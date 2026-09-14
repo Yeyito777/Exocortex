@@ -165,6 +165,8 @@ export interface Tool {
    * Defaults to "exclusive" so new or side-effecting tools are conservative.
    */
   parallelSafety?: ToolParallelSafety;
+  /** Optional input-aware classification; mutations must remain exclusive. */
+  parallelSafetyForInput?: (input: Record<string, unknown>) => ToolParallelSafety;
 
   /**
    * Default wall-clock deadline for one invocation. `null` explicitly opts out

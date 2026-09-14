@@ -19,9 +19,10 @@ tool-name/
 
 Each tool is its own git repository, independently developed. Tools are
 installed by cloning into `external-tools/` — the daemon discovers them
-automatically. Newly discovered external tools default to enabled immediately,
-including in conversations with an existing explicit policy; a conversation must
-explicitly disable a tool to keep it off.
+automatically. Newly discovered external tools default to enabled in ordinary
+conversations using the default policy. Explicit selections (including delegated
+subagent policies) remain exact: installation never adds tools or shell authority
+to them. Enable a tool explicitly, or reset to the default policy to opt in.
 
 ## Helper tools
 

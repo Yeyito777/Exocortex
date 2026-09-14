@@ -14,7 +14,11 @@ export function providerToolNames(names: readonly string[], provider?: ProviderI
     }
     if (selected.has("patch")) selected.add("apply_patch");
     if (selected.has("read")) selected.add("view_image");
-    return [...selected].filter(name => !legacy.has(name));
+    // Restricted research policies must retain text reading/search without
+    // acquiring arbitrary shell authority. Full coding sessions use Codex exec.
+    const readers = new Set(["read", "glob", "grep"]);
+    return [...selected].filter(name => !legacy.has(name)
+      || (!selected.has("exec_command") && readers.has(name)));
   }
   if (selected.has("exec_command")) selected.add("bash");
   if (selected.has("apply_patch")) selected.add("patch");

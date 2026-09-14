@@ -16,6 +16,7 @@ import { safeSlice } from "./util";
 import { spawnShellRunner } from "./shell-runner";
 import { bash, killProcessGroup } from "./bash";
 import { getDaemonShutdownMode } from "../daemon-lifecycle";
+import { recordBackgroundTaskCompletion } from "../conversation-activity";
 
 interface Session {
   id: number;
@@ -93,6 +94,12 @@ function complete(session: Session): void {
   session.started();
   session.didDetach();
   session.finish();
+  if (session.backgrounded && session.context?.conversationId) recordBackgroundTaskCompletion(session.context.conversationId, {
+    taskId: session.taskId, toolName: "exec_command", title: session.title,
+    startedAt: session.startedAt, endedAt: Date.now(), exitCode: session.code,
+    signal: session.signal, outputPath: session.outputPath,
+    ...(session.error ? { failure: session.error } : {}),
+  });
   session.context?.setBackgroundTaskActive?.(session.taskId, false);
   // A replacement daemon, not the old in-memory notification queue, owns
   // delivery once restart preparation begins. Keep the durable record intact.

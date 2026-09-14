@@ -43,22 +43,17 @@ describe("system prompt", () => {
   test("includes compact native-subagent guidance", () => {
     const prompt = buildSystemPrompt({ conversationId: "nested" });
 
-    expect(prompt).toContain([
-      "## exo",
-      "### subagents",
-      "Use the native `exo` tool for delegated work. Don't spawn subagents ever, unless it's work that benefits extraordinarily from parallel execution, requires subagents for testing, or the user requests it. Luna agents for grunt work, terra for slightly more intelligent work, sol for intelligent tasks. effort levels: low, medium, high, xhigh. Short title of 3 words is required for subagents. max_depth=0 unless subagents truly require more subagnets. Subagents get research tools and no external tools by default. Use internal_tools/external_tools for exact delegation. When send targets an existing conversation, supplying both lists persistently replaces its policy before the sent or queued turn; use the discovered tools command to change policy without sending. External CLIs retain their established Bash transport, and allow_edits=true remains legacy shorthand for shell and mutation access.",
-      "### subscriptions",
-      "When asked to manage external notification subscriptions, use action=commands with command=notifications; it can discover sources and defaults subscription targets to the active conversation.",
-      "Subagents start in their own isolated conversation workspace, so include any separate target absolute directory and all necessary task context.",
-      "## chrono",
-      "Prefer chrono over shell sleep, polling background tasks, or cron. `wait` requires a `max_wait` safety limit and wakes immediately when the task finishes. `sleep` pauses this turn until the duration elapses; `wake` persists across daemon restarts; message wakes start a model turn, while command soft-wakes can use hard_wake to escalate failures or command-defined non-zero conditions.",
-    ].join("\n"));
+    expect(prompt).toContain("## exo\n### subagents");
+    expect(prompt).toContain("Defaults include local text reading/search");
+    expect(prompt).toContain("selection is discovery/delegation policy, not a process sandbox");
+    expect(prompt).toContain("new installations do not expand an explicit selection");
+    expect(prompt).toContain("## chrono\nPrefer chrono over shell sleep");
   });
 
   test("tells child turns their remaining native delegation budget", () => {
     const blocked = buildSystemPrompt({ conversationId: "nested-zero", subagentMaxDepth: 0 });
     expect(blocked).toContain("This turn's remaining native exo subagent depth is 0.");
-    expect(blocked).toContain("Do not call the native `exo` tool with action=send or action=queue.");
+    expect(blocked).toContain("No delegation or unrelated administration is available.");
 
     const nested = buildSystemPrompt({ conversationId: "nested-two", subagentMaxDepth: 2 });
     expect(nested).toContain("This turn's remaining native exo subagent depth is 2.");
@@ -83,12 +78,14 @@ describe("system prompt", () => {
     expect(prompt).toContain("Inherited safety constraint");
     expect(prompt).toContain("# Internal tools\n## read\n");
     expect(prompt).not.toContain("# External tools");
-    expect(prompt).not.toContain("remaining native exo subagent depth");
+    expect(prompt).toContain("remaining native exo subagent depth is 0");
+    expect(prompt).not.toContain("### subscriptions");
+    expect(prompt).not.toContain("### subagents");
     expect(getToolDefs(readOnlyTools).map(tool => tool.name)).toEqual([
-      "read", "glob", "grep", "browse",
+      "read", "glob", "grep", "browse", "exo",
     ]);
     expect(getToolDefs(subagentToolNames(0, true)).map(tool => tool.name)).toEqual([
-      "bash", "read", "write", "glob", "grep", "edit", "patch", "browse", "chrono",
+      "bash", "read", "write", "glob", "grep", "edit", "patch", "browse", "exo", "chrono",
     ]);
     expect(getToolDefs(subagentToolNames(1, false)).map(tool => tool.name)).toContain("exo");
   });
@@ -98,6 +95,20 @@ describe("system prompt", () => {
 
     expect(prompt).not.toContain("Exocortex conversation ID:");
     expect(prompt).not.toContain("remaining native exo subagent depth");
+  });
+
+  test("effective guidance never recommends absent coding primitives", () => {
+    const prompt = buildSystemPrompt({ toolNames: ["exec_command", "exo"], includeExternalToolHints: false });
+    expect(prompt).toContain("Read/search text with exec_command");
+    expect(prompt).not.toContain("edit files with raw apply_patch");
+    expect(prompt).not.toContain("Edit files using raw apply_patch");
+    expect(prompt).not.toContain("Inspect local images with view_image");
+    expect(prompt).not.toContain("Use write_stdin only");
+    const restricted = buildSystemPrompt({ toolNames: ["read", "grep", "exo"], subagentMaxDepth: 0, includeExternalToolHints: false });
+    expect(restricted).toContain("Read local text with read");
+    expect(restricted).toContain("Search local text with grep");
+    expect(restricted).toContain("No shell executor is available");
+    expect(restricted).not.toContain("Read/search text with exec_command");
   });
 
   test("preserves live app instructions on read errors and rejects stale writes", () => {

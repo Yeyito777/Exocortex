@@ -95,11 +95,19 @@ async function execute(input: Record<string, unknown>, context: Parameters<Tool[
       chronoMode: "wait",
     });
     try {
-      const completed = await waitForConversationTask(taskId, waitController.signal);
-      return { output: `Task finished: ${completed.id} (${completed.title})`, isError: false };
+      const completed = await waitForConversationTask(taskId, waitController.signal,
+        context.subagentMaxDepth === 0 ? convId : undefined);
+      return { output: JSON.stringify({
+        task_id: completed.id, status: completed.status, title: completed.title,
+        ended_at: completed.endedAt,
+        ...(completed.exitCode !== undefined ? { exit_code: completed.exitCode } : {}),
+        ...(completed.signal !== undefined ? { signal: completed.signal } : {}),
+        ...(completed.outputPath ? { output_path: completed.outputPath } : {}),
+        ...(completed.failure ? { failure: completed.failure } : {}),
+      }, null, 2), isError: false };
     } catch (err) {
       if (limitReached && err instanceof DOMException && err.name === "AbortError") {
-        return { output: `Wait limit reached after ${maxWait} before task completion was observed: ${taskId}`, isError: false };
+        return { output: JSON.stringify({ task_id: taskId, status: "wait_limit_reached", max_wait: maxWait }), isError: false };
       }
       if (err instanceof DOMException && err.name === "AbortError") throw err;
       return { output: err instanceof Error ? err.message : String(err), isError: true };

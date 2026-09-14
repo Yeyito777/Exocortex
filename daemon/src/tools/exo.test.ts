@@ -82,6 +82,78 @@ afterEach(() => {
 });
 
 describe("native exo tool contract", () => {
+  test("depth-zero agents can inspect/stop own tasks but cannot delegate or administer", async () => {
+    const owner = id("depth-zero-owner");
+    const other = id("depth-zero-other");
+    create(owner, "openai", "gpt-5.6-sol", "owner");
+    create(other, "openai", "gpt-5.6-sol", "other");
+    setSubagentPolicy(owner, { parentConversationId: other, allowEdits: true, parentSystemInstructions: "" });
+    get(owner)!.subagentMaxDepth = 0;
+    const ownStop = mock(() => true);
+    const otherStop = mock(() => true);
+    for (const [convId, stop] of [[owner, ownStop], [other, otherStop]] as const) {
+      setBackgroundTaskActive(convId, `bash:${convId}`, true, {
+        title: "test", startedAt: Date.now(), toolName: "bash", pid: 123,
+        backgroundedAt: Date.now(), stop,
+      });
+    }
+    const runTurn = mock(async () => successfulOutcome());
+    const runtime = createExocortexToolRuntime({ server: fakeServer() as never, runTurn, hasCredentials: () => true });
+    // No explicit caller depth: durable scoped policy must still restrict it.
+    const listing = await runtime.execute({ action: "tasks" }, owner);
+    expect(JSON.parse(listing.output).tasks.map((task: { id: string }) => task.id)).toEqual([`bash:${owner}`]);
+    expect((await runtime.execute({ action: "commands", command: "task", args: { operation: "info", task_id: `bash:${owner}` } }, owner)).isError).toBe(false);
+    const commands = JSON.parse((await runtime.execute({ action: "commands" }, owner)).output).commands;
+    expect(commands.map((command: { name: string }) => command.name)).toEqual(["task"]);
+    expect((await runtime.execute({ action: "commands", command: "help", args: { command: "task" } }, owner)).isError).toBe(false);
+
+    for (const input of [
+      { action: "send", text: "escape", title: "Attempt more delegation", max_depth: 0 },
+      { action: "queue", conversation_id: other, text: "escape", max_depth: 0 },
+      { action: "tasks", scope: "all" },
+      { action: "tasks", conversation_id: other },
+      { action: "stop_task", task_id: `bash:${other}` },
+      { action: "commands", command: "task", args: { operation: "info", task_id: `bash:${other}` } },
+      { action: "commands", command: "task", args: { operation: "stop", task_id: `bash:${other}` } },
+      { action: "commands", command: "help", args: { command: "tools" } },
+      { action: "commands", command: "tools", args: { operation: "reset" } },
+      { action: "commands", command: "llm", args: { text: "escape" } },
+      { action: "commands", command: "folder", args: { operation: "mkdir", path: "escape" } },
+      { action: "info", conversation_id: other },
+      { action: "history", conversation_id: other },
+      { action: "abort", conversation_id: other },
+      { action: "delete", conversation_id: other },
+      { action: "llm", text: "legacy escape" },
+      { action: "folder_mkdir", path: "legacy-escape" },
+    ]) {
+      const result = await runtime.execute(input, owner, undefined, 2);
+      expect(result.isError).toBe(true);
+      expect(JSON.parse(result.output).error).toBeString();
+    }
+    expect(runTurn).not.toHaveBeenCalled();
+    expect(otherStop).not.toHaveBeenCalled();
+    expect((await runtime.execute({ action: "stop_task", task_id: `bash:${owner}` }, owner)).isError).toBe(false);
+    expect(ownStop).toHaveBeenCalledTimes(1);
+  });
+
+  test("discovered commands reject schema mistakes before any mutation", async () => {
+    const owner = id("schema-owner");
+    create(owner, "openai", "gpt-5.6-sol", "original");
+    const server = fakeServer();
+    const runtime = createExocortexToolRuntime({ server: server as never, runTurn: async () => successfulOutcome() });
+    for (const args of [{ title: "changed", typo: true }, { title: 12 }, {}]) {
+      const result = await runtime.execute({ action: "commands", command: "rename", args }, owner);
+      expect(result.isError).toBe(true);
+      expect(JSON.parse(result.output)).toMatchObject({
+        error: expect.any(String), command_help: { command: "rename", input_schema: { additionalProperties: false } },
+      });
+      expect(getSummary(owner)?.title).toBe("original");
+    }
+    expect(server.broadcast).not.toHaveBeenCalled();
+    expect((await runtime.execute({ action: "commands", command: "rename", args: { title: "changed" } }, owner)).isError).toBe(false);
+    expect(getSummary(owner)?.title).toBe("changed");
+  });
+
   test("keeps a compact top-level orchestration surface", () => {
     expect(EXO_ACTIONS).toEqual([
       "send", "list", "jobs", "tasks", "stop_task", "info", "history", "abort", "queue", "commands",
@@ -109,13 +181,10 @@ describe("native exo tool contract", () => {
     expect(schema).toContain("Maximum number of additional subagent generations permitted");
     expect(schema).toContain("not a target. Use 0 unless the target clearly needs to delegate");
     expect(exo.description).toContain("Transcription and cross-instance targeting are intentionally excluded");
-    expect(exo.systemHint).toBe([
-      "### subagents",
-      "Use the native `exo` tool for delegated work. Don't spawn subagents ever, unless it's work that benefits extraordinarily from parallel execution, requires subagents for testing, or the user requests it. Luna agents for grunt work, terra for slightly more intelligent work, sol for intelligent tasks. effort levels: low, medium, high, xhigh. Short title of 3 words is required for subagents. max_depth=0 unless subagents truly require more subagnets. Subagents get research tools and no external tools by default. Use internal_tools/external_tools for exact delegation. When send targets an existing conversation, supplying both lists persistently replaces its policy before the sent or queued turn; use the discovered tools command to change policy without sending. External CLIs retain their established Bash transport, and allow_edits=true remains legacy shorthand for shell and mutation access.",
-      "### subscriptions",
-      "When asked to manage external notification subscriptions, use action=commands with command=notifications; it can discover sources and defaults subscription targets to the active conversation.",
-      "Subagents start in their own isolated conversation workspace, so include any separate target absolute directory and all necessary task context.",
-    ].join("\n"));
+    expect(exo.systemHint).toContain("Depth-zero agents retain exo only to inspect and stop their own tasks");
+    expect(exo.systemHint).toContain("new installations do not expand an explicit selection");
+    expect(exo.systemHint).toContain("External CLIs use the available shell executor");
+    expect(exo.systemHint).toContain("Subagents start in their own isolated conversation workspace");
   });
 
   test("jobs trusts daemon mute state while retaining running streams", async () => {
@@ -346,9 +415,9 @@ describe("native exo daemon runtime", () => {
 
     const result = await runtime.execute({ action: "abort", conversation_id: parentId }, parentId);
 
-    expect(result).toEqual({
-      output: "Cannot abort the conversation currently executing this tool. Use action=stop_task to stop a background task.",
-      isError: true,
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.output)).toEqual({
+      error: "Cannot abort the conversation currently executing this tool. Use action=stop_task to stop a background task.",
     });
     expect(active.signal.aborted).toBe(false);
   });
@@ -428,7 +497,7 @@ describe("native exo daemon runtime", () => {
       command: "system_prompt",
       args: { conversation_id: childId },
     }, parentId);
-    expect(childPrompt.output).toStartWith("You are a scoped subagent working for a parent agent.");
+    expect(JSON.parse(childPrompt.output).message).toStartWith("You are a scoped subagent working for a parent agent.");
     expect(childPrompt.output).toContain("Do only the assigned task.");
     expect(childPrompt.output).toContain("Never use live service credentials.");
     expect(childPrompt.output).not.toContain("# External tools");
@@ -547,7 +616,7 @@ describe("native exo daemon runtime", () => {
       mode: "wait",
       max_depth: 0,
     }, parentId);
-    const childId = result.output.match(/exo:([^\s]+)/)?.[1];
+    const childId = JSON.parse(result.output).conversation_id;
     expect(childId).toBeTruthy();
     if (!childId) return;
     conversationIds.push(childId);
@@ -593,7 +662,7 @@ describe("native exo daemon runtime", () => {
       mode: "wait",
       max_depth: 0,
     }, parentId);
-    const childId = result.output.match(/exo:([^\s]+)/)?.[1];
+    const childId = JSON.parse(result.output).conversation_id;
     expect(childId).toBeTruthy();
     if (!childId) return;
     conversationIds.push(childId);
@@ -652,7 +721,7 @@ describe("native exo daemon runtime", () => {
     }, parentId);
     expect(result.isError).toBe(false);
     expect(result.output).toContain("permission confirmed");
-    expect(result.output).toContain("Persistent tool policy updated for this and future turns.");
+    expect(JSON.parse(result.output)).toMatchObject({ tool_policy_persistent: true, tool_policy_updated: true });
     expect(get(childId)?.toolPolicy).toEqual({ internal: ["read"], external: [] });
     expect(runTurn).toHaveBeenCalledWith(
       childId,
@@ -798,9 +867,9 @@ describe("native exo daemon runtime", () => {
     const waited = await runtime.execute({ action: "send", text: "Wait for this", title: "Wait child result", mode: "wait", max_depth: 0 }, parentId);
     expect(waited).toMatchObject({ isError: false });
     expect(waited.output).toContain("waited result");
-    const match = waited.output.match(/exo:([^\s]+)/);
-    expect(match?.[1]).toBeTruthy();
-    if (match?.[1]) conversationIds.push(match[1]);
+    const childId = JSON.parse(waited.output).conversation_id;
+    expect(childId).toBeTruthy();
+    if (childId) conversationIds.push(childId);
 
     const queued = await runtime.execute({ action: "send", conversation_id: parentId, text: "follow up", max_depth: 0 }, parentId);
     expect(queued.isError).toBe(false);
@@ -838,7 +907,7 @@ describe("native exo daemon runtime", () => {
         ...(mode === "detach" ? { model: DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID] } : {}),
       }, parentId);
       expect(result).toMatchObject({ isError: false });
-      expect(result.output).toContain("queued the message for its next turn");
+      expect(JSON.parse(result.output)).toMatchObject({ conversation_id: targetId, status: "queued", timing: "next-turn" });
     }
 
     expect(getQueuedMessages(targetId)).toEqual(modes.map(mode => expect.objectContaining({
@@ -920,7 +989,7 @@ describe("native exo daemon runtime", () => {
       2,
     );
     expect(allowed).toMatchObject({ isError: false });
-    const childId = allowed.output.match(/exo:([^\s]+)/)?.[1];
+    const childId = JSON.parse(allowed.output).conversation_id;
     expect(childId).toBeTruthy();
     if (childId) conversationIds.push(childId);
     expect(runTurn).toHaveBeenLastCalledWith(
@@ -1483,7 +1552,8 @@ describe("native exo daemon runtime", () => {
       command: "llm",
       args: { text: "question", system: "be terse", max_tokens: 123 },
     }, undefined);
-    expect(result).toEqual({ output: "one-shot result", isError: false });
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.output)).toEqual({ message: "one-shot result" });
     expect(runCompletion).toHaveBeenCalledWith("be terse", "question", expect.objectContaining({ maxTokens: 123, tracking: { source: "llm_complete" } }));
 
     const legacy = await runtime.execute({ action: "llm", text: "legacy" }, undefined);

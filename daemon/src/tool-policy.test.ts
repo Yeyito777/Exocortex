@@ -12,6 +12,17 @@ import {
 } from "./tool-policy";
 
 describe("conversation tool policy", () => {
+  test("OpenAI snapshots include every enabled restricted reader", () => {
+    const conv = createConversation("reader-snapshot", "openai", "gpt-5.6-terra");
+    conv.toolPolicy = { internal: ["read", "grep", "glob"], external: [] };
+    const resolved = resolveConversationToolPolicy(conv);
+    const snapshot = buildToolPolicySnapshot(conv);
+    for (const name of resolved.internalToolNames) {
+      expect(snapshot.internal).toContainEqual(expect.objectContaining({ name, enabled: true }));
+    }
+    expect(snapshot.shellWarning).toBe(false);
+    expect(snapshot.internal).toContainEqual(expect.objectContaining({ name: "exec_command", enabled: false }));
+  });
   test("normal conversations default to installed internal tools", () => {
     const conv = createConversation("root", "deepseek", "deepseek/pro");
     const resolved = resolveConversationToolPolicy(conv);
@@ -43,7 +54,7 @@ describe("conversation tool policy", () => {
     }
   });
 
-  test("new external manifests default enabled without re-enabling known disabled tools", () => {
+  test("new external manifests never expand explicit or legacy exact selections", () => {
     const loaded: LoadedTool[] = ["google", "duo"].map((name) => ({
       manifest: {
         name,
@@ -62,16 +73,23 @@ describe("conversation tool policy", () => {
         external: [],
         knownExternal: ["google"],
       };
-      expect(resolveConversationToolPolicy(conv).externalToolNames).toEqual(["duo"]);
+      expect(resolveConversationToolPolicy(conv).externalToolNames).toEqual([]);
+      expect(resolveConversationToolPolicy(conv).internalToolNames).not.toContain("bash");
       expect(buildToolPolicySnapshot(conv).external).toEqual([
         { name: "google", label: "google", enabled: false },
-        { name: "duo", label: "duo", enabled: true },
+        { name: "duo", label: "duo", enabled: false },
       ]);
 
-      // Legacy exact policies did not record their manifest inventory. Their
-      // selected names become the old inventory, so a missing installed tool is
-      // treated as newly added and enabled immediately.
+      // Legacy policies are exact even without an inventory.
       conv.toolPolicy = { internal: ["read"], external: ["google"] };
+      expect(resolveConversationToolPolicy(conv).externalToolNames).toEqual(["google"]);
+      conv.subagentPolicy = { parentConversationId: "parent", allowEdits: false, parentSystemInstructions: "" };
+      conv.toolPolicy = { internal: ["read"], external: [] };
+      expect(resolveConversationToolPolicy(conv).externalToolNames).toEqual([]);
+      expect(resolveConversationToolPolicy(conv).internalToolNames).not.toContain("bash");
+      conv.toolPolicy = null;
+      expect(resolveConversationToolPolicy(conv).externalToolNames).toEqual([]);
+      conv.subagentPolicy = null;
       expect(resolveConversationToolPolicy(conv).externalToolNames).toEqual(["google", "duo"]);
     } finally {
       restore();
@@ -82,7 +100,7 @@ describe("conversation tool policy", () => {
     const conv = createConversation("child", "deepseek", "deepseek/pro");
     conv.subagentMaxDepth = 0;
     conv.subagentPolicy = { parentConversationId: "root", allowEdits: false, parentSystemInstructions: "" };
-    expect(resolveConversationToolPolicy(conv).configurableInternalToolNames).toEqual(["read", "glob", "grep", "browse"]);
+    expect(resolveConversationToolPolicy(conv).configurableInternalToolNames).toEqual(["read", "glob", "grep", "browse", "exo"]);
 
     conv.subagentPolicy.allowEdits = true;
     expect(resolveConversationToolPolicy(conv).configurableInternalToolNames).toEqual(
@@ -90,12 +108,12 @@ describe("conversation tool policy", () => {
     );
   });
 
-  test("an exact selection controls schemas and exo still respects max depth", () => {
+  test("depth-zero policies retain exo for runtime-restricted task management", () => {
     const conv = createConversation("selected", "deepseek", "deepseek/pro");
     conv.subagentMaxDepth = 0;
     conv.subagentPolicy = { parentConversationId: "root", allowEdits: false, parentSystemInstructions: "" };
     conv.toolPolicy = { internal: ["read", "write", "exo"], external: [] };
-    expect(resolveConversationToolPolicy(conv).configurableInternalToolNames).toEqual(["read", "write"]);
+    expect(resolveConversationToolPolicy(conv).configurableInternalToolNames).toEqual(["read", "write", "exo"]);
   });
 
   test("regular policy status ignores an exhausted budget retained from a delegated turn", () => {
@@ -105,7 +123,7 @@ describe("conversation tool policy", () => {
 
     expect(resolveConversationToolPolicy(conv).configurableInternalToolNames).toEqual(["read", "write", "exo"]);
     expect(buildToolPolicySnapshot(conv).internal.find((tool) => tool.name === "exo")?.enabled).toBe(true);
-    expect(resolveConversationToolPolicy(conv, 0).configurableInternalToolNames).toEqual(["read", "write"]);
+    expect(resolveConversationToolPolicy(conv, 0).configurableInternalToolNames).toEqual(["read", "write", "exo"]);
   });
 
   test("mutating a regular policy preserves exo after an exhausted delegated turn", async () => {

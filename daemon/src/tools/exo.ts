@@ -51,7 +51,7 @@ function summarizeExoParams(primary: string, input: Record<string, unknown>, ski
 
 const EXO_SYSTEM_HINT = [
   "### subagents",
-  "Use the native `exo` tool for delegated work. Don't spawn subagents ever, unless it's work that benefits extraordinarily from parallel execution, requires subagents for testing, or the user requests it. Luna agents for grunt work, terra for slightly more intelligent work, sol for intelligent tasks. effort levels: low, medium, high, xhigh. Short title of 3 words is required for subagents. max_depth=0 unless subagents truly require more subagnets. Subagents get research tools and no external tools by default. Use internal_tools/external_tools for exact delegation. When send targets an existing conversation, supplying both lists persistently replaces its policy before the sent or queued turn; use the discovered tools command to change policy without sending. External CLIs retain their established Bash transport, and allow_edits=true remains legacy shorthand for shell and mutation access.",
+  "Use the native `exo` tool for delegated work. Don't spawn subagents unless the work benefits extraordinarily from parallel execution, requires subagents for testing, or the user requests it. Luna agents for grunt work, terra for slightly more intelligent work, sol for intelligent tasks. Use a short three-word title and max_depth=0 unless more delegation is needed. Depth-zero agents retain exo only to inspect and stop their own tasks, not to delegate or administer conversations. Defaults include local text reading/search, browse, and exo, but no external CLIs. Use internal_tools/external_tools for exact delegation; new installations do not expand an explicit selection. For an existing send, both lists persistently replace the next-turn policy; use the discovered tools command to change policy without sending. External CLIs use the available shell executor; selection is discovery/delegation policy, not a process sandbox. allow_edits=true is legacy shorthand for shell, mutation tools, and chrono.",
   "### subscriptions",
   "When asked to manage external notification subscriptions, use action=commands with command=notifications; it can discover sources and defaults subscription targets to the active conversation.",
   "Subagents start in their own isolated conversation workspace, so include any separate target absolute directory and all necessary task context.",
@@ -132,7 +132,7 @@ export const exo: Tool = {
       },
       allow_edits: {
         type: "boolean",
-        description: "Legacy shorthand for a new subagent: add shell, write/edit/patch, and chrono to the research tools. Cannot be combined with internal_tools.",
+        description: "Legacy shorthand for a new subagent: add the provider's shell and file-mutation tools, plus chrono, to research tools. Cannot be combined with internal_tools.",
       },
       internal_tools: {
         type: "array",
@@ -142,7 +142,7 @@ export const exo: Tool = {
       external_tools: {
         type: "array",
         items: { type: "string" },
-        description: "Exact external-tool allowlist. A new subagent defaults to none. For an existing send, internal_tools and external_tools must both be supplied and persistently replace the target's policy before its next turn. External CLIs remain ordinary Bash commands, so selecting any also enables Bash and its established manifest-based TUI presentation.",
+        description: "Exact external-tool allowlist, stable across new installations. A new subagent defaults to none. For an existing send, internal_tools and external_tools must both be supplied and persistently replace the next-turn policy. Selecting any CLI enables the provider's shell executor and manifest-based TUI presentation; this is not a process sandbox.",
       },
       mode: {
         type: "string",
@@ -176,6 +176,20 @@ export const exo: Tool = {
     additionalProperties: false,
   },
   parallelSafety: "exclusive",
+  parallelSafetyForInput(input) {
+    if (["list", "jobs", "tasks", "info", "history"].includes(String(input.action))) return "safe";
+    if (input.action !== "commands") return "exclusive";
+    const command = String(input.command ?? "ls").toLowerCase();
+    // system_prompt may load custom modules, so it remains exclusive.
+    if (["ls", "list", "help", "status", "stats"].includes(command)) return "safe";
+    const args = input.args as Record<string, unknown> | undefined;
+    const operation = args?.operation;
+    if ((command === "task" && operation === "info")
+      || (command === "folder" && ["ls", "tree"].includes(String(operation)))
+      || (["tools", "instructions"].includes(command) && operation === "get")
+      || (command === "notifications" && ["sources", "list"].includes(String(operation)))) return "safe";
+    return "exclusive";
+  },
   // Waiting on a subagent or one-shot LLM is independently cancellable and
   // must not inherit the generic two-minute tool deadline.
   defaultTimeoutMs: null,

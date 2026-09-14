@@ -106,7 +106,7 @@ function buildPromptParts(options: BuildSystemPromptOptions & {
   const parts = [buildEnvironmentHeader(options.conversationId, options.identity, options.workingDirectory)];
 
   if (options.includeToolHints) {
-    const toolHints = buildToolSystemHints(options.toolNames, options.conversationId);
+    const toolHints = buildToolSystemHints(options.toolNames, options.conversationId, options.subagentMaxDepth);
     parts.push(toolHints ? `# Internal tools\n${toolHints}` : "# Internal tools");
   }
 
@@ -116,7 +116,7 @@ function buildPromptParts(options: BuildSystemPromptOptions & {
   const hasExoTool = !options.toolNames || options.toolNames.includes("exo");
   if (hasExoTool && typeof depth === "number" && Number.isInteger(depth) && depth >= 0) {
     parts.push(depth === 0
-      ? "This turn's remaining native exo subagent depth is 0. Do not call the native `exo` tool with action=send or action=queue."
+      ? "This turn's remaining native exo subagent depth is 0. Use exo only for your own tasks (tasks, stop_task, or commands/task info|stop). No delegation or unrelated administration is available."
       : `This turn's remaining native exo subagent depth is ${depth}. A child turn may receive at most max_depth=${depth - 1}.`);
   }
 
@@ -131,9 +131,25 @@ function buildPromptParts(options: BuildSystemPromptOptions & {
   if (options.conversationInstructions) parts.push("# Conversation instructions\n" + options.conversationInstructions);
 
   // User addenda and external manifests may still use the older tool names.
-  if (options.toolNames?.includes("exec_command")) parts.push(
-    "# Provider tool compatibility\nThis session uses Codex coding primitives. References in older instructions or CLI documentation to the bash tool mean exec_command (cmd/workdir, yield_time_ms); literal stdin can be passed using a shell heredoc or write_stdin. Read/search text with exec_command and standard commands, view images with view_image, and edit files with raw apply_patch. The legacy read/write/edit/patch/glob/grep/bash tools are not exposed in this session. The goal internal tool is currently disabled.",
-  );
+  const names = new Set(options.toolNames);
+  if (options.toolNames) parts.push([
+    "# Effective tool guidance",
+    `Available internal tools: ${options.toolNames.join(", ") || "(none)"}.`,
+    ...(names.has("exec_command") ? [
+      "Legacy references to the bash tool mean exec_command (cmd/workdir, yield_time_ms). External CLIs remain ordinary shell commands.",
+      "Read/search text with exec_command and standard commands. Literal stdin can be passed with a quoted heredoc.",
+    ] : []),
+    ...(names.has("write_stdin") ? ["Use write_stdin only with an existing session_id to supply input or collect output."] : []),
+    ...(names.has("read") ? ["Read local text with read."] : []),
+    ...(names.has("glob") ? ["Find local paths with glob."] : []),
+    ...(names.has("grep") ? ["Search local text with grep."] : []),
+    ...(names.has("view_image") ? ["Inspect local images with view_image."] : []),
+    ...(names.has("apply_patch") ? ["Edit files using raw apply_patch."] : []),
+    ...(!names.has("exec_command") && !names.has("bash") ? [
+      "No shell executor is available. Do not substitute unrestricted shell execution for restricted research tools.",
+    ] : []),
+    "Only use tools present in this effective selection; older documentation may mention unavailable tools.",
+  ].join("\n"));
 
   return parts;
 }

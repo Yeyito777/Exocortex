@@ -6,6 +6,7 @@ import { execCommand, writeStdin, unifiedExecInternalsForTest as internals } fro
 import { readBackgroundTaskRecord, removeBackgroundTaskRecord } from "../background-task-state";
 import { beginDaemonShutdown, resetDaemonShutdownModeForTest } from "../daemon-lifecycle";
 import type { BackgroundTaskCompletion, ToolExecutionContext } from "./types";
+import { waitForConversationTask } from "../conversation-activity";
 
 const context: ToolExecutionContext = { conversationId: "unified-exec-test", provider: "openai", cwd: tmpdir() };
 const run = (cmd: string, extra: Record<string, unknown> = {}, ctx = context, signal?: AbortSignal) => execCommand.execute({ cmd, shell: "/bin/bash", login: false, yield_time_ms: 1000, ...extra }, ctx, signal);
@@ -51,6 +52,9 @@ describe.skipIf(process.platform === "win32")("Codex unified exec", () => {
     expect(final.output).toContain("second:two");
     expect(final.output).not.toContain("first:one");
     expect(completions).toHaveLength(0); // collected directly, not a duplicate notification
+    expect(await waitForConversationTask(body.task_id)).toMatchObject({
+      status: "completed", exitCode: 0, outputPath: session.outputPath,
+    });
     expect(activities.at(-1)).toEqual({ id: body.task_id, active: false });
     expect((await writeStdin.execute({ session_id: body.session_id, chars: "late\n" }, ctx)).isError).toBe(true);
     const finished = await writeStdin.execute({ session_id: body.session_id, yield_time_ms: 0 }, ctx);

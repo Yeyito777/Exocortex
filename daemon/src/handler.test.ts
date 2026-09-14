@@ -2241,7 +2241,7 @@ describe("handler load_conversation late-join streaming snapshots", () => {
         source: "explicit",
         internal: expect.arrayContaining([
           expect.objectContaining({ name: "read", enabled: true }),
-          expect.objectContaining({ name: "write", enabled: false }),
+          expect.objectContaining({ name: "apply_patch", enabled: false }),
         ]),
       },
     });

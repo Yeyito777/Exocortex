@@ -12,6 +12,52 @@
  */
 
 import type { ConversationTaskSummary } from "@exocortex/shared/messages";
+import type { BackgroundTaskCompletion } from "./tools/types";
+
+export interface CompletedConversationTask extends ConversationTaskSummary {
+  ownerConversationId: string;
+  status: "completed";
+  endedAt: number;
+  exitCode?: number | null;
+  signal?: string | null;
+  outputPath?: string;
+  failure?: string;
+}
+
+const COMPLETED_TASK_LIMIT = 1000;
+const COMPLETED_TASK_TTL_MS = 60 * 60 * 1000;
+const completedTasks = new Map<string, CompletedConversationTask>();
+
+function rememberCompletedTask(task: CompletedConversationTask): void {
+  completedTasks.delete(task.id);
+  completedTasks.set(task.id, task);
+  for (const [id, record] of completedTasks) {
+    if (record.endedAt < Date.now() - COMPLETED_TASK_TTL_MS || completedTasks.size > COMPLETED_TASK_LIMIT) {
+      completedTasks.delete(id);
+    }
+  }
+}
+
+/** Completion metadata is retained even when parent notifications are suppressed. */
+export function recordBackgroundTaskCompletion(ownerConversationId: string, completion: BackgroundTaskCompletion): void {
+  rememberCompletedTask({
+    id: completion.taskId, kind: "background", title: completion.title,
+    startedAt: completion.startedAt, endedAt: completion.endedAt,
+    ownerConversationId, status: "completed", exitCode: completion.exitCode,
+    signal: completion.signal,
+    ...(completion.outputPath ? { outputPath: completion.outputPath } : {}),
+    ...(completion.failure || completion.outputError ? { failure: completion.failure ?? completion.outputError } : {}),
+  });
+}
+
+export function getCompletedConversationTask(taskId: string): CompletedConversationTask | undefined {
+  const task = completedTasks.get(taskId);
+  if (task && task.endedAt < Date.now() - COMPLETED_TASK_TTL_MS) {
+    completedTasks.delete(taskId);
+    return undefined;
+  }
+  return task ? { ...task } : undefined;
+}
 
 export interface ConversationActivityCounts {
   subagentCount: number;
@@ -84,6 +130,7 @@ function setEntry(
   details?: TaskDetails | BackgroundTaskRuntimeDetails,
 ): boolean {
   if (active) {
+    completedTasks.delete(taskId);
     let tasks = map.get(ownerId);
     if (!tasks) {
       tasks = new Map();
@@ -114,7 +161,14 @@ function setEntry(
   }
 
   const tasks = map.get(ownerId);
-  if (!tasks || !tasks.delete(taskId)) return false;
+  const task = tasks?.get(taskId);
+  if (!tasks || !task) return false;
+  tasks.delete(taskId);
+  if (!getCompletedConversationTask(taskId)) rememberCompletedTask({
+    ...summaryProjection(task), ownerConversationId: ownerId,
+    status: "completed", endedAt: Date.now(),
+    ...(task.outputPath ? { outputPath: task.outputPath } : {}),
+  });
   if (tasks.size === 0) map.delete(ownerId);
   const waiters = taskCompletionWaiters.get(taskId);
   if (waiters) {
@@ -182,14 +236,21 @@ function findActiveTask(taskId: string): InternalTaskRecord | undefined {
 }
 
 /** Event-driven wait for an active task to leave the daemon task catalog. */
-export function waitForConversationTask(taskId: string, signal?: AbortSignal): Promise<ConversationTaskSummary> {
+export function waitForConversationTask(taskId: string, signal?: AbortSignal, ownerConversationId?: string): Promise<CompletedConversationTask> {
+  if (signal?.aborted) return Promise.reject(new DOMException("Aborted", "AbortError"));
   const task = findActiveTask(taskId);
-  if (!task) return Promise.reject(new Error(`Active task not found: ${taskId}`));
-  const snapshot = summaryProjection(task);
+  if (!task) {
+    const completed = getCompletedConversationTask(taskId);
+    if (completed && (!ownerConversationId || completed.ownerConversationId === ownerConversationId)) return Promise.resolve(completed);
+    return Promise.reject(new Error(`Task not found (active or recently completed): ${taskId}`));
+  }
+  const owner = listActiveConversationTasks().find(record => record.id === taskId)!.ownerConversationId;
+  if (ownerConversationId && owner !== ownerConversationId) return Promise.reject(new Error("Can only wait for your own tasks."));
+  const snapshot = { ...summaryProjection(task), ownerConversationId: owner, status: "completed" as const };
   return new Promise((resolve, reject) => {
     const finish = () => {
       signal?.removeEventListener("abort", abort);
-      resolve(snapshot);
+      resolve(getCompletedConversationTask(taskId) ?? { ...snapshot, endedAt: Date.now() });
     };
     const abort = () => {
       const waiters = taskCompletionWaiters.get(taskId);
@@ -351,4 +412,5 @@ export function resetConversationActivityForTest(): void {
   backgroundTasksByConversation.clear();
   chronoTasksByConversation.clear();
   taskCompletionWaiters.clear();
+  completedTasks.clear();
 }

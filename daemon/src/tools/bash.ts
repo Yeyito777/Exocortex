@@ -24,6 +24,7 @@ import { formatToolAbortMessage } from "../abort";
 import { isWindows, socketPath } from "@exocortex/shared/paths";
 import { rewriteExternalToolShellCommandForExecution } from "../external-tools";
 import { log } from "../log";
+import { recordBackgroundTaskCompletion } from "../conversation-activity";
 import { spawnShellRunner } from "./shell-runner";
 import { getDaemonShutdownMode } from "../daemon-lifecycle";
 import {
@@ -472,6 +473,11 @@ async function executeBashImpl(
     function notifyBackgroundTaskCompletion(code: number | null, signal: string | null): void {
       if (!wasBackgrounded || completionNotified || !commandPid) return;
       completionNotified = true;
+      if (context?.conversationId) recordBackgroundTaskCompletion(context.conversationId, {
+        taskId: backgroundTaskId(), toolName: "bash", title: command!,
+        startedAt: startTime, endedAt: Date.now(), exitCode: code, signal,
+        ...(processFailure ? { failure: processFailure } : { outputPath: capturePath }),
+      });
       const tracked = trackedBackgroundProcesses.get(commandPid);
       trackedBackgroundProcesses.delete(commandPid);
       let completionAccepted = tracked?.suppressCompletionNotification === true;
@@ -635,9 +641,9 @@ async function executeBashImpl(
       removeAbortListener();
       if (code !== 0) restoreBackgroundTaskNotifications(intentionalStops);
       clearRegisteredBackgrounder();
-      setBackgroundTaskTracked(false);
       if (outputError) processFailure ??= outputError;
       notifyBackgroundTaskCompletion(code, sig);
+      setBackgroundTaskTracked(false);
       if (settled) return;
       settled = true;
 
@@ -766,8 +772,8 @@ async function executeBashImpl(
       processFailure = err.message;
       if (commandPid) killProcessGroup(commandPid);
       if (wasBackgrounded) {
-        setBackgroundTaskTracked(false);
         notifyBackgroundTaskCompletion(null, null);
+        setBackgroundTaskTracked(false);
       }
       if (settled) return;
       settled = true;
@@ -785,8 +791,8 @@ async function executeBashImpl(
         : "isolated bash runner exited unexpectedly";
       if (commandPid) killProcessGroup(commandPid);
       if (wasBackgrounded) {
-        setBackgroundTaskTracked(false);
         notifyBackgroundTaskCompletion(null, runnerSignal);
+        setBackgroundTaskTracked(false);
       }
       if (settled) return;
       settled = true;

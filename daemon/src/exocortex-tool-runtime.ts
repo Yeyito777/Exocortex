@@ -46,6 +46,7 @@ import type { DaemonServer } from "./server";
 import type { AssistantTurnOutcome } from "./orchestrator";
 import type { ExocortexToolRuntime, ToolResult } from "./tools/types";
 import { EXO_ACTIONS, type ExoAction } from "./tools/exo";
+import { validateCommandArgs } from "./tools/command-schema";
 import { getTokenStatsSnapshot } from "./token-stats";
 import {
   getActiveSubagentCount,
@@ -152,7 +153,7 @@ function ok(output: string): ToolResult {
 }
 
 function fail(output: string): ToolResult {
-  return { output, isError: true };
+  return { output: pretty({ error: output }), isError: true };
 }
 
 function pretty(value: unknown): string {
@@ -780,7 +781,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
 
     const queuedExistingSendResult = (): ToolResult => {
       if (!existingToolPolicyRequested || !requestedExistingToolPolicy || !convId) {
-        return ok(`Conversation ${convId} is busy; queued the message for its next turn.`);
+        return ok(pretty({ conversation_id: convId, status: "queued", timing: "next-turn" }));
       }
       return ok(pretty({
         conversation_id: convId,
@@ -806,9 +807,6 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
         parent,
       );
       let childExternalTools = validateToolSelection("external", requestedExternalTools ?? []);
-      if (maxDepth <= 0 && childInternalTools.includes("exo")) {
-        throw new Error("Cannot enable internal tool exo for a child with max_depth=0");
-      }
       const childCustomModules = (parent?.toolPolicy?.customToolModules ?? []).filter((module) => (
         module.tools.some((tool) => childInternalTools.includes(tool.name))
       ));
@@ -823,6 +821,9 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       if (!folder) throw new Error(`Failed to create ${SUBAGENTS_FOLDER_NAME} folder`);
       convId = convStore.generateId();
       convStore.create(convId, selection.provider, selection.model, requestedTitle, selection.effort, selection.fastMode, folder.id);
+      // Persist the initial ceiling together with the scoped policy, before
+      // any turn, notification, or inspection can observe this new child.
+      convStore.get(convId)!.subagentMaxDepth = maxDepth;
       convStore.setSubagentPolicy(convId, {
         parentConversationId: parentConvId ?? null,
         allowEdits: requestedAllowEdits === true,
@@ -855,9 +856,6 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
           convId,
           requestedExistingToolPolicy.internal,
         );
-        if (maxDepth <= 0 && requestedExistingToolPolicy.internal.includes("exo")) {
-          throw new Error("Cannot enable internal tool exo for a conversation when this send has max_depth=0");
-        }
       }
       // A busy target cannot safely change models or start a nested turn. Preserve
       // the send as durable intent and let the queue scheduler run it next. An
@@ -951,11 +949,12 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       const body = outcome.ok
         ? formatBlocks(outcome.blocks, full) || "(subagent completed without text output)"
         : outcome.error || "Subagent failed";
-      const toolPolicyNotice = existingToolPolicyRequested
-        ? `\n\nPersistent tool policy ${existingToolPolicyChanged ? "updated" : "confirmed"} for this and future turns.`
-        : "";
       return {
-        output: `${body}${toolPolicyNotice}\n\nexo:${convId}`,
+        output: pretty({
+          conversation_id: convId, status: outcome.suspended ? "suspended" : outcome.ok ? "completed" : "failed",
+          ...(outcome.ok ? { message: body } : { error: body }),
+          ...(existingToolPolicyRequested ? { tool_policy_persistent: true, tool_policy_updated: existingToolPolicyChanged } : {}),
+        }),
         isError: !outcome.ok,
       };
     } finally {
@@ -1150,7 +1149,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     await waitForStreamsToStop([convId], signal);
     if (!convStore.remove(convId)) throw new Error(`Conversation ${convId} not found`);
     server.broadcast({ type: "conversation_deleted", convId });
-    return ok(`Deleted ${convId}`);
+    return ok(pretty({ conversation_id: convId, status: "deleted" }));
   };
 
   const executeAbort = (input: Record<string, unknown>, parentConvId: string | undefined): ToolResult => {
@@ -1160,9 +1159,9 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     }
     if (!convStore.getSummary(convId)) throw new Error(`Conversation ${convId} not found`);
     const controller = convStore.getActiveJob(convId);
-    if (!controller) return ok(`Conversation ${convId} has no active job.`);
+    if (!controller) return ok(pretty({ conversation_id: convId, status: "idle" }));
     controller.abort();
-    return ok(`Aborted ${convId}.`);
+    return ok(pretty({ conversation_id: convId, status: "aborted" }));
   };
 
   const executeQueue = (
@@ -1180,7 +1179,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       kind: "exo_send",
       ...(parentConvId ? { sourceId: parentConvId } : {}),
     });
-    return ok(`Queued (${timing}, max_depth=${maxDepth}) for ${convId}`);
+    return ok(pretty({ conversation_id: convId, status: "queued", timing, max_depth: maxDepth }));
   };
 
   const executeRename = (input: Record<string, unknown>, parentConvId: string | undefined): ToolResult => {
@@ -1188,7 +1187,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     const title = stringInput(input, "title", true)!;
     if (!convStore.rename(convId, title)) throw new Error(`Conversation ${convId} not found`);
     broadcastConversationUpdated(server, convId);
-    return ok(`Renamed ${convId} to ${JSON.stringify(title)}`);
+    return ok(pretty({ conversation_id: convId, status: "renamed", title }));
   };
 
   const executeLlm = async (input: Record<string, unknown>, parentConvId: string | undefined, signal?: AbortSignal): Promise<ToolResult> => {
@@ -1207,7 +1206,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       tracking: { source: "llm_complete", ...(parentConvId ? { conversationId: parentConvId } : {}) },
     });
     server.broadcast({ type: "token_stats", stats: getTokenStatsSnapshot() });
-    return ok(result.text);
+    return ok(pretty({ message: result.text }));
   };
 
   const executeStatus = (): ToolResult => {
@@ -1383,7 +1382,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     const instructions = convStore.getEffectiveSystemInstructions(convId);
     const scopedPromptOptions = scopedSubagentPromptOptions(conversation, conversation.subagentMaxDepth ?? 0);
     const resolvedToolPolicy = resolveConversationToolPolicy(conversation, conversation.subagentMaxDepth ?? null);
-    return ok(buildSystemPrompt({
+    return ok(pretty({ message: buildSystemPrompt({
       conversationInstructions: instructions ?? undefined,
       conversationId: convId,
       workingDirectory,
@@ -1392,7 +1391,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       toolNames: resolvedToolPolicy.internalToolNames,
       includeExternalToolHints: true,
       externalToolNames: resolvedToolPolicy.externalToolNames,
-    }));
+    }) }));
   };
 
   const executeToolsCommand = async (
@@ -1448,12 +1447,6 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
         convId,
         nextPolicy.internal,
       );
-      if (conversation.subagentPolicy
-        && typeof conversation.subagentMaxDepth === "number"
-        && conversation.subagentMaxDepth <= 0
-        && nextPolicy.internal.includes("exo")) {
-        throw new Error("Cannot enable internal tool exo for a conversation with max_depth=0");
-      }
     }
 
     const previousPolicy = conversation.toolPolicy;
@@ -1923,7 +1916,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       inputSchema: commandSchema({
         operation: { type: "string", enum: ["get", "set", "reset"] },
         conversation_id: { type: "string", description: "Target conversation. Defaults to the active conversation." },
-        internal_tools: { type: "array", items: { type: "string" }, description: "Exact internal-tool list for set. Required with external_tools; the active caller must retain exo in its own conversation, and external CLIs automatically retain Bash as their established transport." },
+        internal_tools: { type: "array", items: { type: "string" }, description: "Exact internal-tool list for set. Required with external_tools; the active caller must retain exo in its own conversation, and external CLIs automatically retain the provider's shell executor as transport." },
         external_tools: { type: "array", items: { type: "string" }, description: "Exact external manifest-name list for set. Required with internal_tools." },
       }, ["operation"]),
       examples: [
@@ -2027,7 +2020,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
   ];
   const commandMap = new Map(commands.map(command => [command.name, command]));
 
-  const commandHelp = (command: ExoCommandDefinition): string => pretty({
+  const commandHelp = (command: ExoCommandDefinition) => ({
     command: command.name,
     description: command.description,
     input_schema: command.inputSchema,
@@ -2044,7 +2037,8 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     const args = objectInput(input, "args");
     if (commandName === "ls" || commandName === "list") {
       return ok(pretty({
-        commands: commands.map(command => ({ name: command.name, description: command.description })),
+        commands: commands.filter(command => callerMaxDepth !== 0 || command.name === "task")
+          .map(command => ({ name: command.name, description: command.description })),
         help: "Call action=commands, command=help, args={command: <name>} for argument details.",
       }));
     }
@@ -2052,23 +2046,55 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       const target = stringInput(args, "command", true)!.toLowerCase();
       const command = commandMap.get(target);
       if (!command) throw new Error(`Unknown exo command: ${target}. Run action=commands with command=ls.`);
-      return ok(commandHelp(command));
+      return ok(pretty(commandHelp(command)));
     }
 
     const command = commandMap.get(commandName);
     if (!command) throw new Error(`Unknown exo command: ${commandName}. Run action=commands with command=ls.`);
     try {
+      validateCommandArgs(command.inputSchema, args);
       return await command.execute(args, parentConversationId, signal, callerMaxDepth);
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") throw error;
       const message = error instanceof Error ? error.message : String(error);
-      return fail(`${message}\n\nCommand help:\n${commandHelp(command)}`);
+      return { output: pretty({ error: message, command_help: commandHelp(command) }), isError: true };
     }
   };
 
   const runtime: ExocortexToolRuntime = {
     async execute(input, parentConversationId, signal, callerMaxDepth) {
       try {
+        const caller = parentConversationId ? convStore.get(parentConversationId) : undefined;
+        // The persisted scoped ceiling also applies to callers that omit the
+        // turn-local depth (e.g. direct runtime clients).
+        if (caller?.subagentPolicy && caller.subagentMaxDepth === 0) callerMaxDepth = 0;
+        if (callerMaxDepth === 0) {
+          if (!parentConversationId) throw new Error("Depth-zero task access requires an active conversation.");
+          const action = input.action;
+          if (action === "tasks") {
+            if (input.scope === "all"
+              || (input.conversation_id !== undefined && stringInput(input, "conversation_id") !== parentConversationId)) {
+              throw new Error("Depth-zero agents can only inspect their own tasks.");
+            }
+          } else if (action === "stop_task" || action === "commands") {
+            const command = String(input.command ?? "ls").toLowerCase();
+            const args = action === "commands" ? objectInput(input, "args") : input;
+            if (action === "commands" && ["ls", "list"].includes(command)) {
+              // Discovery is filtered below.
+            } else if (action === "commands" && command === "help" && args.command === "task") {
+              // Only disclose commands available to this caller.
+            } else if (action === "stop_task" || command === "task") {
+              const taskId = stringInput(args, "task_id", true)!;
+              if (!listActiveConversationTasks(parentConversationId).some(task => task.id === taskId)) {
+                throw new Error("Depth-zero agents can only inspect or stop their own active tasks.");
+              }
+            } else {
+              throw new Error("At max_depth=0 only own-task inspection and stopping are available.");
+            }
+          } else {
+            throw new Error("At max_depth=0 only own-task inspection and stopping are available; cannot spawn or queue another subagent turn.");
+          }
+        }
         const action = input.action;
         if (typeof action !== "string" || !VALID_ACTIONS.has(action)) {
           throw new Error(`Invalid exo action: ${String(action)}`);

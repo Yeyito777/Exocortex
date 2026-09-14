@@ -5,8 +5,40 @@ import { resolveConversationToolPolicy } from "../tool-policy";
 import { buildConversationRequestSurface } from "../conversation-request-surface";
 import { createConversation } from "../messages";
 import { readExocortexConfig, writeExocortexConfig } from "@exocortex/shared/config";
+import { mkdtemp, writeFile, rm } from "fs/promises";
+import { tmpdir } from "os";
+import { join } from "path";
 
 describe("provider-specific coding primitives", () => {
+  test("default OpenAI researchers can actually read/search files without shell or mutation", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "research-policy-"));
+    try {
+      await writeFile(join(dir, "evidence.txt"), "research-needle\n");
+      const conv = createConversation("research-test", "openai", "gpt-5.6-terra");
+      conv.subagentMaxDepth = 0;
+      conv.subagentPolicy = { parentConversationId: "parent", allowEdits: false, parentSystemInstructions: "" };
+      const surface = buildConversationRequestSurface(conv, { conversationId: conv.id, workingDirectory: dir });
+      expect(surface.toolNames).toContain("read");
+      expect(surface.toolNames).toContain("grep");
+      expect(surface.toolNames).toContain("glob");
+      expect(surface.toolNames).toContain("exo");
+      for (const name of ["exec_command", "write_stdin", "apply_patch", "bash"]) expect(surface.toolNames).not.toContain(name);
+      const execute = buildExecutor({ provider: "openai", cwd: dir, conversationId: conv.id }, surface.toolNames);
+      const [read] = await execute([{ id: "read", name: "read", input: { file_path: "evidence.txt" } }]);
+      expect(read.isError).toBe(false);
+      expect(read.output).toContain("research-needle");
+      const [grep] = await execute([{ id: "grep", name: "grep", input: { path: dir, pattern: "research-needle" } }]);
+      expect(grep.isError).toBe(false);
+      expect(grep.output).toContain("evidence.txt");
+      const [shell] = await execute([{ id: "blocked", name: "exec_command", input: { cmd: "exit 0" } }]);
+      expect(shell.isError).toBe(true);
+      conv.provider = "deepseek";
+      const switched = resolveConversationToolPolicy(conv).internalToolNames;
+      expect(switched).toContain("read");
+      expect(switched).not.toContain("bash");
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
   test("OpenAI exposes only Codex filesystem/shell primitives and preserves Exocortex tools", () => {
     const names = providerToolNames(getRegisteredTools().map(tool => tool.name), "openai");
     for (const name of ["exec_command", "write_stdin", "apply_patch", "view_image", "browse", "exo", "chrono"]) expect(names).toContain(name);
@@ -23,7 +55,7 @@ describe("provider-specific coding primitives", () => {
   });
 
   test("a legacy read-only allowlist does not gain arbitrary shell or patch authority", () => {
-    expect(providerToolNames(["read", "glob", "grep", "browse"], "openai")).toEqual(["browse", "view_image"]);
+    expect(providerToolNames(["read", "glob", "grep", "browse"], "openai")).toEqual(["read", "glob", "grep", "browse", "view_image"]);
     expect(providerToolNames(["edit"], "openai")).not.toContain("apply_patch");
   });
 

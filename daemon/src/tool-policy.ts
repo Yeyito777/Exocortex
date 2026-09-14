@@ -45,7 +45,7 @@ export function getDefaultSubagentInternalToolNames(maxDepth: number | null, all
   return [
     ...RESEARCH_INTERNAL_TOOLS,
     ...(allowEdits ? LEGACY_EDIT_INTERNAL_TOOLS : []),
-    ...(typeof maxDepth === "number" && maxDepth > 0 ? ["exo"] : []),
+    "exo",
   ];
 }
 
@@ -79,23 +79,11 @@ export function resolveConversationToolPolicy(
     : registeredInternal;
   let configurableInternalToolNames = uniqueNames(selected?.internal ?? defaultInternal)
     .filter((name) => registeredInternalSet.has(name));
-  if (typeof maxDepth === "number" && maxDepth <= 0) {
-    configurableInternalToolNames = configurableInternalToolNames.filter((name) => name !== "exo");
-  }
 
   const defaultExternal = scoped ? [] : installedExternal;
   const selectedExternal = new Set(uniqueNames(selected?.external ?? defaultExternal));
-  if (selected) {
-    // Explicit policies remember the inventory they were written against. A
-    // manifest installed later is enabled immediately instead of silently
-    // landing in the disabled set. Legacy policies have no inventory; treating
-    // their selected names as the old inventory upgrades newly discovered tools
-    // to enabled on first resolution.
-    const knownExternal = new Set(uniqueNames(selected.knownExternal ?? selected.external));
-    for (const name of installedExternal) {
-      if (!knownExternal.has(name)) selectedExternal.add(name);
-    }
-  }
+  // Explicit selections are stable, including legacy policies without an
+  // inventory. Only default root policies opt into newly installed manifests.
   const externalToolNames = orderedSelection(selectedExternal, installedExternal)
     .filter((name) => installedExternalSet.has(name));
 
@@ -284,7 +272,13 @@ export function buildToolPolicySnapshot(
   const enabledInternal = new Set(resolved.configurableInternalToolNames);
   const enabledExternal = new Set(resolved.externalToolNames);
   const modules = conversationModules(conversation);
-  const providerNames = new Set(providerToolNames(getRegisteredTools().map(tool => tool.name), conversation.provider));
+  // Full coding and restricted research profiles differ on OpenAI. Never hide
+  // an enabled restricted reader merely because the default coding profile
+  // would replace it with exec_command.
+  const providerNames = new Set([
+    ...providerToolNames(getRegisteredTools().map(tool => tool.name), conversation.provider),
+    ...enabledInternal,
+  ]);
   return {
     convId: conversation.id,
     scoped: resolved.scoped,

@@ -121,10 +121,12 @@ export function getCustomToolDisplayInfo(name: string, conversationId?: string):
 
 // ── System prompt hints ────────────────────────────────────────────
 
-export function buildToolSystemHints(allowedNames?: readonly string[], conversationId?: string): string {
+export function buildToolSystemHints(allowedNames?: readonly string[], conversationId?: string, maxDepth?: number | null): string {
   return getSelectedAvailableTools(allowedNames, conversationId)
     .filter(t => t.systemHint)
-    .map(t => `## ${t.name}\n${t.systemHint!}`)
+    .map(t => `## ${t.name}\n${t.name === "exo" && maxDepth === 0
+      ? "Use exo to inspect your own tasks (action=tasks), stop your own background tasks (action=stop_task), or inspect an exact task (action=commands, command=task, args={operation: 'info', task_id: ...}). Delegation and unrelated administration are unavailable at depth zero."
+      : t.systemHint!}`)
     .join("\n");
 }
 
@@ -252,7 +254,9 @@ export function toolCallsRequireWatchdogPause(calls: ApiToolCall[], conversation
 }
 
 function callSupportsParallel(call: ApiToolCall, conversationId?: string): boolean {
-  return getToolParallelSafety(call.name, conversationId) === "safe";
+  const tool = getTool(call.name, conversationId);
+  return (tool?.parallelSafetyForInput?.(call.input)
+    ?? getToolParallelSafety(call.name, conversationId)) === "safe";
 }
 
 export function planToolExecutionBatches(calls: ApiToolCall[], conversationId?: string): ToolExecutionBatch[] {

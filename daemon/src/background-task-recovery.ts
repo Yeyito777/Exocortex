@@ -12,6 +12,7 @@ import {
 } from "./background-task-state";
 import {
   setBackgroundTaskActive,
+  recordBackgroundTaskCompletion,
 } from "./conversation-activity";
 import * as convStore from "./conversations";
 import { log } from "./log";
@@ -201,6 +202,8 @@ export class BackgroundTaskRecovery {
   }
 
   private finish(recordPath: string, record: PersistedBackgroundTask): void {
+    const completion = backgroundTaskCompletion(record);
+    if (completion) recordBackgroundTaskCompletion(record.ownerConversationId, completion);
     const adopted = this.adopted.get(recordPath);
     if (adopted) this.clearAdopted(adopted);
 
@@ -208,7 +211,6 @@ export class BackgroundTaskRecovery {
       return;
     }
 
-    const completion = backgroundTaskCompletion(record);
     if (completion
         && !isBackgroundTaskNotificationSuppressed(recordPath)
         && !this.hasDeliveredCompletion(record.ownerConversationId, record.taskId)) {

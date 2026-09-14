@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import {
   getActiveSubagentCount,
+  getCompletedConversationTask,
+  recordBackgroundTaskCompletion,
   getConversationActivityCounts,
   getConversationTasks,
   getSubagentConversationIds,
@@ -22,6 +24,40 @@ afterEach(() => {
 });
 
 describe("focused conversation activity", () => {
+  test("late waits retain completion metadata, while invalid IDs and foreign owners fail", async () => {
+    setBackgroundTaskActive("owner", "bash:late", true, { title: "test", startedAt: 1 });
+    recordBackgroundTaskCompletion("owner", {
+      taskId: "bash:late", toolName: "bash", title: "test", startedAt: 1,
+      endedAt: Date.now(), exitCode: 7, signal: null, outputPath: "/tmp/test.log",
+    });
+    setBackgroundTaskActive("owner", "bash:late", false);
+    const completed = await waitForConversationTask("bash:late", undefined, "owner");
+    expect(completed).toMatchObject({ status: "completed", exitCode: 7, signal: null, outputPath: "/tmp/test.log" });
+    expect(getConversationTasks("owner")).toEqual([]);
+    await expect(waitForConversationTask("bash:late", undefined, "foreign")).rejects.toThrow();
+    const aborted = new AbortController();
+    aborted.abort();
+    await expect(waitForConversationTask("bash:late", aborted.signal)).rejects.toThrow();
+    // A repeated child/task ID denotes new work, not the previous completion.
+    setBackgroundTaskActive("owner", "bash:late", true, { title: "new test", startedAt: 2 });
+    expect(getCompletedConversationTask("bash:late")).toBeUndefined();
+    await expect(waitForConversationTask("bash:late", undefined, "foreign")).rejects.toThrow("own tasks");
+    const waiting = waitForConversationTask("bash:late");
+    setBackgroundTaskActive("owner", "bash:late", false);
+    expect((await waiting).title).toBe("new test");
+  });
+
+  test("completion history is bounded by count and age", () => {
+    const completion = (taskId: string, endedAt: number) => recordBackgroundTaskCompletion("owner", {
+      taskId, toolName: "bash", title: "test", startedAt: 1, endedAt, exitCode: 0, signal: null,
+    });
+    for (let i = 0; i < 1001; i++) completion(`bounded-${i}`, Date.now());
+    expect(getCompletedConversationTask("bounded-0")).toBeUndefined();
+    expect(getCompletedConversationTask("bounded-1000")).toBeDefined();
+    completion("expired", Date.now() - 3_600_001);
+    expect(getCompletedConversationTask("expired")).toBeUndefined();
+  });
+
   test("deduplicates active tasks while retaining their UI details", () => {
     expect(setSubagentActive("parent", "child-1", true, { title: "Inspect renderer flow", startedAt: 100 })).toBe(true);
     expect(setSubagentActive("parent", "child-1", true, { title: "Inspect renderer flow", startedAt: 100 })).toBe(false);
@@ -80,7 +116,7 @@ describe("focused conversation activity", () => {
     const waiting = waitForConversationTask("bash:waited");
     setBackgroundTaskActive("parent", "bash:waited", false);
     await expect(waiting).resolves.toMatchObject({ id: "bash:waited", kind: "background" });
-    await expect(waitForConversationTask("missing")).rejects.toThrow("Active task not found");
+    await expect(waitForConversationTask("missing")).rejects.toThrow("Task not found");
   });
 
   test("orders task-panel buckets and puts the soonest Chrono schedules first", () => {

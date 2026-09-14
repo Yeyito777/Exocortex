@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { chrono } from "./chrono";
 import { chronoInternalsForTest, installMigratedSchedule } from "../chrono-service";
-import { resetConversationActivityForTest, setBackgroundTaskActive } from "../conversation-activity";
+import { resetConversationActivityForTest, setBackgroundTaskActive, recordBackgroundTaskCompletion } from "../conversation-activity";
 import { create, remove } from "../conversations";
 
 const conversationIds: string[] = [];
@@ -20,6 +20,22 @@ afterEach(() => {
 });
 
 describe("Chrono tool", () => {
+  test("wait succeeds immediately after completion and exposes exit/output evidence", async () => {
+    recordBackgroundTaskCompletion("owner", {
+      taskId: "bash:finished", toolName: "bash", title: "test", startedAt: 1,
+      endedAt: Date.now(), exitCode: 3, signal: null, outputPath: "/tmp/finished.log",
+    });
+    const result = await chrono.execute({ action: "wait", task_id: "bash:finished", max_wait: "1s" },
+      { conversationId: "owner", subagentMaxDepth: 0 });
+    expect(result.isError).toBe(false); // The wait succeeded; the process did not.
+    expect(JSON.parse(result.output)).toMatchObject({
+      task_id: "bash:finished", status: "completed", exit_code: 3, output_path: "/tmp/finished.log",
+    });
+    const foreign = await chrono.execute({ action: "wait", task_id: "bash:finished", max_wait: "1s" },
+      { conversationId: "foreign", subagentMaxDepth: 0 });
+    expect(foreign.isError).toBe(true);
+  });
+
   test("shows the wait limit as a flag in TUI summaries", () => {
     expect(chrono.summarize({ action: "wait", task_id: "bash:42", max_wait: "20m" }).detail)
       .toBe("wait: bash:42 --max_wait 20m");
@@ -59,7 +75,7 @@ describe("Chrono tool", () => {
       { conversationId: "parent", toolCallId: "call-limit", setChronoTaskActive: activity },
     );
     expect(result).toEqual(expect.objectContaining({ isError: false }));
-    expect(result.output).toContain("Wait limit reached after 5ms");
+    expect(JSON.parse(result.output)).toEqual({ task_id: "bash:slow", status: "wait_limit_reached", max_wait: "5ms" });
     expect(activity).toHaveBeenLastCalledWith("chrono:wait:call-limit", false);
   });
 

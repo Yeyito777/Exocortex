@@ -164,8 +164,8 @@ export interface ConversationToolPolicy {
   external: string[];
   /**
    * External manifests known when this explicit selection was last written.
-   * Installed manifests absent from this inventory are new and default enabled;
-   * this preserves deliberate disables without making newly installed tools opt-in.
+   * Retained for storage compatibility/inventory evidence only; explicit
+   * selections never acquire newly installed tools automatically.
    */
   knownExternal?: string[];
   /** Trusted internal-tool modules attached only to this conversation. */
