@@ -9,8 +9,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { repoRoot } from "@exocortex/shared/paths";
-import { checkForUpdate, startUpdateChecks } from "./updatecheck";
+import { queryLocalUpdateStatus, UpdateStatusMonitor } from "./update-status";
 import { DaemonClient } from "./client";
 import { parseInput, PasteBuffer, type KeyEvent, type MouseEvent } from "./input";
 import { TerminalClipboardClient, TerminalControlBuffer } from "./terminalclipboard";
@@ -388,10 +387,10 @@ function resetForDaemonRouteSwitch(): void {
   pendingVoiceSubmissions.clear();
 
   const sidebarOpen = state.sidebar.open;
-  const updateAvailable = state.sidebar.updateAvailable;
+  const updateStatus = state.sidebar.updateStatus;
   state.sidebar = createSidebarState();
   state.sidebar.open = sidebarOpen;
-  state.sidebar.updateAvailable = updateAvailable;
+  state.sidebar.updateStatus = updateStatus;
   state.queuedMessages = [];
   state.pendingQueueRemovalIds.clear();
   state.pendingAuthQueue = [];
@@ -1766,6 +1765,7 @@ function restoreDaemonSessionAfterReconnect(
   // already producing this bootstrap. Do not request the same multi-megabyte
   // state a second time.
   if (!bootstrapAlreadyRequested) daemon.ping();
+  updateMonitor?.setRoute(daemon.remoteAlias);
   if (!conversationWillReload && state.convId) daemon.loadConversation(state.convId);
 }
 
@@ -1808,6 +1808,7 @@ async function reconnectToDaemon(): Promise<void> {
 }
 
 function handleDaemonConnectionLost(shutdownMode: DaemonShutdownMode | null): void {
+  updateMonitor?.disconnected();
   voiceInput?.cleanup();
   callMedia?.stop();
   state.activeCallIdsByConversation.clear();
@@ -1869,7 +1870,7 @@ function restoreTerminal(): void {
 
 // ── Main ────────────────────────────────────────────────────────────
 
-let stopUpdateChecks: (() => void) | null = null;
+let updateMonitor: UpdateStatusMonitor | null = null;
 
 async function main(): Promise<void> {
   startupProfileMark("main_begin");
@@ -1986,15 +1987,15 @@ async function main(): Promise<void> {
   const initialRenderStartedAt = performance.now();
   render(state);
   startupProfileMark("initial_render_done", { renderMs: Math.round((performance.now() - initialRenderStartedAt) * 1000) / 1000 });
-  stopUpdateChecks = startUpdateChecks(() => checkForUpdate(repoRoot()), available => {
-    state.sidebar.updateAvailable = available;
+  updateMonitor = new UpdateStatusMonitor(daemon.remoteAlias, () => daemon.requestUpdateStatus(), queryLocalUpdateStatus, snapshot => {
+    state.sidebar.updateStatus = snapshot;
     scheduleRender();
   });
 }
 
 function cleanup(): void {
   running = false;
-  stopUpdateChecks?.();
+  updateMonitor?.stop();
   persistStartingStateOnce();
   clearRenderTimer();
   clearStreamTick();

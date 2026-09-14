@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkForUpdate, eligibleUpdateHead, startUpdateChecks, UPDATE_CHECK_INTERVAL_MS, type UpdateRequest } from "./updatecheck";
+import { checkForUpdate, createUpdateStatusChecker, eligibleUpdateHead, startUpdateChecks, UPDATE_CHECK_INTERVAL_MS, type UpdateRequest } from "./updatecheck";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -53,6 +53,84 @@ describe("mainline update eligibility", () => {
 });
 
 describe("GitHub comparison", () => {
+  test("frequent status queries share GitHub results until the two-minute cache expires", async () => {
+    const root = repo();
+    let time = 0;
+    let requests = 0;
+    let ahead = false;
+    const checker = createUpdateStatusChecker(root, async () => {
+      requests++;
+      return Response.json({ status: ahead ? "ahead" : "identical", ahead_by: ahead ? 1 : 0 });
+    }, () => time);
+    expect(await Promise.all([checker(), checker()])).toEqual(["none", "none"]);
+    expect(requests).toBe(1);
+    ahead = true;
+    for (time = 10_000; time < UPDATE_CHECK_INTERVAL_MS; time += 10_000) {
+      expect(await checker()).toBe("none");
+    }
+    expect(requests).toBe(1);
+    expect(await checker()).toBe("update_available");
+    expect(requests).toBe(2);
+    git(root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "downloaded update");
+    time += 10_000;
+    expect(await checker()).toBe("restart_needed");
+    expect(requests).toBe(2); // Disk checks bypass even a fresh GitHub cache.
+  });
+
+  test("failed GitHub checks are throttled too, without delaying restart detection", async () => {
+    const root = repo();
+    let time = 0;
+    let requests = 0;
+    const checker = createUpdateStatusChecker(root, async () => {
+      requests++;
+      throw new Error("offline");
+    }, () => time);
+    expect(await checker()).toBe("unknown");
+    time = 10_000;
+    expect(await checker()).toBe("unknown");
+    expect(requests).toBe(1);
+    time = UPDATE_CHECK_INTERVAL_MS;
+    expect(await checker()).toBe("unknown");
+    expect(requests).toBe(2);
+    git(root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "offline update");
+    expect(await checker()).toBe("restart_needed");
+    expect(requests).toBe(2);
+  });
+
+  test("daemon revision is captured once; downloaded updates need restart even offline", async () => {
+    const root = repo();
+    let requests = 0;
+    const request: UpdateRequest = async () => { requests++; return Response.json({ status: "identical" }); };
+    const running = createUpdateStatusChecker(root, request);
+    expect(await running()).toBe("none");
+    git(root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "downloaded update");
+    expect(await running()).toBe("restart_needed");
+    expect(await running()).toBe("restart_needed");
+    expect(requests).toBe(1);
+    const restarted = createUpdateStatusChecker(root, request);
+    expect(await restarted()).toBe("none");
+    git(root, "checkout", "-b", "feature");
+    expect(await running()).toBe("disabled");
+  });
+
+  test("runtime status distinguishes upstream updates from offline or unsupported responses", async () => {
+    const root = repo();
+    expect(await createUpdateStatusChecker(root, response("ahead", 2))()).toBe("update_available");
+    expect(await createUpdateStatusChecker(root, async () => { throw new Error("offline"); })()).toBe("unknown");
+    expect(await createUpdateStatusChecker(root, async () => new Response("rate limited", { status: 403 }))()).toBe("unknown");
+    const disabled = createUpdateStatusChecker(join(root, "missing"), async () => { throw new Error("must not request"); });
+    expect(await disabled()).toBe("disabled");
+  });
+
+  test("a pull during the upstream request yields Restart needed, not None", async () => {
+    const root = repo();
+    const checker = createUpdateStatusChecker(root, async () => {
+      git(root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "update");
+      return Response.json({ status: "ahead", ahead_by: 1 });
+    });
+    expect(await checker()).toBe("restart_needed");
+  });
+
   test("only signals upstream ahead; verifies URL and bounded request", async () => {
     const root = repo();
     const request = (async (url: string, init: RequestInit) => {
