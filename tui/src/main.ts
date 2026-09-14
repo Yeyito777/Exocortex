@@ -9,6 +9,8 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { repoRoot } from "@exocortex/shared/paths";
+import { checkForUpdate, startUpdateChecks } from "./updatecheck";
 import { DaemonClient } from "./client";
 import { parseInput, PasteBuffer, type KeyEvent, type MouseEvent } from "./input";
 import { TerminalClipboardClient, TerminalControlBuffer } from "./terminalclipboard";
@@ -386,8 +388,10 @@ function resetForDaemonRouteSwitch(): void {
   pendingVoiceSubmissions.clear();
 
   const sidebarOpen = state.sidebar.open;
+  const updateAvailable = state.sidebar.updateAvailable;
   state.sidebar = createSidebarState();
   state.sidebar.open = sidebarOpen;
+  state.sidebar.updateAvailable = updateAvailable;
   state.queuedMessages = [];
   state.pendingQueueRemovalIds.clear();
   state.pendingAuthQueue = [];
@@ -1865,6 +1869,8 @@ function restoreTerminal(): void {
 
 // ── Main ────────────────────────────────────────────────────────────
 
+let stopUpdateChecks: (() => void) | null = null;
+
 async function main(): Promise<void> {
   startupProfileMark("main_begin");
   daemon = new DaemonClient(onDaemonEvent);
@@ -1980,10 +1986,15 @@ async function main(): Promise<void> {
   const initialRenderStartedAt = performance.now();
   render(state);
   startupProfileMark("initial_render_done", { renderMs: Math.round((performance.now() - initialRenderStartedAt) * 1000) / 1000 });
+  stopUpdateChecks = startUpdateChecks(() => checkForUpdate(repoRoot()), available => {
+    state.sidebar.updateAvailable = available;
+    scheduleRender();
+  });
 }
 
 function cleanup(): void {
   running = false;
+  stopUpdateChecks?.();
   persistStartingStateOnce();
   clearRenderTimer();
   clearStreamTick();

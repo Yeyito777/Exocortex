@@ -1,5 +1,5 @@
 import type { SidebarSelectableItem } from "./items";
-import { buildDisplayRows } from "./rows";
+import { buildDisplayRows, sidebarListRows } from "./rows";
 import type { SidebarState } from "./state";
 
 /**
@@ -13,8 +13,8 @@ import type { SidebarState } from "./state";
 export function sidebarHitTest(screenRow: number, totalRows: number, sidebar: SidebarState): SidebarSelectableItem | null {
   // Rows 1-2 are header and separator — not clickable
   if (screenRow <= 2) return null;
-  // Bottom row is reserved for the search/command/prompt bar while open.
-  if ((sidebar.search?.barOpen || sidebar.prompt) && screenRow === totalRows) return null;
+  // Exclude all footer / editing rows, even when entries overflow the viewport.
+  if (screenRow > 2 + sidebarListRows(totalRows, sidebar)) return null;
 
   const displayRows = buildDisplayRows(sidebar);
 
