@@ -32,7 +32,7 @@ export function contextBlock(state: RenderState): StatusBlock | null {
 
   return {
     id: "context",
-    priority: 2,
+    priority: 1,
     width,
     height: 2,
     rows: [

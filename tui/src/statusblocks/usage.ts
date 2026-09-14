@@ -83,7 +83,7 @@ export function usageBlock(state: RenderState): StatusBlock | null {
 
   return {
     id: "usage",
-    priority: 1,
+    priority: 2,
     width: blockWidth,
     height: 2,
     rows: [
