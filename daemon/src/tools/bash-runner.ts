@@ -24,6 +24,11 @@ interface StartRequest {
   outputPath: string;
   windows: boolean;
   stdin?: string;
+  keepStdinOpen?: boolean;
+  tty?: boolean;
+  shell?: string;
+  login?: boolean;
+  captureLimitBytes?: number;
   terminateOnParentExit?: boolean;
   timeoutMs?: number;
   cwd: string;
@@ -35,7 +40,7 @@ interface BackgroundRequest {
   recovery?: BackgroundTaskRecoveryMetadata;
 }
 
-type Request = StartRequest | BackgroundRequest;
+type Request = StartRequest | BackgroundRequest | { type: "input"; chars: string } | { type: "stop" };
 
 type RunnerEvent =
   | { type: "started"; pid: number }
@@ -50,6 +55,10 @@ type RunnerEvent =
     };
 
 let commandProcess: ChildProcessWithoutNullStreams | null = null;
+let terminalProcess: Bun.Subprocess | null = null;
+let terminal: Bun.Terminal | undefined;
+let captureLimitBytes: number | undefined;
+const commandPid = () => commandProcess?.pid ?? terminalProcess?.pid;
 let outputStream: WriteStream | null = null;
 let outputStreamFailed = false;
 let outputError: string | undefined;
@@ -117,8 +126,8 @@ function writeOutput(data: Buffer): void {
   if (!stream || outputStreamFailed) return;
 
   let chunk = data;
-  if (!backgrounded) {
-    const remaining = MAX_CAPTURE_BYTES - totalCapturedBytes;
+  if (!backgrounded || captureLimitBytes !== undefined) {
+    const remaining = (captureLimitBytes ?? MAX_CAPTURE_BYTES) - totalCapturedBytes;
     if (remaining <= 0) {
       byteTruncated = true;
       return;
@@ -137,23 +146,24 @@ function writeOutput(data: Buffer): void {
 
 function enableBackgrounding(request: BackgroundRequest): void {
   if (backgrounded) return;
-  if (request.recovery && commandProcess?.pid) {
+  const pid = commandPid();
+  if (request.recovery && pid) {
     const metadata = request.recovery;
     const runnerStartTime = readProcessStartTime(process.pid);
-    const processStartTime = readProcessStartTime(commandProcess.pid);
+    const processStartTime = readProcessStartTime(pid);
     const record: PersistedBackgroundTask = {
       version: 1,
       state: "running",
       taskId: metadata.taskId,
       ownerConversationId: metadata.ownerConversationId,
-      toolName: "bash",
+      toolName: metadata.toolName ?? "bash",
       title: metadata.title,
       startedAt: metadata.startedAt,
       backgroundedAt: metadata.backgroundedAt,
       originDaemonPid: metadata.originDaemonPid,
       runnerPid: process.pid,
       ...(runnerStartTime ? { runnerStartTime } : {}),
-      pid: commandProcess.pid,
+      pid,
       ...(processStartTime ? { processStartTime } : {}),
       outputPath: metadata.outputPath,
       cwd: metadata.cwd,
@@ -185,6 +195,7 @@ function enableBackgrounding(request: BackgroundRequest): void {
 }
 
 function finish(code: number | null, signal: string | null): void {
+  terminal?.close();
   if (commandTimeout) clearTimeout(commandTimeout);
   const done = () => {
     if (recoveryRecordPath && recoveryRecord) {
@@ -233,40 +244,55 @@ function finish(code: number | null, signal: string | null): void {
 function terminateCommandTree(): void {
   if (terminating) return;
   terminating = true;
-  const proc = commandProcess;
-  if (!proc?.pid) {
+  const pid = commandPid();
+  if (!pid) {
     send({ type: "error", message: "bash runner terminated before command startup completed" }, true);
     return;
   }
 
   if (process.platform === "win32") {
-    try { spawn("taskkill", ["/T", "/F", "/PID", String(proc.pid)], { stdio: "ignore", windowsHide: true }); }
-    catch { try { proc.kill(); } catch { /* already exited */ } }
+    try { spawn("taskkill", ["/T", "/F", "/PID", String(pid)], { stdio: "ignore", windowsHide: true }); }
+    catch { try { commandProcess?.kill(); } catch { /* already exited */ } }
     return;
   }
 
-  try { process.kill(-proc.pid, "SIGTERM"); } catch { /* already exited */ }
+  try { process.kill(-pid, "SIGTERM"); } catch { try { process.kill(pid, "SIGTERM"); } catch {} }
   const forceKill = setTimeout(() => {
-    try { process.kill(-proc.pid!, "SIGKILL"); } catch { /* already exited */ }
+    try { process.kill(-pid, "SIGKILL"); } catch { /* already exited */ }
   }, 200);
   forceKill.unref?.();
 }
 
 function start(request: StartRequest): void {
-  if (commandProcess) {
+  if (commandPid()) {
     send({ type: "error", message: "bash runner received more than one start request" }, true);
     return;
   }
 
   try {
     terminateOnParentExit = request.terminateOnParentExit === true;
+    captureLimitBytes = request.captureLimitBytes;
     outputStream = createWriteStream(request.outputPath, { flags: "wx", mode: 0o600 });
     outputStream.on("error", markOutputFailed);
     outputStream.on("drain", resumeCommandOutput);
 
+    const shell = request.shell ?? (request.windows ? "powershell" : "bash");
+    const args = request.windows ? ["-NoProfile", "-Command", request.command] : [request.login ? "-lc" : "-c", request.command];
+    if (request.tty) {
+      if (request.windows) throw new Error("PTY execution is not supported on Windows by this runner");
+      terminal = new Bun.Terminal({ cols: 120, rows: 30, data: (_term, data) => writeOutput(Buffer.from(data)) });
+      terminalProcess = Bun.spawn([shell, ...args], {
+        cwd: request.cwd, env: request.env ?? process.env, terminal, detached: true,
+      });
+      send({ type: "started", pid: terminalProcess.pid });
+      if (request.timeoutMs) commandTimeout = setTimeout(terminateCommandTree, request.timeoutMs);
+      if (request.stdin) terminal.write(request.stdin);
+      void terminalProcess.exited.then(code => finish(code, terminalProcess?.signalCode ?? null));
+      return;
+    }
     commandProcess = spawn(
-      request.windows ? "powershell" : "bash",
-      request.windows ? ["-NoProfile", "-Command", request.command] : ["-c", request.command],
+      shell,
+      args,
       {
         cwd: request.cwd,
         env: request.env ? { ...request.env } : { ...process.env },
@@ -292,7 +318,9 @@ function start(request: StartRequest): void {
     commandTimeout.unref?.();
   }
   proc.stdin.on("error", () => { /* the command may exit before consuming all input */ });
-  proc.stdin.end(request.stdin ?? "");
+  if (request.keepStdinOpen) {
+    if (request.stdin) proc.stdin.write(request.stdin);
+  } else proc.stdin.end(request.stdin ?? "");
   proc.stdout.on("data", writeOutput);
   proc.stderr.on("data", writeOutput);
   proc.on("error", (err) => {
@@ -313,12 +341,17 @@ lines.on("line", (line) => {
 
   if (request.type === "start") start(request);
   else if (request.type === "background") enableBackgrounding(request);
+  else if (request.type === "stop") terminateCommandTree();
+  else if (request.type === "input") {
+    if (terminal) terminal.write(request.chars);
+    else if (commandProcess?.stdin.writable) commandProcess.stdin.write(request.chars);
+  }
 });
 
 process.stdin.on("end", () => {
-  if (commandProcess && terminateOnParentExit && !finalSent) {
+  if (commandPid() && terminateOnParentExit && !finalSent) {
     terminateCommandTree();
-  } else if (!commandProcess && !finalSent) {
+  } else if (!commandPid() && !finalSent) {
     send({ type: "error", message: "bash runner input closed before start" }, true);
   }
 });

@@ -2,6 +2,7 @@ import type { ToolPolicyMutation, ToolPolicySnapshot } from "@exocortex/shared/m
 import type { Conversation, ConversationCustomToolModule, ConversationToolPolicy } from "./messages";
 import { getExternalToolNames, getExternalToolStyles } from "./external-tools";
 import { getRegisteredTools } from "./tools/registry";
+import { providerToolNames } from "./tools/provider-primitives";
 import {
   canonicalizeCustomToolModulePath,
   clearConversationCustomTools,
@@ -57,7 +58,7 @@ export interface ResolvedToolPolicy {
 }
 
 export function resolveConversationToolPolicy(
-  conversation: Pick<Conversation, "subagentPolicy" | "subagentMaxDepth" | "toolPolicy">,
+  conversation: Pick<Conversation, "subagentPolicy" | "subagentMaxDepth" | "toolPolicy"> & Partial<Pick<Conversation, "provider">>,
   // A regular conversation retains the budget from its last delegated turn until
   // another turn starts. That value is not part of its persistent tool policy.
   // Callers building an active delegated turn pass its depth explicitly; policy
@@ -109,6 +110,10 @@ export function resolveConversationToolPolicy(
       registeredInternal,
     );
   }
+
+  // Legacy stored policies remain portable when a conversation changes provider.
+  // Read/search authority alone never becomes arbitrary shell execution.
+  configurableInternalToolNames = providerToolNames(configurableInternalToolNames, conversation.provider);
 
   return {
     internalToolNames: [...configurableInternalToolNames],
@@ -176,7 +181,7 @@ async function restoreLoadedModules(
 }
 
 export async function applyToolPolicyMutation(
-  conversation: Pick<Conversation, "id" | "subagentPolicy" | "subagentMaxDepth" | "toolPolicy">,
+  conversation: Pick<Conversation, "id" | "subagentPolicy" | "subagentMaxDepth" | "toolPolicy"> & Partial<Pick<Conversation, "provider">>,
   mutation: ToolPolicyMutation,
   workingDirectory = process.cwd(),
 ): Promise<ConversationToolPolicy | null> {
@@ -273,18 +278,19 @@ export async function applyToolPolicyMutation(
 }
 
 export function buildToolPolicySnapshot(
-  conversation: Pick<Conversation, "id" | "subagentPolicy" | "subagentMaxDepth" | "toolPolicy">,
+  conversation: Pick<Conversation, "id" | "subagentPolicy" | "subagentMaxDepth" | "toolPolicy"> & Partial<Pick<Conversation, "provider">>,
 ): ToolPolicySnapshot {
   const resolved = resolveConversationToolPolicy(conversation);
   const enabledInternal = new Set(resolved.configurableInternalToolNames);
   const enabledExternal = new Set(resolved.externalToolNames);
   const modules = conversationModules(conversation);
+  const providerNames = new Set(providerToolNames(getRegisteredTools().map(tool => tool.name), conversation.provider));
   return {
     convId: conversation.id,
     scoped: resolved.scoped,
     source: resolved.source,
     internal: [
-      ...getRegisteredTools().map((tool) => ({
+      ...getRegisteredTools().filter(tool => providerNames.has(tool.name)).map((tool) => ({
         name: tool.name,
         label: tool.display.label,
         enabled: enabledInternal.has(tool.name),
@@ -307,6 +313,6 @@ export function buildToolPolicySnapshot(
       digest: module.digest,
       tools: module.tools.map((tool) => tool.name),
     })),
-    shellWarning: enabledInternal.has("bash") || enabledInternal.has("chrono"),
+    shellWarning: enabledInternal.has("bash") || enabledInternal.has("exec_command") || enabledInternal.has("write_stdin") || enabledInternal.has("chrono"),
   };
 }

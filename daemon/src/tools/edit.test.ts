@@ -107,7 +107,7 @@ describe("edit tool", () => {
     expect(readText(filePath)).toBe("\uFEFFalpha\r\nBETA\r\n");
   });
 
-  test("uses Pi-compatible fuzzy fallback for trailing whitespace and typographic punctuation", async () => {
+  test("rejects fuzzy punctuation matches without changing unrelated content", async () => {
     const cwd = tempWorkspace();
     const filePath = join(cwd, "unicode.txt");
     writeFileSync(filePath, "const msg = “hello — world”;   \n");
@@ -117,8 +117,24 @@ describe("edit tool", () => {
       edits: [{ oldText: "const msg = \"hello - world\";", newText: "const msg = \"goodbye - world\";" }],
     });
 
+    expect(result.isError).toBe(true);
+    expect(readText(filePath)).toBe("const msg = “hello — world”;   \n");
+  });
+
+  test("preserves mixed terminators, unicode and whitespace outside the exact target", async () => {
+    const filePath = join(tempWorkspace(), "mixed.txt");
+    writeFileSync(filePath, "keep “𝒙”   \r\nchange\nkeep\rtail  \r\n");
+    const result = await edit.execute({ path: filePath, edits: [{ oldText: "change", newText: "changed" }] });
     expect(result.isError).toBe(false);
-    expect(readText(filePath)).toBe("const msg = \"goodbye - world\";\n");
+    expect(readText(filePath)).toBe("keep “𝒙”   \r\nchanged\nkeep\rtail  \r\n");
+  });
+
+  test("counts exact occurrences, not normalized lookalikes", async () => {
+    const filePath = join(tempWorkspace(), "quotes.txt");
+    writeFileSync(filePath, '"hello"\n“hello”\n');
+    const result = await edit.execute({ path: filePath, edits: [{ oldText: '"hello"', newText: '"goodbye"' }] });
+    expect(result.isError).toBe(false);
+    expect(readText(filePath)).toBe('"goodbye"\n“hello”\n');
   });
 
   test("resolves relative paths from the current working directory", async () => {

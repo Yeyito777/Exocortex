@@ -16,7 +16,8 @@ import { grep } from "./grep";
 import { edit } from "./edit";
 import { patch } from "./patch";
 import { browse } from "./browse";
-import { goal } from "./goal";
+import { execCommand, writeStdin } from "./unified-exec";
+import { applyPatch, viewImage } from "./codex-files";
 import { exo } from "./exo";
 import { chrono } from "./chrono";
 import { TOOL_BACKGROUND_SECONDS } from "../constants";
@@ -25,6 +26,7 @@ import { evaluateToolCallSafety, formatSafetyBlock } from "../safety";
 import { AbortableSemaphore } from "./semaphore";
 import { log } from "../log";
 import { getConversationCustomTool, getConversationCustomTools } from "./custom-tools";
+import { providerToolNames } from "./provider-primitives";
 
 // ── Registry ───────────────────────────────────────────────────────
 
@@ -37,7 +39,10 @@ const TOOLS: Tool[] = [
   edit,
   patch,
   browse,
-  goal,
+  execCommand,
+  writeStdin,
+  applyPatch,
+  viewImage,
   exo,
   chrono,
 ];
@@ -59,7 +64,7 @@ const resourceSemaphores = new Map<ToolResourceClass, AbortableSemaphore>([
 ]);
 
 function isToolAvailable(tool: Tool): boolean {
-  return tool.isAvailable?.() ?? true;
+  return tool.name !== "goal" && (tool.isAvailable?.() ?? true);
 }
 
 function getAvailableTools(conversationId?: string): Tool[] {
@@ -71,7 +76,10 @@ function getAvailableTools(conversationId?: string): Tool[] {
 
 function getSelectedAvailableTools(allowedNames?: readonly string[], conversationId?: string): Tool[] {
   const available = getAvailableTools(conversationId);
-  if (!allowedNames) return available;
+  if (!allowedNames) {
+    const defaults = new Set(providerToolNames(available.map(tool => tool.name)));
+    return available.filter(tool => defaults.has(tool.name));
+  }
   const allowed = new Set(allowedNames);
   return available.filter(tool => allowed.has(tool.name));
 }
@@ -86,11 +94,12 @@ export function getRegisteredTools(conversationId?: string): Tool[] {
 
 // ── API tool definitions (sent to model providers) ─────────────────
 
-export function getToolDefs(allowedNames?: readonly string[], conversationId?: string): { name: string; description: string; input_schema: Record<string, unknown> }[] {
+export function getToolDefs(allowedNames?: readonly string[], conversationId?: string): { name: string; description: string; input_schema: Record<string, unknown>; freeform?: Tool["freeform"] }[] {
   return getSelectedAvailableTools(allowedNames, conversationId).map(t => ({
     name: t.name,
     description: t.description,
     input_schema: t.inputSchema,
+    ...(t.freeform ? { freeform: t.freeform } : {}),
   }));
 }
 
@@ -296,6 +305,17 @@ async function executeSingleTool(
     };
   }
 
+  // Provider adapters must not bypass existing per-tool denylists.
+  const legacySafetyCall = call.name === "exec_command" ? { name: "bash", input: { ...call.input, command: call.input.cmd } }
+    : call.name === "write_stdin" ? { name: "bash", input: { ...call.input, command: call.input.chars } }
+    : call.name === "apply_patch" ? { name: "patch", input: call.input }
+    : call.name === "view_image" ? { name: "read", input: { file_path: call.input.path } }
+    : undefined;
+  if (legacySafetyCall) {
+    const legacySafety = evaluateToolCallSafety(legacySafetyCall.name, legacySafetyCall.input);
+    if (!legacySafety.allowed) return { toolCallId: call.id, toolName: call.name, output: formatSafetyBlock(legacySafety), isError: true };
+  }
+
   const tool = getTool(call.name, toolContext?.conversationId);
   if (!tool) {
     return { toolCallId: call.id, toolName: call.name, output: `Unknown tool: ${call.name}`, isError: true };
@@ -371,7 +391,9 @@ export function buildExecutor(
   toolContext?: ToolExecutionContext,
   allowedToolNames?: readonly string[],
 ): (calls: ApiToolCall[], signal?: AbortSignal) => Promise<ToolExecResult[]> {
-  const allowedTools = allowedToolNames ? new Set(allowedToolNames) : undefined;
+  const allowedTools = new Set(allowedToolNames ?? providerToolNames(
+    getAvailableTools(toolContext?.conversationId).map(tool => tool.name), toolContext?.provider,
+  ));
   return (calls, signal?) => executeScheduledTools(calls, toolContext, signal, allowedTools);
 }
 

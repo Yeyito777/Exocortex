@@ -4,9 +4,12 @@ import { FENCE_OPEN_RE, isFenceClose, renderCodeBlockWrapped, stripFenceIndent }
 import { isTableLine, renderTableBlock } from "./tables";
 import { renderDisplayMath, renderInlineMathChunks, takeDisplayMathBlock } from "./math";
 import type { WrapCopyLine } from "../textwrap";
+import type { LinkSpan } from "../links";
+import { wrapLinkedParagraphs } from "./linkwrap";
 
 export interface MarkdownWrapResult {
   lines: string[];
+  links?: LinkSpan[][];
   /** true for visual lines that are continuations of the previous logical line. */
   cont: boolean[];
   /** separator to reinsert before each continuation line when reconstructing plain text. */
@@ -78,6 +81,7 @@ export function markdownWordWrap(text: string, width: number, bgRestore?: string
   const cont: boolean[] = [];
   const join: string[] = [];
   const copy: Array<WrapCopyLine | null> = [];
+  const links: LinkSpan[][] = [];
 
   let i = 0;
   while (i < inputLines.length) {
@@ -123,7 +127,9 @@ export function markdownWordWrap(text: string, width: number, bgRestore?: string
       while (i < inputLines.length && isTableLine(inputLines[i])) {
         i++;
       }
-      const rendered = renderTableBlock(inputLines.slice(start, i), width, bgRestore);
+      const tableLinks: LinkSpan[][] = [];
+      const rendered = renderTableBlock(inputLines.slice(start, i), width, bgRestore, tableLinks);
+      for (let row = 0; row < rendered.length; row++) links[result.length + row] = tableLinks[row] ?? [];
       pushStandaloneLines(result, cont, join, copy, rendered);
       continue;
     }
@@ -155,15 +161,15 @@ export function markdownWordWrap(text: string, width: number, bgRestore?: string
     }
 
     if (paragraphLines.length > 0) {
-      wrapParagraphBlock(paragraphLines, width, result, cont, join, copy, bgRestore);
+      wrapParagraphBlock(paragraphLines, width, result, cont, join, copy, bgRestore, links);
       continue;
     }
 
-    wrapParagraphBlock([inputLines[i]], width, result, cont, join, copy, bgRestore);
+    wrapParagraphBlock([inputLines[i]], width, result, cont, join, copy, bgRestore, links);
     i++;
   }
 
-  return { lines: result, cont, join, copy };
+  return { lines: result, cont, join, copy, links };
 }
 
 interface RawWrapResult {
@@ -248,8 +254,18 @@ function wrapParagraphBlock(
   join: string[],
   copy: Array<WrapCopyLine | null>,
   bgRestore?: string,
+  links: LinkSpan[][] = [],
 ): void {
   const sourceParagraphs = bgRestore != null ? renderInlineMathChunks(paragraphs) : paragraphs;
+  if (bgRestore != null && sourceParagraphs.some(paragraph => /https?:\/\//i.test(paragraph))) {
+    const wrapped = wrapLinkedParagraphs(sourceParagraphs.map(line => line.trim().replace(/\s+/g, " ")), width, bgRestore);
+    for (let row = 0; row < wrapped.lines.length; row++) links[result.length + row] = wrapped.links[row];
+    result.push(...wrapped.lines);
+    cont.push(...wrapped.cont);
+    join.push(...wrapped.join);
+    copy.push(...wrapped.lines.map(() => null));
+    return;
+  }
   const rawLines: string[] = [];
   const parseJoin: string[] = [];
   const outCont: boolean[] = [];

@@ -96,11 +96,11 @@ function isAbsolutePatchPath(path: string): boolean {
   return path.startsWith("/") || path.startsWith("\\") || /^[A-Za-z]:[\\/]/.test(path);
 }
 
-function validatePatchPath(path: string, lineNumber: number): string {
+function validatePatchPath(path: string, lineNumber: number, allowAbsolutePaths = false): string {
   const trimmed = path.trim();
   if (!trimmed) throw new PatchParseError("patch path must not be empty", lineNumber);
   if (trimmed.includes("\0")) throw new PatchParseError(`patch path contains a NUL byte: ${trimmed}`, lineNumber);
-  if (isAbsolutePatchPath(trimmed)) {
+  if (!allowAbsolutePaths && isAbsolutePatchPath(trimmed)) {
     throw new PatchParseError(`patch paths must be relative, got absolute path: ${trimmed}`, lineNumber);
   }
   return trimmed;
@@ -139,7 +139,7 @@ function checkPatchBoundaries(inputLines: string[]): { patchLines: string[]; bod
   }
 }
 
-function parsePatch(input: string): ParsedPatch {
+function parsePatch(input: string, allowAbsolutePaths = false): ParsedPatch {
   const lines = splitPatchLines(input);
   const { patchLines, bodyLines } = checkPatchBoundaries(lines);
   const hunks: Hunk[] = [];
@@ -147,7 +147,7 @@ function parsePatch(input: string): ParsedPatch {
   let lineNumber = 2;
 
   while (index < bodyLines.length) {
-    const [hunk, consumed] = parseOneHunk(bodyLines.slice(index), lineNumber);
+    const [hunk, consumed] = parseOneHunk(bodyLines.slice(index), lineNumber, allowAbsolutePaths);
     hunks.push(hunk);
     index += consumed;
     lineNumber += consumed;
@@ -156,11 +156,11 @@ function parsePatch(input: string): ParsedPatch {
   return { hunks, normalizedInput: patchLines.join("\n") };
 }
 
-function parseOneHunk(lines: string[], lineNumber: number): [Hunk, number] {
+function parseOneHunk(lines: string[], lineNumber: number, allowAbsolutePaths = false): [Hunk, number] {
   const firstLine = lines[0]?.trim() ?? "";
 
   if (firstLine.startsWith(ADD_FILE_MARKER)) {
-    const path = validatePatchPath(firstLine.slice(ADD_FILE_MARKER.length), lineNumber);
+    const path = validatePatchPath(firstLine.slice(ADD_FILE_MARKER.length), lineNumber, allowAbsolutePaths);
     let contents = "";
     let consumed = 1;
     for (const line of lines.slice(1)) {
@@ -172,18 +172,18 @@ function parseOneHunk(lines: string[], lineNumber: number): [Hunk, number] {
   }
 
   if (firstLine.startsWith(DELETE_FILE_MARKER)) {
-    const path = validatePatchPath(firstLine.slice(DELETE_FILE_MARKER.length), lineNumber);
+    const path = validatePatchPath(firstLine.slice(DELETE_FILE_MARKER.length), lineNumber, allowAbsolutePaths);
     return [{ kind: "delete", path }, 1];
   }
 
   if (firstLine.startsWith(UPDATE_FILE_MARKER)) {
-    const path = validatePatchPath(firstLine.slice(UPDATE_FILE_MARKER.length), lineNumber);
+    const path = validatePatchPath(firstLine.slice(UPDATE_FILE_MARKER.length), lineNumber, allowAbsolutePaths);
     let remaining = lines.slice(1);
     let consumed = 1;
     let movePath: string | null = null;
 
     if (remaining[0]?.startsWith(MOVE_TO_MARKER)) {
-      movePath = validatePatchPath(remaining[0].slice(MOVE_TO_MARKER.length), lineNumber + consumed);
+      movePath = validatePatchPath(remaining[0].slice(MOVE_TO_MARKER.length), lineNumber + consumed, allowAbsolutePaths);
       remaining = remaining.slice(1);
       consumed++;
     }
@@ -490,10 +490,11 @@ function formatUncertainMutation(affected: AffectedPaths): string {
     : `The failing filesystem operation may also have modified:\n? ${affected.uncertainPath}`;
 }
 
-async function executePatch(
+export async function executePatch(
   input: Record<string, unknown>,
   context?: ToolExecutionContext,
   signal?: AbortSignal,
+  allowAbsolutePaths = false,
 ): Promise<ToolResult> {
   const patchInput = getString(input, "input");
   const cwdInput = getString(input, "cwd") ?? context?.cwd ?? process.cwd();
@@ -512,7 +513,7 @@ async function executePatch(
     uncertainPath: null,
   };
   try {
-    const parsed = parsePatch(patchInput);
+    const parsed = parsePatch(patchInput, allowAbsolutePaths);
     await applyHunks(parsed.hunks, cwdInput, affected, signal);
     return { output: formatSummary(affected), isError: false };
   } catch (err) {

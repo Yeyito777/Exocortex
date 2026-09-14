@@ -28,7 +28,9 @@ export function buildBackgroundTaskNotificationText(completion: BackgroundTaskCo
   const output = completion.outputPath
     ? [
         `Output: ${completion.outputPath}`,
-        "Use the read tool to inspect the full output.",
+        completion.toolName === "exec_command"
+          ? "Use exec_command to inspect the output file, or write_stdin to collect new output from the session."
+          : "Use the read tool to inspect the full output.",
       ]
     : [
         `Output: unavailable${completion.outputError ? ` (${cap(completion.outputError, 240)})` : ""}`,

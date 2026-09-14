@@ -27,6 +27,9 @@ import { clampCol, ensureCursorVisible } from "./historycursor";
 import { editMessageItemIndexAtMouse } from "./editmessage";
 import { sameSidebarItem } from "./sidebar/items";
 import { focusSidebarItem } from "./sidebar/selection";
+import { openableTargetAtHistoryPosition } from "./historyopenable";
+import { nextGrapheme } from "./textwidth";
+import { stripAnsi } from "./historymotions";
 
 // ── Constants ─────────────────────────────────────────────────────
 
@@ -66,8 +69,44 @@ function screenToHistoryPos(
   // Map screen column to content column (account for sidebar offset)
   const contentCol = screenCol - layout.chatCol;
   const sourceCol = Math.max(0, contentCol - viewportRow.displayPrefixWidth);
-  const col = clampCol(viewportRow.startCol + sourceCol, lines, lineIdx);
+  const plain = stripAnsi(lines[lineIdx]);
+  let offset = viewportRow.startCol;
+  let width = 0;
+  while (offset < plain.length) {
+    const [size, end] = nextGrapheme(plain, offset);
+    if (width + size > sourceCol) break;
+    width += size;
+    offset = end;
+  }
+  const col = clampCol(offset, lines, lineIdx);
   return { row: lineIdx, col };
+}
+
+/** Exact hit test: unlike selection, whitespace beyond a row must not clamp onto its last link. */
+function linkAtScreen(col: number, row: number, state: RenderState): string | null {
+  const { layout } = state;
+  if (state.editMessagePrompt || state.queuePrompt || state.sidebar.conversationActionMenu) return null;
+  if (row < 3 || row >= layout.sepAbove || col < layout.chatCol || col > state.cols || isInsideTaskPanel(col, row, state)) return null;
+  const viewport = layout.historyViewportRows[row - 3];
+  if (!viewport) return null;
+  const plain = stripAnsi(state.historyLines[viewport.lineIndex] ?? "");
+  const column = col - layout.chatCol - viewport.displayPrefixWidth;
+  if (column < 0) return null;
+  let width = 0;
+  for (let offset = viewport.startCol; offset < Math.min(plain.length, viewport.endCol ?? plain.length);) {
+    const [size, end] = nextGrapheme(plain, offset);
+    if (column >= width && column < width + size) {
+      return openableTargetAtHistoryPosition({
+        lines: state.historyLines,
+        wrapContinuation: state.historyWrapContinuation,
+        wrapJoiners: state.historyWrapJoiners,
+        lineAnchors: state.historyLineAnchors,
+      }, { row: viewport.lineIndex, col: offset });
+    }
+    width += size;
+    offset = end;
+  }
+  return null;
 }
 
 // ── Cursor shape ──────────────────────────────────────────────────
@@ -108,7 +147,7 @@ function cursorZone(col: number, row: number, state: RenderState): CursorShape {
 
   // Message area (chat history) → text, except for the task panel itself.
   if (row >= 3 && layout.sepAbove > 0 && row < layout.sepAbove) {
-    return isInsideTaskPanel(col, row, state) ? "pointer" : "text";
+    return isInsideTaskPanel(col, row, state) ? "pointer" : linkAtScreen(col, row, state) ? "hand" : "text";
   }
 
   // Prompt input area → text
@@ -136,6 +175,8 @@ function updateMouseCursor(col: number, row: number, state: RenderState): void {
 // ── Event handler ─────────────────────────────────────────────────
 
 export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult {
+  if (ev.action === "press" || (ev.action === "motion" && state.mouseLinkPress
+      && (ev.col !== state.mouseLinkPress.col || ev.row !== state.mouseLinkPress.row))) state.mouseLinkPress = null;
   // Always update cursor shape on any mouse event (motion, press, scroll)
   updateMouseCursor(ev.col, ev.row, state);
 
@@ -246,6 +287,8 @@ export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult 
     // Click in message area → start visual selection at clicked position
     const pos = screenToHistoryPos(col, row, state);
     if (pos) {
+      const target = linkAtScreen(col, row, state);
+      state.mouseLinkPress = target ? { col, row, target } : null;
       focusHistory(state);
       state.vim.mode = "visual";
       state.historyCursor = pos;
@@ -263,6 +306,13 @@ export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult 
 
   // ── Left button release — finalize visual selection ─────────────
   if (button === 0 && action === "release") {
+    const pressedLink = state.mouseLinkPress;
+    state.mouseLinkPress = null;
+    if (pressedLink && pressedLink.col === col && pressedLink.row === row
+        && linkAtScreen(col, row, state) === pressedLink.target) {
+      state.vim.mode = "normal";
+      return { type: "open_target", target: pressedLink.target };
+    }
     if (state.vim.mode === "visual" && state.chatFocus === "history") {
       // Update cursor to release position
       const pos = screenToHistoryPos(col, row, state);

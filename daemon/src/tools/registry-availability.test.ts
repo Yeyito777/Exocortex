@@ -57,12 +57,12 @@ describe("tool availability", () => {
     expect(buildToolSystemHints()).not.toContain("desktop control");
   });
 
-  test("goal tool is enabled by default and can be disabled by feature flag", () => {
+  test("goal tool is disabled regardless of the previous feature flag", () => {
     writeExocortexConfig({});
     const defaultTools = getToolDefs().map((tool) => tool.name);
-    expect(defaultTools).toContain("goal");
-    expect(getToolDisplayInfo().some((tool) => tool.name === "goal")).toBe(true);
-    expect(buildToolSystemHints()).toContain("Only set a goal when");
+    expect(defaultTools).not.toContain("goal");
+    expect(getToolDisplayInfo().some((tool) => tool.name === "goal")).toBe(false);
+    expect(buildToolSystemHints()).not.toContain("Only set a goal when");
 
     writeExocortexConfig({ features: { goalTool: false } });
     const disabledTools = getToolDefs().map((tool) => tool.name);
@@ -72,6 +72,6 @@ describe("tool availability", () => {
 
     writeExocortexConfig({ features: { goalTool: true } });
     const enabledTools = getToolDefs().map((tool) => tool.name);
-    expect(enabledTools).toContain("goal");
+    expect(enabledTools).not.toContain("goal");
   });
 });

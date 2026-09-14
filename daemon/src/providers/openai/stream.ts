@@ -4,6 +4,7 @@ import type { ApiToolCall } from "../types";
 import type { ContentBlock, StreamCallbacks, StreamResult } from "../types";
 import { extractReasoningRawContent, extractReasoningSummaries, finalizeReasoningItem, hasPreservableReasoning, hasRenderableReasoning, mergeReasoningSummaries } from "./reasoning";
 import type { OpenAICompactionItem, OpenAIReasoningItem } from "./types";
+import { openAIToolCallItem, parseOpenAIToolInput } from "./tool-wire";
 
 export interface OpenAIStreamToolState {
   id: string;
@@ -358,7 +359,7 @@ function handleStreamEvent(state: OpenAIReadState, event: Record<string, unknown
       const outputIndex = typeof event.output_index === "number" && Number.isFinite(event.output_index)
         ? event.output_index
         : nextOutputStateIndex(state);
-      if (item.type === "function_call") {
+      if (item.type === "function_call" || item.type === "custom_tool_call") {
         state.toolStates.set(outputIndex, {
           id: String(item.call_id ?? ""),
           name: String(item.name ?? ""),
@@ -412,6 +413,7 @@ function handleStreamEvent(state: OpenAIReadState, event: Record<string, unknown
       break;
     }
 
+    case "response.custom_tool_call_input.delta":
     case "response.function_call_arguments.delta": {
       const outputIndex = event.output_index as number;
       const toolState = state.toolStates.get(outputIndex);
@@ -489,12 +491,12 @@ function handleStreamEvent(state: OpenAIReadState, event: Record<string, unknown
           ? resolveCompactionOutputIndex(state, item) ?? nextOutputStateIndex(state)
           : resolveReasoningOutputIndex(state, event);
       if (!item || outputIndex == null) break;
-      if (item.type === "function_call") {
+      if (item.type === "function_call" || item.type === "custom_tool_call") {
         const toolState = state.toolStates.get(outputIndex);
         const rawArgs = toolState?.arguments || String(item.arguments ?? "{}");
         let input: Record<string, unknown> = {};
         try {
-          input = JSON.parse(rawArgs || "{}") as Record<string, unknown>;
+          input = parseOpenAIToolInput(item, rawArgs);
         } catch {
           log("warn", `openai api: failed to parse tool input for ${String(item.name ?? "unknown")}`);
         }
@@ -554,11 +556,11 @@ function handleStreamEvent(state: OpenAIReadState, event: Record<string, unknown
         for (const [outputIndex, item] of (response?.output ?? []).entries()) {
           if (item.type === "reasoning") {
             handleCompletedReasoningItem(state, item);
-          } else if (item.type === "function_call") {
+          } else if (item.type === "function_call" || item.type === "custom_tool_call") {
             if (!state.toolCalls.some((call) => call.id === String(item.call_id ?? ""))) {
               let input: Record<string, unknown> = {};
               try {
-                input = JSON.parse(String(item.arguments ?? "{}")) as Record<string, unknown>;
+                input = parseOpenAIToolInput(item);
               } catch {}
               const toolCall = {
                 id: String(item.call_id ?? ""),
@@ -634,12 +636,7 @@ function buildResponseOutputItems(state: OpenAIReadState): unknown[] {
 
   items.push(...[...state.toolCallsByOutputIndex.entries()]
     .sort((a, b) => a[0] - b[0])
-    .map(([, toolCall]) => ({
-        type: "function_call",
-        call_id: toolCall.id,
-        name: toolCall.name,
-        arguments: JSON.stringify(toolCall.input),
-    })));
+    .map(([, toolCall]) => openAIToolCallItem(toolCall)));
 
   return items;
 }

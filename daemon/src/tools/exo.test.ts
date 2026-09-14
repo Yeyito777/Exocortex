@@ -561,7 +561,8 @@ describe("native exo daemon runtime", () => {
       command: "system_prompt",
       args: { conversation_id: childId },
     }, parentId);
-    expect(prompt.output).toContain("Prefer the edit tool over sed/awk");
+    expect(prompt.output).toContain("Use apply_patch for file edits");
+    expect(prompt.output).toContain("## exec_command");
 
     const immutable = await runtime.execute({
       action: "send",
@@ -603,8 +604,8 @@ describe("native exo daemon runtime", () => {
       command: "system_prompt",
       args: { conversation_id: childId },
     }, parentId);
-    expect(prompt.output).toContain("Prefer the read tool over cat/head/tail");
-    expect(prompt.output).toContain("Prefer the grep tool over grep/rg");
+    expect(prompt.output).toContain("## view_image");
+    expect(prompt.output).not.toContain("## exec_command"); // no implicit shell grant
     expect(prompt.output).not.toContain("Prefer the glob tool over find/ls");
     expect(prompt.output).not.toContain("## bash");
   });
@@ -719,7 +720,7 @@ describe("native exo daemon runtime", () => {
     expect(escalation).toMatchObject({ isError: false });
     const escalatedChild = JSON.parse(escalation.output);
     conversationIds.push(escalatedChild.conversation_id);
-    expect(escalatedChild.internal_tools).toEqual(expect.arrayContaining(["bash", "write", "edit", "patch"]));
+    expect(escalatedChild.internal_tools).toEqual(expect.arrayContaining(["exec_command", "write_stdin", "apply_patch"]));
 
     const unrelatedSend = await runtime.execute({
       action: "send",
@@ -1052,7 +1053,7 @@ describe("native exo daemon runtime", () => {
       args: { operation: "get", conversation_id: childId },
     }, parentId)).output);
     expect(before.tool_policy).toMatchObject({ source: "explicit" });
-    expect(before.tool_policy.internal.find((tool: { name: string }) => tool.name === "read").enabled).toBe(true);
+    expect(before.tool_policy.internal.find((tool: { name: string }) => tool.name === "view_image").enabled).toBe(true);
 
     const changed = JSON.parse((await runtime.execute({
       action: "commands",

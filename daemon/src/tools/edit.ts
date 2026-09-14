@@ -1,10 +1,10 @@
 /**
- * Edit tool — Pi-style targeted text replacement in files.
+ * Edit tool — exact targeted text replacement in files.
  *
  * Edits one file with one or more unique, non-overlapping text replacements.
  * Each oldText is matched against the original file contents, not against the
- * incrementally edited result. Matching uses exact text first, then Pi's
- * fuzzy-normalized fallback for minor whitespace/Unicode punctuation drift.
+ * incrementally edited result. Line ending differences may be matched without
+ * rewriting any bytes outside the selected spans; Unicode is never normalized.
  */
 
 import { constants } from "fs";
@@ -32,13 +32,7 @@ interface MatchedEdit {
 interface AppliedEditsResult {
   baseContent: string;
   newContent: string;
-}
-
-interface FuzzyMatchResult {
-  found: boolean;
-  index: number;
-  matchLength: number;
-  usedFuzzyMatch: boolean;
+  matches: MatchedEdit[];
 }
 
 type PreparedEditInput = {
@@ -72,57 +66,6 @@ function stripBom(text: string): { bom: string; text: string } {
   return text.startsWith("\uFEFF")
     ? { bom: "\uFEFF", text: text.slice(1) }
     : { bom: "", text };
-}
-
-/**
- * Normalize text for Pi-compatible fuzzy matching.
- *
- * Exact matching is attempted first. This fallback strips trailing whitespace
- * per line, normalizes smart quotes/dashes to ASCII, and normalizes special
- * Unicode spaces to regular spaces.
- */
-function normalizeForFuzzyMatch(text: string): string {
-  return text
-    .normalize("NFKC")
-    .split("\n")
-    .map(line => line.trimEnd())
-    .join("\n")
-    .replace(/[\u2018\u2019\u201A\u201B]/g, "'")
-    .replace(/[\u201C\u201D\u201E\u201F]/g, '"')
-    .replace(/[\u2010\u2011\u2012\u2013\u2014\u2015\u2212]/g, "-")
-    .replace(/[\u00A0\u2002-\u200A\u202F\u205F\u3000]/g, " ");
-}
-
-function fuzzyFindText(content: string, oldText: string): FuzzyMatchResult {
-  const exactIndex = content.indexOf(oldText);
-  if (exactIndex !== -1) {
-    return {
-      found: true,
-      index: exactIndex,
-      matchLength: oldText.length,
-      usedFuzzyMatch: false,
-    };
-  }
-
-  const fuzzyContent = normalizeForFuzzyMatch(content);
-  const fuzzyOldText = normalizeForFuzzyMatch(oldText);
-  const fuzzyIndex = fuzzyContent.indexOf(fuzzyOldText);
-  if (fuzzyIndex === -1) {
-    return { found: false, index: -1, matchLength: 0, usedFuzzyMatch: false };
-  }
-
-  return {
-    found: true,
-    index: fuzzyIndex,
-    matchLength: fuzzyOldText.length,
-    usedFuzzyMatch: true,
-  };
-}
-
-function countOccurrences(content: string, oldText: string): number {
-  const fuzzyContent = normalizeForFuzzyMatch(content);
-  const fuzzyOldText = normalizeForFuzzyMatch(oldText);
-  return fuzzyContent.split(fuzzyOldText).length - 1;
 }
 
 function getNotFoundError(path: string, editIndex: number, totalEdits: number): Error {
@@ -224,24 +167,24 @@ function applyEditsToNormalizedContent(
     }
   }
 
-  const initialMatches = normalizedEdits.map(edit => fuzzyFindText(normalizedContent, edit.oldText));
-  const baseContent = initialMatches.some(match => match.usedFuzzyMatch)
-    ? normalizeForFuzzyMatch(normalizedContent)
-    : normalizedContent;
+  // The public contract is exact replacement. Never normalize the entire file
+  // as a fuzzy-match fallback: that silently rewrites unrelated source text.
+  const baseContent = normalizedContent;
 
   const matchedEdits: MatchedEdit[] = [];
   for (let i = 0; i < normalizedEdits.length; i++) {
     const edit = normalizedEdits[i];
-    const matchResult = fuzzyFindText(baseContent, edit.oldText);
-    if (!matchResult.found) throw getNotFoundError(path, i, normalizedEdits.length);
+    const matchIndex = baseContent.indexOf(edit.oldText);
+    if (matchIndex < 0) throw getNotFoundError(path, i, normalizedEdits.length);
 
-    const occurrences = countOccurrences(baseContent, edit.oldText);
+    let occurrences = 0;
+    for (let at = matchIndex; at >= 0; at = baseContent.indexOf(edit.oldText, at + 1)) occurrences++;
     if (occurrences > 1) throw getDuplicateError(path, i, normalizedEdits.length, occurrences);
 
     matchedEdits.push({
       editIndex: i,
-      matchIndex: matchResult.index,
-      matchLength: matchResult.matchLength,
+      matchIndex,
+      matchLength: edit.oldText.length,
       newText: edit.newText,
     });
   }
@@ -267,7 +210,7 @@ function applyEditsToNormalizedContent(
   }
 
   if (baseContent === newContent) throw getNoChangeError(path, normalizedEdits.length);
-  return { baseContent, newContent };
+  return { baseContent, newContent, matches: matchedEdits };
 }
 
 function resolveEditPath(path: string, cwd: string): string {
@@ -370,18 +313,34 @@ async function executeEdit(
       const { bom, text: content } = stripBom(rawContent);
       const originalEnding = detectLineEnding(content);
       const normalizedContent = normalizeToLF(content);
-      const { baseContent, newContent } = applyEditsToNormalizedContent(
+      const { matches } = applyEditsToNormalizedContent(
         normalizedContent,
         prepared.edits,
         prepared.path,
       );
       throwIfAborted();
 
-      const finalContent = bom + restoreLineEndings(newContent, originalEnding);
+      // Map normalized LF positions back to the original byte-preserving JS
+      // string positions, including mixed CRLF/LF and lone CR terminators.
+      const sourcePositions: number[] = [];
+      for (let at = 0; at < content.length; at++) {
+        sourcePositions.push(at);
+        if (content[at] === "\r" && content[at + 1] === "\n") at++;
+      }
+      sourcePositions.push(content.length);
+      let newContent = content;
+      for (const match of [...matches].reverse()) {
+        const start = sourcePositions[match.matchIndex];
+        const end = sourcePositions[match.matchIndex + match.matchLength];
+        const removed = content.slice(start, end);
+        const ending = removed.includes("\n") ? detectLineEnding(removed) : originalEnding;
+        newContent = newContent.slice(0, start) + restoreLineEndings(match.newText, ending) + newContent.slice(end);
+      }
+      const finalContent = bom + newContent;
       await writeFile(absolutePath, finalContent, "utf-8");
       throwIfAborted();
 
-      const excerpt = formatChangedExcerpt(baseContent, newContent);
+      const excerpt = formatChangedExcerpt(content, newContent);
       const output = `Successfully replaced ${prepared.edits.length} block(s) in ${prepared.path}.${excerpt ? `\n${excerpt}` : ""}`;
       return { output: cap(output), isError: false };
     });
@@ -403,6 +362,7 @@ export const edit: Tool = {
     "Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
   parallelSafety: "exclusive",
   defaultTimeoutMs: 30_000,
+  settleOnAbort: true,
   inputSchema: {
     type: "object",
     properties: {
@@ -441,6 +401,5 @@ export const edit: Tool = {
 
 export const editInternalsForTest = {
   applyEditsToNormalizedContent,
-  normalizeForFuzzyMatch,
   prepareEditArguments,
 };
