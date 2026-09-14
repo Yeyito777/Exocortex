@@ -276,6 +276,9 @@ function start(request: StartRequest): void {
     outputStream.on("error", markOutputFailed);
     outputStream.on("drain", resumeCommandOutput);
 
+    // Keep the legacy non-login shell default; $SHELL/login profiles are not a
+    // substitute for the daemon environment supplied in request.env. Apply that
+    // same environment to both PTY and pipe execution (see shell-runner.ts).
     const shell = request.shell ?? (request.windows ? "powershell" : "bash");
     const args = request.windows ? ["-NoProfile", "-Command", request.command] : [request.login ? "-lc" : "-c", request.command];
     if (request.tty) {

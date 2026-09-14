@@ -215,7 +215,11 @@ async function executeCommand(input: Record<string, unknown>, context?: ToolExec
     const windows = process.platform === "win32";
     if (windows && input.tty) throw new Error("PTY execution is currently supported on POSIX only.");
     const cwd = typeof input.workdir === "string" ? resolve(context?.cwd ?? process.cwd(), input.workdir) : context?.cwd ?? process.cwd();
-    const shell = typeof input.shell === "string" ? input.shell : windows ? "powershell" : process.env.SHELL || "/bin/bash";
+    // Codex-compatible schemas must not change Exocortex's execution environment:
+    // default to legacy non-login Bash (PowerShell on Windows), not $SHELL or a
+    // login/interactive shell. Startup profiles can replace the daemon's PATH and
+    // auth setup. Different shell/login behavior requires an explicit tool input.
+    const shell = typeof input.shell === "string" ? input.shell : windows ? "powershell" : "bash";
     const command = windows ? input.cmd : await rewriteExternalToolShellCommandForExecution(input.cmd);
     if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
     let id: number;
@@ -223,14 +227,14 @@ async function executeCommand(input: Record<string, unknown>, context?: ToolExec
     const startedAt = Date.now();
     const ready = deferred(), done = deferred(), detached = deferred();
     const outputPath = join(tmpdir(), `exocortex-exec-${process.pid}-${randomUUID()}.tmp`);
+    const env = {
+      ...process.env, EXOCORTEX_SOCKET: socketPath(), EXOCORTEX_WORKSPACE: cwd,
+      ...(owner ? { EXOCORTEX_PARENT_CONV_ID: owner } : {}),
+      ...(context?.provider ? { EXOCORTEX_PARENT_PROVIDER: context.provider } : {}),
+      ...(context?.model ? { EXOCORTEX_PARENT_MODEL: context.model } : {}),
+    };
     const runner = spawnShellRunner({
-      cwd, executionId: randomUUID(),
-      env: {
-        ...process.env, EXOCORTEX_SOCKET: socketPath(), EXOCORTEX_WORKSPACE: cwd,
-        ...(owner ? { EXOCORTEX_PARENT_CONV_ID: owner } : {}),
-        ...(context?.provider ? { EXOCORTEX_PARENT_PROVIDER: context.provider } : {}),
-        ...(context?.model ? { EXOCORTEX_PARENT_MODEL: context.model } : {}),
-      },
+      cwd, executionId: randomUUID(), env,
     });
     session = {
       id, owner, runner, pid: 0, outputPath, cursor: 0, startedAt, taskId: `exec:${id}:${startedAt.toString(36)}`,
@@ -271,8 +275,10 @@ async function executeCommand(input: Record<string, unknown>, context?: ToolExec
         }
       } catch { active.error = "Invalid shell runner protocol response."; stop(active); }
     });
-    runner.stdin.write(JSON.stringify({ type: "start", command, outputPath, windows, cwd, shell,
-      login: input.login !== false, tty: input.tty === true, keepStdinOpen: true,
+    // systemd-run does not forward its client's environment to the service.
+    // Carry it over the private runner protocol, as the legacy Bash tool does.
+    runner.stdin.write(JSON.stringify({ type: "start", command, outputPath, windows, cwd, shell, env,
+      login: input.login === true, tty: input.tty === true, keepStdinOpen: true,
       terminateOnParentExit: true, timeoutMs: HARD_TIMEOUT_MS, captureLimitBytes: CAPTURE_BYTES,
     }) + "\n");
     await waitFor(active, active.ready, 10_000, signal);
@@ -319,8 +325,8 @@ export const execCommand: Tool = {
   inputSchema: { type: "object", additionalProperties: false, required: ["cmd"], properties: {
     cmd: { type: "string", description: "Shell command to execute." },
     workdir: { type: "string", description: "Working directory. Defaults to the conversation workspace." },
-    shell: { type: "string", description: "Shell binary. Defaults to the user's shell." },
-    login: { type: "boolean", description: "Run as a login shell. Defaults to true." },
+    shell: { type: "string", description: "Shell binary. Defaults to bash on POSIX or PowerShell on Windows, matching the legacy shell tool." },
+    login: { type: "boolean", description: "Run as a login shell. Defaults to false to preserve the daemon's configured environment." },
     tty: { type: "boolean", description: "Allocate a PTY (POSIX only). Defaults to false." },
     yield_time_ms: { type: "integer", minimum: 0, maximum: 30000, description: "Time to wait before yielding a running session, not a kill timeout. Defaults to 10000 ms." },
     max_output_tokens: { type: "integer", minimum: 1, maximum: 30000, description: "Approximate output token budget. Defaults to 10000." },

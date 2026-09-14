@@ -2,7 +2,17 @@ import { spawn } from "child_process";
 import { basename, join } from "path";
 
 /** Shared launch policy for both shell tool surfaces. Detached work must not
- * remain in the main daemon's systemd control group on Linux. */
+ * remain in the main daemon's systemd control group on Linux.
+ *
+ * Environment contract for every caller (legacy Bash and Codex exec alike):
+ * pass the daemon's configured environment plus invocation overrides BOTH here
+ * and in the runner's `start.env` protocol field. Under systemd, options.env is
+ * the environment of the systemd-run client, NOT the launched service. Omitting
+ * start.env silently loses external-tool PATH entries, Git/auth configuration,
+ * and Exocortex routing variables even if direct-spawn tests pass.
+ * Send that environment only through the private stdin protocol, not command
+ * arguments or logs: it can contain credentials.
+ */
 export function spawnShellRunner(options: {
   cwd: string;
   env: NodeJS.ProcessEnv;

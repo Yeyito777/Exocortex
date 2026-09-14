@@ -28,7 +28,12 @@ local runtime does not implement those optional upstream capabilities.
 ## Shell lifecycle
 
 Both interfaces use `shell-runner.ts` and the isolated `bash-runner.ts`. The
-Codex surface keeps stdin open and optionally allocates a POSIX PTY. Sessions
+command environment is explicitly forwarded over the private runner protocol,
+including when systemd launches the runner. Like the legacy Bash tool, the
+default is non-login Bash on POSIX (PowerShell on Windows), preserving the
+daemon's configured PATH and auth environment. `shell` and `login` remain
+explicit overrides; login startup files may change that environment.
+The Codex surface keeps stdin open and optionally allocates a POSIX PTY. Sessions
 are owned by a conversation and may be written/polled using `write_stdin`.
 Yield time is not a process timeout. The current hard process limit is one hour;
 output capture is capped at 16 MiB per Codex session with explicit truncation.
