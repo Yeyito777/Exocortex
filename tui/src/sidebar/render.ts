@@ -405,15 +405,16 @@ export function renderSidebar(
   }
 
   if (sidebarUpdateRows(totalRows, sidebar)) {
-    // This status section is passive chrome, not part of the focused list.
+    // Keep the passive separator muted, but continue the sidebar's focused
+    // right edge through the junction and status rows.
     const footerBorder = theme.borderUnfocused;
-    rows.push(theme.sidebarBg + footerBorder + "─".repeat(innerWidth) + borderBg + "┤" + theme.reset);
+    rows.push(theme.sidebarBg + footerBorder + "─".repeat(innerWidth) + borderBg + borderFg + "┤" + theme.reset);
     const status = sidebar.updateStatus!;
     const line = (prefix: string, value: UpdateStatus) => {
       const color = value === "update_available" || value === "restart_needed" ? theme.accent : theme.muted;
       rows.push(
         theme.sidebarBg + color + pad(prefix + UPDATE_LABELS[value], innerWidth) +
-        theme.reset + borderBg + footerBorder + "│" + theme.reset,
+        theme.reset + borderBg + borderFg + "│" + theme.reset,
       );
     };
     if (status.remote !== null) {

@@ -57,7 +57,7 @@ describe("sidebar rendering", () => {
     expect(renderSidebar(sidebar, 12, true, null).join("")).not.toContain("Remote:");
   });
 
-  test("footer borders stay muted when sidebar focus changes in every theme", () => {
+  test("footer separator stays muted while the right edge follows focus in every theme", () => {
     const sidebar = createSidebarState();
     const original = { ...theme };
     try {
@@ -68,9 +68,16 @@ describe("sidebar rendering", () => {
           const count = remote === null ? 2 : 3;
           const focused = renderSidebar(sidebar, 12, true, null).slice(-count);
           const blurred = renderSidebar(sidebar, 12, false, null).slice(-count);
-          expect(focused).toEqual(blurred);
           expect(focused[0]).toContain(theme.sidebarBg + theme.borderUnfocused);
-          expect(focused.every(row => row.includes(theme.borderUnfocused))).toBe(true);
+          expect(blurred[0]).toContain(theme.sidebarBg + theme.borderUnfocused);
+          for (let i = 0; i < count; i++) {
+            const edge = i === 0 ? "┤" : "│";
+            const focusedSuffix = theme.borderFocused + edge + theme.reset;
+            const blurredSuffix = theme.borderUnfocused + edge + theme.reset;
+            expect(focused[i].endsWith(focusedSuffix)).toBe(true);
+            expect(blurred[i].endsWith(blurredSuffix)).toBe(true);
+            expect(focused[i].slice(0, -focusedSuffix.length)).toBe(blurred[i].slice(0, -blurredSuffix.length));
+          }
         }
       }
     } finally { Object.assign(theme, original); }

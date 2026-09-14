@@ -1,7 +1,8 @@
 # Update status footer
 
 The sidebar uses the active theme's accent for actionable update statuses. Its
-footer separator and right border remain muted regardless of sidebar focus.
+horizontal footer separator remains muted regardless of sidebar focus; the
+right border continues the sidebar's focus accent through the footer.
 Search and editing bars temporarily take precedence on the same rows.
 
 On the local route, the footer is hidden unless an update or restart is needed.
