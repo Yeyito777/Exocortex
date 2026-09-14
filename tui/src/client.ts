@@ -224,7 +224,12 @@ export class DaemonClient {
       return connection;
     } catch (error) {
       if (this.socket === transport && this.sshAlias === alias && !this.intentionalDisconnect) {
-        this.handler(this.currentRouteStatus("failed", `Could not connect through SSH alias ${alias}: ${error instanceof Error ? error.message : String(error)}`));
+        const message = `Could not connect through SSH alias ${alias}: ${error instanceof Error ? error.message : String(error)}`;
+        log("warn", `ssh transport: ${message}`);
+        // The established transport already reported the outage. Automatic
+        // retries update route state, not conversation history; DNS/timeout
+        // failures can continue indefinitely while a laptop is offline.
+        this.handler({ ...this.currentRouteStatus("failed", message), silent: true });
       }
       this.handleSocketClose(transport, false);
       throw error;

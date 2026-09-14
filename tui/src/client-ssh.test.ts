@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { DaemonClient } from "./client";
+import { handleEvent } from "./events";
+import { createInitialState } from "./state";
 import type { SshProcess } from "./ssh-transport";
 import { encodeHistoryDelta, type HistoryResponse } from "@exocortex/shared/history-delta";
 
@@ -51,6 +53,64 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 }
 
 describe("DaemonClient SSH routing", () => {
+  test("offline retries do not grow the transcript, but explicit failures and new outages remain visible", async () => {
+    const first = respondingProbe();
+    const recovered = respondingProbe();
+    const retries = Array.from({ length: 12 }, () => new FakeProcess());
+    const manualFailure = new FakeProcess();
+    const processes = [first, ...retries, recovered, manualFailure];
+    const state = createInitialState();
+    const events: any[] = [];
+    let losses = 0;
+    const client = new DaemonClient(event => {
+      events.push(event);
+      handleEvent(event, state, client);
+    }, "/tmp/local.sock", false, {
+      spawnSshProcess: () => processes.shift()!,
+    });
+    client.onConnectionLost(() => { losses++; });
+    try {
+      client.ssh("connect", "whale");
+      await waitFor(() => client.remoteAlias === "whale");
+      (await client.connect()).releaseBootstrapEvents?.();
+      first.emit("close", 255, null);
+      const outageMessages = [...state.messages];
+      expect(state.sshRemote).toEqual({ alias: "whale", connected: false });
+      expect((state.messages.at(-1) as { text: string }).text).toContain("was lost");
+      client.send({ type: "list_conversations" });
+
+      for (const [index, retry] of retries.entries()) {
+        const connecting = client.connect();
+        // Vary the reason: deduplicating identical text alone is insufficient.
+        retry.stderr.write(index % 2 ? "Network is unreachable" : "Could not resolve hostname yeyito.dev");
+        retry.emit("close", 255, null);
+        await expect(connecting).rejects.toThrow("SSH proxy closed");
+        expect(events.at(-1)).toMatchObject({ type: "ssh_status", state: "failed", silent: true });
+        expect(state.messages).toEqual(outageMessages);
+        expect(state.sshRemote).toEqual({ alias: "whale", connected: false });
+        expect(retry.input).not.toContain("list_conversations");
+      }
+      expect(losses).toBe(1);
+      const result = await client.connect();
+      result.releaseBootstrapEvents?.();
+      expect(result.replayedCommands).toEqual([{ type: "list_conversations" }]);
+      expect(state.sshRemote).toEqual({ alias: "whale", connected: true });
+      expect(state.messages).toEqual(outageMessages);
+
+      recovered.emit("close", 255, null);
+      expect(losses).toBe(2);
+      expect(state.messages).toHaveLength(outageMessages.length + 1);
+      client.ssh("connect", "other-host");
+      manualFailure.stderr.write("Could not resolve hostname other-host");
+      manualFailure.emit("close", 255, null);
+      await waitFor(() => events.at(-1)?.state === "failed");
+      expect(events.at(-1).silent).not.toBe(true);
+      expect((state.messages.at(-1) as { text: string }).text).toContain("Could not resolve hostname other-host");
+    } finally {
+      client.disconnect();
+    }
+  });
+
   test("reconnect waits for the daemon pong before replay and preserves bootstrap events", async () => {
     const first = respondingProbe();
     const retry = new FakeProcess();

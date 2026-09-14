@@ -48,7 +48,7 @@ export function formatStreamRetryNotice(event: Extract<Event, { type: "stream_re
 }
 
 export function formatConnectionLostNotice(_shutdownMode: DaemonShutdownMode | null): string {
-  return "✗ Lost connection to daemon.";
+  return "✗ Lost connection to daemon. Reconnecting…";
 }
 
 export function shouldReconcileInlineSystemNoticeOnStop(event: SystemMessageEvent): boolean {

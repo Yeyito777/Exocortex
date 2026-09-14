@@ -16,7 +16,7 @@ export interface SshStatusEvent {
   alias?: string;
   /** True only when a successful local command changed this TUI's endpoint. */
   switched: boolean;
-  /** Session bootstrap notification used only to restore indicators after reconnect. */
+  /** Update transport indicators without appending a transcript notice (bootstrap/retry). */
   silent?: boolean;
   message: string;
 }
