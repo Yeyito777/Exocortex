@@ -19,7 +19,8 @@ import {
 } from "./viewportscroll";
 import { copyToClipboard } from "./vim/clipboard";
 import { keyString, resetPending } from "./vim/types";
-import { resolveTextObject, isTextObjectKey } from "./vim/textobjects";
+import { isTextObjectKey } from "./vim/textobjects";
+import { resolveHistoryTextObject } from "./historytextobjects";
 import { appendPromptQuoteBlock } from "./promptstate";
 import { nextGraphemeEnd } from "./graphemes";
 import { findFinalAssistantTextRows } from "./historymessage";
@@ -362,8 +363,8 @@ export function handleHistoryFind(key: KeyEvent, state: RenderState): boolean {
  * in history context.
  *
  * Intercepts before the vim engine so text objects resolve against
- * the ANSI-stripped history line under the cursor, not the prompt
- * buffer that the engine receives.
+ * logical history text (including display wraps), not the prompt buffer
+ * that the engine receives.
  *
  * Returns { type: "handled" } if the key was consumed, null to
  * fall through to the engine.
@@ -380,23 +381,8 @@ export function handleHistoryTextObject(
   vim.pendingTextObjectModifier = null;
 
   const surface = activeHistorySurface(state);
-  const lines = surface.lines;
-  const cursor = surface.cursor;
-  const row = cursor.row;
-  const plain = stripAnsi(lines[row] ?? "");
-
-  const range = resolveTextObject(modifier, ks, plain, cursor.col);
-  if (!range || range.start >= range.end) {
-    resetPending(vim);
-    return { type: "handled" };
-  }
-
-  // Clamp to content bounds — cursor can't roam into padding
-  const { start: cbStart, end: cbEnd } = contentBounds(plain);
-  const rangeStart = Math.max(range.start, cbStart);
-  const rangeEnd = Math.min(range.end, cbEnd + 1); // end is exclusive
-
-  if (rangeStart >= rangeEnd) {
+  const range = resolveHistoryTextObject(surface, modifier, ks);
+  if (!range) {
     resetPending(vim);
     return { type: "handled" };
   }
@@ -405,8 +391,9 @@ export function handleHistoryTextObject(
 
   if (inVisual) {
     // Snap visual selection to the text object range
-    surface.setVisualAnchor({ row, col: rangeStart });
-    surface.setCursor({ row, col: rangeEnd - 1 }); // inclusive
+    surface.setVisualAnchor(range.start);
+    surface.setCursor(range.end); // inclusive
+    resetPending(vim);
     resetHistoryCurswant(surface);
     ensureCursorVisible(state);
     return { type: "handled" };
@@ -414,7 +401,7 @@ export function handleHistoryTextObject(
 
   // Operator mode (yank only — history is read-only)
   if (vim.pendingOperator === "yank") {
-    const text = plain.slice(rangeStart, rangeEnd);
+    const text = extractHistoryCharwiseSelection(surface, range.start, range.end);
     if (text) copyToClipboard(text);
   }
 

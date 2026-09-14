@@ -4,6 +4,7 @@ import { handleFocusedKey } from "./focus";
 import { applyHistoryAction, contentBounds, getHistoryVisualSelection, joinLogicalLines, stripAnsi } from "./historycursor";
 import { createInitialState } from "./state";
 import type { RenderState } from "./state";
+import { setTextClipboardSystemForTest } from "./vim/clipboard";
 
 function currentChatFocus(state: RenderState): RenderState["chatFocus"] {
   return state.chatFocus;
@@ -77,6 +78,132 @@ function selectFirstWrappedBoundary(state: RenderState): void {
   state.historyVisualAnchor = { row: 0, col: firstStart };
   state.historyCursor = { row: 1, col: secondStart + 1 };
 }
+
+describe("history text objects across display wraps", () => {
+  function atText(text: string, needle: string, width = 30): RenderState {
+    const state = setupRenderedHistory([
+      { role: "user", text, metadata: null },
+    ], width);
+    state.panelFocus = "chat";
+    state.chatFocus = "prompt";
+    state.vim.mode = "insert";
+    state.inputBuffer = "untouched (prompt)";
+    state.cursorPos = 3;
+    handleFocusedKey({ type: "ctrl-n" }, state);
+    expect(currentChatFocus(state)).toBe("history");
+    const row = state.historyLines.findIndex(line => stripAnsi(line).includes(needle));
+    expect(row).toBeGreaterThanOrEqual(0);
+    state.historyCursor = { row, col: stripAnsi(state.historyLines[row]).indexOf(needle) };
+    return state;
+  }
+
+  function select(state: RenderState, keys: string): string {
+    for (const char of keys) handleFocusedKey({ type: "char", char }, state);
+    expect(state.inputBuffer).toBe("untouched (prompt)");
+    expect(state.cursorPos).toBe(3);
+    return getHistoryVisualSelection(state);
+  }
+
+  const url = "https://www.thestar.com/news/insight/fea-excerpt-himelfarb/article_9f80dcb5-9afe-4a8e-902e-bf50f4600e02.html";
+  test("Ctrl+N then vi) selects the full wrapped URL, not just its first character", () => {
+    const state = atText(`[Alex Himelfarb’s article — Toronto Star](${url})`, "https", 60);
+    expect(select(state, "vi)")).toBe(url);
+    expect(state.historyCursor.row).toBeGreaterThan(state.historyVisualAnchor.row);
+  });
+
+  for (const [open, close, aliases] of [
+    ["(", ")", "()b"], ["[", "]", "[]"], ["{", "}", "{}B"], ["<", ">", "<>"],
+    ['"', '"', '"'], ["'", "'", "'"], ["`", "`", "`"],
+  ]) {
+    for (const key of aliases) {
+      for (const modifier of ["i", "a"]) {
+        test(`v${modifier}${key} works with delimiters on different display rows`, () => {
+          const body = "alpha bravo charlie delta echo foxtrot";
+          const state = atText(`${open}${body}${close}`, "delta");
+          expect(select(state, `v${modifier}${key}`)).toBe(modifier === "i" ? body : `${open}${body}${close}`);
+        });
+      }
+    }
+  }
+
+  test("viw resolves a hard-wrapped word from a continuation row", () => {
+    const word = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    const state = atText(word, "GHI", 30);
+    expect(select(state, "viw")).toBe(word);
+  });
+
+  test("viW resolves a hard-wrapped URL", () => {
+    const state = atText(url, "https");
+    expect(select(state, "viW")).toBe(url);
+  });
+
+  test("multiline nested pairs select the innermost enclosing pair", () => {
+    const state = atText("(outer\n[alpha\nbravo]\nend)", "bravo");
+    expect(select(state, "vi]")).toBe("alpha\nbravo");
+  });
+
+  test("quotes do not match across real newlines", () => {
+    const state = atText('"alpha\nbravo"', "alpha");
+    expect(select(state, 'vi"')).toBe("a");
+  });
+
+  test("yi) and vi)y copy identical unbroken URLs", () => {
+    const copies: string[] = [];
+    setTextClipboardSystemForTest({
+      platform: "darwin", env: {}, commandExists: () => true,
+      copy: (_command, text) => { copies.push(text); return Promise.resolve(0); },
+    });
+    try {
+      for (const keys of ["yi)", "vi)y"]) {
+        const state = atText(`(${url})`, "https");
+        const cursor = { ...state.historyCursor };
+        for (const char of keys) handleFocusedKey({ type: "char", char }, state);
+        expect(state.vim.mode).toBe("normal");
+        expect(state.vim.pendingOperator).toBeNull();
+        expect(state.vim.pendingTextObjectModifier).toBeNull();
+        expect(state.inputBuffer).toBe("untouched (prompt)");
+        if (keys === "yi)") expect(state.historyCursor).toEqual(cursor);
+      }
+      expect(copies).toEqual([url, url]);
+    } finally {
+      setTextClipboardSystemForTest(null);
+    }
+  });
+
+  test("brackets never pair across different messages", () => {
+    const state = setupRenderedHistory([
+      { role: "user", text: "(alpha", metadata: null },
+      { role: "user", text: "bravo)", metadata: null },
+    ], 30);
+    state.panelFocus = "chat";
+    state.chatFocus = "history";
+    state.vim.mode = "normal";
+    const row = state.historyLines.findIndex(line => stripAnsi(line).includes("alpha"));
+    state.historyCursor = { row, col: stripAnsi(state.historyLines[row]).indexOf("alpha") };
+    for (const char of "vi)") handleFocusedKey({ type: "char", char }, state);
+    expect(getHistoryVisualSelection(state)).toBe("a");
+  });
+
+  test("fenced-code text objects exclude display gutters and language labels", () => {
+    const state = setupRenderedHistory([
+      { role: "assistant", blocks: [{ type: "text", text: '```js\nconst x = (\n  "hello",\n  "world"\n);\n```' }], metadata: null },
+    ], 30);
+    state.panelFocus = "chat";
+    state.chatFocus = "history";
+    state.vim.mode = "normal";
+    const row = state.historyLines.findIndex(line => stripAnsi(line).includes("hello"));
+    state.historyCursor = { row, col: stripAnsi(state.historyLines[row]).indexOf("hello") };
+    for (const char of "va)") handleFocusedKey({ type: "char", char }, state);
+    expect(getHistoryVisualSelection(state)).toBe('(\n  "hello",\n  "world"\n)');
+  });
+
+  test("selection ends on the start of a complete emoji grapheme", () => {
+    const state = atText('"alpha bravo charlie 😀"', "alpha", 25);
+    expect(select(state, 'vi"')).toBe("alpha bravo charlie 😀");
+    const plain = stripAnsi(state.historyLines[state.historyCursor.row]);
+    expect(plain.slice(state.historyCursor.col)).toStartWith("😀");
+  });
+});
 
 function setupSelectedHistoryText(text: string): RenderState {
   const state = setupRenderedHistory([
