@@ -412,8 +412,11 @@ export function renderSidebar(
     const status = sidebar.updateStatus!;
     const line = (prefix: string, value: UpdateStatus) => {
       const color = value === "update_available" || value === "restart_needed" ? theme.accent : theme.muted;
+      const content = status.remote !== null
+        ? theme.muted + prefix + color + pad(UPDATE_LABELS[value], innerWidth - termWidth(prefix))
+        : color + pad(prefix + UPDATE_LABELS[value], innerWidth);
       rows.push(
-        theme.sidebarBg + color + pad(prefix + UPDATE_LABELS[value], innerWidth) +
+        theme.sidebarBg + content +
         theme.reset + borderBg + borderFg + "│" + theme.reset,
       );
     };

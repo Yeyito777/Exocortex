@@ -1,6 +1,7 @@
 # Update status footer
 
 The sidebar uses the active theme's accent for actionable update statuses. Its
+Remote/Local labels use the same muted color as statusline labels. The
 horizontal footer separator remains muted regardless of sidebar focus; the
 right border continues the sidebar's focus accent through the footer.
 Search and editing bars temporarily take precedence on the same rows.

@@ -44,8 +44,8 @@ describe("sidebar rendering", () => {
     sidebar.updateStatus = { local: "none", remote: "restart_needed" };
     const rows = renderSidebar(sidebar, 12, true, null);
     expect(rows).toHaveLength(12);
-    expect(rows[10]).toContain("Remote: Restart needed");
-    expect(rows[11]).toContain("Local: None");
+    expect(rows[10]).toContain(theme.muted + " Remote: " + theme.accent + "Restart needed");
+    expect(rows[11]).toContain(theme.muted + " Local: " + theme.muted + "None");
     expect(rows.every(row => visibleLength(row) === SIDEBAR_WIDTH)).toBe(true);
     expect(sidebarListRows(12, sidebar)).toBe(7);
     expect(sidebarHitTest(9, 12, sidebar)).not.toBeNull();
@@ -100,7 +100,23 @@ describe("sidebar rendering", () => {
     const withoutStatus = renderSidebar({ ...sidebar, updateStatus: undefined }, 12, true, null);
     expect(currentRows).toEqual(withoutStatus);
     sidebar.updateStatus.remote = "unknown";
-    expect(renderSidebar(sidebar, 12, true, null)[10]).toContain("Remote: Unknown");
+    expect(renderSidebar(sidebar, 12, true, null)[10]).toContain(theme.muted + " Remote: " + theme.muted + "Unknown");
+  });
+
+  test("remote and local labels mirror muted statusline labels in every theme", () => {
+    const sidebar = createSidebarState();
+    sidebar.updateStatus = { remote: "restart_needed", local: "update_available" };
+    const original = { ...theme };
+    try {
+      for (const palette of Object.values(themes)) {
+        Object.assign(theme, palette);
+        const rows = renderSidebar(sidebar, 12, true, null);
+        expect(rows[10]).toContain(theme.sidebarBg + theme.muted + " Remote: " + theme.accent + "Restart needed");
+        expect(rows[11]).toContain(theme.sidebarBg + theme.muted + " Local: " + theme.accent + "Update available");
+        expect(visibleLength(rows[10])).toBe(SIDEBAR_WIDTH);
+        expect(visibleLength(rows[11])).toBe(SIDEBAR_WIDTH);
+      }
+    } finally { Object.assign(theme, original); }
   });
 
   test("update notice follows the active theme accent on every render", () => {
