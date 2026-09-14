@@ -398,7 +398,7 @@ export function renderSidebar(
   if (sidebarUpdateRows(totalRows, sidebar)) {
     rows.push(theme.sidebarBg + borderFg + "─".repeat(innerWidth) + borderBg + "┤" + theme.reset);
     rows.push(
-      theme.sidebarBg + theme.success + pad(" ↑ Update available", innerWidth) +
+      theme.sidebarBg + theme.accent + pad(" ↑ Update available", innerWidth) +
       theme.reset + borderBg + borderFg + "│" + theme.reset,
     );
   }

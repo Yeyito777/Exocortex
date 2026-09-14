@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { createSidebarState, renderSidebar } from "./sidebar";
 import type { ConversationSummary } from "./messages";
 import { SIDEBAR_WIDTH } from "./sidebar/layout";
-import { theme } from "./theme";
+import { theme, themes } from "./theme";
 import { visibleLength } from "./textwidth";
 import { sidebarHitTest } from "./sidebar/hit";
 import { sidebarListRows } from "./sidebar/rows";
@@ -29,6 +29,21 @@ function conversation(id: string, sortOrder: number, overrides: Partial<Conversa
 }
 
 describe("sidebar rendering", () => {
+  test("update notice follows the active theme accent on every render", () => {
+    const sidebar = createSidebarState();
+    sidebar.updateAvailable = true;
+    const original = { ...theme };
+    try {
+      for (const palette of Object.values(themes)) {
+        Object.assign(theme, palette);
+        const footer = renderSidebar(sidebar, 12, true, null)[11];
+        expect(footer).toContain(theme.sidebarBg + palette.accent + " ↑ Update available");
+      }
+    } finally {
+      Object.assign(theme, original);
+    }
+  });
+
   test("update notice is anchored to the bottom and never hits overflowing entries", () => {
     const sidebar = createSidebarState();
     sidebar.updateAvailable = true;
