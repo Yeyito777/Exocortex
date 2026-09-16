@@ -31,8 +31,8 @@ import { clearConversationCustomTools } from "./tools/custom-tools";
 
 // Re-export streaming functions so existing `convStore.*` call sites keep working
 export {
-  isStreaming, isStreamHandoffActive, beginStreamHandoff, clearStreamHandoff,
-  setActiveJob, getActiveJob, getActiveJobKind, isGoalReviewing, isRestartRecoverableJob, clearActiveJob, getStreamingStartedAt,
+  isStreaming, isStreamHandoffActive, getStreamHandoffToken, beginStreamHandoff, clearStreamHandoff,
+  setActiveJob, getActiveJob, getActiveJobKind, isRestartRecoverableJob, clearActiveJob, getStreamingStartedAt,
   setStreamingTokens, getStreamingTokens, nextStreamSeq, getStreamSeq,
   setContextCompactionStartedAt, getContextCompactionStartedAt,
   requestHistoryUnwind, isHistoryUnwindPending, clearHistoryUnwindPending,
@@ -43,7 +43,7 @@ export {
   setStreamingCommittedBlockCount, getStreamingCommittedBlockCount,
   setStreamingCommittedMessageCount, getStreamingCommittedMessageCount,
   pushStreamingBlock, appendToStreamingBlock, clearCurrentStreamingBlocks,
-  requestGoalReviewAfterStream, consumeGoalReviewAfterStream, clearGoalReviewAfterStream,
+  requestGoalContinuationAfterStream, consumeGoalContinuationAfterStream, clearGoalContinuationAfterStream,
 } from "./streaming";
 export {
   getQueuedMessages, getQueuedMessageById, listQueuedMessages, listInternalQueuedMessages,
@@ -688,8 +688,7 @@ export function hasDeletedConversation(id: string): boolean {
 }
 
 export interface SetGoalOptions {
-  pausable?: boolean;
-  completable?: boolean;
+  maxTurns?: number;
 }
 
 export function setGoal(id: string, objective: string, options: SetGoalOptions = {}): ConversationGoal | null {
@@ -697,13 +696,10 @@ export function setGoal(id: string, objective: string, options: SetGoalOptions =
   const trimmed = objective.trim();
   if (!conv || !trimmed) return null;
   const now = Date.now();
-  const completable = options.completable ?? true;
-  const pausable = completable ? options.pausable ?? true : false;
   conv.goal = {
     objective: trimmed,
     status: "active",
-    pausable,
-    completable,
+    ...(options.maxTurns === undefined ? {} : { maxTurns: options.maxTurns }),
     createdAt: now,
     updatedAt: now,
     turns: 0,
@@ -716,18 +712,15 @@ export function setGoal(id: string, objective: string, options: SetGoalOptions =
 export function updateGoalStatus(
   id: string,
   status: ConversationGoalStatus,
-  options: { pausedBy?: "user" | "controller"; reason?: string } = {},
+  options: { reason?: string } = {},
 ): ConversationGoal | null {
   const conv = get(id);
   if (!conv?.goal) return null;
   conv.goal.status = status;
-  if (status === "paused") {
-    conv.goal.pausedBy = options.pausedBy;
-    conv.goal.pauseReason = options.reason?.trim() || undefined;
-  } else {
-    delete conv.goal.pausedBy;
-    delete conv.goal.pauseReason;
-  }
+  conv.goal.reason = options.reason?.trim() || undefined;
+  delete conv.goal.pausedBy;
+  delete conv.goal.pauseReason;
+  if (status === "active") conv.goal.emptyTurns = 0;
   conv.goal.updatedAt = Date.now();
   markDirty(id);
   flush(id);
@@ -778,7 +771,7 @@ function removeConversationState(id: string): boolean {
     messageQueue.persistQueuedMessagesSnapshot();
     persistence.removeConversationUnwindReceipt(id);
   }
-  streaming.clearGoalReviewAfterStream(id);
+  streaming.clearGoalContinuationAfterStream(id);
   streaming.clearHistoryUnwindPending(id);
   return wasUnread;
 }
@@ -1427,7 +1420,7 @@ async function performUnwindTo(
   // during the abort wait, suspension disappears on restart and the queue is
   // still intact; a successful unwind explicitly clears it below.
   messageQueue.suspendQueuedMessageDelivery(id);
-  const goalContinuationBeforeAbort = streaming.consumeGoalReviewAfterStream(id);
+  const goalContinuationBeforeAbort = streaming.consumeGoalContinuationAfterStream(id);
   let committed = false;
   let stoppedAbortedStream = false;
   try {
@@ -1549,7 +1542,7 @@ async function performUnwindTo(
       // will finish the queue cleanup without deleting later queue entries.
       log("error", `conversations: failed to persist queue cleanup after unwind ${id}: ${err instanceof Error ? err.message : String(err)}`);
     }
-    streaming.clearGoalReviewAfterStream(id);
+    streaming.clearGoalContinuationAfterStream(id);
     const result: ConversationUnwindResult = {
       status: "applied",
       operationId,
@@ -1577,9 +1570,9 @@ async function performUnwindTo(
       streaming.clearHistoryUnwindPending(id, operationId);
     }
     if (!committed) {
-      const goalContinuationDuringWait = streaming.consumeGoalReviewAfterStream(id);
+      const goalContinuationDuringWait = streaming.consumeGoalContinuationAfterStream(id);
       if (goalContinuationBeforeAbort || goalContinuationDuringWait) {
-        streaming.requestGoalReviewAfterStream(id);
+        streaming.requestGoalContinuationAfterStream(id);
       }
       // A pending unwind makes the exact aborted stream skip its obsolete final
       // save. If the cut did not commit, restore that interrupted state now.
@@ -1735,7 +1728,6 @@ export function loadFromDisk(): LoadFromDiskStats {
   }
 
   let normalizedEffortCount = 0;
-  let normalizedGoalCount = 0;
   for (const summary of index.summaries) {
     if (!getProvider(summary.provider)) {
       summary.provider = DEFAULT_PROVIDER_ID;
@@ -1746,10 +1738,6 @@ export function loadFromDisk(): LoadFromDiskStats {
     if (normalizedEffort !== summary.effort) {
       summary.effort = normalizedEffort;
       normalizedEffortCount++;
-    }
-    if (summary.goal?.status === "complete") {
-      summary.goal = null;
-      normalizedGoalCount++;
     }
     summary.folderId = summary.folderId && folders.has(summary.folderId) ? summary.folderId : null;
     summaries.set(summary.id, summary);
@@ -1795,8 +1783,8 @@ export function loadFromDisk(): LoadFromDiskStats {
     }
     seen.add(`${summary.folderId ?? "root"}:${summary.pinned}:${summary.sortOrder}`);
   }
-  if (fixed > 0 || normalizedEffortCount > 0 || normalizedGoalCount > 0 || index.saved) {
-    log("info", `conversations: repaired index (deduplicated=${fixed}, normalizedEffort=${normalizedEffortCount}, normalizedGoals=${normalizedGoalCount})`);
+  if (fixed > 0 || normalizedEffortCount > 0 || index.saved) {
+    log("info", `conversations: repaired index (deduplicated=${fixed}, normalizedEffort=${normalizedEffortCount})`);
     if (dirty.size > 0) flushAll();
     else saveSummaryIndex();
   }
@@ -1970,7 +1958,6 @@ export function listSummaries(): ConversationSummary[] {
     result.push({
       ...summary,
       streaming: streaming.isStreaming(summary.id),
-      ...(streaming.isGoalReviewing(summary.id) ? { goalReviewing: true } : {}),
       ...(streaming.isStreaming(summary.id) && !streaming.isRestartRecoverableJob(summary.id) ? { restartRecoverable: false } : {}),
       unread: !notificationsMuted && unread.has(summary.id),
       ...(notificationsMuted ? { notificationsMuted: true } : {}),
@@ -2392,7 +2379,6 @@ export function getSummary(id: string): ConversationSummary | null {
   return {
     ...summary,
     streaming: streaming.isStreaming(id),
-    ...(streaming.isGoalReviewing(id) ? { goalReviewing: true } : {}),
     ...(streaming.isStreaming(id) && !streaming.isRestartRecoverableJob(id) ? { restartRecoverable: false } : {}),
     unread: !notificationsMuted && unread.has(id),
     ...(notificationsMuted ? { notificationsMuted: true } : {}),

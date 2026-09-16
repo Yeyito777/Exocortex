@@ -11,6 +11,7 @@
  */
 
 import { join } from "path";
+import { normalizeConversationGoal } from "@exocortex/shared/goals";
 import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, renameSync, statSync, unlinkSync, utimesSync } from "fs";
 import { log } from "./log";
 import { conversationsDir, dataDir, trashDir } from "@exocortex/shared/paths";
@@ -973,7 +974,7 @@ function fromFile(file: ConversationFile, validateActiveContext = true): Convers
     }
   }
   if (file.folderId != null) conv.folderId = file.folderId;
-  if (file.goal != null && file.goal.status !== "complete") conv.goal = file.goal;
+  if (file.goal != null) conv.goal = normalizeConversationGoal(file.goal);
   const generation = isNonNegativeSafeInteger(file.storageGeneration) && file.storageGeneration > 0
     ? file.storageGeneration
     : 1;

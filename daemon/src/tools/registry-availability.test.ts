@@ -57,21 +57,22 @@ describe("tool availability", () => {
     expect(buildToolSystemHints()).not.toContain("desktop control");
   });
 
-  test("goal tool is disabled regardless of the previous feature flag", () => {
+  test("goal status reporting replaces the removed goal creation feature", () => {
     writeExocortexConfig({});
     const defaultTools = getToolDefs().map((tool) => tool.name);
-    expect(defaultTools).not.toContain("goal");
-    expect(getToolDisplayInfo().some((tool) => tool.name === "goal")).toBe(false);
+    expect(defaultTools).toContain("goal");
+    expect(getToolDisplayInfo().some((tool) => tool.name === "goal")).toBe(true);
     expect(buildToolSystemHints()).not.toContain("Only set a goal when");
 
     writeExocortexConfig({ features: { goalTool: false } });
     const disabledTools = getToolDefs().map((tool) => tool.name);
-    expect(disabledTools).not.toContain("goal");
-    expect(getToolDisplayInfo().some((tool) => tool.name === "goal")).toBe(false);
+    expect(disabledTools).toContain("goal");
+    expect(getToolDisplayInfo().some((tool) => tool.name === "goal")).toBe(true);
     expect(buildToolSystemHints()).not.toContain("Only set a goal when");
 
     writeExocortexConfig({ features: { goalTool: true } });
     const enabledTools = getToolDefs().map((tool) => tool.name);
-    expect(enabledTools).not.toContain("goal");
+    expect(enabledTools).toContain("goal");
+    expect(getToolDefs(["browse"]).map(tool => tool.name)).not.toContain("goal");
   });
 });

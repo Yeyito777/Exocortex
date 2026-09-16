@@ -1911,14 +1911,14 @@ describe("unread persistence", () => {
 });
 
 describe("listRunningConversationIds", () => {
-  test("projects hidden goal reviews as serialized, non-assistant activity", () => {
+  test("projects goal continuations as ordinary recoverable assistant activity", () => {
     const id = mkId("goal-review-summary");
     create(id, "openai", "gpt-5.5");
 
-    setActiveJob(id, new AbortController(), Date.now(), false, "goal_controller");
+    setActiveJob(id, new AbortController(), Date.now());
 
-    expect(getSummary(id)).toMatchObject({ streaming: true, goalReviewing: true, restartRecoverable: false });
-    expect(getPendingStreamSnapshot(id)).toBeNull();
+    expect(getSummary(id)).toMatchObject({ streaming: true });
+    expect(getSummary(id)).not.toHaveProperty("goalReviewing");
   });
 
   test("returns only conversations with active streams", () => {

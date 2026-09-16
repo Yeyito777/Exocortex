@@ -252,7 +252,7 @@ describe("sidebar rendering", () => {
     expect(rows.find(row => row.includes("Pending send"))).toContain(`${theme.accent}◉ `);
   });
 
-  test("renders hidden goal reviews with a purple indicator on conversations and containing folders", () => {
+  test("renders goal continuations with the ordinary streaming indicator", () => {
     const sidebar = createSidebarState();
     sidebar.folders = [
       { id: "work", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 },
@@ -263,22 +263,19 @@ describe("sidebar rendering", () => {
         title: "Reviewing goal",
         folderId: "nested",
         streaming: true,
-        goalReviewing: true,
       }),
     ];
 
     let rows = renderSidebar(sidebar, 8, true, null);
-    expect(rows.find(row => row.includes("Work"))).toContain(`${theme.goal}◉ `);
-    expect(rows.find(row => row.includes("Work"))).not.toContain(`${theme.accent}◉ `);
+    expect(rows.find(row => row.includes("Work"))).toContain(`${theme.accent}◉ `);
 
     sidebar.currentFolderId = "work";
     rows = renderSidebar(sidebar, 8, true, null);
-    expect(rows.find(row => row.includes("Nested"))).toContain(`${theme.goal}◉ `);
+    expect(rows.find(row => row.includes("Nested"))).toContain(`${theme.accent}◉ `);
 
     sidebar.currentFolderId = "nested";
     rows = renderSidebar(sidebar, 8, true, null);
-    expect(rows.find(row => row.includes("Reviewing goal"))).toContain(`${theme.goal}◉ `);
-    expect(rows.find(row => row.includes("Reviewing goal"))).not.toContain(`${theme.accent}◉ `);
+    expect(rows.find(row => row.includes("Reviewing goal"))).toContain(`${theme.accent}◉ `);
   });
 
   test("propagates global-idle indicators to containing folders", () => {

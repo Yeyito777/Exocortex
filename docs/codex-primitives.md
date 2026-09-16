@@ -8,8 +8,8 @@ OpenAI conversations expose `exec_command`, `write_stdin`, raw `apply_patch`, an
 `view_image`. Other providers retain `bash`, `read`, `write`, `edit`, `patch`,
 `glob`, and `grep`. Exocortex orchestration, Chrono, browsing, and external CLIs
 remain available according to the conversation's tool policy. The `goal`
-internal tool is disabled, including when the older feature flag is true;
-stored goals and the separate goal-management UI are not removed.
+internal tool reports goal status (`show`, `complete`, `blocked`); creation,
+editing, pausing, resuming, and clearing are user-controlled. See [Goals](goals.md).
 
 ## Provider boundary
 
@@ -72,7 +72,7 @@ spans, including mixed line endings.
 ## Validation
 
 Regression suites cover both provider wire formats, raw Unicode patch replay,
-ordinary JSON calls, provider/policy switching, disabled goal execution,
+ordinary JSON calls, provider/policy switching, goal status tool permissions,
 absolute/relative patch adapters, exact-edit preservation, pipe and PTY stdin,
 conversation ownership, output budgeting, cancellation, background records,
 and external CLI display. Worktree testing additionally uses `xenv` + `exotest`

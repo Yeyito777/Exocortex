@@ -23,7 +23,7 @@ import { advanceDeferredHistoryRender, hasDeferredHistoryRenderWork, render, inv
 import { preserveViewportAcrossResize } from "./chatscroll";
 import { invalidateFrame } from "./frame";
 import { enter_alt, leave_alt, hide_cursor, show_cursor, enable_bracketed_paste, disable_bracketed_paste, query_clipboard_paste_events, enable_clipboard_paste_events, disable_clipboard_paste_events, enable_kitty_kbd, disable_kitty_kbd, enable_mouse, disable_mouse, set_cursor_color, reset_cursor_color } from "./terminal";
-import { createInitialState, isStreaming, clearPendingAI, clearStreamingTailMessages, focusPrompt, modelSupportsImages, openFolderInstructionsDocument, pushSystemMessage, renderFolderInstructionsDocument, resetDraftConversationState, resetHistoryPagination, resetNewConversationDefaults, resetToolOutputState } from "./state";
+import { createInitialState, isStreaming, canInterrupt, clearPendingAI, clearStreamingTailMessages, focusPrompt, modelSupportsImages, openFolderInstructionsDocument, pushSystemMessage, renderFolderInstructionsDocument, resetDraftConversationState, resetHistoryPagination, resetNewConversationDefaults, resetToolOutputState } from "./state";
 import { createMessageMetadata, createPendingAI, type ImageAttachment, type UserMessage } from "./messages";
 import { loginPromptProviders } from "./providerselection";
 import { handleEvent } from "./events";
@@ -935,7 +935,7 @@ function handleSubmit(): void {
           state.pendingImages = [];
           state.scrollOffset = 0;
           if (state.convId) {
-            daemon.setGoal(state.convId, cmdResult.action, cmdResult.objective, cmdResult.pausable, cmdResult.completable);
+            daemon.setGoal(state.convId, cmdResult.action, cmdResult.objective, cmdResult.maxTurns);
           } else if (cmdResult.action === "set" && cmdResult.objective?.trim()) {
             const objective = cmdResult.objective.trim();
             const draftId = state.pendingToolPolicyDraftId ?? undefined;
@@ -949,11 +949,12 @@ function handleSubmit(): void {
               state.draftFolderId,
               objective,
               draftId,
-              cmdResult.pausable,
-              cmdResult.completable,
+              undefined,
+              undefined,
               undefined,
               undefined,
               draftId,
+              cmdResult.maxTurns,
             );
           } else {
             pushSystemMessage(state, "Create or open a conversation before using /goal.", theme.warning);
@@ -1483,7 +1484,6 @@ function deleteConversationFromUi(convId: string): void {
     clearPendingAI(state);
     state.contextTokens = 0;
     state.goal = null;
-    state.goalReviewing = false;
     state.btw = null;
     resetToolOutputState(state);
     resetHistoryPagination(state);
@@ -1553,14 +1553,14 @@ function handleKey(key: KeyEvent): void {
       running = false;
       break;
     case "abort":
-      if (isStreaming(state)) {
+      if (canInterrupt(state)) {
         const convId = state.convId ?? pendingNewConversationConvId;
         if (convId) {
           // Bind Ctrl+Q to the stream visible at keypress time. The current turn
           // can finish and start a queued successor before this command reaches
           // the daemon; that successor must not inherit the stale interrupt.
           const expectedStartedAt = state.pendingAI?.metadata?.startedAt;
-          showLocalPreContentInterrupt(convId);
+          if (isStreaming(state)) showLocalPreContentInterrupt(convId);
           daemon.abort(convId, expectedStartedAt);
         }
       }
@@ -1610,7 +1610,6 @@ function handleKey(key: KeyEvent): void {
         clearPendingAI(state);
         state.contextTokens = 0;
         state.goal = null;
-        state.goalReviewing = false;
         state.btw = null;
         resetToolOutputState(state);
         resetHistoryPagination(state);

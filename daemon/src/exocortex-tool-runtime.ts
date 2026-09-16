@@ -25,6 +25,7 @@ import {
 import * as convStore from "./conversations";
 import { complete } from "./llm";
 import { log } from "./log";
+import { cancelDeferredChronoSleep } from "./chrono-service";
 import {
   allowsCustomModels,
   canonicalizeModel,
@@ -37,6 +38,7 @@ import {
 } from "./providers/registry";
 import { hasConfiguredCredentials } from "./auth";
 import {
+  broadcastConversationHistoryUpdated,
   broadcastConversationInstructionsUpdated,
   broadcastConversationToolPolicyUpdated,
   broadcastConversationUpdated,
@@ -1159,7 +1161,16 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     }
     if (!convStore.getSummary(convId)) throw new Error(`Conversation ${convId} not found`);
     const controller = convStore.getActiveJob(convId);
-    if (!controller) return ok(pretty({ conversation_id: convId, status: "idle" }));
+    const goal = convStore.get(convId)?.goal;
+    if (goal?.status === "active") {
+      convStore.updateGoalStatus(convId, "paused", { reason: "Interrupted. Resume explicitly to continue." });
+      convStore.clearGoalContinuationAfterStream(convId);
+      convStore.clearStreamHandoff(convId);
+      if (cancelDeferredChronoSleep(convId)) broadcastConversationHistoryUpdated(server, convId);
+      server.sendToSubscribers(convId, { type: "goal_updated", convId, goal: convStore.get(convId)?.goal ?? null });
+      broadcastConversationUpdated(server, convId);
+    }
+    if (!controller) return ok(pretty({ conversation_id: convId, status: goal?.status === "paused" ? "paused" : "idle" }));
     controller.abort();
     return ok(pretty({ conversation_id: convId, status: "aborted" }));
   };

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { existsSync, readFileSync } from "fs";
-import { clearActiveJob, consumeGoalReviewAfterStream, conversationCacheInternalsForTest, create, get, getQueuedMessages, getSummary, pushQueuedMessage, remove, requestGoalReviewAfterStream, setActiveJob, setGoal, updateGoalStatus } from "./conversations";
+import { clearActiveJob, consumeGoalContinuationAfterStream, conversationCacheInternalsForTest, create, get, getQueuedMessages, getSummary, pushQueuedMessage, remove, requestGoalContinuationAfterStream, setActiveJob, setGoal, updateGoalStatus } from "./conversations";
 import { DEFAULT_EFFORT } from "./messages";
 
 const orchestrateReplayConversation = mock(async () => ({ ok: true }));
@@ -99,7 +99,7 @@ describe("restart recovery file", () => {
     expect(readInterruptedStreamIds()).toEqual([]);
   });
 
-  test("interrupted active goals replay the interrupted turn before goal review", () => {
+  test("interrupted active goals replay the interrupted turn before continuation", () => {
     const goalConvId = makeConversation("goal");
     setGoal(goalConvId, "finish the goal");
     const normalConvId = makeConversation("normal");
@@ -152,7 +152,7 @@ describe("restart recovery file", () => {
     const ac = new AbortController();
     setActiveJob(childConvId, ac, Date.now());
     pushQueuedMessage(childConvId, "do not run after start", "next-turn", undefined, 0);
-    requestGoalReviewAfterStream(childConvId);
+    requestGoalContinuationAfterStream(childConvId);
     beginPendingSubagentNotification(
       { convId: parentConvId },
       childConvId,
@@ -181,7 +181,7 @@ describe("restart recovery file", () => {
         source: "daemon",
       }),
     ]);
-    expect(consumeGoalReviewAfterStream(childConvId)).toBe(false);
+    expect(consumeGoalContinuationAfterStream(childConvId)).toBe(false);
   });
 
   test("restores a persisted subagent task even if restart happened before its user message was appended", async () => {

@@ -3,7 +3,7 @@ import { clearConversationDefaults, saveConversationDefaults } from "@exocortex/
 import { conversationWorkspaceDir } from "@exocortex/shared/paths";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { appendMessages, consumeGoalReviewAfterStream, create, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, get, getQueuedMessageById, getQueuedMessages, getSummary, listQueuedMessages, pushGlobalIdleQueuedMessage, remove, removeQueuedMessageById, setGoal, setToolPolicy, updateGoalStatus } from "./conversations";
+import { appendMessages, consumeGoalContinuationAfterStream, create, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, get, getQueuedMessageById, getQueuedMessages, getSummary, listQueuedMessages, pushGlobalIdleQueuedMessage, remove, removeQueuedMessageById, setGoal, setToolPolicy, updateGoalStatus } from "./conversations";
 import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, defaultEffortForModelId } from "./messages";
 import { appendToStreamingBlock, clearActiveJob, clearCurrentStreamingBlocks, initStreamingState, replaceCurrentStreamingBlocks, setActiveJob, setStreamingCommittedMessageCount } from "./streaming";
 import { beginPendingSubagentNotification, listPendingSubagentNotifications, removePendingSubagentNotificationsForConversation } from "./subagent-notifications";
@@ -2017,11 +2017,11 @@ describe("handler set_goal resume", () => {
       message: "Goal resumed.",
       goal: expect.objectContaining({ status: "active" }),
     }));
-    expect(consumeGoalReviewAfterStream(convId)).toBe(true);
+    expect(consumeGoalContinuationAfterStream(convId)).toBe(true);
     expect(orchestrateGoalCycle).not.toHaveBeenCalled();
   });
 
-  test("completing a goal clears it and returns a null goal update", async () => {
+  test("completing a goal retains the objective and completion state", async () => {
     const convId = mkId("complete-clears");
     create(convId, "openai", "gpt-5.4");
     setGoal(convId, "finish the refactor");
@@ -2040,13 +2040,13 @@ describe("handler set_goal resume", () => {
 
     await handle({} as never, { type: "set_goal", reqId: "req-complete", convId, action: "complete" });
 
-    expect(get(convId)?.goal).toBeNull();
+    expect(get(convId)?.goal).toMatchObject({ status: "complete", objective: "finish the refactor" });
     expect(sent).toContainEqual(expect.objectContaining({
       type: "goal_updated",
       reqId: "req-complete",
       convId,
       message: "Goal complete.",
-      goal: null,
+      goal: expect.objectContaining({ status: "complete", objective: "finish the refactor" }),
     }));
   });
 });
@@ -2093,7 +2093,7 @@ describe("handler abort", () => {
     }));
   });
 
-  test("interrupting an active goal leaves it active for implicit resume", async () => {
+  test("interrupting an active goal pauses it until explicit resume", async () => {
     const convId = mkId("abort-active-goal");
     create(convId, "openai", "gpt-5.4");
     setGoal(convId, "finish the long task");
@@ -2116,8 +2116,8 @@ describe("handler abort", () => {
     await handle({} as never, { type: "abort", reqId: "req-abort", convId });
 
     expect(ac.signal.aborted).toBe(true);
-    expect(get(convId)?.goal).toMatchObject({ status: "active" });
-    expect(subscriberEvents).not.toContainEqual(expect.objectContaining({
+    expect(get(convId)?.goal).toMatchObject({ status: "paused" });
+    expect(subscriberEvents).toContainEqual(expect.objectContaining({
       type: "goal_updated",
       convId,
     }));

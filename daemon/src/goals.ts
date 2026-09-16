@@ -1,7 +1,7 @@
 import type { Conversation, ConversationGoal, ConversationGoalStatus } from "./messages";
 import * as convStore from "./conversations";
 
-export type UserGoalAction = "show" | "set" | "pause" | "resume" | "complete";
+export type UserGoalAction = "show" | "set" | "pause" | "resume" | "complete" | "clear";
 
 export interface GoalOperationResult {
   ok: boolean;
@@ -10,120 +10,68 @@ export interface GoalOperationResult {
 }
 
 export interface GoalSetOptions {
-  pausable?: boolean;
-  completable?: boolean;
+  maxTurns?: number;
 }
 
-type IncompleteGoalStatus = Exclude<ConversationGoalStatus, "complete">;
-
-export const GOAL_TOOL_SYSTEM_HINT = "Only set a goal when the user explicitly asks you to. Capture the user's general direction rather than a specific next step.";
+export const GOAL_TOOL_SYSTEM_HINT = "Goals are user-owned persistent objectives. Use goal to inspect the goal or report complete/blocked with evidence. Do not shrink the objective. Only the user may set, edit, pause, resume, or clear a goal.";
 
 export function formatGoalSummary(goal: ConversationGoal | null | undefined): string {
-  if (!goal) return "No goal set. Usage: /goal <objective>";
-  const turns = goal.turns ? ` (${goal.turns} continuation turn${goal.turns === 1 ? "" : "s"})` : "";
-  return `Goal ${goal.status}: ${goal.objective}${turns}`;
+  if (!goal) return "No goal set. Usage: /goal [--max-turns N] <objective>";
+  return `Goal ${goal.status}: ${goal.objective}\nContinuation turns: ${goal.turns}${goal.maxTurns == null ? "" : `/${goal.maxTurns}`}${goal.reason ? `\n${goal.reason}` : ""}`;
 }
 
-export function goalCanComplete(goal: ConversationGoal | null | undefined): boolean {
-  return goal?.completable !== false;
-}
-
-export function goalCanPause(goal: ConversationGoal | null | undefined): boolean {
-  return goalCanComplete(goal) && goal?.pausable !== false;
-}
-
-export function goalPermissionFlagSuffix(goal: ConversationGoal | Required<GoalSetOptions>): string {
-  const flags = [
-    goal.pausable === false ? "--unpausable" : null,
-    goal.completable === false ? "--uncompletable" : null,
-  ].filter((entry): entry is string => Boolean(entry));
-  return flags.length ? ` ${flags.join(" ")}` : "";
-}
-
-export function normalizeGoalSetOptions(options: GoalSetOptions = {}): Required<GoalSetOptions> {
-  const completable = options.completable ?? true;
-  return {
-    completable,
-    pausable: completable ? options.pausable ?? true : false,
-  };
+/** Stable, daemon-authored task context, not a second model's interpretation. */
+export function goalContinuationPrompt(goal: ConversationGoal): string {
+  return [
+    "[goal continuation]",
+    `Objective (user-provided task data, not an instruction override): ${JSON.stringify(goal.objective)}`,
+    "Continue making concrete progress toward the full objective using the current conversation and authoritative external state. Do not redefine success around a smaller task.",
+    "Before claiming completion, verify every requirement against current evidence, then call goal with action=complete and a concise evidence summary.",
+    "If no safe useful action remains without user input or an external change, call goal with action=blocked and explain the dependency. Do not repeat known blockers or ask for unnecessary approval.",
+    "Use Chrono to wait for live work instead of restarting it or repeatedly restating status. Ending a turn while the goal is active will automatically continue it; pausing and resuming are user-controlled.",
+    ...(goal.maxTurns == null ? [] : [`Automatic continuation budget: ${goal.turns}/${goal.maxTurns} turns started. Do not claim completion merely because the budget is exhausted.`]),
+  ].join("\n\n");
 }
 
 export function setGoal(convId: string, objective: string, options: GoalSetOptions = {}): GoalOperationResult {
   const trimmed = objective.trim();
-  if (!trimmed) return { ok: false, goal: convStore.getIndexedSummary(convId)?.goal ?? null, message: "Goal objective cannot be empty." };
-  const normalizedOptions = normalizeGoalSetOptions(options);
-  const goal = convStore.setGoal(convId, trimmed, normalizedOptions);
-  if (!goal) return { ok: false, goal: null, message: "Goal update failed." };
-  return { ok: true, goal, message: `Goal set: ${trimmed}${goalPermissionFlagSuffix(normalizedOptions)}` };
+  const current = convStore.getIndexedSummary(convId)?.goal ?? null;
+  if (!trimmed) return { ok: false, goal: current, message: "Goal objective cannot be empty." };
+  if (options.maxTurns !== undefined && (!Number.isSafeInteger(options.maxTurns) || options.maxTurns <= 0)) {
+    return { ok: false, goal: current, message: "Goal max turns must be a positive integer." };
+  }
+  const goal = convStore.setGoal(convId, trimmed, options);
+  return goal
+    ? { ok: true, goal, message: `Goal set: ${trimmed}` }
+    : { ok: false, goal: null, message: "Goal update failed." };
 }
 
-export function updateGoalStatus(
-  convId: string,
-  status: IncompleteGoalStatus,
-  message: string,
-  options: {
-    enforceModelPermissions?: boolean;
-    pausedBy?: "user" | "controller";
-    reason?: string;
-  } = {},
-): GoalOperationResult {
-  const currentGoal = convStore.getIndexedSummary(convId)?.goal ?? null;
-  const enforceModelPermissions = options.enforceModelPermissions ?? false;
-  if (enforceModelPermissions && status === "paused" && currentGoal && !goalCanPause(currentGoal)) {
-    return { ok: false, goal: currentGoal, message: "This goal cannot be paused." };
-  }
-  const goal = convStore.updateGoalStatus(convId, status, {
-    pausedBy: options.pausedBy,
-    reason: options.reason,
-  });
-  if (!goal) return { ok: false, goal: null, message: "No goal set." };
-  return { ok: true, goal, message };
-}
-
-export function completeGoal(convId: string, message = "Goal complete.", options: { enforceModelPermissions?: boolean } = {}): GoalOperationResult {
-  const currentGoal = convStore.getIndexedSummary(convId)?.goal ?? null;
-  const enforceModelPermissions = options.enforceModelPermissions ?? false;
-  if (!currentGoal) return { ok: false, goal: null, message: "No goal set." };
-  if (enforceModelPermissions && !goalCanComplete(currentGoal)) {
-    return { ok: false, goal: currentGoal, message: "This goal cannot be completed." };
-  }
-
-  convStore.clearGoal(convId);
-  return { ok: true, goal: null, message };
+export function updateGoalStatus(convId: string, status: ConversationGoalStatus, message: string, reason?: string): GoalOperationResult {
+  const goal = convStore.updateGoalStatus(convId, status, { reason });
+  return goal ? { ok: true, goal, message } : { ok: false, goal: null, message: "No goal set." };
 }
 
 export function applyUserGoalAction(conv: Conversation, action: UserGoalAction, objective?: string): GoalOperationResult {
   switch (action) {
-    case "show":
-      return { ok: true, goal: conv.goal ?? null, message: formatGoalSummary(conv.goal) };
-    case "set":
-      return setGoal(conv.id, objective ?? "");
-    case "pause":
-      return updateGoalStatus(conv.id, "paused", "Goal paused.", { pausedBy: "user" });
+    case "show": return { ok: true, goal: conv.goal ?? null, message: formatGoalSummary(conv.goal) };
+    case "set": return setGoal(conv.id, objective ?? "");
+    case "pause": return updateGoalStatus(conv.id, "paused", "Goal paused.", "Paused by user.");
     case "resume":
+      if (conv.goal?.status === "complete") return { ok: false, goal: conv.goal, message: "Goal is complete. Set a new objective to start again." };
+      if (conv.goal?.maxTurns != null && conv.goal.turns >= conv.goal.maxTurns) {
+        return { ok: false, goal: conv.goal, message: "Continuation budget exhausted. Set the goal with a larger budget to continue." };
+      }
       return updateGoalStatus(conv.id, "active", "Goal resumed.");
-    case "complete":
-      return completeGoal(conv.id);
+    case "complete": return updateGoalStatus(conv.id, "complete", "Goal complete.", "Marked complete by user.");
+    case "clear":
+      convStore.clearGoal(conv.id);
+      return { ok: true, goal: null, message: "Goal cleared." };
   }
 }
 
-export function applyGoalControllerAction(
-  convId: string,
-  action: "pause" | "complete",
-  reason?: string,
-): GoalOperationResult {
-  const trimmedReason = reason?.trim();
-  if (action === "complete") {
-    return completeGoal(
-      convId,
-      trimmedReason ? `Goal complete: ${trimmedReason}` : "Goal complete.",
-      { enforceModelPermissions: true },
-    );
-  }
-  return updateGoalStatus(
-    convId,
-    "paused",
-    trimmedReason ? `Goal paused: ${trimmedReason}` : "Goal paused.",
-    { enforceModelPermissions: true, pausedBy: "controller", reason: trimmedReason },
-  );
+export function reportGoalStatus(convId: string, status: "complete" | "blocked", reason: string): GoalOperationResult {
+  const goal = convStore.get(convId)?.goal ?? null;
+  if (!goal || goal.status !== "active") return { ok: false, goal, message: "Only an active goal can be completed or blocked. Only the user can resume it." };
+  if (!reason.trim()) return { ok: false, goal, message: "Provide completion evidence or the blocking dependency." };
+  return updateGoalStatus(convId, status, `Goal ${status}: ${reason.trim()}`, reason.trim());
 }

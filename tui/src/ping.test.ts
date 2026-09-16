@@ -259,7 +259,7 @@ describe("ping config helpers", () => {
     })).toBe(false);
   });
 
-  test("queued, sleeping, and purple goal-review states do not trigger /ping", () => {
+  test("queued, sleeping, and goal-continuation handoffs do not trigger /ping", () => {
     expect(shouldPingForStreamCompletion({
       updatedConvId: "queued",
       wasStreaming: true,
@@ -274,7 +274,7 @@ describe("ping config helpers", () => {
       streamStopReason: "suspended",
     })).toBe(false);
     expect(shouldPingForStreamCompletion({
-      updatedConvId: "goal-review",
+      updatedConvId: "goal-continuation",
       wasStreaming: true,
       isStreaming: true,
       hasPendingWork: true,

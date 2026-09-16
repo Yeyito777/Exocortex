@@ -58,7 +58,7 @@ import {
 } from "./subagent-notifications";
 import { beginDaemonShutdown, getDaemonShutdownMode } from "./daemon-lifecycle";
 import { buildBackgroundTaskNotificationText } from "./background-task-notifications";
-import { configureChronoService } from "./chrono-service";
+import { configureChronoService, cancelDeferredChronoSleep } from "./chrono-service";
 import { INITIAL_HISTORY_TURNS, buildHistoryUpdatedEvents, compactHistoryImages, pageDisplayHistory } from "./history-pagination";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
 import { randomUUID } from "crypto";
@@ -590,7 +590,6 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           model: summary?.model ?? page.model,
           effort: summary?.effort ?? page.effort,
           fastMode: summary?.fastMode ?? page.fastMode,
-          goalReviewing: summary?.goalReviewing ?? false,
           entries: responseEntries,
           historyStartIndex: page.startIndex,
           historyStartUserIndex: page.startUserIndex,
@@ -646,7 +645,6 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       model: compactData.model,
       effort: compactData.effort,
       fastMode: compactData.fastMode,
-      goalReviewing: summary?.goalReviewing ?? false,
       entries: responseEntries,
       ...(page ? {
         historyStartIndex: page.startIndex,
@@ -1342,6 +1340,10 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         const fastMode = requestedFastMode && supportsFastMode(provider, model);
         const initialMessage = cmd.initialMessage;
         const goalObjective = cmd.goalObjective?.trim();
+        if (goalObjective && cmd.goalMaxTurns !== undefined && (!Number.isSafeInteger(cmd.goalMaxTurns) || cmd.goalMaxTurns <= 0)) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: "Goal max turns must be a positive integer." });
+          break;
+        }
         const titleContext = cmd.titleContext?.trim();
         if (provider === "openai" && (initialMessage || goalObjective)
             && rejectDuringOpenAIAccountMutation(client, cmd.reqId, id)) break;
@@ -1404,7 +1406,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             parentSystemInstructions: "",
           });
         }
-        const goalResult = goalObjective ? setConversationGoal(id, goalObjective, { pausable: cmd.goalPausable, completable: cmd.goalCompletable }) : null;
+        const goalResult = goalObjective ? setConversationGoal(id, goalObjective, { maxTurns: cmd.goalMaxTurns }) : null;
         const goal = goalResult?.goal ?? null;
         log("info", `handler: created conversation ${id} (provider=${provider}, model=${model}, fastMode=${fastMode}, title="${title ?? ""}", initialMessage=${Boolean(initialMessage)}, folderId=${folderId ?? "root"})`);
 
@@ -1428,7 +1430,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           server.sendToSubscribers(id, { type: "goal_updated", reqId: cmd.reqId, convId: id, goal, message: goalResult?.message ?? `Goal set: ${goalObjective}` });
           startTitleGeneration(server, id, { extraContext: goalObjective });
           void orchestrateGoalCycle(server, id, buildOrchestrationCallbacks(id)).catch((err) => {
-            log("error", `handler: initial new-conversation goal review failed for ${id}: ${err instanceof Error ? err.message : String(err)}`);
+            log("error", `handler: initial new-conversation goal continuation failed for ${id}: ${err instanceof Error ? err.message : String(err)}`);
           });
         } else if (titleContext && !initialMessage) {
           startTitleGeneration(server, id, { extraContext: titleContext });
@@ -1483,7 +1485,18 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         const ac = convStore.getActiveJob(cmd.convId);
         const activeStartedAt = convStore.getStreamingStartedAt(cmd.convId);
         const targetsActiveStream = cmd.expectedStartedAt === undefined
-          || cmd.expectedStartedAt === activeStartedAt;
+          || cmd.expectedStartedAt === activeStartedAt
+          || (!ac && convStore.isStreamHandoffActive(cmd.convId));
+        if (targetsActiveStream && cmd.reason !== "daemon-restart") {
+          const conv = convStore.get(cmd.convId);
+          if (conv?.goal?.status === "active") {
+            applyUserGoalAction(conv, "pause");
+            convStore.clearGoalContinuationAfterStream(cmd.convId);
+            convStore.clearStreamHandoff(cmd.convId);
+            if (cancelDeferredChronoSleep(cmd.convId)) broadcastConversationHistoryUpdated(server, cmd.convId);
+            sendGoalUpdated(cmd.convId, cmd.reqId, "Goal paused. Use /goal resume to continue.");
+          }
+        }
         if (ac && targetsActiveStream) {
           ac.abort(cmd.reason === "daemon-restart" ? "daemon-restart" : undefined);
           log("info", `handler: abort requested for ${cmd.convId}${cmd.reason ? ` (${cmd.reason})` : ""}`);
@@ -1645,12 +1658,17 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Cannot set a goal while the conversation is streaming." });
             break;
           }
-          const result = setConversationGoal(cmd.convId, objective, { pausable: cmd.pausable, completable: cmd.completable });
+          const result = setConversationGoal(cmd.convId, objective, { maxTurns: cmd.maxTurns });
+          if (!result.ok) {
+            server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: result.message });
+            break;
+          }
+          if (cancelDeferredChronoSleep(cmd.convId)) broadcastConversationHistoryUpdated(server, cmd.convId);
           const goal = sendGoalUpdated(cmd.convId, cmd.reqId, result.message);
           log("info", `handler: set goal for ${cmd.convId}: "${objective.slice(0, 80)}"`);
           if (goal?.status === "active") {
             void orchestrateGoalCycle(server, cmd.convId, buildOrchestrationCallbacks(cmd.convId), { subagentMaxDepth: null }).catch((err) => {
-              log("error", `handler: initial goal review failed for ${cmd.convId}: ${err instanceof Error ? err.message : String(err)}`);
+              log("error", `handler: initial goal continuation failed for ${cmd.convId}: ${err instanceof Error ? err.message : String(err)}`);
             });
           }
           break;
@@ -1659,22 +1677,28 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         if (cmd.action === "resume") {
           const result = applyUserGoalAction(conv, "resume");
           const goal = sendGoalUpdated(cmd.convId, cmd.reqId, result.message);
-          if (goal?.status === "active" && !convStore.isStreaming(cmd.convId)) {
+          if (result.ok && goal?.status === "active" && !convStore.isStreaming(cmd.convId)) {
             void orchestrateGoalCycle(server, cmd.convId, buildOrchestrationCallbacks(cmd.convId), { subagentMaxDepth: null }).catch((err) => {
-              log("error", `handler: resumed goal review failed for ${cmd.convId}: ${err instanceof Error ? err.message : String(err)}`);
+              log("error", `handler: resumed goal continuation failed for ${cmd.convId}: ${err instanceof Error ? err.message : String(err)}`);
             });
-          } else if (goal?.status === "active") {
-            convStore.requestGoalReviewAfterStream(cmd.convId);
+          } else if (result.ok && goal?.status === "active") {
+            convStore.requestGoalContinuationAfterStream(cmd.convId);
             log("info", `handler: resumed goal for ${cmd.convId} while streaming; continuation will run after the active stream stops`);
           }
           break;
         }
 
-        if ((cmd.action === "pause" || cmd.action === "complete") && convStore.isGoalReviewing(cmd.convId)) {
+        const hadGoal = !!conv.goal;
+        const result = applyUserGoalAction(conv, cmd.action);
+        if (cmd.action !== "show" && result.ok && hadGoal) {
+          convStore.clearGoalContinuationAfterStream(cmd.convId);
+          convStore.clearStreamHandoff(cmd.convId);
+          if (cancelDeferredChronoSleep(cmd.convId)) broadcastConversationHistoryUpdated(server, cmd.convId);
           convStore.getActiveJob(cmd.convId)?.abort("goal-state-changed");
         }
-        const result = applyUserGoalAction(conv, cmd.action);
-        server.sendTo(client, { type: "goal_updated", reqId: cmd.reqId, convId: cmd.convId, goal: result.goal, message: result.message });
+        const goalEvent = { type: "goal_updated" as const, reqId: cmd.reqId, convId: cmd.convId, goal: result.goal, message: result.message };
+        server.sendTo(client, goalEvent);
+        if (cmd.action !== "show") server.sendToSubscribersExcept(cmd.convId, goalEvent, client);
         if (cmd.action !== "show") broadcastConversationUpdated(server, cmd.convId);
 
         break;

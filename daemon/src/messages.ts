@@ -1016,7 +1016,7 @@ export function summarizeConversation(
     updatedAt: conv.updatedAt,
     messageCount,
     title: conv.title,
-    goal: conv.goal?.status === "complete" ? null : conv.goal ?? null,
+    goal: conv.goal ?? null,
     marked: conv.marked,
     pinned: conv.pinned,
     muted: conv.muted === true,

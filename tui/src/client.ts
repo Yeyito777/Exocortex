@@ -404,18 +404,19 @@ export class DaemonClient {
     folderId?: string | null,
     goalObjective?: string,
     convId?: string,
-    goalPausable?: boolean,
-    goalCompletable?: boolean,
+    _legacyGoalPausable?: boolean,
+    _legacyGoalCompletable?: boolean,
     titleContext?: string,
     startCall?: boolean,
     draftToolPolicyId?: string,
+    goalMaxTurns?: number,
   ): void {
     this.send({
       type: "new_conversation",
       ...(convId ? { convId } : {}),
       ...(draftToolPolicyId ? { draftToolPolicyId } : {}),
       provider, model, title, titleContext, effort, fastMode, initialMessage, folderId,
-      goalObjective, goalPausable, goalCompletable, startCall,
+      goalObjective, goalMaxTurns, startCall,
     });
   }
 
@@ -722,8 +723,8 @@ export class DaemonClient {
     this.send({ type: "set_fast_mode", convId, enabled });
   }
 
-  setGoal(convId: string, action: GoalAction, objective?: string, pausable?: boolean, completable?: boolean): void {
-    this.send({ type: "set_goal", convId, action, objective, pausable, completable });
+  setGoal(convId: string, action: GoalAction, objective?: string, maxTurns?: number): void {
+    this.send({ type: "set_goal", convId, action, objective, maxTurns });
   }
 
   trimConversation(convId: string, mode: TrimMode, count: number): void {

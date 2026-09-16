@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { browserOpenCommand, handleEvent, type DaemonActions } from "./events";
 import { buildDiskSyncAssistantDiffPayload } from "./events/disk-sync-diagnostics";
 import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, createPendingAI, type ConversationSummary } from "./messages";
-import { createInitialState, isStreaming } from "./state";
+import { createInitialState, isStreaming, canInterrupt } from "./state";
 import { prepareConversationOpen } from "./conversationscroll";
 
 const daemon: DaemonActions = {
@@ -36,23 +36,31 @@ describe("auth browser opener", () => {
   });
 });
 
-describe("hidden goal review state", () => {
-  test("queues sends while the controller owns the focused conversation", () => {
+describe("ordinary turn handoff state", () => {
+  test("Stop remains available for an active goal while the provider is suspended", () => {
+    const state = createInitialState();
+    state.convId = "sleeping-goal";
+    state.goal = { objective: "wait then finish", status: "active", turns: 1, createdAt: 1, updatedAt: 1 };
+    expect(isStreaming(state)).toBe(false);
+    expect(canInterrupt(state)).toBe(true);
+    state.goal.status = "paused";
+    expect(canInterrupt(state)).toBe(false);
+  });
+  test("queues sends while the daemon hands off the focused conversation", () => {
     const state = createInitialState();
     state.convId = "conv-1";
 
     handleEvent({
       type: "conversation_updated",
-      summary: summary({ goalReviewing: true, streaming: true }),
+      summary: summary({ streaming: true }),
     }, state, daemon);
 
     expect(state.pendingAI).toBeNull();
-    expect(state.goalReviewing).toBe(true);
     expect(isStreaming(state)).toBe(true);
 
     handleEvent({
       type: "conversation_updated",
-      summary: summary({ goalReviewing: false, streaming: false }),
+      summary: summary({ streaming: false }),
     }, state, daemon);
     expect(isStreaming(state)).toBe(false);
   });

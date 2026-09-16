@@ -82,9 +82,9 @@ describe("macro expansion", () => {
     const expanded = expandMacros("/autoresearch improve benchmark quality");
 
     expect(expanded).toContain("You're going to autoresearch.");
-    expect(expanded).toContain("Set yourself a goal in accordance with the topic");
-    expect(expanded).toContain("pausable=false and completable=false");
-    expect(expanded).toContain("unpausable and uncompletable");
+    expect(expanded).toContain("objective the user can start with /goal");
+    expect(expanded).toContain("use Chrono for recurring monitoring");
+    expect(expanded).not.toContain("completable=false");
     expect(expanded).not.toContain("not allowed to pause it");
     expect(expanded).toContain("autoresearch/<topic>");
     expect(expanded).toContain("gitignored directory");
@@ -92,8 +92,8 @@ describe("macro expansion", () => {
     expect(expanded).toContain("commit only the accepted production source");
     expect(expanded).toContain("you must create the benchmark first");
     expect(expanded).toContain("Make sure to not use subagents.");
-    expect(expanded).toContain("ask him 5 questions before you actually start");
-    expect(expanded).toContain("set yourself the goal AFTER the user has answered the five questions");
+    expect(expanded).toContain("Ask the user 5 questions before starting");
+    expect(expanded).toContain("propose the goal AFTER the user has answered the five questions");
     expect(expanded).toEndWith("improve benchmark quality");
   });
 

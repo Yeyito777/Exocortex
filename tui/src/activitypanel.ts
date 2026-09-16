@@ -65,7 +65,7 @@ export function focusedConversationTasks(state: RenderState): TaskPanelEntry[] {
     ? [{
         id: `goal:${goal.createdAt}`,
         kind: "goal",
-        title: goal.objective,
+        title: goal.reason ? `${goal.objective} — ${goal.reason}` : goal.objective,
         startedAt: goal.createdAt,
         goalStatus: goal.status,
       }]
@@ -172,7 +172,7 @@ function msUntilNextUnitBoundary(value: number, unitMs: number): number {
  */
 export function msUntilTaskPanelEntryUpdate(task: TaskPanelEntry, now = Date.now()): number | null {
   if (!Number.isFinite(now) || !Number.isFinite(task.startedAt)) return null;
-  if (task.kind === "goal" && task.goalStatus === "paused") return null;
+  if (task.kind === "goal" && task.goalStatus !== "active") return null;
 
   if (task.kind === "chrono" && task.chronoMode !== "wait" && task.dueAt !== undefined) {
     if (!Number.isFinite(task.dueAt)) return null;
@@ -565,12 +565,12 @@ export function renderTaskPanel(
     const isChrono = task.kind === "chrono";
     const color = isGoal ? goal : isSubagent ? exocortex : isChrono ? chrono : bash;
     const label = panelWidth >= 38
-      ? (isGoal ? `${task.goalStatus === "paused" ? "◇" : "◆"} Goal` : isSubagent ? "◆ Exocortex" : isChrono ? "◷ Chrono" : "$ Bash")
-      : (isGoal ? `${task.goalStatus === "paused" ? "◇" : "◆"} Goal` : isSubagent ? "◆ Exo" : isChrono ? "◷ Chrono" : "$ Bash");
+      ? (isGoal ? `${task.goalStatus !== "active" ? "◇" : "◆"} Goal` : isSubagent ? "◆ Exocortex" : isChrono ? "◷ Chrono" : "$ Bash")
+      : (isGoal ? `${task.goalStatus !== "active" ? "◇" : "◆"} Goal` : isSubagent ? "◆ Exo" : isChrono ? "◷ Chrono" : "$ Bash");
     const fallbackTitle = isGoal ? "Conversation goal" : isSubagent ? "Subagent task" : isChrono ? "Chrono task" : "Background task";
     const title = cleanPanelText(task.title) || fallbackTitle;
-    const elapsed = isGoal && task.goalStatus === "paused"
-      ? "paused"
+    const elapsed = isGoal && task.goalStatus !== "active"
+      ? task.goalStatus ?? "paused"
       : isChrono && task.chronoMode !== "wait" && task.dueAt !== undefined
         ? formatTaskCountdown(task.dueAt, now)
       : formatTaskElapsed(task.startedAt, now);

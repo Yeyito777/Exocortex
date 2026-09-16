@@ -911,7 +911,7 @@ describe("save / load round-trip", () => {
     }
   });
 
-  test("legacy completed goals are treated as cleared on load", () => {
+  test("completed goals survive loading", () => {
     const id = mkId("completed-goal-load");
     writeFixture(id, {
       version: 13,
@@ -938,7 +938,7 @@ describe("save / load round-trip", () => {
       },
     });
 
-    expect(load(id)?.goal).toBeUndefined();
+    expect(load(id)?.goal).toMatchObject({ status: "complete", objective: "already finished" });
   });
 
   test("loads a targeted unwind overlay and folds it into the next ordinary save", () => {
@@ -1330,7 +1330,7 @@ describe("loadAll()", () => {
     }
   });
 
-  test("legacy completed goals are omitted from summaries", () => {
+  test("completed goals are retained in summaries", () => {
     const id = mkId("loadall-completed-goal");
     writeFixture(id, {
       version: 13,
@@ -1360,6 +1360,6 @@ describe("loadAll()", () => {
     const summary = loadAll().find((c) => c.id === id);
 
     expect(summary).toBeDefined();
-    expect(summary!.goal).toBeNull();
+    expect(summary!.goal).toMatchObject({ status: "complete", objective: "already finished" });
   });
 });

@@ -78,7 +78,6 @@ export function handleConversationCreated(
   state.effort = event.effort ?? state.effort;
   state.fastMode = event.fastMode ?? state.fastMode;
   state.goal = event.goal ?? null;
-  state.goalReviewing = false;
   state.btw = null;
   resetHistoryPagination(state);
   daemon.subscribe(event.convId);
@@ -120,7 +119,6 @@ function clearRemovedActiveConversation(state: RenderState, convId: string): voi
   delete state.lastStreamSeqByConv[convId];
   state.contextTokens = 0;
   state.goal = null;
-  state.goalReviewing = false;
   state.btw = null;
   resetToolOutputState(state);
   resetHistoryPagination(state);
@@ -142,7 +140,6 @@ export function handleConversationUpdated(event: Extract<Event, { type: "convers
     state.effort = summary.effort ?? state.effort;
     state.fastMode = summary.fastMode ?? state.fastMode;
     state.goal = summary.goal ?? null;
-    state.goalReviewing = summary.goalReviewing ?? false;
     if (providerOrModelChanged && state.contextTokens !== 0) state.contextTokens = null;
   }
 }
@@ -279,7 +276,6 @@ export function handleConversationLoaded(
   state.effort = event.effort ?? state.effort;
   state.fastMode = event.fastMode ?? state.fastMode;
   state.goal = event.goal ?? null;
-  state.goalReviewing = event.goalReviewing ?? false;
   state.btw = projectConversationBtw(event.convId, event.btw);
   state.activeToolPolicy = event.toolPolicySnapshot ?? null;
   state.scrollOffset = 0;

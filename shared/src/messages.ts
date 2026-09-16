@@ -392,23 +392,28 @@ export interface ConversationBtw {
 
 // ── Conversation goals ───────────────────────────────────────────────
 
-export type ConversationGoalStatus = "active" | "paused" | "complete";
+export type ConversationGoalStatus = "active" | "paused" | "blocked" | "complete";
 
 export interface ConversationGoal {
   objective: string;
   status: ConversationGoalStatus;
-  /** Whether the model may pause this goal. Defaults to true for older saved goals. */
+  /** Legacy data, ignored. New goals never write these permission flags. */
   pausable?: boolean;
-  /** Whether the model may mark this goal complete. Defaults to true for older saved goals. */
   completable?: boolean;
   createdAt: number;
   updatedAt: number;
-  /** Number of automatic continuation turns since the goal was set/resumed. */
+  /** Number of automatic continuation turns started since the goal was set. */
   turns: number;
   /** Who most recently paused the goal. Older saved goals omit this. */
   pausedBy?: "user" | "controller";
   /** Concise input/completion context retained across client reloads. */
   pauseReason?: string;
+  /** Explanation/evidence for the most recent stopped state. */
+  reason?: string;
+  /** Optional maximum automatic continuation turns, across resumes. */
+  maxTurns?: number;
+  /** Consecutive empty successful turns; guards against provider empty-output loops. */
+  emptyTurns?: number;
 }
 
 // ── Conversation summary ────────────────────────────────────────────
@@ -469,8 +474,6 @@ export interface ConversationSummary {
   /** Whether this conversation is explicitly muted. */
   muted?: boolean;
   streaming: boolean;
-  /** A hidden source-model request is selecting the active goal's next action. */
-  goalReviewing?: boolean;
   /** False for maintenance jobs that must be aborted, but not replayed, across daemon restarts. */
   restartRecoverable?: boolean;
   unread: boolean;
@@ -644,6 +647,7 @@ export interface UsageData {
 
 export const TOKEN_USAGE_SOURCES = [
   "conversation",
+  // Historical accounting only; new goal turns use "conversation".
   "goal_controller",
   "btw",
   "llm_complete",

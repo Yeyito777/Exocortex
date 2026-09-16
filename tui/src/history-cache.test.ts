@@ -19,7 +19,7 @@ describe("content-checked remote history cache", () => {
     expect(cache.prepare(request("1")).cachedEntryHashes).toBeUndefined();
     cache.receive(response("1"), noRetry);
     const cmd = cache.prepare(request("2"));
-    const fresh = { ...response("2"), contextTokens: 999, goalReviewing: true,
+    const fresh = { ...response("2"), contextTokens: 999,
       pendingAI: { blocks: [{ type: "text" as const, text: "fresh stream" }], metadata: null } };
     const delta = encodeHistoryDelta(fresh, cmd.cachedEntryHashes);
     expect(delta.entries).toEqual([]);

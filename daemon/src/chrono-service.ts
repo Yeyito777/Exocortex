@@ -121,7 +121,7 @@ export interface DeferredChronoSleep {
   durationMs: number;
   state: "sleeping" | "resuming";
   resumedAt?: number;
-  resumeReason?: "elapsed" | "user_message";
+  resumeReason?: "elapsed" | "user_message" | "user_stop";
   retryAt?: number;
 }
 
@@ -249,7 +249,7 @@ function validDeferredSleep(value: unknown): value is DeferredChronoSleep {
     && Number.isFinite(value.dueAt)
     && Number.isFinite(value.durationMs)
     && (value.state === "sleeping" || value.state === "resuming")
-    && (value.resumeReason === undefined || value.resumeReason === "elapsed" || value.resumeReason === "user_message");
+    && (value.resumeReason === undefined || value.resumeReason === "elapsed" || value.resumeReason === "user_message" || value.resumeReason === "user_stop");
 }
 
 function load(): void {
@@ -600,6 +600,7 @@ function deferredSleepOutput(sleep: DeferredChronoSleep): string {
   const resumedAt = sleep.resumedAt ?? Date.now();
   const elapsed = formatElapsedDuration(resumedAt - sleep.startedAt);
   const requested = formatElapsedDuration(sleep.durationMs);
+  if (sleep.resumeReason === "user_stop") return `Sleep cancelled after ${elapsed} because the user stopped the goal (requested ${requested}). Do not resume autonomous goal work.`;
   return sleep.resumeReason === "user_message"
     ? `Sleep interrupted after ${elapsed} because the user sent a message (requested ${requested}).`
     : `Sleep finished after ${elapsed} (requested ${requested}).`;
@@ -655,7 +656,7 @@ export function listDeferredChronoSleeps(conversationId?: string): DeferredChron
 
 function prepareDeferredSleepResume(
   sleep: DeferredChronoSleep,
-  reason: "elapsed" | "user_message",
+  reason: "elapsed" | "user_message" | "user_stop",
   resumedAt: number,
 ): DeferredChronoSleep | null {
   if (!convStore.hasConversation(sleep.conversationId) || !conversationHasSleepToolCall(sleep)) {
@@ -711,6 +712,18 @@ export function interruptDeferredChronoSleep(
 export function completeDeferredChronoSleepResume(sleepId: string): void {
   const sleep = deferredSleeps.get(sleepId);
   if (sleep) removeDeferredSleep(sleep);
+}
+
+/** User Stop closes the pending tool call without scheduling another model turn. */
+export function cancelDeferredChronoSleep(conversationId: string): boolean {
+  const sleeps = listDeferredChronoSleeps(conversationId);
+  for (const sleep of sleeps) {
+    // Persist cancellation before attaching the result. Recovery may repair the
+    // result after a crash, but must never replay the cancelled model turn.
+    prepareDeferredSleepResume(sleep, "user_stop", Date.now());
+    completeDeferredChronoSleepResume(sleep.id);
+  }
+  return sleeps.length > 0;
 }
 
 export function createChronoSchedule(input: CreateScheduleInput, now = Date.now()): { schedule?: ChronoSchedule; error?: string } {
@@ -1058,6 +1071,10 @@ async function executeDeferredSleep(sleep: DeferredChronoSleep): Promise<void> {
           current.resumedAt ?? Math.max(Date.now(), current.dueAt),
         );
     if (!prepared) return;
+    if (prepared.resumeReason === "user_stop") {
+      removeDeferredSleep(prepared);
+      return;
+    }
     if (!deferredSleepReadyListener) {
       throw new Error("Deferred Chrono sleep replay runtime is not configured");
     }

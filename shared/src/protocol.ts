@@ -97,10 +97,12 @@ export interface NewConversationCommand {
   subagent?: boolean;
   /** Optional goal to set immediately after creating the conversation. */
   goalObjective?: string;
-  /** Optional goal permission. Defaults to true. If goalCompletable is false, this is forced false. */
+  /** @deprecated Ignored; every goal can now be stopped and completed. */
   goalPausable?: boolean;
-  /** Optional goal permission. Defaults to true. If false, goalPausable is also forced false. */
+  /** @deprecated Ignored; every goal can now be stopped and completed. */
   goalCompletable?: boolean;
+  /** Optional automatic continuation turn budget. */
+  goalMaxTurns?: number;
   /** Start a realtime call owned by the new conversation immediately after creation. */
   startCall?: boolean;
   /** Optional explicit voice for the initial realtime call. */
@@ -404,7 +406,7 @@ export interface SetFastModeCommand {
   enabled: boolean;
 }
 
-export type GoalAction = "show" | "set" | "pause" | "resume" | "complete";
+export type GoalAction = "show" | "set" | "pause" | "resume" | "complete" | "clear";
 
 export interface SetGoalCommand {
   type: "set_goal";
@@ -412,8 +414,11 @@ export interface SetGoalCommand {
   convId: string;
   action: GoalAction;
   objective?: string;
+  /** @deprecated Ignored; retained for old IPC clients. */
   pausable?: boolean;
+  /** @deprecated Ignored; retained for old IPC clients. */
   completable?: boolean;
+  maxTurns?: number;
 }
 
 export type TrimMode = "messages" | "thinking" | "toolresults";
@@ -1362,8 +1367,6 @@ export interface ConversationLoadedEvent extends CachedHistoryResponse {
   model: ModelId;
   effort: EffortLevel;
   fastMode: boolean;
-  /** True while the hidden source-model goal controller is selecting a next action. */
-  goalReviewing?: boolean;
   /** The requested newest history window in display order, plus pinned system instructions. */
   entries: DisplayEntry[];
   /** Absolute index of the first included non-instructions history entry. */

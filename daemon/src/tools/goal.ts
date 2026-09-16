@@ -1,57 +1,29 @@
 import type { Tool } from "./types";
-import { readExocortexConfig, type ExocortexConfig } from "@exocortex/shared/config";
-import { GOAL_TOOL_SYSTEM_HINT, goalPermissionFlagSuffix, normalizeGoalSetOptions, setGoal } from "../goals";
-
-export function isGoalToolFeatureEnabled(config: ExocortexConfig = readExocortexConfig()): boolean {
-  // The goal tool is product behavior by default; hide/disable it only when the
-  // user explicitly opts out with config.features.goalTool=false.
-  return config.features?.goalTool !== false;
-}
+import * as convStore from "../conversations";
+import { formatGoalSummary, GOAL_TOOL_SYSTEM_HINT, reportGoalStatus } from "../goals";
 
 export const goal: Tool = {
   name: "goal",
-  description: "Set a goal that lets you work on a task for 100+ hours. Only use it when the user explicitly asks you to set a goal.",
+  description: "Inspect the user-set persistent goal, or report it complete/blocked. Completion requires current evidence for the full objective. Block only when no useful safe action remains without user input or an external change. Cannot create, edit, pause, or resume goals.",
   systemHint: GOAL_TOOL_SYSTEM_HINT,
-  isAvailable: isGoalToolFeatureEnabled,
   inputSchema: {
     type: "object",
     properties: {
-      objective: {
-        type: "string",
-        description: "The new active goal objective.",
-      },
-      pausable: {
-        type: "boolean",
-        description: "Whether the private goal controller may pause this goal later. Defaults to true. If completable is false, this is forced to false.",
-      },
-      completable: {
-        type: "boolean",
-        description: "Whether the private goal controller may mark this goal complete later. Defaults to true. If false, pausable is also forced to false.",
-      },
+      action: { type: "string", enum: ["show", "complete", "blocked"] },
+      reason: { type: "string", description: "Required for complete/blocked: verification evidence or the precise blocking dependency." },
     },
-    required: ["objective"],
+    required: ["action"],
     additionalProperties: false,
   },
   display: { label: "Goal", color: "#c792ea" },
-  summarize(input) {
-    const objective = typeof input.objective === "string" ? input.objective : "";
-    const options = normalizeGoalSetOptions({
-      pausable: typeof input.pausable === "boolean" ? input.pausable : undefined,
-      completable: typeof input.completable === "boolean" ? input.completable : undefined,
-    });
-    const suffix = goalPermissionFlagSuffix(options);
-    return { label: "Goal", detail: objective ? `set: ${objective}${suffix}` : `set${suffix}` };
-  },
-  async execute(input, context) {
-    const convId = context?.conversationId;
-    if (!convId) return { output: "No active conversation goal context.", isError: true };
-
-    const objective = typeof input.objective === "string" ? input.objective.trim() : "";
-    if (!objective) return { output: "Goal objective cannot be empty.", isError: true };
-    const result = setGoal(convId, objective, {
-      pausable: typeof input.pausable === "boolean" ? input.pausable : undefined,
-      completable: typeof input.completable === "boolean" ? input.completable : undefined,
-    });
+  summarize(input) { return { label: "Goal", detail: `${input.action ?? "show"}${input.reason ? `: ${input.reason}` : ""}` }; },
+  async execute(input, context, signal) {
+    const id = context?.conversationId;
+    if (!id) return { output: "No active conversation goal context.", isError: true };
+    if (signal?.aborted) return { output: "Goal update interrupted.", isError: true };
+    if (input.action === "show") return { output: formatGoalSummary(convStore.get(id)?.goal), isError: false };
+    if (input.action !== "complete" && input.action !== "blocked") return { output: "Use show, complete, or blocked. Goal creation and resuming are user-controlled.", isError: true };
+    const result = reportGoalStatus(id, input.action, typeof input.reason === "string" ? input.reason : "");
     return { output: result.message, isError: !result.ok };
   },
 };

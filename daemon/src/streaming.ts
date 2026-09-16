@@ -15,12 +15,10 @@ import type { ActiveToolBackgrounder } from "./tools/types";
 // ── State ───────────────────────────────────────────────────────────
 
 const activeJobs = new Map<string, AbortController>();
-export type ConversationJobKind = "assistant" | "maintenance" | "goal_controller";
+export type ConversationJobKind = "assistant" | "maintenance";
 const activeJobKinds = new Map<string, ConversationJobKind>();
 /** Conversations synchronously handing one completed turn to a daemon-owned continuation. */
-const streamHandoffs = new Set<string>();
-/** Handoffs whose immediate successor is the hidden goal controller. */
-const goalReviewHandoffs = new Set<string>();
+const streamHandoffs = new Map<string, symbol>();
 /** Whether an active job represents a model turn that should replay after restart. */
 const restartRecoverableJobs = new Set<string>();
 const chunkCounters = new Map<string, number>();
@@ -40,8 +38,8 @@ const streamingTokens = new Map<string, number>();
 const contextCompactionStartedAt = new Map<string, number>();
 /** Monotonic event sequence per active stream, used by clients to diagnose missed IPC events. */
 const streamSequences = new Map<string, number>();
-/** Goal reviews requested while a stream was already active. */
-const pendingGoalReviews = new Set<string>();
+/** Continuations explicitly requested while a stream was already active. */
+const pendingGoalContinuations = new Set<string>();
 /** Last meaningful activity timestamp per streaming job (for stale stream detection). */
 const lastActivityAt = new Map<string, number>();
 /** Streams paused from staleness tracking (e.g. during tool execution). */
@@ -73,7 +71,7 @@ export const STALE_STREAM_TIMEOUT = 15 * 60 * 1000; // 15 minutes
 
 /**
  * User-visible conversation activity spans both provider work and daemon-owned
- * handoffs to queued turns and hidden goal reviews. Keeping the handoff in this
+ * handoffs to queued turns and goal continuations. Keeping the handoff in this
  * canonical runtime state prevents clients from observing a false idle state.
  */
 export function isStreaming(convId: string): boolean {
@@ -85,15 +83,17 @@ export function isStreamHandoffActive(convId: string): boolean {
   return streamHandoffs.has(convId);
 }
 
-export function beginStreamHandoff(convId: string, successor?: "goal_controller"): void {
-  streamHandoffs.add(convId);
-  if (successor === "goal_controller") goalReviewHandoffs.add(convId);
-  else goalReviewHandoffs.delete(convId);
+/** Identity prevents a cancelled preflight from consuming a newer handoff. */
+export function getStreamHandoffToken(convId: string): symbol | undefined {
+  return streamHandoffs.get(convId);
+}
+
+export function beginStreamHandoff(convId: string): void {
+  streamHandoffs.set(convId, Symbol("stream-handoff"));
 }
 
 export function clearStreamHandoff(convId: string): void {
   streamHandoffs.delete(convId);
-  goalReviewHandoffs.delete(convId);
 }
 
 export function setActiveJob(
@@ -106,7 +106,6 @@ export function setActiveJob(
   // Replacing the handoff marker and installing the next active job happen in
   // one synchronous operation, so summaries remain continuously streaming.
   streamHandoffs.delete(convId);
-  goalReviewHandoffs.delete(convId);
   activeJobs.set(convId, ac);
   activeJobKinds.set(convId, kind);
   if (restartRecoverable) restartRecoverableJobs.add(convId);
@@ -128,11 +127,6 @@ export function getActiveJob(convId: string): AbortController | undefined {
 
 export function getActiveJobKind(convId: string): ConversationJobKind | undefined {
   return activeJobKinds.get(convId);
-}
-
-export function isGoalReviewing(convId: string): boolean {
-  return goalReviewHandoffs.has(convId)
-    || (activeJobs.has(convId) && activeJobKinds.get(convId) === "goal_controller");
 }
 
 export function requestHistoryUnwind(
@@ -381,20 +375,20 @@ export function clearCurrentStreamingBlocks(convId: string): void {
   }
 }
 
-// ── Goal review queue ─────────────────────────────────────────────────
+// ── Goal continuation requests ────────────────────────────────────────
 
-/** Remember that a resumed goal should be reviewed once the active stream fully stops. */
-export function requestGoalReviewAfterStream(convId: string): void {
-  pendingGoalReviews.add(convId);
+/** Remember an explicit resume during an already active turn. */
+export function requestGoalContinuationAfterStream(convId: string): void {
+  pendingGoalContinuations.add(convId);
 }
 
-/** Consume a pending post-stream goal review request, if one exists. */
-export function consumeGoalReviewAfterStream(convId: string): boolean {
-  const pending = pendingGoalReviews.delete(convId);
+/** Consume an explicit resume request, if one exists. */
+export function consumeGoalContinuationAfterStream(convId: string): boolean {
+  const pending = pendingGoalContinuations.delete(convId);
   return pending;
 }
 
-/** Clear any pending post-stream goal review request without consuming it. */
-export function clearGoalReviewAfterStream(convId: string): void {
-  pendingGoalReviews.delete(convId);
+/** Cancel an explicit resume request. */
+export function clearGoalContinuationAfterStream(convId: string): void {
+  pendingGoalContinuations.delete(convId);
 }

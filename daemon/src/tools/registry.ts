@@ -20,6 +20,7 @@ import { execCommand, writeStdin } from "./unified-exec";
 import { applyPatch, viewImage } from "./codex-files";
 import { exo } from "./exo";
 import { chrono } from "./chrono";
+import { goal } from "./goal";
 import { TOOL_BACKGROUND_SECONDS } from "../constants";
 import { formatToolAbortMessage, isToolTimeoutReason, toolTimeoutReason } from "../abort";
 import { evaluateToolCallSafety, formatSafetyBlock } from "../safety";
@@ -45,6 +46,7 @@ const TOOLS: Tool[] = [
   viewImage,
   exo,
   chrono,
+  goal,
 ];
 
 // External manifests intentionally do not become native entries in TOOLS.
@@ -64,7 +66,7 @@ const resourceSemaphores = new Map<ToolResourceClass, AbortableSemaphore>([
 ]);
 
 function isToolAvailable(tool: Tool): boolean {
-  return tool.name !== "goal" && (tool.isAvailable?.() ?? true);
+  return tool.isAvailable?.() ?? true;
 }
 
 function getAvailableTools(conversationId?: string): Tool[] {

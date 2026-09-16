@@ -41,15 +41,15 @@ describe("provider-specific coding primitives", () => {
 
   test("OpenAI exposes only Codex filesystem/shell primitives and preserves Exocortex tools", () => {
     const names = providerToolNames(getRegisteredTools().map(tool => tool.name), "openai");
-    for (const name of ["exec_command", "write_stdin", "apply_patch", "view_image", "browse", "exo", "chrono"]) expect(names).toContain(name);
-    for (const name of ["bash", "read", "write", "edit", "patch", "glob", "grep", "goal"]) expect(names).not.toContain(name);
+    for (const name of ["exec_command", "write_stdin", "apply_patch", "view_image", "browse", "exo", "chrono", "goal"]) expect(names).toContain(name);
+    for (const name of ["bash", "read", "write", "edit", "patch", "glob", "grep"]) expect(names).not.toContain(name);
     expect(getToolDefs(names).find(tool => tool.name === "apply_patch")?.freeform?.syntax).toBe("lark");
   });
 
-  test("other providers retain existing tools; goal cannot be invoked", async () => {
+  test("other providers can inspect goals but cannot create them", async () => {
     const names = providerToolNames(getRegisteredTools().map(tool => tool.name), "deepseek");
-    for (const name of ["bash", "read", "write", "edit", "patch", "glob", "grep"]) expect(names).toContain(name);
-    for (const name of ["exec_command", "write_stdin", "apply_patch", "view_image", "goal"]) expect(names).not.toContain(name);
+    for (const name of ["bash", "read", "write", "edit", "patch", "glob", "grep", "goal"]) expect(names).toContain(name);
+    for (const name of ["exec_command", "write_stdin", "apply_patch", "view_image"]) expect(names).not.toContain(name);
     const [result] = await buildExecutor()([{ id: "disabled", name: "goal", input: { objective: "not allowed" } }]);
     expect(result.isError).toBe(true);
   });
@@ -87,7 +87,7 @@ describe("provider-specific coding primitives", () => {
     expect(surface.toolNames).not.toContain("bash");
     expect(surface.system).toContain("## exec_command");
     expect(surface.system).not.toContain("## read\n");
-    expect(surface.system).not.toContain("## goal\n");
+    expect(surface.system).toContain("## goal\n");
     const [result] = await buildExecutor({ provider: "openai" }, surface.toolNames)([{ id: "legacy", name: "bash", input: { command: "echo should-not-run" } }]);
     expect(result.isError).toBe(true);
     conv.provider = "deepseek";

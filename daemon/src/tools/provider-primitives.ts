@@ -6,7 +6,7 @@ const codex = new Set<string>(CODEX_PRIMITIVES);
 
 /** Translate tool authority, never grant a shell just because a reader is enabled. */
 export function providerToolNames(names: readonly string[], provider?: ProviderId): string[] {
-  const selected = new Set(names.filter(name => name !== "goal"));
+  const selected = new Set(names);
   if (provider === "openai") {
     if (selected.has("bash")) {
       selected.add("exec_command");

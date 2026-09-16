@@ -6,6 +6,7 @@
     "./updatecheck": "./src/updatecheck.ts",
     "./auth": "./src/auth.ts",
     "./messages": "./src/messages.ts",
+    "./goals": "./src/goals.ts",
     "./config": "./src/config.ts",
     "./performance-profiling": "./src/performance-profiling.ts",
     "./model-display": "./src/model-display.ts",

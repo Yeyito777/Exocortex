@@ -219,8 +219,8 @@ export async function prepareCatchableShutdownWithoutReplay(timeoutMs = 5_000): 
     for (const id of ids) {
       interrupted.add(id);
       // Queued user intent is durable and survives both stop and restart. Only
-      // autonomous goal-review state is intentionally discarded here.
-      convStore.clearGoalReviewAfterStream(id);
+      // autonomous continuation requests are intentionally discarded here.
+      convStore.clearGoalContinuationAfterStream(id);
       const ac = convStore.getActiveJob(id);
       if (ac && !ac.signal.aborted) ac.abort("daemon-stop");
     }
@@ -387,8 +387,8 @@ export function recoverInterruptedStreams(server: DaemonServer): string[] {
     }
     // Always restore the interrupted turn itself first, including when the
     // conversation has an active goal. A successful replay will schedule the
-    // ordinary post-turn goal review from the orchestrator finalizer.
-    // Starting with a fresh goal review here would instead skip the interrupted
+    // ordinary post-turn continuation from the orchestrator finalizer.
+    // Starting with a fresh goal continuation here would instead skip the interrupted
     // worker turn entirely.
     log("info", `restart-recovery: replaying interrupted conversation ${convId}`);
     void orchestrateReplayConversation(
@@ -456,7 +456,7 @@ export function recoverActiveGoals(server: DaemonServer, excludeConvIds: Iterabl
   }
 
   if (scheduled.length > 0) {
-    log("info", `restart-recovery: scheduled ${scheduled.length} active goal review(s): ${scheduled.join(", ")}`);
+    log("info", `restart-recovery: scheduled ${scheduled.length} active goal continuation(s): ${scheduled.join(", ")}`);
   }
 
   return scheduled;

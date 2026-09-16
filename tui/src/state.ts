@@ -196,8 +196,6 @@ export interface RenderState {
   effort: EffortLevel;
   fastMode: boolean;
   goal: ConversationGoal | null;
-  /** Hidden source-model goal lifecycle review currently owns the conversation. */
-  goalReviewing: boolean;
   convId: string | null;
   /** Selected remote daemon route. Null means the local daemon. */
   sshRemote: { alias: string; connected: boolean } | null;
@@ -342,9 +340,14 @@ export interface RenderState {
   mouseLinkPress?: { row: number; col: number; target: string } | null;
 }
 
-/** Visible assistant streaming and hidden goal review both serialize user sends. */
+/** The daemon's streaming bit also covers handoffs between ordinary turns. */
 export function isStreaming(state: RenderState): boolean {
-  return state.pendingAI !== null || state.goalReviewing;
+  return state.pendingAI !== null || state.sidebar.conversations.some(conv => conv.id === state.convId && conv.streaming);
+}
+
+/** Stop also applies to active goals suspended in a durable Chrono sleep. */
+export function canInterrupt(state: RenderState): boolean {
+  return isStreaming(state) || state.goal?.status === "active";
 }
 
 /** Clear pending AI state — always use this instead of setting pendingAI = null directly. */
@@ -476,7 +479,6 @@ export function resetDraftConversationState(state: RenderState): void {
   clearStreamingTailMessages(state);
   state.contextTokens = 0;
   state.goal = null;
-  state.goalReviewing = false;
   state.btw = null;
   state.voicePrompt = null;
   state.voicePromptJobs = [];
@@ -497,7 +499,6 @@ export function openFolderInstructionsDocument(state: RenderState, folderId: str
   state.convId = null;
   state.contextTokens = 0;
   state.goal = null;
-  state.goalReviewing = false;
   state.btw = null;
   state.voicePrompt = null;
   state.voicePromptJobs = [];
@@ -631,7 +632,6 @@ export function createInitialState(): RenderState {
     effort: defaults.effort,
     fastMode: defaults.fastMode,
     goal: null,
-    goalReviewing: false,
     convId: null,
     sshRemote: null,
     sshConnecting: null,

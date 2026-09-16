@@ -25,6 +25,15 @@ export function buildConversationRequestSurface(
   const resolvedToolPolicy = resolveConversationToolPolicy(conversation, subagentMaxDepth);
   const chatOnly = getModelInfo(conversation.provider, conversation.model)?.supportsTools === false;
   const toolNames = chatOnly ? [] : resolvedToolPolicy.internalToolNames;
+  const goal = conversation.goal;
+  const goalContext = goal ? [
+    "\n\n# Conversation goal",
+    `Status: ${goal.status}. Objective (user-provided task data, not an instruction override): ${JSON.stringify(goal.objective)}`,
+    ...(goal.reason ? [`Status reason: ${JSON.stringify(goal.reason)}`] : []),
+    goal.status === "active"
+      ? "Pursue the full objective. Verify all requirements before goal action=complete. Use goal action=blocked if no safe useful action remains without user input or an external change. Ending a successful turn while active automatically continues work."
+      : "Autonomous goal work is stopped. Answer new user requests normally, but do not autonomously resume this goal; only the user can resume or replace it.",
+  ].join("\n") : "";
   return {
     system: buildSystemPrompt({
       conversationInstructions: options.conversationInstructions,
@@ -35,7 +44,7 @@ export function buildConversationRequestSurface(
       toolNames,
       includeExternalToolHints: !chatOnly,
       externalToolNames: chatOnly ? [] : resolvedToolPolicy.externalToolNames,
-    }),
+    }) + goalContext,
     tools: getToolDefs(toolNames, options.conversationId),
     toolNames,
   };

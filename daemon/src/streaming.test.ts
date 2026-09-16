@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { appendToStreamingBlock, beginStreamHandoff, clearActiveJob, clearCurrentStreamingBlocks, clearHistoryUnwindPending, clearStreamHandoff, getContextCompactionStartedAt, getCurrentStreamingBlocks, getStreamSeq, getStreamingCommittedMessageCount, hasPendingStreamingAssistant, initStreamingState, isGoalReviewing, isHistoryUnwindPending, isRestartRecoverableJob, isStreaming, isStreamHandoffActive, nextStreamSeq, requestHistoryUnwind, setActiveJob, setContextCompactionStartedAt, setStreamingCommittedMessageCount } from "./streaming";
+import { appendToStreamingBlock, beginStreamHandoff, clearActiveJob, clearCurrentStreamingBlocks, clearHistoryUnwindPending, clearStreamHandoff, getContextCompactionStartedAt, getCurrentStreamingBlocks, getStreamSeq, getStreamingCommittedMessageCount, hasPendingStreamingAssistant, initStreamingState, isHistoryUnwindPending, isRestartRecoverableJob, isStreaming, isStreamHandoffActive, nextStreamSeq, requestHistoryUnwind, setActiveJob, setContextCompactionStartedAt, setStreamingCommittedMessageCount } from "./streaming";
 import { clearQueuedMessages, drainQueuedMessages, pushQueuedMessage } from "./message-queue";
 
 const IDS: string[] = [];
@@ -38,18 +38,17 @@ describe("daemon-owned stream handoff", () => {
   });
 });
 
-describe("hidden goal-controller jobs", () => {
-  test("serialize sends without exposing a pending assistant or restart replay", () => {
-    const id = mkId("goal-controller");
-    setActiveJob(id, new AbortController(), 1, false, "goal_controller");
+describe("ordinary goal continuation jobs", () => {
+  test("use the same assistant and restart recovery state as user turns", () => {
+    const id = mkId("goal-continuation");
+    setActiveJob(id, new AbortController(), 1);
 
     expect(isStreaming(id)).toBe(true);
-    expect(isGoalReviewing(id)).toBe(true);
-    expect(hasPendingStreamingAssistant(id)).toBe(false);
-    expect(isRestartRecoverableJob(id)).toBe(false);
+    expect(hasPendingStreamingAssistant(id)).toBe(true);
+    expect(isRestartRecoverableJob(id)).toBe(true);
 
     clearActiveJob(id);
-    expect(isGoalReviewing(id)).toBe(false);
+    expect(isStreaming(id)).toBe(false);
   });
 });
 

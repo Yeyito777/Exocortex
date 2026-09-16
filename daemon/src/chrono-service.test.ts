@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { conversationWorkspaceDir, trashedConversationWorkspaceDir } from "@exocortex/shared/paths";
 import { appendMessages, create, get, getQueuedMessages, remove } from "./conversations";
@@ -7,6 +7,7 @@ import {
   adoptChronoSchedule,
   chronoInternalsForTest,
   cancelChronoSchedule,
+  cancelDeferredChronoSleep,
   completeDeferredChronoSleepResume,
   configureChronoService,
   createChronoSchedule,
@@ -185,6 +186,59 @@ describe("Chrono scheduler", () => {
 
     completeDeferredChronoSleepResume(deferred.id);
     expect(listDeferredChronoSleeps(owner)).toHaveLength(0);
+  });
+
+  test("Stop closes a suspended sleep without an automatic replay", async () => {
+    const owner = makeConversation("stopped-sleep");
+    const toolCallId = "stopped-sleep-call";
+    appendMessages(owner, [{
+      role: "assistant",
+      content: [{ type: "tool_use", id: toolCallId, name: "chrono", input: { action: "sleep", duration: "10m" } }],
+      metadata: null,
+    }]);
+    let replays = 0;
+    configureChronoService(null, () => { replays++; });
+    await startChronoService();
+    deferChronoSleep({ conversationId: owner, toolCallId, startedAt: Date.now(), durationMs: 600_000 });
+    cancelDeferredChronoSleep(owner);
+    cancelDeferredChronoSleep(owner);
+    expect(replays).toBe(0);
+    expect(listDeferredChronoSleeps(owner)).toEqual([]);
+    expect(get(owner)!.messages.filter(message => Array.isArray(message.content) && message.content.some(
+      block => block.type === "tool_result" && block.tool_use_id === toolCallId,
+    ))).toHaveLength(1);
+    const { stopChronoService } = await import("./chrono-service");
+    stopChronoService();
+    await startChronoService();
+    expect(listDeferredChronoSleeps(owner)).toEqual([]);
+    expect(replays).toBe(0);
+  });
+
+  test("a crash after recording Stop repairs the sleep result without replaying", async () => {
+    const owner = makeConversation("stopped-sleep-recovery");
+    appendMessages(owner, [{
+      role: "assistant",
+      content: [{ type: "tool_use", id: "cancel-recovery", name: "chrono", input: { action: "sleep", duration: "10m" } }],
+      metadata: null,
+    }]);
+    let replays = 0;
+    configureChronoService(null, () => { replays++; });
+    await startChronoService();
+    deferChronoSleep({ conversationId: owner, toolCallId: "cancel-recovery", startedAt: Date.now(), durationMs: 600_000 });
+    const { stopChronoService } = await import("./chrono-service");
+    stopChronoService();
+    const path = chronoInternalsForTest.statePath();
+    const persisted = JSON.parse(readFileSync(path, "utf8"));
+    persisted.sleeps[0].state = "resuming";
+    persisted.sleeps[0].resumeReason = "user_stop";
+    persisted.sleeps[0].resumedAt = Date.now();
+    writeFileSync(path, JSON.stringify(persisted));
+    await startChronoService();
+    await chronoInternalsForTest.processPendingAndDue();
+    expect(listDeferredChronoSleeps(owner)).toEqual([]);
+    expect(replays).toBe(0);
+    const result = get(owner)!.messages.at(-1)!;
+    expect(JSON.stringify(result.content)).toContain("user stopped the goal");
   });
 
   test("a failing command soft-wake escalates to a model hard-wake", async () => {

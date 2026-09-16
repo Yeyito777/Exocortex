@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { normalizeConversationGoal } from "@exocortex/shared/goals";
 import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
@@ -1004,7 +1005,7 @@ export class SqliteConversationStore implements ConversationRepository {
       updatedAt: row.updated_at,
       messageCount: row.message_count,
       title: row.title,
-      goal: parseOptional(row.goal_json),
+      goal: normalizeConversationGoal(parseOptional(row.goal_json)),
       marked: row.marked === 1,
       pinned: row.pinned === 1,
       muted: row.muted === 1,
@@ -1037,7 +1038,7 @@ export class SqliteConversationStore implements ConversationRepository {
       updatedAt,
       messageCount,
       title,
-      goal: parseOptional(goalJson),
+      goal: normalizeConversationGoal(parseOptional(goalJson)),
       marked: marked === 1,
       pinned: pinned === 1,
       muted: muted === 1,
@@ -1158,7 +1159,7 @@ export class SqliteConversationStore implements ConversationRepository {
         sortOrder: row.sort_order,
         folderId: row.folder_id,
         title: row.title,
-        goal: parseOptional(row.goal_json),
+        goal: normalizeConversationGoal(parseOptional(row.goal_json)),
         subagentMaxDepth: row.subagent_max_depth,
         subagentPolicy: parseOptional(row.subagent_policy_json),
         toolPolicy: parseOptional(row.tool_policy_json),
@@ -1474,7 +1475,7 @@ export class SqliteConversationStore implements ConversationRepository {
       conv.sortOrder,
       conv.folderId ?? null,
       conv.title,
-      optionalJson(conv.goal?.status === "complete" ? null : conv.goal),
+      optionalJson(conv.goal),
       conv.subagentMaxDepth ?? null,
       optionalJson(conv.subagentPolicy),
       optionalJson(conv.toolPolicy),
