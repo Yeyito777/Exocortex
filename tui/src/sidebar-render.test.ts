@@ -57,7 +57,7 @@ describe("sidebar rendering", () => {
     expect(renderSidebar(sidebar, 12, true, null).join("")).not.toContain("Remote:");
   });
 
-  test("footer separator stays muted while the right edge follows focus in every theme", () => {
+  test("footer separator stays muted while the straight right edge follows focus in every theme", () => {
     const sidebar = createSidebarState();
     const original = { ...theme };
     try {
@@ -71,7 +71,7 @@ describe("sidebar rendering", () => {
           expect(focused[0]).toContain(theme.sidebarBg + theme.borderUnfocused);
           expect(blurred[0]).toContain(theme.sidebarBg + theme.borderUnfocused);
           for (let i = 0; i < count; i++) {
-            const edge = i === 0 ? "┤" : "│";
+            const edge = "│";
             const focusedSuffix = theme.borderFocused + edge + theme.reset;
             const blurredSuffix = theme.borderUnfocused + edge + theme.reset;
             expect(focused[i].endsWith(focusedSuffix)).toBe(true);

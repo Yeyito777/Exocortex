@@ -402,9 +402,9 @@ export function renderSidebar(
 
   if (sidebarUpdateRows(totalRows, sidebar)) {
     // Keep the passive separator muted, but continue the sidebar's focused
-    // right edge through the junction and status rows.
+    // straight right edge through the separator and status rows.
     const footerBorder = theme.borderUnfocused;
-    rows.push(theme.sidebarBg + footerBorder + "─".repeat(innerWidth) + borderBg + borderFg + "┤" + theme.reset);
+    rows.push(theme.sidebarBg + footerBorder + "─".repeat(innerWidth) + borderBg + borderFg + "│" + theme.reset);
     const status = sidebar.updateStatus!;
     const line = (prefix: string, value: UpdateStatus) => {
       const color = value === "update_available" || value === "restart_needed" ? theme.accent : theme.muted;
