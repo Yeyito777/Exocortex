@@ -35,8 +35,12 @@ export function historyLoadingSpinnerText(startedAt: number, now = Date.now()): 
 }
 
 function rightAlignedProvenanceLabel(label: string, availableWidth: number): string {
-  const padding = " ".repeat(Math.max(0, availableWidth - label.length - 3));
-  return `${padding}${theme.muted}${theme.italic}${label}${theme.reset}`;
+  // These are single terminal rows, not wrapped message content. Overflow can
+  // autowrap into the next sidebar row, which retained-frame diffing may skip.
+  const width = Math.max(1, availableWidth - 3);
+  const text = truncateToWidth(sanitizeUntrustedText(label).replace(/[\r\n\t]/g, " "), width);
+  const padding = " ".repeat(Math.max(0, width - termWidth(text)));
+  return `${padding}${theme.muted}${theme.italic}${text}${theme.reset}`;
 }
 
 function callTranscriptProvenance(metadata: MessageMetadata | null | undefined): string {
@@ -85,7 +89,7 @@ export function compactionFinishedDivider(availableWidth: number): string {
   const dividerWidth = Math.min(maxWidth, Math.max(minimumWidth, midpointWidth));
   return prefix + "─".repeat(dividerWidth - prefix.length);
 }
-import { termWidth } from "./textwidth";
+import { termWidth, truncateToWidth } from "./textwidth";
 import { wordWrap, type WrapCopyLine, type WrapResult } from "./textwrap";
 import type { LinkSpan } from "./links";
 import { isNewConversationQueuedMessage, queuedMessagesInDisplayOrder, queueTimingLabel } from "./queue";

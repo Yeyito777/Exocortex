@@ -71,6 +71,36 @@ function makeState(): RenderState {
 }
 
 describe("render caching and frame diffing", () => {
+  for (const automated of [false, true]) {
+    test(`incremental ${automated ? "automated" : "regular"} queue labels cannot autowrap into the sidebar`, () => {
+      const state = makeState();
+      state.convId = "conv-1";
+      state.sidebar.open = true;
+      state.messages = [];
+      state.rows = 20;
+      for (const chatWidth of [24, 12, 60]) {
+        state.cols = SIDEBAR_WIDTH + chatWidth;
+        state.queuedMessages = [];
+        invalidateHistoryRenderCache(state);
+        captureRenderOutput(state);
+        state.queuedMessages.push({
+          convId: state.convId, text: "Queued", timing: "next-turn",
+          ...(automated ? { automation: { kind: "background_task_completion" as const } } : {}),
+        });
+        invalidateHistoryRenderCache(state);
+        const output = captureRenderOutput(state);
+        const label = state.historyLines[state.historyLineAnchors.findIndex(a => a.segment === "queued_label")];
+        expect(label).toBeDefined();
+        const labelWrite = positionedWrites(output).find(write => write.text.includes(label));
+        expect(labelWrite).toBeDefined();
+        expect(labelWrite!.col).toBe(SIDEBAR_WIDTH + 1);
+        expect(labelWrite!.col - 1 + termWidth(stripCsi(labelWrite!.text))).toBeLessThanOrEqual(state.cols);
+        // The subsequent identical frame does not repair any accidental wrap.
+        expect(captureRenderOutput(state)).toBe("");
+      }
+    });
+  }
+
   test("SSH progress hides old content, survives transcript replacement, and restores it on cancellation", () => {
     const state = makeState();
     state.sidebar.open = true;

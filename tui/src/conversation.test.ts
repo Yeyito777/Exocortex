@@ -63,6 +63,46 @@ describe("system instructions spacing", () => {
 });
 
 describe("automated user-message provenance", () => {
+  for (const automated of [false, true]) {
+    test(`bounds ${automated ? "automated" : "regular"} queued labels at narrow widths`, () => {
+      const state = createInitialState();
+      state.convId = "conv-1";
+      state.queuedMessages.push({
+        convId: state.convId, text: "Queued message", timing: "next-turn",
+        ...(automated ? { automation: { kind: "background_task_completion" as const } } : {}),
+      });
+      for (const width of [80, 24, 12, 3, 1, 80]) {
+        const rendered = buildMessageLines(state, width);
+        const label = rendered.lines[rendered.lineAnchors.findIndex(a => a.segment === "queued_label")];
+        expect(visibleLength(label)).toBeLessThanOrEqual(width);
+        if (width === 80) expect(stripAnsi(label)).toContain("queued: next turn");
+        else if (automated || width < 17) expect(label).toContain("…");
+      }
+    });
+  }
+
+  test("bounds delivered provenance and aligns Unicode labels by terminal cells", () => {
+    const state = createInitialState();
+    state.messages.push({
+      role: "user", text: "Delivered message",
+      metadata: {
+        startedAt: 1, endedAt: 1, model: state.model, tokens: 0,
+        automation: { kind: "background_task_completion" },
+        kind: REALTIME_TRANSCRIPT_KIND,
+        realtimeSpeaker: {
+          kind: "single",
+          participants: [{ id: "speaker", displayName: "界".repeat(30), trust: "owner" }],
+        },
+      },
+    });
+    for (const width of [120, 24, 12, 1]) {
+      const rendered = buildMessageLines(state, width);
+      const label = rendered.lines[rendered.lineAnchors.findIndex(a => a.segment === "automation_label")];
+      expect(visibleLength(label)).toBeLessThanOrEqual(width);
+      if (width === 120) expect(visibleLength(label)).toBe(width - 3);
+    }
+  });
+
   test("uses a softened bubble and a readable source label", () => {
     const state = createInitialState();
     const human = { role: "user" as const, text: "I wrote this", metadata: null };
