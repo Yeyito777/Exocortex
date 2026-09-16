@@ -6,7 +6,9 @@ controller-generated instruction.
 
 ## Commands
 
-- `/goal <objective>` sets/replaces an objective and starts work when idle.
+- `/goal <objective>` sets/replaces an objective, including while streaming.
+  The current turn finishes first; the next goal turn receives the new objective.
+  Reports from the old turn cannot complete or block the replacement.
 - `/goal --max-turns 20 <objective>` limits **automatic continuation turns**.
   This is not a token/spend limit and does not bound tool rounds inside a turn.
   The initial goal-only turn counts; explicit user turns and suspended-turn
@@ -17,6 +19,8 @@ controller-generated instruction.
   resetting the goal with a new budget; complete goals require a new objective.
 - `/goal complete` retains the completed goal and its result.
 - `/goal clear` removes it.
+  Completing or clearing stops future goal continuations, without interrupting
+  the current turn (including its pending Chrono sleep).
 
 The native `goal` tool can inspect the goal or report `complete`/`blocked` with
 a nonempty reason. Completion should cite current verification of the full

@@ -2021,6 +2021,64 @@ describe("handler set_goal resume", () => {
     expect(orchestrateGoalCycle).not.toHaveBeenCalled();
   });
 
+  test("sets and replaces goals during streaming without interrupting or starting another turn", async () => {
+    const convId = mkId("set-streaming");
+    create(convId, "openai", "gpt-5.4");
+    const controller = new AbortController();
+    setActiveJob(convId, controller, Date.now());
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    for (const objective of ["first objective", "replacement objective"]) {
+      await handle({} as never, {
+        type: "set_goal", reqId: "req-set-streaming", convId, action: "set", objective, maxTurns: 2,
+      });
+      expect(get(convId)?.goal).toMatchObject({ objective, status: "active", maxTurns: 2, turns: 0 });
+      expect(consumeGoalContinuationAfterStream(convId)).toBe(true);
+      expect(controller.signal.aborted).toBe(false);
+      expect(orchestrateGoalCycle).not.toHaveBeenCalled();
+    }
+    expect(sent).not.toContainEqual(expect.objectContaining({ type: "error" }));
+  });
+
+  for (const action of ["clear", "complete"] as const) {
+    test(`${action} leaves the current turn running and cancels only future goal continuation`, async () => {
+      const convId = mkId(`${action}-streaming`);
+      create(convId, "openai", "gpt-5.4");
+      const controller = new AbortController();
+      setActiveJob(convId, controller, Date.now());
+      const server = {
+        sendTo: mock(() => {}),
+        broadcast: mock(() => {}),
+        sendToSubscribers: mock(() => {}),
+        sendToSubscribersExcept: mock(() => {}),
+        subscribe: mock(() => {}),
+        unsubscribe: mock(() => {}),
+        hasSubscribers: mock(() => false),
+      };
+      const handle = createHandler(server as never);
+      await handle({} as never, {
+        type: "set_goal", reqId: "req-set", convId, action: "set", objective: "finish work",
+      });
+      await handle({} as never, { type: "set_goal", reqId: "req-finish", convId, action });
+
+      expect(controller.signal.aborted).toBe(false);
+      expect(consumeGoalContinuationAfterStream(convId)).toBe(false);
+      expect(orchestrateGoalCycle).not.toHaveBeenCalled();
+      if (action === "clear") expect(get(convId)?.goal).toBeFalsy();
+      else expect(get(convId)?.goal?.status).toBe("complete");
+    });
+  }
+
   test("completing a goal retains the objective and completion state", async () => {
     const convId = mkId("complete-clears");
     create(convId, "openai", "gpt-5.4");

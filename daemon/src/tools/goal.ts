@@ -23,6 +23,10 @@ export const goal: Tool = {
     if (signal?.aborted) return { output: "Goal update interrupted.", isError: true };
     if (input.action === "show") return { output: formatGoalSummary(convStore.get(id)?.goal), isError: false };
     if (input.action !== "complete" && input.action !== "blocked") return { output: "Use show, complete, or blocked. Goal creation and resuming are user-controlled.", isError: true };
+    if (context && Object.prototype.hasOwnProperty.call(context, "goalAtTurnStart")
+        && (convStore.get(id)?.goal ?? null) !== context.goalAtTurnStart) {
+      return { output: "The user changed the goal during this turn. Leave its current state unchanged; any replacement objective will be handled by the next turn. Do not complete or block it using evidence for the previous task.", isError: true };
+    }
     const result = reportGoalStatus(id, input.action, typeof input.reason === "string" ? input.reason : "");
     return { output: result.message, isError: !result.ok };
   },

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { clearHistoryUnwindPending, clearStreamHandoff, create, getActiveJob, getQueuedMessages, isUnread, pushQueuedMessage, remove, requestHistoryUnwind, setGoal, updateGoalStatus } from "./conversations";
+import { clearGoal, clearHistoryUnwindPending, clearStreamHandoff, create, getActiveJob, getQueuedMessages, isUnread, pushQueuedMessage, remove, requestHistoryUnwind, setGoal, updateGoalStatus } from "./conversations";
 import { load as loadPersisted } from "./persistence";
 import { orchestrateGoalCycle, orchestrateSendMessage, type OrchestrationCallbacks } from "./orchestrator";
 import { streamMessage } from "./api";
@@ -638,6 +638,69 @@ describe("DB-first orchestrator persistence", () => {
     expect(persisted.some(message =>
       message.role === "user" && message.metadata?.automation?.kind === "goal_continuation"
     )).toBe(false);
+  });
+
+  for (const action of ["clear", "complete"] as const) {
+    test(`${action} during goal preflight preserves queued input without interrupting its handoff`, async () => {
+      const convId = id(`goal-preflight-${action}`);
+      create(convId, "openai", "gpt-5.6-sol");
+      setGoal(convId, "old objective");
+      let streamCalls = 0;
+      const fakeStream = (async (_provider, _messages, _model, streamCallbacks) => {
+        streamCalls++;
+        streamCallbacks.onText("handled queued input");
+        return {
+          text: "handled queued input", thinking: "", stopReason: "stop" as const,
+          blocks: [{ type: "text" as const, text: "handled queued input" }],
+          toolCalls: [], inputTokens: 10, outputTokens: 2,
+        };
+      }) as typeof streamMessage;
+
+      const pending = orchestrateGoalCycle(server() as never, convId, callbacks(fakeStream));
+      pushQueuedMessage(convId, "queued user input", "message-end");
+      if (action === "clear") clearGoal(convId);
+      else updateGoalStatus(convId, "complete", { reason: "Marked complete by user." });
+
+      expect((await pending).ok).toBe(true);
+      expect(streamCalls).toBe(1);
+      expect(getQueuedMessages(convId)).toEqual([]);
+      const persisted = loadPersisted(convId)!;
+      expect(persisted.messages.some(message => message.content === "queued user input")).toBe(true);
+      expect(persisted.messages.some(message => message.metadata?.automation?.kind === "goal_continuation")).toBe(false);
+      if (action === "clear") expect(persisted.goal).toBeFalsy();
+      else expect(persisted.goal?.status).toBe("complete");
+    });
+  }
+
+  test("replacement during goal preflight refreshes the prompt without another handoff", async () => {
+    const convId = id("goal-preflight-live-replacement");
+    create(convId, "openai", "gpt-5.6-sol");
+    setGoal(convId, "obsolete objective");
+    let streamCalls = 0;
+    const fakeStream = (async (_provider, _messages, _model, streamCallbacks) => {
+      streamCalls++;
+      streamCallbacks.onText("worked on replacement");
+      return {
+        text: "worked on replacement", thinking: "", stopReason: "stop" as const,
+        blocks: [{ type: "text" as const, text: "worked on replacement" }],
+        toolCalls: [], inputTokens: 10, outputTokens: 2,
+      };
+    }) as typeof streamMessage;
+    const pending = orchestrateGoalCycle(server() as never, convId, callbacks(fakeStream));
+    setGoal(convId, "replacement objective", { maxTurns: 1 });
+
+    expect((await pending).ok).toBe(true);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(streamCalls).toBe(1);
+    const persisted = loadPersisted(convId)!;
+    const prompts = persisted.messages.filter(message => message.metadata?.automation?.kind === "goal_continuation");
+    expect(prompts).toHaveLength(1);
+    expect(String(prompts[0]?.content)).toContain('"replacement objective"');
+    expect(String(prompts[0]?.content)).not.toContain("obsolete objective");
+    expect(persisted.goal).toMatchObject({
+      objective: "replacement objective", status: "blocked", turns: 1, maxTurns: 1,
+      reason: "Continuation budget exhausted. Set the goal with a larger budget to continue.",
+    });
   });
 
   test("a stale preflight cannot consume a newer goal handoff after Stop and replacement", async () => {

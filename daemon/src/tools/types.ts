@@ -63,6 +63,8 @@ export interface ToolExecutionContext {
   provider?: ProviderId;
   /** Conversation id, if any. Reserved for future tool policies/logging. */
   conversationId?: string;
+  /** Exact goal supplied to this turn; lifecycle reports cannot affect its replacement. */
+  goalAtTurnStart?: import("../messages").ConversationGoal | null;
   /** Absolute cwd for this execution. Conversation turns always provide their isolated workspace. */
   cwd?: string;
   /** Whether a URL-reading tool may save direct downloads into cwd. Defaults to true. */

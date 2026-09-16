@@ -51,6 +51,7 @@ import {
 import {
   completeDeferredChronoSleepResume,
   interruptDeferredChronoSleep,
+  cancelDeferredChronoSleep,
   listDeferredChronoSleeps,
   type DeferredChronoSleep,
 } from "./chrono-service";
@@ -368,6 +369,7 @@ async function orchestrateGoalContinuation(
     settleFailedHandoff();
     return buildOutcome(true);
   }
+  const admittedGoal = initial?.goal;
   const outcome = await orchestrateAssistantTurn(server, null, undefined, convId, startedAt, ext, {
     ...policy,
     ...(first ? {
@@ -380,12 +382,20 @@ async function orchestrateGoalContinuation(
     streamChainHandoff: true,
   });
   if (!outcome.ok && !convStore.getActiveJob(convId)) {
-    // A user may queue input, then Stop while custom-tool preflight is yielding.
+    // A replacement during async preflight keeps the handoff but needs a fresh
+    // prompt. Never block the new goal because its predecessor was cancelled.
+    if (initial?.goal?.status === "active" && initial.goal !== admittedGoal
+        && convStore.getStreamHandoffToken(convId) === handoffToken
+        && !getDaemonShutdownMode() && !convStore.isHistoryUnwindPending(convId)) {
+      return orchestrateGoalContinuation(server, convId, ext, policy);
+    }
+    // A user may queue input, then stop/clear/complete the goal during preflight.
     // No assistant finalizer exists yet in that case. Drain the durable input,
     // but never take ownership away from a newer handoff or a history mutation.
     if (!getDaemonShutdownMode() && !convStore.isHistoryUnwindPending(convId)
-        && !convStore.isStreamHandoffActive(convId) && convStore.getQueuedMessages(convId).length > 0) {
-      convStore.beginStreamHandoff(convId);
+        && (!convStore.isStreamHandoffActive(convId) || (!first && convStore.getStreamHandoffToken(convId) === handoffToken))
+        && convStore.getQueuedMessages(convId).length > 0) {
+      if (!convStore.isStreamHandoffActive(convId)) convStore.beginStreamHandoff(convId);
       return orchestrateGoalContinuation(server, convId, ext, policy);
     }
     if (initial?.goal?.status === "active" && !outcome.daemonRestart && !getDaemonShutdownMode()
@@ -572,7 +582,8 @@ async function orchestrateAssistantTurn(
     broadcastConversationHistoryUpdated(server, convId);
     broadcastConversationUpdated(server, convId);
   }
-  const hadGoalAtStart = !!conv.goal;
+  const goalAtTurnStart = conv.goal ?? null;
+  const hadGoalAtStart = !!goalAtTurnStart;
   if (goalContinuation && conv.goal?.status === "active") conv.goal.turns += 1;
 
   // ── Start stream and broadcast initial state ──────────────────────
@@ -728,6 +739,7 @@ async function orchestrateAssistantTurn(
   const transcriptMarkers: TranscriptMarker[] = [];
 
   const toolContext: ToolExecutionContext = {
+    goalAtTurnStart,
     provider: conv.provider,
     conversationId: convId,
     cwd: workingDirectory,
@@ -1449,7 +1461,7 @@ async function orchestrateAssistantTurn(
 
       log("info", `orchestrator: message complete for ${convId} (${result.tokens} tokens, ${result.blocks.length} blocks, ${endedAt - startedAt}ms)`);
 
-      if (!result.suspended && conv.goal?.status === "active") {
+      if (!result.suspended && conv.goal?.status === "active" && conv.goal === goalAtTurnStart) {
         const hasOutput = result.blocks.some(block => block.type === "tool_call" || (block.type === "text" && block.text.trim()));
         conv.goal.emptyTurns = hasOutput ? 0 : (conv.goal.emptyTurns ?? 0) + 1;
         if (conv.goal.emptyTurns >= 2) {
@@ -1495,7 +1507,8 @@ async function orchestrateAssistantTurn(
 
     const endedAt = Date.now();
     const historyUnwindPendingAtAbort = convStore.isHistoryUnwindPending(convId, ac);
-    if (conv.goal?.status === "active" && !isDaemonRestart && !getDaemonShutdownMode() && !historyUnwindPendingAtAbort) {
+    if (conv.goal?.status === "active" && (conv.goal === goalAtTurnStart || (isAbort && !isWatchdog))
+        && !isDaemonRestart && !getDaemonShutdownMode() && !historyUnwindPendingAtAbort) {
       updateGoalStatus(convId, isAbort && !isWatchdog ? "paused" : "blocked",
         isAbort && !isWatchdog ? "Goal paused." : "Goal blocked by a turn error.",
         isAbort && !isWatchdog ? "Interrupted. Resume explicitly to continue." : String(err));
@@ -1634,6 +1647,12 @@ async function orchestrateAssistantTurn(
     // job. The daemon owns both queues and goal continuations, so clients no
     // longer need to guess whether a streaming=false update is only transient.
     const shutdownMode = getDaemonShutdownMode();
+    // A replaced goal must not inherit a sleep requested by the old turn.
+    // Ordinary sleeps still remain suspended until their original wake.
+    if (!shutdownMode && outcome?.suspended && conv.goal?.status === "active" && conv.goal !== goalAtTurnStart) {
+      if (cancelDeferredChronoSleep(convId)) broadcastConversationHistoryUpdated(server, convId);
+      outcome.suspended = false;
+    }
     const allQueued = shutdownMode ? [] : convStore.getQueuedMessages(convId);
     let shouldContinueGoal = false;
     if (shutdownMode) {
@@ -1642,7 +1661,7 @@ async function orchestrateAssistantTurn(
     } else if (allQueued.length === 0) {
       const resumeRequestedAfterStream = convStore.consumeGoalContinuationAfterStream(convId);
       shouldContinueGoal = conv.goal?.status === "active"
-        && !outcome?.suspended && !manualCompaction
+        && !outcome?.suspended && (!manualCompaction || resumeRequestedAfterStream)
         && (resumeRequestedAfterStream || (outcome?.ok === true && !outcome.aborted));
     }
     const streamChainContinues = allQueued.length > 0 || shouldContinueGoal;

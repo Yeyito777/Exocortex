@@ -1654,10 +1654,6 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Usage: /goal <objective>" });
             break;
           }
-          if (convStore.isStreaming(cmd.convId)) {
-            server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Cannot set a goal while the conversation is streaming." });
-            break;
-          }
           const result = setConversationGoal(cmd.convId, objective, { maxTurns: cmd.maxTurns });
           if (!result.ok) {
             server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: result.message });
@@ -1666,7 +1662,9 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           if (cancelDeferredChronoSleep(cmd.convId)) broadcastConversationHistoryUpdated(server, cmd.convId);
           const goal = sendGoalUpdated(cmd.convId, cmd.reqId, result.message);
           log("info", `handler: set goal for ${cmd.convId}: "${objective.slice(0, 80)}"`);
-          if (goal?.status === "active") {
+          if (goal?.status === "active" && convStore.isStreaming(cmd.convId)) {
+            convStore.requestGoalContinuationAfterStream(cmd.convId);
+          } else if (goal?.status === "active") {
             void orchestrateGoalCycle(server, cmd.convId, buildOrchestrationCallbacks(cmd.convId), { subagentMaxDepth: null }).catch((err) => {
               log("error", `handler: initial goal continuation failed for ${cmd.convId}: ${err instanceof Error ? err.message : String(err)}`);
             });
@@ -1692,9 +1690,11 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         const result = applyUserGoalAction(conv, cmd.action);
         if (cmd.action !== "show" && result.ok && hadGoal) {
           convStore.clearGoalContinuationAfterStream(cmd.convId);
-          convStore.clearStreamHandoff(cmd.convId);
-          if (cancelDeferredChronoSleep(cmd.convId)) broadcastConversationHistoryUpdated(server, cmd.convId);
-          convStore.getActiveJob(cmd.convId)?.abort("goal-state-changed");
+          if (cmd.action === "pause") {
+            convStore.clearStreamHandoff(cmd.convId);
+            if (cancelDeferredChronoSleep(cmd.convId)) broadcastConversationHistoryUpdated(server, cmd.convId);
+            convStore.getActiveJob(cmd.convId)?.abort("goal-state-changed");
+          }
         }
         const goalEvent = { type: "goal_updated" as const, reqId: cmd.reqId, convId: cmd.convId, goal: result.goal, message: result.message };
         server.sendTo(client, goalEvent);

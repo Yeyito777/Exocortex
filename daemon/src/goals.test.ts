@@ -66,6 +66,27 @@ describe("goal tool", () => {
     )).toMatchObject({ isError: true, output: expect.stringContaining("active goal") });
   });
 
+  test("stale turns cannot report status for a newly set or replaced goal", async () => {
+    for (const hadGoal of [false, true]) {
+      const convId = makeConversation(`stale-report-${hadGoal}`);
+      if (hadGoal) setGoal(convId, "old objective");
+      const context = { conversationId: convId, goalAtTurnStart: get(convId)?.goal ?? null };
+      setGoal(convId, "new objective");
+      for (const action of ["complete", "blocked"] as const) {
+        expect(await goalTool.execute({ action, reason: "Old task evidence." }, context))
+          .toMatchObject({ isError: true, output: expect.stringContaining("changed the goal") });
+        expect(get(convId)?.goal).toMatchObject({ objective: "new objective", status: "active" });
+      }
+      expect(await goalTool.execute({ action: "show" }, context))
+        .toMatchObject({ isError: false, output: expect.stringContaining("new objective") });
+      expect(await goalTool.execute(
+        { action: "complete", reason: "New objective verified." },
+        { conversationId: convId, goalAtTurnStart: get(convId)!.goal },
+      )).toMatchObject({ isError: false });
+      expect(get(convId)?.goal?.status).toBe("complete");
+    }
+  });
+
   test("tool status calls actually retain completion evidence and block reasons", async () => {
     const completeId = makeConversation("tool-complete");
     setGoal(completeId, "ship verified work");
