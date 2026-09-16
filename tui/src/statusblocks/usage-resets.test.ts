@@ -34,7 +34,9 @@ describe("usage reset status block", () => {
     const block = usageResetsBlock(stateWithUsageResets());
 
     expect(block).not.toBeNull();
-    expect(block!.priority).toBe(0);
+    const state = stateWithUsageResets();
+    expect(block!.priority).toBeGreaterThan(contextBlock(state)!.priority);
+    expect(block!.priority).toBeLessThan(usageBlock(state)!.priority);
     expect(stripAnsi(block!.rows[0]).trim()).toBe("Usage Resets: 3");
     expect(stripAnsi(block!.rows[1]).trim()).toBe("Next Expiriy: 2d:3h:04m");
     expect(block!.rows[0]).toContain(`${theme.accent}3`);
@@ -64,16 +66,32 @@ describe("usage reset status block", () => {
     expect(rendered.indexOf("Context")).toBeLessThan(rendered.indexOf("Usage Resets"));
   });
 
-  test("drops before usage and context on a narrower status line", () => {
+  test("keeps usage resets over context on a narrower status line", () => {
     Date.now = () => 1_700_000_000_000;
     const state = stateWithUsageResets();
     const usage = usageBlock(state)!;
-    const context = contextBlock(state)!;
-    const cols = usage.width + context.width + 3;
+    const resets = usageResetsBlock(state)!;
+    const cols = usage.width + resets.width + 3;
     const rendered = stripAnsi(renderStatusLine(state, cols).lines.join("\n"));
 
     expect(rendered).toContain("5-Hour");
-    expect(rendered).toContain("Context");
-    expect(rendered).not.toContain("Usage Resets");
+    expect(rendered).toContain("Usage Resets");
+    expect(rendered).not.toContain("Context");
+  });
+
+  test("keeps usage over usage resets when either fits but both do not", () => {
+    Date.now = () => 1_700_000_000_000;
+    const state = stateWithUsageResets();
+    const usage = usageBlock(state)!;
+    const resets = usageResetsBlock(state)!;
+    for (const cols of [
+      Math.max(usage.width, resets.width),
+      usage.width + resets.width + 2,
+    ]) {
+      const rendered = stripAnsi(renderStatusLine(state, cols).lines.join("\n"));
+
+      expect(rendered).toContain("5-Hour");
+      expect(rendered).not.toContain("Usage Resets");
+    }
   });
 });

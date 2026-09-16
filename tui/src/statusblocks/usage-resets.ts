@@ -37,7 +37,7 @@ export function usageResetsBlock(state: RenderState): StatusBlock | null {
 
   return {
     id: "usage-resets",
-    priority: 0,
+    priority: 2,
     width,
     height: 2,
     rows: [
