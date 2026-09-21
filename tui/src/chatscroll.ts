@@ -311,7 +311,7 @@ export function preserveViewportAcrossHistoryMutation(state: RenderState, mutate
 
 type HistoryMutationViewportAnchor = (
   oldViewStart: number,
-  oldRender: ReturnType<typeof buildMessageLines>,
+  oldRender: Pick<ReturnType<typeof buildMessageLines>, "lines" | "lineAnchors">,
   messageAreaHeight: number,
 ) => number;
 
@@ -319,6 +319,7 @@ function preserveViewportAcrossHistoryMutationFromRow(
   state: RenderState,
   mutate: () => void,
   selectViewportAnchorRow: HistoryMutationViewportAnchor,
+  useRenderedHistory = false,
 ): void {
   const { messageAreaHeight } = state.layout;
   if (messageAreaHeight <= 0) {
@@ -328,7 +329,12 @@ function preserveViewportAcrossHistoryMutationFromRow(
 
   const sidebarW = state.sidebar.open ? SIDEBAR_WIDTH : 0;
   const chatW = Math.max(1, state.cols - sidebarW);
-  const oldRender = buildMessageLines(state, chatW);
+  // A page can arrive before the loading-spinner frame is painted. Cursor
+  // coordinates still refer to the last rendered rows, not a fresh projection
+  // with an extra loading row inserted ahead of them.
+  const oldRender = useRenderedHistory && state.historyLines.length > 0
+    ? { lines: state.historyLines, lineAnchors: state.historyLineAnchors }
+    : buildMessageLines(state, chatW);
   const oldViewStart = getViewStartFor(oldRender.lines.length, messageAreaHeight, state.scrollOffset);
   const selectedAnchorRow = selectViewportAnchorRow(oldViewStart, oldRender, messageAreaHeight);
   const oldViewportAnchorRow = Math.max(
@@ -380,7 +386,7 @@ function preserveViewportAcrossHistoryMutationFromRow(
 
 function firstMovableHistoryRowInViewport(
   oldViewStart: number,
-  oldRender: ReturnType<typeof buildMessageLines>,
+  oldRender: Pick<ReturnType<typeof buildMessageLines>, "lines" | "lineAnchors">,
   messageAreaHeight: number,
 ): number {
   const viewEnd = Math.min(oldRender.lines.length, oldViewStart + messageAreaHeight);
@@ -402,7 +408,7 @@ function firstMovableHistoryRowInViewport(
  * the newly loaded page appears above it instead of replacing the viewport.
  */
 export function preserveViewportAcrossHistoryPrepend(state: RenderState, mutate: () => void): void {
-  preserveViewportAcrossHistoryMutationFromRow(state, mutate, firstMovableHistoryRowInViewport);
+  preserveViewportAcrossHistoryMutationFromRow(state, mutate, firstMovableHistoryRowInViewport, true);
 }
 
 /** Toggle tool output while preserving the user's semantic position in history. */

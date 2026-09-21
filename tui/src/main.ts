@@ -624,6 +624,9 @@ function onDaemonEvent(event: Event): void {
     return;
   }
 
+  if (event.type === "conversation_history_loaded" && state.pendingHistoryNavigation) {
+    maybeRequestOlderHistory();
+  }
   scheduleRender(renderDelayForEvent(event));
 }
 
@@ -1673,6 +1676,7 @@ function handleKey(key: KeyEvent): void {
 }
 
 function handleMouse(ev: MouseEvent): void {
+  if (ev.action !== "motion") state.pendingHistoryNavigation = null;
   // Hidden old-route controls must not remain clickable during the transition.
   if (state.sshConnecting) return;
   if (voiceInput?.isBlockingMouse()) return;
@@ -1690,6 +1694,7 @@ function handleMouse(ev: MouseEvent): void {
         || state.sidebar.conversationActionMenu?.selection !== prevConversationActionSelection
         || state.historyCursor.row !== prevCursorRow
         || state.historyCursor.col !== prevCursorCol) {
+      state.pendingHistoryNavigation = null;
       renderAfterLocalUiMutation();
     }
     return;

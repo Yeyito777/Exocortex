@@ -164,6 +164,7 @@ export function handleEvent(
       // Only show errors for the current conversation (or unscoped errors).
       if (event.convId && event.convId !== state.convId) break;
       if (event.convId === state.convId && event.reqId === state.historyLoadingRequestId) {
+        state.pendingHistoryNavigation = null;
         state.historyLoadingOlder = false;
         state.historyLoadingStartedAt = null;
         state.historyLoadingRequestId = null;
@@ -413,6 +414,7 @@ export function handleEvent(
         reconcileCallTranscriptDrafts(state);
         state.historyTotalEntries = event.historyTotalEntries
           ?? event.entries.filter((entry) => entry.type !== "system_instructions").length;
+        state.pendingHistoryNavigation = null;
         state.historyLoadingOlder = false;
         state.historyLoadingStartedAt = null;
         state.historyLoadingRequestId = null;

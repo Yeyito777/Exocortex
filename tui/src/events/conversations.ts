@@ -15,6 +15,7 @@ import { focusTargetAfterRemovingSidebarItems } from "../sidebar/removal";
 import { focusSidebarItem } from "../sidebar/selection";
 import type { RenderState } from "../state";
 import { preserveViewportAcrossHistoryPrepend } from "../chatscroll";
+import { resumeHistoryNavigation } from "../historycursor";
 import {
   clearPendingAI,
   clearStreamingTailMessages,
@@ -285,6 +286,7 @@ export function handleConversationLoaded(
   state.historyTotalEntries = event.historyTotalEntries
     ?? event.entries.filter((entry) => entry.type !== "system_instructions").length;
   state.historyHasOlder = event.hasOlderHistory ?? false;
+  state.pendingHistoryNavigation = null;
   state.historyLoadingOlder = false;
   state.historyLoadingStartedAt = null;
   state.historyLoadingRequestId = null;
@@ -391,6 +393,7 @@ export function handleConversationHistoryLoaded(
   // A canonical history refresh may have replaced the window while this page
   // was in flight. Absolute cursors make that stale response safe to discard.
   if (event.historyEndIndex !== state.historyStartIndex) {
+    state.pendingHistoryNavigation = null;
     state.historyLoadingOlder = false;
     state.historyLoadingStartedAt = null;
     state.historyLoadingRequestId = null;
@@ -430,10 +433,15 @@ export function handleConversationHistoryLoaded(
   // change the visible bottom in that state, so avoid rendering/wrapping the old
   // and new windows solely to remap a viewport that does not need remapping.
   const canFastPathInitialBackfill = event.requestSource === "initial-backfill"
+    && !state.pendingHistoryNavigation
     && state.scrollOffset === 0
     && !(state.panelFocus === "chat" && state.chatFocus === "history");
   if (canFastPathInitialBackfill) prependOlderMessages();
   else preserveViewportAcrossHistoryPrepend(state, prependOlderMessages);
+  if (event.historyStartIndex >= event.historyEndIndex) state.pendingHistoryNavigation = null;
+  // Continue from the semantic cursor, not from the new page's first row.
+  // Pages without a matching human prompt/AI text leave the action pending.
+  resumeHistoryNavigation(state);
   // A matching page is sufficient to place a saved percentage. requestSource
   // may be absent when talking to an older daemon, so key this off pending state.
   completeInitialConversationBackfill(state, event.convId);

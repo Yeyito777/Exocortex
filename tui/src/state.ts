@@ -171,6 +171,8 @@ export interface RenderState {
   historyLoadingStartedAt: number | null;
   /** Request id of the one older-history page currently in flight. */
   historyLoadingRequestId: string | null;
+  /** Navigation to resume after older history is prepended. */
+  pendingHistoryNavigation: import("./keybinds").Action | null;
   /** The AI message currently being streamed (not yet finalized). */
   pendingAI: AIMessage | null;
   /** Live GPT-Live transcript projected into history until canonical persistence arrives. */
@@ -374,6 +376,7 @@ export function resetHistoryPagination(state: RenderState): void {
   state.historyTotalEntries = 0;
   state.historyHasOlder = false;
   state.historyLoadingOlder = false;
+  state.pendingHistoryNavigation = null;
   state.historyLoadingStartedAt = null;
   state.historyLoadingRequestId = null;
   state.deferredHistoryRender = null;
@@ -617,6 +620,7 @@ export function createInitialState(): RenderState {
     historyTotalEntries: 0,
     historyHasOlder: false,
     historyLoadingOlder: false,
+    pendingHistoryNavigation: null,
     historyLoadingStartedAt: null,
     historyLoadingRequestId: null,
     pendingAI: null,

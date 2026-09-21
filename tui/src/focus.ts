@@ -186,6 +186,8 @@ export function handleFocusedKey(
   onAsyncUiMutation?: AsyncUiMutationCallback,
   pathCompletionProvider?: PathCompletionProvider,
 ): KeyResult {
+  // A fresh input supersedes any jump still waiting for an older page.
+  if (key.event !== "release") state.pendingHistoryNavigation = null;
   // Ctrl-C is always quit, regardless of focused panel, prompt/modal, or vim state.
   if (key.type === "ctrl-c") return { type: "quit" };
 

@@ -10,6 +10,8 @@
 import type { KeyEvent } from "./input";
 import type { Action } from "./keybinds";
 import type { RenderState } from "./state";
+import { buildMessageLines } from "./conversation";
+import { SIDEBAR_WIDTH } from "./sidebar";
 import { getScrollOffsetForViewStart } from "./chatscroll";
 import {
   ensureCursorRowVisibleInViewport,
@@ -138,11 +140,40 @@ function moveHistoryLine(surface: HistorySurface, direction: -1 | 1): void {
  * Returns true if the action was handled.
  */
 export function applyHistoryAction(action: Action, state: RenderState): boolean {
+  state.pendingHistoryNavigation = null;
+  // Prompt-focused jumps can run before the deferred suffix has been rendered.
+  // Materialize the loaded window first; suffix rows keep their bottom offsets.
+  if (activeHistorySurface(state).kind === "chat" && state.deferredHistoryRender
+      && !state.deferredHistoryRender.complete) {
+    const rendered = buildMessageLines(state, Math.max(1, state.cols - (state.sidebar.open ? SIDEBAR_WIDTH : 0)));
+    const delta = rendered.lines.length - state.historyLines.length;
+    state.historyCursor = { ...state.historyCursor, row: state.historyCursor.row + delta };
+    state.historyVisualAnchor = { ...state.historyVisualAnchor, row: state.historyVisualAnchor.row + delta };
+    state.historyLines = rendered.lines;
+    state.historyWrapContinuation = rendered.wrapContinuation;
+    state.historyWrapJoiners = rendered.wrapJoiners;
+    state.historyCopyLines = rendered.copyLines;
+    state.historyMessageBounds = rendered.messageBounds;
+    state.historyLineAnchors = rendered.lineAnchors;
+    state.layout.totalLines = rendered.lines.length;
+    state.deferredHistoryRender = null;
+  }
   const surface = activeHistorySurface(state);
   const lines = surface.lines;
   const cur = surface.cursor;
 
-  if (lines.length === 0) return true;
+  const defer = () => {
+    if (surface.kind === "chat" && state.convId && state.historyHasOlder && state.historyStartIndex > 0) {
+      state.pendingHistoryNavigation = action;
+      return true;
+    }
+    return false;
+  };
+
+  if (lines.length === 0) {
+    if (action === "history_prev_message" || action === "history_prev_ai_message" || action === "history_gg") defer();
+    return true;
+  }
 
   const wrapCont = surface.wrapContinuation;
   const navigationRow = messageNavigationOriginRow(action, state, surface, cur.row);
@@ -160,11 +191,12 @@ export function applyHistoryAction(action: Action, state: RenderState): boolean 
     case "history_E":       surface.setCursor(wordEndBig(cur, lines)); resetHistoryCurswant(surface); break;
     case "history_0":       surface.setCursor(lineStart(cur, lines, wrapCont)); resetHistoryCurswant(surface); break;
     case "history_dollar":  surface.setCursor(lineEnd(cur, lines, wrapCont)); resetHistoryCurswant(surface); break;
-    case "history_gg":      surface.setCursor(bufferStart(lines)); resetHistoryCurswant(surface); break;
+    case "history_gg":
+      if (!defer()) { surface.setCursor(bufferStart(lines)); resetHistoryCurswant(surface); }
+      break;
     case "history_G":       surface.setCursor(bufferEnd(lines)); resetHistoryCurswant(surface); break;
     case "history_prev_message": {
       const bounds = getUserMessageBounds(surface);
-      if (bounds.length === 0) break;
       // Jump only among human-authored user messages.
       // Pressing { inside a user message goes to its start; pressing {
       // at that start goes to the previous user message's start.
@@ -173,6 +205,7 @@ export function applyHistoryAction(action: Action, state: RenderState): boolean 
         if (bounds[i].contentStart < navigationRow) { target = i; break; }
       }
       if (target >= 0) jumpHistoryCursorToRow(surface, bounds[target].contentStart);
+      else defer();
       break;
     }
     case "history_next_message": {
@@ -203,6 +236,7 @@ export function applyHistoryAction(action: Action, state: RenderState): boolean 
         if (bounds[i].responseStart < navigationRow) { target = i; break; }
       }
       if (target >= 0) jumpHistoryCursorToRow(surface, bounds[target].responseStart);
+      else defer();
       break;
     }
     case "history_next_ai_message": {
@@ -227,6 +261,15 @@ export function applyHistoryAction(action: Action, state: RenderState): boolean 
 
   ensureCursorVisible(state);
   return true;
+}
+
+/** Called only after a matching page has remapped the cursor to its old content. */
+export function resumeHistoryNavigation(state: RenderState): void {
+  const action = state.pendingHistoryNavigation;
+  state.pendingHistoryNavigation = null;
+  if (action && state.panelFocus === "chat" && state.chatFocus === "history") {
+    applyHistoryAction(action, state);
+  }
 }
 
 // ── Cursor-aware scrolling (vim-style) ─────────────────────────────

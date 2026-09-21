@@ -24,6 +24,7 @@ export function beginOlderHistoryLoad(state: RenderState, turns: number): OlderH
 /** Load before the viewport reaches the oldest rendered row. */
 export function shouldLoadOlderHistory(state: RenderState): boolean {
   if (!state.convId || !state.historyHasOlder || state.historyLoadingOlder || state.historyStartIndex <= 0) return false;
+  if (state.pendingHistoryNavigation) return true;
   if (state.layout.messageAreaHeight <= 0 || state.layout.totalLines <= 0) return false;
   const thresholdRows = Math.max(3, Math.ceil(state.layout.messageAreaHeight / 2));
   return getViewStart(state) <= thresholdRows;
