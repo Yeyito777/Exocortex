@@ -2166,10 +2166,16 @@ export class SqliteConversationStore implements ConversationRepository {
     if (!row) return null;
     const total = row.display_entry_count;
     const endIndex = Math.max(0, Math.min(beforeEntryIndex === undefined ? total : Math.floor(beforeEntryIndex), total));
-    const usersBeforeEnd = this.db.query<{ count: number }, [string, number]>(`
-      SELECT COUNT(*) AS count FROM display_entries
-      WHERE conversation_id=? AND pinned=0 AND type='user' AND entry_index<?
-    `).get(id, endIndex)!.count;
+    // User ordinals are contiguous and only user entries have one. Seek backward
+    // through the covering user index instead of counting type='user' in the
+    // payload-bearing table. That count reads the entire transcript on every
+    // open/backfill, including overflow pages for large historical entries.
+    const lastUser = this.db.query<{ user_index: number }, [string, number]>(`
+      SELECT user_index FROM display_entries
+      WHERE conversation_id=? AND pinned=0 AND user_index>=0 AND entry_index<?
+      ORDER BY user_index DESC LIMIT 1
+    `).get(id, endIndex);
+    const usersBeforeEnd = (lastUser?.user_index ?? -1) + 1;
     const safeTurns = Math.max(1, Math.floor(Number.isFinite(turns) ? turns : 1));
     const startUserIndex = Math.max(0, usersBeforeEnd - safeTurns);
     const startIndex = usersBeforeEnd > 0
