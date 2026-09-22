@@ -116,7 +116,7 @@ function buildPromptParts(options: BuildSystemPromptOptions & {
   const hasExoTool = !options.toolNames || options.toolNames.includes("exo");
   if (hasExoTool && typeof depth === "number" && Number.isInteger(depth) && depth >= 0) {
     parts.push(depth === 0
-      ? "This turn's remaining native exo subagent depth is 0. Use exo only for your own tasks (tasks, stop_task, or commands/task info|stop). No delegation or unrelated administration is available."
+      ? "This turn's remaining native exo subagent depth is 0. Use exo only for your own tasks (tasks, read/stop with task_id). No delegation or unrelated administration is available."
       : `This turn's remaining native exo subagent depth is ${depth}. A child turn may receive at most max_depth=${depth - 1}.`);
   }
 

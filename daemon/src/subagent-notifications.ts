@@ -233,7 +233,7 @@ export function buildSubagentNotificationText(
     capText(body, record.maxChars ?? 6000),
     "",
     "Full details:",
-    `Use the native exo tool with action=history, conversation_id=${record.childConvId}, full=true.`,
+    `Use exo with action=read, conversation_id=${record.childConvId}, args={full:true}.`,
   ].join("\n");
 }
 

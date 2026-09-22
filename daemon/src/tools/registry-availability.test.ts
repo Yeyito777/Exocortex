@@ -36,7 +36,7 @@ describe("tool availability", () => {
     expect(actionEnum).not.toContain("status");
     expect(JSON.stringify(definition?.input_schema)).not.toContain("system_prompt");
     expect(getToolDisplayInfo().find((tool) => tool.name === "exo")?.label).toBe("Exocortex");
-    expect(buildToolSystemHints()).toContain("## exo\n### subagents");
+    expect(buildToolSystemHints()).toContain("## exo\nDelegate only");
   });
 
   test("tool schemas avoid OpenAI-rejected top-level JSON Schema composition keywords", () => {

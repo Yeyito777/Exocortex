@@ -39,7 +39,7 @@ Yield time is not a process timeout. The current hard process limit is one hour;
 output capture is capped at 16 MiB per Codex session with explicit truncation.
 
 Yielded commands register ordinary Exocortex background tasks: Chrono can wait
-on the returned `task_id` and `exo stop_task` can stop them. Unobserved completion
+on the returned `task_id` and `exo stop` with `task_id` can stop them. Unobserved completion
 uses existing notifications; completion collected by an active tool call does
 not inject a duplicate notification. Logs and detached task records participate
 in recovery. Live stdin handles do **not** survive daemon restarts: recovered

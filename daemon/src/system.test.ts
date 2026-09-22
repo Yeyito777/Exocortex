@@ -43,10 +43,10 @@ describe("system prompt", () => {
   test("includes compact native-subagent guidance", () => {
     const prompt = buildSystemPrompt({ conversationId: "nested" });
 
-    expect(prompt).toContain("## exo\n### subagents");
-    expect(prompt).toContain("Defaults include local text reading/search");
-    expect(prompt).toContain("selection is discovery/delegation policy, not a process sandbox");
-    expect(prompt).toContain("new installations do not expand an explicit selection");
+    expect(prompt).toContain("## exo\nDelegate only");
+    expect(prompt).toContain("Depth defaults to 0");
+    expect(prompt).toContain("Tool selection is not a sandbox");
+    expect(prompt).toContain("commands/models for exact IDs");
     expect(prompt).toContain("## chrono\nPrefer chrono over shell sleep");
   });
 

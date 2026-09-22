@@ -1,187 +1,90 @@
 import { EFFORT_LEVELS, MAX_EXO_SUBAGENT_DEPTH } from "../messages";
 import type { Tool } from "./types";
 
-export const EXO_ACTIONS = [
-  "send",
-  "list",
-  "jobs",
-  "tasks",
-  "stop_task",
-  "info",
-  "history",
-  "abort",
-  "queue",
-  "commands",
-] as const;
-
+export const EXO_ACTIONS = ["send", "list", "tasks", "read", "stop", "commands"] as const;
 export type ExoAction = typeof EXO_ACTIONS[number];
 
-function actionFromInput(input: Record<string, unknown>): ExoAction | null {
-  return typeof input.action === "string" && (EXO_ACTIONS as readonly string[]).includes(input.action)
-    ? input.action as ExoAction
-    : null;
-}
+const string = (description: string) => ({ type: "string", description });
+const boolean = (description: string) => ({ type: "boolean", description });
+const choice = (values: string[], description: string) => ({ type: "string", enum: values, description });
+const strings = (description: string) => ({ type: "array", items: { type: "string" }, description });
+const conversation_id = string("Exact conversation ID.");
+const task_id = string("Exact active task ID from tasks.");
+const text = string("Task or message text.");
+const title = string("Short title for a new subagent (at most 6 words / 60 characters).");
+const model = string("Optional exact model ID or provider/model. Omit for configured default; commands/models lists choices.");
+const allow_edits = boolean("For a new subagent: enable shell and file edits. Default false; not a sandbox.");
+const mode = choice(["auto", "detach", "wait"], "Default auto: starts and notifies on completion. wait returns the result. Busy targets queue for next turn.");
+const max_depth = { type: "integer", minimum: 0, maximum: MAX_EXO_SUBAGENT_DEPTH, description: "Additional delegation generations. Defaults to 0; cannot exceed caller's remaining depth minus one." };
+const page = {
+  limit: { type: "integer", minimum: 1, maximum: 200, description: "Page size; list/tasks cap at 100, read at 200." },
+  offset: { type: "integer", minimum: 0, description: "Page offset; for history, skip this many newest entries." },
+};
+const listing = {
+  ...page,
+  query: string("Case-insensitive filter."),
+  scope: choice(["children", "all"], "list defaults all; tasks/jobs default children (own work)."),
+};
+const send = {
+  text, title, conversation_id, model, allow_edits, mode, max_depth,
+  provider: choice(["openai", "deepseek", "opencode", "openrouter"], "Provider override."),
+  effort: choice([...EFFORT_LEVELS], "Reasoning effort; defaults medium, normalized for the model."),
+  internal_tools: strings("Exact internal tools. Defaults research tools; cannot combine with allow_edits. For existing targets both tool lists are required and persistently replace policy; self must retain exo."),
+  external_tools: strings("Exact external CLI tools; defaults none. Enables shell; tool selection is not a sandbox."),
+  notify_parent: boolean("Notify on detached completion; defaults true."),
+  full: boolean("Include thinking/tool results in wait output; defaults false."),
+};
 
-function detailValue(input: Record<string, unknown>, key: string): string | undefined {
-  const value = input[key];
-  if (typeof value === "string" && value.trim()) return value.trim();
-  if (Array.isArray(value) && value.length > 0) return value.map(String).join(", ");
-  return undefined;
-}
+/** Full argument reference, returned on demand rather than injected every turn. */
+export const EXO_OPERATION_SCHEMAS: Record<string, Record<string, unknown>> = Object.fromEntries(
+  Object.entries({
+    send,
+    list: listing,
+    tasks: { ...listing, conversation_id, kind: choice(["all", "subagent", "background", "chrono"], "Active task kind; defaults all.") },
+    read: { conversation_id, task_id, ...page, full: boolean("Include thinking and tool results."), view: choice(["history", "info"], "Conversation view; defaults history.") },
+    stop: { conversation_id, task_id },
+    jobs: listing,
+    queue: { conversation_id, text, max_depth, timing: choice(["next-turn", "message-end"], "Defaults next-turn.") },
+  }).map(([name, properties]) => [name, { type: "object", properties, additionalProperties: false }]),
+);
 
-function summaryValue(value: unknown): string {
-  if (typeof value !== "object") return String(value);
-  try {
-    return JSON.stringify(value) ?? String(value);
-  } catch {
-    return String(value);
-  }
+function brief(value: unknown, max = 100): string {
+  const line = typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+  return line.length > max ? `${line.slice(0, max - 1)}…` : line;
 }
-
-function summarizeExoParams(primary: string, input: Record<string, unknown>, skip: string[]): string {
-  const parts = [primary];
-  for (const [key, value] of Object.entries(input)) {
-    if (skip.includes(key) || value == null) continue;
-    const flag = key.startsWith("-") ? key : `--${key}`;
-    if (value === true) parts.push(flag);
-    else parts.push(`${flag} ${summaryValue(value)}`);
-  }
-  return parts.join(" ");
-}
-
-const EXO_SYSTEM_HINT = [
-  "### subagents",
-  "Use the native `exo` tool for delegated work. Don't spawn subagents unless the work benefits extraordinarily from parallel execution, requires subagents for testing, or the user requests it. Luna agents for grunt work, terra for slightly more intelligent work, sol for intelligent tasks. Use a short three-word title and max_depth=0 unless more delegation is needed. Depth-zero agents retain exo only to inspect and stop their own tasks, not to delegate or administer conversations. Defaults include local text reading/search, browse, and exo, but no external CLIs. Use internal_tools/external_tools for exact delegation; new installations do not expand an explicit selection. For an existing send, both lists persistently replace the next-turn policy; use the discovered tools command to change policy without sending. External CLIs use the available shell executor; selection is discovery/delegation policy, not a process sandbox. allow_edits=true is legacy shorthand for shell, mutation tools, and chrono.",
-  "### subscriptions",
-  "When asked to manage external notification subscriptions, use action=commands with command=notifications; it can discover sources and defaults subscription targets to the active conversation.",
-  "Subagents start in their own isolated conversation workspace, so include any separate target absolute directory and all necessary task context.",
-].join("\n");
 
 export const exo: Tool = {
   name: "exo",
-  description: "Manage the current Exocortex daemon directly. Frequent conversation and subagent operations, active-task inspection, and background-task stopping are direct actions. Use action=commands to discover lower-frequency management commands on demand. Transcription and cross-instance targeting are intentionally excluded.",
-  systemHint: EXO_SYSTEM_HINT,
+  description: "Delegate and manage work in this daemon: send, list conversations, tasks, read results, stop work. Advanced administration and option reference are under commands.",
+  systemHint: [
+    "Delegate only when requested, needed for testing, or exceptionally useful in parallel. Start with exo {action:'send', title:'Short task title', text:'Task and context'}; add allow_edits:true for coding. Depth defaults to 0. Results notify you automatically.",
+    "Subagents start in their own isolated conversation workspace; include the target absolute directory and necessary context. Tool selection is not a sandbox.",
+    "Omit model for the configured default, or use commands/models for exact IDs. Use tasks to inspect active work, read for results, stop with one exact task_id or conversation_id. Depth-zero agents may only inspect/stop their own tasks.",
+    "For advanced options use {action:'commands', command:'help', args:{command:'send'}} (or another action/command). Pass options in args. commands without a command lists administration; notifications manages subscriptions.",
+  ].join("\n"),
   inputSchema: {
     type: "object",
     properties: {
-      action: {
-        type: "string",
-        enum: EXO_ACTIONS,
-        description: "Operation to perform on the current daemon. stop_task stops an exact managed background task without aborting its owner conversation.",
-      },
-      text: {
-        type: "string",
-        description: "Message/task for send or queue.",
-      },
-      conversation_id: {
-        type: "string",
-        description: "Conversation targeted by send, tasks, info, history, abort, or queue. For tasks, omit to inspect work owned by the active conversation. Omit for send to create a new subagent; when targeting an existing conversation, send may include both tool lists to persistently replace its policy.",
-      },
-      task_id: {
-        type: "string",
-        description: "For action=stop_task, exact active background-task ID returned by action=tasks.",
-      },
-      title: {
-        type: "string",
-        description: "Required when send creates a new subagent (conversation_id omitted). Short title of about three words; becomes the child conversation title and appears in the parent's Tasks UI.",
-      },
-      max_depth: {
-        type: "integer",
-        minimum: 0,
-        maximum: MAX_EXO_SUBAGENT_DEPTH,
-        description: `Required for send and queue. Maximum number of additional subagent generations permitted (0-${MAX_EXO_SUBAGENT_DEPTH}), not a target. Use 0 unless the target clearly needs to delegate; a spawned caller may set at most its own max_depth minus one.`,
-      },
-      query: {
-        type: "string",
-        description: "Optional case-insensitive filter for list, jobs, or tasks.",
-      },
-      limit: {
-        type: "integer",
-        minimum: 1,
-        maximum: 200,
-        description: "Maximum results for list, jobs, tasks, or history. Defaults to 25 for list/jobs/tasks and 50 for history; list/jobs/tasks cap at 100 and history at 200.",
-      },
-      offset: {
-        type: "integer",
-        minimum: 0,
-        description: "Pagination offset for list/jobs/tasks, or number of newest entries to skip for history. Defaults to 0.",
-      },
-      scope: {
-        type: "string",
-        enum: ["children", "all"],
-        description: "For jobs/list, restrict to child conversations or include all. For tasks, children means work owned by the selected/active conversation and all means daemon-wide. Jobs/tasks default to children; list defaults to all.",
-      },
-      kind: {
-        type: "string",
-        enum: ["all", "subagent", "background", "chrono"],
-        description: "For action=tasks, filter active work by kind. Defaults to all.",
-      },
-      provider: {
-        type: "string",
-        enum: ["openai", "deepseek", "opencode", "openrouter"],
-        description: "Optional provider for a new send.",
-      },
-      model: {
-        type: "string",
-        description: "Optional model or provider/model spec for send (for example gpt-5.6-terra or deepseek/pro).",
-      },
-      effort: {
-        type: "string",
-        enum: EFFORT_LEVELS,
-        description: "Optional reasoning effort for a new subagent. Defaults to medium and is normalized to the selected model's supported levels.",
-      },
-      allow_edits: {
-        type: "boolean",
-        description: "Legacy shorthand for a new subagent: add the provider's shell and file-mutation tools, plus chrono, to research tools. Cannot be combined with internal_tools.",
-      },
-      internal_tools: {
-        type: "array",
-        items: { type: "string" },
-        description: "Exact configurable internal-tool allowlist. A new subagent defaults to research tools plus legacy allow_edits additions. For an existing send, internal_tools and external_tools must both be supplied and persistently replace the target's policy before its next turn. Any installed tool may be selected, and a send targeting the calling conversation must retain exo.",
-      },
-      external_tools: {
-        type: "array",
-        items: { type: "string" },
-        description: "Exact external-tool allowlist, stable across new installations. A new subagent defaults to none. For an existing send, internal_tools and external_tools must both be supplied and persistently replace the next-turn policy. Selecting any CLI enables the provider's shell executor and manifest-based TUI presentation; this is not a process sandbox.",
-      },
-      mode: {
-        type: "string",
-        enum: ["auto", "detach", "wait"],
-        description: "send lifecycle. auto (default) detaches sends to other/new conversations and queues a send to the active parent; detach starts and returns; wait returns the completed child result. Sends to an already-streaming conversation are queued for its next turn regardless of mode.",
-      },
-      notify_parent: {
-        type: "boolean",
-        description: "For detached send, notify the active parent on completion. Defaults to true.",
-      },
-      full: {
-        type: "boolean",
-        description: "Include thinking and tool-result details in send wait output or history. Defaults to false.",
-      },
-      timing: {
-        type: "string",
-        enum: ["next-turn", "message-end"],
-        description: "Queue delivery timing for action=queue. Defaults to next-turn.",
-      },
-      command: {
-        type: "string",
-        description: "For action=commands: omit or use ls to discover available commands, help to inspect one, or a discovered command name to execute it. Command names are intentionally not enumerated in this schema.",
-      },
-      args: {
-        type: "object",
-        description: "Structured command-specific arguments for action=commands. Discover their shape with command=help and args.command=<name>.",
-        additionalProperties: true,
-      },
+      action: choice([...EXO_ACTIONS], "send delegates/messages; list finds conversations; tasks shows active work; read gets history/info; stop cancels one target; commands discovers advanced operations."),
+      text,
+      title,
+      conversation_id: string("send: omit to create a subagent. read: omit for current conversation. stop: exact conversation to abort, never current."),
+      task_id: string("read: exact active task ID. stop: exact background-task ID from tasks. Do not combine with conversation_id."),
+      model,
+      allow_edits,
+      mode,
+      command: string("For commands: omit to list; help with args.command for reference; models for model IDs; otherwise a discovered command."),
+      args: { type: "object", additionalProperties: true, description: "Optional advanced action options or command arguments. Discover with commands/help; ordinary calls need none." },
     },
     required: ["action"],
     additionalProperties: false,
   },
   parallelSafety: "exclusive",
   parallelSafetyForInput(input) {
-    if (["list", "jobs", "tasks", "info", "history"].includes(String(input.action))) return "safe";
+    if (["list", "jobs", "tasks", "read", "info", "history"].includes(String(input.action))) return "safe";
     if (input.action !== "commands") return "exclusive";
     const command = String(input.command ?? "ls").toLowerCase();
-    // system_prompt may load custom modules, so it remains exclusive.
-    if (["ls", "list", "help", "status", "stats"].includes(command)) return "safe";
+    if (["ls", "list", "help", "models", "jobs", "status", "stats"].includes(command)) return "safe";
     const args = input.args as Record<string, unknown> | undefined;
     const operation = args?.operation;
     if ((command === "task" && operation === "info")
@@ -190,24 +93,18 @@ export const exo: Tool = {
       || (command === "notifications" && ["sources", "list"].includes(String(operation)))) return "safe";
     return "exclusive";
   },
-  // Waiting on a subagent or one-shot LLM is independently cancellable and
-  // must not inherit the generic two-minute tool deadline.
   defaultTimeoutMs: null,
   watchdogExempt: true,
   display: { label: "Exocortex", color: "#1d9bf0" },
   summarize(input) {
-    const action = actionFromInput(input);
-    if (!action) return { label: "Exocortex", detail: "invalid action" };
-    const detailKey = action === "send" || action === "queue"
-      ? "text"
+    const args = input.args && typeof input.args === "object" ? input.args as Record<string, unknown> : {};
+    const action = brief(input.action, 20) || "invalid action";
+    const target = action === "send" || action === "queue"
+      ? brief(input.title ?? args.title ?? input.text ?? args.text)
       : action === "commands"
-        ? "command"
-        : action === "stop_task"
-          ? "task_id"
-          : "conversation_id";
-    const detail = detailValue(input, detailKey);
-    const primary = detail ? `${action}: ${detail}` : action;
-    return { label: "Exocortex", detail: summarizeExoParams(primary, input, ["action", detailKey]) };
+        ? brief(input.command ?? "list")
+        : brief(input.task_id ?? args.task_id ?? input.conversation_id ?? args.conversation_id);
+    return { label: "Exocortex", detail: target ? `${action}: ${target}` : action };
   },
   async execute(input, context, signal) {
     if (!context?.exocortex) {

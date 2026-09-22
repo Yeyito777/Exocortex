@@ -47,7 +47,7 @@ import {
 import type { DaemonServer } from "./server";
 import type { AssistantTurnOutcome } from "./orchestrator";
 import type { ExocortexToolRuntime, ToolResult } from "./tools/types";
-import { EXO_ACTIONS, type ExoAction } from "./tools/exo";
+import { EXO_ACTIONS, EXO_OPERATION_SCHEMAS, type ExoAction } from "./tools/exo";
 import { validateCommandArgs } from "./tools/command-schema";
 import { getTokenStatsSnapshot } from "./token-stats";
 import {
@@ -127,7 +127,7 @@ type FolderResolution =
   | { kind: "root"; folderId: null; path: "/" }
   | { kind: "folder"; folder: FolderSummary; folderId: string; path: string };
 
-const LEGACY_ACTIONS = ["delete", "rename", "status", "llm", "folder_ls", "folder_tree", "folder_mkdir", "folder_mv", "folder_rm"] as const;
+const LEGACY_ACTIONS = ["jobs", "info", "history", "abort", "stop_task", "queue", "delete", "rename", "status", "llm", "folder_ls", "folder_tree", "folder_mkdir", "folder_mv", "folder_rm"] as const;
 type LegacyExoAction = typeof LEGACY_ACTIONS[number];
 type RuntimeExoAction = ExoAction | LegacyExoAction;
 const VALID_ACTIONS = new Set<string>([...EXO_ACTIONS, ...LEGACY_ACTIONS]);
@@ -271,9 +271,9 @@ function boundedIntegerInput(
 }
 
 function requestedMaxDepth(input: Record<string, unknown>, callerMaxDepth: number | null | undefined): number {
-  const value = input.max_depth;
+  const value = input.max_depth === undefined ? 0 : input.max_depth;
   if (typeof value !== "number" || !Number.isInteger(value)) {
-    throw new Error(`max_depth is required for action=${String(input.action)} and must be an integer from 0 to ${MAX_EXO_SUBAGENT_DEPTH}`);
+    throw new Error(`max_depth must be an integer from 0 to ${MAX_EXO_SUBAGENT_DEPTH}`);
   }
   if (value < 0 || value > MAX_EXO_SUBAGENT_DEPTH) {
     throw new Error(`max_depth must be between 0 and ${MAX_EXO_SUBAGENT_DEPTH}`);
@@ -317,6 +317,7 @@ function subagentTitleInput(input: Record<string, unknown>): string {
 function inferProviderForModel(model: string | undefined): ProviderId | undefined {
   const lowered = model?.trim().toLowerCase();
   if (!lowered) return undefined;
+  if (["luna", "terra", "sol"].includes(lowered)) return "openai";
   if (isKnownModel("openrouter", lowered)) return "openrouter";
   if (lowered === "pro" || lowered === "flash" || lowered.startsWith("deepseek-") || lowered.startsWith("v4-")) return "deepseek";
   if (lowered.startsWith("gpt-") || lowered.startsWith("o1") || lowered.startsWith("o3") || lowered.startsWith("o4")) return "openai";
@@ -351,6 +352,14 @@ function parseRequestedModel(providerValue: unknown, modelValue: unknown): Reque
   }
 
   provider = provider ?? inferProviderForModel(model);
+  if (provider === "openai" && model && ["luna", "terra", "sol"].includes(model.toLowerCase())) {
+    const alias = model.toLowerCase();
+    const matches = getProvider("openai")!.models.filter(candidate => candidate.id.endsWith(`-${alias}`));
+    if (matches.length !== 1) {
+      throw new Error(`Model nickname "${model}" is ${matches.length ? "ambiguous" : "unavailable"}. Use action=commands, command=models and choose an exact model ID.`);
+    }
+    model = matches[0].id;
+  }
   if (provider && model) model = canonicalizeModel(provider, model);
   return { provider, model };
 }
@@ -1821,6 +1830,31 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
 
   const commands: ExoCommandDefinition[] = [
     {
+      name: "models",
+      description: "List exact model IDs and configured defaults. Use these IDs rather than guessing nicknames.",
+      inputSchema: commandSchema({}),
+      execute: () => ok(pretty({
+        defaults: effectiveConversationDefaults(),
+        providers: getProviders().map(provider => ({
+          provider: provider.id,
+          models: provider.models.map(model => model.id),
+        })),
+      })),
+    },
+    ...(["jobs", "queue"] as const).map(name => ({
+      name,
+      description: ({
+        jobs: "List subagent jobs, including completed/unread work.",
+        queue: "Queue a message with explicit delivery timing.",
+      })[name],
+      inputSchema: EXO_OPERATION_SCHEMAS[name],
+      execute: (args: Record<string, unknown>, parent?: string, _signal?: AbortSignal, depth?: number | null) => {
+        const input = { ...args, action: name };
+        if (name === "jobs") return executeJobs(input, parent);
+        return executeQueue(input, parent, depth);
+      },
+    })),
+    {
       name: "folder",
       description: "List, inspect, create, move, remove, rename, pin, or unpin conversation folders.",
       inputSchema: commandSchema({
@@ -2055,6 +2089,13 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     }
     if (commandName === "help") {
       const target = stringInput(args, "command", true)!.toLowerCase();
+      if (EXO_OPERATION_SCHEMAS[target]) {
+        return ok(pretty({
+          action: target,
+          input_schema: EXO_OPERATION_SCHEMAS[target],
+          usage: `Use action=${EXO_ACTIONS.includes(target as ExoAction) ? target : "commands, command=" + target}; pass advanced options in args.`,
+        }));
+      }
       const command = commandMap.get(target);
       if (!command) throw new Error(`Unknown exo command: ${target}. Run action=commands with command=ls.`);
       return ok(pretty(commandHelp(command)));
@@ -2075,6 +2116,33 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
   const runtime: ExocortexToolRuntime = {
     async execute(input, parentConversationId, signal, callerMaxDepth) {
       try {
+        // Normalize the compact interface before applying any authorization.
+        // Old top-level options remain accepted for in-flight conversations.
+        if (input.action !== "commands" && input.args !== undefined) {
+          const schema = EXO_OPERATION_SCHEMAS[String(input.action)];
+          if (!schema) throw new Error(`args is not supported for action=${String(input.action)}`);
+          const args = objectInput(input, "args");
+          validateCommandArgs(schema, args);
+          for (const key of Object.keys(args)) {
+            if (Object.hasOwn(input, key)) throw new Error(`Specify ${key} once, either at top level or in args.`);
+          }
+          const { args: _, ...rest } = input;
+          input = { ...rest, ...args };
+        }
+        if (input.action === "read" || input.action === "stop") {
+          const taskId = stringInput(input, "task_id");
+          const convId = stringInput(input, "conversation_id");
+          if (taskId && convId) throw new Error("Specify exactly one of task_id or conversation_id.");
+          if (input.action === "stop") {
+            if (!taskId && !convId) throw new Error("stop requires an exact task_id or conversation_id; use tasks or list to find it.");
+            input = { ...input, action: taskId ? "stop_task" : "abort" };
+          } else if (taskId) {
+            input = { action: "commands", command: "task", args: { operation: "info", task_id: taskId } };
+          } else {
+            if (input.view !== undefined && !["history", "info"].includes(String(input.view))) throw new Error("view must be history or info");
+            input = { ...input, action: input.view === "info" ? "info" : "history", conversation_id: convId ?? parentConversationId };
+          }
+        }
         const caller = parentConversationId ? convStore.get(parentConversationId) : undefined;
         // The persisted scoped ceiling also applies to callers that omit the
         // turn-local depth (e.g. direct runtime clients).
@@ -2133,6 +2201,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
           case "folder_mkdir": return executeFolderMkdir(input);
           case "folder_mv": return executeFolderMove(input);
           case "folder_rm": return await executeFolderRemove(input, parentConversationId, signal);
+          default: throw new Error(`Unnormalized exo action: ${String(action)}`);
         }
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") throw error;

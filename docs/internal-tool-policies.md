@@ -1,5 +1,37 @@
 # Internal tool policies and task lifecycle
 
+## Compact native Exocortex interface
+
+The default `exo` schema exposes six actions:
+
+- `send`: delegate with `title` + `text`, or message an existing `conversation_id`.
+- `list`: find conversations.
+- `tasks`: inspect active work.
+- `read`: conversation history (current by default), or an exact active `task_id`.
+- `stop`: stop one explicit `task_id` or abort one explicit `conversation_id`.
+- `commands`: discover administration and detailed option schemas.
+
+Sending defaults to detached execution with a completion notification and
+`max_depth=0`. Use `mode:"wait"` to receive the result inline. Models default to
+the configured choice; `commands/models` lists exact IDs. The native runtime
+resolves `luna`, `terra`, and `sol` only when exactly one OpenAI model has that
+tier suffix; ambiguous/unavailable nicknames fail before creating a child.
+
+Advanced options go in `args`. For example:
+
+```json
+{"action":"send","title":"Review parser safety","text":"Review /absolute/project/path","allow_edits":true}
+{"action":"commands","command":"help","args":{"command":"send"}}
+{"action":"read","conversation_id":"child-id","args":{"full":true,"limit":20}}
+```
+
+`read` with `args.view:"info"` returns conversation metadata. `jobs` and explicit
+`queue` timing remain discoverable commands. Old action names/top-level options
+remain accepted by the runtime for in-flight conversations. Advanced options
+are validated before dispatch and cannot override action routing or duplicate
+top-level fields. Status lines show a short title, not the entire delegated prompt;
+the actual tool input and child task retain the full payload.
+
 ## Provider-specific capabilities
 
 OpenAI coding sessions use `exec_command`, `write_stdin`, `apply_patch`, and
@@ -22,7 +54,8 @@ User-authored instructions and external CLI documentation are not rewritten.
 runtime permits only:
 
 - `tasks`, restricted to the calling conversation;
-- `stop_task`, restricted to an owned active background task;
+- `read` with `task_id`, restricted to an owned active task;
+- `stop` with `task_id`, restricted to an owned active background task;
 - command discovery/help for `task`, and `task info|stop` for owned active tasks.
 
 Other actions, administrative commands, legacy aliases, foreign task IDs, and

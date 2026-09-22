@@ -156,7 +156,7 @@ describe("native exo tool contract", () => {
 
   test("keeps a compact top-level orchestration surface", () => {
     expect(EXO_ACTIONS).toEqual([
-      "send", "list", "jobs", "tasks", "stop_task", "info", "history", "abort", "queue", "commands",
+      "send", "list", "tasks", "read", "stop", "commands",
     ]);
     expect(EXO_ACTIONS).not.toContain("transcribe" as never);
     expect(EXO_ACTIONS).not.toContain("llm" as never);
@@ -168,22 +168,16 @@ describe("native exo tool contract", () => {
     expect(schema).not.toContain("folder_mkdir");
     expect(schema).not.toContain("system_prompt");
     expect(schema).toContain('"title"');
-    expect(schema).toContain("Short title of about three words");
-    expect(schema).toContain("max_depth");
-    expect(schema).toContain('"effort"');
+    expect(schema).toContain("Short title");
+    expect(schema).not.toContain("max_depth");
+    expect(schema).not.toContain('"effort"');
     expect(schema).toContain('"allow_edits"');
-    expect(schema).toContain('"internal_tools"');
-    expect(schema).toContain('"external_tools"');
-    expect(schema).toContain("persistently replace");
-    expect(schema).toContain("must retain exo");
+    expect(schema).not.toContain('"internal_tools"');
+    expect(schema).not.toContain('"external_tools"');
     expect(schema).toContain('"task_id"');
-    expect(schema).toContain("exact active background-task ID returned by action=tasks");
-    expect(schema).toContain("Maximum number of additional subagent generations permitted");
-    expect(schema).toContain("not a target. Use 0 unless the target clearly needs to delegate");
-    expect(exo.description).toContain("Transcription and cross-instance targeting are intentionally excluded");
-    expect(exo.systemHint).toContain("Depth-zero agents retain exo only to inspect and stop their own tasks");
-    expect(exo.systemHint).toContain("new installations do not expand an explicit selection");
-    expect(exo.systemHint).toContain("External CLIs use the available shell executor");
+    expect(Object.keys(exo.inputSchema.properties as object)).toHaveLength(10);
+    expect(exo.systemHint).toContain("Depth-zero agents may only inspect/stop their own tasks");
+    expect(exo.systemHint).toContain("Tool selection is not a sandbox");
     expect(exo.systemHint).toContain("Subagents start in their own isolated conversation workspace");
   });
 
@@ -206,15 +200,17 @@ describe("native exo tool contract", () => {
     ]);
   });
 
-  test("preserves long task text in summaries so the TUI can wrap it", () => {
+  test("keeps long delegated prompts out of the status line", () => {
     const text = `${"Inspect every relevant file and report the exact behavior. ".repeat(5)}TAIL_SENTINEL`;
 
     expect(text.length).toBeGreaterThan(180);
     expect(exo.summarize({ action: "send", text, title: "Inspect relevant files" }).detail)
-      .toBe(`send: ${text} --title Inspect relevant files`);
+      .toBe("send: Inspect relevant files");
+    expect(exo.summarize({ action: "send", text }).detail.length).toBeLessThanOrEqual(106);
+    expect(exo.summarize({ action: "send", text }).detail).not.toContain("TAIL_SENTINEL");
   });
 
-  test("includes supplied arguments in summaries", () => {
+  test("summarizes intent rather than dumping CLI flags and raw JSON", () => {
     expect(exo.summarize({
       action: "send",
       text: "Inspect the renderer",
@@ -227,8 +223,7 @@ describe("native exo tool contract", () => {
       notify_parent: false,
       full: true,
     }).detail).toBe(
-      "send: Inspect the renderer --title Inspect renderer flow --conversation_id child-1 --max_depth 2 --provider openai "
-      + "--model gpt-5.6-terra --mode detach --notify_parent false --full",
+      "send: Inspect renderer flow",
     );
     expect(exo.summarize({
       action: "history",
@@ -236,12 +231,12 @@ describe("native exo tool contract", () => {
       limit: 20,
       offset: 5,
       full: true,
-    }).detail).toBe("history: child-1 --limit 20 --offset 5 --full");
+    }).detail).toBe("history: child-1");
     expect(exo.summarize({
       action: "commands",
       command: "help",
       args: { command: "rename", verbose: false },
-    }).detail).toBe('commands: help --args {"command":"rename","verbose":false}');
+    }).detail).toBe("commands: help");
     expect(exo.summarize({
       action: "stop_task",
       task_id: "bash:42:one",
@@ -263,6 +258,124 @@ describe("native exo tool contract", () => {
 });
 
 describe("native exo daemon runtime", () => {
+  test("resolves supported model nicknames before creating or running a child", async () => {
+    const runTurn = mock(async () => successfulOutcome());
+    const runtime = createExocortexToolRuntime({
+      server: fakeServer() as never, runTurn, hasCredentials: () => true,
+    });
+    for (const model of ["sol", "openai/terra", "LUNA"]) {
+      const text = "Review everything.\n".repeat(100).trimEnd();
+      const result = await runtime.execute({
+        action: "send", title: "Review model selection", text, model,
+        args: { mode: "wait", effort: "medium" },
+      }, undefined);
+      expect(result.isError).toBe(false);
+      const childId = JSON.parse(result.output).conversation_id;
+      conversationIds.push(childId);
+      expect(get(childId)?.provider).toBe("openai");
+      expect(get(childId)?.model).toBe(`gpt-5.6-${model.split("/").at(-1)!.toLowerCase()}`);
+      expect(get(childId)?.subagentMaxDepth).toBe(0);
+      expect(runTurn).toHaveBeenLastCalledWith(childId, text, 0, expect.any(Number), { kind: "exo_send" });
+    }
+    const conflict = await runtime.execute({
+      action: "send", text: "no", title: "Conflicting provider selection",
+      model: "openai/sol", args: { provider: "deepseek" },
+    }, undefined);
+    expect(conflict.isError).toBe(true);
+    expect(conflict.output).toContain("conflicts");
+    expect(runTurn).toHaveBeenCalledTimes(3);
+  });
+
+  test("discovers advanced options and models without expanding the default schema", async () => {
+    const runtime = createExocortexToolRuntime({ server: fakeServer() as never, runTurn: async () => successfulOutcome() });
+    for (const name of ["send", "list", "read", "stop", "tasks", "queue"]) {
+      const result = await runtime.execute({ action: "commands", command: "help", args: { command: name } }, undefined);
+      expect(result.isError).toBe(false);
+      expect(JSON.parse(result.output)).toMatchObject({ input_schema: { additionalProperties: false } });
+    }
+    const models = JSON.parse((await runtime.execute({ action: "commands", command: "models" }, undefined)).output);
+    expect(models.providers.find((p: { provider: string }) => p.provider === "openai").models).toContain("gpt-5.6-sol");
+    const sendHelp = await runtime.execute({ action: "commands", command: "help", args: { command: "send" } }, undefined);
+    expect(sendHelp.output).toContain("internal_tools");
+    expect(sendHelp.output).toContain("max_depth");
+  });
+
+  test("advanced args reject typos, dispatch injection, conflicting fields and invalid values before mutation", async () => {
+    const runTurn = mock(async () => successfulOutcome());
+    const server = fakeServer();
+    const runtime = createExocortexToolRuntime({ server: server as never, runTurn, hasCredentials: () => true });
+    for (const args of [
+      { max_dept: 1 }, { action: "status" }, { command: "delete" },
+      { model: "sol" }, { max_depth: -1 }, { max_depth: 0.5 }, { max_depth: null },
+      { allow_edits: "true" }, { mode: "wat" },
+    ]) {
+      const result = await runtime.execute({
+        action: "send", title: "Validate options first", text: "do not run", model: "sol", args,
+      }, undefined);
+      expect(result.isError).toBe(true);
+    }
+    expect(runTurn).not.toHaveBeenCalled();
+    expect(server.broadcast).not.toHaveBeenCalled();
+  });
+
+  test("read defaults to current history, supports metadata, and preserves pagination", async () => {
+    const owner = id("compact-read");
+    create(owner, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "Read me");
+    const runtime = createExocortexToolRuntime({ server: fakeServer() as never, runTurn: async () => successfulOutcome() });
+    const read = await runtime.execute({ action: "read", args: { limit: 3, offset: 0, full: true } }, owner);
+    const history = await runtime.execute({ action: "history", conversation_id: owner, limit: 3, offset: 0, full: true }, owner);
+    expect(read).toEqual(history);
+    const metadata = await runtime.execute({ action: "read", args: { view: "info" } }, owner);
+    expect(metadata.isError).toBe(false);
+    expect(JSON.parse(metadata.output).title).toBe("Read me");
+    expect((await runtime.execute({ action: "commands", command: "jobs" }, owner)).isError).toBe(false);
+  });
+
+  test("compact read/stop and nested args retain depth-zero ownership boundaries", async () => {
+    const owner = id("compact-owner"), other = id("compact-other");
+    create(owner, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "owner");
+    create(other, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "other");
+    const stopOwner = mock(() => true), stopOther = mock(() => true);
+    const details = { title: "test", startedAt: Date.now(), toolName: "bash", pid: 123, backgroundedAt: Date.now() };
+    setBackgroundTaskActive(owner, `bash:${owner}`, true, { ...details, stop: stopOwner });
+    setBackgroundTaskActive(other, `bash:${other}`, true, { ...details, stop: stopOther });
+    const runtime = createExocortexToolRuntime({ server: fakeServer() as never, runTurn: async () => successfulOutcome() });
+    expect((await runtime.execute({ action: "read", task_id: `bash:${owner}` }, owner, undefined, 0)).isError).toBe(false);
+    for (const input of [
+      { action: "tasks", args: { scope: "all" } },
+      { action: "tasks", args: { conversation_id: other } },
+      { action: "read", args: { task_id: `bash:${other}` } },
+      { action: "read", args: { conversation_id: other } },
+      { action: "stop", args: { task_id: `bash:${other}` } },
+      { action: "stop", args: { conversation_id: other } },
+      { action: "commands", command: "queue", args: { conversation_id: other, text: "escape" } },
+      { action: "send", title: "Escape depth limit", text: "escape" },
+    ]) {
+      expect((await runtime.execute(input, owner, undefined, 0)).isError).toBe(true);
+    }
+    expect(stopOther).not.toHaveBeenCalled();
+    expect((await runtime.execute({ action: "stop", args: { task_id: `bash:${owner}` } }, owner, undefined, 0)).isError).toBe(false);
+    expect(stopOwner).toHaveBeenCalledTimes(1);
+  });
+
+  test("stop requires one explicit target and cannot abort its own conversation", async () => {
+    const owner = id("compact-stop-owner"), other = id("compact-stop-other");
+    create(owner, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "owner");
+    create(other, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "other");
+    const abort = new AbortController();
+    setActiveJob(other, abort, Date.now());
+    const runtime = createExocortexToolRuntime({ server: fakeServer() as never, runTurn: async () => successfulOutcome() });
+    for (const input of [
+      { action: "stop" },
+      { action: "stop", conversation_id: owner },
+      { action: "stop", conversation_id: other, task_id: "bogus" },
+      { action: "read", conversation_id: other, task_id: "bogus" },
+    ]) expect((await runtime.execute(input, owner)).isError).toBe(true);
+    expect(abort.signal.aborted).toBe(false);
+    expect((await runtime.execute({ action: "stop", conversation_id: other }, owner)).isError).toBe(false);
+    expect(abort.signal.aborted).toBe(true);
+  });
+
   test("lists active tasks for the current, selected, or all conversations", async () => {
     const parentId = id("task-parent");
     const otherId = id("task-other");
@@ -945,7 +1058,7 @@ describe("native exo daemon runtime", () => {
     expect(runTurn).not.toHaveBeenCalled();
   });
 
-  test("requires and monotonically decreases the nested subagent depth budget", async () => {
+  test("defaults depth to zero and monotonically decreases explicit nested depth", async () => {
     const parentId = id("depth-parent");
     create(parentId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "parent");
     const runTurn = mock(async () => successfulOutcome("bounded"));
@@ -956,9 +1069,11 @@ describe("native exo daemon runtime", () => {
       hasCredentials: () => true,
     });
 
-    const missing = await runtime.execute({ action: "send", text: "missing" }, parentId);
-    expect(missing).toMatchObject({ isError: true });
-    expect(missing.output).toContain("max_depth is required");
+    const missing = await runtime.execute({ action: "send", title: "Default depth task", text: "missing", mode: "wait" }, parentId);
+    expect(missing).toMatchObject({ isError: false });
+    const defaultChild = JSON.parse(missing.output).conversation_id;
+    conversationIds.push(defaultChild);
+    expect(get(defaultChild)?.subagentMaxDepth).toBe(0);
 
     const missingTitle = await runtime.execute({ action: "send", text: "missing title", max_depth: 0 }, parentId);
     expect(missingTitle).toMatchObject({ isError: true });
@@ -1005,8 +1120,8 @@ describe("native exo daemon runtime", () => {
       conversation_id: parentId,
       text: "missing queue depth",
     }, parentId);
-    expect(missingQueueDepth).toMatchObject({ isError: true });
-    expect(missingQueueDepth.output).toContain("max_depth is required");
+    expect(missingQueueDepth).toMatchObject({ isError: false });
+    expect(getQueuedMessages(parentId).at(-1)?.subagentMaxDepth).toBe(0);
 
     const exhausted = await runtime.execute(
       { action: "queue", conversation_id: parentId, text: "nope", max_depth: 0 },
@@ -1062,6 +1177,7 @@ describe("native exo daemon runtime", () => {
 
     const listed = JSON.parse((await runtime.execute({ action: "commands" }, undefined)).output);
     expect(listed.commands.map((command: { name: string }) => command.name)).toEqual([
+      "models", "jobs", "queue",
       "folder", "mark", "pin", "reorder", "rename", "delete", "llm", "clone", "system_prompt", "tools", "instructions", "stats", "task", "hangup", "status", "notifications",
     ]);
 

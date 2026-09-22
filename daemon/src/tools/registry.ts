@@ -127,7 +127,7 @@ export function buildToolSystemHints(allowedNames?: readonly string[], conversat
   return getSelectedAvailableTools(allowedNames, conversationId)
     .filter(t => t.systemHint)
     .map(t => `## ${t.name}\n${t.name === "exo" && maxDepth === 0
-      ? "Use exo to inspect your own tasks (action=tasks), stop your own background tasks (action=stop_task), or inspect an exact task (action=commands, command=task, args={operation: 'info', task_id: ...}). Delegation and unrelated administration are unavailable at depth zero."
+      ? "Use exo tasks to list your own work, read with task_id to inspect it, and stop with task_id to stop a background task. Delegation and unrelated administration are unavailable at depth zero."
       : t.systemHint!}`)
     .join("\n");
 }
