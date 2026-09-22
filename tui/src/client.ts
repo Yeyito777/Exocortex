@@ -515,6 +515,16 @@ export class DaemonClient {
     return reqId;
   }
 
+  /** File opens are ephemeral and must never be queued onto another route. */
+  requestFileLink(convId: string, target: string): string | null {
+    if (!this.sshAlias || !this.socket || !this._connected) return null;
+    const reqId = `file_link_${++this.nextReqId}_${Date.now()}`;
+    try {
+      this.writeCommand({ type: "resolve_file_link", reqId, convId, target });
+      return reqId;
+    } catch { return null; }
+  }
+
   ssh(action: "connect" | "status" | "cancel", alias?: string): void {
     switch (action) {
       case "status":

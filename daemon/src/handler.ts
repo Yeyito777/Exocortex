@@ -79,6 +79,7 @@ import { BtwSessionManager } from "./btw";
 import { enqueueExternalNotificationSoftWake } from "./external-notification-soft-wakes";
 import { RealtimeCallManager } from "./call/manager";
 import { listPathDirectoryWithLookahead } from "./path-completion";
+import { resolveFileLink } from "./file-links";
 
 // ── Handler ─────────────────────────────────────────────────────────
 
@@ -1207,6 +1208,46 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           reqId: cmd.reqId,
           listings,
         });
+        break;
+      }
+
+      case "resolve_file_link": {
+        const reqId = typeof cmd.reqId === "string" ? cmd.reqId : undefined;
+        const convId = typeof cmd.convId === "string" ? cmd.convId : undefined;
+        if (!reqId || !convId || typeof cmd.target !== "string") {
+          server.sendTo(client, {
+            type: "error",
+            reqId,
+            convId,
+            message: "Invalid resolve_file_link command",
+          });
+          break;
+        }
+        if (!convStore.get(cmd.convId)) {
+          server.sendTo(client, {
+            type: "error",
+            reqId: cmd.reqId,
+            convId: cmd.convId,
+            message: `Conversation ${cmd.convId} not found`,
+          });
+          break;
+        }
+        try {
+          const resolved = await resolveFileLink(cmd.convId, cmd.target);
+          server.sendTo(client, {
+            type: "file_link_resolved",
+            reqId: cmd.reqId,
+            convId: cmd.convId,
+            ...resolved,
+          });
+        } catch (error) {
+          server.sendTo(client, {
+            type: "error",
+            reqId: cmd.reqId,
+            convId: cmd.convId,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
         break;
       }
 

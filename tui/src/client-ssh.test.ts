@@ -346,6 +346,11 @@ describe("DaemonClient SSH routing", () => {
       directory: "~/Workspace/",
       prefix: "exo",
     }));
+    const fileReqId = client.requestFileLink("remote-conversation", "reports/README.md");
+    expect(fileReqId?.startsWith("file_link_")).toBe(true);
+    expect(spawned[0].input).toContain(JSON.stringify({
+      type: "resolve_file_link", reqId: fileReqId, convId: "remote-conversation", target: "reports/README.md",
+    }));
     expect(events.find(event => (
       event as { type?: string; silent?: boolean }
     ).type === "ssh_status" && (
@@ -416,6 +421,9 @@ describe("DaemonClient SSH routing", () => {
   test("does not queue ephemeral path reads while disconnected", () => {
     const client = new DaemonClient(() => {}, "/tmp/local.sock", false);
     expect(client.requestPathDirectory("~/", "W")).toBeNull();
+    expect(client.requestFileLink("conversation", "report.md")).toBeNull();
+    (client as any).sshAlias = "whale";
+    expect(client.requestFileLink("conversation", "report.md")).toBeNull();
     expect((client as any).pendingCommands).toEqual([]);
   });
 });

@@ -1,4 +1,5 @@
-import { fileURLToPath } from "node:url";
+import { parseLocalFileLinkTarget as localPathFromTarget } from "@exocortex/shared/file-links";
+export { localPathFromTarget };
 
 /** Link ranges use UTF-16 offsets in ANSI-stripped display text (like history cursors). */
 export interface LinkSpan {
@@ -10,26 +11,6 @@ export interface LinkSpan {
 export function isWebUrl(target: string): boolean {
   if (!/^https?:\/\//i.test(target) || /[\s\u0000-\u001f\u007f-\u009f]/u.test(target)) return false;
   try { return !!new URL(target).hostname; } catch { return false; }
-}
-
-/** Decode explicit local link destinations, without accepting other URI schemes. */
-export function localPathFromTarget(target: string): string | null {
-  if (!target || /[\u0000-\u001f\u007f-\u009f]/u.test(target)
-    || target.startsWith("#") || target.startsWith("//")) return null;
-  let path: string;
-  try {
-    if (/^file:/i.test(target)) {
-      const url = new URL(target);
-      if (url.search || url.hash) return null;
-      path = fileURLToPath(url);
-    } else {
-      if (/^[a-z][a-z\d+.-]*:/i.test(target)) return null;
-      path = decodeURIComponent(target);
-    }
-  } catch { return null; }
-  if (!path.trim() || /[\u0000-\u001f\u007f-\u009f]/u.test(path)
-    || path.startsWith("//") || /^[a-z][a-z\d+.-]*:/i.test(path)) return null;
-  return path;
 }
 
 /** Strip prose punctuation, but preserve balanced parentheses in URL paths. */

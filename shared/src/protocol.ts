@@ -37,6 +37,14 @@ export interface ListPathDirectoryCommand {
   prefix: string;
 }
 
+/** Resolve a Markdown local-file destination on the daemon host. */
+export interface ResolveFileLinkCommand {
+  type: "resolve_file_link";
+  reqId: string;
+  convId: string;
+  target: string;
+}
+
 export interface PathDirectoryEntry {
   name: string;
   type: "dir" | "file";
@@ -933,6 +941,7 @@ export interface LogoutCommand {
 export type Command =
   | PingCommand
   | ListPathDirectoryCommand
+  | ResolveFileLinkCommand
   | ClientCapabilitiesCommand
   | PrepareShutdownCommand
   | RestartDaemonCommand
@@ -1028,6 +1037,17 @@ export interface PathDirectoryEntriesEvent {
   type: "path_directory_entries";
   reqId: string;
   listings: PathDirectoryListing[];
+}
+
+/** Metadata only; file contents are never transferred in daemon IPC. */
+export interface FileLinkResolvedEvent {
+  type: "file_link_resolved";
+  reqId: string;
+  convId: string;
+  /** Absolute canonical path on the daemon host. */
+  path: string;
+  kind: "file" | "directory";
+  size: number;
 }
 
 /** Sent before a graceful daemon shutdown so clients can classify the disconnect. */
@@ -1825,6 +1845,7 @@ export interface ErrorEvent {
 export type Event =
   | PongEvent
   | PathDirectoryEntriesEvent
+  | FileLinkResolvedEvent
   | DaemonShutdownEvent
   | AckEvent
   | ConversationCreatedEvent

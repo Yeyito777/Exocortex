@@ -88,6 +88,115 @@ function cleanupIds(): void {
   if (subagentsFolder) deleteFolder(subagentsFolder.id);
 }
 
+describe("remote file link resolution", () => {
+  afterEach(cleanupIds);
+
+  test("returns correlated remote file metadata without file contents", async () => {
+    const id = mkId("resolve-file-link");
+    create(id, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
+    const path = join(conversationWorkspaceDir(id), "report one.md");
+    writeFileSync(path, "remote data");
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}), sendToSubscribers: mock(() => {}), sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+
+    await createHandler(server as never)({} as never, {
+      type: "resolve_file_link",
+      reqId: "resolve-1",
+      convId: id,
+      target: "report%20one.md",
+    });
+
+    expect(sent).toEqual([{
+      type: "file_link_resolved",
+      reqId: "resolve-1",
+      convId: id,
+      path,
+      kind: "file",
+      size: 11,
+    }]);
+  });
+
+  test("validates the conversation before resolving and correlates resolution errors", async () => {
+    const id = mkId("resolve-file-link-errors");
+    create(id, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}), sendToSubscribers: mock(() => {}), sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({} as never, {
+      type: "resolve_file_link",
+      reqId: "missing-conversation",
+      convId: "does-not-exist",
+      target: "report.md",
+    });
+    await handle({} as never, {
+      type: "resolve_file_link",
+      reqId: "unsafe-target",
+      convId: id,
+      target: "file://remote/tmp/report.md",
+    });
+
+    expect(sent[0]).toEqual({
+      type: "error",
+      reqId: "missing-conversation",
+      convId: "does-not-exist",
+      message: "Conversation does-not-exist not found",
+    });
+    expect(sent[1]).toEqual({
+      type: "error",
+      reqId: "unsafe-target",
+      convId: id,
+      message: "Invalid or unsupported local file link",
+    });
+  });
+
+  test("rejects malformed raw commands without throwing", async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}), sendToSubscribers: mock(() => {}), sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({} as never, {
+      type: "resolve_file_link",
+      reqId: "malformed-link",
+      convId: 42,
+      target: null,
+    } as never);
+    await handle({} as never, {
+      type: "resolve_file_link",
+      reqId: 42,
+      convId: "conversation",
+      target: "notes.md",
+    } as never);
+
+    expect(sent).toEqual([
+      {
+        type: "error",
+        reqId: "malformed-link",
+        convId: undefined,
+        message: "Invalid resolve_file_link command",
+      },
+      {
+        type: "error",
+        reqId: undefined,
+        convId: "conversation",
+        message: "Invalid resolve_file_link command",
+      },
+    ]);
+  });
+});
+
 describe("handler shutdown preparation", () => {
   afterEach(cleanupIds);
 

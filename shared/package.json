@@ -12,6 +12,7 @@
     "./model-display": "./src/model-display.ts",
     "./token-pricing": "./src/token-pricing.ts",
     "./protocol": "./src/protocol.ts",
+    "./file-links": "./src/file-links.ts",
     "./history-delta": "./src/history-delta.ts",
     "./realtime": "./src/realtime.ts",
     "./paths": "./src/paths.ts"

@@ -47,7 +47,7 @@ import {
 } from "./editmessage";
 import { generateTitle, PENDING_TITLE } from "./titlegen";
 import { theme } from "./theme";
-import { openConversationTarget } from "./openable";
+import { RemoteFileLinkController } from "./remote-file-links";
 import { msUntilNextElapsedSecond } from "./time";
 import { activeDurableSleepMetadataStartedAt } from "./durable-sleep-metadata";
 import type { DaemonShutdownMode, Event, QueueTiming } from "./protocol";
@@ -134,6 +134,7 @@ let terminalControlBuffer: TerminalControlBuffer | null = null;
 let voiceInput: VoiceInputController | null = null;
 let callMedia: CallMediaController | null = null;
 let remotePathCompletion: RemotePathCompletionController | null = null;
+let remoteFileLinks: RemoteFileLinkController | null = null;
 let pendingVoiceQueuePrompt = false;
 let pendingNewConversationConvId: string | null = null;
 let pendingLocalInterruptConvId: string | null = null;
@@ -407,12 +408,14 @@ function resetForDaemonRouteSwitch(): void {
 function onDaemonEvent(event: Event): void {
   const eventStartedAt = PERFORMANCE_PROFILING_ENABLED ? performance.now() : 0;
   if (event.type === "ssh_status" && event.state === "connected" && event.switched) {
+    remoteFileLinks?.cancel();
     daemonRouteSwitchPending = true;
     resetForDaemonRouteSwitch();
   }
   // The switched status is the final frame from the old endpoint. Ignore any
   // already-in-flight old-route events until a fresh local socket reconnects.
   if (daemonRouteSwitchPending && event.type !== "ssh_status") return;
+  if (remoteFileLinks?.handleEvent(event)) return;
   if (event.type === "path_directory_entries" || event.type === "error") {
     const pathResult = remotePathCompletion?.handleEvent(event, state);
     if (pathResult?.consumed) {
@@ -1550,7 +1553,7 @@ function handleKey(key: KeyEvent): void {
       closeBtwSession(state, daemon);
       break;
     case "open_target":
-      openConversationTarget(result.target, state.convId);
+      remoteFileLinks?.open(result.target);
       break;
     case "quit":
       running = false;
@@ -1733,7 +1736,7 @@ function handleMouse(ev: MouseEvent): void {
       daemon.pinConversation(result.convId, result.pinned);
       break;
     case "open_target":
-      openConversationTarget(result.target, state.convId);
+      remoteFileLinks?.open(result.target);
       break;
     case "handled":
       break;
@@ -1812,6 +1815,7 @@ async function reconnectToDaemon(): Promise<void> {
 }
 
 function handleDaemonConnectionLost(shutdownMode: DaemonShutdownMode | null): void {
+  remoteFileLinks?.cancel();
   updateMonitor?.disconnected();
   voiceInput?.cleanup();
   callMedia?.stop();
@@ -1882,6 +1886,14 @@ async function main(): Promise<void> {
   remotePathCompletion = new RemotePathCompletionController(
     (directory, prefix) => daemon.requestPathDirectory(directory, prefix),
   );
+  remoteFileLinks = new RemoteFileLinkController({
+    context: () => ({ alias: daemon.remoteAlias, conversationId: state.convId }),
+    request: (convId, target) => daemon.requestFileLink(convId, target),
+    notify: message => {
+      pushSystemMessage(state, `✗ ${message}`, theme.error);
+      scheduleRender();
+    },
+  });
   daemon.onConnectionLost(handleDaemonConnectionLost);
   callMedia = new CallMediaController(daemon, {
     micGainDb: loadMicGainDb(),
@@ -2019,6 +2031,7 @@ function cleanup(): void {
   terminalControlBuffer = null;
   terminalClipboardClient?.dispose();
   terminalClipboardClient = null;
+  remoteFileLinks?.cancel();
   daemon?.disconnect();
   restoreTerminal();
   process.exit(0);
