@@ -85,6 +85,28 @@ const GPT_6_ASTRA: StaticPricingDefinition = {
 };
 register(["gpt-6-astra"], GPT_6_ASTRA);
 
+// GPT-6 Sol/Luna model pages, checked 2026-09-22:
+// https://developers.openai.com/api/docs/models/gpt-6-sol
+// https://developers.openai.com/api/docs/models/gpt-6-luna
+register(["gpt-6-sol"], {
+  provider: "openai",
+  basisModel: "gpt-6-sol",
+  standard: rates(2, 0.2, 2.5, 10),
+  standardLong: rates(4, 0.4, 5, 15),
+  fast: rates(4, 0.4, 5, 20),
+  fastLong: rates(8, 0.8, 10, 30),
+  longContextThresholdTokens: OPENAI_LONG_CONTEXT_THRESHOLD_TOKENS,
+});
+register(["gpt-6-luna"], {
+  provider: "openai",
+  basisModel: "gpt-6-luna",
+  standard: rates(0.1, 0.01, 0.125, 0.5),
+  standardLong: rates(0.2, 0.02, 0.25, 0.75),
+  fast: rates(0.2, 0.02, 0.25, 1),
+  fastLong: rates(0.4, 0.04, 0.5, 1.5),
+  longContextThresholdTokens: OPENAI_LONG_CONTEXT_THRESHOLD_TOKENS,
+});
+
 const GPT_5_6_SOL: StaticPricingDefinition = {
   provider: "openai",
   basisModel: "gpt-5.6-sol",

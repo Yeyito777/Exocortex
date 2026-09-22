@@ -1,5 +1,33 @@
 import { describe, expect, mock, test } from "bun:test";
 import { createExocortexToolRuntime } from "./exocortex-tool-runtime";
+import type { CompleteOptions } from "./llm";
+
+describe("OpenAI family nicknames", () => {
+  test("prefers GPT-6 for Sol/Luna while preserving Terra and explicit older IDs", async () => {
+    const complete = mock(async (_system: string, _text: string, _options?: CompleteOptions) => ({ text: "OK" }));
+    const runtime = createExocortexToolRuntime({
+      server: { broadcast: () => {} } as never,
+      runTurn: async () => ({ ok: true, blocks: [], tokens: 0, durationMs: 0, endedAt: Date.now() }),
+      hasCredentials: () => true,
+      runCompletion: complete,
+    });
+    for (const [nickname, model] of [
+      ["sol", "gpt-6-sol"],
+      ["LUNA", "gpt-6-luna"],
+      ["openai/sol", "gpt-6-sol"],
+      ["openai/luna", "gpt-6-luna"],
+      ["terra", "gpt-5.6-terra"],
+      ["gpt-5.6-sol", "gpt-5.6-sol"],
+      ["openai/gpt-5.6-luna", "gpt-5.6-luna"],
+    ]) {
+      const result = await runtime.execute({
+        action: "commands", command: "llm", args: { model: nickname, text: "Hello" },
+      });
+      expect(result.isError).toBe(false);
+      expect(complete.mock.calls.at(-1)?.[2]).toMatchObject({ provider: "openai", model, effort: "medium" });
+    }
+  });
+});
 
 function runtimeWithStop(stopCall = mock(async (_convId: string) => {})) {
   const runtime = createExocortexToolRuntime({

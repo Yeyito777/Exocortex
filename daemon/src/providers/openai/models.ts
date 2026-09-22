@@ -66,6 +66,10 @@ function fallbackOpenAIModel(
 
 export const FALLBACK_OPENAI_MODELS: ModelInfo[] = [
   fallbackOpenAIModel("gpt-6-astra", GPT_6_ASTRA_CONTEXT_TOKENS, GPT_6_ASTRA_OPENAI_EFFORTS, "low"),
+  // Conservative Codex context fallback until the endpoint advertises these
+  // tiers; do not substitute their public API's 1.05M context window.
+  fallbackOpenAIModel("gpt-6-sol", DEFAULT_OPENAI_CONTEXT_TOKENS, GPT_5_6_ULTRA_OPENAI_EFFORTS),
+  fallbackOpenAIModel("gpt-6-luna", DEFAULT_OPENAI_CONTEXT_TOKENS, GPT_5_6_OPENAI_EFFORTS),
   fallbackOpenAIModel("gpt-5.6-sol", GPT_5_6_CODEX_CONTEXT_TOKENS, GPT_5_6_ULTRA_OPENAI_EFFORTS),
   fallbackOpenAIModel("gpt-5.6-terra", GPT_5_6_CODEX_CONTEXT_TOKENS, GPT_5_6_ULTRA_OPENAI_EFFORTS),
   fallbackOpenAIModel("gpt-5.6-luna", GPT_5_6_CODEX_CONTEXT_TOKENS, GPT_5_6_OPENAI_EFFORTS),
@@ -79,6 +83,8 @@ export const FALLBACK_OPENAI_MODELS: ModelInfo[] = [
 const PRIMARY_OPENAI_MODEL_FAMILIES = ["gpt-6", "gpt-5.6", "gpt-5.5", "gpt-5.4"] as const;
 const PREFERRED_OPENAI_MODEL_ORDER = [
   "gpt-6-astra",
+  "gpt-6-sol",
+  "gpt-6-luna",
   "gpt-5.6-sol",
   "gpt-5.6-terra",
   "gpt-5.6-luna",
@@ -144,6 +150,7 @@ function isPreferredOpenAIModel(model: OpenAICodexModel, preferredFamily: Primar
 
 function preferredDefaultEffort(modelSlug: string, apiDefaultEffort: EffortLevel | undefined): EffortLevel {
   if (modelSlug === "gpt-6-astra") return apiDefaultEffort ?? "low";
+  if (modelSlug === "gpt-6-sol" || modelSlug === "gpt-6-luna") return "medium";
   if (modelSlug === "gpt-daybreak-blue-latest") return apiDefaultEffort ?? "low";
   // Product preference: use medium effort for GPT-5.6/5.5-family models, even if
   // upstream model metadata reports a higher default.
@@ -156,6 +163,8 @@ function preferredDefaultEffort(modelSlug: string, apiDefaultEffort: EffortLevel
 
 function fallbackEffortsForModel(modelSlug: string): ReasoningEffortInfo[] {
   if (modelSlug === "gpt-6-astra") return GPT_6_ASTRA_OPENAI_EFFORTS;
+  if (modelSlug === "gpt-6-sol") return GPT_5_6_ULTRA_OPENAI_EFFORTS;
+  if (modelSlug === "gpt-6-luna") return GPT_5_6_OPENAI_EFFORTS;
   if (isOpenAIModelInFamily(modelSlug, "gpt-5.6")) {
     return supportsOpenAIUltraReasoningEffort(modelSlug)
       ? GPT_5_6_ULTRA_OPENAI_EFFORTS
