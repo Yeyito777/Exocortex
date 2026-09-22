@@ -32,6 +32,36 @@ function history(text: string, width = 44) {
 }
 
 describe("link parsing and rendering", () => {
+  test("local file and folder labels hide destinations and retain complete targets", () => {
+    for (const target of [
+      "NFC-Findings/", "NFC-Findings/README.md", "./notes.txt", "../notes.md",
+      "/tmp/notes.md", "~/notes.md", "file:///tmp/notes%20one.md",
+      "notes%20one.md", "reports/result_(final).json",
+    ]) {
+      const source = `[Local report](${target})`;
+      expect(inlineLinkAt(source, 0)?.target).toBe(target);
+      const rendered = markdownWordWrap(source, 8, theme.reset);
+      expect(rendered.lines.map(stripAnsi).join(" ")).toBe("Local report");
+      expect(rendered.links?.flat().length).toBeGreaterThan(0);
+      expect(rendered.links?.flat().every(span => span.target === target)).toBe(true);
+    }
+    for (const source of ['[Report](<notes one.md> "Title")', '[Report](notes\\ one.md)']) {
+      expect(inlineLinkAt(source, 0)?.target).toBe("notes one.md");
+    }
+    expect(inlineLinkAt("[Report](notes\\(final\\).md)", 0)?.target).toBe("notes(final).md");
+  });
+
+  test("unsafe, malformed, and code-local links remain literal", () => {
+    for (const source of [
+      "[Local](javascript:notes.md)", "[Local](data:text/plain,notes.md)",
+      "[Local](file://remote/tmp/notes.md)", "[Local](file:///tmp/notes%00.md)",
+      "[Local](notes%0A.md)", "[Local](//remote/notes.md)", "[Local](#section)",
+      "[Local](notes.md", "`[Local](notes.md)`", "[Local](file:///tmp/a\u001b.md)",
+    ]) {
+      expect(markdownWordWrap(source, 100, theme.reset).lines.map(stripAnsi).join(" ")).toContain("[Local]");
+    }
+  });
+
   test("Markdown labels, titles, autolinks and balanced URL punctuation", () => {
     for (const source of ['[Paper](https://example.com/a_(b))', '[Paper](<https://example.com/a_(b)> "A title")']) {
       expect(inlineLinkAt(source, 0)?.target).toBe("https://example.com/a_(b)");
@@ -54,14 +84,16 @@ describe("link parsing and rendering", () => {
   });
 
   test("links in tables retain hit ranges after cell wrapping", () => {
-    const rendered = markdownWordWrap("| Name | Link |\n| --- | --- |\n| 中文 | [a rather long label](https://example.com) |", 24, theme.reset);
-    const spans = rendered.links?.flat() ?? [];
-    expect(spans.length).toBeGreaterThan(0);
-    for (let row = 0; row < rendered.lines.length; row++) {
-      expect(visibleLength(rendered.lines[row])).toBeLessThanOrEqual(24);
-      for (const span of rendered.links?.[row] ?? []) {
-        expect(stripAnsi(rendered.lines[row]).slice(span.start, span.end)).not.toContain("│");
-        expect(span.target).toBe("https://example.com");
+    for (const target of ["https://example.com", "NFC-Findings/README.md", "NFC-Findings/"]) {
+      const rendered = markdownWordWrap(`| Name | Link |\n| --- | --- |\n| 中文 | [a rather long label](${target}) |`, 24, theme.reset);
+      const spans = rendered.links?.flat() ?? [];
+      expect(spans.length).toBeGreaterThan(0);
+      for (let row = 0; row < rendered.lines.length; row++) {
+        expect(visibleLength(rendered.lines[row])).toBeLessThanOrEqual(24);
+        for (const span of rendered.links?.[row] ?? []) {
+          expect(stripAnsi(rendered.lines[row]).slice(span.start, span.end)).not.toContain("│");
+          expect(span.target).toBe(target);
+        }
       }
     }
   });
@@ -89,6 +121,24 @@ describe("link parsing and rendering", () => {
 });
 
 describe("link activation", () => {
+  test("Enter and mouse activate local files and directories by their label", () => {
+    for (const target of ["NFC-Findings/", "NFC-Findings/README.md", "evidence.json", "file:///tmp/notes.md"]) {
+      const state = history(`[Local report](${target})`, 8);
+      state.chatFocus = "history";
+      expect(state.historyLineAnchors.flatMap(anchor => anchor.links ?? []).length).toBeGreaterThan(0);
+      for (let row = 0; row < state.historyLineAnchors.length; row++) {
+        for (const span of state.historyLineAnchors[row].links ?? []) {
+          state.historyCursor = { row, col: span.start };
+          expect(handleFocusedKey({ type: "enter" }, state)).toEqual({ type: "open_target", target });
+          const col = 1 + termWidth(stripAnsi(state.historyLines[row]).slice(0, span.start));
+          const event = { type: "mouse" as const, shift: false, meta: false, ctrl: false, row: row + 3, col, button: 0 };
+          handleMouseEvent({ ...event, action: "press" }, state);
+          expect(handleMouseEvent({ ...event, action: "release" }, state)).toEqual({ type: "open_target", target });
+        }
+      }
+    }
+  });
+
   test("Ctrl+N history navigation and Enter open every wrapped label fragment", () => {
     const state = history("[Working Backwards: Learning to Place by Picking](https://arxiv.org/abs/2312.02352)", 24);
     handleFocusedKey({ type: "ctrl-n" }, state);

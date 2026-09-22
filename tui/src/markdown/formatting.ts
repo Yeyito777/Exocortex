@@ -224,7 +224,7 @@ function buildChunkSource(chunks: string[], joins: string[]): { src: string; own
   return { src, owner };
 }
 
-// Light markdown formatting: **bold**, *italic*, `code`, and HTTP(S) links.
+// Light markdown formatting: **bold**, *italic*, `code`, and web/local links.
 // Returns ANSI-formatted text and a plain version with markers stripped.
 // bgRestore is the ANSI escape to restore after inline code spans.
 //

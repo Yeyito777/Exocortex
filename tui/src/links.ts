@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url";
+
 /** Link ranges use UTF-16 offsets in ANSI-stripped display text (like history cursors). */
 export interface LinkSpan {
   start: number;
@@ -8,6 +10,26 @@ export interface LinkSpan {
 export function isWebUrl(target: string): boolean {
   if (!/^https?:\/\//i.test(target) || /[\s\u0000-\u001f\u007f-\u009f]/u.test(target)) return false;
   try { return !!new URL(target).hostname; } catch { return false; }
+}
+
+/** Decode explicit local link destinations, without accepting other URI schemes. */
+export function localPathFromTarget(target: string): string | null {
+  if (!target || /[\u0000-\u001f\u007f-\u009f]/u.test(target)
+    || target.startsWith("#") || target.startsWith("//")) return null;
+  let path: string;
+  try {
+    if (/^file:/i.test(target)) {
+      const url = new URL(target);
+      if (url.search || url.hash) return null;
+      path = fileURLToPath(url);
+    } else {
+      if (/^[a-z][a-z\d+.-]*:/i.test(target)) return null;
+      path = decodeURIComponent(target);
+    }
+  } catch { return null; }
+  if (!path.trim() || /[\u0000-\u001f\u007f-\u009f]/u.test(path)
+    || path.startsWith("//") || /^[a-z][a-z\d+.-]*:/i.test(path)) return null;
+  return path;
 }
 
 /** Strip prose punctuation, but preserve balanced parentheses in URL paths. */
@@ -28,7 +50,7 @@ export interface InlineLink {
   target: string;
 }
 
-/** Inline Markdown links, autolinks and bare HTTP(S) URLs; never executable schemes. */
+/** Inline web/local Markdown links, plus HTTP(S) autolinks and bare URLs. */
 export function inlineLinkAt(src: string, start: number, end = src.length): InlineLink | null {
   if (!/[\[<hH]/.test(src[start] ?? "")) return null;
   if (src[start] === "[" && src[start - 1] !== "!" && src[start - 1] !== "\\") {
@@ -48,11 +70,12 @@ export function inlineLinkAt(src: string, start: number, end = src.length): Inli
       let parens = 0;
       for (; pos < end; pos++) {
         const ch = src[pos];
+        if (ch === "\\" && /[\\()[\] <>]/.test(src[pos + 1] ?? "")) { pos++; continue; }
         if (angled ? ch === ">" : (/\s/.test(ch) || (ch === ")" && parens === 0))) break;
         if (ch === "(") parens++;
         if (ch === ")") parens--;
       }
-      const target = src.slice(targetStart, pos);
+      const target = src.slice(targetStart, pos).replace(/\\([\\()[\] <>])/g, "$1");
       if (angled && src[pos++] !== ">") return null;
       while (/\s/.test(src[pos] ?? "") && pos < end) pos++;
       // Optional Markdown title (not part of the URL).
@@ -62,7 +85,7 @@ export function inlineLinkAt(src: string, start: number, end = src.length): Inli
         if (src[pos++] !== quote) return null;
         while (/\s/.test(src[pos] ?? "") && pos < end) pos++;
       }
-      if (pos < end && src[pos] === ")" && isWebUrl(target)) {
+      if (pos < end && src[pos] === ")" && (isWebUrl(target) || localPathFromTarget(target) !== null)) {
         return { end: pos + 1, labelStart: start + 1, labelEnd, target };
       }
     }

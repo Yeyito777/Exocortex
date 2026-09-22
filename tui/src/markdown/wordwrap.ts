@@ -257,7 +257,7 @@ function wrapParagraphBlock(
   links: LinkSpan[][] = [],
 ): void {
   const sourceParagraphs = bgRestore != null ? renderInlineMathChunks(paragraphs) : paragraphs;
-  if (bgRestore != null && sourceParagraphs.some(paragraph => /https?:\/\//i.test(paragraph))) {
+  if (bgRestore != null && sourceParagraphs.some(paragraph => /\]\(|https?:\/\//i.test(paragraph))) {
     const wrapped = wrapLinkedParagraphs(sourceParagraphs.map(line => line.trim().replace(/\s+/g, " ")), width, bgRestore);
     for (let row = 0; row < wrapped.lines.length; row++) links[result.length + row] = wrapped.links[row];
     result.push(...wrapped.lines);

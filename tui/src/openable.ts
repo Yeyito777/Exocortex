@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { conversationWorkspaceDir } from "@exocortex/shared/paths";
 import { defaultOpenersConfig, readExocortexConfig } from "@exocortex/shared/config";
-import { isWebUrl, trimUrlPunctuation } from "./links";
+import { isWebUrl, localPathFromTarget, trimUrlPunctuation } from "./links";
 
 export interface OpenableTargetMatch {
   target: string;
@@ -207,27 +208,44 @@ export function findOpenableTargetMatches(text: string): OpenableTargetMatch[] {
   return [...urlMatches, ...fileMatches].sort((a, b) => a.start - b.start);
 }
 
-export function resolveOpenCommand(target: string): OpenCommand | null {
+export interface OpenTargetOptions {
+  baseDirectory?: string;
+  /** Explicit Markdown links can open folders and files without extension rules. */
+  localLink?: boolean;
+}
+
+export function resolveOpenCommand(target: string, options: OpenTargetOptions = {}): OpenCommand | null {
   const openers = readOpenersConfig();
 
   if (/^https?:\/\//i.test(target)) {
     return openers.url && isWebUrl(target) ? commandFromConfig(openers.url, target) : null;
   }
 
-  const rule = ruleForPath(target, openers.rules);
-  if (!rule) return null;
-  const expandedPath = expandUserPath(target);
+  const localPath = localPathFromTarget(target);
+  if (localPath === null) return null;
+  const expandedPath = resolve(options.baseDirectory ?? process.cwd(), expandUserPath(localPath));
+  const rule = ruleForPath(localPath, openers.rules);
+  if (!rule) return options.localLink ? { command: "xdg-open", args: [expandedPath] } : null;
   return commandFromConfig(rule, target, expandedPath);
 }
 
-export function openTargetDetached(target: string): boolean {
-  const openCommand = resolveOpenCommand(target);
+/** History links belong to the conversation, not the terminal's launch directory. */
+export function openConversationTarget(target: string, conversationId: string | null): boolean {
+  return openTargetDetached(target, {
+    baseDirectory: conversationId ? conversationWorkspaceDir(conversationId) : undefined,
+    localLink: true,
+  });
+}
+
+export function openTargetDetached(target: string, options: OpenTargetOptions = {}): boolean {
+  const openCommand = resolveOpenCommand(target, options);
   if (!openCommand) return false;
 
   try {
     const child = spawn(openCommand.command, openCommand.args, {
       detached: true,
       stdio: "ignore",
+      cwd: options.baseDirectory,
     });
     child.on("error", () => {
       // Best effort: opening a target should never disrupt the TUI.

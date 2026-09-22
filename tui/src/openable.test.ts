@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { defaultExocortexConfig, writeExocortexConfig } from "@exocortex/shared/config";
 import { findOpenableTargetMatches, openTargetDetached, resolveOpenCommand } from "./openable";
+import { homedir } from "node:os";
 
 function resetConfig(): void {
   writeExocortexConfig(defaultExocortexConfig());
@@ -48,6 +49,35 @@ describe("openable target detection", () => {
 });
 
 describe("openable target command resolution", () => {
+  test("resolves local links relative to the conversation and decodes file URIs", () => {
+    const options = { baseDirectory: "/tmp/conversation", localLink: true };
+    for (const [target, path] of [
+      ["NFC-Findings/README.md", "/tmp/conversation/NFC-Findings/README.md"],
+      ["../notes.md", "/tmp/notes.md"],
+      ["~/notes.md", `${homedir()}/notes.md`],
+      ["file:///tmp/notes%20one.md", "/tmp/notes one.md"],
+      ["notes%20one.md", "/tmp/conversation/notes one.md"],
+    ]) {
+      expect(resolveOpenCommand(target, options)).toEqual({
+        command: "st", args: ["-e", "zsh", "-ic", `exec nvim '${path}'`],
+      });
+    }
+    for (const target of ["NFC-Findings/", "evidence.json", "SHA256SUMS"]) {
+      expect(resolveOpenCommand(target, options)).toEqual({
+        command: "xdg-open", args: [`/tmp/conversation/${target.replace(/\/$/, "")}`],
+      });
+    }
+  });
+
+  test("local fallback never opens unsafe schemes or control characters", () => {
+    for (const target of [
+      "javascript:notes.md", "data:text/plain,notes.md", "file://remote/tmp/notes.md",
+      "notes%00.md", "notes\n.md", "file:///tmp/notes%1b.md", "//remote/notes.md",
+    ]) {
+      expect(resolveOpenCommand(target, { localLink: true })).toBeNull();
+    }
+  });
+
   test("opens image and pdf paths with show", () => {
     expect(resolveOpenCommand("/tmp/reference.png")).toEqual({ command: "show", args: ["/tmp/reference.png"] });
     expect(resolveOpenCommand("/tmp/reference.pdf")).toEqual({ command: "show", args: ["/tmp/reference.pdf"] });

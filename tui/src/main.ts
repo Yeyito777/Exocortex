@@ -47,7 +47,7 @@ import {
 } from "./editmessage";
 import { generateTitle, PENDING_TITLE } from "./titlegen";
 import { theme } from "./theme";
-import { openTargetDetached } from "./openable";
+import { openConversationTarget } from "./openable";
 import { msUntilNextElapsedSecond } from "./time";
 import { activeDurableSleepMetadataStartedAt } from "./durable-sleep-metadata";
 import type { DaemonShutdownMode, Event, QueueTiming } from "./protocol";
@@ -1550,7 +1550,7 @@ function handleKey(key: KeyEvent): void {
       closeBtwSession(state, daemon);
       break;
     case "open_target":
-      openTargetDetached(result.target);
+      openConversationTarget(result.target, state.convId);
       break;
     case "quit":
       running = false;
@@ -1733,7 +1733,7 @@ function handleMouse(ev: MouseEvent): void {
       daemon.pinConversation(result.convId, result.pinned);
       break;
     case "open_target":
-      openTargetDetached(result.target);
+      openConversationTarget(result.target, state.convId);
       break;
     case "handled":
       break;

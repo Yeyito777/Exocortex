@@ -26,7 +26,7 @@ export function openableTargetAtHistoryPosition(
   if (row < 0 || row >= lines.length) return null;
 
   const link = surface.lineAnchors[row]?.links?.find(span => position.col >= span.start && position.col < span.end);
-  if (link) return resolveOpenCommand(link.target) ? link.target : null;
+  if (link) return resolveOpenCommand(link.target, { localLink: true }) ? link.target : null;
 
   const range = surface.wrapContinuation.length > 0
     ? logicalLineRange(row, surface.wrapContinuation)

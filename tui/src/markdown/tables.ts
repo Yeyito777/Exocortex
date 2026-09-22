@@ -258,7 +258,7 @@ export function renderTableBlock(
     } else {
       // Data row — wrap each cell, then render line-by-line
       const cells = dataRows[i];
-      const linked = colWidths.map((w, c) => bgRestore && /https?:\/\//i.test(cells[c] || "")
+      const linked = colWidths.map((w, c) => bgRestore && /\]\(|https?:\/\//i.test(cells[c] || "")
         ? wrapLinkedParagraphs([cells[c]], w, bgRestore) : null);
       const wrapped = colWidths.map((w, c) => linked[c] ?? wrapCellContent(cells[c] || "", w));
       const formatted = bgRestore
