@@ -386,7 +386,7 @@ export function handleFocusedKey(
         pushSystemMessage(state, `✗ Image inputs are not supported by ${state.provider}/${state.model}. Switch to a vision-capable model to paste images.`, theme.error);
         return { type: "handled" };
       }
-      const img = readClipboardImage();
+      const img = readClipboardImage(message => pushSystemMessage(state, `✗ ${message}`, theme.error));
       if (img) {
         state.pendingImages.push(img);
         // Force focus to prompt in insert mode so user can type a caption

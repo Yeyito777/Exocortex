@@ -149,6 +149,13 @@ brew install node ffmpeg
 Text and image clipboard integration uses macOS's built-in `pbcopy`, `pbpaste`,
 and `osascript` commands.
 
+HEIC/HEIF photos are converted locally to JPEG before being sent to a model.
+This requires ImageMagick with HEIC/libheif support (`brew install imagemagick libheif`
+on macOS). Native HEIC clipboard data and single copied HEIC files from Finder
+or Linux file managers are preferred over PNG file icons. Terminal/SSH clipboard
+pasting supports HEIC when the terminal offers the actual HEIC image bytes;
+a PNG containing only a file icon cannot be recovered into the original photo.
+
 #### Install
 
 ```bash

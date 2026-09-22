@@ -3,6 +3,8 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { read } from "./read";
+import { HEIC_BYTES } from "../../../test/heic-fixture";
+import { isValidImagePayload } from "../image-validation";
 
 const VALID_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=";
 
@@ -38,6 +40,24 @@ function corruptFirstPngIdatByte(base64: string): Buffer {
 }
 
 describe("read tool image validation", () => {
+  for (const ext of ["heic", "HEIC", "heif"]) {
+    test(`converts .${ext} photos to a provider-safe JPEG`, async () => {
+      const filePath = await tempFile(`photo.${ext}`, HEIC_BYTES);
+      const result = await read.execute({ file_path: filePath });
+      expect(result.isError).toBe(false);
+      expect(result.image?.mediaType).toBe("image/jpeg");
+      expect(isValidImagePayload("image/jpeg", result.image!.base64)).toBe(true);
+    });
+  }
+
+  test("rejects corrupt HEIC instead of treating it as text", async () => {
+    const filePath = await tempFile("corrupt.heic", Buffer.from("broken"));
+    const result = await read.execute({ file_path: filePath });
+    expect(result.isError).toBe(true);
+    expect(result.image).toBeUndefined();
+    expect(result.output).toContain("not sent to the provider");
+  });
+
   test("returns provider image data for a valid PNG", async () => {
     const filePath = await tempFile("valid.png", Buffer.from(VALID_PNG, "base64"));
 

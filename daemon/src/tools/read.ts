@@ -21,7 +21,7 @@ const MAX_LINE_CHARS = 2000;
 
 const IMAGE_EXTENSIONS = new Set([
   ".png", ".jpg", ".jpeg", ".gif", ".webp",
-  ".bmp", ".tiff", ".tif", ".svg", ".avif", ".ico",
+  ".bmp", ".tiff", ".tif", ".svg", ".avif", ".ico", ".heic", ".heif",
 ]);
 
 const SUPPORTED_MEDIA_TYPES: Record<string, string> = {
@@ -68,7 +68,7 @@ async function compressImage(
       let proc: ReturnType<typeof Bun.spawn>;
       try {
         proc = Bun.spawn(
-          ["magick", filePath, "-resize", `${MAX_DIMENSION_PX}x${MAX_DIMENSION_PX}>`, "-quality", quality.toString(), tmpOut],
+          ["magick", `${filePath}[0]`, "-auto-orient", "-resize", `${MAX_DIMENSION_PX}x${MAX_DIMENSION_PX}>`, "-quality", quality.toString(), tmpOut],
           { stdout: "pipe", stderr: "pipe" },
         );
       } catch (err) {
@@ -290,7 +290,7 @@ function summarize(input: Record<string, unknown>): ToolSummary {
 
 export const read: Tool = {
   name: "read",
-  description: "Read a file from the local filesystem. Returns file content with line numbers (cat -n format). By default reads up to 2000 lines. Lines longer than 2000 characters are truncated. For image files (PNG, JPEG, GIF, WebP, BMP, TIFF, SVG, AVIF, ICO), returns the image for visual inspection; large images are automatically compressed to fit API limits.",
+  description: "Read a file from the local filesystem. Returns file content with line numbers (cat -n format). By default reads up to 2000 lines. Lines longer than 2000 characters are truncated. For image files (PNG, JPEG, GIF, WebP, BMP, TIFF, SVG, AVIF, ICO, HEIC, HEIF), returns the image for visual inspection; large images are automatically compressed to fit API limits. HEIC/HEIF requires ImageMagick with libheif support.",
   parallelSafety: "safe",
   defaultTimeoutMs: 15_000,
   inputSchema: {

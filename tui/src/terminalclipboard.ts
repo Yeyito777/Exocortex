@@ -7,6 +7,8 @@
  */
 
 import type { ImageAttachment, ImageMediaType } from "./messages";
+import { convertHeic, HEIC_MIME_TYPES } from "./heic";
+import { readHeicClipboardFiles } from "./clipboard";
 export {
   disable_clipboard_paste_events,
   enable_clipboard_paste_events,
@@ -23,8 +25,10 @@ const MAX_CLIPBOARD_BYTES = 50 * 1024 * 1024;
 const MAX_PROTOCOL_CHUNK_BYTES = 4096;
 const MAX_MIME_LIST_BYTES = 64 * 1024;
 const TRANSFER_TIMEOUT_MS = 10_000;
+const FILE_MIME_TYPES = ["text/uri-list", "x-special/gnome-copied-files"];
 
-const IMAGE_MIME_PRIORITY: readonly ImageMediaType[] = [
+const IMAGE_MIME_PRIORITY: readonly string[] = [
+  ...HEIC_MIME_TYPES,
   "image/png",
   "image/jpeg",
   "image/gif",
@@ -48,6 +52,8 @@ interface DataTransfer {
   chunks: Buffer[];
   sizeBytes: number;
   opened: boolean;
+  offer: OfferTransfer;
+  remainingMimes: string[];
 }
 
 export interface TerminalClipboardClientOptions {
@@ -196,7 +202,13 @@ export class TerminalClipboardClient {
       .trim()
       .split(/\s+/)
       .filter(Boolean);
-    const requestedMime = IMAGE_MIME_PRIORITY.find((mime) => mimeTypes.includes(mime))
+    this.startTransfer(offer, mimeTypes);
+  }
+
+  private startTransfer(offer: OfferTransfer, mimeTypes: string[]): void {
+    const requestedMime = HEIC_MIME_TYPES.find(mime => mimeTypes.includes(mime))
+      ?? FILE_MIME_TYPES.find(mime => mimeTypes.includes(mime))
+      ?? IMAGE_MIME_PRIORITY.find((mime) => mimeTypes.includes(mime))
       ?? textMimeFromOffer(mimeTypes);
     if (!requestedMime) return;
 
@@ -205,6 +217,8 @@ export class TerminalClipboardClient {
       chunks: [],
       sizeBytes: 0,
       opened: false,
+      offer,
+      remainingMimes: mimeTypes.filter(mime => mime !== requestedMime),
     };
     this.armTimeout();
     this.options.write(clipboardReadRequest(requestedMime, offer));
@@ -241,8 +255,28 @@ export class TerminalClipboardClient {
       this.transfer = null;
       this.clearTimeout();
       const bytes = Buffer.concat(transfer.chunks);
+      if (FILE_MIME_TYPES.includes(transfer.requestedMime)) {
+        try {
+          const image = readHeicClipboardFiles(
+            bytes.toString("utf8"), !process.env.SSH_CONNECTION && !process.env.SSH_TTY,
+          );
+          if (image) this.options.onImage(image);
+          else this.startTransfer(transfer.offer, transfer.remainingMimes);
+        } catch (err) {
+          this.fail(err instanceof Error ? err.message : String(err));
+        }
+        return;
+      }
       if (transfer.requestedMime.startsWith("image/")) {
-        if (!IMAGE_MIME_PRIORITY.includes(transfer.requestedMime as ImageMediaType) || bytes.length === 0) return;
+        if (!IMAGE_MIME_PRIORITY.includes(transfer.requestedMime) || bytes.length === 0) return;
+        if (HEIC_MIME_TYPES.some(mime => mime === transfer.requestedMime)) {
+          try {
+            this.options.onImage(convertHeic(bytes));
+          } catch (err) {
+            this.fail(err instanceof Error ? err.message : String(err));
+          }
+          return;
+        }
         this.options.onImage({
           mediaType: transfer.requestedMime as ImageMediaType,
           base64: bytes.toString("base64"),

@@ -9,12 +9,14 @@
  */
 
 import { spawnSync, type SpawnSyncReturns } from "child_process";
-import { readFileSync, unlinkSync } from "fs";
+import { readFileSync, unlinkSync, statSync } from "fs";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "os";
 import { join } from "path";
 import { randomUUID } from "crypto";
 import type { ImageAttachment, ImageMediaType } from "./messages";
 import { log } from "./log";
+import { convertHeic, HEIC_MIME_TYPES, isHeicPath, MAX_HEIC_BYTES } from "./heic";
 
 // ── Backend detection ────────────────────────────────────────────
 
@@ -24,6 +26,7 @@ interface ClipboardSystem {
   spawnSync: typeof spawnSync;
   readFileSync: typeof readFileSync;
   unlinkSync: typeof unlinkSync;
+  statSync: typeof statSync;
   platform: NodeJS.Platform;
   env: NodeJS.ProcessEnv;
   tmpPath: () => string;
@@ -33,6 +36,7 @@ const defaultClipboardSystem: ClipboardSystem = {
   spawnSync,
   readFileSync,
   unlinkSync,
+  statSync,
   platform: process.platform,
   env: process.env,
   tmpPath: () => join(tmpdir(), `exocortex-clipboard-${process.pid}-${Date.now()}-${randomUUID()}.png`),
@@ -171,6 +175,64 @@ function invalidImageReason(expected: ImageMediaType, buf: Buffer): string | nul
 
 // ── Backend implementations ──────────────────────────────────────
 
+function readHeicFile(path: string): ImageAttachment {
+  const stat = clipboardSystem.statSync(path);
+  if (!stat.isFile() || stat.size > MAX_HEIC_BYTES) {
+    throw new Error("HEIC clipboard file is not a regular file or exceeds the 50 MB limit");
+  }
+  return convertHeic(clipboardSystem.readFileSync(path), clipboardSystem.spawnSync);
+}
+
+/** Local clipboard file references only. Never fetch remote URLs. */
+function heicFileFromUris(text: string): string | null {
+  const paths = text.split(/\r?\n/).map(line => line.trim())
+    .filter(line => line && !line.startsWith("#") && line !== "copy" && line !== "cut");
+  // Do not silently choose one file from a multiple-file paste.
+  const hasHeic = paths.some(path => {
+    try { return isHeicPath(decodeURIComponent(new URL(path).pathname)); } catch { return false; }
+  });
+  if (!hasHeic) return null;
+  if (paths.length !== 1) throw new Error("Paste one HEIC/HEIF file at a time");
+  try {
+    const path = fileURLToPath(paths[0]);
+    return isHeicPath(path) ? path : null;
+  } catch {
+    throw new Error("HEIC clipboard file must be a local file URL");
+  }
+}
+
+/** File URLs from an SSH terminal refer to the client, not this machine. */
+export function readHeicClipboardFiles(text: string, allowLocalFiles = true): ImageAttachment | null {
+  const path = heicFileFromUris(text);
+  if (!path) return null;
+  if (!allowLocalFiles) {
+    throw new Error("Cannot read a client-side HEIC file over SSH. Copy the photo's image data or upload the file first.");
+  }
+  return readHeicFile(path);
+}
+
+function readOriginalHeic(
+  available: string,
+  readTarget: (target: string) => SpawnSyncReturns<Buffer>,
+): ImageAttachment | null {
+  const targets = new Set(available.split(/\s+/));
+  for (const mime of HEIC_MIME_TYPES) {
+    if (!targets.has(mime)) continue;
+    const result = readTarget(mime);
+    if (result.status !== 0) throw new Error(`Could not read clipboard ${mime}`);
+    return convertHeic(Buffer.from(result.stdout), clipboardSystem.spawnSync);
+  }
+  for (const target of ["text/uri-list", "x-special/gnome-copied-files"]) {
+    if (!targets.has(target)) continue;
+    const result = readTarget(target);
+    if (result.status !== 0) continue;
+    // A failed decode must not fall through to the file icon.
+    const image = readHeicClipboardFiles(result.stdout.toString());
+    if (image) return image;
+  }
+  return null;
+}
+
 function readImageXclip(): ImageAttachment | null {
   const targets = clipboardSystem.spawnSync("xclip", ["-selection", "clipboard", "-t", "TARGETS", "-o"], { timeout: 1000 });
   if (targets.status !== 0) {
@@ -182,6 +244,11 @@ function readImageXclip(): ImageAttachment | null {
     return null;
   }
   const available = targets.stdout.toString();
+  const original = readOriginalHeic(available, target => clipboardSystem.spawnSync(
+    "xclip", ["-selection", "clipboard", "-t", target, "-o"],
+    { timeout: 5000, maxBuffer: MAX_HEIC_BYTES },
+  ));
+  if (original) return original;
   const attempted: string[] = [];
 
   for (const fmt of IMAGE_FORMATS) {
@@ -227,6 +294,10 @@ function readImageWayland(): ImageAttachment | null {
     return null;
   }
   const available = targets.stdout.toString();
+  const original = readOriginalHeic(available, target => clipboardSystem.spawnSync(
+    "wl-paste", ["--type", target], { timeout: 5000, maxBuffer: MAX_HEIC_BYTES },
+  ));
+  if (original) return original;
   const attempted: string[] = [];
 
   for (const fmt of IMAGE_FORMATS) {
@@ -311,6 +382,12 @@ function readImagePowerShell(): ImageAttachment | null {
 }
 
 function readImageAppleScript(): ImageAttachment | null {
+  // Finder may offer a generic PNG icon for a copied HEIC file.
+  const file = clipboardSystem.spawnSync("osascript", [
+    "-e", "POSIX path of (the clipboard as alias)",
+  ], { timeout: 1000, maxBuffer: 64 * 1024 });
+  const path = file.status === 0 ? file.stdout.toString().trim() : "";
+  if (isHeicPath(path)) return readHeicFile(path);
   const tmpPath = clipboardSystem.tmpPath();
   const script = [
     "set outFile to missing value",
@@ -357,7 +434,7 @@ function readImageAppleScript(): ImageAttachment | null {
 // ── Public API ───────────────────────────────────────────────────
 
 /** Read an image from the system clipboard. Returns null if no image is available. */
-export function readClipboardImage(): ImageAttachment | null {
+export function readClipboardImage(onError?: (message: string) => void): ImageAttachment | null {
   try {
     const be = detectBackend();
     if (!be) {
@@ -368,7 +445,9 @@ export function readClipboardImage(): ImageAttachment | null {
     if (be === "powershell") return readImagePowerShell();
     return be === "wl" ? readImageWayland() : readImageXclip();
   } catch (err) {
-    logImagePasteFailure(`unexpected error while reading clipboard image: ${err instanceof Error ? err.message : String(err)}`);
+    const message = err instanceof Error ? err.message : String(err);
+    logImagePasteFailure(`unexpected error while reading clipboard image: ${message}`);
+    onError?.(message);
     return null;
   }
 }

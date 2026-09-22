@@ -1935,7 +1935,11 @@ async function main(): Promise<void> {
     write: sequence => process.stdout.write(sequence),
     onImage: attachTerminalClipboardImage,
     onText: text => handleKey({ type: "paste", text }),
-    onError: message => log("warn", `tui: terminal clipboard protocol failed: ${message}`),
+    onError: message => {
+      log("warn", `tui: terminal clipboard protocol failed: ${message}`);
+      pushSystemMessage(state, `✗ ${message}`, theme.error);
+      scheduleRender();
+    },
   });
   terminalControlBuffer = new TerminalControlBuffer(
     data => {

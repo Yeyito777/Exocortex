@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { HEIC_BYTES } from "../../test/heic-fixture";
+import { setClipboardSystemForTest } from "./clipboard";
 
 import {
   TerminalClipboardClient,
@@ -27,6 +29,86 @@ function pasteOffer(mimeTypes: string, password = b64("one-time")): string[] {
 }
 
 describe("OSC 5522 clipboard client", () => {
+  test("prefers a local HEIC file URI over its PNG icon", () => {
+    const images: Array<{ mediaType: string }> = [];
+    const writes: string[] = [];
+    const errors: string[] = [];
+    const client = new TerminalClipboardClient({
+      write: sequence => writes.push(sequence), onImage: image => images.push(image),
+      onText() {}, onError: message => errors.push(message),
+    });
+    setClipboardSystemForTest({
+      statSync: (() => ({ isFile: () => true, size: HEIC_BYTES.length })) as unknown as typeof import("fs").statSync,
+      readFileSync: (() => HEIC_BYTES) as unknown as typeof import("fs").readFileSync,
+    });
+    try {
+      for (const sequence of pasteOffer("image/png text/uri-list")) client.handleControlSequence(sequence);
+      expect(writes[0]).toContain(`;${b64("text/uri-list")}${ST}`);
+      client.handleControlSequence(packet("type=read:status=OK"));
+      client.handleControlSequence(packet(`type=read:status=DATA:mime=${b64("text/uri-list")}`, b64("file:///tmp/photo.heic")));
+      client.handleControlSequence(packet("type=read:status=DONE"));
+      if (process.env.SSH_CONNECTION || process.env.SSH_TTY) {
+        expect(images).toEqual([]);
+        expect(errors[0]).toContain("over SSH");
+      } else {
+        expect(errors).toEqual([]);
+        expect(images[0]?.mediaType).toBe("image/jpeg");
+      }
+    } finally {
+      client.dispose();
+      setClipboardSystemForTest(null);
+    }
+  });
+
+  test("falls back to the offered PNG for non-HEIC file URIs", () => {
+    const writes: string[] = [];
+    const client = new TerminalClipboardClient({ write: sequence => writes.push(sequence), onImage() {}, onText() {} });
+    for (const sequence of pasteOffer("image/png text/uri-list")) client.handleControlSequence(sequence);
+    client.handleControlSequence(packet("type=read:status=OK"));
+    client.handleControlSequence(packet(`type=read:status=DATA:mime=${b64("text/uri-list")}`, b64("file:///tmp/photo.png")));
+    client.handleControlSequence(packet("type=read:status=DONE"));
+    expect(writes).toHaveLength(2);
+    expect(writes[1]).toContain(`;${b64("image/png")}${ST}`);
+    client.dispose();
+  });
+
+  for (const mime of ["image/heic", "image/heif", "image/heic-sequence", "image/heif-sequence"]) {
+    test(`prefers ${mime} over PNG preview and converts it before attaching`, () => {
+      const images: Array<{ mediaType: string }> = [];
+      const errors: string[] = [];
+      const writes: string[] = [];
+      const client = new TerminalClipboardClient({
+        write: sequence => writes.push(sequence), onImage: image => images.push(image),
+        onText() {}, onError: message => errors.push(message),
+      });
+      for (const sequence of pasteOffer(`image/png ${mime}`)) client.handleControlSequence(sequence);
+      expect(writes[0]).toContain(`;${b64(mime)}${ST}`);
+      client.handleControlSequence(packet("type=read:status=OK"));
+      client.handleControlSequence(packet(`type=read:status=DATA:mime=${b64(mime)}`, b64(HEIC_BYTES)));
+      client.handleControlSequence(packet("type=read:status=DONE"));
+      expect(errors).toEqual([]);
+      expect(images).toHaveLength(1);
+      expect(images[0].mediaType).toBe("image/jpeg");
+      client.dispose();
+    });
+  }
+
+  test("reports invalid HEIC without attaching its bytes", () => {
+    const images: unknown[] = [];
+    const errors: string[] = [];
+    const client = new TerminalClipboardClient({
+      write() {}, onImage: image => images.push(image), onText() {},
+      onError: message => errors.push(message),
+    });
+    for (const sequence of pasteOffer("image/heic")) client.handleControlSequence(sequence);
+    client.handleControlSequence(packet("type=read:status=OK"));
+    client.handleControlSequence(packet(`type=read:status=DATA:mime=${b64("image/heic")}`, b64("broken")));
+    client.handleControlSequence(packet("type=read:status=DONE"));
+    expect(images).toEqual([]);
+    expect(errors[0]).toContain("libheif");
+    client.dispose();
+  });
+
   test("exports capability lifecycle sequences", () => {
     expect(query_clipboard_paste_events).toBe("\x1b[?5522$p");
     expect(enable_clipboard_paste_events).toBe("\x1b[?5522h");
