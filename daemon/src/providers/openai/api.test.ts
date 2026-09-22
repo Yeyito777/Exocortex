@@ -509,7 +509,7 @@ describe("OpenAI replay input", () => {
   });
 
   test("Ultra enables proactive delegation for Sol and Terra but not Luna", () => {
-    for (const model of ["gpt-5.6-sol", "gpt-5.6-terra"]) {
+    for (const model of ["gpt-6-sol", "gpt-5.6-sol", "gpt-5.6-terra"]) {
       const body = buildRequestBodyForTest([
         { role: "user", content: "hello" },
       ], model, 1234, { system: "Base instructions.", effort: "ultra" });
@@ -530,6 +530,16 @@ describe("OpenAI replay input", () => {
     ], "gpt-5.5", 1234, { effort: "max" });
 
     expect((body.reasoning as { effort?: string }).effort).toBe("xhigh");
+  });
+
+  test("GPT-6 Sol and Luna send max effort without downgrading it", () => {
+    for (const model of ["gpt-6-sol", "gpt-6-luna"]) {
+      const body = buildRequestBodyForTest([
+        { role: "user", content: "hello" },
+      ], model, 1234, { effort: "max" });
+      expect(body.model).toBe(model);
+      expect((body.reasoning as { effort?: string }).effort).toBe("max");
+    }
   });
 
   test("builds the Daybreak Blue Responses Lite contract", () => {

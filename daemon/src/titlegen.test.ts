@@ -2,8 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { sanitizeGeneratedTitle, titleModelForProvider } from "./titlegen";
 
 describe("titleModelForProvider", () => {
-  test("uses GPT-5.6 Luna for OpenAI titles, not the unsupported mini model", () => {
-    expect(titleModelForProvider("openai")).toBe("gpt-5.6-luna");
+  test("uses GPT-6 Luna for OpenAI titles, not the unsupported mini model", () => {
+    expect(titleModelForProvider("openai")).toBe("gpt-6-luna");
   });
 
   test("keeps other providers on their own title models", () => {

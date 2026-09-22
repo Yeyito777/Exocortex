@@ -24,6 +24,13 @@ const OPENAI_MODEL_CAPABILITY_OVERRIDES = new Map<ModelId, OpenAIModelCapability
   ["gpt-5.6-sol", {
     supportsUltraReasoningEffort: true,
   }],
+  ["gpt-6-sol", {
+    supportsMaxReasoningEffort: true,
+    supportsUltraReasoningEffort: true,
+  }],
+  ["gpt-6-luna", {
+    supportsMaxReasoningEffort: true,
+  }],
   ["gpt-5.6-terra", {
     supportsUltraReasoningEffort: true,
   }],

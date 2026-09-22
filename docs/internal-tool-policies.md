@@ -14,8 +14,10 @@ The default `exo` schema exposes six actions:
 Sending defaults to detached execution with a completion notification and
 `max_depth=0`. Use `mode:"wait"` to receive the result inline. Models default to
 the configured choice; `commands/models` lists exact IDs. The native runtime
-resolves `luna`, `terra`, and `sol` only when exactly one OpenAI model has that
+resolves `sol` and `luna` to `gpt-6-sol` and `gpt-6-luna` when available.
+Otherwise (including `terra`), it requires exactly one OpenAI model with that
 tier suffix; ambiguous/unavailable nicknames fail before creating a child.
+Explicit older model IDs remain selectable.
 
 Advanced options go in `args`. For example:
 

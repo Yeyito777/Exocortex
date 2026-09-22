@@ -355,10 +355,13 @@ function parseRequestedModel(providerValue: unknown, modelValue: unknown): Reque
   if (provider === "openai" && model && ["luna", "terra", "sol"].includes(model.toLowerCase())) {
     const alias = model.toLowerCase();
     const matches = getProvider("openai")!.models.filter(candidate => candidate.id.endsWith(`-${alias}`));
-    if (matches.length !== 1) {
+    const preferred = alias === "sol" || alias === "luna"
+      ? matches.find(candidate => candidate.id === `gpt-6-${alias}`)
+      : undefined;
+    if (!preferred && matches.length !== 1) {
       throw new Error(`Model nickname "${model}" is ${matches.length ? "ambiguous" : "unavailable"}. Use action=commands, command=models and choose an exact model ID.`);
     }
-    model = matches[0].id;
+    model = (preferred ?? matches[0]).id;
   }
   if (provider && model) model = canonicalizeModel(provider, model);
   return { provider, model };

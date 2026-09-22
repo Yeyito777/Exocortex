@@ -78,6 +78,8 @@ describe("tui defaults", () => {
 
   test("fallback default effort follows the OpenAI model tier", () => {
     expect(defaultEffortForModelId("openai", "gpt-6-astra")).toBe("low");
+    expect(defaultEffortForModelId("openai", "gpt-6-sol")).toBe("medium");
+    expect(defaultEffortForModelId("openai", "gpt-6-luna")).toBe("medium");
     expect(defaultEffortForModelId("openai", "gpt-5.6-sol")).toBe("medium");
     expect(defaultEffortForModelId("openai", "gpt-5.6-terra")).toBe("medium");
     expect(defaultEffortForModelId("openai", "gpt-5.6-luna")).toBe("medium");

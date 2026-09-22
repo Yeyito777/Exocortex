@@ -72,6 +72,7 @@ export const DEFAULT_EFFORT: EffortLevel = "high";
 export function defaultEffortForModelId(providerId: ProviderId, model: ModelId): EffortLevel {
   if (providerId === "openrouter") return model.startsWith("nousresearch/hermes-4-") ? "high" : "none";
   if (providerId === "openai" && model === "gpt-6-astra") return "low";
+  if (providerId === "openai" && (model === "gpt-6-sol" || model === "gpt-6-luna")) return "medium";
   if (providerId === "openai" && model === "gpt-daybreak-blue-latest") return "low";
   if (providerId === "openai" && (/^gpt-5\.6-/.test(model) || /^gpt-5\.5(?:-|$)/.test(model))) return "medium";
   return DEFAULT_EFFORT;
@@ -102,6 +103,9 @@ export const MAX_CONTEXT: Record<string, number> = {
   // API and configurable maximum context windows differ and should be modeled
   // separately if Exocortex adds those modes.
   "gpt-6-astra": 272_000,
+  // Conservative Codex defaults; live model metadata takes precedence.
+  "gpt-6-sol": 272_000,
+  "gpt-6-luna": 272_000,
   "gpt-5.6-sol": 372_000,
   "gpt-5.6-terra": 372_000,
   "gpt-5.6-luna": 372_000,

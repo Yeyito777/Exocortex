@@ -36,9 +36,9 @@ const activeTitleJobs = new Set<string>();
 export function titleModelForProvider(provider: ProviderId): string {
   switch (provider) {
     case "openai":
-      // Use the lightweight GPT-5.6 tier supported by ChatGPT/Codex accounts.
+      // Use the latest lightweight Luna tier for ChatGPT/Codex accounts.
       // GPT-5.4 mini is rejected by that endpoint, even if listed locally.
-      return "gpt-5.6-luna";
+      return "gpt-6-luna";
     case "deepseek":
       return "deepseek-v4-flash";
     case "opencode":
