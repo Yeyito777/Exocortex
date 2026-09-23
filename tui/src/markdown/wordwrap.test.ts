@@ -97,6 +97,23 @@ describe("markdown fenced code block wrapping", () => {
 });
 
 describe("markdown math rendering", () => {
+  test("preserves currency and bold formatting in the shop example", () => {
+    const rendered = markdownWordWrap([
+      "- Customers pay you **$100k**.",
+      "- You pay **$60k** for rent, supplies, and employee wages.",
+      "- You have **$40k left**: your **accounting profit**.",
+    ].join("\n"), 100, "\x1b[0m");
+    expect(rendered.lines.map(stripAnsi)).toEqual([
+      "- Customers pay you $100k.",
+      "- You pay $60k for rent, supplies, and employee wages.",
+      "- You have $40k left: your accounting profit.",
+    ]);
+    for (const line of rendered.lines) expect(line).toContain("\x1b[1m");
+
+    const inline = markdownWordWrap("Prices: **$100k** and **$60k**; math: $2*3$.", 80, "\x1b[0m");
+    expect(inline.lines.map(stripAnsi)).toEqual(["Prices: $100k and $60k; math: 2×3."]);
+  });
+
   test("renders inline math inside prose and tables", () => {
     const prose = markdownWordWrap(String.raw`For \(P\land Q\), use **both** statements.`, 80, "\x1b[0m");
     expect(prose.lines.map(stripAnsi)).toEqual(["For P ∧ Q, use both statements."]);

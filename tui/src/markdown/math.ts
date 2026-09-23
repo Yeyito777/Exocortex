@@ -388,8 +388,8 @@ function findCodeSpanClose(input: string, from: number, ticks: number): number {
   return -1;
 }
 
-function likelyDollarMath(content: string): boolean {
-  if (!content || /^\s|\s$/.test(content) || content.includes("\n")) return false;
+function likelyDollarMath(content: string, lineBoundary: string): boolean {
+  if (!content || /^\s|\s$/.test(content) || content.includes("\n") || content.includes(lineBoundary)) return false;
   // Avoid pairing two currency amounts in prose, such as "$5 and $10".
   if (/^\d[\d,.]*$/.test(content) || (/^\d/.test(content) && /,/.test(content))) return false;
   if (/^[A-Za-z]+(?:\s+[A-Za-z0-9]+)+$/.test(content)) return false;
@@ -412,6 +412,10 @@ function findDollarClose(input: string, from: number, double: boolean): number {
 
 /** Convert inline math while leaving Markdown code spans and ordinary currency alone. */
 export function renderInlineMath(input: string): string {
+  return renderInlineMathWithBoundary(input, "\n");
+}
+
+function renderInlineMathWithBoundary(input: string, lineBoundary: string): string {
   if (!input || (input.indexOf("\\(") < 0 && input.indexOf("\\[") < 0 && input.indexOf("$") < 0)) {
     return input;
   }
@@ -447,7 +451,9 @@ export function renderInlineMath(input: string): string {
       const close = findDollarClose(input, i + delimiterLength, double);
       if (close >= 0) {
         const content = input.slice(i + delimiterLength, close);
-        if (double || likelyDollarMath(content)) {
+        // A dollar followed by a digit starts another price, not a closing
+        // delimiter: **$100k** and **$60k** must stay Markdown, not TeX.
+        if (double || (!/[0-9]/.test(input[close + 1] ?? "") && likelyDollarMath(content, lineBoundary))) {
           out += convertLatexMath(content);
           i = close + delimiterLength;
           continue;
@@ -480,7 +486,7 @@ export function renderInlineMathChunks(lines: string[]): string[] {
     return lines;
   }
 
-  return renderInlineMath(lines.join(separator)).split(separator);
+  return renderInlineMathWithBoundary(lines.join(separator), separator).split(separator);
 }
 
 export interface DisplayMathBlock {

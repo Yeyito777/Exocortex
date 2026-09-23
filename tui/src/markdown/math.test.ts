@@ -73,6 +73,39 @@ describe("inline math delimiters", () => {
     );
   });
 
+  test("does not pair dollar signs from formatted prices", () => {
+    for (const input of [
+      "**$100k** and **$60k**.",
+      "*$5*–*$10*",
+      "Prices: $5-$10, $20/$30.",
+      "**$50k accounting profit − $62k implicit costs = −$12k economic profit.**",
+    ]) {
+      expect(renderInlineMath(input)).toBe(input);
+    }
+  });
+
+  test("keeps physical line boundaries when scanning dollar math", () => {
+    const lines = [
+      "- Customers pay you **$100k**.",
+      "- You pay **$60k** for rent.",
+      "- You have **$40k left**.",
+      "Then use $x^2$.",
+    ];
+    expect(renderInlineMathChunks(lines)).toEqual([...lines.slice(0, 3), "Then use x²."]);
+    // The closing dollar is not necessarily followed by a number.
+    expect(renderInlineMathChunks(["Do not join $x", "and y$ across lines."]))
+      .toEqual(["Do not join $x", "and y$ across lines."]);
+    expect(renderInlineMath("Do not join $x\nand y$ across lines."))
+      .toBe("Do not join $x\nand y$ across lines.");
+  });
+
+  test("still renders numeric math and math alongside prices", () => {
+    expect(renderInlineMath("Pay **$100k** and **$60k**; use $2*3$ or $x^2$."))
+      .toBe("Pay **$100k** and **$60k**; use 2×3 or x².");
+    expect(renderInlineMath(String.raw`$2^3$; $x_1$; $$2*3$$; \(2*3\)`))
+      .toBe("2³; x₁; 2×3; 2×3");
+  });
+
   test("protects Markdown code spans from math rendering", () => {
     const input = "Math \\(x^2\\); code `\\(x^2\\)`; more ``$y_1$``.";
     expect(renderInlineMath(input)).toBe("Math x²; code `\\(x^2\\)`; more ``$y_1$``.");
