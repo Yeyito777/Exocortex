@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync } from "fs";
-import { externalToolsDir, externalToolsTrashDir } from "@exocortex/shared/paths";
-import { getMacroArgs, expandMacros, MACRO_LIST } from "./macros";
+import { join } from "path";
+import { repoRoot, storageDir, externalToolsDir, externalToolsTrashDir } from "@exocortex/shared/paths";
+import { getMacroArgs, getMacroMap, expandMacros, MACRO_LIST } from "./macros";
 
 const TEST_TOOL_DIR = `${externalToolsDir()}/tool-macros-test-cli`;
 
@@ -66,16 +67,43 @@ describe("macro expansion", () => {
   });
 
   test("/worktree setup expands to a concise reference-based setup prompt", () => {
-    const expanded = expandMacros("/worktree setup ~/Workspace/example-project");
+    const expanded = expandMacros('/worktree setup "project with spaces"');
 
     expect(expanded).toContain("If the project is not already a git repo, initialize git first.");
-    expect(expanded).toContain("~/Workspace/exocortex/scripts/dev/create-worktree");
-    expect(expanded).toContain("~/Workspace/exocortex/scripts/dev/worktree-common.sh");
-    expect(expanded).toContain("~/Workspace/exocortex/.githooks/post-checkout");
-    expect(expanded).toContain("~/Workspace/active-development/record/scripts/dev/create-worktree");
+    for (const file of [
+      "scripts/dev/create-worktree",
+      "scripts/dev/clean-worktree",
+      "scripts/dev/worktree-common.sh",
+      ".gitignore",
+      ".githooks/post-checkout",
+      "scripts/dev/exotest",
+    ]) {
+      expect(expanded).toContain(`\`${join(repoRoot(), file)}\``);
+    }
+    expect(expanded).toContain("Verify these files exist");
+    expect(expanded).toContain("ask for its location rather than guessing a path");
+    expect(expanded).toContain("If a local Record checkout is available");
+    expect(expanded).toContain("skip this optional reference if unavailable");
+    expect(expanded).toContain("host OS");
     expect(expanded).toContain("make scripts executable");
     expect(expanded).toContain("smoke-test create + clean");
-    expect(expanded).toEndWith("Project: ~/Workspace/example-project");
+    expect(expanded).toEndWith('Project: "project with spaces"');
+  });
+
+  test("saved-output macros use the configured storage directory", () => {
+    for (const macro of ["/html", "/plan other", "/autoresearch stop"]) {
+      const expanded = expandMacros(macro);
+      expect(expanded).toContain(`\`${join(storageDir(), "playground")}\``);
+      expect(expanded).toContain("create the directory if needed");
+    }
+  });
+
+  test("macros do not assume a home-directory checkout or config layout", () => {
+    for (const expanded of Object.values(getMacroMap())) {
+      expect(expanded).not.toContain("~/Workspace/");
+      expect(expanded).not.toContain("~/.config/exocortex/");
+      expect(expanded).not.toContain("~/Desktop/");
+    }
   });
 
   test("/autoresearch expands to the autoresearch workflow prompt and preserves topic", () => {
@@ -105,7 +133,7 @@ describe("macro expansion", () => {
     expect(expanded).toContain("You're going to stop autoresearching.");
     expect(expanded).toContain("wrap up your last experiment");
     expect(expanded).toContain("create an HTML report of the autoresearch");
-    expect(expanded).toContain("Save it to a file in ~/Workspace/playground/");
+    expect(expanded).toContain(`Save it to a file in \`${join(storageDir(), "playground")}\``);
     expect(expanded).toContain("remove the local autoresearch directory");
   });
 });

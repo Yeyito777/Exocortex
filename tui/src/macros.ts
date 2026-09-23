@@ -46,14 +46,24 @@
  */
 
 import { readdirSync } from "fs";
-import { repoRoot, externalToolsDir, externalToolsTrashDir } from "@exocortex/shared/paths";
+import { join } from "path";
+import { repoRoot, storageDir, externalToolsDir, externalToolsTrashDir } from "@exocortex/shared/paths";
 import type { CompletionItem } from "./commands";
 
 // ── Exocortex paths ──────────────────────────────────────────────
 
 const EXO_ROOT = repoRoot();
+const PLAYGROUND_DIR = join(storageDir(), "playground");
 const TOOLS_DIR = externalToolsDir();
 const TOOLS_TRASH_DIR = externalToolsTrashDir();
+const WORKTREE_REFERENCE_FILES = [
+  "scripts/dev/create-worktree",
+  "scripts/dev/clean-worktree",
+  "scripts/dev/worktree-common.sh",
+  ".gitignore",
+  ".githooks/post-checkout",
+  "scripts/dev/exotest",
+].map(file => `\`${join(EXO_ROOT, file)}\``).join(", ");
 
 // ── Single source of truth ───────────────────────────────────────
 
@@ -138,7 +148,7 @@ const EXOCORTEX_QUALITY_WORKTREE_PROMPT = "Work in a git worktree for this task.
 
 const AUTORESEARCH_PROMPT = "You're going to autoresearch. After clarifying the topic, propose a concrete objective the user can start with /goal. Goals can be stopped and explicitly resumed; use Chrono for recurring monitoring rather than an unfinishable goal. Make a gitignored directory in the project called \"autoresearch/<topic>\" for the raw benchmark, experiment outputs, and success/failure ledger. Never force-add or commit this directory. To know which experiments to keep or trash, you must create the benchmark first and make every experiment deterministic against it. On success, commit only the accepted production source, tests, and durable documentation outside the autoresearch directory. On failure, revert, stash, or delete the failed production change after recording the result in the local ledger. This lets repeated experiments improve the benchmark without accumulating generated research artifacts in the repository. Make sure to not use subagents. With all that said, this is the user request to autoresearch; choose how to interpret it as a benchmark and how to begin the research direction. Ask the user 5 questions before starting, and propose the goal AFTER the user has answered the five questions:";
 
-const AUTORESEARCH_STOP_PROMPT = "You're going to stop autoresearching. Make sure to wrap up your last experiment and tidy everything up. Keep only accepted production source, tests, and durable documentation tracked. Finally create an HTML report of the autoresearch. Format your would-be response in HTML, use dark mode for styling, and use tables, graphs, interactive buttons, or whatever method best conveys the results. Save it to a file in ~/Workspace/playground/, remove the local autoresearch directory after the report is safely written unless the user asks to retain it, and give me the report's absolute path.";
+const AUTORESEARCH_STOP_PROMPT = `You're going to stop autoresearching. Make sure to wrap up your last experiment and tidy everything up. Keep only accepted production source, tests, and durable documentation tracked. Finally create an HTML report of the autoresearch. Format your would-be response in HTML, use dark mode for styling, and use tables, graphs, interactive buttons, or whatever method best conveys the results. Save it to a file in \`${PLAYGROUND_DIR}\` (create the directory if needed), remove the local autoresearch directory after the report is safely written unless the user asks to retain it, and give me the report's absolute path.`;
 
 function exocortexQualityPrompt(component: "tui" | "daemon"): string {
   const testingPrompt = component === "tui"
@@ -166,7 +176,7 @@ const MACROS: MacroDef[] = [
   {
     name: "/plan", desc: "Plan only, no edits", expansion: "Come up with a plan for this and tell me it. Don't write or edit any files.",
     args: [
-      { name: "other", desc: "Draft plan for another instance", expansion: "Draft a plan for this as a prompt for another instance. Write it as a kebab-case markdown file inside ~/.config/exocortex/storage/playground/. The file should be self-contained so I can send it to another instance and he gets all the context he needs to work on it." },
+      { name: "other", desc: "Draft plan for another instance", expansion: `Draft a plan for this as a prompt for another instance. Write it as a kebab-case markdown file inside \`${PLAYGROUND_DIR}\` (create the directory if needed). The file should be self-contained so I can send it to another instance and he gets all the context he needs to work on it.` },
     ],
   },
   { name: "/fix", desc: "Go ahead and fix it", expansion: "Go ahead and fix it" },
@@ -175,7 +185,7 @@ const MACROS: MacroDef[] = [
   { name: "/thoughts", desc: "Tell me your thoughts", expansion: "Can you tell me your thoughts on this?" },
   { name: "/long", desc: "Work until complete", expansion: "This is a long running task, work tirelessly until you can verify that everything is complete and correct" },
   { name: "/subagents", desc: "Delegate when useful", expansion: "Use subagents when parallel work would materially improve speed or quality." },
-  { name: "/html", desc: "Respond with saved HTML", expansion: "Format your would-be response in HTML use dark-mode for styling, user tables, graphs, interactive buttons, or whatever method you consider to be best for displaying the information you want to convey to the user. Save it to a file in ~/Workspace/playground/ and give me the absolute file path." },
+  { name: "/html", desc: "Respond with saved HTML", expansion: `Format your would-be response in HTML use dark-mode for styling, user tables, graphs, interactive buttons, or whatever method you consider to be best for displaying the information you want to convey to the user. Save it to a file in \`${PLAYGROUND_DIR}\` (create the directory if needed) and give me the absolute file path.` },
   {
     name: "/autoresearch",
     desc: "Start autoresearch",
@@ -217,7 +227,7 @@ const MACROS: MacroDef[] = [
     name: "/worktree", desc: "Work in a git worktree",
     expansion: `Work in a git worktree for this task. Find the repo root first (the directory containing .git/; don't assume CWD is it). From there, create the worktree with \`./scripts/dev/create-worktree <name>\`. Work inside that worktree. When I say I'm satisfied, merge back to main and clean up with \`./scripts/dev/clean-worktree <name-or-path>\`.`,
     args: [
-      { name: "setup", desc: "Set up worktree flow for a project", expansion: "Set up git worktree management flow for the project. If the project is not already a git repo, initialize git first. Use the existing Exocortex flow as the reference implementation: ~/Workspace/exocortex/scripts/dev/create-worktree, ~/Workspace/exocortex/scripts/dev/clean-worktree, ~/Workspace/exocortex/scripts/dev/worktree-common.sh, ~/Workspace/exocortex/.gitignore, ~/Workspace/exocortex/.githooks/post-checkout, and ~/Workspace/exocortex/scripts/dev/exotest. Also check ~/Workspace/active-development/record/scripts/dev/create-worktree, clean-worktree, worktree-common.sh, and recordtest for a smaller app-specific version. Adapt the flow to this project's deps/config/runtime/test needs, make scripts executable, update .gitignore, then smoke-test create + clean with a temporary worktree and leave no temp branch/worktree behind. Project:" },
+      { name: "setup", desc: "Set up worktree flow for a project", expansion: `Set up git worktree management flow for the project. If the project is not already a git repo, initialize git first. Use the existing Exocortex flow as the reference implementation: ${WORKTREE_REFERENCE_FILES}. Verify these files exist before reading them; if this installation lacks the source scripts, locate an Exocortex source checkout or ask for its location rather than guessing a path. If a local Record checkout is available, also check its scripts/dev/create-worktree, clean-worktree, worktree-common.sh, and recordtest for a smaller app-specific version; skip this optional reference if unavailable. Adapt the flow to this project's deps/config/runtime/test needs and host OS (do not blindly copy platform-specific shell or process checks), make scripts executable, update .gitignore, then smoke-test create + clean with a temporary worktree and leave no temp branch/worktree behind. Project:` },
       { name: "merge", desc: "Merge worktree back into main", expansion: "First merge local main into the worktree branch (use local main, not origin — it's always up to date) and resolve any merge conflicts. The work in the worktree is good. Merge it back into main. After confirming the merge succeeded, run `./scripts/dev/clean-worktree <name-or-path>` from the repo root to remove the worktree, delete its branch, and clean up any worktree config leftovers." },
       { name: "clean", desc: "Reject/discard worktree", expansion: "The work in this worktree is rejected. Do not merge it, do not preserve the changes, and do not try to salvage the branch. Find the repo root first, identify the target worktree from the current directory or from the name/path I provide, verify it is a linked worktree and not main, then remove it and delete its branch. Prefer the project cleanup script, e.g. `./scripts/dev/clean-worktree <name-or-path>`. If cleanup refuses because the worktree is dirty or the branch is unmerged, explicitly discard the worktree changes and force-remove the worktree/branch. Clean up any worktree runtime/config leftovers if the project has them. Report what was removed." },
     ],
