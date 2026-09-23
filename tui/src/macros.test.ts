@@ -1,8 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync } from "fs";
-import { join } from "path";
+import { join, posix, win32 } from "path";
+import type { MacroEnvironment } from "@exocortex/shared/protocol";
 import { repoRoot, storageDir, externalToolsDir, externalToolsTrashDir } from "@exocortex/shared/paths";
 import { getMacroArgs, getMacroMap, expandMacros, MACRO_LIST } from "./macros";
+import { createInitialState } from "./state";
+import { updateAutocomplete } from "./autocomplete";
+import { highlightPromptInput } from "./prompthighlight";
+import { theme } from "./theme";
 
 const TEST_TOOL_DIR = `${externalToolsDir()}/tool-macros-test-cli`;
 
@@ -179,5 +184,79 @@ describe("tool macros", () => {
     expect(expanded).toContain("timestamp suffix");
     expect(expanded).toContain("Do not delete it outright.");
     expect(expanded).toEndWith("after checking the README");
+  });
+});
+
+describe("daemon-host macro paths", () => {
+  const remote: MacroEnvironment = {
+    repoRoot: "/srv/remote exocortex",
+    storageDir: "/var/lib/remote config/storage",
+    externalToolsDir: "/srv/remote exocortex/external-tools",
+    externalToolsTrashDir: "/var/lib/remote config/data/trash/external-tools",
+    pathStyle: "posix",
+    installedToolDirs: ["remote-only-cli"],
+  };
+
+  for (const environment of [
+    remote,
+    {
+      ...remote,
+      repoRoot: "D:\\Remote Exocortex",
+      storageDir: "E:\\Remote Config\\storage",
+      externalToolsDir: "D:\\Remote Exocortex\\external-tools",
+      externalToolsTrashDir: "E:\\Remote Config\\data\\trash\\external-tools",
+      pathStyle: "win32" as const,
+    },
+  ]) {
+    test(`all filesystem macros use the daemon's ${environment.pathStyle} paths`, () => {
+      const path = environment.pathStyle === "win32" ? win32 : posix;
+      expect(expandMacros("/worktree setup", environment))
+        .toContain(path.join(environment.repoRoot, "scripts/dev/create-worktree"));
+      expect(expandMacros("/commit exocortex", environment)).toContain(environment.repoRoot);
+      expect(getMacroArgs("/commit", environment)["/commit"]![0].desc).toContain(environment.repoRoot);
+      for (const macro of ["/html", "/plan other", "/autoresearch stop"]) {
+        expect(expandMacros(macro, environment)).toContain(path.join(environment.storageDir, "playground"));
+      }
+      expect(expandMacros("/tool install google", environment))
+        .toContain(path.join(environment.externalToolsDir, "google-cli"));
+      const uninstall = expandMacros("/tool uninstall remote-only", environment);
+      expect(uninstall).toContain(path.join(environment.externalToolsDir, "remote-only-cli"));
+      expect(uninstall).toContain(environment.externalToolsTrashDir);
+      expect(getMacroArgs("/tool", environment)["/tool uninstall"]).toEqual([
+        { name: "remote-only", desc: "remote-only-cli" },
+      ]);
+      const state = createInitialState();
+      state.sshRemote = { alias: "remote", connected: true };
+      state.macroEnvironment = environment;
+      state.inputBuffer = "/tool uninstall remote-";
+      state.cursorPos = state.inputBuffer.length;
+      updateAutocomplete(state);
+      expect(state.autocomplete?.matches.map(match => match.name)).toEqual(["remote-only"]);
+      const input = "/tool uninstall remote-only";
+      expect(highlightPromptInput(state, [input], input, 120, 0)[0])
+        .toBe(`${theme.command}${input}${theme.reset}`);
+      for (const expanded of Object.values(getMacroMap(environment))) {
+        expect(expanded).not.toContain(repoRoot());
+        expect(expanded).not.toContain(storageDir());
+      }
+    });
+  }
+
+  test("missing remote metadata never falls back to local paths or installed tools", () => {
+    mkdirSync(TEST_TOOL_DIR, { recursive: true });
+    for (const macro of ["/worktree setup", "/commit exocortex", "/html", "/plan other", "/autoresearch stop", "/tool install google"]) {
+      const expanded = expandMacros(macro, null);
+      expect(expanded).toContain("Resolve the <daemon-...> path placeholders on the connected daemon host");
+      expect(expanded).not.toContain(repoRoot());
+      expect(expanded).not.toContain(storageDir());
+    }
+    expect(getMacroArgs("/tool", null)["/tool uninstall"] ?? []).toEqual([]);
+    const uninstall = expandMacros("/tool uninstall discord after checking README", null);
+    expect(uninstall).toContain("Uninstall the discord external tool on the connected daemon host");
+    expect(uninstall).toContain("verify the tool identity rather than guessing");
+    expect(uninstall).toContain("Do not delete it outright.");
+    expect(uninstall).toEndWith("after checking README");
+    expect(uninstall).not.toContain(repoRoot());
+    expect(expandMacros("/go", null)).toBe(expandMacros("/go"));
   });
 });

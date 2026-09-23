@@ -8,6 +8,7 @@
  */
 
 import { log } from "./log";
+import { localMacroEnvironment } from "@exocortex/shared/macro-environment";
 import { getDaemonUpdateStatus } from "./update-status";
 import { encodeHistoryDelta } from "@exocortex/shared/history-delta";
 import { effectiveConversationDefaults } from "@exocortex/shared/config";
@@ -278,6 +279,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     const externalStyles = getExternalToolStyles();
     server.broadcast({
       type: "tools_available",
+      macroEnvironment: localMacroEnvironment(),
       providers: getProviders(),
       tools: getToolDisplayInfo(),
       authByProvider: getAuthByProvider(),
@@ -1174,6 +1176,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         const externalStyles = getExternalToolStyles();
         server.sendTo(client, {
           type: "tools_available",
+          macroEnvironment: localMacroEnvironment(),
           providers: getProviders(),
           tools: getToolDisplayInfo(),
           authByProvider: getAuthByProvider(),

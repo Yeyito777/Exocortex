@@ -8,6 +8,7 @@
 
 import { mkdirSync } from "fs";
 import { externalToolsDir as getExternalToolsDir, repoRoot, worktreeName } from "@exocortex/shared/paths";
+import { localMacroEnvironment } from "@exocortex/shared/macro-environment";
 import type { ExternalToolStyle } from "@exocortex/shared/messages";
 import { log } from "./log";
 import { rewriteExternalToolShellCommandForToolsWithAuth } from "./external-tools-shell";
@@ -36,6 +37,7 @@ function resolveSystemHintPaths(systemHint: string): string {
 let tools: LoadedTool[] = [];
 let watcher: ExternalToolWatcher | null = null;
 let externalToolsDir: string | null = null;
+let installedToolDirsKey = "";
 let daemonSupervisionEnabled = false;
 const daemonSupervisor = new ExternalToolDaemonSupervisor(setExternalNotificationToolOnline);
 
@@ -83,7 +85,12 @@ function reloadTools(onUpdate?: () => void): void {
   if (!externalToolsDir) return;
 
   const updated = scanExternalTools(externalToolsDir);
-  if (!applyTools(updated)) return;
+  const manifestChanged = applyTools(updated);
+  // Uninstall macros also list checkouts without a valid manifest.
+  const nextDirsKey = JSON.stringify(localMacroEnvironment().installedToolDirs);
+  const directoriesChanged = nextDirsKey !== installedToolDirsKey;
+  installedToolDirsKey = nextDirsKey;
+  if (!manifestChanged && !directoriesChanged) return;
 
   log("info", `external-tools: reloaded — ${updated.length} tool(s): ${updated.map((tool) => tool.manifest.name).join(", ") || "(none)"}`);
   onUpdate?.();
@@ -109,6 +116,7 @@ export function initExternalTools(onUpdate?: () => void): void {
   mkdirSync(externalToolsDir, { recursive: true });
 
   tools = scanExternalTools(externalToolsDir);
+  installedToolDirsKey = JSON.stringify(localMacroEnvironment().installedToolDirs);
   daemonSupervisor.setInitialTools(tools);
   daemonSupervisionEnabled = shouldSuperviseExternalToolDaemons();
   updatePath(tools);

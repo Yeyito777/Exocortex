@@ -11,9 +11,10 @@
  *
  * ── Adding a new macro ───────────────────────────────────────────
  *
- * Add a single entry to the MACROS array below. Everything else —
+ * Add a single entry to the array returned by macroDefinitions below. Everything else —
  * autocomplete, prompt highlighting, sub-arg completion, expansion —
- * is derived automatically.
+ * is derived automatically. Filesystem references use the selected daemon's
+ * advertised environment, not the SSH client's local installation.
  *
  *   { name: "/example", desc: "Short description", expansion: "Full text sent to daemon" }
  *
@@ -45,41 +46,24 @@
  *   }
  */
 
-import { readdirSync } from "fs";
-import { join } from "path";
-import { repoRoot, storageDir, externalToolsDir, externalToolsTrashDir } from "@exocortex/shared/paths";
+import { posix, win32 } from "path";
+import { localMacroEnvironment } from "@exocortex/shared/macro-environment";
+import type { MacroEnvironment } from "@exocortex/shared/protocol";
 import type { CompletionItem } from "./commands";
+import type { RenderState } from "./state";
 
-// ── Exocortex paths ──────────────────────────────────────────────
+/** Undefined permits local discovery; null explicitly forbids it on a remote route. */
+export function macroEnvironmentForState(
+  state: Pick<RenderState, "macroEnvironment" | "sshRemote">,
+): MacroEnvironment | null | undefined {
+  return state.macroEnvironment ?? (state.sshRemote ? null : undefined);
+}
 
-const EXO_ROOT = repoRoot();
-const PLAYGROUND_DIR = join(storageDir(), "playground");
-const TOOLS_DIR = externalToolsDir();
-const TOOLS_TRASH_DIR = externalToolsTrashDir();
-const WORKTREE_REFERENCE_FILES = [
-  "scripts/dev/create-worktree",
-  "scripts/dev/clean-worktree",
-  "scripts/dev/worktree-common.sh",
-  ".gitignore",
-  ".githooks/post-checkout",
-  "scripts/dev/exotest",
-].map(file => `\`${join(EXO_ROOT, file)}\``).join(", ");
+function hostPath(environment: MacroEnvironment, ...parts: string[]): string {
+  return (environment.pathStyle === "win32" ? win32 : posix).join(...parts);
+}
 
 // ── Single source of truth ───────────────────────────────────────
-
-interface MacroArg {
-  name: string;
-  desc: string;
-  expansion: string;
-  args?: MacroArg[];
-}
-
-interface MacroDef {
-  name: string;
-  desc: string;
-  expansion: string;
-  args?: MacroArg[];
-}
 
 interface ExternalToolSpec {
   cliName: string;
@@ -108,47 +92,42 @@ function externalToolShortName(cliName: string): string {
   return cliName.replace(/-cli$/, "");
 }
 
-/** Read installed external tool directories from disk for dynamic uninstall completions. */
-function installedExternalTools(): InstalledExternalTool[] {
-  try {
-    return readdirSync(TOOLS_DIR, { withFileTypes: true })
-      .filter(entry => entry.isDirectory() && !entry.name.startsWith("."))
-      .map(entry => ({
-        argName: externalToolShortName(entry.name),
-        dirName: entry.name,
-      }))
-      .sort((a, b) => a.argName.localeCompare(b.argName));
-  } catch {
-    return [];
-  }
+/** Use the selected daemon's catalog, never scan the TUI host for a remote route. */
+function installedExternalTools(paths: MacroEnvironment): InstalledExternalTool[] {
+  return paths.installedToolDirs.map(dirName => ({
+    argName: externalToolShortName(dirName),
+    dirName,
+  })).sort((a, b) => a.argName.localeCompare(b.argName));
 }
 
 /** Build a tool-install expansion string with the dynamic paths. */
-function toolInstall(spec: ExternalToolSpec): MacroArg {
+function toolInstall(spec: ExternalToolSpec, paths: MacroEnvironment): MacroArg {
   const { cliName, description, repo } = spec;
   return {
     name: externalToolShortName(cliName), desc: description,
-    expansion: `Install the ${cliName} tool for yourself. Clone ${repo} into ${TOOLS_DIR}/${cliName}, then follow the README/setup instructions to build and install it. If the tool requires authentication or API tokens, walk me through the setup step by step — ask me for any credentials or config values you need.`,
+    expansion: `Install the ${cliName} tool for yourself. Clone ${repo} into ${hostPath(paths, paths.externalToolsDir, cliName)}, then follow the README/setup instructions to build and install it. If the tool requires authentication or API tokens, walk me through the setup step by step — ask me for any credentials or config values you need.`,
   };
 }
 
 /** Build a tool-uninstall expansion string with the dynamic paths. */
-function toolUninstall(dirName: string): MacroArg {
+function toolUninstall(dirName: string, paths: MacroEnvironment): MacroArg {
   return {
     name: externalToolShortName(dirName), desc: dirName,
-    expansion: `Uninstall the ${dirName} tool for yourself. Move ${TOOLS_DIR}/${dirName} into ${TOOLS_TRASH_DIR}/ (create the trash directory if needed, and add a timestamp suffix instead of overwriting if a folder with that name is already there). Do not delete it outright. After moving it, check whether the tool's README mentions any extra cleanup steps and walk me through them if needed.`,
+    expansion: `Uninstall the ${dirName} tool for yourself. Move ${hostPath(paths, paths.externalToolsDir, dirName)} into ${paths.externalToolsTrashDir} (create the trash directory if needed, and add a timestamp suffix instead of overwriting if a folder with that name is already there). Do not delete it outright. After moving it, check whether the tool's README mentions any extra cleanup steps and walk me through them if needed.`,
   };
 }
 
-function dynamicToolUninstallArgs(): MacroArg[] {
-  return installedExternalTools().map(tool => toolUninstall(tool.dirName));
+function dynamicToolUninstallArgs(paths: MacroEnvironment): MacroArg[] {
+  return installedExternalTools(paths).map(tool => toolUninstall(tool.dirName, paths));
 }
 
 const EXOCORTEX_QUALITY_WORKTREE_PROMPT = "Work in a git worktree for this task. Find the repo root first (the directory containing .git/; don't assume CWD is it). From there, create the worktree with `./scripts/dev/create-worktree <name>`. Work inside that worktree. When I say I'm satisfied, merge back to main and clean up with `./scripts/dev/clean-worktree <name-or-path>`.";
 
 const AUTORESEARCH_PROMPT = "You're going to autoresearch. After clarifying the topic, propose a concrete objective the user can start with /goal. Goals can be stopped and explicitly resumed; use Chrono for recurring monitoring rather than an unfinishable goal. Make a gitignored directory in the project called \"autoresearch/<topic>\" for the raw benchmark, experiment outputs, and success/failure ledger. Never force-add or commit this directory. To know which experiments to keep or trash, you must create the benchmark first and make every experiment deterministic against it. On success, commit only the accepted production source, tests, and durable documentation outside the autoresearch directory. On failure, revert, stash, or delete the failed production change after recording the result in the local ledger. This lets repeated experiments improve the benchmark without accumulating generated research artifacts in the repository. Make sure to not use subagents. With all that said, this is the user request to autoresearch; choose how to interpret it as a benchmark and how to begin the research direction. Ask the user 5 questions before starting, and propose the goal AFTER the user has answered the five questions:";
 
-const AUTORESEARCH_STOP_PROMPT = `You're going to stop autoresearching. Make sure to wrap up your last experiment and tidy everything up. Keep only accepted production source, tests, and durable documentation tracked. Finally create an HTML report of the autoresearch. Format your would-be response in HTML, use dark mode for styling, and use tables, graphs, interactive buttons, or whatever method best conveys the results. Save it to a file in \`${PLAYGROUND_DIR}\` (create the directory if needed), remove the local autoresearch directory after the report is safely written unless the user asks to retain it, and give me the report's absolute path.`;
+function autoresearchStopPrompt(playgroundDir: string): string {
+  return `You're going to stop autoresearching. Make sure to wrap up your last experiment and tidy everything up. Keep only accepted production source, tests, and durable documentation tracked. Finally create an HTML report of the autoresearch. Format your would-be response in HTML, use dark mode for styling, and use tables, graphs, interactive buttons, or whatever method best conveys the results. Save it to a file in \`${playgroundDir}\` (create the directory if needed), remove the local autoresearch directory after the report is safely written unless the user asks to retain it, and give me the report's absolute path.`;
+}
 
 function exocortexQualityPrompt(component: "tui" | "daemon"): string {
   const testingPrompt = component === "tui"
@@ -158,7 +137,27 @@ function exocortexQualityPrompt(component: "tui" | "daemon"): string {
   return `Check the code quality of exocortex's ${component}. Fix the code quality issues you think are worth fixing, let's prioritize the modularity and longevity of this codebase. ${EXOCORTEX_QUALITY_WORKTREE_PROMPT} ${testingPrompt}`;
 }
 
-const MACROS: MacroDef[] = [
+function macroDefinitions(environment: MacroEnvironment | null = localMacroEnvironment()): MacroDef[] {
+  const paths: MacroEnvironment = environment ?? {
+    repoRoot: "<daemon-repo>",
+    storageDir: "<daemon-storage>",
+    externalToolsDir: "<daemon-external-tools>",
+    externalToolsTrashDir: "<daemon-tools-trash>",
+    pathStyle: "posix",
+    installedToolDirs: [],
+  };
+  const EXO_ROOT = paths.repoRoot;
+  const PLAYGROUND_DIR = hostPath(paths, paths.storageDir, "playground");
+  const WORKTREE_REFERENCE_FILES = [
+    "scripts/dev/create-worktree",
+    "scripts/dev/clean-worktree",
+    "scripts/dev/worktree-common.sh",
+    ".gitignore",
+    ".githooks/post-checkout",
+    "scripts/dev/exotest",
+  ].map(file => `\`${hostPath(paths, EXO_ROOT, file)}\``).join(", ");
+
+  return [
   { name: "/consider", desc: "Am I right or wrong?", expansion: "Consider what I'm saying. Am I right or wrong?" },
   {
     name: "/commit", desc: "Commit and push", expansion: "If you haven't already, commit your work and push it.",
@@ -191,7 +190,7 @@ const MACROS: MacroDef[] = [
     desc: "Start autoresearch",
     expansion: AUTORESEARCH_PROMPT,
     args: [
-      { name: "stop", desc: "Stop autoresearching", expansion: AUTORESEARCH_STOP_PROMPT },
+      { name: "stop", desc: "Stop autoresearching", expansion: autoresearchStopPrompt(PLAYGROUND_DIR) },
     ],
   },
   {
@@ -241,17 +240,28 @@ const MACROS: MacroDef[] = [
         name: "install",
         desc: "Install an external tool",
         expansion: "Explain to me how the installation process for a tool looks in Exocortex.",
-        args: EXTERNAL_TOOL_SPECS.map(toolInstall),
+        args: EXTERNAL_TOOL_SPECS.map(spec => toolInstall(spec, paths)),
       },
       {
         name: "uninstall",
         desc: "Uninstall an external tool",
         expansion: "Explain to me how the uninstallation process for a tool looks in Exocortex.",
+        args: dynamicToolUninstallArgs(paths),
       },
     ],
   },
   { name: "/update", desc: "Update Exocortex", expansion: "Update Exocortex. Pull the latest changes from github, install anything that needs to be installed and then tell me to run \"exocortexd restart\" in my terminal when ready" },
-];
+  ];
+}
+
+interface MacroArg {
+  name: string;
+  desc: string;
+  expansion: string;
+  args?: MacroArg[];
+}
+
+type MacroDef = MacroArg;
 
 // ── Recursive flattening helpers ────────────────────────────────
 
@@ -276,41 +286,29 @@ function flattenArgLists(prefix: string, node: { args?: MacroArg[] }): [string, 
   return entries;
 }
 
-const STATIC_MACRO_MAP: Record<string, string> = Object.fromEntries(
-  MACROS.flatMap(m => flattenExpansions(m.name, m)),
-);
-
-const STATIC_MACRO_ARGS: Record<string, CompletionItem[]> = Object.fromEntries(
-  MACROS.flatMap(m => flattenArgLists(m.name, m)),
-);
-
 // ── Derived exports ──────────────────────────────────────────────
 
 /** Autocomplete entries for macros (base names only — args appear after selecting the base command). */
-export const MACRO_LIST: CompletionItem[] = MACROS.map(m => ({ name: m.name, desc: m.desc }));
+export const MACRO_LIST: CompletionItem[] = macroDefinitions(null).map(m => ({ name: m.name, desc: m.desc }));
 
 /** Expansion text for each macro, keyed by "/name" or "/name arg1 arg2 ...". */
-export function getMacroMap(): Record<string, string> {
-  return {
-    ...STATIC_MACRO_MAP,
-    ...Object.fromEntries(
-      dynamicToolUninstallArgs().map(arg => [`/tool uninstall ${arg.name}`, arg.expansion]),
-    ),
-  };
+export function getMacroMap(environment?: MacroEnvironment | null): Record<string, string> {
+  return Object.fromEntries(
+    macroDefinitions(environment).flatMap(m => flattenExpansions(m.name, m)).map(([key, expansion]) => [
+      key,
+      environment === null && expansion.includes("<daemon-")
+        ? "Resolve the <daemon-...> path placeholders on the connected daemon host before acting; they are not literal paths. Locate its Exocortex checkout, configured storage, external tools and tool trash directories there, asking if necessary. Never substitute paths from the local TUI host. " + expansion
+        : expansion,
+    ]),
+  );
 }
 
 /** Sub-argument lists, keyed by "/name" or "/name arg1 ...". Used by autocomplete and prompt highlighting. */
-export function getMacroArgs(baseName?: string): Record<string, CompletionItem[]> {
-  const registry = Object.fromEntries(
-    Object.entries(STATIC_MACRO_ARGS)
+export function getMacroArgs(baseName?: string, environment?: MacroEnvironment | null): Record<string, CompletionItem[]> {
+  return Object.fromEntries(
+    macroDefinitions(environment).flatMap(m => flattenArgLists(m.name, m))
       .filter(([key]) => !baseName || key === baseName || key.startsWith(`${baseName} `)),
   );
-
-  if (!baseName || baseName === "/tool") {
-    registry["/tool uninstall"] = dynamicToolUninstallArgs().map(arg => ({ name: arg.name, desc: arg.desc }));
-  }
-
-  return registry;
 }
 
 // ── Expansion ─────────────────────────────────────────────────────
@@ -324,11 +322,20 @@ export function getMacroArgs(baseName?: string): Record<string, CompletionItem[]
  *
  * Only matches at word boundaries (start of line or after whitespace).
  */
-export function expandMacros(text: string): string {
-  const macroMap = getMacroMap();
+export function expandMacros(text: string, environment?: MacroEnvironment | null): string {
+  const macroMap = getMacroMap(environment);
 
   return text.replace(/(?<=^|\s)(\/[\w-]+(?:[ \t]+[\w-]+)*)/gm, (full) => {
     const words = full.split(/[ \t]+/);
+    // Older daemons have no catalog, and a freshly installed tool can precede
+    // its refresh event. Preserve an explicit uninstall request without guessing
+    // a directory name or silently turning it into the explanatory base macro.
+    if (words[0] === "/tool" && words[1] === "uninstall" && words[2]
+      && !macroMap[words.slice(0, 3).join(" ")]) {
+      const expansion = `Uninstall the ${words[2]} external tool on the connected daemon host. Locate its exact installed directory under that daemon's external-tools directory; verify the tool identity rather than guessing its path. Move it into that daemon's external-tools trash directory (create it if needed and use a timestamp suffix to avoid overwriting). Do not delete it outright. Check its README for extra cleanup steps and walk me through them if needed.`;
+      const remainder = words.slice(3).join(" ");
+      return remainder ? `${expansion} ${remainder}` : expansion;
+    }
     // Try longest prefix first
     for (let len = words.length; len >= 1; len--) {
       const key = words.slice(0, len).join(" ");

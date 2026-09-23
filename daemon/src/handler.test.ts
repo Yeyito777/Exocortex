@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { clearConversationDefaults, saveConversationDefaults } from "@exocortex/shared/config";
 import { conversationWorkspaceDir } from "@exocortex/shared/paths";
+import { localMacroEnvironment } from "@exocortex/shared/macro-environment";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { appendMessages, consumeGoalContinuationAfterStream, create, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, get, getQueuedMessageById, getQueuedMessages, getSummary, listQueuedMessages, pushGlobalIdleQueuedMessage, remove, removeQueuedMessageById, setGoal, setToolPolicy, updateGoalStatus } from "./conversations";
@@ -67,6 +68,10 @@ test("status-only ping returns the host's runtime status without sidebar/usage b
   await handle({} as never, { type: "ping", reqId: "status-only", updateStatusOnly: true });
   expect(sent).toEqual([{ type: "pong", reqId: "status-only", updateStatus: "restart_needed" }]);
   expect(server.broadcast).not.toHaveBeenCalled();
+  sent.length = 0;
+  await handle({} as never, { type: "ping", reqId: "bootstrap" });
+  expect(sent.find(event => event.type === "tools_available")?.macroEnvironment)
+    .toEqual(localMacroEnvironment());
 });
 
 const IDS: string[] = [];

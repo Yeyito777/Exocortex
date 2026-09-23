@@ -1675,6 +1675,16 @@ export interface ProviderAuthAccountInfo {
   current: boolean;
 }
 
+/** Paths and installed tools belong to the daemon host, not the TUI host. */
+export interface MacroEnvironment {
+  repoRoot: string;
+  storageDir: string;
+  externalToolsDir: string;
+  externalToolsTrashDir: string;
+  pathStyle: "posix" | "win32";
+  installedToolDirs: string[];
+}
+
 export interface ToolsAvailableEvent {
   type: "tools_available";
   providers: ProviderInfo[];
@@ -1682,6 +1692,8 @@ export interface ToolsAvailableEvent {
   authByProvider: Record<ProviderId, boolean>;
   authInfoByProvider: Record<ProviderId, ProviderAuthInfo>;
   externalToolStyles?: ExternalToolStyle[];
+  /** Absent on older daemons; remote clients must not fall back to local paths. */
+  macroEnvironment?: MacroEnvironment;
 }
 
 export interface HistoryUpdatedEvent {

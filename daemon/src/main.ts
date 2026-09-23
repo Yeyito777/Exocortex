@@ -16,6 +16,7 @@ loadEnvFile();
 import { mkdirSync, writeFileSync, readFileSync, unlinkSync, existsSync } from "fs";
 import { connect as netConnect } from "net";
 import { agentWorkingDirectory } from "@exocortex/shared/config";
+import { localMacroEnvironment } from "@exocortex/shared/macro-environment";
 import { log } from "./log";
 import { getAuthByProvider, getAuthInfoByProvider, hasConfiguredCredentials } from "./auth";
 import { DaemonServer } from "./server";
@@ -269,6 +270,7 @@ async function startDaemon(): Promise<void> {
     const externalStyles = isWindows ? [] : getExternalToolStyles();
     server.broadcast({
       type: "tools_available",
+      macroEnvironment: localMacroEnvironment(),
       providers: getProviders(),
       tools: getToolDisplayInfo(),
       authByProvider: getAuthByProvider(),

@@ -27,7 +27,7 @@ import type { SearchDirection } from "./search";
 import type { UndoState } from "./undo";
 import { commitInsertSession, createUndoState, markInsertEntry } from "./undo";
 import type { AutocompleteState } from "./autocomplete";
-import type { ConversationGoal, ProviderAuthInfo, QueuedCommandInvocation, QueueTiming, QueueWaitTarget as ProtocolQueueWaitTarget, UserMessageAutomation } from "./protocol";
+import type { ConversationGoal, MacroEnvironment, ProviderAuthInfo, QueuedCommandInvocation, QueueTiming, QueueWaitTarget as ProtocolQueueWaitTarget, UserMessageAutomation } from "./protocol";
 import type { VoiceChatMessageState, VoicePromptState } from "./voice";
 import type { BtwPanelState } from "./btw/state";
 import { createConversationScrollState, type ConversationScrollState } from "./conversationscroll/types";
@@ -201,6 +201,7 @@ export interface RenderState {
   convId: string | null;
   /** Selected remote daemon route. Null means the local daemon. */
   sshRemote: { alias: string; connected: boolean } | null;
+  macroEnvironment: MacroEnvironment | null;
   /** Route transition UI is independent of chat messages and startup loads. */
   sshConnecting: { phase: "probing" | "loading"; message: string } | null;
   /** Reserved identity for tool choices on the current blank conversation draft. */
@@ -638,6 +639,7 @@ export function createInitialState(): RenderState {
     goal: null,
     convId: null,
     sshRemote: null,
+    macroEnvironment: null,
     sshConnecting: null,
     pendingToolPolicyDraftId: null,
     draftFolderId: null,

@@ -4,6 +4,9 @@ import { PassThrough } from "node:stream";
 import { DaemonClient } from "./client";
 import { handleEvent } from "./events";
 import { createInitialState } from "./state";
+import { expandMacros, getMacroArgs, macroEnvironmentForState } from "./macros";
+import { repoRoot } from "@exocortex/shared/paths";
+import type { MacroEnvironment } from "@exocortex/shared/protocol";
 import type { SshProcess } from "./ssh-transport";
 import { encodeHistoryDelta, type HistoryResponse } from "@exocortex/shared/history-delta";
 
@@ -53,6 +56,71 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 }
 
 describe("DaemonClient SSH routing", () => {
+  test("macro paths follow bootstrap, failed switches, remote switches, legacy daemons, and cancel", async () => {
+    const environment: MacroEnvironment = {
+      repoRoot: "/srv/remote-exocortex",
+      storageDir: "/srv/remote-data/storage",
+      externalToolsDir: "/srv/remote-exocortex/external-tools",
+      externalToolsTrashDir: "/srv/remote-data/trash/external-tools",
+      pathStyle: "posix",
+      installedToolDirs: ["remote-only-cli"],
+    };
+    const bootstrap = {
+      type: "tools_available",
+      providers: [], tools: [], authByProvider: {}, authInfoByProvider: {},
+      macroEnvironment: environment,
+    };
+    const failed = new FakeProcess();
+    const processes = [
+      respondingProbe(bootstrap), failed,
+      respondingProbe({ ...bootstrap, macroEnvironment: { ...environment, repoRoot: "/opt/second-host" } }),
+      respondingProbe({ ...bootstrap, macroEnvironment: undefined }),
+    ];
+    const state = createInitialState();
+    const client = new DaemonClient(event => handleEvent(event, state, client), "/tmp/local.sock", false, {
+      spawnSshProcess: () => processes.shift()!,
+    });
+    const expand = () => expandMacros("/worktree setup", macroEnvironmentForState(state));
+    try {
+      expect(expand()).toContain(repoRoot());
+      client.ssh("connect", "first");
+      await waitFor(() => client.remoteAlias === "first");
+      expect(expand()).not.toContain(repoRoot()); // bootstrap not released yet
+      (await client.connect()).releaseBootstrapEvents?.();
+      await waitFor(() => state.macroEnvironment !== null);
+      expect(expand()).toContain(environment.repoRoot);
+      expect(getMacroArgs("/tool", macroEnvironmentForState(state))["/tool uninstall"])
+        .toEqual([{ name: "remote-only", desc: "remote-only-cli" }]);
+
+      client.ssh("connect", "unreachable");
+      failed.emit("close", 255, null);
+      await waitFor(() => state.sshConnecting === null);
+      expect(expand()).toContain(environment.repoRoot); // failed probe keeps old route
+
+      client.ssh("connect", "second");
+      await waitFor(() => client.remoteAlias === "second");
+      expect(state.macroEnvironment).toBeNull();
+      expect(expand()).not.toContain(environment.repoRoot);
+      (await client.connect()).releaseBootstrapEvents?.();
+      await waitFor(() => state.macroEnvironment !== null);
+      expect(expand()).toContain("/opt/second-host");
+
+      client.ssh("connect", "legacy");
+      await waitFor(() => client.remoteAlias === "legacy");
+      (await client.connect()).releaseBootstrapEvents?.();
+      await waitFor(() => state.sshRemote?.alias === "legacy");
+      expect(expand()).toContain("connected daemon host");
+      expect(expand()).not.toContain(repoRoot());
+      expect(expand()).not.toContain("/opt/second-host");
+
+      client.ssh("cancel");
+      expect(state.macroEnvironment).toBeNull();
+      expect(expand()).toContain(repoRoot());
+    } finally {
+      client.disconnect();
+    }
+  });
+
   test("offline retries do not grow the transcript, but explicit failures and new outages remain visible", async () => {
     const first = respondingProbe();
     const recovered = respondingProbe();

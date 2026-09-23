@@ -17,7 +17,7 @@
 
 import type { RenderState } from "./state";
 import { COMMAND_LIST, getCommandArgs, type CompletionItem } from "./commands";
-import { MACRO_LIST, getMacroArgs } from "./macros";
+import { MACRO_LIST, getMacroArgs, macroEnvironmentForState } from "./macros";
 import { INLINE_COMMANDS, getInlineCommandArgs } from "./inlineeffort";
 import { readdirSync } from "fs";
 import { resolve } from "path";
@@ -107,7 +107,7 @@ function getCommandMatches(state: RenderState, input: string): CompletionItem[] 
   // Argument completion against both command and macro registries
   if (hasArgumentPrefix(raw)) {
     const base = slashBase(raw);
-    const argMatch = matchArgCompletion(raw, getCommandArgs(state, base)) ?? matchArgCompletion(raw, getMacroArgs(base));
+    const argMatch = matchArgCompletion(raw, getCommandArgs(state, base)) ?? matchArgCompletion(raw, getMacroArgs(base, macroEnvironmentForState(state)));
     if (argMatch) return argMatch;
   }
 
@@ -127,7 +127,7 @@ function getInlineSlashMatches(state: RenderState, token: string): CompletionIte
 
   if (hasArgumentPrefix(raw)) {
     const base = slashBase(raw);
-    const argMatch = matchArgCompletion(raw, getInlineCommandArgs(state, base)) ?? matchArgCompletion(raw, getMacroArgs(base));
+    const argMatch = matchArgCompletion(raw, getInlineCommandArgs(state, base)) ?? matchArgCompletion(raw, getMacroArgs(base, macroEnvironmentForState(state)));
     if (argMatch) return argMatch;
   }
 

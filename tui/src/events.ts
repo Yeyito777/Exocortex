@@ -495,6 +495,7 @@ export function handleEvent(
       if (event.state === "switching") {
         state.sshConnecting = { phase: "probing", message: event.message };
       } else if (event.state === "connected" && event.switched) {
+        state.macroEnvironment = null;
         state.sshConnecting = {
           phase: "loading",
           message: event.mode === "remote"

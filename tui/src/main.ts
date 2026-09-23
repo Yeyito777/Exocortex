@@ -17,7 +17,7 @@ import { handleFocusedKey } from "./focus";
 import { handleMouseEvent } from "./mouse";
 import { clearPrompt } from "./promptstate";
 import { tryCommand } from "./commands";
-import { expandMacros } from "./macros";
+import { expandMacros, macroEnvironmentForState } from "./macros";
 import { applyInlineCommands, type InlineCommandApplication } from "./inlineeffort";
 import { advanceDeferredHistoryRender, hasDeferredHistoryRenderWork, render, invalidateHistoryRenderCache } from "./render";
 import { preserveViewportAcrossResize } from "./chatscroll";
@@ -1036,7 +1036,7 @@ function handleSubmit(): void {
         return;
       }
 
-      const messageText = expandMacros(text);
+      const messageText = expandMacros(text, macroEnvironmentForState(state));
       const queueingDraftConversation = !state.convId;
       const draftToolPolicyId = queueingDraftConversation ? state.pendingToolPolicyDraftId ?? undefined : undefined;
       const convId = state.convId ?? draftToolPolicyId ?? generateClientConversationId();
@@ -1092,7 +1092,7 @@ function handleSubmit(): void {
   }
 
   // Regular message — expand macros before sending
-  const messageText = expandMacros(text);
+  const messageText = expandMacros(text, macroEnvironmentForState(state));
 
   const images = hasImages ? [...state.pendingImages] : undefined;
   if (!canSendImages(images)) {
@@ -1137,7 +1137,7 @@ function confirmPendingVoiceQueuePrompt(): boolean {
   // queued-message path using the timing the user selected.
   const inlineCommands = applyInlineCommands(state.inputBuffer.trim(), state);
   syncInlineCommandChanges(inlineCommands);
-  const messageText = expandMacros(inlineCommands.text.trim());
+  const messageText = expandMacros(inlineCommands.text.trim(), macroEnvironmentForState(state));
   if (!messageText && !images?.length) {
     clearPrompt(state);
     state.pendingImages = [];
@@ -1307,7 +1307,7 @@ function completePendingVoiceTranscription(submission: SubmittedVoiceTranscripti
   syncInlineCommandChanges(inlineCommands, submission.convId ?? state.convId);
   if (inlineCommands.efforts.length > 0) submission.effort = state.effort;
   if (inlineCommands.fastModes.length > 0) submission.fastMode = state.fastMode;
-  const messageText = expandMacros(inlineCommands.text.trim());
+  const messageText = expandMacros(inlineCommands.text.trim(), macroEnvironmentForState(state));
   const hasImages = !!submission.images?.length;
   pendingVoiceSubmissions.delete(submission);
 

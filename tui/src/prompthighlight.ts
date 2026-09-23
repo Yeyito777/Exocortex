@@ -9,7 +9,7 @@
 
 import type { RenderState } from "./state";
 import { COMMAND_LIST, getCommandArgs } from "./commands";
-import { MACRO_LIST, getMacroArgs } from "./macros";
+import { MACRO_LIST, getMacroArgs, macroEnvironmentForState } from "./macros";
 import { INLINE_COMMANDS, getInlineCommandArgs } from "./inlineeffort";
 import { matchQueueTargetAfterCommand } from "./queuetargets";
 import { theme } from "./theme";
@@ -37,7 +37,7 @@ function buildValidArgs(state: RenderState, baseName?: string): Record<string, S
       Object.entries(getInlineCommandArgs(state, baseName)).map(([cmd, args]) => [cmd, new Set(argNames(args))]),
     ),
     ...Object.fromEntries(
-      Object.entries(getMacroArgs(baseName)).map(([cmd, args]) => [cmd, new Set(argNames(args))]),
+      Object.entries(getMacroArgs(baseName, macroEnvironmentForState(state))).map(([cmd, args]) => [cmd, new Set(argNames(args))]),
     ),
   };
 }

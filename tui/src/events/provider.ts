@@ -15,6 +15,7 @@ export function syncModelEffortSelection(state: RenderState): void {
 }
 
 export function handleToolsAvailable(event: Extract<Event, { type: "tools_available" }>, state: RenderState): void {
+  state.macroEnvironment = event.macroEnvironment ?? null;
   if (Array.isArray(event.providers)) {
     state.providerRegistry = event.providers;
   }
