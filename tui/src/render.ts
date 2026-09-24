@@ -36,7 +36,7 @@ import { formatSize, imageLabel } from "./clipboard";
 import { renderQueuePromptOverlay } from "./overlays";
 import { renderEditMessageOverlay } from "./overlays";
 import { findSearchMatches, getActiveSearchQuery, getSearchBarViewport } from "./search";
-import { padRightToWidth, termWidth, truncateToWidth } from "./textwidth";
+import { padRightToWidth, termWidth } from "./textwidth";
 import { getVoicePromptRanges } from "./voice";
 import { layoutTaskPanel, renderTaskPanel } from "./activitypanel";
 import { trimAnsiLeadingSpaces, wrapAnsiLine } from "./ansiwrap";
@@ -1306,32 +1306,12 @@ export function render(state: RenderState): boolean {
     const separator = `${theme.dim}${"─".repeat(chatW)}${theme.reset}`;
     writeChatRow(2, separator);
 
-    // Keep the usual footer geometry, but never expose the previous daemon's
-    // draft, attachments, search, or status data. Input remains blocked by the
-    // SSH key handler; even the mode indicator is dimmed and there is no cursor.
-    const bottom = computeBottomLayout({
-      ...state,
-      inputBuffer: "",
-      cursorPos: 0,
-      promptScrollOffset: 0,
-      voicePrompt: null,
-      voicePromptJobs: [],
-      pendingImages: [],
-      search: null,
-    }, chatW, rows);
-    const promptSepRow = Math.max(4, bottom.promptSepRow);
-    const showPrompt = promptSepRow + 2 <= rows;
-    if (showPrompt) {
-      const mode = state.vim.mode === "insert" ? "I" : state.vim.mode === "normal" ? "N" : "V";
-      writeChatRow(promptSepRow, separator);
-      writeChatRow(promptSepRow + 1, `${theme.dim}${truncateToWidth(`${mode} > `, chatW)}${theme.reset}`);
-      writeChatRow(promptSepRow + 2, separator);
-    }
-
+    // Only the top bar and progress are visible until the connection is ready.
+    // The normal prompt/footer returns after loading or cancellation.
     const width = Math.max(1, chatW - 2);
     const spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"][Math.floor(Date.now() / 80) % 10];
     const { lines } = wordWrap(`${spinner} ${state.sshConnecting.message}`, width);
-    const progressRows = Math.max(0, (showPrompt ? promptSepRow - 1 : rows) - 2);
+    const progressRows = Math.max(0, rows - 2);
     lines.slice(0, progressRows).forEach((line, index) => writeChatRow(
       index + 3, `${theme.warning}${chatW > 1 ? " " : ""}${line}${theme.reset}`,
     ));

@@ -9,7 +9,6 @@ import { hide_cursor, show_cursor } from "./terminal";
 import { SIDEBAR_WIDTH } from "./sidebar";
 import { renderUserMessage } from "./blockrenderer";
 import { scrollToTop } from "./chat";
-import { computeBottomLayout } from "./chatlayout";
 
 function captureRenderOutput(state: RenderState): string {
   let out = "";
@@ -104,13 +103,12 @@ describe("render caching and frame diffing", () => {
 
   for (const sidebarOpen of [false, true]) {
     for (const phase of ["probing", "loading"] as const) {
-      test(`SSH ${phase} keeps chrome and a disabled prompt (sidebar ${sidebarOpen})`, () => {
+      test(`SSH ${phase} keeps the top bar without a prompt (sidebar ${sidebarOpen})`, () => {
         const state = makeState();
         state.sidebar.open = sidebarOpen;
         state.vim.mode = "insert";
         const chatCol = sidebarOpen ? SIDEBAR_WIDTH + 1 : 1;
         const chatW = state.cols - chatCol + 1;
-        const bottom = computeBottomLayout(state, chatW, state.rows);
         state.inputBuffer = "Private local draft\nwith another line";
         state.cursorPos = state.inputBuffer.length;
         state.hasChosenProvider = true;
@@ -119,12 +117,10 @@ describe("render caching and frame diffing", () => {
         const output = captureRenderOutput(state);
         const writes = positionedWrites(output);
         expect(writes.some(w => w.row === 1 && w.col === chatCol && w.text.includes("Exocortex"))).toBe(true);
-        for (const row of [2, bottom.promptSepRow, bottom.sepBelow]) {
-          expect(writes.some(w => w.row === row && w.col === chatCol
-            && w.text.includes(`${theme.dim}${"─".repeat(chatW)}${theme.reset}`))).toBe(true);
-        }
-        expect(writes.some(w => w.row === bottom.firstInputRow && w.col === chatCol
-          && w.text.includes(`${theme.dim}I > ${theme.reset}`))).toBe(true);
+        const separators = writes.filter(w => w.col === chatCol
+          && w.text.includes(`${theme.dim}${"─".repeat(chatW)}${theme.reset}`));
+        expect(separators.map(w => w.row)).toEqual([2]);
+        expect(stripCsi(output)).not.toMatch(/[INV] > /);
         expect(output).toContain("Connecting through SSH alias whale");
         expect(output).not.toContain("Private local draft");
         expect(output).not.toContain(state.model);
@@ -140,20 +136,19 @@ describe("render caching and frame diffing", () => {
     }
   }
 
-  test("SSH progress wraps without overwriting the disabled footer on short terminals", () => {
+  test("SSH progress uses the full area below the top bar on short terminals", () => {
     const state = makeState();
     state.cols = 24;
     state.rows = 9;
     state.vim.mode = "normal";
     state.sshConnecting = { phase: "probing", message: "Connecting through SSH alias whale… ".repeat(30) };
     const writes = positionedWrites(captureRenderOutput(state));
-    const prompt = writes.find(w => w.text.includes(`${theme.dim}N > ${theme.reset}`));
-    expect(prompt).toBeDefined();
+    expect(writes.some(w => stripCsi(w.text).includes("N > "))).toBe(false);
     const progress = writes.filter(w => w.text.includes(theme.warning));
-    expect(progress.length).toBeGreaterThan(0);
+    expect(progress.length).toBe(state.rows - 2);
     for (const write of progress) {
       expect(write.row).toBeGreaterThanOrEqual(3);
-      expect(write.row).toBeLessThan(prompt!.row - 1);
+      expect(write.row).toBeLessThanOrEqual(state.rows);
       expect(termWidth(stripCsi(write.text))).toBeLessThanOrEqual(state.cols);
     }
   });
