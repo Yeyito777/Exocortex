@@ -9,6 +9,7 @@ import { hide_cursor, show_cursor } from "./terminal";
 import { SIDEBAR_WIDTH } from "./sidebar";
 import { renderUserMessage } from "./blockrenderer";
 import { scrollToTop } from "./chat";
+import { computeBottomLayout } from "./chatlayout";
 
 function captureRenderOutput(state: RenderState): string {
   let out = "";
@@ -101,6 +102,62 @@ describe("render caching and frame diffing", () => {
     });
   }
 
+  for (const sidebarOpen of [false, true]) {
+    for (const phase of ["probing", "loading"] as const) {
+      test(`SSH ${phase} keeps chrome and a disabled prompt (sidebar ${sidebarOpen})`, () => {
+        const state = makeState();
+        state.sidebar.open = sidebarOpen;
+        state.vim.mode = "insert";
+        const chatCol = sidebarOpen ? SIDEBAR_WIDTH + 1 : 1;
+        const chatW = state.cols - chatCol + 1;
+        const bottom = computeBottomLayout(state, chatW, state.rows);
+        state.inputBuffer = "Private local draft\nwith another line";
+        state.cursorPos = state.inputBuffer.length;
+        state.hasChosenProvider = true;
+        state.sshConnecting = { phase, message: "Connecting through SSH alias whale…" };
+
+        const output = captureRenderOutput(state);
+        const writes = positionedWrites(output);
+        expect(writes.some(w => w.row === 1 && w.col === chatCol && w.text.includes("Exocortex"))).toBe(true);
+        for (const row of [2, bottom.promptSepRow, bottom.sepBelow]) {
+          expect(writes.some(w => w.row === row && w.col === chatCol
+            && w.text.includes(`${theme.dim}${"─".repeat(chatW)}${theme.reset}`))).toBe(true);
+        }
+        expect(writes.some(w => w.row === bottom.firstInputRow && w.col === chatCol
+          && w.text.includes(`${theme.dim}I > ${theme.reset}`))).toBe(true);
+        expect(output).toContain("Connecting through SSH alias whale");
+        expect(output).not.toContain("Private local draft");
+        expect(output).not.toContain(state.model);
+        expect(output).not.toContain("Context:");
+        expect(output).not.toContain(show_cursor);
+        expect(state.inputBuffer).toBe("Private local draft\nwith another line");
+
+        state.sshConnecting = null;
+        const restored = captureRenderOutput(state);
+        expect(restored).toContain("Private local draft");
+        expect(restored).toContain(show_cursor);
+      });
+    }
+  }
+
+  test("SSH progress wraps without overwriting the disabled footer on short terminals", () => {
+    const state = makeState();
+    state.cols = 24;
+    state.rows = 9;
+    state.vim.mode = "normal";
+    state.sshConnecting = { phase: "probing", message: "Connecting through SSH alias whale… ".repeat(30) };
+    const writes = positionedWrites(captureRenderOutput(state));
+    const prompt = writes.find(w => w.text.includes(`${theme.dim}N > ${theme.reset}`));
+    expect(prompt).toBeDefined();
+    const progress = writes.filter(w => w.text.includes(theme.warning));
+    expect(progress.length).toBeGreaterThan(0);
+    for (const write of progress) {
+      expect(write.row).toBeGreaterThanOrEqual(3);
+      expect(write.row).toBeLessThan(prompt!.row - 1);
+      expect(termWidth(stripCsi(write.text))).toBeLessThanOrEqual(state.cols);
+    }
+  });
+
   test("SSH progress hides old content, survives transcript replacement, and restores it on cancellation", () => {
     const state = makeState();
     state.sidebar.open = true;
@@ -112,6 +169,7 @@ describe("render caching and frame diffing", () => {
     }];
     const before = captureRenderOutput(state);
     expect(before).toContain("Old local conversation");
+    state.convId = "local";
     state.sshConnecting = { phase: "probing", message: "Connecting through SSH alias whale…" };
     const progress = captureRenderOutput(state);
     expect(progress).toContain("Connecting through SSH alias whale");

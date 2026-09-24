@@ -15,6 +15,7 @@ const PREVIEW_MAX = 30;
 
 /** Resolve a display label for the current conversation from the sidebar list. */
 function convLabel(state: RenderState): string {
+  if (state.sshConnecting) return "";
   if (state.folderInstructionsDoc) return "📄 AGENTS.md";
   if (!state.convId) return "";
   const conv = state.sidebar.conversations.find(c => c.id === state.convId);
@@ -30,7 +31,7 @@ export function renderTopbar(state: RenderState, width?: number): string {
   let label = convLabel(state);
 
   let rightLabel = "";
-  if (!state.folderInstructionsDoc && (state.hasChosenProvider || state.convId)) {
+  if (!state.sshConnecting && !state.folderInstructionsDoc && (state.hasChosenProvider || state.convId)) {
     const providerId = typeof state.provider === "string" && state.provider.length > 0 ? state.provider : "unknown";
     const providerLabel = state.providerRegistry.find((provider) => provider.id === providerId)?.label
       ?? (providerId === "openai" ? "OpenAI" : providerId.charAt(0).toUpperCase() + providerId.slice(1));
