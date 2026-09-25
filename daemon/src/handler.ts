@@ -188,6 +188,12 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         Date.now(),
         buildOrchestrationCallbacks(sleep.conversationId),
       );
+      // Chrono owns a durable replay, but it does not own an unrelated active
+      // detached-send notification. A lost admission must remain retryable;
+      // settling by child id here would falsely report that active send failed.
+      if (!outcome.ok && outcome.error === "Already streaming") {
+        throw new Error(`Deferred Chrono sleep replay for ${sleep.conversationId} lost turn admission`);
+      }
       if (!outcome.suspended) notificationRuntime.complete(sleep.conversationId, outcome);
     },
   );

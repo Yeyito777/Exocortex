@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { conversationWorkspaceDir, trashedConversationWorkspaceDir } from "@exocortex/shared/paths";
-import { appendMessages, create, get, getQueuedMessages, remove } from "./conversations";
+import { appendMessages, clearActiveJob, create, get, getQueuedMessages, remove, setActiveJob } from "./conversations";
 import {
   adoptChronoSchedule,
   chronoInternalsForTest,
@@ -186,6 +186,46 @@ describe("Chrono scheduler", () => {
 
     completeDeferredChronoSleepResume(deferred.id);
     expect(listDeferredChronoSleeps(owner)).toHaveLength(0);
+  });
+
+  test("does not replay an early-woken sleep while its user turn is still active", async () => {
+    const owner = makeConversation("deferred-sleep-active-user-turn");
+    const toolCallId = "sleep-active-user-turn-call";
+    expect(appendMessages(owner, [{
+      role: "assistant",
+      content: [{ type: "tool_use", id: toolCallId, name: "chrono", input: { action: "sleep", duration: "10m" } }],
+      metadata: null,
+    }])).toBe(true);
+    let replays = 0;
+    configureChronoService(null, () => { replays += 1; });
+    await startChronoService();
+    const deferred = deferChronoSleep({
+      conversationId: owner,
+      toolCallId,
+      startedAt: Date.now() - 125_000,
+      durationMs: 10 * 60_000,
+    }).sleep!;
+    expect(interruptDeferredChronoSleep(owner)).toMatchObject({
+      id: deferred.id,
+      state: "resuming",
+      resumeReason: "user_message",
+    });
+    setActiveJob(owner, new AbortController(), Date.now());
+
+    await chronoInternalsForTest.processPendingAndDue(Date.now() + 31_000);
+    await Bun.sleep(0);
+
+    expect(replays).toBe(0);
+    expect(listDeferredChronoSleeps(owner)).toEqual([
+      expect.objectContaining({
+        id: deferred.id,
+        state: "resuming",
+        resumeReason: "user_message",
+        retryAt: expect.any(Number),
+      }),
+    ]);
+    clearActiveJob(owner);
+    completeDeferredChronoSleepResume(deferred.id);
   });
 
   test("Stop closes a suspended sleep without an automatic replay", async () => {

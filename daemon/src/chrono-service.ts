@@ -22,6 +22,7 @@ import { ensureConversationWorkspace } from "./workspace-service";
 const STATE_VERSION = 1;
 const MAX_TIMER_MS = 2_000_000_000;
 const MAX_COMMAND_OUTPUT_IN_WAKE = 8_000;
+const DEFERRED_SLEEP_ACTIVE_RETRY_MS = 30_000;
 export const LONG_CHRONO_SLEEP_THRESHOLD_MS = 5 * 60 * 1_000;
 const WEEKDAY_INDEX: Record<string, number> = {
   sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6,
@@ -1075,6 +1076,20 @@ async function executeDeferredSleep(sleep: DeferredChronoSleep): Promise<void> {
       removeDeferredSleep(prepared);
       return;
     }
+    // An early user-message wake is consumed by the user turn that changed the
+    // sleep to `resuming`. Keep its durable recovery record, but never launch a
+    // competing replay while that owning turn is still active. The owner
+    // removes the record in its finalizer; after a crash there is no active job
+    // and this retry safely resumes the unfinished history instead.
+    if (prepared.resumeReason === "user_message" && convStore.isStreaming(prepared.conversationId)) {
+      const latest = deferredSleeps.get(prepared.id);
+      if (latest) {
+        latest.retryAt = Date.now() + DEFERRED_SLEEP_ACTIVE_RETRY_MS;
+        deferredSleeps.set(latest.id, latest);
+        persist();
+      }
+      return;
+    }
     if (!deferredSleepReadyListener) {
       throw new Error("Deferred Chrono sleep replay runtime is not configured");
     }
@@ -1096,12 +1111,11 @@ async function executeDeferredSleep(sleep: DeferredChronoSleep): Promise<void> {
   }
 }
 
-async function processPendingAndDue(): Promise<void> {
+async function processPendingAndDue(now = Date.now()): Promise<void> {
   if (!started || processingDue) return;
   processingDue = true;
   clearTimer();
   try {
-    const now = Date.now();
     for (const schedule of [...schedules.values()]) {
       if (schedule.nextAt > now) continue;
       const missingConversationTarget = schedule.target.kind === "conversation" && !convStore.hasConversation(schedule.target.conversationId);

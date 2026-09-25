@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { clearGoal, clearHistoryUnwindPending, clearStreamHandoff, create, get, getActiveJob, getQueuedMessages, isStreaming, isUnread, pushQueuedMessage, remove, requestHistoryUnwind, setGoal, updateGoalStatus } from "./conversations";
 import { load as loadPersisted } from "./persistence";
-import { orchestrateGoalCycle, orchestrateSendMessage, type OrchestrationCallbacks } from "./orchestrator";
+import { orchestrateGoalCycle, orchestrateReplayConversation, orchestrateSendMessage, type OrchestrationCallbacks } from "./orchestrator";
 import { streamMessage } from "./api";
-import { chronoInternalsForTest, listDeferredChronoSleeps } from "./chrono-service";
+import { chronoInternalsForTest, configureChronoService, listDeferredChronoSleeps } from "./chrono-service";
 import { createExocortexToolRuntime } from "./exocortex-tool-runtime";
 
 const IDS: string[] = [];
@@ -1242,6 +1242,132 @@ describe("DB-first orchestrator persistence", () => {
     }));
     expect(loadPersisted(convId)!.messages.map(message => message.role)).toEqual([
       "user", "assistant", "user", "user", "assistant",
+    ]);
+  });
+
+  test("a detached peer wake owns the interrupted sleep through completion without a false failure", async () => {
+    const parentId = id("sleep-peer-parent");
+    const convId = id("sleep-peer-target");
+    create(parentId, "openai", "gpt-5.6-sol");
+    create(convId, "openai", "gpt-5.6-sol");
+    const daemonServer = server();
+    const sleepStream = (async () => ({
+      text: "",
+      thinking: "",
+      stopReason: "tool_use" as const,
+      blocks: [],
+      toolCalls: [{ id: "peer-wake-sleep-call", name: "chrono", input: { action: "sleep", duration: "15m" } }],
+      inputTokens: 10,
+      outputTokens: 2,
+    })) as typeof streamMessage;
+    expect(await orchestrateSendMessage(
+      daemonServer as never,
+      null,
+      undefined,
+      convId,
+      "sleep for fifteen minutes",
+      Date.now(),
+      callbacks(sleepStream),
+    )).toMatchObject({ ok: true, suspended: true });
+
+    let releasePeer!: () => void;
+    const peerMayFinish = new Promise<void>((resolve) => { releasePeer = resolve; });
+    let peerStarted!: () => void;
+    const peerDidStart = new Promise<void>((resolve) => { peerStarted = resolve; });
+    const peerStream = (async (_provider, _messages, _model, streamCallbacks) => {
+      peerStarted();
+      await peerMayFinish;
+      streamCallbacks.onText("peer work accepted");
+      return {
+        text: "peer work accepted",
+        thinking: "",
+        stopReason: "stop" as const,
+        blocks: [{ type: "text" as const, text: "peer work accepted" }],
+        toolCalls: [],
+        inputTokens: 20,
+        outputTokens: 4,
+      };
+    }) as typeof streamMessage;
+    const ext = callbacks(peerStream);
+    const beginParentNotification = mock(() => {});
+    const completeParentNotification = mock((
+      _convId: string,
+      _outcome: import("./orchestrator").AssistantTurnOutcome,
+    ) => {});
+    let peerTurn: Promise<import("./orchestrator").AssistantTurnOutcome> | undefined;
+    const runtime = createExocortexToolRuntime({
+      server: daemonServer as never,
+      runTurn: (targetId, text, maxDepth, startedAt, automation) => {
+        peerTurn = orchestrateSendMessage(
+          daemonServer as never,
+          null,
+          undefined,
+          targetId,
+          text,
+          startedAt,
+          ext,
+          undefined,
+          { subagentMaxDepth: maxDepth, automation },
+        );
+        return peerTurn;
+      },
+      beginParentNotification,
+      completeParentNotification,
+      hasCredentials: () => true,
+    });
+    let chronoReplayCalls = 0;
+    configureChronoService(null, async (sleep) => {
+      chronoReplayCalls += 1;
+      const outcome = await orchestrateReplayConversation(
+        daemonServer as never,
+        null,
+        undefined,
+        sleep.conversationId,
+        Date.now(),
+        ext,
+      );
+      if (!outcome.suspended) completeParentNotification(sleep.conversationId, outcome);
+    });
+
+    const sendResult = await runtime.execute({
+      action: "send",
+      conversation_id: convId,
+      text: "implement the narrow receipt fix",
+      mode: "detach",
+    }, parentId);
+    expect(JSON.parse(sendResult.output)).toMatchObject({
+      conversation_id: convId,
+      status: "running",
+      detached: true,
+      created: false,
+    });
+    await peerDidStart;
+
+    // Drive the durable 30-second recovery deadline without sleeping in the
+    // test. The active peer turn owns this early wake, so Chrono must not start
+    // a replay or settle its detached notification.
+    await chronoInternalsForTest.processPendingAndDue(Date.now() + 31_000);
+    await Bun.sleep(0);
+    expect(chronoReplayCalls).toBe(0);
+    expect(completeParentNotification).not.toHaveBeenCalled();
+    expect(listDeferredChronoSleeps(convId)).toHaveLength(1);
+
+    releasePeer();
+    expect(await peerTurn!).toMatchObject({ ok: true });
+    await Bun.sleep(0);
+    expect(completeParentNotification).toHaveBeenCalledTimes(1);
+    expect(completeParentNotification).toHaveBeenCalledWith(
+      convId,
+      expect.objectContaining({ ok: true }),
+    );
+    expect((completeParentNotification.mock.calls[0]?.[1] as { error?: string }).error).toBeUndefined();
+    expect(listDeferredChronoSleeps(convId)).toHaveLength(0);
+    expect(loadPersisted(convId)!.messages.filter(message => message.role === "user").map(message => (
+      typeof message.content === "string" ? message.content : "tool_result"
+    ))).toEqual([
+      "sleep for fifteen minutes",
+      "tool_result",
+      "implement the narrow receipt fix",
     ]);
   });
 
