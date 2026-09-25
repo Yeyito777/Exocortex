@@ -894,7 +894,10 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
               entry.convId,
               Date.now(),
               buildOrchestrationCallbacks(entry.convId),
-              { subagentMaxDepth: entry.subagentMaxDepth ?? null, queueEntryId: entry.id },
+              {
+                ...(entry.subagentMaxDepth !== undefined ? { subagentMaxDepth: entry.subagentMaxDepth } : {}),
+                queueEntryId: entry.id,
+              },
             );
         notificationRuntime.complete(entry.convId, outcome);
         return outcome;
@@ -950,7 +953,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           buildOrchestrationCallbacks(entry.convId),
           entry.images,
           {
-            subagentMaxDepth: entry.subagentMaxDepth ?? null,
+            ...(entry.subagentMaxDepth !== undefined ? { subagentMaxDepth: entry.subagentMaxDepth } : {}),
             subagentNotificationId: entry.subagentNotificationId,
             queueEntryId: entry.id,
             automation: entry.automation,

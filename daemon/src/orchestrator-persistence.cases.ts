@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { clearGoal, clearHistoryUnwindPending, clearStreamHandoff, create, getActiveJob, getQueuedMessages, isUnread, pushQueuedMessage, remove, requestHistoryUnwind, setGoal, updateGoalStatus } from "./conversations";
+import { clearGoal, clearHistoryUnwindPending, clearStreamHandoff, create, get, getActiveJob, getQueuedMessages, isUnread, pushQueuedMessage, remove, requestHistoryUnwind, setGoal, updateGoalStatus } from "./conversations";
 import { load as loadPersisted } from "./persistence";
 import { orchestrateGoalCycle, orchestrateSendMessage, type OrchestrationCallbacks } from "./orchestrator";
 import { streamMessage } from "./api";
@@ -330,6 +330,7 @@ describe("DB-first orchestrator persistence", () => {
   test("keeps summaries streaming across a daemon-owned queued-turn handoff", async () => {
     const convId = id("queued-chain-summary");
     create(convId, "openai", "gpt-5.6-sol");
+    get(convId)!.subagentMaxDepth = 3;
     const events: Array<Record<string, unknown>> = [];
     let streamCall = 0;
     const fakeStream = (async (_provider, _messages, _model, streamCallbacks) => {
@@ -361,6 +362,7 @@ describe("DB-first orchestrator persistence", () => {
     );
 
     expect(streamCall).toBe(2);
+    expect(get(convId)?.subagentMaxDepth).toBe(3);
     const stopped = events.filter(event => event.type === "streaming_stopped");
     expect(stopped.map(event => event.reason)).toEqual(["handoff", undefined]);
     const summaryStreaming = events

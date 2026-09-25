@@ -374,7 +374,7 @@ async function orchestrateGoalContinuation(
     ...policy,
     ...(first ? {
       userMessage: { text: first.text, images: first.images },
-      subagentMaxDepth: first.subagentMaxDepth ?? null,
+      ...(first.subagentMaxDepth !== undefined ? { subagentMaxDepth: first.subagentMaxDepth } : {}),
       subagentNotificationId: first.subagentNotificationId,
       queueEntryId: first.id,
       automation: first.automation,
@@ -1765,7 +1765,7 @@ async function orchestrateAssistantTurn(
       // is intentionally unavailable to ordinary callers.
       const queuedOutcome = await orchestrateAssistantTurn(server, null, undefined, convId, Date.now(), ext, {
         userMessage: { text: first.text, images: first.images },
-        subagentMaxDepth: first.subagentMaxDepth ?? null,
+        ...(first.subagentMaxDepth !== undefined ? { subagentMaxDepth: first.subagentMaxDepth } : {}),
         subagentNotificationId: first.subagentNotificationId,
         queueEntryId: first.id,
         automation: first.automation,

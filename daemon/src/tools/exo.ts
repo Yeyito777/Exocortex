@@ -15,7 +15,7 @@ const title = string("Short title for a new subagent (at most 6 words / 60 chara
 const model = string("Optional exact model ID or provider/model. Omit for configured default; commands/models lists choices.");
 const allow_edits = boolean("For a new subagent: enable shell and file edits. Default false; not a sandbox.");
 const mode = choice(["auto", "detach", "wait"], "Default auto: starts and notifies on completion. wait returns the result. Busy targets queue for next turn.");
-const max_depth = { type: "integer", minimum: 0, maximum: MAX_EXO_SUBAGENT_DEPTH, description: "Additional delegation generations. Defaults to 0; cannot exceed caller's remaining depth minus one." };
+const max_depth = { type: "integer", minimum: 0, maximum: MAX_EXO_SUBAGENT_DEPTH, description: "Additional delegation generations. New subagents and bounded callers default to 0. Existing targets preserve their current setting when an unbounded caller omits this. Explicit values cannot exceed the caller's remaining depth minus one." };
 const page = {
   limit: { type: "integer", minimum: 1, maximum: 200, description: "Page size; list/tasks cap at 100, read at 200." },
   offset: { type: "integer", minimum: 0, description: "Page offset; for history, skip this many newest entries." },

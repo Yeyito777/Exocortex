@@ -1058,6 +1058,70 @@ describe("native exo daemon runtime", () => {
     expect(runTurn).not.toHaveBeenCalled();
   });
 
+  test("preserves existing peer depth by omission without relaxing bounded callers", async () => {
+    const parentId = id("preserve-depth-parent");
+    const unboundedTargetId = id("preserve-depth-unbounded");
+    const finiteTargetId = id("preserve-depth-finite");
+    create(parentId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "parent");
+    create(unboundedTargetId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "unbounded target");
+    create(finiteTargetId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "finite target");
+    get(finiteTargetId)!.subagentMaxDepth = 3;
+    const runTurn = mock(async () => successfulOutcome("preserved"));
+    const runtime = createExocortexToolRuntime({
+      server: fakeServer() as never,
+      runTurn,
+      hasCredentials: () => true,
+    });
+
+    for (const targetId of [unboundedTargetId, finiteTargetId]) {
+      const result = await runtime.execute({
+        action: "send",
+        conversation_id: targetId,
+        text: "preserve my depth",
+        mode: "wait",
+      }, parentId);
+      expect(result.isError).toBe(false);
+    }
+    expect(runTurn).toHaveBeenNthCalledWith(
+      1, unboundedTargetId, "preserve my depth", null, expect.any(Number),
+      { kind: "exo_send", sourceId: parentId },
+    );
+    expect(runTurn).toHaveBeenNthCalledWith(
+      2, finiteTargetId, "preserve my depth", 3, expect.any(Number),
+      { kind: "exo_send", sourceId: parentId },
+    );
+
+    const queued = await runtime.execute({
+      action: "queue",
+      conversation_id: finiteTargetId,
+      text: "preserve at delivery",
+    }, parentId);
+    expect(JSON.parse(queued.output).max_depth).toBe("preserve");
+    expect(getQueuedMessages(finiteTargetId).at(-1)?.subagentMaxDepth).toBeUndefined();
+
+    const bounded = await runtime.execute({
+      action: "send",
+      conversation_id: unboundedTargetId,
+      text: "bounded default",
+      mode: "wait",
+    }, parentId, undefined, 2);
+    expect(bounded.isError).toBe(false);
+    expect(runTurn).toHaveBeenNthCalledWith(
+      3, unboundedTargetId, "bounded default", 0, expect.any(Number),
+      { kind: "exo_send", sourceId: parentId },
+    );
+
+    const explicitTooDeep = await runtime.execute({
+      action: "send",
+      conversation_id: unboundedTargetId,
+      text: "bounded escalation",
+      max_depth: 2,
+      mode: "wait",
+    }, parentId, undefined, 2);
+    expect(explicitTooDeep.isError).toBe(true);
+    expect(explicitTooDeep.output).toContain("child max_depth must be between 0 and 1");
+  });
+
   test("defaults depth to zero and monotonically decreases explicit nested depth", async () => {
     const parentId = id("depth-parent");
     create(parentId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "parent");
@@ -1121,7 +1185,7 @@ describe("native exo daemon runtime", () => {
       text: "missing queue depth",
     }, parentId);
     expect(missingQueueDepth).toMatchObject({ isError: false });
-    expect(getQueuedMessages(parentId).at(-1)?.subagentMaxDepth).toBe(0);
+    expect(getQueuedMessages(parentId).at(-1)?.subagentMaxDepth).toBeUndefined();
 
     const exhausted = await runtime.execute(
       { action: "queue", conversation_id: parentId, text: "nope", max_depth: 0 },

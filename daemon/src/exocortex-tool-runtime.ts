@@ -93,7 +93,7 @@ export interface ExocortexToolRuntimeDependencies {
   runTurn(
     convId: string,
     text: string,
-    maxDepth: number,
+    maxDepth: number | null,
     startedAt: number,
     automation: UserMessageAutomation,
   ): Promise<AssistantTurnOutcome>;
@@ -288,6 +288,19 @@ function requestedMaxDepth(input: Record<string, unknown>, callerMaxDepth: numbe
     }
   }
   return value;
+}
+
+/**
+ * Existing conversations retain their live delegation setting when an
+ * unbounded caller omits max_depth. Bounded turns still default to zero so an
+ * omitted option can never escape the caller's delegation ceiling.
+ */
+function requestedExistingMaxDepth(
+  input: Record<string, unknown>,
+  callerMaxDepth: number | null | undefined,
+): number | undefined {
+  if (input.max_depth === undefined && callerMaxDepth == null) return undefined;
+  return requestedMaxDepth(input, callerMaxDepth);
 }
 
 function objectInput(input: Record<string, unknown>, key: string): Record<string, unknown> {
@@ -759,8 +772,10 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       ...(parentConvId ? { sourceId: parentConvId } : {}),
     };
     const text = stringInput(input, "text", true)!;
-    const maxDepth = requestedMaxDepth(input, callerMaxDepth);
     let convId = stringInput(input, "conversation_id");
+    const maxDepth = convId
+      ? requestedExistingMaxDepth(input, callerMaxDepth)
+      : requestedMaxDepth(input, callerMaxDepth);
     const requestedAllowEdits = optionalBooleanInput(input, "allow_edits");
     const requestedInternalTools = optionalStringArrayInput(input, "internal_tools");
     const requestedExternalTools = optionalStringArrayInput(input, "external_tools");
@@ -817,7 +832,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       const parent = parentConvId ? convStore.get(parentConvId) : undefined;
       let childInternalTools = validateToolSelection(
         "internal",
-        requestedInternalTools ?? getDefaultSubagentInternalToolNames(maxDepth, requestedAllowEdits === true),
+        requestedInternalTools ?? getDefaultSubagentInternalToolNames(maxDepth!, requestedAllowEdits === true),
         parent,
       );
       let childExternalTools = validateToolSelection("external", requestedExternalTools ?? []);
@@ -837,7 +852,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       convStore.create(convId, selection.provider, selection.model, requestedTitle, selection.effort, selection.fastMode, folder.id);
       // Persist the initial ceiling together with the scoped policy, before
       // any turn, notification, or inspection can observe this new child.
-      convStore.get(convId)!.subagentMaxDepth = maxDepth;
+      convStore.get(convId)!.subagentMaxDepth = maxDepth!;
       convStore.setSubagentPolicy(convId, {
         parentConversationId: parentConvId ?? null,
         allowEdits: requestedAllowEdits === true,
@@ -907,16 +922,22 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     }
     if (!created && trackAsSubagent) ensureSubagentCapacity(parentConvId);
     persistRequestedExistingToolPolicy();
+    // Omission for an existing target means "preserve", resolved immediately
+    // before a direct turn. Queued sends intentionally leave it unresolved
+    // until delivery so later user turns or explicit changes are not reverted.
+    const turnMaxDepth = maxDepth === undefined
+      ? convStore.get(convId)!.subagentMaxDepth ?? null
+      : maxDepth;
     const shouldDetach = mode !== "wait";
     const startedAt = Date.now();
 
     if (shouldDetach) {
       const notify = booleanInput(input, "notify_parent", true) && Boolean(parentConvId);
       if (notify && parentConvId) {
-        deps.beginParentNotification?.({ convId: parentConvId }, convId, text, startedAt, maxDepth, trackAsSubagent);
+        deps.beginParentNotification?.({ convId: parentConvId }, convId, text, startedAt, turnMaxDepth, trackAsSubagent);
       }
       if (trackAsSubagent) setTrackedSubagent(parentConvId, convId, true, { title: taskTitle, startedAt });
-      void deps.runTurn(convId, text, maxDepth, startedAt, automation).then(outcome => {
+      void deps.runTurn(convId, text, turnMaxDepth, startedAt, automation).then(outcome => {
         if (outcome.suspended) return;
         if (trackAsSubagent) setTrackedSubagent(parentConvId, convId!, false);
         if (notify && parentConvId) {
@@ -939,7 +960,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
         status: "running",
         detached: true,
         created,
-        max_depth: maxDepth,
+        max_depth: turnMaxDepth,
         effort: child?.effort ?? null,
         allow_edits: child?.subagentPolicy?.allowEdits === true,
         internal_tools: child ? resolveConversationToolPolicy(child).configurableInternalToolNames : [],
@@ -958,7 +979,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     signal?.addEventListener("abort", onAbort, { once: true });
     if (trackAsSubagent) setTrackedSubagent(parentConvId, convId, true, { title: taskTitle, startedAt });
     try {
-      const outcome = await deps.runTurn(convId, text, maxDepth, startedAt, automation);
+      const outcome = await deps.runTurn(convId, text, turnMaxDepth, startedAt, automation);
       const full = booleanInput(input, "full", false);
       const body = outcome.ok
         ? formatBlocks(outcome.blocks, full) || "(subagent completed without text output)"
@@ -1194,15 +1215,20 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
   ): ToolResult => {
     const convId = stringInput(input, "conversation_id", true)!;
     const text = stringInput(input, "text", true)!;
-    const maxDepth = requestedMaxDepth(input, callerMaxDepth);
     if (!convStore.getSummary(convId)) throw new Error(`Conversation ${convId} not found`);
     ensureScopedDelegationTarget(parentConvId, convId);
+    const maxDepth = requestedExistingMaxDepth(input, callerMaxDepth);
     const timing: QueueTiming = input.timing === "message-end" ? "message-end" : "next-turn";
     convStore.pushQueuedMessage(convId, text, timing, undefined, maxDepth, undefined, undefined, undefined, {
       kind: "exo_send",
       ...(parentConvId ? { sourceId: parentConvId } : {}),
     });
-    return ok(pretty({ conversation_id: convId, status: "queued", timing, max_depth: maxDepth }));
+    return ok(pretty({
+      conversation_id: convId,
+      status: "queued",
+      timing,
+      max_depth: maxDepth === undefined ? "preserve" : maxDepth,
+    }));
   };
 
   const executeRename = (input: Record<string, unknown>, parentConvId: string | undefined): ToolResult => {
