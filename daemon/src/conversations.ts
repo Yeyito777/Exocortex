@@ -31,7 +31,7 @@ import { clearConversationCustomTools } from "./tools/custom-tools";
 
 // Re-export streaming functions so existing `convStore.*` call sites keep working
 export {
-  isStreaming, isStreamHandoffActive, getStreamHandoffToken, beginStreamHandoff, clearStreamHandoff,
+  isStreaming, isStreamHandoffActive, getStreamHandoffToken, beginStreamHandoff, tryBeginStreamHandoff, clearStreamHandoff,
   setActiveJob, getActiveJob, getActiveJobKind, isRestartRecoverableJob, clearActiveJob, getStreamingStartedAt,
   setStreamingTokens, getStreamingTokens, nextStreamSeq, getStreamSeq,
   setContextCompactionStartedAt, getContextCompactionStartedAt,

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { appendToStreamingBlock, beginStreamHandoff, clearActiveJob, clearCurrentStreamingBlocks, clearHistoryUnwindPending, clearStreamHandoff, getContextCompactionStartedAt, getCurrentStreamingBlocks, getStreamSeq, getStreamingCommittedMessageCount, hasPendingStreamingAssistant, initStreamingState, isHistoryUnwindPending, isRestartRecoverableJob, isStreaming, isStreamHandoffActive, nextStreamSeq, requestHistoryUnwind, setActiveJob, setContextCompactionStartedAt, setStreamingCommittedMessageCount } from "./streaming";
+import { appendToStreamingBlock, beginStreamHandoff, clearActiveJob, clearCurrentStreamingBlocks, clearHistoryUnwindPending, clearStreamHandoff, getContextCompactionStartedAt, getCurrentStreamingBlocks, getStreamSeq, getStreamingCommittedMessageCount, hasPendingStreamingAssistant, initStreamingState, isHistoryUnwindPending, isRestartRecoverableJob, isStreaming, isStreamHandoffActive, nextStreamSeq, requestHistoryUnwind, setActiveJob, setContextCompactionStartedAt, setStreamingCommittedMessageCount, tryBeginStreamHandoff } from "./streaming";
 import { clearQueuedMessages, drainQueuedMessages, pushQueuedMessage } from "./message-queue";
 
 const IDS: string[] = [];
@@ -20,6 +20,18 @@ beforeEach(() => {
 });
 
 describe("daemon-owned stream handoff", () => {
+  test("admits only one owner across idle-to-running preflight", () => {
+    const id = mkId("atomic-admission");
+
+    expect(tryBeginStreamHandoff(id)).toBeSymbol();
+    expect(tryBeginStreamHandoff(id)).toBeUndefined();
+    expect(isStreaming(id)).toBe(true);
+
+    setActiveJob(id, new AbortController(), 1);
+    expect(isStreamHandoffActive(id)).toBe(false);
+    expect(isStreaming(id)).toBe(true);
+  });
+
   test("keeps canonical activity true between adjacent jobs", () => {
     const id = mkId("handoff");
     setActiveJob(id, new AbortController(), 1);

@@ -1,9 +1,10 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { clearGoal, clearHistoryUnwindPending, clearStreamHandoff, create, get, getActiveJob, getQueuedMessages, isUnread, pushQueuedMessage, remove, requestHistoryUnwind, setGoal, updateGoalStatus } from "./conversations";
+import { afterEach, describe, expect, mock, test } from "bun:test";
+import { clearGoal, clearHistoryUnwindPending, clearStreamHandoff, create, get, getActiveJob, getQueuedMessages, isStreaming, isUnread, pushQueuedMessage, remove, requestHistoryUnwind, setGoal, updateGoalStatus } from "./conversations";
 import { load as loadPersisted } from "./persistence";
 import { orchestrateGoalCycle, orchestrateSendMessage, type OrchestrationCallbacks } from "./orchestrator";
 import { streamMessage } from "./api";
 import { chronoInternalsForTest, listDeferredChronoSleeps } from "./chrono-service";
+import { createExocortexToolRuntime } from "./exocortex-tool-runtime";
 
 const IDS: string[] = [];
 
@@ -48,6 +49,159 @@ afterEach(() => {
 });
 
 describe("DB-first orchestrator persistence", () => {
+  test("atomically reserves async preflight so a peer send queues and is delivered once", async () => {
+    const parentId = id("admission-parent");
+    const convId = id("admission-race");
+    create(parentId, "openai", "gpt-5.6-sol");
+    create(convId, "openai", "gpt-5.6-sol");
+    const events: Array<Record<string, unknown>> = [];
+    const daemonServer = server(events);
+    let releaseFirst!: () => void;
+    const firstMayFinish = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let streamCalls = 0;
+    const fakeStream = (async (_provider, _messages, _model, streamCallbacks) => {
+      streamCalls += 1;
+      if (streamCalls === 1) await firstMayFinish;
+      const text = streamCalls === 1 ? "first response" : "peer response";
+      streamCallbacks.onText(text);
+      return {
+        text,
+        thinking: "",
+        stopReason: "stop" as const,
+        blocks: [{ type: "text" as const, text }],
+        toolCalls: [],
+        inputTokens: 10,
+        outputTokens: 3,
+      };
+    }) as typeof streamMessage;
+    const ext = callbacks(fakeStream);
+
+    // The first call reserves ownership synchronously, before custom-tool
+    // preflight yields. This is the window where Chrono replay and exo send
+    // previously both observed idle.
+    const firstTurn = orchestrateSendMessage(
+      daemonServer as never,
+      null,
+      undefined,
+      convId,
+      "wake the sleeping target",
+      Date.now(),
+      ext,
+    );
+    const beginParentNotification = mock(() => {});
+    const completeParentNotification = mock(() => {});
+    const runtime = createExocortexToolRuntime({
+      server: daemonServer as never,
+      runTurn: (targetId, text, maxDepth, startedAt, automation) => orchestrateSendMessage(
+        daemonServer as never,
+        null,
+        undefined,
+        targetId,
+        text,
+        startedAt,
+        ext,
+        undefined,
+        { subagentMaxDepth: maxDepth, automation },
+      ),
+      beginParentNotification,
+      completeParentNotification,
+      hasCredentials: () => true,
+    });
+
+    const peerSend = await runtime.execute({
+      action: "send",
+      conversation_id: convId,
+      text: "peer message during wake",
+      mode: "detach",
+    }, parentId);
+    expect(peerSend.isError).toBe(false);
+    expect(JSON.parse(peerSend.output)).toMatchObject({
+      conversation_id: convId,
+      status: "queued",
+      timing: "next-turn",
+    });
+    expect(beginParentNotification).not.toHaveBeenCalled();
+    expect(completeParentNotification).not.toHaveBeenCalled();
+
+    releaseFirst();
+    expect((await firstTurn).ok).toBe(true);
+
+    const persisted = loadPersisted(convId)!;
+    expect(persisted.messages.map(message => message.role)).toEqual([
+      "user", "assistant", "user", "assistant",
+    ]);
+    expect(persisted.messages.filter(message => message.role === "user").map(message => message.content)).toEqual([
+      "wake the sleeping target",
+      "peer message during wake",
+    ]);
+    expect(persisted.messages.some(message => (
+      message.role === "system" && String(message.content).includes("Already streaming")
+    ))).toBe(false);
+    expect(streamCalls).toBe(2);
+  });
+
+  test("a losing direct producer reports Already streaming without persisting or stealing ownership", async () => {
+    const convId = id("direct-admission-race");
+    create(convId, "openai", "gpt-5.6-sol");
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const fakeStream = (async () => {
+      await gate;
+      return {
+        text: "winner",
+        thinking: "",
+        stopReason: "stop" as const,
+        blocks: [{ type: "text" as const, text: "winner" }],
+        toolCalls: [],
+        inputTokens: 10,
+        outputTokens: 2,
+      };
+    }) as typeof streamMessage;
+    const ext = callbacks(fakeStream);
+
+    const winner = orchestrateSendMessage(
+      server() as never, null, undefined, convId, "winner prompt", Date.now(), ext,
+    );
+    const loser = await orchestrateSendMessage(
+      server() as never, null, undefined, convId, "loser prompt", Date.now(), ext,
+    );
+    expect(loser).toMatchObject({ ok: false, error: "Already streaming" });
+    expect(loadPersisted(convId)?.messages.some(message => message.content === "loser prompt")).toBe(false);
+
+    release();
+    expect((await winner).ok).toBe(true);
+    expect(loadPersisted(convId)?.messages.map(message => message.content)).toEqual([
+      "winner prompt",
+      [{ type: "text", text: "winner" }],
+    ]);
+  });
+
+  test("releases an admission reservation after genuine preflight cancellation", async () => {
+    const convId = id("cancelled-admission");
+    create(convId, "openai", "gpt-5.6-sol");
+    expect(requestHistoryUnwind(convId, "test-unwind", null)).toBe(true);
+    let streamCalls = 0;
+    const fakeStream = (async () => {
+      streamCalls += 1;
+      throw new Error("provider should not run during unwind");
+    }) as typeof streamMessage;
+
+    const outcome = await orchestrateSendMessage(
+      server() as never,
+      null,
+      undefined,
+      convId,
+      "blocked by unwind",
+      Date.now(),
+      callbacks(fakeStream),
+    );
+
+    expect(outcome).toMatchObject({ ok: false, error: "Conversation unwind in progress" });
+    expect(streamCalls).toBe(0);
+    expect(isStreaming(convId)).toBe(false);
+    expect(loadPersisted(convId)?.messages).toEqual([]);
+  });
+
   test("commits the user before provider work and appends a successful assistant exactly once", async () => {
     const convId = id("success");
     create(convId, "openai", "gpt-5.6-sol");

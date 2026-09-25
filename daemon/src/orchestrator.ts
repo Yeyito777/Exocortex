@@ -417,6 +417,51 @@ async function orchestrateAssistantTurn(
   ext: OrchestrationCallbacks,
   options: AssistantTurnOptions = {},
 ): Promise<AssistantTurnOutcome> {
+  // Reserve ordinary starts before the first async preflight. Previously two
+  // daemon producers (notably an early peer send and a Chrono sleep replay)
+  // could both observe idle, then one would persist/respond while the other
+  // falsely completed its detached notification with "Already streaming".
+  // Daemon-owned queue/goal successors already carry their existing handoff.
+  if (options.streamChainHandoff === true) {
+    return await orchestrateAdmittedAssistantTurn(server, client, reqId, convId, startedAt, ext, options);
+  }
+  const admissionToken = convStore.tryBeginStreamHandoff(convId);
+  if (!admissionToken) {
+    const message = "Already streaming";
+    if (client) server.sendTo(client, { type: "error", reqId, convId, message });
+    return {
+      ok: false,
+      blocks: [],
+      tokens: 0,
+      durationMs: Date.now() - startedAt,
+      endedAt: Date.now(),
+      error: message,
+    };
+  }
+  try {
+    return await orchestrateAdmittedAssistantTurn(server, client, reqId, convId, startedAt, ext, {
+      ...options,
+      streamChainHandoff: true,
+    });
+  } finally {
+    // setActiveJob consumes this exact marker. Clear only a reservation that
+    // survived failed/cancelled preflight; never erase a newer successor.
+    if (convStore.getStreamHandoffToken(convId) === admissionToken) {
+      convStore.clearStreamHandoff(convId);
+      broadcastConversationUpdated(server, convId);
+    }
+  }
+}
+
+async function orchestrateAdmittedAssistantTurn(
+  server: DaemonServer,
+  client: ConnectedClient | null,
+  reqId: string | undefined,
+  convId: string,
+  startedAt: number,
+  ext: OrchestrationCallbacks,
+  options: AssistantTurnOptions,
+): Promise<AssistantTurnOutcome> {
   const conv = convStore.get(convId);
   if (!conv) {
     const message = `Conversation ${convId} not found`;

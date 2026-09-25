@@ -17,7 +17,7 @@ import type { ActiveToolBackgrounder } from "./tools/types";
 const activeJobs = new Map<string, AbortController>();
 export type ConversationJobKind = "assistant" | "maintenance";
 const activeJobKinds = new Map<string, ConversationJobKind>();
-/** Conversations synchronously handing one completed turn to a daemon-owned continuation. */
+/** Conversations reserved for preflight or handing a completed turn to a daemon-owned continuation. */
 const streamHandoffs = new Map<string, symbol>();
 /** Whether an active job represents a model turn that should replay after restart. */
 const restartRecoverableJobs = new Set<string>();
@@ -90,6 +90,19 @@ export function getStreamHandoffToken(convId: string): symbol | undefined {
 
 export function beginStreamHandoff(convId: string): void {
   streamHandoffs.set(convId, Symbol("stream-handoff"));
+}
+
+/**
+ * Atomically reserve an idle conversation for a turn that has not installed
+ * its AbortController yet. JavaScript execution is synchronous between the
+ * occupancy check and marker write, so competing daemon entry points cannot
+ * both pass preflight and later race at setActiveJob().
+ */
+export function tryBeginStreamHandoff(convId: string): symbol | undefined {
+  if (isStreaming(convId)) return undefined;
+  const token = Symbol("stream-handoff");
+  streamHandoffs.set(convId, token);
+  return token;
 }
 
 export function clearStreamHandoff(convId: string): void {
