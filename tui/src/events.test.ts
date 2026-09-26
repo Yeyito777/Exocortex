@@ -1598,6 +1598,32 @@ describe("disk sync assistant diagnostics", () => {
 });
 
 describe("streaming assistant metadata", () => {
+  for (const scrollOffset of [0, 20]) {
+    for (const automated of [false, true]) {
+      test(`incoming ${automated ? "background" : "user"} message preserves scroll offset ${scrollOffset}, including duplicate delivery`, () => {
+        const state = createInitialState();
+        state.convId = "conv-1";
+        state.scrollOffset = scrollOffset;
+        const event = {
+          type: "user_message" as const,
+          convId: "conv-1",
+          text: automated ? "[notification] Background task completed" : "next question",
+          startedAt: 2,
+          ...(automated ? {
+            queueId: "completion-1",
+            automation: { kind: "background_task_completion" as const, sourceId: "exec:test" },
+          } : {}),
+        };
+
+        handleEvent(event, state, daemon);
+        expect(state.scrollOffset).toBe(scrollOffset);
+        handleEvent(event, state, daemon);
+        expect(state.scrollOffset).toBe(scrollOffset);
+        expect(state.messages).toHaveLength(1);
+      });
+    }
+  }
+
   test("preserves automated-message provenance on a live user event", () => {
     const state = createInitialState();
     state.convId = "conv-1";

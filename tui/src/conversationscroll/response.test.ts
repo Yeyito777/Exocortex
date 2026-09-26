@@ -2,14 +2,14 @@ import { describe, expect, test } from "bun:test";
 import { updateStreamingResponseAutoscroll } from "./response";
 
 describe("streaming response autoscroll", () => {
-  test("follows a new response from a scrolled position, then holds its first row on overflow", () => {
+  test("follows a new response from the bottom, then holds its first row on overflow", () => {
     let update = updateStreamingResponseAutoscroll({
       state: null,
       responseId: "turn-1:text-2",
       responseStart: 90,
       responseEnd: 95,
-      previousScrollOffset: 30,
-      scrollOffset: 30,
+      previousScrollOffset: 0,
+      scrollOffset: 0,
       totalLines: 96,
       viewportHeight: 10,
     });
@@ -43,6 +43,46 @@ describe("streaming response autoscroll", () => {
     });
     expect(update).toMatchObject({ state: { mode: "anchored", lastScrollOffset: 6 }, scrollOffset: 6 });
     expect(106 - 10 - update.scrollOffset).toBe(90);
+  });
+
+  test("preserves history browsing when a response starts and grows past the viewport", () => {
+    let update = updateStreamingResponseAutoscroll({
+      state: null,
+      responseId: "turn-1:text-2",
+      responseStart: 90,
+      responseEnd: 95,
+      previousScrollOffset: 30,
+      scrollOffset: 35,
+      totalLines: 96,
+      viewportHeight: 10,
+    });
+    expect(update).toMatchObject({ state: { mode: "dismissed" }, scrollOffset: 35 });
+
+    update = updateStreamingResponseAutoscroll({
+      state: update.state,
+      responseId: "turn-1:text-2",
+      responseStart: 90,
+      responseEnd: 110,
+      previousScrollOffset: 35,
+      scrollOffset: 50,
+      totalLines: 111,
+      viewportHeight: 10,
+    });
+    expect(update).toMatchObject({ state: { mode: "dismissed" }, scrollOffset: 50 });
+    expect(111 - 10 - update.scrollOffset).toBe(96 - 10 - 35);
+
+    // A later block must not re-enable following while still reading history.
+    update = updateStreamingResponseAutoscroll({
+      state: update.state,
+      responseId: "turn-1:text-4",
+      responseStart: 115,
+      responseEnd: 120,
+      previousScrollOffset: 50,
+      scrollOffset: 60,
+      totalLines: 121,
+      viewportHeight: 10,
+    });
+    expect(update).toMatchObject({ state: { mode: "dismissed" }, scrollOffset: 60 });
   });
 
   test("cedes control when the user scrolls during the response", () => {

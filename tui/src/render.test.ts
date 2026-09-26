@@ -9,6 +9,7 @@ import { hide_cursor, show_cursor } from "./terminal";
 import { SIDEBAR_WIDTH } from "./sidebar";
 import { renderUserMessage } from "./blockrenderer";
 import { scrollToTop } from "./chat";
+import { handleUserMessage } from "./events/streaming";
 
 function captureRenderOutput(state: RenderState): string {
   let out = "";
@@ -493,7 +494,7 @@ describe("render caching and frame diffing", () => {
     state.pendingAI = createPendingAI(123, state.model);
     const response = { type: "text" as const, text: "answer 01\nanswer 02" };
     state.pendingAI.blocks.push(response);
-    state.scrollOffset = 8;
+    state.scrollOffset = 0;
 
     renderSilently(state);
     expect(state.scrollOffset).toBe(0);
@@ -516,6 +517,99 @@ describe("render caching and frame diffing", () => {
     const grownViewStart = state.layout.totalLines - state.layout.messageAreaHeight - state.scrollOffset;
     expect(grownViewStart).toBe(responseStart);
   });
+
+  test("keeps the history viewport through sending, response streaming, and completion", () => {
+    const state = createInitialState();
+    state.cols = 80;
+    state.rows = 16;
+    state.messages = [{
+      role: "assistant",
+      blocks: [{
+        type: "text",
+        text: Array.from({ length: 40 }, (_, index) => `older ${index + 1}`).join("\n"),
+      }],
+      metadata: null,
+    }];
+    renderSilently(state);
+    state.scrollOffset = 20;
+    renderSilently(state);
+    const viewStart = () => state.layout.totalLines - state.layout.messageAreaHeight - state.scrollOffset;
+    const originalStart = viewStart();
+    const originalLine = state.historyLines[originalStart];
+
+    state.messages.push({ role: "user", text: "New question", metadata: null });
+    state.pendingAI = createPendingAI(123, state.model);
+    renderSilently(state);
+    expect(viewStart()).toBe(originalStart);
+
+    const response = { type: "text" as const, text: "answer 01\nanswer 02" };
+    state.pendingAI.blocks.push(response);
+    renderSilently(state);
+    expect(viewStart()).toBe(originalStart);
+    expect(state.conversationScroll.streamingResponse?.mode).toBe("dismissed");
+
+    response.text += "\n" + Array.from({ length: 30 }, (_, index) => `answer ${index + 3}`).join("\n");
+    renderSilently(state);
+    expect(viewStart()).toBe(originalStart);
+    expect(state.conversationScroll.finalResponseViewport).toBeNull();
+
+    // Completion replaces streaming block identities with canonical history.
+    state.messages.push({ role: "assistant", blocks: [{ ...response }], metadata: null });
+    state.pendingAI = null;
+    renderSilently(state);
+    expect(viewStart()).toBe(originalStart);
+    expect(state.historyLines[viewStart()]).toBe(originalLine);
+    expect(state.conversationScroll.finalResponseViewport).toBeNull();
+  });
+
+  for (const remote of [false, true]) {
+    test(`preserves history across background completion and resumed output (${remote ? "SSH" : "local"})`, () => {
+      const state = createInitialState();
+      state.cols = 80;
+      state.rows = 16;
+      state.convId = "background";
+      state.sshRemote = remote ? { alias: "test-remote", connected: true } : null;
+      state.messages = [{
+        role: "assistant",
+        blocks: [{
+          type: "text",
+          text: Array.from({ length: 40 }, (_, index) => `older ${index + 1}`).join("\n"),
+        }],
+        metadata: null,
+      }];
+      state.pendingAI = createPendingAI(123, state.model);
+      state.pendingAI.blocks.push({ type: "thinking", text: "Waiting for a task" });
+      renderSilently(state);
+      state.scrollOffset = 20;
+      renderSilently(state);
+      const viewStart = () => state.layout.totalLines - state.layout.messageAreaHeight - state.scrollOffset;
+      const originalStart = viewStart();
+      const originalLine = state.historyLines[originalStart];
+
+      const completion = {
+        type: "user_message" as const,
+        convId: state.convId,
+        text: "[notification] Background task completed: exec:test\nStatus: exited successfully",
+        startedAt: 456,
+        queueId: "completion-1",
+        automation: { kind: "background_task_completion" as const, sourceId: "exec:test" },
+      };
+      handleUserMessage(completion, state);
+      renderSilently(state);
+      expect(viewStart()).toBe(originalStart);
+      expect(state.historyLines[viewStart()]).toBe(originalLine);
+
+      // Reconciliation of an already-canonical notification must not jump either.
+      handleUserMessage(completion, state);
+      renderSilently(state);
+      expect(viewStart()).toBe(originalStart);
+
+      state.pendingAI!.blocks.push({ type: "text", text: "The background task finished." });
+      renderSilently(state);
+      expect(viewStart()).toBe(originalStart);
+      expect(state.conversationScroll.streamingResponse?.mode).toBe("dismissed");
+    });
+  }
 
   test("keeps ordinary bottom following for active goals", () => {
     const state = createInitialState();

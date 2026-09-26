@@ -10,10 +10,9 @@ export interface StreamingResponseAutoscrollUpdate {
  * block becomes taller than the viewport.
  *
  * The caller supplies `scrollOffset` after ordinary bottom-relative pinning and
- * `previousScrollOffset` from before that pinning. A new response deliberately
- * starts following even if the user was elsewhere in history. Once the user
- * scrolls during this response, however, their position wins for the remainder
- * of the block.
+ * `previousScrollOffset` from before that pinning. A new response only starts
+ * following if the viewport was already pinned to the bottom. Browsing history
+ * before or during a response takes precedence for the remainder of the block.
  */
 export function updateStreamingResponseAutoscroll(options: {
   state: StreamingResponseAutoscrollState | null;
@@ -42,7 +41,11 @@ export function updateStreamingResponseAutoscroll(options: {
 
   const isNewResponse = options.state?.responseId !== responseId;
   let state: StreamingResponseAutoscrollState = isNewResponse
-    ? { responseId, mode: "following", lastScrollOffset: previousScrollOffset }
+    ? {
+      responseId,
+      mode: previousScrollOffset > 0 ? "dismissed" : "following",
+      lastScrollOffset: previousScrollOffset,
+    }
     : { ...options.state! };
 
   // Offset changes between rendered frames are explicit viewport navigation,

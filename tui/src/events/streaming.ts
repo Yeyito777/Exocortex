@@ -344,7 +344,6 @@ export function handleUserMessage(event: Extract<Event, { type: "user_message" }
   ));
   if (alreadyCanonical) {
     removeLocalQueueEntry(state, event.convId, event.text, event.queueId);
-    state.scrollOffset = 0;
     return;
   }
 
@@ -372,7 +371,9 @@ export function handleUserMessage(event: Extract<Event, { type: "user_message" }
   // Remove matching local shadow — the daemon already injected it.
   removeLocalQueueEntry(state, event.convId, event.text, event.queueId);
 
-  state.scrollOffset = 0;
+  // Incoming turns (including background completions) are not navigation.
+  // Let render's normal growth pinning preserve history browsing; offset zero
+  // already follows new output when the user is at the bottom.
 }
 
 export function handleSystemMessage(event: Extract<Event, { type: "system_message" }>, state: RenderState): void {
