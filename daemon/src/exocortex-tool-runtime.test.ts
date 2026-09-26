@@ -3,7 +3,7 @@ import { createExocortexToolRuntime } from "./exocortex-tool-runtime";
 import type { CompleteOptions } from "./llm";
 
 describe("OpenAI family nicknames", () => {
-  test("prefers GPT-6 for Sol/Luna while preserving Terra and explicit older IDs", async () => {
+  test("uses latest size aliases and requires legacy opt-in for older IDs", async () => {
     const complete = mock(async (_system: string, _text: string, _options?: CompleteOptions) => ({ text: "OK" }));
     const runtime = createExocortexToolRuntime({
       server: { broadcast: () => {} } as never,
@@ -12,19 +12,28 @@ describe("OpenAI family nicknames", () => {
       runCompletion: complete,
     });
     for (const [nickname, model] of [
+      ["ASTRA", "gpt-6-astra"],
       ["sol", "gpt-6-sol"],
       ["LUNA", "gpt-6-luna"],
       ["openai/sol", "gpt-6-sol"],
       ["openai/luna", "gpt-6-luna"],
       ["terra", "gpt-5.6-terra"],
-      ["gpt-5.6-sol", "gpt-5.6-sol"],
-      ["openai/gpt-5.6-luna", "gpt-5.6-luna"],
     ]) {
       const result = await runtime.execute({
         action: "commands", command: "llm", args: { model: nickname, text: "Hello" },
-      });
+      }, undefined);
       expect(result.isError).toBe(false);
-      expect(complete.mock.calls.at(-1)?.[2]).toMatchObject({ provider: "openai", model, effort: "medium" });
+      expect(complete.mock.calls.at(-1)?.[2]).toMatchObject({ provider: "openai", model, effort: model === "gpt-6-astra" ? "low" : "medium" });
+    }
+    for (const model of ["gpt-5.6-sol", "openai/gpt-5.6-luna", "gpt-5.4"]) {
+      const calls = complete.mock.calls.length;
+      const rejected = await runtime.execute({ action: "commands", command: "llm", args: { model, text: "Hello" } }, undefined);
+      expect(rejected.isError).toBe(true);
+      expect(rejected.output).toContain("legacy:true");
+      expect(complete.mock.calls.length).toBe(calls);
+      const accepted = await runtime.execute({ action: "commands", command: "llm", args: { model, text: "Hello", legacy: true } }, undefined);
+      expect(accepted.isError).toBe(false);
+      expect(complete.mock.calls.at(-1)?.[2]?.model).toBe(model.replace("openai/", ""));
     }
   });
 });

@@ -12,7 +12,8 @@ const conversation_id = string("Exact conversation ID.");
 const task_id = string("Exact active task ID from tasks.");
 const text = string("Task or message text.");
 const title = string("Short title for a new subagent (at most 6 words / 60 characters).");
-const model = string("Optional exact model ID or provider/model. Omit for configured default; commands/models lists choices.");
+const model = string("Omit for the user's /default-model. Size aliases astra/sol/terra/luna always select their latest available generation. Older explicit IDs require legacy:true; commands/models lists current choices.");
+const legacy = boolean("Explicitly allow older delegation models. Default false; use only when the user explicitly requests a legacy model.");
 const allow_edits = boolean("For a new subagent: enable shell and file edits. Default false; not a sandbox.");
 const mode = choice(["auto", "detach", "wait"], "Default auto: starts and notifies on completion. wait returns the result. Busy targets queue for next turn.");
 const max_depth = { type: "integer", minimum: 0, maximum: MAX_EXO_SUBAGENT_DEPTH, description: "Additional delegation generations. New subagents and bounded callers default to 0. Existing targets preserve their current setting when an unbounded caller omits this. Explicit values cannot exceed the caller's remaining depth minus one." };
@@ -26,9 +27,9 @@ const listing = {
   scope: choice(["children", "all"], "list defaults all; tasks/jobs default children (own work)."),
 };
 const send = {
-  text, title, conversation_id, model, allow_edits, mode, max_depth,
+  text, title, conversation_id, model, legacy, allow_edits, mode, max_depth,
   provider: choice(["openai", "deepseek", "opencode", "openrouter"], "Provider override."),
-  effort: choice([...EFFORT_LEVELS], "Reasoning effort; defaults medium, normalized for the model."),
+  effort: choice([...EFFORT_LEVELS], "Reasoning effort; uses /default-model effort for the configured default, otherwise the selected model's default. Normalized for the model."),
   internal_tools: strings("Exact internal tools. Defaults research tools; cannot combine with allow_edits. For existing targets both tool lists are required and persistently replace policy; self must retain exo."),
   external_tools: strings("Exact external CLI tools; defaults none. Enables shell; tool selection is not a sandbox."),
   notify_parent: boolean("Notify on detached completion; defaults true."),
@@ -44,7 +45,7 @@ export const EXO_OPERATION_SCHEMAS: Record<string, Record<string, unknown>> = Ob
     read: { conversation_id, task_id, ...page, full: boolean("Include thinking and tool results."), view: choice(["history", "info"], "Conversation view; defaults history.") },
     stop: { conversation_id, task_id },
     jobs: listing,
-    queue: { conversation_id, text, max_depth, timing: choice(["next-turn", "message-end"], "Defaults next-turn.") },
+    queue: { conversation_id, text, max_depth, legacy, timing: choice(["next-turn", "message-end"], "Defaults next-turn.") },
   }).map(([name, properties]) => [name, { type: "object", properties, additionalProperties: false }]),
 );
 
@@ -57,9 +58,10 @@ export const exo: Tool = {
   name: "exo",
   description: "Delegate and manage work in this daemon: send, list conversations, tasks, read results, stop work. Advanced administration and option reference are under commands.",
   systemHint: [
-    "Delegate only when requested, needed for testing, or exceptionally useful in parallel. Start with exo {action:'send', title:'Short task title', text:'Task and context'}; add allow_edits:true for coding. Depth defaults to 0. Results notify you automatically.",
+    "Almost never use subagents. Do implementation, research, review, and testing yourself by default; a large task, parallelizable modules, or a request for end-to-end testing is not a reason to delegate. Use subagents when explicitly requested, or only in rare cases with a compelling benefit that cannot reasonably be obtained by doing the work yourself. Never delegate against a user's prohibition, through this tool or another mechanism.",
     "Subagents start in their own isolated conversation workspace; include the target absolute directory and necessary context. Tool selection is not a sandbox.",
-    "Omit model for the configured default, or use commands/models for exact IDs. Use tasks to inspect active work, read for results, stop with one exact task_id or conversation_id. Depth-zero agents may only inspect/stop their own tasks.",
+    "When delegation is warranted, omit model and effort to use the user's /default-model, not the parent model or a cheaper substitute. Size aliases astra/sol/terra/luna always resolve to their latest available generation; implicit outdated size defaults are upgraded without changing the saved setting. Older explicit IDs require legacy:true, only when the user explicitly requests legacy. Do not downgrade substantial implementation, architecture, or correctness-sensitive work from Astra to Sol.",
+    "Use commands/models for current choices. Use send with a short title and task context; allow_edits:true enables coding tools. Child depth defaults to 0; results notify you automatically. Use tasks to inspect active work, read for results, stop with one exact task_id or conversation_id. Depth-zero agents may only inspect/stop their own tasks.",
     "For advanced options use {action:'commands', command:'help', args:{command:'send'}} (or another action/command). Pass options in args. commands without a command lists administration; notifications manages subscriptions.",
   ].join("\n"),
   inputSchema: {
@@ -71,6 +73,7 @@ export const exo: Tool = {
       conversation_id: string("send: omit to create a subagent. read: omit for current conversation. stop: exact conversation to abort, never current."),
       task_id: string("read: exact active task ID. stop: exact background-task ID from tasks. Do not combine with conversation_id."),
       model,
+      legacy,
       allow_edits,
       mode,
       command: string("For commands: omit to list; help with args.command for reference; models for model IDs; otherwise a discovered command."),

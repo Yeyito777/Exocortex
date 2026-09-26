@@ -2,6 +2,7 @@ import { afterEach, describe, expect, mock, test } from "bun:test";
 import { readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { configDir, conversationWorkspaceDir } from "@exocortex/shared/paths";
+import { clearConversationDefaults, saveConversationDefaults } from "@exocortex/shared/config";
 import { createExocortexToolRuntime } from "../exocortex-tool-runtime";
 import {
   clearActiveJob,
@@ -68,6 +69,7 @@ function successfulOutcome(text = "done") {
 }
 
 afterEach(() => {
+  clearConversationDefaults();
   resetConversationActivityForTest();
   resetExternalNotificationsForTest();
   for (const convId of conversationIds.splice(0)) {
@@ -175,7 +177,8 @@ describe("native exo tool contract", () => {
     expect(schema).not.toContain('"internal_tools"');
     expect(schema).not.toContain('"external_tools"');
     expect(schema).toContain('"task_id"');
-    expect(Object.keys(exo.inputSchema.properties as object)).toHaveLength(10);
+    expect(Object.keys(exo.inputSchema.properties as object)).toHaveLength(11);
+    expect(schema).toContain('"legacy"');
     expect(exo.systemHint).toContain("Depth-zero agents may only inspect/stop their own tasks");
     expect(exo.systemHint).toContain("Tool selection is not a sandbox");
     expect(exo.systemHint).toContain("Subagents start in their own isolated conversation workspace");
@@ -258,12 +261,51 @@ describe("native exo tool contract", () => {
 });
 
 describe("native exo daemon runtime", () => {
+  test("uses /default-model and effort instead of the parent's settings", async () => {
+    saveConversationDefaults({ provider: "openai", model: "gpt-5.6-sol", effort: "xhigh", fastMode: false });
+    const parentId = id("different-model-parent");
+    create(parentId, "openai", "gpt-6-astra", "parent", "low");
+    const runtime = createExocortexToolRuntime({ server: fakeServer() as never, runTurn: async () => successfulOutcome(), hasCredentials: () => true });
+    const result = await runtime.execute({ action: "send", title: "Configured default", text: "test", mode: "wait" }, parentId);
+    expect(result.isError).toBe(false);
+    const childId = JSON.parse(result.output).conversation_id;
+    conversationIds.push(childId);
+    expect(get(childId)).toMatchObject({ model: "gpt-6-sol", effort: "xhigh" });
+  });
+
+  test("rejects legacy creation, existing sends and queueing before side effects unless opted in", async () => {
+    const runTurn = mock(async () => successfulOutcome());
+    const runtime = createExocortexToolRuntime({ server: fakeServer() as never, runTurn, hasCredentials: () => true });
+    const target = id("legacy-target");
+    create(target, "openai", "gpt-5.6-sol", "old");
+    const count = listSidebarState().conversations.length;
+    for (const input of [
+      { action: "send", title: "Old model", text: "test", model: "gpt-5.6-sol" },
+      { action: "send", conversation_id: target, text: "test" },
+      { action: "queue", conversation_id: target, text: "test" },
+    ]) {
+      expect((await runtime.execute(input, undefined)).output).toContain("legacy:true");
+    }
+    setActiveJob(target, new AbortController(), Date.now());
+    expect((await runtime.execute({ action: "send", conversation_id: target, text: "test", model: "sol" }, undefined)).output).toContain("legacy:true");
+    clearActiveJob(target);
+    expect(getQueuedMessages(target)).toHaveLength(0);
+    expect(listSidebarState().conversations).toHaveLength(count);
+    expect(runTurn).not.toHaveBeenCalled();
+    const accepted = await runtime.execute({ action: "send", title: "Explicit legacy", text: "test", model: "gpt-5.6-sol", legacy: true, mode: "wait" }, undefined);
+    expect(accepted.isError).toBe(false);
+    conversationIds.push(JSON.parse(accepted.output).conversation_id);
+    expect((await runtime.execute({ action: "send", conversation_id: target, text: "test", legacy: true, mode: "wait" }, undefined)).isError).toBe(false);
+    expect((await runtime.execute({ action: "send", conversation_id: target, text: "test", model: "sol", mode: "wait" }, undefined)).isError).toBe(false);
+    expect(get(target)?.model).toBe("gpt-6-sol");
+  });
+
   test("resolves supported model nicknames before creating or running a child", async () => {
     const runTurn = mock(async () => successfulOutcome());
     const runtime = createExocortexToolRuntime({
       server: fakeServer() as never, runTurn, hasCredentials: () => true,
     });
-    for (const model of ["sol", "openai/terra", "LUNA"]) {
+    for (const [model, expected] of [["astra", "gpt-6-astra"], ["sol", "gpt-6-sol"], ["openai/terra", "gpt-5.6-terra"], ["LUNA", "gpt-6-luna"]]) {
       const text = "Review everything.\n".repeat(100).trimEnd();
       const result = await runtime.execute({
         action: "send", title: "Review model selection", text, model,
@@ -273,7 +315,7 @@ describe("native exo daemon runtime", () => {
       const childId = JSON.parse(result.output).conversation_id;
       conversationIds.push(childId);
       expect(get(childId)?.provider).toBe("openai");
-      expect(get(childId)?.model).toBe(`gpt-5.6-${model.split("/").at(-1)!.toLowerCase()}`);
+      expect(get(childId)?.model).toBe(expected);
       expect(get(childId)?.subagentMaxDepth).toBe(0);
       expect(runTurn).toHaveBeenLastCalledWith(childId, text, 0, expect.any(Number), { kind: "exo_send" });
     }
@@ -283,7 +325,7 @@ describe("native exo daemon runtime", () => {
     }, undefined);
     expect(conflict.isError).toBe(true);
     expect(conflict.output).toContain("conflicts");
-    expect(runTurn).toHaveBeenCalledTimes(3);
+    expect(runTurn).toHaveBeenCalledTimes(4);
   });
 
   test("discovers advanced options and models without expanding the default schema", async () => {
@@ -294,7 +336,10 @@ describe("native exo daemon runtime", () => {
       expect(JSON.parse(result.output)).toMatchObject({ input_schema: { additionalProperties: false } });
     }
     const models = JSON.parse((await runtime.execute({ action: "commands", command: "models" }, undefined)).output);
-    expect(models.providers.find((p: { provider: string }) => p.provider === "openai").models).toContain("gpt-5.6-sol");
+    expect(models.providers.find((p: { provider: string }) => p.provider === "openai").models).toContain("gpt-6-sol");
+    expect(models.providers.find((p: { provider: string }) => p.provider === "openai").models).not.toContain("gpt-5.6-sol");
+    const legacyModels = JSON.parse((await runtime.execute({ action: "commands", command: "models", args: { legacy: true } }, undefined)).output);
+    expect(legacyModels.providers.find((p: { provider: string }) => p.provider === "openai").models).toContain("gpt-5.6-sol");
     const sendHelp = await runtime.execute({ action: "commands", command: "help", args: { command: "send" } }, undefined);
     expect(sendHelp.output).toContain("internal_tools");
     expect(sendHelp.output).toContain("max_depth");
@@ -556,7 +601,7 @@ describe("native exo daemon runtime", () => {
       action: "send",
       text: "Inspect /tmp/project",
       title: "Inspect project files",
-      model: "gpt-5.4",
+      model: "gpt-6-sol",
       max_depth: 0,
     }, parentId);
     expect(result.isError).toBe(false);
@@ -723,7 +768,7 @@ describe("native exo daemon runtime", () => {
       action: "send",
       text: "Implement the focused change",
       title: "Implement focused change",
-      model: "gpt-5.4",
+      model: "gpt-6-astra",
       effort: "xhigh",
       allow_edits: true,
       mode: "wait",

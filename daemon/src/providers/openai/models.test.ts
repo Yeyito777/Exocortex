@@ -2,6 +2,14 @@ import { describe, expect, test } from "bun:test";
 import { selectOpenAIModelsForTest } from "./models";
 
 describe("OpenAI model selection", () => {
+  test("keeps future size generations for dynamic delegation alias selection", () => {
+    const models = selectOpenAIModelsForTest([
+      { slug: "gpt-7-astra" }, { slug: "gpt-6.10-sol" }, { slug: "gpt-6-terra" },
+      { slug: "gpt-7-luna", supported_in_api: false },
+    ]);
+    expect(models.map(model => model.id)).toEqual(expect.arrayContaining(["gpt-7-astra", "gpt-6.10-sol", "gpt-6-terra"]));
+    expect(models.map(model => model.id)).not.toContain("gpt-7-luna");
+  });
   test("offers GPT-6 Sol/Luna before their older tiers even before discovery", () => {
     const models = selectOpenAIModelsForTest([]);
     for (const tier of ["sol", "luna"]) {
@@ -11,7 +19,7 @@ describe("OpenAI model selection", () => {
         defaultEffort: "medium", maxContext: 272_000, supportsImages: true, supportsFastMode: true,
       });
       expect(model.supportedEfforts.map(item => item.effort)).toEqual([
-        "none", "low", "medium", "high", "xhigh", "max", ...(tier === "sol" ? ["ultra"] : []),
+        "none", "low", "medium", "high", "xhigh", "max", ...(tier === "sol" ? ["ultra" as const] : []),
       ]);
       expect(models.indexOf(model)).toBeLessThan(models.findIndex(model => model.id === `gpt-5.6-${tier}`));
     }

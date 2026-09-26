@@ -20,6 +20,7 @@ import { complete } from "./llm";
 import { buildSystemPrompt } from "./system";
 import { createConversationWorkspace, ensureConversationWorkspace } from "./workspace-service";
 import { scopedSubagentPromptOptions } from "./subagent-policy";
+import { assertDelegationModel, parseRequestedModel, resolveDelegationModel } from "./delegation-models";
 import { getToolDisplayInfo } from "./tools/registry";
 import { ensureConversationCustomTools } from "./tools/custom-tools";
 import { getExternalToolStyles, manageExternalToolDaemon } from "./external-tools";
@@ -1356,14 +1357,22 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           break;
         }
         const conversationDefaults = effectiveConversationDefaults();
+        let delegationSelection: ReturnType<typeof resolveDelegationModel> | undefined;
+        if (cmd.subagent || cmd.delegation) {
+          try { delegationSelection = resolveDelegationModel(cmd); }
+          catch (error) {
+            server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: id, message: error instanceof Error ? error.message : String(error) });
+            break;
+          }
+        }
         const inferredProvider = inferProviderForModel(cmd.model);
         const provider = cmd.startCall
           ? "openai"
-          : cmd.provider ?? inferredProvider ?? conversationDefaults.provider;
+          : delegationSelection?.provider ?? cmd.provider ?? inferredProvider ?? conversationDefaults.provider;
         const requestedModel = cmd.startCall && (
           (cmd.provider !== undefined && cmd.provider !== "openai")
           || (inferredProvider !== undefined && inferredProvider !== "openai")
-        ) ? undefined : cmd.model;
+        ) ? undefined : delegationSelection?.model ?? cmd.model;
         const providerInfo = getProvider(provider);
         if (!providerInfo) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: id, message: `Unknown provider: ${provider}` });
@@ -1382,10 +1391,10 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         const defaultEffort = provider === conversationDefaults.provider && model === conversationDefaults.model
           ? conversationDefaults.effort
           : undefined;
-        const effort = normalizeEffort(provider, model, cmd.effort ?? (cmd.subagent ? "medium" : defaultEffort));
+        const effort = delegationSelection?.effort ?? normalizeEffort(provider, model, cmd.effort ?? defaultEffort);
         const requestedFastMode = typeof cmd.fastMode === "boolean"
           ? cmd.fastMode
-          : (provider === conversationDefaults.provider && model === conversationDefaults.model ? conversationDefaults.fastMode : false);
+          : (delegationSelection?.fastMode ?? (provider === conversationDefaults.provider && model === conversationDefaults.model ? conversationDefaults.fastMode : false));
         if (cmd.fastMode === true && !supportsFastMode(provider, model)) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: id, message: `Fast mode is only available for ${provider} conversations that support it.` });
           break;
@@ -1970,6 +1979,13 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
 
       case "send_message": {
         const target = convStore.get(cmd.convId);
+        if (target && (cmd.delegation || target.subagentPolicy)) {
+          try { assertDelegationModel(target.provider, target.model, cmd.legacy); }
+          catch (error) {
+            server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: error instanceof Error ? error.message : String(error) });
+            break;
+          }
+        }
         if (target?.provider === "openai"
             && rejectDuringOpenAIAccountMutation(client, cmd.reqId, cmd.convId)) break;
         const callbacks = buildOrchestrationCallbacks(cmd.convId);
@@ -2115,31 +2131,40 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Cannot switch provider/model while the conversation is streaming." });
           break;
         }
-        const nextProvider = cmd.provider ?? inferProviderForModel(cmd.model) ?? conv.provider;
+        let requested: ReturnType<typeof parseRequestedModel>;
+        try {
+          requested = parseRequestedModel(cmd.provider, cmd.model);
+          if (cmd.delegation) assertDelegationModel(requested.provider ?? conv.provider, requested.model!, cmd.legacy);
+        } catch (error) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: error instanceof Error ? error.message : String(error) });
+          break;
+        }
+        const nextProvider = requested.provider ?? conv.provider;
+        const nextModel = requested.model!;
         if (!getProvider(nextProvider)) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Unknown provider: ${nextProvider}` });
           break;
         }
-        if (!isKnownModel(nextProvider, cmd.model) && !allowsCustomModels(nextProvider)) {
+        if (!isKnownModel(nextProvider, nextModel) && !allowsCustomModels(nextProvider)) {
           server.sendTo(client, {
             type: "error",
             reqId: cmd.reqId,
             convId: cmd.convId,
-            message: unknownModelMessage(nextProvider, cmd.model),
+            message: unknownModelMessage(nextProvider, nextModel),
           });
           break;
         }
-        const nextEffort = normalizeEffort(nextProvider, cmd.model, conv.effort);
-        const nextFastMode = supportsFastMode(nextProvider, cmd.model) ? conv.fastMode : false;
+        const nextEffort = normalizeEffort(nextProvider, nextModel, conv.effort);
+        const nextFastMode = supportsFastMode(nextProvider, nextModel) ? conv.fastMode : false;
         // Keep the checkpoint: native OpenAI compaction can cross models on
         // the same account. An incompatible/invalid checkpoint hard-fails on
         // the next turn instead of rebuilding the unbounded canonical archive.
         // Model selection itself never submits a provider request.
-        const ok = convStore.setModel(cmd.convId, nextProvider, cmd.model, nextEffort, nextFastMode);
+        const ok = convStore.setModel(cmd.convId, nextProvider, nextModel, nextEffort, nextFastMode);
         if (ok) {
           server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
           broadcastConversationUpdated(server, cmd.convId);
-          log("info", `handler: conversation ${cmd.convId} switched to ${nextProvider}/${cmd.model} (effort=${nextEffort}, fastMode=${nextFastMode})`);
+          log("info", `handler: conversation ${cmd.convId} switched to ${nextProvider}/${nextModel} (effort=${nextEffort}, fastMode=${nextFastMode})`);
         } else {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
         }
@@ -2428,6 +2453,14 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       // ── Queue/system/history commands ─────────────────────────────
 
       case "queue_message": {
+        const delegationTarget = convStore.get(cmd.convId);
+        if (delegationTarget && (cmd.delegation || delegationTarget.subagentPolicy)) {
+          try { assertDelegationModel(delegationTarget.provider, delegationTarget.model, cmd.legacy); }
+          catch (error) {
+            server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: error instanceof Error ? error.message : String(error) });
+            break;
+          }
+        }
         const queueId = cmd.queueId?.trim();
         let queuedCommand: { name: string } | undefined;
         let queuedDraftSettings: {
@@ -3089,17 +3122,25 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       }
 
       case "llm_complete": {
-        const provider = cmd.provider ?? inferProviderForModel(cmd.model) ?? effectiveConversationDefaults().provider;
+        let delegationSelection: ReturnType<typeof resolveDelegationModel> | undefined;
+        if (cmd.delegation) {
+          try { delegationSelection = resolveDelegationModel(cmd); }
+          catch (error) {
+            server.sendTo(client, { type: "error", reqId: cmd.reqId, message: error instanceof Error ? error.message : String(error) });
+            break;
+          }
+        }
+        const provider = delegationSelection?.provider ?? cmd.provider ?? inferProviderForModel(cmd.model) ?? effectiveConversationDefaults().provider;
         if (!getProvider(provider)) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Unknown provider: ${provider}` });
           break;
         }
-        const model = cmd.model ?? modelDefaultForProvider(provider);
-        if (cmd.model && !isKnownModel(provider, cmd.model) && !allowsCustomModels(provider)) {
+        const model = delegationSelection?.model ?? cmd.model ?? modelDefaultForProvider(provider);
+        if (!isKnownModel(provider, model) && !allowsCustomModels(provider)) {
           server.sendTo(client, {
             type: "error",
             reqId: cmd.reqId,
-            message: unknownModelMessage(provider, cmd.model),
+            message: unknownModelMessage(provider, model),
           });
           break;
         }
@@ -3115,8 +3156,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           provider,
           model,
           maxTokens,
-          effort: effortDefaultForSelection(provider, model),
-          serviceTier: fastDefaultForSelection(provider, model) && supportsFastMode(provider, model) ? "fast" : undefined,
+          effort: delegationSelection?.effort ?? cmd.effort ?? effortDefaultForSelection(provider, model),
+          serviceTier: (delegationSelection?.fastMode ?? fastDefaultForSelection(provider, model)) && supportsFastMode(provider, model) ? "fast" : undefined,
           tracking: { source: cmd.trackingSource ?? "llm_complete" },
         })
           .then((result) => {

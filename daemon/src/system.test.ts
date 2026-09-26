@@ -43,10 +43,13 @@ describe("system prompt", () => {
   test("includes compact native-subagent guidance", () => {
     const prompt = buildSystemPrompt({ conversationId: "nested" });
 
-    expect(prompt).toContain("## exo\nDelegate only");
-    expect(prompt).toContain("Depth defaults to 0");
+    expect(prompt).toContain("## exo\nAlmost never use subagents.");
+    expect(prompt).toContain("Child depth defaults to 0");
     expect(prompt).toContain("Tool selection is not a sandbox");
-    expect(prompt).toContain("commands/models for exact IDs");
+    expect(prompt).toContain("commands/models for current choices");
+    expect(prompt).toContain("user's /default-model");
+    expect(prompt).toContain("legacy:true");
+    expect(prompt).not.toContain("needed for testing");
     expect(prompt).toContain("## chrono\nPrefer chrono over shell sleep");
   });
 

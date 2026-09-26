@@ -7,6 +7,7 @@
  */
 
 import { effectiveConversationDefaults } from "@exocortex/shared/config";
+import { assertDelegationModel, isLegacyDelegationModel, parseRequestedModel, resolveDelegationModel } from "./delegation-models";
 import { createHash } from "crypto";
 import type { DisplayEntry, ExternalNotificationSoftWake, QueueTiming, UserMessageAutomation } from "@exocortex/shared/protocol";
 import {
@@ -18,7 +19,6 @@ import {
   type Block,
   type EffortLevel,
   type FolderSummary,
-  type ModelId,
   type ProviderId,
   type SidebarItemRef,
 } from "./messages";
@@ -28,8 +28,6 @@ import { log } from "./log";
 import { cancelDeferredChronoSleep } from "./chrono-service";
 import {
   allowsCustomModels,
-  canonicalizeModel,
-  getDefaultModel,
   getProvider,
   getProviders,
   isKnownModel,
@@ -327,57 +325,10 @@ function subagentTitleInput(input: Record<string, unknown>): string {
   return title;
 }
 
-function inferProviderForModel(model: string | undefined): ProviderId | undefined {
-  const lowered = model?.trim().toLowerCase();
-  if (!lowered) return undefined;
-  if (["luna", "terra", "sol"].includes(lowered)) return "openai";
-  if (isKnownModel("openrouter", lowered)) return "openrouter";
-  if (lowered === "pro" || lowered === "flash" || lowered.startsWith("deepseek-") || lowered.startsWith("v4-")) return "deepseek";
-  if (lowered.startsWith("gpt-") || lowered.startsWith("o1") || lowered.startsWith("o3") || lowered.startsWith("o4")) return "openai";
-  return undefined;
-}
-
 function providerInput(value: unknown): ProviderId | undefined {
   if (value === undefined || value === null || value === "") return undefined;
   if (value === "openai" || value === "deepseek" || value === "opencode" || value === "openrouter") return value;
   throw new Error(`Unknown provider: ${String(value)}`);
-}
-
-interface RequestedModel {
-  provider?: ProviderId;
-  model?: ModelId;
-}
-
-function parseRequestedModel(providerValue: unknown, modelValue: unknown): RequestedModel {
-  let provider = providerInput(providerValue);
-  let model = typeof modelValue === "string" && modelValue.trim() ? modelValue.trim() : undefined;
-
-  if (model?.includes("/") && /^(openai|deepseek|opencode|openrouter)\//i.test(model)) {
-    const slash = model.indexOf("/");
-    const specProvider = providerInput(model.slice(0, slash).trim().toLowerCase());
-    const specModel = model.slice(slash + 1).trim();
-    if (!specModel) throw new Error(`Missing model name in model spec: ${model}`);
-    if (provider && specProvider && provider !== specProvider) {
-      throw new Error(`Provider ${provider} conflicts with model spec provider ${specProvider}`);
-    }
-    provider = specProvider;
-    model = specModel;
-  }
-
-  provider = provider ?? inferProviderForModel(model);
-  if (provider === "openai" && model && ["luna", "terra", "sol"].includes(model.toLowerCase())) {
-    const alias = model.toLowerCase();
-    const matches = getProvider("openai")!.models.filter(candidate => candidate.id.endsWith(`-${alias}`));
-    const preferred = alias === "sol" || alias === "luna"
-      ? matches.find(candidate => candidate.id === `gpt-6-${alias}`)
-      : undefined;
-    if (!preferred && matches.length !== 1) {
-      throw new Error(`Model nickname "${model}" is ${matches.length ? "ambiguous" : "unavailable"}. Use action=commands, command=models and choose an exact model ID.`);
-    }
-    model = (preferred ?? matches[0]).id;
-  }
-  if (provider && model) model = canonicalizeModel(provider, model);
-  return { provider, model };
 }
 
 function unknownModelMessage(provider: ProviderId, model: string): string {
@@ -385,30 +336,13 @@ function unknownModelMessage(provider: ProviderId, model: string): string {
   return `Unknown model for provider ${provider}: ${model}. Available models: ${available}`;
 }
 
-interface ModelSelection {
-  provider: ProviderId;
-  model: ModelId;
-  effort: EffortLevel;
-  fastMode: boolean;
-}
-
-function resolveModelSelection(input: Record<string, unknown>, fallbackEffort?: EffortLevel): ModelSelection {
-  const requested = parseRequestedModel(input.provider, input.model);
-  const defaults = effectiveConversationDefaults();
-  const provider = requested.provider ?? defaults.provider;
-  if (!getProvider(provider)) throw new Error(`Unknown provider: ${provider}`);
-  const model = requested.model
-    ?? (provider === defaults.provider ? defaults.model : getDefaultModel(provider));
-  if (!isKnownModel(provider, model) && !allowsCustomModels(provider)) {
-    throw new Error(unknownModelMessage(provider, model));
-  }
-  const configuredEffort = provider === defaults.provider && model === defaults.model ? defaults.effort : undefined;
-  const effort = normalizeEffort(provider, model, effortInput(input.effort) ?? fallbackEffort ?? configuredEffort);
-  const fastMode = provider === defaults.provider
-    && model === defaults.model
-    && defaults.fastMode
-    && supportsFastMode(provider, model);
-  return { provider, model, effort, fastMode };
+function resolveModelSelection(input: Record<string, unknown>) {
+  return resolveDelegationModel({
+    provider: providerInput(input.provider),
+    model: stringInput(input, "model"),
+    effort: effortInput(input.effort),
+    legacy: optionalBooleanInput(input, "legacy"),
+  });
 }
 
 function formatBlocks(blocks: Block[], full: boolean): string {
@@ -827,7 +761,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
 
     if (!convId) {
       ensureSubagentCapacity(parentConvId);
-      const selection = resolveModelSelection(input, "medium");
+      const selection = resolveModelSelection(input);
       ensureCanStart(selection.provider);
       const parent = parentConvId ? convStore.get(parentConvId) : undefined;
       let childInternalTools = validateToolSelection(
@@ -869,6 +803,12 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       const target = convStore.get(convId);
       if (!target) throw new Error(`Conversation ${convId} not found`);
       ensureScopedDelegationTarget(parentConvId, convId);
+      if (convId !== parentConvId) {
+        // Busy targets keep their current model; reject before queueing or
+        // changing tool policy. An idle target may explicitly switch models.
+        const requested = convStore.isStreaming(convId) ? {} : parseRequestedModel(input.provider, input.model);
+        assertDelegationModel(requested.provider ?? target.provider, requested.model ?? target.model, optionalBooleanInput(input, "legacy"));
+      }
       taskTitle = target.title || "Subagent task";
       // Sending to a regular existing conversation is cross-conversation work,
       // not a new child task owned by the caller. Existing scoped/standalone
@@ -1217,6 +1157,10 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     const text = stringInput(input, "text", true)!;
     if (!convStore.getSummary(convId)) throw new Error(`Conversation ${convId} not found`);
     ensureScopedDelegationTarget(parentConvId, convId);
+    if (convId !== parentConvId) {
+      const target = convStore.get(convId)!;
+      assertDelegationModel(target.provider, target.model, optionalBooleanInput(input, "legacy"));
+    }
     const maxDepth = requestedExistingMaxDepth(input, callerMaxDepth);
     const timing: QueueTiming = input.timing === "message-end" ? "message-end" : "next-turn";
     convStore.pushQueuedMessage(convId, text, timing, undefined, maxDepth, undefined, undefined, undefined, {
@@ -1860,15 +1804,25 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
   const commands: ExoCommandDefinition[] = [
     {
       name: "models",
-      description: "List exact model IDs and configured defaults. Use these IDs rather than guessing nicknames.",
-      inputSchema: commandSchema({}),
-      execute: () => ok(pretty({
-        defaults: effectiveConversationDefaults(),
-        providers: getProviders().map(provider => ({
-          provider: provider.id,
-          models: provider.models.map(model => model.id),
-        })),
-      })),
+      description: "List current delegation models and /default-model defaults. Older models are hidden unless legacy:true.",
+      inputSchema: commandSchema({ legacy: { type: "boolean", description: "Include older models requiring explicit legacy opt-in." } }),
+      execute: (args) => {
+        const legacy = optionalBooleanInput(args, "legacy") === true;
+        let defaults: ReturnType<typeof resolveDelegationModel> | null = null;
+        let defaultError: string | undefined;
+        try { defaults = resolveDelegationModel({ legacy }); }
+        catch (error) { defaultError = error instanceof Error ? error.message : String(error); }
+        return ok(pretty({
+          defaults,
+          configured_defaults: effectiveConversationDefaults(),
+          ...(defaultError ? { default_error: defaultError } : {}),
+          providers: getProviders().map(provider => ({
+            provider: provider.id,
+            models: provider.models.map(model => model.id).filter(model =>
+              legacy || !isLegacyDelegationModel(provider.id, model, provider.models.map(candidate => candidate.id))),
+          })),
+        }));
+      },
     },
     ...(["jobs", "queue"] as const).map(name => ({
       name,
@@ -1961,6 +1915,8 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
         system: { type: "string", description: "Optional system prompt." },
         provider: { type: "string", enum: ["openai", "deepseek", "opencode", "openrouter"] },
         model: { type: "string", description: "Optional model or provider/model spec." },
+        legacy: { type: "boolean", description: "Allow older models only when explicitly requested by the user." },
+        effort: { type: "string", enum: [...EFFORT_LEVELS], description: "Omit for configured/default model effort." },
         max_tokens: { type: "integer", minimum: 1, maximum: 128000, default: 16000 },
       }, ["text"]),
       examples: [{ text: "Summarize this", system: "Be terse" }],

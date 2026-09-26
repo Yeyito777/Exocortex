@@ -144,6 +144,9 @@ function preferredOpenAIPrimaryFamily(models: OpenAICodexModel[]): PrimaryOpenAI
 function isPreferredOpenAIModel(model: OpenAICodexModel, preferredFamily: PrimaryOpenAIModelFamily): boolean {
   return typeof model.slug === "string" && (
     isOpenAIModelInFamily(model.slug, preferredFamily)
+    // Keep discovered size generations even when the static preferred-family
+    // list has not been updated yet. Delegation aliases resolve from this list.
+    || /^gpt-\d+(?:\.\d+)*-(astra|sol|terra|luna)$/.test(model.slug)
     || MANUAL_OPENAI_MODEL_IDS.has(model.slug)
   );
 }

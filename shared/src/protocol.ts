@@ -76,6 +76,9 @@ export interface RestartDaemonCommand {
 }
 
 export interface NewConversationCommand {
+  /** Apply current-generation delegation model policy (independent of folder placement). */
+  delegation?: boolean;
+  legacy?: boolean;
   type: "new_conversation";
   reqId?: string;
   /** Optional client-generated id so follow-up commands (notably early abort) can target the conversation before the create ack arrives. */
@@ -130,6 +133,8 @@ export interface ParentNotificationTarget {
 }
 
 export interface SendMessageCommand {
+  delegation?: boolean;
+  legacy?: boolean;
   type: "send_message";
   reqId?: string;
   convId: string;
@@ -393,6 +398,8 @@ export interface LoadToolOutputsCommand {
 }
 
 export interface SetModelCommand {
+  delegation?: boolean;
+  legacy?: boolean;
   type: "set_model";
   reqId?: string;
   convId: string;
@@ -761,6 +768,8 @@ export interface QueuedMessageInfo {
 }
 
 export interface QueueMessageCommand {
+  delegation?: boolean;
+  legacy?: boolean;
   type: "queue_message";
   reqId?: string;
   /** Stable optimistic id. The daemon generates one when omitted by non-UI callers. */
@@ -831,6 +840,9 @@ export interface SetSystemInstructionsCommand {
 }
 
 export interface LlmCompleteCommand {
+  delegation?: boolean;
+  legacy?: boolean;
+  effort?: EffortLevel;
   type: "llm_complete";
   reqId?: string;
   system: string;

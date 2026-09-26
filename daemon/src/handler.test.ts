@@ -1088,6 +1088,55 @@ describe("handler OpenAI reauthentication", () => {
 });
 
 describe("handler new_conversation defaults", () => {
+  test("applies the same latest-size and legacy policy to CLI delegation, not ordinary conversations", async () => {
+    clearConversationDefaults();
+    saveConversationDefaults({ provider: "openai", model: "gpt-5.6-sol", effort: "xhigh", fastMode: false });
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}), sendToSubscribers: mock(() => {}), sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+    for (const [request, model] of [
+      [{ delegation: true }, "gpt-6-sol"],
+      [{ subagent: true }, "gpt-6-sol"],
+      [{ delegation: true, model: "ASTRA" }, "gpt-6-astra"],
+      [{ delegation: true, model: "gpt-5.6-sol", legacy: true }, "gpt-5.6-sol"],
+      [{}, "gpt-5.6-sol"],
+    ] as const) {
+      sent.length = 0;
+      await handle({} as never, { type: "new_conversation", ...request });
+      const created = sent.find(event => event.type === "conversation_created");
+      expect(created).toMatchObject({ model });
+      const convId = created!.convId as string;
+      IDS.push(convId);
+      if (!("model" in request)) expect(get(convId)?.effort).toBe("xhigh");
+    }
+    for (const legacy of [undefined, false, "true"]) {
+      sent.length = 0;
+      await handle({} as never, { type: "new_conversation", delegation: true, model: "gpt-5.6-sol", legacy: legacy as boolean });
+      expect(sent.some(event => event.type === "conversation_created")).toBe(false);
+      expect(sent.some(event => event.type === "error")).toBe(true);
+    }
+    const oldId = IDS.at(-1)!;
+    for (const command of [
+      { type: "send_message" as const, text: "reject", startedAt: Date.now(), detached: true },
+      { type: "queue_message" as const, text: "reject", timing: "next-turn" as const },
+      { type: "set_model" as const, model: "gpt-5.6-luna" },
+    ]) {
+      sent.length = 0;
+      await handle({} as never, { ...command, convId: oldId, delegation: true });
+      expect(sent.find(event => event.type === "error")?.message).toContain("legacy:true");
+    }
+    expect(getQueuedMessages(oldId)).toHaveLength(0);
+    expect(get(oldId)?.model).toBe("gpt-5.6-sol");
+    sent.length = 0;
+    await handle({} as never, { type: "set_model", convId: oldId, model: "sol", delegation: true });
+    expect(sent.some(event => event.type === "ack")).toBe(true);
+    expect(get(oldId)?.model).toBe("gpt-6-sol");
+  });
+
   beforeEach(() => {
     orchestrateSendMessage.mockClear();
     orchestrateReplayConversation.mockClear();
@@ -1368,7 +1417,7 @@ describe("handler subagent folder placement", () => {
     expect(subagentsFolder).toBeTruthy();
     expect(subagentsFolder?.muted).toBe(true);
     expect(convId ? getSummary(convId)?.folderId : null).toBe(subagentsFolder?.id);
-    expect(created).toMatchObject({ effort: "medium" });
+    expect(created).toMatchObject({ model: "gpt-6-astra", effort: "low" });
     expect(convId ? get(convId)?.subagentPolicy : null).toEqual({
       parentConversationId: null,
       allowEdits: false,
