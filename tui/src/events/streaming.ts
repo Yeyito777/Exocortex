@@ -80,6 +80,7 @@ export function handleStreamingStarted(event: Extract<Event, { type: "streaming_
   }
   const pending = state.pendingAI;
   if (!pending) return;
+  if (pending.metadata) pending.metadata.workTimerStartedAt = event.workTimerStartedAt;
   if (event.snapshotKind === "start") {
     state.pendingAIBlockOffset = event.blockOffset ?? 0;
     state.pendingAIPartialCommittedBlocks = [];
@@ -361,6 +362,11 @@ export function handleUserMessage(event: Extract<Event, { type: "user_message" }
     : null;
   if (metadata && event.queueId) metadata.queueEntryId = event.queueId;
   if (metadata && event.automation) metadata.automation = { ...event.automation };
+  // A queued human prompt can be injected inside the same provider turn.
+  // Split the old footer above before resetting the continuation's timer.
+  if (metadata && !event.automation && state.pendingAI?.metadata) {
+    state.pendingAI.metadata.workTimerStartedAt = metadata.startedAt;
+  }
   state.messages.push({
     role: "user",
     text: event.text,

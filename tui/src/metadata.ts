@@ -63,7 +63,8 @@ export function renderMetadata(
 
   // Duration
   const now = options.now ?? Date.now();
-  const elapsed = (options.active ? now : metadata.endedAt ?? now) - metadata.startedAt;
+  const elapsed = (options.active ? now : metadata.endedAt ?? now)
+    - (metadata.workTimerStartedAt ?? metadata.startedAt);
   parts.push(formatDuration(elapsed));
 
   // Metadata is single-line chrome, not a wrapped content block. Include the

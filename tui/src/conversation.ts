@@ -118,7 +118,7 @@ function metadataForDisplayAggregation(msg: Message): MessageMetadata | null {
   // ignore already-persisted overbroad summary metadata until we have a richer
   // multi-segment metadata model.
   const spanMs = msg.metadata.endedAt == null ? 0 : msg.metadata.endedAt - msg.metadata.startedAt;
-  if (spanMs > MAX_SUMMARY_METADATA_SPAN_MS && hasSummaryText(msg)) return null;
+  if (msg.metadata.workTimerStartedAt === undefined && spanMs > MAX_SUMMARY_METADATA_SPAN_MS && hasSummaryText(msg)) return null;
 
   return msg.metadata;
 }

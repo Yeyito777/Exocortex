@@ -32,6 +32,7 @@ const streamingCommittedMessageCounts = new Map<string, number>();
 const streamingPendingAssistantOpen = new Set<string>();
 /** Original startedAt timestamp per streaming job (for late-joining clients). */
 const streamingStartedAt = new Map<string, number>();
+const streamingWorkTimerStartedAt = new Map<string, number>();
 /** Accumulated output token count per streaming job (for late-joining clients). */
 const streamingTokens = new Map<string, number>();
 /** Context compaction currently shown to clients. */
@@ -173,6 +174,7 @@ export function clearActiveJob(convId: string): void {
   restartRecoverableJobs.delete(convId);
   streamingBlocks.delete(convId);
   streamingStartedAt.delete(convId);
+  streamingWorkTimerStartedAt.delete(convId);
   streamingTokens.delete(convId);
   contextCompactionStartedAt.delete(convId);
   streamSequences.delete(convId);
@@ -182,6 +184,14 @@ export function clearActiveJob(convId: string): void {
   lastActivityAt.delete(convId);
   pausedStreams.delete(convId);
   activeToolBackgrounders.delete(convId);
+}
+
+export function setStreamingWorkTimerStartedAt(convId: string, startedAt: number): void {
+  streamingWorkTimerStartedAt.set(convId, startedAt);
+}
+
+export function getStreamingWorkTimerStartedAt(convId: string): number | undefined {
+  return streamingWorkTimerStartedAt.get(convId);
 }
 
 // ── Active backgroundable tool calls ─────────────────────────────────

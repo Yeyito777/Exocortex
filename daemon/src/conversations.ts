@@ -34,6 +34,7 @@ export {
   isStreaming, isStreamHandoffActive, getStreamHandoffToken, beginStreamHandoff, tryBeginStreamHandoff, clearStreamHandoff,
   setActiveJob, getActiveJob, getActiveJobKind, isRestartRecoverableJob, clearActiveJob, getStreamingStartedAt,
   setStreamingTokens, getStreamingTokens, nextStreamSeq, getStreamSeq,
+  setStreamingWorkTimerStartedAt, getStreamingWorkTimerStartedAt,
   setContextCompactionStartedAt, getContextCompactionStartedAt,
   requestHistoryUnwind, isHistoryUnwindPending, clearHistoryUnwindPending,
   touchActivity, pauseActivity, resumeActivity,
@@ -1847,7 +1848,7 @@ export function flush(id: string, options: { summaryIndex?: SummaryIndexFlushMod
 export function appendMessages(
   id: string,
   messages: readonly StoredMessage[],
-  options: { updatedAt?: number; summaryIndex?: SummaryIndexFlushMode } = {},
+  options: { updatedAt?: number; summaryIndex?: SummaryIndexFlushMode; preservePendingAssistant?: boolean } = {},
 ): boolean {
   const conv = get(id);
   if (!conv) return false;
@@ -1876,7 +1877,7 @@ export function appendMessages(
   streaming.setStreamingCommittedMessageCount(id, conv.messages.length);
   if (!persistence.isSqliteConversationStore()) scheduleDisplayIndex(id);
   const streamStartedAt = streaming.getStreamingStartedAt(id);
-  if (streamStartedAt !== undefined && messages.some(
+  if (!options.preservePendingAssistant && streamStartedAt !== undefined && messages.some(
     message => message.role === "assistant" && message.metadata?.startedAt === streamStartedAt,
   )) {
     streaming.markStreamingAssistantCommitted(id);
@@ -2627,11 +2628,14 @@ export function getPendingStreamSnapshot(id: string): PendingStreamSnapshot | nu
   return {
     blocks: [...(streaming.getCurrentStreamingBlocks(id) ?? [])],
     blockOffset: streaming.getStreamingCommittedBlockCount(id),
-    metadata: createMessageMetadata(
-      startedAt ?? Date.now(),
-      conv.model,
-      { tokens: streaming.getStreamingTokens(id) },
-    ),
+    metadata: {
+      ...createMessageMetadata(
+        startedAt ?? Date.now(),
+        conv.model,
+        { tokens: streaming.getStreamingTokens(id) },
+      ),
+      workTimerStartedAt: streaming.getStreamingWorkTimerStartedAt(id),
+    },
     committedMessageCount: conv.messages.length,
   };
 }

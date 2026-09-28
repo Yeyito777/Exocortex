@@ -8,6 +8,7 @@
  */
 
 import { log } from "./log";
+import { workTimerForTurn } from "./work-timer";
 import { hasConfiguredCredentials } from "./auth";
 import { runAgentLoop, type AgentCallbacks, type AgentState } from "./agent";
 import { getMaxContext, supportsImageInputs } from "./providers/registry";
@@ -713,6 +714,8 @@ async function orchestrateAdmittedAssistantTurn(
   // daemon restart. It is still an active job so abort, queueing, and shutdown
   // can coordinate with it normally.
   convStore.setActiveJob(convId, ac, startedAt, !manualCompaction);
+  let workTimerStartedAt = workTimerForTurn(conv.messages, startedAt);
+  convStore.setStreamingWorkTimerStartedAt(convId, workTimerStartedAt);
   convStore.initStreamingState(convId);
   convStore.setStreamingCommittedMessageCount(convId, conv.messages.length);
 
@@ -744,6 +747,7 @@ async function orchestrateAdmittedAssistantTurn(
     streamSeq: convStore.nextStreamSeq(convId),
     snapshotKind: "start",
     startedAt,
+    workTimerStartedAt,
   });
 
   // The request surface appends current goal state after the stable system
@@ -934,6 +938,7 @@ async function orchestrateAdmittedAssistantTurn(
           metadata: {
             startedAt: completedAt,
             endedAt: completedAt,
+            workTimerStartedAt,
             model: liveConv.model,
             tokens: 0,
             kind: CONTEXT_COMPACTION_FINISHED_KIND,
@@ -999,7 +1004,7 @@ async function orchestrateAdmittedAssistantTurn(
     return toStoredMessages(agentState.completedMessages);
   }
 
-  function appendCompletedTurnSnapshot(completed: StoredMessage[]): void {
+  function appendCompletedTurnSnapshot(completed: StoredMessage[], final = false): void {
     if (completed.length < persistedTurnMessageCount) {
       throw new Error(
         `Completed turn prefix regressed for ${convId}: ${completed.length}/${persistedTurnMessageCount}`,
@@ -1008,7 +1013,17 @@ async function orchestrateAdmittedAssistantTurn(
     const appended = completed.slice(persistedTurnMessageCount);
     if (appended.length === 0) return;
     const updatedAt = Date.now();
-    if (!convStore.appendMessages(convId, appended, { updatedAt })) {
+    // Completed rounds must retain the clock too: compaction, suspension or a
+    // restart can leave this prefix as the only durable assistant progress.
+    for (const message of appended) {
+      if (message.role === "assistant" && !message.metadata) {
+        message.metadata = {
+          startedAt, endedAt: updatedAt, workTimerStartedAt,
+          model: liveConv.model, tokens: agentState.tokens,
+        };
+      }
+    }
+    if (!convStore.appendMessages(convId, appended, { updatedAt, preservePendingAssistant: !final })) {
       throw new Error(`Conversation ${convId} disappeared while committing a completed provider round`);
     }
     for (const message of appended) {
@@ -1086,6 +1101,7 @@ async function orchestrateAdmittedAssistantTurn(
       streamSeq: convStore.nextStreamSeq(convId),
       snapshotKind: "heartbeat",
       startedAt: pendingAI.metadata?.startedAt ?? startedAt,
+      workTimerStartedAt,
       blocks: pendingAI.blocks,
       blockOffset: pendingAI.blockOffset,
       tokens: pendingAI.metadata?.tokens ?? 0,
@@ -1313,6 +1329,12 @@ async function orchestrateAdmittedAssistantTurn(
       // Commit the accepted user prompts before removing their durable queue
       // copies or broadcasting them.
       persistCompletedTurnPrefix(injectedStored);
+      const latestHuman = injectedStored.findLast(message => !message.metadata?.automation);
+      if (latestHuman?.metadata) {
+        workTimerStartedAt = latestHuman.metadata.startedAt;
+        convStore.setStreamingWorkTimerStartedAt(convId, workTimerStartedAt);
+        lastCanonicalTurnAssistant = null;
+      }
       convStore.removeQueuedMessagesById(drained.map(message => message.id));
       for (const qm of drained) {
         if (qm.subagentNotificationId) acknowledgeSubagentNotification(qm.subagentNotificationId);
@@ -1477,6 +1499,7 @@ async function orchestrateAdmittedAssistantTurn(
       if (lastAssistant) {
         lastAssistant.metadata = {
           startedAt,
+          workTimerStartedAt,
           endedAt,
           model: conv.model,
           tokens: result.tokens,
@@ -1489,7 +1512,7 @@ async function orchestrateAdmittedAssistantTurn(
       // appear between the rounds where they actually occurred.
       const interleavedMessages = interleaveTranscriptMarkers(storedMessages, transcriptMarkers);
       syncActiveContext(result.contextMessages);
-      appendCompletedTurnSnapshot(interleavedMessages);
+      appendCompletedTurnSnapshot(interleavedMessages, true);
       conv.updatedAt = Date.now();
       // Do not bump on completion. The conversation was already brought to the
       // top when the user/queued message started; bumping again here can race with
@@ -1583,6 +1606,7 @@ async function orchestrateAdmittedAssistantTurn(
       if (hasCompletedAssistant && canonicalAssistant?.role === "assistant") {
         canonicalAssistant.metadata = {
           startedAt,
+          workTimerStartedAt,
           endedAt,
           model: conv.model,
           tokens: agentState.tokens,
@@ -1640,6 +1664,7 @@ async function orchestrateAdmittedAssistantTurn(
           content: safeContent,
           metadata: {
             startedAt,
+            workTimerStartedAt,
             endedAt,
             model: conv.model,
             tokens: agentState.tokens,

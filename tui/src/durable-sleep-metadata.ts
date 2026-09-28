@@ -27,6 +27,9 @@ export function activeDurableSleepAssistant(state: RenderState): AIMessage | nul
   for (let index = state.messages.length - 1; index >= 0; index--) {
     const message = state.messages[index];
     if (message.role !== "assistant" || !message.metadata) continue;
+    // Work-stretch timers pause when the provider turn suspends. Keep the old
+    // live-span behavior only for historical messages without a work timer.
+    if (message.metadata.workTimerStartedAt !== undefined) return null;
     const ownsSleep = message.blocks.some(block =>
       block.type === "tool_call"
       && block.toolName === "chrono"

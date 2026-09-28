@@ -4,6 +4,16 @@ import { visibleLength } from "./textwidth";
 import { theme } from "./theme";
 
 describe("renderMetadata", () => {
+  test("only the existing duration changes for a continued work stretch", () => {
+    const metadata = {
+      startedAt: 137_000, endedAt: 177_000, workTimerStartedAt: 3_000,
+      model: "gpt-5.5", tokens: 42,
+    };
+    expect(renderMetadata(metadata)[0]).toContain("Gpt-5.5 | 42 tokens | 2m 54s");
+    expect(renderMetadata({ ...metadata, endedAt: null }, { now: 187_000 })[0])
+      .toContain("Gpt-5.5 | 42 tokens | 3m 4s");
+    expect(renderMetadata(metadata, { now: 900_000 })[0]).toContain("2m 54s");
+  });
   test("fits metadata and its indent into terminal columns, including Unicode and tiny panes", () => {
     for (const model of ["gpt-6-astra", "模型👩‍💻é-super-long-model-name"]) {
       const metadata = { startedAt: 0, endedAt: 289_000, model, tokens: 3161 };

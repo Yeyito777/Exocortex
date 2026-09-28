@@ -221,6 +221,11 @@ export interface MessageMetadata {
   startedAt: number;
   /** When the daemon finished. Null while streaming. */
   endedAt: number | null;
+  /**
+   * Virtual start of the work-stretch timer (idle gaps already subtracted).
+   * Separate from startedAt, which remains the identity of this provider turn.
+   */
+  workTimerStartedAt?: number;
   /** Model used. Client-originated (set on creation). */
   model: ModelId;
   /** Accumulated output tokens. Starts at 0, daemon sends periodic updates. */

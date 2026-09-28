@@ -338,7 +338,7 @@ function resetStreamTick(): void {
     return;
   }
   const tickDelays: number[] = [];
-  const startedAt = state.pendingAI?.metadata?.startedAt;
+  const startedAt = state.pendingAI?.metadata?.workTimerStartedAt ?? state.pendingAI?.metadata?.startedAt;
   if (isStreaming(state) && typeof startedAt === "number") {
     tickDelays.push(msUntilNextElapsedSecond(startedAt));
   }

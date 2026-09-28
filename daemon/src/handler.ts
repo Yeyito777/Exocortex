@@ -2888,6 +2888,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
               streamSeq: convStore.getStreamSeq(loadedConvId),
               snapshotKind: "catchup",
               startedAt: pendingAI.metadata?.startedAt ?? Date.now(),
+              workTimerStartedAt: pendingAI.metadata?.workTimerStartedAt,
               blocks: pendingAI.blocks,
               blockOffset: pendingAI.blockOffset,
               tokens: pendingAI.metadata?.tokens ?? 0,

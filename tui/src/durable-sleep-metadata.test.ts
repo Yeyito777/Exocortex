@@ -54,6 +54,12 @@ function sleepingState(streaming = false) {
 }
 
 describe("durable Chrono sleep metadata", () => {
+  test("does not count suspended idle time as work with the new timer", () => {
+    const { state } = sleepingState();
+    state.messages[0].metadata!.workTimerStartedAt = 1_000;
+    expect(activeDurableSleepAssistant(state)).toBeNull();
+    expect(durableSleepMetadataFrame(state, 600_000)).toBeNull();
+  });
   test("recovers the live assistant clock from the durable task and tool-call ids", () => {
     const { state, assistant } = sleepingState();
 

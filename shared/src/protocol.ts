@@ -1229,6 +1229,8 @@ export interface StreamingStartedEvent {
   snapshotKind?: StreamingSnapshotKind;
   /** When the AI started processing. Lets late-joining clients show the correct elapsed time. */
   startedAt: number;
+  /** Work-stretch timer origin, independent of the current provider turn. */
+  workTimerStartedAt?: number;
   /** Accumulated blocks so far — included for late-joining clients and periodic catch-up snapshots. */
   blocks?: Block[];
   /** Canonical active-turn blocks represented by history before this live tail. */

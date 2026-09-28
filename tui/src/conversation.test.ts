@@ -1344,6 +1344,24 @@ describe("assistant metadata spacing", () => {
     ]);
   });
 
+  test("keeps the daemon work timer independent of token aggregation and paginated history", () => {
+    const state = createInitialState();
+    state.messages.push(
+      { role: "assistant", blocks: [{ type: "text", text: "Earlier" }],
+        metadata: { startedAt: 0, endedAt: 134_000, model: "gpt-5.5", tokens: 42, workTimerStartedAt: 0 } },
+      { role: "system", text: "Compaction finished", metadata: null },
+      { role: "user", text: "automatic wake", metadata: {
+        startedAt: 137_000, endedAt: 137_000, model: "gpt-5.5", tokens: 0,
+        automation: { kind: "goal_continuation" },
+      } },
+      { role: "assistant", blocks: [{ type: "text", text: "Continued" }],
+        metadata: { startedAt: 137_000, endedAt: 177_000, model: "gpt-5.5", tokens: 10, workTimerStartedAt: 3_000 } },
+    );
+    expect(buildMessageLines(state, 120).lines.map(stripAnsi)).toContain("  Gpt-5.5 | 10 tokens | 2m 54s");
+    state.messages = state.messages.slice(-1);
+    expect(buildMessageLines(state, 120).lines.map(stripAnsi)).toContain("  Gpt-5.5 | 10 tokens | 2m 54s");
+  });
+
   test("keeps delegated-agent metadata when a GPT-Live transcript follows it", () => {
     const state = createInitialState();
     state.messages.push(
