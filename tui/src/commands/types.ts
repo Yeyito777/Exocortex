@@ -1,3 +1,4 @@
+import type { FastMode } from "@exocortex/shared/messages";
 import type { RenderState } from "../state";
 import type { GoalAction, OpenAILoginMethod, QueuedCommandInvocation, QueueWaitTarget, ToolPolicyMutation, TrimMode } from "../protocol";
 import type { ProviderId, ModelId, EffortLevel } from "../messages";
@@ -30,7 +31,7 @@ type CommandAction =
   | { type: "model_changed"; provider: ProviderId; model: ModelId }
   | { type: "trim_requested"; mode: TrimMode; count: number }
   | { type: "effort_changed"; effort: EffortLevel }
-  | { type: "fast_mode_changed"; enabled: boolean }
+  | { type: "fast_mode_changed"; enabled: FastMode }
   | { type: "goal"; action: GoalAction; objective?: string; maxTurns?: number }
   | { type: "rename_conversation"; title: string }
   | { type: "generate_title" }
@@ -49,7 +50,7 @@ export interface CommandComposition {
   queue?: QueueWaitTarget;
   queuedCommand?: QueuedCommandInvocation & { text: string };
   efforts?: EffortLevel[];
-  fastModes?: boolean[];
+  fastModes?: FastMode[];
 }
 
 export type CommandResult = CommandAction & CommandComposition;

@@ -1,3 +1,4 @@
+import { isFastMode, type FastMode } from "./messages";
 /**
  * Shared Exocortex config loader.
  *
@@ -106,7 +107,7 @@ export interface ConversationDefaultsConfig {
   /** Reasoning effort used for newly-created conversations. */
   effort?: EffortLevel;
   /** Whether OpenAI fast service tier is enabled for newly-created conversations. */
-  fastMode?: boolean;
+  fastMode?: FastMode;
 }
 
 export interface DefaultsConfig {
@@ -139,7 +140,7 @@ export interface ConversationDefaults {
   provider: ProviderId;
   model: ModelId;
   effort: EffortLevel;
-  fastMode: boolean;
+  fastMode: FastMode;
 }
 
 export interface TuiConfig {
@@ -370,7 +371,7 @@ export function configuredConversationDefaults(config: ExocortexConfig = readExo
     provider,
     model,
     effort,
-    fastMode: conversation.fastMode === true,
+    fastMode: isFastMode(conversation.fastMode) ? conversation.fastMode : false,
   };
 }
 

@@ -1,3 +1,4 @@
+import type { FastMode } from "@exocortex/shared/messages";
 /**
  * Converts stored API messages to TUI-friendly display format.
  *
@@ -26,7 +27,7 @@ export interface ConversationDisplayData {
   provider: ProviderId;
   model: ModelId;
   effort: EffortLevel;
-  fastMode: boolean;
+  fastMode: FastMode;
   entries: DisplayEntry[];
   contextTokens: number | null;
   toolOutputsIncluded: boolean;
@@ -81,7 +82,7 @@ export function buildDisplayData(
   provider: ProviderId,
   model: ModelId,
   effort: EffortLevel,
-  fastMode: boolean,
+  fastMode: FastMode,
   messages: StoredMessage[],
   lastContextTokens: number | null,
   summarizer: ToolSummarizerFn,

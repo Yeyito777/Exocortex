@@ -13,9 +13,9 @@ describe("OpenAI family nicknames", () => {
     });
     for (const [nickname, model] of [
       ["ASTRA", "gpt-6-astra"],
-      ["sol", "gpt-6-sol"],
+      ["sol", "gpt-6.1-sol"],
       ["LUNA", "gpt-6-luna"],
-      ["openai/sol", "gpt-6-sol"],
+      ["openai/sol", "gpt-6.1-sol"],
       ["openai/luna", "gpt-6-luna"],
       ["terra", "gpt-5.6-terra"],
     ]) {
@@ -23,9 +23,9 @@ describe("OpenAI family nicknames", () => {
         action: "commands", command: "llm", args: { model: nickname, text: "Hello" },
       }, undefined);
       expect(result.isError).toBe(false);
-      expect(complete.mock.calls.at(-1)?.[2]).toMatchObject({ provider: "openai", model, effort: model === "gpt-6-astra" ? "low" : "medium" });
+      expect(complete.mock.calls.at(-1)?.[2]).toMatchObject({ provider: "openai", model, effort: ["gpt-6-astra", "gpt-6.1-sol"].includes(model) ? "low" : "medium" });
     }
-    for (const model of ["gpt-5.6-sol", "openai/gpt-5.6-luna", "gpt-5.4"]) {
+    for (const model of ["gpt-6-sol", "gpt-5.6-sol", "openai/gpt-5.6-luna", "gpt-5.4"]) {
       const calls = complete.mock.calls.length;
       const rejected = await runtime.execute({ action: "commands", command: "llm", args: { model, text: "Hello" } }, undefined);
       expect(rejected.isError).toBe(true);

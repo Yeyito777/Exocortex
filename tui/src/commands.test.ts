@@ -470,7 +470,7 @@ describe("/fast command", () => {
 
     expect(result).toEqual({ type: "handled" });
     expect(state.fastMode).toBe(false);
-    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe("Usage: /fast [on|off]");
+    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe("Usage: /fast [on|off|ultrafast]");
   });
 });
 

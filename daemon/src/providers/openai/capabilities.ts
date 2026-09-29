@@ -14,6 +14,13 @@ interface OpenAIModelCapabilityOverride {
 // Model-level wire quirks verified against the Codex Responses endpoint.
 // Keep these here so request building and UI metadata stay in sync.
 const OPENAI_MODEL_CAPABILITY_OVERRIDES = new Map<ModelId, OpenAIModelCapabilityOverride>([
+  ["gpt-6.1-sol", {
+    supportsMaxReasoningEffort: true,
+    supportsUltraReasoningEffort: true,
+    ultraReasoningEffortForRequest: "xhigh",
+    usesResponsesLite: true,
+    defaultVerbosity: "low",
+  }],
   ["gpt-6-astra", {
     supportsMaxReasoningEffort: true,
     supportsUltraReasoningEffort: true,

@@ -32,6 +32,7 @@ function formatDeepSeekModelDisplayName(modelId: string): string | null {
 export function formatModelDisplayName(modelId: ModelId): string {
   if (modelId === "ox-alpha") return "Ox Alpha";
   if (modelId === "gpt-6-astra") return "GPT-6-Astra";
+  if (modelId === "gpt-6.1-sol") return "GPT-6.1-Sol";
   if (modelId === "gpt-6-sol") return "GPT-6-Sol";
   if (modelId === "gpt-6-luna") return "GPT-6-Luna";
   if (modelId === "gpt-daybreak-blue-latest") return "Daybreak Blue";

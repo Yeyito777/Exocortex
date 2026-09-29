@@ -374,6 +374,32 @@ describe("OpenAI replay input", () => {
     expect(body.service_tier).toBe("priority");
   });
 
+  test("GPT-6.1 Sol uses Responses Lite and Codex's ultra effort override", () => {
+    const body = buildRequestBodyForTest([{ role: "user", content: "hello" }], "gpt-6.1-sol", 1234, {
+      effort: "ultra", system: "test instructions", serviceTier: "fast",
+    });
+    expect(body.model).toBe("gpt-6.1-sol");
+    expect(body.reasoning).toMatchObject({ effort: "xhigh" });
+    expect(body.text).toEqual({ verbosity: "low" });
+    expect(body.service_tier).toBe("priority");
+    expect(body.instructions).toBeUndefined();
+    expect(body.input).toEqual(expect.arrayContaining([
+      { type: "message", role: "developer", content: [{ type: "input_text", text: expect.stringContaining("test instructions") }] },
+    ]));
+  });
+
+  test("Ultrafast remains distinct on the wire and in reported billing", () => {
+    const body = buildRequestBodyForTest([{ role: "user", content: "hello" }], "gpt-6-astra", 1234, {
+      serviceTier: "ultrafast",
+    });
+    expect(body.service_tier).toBe("ultrafast");
+    const result = readOpenAIEventsForTest([{
+      type: "response.completed",
+      response: { id: "resp_ultrafast", output: [], service_tier: "ultrafast" },
+    }]);
+    expect(result.billingServiceTier).toBe("ultrafast");
+  });
+
   test("one-shot HTTP transport parses SSE responses without websocket beta headers", async () => {
     globalThis.fetch = mock((input: RequestInfo | URL, init?: RequestInit) => {
       expect(String(input)).toBe(OPENAI_CODEX_RESPONSES_URL);

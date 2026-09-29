@@ -1,3 +1,4 @@
+import type { FastMode } from "@exocortex/shared/messages";
 import type { RenderState } from "./state";
 import type { EffortLevel } from "./messages";
 import { pushSystemMessage } from "./state";
@@ -31,7 +32,7 @@ const INLINE_FAST_ARGS: CompletionItem[] = [
 export interface InlineCommandApplication {
   text: string;
   efforts: EffortLevel[];
-  fastModes: boolean[];
+  fastModes: FastMode[];
   /** Present when the prompt contained /queue and should enter the daemon-owned idle queue. */
   queue?: QueueWaitTarget;
 }
@@ -40,7 +41,7 @@ export type InlineEffortApplication = InlineCommandApplication;
 
 type InlineAction =
   | { type: "effort"; effort: EffortLevel }
-  | { type: "fast"; enabled: boolean };
+  | { type: "fast"; enabled: FastMode };
 
 interface ParsedInlineCommands {
   result: InlineCommandApplication;
@@ -56,7 +57,11 @@ interface WordPosition {
 export function getInlineCommandArgs(state: RenderState, commandName?: string): Record<string, CompletionItem[]> {
   const registry: Record<string, CompletionItem[]> = {};
   if (!commandName || commandName === "/effort") registry["/effort"] = effortItems(state);
-  if (!commandName || commandName === "/fast") registry["/fast"] = INLINE_FAST_ARGS;
+  if (!commandName || commandName === "/fast") registry["/fast"] = [
+    ...INLINE_FAST_ARGS,
+    ...(providerSupportsFastMode(state, state.provider, state.model, "ultrafast")
+      ? [{ name: "ultrafast", desc: "Use Ultrafast for this conversation" }] : []),
+  ];
   if (!commandName || commandName === "/queue") registry["/queue"] = queueTargetCompletionItems(state);
   return registry;
 }
@@ -100,7 +105,7 @@ function removeSpanPreservingBoundary(text: string, start: number, end: number):
  * the prompt with those command tokens removed.
  *
  * This is intentionally narrower than macro expansion: only `/effort <level>`,
- * `/fast [on|off]`, and `/queue` can run mid-prompt.  Other slash commands
+ * `/fast [on|off|ultrafast]`, and `/queue` can run mid-prompt.  Other slash commands
  * remain ordinary text unless they are submitted through the normal command
  * path at the start of a prompt.
  */
@@ -111,7 +116,7 @@ function parseInlineCommands(text: string, state: RenderState): ParsedInlineComm
   const spans: Array<{ start: number; end: number }> = [];
   const actions: InlineAction[] = [];
   const efforts: EffortLevel[] = [];
-  const fastModes: boolean[] = [];
+  const fastModes: FastMode[] = [];
   let queue: QueueWaitTarget | undefined;
   let simulatedFastMode = state.fastMode;
 
@@ -130,8 +135,9 @@ function parseInlineCommands(text: string, state: RenderState): ParsedInlineComm
 
     if (command.word === "/fast" && supportsFast) {
       const rawArg = arg?.word.toLowerCase();
-      const hasExplicitArg = rawArg === "on" || rawArg === "off";
-      const enabled = hasExplicitArg ? rawArg === "on" : !simulatedFastMode;
+      const hasExplicitArg = rawArg === "on" || rawArg === "off" || rawArg === "ultrafast";
+      if (rawArg === "ultrafast" && !providerSupportsFastMode(state, state.provider, state.model, "ultrafast")) continue;
+      const enabled: FastMode = rawArg === "ultrafast" ? "ultrafast" : hasExplicitArg ? rawArg === "on" : !simulatedFastMode;
       simulatedFastMode = enabled;
       fastModes.push(enabled);
       actions.push({ type: "fast", enabled });
@@ -177,7 +183,7 @@ export function applyInlineCommands(text: string, state: RenderState): InlineCom
       pushSystemMessage(state, `Effort set to ${action.effort}`);
     } else {
       state.fastMode = action.enabled;
-      pushSystemMessage(state, `Fast mode ${action.enabled ? "enabled" : "disabled"}.`);
+      pushSystemMessage(state, `Fast mode ${action.enabled === "ultrafast" ? "set to ultrafast" : action.enabled ? "enabled" : "disabled"}.`);
     }
   }
   return parsed.result;

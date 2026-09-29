@@ -19,7 +19,7 @@ function formatConvoInfo(state: Parameters<SlashCommand["handler"]>[1]): string 
   const flags = [
     conv?.pinned && "pinned",
     conv?.marked && "starred",
-    conv?.fastMode && "fast",
+    conv?.fastMode === "ultrafast" ? "ultrafast" : conv?.fastMode && "fast",
     markLabel,
   ].filter(Boolean).join(", ");
 
@@ -29,7 +29,7 @@ function formatConvoInfo(state: Parameters<SlashCommand["handler"]>[1]): string 
     `Provider: ${provider}`,
     `Model:    ${model}`,
     `Effort:   ${state.effort}`,
-    `Fast:     ${state.fastMode ? "on" : "off"}`,
+    `Fast:     ${state.fastMode === "ultrafast" ? "ultrafast" : state.fastMode ? "on" : "off"}`,
     `Messages: ${msgs}`,
     `Created:  ${created}`,
     `Updated:  ${updated}`,

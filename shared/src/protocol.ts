@@ -1,3 +1,4 @@
+import type { FastMode } from "./messages";
 /**
  * @exocortex/shared — IPC protocol.
  *
@@ -86,7 +87,7 @@ export interface NewConversationCommand {
   provider?: ProviderId;
   model?: ModelId;
   effort?: EffortLevel;
-  fastMode?: boolean;
+  fastMode?: FastMode;
   /** Initial title. Clients that don't set this get an empty title. */
   title?: string;
   /** Optional prompt text used to auto-generate a title before any message is sent. */
@@ -418,7 +419,7 @@ export interface SetFastModeCommand {
   type: "set_fast_mode";
   reqId?: string;
   convId: string;
-  enabled: boolean;
+  enabled: FastMode;
 }
 
 export type GoalAction = "show" | "set" | "pause" | "resume" | "complete" | "clear";
@@ -761,7 +762,7 @@ export interface QueuedMessageInfo {
   provider?: ProviderId;
   model?: ModelId;
   effort?: EffortLevel;
-  fastMode?: boolean;
+  fastMode?: FastMode;
   folderId?: string | null;
   waitTarget?: QueueWaitTarget;
   createdAt: number;
@@ -785,7 +786,7 @@ export interface QueueMessageCommand {
   provider?: ProviderId;
   model?: ModelId;
   effort?: EffortLevel;
-  fastMode?: boolean;
+  fastMode?: FastMode;
   folderId?: string | null;
   waitTarget?: QueueWaitTarget;
   /** Draft tool policy consumed when target=new-conversation creates convId. */
@@ -1081,7 +1082,7 @@ export interface ConversationCreatedEvent {
   provider: ProviderId;
   model: ModelId;
   effort: EffortLevel;
-  fastMode: boolean;
+  fastMode: FastMode;
   goal?: ConversationGoal | null;
 }
 
@@ -1400,7 +1401,7 @@ export interface ConversationLoadedEvent extends CachedHistoryResponse {
   provider: ProviderId;
   model: ModelId;
   effort: EffortLevel;
-  fastMode: boolean;
+  fastMode: FastMode;
   /** The requested newest history window in display order, plus pinned system instructions. */
   entries: DisplayEntry[];
   /** Absolute index of the first included non-instructions history entry. */

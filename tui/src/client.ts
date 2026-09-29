@@ -1,3 +1,4 @@
+import type { FastMode } from "@exocortex/shared/messages";
 /**
  * Client for connecting to exocortexd through a local socket or an SSH proxy.
  *
@@ -399,7 +400,7 @@ export class DaemonClient {
     model?: import("./protocol").ModelId,
     title?: string,
     effort?: EffortLevel,
-    fastMode?: boolean,
+    fastMode?: FastMode,
     initialMessage?: { text: string; startedAt: number; images?: ImageAttachment[] },
     folderId?: string | null,
     goalObjective?: string,
@@ -424,7 +425,7 @@ export class DaemonClient {
     provider: ProviderId,
     model: ModelId,
     effort: EffortLevel,
-    fastMode: boolean,
+    fastMode: FastMode,
     folderId?: string | null,
     voice?: RealtimeVoice,
     convId?: string,
@@ -729,7 +730,7 @@ export class DaemonClient {
     this.send({ type: "set_effort", convId, effort });
   }
 
-  setFastMode(convId: string, enabled: boolean): void {
+  setFastMode(convId: string, enabled: FastMode): void {
     this.send({ type: "set_fast_mode", convId, enabled });
   }
 
@@ -838,7 +839,7 @@ export class DaemonClient {
       provider?: ProviderId;
       model?: ModelId;
       effort?: EffortLevel;
-      fastMode?: boolean;
+      fastMode?: FastMode;
       folderId?: string | null;
       waitTarget?: QueueWaitTarget;
       draftToolPolicyId?: string;

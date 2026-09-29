@@ -1,3 +1,4 @@
+import type { FastMode } from "@exocortex/shared/messages";
 import {
   DEFAULT_MODEL_BY_PROVIDER,
   DEFAULT_PROVIDER_ORDER,
@@ -156,9 +157,10 @@ export function allowsCustomModels(providerId: ProviderId): boolean {
   return getProvider(providerId)?.allowsCustomModels ?? false;
 }
 
-export function supportsFastMode(providerId: ProviderId, model?: ModelId): boolean {
+export function supportsFastMode(providerId: ProviderId, model?: ModelId, mode: FastMode = true): boolean {
   const provider = getProvider(providerId);
   if (!provider?.supportsFastMode) return false;
+  if (mode === "ultrafast") return !!model && getModelInfo(providerId, model)?.supportsUltrafastMode === true;
   return !model || getModelInfo(providerId, model)?.supportsFastMode !== false;
 }
 

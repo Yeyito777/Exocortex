@@ -1099,8 +1099,8 @@ describe("handler new_conversation defaults", () => {
     };
     const handle = createHandler(server as never);
     for (const [request, model] of [
-      [{ delegation: true }, "gpt-6-sol"],
-      [{ subagent: true }, "gpt-6-sol"],
+      [{ delegation: true }, "gpt-6.1-sol"],
+      [{ subagent: true }, "gpt-6.1-sol"],
       [{ delegation: true, model: "ASTRA" }, "gpt-6-astra"],
       [{ delegation: true, model: "gpt-5.6-sol", legacy: true }, "gpt-5.6-sol"],
       [{}, "gpt-5.6-sol"],
@@ -1134,7 +1134,7 @@ describe("handler new_conversation defaults", () => {
     sent.length = 0;
     await handle({} as never, { type: "set_model", convId: oldId, model: "sol", delegation: true });
     expect(sent.some(event => event.type === "ack")).toBe(true);
-    expect(get(oldId)?.model).toBe("gpt-6-sol");
+    expect(get(oldId)?.model).toBe("gpt-6.1-sol");
   });
 
   beforeEach(() => {
@@ -1279,6 +1279,32 @@ describe("handler new_conversation defaults", () => {
       reqId: "req-daybreak-fast",
       message: "Fast mode is only available for openai conversations that support it.",
     });
+  });
+
+  test("rejects unadvertised Ultrafast both on creation and through set_fast_mode", async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}), sendToSubscribers: mock(() => {}), sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+    await handle({} as never, {
+      type: "new_conversation", provider: "openai", model: "gpt-6-astra", fastMode: "ultrafast",
+    });
+    expect(sent.some(event => event.type === "conversation_created")).toBe(false);
+    expect(sent.some(event => event.type === "error")).toBe(true);
+    sent.length = 0;
+    const id = `ultrafast-gate-${Date.now()}`;
+    IDS.push(id);
+    create(id, "openai", "gpt-6-astra");
+    await handle({} as never, { type: "set_fast_mode", convId: id, enabled: "ultrafast" });
+    expect(sent.some(event => event.type === "error")).toBe(true);
+    expect(get(id)?.fastMode).toBe(false);
+    sent.length = 0;
+    await handle({} as never, { type: "set_fast_mode", convId: id, enabled: true });
+    expect(sent.some(event => event.type === "ack")).toBe(true);
+    expect(get(id)?.fastMode).toBe(true);
   });
 
   test("an explicit OpenAI model infers OpenAI even when the saved default provider differs", async () => {

@@ -16,6 +16,17 @@ export type ProviderId = "openai" | "deepseek" | "opencode" | "openrouter";
 /** Provider-scoped model identifier. */
 export type ModelId = string;
 
+/** Retains existing on/off settings; ultrafast is a distinct, opt-in service tier. */
+export type FastMode = boolean | "ultrafast";
+
+export function isFastMode(value: unknown): value is FastMode {
+  return typeof value === "boolean" || value === "ultrafast";
+}
+
+export function fastModeServiceTier(mode: FastMode | undefined): "fast" | "ultrafast" | undefined {
+  return mode === "ultrafast" ? "ultrafast" : mode ? "fast" : undefined;
+}
+
 export type EffortLevel = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 
 /** Reserved top-level folder used for autonomous subagent conversations. */
@@ -38,6 +49,8 @@ export interface ModelInfo {
   supportsTools?: boolean;
   /** Whether the model supports its provider's fast service tier. Omitted means inherit the provider capability. */
   supportsFastMode?: boolean;
+  /** Opt-in only: must be explicitly advertised by the account's model catalog. */
+  supportsUltrafastMode?: boolean;
 }
 
 export interface ProviderInfo {
@@ -71,7 +84,7 @@ export const DEFAULT_EFFORT: EffortLevel = "high";
 /** Default effort fallback when the app only knows the provider/model ids. */
 export function defaultEffortForModelId(providerId: ProviderId, model: ModelId): EffortLevel {
   if (providerId === "openrouter") return model.startsWith("nousresearch/hermes-4-") ? "high" : "none";
-  if (providerId === "openai" && model === "gpt-6-astra") return "low";
+  if (providerId === "openai" && (model === "gpt-6-astra" || model === "gpt-6.1-sol")) return "low";
   if (providerId === "openai" && (model === "gpt-6-sol" || model === "gpt-6-luna")) return "medium";
   if (providerId === "openai" && model === "gpt-daybreak-blue-latest") return "low";
   if (providerId === "openai" && (/^gpt-5\.6-/.test(model) || /^gpt-5\.5(?:-|$)/.test(model))) return "medium";
@@ -470,7 +483,7 @@ export interface ConversationSummary {
   provider: ProviderId;
   model: ModelId;
   effort: EffortLevel;
-  fastMode: boolean;
+  fastMode: FastMode;
   createdAt: number;
   updatedAt: number;
   messageCount: number;

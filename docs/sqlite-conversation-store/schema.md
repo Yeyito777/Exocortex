@@ -2,7 +2,7 @@
 
 Canonical database: `<dataDir>/exocortex.sqlite3`
 
-Current schema version: **7**
+Current schema version: **10**
 
 ## Lifecycle tables
 
@@ -22,6 +22,11 @@ fast mode, timestamps, context total, marked/pinned/order/folder/title, goal,
 subagent policy/depth, exact per-conversation `tool_policy_json`,
 `storage_generation`, summary message counts, compact display count, and
 `deleted_at`.
+
+Schema 10 adds `ultrafast_mode` (0/1, default 0), preserving the existing
+`fast_mode` boolean column and all old selections. The domain/IPC `fastMode`
+setting is `false` (standard), `true` (Fast), or `"ultrafast"`. Summaries, display
+pages, exports, queues, and clones preserve this distinction.
 
 `folder_id` intentionally has no foreign key. A soft-deleted conversation must
 retain its historical folder membership while its folder is temporarily absent

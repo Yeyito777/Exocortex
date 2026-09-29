@@ -1,3 +1,4 @@
+import type { FastMode } from "@exocortex/shared/messages";
 import {
   clearConversationDefaults,
   configuredConversationDefaults,
@@ -26,7 +27,7 @@ const USAGE = [
   "  /default-model",
   "  /default-model current",
   "  /default-model reset",
-  "  /default-model <provider> <model> <effort> <fast|off|na>",
+  "  /default-model <provider> <model> <effort> <fast|ultrafast|off|na>",
 ].join("\n");
 
 const FAST_ITEMS: CompletionItem[] = [
@@ -48,7 +49,7 @@ const DEEPSEEK_ALIASES: Record<string, ModelId> = {
 };
 
 type FastParseResult =
-  | { ok: true; value: boolean }
+  | { ok: true; value: FastMode }
   | { ok: false };
 
 function isProviderId(value: string): value is ProviderId {
@@ -61,6 +62,8 @@ function isEffortLevel(value: string): value is EffortLevel {
 
 function parseFast(value: string): FastParseResult {
   switch (value.toLowerCase()) {
+    case "ultrafast":
+      return { ok: true, value: "ultrafast" };
     case "fast":
     case "on":
     case "true":
@@ -135,12 +138,12 @@ function parseSelectionArgs(args: string[], stateProvider: ProviderId): ParsedSe
 
 interface ParsedOptions {
   effort?: EffortLevel;
-  fastMode: boolean;
+  fastMode: FastMode;
 }
 
 function parseSelectionOptions(args: string[]): ParsedOptions | { error: string } {
   let effort: EffortLevel | undefined;
-  let fastMode = false;
+  let fastMode: FastMode = false;
   let sawFast = false;
 
   for (const raw of args) {
@@ -181,7 +184,7 @@ function validateSelection(
   provider: ProviderId,
   model: ModelId,
   effort: EffortLevel | undefined,
-  fastMode: boolean,
+  fastMode: FastMode,
 ): ConversationDefaults | { error: string } {
   const providers = availableProviders(state);
   if (!providers.includes(provider)) {
@@ -202,6 +205,9 @@ function validateSelection(
   if (fastMode && !providerSupportsFastFallback(state, provider, model)) {
     return { error: `Fast mode is only available for ${provider} conversations that support it.` };
   }
+  if (fastMode === "ultrafast" && getModelInfo(state, provider, model)?.supportsUltrafastMode !== true) {
+    return { error: "Ultrafast is not advertised for this model/account." };
+  }
 
   const finalEffort = effort ?? defaultEffortForSelection(state, provider, model);
   const modelInfo = getModelInfo(state, provider, model);
@@ -218,7 +224,7 @@ function formatDefaults(defaults: ConversationDefaults): string {
     `Provider: ${defaults.provider}`,
     `Model:    ${defaults.model}`,
     `Effort:   ${defaults.effort}`,
-    `Fast:     ${defaults.fastMode ? "on" : "off"}`,
+    `Fast:     ${defaults.fastMode === "ultrafast" ? "ultrafast" : defaults.fastMode ? "on" : "off"}`,
   ].join("\n");
 }
 
@@ -250,7 +256,10 @@ function persistDefaults(state: Parameters<SlashCommand["handler"]>[1], defaults
 }
 
 function fastItems(state: Parameters<SlashCommand["handler"]>[1], provider: ProviderId, model: ModelId): CompletionItem[] {
-  return providerSupportsFastFallback(state, provider, model) ? FAST_ITEMS : FAST_UNAVAILABLE_ITEMS;
+  return providerSupportsFastFallback(state, provider, model)
+    ? [...FAST_ITEMS, ...(getModelInfo(state, provider, model)?.supportsUltrafastMode
+      ? [{ name: "ultrafast", desc: "Use Ultrafast for new conversations" }] : [])]
+    : FAST_UNAVAILABLE_ITEMS;
 }
 
 function addPositionalCompletions(registry: Record<string, CompletionItem[]>, state: Parameters<SlashCommand["handler"]>[1], key: string, provider: ProviderId, model: ModelId): void {

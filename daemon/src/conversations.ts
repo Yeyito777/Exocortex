@@ -1,3 +1,4 @@
+import type { FastMode } from "@exocortex/shared/messages";
 /**
  * In-memory conversation store with persistence.
  *
@@ -544,7 +545,7 @@ export function generateId(): string {
 
 // ── Conversation CRUD/configuration ─────────────────────────────────
 
-export function create(id: string, provider: ProviderId, model: ModelId, title?: string, effort?: EffortLevel, fastMode = false, folderId: string | null = null, adoptExistingWorkspace = false): Conversation {
+export function create(id: string, provider: ProviderId, model: ModelId, title?: string, effort?: EffortLevel, fastMode: FastMode = false, folderId: string | null = null, adoptExistingWorkspace = false): Conversation {
   if (hasConversation(id) || persistence.hasDeletedConversation(id)) {
     throw new Error(`Conversation ${id} already exists or is recoverable from trash`);
   }
@@ -563,7 +564,7 @@ export function createWithInitialUserMessage(
   model: ModelId,
   title: string | undefined,
   effort: EffortLevel | undefined,
-  fastMode: boolean,
+  fastMode: FastMode,
   message: { text: string; startedAt: number; images?: ImageAttachment[]; automation?: UserMessageAutomation },
   folderId: string | null = null,
   adoptExistingWorkspace = false,
@@ -1142,7 +1143,7 @@ export function setModel(
   provider: ProviderId,
   model: ModelId,
   effort: EffortLevel,
-  fastMode: boolean,
+  fastMode: FastMode,
 ): boolean {
   const conv = get(id);
   if (!conv) return false;
@@ -1166,7 +1167,7 @@ export function setEffort(id: string, effort: EffortLevel): boolean {
   return true;
 }
 
-export function setFastMode(id: string, enabled: boolean): boolean {
+export function setFastMode(id: string, enabled: FastMode): boolean {
   const conv = get(id);
   if (!conv) return false;
   conv.fastMode = enabled;

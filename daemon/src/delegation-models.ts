@@ -1,3 +1,4 @@
+import type { FastMode } from "@exocortex/shared/messages";
 import { effectiveConversationDefaults } from "@exocortex/shared/config";
 import type { EffortLevel, ModelId, ProviderId } from "./messages";
 import {
@@ -94,7 +95,7 @@ export interface DelegationModelRequest {
   provider?: ProviderId;
   model?: string;
   effort?: EffortLevel;
-  fastMode?: boolean;
+  fastMode?: FastMode;
   legacy?: boolean;
 }
 
@@ -115,6 +116,7 @@ export function resolveDelegationModel(input: DelegationModelRequest) {
   }
   assertDelegationModel(provider, model, input.legacy);
   const effort = normalizeEffort(provider, model, input.effort ?? (usesConfiguredDefault ? defaults.effort : undefined));
-  const fastMode = (input.fastMode ?? (usesConfiguredDefault && defaults.fastMode)) && supportsFastMode(provider, model);
+  const requestedFastMode = input.fastMode ?? (usesConfiguredDefault && defaults.fastMode);
+  const fastMode = supportsFastMode(provider, model, requestedFastMode) ? requestedFastMode : false;
   return { provider, model, effort, fastMode };
 }

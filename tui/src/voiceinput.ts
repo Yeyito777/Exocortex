@@ -1,3 +1,4 @@
+import type { FastMode } from "@exocortex/shared/messages";
 /**
  * Hold-to-talk prompt controller.
  *
@@ -58,7 +59,7 @@ export interface SubmittedVoiceTranscription {
   provider: ProviderId;
   model: ModelId;
   effort: EffortLevel;
-  fastMode: boolean;
+  fastMode: FastMode;
   folderId: string | null;
   wasStreaming: boolean;
 }

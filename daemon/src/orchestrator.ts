@@ -1,3 +1,4 @@
+import { fastModeServiceTier } from "@exocortex/shared/messages";
 /**
  * Streaming orchestration for exocortexd.
  *
@@ -882,7 +883,7 @@ async function orchestrateAdmittedAssistantTurn(
         signal: ac.signal,
         tools: toolDefs,
         effort: liveConv.effort,
-        serviceTier: liveConv.fastMode ? "fast" : undefined,
+        serviceTier: fastModeServiceTier(liveConv.fastMode),
         promptCacheKey: convId,
         tracking: { source: "context_compaction", conversationId: convId },
         turnSession: providerTurnSession ?? undefined,
@@ -1453,7 +1454,7 @@ async function orchestrateAdmittedAssistantTurn(
           return presentation || toolStyle ? { ...presentation, ...(toolStyle ? { toolStyle } : {}) } : undefined;
         },
         effort: conv.effort,
-        serviceTier: conv.fastMode ? "fast" : undefined,
+        serviceTier: fastModeServiceTier(conv.fastMode),
         promptCacheKey: convId,
         tracking: { source: "conversation", conversationId: convId },
         turnSession: providerTurnSession ?? undefined,

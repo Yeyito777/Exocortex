@@ -1,3 +1,4 @@
+import { fastModeServiceTier } from "@exocortex/shared/messages";
 /**
  * Native implementation of the model-facing `exo` tool.
  *
@@ -690,7 +691,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
     if (!isKnownModel(provider, model) && !allowsCustomModels(provider)) throw new Error(unknownModelMessage(provider, model));
     ensureCanStart(provider);
     const effort = normalizeEffort(provider, model, requestedEffort ?? conv.effort);
-    const fastMode = supportsFastMode(provider, model) ? conv.fastMode : false;
+    const fastMode = supportsFastMode(provider, model, conv.fastMode) ? conv.fastMode : false;
     if (!convStore.setModel(convId, provider, model, effort, fastMode)) throw new Error(`Conversation ${convId} not found`);
     broadcastConversationUpdated(server, convId);
   };
@@ -1194,7 +1195,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       model: selection.model,
       maxTokens,
       effort: selection.effort,
-      serviceTier: selection.fastMode ? "fast" : undefined,
+      serviceTier: fastModeServiceTier(selection.fastMode),
       signal,
       tracking: { source: "llm_complete", ...(parentConvId ? { conversationId: parentConvId } : {}) },
     });

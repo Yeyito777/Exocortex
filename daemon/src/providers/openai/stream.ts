@@ -18,7 +18,7 @@ interface OpenAIReadState {
   cachedInputTokens?: number;
   cacheMissInputTokens?: number;
   outputTokens?: number;
-  billingServiceTier?: "standard" | "fast";
+  billingServiceTier?: "standard" | "fast" | "ultrafast";
   stopReason: string;
   compactionDoneCount: number;
   responseCompleted: boolean;
@@ -548,7 +548,9 @@ function handleStreamEvent(state: OpenAIReadState, event: Record<string, unknown
         state.outputTokens = response?.usage?.output_tokens;
         state.cachedInputTokens = response?.usage?.input_tokens_details?.cached_tokens;
         state.cacheMissInputTokens = response?.usage?.input_tokens_details?.cache_write_tokens;
-        if (response?.service_tier === "priority" || response?.service_tier === "fast") {
+        if (response?.service_tier === "ultrafast") {
+          state.billingServiceTier = "ultrafast";
+        } else if (response?.service_tier === "priority" || response?.service_tier === "fast") {
           state.billingServiceTier = "fast";
         } else if (response?.service_tier === "default") {
           state.billingServiceTier = "standard";

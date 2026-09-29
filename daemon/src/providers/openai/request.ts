@@ -330,6 +330,8 @@ function mapServiceTier(serviceTier: StreamOptions["serviceTier"], model: ModelI
     // `priority`, even though the app-level setting is exposed as `fast`.
     case "fast":
       return "priority";
+    case "ultrafast":
+      return "ultrafast";
     default:
       return undefined;
   }

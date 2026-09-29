@@ -1,3 +1,4 @@
+import type { FastMode } from "@exocortex/shared/messages";
 /**
  * Message and block model for exocortexd.
  *
@@ -177,7 +178,7 @@ export interface Conversation {
   provider: ProviderId;
   model: ModelId;
   effort: EffortLevel;
-  fastMode: boolean;
+  fastMode: FastMode;
   messages: StoredMessage[];
   /** Compact model replay; never used to render or count the visible chat. */
   activeContext?: ActiveContext | null;
@@ -1032,7 +1033,7 @@ export function createConversation(
   sortOrder?: number,
   title?: string,
   effort?: EffortLevel,
-  fastMode = false,
+  fastMode: FastMode = false,
   folderId: string | null = null,
 ): Conversation {
   const now = Date.now();

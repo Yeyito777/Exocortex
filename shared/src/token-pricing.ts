@@ -1,6 +1,6 @@
 import type { ModelId, ProviderId } from "./messages";
 
-export type TokenPricingServiceTier = "standard" | "fast";
+export type TokenPricingServiceTier = "standard" | "fast" | "ultrafast";
 
 /** Exact published rates selected for one request. Null means that rate is not published. */
 export interface ModelTokenPricing {
@@ -35,9 +35,11 @@ interface StaticPricingDefinition {
   basisModel: ModelId;
   standard: TokenPricingRates;
   fast?: TokenPricingRates;
+  ultrafast?: TokenPricingRates;
   longContextThresholdTokens?: number;
   standardLong?: TokenPricingRates;
   fastLong?: TokenPricingRates;
+  ultrafastLong?: TokenPricingRates;
 }
 
 const rates = (
@@ -81,9 +83,25 @@ const GPT_6_ASTRA: StaticPricingDefinition = {
   standardLong: rates(20, 2, 25, 75),
   fast: rates(20, 2, 25, 100),
   fastLong: rates(40, 4, 50, 150),
+  // https://developers.openai.com/api/docs/pricing?latest-pricing=ultrafast
+  // Verified 2026-09-29. Preview models without published rates stay unpriced.
+  ultrafast: rates(60, 6, 75, 300),
+  ultrafastLong: rates(120, 12, 150, 450),
   longContextThresholdTokens: OPENAI_LONG_CONTEXT_THRESHOLD_TOKENS,
 };
 register(["gpt-6-astra"], GPT_6_ASTRA);
+
+// https://developers.openai.com/api/docs/models/gpt-6.1-sol (2026-09-29).
+// Cached reads are 5% here, not GPT-6 Sol's 10%.
+register(["gpt-6.1-sol"], {
+  provider: "openai",
+  basisModel: "gpt-6.1-sol",
+  standard: rates(2, 0.1, 2.5, 10),
+  standardLong: rates(4, 0.2, 5, 15),
+  fast: rates(4, 0.2, 5, 20),
+  fastLong: rates(8, 0.4, 10, 30),
+  longContextThresholdTokens: OPENAI_LONG_CONTEXT_THRESHOLD_TOKENS,
+});
 
 // GPT-6 Sol/Luna model pages, checked 2026-09-22:
 // https://developers.openai.com/api/docs/models/gpt-6-sol
@@ -269,7 +287,9 @@ export function resolveModelTokenPricing(
   if (!definition) return null;
   const longContext = definition.longContextThresholdTokens !== undefined
     && (options.inputTokens ?? 0) > definition.longContextThresholdTokens;
-  const selected = serviceTier === "fast"
+  const selected = serviceTier === "ultrafast"
+    ? (longContext ? definition.ultrafastLong : definition.ultrafast)
+    : serviceTier === "fast"
     ? (longContext ? definition.fastLong : definition.fast)
     : (longContext ? definition.standardLong : definition.standard);
   if (!selected) return null;

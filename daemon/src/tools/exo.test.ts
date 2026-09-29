@@ -270,7 +270,7 @@ describe("native exo daemon runtime", () => {
     expect(result.isError).toBe(false);
     const childId = JSON.parse(result.output).conversation_id;
     conversationIds.push(childId);
-    expect(get(childId)).toMatchObject({ model: "gpt-6-sol", effort: "xhigh" });
+    expect(get(childId)).toMatchObject({ model: "gpt-6.1-sol", effort: "xhigh" });
   });
 
   test("rejects legacy creation, existing sends and queueing before side effects unless opted in", async () => {
@@ -297,7 +297,7 @@ describe("native exo daemon runtime", () => {
     conversationIds.push(JSON.parse(accepted.output).conversation_id);
     expect((await runtime.execute({ action: "send", conversation_id: target, text: "test", legacy: true, mode: "wait" }, undefined)).isError).toBe(false);
     expect((await runtime.execute({ action: "send", conversation_id: target, text: "test", model: "sol", mode: "wait" }, undefined)).isError).toBe(false);
-    expect(get(target)?.model).toBe("gpt-6-sol");
+    expect(get(target)?.model).toBe("gpt-6.1-sol");
   });
 
   test("resolves supported model nicknames before creating or running a child", async () => {
@@ -305,7 +305,7 @@ describe("native exo daemon runtime", () => {
     const runtime = createExocortexToolRuntime({
       server: fakeServer() as never, runTurn, hasCredentials: () => true,
     });
-    for (const [model, expected] of [["astra", "gpt-6-astra"], ["sol", "gpt-6-sol"], ["openai/terra", "gpt-5.6-terra"], ["LUNA", "gpt-6-luna"]]) {
+    for (const [model, expected] of [["astra", "gpt-6-astra"], ["sol", "gpt-6.1-sol"], ["openai/terra", "gpt-5.6-terra"], ["LUNA", "gpt-6-luna"]]) {
       const text = "Review everything.\n".repeat(100).trimEnd();
       const result = await runtime.execute({
         action: "send", title: "Review model selection", text, model,
@@ -336,7 +336,8 @@ describe("native exo daemon runtime", () => {
       expect(JSON.parse(result.output)).toMatchObject({ input_schema: { additionalProperties: false } });
     }
     const models = JSON.parse((await runtime.execute({ action: "commands", command: "models" }, undefined)).output);
-    expect(models.providers.find((p: { provider: string }) => p.provider === "openai").models).toContain("gpt-6-sol");
+    expect(models.providers.find((p: { provider: string }) => p.provider === "openai").models).toContain("gpt-6.1-sol");
+    expect(models.providers.find((p: { provider: string }) => p.provider === "openai").models).not.toContain("gpt-6-sol");
     expect(models.providers.find((p: { provider: string }) => p.provider === "openai").models).not.toContain("gpt-5.6-sol");
     const legacyModels = JSON.parse((await runtime.execute({ action: "commands", command: "models", args: { legacy: true } }, undefined)).output);
     expect(legacyModels.providers.find((p: { provider: string }) => p.provider === "openai").models).toContain("gpt-5.6-sol");
@@ -601,7 +602,7 @@ describe("native exo daemon runtime", () => {
       action: "send",
       text: "Inspect /tmp/project",
       title: "Inspect project files",
-      model: "gpt-6-sol",
+      model: "gpt-6.1-sol",
       max_depth: 0,
     }, parentId);
     expect(result.isError).toBe(false);
@@ -615,7 +616,7 @@ describe("native exo daemon runtime", () => {
       detached: true,
       created: true,
       max_depth: 0,
-      effort: "medium",
+      effort: "low",
       allow_edits: false,
       notify_parent: parentId,
     });
@@ -625,7 +626,7 @@ describe("native exo daemon runtime", () => {
     expect(conversationWorkspaceDir(childId)).not.toBe(conversationWorkspaceDir(parentId));
     const child = get(childId);
     expect(child).toMatchObject({
-      effort: "medium",
+      effort: "low",
       subagentPolicy: {
         parentConversationId: parentId,
         allowEdits: false,

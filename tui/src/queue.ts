@@ -1,3 +1,4 @@
+import { isFastMode } from "@exocortex/shared/messages";
 /**
  * Message queue prompt — modal overlay for queuing messages during streaming.
  *
@@ -87,7 +88,7 @@ export function enqueueGlobalIdleMessage(
     ...(options.provider ? { provider: options.provider } : {}),
     ...(options.model ? { model: options.model } : {}),
     ...(options.effort ? { effort: options.effort } : {}),
-    ...(typeof options.fastMode === "boolean" ? { fastMode: options.fastMode } : {}),
+    ...(isFastMode(options.fastMode) ? { fastMode: options.fastMode } : {}),
     ...("folderId" in options ? { folderId: options.folderId ?? null } : {}),
     ...(options.waitTarget && options.waitTarget.type !== "global" ? { waitTarget: options.waitTarget } : {}),
     ...(images?.length ? { images } : {}),

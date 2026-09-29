@@ -2,6 +2,28 @@ import { describe, expect, test } from "bun:test";
 import { selectOpenAIModelsForTest } from "./models";
 
 describe("OpenAI model selection", () => {
+  test("offers GPT-6.1 Sol with Codex limits, efforts, and account-gated Ultrafast", () => {
+    const fallback = selectOpenAIModelsForTest([]).find(model => model.id === "gpt-6.1-sol")!;
+    expect(fallback).toMatchObject({ label: "GPT-6.1-Sol", maxContext: 272_000, defaultEffort: "low" });
+    expect(fallback.supportedEfforts.map(item => item.effort)).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
+    expect(fallback.supportsUltrafastMode).not.toBe(true);
+    for (const [tiers, fast, ultrafast] of [
+      [[], false, false],
+      [[{ id: "priority" }], true, false],
+      [[{ id: "priority" }, { id: "ultrafast" }], true, true],
+    ] as const) {
+      const model = selectOpenAIModelsForTest([{
+        slug: "gpt-6.1-sol", context_window: 300_000, default_reasoning_level: "high",
+        service_tiers: [...tiers],
+      }]).find(model => model.id === "gpt-6.1-sol")!;
+      expect(model).toMatchObject({
+        maxContext: 300_000, defaultEffort: "high", supportsFastMode: fast, supportsUltrafastMode: ultrafast,
+      });
+    }
+    expect(selectOpenAIModelsForTest([{ slug: "gpt-6.1-sol", visibility: "hide" }])
+      .some(model => model.id === "gpt-6.1-sol")).toBe(false);
+    expect(selectOpenAIModelsForTest([{ slug: "gpt-6.1" }]).some(model => model.id === "gpt-6.1")).toBe(false);
+  });
   test("keeps future size generations for dynamic delegation alias selection", () => {
     const models = selectOpenAIModelsForTest([
       { slug: "gpt-7-astra" }, { slug: "gpt-6.10-sol" }, { slug: "gpt-6-terra" },
@@ -80,6 +102,7 @@ describe("OpenAI model selection", () => {
 
     expect(models.map((model) => model.id)).toEqual([
       "gpt-6-astra",
+      "gpt-6.1-sol",
       "gpt-6-sol",
       "gpt-6-luna",
       "gpt-5.6-sol",
@@ -100,16 +123,16 @@ describe("OpenAI model selection", () => {
       supportsFastMode: true,
     });
     expect(models[0]?.supportedEfforts.map((item) => item.effort)).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
-    expect(models[3]).toMatchObject({
+    expect(models[4]).toMatchObject({
       id: "gpt-5.6-sol",
       maxContext: 372_000,
       defaultEffort: "medium",
       supportsImages: true,
     });
-    expect(models[3]?.supportedEfforts.map((item) => item.effort)).toEqual(["none", "low", "medium", "high", "xhigh", "max", "ultra"]);
     expect(models[4]?.supportedEfforts.map((item) => item.effort)).toEqual(["none", "low", "medium", "high", "xhigh", "max", "ultra"]);
-    expect(models[5]?.supportedEfforts.map((item) => item.effort)).toEqual(["none", "low", "medium", "high", "xhigh", "max"]);
-    expect(models[6]).toMatchObject({
+    expect(models[5]?.supportedEfforts.map((item) => item.effort)).toEqual(["none", "low", "medium", "high", "xhigh", "max", "ultra"]);
+    expect(models[6]?.supportedEfforts.map((item) => item.effort)).toEqual(["none", "low", "medium", "high", "xhigh", "max"]);
+    expect(models[7]).toMatchObject({
       id: "gpt-daybreak-blue-latest",
       label: "Daybreak Blue",
       maxContext: 272_000,
@@ -117,9 +140,9 @@ describe("OpenAI model selection", () => {
       supportsImages: true,
       supportsFastMode: false,
     });
-    expect(models[6]?.supportedEfforts.map((item) => item.effort)).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
-    expect(models[10]?.maxContext).toBe(128_000);
-    expect(models[10]?.supportsImages).toBe(false);
+    expect(models[7]?.supportedEfforts.map((item) => item.effort)).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
+    expect(models[11]?.maxContext).toBe(128_000);
+    expect(models[11]?.supportsImages).toBe(false);
   });
 
   test("does not re-add gpt-5.3-codex-spark when the Codex endpoint explicitly hides it", () => {
@@ -135,6 +158,7 @@ describe("OpenAI model selection", () => {
 
     expect(models.map((model) => model.id)).toEqual([
       "gpt-6-astra",
+      "gpt-6.1-sol",
       "gpt-6-sol",
       "gpt-6-luna",
       "gpt-5.6-sol",
@@ -190,6 +214,7 @@ describe("OpenAI model selection", () => {
       defaultEffort: "low",
       supportsImages: true,
       supportsFastMode: true,
+      supportsUltrafastMode: false,
     });
     expect(models.some((model) => model.id === "gpt-5.6-sol")).toBe(true);
   });
@@ -243,6 +268,7 @@ describe("OpenAI model selection", () => {
       defaultEffort: "low",
       supportsImages: true,
       supportsFastMode: false,
+      supportsUltrafastMode: false,
     });
     expect(models.some((model) => model.id === "gpt-daybreak-red-latest")).toBe(false);
   });
@@ -288,8 +314,9 @@ describe("OpenAI model selection", () => {
 
     expect(models.map((model) => model.id)).not.toContain("gpt-6");
     expect(models.map((model) => model.id)).not.toContain("gpt-5.6");
-    expect(models.map((model) => model.id).slice(0, 6)).toEqual([
+    expect(models.map((model) => model.id).slice(0, 7)).toEqual([
       "gpt-6-astra",
+      "gpt-6.1-sol",
       "gpt-6-sol",
       "gpt-6-luna",
       "gpt-5.6-sol",
@@ -320,6 +347,7 @@ describe("OpenAI model selection", () => {
       defaultEffort: "high",
       supportsImages: false,
       supportsFastMode: true,
+      supportsUltrafastMode: false,
     });
   });
 
@@ -352,6 +380,7 @@ describe("OpenAI model selection", () => {
 
     expect(models.map((model) => model.id)).toEqual([
       "gpt-6-astra",
+      "gpt-6.1-sol",
       "gpt-6-sol",
       "gpt-6-luna",
       "gpt-5.6-sol",

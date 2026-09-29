@@ -1,3 +1,4 @@
+import { isFastMode, type FastMode } from "@exocortex/shared/messages";
 /**
  * Persistent, page-addressable projection of conversation display history.
  *
@@ -74,7 +75,7 @@ interface DisplayPageManifest {
   provider: Conversation["provider"];
   model: Conversation["model"];
   effort: Conversation["effort"];
-  fastMode: boolean;
+  fastMode: FastMode;
   contextTokens: number | null;
   storedMessageCount: number;
   pinnedEntries: DisplayEntry[];
@@ -94,7 +95,7 @@ export interface StoredDisplayHistoryPage {
   provider: Conversation["provider"];
   model: Conversation["model"];
   effort: Conversation["effort"];
-  fastMode: boolean;
+  fastMode: FastMode;
   contextTokens: number | null;
   toolOutputsIncluded: false;
   pinnedEntries: DisplayEntry[];
@@ -192,7 +193,7 @@ function readManifest(id: string): DisplayPageManifest | null {
         || (parsed.provider !== "openai" && parsed.provider !== "deepseek" && parsed.provider !== "opencode" && parsed.provider !== "openrouter")
         || typeof parsed.model !== "string"
         || !["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(String(parsed.effort))
-        || typeof parsed.fastMode !== "boolean"
+        || !isFastMode(parsed.fastMode)
         || (parsed.contextTokens !== null && !Number.isFinite(parsed.contextTokens))
         || !Array.isArray(parsed.pinnedEntries)
         || !Array.isArray(parsed.userEntryIndices)

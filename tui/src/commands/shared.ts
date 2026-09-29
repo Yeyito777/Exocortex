@@ -1,3 +1,4 @@
+import type { FastMode } from "@exocortex/shared/messages";
 import type { RenderState } from "../state";
 import type { AIMessage, UserMessage } from "../messages";
 import {
@@ -31,9 +32,10 @@ export function providerAllowsCustomModels(state: RenderState, provider = state.
   return getProviderInfo(state, provider)?.allowsCustomModels ?? false;
 }
 
-export function providerSupportsFastMode(state: RenderState, provider = state.provider, model = state.model): boolean {
+export function providerSupportsFastMode(state: RenderState, provider = state.provider, model = state.model, mode: FastMode = true): boolean {
   const providerInfo = getProviderInfo(state, provider);
   if (!providerInfo?.supportsFastMode) return false;
+  if (mode === "ultrafast") return getModelInfo(state, provider, model)?.supportsUltrafastMode === true;
   return getModelInfo(state, provider, model)?.supportsFastMode !== false;
 }
 
@@ -102,12 +104,12 @@ export function applyProviderModelSelection(state: RenderState, provider: Provid
   setChosenProvider(state, provider);
   state.model = model;
   normalizeStateEffort(state, provider, model);
-  if (!providerSupportsFastMode(state, provider, model)) state.fastMode = false;
+  if (!providerSupportsFastMode(state, provider, model, state.fastMode)) state.fastMode = false;
   state.contextTokens = previousContextTokens === 0 ? 0 : null;
 
   return {
     effortChanged: state.effort !== previousEffort,
-    fastDisabled: previousFastMode && !state.fastMode,
+    fastDisabled: !!previousFastMode && !state.fastMode,
     contextWarning: buildContextWindowWarning(previousContextTokens, provider, model, nextMaxContext),
   };
 }

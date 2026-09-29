@@ -1,3 +1,4 @@
+import type { FastMode } from "@exocortex/shared/messages";
 /**
  * TUI render state.
  *
@@ -62,7 +63,7 @@ export interface QueuedMessage {
   provider?: ProviderId;
   model?: ModelId;
   effort?: EffortLevel;
-  fastMode?: boolean;
+  fastMode?: FastMode;
   folderId?: string | null;
   /** Daemon-evaluated dependency that must be idle before delivery. */
   waitTarget?: QueueWaitTarget;
@@ -196,7 +197,7 @@ export interface RenderState {
   hasChosenProvider: boolean;
   model: ModelId;
   effort: EffortLevel;
-  fastMode: boolean;
+  fastMode: FastMode;
   goal: ConversationGoal | null;
   convId: string | null;
   /** Selected remote daemon route. Null means the local daemon. */

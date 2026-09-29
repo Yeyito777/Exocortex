@@ -1,3 +1,4 @@
+import { isFastMode, type FastMode } from "@exocortex/shared/messages";
 /**
  * Conversation persistence — versioned JSON files.
  *
@@ -158,7 +159,7 @@ interface ConversationFileV11 {
   provider: ProviderId;
   model: ModelId;
   effort: EffortLevel;
-  fastMode: boolean;
+  fastMode: FastMode;
   messages: StoredMessage[];
   createdAt: number;
   updatedAt: number;
@@ -175,7 +176,7 @@ interface ConversationFileV12 {
   provider: ProviderId;
   model: ModelId;
   effort: EffortLevel;
-  fastMode: boolean;
+  fastMode: FastMode;
   messages: StoredMessage[];
   createdAt: number;
   updatedAt: number;
@@ -193,7 +194,7 @@ interface ConversationFileV13 {
   provider: ProviderId;
   model: ModelId;
   effort: EffortLevel;
-  fastMode: boolean;
+  fastMode: FastMode;
   messages: StoredMessage[];
   createdAt: number;
   updatedAt: number;
@@ -1347,7 +1348,7 @@ function normalizeQueuedMessage(raw: unknown): PersistedQueuedMessage | null {
   if (typeof entry.provider === "string") normalized.provider = entry.provider as ProviderId;
   if (typeof entry.model === "string") normalized.model = entry.model;
   if (typeof entry.effort === "string") normalized.effort = entry.effort as EffortLevel;
-  if (typeof entry.fastMode === "boolean") normalized.fastMode = entry.fastMode;
+  if (isFastMode(entry.fastMode)) normalized.fastMode = entry.fastMode;
   if (typeof entry.folderId === "string" || entry.folderId === null) normalized.folderId = entry.folderId;
   if (entry.waitTarget && typeof entry.waitTarget === "object") {
     const target = entry.waitTarget as Record<string, unknown>;

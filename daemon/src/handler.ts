@@ -1,3 +1,4 @@
+import { fastModeServiceTier, isFastMode, type FastMode } from "@exocortex/shared/messages";
 /**
  * Command handler for exocortexd.
  *
@@ -232,7 +233,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     const defaults = effectiveConversationDefaults();
     return provider === defaults.provider && model === defaults.model ? defaults.effort : undefined;
   };
-  const fastDefaultForSelection = (provider: import("./messages").ProviderId, model: string): boolean => {
+  const fastDefaultForSelection = (provider: import("./messages").ProviderId, model: string): FastMode => {
     const defaults = effectiveConversationDefaults();
     return provider === defaults.provider && model === defaults.model && defaults.fastMode;
   };
@@ -1055,7 +1056,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             ? idleEntry.model
             : (provider === defaults.provider ? defaults.model : getDefaultModel(provider));
           const effort = normalizeEffort(provider, model, idleEntry.effort);
-          const fastMode = idleEntry.fastMode === true && supportsFastMode(provider, model);
+          const requestedFastMode = idleEntry.fastMode ?? false;
+          const fastMode = supportsFastMode(provider, model, requestedFastMode) ? requestedFastMode : false;
           const folderId = idleEntry.folderId
             && convStore.listSidebarState().folders.some(folder => folder.id === idleEntry.folderId)
             ? idleEntry.folderId
@@ -1392,14 +1394,14 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           ? conversationDefaults.effort
           : undefined;
         const effort = delegationSelection?.effort ?? normalizeEffort(provider, model, cmd.effort ?? defaultEffort);
-        const requestedFastMode = typeof cmd.fastMode === "boolean"
+        const requestedFastMode = isFastMode(cmd.fastMode)
           ? cmd.fastMode
           : (delegationSelection?.fastMode ?? (provider === conversationDefaults.provider && model === conversationDefaults.model ? conversationDefaults.fastMode : false));
-        if (cmd.fastMode === true && !supportsFastMode(provider, model)) {
+        if (cmd.fastMode !== undefined && (!isFastMode(cmd.fastMode) || (cmd.fastMode && !supportsFastMode(provider, model, cmd.fastMode)))) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: id, message: `Fast mode is only available for ${provider} conversations that support it.` });
           break;
         }
-        const fastMode = requestedFastMode && supportsFastMode(provider, model);
+        const fastMode = supportsFastMode(provider, model, requestedFastMode) ? requestedFastMode : false;
         const initialMessage = cmd.initialMessage;
         const goalObjective = cmd.goalObjective?.trim();
         if (goalObjective && cmd.goalMaxTurns !== undefined && (!Number.isSafeInteger(cmd.goalMaxTurns) || cmd.goalMaxTurns <= 0)) {
@@ -2155,7 +2157,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           break;
         }
         const nextEffort = normalizeEffort(nextProvider, nextModel, conv.effort);
-        const nextFastMode = supportsFastMode(nextProvider, nextModel) ? conv.fastMode : false;
+        const nextFastMode = supportsFastMode(nextProvider, nextModel, conv.fastMode) ? conv.fastMode : false;
         // Keep the checkpoint: native OpenAI compaction can cross models on
         // the same account. An incompatible/invalid checkpoint hard-fails on
         // the next turn instead of rebuilding the unbounded canonical archive.
@@ -2235,7 +2237,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
           break;
         }
-        if (cmd.enabled && !supportsFastMode(conv.provider, conv.model)) {
+        if (!isFastMode(cmd.enabled) || (cmd.enabled && !supportsFastMode(conv.provider, conv.model, cmd.enabled))) {
           server.sendTo(client, {
             type: "error",
             reqId: cmd.reqId,
@@ -2248,7 +2250,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         if (ok) {
           server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
           broadcastConversationUpdated(server, cmd.convId);
-          log("info", `handler: fast mode ${cmd.enabled ? "enabled" : "disabled"} for ${cmd.convId}`);
+          log("info", `handler: fast mode ${cmd.enabled === "ultrafast" ? "ultrafast" : cmd.enabled ? "enabled" : "disabled"} for ${cmd.convId}`);
         } else {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
         }
@@ -2467,7 +2469,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           provider: import("./messages").ProviderId;
           model: import("./messages").ModelId;
           effort: import("./messages").EffortLevel;
-          fastMode: boolean;
+          fastMode: FastMode;
           folderId: string | null;
         } | null = null;
         if (queueId && (queueId.length > 200 || /[\r\n]/.test(queueId))) {
@@ -2557,12 +2559,13 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           }
           const model = cmd.model ?? (provider === defaults.provider ? defaults.model : getDefaultModel(provider));
           const effort = normalizeEffort(provider, model, cmd.effort ?? effortDefaultForSelection(provider, model));
-          if (cmd.fastMode === true && !supportsFastMode(provider, model)) {
+          if (cmd.fastMode !== undefined && (!isFastMode(cmd.fastMode) || (cmd.fastMode && !supportsFastMode(provider, model, cmd.fastMode)))) {
             server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Fast mode is only available for ${provider} conversations that support it.` });
             server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages(), ...(queueId ? { settledQueueIds: [queueId] } : {}) });
             break;
           }
-          const fastMode = (cmd.fastMode ?? fastDefaultForSelection(provider, model)) && supportsFastMode(provider, model);
+          const requestedFastMode = cmd.fastMode ?? fastDefaultForSelection(provider, model);
+          const fastMode = supportsFastMode(provider, model, requestedFastMode) ? requestedFastMode : false;
           const folderId = cmd.folderId ?? null;
           if (folderId && !convStore.listSidebarState().folders.some(folder => folder.id === folderId)) {
             server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Folder ${folderId} not found` });
@@ -3158,7 +3161,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           model,
           maxTokens,
           effort: delegationSelection?.effort ?? cmd.effort ?? effortDefaultForSelection(provider, model),
-          serviceTier: (delegationSelection?.fastMode ?? fastDefaultForSelection(provider, model)) && supportsFastMode(provider, model) ? "fast" : undefined,
+          serviceTier: supportsFastMode(provider, model, delegationSelection?.fastMode ?? fastDefaultForSelection(provider, model))
+            ? fastModeServiceTier(delegationSelection?.fastMode ?? fastDefaultForSelection(provider, model)) : undefined,
           tracking: { source: cmd.trackingSource ?? "llm_complete" },
         })
           .then((result) => {

@@ -1,3 +1,4 @@
+import { fastModeServiceTier } from "@exocortex/shared/messages";
 import type { BtwFollowupCommand, BtwQueryCommand } from "../protocol";
 import { runAgentLoop } from "../agent";
 import { buildConversationApiContext } from "../context-compaction";
@@ -34,7 +35,7 @@ export interface PreparedBtwRun {
   tools: ReturnType<typeof buildConversationRequestSurface>["tools"];
   executor: ReturnType<typeof buildExecutor>;
   effort: Conversation["effort"];
-  serviceTier: "fast" | undefined;
+  serviceTier: "fast" | "ultrafast" | undefined;
   /** Stable source-conversation identity so BTW requests reuse its prompt cache. */
   promptCacheKey: string;
   sourceWindowId: string;
@@ -315,7 +316,7 @@ export function prepareBtwRun(conv: Conversation, command: BtwQueryCommand, quer
     tools: requestSurface.tools,
     executor: buildExecutor(toolContext, BTW_READ_ONLY_TOOLS),
     effort: conv.effort,
-    serviceTier: conv.fastMode ? "fast" : undefined,
+    serviceTier: fastModeServiceTier(conv.fastMode),
     // BTW branches from the source replay rather than creating a cache-cold
     // pseudo-conversation. Its turn id remains unique below, while the stable
     // cache/thread and current compaction window match the source conversation.

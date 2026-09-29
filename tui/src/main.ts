@@ -1177,7 +1177,7 @@ function maybeScheduleOpenAIPrewarm(inputBefore: string): void {
   const nowHasInput = hasNonWhitespaceText(state.inputBuffer) || state.pendingImages.length > 0;
   if (!beforeWasEmpty || !nowHasInput) return;
 
-  const key = `${convId}:${state.model}:${state.effort}:${state.fastMode ? "fast" : "normal"}`;
+  const key = `${convId}:${state.model}:${state.effort}:${state.fastMode}`;
   const now = Date.now();
   if (lastPrewarmKey === key && now - lastPrewarmAt < PREWARM_COOLDOWN_MS) return;
 

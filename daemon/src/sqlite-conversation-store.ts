@@ -51,7 +51,7 @@ import type { ConversationRepository, ConversationToolPolicyState } from "./conv
 import type { ConversationCloneTarget } from "./conversation-clone";
 import { pagedUserFingerprint, storedMessageFingerprint as messageFingerprint } from "./message-fingerprint";
 
-const SCHEMA_VERSION = 9;
+const SCHEMA_VERSION = 10;
 const DEFAULT_FILE = "exocortex.sqlite3";
 const RECENT_HISTORY_IMAGE_PAYLOAD_ENTRIES = 8;
 
@@ -116,6 +116,7 @@ interface ConversationRow {
   model: string;
   effort: Conversation["effort"];
   fast_mode: number;
+  ultrafast_mode: number;
   created_at: number;
   updated_at: number;
   last_context_tokens: number | null;
@@ -802,6 +803,13 @@ export class SqliteConversationStore implements ConversationRepository {
         this.db.query("INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)").run(9, "copy-on-write cloned message blobs", Date.now());
       })();
     }
+    if (current < 10 && targetVersion >= 10) {
+      this.db.transaction(() => {
+        // Keep the old boolean column intact for existing conversations.
+        this.db.exec("ALTER TABLE conversations ADD COLUMN ultrafast_mode INTEGER NOT NULL DEFAULT 0 CHECK (ultrafast_mode IN (0,1));");
+        this.db.query("INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)").run(10, "ultrafast service tier", Date.now());
+      })();
+    }
   }
 
   close(): void {
@@ -1000,7 +1008,7 @@ export class SqliteConversationStore implements ConversationRepository {
       provider: row.provider,
       model: row.model,
       effort: row.effort,
-      fastMode: row.fast_mode === 1,
+      fastMode: row.ultrafast_mode === 1 ? "ultrafast" : row.fast_mode === 1,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       messageCount: row.message_count,
@@ -1019,7 +1027,7 @@ export class SqliteConversationStore implements ConversationRepository {
     // and selecting only summary columns keeps startup proportional to compact
     // metadata rather than the complete canonical row shape.
     const rows = this.db.query(`
-      SELECT id, provider, model, effort, fast_mode, created_at, updated_at,
+      SELECT id, provider, model, effort, CASE WHEN ultrafast_mode=1 THEN 2 ELSE fast_mode END, created_at, updated_at,
              message_count, title, goal_json, marked, pinned, muted, sort_order, folder_id
       FROM conversations
       WHERE deleted_at IS NULL
@@ -1033,7 +1041,7 @@ export class SqliteConversationStore implements ConversationRepository {
       provider,
       model,
       effort,
-      fastMode: fastMode === 1,
+      fastMode: fastMode === 2 ? "ultrafast" as const : fastMode === 1,
       createdAt,
       updatedAt,
       messageCount,
@@ -1147,7 +1155,7 @@ export class SqliteConversationStore implements ConversationRepository {
         provider: row.provider,
         model: row.model,
         effort: row.effort,
-        fastMode: row.fast_mode === 1,
+        fastMode: row.ultrafast_mode === 1 ? "ultrafast" : row.fast_mode === 1,
         messages,
         ...(activeContext ? { activeContext } : {}),
         createdAt: row.created_at,
@@ -1216,13 +1224,13 @@ export class SqliteConversationStore implements ConversationRepository {
             last_context_tokens, marked, pinned, muted, sort_order, folder_id, title,
             goal_json, subagent_max_depth, subagent_policy_json, tool_policy_json,
             storage_generation, message_count, stored_message_count,
-            display_entry_count, content_bytes, deleted_at
+            display_entry_count, content_bytes, deleted_at, ultrafast_mode
           )
           SELECT ?, provider, model, effort, fast_mode, ?, ?,
                  last_context_tokens, marked, pinned, muted, ?, folder_id, ?,
                  NULL, NULL, NULL, tool_policy_json,
                  1, message_count, stored_message_count,
-                 display_entry_count, content_bytes, NULL
+                 display_entry_count, content_bytes, NULL, ultrafast_mode
           FROM conversations WHERE id=? AND deleted_at IS NULL
         `).run(
           target.id,
@@ -1447,11 +1455,11 @@ export class SqliteConversationStore implements ConversationRepository {
         id, provider, model, effort, fast_mode, created_at, updated_at,
         last_context_tokens, marked, pinned, muted, sort_order, folder_id, title,
         goal_json, subagent_max_depth, subagent_policy_json, tool_policy_json, storage_generation,
-        message_count, stored_message_count, display_entry_count, deleted_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)
+        message_count, stored_message_count, display_entry_count, deleted_at, ultrafast_mode
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?)
       ON CONFLICT(id) DO UPDATE SET
         provider=excluded.provider, model=excluded.model, effort=excluded.effort,
-        fast_mode=excluded.fast_mode, created_at=excluded.created_at,
+        fast_mode=excluded.fast_mode, ultrafast_mode=excluded.ultrafast_mode, created_at=excluded.created_at,
         updated_at=excluded.updated_at, last_context_tokens=excluded.last_context_tokens,
         marked=excluded.marked, pinned=excluded.pinned, muted=excluded.muted, sort_order=excluded.sort_order,
         folder_id=excluded.folder_id, title=excluded.title, goal_json=excluded.goal_json,
@@ -1482,6 +1490,7 @@ export class SqliteConversationStore implements ConversationRepository {
       generation,
       messageCount,
       storedMessageCount,
+      conv.fastMode === "ultrafast" ? 1 : 0,
     );
   }
 
@@ -2195,7 +2204,7 @@ export class SqliteConversationStore implements ConversationRepository {
       provider: row.provider,
       model: row.model,
       effort: row.effort,
-      fastMode: row.fast_mode === 1,
+      fastMode: row.ultrafast_mode === 1 ? "ultrafast" : row.fast_mode === 1,
       contextTokens: row.last_context_tokens,
       toolOutputsIncluded: false,
       pinnedEntries,

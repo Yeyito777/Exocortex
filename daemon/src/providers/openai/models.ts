@@ -66,6 +66,8 @@ function fallbackOpenAIModel(
 
 export const FALLBACK_OPENAI_MODELS: ModelInfo[] = [
   fallbackOpenAIModel("gpt-6-astra", GPT_6_ASTRA_CONTEXT_TOKENS, GPT_6_ASTRA_OPENAI_EFFORTS, "low"),
+  // Codex 2026-09-29: Sol 6.1 shares Astra's effort menu, not Sol 6's "none" fallback.
+  fallbackOpenAIModel("gpt-6.1-sol", DEFAULT_OPENAI_CONTEXT_TOKENS, GPT_6_ASTRA_OPENAI_EFFORTS, "low"),
   // Conservative Codex context fallback until the endpoint advertises these
   // tiers; do not substitute their public API's 1.05M context window.
   fallbackOpenAIModel("gpt-6-sol", DEFAULT_OPENAI_CONTEXT_TOKENS, GPT_5_6_ULTRA_OPENAI_EFFORTS),
@@ -80,9 +82,10 @@ export const FALLBACK_OPENAI_MODELS: ModelInfo[] = [
   fallbackOpenAIModel("gpt-5.3-codex-spark", CODEX_SPARK_CONTEXT_TOKENS),
 ];
 
-const PRIMARY_OPENAI_MODEL_FAMILIES = ["gpt-6", "gpt-5.6", "gpt-5.5", "gpt-5.4"] as const;
+const PRIMARY_OPENAI_MODEL_FAMILIES = ["gpt-6.1", "gpt-6", "gpt-5.6", "gpt-5.5", "gpt-5.4"] as const;
 const PREFERRED_OPENAI_MODEL_ORDER = [
   "gpt-6-astra",
+  "gpt-6.1-sol",
   "gpt-6-sol",
   "gpt-6-luna",
   "gpt-5.6-sol",
@@ -116,6 +119,7 @@ interface OpenAICodexModel {
     effort?: EffortLevel;
     description?: string;
   }>;
+  service_tiers?: Array<{ id?: string; name?: string; description?: string }>;
 }
 
 interface OpenAIModelsResponse {
@@ -129,7 +133,7 @@ function isOpenAIModelInFamily(modelSlug: string, family: PrimaryOpenAIModelFami
 function isUnsupportedOpenAIModel(modelSlug: string): boolean {
   // Codex advertises explicit tier slugs. Do not surface broad family aliases
   // alongside those concrete choices.
-  return modelSlug === "gpt-6" || modelSlug === "gpt-5.6";
+  return modelSlug === "gpt-6.1" || modelSlug === "gpt-6" || modelSlug === "gpt-5.6";
 }
 
 function preferredOpenAIPrimaryFamily(models: OpenAICodexModel[]): PrimaryOpenAIModelFamily {
@@ -152,6 +156,7 @@ function isPreferredOpenAIModel(model: OpenAICodexModel, preferredFamily: Primar
 }
 
 function preferredDefaultEffort(modelSlug: string, apiDefaultEffort: EffortLevel | undefined): EffortLevel {
+  if (modelSlug === "gpt-6.1-sol") return apiDefaultEffort ?? "low";
   if (modelSlug === "gpt-6-astra") return apiDefaultEffort ?? "low";
   if (modelSlug === "gpt-6-sol" || modelSlug === "gpt-6-luna") return "medium";
   if (modelSlug === "gpt-daybreak-blue-latest") return apiDefaultEffort ?? "low";
@@ -165,6 +170,7 @@ function preferredDefaultEffort(modelSlug: string, apiDefaultEffort: EffortLevel
 }
 
 function fallbackEffortsForModel(modelSlug: string): ReasoningEffortInfo[] {
+  if (modelSlug === "gpt-6.1-sol") return GPT_6_ASTRA_OPENAI_EFFORTS;
   if (modelSlug === "gpt-6-astra") return GPT_6_ASTRA_OPENAI_EFFORTS;
   if (modelSlug === "gpt-6-sol") return GPT_5_6_ULTRA_OPENAI_EFFORTS;
   if (modelSlug === "gpt-6-luna") return GPT_5_6_OPENAI_EFFORTS;
@@ -215,7 +221,10 @@ function toModelInfo(model: OpenAICodexModel): ModelInfo | null {
     supportedEfforts: supportedEffortsForModel(model.slug, supportedEfforts),
     defaultEffort: preferredDefaultEffort(model.slug, model.default_reasoning_level),
     supportsImages: supportsOpenAIImageInputs(model.slug),
-    supportsFastMode: supportsOpenAIFastServiceTier(model.slug),
+    supportsFastMode: supportsOpenAIFastServiceTier(model.slug)
+      && (model.service_tiers?.some(tier => tier.id === "priority") ?? true),
+    supportsUltrafastMode: supportsOpenAIFastServiceTier(model.slug)
+      && (model.service_tiers?.some(tier => tier.id === "ultrafast") ?? false),
   };
 }
 

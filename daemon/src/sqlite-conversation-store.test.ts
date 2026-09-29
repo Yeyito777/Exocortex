@@ -41,6 +41,43 @@ function savedFixture(store: SqliteConversationStore, id: string) {
   return conv;
 }
 
+test("Ultrafast survives reopen, summaries, display pages, and direct clone", () => {
+  const { path } = pathFor("ultrafast");
+  let store = new SqliteConversationStore({ path });
+  const conv = savedFixture(store, "ultrafast");
+  conv.fastMode = "ultrafast";
+  store.save(conv);
+  store.close();
+  store = new SqliteConversationStore({ path });
+  expect(store.load(conv.id)?.fastMode).toBe("ultrafast");
+  expect(store.getSummary(conv.id)?.fastMode).toBe("ultrafast");
+  expect(store.listSummaries()[0]?.fastMode).toBe("ultrafast");
+  expect(store.loadDisplayPage(conv.id, 10)?.fastMode).toBe("ultrafast");
+  store.cloneConversation(conv.id, { id: "ultrafast-clone", createdAt: 1, updatedAt: 1, sortOrder: 1, title: "clone" });
+  expect(store.load("ultrafast-clone")?.fastMode).toBe("ultrafast");
+  conv.fastMode = false;
+  store.save(conv);
+  expect(store.load(conv.id)?.fastMode).toBe(false);
+  expect(store.integrityCheck().ok).toBe(true);
+  store.close();
+});
+
+test("v9 migration preserves existing standard and Fast settings", () => {
+  const { path } = pathFor("old-fast-modes");
+  let store = new SqliteConversationStore({ path, targetSchemaVersion: 9 });
+  for (const fast of [0, 1]) {
+    store.db.query(`INSERT INTO conversations
+      (id, provider, model, effort, fast_mode, created_at, updated_at, marked, pinned, sort_order, title, storage_generation)
+      VALUES (?, 'openai', 'gpt-6-astra', 'low', ?, 1, 1, 0, 0, 0, 'old', 1)`).run(`old-${fast}`, fast);
+  }
+  store.close();
+  store = new SqliteConversationStore({ path });
+  expect(store.getSummary("old-0")?.fastMode).toBe(false);
+  expect(store.getSummary("old-1")?.fastMode).toBe(true);
+  expect(store.integrityCheck().ok).toBe(true);
+  store.close();
+});
+
 function logicalState(store: SqliteConversationStore, id: string) {
   const btw = store.loadConversationBtwState();
   return {
@@ -738,7 +775,7 @@ describe("SQLite maintenance", () => {
       { type: "conversation_removed", id: "maintenance" },
     ]);
     expect(store.diagnostics()).toMatchObject({
-      schemaVersion: 9,
+      schemaVersion: 10,
       liveConversations: 1,
       deletedConversations: 1,
       messages: 4,
@@ -973,8 +1010,8 @@ describe("SQLite maintenance", () => {
     store.close();
   });
 
-  test("migrates every schema checkpoint through v9 transactionally", () => {
-    for (let version = 1; version <= 8; version++) {
+  test("migrates every schema checkpoint through v10 transactionally", () => {
+    for (let version = 1; version <= 9; version++) {
       const { path } = pathFor(`schema-v${version}`);
       let store = new SqliteConversationStore({ path, targetSchemaVersion: version });
       expect(store.db.query<{ version: number }, []>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(version);
@@ -982,7 +1019,7 @@ describe("SQLite maintenance", () => {
       store.close();
 
       store = new SqliteConversationStore({ path });
-      expect(store.diagnostics().schemaVersion).toBe(9);
+      expect(store.diagnostics().schemaVersion).toBe(10);
       expect(store.integrityCheck().ok).toBe(true);
       store.close();
     }

@@ -4,7 +4,7 @@ import type { AssistantProviderData } from "./provider-data";
 import type { OpenAICompactionItem } from "./openai/types";
 import type { DeviceCodeAuthPrompt, OpenAILoginMethod, UsageResetOutcome } from "@exocortex/shared/protocol";
 
-export type ServiceTier = "fast";
+export type ServiceTier = "fast" | "ultrafast";
 
 export interface ApiToolCall {
   id: string;
@@ -31,7 +31,7 @@ export interface StreamResult {
   cacheMissInputTokens?: number;
   outputTokens?: number;
   /** Actual provider billing tier when the response reports it. */
-  billingServiceTier?: "standard" | "fast";
+  billingServiceTier?: "standard" | ServiceTier;
   /** Provider-wire output items from this response, used for guarded incremental continuation. */
   responseOutputItems?: unknown[];
   requestDiagnostics?: ModelRequestDiagnostics;

@@ -1,3 +1,4 @@
+import { isFastMode, type FastMode } from "@exocortex/shared/messages";
 /**
  * Durable daemon-owned message queue.
  *
@@ -26,7 +27,7 @@ export interface GlobalIdleQueueOptions {
   provider?: QueuedMessageInfo["provider"];
   model?: QueuedMessageInfo["model"];
   effort?: QueuedMessageInfo["effort"];
-  fastMode?: boolean;
+  fastMode?: FastMode;
   folderId?: string | null;
   waitTarget?: QueueWaitTarget;
   createdAt?: number;
@@ -217,7 +218,7 @@ export function pushGlobalIdleQueuedMessage(
     ...(options.provider ? { provider: options.provider } : {}),
     ...(options.model ? { model: options.model } : {}),
     ...(options.effort ? { effort: options.effort } : {}),
-    ...(typeof options.fastMode === "boolean" ? { fastMode: options.fastMode } : {}),
+    ...(isFastMode(options.fastMode) ? { fastMode: options.fastMode } : {}),
     ...("folderId" in options ? { folderId: options.folderId ?? null } : {}),
     ...(options.waitTarget && options.waitTarget.type !== "global" ? { waitTarget: options.waitTarget } : {}),
   };
