@@ -1018,6 +1018,10 @@ function handleSubmit(): void {
   }
 
   const inlineCommands = applyInlineCommands(text, state);
+  if (inlineCommands.error) {
+    scheduleRender();
+    return;
+  }
   if (hasInlineCommandChanges(inlineCommands) || inlineCommands.queue) {
     syncInlineCommandChanges(inlineCommands);
     text = inlineCommands.text.trim();
@@ -1136,6 +1140,10 @@ function confirmPendingVoiceQueuePrompt(): boolean {
   // that case the prompt now contains plain text; confirm it through the normal
   // queued-message path using the timing the user selected.
   const inlineCommands = applyInlineCommands(state.inputBuffer.trim(), state);
+  if (inlineCommands.error) {
+    scheduleRender();
+    return true;
+  }
   syncInlineCommandChanges(inlineCommands);
   const messageText = expandMacros(inlineCommands.text.trim(), macroEnvironmentForState(state));
   if (!messageText && !images?.length) {
@@ -1304,6 +1312,18 @@ function submitPendingVoiceTranscription(
 
 function completePendingVoiceTranscription(submission: SubmittedVoiceTranscription, finalText: string): void {
   const inlineCommands = applyInlineCommands(finalText.trim(), state);
+  if (inlineCommands.error) {
+    pendingVoiceSubmissions.delete(submission);
+    removePendingVoiceEcho(submission);
+    // Keep the rejected transcript as an editable draft rather than sending it
+    // under a different speed tier or losing it.
+    state.inputBuffer = state.inputBuffer ? `${state.inputBuffer}\n${finalText}` : finalText;
+    state.cursorPos = state.inputBuffer.length;
+    state.pendingImages.push(...(submission.images ?? []));
+    invalidateHistoryRenderCache(state);
+    scheduleRender();
+    return;
+  }
   syncInlineCommandChanges(inlineCommands, submission.convId ?? state.convId);
   if (inlineCommands.efforts.length > 0) submission.effort = state.effort;
   if (inlineCommands.fastModes.length > 0) submission.fastMode = state.fastMode;

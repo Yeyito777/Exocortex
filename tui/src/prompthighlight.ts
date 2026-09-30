@@ -98,9 +98,10 @@ function findCommandSpans(
     let validArgs: Record<string, Set<string>> | null = null;
     for (let i = wordIndex + 1; i < words.length; i++) {
       validArgs ??= getValidArgs(baseCmd);
-      if (validArgs[key]?.has(words[i].word)) {
+      const arg = baseCmd === "/fast" || baseCmd === "/ultrafast" ? words[i].word.toLowerCase() : words[i].word;
+      if (validArgs[key]?.has(arg)) {
         spanEnd = words[i].end;
-        key = key + " " + words[i].word;
+        key = key + " " + arg;
       } else if (key.startsWith("/model ") && getProvidersWithCustomModels().has(key.slice("/model ".length))) {
         spanEnd = words[i].end;
         break;

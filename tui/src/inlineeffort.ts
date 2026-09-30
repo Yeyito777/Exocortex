@@ -6,6 +6,7 @@ import { effortItems, providerSupportsFastMode, supportedEfforts } from "./comma
 import type { CompletionItem } from "./commands";
 import type { QueueWaitTarget } from "./state";
 import { matchQueueTargetAfterCommand, queueTargetCompletionItems } from "./queuetargets";
+import { SPEED_COMMAND_ARGS, speedModeForArgument } from "./commands/speed";
 
 export const INLINE_EFFORT_COMMAND: CompletionItem = {
   name: "/effort",
@@ -17,22 +18,24 @@ export const INLINE_FAST_COMMAND: CompletionItem = {
   desc: "Toggle or set fast mode",
 };
 
+export const INLINE_ULTRAFAST_COMMAND: CompletionItem = {
+  name: "/ultrafast",
+  desc: "Toggle or set ultrafast mode",
+};
+
 export const INLINE_QUEUE_COMMAND: CompletionItem = {
   name: "/queue",
   desc: "Send after global, conversation, or folder idle",
 };
 
-export const INLINE_COMMANDS: CompletionItem[] = [INLINE_EFFORT_COMMAND, INLINE_FAST_COMMAND, INLINE_QUEUE_COMMAND];
-
-const INLINE_FAST_ARGS: CompletionItem[] = [
-  { name: "on", desc: "Enable fast mode for this conversation" },
-  { name: "off", desc: "Disable fast mode for this conversation" },
-];
+export const INLINE_COMMANDS: CompletionItem[] = [INLINE_EFFORT_COMMAND, INLINE_FAST_COMMAND, INLINE_ULTRAFAST_COMMAND, INLINE_QUEUE_COMMAND];
 
 export interface InlineCommandApplication {
   text: string;
   efforts: EffortLevel[];
   fastModes: FastMode[];
+  /** Invalid speed selection blocks submission without partially applying modifiers. */
+  error?: string;
   /** Present when the prompt contained /queue and should enter the daemon-owned idle queue. */
   queue?: QueueWaitTarget;
 }
@@ -41,7 +44,7 @@ export type InlineEffortApplication = InlineCommandApplication;
 
 type InlineAction =
   | { type: "effort"; effort: EffortLevel }
-  | { type: "fast"; enabled: FastMode };
+  | { type: "fast"; enabled: FastMode; label: "Fast" | "Ultrafast" };
 
 interface ParsedInlineCommands {
   result: InlineCommandApplication;
@@ -57,11 +60,11 @@ interface WordPosition {
 export function getInlineCommandArgs(state: RenderState, commandName?: string): Record<string, CompletionItem[]> {
   const registry: Record<string, CompletionItem[]> = {};
   if (!commandName || commandName === "/effort") registry["/effort"] = effortItems(state);
-  if (!commandName || commandName === "/fast") registry["/fast"] = [
-    ...INLINE_FAST_ARGS,
-    ...(providerSupportsFastMode(state, state.provider, state.model, "ultrafast")
-      ? [{ name: "ultrafast", desc: "Use Ultrafast for this conversation" }] : []),
-  ];
+  // Syntax does not depend on entitlement: standalone/inline completion and
+  // highlighting must agree, even when execution will report unavailable.
+  for (const name of ["/fast", "/ultrafast"]) {
+    if (!commandName || commandName === name) registry[name] = SPEED_COMMAND_ARGS;
+  }
   if (!commandName || commandName === "/queue") registry["/queue"] = queueTargetCompletionItems(state);
   return registry;
 }
@@ -105,7 +108,7 @@ function removeSpanPreservingBoundary(text: string, start: number, end: number):
  * the prompt with those command tokens removed.
  *
  * This is intentionally narrower than macro expansion: only `/effort <level>`,
- * `/fast [on|off|ultrafast]`, and `/queue` can run mid-prompt.  Other slash commands
+ * `/fast [on|off]`, `/ultrafast [on|off]`, and `/queue` can run mid-prompt. Other slash commands
  * remain ordinary text unless they are submitted through the normal command
  * path at the start of a prompt.
  */
@@ -133,14 +136,20 @@ function parseInlineCommands(text: string, state: RenderState): ParsedInlineComm
       continue;
     }
 
-    if (command.word === "/fast" && supportsFast) {
+    if ((command.word === "/fast" && supportsFast) || command.word === "/ultrafast") {
       const rawArg = arg?.word.toLowerCase();
-      const hasExplicitArg = rawArg === "on" || rawArg === "off" || rawArg === "ultrafast";
-      if (rawArg === "ultrafast" && !providerSupportsFastMode(state, state.provider, state.model, "ultrafast")) continue;
-      const enabled: FastMode = rawArg === "ultrafast" ? "ultrafast" : hasExplicitArg ? rawArg === "on" : !simulatedFastMode;
+      const hasExplicitArg = rawArg === "on" || rawArg === "off";
+      const tier = command.word === "/ultrafast" ? "ultrafast" : true;
+      const enabled = speedModeForArgument(tier, hasExplicitArg ? rawArg : undefined, simulatedFastMode);
+      if (enabled === "ultrafast" && !providerSupportsFastMode(state, state.provider, state.model, enabled)) {
+        return {
+          result: { text, efforts: [], fastModes: [], error: "Ultrafast is not advertised for this model/account." },
+          actions: [],
+        };
+      }
       simulatedFastMode = enabled;
       fastModes.push(enabled);
-      actions.push({ type: "fast", enabled });
+      actions.push({ type: "fast", enabled, label: tier === "ultrafast" ? "Ultrafast" : "Fast" });
       spans.push({ start: command.start, end: hasExplicitArg && arg ? arg.end : command.end });
       if (hasExplicitArg) i++;
       continue;
@@ -177,13 +186,17 @@ export function previewInlineCommands(text: string, state: RenderState): InlineC
 
 export function applyInlineCommands(text: string, state: RenderState): InlineCommandApplication {
   const parsed = parseInlineCommands(text, state);
+  if (parsed.result.error) {
+    pushSystemMessage(state, parsed.result.error);
+    return parsed.result;
+  }
   for (const action of parsed.actions) {
     if (action.type === "effort") {
       state.effort = action.effort;
       pushSystemMessage(state, `Effort set to ${action.effort}`);
     } else {
       state.fastMode = action.enabled;
-      pushSystemMessage(state, `Fast mode ${action.enabled === "ultrafast" ? "set to ultrafast" : action.enabled ? "enabled" : "disabled"}.`);
+      pushSystemMessage(state, `${action.label} mode ${action.enabled ? "enabled" : "disabled"}.`);
     }
   }
   return parsed.result;

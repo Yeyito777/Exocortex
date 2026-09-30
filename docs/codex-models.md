@@ -9,10 +9,18 @@ and the account's `/backend-api/codex/models` response.
 - Latest size aliases: Astra = GPT-6, Sol = GPT-6.1, Luna = GPT-6;
   Terra remains GPT-5.6. Existing conversation/default model IDs are not rewritten.
 - `/fast on` still means `service_tier: "priority"`; `/fast off` means standard.
-  `/fast ultrafast` selects the distinct `service_tier: "ultrafast"` only when
-  advertised for the model/account. It also works inline and with `/default-model`.
+  `/ultrafast [on|off]` independently selects the distinct `service_tier: "ultrafast"`
+  only when advertised for the model/account. Both commands toggle their own tier
+  when called without arguments and work inline, e.g. `explain this /ultrafast`
+  or `/ultrafast on explain this`. `/default-model ... ultrafast` still saves it
+  as the default tier.
   Missing metadata does not grant Ultrafast access. At verification time this
   Codex account advertised Priority only, despite public API Ultrafast availability.
+  A fresh check with Codex client versions 0.160.0 and 0.161.0 also advertised
+  only Priority. The default client version is now 0.161.0: 0.153.4 omitted the
+  GPT-6.1 catalog metadata. Syntax highlighting/completion does not depend on
+  entitlement; an unavailable inline Ultrafast selection blocks submission and
+  leaves the prompt/settings intact rather than silently sending at another tier.
 - Reasoning `ultra` and the Ultrafast service tier are independent settings.
 
 Pricing sources (API-cost estimates, not ChatGPT subscription charges):
@@ -24,7 +32,7 @@ Pricing sources (API-cost estimates, not ChatGPT subscription charges):
 GPT-6.1 Sol cached reads are 5%, not GPT-6 Sol's 10%. Published Astra Ultrafast
 rates are recorded separately; unpublished model/tier combinations stay unpriced.
 
-## Validation
+## Initial implementation validation (before the separate `/ultrafast` command)
 
 - `bun test tui/src shared/src`: 1,127 passed.
 - `bun test daemon/src`: 1,133 passed; two existing failing test groups

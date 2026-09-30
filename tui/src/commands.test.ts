@@ -459,7 +459,7 @@ describe("/fast command", () => {
     expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe("Fast mode disabled.");
   });
 
-  test("rejects the deprecated toggle argument", () => {
+  test("treats a non-argument word after /fast as prompt text", () => {
     const state = createInitialState();
     state.providerRegistry = structuredClone(providers);
     state.provider = "openai";
@@ -468,9 +468,9 @@ describe("/fast command", () => {
 
     const result = tryCommand("/fast toggle", state);
 
-    expect(result).toEqual({ type: "handled" });
+    expect(result).toBeNull();
     expect(state.fastMode).toBe(false);
-    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe("Usage: /fast [on|off|ultrafast]");
+    expect(state.messages).toEqual([]);
   });
 });
 

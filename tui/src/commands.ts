@@ -7,6 +7,7 @@ import { CONVO_COMMAND } from "./commands/convo";
 import { DEFAULT_MODEL_COMMAND } from "./commands/default-model";
 import { EFFORT_COMMAND } from "./commands/effort";
 import { FAST_COMMAND } from "./commands/fast";
+import { ULTRAFAST_COMMAND } from "./commands/ultrafast";
 import { GOAL_COMMAND } from "./commands/goal";
 import { HANGUP_COMMAND } from "./commands/hangup";
 import { createHelpCommand } from "./commands/help";
@@ -55,6 +56,7 @@ const commands: SlashCommand[] = [
   TRIM_COMMAND,
   EFFORT_COMMAND,
   FAST_COMMAND,
+  ULTRAFAST_COMMAND,
   QUEUE_COMMAND,
   GOAL_COMMAND,
   CONVO_COMMAND,
@@ -89,6 +91,10 @@ export function tryCommand(text: string, state: RenderState): CommandResult | nu
   // explicitly compatible slash commands. Preview first so invalid command chains
   // cannot partially apply inline effort/fast changes.
   const preview = previewInlineCommands(text, state);
+  if (preview.error) {
+    applyInlineCommands(text, state);
+    return { type: "handled" };
+  }
   if (preview.queue) {
     const primaryText = preview.text.trim();
     const primaryName = primaryText.split(/\s+/, 1)[0];
@@ -112,7 +118,13 @@ export function tryCommand(text: string, state: RenderState): CommandResult | nu
   const name = text.split(/\s+/)[0];
   const cmd = commands.find((command) => command.name === name);
   if (!cmd) return null;
-  if ((cmd === EFFORT_COMMAND || cmd === FAST_COMMAND) && !isStandaloneOptionalArgCommand(text, cmd.name)) return null;
+  // A speed command followed by prose is a prompt modifier, even for a
+  // one-word prompt such as "/ultrafast hello".
+  if ((cmd === FAST_COMMAND || cmd === ULTRAFAST_COMMAND)
+    && !/^\/(?:fast|ultrafast)(?:\s+(?:on|off))?\s*$/i.test(text)) {
+    return null;
+  }
+  if (cmd === EFFORT_COMMAND && !isStandaloneOptionalArgCommand(text, cmd.name)) return null;
   if (cmd === QUEUE_COMMAND && !isStandaloneNoArgCommand(text, cmd.name)) return null;
 
   return cmd.handler(text, state);
