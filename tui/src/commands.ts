@@ -111,6 +111,7 @@ export function tryCommand(text: string, state: RenderState): CommandResult | nu
         queuedCommand: { ...queueable, text: primaryText },
         efforts: applied.efforts,
         fastModes: applied.fastModes,
+        ...(applied.modelSelection ? { modelSelection: applied.modelSelection } : {}),
       };
     }
   }
@@ -125,6 +126,7 @@ export function tryCommand(text: string, state: RenderState): CommandResult | nu
     return null;
   }
   if (cmd === EFFORT_COMMAND && !isStandaloneOptionalArgCommand(text, cmd.name)) return null;
+  if (cmd === MODEL_COMMAND && text.trim().split(/\s+/).length > 3) return null;
   if (cmd === QUEUE_COMMAND && !isStandaloneNoArgCommand(text, cmd.name)) return null;
 
   return cmd.handler(text, state);

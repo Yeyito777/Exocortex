@@ -51,6 +51,7 @@ export interface CommandComposition {
   queuedCommand?: QueuedCommandInvocation & { text: string };
   efforts?: EffortLevel[];
   fastModes?: FastMode[];
+  modelSelection?: Pick<RenderState, "provider" | "model" | "effort" | "fastMode">;
 }
 
 export type CommandResult = CommandAction & CommandComposition;

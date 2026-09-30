@@ -774,6 +774,13 @@ function startNewConversation(): void {
 
 function syncInlineCommandChanges(result: InlineCommandApplication, convId = state.convId): void {
   if (!convId) return;
+  if (result.modelSelection) {
+    const { provider, model, effort, fastMode } = result.modelSelection;
+    daemon.setModel(convId, provider, model);
+    daemon.setEffort(convId, effort);
+    daemon.setFastMode(convId, fastMode);
+    return;
+  }
   for (const effort of result.efforts) {
     daemon.setEffort(convId, effort);
   }
@@ -783,7 +790,7 @@ function syncInlineCommandChanges(result: InlineCommandApplication, convId = sta
 }
 
 function hasInlineCommandChanges(result: InlineCommandApplication): boolean {
-  return result.efforts.length > 0 || result.fastModes.length > 0;
+  return !!result.modelSelection || result.efforts.length > 0 || result.fastModes.length > 0;
 }
 
 function hasNonWhitespaceText(text: string): boolean {
@@ -828,6 +835,7 @@ function handleSubmit(): void {
           text: "",
           efforts: cmdResult.efforts ?? [],
           fastModes: cmdResult.fastModes ?? [],
+          modelSelection: cmdResult.modelSelection,
           queue: cmdResult.queue,
         });
         enqueueQueuedCommand(state, daemon, cmdResult.queuedCommand, cmdResult.queue);
@@ -1325,6 +1333,7 @@ function completePendingVoiceTranscription(submission: SubmittedVoiceTranscripti
     return;
   }
   syncInlineCommandChanges(inlineCommands, submission.convId ?? state.convId);
+  if (inlineCommands.modelSelection) Object.assign(submission, inlineCommands.modelSelection);
   if (inlineCommands.efforts.length > 0) submission.effort = state.effort;
   if (inlineCommands.fastModes.length > 0) submission.fastMode = state.fastMode;
   const messageText = expandMacros(inlineCommands.text.trim(), macroEnvironmentForState(state));

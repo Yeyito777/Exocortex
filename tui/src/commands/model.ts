@@ -11,23 +11,38 @@ import {
   providerModelItems,
   providerModels,
 } from "./shared";
-import type { SlashCommand } from "./types";
+import type { CompletionItem, SlashCommand } from "./types";
+import type { RenderState } from "../state";
+
+export function modelCommandArgs(state: RenderState): Record<string, CompletionItem[]> {
+  const registry: Record<string, CompletionItem[]> = {
+    "/model": availableProviders(state).map((provider) => ({
+      name: provider,
+      desc: `${getProviderInfo(state, provider)?.label ?? provider} models`,
+    })),
+  };
+  for (const provider of availableProviders(state)) {
+    registry[`/model ${provider}`] = providerModelItems(state, provider);
+  }
+  return registry;
+}
+
+/** Apply a validated selection without clearing the surrounding prompt. */
+export function applyModelSelectionWithNotice(state: RenderState, provider: ProviderId, model: ModelId): void {
+  const selection = applyProviderModelSelection(state, provider, model);
+  const effortSuffix = selection.effortChanged ? ` (effort ${state.effort})` : "";
+  const fastSuffix = selection.fastDisabled ? " (fast off)" : "";
+  pushSystemMessage(state, `Model set to ${state.provider}/${state.model}${effortSuffix}${fastSuffix}`);
+  if (getModelInfo(state, provider, model)?.supportsTools === false) {
+    pushSystemMessage(state, "This endpoint is chat-only: tools and external actions are unavailable.", "warning");
+  }
+  if (selection.contextWarning) pushSystemMessage(state, selection.contextWarning, "warning");
+}
 
 export const MODEL_COMMAND: SlashCommand = {
   name: "/model",
   description: "Set or show the current provider/model",
-  getArgs: (state) => {
-    const registry: Record<string, { name: string; desc: string }[]> = {
-      "/model": availableProviders(state).map((provider) => ({
-        name: provider,
-        desc: `${getProviderInfo(state, provider)?.label ?? provider} models`,
-      })),
-    };
-    for (const provider of availableProviders(state)) {
-      registry[`/model ${provider}`] = providerModelItems(state, provider);
-    }
-    return registry;
-  },
+  getArgs: modelCommandArgs,
   handler: (text, state) => {
     const parts = text.trim().split(/\s+/).filter(Boolean);
     const providers = availableProviders(state);
@@ -66,18 +81,7 @@ export const MODEL_COMMAND: SlashCommand = {
     }
 
     const model = parts[2] as ModelId;
-    const selection = applyProviderModelSelection(state, provider, model);
-
-    const effortSuffix = selection.effortChanged ? ` (effort ${state.effort})` : "";
-    const fastSuffix = selection.fastDisabled ? " (fast off)" : "";
-    pushSystemMessage(state, `Model set to ${state.provider}/${state.model}${effortSuffix}${fastSuffix}`);
-    if (getModelInfo(state, provider, model)?.supportsTools === false) {
-      pushSystemMessage(state, "This endpoint is chat-only: tools and external actions are unavailable.", "warning");
-    }
-
-    if (selection.contextWarning) {
-      pushSystemMessage(state, selection.contextWarning, "warning");
-    }
+    applyModelSelectionWithNotice(state, provider, model);
 
     clearPrompt(state);
     return state.convId ? { type: "model_changed", provider, model } : { type: "handled" };

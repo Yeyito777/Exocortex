@@ -130,10 +130,10 @@ describe("prompt highlighting", () => {
     state.provider = "openai";
     state.model = "gpt-5.4";
 
-    const input = "Use /model openai gpt-5.4 and /effort high with /fast on please";
+    const input = "Use /convo and /model openai gpt-5.4 and /effort high with /fast on please";
     const [line] = highlightPromptInput(state, [input], input, 120, 0);
 
-    expect(line).toBe(`Use /model openai gpt-5.4 and ${theme.command}/effort high${theme.reset} with ${theme.command}/fast on${theme.reset} please`);
+    expect(line).toBe(`Use /convo and ${theme.command}/model openai gpt-5.4${theme.reset} and ${theme.command}/effort high${theme.reset} with ${theme.command}/fast on${theme.reset} please`);
   });
 
   test("highlights multi-word /queue conversation targets without swallowing message text", () => {

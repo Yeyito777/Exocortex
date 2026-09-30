@@ -1,12 +1,18 @@
 import type { FastMode } from "@exocortex/shared/messages";
 import type { RenderState } from "./state";
-import type { EffortLevel } from "./messages";
-import { pushSystemMessage } from "./state";
-import { effortItems, providerSupportsFastMode, supportedEfforts } from "./commands/shared";
+import { normalizeEffortForModel, type EffortLevel, type ProviderId, type ModelId } from "./messages";
+import { getModelInfo, isStreaming, pushSystemMessage } from "./state";
+import { availableProviders, effortItems, providerAllowsCustomModels, providerModels, providerSupportsFastMode, supportedEfforts } from "./commands/shared";
 import type { CompletionItem } from "./commands";
 import type { QueueWaitTarget } from "./state";
 import { matchQueueTargetAfterCommand, queueTargetCompletionItems } from "./queuetargets";
 import { SPEED_COMMAND_ARGS, speedModeForArgument } from "./commands/speed";
+import { applyModelSelectionWithNotice, modelCommandArgs } from "./commands/model";
+
+export const INLINE_MODEL_COMMAND: CompletionItem = {
+  name: "/model",
+  desc: "Select provider/model for this prompt",
+};
 
 export const INLINE_EFFORT_COMMAND: CompletionItem = {
   name: "/effort",
@@ -28,13 +34,15 @@ export const INLINE_QUEUE_COMMAND: CompletionItem = {
   desc: "Send after global, conversation, or folder idle",
 };
 
-export const INLINE_COMMANDS: CompletionItem[] = [INLINE_EFFORT_COMMAND, INLINE_FAST_COMMAND, INLINE_ULTRAFAST_COMMAND, INLINE_QUEUE_COMMAND];
+export const INLINE_COMMANDS: CompletionItem[] = [INLINE_MODEL_COMMAND, INLINE_EFFORT_COMMAND, INLINE_FAST_COMMAND, INLINE_ULTRAFAST_COMMAND, INLINE_QUEUE_COMMAND];
 
 export interface InlineCommandApplication {
   text: string;
   efforts: EffortLevel[];
   fastModes: FastMode[];
-  /** Invalid speed selection blocks submission without partially applying modifiers. */
+  /** Final settings after ordered model/effort/speed modifiers; sync the model first. */
+  modelSelection?: Pick<RenderState, "provider" | "model" | "effort" | "fastMode">;
+  /** Invalid selection blocks submission without partially applying modifiers. */
   error?: string;
   /** Present when the prompt contained /queue and should enter the daemon-owned idle queue. */
   queue?: QueueWaitTarget;
@@ -43,6 +51,7 @@ export interface InlineCommandApplication {
 export type InlineEffortApplication = InlineCommandApplication;
 
 type InlineAction =
+  | { type: "model"; provider: ProviderId; model: ModelId }
   | { type: "effort"; effort: EffortLevel }
   | { type: "fast"; enabled: FastMode; label: "Fast" | "Ultrafast" };
 
@@ -59,6 +68,7 @@ interface WordPosition {
 
 export function getInlineCommandArgs(state: RenderState, commandName?: string): Record<string, CompletionItem[]> {
   const registry: Record<string, CompletionItem[]> = {};
+  if (!commandName || commandName === "/model") Object.assign(registry, modelCommandArgs(state));
   if (!commandName || commandName === "/effort") registry["/effort"] = effortItems(state);
   // Syntax does not depend on entitlement: standalone/inline completion and
   // highlighting must agree, even when execution will report unavailable.
@@ -107,28 +117,59 @@ function removeSpanPreservingBoundary(text: string, start: number, end: number):
  * Execute supported inline slash commands anywhere in prompt text and return
  * the prompt with those command tokens removed.
  *
- * This is intentionally narrower than macro expansion: only `/effort <level>`,
+ * This is intentionally narrower than macro expansion: only `/model <provider> <model>`, `/effort <level>`,
  * `/fast [on|off]`, `/ultrafast [on|off]`, and `/queue` can run mid-prompt. Other slash commands
  * remain ordinary text unless they are submitted through the normal command
  * path at the start of a prompt.
  */
 function parseInlineCommands(text: string, state: RenderState): ParsedInlineCommands {
-  const supportedLevels = new Set(supportedEfforts(state).map(candidate => candidate.effort));
-  const supportsFast = providerSupportsFastMode(state);
+  // Only scalar selection fields are changed during preview. Never persist
+  // preferences or mutate RenderState until every modifier has been validated.
+  const simulated = { ...state };
   const words = wordsIn(text);
   const spans: Array<{ start: number; end: number }> = [];
   const actions: InlineAction[] = [];
   const efforts: EffortLevel[] = [];
   const fastModes: FastMode[] = [];
   let queue: QueueWaitTarget | undefined;
-  let simulatedFastMode = state.fastMode;
+  let changedModel = false;
+  const reject = (error: string): ParsedInlineCommands => ({
+    result: { text, efforts: [], fastModes: [], error }, actions: [],
+  });
 
   for (let i = 0; i < words.length; i++) {
     const command = words[i];
     const arg = words[i + 1];
 
-    if (command.word === "/effort" && arg && supportedLevels.has(arg.word as EffortLevel)) {
+    if (command.word === "/model") {
+      const modelArg = words[i + 2];
+      // Preserve standalone /model and /model <provider> informational views.
+      if (i === 0 && words.length <= 2) continue;
+      if (!arg || !modelArg || arg.word.startsWith("/") || modelArg.word.startsWith("/")) {
+        return reject("Usage: /model <provider> <model>");
+      }
+      const provider = arg.word as ProviderId;
+      const model = modelArg.word;
+      const providers = availableProviders(state);
+      if (!providers.includes(provider)) return reject(`Unknown provider: ${provider}. Available: ${providers.join(", ")}`);
+      if (!providerAllowsCustomModels(state, provider) && !providerModels(state, provider).includes(model)) {
+        return reject(`Unknown model for provider ${provider}: ${model}. Available: ${providerModels(state, provider).join(", ")}`);
+      }
+      if (state.convId && isStreaming(state)) return reject("Cannot switch provider/model while this conversation is streaming.");
+      simulated.provider = provider;
+      simulated.model = model;
+      simulated.effort = normalizeEffortForModel(getModelInfo(state, provider, model), simulated.effort);
+      if (!providerSupportsFastMode(state, provider, model, simulated.fastMode)) simulated.fastMode = false;
+      changedModel = true;
+      actions.push({ type: "model", provider, model });
+      spans.push({ start: command.start, end: modelArg.end });
+      i += 2;
+      continue;
+    }
+
+    if (command.word === "/effort" && arg && supportedEfforts(simulated).some(candidate => candidate.effort === arg.word)) {
       const effort = arg.word as EffortLevel;
+      simulated.effort = effort;
       efforts.push(effort);
       actions.push({ type: "effort", effort });
       spans.push({ start: command.start, end: arg.end });
@@ -136,18 +177,15 @@ function parseInlineCommands(text: string, state: RenderState): ParsedInlineComm
       continue;
     }
 
-    if ((command.word === "/fast" && supportsFast) || command.word === "/ultrafast") {
+    if ((command.word === "/fast" && providerSupportsFastMode(simulated)) || command.word === "/ultrafast") {
       const rawArg = arg?.word.toLowerCase();
       const hasExplicitArg = rawArg === "on" || rawArg === "off";
       const tier = command.word === "/ultrafast" ? "ultrafast" : true;
-      const enabled = speedModeForArgument(tier, hasExplicitArg ? rawArg : undefined, simulatedFastMode);
-      if (enabled === "ultrafast" && !providerSupportsFastMode(state, state.provider, state.model, enabled)) {
-        return {
-          result: { text, efforts: [], fastModes: [], error: "Ultrafast is not advertised for this model/account." },
-          actions: [],
-        };
+      const enabled = speedModeForArgument(tier, hasExplicitArg ? rawArg : undefined, simulated.fastMode);
+      if (enabled === "ultrafast" && !providerSupportsFastMode(simulated, simulated.provider, simulated.model, enabled)) {
+        return reject("Ultrafast is not advertised for this model/account.");
       }
-      simulatedFastMode = enabled;
+      simulated.fastMode = enabled;
       fastModes.push(enabled);
       actions.push({ type: "fast", enabled, label: tier === "ultrafast" ? "Ultrafast" : "Fast" });
       spans.push({ start: command.start, end: hasExplicitArg && arg ? arg.end : command.end });
@@ -174,7 +212,13 @@ function parseInlineCommands(text: string, state: RenderState): ParsedInlineComm
   }
 
   return {
-    result: { text: stripped, efforts, fastModes, ...(queue ? { queue } : {}) },
+    result: {
+      text: stripped, efforts, fastModes, ...(queue ? { queue } : {}),
+      ...(changedModel ? { modelSelection: {
+        provider: simulated.provider, model: simulated.model,
+        effort: simulated.effort, fastMode: simulated.fastMode,
+      } } : {}),
+    },
     actions,
   };
 }
@@ -191,7 +235,9 @@ export function applyInlineCommands(text: string, state: RenderState): InlineCom
     return parsed.result;
   }
   for (const action of parsed.actions) {
-    if (action.type === "effort") {
+    if (action.type === "model") {
+      applyModelSelectionWithNotice(state, action.provider, action.model);
+    } else if (action.type === "effort") {
       state.effort = action.effort;
       pushSystemMessage(state, `Effort set to ${action.effort}`);
     } else {

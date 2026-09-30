@@ -22,6 +22,28 @@ and the account's `/backend-api/codex/models` response.
   entitlement; an unavailable inline Ultrafast selection blocks submission and
   leaves the prompt/settings intact rather than silently sending at another tier.
 - Reasoning `ultra` and the Ultrafast service tier are independent settings.
+- `/model <provider> <model>` also works inside a prompt, e.g.
+  `/model openai gpt-6.1-sol /effort max explain this` or
+  `explain this /model openai gpt-6.1-sol`. Model changes persist in the
+  conversation, just like standalone `/model`; streaming conversations cannot
+  switch models. Modifiers are applied in textual order and invalid selections
+  block submission without partially changing settings.
+
+## ChatGPT subscription eligibility (September 29, 2026)
+
+OpenAI introduced **Pro 500 ($500/month)** on September 29. Among Pro plans,
+Astra Ultrafast is available only on Pro 500 at launch. Pro 100 and Pro 200
+do not gain access by purchasing credits; grandfathered Pro 200 usage does not
+grant Ultrafast either. Eligible Enterprise/Edu workspaces have separate
+billing, admin, and inference-residency requirements. No date for Pro 200
+Ultrafast access is announced in these sources.
+
+- https://help.openai.com/en/articles/6825453-chatgpt-release-notes
+- https://help.openai.com/en/articles/9793128-about-chatgpt-pro-tiers
+- https://learn.chatgpt.com/docs/agent-configuration/speed
+
+This is separate from API Ultrafast availability. Subscription included-usage
+and credit multipliers are not API token prices.
 
 Pricing sources (API-cost estimates, not ChatGPT subscription charges):
 
