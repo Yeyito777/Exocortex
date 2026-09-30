@@ -2,7 +2,7 @@ import { theme } from "../theme";
 import { formatMarkdownChunks, stripMarkdown, termWidth, sliceByWidth, isHorizontalRule } from "./formatting";
 import { FENCE_OPEN_RE, isFenceClose, renderCodeBlockWrapped, stripFenceIndent } from "./codeblocks";
 import { isTableLine, renderTableBlock } from "./tables";
-import { renderDisplayMath, renderInlineMathChunks, takeDisplayMathBlock } from "./math";
+import { findDisplayMathBlocks, renderDisplayMath, renderInlineMathChunks, takeDisplayMathBlock } from "./math";
 import type { WrapCopyLine } from "../textwrap";
 import type { LinkSpan } from "../links";
 import { wrapLinkedParagraphs } from "./linkwrap";
@@ -58,7 +58,7 @@ function seedLongWord(
  *
  * Processes text line by line and:
  * 1. Detects fenced code blocks and renders them with syntax highlighting
- * 2. Renders standalone TeX math blocks as centered Unicode notation
+ * 2. Renders standalone TeX math blocks as left-aligned Unicode notation
  * 3. Detects table blocks and renders with box-drawing
  * 4. Detects horizontal rules and renders them as box-drawing lines
  * 5. For regular paragraph text, word-wraps to fit within width and
@@ -149,6 +149,7 @@ export function markdownWordWrap(text: string, width: number, bgRestore?: string
     // Regular paragraph text.  Collect consecutive non-special physical lines
     // so inline markdown can span hard newlines while preserving those line
     // breaks in the rendered output.
+    const paragraphStart = i;
     const paragraphLines: string[] = [];
     while (i < inputLines.length) {
       const line = inputLines[i];
@@ -161,7 +162,27 @@ export function markdownWordWrap(text: string, width: number, bgRestore?: string
     }
 
     if (paragraphLines.length > 0) {
-      wrapParagraphBlock(paragraphLines, width, result, cont, join, copy, bgRestore, links);
+      // Display math can follow prose without a blank line. Scan the complete
+      // inline context first so a display-looking line inside multiline code
+      // does not split that code span into separate paragraphs.
+      const mathBlocks = bgRestore != null ? findDisplayMathBlocks(inputLines, paragraphStart, i) : [];
+      if (mathBlocks.length === 0) {
+        wrapParagraphBlock(paragraphLines, width, result, cont, join, copy, bgRestore, links);
+        continue;
+      }
+      let textStart = paragraphStart;
+      for (const block of mathBlocks) {
+        wrapParagraphBlock(inputLines.slice(textStart, block.startLine), width, result, cont, join, copy, bgRestore, links);
+        const rendered = renderDisplayMath(block.source, width);
+        result.push(...rendered.lines);
+        cont.push(...rendered.cont);
+        join.push(...rendered.join);
+        copy.push(...rendered.copy);
+        textStart = block.nextLine;
+      }
+      // A math block may contain blank lines beyond the collected paragraph.
+      i = Math.max(i, textStart);
+      wrapParagraphBlock(inputLines.slice(textStart, i), width, result, cont, join, copy, bgRestore, links);
       continue;
     }
 

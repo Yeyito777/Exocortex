@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { markdownWordWrap } from "./wordwrap";
+import { renderDisplayMath } from "./math";
+import { termWidth } from "../textwidth";
 
 function stripAnsi(s: string): string {
   return s.replace(/\x1b\[[0-9;]*m/g, "");
@@ -144,6 +146,132 @@ describe("markdown math rendering", () => {
       "¬(P ∧ Q) ⇔ (¬ P ∨ ¬ Q)",
     ]);
     expect(rendered.copy?.[0]?.text).toBe("¬(P ∧ Q) ⇔ (¬ P ∨ ¬ Q)");
+  });
+
+  test("renders the screenshot equation immediately after prose", () => {
+    const source = String.raw`|x_1+\cdots+x_{n+1}|
+\le |x_1+\cdots+x_n|+|x_{n+1}|.`;
+    for (const [open, close] of [[String.raw`\[`, String.raw`\]`], ["$$", "$$"]]) {
+      const rendered = markdownWordWrap([
+        "Triangle inequality gives:",
+        open,
+        source,
+        close,
+        "**The missing term is necessary.**",
+      ].join("\n"), 100, "\x1b[0m");
+
+      expect(rendered.lines.map(stripAnsi)).toEqual([
+        "Triangle inequality gives:",
+        "|x₁+⋯+xₙ₊₁| ≤ |x₁+⋯+xₙ|+|xₙ₊₁|.",
+        "The missing term is necessary.",
+      ]);
+      expect(rendered.copy?.[1]?.text).toBe("|x₁+⋯+xₙ₊₁| ≤ |x₁+⋯+xₙ|+|xₙ₊₁|.");
+      expect(rendered.cont).toEqual([false, false, false]);
+      expect(rendered.lines[2]).toContain("\x1b[1m");
+    }
+  });
+
+  test("renders adjacent single-line and structured display blocks after prose", () => {
+    const rendered = markdownWordWrap([
+      "First:",
+      String.raw`\[x^2\]`,
+      String.raw`\[`,
+      String.raw`\begin{aligned}x &= 1 \\ y &= 2\end{aligned}`,
+      String.raw`\]`,
+      "$$z_1$$",
+      "After.",
+    ].join("\n"), 80, "\x1b[0m");
+
+    expect(rendered.lines.map(stripAnsi)).toEqual([
+      "First:", "x²", "x = 1", "y = 2", "z₁", "After.",
+    ]);
+    expect(rendered.copy?.slice(1, 5).map(line => line?.text)).toEqual([
+      "x²", "x = 1", "y = 2", "z₁",
+    ]);
+  });
+
+  test("allows blank lines inside display math that follows prose", () => {
+    const rendered = markdownWordWrap([
+      "Equation:",
+      String.raw`\[`,
+      "x^2",
+      "",
+      "+ y^2",
+      String.raw`\]`,
+      "After.",
+    ].join("\n"), 80, "\x1b[0m");
+
+    expect(rendered.lines.map(stripAnsi)).toEqual(["Equation:", "x² + y²", "After."]);
+  });
+
+  test("keeps display-looking blocks inside multiline inline code literal", () => {
+    for (const ticks of ["`", "``"]) {
+      for (const [open, close] of [[String.raw`\[`, String.raw`\]`], ["$$", "$$"]]) {
+        const rendered = markdownWordWrap([
+          `Code ${ticks}literal`,
+          ticks === "``" ? "a single ` is still code" : "literal",
+          open,
+          "x^2",
+          close,
+          `ends here${ticks}.`,
+          String.raw`\[y^2\]`,
+        ].join("\n"), 80, "\x1b[0m");
+
+        expect(rendered.lines.map(stripAnsi)).toEqual([
+          "Code literal",
+          ticks === "``" ? "a single ` is still code" : "literal",
+          open,
+          "x^2",
+          close,
+          "ends here.",
+          "y²",
+        ]);
+        expect(rendered.copy?.[6]?.text).toBe("y²");
+      }
+    }
+  });
+
+  test("does not let an unmatched backtick hide a display block", () => {
+    const rendered = markdownWordWrap([
+      "A lone ` is literal.",
+      String.raw`\[x^2\]`,
+    ].join("\n"), 80, "\x1b[0m");
+
+    expect(rendered.lines.map(stripAnsi)).toEqual(["A lone ` is literal.", "x²"]);
+    expect(rendered.copy?.[1]?.text).toBe("x²");
+  });
+
+  test("preserves incomplete streaming math and renders it once closed", () => {
+    for (const [open, close] of [[String.raw`\[`, String.raw`\]`], ["$$", "$$"]]) {
+      const lines = ["Equation:", open, "x^2"];
+      const incomplete = markdownWordWrap(lines.join("\n"), 80, "\x1b[0m");
+      expect(incomplete.lines.map(stripAnsi)).toEqual(lines);
+      expect(markdownWordWrap([...lines, close].join("\n"), 80, "\x1b[0m").lines.map(stripAnsi))
+        .toEqual(["Equation:", "x²"]);
+    }
+  });
+
+  test("retains display wrapping and copy metadata after adjacent prose", () => {
+    const source = String.raw`|x_1+\cdots+x_{n+1}|\le |x_1+\cdots+x_n|+|x_{n+1}|.`;
+    const math = renderDisplayMath(source, 12);
+    const rendered = markdownWordWrap([
+      "Equation:",
+      String.raw`\[`,
+      source,
+      String.raw`\]`,
+      "After.",
+    ].join("\n"), 12, "\x1b[0m");
+
+    expect(rendered.lines.map(stripAnsi)).toEqual(["Equation:", ...math.lines, "After."]);
+    expect(rendered.cont).toEqual([false, ...math.cont, false]);
+    expect(rendered.join).toEqual(["", ...math.join, ""]);
+    expect(rendered.copy?.slice(1, -1)).toEqual(math.copy);
+    expect(rendered.lines.every(line => termWidth(line) <= 12)).toBe(true);
+  });
+
+  test("leaves display source plain when markdown mode is disabled", () => {
+    const lines = ["Equation:", String.raw`\[`, "x^2", String.raw`\]`, "After."];
+    expect(markdownWordWrap(lines.join("\n"), 80).lines).toEqual(lines);
   });
 
   test("treats pretty-printed display source as one expression", () => {

@@ -34,6 +34,33 @@ describe("adaptive user message rendering", () => {
   });
 });
 
+describe("assistant display math rendering", () => {
+  test("renders math after prose and preserves the indented copy projection", () => {
+    const block: Block = {
+      type: "text",
+      text: [
+        "Triangle inequality gives:",
+        String.raw`\[`,
+        String.raw`|x_1+\cdots+x_{n+1}|`,
+        String.raw`\le |x_1+\cdots+x_n|+|x_{n+1}|.`,
+        String.raw`\]`,
+        "The missing term is necessary.",
+      ].join("\n"),
+    };
+    const rendered = renderBlockCached(block, 100, [], [], false);
+
+    expect(rendered.lines.map(stripAnsi)).toEqual([
+      "  Triangle inequality gives:",
+      "  |x₁+⋯+xₙ₊₁| ≤ |x₁+⋯+xₙ|+|xₙ₊₁|.",
+      "  The missing term is necessary.",
+    ]);
+    expect(rendered.copy?.[1]).toEqual({
+      text: "|x₁+⋯+xₙ₊₁| ≤ |x₁+⋯+xₙ|+|xₙ₊₁|.",
+      displayStart: 2,
+    });
+  });
+});
+
 describe("tool-call presentation", () => {
   test("uses invocation-local styles for conversation-scoped internal tools", () => {
     const block: Block = {

@@ -520,6 +520,60 @@ export function takeDisplayMathBlock(lines: string[], start: number): DisplayMat
   return null;
 }
 
+export interface LocatedDisplayMathBlock extends DisplayMathBlock {
+  startLine: number;
+}
+
+/**
+ * Find complete display blocks in a paragraph without treating multiline code
+ * spans as math. Code-span lookahead is limited to the paragraph's inline
+ * context; a display block itself may extend past `end` through blank lines.
+ */
+export function findDisplayMathBlocks(lines: string[], start: number, end: number): LocatedDisplayMathBlock[] {
+  let hasMath = false;
+  for (let index = start; index < end; index++) {
+    if (/^\s*(?:\\\[|\$\$)/.test(lines[index])) {
+      hasMath = true;
+      break;
+    }
+  }
+  if (!hasMath) return [];
+
+  const source = lines.slice(start, end).join("\n");
+  const blocks: LocatedDisplayMathBlock[] = [];
+  let offset = 0;
+  let codeEnd = 0;
+  let index = start;
+  while (index < end) {
+    const block = offset >= codeEnd ? takeDisplayMathBlock(lines, index) : null;
+    if (block) {
+      blocks.push({ startLine: index, ...block });
+      // Do not interpret backticks in TeX as Markdown code delimiters.
+      while (index < block.nextLine) offset += lines[index++].length + 1;
+      continue;
+    }
+
+    const lineEnd = offset + lines[index].length;
+    let cursor = Math.max(offset, codeEnd);
+    while (cursor < lineEnd) {
+      const tick = source.indexOf("`", cursor);
+      if (tick < 0 || tick >= lineEnd) break;
+      const ticks = countRun(source, tick, "`");
+      const close = findCodeSpanClose(source, tick + ticks, ticks);
+      if (close >= 0) {
+        codeEnd = close + ticks;
+        cursor = codeEnd;
+      } else {
+        // Unmatched backticks are literal text, not an open code span.
+        cursor = tick + ticks;
+      }
+    }
+    offset = lineEnd + 1;
+    index++;
+  }
+  return blocks;
+}
+
 export interface RenderedDisplayMath {
   lines: string[];
   cont: boolean[];
