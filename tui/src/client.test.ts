@@ -556,7 +556,7 @@ describe("DaemonClient commands", () => {
     const client = new DaemonClient(() => {});
     const internal = client as any;
 
-    client.createConversation("openai", "gpt-5.4", undefined, "high", false, undefined, null, "finish it", undefined, undefined, undefined, undefined, undefined, undefined, 10);
+    client.createConversation("openai", "gpt-5.4", undefined, "high", false, undefined, null, "finish it", undefined, undefined, undefined, 10);
 
     expect(internal.pendingCommands[0]).toMatchObject({
       type: "new_conversation",
@@ -569,7 +569,7 @@ describe("DaemonClient commands", () => {
     const client = new DaemonClient(() => {});
     const internal = client as any;
 
-    client.createConversation("openai", "gpt-5.4", "pending", "high", false, undefined, "folder-1", undefined, "queued-draft-1", undefined, undefined, "queued prompt text");
+    client.createConversation("openai", "gpt-5.4", "pending", "high", false, undefined, "folder-1", undefined, "queued-draft-1", "queued prompt text");
 
     expect(internal.pendingCommands[0]).toMatchObject({
       type: "new_conversation",

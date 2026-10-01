@@ -47,3 +47,17 @@ discord call join -a paramount CHANNEL --voice sol
 There is no public Bidi mode switch: the realtime backend is an Exocortex implementation detail. Discord CLI contains no separate ASR, speech segmentation, transcript notification, saved-segment, or one-shot speech path. It retains Discord gateway/voice state, RTP, Opus, DAVE, participant mapping, mute/deafen, and media adaptation.
 
 Future platform tools, including WhatsApp when its call media is available, implement the same control and WebRTC boundary without changing Exocortex call orchestration. Persisted call messages retain call ID, adapter identity, tool, account, endpoint, and source-label metadata.
+
+## Realtime transcripts and delegation
+
+Each call retains a finalized role-bearing transcript ledger. Handoffs send an
+escaped task payload, original speech when different, speaker attribution, and
+the transcript delta since the previous handoff. Backend answer text is
+forwarded in ordered 200 ms batches, capped at 16,000 characters; additional
+handoffs use the normal next-turn queue. Shutdown commits the remaining
+transcript tail once. Platform speaker attribution is conservative for overlaps
+and unknown speakers, and survives persistence and replay.
+
+Native capture/playback is full duplex. `/mute` sends silence without removing
+the microphone track; the sidebar indicates active calls in conversations and
+their containing folders.

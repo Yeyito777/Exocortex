@@ -9,7 +9,6 @@
 import { summarizeConversation, type Conversation, type ConversationSummary, type PersistedConversationSummary, type PersistedFolderSummary } from "./messages";
 import type { ToolOutputInfo } from "./protocol";
 import type { StoredDisplayHistoryPage } from "./display-page-store";
-import type { ConversationToolPolicyState } from "./conversation-repository";
 import { clonedConversationValue, type ConversationCloneTarget } from "./conversation-clone";
 import * as jsonPersistence from "./json-persistence";
 import { SqliteConversationStore, sqliteConversationStorePath, type IntegrityReport, type LegacyImportReport } from "./sqlite-conversation-store";
@@ -265,25 +264,6 @@ export function restoreConversationsFromTrash(ids: string[]): Conversation[] {
 
 export function load(id: string): Conversation | null {
   return backend === "sqlite" ? store().load(id) : jsonPersistence.load(id);
-}
-
-/**
- * Load the small capability-policy projection without materializing SQLite
- * message history. The JSON compatibility backend has no columnar projection,
- * so it falls back to its canonical conversation file.
- */
-export function loadToolPolicyState(
-  id: string,
-): ConversationToolPolicyState | null {
-  if (backend === "sqlite") return store().loadToolPolicyState(id);
-  const conversation = jsonPersistence.load(id);
-  if (!conversation) return null;
-  return {
-    id: conversation.id,
-    subagentMaxDepth: conversation.subagentMaxDepth ?? null,
-    subagentPolicy: conversation.subagentPolicy ?? null,
-    toolPolicy: conversation.toolPolicy ?? null,
-  };
 }
 
 /** Clone canonical state plus undo while allowing normalized stores to copy rows in-place. */

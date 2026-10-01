@@ -88,8 +88,7 @@ for (const backend of ["json", "sqlite"] as const) {
 
       expect(h.repository.has(id)).toBe(true);
       expect(h.repository.getSummary(id)?.messageCount).toBe(2);
-      expect(h.repository.loadToolPolicyState(id)).toEqual({
-        id,
+      expect(h.repository.load(id)).toMatchObject({
         subagentMaxDepth: 0,
         subagentPolicy: conv.subagentPolicy,
         toolPolicy: conv.toolPolicy,

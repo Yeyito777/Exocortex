@@ -525,10 +525,6 @@ export function handleEvent(
       pushSystemMessage(state, event.systemPrompt);
       break;
 
-    case "tool_policy":
-      // Ignore legacy policy events from older daemons.
-      break;
-
     case "system_instructions_updated":
       // No-op — the daemon sends history_updated which rebuilds everything.
       break;

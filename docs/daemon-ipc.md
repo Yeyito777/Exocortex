@@ -21,4 +21,6 @@ Never restart the main daemon.
 
 The native `exo` tool only starts a subagent or aborts a conversation. Tool
 selection and conversation-scoped custom modules are retired; old persisted
-policies are retained as inert historical data.
+policies are retained as opaque historical data for lossless import/export.
+Old selection requests receive an explicit error; they have no mutation API,
+availability projection, or UI snapshot in the current implementation.

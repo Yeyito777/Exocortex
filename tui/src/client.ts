@@ -414,11 +414,8 @@ export class DaemonClient {
     folderId?: string | null,
     goalObjective?: string,
     convId?: string,
-    _legacyGoalPausable?: boolean,
-    _legacyGoalCompletable?: boolean,
     titleContext?: string,
     startCall?: boolean,
-    _retiredDraftToolPolicyId?: string,
     goalMaxTurns?: number,
   ): void {
     this.send({

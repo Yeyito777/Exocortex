@@ -10,10 +10,10 @@ import type { ActiveTaskInfo } from "./messages";
  * Commands flow client → daemon. Events flow daemon → client.
  */
 
-import type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ToolCallPresentation, ImageAttachment, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus, ConversationBtw, UserMessageContextCheckpoint, ExternalNotificationDelivery, ToolPolicyMutation, ToolPolicySnapshot, UserMessageAutomation } from "./messages";
+import type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ToolCallPresentation, ImageAttachment, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus, ConversationBtw, UserMessageContextCheckpoint, ExternalNotificationDelivery, UserMessageAutomation } from "./messages";
 import type { RealtimeVoice } from "./realtime";
 import type { UpdateStatus } from "./updatecheck";
-export type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ToolCallPresentation, ImageAttachment, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus, ConversationBtw, UserMessageContextCheckpoint, ExternalNotificationDelivery, ToolPolicyMutation, ToolPolicySnapshot, UserMessageAutomation };
+export type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ToolCallPresentation, ImageAttachment, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus, ConversationBtw, UserMessageContextCheckpoint, ExternalNotificationDelivery, UserMessageAutomation };
 
 // ── Commands (client → daemon) ──────────────────────────────────────
 
@@ -110,10 +110,6 @@ export interface NewConversationCommand {
   subagent?: boolean;
   /** Optional goal to set immediately after creating the conversation. */
   goalObjective?: string;
-  /** @deprecated Ignored; every goal can now be stopped and completed. */
-  goalPausable?: boolean;
-  /** @deprecated Ignored; every goal can now be stopped and completed. */
-  goalCompletable?: boolean;
   /** Optional automatic continuation turn budget. */
   goalMaxTurns?: number;
   /** Start a realtime call owned by the new conversation immediately after creation. */
@@ -428,10 +424,6 @@ export interface SetGoalCommand {
   convId: string;
   action: GoalAction;
   objective?: string;
-  /** @deprecated Ignored; retained for old IPC clients. */
-  pausable?: boolean;
-  /** @deprecated Ignored; retained for old IPC clients. */
-  completable?: boolean;
   maxTurns?: number;
 }
 
@@ -892,44 +884,14 @@ export interface TaskStoppedEvent {
   status: "stopping";
 }
 
-export interface GetToolPolicyCommand {
-  /** @deprecated Retired command; retained only for an explicit IPC error. */
-  type: "get_tool_policy";
+/** Rejection-only tombstone for old clients; no policy payload is interpreted. */
+export interface RetiredToolSelectionCommand {
+  type: "get_tool_policy" | "set_tool_policy" | "get_draft_tool_policy"
+    | "set_draft_tool_policy" | "clear_draft_tool_policy";
   reqId?: string;
-  convId: string;
-}
-
-export interface SetToolPolicyCommand {
-  /** @deprecated Retired command; retained only for an explicit IPC error. */
-  type: "set_tool_policy";
-  reqId?: string;
-  convId: string;
-  mutation: ToolPolicyMutation;
-}
-
-/** Inspect the tool policy being assembled for a not-yet-created conversation. */
-export interface GetDraftToolPolicyCommand {
-  /** @deprecated Retired command; retained only for an explicit IPC error. */
-  type: "get_draft_tool_policy";
-  reqId?: string;
-  draftId: string;
-}
-
-/** Mutate a not-yet-created conversation's ephemeral tool policy. */
-export interface SetDraftToolPolicyCommand {
-  /** @deprecated Retired command; retained only for an explicit IPC error. */
-  type: "set_draft_tool_policy";
-  reqId?: string;
-  draftId: string;
-  mutation: ToolPolicyMutation;
-}
-
-/** Abandon an ephemeral draft policy and dispose its custom tool instances. */
-export interface ClearDraftToolPolicyCommand {
-  /** @deprecated Retired command; retained only for an explicit IPC error. */
-  type: "clear_draft_tool_policy";
-  reqId?: string;
-  draftId: string;
+  convId?: string;
+  draftId?: string;
+  mutation?: unknown;
 }
 
 export interface TranscribeAudioCommand {
@@ -1055,13 +1017,9 @@ export type Command =
   | SetSystemInstructionsCommand
   | LlmCompleteCommand
   | GetSystemPromptCommand
-  | GetToolPolicyCommand
+  | RetiredToolSelectionCommand
   | ListTasksCommand
   | StopTaskCommand
-  | SetToolPolicyCommand
-  | GetDraftToolPolicyCommand
-  | SetDraftToolPolicyCommand
-  | ClearDraftToolPolicyCommand
   | TranscribeAudioCommand
   | LoginCommand
   | AccountCommand
@@ -1459,8 +1417,6 @@ export interface ConversationLoadedEvent extends CachedHistoryResponse {
   goal?: ConversationGoal | null;
   /** Durable one-shot answer retained by this conversation until closed. */
   btw?: ConversationBtw | null;
-  /** Resolved availability used by the focused-conversation activity panel. */
-  toolPolicySnapshot?: ToolPolicySnapshot;
 }
 
 export interface ConversationHistoryLoadedEvent extends CachedHistoryResponse {
@@ -1811,14 +1767,6 @@ export interface SystemPromptEvent {
   systemPrompt: string;
 }
 
-export interface ToolPolicyEvent {
-  type: "tool_policy";
-  reqId?: string;
-  convId: string;
-  snapshot: ToolPolicySnapshot;
-  changed: boolean;
-}
-
 export interface TranscriptionResultEvent {
   type: "transcription_result";
   reqId?: string;
@@ -1970,7 +1918,6 @@ export type Event =
   | FolderInstructionsUpdatedEvent
   | LlmCompleteResultEvent
   | SystemPromptEvent
-  | ToolPolicyEvent
   | TasksListEvent
   | TaskStoppedEvent
   | TranscriptionResultEvent

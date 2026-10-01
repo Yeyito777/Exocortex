@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkForUpdate, createUpdateStatusChecker, eligibleUpdateHead, startUpdateChecks, UPDATE_CHECK_INTERVAL_MS, type UpdateRequest } from "./updatecheck";
+import { checkForUpdate, createUpdateStatusChecker, eligibleUpdateHead, startUpdateChecks, UPDATE_CHECK_INTERVAL_MS, type UpdateRequest } from "@exocortex/shared/updatecheck";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });

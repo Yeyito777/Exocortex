@@ -37,17 +37,6 @@ export class JsonConversationRepository implements ConversationRepository {
     return this.listSummaries().find((summary) => summary.id === id) ?? null;
   }
 
-  loadToolPolicyState(id: string) {
-    const conversation = json.load(id);
-    if (!conversation) return null;
-    return {
-      id: conversation.id,
-      subagentMaxDepth: conversation.subagentMaxDepth ?? null,
-      subagentPolicy: conversation.subagentPolicy ?? null,
-      toolPolicy: conversation.toolPolicy ?? null,
-    };
-  }
-
   cloneConversation(sourceId: string, target: ConversationCloneTarget): PersistedConversationSummary | null {
     const source = json.load(sourceId);
     if (!source) return null;
