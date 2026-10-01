@@ -53,6 +53,8 @@ const KEYMAP: KeymapEntry[] = [
   { mode: "normal", context: "prompt", key: "dd", command: { type: "standalone", name: "delete_line" } },
   { mode: "normal", context: "prompt", key: "cc", command: { type: "standalone", name: "change_line" } },
   { mode: "normal", context: "prompt", key: "yy", command: { type: "standalone", name: "yank_line" } },
+  { mode: "normal", context: "prompt", key: ">>", command: { type: "standalone", name: "shift_right" } },
+  { mode: "normal", context: "prompt", key: "<<", command: { type: "standalone", name: "shift_left" } },
 
   // Undo/redo
   { mode: "normal", context: "prompt", key: "u",  command: { type: "standalone", name: "undo" } },
@@ -144,6 +146,8 @@ const KEYMAP: KeymapEntry[] = [
   { mode: "visual", context: "prompt", key: "c",  command: { type: "standalone", name: "visual_change" } },
   { mode: "visual", context: "prompt", key: "y",  command: { type: "standalone", name: "visual_yank" } },
   { mode: "visual", context: "prompt", key: "~",  command: { type: "standalone", name: "visual_swap_case" } },
+  { mode: "visual", context: "prompt", key: ">>", command: { type: "standalone", name: "visual_shift_right" } },
+  { mode: "visual", context: "prompt", key: "<<", command: { type: "standalone", name: "visual_shift_left" } },
 
   // ── Visual mode: history (motions + yank only) ──────────────────
   { mode: "visual", context: "history", key: "h",  command: { type: "action", action: "history_left" } },
@@ -176,6 +180,8 @@ const KEYMAP: KeymapEntry[] = [
   { mode: "visual-line", context: "prompt", key: "c",  command: { type: "standalone", name: "visual_change" } },
   { mode: "visual-line", context: "prompt", key: "y",  command: { type: "standalone", name: "visual_yank" } },
   { mode: "visual-line", context: "prompt", key: "~",  command: { type: "standalone", name: "visual_swap_case" } },
+  { mode: "visual-line", context: "prompt", key: ">>", command: { type: "standalone", name: "visual_shift_right" } },
+  { mode: "visual-line", context: "prompt", key: "<<", command: { type: "standalone", name: "visual_shift_left" } },
 
   { mode: "visual-line", context: "history", key: "j",  command: { type: "action", action: "history_down" } },
   { mode: "visual-line", context: "history", key: "k",  command: { type: "action", action: "history_up" } },
@@ -198,7 +204,6 @@ const _prefixes = new Set<string>();
 for (const entry of KEYMAP) {
   for (let i = 1; i < entry.key.length; i++) {
     _prefixes.add(`${entry.mode}:${entry.context}:${entry.key.slice(0, i)}`);
-    _prefixes.add(`${entry.mode}:*:${entry.key.slice(0, i)}`);
   }
 }
 

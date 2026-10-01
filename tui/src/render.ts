@@ -1263,7 +1263,8 @@ function buildCursorPayload(
     // Vim: block cursor in normal mode, bar cursor in insert mode
     out.push(
       state.vim.mode === "insert" ? cursor_bar
-        : (state.vim.pendingOperator || state.vim.pendingReplace) ? cursor_underline
+        : (state.vim.pendingOperator || state.vim.pendingReplace
+          || state.vim.pendingKeys === "<" || state.vim.pendingKeys === ">") ? cursor_underline
         : cursor_block,
     );
     out.push(show_cursor);

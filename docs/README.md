@@ -111,6 +111,9 @@ Commands flow client → daemon. Events flow daemon → client.
 | `Escape`         | Normal mode (vim)                   |
 | `i` / `a`        | Insert mode (vim)                   |
 | `v` / `V`        | Visual / visual-line mode           |
+| `Tab`            | In prompt insert mode, complete a popup/path or insert a four-space soft tab |
+| `Backspace` / `Delete` | Remove an adjacent four-space soft tab in one press (shorter space runs delete normally) |
+| `>>` / `<<`      | Shift the prompt line or selected lines right/left by four spaces; first key shows an underscore cursor |
 | `{` / `}`        | In chat normal mode, focus history and jump among user-message starts |
 | `[` / `]`        | In chat normal mode, focus history and jump among final AI-response text blocks (`]` falls through to the end) |
 | `;`               | In history visual mode, quote selection into the draft and focus the following line |
@@ -119,6 +122,11 @@ Commands flow client → daemon. Events flow daemon → client.
 | `/trim <mode> <n>` | Trim old context from the current conversation |
 | `/tools enable/disable ...` | Change built-in tools or attach a [conversation-scoped tool module](custom-internal-tools.md) |
 | `/quit`          | Exit                                |
+
+In prompt normal mode, a count such as `3>>` shifts three lines once. In visual
+and visual-line modes, `>>`/`<<` shift every selected logical line and return to
+normal mode. Shifts support undo/redo; outdenting removes at most four leading
+spaces without removing text.
 
 ## Protocol
 
