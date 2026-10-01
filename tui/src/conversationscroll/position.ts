@@ -91,7 +91,7 @@ export function beginConversationScrollRestore(
           convId,
           mode: "percentage",
           percentage,
-          waitForInitialBackfill: hasOlderHistory,
+          waitForInitialBackfill: hasOlderHistory && percentage < 1,
         }
       : null;
 }

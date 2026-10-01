@@ -117,8 +117,13 @@ function canReuseHistoryRender(
 }
 
 function shouldForceFullHistoryRender(state: RenderState): boolean {
+  const restore = state.conversationScroll.pendingRestore;
+  // A remembered bottom is width/history independent. It can be restored from
+  // the viewport-sized suffix; wrapping all fifteen buffered turns buys nothing.
+  const restoreNeedsFullHistory = hasReadyConversationScrollRestore(state)
+    && !(restore?.mode === "percentage" && restore.percentage === 1);
   return state.pendingAI !== null
-    || hasReadyConversationScrollRestore(state)
+    || restoreNeedsFullHistory
     || state.scrollOffset > 0
     || state.showToolOutput
     || state.toolOutputsLoaded

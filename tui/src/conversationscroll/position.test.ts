@@ -96,6 +96,17 @@ describe("conversation scroll percentages", () => {
     expect(isConversationScrollRestoreWaitingForInitialBackfill(state)).toBe(false);
   });
 
+  test("restores a remembered bottom on the opening page without waiting for backfill", () => {
+    const state = createInitialState();
+    state.conversationScroll.positions.set("target", 1);
+    prepareConversationOpen(state, "target");
+    beginConversationScrollRestore(state, "target", false, true);
+    expect(state.conversationScroll.pendingRestore).toMatchObject({
+      percentage: 1,
+      waitForInitialBackfill: false,
+    });
+  });
+
   test("prunes positions for conversations no longer reported by the daemon", () => {
     const state = createInitialState();
     state.conversationScroll.positions.set("keep", 0.25);
