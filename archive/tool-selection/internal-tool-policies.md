@@ -1,4 +1,4 @@
-# Internal tool policies and task lifecycle
+# Archived internal tool policies and task lifecycle
 
 ## Compact native Exocortex interface
 

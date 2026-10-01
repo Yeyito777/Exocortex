@@ -9,7 +9,7 @@ import {
   setGoal,
 } from "./goals";
 import { goal as goalTool } from "./tools/goal";
-import { resolveConversationToolPolicy } from "./tool-policy";
+import { getConversationToolNames } from "./tools/registry";
 
 const IDS: string[] = [];
 
@@ -40,17 +40,15 @@ describe("goal tool", () => {
     expect((goalTool.inputSchema.properties as Record<string, unknown>).completable).toBeUndefined();
   });
 
-  test("is enabled by default for every provider while explicit policy remains authoritative", () => {
+  test("is enabled for every provider regardless of archived policies", () => {
     for (const provider of ["openai", "deepseek", "opencode", "openrouter"] as const) {
       const convId = makeConversation(`provider-${provider}`);
       const conv = get(convId)!;
       conv.provider = provider;
-      expect(resolveConversationToolPolicy(conv).internalToolNames).toContain("goal");
+      expect(getConversationToolNames(provider)).toContain("goal");
 
       conv.toolPolicy = { internal: [], external: [] };
-      const explicit = resolveConversationToolPolicy(conv);
-      expect(explicit.source).toBe("explicit");
-      expect(explicit.internalToolNames).not.toContain("goal");
+      expect(getConversationToolNames(provider)).toContain("goal");
     }
   });
 

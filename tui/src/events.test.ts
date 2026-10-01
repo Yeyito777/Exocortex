@@ -95,9 +95,8 @@ describe("auth device code instructions", () => {
 });
 
 describe("tool policy activity state", () => {
-  test("accepts policy snapshots for a blank conversation draft", () => {
+  test("ignores old policy snapshots for a blank conversation draft", () => {
     const state = createInitialState();
-    state.pendingToolPolicyDraftId = "conv-tools";
 
     handleEvent({
       type: "tool_policy",
@@ -107,12 +106,11 @@ describe("tool policy activity state", () => {
       changed: true,
     }, state, daemon);
 
-    expect(state.activeToolPolicy).toEqual(disabledToolPolicy);
+    expect(state).not.toHaveProperty("activeToolPolicy");
   });
 
-  test("prints the all-enabled default policy for a blank conversation draft", () => {
+  test("does not print retired tool policy events", () => {
     const state = createInitialState();
-    state.pendingToolPolicyDraftId = "draft-tools";
 
     handleEvent({
       type: "tool_policy",
@@ -129,26 +127,11 @@ describe("tool policy activity state", () => {
       changed: false,
     }, state, daemon);
 
-    expect(state.messages).toHaveLength(1);
-    expect(state.messages[0]).toMatchObject({
-      role: "system",
-      text: expect.stringContaining([
-        "Enabled:",
-        "  Internal: read",
-        "  External: gmail",
-        "",
-        "Disabled:",
-        "  Internal: (none)",
-        "  External: (none)",
-      ].join("\n")),
-    });
+    expect(state.messages).toEqual([]);
   });
 
-  test("abandons blank-draft tool choices when another conversation is opened", () => {
+  test("opening another conversation does not require a draft policy cleanup", () => {
     const state = createInitialState();
-    state.pendingToolPolicyDraftId = "draft-tools";
-    state.activeToolPolicy = { ...disabledToolPolicy, convId: "draft-tools" };
-    const cleared: string[] = [];
 
     handleEvent({
       type: "conversation_loaded",
@@ -160,14 +143,13 @@ describe("tool policy activity state", () => {
       entries: [],
       contextTokens: 0,
       toolOutputsIncluded: false,
-    }, state, { ...daemon, clearDraftToolPolicy: (draftId) => { cleared.push(draftId); } });
+    }, state, daemon);
 
-    expect(cleared).toEqual(["draft-tools"]);
-    expect(state.pendingToolPolicyDraftId).toBeNull();
-    expect(state.activeToolPolicy).toBeNull();
+    expect(state).not.toHaveProperty("pendingToolPolicyDraftId");
+    expect(state).not.toHaveProperty("activeToolPolicy");
   });
 
-  test("hydrates the focused policy when a conversation opens", () => {
+  test("does not hydrate legacy policy metadata when a conversation opens", () => {
     const state = createInitialState();
     state.convId = "conv-tools";
 
@@ -184,10 +166,10 @@ describe("tool policy activity state", () => {
       toolPolicySnapshot: disabledToolPolicy,
     }, state, daemon);
 
-    expect(state.activeToolPolicy).toEqual(disabledToolPolicy);
+    expect(state).not.toHaveProperty("activeToolPolicy");
   });
 
-  test("applies passive refreshes without adding chat noise", () => {
+  test("ignores passive legacy refreshes without adding chat noise", () => {
     const state = createInitialState();
     state.convId = "conv-tools";
 
@@ -198,11 +180,11 @@ describe("tool policy activity state", () => {
       changed: true,
     }, state, daemon);
 
-    expect(state.activeToolPolicy).toEqual(disabledToolPolicy);
+    expect(state).not.toHaveProperty("activeToolPolicy");
     expect(state.messages).toEqual([]);
   });
 
-  test("keeps interactive tool-policy output visible", () => {
+  test("ignores obsolete interactive tool-policy output", () => {
     const state = createInitialState();
     state.convId = "conv-tools";
 
@@ -214,9 +196,8 @@ describe("tool policy activity state", () => {
       changed: false,
     }, state, daemon);
 
-    expect(state.activeToolPolicy).toEqual(disabledToolPolicy);
-    expect(state.messages).toHaveLength(1);
-    expect(state.messages[0]).toMatchObject({ role: "system", text: expect.stringContaining("write") });
+    expect(state).not.toHaveProperty("activeToolPolicy");
+    expect(state.messages).toEqual([]);
   });
 });
 

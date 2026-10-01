@@ -1,6 +1,6 @@
 import type { FastMode } from "@exocortex/shared/messages";
 import type { RenderState } from "../state";
-import type { GoalAction, OpenAILoginMethod, QueuedCommandInvocation, QueueWaitTarget, ToolPolicyMutation, TrimMode } from "../protocol";
+import type { GoalAction, OpenAILoginMethod, QueuedCommandInvocation, QueueWaitTarget, TrimMode } from "../protocol";
 import type { ProviderId, ModelId, EffortLevel } from "../messages";
 import type { RealtimeVoice } from "@exocortex/shared/realtime";
 
@@ -41,7 +41,6 @@ type CommandAction =
   | { type: "logout"; provider?: ProviderId }
   | { type: "theme_changed" }
   | { type: "get_system_prompt" }
-  | { type: "tool_policy"; mutation?: ToolPolicyMutation }
   | { type: "set_system_instructions"; text: string }
   | { type: "ssh"; action: "connect" | "status" | "cancel"; alias?: string };
 

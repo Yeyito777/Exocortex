@@ -13,8 +13,7 @@ import { workTimerForTurn } from "./work-timer";
 import { hasConfiguredCredentials } from "./auth";
 import { runAgentLoop, type AgentCallbacks, type AgentState } from "./agent";
 import { getMaxContext, supportsImageInputs } from "./providers/registry";
-import { buildExecutor, summarizeTool, toolCallsRequireWatchdogPause, getRegisteredTools, getCustomToolDisplayInfo } from "./tools/registry";
-import { ensureConversationCustomTools } from "./tools/custom-tools";
+import { buildExecutor, summarizeTool, toolCallsRequireWatchdogPause } from "./tools/registry";
 import * as convStore from "./conversations";
 import type { DaemonServer, ConnectedClient } from "./server";
 import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, MAX_EXO_SUBAGENT_DEPTH, createStoredUserContextCheckpoint, createStoredUserMessage, currentReplayHistoryPrefix, isHistoryMessage, isReplayHistoryMessage, isValidActiveContextCached, type ActiveContext, type StoredMessage, type ApiContentBlock, type ApiMessage, type Block, type UserMessageAutomation } from "./messages";
@@ -58,7 +57,6 @@ import {
   type DeferredChronoSleep,
 } from "./chrono-service";
 import { buildConversationRequestSurface } from "./conversation-request-surface";
-import { resolveConversationToolPolicy } from "./tool-policy";
 import { getModelInfo } from "./providers/registry";
 
 // ── Transcript marker helpers ──────────────────────────────────────
@@ -358,9 +356,8 @@ async function orchestrateGoalContinuation(
     settleFailedHandoff();
     return buildOutcome(false, "No active goal to continue.");
   }
-  if (!first && initial && (!resolveConversationToolPolicy(initial).internalToolNames.includes("goal")
-      || getModelInfo(initial.provider, initial.model)?.supportsTools === false)) {
-    const result = updateGoalStatus(convId, "blocked", "Goal cannot continue without its status tool.", "Enable the goal tool and a tool-capable model, then resume.");
+  if (!first && initial && getModelInfo(initial.provider, initial.model)?.supportsTools === false) {
+    const result = updateGoalStatus(convId, "blocked", "Goal cannot continue without its status tool.", "Select a tool-capable model, then resume.");
     server.sendToSubscribers(convId, { type: "goal_updated", convId, goal: result.goal, message: result.message });
     settleFailedHandoff();
     return buildOutcome(false, result.message);
@@ -583,11 +580,8 @@ async function orchestrateAdmittedAssistantTurn(
   if (goalContinuation && conv.goal?.status !== "active") {
     return buildErrorOutcome("No active goal to continue.");
   }
-  try {
-    await ensureConversationCustomTools(conv, getRegisteredTools().map((tool) => tool.name), workingDirectory);
-  } catch (error) {
-    return reportSendError(`Failed to load custom tools: ${error instanceof Error ? error.message : String(error)}`);
-  }
+  // Preserve the asynchronous admission boundary: queued input/Stop can win.
+  await Promise.resolve();
   // The preflight above can yield: Stop, a goal edit, or queued user input wins
   // over a continuation selected before that await.
   if (acceptedHandoffToken && convStore.getStreamHandoffToken(convId) !== acceptedHandoffToken) {
@@ -1450,8 +1444,7 @@ async function orchestrateAdmittedAssistantTurn(
         },
         presentationResolver: async (name, input) => {
           const presentation = await resolveToolCallPresentation(name, input, workingDirectory);
-          const toolStyle = getCustomToolDisplayInfo(name, convId);
-          return presentation || toolStyle ? { ...presentation, ...(toolStyle ? { toolStyle } : {}) } : undefined;
+          return presentation ?? undefined;
         },
         effort: conv.effort,
         serviceTier: fastModeServiceTier(conv.fastMode),

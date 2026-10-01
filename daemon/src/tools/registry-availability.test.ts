@@ -25,18 +25,10 @@ describe("tool availability", () => {
   test("native exo management is available while transcription remains external", () => {
     const definition = getToolDefs().find((tool) => tool.name === "exo");
     expect(definition).toBeTruthy();
-    const actionEnum = (definition?.input_schema.properties as Record<string, { enum?: string[] }>).action.enum;
-    expect(actionEnum).toContain("send");
-    expect(actionEnum).toContain("commands");
-    expect(actionEnum).not.toContain("transcribe");
-    expect(actionEnum).not.toContain("llm");
-    expect(actionEnum).not.toContain("folder_mkdir");
-    expect(actionEnum).not.toContain("rename");
-    expect(actionEnum).not.toContain("delete");
-    expect(actionEnum).not.toContain("status");
+    expect(Object.keys(definition!.input_schema.properties as object)).toEqual(["subagent", "args", "abort"]);
     expect(JSON.stringify(definition?.input_schema)).not.toContain("system_prompt");
     expect(getToolDisplayInfo().find((tool) => tool.name === "exo")?.label).toBe("Exocortex");
-    expect(buildToolSystemHints()).toContain("## exo\nAlmost never use subagents.");
+    expect(buildToolSystemHints()).toContain("## exo\nAlmost never use subagents:");
     expect(buildToolSystemHints()).not.toContain("needed for testing");
   });
 

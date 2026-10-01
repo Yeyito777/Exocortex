@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { broadcastConversationToolPolicyUpdated, broadcastConversationUpdated } from "./conversation-events";
-import { create, remove, setToolPolicy } from "./conversations";
+import { broadcastConversationUpdated } from "./conversation-events";
+import { create, remove } from "./conversations";
 import type { DaemonServer } from "./server";
 
 const ids: string[] = [];
@@ -53,37 +53,5 @@ describe("broadcastConversationUpdated", () => {
     expect(broadcastConversationUpdated(server, id, "daemon-restart")).toBe(true);
 
     expect(events).toMatchObject([{ type: "conversation_updated", summary: { id }, streamStopReason: "daemon-restart" }]);
-  });
-});
-
-describe("broadcastConversationToolPolicyUpdated", () => {
-  test("does not broadcast a policy for a missing conversation", () => {
-    const { server, events } = captureServer();
-    expect(broadcastConversationToolPolicyUpdated(server, "missing-conversation")).toBe(false);
-    expect(events).toEqual([]);
-  });
-
-  test("broadcasts the resolved persistent policy without an interactive reqId", () => {
-    const id = mkId("tool-policy");
-    create(id, "openai", "gpt-5.5");
-    setToolPolicy(id, { internal: ["read"], external: [] });
-    const { server, events } = captureServer();
-
-    expect(broadcastConversationToolPolicyUpdated(server, id)).toBe(true);
-    expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({
-      type: "tool_policy",
-      convId: id,
-      changed: true,
-      snapshot: {
-        convId: id,
-        source: "explicit",
-        internal: expect.arrayContaining([
-          expect.objectContaining({ name: "read", enabled: true }),
-          expect.objectContaining({ name: "apply_patch", enabled: false }),
-        ]),
-      },
-    });
-    expect(events[0]).not.toHaveProperty("reqId");
   });
 });

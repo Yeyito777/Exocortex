@@ -138,13 +138,13 @@ export const MAX_ACTIVE_EXO_SUBAGENTS_GLOBAL = 32;
 export interface SubagentPolicy {
   /** Conversation that created this worker. Null is reserved for external/debug clients. */
   parentConversationId: string | null;
-  /** Legacy allow_edits shorthand; an exact toolPolicy supersedes it. */
+  /** Inert legacy storage field; no longer controls capabilities. */
   allowEdits: boolean;
   /** Snapshot of the parent's effective folder/conversation instructions at creation. */
   parentSystemInstructions: string;
 }
 
-/** Per-conversation selection. Omission uses the root/scoped defaults. */
+/** Archived custom-module descriptors, preserved only for storage compatibility. */
 export interface ConversationCustomToolModule {
   /** Canonical absolute module path. */
   path: string;
@@ -160,6 +160,7 @@ export interface ConversationCustomToolModule {
   }>;
 }
 
+/** Archived selections; never loaded as executable capability configuration. */
 export interface ConversationToolPolicy {
   internal: string[];
   external: string[];
@@ -201,9 +202,9 @@ export interface Conversation {
    * conversation. Null/omitted means a root/user-started turn.
    */
   subagentMaxDepth?: number | null;
-  /** Restricted worker capabilities and inherited parent constraints. */
+  /** Worker identity and inherited parent constraints, not tool restrictions. */
   subagentPolicy?: SubagentPolicy | null;
-  /** User/delegator-selected internal and external tool selections. */
+  /** Archived historical data; ignored by the model/executor surface. */
   toolPolicy?: ConversationToolPolicy | null;
 }
 

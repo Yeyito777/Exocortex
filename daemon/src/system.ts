@@ -5,7 +5,7 @@
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { buildToolSystemHints } from "./tools/registry";
-import { getExternalToolHints, getExternalToolHintsForNames } from "./external-tools";
+import { getExternalToolHints } from "./external-tools";
 import { configDir } from "@exocortex/shared/paths";
 
 let _userAddendum = "";
@@ -91,8 +91,6 @@ export interface BuildSystemPromptOptions {
   toolNames?: readonly string[];
   /** Managed external tool hints can be disabled for utility/restricted sessions. */
   includeExternalToolHints?: boolean;
-  /** Restrict external manifest hints to this exact resolved allowlist. */
-  externalToolNames?: readonly string[];
   /** Session-specific behavior placed near the top of the system prompt. */
   wrapperNote?: string;
   /** Session-specific assistant identity. */
@@ -115,15 +113,11 @@ function buildPromptParts(options: BuildSystemPromptOptions & {
   const depth = options.subagentMaxDepth;
   const hasExoTool = !options.toolNames || options.toolNames.includes("exo");
   if (hasExoTool && typeof depth === "number" && Number.isInteger(depth) && depth >= 0) {
-    parts.push(depth === 0
-      ? "This turn's remaining native exo subagent depth is 0. Use exo only for your own tasks (tasks, read/stop with task_id). No delegation or unrelated administration is available."
-      : `This turn's remaining native exo subagent depth is ${depth}. A child turn may receive at most max_depth=${depth - 1}.`);
+    if (depth === 0) parts.push("This is a depth-zero turn: do not delegate further. Administration uses direct daemon IPC.");
   }
 
   if (options.includeExternalHints) {
-    const externalHints = options.externalToolNames === undefined
-      ? getExternalToolHints()
-      : getExternalToolHintsForNames(options.externalToolNames);
+    const externalHints = getExternalToolHints();
     if (externalHints) parts.push("# External tools\n" + externalHints);
   }
 

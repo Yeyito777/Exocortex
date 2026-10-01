@@ -135,13 +135,13 @@ directories when they need different labels or colors.
 - **display**: TUI styling for bash sub-command matching (label + hex color).
 
 External tools intentionally remain ordinary executables invoked through the
-native Bash tool. Their manifest name selects which system-prompt instructions
-a conversation receives, while the existing Bash summary matcher supplies the
+native shell tool. Every tool-capable conversation, including subagents, receives
+all installed manifest hints, while the existing shell summary matcher supplies the
 tool-specific TUI label and color. Do not add a generic native external-tool
 broker or wrapper: that extra call layer bypasses the established manifest
-presentation and makes every tool render as the wrapper instead. Because Bash
-is a broad host capability, per-conversation external-tool selection is a
-discovery/delegation policy rather than a hard process sandbox.
+presentation and makes every tool render as the wrapper instead. Shell execution
+is a broad host capability, not a process sandbox. Per-conversation tool selection
+is retired; parents cannot select or remove their children's tools.
 
 ## Primary opaque payloads
 

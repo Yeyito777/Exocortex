@@ -1,118 +1,45 @@
-import { EFFORT_LEVELS, MAX_EXO_SUBAGENT_DEPTH } from "../messages";
+import { repoRoot } from "@exocortex/shared/paths";
 import type { Tool } from "./types";
 
-export const EXO_ACTIONS = ["send", "list", "tasks", "read", "stop", "commands"] as const;
-export type ExoAction = typeof EXO_ACTIONS[number];
-
-const string = (description: string) => ({ type: "string", description });
-const boolean = (description: string) => ({ type: "boolean", description });
-const choice = (values: string[], description: string) => ({ type: "string", enum: values, description });
-const strings = (description: string) => ({ type: "array", items: { type: "string" }, description });
-const conversation_id = string("Exact conversation ID.");
-const task_id = string("Exact active task ID from tasks.");
-const text = string("Task or message text.");
-const title = string("Short title for a new subagent (at most 6 words / 60 characters).");
-const model = string("Omit for the user's /default-model. Size aliases astra/sol/terra/luna always select their latest available generation. Older explicit IDs require legacy:true; commands/models lists current choices.");
-const legacy = boolean("Explicitly allow older delegation models. Default false; use only when the user explicitly requests a legacy model.");
-const allow_edits = boolean("For a new subagent: enable shell and file edits. Default false; not a sandbox.");
-const mode = choice(["auto", "detach", "wait"], "Default auto: starts and notifies on completion. wait returns the result. Busy targets queue for next turn.");
-const max_depth = { type: "integer", minimum: 0, maximum: MAX_EXO_SUBAGENT_DEPTH, description: "Additional delegation generations. New subagents and bounded callers default to 0. Existing targets preserve their current setting when an unbounded caller omits this. Explicit values cannot exceed the caller's remaining depth minus one." };
-const page = {
-  limit: { type: "integer", minimum: 1, maximum: 200, description: "Page size; list/tasks cap at 100, read at 200." },
-  offset: { type: "integer", minimum: 0, description: "Page offset; for history, skip this many newest entries." },
-};
-const listing = {
-  ...page,
-  query: string("Case-insensitive filter."),
-  scope: choice(["children", "all"], "list defaults all; tasks/jobs default children (own work)."),
-};
-const send = {
-  text, title, conversation_id, model, legacy, allow_edits, mode, max_depth,
-  provider: choice(["openai", "deepseek", "opencode", "openrouter"], "Provider override."),
-  effort: choice([...EFFORT_LEVELS], "Reasoning effort; uses /default-model effort for the configured default, otherwise the selected model's default. Normalized for the model."),
-  internal_tools: strings("Exact internal tools. Defaults research tools; cannot combine with allow_edits. For existing targets both tool lists are required and persistently replace policy; self must retain exo."),
-  external_tools: strings("Exact external CLI tools; defaults none. Enables shell; tool selection is not a sandbox."),
-  notify_parent: boolean("Notify on detached completion; defaults true."),
-  full: boolean("Include thinking/tool results in wait output; defaults false."),
-};
-
-/** Full argument reference, returned on demand rather than injected every turn. */
-export const EXO_OPERATION_SCHEMAS: Record<string, Record<string, unknown>> = Object.fromEntries(
-  Object.entries({
-    send,
-    list: listing,
-    tasks: { ...listing, conversation_id, kind: choice(["all", "subagent", "background", "chrono"], "Active task kind; defaults all.") },
-    read: { conversation_id, task_id, ...page, full: boolean("Include thinking and tool results."), view: choice(["history", "info"], "Conversation view; defaults history.") },
-    stop: { conversation_id, task_id },
-    jobs: listing,
-    queue: { conversation_id, text, max_depth, legacy, timing: choice(["next-turn", "message-end"], "Defaults next-turn.") },
-  }).map(([name, properties]) => [name, { type: "object", properties, additionalProperties: false }]),
-);
-
-function brief(value: unknown, max = 100): string {
-  const line = typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
-  return line.length > max ? `${line.slice(0, max - 1)}…` : line;
-}
+export const EXO_MODELS = ["sol fast", "astra"] as const;
 
 export const exo: Tool = {
   name: "exo",
-  description: "Delegate and manage work in this daemon: send, list conversations, tasks, read results, stop work. Advanced administration and option reference are under commands.",
+  description: "Start a subagent or abort a conversation.",
   systemHint: [
-    "Almost never use subagents. Do implementation, research, review, and testing yourself by default; a large task, parallelizable modules, or a request for end-to-end testing is not a reason to delegate. Use subagents when explicitly requested, or only in rare cases with a compelling benefit that cannot reasonably be obtained by doing the work yourself. Never delegate against a user's prohibition, through this tool or another mechanism.",
-    "Subagents start in their own isolated conversation workspace; include the target absolute directory and necessary context. Tool selection is not a sandbox.",
-    "When delegation is warranted, omit model and effort to use the user's /default-model, not the parent model or a cheaper substitute. Size aliases astra/sol/terra/luna always resolve to their latest available generation; implicit outdated size defaults are upgraded without changing the saved setting. Older explicit IDs require legacy:true, only when the user explicitly requests legacy. Do not downgrade substantial implementation, architecture, or correctness-sensitive work from Astra to Sol.",
-    "Use commands/models for current choices. Use send with a short title and task context; allow_edits:true enables coding tools. Child depth defaults to 0; results notify you automatically. Use tasks to inspect active work, read for results, stop with one exact task_id or conversation_id. Depth-zero agents may only inspect/stop their own tasks.",
-    "For advanced options use {action:'commands', command:'help', args:{command:'send'}} (or another action/command). Pass options in args. commands without a command lists administration; notifications manages subscriptions.",
+    "Almost never use subagents: do implementation, research, review, and testing yourself; size, parallelism, and end-to-end testing are not reasons to delegate. Delegate only on explicit request or for a rare compelling benefit unavailable by working yourself. Never bypass a user's prohibition.",
+    "Children have their own workspace and the same tools; include the absolute target directory and context. They cannot delegate further. Default: sol fast; use Astra for substantial implementation, architecture, or correctness-sensitive work. Completion notifies you unless detach:true.",
+    `For administration (inspect/create conversations, history, tasks, folders), send commands directly to this daemon; read ${repoRoot()}/docs/daemon-ipc.md and ${repoRoot()}/shared/src/protocol.ts first.`,
   ].join("\n"),
   inputSchema: {
     type: "object",
     properties: {
-      action: choice([...EXO_ACTIONS], "send delegates/messages; list finds conversations; tasks shows active work; read gets history/info; stop cancels one target; commands discovers advanced operations."),
-      text,
-      title,
-      conversation_id: string("send: omit to create a subagent. read: omit for current conversation. stop: exact conversation to abort, never current."),
-      task_id: string("read: exact active task ID. stop: exact background-task ID from tasks. Do not combine with conversation_id."),
-      model,
-      legacy,
-      allow_edits,
-      mode,
-      command: string("For commands: omit to list; help with args.command for reference; models for model IDs; otherwise a discovered command."),
-      args: { type: "object", additionalProperties: true, description: "Optional advanced action options or command arguments. Discover with commands/help; ordinary calls need none." },
+      subagent: { type: "string", description: "Task prompt; include the target absolute directory and necessary context." },
+      args: {
+        type: "object",
+        properties: {
+          detach: { type: "boolean", description: "Do not notify the parent on completion. Default false." },
+          model: { type: "string", enum: [...EXO_MODELS], description: "Default sol fast. Only sol fast or astra." },
+        },
+        additionalProperties: false,
+      },
+      abort: { type: "string", description: "Exact conversation ID to abort; never the current conversation." },
     },
-    required: ["action"],
     additionalProperties: false,
   },
   parallelSafety: "exclusive",
-  parallelSafetyForInput(input) {
-    if (["list", "jobs", "tasks", "read", "info", "history"].includes(String(input.action))) return "safe";
-    if (input.action !== "commands") return "exclusive";
-    const command = String(input.command ?? "ls").toLowerCase();
-    if (["ls", "list", "help", "models", "jobs", "status", "stats"].includes(command)) return "safe";
-    const args = input.args as Record<string, unknown> | undefined;
-    const operation = args?.operation;
-    if ((command === "task" && operation === "info")
-      || (command === "folder" && ["ls", "tree"].includes(String(operation)))
-      || (["tools", "instructions"].includes(command) && operation === "get")
-      || (command === "notifications" && ["sources", "list"].includes(String(operation)))) return "safe";
-    return "exclusive";
-  },
   defaultTimeoutMs: null,
   watchdogExempt: true,
   display: { label: "Exocortex", color: "#1d9bf0" },
   summarize(input) {
-    const args = input.args && typeof input.args === "object" ? input.args as Record<string, unknown> : {};
-    const action = brief(input.action, 20) || "invalid action";
-    const target = action === "send" || action === "queue"
-      ? brief(input.title ?? args.title ?? input.text ?? args.text)
-      : action === "commands"
-        ? brief(input.command ?? "list")
-        : brief(input.task_id ?? args.task_id ?? input.conversation_id ?? args.conversation_id);
-    return { label: "Exocortex", detail: target ? `${action}: ${target}` : action };
+    const value = input.subagent ?? input.abort;
+    const text = typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+    return { label: "Exocortex", detail: `${input.subagent !== undefined ? "subagent" : "abort"}: ${text.slice(0, 100)}` };
   },
   async execute(input, context, signal) {
     if (!context?.exocortex) {
       return { output: "The native Exocortex runtime is unavailable in this tool context.", isError: true };
     }
-    return await context.exocortex.execute(input, context.conversationId, signal, context.subagentMaxDepth);
+    return context.exocortex.execute(input, context.conversationId, signal, context.subagentMaxDepth);
   },
 };

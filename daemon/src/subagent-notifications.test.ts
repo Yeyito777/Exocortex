@@ -5,6 +5,7 @@ import { DEFAULT_EFFORT } from "./messages";
 import {
   acknowledgeSubagentNotification,
   beginPendingSubagentNotification,
+  buildSubagentNotificationText,
   hasSubagentNotificationBeenDelivered,
   listPendingSubagentNotifications,
   pendingSubagentNotificationsPath,
@@ -30,6 +31,16 @@ afterEach(() => {
 });
 
 describe("durable subagent notifications", () => {
+  test("full-details guidance points to direct daemon IPC, not removed native actions", () => {
+    const parentId = conversation("hint-parent");
+    const childId = conversation("hint-child");
+    const record = beginPendingSubagentNotification({ convId: parentId }, childId, "task", 42, 0);
+    const text = buildSubagentNotificationText(record, { ok: true, blocks: [{ type: "text", text: "done" }] });
+    expect(text).toContain(childId);
+    expect(text).toContain("load_conversation/load_conversation_history");
+    expect(text).toContain("shared/src/protocol.ts");
+    expect(text).not.toContain("action=read");
+  });
   test("persists the parent target before the child runs and reloads it", () => {
     const parentConvId = conversation("parent");
     const childConvId = conversation("child");

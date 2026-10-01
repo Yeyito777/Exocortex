@@ -22,11 +22,8 @@ import { buildSystemPrompt } from "./system";
 import { createConversationWorkspace, ensureConversationWorkspace } from "./workspace-service";
 import { scopedSubagentPromptOptions } from "./subagent-policy";
 import { assertDelegationModel, parseRequestedModel, resolveDelegationModel } from "./delegation-models";
-import { getToolDisplayInfo } from "./tools/registry";
-import { ensureConversationCustomTools } from "./tools/custom-tools";
+import { getConversationToolNames, getToolDisplayInfo } from "./tools/registry";
 import { getExternalToolStyles, manageExternalToolDaemon } from "./external-tools";
-import { applyToolPolicyMutation, buildToolPolicySnapshot, resolveConversationToolPolicy } from "./tool-policy";
-import { clearDraftToolPolicy, getDraftToolPolicy, hasDraftWorkspaceReservation, reserveDraftWorkspace, setDraftToolPolicy, takeDraftToolPolicy } from "./draft-tool-policy";
 import { EFFORT_LEVELS, SUBAGENTS_FOLDER_NAME } from "./messages";
 import { getDefaultProvider, getDefaultModel, getProvider, getProviders, isKnownModel, allowsCustomModels, refreshProviders, normalizeEffort, supportsEffort, getSupportedEfforts, supportsFastMode, supportsImageInputs } from "./providers/registry";
 import { transcribeAudioBytes } from "./transcription";
@@ -41,14 +38,13 @@ import { getTokenStatsSnapshot } from "./token-stats";
 import {
   broadcastConversationHistoryUpdated,
   broadcastConversationInstructionsUpdated,
-  broadcastConversationToolPolicyUpdated,
   broadcastConversationUpdated,
   broadcastFolderInstructionsUpdated,
 } from "./conversation-events";
 import { applyUserGoalAction, setGoal as setConversationGoal } from "./goals";
 import { createExocortexToolRuntime } from "./exocortex-tool-runtime";
 import type { BackgroundTaskCompletion, ExocortexToolRuntime } from "./tools/types";
-import { getSubagentParentConversationId, setSubagentActive } from "./conversation-activity";
+import { getSubagentParentConversationId, listActiveConversationTasks, setSubagentActive, stopBackgroundTask } from "./conversation-activity";
 import {
   acknowledgeSubagentNotification,
   beginPendingSubagentNotification,
@@ -524,11 +520,6 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       maybeStartAutoTitleGeneration(convId);
       return turn;
     },
-    stopCall: async (convId) => {
-      const callId = delegatedCallByConversation.get(convId);
-      if (callId) await callManager.stopFromAgent(convId, callId);
-      else await callManager.stopFromAgent(convId);
-    },
     beginParentNotification: notificationRuntime.begin,
     completeParentNotification: notificationRuntime.complete,
     cannotStart: (provider) => {
@@ -618,7 +609,6 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           queuedMessages: queued.length > 0 ? queued : undefined,
           goal: summary?.goal ?? null,
           btw,
-          toolPolicySnapshot: convStore.getToolPolicySnapshot(page.convId) ?? undefined,
         }, cachedEntryHashes), metrics !== undefined);
         if (metrics) {
           metrics.snapshot = snapshotDiagnostics ?? {};
@@ -669,7 +659,6 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       queuedMessages: queued.length > 0 ? queued : undefined,
       goal: summary?.goal ?? null,
       btw,
-      toolPolicySnapshot: convStore.getToolPolicySnapshot(data.convId) ?? undefined,
     }, cachedEntryHashes), metrics !== undefined);
     if (metrics) {
       metrics.snapshot = snapshotDiagnostics ?? {};
@@ -1348,8 +1337,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         while (!cmd.convId && (convStore.hasConversation(id) || convStore.hasDeletedConversation(id))) {
           id = convStore.generateId();
         }
-        if (cmd.draftToolPolicyId !== undefined && (!cmd.draftToolPolicyId || !cmd.convId || cmd.draftToolPolicyId !== cmd.convId)) {
-          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: id, message: "draftToolPolicyId must match the client-supplied conversation id" });
+        if (cmd.draftToolPolicyId !== undefined) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: id, message: "Tool selection is retired." });
           break;
         }
         if (cmd.convId && (!isSafeClientConversationId(cmd.convId)
@@ -1440,8 +1429,6 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           break;
         }
         const folderId = subagentFolder?.id ?? cmd.folderId ?? null;
-        const adoptDraftWorkspace = cmd.draftToolPolicyId !== undefined
-          && hasDraftWorkspaceReservation(cmd.draftToolPolicyId);
         if (initialMessage) {
           convStore.createWithInitialUserMessage(
             id,
@@ -1454,14 +1441,9 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
               ? { ...initialMessage, automation: { kind: "exo_send" } }
               : initialMessage,
             folderId,
-            adoptDraftWorkspace,
           );
         } else {
-          convStore.create(id, provider, model, title, effort, fastMode, folderId, adoptDraftWorkspace);
-        }
-        if (cmd.draftToolPolicyId !== undefined) {
-          const draftPolicy = takeDraftToolPolicy(cmd.draftToolPolicyId);
-          if (draftPolicy) convStore.setToolPolicy(id, draftPolicy);
+          convStore.create(id, provider, model, title, effort, fastMode, folderId);
         }
         if (cmd.subagent) {
           convStore.setSubagentPolicy(id, {
@@ -2527,13 +2509,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           break;
         }
 
-        if (cmd.draftToolPolicyId !== undefined && (
-          !cmd.draftToolPolicyId
-          || cmd.source !== "global-idle"
-          || cmd.target !== "new-conversation"
-          || cmd.draftToolPolicyId !== cmd.convId
-        )) {
-          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "draftToolPolicyId is only valid for its matching new-conversation queue target" });
+        if (cmd.draftToolPolicyId !== undefined) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Tool selection is retired." });
           break;
         }
 
@@ -2606,13 +2583,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             effort,
             fastMode,
             folderId,
-            cmd.draftToolPolicyId !== undefined
-              && hasDraftWorkspaceReservation(cmd.draftToolPolicyId),
           );
-          if (cmd.draftToolPolicyId !== undefined) {
-            const draftPolicy = takeDraftToolPolicy(cmd.draftToolPolicyId);
-            if (draftPolicy) convStore.setToolPolicy(cmd.convId, draftPolicy);
-          }
           server.sendTo(client, {
             type: "conversation_created",
             reqId: cmd.reqId,
@@ -2974,12 +2945,6 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           ? scopedSubagentPromptOptions(conversation, subagentMaxDepth)
           : null;
         const workingDirectory = conversation ? ensureConversationWorkspace(conversation.id) : undefined;
-        if (conversation) {
-          await ensureConversationCustomTools(conversation, getToolDisplayInfo().map((tool) => tool.name), workingDirectory);
-        }
-        const resolvedToolPolicy = conversation
-          ? resolveConversationToolPolicy(conversation, subagentMaxDepth)
-          : null;
         server.sendTo(client, {
           type: "system_prompt",
           reqId: cmd.reqId,
@@ -2989,139 +2954,48 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             workingDirectory,
             subagentMaxDepth,
             ...(scopedPromptOptions ?? {}),
-            ...(resolvedToolPolicy ? {
-              toolNames: resolvedToolPolicy.internalToolNames,
-              includeExternalToolHints: true,
-              externalToolNames: resolvedToolPolicy.externalToolNames,
-            } : {}),
+            toolNames: getConversationToolNames(conversation?.provider),
           }),
         });
         break;
       }
 
-      case "get_tool_policy": {
-        const conversation = convStore.get(cmd.convId);
-        if (!conversation) {
-          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Conversation not found" });
+      case "list_tasks": {
+        if (cmd.convId !== undefined && !convStore.getSummary(cmd.convId)) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: "Conversation not found." });
           break;
         }
-        server.sendTo(client, {
-          type: "tool_policy",
-          reqId: cmd.reqId,
-          convId: cmd.convId,
-          snapshot: buildToolPolicySnapshot(conversation),
-          changed: false,
-        });
+        server.sendTo(client, { type: "tasks_list", reqId: cmd.reqId, tasks: listActiveConversationTasks(cmd.convId) });
         break;
       }
 
-      case "get_draft_tool_policy": {
-        if (!isSafeClientConversationId(cmd.draftId)
-            || convStore.hasConversation(cmd.draftId)
-            || convStore.hasDeletedConversation(cmd.draftId)) {
-          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.draftId, message: "Invalid or already-used draft tool policy id" });
+      case "stop_task": {
+        const task = listActiveConversationTasks(cmd.convId).find(task => task.id === cmd.taskId);
+        if (!task || task.ownerConversationId !== cmd.convId) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: "Exact managed task not found for this conversation." });
           break;
         }
-        server.sendTo(client, {
-          type: "tool_policy",
-          reqId: cmd.reqId,
-          convId: cmd.draftId,
-          snapshot: buildToolPolicySnapshot({
-            id: cmd.draftId,
-            subagentPolicy: null,
-            subagentMaxDepth: null,
-            toolPolicy: getDraftToolPolicy(cmd.draftId),
-          }),
-          changed: false,
-        });
-        break;
-      }
-
-      case "set_draft_tool_policy": {
-        if (!isSafeClientConversationId(cmd.draftId)
-            || convStore.hasConversation(cmd.draftId)
-            || convStore.hasDeletedConversation(cmd.draftId)) {
-          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.draftId, message: "Invalid or already-used draft tool policy id" });
+        if (task.kind !== "background") {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: "Use abort for subagent conversations or Chrono cancellation for schedules." });
           break;
         }
-        try {
-          const draftConversation = {
-            id: cmd.draftId,
-            subagentPolicy: null,
-            subagentMaxDepth: null,
-            toolPolicy: getDraftToolPolicy(cmd.draftId),
-          };
-          const workingDirectory = hasDraftWorkspaceReservation(cmd.draftId)
-            ? ensureConversationWorkspace(cmd.draftId)
-            : createConversationWorkspace(cmd.draftId);
-          reserveDraftWorkspace(cmd.draftId);
-          const policy = await applyToolPolicyMutation(
-            draftConversation,
-            cmd.mutation,
-            workingDirectory,
-          );
-          if (policy) setDraftToolPolicy(cmd.draftId, policy);
-          else await clearDraftToolPolicy(cmd.draftId);
-          server.sendTo(client, {
-            type: "tool_policy",
-            reqId: cmd.reqId,
-            convId: cmd.draftId,
-            snapshot: buildToolPolicySnapshot({ ...draftConversation, toolPolicy: policy }),
-            changed: true,
-          });
-        } catch (error) {
-          server.sendTo(client, {
-            type: "error",
-            reqId: cmd.reqId,
-            convId: cmd.draftId,
-            message: error instanceof Error ? error.message : String(error),
-          });
+        const stopped = stopBackgroundTask(cmd.taskId, true);
+        if (stopped.result !== "stopping" && stopped.result !== "already-stopping") {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Cannot stop task: ${stopped.result}.` });
+          break;
         }
+        broadcastConversationUpdated(server, cmd.convId);
+        server.sendTo(client, { type: "task_stopped", reqId: cmd.reqId, convId: cmd.convId, taskId: cmd.taskId, status: "stopping" });
         break;
       }
 
-      case "clear_draft_tool_policy": {
-        // A delayed client abandonment must never dispose tools after this
-        // reserved id has already become a real conversation.
-        if (!convStore.hasConversation(cmd.draftId)) await clearDraftToolPolicy(cmd.draftId);
-        server.sendTo(client, { type: "ack", reqId: cmd.reqId });
-        break;
-      }
-
+      // Explicit errors for old clients; no policy runtime is loaded.
+      case "get_tool_policy":
+      case "get_draft_tool_policy":
+      case "set_draft_tool_policy":
+      case "clear_draft_tool_policy":
       case "set_tool_policy": {
-        const conversation = convStore.get(cmd.convId);
-        if (!conversation) {
-          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Conversation not found" });
-          break;
-        }
-        if (convStore.isStreaming(cmd.convId)) {
-          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Cannot change tool availability while the conversation is streaming." });
-          break;
-        }
-        try {
-          const policy = await applyToolPolicyMutation(
-            conversation,
-            cmd.mutation,
-            ensureConversationWorkspace(conversation.id),
-          );
-          convStore.setToolPolicy(cmd.convId, policy);
-          const updated = convStore.get(cmd.convId)!;
-          server.sendTo(client, {
-            type: "tool_policy",
-            reqId: cmd.reqId,
-            convId: cmd.convId,
-            snapshot: buildToolPolicySnapshot(updated),
-            changed: true,
-          });
-          broadcastConversationToolPolicyUpdated(server, cmd.convId);
-        } catch (error) {
-          server.sendTo(client, {
-            type: "error",
-            reqId: cmd.reqId,
-            convId: cmd.convId,
-            message: error instanceof Error ? error.message : String(error),
-          });
-        }
+        server.sendTo(client, { type: "error", reqId: cmd.reqId, message: "Tool selection is retired." });
         break;
       }
 

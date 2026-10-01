@@ -15,19 +15,13 @@ function call(name: string, id = name): ApiToolCall {
 }
 
 describe("tool execution scheduling", () => {
-  test("batches exo inspection while serializing mutations and waits", () => {
+  test("serializes subagent creation and aborts", () => {
     const calls = [
-      { id: "1", name: "exo", input: { action: "tasks" } },
-      { id: "2", name: "exo", input: { action: "commands", command: "task", args: { operation: "info", task_id: "task" } } },
-      { id: "3", name: "exo", input: { action: "stop_task", task_id: "task" } },
-      { id: "4", name: "exo", input: { action: "commands", command: "tools", args: { operation: "set" } } },
-      { id: "5", name: "exo", input: { action: "send", mode: "wait" } },
-      { id: "6", name: "exo", input: { action: "commands", command: "unknown" } },
+      { id: "1", name: "exo", input: { subagent: "task" } },
+      { id: "2", name: "exo", input: { abort: "child" } },
     ];
     expect(planToolExecutionBatches(calls).map(batch => ({ mode: batch.mode, ids: batch.calls.map(call => call.id) }))).toEqual([
-      { mode: "parallel", ids: ["1", "2"] },
-      { mode: "exclusive", ids: ["3"] }, { mode: "exclusive", ids: ["4"] },
-      { mode: "exclusive", ids: ["5"] }, { mode: "exclusive", ids: ["6"] },
+      { mode: "exclusive", ids: ["1"] }, { mode: "exclusive", ids: ["2"] },
     ]);
   });
   test("marks independently isolated tools as parallel-safe and potentially conflicting tools as exclusive", () => {

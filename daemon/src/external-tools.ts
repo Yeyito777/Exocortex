@@ -173,15 +173,6 @@ export function getExternalToolHints(loadedTools: readonly LoadedTool[] = tools)
   return hints.length > 0 ? hints.join("\n") : "";
 }
 
-/** Aggregated system hints restricted to one resolved conversation policy. */
-export function getExternalToolHintsForNames(
-  allowedNames: readonly string[],
-  loadedTools: readonly LoadedTool[] = tools,
-): string {
-  const allowed = new Set(allowedNames);
-  return getExternalToolHints(loadedTools.filter((tool) => allowed.has(tool.manifest.name)));
-}
-
 /**
  * Display styles for TUI Bash sub-command matching.
  *

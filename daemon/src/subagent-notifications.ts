@@ -233,7 +233,7 @@ export function buildSubagentNotificationText(
     capText(body, record.maxChars ?? 6000),
     "",
     "Full details:",
-    `Use exo with action=read, conversation_id=${record.childConvId}, args={full:true}.`,
+    `Inspect conversation ${record.childConvId} through daemon IPC (load_conversation/load_conversation_history); read shared/src/protocol.ts for fields.`,
   ].join("\n");
 }
 

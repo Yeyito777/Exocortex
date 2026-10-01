@@ -7,7 +7,7 @@ Exocortex's runtime, not an embedded Codex daemon or a claim of sandbox parity.
 OpenAI conversations expose `exec_command`, `write_stdin`, raw `apply_patch`, and
 `view_image`. Other providers retain `bash`, `read`, `write`, `edit`, `patch`,
 `glob`, and `grep`. Exocortex orchestration, Chrono, browsing, and external CLIs
-remain available according to the conversation's tool policy. The `goal`
+remain available in the standard provider profile, including on subagents. The `goal`
 internal tool reports goal status (`show`, `complete`, `blocked`); creation,
 editing, pausing, resuming, and clearing are user-controlled. See [Goals](goals.md).
 
@@ -39,7 +39,7 @@ Yield time is not a process timeout. The current hard process limit is one hour;
 output capture is capped at 16 MiB per Codex session with explicit truncation.
 
 Yielded commands register ordinary Exocortex background tasks: Chrono can wait
-on the returned `task_id` and `exo stop` with `task_id` can stop them. Unobserved completion
+on the returned `task_id`; direct daemon IPC `list_tasks` / `stop_task` inspects/stops them. Unobserved completion
 uses existing notifications; completion collected by an active tool call does
 not inject a duplicate notification. Logs and detached task records participate
 in recovery. Live stdin handles do **not** survive daemon restarts: recovered
@@ -51,18 +51,12 @@ retained. Per-tool safety denylists are checked for both the new tool name and
 its legacy counterpart. This is still local execution with daemon permissions,
 not a Codex OS sandbox or a new approval system.
 
-## Policy compatibility
+## Provider profiles
 
-Legacy stored policies translate when switching providers: `bash` grants the
-two exec primitives, `patch` grants `apply_patch`, and `read` grants `view_image`.
-The reverse mapping supports switching back. Goal is filtered from all policies.
-
-**Restricted policies are conservative.** Read/glob/grep authority alone never
-silently grants an arbitrary shell; edit/write authority alone never grants all
-patch operations. Consequently an OpenAI research-only subagent without shell
-permission cannot read/search text files through these primitives. Explicitly
-delegate `exec_command` when that authority is intended, and `apply_patch` for
-general mutation. New native primitive names are reserved against custom tools.
+Every tool-capable conversation receives the standard tools for its provider
+and all installed external hints. Provider switching adapts the coding
+primitives, not parent-selected permissions. Stored selections and
+conversation-scoped custom modules are archived and inert.
 
 The legacy exact-edit implementation no longer uses whole-file Unicode/fuzzy
 normalization. It rejects non-exact text (aside from matching line endings),
@@ -72,7 +66,7 @@ spans, including mixed line endings.
 ## Validation
 
 Regression suites cover both provider wire formats, raw Unicode patch replay,
-ordinary JSON calls, provider/policy switching, goal status tool permissions,
+ordinary JSON calls, provider switching, goal status reporting,
 absolute/relative patch adapters, exact-edit preservation, pipe and PTY stdin,
 conversation ownership, output budgeting, cancellation, background records,
 and external CLI display. Worktree testing additionally uses `xenv` + `exotest`

@@ -19,7 +19,7 @@ Current schema version: **10**
 
 One live or soft-deleted row per conversation. It stores provider/model/effort,
 fast mode, timestamps, context total, marked/pinned/order/folder/title, goal,
-subagent policy/depth, exact per-conversation `tool_policy_json`,
+subagent identity/depth, inert historical `tool_policy_json`,
 `storage_generation`, summary message counts, compact display count, and
 `deleted_at`.
 

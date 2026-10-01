@@ -58,7 +58,6 @@ import { handleToolsAvailable } from "./events/provider";
 import { hydratePendingAIFromSnapshot } from "./events/pending-ai";
 import type { DaemonActions } from "./events/types";
 import { handleCallTranscript, reconcileCallTranscriptDrafts } from "./events/call";
-import { formatToolPolicySnapshot } from "./commands/tools";
 import { handleBtwEvent } from "./btw/events";
 
 export type { DaemonActions } from "./events/types";
@@ -76,8 +75,7 @@ export function handleEvent(
 ): void {
   // Early exit for conversation-scoped events targeting a different conversation.
   if (CONV_SCOPED.has(event.type) && "convId" in event && event.convId !== state.convId) {
-    const targetsDraftPolicy = event.type === "tool_policy" && event.convId === state.pendingToolPolicyDraftId;
-    if (!targetsDraftPolicy) return;
+    return;
   }
 
   observeStreamSeq(event, state);
@@ -528,10 +526,7 @@ export function handleEvent(
       break;
 
     case "tool_policy":
-      state.activeToolPolicy = event.snapshot;
-      // Passive daemon broadcasts have no reqId and only refresh the task
-      // manager. Interactive `/tools` requests retain their textual response.
-      if (event.reqId) pushSystemMessage(state, formatToolPolicySnapshot(event.snapshot, event.changed));
+      // Ignore legacy policy events from older daemons.
       break;
 
     case "system_instructions_updated":

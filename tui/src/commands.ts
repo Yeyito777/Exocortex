@@ -31,7 +31,6 @@ import { TIME_COMMAND } from "./commands/time";
 import { TOKENS_COMMAND } from "./commands/tokens";
 import { TRIM_COMMAND } from "./commands/trim";
 import { USAGE_COMMAND } from "./commands/usage";
-import { TOOLS_COMMAND } from "./commands/tools";
 import type { CommandResult, CompletionItem, SlashCommand } from "./commands/types";
 import { applyInlineCommands, previewInlineCommands } from "./inlineeffort";
 
@@ -61,7 +60,6 @@ const commands: SlashCommand[] = [
   GOAL_COMMAND,
   CONVO_COMMAND,
   TOKENS_COMMAND,
-  TOOLS_COMMAND,
   USAGE_COMMAND,
   TIME_COMMAND,
   THEME_COMMAND,

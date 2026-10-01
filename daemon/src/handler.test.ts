@@ -14,6 +14,7 @@ import { clearProviderAuth, saveProviderAuth } from "./store";
 import { resetExternalNotificationsForTest } from "./external-notifications";
 import { listPendingExternalNotificationSoftWakes, resetExternalNotificationSoftWakesForTest } from "./external-notification-soft-wakes";
 import { getExocortexToolRuntime } from "./exocortex-tool-runtime";
+import { resetConversationActivityForTest, setBackgroundTaskActive } from "./conversation-activity";
 
 interface TestAssistantOutcome {
   ok: boolean;
@@ -313,7 +314,7 @@ describe("handler sidebar patches", () => {
 describe("handler conversation tool policy", () => {
   afterEach(cleanupIds);
 
-  test("shows, mutates, and resets daemon-owned policy", async () => {
+  test("rejects retired tool-selection commands without mutating or broadcasting", async () => {
     const id = mkId("tool-policy");
     create(id, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
     const sent: Array<Record<string, any>> = [];
@@ -326,7 +327,7 @@ describe("handler conversation tool policy", () => {
     const handle = createHandler(server as never);
 
     await handle({} as never, { type: "get_tool_policy", reqId: "show", convId: id });
-    expect(sent.at(-1)).toMatchObject({ type: "tool_policy", reqId: "show", changed: false, snapshot: { source: "default" } });
+    expect(sent.at(-1)).toMatchObject({ type: "error", reqId: "show", message: "Tool selection is retired." });
 
     await handle({} as never, {
       type: "set_tool_policy",
@@ -334,10 +335,9 @@ describe("handler conversation tool policy", () => {
       convId: id,
       mutation: { action: "disable", tools: [{ kind: "internal", name: "bash" }] },
     });
-    expect(get(id)?.toolPolicy?.internal).not.toContain("bash");
-    expect(sent.at(-1)).toMatchObject({ type: "tool_policy", reqId: "disable-bash", changed: true, snapshot: { source: "explicit" } });
-    expect(broadcasted.at(-1)).toMatchObject({ type: "tool_policy", convId: id, changed: true, snapshot: { source: "explicit" } });
-    expect(broadcasted.at(-1)).not.toHaveProperty("reqId");
+    expect(get(id)?.toolPolicy).toBeFalsy();
+    expect(sent.at(-1)).toMatchObject({ type: "error", reqId: "disable-bash" });
+    expect(broadcasted).toEqual([]);
 
     await handle({} as never, {
       type: "set_tool_policy",
@@ -345,12 +345,12 @@ describe("handler conversation tool policy", () => {
       convId: id,
       mutation: { action: "reset" },
     });
-    expect(get(id)?.toolPolicy).toBeNull();
-    expect(sent.at(-1)).toMatchObject({ type: "tool_policy", reqId: "reset", changed: true, snapshot: { source: "default" } });
-    expect(broadcasted.at(-1)).toMatchObject({ type: "tool_policy", convId: id, changed: true, snapshot: { source: "default" } });
+    expect(get(id)?.toolPolicy).toBeFalsy();
+    expect(sent.at(-1)).toMatchObject({ type: "error", reqId: "reset" });
+    expect(broadcasted).toEqual([]);
   });
 
-  test("enables Exocortex through /tools after a regular delegated turn exhausted its depth", async () => {
+  test("never mutates old stored policies through retired IPC", async () => {
     const id = mkId("tool-policy-exocortex-after-delegation");
     create(id, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
     const conversation = get(id)!;
@@ -371,18 +371,15 @@ describe("handler conversation tool policy", () => {
       mutation: { action: "enable", tools: [{ kind: "internal", name: "exo" }] },
     });
 
-    expect(get(id)?.toolPolicy?.internal).toContain("exo");
+    expect(get(id)?.toolPolicy?.internal).toEqual(["read"]);
     expect(sent.at(-1)).toMatchObject({
-      type: "tool_policy",
+      type: "error",
       reqId: "enable-exocortex",
-      changed: true,
-      snapshot: {
-        internal: expect.arrayContaining([expect.objectContaining({ name: "exo", enabled: true })]),
-      },
+      message: "Tool selection is retired.",
     });
   });
 
-  test("keeps blank-draft choices ephemeral and applies them when the conversation is created", async () => {
+  test("rejects retired draft selections and their use during creation", async () => {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8).padEnd(6, "0")}`;
     IDS.push(id);
     const sent: Array<Record<string, any>> = [];
@@ -401,12 +398,9 @@ describe("handler conversation tool policy", () => {
     });
     expect(get(id)).toBeUndefined();
     expect(sent.at(-1)).toMatchObject({
-      type: "tool_policy",
-      convId: id,
-      snapshot: { internal: expect.arrayContaining([expect.objectContaining({ name: "read", enabled: false })]) },
+      type: "error",
+      message: "Tool selection is retired.",
     });
-    const draftWorkspace = conversationWorkspaceDir(id);
-    writeFileSync(join(draftWorkspace, "draft-marker.txt"), "preserved");
 
     await handle({} as never, {
       type: "new_conversation",
@@ -414,9 +408,46 @@ describe("handler conversation tool policy", () => {
       convId: id,
       draftToolPolicyId: id,
     });
-    expect(get(id)?.toolPolicy?.internal).not.toContain("read");
-    expect(readFileSync(join(draftWorkspace, "draft-marker.txt"), "utf8")).toBe("preserved");
-    expect(sent.at(-1)).toMatchObject({ type: "conversation_created", convId: id });
+    expect(get(id)).toBeUndefined();
+    expect(sent.at(-1)).toMatchObject({ type: "error", convId: id, message: "Tool selection is retired." });
+  });
+});
+
+describe("direct task-management IPC", () => {
+  afterEach(() => { resetConversationActivityForTest(); cleanupIds(); });
+  test("lists exact managed records and stops only a matching background task", async () => {
+    const convId = mkId("managed-task");
+    create(convId, "openai", "gpt-6.1-sol");
+    const stop = mock(() => true);
+    const events: Array<Record<string, any>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { events.push(event); }),
+      broadcast: mock(() => {}), sendToSubscribers: mock(() => {}), sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+    setBackgroundTaskActive(convId, "exec:exact:nonce", true, {
+      title: "test", startedAt: 1, toolName: "exec_command", pid: 1234, backgroundedAt: 1,
+      outputPath: "/tmp/task-output", cwd: "/tmp", stop,
+    });
+    await handle({} as never, { type: "list_tasks", reqId: "task-list", convId });
+    expect(events.at(-1)).toMatchObject({ type: "tasks_list", reqId: "task-list", tasks: [{
+      id: "exec:exact:nonce", ownerConversationId: convId, status: "running", pid: 1234, outputPath: "/tmp/task-output",
+    }] });
+    expect(events.at(-1)!.tasks[0]).not.toHaveProperty("stop");
+    for (const [owner, taskId] of [["missing", "exec:exact:nonce"], [convId, "1234"]]) {
+      await handle({} as never, { type: "stop_task", reqId: "bad-stop", convId: owner, taskId });
+      expect(events.at(-1)).toMatchObject({ type: "error", reqId: "bad-stop" });
+    }
+    expect(stop).not.toHaveBeenCalled();
+    for (let i = 0; i < 2; i++) {
+      await handle({} as never, { type: "stop_task", reqId: "exact-stop", convId, taskId: "exec:exact:nonce" });
+      expect(events.at(-1)).toMatchObject({ type: "task_stopped", taskId: "exec:exact:nonce", status: "stopping" });
+    }
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(stop).toHaveBeenCalledWith(true);
+    await handle({} as never, { type: "list_tasks", reqId: "missing-owner", convId: "missing" });
+    expect(events.at(-1)).toMatchObject({ type: "error", reqId: "missing-owner" });
   });
 });
 
@@ -2030,7 +2061,7 @@ describe("handler start_call", () => {
     ]));
   });
 
-  test("lets the owning agent hang up through the discovered Exocortex command", async () => {
+  test("rejects removed native hangup administration", async () => {
     const convId = mkId("call-tool-hangup");
     create(convId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
     const server = {
@@ -2052,8 +2083,8 @@ describe("handler start_call", () => {
       args: {},
     }, convId);
 
-    expect(result.isError).toBe(false);
-    expect(callManager.stopFromAgent).toHaveBeenCalledWith(convId);
+    expect(result.isError).toBe(true);
+    expect(callManager.stopFromAgent).not.toHaveBeenCalled();
   });
 
   test("creates empty-draft calls as OpenAI conversations even when the draft selected another provider", async () => {
@@ -2502,15 +2533,8 @@ describe("handler load_conversation late-join streaming snapshots", () => {
       historyStartUserIndex: 2,
       historyTotalEntries: 14,
       hasOlderHistory: true,
-      toolPolicySnapshot: {
-        convId,
-        source: "explicit",
-        internal: expect.arrayContaining([
-          expect.objectContaining({ name: "read", enabled: true }),
-          expect.objectContaining({ name: "apply_patch", enabled: false }),
-        ]),
-      },
     });
+    expect(sent[0]).not.toHaveProperty("toolPolicySnapshot");
     expect((sent[0].entries as Array<{ type: string; text?: string }>)
       .filter((entry) => entry.type === "user").map((entry) => entry.text))
       .toEqual(["u3", "u4", "u5", "u6", "u7"]);

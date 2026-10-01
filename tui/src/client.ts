@@ -9,7 +9,7 @@ import { connect } from "net";
 import { existsSync } from "fs";
 import { randomUUID } from "crypto";
 import { hostname } from "os";
-import type { Command, DaemonShutdownMode, Event, GoalAction, MoveSidebarItemsOptions, OpenAILoginMethod, QueuedCommandInvocation, QueueTiming, QueueWaitTarget, ToolPolicyMutation, TrimMode, SidebarItemRef } from "./protocol";
+import type { Command, DaemonShutdownMode, Event, GoalAction, MoveSidebarItemsOptions, OpenAILoginMethod, QueuedCommandInvocation, QueueTiming, QueueWaitTarget, TrimMode, SidebarItemRef } from "./protocol";
 import type { ProviderId, ModelId, EffortLevel, ImageAttachment, TokenUsageSource } from "./messages";
 import { socketPath, isWindows } from "@exocortex/shared/paths";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
@@ -409,13 +409,12 @@ export class DaemonClient {
     _legacyGoalCompletable?: boolean,
     titleContext?: string,
     startCall?: boolean,
-    draftToolPolicyId?: string,
+    _retiredDraftToolPolicyId?: string,
     goalMaxTurns?: number,
   ): void {
     this.send({
       type: "new_conversation",
       ...(convId ? { convId } : {}),
-      ...(draftToolPolicyId ? { draftToolPolicyId } : {}),
       provider, model, title, titleContext, effort, fastMode, initialMessage, folderId,
       goalObjective, goalMaxTurns, startCall,
     });
@@ -429,7 +428,6 @@ export class DaemonClient {
     folderId?: string | null,
     voice?: RealtimeVoice,
     convId?: string,
-    draftToolPolicyId?: string,
   ): void {
     this.send({
       type: "new_conversation",
@@ -441,7 +439,6 @@ export class DaemonClient {
       folderId,
       startCall: true,
       ...(voice ? { callVoice: voice } : {}),
-      ...(draftToolPolicyId ? { draftToolPolicyId } : {}),
     });
   }
 
@@ -842,7 +839,6 @@ export class DaemonClient {
       fastMode?: FastMode;
       folderId?: string | null;
       waitTarget?: QueueWaitTarget;
-      draftToolPolicyId?: string;
     } = {},
   ): void {
     this.send({ type: "queue_message", convId, text, timing, ...(images?.length ? { images } : {}), ...options });
@@ -967,26 +963,6 @@ export class DaemonClient {
     this.send({ type: "get_system_prompt", convId });
   }
 
-  getToolPolicy(convId: string): void {
-    this.send({ type: "get_tool_policy", reqId: this.requestId("tools"), convId });
-  }
-
-  setToolPolicy(convId: string, mutation: ToolPolicyMutation): void {
-    this.send({ type: "set_tool_policy", reqId: this.requestId("tools"), convId, mutation });
-  }
-
-  getDraftToolPolicy(draftId: string): void {
-    this.send({ type: "get_draft_tool_policy", reqId: this.requestId("tools"), draftId });
-  }
-
-  setDraftToolPolicy(draftId: string, mutation: ToolPolicyMutation): void {
-    this.send({ type: "set_draft_tool_policy", reqId: this.requestId("tools"), draftId, mutation });
-  }
-
-  clearDraftToolPolicy(draftId: string): void {
-    this.send({ type: "clear_draft_tool_policy", draftId });
-  }
-
   llmComplete(
     system: string, userText: string,
     onSuccess: LlmCompleteCallback, onError?: LlmErrorCallback,
@@ -1010,10 +986,6 @@ export class DaemonClient {
   }
 
   // ── Internal ────────────────────────────────────────────────────
-
-  private requestId(prefix: string): string {
-    return `${prefix}_${++this.nextReqId}_${Date.now()}`;
-  }
 
   private socketMissingError(): Error {
     return new Error(

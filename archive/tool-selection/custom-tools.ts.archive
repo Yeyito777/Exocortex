@@ -6,6 +6,7 @@
  * while executable instances remain daemon-local and are recreated lazily.
  */
 
+// Archived conversation-scoped custom tools.
 import { createHash } from "crypto";
 import { mkdir, realpath, stat, writeFile } from "fs/promises";
 import { homedir } from "os";

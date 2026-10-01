@@ -9,7 +9,7 @@ import type { FastMode } from "@exocortex/shared/messages";
 
 import type { Conversation, ProviderId, ModelId, EffortLevel, ConversationSummary, FolderSummary, SidebarItemRef, StoredMessage, Block, MessageMetadata, PersistedConversationSummary, PersistedFolderSummary, ConversationGoal, ConversationGoalStatus, SubagentPolicy, ConversationToolPolicy, UserMessageAutomation } from "./messages";
 import { CONTEXT_COMPACTION_FINISHED_KIND, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, REALTIME_CALL_STATUS_KIND, REALTIME_TRANSCRIPT_KIND, cachedValidatedHistoryPrefixHashBeforeMessage, createConversation, countConversationMessages, createMessageMetadata, createModelVisibleSystemNotice, createStoredUserContextCheckpoint, createStoredUserMessage, historyPrefixHash, isRealUserMessage, isReplayHistoryMessage, isToolResultMessage, isValidActiveContextCached, rememberValidatedActiveContext, rewindActiveContextToHistoryCount, rewindValidatedActiveContextToHistoryCount, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation, type StoredUserContextCheckpoint, validatedActiveContextCompactionHistoryCount } from "./messages";
-import type { ImageAttachment, ToolPolicySnapshot } from "@exocortex/shared/messages";
+import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { MoveSidebarItemsOptions, RealtimeCallSpeakerAttribution, SidebarItemOrderUpdate, TrimMode, ToolOutputInfo } from "./protocol";
 import { trimConversationInPlace, type TrimConversationResult } from "./conversation-trim";
 import { buildDisplayData, collectToolOutputs, type ConversationDisplayData } from "./display";
@@ -27,8 +27,6 @@ import { contextMessageChars } from "./context-token-attribution";
 import { getConversationExternalIntegrations } from "./external-notifications";
 import * as displayPageStore from "./display-page-store";
 import { scheduleDisplayIndex } from "./display-index-backfill";
-import { buildToolPolicySnapshot } from "./tool-policy";
-import { clearConversationCustomTools } from "./tools/custom-tools";
 
 // Re-export streaming functions so existing `convStore.*` call sites keep working
 export {
@@ -598,6 +596,7 @@ export function setSubagentPolicy(id: string, policy: SubagentPolicy): boolean {
   return true;
 }
 
+/** Legacy persistence helper only; selections no longer affect tools. */
 export function setToolPolicy(id: string, policy: ConversationToolPolicy | null): boolean {
   const conv = get(id);
   if (!conv) return false;
@@ -612,11 +611,6 @@ export function setToolPolicy(id: string, policy: ConversationToolPolicy | null)
       })),
     } : {}),
   } : null;
-  if (!policy) {
-    void clearConversationCustomTools(id).catch((error) => {
-      log("warn", `conversations: failed to dispose custom tools for ${id}: ${error instanceof Error ? error.message : String(error)}`);
-    });
-  }
   markDirty(id);
   flush(id);
   return true;
@@ -829,9 +823,6 @@ export function removeMany(ids: string[], recordUndo = true): string[] {
     trashWorkspaceAfterConversation(id);
     displayPageStore.removeDisplayProjection(id);
     unreadChanged = removeConversationState(id) || unreadChanged;
-    void clearConversationCustomTools(id).catch((error) => {
-      log("warn", `conversations: failed to dispose custom tools for deleted conversation ${id}: ${error instanceof Error ? error.message : String(error)}`);
-    });
   }
   if (unreadChanged) saveUnreadState();
   saveSummaryIndex();
@@ -854,9 +845,6 @@ function deleteConversationWithoutUndo(id: string): boolean {
   trashWorkspaceAfterConversation(id);
   displayPageStore.removeDisplayProjection(id);
   const unreadChanged = removeConversationState(id);
-  void clearConversationCustomTools(id).catch((error) => {
-    log("warn", `conversations: failed to dispose custom tools for deleted conversation ${id}: ${error instanceof Error ? error.message : String(error)}`);
-  });
   if (unreadChanged) saveUnreadState();
   saveSummaryIndex();
   return true;
@@ -2388,16 +2376,6 @@ export function getSummary(id: string): ConversationSummary | null {
     tasks: getConversationTasks(id),
     integrations: getConversationExternalIntegrations(id),
   };
-}
-
-/**
- * Resolve the focused conversation's tool policy without forcing SQLite to load
- * its transcript. This projection is sent on conversation open and refreshed
- * whenever a policy mutation is broadcast.
- */
-export function getToolPolicySnapshot(id: string): ToolPolicySnapshot | null {
-  const policyState = conversations.get(id) ?? persistence.loadToolPolicyState(id);
-  return policyState ? buildToolPolicySnapshot(policyState) : null;
 }
 
 /** Read durable/indexed metadata without loading or rescanning a full transcript. */

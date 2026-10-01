@@ -9,7 +9,6 @@ import {
   buildDaemonSpawnSpec,
   getDaemonStatePaths,
   getExternalToolHints,
-  getExternalToolHintsForNames,
   getExternalToolWatchTargets,
   getToolReloadKey,
   isLikelyManagedDaemonPid,
@@ -261,13 +260,12 @@ describe("getExternalToolHints", () => {
     ].join("\n"));
   });
 
-  test("projects only the selected manifest hints", () => {
+  test("projects every installed manifest hint", () => {
     const loaded = [
       makeTool({ manifest: { name: "gmail", systemHint: "Gmail hint" } }),
       makeTool({ manifest: { name: "image", systemHint: "Image hint" } }),
     ];
-    expect(getExternalToolHintsForNames(["gmail"], loaded)).toBe("## gmail\nGmail hint");
-    expect(getExternalToolHintsForNames([], loaded)).toBe("");
+    expect(getExternalToolHints(loaded)).toBe("## gmail\nGmail hint\n## image\nImage hint");
   });
 
   test("resolves Exocortex source directory placeholders when building hints", () => {

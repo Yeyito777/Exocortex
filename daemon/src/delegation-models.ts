@@ -69,7 +69,7 @@ export function parseRequestedModel(providerValue: unknown, modelValue: unknown)
   if (provider === "openai" && model && OPENAI_SIZES.some(size => size === model!.toLowerCase())) {
     const alias = model.toLowerCase();
     model = latestSizeModel(alias, getProvider("openai")!.models.map(candidate => candidate.id));
-    if (!model) throw new Error(`Model size "${alias}" is unavailable. Use commands/models for available models.`);
+    if (!model) throw new Error(`Model size "${alias}" is unavailable. Inspect the provider catalog for available models.`);
   }
   if (provider && model) model = canonicalizeModel(provider, model);
   return { provider, model };
@@ -87,7 +87,7 @@ export function assertDelegationModel(provider: ProviderId, model: string, legac
   if (!legacy && isLegacyDelegationModel(provider, model, models)) {
     const size = sizedModel.exec(model)?.[2];
     const latest = size ? latestSizeModel(size, models) : undefined;
-    throw new Error(`Legacy delegation model "${model}" requires explicit legacy:true (CLI: --legacy). ${latest ? `Use ${size} or ${latest} instead.` : "Use commands/models for current choices."}`);
+    throw new Error(`Legacy delegation model "${model}" requires explicit legacy:true (CLI: --legacy). ${latest ? `Use ${size} or ${latest} instead.` : "Inspect the provider catalog for current choices."}`);
   }
 }
 

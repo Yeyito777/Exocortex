@@ -38,7 +38,7 @@ import { getActiveBackgroundTaskCount, stopAllBackgroundTasks, waitForBackground
 import { pruneExternalNotificationSubscriptions } from "./external-notifications";
 import { startExternalNotificationSoftWakeService, stopExternalNotificationSoftWakeService } from "./external-notification-soft-wakes";
 import { startDisplayIndexBackfill } from "./display-index-backfill";
-import { broadcastConversationToolPolicyUpdated, broadcastConversationUpdated } from "./conversation-events";
+import { broadcastConversationUpdated } from "./conversation-events";
 import { BackgroundTaskRecovery } from "./background-task-recovery";
 import { runIpcProxy } from "./ipc-proxy";
 
@@ -284,12 +284,6 @@ async function startDaemon(): Promise<void> {
     initExternalTools(() => {
       // Broadcast updated tool styles to all connected clients
       broadcastToolsAvailable();
-      // Explicit policies auto-enable manifests that were not installed when the
-      // policy was written. Refresh every lightweight policy projection so open
-      // conversations show the new tool as enabled immediately.
-      for (const conversation of convStore.listSummaries()) {
-        broadcastConversationToolPolicyUpdated(server, conversation.id);
-      }
     });
   }
   profileMark("external_tools_initialized", { externalToolCount: isWindows ? 0 : getExternalToolCount(), supervisedDaemonCount: isWindows ? 0 : getSupervisedDaemonCount() });
