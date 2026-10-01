@@ -595,52 +595,6 @@ export interface ToolDisplayInfo {
   color: string;    // hex color "#d19a66"
 }
 
-// ── Retired tool policy wire types (older-client compatibility only) ─
-
-export type ToolPolicyKind = "internal" | "external";
-
-export interface ToolPolicyRef {
-  kind: ToolPolicyKind;
-  name: string;
-}
-
-export type ToolPolicyMutation =
-  | {
-      action: "enable" | "disable";
-      tools: ToolPolicyRef[];
-      /** TypeScript/JavaScript tool modules to attach or detach from this conversation. */
-      modulePaths?: string[];
-    }
-  | { action: "reset" };
-
-export interface ToolPolicyAvailability {
-  name: string;
-  label: string;
-  enabled: boolean;
-  color?: string;
-  /** Present for a dynamically loaded conversation-scoped internal tool. */
-  modulePath?: string;
-}
-
-export interface ToolPolicyModuleAvailability {
-  path: string;
-  digest: string;
-  tools: string[];
-}
-
-/** @deprecated Retired `/tools` wire metadata; ignored by current clients. */
-export interface ToolPolicySnapshot {
-  convId: string;
-  scoped: boolean;
-  source: "default" | "explicit";
-  internal: ToolPolicyAvailability[];
-  external: ToolPolicyAvailability[];
-  /** Dynamically loaded internal-tool modules attached to this conversation. */
-  modules?: ToolPolicyModuleAvailability[];
-  /** Bash or command-capable scheduling makes denials non-sandbox boundaries. */
-  shellWarning: boolean;
-}
-
 /**
  * Bash command style — maps a command prefix to TUI display properties.
  * Global external-tool styles are sent alongside ToolDisplayInfo; local styles

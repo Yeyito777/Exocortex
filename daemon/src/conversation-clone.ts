@@ -55,6 +55,6 @@ export function clonedConversationValue(
     sortOrder: target.sortOrder,
     folderId: source.folderId ?? null,
     title: target.title,
-    toolPolicy: source.toolPolicy ? structuredClone(source.toolPolicy) : null,
+    toolPolicy: source.toolPolicy == null ? null : structuredClone(source.toolPolicy),
   };
 }

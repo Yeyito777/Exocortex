@@ -47,7 +47,7 @@ import type {
 import type { StoredDisplayHistoryPage } from "./display-page-store";
 import * as legacy from "./json-persistence";
 import { log } from "./log";
-import type { ConversationRepository, ConversationToolPolicyState } from "./conversation-repository";
+import type { ConversationRepository } from "./conversation-repository";
 import type { ConversationCloneTarget } from "./conversation-clone";
 import { pagedUserFingerprint, storedMessageFingerprint as messageFingerprint } from "./message-fingerprint";
 
@@ -1058,20 +1058,6 @@ export class SqliteConversationStore implements ConversationRepository {
   getSummary(id: string): PersistedConversationSummary | null {
     const row = this.row(id);
     return row ? this.summaryFromRow(row) : null;
-  }
-
-  /** Read only the compact fields needed to resolve current tool availability. */
-  loadToolPolicyState(
-    id: string,
-  ): ConversationToolPolicyState | null {
-    const row = this.row(id);
-    if (!row) return null;
-    return {
-      id: row.id,
-      subagentMaxDepth: row.subagent_max_depth,
-      subagentPolicy: parseOptional(row.subagent_policy_json),
-      toolPolicy: parseOptional(row.tool_policy_json),
-    };
   }
 
   getConversationFileStat(id: string): { fileSize: number; fileMtimeMs: number } {

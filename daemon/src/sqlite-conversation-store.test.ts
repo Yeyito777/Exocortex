@@ -151,7 +151,7 @@ describe("SQLite transaction fault boundaries", () => {
       allowEdits: false,
       parentSystemInstructions: "parent constraints",
     };
-    source.toolPolicy = { internal: ["read"], external: ["google"] };
+    source.toolPolicy = false; // Opaque historical payloads are not capability configuration.
     source.messages.push(
       { role: "user", content: "first", metadata: null },
       {
@@ -236,6 +236,7 @@ describe("SQLite transaction fault boundaries", () => {
     expect(store.popUndoEntry()).toEqual({ type: "conversation_removed", id: target.id });
 
     const expected = clonedConversationValue(source, target);
+    expect(expected.toolPolicy).toEqual(source.toolPolicy);
     const cloned = store.load(target.id)!;
     expect(cloned.messages).toEqual(expected.messages);
     expect(cloned.activeContext).toEqual(expected.activeContext);
@@ -719,7 +720,7 @@ describe("SQLite maintenance", () => {
     store.close();
   });
 
-  test("round-trips exact conversation tool policy", () => {
+  test("retains opaque legacy tool metadata through saves and exports", () => {
     const { path } = pathFor("tool-policy");
     const store = new SqliteConversationStore({ path });
     const conv = createConversation("tool-policy", "openai", "gpt-5.6-sol");
@@ -727,15 +728,15 @@ describe("SQLite maintenance", () => {
       internal: ["read", "write"],
       external: ["google"],
       knownExternal: ["google", "duo"],
+      customToolModules: [{ path: "/old/module.ts", digest: "old-digest", tools: [] }],
+      unknownLegacyField: { keep: true },
     };
     store.save(conv);
     expect(store.load(conv.id)?.toolPolicy).toEqual(conv.toolPolicy);
-    expect(store.loadToolPolicyState(conv.id)).toEqual({
-      id: conv.id,
-      subagentMaxDepth: null,
-      subagentPolicy: null,
-      toolPolicy: conv.toolPolicy,
-    });
+    const loaded = store.load(conv.id)!;
+    loaded.title = "Renamed without changing legacy metadata";
+    store.save(loaded);
+    expect(store.exportConversation(conv.id)?.toolPolicy).toEqual(conv.toolPolicy);
     expect(store.db.query<{ tool_policy_json: string | null }, [string]>("SELECT tool_policy_json FROM conversations WHERE id=?").get(conv.id)?.tool_policy_json).toBe(JSON.stringify(conv.toolPolicy));
     store.close();
   });

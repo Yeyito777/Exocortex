@@ -14,11 +14,6 @@ import type {
 } from "./json-persistence";
 import type { ConversationCloneTarget } from "./conversation-clone";
 
-export type ConversationToolPolicyState = Pick<
-  Conversation,
-  "id" | "subagentMaxDepth" | "subagentPolicy" | "toolPolicy"
->;
-
 /**
  * Backend-independent durable conversation contract.
  *
@@ -36,8 +31,6 @@ export interface ConversationRepository {
   listSummaries(): PersistedConversationSummary[];
   loadConversationIndex(): LoadConversationIndexResult;
   getSummary(id: string): PersistedConversationSummary | null;
-  /** Capability projection; normalized stores must not materialize message rows. */
-  loadToolPolicyState(id: string): ConversationToolPolicyState | null;
   /** Clone canonical state and its undo record without inheriting execution/automation state. */
   cloneConversation(sourceId: string, target: ConversationCloneTarget): PersistedConversationSummary | null;
   save(conv: Conversation, options?: { forceMessages?: boolean }): void;

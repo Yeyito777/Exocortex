@@ -964,16 +964,8 @@ function fromFile(file: ConversationFile, validateActiveContext = true): Convers
       parentSystemInstructions: typeof policy.parentSystemInstructions === "string" ? policy.parentSystemInstructions : "",
     };
   }
-  if (file.toolPolicy && typeof file.toolPolicy === "object") {
-    const policy = file.toolPolicy as unknown as Record<string, unknown>;
-    if (Array.isArray(policy.internal) && policy.internal.every((name) => typeof name === "string")
-        && Array.isArray(policy.external) && policy.external.every((name) => typeof name === "string")) {
-      conv.toolPolicy = {
-        internal: [...new Set(policy.internal as string[])],
-        external: [...new Set(policy.external as string[])],
-      };
-    }
-  }
+  // Retain old selection/module payloads verbatim for rollback/export, not execution.
+  if (file.toolPolicy != null) conv.toolPolicy = file.toolPolicy;
   if (file.folderId != null) conv.folderId = file.folderId;
   if (file.goal != null) conv.goal = normalizeConversationGoal(file.goal);
   const generation = isNonNegativeSafeInteger(file.storageGeneration) && file.storageGeneration > 0

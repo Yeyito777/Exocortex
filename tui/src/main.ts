@@ -945,9 +945,6 @@ function handleSubmit(): void {
               undefined,
               undefined,
               undefined,
-              undefined,
-              undefined,
-              undefined,
               cmdResult.maxTurns,
             );
           } else {

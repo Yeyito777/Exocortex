@@ -4,7 +4,7 @@ import { conversationWorkspaceDir } from "@exocortex/shared/paths";
 import { localMacroEnvironment } from "@exocortex/shared/macro-environment";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { appendMessages, consumeGoalContinuationAfterStream, create, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, get, getQueuedMessageById, getQueuedMessages, getSummary, listQueuedMessages, pushGlobalIdleQueuedMessage, remove, removeQueuedMessageById, setGoal, setToolPolicy, updateGoalStatus } from "./conversations";
+import { appendMessages, consumeGoalContinuationAfterStream, create, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, get, getQueuedMessageById, getQueuedMessages, getSummary, listQueuedMessages, pushGlobalIdleQueuedMessage, remove, removeQueuedMessageById, setGoal, updateGoalStatus } from "./conversations";
 import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, defaultEffortForModelId } from "./messages";
 import { appendToStreamingBlock, clearActiveJob, clearCurrentStreamingBlocks, initStreamingState, replaceCurrentStreamingBlocks, setActiveJob, setStreamingCommittedMessageCount } from "./streaming";
 import { beginPendingSubagentNotification, listPendingSubagentNotifications, removePendingSubagentNotificationsForConversation } from "./subagent-notifications";
@@ -371,7 +371,7 @@ describe("handler conversation tool policy", () => {
       mutation: { action: "enable", tools: [{ kind: "internal", name: "exo" }] },
     });
 
-    expect(get(id)?.toolPolicy?.internal).toEqual(["read"]);
+    expect(get(id)?.toolPolicy).toEqual({ internal: ["read"], external: [] });
     expect(sent.at(-1)).toMatchObject({
       type: "error",
       reqId: "enable-exocortex",
@@ -2506,7 +2506,6 @@ describe("handler load_conversation late-join streaming snapshots", () => {
     const convId = mkId("paged-history");
     create(convId, "openai", "gpt-5.4");
     const conv = get(convId)!;
-    setToolPolicy(convId, { internal: ["read"], external: [] });
     for (let turn = 1; turn <= 7; turn++) {
       conv.messages.push({ role: "user", content: `u${turn}`, metadata: null });
       conv.messages.push({ role: "assistant", content: `a${turn}`, metadata: null });
@@ -2534,7 +2533,6 @@ describe("handler load_conversation late-join streaming snapshots", () => {
       historyTotalEntries: 14,
       hasOlderHistory: true,
     });
-    expect(sent[0]).not.toHaveProperty("toolPolicySnapshot");
     expect((sent[0].entries as Array<{ type: string; text?: string }>)
       .filter((entry) => entry.type === "user").map((entry) => entry.text))
       .toEqual(["u3", "u4", "u5", "u6", "u7"]);

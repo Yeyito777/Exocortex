@@ -4,6 +4,7 @@ import { buildDiskSyncAssistantDiffPayload } from "./events/disk-sync-diagnostic
 import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, createPendingAI, type ConversationSummary } from "./messages";
 import { createInitialState, isStreaming, canInterrupt } from "./state";
 import { prepareConversationOpen } from "./conversationscroll";
+import type { Event } from "./protocol";
 
 const daemon: DaemonActions = {
   subscribe() {},
@@ -11,15 +12,6 @@ const daemon: DaemonActions = {
   sendMessage() {},
   setSystemInstructions() {},
   loadToolOutputs() {},
-};
-
-const disabledToolPolicy = {
-  convId: "conv-tools",
-  scoped: false,
-  source: "explicit" as const,
-  internal: [{ name: "write", label: "Write", enabled: false }],
-  external: [{ name: "gmail", label: "Gmail", enabled: true }],
-  shellWarning: false,
 };
 
 describe("auth browser opener", () => {
@@ -94,48 +86,24 @@ describe("auth device code instructions", () => {
   });
 });
 
-describe("tool policy activity state", () => {
-  test("ignores old policy snapshots for a blank conversation draft", () => {
+describe("older-daemon compatibility", () => {
+  test("ignores retired events and extra snapshot fields without policy-specific UI state", () => {
     const state = createInitialState();
+    state.convId = "conv-tools";
 
-    handleEvent({
-      type: "tool_policy",
-      reqId: "draft-tools-request",
-      convId: "conv-tools",
-      snapshot: disabledToolPolicy,
-      changed: true,
-    }, state, daemon);
-
-    expect(state).not.toHaveProperty("activeToolPolicy");
-  });
-
-  test("does not print retired tool policy events", () => {
-    const state = createInitialState();
-
-    handleEvent({
-      type: "tool_policy",
-      reqId: "tools-draft-request",
-      convId: "draft-tools",
-      snapshot: {
-        convId: "draft-tools",
-        scoped: false,
-        source: "default",
-        internal: [{ name: "read", label: "Read", enabled: true }],
-        external: [{ name: "gmail", label: "Gmail", enabled: true }],
-        shellWarning: false,
-      },
-      changed: false,
-    }, state, daemon);
-
-    expect(state.messages).toEqual([]);
-  });
-
-  test("opening another conversation does not require a draft policy cleanup", () => {
-    const state = createInitialState();
-
+    // Old wire frames are deliberately no longer part of the current Event schema.
+    for (const reqId of [undefined, "tools-request"]) {
+      handleEvent({
+        type: "tool_policy",
+        reqId,
+        convId: state.convId,
+        snapshot: { internal: [], external: [] },
+        changed: true,
+      } as unknown as Event, state, daemon);
+    }
     handleEvent({
       type: "conversation_loaded",
-      convId: "existing-conversation",
+      convId: "conv-tools",
       provider: "openai",
       model: "gpt-5.5",
       effort: "high",
@@ -143,59 +111,10 @@ describe("tool policy activity state", () => {
       entries: [],
       contextTokens: 0,
       toolOutputsIncluded: false,
-    }, state, daemon);
+      toolPolicySnapshot: { internal: [], external: [] },
+    } as unknown as Event, state, daemon);
 
     expect(state).not.toHaveProperty("pendingToolPolicyDraftId");
-    expect(state).not.toHaveProperty("activeToolPolicy");
-  });
-
-  test("does not hydrate legacy policy metadata when a conversation opens", () => {
-    const state = createInitialState();
-    state.convId = "conv-tools";
-
-    handleEvent({
-      type: "conversation_loaded",
-      convId: "conv-tools",
-      provider: "openai",
-      model: "gpt-5.5",
-      effort: "high",
-      fastMode: false,
-      entries: [],
-      contextTokens: 0,
-      toolOutputsIncluded: false,
-      toolPolicySnapshot: disabledToolPolicy,
-    }, state, daemon);
-
-    expect(state).not.toHaveProperty("activeToolPolicy");
-  });
-
-  test("ignores passive legacy refreshes without adding chat noise", () => {
-    const state = createInitialState();
-    state.convId = "conv-tools";
-
-    handleEvent({
-      type: "tool_policy",
-      convId: "conv-tools",
-      snapshot: disabledToolPolicy,
-      changed: true,
-    }, state, daemon);
-
-    expect(state).not.toHaveProperty("activeToolPolicy");
-    expect(state.messages).toEqual([]);
-  });
-
-  test("ignores obsolete interactive tool-policy output", () => {
-    const state = createInitialState();
-    state.convId = "conv-tools";
-
-    handleEvent({
-      type: "tool_policy",
-      reqId: "tools-request",
-      convId: "conv-tools",
-      snapshot: disabledToolPolicy,
-      changed: false,
-    }, state, daemon);
-
     expect(state).not.toHaveProperty("activeToolPolicy");
     expect(state.messages).toEqual([]);
   });

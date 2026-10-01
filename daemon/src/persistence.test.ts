@@ -751,6 +751,9 @@ describe("save / load round-trip", () => {
       toolPolicy: {
         internal: ["read", "glob", "grep", "browse", "write", "edit", "patch"],
         external: ["google"],
+        knownExternal: ["google", "duo"],
+        customToolModules: [{ path: "/old/module.ts", digest: "old-digest", tools: [] }],
+        unknownLegacyField: { keep: true },
       },
     };
 
@@ -790,7 +793,7 @@ describe("save / load round-trip", () => {
     });
   });
 
-  test("migrates v18 conversations to the default tool policy", () => {
+  test("loads v18 conversations without inventing retired tool metadata", () => {
     const id = mkId("legacy-tool-policy");
     writeFixture(id, {
       version: 18,

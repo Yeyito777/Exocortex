@@ -144,36 +144,6 @@ export interface SubagentPolicy {
   parentSystemInstructions: string;
 }
 
-/** Archived custom-module descriptors, preserved only for storage compatibility. */
-export interface ConversationCustomToolModule {
-  /** Canonical absolute module path. */
-  path: string;
-  /** SHA-256 of the module's bundled local source closure when it was enabled. */
-  digest: string;
-  /** Optional stable toolset identifier exported by the module. */
-  id?: string;
-  /** Persisted display metadata supports policy inspection before lazy reload. */
-  tools: Array<{
-    name: string;
-    label: string;
-    color: string;
-  }>;
-}
-
-/** Archived selections; never loaded as executable capability configuration. */
-export interface ConversationToolPolicy {
-  internal: string[];
-  external: string[];
-  /**
-   * External manifests known when this explicit selection was last written.
-   * Retained for storage compatibility/inventory evidence only; explicit
-   * selections never acquire newly installed tools automatically.
-   */
-  knownExternal?: string[];
-  /** Trusted internal-tool modules attached only to this conversation. */
-  customToolModules?: ConversationCustomToolModule[];
-}
-
 export interface Conversation {
   id: string;
   provider: ProviderId;
@@ -204,8 +174,8 @@ export interface Conversation {
   subagentMaxDepth?: number | null;
   /** Worker identity and inherited parent constraints, not tool restrictions. */
   subagentPolicy?: SubagentPolicy | null;
-  /** Archived historical data; ignored by the model/executor surface. */
-  toolPolicy?: ConversationToolPolicy | null;
+  /** Opaque historical payload for lossless storage/export, never interpreted as capabilities. */
+  toolPolicy?: unknown;
 }
 
 /**

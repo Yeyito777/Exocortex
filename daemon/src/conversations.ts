@@ -7,7 +7,7 @@ import type { FastMode } from "@exocortex/shared/messages";
  * In-flight stream tracking lives in streaming.ts.
  */
 
-import type { Conversation, ProviderId, ModelId, EffortLevel, ConversationSummary, FolderSummary, SidebarItemRef, StoredMessage, Block, MessageMetadata, PersistedConversationSummary, PersistedFolderSummary, ConversationGoal, ConversationGoalStatus, SubagentPolicy, ConversationToolPolicy, UserMessageAutomation } from "./messages";
+import type { Conversation, ProviderId, ModelId, EffortLevel, ConversationSummary, FolderSummary, SidebarItemRef, StoredMessage, Block, MessageMetadata, PersistedConversationSummary, PersistedFolderSummary, ConversationGoal, ConversationGoalStatus, SubagentPolicy, UserMessageAutomation } from "./messages";
 import { CONTEXT_COMPACTION_FINISHED_KIND, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, REALTIME_CALL_STATUS_KIND, REALTIME_TRANSCRIPT_KIND, cachedValidatedHistoryPrefixHashBeforeMessage, createConversation, countConversationMessages, createMessageMetadata, createModelVisibleSystemNotice, createStoredUserContextCheckpoint, createStoredUserMessage, historyPrefixHash, isRealUserMessage, isReplayHistoryMessage, isToolResultMessage, isValidActiveContextCached, rememberValidatedActiveContext, rewindActiveContextToHistoryCount, rewindValidatedActiveContextToHistoryCount, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation, type StoredUserContextCheckpoint, validatedActiveContextCompactionHistoryCount } from "./messages";
 import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { MoveSidebarItemsOptions, RealtimeCallSpeakerAttribution, SidebarItemOrderUpdate, TrimMode, ToolOutputInfo } from "./protocol";
@@ -591,26 +591,6 @@ export function setSubagentPolicy(id: string, policy: SubagentPolicy): boolean {
     allowEdits: policy.allowEdits === true,
     parentSystemInstructions: policy.parentSystemInstructions.trim(),
   };
-  markDirty(id);
-  flush(id);
-  return true;
-}
-
-/** Legacy persistence helper only; selections no longer affect tools. */
-export function setToolPolicy(id: string, policy: ConversationToolPolicy | null): boolean {
-  const conv = get(id);
-  if (!conv) return false;
-  conv.toolPolicy = policy ? {
-    internal: [...new Set(policy.internal)],
-    external: [...new Set(policy.external)],
-    ...(policy.knownExternal ? { knownExternal: [...new Set(policy.knownExternal)] } : {}),
-    ...(policy.customToolModules?.length ? {
-      customToolModules: policy.customToolModules.map((module) => ({
-        ...module,
-        tools: module.tools.map((tool) => ({ ...tool })),
-      })),
-    } : {}),
-  } : null;
   markDirty(id);
   flush(id);
   return true;
