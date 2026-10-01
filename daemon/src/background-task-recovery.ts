@@ -211,7 +211,10 @@ export class BackgroundTaskRecovery {
       return;
     }
 
+    // Codex exec sessions use polling, including after a daemon restart. Keep
+    // catalog/waiter updates above, without converting recovery into a model wake.
     if (completion
+        && completion.toolName !== "exec_command"
         && !isBackgroundTaskNotificationSuppressed(recordPath)
         && !this.hasDeliveredCompletion(record.ownerConversationId, record.taskId)) {
       this.callbacks.onComplete(record.ownerConversationId, completion);
