@@ -10,7 +10,8 @@ import { fastModeServiceTier, isFastMode, type FastMode } from "@exocortex/share
 
 import { log } from "./log";
 import { isSqliteConversationStore } from "./persistence";
-import { scheduleConversationPrewarm } from "./conversation-loader";
+import { scheduleConversationPrewarm,loadToolOutputsOffThread } from "./conversation-loader";
+import { ConversationIntegrityError } from "./checkpoint-tail-integrity";
 import { localMacroEnvironment } from "@exocortex/shared/macro-environment";
 import { getDaemonUpdateStatus } from "./update-status";
 import { encodeHistoryDelta } from "@exocortex/shared/history-delta";
@@ -1190,7 +1191,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       });
       return;
     }
-    switch (cmd.type) {
+    try { switch (cmd.type) {
 
       // ── Connection/bootstrap commands ──────────────────────────────
 
@@ -2808,7 +2809,15 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           break;
         }
         const loadStartedAt = PERFORMANCE_PROFILING_ENABLED ? performance.now() : 0;
-        const outputs = convStore.getToolOutputs(cmd.convId, cmd.toolCallIds);
+        let outputs;
+        try {
+          outputs=isSqliteConversationStore()
+            ? await loadToolOutputsOffThread(cmd.convId,cmd.toolCallIds)
+            : convStore.getToolOutputs(cmd.convId,cmd.toolCallIds);
+        } catch(error) {
+          server.sendTo(client,{type:"error",reqId:cmd.reqId,convId:cmd.convId,message:`Could not load verified archive output: ${error instanceof Error?error.message:String(error)}`});
+          break;
+        }
         const loadMs = PERFORMANCE_PROFILING_ENABLED ? performance.now() - loadStartedAt : 0;
         if (!outputs) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
@@ -3290,6 +3299,13 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           message: `Unknown command: ${unknown.type}`,
         });
       }
+    } } catch(error) {
+      if(!(error instanceof ConversationIntegrityError))throw error;
+      server.sendTo(client,{
+        type:"error",reqId:"reqId" in cmd?cmd.reqId:undefined,
+        ...("convId" in cmd?{convId:cmd.convId}:{}),
+        message:`Could not load verified archive chunk: ${error.message}`,
+      });
     }
   };
 

@@ -24,7 +24,7 @@ import { DaemonServer } from "./server";
 import { createHandler } from "./handler";
 import { handleLogin } from "./cli";
 import * as convStore from "./conversations";
-import { closeConversationPersistence } from "./persistence";
+import { closeConversationPersistence, prepareConversationStoreSchema } from "./persistence";
 import { getRunningConversationIds, prepareRestartForReplay, prepareStopWithoutReplay } from "./control";
 import { clearRestartRecoveryForStop, deliverPendingSubagentNotifications, hasActiveGoalRestartMarker, prepareCatchableShutdownForReplay, prepareCatchableShutdownWithoutReplay, recoverActiveGoals, recoverInterruptedStreams } from "./restart-recovery";
 import { startChronoService, stopChronoService, listChronoSchedules } from "./chrono-service";
@@ -199,6 +199,8 @@ async function startDaemon(): Promise<void> {
     return shutdownPromise;
   };
 
+  await prepareConversationStoreSchema();
+  profileMark("conversation_schema_ready");
   commandHandler = createHandler(server, {
     requestRestart: () => { void shutdown(DAEMON_RESTART_EXIT_CODE, "client restart request"); },
   });

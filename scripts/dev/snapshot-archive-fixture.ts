@@ -20,6 +20,7 @@ store.close();
 // enable URI filenames; explicitly enable mode=ro for the attached source.
 const db = new Database(path, 2 | 64);
 db.exec("PRAGMA foreign_keys=ON");
+let needsEnrollment = false;
 try {
   const uri = pathToFileURL(resolve(source)); uri.searchParams.set("mode", "ro");
   db.query("ATTACH DATABASE ? AS original").run(uri.href);
@@ -30,6 +31,12 @@ try {
     for (const table of ["messages", "tool_outputs", "active_contexts", "display_entries", "unwind_receipts"]) {
       db.query(`INSERT INTO main.${table} SELECT * FROM original.${table} WHERE conversation_id=?`).run(id);
     }
+    const catalog = db.query("SELECT 1 FROM original.sqlite_master WHERE type='table' AND name='checkpoint_integrity'").get();
+    if (catalog) {
+      for (const table of ["message_integrity", "checkpoint_integrity", "display_integrity"]) {
+        db.query(`INSERT INTO main.${table} SELECT * FROM original.${table} WHERE conversation_id=?`).run(id);
+      }
+    } else needsEnrollment = true;
     db.query(`INSERT INTO main.message_blobs
       SELECT conversation_id, message_sequence, kind, ordinal, payload_json, payload_bytes, content_hash
       FROM original.resolved_message_blobs WHERE conversation_id=?`).run(id);
@@ -37,3 +44,10 @@ try {
   db.exec("DETACH DATABASE original");
   console.log(JSON.stringify({ path, id, messages: db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM messages WHERE conversation_id=?").get(id)!.n }));
 } finally { db.close(); }
+// The source may predate the checksum catalog. Only this NEW owned snapshot is
+// enrolled, after all rows have been copied; no source checksum is rewritten.
+if (needsEnrollment) {
+  const enrolled = new SqliteConversationStore({path});
+  try { enrolled.db.transaction(() => enrolled.initializeIntegrityBaselines())(); }
+  finally { enrolled.close(); }
+}

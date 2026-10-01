@@ -776,7 +776,7 @@ describe("SQLite maintenance", () => {
       { type: "conversation_removed", id: "maintenance" },
     ]);
     expect(store.diagnostics()).toMatchObject({
-      schemaVersion: 11,
+      schemaVersion: 12,
       liveConversations: 1,
       deletedConversations: 1,
       messages: 4,
@@ -1011,8 +1011,8 @@ describe("SQLite maintenance", () => {
     store.close();
   });
 
-  test("migrates every schema checkpoint through v11 transactionally", () => {
-    for (let version = 1; version <= 10; version++) {
+  test("migrates every schema checkpoint through v12 transactionally", () => {
+    for (let version = 1; version <= 11; version++) {
       const { path } = pathFor(`schema-v${version}`);
       let store = new SqliteConversationStore({ path, targetSchemaVersion: version });
       expect(store.db.query<{ version: number }, []>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(version);
@@ -1020,7 +1020,7 @@ describe("SQLite maintenance", () => {
       store.close();
 
       store = new SqliteConversationStore({ path });
-      expect(store.diagnostics().schemaVersion).toBe(11);
+      expect(store.diagnostics().schemaVersion).toBe(12);
       expect(store.integrityCheck().ok).toBe(true);
       store.close();
     }

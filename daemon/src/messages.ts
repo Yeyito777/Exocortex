@@ -103,6 +103,8 @@ export interface StoredUserContextCheckpoint {
  */
 export interface ActiveContext {
   version: 1;
+  /** Checkpoint-relative fingerprints; prior audit bytes are verified on access. */
+  historyHashMode?: "checkpoint_tail_v1";
   kind: "openai_native" | "plaintext";
   /** Provider/model that created the checkpoint (plaintext remains portable). */
   provider: ProviderId;
@@ -112,7 +114,7 @@ export interface ActiveContext {
   messages: ApiMessage[];
   /** Number of model-history messages represented by messages. */
   transcriptHistoryCount: number;
-  /** Detect transcript edits/corruption before replaying a derived checkpoint. */
+  /** Replay cursor fingerprint. Superseded archive content is checked on access. */
   transcriptPrefixHash: string;
   /**
    * Fixed transcript boundary represented by the latest compaction item itself.
@@ -767,17 +769,52 @@ function validateActiveContext(
   active: unknown,
   transcript: StoredMessage[],
 ): { active: ActiveContext; userPrefixHashes: WeakMap<StoredMessage, string> } | null {
-  if (!active || typeof active !== "object") return null;
+  if (!isValidActiveContextEnvelope(active, transcript.filter(isReplayHistoryMessage).length)) return null;
+  const value = active as ActiveContext;
+  const hasCompactionCount = value.compactionHistoryCount !== undefined;
+  const editableHistoryStart = value.compactionHistoryCount ?? archiveWindow(transcript)?.prefixHistoryCount ?? 0;
+  const userHistoryCounts = new Map<StoredMessage, number>();
+  let replayHistoryCount = 0;
+  for (const message of transcript) {
+    if (!isReplayHistoryMessage(message)) continue;
+    if (replayHistoryCount >= value.transcriptHistoryCount) break;
+    // Boundaries before an opaque compaction cannot be rewound and no longer
+    // need a historical-prefix integrity proof during checkpoint admission.
+    if (isRealUserMessage(message)
+        && replayHistoryCount >= editableHistoryStart) {
+      userHistoryCounts.set(message, replayHistoryCount);
+    }
+    replayHistoryCount += 1;
+  }
+  const prefixHashes = historyPrefixHashes(transcript, [
+    value.transcriptHistoryCount,
+    ...(hasCompactionCount ? [value.compactionHistoryCount!] : []),
+    ...userHistoryCounts.values(),
+  ]);
+  if (prefixHashes.get(value.transcriptHistoryCount) !== value.transcriptPrefixHash) return null;
+  if (hasCompactionCount && prefixHashes.get(value.compactionHistoryCount!) !== value.compactionPrefixHash) return null;
+  const userPrefixHashes = new WeakMap<StoredMessage, string>();
+  for (const [message, count] of userHistoryCounts) {
+    const hash = prefixHashes.get(count);
+    if (hash) userPrefixHashes.set(message, hash);
+  }
+  return { active: value, userPrefixHashes };
+}
+
+/** Validate the checkpoint itself, without reading its superseded audit prefix. */
+export function isValidActiveContextEnvelope(active: unknown, historyCount: number): active is ActiveContext {
+  if (!active || typeof active !== "object") return false;
   const value = active as Partial<ActiveContext>;
-  if (value.version !== 1) return null;
-  if (value.kind !== "openai_native" && value.kind !== "plaintext") return null;
+  if (value.version !== 1) return false;
+  if (value.kind !== "openai_native" && value.kind !== "plaintext") return false;
+  if (value.historyHashMode !== undefined && value.historyHashMode !== "checkpoint_tail_v1") return false;
   if (typeof value.provider !== "string" || value.provider.length === 0
-      || typeof value.model !== "string" || value.model.length === 0) return null;
+      || typeof value.model !== "string" || value.model.length === 0) return false;
   if (value.accountScope !== undefined
-      && (typeof value.accountScope !== "string" || value.accountScope.length === 0)) return null;
-  if (value.kind === "openai_native" && value.provider !== "openai") return null;
-  if (!Array.isArray(value.messages) || !validActiveReplayMessages(value.messages)) return null;
-  if (value.kind === "openai_native" && countValidNativeCompactionItems(value.messages as ApiMessage[]) !== 1) return null;
+      && (typeof value.accountScope !== "string" || value.accountScope.length === 0)) return false;
+  if (value.kind === "openai_native" && value.provider !== "openai") return false;
+  if (!Array.isArray(value.messages) || !validActiveReplayMessages(value.messages)) return false;
+  if (value.kind === "openai_native" && countValidNativeCompactionItems(value.messages as ApiMessage[]) !== 1) return false;
   if (value.kind === "plaintext") {
     const checkpointCount = (value.messages as ApiMessage[]).filter((message) =>
       message.role === "user"
@@ -786,52 +823,30 @@ function validateActiveContext(
       && typeof message.content === "string"
       && message.content.length > 0
     ).length;
-    if (checkpointCount !== 1) return null;
+    if (checkpointCount !== 1) return false;
   }
-  if (!Number.isSafeInteger(value.transcriptHistoryCount) || value.transcriptHistoryCount! < 0) return null;
-  const historyCount = transcript.filter(isReplayHistoryMessage).length;
-  if (value.transcriptHistoryCount! > historyCount) return null;
-  if (typeof value.transcriptPrefixHash !== "string" || !/^[0-9a-f]{24}$/.test(value.transcriptPrefixHash)) return null;
+  if (!Number.isSafeInteger(value.transcriptHistoryCount) || value.transcriptHistoryCount! < 0) return false;
+  if (value.transcriptHistoryCount! > historyCount) return false;
+  if (typeof value.transcriptPrefixHash !== "string" || !/^[0-9a-f]{24}$/.test(value.transcriptPrefixHash)) return false;
   const hasCompactionCount = value.compactionHistoryCount !== undefined;
   const hasCompactionHash = value.compactionPrefixHash !== undefined;
-  if (hasCompactionCount !== hasCompactionHash) return null;
+  if (hasCompactionCount !== hasCompactionHash) return false;
   if (hasCompactionCount) {
     if (!Number.isSafeInteger(value.compactionHistoryCount)
         || value.compactionHistoryCount! < 0
         || value.compactionHistoryCount! > value.transcriptHistoryCount!
         || typeof value.compactionPrefixHash !== "string"
-        || !/^[0-9a-f]{24}$/.test(value.compactionPrefixHash)) return null;
+        || !/^[0-9a-f]{24}$/.test(value.compactionPrefixHash)) return false;
     // Every replay message after the fixed compaction boundary is a suffix of
     // active.messages. Without this invariant a rewind could cut into the opaque
     // checkpoint itself.
-    if (value.transcriptHistoryCount! - value.compactionHistoryCount! > value.messages.length) return null;
+    if (value.transcriptHistoryCount! - value.compactionHistoryCount! > value.messages.length) return false;
   }
-  const userHistoryCounts = new Map<StoredMessage, number>();
-  let replayHistoryCount = 0;
-  for (const message of transcript) {
-    if (!isReplayHistoryMessage(message)) continue;
-    if (replayHistoryCount >= value.transcriptHistoryCount!) break;
-    if (isRealUserMessage(message)) userHistoryCounts.set(message, replayHistoryCount);
-    replayHistoryCount += 1;
-  }
-  const prefixHashes = historyPrefixHashes(transcript, [
-    value.transcriptHistoryCount!,
-    ...(hasCompactionCount ? [value.compactionHistoryCount!] : []),
-    ...userHistoryCounts.values(),
-  ]);
-  if (prefixHashes.get(value.transcriptHistoryCount!) !== value.transcriptPrefixHash) return null;
-  if (hasCompactionCount
-      && prefixHashes.get(value.compactionHistoryCount!) !== value.compactionPrefixHash) return null;
-  if (typeof value.windowId !== "string" || value.windowId.length === 0) return null;
-  if (!Number.isSafeInteger(value.windowNumber) || value.windowNumber! < 1) return null;
+  if (typeof value.windowId !== "string" || value.windowId.length === 0) return false;
+  if (!Number.isSafeInteger(value.windowNumber) || value.windowNumber! < 1) return false;
   if (!Number.isSafeInteger(value.compactedAt) || value.compactedAt! < 0
-      || !Number.isSafeInteger(value.compactionCount) || value.compactionCount! < 1) return null;
-  const userPrefixHashes = new WeakMap<StoredMessage, string>();
-  for (const [message, count] of userHistoryCounts) {
-    const hash = prefixHashes.get(count);
-    if (hash) userPrefixHashes.set(message, hash);
-  }
-  return { active: value as ActiveContext, userPrefixHashes };
+      || !Number.isSafeInteger(value.compactionCount) || value.compactionCount! < 1) return false;
+  return true;
 }
 
 export function isValidActiveContext(active: unknown, transcript: StoredMessage[]): active is ActiveContext {

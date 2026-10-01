@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import * as convStore from "./conversations";
 import * as persistence from "./persistence";
-import { stopConversationLoader } from "./conversation-loader";
+import { prepareArchiveHashes, stopConversationLoader } from "./conversation-loader";
 import { archiveWindow, isArchivedMessage } from "./conversation-window";
 import {
   CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT,
@@ -136,9 +136,10 @@ test("multiple queued prompts get exact preceding-prefix proofs and remain durab
     const canonical = persistence.load(id)!;
     for (const queueId of [first.id, second.id]) {
       const index = canonical.messages.findIndex(message => message.metadata?.queueEntryId === queueId);
-      const prefix = currentReplayHistoryPrefix(canonical.messages.slice(0, index));
+      const historyCount = currentReplayHistoryPrefix(canonical.messages).historyCount
+        - canonical.messages.slice(index).filter(message => message.role !== "system" && message.role !== "system_instructions" && message.metadata?.kind !== "context_warning").length;
       expect(canonical.messages[index].contextCheckpoint).toMatchObject({
-        transcriptHistoryCount: prefix.historyCount, transcriptPrefixHash: prefix.hash,
+        transcriptHistoryCount: historyCount, transcriptPrefixHash: historyPrefixHash(canonical.messages, historyCount),
       });
     }
     return response("finished after queues");
@@ -176,7 +177,10 @@ test("indexed tail unwind and explicit archive rewrite preserve canonical histor
   expect(archiveWindow(loaded!.messages)?.prefixSequence).toBe(0);
   expect(convStore.setSystemInstructions(id, "new instructions")).toBe(true);
   expect(persistence.load(id)!.messages[0].content).toBe("new instructions");
+  await prepareArchiveHashes(loaded!.messages);
+  expect(createStoredUserContextCheckpoint(loaded!)).not.toBeNull();
   expect(convStore.trimConversation(id, "messages", 1)).not.toBeNull();
+  expect(archiveWindow(loaded!.messages)).toBeNull();
 });
 
 test("an asynchronous full-read preparation cannot overwrite a new stream handoff", async () => {

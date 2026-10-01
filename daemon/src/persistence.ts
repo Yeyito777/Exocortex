@@ -12,6 +12,7 @@ import type { StoredDisplayHistoryPage } from "./display-page-store";
 import { clonedConversationValue, type ConversationCloneTarget } from "./conversation-clone";
 import type { ConversationLoadResult } from "./conversation-load-protocol";
 import * as jsonPersistence from "./json-persistence";
+import { existsSync } from "node:fs";
 import { SqliteConversationStore, sqliteConversationStorePath, type IntegrityReport, type LegacyImportReport } from "./sqlite-conversation-store";
 
 export type {
@@ -51,6 +52,25 @@ function configuredBackend(): ConversationPersistenceBackend {
 
 const backend = configuredBackend();
 let sqlite: SqliteConversationStore | null = null;
+
+/** Run schema enrollment before accepting commands; do not scan archives in startup IPC. */
+export async function prepareConversationStoreSchema(path = sqliteConversationStorePath(), importLegacy = true): Promise<void> {
+  if (backend !== "sqlite") return;
+  const source = new URL("./conversation-schema-worker.ts", import.meta.url);
+  const worker = new Worker((existsSync(source) ? source : new URL("./conversation-schema-worker.js", import.meta.url)).href, { type: "module" });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("Conversation schema migration timed out")), 300_000);
+      worker.onmessage = (event: MessageEvent<{ ok?: boolean; error?: string }>) => {
+        clearTimeout(timeout);
+        if (event.data.ok) resolve();
+        else reject(new Error(event.data.error ?? "Schema worker returned an invalid response"));
+      };
+      worker.onerror = event => { clearTimeout(timeout); reject(new Error(event.message)); };
+      worker.postMessage({ path, importLegacy });
+    });
+  } finally { worker.terminate(); }
+}
 
 function store(): SqliteConversationStore {
   if (backend !== "sqlite") throw new Error("SQLite conversation store is not selected");

@@ -1,22 +1,31 @@
 # Asynchronous conversation windows
 
-Compacted SQLite conversations no longer load their complete canonical bodies
-on the daemon's IPC thread. See also [DB-first conversations](DB-FIRST-CONVERSATIONS.md)
+Compacted SQLite conversations resume from the last usable checkpoint and its
+tail, not from a validation scan of historical bodies. Historical chunks are
+verified when requested. See also [DB-first conversations](DB-FIRST-CONVERSATIONS.md)
 for append/display invariants.
 
 ## Read and integrity model
 
 - `conversation-load-worker.ts` owns readonly SQLite connections. A consistent
-  read transaction streams 128-row batches, resolves original blob bytes, parses
-  messages, and validates the checkpoint off-thread. It does **not** import,
-  migrate, repair, or write the database.
-- The worker uses the existing SHA-256 prefix definition: JSON of
-  `{role, content, providerData: providerData ?? null}`, followed by a newline
-  per replay-history message, truncated to the same 24 hex characters.
-  Neither hashing nor checkpoint validation is disabled.
+  transaction verifies the checkpoint payload/range receipt, structural replay
+  invariants, required system instructions, and canonical tail in 128-row batches.
+  It does **not** import, migrate, repair, or write the database.
+- Superseded tool/image/message bodies are **not** read or verified on admission,
+  including after worker/daemon restart. Their corruption is detected on access,
+  not proactively reported on resume. A bad/missing checkpoint or tail checksum
+  rejects admission; there is no automatic full-history replay fallback.
+- Legacy prefix fingerprints are retained as checkpoint roots. New cursors use
+  a domain-separated per-message SHA-256 chain (`checkpoint_tail_v1`), rather
+  than pretending a truncated legacy digest can restore native SHA internals.
+  Each chain step binds replay count, preceding root, and canonical JSON of
+  `{role, content, providerData: providerData ?? null}`. A newer compaction root
+  resumes the same chain across restart without rereading the earlier tail.
 - Foreground state contains the active checkpoint and real recent tail, plus
-  small immutable headers for earlier rows. Absolute message/user indices,
-  automation metadata, user checkpoints, and system instructions survive.
+  small immutable index headers for earlier rows. Absolute message/user indices,
+  automation metadata, and required system instructions survive. Superseded
+  user checkpoints are not eagerly hydrated; legacy represented-tail cursors
+  are verified with those bounded tail rows.
   Headers are runtime-only WeakMap identities, **not** canonical message values.
 - A matching compaction divider bounds the retained tail, even when one user
   task accumulated tens of thousands of tool rounds. Legacy checkpoints use
@@ -28,19 +37,20 @@ for append/display invariants.
 - Adoption checks the current durable generation, message count, and deletion
   state. Cold reads coalesce; stale results are released/retried, never installed
   over newer cache state.
-- Invalid checkpoints remain present so replay fails closed. A missing
+- Invalid checkpoints remain stored but admission rejects them. A missing
   checkpoint with a compaction divider cannot silently replay the archive.
   Canonical insert, provider projection, hashing, and unsafe render fallbacks
   reject headers. Prefix validation runs before destructive persistence writes.
-- A worker retains copied native SHA state for each live window. Appends hash
-  only the real tail off-thread. If the worker is lost, it rebuilds the prefix
-  from canonical bytes and requires the original count/digest to match.
+- A worker retains copied tail-chain state for each live window. Appends hash
+  only the real tail off-thread. If the worker is lost, it restores the already
+  admitted checkpoint root, not its superseded canonical archive. Uncompacted
+  replay retains the original native SHA definition.
   Eviction/stale loads release handles; shutdown terminates the loader.
 
 ### Cooperative loading and verified reuse
 
 - Two lazy readonly worker lanes avoid globally serializing admission behind one
-  large archive. Reads yield between 128-row batches; urgent native tail hashes
+  large archive. Reads yield between 128-row batches; urgent tail hashes
   can run during another archive read. Lost-hash restoration uses a separate
   connection so it cannot nest inside the cooperative read transaction.
 - A paginated open schedules a 120 ms debounced prewarm. At most one speculative
@@ -50,7 +60,7 @@ for append/display invariants.
 - Each worker retains at most eight verified windows with a 64 MiB accounted
   budget (32 MiB maximum per entry). Full/uncompacted/invalid-checkpoint results
   are not retained. Cache entries contain checkpoint, headers, real tail, and
-  native hash state—not old tool bodies. Every adoption gets its own handle.
+  tail hash state—not old tool bodies. Every adoption gets its own handle.
 - Schema 11 installs transactional revision triggers covering conversation rows,
   messages, blobs, clone aliases, checkpoints, and runtime unwind-receipt fields.
   Owner-blob changes invalidate dependent clones too. An unrelated conversation
@@ -62,18 +72,37 @@ for append/display invariants.
   Adoption and subsequent writes check freshness. Writes recheck inside the
   transaction and capture the resulting token before commit; presentation
   updates cannot bless a previously stale loaded snapshot.
-- This revision is **freshness, not a cryptographic receipt**. Initial reads still
-  validate actual bytes. Worker restart discards every cached proof.
-- Canonical archived blob envelopes can be reconstructed as raw JSON fragments,
-  avoiding decode/re-escape of large strings and structured results. Those exact
-  bytes must match either the row's content SHA or the active checkpoint's native
-  prefix SHA. Failed anchored validation retries with the original JSON
-  parse/normalize semantics; it never turns a failed checkpoint into a valid one.
+- The revision is **freshness, not a cryptographic receipt**. Schema 12 separately
+  stores full SHA-256 checksums for message envelopes, checkpoint payload/range
+  receipts, and compact display projections. Writes update them transactionally.
+  Missing receipts fail closed and are never repaired by a reader.
+
+### Requested chunks and migration boundary
+
+- Scrolling verifies precisely the selected compact display projections (plus
+  pinned entries) against their stored checksums and index continuity. Hidden
+  canonical tool bodies are not part of a compact page request.
+- Expanding tool output verifies the selected canonical message envelope,
+  reconstructed content checksum, blob checksums and block/index correspondence
+  on a worker before returning it. Unrelated old outputs are not read. Full
+  materialization explicitly verifies all requested canonical rows.
+- Clones preserve deferred body checksums. Checkpoints, envelopes and user
+  projections that need rebinding are checked before new checksums are minted,
+  so clone does not silently bless source corruption.
+- The one-time v12 migration enrolls existing small envelopes, compact projections,
+  and checkpoint/range receipts. Existing canonical content/blob checksums are
+  preserved; old tool/image bodies are not scanned. Previously unchecksummed
+  fields are necessarily an **enrollment baseline**, not retroactive proof that
+  old data was never corrupted. Checksums protect against accidental/uncoordinated
+  changes, not an attacker rewriting both data and checksums.
+- Migration/import runs in `conversation-schema-worker.ts` before accepting IPC,
+  transactionally and off the main thread. A current-schema restart does not
+  repeat enrollment. Both worker entrypoints must be embedded in compiled builds.
 
 Implementation entry points:
 `conversation-loader.ts`, `conversation-load-protocol.ts`,
 `conversation-window.ts`, `sqlite-conversation-store.ts`, and `conversations.ts`.
-Compiled builds must explicitly include the worker entrypoint; Bun 1.3 embeds it
+Compiled builds must explicitly include both worker entrypoints; Bun 1.3 embeds them
 as `.js`, while source installations use `.ts`.
 
 ## Admission and non-model work
@@ -99,33 +128,21 @@ as `.js`, while source installations use `.ts`.
 
 ## Scope and remaining costs
 
-This is not zero-cost cold loading: the first read still scans/hash-validates
-the canonical archive on a worker, and foreground adoption is proportional to
-row/header count and the actual retained context. No checkpoint means the
+This is not zero-cost cold loading: checkpoint/tail verification is proportional
+to the retained context, and foreground adoption is still proportional to
+row/header count. No checkpoint means the
 canonical replay itself is needed; the loader cannot invent a compaction.
 
-**Architectural limit:** `readRuntimeWindow` still loops through the entire
-canonical archive to establish the native checkpoint's relationship to it.
-Verified reuse and prewarm eliminate repeated scans or move the first one before
-admission; neither makes a genuinely fresh/restarted load bounded by live context
-size. Tail append/checkpoint/presentation changes conservatively invalidate the
-whole worker entry. The foreground also constructs/freezes/snapshots one header
-per old row, so even a cache hit is not independent of archive row count.
+**Remaining architectural limit:** index headers are still queried, transferred,
+frozen and snapshotted once per old row to preserve existing absolute-index APIs.
+Thus cold loading is independent of superseded body byte size, but **not** of
+historical row count. Truly constant-row admission needs lazy/sparse index
+descriptors instead of a whole header array. Cache invalidation is also still
+conservative for unrelated-to-replay edits within the same conversation.
 
-The next storage design needs a separately persisted, integrity-bound runtime
-checkpoint plus indexed recent tail, prefix-scoped mutation tracking, and lazy
-archive/user-boundary descriptors instead of a whole header array. A stored SHA
-or Merkle root alone does **not** prove that unread archive bytes are unchanged.
-Two different guarantees must be kept explicit:
-
-1. Verify every historical byte before every cold admission (necessarily
-   proportional to archive size).
-2. Verify an authenticated runtime capsule before admission, invalidate it on
-   relevant mutations, and verify archived data when accessed/audited.
-
-The second can provide bounded cold latency, but merely deferring the current
-prefix check to the background would weaken the first guarantee. This work does
-not silently make that change or persist unchecked trust receipts.
+The admission guarantee intentionally changed at the user's request: checkpoint
+and tail are verified before resume; archived chunks are verified on access.
+This does not claim that a stored hash proves unread historical bytes unchanged.
 
 Explicit trim/instruction rewrites opt into full materialization **off-thread**
 and refuse concurrent streams/unwinds. Their subsequent persistence/rewrite may
@@ -135,7 +152,12 @@ migrations retain their explicit full-history costs. This change does not
 promise to eliminate stalls caused by those operations, provider output size,
 other synchronous work, or general host resource contention.
 
-## Validation (2026-10-01)
+New chain-mode checkpoints require the SQLite receipt/proof path. Export retains
+their data and namespace, but a legacy JSON-backend rollback cannot reinterpret
+those fingerprints as native full-prefix SHA; it fails closed rather than
+silently treating them as validated resumable checkpoints.
+
+## Earlier full-prefix implementation validation (2026-10-01)
 
 ### Readonly production-sized comparison
 
@@ -212,7 +234,8 @@ bun scripts/dev/profile-archive-loader.ts baseline /tmp/NEW-fixture.sqlite3 arch
 bun scripts/dev/profile-archive-loader.ts worker /tmp/NEW-fixture.sqlite3 archive-stress
 bun scripts/dev/async-loader-ipc-smoke.ts /tmp/NEW-fixture.sqlite3 archive-stress /tmp/ipc-report.json
 bun build --compile daemon/src/conversation-loader-compiled-smoke.ts \
-  daemon/src/conversation-load-worker.ts --outfile /tmp/loader-smoke
+  daemon/src/conversation-load-worker.ts daemon/src/conversation-schema-worker.ts \
+  --outfile /tmp/loader-smoke
 (cd /tmp && ./loader-smoke /tmp/NEW-fixture.sqlite3 archive-stress)
 ```
 
@@ -276,3 +299,73 @@ env -u EXOCORTEX_CONFIG_DIR EXOCORTEX_TEST_CONFIG_READY=1 \
 bun scripts/dev/profile-archive-loader.ts warm /tmp/CURRENT-fixture.sqlite3 archive-stress
 bun scripts/dev/profile-archive-loader.ts prefetch /tmp/CURRENT-fixture.sqlite3 archive-stress
 ```
+
+## Checkpoint/tail architecture validation (2026-10-01)
+
+This replaces the full-prefix admission guarantee described in the earlier
+measurements, explicitly at the user's request. All fixtures were owned copies;
+the real source database was never migrated or written, and the main daemon
+was not restarted.
+
+### Cold latency and archive-size independence
+
+The same 156,572,475-byte / 32,647-row conversation now reads **162 canonical
+tail rows and zero superseded bodies**. Its 597 provider replay messages and
+checkpoint payload are preserved. It still transfers 32,485 small index headers.
+
+| Path | Load | Canonical rows read |
+|---|---:|---:|
+| Previous full-prefix worker | 943 ms | 32,647 |
+| New fresh worker, median of 3 | **267 ms** | **162** |
+| Verified cached reload | 101 ms | 0 |
+| Completed prewarm | 104 ms | 0 |
+
+Fresh samples were 267.0, 269.0 and 265.7 ms: approximately **72% less load
+latency** than the previous full scan. Preparation took 18–19 ms. These are
+fresh runtime/worker loads with filesystem cache potentially warm, not a claim
+about physical-disk cold starts. Foreground state was 5,047,839 bytes.
+
+A matched 32,004-row synthetic comparison kept the same checkpoint, headers
+and three-row tail while changing historical body size:
+
+| Historical canonical bytes | Fresh load | Old bodies read |
+|---:|---:|---:|
+| 3,486,755 | 185 ms | 0 |
+| 159,726,755 | 182 ms | 0 |
+
+This verifies that historical **body byte size** no longer drives admission.
+The remaining approximately 100 ms cached-load floor is principally eager
+index-header transfer/adoption and retained-context setup. It is not constant
+in historical row count. Profiling-helper event-loop maxima also include its
+foreground JSON size measurement; actual IPC contention was measured separately.
+
+### Integrity, restart and build tests
+
+- Repository suite: **2,413 passed**, zero failures; the external exo-cli
+  paths file passed **5/5** separately without the conflicting config preload.
+  Shared, daemon and TUI typechecks passed.
+- All 33 loader cases repeated three times: **99 passed**. Cases cover deferred
+  corrupt/missing old blobs, requested projection/content/envelope checksums,
+  ordinal corruption, missing/tampered checkpoint receipts, tail/instruction
+  corruption, no automatic checksum repair, clone rebinding, worker loss,
+  new-compaction fingerprint parity across restart, legacy represented-tail
+  rewind, and instruction insertion/removal without breaking covered proofs.
+- Startup-worker enrollment passed with an intentionally malformed old blob;
+  resume did not inspect it, requested expansion rejected it. Reopening a v12
+  database did not recreate a deliberately removed receipt.
+- Dedicated five-child daemon IPC smoke passed: Stop **4.1 ms**, paged opens
+  **14 ms**, fresh restarted resume **179 ms**, completed-prewarm resume **82 ms**.
+  Concurrent cheap IPC maxima were **49/54 ms**, medians **0.27/0.25 ms**.
+  All 32,004 rows and the byte-identical checkpoint survived cancellation,
+  restart and metadata undo/redo. Restarted diagnostics read three tail rows,
+  not the archive. Old corruption allowed resume but requested output/page
+  corruption returned IPC errors; fresh tail corruption rejected resume and
+  subsequent cheap IPC still worked.
+- Linux embedded load and schema workers ran successfully outside the checkout.
+  Windows x64 cross-compilation included both workers, as do Makefile and
+  PowerShell build entrypoints. Windows runtime was not available/tested.
+
+Artifacts: `/tmp/exocortex-async-loading-validation-1790876711501/`,
+particularly `checkpoint-tail-last-*.json`, `checkpoint-tail-ipc-last.json`
+and its per-child performance log. Tests/typechecks:
+`/tmp/checkpoint-tail-{root,exo-paths,loader-repeat,types}-last.log`.

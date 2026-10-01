@@ -1,19 +1,20 @@
-/** Read-only, cooperative archive I/O and integrity work. No persisted trust shortcuts. */
-import { createHash, randomUUID } from "node:crypto";
+/** Readonly checkpoint/tail and requested-chunk verification, with cooperative I/O. */
+import { randomUUID } from "node:crypto";
 import { SqliteConversationStore } from "./sqlite-conversation-store";
 import { isReplayHistoryMessage } from "./messages";
 import type { ConversationLoadRequest, ConversationLoadResponse, ConversationLoadResult } from "./conversation-load-protocol";
+import { checkpointTailHasher, type ReplayHash } from "./checkpoint-tail-integrity";
 
 const stores = new Map<string, SqliteConversationStore>();
 const restoreStores = new Map<string, SqliteConversationStore>();
-type Prefix = { hash: ReturnType<typeof createHash>; historyCount: number; hashes: Array<[number, string]> };
+type Prefix = { hash: ReplayHash; historyCount: number; hashes: Array<[number, string]> };
 const prefixes = new Map<string, Prefix>();
 type Read = NonNullable<ReturnType<SqliteConversationStore["loadRuntimeWindow"]>>;
 const cache = new Map<string, { read: Read; token: string; bytes: number }>();
 let cacheBytes = 0;
 const CACHE_BYTES = 64 * 1024 * 1024;
 const CACHE_ENTRIES = 8;
-const jobs: Array<Extract<ConversationLoadRequest, { type: "load" | "prefetch" }>> = [];
+const jobs: Array<Extract<ConversationLoadRequest, { type: "load" | "prefetch" | "tools" }>> = [];
 let working = false;
 
 function storeFor(path: string, restoring = false) {
@@ -52,10 +53,11 @@ async function pump() {
   working = true;
   try {
     while (jobs.length) {
-      const interactive = jobs.findIndex(job => job.type === "load");
+      const interactive = jobs.findIndex(job => job.type !== "prefetch");
       const request = jobs.splice(interactive < 0 ? 0 : interactive, 1)[0];
       try {
         const store = storeFor(request.path);
+        if(request.type==="tools"){send({requestId:request.requestId,outputs:store.loadToolOutputs(request.id,request.toolCallIds)});continue;}
         if (request.type === "prefetch" && !store.hasRuntimeArchive(request.id)) {
           send({ requestId: request.requestId, warmed: false }); continue;
         }
@@ -93,7 +95,11 @@ async function pump() {
           const handle = randomUUID();
           result = { ...loaded.result,
             window: loaded.result.window ? { ...loaded.result.window, handle } : undefined,
-            loadDiagnostics: { cacheHit, archiveRowsRead: cacheHit ? 0 : loaded.result.conversation.messages.length },
+            loadDiagnostics: {
+              ...loaded.result.loadDiagnostics, cacheHit,
+              archiveRowsRead: cacheHit ? 0 : loaded.result.loadDiagnostics?.archiveRowsRead ?? loaded.result.conversation.messages.length,
+              ...(cacheHit ? { archivedBodiesRead: 0 } : {}),
+            },
           };
           if (result.window) prefixes.set(handle, {
             hash: loaded.baseHash.copy(), historyCount: result.window.prefixHistoryCount, hashes: loaded.prefixHashes,
@@ -110,9 +116,14 @@ async function pump() {
 globalThis.onmessage = (event: MessageEvent<ConversationLoadRequest>) => {
   const request = event.data;
   if (request.type === "release") { prefixes.delete(request.handle); return; }
-  if (request.type === "load" || request.type === "prefetch") { jobs.push(request); void pump(); return; }
+  if (request.type === "load" || request.type === "prefetch" || request.type === "tools") { jobs.push(request); void pump(); return; }
   try {
     let prefix = prefixes.get(request.window.handle);
+    if(!prefix && request.window.hashAnchor){
+      prefix={hash:checkpointTailHasher(request.window.hashAnchor),historyCount:request.window.prefixHistoryCount,
+        hashes:[[request.window.hashAnchor.historyCount,request.window.hashAnchor.hash]]};
+      prefixes.set(request.window.handle,prefix);
+    }
     if (!prefix) {
       // Separate connection: an interrupted/cooperative cold read may still own
       // a transaction on the normal connection. Never restore inside that txn.
@@ -127,13 +138,16 @@ globalThis.onmessage = (event: MessageEvent<ConversationLoadRequest>) => {
     const hash = prefix.hash.copy();
     const hashes = new Map(prefix.hashes);
     let count = prefix.historyCount;
-    hashes.set(count, hash.copy().digest("hex").slice(0, 24));
+    if(!request.window.hashAnchor || count>request.window.hashAnchor.historyCount)hashes.set(count, hash.copy().digest("hex").slice(0, 24));
     for (const message of request.tail) {
       if (isReplayHistoryMessage(message)) {
-        hash.update(JSON.stringify({ role: message.role, content: message.content, providerData: message.providerData ?? null }));
-        hash.update("\n"); count++;
+        if(!request.window.hashAnchor || count>=request.window.hashAnchor.historyCount){
+          hash.update(JSON.stringify({ role: message.role, content: message.content, providerData: message.providerData ?? null }));
+          hash.update("\n");
+        }
+        count++;
       }
-      hashes.set(count, hash.copy().digest("hex").slice(0, 24));
+      if(!request.window.hashAnchor || count>request.window.hashAnchor.historyCount)hashes.set(count, hash.copy().digest("hex").slice(0, 24));
     }
     send({ requestId: request.requestId, hashes: [...hashes] });
   } catch (error) {

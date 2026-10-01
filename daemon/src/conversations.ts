@@ -29,7 +29,7 @@ import { getConversationExternalIntegrations } from "./external-notifications";
 import * as displayPageStore from "./display-page-store";
 import { scheduleDisplayIndex } from "./display-index-backfill";
 import { loadConversationOffThread, prepareArchiveHashes, releaseArchiveWindow } from "./conversation-loader";
-import { archiveWindow, inheritArchiveHashProof, isArchivedMessage } from "./conversation-window";
+import { archiveWindow, forgetFullArchiveWindow, inheritArchiveHashProof, isArchivedMessage } from "./conversation-window";
 
 // Re-export streaming functions so existing `convStore.*` call sites keep working
 export {
@@ -553,6 +553,8 @@ function loadConversation(id: string): Conversation | undefined {
 }
 
 function applyConversationMutation(id: string, conv: Conversation): void {
+  releaseArchiveWindow(conv.messages);
+  forgetFullArchiveWindow(conv.messages);
   conv.lastContextTokens = null;
   conv.activeContext = null;
   conv.updatedAt = Date.now();

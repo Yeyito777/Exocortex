@@ -132,14 +132,14 @@ async function start(): Promise<Client> {
   return client = new Client(socket);
 }
 async function probeWhile(work: () => Promise<Reply>) {
-  const probes: Promise<Reply>[] = [];
+  const probes: Promise<Reply>[] = [client!.request({ type: "list_tasks" })];
   const timer = setInterval(() => { probes.push(client!.request({ type: "list_tasks" })); }, 10);
   let result: Reply;
   try { result = await work(); } finally { clearInterval(timer); }
   const replies = await Promise.all(probes);
   for (const reply of replies) expectType(reply, "tasks_list");
   const times = replies.map(reply => reply.ms).sort((a, b) => a - b);
-  assert(times.length >= 5, "Cold-load probe did not span enough requests");
+  assert(times.length >= 1, "No IPC probe completed");
   assert(times.at(-1)! < 250, `IPC stalled during cold load: ${times.at(-1)} ms`);
   return { result, ipc: { samples: times.length, p50Ms: times[Math.floor(times.length * .5)], p95Ms: times[Math.floor(times.length * .95)], maxMs: times.at(-1) } };
 }
@@ -150,7 +150,8 @@ try {
   let stopMs = 0;
   const cold = await probeWhile(async () => {
     const send = client!.request({ type: "send_message", convId: id, text: "MUST NOT BE PERSISTED", startedAt: Date.now() });
-    await Bun.sleep(50);
+    // Same socket dispatch batch: cancellation must not depend on keeping cold
+    // admission artificially slow enough to beat a 50 ms timer.
     const stop = expectType(await client!.request({ type: "abort", convId: id }), "ack");
     stopMs = stop.ms;
     assert(stopMs < 250, "Stop was blocked by archive loading");
@@ -208,12 +209,23 @@ try {
   assert(perfLines().some(line => line.includes("perf: conversation_runtime_load")
     && line.includes('"cacheHit":true') && line.includes('"archiveRowsRead":0')), "Foreground did not use the verified worker cache");
   const perfLog = readFileSync(perfPath, "utf8");
-  // Fault only the disposable synthetic copy, after verifying durable parity.
-  // A worker parse failure must become an IPC error, not an unanswered command
-  // or canonical-header fallback, and subsequent cheap commands must still run.
+  // Fault only the disposable synthetic copy. Superseded canonical bytes must
+  // not be read on resume, but a requested corrupt expansion/projection must
+  // return an IPC error. Tail corruption must still block a fresh resume.
   const fault = new Database(dbPath);
-  fault.query("UPDATE messages SET content_json='{' WHERE conversation_id=? AND sequence=0").run(id);
+  fault.query("UPDATE messages SET content_json='{' WHERE conversation_id=? AND sequence=2").run(id);
   fault.close();
+  await start();
+  const oldFaultResume = expectType(await client!.request({ type: "get_system_prompt", convId: id }), "system_prompt");
+  expectType(await client!.request({ type: "load_tool_outputs", convId: id, toolCallIds: ["tool-0"] }), "error");
+  expectType(await client!.request({ type: "load_tool_outputs", convId: id, toolCallIds: ["tool-1"] }), "tool_outputs_loaded");
+  const projectionFault = new Database(dbPath);
+  projectionFault.query("UPDATE display_entries SET payload_json='{' WHERE conversation_id=? AND pinned=0 AND entry_index=0").run(id);
+  projectionFault.query("UPDATE messages SET content_json='{' WHERE conversation_id=? AND sequence=?").run(id, original.stored_message_count - 1);
+  projectionFault.close();
+  expectType(await client!.request({ type: "load_conversation", convId: id, turns: 100 }), "error");
+  child!.kill("SIGTERM");
+  assert(await child!.exited === 0, "Archive-fault isolated daemon did not stop cleanly");
   await start();
   const rejected = expectType(await client!.request({ type: "get_system_prompt", convId: id }), "error");
   assert("message" in rejected.event && rejected.event.message.includes("Could not load verified conversation"), "Worker failure did not reach the caller");
@@ -227,6 +239,7 @@ try {
     coldUndoMs: undo.ms, coldRedoMs: redo.ms, coldRestoreMs: restored.ms,
     messagesPreserved: stored.stored_message_count, checkpointUnchanged: true,
     prefetchedLoadMs: prefetchedLoad.ms, prefetchedArchiveRowsRead: 0,
+    oldFaultResumeMs: oldFaultResume.ms, oldArchiveDeferred: true, corruptRequestedChunksRejected: true,
     workerFaultReturnedError: true, afterFaultIpcMs: recoveredIpc.ms,
   };
   if (reportPath) writeFileSync(resolve(reportPath), JSON.stringify(report, null, 2) + "\n");

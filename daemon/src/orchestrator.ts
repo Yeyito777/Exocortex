@@ -11,7 +11,7 @@ import { fastModeServiceTier } from "@exocortex/shared/messages";
 import { log } from "./log";
 import { isDeepStrictEqual } from "node:util";
 import { prepareArchiveHashes } from "./conversation-loader";
-import { inheritArchiveHashProof } from "./conversation-window";
+import { archiveWindow, inheritArchiveHashProof } from "./conversation-window";
 import { workTimerForTurn } from "./work-timer";
 import { hasConfiguredCredentials } from "./auth";
 import { runAgentLoop, type AgentCallbacks, type AgentState } from "./agent";
@@ -1008,6 +1008,7 @@ async function orchestrateAdmittedAssistantTurn(
     const transcriptHistoryCount = replayPrefix.historyCount;
     const candidate: ActiveContext = {
       version: 1,
+      ...(archiveWindow(liveConv.messages)?.hashAnchor ? { historyHashMode: "checkpoint_tail_v1" as const } : {}),
       kind: latestCompactionKind ?? previous!.kind,
       provider: liveConv.provider,
       model: liveConv.model,

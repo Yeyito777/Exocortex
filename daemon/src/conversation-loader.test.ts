@@ -3,13 +3,14 @@ import { existsSync, mkdtempSync, renameSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SqliteConversationStore } from "./sqlite-conversation-store";
-import { loadConversationOffThread, prefetchConversation, prepareArchiveHashes, releaseArchiveWindow, stopConversationLoader } from "./conversation-loader";
+import { loadConversationOffThread, loadToolOutputsOffThread, prefetchConversation, prepareArchiveHashes, releaseArchiveWindow, stopConversationLoader } from "./conversation-loader";
+import { checkpointTailHasher, updateCheckpointTailHash } from "./checkpoint-tail-integrity";
 import { archiveWindow, inheritArchiveHashProof, isArchivedMessage } from "./conversation-window";
 import { titleContext } from "./conversation-title-context";
 import {
   CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT,
   createConversation, createStoredUserContextCheckpoint, currentReplayHistoryPrefix,
-  historyPrefixHash, isValidActiveContextCached, type Conversation, type StoredMessage,
+  historyPrefixHash, isReplayHistoryMessage, isValidActiveContextCached, rewindActiveContextToHistoryCount, type Conversation, type StoredMessage,
 } from "./messages";
 import { buildConversationApiContext } from "./context-compaction";
 
@@ -66,6 +67,18 @@ async function rejects(promise: Promise<unknown>, pattern: RegExp) {
   expect((error as Error).message).toMatch(pattern);
 }
 
+function checkpointPrefix(conv: Conversation, messages = conv.messages) {
+  const anchor = { historyCount: conv.activeContext!.transcriptHistoryCount, hash: conv.activeContext!.transcriptPrefixHash };
+  const hash = checkpointTailHasher(anchor);
+  let count = 0;
+  for (const message of messages) {
+    if (!isReplayHistoryMessage(message)) continue;
+    if (count >= anchor.historyCount) updateCheckpointTailHash(hash, message);
+    count++;
+  }
+  return { historyCount: count, hash: count === anchor.historyCount ? anchor.hash : hash.digest("hex") };
+}
+
 test("worker keeps a checkpoint and actual tail, never a huge single-user group", async () => {
   const { store, conv } = fixture();
   const loaded = await load(store, conv);
@@ -74,8 +87,10 @@ test("worker keeps a checkpoint and actual tail, never a huge single-user group"
   expect(JSON.stringify(loaded).length).toBeLessThan(15_000);
   expect(isValidActiveContextCached(loaded.activeContext!, loaded.messages)).toBe(true);
   expect(buildConversationApiContext(loaded)).toEqual(buildConversationApiContext(conv));
-  expect(currentReplayHistoryPrefix(loaded.messages)).toEqual(currentReplayHistoryPrefix(conv.messages));
-  expect(createStoredUserContextCheckpoint(loaded)).toEqual(createStoredUserContextCheckpoint(conv));
+  expect(currentReplayHistoryPrefix(loaded.messages)).toEqual(checkpointPrefix(conv));
+  expect(createStoredUserContextCheckpoint(loaded)).toMatchObject({
+    transcriptHistoryCount: checkpointPrefix(conv).historyCount, transcriptPrefixHash: checkpointPrefix(conv).hash,
+  });
   expect(titleContext(loaded)).toEqual(titleContext(conv));
   expect(titleContext(loaded, "extra")).toEqual(titleContext(conv, "extra"));
   expect(() => { (loaded.messages[1] as StoredMessage).content = "fake"; }).toThrow();
@@ -111,46 +126,46 @@ test("off-thread proofs refresh after appends, copy to unwind plans, reject repl
   const loaded = await load(store, conv);
   const planned = loaded.messages.slice(0, -1);
   inheritArchiveHashProof(loaded.messages, planned);
-  expect(currentReplayHistoryPrefix(planned)).toEqual(currentReplayHistoryPrefix(conv.messages.slice(0, -1)));
+  expect(currentReplayHistoryPrefix(planned)).toEqual(checkpointPrefix(conv, conv.messages.slice(0, -1)));
   loaded.messages.push({ role: "user", content: "queued one", metadata: null });
   expect(() => currentReplayHistoryPrefix(loaded.messages)).toThrow(/refresh|Missing/);
   await prepareArchiveHashes(loaded.messages);
-  expect(currentReplayHistoryPrefix(loaded.messages)).toEqual(currentReplayHistoryPrefix([...conv.messages, loaded.messages.at(-1)!]));
+  expect(currentReplayHistoryPrefix(loaded.messages)).toEqual(checkpointPrefix(conv, [...conv.messages, loaded.messages.at(-1)!]));
   const tail = loaded.messages.at(-1)!;
   tail.content = "changed";
   expect(() => currentReplayHistoryPrefix(loaded.messages)).toThrow(/refresh/);
   await prepareArchiveHashes(loaded.messages);
-  expect(currentReplayHistoryPrefix(loaded.messages)).toEqual(currentReplayHistoryPrefix([...conv.messages, tail]));
+  expect(currentReplayHistoryPrefix(loaded.messages)).toEqual(checkpointPrefix(conv, [...conv.messages, tail]));
   loaded.messages[0] = { role: "system_instructions", content: "replacement", metadata: null };
   await rejects(prepareArchiveHashes(loaded.messages), /changed/);
 });
 
-test("worker loss restores native hash state from verified canonical bytes", async () => {
+test("worker loss restores checkpoint-tail state without reading superseded canonical bytes", async () => {
   const { store, conv } = fixture();
   const loaded = await load(store, conv);
   stopConversationLoader("simulated worker crash");
   loaded.messages.push({ role: "user", content: "after worker crash", metadata: null });
   await prepareArchiveHashes(loaded.messages);
-  expect(currentReplayHistoryPrefix(loaded.messages)).toEqual(currentReplayHistoryPrefix([...conv.messages, loaded.messages.at(-1)!]));
+  expect(currentReplayHistoryPrefix(loaded.messages)).toEqual(checkpointPrefix(conv, [...conv.messages, loaded.messages.at(-1)!]));
   releaseArchiveWindow(loaded.messages);
   store.db.query("UPDATE messages SET content_json=? WHERE conversation_id=? AND sequence=1").run(JSON.stringify("corrupt"), conv.id);
   loaded.messages.push({ role: "user", content: "force another refresh", metadata: null });
-  await rejects(prepareArchiveHashes(loaded.messages), /prefix changed/);
+  await prepareArchiveHashes(loaded.messages);
+  expect(currentReplayHistoryPrefix(loaded.messages).historyCount).toBe(21);
+  await rejects(loadConversationOffThread(conv.id, true, store.path), /integrity/);
 });
 
 test("corrupt checkpoint, missing checkpoint and archive holes fail closed", async () => {
   const { store, conv } = fixture();
   const active = { ...conv.activeContext!, transcriptPrefixHash: "bad" };
   store.db.query("UPDATE active_contexts SET payload_json=? WHERE conversation_id=?").run(JSON.stringify(active), conv.id);
-  let loaded = await load(store, conv);
-  expect(loaded.activeContext?.transcriptPrefixHash).toBe("bad");
-  expect(() => buildConversationApiContext(loaded)).toThrow(/checkpoint is invalid/);
-  store.db.query("DELETE FROM active_contexts WHERE conversation_id=?").run(conv.id);
-  loaded = await load(store, conv);
-  expect(loaded.messages.every(isArchivedMessage)).toBe(true);
-  expect(() => buildConversationApiContext(loaded)).toThrow(/checkpoint is missing/);
+  await rejects(loadConversationOffThread(conv.id, false, store.path), /Checkpoint integrity/);
+  store.db.query("UPDATE active_contexts SET payload_json=? WHERE conversation_id=?").run(JSON.stringify(conv.activeContext), conv.id);
   store.db.query("DELETE FROM messages WHERE conversation_id=? AND sequence=2").run(conv.id);
-  await rejects(loadConversationOffThread(conv.id, false, store.path), /Non-contiguous/);
+  await rejects(loadConversationOffThread(conv.id, false, store.path), /non-contiguous/);
+  store.save(conv, { forceMessages: true });
+  store.db.query("DELETE FROM active_contexts WHERE conversation_id=?").run(conv.id);
+  await rejects(loadConversationOffThread(conv.id, false, store.path), /checkpoint is missing/);
 });
 
 test("stale worker generations and deleted conversations cannot be adopted", async () => {
@@ -165,7 +180,7 @@ test("stale worker generations and deleted conversations cannot be adopted", asy
   expect(await loadConversationOffThread(conv.id, false, store.path)).toBeNull();
 });
 
-test("missing and corrupted canonical blobs invalidate the checkpoint without replay fallback", async () => {
+test("old missing/corrupt blobs do not block resume but fail closed on requested expansion", async () => {
   const { store, conv } = fixture();
   const blob = store.db.query<{ message_sequence: number; ordinal: number; payload_json: string }, [string]>(
     "SELECT message_sequence, ordinal, payload_json FROM message_blobs WHERE conversation_id=? AND kind='tool_result' LIMIT 1",
@@ -173,13 +188,16 @@ test("missing and corrupted canonical blobs invalidate the checkpoint without re
   store.db.query("UPDATE message_blobs SET payload_json=? WHERE conversation_id=? AND message_sequence=? AND kind='tool_result' AND ordinal=?")
     .run(JSON.stringify({ blockIndex: 0, value: "tampered" }), conv.id, blob.message_sequence, blob.ordinal);
   let loaded = await load(store, conv);
-  expect(isValidActiveContextCached(loaded.activeContext!, loaded.messages)).toBe(false);
-  expect(() => buildConversationApiContext(loaded)).toThrow(/checkpoint is invalid/);
+  expect(isValidActiveContextCached(loaded.activeContext!, loaded.messages)).toBe(true);
+  expect(buildConversationApiContext(loaded)).toEqual(buildConversationApiContext(conv));
+  await rejects(loadToolOutputsOffThread(conv.id, ["tool-0"], store.path), /blob checksum/);
+  expect((await loadToolOutputsOffThread(conv.id, ["tool-1"], store.path))?.[0].toolCallId).toBe("tool-1");
   releaseArchiveWindow(loaded.messages);
   store.db.query("DELETE FROM message_blobs WHERE conversation_id=? AND message_sequence=? AND kind='tool_result' AND ordinal=?")
     .run(conv.id, blob.message_sequence, blob.ordinal);
   loaded = await load(store, conv);
-  expect(() => buildConversationApiContext(loaded)).toThrow(/checkpoint is invalid/);
+  expect(buildConversationApiContext(loaded).usedActiveContext).toBe(true);
+  await rejects(loadToolOutputsOffThread(conv.id, ["tool-0"], store.path), /missing or duplicate/);
 });
 
 test("cloned copy-on-write archives get the same integrity proof and rebound checkpoint", async () => {
@@ -195,7 +213,7 @@ test("cloned copy-on-write archives get the same integrity proof and rebound che
   expect(archiveWindow(loaded.messages)?.prefixSequence).toBe(conv.messages.length - 3);
   expect(loaded.activeContext?.windowId).toBe(`${cloneId}:1`);
   expect(buildConversationApiContext(loaded)).toEqual(buildConversationApiContext(canonical));
-  expect(currentReplayHistoryPrefix(loaded.messages)).toEqual(currentReplayHistoryPrefix(conv.messages));
+  expect(currentReplayHistoryPrefix(loaded.messages)).toEqual(checkpointPrefix(conv));
   loaded.messages.push({ role: "user", content: "clone-only append", metadata: null });
   await prepareArchiveHashes(loaded.messages);
   store.appendMessages(loaded, canonical.messages.length);
@@ -227,6 +245,28 @@ test("legacy checkpoints use their fixed divider, not the advancing replay curso
   expect(buildConversationApiContext(loaded)).toEqual(buildConversationApiContext(conv));
 });
 
+test("legacy represented-tail rewind uses verified requested user cursors, without an old-prefix scan", async () => {
+  const { store, conv } = fixture();
+  const active = conv.activeContext!;
+  const floor = active.compactionHistoryCount!;
+  conv.messages.at(-2)!.contextCheckpoint = createStoredUserContextCheckpoint({
+    ...conv, messages: conv.messages.slice(0, -2),
+  })!;
+  delete active.compactionHistoryCount;
+  delete active.compactionPrefixHash;
+  active.messages.push({ role: "user", content: "recent editable task" }, { role: "assistant", content: "recent answer" });
+  active.transcriptHistoryCount += 2;
+  active.transcriptPrefixHash = historyPrefixHash(conv.messages, active.transcriptHistoryCount);
+  conv.activeContext = structuredClone(active);
+  store.save(conv);
+  const loaded = await load(store, conv);
+  const rewound = rewindActiveContextToHistoryCount(loaded.activeContext!, loaded.messages, floor);
+  expect(rewound).not.toBeNull();
+  const messages = loaded.messages.slice(0, -2);
+  inheritArchiveHashProof(loaded.messages, messages);
+  expect(buildConversationApiContext({ ...loaded, messages, activeContext: rewound }).usedActiveContext).toBe(true);
+});
+
 test("even noncompacted cold transcripts use worker proofs instead of foreground hashing", async () => {
   const { store, conv } = fixture();
   conv.activeContext = null;
@@ -249,15 +289,15 @@ test("even noncompacted cold transcripts use worker proofs instead of foreground
 test("verified windows survive release/eviction and unrelated writes without rereading the archive", async () => {
   const { store, conv } = fixture();
   const first = await loadConversationOffThread(conv.id, false, store.path);
-  expect(first!.loadDiagnostics).toEqual({ cacheHit: false, archiveRowsRead: conv.messages.length });
+  expect(first!.loadDiagnostics).toEqual({ cacheHit: false, archiveRowsRead: 4, archivedBodiesRead: 1 });
   releaseArchiveWindow(first!.conversation.messages, first!.window?.handle);
   const other = createConversation("unrelated", "openai", "gpt-6.1-sol", 1);
   store.save(other);
   const next = await loadConversationOffThread(conv.id, false, store.path);
-  expect(next!.loadDiagnostics).toEqual({ cacheHit: true, archiveRowsRead: 0 });
+  expect(next!.loadDiagnostics).toEqual({ cacheHit: true, archiveRowsRead: 0, archivedBodiesRead: 0 });
   expect(next!.window?.handle).not.toBe(first!.window?.handle);
   expect(store.adoptLoadedConversation(next!)).toBe(true);
-  expect(currentReplayHistoryPrefix(next!.conversation.messages)).toEqual(currentReplayHistoryPrefix(conv.messages));
+  expect(currentReplayHistoryPrefix(next!.conversation.messages)).toEqual(checkpointPrefix(conv));
 });
 
 test("prefetch validates off-thread and admission consumes a zero-scan cached window", async () => {
@@ -283,7 +323,10 @@ test("out-of-band canonical, metadata and checkpoint edits invalidate cached pro
   const damaged = await loadConversationOffThread(conv.id, false, store.path);
   expect(damaged!.loadDiagnostics?.cacheHit).toBe(false);
   expect(store.adoptLoadedConversation(damaged!)).toBe(true);
-  expect(() => buildConversationApiContext(damaged!.conversation)).toThrow(/checkpoint is invalid/);
+  expect(buildConversationApiContext(damaged!.conversation).usedActiveContext).toBe(true);
+  await rejects(loadConversationOffThread(conv.id, true, store.path), /content checksum/);
+  store.db.query("UPDATE active_contexts SET payload_json='{}' WHERE conversation_id=?").run(conv.id);
+  await rejects(loadConversationOffThread(conv.id, false, store.path), /Checkpoint integrity/);
 });
 
 test("canonical fallback preserves legacy whitespace and provider-null semantics", async () => {
@@ -293,7 +336,8 @@ test("canonical fallback preserves legacy whitespace and provider-null semantics
   store.db.query("UPDATE messages SET provider_data_json=' null ', has_provider_data=1 WHERE conversation_id=? AND sequence=2").run(conv.id);
   const loaded = await load(store, conv);
   expect(isValidActiveContextCached(loaded.activeContext!, loaded.messages)).toBe(true);
-  expect(currentReplayHistoryPrefix(loaded.messages)).toEqual(currentReplayHistoryPrefix(conv.messages));
+  expect(currentReplayHistoryPrefix(loaded.messages)).toEqual(checkpointPrefix(conv));
+  await rejects(loadConversationOffThread(conv.id, true, store.path), /envelope checksum/);
 });
 
 test("SQL rollback leaves cache receipts valid, and unknown edits cannot be blessed by metadata writes", async () => {
@@ -310,7 +354,7 @@ test("SQL rollback leaves cache receipts valid, and unknown edits cannot be bles
   store.updateConversationPresentation(conv.id, { title: "metadata" });
   store.saveConversationSidebarState({ id: conv.id, folderId: null, pinned: true, sortOrder: 1 });
   expect(() => store.appendMessages(loaded, before)).toThrow(/Stale conversation revision/);
-  expect(store.load(conv.id)!.messages.length).toBe(before);
+  expect(store.db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM messages WHERE conversation_id=?").get(conv.id)!.n).toBe(before);
 });
 
 test("unwind queue-cleanup acknowledgements do not invalidate the freshly loaded runtime receipt", async () => {
@@ -375,7 +419,8 @@ test("owner blob edits invalidate verified clone windows through alias revision 
   const result = await loadConversationOffThread(id, false, store.path);
   expect(result!.loadDiagnostics?.cacheHit).toBe(false);
   expect(store.adoptLoadedConversation(result!)).toBe(true);
-  expect(() => buildConversationApiContext(result!.conversation)).toThrow(/checkpoint is invalid/);
+  expect(buildConversationApiContext(result!.conversation).usedActiveContext).toBe(true);
+  await rejects(loadToolOutputsOffThread(id, ["tool-0"], store.path), /blob checksum/);
 });
 
 test("missing revision triggers cannot silently authorize a cached checkpoint", async () => {
@@ -405,16 +450,34 @@ test("foreground loads use a free lane, while same-chat admission joins a prefet
   const small = createConversation("other-lane", "openai", "gpt-6.1-sol", 1);
   small.messages.push({ role: "user", content: "small", metadata: null });
   store.save(small);
-  let finished = false;
-  const warming = prefetchConversation(conv.id, store.path).then(result => { finished = true; return result; });
-  const independent = await loadConversationOffThread(small.id, false, store.path);
-  expect(independent).not.toBeNull();
-  expect(finished).toBe(false);
-  const joined = await loadConversationOffThread(conv.id, false, store.path);
-  expect(await warming).toBe(true);
-  expect(joined!.loadDiagnostics).toEqual({ cacheHit: true, archiveRowsRead: 0 });
-  expect(store.adoptLoadedConversation(joined!)).toBe(true);
-  expect(currentReplayHistoryPrefix(joined!.conversation.messages)).toEqual(currentReplayHistoryPrefix(conv.messages));
+  // Verify actual routing, not a race that requires cold loads to stay slower
+  // than another worker's startup as the loader gets faster.
+  const NativeWorker = globalThis.Worker;
+  const requests: Array<{ worker: Worker; request: { type: string; id?: string } }> = [];
+  globalThis.Worker = class extends NativeWorker {
+    postMessage(message: any, transfer: Transferable[]): void;
+    postMessage(message: any, options?: StructuredSerializeOptions): void;
+    postMessage(message: any, options?: Transferable[] | StructuredSerializeOptions): void {
+      requests.push({ worker: this, request: message });
+      if (Array.isArray(options)) super.postMessage(message, options);
+      else super.postMessage(message, options);
+    }
+  };
+  try {
+    const warming = prefetchConversation(conv.id, store.path);
+    const independent = await loadConversationOffThread(small.id, false, store.path);
+    expect(independent).not.toBeNull();
+    const joined = await loadConversationOffThread(conv.id, false, store.path);
+    expect(await warming).toBe(true);
+    const prefetch = requests.find(item => item.request.type === "prefetch" && item.request.id === conv.id)!;
+    const foreground = requests.find(item => item.request.type === "load" && item.request.id === small.id)!;
+    const sameChat = requests.find(item => item.request.type === "load" && item.request.id === conv.id)!;
+    expect(foreground.worker).not.toBe(prefetch.worker);
+    expect(sameChat.worker).toBe(prefetch.worker);
+    expect(joined!.loadDiagnostics).toEqual({ cacheHit: true, archiveRowsRead: 0, archivedBodiesRead: 0 });
+    expect(store.adoptLoadedConversation(joined!)).toBe(true);
+    expect(currentReplayHistoryPrefix(joined!.conversation.messages)).toEqual(checkpointPrefix(conv));
+  } finally { globalThis.Worker = NativeWorker; }
 }, 20_000);
 
 test("worker cache has a hard LRU entry bound and never retains full/uncompacted archives", async () => {
@@ -432,4 +495,115 @@ test("worker cache has a hard LRU entry bound and never retains full/uncompacted
   plain.messages.push({ role: "user", content: "plain", metadata: null });
   store.save(plain);
   expect(await prefetchConversation(plain.id, store.path)).toBe(false);
+});
+
+test("checkpoint-tail fingerprints survive a new compaction, worker loss and cold restart", async () => {
+  const { store, conv } = fixture();
+  const loaded = await load(store, conv);
+  const prefix = currentReplayHistoryPrefix(loaded.messages);
+  loaded.activeContext = {
+    ...loaded.activeContext!, historyHashMode: "checkpoint_tail_v1",
+    transcriptHistoryCount: prefix.historyCount, transcriptPrefixHash: prefix.hash,
+    compactionHistoryCount: prefix.historyCount, compactionPrefixHash: prefix.hash,
+    windowId: `${conv.id}:2`, windowNumber: 2, compactionCount: 2,
+  };
+  expect(isValidActiveContextCached(loaded.activeContext, loaded.messages)).toBe(true);
+  store.save(loaded);
+  const length = loaded.messages.length;
+  loaded.messages.push({ role: "user", content: "after newer checkpoint", metadata: null });
+  await prepareArchiveHashes(loaded.messages);
+  const before = currentReplayHistoryPrefix(loaded.messages);
+  store.appendMessages(loaded, length);
+  stopConversationLoader("restart after compaction");
+  const restarted = await load(store, conv);
+  expect(currentReplayHistoryPrefix(restarted.messages)).toEqual(before);
+  expect(buildConversationApiContext(restarted)).toEqual(buildConversationApiContext(loaded));
+  const canonical = store.load(conv.id)!;
+  expect(currentReplayHistoryPrefix(canonical.messages)).toEqual(before);
+  restarted.messages.at(-1)!.content = "changed after checkpoint";
+  await prepareArchiveHashes(restarted.messages);
+  expect(currentReplayHistoryPrefix(restarted.messages)).not.toEqual(before);
+});
+
+test("tail and required instructions are checked on cold resume; missing seals never get repaired", async () => {
+  const { store, conv } = fixture();
+  const last = conv.messages.length - 1;
+  store.db.query("UPDATE messages SET content_json='\"changed tail\"' WHERE conversation_id=? AND sequence=?").run(conv.id, last);
+  await rejects(loadConversationOffThread(conv.id, false, store.path), /content checksum/);
+  store.db.query("UPDATE messages SET content_json=? WHERE conversation_id=? AND sequence=?").run(JSON.stringify("recent answer"), conv.id, last);
+  store.db.query("DELETE FROM message_integrity WHERE conversation_id=? AND sequence=?").run(conv.id, last);
+  await rejects(loadConversationOffThread(conv.id, false, store.path), /envelope checksum/);
+  expect(store.db.query("SELECT 1 FROM message_integrity WHERE conversation_id=? AND sequence=?").get(conv.id, last)).toBeNull();
+  store.db.query("UPDATE messages SET content_json='\"changed instructions\"' WHERE conversation_id=? AND sequence=0").run(conv.id);
+  await rejects(loadConversationOffThread(conv.id, false, store.path), /message 0.*content checksum/);
+});
+
+test("checkpoint range receipts fail closed and readonly restart does not enroll removed checksums", async () => {
+  const { store, conv } = fixture();
+  store.db.query("UPDATE checkpoint_integrity SET sequence_floor=sequence_floor-1 WHERE conversation_id=?").run(conv.id);
+  await rejects(loadConversationOffThread(conv.id, false, store.path), /Checkpoint integrity/);
+  store.db.query("DELETE FROM checkpoint_integrity WHERE conversation_id=?").run(conv.id);
+  stopConversationLoader();
+  await rejects(loadConversationOffThread(conv.id, false, store.path), /Checkpoint integrity/);
+  expect(store.db.query("SELECT 1 FROM checkpoint_integrity WHERE conversation_id=?").get(conv.id)).toBeNull();
+});
+
+test("scroll checks only requested projection chunks; expansion separately checks canonical bodies", async () => {
+  const { store, conv } = fixture();
+  const page = store.loadDisplayPage(conv.id, 1)!;
+  expect(page.hasOlder).toBe(true);
+  store.db.query("UPDATE display_entries SET payload_json='{}' WHERE conversation_id=? AND pinned=0 AND entry_index=0").run(conv.id);
+  expect(store.loadDisplayPage(conv.id, 1)?.entries).toEqual(page.entries);
+  expect(() => store.loadDisplayPage(conv.id, 1, page.startIndex)).toThrow(/display chunk/);
+  expect((await load(store, conv)).activeContext).toBeDefined();
+  expect((await loadToolOutputsOffThread(conv.id, ["tool-0"], store.path))?.[0].toolCallId).toBe("tool-0");
+  store.db.query("DELETE FROM display_integrity WHERE conversation_id=? AND pinned=0 AND entry_index=?").run(conv.id, page.startIndex);
+  expect(() => store.loadDisplayPage(conv.id, 1)).toThrow(/display chunk/);
+});
+
+test("clone does not bless corrupt source checkpoints or projections when rebinding them", async () => {
+  const { store, conv } = fixture();
+  const target = { id: "not-blessed", title: "clone", sortOrder: 1, createdAt: 1, updatedAt: 1 };
+  store.db.query("UPDATE active_contexts SET payload_json='{}' WHERE conversation_id=?").run(conv.id);
+  expect(() => store.cloneConversation(conv.id, target)).toThrow(/Checkpoint integrity/);
+  expect(store.has(target.id)).toBe(false);
+  store.db.query("UPDATE active_contexts SET payload_json=? WHERE conversation_id=?").run(JSON.stringify(conv.activeContext), conv.id);
+  store.db.query("UPDATE display_entries SET payload_json='{}' WHERE conversation_id=? AND pinned=0 AND entry_index=0").run(conv.id);
+  expect(() => store.cloneConversation(conv.id, target)).toThrow(/display chunk/);
+  expect(store.has(target.id)).toBe(false);
+});
+
+test("requested blob ordinal corruption cannot pass an unchanged payload/content checksum", async () => {
+  const { store, conv } = fixture();
+  store.db.query("UPDATE message_blobs SET ordinal=42 WHERE conversation_id=? AND message_sequence=3 AND kind='tool_result'").run(conv.id);
+  expect(buildConversationApiContext(await load(store, conv)).usedActiveContext).toBe(true);
+  await rejects(loadToolOutputsOffThread(conv.id, ["tool-0"], store.path), /blob block mapping/);
+});
+
+test("full-window instruction insertion/removal preserves replay proofs, but covered replay edits do not", async () => {
+  const { store, conv } = fixture();
+  const result = (await loadConversationOffThread(conv.id, true, store.path))!;
+  expect(store.adoptLoadedConversation(result)).toBe(true);
+  const loaded = result.conversation;
+  const before = currentReplayHistoryPrefix(loaded.messages);
+  loaded.messages.shift();
+  store.save(loaded, { forceMessages: true });
+  await prepareArchiveHashes(loaded.messages);
+  expect(currentReplayHistoryPrefix(loaded.messages)).toEqual(before);
+  loaded.messages.unshift({ role: "system_instructions", content: "new instruction", metadata: null });
+  store.save(loaded, { forceMessages: true });
+  await prepareArchiveHashes(loaded.messages);
+  expect(currentReplayHistoryPrefix(loaded.messages)).toEqual(before);
+  stopConversationLoader();
+  expect(currentReplayHistoryPrefix((await load(store, conv)).messages)).toEqual(before);
+  loaded.messages[1].content = "cannot replace checkpoint-covered user";
+  await rejects(prepareArchiveHashes(loaded.messages), /Checkpoint-covered/);
+});
+
+test("ordinary writes cannot seal a structurally valid checkpoint with an unproved replay root", async () => {
+  const { store, conv } = fixture();
+  conv.activeContext = { ...conv.activeContext!, transcriptPrefixHash: "a".repeat(24) };
+  store.save(conv);
+  await rejects(loadConversationOffThread(conv.id, false, store.path), /Checkpoint integrity/);
+  expect(store.db.query("SELECT 1 FROM checkpoint_integrity WHERE conversation_id=?").get(conv.id)).toBeNull();
 });

@@ -1,13 +1,15 @@
 /**
  * Runtime-only references to a compacted archive. Never persisted.
  *
- * Workers hash real canonical bytes. The foreground holds only immutable row
+ * Workers verify the sealed checkpoint, real tail, and requested archive bytes.
+ * The foreground holds only immutable row
  * headers before the compact boundary and real messages after it. Hash proofs
  * are bound to exact object/content references, not to caller-supplied metadata.
  * Missing or changed proofs fail closed; archive references must never be
  * serialized as canonical messages or submitted to a provider.
  */
 import type { StoredMessage } from "./messages";
+import type { CheckpointHashAnchor } from "./checkpoint-tail-integrity";
 
 export interface ArchiveProofSnapshot {
   ref: StoredMessage;
@@ -25,6 +27,7 @@ export interface ArchiveWindow {
   archivedBytes: number;
   prefixSequence: number;
   prefixHistoryCount: number;
+  hashAnchor?: CheckpointHashAnchor;
   headers: StoredMessage[];
 }
 
@@ -70,6 +73,22 @@ function matches(messages: StoredMessage[], saved: ArchiveProofSnapshot[], throu
         || replay(message) !== old.replay) return false;
   }
   return true;
+}
+
+function matchesCheckpointCovered(messages: StoredMessage[], saved: ArchiveProofSnapshot[], window: ArchiveWindow): boolean {
+  const count = window.hashAnchor?.historyCount;
+  if (count === undefined) return matches(messages, saved, window.prefixSequence);
+  let seen = 0, oldIndex = 0;
+  for (const message of messages) {
+    if (seen === count) break;
+    if (!replay(message)) continue;
+    while (oldIndex < saved.length && !saved[oldIndex].replay) oldIndex++;
+    const old = saved[oldIndex++];
+    if (!old || message !== old.ref || message.role !== old.role
+        || message.content !== old.content || message.providerData !== old.providerData) return false;
+    seen++;
+  }
+  return seen === count;
 }
 
 export function archiveWindow(messages: StoredMessage[]): ArchiveWindow | null {
@@ -132,16 +151,27 @@ export function bindArchiveHashProof(
   const combined = new Map<number, string>();
   // A restored worker prefix can prove new tail cursors without recomputing all
   // historical user boundaries. Retain only still-bound immutable old proofs.
-  if (previous && matches(messages, previous.snapshot, window.prefixSequence)) {
-    for (const [count, hash] of previous.hashes) if (count <= window.prefixHistoryCount) combined.set(count, hash);
+  if (previous && matchesCheckpointCovered(messages, previous.snapshot, window)) {
+    for (const [count, hash] of previous.hashes) if (count <= (window.hashAnchor?.historyCount ?? window.prefixHistoryCount)) combined.set(count, hash);
   }
   for (const [count, hash] of hashes) combined.set(count, hash);
   proofs.set(messages, { window, snapshot: snapshot(messages), hashes: combined });
 }
 
 export function archiveProofSnapshot(messages: StoredMessage[]): ArchiveProofSnapshot[] {
+  const proof = proofs.get(messages);
+  if (proof?.window.hashAnchor && !matchesCheckpointCovered(messages, proof.snapshot, proof.window)) {
+    throw new Error("Checkpoint-covered conversation history was changed");
+  }
   freezeReplayContent(messages);
   return snapshot(messages);
+}
+
+/** Explicit canonical rewrites may retire a checkpoint, never its row headers. */
+export function forgetFullArchiveWindow(messages: StoredMessage[]): void {
+  const window = archiveWindow(messages);
+  if (window?.prefixSequence) throw new Error("Cannot rewrite an unmaterialized archive");
+  proofs.delete(messages);
 }
 
 export function archiveProofSnapshotMatches(messages: StoredMessage[], saved: ArchiveProofSnapshot[]): boolean {

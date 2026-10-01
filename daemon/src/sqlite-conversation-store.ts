@@ -29,6 +29,7 @@ import {
   isReplayHistoryMessage,
   isToolResultMessage,
   isValidActiveContextCached,
+  isValidActiveContextEnvelope,
   rememberValidatedActiveContext,
   summarizeConversation,
   validatedActiveContextCompactionHistoryCount,
@@ -56,12 +57,15 @@ import { adoptArchiveWindow, archiveWindow, assertCanonicalMessage, freezeArchiv
 import { MAX_TITLE_CONTEXT_CHARS, setArchivedTitleContext, titleUserText } from "./conversation-title-context";
 import type { ConversationLoadResult } from "./conversation-load-protocol";
 import { canonicalArchiveContent } from "./canonical-archive-content";
+import { checkpointTailHasher, updateCheckpointTailHash, integritySha, ConversationIntegrityError, type CheckpointHashAnchor, type ReplayHash } from "./checkpoint-tail-integrity";
 
-const SCHEMA_VERSION = 11;
+const SCHEMA_VERSION = 12;
+const INTEGRITY_TABLES = ["message_integrity", "checkpoint_integrity", "display_integrity"];
 const RUNTIME_REVISION_TRIGGERS: Record<string, string> = {};
 for (const [table, id] of [
   ["conversations", "id"], ["messages", "conversation_id"], ["message_blobs", "conversation_id"],
   ["message_blob_aliases", "conversation_id"], ["active_contexts", "conversation_id"], ["unwind_receipts", "conversation_id"],
+  ...INTEGRITY_TABLES.map(table => [table, "conversation_id"]),
 ]) for (const operation of ["INSERT", "UPDATE", "DELETE"]) {
   const name = `runtime_revision_${table}_${operation.toLowerCase()}`;
   const refs = operation === "INSERT" ? ["NEW"] : operation === "DELETE" ? ["OLD"] : ["OLD", "NEW"];
@@ -88,7 +92,7 @@ const DEFAULT_FILE = "exocortex.sqlite3";
 const RECENT_HISTORY_IMAGE_PAYLOAD_ENTRIES = 8;
 type RuntimeWindowRead = {
   result: ConversationLoadResult;
-  baseHash: ReturnType<typeof createHash>;
+  baseHash: ReplayHash;
   prefixHashes: Array<[number, string]>;
 };
 
@@ -187,6 +191,10 @@ interface MessageRow {
   has_context_tokens: number;
   has_context_checkpoint: number;
   content_hash?: string;
+  message_hash?: string;
+  is_real_user?: number;
+  is_replay_history?: number;
+  envelope_hash?: string | null;
 }
 
 interface MessageBlobRow {
@@ -194,6 +202,17 @@ interface MessageBlobRow {
   ordinal: number;
   kind: "tool_result" | "image";
   payload_json: string;
+  content_hash?: string;
+}
+
+interface CheckpointReceipt {
+  payload_json: string;
+  sequence_floor: number;
+  history_floor: number;
+  payload_hash: string;
+  receipt_hash: string;
+  title_context_json: string;
+  archived_bytes: number;
 }
 
 interface LoadedMessageSnapshot {
@@ -893,11 +912,194 @@ export class SqliteConversationStore implements ConversationRepository {
     if (current < 11 && targetVersion >= 11) {
       this.db.transaction(() => {
         this.db.exec("CREATE TABLE conversation_runtime_revisions (id TEXT PRIMARY KEY, revision INTEGER NOT NULL) WITHOUT ROWID, STRICT;");
-        for (const sql of Object.values(RUNTIME_REVISION_TRIGGERS)) this.db.exec(sql);
+        for (const [name, sql] of Object.entries(RUNTIME_REVISION_TRIGGERS)) {
+          if (!INTEGRITY_TABLES.some(table => name.startsWith(`runtime_revision_${table}_`))) this.db.exec(sql);
+        }
         this.db.query("INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)")
           .run(11, "transactional runtime cache revisions", Date.now());
       })();
     }
+    if (current < 12 && targetVersion >= 12) {
+      this.db.transaction(() => {
+        this.db.exec(`
+          CREATE TABLE message_integrity (
+            conversation_id TEXT NOT NULL, sequence INTEGER NOT NULL, envelope_hash TEXT NOT NULL,
+            PRIMARY KEY(conversation_id, sequence),
+            FOREIGN KEY(conversation_id, sequence) REFERENCES messages(conversation_id, sequence) ON DELETE CASCADE
+          ) WITHOUT ROWID, STRICT;
+          CREATE TABLE checkpoint_integrity (
+            conversation_id TEXT PRIMARY KEY REFERENCES active_contexts(conversation_id) ON DELETE CASCADE,
+            sequence_floor INTEGER NOT NULL, history_floor INTEGER NOT NULL,
+            payload_hash TEXT NOT NULL, receipt_hash TEXT NOT NULL,
+            title_context_json TEXT NOT NULL, archived_bytes INTEGER NOT NULL
+          ) STRICT;
+          CREATE TABLE display_integrity (
+            conversation_id TEXT NOT NULL, pinned INTEGER NOT NULL, entry_index INTEGER NOT NULL, payload_hash TEXT NOT NULL,
+            PRIMARY KEY(conversation_id, pinned, entry_index),
+            FOREIGN KEY(conversation_id,pinned,entry_index) REFERENCES display_entries(conversation_id,pinned,entry_index) ON DELETE CASCADE
+          ) WITHOUT ROWID, STRICT;
+        `);
+        for (const [name, sql] of Object.entries(RUNTIME_REVISION_TRIGGERS)) {
+          if (INTEGRITY_TABLES.some(table => name.startsWith(`runtime_revision_${table}_`))) this.db.exec(sql);
+        }
+        // Enroll existing SMALL envelopes and compact projections once. No old
+        // tool/image blob is read or revalidated. Production runs migrations on
+        // a startup worker; normal resume never enters this enrollment path.
+        this.initializeIntegrityBaselines();
+        this.db.query("INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)")
+          .run(12, "checkpoint-tail and requested-chunk integrity", Date.now());
+      })();
+    }
+  }
+
+  private envelopeHash(row: MessageRow): string {
+    return integritySha(JSON.stringify([
+      row.sequence, row.role, row.content_hash, row.metadata_json, row.provider_data_json,
+      row.context_checkpoint_json, row.has_provider_data, row.has_context_checkpoint,
+      row.is_real_user, row.is_replay_history,
+    ]));
+  }
+
+  /** Only for schema enrollment or a NEW owned snapshot, never repair a load. */
+  initializeIntegrityBaselines(): void {
+    if (this.readOnly) throw new Error("Cannot enroll integrity on a readonly database");
+    for (const row of this.db.query<MessageRow & { conversation_id: string }, []>(`
+      SELECT conversation_id,sequence,role,content_hash,metadata_json,provider_data_json,context_checkpoint_json,
+             has_provider_data,has_context_checkpoint,is_real_user,is_replay_history
+      FROM messages
+    `).iterate()) {
+      this.db.query("INSERT OR IGNORE INTO message_integrity VALUES (?, ?, ?)").run(row.conversation_id, row.sequence, this.envelopeHash(row));
+    }
+    for (const row of this.db.query<{ conversation_id: string }, []>("SELECT conversation_id FROM active_contexts").iterate()) {
+      if (!this.db.query("SELECT 1 FROM checkpoint_integrity WHERE conversation_id=?").get(row.conversation_id)) {
+        this.sealCheckpoint(row.conversation_id);
+      }
+    }
+    for (const row of this.db.query<{ conversation_id: string; pinned: number; entry_index: number; user_index: number | null; type: string; payload_json: string }, []>("SELECT * FROM display_entries").iterate()) {
+      this.db.query("INSERT OR IGNORE INTO display_integrity VALUES (?, ?, ?, ?)").run(row.conversation_id, row.pinned, row.entry_index, this.displayHash(row));
+    }
+  }
+
+  private displayHash(row: { pinned: number; entry_index: number; user_index: number | null; type: string; payload_json: string }) {
+    return integritySha(JSON.stringify([row.pinned, row.entry_index, row.user_index, row.type, row.payload_json]));
+  }
+
+  private verifiedDisplay(row: { pinned: number; entry_index: number; user_index: number | null; type: string; payload_json: string; payload_hash: string | null }) {
+    try {
+      if (!row.payload_hash || this.displayHash(row) !== row.payload_hash) throw new Error("projection checksum");
+      const value = JSON.parse(row.payload_json);
+      if (!value || value.type !== row.type) throw new Error("projection type");
+      return value;
+    } catch (error) {
+      throw new ConversationIntegrityError(`Archive display chunk failed at entry ${row.entry_index}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  private verifiedCheckpoint(id: string): CheckpointReceipt | null {
+    const checkpoint = this.db.query<CheckpointReceipt, [string]>(`
+      SELECT a.payload_json,i.sequence_floor,i.history_floor,i.payload_hash,i.receipt_hash,i.title_context_json,i.archived_bytes
+      FROM active_contexts a LEFT JOIN checkpoint_integrity i ON i.conversation_id=a.conversation_id WHERE a.conversation_id=?
+    `).get(id);
+    if (!checkpoint) return null;
+    if (!checkpoint.payload_hash || integritySha(checkpoint.payload_json) !== checkpoint.payload_hash
+        || integritySha(JSON.stringify([id,checkpoint.sequence_floor,checkpoint.history_floor,checkpoint.payload_hash,checkpoint.title_context_json,checkpoint.archived_bytes])) !== checkpoint.receipt_hash) {
+      throw new ConversationIntegrityError("Checkpoint integrity receipt is missing or changed");
+    }
+    return checkpoint;
+  }
+
+  private writeCheckpointReceipt(id: string, payload: string, floor: number, historyFloor: number, titleJson: string, bytes: number): void {
+    const payloadHash = integritySha(payload);
+    const receiptHash = integritySha(JSON.stringify([id, floor, historyFloor, payloadHash, titleJson, bytes]));
+    this.db.query("INSERT OR REPLACE INTO checkpoint_integrity VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(id, floor, historyFloor, payloadHash, receiptHash, titleJson, bytes);
+  }
+
+  private sealCheckpoint(id: string): void {
+    const row = this.db.query<{ payload_json: string }, [string]>("SELECT payload_json FROM active_contexts WHERE conversation_id=?").get(id);
+    if (!row) return;
+    let active: NonNullable<Conversation["activeContext"]>;
+    try { active = JSON.parse(row.payload_json); } catch { return; } // retain bad checkpoint, but no usable receipt
+    const total = this.db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM messages WHERE conversation_id=? AND is_replay_history=1").get(id)!.n;
+    if (!isValidActiveContextEnvelope(active, total)) return;
+    const legacyDivider = active.compactionHistoryCount === undefined
+      ? this.db.query<{ sequence: number }, [string, number]>(`
+          SELECT sequence FROM messages WHERE conversation_id=? AND role='system'
+          AND json_valid(metadata_json)
+          AND json_extract(metadata_json,'$.kind')='context_compaction_finished'
+          AND json_extract(metadata_json,'$.startedAt')=? ORDER BY sequence DESC LIMIT 1
+        `).get(id, active.compactedAt)
+      : null;
+    const historyFloor = active.compactionHistoryCount ?? (legacyDivider
+      ? this.db.query<{ n: number }, [string, number]>(`
+          SELECT COUNT(*) AS n FROM messages WHERE conversation_id=? AND is_replay_history=1 AND sequence<?
+        `).get(id, legacyDivider.sequence)!.n
+      : active.transcriptHistoryCount);
+    const floor = historyFloor === 0 ? 0 : (this.db.query<{ sequence: number }, [string, number]>(`
+      SELECT sequence FROM messages WHERE conversation_id=? AND is_replay_history=1 ORDER BY sequence LIMIT 1 OFFSET ?
+    `).get(id, historyFloor - 1)?.sequence ?? -2) + 1;
+    if (floor < 0) return;
+    const title: string[] = [];
+    let remaining = MAX_TITLE_CONTEXT_CHARS;
+    for (const user of this.db.query<{ content_json: string }, [string, number]>(`
+      SELECT content_json FROM messages WHERE conversation_id=? AND is_real_user=1 AND sequence<? ORDER BY sequence
+    `).iterate(id, floor)) {
+      if (remaining <= 0) break;
+      try {
+        const text = titleUserText(JSON.parse(user.content_json));
+        if (text) { title.push(text.slice(0, remaining)); remaining -= text.length; }
+      } catch { /* archival title is optional; bad source is refused on access */ }
+    }
+    const titleJson = JSON.stringify(title);
+    const bytes = this.db.query<{ n: number }, [string, number]>("SELECT COALESCE(SUM(content_bytes),0) AS n FROM messages WHERE conversation_id=? AND sequence<?").get(id, floor)!.n;
+    this.writeCheckpointReceipt(id, row.payload_json, floor, historyFloor, titleJson, bytes);
+  }
+
+  private verifyMessage(row: MessageRow, blobs: MessageBlobRow[]): StoredMessage {
+    try {
+      if (!row.envelope_hash || this.envelopeHash(row) !== row.envelope_hash) throw new Error("message envelope checksum");
+      for (const blob of blobs) {
+        if (!blob.content_hash || integritySha(blob.payload_json) !== blob.content_hash) throw new Error("blob checksum");
+      }
+      const stub = JSON.parse(row.content_json);
+      if (Array.isArray(stub)) {
+        const required = stub.filter(block => block.type === "image" || block.type === "tool_result").length;
+        if (blobs.length !== required) throw new Error("missing or duplicate message blobs");
+        const ordinals = new Map<number, number>();
+        const byKind = { image: 0, tool_result: 0 };
+        stub.forEach((block, index) => {
+          if (block.type === "image" || block.type === "tool_result") {
+            const kind = block.type as keyof typeof byKind;
+            ordinals.set(index, byKind[kind]++);
+          }
+        });
+        const occupied = new Set<number>();
+        for (const blob of blobs) {
+          const payload = JSON.parse(blob.payload_json);
+          const block = stub[payload.blockIndex];
+          if (!Number.isSafeInteger(payload.blockIndex) || !block || block.type !== blob.kind
+              || blob.ordinal !== ordinals.get(payload.blockIndex)
+              || occupied.has(payload.blockIndex)) throw new Error("blob block mapping");
+          occupied.add(payload.blockIndex);
+        }
+      } else if (blobs.length) throw new Error("unexpected message blobs");
+      const message = storedMessageFromRow(row, blobs);
+      if (!row.content_hash || integritySha(JSON.stringify(message.content)) !== row.content_hash) throw new Error("content checksum");
+      if (Number(isRealUserMessage(message)) !== row.is_real_user
+          || Number(isReplayHistoryMessage(message)) !== row.is_replay_history) throw new Error("message index flags");
+      return message;
+    } catch (error) {
+      throw new ConversationIntegrityError(`Archive integrity failed at message ${row.sequence}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  private sealMessageEnvelope(id: string, sequence: number): void {
+    const row = this.db.query<MessageRow,[string,number]>(`
+      SELECT sequence,role,content_hash,metadata_json,provider_data_json,context_checkpoint_json,
+             has_provider_data,has_context_checkpoint,is_real_user,is_replay_history
+      FROM messages WHERE conversation_id=? AND sequence=?
+    `).get(id,sequence)!;
+    this.db.query("INSERT OR REPLACE INTO message_integrity VALUES (?,?,?)").run(id,sequence,this.envelopeHash(row));
   }
 
   close(): void {
@@ -1172,20 +1374,6 @@ export class SqliteConversationStore implements ConversationRepository {
     return { summaries: this.listSummaries(), reused: this.db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM conversations WHERE deleted_at IS NULL").get()!.count, rebuilt: 0, removed: 0, saved: false };
   }
 
-  private loadMessages(id: string): StoredMessage[] {
-    const rows = this.db.query<MessageRow, [string]>(`
-      SELECT sequence, role, content_json, metadata_json, provider_data_json,
-             context_tokens_json, context_checkpoint_json, has_provider_data,
-             has_context_tokens, has_context_checkpoint
-      FROM messages WHERE conversation_id=? ORDER BY sequence
-    `).all(id);
-    const blobs = this.db.query<MessageBlobRow, [string]>(`
-      SELECT message_sequence, ordinal, kind, payload_json FROM resolved_message_blobs
-      WHERE conversation_id=? ORDER BY message_sequence, kind, ordinal
-    `).all(id);
-    return storedMessagesFromRows(rows, blobs).map(({ message }) => message);
-  }
-
   /** Load only rows whose checkpoint was rebound to a clone's active window. */
   private loadMessagesWithCheckpointWindow(
     id: string,
@@ -1215,9 +1403,21 @@ export class SqliteConversationStore implements ConversationRepository {
     const row = this.row(id, includeDeleted);
     if (!row) return null;
     try {
-      const messages = this.loadMessages(id);
       const activeRow = this.db.query<{ payload_json: string }, [string]>("SELECT payload_json FROM active_contexts WHERE conversation_id=?").get(id);
       const persistedActive = activeRow ? JSON.parse(activeRow.payload_json) as NonNullable<Conversation["activeContext"]> : null;
+      // Explicit full reads validate requested canonical history too, and
+      // retain checkpoint-relative fingerprints instead of recomputing the
+      // obsolete legacy stream SHA after a new compaction.
+      const total = this.db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM messages WHERE conversation_id=? AND is_replay_history=1").get(id)!.n;
+      if (persistedActive && isValidActiveContextEnvelope(persistedActive, total)) {
+        const reader = this.readRuntimeWindow(id, randomUUID(), true, includeDeleted);
+        let step = reader.next();
+        while (!step.done) step = reader.next();
+        const result = step.value?.result;
+        if (!result || !this.adoptLoadedConversation(result, includeDeleted)) return null;
+        return result.conversation;
+      }
+      const messages = [...this.verifiedMessages(id, Array.from({ length: row.stored_message_count }, (_, index) => index)).values()];
       const activeContext = persistedActive;
       const invalidActiveContext = persistedActive != null && !isValidActiveContextCached(persistedActive, messages);
       // Retain invalid checkpoints so replay can fail closed and quarantine
@@ -1267,9 +1467,8 @@ export class SqliteConversationStore implements ConversationRepository {
 
   /**
    * Worker-only cold load. A read transaction binds metadata, checkpoint and
-   * archive bytes to one SQLite snapshot. Prefix bodies are streamed in batches
-   * for integrity validation, then discarded; only immutable row headers and
-   * the last visible user group/checkpoint tail cross the worker boundary.
+   * checkpoint/tail bytes to one SQLite snapshot. Superseded archive bodies are
+   * verified only on explicit full reads or requested chunk access.
    */
   loadRuntimeWindow(id: string, handle: string, full = false): RuntimeWindowRead | null {
     const reader = this.readRuntimeWindow(id, handle, full);
@@ -1311,7 +1510,140 @@ export class SqliteConversationStore implements ConversationRepository {
   }
 
   /** Cooperative worker read; the snapshot remains pinned across batch yields. */
-  *readRuntimeWindow(id: string, handle: string, full = false, normalize = false): Generator<void, RuntimeWindowRead | null> {
+  *readRuntimeWindow(id: string, handle: string, full = false, includeDeleted = false): Generator<void, RuntimeWindowRead | null> {
+    if (!this.db.query("SELECT 1 FROM active_contexts WHERE conversation_id=?").get(id)) {
+      if (!full && this.db.query(`SELECT 1 FROM messages WHERE conversation_id=?
+          AND json_valid(metadata_json) AND json_extract(metadata_json,'$.kind')='context_compaction_finished' LIMIT 1`).get(id)) {
+        throw new ConversationIntegrityError("Compaction checkpoint is missing");
+      }
+      return yield* this.readFullRuntimeWindow(id, handle, full);
+    }
+    this.db.exec("BEGIN");
+    try {
+      const row = this.row(id, includeDeleted);
+      if (!row) return null;
+      const checkpoint = this.verifiedCheckpoint(id)!;
+      const active = JSON.parse(checkpoint.payload_json);
+      const floor = checkpoint.sequence_floor;
+      if (!Number.isSafeInteger(floor) || floor < 0 || floor > row.stored_message_count
+          || !Number.isSafeInteger(checkpoint.history_floor) || checkpoint.history_floor < 0) {
+        throw new ConversationIntegrityError("Checkpoint range is invalid");
+      }
+      const anchor: CheckpointHashAnchor = { historyCount: active.transcriptHistoryCount, hash: active.transcriptPrefixHash };
+      const hash = checkpointTailHasher(anchor);
+      const hashes = new Map<number, string>([[anchor.historyCount, anchor.hash]]);
+      if (active.compactionHistoryCount !== undefined) hashes.set(active.compactionHistoryCount, active.compactionPrefixHash);
+      const messages: StoredMessage[] = [];
+      let count = 0;
+      // Index-only headers preserve absolute user/message indices. No content,
+      // provider replay body or blob before floor is read on the resume path.
+      type Header = {
+        sequence: number; role: StoredMessage["role"]; metadata_json: string | null;
+        is_real_user: number; is_replay_history: number;
+      };
+      let instructionRows = 0;
+      for (let start = 0; start < floor; start += 128) {
+        const end = Math.min(start + 128, floor);
+        const batch = this.db.query<Header, [string, number, number]>(`
+          SELECT sequence,role,metadata_json,is_real_user,is_replay_history
+          FROM messages WHERE conversation_id=? AND sequence>=? AND sequence<? ORDER BY sequence
+        `).all(id, start, end);
+        if (batch.length !== end - start || batch.some((item, index) => item.sequence !== start + index)) {
+          throw new ConversationIntegrityError("Archive index is non-contiguous");
+        }
+        const requested = batch.filter(item => full || item.role === "system_instructions").map(item => item.sequence);
+        const verified = this.verifiedMessages(id, requested);
+        if (!full) instructionRows += requested.length;
+        for (const item of batch) {
+          let metadata: StoredMessage["metadata"] = null;
+          try { metadata = parseOptional(item.metadata_json); } catch { /* old bytes validated only when requested */ }
+          if (!item.is_replay_history && item.role !== "system" && item.role !== "system_instructions") metadata = { ...metadata, kind: "context_warning" } as StoredMessage["metadata"];
+          if (item.is_real_user && metadata?.system) metadata = { ...metadata, system: false };
+          const message: StoredMessage = {
+            role: item.role, metadata,
+            content: item.role === "user" && !item.is_real_user && !metadata?.system
+              ? [{ type: "tool_result", tool_use_id: "", content: "" }] : "",
+          };
+          if (item.role === "system_instructions" || full) Object.assign(message, verified.get(item.sequence)!);
+          messages.push(message);
+          count += Number(isReplayHistoryMessage(message));
+        }
+        yield;
+      }
+      if (count !== checkpoint.history_floor) throw new ConversationIntegrityError("Checkpoint/index boundary changed");
+      const baseHash = hash.copy();
+      let tailRows = 0;
+      for (let start = floor; start < row.stored_message_count; start += 128) {
+        const end = Math.min(start + 128, row.stored_message_count);
+        const verified = this.verifiedMessages(id, Array.from({ length: end - start }, (_, index) => start + index));
+        for (const message of verified.values()) {
+          if (isReplayHistoryMessage(message)) {
+            if (count >= anchor.historyCount) updateCheckpointTailHash(hash, message);
+            count++;
+          }
+          // Legacy checkpoints carried rewindable replay after compaction.
+          // Their saved user cursor is checksum-verified with the bounded row.
+          if (count <= anchor.historyCount && message.contextCheckpoint) {
+            hashes.set(message.contextCheckpoint.transcriptHistoryCount, message.contextCheckpoint.transcriptPrefixHash);
+          }
+          if (count > anchor.historyCount) hashes.set(count, hash.copy().digest("hex").slice(0, 24));
+          messages.push(message); tailRows++;
+        }
+        yield;
+      }
+      if (!isValidActiveContextEnvelope(active, count)) throw new ConversationIntegrityError("Checkpoint envelope is invalid");
+      hashes.set(anchor.historyCount, anchor.hash);
+      const window = {
+        handle, conversationId: id, path: this.path, prefixSequence: full ? 0 : floor,
+        prefixHistoryCount: full ? 0 : checkpoint.history_floor,
+        prefixHash: anchor.hash, archivedBytes: full ? 0 : checkpoint.archived_bytes, hashAnchor: anchor,
+      };
+      // The result crosses a structured-clone boundary. Bind/freeze identities
+      // once, at foreground adoption, rather than doing the same O(header count)
+      // work here on identities that will immediately be discarded.
+      const receipt = this.db.query<{ operation_id: string; user_message_index: number; history_total_entries: number }, [string]>("SELECT * FROM unwind_receipts WHERE conversation_id=?").get(id);
+      return {
+        result: {
+          conversation: {
+            id:row.id,provider:row.provider,model:row.model,effort:row.effort,
+            fastMode:row.ultrafast_mode===1?"ultrafast":row.fast_mode===1,
+            messages,activeContext:active,createdAt:row.created_at,updatedAt:row.updated_at,lastContextTokens:row.last_context_tokens,
+            marked:row.marked===1,pinned:row.pinned===1,muted:row.muted===1,sortOrder:row.sort_order,folderId:row.folder_id,title:row.title,
+            goal:normalizeConversationGoal(parseOptional(row.goal_json)),subagentMaxDepth:row.subagent_max_depth,
+            subagentPolicy:parseOptional(row.subagent_policy_json),toolPolicy:parseOptional(row.tool_policy_json),
+          },
+          generation:row.storage_generation,validatedActiveContext:true,hashes:[...hashes],window,
+          archivedTitleContext:JSON.parse(checkpoint.title_context_json),readRevision:this.runtimeCacheToken(id) ?? undefined,
+          loadDiagnostics:{cacheHit:false,archiveRowsRead:full?messages.length:tailRows+instructionRows,archivedBodiesRead:full?floor:instructionRows},
+          receipt:receipt?{operationId:receipt.operation_id,userMessageIndex:receipt.user_message_index,historyTotalEntries:receipt.history_total_entries}:null,
+        },
+        baseHash, prefixHashes:[...hashes].filter(([n])=>n<=anchor.historyCount),
+      };
+    } finally { this.db.exec("ROLLBACK"); }
+  }
+
+  private verifiedMessages(id: string, sequences: readonly number[]): Map<number, StoredMessage> {
+    const result = new Map<number,StoredMessage>();
+    for (let offset=0;offset<sequences.length;offset+=128) {
+      const batch=sequences.slice(offset,offset+128);
+      const rows=this.db.query<MessageRow,string[]>(`
+        SELECT m.*,i.envelope_hash FROM messages m LEFT JOIN message_integrity i
+        ON i.conversation_id=m.conversation_id AND i.sequence=m.sequence
+        WHERE m.conversation_id=? AND m.sequence IN (${sqlPlaceholders(batch.length)}) ORDER BY m.sequence
+      `).all(id,...batch.map(String));
+      if (rows.length!==batch.length) throw new ConversationIntegrityError("Requested archive chunk is missing rows");
+      const blobs=this.db.query<MessageBlobRow,string[]>(`
+        SELECT * FROM resolved_message_blobs WHERE conversation_id=? AND message_sequence IN (${sqlPlaceholders(batch.length)})
+        ORDER BY message_sequence,kind,ordinal
+      `).all(id,...batch.map(String));
+      const grouped=new Map<number,MessageBlobRow[]>();
+      for(const blob of blobs){const list=grouped.get(blob.message_sequence)??[];list.push(blob);grouped.set(blob.message_sequence,list);}
+      for(const item of rows)result.set(item.sequence,this.verifyMessage(item,grouped.get(item.sequence)??[]));
+    }
+    return result;
+  }
+
+  private *readFullRuntimeWindow(id: string, handle: string, full = false, normalize = false): Generator<void, RuntimeWindowRead | null> {
     this.db.exec("BEGIN");
     let snapshotOpen = true;
     try {
@@ -1373,13 +1705,12 @@ export class SqliteConversationStore implements ConversationRepository {
       for (let start = 0; start < row.stored_message_count; start += 128) {
         const end = Math.min(row.stored_message_count, start + 128);
         const rows = this.db.query<MessageRow, [string, number, number]>(`
-          SELECT sequence, role, content_json, metadata_json, provider_data_json,
-                 context_tokens_json, context_checkpoint_json, has_provider_data,
-                 has_context_tokens, has_context_checkpoint, content_hash
-          FROM messages WHERE conversation_id=? AND sequence>=? AND sequence<? ORDER BY sequence
+          SELECT m.*, i.envelope_hash FROM messages m LEFT JOIN message_integrity i
+          ON i.conversation_id=m.conversation_id AND i.sequence=m.sequence
+          WHERE m.conversation_id=? AND m.sequence>=? AND m.sequence<? ORDER BY m.sequence
         `).all(id, start, end);
         const blobs = this.db.query<MessageBlobRow, [string, number, number]>(`
-          SELECT message_sequence, ordinal, kind, payload_json FROM resolved_message_blobs
+          SELECT message_sequence, ordinal, kind, payload_json,content_hash FROM resolved_message_blobs
           WHERE conversation_id=? AND message_sequence>=? AND message_sequence<?
           ORDER BY message_sequence, kind, ordinal
         `).all(id, start, end);
@@ -1400,7 +1731,7 @@ export class SqliteConversationStore implements ConversationRepository {
                 !normalize && isReplayHistoryMessage({ role: messageRow.role, content: "", metadata: parseOptional(messageRow.metadata_json) })
                   && Number.isSafeInteger(active?.transcriptHistoryCount) && historyCount < active!.transcriptHistoryCount,
                 normalize) : null;
-          const message = archived?.message ?? storedMessageFromRow(messageRow, messageBlobs);
+          const message = archived?.message ?? this.verifyMessage(messageRow, messageBlobs);
           if (sequence === prefixSequence) {
             baseHash = hash.copy();
             prefixHistoryCount = historyCount;
@@ -1458,7 +1789,7 @@ export class SqliteConversationStore implements ConversationRepository {
         // Preserve legacy canonical JSON semantics (whitespace/number formatting,
         // etc.) and fail-closed corruption behavior via the original slow path.
         this.db.exec("ROLLBACK"); snapshotOpen = false;
-        return yield* this.readRuntimeWindow(id, handle, full, true);
+        return yield* this.readFullRuntimeWindow(id, handle, full, true);
       }
       const conversation: Conversation = {
         id: row.id, provider: row.provider, model: row.model, effort: row.effort,
@@ -1496,9 +1827,9 @@ export class SqliteConversationStore implements ConversationRepository {
   }
 
   /** Install worker-owned read state only if its durable generation still exists. */
-  adoptLoadedConversation(result: ConversationLoadResult): boolean {
+  adoptLoadedConversation(result: ConversationLoadResult, includeDeleted = false): boolean {
     const conv = result.conversation;
-    const row = this.row(conv.id);
+    const row = this.row(conv.id, includeDeleted);
     if (!row || row.storage_generation !== result.generation
         || row.stored_message_count !== conv.messages.length
         || (result.readRevision && result.readRevision !== this.runtimeCacheToken(conv.id))) return false;
@@ -1689,6 +2020,30 @@ export class SqliteConversationStore implements ConversationRepository {
     let committed = false;
     try {
       this.db.transaction(() => {
+        const sourceReceipt = active ? this.verifiedCheckpoint(sourceId) : null;
+        // Rebinding changes these fields. Verify the source envelopes before
+        // minting new checksums; untouched historical bodies stay deferred.
+        if (active) {
+          for (const message of this.db.query<MessageRow, [string, string]>(`
+            SELECT m.sequence,m.role,m.content_hash,m.metadata_json,m.provider_data_json,m.context_checkpoint_json,
+                   m.has_provider_data,m.has_context_checkpoint,m.is_real_user,m.is_replay_history,i.envelope_hash
+            FROM messages m LEFT JOIN message_integrity i
+            ON i.conversation_id=m.conversation_id AND i.sequence=m.sequence
+            WHERE m.conversation_id=? AND json_valid(m.context_checkpoint_json)
+            AND json_extract(m.context_checkpoint_json,'$.windowId')=?
+          `).iterate(sourceId, active.window_id)) {
+            if (!message.envelope_hash || this.envelopeHash(message) !== message.envelope_hash) {
+              throw new ConversationIntegrityError(`Clone source envelope failed at message ${message.sequence}`);
+            }
+          }
+        }
+        for (const entry of this.db.query<{
+          pinned: number; entry_index: number; user_index: number | null; type: string; payload_json: string; payload_hash: string | null;
+        }, [string]>(`
+          SELECT d.*,i.payload_hash FROM display_entries d LEFT JOIN display_integrity i
+          ON i.conversation_id=d.conversation_id AND i.pinned=d.pinned AND i.entry_index=d.entry_index
+          WHERE d.conversation_id=? AND d.type='user'
+        `).iterate(sourceId)) this.verifiedDisplay(entry);
         this.db.query(`
           INSERT INTO conversations(
             id, provider, model, effort, fast_mode, created_at, updated_at,
@@ -1806,6 +2161,7 @@ export class SqliteConversationStore implements ConversationRepository {
               SET message_hash=CASE sequence ${cases} END
               WHERE conversation_id=? AND sequence IN (${sequences})
             `).run(...rebound.map(({ message }) => messageFingerprint(message)), target.id);
+            for(const item of rebound)this.sealMessageEnvelope(target.id,item.sequence);
           }
         }
         // New page-v2 identities derive directly from already-stored content hashes,
@@ -1825,6 +2181,17 @@ export class SqliteConversationStore implements ConversationRepository {
           WHERE entry.conversation_id=? AND entry.pinned=0 AND entry.type='user'
             AND users.user_index=entry.user_index
         `).run(target.id, target.id);
+        this.db.query(`INSERT OR IGNORE INTO message_integrity SELECT ?,sequence,envelope_hash FROM message_integrity WHERE conversation_id=?`).run(target.id,sourceId);
+        this.db.query(`INSERT INTO display_integrity SELECT ?,pinned,entry_index,payload_hash FROM display_integrity WHERE conversation_id=?`).run(target.id,sourceId);
+        // Only user projections changed during clone rebinding.
+        for(const item of this.db.query<{pinned:number;entry_index:number;user_index:number|null;type:string;payload_json:string},[string]>(
+          "SELECT * FROM display_entries WHERE conversation_id=? AND type='user'",
+        ).iterate(target.id))this.db.query("UPDATE display_integrity SET payload_hash=? WHERE conversation_id=? AND pinned=? AND entry_index=?")
+          .run(this.displayHash(item),target.id,item.pinned,item.entry_index);
+        if (sourceReceipt) {
+          const payload = this.db.query<{ payload_json: string }, [string]>("SELECT payload_json FROM active_contexts WHERE conversation_id=?").get(target.id)!.payload_json;
+          this.writeCheckpointReceipt(target.id, payload, sourceReceipt.sequence_floor, sourceReceipt.history_floor, sourceReceipt.title_context_json, sourceReceipt.archived_bytes);
+        }
         // Clone creation and its undo record commit together. Besides closing a
         // crash gap, this avoids a second large-WAL auto-checkpoint on the caller.
         this.appendStackEntry("undo", { type: "conversation_removed", id: target.id });
@@ -1899,6 +2266,7 @@ export class SqliteConversationStore implements ConversationRepository {
       Object.hasOwn(message, "contextTokens") ? 1 : 0,
       Object.hasOwn(message, "contextCheckpoint") ? 1 : 0,
     );
+    this.sealMessageEnvelope(id, sequence);
     for (const tool of tools) {
       this.db.query(`
         INSERT INTO tool_outputs(conversation_id, message_sequence, ordinal, tool_call_id, output, is_error)
@@ -1990,6 +2358,14 @@ export class SqliteConversationStore implements ConversationRepository {
       active.compactedAt,
       JSON.stringify(active),
     );
+    // Enrollment trusts the legacy baseline, but ordinary writes must only
+    // mint a usable receipt for a checkpoint validated by its derivation/proof.
+    if (this.checkpointIsValidated(conv)) this.sealCheckpoint(conv.id);
+  }
+
+  private checkpointIsValidated(conv: Conversation): boolean {
+    try { return !!conv.activeContext && isValidActiveContextCached(conv.activeContext, conv.messages); }
+    catch { return false; } // retain invalid payload, never bless stale proofs
   }
 
   private firstChangedMessage(conv: Conversation, forceMessages: boolean): number | null {
@@ -2100,10 +2476,14 @@ export class SqliteConversationStore implements ConversationRepository {
       }
       const pinned = entry.type === "system_instructions" ? 1 : 0;
       const index = pinned ? pinnedIndex++ : historyIndex++;
+      const payload = JSON.stringify(entry);
       this.db.query(`
         INSERT INTO display_entries(conversation_id, pinned, entry_index, user_index, type, payload_json)
         VALUES (?, ?, ?, ?, ?, ?)
-      `).run(conv.id, pinned, index, userIndex, entry.type, JSON.stringify(entry));
+      `).run(conv.id, pinned, index, userIndex, entry.type, payload);
+      this.db.query("INSERT INTO display_integrity VALUES (?,?,?,?)").run(
+        conv.id,pinned,index,this.displayHash({pinned,entry_index:index,user_index:userIndex,type:entry.type,payload_json:payload}),
+      );
     }
     if (localUser !== realUsers.length) throw new Error(`Display/user mismatch while indexing ${conv.id}: ${localUser}/${realUsers.length}`);
     const displayCount = this.db.query<{ count: number }, [string]>(
@@ -2147,6 +2527,17 @@ export class SqliteConversationStore implements ConversationRepository {
         this.faultInjection?.("save.after-display");
       }
       if (!existing || loaded?.activeContextRef !== conv.activeContext) this.saveActiveContext(conv);
+      else if (changedAt !== null && conv.activeContext) {
+        const checkpoint = this.db.query<{ sequence_floor: number }, [string]>(
+          "SELECT sequence_floor FROM checkpoint_integrity WHERE conversation_id=?",
+        ).get(conv.id);
+        // Explicit full rewrites (e.g. inserting system instructions) can move
+        // the absolute sequence boundary without changing replay cursors.
+        if (checkpoint && changedAt < checkpoint.sequence_floor) {
+          if (this.checkpointIsValidated(conv)) this.sealCheckpoint(conv.id);
+          else this.db.query("DELETE FROM checkpoint_integrity WHERE conversation_id=?").run(conv.id);
+        }
+      }
       this.faultInjection?.("save.before-commit");
       if (loaded?.readRevision) readRevision = this.runtimeCacheToken(conv.id)!;
     })();
@@ -2639,11 +3030,15 @@ export class SqliteConversationStore implements ConversationRepository {
   }
 
   loadToolOutputs(id: string, toolCallIds?: readonly string[]): ToolOutputInfo[] | null {
+    return this.db.transaction(() => this.loadVerifiedToolOutputs(id, toolCallIds))();
+  }
+
+  private loadVerifiedToolOutputs(id: string, toolCallIds?: readonly string[]): ToolOutputInfo[] | null {
     if (!this.has(id)) return null;
     const requestedIds = toolCallIds ? [...new Set(toolCallIds)] : null;
     if (requestedIds?.length === 0) return [];
 
-    type ToolOutputRow = { tool_call_id: string; content_json: string; payload_json: string | null };
+    type ToolOutputRow = { tool_call_id: string; message_sequence:number; ordinal:number };
     const selectRows = (ids?: readonly string[]): ToolOutputRow[] => {
       const idFilter = ids ? ` AND t.tool_call_id IN (${sqlPlaceholders(ids.length)})` : "";
       // Do not join the resolved_message_blobs UNION view here. SQLite
@@ -2651,19 +3046,8 @@ export class SqliteConversationStore implements ConversationRepository {
       // predicates, which turns an unwarmed Ctrl+O into a scan of every blob in
       // the database. Point-join the local row/alias and its owner instead.
       return this.db.query<ToolOutputRow, string[]>(`
-        SELECT t.tool_call_id, m.content_json,
-               COALESCE(direct.payload_json, owner.payload_json) AS payload_json
+        SELECT t.tool_call_id,t.message_sequence,t.ordinal
         FROM tool_outputs t
-        JOIN messages m ON m.conversation_id=t.conversation_id AND m.sequence=t.message_sequence
-        LEFT JOIN message_blobs direct ON direct.conversation_id=t.conversation_id
-          AND direct.message_sequence=t.message_sequence
-          AND direct.kind='tool_result' AND direct.ordinal=t.ordinal
-        LEFT JOIN message_blob_aliases alias ON alias.conversation_id=t.conversation_id
-          AND alias.message_sequence=t.message_sequence
-          AND alias.kind='tool_result' AND alias.ordinal=t.ordinal
-        LEFT JOIN message_blobs owner ON owner.conversation_id=alias.owner_conversation_id
-          AND owner.message_sequence=alias.owner_message_sequence
-          AND owner.kind=alias.owner_kind AND owner.ordinal=alias.owner_ordinal
         WHERE t.conversation_id=?${idFilter} ORDER BY t.message_sequence, t.ordinal
       `).all(id, ...(ids ?? []));
     };
@@ -2679,18 +3063,13 @@ export class SqliteConversationStore implements ConversationRepository {
       rows.push(...selectRows());
     }
 
+    const verified=this.verifiedMessages(id,[...new Set(rows.map(row=>row.message_sequence))].sort((a,b)=>a-b));
     return rows.map((row) => {
-      let raw: unknown;
-      if (row.payload_json != null) {
-        raw = (JSON.parse(row.payload_json) as { value: unknown }).value;
-      } else {
-        // Schema <=5 rows retain the complete content inline.
-        const content = JSON.parse(row.content_json);
-        const part = Array.isArray(content)
-          ? content.find((candidate: any) => candidate?.type === "tool_result" && candidate.tool_use_id === row.tool_call_id)
-          : null;
-        raw = part?.content;
-      }
+      const message=verified.get(row.message_sequence)!;
+      const parts=Array.isArray(message.content)?message.content.filter(part=>part.type==="tool_result"):[];
+      const part=parts[row.ordinal];
+      if(!part || part.type!=="tool_result" || part.tool_use_id!==row.tool_call_id)throw new ConversationIntegrityError("Tool-output index does not match its verified message");
+      const raw=part.content;
       const output = typeof raw === "string"
         ? raw
         : Array.isArray(raw)
@@ -2701,6 +3080,10 @@ export class SqliteConversationStore implements ConversationRepository {
   }
 
   loadDisplayPage(id: string, turns: number, beforeEntryIndex?: number): StoredDisplayHistoryPage | null {
+    return this.db.transaction(() => this.loadVerifiedDisplayPage(id, turns, beforeEntryIndex))();
+  }
+
+  private loadVerifiedDisplayPage(id: string, turns: number, beforeEntryIndex?: number): StoredDisplayHistoryPage | null {
     const row = this.row(id);
     if (!row) return null;
     const total = row.display_entry_count;
@@ -2722,13 +3105,19 @@ export class SqliteConversationStore implements ConversationRepository {
           SELECT entry_index FROM display_entries WHERE conversation_id=? AND pinned=0 AND user_index=? LIMIT 1
         `).get(id, startUserIndex)?.entry_index ?? 0
       : 0;
-    const pinnedEntries = this.db.query<{ payload_json: string }, [string]>(`
-      SELECT payload_json FROM display_entries WHERE conversation_id=? AND pinned=1 ORDER BY entry_index
-    `).all(id).map((entry) => JSON.parse(entry.payload_json));
-    const entries = this.db.query<{ entry_index: number; payload_json: string }, [string, number, number]>(`
-      SELECT entry_index, payload_json FROM display_entries
-      WHERE conversation_id=? AND pinned=0 AND entry_index>=? AND entry_index<? ORDER BY entry_index
-    `).all(id, startIndex, endIndex).map((entry) => compactOldImages(JSON.parse(entry.payload_json), entry.entry_index, total));
+    type ProjectionRow={pinned:number;entry_index:number;user_index:number|null;type:string;payload_json:string;payload_hash:string|null};
+    const pinnedEntries = this.db.query<ProjectionRow, [string]>(`
+      SELECT d.*,i.payload_hash FROM display_entries d LEFT JOIN display_integrity i
+      ON i.conversation_id=d.conversation_id AND i.pinned=d.pinned AND i.entry_index=d.entry_index
+      WHERE d.conversation_id=? AND d.pinned=1 ORDER BY d.entry_index
+    `).all(id).map((entry) => this.verifiedDisplay(entry));
+    const selected = this.db.query<ProjectionRow, [string, number, number]>(`
+      SELECT d.*,i.payload_hash FROM display_entries d LEFT JOIN display_integrity i
+      ON i.conversation_id=d.conversation_id AND i.pinned=d.pinned AND i.entry_index=d.entry_index
+      WHERE d.conversation_id=? AND d.pinned=0 AND d.entry_index>=? AND d.entry_index<? ORDER BY d.entry_index
+    `).all(id, startIndex, endIndex);
+    if(selected.length!==endIndex-startIndex || selected.some((entry,index)=>entry.entry_index!==startIndex+index))throw new ConversationIntegrityError("Requested display chunk is non-contiguous");
+    const entries=selected.map(entry=>compactOldImages(this.verifiedDisplay(entry),entry.entry_index,total));
     return {
       convId: id,
       provider: row.provider,

@@ -57,7 +57,8 @@ function getWorker(lane: number): Worker {
 }
 type Rpc = Omit<Extract<ConversationLoadRequest, { type: "load" }>, "requestId">
   | Omit<Extract<ConversationLoadRequest, { type: "hash" }>, "requestId">
-  | Omit<Extract<ConversationLoadRequest, { type: "prefetch" }>, "requestId">;
+  | Omit<Extract<ConversationLoadRequest, { type: "prefetch" }>, "requestId">
+  | Omit<Extract<ConversationLoadRequest, { type: "tools" }>, "requestId">;
 function rpc(request: Rpc, lane: number): Promise<ConversationLoadResponse> {
   if (pending.size >= 128) return Promise.reject(new Error("Conversation loader queue is full"));
   const current = getWorker(lane), requestId = ++nextId;
@@ -114,6 +115,11 @@ export async function prefetchConversation(id: string, path = sqliteConversation
     return "warmed" in response && response.warmed === true;
   } finally { if (backgroundKey === key) backgroundKey = null; }
 }
+export async function loadToolOutputsOffThread(id: string, toolCallIds?: readonly string[], path = sqliteConversationStorePath()) {
+  const response = await rpc({ type: "tools", id, toolCallIds, path }, chooseLane(keyFor(path, id)));
+  if (!("outputs" in response)) throw new Error("Invalid verified archive output response");
+  return response.outputs;
+}
 /** Debounce sidebar hopping; never proactively scan the corpus at startup. */
 export function scheduleConversationPrewarm(id: string): void {
   clearTimeout(prewarmTimer);
@@ -138,6 +144,7 @@ export async function prepareArchiveHashes(messages: StoredMessage[]): Promise<v
       handle: window.handle, conversationId: window.conversationId, prefixHash: window.prefixHash,
       path: window.path, archivedBytes: window.archivedBytes,
       prefixSequence: window.prefixSequence, prefixHistoryCount: window.prefixHistoryCount,
+      hashAnchor: window.hashAnchor,
     }, path: window.path, tail: messages.slice(window.prefixSequence),
   }, lane);
   if (!response.hashes) throw new Error("Invalid conversation hash response");

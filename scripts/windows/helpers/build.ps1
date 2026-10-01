@@ -49,7 +49,7 @@ try {
     New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
 
     Write-Host "Building exocortexd.exe..."
-    Invoke-Bun build --compile --target=bun-windows-x64 daemon/src/windows-entry.ts --outfile (Join-Path $DistDir "exocortexd.exe")
+    Invoke-Bun build --compile --target=bun-windows-x64 daemon/src/windows-entry.ts daemon/src/conversation-load-worker.ts daemon/src/conversation-schema-worker.ts --outfile (Join-Path $DistDir "exocortexd.exe")
 
     Write-Host "Building exocortex.exe..."
     Invoke-Bun build --compile --target=bun-windows-x64 tui/src/main.ts --outfile (Join-Path $DistDir "exocortex.exe")
