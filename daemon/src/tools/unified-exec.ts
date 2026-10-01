@@ -10,7 +10,7 @@ import { join, resolve } from "path";
 import { tmpdir } from "os";
 import { socketPath } from "@exocortex/shared/paths";
 import { rewriteExternalToolShellCommandForExecution } from "../external-tools";
-import { backgroundTaskRecordPath, removeBackgroundTaskRecord, suppressBackgroundTaskNotification } from "../background-task-state";
+import { backgroundTaskRecordPath, removeBackgroundTaskRecord } from "../background-task-state";
 import type { Tool, ToolExecutionContext, ToolResult } from "./types";
 import { safeSlice } from "./util";
 import { spawnShellRunner } from "./shell-runner";
@@ -32,7 +32,6 @@ interface Session {
   title: string;
   context?: ToolExecutionContext;
   backgrounded: boolean;
-  suppressed: boolean;
   busy: boolean;
   closed: boolean;
   code: number | null;
@@ -68,12 +67,8 @@ function integer(input: Record<string, unknown>, key: string, fallback: number, 
   return value;
 }
 
-function stop(session: Session, suppress = false): boolean {
+function stop(session: Session): boolean {
   if (session.closed) return false;
-  if (suppress) {
-    session.suppressed = true;
-    if (session.recordPath) suppressBackgroundTaskNotification(session.recordPath);
-  }
   // Signal the runner through its control channel even when systemd-run is the
   // direct child. The runner owns process-group termination/startup races.
   try {
@@ -101,19 +96,10 @@ function complete(session: Session): void {
     ...(session.error ? { failure: session.error } : {}),
   });
   session.context?.setBackgroundTaskActive?.(session.taskId, false);
-  // A replacement daemon, not the old in-memory notification queue, owns
-  // delivery once restart preparation begins. Keep the durable record intact.
+  // Exec sessions are polling-only: task completion updates the catalog and
+  // releases waiters, but never injects a user notification into the model turn.
+  // Keep durable state for the replacement daemon once restart preparation begins.
   const handoff = getDaemonShutdownMode() === "restart" && Boolean(session.recordPath);
-  // A currently waiting tool call will deliver this completion directly. Do
-  // not interrupt that same model turn with a duplicate user notification.
-  if (!handoff && session.backgrounded && !session.suppressed && !session.busy) {
-    session.context?.onBackgroundTaskComplete?.({
-      taskId: session.taskId, toolName: "exec_command", title: session.title,
-      startedAt: session.startedAt, endedAt: Date.now(), exitCode: session.code,
-      signal: session.signal, outputPath: session.outputPath,
-      ...(session.error ? { failure: session.error } : {}),
-    });
-  }
   // On control-channel failure, retain evidence until recovery can verify the
   // command is gone. A detached process must never disappear from recovery
   // merely because its runner died.
@@ -245,7 +231,7 @@ async function executeCommand(input: Record<string, unknown>, context?: ToolExec
     });
     session = {
       id, owner, runner, pid: 0, outputPath, cursor: 0, startedAt, taskId: `exec:${id}:${startedAt.toString(36)}`,
-      cwd, title: input.cmd, context, backgrounded: false, suppressed: false, busy: true, closed: false, code: null, signal: null, truncated: false,
+      cwd, title: input.cmd, context, backgrounded: false, busy: true, closed: false, code: null, signal: null, truncated: false,
       ready: ready.promise, started: ready.resolve, done: done.promise, finish: done.resolve, detached: detached.promise, didDetach: detached.resolve,
     };
     const active = session;
@@ -272,7 +258,7 @@ async function executeCommand(input: Record<string, unknown>, context?: ToolExec
           active.didDetach();
           if (!active.closed) context?.setBackgroundTaskActive?.(active.taskId, true, {
             title: active.title, startedAt, toolName: "exec_command", pid: active.pid,
-            backgroundedAt: Date.now(), outputPath, cwd, stop: suppress => stop(active, suppress),
+            backgroundedAt: Date.now(), outputPath, cwd, stop: () => stop(active),
           });
         } else if (event.type === "error") { active.error = event.message; stop(active); }
         else if (event.type === "close") {
@@ -338,7 +324,7 @@ export const execCommand: Tool = {
     yield_time_ms: { type: "integer", minimum: 0, maximum: 30000, description: "Time to wait before yielding a running session, not a kill timeout. Defaults to 10000 ms." },
     max_output_tokens: { type: "integer", minimum: 1, maximum: 30000, description: "Approximate output token budget. Defaults to 10000." },
   } },
-  systemHint: "Use exec_command for shell commands, reading files, and searching (prefer rg for search). Use workdir to select a directory. Commands run locally with the daemon's permissions, not inside a Codex sandbox. External CLIs remain ordinary shell commands. A session_id means the process is still running: use write_stdin to send input or collect new output, chrono wait with the returned task_id for completion, or exo stop with task_id to stop it. Commands have a one-hour hard limit; output files are capped at 16 MiB. Stdin sessions belong to this conversation and do not survive daemon restarts, though detached tasks and their output can be recovered.",
+  systemHint: "Use exec_command for shell commands, reading files, and searching (prefer rg for search). Use workdir to select a directory. Commands run locally with the daemon's permissions, not inside a Codex sandbox. External CLIs remain ordinary shell commands. A session_id means the process is still running: use write_stdin to send input or poll for output and completion. Sessions do not send completion notifications. Use exo stop with the returned task_id to stop a session. Commands have a one-hour hard limit; output files are capped at 16 MiB. Stdin sessions belong to this conversation and do not survive daemon restarts, though detached tasks and their output can be recovered.",
   display: bash.display,
   summarize: input => ({ label: "$", detail: String(input.cmd ?? "") }), execute: executeCommand,
 };
@@ -357,5 +343,5 @@ export const writeStdin: Tool = {
 
 export const unifiedExecInternalsForTest = {
   sessions,
-  stopAll: () => { for (const session of sessions.values()) stop(session, true); },
+  stopAll: () => { for (const session of sessions.values()) stop(session); },
 };
