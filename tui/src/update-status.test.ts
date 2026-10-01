@@ -46,6 +46,81 @@ describe("update status routing", () => {
     } finally { monitor.stop(); }
   });
 
+  test("startup Local probe survives the local socket closing and SSH reconnects", async () => {
+    let finishActive!: (status: UpdateStatus) => void;
+    let finishLocal!: (status: UpdateStatus) => void;
+    let localCalls = 0;
+    const values: UpdateSnapshot[] = [];
+    const monitor = new UpdateStatusMonitor(null, () => new Promise(resolve => { finishActive = resolve; }),
+      () => { localCalls++; return new Promise(resolve => { finishLocal = resolve; }); },
+      status => values.push(status));
+    try {
+      const local = monitor.refreshLocal();
+      // --ssh closes the startup socket while its status request is pending.
+      monitor.disconnected("whale");
+      finishActive("unknown");
+      monitor.setRoute("whale");
+      finishActive("none");
+      // Same-alias reconnects must not cancel or duplicate the local check.
+      monitor.disconnected();
+      monitor.setRoute("whale");
+      finishActive("none");
+      await pause();
+      expect(localCalls).toBe(1);
+      expect(values.at(-1)).toEqual({ local: "unknown", remote: "none" });
+      finishLocal("restart_needed");
+      await local;
+      expect(values.at(-1)).toEqual({ local: "restart_needed", remote: "none" });
+    } finally { monitor.stop(); }
+  });
+
+  test("a completed startup Local check is not erased by the SSH handoff", async () => {
+    let finishActive!: (status: UpdateStatus) => void;
+    const values: UpdateSnapshot[] = [];
+    const monitor = new UpdateStatusMonitor(null, () => new Promise(resolve => { finishActive = resolve; }),
+      async () => "none", status => values.push(status));
+    try {
+      await monitor.refreshLocal();
+      // The original active request can fail before the route changes.
+      finishActive("unknown");
+      await pause();
+      expect(values.at(-1)).toEqual({ local: "none", remote: null });
+      monitor.disconnected("whale");
+      expect(values.at(-1)).toEqual({ local: "none", remote: "unknown" });
+      monitor.setRoute("whale");
+      finishActive("none");
+      await pause();
+      expect(values.at(-1)).toEqual({ local: "none", remote: "none" });
+    } finally { monitor.stop(); }
+  });
+
+  test("a pending Local result remains valid when switching SSH hosts", async () => {
+    const localReplies: Array<(status: UpdateStatus) => void> = [];
+    const values: UpdateSnapshot[] = [];
+    const monitor = new UpdateStatusMonitor("first", async () => "none",
+      () => new Promise(resolve => localReplies.push(resolve)), status => values.push(status));
+    try {
+      monitor.setRoute("second");
+      localReplies[0]("none");
+      await pause();
+      expect(values.at(-1)).toEqual({ local: "none", remote: "none" });
+      expect(localReplies).toHaveLength(1);
+    } finally { monitor.stop(); }
+  });
+
+  test("stopping ignores a late independent Local result", async () => {
+    let finishLocal!: (status: UpdateStatus) => void;
+    const values: UpdateSnapshot[] = [];
+    const monitor = new UpdateStatusMonitor("whale", async () => "none",
+      () => new Promise(resolve => { finishLocal = resolve; }), status => values.push(status));
+    const local = monitor.refreshLocal();
+    monitor.stop();
+    const count = values.length;
+    finishLocal("restart_needed");
+    await local;
+    expect(values).toHaveLength(count);
+  });
+
   test("route changes discard stale results, including same-alias reconnects", async () => {
     const pending: Array<(status: UpdateStatus) => void> = [];
     const values: UpdateSnapshot[] = [];
