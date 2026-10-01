@@ -1845,7 +1845,7 @@ async function reconnectToDaemon(): Promise<void> {
 
 function handleDaemonConnectionLost(shutdownMode: DaemonShutdownMode | null): void {
   remoteFileLinks?.cancel();
-  updateMonitor?.disconnected();
+  updateMonitor?.disconnected(daemon.remoteAlias);
   voiceInput?.cleanup();
   callMedia?.stop();
   state.activeCallIdsByConversation.clear();
@@ -2029,6 +2029,14 @@ async function main(): Promise<void> {
     renderImmediately();
   });
 
+  updateMonitor = new UpdateStatusMonitor(daemon.remoteAlias, () => daemon.requestUpdateStatus(), queryLocalUpdateStatus, snapshot => {
+    state.sidebar.updateStatus = snapshot;
+    scheduleRender();
+  });
+  // Start an independent local socket check before --ssh can close the startup
+  // connection. Its result must survive the route switch and remote bootstrap.
+  if (launchOptions.sshAlias) void updateMonitor.refreshLocal();
+
   // Match entering `/ssh <alias>` once startup is complete. Going through the
   // normal route-switch path keeps local fallback and all SSH status UI intact.
   applyTuiLaunchOptions(launchOptions, daemon);
@@ -2036,10 +2044,6 @@ async function main(): Promise<void> {
   const initialRenderStartedAt = performance.now();
   render(state);
   startupProfileMark("initial_render_done", { renderMs: Math.round((performance.now() - initialRenderStartedAt) * 1000) / 1000 });
-  updateMonitor = new UpdateStatusMonitor(daemon.remoteAlias, () => daemon.requestUpdateStatus(), queryLocalUpdateStatus, snapshot => {
-    state.sidebar.updateStatus = snapshot;
-    scheduleRender();
-  });
 }
 
 function cleanup(): void {

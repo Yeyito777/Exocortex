@@ -33,10 +33,12 @@ export async function queryLocalUpdateStatus(overrideSocketPath?: string): Promi
   }
 }
 
-/** Owns the timer and rejects stale results after route changes/reconnects. */
+/** Owns the timer and rejects stale active-endpoint replies after route changes. */
 export class UpdateStatusMonitor {
   private generation = 0;
   private inFlight = new Set<number>();
+  private localGeneration = 0;
+  private localInFlight: Promise<void> | null = null;
   private stopped = false;
   private alias: string | null;
   private snapshot: UpdateSnapshot = { local: "unknown", remote: null };
@@ -65,8 +67,11 @@ export class UpdateStatusMonitor {
     void this.refresh();
   }
 
-  disconnected(): void {
+  disconnected(alias = this.alias): void {
     this.generation++;
+    // The client has already selected its new route when it closes the old
+    // socket. Keep a known Local status during the startup local -> SSH handoff.
+    this.alias = alias;
     this.publish(this.alias
       ? { local: this.snapshot.local, remote: "unknown" }
       : { local: "unknown", remote: null });
@@ -78,24 +83,48 @@ export class UpdateStatusMonitor {
     if (!this.stopped) this.onChange({ ...snapshot });
   }
 
+  /**
+   * Prime Local before starting SSH, and share that probe across route changes.
+   * Its socket belongs to the local endpoint, not to the active route generation.
+   */
+  refreshLocal(): Promise<void> {
+    if (this.stopped) return Promise.resolve();
+    if (this.localInFlight) return this.localInFlight;
+    const generation = ++this.localGeneration;
+    const pending = (async () => {
+      let status: UpdateStatus;
+      try { status = await this.local(); } catch { status = "unknown"; }
+      if (!this.stopped && generation === this.localGeneration) {
+        this.publish({ ...this.snapshot, local: status });
+      }
+    })().finally(() => {
+      if (this.localInFlight === pending) this.localInFlight = null;
+    });
+    this.localInFlight = pending;
+    return pending;
+  }
+
   async refresh(): Promise<void> {
     const generation = this.generation;
     if (this.stopped || this.inFlight.has(generation)) return;
+    // A startup probe is independent of the main socket. Do not race it with
+    // another active-local request that SSH can cancel.
+    if (!this.alias && this.localInFlight) return this.localInFlight;
     this.inFlight.add(generation);
     const safe = async (query: () => Promise<UpdateStatus>): Promise<UpdateStatus> => {
       try { return await query(); } catch { return "unknown"; }
     };
     try {
       const remote = Boolean(this.alias);
+      const localGeneration = this.localGeneration;
       // Publish independently so an unavailable SSH host never delays Local.
       await Promise.all([
         safe(this.active).then(status => {
           if (this.stopped || generation !== this.generation) return;
+          if (!remote && localGeneration !== this.localGeneration) return;
           this.publish(remote ? { ...this.snapshot, remote: status } : { local: status, remote: null });
         }),
-        ...(remote ? [safe(this.local).then(status => {
-          if (!this.stopped && generation === this.generation) this.publish({ ...this.snapshot, local: status });
-        })] : []),
+        ...(remote ? [this.refreshLocal()] : []),
       ]);
     } finally { this.inFlight.delete(generation); }
   }
