@@ -7,6 +7,7 @@
 
 import type { BufferEdit } from "./types";
 import { lineStartOf, lineEndOf, clampNormal, nextGraphemeEnd, previousGraphemeStart } from "./buffer";
+import { PROMPT_TAB, PROMPT_TAB_WIDTH } from "../prompttabs";
 
 // ── Core: delete a range ───────────────────────────────────────────
 
@@ -41,6 +42,22 @@ export function changeLine(buffer: string, pos: number): BufferEdit {
   const le = lineEndOf(buffer, pos);
   const newBuffer = buffer.slice(0, ls) + buffer.slice(le);
   return { buffer: newBuffer, cursor: ls };
+}
+
+/** Shift every logical line touched by the inclusive range by one soft tab. */
+export function shiftLines(buffer: string, start: number, end: number, direction: -1 | 1): BufferEdit {
+  const first = lineStartOf(buffer, Math.min(start, end));
+  const last = lineEndOf(buffer, Math.max(start, end));
+  const lines = buffer.slice(first, last).split("\n").map(line => {
+    if (direction > 0) return PROMPT_TAB + line;
+    const indent = line.match(/^ */)![0].length;
+    return line.slice(Math.min(indent, PROMPT_TAB_WIDTH));
+  });
+  const newBuffer = buffer.slice(0, first) + lines.join("\n") + buffer.slice(last);
+  // Like Vim, land on the first nonblank of the first shifted line.
+  const indent = lines[0].match(/^ */)![0].length;
+  const col = Math.min(indent, Math.max(0, lines[0].length - 1));
+  return { buffer: newBuffer, cursor: clampNormal(newBuffer, first + col) };
 }
 
 // ── Character operators ────────────────────────────────────────────

@@ -13,7 +13,7 @@ import { lookupCommand, isPrefix } from "./keymap";
 import { resolveMotion, findForward, findBackward } from "./motions";
 import { resolveTextObject, isTextObjectKey } from "./textobjects";
 import { lineStartOf, lineEndOf, clampNormal } from "./buffer";
-import { swapCaseRange } from "./operators";
+import { shiftLines, swapCaseRange } from "./operators";
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -56,6 +56,11 @@ export function handleVisualMode(
   }
 
   if (ks === null) return { type: "passthrough" };
+
+  if ((vim.pendingKeys === "<" || vim.pendingKeys === ">") && ks !== vim.pendingKeys) {
+    resetPending(vim);
+    return { type: "noop" };
+  }
 
   // Pending find (f/F waiting for character) in visual
   if (vim.pendingFind) {
@@ -150,6 +155,12 @@ function executeVisualCommand(
 
     case "standalone": {
       const anchor = vim.visualAnchor;
+      if (cmd.name === "visual_shift_right" || cmd.name === "visual_shift_left") {
+        const edit = shiftLines(buffer, anchor, cursor, cmd.name === "visual_shift_right" ? 1 : -1);
+        const exited = exitVisual(vim, edit.cursor);
+        if (edit.buffer === buffer) return exited;
+        return { type: "visual_edit", ...edit, mode: "normal" };
+      }
       let start = Math.min(anchor, cursor);
       let end = Math.max(anchor, cursor);
 

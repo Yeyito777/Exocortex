@@ -5,7 +5,8 @@ import { createInitialState, type RenderState } from "./state";
 import { invalidateFrame } from "./frame";
 import { hexToAnsi, theme } from "./theme";
 import { termWidth } from "./textwidth";
-import { hide_cursor, show_cursor } from "./terminal";
+import { cursor_block, cursor_underline, hide_cursor, show_cursor } from "./terminal";
+import { handleFocusedKey } from "./focus";
 import { SIDEBAR_WIDTH } from "./sidebar";
 import { renderUserMessage } from "./blockrenderer";
 import { scrollToTop } from "./chat";
@@ -72,6 +73,22 @@ function makeState(): RenderState {
 }
 
 describe("render caching and frame diffing", () => {
+  for (const mode of ["normal", "visual", "visual-line"] as const) {
+    for (const key of ["<", ">"]) {
+      test(`${mode} ${key}${key} uses an underline cursor only while pending`, () => {
+        const state = makeState();
+        state.inputBuffer = "text";
+        state.vim.mode = mode;
+        expect(captureRenderOutput(state)).toContain(cursor_block);
+        handleFocusedKey({ type: "char", char: key }, state);
+        expect(captureRenderOutput(state)).toContain(cursor_underline);
+        handleFocusedKey({ type: "char", char: key }, state);
+        expect(captureRenderOutput(state)).toContain(cursor_block);
+        expect(state.vim.pendingKeys).toBe("");
+      });
+    }
+  }
+
   for (const automated of [false, true]) {
     test(`incremental ${automated ? "automated" : "regular"} queue labels cannot autowrap into the sidebar`, () => {
       const state = makeState();

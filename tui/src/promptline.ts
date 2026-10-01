@@ -14,6 +14,7 @@ import { getSymbol } from "./symbols";
 import { graphemeBoundaryAtOrAfter, nextGraphemeEnd, previousGraphemeStart } from "./graphemes";
 import { sliceByWidthFrom, termWidth } from "./textwidth";
 import { sanitizePromptTextForInsertion } from "./prompttext";
+import { PROMPT_TAB, promptDeleteStart, promptDeleteEnd } from "./prompttabs";
 
 export type PromptKeyResult =
   | { type: "handled" }
@@ -126,12 +127,16 @@ export function handlePromptKey(
 ): PromptKeyResult {
   const action = resolveAction(key);
 
-  // Tab → cycle autocomplete forward, or try path completion
+  // Tab → cycle autocomplete, complete a path, or insert a four-space soft tab.
   if (key.type === "tab") {
     if (state.autocomplete) {
       cycleAutocomplete(state, 1);
-    } else {
-      tryPathComplete(state, pathCompletionProvider);
+    } else if (!tryPathComplete(state, pathCompletionProvider) && state.vim.mode === "insert") {
+      const pos = graphemeBoundaryAtOrAfter(state.inputBuffer, state.cursorPos);
+      state.inputBuffer =
+        state.inputBuffer.slice(0, pos) + PROMPT_TAB + state.inputBuffer.slice(pos);
+      state.cursorPos = pos + PROMPT_TAB.length;
+      updateAutocomplete(state);
     }
     resetPromptCurswant(state);
     return HANDLED;
@@ -206,7 +211,7 @@ export function handlePromptKey(
     case "delete_back": {
       const pos = graphemeBoundaryAtOrAfter(state.inputBuffer, state.cursorPos);
       if (pos > 0) {
-        const start = previousGraphemeStart(state.inputBuffer, pos);
+        const start = promptDeleteStart(state.inputBuffer, pos);
         state.inputBuffer =
           state.inputBuffer.slice(0, start) +
           state.inputBuffer.slice(pos);
@@ -223,7 +228,7 @@ export function handlePromptKey(
     case "delete_forward": {
       const pos = graphemeBoundaryAtOrAfter(state.inputBuffer, state.cursorPos);
       if (pos < state.inputBuffer.length) {
-        const end = nextGraphemeEnd(state.inputBuffer, pos);
+        const end = promptDeleteEnd(state.inputBuffer, pos);
         state.inputBuffer =
           state.inputBuffer.slice(0, pos) +
           state.inputBuffer.slice(end);
