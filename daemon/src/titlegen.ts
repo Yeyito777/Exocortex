@@ -11,10 +11,10 @@ import { log } from "./log";
 import { complete } from "./llm";
 import * as convStore from "./conversations";
 import type { DaemonServer } from "./server";
-import type { ApiContentBlock, Conversation, ProviderId, StoredMessage } from "./messages";
-import { isRealUserMessage } from "./messages";
+import type { ProviderId } from "./messages";
 import { getTokenStatsSnapshot } from "./token-stats";
 import { broadcastConversationUpdated } from "./conversation-events";
+import { titleContext } from "./conversation-title-context";
 
 const INSTRUCTION = `You generate short conversation titles. Output ONLY the title — 3 to 4 lowercase words, no quotes, no punctuation, no explanation. Match this naming style:
 exo bash truncate, exo code qa, berlin airbnb, tokens bug, context tool, unbricking convo, merging img pasting, netherlands trains, exo vim linewrapping, exo msg queuing, fixing message queuing, airpods pro autoconnect, discord streaming, context management`;
@@ -23,9 +23,6 @@ exo bash truncate, exo code qa, berlin airbnb, tokens bug, context tool, unbrick
 // non-adaptive models — otherwise all tokens go to thinking and the
 // text response is empty.
 const MAX_TOKENS = 10200;
-
-/** Max characters of user message context to send for title generation. */
-const MAX_CONTEXT_CHARS = 2000;
 
 /** Placeholder title shown while generation is in-flight. */
 export const PENDING_TITLE = "pending";
@@ -81,42 +78,6 @@ function pendingTitleFor(existingTitle: string): { pendingTitle: string; previou
   return { pendingTitle, previousStableTitle, markPrefix };
 }
 
-function userTextFromContent(content: StoredMessage["content"]): string {
-  if (typeof content === "string") return content;
-  const textParts: string[] = [];
-  for (const block of content as ApiContentBlock[]) {
-    if (block.type === "text" && block.text.trim()) textParts.push(block.text);
-  }
-  if (textParts.length > 0) return textParts.join("\n");
-  return content.some((block) => block.type === "image") ? "[image]" : "";
-}
-
-/** Collect user messages into a single string, truncated to MAX_CONTEXT_CHARS. */
-function extractUserContext(conv: Conversation, extraContext?: string): string {
-  const parts: string[] = [];
-  let total = 0;
-  const extra = extraContext?.trim();
-  if (extra) {
-    parts.push(extra.slice(0, MAX_CONTEXT_CHARS));
-    total += extra.length;
-  }
-  for (const msg of conv.messages) {
-    if (!isRealUserMessage(msg)) continue;
-    const text = userTextFromContent(msg.content).trim();
-    if (!text) continue;
-    const remaining = MAX_CONTEXT_CHARS - total;
-    if (remaining <= 0) break;
-    parts.push(text.slice(0, remaining));
-    total += text.length;
-  }
-  return parts.join("\n\n");
-}
-
-function hasTitleContext(conv: Conversation, extraContext?: string): boolean {
-  if (extraContext?.trim()) return true;
-  return conv.messages.some((msg) => isRealUserMessage(msg) && userTextFromContent(msg.content).trim().length > 0);
-}
-
 function broadcastTitle(server: DaemonServer, convId: string, title: string, reason: string): void {
   if (!convStore.rename(convId, title, false)) return;
   broadcastConversationUpdated(server, convId);
@@ -129,17 +90,30 @@ function broadcastTitle(server: DaemonServer, convId: string, title: string, rea
  */
 export function startTitleGeneration(server: DaemonServer, convId: string, options: { force?: boolean; extraContext?: string } = {}): boolean {
   if (activeTitleJobs.has(convId)) return false;
-  const conv = convStore.get(convId);
-  if (!conv) return false;
+  const conv = convStore.getCached(convId);
+  if (!conv) {
+    const summary = convStore.getIndexedSummary(convId);
+    if (!summary || (!options.force && summary.title.trim() && !isPendingTitle(summary.title))) return false;
+    activeTitleJobs.add(convId);
+    void convStore.getAsync(convId).then(loaded => {
+      activeTitleJobs.delete(convId);
+      if (loaded) startTitleGeneration(server, convId, options);
+    }).catch(error => {
+      activeTitleJobs.delete(convId);
+      log("error", `titlegen: could not load ${convId}: ${error instanceof Error ? error.message : String(error)}`);
+    });
+    return true;
+  }
   if (!options.force && conv.title.trim() && !isPendingTitle(conv.title)) return false;
-  if (!hasTitleContext(conv, options.extraContext)) return false;
+  const context = titleContext(conv, options.extraContext);
+  if (!context) return false;
 
   const existingTitle = conv.title ?? "";
   const { pendingTitle, previousStableTitle, markPrefix } = pendingTitleFor(existingTitle);
-  const context = extractUserContext(conv, options.extraContext);
   const prompt = `${INSTRUCTION}\n\nHere is the conversation to generate a title for:\n<prompt>\n${context}\n</prompt>`;
 
   activeTitleJobs.add(convId);
+  const releaseCache = convStore.pinConversationCache(convId);
   if (existingTitle !== pendingTitle) {
     broadcastTitle(server, convId, pendingTitle, "pending title");
   }
@@ -164,6 +138,7 @@ export function startTitleGeneration(server: DaemonServer, convId: string, optio
     })
     .finally(() => {
       activeTitleJobs.delete(convId);
+      releaseCache();
     });
 
   return true;

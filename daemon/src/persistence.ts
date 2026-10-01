@@ -10,6 +10,7 @@ import { summarizeConversation, type Conversation, type ConversationSummary, typ
 import type { ToolOutputInfo } from "./protocol";
 import type { StoredDisplayHistoryPage } from "./display-page-store";
 import { clonedConversationValue, type ConversationCloneTarget } from "./conversation-clone";
+import type { ConversationLoadResult } from "./conversation-load-protocol";
 import * as jsonPersistence from "./json-persistence";
 import { SqliteConversationStore, sqliteConversationStorePath, type IntegrityReport, type LegacyImportReport } from "./sqlite-conversation-store";
 
@@ -70,6 +71,56 @@ export function conversationPersistenceBackend(): ConversationPersistenceBackend
 
 export function isSqliteConversationStore(): boolean {
   return backend === "sqlite";
+}
+
+export function adoptLoadedConversation(result: ConversationLoadResult): boolean {
+  return store().adoptLoadedConversation(result);
+}
+
+export function hasMessageMetadata(id: string, fields: Record<string, string | number | boolean>, role?: string): boolean {
+  if (backend === "sqlite") return store().hasMessageMetadata(id, fields, role);
+  return jsonPersistence.load(id)?.messages.some(message => (!role || message.role === role)
+    && Object.entries(fields).every(([path, value]) => {
+      let current: unknown = message.metadata;
+      for (const key of path.split(".")) current = (current as Record<string, unknown> | null)?.[key];
+      return current === value;
+    })) ?? false;
+}
+
+export function policyMetadata(id: string) {
+  return backend === "sqlite" ? store().policyMetadata(id) : jsonPersistence.load(id);
+}
+
+export function updateIndexedGoalStatus(id: string, status: import("./messages").ConversationGoalStatus, reason?: string) {
+  return store().updateIndexedGoalStatus(id, status, reason);
+}
+
+export function hasToolBlock(id: string, type: "tool_use" | "tool_result", toolId: string, name?: string): boolean {
+  if (backend === "sqlite") return store().hasToolBlock(id, type, toolId, name);
+  return jsonPersistence.load(id)?.messages.some(message => Array.isArray(message.content)
+    && message.content.some(block => type === "tool_use"
+      ? block.type === type && block.id === toolId && (!name || block.name === name)
+      : block.type === type && block.tool_use_id === toolId)) ?? false;
+}
+
+export function hasUserTask(id: string, startedAt: number, task: string): boolean {
+  if (backend === "sqlite") return store().hasUserTask(id, startedAt, task);
+  return jsonPersistence.load(id)?.messages.some(message => message.role === "user"
+    && message.metadata?.system !== true && message.metadata?.startedAt === startedAt
+    && (typeof message.content === "string" ? message.content === task
+      : message.content.some(block => block.type === "text" && block.text === task))) ?? false;
+}
+
+export function completedTaskText(id: string, startedAt: number): string[] | null {
+  if (backend === "sqlite") return store().completedTaskText(id, startedAt);
+  const messages = jsonPersistence.load(id)?.messages;
+  const index = messages?.findLastIndex(message => message.role === "assistant"
+    && message.metadata?.startedAt === startedAt && message.metadata.endedAt != null) ?? -1;
+  if (!messages || index < 0 || messages.slice(index + 1).some(message => message.role === "system"
+    && typeof message.content === "string" && message.content.startsWith("✗"))) return null;
+  const content = messages[index].content;
+  return typeof content === "string" ? (content ? [content] : [])
+    : content.filter(block => block.type === "text").map(block => (block as { text: string }).text);
 }
 
 /** Whether an ID is still reserved by a recoverable soft-deleted conversation. */
@@ -260,6 +311,11 @@ export function trashFolderRecursive(entry: Extract<TrashStackEntry, { type: "fo
 
 export function restoreConversationsFromTrash(ids: string[]): Conversation[] {
   return backend === "sqlite" ? store().restoreConversationsFromTrash(ids) : jsonPersistence.restoreConversationsFromTrash(ids);
+}
+
+export function restoreConversationSummariesFromTrash(ids: string[]): PersistedConversationSummary[] {
+  return backend === "sqlite" ? store().restoreConversationSummariesFromTrash(ids)
+    : jsonPersistence.restoreConversationsFromTrash(ids).map(conv => summarizeConversation(conv));
 }
 
 export function load(id: string): Conversation | null {

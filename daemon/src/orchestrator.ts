@@ -9,6 +9,9 @@ import { fastModeServiceTier } from "@exocortex/shared/messages";
  */
 
 import { log } from "./log";
+import { isDeepStrictEqual } from "node:util";
+import { prepareArchiveHashes } from "./conversation-loader";
+import { inheritArchiveHashProof } from "./conversation-window";
 import { workTimerForTurn } from "./work-timer";
 import { hasConfiguredCredentials } from "./auth";
 import { runAgentLoop, type AgentCallbacks, type AgentState } from "./agent";
@@ -293,7 +296,7 @@ export async function orchestrateGoalCycle(
   ext: OrchestrationCallbacks,
   policy: SubagentTurnPolicy = {},
 ): Promise<AssistantTurnOutcome> {
-  const conv = convStore.get(convId);
+  const conv = convStore.getIndexedSummary(convId);
   if (!conv?.goal || conv.goal.status !== "active") {
     return {
       ok: false,
@@ -342,7 +345,15 @@ async function orchestrateGoalContinuation(
     convStore.clearStreamHandoff(convId);
     broadcastConversationUpdated(server, convId);
   };
-  const initial = convStore.get(convId);
+  const initial = convStore.getCached(convId) ?? await convStore.getAsync(convId);
+  if (handoffToken && convStore.getStreamHandoffToken(convId) !== handoffToken) {
+    if (!convStore.isStreaming(convId) && convStore.getQueuedMessages(convId).length > 0
+        && !getDaemonShutdownMode()) {
+      convStore.beginStreamHandoff(convId);
+      return orchestrateGoalContinuation(server, convId, ext, policy);
+    }
+    return buildOutcome(false, "Turn handoff cancelled.");
+  }
   if (getDaemonShutdownMode()) {
     settleFailedHandoff();
     return buildOutcome(false, "Daemon is shutting down; continuation deferred.");
@@ -461,7 +472,22 @@ async function orchestrateAdmittedAssistantTurn(
   ext: OrchestrationCallbacks,
   options: AssistantTurnOptions,
 ): Promise<AssistantTurnOutcome> {
-  const conv = convStore.get(convId);
+  const acceptedHandoffToken = options.streamChainHandoff === true ? convStore.getStreamHandoffToken(convId) : undefined;
+  let conv;
+  try {
+    conv = await convStore.getAsync(convId);
+    if (conv) await prepareArchiveHashes(conv.messages);
+  } catch (error) {
+    const message = `Could not load verified conversation: ${error instanceof Error ? error.message : String(error)}`;
+    if (client) server.sendTo(client, { type: "error", reqId, convId, message });
+    return { ok: false, blocks: [], tokens: 0, durationMs: Date.now() - startedAt, endedAt: Date.now(), error: message };
+  }
+  if (!acceptedHandoffToken || convStore.getStreamHandoffToken(convId) !== acceptedHandoffToken
+      || options.externalAbortSignal?.aborted) {
+    const message = "Turn handoff cancelled.";
+    if (client) server.sendTo(client, { type: "error", reqId, convId, message });
+    return { ok: false, blocks: [], tokens: 0, durationMs: Date.now() - startedAt, endedAt: Date.now(), error: message };
+  }
   if (!conv) {
     const message = `Conversation ${convId} not found`;
     if (client) server.sendTo(client, { type: "error", reqId, convId, message });
@@ -558,14 +584,13 @@ async function orchestrateAdmittedAssistantTurn(
     });
     return buildErrorOutcome(message);
   }
-  const acceptedHandoffToken = options.streamChainHandoff === true ? convStore.getStreamHandoffToken(convId) : undefined;
   const acceptingStreamChainHandoff = acceptedHandoffToken !== undefined;
   if (convStore.isStreaming(convId) && !acceptingStreamChainHandoff) {
     const message = "Already streaming";
     if (client) server.sendTo(client, { type: "error", reqId, convId, message });
     return buildErrorOutcome(message);
   }
-  if (convStore.isHistoryUnwindPending(convId)) {
+  if (convStore.isHistoryUnwindPending(convId) || convStore.isHistoryPreparationPending(convId)) {
     const message = "Conversation unwind in progress";
     if (client) server.sendTo(client, { type: "error", reqId, convId, message });
     return buildErrorOutcome(message);
@@ -631,13 +656,23 @@ async function orchestrateAdmittedAssistantTurn(
 
   let acceptedUserMessage: StoredMessage | null = null;
   if (userMessage) {
-    const contextCheckpoint = createStoredUserContextCheckpoint(conv);
-    acceptedUserMessage = createStoredUserMessage(userMessage.text, conv.model, startedAt, userMessage.images, {
-      subagentNotificationId: options.subagentNotificationId,
-      queueEntryId: options.queueEntryId,
-      automation,
-      contextCheckpoint,
-    });
+    try {
+      await prepareArchiveHashes(conv.messages);
+      if (convStore.getStreamHandoffToken(convId) !== acceptedHandoffToken || options.externalAbortSignal?.aborted) {
+        const message = "Turn handoff cancelled.";
+        if (client) server.sendTo(client, { type: "error", reqId, convId, message });
+        return buildErrorOutcome(message);
+      }
+      const contextCheckpoint = createStoredUserContextCheckpoint(conv);
+      acceptedUserMessage = createStoredUserMessage(userMessage.text, conv.model, startedAt, userMessage.images, {
+        subagentNotificationId: options.subagentNotificationId,
+        queueEntryId: options.queueEntryId,
+        automation,
+        contextCheckpoint,
+      });
+    } catch (error) {
+      return reportSendError(`Could not prepare verified conversation: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   conv.updatedAt = Date.now();
@@ -943,7 +978,7 @@ async function orchestrateAdmittedAssistantTurn(
       // Make the successful boundary durable before the next provider request,
       // together with the replay it identifies, then replace the spinner with
       // the matching live divider.
-      syncActiveContext(result.messages);
+      await syncActiveContext(result.messages);
       persistCompletedTurnPrefix();
       compactionStatusActive = false;
       setContextCompactionStatus(false, completedAt);
@@ -955,7 +990,7 @@ async function orchestrateAdmittedAssistantTurn(
     }
   }
 
-  function syncActiveContext(messages: ApiMessage[]): void {
+  async function syncActiveContext(messages: ApiMessage[]): Promise<void> {
     const previous = liveConv.activeContext;
     // activeContext is the immutable output of the latest compaction, not a
     // second copy of all later turns. Ordinary success/abort paths call this
@@ -964,6 +999,7 @@ async function orchestrateAdmittedAssistantTurn(
     const installingNewCompaction = compactionsThisTurn > 0
       && previous?.windowId !== currentWindowId;
     if (!installingNewCompaction) return;
+    await prepareArchiveHashes(liveConv.messages);
     const checkpointAccountScope = compactionsThisTurn > 0
       ? latestCompactionAccountScope
       : previous?.accountScope ?? accountScope;
@@ -1279,7 +1315,7 @@ async function orchestrateAdmittedAssistantTurn(
       // potentially long mid-turn compaction or next provider request.
       persistCompletedTurnPrefix();
     },
-    drainNextTurnMessages() {
+    async drainNextTurnMessages() {
       // Peek first. Queue entries are removed only after their user messages are
       // durably committed below, preventing a crash between dequeue and history.
       const drained = convStore.getQueuedMessages(convId).filter(message => message.timing === "next-turn");
@@ -1292,11 +1328,17 @@ async function orchestrateAdmittedAssistantTurn(
       // cursor against the preceding accepted prompt, even though persistence is
       // intentionally batched below.
       const checkpointTranscript = [...liveConv.messages];
+      // A zero-header window (not yet compacted) still carries worker hash
+      // proofs; shallow copies must not silently return to foreground hashing.
+      await prepareArchiveHashes(liveConv.messages);
+      inheritArchiveHashProof(liveConv.messages, checkpointTranscript);
       let checkpointContextTokens = Math.max(
         liveConv.lastContextTokens ?? 0,
         estimateContextTokens(agentState.contextMessages, liveConv.provider),
       );
       for (const qm of drained) {
+        await prepareArchiveHashes(checkpointTranscript);
+        if (ac.signal.aborted) return [];
         const injectedStartedAt = Date.now();
         const contextCheckpoint = createStoredUserContextCheckpoint(
           liveConv,
@@ -1323,6 +1365,7 @@ async function orchestrateAdmittedAssistantTurn(
 
       // Commit the accepted user prompts before removing their durable queue
       // copies or broadcasting them.
+      if (ac.signal.aborted || drained.some(qm => !isDeepStrictEqual(convStore.getQueuedMessageById(qm.id), qm))) return [];
       persistCompletedTurnPrefix(injectedStored);
       const latestHuman = injectedStored.findLast(message => !message.metadata?.automation);
       if (latestHuman?.metadata) {
@@ -1413,12 +1456,12 @@ async function orchestrateAdmittedAssistantTurn(
     assertBoundedContextReplay(projectedTokens, contextLimit);
     if (manualCompaction) {
       apiMessages = await performContextCompaction(apiMessages, "manual", projectedTokens);
-      syncActiveContext(apiMessages);
+      await syncActiveContext(apiMessages);
       convStore.markDirty(convId);
       convStore.flush(convId);
     } else if (shouldAutoCompact(projectedTokens, contextLimit)) {
       apiMessages = await performContextCompaction(apiMessages, "pre_turn", projectedTokens);
-      syncActiveContext(apiMessages);
+      await syncActiveContext(apiMessages);
       convStore.markDirty(convId);
       convStore.flush(convId);
     }
@@ -1505,7 +1548,7 @@ async function orchestrateAdmittedAssistantTurn(
       // Interleave status markers at the correct positions so system messages
       // appear between the rounds where they actually occurred.
       const interleavedMessages = interleaveTranscriptMarkers(storedMessages, transcriptMarkers);
-      syncActiveContext(result.contextMessages);
+      await syncActiveContext(result.contextMessages);
       appendCompletedTurnSnapshot(interleavedMessages, true);
       conv.updatedAt = Date.now();
       // Do not bump on completion. The conversation was already brought to the
@@ -1637,7 +1680,7 @@ async function orchestrateAdmittedAssistantTurn(
       if (hasContent) {
         recoveredContext.push({ role: "assistant", content: safeContent });
       }
-      syncActiveContext(recoveredContext);
+      await syncActiveContext(recoveredContext);
     }
 
     const outcomeError = isWatchdog

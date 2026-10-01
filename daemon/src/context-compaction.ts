@@ -18,6 +18,7 @@ import { contextMessageChars } from "./context-token-attribution";
 import type { ProviderTurnSession, ServiceTier, StreamCallbacks, StreamOptions, StreamRequestBudget } from "./providers/types";
 import { isNonRetryableProviderError, isContextWindowProviderError } from "./providers/errors";
 import { getMaxContext } from "./providers/registry";
+import { assertCanonicalMessage, isArchivedMessage } from "./conversation-window";
 
 export const AUTO_COMPACTION_FRACTION = 0.9;
 const OPENAI_RETAINED_USER_TOKENS = 64_000;
@@ -141,6 +142,7 @@ function asApiMessage(
   message: Conversation["messages"][number],
   stripProviderScopedData = false,
 ): ApiMessage {
+  assertCanonicalMessage(message);
   // Replay projection must never alias mutable nested transcript arrays. In
   // particular, adding a safe reasoning summary during scope sanitization must
   // not mutate the canonical visible/audit transcript.
@@ -247,6 +249,9 @@ export function buildConversationApiContext(conv: Conversation, accountScope?: s
     );
   }
   if (!active) {
+    if (conv.messages.some(isArchivedMessage)) {
+      throw new Error("Saved compaction checkpoint is missing; refusing archive-header replay");
+    }
     // Provider data is scoped independently on every assistant response. This
     // also protects ordinary, never-compacted transcripts after model/account
     // switches and conservatively sanitizes legacy unscoped encrypted data.

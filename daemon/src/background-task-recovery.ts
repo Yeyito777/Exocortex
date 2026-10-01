@@ -64,11 +64,9 @@ export class BackgroundTaskRecovery {
     this.pollMs = options.pollMs ?? 250;
     this.hasConversation = options.hasConversation ?? ((convId) => convStore.hasConversation(convId));
     this.hasDeliveredCompletion = options.hasDeliveredCompletion ?? ((convId, taskId) => {
-      const conversation = convStore.get(convId);
-      if (conversation?.messages.some(message => (
-        message.metadata?.automation?.kind === "background_task_completion"
-        && message.metadata.automation.sourceId === taskId
-      ))) return true;
+      if (convStore.hasMessageMetadata(convId, {
+        "automation.kind": "background_task_completion", "automation.sourceId": taskId,
+      })) return true;
       return convStore.getQueuedMessages(convId).some(message => (
         message.automation?.kind === "background_task_completion"
         && message.automation.sourceId === taskId

@@ -508,7 +508,8 @@ describe("autocomplete with vim Escape", () => {
   test("mid-message autocomplete does not offer ordinary slash commands", () => {
     const state = createInitialState();
 
-    typePromptText(state, "please /mod");
+    // /model is an inline command; /rename is only a standalone command.
+    typePromptText(state, "please /ren");
 
     expect(state.autocomplete).toBeNull();
   });

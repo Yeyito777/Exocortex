@@ -383,7 +383,9 @@ describe("restart recovery file", () => {
     expect(orchestrateGoalCycle).toHaveBeenCalledTimes(1);
     expect((orchestrateGoalCycle.mock.calls[0] as unknown[] | undefined)?.[1]).toBe(activeConvId);
     expect(orchestrateReplayConversation).not.toHaveBeenCalled();
-    expect(conversationCacheInternalsForTest.snapshot().ids).toContain(activeConvId);
+    // Recovery selects from indexed goal metadata; the admitted turn owns the
+    // asynchronous runtime-window load rather than startup hydrating the archive.
+    expect(conversationCacheInternalsForTest.snapshot().ids).not.toContain(activeConvId);
     expect(conversationCacheInternalsForTest.snapshot().ids).not.toContain(pausedConvId);
   });
 

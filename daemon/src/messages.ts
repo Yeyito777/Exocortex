@@ -16,6 +16,7 @@ export * from "@exocortex/shared/messages";
 import { CONTEXT_COMPACTION_FINISHED_KIND, DEFAULT_EFFORT, REALTIME_CALL_STATUS_KIND, createMessageMetadata, type ProviderId, type ModelId, type EffortLevel, type MessageMetadata, type ConversationSummary, type FolderSummary, type ImageAttachment, type ConversationGoal, type ToolCallPresentation, type UserMessageAutomation } from "@exocortex/shared/messages";
 import type { AssistantProviderData } from "./providers/provider-data";
 import { createHash } from "crypto";
+import { archiveWindow, provenArchiveHashes, assertCanonicalMessage } from "./conversation-window";
 
 export interface ContextTokenBreakdown {
   userText: number;
@@ -238,6 +239,8 @@ export function isReplayHistoryMessage(msg: StoredMessage): msg is StoredMessage
 }
 
 export function historyPrefixHash(messages: StoredMessage[], historyCount: number): string {
+  const proof = provenArchiveHashes(messages, [historyCount]);
+  if (proof) return proof.get(historyCount)!;
   const hash = createHash("sha256");
   let seen = 0;
   for (const message of messages) {
@@ -250,6 +253,7 @@ export function historyPrefixHash(messages: StoredMessage[], historyCount: numbe
 }
 
 function updateHistoryPrefixHash(hash: ReturnType<typeof createHash>, message: StoredMessage): void {
+  assertCanonicalMessage(message);
   hash.update(JSON.stringify({
     role: message.role,
     content: message.content,
@@ -328,6 +332,11 @@ export function currentReplayHistoryPrefix(messages: StoredMessage[]): {
   historyCount: number;
   hash: string;
 } {
+  if (archiveWindow(messages)) {
+    const totalHistoryCount = messages.reduce((count, message) => count + (isReplayHistoryMessage(message) ? 1 : 0), 0);
+    const proof = provenArchiveHashes(messages, [totalHistoryCount])!;
+    return { historyCount: totalHistoryCount, hash: proof.get(totalHistoryCount)! };
+  }
   const cached = replayHistoryPrefixCache.get(messages);
   const canExtend = cached !== undefined && replayHistoryPrefixCacheMatches(messages, cached);
   const hash = canExtend ? cached.hash.copy() : createHash("sha256");
@@ -358,6 +367,7 @@ export function userMessageUnwindFingerprints(
   const fingerprints = new Map<StoredMessage, string>();
   const hash = createHash("sha256");
   for (const message of prefixMessages) {
+    assertCanonicalMessage(message);
     if (!isReplayHistoryMessage(message)) continue;
     hash.update(JSON.stringify({
       role: message.role,
@@ -367,6 +377,7 @@ export function userMessageUnwindFingerprints(
     hash.update("\n");
   }
   for (const message of messages) {
+    assertCanonicalMessage(message);
     if (!isReplayHistoryMessage(message)) continue;
     hash.update(JSON.stringify({
       role: message.role,
@@ -390,6 +401,8 @@ export function userMessageUnwindFingerprints(
  * every (potentially very large) retained tool result and image once per cursor.
  */
 function historyPrefixHashes(messages: StoredMessage[], historyCounts: number[]): Map<number, string> {
+  const proof = provenArchiveHashes(messages, historyCounts);
+  if (proof) return proof;
   const targets = [...new Set(historyCounts)].sort((a, b) => a - b);
   const hashes = new Map<number, string>();
   if (targets.length === 0) return hashes;

@@ -60,19 +60,20 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
           const convId = (input.abort as string).trim();
           if (!convId) throw new Error("abort requires an exact conversation ID.");
           if (convId === parentId) throw new Error("Cannot abort the conversation currently executing this tool.");
-          const target = convStore.get(convId);
+          const target = convStore.getPolicyMetadata(convId);
           if (!target) throw new Error(`Conversation ${convId} not found`);
           if (parent?.subagentPolicy && target.subagentPolicy?.parentConversationId !== parentId) {
             throw new Error("Subagents can only abort their own direct children.");
           }
           const controller = convStore.getActiveJob(convId);
-          const pausing = target.goal?.status === "active";
+          if (!controller) convStore.clearStreamHandoff(convId);
+          const pausing = convStore.getIndexedSummary(convId)?.goal?.status === "active";
           if (pausing) {
             convStore.updateGoalStatus(convId, "paused", { reason: "Interrupted. Resume explicitly to continue." });
             convStore.clearGoalContinuationAfterStream(convId);
             convStore.clearStreamHandoff(convId);
             if (cancelDeferredChronoSleep(convId)) broadcastConversationHistoryUpdated(server, convId);
-            server.sendToSubscribers(convId, { type: "goal_updated", convId, goal: target.goal ?? null });
+            server.sendToSubscribers(convId, { type: "goal_updated", convId, goal: convStore.getIndexedSummary(convId)?.goal ?? null });
             broadcastConversationUpdated(server, convId);
           }
           controller?.abort();

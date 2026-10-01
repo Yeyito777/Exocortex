@@ -300,7 +300,7 @@ function capOutput(output: string): string {
 function hardWakeAlreadyDelivered(occurrence: PendingExternalNotificationSoftWake, queueId: string): boolean {
   return Boolean(
     convStore.getQueuedMessageById(queueId)
-    || convStore.get(occurrence.convId)?.messages.some(message => message.metadata?.queueEntryId === queueId),
+    || convStore.hasMessageMetadata(occurrence.convId, { queueEntryId: queueId }),
   );
 }
 

@@ -93,7 +93,7 @@ DIST_DIR := $(REPO_DIR)/dist
 windows: check-bun
 	@mkdir -p $(DIST_DIR)
 	@printf '  Building Windows executables...\n'
-	@bun build --compile --target=bun-windows-x64 daemon/src/windows-entry.ts --outfile $(DIST_DIR)/exocortexd.exe
+	@bun build --compile --target=bun-windows-x64 daemon/src/windows-entry.ts daemon/src/conversation-load-worker.ts --outfile $(DIST_DIR)/exocortexd.exe
 	@bun build --compile --target=bun-windows-x64 tui/src/main.ts --outfile $(DIST_DIR)/exocortex.exe
 	@test -f external-tools/exo-cli/src/main.ts || git clone https://github.com/Yeyito777/exo-cli.git external-tools/exo-cli
 	@bun build --compile --target=bun-windows-x64 external-tools/exo-cli/src/main.ts --outfile $(DIST_DIR)/exo.exe

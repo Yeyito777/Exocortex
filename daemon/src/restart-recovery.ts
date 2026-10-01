@@ -436,8 +436,7 @@ export function recoverActiveGoals(server: DaemonServer, excludeConvIds: Iterabl
     // The summary index already carries goal state. Do not parse every canonical
     // transcript on boot just to reject virtually all of them.
     if (summary.goal?.status !== "active") continue;
-    const conv = convStore.get(convId);
-    if (conv?.goal?.status !== "active") continue;
+    if (convStore.getIndexedSummary(convId)?.goal?.status !== "active") continue;
     if (convStore.isStreaming(convId)) continue;
     if (convStore.getQueuedMessages(convId).length > 0) continue;
 

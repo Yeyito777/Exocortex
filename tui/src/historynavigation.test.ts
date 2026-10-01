@@ -76,7 +76,9 @@ describe("navigation beyond loaded history", () => {
     };
     state.chatFocus = "prompt";
     handleFocusedKey({ type: "char", char: "{" }, state);
-    expect(state.chatFocus).toBe("history");
+    // The handler mutates focus; TypeScript cannot see through that call and
+    // otherwise retains the preceding assignment's "prompt" narrowing.
+    expect<RenderState["chatFocus"]>(state.chatFocus).toBe("history");
     expect(cursorText(state)).toBe("new prompt");
     expect(state.pendingHistoryNavigation).toBeNull();
     expect(state.deferredHistoryRender).toBeNull();

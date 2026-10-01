@@ -301,13 +301,7 @@ export function removePendingSubagentNotificationsForConversation(convId: string
 
 /** True once the original detached task is durably present in child history. */
 export function hasSubagentTaskStarted(record: PendingSubagentNotification): boolean {
-  return convStore.get(record.childConvId)?.messages.some((message) => {
-    if (message.role !== "user"
-        || message.metadata?.system === true
-        || message.metadata?.startedAt !== record.childStartedAt) return false;
-    if (typeof message.content === "string") return message.content === record.task;
-    return message.content.some((block) => block.type === "text" && block.text === record.task);
-  }) ?? false;
+  return convStore.hasUserTask(record.childConvId, record.childStartedAt, record.task);
 }
 
 /**
@@ -319,40 +313,15 @@ export function completedSubagentOutcomeFromHistory(
   record: PendingSubagentNotification,
 ): SubagentNotificationOutcome | null {
   if (!hasSubagentTaskStarted(record)) return null;
-  const messages = convStore.get(record.childConvId)?.messages;
-  if (!messages) return null;
-  let assistantIndex = -1;
-  for (let index = messages.length - 1; index >= 0; index--) {
-    const message = messages[index];
-    if (message.role === "assistant"
-        && message.metadata?.startedAt === record.childStartedAt
-        && message.metadata.endedAt != null) {
-      assistantIndex = index;
-      break;
-    }
-  }
-  if (assistantIndex < 0) return null;
-  const interruptedAfterAssistant = messages.slice(assistantIndex + 1).some((message) =>
-    message.role === "system"
-    && typeof message.content === "string"
-    && message.content.startsWith("✗")
-  );
-  if (interruptedAfterAssistant) return null;
-
-  const content = messages[assistantIndex].content;
-  const blocks: Block[] = typeof content === "string"
-    ? (content ? [{ type: "text", text: content }] : [])
-    : content
-        .filter((block): block is Extract<typeof block, { type: "text" }> => block.type === "text")
-        .map((block) => ({ type: "text" as const, text: block.text }));
+  const text = convStore.completedTaskText(record.childConvId, record.childStartedAt);
+  if (!text) return null;
+  const blocks: Block[] = text.map(text => ({ type: "text", text }));
   return { ok: true, blocks };
 }
 
 /** Crash-window dedupe: notification was accepted even if its sidecar ack was interrupted. */
 export function hasSubagentNotificationBeenDelivered(record: PendingSubagentNotification): boolean {
-  return convStore.get(record.parentConvId)?.messages.some((message) =>
-    message.role === "user" && message.metadata?.subagentNotificationId === record.id
-  ) ?? false;
+  return convStore.hasMessageMetadata(record.parentConvId, { subagentNotificationId: record.id }, "user");
 }
 
 export function registerSubagentNotificationRuntime(server: object, runtime: SubagentNotificationRuntime): void {

@@ -22,6 +22,11 @@ Make the normalized store authoritative for every structurally complete conversa
 - Runtime stream state retains abort/transport coordination and the current partial block accumulator only. A later schema may persist this accumulator for crash recovery, but persistence does not make it canonical history.
 - `loadDisplayPage` is valid during streaming whenever the store's durable message count matches the in-memory canonical count and no unrelated rewrite is dirty.
 
+Cold provider-context preparation now uses a validated worker window rather
+than eagerly hydrating compacted canonical bodies on the IPC thread. See
+[asynchronous conversation loading](async-conversation-loading.md) for integrity,
+admission, compatibility limits, and current responsiveness measurements.
+
 ## Sequential migration
 
 1. Add repository/domain append APIs and parity tests for JSON and SQLite.

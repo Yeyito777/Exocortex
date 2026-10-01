@@ -358,7 +358,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
 
   function deliverPendingBackgroundNotifications(): void {
     for (const [id, pending] of pendingBackgroundNotifications) {
-      const parent = convStore.get(pending.convId);
+      const parent = convStore.getPolicyMetadata(pending.convId);
       if (!parent) {
         pendingBackgroundNotifications.delete(id);
         log("warn", `handler: dropping background task notification for missing conversation ${pending.convId}`);
@@ -371,10 +371,9 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
 
       const text = buildBackgroundTaskNotificationText(pending.completion);
       const automation = { kind: "background_task_completion" as const, sourceId: pending.completion.taskId };
-      const alreadyDurable = parent.messages.some(message => (
-        message.metadata?.automation?.kind === automation.kind
-        && message.metadata.automation.sourceId === automation.sourceId
-      )) || convStore.getQueuedMessages(pending.convId).some(message => (
+      const alreadyDurable = convStore.hasMessageMetadata(pending.convId, {
+        "automation.kind": automation.kind, "automation.sourceId": automation.sourceId,
+      }) || convStore.getQueuedMessages(pending.convId).some(message => (
         message.automation?.kind === automation.kind
         && message.automation.sourceId === automation.sourceId
       ));
@@ -409,7 +408,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       record.text!,
       "next-turn",
       undefined,
-      convStore.get(record.parentConvId)?.subagentMaxDepth ?? null,
+      convStore.getPolicyMetadata(record.parentConvId)?.subagentMaxDepth ?? null,
       record.id,
       undefined,
       undefined,
@@ -429,7 +428,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         acknowledgeSubagentNotification(record.id);
         continue;
       }
-      const parent = convStore.get(record.parentConvId);
+      const parent = convStore.getPolicyMetadata(record.parentConvId);
       if (!parent) {
         log("warn", `handler: parent conversation ${record.parentConvId} not found for subagent ${record.childConvId}; keeping notification pending`);
         continue;
@@ -756,7 +755,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   const broadcastSidebarUndoResult = (
     target: ConnectedClient,
     reqId: string | undefined,
-    result: convStore.UndoDeleteResult | null,
+    result: convStore.UndoDeleteResult | convStore.AsyncUndoDeleteResult | null,
     emptyMessage: string,
     previousSidebarState: SidebarStateSnapshot,
   ): void => {
@@ -1090,7 +1089,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       convStore.removeQueuedMessageById(queueId);
     },
     delegate: async (convId, delegation, signal, onTextDelta) => {
-      const conv = convStore.get(convId);
+      const conv = await convStore.getAsync(convId);
       if (!conv) throw new Error("Owning conversation no longer exists.");
       if (convStore.isStreaming(convId)) throw new Error("The owning conversation is already running another turn.");
       delegatedCallByConversation.set(convId, delegation.callId);
@@ -1131,7 +1130,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     adapter?: RealtimeCallAdapter,
     participants: RealtimeCallParticipant[] = [],
   ): Promise<void> => {
-    if (!convStore.get(convId)) {
+    if (!await convStore.getAsync(convId)) {
       server.sendTo(client, {
         type: "error",
         reqId,
@@ -1163,7 +1162,33 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     scheduleQueuePump();
   });
 
+  // Only commands which actually need live canonical state warm the runtime
+  // window. Read-only paging, Stop, scheduling and turn admission stay cheap.
+  const warmCommands = new Set([
+    "btw_query", "btw_followup", "set_goal", "set_model", "set_effort",
+    "set_fast_mode", "mark_conversation", "pin_conversation", "mute_conversation",
+    "rename_conversation", "clone_conversation", "get_system_prompt",
+  ]);
   const handleCommand = async function handleCommand(client: ConnectedClient, cmd: Command): Promise<void> {
+    try {
+      if (warmCommands.has(cmd.type) && "convId" in cmd && typeof cmd.convId === "string") {
+        await convStore.getAsync(cmd.convId);
+      }
+      if (cmd.type === "trim_conversation" || cmd.type === "set_system_instructions") {
+        if (convStore.isStreaming(cmd.convId)) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Cannot rewrite conversation history while it is streaming." });
+          return;
+        }
+        await convStore.getFullAsync(cmd.convId);
+      }
+    } catch (error) {
+      server.sendTo(client, {
+        type: "error", reqId: "reqId" in cmd ? cmd.reqId : undefined,
+        ...("convId" in cmd && typeof cmd.convId === "string" ? { convId: cmd.convId } : {}),
+        message: `Could not load verified conversation: ${error instanceof Error ? error.message : String(error)}`,
+      });
+      return;
+    }
     switch (cmd.type) {
 
       // ── Connection/bootstrap commands ──────────────────────────────
@@ -1227,7 +1252,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           });
           break;
         }
-        if (!convStore.get(cmd.convId)) {
+        if (!convStore.hasConversation(cmd.convId)) {
           server.sendTo(client, {
             type: "error",
             reqId: cmd.reqId,
@@ -1534,9 +1559,13 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           || cmd.expectedStartedAt === activeStartedAt
           || (!ac && convStore.isStreamHandoffActive(cmd.convId));
         if (targetsActiveStream && cmd.reason !== "daemon-restart") {
-          const conv = convStore.get(cmd.convId);
-          if (conv?.goal?.status === "active") {
-            applyUserGoalAction(conv, "pause");
+          // Cancel admission immediately, even while a cold worker read is in
+          // flight. Never wait for archive loading before acknowledging Stop.
+          if (!ac) convStore.clearStreamHandoff(cmd.convId);
+          const conv = convStore.getCached(cmd.convId);
+          if ((conv?.goal ?? convStore.getIndexedSummary(cmd.convId)?.goal)?.status === "active") {
+            if (conv) applyUserGoalAction(conv, "pause");
+            else convStore.updateGoalStatus(cmd.convId, "paused", { reason: "Paused by user." });
             convStore.clearGoalContinuationAfterStream(cmd.convId);
             convStore.clearStreamHandoff(cmd.convId);
             if (cancelDeferredChronoSleep(cmd.convId)) broadcastConversationHistoryUpdated(server, cmd.convId);
@@ -1911,6 +1940,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
                 status: queued.duplicate ? "duplicate" : "queued",
               });
             } else if (subscription.delivery === "inbox") {
+              await convStore.getAsync(subscription.convId);
               if (!convStore.appendExternalInboxNotification(subscription.convId, envelope, Date.now(), subscription.id)) {
                 throw new Error("Conversation not found");
               }
@@ -1962,7 +1992,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       // ── Assistant turn commands ───────────────────────────────────
 
       case "send_message": {
-        const target = convStore.get(cmd.convId);
+        const target = convStore.getPolicyMetadata(cmd.convId);
         if (target && (cmd.delegation || target.subagentPolicy)) {
           try { assertDelegationModel(target.provider, target.model, cmd.legacy); }
           catch (error) {
@@ -2001,7 +2031,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             }
           }
           if (trackAsSubagent && trackedParentId && setSubagentActive(trackedParentId, cmd.convId, true, {
-            title: target?.title || "Subagent task",
+            title: convStore.getIndexedSummary(cmd.convId)?.title || "Subagent task",
             startedAt: cmd.startedAt,
           })) {
             broadcastConversationUpdated(server, trackedParentId);
@@ -2056,7 +2086,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       }
 
       case "replay_conversation": {
-        const target = convStore.get(cmd.convId);
+        const target = convStore.getPolicyMetadata(cmd.convId);
         if (target?.provider === "openai"
             && rejectDuringOpenAIAccountMutation(client, cmd.reqId, cmd.convId)) break;
         const pending = listPendingSubagentNotifications({ childConvId: cmd.convId, state: "running" })[0];
@@ -2089,7 +2119,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       }
 
       case "compact_conversation": {
-        const target = convStore.get(cmd.convId);
+        const target = convStore.getPolicyMetadata(cmd.convId);
         if (target?.provider === "openai"
             && rejectDuringOpenAIAccountMutation(client, cmd.reqId, cmd.convId)) break;
         await orchestrateCompactConversation(
@@ -2424,20 +2454,20 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
 
       case "undo_delete": {
         const previousSidebarState = convStore.listSidebarState();
-        broadcastSidebarUndoResult(client, cmd.reqId, convStore.undoDelete(), "Nothing to undo", previousSidebarState);
+        broadcastSidebarUndoResult(client, cmd.reqId, await convStore.undoDeleteAsync(), "Nothing to undo", previousSidebarState);
         break;
       }
 
       case "redo_delete": {
         const previousSidebarState = convStore.listSidebarState();
-        broadcastSidebarUndoResult(client, cmd.reqId, convStore.redoDelete(), "Nothing to redo", previousSidebarState);
+        broadcastSidebarUndoResult(client, cmd.reqId, await convStore.redoDeleteAsync(), "Nothing to redo", previousSidebarState);
         break;
       }
 
       // ── Queue/system/history commands ─────────────────────────────
 
       case "queue_message": {
-        const delegationTarget = convStore.get(cmd.convId);
+        const delegationTarget = convStore.getPolicyMetadata(cmd.convId);
         if (delegationTarget && (cmd.delegation || delegationTarget.subagentPolicy)) {
           try { assertDelegationModel(delegationTarget.provider, delegationTarget.model, cmd.legacy); }
           catch (error) {
@@ -2465,7 +2495,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages(), settledQueueIds: [queueId] });
           break;
         }
-        if (queueId && convStore.get(cmd.convId)?.messages.some(message => message.metadata?.queueEntryId === queueId)) {
+        if (queueId && convStore.hasMessageMetadata(cmd.convId, { queueEntryId: queueId })) {
           // The daemon may have accepted and removed this entry before the
           // caller observed its acknowledgement. Durable history deduplicates
           // that replay as well as queue-file crash recovery.

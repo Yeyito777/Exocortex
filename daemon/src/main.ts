@@ -18,6 +18,7 @@ import { connect as netConnect } from "net";
 import { agentWorkingDirectory } from "@exocortex/shared/config";
 import { localMacroEnvironment } from "@exocortex/shared/macro-environment";
 import { log } from "./log";
+import { stopConversationLoader } from "./conversation-loader";
 import { getAuthByProvider, getAuthInfoByProvider, hasConfiguredCredentials } from "./auth";
 import { DaemonServer } from "./server";
 import { createHandler } from "./handler";
@@ -184,6 +185,7 @@ async function startDaemon(): Promise<void> {
         await stopExternalToolsAsync();
       }
       convStore.flushAll();
+      stopConversationLoader();
       closeConversationPersistence();
       await server.stop();
       try { unlinkSync(PID_PATH); } catch { /* best-effort cleanup */ }
@@ -230,6 +232,7 @@ async function startDaemon(): Promise<void> {
 
   // Load persisted conversations
   const conversationLoadStats = convStore.loadFromDisk();
+  convStore.requireAsyncConversationLoading();
   profileMark("conversations_loaded", conversationLoadStats);
   backgroundTaskRecovery = new BackgroundTaskRecovery({
     onConversationChanged: (convId) => { broadcastConversationUpdated(server, convId); },
@@ -252,8 +255,7 @@ async function startDaemon(): Promise<void> {
   // removing its queue copy, the transcript's durable queueEntryId wins.
   const deliveredQueueIds = new Set<string>();
   for (const queued of convStore.listQueuedMessages()) {
-    const conversation = convStore.get(queued.convId);
-    if (conversation?.messages.some(message => message.metadata?.queueEntryId === queued.id)) {
+    if (convStore.hasMessageMetadata(queued.convId, { queueEntryId: queued.id })) {
       deliveredQueueIds.add(queued.id);
     }
   }

@@ -859,7 +859,8 @@ describe("automatic context compaction state", () => {
       contextLimit: 10_000,
       reason: "context_error",
       streamMessageFn: fakeStream,
-    })).rejects.toThrow("without losing image contents");
+    // The archive safety gate now rejects before hierarchical/image handling.
+    })).rejects.toThrow("Refusing oversized context replay/compaction");
     expect(calls).toBe(0);
   });
 });

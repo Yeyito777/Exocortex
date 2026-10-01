@@ -238,7 +238,7 @@ export interface RealtimeCallManagerDependencies {
   getConversation?: typeof convStore.get;
   getEffectiveInstructions?: typeof convStore.getEffectiveSystemInstructions;
   getAccountScope?: () => string | null;
-  persistTranscript?: typeof convStore.appendRealtimeTranscript;
+  persistTranscript?: (...args: Parameters<typeof convStore.appendRealtimeTranscript>) => boolean | Promise<boolean>;
   persistStatus?: typeof convStore.appendRealtimeCallStatus;
   getVoice?: () => RealtimeVoice;
   saveVoice?: (voice: RealtimeVoice) => void;
@@ -346,6 +346,7 @@ function callAdapterKey(adapter: RealtimeCallAdapter): string {
 
 /** Owns independent restart-unsafe Bidi sessions for platform media adapters. */
 export class RealtimeCallManager {
+  private readonly cachePins = new Map<string, () => void>();
   private readonly calls = new Map<string, ActiveCall>();
   private readonly callByAdapter = new Map<string, string>();
   private readonly startingByAdapter = new Map<string, Promise<ActiveCall>>();
@@ -353,7 +354,7 @@ export class RealtimeCallManager {
   private readonly getConversation: typeof convStore.get;
   private readonly getEffectiveInstructions: typeof convStore.getEffectiveSystemInstructions;
   private readonly getAccountScope: () => string | null;
-  private readonly persistTranscript: typeof convStore.appendRealtimeTranscript;
+  private readonly persistTranscript: NonNullable<RealtimeCallManagerDependencies["persistTranscript"]>;
   private readonly persistStatus: typeof convStore.appendRealtimeCallStatus;
   private readonly getVoice: () => RealtimeVoice;
   private readonly saveVoice: (voice: RealtimeVoice) => void;
@@ -371,7 +372,7 @@ export class RealtimeCallManager {
     this.getConversation = dependencies.getConversation ?? convStore.get;
     this.getEffectiveInstructions = dependencies.getEffectiveInstructions ?? convStore.getEffectiveSystemInstructions;
     this.getAccountScope = dependencies.getAccountScope ?? getCurrentAccountScope;
-    this.persistTranscript = dependencies.persistTranscript ?? convStore.appendRealtimeTranscript;
+    this.persistTranscript = dependencies.persistTranscript ?? convStore.appendRealtimeTranscriptAsync;
     this.persistStatus = dependencies.persistStatus ?? convStore.appendRealtimeCallStatus;
     this.getVoice = dependencies.getVoice ?? effectiveRealtimeVoice;
     this.saveVoice = dependencies.saveVoice ?? saveRealtimeVoice;
@@ -478,6 +479,7 @@ export class RealtimeCallManager {
         seenUtteranceIds: new Set(),
       };
       this.calls.set(callId, provisional);
+      this.cachePins.set(callId, convStore.pinConversationCache(convId));
       this.callByAdapter.set(adapterKey, callId);
       this.emitState(provisional, "Preparing ChatGPT Bidi…");
       try {
@@ -622,7 +624,7 @@ export class RealtimeCallManager {
         this.emitState(call, "Cancelling active Exo work…");
       }
       call.transcript.user.finalKey = null;
-      this.finalizeTranscript(call, "user", transcript, undefined, {
+      await this.finalizeTranscript(call, "user", transcript, undefined, {
         speaker,
         startedAt: utterance.startedAt,
         endedAt: utterance.endedAt,
@@ -760,7 +762,7 @@ export class RealtimeCallManager {
     try {
       await call.transport.stop();
     } finally {
-      this.flushTranscriptTail(call);
+      await this.flushTranscriptTail(call);
       call.state = "closed";
       this.persistCallStatus(call, "Realtime call ended.");
       this.emitState(call);
@@ -792,6 +794,8 @@ export class RealtimeCallManager {
   }
 
   private removeCall(call: ActiveCall): void {
+    this.cachePins.get(call.callId)?.();
+    this.cachePins.delete(call.callId);
     if (this.calls.get(call.callId) === call) this.calls.delete(call.callId);
     const key = callAdapterKey(call.adapter);
     if (this.callByAdapter.get(key) === call.callId) this.callByAdapter.delete(key);
@@ -845,7 +849,7 @@ export class RealtimeCallManager {
         accumulator.text += event.text;
         if (event.role === "user") {
           this.collectUserSpeakers(call);
-          this.finalizeInterruptedAssistant(call);
+          await this.finalizeInterruptedAssistant(call);
           call.userTranscriptFinal = false;
         }
         const interruptedReplay = event.role === "user"
@@ -894,7 +898,7 @@ export class RealtimeCallManager {
           this.abortActiveHandoffs(call, "cancelled by realtime user request");
           this.emitState(call, "Cancelling active Exo work…");
         }
-        if (event.role === "user") this.finalizeInterruptedAssistant(call);
+        if (event.role === "user") await this.finalizeInterruptedAssistant(call);
         const completedTranscript = mergeCompletedTranscript(call.transcript[event.role].text, event.text);
         if (event.role === "assistant" && call.interruptedAssistantReplay) {
           const withoutReplay = stripRepeatedInterruptedTranscript(
@@ -912,7 +916,7 @@ export class RealtimeCallManager {
             break;
           }
         }
-        this.finalizeTranscript(
+        await this.finalizeTranscript(
           call,
           event.role,
           completedTranscript,
@@ -924,16 +928,16 @@ export class RealtimeCallManager {
       case "handoff": {
         const backendTask = event.text.trim();
         if (!backendTask) break;
-        this.finalizeInterruptedAssistant(call);
+        await this.finalizeInterruptedAssistant(call);
         this.collectUserSpeakers(call);
         // Prefer the independently transcribed speech as the visible/canonical
         // utterance. Frameless is allowed to put a distilled backend task in the
         // delegation item; only fall back to that text when no transcript event
         // was available at all.
         if (call.transcript.user.text.trim()) {
-          this.finalizeTranscript(call, "user", call.transcript.user.text);
+          await this.finalizeTranscript(call, "user", call.transcript.user.text);
         } else if (!call.userTranscriptFinal || !call.lastFinalUserTranscript) {
-          this.finalizeTranscript(call, "user", backendTask);
+          await this.finalizeTranscript(call, "user", backendTask);
         }
         call.userTranscriptFinal = true;
         const originalUserUtterance = call.lastFinalUserTranscript ?? backendTask;
@@ -960,7 +964,7 @@ export class RealtimeCallManager {
         if (call.state === "stopping" || call.state === "closed") return;
         call.state = "closed";
         await call.transport.stop();
-        this.flushTranscriptTail(call);
+        await this.flushTranscriptTail(call);
         this.persistCallStatus(call, event.reason
           ? `Realtime call ended: ${event.reason}`
           : "Realtime call ended.");
@@ -970,7 +974,7 @@ export class RealtimeCallManager {
     }
   }
 
-  private finalizeTranscript(
+  private async finalizeTranscript(
     call: ActiveCall,
     role: "user" | "assistant",
     text: string,
@@ -980,7 +984,7 @@ export class RealtimeCallManager {
       startedAt: number;
       endedAt: number;
     },
-  ): void {
+  ): Promise<void> {
     const accumulator = call.transcript[role];
     let normalized = text.trim();
     if (role === "user" && call.interruptedUserReplay) {
@@ -1035,7 +1039,7 @@ export class RealtimeCallManager {
       tokens,
       ...(speaker ? { speaker } : {}),
     });
-    if (this.persistTranscript(call.convId, role, normalized, startedAt, {
+    if (await this.persistTranscript(call.convId, role, normalized, startedAt, {
       endedAt,
       ...persistedCallSource(call),
       ...(speaker ? { speaker } : {}),
@@ -1051,11 +1055,11 @@ export class RealtimeCallManager {
     call.transcriptLedger.push({ role, text: normalized });
   }
 
-  private finalizeInterruptedAssistant(call: ActiveCall): void {
+  private async finalizeInterruptedAssistant(call: ActiveCall): Promise<void> {
     if (!call.userTranscriptFinal || !call.transcript.assistant.text.trim()) return;
     call.interruptedUserReplay = call.lastFinalUserTranscript;
     const interruptedAssistant = call.transcript.assistant.text;
-    this.finalizeTranscript(call, "assistant", interruptedAssistant);
+    await this.finalizeTranscript(call, "assistant", interruptedAssistant);
     call.interruptedAssistantReplay = interruptedAssistant;
   }
 
@@ -1075,9 +1079,9 @@ export class RealtimeCallManager {
   }
 
   /** Finalize only the entries after the last handoff boundary and close that boundary. */
-  private flushTranscriptTail(call: ActiveCall): RealtimeTranscriptEntry[] {
-    this.finalizeTranscript(call, "user", call.transcript.user.text);
-    this.finalizeTranscript(call, "assistant", call.transcript.assistant.text);
+  private async flushTranscriptTail(call: ActiveCall): Promise<RealtimeTranscriptEntry[]> {
+    await this.finalizeTranscript(call, "user", call.transcript.user.text);
+    await this.finalizeTranscript(call, "assistant", call.transcript.assistant.text);
     const tail = call.transcriptLedger
       .slice(call.lastHandoffLedgerIndex)
       .map(entry => ({ ...entry }));

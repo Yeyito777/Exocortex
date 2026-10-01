@@ -58,7 +58,7 @@ export interface AgentCallbacks {
    * Called after onRoundComplete only while the turn remains active — returns
    * user messages to inject into the conversation before the next API call.
    */
-  drainNextTurnMessages?(): ApiMessage[];
+  drainNextTurnMessages?(): ApiMessage[] | Promise<ApiMessage[]>;
   /** Atomically replace active provider replay with an automatic checkpoint. */
   compactContext?(messages: ApiMessage[], reason: CompactionReason, projectedTokens: number): Promise<ApiMessage[] | null>;
 }
@@ -488,7 +488,7 @@ export async function runAgentLoop(
     if (options.signal?.aborted) throw createAbortError();
 
     // Inject "next-turn" queued messages between tool rounds.
-    const nextTurn = callbacks.drainNextTurnMessages?.() ?? [];
+    const nextTurn = await callbacks.drainNextTurnMessages?.() ?? [];
     for (const qm of nextTurn) {
       messages.push(qm);
       newMessages.push(qm);

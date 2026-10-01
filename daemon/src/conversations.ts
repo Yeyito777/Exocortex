@@ -27,6 +27,8 @@ import { contextMessageChars } from "./context-token-attribution";
 import { getConversationExternalIntegrations } from "./external-notifications";
 import * as displayPageStore from "./display-page-store";
 import { scheduleDisplayIndex } from "./display-index-backfill";
+import { loadConversationOffThread, prepareArchiveHashes, releaseArchiveWindow } from "./conversation-loader";
+import { archiveWindow, inheritArchiveHashProof, isArchivedMessage } from "./conversation-window";
 
 // Re-export streaming functions so existing `convStore.*` call sites keep working
 export {
@@ -58,6 +60,24 @@ export {
 // ── State ───────────────────────────────────────────────────────────
 
 const conversations = new Map<string, Conversation>();
+const cachePins = new Map<string, number>();
+/** Realtime owners retain the live window while their transport can append. */
+export function pinConversationCache(id: string): () => void {
+  cachePins.set(id, (cachePins.get(id) ?? 0) + 1);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const count = (cachePins.get(id) ?? 1) - 1;
+    if (count > 0) cachePins.set(id, count);
+    else cachePins.delete(id);
+  };
+}
+let asyncLoadingRequired = false;
+const pendingLoads = new Map<string, Promise<Conversation | undefined>>();
+/** Production cold misses must never silently run archive work on the IPC thread. */
+export function requireAsyncConversationLoading(): void { asyncLoadingRequired = true; }
+export function getCached(id: string): Conversation | undefined { return conversations.get(id); }
 const summaries = new Map<string, PersistedConversationSummary>();
 const folders = new Map<string, PersistedFolderSummary>();
 const folderInstructions = new Map<string, string>();
@@ -83,7 +103,12 @@ let conversationCacheTotalFileBytes = 0;
 
 function cachedFileSize(id: string): number {
   try {
-    return persistence.getConversationFileStat(id).fileSize;
+    const bytes = persistence.getConversationFileStat(id).fileSize;
+    const conv = conversations.get(id);
+    const window = conv ? archiveWindow(conv.messages) : null;
+    // Count the live tail and conservative row-header overhead, not historical
+    // blob bytes which no longer reside in the foreground heap.
+    return window ? Math.max(0, bytes - window.archivedBytes) + window.prefixSequence * 512 : bytes;
   } catch {
     return 0;
   }
@@ -107,6 +132,7 @@ function cacheIsOverLimit(): boolean {
 }
 
 function canEvictCachedConversation(id: string): boolean {
+  if (cachePins.has(id)) return false;
   if (dirty.has(id)) return false;
   if (streaming.isStreaming(id) || streaming.isHistoryUnwindPending(id)) return false;
   const activity = getConversationActivityCounts(id);
@@ -114,6 +140,8 @@ function canEvictCachedConversation(id: string): boolean {
 }
 
 function evictCachedConversation(id: string): boolean {
+  const conv = conversations.get(id);
+  if (conv) releaseArchiveWindow(conv.messages);
   if (!conversations.delete(id)) return false;
   renderSnapshotCache.delete(id);
   conversationCacheLru.delete(id);
@@ -505,6 +533,10 @@ function loadConversation(id: string): Conversation | undefined {
     return cached;
   }
 
+  if (asyncLoadingRequired && persistence.isSqliteConversationStore()) {
+    if (!hasConversation(id)) return undefined;
+    throw new Error(`Cold conversation ${id} requires asynchronous loading`);
+  }
   const conv = persistence.load(id);
   if (!conv) return undefined;
   const normalizedEffort = normalizeEffort(conv.provider, conv.model, conv.effort);
@@ -653,6 +685,102 @@ export function get(id: string): Conversation | undefined {
   return loadConversation(id);
 }
 
+/** Coalesce cold reads and adopt only the exact still-current durable generation. */
+export async function getAsync(id: string): Promise<Conversation | undefined> {
+  const cached = conversations.get(id);
+  if (cached) return loadConversation(id);
+  if (!persistence.isSqliteConversationStore()) return loadConversation(id);
+  const inFlight = pendingLoads.get(id);
+  if (inFlight) return inFlight;
+  const loading = (async () => {
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const result = await loadConversationOffThread(id);
+      const newer = conversations.get(id);
+      if (newer) {
+        if (result) releaseArchiveWindow(result.conversation.messages, result.window?.handle);
+        return newer;
+      }
+      if (!result) return undefined;
+      if (!persistence.adoptLoadedConversation(result)) {
+        releaseArchiveWindow(result.conversation.messages, result.window?.handle);
+        continue;
+      }
+      const conv = result.conversation;
+      conv.effort = normalizeEffort(conv.provider, conv.model, conv.effort);
+      retainConversation(conv);
+      updateSummaryFromConversation(conv);
+      return conv;
+    }
+    throw new Error(`Conversation ${id} kept changing during asynchronous loading`);
+  })();
+  pendingLoads.set(id, loading);
+  try { return await loading; }
+  finally { if (pendingLoads.get(id) === loading) pendingLoads.delete(id); }
+}
+
+/** Explicit archive rewrites opt into full materialization; ordinary turns never do. */
+export async function getFullAsync(id: string): Promise<Conversation | undefined> {
+  const current = await getAsync(id);
+  if (!current) return undefined;
+  if (streaming.isStreaming(id) || streaming.isHistoryUnwindPending(id) || isHistoryPreparationPending(id)) {
+    throw new Error("Cannot materialize a changing archive");
+  }
+  if (!archiveWindow(current.messages)?.prefixSequence) return current;
+  flush(id);
+  const result = await loadConversationOffThread(id, true);
+  if (!result || conversations.get(id) !== current || streaming.isStreaming(id)
+      || streaming.isHistoryUnwindPending(id) || isHistoryPreparationPending(id) || !persistence.adoptLoadedConversation(result)) {
+    if (result) releaseArchiveWindow(result.conversation.messages, result.window?.handle);
+    throw new Error("Conversation changed while materializing its archive");
+  }
+  releaseArchiveWindow(current.messages);
+  retainConversation(result.conversation);
+  return result.conversation;
+}
+
+export function hasMessageMetadata(id: string, fields: Record<string, string | number | boolean>, role?: string): boolean {
+  const cached = conversations.get(id);
+  if (cached) return cached.messages.some(message => (!role || message.role === role)
+    && Object.entries(fields).every(([path, value]) => {
+      let current: unknown = message.metadata;
+      for (const key of path.split(".")) current = (current as Record<string, unknown> | null)?.[key];
+      return current === value;
+    }));
+  return persistence.hasMessageMetadata(id, fields, role);
+}
+export function getPolicyMetadata(id: string) {
+  return conversations.get(id) ?? persistence.policyMetadata(id);
+}
+export function hasToolBlock(id: string, type: "tool_use" | "tool_result", toolId: string, name?: string): boolean {
+  const cached = conversations.get(id);
+  if (cached?.messages.some(message => !isArchivedMessage(message) && Array.isArray(message.content)
+    && message.content.some(block => type === "tool_use"
+      ? block.type === type && block.id === toolId && (!name || block.name === name)
+      : block.type === type && block.tool_use_id === toolId))) return true;
+  return persistence.hasToolBlock(id, type, toolId, name);
+}
+export function hasUserTask(id: string, startedAt: number, task: string): boolean {
+  const cached = conversations.get(id);
+  if (cached?.messages.some(message => !isArchivedMessage(message) && message.role === "user"
+    && message.metadata?.system !== true && message.metadata?.startedAt === startedAt
+    && (typeof message.content === "string" ? message.content === task
+      : message.content.some(block => block.type === "text" && block.text === task)))) return true;
+  return persistence.hasUserTask(id, startedAt, task);
+}
+export function completedTaskText(id: string, startedAt: number): string[] | null {
+  const messages = conversations.get(id)?.messages;
+  const index = messages?.findLastIndex(message => message.role === "assistant"
+    && message.metadata?.startedAt === startedAt && message.metadata.endedAt != null) ?? -1;
+  if (messages && index >= 0 && !isArchivedMessage(messages[index])) {
+    if (messages.slice(index + 1).some(message => message.role === "system"
+      && typeof message.content === "string" && message.content.startsWith("✗"))) return null;
+    const content = messages[index].content;
+    return typeof content === "string" ? (content ? [content] : [])
+      : content.filter(block => block.type === "text").map(block => (block as { text: string }).text);
+  }
+  return persistence.completedTaskText(id, startedAt);
+}
+
 /** Check indexed existence without parsing and retaining the canonical transcript. */
 export function hasConversation(id: string): boolean {
   return summaries.has(id) || conversations.has(id);
@@ -690,6 +818,12 @@ export function updateGoalStatus(
   status: ConversationGoalStatus,
   options: { reason?: string } = {},
 ): ConversationGoal | null {
+  if (!conversations.has(id) && persistence.isSqliteConversationStore()) {
+    const goal = persistence.updateIndexedGoalStatus(id, status, options.reason);
+    const summary = summaries.get(id);
+    if (summary && goal) summary.goal = goal;
+    return goal;
+  }
   const conv = get(id);
   if (!conv?.goal) return null;
   conv.goal.status = status;
@@ -785,7 +919,7 @@ export function removeMany(ids: string[], recordUndo = true): string[] {
   for (const id of ids) {
     if (seen.has(id)) continue;
     seen.add(id);
-    if (streaming.isHistoryUnwindPending(id)) {
+    if (streaming.isHistoryUnwindPending(id) || inFlightUnwinds.has(id)) {
       log("warn", `conversations: refusing to delete ${id} while a history unwind is pending`);
       continue;
     }
@@ -814,7 +948,7 @@ export function remove(id: string): boolean {
 }
 
 function deleteConversationWithoutUndo(id: string): boolean {
-  if (streaming.isHistoryUnwindPending(id)) {
+  if (streaming.isHistoryUnwindPending(id) || inFlightUnwinds.has(id)) {
     log("warn", `conversations: refusing to delete ${id} while a history unwind is pending`);
     return false;
   }
@@ -1074,6 +1208,62 @@ function applySidebarStackEntry(entry: persistence.TrashStackEntry, direction: S
 }
 
 /** Restore the most recent undoable sidebar operation, or null if the undo stack is empty. */
+export type AsyncUndoDeleteResult = Exclude<UndoDeleteResult, { type: "conversation" | "conversations" }>
+  | { type: "conversation"; conversation: Pick<Conversation, "id"> }
+  | { type: "conversations"; conversations: Array<Pick<Conversation, "id">> };
+
+let sidebarHistoryTail: Promise<unknown> = Promise.resolve();
+function applySidebarHistoryAsync(direction: SidebarUndoDirection): Promise<AsyncUndoDeleteResult | null> {
+  const operation = sidebarHistoryTail.catch(() => {}).then(async () => {
+    if (!persistence.isSqliteConversationStore()) return direction === "undo" ? undoDelete() : redoDelete();
+    const entry = direction === "undo" ? persistence.popUndoEntry() : persistence.popRedoEntry();
+    if (!entry) return null;
+    try {
+      if (entry.type === "conversation" || entry.type === "conversations" || entry.type === "folder_recursive") {
+        const ids = entry.type === "conversation" ? [entry.id] : entry.type === "conversations" ? entry.ids : entry.conversationIds;
+        for (const id of ids) {
+          if (hasConversation(id)) throw new ConversationWorkspaceRestoreError(`Refusing to overwrite live conversation ${id}`);
+          assertConversationWorkspaceRestorable(id);
+        }
+        const restored = persistence.restoreConversationSummariesFromTrash(ids);
+        for (const summary of restored) {
+          summaries.set(summary.id, summary);
+          try { restoreConversationWorkspace(summary.id); }
+          catch (error) { log("error", `conversations: restored ${summary.id}, workspace remains recoverable: ${error}`); }
+        }
+        if (entry.type === "folder_recursive") {
+          for (const folder of entry.folders) folders.set(folder.id, { ...folder });
+          saveFolderState();
+          pushOppositeSidebarEntry(direction, { type: "folder_recursive_removed", folderId: entry.folderId });
+          return { type: "sidebar_state" as const };
+        }
+        if (!restored.length) return null;
+        pushOppositeSidebarEntry(direction, entry.type === "conversation"
+          ? { type: "conversation_removed", id: restored[0].id }
+          : { type: "conversations_removed", ids: restored.map(summary => summary.id) });
+        return entry.type === "conversation"
+          ? { type: "conversation" as const, conversation: restored[0] }
+          : { type: "conversations" as const, conversations: restored };
+      }
+      if (entry.type === "conversation_marked" || entry.type === "conversation_renamed") await getAsync(entry.convId);
+      if (entry.type === "folder_unwrap") {
+        for (const child of entry.children) if (child.item.type === "conversation") await getAsync(child.item.id);
+      }
+      return applySidebarStackEntry(entry, direction);
+    } catch (error) {
+      if (direction === "undo") persistence.pushUndoEntry(entry);
+      else persistence.pushRedoEntry(entry);
+      log("error", `conversations: failed async ${direction}: ${error}`);
+      return null;
+    }
+  });
+  sidebarHistoryTail = operation;
+  return operation;
+}
+
+export function undoDeleteAsync(): Promise<AsyncUndoDeleteResult | null> { return applySidebarHistoryAsync("undo"); }
+export function redoDeleteAsync(): Promise<AsyncUndoDeleteResult | null> { return applySidebarHistoryAsync("redo"); }
+
 export function undoDelete(): UndoDeleteResult | null {
   let entry: persistence.TrashStackEntry | null = null;
   try {
@@ -1263,6 +1453,9 @@ const inFlightUnwinds = new Map<string, {
   promise: Promise<ConversationUnwindResult | null>;
 }>();
 
+/** Includes read/hash preflight, before destructive interruption acquires its lease. */
+export function isHistoryPreparationPending(id: string): boolean { return inFlightUnwinds.has(id); }
+
 export function releaseHistoryUnwindLease(id: string, operationId: string): void {
   streaming.clearHistoryUnwindPending(id, operationId);
 }
@@ -1308,8 +1501,9 @@ async function performUnwindTo(
   deferLeaseRelease: boolean,
   onCommitted: ((result: ConversationUnwindResult) => void) | undefined,
 ): Promise<ConversationUnwindResult | null> {
-  const conv = get(id);
+  const conv = conversations.get(id) ?? await getAsync(id);
   if (!conv) return null;
+  if (archiveWindow(conv.messages)) await prepareArchiveHashes(conv.messages);
   const receipt = persistence.getLastUnwindReceipt(conv);
   if (receipt?.operationId === operationId) {
     return {
@@ -1428,6 +1622,7 @@ async function performUnwindTo(
     // linearization point; live history and queue state remain untouched until it
     // succeeds.
     const plannedMessages = conv.messages.slice(0, spliceAt);
+    inheritArchiveHashProof(conv.messages, plannedMessages);
     const targetCheckpointPrefixHash = trustedUserCheckpointPrefixHash(
       conv,
       targetMessage,
@@ -2314,7 +2509,7 @@ export function deleteFolder(folderId: string, mode: "recursive" | "unwrap" = "r
     .filter(summary => summary.folderId && folderIds.has(summary.folderId))
     .map(summary => summary.id);
 
-  if (conversationIds.some((convId) => streaming.isHistoryUnwindPending(convId))) {
+  if (conversationIds.some((convId) => streaming.isHistoryUnwindPending(convId) || inFlightUnwinds.has(convId))) {
     log("warn", `conversations: refusing to delete folder ${folderId} while a history unwind is pending`);
     return false;
   }
@@ -2416,6 +2611,8 @@ export function getStoredDisplayPage(
   beforeEntryIndex?: number,
   diagnostics?: Partial<RenderSnapshotDiagnostics>,
 ): StoredDisplayHistoryPage | null {
+  const runtime = conversations.get(id);
+  if (runtime && archiveWindow(runtime.messages) && dirty.has(id)) flush(id);
   if (!summaries.has(id) && !conversations.has(id)) return null;
   const totalStartedAt = diagnostics ? performance.now() : 0;
   const conversationCacheHit = diagnostics ? conversations.has(id) : false;
@@ -2604,6 +2801,30 @@ export function getRenderSnapshot(
   includeToolOutputs = true,
   diagnostics?: Partial<RenderSnapshotDiagnostics>,
 ): ConversationRenderSnapshot | null {
+  const cachedConversation = conversations.get(id);
+  if (cachedConversation && archiveWindow(cachedConversation.messages) && dirty.has(id)) flush(id);
+  if (persistence.isSqliteConversationStore() && !dirty.has(id)
+      && (!cachedConversation || archiveWindow(cachedConversation.messages))) {
+    const page = getStoredDisplayPage(id, Number.MAX_SAFE_INTEGER, undefined, diagnostics);
+    if (!page) return null;
+    const entries = [...page.pinnedEntries, ...page.entries];
+    if (includeToolOutputs) {
+      const outputs = new Map((persistence.loadToolOutputs(id) ?? []).map(output => [output.toolCallId, output]));
+      for (const entry of entries) if (entry.type === "ai") {
+        for (const block of entry.blocks) if (block.type === "tool_result") {
+          const output = outputs.get(block.toolCallId);
+          if (output) block.output = output.output;
+        }
+      }
+    }
+    const pending = getPendingStreamSnapshot(id);
+    return {
+      convId: id, provider: page.provider, model: page.model, effort: page.effort,
+      fastMode: page.fastMode, entries, contextTokens: page.contextTokens,
+      toolOutputsIncluded: includeToolOutputs,
+      ...(pending ? { pendingAI: { blocks: pending.blocks, metadata: pending.metadata, blockOffset: pending.blockOffset } } : {}),
+    };
+  }
   // Avoid clocks, cache probes, and file stats entirely unless a caller opts in.
   const collectingDiagnostics = diagnostics !== undefined;
   const totalStartedAt = collectingDiagnostics ? performance.now() : 0;
@@ -2631,6 +2852,7 @@ export function getRenderSnapshot(
     return snapshot;
   };
   if (!conv) return finishDiagnostics(null, false, 0);
+  if (archiveWindow(conv.messages)) throw new Error("Archived conversations require indexed history paging");
 
   if (!isStreaming) {
     const cached = renderSnapshotCache.get(id)?.get(includeToolOutputs);
@@ -2664,13 +2886,18 @@ export function getRenderSnapshot(
 }
 
 export function getDisplayData(id: string, includeToolOutputs = true): ConversationDisplayData | null {
+  if (persistence.isSqliteConversationStore() && !dirty.has(id)
+      && (!conversations.has(id) || archiveWindow(conversations.get(id)!.messages))) {
+    return getRenderSnapshot(id, includeToolOutputs);
+  }
   const conv = get(id);
   if (!conv) return null;
+  if (archiveWindow(conv.messages)) throw new Error("Archived conversations require indexed history paging");
   return buildSnapshotDisplayData(conv, conv.messages, includeToolOutputs);
 }
 
 export function getToolOutputs(id: string, toolCallIds?: readonly string[]): ToolOutputInfo[] | null {
-  if (persistence.isSqliteConversationStore() && !streaming.isStreaming(id)) {
+  if (persistence.isSqliteConversationStore()) {
     const loaded = conversations.get(id);
     const summary = summaries.get(id);
     if (!loaded || !summary || countConversationMessages(loaded.messages) === summary.messageCount) {
@@ -2718,6 +2945,28 @@ export function appendExternalInboxNotification(
 }
 
 /** Persist one finalized voice-call utterance as a normal provenance-tagged turn. */
+const realtimeTranscriptWrites = new Map<string, Promise<boolean>>();
+export function appendRealtimeTranscriptAsync(...args: Parameters<typeof appendRealtimeTranscript>): Promise<boolean> {
+  const [id] = args;
+  const previous = realtimeTranscriptWrites.get(id);
+  const writing = (previous ?? Promise.resolve(true)).catch(() => false).then(async () => {
+    const conv = await getAsync(id);
+    if (!conv) return false;
+    for (let attempt = 0; attempt < 8; attempt++) {
+      try { await prepareArchiveHashes(conv.messages); break; }
+      catch (error) {
+        if (attempt === 7 || !(error instanceof Error) || !error.message.includes("Transcript changed during")) throw error;
+      }
+    }
+    if (conversations.get(id) !== conv) return false;
+    return appendRealtimeTranscript(...args);
+  });
+  realtimeTranscriptWrites.set(id, writing);
+  const clear = () => { if (realtimeTranscriptWrites.get(id) === writing) realtimeTranscriptWrites.delete(id); };
+  void writing.then(clear, clear);
+  return writing;
+}
+
 export function appendRealtimeTranscript(
   convId: string,
   role: "user" | "assistant",

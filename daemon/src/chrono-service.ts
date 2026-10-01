@@ -562,21 +562,11 @@ function defaultTitle(input: CreateScheduleInput): string {
 }
 
 function conversationHasSleepToolCall(sleep: DeferredChronoSleep): boolean {
-  return convStore.get(sleep.conversationId)?.messages.some((message) =>
-    message.role === "assistant"
-    && Array.isArray(message.content)
-    && message.content.some((block) => block.type === "tool_use"
-      && block.id === sleep.toolCallId
-      && block.name === "chrono")
-  ) ?? false;
+  return convStore.hasToolBlock(sleep.conversationId, "tool_use", sleep.toolCallId, "chrono");
 }
 
 function conversationHasSleepToolResult(sleep: DeferredChronoSleep): boolean {
-  return convStore.get(sleep.conversationId)?.messages.some((message) =>
-    message.role === "user"
-    && Array.isArray(message.content)
-    && message.content.some((block) => block.type === "tool_result" && block.tool_use_id === sleep.toolCallId)
-  ) ?? false;
+  return convStore.hasToolBlock(sleep.conversationId, "tool_result", sleep.toolCallId);
 }
 
 function formatElapsedDuration(durationMs: number): string {
@@ -914,8 +904,7 @@ export function quiesceChronoCommandsForConversation(conversationId: string): nu
 
 function occurrenceAlreadyDelivered(occurrence: PendingOccurrence): boolean {
   if (occurrence.target.kind !== "conversation") return false;
-  return convStore.get(occurrence.target.conversationId)?.messages
-    .some(message => message.metadata?.queueEntryId === occurrence.id) ?? false;
+  return convStore.hasMessageMetadata(occurrence.target.conversationId, { queueEntryId: occurrence.id });
 }
 
 function capOutput(output: string): string {
@@ -930,8 +919,7 @@ function enqueueHardWake(occurrence: PendingOccurrence, hardWake: CommandHardWak
     return;
   }
   const queueId = `${occurrence.id}:hard-wake`;
-  const alreadyDelivered = convStore.get(hardWake.conversationId)?.messages
-    .some(message => message.metadata?.queueEntryId === queueId) ?? false;
+  const alreadyDelivered = convStore.hasMessageMetadata(hardWake.conversationId, { queueEntryId: queueId });
   if (alreadyDelivered || convStore.getQueuedMessageById(queueId)) return;
   const status = failed ? "failed or reported an escalation condition" : "completed";
   const text = [

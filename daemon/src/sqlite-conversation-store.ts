@@ -27,7 +27,9 @@ import {
   countConversationMessages,
   isRealUserMessage,
   isReplayHistoryMessage,
+  isToolResultMessage,
   isValidActiveContextCached,
+  rememberValidatedActiveContext,
   summarizeConversation,
   validatedActiveContextCompactionHistoryCount,
 } from "./messages";
@@ -50,6 +52,9 @@ import { log } from "./log";
 import type { ConversationRepository } from "./conversation-repository";
 import type { ConversationCloneTarget } from "./conversation-clone";
 import { pagedUserFingerprint, storedMessageFingerprint as messageFingerprint } from "./message-fingerprint";
+import { adoptArchiveWindow, archiveWindow, assertCanonicalMessage, freezeArchiveCheckpoint, isArchivedMessage } from "./conversation-window";
+import { MAX_TITLE_CONTEXT_CHARS, setArchivedTitleContext, titleUserText } from "./conversation-title-context";
+import type { ConversationLoadResult } from "./conversation-load-protocol";
 
 const SCHEMA_VERSION = 10;
 const DEFAULT_FILE = "exocortex.sqlite3";
@@ -346,12 +351,17 @@ export class SqliteConversationStore implements ConversationRepository {
     this.path = resolve(options.path ?? sqliteConversationStorePath());
     this.readOnly = options.readonly ?? false;
     this.faultInjection = options.faultInjection;
-    mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
+    if (!this.readOnly) mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
     this.db = new Database(this.path, { create: !options.readonly, readonly: options.readonly ?? false });
     try {
-      try { chmodSync(this.path, 0o600); } catch { /* best effort, especially on Windows */ }
+      if (!this.readOnly) {
+        try { chmodSync(this.path, 0o600); } catch { /* best effort, especially on Windows */ }
+      }
       this.configure();
-      this.migrate(options.targetSchemaVersion ?? SCHEMA_VERSION);
+      if (!this.readOnly) this.migrate(options.targetSchemaVersion ?? SCHEMA_VERSION);
+      else if (this.db.query<{ version: number }, []>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version !== SCHEMA_VERSION) {
+        throw new Error("Archive loader requires the current SQLite schema");
+      }
       if (options.autoImportLegacy) this.importLegacyIfNeeded();
     } catch (err) {
       // A constructor that throws must not leave the database locked. This is
@@ -1177,6 +1187,301 @@ export class SqliteConversationStore implements ConversationRepository {
     }
   }
 
+  /**
+   * Worker-only cold load. A read transaction binds metadata, checkpoint and
+   * archive bytes to one SQLite snapshot. Prefix bodies are streamed in batches
+   * for integrity validation, then discarded; only immutable row headers and
+   * the last visible user group/checkpoint tail cross the worker boundary.
+   */
+  loadRuntimeWindow(id: string, handle: string, full = false): {
+    result: ConversationLoadResult;
+    baseHash: ReturnType<typeof createHash>;
+    prefixHashes: Array<[number, string]>;
+  } | null {
+    return this.db.transaction(() => {
+      const row = this.row(id);
+      if (!row) return null;
+      const activeRow = this.db.query<{ payload_json: string }, [string]>(
+        "SELECT payload_json FROM active_contexts WHERE conversation_id=?",
+      ).get(id);
+      const active = activeRow ? JSON.parse(activeRow.payload_json) as Conversation["activeContext"] : null;
+      let prefixSequence = 0;
+      if (full) {
+        // Explicit rewrites need real canonical rows, but still parse and hash
+        // them here and carry a zero-header worker proof to the foreground.
+      } else if (active) {
+        const legacyDivider = active.compactionHistoryCount === undefined
+          ? this.db.query<{ sequence: number }, [string, number]>(`
+              SELECT sequence FROM messages WHERE conversation_id=? AND role='system'
+              AND json_extract(metadata_json, '$.kind')='context_compaction_finished'
+              AND json_extract(metadata_json, '$.startedAt')=? LIMIT 1
+            `).get(id, active.compactedAt) : null;
+        const cursor = active.compactionHistoryCount ?? (legacyDivider
+          ? this.db.query<{ count: number }, [string, number]>(`
+              SELECT COUNT(*) AS count FROM messages
+              WHERE conversation_id=? AND is_replay_history=1 AND sequence<?
+            `).get(id, legacyDivider.sequence)!.count : 0);
+        if (Number.isSafeInteger(cursor) && cursor > 0) {
+          const boundary = this.db.query<{ sequence: number }, [string, number]>(`
+            SELECT sequence FROM messages WHERE conversation_id=? AND is_replay_history=1
+            ORDER BY sequence LIMIT 1 OFFSET ?
+          `).get(id, cursor - 1)?.sequence ?? row.stored_message_count;
+          // A compaction divider flushes the display's open AI group, even in a
+          // single enormous user turn. Prefer that bounded indexing boundary.
+          const divider = this.db.query<{ sequence: number }, [string, number, number]>(`
+            SELECT sequence FROM messages WHERE conversation_id=? AND role='system'
+            AND json_extract(metadata_json, '$.kind')='context_compaction_finished'
+            AND json_extract(metadata_json, '$.startedAt')=? AND sequence>?
+            ORDER BY sequence DESC LIMIT 1
+          `).get(id, active.compactedAt, boundary);
+          prefixSequence = divider?.sequence ?? this.db.query<{ sequence: number }, [string, number]>(`
+            SELECT sequence FROM messages WHERE conversation_id=? AND is_real_user=1 AND sequence<=?
+            ORDER BY sequence DESC LIMIT 1
+          `).get(id, boundary)?.sequence ?? 0;
+        }
+      } else {
+        const lostCheckpoint = this.db.query<{ sequence: number }, [string]>(`
+          SELECT sequence FROM messages WHERE conversation_id=?
+          AND json_extract(metadata_json, '$.kind')='context_compaction_finished' LIMIT 1
+        `).get(id);
+        if (lostCheckpoint) prefixSequence = row.stored_message_count;
+      }
+      const messages: StoredMessage[] = [];
+      const archivedTitleContext: string[] = [];
+      let titleRemaining = MAX_TITLE_CONTEXT_CHARS;
+      const hashes = new Map<number, string>();
+      const hash = createHash("sha256");
+      let historyCount = 0, prefixHistoryCount = 0;
+      let baseHash = hash.copy();
+      hashes.set(0, hash.copy().digest("hex").slice(0, 24));
+      for (let start = 0; start < row.stored_message_count; start += 128) {
+        const end = Math.min(row.stored_message_count, start + 128);
+        const rows = this.db.query<MessageRow, [string, number, number]>(`
+          SELECT sequence, role, content_json, metadata_json, provider_data_json,
+                 context_tokens_json, context_checkpoint_json, has_provider_data,
+                 has_context_tokens, has_context_checkpoint
+          FROM messages WHERE conversation_id=? AND sequence>=? AND sequence<? ORDER BY sequence
+        `).all(id, start, end);
+        const blobs = this.db.query<MessageBlobRow, [string, number, number]>(`
+          SELECT message_sequence, ordinal, kind, payload_json FROM resolved_message_blobs
+          WHERE conversation_id=? AND message_sequence>=? AND message_sequence<?
+          ORDER BY message_sequence, kind, ordinal
+        `).all(id, start, end);
+        if (rows.length !== end-start) throw new Error(`Non-contiguous archive for ${id}`);
+        for (const { sequence, message } of storedMessagesFromRows(rows, blobs)) {
+          if (sequence === prefixSequence) {
+            baseHash = hash.copy();
+            prefixHistoryCount = historyCount;
+          }
+          if (isRealUserMessage(message) || sequence >= prefixSequence) {
+            hashes.set(historyCount, hash.copy().digest("hex").slice(0, 24));
+          }
+          if (isReplayHistoryMessage(message)) {
+            hash.update(JSON.stringify({ role: message.role, content: message.content, providerData: message.providerData ?? null }));
+            hash.update("\n");
+            historyCount++;
+          }
+          if (sequence >= prefixSequence
+              || historyCount === active?.transcriptHistoryCount
+              || historyCount === active?.compactionHistoryCount) {
+            hashes.set(historyCount, hash.copy().digest("hex").slice(0, 24));
+          }
+          if (sequence < prefixSequence) {
+            if (titleRemaining > 0 && isRealUserMessage(message)) {
+              const text = titleUserText(message.content);
+              if (text) { archivedTitleContext.push(text.slice(0, titleRemaining)); titleRemaining -= text.length; }
+            }
+            const header: StoredMessage = {
+              role: message.role,
+              content: message.role === "system_instructions" ? message.content
+                : isToolResultMessage(message)
+                  ? [{ type: "tool_result", tool_use_id: "", content: "" }] : "",
+              metadata: message.metadata,
+              ...(message.contextCheckpoint ? { contextCheckpoint: message.contextCheckpoint } : {}),
+            };
+            messages.push(header);
+          } else messages.push(message);
+        }
+      }
+      if (prefixSequence === row.stored_message_count) {
+        baseHash = hash.copy();
+        prefixHistoryCount = historyCount;
+      }
+      hashes.set(historyCount, hash.copy().digest("hex").slice(0, 24));
+      const window = {
+        handle, conversationId: id, path: this.path, prefixSequence, prefixHistoryCount,
+        prefixHash: baseHash.copy().digest("hex").slice(0, 24),
+        archivedBytes: this.db.query<{ bytes: number }, [string, number]>(`
+          SELECT COALESCE(SUM(content_bytes), 0) AS bytes FROM messages WHERE conversation_id=? AND sequence<?
+        `).get(id, prefixSequence)!.bytes,
+      };
+      adoptArchiveWindow(messages, window, [...hashes]);
+      const valid = active == null || isValidActiveContextCached(active, messages);
+      const conversation: Conversation = {
+        id: row.id, provider: row.provider, model: row.model, effort: row.effort,
+        fastMode: row.ultrafast_mode === 1 ? "ultrafast" : row.fast_mode === 1,
+        messages, ...(active ? { activeContext: active } : {}),
+        createdAt: row.created_at, updatedAt: row.updated_at,
+        lastContextTokens: valid ? row.last_context_tokens : null,
+        marked: row.marked === 1, pinned: row.pinned === 1, muted: row.muted === 1,
+        sortOrder: row.sort_order, folderId: row.folder_id, title: row.title,
+        goal: normalizeConversationGoal(parseOptional(row.goal_json)),
+        subagentMaxDepth: row.subagent_max_depth,
+        subagentPolicy: parseOptional(row.subagent_policy_json),
+        toolPolicy: parseOptional(row.tool_policy_json),
+      };
+      const receipt = this.db.query<{
+        operation_id: string; user_message_index: number; history_total_entries: number;
+      }, [string]>("SELECT operation_id, user_message_index, history_total_entries FROM unwind_receipts WHERE conversation_id=?").get(id);
+      return {
+        result: {
+          conversation, generation: row.storage_generation, hashes: [...hashes], archivedTitleContext,
+          validatedActiveContext: active != null && valid,
+          window,
+          receipt: receipt ? {
+            operationId: receipt.operation_id, userMessageIndex: receipt.user_message_index,
+            historyTotalEntries: receipt.history_total_entries,
+          } : null,
+        },
+        baseHash,
+        prefixHashes: [...hashes].filter(([count]) => count <= prefixHistoryCount),
+      };
+    })();
+  }
+
+  /** Install worker-owned read state only if its durable generation still exists. */
+  adoptLoadedConversation(result: ConversationLoadResult): boolean {
+    const conv = result.conversation;
+    const row = this.row(conv.id);
+    if (!row || row.storage_generation !== result.generation
+        || row.stored_message_count !== conv.messages.length) return false;
+    if (result.window) adoptArchiveWindow(conv.messages, result.window, result.hashes);
+    if (result.validatedActiveContext && conv.activeContext) {
+      freezeArchiveCheckpoint(conv.activeContext);
+      const hashes = new Map(result.hashes);
+      const userHashes = new WeakMap<StoredMessage, string>();
+      let count = 0;
+      for (const message of conv.messages) {
+        if (isRealUserMessage(message)) {
+          const hash = hashes.get(count);
+          if (hash) userHashes.set(message, hash);
+        }
+        if (isReplayHistoryMessage(message)) count++;
+      }
+      // Transfer the worker's successful structural/integrity result, bound to
+      // the exact adopted references. Do not repeat archive validation in IPC.
+      rememberValidatedActiveContext(conv.activeContext, conv.messages, userHashes);
+    }
+    if (result.archivedTitleContext) setArchivedTitleContext(conv, result.archivedTitleContext);
+    this.loadedState.set(conv, {
+      generation: result.generation, messages: conv.messages.map(messageSnapshot),
+      activeContextRef: conv.activeContext, lastUnwindReceipt: result.receipt,
+    });
+    this.loadedById.set(conv.id, new WeakRef(conv));
+    return true;
+  }
+
+  /** Restore a lost worker hash state from canonical bytes, never from row headers. */
+  loadPrefixHash(id: string, sequenceCount: number) {
+    return this.db.transaction(() => {
+      const row = this.row(id);
+      if (!row || sequenceCount > row.stored_message_count) throw new Error("Archived prefix no longer exists");
+      const hash = createHash("sha256");
+      let historyCount = 0;
+      for (let start = 0; start < sequenceCount; start += 128) {
+        const end = Math.min(start + 128, sequenceCount);
+        const rows = this.db.query<MessageRow, [string, number, number]>(`
+          SELECT * FROM messages WHERE conversation_id=? AND sequence>=? AND sequence<? ORDER BY sequence
+        `).all(id, start, end);
+        const blobs = this.db.query<MessageBlobRow, [string, number, number]>(`
+          SELECT * FROM resolved_message_blobs
+          WHERE conversation_id=? AND message_sequence>=? AND message_sequence<? ORDER BY message_sequence, kind, ordinal
+        `).all(id, start, end);
+        if (rows.length !== end - start) throw new Error("Archived prefix is non-contiguous");
+        for (const { message } of storedMessagesFromRows(rows, blobs)) if (isReplayHistoryMessage(message)) {
+          hash.update(JSON.stringify({ role: message.role, content: message.content, providerData: message.providerData ?? null }));
+          hash.update("\n");
+          historyCount++;
+        }
+      }
+      return { hash, historyCount };
+    })();
+  }
+
+  hasMessageMetadata(id: string, fields: Record<string, string | number | boolean>, role?: string): boolean {
+    const entries = Object.entries(fields);
+    if (!entries.length || entries.some(([field]) => !/^[a-zA-Z_][\w]*(\.[a-zA-Z_][\w]*)*$/.test(field))) {
+      throw new Error("Invalid message metadata predicate");
+    }
+    const clauses = entries.map(() => "json_extract(metadata_json, ?) = ?");
+    const params: (string | number)[] = [id];
+    for (const [field, value] of entries) params.push(`$.${field}`, typeof value === "boolean" ? Number(value) : value);
+    if (role) { clauses.push("role=?"); params.push(role); }
+    return this.db.query(`SELECT 1 FROM messages WHERE conversation_id=? AND ${clauses.join(" AND ")} LIMIT 1`).get(...params) != null;
+  }
+
+  policyMetadata(id: string): Pick<Conversation, "provider" | "model" | "subagentPolicy" | "subagentMaxDepth"> | null {
+    const row = this.row(id);
+    return row ? {
+      provider: row.provider, model: row.model, subagentMaxDepth: row.subagent_max_depth,
+      subagentPolicy: parseOptional(row.subagent_policy_json),
+    } : null;
+  }
+
+  updateIndexedGoalStatus(id: string, status: import("./messages").ConversationGoalStatus, reason?: string) {
+    const row = this.row(id);
+    const goal = row ? normalizeConversationGoal(parseOptional(row.goal_json)) : null;
+    if (!goal) return null;
+    goal.status = status;
+    goal.reason = reason?.trim() || undefined;
+    delete goal.pausedBy;
+    delete goal.pauseReason;
+    if (status === "active") goal.emptyTurns = 0;
+    goal.updatedAt = Date.now();
+    this.db.query("UPDATE conversations SET goal_json=?, storage_generation=storage_generation+1 WHERE id=? AND deleted_at IS NULL")
+      .run(JSON.stringify(goal), id);
+    return goal;
+  }
+
+  hasToolBlock(id: string, type: "tool_use" | "tool_result", toolId: string, name?: string): boolean {
+    if (type === "tool_result") return this.db.query(
+      "SELECT 1 FROM tool_outputs WHERE conversation_id=? AND tool_call_id=? LIMIT 1",
+    ).get(id, toolId) != null;
+    return this.db.query(`
+      SELECT 1 FROM messages m, json_each(CASE WHEN json_type(m.content_json)='array' THEN m.content_json ELSE '[]' END) b
+      WHERE m.conversation_id=? AND m.role='assistant' AND json_type(m.content_json)='array'
+      AND json_extract(b.value, '$.type')='tool_use' AND json_extract(b.value, '$.id')=?
+      AND (? IS NULL OR json_extract(b.value, '$.name')=?) LIMIT 1
+    `).get(id, toolId, name ?? null, name ?? null) != null;
+  }
+
+  hasUserTask(id: string, startedAt: number, task: string): boolean {
+    return this.db.query(`
+      SELECT 1 FROM messages m WHERE conversation_id=? AND role='user'
+      AND COALESCE(json_extract(metadata_json, '$.system'), 0)!=1
+      AND json_extract(metadata_json, '$.startedAt')=?
+      AND (json_extract(content_json, '$')=? OR EXISTS (
+        SELECT 1 FROM json_each(CASE WHEN json_type(m.content_json)='array' THEN m.content_json ELSE '[]' END) b
+        WHERE json_extract(b.value, '$.type')='text' AND json_extract(b.value, '$.text')=?
+      )) LIMIT 1
+    `).get(id, startedAt, task, task) != null;
+  }
+
+  completedTaskText(id: string, startedAt: number): string[] | null {
+    const row = this.db.query<{ sequence: number; content_json: string }, [string, number]>(`
+      SELECT sequence, content_json FROM messages WHERE conversation_id=? AND role='assistant'
+      AND json_extract(metadata_json, '$.startedAt')=? AND json_extract(metadata_json, '$.endedAt') IS NOT NULL
+      ORDER BY sequence DESC LIMIT 1
+    `).get(id, startedAt);
+    if (!row || this.db.query(`
+      SELECT 1 FROM messages WHERE conversation_id=? AND sequence>? AND role='system'
+      AND json_type(content_json)='text' AND substr(json_extract(content_json, '$'), 1, 1)='✗' LIMIT 1
+    `).get(id, row.sequence)) return null;
+    const content = JSON.parse(row.content_json);
+    return typeof content === "string" ? (content ? [content] : [])
+      : content.filter((block: { type: string }) => block.type === "text").map((block: { text: string }) => block.text);
+  }
+
   loadAllConversations(): Conversation[] {
     return this.listSummaries().map((summary) => this.load(summary.id)).filter((conv): conv is Conversation => conv !== null);
   }
@@ -1360,6 +1665,7 @@ export class SqliteConversationStore implements ConversationRepository {
   }
 
   private insertMessage(id: string, sequence: number, message: StoredMessage): number {
+    assertCanonicalMessage(message);
     const fullContentJson = JSON.stringify(message.content);
     const contentBytes = Buffer.byteLength(fullContentJson);
     const blobs: Array<{ kind: "tool_result" | "image"; ordinal: number; payload: string }> = [];
@@ -1515,6 +1821,10 @@ export class SqliteConversationStore implements ConversationRepository {
         "SELECT sequence, message_hash FROM messages WHERE conversation_id=? ORDER BY sequence",
       ).all(conv.id);
       for (let i = 0; i < common; i++) {
+        if (isArchivedMessage(conv.messages[i])) {
+          if (state.messages[i].ref !== conv.messages[i]) throw new Error("Archived row header changed");
+          continue;
+        }
         if (rows[i]?.sequence !== i || rows[i].message_hash !== messageFingerprint(conv.messages[i])) return i;
       }
     } else {
@@ -1533,11 +1843,24 @@ export class SqliteConversationStore implements ConversationRepository {
     // Rebuild only from the last affected real user turn. Resolve that boundary
     // and its absolute counters from indexed normalized rows rather than scanning
     // the complete in-memory prefix on every append.
-    const startSequence = this.db.query<{ sequence: number }, [string, number]>(`
+    let startSequence = this.db.query<{ sequence: number }, [string, number]>(`
       SELECT sequence FROM messages
       WHERE conversation_id=? AND is_real_user=1 AND sequence<=?
       ORDER BY sequence DESC LIMIT 1
     `).get(conv.id, Math.min(changedAt, Math.max(0, conv.messages.length - 1)))?.sequence ?? 0;
+    // Compaction dividers are independently rendered boundaries. Rebuilding an
+    // entire user group can otherwise rematerialize hundreds of MB after each
+    // append in a long-running single user turn.
+    const divider = this.db.query<{ sequence: number; entry_index: number }, [string, number, number]>(`
+      SELECT m.sequence, d.entry_index FROM messages m JOIN display_entries d
+      ON d.conversation_id=m.conversation_id AND d.pinned=0 AND d.type='system'
+      AND json_extract(d.payload_json, '$.metadata.kind')='context_compaction_finished'
+      AND json_extract(d.payload_json, '$.metadata.startedAt')=json_extract(m.metadata_json, '$.startedAt')
+      WHERE m.conversation_id=? AND m.sequence>? AND m.sequence<=? AND m.role='system'
+      AND json_extract(m.metadata_json, '$.kind')='context_compaction_finished'
+      ORDER BY m.sequence DESC LIMIT 1
+    `).get(conv.id, startSequence, changedAt);
+    if (divider) startSequence = divider.sequence;
     const userOffset = this.db.query<{ count: number }, [string, number]>(`
       SELECT COUNT(*) AS count FROM messages
       WHERE conversation_id=? AND is_real_user=1 AND sequence<?
@@ -1552,7 +1875,7 @@ export class SqliteConversationStore implements ConversationRepository {
         SELECT entry_index FROM display_entries
         WHERE conversation_id=? AND pinned=0 AND user_index=? LIMIT 1
       `).get(conv.id, userOffset);
-      entryStart = found?.entry_index ?? this.db.query<{ count: number }, [string]>(
+      entryStart = (divider ? divider.entry_index : found?.entry_index) ?? this.db.query<{ count: number }, [string]>(
         "SELECT COUNT(*) AS count FROM display_entries WHERE conversation_id=? AND pinned=0",
       ).get(conv.id)!.count;
       this.db.query("DELETE FROM display_entries WHERE conversation_id=? AND pinned=0 AND entry_index>=?").run(conv.id, entryStart);
@@ -1561,6 +1884,7 @@ export class SqliteConversationStore implements ConversationRepository {
     }
 
     const suffix = conv.messages.slice(startSequence);
+    if (suffix.some(isArchivedMessage)) throw new Error("Display rebuild crossed the materialized archive boundary");
     const data = buildDisplayData(
       conv.id,
       conv.provider,
@@ -1610,6 +1934,7 @@ export class SqliteConversationStore implements ConversationRepository {
 
   save(conv: Conversation, options: { forceMessages?: boolean; generation?: number } = {}): void {
     assertSafeId(conv.id);
+    archiveWindow(conv.messages); // validate immutable prefix before ANY delete/upsert
     const existing = this.row(conv.id, true);
     const loaded = this.loadedState.get(conv);
     if (existing && loaded && existing.storage_generation !== loaded.generation) {
@@ -1653,6 +1978,7 @@ export class SqliteConversationStore implements ConversationRepository {
 
   appendMessages(conv: Conversation, expectedStoredMessageCount: number): void {
     assertSafeId(conv.id);
+    archiveWindow(conv.messages);
     if (!Number.isSafeInteger(expectedStoredMessageCount) || expectedStoredMessageCount < 0
         || conv.messages.length < expectedStoredMessageCount) {
       throw new Error(`Invalid conversation append boundary for ${conv.id}: ${expectedStoredMessageCount}/${conv.messages.length}`);
@@ -1705,6 +2031,7 @@ export class SqliteConversationStore implements ConversationRepository {
   }
 
   saveContextAttribution(conv: Conversation): void {
+    archiveWindow(conv.messages);
     const existing = this.row(conv.id);
     const loaded = this.loadedState.get(conv);
     if (!existing) return this.save(conv);
@@ -1713,6 +2040,7 @@ export class SqliteConversationStore implements ConversationRepository {
     this.db.transaction(() => {
       for (let sequence = 0; sequence < conv.messages.length; sequence++) {
         const message = conv.messages[sequence];
+        if (isArchivedMessage(message)) continue;
         this.db.query("UPDATE messages SET context_tokens_json=?, has_context_tokens=? WHERE conversation_id=? AND sequence=?")
           .run(optionalJson(message.contextTokens), Object.hasOwn(message, "contextTokens") ? 1 : 0, conv.id, sequence);
       }
@@ -2080,17 +2408,26 @@ export class SqliteConversationStore implements ConversationRepository {
 
   restoreConversationsFromTrash(ids: string[]): Conversation[] {
     const restored: Conversation[] = [];
+    this.restoreConversationSummariesFromTrash(ids);
+    for (const id of ids) {
+      const conv = this.load(id);
+      if (conv) restored.push(conv);
+    }
+    return restored;
+  }
+
+  /** Sidebar undo does not need to deserialize any restored canonical bodies. */
+  restoreConversationSummariesFromTrash(ids: string[]): PersistedConversationSummary[] {
+    const restored: PersistedConversationSummary[] = [];
     this.db.transaction(() => {
       for (const id of ids) {
         const row = this.row(id, true);
         if (!row || row.deleted_at === null) continue;
         this.db.query("UPDATE conversations SET deleted_at=NULL, storage_generation=storage_generation+1 WHERE id=?").run(id);
+        const summary = this.getSummary(id);
+        if (summary) restored.push(summary);
       }
     })();
-    for (const id of ids) {
-      const conv = this.load(id);
-      if (conv) restored.push(conv);
-    }
     return restored;
   }
 
