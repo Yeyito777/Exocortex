@@ -440,19 +440,31 @@ export function createVimbrowserPageFetcher(
       return recoveredId;
     }
 
-    const activeBefore = positiveInteger(payload.active_tabid);
+    const existingTabIds = new Set(tabsFromPayload(payload).map(tab => positiveInteger(tab.id)));
     const created = await runJson(run, ["open", VIMBROWSER_IDLE_URL], {
       signal,
       timeoutMs: 10_000,
     });
-    const createdId = positiveInteger(created.active_tabid);
-    if (createdId === null) throw new Error("vimbrowser did not report the new browse tab ID");
-
-    if (activeBefore !== null && activeBefore !== createdId) {
-      await run(["focus", String(activeBefore)], {
-        signal,
-        timeoutMs: 5_000,
-      });
+    // Background open returns the unchanged active_tabid, not the new tab ID.
+    // Compare stable IDs instead, and fail closed if a concurrent open makes
+    // ownership ambiguous. Never navigate or label an existing user tab.
+    const addedTabs = tabsFromPayload(created).filter(tab => {
+      const id = positiveInteger(tab.id);
+      return id !== null && !existingTabIds.has(id);
+    });
+    const createdTab = addedTabs[0];
+    if (addedTabs.length !== 1 || !createdTab) {
+      throw new Error("vimbrowser did not report exactly one new browse tab");
+    }
+    const createdId = positiveInteger(createdTab.id);
+    if (
+      createdId === null
+      || !isNormalProfileTab(createdTab)
+      || createdTab.url !== VIMBROWSER_IDLE_URL
+      || created.active_tabid === createdId
+      || created.visible_tabid === createdId
+    ) {
+      throw new Error("vimbrowser did not create an inactive normal-profile browse tab");
     }
     await labelTab(createdId, signal);
     ownedTabId = createdId;

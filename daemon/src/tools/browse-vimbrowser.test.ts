@@ -9,7 +9,7 @@ import {
 } from "./browse-vimbrowser";
 
 describe("browse vimbrowser backend", () => {
-  test("owns an inactive tab, renders a page, and resets it", async () => {
+  test.each([3, 4])("owns only the new background tab when the active tab becomes %i", async activeAfterOpen => {
     let now = 0;
     let activeTabId = 3;
     let toolTabId: number | null = null;
@@ -17,35 +17,41 @@ describe("browse vimbrowser backend", () => {
     let toolTitle = "";
     const calls: Array<{ args: string[]; input?: string }> = [];
 
+    const tabsPayload = () => {
+      const tabs: Array<Record<string, unknown>> = [
+        { id: 3, context: null, loading: false, title: "User tab", url: "https://user.example/" },
+        { id: 4, context: null, loading: false, title: "Other user tab", url: "https://other.example/" },
+        { id: 6, context: null, loading: false, title: "", url: "about:blank" },
+      ];
+      if (toolTabId !== null) {
+        // Ownership must not depend on tab-stack position or a preexisting blank.
+        tabs.unshift({
+          id: toolTabId,
+          context: null,
+          loading: false,
+          title: toolTitle,
+          url: toolUrl,
+        });
+      }
+      return JSON.stringify({ active_tabid: activeTabId, visible_tabid: activeTabId, tabs });
+    };
+
     const run: RunVimbrowser = async (args, options = {}) => {
       calls.push({ args, input: options.input });
       const command = args[0];
       if (command === "tabs") {
-        const tabs: Array<Record<string, unknown>> = [
-          { id: 3, context: null, loading: false, title: "User tab", url: "https://user.example/" },
-        ];
-        if (toolTabId !== null) {
-          tabs.push({
-            id: toolTabId,
-            context: null,
-            loading: false,
-            title: toolTitle,
-            url: toolUrl,
-          });
-        }
-        return JSON.stringify({ active_tabid: activeTabId, tabs });
+        return tabsPayload();
       }
       if (command === "open") {
         toolTabId = 8;
-        activeTabId = 8;
+        // Background open does not focus the new tab. The user may independently
+        // change focus while the open command is in flight.
+        activeTabId = activeAfterOpen;
         toolUrl = "about:blank";
-        return JSON.stringify({ active_tabid: 8 });
-      }
-      if (command === "focus") {
-        activeTabId = Number(args[1]);
-        return JSON.stringify({ ok: true });
+        return tabsPayload();
       }
       if (command === "js") {
+        expect(args[1]).toBe(String(toolTabId));
         if (options.input?.startsWith("location.replace")) {
           const encodedUrl = options.input.slice("location.replace(".length, options.input.indexOf("); true"));
           toolUrl = JSON.parse(encodedUrl);
@@ -57,28 +63,91 @@ describe("browse vimbrowser backend", () => {
         return JSON.stringify({ ok: true });
       }
       if (command === "html") {
+        expect(args[1]).toBe(String(toolTabId));
         return "<!doctype html><html><head><title>Rendered page</title></head><body><main>Browser content</main></body></html>";
       }
       throw new Error(`unexpected command: ${args.join(" ")}`);
     };
 
-    const fetcher = createVimbrowserPageFetcher({
+    const options = {
       run,
       now: () => now,
-      sleep: async milliseconds => {
+      sleep: async (milliseconds: number) => {
         now += milliseconds;
       },
-    });
+    };
+    const fetcher = createVimbrowserPageFetcher(options);
     const result = await fetcher("https://blocked.example/page");
 
     expect(result?.pageUrl).toBe("https://blocked.example/page");
     expect(result?.html).toContain("Browser content");
-    expect(activeTabId).toBe(3);
+    expect(activeTabId).toBe(activeAfterOpen);
     expect(toolUrl).toBe("about:blank");
     expect(toolTitle).toBe(browseVimbrowserInternalsForTest.tabTitle);
     expect(calls.some(call => call.args[0] === "html")).toBe(true);
-    expect(calls.filter(call => call.args[0] === "focus")).toHaveLength(1);
+    // Reuse the owned tab, and recover it in a fresh fetcher, without opening
+    // additional tabs or touching either user tab.
+    await fetcher("https://blocked.example/second");
+    await createVimbrowserPageFetcher(options)("https://blocked.example/recovered");
+    expect(toolUrl).toBe("about:blank");
+    expect(toolTitle).toBe(browseVimbrowserInternalsForTest.tabTitle);
+    expect(activeTabId).toBe(activeAfterOpen);
+    expect(calls.filter(call => call.args[0] === "open")).toHaveLength(1);
+    expect(calls.filter(call => call.args[0] === "focus")).toHaveLength(0);
   });
+
+  const preexistingTabs = [
+    { id: 3, context: null, loading: false, title: "User tab", url: "https://user.example/" },
+    { id: 6, context: null, loading: false, title: "", url: "about:blank" },
+  ];
+  const newBlankTab = { id: 8, context: null, loading: false, title: "", url: "about:blank" };
+  const unsafeOpenResponses: Array<{ name: string; response: Record<string, unknown> }> = [
+    { name: "no new tab", response: { active_tabid: 3, tabs: preexistingTabs } },
+    {
+      name: "multiple new tabs",
+      response: { active_tabid: 3, tabs: [...preexistingTabs, newBlankTab, { ...newBlankTab, id: 9 }] },
+    },
+    {
+      name: "duplicate new IDs",
+      response: { active_tabid: 3, tabs: [...preexistingTabs, newBlankTab, newBlankTab] },
+    },
+    {
+      name: "an invalid new ID",
+      response: { active_tabid: 3, tabs: [...preexistingTabs, { ...newBlankTab, id: "8" }] },
+    },
+    {
+      name: "a named-context tab",
+      response: { active_tabid: 3, tabs: [...preexistingTabs, { ...newBlankTab, context: "private" }] },
+    },
+    {
+      name: "a non-idle tab",
+      response: { active_tabid: 3, tabs: [...preexistingTabs, { ...newBlankTab, url: "https://user.example/" }] },
+    },
+    {
+      name: "an active new tab",
+      response: { active_tabid: 8, visible_tabid: 3, tabs: [...preexistingTabs, newBlankTab] },
+    },
+    {
+      name: "a visible new tab",
+      response: { active_tabid: 3, visible_tabid: 8, tabs: [...preexistingTabs, newBlankTab] },
+    },
+    { name: "a missing tabs list", response: { active_tabid: 3 } },
+  ];
+  for (const { name, response } of unsafeOpenResponses) {
+    test(`refuses ${name} without mutating any tab`, async () => {
+      const calls: string[][] = [];
+      const fetcher = createVimbrowserPageFetcher({
+        run: async args => {
+          calls.push(args);
+          if (args[0] === "tabs") return JSON.stringify({ active_tabid: 3, tabs: preexistingTabs });
+          if (args[0] === "open") return JSON.stringify(response);
+          throw new Error(`unexpected command: ${args.join(" ")}`);
+        },
+      });
+      await expect(fetcher("https://blocked.example/page")).rejects.toThrow("vimbrowser");
+      expect(calls.map(args => args[0])).toEqual(["tabs", "open"]);
+    });
+  }
 
   test("recognizes common rendered challenge pages", () => {
     const { challengePage } = browseVimbrowserInternalsForTest;
@@ -101,7 +170,7 @@ describe("browse vimbrowser backend", () => {
 
   test("streams an exact same-profile response to the requested workspace", async () => {
     let now = 0;
-    let activeTabId = 3;
+    const activeTabId = 3;
     let toolTabId: number | null = null;
     let toolUrl = "";
     let toolTitle = "";
@@ -118,29 +187,29 @@ describe("browse vimbrowser backend", () => {
       result: JSON.stringify(value),
     });
 
+    const tabsPayload = () => {
+      const tabs: Array<Record<string, unknown>> = [
+        { id: 3, context: null, loading: false, title: "User tab", url: "https://user.example/" },
+      ];
+      if (toolTabId !== null) {
+        tabs.push({ id: toolTabId, context: null, loading: false, title: toolTitle, url: toolUrl });
+      }
+      return JSON.stringify({ active_tabid: activeTabId, visible_tabid: activeTabId, tabs });
+    };
+
     const run: RunVimbrowser = async (args, options = {}) => {
       calls.push({ args, input: options.input });
       const command = args[0];
       if (command === "tabs") {
-        const tabs: Array<Record<string, unknown>> = [
-          { id: 3, context: null, loading: false, title: "User tab", url: "https://user.example/" },
-        ];
-        if (toolTabId !== null) {
-          tabs.push({ id: toolTabId, context: null, loading: false, title: toolTitle, url: toolUrl });
-        }
-        return JSON.stringify({ active_tabid: activeTabId, tabs });
+        return tabsPayload();
       }
       if (command === "open") {
         toolTabId = 8;
-        activeTabId = 8;
         toolUrl = "about:blank";
-        return JSON.stringify({ active_tabid: 8 });
-      }
-      if (command === "focus") {
-        activeTabId = Number(args[1]);
-        return JSON.stringify({ ok: true });
+        return tabsPayload();
       }
       if (command === "js") {
+        expect(args[1]).toBe(String(toolTabId));
         const script = options.input ?? "";
         if (script.startsWith(markers.start)) {
           status = "ready";
@@ -210,6 +279,7 @@ describe("browse vimbrowser backend", () => {
       expect(activeTabId).toBe(3);
       expect(toolUrl).toBe("about:blank");
       expect(calls.some(call => call.args[0] === "html")).toBe(false);
+      expect(calls.some(call => call.args[0] === "focus")).toBe(false);
       expect(calls.filter(call => call.input?.startsWith(markers.take))).toHaveLength(3);
     } finally {
       rmSync(root, { recursive: true, force: true });
