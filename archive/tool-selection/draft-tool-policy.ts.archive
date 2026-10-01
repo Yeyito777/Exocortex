@@ -1,4 +1,4 @@
-/** Ephemeral tool choices for a client-reserved, not-yet-created conversation. */
+/** Archived ephemeral tool choices. */
 
 import type { ConversationToolPolicy } from "./messages";
 import { clearConversationCustomTools } from "./tools/custom-tools";

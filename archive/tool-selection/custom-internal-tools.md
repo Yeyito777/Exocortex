@@ -1,4 +1,4 @@
-# Conversation-scoped internal tools
+# Archived conversation-scoped internal tools
 
 Exocortex can attach trusted TypeScript or JavaScript internal tools to one
 conversation without adding them to the daemon's built-in registry:

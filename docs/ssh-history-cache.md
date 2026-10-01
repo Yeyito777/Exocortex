@@ -17,7 +17,7 @@ The TUI now keeps a transport-only, in-memory LRU cache for remote history loads
   canonical page and sends fresh entries plus an ordered index map. This handles
   appended, edited, duplicated, truncated and shifted entries without relying on
   timestamps, message counts or append-only assumptions.
-- Subscription, streaming catch-up, metadata, goals, tool policy and BTW state
+- Subscription, streaming catch-up, metadata, goals and BTW state
   retain their existing authoritative paths. The cache never paints a stale
   transcript while waiting for validation.
 - Reconstruction happens before existing TUI event handlers. Pending requests

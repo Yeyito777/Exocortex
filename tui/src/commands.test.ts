@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { configuredConversationDefaults, defaultExocortexConfig, readExocortexConfig, saveConversationDefaults, writeExocortexConfig } from "@exocortex/shared/config";
 import { cycleAutocomplete, updateAutocomplete } from "./autocomplete";
 import { getCommandArgs, tryCommand, type CommandResult } from "./commands";
-import { formatToolPolicySnapshot } from "./commands/tools";
 import { clearPreferredProvider } from "./preferences";
 import { createInitialState } from "./state";
 import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, defaultEffortForModelId, type ProviderInfo, type TokenStatsSnapshot, type TokenUsageTotals } from "./messages";
@@ -1434,124 +1433,11 @@ describe("/theme", () => {
 });
 
 describe("/tools", () => {
-  test("shows the active conversation policy", () => {
+  test("retired tool selection is neither advertised nor parsed", () => {
     const state = createInitialState();
     state.convId = "conversation-1";
-    expect(tryCommand("/tools", state)).toEqual({ type: "tool_policy" });
-  });
-
-  test("parses incremental policy changes and reset", () => {
-    const state = createInitialState();
-    state.convId = "conversation-1";
-    state.toolRegistry = [{ name: "write", label: "Write", color: "#ffffff" }];
-    state.externalToolStyles = [{ cmd: "gmail", label: "Gmail", color: "#ffffff" }];
-    expect(tryCommand("/tools enable write gmail", state)).toEqual({
-      type: "tool_policy",
-      mutation: {
-        action: "enable",
-        tools: [
-          { kind: "internal", name: "write" },
-          { kind: "external", name: "gmail" },
-        ],
-      },
-    });
-    expect(tryCommand("/tools reset", state)).toEqual({
-      type: "tool_policy",
-      mutation: { action: "reset" },
-    });
-    expect(tryCommand("/tools enable path/to/tool.ts", state)).toEqual({
-      type: "tool_policy",
-      mutation: {
-        action: "enable",
-        tools: [],
-        modulePaths: ["path/to/tool.ts"],
-      },
-    });
-  });
-
-  test("offers installed internal and external tools in autocomplete", () => {
-    const state = createInitialState();
-    state.toolRegistry = [
-      { name: "read", label: "Read", color: "#ffffff" },
-    ];
-    state.externalToolStyles = [{ cmd: "gmail", label: "Gmail", color: "#ffffff" }];
-    const args = getCommandArgs(state, "/tools");
-    expect(args["/tools"]?.map((item) => item.name)).toEqual(["enable", "disable", "reset"]);
-    expect(args["/tools enable"]?.map((item) => item.name)).toEqual(["read", "gmail"]);
-    expect(args["/tools enable"]?.map((item) => item.insertText)).toEqual([undefined, undefined]);
-    expect(args["/tools enable"]?.map((item) => item.desc)).toEqual(["Internal · Read", "External · Gmail"]);
-
-    state.inputBuffer = "/tools enable r";
-    state.cursorPos = state.inputBuffer.length;
-    updateAutocomplete(state);
-    cycleAutocomplete(state, 1);
-    expect(state.inputBuffer).toBe("/tools enable read");
-  });
-
-  test("offers and mutates internal Exocortex and the external exo CLI separately", () => {
-    const state = createInitialState();
-    state.toolRegistry = [{ name: "exo", label: "Exocortex", color: "#ffffff" }];
-    state.externalToolStyles = [{ cmd: "exo", label: "Exocortex CLI", color: "#ffffff" }];
-
-    expect(getCommandArgs(state, "/tools")["/tools enable"]).toEqual([
-      { name: "exocortex", desc: "Internal · Exocortex" },
-      { name: "exo-cli", desc: "External · Exocortex CLI" },
-    ]);
-    expect(tryCommand("/tools disable exocortex", state)).toEqual({
-      type: "tool_policy",
-      mutation: {
-        action: "disable",
-        tools: [{ kind: "internal", name: "exo" }],
-      },
-    });
-    expect(tryCommand("/tools disable exo-cli", state)).toEqual({
-      type: "tool_policy",
-      mutation: {
-        action: "disable",
-        tools: [{ kind: "external", name: "exo" }],
-      },
-    });
-    expect(tryCommand("/tools disable exo", state)).toEqual({ type: "handled" });
-  });
-
-  test("works on a blank conversation draft and rejects malformed references", () => {
-    const state = createInitialState();
-    expect(tryCommand("/tools", state)).toEqual({ type: "tool_policy" });
-    expect(state.messages).toEqual([]);
-    expect(tryCommand("/tools enable internal:", state)).toEqual({ type: "handled" });
-    const usageMessage = state.messages.at(-1);
-    if (!usageMessage || usageMessage.role !== "system") throw new Error("Expected /tools usage message");
-    expect(usageMessage.text).toContain("Invalid /tools command");
-    expect(usageMessage.text.includes("internal:<name>")).toBe(false);
-    expect(usageMessage.text.includes("external:<name>")).toBe(false);
-  });
-
-  test("formats enabled and disabled internal and external tools separately without a shell warning", () => {
-    const output = formatToolPolicySnapshot({
-      convId: "conversation-1",
-      scoped: false,
-      source: "explicit",
-      internal: [
-        { name: "read", label: "Read", enabled: true },
-        { name: "exo", label: "Exo", enabled: false },
-      ],
-      external: [
-        { name: "gmail", label: "Gmail", enabled: false },
-        { name: "exo", label: "Exocortex CLI", enabled: true },
-      ],
-      shellWarning: true,
-    }, false);
-
-    expect(output).toContain([
-      "Enabled:",
-      "  Internal: read",
-      "  External: exo-cli",
-      "",
-      "Disabled:",
-      "  Internal: exocortex",
-      "  External: gmail",
-    ].join("\n"));
-    expect(output).not.toContain("Warning: bash");
-    expect(output).not.toContain("Use /tools");
+    expect(tryCommand("/tools", state)).toBeNull();
+    expect(tryCommand("/tools enable write", state)).toBeNull();
+    expect(getCommandArgs(state, "/tools")).toEqual({});
   });
 });

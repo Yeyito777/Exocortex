@@ -11,7 +11,7 @@
  * durable lifecycle sidecars before replaying interrupted conversations.
  */
 
-import type { ConversationTaskSummary } from "@exocortex/shared/messages";
+import type { ActiveTaskInfo, ConversationTaskSummary } from "@exocortex/shared/messages";
 import type { BackgroundTaskCompletion } from "./tools/types";
 
 export interface CompletedConversationTask extends ConversationTaskSummary {
@@ -86,15 +86,7 @@ interface InternalTaskRecord extends ConversationTaskSummary {
   stop?: BackgroundTaskStop;
 }
 
-export interface ActiveConversationTask extends ConversationTaskSummary {
-  ownerConversationId: string;
-  status: "running" | "stopping";
-  toolName?: string;
-  pid?: number;
-  backgroundedAt?: number;
-  outputPath?: string;
-  cwd?: string;
-}
+export type ActiveConversationTask = ActiveTaskInfo;
 
 type TaskMap = Map<string, InternalTaskRecord>;
 

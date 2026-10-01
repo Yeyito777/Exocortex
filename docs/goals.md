@@ -33,9 +33,9 @@ objective, create new goals, or resume stopped ones.
 
 Successful active turns schedule a normal continuation with a stable prompt and
 the same context/tools. Queued user input wins. Two consecutive empty responses,
-terminal turn errors, missing goal-tool permission, or the continuation budget
-stop automatic work with an explanatory blocked state. Explicit tool policies
-are respected, not silently expanded.
+terminal turn errors, a chat-only model, or the continuation budget
+stop automatic work with an explanatory blocked state. Archived tool policies
+no longer affect capabilities.
 
 Chrono suspension is not a finished turn: it waits for its existing wake rather
 than starting a fresh continuation. Stop closes a pending sleep without

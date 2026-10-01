@@ -1,4 +1,5 @@
 import type { FastMode } from "./messages";
+import type { ActiveTaskInfo } from "./messages";
 /**
  * @exocortex/shared — IPC protocol.
  *
@@ -119,10 +120,7 @@ export interface NewConversationCommand {
   startCall?: boolean;
   /** Optional explicit voice for the initial realtime call. */
   callVoice?: RealtimeVoice;
-  /**
-   * Ephemeral draft whose tool policy should be consumed atomically when this
-   * conversation is created. Must equal convId when present.
-   */
+  /** @deprecated Retired; daemon rejects requests containing this field. */
   draftToolPolicyId?: string;
 }
 
@@ -789,7 +787,7 @@ export interface QueueMessageCommand {
   fastMode?: FastMode;
   folderId?: string | null;
   waitTarget?: QueueWaitTarget;
-  /** Draft tool policy consumed when target=new-conversation creates convId. */
+  /** @deprecated Retired; daemon rejects requests containing this field. */
   draftToolPolicyId?: string;
 }
 
@@ -864,13 +862,45 @@ export interface GetSystemPromptCommand {
   convId?: string;
 }
 
+/** Inspect managed work, including exact task IDs, output paths and process metadata. */
+export interface ListTasksCommand {
+  type: "list_tasks";
+  reqId?: string;
+  /** Omit to list all active work. */
+  convId?: string;
+}
+
+/** Stop one exact managed background task, never an arbitrary operating-system PID. */
+export interface StopTaskCommand {
+  type: "stop_task";
+  reqId?: string;
+  convId: string;
+  taskId: string;
+}
+
+export interface TasksListEvent {
+  type: "tasks_list";
+  reqId?: string;
+  tasks: ActiveTaskInfo[];
+}
+
+export interface TaskStoppedEvent {
+  type: "task_stopped";
+  reqId?: string;
+  convId: string;
+  taskId: string;
+  status: "stopping";
+}
+
 export interface GetToolPolicyCommand {
+  /** @deprecated Retired command; retained only for an explicit IPC error. */
   type: "get_tool_policy";
   reqId?: string;
   convId: string;
 }
 
 export interface SetToolPolicyCommand {
+  /** @deprecated Retired command; retained only for an explicit IPC error. */
   type: "set_tool_policy";
   reqId?: string;
   convId: string;
@@ -879,6 +909,7 @@ export interface SetToolPolicyCommand {
 
 /** Inspect the tool policy being assembled for a not-yet-created conversation. */
 export interface GetDraftToolPolicyCommand {
+  /** @deprecated Retired command; retained only for an explicit IPC error. */
   type: "get_draft_tool_policy";
   reqId?: string;
   draftId: string;
@@ -886,6 +917,7 @@ export interface GetDraftToolPolicyCommand {
 
 /** Mutate a not-yet-created conversation's ephemeral tool policy. */
 export interface SetDraftToolPolicyCommand {
+  /** @deprecated Retired command; retained only for an explicit IPC error. */
   type: "set_draft_tool_policy";
   reqId?: string;
   draftId: string;
@@ -894,6 +926,7 @@ export interface SetDraftToolPolicyCommand {
 
 /** Abandon an ephemeral draft policy and dispose its custom tool instances. */
 export interface ClearDraftToolPolicyCommand {
+  /** @deprecated Retired command; retained only for an explicit IPC error. */
   type: "clear_draft_tool_policy";
   reqId?: string;
   draftId: string;
@@ -1023,6 +1056,8 @@ export type Command =
   | LlmCompleteCommand
   | GetSystemPromptCommand
   | GetToolPolicyCommand
+  | ListTasksCommand
+  | StopTaskCommand
   | SetToolPolicyCommand
   | GetDraftToolPolicyCommand
   | SetDraftToolPolicyCommand
@@ -1936,6 +1971,8 @@ export type Event =
   | LlmCompleteResultEvent
   | SystemPromptEvent
   | ToolPolicyEvent
+  | TasksListEvent
+  | TaskStoppedEvent
   | TranscriptionResultEvent
   | ExternalToolDaemonResultEvent
   | ExternalNotificationSourceEvent

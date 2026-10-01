@@ -3,8 +3,8 @@ import { mkdirSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { configDir } from "@exocortex/shared/paths";
 import { buildSystemPrompt, getUserAddendum, reloadUserAddendum, setUserAddendum } from "./system";
-import { getToolDefs } from "./tools/registry";
-import { SCOPED_SUBAGENT_IDENTITY, SCOPED_SUBAGENT_WRAPPER_NOTE, subagentToolNames } from "./subagent-policy";
+import { getConversationToolNames, getToolDefs } from "./tools/registry";
+import { SCOPED_SUBAGENT_IDENTITY, SCOPED_SUBAGENT_WRAPPER_NOTE } from "./subagent-policy";
 
 describe("system prompt", () => {
   test("includes Exocortex-owned tool/runtime guidance", () => {
@@ -43,28 +43,27 @@ describe("system prompt", () => {
   test("includes compact native-subagent guidance", () => {
     const prompt = buildSystemPrompt({ conversationId: "nested" });
 
-    expect(prompt).toContain("## exo\nAlmost never use subagents.");
-    expect(prompt).toContain("Child depth defaults to 0");
-    expect(prompt).toContain("Tool selection is not a sandbox");
-    expect(prompt).toContain("commands/models for current choices");
-    expect(prompt).toContain("user's /default-model");
-    expect(prompt).toContain("legacy:true");
+    expect(prompt).toContain("## exo\nAlmost never use subagents:");
+    expect(prompt).toContain("Default: sol fast");
+    expect(prompt).toContain("same tools");
+    expect(prompt).toContain("docs/daemon-ipc.md");
+    expect(prompt).not.toContain("commands/models");
+    expect(prompt).not.toContain("legacy:true");
     expect(prompt).not.toContain("needed for testing");
     expect(prompt).toContain("## chrono\nPrefer chrono over shell sleep");
   });
 
   test("tells child turns their remaining native delegation budget", () => {
     const blocked = buildSystemPrompt({ conversationId: "nested-zero", subagentMaxDepth: 0 });
-    expect(blocked).toContain("This turn's remaining native exo subagent depth is 0.");
-    expect(blocked).toContain("No delegation or unrelated administration is available.");
+    expect(blocked).toContain("depth-zero turn: do not delegate further");
+    expect(blocked).toContain("Administration uses direct daemon IPC");
 
     const nested = buildSystemPrompt({ conversationId: "nested-two", subagentMaxDepth: 2 });
-    expect(nested).toContain("This turn's remaining native exo subagent depth is 2.");
-    expect(nested).toContain("A child turn may receive at most max_depth=1.");
+    expect(nested).not.toContain("max_depth");
   });
 
-  test("builds a minimal restricted prompt and tool set for scoped subagents", () => {
-    const readOnlyTools = subagentToolNames(0, false);
+  test("builds a scoped identity without removing the standard tools", () => {
+    const readOnlyTools = getConversationToolNames("openai");
     const prompt = buildSystemPrompt({
       conversationId: "scoped-child",
       subagentMaxDepth: 0,
@@ -79,18 +78,14 @@ describe("system prompt", () => {
     expect(prompt).toContain("Do only the assigned task.");
     expect(prompt).toContain("Do not inventory repositories");
     expect(prompt).toContain("Inherited safety constraint");
-    expect(prompt).toContain("# Internal tools\n## read\n");
+    expect(prompt).toContain("# Internal tools\n## browse\n");
     expect(prompt).not.toContain("# External tools");
-    expect(prompt).toContain("remaining native exo subagent depth is 0");
+    expect(prompt).toContain("depth-zero turn");
     expect(prompt).not.toContain("### subscriptions");
     expect(prompt).not.toContain("### subagents");
     expect(getToolDefs(readOnlyTools).map(tool => tool.name)).toEqual([
-      "read", "glob", "grep", "browse", "exo",
+      "browse", "exec_command", "write_stdin", "apply_patch", "view_image", "exo", "chrono", "goal",
     ]);
-    expect(getToolDefs(subagentToolNames(0, true)).map(tool => tool.name)).toEqual([
-      "bash", "read", "write", "glob", "grep", "edit", "patch", "browse", "exo", "chrono",
-    ]);
-    expect(getToolDefs(subagentToolNames(1, false)).map(tool => tool.name)).toContain("exo");
   });
 
   test("omits the conversation-id line for non-conversation utility prompts", () => {

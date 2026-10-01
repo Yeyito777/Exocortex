@@ -26,8 +26,8 @@ import { formatToolAbortMessage, isToolTimeoutReason, toolTimeoutReason } from "
 import { evaluateToolCallSafety, formatSafetyBlock } from "../safety";
 import { AbortableSemaphore } from "./semaphore";
 import { log } from "../log";
-import { getConversationCustomTool, getConversationCustomTools } from "./custom-tools";
 import { providerToolNames } from "./provider-primitives";
+import type { ProviderId } from "../messages";
 
 // ── Registry ───────────────────────────────────────────────────────
 
@@ -70,10 +70,7 @@ function isToolAvailable(tool: Tool): boolean {
 }
 
 function getAvailableTools(conversationId?: string): Tool[] {
-  return [
-    ...TOOLS.filter(isToolAvailable),
-    ...getConversationCustomTools(conversationId).filter(isToolAvailable),
-  ];
+  return TOOLS.filter(isToolAvailable);
 }
 
 function getSelectedAvailableTools(allowedNames?: readonly string[], conversationId?: string): Tool[] {
@@ -87,11 +84,16 @@ function getSelectedAvailableTools(allowedNames?: readonly string[], conversatio
 }
 
 function getTool(name: string, conversationId?: string): Tool | undefined {
-  return builtinToolMap.get(name) ?? getConversationCustomTool(conversationId, name);
+  return builtinToolMap.get(name);
 }
 
 export function getRegisteredTools(conversationId?: string): Tool[] {
   return [...getAvailableTools(conversationId)];
+}
+
+/** Provider adaptation only; old persisted selections have no effect. */
+export function getConversationToolNames(provider?: ProviderId): string[] {
+  return providerToolNames(getAvailableTools().map(tool => tool.name), provider);
 }
 
 // ── API tool definitions (sent to model providers) ─────────────────
@@ -115,20 +117,12 @@ export function getToolDisplayInfo(): ToolDisplayInfo[] {
   }));
 }
 
-/** Invocation-local display metadata for a conversation-scoped custom tool. */
-export function getCustomToolDisplayInfo(name: string, conversationId?: string): ToolDisplayInfo | undefined {
-  const tool = getConversationCustomTool(conversationId, name);
-  return tool ? { name: tool.name, label: tool.display.label, color: tool.display.color } : undefined;
-}
-
 // ── System prompt hints ────────────────────────────────────────────
 
-export function buildToolSystemHints(allowedNames?: readonly string[], conversationId?: string, maxDepth?: number | null): string {
+export function buildToolSystemHints(allowedNames?: readonly string[], conversationId?: string, _maxDepth?: number | null): string {
   return getSelectedAvailableTools(allowedNames, conversationId)
     .filter(t => t.systemHint)
-    .map(t => `## ${t.name}\n${t.name === "exo" && maxDepth === 0
-      ? "Use exo tasks to list your own work, read with task_id to inspect it, and stop with task_id to stop a background task. Delegation and unrelated administration are unavailable at depth zero."
-      : t.systemHint!}`)
+    .map(t => `## ${t.name}\n${t.systemHint!}`)
     .join("\n");
 }
 

@@ -4,7 +4,6 @@ import { load as loadPersisted } from "./persistence";
 import { orchestrateGoalCycle, orchestrateReplayConversation, orchestrateSendMessage, type OrchestrationCallbacks } from "./orchestrator";
 import { streamMessage } from "./api";
 import { chronoInternalsForTest, configureChronoService, listDeferredChronoSleeps } from "./chrono-service";
-import { createExocortexToolRuntime } from "./exocortex-tool-runtime";
 
 const IDS: string[] = [];
 
@@ -88,40 +87,9 @@ describe("DB-first orchestrator persistence", () => {
       Date.now(),
       ext,
     );
-    const beginParentNotification = mock(() => {});
-    const completeParentNotification = mock(() => {});
-    const runtime = createExocortexToolRuntime({
-      server: daemonServer as never,
-      runTurn: (targetId, text, maxDepth, startedAt, automation) => orchestrateSendMessage(
-        daemonServer as never,
-        null,
-        undefined,
-        targetId,
-        text,
-        startedAt,
-        ext,
-        undefined,
-        { subagentMaxDepth: maxDepth, automation },
-      ),
-      beginParentNotification,
-      completeParentNotification,
-      hasCredentials: () => true,
-    });
-
-    const peerSend = await runtime.execute({
-      action: "send",
-      conversation_id: convId,
-      text: "peer message during wake",
-      mode: "detach",
-    }, parentId);
-    expect(peerSend.isError).toBe(false);
-    expect(JSON.parse(peerSend.output)).toMatchObject({
-      conversation_id: convId,
-      status: "queued",
-      timing: "next-turn",
-    });
-    expect(beginParentNotification).not.toHaveBeenCalled();
-    expect(completeParentNotification).not.toHaveBeenCalled();
+    // Cross-conversation messages now use daemon queue IPC, not the native tool.
+    pushQueuedMessage(convId, "peer message during wake", "next-turn", undefined,
+      undefined, undefined, undefined, undefined, { kind: "exo_send", sourceId: parentId });
 
     releaseFirst();
     expect((await firstTurn).ok).toBe(true);
@@ -1086,9 +1054,9 @@ describe("DB-first orchestrator persistence", () => {
     });
   });
 
-  test("explicitly excluding the goal tool blocks continuation before provider work", async () => {
+  test("chat-only models block goal continuation before provider work", async () => {
     const convId = id("goal-tool-excluded");
-    const conv = create(convId, "openai", "gpt-5.6-sol");
+    const conv = create(convId, "openrouter", "nousresearch/hermes-4-405b");
     conv.toolPolicy = { internal: [], external: [] };
     setGoal(convId, "must have a status tool");
     let streamCalls = 0;
@@ -1107,7 +1075,7 @@ describe("DB-first orchestrator persistence", () => {
     expect(loadPersisted(convId)?.goal).toMatchObject({
       status: "blocked",
       turns: 0,
-      reason: "Enable the goal tool and a tool-capable model, then resume.",
+      reason: "Select a tool-capable model, then resume.",
     });
   });
 
@@ -1295,26 +1263,6 @@ describe("DB-first orchestrator persistence", () => {
       _outcome: import("./orchestrator").AssistantTurnOutcome,
     ) => {});
     let peerTurn: Promise<import("./orchestrator").AssistantTurnOutcome> | undefined;
-    const runtime = createExocortexToolRuntime({
-      server: daemonServer as never,
-      runTurn: (targetId, text, maxDepth, startedAt, automation) => {
-        peerTurn = orchestrateSendMessage(
-          daemonServer as never,
-          null,
-          undefined,
-          targetId,
-          text,
-          startedAt,
-          ext,
-          undefined,
-          { subagentMaxDepth: maxDepth, automation },
-        );
-        return peerTurn;
-      },
-      beginParentNotification,
-      completeParentNotification,
-      hasCredentials: () => true,
-    });
     let chronoReplayCalls = 0;
     configureChronoService(null, async (sleep) => {
       chronoReplayCalls += 1;
@@ -1329,17 +1277,13 @@ describe("DB-first orchestrator persistence", () => {
       if (!outcome.suspended) completeParentNotification(sleep.conversationId, outcome);
     });
 
-    const sendResult = await runtime.execute({
-      action: "send",
-      conversation_id: convId,
-      text: "implement the narrow receipt fix",
-      mode: "detach",
-    }, parentId);
-    expect(JSON.parse(sendResult.output)).toMatchObject({
-      conversation_id: convId,
-      status: "running",
-      detached: true,
-      created: false,
+    // Existing-target work now enters through direct daemon IPC.
+    beginParentNotification();
+    peerTurn = orchestrateSendMessage(daemonServer as never, null, undefined, convId,
+      "implement the narrow receipt fix", Date.now(), ext, undefined,
+      { automation: { kind: "exo_send", sourceId: parentId } });
+    void peerTurn.then(outcome => {
+      if (!outcome.suspended) completeParentNotification(convId, outcome);
     });
     await peerDidStart;
 

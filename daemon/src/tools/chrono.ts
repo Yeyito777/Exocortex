@@ -246,7 +246,7 @@ export const chrono: Tool = {
     type: "object",
     properties: {
       action: { type: "string", enum: ["wait", "sleep", "wake", "list", "adopt", "cancel"], description: "Chrono operation." },
-      task_id: { type: "string", description: "For wait: exact active task id from the Tasks UI or exo tasks." },
+      task_id: { type: "string", description: "For wait: exact active task id from the Tasks UI, exec_command, or daemon IPC list_tasks." },
       max_wait: { type: "string", description: "Required for wait: maximum duration to wait, such as 30s, 1m20s, 2h 30m, or 1d." },
       duration: { type: "string", description: "For sleep: positive duration such as 30s, 1m20s, 2h 30m, or 1d." },
       at: { type: "string", description: "For wake: future ISO-8601 date/time with an explicit timezone offset." },

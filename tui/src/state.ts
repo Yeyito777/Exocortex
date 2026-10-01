@@ -8,7 +8,7 @@ import type { FastMode } from "@exocortex/shared/messages";
 
 import { createEmptyProviderAuthInfo } from "@exocortex/shared/auth";
 import { configuredConversationDefaults, effectiveConversationDefaults, productConversationDefaults, type ConversationDefaults } from "@exocortex/shared/config";
-import type { ProviderId, ProviderInfo, ModelId, EffortLevel, UsageData, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, ModelInfo, TokenStatsSnapshot, UserMessage, ToolPolicySnapshot } from "./messages";
+import type { ProviderId, ProviderInfo, ModelId, EffortLevel, UsageData, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, ModelInfo, TokenStatsSnapshot, UserMessage } from "./messages";
 import { DEFAULT_MODEL_BY_PROVIDER, defaultEffortForModelId, supportsImageInputsForModel } from "./messages";
 import type { Message, AIMessage, SystemMessage, Block } from "./messages";
 import { loadPreferredProvider } from "./preferences";
@@ -205,8 +205,6 @@ export interface RenderState {
   macroEnvironment: MacroEnvironment | null;
   /** Route transition UI is independent of chat messages and startup loads. */
   sshConnecting: { phase: "probing" | "loading"; message: string } | null;
-  /** Reserved identity for tool choices on the current blank conversation draft. */
-  pendingToolPolicyDraftId: string | null;
   /** Folder captured when the current blank draft was started. Sidebar browsing must not retarget it. */
   draftFolderId: string | null;
   inputBuffer: string;
@@ -280,8 +278,6 @@ export interface RenderState {
   providerRegistry: ProviderInfo[];
   /** External tool styles for bash sub-command matching (from daemon). */
   externalToolStyles: ExternalToolStyle[];
-  /** Resolved persistent availability for the currently loaded conversation. */
-  activeToolPolicy: ToolPolicySnapshot | null;
   /** Whether tool result output is visible. Toggled with Ctrl+O. */
   showToolOutput: boolean;
   /** Whether user-identifying auth/account labels should be censored in the UI. */
@@ -472,8 +468,6 @@ export function renderDraftFolderInstructions(state: RenderState): void {
 export function resetDraftConversationState(state: RenderState): void {
   state.folderInstructionsDoc = null;
   state.convId = null;
-  state.pendingToolPolicyDraftId = null;
-  state.activeToolPolicy = null;
   // Starting a draft chooses its destination. Navigating the sidebar afterward
   // is only browsing and must not silently move the eventual conversation.
   state.draftFolderId = state.sidebar.currentFolderId;
@@ -642,7 +636,6 @@ export function createInitialState(): RenderState {
     sshRemote: null,
     macroEnvironment: null,
     sshConnecting: null,
-    pendingToolPolicyDraftId: null,
     draftFolderId: null,
     inputBuffer: "",
     cursorPos: 0,
@@ -692,7 +685,6 @@ export function createInitialState(): RenderState {
     toolRegistry: [],
     providerRegistry: [],
 	    externalToolStyles: [],
-	    activeToolPolicy: null,
 	    showToolOutput: false,
 	    hideSensitiveInfo,
 	    toolOutputsLoaded: false,

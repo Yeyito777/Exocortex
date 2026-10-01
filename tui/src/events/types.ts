@@ -7,5 +7,4 @@ export interface DaemonActions {
   sendMessage(convId: string, text: string, startedAt: number, images?: ImageAttachment[]): void;
   setSystemInstructions(convId: string, text: string): void;
   loadToolOutputs(convId: string, toolCallIds?: string[]): void;
-  clearDraftToolPolicy?(draftId: string): void;
 }

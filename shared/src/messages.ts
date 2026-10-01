@@ -441,6 +441,16 @@ export interface ConversationGoal {
 // ── Conversation summary ────────────────────────────────────────────
 
 /** Ephemeral work currently owned by a conversation. */
+export interface ActiveTaskInfo extends ConversationTaskSummary {
+  ownerConversationId: string;
+  status: "running" | "stopping";
+  toolName?: string;
+  pid?: number;
+  backgroundedAt?: number;
+  outputPath?: string;
+  cwd?: string;
+}
+
 export interface ConversationTaskSummary {
   /** Child conversation id for subagents, or the tool-owned task id for background work. */
   id: string;
@@ -585,7 +595,7 @@ export interface ToolDisplayInfo {
   color: string;    // hex color "#d19a66"
 }
 
-// ── Per-conversation tool policy ───────────────────────────────────
+// ── Retired tool policy wire types (older-client compatibility only) ─
 
 export type ToolPolicyKind = "internal" | "external";
 
@@ -618,7 +628,7 @@ export interface ToolPolicyModuleAvailability {
   tools: string[];
 }
 
-/** Daemon-resolved policy shown by `/tools`; installed and enabled are distinct. */
+/** @deprecated Retired `/tools` wire metadata; ignored by current clients. */
 export interface ToolPolicySnapshot {
   convId: string;
   scoped: boolean;

@@ -1,8 +1,7 @@
 import type { Conversation } from "./messages";
 import { scopedSubagentPromptOptions } from "./subagent-policy";
 import { buildSystemPrompt } from "./system";
-import { resolveConversationToolPolicy } from "./tool-policy";
-import { getToolDefs } from "./tools/registry";
+import { getConversationToolNames, getToolDefs } from "./tools/registry";
 import { getModelInfo } from "./providers/registry";
 
 /**
@@ -22,9 +21,8 @@ export function buildConversationRequestSurface(
 ) {
   const subagentMaxDepth = options.subagentMaxDepth ?? conversation.subagentMaxDepth ?? null;
   const scopedPromptOptions = scopedSubagentPromptOptions(conversation, subagentMaxDepth);
-  const resolvedToolPolicy = resolveConversationToolPolicy(conversation, subagentMaxDepth);
   const chatOnly = getModelInfo(conversation.provider, conversation.model)?.supportsTools === false;
-  const toolNames = chatOnly ? [] : resolvedToolPolicy.internalToolNames;
+  const toolNames = chatOnly ? [] : getConversationToolNames(conversation.provider);
   const goal = conversation.goal;
   const goalContext = goal ? [
     "\n\n# Conversation goal",
@@ -43,7 +41,6 @@ export function buildConversationRequestSurface(
       ...(scopedPromptOptions ?? {}),
       toolNames,
       includeExternalToolHints: !chatOnly,
-      externalToolNames: chatOnly ? [] : resolvedToolPolicy.externalToolNames,
     }) + goalContext,
     tools: getToolDefs(toolNames, options.conversationId),
     toolNames,

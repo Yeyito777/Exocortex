@@ -59,14 +59,6 @@ export function handleConversationCreated(
   state: RenderState,
   daemon: DaemonActions,
 ): void {
-  const pendingDraftId = state.pendingToolPolicyDraftId;
-  if (pendingDraftId) {
-    if (pendingDraftId !== event.convId) {
-      daemon.clearDraftToolPolicy?.(pendingDraftId);
-      state.activeToolPolicy = null;
-    }
-    state.pendingToolPolicyDraftId = null;
-  }
   rememberEnteredConversation(state.sidebar, state.convId, event.convId);
   // The summary arrives in the following conversation_updated event. Remember
   // which row to select so creation moves the sidebar cursor even when keyboard
@@ -192,11 +184,6 @@ export function handleConversationLoaded(
   state: RenderState,
   daemon: DaemonActions,
 ): void {
-  if (state.pendingToolPolicyDraftId) {
-    daemon.clearDraftToolPolicy?.(state.pendingToolPolicyDraftId);
-    state.pendingToolPolicyDraftId = null;
-    state.activeToolPolicy = null;
-  }
   const previousConvId = state.convId;
   const sameConversation = previousConvId === event.convId;
   beginConversationScrollRestore(
@@ -278,7 +265,6 @@ export function handleConversationLoaded(
   state.fastMode = event.fastMode ?? state.fastMode;
   state.goal = event.goal ?? null;
   state.btw = projectConversationBtw(event.convId, event.btw);
-  state.activeToolPolicy = event.toolPolicySnapshot ?? null;
   state.scrollOffset = 0;
   state.contextTokens = event.contextTokens;
   state.historyStartIndex = event.historyStartIndex ?? 0;
