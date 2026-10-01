@@ -20,6 +20,11 @@ afterEach(() => {
 });
 
 describe("Chrono tool", () => {
+  test("guidance leaves exec session polling to write_stdin", () => {
+    expect(chrono.systemHint).toContain("Use native session polling for shell tools that provide it");
+    expect(chrono.systemHint).not.toContain("Prefer chrono over shell sleep, polling");
+  });
+
   test("wait succeeds immediately after completion and exposes exit/output evidence", async () => {
     recordBackgroundTaskCompletion("owner", {
       taskId: "bash:finished", toolName: "bash", title: "test", startedAt: 1,

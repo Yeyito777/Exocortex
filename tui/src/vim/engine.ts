@@ -123,6 +123,12 @@ function handleNormalMode(
     return { type: "passthrough" };
   }
 
+  // A shift prefix requires the same second key, not a new find/replace/count.
+  if ((vim.pendingKeys === "<" || vim.pendingKeys === ">") && ks !== vim.pendingKeys) {
+    resetPending(vim);
+    return { type: "noop" };
+  }
+
   // ── Pending find (f/F waiting for character) ────────────────────
   if (vim.pendingFind) {
     if (key.type !== "char" || !key.char) { vim.pendingFind = null; return { type: "noop" }; }
@@ -428,6 +434,18 @@ function executeStandalone(
   let edit: BufferEdit;
 
   switch (name) {
+    case "shift_right":
+    case "shift_left": {
+      let end = lineEndOf(buffer, cursor);
+      for (let i = 1; i < count && end < buffer.length; i++) {
+        end = lineEndOf(buffer, end + 1);
+      }
+      edit = ops.shiftLines(buffer, cursor, end, name === "shift_right" ? 1 : -1);
+      return edit.buffer === buffer
+        ? { type: "cursor_move", cursor: edit.cursor }
+        : { type: "buffer_edit", ...edit };
+    }
+
     case "delete_char":
       edit = ops.deleteChar(buffer, cursor);
       return { type: "buffer_edit", ...edit };

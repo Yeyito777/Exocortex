@@ -90,6 +90,11 @@ daemon through `exocortexd proxy`; `/ssh cancel` returns to the local daemon.
 The selected route belongs to that TUI process, so other TUIs can remain local
 or connect to different aliases at the same time.
 
+Hold-to-talk transcription on an SSH route prefers the local daemon, falling
+back to the remote daemon if local transcription is unavailable. Prompt editing,
+pending-message recall, and optimistic queuing still work normally; final text
+goes to the selected conversation daemon. Voice jobs survive SSH reconnects.
+
 To select the SSH route as soon as the TUI launches, pass the same alias on the
 command line:
 

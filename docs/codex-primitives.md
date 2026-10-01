@@ -38,13 +38,16 @@ are owned by a conversation and may be written/polled using `write_stdin`.
 Yield time is not a process timeout. The current hard process limit is one hour;
 output capture is capped at 16 MiB per Codex session with explicit truncation.
 
-Yielded commands register ordinary Exocortex background tasks: Chrono can wait
-on the returned `task_id`; direct daemon IPC `list_tasks` / `stop_task` inspects/stops them. Unobserved completion
-uses existing notifications; completion collected by an active tool call does
-not inject a duplicate notification. Logs and detached task records participate
-in recovery. Live stdin handles do **not** survive daemon restarts: recovered
-tasks must be inspected/stopped through task management instead. Completed
-stdin sessions expire after 30 minutes. PTYs currently require POSIX.
+Yielded commands are polling-only: use `write_stdin` to collect output and final
+exit status. Completion never injects a user notification, even if no tool call
+is waiting or the task is recovered after a daemon restart. They still register
+Exocortex background tasks: Chrono can explicitly wait on the returned `task_id`
+and direct daemon IPC `list_tasks` / `stop_task` inspects/stops them. Logs and detached task records
+participate in recovery. Live stdin handles do **not** survive daemon restarts:
+recovered tasks must be inspected/stopped through task management instead.
+Completed stdin sessions expire after 30 minutes. PTYs currently require POSIX.
+Legacy Bash completion, subagent, Chrono wake, and external-service notifications
+are unchanged.
 
 External CLI preparation, environment identity, and TUI manifest styling are
 retained. Per-tool safety denylists are checked for both the new tool name and

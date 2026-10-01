@@ -51,7 +51,7 @@ describe.skipIf(process.platform === "win32")("Codex unified exec", () => {
     expect(final.exit_code).toBe(0);
     expect(final.output).toContain("second:two");
     expect(final.output).not.toContain("first:one");
-    expect(completions).toHaveLength(0); // collected directly, not a duplicate notification
+    expect(completions).toHaveLength(0);
     expect(await waitForConversationTask(body.task_id)).toMatchObject({
       status: "completed", exitCode: 0, outputPath: session.outputPath,
     });
@@ -72,24 +72,53 @@ describe.skipIf(process.platform === "win32")("Codex unified exec", () => {
     expect(JSON.parse(response.output).output).toContain("got:hello");
   });
 
-  test("notifies about unobserved completion and stops exact tasks through their callback", async () => {
+  test("polls unobserved completion and stops exact tasks without notifying", async () => {
     const completions: BackgroundTaskCompletion[] = [];
     let stopTask: ((suppress: boolean) => boolean) | undefined;
     const ctx: ToolExecutionContext = { ...context,
       onBackgroundTaskComplete: value => { completions.push(value); },
       setBackgroundTaskActive: (_id, active, details) => { if (active) stopTask = details?.stop; },
     };
-    const first = JSON.parse((await run(`read -r value; ${JSON.stringify(process.execPath)} -e 'setTimeout(() => {}, 30)'`, { yield_time_ms: 0 }, ctx)).output);
+    const first = JSON.parse((await run(`read -r value; ${JSON.stringify(process.execPath)} -e 'setTimeout(() => {}, 30)'; printf finished`, { yield_time_ms: 0 }, ctx)).output);
     await writeStdin.execute({ session_id: first.session_id, chars: "finish\n", yield_time_ms: 0 }, ctx);
-    await internals.sessions.get(first.session_id)!.done;
-    expect(completions).toHaveLength(1);
-    expect(completions[0].exitCode).toBe(0);
+    const session = internals.sessions.get(first.session_id)!;
+    expect(session.closed).toBe(false);
+    expect(session.busy).toBe(false);
+    await session.done;
+    expect(completions).toHaveLength(0);
+    const final = JSON.parse((await writeStdin.execute({ session_id: first.session_id, yield_time_ms: 0 }, ctx)).output);
+    expect(final.exit_code).toBe(0);
+    expect(final.output).toContain("finished");
 
     const second = JSON.parse((await run("read -r forever", { yield_time_ms: 0 }, ctx)).output);
-    expect(stopTask?.(true)).toBe(true);
+    expect(stopTask?.(false)).toBe(true); // polling-only even without explicit suppression
     await internals.sessions.get(second.session_id)!.done;
     expect(internals.sessions.get(second.session_id)!.closed).toBe(true);
-    expect(completions).toHaveLength(1); // intentional-stop notification suppressed
+    expect(completions).toHaveLength(0);
+  });
+
+  test.each([0, 7])("completion between polls is silent and retains exit code %i", async exitCode => {
+    const completions: BackgroundTaskCompletion[] = [];
+    const ctx = { ...context, onBackgroundTaskComplete: (value: BackgroundTaskCompletion) => { completions.push(value); } };
+    const body = JSON.parse((await run(`sleep 0.2; printf final; exit ${exitCode}`, { yield_time_ms: 0 }, ctx)).output);
+    const session = internals.sessions.get(body.session_id)!;
+    expect(session.closed).toBe(false);
+    expect(session.busy).toBe(false);
+    await session.done;
+    expect(completions).toHaveLength(0);
+    expect(await waitForConversationTask(body.task_id)).toMatchObject({
+      status: "completed", exitCode, outputPath: session.outputPath,
+    });
+    const polled = await writeStdin.execute({ session_id: body.session_id, yield_time_ms: 0 }, ctx);
+    expect(polled.isError).toBe(exitCode !== 0);
+    expect(JSON.parse(polled.output).exit_code).toBe(exitCode);
+    expect(JSON.parse(polled.output).output).toContain("final");
+  });
+
+  test("shell guidance favors polling, not Chrono waits or completion notifications", () => {
+    expect(execCommand.systemHint).toContain("poll for output and completion");
+    expect(execCommand.systemHint).toContain("do not send completion notifications");
+    expect(execCommand.systemHint).not.toContain("chrono wait");
   });
 
   test("validates parameters before spawning or sending input", async () => {
@@ -119,12 +148,18 @@ describe.skipIf(process.platform === "win32")("Codex unified exec", () => {
   });
 
   test.skipIf(process.platform !== "linux")("runner failure kills its detached command and retains recovery evidence", async () => {
-    const initial = JSON.parse((await run(`${JSON.stringify(process.execPath)} -e 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000)'`, { yield_time_ms: 100 })).output);
+    const completions: BackgroundTaskCompletion[] = [];
+    const ctx = { ...context, onBackgroundTaskComplete: (value: BackgroundTaskCompletion) => { completions.push(value); } };
+    const initial = JSON.parse((await run(`${JSON.stringify(process.execPath)} -e 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000)'`, { yield_time_ms: 100 }, ctx)).output);
     const session = internals.sessions.get(initial.session_id)!;
     try {
       session.runner.kill("SIGKILL");
       await session.done;
       expect(session.runnerFailed).toBe(true);
+      expect(completions).toHaveLength(0);
+      const polled = await writeStdin.execute({ session_id: initial.session_id, yield_time_ms: 0 }, ctx);
+      expect(polled.isError).toBe(true);
+      expect(JSON.parse(polled.output).error).toContain("Shell runner");
       expect(readBackgroundTaskRecord(session.recordPath!)).not.toBeNull();
       await new Promise(resolve => setTimeout(resolve, 350)); // process-group SIGKILL grace period
       const stat = await readFile(`/proc/${session.pid}/stat`, "utf8").catch(() => "");

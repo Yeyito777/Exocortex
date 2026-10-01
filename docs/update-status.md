@@ -32,7 +32,10 @@ feature must itself be upgraded and restarted before it can report status.
 The TUI checks daemon/restart status asynchronously at startup, every 10 seconds, and after route
 changes/reconnects. Requests don't overlap on a route; late replies from an old
 route are discarded. SSH's local status uses a separate, short-lived local
-socket connection, without changing the active route.
+socket connection, without changing the active route. On `--ssh` startup, that
+local probe starts before the startup socket is closed. Local probes survive
+SSH route changes/reconnects and are shared rather than duplicated; only active
+endpoint replies are scoped to the route generation.
 
 Each daemon caches GitHub comparison results for 120 seconds across all clients,
 including failed requests. Disk revision checks bypass that cache, so downloaded
