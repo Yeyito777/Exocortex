@@ -206,6 +206,26 @@ test("trash undo/redo restores indexed metadata without synchronously loading an
   expect((await convStore.getAsync(id))!.messages.some(isArchivedMessage)).toBe(true);
 });
 
+test("cold sidebar mutations, clones and undo do not hydrate canonical archives", async () => {
+  const id = seed();
+  expect(convStore.rename(id, "cold renamed")).toBe(true);
+  expect(convStore.mark(id, true)).toBe(true);
+  expect(convStore.pin(id, true)).toBe(true);
+  expect(convStore.mute(id, true)).toBe(true);
+  expect(convStore.getCached(id)).toBeUndefined();
+  expect((await convStore.undoDeleteAsync())?.type).toBe("sidebar_state");
+  expect(convStore.getCached(id)).toBeUndefined();
+  const copy = convStore.clone(id)!;
+  ids.push(copy.id);
+  expect(copy.title).toContain("cold renamed");
+  expect(convStore.getCached(copy.id)).toBeUndefined();
+  const original = await convStore.getAsync(id);
+  expect(original!.title).toBe("cold renamed");
+  original!.messages.push({ role: "user", content: "after metadata-only writes", metadata: null });
+  convStore.markDirty(id, "messages");
+  convStore.flush(id);
+});
+
 test("Stop can persist a cold active-goal pause without loading its history", async () => {
   const id = seed();
   await convStore.getAsync(id);

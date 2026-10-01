@@ -8,7 +8,7 @@
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { connect, type Socket } from "node:net";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -50,6 +50,7 @@ class Client {
   buffer = "";
   pending = new Map<string, { resolve: (reply: Reply) => void; reject: (error: Error) => void; start: number; timer: ReturnType<typeof setTimeout>; broadcast?: Event["type"] }>();
   constructor(readonly socket: Socket) {
+    socket.setEncoding("utf8");
     socket.on("data", data => {
       this.buffer += data.toString();
       let end: number;
@@ -175,8 +176,8 @@ try {
   assert(redo.event.type !== "error", `Redo failed: ${JSON.stringify(redo.event)}`);
   const restored = await client!.request({ type: "undo_delete" });
   assert(restored.event.type !== "error", `Restore failed: ${JSON.stringify(restored.event)}`);
-  const reloaded = await probeWhile(() => client!.request({ type: "rename_conversation", convId: id, title: "IPC persisted rename" }));
-  expectType(reloaded.result, "ack");
+  const reloaded = await probeWhile(() => client!.request({ type: "get_system_prompt", convId: id }));
+  expectType(reloaded.result, "system_prompt");
   child!.kill("SIGTERM");
   assert(await child!.exited === 0, "Isolated daemon did not stop cleanly");
   const final = new Database(dbPath, { readonly: true });
@@ -188,6 +189,25 @@ try {
   assert(final.query<{ payload_json: string }, [string]>("SELECT payload_json FROM active_contexts WHERE conversation_id=?").get(id)!.payload_json === checkpoint, "Checkpoint changed");
   assert(Object.values(final.query("PRAGMA integrity_check").get()!)[0] === "ok", "SQLite integrity check failed");
   final.close();
+  // A fresh daemon has no trusted proofs. Paged open speculates a bounded,
+  // verified window off-thread; wait for evidence from this exact child rather
+  // than sleeping long enough and assuming the cache must be warm.
+  await start();
+  expectType(await client!.request({ type: "load_conversation", convId: id, turns: 1 }), "conversation_loaded");
+  const perfPath = join(root, "runtime", namespace, "exocortex.log");
+  const perfLines = () => existsSync(perfPath) ? readFileSync(perfPath, "utf8").split("\n")
+    .filter(line => line.includes(`[${child!.pid}]`)) : [];
+  const deadline = performance.now() + 10_000;
+  while (!perfLines().some(line => line.includes("perf: conversation_runtime_prefetch") && line.includes('"warmed":true'))) {
+    assert(performance.now() < deadline, "Paged open did not finish verified background warming");
+    await Bun.sleep(25);
+  }
+  const prefetchedLoad = expectType(await client!.request({ type: "get_system_prompt", convId: id }), "system_prompt");
+  child!.kill("SIGTERM");
+  assert(await child!.exited === 0, "Prefetched isolated daemon did not stop cleanly");
+  assert(perfLines().some(line => line.includes("perf: conversation_runtime_load")
+    && line.includes('"cacheHit":true') && line.includes('"archiveRowsRead":0')), "Foreground did not use the verified worker cache");
+  const perfLog = readFileSync(perfPath, "utf8");
   // Fault only the disposable synthetic copy, after verifying durable parity.
   // A worker parse failure must become an IPC error, not an unanswered command
   // or canonical-header fallback, and subsequent cheap commands must still run.
@@ -195,7 +215,7 @@ try {
   fault.query("UPDATE messages SET content_json='{' WHERE conversation_id=? AND sequence=0").run(id);
   fault.close();
   await start();
-  const rejected = expectType(await client!.request({ type: "rename_conversation", convId: id, title: "MUST NOT APPLY" }), "error");
+  const rejected = expectType(await client!.request({ type: "get_system_prompt", convId: id }), "error");
   assert("message" in rejected.event && rejected.event.message.includes("Could not load verified conversation"), "Worker failure did not reach the caller");
   const recoveredIpc = expectType(await client!.request({ type: "list_tasks" }), "tasks_list");
   child!.kill("SIGTERM");
@@ -206,9 +226,11 @@ try {
     restartPageMs: restartPage.ms, restartColdLoadMs: reloaded.result.ms, restartIpc: reloaded.ipc,
     coldUndoMs: undo.ms, coldRedoMs: redo.ms, coldRestoreMs: restored.ms,
     messagesPreserved: stored.stored_message_count, checkpointUnchanged: true,
+    prefetchedLoadMs: prefetchedLoad.ms, prefetchedArchiveRowsRead: 0,
     workerFaultReturnedError: true, afterFaultIpcMs: recoveredIpc.ms,
   };
   if (reportPath) writeFileSync(resolve(reportPath), JSON.stringify(report, null, 2) + "\n");
+  if (reportPath) writeFileSync(resolve(reportPath) + ".perf.log", perfLog);
   console.log(JSON.stringify(report, null, 2));
 } finally {
   client?.socket.destroy();

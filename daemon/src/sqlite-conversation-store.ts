@@ -55,10 +55,42 @@ import { pagedUserFingerprint, storedMessageFingerprint as messageFingerprint } 
 import { adoptArchiveWindow, archiveWindow, assertCanonicalMessage, freezeArchiveCheckpoint, isArchivedMessage } from "./conversation-window";
 import { MAX_TITLE_CONTEXT_CHARS, setArchivedTitleContext, titleUserText } from "./conversation-title-context";
 import type { ConversationLoadResult } from "./conversation-load-protocol";
+import { canonicalArchiveContent } from "./canonical-archive-content";
 
-const SCHEMA_VERSION = 10;
+const SCHEMA_VERSION = 11;
+const RUNTIME_REVISION_TRIGGERS: Record<string, string> = {};
+for (const [table, id] of [
+  ["conversations", "id"], ["messages", "conversation_id"], ["message_blobs", "conversation_id"],
+  ["message_blob_aliases", "conversation_id"], ["active_contexts", "conversation_id"], ["unwind_receipts", "conversation_id"],
+]) for (const operation of ["INSERT", "UPDATE", "DELETE"]) {
+  const name = `runtime_revision_${table}_${operation.toLowerCase()}`;
+  const refs = operation === "INSERT" ? ["NEW"] : operation === "DELETE" ? ["OLD"] : ["OLD", "NEW"];
+  // Queue-cleanup acknowledgements do not change the receipt transferred into
+  // a loaded window. Do not invalidate a freshly unwound snapshot on its own ack.
+  const when = table === "unwind_receipts" && operation === "UPDATE"
+    ? ` WHEN OLD.conversation_id IS NOT NEW.conversation_id OR OLD.operation_id IS NOT NEW.operation_id
+      OR OLD.user_message_index IS NOT NEW.user_message_index OR OLD.history_total_entries IS NOT NEW.history_total_entries`
+    : "";
+  RUNTIME_REVISION_TRIGGERS[name] = `CREATE TRIGGER ${name} AFTER ${operation} ON ${table}${when} BEGIN
+    ${refs.map(ref => `INSERT INTO conversation_runtime_revisions(id, revision) VALUES (${ref}.${id}, 1)
+      ON CONFLICT(id) DO UPDATE SET revision=revision+1;`).join("\n")}
+  END`;
+}
+RUNTIME_REVISION_TRIGGERS.runtime_revision_blob_dependents = `CREATE TRIGGER runtime_revision_blob_dependents
+  AFTER UPDATE ON message_blobs BEGIN
+    INSERT INTO conversation_runtime_revisions(id, revision)
+    SELECT DISTINCT conversation_id, 1 FROM message_blob_aliases
+    WHERE owner_conversation_id=OLD.conversation_id AND owner_message_sequence=OLD.message_sequence
+      AND owner_kind=OLD.kind AND owner_ordinal=OLD.ordinal
+    ON CONFLICT(id) DO UPDATE SET revision=revision+1;
+  END`;
 const DEFAULT_FILE = "exocortex.sqlite3";
 const RECENT_HISTORY_IMAGE_PAYLOAD_ENTRIES = 8;
+type RuntimeWindowRead = {
+  result: ConversationLoadResult;
+  baseHash: ReturnType<typeof createHash>;
+  prefixHashes: Array<[number, string]>;
+};
 
 export interface SqliteConversationStoreOptions {
   path?: string;
@@ -154,6 +186,7 @@ interface MessageRow {
   has_provider_data: number;
   has_context_tokens: number;
   has_context_checkpoint: number;
+  content_hash?: string;
 }
 
 interface MessageBlobRow {
@@ -182,6 +215,7 @@ interface LoadedConversationState {
   messages: LoadedMessageSnapshot[];
   activeContextRef: Conversation["activeContext"];
   lastUnwindReceipt: PersistedUnwindReceipt | null;
+  readRevision?: string;
 }
 
 function optionalJson(value: unknown): string | null {
@@ -260,6 +294,38 @@ function storedMessageFromRow(row: MessageRow, blobs: MessageBlobRow[] = []): St
   const checkpoint = parseOptional<NonNullable<StoredMessage["contextCheckpoint"]>>(row.context_checkpoint_json);
   if (row.has_context_checkpoint === 1) (message as unknown as Record<string, unknown>).contextCheckpoint = checkpoint;
   return message;
+}
+
+/** Prefix-only projection plus exact canonical hashing bytes, never large bodies. */
+function archiveRow(row: MessageRow, blobs: MessageBlobRow[], keepTitle: boolean, anchored = false, normalize = false) {
+  const raw = normalize ? null : canonicalArchiveContent(row.content_json, row.content_hash, blobs, anchored);
+  if (!raw) {
+    // Preserve the existing canonical semantics on legacy/noncanonical input.
+    const message = storedMessageFromRow(row, blobs);
+    return { message, parts: [JSON.stringify(message.content)], providerJson: JSON.stringify(message.providerData ?? null) };
+  }
+  const metadata = parseOptional<StoredMessage["metadata"]>(row.metadata_json);
+  const hasResult = blobs.some(blob => blob.kind === "tool_result")
+    || (row.role === "user" && row.content_json.startsWith("[")
+      && (raw.stub ?? JSON.parse(row.content_json)).some((block: { type: string }) => block.type === "tool_result"));
+  const message: StoredMessage = {
+    role: row.role, metadata,
+    content: row.role === "system_instructions" || (keepTitle && row.role === "user" && !hasResult && metadata?.system !== true)
+      ? (raw.stub ?? JSON.parse(row.content_json))
+      : hasResult ? [{ type: "tool_result", tool_use_id: "", content: "" }] : "",
+  };
+  if (row.has_context_checkpoint) (message as unknown as Record<string, unknown>).contextCheckpoint = parseOptional(row.context_checkpoint_json);
+  // Provider metadata is normally small. Normalize it exactly as before rather
+  // than assuming arbitrary DB JSON uses the writer's canonical formatting.
+  const providerJson = anchored ? (row.has_provider_data ? row.provider_data_json ?? "null" : "null")
+    : JSON.stringify(row.has_provider_data ? parseOptional(row.provider_data_json) : null);
+  return { message, parts: raw.parts, providerJson };
+}
+
+function updateCanonicalArchiveHash(hash: ReturnType<typeof createHash>, row: MessageRow, parts: string[], providerJson: string) {
+  // One native hash call per row, rather than hundreds of thousands of tiny
+  // UTF-8 conversions. Joining raw slices never decodes/re-escapes blob values.
+  hash.update(`{"role":${JSON.stringify(row.role)},"content":${parts.join("")},"providerData":${providerJson}}\n`);
 }
 
 function storedMessagesFromRows(
@@ -346,6 +412,8 @@ export class SqliteConversationStore implements ConversationRepository {
   private readonly readOnly: boolean;
   private readonly faultInjection?: (point: string) => void;
   private deferredCheckpointTimer: ReturnType<typeof setTimeout> | null = null;
+  private verifiedRuntimeSchema: number | null = null;
+  private readonly openFileIdentity: string;
 
   constructor(options: SqliteConversationStoreOptions = {}) {
     this.path = resolve(options.path ?? sqliteConversationStorePath());
@@ -354,6 +422,8 @@ export class SqliteConversationStore implements ConversationRepository {
     if (!this.readOnly) mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
     this.db = new Database(this.path, { create: !options.readonly, readonly: options.readonly ?? false });
     try {
+      const identity = statSync(this.path);
+      this.openFileIdentity = `${identity.dev}:${identity.ino}`;
       if (!this.readOnly) {
         try { chmodSync(this.path, 0o600); } catch { /* best effort, especially on Windows */ }
       }
@@ -820,6 +890,14 @@ export class SqliteConversationStore implements ConversationRepository {
         this.db.query("INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)").run(10, "ultrafast service tier", Date.now());
       })();
     }
+    if (current < 11 && targetVersion >= 11) {
+      this.db.transaction(() => {
+        this.db.exec("CREATE TABLE conversation_runtime_revisions (id TEXT PRIMARY KEY, revision INTEGER NOT NULL) WITHOUT ROWID, STRICT;");
+        for (const sql of Object.values(RUNTIME_REVISION_TRIGGERS)) this.db.exec(sql);
+        this.db.query("INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)")
+          .run(11, "transactional runtime cache revisions", Date.now());
+      })();
+    }
   }
 
   close(): void {
@@ -1193,12 +1271,50 @@ export class SqliteConversationStore implements ConversationRepository {
    * for integrity validation, then discarded; only immutable row headers and
    * the last visible user group/checkpoint tail cross the worker boundary.
    */
-  loadRuntimeWindow(id: string, handle: string, full = false): {
-    result: ConversationLoadResult;
-    baseHash: ReturnType<typeof createHash>;
-    prefixHashes: Array<[number, string]>;
-  } | null {
-    return this.db.transaction(() => {
+  loadRuntimeWindow(id: string, handle: string, full = false): RuntimeWindowRead | null {
+    const reader = this.readRuntimeWindow(id, handle, full);
+    let step = reader.next();
+    while (!step.done) step = reader.next();
+    return step.value;
+  }
+
+  /** SQL triggers cover canonical rows, blobs, aliases and checkpoint/metadata
+   * edits, even out-of-band SQL without storage_generation updates. The cookie
+   * is freshness ONLY; a worker still verifies actual bytes before caching. */
+  runtimeCacheToken(id: string): string | null {
+    const identity = statSync(this.path);
+    if (`${identity.dev}:${identity.ino}` !== this.openFileIdentity) throw new Error("Archive database was replaced; reopen its connections");
+    const version = this.db.query<{ schema_version: number }, []>("PRAGMA schema_version").get()!.schema_version;
+    if (this.verifiedRuntimeSchema !== version) {
+      const installed = new Map(this.db.query<{ name: string; sql: string }, []>(
+        "SELECT name, sql FROM sqlite_master WHERE type='trigger' AND name LIKE 'runtime_revision_%'",
+      ).all().map(row => [row.name, row.sql.trim()]));
+      for (const [name, sql] of Object.entries(RUNTIME_REVISION_TRIGGERS)) {
+        if (installed.get(name) !== sql.trim()) throw new Error(`Runtime integrity revision trigger is missing or changed: ${name}`);
+      }
+      this.verifiedRuntimeSchema = version;
+    }
+    const row = this.row(id);
+    const revision = this.db.query<{ revision: number }, [string]>(
+      "SELECT revision FROM conversation_runtime_revisions WHERE id=?",
+    ).get(id)?.revision ?? 0;
+    return row ? `${this.openFileIdentity}:${version}:${revision}:${row.storage_generation}:${row.stored_message_count}` : null;
+  }
+
+  hasRuntimeArchive(id: string): boolean {
+    return this.db.query(`
+      SELECT 1 FROM active_contexts a JOIN conversations c ON c.id=a.conversation_id
+      WHERE a.conversation_id=? AND c.deleted_at IS NULL
+      AND (COALESCE(json_extract(a.payload_json, '$.compactionHistoryCount'), 0)>0
+        OR COALESCE(json_extract(a.payload_json, '$.compactedAt'), 0)>0)
+    `).get(id) != null;
+  }
+
+  /** Cooperative worker read; the snapshot remains pinned across batch yields. */
+  *readRuntimeWindow(id: string, handle: string, full = false, normalize = false): Generator<void, RuntimeWindowRead | null> {
+    this.db.exec("BEGIN");
+    let snapshotOpen = true;
+    try {
       const row = this.row(id);
       if (!row) return null;
       const activeRow = this.db.query<{ payload_json: string }, [string]>(
@@ -1259,7 +1375,7 @@ export class SqliteConversationStore implements ConversationRepository {
         const rows = this.db.query<MessageRow, [string, number, number]>(`
           SELECT sequence, role, content_json, metadata_json, provider_data_json,
                  context_tokens_json, context_checkpoint_json, has_provider_data,
-                 has_context_tokens, has_context_checkpoint
+                 has_context_tokens, has_context_checkpoint, content_hash
           FROM messages WHERE conversation_id=? AND sequence>=? AND sequence<? ORDER BY sequence
         `).all(id, start, end);
         const blobs = this.db.query<MessageBlobRow, [string, number, number]>(`
@@ -1267,8 +1383,24 @@ export class SqliteConversationStore implements ConversationRepository {
           WHERE conversation_id=? AND message_sequence>=? AND message_sequence<?
           ORDER BY message_sequence, kind, ordinal
         `).all(id, start, end);
-        if (rows.length !== end-start) throw new Error(`Non-contiguous archive for ${id}`);
-        for (const { sequence, message } of storedMessagesFromRows(rows, blobs)) {
+        if (rows.length !== end-start || rows.some((row, offset) => row.sequence !== start + offset)) {
+          throw new Error(`Non-contiguous archive for ${id}`);
+        }
+        const grouped = new Map<number, MessageBlobRow[]>();
+        for (const blob of blobs) {
+          const list = grouped.get(blob.message_sequence) ?? [];
+          list.push(blob);
+          grouped.set(blob.message_sequence, list);
+        }
+        for (const messageRow of rows) {
+          const sequence = messageRow.sequence;
+          const messageBlobs = grouped.get(sequence) ?? [];
+          const archived = sequence < prefixSequence
+            ? archiveRow(messageRow, messageBlobs, titleRemaining > 0,
+                !normalize && isReplayHistoryMessage({ role: messageRow.role, content: "", metadata: parseOptional(messageRow.metadata_json) })
+                  && Number.isSafeInteger(active?.transcriptHistoryCount) && historyCount < active!.transcriptHistoryCount,
+                normalize) : null;
+          const message = archived?.message ?? storedMessageFromRow(messageRow, messageBlobs);
           if (sequence === prefixSequence) {
             baseHash = hash.copy();
             prefixHistoryCount = historyCount;
@@ -1277,8 +1409,11 @@ export class SqliteConversationStore implements ConversationRepository {
             hashes.set(historyCount, hash.copy().digest("hex").slice(0, 24));
           }
           if (isReplayHistoryMessage(message)) {
-            hash.update(JSON.stringify({ role: message.role, content: message.content, providerData: message.providerData ?? null }));
-            hash.update("\n");
+            if (archived) updateCanonicalArchiveHash(hash, messageRow, archived.parts, archived.providerJson);
+            else {
+              hash.update(JSON.stringify({ role: message.role, content: message.content, providerData: message.providerData ?? null }));
+              hash.update("\n");
+            }
             historyCount++;
           }
           if (sequence >= prefixSequence
@@ -1302,6 +1437,7 @@ export class SqliteConversationStore implements ConversationRepository {
             messages.push(header);
           } else messages.push(message);
         }
+        yield;
       }
       if (prefixSequence === row.stored_message_count) {
         baseHash = hash.copy();
@@ -1317,6 +1453,13 @@ export class SqliteConversationStore implements ConversationRepository {
       };
       adoptArchiveWindow(messages, window, [...hashes]);
       const valid = active == null || isValidActiveContextCached(active, messages);
+      if (active && !valid && !normalize && !full) {
+        // Raw fragments are trusted only after the checkpoint hashes validate.
+        // Preserve legacy canonical JSON semantics (whitespace/number formatting,
+        // etc.) and fail-closed corruption behavior via the original slow path.
+        this.db.exec("ROLLBACK"); snapshotOpen = false;
+        return yield* this.readRuntimeWindow(id, handle, full, true);
+      }
       const conversation: Conversation = {
         id: row.id, provider: row.provider, model: row.model, effort: row.effort,
         fastMode: row.ultrafast_mode === 1 ? "ultrafast" : row.fast_mode === 1,
@@ -1337,6 +1480,7 @@ export class SqliteConversationStore implements ConversationRepository {
         result: {
           conversation, generation: row.storage_generation, hashes: [...hashes], archivedTitleContext,
           validatedActiveContext: active != null && valid,
+          readRevision: this.runtimeCacheToken(id)!,
           window,
           receipt: receipt ? {
             operationId: receipt.operation_id, userMessageIndex: receipt.user_message_index,
@@ -1346,7 +1490,9 @@ export class SqliteConversationStore implements ConversationRepository {
         baseHash,
         prefixHashes: [...hashes].filter(([count]) => count <= prefixHistoryCount),
       };
-    })();
+    } finally {
+      if (snapshotOpen) this.db.exec("ROLLBACK"); // release on success, failure or cancellation
+    }
   }
 
   /** Install worker-owned read state only if its durable generation still exists. */
@@ -1354,7 +1500,8 @@ export class SqliteConversationStore implements ConversationRepository {
     const conv = result.conversation;
     const row = this.row(conv.id);
     if (!row || row.storage_generation !== result.generation
-        || row.stored_message_count !== conv.messages.length) return false;
+        || row.stored_message_count !== conv.messages.length
+        || (result.readRevision && result.readRevision !== this.runtimeCacheToken(conv.id))) return false;
     if (result.window) adoptArchiveWindow(conv.messages, result.window, result.hashes);
     if (result.validatedActiveContext && conv.activeContext) {
       freezeArchiveCheckpoint(conv.activeContext);
@@ -1375,7 +1522,7 @@ export class SqliteConversationStore implements ConversationRepository {
     if (result.archivedTitleContext) setArchivedTitleContext(conv, result.archivedTitleContext);
     this.loadedState.set(conv, {
       generation: result.generation, messages: conv.messages.map(messageSnapshot),
-      activeContextRef: conv.activeContext, lastUnwindReceipt: result.receipt,
+      activeContextRef: conv.activeContext, lastUnwindReceipt: result.receipt, readRevision: result.readRevision,
     });
     this.loadedById.set(conv.id, new WeakRef(conv));
     return true;
@@ -1397,10 +1544,16 @@ export class SqliteConversationStore implements ConversationRepository {
           SELECT * FROM resolved_message_blobs
           WHERE conversation_id=? AND message_sequence>=? AND message_sequence<? ORDER BY message_sequence, kind, ordinal
         `).all(id, start, end);
-        if (rows.length !== end - start) throw new Error("Archived prefix is non-contiguous");
-        for (const { message } of storedMessagesFromRows(rows, blobs)) if (isReplayHistoryMessage(message)) {
-          hash.update(JSON.stringify({ role: message.role, content: message.content, providerData: message.providerData ?? null }));
-          hash.update("\n");
+        if (rows.length !== end - start || rows.some((row, offset) => row.sequence !== start + offset)) throw new Error("Archived prefix is non-contiguous");
+        const grouped = new Map<number, MessageBlobRow[]>();
+        for (const blob of blobs) {
+          const list = grouped.get(blob.message_sequence) ?? [];
+          list.push(blob); grouped.set(blob.message_sequence, list);
+        }
+        for (const row of rows) {
+          const archived = archiveRow(row, grouped.get(row.sequence) ?? [], false);
+          if (!isReplayHistoryMessage(archived.message)) continue;
+          updateCanonicalArchiveHash(hash, row, archived.parts, archived.providerJson);
           historyCount++;
         }
       }
@@ -1441,6 +1594,33 @@ export class SqliteConversationStore implements ConversationRepository {
     this.db.query("UPDATE conversations SET goal_json=?, storage_generation=storage_generation+1 WHERE id=? AND deleted_at IS NULL")
       .run(JSON.stringify(goal), id);
     return goal;
+  }
+
+  /** Presentation changes cannot require canonical archive hydration. */
+  updateConversationPresentation(id: string, fields: { title?: string; marked?: boolean; muted?: boolean }): boolean {
+    const entries = Object.entries(fields);
+    if (!entries.length || entries.some(([key]) => !["title", "marked", "muted"].includes(key))) throw new Error("Invalid presentation patch");
+    const loaded = this.loadedById.get(id)?.deref();
+    const state = loaded ? this.loadedState.get(loaded) : undefined;
+    const saved = this.db.transaction(() => {
+      const row = this.row(id);
+      if (!row) return null;
+      const current = state?.generation === row.storage_generation
+        && (!state.readRevision || state.readRevision === this.runtimeCacheToken(id));
+      this.db.query(`UPDATE conversations SET ${entries.map(([key]) => `${key}=?`).join(",")}, storage_generation=storage_generation+1 WHERE id=? AND deleted_at IS NULL`)
+        .run(...entries.map(([, value]) => typeof value === "boolean" ? Number(value) : value!), id);
+      return { current, generation: row.storage_generation + 1,
+        readRevision: current && state?.readRevision ? this.runtimeCacheToken(id)! : undefined };
+    })();
+    if (!saved) return false;
+    if (loaded) {
+      Object.assign(loaded, fields);
+      if (state && saved.current) {
+        state.generation = saved.generation;
+        state.readRevision = saved.readRevision;
+      }
+    }
+    return true;
   }
 
   hasToolBlock(id: string, type: "tool_use" | "tool_result", toolId: string, name?: string): boolean {
@@ -1937,12 +2117,15 @@ export class SqliteConversationStore implements ConversationRepository {
     archiveWindow(conv.messages); // validate immutable prefix before ANY delete/upsert
     const existing = this.row(conv.id, true);
     const loaded = this.loadedState.get(conv);
+    if (loaded?.readRevision && loaded.readRevision !== this.runtimeCacheToken(conv.id)) throw new Error(`Stale conversation revision for ${conv.id}`);
     if (existing && loaded && existing.storage_generation !== loaded.generation) {
       throw new Error(`Stale conversation generation for ${conv.id}: loaded=${loaded.generation}, current=${existing.storage_generation}`);
     }
     const generation = options.generation ?? ((existing?.storage_generation ?? 0) + 1);
     const changedAt = this.firstChangedMessage(conv, options.forceMessages === true);
+    let readRevision: string | undefined;
     this.db.transaction(() => {
+      if (loaded?.readRevision && loaded.readRevision !== this.runtimeCacheToken(conv.id)) throw new Error(`Stale conversation revision for ${conv.id}`);
       this.upsertConversationRow(conv, generation);
       this.faultInjection?.("save.after-conversation");
       if (changedAt !== null) {
@@ -1965,6 +2148,7 @@ export class SqliteConversationStore implements ConversationRepository {
       }
       if (!existing || loaded?.activeContextRef !== conv.activeContext) this.saveActiveContext(conv);
       this.faultInjection?.("save.before-commit");
+      if (loaded?.readRevision) readRevision = this.runtimeCacheToken(conv.id)!;
     })();
     const previousReceipt = loaded?.lastUnwindReceipt ?? null;
     this.loadedState.set(conv, {
@@ -1972,6 +2156,7 @@ export class SqliteConversationStore implements ConversationRepository {
       messages: conv.messages.map(messageSnapshot),
       activeContextRef: conv.activeContext,
       lastUnwindReceipt: previousReceipt,
+      readRevision,
     });
     this.loadedById.set(conv.id, new WeakRef(conv));
   }
@@ -1986,6 +2171,7 @@ export class SqliteConversationStore implements ConversationRepository {
     const existing = this.row(conv.id);
     if (!existing) throw new Error(`Conversation not found: ${conv.id}`);
     const loaded = this.loadedState.get(conv);
+    if (loaded?.readRevision && loaded.readRevision !== this.runtimeCacheToken(conv.id)) throw new Error(`Stale conversation revision for ${conv.id}`);
     if (loaded && existing.storage_generation !== loaded.generation) {
       throw new Error(`Stale conversation generation for ${conv.id}: loaded=${loaded.generation}, current=${existing.storage_generation}`);
     }
@@ -2003,7 +2189,9 @@ export class SqliteConversationStore implements ConversationRepository {
       storedMessageCount: conv.messages.length,
     };
     let insertedBytes = 0;
+    let readRevision: string | undefined;
     this.db.transaction(() => {
+      if (loaded?.readRevision && loaded.readRevision !== this.runtimeCacheToken(conv.id)) throw new Error(`Stale conversation revision for ${conv.id}`);
       this.upsertConversationRow(conv, generation, counts);
       this.faultInjection?.("append.after-conversation");
       for (let sequence = expectedStoredMessageCount; sequence < conv.messages.length; sequence++) {
@@ -2015,6 +2203,7 @@ export class SqliteConversationStore implements ConversationRepository {
         .run(existing.content_bytes + insertedBytes, conv.id);
       if (!loaded || loaded.activeContextRef !== conv.activeContext) this.saveActiveContext(conv);
       this.faultInjection?.("append.before-commit");
+      if (loaded?.readRevision) readRevision = this.runtimeCacheToken(conv.id)!;
     })();
 
     const messageSnapshots = loaded
@@ -2026,6 +2215,7 @@ export class SqliteConversationStore implements ConversationRepository {
       messages: messageSnapshots,
       activeContextRef: conv.activeContext,
       lastUnwindReceipt: loaded?.lastUnwindReceipt ?? null,
+      readRevision,
     });
     this.loadedById.set(conv.id, new WeakRef(conv));
   }
@@ -2034,10 +2224,13 @@ export class SqliteConversationStore implements ConversationRepository {
     archiveWindow(conv.messages);
     const existing = this.row(conv.id);
     const loaded = this.loadedState.get(conv);
+    if (loaded?.readRevision && loaded.readRevision !== this.runtimeCacheToken(conv.id)) throw new Error(`Stale conversation revision for ${conv.id}`);
     if (!existing) return this.save(conv);
     if (loaded && loaded.generation !== existing.storage_generation) throw new Error(`Stale conversation generation for ${conv.id}`);
     const generation = existing.storage_generation + 1;
+    let readRevision: string | undefined;
     this.db.transaction(() => {
+      if (loaded?.readRevision && loaded.readRevision !== this.runtimeCacheToken(conv.id)) throw new Error(`Stale conversation revision for ${conv.id}`);
       for (let sequence = 0; sequence < conv.messages.length; sequence++) {
         const message = conv.messages[sequence];
         if (isArchivedMessage(message)) continue;
@@ -2046,8 +2239,10 @@ export class SqliteConversationStore implements ConversationRepository {
       }
       this.upsertConversationRow(conv, generation);
       if (loaded?.activeContextRef !== conv.activeContext) this.saveActiveContext(conv);
+      if (loaded?.readRevision) readRevision = this.runtimeCacheToken(conv.id)!;
     })();
-    this.loadedState.set(conv, { generation, messages: conv.messages.map(messageSnapshot), activeContextRef: conv.activeContext, lastUnwindReceipt: loaded?.lastUnwindReceipt ?? null });
+    this.loadedState.set(conv, { generation, messages: conv.messages.map(messageSnapshot), activeContextRef: conv.activeContext, lastUnwindReceipt: loaded?.lastUnwindReceipt ?? null,
+      readRevision });
     this.loadedById.set(conv.id, new WeakRef(conv));
   }
 
@@ -2066,6 +2261,7 @@ export class SqliteConversationStore implements ConversationRepository {
     const loaded = this.loadedState.get(base);
     if (!existing) throw new Error(`Cannot persist unwind for missing conversation ${base.id}`);
     if (!loaded) throw new Error(`Cannot persist unwind for unloaded conversation ${base.id}`);
+    if (loaded.readRevision && loaded.readRevision !== this.runtimeCacheToken(base.id)) throw new Error(`Stale conversation revision for ${base.id}`);
     if (loaded.generation !== existing.storage_generation) throw new Error(`Stale conversation generation for ${base.id}`);
     const cutSequence = result.messages.length;
     if (cutSequence > existing.stored_message_count || cutSequence > base.messages.length) {
@@ -2092,7 +2288,9 @@ export class SqliteConversationStore implements ConversationRepository {
       userMessageIndex: options.userMessageIndex,
       historyTotalEntries: options.historyTotalEntries,
     };
+    let readRevision: string | undefined;
     this.db.transaction(() => {
+      if (loaded.readRevision && loaded.readRevision !== this.runtimeCacheToken(base.id)) throw new Error(`Stale conversation revision for ${base.id}`);
       const removedBytes = this.db.query<{ bytes: number }, [string, number]>(`
         SELECT COALESCE(SUM(content_bytes), 0) AS bytes FROM messages
         WHERE conversation_id=? AND sequence>=?
@@ -2143,12 +2341,14 @@ export class SqliteConversationStore implements ConversationRepository {
         this.db.query(`DELETE FROM queued_messages WHERE id IN (${sqlPlaceholders(options.supersededQueueIds.length)})`).run(...options.supersededQueueIds);
       }
       this.faultInjection?.("unwind.before-commit");
+      if (loaded.readRevision) readRevision = this.runtimeCacheToken(base.id)!;
     })();
     this.loadedState.set(base, {
       generation,
       messages: loaded.messages.slice(0, cutSequence),
       activeContextRef: result.activeContext,
       lastUnwindReceipt: receipt,
+      readRevision,
     });
     const savedSnapshots = this.loadedState.get(base)!.messages;
     for (const sequence of contextAttributionUpdates) {
@@ -2188,16 +2388,23 @@ export class SqliteConversationStore implements ConversationRepository {
   }
 
   saveConversationSidebarState(state: ConversationSidebarState): void {
-    const row = this.row(state.id);
-    if (!row) throw new Error(`Conversation not found: ${state.id}`);
-    this.db.query(`
-      UPDATE conversations SET folder_id=?, pinned=?, sort_order=?, storage_generation=storage_generation+1
-      WHERE id=? AND deleted_at IS NULL
-    `).run(state.folderId, state.pinned ? 1 : 0, state.sortOrder, state.id);
     const loaded = this.loadedById.get(state.id)?.deref();
-    if (loaded) {
-      const loadedState = this.loadedState.get(loaded);
-      if (loadedState) loadedState.generation = row.storage_generation + 1;
+    const loadedState = loaded ? this.loadedState.get(loaded) : undefined;
+    const saved = this.db.transaction(() => {
+      const row = this.row(state.id);
+      if (!row) throw new Error(`Conversation not found: ${state.id}`);
+      const current = loadedState?.generation === row.storage_generation
+        && (!loadedState.readRevision || loadedState.readRevision === this.runtimeCacheToken(state.id));
+      this.db.query(`
+        UPDATE conversations SET folder_id=?, pinned=?, sort_order=?, storage_generation=storage_generation+1
+        WHERE id=? AND deleted_at IS NULL
+      `).run(state.folderId, state.pinned ? 1 : 0, state.sortOrder, state.id);
+      return { current, generation: row.storage_generation + 1,
+        readRevision: current && loadedState?.readRevision ? this.runtimeCacheToken(state.id)! : undefined };
+    })();
+    if (loadedState && saved.current) {
+      loadedState.generation = saved.generation;
+      loadedState.readRevision = saved.readRevision;
     }
   }
 

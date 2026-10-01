@@ -95,6 +95,10 @@ export function updateIndexedGoalStatus(id: string, status: import("./messages")
   return store().updateIndexedGoalStatus(id, status, reason);
 }
 
+export function updateConversationPresentation(id: string, fields: { title?: string; marked?: boolean; muted?: boolean }): boolean {
+  return store().updateConversationPresentation(id, fields);
+}
+
 export function hasToolBlock(id: string, type: "tool_use" | "tool_result", toolId: string, name?: string): boolean {
   if (backend === "sqlite") return store().hasToolBlock(id, type, toolId, name);
   return jsonPersistence.load(id)?.messages.some(message => Array.isArray(message.content)

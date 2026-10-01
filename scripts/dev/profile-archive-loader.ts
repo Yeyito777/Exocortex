@@ -4,12 +4,14 @@
  * profile modes always open readonly and never contact a provider/daemon.
  *
  * bun scripts/dev/profile-archive-loader.ts seed NEW_DB ID [archiveMiB]
- * bun scripts/dev/profile-archive-loader.ts worker|baseline DB ID
+ * bun scripts/dev/profile-archive-loader.ts worker|baseline|warm|prefetch|syncwindow DB ID
+ * warm/prefetch report warmup separately; syncwindow is a CPU-profiling helper,
+ * NOT a production foreground loading path. Use a current-schema fixture.
  */
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { SqliteConversationStore } from "../../daemon/src/sqlite-conversation-store";
-import { loadConversationOffThread, stopConversationLoader } from "../../daemon/src/conversation-loader";
+import { loadConversationOffThread, releaseArchiveWindow, prefetchConversation, stopConversationLoader } from "../../daemon/src/conversation-loader";
 import { archiveWindow } from "../../daemon/src/conversation-window";
 import { buildConversationApiContext } from "../../daemon/src/context-compaction";
 import {
@@ -18,7 +20,7 @@ import {
 } from "../../daemon/src/messages";
 
 const [mode, rawPath, id, sizeRaw = "150"] = process.argv.slice(2);
-if (!rawPath || !id || !["seed", "worker", "baseline"].includes(mode)) throw new Error("See usage in profile-archive-loader.ts");
+if (!rawPath || !id || !["seed", "worker", "warm", "prefetch", "syncwindow", "baseline"].includes(mode)) throw new Error("See usage in profile-archive-loader.ts");
 const path = resolve(rawPath);
 if (mode === "seed") {
   if (existsSync(path)) throw new Error("Refusing to overwrite an existing fixture DB");
@@ -61,9 +63,21 @@ if (mode === "seed") {
   }, 5);
   await Bun.sleep(20);
   const before = process.memoryUsage();
+  let warmupMs = 0;
+  if (mode === "warm" || mode === "prefetch") {
+    const warmup = performance.now();
+    if (mode === "prefetch") await prefetchConversation(id, path);
+    else {
+      const first = await loadConversationOffThread(id, false, path);
+      if (first?.window) releaseArchiveWindow(first.conversation.messages, first.window.handle);
+    }
+    warmupMs = performance.now() - warmup;
+    lag.length = 0;
+  }
   const start = performance.now();
-  const result = mode === "worker" ? await loadConversationOffThread(id, false, path) : null;
-  const conv = mode === "worker" ? result?.conversation : store.load(id);
+  const result = mode === "syncwindow" ? store.loadRuntimeWindow(id, "readonly-profile")?.result
+    : mode !== "baseline" ? await loadConversationOffThread(id, false, path) : null;
+  const conv = mode !== "baseline" ? result?.conversation : store.load(id);
   if (!conv) throw new Error("Conversation could not be loaded");
   if (result && !store.adoptLoadedConversation(result)) throw new Error("Conversation changed during profiling; retry when idle");
   const loadMs = performance.now() - start;
@@ -73,13 +87,13 @@ if (mode === "seed") {
   const prepareMs = performance.now() - prepareStart;
   const memory = process.memoryUsage();
   const window = archiveWindow(conv.messages);
-  const foregroundBytes = mode === "worker" ? Buffer.byteLength(JSON.stringify(conv)) : stat.fileSize;
+  const foregroundBytes = mode !== "baseline" ? Buffer.byteLength(JSON.stringify(conv)) : stat.fileSize;
   await Bun.sleep(20);
   clearInterval(timer);
   lag.sort((a, b) => a - b);
   console.log(JSON.stringify({
     mode, id, archiveBytes: stat.fileSize, messages: conv.messages.length,
-    loadMs, prepareMs, eventLoop: {
+    loadMs, prepareMs, warmupMs, loadDiagnostics: result?.loadDiagnostics, eventLoop: {
       samples: lag.length, maxLagMs: lag.at(-1), p95LagMs: lag[Math.floor(lag.length * .95)],
     },
     foregroundBytes, archivedHeaders: window?.prefixSequence ?? 0,

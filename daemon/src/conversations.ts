@@ -1,4 +1,5 @@
 import type { FastMode } from "@exocortex/shared/messages";
+import { performanceProfilingEnabled } from "@exocortex/shared/config";
 /**
  * In-memory conversation store with persistence.
  *
@@ -60,6 +61,7 @@ export {
 // ── State ───────────────────────────────────────────────────────────
 
 const conversations = new Map<string, Conversation>();
+const PROFILE_RUNTIME_LOADS = performanceProfilingEnabled();
 const cachePins = new Map<string, number>();
 /** Realtime owners retain the live window while their transport can append. */
 export function pinConversationCache(id: string): () => void {
@@ -694,6 +696,7 @@ export async function getAsync(id: string): Promise<Conversation | undefined> {
   if (inFlight) return inFlight;
   const loading = (async () => {
     for (let attempt = 0; attempt < 8; attempt++) {
+      const started = PROFILE_RUNTIME_LOADS ? performance.now() : 0;
       const result = await loadConversationOffThread(id);
       const newer = conversations.get(id);
       if (newer) {
@@ -709,6 +712,10 @@ export async function getAsync(id: string): Promise<Conversation | undefined> {
       conv.effort = normalizeEffort(conv.provider, conv.model, conv.effort);
       retainConversation(conv);
       updateSummaryFromConversation(conv);
+      if (PROFILE_RUNTIME_LOADS) log("info", `perf: conversation_runtime_load ${JSON.stringify({
+        convId: id, durationMs: performance.now() - started, attempt,
+        ...result.loadDiagnostics, archivedHeaders: result.window?.prefixSequence ?? 0,
+      })}`);
       return conv;
     }
     throw new Error(`Conversation ${id} kept changing during asynchronous loading`);
@@ -1245,7 +1252,6 @@ function applySidebarHistoryAsync(direction: SidebarUndoDirection): Promise<Asyn
           ? { type: "conversation" as const, conversation: restored[0] }
           : { type: "conversations" as const, conversations: restored };
       }
-      if (entry.type === "conversation_marked" || entry.type === "conversation_renamed") await getAsync(entry.convId);
       if (entry.type === "folder_unwrap") {
         for (const child of entry.children) if (child.item.type === "conversation") await getAsync(child.item.id);
       }
@@ -1335,6 +1341,15 @@ export function setFastMode(id: string, enabled: FastMode): boolean {
 }
 
 export function rename(id: string, title: string, recordUndo = true): boolean {
+  if (!conversations.has(id) && persistence.isSqliteConversationStore()) {
+    const summary = summaries.get(id);
+    if (!summary) return false;
+    if (summary.title === title) return true;
+    if (recordUndo) recordSidebarUndo({ type: "conversation_renamed", convId: id, title: summary.title });
+    if (!persistence.updateConversationPresentation(id, { title })) return false;
+    summary.title = title; saveSummaryIndex();
+    return true;
+  }
   const conv = get(id);
   if (!conv) return false;
   if (conv.title === title) return true;
@@ -2164,6 +2179,15 @@ export function listRestartRecoverableConversationIds(): string[] {
 
 /** Toggle or set the marked flag on a conversation. */
 export function mark(id: string, marked: boolean): boolean {
+  if (!conversations.has(id) && persistence.isSqliteConversationStore()) {
+    const summary = summaries.get(id);
+    if (!summary) return false;
+    if (summary.marked === marked) return true;
+    recordSidebarUndo({ type: "conversation_marked", convId: id, marked: summary.marked });
+    if (!persistence.updateConversationPresentation(id, { marked })) return false;
+    summary.marked = marked; saveSummaryIndex();
+    return true;
+  }
   const conv = get(id);
   if (!conv) return false;
   if (conv.marked === marked) return true;
@@ -2194,6 +2218,15 @@ export function pin(id: string, pinned: boolean): boolean {
 
 /** Explicitly mute or unmute a conversation. Folder muting still takes precedence. */
 export function mute(id: string, muted: boolean): boolean {
+  if (!conversations.has(id) && persistence.isSqliteConversationStore()) {
+    const summary = summaries.get(id);
+    if (!summary) return false;
+    if (summary.muted === muted) return true;
+    if (!persistence.updateConversationPresentation(id, { muted })) return false;
+    summary.muted = muted; saveSummaryIndex();
+    if (muted) clearUnread(id);
+    return true;
+  }
   const conv = get(id);
   if (!conv) return false;
   if (conv.muted === muted) return true;

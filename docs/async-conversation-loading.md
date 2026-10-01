@@ -37,6 +37,39 @@ for append/display invariants.
   from canonical bytes and requires the original count/digest to match.
   Eviction/stale loads release handles; shutdown terminates the loader.
 
+### Cooperative loading and verified reuse
+
+- Two lazy readonly worker lanes avoid globally serializing admission behind one
+  large archive. Reads yield between 128-row batches; urgent native tail hashes
+  can run during another archive read. Lost-hash restoration uses a separate
+  connection so it cannot nest inside the cooperative read transaction.
+- A paginated open schedules a 120 ms debounced prewarm. At most one speculative
+  job runs, only compacted archives qualify, and another interactive load can
+  cancel it at a batch boundary. This is not a startup scan or provider request.
+  Same-conversation admission joins that lane rather than duplicating its read.
+- Each worker retains at most eight verified windows with a 64 MiB accounted
+  budget (32 MiB maximum per entry). Full/uncompacted/invalid-checkpoint results
+  are not retained. Cache entries contain checkpoint, headers, real tail, and
+  native hash state—not old tool bodies. Every adoption gets its own handle.
+- Schema 11 installs transactional revision triggers covering conversation rows,
+  messages, blobs, clone aliases, checkpoints, and runtime unwind-receipt fields.
+  Owner-blob changes invalidate dependent clones too. An unrelated conversation
+  write does not invalidate an entry. Queue-cleanup acknowledgements do not
+  change the runtime receipt and therefore do not invalidate it.
+- Reuse requires the same database file identity, schema cookie, revision,
+  generation, and count. Trigger definitions are checked on schema-cookie
+  changes; missing/altered triggers or atomic file replacement fail closed.
+  Adoption and subsequent writes check freshness. Writes recheck inside the
+  transaction and capture the resulting token before commit; presentation
+  updates cannot bless a previously stale loaded snapshot.
+- This revision is **freshness, not a cryptographic receipt**. Initial reads still
+  validate actual bytes. Worker restart discards every cached proof.
+- Canonical archived blob envelopes can be reconstructed as raw JSON fragments,
+  avoiding decode/re-escape of large strings and structured results. Those exact
+  bytes must match either the row's content SHA or the active checkpoint's native
+  prefix SHA. Failed anchored validation retries with the original JSON
+  parse/normalize semantics; it never turns a failed checkpoint into a valid one.
+
 Implementation entry points:
 `conversation-loader.ts`, `conversation-load-protocol.ts`,
 `conversation-window.ts`, `sqlite-conversation-store.ts`, and `conversations.ts`.
@@ -56,6 +89,8 @@ as `.js`, while source installations use `.ts`.
   without archive hydration.
 - Display suffix rebuilding recognizes compaction dividers, avoiding an enormous
   still-open AI group from the original single-user task.
+- Cold rename/mark/mute/pin/clone and corresponding mark/rename undo use targeted
+  SQL/sidebar state rather than hydrating canonical history.
 - Cache accounting charges the live tail plus header overhead. Realtime owners
   and title jobs pin their live window while asynchronous callbacks can append
   or rename it. Voice transcript writes serialize per conversation.
@@ -68,6 +103,29 @@ This is not zero-cost cold loading: the first read still scans/hash-validates
 the canonical archive on a worker, and foreground adoption is proportional to
 row/header count and the actual retained context. No checkpoint means the
 canonical replay itself is needed; the loader cannot invent a compaction.
+
+**Architectural limit:** `readRuntimeWindow` still loops through the entire
+canonical archive to establish the native checkpoint's relationship to it.
+Verified reuse and prewarm eliminate repeated scans or move the first one before
+admission; neither makes a genuinely fresh/restarted load bounded by live context
+size. Tail append/checkpoint/presentation changes conservatively invalidate the
+whole worker entry. The foreground also constructs/freezes/snapshots one header
+per old row, so even a cache hit is not independent of archive row count.
+
+The next storage design needs a separately persisted, integrity-bound runtime
+checkpoint plus indexed recent tail, prefix-scoped mutation tracking, and lazy
+archive/user-boundary descriptors instead of a whole header array. A stored SHA
+or Merkle root alone does **not** prove that unread archive bytes are unchanged.
+Two different guarantees must be kept explicit:
+
+1. Verify every historical byte before every cold admission (necessarily
+   proportional to archive size).
+2. Verify an authenticated runtime capsule before admission, invalidate it on
+   relevant mutations, and verify archived data when accessed/audited.
+
+The second can provide bounded cold latency, but merely deferring the current
+prefix check to the background would weaken the first guarantee. This work does
+not silently make that change or persist unchecked trust receipts.
 
 Explicit trim/instruction rewrites opt into full materialization **off-thread**
 and refuse concurrent streams/unwinds. Their subsequent persistence/rewrite may
@@ -161,3 +219,60 @@ bun build --compile daemon/src/conversation-loader-compiled-smoke.ts \
 The seed command refuses to overwrite an existing file; profile modes open
 readonly. The IPC smoke refuses non-synthetic or undersized input, creates its
 own fresh config, never targets a service/main instance, and removes its copy.
+
+## Follow-up after merging main's TUI reopening changes (2026-10-01)
+
+Main's render LRU/offscreen layout changes were merged into this worktree.
+They speed up display/reopening, not canonical checkpoint validation.
+
+A transactionally copied, single-conversation fixture contains 156,572,475
+canonical bytes / 32,647 rows. Source attachment is enforced `mode=ro` using
+SQLite URI-open flags; no production migration, model request, or daemon restart
+is needed. Measurements below are individual runs, not statistical percentiles:
+
+| Read path | Load | Archive rows read | Replay/checkpoint prep |
+|---|---:|---:|---:|
+| Synchronous full baseline | 1,246 ms | 32,647 | 27 ms |
+| Fresh worker window | 943 ms | 32,647 | 26 ms |
+| Verified worker cache | 122 ms | **0** | 24 ms |
+| Completed prewarm | 114 ms | **0** | 26 ms |
+
+The worker paths retained 5,469,554 foreground bytes, 162 real tail rows, and
+32,485 headers. All four produced 597 replay messages and the identical hash
+`a7c8cb54c9fc74ec4e568815`. Cold worker RSS delta was 204.6 MB versus 1,289.0 MB
+for the baseline; these are process deltas, not peak memory. The cold worker's
+5 ms event-loop probe had 0.81 ms p95 and 133 ms maximum (including foreground
+adoption/reporting), versus a 1,274 ms baseline maximum.
+
+A synchronous CPU profile of the optimized worker algorithm attributed self
+samples to SQLite `.all` row extraction/string decoding (29.3%), SHA operations
+(23.1%), JSON parse/stringify (9.4%), and other work (38.3%, including additional
+SQL queries, joins, projection, freezing, allocation and setup). These are CPU
+samples, **not** wall-time task-completion percentages or disk/model latency.
+The architectural problem is touching 156.6 MB to prepare a 5.5 MB live window.
+
+The isolated IPC smoke additionally waits for an exact-child prewarm log and
+requires foreground `cacheHit:true, archiveRowsRead:0`; a timer alone is not
+accepted as proof. On the 159.7 MB synthetic fixture, it measured 90 ms after
+verified prewarm, ~629–648 ms true cold, 0.26 ms Stop, and maximum concurrent
+cheap-IPC delay 57–60 ms. Restart/restore durability, cancelled-input exclusion,
+byte-identical checkpoint, SQLite integrity checks, and fault isolation passed.
+Only owned child daemons were restarted.
+
+Coverage includes invalidation after direct SQL edits, rollback, alias fanout,
+missing revision triggers, atomic file replacement, inter-check/transaction
+writer races, cleanup acknowledgements, bounded LRU, independent foreground lanes,
+same-chat prefetch joining, urgent hashing during cold reads, and legacy JSON
+normalization fallback. Linux's current embedded-worker build passed outside the
+checkout; the Windows daemon/worker cross-build passed (not Windows runtime).
+The shared external exo-cli path
+tests assume the config override is unset, conflicting with the repository's
+isolation preload; run that read-only file separately with:
+
+```sh
+bun test --path-ignore-patterns '**/exo-cli/src/shared/paths.test.ts'
+env -u EXOCORTEX_CONFIG_DIR EXOCORTEX_TEST_CONFIG_READY=1 \
+  bun test external-tools/exo-cli/src/shared/paths.test.ts
+bun scripts/dev/profile-archive-loader.ts warm /tmp/CURRENT-fixture.sqlite3 archive-stress
+bun scripts/dev/profile-archive-loader.ts prefetch /tmp/CURRENT-fixture.sqlite3 archive-stress
+```

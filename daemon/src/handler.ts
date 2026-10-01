@@ -9,6 +9,8 @@ import { fastModeServiceTier, isFastMode, type FastMode } from "@exocortex/share
  */
 
 import { log } from "./log";
+import { isSqliteConversationStore } from "./persistence";
+import { scheduleConversationPrewarm } from "./conversation-loader";
 import { localMacroEnvironment } from "@exocortex/shared/macro-environment";
 import { getDaemonUpdateStatus } from "./update-status";
 import { encodeHistoryDelta } from "@exocortex/shared/history-delta";
@@ -1166,8 +1168,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   // window. Read-only paging, Stop, scheduling and turn admission stay cheap.
   const warmCommands = new Set([
     "btw_query", "btw_followup", "set_goal", "set_model", "set_effort",
-    "set_fast_mode", "mark_conversation", "pin_conversation", "mute_conversation",
-    "rename_conversation", "clone_conversation", "get_system_prompt",
+    "set_fast_mode", "get_system_prompt",
   ]);
   const handleCommand = async function handleCommand(client: ConnectedClient, cmd: Command): Promise<void> {
     try {
@@ -2869,6 +2870,10 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           break;
         }
         const loadedConvId = loaded.convId;
+        if (cmd.turns !== undefined && isSqliteConversationStore()
+            && !convStore.getCached(loadedConvId) && !convStore.isStreaming(loadedConvId)) {
+          scheduleConversationPrewarm(loadedConvId);
+        }
         server.subscribe(client, loadedConvId);
         // Reconcile any BTW updates emitted between the load snapshot and this
         // subscription, just like the active-turn catch-up below. An all-null
