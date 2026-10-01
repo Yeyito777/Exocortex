@@ -18,6 +18,7 @@ import { log } from "./log";
 import type { UpdateStatus } from "@exocortex/shared/updatecheck";
 import { BtwMutationReplay, isBtwMutation } from "./btw/replay";
 import { HistoryCache } from "./history-cache";
+import { transcribeLocally } from "./local-transcription";
 import {
   DEFAULT_SSH_PROBE_TIMEOUT_MS,
   appendSshStderr,
@@ -66,6 +67,8 @@ export interface DaemonClientTransportOptions {
   spawnSshProcess?: SpawnSshProcess;
   sshProbeTimeoutMs?: number;
   localHostname?: string;
+  localTranscriptionConnectTimeoutMs?: number;
+  localTranscriptionTimeoutMs?: number;
 }
 
 type ReplayableQueueCommand = Extract<Command, { type: "queue_message" | "unqueue_message" }>;
@@ -107,6 +110,7 @@ export class DaemonClient {
   private nextCommandSequence = 0;
   private llmCallbacks = new Map<string, { onSuccess: LlmCompleteCallback; onError?: LlmErrorCallback }>();
   private transcriptionCallbacks = new Map<string, { onSuccess: TranscriptionCallback; onError?: TranscriptionErrorCallback }>();
+  private localTranscriptions = new Set<AbortController>();
   private pendingConversationLoads = new Map<string, { convId: string; startedAt: number }>();
   private pendingConversationHistoryLoads = new Map<string, { convId: string; requestSource: "initial-backfill" | "viewport"; startedAt: number }>();
   private pendingToolOutputLoads = new Map<string, { convId: string; requested: number | null; startedAt: number }>();
@@ -115,6 +119,8 @@ export class DaemonClient {
   private readonly spawnSshProcess: SpawnSshProcess;
   private readonly sshProbeTimeoutMs: number;
   private readonly localHostname: string;
+  private readonly localTranscriptionConnectTimeoutMs: number | undefined;
+  private readonly localTranscriptionTimeoutMs: number | undefined;
   private sshAlias: string | null = null;
   private sshSwitchingTo: string | null = null;
   private sshSwitchGeneration = 0;
@@ -132,6 +138,8 @@ export class DaemonClient {
     this.spawnSshProcess = transportOptions.spawnSshProcess ?? spawnSshProxy;
     this.sshProbeTimeoutMs = transportOptions.sshProbeTimeoutMs ?? DEFAULT_SSH_PROBE_TIMEOUT_MS;
     this.localHostname = transportOptions.localHostname ?? hostname();
+    this.localTranscriptionConnectTimeoutMs = transportOptions.localTranscriptionConnectTimeoutMs;
+    this.localTranscriptionTimeoutMs = transportOptions.localTranscriptionTimeoutMs;
   }
 
   get connected(): boolean { return this._connected; }
@@ -362,6 +370,7 @@ export class DaemonClient {
 
   disconnect(): void {
     this.clearUpdateRequests();
+    this.cancelLocalTranscriptions();
     this.intentionalDisconnect = true;
     this.abortPendingSshSwitch("TUI disconnected");
     this.discardPendingSshConnection();
@@ -682,6 +691,7 @@ export class DaemonClient {
   }
 
   private closeCurrentTransportForRouteSwitch(): void {
+    this.cancelLocalTranscriptions();
     if (this.activeSshConnection) this.activeSshConnection.intentionalClose = true;
     try { this.socket?.end(); } catch { /* already closed */ }
     try { this.socket?.destroy(); } catch { /* already closed */ }
@@ -1005,11 +1015,44 @@ export class DaemonClient {
     onError?: TranscriptionErrorCallback,
   ): void {
     const reqId = `transcribe_${++this.nextReqId}_${Date.now()}`;
+    if (this.sshAlias) {
+      // Only ASR is local: the voice controller still owns its optimistic prompt
+      // jobs, submitted placeholders, recall, and final-text queue/send behavior.
+      const controller = new AbortController();
+      this.localTranscriptions.add(controller);
+      void transcribeLocally(this.socketPath, { type: "transcribe_audio", reqId, audioBase64, mimeType }, {
+        signal: controller.signal,
+        connectTimeoutMs: this.localTranscriptionConnectTimeoutMs,
+        responseTimeoutMs: this.localTranscriptionTimeoutMs,
+      }).then(
+        text => {
+          this.localTranscriptions.delete(controller);
+          if (!controller.signal.aborted) onSuccess(text);
+        },
+        () => {
+          this.localTranscriptions.delete(controller);
+          if (controller.signal.aborted) return;
+          // Missing/stopped local daemon, local auth/backend failure, or timeout:
+          // retain the ordinary SSH/offline queue path as a transparent fallback.
+          log("info", "local transcription unavailable; falling back to the active SSH daemon");
+          this.transcriptionCallbacks.set(reqId, { onSuccess, onError });
+          this.send({ type: "transcribe_audio", reqId, audioBase64, mimeType });
+        },
+      ).catch(error => {
+        log("error", `transcription callback failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
+      return;
+    }
     this.transcriptionCallbacks.set(reqId, { onSuccess, onError });
     this.send({ type: "transcribe_audio", reqId, audioBase64, mimeType });
   }
 
   // ── Internal ────────────────────────────────────────────────────
+
+  private cancelLocalTranscriptions(): void {
+    for (const controller of this.localTranscriptions) controller.abort();
+    this.localTranscriptions.clear();
+  }
 
   private requestId(prefix: string): string {
     return `${prefix}_${++this.nextReqId}_${Date.now()}`;
