@@ -1846,7 +1846,10 @@ async function reconnectToDaemon(): Promise<void> {
 function handleDaemonConnectionLost(shutdownMode: DaemonShutdownMode | null): void {
   remoteFileLinks?.cancel();
   updateMonitor?.disconnected(daemon.remoteAlias);
-  voiceInput?.cleanup();
+  // SSH outages do not interrupt local capture/ASR. Keep prompt jobs and
+  // optimistic submissions alive; their final text can queue until reconnect.
+  // An explicit endpoint switch still resets them in resetForDaemonRouteSwitch.
+  if (!daemon.remoteAlias || daemonRouteSwitchPending) voiceInput?.cleanup();
   callMedia?.stop();
   state.activeCallIdsByConversation.clear();
   // The client retains an ambiguous unwind with its operation UUID and replays

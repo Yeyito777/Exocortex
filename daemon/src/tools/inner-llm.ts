@@ -14,9 +14,9 @@ export interface InnerLlmSummaryOptions {
 const SUMMARY_EFFORT: EffortLevel = "none";
 
 const SUMMARY_MODEL_BY_PROVIDER: Record<ProviderId, ModelId> = {
-  // Browse quality is sensitive to extraction/relevance judgment. Use Terra on
-  // the ChatGPT-account backend and request the fast service tier separately.
-  openai: "gpt-5.6-terra",
+  // Use GPT-6 Luna on the ChatGPT-account backend and request the fast service
+  // tier separately.
+  openai: "gpt-6-luna",
   deepseek: "deepseek-v4-flash",
   opencode: "ox-alpha",
   openrouter: "nousresearch/hermes-4-70b",
