@@ -15,6 +15,7 @@ import { sanitizeUntrustedText } from "./terminaltext";
 import { sliceByWidthFrom, termWidth } from "./textwidth";
 import { wordWrap, type WrapResult } from "./textwrap";
 import { renderToolCallLogicalLines } from "./toolcalllogical";
+import { RehydratedRenderCache } from "./rehydrated-render-cache";
 
 interface BlockCacheEntry {
   /** Exact mutable source content at render time (detects rewrites, not just growth). */
@@ -35,6 +36,19 @@ interface BlockCacheEntry {
 }
 
 const blockRenderCache = new WeakMap<Block, BlockCacheEntry>();
+const rehydratedBlockRenderCache = new RehydratedRenderCache<BlockCacheEntry>();
+
+function wrapResultBytes(result: WrapResult): number {
+  // Account for strings plus row/copy/link array objects without serializing the
+  // entire rendered history just to decide whether to cache it.
+  let bytes = result.lines.length * 256;
+  for (const line of result.lines) bytes += line.length * 2;
+  for (const line of result.copy ?? []) bytes += (line?.text.length ?? 0) * 2;
+  for (const spans of result.links ?? []) {
+    for (const span of spans ?? []) bytes += 128 + span.target.length * 2;
+  }
+  return bytes;
+}
 
 interface UserMessageCacheEntry {
   text: string;
@@ -61,9 +75,9 @@ function blockContentKey(block: Block): string {
     case "text":
       return block.text;
     case "tool_call":
-      return `${block.summary}\n${JSON.stringify(block.input)}\n${JSON.stringify(block.presentation ?? null)}`;
+      return JSON.stringify([block.toolName, block.summary, block.input, block.presentation ?? null]);
     case "tool_result":
-      return block.output;
+      return `${block.isError === true}:${block.output}`;
   }
 }
 
@@ -95,7 +109,8 @@ export function renderBlockCached(
   toolCallErrored = false,
 ): WrapResult {
   const contentKey = blockContentKey(block);
-  const cached = blockRenderCache.get(block);
+  const rehydratedKey = `${block.type}:${contentKey}`;
+  const cached = blockRenderCache.get(block) ?? rehydratedBlockRenderCache.get(rehydratedKey);
   if (
     cached &&
     cached.contentKey === contentKey &&
@@ -106,11 +121,12 @@ export function renderBlockCached(
     cached.toolRegistryRef === toolRegistry &&
     cached.externalToolStylesRef === externalToolStyles
   ) {
+    blockRenderCache.set(block, cached);
     return cached.result;
   }
 
   const result = renderBlock(block, contentWidth, toolRegistry, externalToolStyles, showToolOutput, toolCallErrored);
-  blockRenderCache.set(block, {
+  const entry: BlockCacheEntry = {
     contentKey,
     width: contentWidth,
     showToolOutput,
@@ -119,7 +135,9 @@ export function renderBlockCached(
     toolRegistryRef: toolRegistry,
     externalToolStylesRef: externalToolStyles,
     result,
-  });
+  };
+  blockRenderCache.set(block, entry);
+  rehydratedBlockRenderCache.set(rehydratedKey, entry, contentKey.length * 2 + wrapResultBytes(result));
   return result;
 }
 

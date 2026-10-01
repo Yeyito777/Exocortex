@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { renderAdaptiveUserMessageRows, renderBlockCached, renderUserMessage } from "./blockrenderer";
-import type { Block } from "./messages";
+import type { Block, ToolDisplayInfo, ExternalToolStyle } from "./messages";
 import { theme } from "./theme";
 import { termWidth } from "./textwidth";
 
@@ -16,6 +16,48 @@ function userBubbleWidth(line: string): number {
   expect(backgroundEnd).toBeGreaterThanOrEqual(contentStart);
   return termWidth(stripAnsi(line.slice(contentStart, backgroundEnd)));
 }
+
+describe("rehydrated block render caching", () => {
+  const registry: ToolDisplayInfo[] = [];
+  const styles: ExternalToolStyle[] = [];
+  const paint = (block: Block, width = 80, expanded = false, errored = false) =>
+    renderBlockCached(block, width, registry, styles, expanded, errored);
+
+  test("reuses presentation after JSON reload without reusing mutable blocks", () => {
+    const block: Block = { type: "text", text: "Reloaded **markdown** with [a link](https://example.com/cache)." };
+    const rendered = paint(block);
+    const reloaded: Block = JSON.parse(JSON.stringify(block));
+    expect(reloaded).not.toBe(block);
+    expect(paint(reloaded)).toBe(rendered);
+    if (reloaded.type === "text") reloaded.text = "Canonical edited text";
+    expect(paint(reloaded)).not.toBe(rendered);
+    expect(paint(block)).toBe(rendered);
+  });
+
+  test("respects width, block type, registries and tool-output visibility", () => {
+    const block: Block = { type: "text", text: "Context-sensitive cached block" };
+    const rendered = paint(block);
+    expect(paint({ ...block }, 40)).not.toBe(rendered);
+    expect(paint({ type: "thinking", text: block.text })).not.toBe(rendered);
+    expect(renderBlockCached({ ...block }, 80, [], styles, false)).not.toBe(rendered);
+    const result: Block = { type: "tool_result", toolCallId: "result-cache", toolName: "bash", output: "Output", isError: false };
+    expect(paint({ ...result }, 80, true).lines.length).toBeGreaterThan(paint(result).lines.length);
+  });
+
+  test("includes tool name and error status in content identity", () => {
+    const block: Block = { type: "tool_call", toolCallId: "call-cache", toolName: "bash", input: {}, summary: "cached command" };
+    const rendered = paint(block);
+    expect(paint({ ...block, toolName: "browse" })).not.toBe(rendered);
+    expect(paint({ ...block }, 80, false, true)).not.toBe(rendered);
+    block.toolName = "browse";
+    expect(paint(block)).not.toBe(rendered);
+
+    const result: Block = { type: "tool_result", toolCallId: "error-cache", toolName: "bash", output: "same output", isError: false };
+    const success = paint(result, 80, true);
+    result.isError = true;
+    expect(paint(result, 80, true)).not.toBe(success);
+  });
+});
 
 describe("adaptive user message rendering", () => {
   test("sizes a partially visible bubble from the longest line in the complete message", () => {

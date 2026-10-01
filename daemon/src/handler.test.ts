@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { clearConversationDefaults, saveConversationDefaults } from "@exocortex/shared/config";
 import { conversationWorkspaceDir } from "@exocortex/shared/paths";
 import { localMacroEnvironment } from "@exocortex/shared/macro-environment";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { appendMessages, consumeGoalContinuationAfterStream, create, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, get, getQueuedMessageById, getQueuedMessages, getSummary, listQueuedMessages, pushGlobalIdleQueuedMessage, remove, removeQueuedMessageById, setGoal, updateGoalStatus } from "./conversations";
 import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, defaultEffortForModelId } from "./messages";
@@ -120,7 +120,7 @@ describe("remote file link resolution", () => {
       type: "file_link_resolved",
       reqId: "resolve-1",
       convId: id,
-      path,
+      path: realpathSync(path),
       kind: "file",
       size: 11,
     }]);

@@ -545,7 +545,6 @@ async function orchestrateAdmittedAssistantTurn(
 
     const text = `✗ ${message}`;
     const updatedAt = Date.now();
-    convStore.bumpToTop(convId);
     if (!convStore.appendMessages(
       convId,
       [{ role: "system", content: text, metadata: null }],
@@ -676,13 +675,15 @@ async function orchestrateAdmittedAssistantTurn(
   }
 
   conv.updatedAt = Date.now();
-  convStore.bumpToTop(convId);
+  // Automated prompts use the user-message path too, but only new human input
+  // should reorder the sidebar. Replays, compaction and delegation stay put.
+  if (userMessage && !automation) convStore.bumpToTop(convId);
   if (acceptedUserMessage) {
     if (!convStore.appendMessages(convId, [acceptedUserMessage], { updatedAt: conv.updatedAt })) {
       throw new Error(`Conversation ${convId} disappeared before its user turn could be committed`);
     }
   } else {
-    // Replay/manual compaction has no new user message, but its sidebar/metadata
+    // Replay/manual compaction has no new user message, but its metadata
     // mutation still needs an explicit commit before provider work starts.
     convStore.markDirty(convId);
     convStore.flush(convId);
@@ -1366,8 +1367,9 @@ async function orchestrateAdmittedAssistantTurn(
       // Commit the accepted user prompts before removing their durable queue
       // copies or broadcasting them.
       if (ac.signal.aborted || drained.some(qm => !isDeepStrictEqual(convStore.getQueuedMessageById(qm.id), qm))) return [];
-      persistCompletedTurnPrefix(injectedStored);
       const latestHuman = injectedStored.findLast(message => !message.metadata?.automation);
+      const sidebarBumped = !!latestHuman && convStore.bumpToTop(convId);
+      persistCompletedTurnPrefix(injectedStored);
       if (latestHuman?.metadata) {
         workTimerStartedAt = latestHuman.metadata.startedAt;
         convStore.setStreamingWorkTimerStartedAt(convId, workTimerStartedAt);
@@ -1391,6 +1393,7 @@ async function orchestrateAdmittedAssistantTurn(
           ...(qm.automation ? { automation: qm.automation } : {}),
         });
       }
+      if (sidebarBumped) broadcastConversationUpdated(server, convId);
       return apiMsgs;
     },
     onRecoveryStateUpdate() {
@@ -1551,9 +1554,8 @@ async function orchestrateAdmittedAssistantTurn(
       await syncActiveContext(result.contextMessages);
       appendCompletedTurnSnapshot(interleavedMessages, true);
       conv.updatedAt = Date.now();
-      // Do not bump on completion. The conversation was already brought to the
-      // top when the user/queued message started; bumping again here can race with
-      // manual sidebar reordering performed while the stream is ending.
+      // Only human input reorders the sidebar. Completion must leave automated
+      // turns in place and preserve any manual reordering during the stream.
 
       server.sendToSubscribers(convId, {
         type: "message_complete",

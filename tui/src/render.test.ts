@@ -1699,6 +1699,28 @@ describe("render caching and frame diffing", () => {
     expect(stripAnsi(state.historyLines.join("\n"))).toContain("oldest-hidden");
   });
 
+  test("remembered bottom restoration does not force wrapping offscreen history", () => {
+    const state = createInitialState();
+    state.cols = 100;
+    state.rows = 20;
+    state.convId = "bottom-restore";
+    state.panelFocus = "sidebar";
+    state.conversationScroll.pendingRestore = {
+      convId: state.convId, mode: "percentage", percentage: 1, waitForInitialBackfill: false,
+    };
+    state.messages = [
+      { role: "user", text: "oldest prompt", metadata: null },
+      { role: "assistant", blocks: [{ type: "text", text: "oldest offscreen" }], metadata: null },
+      { role: "user", text: "newest prompt", metadata: null },
+      { role: "assistant", blocks: [{ type: "text", text: "newest response\n".repeat(100) }], metadata: null },
+    ];
+    renderSilently(state);
+    expect(state.conversationScroll.pendingRestore).toBeNull();
+    expect(state.scrollOffset).toBe(0);
+    expect(state.deferredHistoryRender).toMatchObject({ startMessageIndex: 2, complete: false });
+    expect(state.historyLines.join("\n")).not.toContain("oldest offscreen");
+  });
+
   test("abandoned deferred history work does not advance after conversation switch", () => {
     const state = createInitialState();
     state.cols = 100;

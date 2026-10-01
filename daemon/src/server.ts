@@ -7,6 +7,7 @@
 
 import { createServer, type Server, type Socket } from "net";
 import { existsSync, unlinkSync } from "fs";
+import { StringDecoder } from "node:string_decoder";
 import { isWindows } from "@exocortex/shared/paths";
 import { log } from "./log";
 import type { ClientCapability, Command, Event } from "./protocol";
@@ -20,6 +21,8 @@ export interface ConnectedClient {
   socket: Socket;
   subscriptions: Set<string>;
   buffer: string;
+  /** Per-connection UTF-8 state; bytes can split a character across reads. */
+  decoder?: StringDecoder;
   capabilities: Set<"history-pagination" | ClientCapability>;
 }
 
@@ -83,6 +86,7 @@ export class DaemonServer {
       socket,
       subscriptions: new Set(),
       buffer: "",
+      decoder: new StringDecoder("utf8"),
       capabilities: new Set(),
     };
     this.clients.set(id, client);
@@ -100,7 +104,7 @@ export class DaemonServer {
   }
 
   private onData(client: ConnectedClient, data: Buffer | string): void {
-    client.buffer += typeof data === "string" ? data : data.toString("utf-8");
+    client.buffer += typeof data === "string" ? data : (client.decoder ??= new StringDecoder("utf8")).write(data);
 
     let idx: number;
     while ((idx = client.buffer.indexOf("\n")) !== -1) {

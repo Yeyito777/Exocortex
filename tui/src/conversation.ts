@@ -446,7 +446,9 @@ export function buildMessageLines(
       const isCallTranscript = msg.metadata?.kind === REALTIME_TRANSCRIPT_KIND;
       const metadata = isCallTranscript
         ? msg.metadata
-        : assistantSegmentMetadata(state.messages, messageIndex) ?? assistantRunMetadata(state.messages, messageIndex);
+        : nextContinuesAssistantSegment
+          ? null
+          : assistantSegmentMetadata(state.messages, messageIndex) ?? assistantRunMetadata(state.messages, messageIndex);
       const metadataLines = isCallTranscript
         ? renderMetadata(metadata, { width: availableWidth })
         : nextContinuesAssistantSegment ? [] : renderMetadata(metadata, { width: availableWidth, active: msg === durableSleepAssistant });

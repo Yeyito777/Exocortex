@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { clearGoal, clearHistoryUnwindPending, clearStreamHandoff, create, get, getActiveJob, getQueuedMessages, isStreaming, isUnread, pushQueuedMessage, remove, requestHistoryUnwind, setGoal, updateGoalStatus } from "./conversations";
+import { appendMessages, clearGoal, clearHistoryUnwindPending, clearStreamHandoff, create, get, getActiveJob, getQueuedMessages, getSummary, isStreaming, isUnread, pin, pushQueuedMessage, remove, requestHistoryUnwind, setGoal, updateGoalStatus } from "./conversations";
 import { load as loadPersisted } from "./persistence";
-import { orchestrateGoalCycle, orchestrateReplayConversation, orchestrateSendMessage, type OrchestrationCallbacks } from "./orchestrator";
+import { orchestrateCompactConversation, orchestrateGoalCycle, orchestrateReplayConversation, orchestrateSendMessage, type OrchestrationCallbacks } from "./orchestrator";
 import { streamMessage } from "./api";
 import { chronoInternalsForTest, configureChronoService, listDeferredChronoSleeps } from "./chrono-service";
+import { USER_MESSAGE_AUTOMATION_KINDS, createStoredUserMessage } from "./messages";
 
 const IDS: string[] = [];
 
@@ -44,6 +45,166 @@ afterEach(() => {
   for (const convId of IDS.splice(0)) {
     clearHistoryUnwindPending(convId);
     remove(convId);
+  }
+});
+
+describe("human-only sidebar bumps", () => {
+  function targetBelowNewerConversation(suffix: string): { convId: string; newerId: string; originalOrder: number } {
+    const convId = id(`sidebar-${suffix}`);
+    const newerId = id(`sidebar-${suffix}-newer`);
+    create(convId, "openai", "gpt-5.6-sol");
+    create(newerId, "openai", "gpt-5.6-sol");
+    const originalOrder = get(convId)!.sortOrder;
+    expect(originalOrder).toBeGreaterThan(get(newerId)!.sortOrder);
+    return { convId, newerId, originalOrder };
+  }
+
+  const answer = {
+    text: "answer",
+    thinking: "",
+    stopReason: "stop" as const,
+    blocks: [{ type: "text" as const, text: "answer" }],
+    toolCalls: [],
+    inputTokens: 10,
+    outputTokens: 2,
+  };
+
+  for (const kind of USER_MESSAGE_AUTOMATION_KINDS) {
+    test(`${kind} persists and notifies without changing sidebar order`, async () => {
+      const { convId, originalOrder } = targetBelowNewerConversation(kind);
+      const events: Array<Record<string, unknown>> = [];
+      const automation = { kind, sourceId: "sidebar-test-source" };
+      const fakeStream = (async () => {
+        expect(loadPersisted(convId)!.sortOrder).toBe(originalOrder);
+        expect(getSummary(convId)!.sortOrder).toBe(originalOrder);
+        return answer;
+      }) as typeof streamMessage;
+
+      const outcome = await orchestrateSendMessage(
+        server(events) as never, null, undefined, convId, "automatic prompt", Date.now(),
+        callbacks(fakeStream), undefined, { automation },
+      );
+
+      expect(outcome.ok).toBe(true);
+      expect(loadPersisted(convId)!.sortOrder).toBe(originalOrder);
+      expect(loadPersisted(convId)!.messages[0]?.metadata?.automation).toEqual(automation);
+      expect(events).toContainEqual(expect.objectContaining({ type: "user_message", automation }));
+      const summaries = events.filter(event => event.type === "conversation_updated");
+      expect(summaries.length).toBeGreaterThan(0);
+      expect(summaries.every(event => (event.summary as { sortOrder: number }).sortOrder === originalOrder)).toBe(true);
+    });
+  }
+
+  for (const delivery of ["direct", "queued"] as const) {
+    test(`${delivery} human input still bumps before provider work`, async () => {
+      const { convId, newerId, originalOrder } = targetBelowNewerConversation(delivery);
+      const queueEntryId = delivery === "queued"
+        ? pushQueuedMessage(convId, "human prompt", "next-turn").id
+        : undefined;
+      const fakeStream = (async () => {
+        expect(loadPersisted(convId)!.sortOrder).toBeLessThan(get(newerId)!.sortOrder);
+        expect(getSummary(convId)!.sortOrder).toBe(loadPersisted(convId)!.sortOrder);
+        expect(getQueuedMessages(convId)).toEqual([]);
+        return answer;
+      }) as typeof streamMessage;
+
+      const outcome = await orchestrateSendMessage(
+        server() as never, delivery === "direct" ? {} as never : null, undefined,
+        convId, "human prompt", Date.now(), callbacks(fakeStream), undefined, { queueEntryId },
+      );
+
+      expect(outcome.ok).toBe(true);
+      expect(loadPersisted(convId)!.sortOrder).toBeLessThan(originalOrder);
+      expect(getQueuedMessages(convId)).toEqual([]);
+    });
+  }
+
+  test("human input leaves pinned conversations in place", async () => {
+    const { convId } = targetBelowNewerConversation("pinned");
+    pin(convId, true);
+    const pinnedOrder = get(convId)!.sortOrder;
+    const outcome = await orchestrateSendMessage(
+      server() as never, null, undefined, convId, "human prompt", Date.now(),
+      callbacks((async () => answer) as typeof streamMessage),
+    );
+    expect(outcome.ok).toBe(true);
+    expect(loadPersisted(convId)!.sortOrder).toBe(pinnedOrder);
+  });
+
+  for (const [name, startTurn] of [
+    ["replay", orchestrateReplayConversation],
+    ["manual compaction", orchestrateCompactConversation],
+  ] as const) {
+    test(`${name} without new human input preserves sidebar order`, async () => {
+      const { convId, originalOrder } = targetBelowNewerConversation(name.replaceAll(" ", "-"));
+      appendMessages(convId, [createStoredUserMessage("earlier human input", "gpt-5.6-sol", 1_000)]);
+      const fakeStream = (async () => {
+        expect(loadPersisted(convId)!.sortOrder).toBe(originalOrder);
+        return answer;
+      }) as typeof streamMessage;
+
+      const outcome = await startTurn(
+        server() as never, null, undefined, convId, Date.now(), callbacks(fakeStream),
+      );
+
+      expect(outcome.ok).toBe(true);
+      expect(loadPersisted(convId)!.sortOrder).toBe(originalOrder);
+    });
+  }
+
+  test("a daemon-authored preflight error preserves sidebar order", async () => {
+    const { convId, originalOrder } = targetBelowNewerConversation("preflight-error");
+    const outcome = await orchestrateReplayConversation(
+      server() as never, null, undefined, convId, Date.now(),
+      callbacks((async () => { throw new Error("provider should not run"); }) as typeof streamMessage),
+    );
+    expect(outcome.ok).toBe(false);
+    expect(outcome.error).toContain("No conversation history to replay");
+    expect(loadPersisted(convId)!.messages.at(-1)?.role).toBe("system");
+    expect(loadPersisted(convId)!.sortOrder).toBe(originalOrder);
+  });
+
+  for (const timing of ["next-turn", "message-end"] as const) {
+    for (const automated of [true, false]) {
+      test(`${timing} ${automated ? "automatic" : "human"} input ${automated ? "preserves" : "bumps"} sidebar order`, async () => {
+        const { convId } = targetBelowNewerConversation(`queue-${timing}-${automated}`);
+        const newerId = id("sidebar-newer-during-stream");
+        let orderBeforeQueuedInput = 0;
+        let streamCalls = 0;
+        const fakeStream = (async () => {
+          streamCalls += 1;
+          if (streamCalls === 1) {
+            // Another conversation can move above the target while it streams.
+            create(newerId, "openai", "gpt-5.6-sol");
+            orderBeforeQueuedInput = get(convId)!.sortOrder;
+            pushQueuedMessage(
+              convId, "queued prompt", timing, undefined, undefined, undefined, undefined, undefined,
+              automated ? { kind: "background_task_completion", sourceId: "queued-sidebar-test" } : undefined,
+            );
+            if (timing === "next-turn") {
+              return {
+                ...answer, text: "", stopReason: "tool_use" as const, blocks: [],
+                toolCalls: [{ id: "sidebar-read-hosts", name: "read", input: { file_path: "/etc/hosts" } }],
+              };
+            }
+          } else {
+            const persisted = loadPersisted(convId)!;
+            expect(persisted.messages.some(message => message.content === "queued prompt")).toBe(true);
+            if (automated) expect(persisted.sortOrder).toBe(orderBeforeQueuedInput);
+            else expect(persisted.sortOrder).toBeLessThan(get(newerId)!.sortOrder);
+          }
+          return answer;
+        }) as typeof streamMessage;
+
+        const outcome = await orchestrateSendMessage(
+          server() as never, null, undefined, convId, "initial human prompt", Date.now(), callbacks(fakeStream),
+        );
+        expect(outcome.ok).toBe(true);
+        expect(streamCalls).toBe(2);
+        if (automated) expect(loadPersisted(convId)!.sortOrder).toBe(orderBeforeQueuedInput);
+        else expect(loadPersisted(convId)!.sortOrder).toBeLessThan(get(newerId)!.sortOrder);
+      });
+    }
   }
 });
 
@@ -213,6 +374,8 @@ describe("DB-first orchestrator persistence", () => {
   test("tags goal continuations in canonical history and the live user event", async () => {
     const convId = id("goal-automation");
     create(convId, "openai", "gpt-5.6-sol");
+    const originalOrder = get(convId)!.sortOrder;
+    create(id("goal-automation-newer"), "openai", "gpt-5.6-sol");
     setGoal(convId, "finish the migration");
     const events: Array<Record<string, unknown>> = [];
     const offeredToolNames: string[][] = [];
@@ -254,6 +417,7 @@ describe("DB-first orchestrator persistence", () => {
     expect(streamCall).toBe(2);
     expect(offeredToolNames.every(names => names.includes("goal"))).toBe(true);
     expect(offeredToolNames.flat()).not.toContain("send_prompt");
+    expect(loadPersisted(convId)!.sortOrder).toBe(originalOrder);
     expect(loadPersisted(convId)!.messages[0]?.metadata?.automation).toEqual({ kind: "goal_continuation" });
     expect(events).toContainEqual(expect.objectContaining({
       type: "user_message",
