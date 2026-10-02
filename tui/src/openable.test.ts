@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { defaultExocortexConfig, writeExocortexConfig } from "@exocortex/shared/config";
-import { findOpenableTargetMatches, openTargetDetached, resolveOpenCommand } from "./openable";
-import { homedir } from "node:os";
+import { canOpenLinkTarget, findOpenableTargetMatches, openTargetDetached, resolveOpenCommand } from "./openable";
+import { homedir, tmpdir } from "node:os";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 function resetConfig(): void {
   writeExocortexConfig(defaultExocortexConfig());
@@ -30,6 +32,11 @@ describe("openable target detection", () => {
     ]);
   });
 
+  test("keeps filename apostrophes but drops surrounding prose quotes", () => {
+    expect(findOpenableTargetMatches("'/tmp/it's.py' \"/tmp/notes.md\"").map(m => m.target))
+      .toEqual(["/tmp/it's.py", "/tmp/notes.md"]);
+  });
+
   test("detects http and https links", () => {
     expect(findOpenableTargetMatches("See https://example.com/a?b=1 and http://localhost:3000.").map((m) => m.target)).toEqual([
       "https://example.com/a?b=1",
@@ -45,6 +52,73 @@ describe("openable target detection", () => {
 
   test("ignores unconfigured file extensions", () => {
     expect(findOpenableTargetMatches("/tmp/archive.zip")).toEqual([]);
+  });
+
+  test("does not open a prefix of an unconfigured extension or a disabled URL", () => {
+    expect(findOpenableTargetMatches("/tmp/a.md.zip")).toEqual([]);
+    writeExocortexConfig({ openers: { url: null } });
+    expect(findOpenableTargetMatches("https://example.com/a.md")).toEqual([]);
+  });
+});
+
+describe("configured text-file rules", () => {
+  test("matches existing text files of any extension and extensionless files", () => {
+    const directory = mkdtempSync(join(tmpdir(), "exocortex-text-openers-"));
+    try {
+      writeExocortexConfig({
+        openers: { rules: [
+          { extensions: ["pdf"], command: "pdf-viewer", args: ["{path}"] },
+          { text: true, command: "terminal", args: ["-e", "editor", "--", "{path}"] },
+        ] },
+      });
+      for (const name of ["notes.md", "script.py", "data.json", "code.rs", ".gitignore", "Makefile", "it's $(literal).txt"]) {
+        const path = join(directory, name);
+        writeFileSync(path, "中文 text\n");
+        const options = { baseDirectory: directory, localLink: true };
+        expect(resolveOpenCommand(name, options)).toEqual({
+          command: "terminal", args: ["-e", "editor", "--", path],
+        });
+      }
+      expect(resolveOpenCommand("file://" + directory + "/data.json", { localLink: true })).toEqual({
+        command: "terminal", args: ["-e", "editor", "--", join(directory, "data.json")],
+      });
+      // Rules remain ordered; explicit extensions can opt in without a file.
+      expect(resolveOpenCommand(join(directory, "not-created.pdf"))?.command).toBe("pdf-viewer");
+      const binary = join(directory, "binary.dat");
+      writeFileSync(binary, Buffer.from([0, 1, 2, 0xff]));
+      expect(resolveOpenCommand(binary)).toBeNull();
+      expect(resolveOpenCommand(binary, { localLink: true })).toEqual({ command: "xdg-open", args: [binary] });
+      expect(resolveOpenCommand(directory, { localLink: true })?.command).toBe("xdg-open");
+      expect(resolveOpenCommand(join(directory, "missing.unknown"))).toBeNull();
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  test("combines extension opt-ins with content detection and obeys config changes", () => {
+    writeExocortexConfig({ openers: { rules: [
+      { text: true, extensions: [".MD", "py"], command: "st", args: ["-e", "nvim", "--", "{path}"] },
+    ] } });
+    expect(resolveOpenCommand("/not-created/notes.md")).toEqual({
+      command: "st", args: ["-e", "nvim", "--", "/not-created/notes.md"],
+    });
+    writeExocortexConfig({ openers: { rules: [] } });
+    expect(resolveOpenCommand("/not-created/notes.md")).toBeNull();
+    expect(findOpenableTargetMatches("/not-created/notes.md")).toEqual([]);
+  });
+
+  test("history recognition never requires local files, including remote paths", () => {
+    writeExocortexConfig({ openers: { url: null, rules: [
+      { text: true, command: "custom-editor", args: ["{path}"] },
+    ] } });
+    expect(findOpenableTargetMatches("Files: /remote/Makefile ./src/main.rs ~/notes/.env file:///remote/a%20b.json.").map(m => m.target))
+      .toEqual(["/remote/Makefile", "./src/main.rs", "~/notes/.env", "file:///remote/a%20b.json"]);
+    expect(canOpenLinkTarget("remote/file.rs")).toBe(true);
+    expect(canOpenLinkTarget("https://example.com")).toBe(false);
+    expect(findOpenableTargetMatches("https://example.com/file.rs javascript:/remote/file.rs")).toEqual([]);
+  });
+
+  test("ignores invalid or disabled text rules", () => {
+    writeExocortexConfig({ openers: { rules: [{ text: false, command: "editor" }] } });
+    expect(findOpenableTargetMatches("/remote/Makefile")).toEqual([]);
   });
 });
 

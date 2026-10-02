@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { conversationWorkspaceDir } from "@exocortex/shared/paths";
 import { defaultOpenersConfig, readExocortexConfig } from "@exocortex/shared/config";
 import { isWebUrl, localPathFromTarget, trimUrlPunctuation } from "./links";
+import { isEditableTextFile } from "./text-file";
 
 export interface OpenableTargetMatch {
   target: string;
@@ -21,13 +22,14 @@ interface NormalizedOpenCommandConfig {
   args: string[];
 }
 
-interface ExtensionOpenRule extends NormalizedOpenCommandConfig {
+interface FileOpenRule extends NormalizedOpenCommandConfig {
   extensions: readonly string[];
+  text: boolean;
 }
 
 interface NormalizedOpenersConfig {
   url: NormalizedOpenCommandConfig | null;
-  rules: readonly ExtensionOpenRule[];
+  rules: readonly FileOpenRule[];
 }
 
 const URL_RE = /\bhttps?:\/\/[^\s<>"'`]+/gi;
@@ -60,12 +62,13 @@ function normalizeExtensions(value: unknown): string[] {
   return [...extensions];
 }
 
-function normalizeOpenFileRule(value: unknown): ExtensionOpenRule | null {
+function normalizeOpenFileRule(value: unknown): FileOpenRule | null {
   const command = normalizeCommandConfig(value);
   if (!command || !isRecord(value)) return null;
   const extensions = normalizeExtensions(value.extensions);
-  if (extensions.length === 0) return null;
-  return { ...command, extensions };
+  const text = value.text === true;
+  if (extensions.length === 0 && !text) return null;
+  return { ...command, extensions, text };
 }
 
 function defaultNormalizedOpenersConfig(): NormalizedOpenersConfig {
@@ -74,7 +77,7 @@ function defaultNormalizedOpenersConfig(): NormalizedOpenersConfig {
     url: normalizeCommandConfig(defaults.url) ?? { command: "xdg-open", args: ["{target}"] },
     rules: (defaults.rules ?? [])
       .map(normalizeOpenFileRule)
-      .filter((rule): rule is ExtensionOpenRule => rule !== null),
+      .filter((rule): rule is FileOpenRule => rule !== null),
   };
 }
 
@@ -91,27 +94,17 @@ function readOpenersConfig(): NormalizedOpenersConfig {
     ? (Array.isArray(configured.rules)
       ? configured.rules
         .map(normalizeOpenFileRule)
-        .filter((rule): rule is ExtensionOpenRule => rule !== null)
+        .filter((rule): rule is FileOpenRule => rule !== null)
       : [])
     : defaults.rules;
 
   return { url, rules };
 }
 
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function openableFilePathRegExp(rules: readonly ExtensionOpenRule[]): RegExp | null {
-  const pattern = [...new Set(rules.flatMap((rule) => rule.extensions))]
-    .map(escapeRegExp)
-    .join("|");
-  if (!pattern) return null;
-  return new RegExp(String.raw`(?:~/|\.{1,2}/|/)\S*?\.(?:${pattern})\b`, "gi");
-}
+const LOCAL_PATH_RE = /(?:file:\/\/(?:localhost)?\/|~\/|\.{1,2}\/|\/)[^\s<>"`]+/gi;
 
 function trimTrailingTargetPunctuation(target: string): string {
-  return target.replace(/[),.;:!?\]}]+$/g, "");
+  return target.replace(/[),.;:!?'\]}]+$/g, "");
 }
 
 function extensionOf(filePath: string): string | null {
@@ -119,10 +112,15 @@ function extensionOf(filePath: string): string | null {
   return match ? match[1].toLowerCase() : null;
 }
 
-function ruleForPath(filePath: string, rules: readonly ExtensionOpenRule[]): ExtensionOpenRule | null {
+function ruleForPath(filePath: string, rules: readonly FileOpenRule[], textPath?: string): FileOpenRule | null {
   const ext = extensionOf(filePath);
-  if (!ext) return null;
-  return rules.find((rule) => rule.extensions.includes(ext)) ?? null;
+  let isText: boolean | undefined;
+  return rules.find(rule => {
+    if (ext && rule.extensions.includes(ext)) return true;
+    // Only inspect content when resolving an actual open, not during history
+    // hit-testing: over /ssh, the displayed path belongs to the remote daemon.
+    return rule.text && textPath !== undefined && (isText ??= isEditableTextFile(textPath));
+  }) ?? null;
 }
 
 function expandUserPath(filePath: string): string {
@@ -175,17 +173,21 @@ function collectUrlMatches(text: string): OpenableTargetMatch[] {
 function collectFilePathMatches(
   text: string,
   occupied: readonly OpenableTargetMatch[],
-  rules: readonly ExtensionOpenRule[],
+  rules: readonly FileOpenRule[],
 ): OpenableTargetMatch[] {
   const matches: OpenableTargetMatch[] = [];
-  const localFilePathRe = openableFilePathRegExp(rules);
-  if (!localFilePathRe) return matches;
+  if (rules.length === 0) return matches;
+  const hasTextRule = rules.some(rule => rule.text);
+  LOCAL_PATH_RE.lastIndex = 0;
 
-  for (const match of text.matchAll(localFilePathRe)) {
+  for (const match of text.matchAll(LOCAL_PATH_RE)) {
     const raw = match[0];
     const start = match.index ?? 0;
+    // Do not find a local path inside a URL, scheme, or ordinary word.
+    if (start > 0 && /[\w:/\\]/.test(text[start - 1])) continue;
     const target = trimTrailingTargetPunctuation(raw);
-    if (!target || !ruleForPath(target, rules)) continue;
+    const path = localPathFromTarget(target);
+    if (path === null || (!hasTextRule && !ruleForPath(path, rules))) continue;
 
     const candidate = { target, start, end: start + target.length };
     if (overlapsAny(candidate, occupied)) continue;
@@ -199,19 +201,25 @@ function collectFilePathMatches(
  *
  * Targets are configured by config/config.json under openers:
  * - openers.url controls http/https link opening
- * - openers.rules controls local file extensions and commands
+ * - openers.rules controls local file extensions, text matching, and commands
  */
 export function findOpenableTargetMatches(text: string): OpenableTargetMatch[] {
   const openers = readOpenersConfig();
-  const urlMatches = openers.url ? collectUrlMatches(text) : [];
-  const fileMatches = collectFilePathMatches(text, urlMatches, openers.rules);
-  return [...urlMatches, ...fileMatches].sort((a, b) => a.start - b.start);
+  const urls = collectUrlMatches(text);
+  const fileMatches = collectFilePathMatches(text, urls, openers.rules);
+  return [...(openers.url ? urls : []), ...fileMatches].sort((a, b) => a.start - b.start);
 }
 
 export interface OpenTargetOptions {
   baseDirectory?: string;
   /** Explicit Markdown links can open folders and files without extension rules. */
   localLink?: boolean;
+}
+
+/** Hit-testing is syntax/config only; a history path may live on an SSH host. */
+export function canOpenLinkTarget(target: string): boolean {
+  if (/^https?:\/\//i.test(target)) return isWebUrl(target) && readOpenersConfig().url !== null;
+  return localPathFromTarget(target) !== null;
 }
 
 export function resolveOpenCommand(target: string, options: OpenTargetOptions = {}): OpenCommand | null {
@@ -224,7 +232,7 @@ export function resolveOpenCommand(target: string, options: OpenTargetOptions = 
   const localPath = localPathFromTarget(target);
   if (localPath === null) return null;
   const expandedPath = resolve(options.baseDirectory ?? process.cwd(), expandUserPath(localPath));
-  const rule = ruleForPath(localPath, openers.rules);
+  const rule = ruleForPath(localPath, openers.rules, expandedPath);
   if (!rule) return options.localLink ? { command: "xdg-open", args: [expandedPath] } : null;
   return commandFromConfig(rule, target, expandedPath);
 }

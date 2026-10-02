@@ -1,6 +1,7 @@
-import { findOpenableTargetMatches, resolveOpenCommand } from "./openable";
+import { canOpenLinkTarget, findOpenableTargetMatches } from "./openable";
 import { activeHistorySurface } from "./historysurface";
 import { contentBounds, logicalLineRange, stripAnsi } from "./historymotions";
+import { nextGraphemeEnd } from "./graphemes";
 import type { RenderState } from "./state";
 import type { HistorySurface } from "./historysurface";
 import type { HistoryCursor } from "./historycursor";
@@ -18,7 +19,7 @@ export function openableTargetAtHistoryCursor(state: RenderState): string | null
 }
 
 export function openableTargetAtHistoryPosition(
-  surface: Pick<HistorySurface, "lines" | "wrapContinuation" | "wrapJoiners" | "lineAnchors">,
+  surface: Pick<HistorySurface, "lines" | "wrapContinuation" | "wrapJoiners" | "lineAnchors" | "copyLines">,
   position: HistoryCursor,
 ): string | null {
   const row = position.row;
@@ -26,7 +27,7 @@ export function openableTargetAtHistoryPosition(
   if (row < 0 || row >= lines.length) return null;
 
   const link = surface.lineAnchors[row]?.links?.find(span => position.col >= span.start && position.col < span.end);
-  if (link) return resolveOpenCommand(link.target, { localLink: true }) ? link.target : null;
+  if (link) return canOpenLinkTarget(link.target) ? link.target : null;
 
   const range = surface.wrapContinuation.length > 0
     ? logicalLineRange(row, surface.wrapContinuation)
@@ -35,9 +36,13 @@ export function openableTargetAtHistoryPosition(
   let logicalText = "";
   let cursorOffset: number | null = null;
   for (let r = range.first; r <= range.last; r++) {
+    const projection = surface.copyLines[r];
+    if (projection?.skip) continue;
     const plain = stripAnsi(lines[r] ?? "");
     const bounds = contentBounds(plain);
-    const segment = plain.slice(bounds.start, bounds.end + 1);
+    // Source projections omit code-block gutters and preserve source whitespace.
+    const displayStart = projection?.displayStart ?? bounds.start;
+    const segment = projection?.text ?? plain.slice(bounds.start, nextGraphemeEnd(plain, bounds.end));
     const joiner = r === range.first ? "" : (surface.wrapJoiners[r] ?? " ");
     logicalText += joiner;
     const segmentStart = logicalText.length;
@@ -45,8 +50,8 @@ export function openableTargetAtHistoryPosition(
 
     if (r !== row) continue;
     const col = position.col;
-    if (col < bounds.start || col > bounds.end) return null;
-    cursorOffset = segmentStart + Math.max(0, Math.min(col - bounds.start, segment.length - 1));
+    if (col < displayStart || col >= displayStart + segment.length) return null;
+    cursorOffset = segmentStart + col - displayStart;
   }
 
   if (cursorOffset == null) return null;

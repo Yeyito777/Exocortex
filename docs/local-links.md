@@ -14,9 +14,45 @@ Wrapped labels retain the full destination.
 
 Local links use matching `openers.rules` from `config/config.json`.
 Files without a matching rule and folders fall back to `xdg-open`.
-Bare paths retain the existing configured-extension detection; this fallback
-does not make arbitrary prose clickable. HTTP(S) links still use `openers.url`.
+HTTP(S) links still use `openers.url`.
 Other URI schemes, remote file URLs, and control characters are rejected.
+
+## Open editable text in a terminal
+
+Add a rule to `openers.rules`; the **first matching rule wins**:
+
+```json
+{
+  "text": true,
+  "extensions": ["md", "py", "txt"],
+  "command": "st",
+  "args": ["-e", "nvim", "--", "{path}"]
+}
+```
+
+`text: true` matches existing regular text files by content, regardless of
+extension (for example `.json`, `.rs`, `.gitignore`, and `Makefile`). Detection
+samples up to 8 KiB and recognizes UTF-8/ASCII and BOM-marked UTF-16; unreadable
+files, directories, and binary samples do not match. Optional `extensions`
+also matches those suffixes without requiring an existing file. Neither the
+terminal nor editor is hardcoded: both come from the rule. Use absolute
+executable paths if they are not on the TUI's PATH; on macOS, for example,
+`/Users/you/Applications/st.app/Contents/MacOS/st`.
+
+Put this rule first to edit text even when a later rule handles its extension
+(such as HTML or SVG); put it last to preserve those specialized viewers.
+Changes to the config are read on each open, without restarting the daemon.
+
+Arguments are passed directly, not through a shell. `{path}` is the decoded,
+absolute filesystem path; `{target}` is the original link destination.
+Shell commands can use `{path:sh}` or `{target:sh}` for quoted substitutions.
+
+Without a text rule, bare paths are recognized by configured extensions.
+With a text rule, qualified bare paths (`/absolute`, `~/home`, `./relative`,
+`../relative`, and `file:///…`) are also recognized, including inside code
+blocks and across hard-wrapped rows. Content is inspected **only when opening**,
+not while navigating history. Use Markdown links for paths with spaces or
+unqualified names: `[Build file](Makefile)`.
 
 ## Over `/ssh`
 
@@ -28,6 +64,7 @@ same-named file on the TUI host.
 - Regular files are downloaded over SFTP using the selected SSH alias, then
   opened with the TUI host's configured file viewer. These are **local preview
   copies**: editing a preview does not upload changes to the remote file.
+  Text rules inspect the downloaded copy, never a same-named local source file.
 - Folders open as `sftp://<ssh-alias>/<remote-path>` via `xdg-open`. The local
   desktop needs an SFTP-capable handler.
 - Web links still open locally.

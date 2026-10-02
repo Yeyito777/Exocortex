@@ -100,6 +100,7 @@ function linkAtScreen(col: number, row: number, state: RenderState): string | nu
         lines: state.historyLines,
         wrapContinuation: state.historyWrapContinuation,
         wrapJoiners: state.historyWrapJoiners,
+        copyLines: state.historyCopyLines,
         lineAnchors: state.historyLineAnchors,
       }, { row: viewport.lineIndex, col: offset });
     }

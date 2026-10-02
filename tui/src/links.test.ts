@@ -25,6 +25,7 @@ function history(text: string, width = 44) {
   state.historyLineAnchors = rendered.lineAnchors;
   state.historyWrapContinuation = rendered.wrapContinuation;
   state.historyWrapJoiners = rendered.wrapJoiners;
+  state.historyCopyLines = rendered.copyLines;
   state.historyMessageBounds = rendered.messageBounds;
   state.layout = { ...state.layout, chatCol: 1, sepAbove: 35, messageAreaHeight: 32,
     historyViewportRows: rendered.lines.map((_, lineIndex) => ({ lineIndex, startCol: 0, displayPrefixWidth: 0 })) };
@@ -121,6 +122,40 @@ describe("link parsing and rendering", () => {
 });
 
 describe("link activation", () => {
+  test("Enter on every fragment of a wrapped code-block path retains its full target", () => {
+    writeExocortexConfig({ openers: { rules: [
+      { text: true, command: "configured-terminal", args: ["-e", "configured-editor", "{path}"] },
+    ] } });
+    for (const path of [
+      "/Users/yeyito/Desktop/uoft/classes/ECO101/assignments/writing3/writing-3-draft.md",
+      "/remote/project/really-long-source-directory/main.rs",
+      "/remote/project/really-long-source-directory/Makefile",
+    ]) {
+      const state = history("```text\n" + path + "\n```", 36);
+      state.chatFocus = "history";
+      const rows = state.historyLines.map(stripAnsi);
+      const first = rows.findIndex(row => row.includes("/Users") || row.includes("/remote"));
+      expect(first).toBeGreaterThanOrEqual(0);
+      let fragments = 0;
+      for (let row = first; row < rows.length; row++) {
+        if (row !== first && !state.historyWrapContinuation[row]) break;
+        const col = row === first ? rows[row].indexOf("/") : state.historyCopyLines[row]!.displayStart;
+        state.historyCursor = { row, col };
+        expect(handleFocusedKey({ type: "enter" }, state)).toEqual({ type: "open_target", target: path });
+        const event = {
+          type: "mouse" as const, shift: false, meta: false, ctrl: false, row: row + 3,
+          col: 1 + termWidth(rows[row].slice(0, col)), button: 0,
+        };
+        handleMouseEvent({ ...event, action: "press" }, state);
+        expect(handleMouseEvent({ ...event, action: "release" }, state)).toEqual({ type: "open_target", target: path });
+        state.historyCursor = { row, col: state.historyCopyLines[row]!.displayStart - 2 };
+        expect(handleFocusedKey({ type: "enter" }, state)).toEqual({ type: "handled" });
+        fragments++;
+      }
+      expect(fragments).toBeGreaterThan(1);
+    }
+  });
+
   test("Enter and mouse activate local files and directories by their label", () => {
     for (const target of ["NFC-Findings/", "NFC-Findings/README.md", "evidence.json", "file:///tmp/notes.md"]) {
       const state = history(`[Local report](${target})`, 8);

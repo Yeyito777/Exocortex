@@ -47,13 +47,15 @@ export interface OpenCommandConfig {
 
 export interface OpenFileRuleConfig extends OpenCommandConfig {
   /** File extensions handled by this opener, without a leading dot. */
-  extensions: string[];
+  extensions?: string[];
+  /** Also match existing regular text files by content, including extensionless files. */
+  text?: boolean;
 }
 
 export interface OpenersConfig {
   /** Opener used for http/https links. Set to null to disable link opening. */
   url?: OpenCommandConfig | null;
-  /** File openers matched by extension, checked in order. */
+  /** File openers matched by extension or text content, checked in order. */
   rules?: OpenFileRuleConfig[];
 }
 

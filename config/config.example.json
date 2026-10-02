@@ -30,6 +30,13 @@
   },
   "openers": {
     "url": null,
-    "rules": []
+    "rules": [
+      {
+        "text": true,
+        "extensions": ["md", "py", "txt"],
+        "command": "st",
+        "args": ["-e", "nvim", "--", "{path}"]
+      }
+    ]
   }
 }
