@@ -1915,6 +1915,14 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // Start status checks before conversation/bootstrap work. For --ssh, use a
+  // single independent local probe whose result survives closing this socket.
+  // Neither the first paint nor SSH readiness waits for the status response.
+  updateMonitor = new UpdateStatusMonitor(daemon.remoteAlias, () => daemon.requestUpdateStatus(), queryLocalUpdateStatus, snapshot => {
+    state.sidebar.updateStatus = snapshot;
+    scheduleRender();
+  }, { initialLocalProbe: Boolean(launchOptions.sshAlias) });
+
   // Speculatively request the saved conversation before the much larger
   // sidebar bootstrap. The list remains authoritative, but the common case no
   // longer waits an extra network round trip (or for the full list payload).
@@ -1995,14 +2003,6 @@ async function main(): Promise<void> {
     // geometry, so repaint the invalidated full frame immediately.
     renderImmediately();
   });
-
-  updateMonitor = new UpdateStatusMonitor(daemon.remoteAlias, () => daemon.requestUpdateStatus(), queryLocalUpdateStatus, snapshot => {
-    state.sidebar.updateStatus = snapshot;
-    scheduleRender();
-  });
-  // Start an independent local socket check before --ssh can close the startup
-  // connection. Its result must survive the route switch and remote bootstrap.
-  if (launchOptions.sshAlias) void updateMonitor.refreshLocal();
 
   // Match entering `/ssh <alias>` once startup is complete. Going through the
   // normal route-switch path keeps local fallback and all SSH status UI intact.

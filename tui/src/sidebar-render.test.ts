@@ -85,7 +85,7 @@ describe("sidebar rendering", () => {
 
   test("None is known-current, Unknown is not current, and disabled worktrees stay hidden", () => {
     const sidebar = createSidebarState();
-    for (const local of ["none", "unknown", "disabled"] as const) {
+    for (const local of ["none", "unknown", "disabled", "checking"] as const) {
       sidebar.updateStatus = { local, remote: null };
       expect(sidebarListRows(12, sidebar)).toBe(10);
     }
@@ -101,6 +101,18 @@ describe("sidebar rendering", () => {
     expect(currentRows).toEqual(withoutStatus);
     sidebar.updateStatus.remote = "unknown";
     expect(renderSidebar(sidebar, 12, true, null)[10]).toContain(theme.muted + " Remote: " + theme.muted + "Unknown");
+  });
+
+  test("pending checks are muted Checking, not Unknown or known-current", () => {
+    const sidebar = createSidebarState();
+    sidebar.updateStatus = { local: "checking", remote: "none" };
+    expect(sidebarListRows(12, sidebar)).toBe(7);
+    const rows = renderSidebar(sidebar, 12, true, null);
+    expect(rows[11]).toContain(theme.muted + " Local: " + theme.muted + "Checking…");
+    expect(rows.join("")).not.toContain("Unknown");
+    expect(rows.every(row => visibleLength(row) === SIDEBAR_WIDTH)).toBe(true);
+    sidebar.updateStatus.remote = "checking";
+    expect(renderSidebar(sidebar, 12, true, null)[10]).toContain(theme.muted + " Remote: " + theme.muted + "Checking…");
   });
 
   test("remote and local labels mirror muted statusline labels in every theme", () => {

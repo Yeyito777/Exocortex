@@ -10,12 +10,56 @@ describe("update status routing", () => {
     expect(UPDATE_CHECK_INTERVAL_MS).toBe(120_000);
   });
 
+  test("Unknown is a completed check failure, not the initial pending state", async () => {
+    let finish!: (status: UpdateStatus) => void;
+    const values: UpdateSnapshot[] = [];
+    const monitor = new UpdateStatusMonitor(null, () => new Promise(resolve => { finish = resolve; }),
+      async () => "none", value => values.push(value));
+    try {
+      expect(values).toEqual([{ local: "checking", remote: null }]);
+      finish("unknown");
+      await pause();
+      expect(values.at(-1)).toEqual({ local: "unknown", remote: null });
+      const next = monitor.refresh();
+      // Periodic refreshes keep the last result, rather than flashing Checking.
+      expect(values.at(-1)).toEqual({ local: "unknown", remote: null });
+      finish("none");
+      await next;
+      expect(values.at(-1)).toEqual({ local: "none", remote: null });
+    } finally { monitor.stop(); }
+  });
+
+  test("--ssh starts just one surviving Local probe before any active request", async () => {
+    let activeCalls = 0;
+    let localCalls = 0;
+    let finishLocal!: (status: UpdateStatus) => void;
+    const values: UpdateSnapshot[] = [];
+    const monitor = new UpdateStatusMonitor(null, async () => { activeCalls++; return "none"; },
+      () => { localCalls++; return new Promise(resolve => { finishLocal = resolve; }); },
+      value => values.push(value), { initialLocalProbe: true, intervalMs: 10 });
+    try {
+      const local = monitor.refreshLocal();
+      expect(monitor.refreshLocal()).toBe(local);
+      await pause(25);
+      expect(activeCalls).toBe(0);
+      expect(localCalls).toBe(1);
+      monitor.disconnected("whale");
+      monitor.setRoute("whale");
+      await pause();
+      expect(values.at(-1)).toEqual({ local: "checking", remote: "none" });
+      expect(localCalls).toBe(1);
+      finishLocal("restart_needed");
+      await local;
+      expect(values.at(-1)).toEqual({ local: "restart_needed", remote: "none" });
+    } finally { monitor.stop(); }
+  });
+
   test("polls local immediately and periodically without an extra local connection", async () => {
     let activeCalls = 0;
     let localCalls = 0;
     const values: UpdateSnapshot[] = [];
     const monitor = new UpdateStatusMonitor(null, async () => { activeCalls++; return "none"; },
-      async () => { localCalls++; return "none"; }, status => values.push(status), 10);
+      async () => { localCalls++; return "none"; }, status => values.push(status), { intervalMs: 10 });
     try {
       expect(activeCalls).toBe(1);
       await pause(35);
@@ -35,11 +79,11 @@ describe("update status routing", () => {
     const monitor = new UpdateStatusMonitor("whale", () => {
       calls++;
       return new Promise(resolve => { finish = resolve; });
-    }, async () => "none", status => values.push(status), 10);
+    }, async () => "none", status => values.push(status), { intervalMs: 10 });
     try {
       await pause(35);
       expect(calls).toBe(1); // no overlapping checks
-      expect(values.at(-1)).toEqual({ local: "none", remote: "unknown" });
+      expect(values.at(-1)).toEqual({ local: "none", remote: "checking" });
       finish("restart_needed");
       await pause();
       expect(values.at(-1)).toEqual({ local: "none", remote: "restart_needed" });
@@ -67,7 +111,7 @@ describe("update status routing", () => {
       finishActive("none");
       await pause();
       expect(localCalls).toBe(1);
-      expect(values.at(-1)).toEqual({ local: "unknown", remote: "none" });
+      expect(values.at(-1)).toEqual({ local: "checking", remote: "none" });
       finishLocal("restart_needed");
       await local;
       expect(values.at(-1)).toEqual({ local: "restart_needed", remote: "none" });
@@ -86,7 +130,7 @@ describe("update status routing", () => {
       await pause();
       expect(values.at(-1)).toEqual({ local: "none", remote: null });
       monitor.disconnected("whale");
-      expect(values.at(-1)).toEqual({ local: "none", remote: "unknown" });
+      expect(values.at(-1)).toEqual({ local: "none", remote: "checking" });
       monitor.setRoute("whale");
       finishActive("none");
       await pause();

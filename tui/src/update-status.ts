@@ -1,10 +1,19 @@
 import { DAEMON_STATUS_INTERVAL_MS, type UpdateStatus } from "@exocortex/shared/updatecheck";
 import { DaemonClient } from "./client";
 
+/** TUI-only pending state; Unknown is reserved for a completed, failed check. */
+export type DisplayUpdateStatus = UpdateStatus | "checking";
+
 export interface UpdateSnapshot {
-  local: UpdateStatus;
+  local: DisplayUpdateStatus;
   /** null means this TUI is on its local route. */
-  remote: UpdateStatus | null;
+  remote: DisplayUpdateStatus | null;
+}
+
+interface UpdateStatusMonitorOptions {
+  intervalMs?: number;
+  /** --ssh startup: use a local socket that won't be closed by the handoff. */
+  initialLocalProbe?: boolean;
 }
 
 /**
@@ -41,7 +50,7 @@ export class UpdateStatusMonitor {
   private localInFlight: Promise<void> | null = null;
   private stopped = false;
   private alias: string | null;
-  private snapshot: UpdateSnapshot = { local: "unknown", remote: null };
+  private snapshot: UpdateSnapshot = { local: "checking", remote: null };
   private timer: ReturnType<typeof setInterval>;
 
   constructor(
@@ -49,21 +58,24 @@ export class UpdateStatusMonitor {
     private readonly active: () => Promise<UpdateStatus>,
     private readonly local: () => Promise<UpdateStatus>,
     private readonly onChange: (snapshot: UpdateSnapshot) => void,
-    intervalMs = DAEMON_STATUS_INTERVAL_MS,
+    options: UpdateStatusMonitorOptions = {},
   ) {
     this.alias = alias;
-    this.snapshot.remote = alias ? "unknown" : null;
+    this.snapshot.remote = alias ? "checking" : null;
     this.onChange({ ...this.snapshot });
-    this.timer = setInterval(() => { void this.refresh(); }, intervalMs);
+    this.timer = setInterval(() => { void this.refresh(); }, options.intervalMs ?? DAEMON_STATUS_INTERVAL_MS);
     this.timer.unref();
-    void this.refresh();
+    // Don't issue an active-local request that --ssh will cancel, then discard
+    // it in favour of a second probe. Start the surviving local probe directly.
+    if (!alias && options.initialLocalProbe) void this.refreshLocal();
+    else void this.refresh();
   }
 
   /** Call even for same-alias reconnects: the daemon may have restarted. */
   setRoute(alias: string | null): void {
     this.generation++;
     this.alias = alias;
-    this.publish({ local: this.snapshot.local, remote: alias ? "unknown" : null });
+    this.publish({ local: this.snapshot.local, remote: alias ? "checking" : null });
     void this.refresh();
   }
 
@@ -71,9 +83,10 @@ export class UpdateStatusMonitor {
     this.generation++;
     // The client has already selected its new route when it closes the old
     // socket. Keep a known Local status during the startup local -> SSH handoff.
+    const switched = alias !== this.alias;
     this.alias = alias;
     this.publish(this.alias
-      ? { local: this.snapshot.local, remote: "unknown" }
+      ? { local: this.snapshot.local, remote: switched ? "checking" : "unknown" }
       : { local: "unknown", remote: null });
   }
 

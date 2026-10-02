@@ -18,9 +18,10 @@ import { theme } from "../theme";
 import { hasInProgressModelWork, isDurablySleeping, shouldDisplayConversationTask } from "../taskvisibility";
 import { padRightToWidth, termWidth, truncateToWidth } from "../textwidth";
 import type { ConversationTaskSummary } from "../messages";
-import type { UpdateStatus } from "@exocortex/shared/updatecheck";
+import type { DisplayUpdateStatus } from "../update-status";
 
-const UPDATE_LABELS: Record<UpdateStatus, string> = {
+const UPDATE_LABELS: Record<DisplayUpdateStatus, string> = {
+  checking: "Checking…",
   none: "None",
   update_available: "Update available",
   restart_needed: "Restart needed",
@@ -406,7 +407,7 @@ export function renderSidebar(
     const footerBorder = theme.borderUnfocused;
     rows.push(theme.sidebarBg + footerBorder + "─".repeat(innerWidth) + borderBg + borderFg + "│" + theme.reset);
     const status = sidebar.updateStatus!;
-    const line = (prefix: string, value: UpdateStatus) => {
+    const line = (prefix: string, value: DisplayUpdateStatus) => {
       const color = value === "update_available" || value === "restart_needed" ? theme.accent : theme.muted;
       const content = status.remote !== null
         ? theme.muted + prefix + color + pad(UPDATE_LABELS[value], innerWidth - termWidth(prefix))
