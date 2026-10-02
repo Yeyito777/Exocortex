@@ -1097,14 +1097,21 @@ export class SqliteConversationStore implements ConversationRepository {
     if (floor < 0) return;
     const title: string[] = [];
     let remaining = MAX_TITLE_CONTEXT_CHARS;
-    for (const user of this.db.query<{ content_json: string }, [string, number]>(`
+    // Bun's cached iterate() cursor remains active after an early break.
+    // Own and finalize this statement so the next checkpoint can bind safely.
+    const titleStatement = this.db.prepare<{ content_json: string }, [string, number]>(`
       SELECT content_json FROM messages WHERE conversation_id=? AND is_real_user=1 AND sequence<? ORDER BY sequence
-    `).iterate(id, floor)) {
-      if (remaining <= 0) break;
-      try {
-        const text = titleUserText(JSON.parse(user.content_json));
-        if (text) { title.push(text.slice(0, remaining)); remaining -= text.length; }
-      } catch { /* archival title is optional; bad source is refused on access */ }
+    `);
+    try {
+      for (const user of titleStatement.iterate(id, floor)) {
+        if (remaining <= 0) break;
+        try {
+          const text = titleUserText(JSON.parse(user.content_json));
+          if (text) { title.push(text.slice(0, remaining)); remaining -= text.length; }
+        } catch { /* archival title is optional; bad source is refused on access */ }
+      }
+    } finally {
+      titleStatement.finalize();
     }
     const titleJson = JSON.stringify(title);
     const bytes = this.db.query<{ n: number }, [string, number]>("SELECT COALESCE(SUM(content_bytes),0) AS n FROM messages WHERE conversation_id=? AND sequence<?").get(id, floor)!.n;
