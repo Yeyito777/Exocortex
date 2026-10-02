@@ -33,7 +33,7 @@ test("startup worker enrolls legacy envelopes once, without reading old blob bod
       DROP TABLE checkpoint_integrity;
       DROP TABLE message_integrity;
       DROP TABLE display_integrity;
-      DELETE FROM schema_migrations WHERE version=12;
+      DELETE FROM schema_migrations WHERE version>=12;
       UPDATE message_blobs SET payload_json='{' WHERE message_sequence=2;
     `);
     const checkpoint = store.db.query<{ payload_json: string }, []>("SELECT payload_json FROM active_contexts").get()!.payload_json;
@@ -54,7 +54,7 @@ test("startup worker enrolls legacy envelopes once, without reading old blob bod
     } finally { clearInterval(timer); worker.terminate(); worker = undefined; }
     expect(ticks).toBeGreaterThan(5);
     store = new SqliteConversationStore({ path });
-    expect(store.diagnostics().schemaVersion).toBe(12);
+    expect(store.diagnostics().schemaVersion).toBe(13);
     expect(store.db.query<{ payload_json: string }, []>("SELECT payload_json FROM active_contexts").get()!.payload_json).toBe(checkpoint);
     expect(store.loadRuntimeWindow(conv.id, "migration")?.result.loadDiagnostics?.archiveRowsRead).toBe(0);
     expect(() => store!.loadToolOutputs(conv.id, ["t-0"])).toThrow(/blob checksum/);

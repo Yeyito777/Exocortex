@@ -29,7 +29,7 @@ import { getConversationExternalIntegrations } from "./external-notifications";
 import * as displayPageStore from "./display-page-store";
 import { scheduleDisplayIndex } from "./display-index-backfill";
 import { loadConversationOffThread, prepareArchiveHashes, releaseArchiveWindow } from "./conversation-loader";
-import { archiveWindow, forgetFullArchiveWindow, inheritArchiveHashProof, isArchivedMessage } from "./conversation-window";
+import { archiveWindow, forgetFullArchiveWindow, inheritArchiveHashProof, isArchivedMessage, storedMessageCount, archivedUserCount, systemInstructionMessages } from "./conversation-window";
 
 // Re-export streaming functions so existing `convStore.*` call sites keep working
 export {
@@ -108,9 +108,8 @@ function cachedFileSize(id: string): number {
     const bytes = persistence.getConversationFileStat(id).fileSize;
     const conv = conversations.get(id);
     const window = conv ? archiveWindow(conv.messages) : null;
-    // Count the live tail and conservative row-header overhead, not historical
-    // blob bytes which no longer reside in the foreground heap.
-    return window ? Math.max(0, bytes - window.archivedBytes) + window.prefixSequence * 512 : bytes;
+    // Charge materialized bodies and the small descriptor, not archive rows.
+    return window ? Math.max(0, bytes - window.archivedBytes) + (window.sparse ? 4096 : window.prefixSequence * 512) : bytes;
   } catch {
     return 0;
   }
@@ -749,12 +748,13 @@ export async function getFullAsync(id: string): Promise<Conversation | undefined
 
 export function hasMessageMetadata(id: string, fields: Record<string, string | number | boolean>, role?: string): boolean {
   const cached = conversations.get(id);
-  if (cached) return cached.messages.some(message => (!role || message.role === role)
+  if (cached && cached.messages.some(message => (!role || message.role === role)
     && Object.entries(fields).every(([path, value]) => {
       let current: unknown = message.metadata;
       for (const key of path.split(".")) current = (current as Record<string, unknown> | null)?.[key];
       return current === value;
-    }));
+    }))) return true;
+  if (cached && !archiveWindow(cached.messages)?.sparse) return false;
   return persistence.hasMessageMetadata(id, fields, role);
 }
 export function getPolicyMetadata(id: string) {
@@ -1366,6 +1366,7 @@ export function rename(id: string, title: string, recordUndo = true): boolean {
 export function setSystemInstructions(id: string, text: string): boolean {
   const conv = get(id);
   if (!conv) return false;
+  if (archiveWindow(conv.messages)?.sparse) throw new Error("System instruction changes require full archive materialization");
 
   const hasExisting = conv.messages.length > 0 && conv.messages[0].role === "system_instructions";
   let changed = false;
@@ -1398,9 +1399,8 @@ export function setSystemInstructions(id: string, text: string): boolean {
 export function getSystemInstructions(id: string): string | null {
   const conv = get(id);
   if (!conv) return null;
-  if (conv.messages.length > 0 && conv.messages[0].role === "system_instructions") {
-    return typeof conv.messages[0].content === "string" ? conv.messages[0].content : null;
-  }
+  const instruction = systemInstructionMessages(conv.messages)[0];
+  if (instruction) return typeof instruction.content === "string" ? instruction.content : null;
   return null;
 }
 
@@ -1539,8 +1539,9 @@ async function performUnwindTo(
   // role="user" but are invisible in the TUI (folded into AI entries).
   // Skip system_instructions (always at index 0) — they're never unwound.
   let spliceAt = -1;
-  let userCount = 0;
-  let historyCount = 0;
+  let userCount = archivedUserCount(conv.messages);
+  const window = archiveWindow(conv.messages);
+  let historyCount = window?.sparse ? window.prefixHistoryCount : 0;
   let targetHistoryCount = -1;
   let targetContextCheckpoint: StoredUserContextCheckpoint | undefined;
   let targetMessage: StoredMessage | undefined;
@@ -1847,6 +1848,8 @@ function estimateRewoundReplayTokens(
 /** Full replay estimate for legacy/malformed checkpoints and changed compact cursors. */
 function estimateCurrentReplayTokens(conv: Conversation): number {
   const history = conv.messages.filter(isReplayHistoryMessage);
+  const window = archiveWindow(conv.messages);
+  const offset = window?.sparse ? window.prefixHistoryCount : 0;
   const replay = conv.activeContext && isValidActiveContextCached(conv.activeContext, conv.messages)
     ? [
         ...conv.activeContext.messages.map((message) => ({
@@ -1855,7 +1858,7 @@ function estimateCurrentReplayTokens(conv: Conversation): number {
           metadata: message.metadata ?? null,
           providerData: message.providerData,
         })),
-        ...history.slice(conv.activeContext.transcriptHistoryCount).map((message) => ({
+        ...history.slice(conv.activeContext.transcriptHistoryCount - offset).map((message) => ({
           role: message.role as "user" | "assistant",
           content: message.content,
           metadata: message.metadata ?? null,
@@ -2010,7 +2013,7 @@ export function flush(id: string, options: { summaryIndex?: SummaryIndexFlushMod
     forceMessages: messageContentDirty.has(id),
     contextAttributionOnly: contextAttributionDirty.has(id),
   });
-  streaming.setStreamingCommittedMessageCount(id, conv.messages.length);
+  streaming.setStreamingCommittedMessageCount(id, storedMessageCount(conv.messages));
   if (!persistence.isSqliteConversationStore()) scheduleDisplayIndex(id);
   dirty.delete(id);
   messageContentDirty.delete(id);
@@ -2039,7 +2042,8 @@ export function appendMessages(
   // through their explicit update path before establishing the append boundary.
   if (messageContentDirty.has(id) || contextAttributionDirty.has(id)) flush(id, options);
 
-  const expectedStoredMessageCount = conv.messages.length;
+  const previousLocalCount = conv.messages.length;
+  const expectedStoredMessageCount = storedMessageCount(conv.messages);
   const previousUpdatedAt = conv.updatedAt;
   conv.messages.push(...messages);
   conv.updatedAt = Math.max(previousUpdatedAt, options.updatedAt ?? Date.now());
@@ -2047,7 +2051,7 @@ export function appendMessages(
   try {
     persistence.appendMessages(conv, expectedStoredMessageCount);
   } catch (error) {
-    conv.messages.length = expectedStoredMessageCount;
+    conv.messages.length = previousLocalCount;
     conv.updatedAt = previousUpdatedAt;
     throw error;
   }
@@ -2055,7 +2059,7 @@ export function appendMessages(
   // The pending accumulator is now based on this exact canonical boundary.
   // Centralizing the advance here also covers append callers outside the main
   // orchestrator (queued turns, retry markers, tests, and future producers).
-  streaming.setStreamingCommittedMessageCount(id, conv.messages.length);
+  streaming.setStreamingCommittedMessageCount(id, storedMessageCount(conv.messages));
   if (!persistence.isSqliteConversationStore()) scheduleDisplayIndex(id);
   const streamStartedAt = streaming.getStreamingStartedAt(id);
   if (!options.preservePendingAssistant && streamStartedAt !== undefined && messages.some(
@@ -2086,7 +2090,7 @@ export function flushAll(): void {
       forceMessages: messageContentDirty.has(id),
       contextAttributionOnly: contextAttributionDirty.has(id),
     });
-    streaming.setStreamingCommittedMessageCount(id, conv.messages.length);
+    streaming.setStreamingCommittedMessageCount(id, storedMessageCount(conv.messages));
     if (!persistence.isSqliteConversationStore()) scheduleDisplayIndex(id);
     setCachedFileSize(id, cachedFileSize(id));
     updateSummaryFromConversation(conv);
@@ -2658,7 +2662,7 @@ export function getStoredDisplayPage(
     const loadedConversation = conversations.get(id);
     // Preserve the existing safety fallback for direct in-memory mutations that
     // have not yet been marked dirty/flushed (notably test and maintenance code).
-    if (!page || (loadedConversation && page.storedMessageCount !== loadedConversation.messages.length)) return null;
+    if (!page || (loadedConversation && page.storedMessageCount !== storedMessageCount(loadedConversation.messages))) return null;
     const summary = summaries.get(id) ?? summarizeConversation(conversations.get(id)!);
     const folderInstructionsText = formatFolderInstructionsForDisplay(summary.folderId ?? null);
     const pinnedEntries = folderInstructionsText
@@ -2684,7 +2688,7 @@ export function getStoredDisplayPage(
   let page = displayPageStore.loadDisplayPage(id, turns, beforeEntryIndex);
   const loadedConversation = conversations.get(id);
   if (loadedConversation && dirty.has(id)) return null;
-  if (page && loadedConversation && page.storedMessageCount !== loadedConversation.messages.length) {
+  if (page && loadedConversation && page.storedMessageCount !== storedMessageCount(loadedConversation.messages)) {
     // An in-memory mutation can exist briefly before its canonical save. Never
     // publish or serve a projection ahead of the durable source of truth.
     page = null;
@@ -2812,9 +2816,9 @@ export function getPendingStreamSnapshot(id: string): PendingStreamSnapshot | nu
   const conv = get(id);
   if (!conv) return null;
   const startedAt = streaming.getStreamingStartedAt(id);
-  const committedMessageCount = streaming.getStreamingCommittedMessageCount(id) ?? conv.messages.length;
-  if (committedMessageCount !== conv.messages.length) {
-    log("warn", `streaming: pending boundary drift for ${id} (pending=${committedMessageCount}, canonical=${conv.messages.length})`);
+  const committedMessageCount = streaming.getStreamingCommittedMessageCount(id) ?? storedMessageCount(conv.messages);
+  if (committedMessageCount !== storedMessageCount(conv.messages)) {
+    log("warn", `streaming: pending boundary drift for ${id} (pending=${committedMessageCount}, canonical=${storedMessageCount(conv.messages)})`);
   }
   return {
     blocks: [...(streaming.getCurrentStreamingBlocks(id) ?? [])],
@@ -2827,7 +2831,7 @@ export function getPendingStreamSnapshot(id: string): PendingStreamSnapshot | nu
       ),
       workTimerStartedAt: streaming.getStreamingWorkTimerStartedAt(id),
     },
-    committedMessageCount: conv.messages.length,
+    committedMessageCount: storedMessageCount(conv.messages),
   };
 }
 

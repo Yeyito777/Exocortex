@@ -16,9 +16,10 @@ export interface ConversationLoadResult {
     prefixSequence: number;
     prefixHistoryCount: number;
     hashAnchor?: import("./checkpoint-tail-integrity").CheckpointHashAnchor;
+    sparse?: import("./conversation-window").ArchiveWindow["sparse"];
   };
   hashes: Array<[number, string]>;
-  loadDiagnostics?: { cacheHit: boolean; archiveRowsRead: number; archivedBodiesRead?: number };
+  loadDiagnostics?: { cacheHit: boolean; archiveRowsRead: number; archivedBodiesRead?: number; archivedHeadersRead?: number };
   readRevision?: string;
 }
 

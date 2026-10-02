@@ -2,8 +2,8 @@
  * Runtime-only references to a compacted archive. Never persisted.
  *
  * Workers verify the sealed checkpoint, real tail, and requested archive bytes.
- * The foreground holds only immutable row
- * headers before the compact boundary and real messages after it. Hash proofs
+ * The foreground holds a sealed prefix descriptor and real messages after the
+ * compact boundary, not a per-row representation of old history. Hash proofs
  * are bound to exact object/content references, not to caller-supplied metadata.
  * Missing or changed proofs fail closed; archive references must never be
  * serialized as canonical messages or submitted to a provider.
@@ -28,6 +28,13 @@ export interface ArchiveWindow {
   prefixSequence: number;
   prefixHistoryCount: number;
   hashAnchor?: CheckpointHashAnchor;
+  /** A sealed prefix descriptor. messages contains only rows at/after prefixSequence. */
+  sparse?: {
+    userCount: number;
+    messageCount: number;
+    instructions: StoredMessage[];
+    workTimer?: StoredMessage["metadata"];
+  };
   headers: StoredMessage[];
 }
 
@@ -78,7 +85,7 @@ function matches(messages: StoredMessage[], saved: ArchiveProofSnapshot[], throu
 function matchesCheckpointCovered(messages: StoredMessage[], saved: ArchiveProofSnapshot[], window: ArchiveWindow): boolean {
   const count = window.hashAnchor?.historyCount;
   if (count === undefined) return matches(messages, saved, window.prefixSequence);
-  let seen = 0, oldIndex = 0;
+  let seen = window.sparse ? window.prefixHistoryCount : 0, oldIndex = 0;
   for (const message of messages) {
     if (seen === count) break;
     if (!replay(message)) continue;
@@ -95,7 +102,7 @@ export function archiveWindow(messages: StoredMessage[]): ArchiveWindow | null {
   const proof = proofs.get(messages);
   if (proof) {
     const window = proof.window;
-    if (messages.length < window.prefixSequence
+    if (messages.length < (window.sparse ? 0 : window.prefixSequence)
         || window.headers.some((header, i) => messages[i] !== header)) {
       throw new Error("Archived conversation prefix was changed");
     }
@@ -119,12 +126,47 @@ export function isArchivedMessage(message: StoredMessage): boolean {
   return headers.has(message);
 }
 
+/** Local array positions are not durable SQLite sequences for a sparse window. */
+export function messageSequenceOffset(messages: readonly StoredMessage[]): number {
+  const window = archiveWindow(messages as StoredMessage[]);
+  return window?.sparse ? window.prefixSequence : 0;
+}
+
+export function storedMessageCount(messages: readonly StoredMessage[]): number {
+  return messageSequenceOffset(messages) + messages.length;
+}
+
+export function replayHistoryCount(messages: readonly StoredMessage[]): number {
+  const window = archiveWindow(messages as StoredMessage[]);
+  return (window?.sparse ? window.prefixHistoryCount : 0)
+    + messages.reduce((n, message) => n + Number(replay(message)), 0);
+}
+
+export function archivedUserCount(messages: StoredMessage[]): number {
+  return archiveWindow(messages)?.sparse?.userCount ?? 0;
+}
+
+export function systemInstructionMessages(messages: StoredMessage[]): StoredMessage[] {
+  return [...(archiveWindow(messages)?.sparse?.instructions ?? []),
+    ...messages.filter(message => message.role === "system_instructions")];
+}
+
 /** Called only for a validated worker result, never for persisted JSON. */
 export function adoptArchiveWindow(
   messages: StoredMessage[], window: Omit<ArchiveWindow, "headers">,
   hashes: Array<[number, string]>,
 ): void {
-  const bound: ArchiveWindow = { ...window, headers: messages.slice(0, window.prefixSequence) };
+  const bound: ArchiveWindow = { ...window, headers: window.sparse ? [] : messages.slice(0, window.prefixSequence) };
+  if (bound.sparse) {
+    for (const message of bound.sparse.instructions) {
+      freezeJson(message);
+    }
+    Object.freeze(bound.sparse.instructions);
+    freezeJson(bound.sparse);
+  }
+  Object.freeze(bound.headers);
+  freezeJson(bound.hashAnchor);
+  Object.freeze(bound);
   freezeReplayContent(messages);
   for (let i = 0; i < bound.headers.length; i++) {
     const message = bound.headers[i];
@@ -143,7 +185,7 @@ export function adoptArchiveWindow(
 export function bindArchiveHashProof(
   messages: StoredMessage[], window: ArchiveWindow, hashes: Array<[number, string]>,
 ): void {
-  if (messages.length < window.prefixSequence
+  if (messages.length < (window.sparse ? 0 : window.prefixSequence)
       || window.headers.some((header, i) => messages[i] !== header)) {
     throw new Error("Cannot bind a hash proof to changed archive references");
   }
@@ -200,7 +242,7 @@ export function provenArchiveHashes(
   if (!window) return null;
   const proof = proofs.get(messages);
   const maxCount = Math.max(0, ...counts);
-  let through = 0, seen = 0;
+  let through = 0, seen = window.sparse ? window.prefixHistoryCount : 0;
   while (through < messages.length && seen < maxCount) {
     const message = messages[through++];
     if (message.role !== "system" && message.role !== "system_instructions"
@@ -210,9 +252,7 @@ export function provenArchiveHashes(
     throw new Error("Conversation hash proof requires an off-thread refresh");
   }
   const result = new Map<number, string>();
-  const historyCount = messages.reduce((count, message) => count
-    + (message.role !== "system" && message.role !== "system_instructions"
-      && message.metadata?.kind !== "context_warning" ? 1 : 0), 0);
+  const historyCount = replayHistoryCount(messages);
   for (const count of counts) {
     if (!Number.isSafeInteger(count) || count < 0 || count > historyCount) {
       throw new Error(`Invalid archive prefix cursor ${count}/${historyCount}`);

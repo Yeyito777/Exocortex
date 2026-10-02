@@ -14,7 +14,12 @@ const [source, id, destination] = process.argv.slice(2);
 if (!source || !id || !destination) throw new Error("Expected SOURCE_DB ID NEW_DB");
 const path = resolve(destination);
 if (existsSync(path)) throw new Error("Refusing to overwrite a snapshot");
-const store = new SqliteConversationStore({ path });
+const sourceDb = new Database(resolve(source), { readonly: true });
+let sourceVersion: number;
+try { sourceVersion = sourceDb.query<{ version: number }, []>("SELECT MAX(version) AS version FROM schema_migrations").get()!.version; }
+finally { sourceDb.close(); }
+// Copy catalogs at their original schema, then migrate ONLY this owned copy.
+const store = new SqliteConversationStore({ path, ...(sourceVersion >= 12 ? { targetSchemaVersion: sourceVersion } : {}) });
 store.close();
 // SQLITE_OPEN_READWRITE | SQLITE_OPEN_URI. Bun's default connection does not
 // enable URI filenames; explicitly enable mode=ro for the attached source.
@@ -46,8 +51,8 @@ try {
 } finally { db.close(); }
 // The source may predate the checksum catalog. Only this NEW owned snapshot is
 // enrolled, after all rows have been copied; no source checksum is rewritten.
-if (needsEnrollment) {
-  const enrolled = new SqliteConversationStore({path});
-  try { enrolled.db.transaction(() => enrolled.initializeIntegrityBaselines())(); }
+{
+  const enrolled = new SqliteConversationStore({ path });
+  try { if (needsEnrollment) enrolled.db.transaction(() => enrolled.initializeIntegrityBaselines())(); }
   finally { enrolled.close(); }
 }

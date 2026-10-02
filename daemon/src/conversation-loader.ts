@@ -145,7 +145,7 @@ export async function prepareArchiveHashes(messages: StoredMessage[]): Promise<v
       path: window.path, archivedBytes: window.archivedBytes,
       prefixSequence: window.prefixSequence, prefixHistoryCount: window.prefixHistoryCount,
       hashAnchor: window.hashAnchor,
-    }, path: window.path, tail: messages.slice(window.prefixSequence),
+    }, path: window.path, tail: window.sparse ? messages.slice() : messages.slice(window.prefixSequence),
   }, lane);
   if (!response.hashes) throw new Error("Invalid conversation hash response");
   if (!archiveProofSnapshotMatches(messages, snapshot)) throw new Error("Transcript changed during off-thread hashing");

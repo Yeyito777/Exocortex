@@ -18,7 +18,7 @@ import { contextMessageChars } from "./context-token-attribution";
 import type { ProviderTurnSession, ServiceTier, StreamCallbacks, StreamOptions, StreamRequestBudget } from "./providers/types";
 import { isNonRetryableProviderError, isContextWindowProviderError } from "./providers/errors";
 import { getMaxContext } from "./providers/registry";
-import { assertCanonicalMessage, isArchivedMessage } from "./conversation-window";
+import { assertCanonicalMessage, isArchivedMessage, archiveWindow } from "./conversation-window";
 
 export const AUTO_COMPACTION_FRACTION = 0.9;
 const OPENAI_RETAINED_USER_TOKENS = 64_000;
@@ -249,7 +249,7 @@ export function buildConversationApiContext(conv: Conversation, accountScope?: s
     );
   }
   if (!active) {
-    if (conv.messages.some(isArchivedMessage)) {
+    if (archiveWindow(conv.messages)?.sparse || conv.messages.some(isArchivedMessage)) {
       throw new Error("Saved compaction checkpoint is missing; refusing archive-header replay");
     }
     // Provider data is scoped independently on every assistant response. This
@@ -274,7 +274,8 @@ export function buildConversationApiContext(conv: Conversation, accountScope?: s
     active.accountScope,
   );
   const tailMessages: ApiMessage[] = [];
-  let historyIndex = 0;
+  const window = archiveWindow(conv.messages);
+  let historyIndex = window?.sparse ? window.prefixHistoryCount : 0;
   for (const message of conv.messages) {
     if (!isReplayHistoryMessage(message)) continue;
     if (historyIndex++ < active.transcriptHistoryCount) continue;

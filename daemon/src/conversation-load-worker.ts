@@ -39,7 +39,7 @@ function retain(key: string, token: string, read: Read) {
   if (!read.result.validatedActiveContext || !read.result.window?.prefixSequence) return false;
   // Bodies are only the actual tail. Never cache full/uncompacted archives.
   const bytes = Buffer.byteLength(JSON.stringify(read.result)) * 2
-    + read.result.window.prefixSequence * 320 + 4096;
+    + (read.result.window.sparse ? 0 : read.result.window.prefixSequence * 320) + 4096;
   if (bytes > CACHE_BYTES / 2) return false;
   removeCached(key);
   while (cache.size && (cacheBytes + bytes > CACHE_BYTES || cache.size >= CACHE_ENTRIES)) removeCached(cache.keys().next().value!);

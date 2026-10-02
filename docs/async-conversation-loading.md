@@ -22,18 +22,23 @@ for append/display invariants.
   `{role, content, providerData: providerData ?? null}`. A newer compaction root
   resumes the same chain across restart without rereading the earlier tail.
 - Foreground state contains the active checkpoint and real recent tail, plus
-  small immutable index headers for earlier rows. Absolute message/user indices,
-  automation metadata, and required system instructions survive. Superseded
+  one sealed prefix descriptor. No old per-row headers are queried or transferred.
+  The descriptor carries absolute sequence/replay/user offsets, summary counts,
+  and verified required system instructions. Historical metadata/dedupe queries
+  use indexed persistence even when a sparse window is cached. Superseded
   user checkpoints are not eagerly hydrated; legacy represented-tail cursors
   are verified with those bounded tail rows.
-  Headers are runtime-only WeakMap identities, **not** canonical message values.
+  Descriptors/proofs are runtime-only WeakMap identities, **not** canonical rows.
+  `Conversation.messages` is the materialized tail, not an absolute-index array;
+  use `storedMessageCount` / `messageSequenceOffset` for durable boundaries.
 - A matching compaction divider bounds the retained tail, even when one user
   task accumulated tens of thousands of tool rounds. Legacy checkpoints use
   their original divider, not their later advancing replay cursor.
 - Successful integrity proofs bind to the exact adopted message/content/provider
   references and replay eligibility. Replay bodies/provider data and loaded
-  checkpoints are recursively frozen. Replacing content requires an off-thread
-  proof refresh; changing/truncating/reordering archive headers is rejected.
+  checkpoints and prefix descriptors are recursively frozen. Replacing content
+  requires an off-thread proof refresh; losing/replacing the sparse descriptor
+  cannot authorize a destructive write.
 - Adoption checks the current durable generation, message count, and deletion
   state. Cold reads coalesce; stale results are released/retried, never installed
   over newer cache state.
@@ -59,7 +64,7 @@ for append/display invariants.
   Same-conversation admission joins that lane rather than duplicating its read.
 - Each worker retains at most eight verified windows with a 64 MiB accounted
   budget (32 MiB maximum per entry). Full/uncompacted/invalid-checkpoint results
-  are not retained. Cache entries contain checkpoint, headers, real tail, and
+  are not retained. Cache entries contain checkpoint, prefix descriptor, real tail, and
   tail hash state—not old tool bodies. Every adoption gets its own handle.
 - Schema 11 installs transactional revision triggers covering conversation rows,
   messages, blobs, clone aliases, checkpoints, and runtime unwind-receipt fields.
@@ -76,6 +81,14 @@ for append/display invariants.
   stores full SHA-256 checksums for message envelopes, checkpoint payload/range
   receipts, and compact display projections. Writes update them transactionally.
   Missing receipts fail closed and are never repaired by a reader.
+- Schema 13 extends each checkpoint receipt to bind a small prefix summary:
+  real-user count, summary message count, instruction sequences and a bounded
+  work-timer continuation record. Its one-time
+  startup-worker upgrade verifies the existing v12 receipt before extending it;
+  invalid/missing receipts stay invalid/missing. Summary enrollment reads small
+  index/metadata fields, never old tool/image bodies. New checkpoint writes and
+  clone rebinding preserve this sealed descriptor transactionally. Normal loads
+  read the descriptor rather than recounting or enumerating the prefix.
 
 ### Requested chunks and migration boundary
 
@@ -120,25 +133,25 @@ as `.js`, while source installations use `.ts`.
   still-open AI group from the original single-user task.
 - Cold rename/mark/mute/pin/clone and corresponding mark/rename undo use targeted
   SQL/sidebar state rather than hydrating canonical history.
-- Cache accounting charges the live tail plus header overhead. Realtime owners
+- Cache accounting charges the live tail plus descriptor overhead. Realtime owners
   and title jobs pin their live window while asynchronous callbacks can append
   or rename it. Voice transcript writes serialize per conversation.
 - Titles retain bounded earliest user context from the worker rather than
-  accidentally generating from empty archive headers or only the latest tail.
+  accidentally generating from only the latest tail.
 
 ## Scope and remaining costs
 
 This is not zero-cost cold loading: checkpoint/tail verification is proportional
-to the retained context, and foreground adoption is still proportional to
-row/header count. No checkpoint means the
+to the retained context, and foreground adoption visits only materialized tail
+rows/checkpoint data. Neither depends on superseded historical row count or body
+size. No checkpoint means the
 canonical replay itself is needed; the loader cannot invent a compaction.
 
-**Remaining architectural limit:** index headers are still queried, transferred,
-frozen and snapshotted once per old row to preserve existing absolute-index APIs.
-Thus cold loading is independent of superseded body byte size, but **not** of
-historical row count. Truly constant-row admission needs lazy/sparse index
-descriptors instead of a whole header array. Cache invalidation is also still
-conservative for unrelated-to-replay edits within the same conversation.
+Remaining admission costs are worker startup (if no lane exists yet), bounded
+checkpoint/tail I/O, checksum verification, structured clone and live-context
+setup. Cache invalidation is still conservative for unrelated-to-replay edits
+within the same conversation. Explicit checkpoint creation/upgrade, full rewrites
+and requested full history retain their archive-sized costs; they are not resume.
 
 The admission guarantee intentionally changed at the user's request: checkpoint
 and tail are verified before resume; archived chunks are verified on access.
@@ -369,3 +382,88 @@ Artifacts: `/tmp/exocortex-async-loading-validation-1790876711501/`,
 particularly `checkpoint-tail-last-*.json`, `checkpoint-tail-ipc-last.json`
 and its per-child performance log. Tests/typechecks:
 `/tmp/checkpoint-tail-{root,exo-paths,loader-repeat,types}-last.log`.
+
+## Sparse-prefix architecture validation (2026-10-01)
+
+The old header-array cost described above is now removed. A sealed descriptor
+replaces all 32,485 historical headers. Required instructions remain verified;
+absolute append, streaming, summary and editable-user indices remain durable.
+Unwind carries the descriptor to its bounded prefix plan. Explicit rewrites still
+materialize off-thread; detached descriptors cannot authorize prefix deletion.
+Automated continuations retain a bounded archived work clock, while human turns
+reset it. Historical metadata dedupe falls back to indexed SQL, not enumeration.
+
+### Latest large-chat results
+
+Same owned 156,572,475-byte / 32,647-row archive, byte-preserved checkpoint and
+597 provider replay messages. Medians below are three independent measurements;
+fresh runtime/worker does not mean physically cold filesystem cache.
+
+| Path | Previous header window | Sparse descriptor |
+|---|---:|---:|
+| First load, including worker startup | 267 ms | **114 ms** |
+| Uncached chat, already-started worker | — | **51 ms** |
+| Verified cached reload | 101 ms | **10 ms** |
+| Completed prewarm | 104 ms | **16 ms** |
+
+All uncached reads verified 162 canonical tail rows, **zero old headers and zero
+old bodies**. Foreground state fell from 5,047,839 to **2,266,614 bytes**.
+Foreground adoption itself was 3.6–4.5 ms; replay/checkpoint setup was ~12 ms.
+The uncached started-worker path includes ~47 ms RPC/worker read/transfer, not
+47 ms foreground CPU. Worker startup accounts for much of the first-load
+premium. Loading remains proportional to the actual live checkpoint/tail,
+not to unread audit-history rows.
+
+An independent row-scaling comparison held the same tiny checkpoint and three
+tail rows while varying superseded history:
+
+| Stored rows | Fresh worker load, median of three | Old headers/bodies read |
+|---:|---:|---:|
+| 1,004 | 80 ms | 0 / 0 |
+| 128,004 | 78 ms | 0 / 0 |
+
+Both transferred ~1.1 KB foreground state. This is a scaling check, not a claim
+that bigger archives are intrinsically faster; worker-startup noise dominates.
+
+### Validation and runtime caveat
+
+- Repository run: **2,381 passed, zero failures**, including a child containing
+  **39 loader cases** and another containing **14 real orchestrator cases**.
+  The external exo-cli path tests passed **5/5** separately.
+- Loader cases repeated three times: **117 passed**. New coverage includes
+  bounded 32,002-row prefixes, absolute user/summary/streaming indices, cached
+  metadata dedupe, clone descriptors, empty tails, automation clocks, descriptor
+  tampering/detachment and v12 upgrade without blessing bad/missing receipts.
+- Shared/daemon/TUI typechecks passed. Linux embedded load/schema workers ran
+  outside the checkout; Windows x64 cross-build passed. Windows runtime was
+  not available/tested.
+- Owned five-child daemon IPC/restart smoke passed. Fresh restarted resume was
+  **72 ms**, verified prewarm **5.4 ms**, Stop **4.2 ms**. Concurrent cheap-IPC
+  maximum was **0.28 ms** during restarted admission (seven probes).
+  All 32,004 rows and byte-identical checkpoint survived; requested old
+  corruption/tail corruption rejected the appropriate request, and cheap IPC
+  remained usable. Only owned test children were restarted.
+- Two earlier monolithic runs crashed inside Bun 1.3.14's native GC/timer heap
+  (`IncrementalSweeper` → `WTFTimer` → intrusive heap removal). These were
+  **not passing runs**. The real-worker suite now runs in an isolated child,
+  avoiding the repository's unrelated process-wide mocks; the complete
+  isolated coverage and repeated worker suite pass. This is test isolation,
+  **not a claim to have fixed Bun's native runtime bug**.
+- A concurrent stress run also hit three cleanup-hook timeouts in the unchanged
+  voice/SSH TUI E2E tests. Their isolated rerun passed **4/4**, and the final
+  serial repository run passed **2,381/2,381**. No voice test implementation
+  or timeout was changed.
+
+Artifacts: `sparse-final-*.json`, `sparse-ipc-final.json`, its child/performance
+logs and `sparse-compiled-*.json` in the same owned validation directory.
+Test logs: `/tmp/sparse-root-serial-final.log`,
+`/tmp/sparse-loader-isolated-last.log`, `/tmp/sparse-exo-paths-verified.log`
+and `/tmp/sparse-types-final-post-isolation.log`.
+
+```sh
+bun test ./daemon/src/conversation-loader.cases.ts --rerun-each 3
+bun scripts/dev/profile-archive-loader.ts ready /tmp/CURRENT-fixture.sqlite3 archive-stress
+# Owned NEW fixtures with different row counts:
+bun scripts/dev/profile-archive-loader.ts seed /tmp/NEW-small.sqlite3 archive-stress 1 500
+bun scripts/dev/profile-archive-loader.ts seed /tmp/NEW-large.sqlite3 archive-stress 1 64000
+```

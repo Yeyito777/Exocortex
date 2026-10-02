@@ -16,7 +16,7 @@ export * from "@exocortex/shared/messages";
 import { CONTEXT_COMPACTION_FINISHED_KIND, DEFAULT_EFFORT, REALTIME_CALL_STATUS_KIND, createMessageMetadata, type ProviderId, type ModelId, type EffortLevel, type MessageMetadata, type ConversationSummary, type FolderSummary, type ImageAttachment, type ConversationGoal, type ToolCallPresentation, type UserMessageAutomation } from "@exocortex/shared/messages";
 import type { AssistantProviderData } from "./providers/provider-data";
 import { createHash } from "crypto";
-import { archiveWindow, provenArchiveHashes, assertCanonicalMessage } from "./conversation-window";
+import { archiveWindow, provenArchiveHashes, assertCanonicalMessage, replayHistoryCount, type ArchiveWindow } from "./conversation-window";
 
 export interface ContextTokenBreakdown {
   userText: number;
@@ -153,6 +153,8 @@ export interface Conversation {
   model: ModelId;
   effort: EffortLevel;
   fastMode: FastMode;
+  /** Materialized rows only for a sparse SQLite runtime window. Durable sequence/
+   * count APIs live in conversation-window.ts; rewrites require getFullAsync. */
   messages: StoredMessage[];
   /** Compact model replay; never used to render or count the visible chat. */
   activeContext?: ActiveContext | null;
@@ -335,7 +337,7 @@ export function currentReplayHistoryPrefix(messages: StoredMessage[]): {
   hash: string;
 } {
   if (archiveWindow(messages)) {
-    const totalHistoryCount = messages.reduce((count, message) => count + (isReplayHistoryMessage(message) ? 1 : 0), 0);
+    const totalHistoryCount = replayHistoryCount(messages);
     const proof = provenArchiveHashes(messages, [totalHistoryCount])!;
     return { historyCount: totalHistoryCount, hash: proof.get(totalHistoryCount)! };
   }
@@ -445,6 +447,7 @@ function historyPrefixHashes(messages: StoredMessage[], historyCounts: number[])
 // of megabytes of retained audit history. Disk loads use new object identities,
 // so persisted corruption is still checked once on every daemon load.
 interface ActiveContextValidationFingerprint {
+  window: ArchiveWindow | null;
   activeMessages: Array<{
     message: ApiMessage;
     role: ApiMessage["role"];
@@ -474,9 +477,11 @@ function activeContextValidationFingerprint(
   userPrefixHashes: WeakMap<StoredMessage, string> = new WeakMap(),
 ): ActiveContextValidationFingerprint {
   const transcriptPrefix: ActiveContextValidationFingerprint["transcriptPrefix"] = [];
+  const window = archiveWindow(transcript);
+  const offset = window?.sparse ? window.prefixHistoryCount : 0;
   for (const message of transcript) {
     if (!isReplayHistoryMessage(message)) continue;
-    if (transcriptPrefix.length >= active.transcriptHistoryCount) break;
+    if (transcriptPrefix.length + offset >= active.transcriptHistoryCount) break;
     transcriptPrefix.push({
       message,
       role: message.role,
@@ -485,6 +490,7 @@ function activeContextValidationFingerprint(
     });
   }
   return {
+    window,
     activeMessages: active.messages.map((message) => ({
       message,
       role: message.role,
@@ -507,6 +513,7 @@ function activeContextValidationFingerprintMatches(
   transcript: StoredMessage[],
   fingerprint: ActiveContextValidationFingerprint,
 ): boolean {
+  if (archiveWindow(transcript) !== fingerprint.window) return false;
   if (active.messages !== fingerprint.activeMessagesArray
       || active.compactionHistoryCount !== fingerprint.compactionHistoryCount
       || active.compactionPrefixHash !== fingerprint.compactionPrefixHash
@@ -611,7 +618,8 @@ export function activeContextCompactionHistoryCount(
     return active.compactionHistoryCount!;
   }
 
-  let historyCount = 0;
+  const window = archiveWindow(transcript);
+  let historyCount = window?.sparse ? window.prefixHistoryCount : 0;
   for (const message of transcript) {
     if (message.role === "system"
         && message.metadata?.kind === CONTEXT_COMPACTION_FINISHED_KIND
@@ -769,22 +777,23 @@ function validateActiveContext(
   active: unknown,
   transcript: StoredMessage[],
 ): { active: ActiveContext; userPrefixHashes: WeakMap<StoredMessage, string> } | null {
-  if (!isValidActiveContextEnvelope(active, transcript.filter(isReplayHistoryMessage).length)) return null;
+  if (!isValidActiveContextEnvelope(active, replayHistoryCount(transcript))) return null;
   const value = active as ActiveContext;
   const hasCompactionCount = value.compactionHistoryCount !== undefined;
   const editableHistoryStart = value.compactionHistoryCount ?? archiveWindow(transcript)?.prefixHistoryCount ?? 0;
   const userHistoryCounts = new Map<StoredMessage, number>();
-  let replayHistoryCount = 0;
+  const window = archiveWindow(transcript);
+  let replayCount = window?.sparse ? window.prefixHistoryCount : 0;
   for (const message of transcript) {
     if (!isReplayHistoryMessage(message)) continue;
-    if (replayHistoryCount >= value.transcriptHistoryCount) break;
+    if (replayCount >= value.transcriptHistoryCount) break;
     // Boundaries before an opaque compaction cannot be rewound and no longer
     // need a historical-prefix integrity proof during checkpoint admission.
     if (isRealUserMessage(message)
-        && replayHistoryCount >= editableHistoryStart) {
-      userHistoryCounts.set(message, replayHistoryCount);
+        && replayCount >= editableHistoryStart) {
+      userHistoryCounts.set(message, replayCount);
     }
-    replayHistoryCount += 1;
+    replayCount += 1;
   }
   const prefixHashes = historyPrefixHashes(transcript, [
     value.transcriptHistoryCount,
@@ -863,7 +872,7 @@ export function rewindActiveContextToHistoryCount(
   targetHistoryCount: number,
 ): ActiveContext | null {
   if (!Number.isSafeInteger(targetHistoryCount) || targetHistoryCount < 0) return null;
-  const transcriptHistoryCount = transcript.filter(isReplayHistoryMessage).length;
+  const transcriptHistoryCount = replayHistoryCount(transcript);
   if (targetHistoryCount > transcriptHistoryCount) return null;
   const compactionHistoryCount = activeContextCompactionHistoryCount(active, transcript);
   if (compactionHistoryCount == null || targetHistoryCount < compactionHistoryCount) return null;
@@ -988,7 +997,7 @@ export function buildHistoryTurnMap(messages: StoredMessage[]): number[] {
 
 /** Count user-visible turns for summaries/UI, excluding non-turn status entries. */
 export function countConversationMessages(messages: readonly StoredMessage[]): number {
-  return messages.filter((msg) =>
+  return (archiveWindow(messages as StoredMessage[])?.sparse?.messageCount ?? 0) + messages.filter((msg) =>
     msg.role !== "system_instructions"
     && !isModelVisibleSystemNotice(msg)
     && msg.metadata?.kind !== CONTEXT_COMPACTION_FINISHED_KIND

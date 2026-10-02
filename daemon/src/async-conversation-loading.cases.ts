@@ -18,7 +18,10 @@ function seed() {
   const id = `async-runtime-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   ids.push(id);
   const conv = convStore.create(id, "openai", "gpt-6.1-sol", "worker fixture");
-  conv.messages.push({ role: "user", content: "archived original task", metadata: null });
+  conv.messages.push({
+    role: "user", content: "archived original task",
+    metadata: { startedAt: 1, endedAt: 1, model: conv.model, tokens: 0, queueEntryId: "archived-queue" },
+  });
   for (let i = 0; i < 64; i++) conv.messages.push(
     { role: "assistant", content: [{ type: "tool_use", id: `old-${i}`, name: "exec_command", input: {} }], metadata: null },
     { role: "user", content: [{ type: "tool_result", tool_use_id: `old-${i}`, content: "x".repeat(16_384) }], metadata: null },
@@ -72,7 +75,8 @@ test("cold get coalesces and strict synchronous access cannot block IPC", async 
   expect(() => convStore.get(id)).toThrow(/asynchronous loading/);
   const [one, two] = await Promise.all([convStore.getAsync(id), convStore.getAsync(id)]);
   expect(one).toBe(two);
-  expect(one!.messages.some(isArchivedMessage)).toBe(true);
+  expect(archiveWindow(one!.messages)?.sparse).toBeDefined();
+  expect(one!.messages).toHaveLength(3);
   expect(convStore.get(id)).toBe(one);
 });
 
@@ -84,6 +88,21 @@ test("cold paging, full compatibility snapshots, tool outputs and metadata dedup
   expect(convStore.hasToolBlock(id, "tool_use", "old-1", "exec_command")).toBe(true);
   expect(convStore.hasToolBlock(id, "tool_result", "old-1")).toBe(true);
   expect(convStore.getCached(id)).toBeUndefined();
+});
+
+test("sparse cached metadata dedupe and streaming boundaries retain absolute durable indices", async () => {
+  const id = seed();
+  const loaded = (await convStore.getAsync(id))!;
+  expect(loaded.messages).toHaveLength(3);
+  expect(convStore.hasMessageMetadata(id, { queueEntryId: "archived-queue" }, "user")).toBe(true);
+  expect(convStore.hasMessageMetadata(id, { queueEntryId: "absent" }, "user")).toBe(false);
+  const outcome = await send(id, "after sparse load", async () => {
+    expect(convStore.getStreamingCommittedMessageCount(id)).toBe(persistence.load(id)!.messages.length);
+    return response("after sparse response");
+  });
+  expect(outcome.ok, outcome.error).toBe(true);
+  const canonical = persistence.load(id)!;
+  expect(convStore.getStoredDisplayPage(id, 1)!.storedMessageCount).toBe(canonical.messages.length);
 });
 
 test("Stop during cold loading cancels admission without accepting user input", async () => {
@@ -146,7 +165,7 @@ test("multiple queued prompts get exact preceding-prefix proofs and remain durab
   }) as typeof streamMessage);
   expect(outcome.ok, outcome.error).toBe(true);
   expect(calls).toBe(2);
-  expect(convStore.get(id)!.messages.some(isArchivedMessage)).toBe(true);
+  expect(archiveWindow(convStore.get(id)!.messages)?.sparse).toBeDefined();
 });
 
 test("a fresh compaction installs a valid fixed boundary without serializing archive headers", async () => {
@@ -163,7 +182,7 @@ test("a fresh compaction installs a valid fixed boundary without serializing arc
     historyPrefixHash(canonical.messages, canonical.activeContext!.transcriptHistoryCount),
   );
   expect(buildConversationApiContext(loaded)).toEqual(buildConversationApiContext(canonical));
-  expect(loaded.messages.some(isArchivedMessage)).toBe(true);
+  expect(archiveWindow(loaded.messages)?.sparse).toBeDefined();
 });
 
 test("indexed tail unwind and explicit archive rewrite preserve canonical history", async () => {
@@ -207,7 +226,7 @@ test("trash undo/redo restores indexed metadata without synchronously loading an
   expect((await convStore.redoDeleteAsync())?.type).toBe("sidebar_state");
   expect(convStore.hasConversation(id)).toBe(false);
   expect((await convStore.undoDeleteAsync())?.type).toBe("conversation");
-  expect((await convStore.getAsync(id))!.messages.some(isArchivedMessage)).toBe(true);
+  expect(archiveWindow((await convStore.getAsync(id))!.messages)?.sparse).toBeDefined();
 });
 
 test("cold sidebar mutations, clones and undo do not hydrate canonical archives", async () => {

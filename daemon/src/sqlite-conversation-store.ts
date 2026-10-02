@@ -24,6 +24,8 @@ import type {
 } from "./messages";
 import {
   activeContextCompactionHistoryCount,
+  CONTEXT_COMPACTION_FINISHED_KIND,
+  REALTIME_TRANSCRIPT_KIND,
   countConversationMessages,
   isRealUserMessage,
   isReplayHistoryMessage,
@@ -53,13 +55,13 @@ import { log } from "./log";
 import type { ConversationRepository } from "./conversation-repository";
 import type { ConversationCloneTarget } from "./conversation-clone";
 import { pagedUserFingerprint, storedMessageFingerprint as messageFingerprint } from "./message-fingerprint";
-import { adoptArchiveWindow, archiveWindow, assertCanonicalMessage, freezeArchiveCheckpoint, isArchivedMessage } from "./conversation-window";
+import { adoptArchiveWindow, archiveWindow, assertCanonicalMessage, freezeArchiveCheckpoint, isArchivedMessage, messageSequenceOffset, storedMessageCount } from "./conversation-window";
 import { MAX_TITLE_CONTEXT_CHARS, setArchivedTitleContext, titleUserText } from "./conversation-title-context";
 import type { ConversationLoadResult } from "./conversation-load-protocol";
 import { canonicalArchiveContent } from "./canonical-archive-content";
 import { checkpointTailHasher, updateCheckpointTailHash, integritySha, ConversationIntegrityError, type CheckpointHashAnchor, type ReplayHash } from "./checkpoint-tail-integrity";
 
-const SCHEMA_VERSION = 12;
+const SCHEMA_VERSION = 13;
 const INTEGRITY_TABLES = ["message_integrity", "checkpoint_integrity", "display_integrity"];
 const RUNTIME_REVISION_TRIGGERS: Record<string, string> = {};
 for (const [table, id] of [
@@ -213,6 +215,7 @@ interface CheckpointReceipt {
   receipt_hash: string;
   title_context_json: string;
   archived_bytes: number;
+  prefix_summary_json?: string | null;
 }
 
 interface LoadedMessageSnapshot {
@@ -230,6 +233,7 @@ interface LoadedMessageSnapshot {
 }
 
 interface LoadedConversationState {
+  messageOffset?: number;
   generation: number;
   messages: LoadedMessageSnapshot[];
   activeContextRef: Conversation["activeContext"];
@@ -950,6 +954,28 @@ export class SqliteConversationStore implements ConversationRepository {
           .run(12, "checkpoint-tail and requested-chunk integrity", Date.now());
       })();
     }
+    if (current < 13 && targetVersion >= 13) {
+      this.db.transaction(() => {
+        // Verify old receipts BEFORE extending them. Never bless an invalid or
+        // absent v12 receipt during upgrade; it must still fail admission.
+        // Keep only IDs, not every conversation's potentially multi-MB payload.
+        // ALTER is transactional; legacy digest interpretation is restricted to
+        // this upgrade and happens before any receipt is extended.
+        this.db.exec("ALTER TABLE checkpoint_integrity ADD COLUMN prefix_summary_json TEXT;");
+        for (const { conversation_id: id } of this.db.query<{ conversation_id: string }, []>(
+          "SELECT conversation_id FROM checkpoint_integrity",
+        ).all()) {
+          let receipt: CheckpointReceipt | null;
+          try { receipt = this.verifiedCheckpoint(id, true); }
+          catch (error) { if (error instanceof ConversationIntegrityError) continue; throw error; }
+          if (!receipt) continue;
+          this.writeCheckpointReceipt(id, receipt.payload_json, receipt.sequence_floor, receipt.history_floor,
+            receipt.title_context_json, receipt.archived_bytes);
+        }
+        this.db.query("INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)")
+          .run(13, "sealed sparse archive prefix descriptors", Date.now());
+      })();
+    }
   }
 
   private envelopeHash(row: MessageRow): string {
@@ -995,23 +1021,53 @@ export class SqliteConversationStore implements ConversationRepository {
     }
   }
 
-  private verifiedCheckpoint(id: string): CheckpointReceipt | null {
+  private verifiedCheckpoint(id: string, legacyV12Upgrade = false): CheckpointReceipt | null {
     const checkpoint = this.db.query<CheckpointReceipt, [string]>(`
-      SELECT a.payload_json,i.sequence_floor,i.history_floor,i.payload_hash,i.receipt_hash,i.title_context_json,i.archived_bytes
+      SELECT a.payload_json,i.*
       FROM active_contexts a LEFT JOIN checkpoint_integrity i ON i.conversation_id=a.conversation_id WHERE a.conversation_id=?
     `).get(id);
     if (!checkpoint) return null;
     if (!checkpoint.payload_hash || integritySha(checkpoint.payload_json) !== checkpoint.payload_hash
-        || integritySha(JSON.stringify([id,checkpoint.sequence_floor,checkpoint.history_floor,checkpoint.payload_hash,checkpoint.title_context_json,checkpoint.archived_bytes])) !== checkpoint.receipt_hash) {
+        || integritySha(JSON.stringify([id,checkpoint.sequence_floor,checkpoint.history_floor,checkpoint.payload_hash,checkpoint.title_context_json,checkpoint.archived_bytes,
+          ...(!legacyV12Upgrade && Object.hasOwn(checkpoint, "prefix_summary_json") ? [checkpoint.prefix_summary_json] : [])])) !== checkpoint.receipt_hash) {
       throw new ConversationIntegrityError("Checkpoint integrity receipt is missing or changed");
     }
     return checkpoint;
   }
 
-  private writeCheckpointReceipt(id: string, payload: string, floor: number, historyFloor: number, titleJson: string, bytes: number): void {
+  private prefixSummary(id: string, floor: number): string {
+    let userCount = 0, messageCount = 0;
+    let workTimer: StoredMessage["metadata"] = null;
+    const instructions: number[] = [];
+    // Only at checkpoint creation / one-time upgrade, never at runtime load.
+    for (const row of this.db.query<{ sequence: number; role: StoredMessage["role"]; metadata_json: string | null; is_real_user: number }, [string, number]>(`
+      SELECT sequence,role,metadata_json,is_real_user FROM messages
+      WHERE conversation_id=? AND sequence<? ORDER BY sequence
+    `).iterate(id, floor)) {
+      userCount += row.is_real_user;
+      if (row.role === "system_instructions") instructions.push(row.sequence);
+      let metadata: StoredMessage["metadata"] = null;
+      try { metadata = parseOptional(row.metadata_json); } catch { /* archived bytes are checked on request */ }
+      messageCount += countConversationMessages([{ role: row.role, content: "", metadata }]);
+      // Fold the bounded continuation clock while enrolling the descriptor.
+      // Runtime work-timer lookup must not resurrect the entire header array.
+      if (row.is_real_user && !metadata?.automation) workTimer = null;
+      if (metadata?.kind === CONTEXT_COMPACTION_FINISHED_KIND && metadata.workTimerStartedAt !== undefined) workTimer = metadata;
+      else if (row.role === "assistant" && metadata) workTimer = metadata.kind === REALTIME_TRANSCRIPT_KIND ? null : metadata;
+    }
+    return JSON.stringify({ userCount, messageCount, instructions, workTimer });
+  }
+
+  private writeCheckpointReceipt(id: string, payload: string, floor: number, historyFloor: number, titleJson: string, bytes: number, summary?: string): void {
     const payloadHash = integritySha(payload);
-    const receiptHash = integritySha(JSON.stringify([id, floor, historyFloor, payloadHash, titleJson, bytes]));
-    this.db.query("INSERT OR REPLACE INTO checkpoint_integrity VALUES (?, ?, ?, ?, ?, ?, ?)")
+    const sparseSchema = this.db.query<{ name: string }, []>("PRAGMA table_info(checkpoint_integrity)").all()
+      .some(column => column.name === "prefix_summary_json");
+    const summaryJson = sparseSchema ? summary ?? this.prefixSummary(id, floor) : undefined;
+    const receiptHash = integritySha(JSON.stringify([id, floor, historyFloor, payloadHash, titleJson, bytes,
+      ...(sparseSchema ? [summaryJson] : [])]));
+    if (sparseSchema) this.db.query("INSERT OR REPLACE INTO checkpoint_integrity VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(id, floor, historyFloor, payloadHash, receiptHash, titleJson, bytes, summaryJson!);
+    else this.db.query("INSERT OR REPLACE INTO checkpoint_integrity VALUES (?, ?, ?, ?, ?, ?, ?)")
       .run(id, floor, historyFloor, payloadHash, receiptHash, titleJson, bytes);
   }
 
@@ -1534,43 +1590,37 @@ export class SqliteConversationStore implements ConversationRepository {
       const hashes = new Map<number, string>([[anchor.historyCount, anchor.hash]]);
       if (active.compactionHistoryCount !== undefined) hashes.set(active.compactionHistoryCount, active.compactionPrefixHash);
       const messages: StoredMessage[] = [];
-      let count = 0;
-      // Index-only headers preserve absolute user/message indices. No content,
-      // provider replay body or blob before floor is read on the resume path.
-      type Header = {
-        sequence: number; role: StoredMessage["role"]; metadata_json: string | null;
-        is_real_user: number; is_replay_history: number;
-      };
+      let count = full ? 0 : checkpoint.history_floor;
+      const summary = JSON.parse(checkpoint.prefix_summary_json ?? "null") as {
+        userCount: number; messageCount: number; instructions: number[]; workTimer?: StoredMessage["metadata"];
+      } | null;
+      if (!summary || !Number.isSafeInteger(summary.userCount) || summary.userCount < 0 || summary.userCount > floor
+          || !Number.isSafeInteger(summary.messageCount) || summary.messageCount < 0 || summary.messageCount > floor
+          || !Array.isArray(summary.instructions) || summary.instructions.some((n, i) =>
+            !Number.isSafeInteger(n) || n < 0 || n >= floor || (i > 0 && n <= summary.instructions[i - 1]))
+          || checkpoint.history_floor > anchor.historyCount) {
+        throw new ConversationIntegrityError("Checkpoint prefix descriptor is invalid");
+      }
       let instructionRows = 0;
-      for (let start = 0; start < floor; start += 128) {
-        const end = Math.min(start + 128, floor);
-        const batch = this.db.query<Header, [string, number, number]>(`
-          SELECT sequence,role,metadata_json,is_real_user,is_replay_history
-          FROM messages WHERE conversation_id=? AND sequence>=? AND sequence<? ORDER BY sequence
-        `).all(id, start, end);
-        if (batch.length !== end - start || batch.some((item, index) => item.sequence !== start + index)) {
-          throw new ConversationIntegrityError("Archive index is non-contiguous");
+      const instructions: StoredMessage[] = [];
+      if (full) {
+        for (let start = 0; start < floor; start += 128) {
+          const end = Math.min(start + 128, floor);
+          for (const message of this.verifiedMessages(id, Array.from({ length: end - start }, (_, i) => start + i)).values()) {
+            messages.push(message);
+            count += Number(isReplayHistoryMessage(message));
+          }
+          yield;
         }
-        const requested = batch.filter(item => full || item.role === "system_instructions").map(item => item.sequence);
-        const verified = this.verifiedMessages(id, requested);
-        if (!full) instructionRows += requested.length;
-        for (const item of batch) {
-          let metadata: StoredMessage["metadata"] = null;
-          try { metadata = parseOptional(item.metadata_json); } catch { /* old bytes validated only when requested */ }
-          if (!item.is_replay_history && item.role !== "system" && item.role !== "system_instructions") metadata = { ...metadata, kind: "context_warning" } as StoredMessage["metadata"];
-          if (item.is_real_user && metadata?.system) metadata = { ...metadata, system: false };
-          const message: StoredMessage = {
-            role: item.role, metadata,
-            content: item.role === "user" && !item.is_real_user && !metadata?.system
-              ? [{ type: "tool_result", tool_use_id: "", content: "" }] : "",
-          };
-          if (item.role === "system_instructions" || full) Object.assign(message, verified.get(item.sequence)!);
-          messages.push(message);
-          count += Number(isReplayHistoryMessage(message));
+        if (count !== checkpoint.history_floor) throw new ConversationIntegrityError("Checkpoint/index boundary changed");
+      } else if (summary.instructions.length) {
+        for (const message of this.verifiedMessages(id, summary.instructions).values()) {
+          if (message.role !== "system_instructions") throw new ConversationIntegrityError("Checkpoint instruction index changed");
+          instructions.push(message);
         }
+        instructionRows = instructions.length;
         yield;
       }
-      if (count !== checkpoint.history_floor) throw new ConversationIntegrityError("Checkpoint/index boundary changed");
       const baseHash = hash.copy();
       let tailRows = 0;
       for (let start = floor; start < row.stored_message_count; start += 128) {
@@ -1597,6 +1647,7 @@ export class SqliteConversationStore implements ConversationRepository {
         handle, conversationId: id, path: this.path, prefixSequence: full ? 0 : floor,
         prefixHistoryCount: full ? 0 : checkpoint.history_floor,
         prefixHash: anchor.hash, archivedBytes: full ? 0 : checkpoint.archived_bytes, hashAnchor: anchor,
+        ...(full ? {} : { sparse: { userCount: summary.userCount, messageCount: summary.messageCount, instructions, workTimer: summary.workTimer } }),
       };
       // The result crosses a structured-clone boundary. Bind/freeze identities
       // once, at foreground adoption, rather than doing the same O(header count)
@@ -1614,7 +1665,7 @@ export class SqliteConversationStore implements ConversationRepository {
           },
           generation:row.storage_generation,validatedActiveContext:true,hashes:[...hashes],window,
           archivedTitleContext:JSON.parse(checkpoint.title_context_json),readRevision:this.runtimeCacheToken(id) ?? undefined,
-          loadDiagnostics:{cacheHit:false,archiveRowsRead:full?messages.length:tailRows+instructionRows,archivedBodiesRead:full?floor:instructionRows},
+          loadDiagnostics:{cacheHit:false,archiveRowsRead:full?messages.length:tailRows+instructionRows,archivedBodiesRead:full?floor:instructionRows,archivedHeadersRead:0},
           receipt:receipt?{operationId:receipt.operation_id,userMessageIndex:receipt.user_message_index,historyTotalEntries:receipt.history_total_entries}:null,
         },
         baseHash, prefixHashes:[...hashes].filter(([n])=>n<=anchor.historyCount),
@@ -1831,14 +1882,14 @@ export class SqliteConversationStore implements ConversationRepository {
     const conv = result.conversation;
     const row = this.row(conv.id, includeDeleted);
     if (!row || row.storage_generation !== result.generation
-        || row.stored_message_count !== conv.messages.length
+        || row.stored_message_count !== (result.window?.sparse ? result.window.prefixSequence : 0) + conv.messages.length
         || (result.readRevision && result.readRevision !== this.runtimeCacheToken(conv.id))) return false;
     if (result.window) adoptArchiveWindow(conv.messages, result.window, result.hashes);
     if (result.validatedActiveContext && conv.activeContext) {
       freezeArchiveCheckpoint(conv.activeContext);
       const hashes = new Map(result.hashes);
       const userHashes = new WeakMap<StoredMessage, string>();
-      let count = 0;
+      let count = result.window?.sparse ? result.window.prefixHistoryCount : 0;
       for (const message of conv.messages) {
         if (isRealUserMessage(message)) {
           const hash = hashes.get(count);
@@ -1852,6 +1903,7 @@ export class SqliteConversationStore implements ConversationRepository {
     }
     if (result.archivedTitleContext) setArchivedTitleContext(conv, result.archivedTitleContext);
     this.loadedState.set(conv, {
+      messageOffset: messageSequenceOffset(conv.messages),
       generation: result.generation, messages: conv.messages.map(messageSnapshot),
       activeContextRef: conv.activeContext, lastUnwindReceipt: result.receipt, readRevision: result.readRevision,
     });
@@ -2190,7 +2242,8 @@ export class SqliteConversationStore implements ConversationRepository {
           .run(this.displayHash(item),target.id,item.pinned,item.entry_index);
         if (sourceReceipt) {
           const payload = this.db.query<{ payload_json: string }, [string]>("SELECT payload_json FROM active_contexts WHERE conversation_id=?").get(target.id)!.payload_json;
-          this.writeCheckpointReceipt(target.id, payload, sourceReceipt.sequence_floor, sourceReceipt.history_floor, sourceReceipt.title_context_json, sourceReceipt.archived_bytes);
+          this.writeCheckpointReceipt(target.id, payload, sourceReceipt.sequence_floor, sourceReceipt.history_floor, sourceReceipt.title_context_json, sourceReceipt.archived_bytes,
+            sourceReceipt.prefix_summary_json ?? undefined);
         }
         // Clone creation and its undo record commit together. Besides closing a
         // crash gap, this avoids a second large-WAL auto-checkpoint on the caller.
@@ -2289,7 +2342,7 @@ export class SqliteConversationStore implements ConversationRepository {
     counts?: { messageCount: number; storedMessageCount: number },
   ): void {
     const messageCount = counts?.messageCount ?? summarizeConversation(conv).messageCount;
-    const storedMessageCount = counts?.storedMessageCount ?? conv.messages.length;
+    const storedCount = counts?.storedMessageCount ?? storedMessageCount(conv.messages);
     this.db.query(`
       INSERT INTO conversations(
         id, provider, model, effort, fast_mode, created_at, updated_at,
@@ -2329,7 +2382,7 @@ export class SqliteConversationStore implements ConversationRepository {
       optionalJson(conv.toolPolicy),
       generation,
       messageCount,
-      storedMessageCount,
+      storedCount,
       conv.fastMode === "ultrafast" ? 1 : 0,
     );
   }
@@ -2371,24 +2424,26 @@ export class SqliteConversationStore implements ConversationRepository {
   private firstChangedMessage(conv: Conversation, forceMessages: boolean): number | null {
     const state = this.loadedState.get(conv);
     if (!state) return 0;
+    const offset = messageSequenceOffset(conv.messages);
+    if (offset !== (state.messageOffset ?? 0)) throw new Error("Sparse archive descriptor was changed");
     const common = Math.min(state.messages.length, conv.messages.length);
     if (forceMessages) {
-      const rows = this.db.query<{ sequence: number; message_hash: string }, [string]>(
-        "SELECT sequence, message_hash FROM messages WHERE conversation_id=? ORDER BY sequence",
-      ).all(conv.id);
+      const rows = this.db.query<{ sequence: number; message_hash: string }, [string, number]>(
+        "SELECT sequence, message_hash FROM messages WHERE conversation_id=? AND sequence>=? ORDER BY sequence",
+      ).all(conv.id, offset);
       for (let i = 0; i < common; i++) {
         if (isArchivedMessage(conv.messages[i])) {
           if (state.messages[i].ref !== conv.messages[i]) throw new Error("Archived row header changed");
           continue;
         }
-        if (rows[i]?.sequence !== i || rows[i].message_hash !== messageFingerprint(conv.messages[i])) return i;
+        if (rows[i]?.sequence !== i + offset || rows[i].message_hash !== messageFingerprint(conv.messages[i])) return i + offset;
       }
     } else {
       for (let i = 0; i < common; i++) {
-        if (messageShallowChanged(state.messages[i], conv.messages[i])) return i;
+        if (messageShallowChanged(state.messages[i], conv.messages[i])) return i + offset;
       }
     }
-    return state.messages.length === conv.messages.length ? null : common;
+    return state.messages.length === conv.messages.length ? null : common + offset;
   }
 
   private rebuildDisplay(
@@ -2403,7 +2458,7 @@ export class SqliteConversationStore implements ConversationRepository {
       SELECT sequence FROM messages
       WHERE conversation_id=? AND is_real_user=1 AND sequence<=?
       ORDER BY sequence DESC LIMIT 1
-    `).get(conv.id, Math.min(changedAt, Math.max(0, conv.messages.length - 1)))?.sequence ?? 0;
+    `).get(conv.id, Math.min(changedAt, Math.max(0, storedMessageCount(conv.messages) - 1)))?.sequence ?? 0;
     // Compaction dividers are independently rendered boundaries. Rebuilding an
     // entire user group can otherwise rematerialize hundreds of MB after each
     // append in a long-running single user turn.
@@ -2439,7 +2494,9 @@ export class SqliteConversationStore implements ConversationRepository {
       this.db.query("DELETE FROM display_entries WHERE conversation_id=?").run(conv.id);
     }
 
-    const suffix = conv.messages.slice(startSequence);
+    const offset = messageSequenceOffset(conv.messages);
+    if (startSequence < offset) throw new Error("Display rebuild crossed the sparse archive boundary");
+    const suffix = conv.messages.slice(startSequence - offset);
     if (suffix.some(isArchivedMessage)) throw new Error("Display rebuild crossed the materialized archive boundary");
     const data = buildDisplayData(
       conv.id,
@@ -2495,6 +2552,9 @@ export class SqliteConversationStore implements ConversationRepository {
   save(conv: Conversation, options: { forceMessages?: boolean; generation?: number } = {}): void {
     assertSafeId(conv.id);
     archiveWindow(conv.messages); // validate immutable prefix before ANY delete/upsert
+    if (archiveWindow(conv.messages)?.sparse && !this.checkpointIsValidated(conv)) {
+      throw new Error("Cannot discard or change the checkpoint of an unmaterialized archive");
+    }
     const existing = this.row(conv.id, true);
     const loaded = this.loadedState.get(conv);
     if (loaded?.readRevision && loaded.readRevision !== this.runtimeCacheToken(conv.id)) throw new Error(`Stale conversation revision for ${conv.id}`);
@@ -2517,8 +2577,11 @@ export class SqliteConversationStore implements ConversationRepository {
           : 0;
         this.db.query("DELETE FROM messages WHERE conversation_id=? AND sequence>=?").run(conv.id, changedAt);
         let insertedBytes = 0;
-        for (let sequence = changedAt; sequence < conv.messages.length; sequence++) {
-          insertedBytes += this.insertMessage(conv.id, sequence, conv.messages[sequence]);
+        const offset = messageSequenceOffset(conv.messages);
+        const endSequence = offset + conv.messages.length;
+        if (changedAt < offset) throw new Error("Cannot rewrite an unmaterialized archive");
+        for (let sequence = changedAt; sequence < endSequence; sequence++) {
+          insertedBytes += this.insertMessage(conv.id, sequence, conv.messages[sequence - offset]);
         }
         this.faultInjection?.("save.after-messages");
         this.rebuildDisplay(conv, changedAt);
@@ -2543,6 +2606,7 @@ export class SqliteConversationStore implements ConversationRepository {
     })();
     const previousReceipt = loaded?.lastUnwindReceipt ?? null;
     this.loadedState.set(conv, {
+      messageOffset: messageSequenceOffset(conv.messages),
       generation,
       messages: conv.messages.map(messageSnapshot),
       activeContextRef: conv.activeContext,
@@ -2556,28 +2620,32 @@ export class SqliteConversationStore implements ConversationRepository {
     assertSafeId(conv.id);
     archiveWindow(conv.messages);
     if (!Number.isSafeInteger(expectedStoredMessageCount) || expectedStoredMessageCount < 0
-        || conv.messages.length < expectedStoredMessageCount) {
+        || storedMessageCount(conv.messages) < expectedStoredMessageCount
+        || expectedStoredMessageCount < messageSequenceOffset(conv.messages)) {
       throw new Error(`Invalid conversation append boundary for ${conv.id}: ${expectedStoredMessageCount}/${conv.messages.length}`);
     }
     const existing = this.row(conv.id);
     if (!existing) throw new Error(`Conversation not found: ${conv.id}`);
     const loaded = this.loadedState.get(conv);
+    if (loaded && (loaded.messageOffset ?? 0) !== messageSequenceOffset(conv.messages)) throw new Error("Sparse archive descriptor was changed");
     if (loaded?.readRevision && loaded.readRevision !== this.runtimeCacheToken(conv.id)) throw new Error(`Stale conversation revision for ${conv.id}`);
     if (loaded && existing.storage_generation !== loaded.generation) {
       throw new Error(`Stale conversation generation for ${conv.id}: loaded=${loaded.generation}, current=${existing.storage_generation}`);
     }
     if (existing.stored_message_count !== expectedStoredMessageCount
-        || (loaded && loaded.messages.length !== expectedStoredMessageCount)) {
+        || (loaded && loaded.messages.length + messageSequenceOffset(conv.messages) !== expectedStoredMessageCount)) {
       throw new Error(
         `Stale conversation append boundary for ${conv.id}: expected=${expectedStoredMessageCount}, durable=${existing.stored_message_count}, loaded=${loaded?.messages.length ?? "unknown"}`,
       );
     }
+    if (archiveWindow(conv.messages)?.sparse && !this.checkpointIsValidated(conv)) throw new Error("Cannot discard or change the checkpoint of an unmaterialized archive");
 
-    const appended = conv.messages.slice(expectedStoredMessageCount);
+    const offset = messageSequenceOffset(conv.messages);
+    const appended = conv.messages.slice(expectedStoredMessageCount - offset);
     const generation = existing.storage_generation + 1;
     const counts = {
       messageCount: existing.message_count + countConversationMessages(appended),
-      storedMessageCount: conv.messages.length,
+      storedMessageCount: storedMessageCount(conv.messages),
     };
     let insertedBytes = 0;
     let readRevision: string | undefined;
@@ -2585,8 +2653,8 @@ export class SqliteConversationStore implements ConversationRepository {
       if (loaded?.readRevision && loaded.readRevision !== this.runtimeCacheToken(conv.id)) throw new Error(`Stale conversation revision for ${conv.id}`);
       this.upsertConversationRow(conv, generation, counts);
       this.faultInjection?.("append.after-conversation");
-      for (let sequence = expectedStoredMessageCount; sequence < conv.messages.length; sequence++) {
-        insertedBytes += this.insertMessage(conv.id, sequence, conv.messages[sequence]!);
+      for (let sequence = expectedStoredMessageCount; sequence < offset + conv.messages.length; sequence++) {
+        insertedBytes += this.insertMessage(conv.id, sequence, conv.messages[sequence - offset]!);
       }
       this.faultInjection?.("append.after-messages");
       if (appended.length > 0) this.rebuildDisplay(conv, expectedStoredMessageCount);
@@ -2599,9 +2667,10 @@ export class SqliteConversationStore implements ConversationRepository {
 
     const messageSnapshots = loaded
       ? loaded.messages
-      : conv.messages.slice(0, expectedStoredMessageCount).map(messageSnapshot);
+      : conv.messages.slice(0, expectedStoredMessageCount - offset).map(messageSnapshot);
     messageSnapshots.push(...appended.map(messageSnapshot));
     this.loadedState.set(conv, {
+      messageOffset: offset,
       generation,
       messages: messageSnapshots,
       activeContextRef: conv.activeContext,
@@ -2615,6 +2684,9 @@ export class SqliteConversationStore implements ConversationRepository {
     archiveWindow(conv.messages);
     const existing = this.row(conv.id);
     const loaded = this.loadedState.get(conv);
+    const offset = messageSequenceOffset(conv.messages);
+    if (loaded && (loaded.messageOffset ?? 0) !== offset) throw new Error("Sparse archive descriptor was changed");
+    if (archiveWindow(conv.messages)?.sparse && !this.checkpointIsValidated(conv)) throw new Error("Cannot discard or change the checkpoint of an unmaterialized archive");
     if (loaded?.readRevision && loaded.readRevision !== this.runtimeCacheToken(conv.id)) throw new Error(`Stale conversation revision for ${conv.id}`);
     if (!existing) return this.save(conv);
     if (loaded && loaded.generation !== existing.storage_generation) throw new Error(`Stale conversation generation for ${conv.id}`);
@@ -2626,13 +2698,13 @@ export class SqliteConversationStore implements ConversationRepository {
         const message = conv.messages[sequence];
         if (isArchivedMessage(message)) continue;
         this.db.query("UPDATE messages SET context_tokens_json=?, has_context_tokens=? WHERE conversation_id=? AND sequence=?")
-          .run(optionalJson(message.contextTokens), Object.hasOwn(message, "contextTokens") ? 1 : 0, conv.id, sequence);
+          .run(optionalJson(message.contextTokens), Object.hasOwn(message, "contextTokens") ? 1 : 0, conv.id, sequence + offset);
       }
       this.upsertConversationRow(conv, generation);
       if (loaded?.activeContextRef !== conv.activeContext) this.saveActiveContext(conv);
       if (loaded?.readRevision) readRevision = this.runtimeCacheToken(conv.id)!;
     })();
-    this.loadedState.set(conv, { generation, messages: conv.messages.map(messageSnapshot), activeContextRef: conv.activeContext, lastUnwindReceipt: loaded?.lastUnwindReceipt ?? null,
+    this.loadedState.set(conv, { messageOffset: messageSequenceOffset(conv.messages), generation, messages: conv.messages.map(messageSnapshot), activeContextRef: conv.activeContext, lastUnwindReceipt: loaded?.lastUnwindReceipt ?? null,
       readRevision });
     this.loadedById.set(conv.id, new WeakRef(conv));
   }
@@ -2654,15 +2726,17 @@ export class SqliteConversationStore implements ConversationRepository {
     if (!loaded) throw new Error(`Cannot persist unwind for unloaded conversation ${base.id}`);
     if (loaded.readRevision && loaded.readRevision !== this.runtimeCacheToken(base.id)) throw new Error(`Stale conversation revision for ${base.id}`);
     if (loaded.generation !== existing.storage_generation) throw new Error(`Stale conversation generation for ${base.id}`);
-    const cutSequence = result.messages.length;
-    if (cutSequence > existing.stored_message_count || cutSequence > base.messages.length) {
+    const offset = messageSequenceOffset(base.messages);
+    const cutSequence = storedMessageCount(result.messages);
+    if (offset !== (loaded.messageOffset ?? 0) || messageSequenceOffset(result.messages) !== offset
+        || cutSequence > existing.stored_message_count || cutSequence > storedMessageCount(base.messages)) {
       throw new Error(`Invalid unwind boundary for ${base.id}: ${cutSequence}/${existing.stored_message_count}`);
     }
     // A targeted unwind may only remove a suffix. Prefix replacement belongs to
     // the ordinary generation-checked save path and must not be smuggled into this
     // optimized delete-only transaction.
     const contextAttributionUpdates: number[] = [];
-    for (let sequence = 0; sequence < cutSequence; sequence++) {
+    for (let sequence = 0; sequence < result.messages.length; sequence++) {
       const snapshot = loaded.messages[sequence];
       if (result.messages[sequence] !== base.messages[sequence]
           || !snapshot
@@ -2706,7 +2780,7 @@ export class SqliteConversationStore implements ConversationRepository {
           optionalJson(message.contextTokens),
           Object.hasOwn(message, "contextTokens") ? 1 : 0,
           base.id,
-          sequence,
+          sequence + offset,
         );
       }
       this.faultInjection?.("unwind.after-messages");
@@ -2735,8 +2809,9 @@ export class SqliteConversationStore implements ConversationRepository {
       if (loaded.readRevision) readRevision = this.runtimeCacheToken(base.id)!;
     })();
     this.loadedState.set(base, {
+      messageOffset: offset,
       generation,
-      messages: loaded.messages.slice(0, cutSequence),
+      messages: loaded.messages.slice(0, result.messages.length),
       activeContextRef: result.activeContext,
       lastUnwindReceipt: receipt,
       readRevision,

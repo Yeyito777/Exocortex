@@ -11,7 +11,7 @@ import { fastModeServiceTier } from "@exocortex/shared/messages";
 import { log } from "./log";
 import { isDeepStrictEqual } from "node:util";
 import { prepareArchiveHashes } from "./conversation-loader";
-import { archiveWindow, inheritArchiveHashProof } from "./conversation-window";
+import { archiveWindow, inheritArchiveHashProof, storedMessageCount } from "./conversation-window";
 import { workTimerForTurn } from "./work-timer";
 import { hasConfiguredCredentials } from "./auth";
 import { runAgentLoop, type AgentCallbacks, type AgentState } from "./agent";
@@ -152,7 +152,7 @@ function toStoredMessages(messages: import("./messages").ApiMessage[]): StoredMe
 }
 
 function hasReplayableHistory(messages: StoredMessage[]): boolean {
-  return messages.some(isHistoryMessage);
+  return (archiveWindow(messages)?.prefixHistoryCount ?? 0) > 0 || messages.some(isHistoryMessage);
 }
 
 /**
@@ -748,7 +748,7 @@ async function orchestrateAdmittedAssistantTurn(
   let workTimerStartedAt = workTimerForTurn(conv.messages, startedAt);
   convStore.setStreamingWorkTimerStartedAt(convId, workTimerStartedAt);
   convStore.initStreamingState(convId);
-  convStore.setStreamingCommittedMessageCount(convId, conv.messages.length);
+  convStore.setStreamingCommittedMessageCount(convId, storedMessageCount(conv.messages));
 
   // The app watchdog interrupts only the current provider invocation. Give each
   // retry a fresh child signal while preserving `ac.signal` as the terminal turn

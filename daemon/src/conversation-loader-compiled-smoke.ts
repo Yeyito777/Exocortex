@@ -7,6 +7,7 @@
  */
 import { loadConversationOffThread, stopConversationLoader } from "./conversation-loader";
 import { SqliteConversationStore } from "./sqlite-conversation-store";
+import { storedMessageCount } from "./conversation-window";
 import { buildConversationApiContext } from "./context-compaction";
 import { currentReplayHistoryPrefix } from "./messages";
 import { prepareConversationStoreSchema } from "./persistence";
@@ -28,7 +29,7 @@ try {
   if (!store.adoptLoadedConversation(result)) throw new Error("Stale generation");
   const replay = buildConversationApiContext(result.conversation, result.conversation.activeContext?.accountScope);
   console.log(JSON.stringify({
-    rows: result.conversation.messages.length, archivedHeaders: result.window?.prefixSequence,
+    rows: storedMessageCount(result.conversation.messages), archivedHeaders: result.window?.sparse ? 0 : result.window?.prefixSequence,
     replayMessages: replay.messages.length, hash: currentReplayHistoryPrefix(result.conversation.messages).hash,
     loadDiagnostics: result.loadDiagnostics,
   }));
