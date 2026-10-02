@@ -467,3 +467,27 @@ bun scripts/dev/profile-archive-loader.ts ready /tmp/CURRENT-fixture.sqlite3 arc
 bun scripts/dev/profile-archive-loader.ts seed /tmp/NEW-small.sqlite3 archive-stress 1 500
 bun scripts/dev/profile-archive-loader.ts seed /tmp/NEW-large.sqlite3 archive-stress 1 64000
 ```
+
+## Startup cursor regression and cleanup
+
+The v12 enrollment title collector stopped at its character budget while using
+a cached `db.query(...).iterate()` statement. The next checkpoint could not
+rebind that still-active cursor (`bad parameter or other API misuse`), preventing
+startup. The same behavior reproduces on Bun 1.3.14 and 1.4.2; it is separate from
+the native GC/timer crash above. Single-checkpoint/short-title fixtures missed it.
+
+All streamed store queries now use `iterateRows`: an uncached prepared statement
+owned by a generator and finalized in `finally`. Exhaustion, early breaks and
+validation exceptions release it. Clone envelope/projection failures previously
+poisoned subsequent same-connection attempts too; repeated rejection and a retry
+after restoring the exact fixture bytes are now covered. Integrity checks,
+transactions, receipt format and deferred historical-body validation are unchanged.
+
+On an owned consistent 7.1 GB backup (817,230 messages, 245 checkpoints), full
+v11→v13 enrollment succeeded in 22.9 s, preserving byte-identical checkpoint
+payloads. A subsequent schema-worker run took 54 ms (schema phase only, not whole
+daemon startup). SQLite quick-check, foreign keys, blob aliases and receipt/
+descriptor coverage were clean. Two fresh runtime admissions/replays succeeded
+without reading historical bodies or index headers. Validation: 2,384 repository
+tests, 40 repeated cursor/migration checks, workspace typechecks, owned daemon
+IPC/integrity smoke, Linux compiled-worker smoke and Windows x64 cross-build.

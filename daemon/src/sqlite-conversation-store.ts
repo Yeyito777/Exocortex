@@ -1,4 +1,4 @@
-import { Database } from "bun:sqlite";
+import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { normalizeConversationGoal } from "@exocortex/shared/goals";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -468,6 +468,19 @@ export class SqliteConversationStore implements ConversationRepository {
 
   private assertOpen(): void {
     if (this.closed) throw new Error("SQLite conversation store is closed");
+  }
+
+  /** Cached Bun cursors survive early exits. Own every streamed statement. */
+  private *iterateRows<Row, Params extends SQLQueryBindings[] = []>(
+    sql: string, ...bindings: Params
+  ): Generator<Row> {
+    const statement = this.db.prepare<Row, SQLQueryBindings[]>(sql);
+    try {
+      yield* statement.iterate(...bindings);
+    } finally {
+      // Covers exhaustion, break, validation exceptions and transaction aborts.
+      statement.finalize();
+    }
   }
 
   private configure(): void {
@@ -989,19 +1002,19 @@ export class SqliteConversationStore implements ConversationRepository {
   /** Only for schema enrollment or a NEW owned snapshot, never repair a load. */
   initializeIntegrityBaselines(): void {
     if (this.readOnly) throw new Error("Cannot enroll integrity on a readonly database");
-    for (const row of this.db.query<MessageRow & { conversation_id: string }, []>(`
+    for (const row of this.iterateRows<MessageRow & { conversation_id: string }, []>(`
       SELECT conversation_id,sequence,role,content_hash,metadata_json,provider_data_json,context_checkpoint_json,
              has_provider_data,has_context_checkpoint,is_real_user,is_replay_history
       FROM messages
-    `).iterate()) {
+    `)) {
       this.db.query("INSERT OR IGNORE INTO message_integrity VALUES (?, ?, ?)").run(row.conversation_id, row.sequence, this.envelopeHash(row));
     }
-    for (const row of this.db.query<{ conversation_id: string }, []>("SELECT conversation_id FROM active_contexts").iterate()) {
+    for (const row of this.iterateRows<{ conversation_id: string }, []>("SELECT conversation_id FROM active_contexts")) {
       if (!this.db.query("SELECT 1 FROM checkpoint_integrity WHERE conversation_id=?").get(row.conversation_id)) {
         this.sealCheckpoint(row.conversation_id);
       }
     }
-    for (const row of this.db.query<{ conversation_id: string; pinned: number; entry_index: number; user_index: number | null; type: string; payload_json: string }, []>("SELECT * FROM display_entries").iterate()) {
+    for (const row of this.iterateRows<{ conversation_id: string; pinned: number; entry_index: number; user_index: number | null; type: string; payload_json: string }, []>("SELECT * FROM display_entries")) {
       this.db.query("INSERT OR IGNORE INTO display_integrity VALUES (?, ?, ?, ?)").run(row.conversation_id, row.pinned, row.entry_index, this.displayHash(row));
     }
   }
@@ -1040,10 +1053,10 @@ export class SqliteConversationStore implements ConversationRepository {
     let workTimer: StoredMessage["metadata"] = null;
     const instructions: number[] = [];
     // Only at checkpoint creation / one-time upgrade, never at runtime load.
-    for (const row of this.db.query<{ sequence: number; role: StoredMessage["role"]; metadata_json: string | null; is_real_user: number }, [string, number]>(`
+    for (const row of this.iterateRows<{ sequence: number; role: StoredMessage["role"]; metadata_json: string | null; is_real_user: number }, [string, number]>(`
       SELECT sequence,role,metadata_json,is_real_user FROM messages
       WHERE conversation_id=? AND sequence<? ORDER BY sequence
-    `).iterate(id, floor)) {
+    `, id, floor)) {
       userCount += row.is_real_user;
       if (row.role === "system_instructions") instructions.push(row.sequence);
       let metadata: StoredMessage["metadata"] = null;
@@ -1097,9 +1110,9 @@ export class SqliteConversationStore implements ConversationRepository {
     if (floor < 0) return;
     const title: string[] = [];
     let remaining = MAX_TITLE_CONTEXT_CHARS;
-    for (const user of this.db.query<{ content_json: string }, [string, number]>(`
+    for (const user of this.iterateRows<{ content_json: string }, [string, number]>(`
       SELECT content_json FROM messages WHERE conversation_id=? AND is_real_user=1 AND sequence<? ORDER BY sequence
-    `).iterate(id, floor)) {
+    `, id, floor)) {
       if (remaining <= 0) break;
       try {
         const text = titleUserText(JSON.parse(user.content_json));
@@ -2076,26 +2089,26 @@ export class SqliteConversationStore implements ConversationRepository {
         // Rebinding changes these fields. Verify the source envelopes before
         // minting new checksums; untouched historical bodies stay deferred.
         if (active) {
-          for (const message of this.db.query<MessageRow, [string, string]>(`
+          for (const message of this.iterateRows<MessageRow, [string, string]>(`
             SELECT m.sequence,m.role,m.content_hash,m.metadata_json,m.provider_data_json,m.context_checkpoint_json,
                    m.has_provider_data,m.has_context_checkpoint,m.is_real_user,m.is_replay_history,i.envelope_hash
             FROM messages m LEFT JOIN message_integrity i
             ON i.conversation_id=m.conversation_id AND i.sequence=m.sequence
             WHERE m.conversation_id=? AND json_valid(m.context_checkpoint_json)
             AND json_extract(m.context_checkpoint_json,'$.windowId')=?
-          `).iterate(sourceId, active.window_id)) {
+          `, sourceId, active.window_id)) {
             if (!message.envelope_hash || this.envelopeHash(message) !== message.envelope_hash) {
               throw new ConversationIntegrityError(`Clone source envelope failed at message ${message.sequence}`);
             }
           }
         }
-        for (const entry of this.db.query<{
+        for (const entry of this.iterateRows<{
           pinned: number; entry_index: number; user_index: number | null; type: string; payload_json: string; payload_hash: string | null;
         }, [string]>(`
           SELECT d.*,i.payload_hash FROM display_entries d LEFT JOIN display_integrity i
           ON i.conversation_id=d.conversation_id AND i.pinned=d.pinned AND i.entry_index=d.entry_index
           WHERE d.conversation_id=? AND d.type='user'
-        `).iterate(sourceId)) this.verifiedDisplay(entry);
+        `, sourceId)) this.verifiedDisplay(entry);
         this.db.query(`
           INSERT INTO conversations(
             id, provider, model, effort, fast_mode, created_at, updated_at,
@@ -2236,9 +2249,10 @@ export class SqliteConversationStore implements ConversationRepository {
         this.db.query(`INSERT OR IGNORE INTO message_integrity SELECT ?,sequence,envelope_hash FROM message_integrity WHERE conversation_id=?`).run(target.id,sourceId);
         this.db.query(`INSERT INTO display_integrity SELECT ?,pinned,entry_index,payload_hash FROM display_integrity WHERE conversation_id=?`).run(target.id,sourceId);
         // Only user projections changed during clone rebinding.
-        for(const item of this.db.query<{pinned:number;entry_index:number;user_index:number|null;type:string;payload_json:string},[string]>(
+        for(const item of this.iterateRows<{pinned:number;entry_index:number;user_index:number|null;type:string;payload_json:string},[string]>(
           "SELECT * FROM display_entries WHERE conversation_id=? AND type='user'",
-        ).iterate(target.id))this.db.query("UPDATE display_integrity SET payload_hash=? WHERE conversation_id=? AND pinned=? AND entry_index=?")
+          target.id,
+        ))this.db.query("UPDATE display_integrity SET payload_hash=? WHERE conversation_id=? AND pinned=? AND entry_index=?")
           .run(this.displayHash(item),target.id,item.pinned,item.entry_index);
         if (sourceReceipt) {
           const payload = this.db.query<{ payload_json: string }, [string]>("SELECT payload_json FROM active_contexts WHERE conversation_id=?").get(target.id)!.payload_json;
