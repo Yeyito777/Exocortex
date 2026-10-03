@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { defaultExocortexConfig, writeExocortexConfig } from "@exocortex/shared/config";
-import { canOpenLinkTarget, findOpenableTargetMatches, openTargetDetached, resolveOpenCommand } from "./openable";
+import { canOpenLinkTarget, findOpenableTargetMatches, openCommandDetached, openTargetDetached, resolveOpenCommand, resolveRemoteOpenCommand } from "./openable";
 import { homedir, tmpdir } from "node:os";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -119,6 +119,78 @@ describe("configured text-file rules", () => {
   test("ignores invalid or disabled text rules", () => {
     writeExocortexConfig({ openers: { rules: [{ text: false, command: "editor" }] } });
     expect(findOpenableTargetMatches("/remote/Makefile")).toEqual([]);
+  });
+});
+
+describe("configured remote file openers", () => {
+  function configure(): void {
+    writeExocortexConfig({ openers: { rules: [
+      { extensions: ["pdf"], command: "local-pdf-viewer" },
+      {
+        text: true, extensions: ["md", "py"], command: "local-terminal",
+        remote: {
+          command: "remote-terminal",
+          args: ["-e", "ssh", "-t", "--", "{host}", "exec nvim -- {path:sh}", "{target}", "{host:sh}"],
+        },
+      },
+    ] } });
+  }
+
+  test("templates the selected host and literal canonical remote path, not the local workspace", () => {
+    configure();
+    const path = "/remote/it's $(literal) {host} {path:sh}.md";
+    expect(resolveRemoteOpenCommand("fenrir", path, { target: "file:///remote/notes.md" })).toEqual({
+      command: "remote-terminal",
+      args: ["-e", "ssh", "-t", "--", "fenrir",
+        "exec nvim -- '/remote/it'\\''s $(literal) {host} {path:sh}.md'",
+        "file:///remote/notes.md", "'fenrir'"],
+    });
+    expect(resolveOpenCommand("/tmp/notes.md")?.command).toBe("local-terminal");
+    expect(resolveRemoteOpenCommand("whale", "/remote/data.json")).toBeNull();
+    expect(resolveRemoteOpenCommand("whale", "/remote/data.json", { text: true })?.command).toBe("remote-terminal");
+    expect(resolveRemoteOpenCommand("whale", "/remote/Makefile", { text: true })?.command).toBe("remote-terminal");
+    expect(resolveRemoteOpenCommand("whale", "/remote/report.pdf", { text: true })).toBeNull();
+  });
+
+  test("rejects unsafe aliases/paths and obeys absent or disabled remote config", () => {
+    configure();
+    for (const alias of ["-oProxyCommand=bad", "host;command", "user@host", ""]) {
+      expect(resolveRemoteOpenCommand(alias, "/remote/a.md")).toBeNull();
+    }
+    for (const path of ["relative.md", "~/notes.md", "//remote/a.md", "/remote/\0.md", "/remote/\n.md"]) {
+      expect(resolveRemoteOpenCommand("whale", path)).toBeNull();
+    }
+    writeExocortexConfig({ openers: { rules: [{ extensions: ["md"], command: "editor", remote: null }] } });
+    expect(resolveRemoteOpenCommand("whale", "/remote/a.md")).toBeNull();
+    resetConfig();
+    expect(resolveRemoteOpenCommand("whale", "/remote/a.md")).toBeNull();
+  });
+
+  test("earlier text rules are classified before choosing a later extension-specific remote opener", () => {
+    writeExocortexConfig({ openers: { rules: [
+      { text: true, command: "local-text", remote: { command: "remote-text" } },
+      { extensions: ["html"], command: "local-browser", remote: { command: "remote-browser" } },
+    ] } });
+    expect(resolveRemoteOpenCommand("whale", "/remote/page.html")).toBeNull();
+    expect(resolveRemoteOpenCommand("whale", "/remote/page.html", { text: true })?.command).toBe("remote-text");
+    expect(resolveRemoteOpenCommand("whale", "/remote/page.html", { text: false })?.command).toBe("remote-browser");
+  });
+
+  test("remote-shell quoting survives command substitution and apostrophes", async () => {
+    const path = "/remote/it's $(echo injected); {host} [file].md";
+    writeExocortexConfig({ openers: { rules: [{
+      extensions: ["md"], command: "editor",
+      remote: { command: "terminal", args: ["exec printf '%s' {path:sh}"] },
+    }] } });
+    const command = resolveRemoteOpenCommand("whale", path)!;
+    const child = Bun.spawn(["sh", "-c", command.args[0]], { stdout: "pipe", stderr: "pipe" });
+    expect(await new Response(child.stdout).text()).toBe(path);
+    expect(await child.exited).toBe(0);
+  });
+
+  test("detached terminal launch reports a missing executable instead of silently succeeding", async () => {
+    expect(await openCommandDetached({ command: "/not-existing/exocortex-test-terminal", args: [] })).toBe(false);
+    expect(await openCommandDetached({ command: process.execPath, args: ["-e", "process.exit(0)"] })).toBe(true);
   });
 });
 

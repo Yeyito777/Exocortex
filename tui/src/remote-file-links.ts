@@ -6,8 +6,9 @@ import { pathToFileURL } from "node:url";
 import { runtimeDir } from "@exocortex/shared/paths";
 import type { Event, FileLinkResolvedEvent } from "./protocol";
 import { isWebUrl, localPathFromTarget } from "./links";
-import { openConversationTarget, openTargetDetached } from "./openable";
+import { openCommandDetached, openConversationTarget, openTargetDetached, resolveRemoteOpenCommand, type OpenCommand } from "./openable";
 import { validateSshAlias } from "./ssh-transport";
+import { isEditableTextFile } from "./text-file";
 
 const MAX_FILE_BYTES = 128 * 1024 * 1024;
 const PREVIEW_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
@@ -101,6 +102,8 @@ interface FileLinkDependencies {
   download?: typeof downloadRemoteFile;
   openFile?: (path: string) => boolean;
   openDirectory?: (alias: string, path: string) => boolean | Promise<boolean>;
+  openRemote?: (command: OpenCommand) => boolean | Promise<boolean>;
+  isText?: typeof isEditableTextFile;
 }
 
 interface PendingLink {
@@ -108,6 +111,7 @@ interface PendingLink {
   abort: AbortController;
   timer: ReturnType<typeof setTimeout>;
   downloading: boolean;
+  target: string;
 }
 
 export class RemoteFileLinkController {
@@ -122,6 +126,10 @@ export class RemoteFileLinkController {
       return;
     }
     if (localPathFromTarget(target) === null) return;
+    if (validateSshAlias(context.alias)) {
+      this.dependencies.notify("Remote file link unavailable: invalid SSH alias.");
+      return;
+    }
     if (!context.conversationId) {
       this.dependencies.notify("Open a remote conversation before opening a file link.");
       return;
@@ -136,7 +144,7 @@ export class RemoteFileLinkController {
       return;
     }
     const pending: PendingLink = {
-      context, abort: new AbortController(), downloading: false,
+      context, abort: new AbortController(), downloading: false, target,
       timer: setTimeout(() => this.expire(reqId), 15_000),
     };
     this.pending.set(reqId, pending);
@@ -200,13 +208,39 @@ export class RemoteFileLinkController {
         const opened = await (this.dependencies.openDirectory ?? openRemoteDirectory)(pending.context.alias!, event.path);
         if (!opened) throw new Error("No local SFTP folder handler could be started.");
       } else {
-        if (event.kind !== "file" || !Number.isFinite(event.size) || event.size < 0 || event.size > MAX_FILE_BYTES) {
-          throw new Error("Remote preview exceeds the 128 MiB limit or is not a regular file.");
+        if (event.kind !== "file" || !Number.isFinite(event.size) || event.size < 0) {
+          throw new Error("Remote file metadata is invalid or is not a regular file.");
+        }
+        const alias = pending.context.alias!;
+        const remoteCommand = resolveRemoteOpenCommand(alias, event.path, { target: pending.target });
+        if (remoteCommand) {
+          // Known extensions need no download: edit the original on this host.
+          if (!await (this.dependencies.openRemote ?? openCommandDetached)(remoteCommand)) {
+            throw new Error("The configured remote editor terminal could not be started.");
+          }
+          return;
+        }
+        if (event.size > MAX_FILE_BYTES) {
+          throw new Error("Remote preview exceeds the 128 MiB limit.");
         }
         const file = await (this.dependencies.download ?? downloadRemoteFile)(
           pending.context.alias!, event.path, pending.abort.signal,
         );
         if (!this.isCurrent(pending)) { await file.discard(); return; }
+        // The existing remote protocol doesn't report text/binary content.
+        // Classify a preview, but launch the editor against the original remote
+        // path when a text rule has a remote opener. Never edit this temp copy.
+        const textCommand = resolveRemoteOpenCommand(alias, event.path, {
+          text: (this.dependencies.isText ?? isEditableTextFile)(file.path), target: pending.target,
+        });
+        if (textCommand) {
+          try {
+            if (!await (this.dependencies.openRemote ?? openCommandDetached)(textCommand)) {
+              throw new Error("The configured remote editor terminal could not be started.");
+            }
+          } finally { await file.discard(); }
+          return;
+        }
         const opened = (this.dependencies.openFile ?? (path =>
           openTargetDetached(pathToFileURL(path).href, { localLink: true })))(file.path);
         if (!opened) { await file.discard(); throw new Error("No local viewer could be started."); }

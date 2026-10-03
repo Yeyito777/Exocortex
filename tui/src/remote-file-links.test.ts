@@ -1,8 +1,21 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { RemoteFileLinkController, remoteDirectoryUrl, remoteFileCopyArgs, type FileLinkContext } from "./remote-file-links";
+import { defaultExocortexConfig, writeExocortexConfig } from "@exocortex/shared/config";
+import type { OpenCommand } from "./openable";
 
 const controllers: RemoteFileLinkController[] = [];
-afterEach(() => { for (const controller of controllers.splice(0)) controller.cancel(); });
+beforeEach(() => writeExocortexConfig(defaultExocortexConfig()));
+afterEach(() => {
+  for (const controller of controllers.splice(0)) controller.cancel();
+  writeExocortexConfig(defaultExocortexConfig());
+});
+
+function configureRemoteText(): void {
+  writeExocortexConfig({ openers: { rules: [{
+    text: true, extensions: ["md", "py", "txt"], command: "local-editor",
+    remote: { command: "terminal", args: ["-e", "ssh", "-t", "--", "{host}", "exec nvim -- {path:sh}"] },
+  }] } });
+}
 
 function setup() {
   let context: FileLinkContext = { alias: "remote", conversationId: "conversation" };
@@ -13,8 +26,12 @@ function setup() {
   const files: string[] = [];
   const directories: string[][] = [];
   const discarded: string[] = [];
+  const remote: OpenCommand[] = [];
+  const samples: string[] = [];
   let online = true;
   let directoryWorks = true;
+  let remoteWorks = true;
+  let text = false;
   let downloadGate: Promise<void> = Promise.resolve();
   const controller = new RemoteFileLinkController({
     context: () => context,
@@ -32,6 +49,8 @@ function setup() {
     },
     openFile: path => { files.push(path); return true; },
     openDirectory: (alias, path) => { directories.push([alias, path]); return directoryWorks; },
+    openRemote: command => { remote.push(command); return remoteWorks; },
+    isText: path => { samples.push(path); return text; },
   });
   controllers.push(controller);
   const response = (extra = {}) => controller.handleEvent({
@@ -39,10 +58,12 @@ function setup() {
     path: "/remote/workspace/report.md", kind: "file", size: 4, ...extra,
   });
   return {
-    controller, requests, notices, local, copies, files, directories, discarded, response,
+    controller, requests, notices, local, copies, files, directories, discarded, remote, samples, response,
     route: (next: FileLinkContext) => { context = next; },
     offline: () => { online = false; },
     failDirectory: () => { directoryWorks = false; },
+    failRemote: () => { remoteWorks = false; },
+    text: () => { text = true; },
     gate: (promise: Promise<void>) => { downloadGate = promise; },
   };
 }
@@ -50,6 +71,113 @@ function setup() {
 const settle = () => new Promise<void>(resolve => setImmediate(resolve));
 
 describe("SSH file links", () => {
+  test("configured remote editor opens the canonical original on the selected host without downloading", async () => {
+    configureRemoteText();
+    const s = setup();
+    s.route({ alias: "whale", conversationId: "conversation" });
+    s.controller.open("reports/note%20one.md");
+    s.response({ path: "/remote/canonical/note one.md" });
+    s.response({ path: "/remote/canonical/note one.md" });
+    await settle();
+    expect(s.remote).toEqual([{
+      command: "terminal",
+      args: ["-e", "ssh", "-t", "--", "whale", "exec nvim -- '/remote/canonical/note one.md'"],
+    }]);
+    expect(s.requests).toEqual([["conversation", "reports/note%20one.md"]]);
+    expect(s.copies).toHaveLength(0);
+    expect(s.samples).toHaveLength(0);
+    expect(s.files).toHaveLength(0);
+    expect(s.notices).toHaveLength(0);
+    s.response();
+    expect(s.remote).toHaveLength(1);
+  });
+
+  test("unlisted and extensionless text files open the original after classifying a discarded preview", async () => {
+    configureRemoteText();
+    for (const path of ["/remote/Makefile", "/remote/project/data.json"]) {
+      const s = setup();
+      s.text();
+      s.controller.open(path);
+      s.response({ path });
+      await settle();
+      expect(s.samples).toEqual(["/local/preview/file.md"]);
+      expect(s.remote[0].args.at(-1)).toBe(`exec nvim -- '${path}'`);
+      expect(s.files).toHaveLength(0);
+      expect(s.discarded).toEqual([path]);
+    }
+  });
+
+  test("binary files without matching remote rules still use the configured local preview viewer", async () => {
+    configureRemoteText();
+    const s = setup();
+    s.controller.open("/remote/image.png");
+    s.response({ path: "/remote/image.png" });
+    await settle();
+    expect(s.remote).toHaveLength(0);
+    expect(s.files).toEqual(["/local/preview/file.md"]);
+    expect(s.notices).toHaveLength(0);
+  });
+
+  test("remote terminal failures never fall back to editing a local copy", async () => {
+    configureRemoteText();
+    for (const path of ["/remote/notes.md", "/remote/data.json"]) {
+      const s = setup();
+      s.text();
+      s.failRemote();
+      s.controller.open(path);
+      s.response({ path });
+      await settle();
+      expect(s.notices[0]).toContain("remote editor terminal");
+      expect(s.files).toHaveLength(0);
+      expect(s.remote).toHaveLength(1);
+      expect(s.discarded).toEqual(path.endsWith(".json") ? [path] : []);
+    }
+  });
+
+  test("direct editors do not inherit the preview download size limit but validate metadata", async () => {
+    configureRemoteText();
+    const s = setup();
+    s.controller.open("notes.md");
+    s.response({ size: 512 * 1024 * 1024 });
+    await settle();
+    expect(s.remote).toHaveLength(1);
+    expect(s.copies).toHaveLength(0);
+    for (const extra of [{ size: -1 }, { size: NaN }, { kind: "device" }, { path: "/remote/\u001b.md" }]) {
+      const invalid = setup();
+      invalid.controller.open("notes.md");
+      invalid.response(extra);
+      await settle();
+      expect(invalid.notices).toHaveLength(1);
+      expect(invalid.remote).toHaveLength(0);
+      expect(invalid.copies).toHaveLength(0);
+    }
+  });
+
+  test("stale routes, invalid aliases, and cancelled classification cannot launch a remote editor", async () => {
+    configureRemoteText();
+    const stale = setup();
+    stale.controller.open("notes.md");
+    stale.route({ alias: "other", conversationId: "conversation" });
+    stale.response();
+    expect(stale.remote).toHaveLength(0);
+    const invalid = setup();
+    invalid.route({ alias: "-oProxyCommand=bad", conversationId: "conversation" });
+    invalid.controller.open("notes.md");
+    expect(invalid.requests).toHaveLength(0);
+    expect(invalid.notices[0]).toContain("invalid SSH alias");
+    const pending = setup();
+    let release!: () => void;
+    pending.gate(new Promise<void>(resolve => { release = resolve; }));
+    pending.text();
+    pending.controller.open("Makefile");
+    pending.response({ path: "/remote/Makefile" });
+    pending.controller.cancel();
+    release();
+    await settle();
+    expect(pending.remote).toHaveLength(0);
+    expect(pending.discarded).toEqual(["/remote/Makefile"]);
+  });
+
   test("local mode and web URLs remain local; remote web links have no remote cwd", () => {
     const s = setup();
     s.controller.open("https://example.com/report");

@@ -5,6 +5,7 @@ import { conversationWorkspaceDir } from "@exocortex/shared/paths";
 import { defaultOpenersConfig, readExocortexConfig } from "@exocortex/shared/config";
 import { isWebUrl, localPathFromTarget, trimUrlPunctuation } from "./links";
 import { isEditableTextFile } from "./text-file";
+import { validateSshAlias } from "./ssh-transport";
 
 export interface OpenableTargetMatch {
   target: string;
@@ -25,6 +26,7 @@ interface NormalizedOpenCommandConfig {
 interface FileOpenRule extends NormalizedOpenCommandConfig {
   extensions: readonly string[];
   text: boolean;
+  remote: NormalizedOpenCommandConfig | null;
 }
 
 interface NormalizedOpenersConfig {
@@ -68,7 +70,7 @@ function normalizeOpenFileRule(value: unknown): FileOpenRule | null {
   const extensions = normalizeExtensions(value.extensions);
   const text = value.text === true;
   if (extensions.length === 0 && !text) return null;
-  return { ...command, extensions, text };
+  return { ...command, extensions, text, remote: normalizeCommandConfig(value.remote) };
 }
 
 function defaultNormalizedOpenersConfig(): NormalizedOpenersConfig {
@@ -133,23 +135,19 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
-function replaceLiteral(value: string, search: string, replacement: string): string {
-  return value.split(search).join(replacement);
+function renderCommandTemplate(template: string, target: string, path: string, host?: string): string {
+  const values: Record<string, string | undefined> = { target, path, host };
+  // One pass: placeholder-looking text inside a filename is always literal.
+  return template.replace(/\{(target|path|host)(:sh)?\}/g, (literal, key: string, quote: string | undefined) => {
+    const value = values[key];
+    return value === undefined ? literal : quote ? shellQuote(value) : value;
+  });
 }
 
-function renderCommandTemplate(template: string, target: string, path: string): string {
-  let rendered = template;
-  rendered = replaceLiteral(rendered, "{target:sh}", shellQuote(target));
-  rendered = replaceLiteral(rendered, "{path:sh}", shellQuote(path));
-  rendered = replaceLiteral(rendered, "{target}", target);
-  rendered = replaceLiteral(rendered, "{path}", path);
-  return rendered;
-}
-
-function commandFromConfig(config: NormalizedOpenCommandConfig, target: string, path = target): OpenCommand {
+function commandFromConfig(config: NormalizedOpenCommandConfig, target: string, path = target, host?: string): OpenCommand {
   return {
-    command: renderCommandTemplate(config.command, target, path),
-    args: config.args.map((arg) => renderCommandTemplate(arg, target, path)),
+    command: renderCommandTemplate(config.command, target, path, host),
+    args: config.args.map((arg) => renderCommandTemplate(arg, target, path, host)),
   };
 }
 
@@ -235,6 +233,40 @@ export function resolveOpenCommand(target: string, options: OpenTargetOptions = 
   const rule = ruleForPath(localPath, openers.rules, expandedPath);
   if (!rule) return options.localLink ? { command: "xdg-open", args: [expandedPath] } : null;
   return commandFromConfig(rule, target, expandedPath);
+}
+
+/** Match a daemon-resolved remote file without ever probing the TUI host's path. */
+export function resolveRemoteOpenCommand(
+  alias: string,
+  path: string,
+  options: { text?: boolean; target?: string } = {},
+): OpenCommand | null {
+  if (validateSshAlias(alias) || !path.startsWith("/") || path.startsWith("//")
+    || /[\u0000-\u001f\u007f-\u009f]/u.test(path)) return null;
+  const ext = extensionOf(path);
+  for (const rule of readOpenersConfig().rules) {
+    if ((ext !== null && rule.extensions.includes(ext)) || (rule.text && options.text === true)) {
+      return rule.remote ? commandFromConfig(rule.remote, options.target ?? path, path, alias) : null;
+    }
+    // A higher-priority content rule must be classified before selecting a
+    // later extension rule. Do not silently change first-match ordering over SSH.
+    if (rule.text && options.text === undefined) return null;
+  }
+  return null;
+}
+
+/** Resolve on process creation, not editor exit: remote editing owns the new terminal. */
+export function openCommandDetached(command: OpenCommand): Promise<boolean> {
+  return new Promise(resolve => {
+    try {
+      const child = spawn(command.command, command.args, { detached: true, stdio: "ignore", shell: false });
+      child.once("error", () => resolve(false));
+      child.once("spawn", () => resolve(true));
+      child.unref();
+    } catch {
+      resolve(false);
+    }
+  });
 }
 
 /** History links belong to the conversation, not the terminal's launch directory. */

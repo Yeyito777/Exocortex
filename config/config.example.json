@@ -35,7 +35,11 @@
         "text": true,
         "extensions": ["md", "py", "txt"],
         "command": "st",
-        "args": ["-e", "nvim", "--", "{path}"]
+        "args": ["-e", "nvim", "--", "{path}"],
+        "remote": {
+          "command": "st",
+          "args": ["-e", "ssh", "-t", "--", "{host}", "exec nvim -- {path:sh}"]
+        }
       }
     ]
   }

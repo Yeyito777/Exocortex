@@ -41,7 +41,7 @@ export interface SafetyConfig {
 export interface OpenCommandConfig {
   /** Executable to spawn when opening a matching target. */
   command: string;
-  /** Arguments passed to command. Supports {target}, {path}, {target:sh}, and {path:sh}. */
+  /** Arguments passed directly. Supports {target}, {path}, and their :sh variants; remote openers also support {host}. */
   args?: string[];
 }
 
@@ -50,6 +50,8 @@ export interface OpenFileRuleConfig extends OpenCommandConfig {
   extensions?: string[];
   /** Also match existing regular text files by content, including extensionless files. */
   text?: boolean;
+  /** Open the original file on the selected /ssh host instead of a downloaded preview. */
+  remote?: OpenCommandConfig | null;
 }
 
 export interface OpenersConfig {

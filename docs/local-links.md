@@ -61,10 +61,31 @@ resolved in the remote conversation workspace; `~/`, absolute paths, and
 `file://` URLs refer to that remote host as well. They never fall back to a
 same-named file on the TUI host.
 
-- Regular files are downloaded over SFTP using the selected SSH alias, then
-  opened with the TUI host's configured file viewer. These are **local preview
-  copies**: editing a preview does not upload changes to the remote file.
-  Text rules inspect the downloaded copy, never a same-named local source file.
+- Rules can provide a `remote` command to open the **original remote file**.
+  For example, add this to the text rule above:
+
+  ```json
+  "remote": {
+    "command": "st",
+    "args": ["-e", "ssh", "-t", "--", "{host}", "exec nvim -- {path:sh}"]
+  }
+  ```
+
+  This launches a new terminal, connects to the **currently selected `/ssh`
+  alias**, and runs Neovim there. Saving edits updates the remote document,
+  not a local copy. `{host}` is that alias; `{path}` is the absolute remote
+  path returned by the daemon. `{path:sh}` safely quotes spaces, apostrophes,
+  and shell metacharacters for SSH's remote shell. The terminal, SSH program,
+  and editor are all configurable. Neovim must be on the remote shell's PATH.
+  A matching extension (such as `.md` or `.py`) launches without a download.
+  Omit `remote` or set it to `null` to retain preview-only behavior.
+- Files without a matching remote opener are downloaded over SFTP and opened
+  with the TUI host's configured viewer. These are **local preview copies**:
+  editing a preview does not upload changes to the remote file.
+  For extensionless/unlisted text files, a temporary download is classified
+  first; when the text rule has a remote opener, the preview is discarded and
+  Neovim opens the original remote path instead. This works with the existing
+  remote daemon protocol, without deploying new code or restarting it.
 - Folders open as `sftp://<ssh-alias>/<remote-path>` via `xdg-open`. The local
   desktop needs an SFTP-capable handler.
 - Web links still open locally.
@@ -74,8 +95,11 @@ same-named file on the TUI host.
 
 Transfers require OpenSSH `scp` with SFTP support and use the same SSH alias
 configuration as `/ssh` (batch authentication, no interactive password prompt).
-Files above 128 MiB are rejected at preflight and after transfer; a changing
+Preview downloads above 128 MiB are rejected at preflight and after transfer; a changing
 remote file can exceed that size in transit. Transfers have a two-minute deadline.
+Direct remote opens matched by extension do not need a transfer and have no
+preview-size limit. If a configured remote terminal cannot launch, an error is
+shown; it never silently opens an editable local substitute.
 Previews live
 under the local runtime directory's `file-link-previews/`; previews older than
 seven days are removed when another file is fetched.
