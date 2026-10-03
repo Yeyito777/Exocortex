@@ -28,7 +28,10 @@ arbitrary client fields cannot attach an orphaned workspace.
 Deleting a conversation first commits its soft deletion, then stops its
 active/background work and moves its workspace to
 `config/data/.../trash/workspaces/<conversation-id>/`. Undo restores the same
-directory and its contents. A clone deliberately starts with an empty workspace
+directory and its contents. A conversation copy retains its latest compaction
+checkpoint, messages since that boundary, and instruction snapshots; older
+transcript history remains only in the original. Without a checkpoint, all
+messages are copied. A clone deliberately starts with an empty workspace
 instead of silently copying an unbounded directory. An ID remains reserved while
 its conversation is recoverable from trash, preventing a later undo from
 overwriting an unrelated replacement conversation.

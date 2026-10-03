@@ -53,7 +53,7 @@ import type { StoredDisplayHistoryPage } from "./display-page-store";
 import * as legacy from "./json-persistence";
 import { log } from "./log";
 import type { ConversationRepository } from "./conversation-repository";
-import type { ConversationCloneTarget } from "./conversation-clone";
+import { clonedConversationValue, type ConversationCloneTarget } from "./conversation-clone";
 import { pagedUserFingerprint, storedMessageFingerprint as messageFingerprint } from "./message-fingerprint";
 import { adoptArchiveWindow, archiveWindow, assertCanonicalMessage, freezeArchiveCheckpoint, isArchivedMessage, messageSequenceOffset, storedMessageCount } from "./conversation-window";
 import { MAX_TITLE_CONTEXT_CHARS, setArchivedTitleContext, titleUserText } from "./conversation-title-context";
@@ -1443,31 +1443,6 @@ export class SqliteConversationStore implements ConversationRepository {
     return { summaries: this.listSummaries(), reused: this.db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM conversations WHERE deleted_at IS NULL").get()!.count, rebuilt: 0, removed: 0, saved: false };
   }
 
-  /** Load only rows whose checkpoint was rebound to a clone's active window. */
-  private loadMessagesWithCheckpointWindow(
-    id: string,
-    windowId: string,
-  ): Array<{ sequence: number; message: StoredMessage }> {
-    const rows = this.db.query<MessageRow, [string, string]>(`
-      SELECT sequence, role, content_json, metadata_json, provider_data_json,
-             context_tokens_json, context_checkpoint_json, has_provider_data,
-             has_context_tokens, has_context_checkpoint
-      FROM messages
-      WHERE conversation_id=? AND context_checkpoint_json IS NOT NULL
-        AND json_extract(context_checkpoint_json, '$.windowId')=?
-      ORDER BY sequence
-    `).all(id, windowId);
-    const blobs = this.db.query<MessageBlobRow, [string, string]>(`
-      SELECT b.message_sequence, b.ordinal, b.kind, b.payload_json
-      FROM resolved_message_blobs b
-      JOIN messages m ON m.conversation_id=b.conversation_id AND m.sequence=b.message_sequence
-      WHERE b.conversation_id=? AND m.context_checkpoint_json IS NOT NULL
-        AND json_extract(m.context_checkpoint_json, '$.windowId')=?
-      ORDER BY b.message_sequence, b.kind, b.ordinal
-    `).all(id, windowId);
-    return storedMessagesFromRows(rows, blobs);
-  }
-
   load(id: string, includeDeleted = false): Conversation | null {
     const row = this.row(id, includeDeleted);
     if (!row) return null;
@@ -1535,9 +1510,10 @@ export class SqliteConversationStore implements ConversationRepository {
   }
 
   /**
-   * Worker-only cold load. A read transaction binds metadata, checkpoint and
-   * checkpoint/tail bytes to one SQLite snapshot. Superseded archive bodies are
-   * verified only on explicit full reads or requested chunk access.
+   * Checkpoint/tail cold read, normally run on a worker; also used by bounded
+   * copying. A read transaction binds metadata, checkpoint and tail bytes to
+   * one SQLite snapshot. Superseded archive bodies are verified only on explicit
+   * full reads or requested chunk access.
    */
   loadRuntimeWindow(id: string, handle: string, full = false): RuntimeWindowRead | null {
     const reader = this.readRuntimeWindow(id, handle, full);
@@ -2063,11 +2039,10 @@ export class SqliteConversationStore implements ConversationRepository {
   }
 
   /**
-   * Clone normalized rows in one transaction instead of materializing and then
-   * re-serializing the complete transcript. Large blobs become copy-on-write
-   * aliases, page identities derive from stored hashes, and only the handful of
-   * rebound checkpoint rows enter JS. Clone state and sidebar undo share one
-   * transaction.
+   * Compacted copies contain only a verified checkpoint and its actual tail;
+   * neither loading nor writing them visits superseded archive rows. Ordinary
+   * conversations still use SQL/copy-on-write blobs for their complete history.
+   * Clone state and sidebar undo share one transaction.
    */
   cloneConversation(sourceId: string, target: ConversationCloneTarget): PersistedConversationSummary | null {
     assertSafeId(sourceId);
@@ -2076,31 +2051,56 @@ export class SqliteConversationStore implements ConversationRepository {
     if (!source) return null;
     if (this.row(target.id, true)) throw new Error(`Conversation already exists: ${target.id}`);
 
-    const active = this.db.query<{ window_id: string; window_number: number }, [string]>(`
-      SELECT window_id, window_number FROM active_contexts WHERE conversation_id=?
-    `).get(sourceId);
-    const targetWindowId = active ? `${target.id}:${active.window_number}` : null;
+    const sourceRevision = this.runtimeCacheToken(sourceId);
+    const active = this.db.query("SELECT 1 FROM active_contexts WHERE conversation_id=?").get(sourceId);
+    const compacted = active ? this.loadRuntimeWindow(sourceId, `clone:${target.id}`)?.result : null;
+    if (active && !compacted) throw new ConversationIntegrityError("Clone source checkpoint is missing");
+    if (!active && this.db.query(`SELECT 1 FROM messages WHERE conversation_id=?
+        AND json_valid(metadata_json) AND json_extract(metadata_json,'$.kind')='context_compaction_finished' LIMIT 1`).get(sourceId)) {
+      throw new ConversationIntegrityError("Compaction checkpoint is missing");
+    }
+    if (compacted?.window) adoptArchiveWindow(compacted.conversation.messages, compacted.window, compacted.hashes);
+    const boundedClone = compacted ? clonedConversationValue(compacted.conversation, target) : null;
+    if (boundedClone?.activeContext) {
+      // Runtime SQLite fingerprints extend a checkpoint-relative chain. Rebase
+      // recent edit checkpoints onto that chain too; the legacy backend uses
+      // stream hashes instead. Counts at/before a legacy replay cursor keep
+      // their canonical prefix hashes for rewinding within active.messages.
+      const active = boundedClone.activeContext;
+      const hash = checkpointTailHasher({ historyCount: active.transcriptHistoryCount, hash: active.transcriptPrefixHash });
+      let count = 0;
+      for (const message of boundedClone.messages) {
+        if (message.contextCheckpoint && count >= active.transcriptHistoryCount) {
+          message.contextCheckpoint.transcriptPrefixHash = hash.copy().digest("hex").slice(0, 24);
+        }
+        if (isReplayHistoryMessage(message) && count++ >= active.transcriptHistoryCount) updateCheckpointTailHash(hash, message);
+      }
+    }
 
     const checkpointWasAlreadyDeferred = this.suspendAutoCheckpoint();
     let committed = false;
     try {
       this.db.transaction(() => {
-        const sourceReceipt = active ? this.verifiedCheckpoint(sourceId) : null;
-        // Rebinding changes these fields. Verify the source envelopes before
-        // minting new checksums; untouched historical bodies stay deferred.
-        if (active) {
-          for (const message of this.iterateRows<MessageRow, [string, string]>(`
-            SELECT m.sequence,m.role,m.content_hash,m.metadata_json,m.provider_data_json,m.context_checkpoint_json,
-                   m.has_provider_data,m.has_context_checkpoint,m.is_real_user,m.is_replay_history,i.envelope_hash
-            FROM messages m LEFT JOIN message_integrity i
-            ON i.conversation_id=m.conversation_id AND i.sequence=m.sequence
-            WHERE m.conversation_id=? AND json_valid(m.context_checkpoint_json)
-            AND json_extract(m.context_checkpoint_json,'$.windowId')=?
-          `, sourceId, active.window_id)) {
-            if (!message.envelope_hash || this.envelopeHash(message) !== message.envelope_hash) {
-              throw new ConversationIntegrityError(`Clone source envelope failed at message ${message.sequence}`);
-            }
+        if ((compacted?.readRevision ?? sourceRevision) !== this.runtimeCacheToken(sourceId)) {
+          throw new Error("Clone source changed; retry copying");
+        }
+        if (this.row(target.id, true)) throw new Error(`Conversation already exists: ${target.id}`);
+        if (boundedClone && compacted) {
+          this.upsertConversationRow(boundedClone, 1);
+          this.faultInjection?.("clone.after-conversation");
+          let bytes = 0;
+          for (let sequence = 0; sequence < boundedClone.messages.length; sequence++) {
+            bytes += this.insertMessage(target.id, sequence, boundedClone.messages[sequence]);
           }
+          this.faultInjection?.("clone.after-messages");
+          this.rebuildDisplay(boundedClone, 0);
+          this.db.query("UPDATE conversations SET content_bytes=? WHERE id=?").run(bytes, target.id);
+          this.saveActiveContext(boundedClone);
+          this.appendStackEntry("undo", { type: "conversation_removed", id: target.id });
+          this.db.query("DELETE FROM sidebar_history WHERE stack='redo'").run();
+          this.faultInjection?.("clone.after-display");
+          this.faultInjection?.("clone.before-commit");
+          return;
         }
         for (const entry of this.iterateRows<{
           pinned: number; entry_index: number; user_index: number | null; type: string; payload_json: string; payload_hash: string | null;
@@ -2133,53 +2133,19 @@ export class SqliteConversationStore implements ConversationRepository {
         );
         this.faultInjection?.("clone.after-conversation");
 
-        if (active && targetWindowId) {
-          this.db.query(`
-            INSERT INTO active_contexts(
-              conversation_id, kind, provider, model, transcript_history_count,
-              transcript_prefix_hash, compaction_history_count, compaction_prefix_hash,
-              window_id, window_number, compacted_at, payload_json
-            )
-            SELECT ?, kind, provider, model, transcript_history_count,
-                   transcript_prefix_hash, compaction_history_count, compaction_prefix_hash,
-                   ?, window_number, compacted_at,
-                   replace(payload_json, json_quote(window_id), json_quote(?))
-            FROM active_contexts WHERE conversation_id=?
-          `).run(target.id, targetWindowId, targetWindowId, sourceId);
-          this.db.query(`
-            INSERT INTO messages(
-              conversation_id, sequence, role, content_json, metadata_json,
-              provider_data_json, context_tokens_json, context_checkpoint_json,
-              is_real_user, is_replay_history, content_bytes, content_hash, message_hash,
-              has_provider_data, has_context_tokens, has_context_checkpoint
-            )
-            SELECT ?, sequence, role, content_json, metadata_json,
-                   provider_data_json, context_tokens_json,
-                   CASE
-                     WHEN context_checkpoint_json IS NOT NULL
-                       AND json_extract(context_checkpoint_json, '$.windowId')=?
-                     THEN json_set(context_checkpoint_json, '$.windowId', ?)
-                     ELSE context_checkpoint_json
-                   END,
-                   is_real_user, is_replay_history, content_bytes, content_hash, message_hash,
-                   has_provider_data, has_context_tokens, has_context_checkpoint
-            FROM messages WHERE conversation_id=? ORDER BY sequence
-          `).run(target.id, active.window_id, targetWindowId, sourceId);
-        } else {
-          this.db.query(`
-            INSERT INTO messages(
-              conversation_id, sequence, role, content_json, metadata_json,
-              provider_data_json, context_tokens_json, context_checkpoint_json,
-              is_real_user, is_replay_history, content_bytes, content_hash, message_hash,
-              has_provider_data, has_context_tokens, has_context_checkpoint
-            )
-            SELECT ?, sequence, role, content_json, metadata_json,
-                   provider_data_json, context_tokens_json, context_checkpoint_json,
-                   is_real_user, is_replay_history, content_bytes, content_hash, message_hash,
-                   has_provider_data, has_context_tokens, has_context_checkpoint
-            FROM messages WHERE conversation_id=? ORDER BY sequence
-          `).run(target.id, sourceId);
-        }
+        this.db.query(`
+          INSERT INTO messages(
+            conversation_id, sequence, role, content_json, metadata_json,
+            provider_data_json, context_tokens_json, context_checkpoint_json,
+            is_real_user, is_replay_history, content_bytes, content_hash, message_hash,
+            has_provider_data, has_context_tokens, has_context_checkpoint
+          )
+          SELECT ?, sequence, role, content_json, metadata_json,
+                 provider_data_json, context_tokens_json, context_checkpoint_json,
+                 is_real_user, is_replay_history, content_bytes, content_hash, message_hash,
+                 has_provider_data, has_context_tokens, has_context_checkpoint
+          FROM messages WHERE conversation_id=? ORDER BY sequence
+        `).run(target.id, sourceId);
 
         this.db.query(`
           INSERT INTO tool_outputs(
@@ -2214,21 +2180,6 @@ export class SqliteConversationStore implements ConversationRepository {
           FROM display_entries WHERE conversation_id=?
         `).run(target.id, sourceId);
 
-        // Rebinding checkpoint window IDs changes the full-message fingerprint,
-        // but not canonical content hashes or active-context history hashes.
-        if (targetWindowId) {
-          const rebound = this.loadMessagesWithCheckpointWindow(target.id, targetWindowId);
-          if (rebound.length > 0) {
-            const cases = rebound.map(({ sequence }) => `WHEN ${sequence} THEN ?`).join(" ");
-            const sequences = rebound.map(({ sequence }) => sequence).join(",");
-            this.db.query(`
-              UPDATE messages
-              SET message_hash=CASE sequence ${cases} END
-              WHERE conversation_id=? AND sequence IN (${sequences})
-            `).run(...rebound.map(({ message }) => messageFingerprint(message)), target.id);
-            for(const item of rebound)this.sealMessageEnvelope(target.id,item.sequence);
-          }
-        }
         // New page-v2 identities derive directly from already-stored content hashes,
         // so cloning never has to parse user text or image payloads.
         this.db.query(`
@@ -2254,11 +2205,6 @@ export class SqliteConversationStore implements ConversationRepository {
           target.id,
         ))this.db.query("UPDATE display_integrity SET payload_hash=? WHERE conversation_id=? AND pinned=? AND entry_index=?")
           .run(this.displayHash(item),target.id,item.pinned,item.entry_index);
-        if (sourceReceipt) {
-          const payload = this.db.query<{ payload_json: string }, [string]>("SELECT payload_json FROM active_contexts WHERE conversation_id=?").get(target.id)!.payload_json;
-          this.writeCheckpointReceipt(target.id, payload, sourceReceipt.sequence_floor, sourceReceipt.history_floor, sourceReceipt.title_context_json, sourceReceipt.archived_bytes,
-            sourceReceipt.prefix_summary_json ?? undefined);
-        }
         // Clone creation and its undo record commit together. Besides closing a
         // crash gap, this avoids a second large-WAL auto-checkpoint on the caller.
         this.appendStackEntry("undo", { type: "conversation_removed", id: target.id });

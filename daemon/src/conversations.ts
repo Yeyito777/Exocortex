@@ -646,7 +646,7 @@ export function bumpToTop(id: string): boolean {
   return true;
 }
 
-/** Clone a conversation with a new ID, placed right after the original in sort order. */
+/** Copy the latest checkpoint/tail with a new ID, placed right after the original. */
 export function clone(id: string): ConversationSummary | null {
   if (dirty.has(id)) flush(id);
   const source = summaries.get(id);

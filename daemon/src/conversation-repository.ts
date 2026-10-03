@@ -31,7 +31,7 @@ export interface ConversationRepository {
   listSummaries(): PersistedConversationSummary[];
   loadConversationIndex(): LoadConversationIndexResult;
   getSummary(id: string): PersistedConversationSummary | null;
-  /** Clone canonical state and its undo record without inheriting execution/automation state. */
+  /** Copy the latest checkpoint and tail (all history if uncompacted), plus undo; no execution/automation state. */
   cloneConversation(sourceId: string, target: ConversationCloneTarget): PersistedConversationSummary | null;
   save(conv: Conversation, options?: { forceMessages?: boolean }): void;
   /**
