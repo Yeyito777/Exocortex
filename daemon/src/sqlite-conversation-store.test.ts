@@ -244,15 +244,12 @@ describe("SQLite transaction fault boundaries", () => {
     expect(cloned.subagentMaxDepth ?? null).toBeNull();
     expect(cloned.subagentPolicy ?? null).toBeNull();
     expect(cloned.toolPolicy).toEqual(source.toolPolicy);
-    expect(store.loadToolOutputs(target.id)).toEqual(store.loadToolOutputs(source.id));
-    expect(store.loadToolOutputs(target.id, ["clone-tool"])).toEqual([{
-      toolCallId: "clone-tool",
-      output: "large deferred result".repeat(10_000),
-    }]);
+    expect(store.loadToolOutputs(target.id)).toEqual([]);
+    expect(store.loadToolOutputs(target.id, ["clone-tool"])).toEqual([]);
 
-    const sourceUser = store.loadDisplayPage(source.id, 20)?.entries.find((entry) => entry.type === "user");
+    const sourceUser = store.loadDisplayPage(source.id, 20)?.entries.find((entry) => entry.type === "user" && entry.text === "tail");
     const clonedUser = store.loadDisplayPage(target.id, 20)?.entries.find((entry) => entry.type === "user");
-    expect(clonedUser).toMatchObject({ type: "user", text: "first" });
+    expect(clonedUser).toMatchObject({ type: "user", text: "tail" });
     expect((clonedUser as any)?.unwindFingerprint).toMatch(/^page-v2:/);
     expect((clonedUser as any)?.unwindFingerprint).toBe((sourceUser as any)?.unwindFingerprint);
 

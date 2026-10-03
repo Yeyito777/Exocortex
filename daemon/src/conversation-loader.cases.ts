@@ -205,7 +205,7 @@ test("old missing/corrupt blobs do not block resume but fail closed on requested
   await rejects(loadToolOutputsOffThread(conv.id, ["tool-0"], store.path), /missing or duplicate/);
 });
 
-test("cloned copy-on-write archives get the same integrity proof and rebound checkpoint", async () => {
+test("clones retain only the checkpoint/tail with independent offsets and integrity proofs", async () => {
   const { store, conv } = fixture();
   const cloneId = "cloned-worker-fixture";
   expect(store.cloneConversation(conv.id, {
@@ -215,10 +215,12 @@ test("cloned copy-on-write archives get the same integrity proof and rebound che
   const result = await loadConversationOffThread(cloneId, false, store.path);
   expect(store.adoptLoadedConversation(result!)).toBe(true);
   const loaded = result!.conversation;
-  expect(archiveWindow(loaded.messages)?.prefixSequence).toBe(conv.messages.length - 3);
+  expect(archiveWindow(loaded.messages)?.prefixSequence).toBe(0);
+  expect(canonical.messages).toHaveLength(4); // instructions, divider, recent user/answer
   expect(loaded.activeContext?.windowId).toBe(`${cloneId}:1`);
   expect(buildConversationApiContext(loaded)).toEqual(buildConversationApiContext(canonical));
-  expect(currentReplayHistoryPrefix(loaded.messages)).toEqual(checkpointPrefix(conv));
+  expect(buildConversationApiContext(loaded)).toEqual(buildConversationApiContext(conv));
+  expect(currentReplayHistoryPrefix(loaded.messages)).toEqual(checkpointPrefix(canonical));
   loaded.messages.push({ role: "user", content: "clone-only append", metadata: null });
   await prepareArchiveHashes(loaded.messages);
   store.appendMessages(loaded, canonical.messages.length);
@@ -419,8 +421,19 @@ test.skipIf(process.platform === "win32")("atomic database replacement cannot au
 
 test("owner blob edits invalidate verified clone windows through alias revision fanout", async () => {
   const { store, conv } = fixture();
+  // Copy before compaction, then compact the copy: its archived bodies remain
+  // aliases. Copying an already-compacted source no longer inherits its archive.
+  const active = structuredClone(conv.activeContext!);
+  const divider = conv.messages.at(-3)!;
+  conv.activeContext = null;
+  conv.messages = conv.messages.filter(message => message.metadata?.kind !== CONTEXT_COMPACTION_FINISHED_KIND);
+  store.save(conv, { forceMessages: true });
   const id = "cached-alias";
   store.cloneConversation(conv.id, { id, title: "copy", sortOrder: 2, createdAt: 100, updatedAt: 100 });
+  const copy = store.load(id)!;
+  copy.messages.splice(copy.messages.length - 2, 0, divider);
+  copy.activeContext = { ...active, windowId: `${id}:1` };
+  store.save(copy);
   await loadConversationOffThread(id, false, store.path);
   store.db.query("UPDATE message_blobs SET payload_json=? WHERE conversation_id=? AND message_sequence=3 AND kind='tool_result'")
     .run(JSON.stringify({ blockIndex: 0, value: "changed owner" }), conv.id);
@@ -492,7 +505,7 @@ test("worker cache has a hard LRU entry bound and never retains full/uncompacted
   const { store, conv } = fixture(1024, 2);
   for (let index = 0; index < 9; index++) {
     const id = `cache-lru-${index}`;
-    store.cloneConversation(conv.id, { id, title: "LRU", sortOrder: index + 1, createdAt: 100, updatedAt: 100 });
+    store.save({ ...structuredClone(conv), id });
     const loaded = await loadConversationOffThread(id, false, store.path);
     releaseArchiveWindow(loaded!.conversation.messages, loaded!.window?.handle);
   }
@@ -569,7 +582,7 @@ test("scroll checks only requested projection chunks; expansion separately check
   expect(() => store.loadDisplayPage(conv.id, 1)).toThrow(/display chunk/);
 });
 
-test("clone does not bless corrupt source checkpoints or projections when rebinding them", async () => {
+test("clone refuses corrupt checkpoints but rebuilds display solely from its verified tail", async () => {
   const { store, conv } = fixture();
   const target = { id: "not-blessed", title: "clone", sortOrder: 1, createdAt: 1, updatedAt: 1 };
   store.db.query("UPDATE active_contexts SET payload_json='{}' WHERE conversation_id=?").run(conv.id);
@@ -577,8 +590,9 @@ test("clone does not bless corrupt source checkpoints or projections when rebind
   expect(store.has(target.id)).toBe(false);
   store.db.query("UPDATE active_contexts SET payload_json=? WHERE conversation_id=?").run(JSON.stringify(conv.activeContext), conv.id);
   store.db.query("UPDATE display_entries SET payload_json='{}' WHERE conversation_id=? AND pinned=0 AND entry_index=0").run(conv.id);
-  expect(() => store.cloneConversation(conv.id, target)).toThrow(/display chunk/);
-  expect(store.has(target.id)).toBe(false);
+  expect(store.cloneConversation(conv.id, target)?.id).toBe(target.id);
+  expect(store.loadDisplayPage(target.id, 20)?.entries.find(entry => entry.type === "user"))
+    .toMatchObject({ text: "recent editable task" });
 });
 
 test("requested blob ordinal corruption cannot pass an unchanged payload/content checksum", async () => {
@@ -657,8 +671,8 @@ test("sparse absolute user/count offsets survive checkpoint adoption, clone and 
   store.cloneConversation(conv.id, { id: "sparse-count-clone", title: "clone", sortOrder: 1, createdAt: 2, updatedAt: 2 });
   const clone = (await loadConversationOffThread("sparse-count-clone", false, store.path))!;
   expect(store.adoptLoadedConversation(clone)).toBe(true);
-  expect(archiveWindow(clone.conversation.messages)?.sparse?.userCount).toBe(2);
-  expect(store.loadDisplayPage(clone.conversation.id, 1)!.startUserIndex).toBe(2);
+  expect(archiveWindow(clone.conversation.messages)?.sparse?.userCount).toBe(0);
+  expect(store.loadDisplayPage(clone.conversation.id, 1)!.startUserIndex).toBe(0);
 });
 
 test("sealed sparse descriptors reject changed counts and omitted required instructions", async () => {

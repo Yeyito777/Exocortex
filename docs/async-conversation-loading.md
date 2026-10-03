@@ -86,8 +86,8 @@ for append/display invariants.
   work-timer continuation record. Its one-time
   startup-worker upgrade verifies the existing v12 receipt before extending it;
   invalid/missing receipts stay invalid/missing. Summary enrollment reads small
-  index/metadata fields, never old tool/image bodies. New checkpoint writes and
-  clone rebinding preserve this sealed descriptor transactionally. Normal loads
+  index/metadata fields, never old tool/image bodies. New checkpoint writes
+  preserve this sealed descriptor transactionally. Normal loads
   read the descriptor rather than recounting or enumerating the prefix.
 
 ### Requested chunks and migration boundary
@@ -99,9 +99,15 @@ for append/display invariants.
   reconstructed content checksum, blob checksums and block/index correspondence
   on a worker before returning it. Unrelated old outputs are not read. Full
   materialization explicitly verifies all requested canonical rows.
-- Clones preserve deferred body checksums. Checkpoints, envelopes and user
-  projections that need rebinding are checked before new checksums are minted,
-  so clone does not silently bless source corruption.
+- Copies of compacted conversations read only the verified latest checkpoint,
+  its editable tail, and required instruction snapshots. Superseded history and
+  its display/tool rows are not copied. Replay and user-edit cursors are rebased
+  to the new transcript, and display rows are rebuilt from the verified tail.
+  The source snapshot's revision is checked again inside the creation/undo
+  transaction. Missing or corrupt checkpoints/tails fail closed.
+- Uncompacted copies retain all history using SQL and copy-on-write blobs,
+  preserving deferred body checksums. Rebound user projections are verified
+  before new checksums are minted.
 - The one-time v12 migration enrolls existing small envelopes, compact projections,
   and checkpoint/range receipts. Existing canonical content/blob checksums are
   preserved; old tool/image bodies are not scanned. Previously unchecksummed
