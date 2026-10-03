@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { rmSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
-import { DaemonClient } from "./client";
+import { DaemonClient, type DaemonClientTransportOptions } from "./client";
 import type { Command, Event, TranscribeAudioCommand } from "./protocol";
 
 const cleanups: Array<() => void | Promise<void>> = [];
@@ -54,11 +54,16 @@ async function localDaemon(onCommand: (command: TranscribeAudioCommand, socket: 
   return { path, commands, sockets };
 }
 
-function remoteClient(path: string, timeoutMs?: number) {
+function remoteClient(
+  path: string,
+  timeoutMs?: number,
+  recoveryOptions: Pick<DaemonClientTransportOptions, "transcriptionTimeoutMs" | "transcriptionMaxAttempts"> = {},
+) {
   const events: Event[] = [];
   const writes: Command[] = [];
   const client = new DaemonClient(event => events.push(event), path, false, {
     localTranscriptionTimeoutMs: timeoutMs,
+    ...recoveryOptions,
   });
   // The selected SSH transport only needs write/end/destroy for these tests.
   const internal = client as any;
@@ -81,6 +86,7 @@ function reply(socket: Socket, reqId: string | undefined, text: string): void {
 describe("SSH local-first transcription", () => {
   test("uses only the existing connection on the local route", () => {
     const client = new DaemonClient(() => {});
+    cleanups.push(() => client.disconnect());
     client.transcribeAudio("clip", "audio/wav", () => {});
     expect((client as any).pendingCommands).toEqual([{
       type: "transcribe_audio", reqId: expect.any(String), audioBase64: "clip", mimeType: "audio/wav",
@@ -153,6 +159,8 @@ describe("SSH local-first transcription", () => {
     }) + "\n"));
     expect(errors).toEqual(["Remote ASR failed"]);
     expect(events).toEqual([]);
+    expect(internal.unresolvedTranscriptionCommands.size).toBe(0);
+    expect(internal.flushPendingCommands()).toEqual([]);
   });
 
   test("a local connection lost before the result falls back exactly once", async () => {
@@ -229,6 +237,153 @@ describe("SSH local-first transcription", () => {
     internal._connected = true;
     internal.flushPendingCommands();
     expect(writes).toHaveLength(1);
+  });
+
+  test("an uploaded transcription is recovered after SSH drops before its result", async () => {
+    const { client, internal, writes, events, transport } = remoteClient(`/tmp/absent-${randomUUID()}.sock`);
+    const results: string[] = [];
+    client.transcribeAudio("original-clip", "audio/wav", text => results.push(text));
+    await waitFor(() => writes.length === 1);
+    const original = writes[0] as TranscribeAudioCommand;
+    internal.onData(Buffer.from(JSON.stringify({ type: "ack", reqId: original.reqId }) + "\n"));
+    internal.handleSocketClose(transport, true);
+    internal.socket = transport;
+    internal._connected = true;
+    internal.flushPendingCommands();
+    expect(writes).toHaveLength(2);
+    expect(writes[1]).toEqual(original);
+    internal.onData(Buffer.from(JSON.stringify({
+      type: "transcription_result", reqId: original.reqId, text: "recovered voice",
+    }) + "\n"));
+    expect(results).toEqual(["recovered voice"]);
+    expect(internal.flushPendingCommands()).toEqual([]);
+    events.length = 0;
+    internal.onData(Buffer.from(JSON.stringify({
+      type: "transcription_result", reqId: original.reqId, text: "duplicate voice",
+    }) + "\n" + JSON.stringify({
+      type: "error", reqId: original.reqId, message: "late old result",
+    }) + "\n"));
+    expect(results).toEqual(["recovered voice"]);
+    expect(events).toEqual([]);
+    // Only this client's requests are suppressed, not unrelated global errors.
+    internal.onData(JSON.stringify({ type: "error", reqId: "transcribe_unrelated", message: "unrelated" }) + "\n");
+    expect(events).toEqual([{ type: "error", reqId: "transcribe_unrelated", message: "unrelated" }]);
+  });
+
+  for (const action of ["disconnect", "route switch"] as const) {
+    test(`${action} cancels uploaded/offline remote ASR without carrying audio to another route`, async () => {
+      const { client, internal, writes, events, transport } = remoteClient(`/tmp/absent-${randomUUID()}.sock`);
+      const callbacks: string[] = [];
+      client.transcribeAudio("old-route-audio", "audio/wav",
+        text => callbacks.push(text), message => callbacks.push(message));
+      await waitFor(() => writes.length === 1);
+      const original = writes[0] as TranscribeAudioCommand;
+      internal.handleSocketClose(transport, true);
+      client.transcribeAudio("offline-audio", "audio/wav",
+        text => callbacks.push(text), message => callbacks.push(message));
+      await waitFor(() => internal.pendingCommands.length === 1);
+      if (action === "disconnect") client.disconnect();
+      else client.ssh("cancel");
+      internal.socket = transport;
+      internal._connected = true;
+      expect(internal.flushPendingCommands()).toEqual([]);
+      expect(writes).toHaveLength(1);
+      expect(internal.transcriptionCallbacks.size).toBe(0);
+      expect(internal.unresolvedTranscriptionCommands.size).toBe(0);
+      events.length = 0;
+      internal.onData(JSON.stringify({
+        type: "error", reqId: original.reqId, message: "old endpoint error",
+      }) + "\n");
+      expect(callbacks).toEqual([]);
+      expect(events).toEqual([]);
+    });
+  }
+
+  test("repeated SSH loss is bounded to three uploads and settles the voice job once", async () => {
+    const { client, internal, writes, transport, events } = remoteClient(`/tmp/absent-${randomUUID()}.sock`);
+    const callbacks: string[] = [];
+    client.transcribeAudio("clip", "audio/wav",
+      text => callbacks.push(text), message => callbacks.push(message));
+    await waitFor(() => writes.length === 1);
+    const original = writes[0] as TranscribeAudioCommand;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      internal.handleSocketClose(transport, true);
+      internal.socket = transport;
+      internal._connected = true;
+      internal.flushPendingCommands();
+    }
+    expect(writes).toEqual([original, original, original]);
+    expect(callbacks).toEqual([expect.stringContaining("reconnect limit")]);
+    expect(internal.transcriptionCallbacks.size).toBe(0);
+    expect(internal.unresolvedTranscriptionCommands.size).toBe(0);
+    internal.onData(JSON.stringify({
+      type: "transcription_result", reqId: original.reqId, text: "too late",
+    }) + "\n");
+    expect(callbacks).toHaveLength(1);
+    expect(events).toEqual([]);
+  });
+
+  test("the final allowed upload can still complete successfully", async () => {
+    const { client, internal, writes, transport } = remoteClient(`/tmp/absent-${randomUUID()}.sock`, undefined, {
+      transcriptionMaxAttempts: 2,
+    });
+    const callbacks: string[] = [];
+    client.transcribeAudio("clip", "audio/wav",
+      text => callbacks.push(text), message => callbacks.push(message));
+    await waitFor(() => writes.length === 1);
+    internal.handleSocketClose(transport, true);
+    internal.socket = transport;
+    internal._connected = true;
+    internal.flushPendingCommands();
+    expect(writes).toHaveLength(2);
+    expect(callbacks).toEqual([]);
+    internal.onData(JSON.stringify({
+      type: "transcription_result", reqId: (writes[1] as TranscribeAudioCommand).reqId, text: "last attempt worked",
+    }) + "\n");
+    expect(callbacks).toEqual(["last attempt worked"]);
+    expect(internal.unresolvedTranscriptionCommands.size).toBe(0);
+  });
+
+  for (const state of ["offline", "uploaded"] as const) {
+    test(`the transcription deadline expires ${state} requests without later replay`, async () => {
+      const { client, internal, writes, transport, events } = remoteClient(`/tmp/absent-${randomUUID()}.sock`, undefined, {
+        transcriptionTimeoutMs: 40,
+      });
+      const callbacks: string[] = [];
+      if (state === "offline") internal.handleSocketClose(transport, true);
+      client.transcribeAudio("clip", "audio/wav",
+        text => callbacks.push(text), message => callbacks.push(message));
+      await waitFor(() => internal.unresolvedTranscriptionCommands.size === 1);
+      const reqId = [...internal.unresolvedTranscriptionCommands.keys()][0];
+      await waitFor(() => callbacks.length === 1);
+      expect(callbacks).toEqual([expect.stringContaining("timed out")]);
+      expect(internal.transcriptionCallbacks.size).toBe(0);
+      expect(internal.unresolvedTranscriptionCommands.size).toBe(0);
+      expect(internal.pendingCommands).toEqual([]);
+      internal.socket = transport;
+      internal._connected = true;
+      expect(internal.flushPendingCommands()).toEqual([]);
+      expect(writes).toHaveLength(state === "offline" ? 0 : 1);
+      internal.onData(JSON.stringify({ type: "error", reqId, message: "late timeout reply" }) + "\n");
+      expect(callbacks).toHaveLength(1);
+      expect(events).toEqual([]);
+    });
+  }
+
+  test("reconnect checks the deadline even if its timer has not run yet", async () => {
+    const { client, internal, writes, transport } = remoteClient(`/tmp/absent-${randomUUID()}.sock`);
+    const errors: string[] = [];
+    internal.handleSocketClose(transport, true);
+    client.transcribeAudio("clip", "audio/wav", () => {}, message => errors.push(message));
+    await waitFor(() => internal.pendingCommands.length === 1);
+    // Simulate waking after a long suspension before overdue timers dispatch.
+    [...internal.unresolvedTranscriptionCommands.values()][0].expiresAt = Date.now() - 1;
+    internal.socket = transport;
+    internal._connected = true;
+    expect(internal.flushPendingCommands()).toEqual([]);
+    expect(writes).toEqual([]);
+    expect(errors).toEqual([expect.stringContaining("timed out")]);
+    expect(internal.pendingCommands).toEqual([]);
   });
 
   for (const action of ["disconnect", "route switch"] as const) {

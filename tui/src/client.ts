@@ -69,10 +69,22 @@ export interface DaemonClientTransportOptions {
   localHostname?: string;
   localTranscriptionConnectTimeoutMs?: number;
   localTranscriptionTimeoutMs?: number;
+  /** Deadline from enqueueing ASR on the active route; reconnects do not reset it. */
+  transcriptionTimeoutMs?: number;
+  /** Maximum uploads per active-route ASR job, including its initial upload. */
+  transcriptionMaxAttempts?: number;
 }
 
 type ReplayableQueueCommand = Extract<Command, { type: "queue_message" | "unqueue_message" }>;
 type ReplayableUnwindCommand = Extract<Command, { type: "unwind_conversation" }>;
+type ReplayableTranscriptionCommand = Extract<Command, { type: "transcribe_audio" }> & { reqId: string };
+interface PendingTranscription {
+  command: ReplayableTranscriptionCommand;
+  sequence: number;
+  attempts: number;
+  expiresAt: number;
+  timer: ReturnType<typeof setTimeout>;
+}
 function replayableQueueCommandKey(command: Command): string | null {
   if (command.type === "queue_message" && command.queueId) return `enqueue:${command.queueId}`;
   if (command.type === "unqueue_message" && command.queueId) return `unqueue:${command.queueId}`;
@@ -110,6 +122,11 @@ export class DaemonClient {
   private nextCommandSequence = 0;
   private llmCallbacks = new Map<string, { onSuccess: LlmCompleteCallback; onError?: LlmErrorCallback }>();
   private transcriptionCallbacks = new Map<string, { onSuccess: TranscriptionCallback; onError?: TranscriptionErrorCallback }>();
+  // Upload/ack is not completion. Recover ambiguous ASR requests after an
+  // unexpected disconnect, but bound both audio retention and repeated uploads.
+  private unresolvedTranscriptionCommands = new Map<string, PendingTranscription>();
+  // Suppress stale replies only for this client's own voice requests.
+  private readonly transcriptionRequestPrefix = `transcribe_${randomUUID()}_`;
   private localTranscriptions = new Set<AbortController>();
   private pendingConversationLoads = new Map<string, { convId: string; startedAt: number }>();
   private pendingConversationHistoryLoads = new Map<string, { convId: string; requestSource: "initial-backfill" | "viewport"; startedAt: number }>();
@@ -121,6 +138,8 @@ export class DaemonClient {
   private readonly localHostname: string;
   private readonly localTranscriptionConnectTimeoutMs: number | undefined;
   private readonly localTranscriptionTimeoutMs: number | undefined;
+  private readonly transcriptionTimeoutMs: number;
+  private readonly transcriptionMaxAttempts: number;
   private sshAlias: string | null = null;
   private sshSwitchingTo: string | null = null;
   private sshSwitchGeneration = 0;
@@ -140,6 +159,8 @@ export class DaemonClient {
     this.localHostname = transportOptions.localHostname ?? hostname();
     this.localTranscriptionConnectTimeoutMs = transportOptions.localTranscriptionConnectTimeoutMs;
     this.localTranscriptionTimeoutMs = transportOptions.localTranscriptionTimeoutMs;
+    this.transcriptionTimeoutMs = transportOptions.transcriptionTimeoutMs ?? 120_000;
+    this.transcriptionMaxAttempts = transportOptions.transcriptionMaxAttempts ?? 3;
   }
 
   get connected(): boolean { return this._connected; }
@@ -370,7 +391,7 @@ export class DaemonClient {
 
   disconnect(): void {
     this.clearUpdateRequests();
-    this.cancelLocalTranscriptions();
+    this.cancelTranscriptions();
     this.intentionalDisconnect = true;
     this.abortPendingSshSwitch("TUI disconnected");
     this.discardPendingSshConnection();
@@ -393,6 +414,19 @@ export class DaemonClient {
     }
     if (command.type === "unwind_conversation" && command.reqId) {
       this.unresolvedUnwindCommands.set(command.reqId, { command, sequence });
+    }
+    if (command.type === "transcribe_audio" && command.reqId
+        && this.transcriptionCallbacks.has(command.reqId)
+        && !this.unresolvedTranscriptionCommands.has(command.reqId)) {
+      const reqId = command.reqId;
+      const timer = setTimeout(() => {
+        this.failTranscription(reqId, "Voice transcription timed out. Try again.");
+      }, this.transcriptionTimeoutMs);
+      timer.unref();
+      this.unresolvedTranscriptionCommands.set(reqId, {
+        command: { ...command, reqId }, sequence, attempts: 0,
+        expiresAt: Date.now() + this.transcriptionTimeoutMs, timer,
+      });
     }
     if (isBtwMutation(command)) this.btwMutationReplay.record(command, sequence);
     if (!this.socket || !this._connected) {
@@ -685,7 +719,7 @@ export class DaemonClient {
   }
 
   private closeCurrentTransportForRouteSwitch(): void {
-    this.cancelLocalTranscriptions();
+    this.cancelTranscriptions();
     if (this.activeSshConnection) this.activeSshConnection.intentionalClose = true;
     try { this.socket?.end(); } catch { /* already closed */ }
     try { this.socket?.destroy(); } catch { /* already closed */ }
@@ -987,7 +1021,7 @@ export class DaemonClient {
     onSuccess: TranscriptionCallback,
     onError?: TranscriptionErrorCallback,
   ): void {
-    const reqId = `transcribe_${++this.nextReqId}_${Date.now()}`;
+    const reqId = `${this.transcriptionRequestPrefix}${++this.nextReqId}_${Date.now()}`;
     if (this.sshAlias) {
       // Only ASR is local: the voice controller still owns its optimistic prompt
       // jobs, submitted placeholders, recall, and final-text queue/send behavior.
@@ -1002,12 +1036,16 @@ export class DaemonClient {
           this.localTranscriptions.delete(controller);
           if (!controller.signal.aborted) onSuccess(text);
         },
-        () => {
+        (error: unknown) => {
           this.localTranscriptions.delete(controller);
           if (controller.signal.aborted) return;
           // Missing/stopped local daemon, local auth/backend failure, or timeout:
           // retain the ordinary SSH/offline queue path as a transparent fallback.
-          log("info", "local transcription unavailable; falling back to the active SSH daemon");
+          // Never log audio, recognized text, or backend/auth error bodies.
+          const message = error instanceof Error ? error.message : "";
+          const reason = /empty result/i.test(message) ? "empty transcript"
+            : /timed out/i.test(message) ? "timeout" : "backend/connection error";
+          log("info", `local transcription unavailable (${reqId}: ${reason}); falling back to the active SSH daemon`);
           this.transcriptionCallbacks.set(reqId, { onSuccess, onError });
           this.send({ type: "transcribe_audio", reqId, audioBase64, mimeType });
         },
@@ -1022,9 +1060,35 @@ export class DaemonClient {
 
   // ── Internal ────────────────────────────────────────────────────
 
-  private cancelLocalTranscriptions(): void {
+  private settleTranscription(reqId: string) {
+    const callbacks = this.transcriptionCallbacks.get(reqId);
+    this.transcriptionCallbacks.delete(reqId);
+    const pending = this.unresolvedTranscriptionCommands.get(reqId);
+    if (pending) clearTimeout(pending.timer);
+    this.unresolvedTranscriptionCommands.delete(reqId);
+    this.pendingCommands = this.pendingCommands.filter(command =>
+      command.type !== "transcribe_audio" || command.reqId !== reqId);
+    return callbacks;
+  }
+
+  private failTranscription(reqId: string, message: string): void {
+    const callbacks = this.settleTranscription(reqId);
+    try {
+      callbacks?.onError?.(message);
+    } catch {
+      log("error", `transcription error callback failed (${reqId})`);
+    }
+  }
+
+  private cancelTranscriptions(): void {
     for (const controller of this.localTranscriptions) controller.abort();
     this.localTranscriptions.clear();
+    for (const pending of this.unresolvedTranscriptionCommands.values()) clearTimeout(pending.timer);
+    this.transcriptionCallbacks.clear();
+    this.unresolvedTranscriptionCommands.clear();
+    // Explicit disconnect/route changes must never carry a clip to another
+    // endpoint. Unexpected connection loss does not call this cancellation.
+    this.pendingCommands = this.pendingCommands.filter(command => command.type !== "transcribe_audio");
   }
 
   private socketMissingError(): Error {
@@ -1035,6 +1099,10 @@ export class DaemonClient {
   }
 
   private writeCommand(command: Command): void {
+    if (command.type === "transcribe_audio" && command.reqId) {
+      const pending = this.unresolvedTranscriptionCommands.get(command.reqId);
+      if (pending) pending.attempts++;
+    }
     const outgoing = this.sshAlias && (command.type === "load_conversation" || command.type === "load_conversation_history")
       ? this.historyCache.prepare(command)
       : command;
@@ -1043,22 +1111,35 @@ export class DaemonClient {
 
   private flushPendingCommands(): Command[] {
     if (!this.socket || !this._connected) return [];
+    // Also check wall time here: overdue timers may not have run after suspend.
+    // Exhaustion is checked on reconnect, not on the final allowed upload, so
+    // that last attempt still has a chance to return successfully.
+    for (const [reqId, request] of [...this.unresolvedTranscriptionCommands]) {
+      if (Date.now() >= request.expiresAt) {
+        this.failTranscription(reqId, "Voice transcription timed out. Try again.");
+      } else if (request.attempts >= this.transcriptionMaxAttempts) {
+        this.failTranscription(reqId, "Voice transcription reached its reconnect limit. Try again.");
+      }
+    }
     const pending = this.pendingCommands;
     this.pendingCommands = [];
 
     // Queue mutations in the offline list may be stale duplicates of the latest
-    // unresolved command for that key. Merge the canonical unresolved mutations
-    // with ordinary offline work by original issuance order. This preserves
+    // unresolved command for that key. Merge unresolved mutations and ASR
+    // requests with ordinary offline work by original issuance order. This preserves
     // causality such as queue → unwind → unqueue across a disconnect.
     const ordinary = pending
       .filter(command => replayableQueueCommandKey(command) === null
         && (command.type !== "unwind_conversation" || !command.reqId)
+        && (command.type !== "transcribe_audio" || !command.reqId
+          || !this.unresolvedTranscriptionCommands.has(command.reqId))
         && !isBtwMutation(command))
       .map(command => ({ command, sequence: this.commandSequences.get(command) ?? ++this.nextCommandSequence }));
     const replayed = [
       ...ordinary,
       ...this.unresolvedQueueCommands.values(),
       ...this.unresolvedUnwindCommands.values(),
+      ...this.unresolvedTranscriptionCommands.values(),
       ...this.btwMutationReplay.values(),
     ]
       .sort((a, b) => a.sequence - b.sequence)
@@ -1197,10 +1278,10 @@ export class DaemonClient {
         } else if (event.type === "transcription_result" && event.reqId) {
           const cbs = this.transcriptionCallbacks.get(event.reqId);
           if (cbs) {
-            this.transcriptionCallbacks.delete(event.reqId);
+            this.settleTranscription(event.reqId);
             cbs.onSuccess(event.text);
             handledByCallback = true;
-          }
+          } else if (event.reqId.startsWith(this.transcriptionRequestPrefix)) handledByCallback = true;
         } else if (event.type === "error" && event.reqId) {
           const llmCbs = this.llmCallbacks.get(event.reqId);
           if (llmCbs) {
@@ -1210,10 +1291,10 @@ export class DaemonClient {
           }
           const transcriptionCbs = this.transcriptionCallbacks.get(event.reqId);
           if (transcriptionCbs) {
-            this.transcriptionCallbacks.delete(event.reqId);
+            this.settleTranscription(event.reqId);
             transcriptionCbs.onError?.(event.message);
             handledByCallback = true;
-          }
+          } else if (event.reqId.startsWith(this.transcriptionRequestPrefix)) handledByCallback = true;
         }
 
         if (!handledByCallback) {
