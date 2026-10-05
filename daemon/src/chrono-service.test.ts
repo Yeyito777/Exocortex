@@ -16,10 +16,12 @@ import {
   interruptDeferredChronoSleep,
   listDeferredChronoSleeps,
   listChronoSchedules,
+  resumeDeferredChronoWaits,
   startChronoService,
+  stopChronoService,
 } from "./chrono-service";
 import { clearAllQueuedMessages } from "./message-queue";
-import { resetConversationActivityForTest } from "./conversation-activity";
+import { getConversationTasks, recordBackgroundTaskCompletion, resetConversationActivityForTest, setBackgroundTaskActive, setSubagentActive } from "./conversation-activity";
 
 const ids: string[] = [];
 
@@ -28,6 +30,18 @@ function makeConversation(label: string): string {
   ids.push(id);
   create(id, "openai", "gpt-5.6-sol", label);
   return id;
+}
+
+function waitCall(owner: string, toolCallId = "wait-call") {
+  appendMessages(owner, [{
+    role: "assistant",
+    content: [{ type: "tool_use", id: toolCallId, name: "chrono", input: { action: "wait", task_id: "bash:build", max_wait: "10m" } }],
+    metadata: null,
+  }]);
+}
+
+function waitResult(owner: string): { content: string; is_error: boolean } {
+  return (get(owner)!.messages.at(-1)!.content as Array<{ content: string; is_error: boolean }>)[0];
 }
 
 async function waitUntil(predicate: () => boolean, timeoutMs = process.platform === "win32" ? 5_000 : 2_000): Promise<void> {
@@ -185,6 +199,208 @@ describe("Chrono scheduler", () => {
     expect(listDeferredChronoSleeps(owner)).toHaveLength(1);
 
     completeDeferredChronoSleepResume(deferred.id);
+    expect(listDeferredChronoSleeps(owner)).toHaveLength(0);
+  });
+
+  test("deferred waits wake on task completion with exit/output evidence", async () => {
+    const owner = makeConversation("wait-completed");
+    waitCall(owner);
+    setBackgroundTaskActive(owner, "bash:build", true, { title: "build", startedAt: 1 });
+    let replays = 0;
+    configureChronoService(null, () => { replays++; });
+    await startChronoService();
+    deferChronoSleep({
+      conversationId: owner, toolCallId: "wait-call", startedAt: Date.now(), durationMs: 600_000,
+      wait: { taskId: "bash:build", maxWait: "10m", ownerConversationId: owner },
+    });
+    expect(getConversationTasks(owner)).toContainEqual(expect.objectContaining({
+      id: "chrono:wait:wait-call", chronoMode: "wait", dueAt: expect.any(Number),
+    }));
+    recordBackgroundTaskCompletion(owner, {
+      taskId: "bash:build", toolName: "bash", title: "build", startedAt: 1, endedAt: Date.now(),
+      exitCode: 7, signal: null, outputPath: "/tmp/build.log",
+    });
+    setBackgroundTaskActive(owner, "bash:build", false);
+    await waitUntil(() => replays === 1);
+    expect(JSON.parse(waitResult(owner).content)).toMatchObject({
+      task_id: "bash:build", status: "completed", exit_code: 7, output_path: "/tmp/build.log",
+    });
+    expect(waitResult(owner).is_error).toBe(false);
+    expect(listDeferredChronoSleeps(owner)).toHaveLength(0);
+  });
+
+  test("a deferred wait times out without stopping its target", async () => {
+    const owner = makeConversation("wait-deadline");
+    waitCall(owner);
+    setBackgroundTaskActive(owner, "bash:build", true, { title: "build", startedAt: 1 });
+    let replays = 0;
+    configureChronoService(null, () => { replays++; });
+    await startChronoService();
+    deferChronoSleep({
+      conversationId: owner, toolCallId: "wait-call", startedAt: Date.now() - 600_000 + 20, durationMs: 600_000,
+      wait: { taskId: "bash:build", maxWait: "10m" },
+    });
+    await waitUntil(() => replays === 1);
+    expect(JSON.parse(waitResult(owner).content)).toEqual({
+      task_id: "bash:build", status: "wait_limit_reached", max_wait: "10m",
+    });
+    expect(getConversationTasks(owner).map(task => task.id)).toEqual(["bash:build"]);
+    setBackgroundTaskActive(owner, "bash:build", false);
+    await Bun.sleep(10);
+    expect(replays).toBe(1);
+  });
+
+  test("completion during suspension handoff waits for committed history and stream cleanup", async () => {
+    const owner = makeConversation("wait-handoff");
+    setBackgroundTaskActive(owner, "bash:build", true, { title: "build", startedAt: 1 });
+    setActiveJob(owner, new AbortController(), Date.now());
+    let replays = 0;
+    configureChronoService(null, () => { replays++; });
+    await startChronoService();
+    deferChronoSleep({
+      conversationId: owner, toolCallId: "wait-call", startedAt: Date.now(), durationMs: 600_000,
+      wait: { taskId: "bash:build", maxWait: "10m" },
+    });
+    setBackgroundTaskActive(owner, "bash:build", false);
+    await waitUntil(() => listDeferredChronoSleeps(owner)[0]?.retryAt !== undefined);
+    expect(replays).toBe(0);
+    expect(get(owner)!.messages).toHaveLength(0);
+    waitCall(owner);
+    clearActiveJob(owner);
+    await waitUntil(() => replays === 1);
+    expect(JSON.parse(waitResult(owner).content).status).toBe("completed");
+  });
+
+  test("deferred wait subscriptions are re-established on service restart", async () => {
+    const owner = makeConversation("wait-restart");
+    waitCall(owner);
+    setBackgroundTaskActive(owner, "bash:build", true, { title: "build", startedAt: 1 });
+    let replays = 0;
+    configureChronoService(null, () => { replays++; });
+    await startChronoService();
+    deferChronoSleep({
+      conversationId: owner, toolCallId: "wait-call", startedAt: Date.now(), durationMs: 600_000,
+      wait: { taskId: "bash:build", maxWait: "10m" },
+    });
+    stopChronoService();
+    await startChronoService();
+    expect(listDeferredChronoSleeps(owner)[0].wait?.taskId).toBe("bash:build");
+    setBackgroundTaskActive(owner, "bash:build", false);
+    await waitUntil(() => replays === 1);
+    expect(JSON.parse(waitResult(owner).content).status).toBe("completed");
+  });
+
+  test("completion evidence survives a restart before the suspended turn can replay", async () => {
+    const owner = makeConversation("wait-completion-recovery");
+    waitCall(owner);
+    setBackgroundTaskActive(owner, "bash:build", true, { title: "build", startedAt: 1 });
+    setActiveJob(owner, new AbortController(), Date.now());
+    let replays = 0;
+    configureChronoService(null, () => { replays++; });
+    await startChronoService();
+    deferChronoSleep({
+      conversationId: owner, toolCallId: "wait-call", startedAt: Date.now(), durationMs: 600_000,
+      wait: { taskId: "bash:build", maxWait: "10m" },
+    });
+    recordBackgroundTaskCompletion(owner, {
+      taskId: "bash:build", toolName: "bash", title: "build", startedAt: 1, endedAt: Date.now(),
+      exitCode: 9, signal: null, outputPath: "/tmp/recovered-build.log",
+    });
+    setBackgroundTaskActive(owner, "bash:build", false);
+    await waitUntil(() => listDeferredChronoSleeps(owner)[0]?.retryAt !== undefined);
+    expect(replays).toBe(0);
+    stopChronoService();
+    clearActiveJob(owner);
+    resetConversationActivityForTest(); // Neither active task nor completion cache survived.
+    await startChronoService();
+    await waitUntil(() => replays === 1);
+    expect(JSON.parse(waitResult(owner).content)).toMatchObject({
+      status: "completed", exit_code: 9, output_path: "/tmp/recovered-build.log",
+    });
+    expect(waitResult(owner).is_error).toBe(false);
+  });
+
+  test("a completion after the safety deadline cannot overwrite a wait timeout", async () => {
+    const owner = makeConversation("wait-late-completion");
+    waitCall(owner);
+    setBackgroundTaskActive(owner, "bash:build", true, { title: "build", startedAt: 1 });
+    let replays = 0;
+    configureChronoService(null, () => { replays++; });
+    await startChronoService();
+    deferChronoSleep({
+      conversationId: owner, toolCallId: "wait-call", startedAt: Date.now() - 600_001, durationMs: 600_000,
+      wait: { taskId: "bash:build", maxWait: "10m" },
+    });
+    setBackgroundTaskActive(owner, "bash:build", false);
+    await waitUntil(() => replays === 1);
+    expect(JSON.parse(waitResult(owner).content).status).toBe("wait_limit_reached");
+  });
+
+  test("a target lost across restart closes the pending wait with an error", async () => {
+    const owner = makeConversation("wait-lost");
+    waitCall(owner);
+    setBackgroundTaskActive(owner, "bash:build", true, { title: "build", startedAt: 1 });
+    let replays = 0;
+    configureChronoService(null, () => { replays++; });
+    await startChronoService();
+    deferChronoSleep({
+      conversationId: owner, toolCallId: "wait-call", startedAt: Date.now(), durationMs: 600_000,
+      wait: { taskId: "bash:build", maxWait: "10m" },
+    });
+    stopChronoService();
+    resetConversationActivityForTest();
+    await startChronoService();
+    await waitUntil(() => replays === 1);
+    expect(waitResult(owner).is_error).toBe(true);
+    expect(waitResult(owner).content).toContain("Task not found");
+  });
+
+  test("boot defers wait subscriptions until recovered subagents are in the catalog", async () => {
+    const owner = makeConversation("wait-subagent-recovery");
+    waitCall(owner);
+    await startChronoService();
+    setSubagentActive(owner, "child:recovering", true, { title: "child", startedAt: 1 });
+    deferChronoSleep({
+      conversationId: owner, toolCallId: "wait-call", startedAt: Date.now(), durationMs: 600_000,
+      wait: { taskId: "child:recovering", maxWait: "10m" },
+    });
+    stopChronoService();
+    resetConversationActivityForTest();
+    let replays = 0;
+    configureChronoService(null, () => { replays++; });
+    await startChronoService({ deferWaitSubscriptions: true });
+    await Bun.sleep(10);
+    expect(listDeferredChronoSleeps(owner)[0].wait?.output).toBeUndefined();
+    setSubagentActive(owner, "child:recovering", true, { title: "child", startedAt: 1 });
+    resumeDeferredChronoWaits();
+    setSubagentActive(owner, "child:recovering", false);
+    await waitUntil(() => replays === 1);
+    expect(JSON.parse(waitResult(owner).content)).toMatchObject({ task_id: "child:recovering", status: "completed" });
+    expect(waitResult(owner).is_error).toBe(false);
+  });
+
+  test.each(["user_message", "user_stop"] as const)("a %s closes a durable wait without stopping the target or double replaying", async (reason) => {
+    const owner = makeConversation(`wait-${reason}`);
+    waitCall(owner);
+    setBackgroundTaskActive(owner, "bash:build", true, { title: "build", startedAt: 1 });
+    let replays = 0;
+    configureChronoService(null, () => { replays++; });
+    await startChronoService();
+    const deferred = deferChronoSleep({
+      conversationId: owner, toolCallId: "wait-call", startedAt: Date.now(), durationMs: 600_000,
+      wait: { taskId: "bash:build", maxWait: "10m" },
+    }).sleep!;
+    if (reason === "user_message") {
+      interruptDeferredChronoSleep(owner);
+      completeDeferredChronoSleepResume(deferred.id);
+    } else cancelDeferredChronoSleep(owner);
+    expect(JSON.parse(waitResult(owner).content)).toMatchObject({
+      reason, status: reason === "user_stop" ? "wait_cancelled" : "wait_interrupted",
+    });
+    expect(getConversationTasks(owner).map(task => task.id)).toEqual(["bash:build"]);
+    setBackgroundTaskActive(owner, "bash:build", false);
+    await Bun.sleep(10);
+    expect(replays).toBe(0);
     expect(listDeferredChronoSleeps(owner)).toHaveLength(0);
   });
 

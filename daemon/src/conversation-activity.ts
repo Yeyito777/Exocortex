@@ -227,18 +227,30 @@ function findActiveTask(taskId: string): InternalTaskRecord | undefined {
   return undefined;
 }
 
-/** Event-driven wait for an active task to leave the daemon task catalog. */
-export function waitForConversationTask(taskId: string, signal?: AbortSignal, ownerConversationId?: string): Promise<CompletedConversationTask> {
-  if (signal?.aborted) return Promise.reject(new DOMException("Aborted", "AbortError"));
+/** Validate a wait target without registering a completion listener. */
+export function getWaitableConversationTask(taskId: string, ownerConversationId?: string): ActiveConversationTask | CompletedConversationTask {
   const task = findActiveTask(taskId);
   if (!task) {
     const completed = getCompletedConversationTask(taskId);
-    if (completed && (!ownerConversationId || completed.ownerConversationId === ownerConversationId)) return Promise.resolve(completed);
-    return Promise.reject(new Error(`Task not found (active or recently completed): ${taskId}`));
+    if (completed && (!ownerConversationId || completed.ownerConversationId === ownerConversationId)) return completed;
+    throw new Error(`Task not found (active or recently completed): ${taskId}`);
   }
-  const owner = listActiveConversationTasks().find(record => record.id === taskId)!.ownerConversationId;
-  if (ownerConversationId && owner !== ownerConversationId) return Promise.reject(new Error("Can only wait for your own tasks."));
-  const snapshot = { ...summaryProjection(task), ownerConversationId: owner, status: "completed" as const };
+  const active = listActiveConversationTasks().find(record => record.id === taskId)!;
+  if (ownerConversationId && active.ownerConversationId !== ownerConversationId) throw new Error("Can only wait for your own tasks.");
+  return active;
+}
+
+/** Event-driven wait for an active task to leave the daemon task catalog. */
+export function waitForConversationTask(taskId: string, signal?: AbortSignal, ownerConversationId?: string): Promise<CompletedConversationTask> {
+  if (signal?.aborted) return Promise.reject(new DOMException("Aborted", "AbortError"));
+  let task: ActiveConversationTask | CompletedConversationTask;
+  try {
+    task = getWaitableConversationTask(taskId, ownerConversationId);
+  } catch (err) {
+    return Promise.reject(err);
+  }
+  if (task.status === "completed") return Promise.resolve(task);
+  const snapshot = { ...task, status: "completed" as const };
   return new Promise((resolve, reject) => {
     const finish = () => {
       signal?.removeEventListener("abort", abort);

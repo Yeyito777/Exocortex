@@ -192,7 +192,7 @@ describe("automatic agent compaction", () => {
 });
 
 describe("deferred tool results", () => {
-  test("ends the provider loop with an outstanding Chrono tool call", async () => {
+  test.each(["sleep", "wait"] as const)("ends the provider loop with an outstanding Chrono %s call", async (operation) => {
     const recovery = state();
     const emittedResults: string[] = [];
     let streamCalls = 0;
@@ -203,7 +203,9 @@ describe("deferred tool results", () => {
         thinking: "",
         stopReason: "tool_use",
         blocks: [],
-        toolCalls: [{ id: "sleep-call", name: "chrono", input: { action: "sleep", duration: "10m" } }],
+        toolCalls: [{ id: "sleep-call", name: "chrono", input: operation === "sleep"
+          ? { action: "sleep", duration: "10m" }
+          : { action: "wait", task_id: "bash:build", max_wait: "10m" } }],
         outputTokens: 4,
       } satisfies StreamResult;
     }) as typeof streamMessage;
@@ -221,9 +223,15 @@ describe("deferred tool results", () => {
           toolName: "chrono",
           output: "",
           isError: false,
-          deferred: {
+          deferred: operation === "sleep" ? {
             kind: "chrono_sleep",
             sleepId: "chrono:sleep:sleep-call",
+            startedAt: 1_000,
+            dueAt: 601_000,
+            durationMs: 600_000,
+          } : {
+            kind: "chrono_wait",
+            waitId: "chrono:wait:sleep-call",
             startedAt: 1_000,
             dueAt: 601_000,
             durationMs: 600_000,
@@ -233,7 +241,9 @@ describe("deferred tool results", () => {
     );
 
     expect(streamCalls).toBe(1);
-    expect(result.suspended).toMatchObject({ kind: "chrono_sleep", sleepId: "chrono:sleep:sleep-call" });
+    expect(result.suspended).toMatchObject(operation === "sleep"
+      ? { kind: "chrono_sleep", sleepId: "chrono:sleep:sleep-call" }
+      : { kind: "chrono_wait", waitId: "chrono:wait:sleep-call" });
     expect(result.newMessages).toHaveLength(1);
     expect(result.newMessages[0]).toMatchObject({
       role: "assistant",

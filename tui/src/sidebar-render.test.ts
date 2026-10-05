@@ -402,7 +402,7 @@ describe("sidebar rendering", () => {
     expect(visibleLength(row!)).toBe(SIDEBAR_WIDTH);
   });
 
-  test("renders durable Chrono sleeps with the yellow streaming indicator", () => {
+  test("renders durable Chrono sleeps and waits with the yellow streaming indicator", () => {
     const sidebar = createSidebarState();
     sidebar.folders = [{ id: "folder", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 }];
     sidebar.conversations = [
@@ -422,6 +422,11 @@ describe("sidebar rendering", () => {
         folderId: "folder",
         tasks: [{ id: "chrono-wait", kind: "chrono", title: "Wait for build", startedAt: 0, chronoMode: "wait" }],
       }),
+      conversation("deferred-wait", 3, {
+        title: "Deferred wait",
+        folderId: "folder",
+        tasks: [{ id: "chrono:wait:wait-call", kind: "chrono", title: "Wait for build", startedAt: 0, chronoMode: "wait" }],
+      }),
     ];
 
     let rows = renderSidebar(sidebar, 8, true, null);
@@ -436,6 +441,8 @@ describe("sidebar rendering", () => {
     expect(rows.find(row => row.includes("Deferred sleep"))).toContain(`${theme.warning}◉ `);
     expect(rows.find(row => row.includes("Deferred sleep"))).not.toContain(`${theme.success}◉ `);
     expect(rows.find(row => row.includes("Deferred sleep"))).not.toContain("◷");
+    expect(rows.find(row => row.includes("Deferred wait"))).toContain(`${theme.warning}◉ `);
+    expect(rows.find(row => row.includes("Deferred wait"))).not.toContain("◷");
     expect(rows.join("\n")).not.toContain("wakes in");
     expect(rows.find(row => row.includes("Waiting"))).not.toContain("◉");
     expect(rows.find(row => row.includes("Waiting"))).not.toContain("◷");

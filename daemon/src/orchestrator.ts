@@ -1743,7 +1743,7 @@ async function orchestrateAdmittedAssistantTurn(
     if (providerTurnSession) {
       try {
         // Ordinary successful turns may park OpenAI's websocket briefly for
-        // reuse. A long Chrono sleep is explicitly not an idle live turn: tear
+        // reuse. A long Chrono sleep/wait is not an idle live turn: tear
         // down the physical transport now and establish a fresh one on replay.
         if (outcome?.ok && !outcome.suspended) await providerTurnSession.close();
         else if (providerTurnSession.destroy) await providerTurnSession.destroy();
