@@ -54,6 +54,17 @@ function sleepingState(streaming = false) {
 }
 
 describe("durable Chrono sleep metadata", () => {
+  test("recovers metadata for suspended waits through the same task/tool-call linkage", () => {
+    const { state, assistant } = sleepingState();
+    const task = state.sidebar.conversations[0].tasks![0];
+    task.id = "chrono:wait:sleep-call";
+    task.chronoMode = "wait";
+    expect(activeDurableSleepAssistant(state)).toBe(assistant);
+    expect(durableSleepMetadataFrame(state, 6_999)).toBe(5);
+    state.messages[0].metadata!.workTimerStartedAt = 1_000;
+    expect(activeDurableSleepAssistant(state)).toBeNull();
+  });
+
   test("does not count suspended idle time as work with the new timer", () => {
     const { state } = sleepingState();
     state.messages[0].metadata!.workTimerStartedAt = 1_000;

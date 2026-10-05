@@ -5,6 +5,9 @@ import { orchestrateCompactConversation, orchestrateGoalCycle, orchestrateReplay
 import { streamMessage } from "./api";
 import { chronoInternalsForTest, configureChronoService, listDeferredChronoSleeps } from "./chrono-service";
 import { USER_MESSAGE_AUTOMATION_KINDS, createStoredUserMessage } from "./messages";
+import { setBackgroundTaskActive } from "./conversation-activity";
+import { getProviderAdapter } from "./providers/catalog";
+import { invalidateCredentialsCache } from "./auth";
 
 const IDS: string[] = [];
 
@@ -1243,10 +1246,11 @@ describe("DB-first orchestrator persistence", () => {
     });
   });
 
-  test("a suspended goal turn remains active and is not auto-continued", async () => {
+  test.each(["sleep", "wait"] as const)("a goal suspended by Chrono %s remains active and is not auto-continued", async (operation) => {
     const convId = id("goal-suspended");
     create(convId, "openai", "gpt-5.6-sol");
     setGoal(convId, "wait rather than spin");
+    setBackgroundTaskActive(convId, "bash:goal-build", true, { title: "build", startedAt: 1 });
     let streamCalls = 0;
     const sleepStream = (async (_provider, _messages, _model, _streamCallbacks, options) => {
       const tools = (options?.tools ?? []) as Array<{ name?: string }>;
@@ -1257,7 +1261,8 @@ describe("DB-first orchestrator persistence", () => {
         thinking: "",
         stopReason: "tool_use" as const,
         blocks: [],
-        toolCalls: [{ id: "goal-sleep", name: "chrono", input: { action: "sleep", duration: "10m" } }],
+        toolCalls: [{ id: "goal-sleep", name: "chrono", input: operation === "sleep"
+          ? { action: "sleep", duration: "10m" } : { action: "wait", task_id: "bash:goal-build", max_wait: "10m" } }],
         inputTokens: 10,
         outputTokens: 2,
       };
@@ -1272,10 +1277,11 @@ describe("DB-first orchestrator persistence", () => {
     expect(listDeferredChronoSleeps(convId)).toHaveLength(1);
   });
 
-  test("orchestrateGoalCycle does not wake an already deferred Chrono sleep", async () => {
+  test.each(["sleep", "wait"] as const)("orchestrateGoalCycle does not wake an already deferred Chrono %s", async (operation) => {
     const convId = id("goal-already-sleeping");
     create(convId, "openai", "gpt-5.6-sol");
     setGoal(convId, "wait for the scheduled wake");
+    setBackgroundTaskActive(convId, "bash:goal-build", true, { title: "build", startedAt: 1 });
     let streamCalls = 0;
     const sleepStream = (async () => {
       streamCalls += 1;
@@ -1284,7 +1290,8 @@ describe("DB-first orchestrator persistence", () => {
         thinking: "",
         stopReason: "tool_use" as const,
         blocks: [],
-        toolCalls: [{ id: "existing-goal-sleep", name: "chrono", input: { action: "sleep", duration: "10m" } }],
+        toolCalls: [{ id: "existing-goal-sleep", name: "chrono", input: operation === "sleep"
+          ? { action: "sleep", duration: "10m" } : { action: "wait", task_id: "bash:goal-build", max_wait: "10m" } }],
         inputTokens: 10,
         outputTokens: 2,
       };
@@ -1304,16 +1311,18 @@ describe("DB-first orchestrator persistence", () => {
     expect(loadPersisted(convId)?.goal).toMatchObject({ status: "active", turns: 1 });
   });
 
-  test("stops a long Chrono sleep turn without marking it unread, then resumes it before a user message", async () => {
+  test.each(["sleep", "wait"] as const)("suspends a long Chrono %s without marking it unread, then resumes it before a user message", async (operation) => {
     const convId = id("deferred-chrono-sleep");
     create(convId, "openai", "gpt-5.6-sol");
+    setBackgroundTaskActive(convId, "bash:build", true, { title: "build", startedAt: 1 });
     const events: Array<Record<string, unknown>> = [];
     const sleepStream = (async () => ({
       text: "",
       thinking: "",
       stopReason: "tool_use" as const,
       blocks: [],
-      toolCalls: [{ id: "long-sleep-call", name: "chrono", input: { action: "sleep", duration: "10m" } }],
+      toolCalls: [{ id: "long-sleep-call", name: "chrono", input: operation === "sleep"
+        ? { action: "sleep", duration: "10m" } : { action: "wait", task_id: "bash:build", max_wait: "10m" } }],
       inputTokens: 10,
       outputTokens: 2,
     })) as typeof streamMessage;
@@ -1370,11 +1379,50 @@ describe("DB-first orchestrator persistence", () => {
     expect(toolResultMessage.content).toContainEqual(expect.objectContaining({
       type: "tool_result",
       tool_use_id: "long-sleep-call",
-      content: expect.stringContaining("Sleep interrupted after"),
+      content: expect.stringContaining(operation === "sleep" ? "Sleep interrupted after" : "wait_interrupted"),
     }));
     expect(loadPersisted(convId)!.messages.map(message => message.role)).toEqual([
       "user", "assistant", "user", "user", "assistant",
     ]);
+  });
+
+  test.each(["sleep", "wait"] as const)("Chrono %s suspension destroys rather than parks the provider transport", async (operation) => {
+    const convId = id(`transport-${operation}`);
+    create(convId, "openai", "gpt-5.6-sol");
+    setBackgroundTaskActive(convId, "bash:transport-test", true, { title: "build", startedAt: 1 });
+    const adapter = getProviderAdapter("openai");
+    const originalStream = adapter.streamMessage;
+    const originalSession = adapter.createTurnSession;
+    const originalCredentials = adapter.auth.hasConfiguredCredentials;
+    const session = { close: mock(() => {}), destroy: mock(() => {}) };
+    // These cases run in an isolated child process. Replace the transport at
+    // the adapter boundary, leaving real orchestrator session ownership intact.
+    adapter.auth.hasConfiguredCredentials = () => true;
+    invalidateCredentialsCache("openai");
+    adapter.createTurnSession = () => session;
+    adapter.streamMessage = async (_messages, _model, _callbacks, options) => {
+      expect(options?.turnSession).toBe(session);
+      return {
+        text: "", thinking: "", stopReason: "tool_use", blocks: [], inputTokens: 10, outputTokens: 2,
+        toolCalls: [{ id: "transport-call", name: "chrono", input: operation === "sleep"
+          ? { action: "sleep", duration: "10m" }
+          : { action: "wait", task_id: "bash:transport-test", max_wait: "10m" } }],
+      };
+    };
+    try {
+      const outcome = await orchestrateSendMessage(
+        server() as never, null, undefined, convId, "suspend transport", Date.now(),
+        { onHeaders() {}, onComplete() {} },
+      );
+      expect(outcome).toMatchObject({ ok: true, suspended: true });
+      expect(session.destroy).toHaveBeenCalledTimes(1);
+      expect(session.close).not.toHaveBeenCalled();
+    } finally {
+      adapter.streamMessage = originalStream;
+      adapter.createTurnSession = originalSession;
+      adapter.auth.hasConfiguredCredentials = originalCredentials;
+      invalidateCredentialsCache("openai");
+    }
   });
 
   test("a detached peer wake owns the interrupted sleep through completion without a false failure", async () => {

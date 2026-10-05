@@ -2,7 +2,7 @@ import type { AIMessage } from "./messages";
 import type { RenderState } from "./state";
 import { isDurablySleeping } from "./taskvisibility";
 
-const CHRONO_SLEEP_TASK_PREFIX = "chrono:sleep:";
+const CHRONO_SUSPENDED_TASK_PREFIXES = ["chrono:sleep:", "chrono:wait:"];
 
 /**
  * Find the committed assistant message whose Chrono tool call currently owns a
@@ -20,7 +20,7 @@ export function activeDurableSleepAssistant(state: RenderState): AIMessage | nul
 
   const sleepTaskIds = new Set(
     (conversation.tasks ?? [])
-      .filter(task => task.kind === "chrono" && task.chronoMode === "sleep")
+      .filter(task => task.kind === "chrono" && (task.chronoMode === "sleep" || task.chronoMode === "wait"))
       .map(task => task.id),
   );
 
@@ -33,7 +33,7 @@ export function activeDurableSleepAssistant(state: RenderState): AIMessage | nul
     const ownsSleep = message.blocks.some(block =>
       block.type === "tool_call"
       && block.toolName === "chrono"
-      && sleepTaskIds.has(`${CHRONO_SLEEP_TASK_PREFIX}${block.toolCallId}`)
+      && CHRONO_SUSPENDED_TASK_PREFIXES.some(prefix => sleepTaskIds.has(`${prefix}${block.toolCallId}`))
     );
     if (ownsSleep) return message;
   }

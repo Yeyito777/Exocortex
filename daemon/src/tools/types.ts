@@ -125,7 +125,15 @@ export interface DeferredChronoSleepResult {
   durationMs: number;
 }
 
-export type DeferredToolResult = DeferredChronoSleepResult;
+export interface DeferredChronoWaitResult {
+  kind: "chrono_wait";
+  waitId: string;
+  startedAt: number;
+  dueAt: number;
+  durationMs: number;
+}
+
+export type DeferredToolResult = DeferredChronoSleepResult | DeferredChronoWaitResult;
 
 export interface ActiveToolBackgrounder {
   toolName: string;

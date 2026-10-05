@@ -1,18 +1,20 @@
 import type { ConversationSummary, ConversationTaskSummary } from "./messages";
 
-/** Whether a durable Chrono sleep currently suspends a conversation. */
+/** Whether a durable Chrono sleep or wait currently suspends a conversation. */
 export function isDurablySleeping(
   conversation: Pick<ConversationSummary, "streaming" | "tasks">,
 ): boolean {
   return !conversation.streaming && conversation.tasks?.some(
-    task => task.kind === "chrono" && task.chronoMode === "sleep",
+    task => task.kind === "chrono" && (task.chronoMode === "sleep" || (
+      task.chronoMode === "wait" && task.id.startsWith("chrono:wait:")
+    )),
   ) === true;
 }
 
 /**
  * Whether a conversation still owns an active model turn.
  *
- * Long Chrono sleeps deliberately close the provider websocket and suspend the
+ * Long Chrono sleeps/waits deliberately close the provider websocket and suspend the
  * turn, so `streaming` becomes false even though the turn has not completed.
  * This remains useful for attention and activity navigation even though the
  * sidebar renders the suspended state differently from connected streaming.

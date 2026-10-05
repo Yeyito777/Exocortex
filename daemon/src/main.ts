@@ -27,7 +27,7 @@ import * as convStore from "./conversations";
 import { closeConversationPersistence, prepareConversationStoreSchema } from "./persistence";
 import { getRunningConversationIds, prepareRestartForReplay, prepareStopWithoutReplay } from "./control";
 import { clearRestartRecoveryForStop, deliverPendingSubagentNotifications, hasActiveGoalRestartMarker, prepareCatchableShutdownForReplay, prepareCatchableShutdownWithoutReplay, recoverActiveGoals, recoverInterruptedStreams } from "./restart-recovery";
-import { startChronoService, stopChronoService, listChronoSchedules } from "./chrono-service";
+import { startChronoService, stopChronoService, listChronoSchedules, resumeDeferredChronoWaits } from "./chrono-service";
 import { startWatchdog, stopWatchdog } from "./watchdog";
 import { initExternalTools, stopExternalToolsAsync, getExternalToolCount, getSupervisedDaemonCount, getExternalToolStyles } from "./external-tools";
 import { recoverPendingTitles } from "./titlegen";
@@ -265,7 +265,7 @@ async function startDaemon(): Promise<void> {
   profileMark("message_queue_loaded", { queuedMessageCount, deduplicated: deliveredQueueIds.size });
   const pendingExternalSoftWakeCount = startExternalNotificationSoftWakeService();
   profileMark("external_notification_soft_wakes_started", { pendingCount: pendingExternalSoftWakeCount });
-  const chronoScheduleCount = await startChronoService();
+  const chronoScheduleCount = await startChronoService({ deferWaitSubscriptions: true });
   profileMark("chrono_started", { scheduleCount: chronoScheduleCount });
   recoverPendingTitles(server);
   profileMark("pending_titles_recovered");
@@ -338,6 +338,10 @@ async function startDaemon(): Promise<void> {
     profileMark("subagent_notifications_recovered", { count: pendingNotifications });
   }
   backgroundTaskRecovery.enableCompletionDelivery();
+  // recoverInterruptedStreams reconstructs notification-linked subagent tasks.
+  // Do not mistake those targets for lost tasks while boot is still rebuilding
+  // the catalog that suspended Chrono waits subscribe to.
+  resumeDeferredChronoWaits();
 }
 
 // ── Main ────────────────────────────────────────────────────────────

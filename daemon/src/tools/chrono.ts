@@ -9,7 +9,8 @@ import {
   listChronoSchedules,
   type RepeatInput,
 } from "../chrono-service";
-import { waitForConversationTask } from "../conversation-activity";
+import { getWaitableConversationTask, waitForConversationTask } from "../conversation-activity";
+import { completedChronoWaitOutput } from "./chrono-output";
 import { parseDurationMs } from "./duration";
 
 function action(input: Record<string, unknown>): string {
@@ -70,6 +71,41 @@ async function execute(input: Record<string, unknown>, context: Parameters<Tool[
     const maxWait = String(input.max_wait).trim();
     const startedAt = Date.now();
     const ownTaskId = `chrono:wait:${context.toolCallId ?? startedAt}`;
+    const ownerConversationId = context.subagentMaxDepth === 0 ? convId : undefined;
+    if (maxWaitMs > LONG_CHRONO_SLEEP_THRESHOLD_MS) {
+      if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+      try {
+        const target = getWaitableConversationTask(taskId, ownerConversationId);
+        if (target.status === "completed") return { output: completedChronoWaitOutput(target), isError: false };
+      } catch (err) {
+        return { output: err instanceof Error ? err.message : String(err), isError: true };
+      }
+      if (!context.toolCallId || !context.canDeferToolResult) {
+        return {
+          output: "Chrono waits longer than five minutes must be the only tool call in a model provider round so the turn can be suspended safely. Call chrono wait again by itself.",
+          isError: true,
+        };
+      }
+      const deferred = deferChronoSleep({
+        conversationId: convId,
+        toolCallId: context.toolCallId,
+        startedAt,
+        durationMs: maxWaitMs,
+        wait: { taskId, maxWait, ownerConversationId },
+      });
+      if (!deferred.sleep) return { output: deferred.error ?? "Could not defer Chrono wait.", isError: true };
+      return {
+        output: "",
+        isError: false,
+        deferred: {
+          kind: "chrono_wait",
+          waitId: deferred.sleep.id,
+          startedAt,
+          dueAt: startedAt + maxWaitMs,
+          durationMs: maxWaitMs,
+        },
+      };
+    }
     const waitController = new AbortController();
     const limitController = new AbortController();
     let limitReached = false;
@@ -95,16 +131,8 @@ async function execute(input: Record<string, unknown>, context: Parameters<Tool[
       chronoMode: "wait",
     });
     try {
-      const completed = await waitForConversationTask(taskId, waitController.signal,
-        context.subagentMaxDepth === 0 ? convId : undefined);
-      return { output: JSON.stringify({
-        task_id: completed.id, status: completed.status, title: completed.title,
-        ended_at: completed.endedAt,
-        ...(completed.exitCode !== undefined ? { exit_code: completed.exitCode } : {}),
-        ...(completed.signal !== undefined ? { signal: completed.signal } : {}),
-        ...(completed.outputPath ? { output_path: completed.outputPath } : {}),
-        ...(completed.failure ? { failure: completed.failure } : {}),
-      }, null, 2), isError: false };
+      const completed = await waitForConversationTask(taskId, waitController.signal, ownerConversationId);
+      return { output: completedChronoWaitOutput(completed), isError: false };
     } catch (err) {
       if (limitReached && err instanceof DOMException && err.name === "AbortError") {
         return { output: JSON.stringify({ task_id: taskId, status: "wait_limit_reached", max_wait: maxWait }), isError: false };
@@ -240,7 +268,7 @@ async function execute(input: Record<string, unknown>, context: Parameters<Tool[
 
 export const chrono: Tool = {
   name: "chrono",
-  description: "Wait for an active task up to a required limit, sleep the current model turn, or manage durable one-shot/recurring wakes. Sleeps longer than five minutes suspend the provider turn and resume it by replay when elapsed or interrupted by a user message. A message is a hard wake that starts the model. A command is a soft wake that runs without a model and can escalate to a hard wake on failure or a script-defined non-zero exit.",
+  description: "Wait for an active task up to a required limit, sleep the current model turn, or manage durable one-shot/recurring wakes. Sleeps and waits with limits longer than five minutes suspend the provider turn and resume it by replay on completion, timeout, or a user message. A message is a hard wake that starts the model. A command is a soft wake that runs without a model and can escalate to a hard wake on failure or a script-defined non-zero exit.",
   systemHint: "Prefer chrono over shell sleep or cron. Use native session polling for shell tools that provide it; use chrono wait for other active tasks. `wait` requires a `max_wait` safety limit and wakes immediately when the task finishes. `sleep` pauses this turn until the duration elapses; `wake` persists across daemon restarts; message wakes start a model turn, while command soft-wakes can use hard_wake to escalate failures or command-defined non-zero conditions.",
   inputSchema: {
     type: "object",

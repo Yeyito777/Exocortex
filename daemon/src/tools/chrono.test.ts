@@ -126,6 +126,66 @@ describe("Chrono tool", () => {
     expect(result.output).toContain("must be the only tool call");
   });
 
+  test("a wait above the same five-minute cutoff suspends immediately", async () => {
+    const conversationId = makeConversation("long-wait");
+    setBackgroundTaskActive(conversationId, "bash:long", true, { title: "build", startedAt: 1 });
+    const result = await chrono.execute(
+      { action: "wait", task_id: "bash:long", max_wait: "5m1ms" },
+      { conversationId, toolCallId: "wait-long", canDeferToolResult: true },
+    );
+    expect(result).toMatchObject({
+      output: "", isError: false,
+      deferred: { kind: "chrono_wait", waitId: "chrono:wait:wait-long", durationMs: 300_001 },
+    });
+  });
+
+  test("long waits validate targets and ownership before suspending", async () => {
+    const conversationId = makeConversation("invalid-wait");
+    const context = { conversationId, toolCallId: "invalid", canDeferToolResult: true, subagentMaxDepth: 0 };
+    const missing = await chrono.execute({ action: "wait", task_id: "missing", max_wait: "1h" }, context);
+    expect(missing.isError).toBe(true);
+    expect(missing.deferred).toBeUndefined();
+    setBackgroundTaskActive("other", "bash:foreign", true, { title: "private", startedAt: 1 });
+    const foreign = await chrono.execute({ action: "wait", task_id: "bash:foreign", max_wait: "1h" }, context);
+    expect(foreign.output).toContain("own tasks");
+    expect(foreign.deferred).toBeUndefined();
+  });
+
+  test("already-completed tasks return inline even with a long wait limit or multiple tools", async () => {
+    recordBackgroundTaskCompletion("owner", {
+      taskId: "bash:done", toolName: "bash", title: "done", startedAt: 1,
+      endedAt: Date.now(), exitCode: 0, signal: null, outputPath: "/tmp/done.log",
+    });
+    const result = await chrono.execute(
+      { action: "wait", task_id: "bash:done", max_wait: "1h" },
+      { conversationId: "owner", canDeferToolResult: false },
+    );
+    expect(result.isError).toBe(false);
+    expect(result.deferred).toBeUndefined();
+    expect(JSON.parse(result.output)).toMatchObject({ status: "completed", exit_code: 0 });
+  });
+
+  test("a long wait in a multi-tool round asks the model to retry it alone", async () => {
+    const conversationId = makeConversation("wait-batch");
+    setBackgroundTaskActive(conversationId, "bash:batch", true, { title: "job", startedAt: 1 });
+    const result = await chrono.execute(
+      { action: "wait", task_id: "bash:batch", max_wait: "10m" },
+      { conversationId, toolCallId: "wait-batch", canDeferToolResult: false },
+    );
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("must be the only tool call");
+  });
+
+  test("an aborted long wait never leaves a durable suspension", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    await expect(chrono.execute(
+      { action: "wait", task_id: "missing", max_wait: "1h" },
+      { conversationId: "owner", toolCallId: "aborted", canDeferToolResult: true },
+      controller.signal,
+    )).rejects.toThrow("Aborted");
+  });
+
   test("creates and lists a durable hard wake", async () => {
     const created = await chrono.execute({
       action: "wake",
