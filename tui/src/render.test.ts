@@ -769,6 +769,139 @@ describe("render caching and frame diffing", () => {
     });
   });
 
+  for (const streaming of [false, true]) {
+    test(`counts the response footer when tasks reflow a ${streaming ? "streaming" : "completed unread"} response`, () => {
+      const state = createInitialState();
+      state.convId = "footer-reflow";
+      state.cols = 120;
+      state.rows = 20;
+      const assistant = createPendingAI(Date.now() - 2_000, state.model);
+      const thinking = {
+        type: "thinking" as const,
+        text: Array.from({ length: 25 }, (_, index) => `thinking ${index + 1}`).join("\n"),
+      };
+      const response = {
+        type: "text" as const,
+        text: [
+          `answer 01 ${"word ".repeat(15)}`,
+          ...Array.from({ length: 11 }, (_, index) => `answer ${index + 2}`),
+        ].join("\n"),
+      };
+      assistant.blocks = [thinking, response];
+      if (streaming) {
+        state.pendingAI = assistant;
+      } else {
+        assistant.metadata!.endedAt = Date.now();
+        state.messages = [assistant];
+        state.conversationScroll.pendingRestore = {
+          convId: state.convId,
+          mode: "unread-response",
+          waitForInitialBackfill: false,
+        };
+      }
+      state.sidebar.conversations = [{
+        id: state.convId,
+        provider: state.provider,
+        model: state.model,
+        effort: state.effort,
+        fastMode: state.fastMode,
+        createdAt: 1,
+        updatedAt: 2,
+        messageCount: 1,
+        title: "Footer reflow",
+        marked: false,
+        pinned: false,
+        streaming,
+        unread: !streaming,
+        sortOrder: 0,
+        tasks: [],
+      }];
+
+      renderSilently(state);
+      expect(state.layout.messageAreaHeight).toBe(13);
+      expect(state.conversationScroll.finalResponseViewport?.mode).toBe("following");
+
+      // Twelve canonical response rows + one metadata row fit exactly. The
+      // task card adds one wrap: the text alone still fits, but its footer
+      // pushes the first visual chunk out of the bottom-following viewport.
+      state.sidebar.conversations[0].tasks = [{
+        id: "child", kind: "subagent", title: "Task", startedAt: Date.now() - 2_000,
+      }];
+      renderSilently(state);
+
+      const responseStart = state.historyLineAnchors.findIndex(anchor => anchor.owner === response);
+      const responseEnd = state.historyLineAnchors.findLastIndex(anchor => anchor.owner === response) + 1;
+      expect(responseEnd - responseStart).toBe(12);
+      expect(state.layout.totalLines - responseEnd).toBe(1);
+      expect(state.conversationScroll.finalResponseViewport?.mode).toBe("anchored");
+      expect(state.layout.historyViewportRows[0]).toMatchObject({ lineIndex: responseStart, startCol: 0 });
+
+      renderSilently(state);
+      expect(state.layout.historyViewportRows[0]).toMatchObject({ lineIndex: responseStart, startCol: 0 });
+    });
+  }
+
+  test("follows an exactly fitting wrapped response and footer, then holds its top across growth and completion", () => {
+    const state = createInitialState();
+    state.convId = "footer-growth";
+    state.cols = 120;
+    state.rows = 20;
+    state.sidebar.conversations = [{
+      id: state.convId,
+      provider: state.provider,
+      model: state.model,
+      effort: state.effort,
+      fastMode: state.fastMode,
+      createdAt: 1,
+      updatedAt: 2,
+      messageCount: 0,
+      title: "Footer growth",
+      marked: false,
+      pinned: false,
+      streaming: true,
+      unread: false,
+      sortOrder: 0,
+      tasks: [{ id: "child", kind: "subagent", title: "Task", startedAt: Date.now() - 2_000 }],
+    }];
+    state.pendingAI = createPendingAI(Date.now() - 2_000, state.model);
+    state.pendingAI.blocks.push({
+      type: "thinking",
+      text: Array.from({ length: 25 }, (_, index) => `thinking ${index + 1}`).join("\n"),
+    });
+    const response = {
+      type: "text" as const,
+      text: [
+        `answer 01 ${"word ".repeat(15)}`,
+        ...Array.from({ length: 10 }, (_, index) => `answer ${index + 2}`),
+      ].join("\n"),
+    };
+    state.pendingAI.blocks.push(response);
+
+    renderSilently(state);
+    let responseStart = state.historyLineAnchors.findIndex(anchor => anchor.owner === response);
+    expect(state.conversationScroll.streamingResponse?.mode).toBe("following");
+    expect(state.scrollOffset).toBe(0);
+    expect(state.layout.historyViewportRows[0]).toMatchObject({ lineIndex: responseStart, startCol: 0 });
+
+    response.text += "\nanswer 12";
+    renderSilently(state);
+    expect(state.conversationScroll.streamingResponse?.mode).toBe("anchored");
+    expect(state.layout.historyViewportRows[0]).toMatchObject({ lineIndex: responseStart, startCol: 0 });
+
+    response.text += "\nanswer 13";
+    renderSilently(state);
+    expect(state.layout.historyViewportRows[0]).toMatchObject({ lineIndex: responseStart, startCol: 0 });
+
+    const completed = structuredClone(state.pendingAI);
+    completed.metadata!.endedAt = Date.now();
+    state.messages = [completed];
+    state.pendingAI = null;
+    renderSilently(state);
+    responseStart = state.historyLineAnchors.findIndex(anchor => anchor.owner === completed.blocks[1]);
+    expect(state.conversationScroll.finalResponseViewport?.mode).toBe("anchored");
+    expect(state.layout.historyViewportRows[0]).toMatchObject({ lineIndex: responseStart, startCol: 0 });
+  });
+
   test("keeps a reflowed streaming response top-anchored across canonical completion", () => {
     const state = createInitialState();
     state.convId = "streaming-reflow";

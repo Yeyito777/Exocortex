@@ -62,6 +62,22 @@ describe("conversation open placement", () => {
     expect(state.scrollOffset).toBe(0);
   });
 
+  test("holds the first unread response row when its footer pushes it out of view", () => {
+    const state = createInitialState();
+    state.convId = "unread";
+    state.conversationScroll.pendingRestore = {
+      convId: "unread",
+      mode: "unread-response",
+      waitForInitialBackfill: false,
+    };
+    const document = assistantDocument({ totalLines: 51, responseStart: 40, responseEnd: 50 });
+
+    const update = applyChatConversationScroll(state, document.anchors, document.bounds, 51, 10, 0);
+
+    expect(state.scrollOffset).toBe(1);
+    expect(update.topAnchorRow).toBe(40);
+  });
+
   test("restores a remembered percentage after backfill", () => {
     const state = createInitialState();
     state.convId = "remembered";

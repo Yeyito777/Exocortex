@@ -1490,15 +1490,19 @@ export function render(state: RenderState): boolean {
     totalLines,
     messageAreaHeight,
     previousScrollOffset,
-    (responseStart, responseEnd) => {
+    (responseStart) => {
+      // Following pins the entire history tail, not just the text block. Its
+      // metadata (and any other rows below it) consumes viewport space too.
+      // Omitting that footer lets task-panel reflow clip the first response
+      // chunk even when the measured text height still fits exactly.
       if (taskPanelFlowHeight <= 0 || historyWidth === chatW) {
-        return responseEnd - responseStart;
+        return totalLines - responseStart;
       }
       return composeViewportFrom(
         allLines,
         lineAnchors,
         canonicalSourceState(allLines, responseStart),
-        responseEnd,
+        totalLines,
         0,
         taskPanelFlowHeight,
         historyWidth,

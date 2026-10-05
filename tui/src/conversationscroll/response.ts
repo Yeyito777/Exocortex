@@ -19,7 +19,7 @@ export function updateStreamingResponseAutoscroll(options: {
   responseId: string | null;
   responseStart: number;
   responseEnd: number;
-  /** Visual response height after viewport-only reflow, when it differs. */
+  /** Visual space needed for the response and followed tail, including reflow. */
   responseHeight?: number;
   previousScrollOffset: number;
   scrollOffset: number;

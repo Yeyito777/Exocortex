@@ -19,6 +19,7 @@ export interface ChatConversationScrollUpdate {
 }
 
 type FinalResponseViewportMode = "following" | "anchored";
+/** Space needed to show the response's beginning while following the history tail. */
 type MeasureResponseHeight = (startRow: number, endRow: number) => number;
 
 function textRowsForOwner(
@@ -132,7 +133,7 @@ export function applyChatConversationScroll(
   totalLines: number,
   viewportHeight: number,
   previousScrollOffset: number,
-  measureResponseHeight: MeasureResponseHeight = (start, end) => end - start,
+  measureResponseHeight: MeasureResponseHeight = (start) => totalLines - start,
 ): ChatConversationScrollUpdate {
   let retainedViewport = state.conversationScroll.finalResponseViewport;
   const retainedViewportDismissed = Boolean(retainedViewport && (
