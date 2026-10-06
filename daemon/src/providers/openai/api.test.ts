@@ -400,15 +400,15 @@ describe("OpenAI replay input", () => {
     expect(result.billingServiceTier).toBe("ultrafast");
   });
 
-  test("one-shot HTTP transport parses SSE responses without websocket beta headers", async () => {
+  test("one-shot HTTP resolves the Daybreak alias without forcing Responses Lite", async () => {
     globalThis.fetch = mock((input: RequestInfo | URL, init?: RequestInit) => {
       expect(String(input)).toBe(OPENAI_CODEX_RESPONSES_URL);
       const headers = init?.headers as Record<string, string>;
       expect(headers["OpenAI-Beta"]).toBeUndefined();
-      expect(headers[OPENAI_RESPONSES_LITE_HEADER]).toBe("true");
+      expect(headers[OPENAI_RESPONSES_LITE_HEADER]).toBeUndefined();
       expect(headers.Accept).toBe("text/event-stream");
       expect(JSON.parse(String(init?.body))).toMatchObject({
-        model: "gpt-6.1-sol", access_programs: { cyber: "daybreak_blue" },
+        model: "gpt-6-sol", access_programs: { cyber: "daybreak_blue" },
       });
       const body = [
         `event: response.created\ndata: ${JSON.stringify({ type: "response.created", response: { id: "resp_1" } })}`,
@@ -424,9 +424,9 @@ describe("OpenAI replay input", () => {
     const result = await streamMessageHttpWithSessionForTest(
       { accessToken: "test-token", accountId: null },
       [{ role: "user", content: "hello" }],
-      "gpt-6.1-sol",
+      "gpt-6-sol-daybreak",
       { onText: () => {}, onThinking: () => {} },
-      { effort: "none", preferHttp: true, cyberAccessProgram: "daybreak_blue" },
+      { effort: "none", preferHttp: true },
     );
 
     expect(result.text).toBe("OK");
@@ -590,7 +590,22 @@ describe("OpenAI replay input", () => {
     }
   });
 
-  test("Daybreak preserves Sol's Responses Lite contract and independent speed/effort", () => {
+  test("the selectable Daybreak alias inherits the entire Sol request shape", () => {
+    for (const compaction of [false, true]) {
+      for (const serviceTier of [undefined, "fast", "ultrafast"] as const) {
+        for (const effort of ["none", "max", "ultra"] as const) {
+          const options = { compaction, serviceTier, effort, system: "defensive test" };
+          const base = buildRequestBodyForTest([], "gpt-6-sol", 1234, options);
+          const alias = buildRequestBodyForTest([], "gpt-6-sol-daybreak", 1234, options);
+          expect(alias).toEqual({ ...base, access_programs: { cyber: "daybreak_blue" } });
+        }
+      }
+    }
+    expect(() => buildRequestBodyForTest([], "gpt-6-sol-daybreak", 1234, { cyberAccessProgram: "standard" })).toThrow();
+    expect(() => buildRequestBodyForTest([], "gpt-6.1-sol-daybreak", 1234, {})).toThrow();
+  });
+
+  test("cyber access does not change the underlying Sol 6.1 Responses Lite contract", () => {
     const body = buildRequestBodyForTest([
       { role: "user", content: "inspect this defensively" },
     ], "gpt-6.1-sol", 1234, {
@@ -1298,9 +1313,9 @@ describe("OpenAI replay input", () => {
     const first = await streamMessageWithSession(
       session,
       [{ role: "user", content: "hello" }],
-      "gpt-5.6-sol",
+      "gpt-6-sol-daybreak",
       callbacks,
-      { promptCacheKey: "conv-reused-compact", codexWindowId: "conv-reused-compact:0", turnSession, cyberAccessProgram: "daybreak_blue" },
+      { promptCacheKey: "conv-reused-compact", codexWindowId: "conv-reused-compact:0", turnSession },
     );
     const second = await streamMessageWithSession(
       session,
@@ -1308,14 +1323,13 @@ describe("OpenAI replay input", () => {
         { role: "user", content: "hello" },
         { role: "assistant", content: [{ type: "text", text: "normal answer" }], providerData: first.assistantProviderData },
       ],
-      "gpt-5.6-sol",
+      "gpt-6-sol-daybreak",
       callbacks,
       {
         promptCacheKey: "conv-reused-compact",
         codexWindowId: "conv-reused-compact:0",
         turnSession,
         compaction: true,
-        cyberAccessProgram: "daybreak_blue",
         compactionMetadata: { reason: "context_limit", phase: "mid_turn" },
       },
     );
@@ -1326,6 +1340,10 @@ describe("OpenAI replay input", () => {
     expect(compactionBody.previous_response_id).toBe("resp_normal");
     expect(JSON.parse(calls[0].sent[0]).access_programs).toEqual({ cyber: "daybreak_blue" });
     expect(compactionBody.access_programs).toEqual({ cyber: "daybreak_blue" });
+    expect(compactionBody.model).toBe("gpt-6-sol");
+    expect(JSON.parse(calls[0].sent[0]).model).toBe("gpt-6-sol");
+    expect(first.assistantProviderData?.openai.replayScope?.model).toBe("gpt-6-sol");
+    expect(second.assistantProviderData?.openai.replayScope?.model).toBe("gpt-6-sol");
     expect(compactionBody.input).toEqual([{ type: "compaction_trigger" }]);
     expect(JSON.parse(compactionBody.client_metadata["x-codex-turn-metadata"])).toMatchObject({
       request_kind: "compaction",
@@ -1334,7 +1352,7 @@ describe("OpenAI replay input", () => {
     });
     expect(second.compactionItems).toEqual([{ encryptedContent: "opaque-reused" }]);
     expect(first.assistantProviderData?.openai.replayScope).toEqual({
-      model: "gpt-5.6-sol",
+      model: "gpt-6-sol",
       accountScope: accountScopeForKey("stable-account-a")!,
     });
     expect(second.assistantProviderData?.openai.replayScope).toEqual(first.assistantProviderData?.openai.replayScope);
@@ -1446,6 +1464,42 @@ describe("OpenAI replay input", () => {
     turnSession.close();
   });
 
+
+  test("switching standard Sol and Daybreak invalidates incremental response reuse in both directions", async () => {
+    for (const firstModel of ["gpt-6-sol", "gpt-6-sol-daybreak"]) {
+      const calls = mockOpenAIWebSocket([{ events: ["resp_1", "resp_2"].flatMap(id => [
+        { type: "response.created", response: { id } },
+        { type: "response.completed", response: {
+          id, output: [{ type: "message", id: `msg_${id}`, content: [{ type: "output_text", text: "OK" }] }],
+        } },
+      ]) }]);
+      const turnSession = createOpenAITurnSession();
+      const session = { accessToken: "test-token", accountId: null };
+      const callbacks = { onText: () => {}, onThinking: () => {} };
+      const messages: ApiMessage[] = [{ role: "user", content: "hello" }];
+      const first = await streamMessageWithSession(session, messages, firstModel, callbacks, {
+        turnSession, promptCacheKey: `program-switch-${firstModel}`,
+        ...(firstModel === "gpt-6-sol" ? { cyberAccessProgram: "standard" as const } : {}),
+      });
+      const secondModel = firstModel === "gpt-6-sol" ? "gpt-6-sol-daybreak" : "gpt-6-sol";
+      await streamMessageWithSession(session, [
+        ...messages,
+        { role: "assistant", content: [{ type: "text", text: "OK" }], providerData: first.assistantProviderData },
+        { role: "user", content: "again" },
+      ], secondModel, callbacks, {
+        turnSession, promptCacheKey: `program-switch-${firstModel}`,
+        ...(secondModel === "gpt-6-sol" ? { cyberAccessProgram: "standard" as const } : {}),
+      });
+      expect(calls).toHaveLength(1);
+      expect(calls[0].sent).toHaveLength(2);
+      const body = JSON.parse(calls[0].sent[1]);
+      expect(body.model).toBe("gpt-6-sol");
+      expect(body.access_programs).toEqual({ cyber: secondModel === "gpt-6-sol" ? "standard" : "daybreak_blue" });
+      expect(body.previous_response_id).toBeUndefined();
+      expect(body.input).toHaveLength(3);
+      turnSession.close();
+    }
+  });
 
   test("silently reconnects a reused websocket that closes before the follow-up response starts", async () => {
     const retryCalls: unknown[][] = [];

@@ -61,6 +61,7 @@ import {
 } from "./chrono-service";
 import { buildConversationRequestSurface } from "./conversation-request-surface";
 import { getModelInfo, cyberAccessProgramForSelection, refreshProviders } from "./providers/registry";
+import { isDaybreakModelId } from "@exocortex/shared/daybreak";
 
 // ── Transcript marker helpers ──────────────────────────────────────
 
@@ -558,8 +559,8 @@ async function orchestrateAdmittedAssistantTurn(
   let cyberAccessProgram: ReturnType<typeof cyberAccessProgramForSelection>;
   try {
     // Restart recovery and automation use the same account-scoped validation.
-    if (conv.daybreak) await refreshProviders();
-    cyberAccessProgram = cyberAccessProgramForSelection(conv.provider, conv.model, conv.daybreak);
+    if (isDaybreakModelId(conv.model)) await refreshProviders();
+    cyberAccessProgram = cyberAccessProgramForSelection(conv.provider, conv.model);
   } catch (error) {
     return reportSendError(error instanceof Error ? error.message : String(error));
   }

@@ -5,6 +5,8 @@ import { AuthError } from "./providers/errors";
 import { recordTokenUsage } from "./token-stats";
 import { recordModelRequestDiagnostics } from "./diagnostics";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
+import { DAYBREAK_MODEL_ID, DAYBREAK_RETIRED_MODEL, isDaybreakModelId } from "@exocortex/shared/daybreak";
+import { cyberAccessProgramForSelection, refreshProviders } from "./providers/registry";
 
 export type { ApiMessage, ApiContentBlock };
 export type { ApiToolCall, ContentBlock, ProviderTurnSession, StreamResult, StreamCallbacks, StreamOptions };
@@ -28,6 +30,15 @@ export async function streamMessage(
   options: StreamMessageOptions = {},
 ): Promise<StreamResult> {
   const { diagnosticMessages = [], ...providerOptions } = options;
+  if (isDaybreakModelId(model)) {
+    if (provider !== "openai" || model !== DAYBREAK_MODEL_ID) throw new Error(DAYBREAK_RETIRED_MODEL);
+    // Conversation turns already freeze the validated program at admission.
+    // Utility completions have no admission step: validate their alias here.
+    if (providerOptions.cyberAccessProgram === undefined) {
+      await refreshProviders();
+      providerOptions.cyberAccessProgram = cyberAccessProgramForSelection(provider, model);
+    }
+  }
   const result = await getProviderAdapter(provider).streamMessage(messages, model, callbacks, providerOptions);
   if (options.tracking) {
     recordTokenUsage(provider, model, {

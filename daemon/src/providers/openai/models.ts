@@ -1,6 +1,6 @@
 import { EFFORT_LEVELS, type EffortLevel, type ModelInfo, type ReasoningEffortInfo } from "@exocortex/shared/messages";
 import { formatModelDisplayName } from "@exocortex/shared/model-display";
-import { isDaybreakSolModel } from "@exocortex/shared/daybreak";
+import { DAYBREAK_BASE_MODEL_ID, DAYBREAK_MODEL_ID, isDaybreakModelId } from "@exocortex/shared/daybreak";
 import { log } from "../../log";
 import { getVerifiedSession } from "./auth";
 import { supportsOpenAIFastServiceTier, supportsOpenAIImageInputs, supportsOpenAIUltraReasoningEffort } from "./capabilities";
@@ -80,6 +80,7 @@ const PREFERRED_OPENAI_MODEL_ORDER = [
   "gpt-6-astra",
   "gpt-6.1-sol",
   "gpt-6-sol",
+  DAYBREAK_MODEL_ID,
   "gpt-6-luna",
   "gpt-5.6-sol",
   "gpt-5.6-terra",
@@ -125,7 +126,7 @@ function isOpenAIModelInFamily(modelSlug: string, family: PrimaryOpenAIModelFami
 function isUnsupportedOpenAIModel(modelSlug: string): boolean {
   // Codex advertises explicit tier slugs. Do not surface broad family aliases
   // alongside those concrete choices.
-  return modelSlug === "gpt-6.1" || modelSlug === "gpt-6" || modelSlug === "gpt-5.6";
+  return isDaybreakModelId(modelSlug) || modelSlug === "gpt-6.1" || modelSlug === "gpt-6" || modelSlug === "gpt-5.6";
 }
 
 function preferredOpenAIPrimaryFamily(models: OpenAICodexModel[]): PrimaryOpenAIModelFamily {
@@ -216,7 +217,7 @@ function toModelInfo(model: OpenAICodexModel): ModelInfo | null {
       && (model.service_tiers?.some(tier => tier.id === "priority") ?? true),
     supportsUltrafastMode: supportsOpenAIFastServiceTier(model.slug)
       && (model.service_tiers?.some(tier => tier.id === "ultrafast") ?? false),
-    supportsDaybreak: isDaybreakSolModel(model.slug)
+    supportsDaybreak: model.slug === DAYBREAK_BASE_MODEL_ID
       && cyberPrograms.includes("daybreak_blue"),
     supportsStandardCyber: cyberPrograms.includes("standard"),
   };
@@ -265,6 +266,12 @@ function mergeMissingFallbackModels(models: ModelInfo[], remoteModels: OpenAICod
     merged.push(fallbackModel);
   }
 
+  // A selectable alias of the account-advertised base model, not a fallback
+  // model or the old hidden upstream slug. All other capabilities are copied.
+  const sol = models.find(model => model.id === DAYBREAK_BASE_MODEL_ID);
+  if (sol?.supportsDaybreak) {
+    merged.push({ ...sol, id: DAYBREAK_MODEL_ID, label: formatModelDisplayName(DAYBREAK_MODEL_ID) });
+  }
   return sortOpenAIModels(merged);
 }
 

@@ -106,7 +106,7 @@ register(["gpt-6.1-sol"], {
 // GPT-6 Sol/Luna model pages, checked 2026-09-22:
 // https://developers.openai.com/api/docs/models/gpt-6-sol
 // https://developers.openai.com/api/docs/models/gpt-6-luna
-register(["gpt-6-sol"], {
+register(["gpt-6-sol", "gpt-6-sol-daybreak"], {
   provider: "openai",
   basisModel: "gpt-6-sol",
   standard: rates(2, 0.2, 2.5, 10),

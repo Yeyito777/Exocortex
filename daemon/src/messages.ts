@@ -153,7 +153,6 @@ export interface Conversation {
   model: ModelId;
   effort: EffortLevel;
   fastMode: FastMode;
-  daybreak?: boolean;
   /** Materialized rows only for a sparse SQLite runtime window. Durable sequence/
    * count APIs live in conversation-window.ts; rewrites require getFullAsync. */
   messages: StoredMessage[];
@@ -1022,7 +1021,6 @@ export function summarizeConversation(
     model: conv.model,
     effort: conv.effort ?? DEFAULT_EFFORT,
     fastMode: conv.fastMode ?? false,
-    daybreak: conv.daybreak === true,
     createdAt: conv.createdAt,
     updatedAt: conv.updatedAt,
     messageCount,
@@ -1045,7 +1043,6 @@ export function createConversation(
   effort?: EffortLevel,
   fastMode: FastMode = false,
   folderId: string | null = null,
-  daybreak = false,
 ): Conversation {
   const now = Date.now();
   return {
@@ -1054,7 +1051,6 @@ export function createConversation(
     model,
     effort: effort ?? DEFAULT_EFFORT,
     fastMode,
-    daybreak,
     messages: [],
     createdAt: now,
     updatedAt: now,

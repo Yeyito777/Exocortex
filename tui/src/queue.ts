@@ -33,7 +33,7 @@ export function isNewConversationQueuedMessage(message: QueuedMessage): boolean 
   return isGlobalIdleQueuedMessage(message) && message.target === "new-conversation";
 }
 
-export type GlobalIdleQueueOptions = Pick<QueuedMessage, "id" | "command" | "target" | "provider" | "model" | "effort" | "fastMode" | "daybreak" | "folderId" | "waitTarget">;
+export type GlobalIdleQueueOptions = Pick<QueuedMessage, "id" | "command" | "target" | "provider" | "model" | "effort" | "fastMode" | "folderId" | "waitTarget">;
 
 export function queueWaitTargetOf(message: QueuedMessage): QueueWaitTarget {
   return message.waitTarget ?? { type: "global" };
@@ -89,7 +89,6 @@ export function enqueueGlobalIdleMessage(
     ...(options.model ? { model: options.model } : {}),
     ...(options.effort ? { effort: options.effort } : {}),
     ...(isFastMode(options.fastMode) ? { fastMode: options.fastMode } : {}),
-    ...(typeof options.daybreak === "boolean" ? { daybreak: options.daybreak } : {}),
     ...("folderId" in options ? { folderId: options.folderId ?? null } : {}),
     ...(options.waitTarget && options.waitTarget.type !== "global" ? { waitTarget: options.waitTarget } : {}),
     ...(images?.length ? { images } : {}),

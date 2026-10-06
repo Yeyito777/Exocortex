@@ -89,7 +89,7 @@ export const DEFAULT_EFFORT: EffortLevel = "high";
 export function defaultEffortForModelId(providerId: ProviderId, model: ModelId): EffortLevel {
   if (providerId === "openrouter") return model.startsWith("nousresearch/hermes-4-") ? "high" : "none";
   if (providerId === "openai" && (model === "gpt-6-astra" || model === "gpt-6.1-sol")) return "low";
-  if (providerId === "openai" && (model === "gpt-6-sol" || model === "gpt-6-luna")) return "medium";
+  if (providerId === "openai" && (model === "gpt-6-sol" || model === "gpt-6-sol-daybreak" || model === "gpt-6-luna")) return "medium";
   if (providerId === "openai" && (/^gpt-5\.6-/.test(model) || /^gpt-5\.5(?:-|$)/.test(model))) return "medium";
   return DEFAULT_EFFORT;
 }
@@ -121,6 +121,7 @@ export const MAX_CONTEXT: Record<string, number> = {
   "gpt-6-astra": 272_000,
   // Conservative Codex defaults; live model metadata takes precedence.
   "gpt-6-sol": 272_000,
+  "gpt-6-sol-daybreak": 272_000,
   "gpt-6-luna": 272_000,
   "gpt-5.6-sol": 372_000,
   "gpt-5.6-terra": 372_000,
@@ -496,7 +497,6 @@ export interface ConversationSummary {
   model: ModelId;
   effort: EffortLevel;
   fastMode: FastMode;
-  daybreak?: boolean;
   createdAt: number;
   updatedAt: number;
   messageCount: number;

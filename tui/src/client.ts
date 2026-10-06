@@ -470,14 +470,12 @@ export class DaemonClient {
     titleContext?: string,
     startCall?: boolean,
     goalMaxTurns?: number,
-    daybreak?: boolean,
   ): void {
     this.send({
       type: "new_conversation",
       ...(convId ? { convId } : {}),
       provider, model, title, titleContext, effort, fastMode, initialMessage, folderId,
       goalObjective, goalMaxTurns, startCall,
-      daybreak,
     });
   }
 
@@ -489,7 +487,6 @@ export class DaemonClient {
     folderId?: string | null,
     voice?: RealtimeVoice,
     convId?: string,
-    daybreak?: boolean,
   ): void {
     this.send({
       type: "new_conversation",
@@ -500,7 +497,6 @@ export class DaemonClient {
       fastMode,
       folderId,
       startCall: true,
-      daybreak,
       ...(voice ? { callVoice: voice } : {}),
     });
   }
@@ -795,10 +791,6 @@ export class DaemonClient {
     this.send({ type: "set_fast_mode", convId, enabled });
   }
 
-  setDaybreak(convId: string, enabled: boolean): void {
-    this.send({ type: "set_daybreak", convId, enabled });
-  }
-
   setGoal(convId: string, action: GoalAction, objective?: string, maxTurns?: number): void {
     this.send({ type: "set_goal", convId, action, objective, maxTurns });
   }
@@ -905,7 +897,6 @@ export class DaemonClient {
       model?: ModelId;
       effort?: EffortLevel;
       fastMode?: FastMode;
-      daybreak?: boolean;
       folderId?: string | null;
       waitTarget?: QueueWaitTarget;
     } = {},

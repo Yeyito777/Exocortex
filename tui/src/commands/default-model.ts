@@ -1,5 +1,6 @@
 import type { FastMode } from "@exocortex/shared/messages";
 import type { ConversationDefaults } from "@exocortex/shared/config";
+import { DAYBREAK_MODEL_ID, DAYBREAK_RETIRED_MODEL, DAYBREAK_UNAVAILABLE, isDaybreakModelId } from "@exocortex/shared/daybreak";
 import { clearPrompt } from "../promptstate";
 import { getModelInfo, getProviderInfo, pushSystemMessage } from "../state";
 import { formatConversationDefaults } from "../events/conversation-defaults";
@@ -186,6 +187,10 @@ function validateSelection(
   }
 
   const knownModels = providerModels(state, provider);
+  if (isDaybreakModelId(model)) {
+    if (provider !== "openai" || model !== DAYBREAK_MODEL_ID) return { error: DAYBREAK_RETIRED_MODEL };
+    if (!knownModels.includes(model)) return { error: DAYBREAK_UNAVAILABLE };
+  }
   const providerLoaded = getProviderInfo(state, provider) !== null;
   if (providerLoaded && knownModels.length > 0 && !knownModels.includes(model) && !providerAllowsCustomModels(state, provider)) {
     return { error: `Unknown model for provider ${provider}: ${model}. Available: ${knownModels.join(", ")}` };

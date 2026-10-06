@@ -1,4 +1,5 @@
 import type { ModelId } from "@exocortex/shared/messages";
+import { openAIWireModel } from "@exocortex/shared/daybreak";
 
 interface OpenAIModelCapabilityOverride {
   supportsReasoningSummary?: boolean;
@@ -48,7 +49,7 @@ const OPENAI_MODEL_CAPABILITY_OVERRIDES = new Map<ModelId, OpenAIModelCapability
 ]);
 
 function openAIModelCapabilityOverride(model: ModelId): OpenAIModelCapabilityOverride | undefined {
-  return OPENAI_MODEL_CAPABILITY_OVERRIDES.get(model);
+  return OPENAI_MODEL_CAPABILITY_OVERRIDES.get(openAIWireModel(model));
 }
 
 export function supportsOpenAIReasoningSummary(model: ModelId): boolean {

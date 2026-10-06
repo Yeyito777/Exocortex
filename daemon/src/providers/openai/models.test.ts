@@ -252,14 +252,18 @@ describe("OpenAI model selection", () => {
     expect(models.some((model) => model.id === "gpt-daybreak-red-latest")).toBe(false);
   });
 
-  test("only advertises Daybreak Blue for entitled Sol models", () => {
+  test("only exposes the GPT-6 Sol Daybreak alias when that base model advertises Blue", () => {
     for (const slug of ["gpt-6.1-sol", "gpt-6-sol", "gpt-5.6-sol", "gpt-6-luna", "gpt-6-astra"]) {
       for (const cyber of [undefined, [], ["standard"], ["daybreak_red"], ["standard", "daybreak_blue", "future_program"]]) {
         const models = selectOpenAIModelsForTest([{
           slug, ...(cyber ? { available_access_programs: { cyber } } : {}),
         }]);
         const model = models.find(model => model.id === slug)!;
-        expect(model.supportsDaybreak).toBe(slug.endsWith("-sol") && !!cyber?.includes("daybreak_blue"));
+        const entitled = slug === "gpt-6-sol" && !!cyber?.includes("daybreak_blue");
+        expect(model.supportsDaybreak).toBe(entitled);
+        const alias = models.find(model => model.id === "gpt-6-sol-daybreak");
+        expect(!!alias).toBe(entitled);
+        if (alias) expect(alias).toEqual({ ...model, id: "gpt-6-sol-daybreak", label: "GPT-6-Sol-Daybreak" });
         expect(model.supportsStandardCyber).toBe(!!cyber?.includes("standard"));
       }
     }
@@ -267,6 +271,14 @@ describe("OpenAI model selection", () => {
     expect(selectOpenAIModelsForTest([{
       slug: "gpt-6-sol", available_access_programs: { cyber: "daybreak_blue" as never },
     }]).find(model => model.id === "gpt-6-sol")?.supportsDaybreak).toBe(false);
+    for (const hidden of [{ visibility: "hide" }, { supported_in_api: false }]) {
+      expect(selectOpenAIModelsForTest([{
+        slug: "gpt-6-sol", ...hidden, available_access_programs: { cyber: ["daybreak_blue"] },
+      }]).some(model => model.id === "gpt-6-sol-daybreak")).toBe(false);
+    }
+    expect(selectOpenAIModelsForTest([{
+      slug: "gpt-6-sol-daybreak", available_access_programs: { cyber: ["daybreak_blue"] },
+    }]).some(model => model.id === "gpt-6-sol-daybreak")).toBe(false);
   });
 
   test("does not expose broad GPT family aliases even when upstream lists them", () => {

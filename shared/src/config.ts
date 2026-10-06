@@ -1,4 +1,5 @@
 import { isFastMode, type FastMode } from "./messages";
+import { migrateLegacyDaybreak } from "./daybreak";
 /**
  * Shared Exocortex config loader.
  *
@@ -366,7 +367,9 @@ export function configuredConversationDefaults(config: ExocortexConfig = readExo
   if (!isObject(conversation)) return null;
 
   const provider = isProviderId(conversation.provider) ? conversation.provider : DEFAULT_PROVIDER_ID;
-  const model = normalizeModelId(conversation.model) ?? DEFAULT_MODEL_BY_PROVIDER[provider];
+  const model = migrateLegacyDaybreak({
+    provider, model: normalizeModelId(conversation.model) ?? DEFAULT_MODEL_BY_PROVIDER[provider],
+  }).model;
   const effort = isEffortLevel(conversation.effort)
     ? conversation.effort
     : defaultEffortForModelId(provider, model);

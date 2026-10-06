@@ -97,7 +97,6 @@ export function clonedConversationValue(
     model: source.model,
     effort: source.effort ?? DEFAULT_EFFORT,
     fastMode: source.fastMode ?? false,
-    daybreak: source.daybreak === true,
     messages,
     activeContext,
     createdAt: target.createdAt,

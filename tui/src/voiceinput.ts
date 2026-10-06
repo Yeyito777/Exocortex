@@ -60,7 +60,6 @@ export interface SubmittedVoiceTranscription {
   model: ModelId;
   effort: EffortLevel;
   fastMode: FastMode;
-  daybreak?: boolean;
   folderId: string | null;
   wasStreaming: boolean;
 }

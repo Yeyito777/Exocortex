@@ -733,7 +733,7 @@ test("v13 extends valid v12 receipts, preserves bad/missing receipts and never s
       ])), conv.id,
     );
     if (condition === "missing") store.db.query("DELETE FROM checkpoint_integrity WHERE conversation_id=?").run(conv.id);
-    store.db.exec("ALTER TABLE checkpoint_integrity DROP COLUMN prefix_summary_json; ALTER TABLE conversations DROP COLUMN daybreak; DELETE FROM schema_migrations WHERE version>=13;");
+    store.db.exec("ALTER TABLE checkpoint_integrity DROP COLUMN prefix_summary_json; DELETE FROM schema_migrations WHERE version>=13;");
     store.db.query("UPDATE message_blobs SET payload_json='{' WHERE conversation_id=? AND message_sequence=3").run(conv.id);
     store.close();
     const upgraded = new SqliteConversationStore({ path });

@@ -21,6 +21,24 @@ import {
 import type { streamMessage } from "./api";
 import { NonRetryableProviderError } from "./providers/errors";
 
+test("standard and Daybreak Sol share reasoning scope without broadening model or account scope", () => {
+  const conv = createConversation("daybreak-replay", "openai", "gpt-6-sol-daybreak");
+  conv.messages = [
+    { role: "user", content: "hello", metadata: null },
+    { role: "assistant", content: [], metadata: null, providerData: { openai: {
+      replayScope: { model: "gpt-6-sol", accountScope: "account-a" },
+      reasoningItems: [{ id: "reasoning", encryptedContent: "opaque", summaries: ["safe summary"] }],
+    } } },
+  ];
+  const before = structuredClone(conv);
+  expect(buildConversationApiContext(conv, "account-a").messages[1].providerData).toEqual(conv.messages[1].providerData);
+  expect(buildConversationApiContext(conv, "account-b").messages[1].providerData).toBeUndefined();
+  conv.model = "gpt-6.1-sol";
+  expect(buildConversationApiContext(conv, "account-a").messages[1].providerData).toBeUndefined();
+  conv.model = before.model;
+  expect(conv).toEqual(before);
+});
+
 function history(): StoredMessage[] {
   return [
     { role: "system_instructions", content: "be precise", metadata: null },

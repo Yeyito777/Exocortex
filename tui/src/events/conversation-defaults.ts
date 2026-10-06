@@ -20,7 +20,7 @@ export function receiveConversationDefaults(
   const previous = state.conversationDefaults?.defaults ?? productConversationDefaults();
   const followingDefaults = !state.hasChosenProvider
     || (state.provider === previous.provider && state.model === previous.model
-      && state.effort === previous.effort && state.fastMode === previous.fastMode && !state.daybreak);
+      && state.effort === previous.effort && state.fastMode === previous.fastMode);
   state.conversationDefaults = { defaults: { ...snapshot.defaults }, configured: snapshot.configured };
   if (!state.convId && (applyToDraft || followingDefaults)) resetNewConversationDefaults(state);
 }

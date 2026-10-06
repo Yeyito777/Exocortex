@@ -19,11 +19,12 @@ not raw PIDs. Use `abort` for subagent conversations and Chrono cancellation
 for schedules.
 Never restart the main daemon.
 
-`set_daybreak {convId, enabled}` persists the conversation's Sol Daybreak Blue
-preference and broadcasts its summary. `new_conversation` and queued drafts
-accept `daybreak?: boolean`; absence means off. Enable requires exact Sol model
-catalog support; off always remains possible. Streaming changes are rejected.
-This is independent of effort and speed, not a synthetic model identifier.
+Daybreak uses ordinary model selection: `provider: "openai"` and
+`model: "gpt-6-sol-daybreak"`. The account catalog must advertise Blue on
+`gpt-6-sol`; custom-model support cannot bypass this check. There is no separate
+toggle or IPC flag. Select `gpt-6-sol` for standard access. Internally the alias
+sends the base model plus `access_programs.cyber: "daybreak_blue"`, independently
+of effort and speed.
 
 ## New-conversation defaults
 

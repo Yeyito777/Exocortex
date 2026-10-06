@@ -10,7 +10,6 @@ import {
   type ReasoningEffortInfo,
 } from "../messages";
 import { clearPrompt } from "../promptstate";
-import { supportsDaybreak } from "@exocortex/shared/daybreak";
 import { getModelInfo, getProviderInfo, pushSystemMessage } from "../state";
 import { availableProviders, setChosenProvider } from "../providerselection";
 import type { CommandResult, CompletionItem } from "./types";
@@ -95,12 +94,10 @@ function buildContextWindowWarning(
 export function applyProviderModelSelection(state: RenderState, provider: ProviderId, model: ModelId): {
   effortChanged: boolean;
   fastDisabled: boolean;
-  daybreakDisabled: boolean;
   contextWarning: string | null;
 } {
   const previousEffort = state.effort;
   const previousFastMode = state.fastMode;
-  const previousDaybreak = state.daybreak;
   const previousContextTokens = state.contextTokens;
   const nextMaxContext = maxContextFor(state, provider, model);
 
@@ -108,13 +105,11 @@ export function applyProviderModelSelection(state: RenderState, provider: Provid
   state.model = model;
   normalizeStateEffort(state, provider, model);
   if (!providerSupportsFastMode(state, provider, model, state.fastMode)) state.fastMode = false;
-  if (!supportsDaybreak(provider, getModelInfo(state, provider, model))) state.daybreak = false;
   state.contextTokens = previousContextTokens === 0 ? 0 : null;
 
   return {
     effortChanged: state.effort !== previousEffort,
     fastDisabled: !!previousFastMode && !state.fastMode,
-    daybreakDisabled: previousDaybreak && !state.daybreak,
     contextWarning: buildContextWindowWarning(previousContextTokens, provider, model, nextMaxContext),
   };
 }

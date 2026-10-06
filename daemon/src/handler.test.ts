@@ -1366,7 +1366,7 @@ describe("handler new_conversation defaults", () => {
     expect(sent.find((event) => event.type === "conversation_created")).toBeUndefined();
     expect(sent.find((event) => event.type === "error")).toMatchObject({
       reqId: "req-daybreak-fast",
-      message: "Daybreak is an access mode, not a model. Select Sol and enable /daybreak.",
+      message: "Use /model openai gpt-6-sol-daybreak for Daybreak Blue.",
     });
   });
 

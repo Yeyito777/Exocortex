@@ -160,7 +160,6 @@ interface ConversationRow {
   effort: Conversation["effort"];
   fast_mode: number;
   ultrafast_mode: number;
-  daybreak: number;
   created_at: number;
   updated_at: number;
   last_context_tokens: number | null;
@@ -992,12 +991,11 @@ export class SqliteConversationStore implements ConversationRepository {
     }
     if (current < 14 && targetVersion >= 14) {
       this.db.transaction(() => {
-        this.db.exec("ALTER TABLE conversations ADD COLUMN daybreak INTEGER NOT NULL DEFAULT 0 CHECK (daybreak IN (0,1));");
         // Only the current selection changes; canonical history and sealed
         // compaction checkpoints retain their original model provenance.
-        this.db.exec("UPDATE conversations SET model='gpt-6-sol', daybreak=1 WHERE provider='openai' AND model='gpt-daybreak-blue-latest';");
+        this.db.exec("UPDATE conversations SET model='gpt-6-sol-daybreak' WHERE provider='openai' AND model='gpt-daybreak-blue-latest';");
         this.db.query("INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)")
-          .run(14, "Sol Daybreak access mode", Date.now());
+          .run(14, "Sol Daybreak model alias", Date.now());
       })();
     }
   }
@@ -1379,7 +1377,6 @@ export class SqliteConversationStore implements ConversationRepository {
       model: row.model,
       effort: row.effort,
       fastMode: row.ultrafast_mode === 1 ? "ultrafast" : row.fast_mode === 1,
-      daybreak: row.daybreak === 1,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       messageCount: row.message_count,
@@ -1399,21 +1396,20 @@ export class SqliteConversationStore implements ConversationRepository {
     // metadata rather than the complete canonical row shape.
     const rows = this.db.query(`
       SELECT id, provider, model, effort, CASE WHEN ultrafast_mode=1 THEN 2 ELSE fast_mode END, created_at, updated_at,
-             message_count, title, goal_json, marked, pinned, muted, sort_order, folder_id, daybreak
+             message_count, title, goal_json, marked, pinned, muted, sort_order, folder_id
       FROM conversations
       WHERE deleted_at IS NULL
       ORDER BY pinned DESC, sort_order, id
-    `).values() as Array<[string, Conversation["provider"], string, Conversation["effort"], number, number, number, number, string, string | null, number, number, number, number, string | null, number]>;
+    `).values() as Array<[string, Conversation["provider"], string, Conversation["effort"], number, number, number, number, string, string | null, number, number, number, number, string | null]>;
     return rows.map(([
       id, provider, model, effort, fastMode, createdAt, updatedAt,
-      messageCount, title, goalJson, marked, pinned, muted, sortOrder, folderId, daybreak,
+      messageCount, title, goalJson, marked, pinned, muted, sortOrder, folderId,
     ]) => ({
       id,
       provider,
       model,
       effort,
       fastMode: fastMode === 2 ? "ultrafast" as const : fastMode === 1,
-      daybreak: daybreak === 1,
       createdAt,
       updatedAt,
       messageCount,
@@ -1487,7 +1483,6 @@ export class SqliteConversationStore implements ConversationRepository {
         model: row.model,
         effort: row.effort,
         fastMode: row.ultrafast_mode === 1 ? "ultrafast" : row.fast_mode === 1,
-        daybreak: row.daybreak === 1,
         messages,
         ...(activeContext ? { activeContext } : {}),
         createdAt: row.created_at,
@@ -1661,7 +1656,6 @@ export class SqliteConversationStore implements ConversationRepository {
           conversation: {
             id:row.id,provider:row.provider,model:row.model,effort:row.effort,
             fastMode:row.ultrafast_mode===1?"ultrafast":row.fast_mode===1,
-            daybreak: row.daybreak === 1,
             messages,activeContext:active,createdAt:row.created_at,updatedAt:row.updated_at,lastContextTokens:row.last_context_tokens,
             marked:row.marked===1,pinned:row.pinned===1,muted:row.muted===1,sortOrder:row.sort_order,folderId:row.folder_id,title:row.title,
             goal:normalizeConversationGoal(parseOptional(row.goal_json)),subagentMaxDepth:row.subagent_max_depth,
@@ -1849,7 +1843,6 @@ export class SqliteConversationStore implements ConversationRepository {
       const conversation: Conversation = {
         id: row.id, provider: row.provider, model: row.model, effort: row.effort,
         fastMode: row.ultrafast_mode === 1 ? "ultrafast" : row.fast_mode === 1,
-        daybreak: row.daybreak === 1,
         messages, ...(active ? { activeContext: active } : {}),
         createdAt: row.created_at, updatedAt: row.updated_at,
         lastContextTokens: valid ? row.last_context_tokens : null,
@@ -2131,13 +2124,13 @@ export class SqliteConversationStore implements ConversationRepository {
             last_context_tokens, marked, pinned, muted, sort_order, folder_id, title,
             goal_json, subagent_max_depth, subagent_policy_json, tool_policy_json,
             storage_generation, message_count, stored_message_count,
-            display_entry_count, content_bytes, deleted_at, ultrafast_mode, daybreak
+            display_entry_count, content_bytes, deleted_at, ultrafast_mode
           )
           SELECT ?, provider, model, effort, fast_mode, ?, ?,
                  last_context_tokens, marked, pinned, muted, ?, folder_id, ?,
                  NULL, NULL, NULL, tool_policy_json,
                  1, message_count, stored_message_count,
-                 display_entry_count, content_bytes, NULL, ultrafast_mode, daybreak
+                 display_entry_count, content_bytes, NULL, ultrafast_mode
           FROM conversations WHERE id=? AND deleted_at IS NULL
         `).run(
           target.id,
@@ -2324,11 +2317,11 @@ export class SqliteConversationStore implements ConversationRepository {
         id, provider, model, effort, fast_mode, created_at, updated_at,
         last_context_tokens, marked, pinned, muted, sort_order, folder_id, title,
         goal_json, subagent_max_depth, subagent_policy_json, tool_policy_json, storage_generation,
-        message_count, stored_message_count, display_entry_count, deleted_at, ultrafast_mode, daybreak
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)
+        message_count, stored_message_count, display_entry_count, deleted_at, ultrafast_mode
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?)
       ON CONFLICT(id) DO UPDATE SET
         provider=excluded.provider, model=excluded.model, effort=excluded.effort,
-        fast_mode=excluded.fast_mode, ultrafast_mode=excluded.ultrafast_mode, daybreak=excluded.daybreak, created_at=excluded.created_at,
+        fast_mode=excluded.fast_mode, ultrafast_mode=excluded.ultrafast_mode, created_at=excluded.created_at,
         updated_at=excluded.updated_at, last_context_tokens=excluded.last_context_tokens,
         marked=excluded.marked, pinned=excluded.pinned, muted=excluded.muted, sort_order=excluded.sort_order,
         folder_id=excluded.folder_id, title=excluded.title, goal_json=excluded.goal_json,
@@ -2360,7 +2353,6 @@ export class SqliteConversationStore implements ConversationRepository {
       messageCount,
       storedCount,
       conv.fastMode === "ultrafast" ? 1 : 0,
-      conv.daybreak === true ? 1 : 0,
     );
   }
 
@@ -3176,7 +3168,6 @@ export class SqliteConversationStore implements ConversationRepository {
       model: row.model,
       effort: row.effort,
       fastMode: row.ultrafast_mode === 1 ? "ultrafast" : row.fast_mode === 1,
-      daybreak: row.daybreak === 1,
       contextTokens: row.last_context_tokens,
       toolOutputsIncluded: false,
       pinnedEntries,
@@ -3221,7 +3212,6 @@ export class SqliteConversationStore implements ConversationRepository {
       model: conv.model,
       effort: conv.effort,
       fastMode: conv.fastMode,
-      daybreak: conv.daybreak === true,
       messages: conv.messages,
       activeContext: conv.activeContext ?? null,
       createdAt: conv.createdAt,

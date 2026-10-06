@@ -15,7 +15,7 @@ import { buildCodexClientMetadata } from "./identity";
 import type { OpenAIReasoningItem } from "./types";
 import { isValidImagePayload } from "../../image-validation";
 import { openAIToolCallItem } from "./tool-wire";
-import { DAYBREAK_RETIRED_MODEL, isDaybreakSolModel } from "@exocortex/shared/daybreak";
+import { DAYBREAK_MODEL_ID, DAYBREAK_RETIRED_MODEL, isDaybreakModelId, isDaybreakSolModel, openAIWireModel } from "@exocortex/shared/daybreak";
 
 export type OpenAIInputItem =
   | { type: "message"; role: "user"; content: Array<{ type: "input_text"; text: string } | { type: "input_image"; image_url: string }> }
@@ -349,10 +349,21 @@ function requestInstructions(model: ModelId, options: StreamOptions): string {
   return `${base}\n\n${OPENAI_ULTRA_MULTI_AGENT_INSTRUCTION}`;
 }
 
-function buildRequestShape(model: ModelId, options: StreamOptions): OpenAIRequestShape {
-  if (model.startsWith("gpt-daybreak-")) {
+/** Resolve before transport, replay-scope checks and all model-specific shaping. */
+export function resolveOpenAIRequestSelection(model: ModelId, options: StreamOptions): { model: ModelId; options: StreamOptions } {
+  if (isDaybreakModelId(model) && model !== DAYBREAK_MODEL_ID) {
     throw new Error(DAYBREAK_RETIRED_MODEL);
   }
+  if (model === DAYBREAK_MODEL_ID) {
+    if (options.cyberAccessProgram && options.cyberAccessProgram !== "daybreak_blue") {
+      throw new Error("The Daybreak model cannot use standard cyber access.");
+    }
+    return { model: openAIWireModel(model), options: { ...options, cyberAccessProgram: "daybreak_blue" } };
+  }
+  return { model, options };
+}
+
+function buildRequestShape(model: ModelId, options: StreamOptions): OpenAIRequestShape {
   if (options.cyberAccessProgram === "daybreak_blue" && !isDaybreakSolModel(model)) {
     throw new Error("Daybreak Blue is only supported on Sol models.");
   }
@@ -388,6 +399,7 @@ export function buildRequestBody(
   model: ModelId,
   options: StreamOptions,
 ): Record<string, unknown> {
+  ({ model, options } = resolveOpenAIRequestSelection(model, options));
   const input = buildOpenAIInput(messages);
   if (usesOpenAIResponsesLite(model)) {
     prependResponsesLiteContext(input, requestInstructions(model, options), options.tools);

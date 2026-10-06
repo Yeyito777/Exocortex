@@ -1,5 +1,5 @@
 import type { FastMode } from "@exocortex/shared/messages";
-import { DAYBREAK_UNAVAILABLE, supportsDaybreak as modelSupportsDaybreak } from "@exocortex/shared/daybreak";
+import { DAYBREAK_BASE_MODEL_ID, DAYBREAK_MODEL_ID, DAYBREAK_RETIRED_MODEL, DAYBREAK_UNAVAILABLE, isDaybreakModelId, openAIWireModel, supportsDaybreak as modelSupportsDaybreak } from "@exocortex/shared/daybreak";
 import {
   DEFAULT_MODEL_BY_PROVIDER,
   DEFAULT_PROVIDER_ORDER,
@@ -129,7 +129,7 @@ export function canonicalizeModel(providerId: ProviderId, model: ModelId): Model
 }
 
 export function getMaxContext(providerId: ProviderId, model: ModelId): number | null {
-  return getModelInfo(providerId, model)?.maxContext ?? MAX_CONTEXT[model] ?? null;
+  return getModelInfo(providerId, model)?.maxContext ?? MAX_CONTEXT[providerId === "openai" ? openAIWireModel(model) : model] ?? null;
 }
 
 export function getSupportedEfforts(providerId: ProviderId, model: ModelId): ReasoningEffortInfo[] {
@@ -169,14 +169,19 @@ export function supportsImageInputs(providerId: ProviderId, model: ModelId): boo
   return supportsImageInputsForModel(getModelInfo(providerId, model));
 }
 
-export function supportsDaybreak(providerId: ProviderId, model: ModelId): boolean {
-  return modelSupportsDaybreak(providerId, getModelInfo(providerId, model));
+/** Fail closed for our reserved product aliases, even on custom-model providers. */
+export function daybreakSelectionError(providerId: ProviderId, model: ModelId): string | null {
+  if (!isDaybreakModelId(model)) return null;
+  if (providerId !== "openai" || model !== DAYBREAK_MODEL_ID) return DAYBREAK_RETIRED_MODEL;
+  return modelSupportsDaybreak(providerId, getModelInfo(providerId, DAYBREAK_BASE_MODEL_ID))
+    ? null : DAYBREAK_UNAVAILABLE;
 }
 
 /** Resolve once at turn admission; all tool rounds and compactions reuse it. */
-export function cyberAccessProgramForSelection(providerId: ProviderId, model: ModelId, daybreak = false): "standard" | "daybreak_blue" | undefined {
-  if (daybreak) {
-    if (!supportsDaybreak(providerId, model)) throw new Error(DAYBREAK_UNAVAILABLE);
+export function cyberAccessProgramForSelection(providerId: ProviderId, model: ModelId): "standard" | "daybreak_blue" | undefined {
+  const error = daybreakSelectionError(providerId, model);
+  if (error) throw new Error(error);
+  if (model === DAYBREAK_MODEL_ID) {
     return "daybreak_blue";
   }
   return providerId === "openai" && getModelInfo(providerId, model)?.supportsStandardCyber

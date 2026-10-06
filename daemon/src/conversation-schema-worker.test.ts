@@ -38,7 +38,6 @@ test("startup worker migrates multiple checkpoints with bounded archival title c
       DROP TABLE checkpoint_integrity;
       DROP TABLE message_integrity;
       DROP TABLE display_integrity;
-      ALTER TABLE conversations DROP COLUMN daybreak;
       DELETE FROM schema_migrations WHERE version>=12;
     `);
     store.close(); store = undefined;
@@ -102,7 +101,6 @@ test("startup worker enrolls legacy envelopes once, without reading old blob bod
       DROP TABLE checkpoint_integrity;
       DROP TABLE message_integrity;
       DROP TABLE display_integrity;
-      ALTER TABLE conversations DROP COLUMN daybreak;
       DELETE FROM schema_migrations WHERE version>=12;
       UPDATE message_blobs SET payload_json='{' WHERE message_sequence=2;
     `);

@@ -35,7 +35,6 @@ type CommandAction =
   | { type: "trim_requested"; mode: TrimMode; count: number }
   | { type: "effort_changed"; effort: EffortLevel }
   | { type: "fast_mode_changed"; enabled: FastMode }
-  | { type: "daybreak_changed"; enabled: boolean }
   | { type: "goal"; action: GoalAction; objective?: string; maxTurns?: number }
   | { type: "rename_conversation"; title: string }
   | { type: "generate_title" }
@@ -54,7 +53,7 @@ export interface CommandComposition {
   queuedCommand?: QueuedCommandInvocation & { text: string };
   efforts?: EffortLevel[];
   fastModes?: FastMode[];
-  modelSelection?: Pick<RenderState, "provider" | "model" | "effort" | "fastMode" | "daybreak">;
+  modelSelection?: Pick<RenderState, "provider" | "model" | "effort" | "fastMode">;
 }
 
 export type CommandResult = CommandAction & CommandComposition;

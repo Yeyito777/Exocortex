@@ -247,6 +247,7 @@ interface ConversationFileV19 extends Omit<ConversationFileV18, "version"> {
 interface ConversationFileV20 extends Omit<ConversationFileV19, "version"> {
   version: 20;
   muted: boolean;
+  /** Read-only compatibility with the unreleased conversation-toggle format. */
   daybreak?: boolean;
 }
 
@@ -904,7 +905,6 @@ function toFile(
     model: conv.model,
     effort: conv.effort ?? DEFAULT_EFFORT,
     fastMode: conv.fastMode ?? false,
-    ...(typeof conv.daybreak === "boolean" ? { daybreak: conv.daybreak } : {}),
     messages: conv.messages,
     activeContext: conv.activeContext ?? null,
     createdAt: conv.createdAt,
@@ -940,7 +940,6 @@ function fromFile(file: ConversationFile, validateActiveContext = true): Convers
     model: provider === file.provider ? file.model : DEFAULT_MODEL_BY_PROVIDER[provider],
     effort: file.effort,
     fastMode: file.fastMode,
-    ...(typeof file.daybreak === "boolean" ? { daybreak: file.daybreak } : {}),
     messages: file.messages,
     ...(activeContext ? { activeContext } : {}),
     createdAt: file.createdAt,
@@ -982,7 +981,11 @@ function fromFile(file: ConversationFile, validateActiveContext = true): Convers
   });
   knownBaseStorageGenerations.set(conv.id, generation);
   knownStorageGenerations.set(conv.id, generation);
-  return migrateLegacyDaybreak(conv);
+  // Keep this object identity: storage-generation WeakMaps above belong to it.
+  conv.model = migrateLegacyDaybreak({
+    provider: conv.provider, model: conv.model, daybreak: file.daybreak,
+  }).model;
+  return conv;
 }
 
 // ── Summary index ───────────────────────────────────────────────────
@@ -1345,7 +1348,11 @@ function normalizeQueuedMessage(raw: unknown): PersistedQueuedMessage | null {
   if (typeof entry.model === "string") normalized.model = entry.model;
   if (typeof entry.effort === "string") normalized.effort = entry.effort as EffortLevel;
   if (isFastMode(entry.fastMode)) normalized.fastMode = entry.fastMode;
-  if (typeof entry.daybreak === "boolean") normalized.daybreak = entry.daybreak;
+  if (normalized.provider && normalized.model) {
+    normalized.model = migrateLegacyDaybreak({
+      provider: normalized.provider, model: normalized.model, daybreak: entry.daybreak === true,
+    }).model;
+  }
   if (typeof entry.folderId === "string" || entry.folderId === null) normalized.folderId = entry.folderId;
   if (entry.waitTarget && typeof entry.waitTarget === "object") {
     const target = entry.waitTarget as Record<string, unknown>;

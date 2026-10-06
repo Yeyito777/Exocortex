@@ -33,37 +33,42 @@ and the account's `/backend-api/codex/models` response.
 
 Checked against Codex `0b863c69f5`, notably `tui/src/daybreak.rs`,
 `protocol/src/openai_models/access_programs.rs`, and `codex-api/src/common.rs`.
-Daybreak is a per-conversation preference selecting a per-request cyber access
-program, not a model slug or a Responses Lite switch.
+Upstream Daybreak selects a per-request cyber access program, not a wire model
+slug or a Responses Lite switch. Exocortex exposes it as a selectable model alias.
 
-- Exocortex exposes standalone `/daybreak [on|off]` for **Sol / Daybreak Blue**.
-  No argument toggles. New chats start off; drafts capture the setting on creation.
+- Select **`/model openai gpt-6-sol-daybreak`**. Only GPT-6 Sol / Blue is supported.
+  It appears beside GPT-6 Sol in model completion when available. There is no
+  `/daybreak` toggle or separately persisted mode flag. Defaults and inline
+  model selection work normally.
 - Discovery must advertise `available_access_programs.cyber: ["daybreak_blue", ...]`
-  on that exact Sol model. No fallback entitlement, and no automatic model substitution.
+  on GPT-6 Sol. No fallback entitlement, and no automatic model substitution.
   The current account advertises Blue on **GPT-6 Sol**, but not GPT-6.1 Sol.
-- Requests keep the selected model, effort, tools, and speed; they add
-  `access_programs: { cyber: "daybreak_blue" }`. Off sends `"standard"` when
+- Requests use **`model: "gpt-6-sol"`** plus
+  `access_programs: { cyber: "daybreak_blue" }`, preserving Sol's effort,
+  tools, speed, context and transport behavior. Standard Sol sends `"standard"` when
   advertised, otherwise omits the field. HTTP, WebSocket, retries, tool rounds,
   replay, and native/plaintext compaction share the same treatment.
 - Conversation storage, summaries, queues, cloning, and resumed clients retain
-  the preference. Account/catalog changes cannot silently downgrade enabled turns.
-  Changing the toggle while streaming is rejected; switching to an unsupported
-  model turns it off. Inference still enforces server-side authorization.
+  the alias. Account/catalog changes cannot silently downgrade Daybreak turns.
+  Normal model-switch streaming protections apply. The alias resolves before
+  replay-scope checks, so standard and Daybreak Sol share base-model reasoning
+  scope without allowing other models/accounts. Inference enforces authorization.
 - The retired hidden model is no longer listed or accepted for new selections.
-  Old `gpt-daybreak-blue-latest` conversations migrate to GPT-6 Sol with Daybreak
-  on, preserving historical messages and compaction provenance.
+  Old `gpt-daybreak-blue-latest` conversations migrate to the selectable alias,
+  preserving historical messages and compaction provenance. Saved defaults
+  and queued draft selections also normalize to the alias.
 
 Validation:
 
-- Typecheck passes; shared/TUI suite: 1,249 passed.
+- Typecheck passes; shared/TUI suite: 1,253 passed.
 - Daybreak boundary/turn/queue/compaction cases and HTTP/WebSocket wire tests pass.
   Storage/migration/loader regression group: 47 passed.
-- Nested `dwm`/`exotest`: live Sol request returned `DAYBREAK_OK`; toggle on/off,
-  unsupported GPT-6.1 rejection, and persisted reload after test-daemon restart checked.
-- Full daemon suite is not green: two clone-integrity failures and a shell
-  startup timing failure were reproduced on untouched `34031f8`. Cooperative
-  loader/background timing assertions also varied under load. These unrelated
-  tests were not weakened or changed.
+- Nested `dwm`/`exotest`: the exact alias returned `DAYBREAK_ALIAS_OK`; ordinary
+  model switching, unsupported alias rejection, persisted reload (no separate
+  flag), and a resumed `DAYBREAK_RESUMED_OK` turn were checked.
+- Full daemon suite has two clone-integrity failures, reproduced on untouched
+  `34031f8`. Earlier runs also varied on shell/loader/background timing checks.
+  These unrelated tests were not weakened or changed.
 
 ## ChatGPT subscription eligibility (September 29, 2026)
 
