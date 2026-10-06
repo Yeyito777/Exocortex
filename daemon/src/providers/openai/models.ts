@@ -1,5 +1,6 @@
 import { EFFORT_LEVELS, type EffortLevel, type ModelInfo, type ReasoningEffortInfo } from "@exocortex/shared/messages";
 import { formatModelDisplayName } from "@exocortex/shared/model-display";
+import { isDaybreakSolModel } from "@exocortex/shared/daybreak";
 import { log } from "../../log";
 import { getVerifiedSession } from "./auth";
 import { supportsOpenAIFastServiceTier, supportsOpenAIImageInputs, supportsOpenAIUltraReasoningEffort } from "./capabilities";
@@ -14,7 +15,6 @@ const GPT_6_ASTRA_CONTEXT_TOKENS = 272_000;
 // Exocortex uses the ChatGPT Codex backend, where GPT-5.6 has a 372K
 // context window. The public OpenAI API exposes a separate 1.05M window.
 const GPT_5_6_CODEX_CONTEXT_TOKENS = 372_000;
-const DAYBREAK_BLUE_CONTEXT_TOKENS = 272_000;
 const CODEX_SPARK_CONTEXT_TOKENS = 128_000;
 
 const FALLBACK_OPENAI_EFFORTS: ReasoningEffortInfo[] = [
@@ -36,12 +36,6 @@ const GPT_5_6_ULTRA_OPENAI_EFFORTS: ReasoningEffortInfo[] = [
 ];
 
 const GPT_6_ASTRA_OPENAI_EFFORTS: ReasoningEffortInfo[] = [
-  ...FALLBACK_OPENAI_EFFORTS,
-  { effort: "max", description: "Maximum reasoning depth for the hardest problems" },
-  { effort: "ultra", description: "Maximum reasoning with automatic task delegation" },
-];
-
-const DAYBREAK_BLUE_OPENAI_EFFORTS: ReasoningEffortInfo[] = [
   ...FALLBACK_OPENAI_EFFORTS,
   { effort: "max", description: "Maximum reasoning depth for the hardest problems" },
   { effort: "ultra", description: "Maximum reasoning with automatic task delegation" },
@@ -75,7 +69,6 @@ export const FALLBACK_OPENAI_MODELS: ModelInfo[] = [
   fallbackOpenAIModel("gpt-5.6-sol", GPT_5_6_CODEX_CONTEXT_TOKENS, GPT_5_6_ULTRA_OPENAI_EFFORTS),
   fallbackOpenAIModel("gpt-5.6-terra", GPT_5_6_CODEX_CONTEXT_TOKENS, GPT_5_6_ULTRA_OPENAI_EFFORTS),
   fallbackOpenAIModel("gpt-5.6-luna", GPT_5_6_CODEX_CONTEXT_TOKENS, GPT_5_6_OPENAI_EFFORTS),
-  fallbackOpenAIModel("gpt-daybreak-blue-latest", DAYBREAK_BLUE_CONTEXT_TOKENS, DAYBREAK_BLUE_OPENAI_EFFORTS, "low"),
   fallbackOpenAIModel("gpt-5.5"),
   fallbackOpenAIModel("gpt-5.4", DEFAULT_OPENAI_CONTEXT_TOKENS, FALLBACK_OPENAI_EFFORTS, "high"),
   fallbackOpenAIModel("gpt-5.4-mini"),
@@ -91,7 +84,6 @@ const PREFERRED_OPENAI_MODEL_ORDER = [
   "gpt-5.6-sol",
   "gpt-5.6-terra",
   "gpt-5.6-luna",
-  "gpt-daybreak-blue-latest",
   "gpt-5.5",
   "gpt-5.5-pro",
   "gpt-5.5-mini",
@@ -102,8 +94,7 @@ const PREFERRED_OPENAI_MODEL_ORDER = [
   "gpt-5.4-nano",
   "gpt-5.3-codex-spark",
 ] as const;
-const MANUAL_OPENAI_MODEL_IDS = new Set(["gpt-5.3-codex-spark", "gpt-daybreak-blue-latest"]);
-const EXPOSED_HIDDEN_OPENAI_MODEL_IDS = new Set(["gpt-daybreak-blue-latest"]);
+const MANUAL_OPENAI_MODEL_IDS = new Set(["gpt-5.3-codex-spark"]);
 
 type PrimaryOpenAIModelFamily = typeof PRIMARY_OPENAI_MODEL_FAMILIES[number];
 
@@ -120,6 +111,7 @@ interface OpenAICodexModel {
     description?: string;
   }>;
   service_tiers?: Array<{ id?: string; name?: string; description?: string }>;
+  available_access_programs?: { cyber?: string[] };
 }
 
 interface OpenAIModelsResponse {
@@ -159,7 +151,6 @@ function preferredDefaultEffort(modelSlug: string, apiDefaultEffort: EffortLevel
   if (modelSlug === "gpt-6.1-sol") return apiDefaultEffort ?? "low";
   if (modelSlug === "gpt-6-astra") return apiDefaultEffort ?? "low";
   if (modelSlug === "gpt-6-sol" || modelSlug === "gpt-6-luna") return "medium";
-  if (modelSlug === "gpt-daybreak-blue-latest") return apiDefaultEffort ?? "low";
   // Product preference: use medium effort for GPT-5.6/5.5-family models, even if
   // upstream model metadata reports a higher default.
   if (isOpenAIModelInFamily(modelSlug, "gpt-5.6")) return "medium";
@@ -179,7 +170,6 @@ function fallbackEffortsForModel(modelSlug: string): ReasoningEffortInfo[] {
       ? GPT_5_6_ULTRA_OPENAI_EFFORTS
       : GPT_5_6_OPENAI_EFFORTS;
   }
-  if (modelSlug === "gpt-daybreak-blue-latest") return DAYBREAK_BLUE_OPENAI_EFFORTS;
   return FALLBACK_OPENAI_EFFORTS;
 }
 
@@ -199,13 +189,14 @@ function supportedEffortsForModel(modelSlug: string, apiEfforts: ReasoningEffort
 function fallbackContextWindow(modelSlug: string): number {
   if (modelSlug === "gpt-6-astra") return GPT_6_ASTRA_CONTEXT_TOKENS;
   if (isOpenAIModelInFamily(modelSlug, "gpt-5.6")) return GPT_5_6_CODEX_CONTEXT_TOKENS;
-  if (modelSlug === "gpt-daybreak-blue-latest") return DAYBREAK_BLUE_CONTEXT_TOKENS;
   if (modelSlug === "gpt-5.3-codex-spark") return CODEX_SPARK_CONTEXT_TOKENS;
   return DEFAULT_OPENAI_CONTEXT_TOKENS;
 }
 
 function toModelInfo(model: OpenAICodexModel): ModelInfo | null {
   if (!model.slug) return null;
+  const cyberPrograms = Array.isArray(model.available_access_programs?.cyber)
+    ? model.available_access_programs.cyber : [];
   const supportedEfforts = (model.supported_reasoning_levels ?? [])
     .filter((candidate): candidate is { effort: EffortLevel; description?: string } => (
       typeof candidate.effort === "string" && (EFFORT_LEVELS as readonly string[]).includes(candidate.effort)
@@ -225,14 +216,16 @@ function toModelInfo(model: OpenAICodexModel): ModelInfo | null {
       && (model.service_tiers?.some(tier => tier.id === "priority") ?? true),
     supportsUltrafastMode: supportsOpenAIFastServiceTier(model.slug)
       && (model.service_tiers?.some(tier => tier.id === "ultrafast") ?? false),
+    supportsDaybreak: isDaybreakSolModel(model.slug)
+      && cyberPrograms.includes("daybreak_blue"),
+    supportsStandardCyber: cyberPrograms.includes("standard"),
   };
 }
 
 function selectPreferredOpenAIModels(models: OpenAICodexModel[]): ModelInfo[] {
   const visibleModels = models
     .filter((model) => model.supported_in_api !== false)
-    .filter((model) => model.visibility !== "hide"
-      || (typeof model.slug === "string" && EXPOSED_HIDDEN_OPENAI_MODEL_IDS.has(model.slug)))
+    .filter((model) => model.visibility !== "hide")
     .filter((model) => typeof model.slug !== "string" || !isUnsupportedOpenAIModel(model.slug));
   const preferredFamily = preferredOpenAIPrimaryFamily(visibleModels);
 
@@ -265,7 +258,7 @@ function mergeMissingFallbackModels(models: ModelInfo[], remoteModels: OpenAICod
 
     const remoteModel = remoteModelById.get(fallbackModel.id);
     if (remoteModel && (remoteModel.supported_in_api === false
-      || (remoteModel.visibility === "hide" && !EXPOSED_HIDDEN_OPENAI_MODEL_IDS.has(fallbackModel.id)))) {
+      || remoteModel.visibility === "hide")) {
       continue;
     }
 

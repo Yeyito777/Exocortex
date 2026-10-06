@@ -407,6 +407,9 @@ describe("OpenAI replay input", () => {
       expect(headers["OpenAI-Beta"]).toBeUndefined();
       expect(headers[OPENAI_RESPONSES_LITE_HEADER]).toBe("true");
       expect(headers.Accept).toBe("text/event-stream");
+      expect(JSON.parse(String(init?.body))).toMatchObject({
+        model: "gpt-6.1-sol", access_programs: { cyber: "daybreak_blue" },
+      });
       const body = [
         `event: response.created\ndata: ${JSON.stringify({ type: "response.created", response: { id: "resp_1" } })}`,
         `event: response.output_item.added\ndata: ${JSON.stringify({ type: "response.output_item.added", output_index: 0, item: { type: "message", id: "msg_1" } })}`,
@@ -421,9 +424,9 @@ describe("OpenAI replay input", () => {
     const result = await streamMessageHttpWithSessionForTest(
       { accessToken: "test-token", accountId: null },
       [{ role: "user", content: "hello" }],
-      "gpt-daybreak-blue-latest",
+      "gpt-6.1-sol",
       { onText: () => {}, onThinking: () => {} },
-      { effort: "none", preferHttp: true },
+      { effort: "none", preferHttp: true, cyberAccessProgram: "daybreak_blue" },
     );
 
     expect(result.text).toBe("OK");
@@ -568,13 +571,33 @@ describe("OpenAI replay input", () => {
     }
   });
 
-  test("builds the Daybreak Blue Responses Lite contract", () => {
+  test("cyber treatment is explicit and independent of normal/compaction request shape", () => {
+    for (const model of ["gpt-6-sol", "gpt-6.1-sol"]) {
+      for (const compaction of [false, true]) {
+        for (const cyberAccessProgram of [undefined, "standard", "daybreak_blue"] as const) {
+          const body = buildRequestBodyForTest([{ role: "user", content: "hello" }], model, 1234, {
+            effort: "high", serviceTier: "ultrafast", cyberAccessProgram, compaction,
+          });
+          expect(body.model).toBe(model);
+          expect(body.service_tier).toBe("ultrafast");
+          expect(body.access_programs).toEqual(cyberAccessProgram ? { cyber: cyberAccessProgram } : undefined);
+          expect((body.reasoning as { effort: string }).effort).toBe("high");
+        }
+      }
+    }
+    for (const model of ["gpt-6-luna", "gpt-6-astra", "gpt-daybreak-blue-latest"]) {
+      expect(() => buildRequestBodyForTest([], model, 1234, { cyberAccessProgram: "daybreak_blue" })).toThrow();
+    }
+  });
+
+  test("Daybreak preserves Sol's Responses Lite contract and independent speed/effort", () => {
     const body = buildRequestBodyForTest([
       { role: "user", content: "inspect this defensively" },
-    ], "gpt-daybreak-blue-latest", 1234, {
+    ], "gpt-6.1-sol", 1234, {
       system: "Use only authorized defensive techniques.",
       effort: "ultra",
       serviceTier: "fast",
+      cyberAccessProgram: "daybreak_blue",
       tools: [{
         name: "inspect",
         description: "Inspect a target",
@@ -589,9 +612,11 @@ describe("OpenAI replay input", () => {
     expect(body.instructions).toBeUndefined();
     expect(body.tools).toBeUndefined();
     expect(body.parallel_tool_calls).toBe(false);
-    expect(body.service_tier).toBeUndefined();
+    expect(body.service_tier).toBe("priority");
+    expect(body.model).toBe("gpt-6.1-sol");
+    expect(body.access_programs).toEqual({ cyber: "daybreak_blue" });
     expect(body.text).toEqual({ verbosity: "low" });
-    expect(body.reasoning).toMatchObject({ effort: "max", context: "all_turns" });
+    expect(body.reasoning).toMatchObject({ effort: "xhigh", context: "all_turns" });
     expect(body.client_metadata).toMatchObject({
       ws_request_header_x_openai_internal_codex_responses_lite: "true",
     });
@@ -1275,7 +1300,7 @@ describe("OpenAI replay input", () => {
       [{ role: "user", content: "hello" }],
       "gpt-5.6-sol",
       callbacks,
-      { promptCacheKey: "conv-reused-compact", codexWindowId: "conv-reused-compact:0", turnSession },
+      { promptCacheKey: "conv-reused-compact", codexWindowId: "conv-reused-compact:0", turnSession, cyberAccessProgram: "daybreak_blue" },
     );
     const second = await streamMessageWithSession(
       session,
@@ -1290,6 +1315,7 @@ describe("OpenAI replay input", () => {
         codexWindowId: "conv-reused-compact:0",
         turnSession,
         compaction: true,
+        cyberAccessProgram: "daybreak_blue",
         compactionMetadata: { reason: "context_limit", phase: "mid_turn" },
       },
     );
@@ -1298,6 +1324,8 @@ describe("OpenAI replay input", () => {
     expect(calls[0].sent).toHaveLength(2);
     const compactionBody = JSON.parse(calls[0].sent[1]);
     expect(compactionBody.previous_response_id).toBe("resp_normal");
+    expect(JSON.parse(calls[0].sent[0]).access_programs).toEqual({ cyber: "daybreak_blue" });
+    expect(compactionBody.access_programs).toEqual({ cyber: "daybreak_blue" });
     expect(compactionBody.input).toEqual([{ type: "compaction_trigger" }]);
     expect(JSON.parse(compactionBody.client_metadata["x-codex-turn-metadata"])).toMatchObject({
       request_kind: "compaction",

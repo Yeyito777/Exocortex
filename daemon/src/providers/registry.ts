@@ -1,4 +1,5 @@
 import type { FastMode } from "@exocortex/shared/messages";
+import { DAYBREAK_UNAVAILABLE, supportsDaybreak as modelSupportsDaybreak } from "@exocortex/shared/daybreak";
 import {
   DEFAULT_MODEL_BY_PROVIDER,
   DEFAULT_PROVIDER_ORDER,
@@ -166,6 +167,20 @@ export function supportsFastMode(providerId: ProviderId, model?: ModelId, mode: 
 
 export function supportsImageInputs(providerId: ProviderId, model: ModelId): boolean {
   return supportsImageInputsForModel(getModelInfo(providerId, model));
+}
+
+export function supportsDaybreak(providerId: ProviderId, model: ModelId): boolean {
+  return modelSupportsDaybreak(providerId, getModelInfo(providerId, model));
+}
+
+/** Resolve once at turn admission; all tool rounds and compactions reuse it. */
+export function cyberAccessProgramForSelection(providerId: ProviderId, model: ModelId, daybreak = false): "standard" | "daybreak_blue" | undefined {
+  if (daybreak) {
+    if (!supportsDaybreak(providerId, model)) throw new Error(DAYBREAK_UNAVAILABLE);
+    return "daybreak_blue";
+  }
+  return providerId === "openai" && getModelInfo(providerId, model)?.supportsStandardCyber
+    ? "standard" : undefined;
 }
 
 export async function refreshProviders(force = false): Promise<boolean> {

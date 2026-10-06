@@ -102,6 +102,7 @@ export interface NewConversationCommand {
   model?: ModelId;
   effort?: EffortLevel;
   fastMode?: FastMode;
+  daybreak?: boolean;
   /** Initial title. Clients that don't set this get an empty title. */
   title?: string;
   /** Optional prompt text used to auto-generate a title before any message is sent. */
@@ -427,6 +428,13 @@ export interface SetFastModeCommand {
   reqId?: string;
   convId: string;
   enabled: FastMode;
+}
+
+export interface SetDaybreakCommand {
+  type: "set_daybreak";
+  reqId?: string;
+  convId: string;
+  enabled: boolean;
 }
 
 export type GoalAction = "show" | "set" | "pause" | "resume" | "complete" | "clear";
@@ -766,6 +774,7 @@ export interface QueuedMessageInfo {
   model?: ModelId;
   effort?: EffortLevel;
   fastMode?: FastMode;
+  daybreak?: boolean;
   folderId?: string | null;
   waitTarget?: QueueWaitTarget;
   createdAt: number;
@@ -790,6 +799,7 @@ export interface QueueMessageCommand {
   model?: ModelId;
   effort?: EffortLevel;
   fastMode?: FastMode;
+  daybreak?: boolean;
   folderId?: string | null;
   waitTarget?: QueueWaitTarget;
   /** @deprecated Retired; daemon rejects requests containing this field. */
@@ -978,6 +988,7 @@ export type Command =
   | SetModelCommand
   | SetEffortCommand
   | SetFastModeCommand
+  | SetDaybreakCommand
   | SetGoalCommand
   | ManageExternalToolDaemonCommand
   | RegisterExternalNotificationSourceCommand
@@ -1091,6 +1102,7 @@ export interface ConversationCreatedEvent {
   model: ModelId;
   effort: EffortLevel;
   fastMode: FastMode;
+  daybreak?: boolean;
   goal?: ConversationGoal | null;
 }
 
@@ -1410,6 +1422,7 @@ export interface ConversationLoadedEvent extends CachedHistoryResponse {
   model: ModelId;
   effort: EffortLevel;
   fastMode: FastMode;
+  daybreak?: boolean;
   /** The requested newest history window in display order, plus pinned system instructions. */
   entries: DisplayEntry[];
   /** Absolute index of the first included non-instructions history entry. */

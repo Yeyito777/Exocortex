@@ -51,6 +51,7 @@ The implementation in [keybinds.ts](../tui/src/keybinds.ts) and
 | `;` | In history visual mode, quote selection into the draft |
 | `/new` | Start a new conversation |
 | `/model <provider> <model>` | Switch provider/model |
+| `/daybreak [on\|off]` | Toggle Daybreak Blue on an account-supported Sol model |
 | `/trim <mode> <n>` | Trim old context |
 | `/quit` | Exit |
 

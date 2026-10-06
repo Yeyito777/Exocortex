@@ -47,7 +47,7 @@ test("model modifiers work before, within, and after prompt text", () => {
     state.inputBuffer = input;
     const result = applyInlineCommands(input, state);
     expect(result.text).toBe("hello there");
-    expect(result.modelSelection).toEqual({ provider: "openai", model: "gpt-6.1-sol", effort: "low", fastMode: false });
+    expect(result.modelSelection).toEqual({ provider: "openai", model: "gpt-6.1-sol", effort: "low", fastMode: false, daybreak: false });
     expect(state.model).toBe("gpt-6.1-sol");
     expect(state.inputBuffer).toBe(input);
   }
@@ -59,7 +59,7 @@ test("preview is side-effect free and later modifiers use the newly selected mod
   expect(tryCommand(text, state)).toBeNull();
   const preview = previewInlineCommands(text, state);
   expect(preview.text).toBe("explain this");
-  expect(preview.modelSelection).toEqual({ provider: "openai", model: "gpt-6.1-sol", effort: "max", fastMode: true });
+  expect(preview.modelSelection).toEqual({ provider: "openai", model: "gpt-6.1-sol", effort: "max", fastMode: true, daybreak: false });
   expect(state.provider).toBe("deepseek");
   expect(state.effort).toBe("high");
   expect(state.messages).toEqual([]);
@@ -71,7 +71,7 @@ test("the last model selection normalizes earlier speed and effort changes", () 
   const state = fixture();
   const result = applyInlineCommands("/model openai gpt-6.1-sol /fast on /model deepseek deepseek-v4-pro answer", state);
   expect(result.text).toBe("answer");
-  expect(result.modelSelection).toEqual({ provider: "deepseek", model: "deepseek-v4-pro", effort: "high", fastMode: false });
+  expect(result.modelSelection).toEqual({ provider: "deepseek", model: "deepseek-v4-pro", effort: "high", fastMode: false, daybreak: false });
   expect(state).toMatchObject(result.modelSelection!);
 });
 

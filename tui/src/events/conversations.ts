@@ -70,6 +70,7 @@ export function handleConversationCreated(
   state.model = event.model ?? state.model;
   state.effort = event.effort ?? state.effort;
   state.fastMode = event.fastMode ?? state.fastMode;
+  state.daybreak = event.daybreak === true;
   state.goal = event.goal ?? null;
   state.btw = null;
   resetHistoryPagination(state);
@@ -132,6 +133,7 @@ export function handleConversationUpdated(event: Extract<Event, { type: "convers
     state.model = nextModel;
     state.effort = summary.effort ?? state.effort;
     state.fastMode = summary.fastMode ?? state.fastMode;
+    state.daybreak = summary.daybreak === true;
     state.goal = summary.goal ?? null;
     if (providerOrModelChanged && state.contextTokens !== 0) state.contextTokens = null;
   }
@@ -263,6 +265,7 @@ export function handleConversationLoaded(
   state.model = event.model ?? state.model;
   state.effort = event.effort ?? state.effort;
   state.fastMode = event.fastMode ?? state.fastMode;
+  state.daybreak = event.daybreak === true;
   state.goal = event.goal ?? null;
   state.btw = projectConversationBtw(event.convId, event.btw);
   state.scrollOffset = 0;

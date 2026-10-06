@@ -7,6 +7,7 @@
     "./updatecheck": "./src/updatecheck.ts",
     "./auth": "./src/auth.ts",
     "./messages": "./src/messages.ts",
+    "./daybreak": "./src/daybreak.ts",
     "./goals": "./src/goals.ts",
     "./config": "./src/config.ts",
     "./performance-profiling": "./src/performance-profiling.ts",

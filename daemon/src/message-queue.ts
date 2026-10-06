@@ -28,6 +28,7 @@ export interface GlobalIdleQueueOptions {
   model?: QueuedMessageInfo["model"];
   effort?: QueuedMessageInfo["effort"];
   fastMode?: FastMode;
+  daybreak?: boolean;
   folderId?: string | null;
   waitTarget?: QueueWaitTarget;
   createdAt?: number;
@@ -219,6 +220,7 @@ export function pushGlobalIdleQueuedMessage(
     ...(options.model ? { model: options.model } : {}),
     ...(options.effort ? { effort: options.effort } : {}),
     ...(isFastMode(options.fastMode) ? { fastMode: options.fastMode } : {}),
+    ...(typeof options.daybreak === "boolean" ? { daybreak: options.daybreak } : {}),
     ...("folderId" in options ? { folderId: options.folderId ?? null } : {}),
     ...(options.waitTarget && options.waitTarget.type !== "global" ? { waitTarget: options.waitTarget } : {}),
   };

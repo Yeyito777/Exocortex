@@ -51,6 +51,10 @@ export interface ModelInfo {
   supportsFastMode?: boolean;
   /** Opt-in only: must be explicitly advertised by the account's model catalog. */
   supportsUltrafastMode?: boolean;
+  /** Account-scoped Daybreak Blue support. Missing discovery never grants access. */
+  supportsDaybreak?: boolean;
+  /** Whether an explicit standard cyber treatment is advertised. */
+  supportsStandardCyber?: boolean;
 }
 
 export interface ProviderInfo {
@@ -86,7 +90,6 @@ export function defaultEffortForModelId(providerId: ProviderId, model: ModelId):
   if (providerId === "openrouter") return model.startsWith("nousresearch/hermes-4-") ? "high" : "none";
   if (providerId === "openai" && (model === "gpt-6-astra" || model === "gpt-6.1-sol")) return "low";
   if (providerId === "openai" && (model === "gpt-6-sol" || model === "gpt-6-luna")) return "medium";
-  if (providerId === "openai" && model === "gpt-daybreak-blue-latest") return "low";
   if (providerId === "openai" && (/^gpt-5\.6-/.test(model) || /^gpt-5\.5(?:-|$)/.test(model))) return "medium";
   return DEFAULT_EFFORT;
 }
@@ -122,7 +125,6 @@ export const MAX_CONTEXT: Record<string, number> = {
   "gpt-5.6-sol": 372_000,
   "gpt-5.6-terra": 372_000,
   "gpt-5.6-luna": 372_000,
-  "gpt-daybreak-blue-latest": 272_000,
   "gpt-5.5": 272_000,
   "gpt-5.4": 272_000,
   "gpt-5.4-mini": 272_000,
@@ -494,6 +496,7 @@ export interface ConversationSummary {
   model: ModelId;
   effort: EffortLevel;
   fastMode: FastMode;
+  daybreak?: boolean;
   createdAt: number;
   updatedAt: number;
   messageCount: number;

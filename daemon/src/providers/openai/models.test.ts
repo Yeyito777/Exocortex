@@ -108,7 +108,6 @@ describe("OpenAI model selection", () => {
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
-      "gpt-daybreak-blue-latest",
       "gpt-5.5",
       "gpt-5.4",
       "gpt-5.4-mini",
@@ -132,17 +131,9 @@ describe("OpenAI model selection", () => {
     expect(models[4]?.supportedEfforts.map((item) => item.effort)).toEqual(["none", "low", "medium", "high", "xhigh", "max", "ultra"]);
     expect(models[5]?.supportedEfforts.map((item) => item.effort)).toEqual(["none", "low", "medium", "high", "xhigh", "max", "ultra"]);
     expect(models[6]?.supportedEfforts.map((item) => item.effort)).toEqual(["none", "low", "medium", "high", "xhigh", "max"]);
-    expect(models[7]).toMatchObject({
-      id: "gpt-daybreak-blue-latest",
-      label: "Daybreak Blue",
-      maxContext: 272_000,
-      defaultEffort: "low",
-      supportsImages: true,
-      supportsFastMode: false,
-    });
-    expect(models[7]?.supportedEfforts.map((item) => item.effort)).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
-    expect(models[11]?.maxContext).toBe(128_000);
-    expect(models[11]?.supportsImages).toBe(false);
+    expect(models.every(model => !model.id.startsWith("gpt-daybreak-"))).toBe(true);
+    expect(models[10]?.maxContext).toBe(128_000);
+    expect(models[10]?.supportsImages).toBe(false);
   });
 
   test("does not re-add gpt-5.3-codex-spark when the Codex endpoint explicitly hides it", () => {
@@ -164,7 +155,6 @@ describe("OpenAI model selection", () => {
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
-      "gpt-daybreak-blue-latest",
       "gpt-5.5",
       "gpt-5.4",
       "gpt-5.4-mini",
@@ -215,6 +205,8 @@ describe("OpenAI model selection", () => {
       supportsImages: true,
       supportsFastMode: true,
       supportsUltrafastMode: false,
+      supportsDaybreak: false,
+      supportsStandardCyber: false,
     });
     expect(models.some((model) => model.id === "gpt-5.6-sol")).toBe(true);
   });
@@ -231,7 +223,7 @@ describe("OpenAI model selection", () => {
     expect(models.some((model) => model.id === "gpt-6-astra")).toBe(false);
   });
 
-  test("exposes hidden Daybreak Blue with its Codex endpoint metadata", () => {
+  test("does not expose retired hidden Daybreak models", () => {
     const models = selectOpenAIModelsForTest([
       {
         slug: "gpt-daybreak-blue-latest",
@@ -256,35 +248,25 @@ describe("OpenAI model selection", () => {
       },
     ]);
 
-    expect(models.find((model) => model.id === "gpt-daybreak-blue-latest")).toEqual({
-      id: "gpt-daybreak-blue-latest",
-      label: "Daybreak Blue",
-      maxContext: 271_000,
-      supportedEfforts: [
-        { effort: "low", description: "Fast defensive work" },
-        { effort: "max", description: "Deep defensive work" },
-        { effort: "ultra", description: "Delegate defensive work" },
-      ],
-      defaultEffort: "low",
-      supportsImages: true,
-      supportsFastMode: false,
-      supportsUltrafastMode: false,
-    });
+    expect(models.some((model) => model.id === "gpt-daybreak-blue-latest")).toBe(false);
     expect(models.some((model) => model.id === "gpt-daybreak-red-latest")).toBe(false);
   });
 
-  test("uses Daybreak Blue defaults when remote metadata omits effort details", () => {
-    const models = selectOpenAIModelsForTest([{
-      slug: "gpt-daybreak-blue-latest",
-      display_name: "Daybreak Blue",
-      supported_in_api: true,
-      visibility: "hide",
-      priority: 3,
-    }]);
-    const daybreak = models.find((model) => model.id === "gpt-daybreak-blue-latest");
-
-    expect(daybreak?.defaultEffort).toBe("low");
-    expect(daybreak?.supportedEfforts.map((item) => item.effort)).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
+  test("only advertises Daybreak Blue for entitled Sol models", () => {
+    for (const slug of ["gpt-6.1-sol", "gpt-6-sol", "gpt-5.6-sol", "gpt-6-luna", "gpt-6-astra"]) {
+      for (const cyber of [undefined, [], ["standard"], ["daybreak_red"], ["standard", "daybreak_blue", "future_program"]]) {
+        const models = selectOpenAIModelsForTest([{
+          slug, ...(cyber ? { available_access_programs: { cyber } } : {}),
+        }]);
+        const model = models.find(model => model.id === slug)!;
+        expect(model.supportsDaybreak).toBe(slug.endsWith("-sol") && !!cyber?.includes("daybreak_blue"));
+        expect(model.supportsStandardCyber).toBe(!!cyber?.includes("standard"));
+      }
+    }
+    expect(selectOpenAIModelsForTest([]).some(model => model.supportsDaybreak)).toBe(false);
+    expect(selectOpenAIModelsForTest([{
+      slug: "gpt-6-sol", available_access_programs: { cyber: "daybreak_blue" as never },
+    }]).find(model => model.id === "gpt-6-sol")?.supportsDaybreak).toBe(false);
   });
 
   test("does not expose broad GPT family aliases even when upstream lists them", () => {
@@ -348,6 +330,8 @@ describe("OpenAI model selection", () => {
       supportsImages: false,
       supportsFastMode: true,
       supportsUltrafastMode: false,
+      supportsDaybreak: false,
+      supportsStandardCyber: false,
     });
   });
 
@@ -386,7 +370,6 @@ describe("OpenAI model selection", () => {
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
-      "gpt-daybreak-blue-latest",
       "gpt-5.5",
       "gpt-5.4",
       "gpt-5.4-mini",

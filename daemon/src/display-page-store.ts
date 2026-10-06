@@ -76,6 +76,7 @@ interface DisplayPageManifest {
   model: Conversation["model"];
   effort: Conversation["effort"];
   fastMode: FastMode;
+  daybreak?: boolean;
   contextTokens: number | null;
   storedMessageCount: number;
   pinnedEntries: DisplayEntry[];
@@ -96,6 +97,7 @@ export interface StoredDisplayHistoryPage {
   model: Conversation["model"];
   effort: Conversation["effort"];
   fastMode: FastMode;
+  daybreak?: boolean;
   contextTokens: number | null;
   toolOutputsIncluded: false;
   pinnedEntries: DisplayEntry[];
@@ -400,6 +402,7 @@ export function writeDisplayProjection(
       model: conv.model,
       effort: conv.effort,
       fastMode: conv.fastMode ?? false,
+      daybreak: conv.daybreak === true,
       contextTokens: conv.lastContextTokens,
       storedMessageCount: conv.messages.length,
       pinnedEntries: projection.pinnedEntries,
@@ -505,6 +508,7 @@ export function loadDisplayPage(
         model: manifest.model,
         effort: manifest.effort,
         fastMode: manifest.fastMode,
+        daybreak: manifest.daybreak === true,
         contextTokens: manifest.contextTokens,
         toolOutputsIncluded: false,
         pinnedEntries: manifest.pinnedEntries,

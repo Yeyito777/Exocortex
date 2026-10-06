@@ -28,12 +28,14 @@ export interface ConversationDisplayData {
   model: ModelId;
   effort: EffortLevel;
   fastMode: FastMode;
+  daybreak?: boolean;
   entries: DisplayEntry[];
   contextTokens: number | null;
   toolOutputsIncluded: boolean;
 }
 
 export interface BuildDisplayOptions {
+  daybreak?: boolean;
   includeToolOutputs?: boolean;
   /** Include daemon-authored identities used by interactive history editing. */
   includeUnwindFingerprints?: boolean;
@@ -257,6 +259,7 @@ export function buildDisplayData(
     model,
     effort,
     fastMode,
+    daybreak: options?.daybreak === true,
     entries,
     contextTokens: lastContextTokens,
     toolOutputsIncluded: includeToolOutputs,

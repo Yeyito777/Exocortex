@@ -1,4 +1,6 @@
 import { fastModeServiceTier, isFastMode, type FastMode } from "@exocortex/shared/messages";
+import { DAYBREAK_RETIRED_MODEL, DAYBREAK_UNAVAILABLE } from "@exocortex/shared/daybreak";
+import { supportsDaybreak } from "./providers/registry";
 /**
  * Command handler for exocortexd.
  *
@@ -596,6 +598,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           model: summary?.model ?? page.model,
           effort: summary?.effort ?? page.effort,
           fastMode: summary?.fastMode ?? page.fastMode,
+          daybreak: summary?.daybreak ?? page.daybreak ?? false,
           entries: responseEntries,
           historyStartIndex: page.startIndex,
           historyStartUserIndex: page.startUserIndex,
@@ -650,6 +653,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       model: compactData.model,
       effort: compactData.effort,
       fastMode: compactData.fastMode,
+      daybreak: compactData.daybreak ?? false,
       entries: responseEntries,
       ...(page ? {
         historyStartIndex: page.startIndex,
@@ -1055,7 +1059,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             && convStore.listSidebarState().folders.some(folder => folder.id === idleEntry.folderId)
             ? idleEntry.folderId
             : null;
-          convStore.create(idleEntry.convId, provider, model, PENDING_TITLE, effort, fastMode, folderId);
+          convStore.create(idleEntry.convId, provider, model, PENDING_TITLE, effort, fastMode, folderId, false, idleEntry.daybreak === true);
           broadcastConversationUpdated(server, idleEntry.convId);
           startTitleGeneration(server, idleEntry.convId, { extraContext: idleEntry.text });
           log("info", `handler: recovered queued draft conversation ${idleEntry.convId} from durable queue ${idleEntry.id}`);
@@ -1171,7 +1175,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   // window. Read-only paging, Stop, scheduling and turn admission stay cheap.
   const warmCommands = new Set([
     "btw_query", "btw_followup", "set_goal", "set_model", "set_effort",
-    "set_fast_mode", "get_system_prompt",
+    "set_fast_mode", "set_daybreak", "get_system_prompt",
   ]);
   const handleCommand = async function handleCommand(client: ConnectedClient, cmd: Command): Promise<void> {
     try {
@@ -1439,6 +1443,10 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           break;
         }
         const model = requestedModel ?? (provider === conversationDefaults.provider ? conversationDefaults.model : getDefaultModel(provider));
+        if (provider === "openai" && model.startsWith("gpt-daybreak-")) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: id, message: DAYBREAK_RETIRED_MODEL });
+          break;
+        }
         const defaultEffort = provider === conversationDefaults.provider && model === conversationDefaults.model
           ? conversationDefaults.effort
           : undefined;
@@ -1451,6 +1459,11 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           break;
         }
         const fastMode = supportsFastMode(provider, model, requestedFastMode) ? requestedFastMode : false;
+        if (cmd.daybreak !== undefined && (typeof cmd.daybreak !== "boolean" || (cmd.daybreak && !supportsDaybreak(provider, model)))) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: id, message: DAYBREAK_UNAVAILABLE });
+          break;
+        }
+        const daybreak = cmd.daybreak === true;
         const initialMessage = cmd.initialMessage;
         const goalObjective = cmd.goalObjective?.trim();
         if (goalObjective && cmd.goalMaxTurns !== undefined && (!Number.isSafeInteger(cmd.goalMaxTurns) || cmd.goalMaxTurns <= 0)) {
@@ -1501,9 +1514,11 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
               ? { ...initialMessage, automation: { kind: "exo_send" } }
               : initialMessage,
             folderId,
+            false,
+            daybreak,
           );
         } else {
-          convStore.create(id, provider, model, title, effort, fastMode, folderId);
+          convStore.create(id, provider, model, title, effort, fastMode, folderId, false, daybreak);
         }
         if (cmd.subagent) {
           convStore.setSubagentPolicy(id, {
@@ -1524,6 +1539,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           model,
           effort,
           fastMode,
+          daybreak,
           goal,
         });
         broadcastConversationUpdated(server, id);
@@ -2190,6 +2206,10 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         }
         const nextProvider = requested.provider ?? conv.provider;
         const nextModel = requested.model!;
+        if (nextProvider === "openai" && nextModel.startsWith("gpt-daybreak-")) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: DAYBREAK_RETIRED_MODEL });
+          break;
+        }
         if (!getProvider(nextProvider)) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Unknown provider: ${nextProvider}` });
           break;
@@ -2209,7 +2229,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         // the same account. An incompatible/invalid checkpoint hard-fails on
         // the next turn instead of rebuilding the unbounded canonical archive.
         // Model selection itself never submits a provider request.
-        const ok = convStore.setModel(cmd.convId, nextProvider, nextModel, nextEffort, nextFastMode);
+        const nextDaybreak = conv.daybreak === true && supportsDaybreak(nextProvider, nextModel);
+        const ok = convStore.setModel(cmd.convId, nextProvider, nextModel, nextEffort, nextFastMode, nextDaybreak);
         if (ok) {
           server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
           broadcastConversationUpdated(server, cmd.convId);
@@ -2305,6 +2326,26 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       }
 
       // ── Sidebar/list commands ─────────────────────────────────────
+      case "set_daybreak": {
+        const conv = convStore.get(cmd.convId);
+        if (!conv) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
+          break;
+        }
+        if (convStore.isStreaming(cmd.convId)) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Cannot change Daybreak while streaming. It applies to the next turn." });
+          break;
+        }
+        if (typeof cmd.enabled !== "boolean" || (cmd.enabled && !supportsDaybreak(conv.provider, conv.model))) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: DAYBREAK_UNAVAILABLE });
+          break;
+        }
+        convStore.setDaybreak(cmd.convId, cmd.enabled);
+        server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
+        broadcastConversationUpdated(server, cmd.convId);
+        server.sendTo(client, { type: "system_message", convId: cmd.convId, text: `Daybreak ${cmd.enabled ? "enabled" : "disabled"}.` });
+        break;
+      }
 
       case "list_conversations": {
         server.sendTo(client, { type: "conversations_list", reqId: cmd.reqId, ...convStore.listSidebarState() });
@@ -2517,6 +2558,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           model: import("./messages").ModelId;
           effort: import("./messages").EffortLevel;
           fastMode: FastMode;
+          daybreak: boolean;
           folderId: string | null;
         } | null = null;
         if (queueId && (queueId.length > 200 || /[\r\n]/.test(queueId))) {
@@ -2600,6 +2642,11 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             break;
           }
           const model = cmd.model ?? (provider === defaults.provider ? defaults.model : getDefaultModel(provider));
+          if (provider === "openai" && model.startsWith("gpt-daybreak-")) {
+            server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: DAYBREAK_RETIRED_MODEL });
+            server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages(), ...(queueId ? { settledQueueIds: [queueId] } : {}) });
+            break;
+          }
           const effort = normalizeEffort(provider, model, cmd.effort ?? effortDefaultForSelection(provider, model));
           if (cmd.fastMode !== undefined && (!isFastMode(cmd.fastMode) || (cmd.fastMode && !supportsFastMode(provider, model, cmd.fastMode)))) {
             server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Fast mode is only available for ${provider} conversations that support it.` });
@@ -2608,13 +2655,18 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           }
           const requestedFastMode = cmd.fastMode ?? fastDefaultForSelection(provider, model);
           const fastMode = supportsFastMode(provider, model, requestedFastMode) ? requestedFastMode : false;
+          if (cmd.daybreak !== undefined && (typeof cmd.daybreak !== "boolean" || (cmd.daybreak && !supportsDaybreak(provider, model)))) {
+            server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: DAYBREAK_UNAVAILABLE });
+            server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages(), ...(queueId ? { settledQueueIds: [queueId] } : {}) });
+            break;
+          }
           const folderId = cmd.folderId ?? null;
           if (folderId && !convStore.listSidebarState().folders.some(folder => folder.id === folderId)) {
             server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Folder ${folderId} not found` });
             server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages(), ...(queueId ? { settledQueueIds: [queueId] } : {}) });
             break;
           }
-          queuedDraftSettings = { provider, model, effort, fastMode, folderId };
+          queuedDraftSettings = { provider, model, effort, fastMode, daybreak: cmd.daybreak === true, folderId };
         } else if (!convStore.hasConversation(cmd.convId)) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
           server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages(), ...(queueId ? { settledQueueIds: [queueId] } : {}) });
@@ -2630,6 +2682,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             model: queuedDraftSettings?.model ?? cmd.model,
             effort: queuedDraftSettings?.effort ?? cmd.effort,
             fastMode: queuedDraftSettings?.fastMode ?? cmd.fastMode,
+            daybreak: queuedDraftSettings?.daybreak ?? cmd.daybreak,
             folderId: queuedDraftSettings?.folderId ?? cmd.folderId,
             waitTarget: cmd.waitTarget,
           });
@@ -2637,7 +2690,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           convStore.pushQueuedMessage(cmd.convId, cmd.text, cmd.timing, cmd.images, undefined, undefined, queueId);
         }
         if (queuedDraftSettings) {
-          const { provider, model, effort, fastMode, folderId } = queuedDraftSettings;
+          const { provider, model, effort, fastMode, daybreak, folderId } = queuedDraftSettings;
           // Queue persistence happens first. If the daemon dies before creation,
           // the scheduler reconstructs this draft from the captured settings.
           convStore.create(
@@ -2648,6 +2701,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             effort,
             fastMode,
             folderId,
+            false,
+            daybreak,
           );
           server.sendTo(client, {
             type: "conversation_created",
@@ -2657,6 +2712,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             model,
             effort,
             fastMode,
+            daybreak,
           });
           broadcastConversationUpdated(server, cmd.convId);
           startTitleGeneration(server, cmd.convId, { extraContext: cmd.text });

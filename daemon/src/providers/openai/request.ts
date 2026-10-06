@@ -15,6 +15,7 @@ import { buildCodexClientMetadata } from "./identity";
 import type { OpenAIReasoningItem } from "./types";
 import { isValidImagePayload } from "../../image-validation";
 import { openAIToolCallItem } from "./tool-wire";
+import { DAYBREAK_RETIRED_MODEL, isDaybreakSolModel } from "@exocortex/shared/daybreak";
 
 export type OpenAIInputItem =
   | { type: "message"; role: "user"; content: Array<{ type: "input_text"; text: string } | { type: "input_image"; image_url: string }> }
@@ -47,6 +48,7 @@ interface OpenAIRequestShape {
   };
   text?: { verbosity: "low" | "medium" | "high" };
   service_tier?: string;
+  access_programs?: { cyber: "standard" | "daybreak_blue" };
   tools?: OpenAIWireTool[];
 }
 
@@ -348,6 +350,12 @@ function requestInstructions(model: ModelId, options: StreamOptions): string {
 }
 
 function buildRequestShape(model: ModelId, options: StreamOptions): OpenAIRequestShape {
+  if (model.startsWith("gpt-daybreak-")) {
+    throw new Error(DAYBREAK_RETIRED_MODEL);
+  }
+  if (options.cyberAccessProgram === "daybreak_blue" && !isDaybreakSolModel(model)) {
+    throw new Error("Daybreak Blue is only supported on Sol models.");
+  }
   const responsesLite = usesOpenAIResponsesLite(model);
   const tools = responsesLite ? undefined : buildOpenAITools(options.tools);
   const serviceTier = mapServiceTier(options.serviceTier, model);
@@ -370,6 +378,7 @@ function buildRequestShape(model: ModelId, options: StreamOptions): OpenAIReques
     },
     ...(verbosity ? { text: { verbosity } } : {}),
     ...(serviceTier ? { service_tier: serviceTier } : {}),
+    ...(options.cyberAccessProgram ? { access_programs: { cyber: options.cyberAccessProgram } } : {}),
     ...(tools ? { tools } : {}),
   };
 }

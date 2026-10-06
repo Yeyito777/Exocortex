@@ -63,6 +63,7 @@ export interface QueuedMessage {
   model?: ModelId;
   effort?: EffortLevel;
   fastMode?: FastMode;
+  daybreak?: boolean;
   folderId?: string | null;
   /** Daemon-evaluated dependency that must be idle before delivery. */
   waitTarget?: QueueWaitTarget;
@@ -199,6 +200,7 @@ export interface RenderState {
   model: ModelId;
   effort: EffortLevel;
   fastMode: FastMode;
+  daybreak: boolean;
   goal: ConversationGoal | null;
   convId: string | null;
   /** Selected remote daemon route. Null means the local daemon. */
@@ -541,12 +543,13 @@ export function resetNewConversationDefaults(state: RenderState): void {
   state.model = defaults.model;
   state.effort = defaults.effort;
   state.fastMode = defaults.fastMode;
+  state.daybreak = false;
 }
 
 /** Never send the display-only startup fallback as an override of daemon defaults. */
-export function newConversationSelection(state: RenderState): Partial<ConversationDefaults> {
+export function newConversationSelection(state: RenderState): Partial<ConversationDefaults> & { daybreak?: boolean } {
   if (!state.conversationDefaults && !state.hasChosenProvider) return {};
-  return { provider: state.provider, model: state.model, effort: state.effort, fastMode: state.fastMode };
+  return { provider: state.provider, model: state.model, effort: state.effort, fastMode: state.fastMode, ...(state.daybreak ? { daybreak: true } : {}) };
 }
 
 // ── Focus transition helpers ──────────────────────────────────────
@@ -626,6 +629,7 @@ export function createInitialState(): RenderState {
     model: defaults.model,
     effort: defaults.effort,
     fastMode: defaults.fastMode,
+    daybreak: false,
     goal: null,
     convId: null,
     sshRemote: null,

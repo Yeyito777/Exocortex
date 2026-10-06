@@ -578,13 +578,13 @@ export function generateId(): string {
 
 // ── Conversation CRUD/configuration ─────────────────────────────────
 
-export function create(id: string, provider: ProviderId, model: ModelId, title?: string, effort?: EffortLevel, fastMode: FastMode = false, folderId: string | null = null, adoptExistingWorkspace = false): Conversation {
+export function create(id: string, provider: ProviderId, model: ModelId, title?: string, effort?: EffortLevel, fastMode: FastMode = false, folderId: string | null = null, adoptExistingWorkspace = false, daybreak = false): Conversation {
   if (hasConversation(id) || persistence.hasDeletedConversation(id)) {
     throw new Error(`Conversation ${id} already exists or is recoverable from trash`);
   }
   createConversationWorkspace(id, { adoptExisting: adoptExistingWorkspace });
   const parentId = folderId && folders.has(folderId) ? folderId : null;
-  const conv = createConversation(id, provider, model, nextUnpinnedOrderInFolder(parentId), title, effort, fastMode, parentId);
+  const conv = createConversation(id, provider, model, nextUnpinnedOrderInFolder(parentId), title, effort, fastMode, parentId, daybreak);
   retainConversation(conv);
   markDirty(id);
   flush(id);
@@ -601,13 +601,14 @@ export function createWithInitialUserMessage(
   message: { text: string; startedAt: number; images?: ImageAttachment[]; automation?: UserMessageAutomation },
   folderId: string | null = null,
   adoptExistingWorkspace = false,
+  daybreak = false,
 ): Conversation {
   if (hasConversation(id) || persistence.hasDeletedConversation(id)) {
     throw new Error(`Conversation ${id} already exists or is recoverable from trash`);
   }
   createConversationWorkspace(id, { adoptExisting: adoptExistingWorkspace });
   const parentId = folderId && folders.has(folderId) ? folderId : null;
-  const conv = createConversation(id, provider, model, nextUnpinnedOrderInFolder(parentId), title, effort, fastMode, parentId);
+  const conv = createConversation(id, provider, model, nextUnpinnedOrderInFolder(parentId), title, effort, fastMode, parentId, daybreak);
   conv.messages.push(createStoredUserMessage(message.text, model, message.startedAt, message.images, {
     automation: message.automation,
     contextCheckpoint: createStoredUserContextCheckpoint(conv),
@@ -1310,6 +1311,7 @@ export function setModel(
   model: ModelId,
   effort: EffortLevel,
   fastMode: FastMode,
+  daybreak = false,
 ): boolean {
   const conv = get(id);
   if (!conv) return false;
@@ -1317,6 +1319,7 @@ export function setModel(
   conv.model = model;
   conv.effort = effort;
   conv.fastMode = fastMode;
+  conv.daybreak = daybreak;
   conv.lastContextTokens = null;
   conv.updatedAt = Date.now();
   markDirty(id);
@@ -1337,6 +1340,15 @@ export function setFastMode(id: string, enabled: FastMode): boolean {
   const conv = get(id);
   if (!conv) return false;
   conv.fastMode = enabled;
+  markDirty(id);
+  flush(id);
+  return true;
+}
+
+export function setDaybreak(id: string, enabled: boolean): boolean {
+  const conv = get(id);
+  if (!conv) return false;
+  conv.daybreak = enabled;
   markDirty(id);
   flush(id);
   return true;
@@ -2798,6 +2810,7 @@ function buildSnapshotDisplayData(
     summarizeTool,
     {
       includeToolOutputs,
+      daybreak: conv.daybreak === true,
       includeUnwindFingerprints,
       unwindFingerprintPrefix,
       replayHistoryPrefixCount: unwindFingerprintPrefix?.filter(isReplayHistoryMessage).length ?? 0,
@@ -2859,7 +2872,7 @@ export function getRenderSnapshot(
     const pending = getPendingStreamSnapshot(id);
     return {
       convId: id, provider: page.provider, model: page.model, effort: page.effort,
-      fastMode: page.fastMode, entries, contextTokens: page.contextTokens,
+      fastMode: page.fastMode, daybreak: page.daybreak, entries, contextTokens: page.contextTokens,
       toolOutputsIncluded: includeToolOutputs,
       ...(pending ? { pendingAI: { blocks: pending.blocks, metadata: pending.metadata, blockOffset: pending.blockOffset } } : {}),
     };

@@ -154,6 +154,7 @@ export async function runAgentLoop(
     tools?: unknown[];
     effort?: EffortLevel;
     serviceTier?: ServiceTier;
+    cyberAccessProgram?: StreamOptions["cyberAccessProgram"];
     promptCacheKey?: string;
     /** Token-accounting metadata for each API round in this loop. */
     tracking?: TokenTrackingContext;
@@ -231,6 +232,7 @@ export async function runAgentLoop(
           tools: options.tools,
           effort: options.effort,
           serviceTier: options.serviceTier,
+          cyberAccessProgram: options.cyberAccessProgram,
           promptCacheKey: options.promptCacheKey,
           tracking: options.tracking,
           turnSession: options.turnSession,

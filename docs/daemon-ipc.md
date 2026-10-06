@@ -19,6 +19,12 @@ not raw PIDs. Use `abort` for subagent conversations and Chrono cancellation
 for schedules.
 Never restart the main daemon.
 
+`set_daybreak {convId, enabled}` persists the conversation's Sol Daybreak Blue
+preference and broadcasts its summary. `new_conversation` and queued drafts
+accept `daybreak?: boolean`; absence means off. Enable requires exact Sol model
+catalog support; off always remains possible. Streaming changes are rejected.
+This is independent of effort and speed, not a synthetic model identifier.
+
 ## New-conversation defaults
 
 The connected daemon owns `defaults.conversation` in its host's config.

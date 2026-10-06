@@ -32,7 +32,8 @@ export function applyModelSelectionWithNotice(state: RenderState, provider: Prov
   const selection = applyProviderModelSelection(state, provider, model);
   const effortSuffix = selection.effortChanged ? ` (effort ${state.effort})` : "";
   const fastSuffix = selection.fastDisabled ? " (fast off)" : "";
-  pushSystemMessage(state, `Model set to ${state.provider}/${state.model}${effortSuffix}${fastSuffix}`);
+  const daybreakSuffix = selection.daybreakDisabled ? " (daybreak off)" : "";
+  pushSystemMessage(state, `Model set to ${state.provider}/${state.model}${effortSuffix}${fastSuffix}${daybreakSuffix}`);
   if (getModelInfo(state, provider, model)?.supportsTools === false) {
     pushSystemMessage(state, "This endpoint is chat-only: tools and external actions are unavailable.", "warning");
   }

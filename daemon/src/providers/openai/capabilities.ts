@@ -45,13 +45,6 @@ const OPENAI_MODEL_CAPABILITY_OVERRIDES = new Map<ModelId, OpenAIModelCapability
     supportsReasoningSummary: false,
     supportsImages: false,
   }],
-  ["gpt-daybreak-blue-latest", {
-    supportsMaxReasoningEffort: true,
-    supportsUltraReasoningEffort: true,
-    usesResponsesLite: true,
-    supportsFastServiceTier: false,
-    defaultVerbosity: "low",
-  }],
 ]);
 
 function openAIModelCapabilityOverride(model: ModelId): OpenAIModelCapabilityOverride | undefined {

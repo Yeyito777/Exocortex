@@ -884,6 +884,8 @@ function handleSubmit(): void {
               selection.fastMode,
               state.draftFolderId,
               cmdResult.voice,
+              undefined,
+              selection.daybreak,
             );
           }
           break;
@@ -934,6 +936,9 @@ function handleSubmit(): void {
         case "fast_mode_changed":
           if (state.convId) daemon.setFastMode(state.convId, cmdResult.enabled);
           break;
+        case "daybreak_changed":
+          if (state.convId) daemon.setDaybreak(state.convId, cmdResult.enabled);
+          break;
         case "goal":
           clearPrompt(state);
           state.pendingImages = [];
@@ -956,6 +961,7 @@ function handleSubmit(): void {
               undefined,
               undefined,
               cmdResult.maxTurns,
+              selection.daybreak,
             );
           } else {
             pushSystemMessage(state, "Create or open a conversation before using /goal.", theme.warning);
@@ -1050,6 +1056,7 @@ function handleSubmit(): void {
         model: queued.model,
         effort: queued.effort,
         fastMode: queued.fastMode,
+        daybreak: queued.daybreak,
         folderId: queued.folderId,
         waitTarget: queued.waitTarget,
       });
@@ -1234,6 +1241,7 @@ function sendDirectly(messageText: string, images?: ImageAttachment[], options: 
       { text: messageText, startedAt, images },
       options.folderId === undefined ? state.draftFolderId : options.folderId,
       undefined, convId,
+      undefined, undefined, undefined, selection.daybreak,
     );
   } else {
     daemon.sendMessage(state.convId, messageText, startedAt, images);
@@ -1281,6 +1289,7 @@ function submitPendingVoiceTranscription(
     model: state.model,
     effort: state.effort,
     fastMode: state.fastMode,
+    daybreak: state.daybreak,
     folderId: state.convId ? state.sidebar.currentFolderId : state.draftFolderId,
     wasStreaming: isStreaming(state),
   };
@@ -1388,7 +1397,7 @@ function completePendingVoiceTranscription(submission: SubmittedVoiceTranscripti
     text: messageText,
     startedAt: submission.startedAt,
     images: submission.images,
-  }, submission.folderId);
+  }, submission.folderId, undefined, undefined, undefined, undefined, undefined, submission.daybreak);
   scheduleRender();
 }
 

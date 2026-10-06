@@ -7,6 +7,7 @@ import {
   type ConversationDefaults,
 } from "@exocortex/shared/config";
 import { EFFORT_LEVELS, isFastMode } from "@exocortex/shared/messages";
+import { DAYBREAK_RETIRED_MODEL } from "@exocortex/shared/daybreak";
 import type { ConversationDefaultsSnapshot } from "./protocol";
 import {
   allowsCustomModels, getProvider, getSupportedEfforts, isKnownModel,
@@ -29,6 +30,9 @@ export function setDaemonConversationDefaults(value: unknown): ConversationDefau
   }
   if (typeof model !== "string" || !model.trim() || model !== model.trim()) {
     throw new Error("Invalid default model");
+  }
+  if (provider === "openai" && model.startsWith("gpt-daybreak-")) {
+    throw new Error(DAYBREAK_RETIRED_MODEL);
   }
   if (!isKnownModel(provider, model) && !allowsCustomModels(provider)) {
     throw new Error(`Unknown model for provider ${provider}: ${model}`);

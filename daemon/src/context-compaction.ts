@@ -62,6 +62,7 @@ export interface ContextCompactionOptions {
   tools?: unknown[];
   effort?: EffortLevel;
   serviceTier?: ServiceTier;
+  cyberAccessProgram?: StreamOptions["cyberAccessProgram"];
   promptCacheKey?: string;
   tracking?: TokenTrackingContext;
   turnSession?: ProviderTurnSession;
@@ -400,6 +401,7 @@ function compactStreamOptions(options: ContextCompactionOptions, extra: Partial<
     tools: options.tools,
     effort: options.effort,
     serviceTier: options.serviceTier,
+    cyberAccessProgram: options.cyberAccessProgram,
     promptCacheKey: options.promptCacheKey,
     tracking: options.tracking,
     turnSession: options.turnSession,

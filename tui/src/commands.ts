@@ -7,6 +7,7 @@ import { CONVO_COMMAND } from "./commands/convo";
 import { DEFAULT_MODEL_COMMAND } from "./commands/default-model";
 import { EFFORT_COMMAND } from "./commands/effort";
 import { FAST_COMMAND } from "./commands/fast";
+import { DAYBREAK_COMMAND } from "./commands/daybreak";
 import { ULTRAFAST_COMMAND } from "./commands/ultrafast";
 import { GOAL_COMMAND } from "./commands/goal";
 import { HANGUP_COMMAND } from "./commands/hangup";
@@ -55,6 +56,7 @@ const commands: SlashCommand[] = [
   TRIM_COMMAND,
   EFFORT_COMMAND,
   FAST_COMMAND,
+  DAYBREAK_COMMAND,
   ULTRAFAST_COMMAND,
   QUEUE_COMMAND,
   GOAL_COMMAND,

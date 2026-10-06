@@ -78,6 +78,43 @@ test("v9 migration preserves existing standard and Fast settings", () => {
   store.close();
 });
 
+test("Daybreak survives reopen, summaries, display pages, export and direct clone", () => {
+  const { path } = pathFor("daybreak");
+  let store = new SqliteConversationStore({ path });
+  const conv = savedFixture(store, "daybreak");
+  conv.daybreak = true;
+  conv.fastMode = true;
+  store.save(conv);
+  store.close();
+  store = new SqliteConversationStore({ path });
+  expect(store.load(conv.id)).toMatchObject({ model: "gpt-5.6-sol", fastMode: true, daybreak: true });
+  expect(store.getSummary(conv.id)?.daybreak).toBe(true);
+  expect(store.listSummaries()[0]?.daybreak).toBe(true);
+  expect(store.loadDisplayPage(conv.id, 10)?.daybreak).toBe(true);
+  expect(store.exportConversation(conv.id)?.daybreak).toBe(true);
+  store.cloneConversation(conv.id, { id: "daybreak-clone", createdAt: 1, updatedAt: 1, sortOrder: 1, title: "clone" });
+  expect(store.load("daybreak-clone")?.daybreak).toBe(true);
+  conv.daybreak = false;
+  store.save(conv);
+  expect(store.load(conv.id)?.daybreak).toBe(false);
+  expect(store.integrityCheck().ok).toBe(true);
+  store.close();
+});
+
+test("v13 migration upgrades the retired Daybreak selection without rewriting history", () => {
+  const { path } = pathFor("old-daybreak");
+  let store = new SqliteConversationStore({ path, targetSchemaVersion: 13 });
+  store.db.query(`INSERT INTO conversations
+    (id, provider, model, effort, fast_mode, created_at, updated_at, marked, pinned, sort_order, title, storage_generation)
+    VALUES ('old-daybreak', 'openai', 'gpt-daybreak-blue-latest', 'low', 0, 1, 1, 0, 0, 0, 'old', 1)`).run();
+  store.close();
+  store = new SqliteConversationStore({ path });
+  expect(store.load("old-daybreak")).toMatchObject({ model: "gpt-6-sol", effort: "low", fastMode: false, daybreak: true });
+  expect(store.getSummary("old-daybreak")).toMatchObject({ model: "gpt-6-sol", daybreak: true });
+  expect(store.integrityCheck().ok).toBe(true);
+  store.close();
+});
+
 function logicalState(store: SqliteConversationStore, id: string) {
   const btw = store.loadConversationBtwState();
   return {
@@ -773,7 +810,7 @@ describe("SQLite maintenance", () => {
       { type: "conversation_removed", id: "maintenance" },
     ]);
     expect(store.diagnostics()).toMatchObject({
-      schemaVersion: 13,
+      schemaVersion: 14,
       liveConversations: 1,
       deletedConversations: 1,
       messages: 4,
@@ -1008,8 +1045,8 @@ describe("SQLite maintenance", () => {
     store.close();
   });
 
-  test("migrates every schema checkpoint through v13 transactionally", () => {
-    for (let version = 1; version <= 12; version++) {
+  test("migrates every schema checkpoint through v14 transactionally", () => {
+    for (let version = 1; version <= 13; version++) {
       const { path } = pathFor(`schema-v${version}`);
       let store = new SqliteConversationStore({ path, targetSchemaVersion: version });
       expect(store.db.query<{ version: number }, []>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(version);
@@ -1017,7 +1054,7 @@ describe("SQLite maintenance", () => {
       store.close();
 
       store = new SqliteConversationStore({ path });
-      expect(store.diagnostics().schemaVersion).toBe(13);
+      expect(store.diagnostics().schemaVersion).toBe(14);
       expect(store.integrityCheck().ok).toBe(true);
       store.close();
     }

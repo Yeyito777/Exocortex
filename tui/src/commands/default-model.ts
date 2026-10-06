@@ -164,7 +164,7 @@ function parseSelectionOptions(args: string[]): ParsedOptions | { error: string 
 
 function providerSupportsFastFallback(state: Parameters<SlashCommand["handler"]>[1], provider: ProviderId, model: ModelId): boolean {
   const info = getProviderInfo(state, provider);
-  if (!info) return provider === "openai" && model !== "gpt-daybreak-blue-latest";
+  if (!info) return provider === "openai";
   return info.supportsFastMode && getModelInfo(state, provider, model)?.supportsFastMode !== false;
 }
 

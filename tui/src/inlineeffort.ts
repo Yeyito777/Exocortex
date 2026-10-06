@@ -1,4 +1,5 @@
 import type { FastMode } from "@exocortex/shared/messages";
+import { DAYBREAK_RETIRED_MODEL, supportsDaybreak } from "@exocortex/shared/daybreak";
 import type { RenderState } from "./state";
 import { normalizeEffortForModel, type EffortLevel, type ProviderId, type ModelId } from "./messages";
 import { getModelInfo, isStreaming, pushSystemMessage } from "./state";
@@ -41,7 +42,7 @@ export interface InlineCommandApplication {
   efforts: EffortLevel[];
   fastModes: FastMode[];
   /** Final settings after ordered model/effort/speed modifiers; sync the model first. */
-  modelSelection?: Pick<RenderState, "provider" | "model" | "effort" | "fastMode">;
+  modelSelection?: Pick<RenderState, "provider" | "model" | "effort" | "fastMode" | "daybreak">;
   /** Invalid selection blocks submission without partially applying modifiers. */
   error?: string;
   /** Present when the prompt contained /queue and should enter the daemon-owned idle queue. */
@@ -150,6 +151,7 @@ function parseInlineCommands(text: string, state: RenderState): ParsedInlineComm
       }
       const provider = arg.word as ProviderId;
       const model = modelArg.word;
+      if (provider === "openai" && model.startsWith("gpt-daybreak-")) return reject(DAYBREAK_RETIRED_MODEL);
       const providers = availableProviders(state);
       if (!providers.includes(provider)) return reject(`Unknown provider: ${provider}. Available: ${providers.join(", ")}`);
       if (!providerAllowsCustomModels(state, provider) && !providerModels(state, provider).includes(model)) {
@@ -160,6 +162,7 @@ function parseInlineCommands(text: string, state: RenderState): ParsedInlineComm
       simulated.model = model;
       simulated.effort = normalizeEffortForModel(getModelInfo(state, provider, model), simulated.effort);
       if (!providerSupportsFastMode(state, provider, model, simulated.fastMode)) simulated.fastMode = false;
+      if (!supportsDaybreak(provider, getModelInfo(state, provider, model))) simulated.daybreak = false;
       changedModel = true;
       actions.push({ type: "model", provider, model });
       spans.push({ start: command.start, end: modelArg.end });
@@ -217,6 +220,7 @@ function parseInlineCommands(text: string, state: RenderState): ParsedInlineComm
       ...(changedModel ? { modelSelection: {
         provider: simulated.provider, model: simulated.model,
         effort: simulated.effort, fastMode: simulated.fastMode,
+        daybreak: simulated.daybreak,
       } } : {}),
     },
     actions,
