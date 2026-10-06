@@ -201,7 +201,7 @@ describe("/new", () => {
     expect(String(state.model)).toBe(DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
     expect(String(state.effort)).toBe(defaultEffortForModelId(DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]));
     expect(state.fastMode).toBe(false);
-    expect(state.hasChosenProvider).toBe(true);
+    expect(state.hasChosenProvider).toBe(false);
   });
 });
 
@@ -306,24 +306,23 @@ describe("/mute", () => {
 });
 
 describe("/default-model command", () => {
-  test("saves an explicit provider/model/effort/fast default and applies it to a draft", () => {
+  test("requests a daemon mutation without writing config or optimistically changing the draft", () => {
     const state = createInitialState();
     state.providerRegistry = structuredClone(providers);
 
     const result = tryCommand("/default-model openai gpt-5.4 high fast", state);
 
-    expect(result).toEqual({ type: "handled" });
-    expect(configuredConversationDefaults()).toEqual({
+    expect(result).toEqual({ type: "conversation_defaults_changed", defaults: {
       provider: "openai",
       model: "gpt-5.4",
       effort: "high",
       fastMode: true,
-    });
+    } });
+    expect(configuredConversationDefaults()).toBeNull();
     expect(String(state.provider)).toBe("openai");
-    expect(String(state.model)).toBe("gpt-5.4");
-    expect(String(state.effort)).toBe("high");
-    expect(state.fastMode).toBe(true);
-    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toContain("Default model saved");
+    expect(state.model).toBe(DEFAULT_MODEL_BY_PROVIDER.openai);
+    expect(state.fastMode).toBe(false);
+    expect(state.messages).toEqual([]);
   });
 
   test("saves the current selection", () => {
@@ -336,23 +335,23 @@ describe("/default-model command", () => {
 
     const result = tryCommand("/default-model current", state);
 
-    expect(result).toEqual({ type: "handled" });
-    expect(configuredConversationDefaults()).toEqual({
+    expect(result).toEqual({ type: "conversation_defaults_changed", defaults: {
       provider: "deepseek",
       model: "deepseek-v4-pro",
       effort: "max",
       fastMode: false,
-    });
+    } });
+    expect(configuredConversationDefaults()).toBeNull();
   });
 
-  test("resets to the app default", () => {
+  test("requests a reset on the daemon without clearing TUI-host config", () => {
     saveConversationDefaults({ provider: "openai", model: "gpt-5.4", effort: "high", fastMode: true });
     const state = createInitialState();
 
     const result = tryCommand("/default-model reset", state);
 
-    expect(result).toEqual({ type: "handled" });
-    expect(configuredConversationDefaults()).toBeNull();
+    expect(result).toEqual({ type: "conversation_defaults_reset" });
+    expect(configuredConversationDefaults()?.model).toBe("gpt-5.4");
     expect(String(state.provider)).toBe(DEFAULT_PROVIDER_ID);
     expect(String(state.model)).toBe(DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
     expect(String(state.effort)).toBe(defaultEffortForModelId(DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]));
@@ -376,13 +375,31 @@ describe("/default-model command", () => {
 
     const result = tryCommand("/default-model deepseek deepseek-v4-pro max na", state);
 
-    expect(result).toEqual({ type: "handled" });
-    expect(configuredConversationDefaults()).toEqual({
+    expect(result).toEqual({ type: "conversation_defaults_changed", defaults: {
       provider: "deepseek",
       model: "deepseek-v4-pro",
       effort: "max",
       fastMode: false,
-    });
+    } });
+    expect(configuredConversationDefaults()).toBeNull();
+  });
+
+  test("shows the connected daemon's cached defaults rather than local config", () => {
+    saveConversationDefaults({ provider: "openai", model: "local-only", effort: "high", fastMode: true });
+    const state = createInitialState();
+    state.conversationDefaults = {
+      configured: true,
+      defaults: { provider: "deepseek", model: "deepseek-v4-pro", effort: "max", fastMode: false },
+    };
+    expect(tryCommand("/default-model", state)).toEqual({ type: "handled" });
+    expect(JSON.stringify(state.messages)).toContain("deepseek-v4-pro");
+    expect(JSON.stringify(state.messages)).not.toContain("local-only");
+  });
+
+  test("does not claim to know defaults before connection bootstrap", () => {
+    const state = createInitialState();
+    tryCommand("/default-model", state);
+    expect(JSON.stringify(state.messages)).toContain("Waiting for conversation defaults");
   });
 
   test("registers nested autocomplete entries", () => {

@@ -1,4 +1,5 @@
 import type { FastMode } from "./messages";
+import type { ConversationDefaults } from "./config";
 import type { ActiveTaskInfo } from "./messages";
 /**
  * @exocortex/shared — IPC protocol.
@@ -22,6 +23,18 @@ export interface PingCommand {
   reqId?: string;
   /** Read-only update query without the normal conversation/usage bootstrap. */
   updateStatusOnly?: boolean;
+}
+
+/** Defaults are persisted and validated on the connected daemon host. */
+export interface SetConversationDefaultsCommand {
+  type: "set_conversation_defaults";
+  reqId?: string;
+  defaults: ConversationDefaults;
+}
+
+export interface ResetConversationDefaultsCommand {
+  type: "reset_conversation_defaults";
+  reqId?: string;
 }
 
 /**
@@ -948,6 +961,8 @@ export interface LogoutCommand {
 
 export type Command =
   | PingCommand
+  | SetConversationDefaultsCommand
+  | ResetConversationDefaultsCommand
   | ListPathDirectoryCommand
   | ResolveFileLinkCommand
   | ClientCapabilitiesCommand
@@ -1700,6 +1715,21 @@ export interface ToolsAvailableEvent {
   externalToolStyles?: ExternalToolStyle[];
   /** Absent on older daemons; remote clients must not fall back to local paths. */
   macroEnvironment?: MacroEnvironment;
+  /** Small connection/bootstrap snapshot; absent on older daemons. */
+  conversationDefaults?: ConversationDefaultsSnapshot;
+}
+
+export interface ConversationDefaultsSnapshot {
+  defaults: ConversationDefaults;
+  /** Whether these are user-saved overrides rather than product defaults. */
+  configured: boolean;
+}
+
+export interface ConversationDefaultsEvent extends ConversationDefaultsSnapshot {
+  type: "conversation_defaults";
+  reqId?: string;
+  /** Mutation confirmation, sent only to the requesting client. */
+  message?: string;
 }
 
 export interface HistoryUpdatedEvent {
@@ -1854,6 +1884,7 @@ export interface ErrorEvent {
 
 export type Event =
   | PongEvent
+  | ConversationDefaultsEvent
   | PathDirectoryEntriesEvent
   | FileLinkResolvedEvent
   | DaemonShutdownEvent

@@ -2,6 +2,7 @@ import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, normalizeEffortForModel
 import { syncChosenProvider } from "../providerselection";
 import type { Event } from "../protocol";
 import type { RenderState } from "../state";
+import { receiveConversationDefaults } from "./conversation-defaults";
 
 export function fallbackProvider(state: RenderState): RenderState["provider"] {
   return state.providerRegistry[0]?.id ?? state.provider ?? DEFAULT_PROVIDER_ID;
@@ -10,7 +11,7 @@ export function fallbackProvider(state: RenderState): RenderState["provider"] {
 export function syncModelEffortSelection(state: RenderState): void {
   const provider = state.providerRegistry.find((candidate) => candidate.id === state.provider);
   const model = provider?.models.find((candidate) => candidate.id === state.model) ?? null;
-  state.effort = normalizeEffortForModel(model, state.effort);
+  if (model) state.effort = normalizeEffortForModel(model, state.effort);
   if (provider && (!provider.supportsFastMode || model?.supportsFastMode === false)) state.fastMode = false;
   if (provider && state.fastMode === "ultrafast" && model?.supportsUltrafastMode !== true) state.fastMode = false;
 }
@@ -28,6 +29,7 @@ export function handleToolsAvailable(event: Extract<Event, { type: "tools_availa
     state.authInfoByProvider = event.authInfoByProvider;
   }
   state.externalToolStyles = event.externalToolStyles ?? [];
+  if (event.conversationDefaults) receiveConversationDefaults(state, event.conversationDefaults);
   const registry = state.providerRegistry ?? [];
 
   let provider = registry.find((p) => p.id === state.provider) ?? null;
@@ -38,7 +40,7 @@ export function handleToolsAvailable(event: Extract<Event, { type: "tools_availa
     provider = authenticated.length === 1 ? authenticated[0] : registry[0];
     syncChosenProvider(state, provider.id);
     state.model = provider.defaultModel ?? DEFAULT_MODEL_BY_PROVIDER[provider.id];
-  } else if (!state.hasChosenProvider) {
+  } else if (!state.hasChosenProvider && !state.conversationDefaults) {
     if (authenticated.length === 1) {
       provider = authenticated[0];
       syncChosenProvider(state, provider.id);

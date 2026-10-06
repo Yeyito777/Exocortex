@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { clearConversationDefaults, saveConversationDefaults } from "@exocortex/shared/config";
+import { clearConversationDefaults, configuredConversationDefaults, productConversationDefaults, saveConversationDefaults } from "@exocortex/shared/config";
 import { conversationWorkspaceDir } from "@exocortex/shared/paths";
 import { localMacroEnvironment } from "@exocortex/shared/macro-environment";
 import { readFileSync, realpathSync, writeFileSync } from "node:fs";
@@ -73,6 +73,8 @@ test("status-only ping returns the host's runtime status without sidebar/usage b
   await handle({} as never, { type: "ping", reqId: "bootstrap" });
   expect(sent.find(event => event.type === "tools_available")?.macroEnvironment)
     .toEqual(localMacroEnvironment());
+  expect(sent.find(event => event.type === "tools_available")?.conversationDefaults)
+    .toEqual({ defaults: productConversationDefaults(), configured: false });
 });
 
 const IDS: string[] = [];
@@ -93,6 +95,62 @@ function cleanupIds(): void {
   const subagentsFolder = findTopLevelFolderByName("subagents");
   if (subagentsFolder) deleteFolder(subagentsFolder.id);
 }
+
+describe("conversation default IPC", () => {
+  beforeEach(clearConversationDefaults);
+  afterEach(() => { clearConversationDefaults(); cleanupIds(); });
+
+  function fixture() {
+    const sent: Array<Record<string, unknown>> = [];
+    const broadcasts: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock((event: Record<string, unknown>) => { broadcasts.push(event); }),
+      sendToSubscribers: mock(() => {}), sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    return { sent, broadcasts, handle: createHandler(server as never) };
+  }
+
+  test("mutations persist on the daemon, broadcast snapshots and affect new conversations", async () => {
+    const { sent, broadcasts, handle } = fixture();
+    const defaults = { provider: "deepseek", model: "deepseek-v4-pro", effort: "max", fastMode: false } as const;
+    await handle({} as never, { type: "set_conversation_defaults", reqId: "set-default", defaults });
+    expect(configuredConversationDefaults()).toEqual(defaults);
+    expect(broadcasts).toContainEqual({ type: "conversation_defaults", defaults, configured: true });
+    expect(sent).toContainEqual({
+      type: "conversation_defaults", reqId: "set-default", defaults, configured: true,
+      message: "Default model saved",
+    });
+    sent.length = 0;
+    await handle({} as never, { type: "new_conversation", reqId: "use-default" });
+    const created = sent.find(event => event.type === "conversation_created")!;
+    expect(created).toMatchObject(defaults);
+    IDS.push(created.convId as string);
+    sent.length = 0;
+    await handle({} as never, { type: "ping" });
+    expect(sent.find(event => event.type === "tools_available")?.conversationDefaults)
+      .toEqual({ configured: true, defaults });
+    await handle({} as never, { type: "reset_conversation_defaults", reqId: "reset-default" });
+    expect(configuredConversationDefaults()).toBeNull();
+    expect(broadcasts).toContainEqual({
+      type: "conversation_defaults", defaults: productConversationDefaults(), configured: false,
+    });
+    expect(sent.at(-1)).toMatchObject({ type: "conversation_defaults", reqId: "reset-default", configured: false });
+    // Updating defaults never mutates an existing conversation.
+    expect(get(created.convId as string)).toMatchObject(defaults);
+  });
+
+  test("malformed or unsupported mutations return errors without broadcasts or writes", async () => {
+    const { sent, broadcasts, handle } = fixture();
+    for (const defaults of [null, {}, { provider: "deepseek", model: "deepseek-v4-pro", effort: "max", fastMode: true }]) {
+      await handle({} as never, { type: "set_conversation_defaults", reqId: "invalid-default", defaults } as never);
+      expect(sent.at(-1)).toMatchObject({ type: "error", reqId: "invalid-default" });
+    }
+    expect(broadcasts).toEqual([]);
+    expect(configuredConversationDefaults()).toBeNull();
+  });
+});
 
 describe("remote file link resolution", () => {
   afterEach(cleanupIds);

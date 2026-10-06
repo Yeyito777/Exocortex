@@ -1,4 +1,5 @@
 import type { FastMode } from "@exocortex/shared/messages";
+import type { ConversationDefaults } from "@exocortex/shared/config";
 import type { RenderState } from "../state";
 import type { GoalAction, OpenAILoginMethod, QueuedCommandInvocation, QueueWaitTarget, TrimMode } from "../protocol";
 import type { ProviderId, ModelId, EffortLevel } from "../messages";
@@ -29,6 +30,8 @@ type CommandAction =
   | { type: "mute_requested" }
   | { type: "mic_gain_changed"; gainDb: number }
   | { type: "model_changed"; provider: ProviderId; model: ModelId }
+  | { type: "conversation_defaults_changed"; defaults: ConversationDefaults }
+  | { type: "conversation_defaults_reset" }
   | { type: "trim_requested"; mode: TrimMode; count: number }
   | { type: "effort_changed"; effort: EffortLevel }
   | { type: "fast_mode_changed"; enabled: FastMode }

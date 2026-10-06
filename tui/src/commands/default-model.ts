@@ -1,14 +1,8 @@
 import type { FastMode } from "@exocortex/shared/messages";
-import {
-  clearConversationDefaults,
-  configuredConversationDefaults,
-  effectiveConversationDefaults,
-  saveConversationDefaults,
-  type ConversationDefaults,
-} from "@exocortex/shared/config";
+import type { ConversationDefaults } from "@exocortex/shared/config";
 import { clearPrompt } from "../promptstate";
 import { getModelInfo, getProviderInfo, pushSystemMessage } from "../state";
-import { clearPreferredProvider } from "../preferences";
+import { formatConversationDefaults } from "../events/conversation-defaults";
 import { EFFORT_LEVELS, defaultEffortForModelId, normalizeEffortForModel, type EffortLevel, type ModelId, type ProviderId } from "../messages";
 import {
   availableProviders,
@@ -219,40 +213,18 @@ function validateSelection(
   };
 }
 
-function formatDefaults(defaults: ConversationDefaults): string {
-  return [
-    `Provider: ${defaults.provider}`,
-    `Model:    ${defaults.model}`,
-    `Effort:   ${defaults.effort}`,
-    `Fast:     ${defaults.fastMode === "ultrafast" ? "ultrafast" : defaults.fastMode ? "on" : "off"}`,
-  ].join("\n");
-}
-
 function showDefaults(state: Parameters<SlashCommand["handler"]>[1]) {
-  const configured = configuredConversationDefaults();
-  const effective = effectiveConversationDefaults();
-  const source = configured ? "User default" : "App default";
-  pushSystemMessage(state, `${source}:\n${formatDefaults(effective)}\n\n${USAGE}`);
+  const snapshot = state.conversationDefaults;
+  pushSystemMessage(state, snapshot
+    ? `${snapshot.configured ? "User default" : "App default"}:\n${formatConversationDefaults(snapshot.defaults)}\n\n${USAGE}`
+    : "Waiting for conversation defaults from the connected daemon.");
   clearPrompt(state);
   return { type: "handled" } as const;
 }
 
-function applySavedDefaultToDraft(state: Parameters<SlashCommand["handler"]>[1], defaults: ConversationDefaults): void {
-  if (state.convId) return;
-  state.provider = defaults.provider;
-  state.hasChosenProvider = true;
-  state.model = defaults.model;
-  state.effort = defaults.effort;
-  state.fastMode = defaults.fastMode;
-}
-
-function persistDefaults(state: Parameters<SlashCommand["handler"]>[1], defaults: ConversationDefaults, detail = "Default model saved"): ReturnType<SlashCommand["handler"]> {
-  saveConversationDefaults(defaults);
-  clearPreferredProvider();
-  applySavedDefaultToDraft(state, defaults);
-  pushSystemMessage(state, `${detail}:\n${formatDefaults(defaults)}`);
+function requestDefaults(state: Parameters<SlashCommand["handler"]>[1], defaults: ConversationDefaults): ReturnType<SlashCommand["handler"]> {
   clearPrompt(state);
-  return { type: "handled" };
+  return { type: "conversation_defaults_changed", defaults };
 }
 
 function fastItems(state: Parameters<SlashCommand["handler"]>[1], provider: ProviderId, model: ModelId): CompletionItem[] {
@@ -294,13 +266,8 @@ export const DEFAULT_MODEL_COMMAND: SlashCommand = {
     if (!command) return showDefaults(state);
 
     if (["reset", "clear", "product", "default"].includes(command)) {
-      clearConversationDefaults();
-      clearPreferredProvider();
-      const defaults = effectiveConversationDefaults();
-      applySavedDefaultToDraft(state, defaults);
-      pushSystemMessage(state, `Default model reset to app default:\n${formatDefaults(defaults)}`);
       clearPrompt(state);
-      return { type: "handled" };
+      return { type: "conversation_defaults_reset" };
     }
 
     if (command === "current") {
@@ -310,7 +277,7 @@ export const DEFAULT_MODEL_COMMAND: SlashCommand = {
         clearPrompt(state);
         return { type: "handled" };
       }
-      return persistDefaults(state, current, "Current settings saved as the default");
+      return requestDefaults(state, current);
     }
 
     const parsedSelection = parseSelectionArgs(args, state.provider);
@@ -340,6 +307,6 @@ export const DEFAULT_MODEL_COMMAND: SlashCommand = {
       return { type: "handled" };
     }
 
-    return persistDefaults(state, defaults);
+    return requestDefaults(state, defaults);
   },
 };
