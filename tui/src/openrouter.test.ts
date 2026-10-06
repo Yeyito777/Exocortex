@@ -36,10 +36,13 @@ test("OpenRouter model selection warns about unavailable tools", () => {
   expect(getCommandArgs(s)["/model openrouter"]?.[0]?.desc).toContain("chat only");
 });
 
-test("OpenRouter defaults persist a namespaced model ID", () => {
+test("OpenRouter defaults send a namespaced model ID to the daemon", () => {
   const s = state();
-  tryCommand(`/default-model openrouter/${provider.defaultModel} none`, s);
-  expect(configuredConversationDefaults(readExocortexConfig())).toMatchObject({ provider: "openrouter", model: provider.defaultModel, effort: "none", fastMode: false });
+  expect(tryCommand(`/default-model openrouter/${provider.defaultModel} none`, s)).toEqual({
+    type: "conversation_defaults_changed",
+    defaults: { provider: "openrouter", model: provider.defaultModel, effort: "none", fastMode: false },
+  });
+  expect(configuredConversationDefaults(readExocortexConfig())).toBeNull();
 });
 
 test("non-reasoning models do not claim a high effort setting", () => {

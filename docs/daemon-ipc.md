@@ -19,6 +19,19 @@ not raw PIDs. Use `abort` for subagent conversations and Chrono cancellation
 for schedules.
 Never restart the main daemon.
 
+## New-conversation defaults
+
+The connected daemon owns `defaults.conversation` in its host's config.
+Normal `ping` bootstrap includes a small `conversationDefaults` snapshot in
+`tools_available`; the TUI caches it for display and `/new`. `/ssh` discards
+the old endpoint's cache and adopts the new host's bootstrap.
+
+`set_conversation_defaults` validates and persists a complete selection;
+`reset_conversation_defaults` removes the override. Both broadcast
+`conversation_defaults` and send a request-correlated confirmation. The TUI's
+`/default-model` uses these commands, never local config reads/writes.
+Changes do not alter existing conversations or other clients' edited drafts.
+
 The native `exo` tool only starts a subagent or aborts a conversation. Tool
 selection and conversation-scoped custom modules are retired; old persisted
 policies are retained as opaque historical data for lossless import/export.

@@ -55,6 +55,7 @@ import {
 } from "./events/streaming";
 import { collectDisplayedToolResultIds, handleToolOutputsLoaded } from "./events/tool-outputs";
 import { handleToolsAvailable } from "./events/provider";
+import { formatConversationDefaults, receiveConversationDefaults } from "./events/conversation-defaults";
 import { hydratePendingAIFromSnapshot } from "./events/pending-ai";
 import type { DaemonActions } from "./events/types";
 import { handleCallTranscript, reconcileCallTranscriptDrafts } from "./events/call";
@@ -83,6 +84,11 @@ export function handleEvent(
   if (handleBtwEvent(event, state)) return;
 
   switch (event.type) {
+    case "conversation_defaults":
+      receiveConversationDefaults(state, event, Boolean(event.message));
+      if (event.message) pushSystemMessage(state, `${event.message}:\n${formatConversationDefaults(event.defaults)}`);
+      break;
+
     case "conversation_created":
       handleConversationCreated(event, state, daemon);
       break;
@@ -494,6 +500,7 @@ export function handleEvent(
         state.sshConnecting = { phase: "probing", message: event.message };
       } else if (event.state === "connected" && event.switched) {
         state.macroEnvironment = null;
+        state.conversationDefaults = null;
         state.sshConnecting = {
           phase: "loading",
           message: event.mode === "remote"

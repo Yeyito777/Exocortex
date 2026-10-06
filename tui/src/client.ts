@@ -438,6 +438,25 @@ export class DaemonClient {
 
   // ── Convenience methods ─────────────────────────────────────────
 
+  setConversationDefaults(defaults: import("@exocortex/shared/config").ConversationDefaults): void {
+    this.sendConversationDefaultsMutation({ type: "set_conversation_defaults", defaults });
+  }
+
+  resetConversationDefaults(): void {
+    this.sendConversationDefaultsMutation({ type: "reset_conversation_defaults" });
+  }
+
+  /** Host-scoped settings must never be queued and later sent to another endpoint. */
+  private sendConversationDefaultsMutation(
+    command: Extract<Command, { type: "set_conversation_defaults" | "reset_conversation_defaults" }>,
+  ): void {
+    if (!this.socket || !this._connected) {
+      this.handler({ type: "error", message: "Connect to a daemon before changing conversation defaults." });
+      return;
+    }
+    this.send({ ...command, reqId: `defaults_${randomUUID()}` });
+  }
+
   createConversation(
     provider?: ProviderId,
     model?: import("./protocol").ModelId,
@@ -461,10 +480,10 @@ export class DaemonClient {
   }
 
   createConversationForCall(
-    provider: ProviderId,
-    model: ModelId,
-    effort: EffortLevel,
-    fastMode: FastMode,
+    provider?: ProviderId,
+    model?: ModelId,
+    effort?: EffortLevel,
+    fastMode?: FastMode,
     folderId?: string | null,
     voice?: RealtimeVoice,
     convId?: string,

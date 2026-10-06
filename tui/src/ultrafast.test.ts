@@ -106,10 +106,11 @@ test("Ultrafast syntax highlights and completes consistently regardless of entit
   }
 });
 
-test("default-model persists Ultrafast only for advertised models", () => {
+test("default-model requests Ultrafast only for advertised models", () => {
   const state = stateWithUltrafast(true);
-  tryCommand("/default-model openai gpt-6-astra low ultrafast", state);
-  expect(configuredConversationDefaults()?.fastMode).toBe("ultrafast");
-  tryCommand("/default-model openai gpt-6.1-sol low ultrafast", state);
-  expect(configuredConversationDefaults()?.model).toBe("gpt-6-astra");
+  expect(tryCommand("/default-model openai gpt-6-astra low ultrafast", state)).toMatchObject({
+    type: "conversation_defaults_changed", defaults: { fastMode: "ultrafast" },
+  });
+  expect(tryCommand("/default-model openai gpt-6.1-sol low ultrafast", state)).toEqual({ type: "handled" });
+  expect(configuredConversationDefaults()).toBeNull();
 });

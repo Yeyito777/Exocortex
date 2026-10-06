@@ -23,7 +23,7 @@ import { advanceDeferredHistoryRender, hasDeferredHistoryRenderWork, render, inv
 import { preserveViewportAcrossResize } from "./chatscroll";
 import { invalidateFrame } from "./frame";
 import { enter_alt, leave_alt, hide_cursor, show_cursor, enable_bracketed_paste, disable_bracketed_paste, query_clipboard_paste_events, enable_clipboard_paste_events, disable_clipboard_paste_events, enable_kitty_kbd, disable_kitty_kbd, enable_mouse, disable_mouse, set_cursor_color, reset_cursor_color } from "./terminal";
-import { createInitialState, isStreaming, canInterrupt, clearPendingAI, clearStreamingTailMessages, focusPrompt, modelSupportsImages, openFolderInstructionsDocument, pushSystemMessage, renderFolderInstructionsDocument, resetDraftConversationState, resetHistoryPagination, resetNewConversationDefaults, resetToolOutputState } from "./state";
+import { createInitialState, isStreaming, canInterrupt, clearPendingAI, clearStreamingTailMessages, focusPrompt, modelSupportsImages, newConversationSelection, openFolderInstructionsDocument, pushSystemMessage, renderFolderInstructionsDocument, resetDraftConversationState, resetHistoryPagination, resetNewConversationDefaults, resetToolOutputState } from "./state";
 import { createMessageMetadata, createPendingAI, type ImageAttachment, type UserMessage } from "./messages";
 import { loginPromptProviders } from "./providerselection";
 import { handleEvent } from "./events";
@@ -401,6 +401,7 @@ function resetForDaemonRouteSwitch(): void {
   state.externalToolStyles = [];
   state.tokenStats = null;
   state.lastStreamSeqByConv = {};
+  state.conversationDefaults = null;
   resetDraftConversationState(state);
 }
 
@@ -846,8 +847,9 @@ function handleSubmit(): void {
           state.pendingSystemInstructions = cmdResult.text;
           state.pendingGenerateTitleOnCreate = false;
           {
+            const selection = newConversationSelection(state);
             daemon.createConversation(
-              state.provider, state.model, "", state.effort, state.fastMode,
+              selection.provider, selection.model, "", selection.effort, selection.fastMode,
               undefined, state.draftFolderId,
             );
           }
@@ -874,11 +876,12 @@ function handleSubmit(): void {
           if (state.convId) {
             daemon.startCall(state.convId, cmdResult.voice);
           } else {
+            const selection = newConversationSelection(state);
             daemon.createConversationForCall(
-              state.provider,
-              state.model,
-              state.effort,
-              state.fastMode,
+              selection.provider,
+              selection.model,
+              selection.effort,
+              selection.fastMode,
               state.draftFolderId,
               cmdResult.voice,
             );
@@ -916,6 +919,12 @@ function handleSubmit(): void {
         case "model_changed":
           if (state.convId) daemon.setModel(state.convId, cmdResult.provider, cmdResult.model);
           break;
+        case "conversation_defaults_changed":
+          daemon.setConversationDefaults(cmdResult.defaults);
+          break;
+        case "conversation_defaults_reset":
+          daemon.resetConversationDefaults();
+          break;
         case "trim_requested":
           if (state.convId) daemon.trimConversation(state.convId, cmdResult.mode, cmdResult.count);
           break;
@@ -933,12 +942,13 @@ function handleSubmit(): void {
             daemon.setGoal(state.convId, cmdResult.action, cmdResult.objective, cmdResult.maxTurns);
           } else if (cmdResult.action === "set" && cmdResult.objective?.trim()) {
             const objective = cmdResult.objective.trim();
+            const selection = newConversationSelection(state);
             daemon.createConversation(
-              state.provider,
-              state.model,
+              selection.provider,
+              selection.model,
               undefined,
-              state.effort,
-              state.fastMode,
+              selection.effort,
+              selection.fastMode,
               undefined,
               state.draftFolderId,
               objective,
@@ -1022,10 +1032,7 @@ function handleSubmit(): void {
       const waitTarget = inlineCommands.queue;
       const queued = enqueueGlobalIdleMessage(state, convId, messageText, images, queueingDraftConversation ? {
         target: "new-conversation",
-        provider: state.provider,
-        model: state.model,
-        effort: state.effort,
-        fastMode: state.fastMode,
+        ...newConversationSelection(state),
         folderId,
         waitTarget,
       } : {
@@ -1221,8 +1228,9 @@ function sendDirectly(messageText: string, images?: ImageAttachment[], options: 
     state.pendingSend.text = "";
     state.pendingSend.images = undefined;
     state.pendingGenerateTitleOnCreate = false;
+    const selection = newConversationSelection(state);
     daemon.createConversation(
-      state.provider, state.model, PENDING_TITLE, state.effort, state.fastMode,
+      selection.provider, selection.model, PENDING_TITLE, selection.effort, selection.fastMode,
       { text: messageText, startedAt, images },
       options.folderId === undefined ? state.draftFolderId : options.folderId,
       undefined, convId,

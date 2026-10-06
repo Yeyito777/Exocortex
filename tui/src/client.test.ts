@@ -17,6 +17,26 @@ afterEach(async () => {
 });
 
 describe("DaemonClient request-scoped events", () => {
+  test("sends defaults mutations only to the active transport and never queues them offline", () => {
+    const events: unknown[] = [];
+    const client = new DaemonClient(event => events.push(event));
+    const internal = client as any;
+    const defaults = { provider: "deepseek", model: "deepseek-v4-pro", effort: "max", fastMode: false } as const;
+    client.setConversationDefaults(defaults);
+    client.resetConversationDefaults();
+    expect(internal.pendingCommands).toEqual([]);
+    expect(events).toHaveLength(2);
+    const writes: string[] = [];
+    internal.socket = { write: (value: string) => { writes.push(value); } };
+    internal._connected = true;
+    client.setConversationDefaults(defaults);
+    client.resetConversationDefaults();
+    expect(writes.map(value => JSON.parse(value))).toEqual([
+      { type: "set_conversation_defaults", reqId: expect.any(String), defaults },
+      { type: "reset_conversation_defaults", reqId: expect.any(String) },
+    ]);
+  });
+
   test("handles SSH status controls in the TUI without writing daemon protocol", () => {
     const events: unknown[] = [];
     const client = new DaemonClient(event => events.push(event), undefined, false, {

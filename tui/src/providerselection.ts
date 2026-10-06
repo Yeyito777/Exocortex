@@ -1,6 +1,5 @@
 import { DEFAULT_PROVIDER_ORDER, type ProviderId } from "./messages";
 import type { RenderState } from "./state";
-import { savePreferredProvider } from "./preferences";
 
 export function availableProviders(state: RenderState): ProviderId[] {
   const ids = state.providerRegistry.map((provider) => provider.id);
@@ -11,13 +10,13 @@ export function loginPromptProviders(state: RenderState): ProviderId[] {
   return availableProviders(state);
 }
 
-export function setChosenProvider(state: RenderState, provider: ProviderId, persist = true): void {
+/** A provider selection is conversation/draft state, not a locally saved default. */
+export function setChosenProvider(state: RenderState, provider: ProviderId): void {
   state.provider = provider;
   state.hasChosenProvider = true;
-  if (persist) savePreferredProvider(provider);
 }
 
-/** Sync the active provider from daemon state without overwriting the user's saved default. */
+/** Sync the active provider from daemon state. */
 export function syncChosenProvider(state: RenderState, provider: ProviderId): void {
-  setChosenProvider(state, provider, false);
+  setChosenProvider(state, provider);
 }

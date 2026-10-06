@@ -16,6 +16,7 @@ import { localMacroEnvironment } from "@exocortex/shared/macro-environment";
 import { getDaemonUpdateStatus } from "./update-status";
 import { encodeHistoryDelta } from "@exocortex/shared/history-delta";
 import { effectiveConversationDefaults } from "@exocortex/shared/config";
+import { conversationDefaultsSnapshot, resetDaemonConversationDefaults, setDaemonConversationDefaults } from "./conversation-defaults";
 import type { RealtimeVoice } from "@exocortex/shared/realtime";
 import type { RealtimeCallAdapter, RealtimeCallParticipant } from "@exocortex/shared/protocol";
 import { consumeUsageReset, refreshUsage, handleUsageHeaders, getLastUsage, clearUsage } from "./usage";
@@ -287,6 +288,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     server.broadcast({
       type: "tools_available",
       macroEnvironment: localMacroEnvironment(),
+      conversationDefaults: conversationDefaultsSnapshot(),
       providers: getProviders(),
       tools: getToolDisplayInfo(),
       authByProvider: getAuthByProvider(),
@@ -1195,6 +1197,36 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
 
       // ── Connection/bootstrap commands ──────────────────────────────
 
+      case "set_conversation_defaults":
+      case "reset_conversation_defaults": {
+        let snapshot: ReturnType<typeof conversationDefaultsSnapshot>;
+        try {
+          if (cmd.reqId !== undefined && typeof cmd.reqId !== "string") {
+            throw new Error("Invalid conversation defaults request id");
+          }
+          snapshot = cmd.type === "set_conversation_defaults"
+            ? setDaemonConversationDefaults(cmd.defaults)
+            : resetDaemonConversationDefaults();
+        } catch (error) {
+          server.sendTo(client, {
+            type: "error",
+            reqId: typeof cmd.reqId === "string" ? cmd.reqId : undefined,
+            message: error instanceof Error ? error.message : String(error),
+          });
+          break;
+        }
+        server.broadcast({ type: "conversation_defaults", ...snapshot });
+        server.sendTo(client, {
+          type: "conversation_defaults",
+          reqId: cmd.reqId,
+          ...snapshot,
+          message: cmd.type === "set_conversation_defaults"
+            ? "Default model saved"
+            : "Default model reset to app default",
+        });
+        break;
+      }
+
       case "ping": {
         if (cmd.updateStatusOnly) {
           server.sendTo(client, { type: "pong", reqId: cmd.reqId, updateStatus: await getDaemonUpdateStatus() });
@@ -1205,6 +1237,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         server.sendTo(client, {
           type: "tools_available",
           macroEnvironment: localMacroEnvironment(),
+          conversationDefaults: conversationDefaultsSnapshot(),
           providers: getProviders(),
           tools: getToolDisplayInfo(),
           authByProvider: getAuthByProvider(),

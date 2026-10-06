@@ -7,11 +7,10 @@ import type { FastMode } from "@exocortex/shared/messages";
  */
 
 import { createEmptyProviderAuthInfo } from "@exocortex/shared/auth";
-import { configuredConversationDefaults, effectiveConversationDefaults, productConversationDefaults, type ConversationDefaults } from "@exocortex/shared/config";
+import { productConversationDefaults, type ConversationDefaults } from "@exocortex/shared/config";
 import type { ProviderId, ProviderInfo, ModelId, EffortLevel, UsageData, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, ModelInfo, TokenStatsSnapshot, UserMessage } from "./messages";
-import { DEFAULT_MODEL_BY_PROVIDER, defaultEffortForModelId, supportsImageInputsForModel } from "./messages";
+import { supportsImageInputsForModel } from "./messages";
 import type { Message, AIMessage, SystemMessage, Block } from "./messages";
-import { loadPreferredProvider } from "./preferences";
 import { loadHideSensitiveInfoPreference } from "./privacy";
 import { theme } from "./theme";
 import type { MessageBound, RenderLineAnchor } from "./conversation";
@@ -28,7 +27,7 @@ import type { SearchDirection } from "./search";
 import type { UndoState } from "./undo";
 import { commitInsertSession, createUndoState, markInsertEntry } from "./undo";
 import type { AutocompleteState } from "./autocomplete";
-import type { ConversationGoal, MacroEnvironment, ProviderAuthInfo, QueuedCommandInvocation, QueueTiming, QueueWaitTarget as ProtocolQueueWaitTarget, UserMessageAutomation } from "./protocol";
+import type { ConversationDefaultsSnapshot, ConversationGoal, MacroEnvironment, ProviderAuthInfo, QueuedCommandInvocation, QueueTiming, QueueWaitTarget as ProtocolQueueWaitTarget, UserMessageAutomation } from "./protocol";
 import type { VoiceChatMessageState, VoicePromptState } from "./voice";
 import type { BtwPanelState } from "./btw/state";
 import { createConversationScrollState, type ConversationScrollState } from "./conversationscroll/types";
@@ -195,6 +194,8 @@ export interface RenderState {
   suppressPendingAIMetadataStartedAt: number | null;
   provider: ProviderId;
   hasChosenProvider: boolean;
+  /** Connection-scoped cache received from the daemon; never read from local config. */
+  conversationDefaults: ConversationDefaultsSnapshot | null;
   model: ModelId;
   effort: EffortLevel;
   fastMode: FastMode;
@@ -530,27 +531,22 @@ export function modelSupportsImages(state: RenderState, provider = state.provide
   return supportsImageInputsForModel(getModelInfo(state, provider, model));
 }
 
-/** Reset the pending-new-conversation settings to the configured app defaults. */
+/** Reset to the connected daemon's defaults, or a temporary bootstrap fallback. */
 export function resetNewConversationDefaults(state: RenderState): void {
-  const defaults = effectiveConversationDefaults();
+  const defaults = state.conversationDefaults?.defaults ?? productConversationDefaults();
   state.provider = defaults.provider;
   // Treat the configured default as the selected blank-chat provider so later
   // provider-registry refreshes don't substitute the focused/sole auth provider.
-  state.hasChosenProvider = true;
+  state.hasChosenProvider = state.conversationDefaults !== null;
   state.model = defaults.model;
   state.effort = defaults.effort;
   state.fastMode = defaults.fastMode;
 }
 
-function defaultSelectionForPreferredProvider(provider: ProviderId | null): ConversationDefaults {
-  if (!provider) return productConversationDefaults();
-  const model = DEFAULT_MODEL_BY_PROVIDER[provider];
-  return {
-    provider,
-    model,
-    effort: defaultEffortForModelId(provider, model),
-    fastMode: false,
-  };
+/** Never send the display-only startup fallback as an override of daemon defaults. */
+export function newConversationSelection(state: RenderState): Partial<ConversationDefaults> {
+  if (!state.conversationDefaults && !state.hasChosenProvider) return {};
+  return { provider: state.provider, model: state.model, effort: state.effort, fastMode: state.fastMode };
 }
 
 // ── Focus transition helpers ──────────────────────────────────────
@@ -603,9 +599,7 @@ export function focusSidebar(state: RenderState): void {
 }
 
 export function createInitialState(): RenderState {
-  const configuredDefaults = configuredConversationDefaults();
-  const preferredProvider = loadPreferredProvider();
-  const defaults = configuredDefaults ?? defaultSelectionForPreferredProvider(preferredProvider);
+  const defaults = productConversationDefaults();
   const provider = defaults.provider;
   const hideSensitiveInfo = loadHideSensitiveInfoPreference();
 
@@ -627,7 +621,8 @@ export function createInitialState(): RenderState {
     pendingAIHydratedFromSnapshot: false,
     suppressPendingAIMetadataStartedAt: null,
     provider,
-    hasChosenProvider: configuredDefaults !== null || preferredProvider !== null,
+    hasChosenProvider: false,
+    conversationDefaults: null,
     model: defaults.model,
     effort: defaults.effort,
     fastMode: defaults.fastMode,

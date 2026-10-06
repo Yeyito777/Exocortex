@@ -1,6 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { handleEvent } from "./events";
 import { createInitialState } from "./state";
+import { clearConversationDefaults, productConversationDefaults, saveConversationDefaults } from "@exocortex/shared/config";
 
 const daemon = {
   subscribe() {},
@@ -11,6 +12,74 @@ const daemon = {
 };
 
 describe("SSH status events", () => {
+  afterEach(clearConversationDefaults);
+  test("uses each endpoint's bootstrap defaults, even when both expose the same provider", () => {
+    const state = createInitialState();
+    saveConversationDefaults({ provider: "openai", model: "local-file-only", effort: "high", fastMode: true });
+    const local = { configured: false, defaults: productConversationDefaults() };
+    const remote = {
+      configured: true,
+      defaults: { provider: "openai", model: "remote-model", effort: "medium", fastMode: true },
+    } as const;
+    const bootstrap = (snapshot: typeof local | typeof remote) => handleEvent({
+      type: "tools_available", providers: [], tools: [],
+      authByProvider: state.authByProvider, authInfoByProvider: state.authInfoByProvider,
+      conversationDefaults: snapshot,
+    }, state, daemon);
+    bootstrap(local);
+    expect(state.conversationDefaults).toEqual(local);
+    for (const [mode, alias, snapshot] of [
+      ["remote", "whale", remote], ["local", undefined, local],
+    ] as const) {
+      handleEvent({
+        type: "ssh_status", mode, alias, state: "connected", switched: true, message: "Switched",
+      }, state, daemon);
+      expect(state.conversationDefaults).toBeNull();
+      // main.ts resets the draft on an endpoint switch, before releasing bootstrap.
+      state.hasChosenProvider = false;
+      bootstrap(snapshot);
+      expect(state.conversationDefaults).toEqual(snapshot);
+      expect(state.model).toBe(snapshot.defaults.model);
+      expect(state.fastMode).toBe(snapshot.defaults.fastMode);
+    }
+  });
+
+  test("a defaults mutation acknowledgement updates a draft but not a focused chat", () => {
+    const state = createInitialState();
+    const event = {
+      type: "conversation_defaults", configured: true, message: "Default model saved",
+      defaults: { provider: "deepseek", model: "deepseek-v4-pro", effort: "max", fastMode: false },
+    } as const;
+    state.hasChosenProvider = true;
+    state.model = "edited-draft";
+    handleEvent(event, state, daemon);
+    expect(state.model).toBe("deepseek-v4-pro");
+    expect(JSON.stringify(state.messages)).toContain("Default model saved");
+    state.convId = "focused";
+    state.model = "focused-model";
+    handleEvent(event, state, daemon);
+    expect(state.model).toBe("focused-model");
+  });
+
+  test("bootstrap preserves the daemon's effort for an allowed custom model", () => {
+    const state = createInitialState();
+    handleEvent({
+      type: "tools_available",
+      providers: [{
+        id: "openai", label: "OpenAI", defaultModel: "catalog-default",
+        allowsCustomModels: true, supportsFastMode: true, models: [],
+      }],
+      tools: [], authByProvider: state.authByProvider, authInfoByProvider: state.authInfoByProvider,
+      conversationDefaults: {
+        configured: true,
+        defaults: { provider: "openai", model: "custom-model", effort: "low", fastMode: true },
+      },
+    }, state, daemon);
+    expect(state.model).toBe("custom-model");
+    expect(state.effort).toBe("low");
+    expect(state.fastMode).toBe(true);
+  });
+
   test("keeps progress through local startup loads and remote transport activation until bootstrap", () => {
     const state = createInitialState();
     handleEvent({

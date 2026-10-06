@@ -3,7 +3,8 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { DaemonClient } from "./client";
 import { handleEvent } from "./events";
-import { createInitialState } from "./state";
+import { createInitialState, resetDraftConversationState, resetNewConversationDefaults } from "./state";
+import { tryCommand } from "./commands";
 import { expandMacros, getMacroArgs, macroEnvironmentForState } from "./macros";
 import { repoRoot } from "@exocortex/shared/paths";
 import type { MacroEnvironment } from "@exocortex/shared/protocol";
@@ -56,6 +57,79 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 }
 
 describe("DaemonClient SSH routing", () => {
+  test("defaults follow successful host switches and mutations target only the connected SSH host", async () => {
+    const firstDefaults = {
+      configured: true,
+      defaults: { provider: "deepseek", model: "deepseek-v4-pro", effort: "max", fastMode: false },
+    } as const;
+    const secondDefaults = {
+      configured: true,
+      defaults: { provider: "openai", model: "gpt-6.1-sol", effort: "xhigh", fastMode: true },
+    } as const;
+    const bootstrap = (conversationDefaults: typeof firstDefaults | typeof secondDefaults) => ({
+      type: "tools_available", providers: [], tools: [],
+      authByProvider: {}, authInfoByProvider: {}, conversationDefaults,
+    });
+    const first = respondingProbe(bootstrap(firstDefaults));
+    const failed = new FakeProcess();
+    const second = respondingProbe(bootstrap(secondDefaults));
+    const processes = [first, failed, second];
+    const state = createInitialState();
+    const client = new DaemonClient(event => {
+      // Mirror main.ts's route-switch reset before bootstrap is released.
+      if (event.type === "ssh_status" && event.state === "connected" && event.switched) {
+        state.conversationDefaults = null;
+        resetDraftConversationState(state);
+      }
+      handleEvent(event, state, client);
+    }, "/tmp/local.sock", false, { spawnSshProcess: () => processes.shift()! });
+    try {
+      client.ssh("connect", "first");
+      await waitFor(() => client.remoteAlias === "first");
+      const firstConnection = await client.connect();
+      expect(state.conversationDefaults).toBeNull();
+      firstConnection.releaseBootstrapEvents?.();
+      await waitFor(() => state.conversationDefaults !== null);
+      expect(state.conversationDefaults).toEqual(firstDefaults);
+      expect(state.model).toBe("deepseek-v4-pro");
+
+      client.ssh("connect", "unreachable");
+      failed.emit("close", 255, null);
+      await waitFor(() => state.sshConnecting === null);
+      expect(state.conversationDefaults).toEqual(firstDefaults);
+
+      client.ssh("connect", "second");
+      await waitFor(() => client.remoteAlias === "second");
+      expect(state.conversationDefaults).toBeNull();
+      (await client.connect()).releaseBootstrapEvents?.();
+      await waitFor(() => state.conversationDefaults !== null);
+      expect(state.conversationDefaults).toEqual(secondDefaults);
+      expect(state.model).toBe("gpt-6.1-sol");
+      expect(state.fastMode).toBe(true);
+
+      const action = tryCommand("/default-model deepseek pro max off", state)!;
+      expect(action.type).toBe("conversation_defaults_changed");
+      if (action.type !== "conversation_defaults_changed") throw new Error("Wrong command action");
+      client.setConversationDefaults(action.defaults);
+      expect(first.input).not.toContain("set_conversation_defaults");
+      expect(second.input).toContain("set_conversation_defaults");
+      expect(state.conversationDefaults).toEqual(secondDefaults); // wait for acknowledgement
+      second.stdout.write(JSON.stringify({
+        type: "conversation_defaults", configured: true, defaults: action.defaults, message: "Default model saved",
+      }) + "\n");
+      await waitFor(() => state.model === "deepseek-v4-pro");
+      expect(state.conversationDefaults?.defaults).toEqual(action.defaults);
+      state.model = "temporary-selection";
+      resetNewConversationDefaults(state);
+      expect(state.model).toBe("deepseek-v4-pro");
+      client.resetConversationDefaults();
+      expect(second.input).toContain("reset_conversation_defaults");
+      expect(first.input).not.toContain("reset_conversation_defaults");
+    } finally {
+      client.disconnect();
+    }
+  });
+
   test("macro paths follow bootstrap, failed switches, remote switches, legacy daemons, and cancel", async () => {
     const environment: MacroEnvironment = {
       repoRoot: "/srv/remote-exocortex",
