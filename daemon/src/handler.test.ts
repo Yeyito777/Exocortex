@@ -1342,7 +1342,7 @@ describe("handler new_conversation defaults", () => {
     });
   });
 
-  test("rejects fast mode for Daybreak Blue at the daemon boundary", async () => {
+  test("rejects the retired Daybreak model at the daemon boundary", async () => {
     const sent: Array<Record<string, unknown>> = [];
     const server = {
       sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
@@ -1366,7 +1366,7 @@ describe("handler new_conversation defaults", () => {
     expect(sent.find((event) => event.type === "conversation_created")).toBeUndefined();
     expect(sent.find((event) => event.type === "error")).toMatchObject({
       reqId: "req-daybreak-fast",
-      message: "Fast mode is only available for openai conversations that support it.",
+      message: "Use /model openai gpt-6-sol-daybreak for Daybreak Blue.",
     });
   });
 

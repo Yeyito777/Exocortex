@@ -51,6 +51,7 @@ The implementation in [keybinds.ts](../tui/src/keybinds.ts) and
 | `;` | In history visual mode, quote selection into the draft |
 | `/new` | Start a new conversation |
 | `/model <provider> <model>` | Switch provider/model |
+| `/model openai gpt-6-sol-daybreak` | Select Sol Daybreak Blue when advertised by the connected account |
 | `/trim <mode> <n>` | Trim old context |
 | `/quit` | Exit |
 

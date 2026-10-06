@@ -10,7 +10,7 @@ import { EFFORT_LEVELS, isFastMode } from "@exocortex/shared/messages";
 import type { ConversationDefaultsSnapshot } from "./protocol";
 import {
   allowsCustomModels, getProvider, getSupportedEfforts, isKnownModel,
-  supportsEffort, supportsFastMode,
+  supportsEffort, supportsFastMode, daybreakSelectionError,
 } from "./providers/registry";
 
 export function conversationDefaultsSnapshot(): ConversationDefaultsSnapshot {
@@ -30,6 +30,8 @@ export function setDaemonConversationDefaults(value: unknown): ConversationDefau
   if (typeof model !== "string" || !model.trim() || model !== model.trim()) {
     throw new Error("Invalid default model");
   }
+  const daybreakError = daybreakSelectionError(provider, model);
+  if (daybreakError) throw new Error(daybreakError);
   if (!isKnownModel(provider, model) && !allowsCustomModels(provider)) {
     throw new Error(`Unknown model for provider ${provider}: ${model}`);
   }

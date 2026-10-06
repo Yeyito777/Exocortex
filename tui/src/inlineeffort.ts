@@ -1,4 +1,5 @@
 import type { FastMode } from "@exocortex/shared/messages";
+import { DAYBREAK_MODEL_ID, DAYBREAK_RETIRED_MODEL, DAYBREAK_UNAVAILABLE, isDaybreakModelId } from "@exocortex/shared/daybreak";
 import type { RenderState } from "./state";
 import { normalizeEffortForModel, type EffortLevel, type ProviderId, type ModelId } from "./messages";
 import { getModelInfo, isStreaming, pushSystemMessage } from "./state";
@@ -150,6 +151,10 @@ function parseInlineCommands(text: string, state: RenderState): ParsedInlineComm
       }
       const provider = arg.word as ProviderId;
       const model = modelArg.word;
+      if (isDaybreakModelId(model)) {
+        if (provider !== "openai" || model !== DAYBREAK_MODEL_ID) return reject(DAYBREAK_RETIRED_MODEL);
+        if (!getModelInfo(state, provider, model)) return reject(DAYBREAK_UNAVAILABLE);
+      }
       const providers = availableProviders(state);
       if (!providers.includes(provider)) return reject(`Unknown provider: ${provider}. Available: ${providers.join(", ")}`);
       if (!providerAllowsCustomModels(state, provider) && !providerModels(state, provider).includes(model)) {

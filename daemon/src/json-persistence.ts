@@ -1,4 +1,5 @@
 import { isFastMode, type FastMode } from "@exocortex/shared/messages";
+import { migrateLegacyDaybreak } from "@exocortex/shared/daybreak";
 /**
  * Conversation persistence — versioned JSON files.
  *
@@ -246,6 +247,8 @@ interface ConversationFileV19 extends Omit<ConversationFileV18, "version"> {
 interface ConversationFileV20 extends Omit<ConversationFileV19, "version"> {
   version: 20;
   muted: boolean;
+  /** Read-only compatibility with the unreleased conversation-toggle format. */
+  daybreak?: boolean;
 }
 
 type ConversationFile = ConversationFileV20;
@@ -978,6 +981,10 @@ function fromFile(file: ConversationFile, validateActiveContext = true): Convers
   });
   knownBaseStorageGenerations.set(conv.id, generation);
   knownStorageGenerations.set(conv.id, generation);
+  // Keep this object identity: storage-generation WeakMaps above belong to it.
+  conv.model = migrateLegacyDaybreak({
+    provider: conv.provider, model: conv.model, daybreak: file.daybreak,
+  }).model;
   return conv;
 }
 
@@ -1341,6 +1348,11 @@ function normalizeQueuedMessage(raw: unknown): PersistedQueuedMessage | null {
   if (typeof entry.model === "string") normalized.model = entry.model;
   if (typeof entry.effort === "string") normalized.effort = entry.effort as EffortLevel;
   if (isFastMode(entry.fastMode)) normalized.fastMode = entry.fastMode;
+  if (normalized.provider && normalized.model) {
+    normalized.model = migrateLegacyDaybreak({
+      provider: normalized.provider, model: normalized.model, daybreak: entry.daybreak === true,
+    }).model;
+  }
   if (typeof entry.folderId === "string" || entry.folderId === null) normalized.folderId = entry.folderId;
   if (entry.waitTarget && typeof entry.waitTarget === "object") {
     const target = entry.waitTarget as Record<string, unknown>;
@@ -1406,7 +1418,8 @@ export function loadConversationIndex(): LoadConversationIndexResult {
     if (!stat) continue;
 
     const cached = indexed.get(id);
-    if (cached && cached.fileSize === stat.fileSize && cached.fileMtimeMs === stat.fileMtimeMs) {
+    if (cached && cached.model !== "gpt-daybreak-blue-latest"
+        && cached.fileSize === stat.fileSize && cached.fileMtimeMs === stat.fileMtimeMs) {
       try {
         entries.push(overlayCachedIndexEntry(cached));
         reused++;

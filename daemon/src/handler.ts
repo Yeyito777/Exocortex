@@ -1,4 +1,5 @@
 import { fastModeServiceTier, isFastMode, type FastMode } from "@exocortex/shared/messages";
+import { daybreakSelectionError } from "./providers/registry";
 /**
  * Command handler for exocortexd.
  *
@@ -1439,6 +1440,11 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           break;
         }
         const model = requestedModel ?? (provider === conversationDefaults.provider ? conversationDefaults.model : getDefaultModel(provider));
+        const daybreakError = daybreakSelectionError(provider, model);
+        if (daybreakError) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: id, message: daybreakError });
+          break;
+        }
         const defaultEffort = provider === conversationDefaults.provider && model === conversationDefaults.model
           ? conversationDefaults.effort
           : undefined;
@@ -2190,6 +2196,11 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         }
         const nextProvider = requested.provider ?? conv.provider;
         const nextModel = requested.model!;
+        const daybreakError = daybreakSelectionError(nextProvider, nextModel);
+        if (daybreakError) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: daybreakError });
+          break;
+        }
         if (!getProvider(nextProvider)) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Unknown provider: ${nextProvider}` });
           break;
@@ -2600,6 +2611,12 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             break;
           }
           const model = cmd.model ?? (provider === defaults.provider ? defaults.model : getDefaultModel(provider));
+          const daybreakError = daybreakSelectionError(provider, model);
+          if (daybreakError) {
+            server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: daybreakError });
+            server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages(), ...(queueId ? { settledQueueIds: [queueId] } : {}) });
+            break;
+          }
           const effort = normalizeEffort(provider, model, cmd.effort ?? effortDefaultForSelection(provider, model));
           if (cmd.fastMode !== undefined && (!isFastMode(cmd.fastMode) || (cmd.fastMode && !supportsFastMode(provider, model, cmd.fastMode)))) {
             server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Fast mode is only available for ${provider} conversations that support it.` });

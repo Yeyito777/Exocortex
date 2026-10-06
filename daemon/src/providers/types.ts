@@ -116,6 +116,8 @@ export interface StreamOptions {
   tools?: unknown[];
   effort?: EffortLevel;
   serviceTier?: ServiceTier;
+  /** Explicit cyber treatment, independent of model, effort, and service tier. */
+  cyberAccessProgram?: "standard" | "daybreak_blue";
   promptCacheKey?: string;
   /** Token-accounting metadata for this request. */
   tracking?: TokenTrackingContext;

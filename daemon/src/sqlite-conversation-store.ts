@@ -61,7 +61,7 @@ import type { ConversationLoadResult } from "./conversation-load-protocol";
 import { canonicalArchiveContent } from "./canonical-archive-content";
 import { checkpointTailHasher, updateCheckpointTailHash, integritySha, ConversationIntegrityError, type CheckpointHashAnchor, type ReplayHash } from "./checkpoint-tail-integrity";
 
-const SCHEMA_VERSION = 13;
+const SCHEMA_VERSION = 14;
 const INTEGRITY_TABLES = ["message_integrity", "checkpoint_integrity", "display_integrity"];
 const RUNTIME_REVISION_TRIGGERS: Record<string, string> = {};
 for (const [table, id] of [
@@ -987,6 +987,15 @@ export class SqliteConversationStore implements ConversationRepository {
         }
         this.db.query("INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)")
           .run(13, "sealed sparse archive prefix descriptors", Date.now());
+      })();
+    }
+    if (current < 14 && targetVersion >= 14) {
+      this.db.transaction(() => {
+        // Only the current selection changes; canonical history and sealed
+        // compaction checkpoints retain their original model provenance.
+        this.db.exec("UPDATE conversations SET model='gpt-6-sol-daybreak' WHERE provider='openai' AND model='gpt-daybreak-blue-latest';");
+        this.db.query("INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)")
+          .run(14, "Sol Daybreak model alias", Date.now());
       })();
     }
   }

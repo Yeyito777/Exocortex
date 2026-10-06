@@ -53,7 +53,7 @@ test("startup worker migrates multiple checkpoints with bounded archival title c
     });
     worker.terminate(); worker = undefined;
     store = new SqliteConversationStore({ path });
-    expect(store.diagnostics().schemaVersion).toBe(13);
+    expect(store.diagnostics().schemaVersion).toBe(14);
     for (const id of ["long-title-a", "long-title-b"]) {
       const receipt = store.db.query<{ title_context_json: string }, [string]>(
         "SELECT title_context_json FROM checkpoint_integrity WHERE conversation_id=?",
@@ -122,7 +122,7 @@ test("startup worker enrolls legacy envelopes once, without reading old blob bod
     } finally { clearInterval(timer); worker.terminate(); worker = undefined; }
     expect(ticks).toBeGreaterThan(5);
     store = new SqliteConversationStore({ path });
-    expect(store.diagnostics().schemaVersion).toBe(13);
+    expect(store.diagnostics().schemaVersion).toBe(14);
     expect(store.db.query<{ payload_json: string }, []>("SELECT payload_json FROM active_contexts").get()!.payload_json).toBe(checkpoint);
     expect(store.loadRuntimeWindow(conv.id, "migration")?.result.loadDiagnostics?.archiveRowsRead).toBe(0);
     expect(() => store!.loadToolOutputs(conv.id, ["t-0"])).toThrow(/blob checksum/);

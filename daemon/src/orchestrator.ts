@@ -60,7 +60,8 @@ import {
   type DeferredChronoSleep,
 } from "./chrono-service";
 import { buildConversationRequestSurface } from "./conversation-request-surface";
-import { getModelInfo } from "./providers/registry";
+import { getModelInfo, cyberAccessProgramForSelection, refreshProviders } from "./providers/registry";
+import { isDaybreakModelId } from "@exocortex/shared/daybreak";
 
 // ── Transcript marker helpers ──────────────────────────────────────
 
@@ -555,6 +556,15 @@ async function orchestrateAdmittedAssistantTurn(
     return buildErrorOutcome(text);
   };
 
+  let cyberAccessProgram: ReturnType<typeof cyberAccessProgramForSelection>;
+  try {
+    // Restart recovery and automation use the same account-scoped validation.
+    if (isDaybreakModelId(conv.model)) await refreshProviders();
+    cyberAccessProgram = cyberAccessProgramForSelection(conv.provider, conv.model);
+  } catch (error) {
+    return reportSendError(error instanceof Error ? error.message : String(error));
+  }
+
   let workingDirectory: string;
   try {
     // Existing conversations are migrated lazily; startup remains summary-only
@@ -914,6 +924,7 @@ async function orchestrateAdmittedAssistantTurn(
         tools: toolDefs,
         effort: liveConv.effort,
         serviceTier: fastModeServiceTier(liveConv.fastMode),
+        cyberAccessProgram,
         promptCacheKey: convId,
         tracking: { source: "context_compaction", conversationId: convId },
         turnSession: providerTurnSession ?? undefined,
@@ -1495,6 +1506,7 @@ async function orchestrateAdmittedAssistantTurn(
         },
         effort: conv.effort,
         serviceTier: fastModeServiceTier(conv.fastMode),
+        cyberAccessProgram,
         promptCacheKey: convId,
         tracking: { source: "conversation", conversationId: convId },
         turnSession: providerTurnSession ?? undefined,

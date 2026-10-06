@@ -27,8 +27,8 @@ const providers: ProviderInfo[] = [
         defaultEffort: "medium",
       },
       {
-        id: "gpt-daybreak-blue-latest",
-        label: "Daybreak Blue",
+        id: "no-fast-test-model",
+        label: "No Fast test model",
         maxContext: 272_000,
         supportedEfforts: [
           { effort: "low", description: "Fast" },
@@ -450,7 +450,7 @@ describe("/fast command", () => {
     const state = createInitialState();
     state.providerRegistry = structuredClone(providers);
     state.provider = "openai";
-    state.model = "gpt-daybreak-blue-latest";
+    state.model = "no-fast-test-model";
     state.fastMode = false;
 
     const result = tryCommand("/fast on", state);
@@ -763,7 +763,7 @@ describe("/model", () => {
     expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe("Model set to deepseek/deepseek-v4-pro (effort high) (fast off)");
   });
 
-  test("switching to Daybreak Blue disables an existing fast selection", () => {
+  test("switching to a model without Fast disables an existing fast selection", () => {
     const state = createInitialState();
     state.providerRegistry = structuredClone(providers);
     state.provider = "openai";
@@ -772,11 +772,11 @@ describe("/model", () => {
     state.fastMode = true;
     state.convId = "conv-openai";
 
-    const result = tryCommand("/model openai gpt-daybreak-blue-latest", state);
+    const result = tryCommand("/model openai no-fast-test-model", state);
 
-    expect(result).toEqual({ type: "model_changed", provider: "openai", model: "gpt-daybreak-blue-latest" });
+    expect(result).toEqual({ type: "model_changed", provider: "openai", model: "no-fast-test-model" });
     expect(state.fastMode).toBe(false);
-    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe("Model set to openai/gpt-daybreak-blue-latest (effort low) (fast off)");
+    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe("Model set to openai/no-fast-test-model (effort low) (fast off)");
   });
 
   test("warns when switching to a model with a smaller known context window", () => {

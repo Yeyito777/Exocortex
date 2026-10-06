@@ -19,6 +19,13 @@ not raw PIDs. Use `abort` for subagent conversations and Chrono cancellation
 for schedules.
 Never restart the main daemon.
 
+Daybreak uses ordinary model selection: `provider: "openai"` and
+`model: "gpt-6-sol-daybreak"`. The account catalog must advertise Blue on
+`gpt-6-sol`; custom-model support cannot bypass this check. There is no separate
+toggle or IPC flag. Select `gpt-6-sol` for standard access. Internally the alias
+sends the base model plus `access_programs.cyber: "daybreak_blue"`, independently
+of effort and speed.
+
 ## New-conversation defaults
 
 The connected daemon owns `defaults.conversation` in its host's config.

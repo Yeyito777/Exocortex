@@ -1,4 +1,5 @@
 import { clearPrompt } from "../promptstate";
+import { DAYBREAK_MODEL_ID, DAYBREAK_RETIRED_MODEL, DAYBREAK_UNAVAILABLE, isDaybreakModelId } from "@exocortex/shared/daybreak";
 import { getModelInfo, getProviderInfo, isStreaming, pushSystemMessage } from "../state";
 import { type ModelId, type ProviderId } from "../messages";
 import {
@@ -81,6 +82,11 @@ export const MODEL_COMMAND: SlashCommand = {
     }
 
     const model = parts[2] as ModelId;
+    if (isDaybreakModelId(model) && (provider !== "openai" || model !== DAYBREAK_MODEL_ID || !getModelInfo(state, provider, model))) {
+      pushSystemMessage(state, provider === "openai" && model === DAYBREAK_MODEL_ID ? DAYBREAK_UNAVAILABLE : DAYBREAK_RETIRED_MODEL);
+      clearPrompt(state);
+      return { type: "handled" };
+    }
     applyModelSelectionWithNotice(state, provider, model);
 
     clearPrompt(state);

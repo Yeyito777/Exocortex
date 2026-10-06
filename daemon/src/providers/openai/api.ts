@@ -9,7 +9,8 @@ import { OPENAI_CODEX_RESPONSES_URL, OPENAI_CODEX_RESPONSES_WS_URL, OPENAI_RESPO
 import { usesOpenAIResponsesLite } from "./capabilities";
 import { buildOpenAIRequestHeaders, type OpenAIRequestSession } from "./cache";
 import { buildCloudflareCookieHeader, storeCloudflareCookiesFromHeaders } from "./cookies";
-import { buildOpenAIInput, buildRequestBody } from "./request";
+import { buildOpenAIInput, buildRequestBody, resolveOpenAIRequestSelection } from "./request";
+import { openAIWireModel } from "@exocortex/shared/daybreak";
 import { mergeReasoningSummaries } from "./reasoning";
 import { OpenAIWebSocketClosedBeforeResponseStartedError, readOpenAIResponsesWebSocket } from "./responses-websocket";
 import { createOpenAIEventAccumulator, readOpenAIEventsForTest } from "./stream";
@@ -176,7 +177,7 @@ function assertReplayScopeForSession(
     const portableCheckpoint = (openai.compactionItems?.length ?? 0) > 0
       && (openai.reasoningItems?.length ?? 0) === 0
       && actualAccountScope != null;
-    if ((!portableCheckpoint && openai.replayScope.model !== model)
+    if ((!portableCheckpoint && openAIWireModel(openai.replayScope.model) !== model)
         || openai.replayScope.accountScope !== actualAccountScope) {
       throw new NonRetryableProviderError(
         "Refusing to replay OpenAI encrypted state under a different account, or model-scoped reasoning under a different model.",
@@ -406,6 +407,7 @@ async function streamMessageHttpWithSession(
   callbacks: StreamCallbacks,
   options: StreamOptions = {},
 ): Promise<StreamResult> {
+  ({ model, options } = resolveOpenAIRequestSelection(model, options));
   assertReplayScopeForSession(messages, model, session, options.accountScope);
   const turnSession = isOpenAITurnSession(options.turnSession) ? options.turnSession : null;
   const requestCallbacks = callbacksForSession(callbacks, session);
@@ -1027,6 +1029,7 @@ export async function streamMessageWithSession(
   callbacks: StreamCallbacks,
   options: StreamOptions = {},
 ): Promise<StreamResult> {
+  ({ model, options } = resolveOpenAIRequestSelection(model, options));
   const { signal } = options;
   assertReplayScopeForSession(messages, model, session, options.accountScope);
   const turnSession = isOpenAITurnSession(options.turnSession) ? options.turnSession : null;
@@ -1282,6 +1285,7 @@ export async function streamMessage(
   callbacks: StreamCallbacks,
   options: StreamOptions = {},
 ): Promise<StreamResult> {
+  ({ model, options } = resolveOpenAIRequestSelection(model, options));
   const { signal } = options;
   const turnSession = isOpenAITurnSession(options.turnSession) ? options.turnSession : null;
   const session = turnSession

@@ -1,4 +1,5 @@
 import { streamMessage } from "./api";
+import { openAIWireModel } from "@exocortex/shared/daybreak";
 import { log } from "./log";
 import {
   createModelVisibleSystemNotice,
@@ -62,6 +63,7 @@ export interface ContextCompactionOptions {
   tools?: unknown[];
   effort?: EffortLevel;
   serviceTier?: ServiceTier;
+  cyberAccessProgram?: StreamOptions["cyberAccessProgram"];
   promptCacheKey?: string;
   tracking?: TokenTrackingContext;
   turnSession?: ProviderTurnSession;
@@ -113,7 +115,7 @@ function hasExactOpenAIScope(
 ): boolean {
   return provider === "openai"
     && scopedProvider === provider
-    && scopedModel === model
+    && openAIWireModel(scopedModel) === openAIWireModel(model)
     && scopedAccount === accountScope;
 }
 
@@ -135,7 +137,7 @@ function isMessageProviderDataCompatible(
   // account (live-verified Sol -> Astra). Ordinary reasoning items still use
   // their original model scope; do not broaden that separate replay contract.
   return scope.accountScope === accountScope
-    && (scope.model === model || (compactionOnly && accountScope != null));
+    && (openAIWireModel(scope.model) === openAIWireModel(model) || (compactionOnly && accountScope != null));
 }
 
 function asApiMessage(
@@ -216,7 +218,7 @@ export function isActiveContextCompatible(
   );
   const sameOpenAIAccount = provider === "openai" && active.provider === provider
     && active.accountScope === accountScope
-    && (accountScope != null || active.model === model);
+    && (accountScope != null || openAIWireModel(active.model) === openAIWireModel(model));
   if (active.kind === "openai_native" && !sameOpenAIAccount) return false;
   if (!hasProviderScopedReplayData(active.messages)) return true;
   return active.messages.every((message) => isMessageProviderDataCompatible(
@@ -400,6 +402,7 @@ function compactStreamOptions(options: ContextCompactionOptions, extra: Partial<
     tools: options.tools,
     effort: options.effort,
     serviceTier: options.serviceTier,
+    cyberAccessProgram: options.cyberAccessProgram,
     promptCacheKey: options.promptCacheKey,
     tracking: options.tracking,
     turnSession: options.turnSession,
@@ -455,7 +458,7 @@ async function nativeOpenAICompaction(
   }
   const responseReplayScope = result.assistantProviderData?.openai.replayScope;
   const checkpointReplayScope = responseReplayScope ?? {
-    model: options.model,
+    model: openAIWireModel(options.model),
     ...(options.accountScope ? { accountScope: options.accountScope } : {}),
   };
   const checkpoint: ApiMessage = {
