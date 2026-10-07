@@ -4,6 +4,15 @@ import { visibleLength } from "./textwidth";
 import { theme } from "./theme";
 
 describe("renderMetadata", () => {
+  test("starts fresh and optimistic messages at zero instead of an earlier rate", () => {
+    const metadata = { startedAt: 1_000, endedAt: null, model: "gpt-5.4", tokens: 0 };
+    expect(renderMetadata(metadata, { now: 1_000 })[0]).toContain("0.0 tokens/s");
+    expect(renderMetadata({
+      ...metadata,
+      generationThroughput: { provider: "openai", model: metadata.model, rates: [] },
+    }, { now: 50_000 })[0]).toContain("0.0 tokens/s");
+  });
+
   test("uses measured throughput independently of the response span and work timer", () => {
     const metadata = {
       startedAt: 137_000, endedAt: 177_000, workTimerStartedAt: 3_000,

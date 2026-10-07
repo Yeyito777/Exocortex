@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ProviderGenerationTimer, generationThroughputForTurn } from "./generation-throughput";
-import type { StoredMessage } from "./messages";
+import { ProviderGenerationTimer } from "./generation-throughput";
 
 describe("per-request generation timing", () => {
   test("counts TTFT plus generation, with millisecond precision and no tool time", () => {
@@ -29,18 +28,5 @@ describe("per-request generation timing", () => {
     timer.reset();
     now += 1_000;
     expect(timer.rate(100)).toBe(100);
-  });
-
-  test("carries persisted samples across human messages but not model/provider changes", () => {
-    const throughput = { provider: "openai" as const, model: "model", rates: [100, 200] };
-    const messages: StoredMessage[] = [
-      { role: "assistant", content: "previous", metadata: {
-        startedAt: 0, endedAt: 1_000, model: "model", tokens: 300, generationThroughput: throughput,
-      } },
-      { role: "user", content: "next", metadata: null },
-    ];
-    expect(generationThroughputForTurn(messages, "openai", "model")).toBe(throughput);
-    expect(generationThroughputForTurn(messages, "deepseek", "model")).toBeUndefined();
-    expect(generationThroughputForTurn(messages, "openai", "different")).toBeUndefined();
   });
 });

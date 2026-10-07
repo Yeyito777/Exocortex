@@ -1,8 +1,20 @@
 import { describe, expect, test } from "bun:test";
-import { appendGenerationRate, generationTokensPerSecond, GENERATION_RATE_ALPHA } from "./generation-throughput";
+import { appendGenerationRate, createGenerationThroughput, generationTokensPerSecond, GENERATION_RATE_ALPHA } from "./generation-throughput";
 import { combineMessageMetadata, type GenerationThroughput } from "./messages";
 
 describe("generation throughput", () => {
+  test("starts each message at zero, without earlier messages' samples", () => {
+    const first = appendGenerationRate(createGenerationThroughput("openai", "model"), "openai", "model", 10_000)!;
+    const second = createGenerationThroughput("openai", "model");
+    expect(second.rates).toEqual([]);
+    expect(generationTokensPerSecond(second)).toBe(0);
+    const measured = appendGenerationRate(second, "openai", "model", 100);
+    expect(measured?.rates).toEqual([100]);
+    expect(generationTokensPerSecond(measured)).toBe(100);
+    expect(first.rates).toEqual([10_000]);
+    expect(second.rates).toEqual([]);
+  });
+
   test("uses normalized exponential weights, not combined tokens or durations", () => {
     expect(GENERATION_RATE_ALPHA).toBeCloseTo(2 / 11);
     expect(generationTokensPerSecond({ provider: "openai", model: "model", rates: [100, 200] }))
@@ -33,17 +45,19 @@ describe("generation throughput", () => {
     expect(generationTokensPerSecond({ ...previous, rates: [NaN, 0, -1, Infinity] })).toBeNull();
   });
 
-  test("message aggregation uses the latest round history, not a message-level rate", () => {
+  test("message aggregation uses only the latest message's independent samples", () => {
     const first = {
       startedAt: 0, endedAt: 1_000, model: "model", tokens: 100,
       generationThroughput: { provider: "openai" as const, model: "model", rates: [100] },
     };
     const last = {
       startedAt: 600_000, endedAt: 601_000, model: "model", tokens: 200,
-      generationThroughput: { provider: "openai" as const, model: "model", rates: [100, 200] },
+      generationThroughput: { provider: "openai" as const, model: "model", rates: [200] },
     };
     const combined = combineMessageMetadata(first, last);
     expect(combined?.tokens).toBe(300);
-    expect(generationTokensPerSecond(combined?.generationThroughput)).toBeCloseTo(155);
+    expect(generationTokensPerSecond(combined?.generationThroughput)).toBe(200);
+    const fresh = { ...last, endedAt: null, tokens: 0, generationThroughput: createGenerationThroughput("openai", "model") };
+    expect(generationTokensPerSecond(combineMessageMetadata(first, fresh)?.generationThroughput)).toBe(0);
   });
 });

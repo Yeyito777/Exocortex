@@ -5,7 +5,7 @@ import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, cre
 import { createInitialState, isStreaming, canInterrupt } from "./state";
 import { prepareConversationOpen } from "./conversationscroll";
 import type { Event } from "./protocol";
-import { generationTokensPerSecond } from "@exocortex/shared/generation-throughput";
+import { createGenerationThroughput, generationTokensPerSecond } from "@exocortex/shared/generation-throughput";
 
 const daemon: DaemonActions = {
   subscribe() {},
@@ -35,6 +35,19 @@ describe("generation throughput events", () => {
       blocks: [], tokens: 300, generationThroughput: latest,
     }, state, daemon);
     expect(state.pendingAI).toBeNull();
+    expect(state.messages.at(-1)?.metadata?.generationThroughput).toEqual(latest);
+
+    handleEvent({
+      type: "streaming_started", convId: state.convId, provider: "openai", model: "gpt-5.4",
+      startedAt: 4_000_000, snapshotKind: "start",
+      generationThroughput: createGenerationThroughput("openai", "gpt-5.4"),
+    }, state, daemon);
+    expect(generationTokensPerSecond(state.pendingAI?.metadata?.generationThroughput)).toBe(0);
+    handleEvent({
+      type: "tokens_update", convId: state.convId, tokens: 500,
+      generationThroughput: { ...first, rates: [500] },
+    }, state, daemon);
+    expect(generationTokensPerSecond(state.pendingAI?.metadata?.generationThroughput)).toBe(500);
     expect(state.messages.at(-1)?.metadata?.generationThroughput).toEqual(latest);
   });
 });

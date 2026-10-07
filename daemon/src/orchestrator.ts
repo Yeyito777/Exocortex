@@ -13,8 +13,7 @@ import { isDeepStrictEqual } from "node:util";
 import { prepareArchiveHashes } from "./conversation-loader";
 import { archiveWindow, inheritArchiveHashProof, storedMessageCount } from "./conversation-window";
 import { workTimerForTurn } from "./work-timer";
-import { appendGenerationRate } from "@exocortex/shared/generation-throughput";
-import { generationThroughputForTurn } from "./generation-throughput";
+import { appendGenerationRate, createGenerationThroughput } from "@exocortex/shared/generation-throughput";
 import { hasConfiguredCredentials } from "./auth";
 import { runAgentLoop, type AgentCallbacks, type AgentState } from "./agent";
 import { getMaxContext, supportsImageInputs } from "./providers/registry";
@@ -758,7 +757,9 @@ async function orchestrateAdmittedAssistantTurn(
   // can coordinate with it normally.
   convStore.setActiveJob(convId, ac, startedAt, !manualCompaction);
   let workTimerStartedAt = workTimerForTurn(conv.messages, startedAt);
-  let generationThroughput = generationThroughputForTurn(conv.messages, conv.provider, conv.model);
+  // One invocation produces one assistant message. Never seed its rate from
+  // earlier messages, even when the independent work timer continues.
+  let generationThroughput = createGenerationThroughput(conv.provider, conv.model);
   convStore.setStreamingGenerationThroughput(convId, generationThroughput);
   convStore.setStreamingWorkTimerStartedAt(convId, workTimerStartedAt);
   convStore.initStreamingState(convId);
@@ -1299,7 +1300,7 @@ async function orchestrateAdmittedAssistantTurn(
       });
     },
     onGenerationRate(rate) {
-      generationThroughput = appendGenerationRate(generationThroughput, conv.provider, conv.model, rate);
+      generationThroughput = appendGenerationRate(generationThroughput, conv.provider, conv.model, rate) ?? generationThroughput;
       convStore.setStreamingGenerationThroughput(convId, generationThroughput);
     },
     onTokensUpdate(tokens) {

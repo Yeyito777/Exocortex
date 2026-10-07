@@ -31,7 +31,7 @@ describe("startReplayConversation", () => {
     });
     expect(state.pendingAIHydratedFromSnapshot).toBe(false);
     expect(state.pendingAICommittedIndex).toBeNull();
-    expect(stripAnsi(buildMessageLines(state, 120).lines[0])).toContain("Gpt-5.4 | — tokens/s |");
+    expect(stripAnsi(buildMessageLines(state, 120).lines[0])).toContain("Gpt-5.4 | 0.0 tokens/s |");
   });
 
   test("pins the replay placeholder to the bottom like a normal send", () => {
@@ -56,7 +56,7 @@ describe("startReplayConversation", () => {
 
     const lines = buildMessageLines(state, 120).lines.map(stripAnsi);
     expect(lines.some(line => line.includes("✗ Interrupted"))).toBe(true);
-    expect(lines.some(line => line.includes("Gpt-5.4 | — tokens/s |"))).toBe(true);
+    expect(lines.some(line => line.includes("Gpt-5.4 | 0.0 tokens/s |"))).toBe(true);
   });
 
   test("does not count idle time between an interrupted turn and its replay", () => {
@@ -100,7 +100,7 @@ describe("startReplayConversation", () => {
 
     const lines = buildMessageLines(state, 120).lines.map(stripAnsi);
     expect(lines.some(line => line.includes("✗ Daemon restarted"))).toBe(true);
-    expect(lines.some(line => line.includes("Gpt-5.4 | — tokens/s |"))).toBe(true);
+    expect(lines.some(line => line.includes("Gpt-5.4 | 0.0 tokens/s |"))).toBe(true);
   });
 
   test("does nothing without an active conversation", () => {

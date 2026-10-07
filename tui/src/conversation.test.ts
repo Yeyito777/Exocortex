@@ -1245,6 +1245,22 @@ describe("tool call rendering", () => {
 });
 
 describe("assistant metadata spacing", () => {
+  test("a fresh optimistic message never displays the previous message's throughput", () => {
+    const state = createInitialState();
+    const previous = createPendingAI(1_000, "gpt-5.4");
+    previous.metadata!.endedAt = 2_000;
+    previous.metadata!.tokens = 100;
+    previous.metadata!.generationThroughput = { provider: "openai", model: "gpt-5.4", rates: [999] };
+    previous.blocks = [{ type: "text", text: "Previous answer" }];
+    state.messages = [previous];
+    state.pendingAI = createPendingAI(3_000, "gpt-5.4");
+    const rendered = buildMessageLines(state, 120);
+    const metadataLines = rendered.lines
+      .filter((_, index) => rendered.lineAnchors[index].segment === "assistant_metadata").map(stripAnsi);
+    expect(metadataLines.at(-1)).toContain("0.0 tokens/s");
+    expect(metadataLines.at(-1)).not.toContain("999.0 tokens/s");
+  });
+
   test("retains aggregated token counts behind diagnostics for committed and pending turns", () => {
     for (const pending of [false, true]) {
       const state = createInitialState();
