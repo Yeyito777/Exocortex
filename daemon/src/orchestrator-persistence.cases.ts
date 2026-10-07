@@ -8,6 +8,8 @@ import { USER_MESSAGE_AUTOMATION_KINDS, createStoredUserMessage } from "./messag
 import { setBackgroundTaskActive } from "./conversation-activity";
 import { getProviderAdapter } from "./providers/catalog";
 import { invalidateCredentialsCache } from "./auth";
+import { createOpenAIEventAccumulator } from "./providers/openai/stream";
+import { getStaleStreams } from "./streaming";
 
 const IDS: string[] = [];
 
@@ -48,6 +50,47 @@ afterEach(() => {
   for (const convId of IDS.splice(0)) {
     clearHistoryUnwindPending(convId);
     remove(convId);
+  }
+});
+
+describe("hidden provider progress reaches the app watchdog", () => {
+  for (const [itemType, eventType] of [
+    ["function_call", "response.function_call_arguments.delta"],
+    ["custom_tool_call", "response.custom_tool_call_input.delta"],
+  ] as const) {
+    test(`${itemType} arguments do not trigger a rendering-based timeout`, async () => {
+      const convId = id(`provider-activity-${itemType}`);
+      create(convId, "openai", "gpt-5.6-sol");
+      const events: Array<Record<string, unknown>> = [];
+      const fakeStream = (async (_provider, _messages, _model, streamCallbacks) => {
+        const originalNow = Date.now;
+        let now = originalNow();
+        try {
+          Date.now = () => now;
+          const accumulator = createOpenAIEventAccumulator(streamCallbacks);
+          accumulator.handle({
+            type: "response.output_item.added", output_index: 0,
+            item: { type: itemType, call_id: "call-1", name: "test-tool" },
+          });
+          for (let i = 0; i < 16; i++) {
+            now += 60_000;
+            accumulator.handle({ type: eventType, output_index: 0, delta: "a" });
+          }
+          expect(getStaleStreams().some(([id]) => id === convId)).toBe(false);
+          expect(events.some(event => event.type === "tool_call")).toBe(false);
+        } finally {
+          Date.now = originalNow;
+        }
+        // Only completed calls are executable. This seam finishes without one.
+        return { text: "", thinking: "", stopReason: "stop", blocks: [], toolCalls: [] };
+      }) as typeof streamMessage;
+      const outcome = await orchestrateSendMessage(
+        server(events) as never, null, undefined, convId, "test", Date.now(), callbacks(fakeStream),
+      );
+      expect(outcome.ok).toBe(true);
+      expect(isStreaming(convId)).toBe(false);
+      expect(events.some(event => event.type === "stream_retry")).toBe(false);
+    });
   }
 });
 

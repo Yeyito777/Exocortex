@@ -1201,6 +1201,9 @@ async function orchestrateAdmittedAssistantTurn(
   // ── Agent callbacks: stream events and live display state ─────────
 
   const callbacks: AgentCallbacks = {
+    onProviderActivity() {
+      convStore.touchActivity(convId);
+    },
     onBlockStart(blockType) {
       convStore.touchActivity(convId);
       server.sendToSubscribers(convId, { type: "block_start", convId, streamSeq: convStore.nextStreamSeq(convId), blockType });

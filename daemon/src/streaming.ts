@@ -254,7 +254,8 @@ export function getStreamSeq(convId: string): number {
 
 // ── Activity tracking (for stale stream detection) ──────────────────
 
-/** Record meaningful activity on a stream (chunks, tool calls, retries, etc.). */
+/** Record meaningful activity (including hidden tool-input progress, chunks,
+ * completed tool calls/results, and retries), not just renderable output. */
 export function touchActivity(convId: string): void {
   if (activeJobs.has(convId)) lastActivityAt.set(convId, Date.now());
 }

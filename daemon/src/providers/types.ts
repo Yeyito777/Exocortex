@@ -64,6 +64,9 @@ export interface StreamRetryMetadata {
 export interface StreamCallbacks {
   onText: (chunk: string) => void;
   onThinking: (chunk: string) => void;
+  /** Meaningful provider progress that need not be rendered or committed,
+   * such as a non-whitespace tool-input delta. Not a transport heartbeat. */
+  onActivity?: () => void;
   onBlockStart?: (type: "text" | "thinking") => void;
   /** Replace the current round's live text/thinking blocks with the canonical provider state. */
   onBlocksUpdate?: (blocks: ContentBlock[]) => void;

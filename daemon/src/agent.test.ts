@@ -29,6 +29,31 @@ function state(): AgentState {
 }
 
 describe("automatic agent compaction", () => {
+  test("forwards hidden provider activity without treating it as committed output", async () => {
+    let activity = 0;
+    let compactCalls = 0;
+    let requests = 0;
+    const fakeStream = (async (_provider, _messages, _model, streamCallbacks) => {
+      requests++;
+      if (requests === 1) {
+        streamCallbacks.onActivity?.();
+        throw new Error("maximum context length exceeded");
+      }
+      return { text: "", thinking: "", stopReason: "stop", blocks: [], toolCalls: [] };
+    }) as typeof streamMessage;
+    await runAgentLoop(
+      [{ role: "user", content: "hello" }], "openai", "gpt-5.6-sol",
+      callbacks({
+        onProviderActivity() { activity++; },
+        compactContext: async () => { compactCalls++; return []; },
+      }),
+      { streamMessageFn: fakeStream },
+    );
+    expect(activity).toBe(1);
+    expect(compactCalls).toBe(1);
+    expect(requests).toBe(2);
+  });
+
   test("records a completed raw tool round before a failing compaction", async () => {
     const recovery = state();
     let recoveryReadyBeforeCompaction = false;

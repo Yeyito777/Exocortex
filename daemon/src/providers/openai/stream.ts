@@ -417,7 +417,14 @@ function handleStreamEvent(state: OpenAIReadState, event: Record<string, unknown
     case "response.function_call_arguments.delta": {
       const outputIndex = event.output_index as number;
       const toolState = state.toolStates.get(outputIndex);
-      if (toolState) toolState.arguments += String(event.delta ?? "");
+      if (toolState) {
+        toolState.arguments += String(event.delta ?? "");
+        // A call is not executable/renderable until complete, but its input
+        // generation is real progress. Keep the app watchdog in sync with
+        // both WS and HTTP/SSE without allowing empty/whitespace storms or
+        // orphan/malformed deltas to mask a genuinely stalled response.
+        if (typeof event.delta === "string" && /\S/.test(event.delta)) cb.onActivity?.();
+      }
       break;
     }
 
@@ -696,6 +703,7 @@ export function readOpenAIEventsForTest(
   const cb: StreamCallbacks = {
     onText: callbacks.onText ?? (() => {}),
     onThinking: callbacks.onThinking ?? (() => {}),
+    onActivity: callbacks.onActivity,
     onBlockStart: callbacks.onBlockStart,
     onBlocksUpdate: callbacks.onBlocksUpdate,
     onSignature: callbacks.onSignature,

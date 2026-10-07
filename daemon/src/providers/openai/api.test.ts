@@ -105,6 +105,45 @@ function httpCompletion(output: unknown[] = [{ type: "message", id: "msg_http", 
   return new Response(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join(""), { headers });
 }
 
+describe("OpenAI HTTP/SSE tool-input activity", () => {
+  for (const [itemType, eventType, name, chunks] of [
+    ["function_call", "response.function_call_arguments.delta", "exec_command", ['{"cmd":', '"true"}']],
+    ["custom_tool_call", "response.custom_tool_call_input.delta", "apply_patch", ["*** Begin Patch\n", "*** End Patch\n"]],
+  ] as const) {
+    test(`${itemType} shares the hidden progress hook without publishing an incomplete call`, async () => {
+      const completedItem = {
+        type: itemType, call_id: "call_http", name,
+        ...(itemType === "function_call" ? { arguments: chunks.join("") } : { input: chunks.join("") }),
+      };
+      const events = [
+        { type: "response.created", response: { id: "resp_http" } },
+        { type: "response.output_item.added", output_index: 0,
+          item: { type: itemType, call_id: "call_http", name } },
+        ...[chunks[0], "", " \n\t", chunks[1]].map(delta => ({ type: eventType, output_index: 0, delta })),
+        { type: "response.output_item.done", output_index: 0, item: completedItem },
+        { type: "response.completed", response: { id: "resp_http", output: [completedItem] } },
+      ];
+      globalThis.fetch = mock(async (url: string | URL | Request) => {
+        expect(String(url)).toBe(OPENAI_CODEX_RESPONSES_URL);
+        return new Response(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join(""));
+      }) as unknown as typeof fetch;
+      const onActivity = mock(() => {});
+      const onToolCall = mock(() => {});
+      const result = await streamMessageHttpWithSessionForTest(
+        { accessToken: "test-token", accountId: null, accountKey: "test-account" },
+        [{ role: "user", content: "test" }], "gpt-5.4",
+        { onText: () => {}, onThinking: () => {}, onActivity, onToolCall },
+      );
+      expect(onActivity).toHaveBeenCalledTimes(2);
+      expect(onToolCall).not.toHaveBeenCalled();
+      expect(result.toolCalls).toHaveLength(1);
+      expect(result.toolCalls[0].input).toEqual(
+        itemType === "function_call" ? { cmd: "true" } : { input: chunks.join("") },
+      );
+    });
+  }
+});
+
 describe("OpenAI automatic HTTPS fallback", () => {
   const session = { accessToken: "test-token", accountId: "acct" };
   const messages: ApiMessage[] = [{ role: "user", content: "hello" }];

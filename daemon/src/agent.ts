@@ -24,6 +24,8 @@ import { createAbortError } from "./abort";
 // ── Callbacks ───────────────────────────────────────────────────────
 
 export interface AgentCallbacks {
+  /** Hidden provider progress refreshes liveness without publishing partial output. */
+  onProviderActivity?(): void;
   /** A new text or thinking block has started streaming. */
   onBlockStart(type: "text" | "thinking"): void;
   /** A text chunk has arrived (append to current text block). */
@@ -216,6 +218,9 @@ export async function runAgentLoop(
           onToolCall: (block) => { roundEmittedOutput = true; callbacks.onToolCall(block); },
           onToolResult: (block) => { roundEmittedOutput = true; callbacks.onToolResult(block); },
           onHeaders: callbacks.onHeaders,
+          // Argument generation is liveness, not committed/rendered output.
+          // Do not set roundEmittedOutput: a context-error retry can still discard it.
+          onActivity: callbacks.onProviderActivity,
           onRetry: (attempt, maxAttempts, errorMessage, delaySec, metadata) => {
             // Provider retries discard the current attempt's streamed output.
             // Reset this guard too so a clean retry that hits a context error can
