@@ -6,7 +6,7 @@ import { DaemonServer } from "./server";
 import { createHandler } from "./handler";
 import { appendMessages, create, remove } from "./conversations";
 import type { StoredMessage } from "./messages";
-import { clearActiveJob, initStreamingState, replaceCurrentStreamingBlocks, setActiveJob } from "./streaming";
+import { clearActiveJob, initStreamingState, replaceCurrentStreamingBlocks, setActiveJob, setStreamingGenerationThroughput } from "./streaming";
 import { DaemonClient } from "../../tui/src/client";
 import { createInitialState } from "../../tui/src/state";
 import { handleEvent } from "../../tui/src/events";
@@ -49,6 +49,8 @@ describe("late-join streaming integration", () => {
     // joiners read that round from the canonical display page exactly once.
     setActiveJob(convId, new AbortController(), 100);
     initStreamingState(convId);
+    const throughput = { provider: "openai" as const, model: "gpt-5.4", rates: [100, 200] };
+    setStreamingGenerationThroughput(convId, throughput);
     const completedRound: StoredMessage[] = [
       {
         role: "assistant",
@@ -102,11 +104,12 @@ describe("late-join streaming integration", () => {
       expect(state.pendingAI).toMatchObject({
         role: "assistant",
         blocks: [],
-        metadata: { startedAt: 100, endedAt: null, model: "gpt-5.4", tokens: 0 },
+        metadata: { startedAt: 100, endedAt: null, model: "gpt-5.4", tokens: 0, generationThroughput: throughput },
       });
 
       const rendered = buildMessageLines(state, 80).lines.map(stripAnsi).join("\n");
       expect(rendered).toContain("done with the tool round");
+      expect(rendered).toContain("155.0 tokens/s");
       expect(rendered).not.toContain("partial old reply");
       expect((rendered.match(/done with the tool round/g) ?? [])).toHaveLength(1);
     } finally {

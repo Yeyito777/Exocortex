@@ -9,7 +9,7 @@
  * Conversation data and persistence live in conversations.ts.
  */
 
-import type { Block } from "./messages";
+import type { Block, GenerationThroughput } from "./messages";
 import type { ActiveToolBackgrounder } from "./tools/types";
 
 // ── State ───────────────────────────────────────────────────────────
@@ -35,6 +35,7 @@ const streamingStartedAt = new Map<string, number>();
 const streamingWorkTimerStartedAt = new Map<string, number>();
 /** Accumulated output token count per streaming job (for late-joining clients). */
 const streamingTokens = new Map<string, number>();
+const streamingGenerationThroughput = new Map<string, GenerationThroughput>();
 /** Context compaction currently shown to clients. */
 const contextCompactionStartedAt = new Map<string, number>();
 /** Monotonic event sequence per active stream, used by clients to diagnose missed IPC events. */
@@ -176,6 +177,7 @@ export function clearActiveJob(convId: string): void {
   streamingStartedAt.delete(convId);
   streamingWorkTimerStartedAt.delete(convId);
   streamingTokens.delete(convId);
+  streamingGenerationThroughput.delete(convId);
   contextCompactionStartedAt.delete(convId);
   streamSequences.delete(convId);
   streamingCommittedBlockCounts.delete(convId);
@@ -227,6 +229,15 @@ export function setStreamingTokens(convId: string, tokens: number): void {
 /** Get the accumulated output token count for an in-flight stream. */
 export function getStreamingTokens(convId: string): number {
   return streamingTokens.get(convId) ?? 0;
+}
+
+export function setStreamingGenerationThroughput(convId: string, throughput: GenerationThroughput | undefined): void {
+  if (throughput) streamingGenerationThroughput.set(convId, throughput);
+  else streamingGenerationThroughput.delete(convId);
+}
+
+export function getStreamingGenerationThroughput(convId: string): GenerationThroughput | undefined {
+  return streamingGenerationThroughput.get(convId);
 }
 
 export function setContextCompactionStartedAt(convId: string, startedAt: number | null): void {

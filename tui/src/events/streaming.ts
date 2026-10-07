@@ -81,6 +81,9 @@ export function handleStreamingStarted(event: Extract<Event, { type: "streaming_
   const pending = state.pendingAI;
   if (!pending) return;
   if (pending.metadata) pending.metadata.workTimerStartedAt = event.workTimerStartedAt;
+  if (pending.metadata && (event.snapshotKind === "start" || event.generationThroughput !== undefined)) {
+    pending.metadata.generationThroughput = event.generationThroughput;
+  }
   if (event.snapshotKind === "start") {
     state.pendingAIBlockOffset = event.blockOffset ?? 0;
     state.pendingAIPartialCommittedBlocks = [];
@@ -194,7 +197,10 @@ export function handleToolResult(event: Extract<Event, { type: "tool_result" }>,
 }
 
 export function handleTokensUpdate(event: Extract<Event, { type: "tokens_update" }>, state: RenderState): void {
-  if (state.pendingAI) state.pendingAI.metadata!.tokens = event.tokens;
+  if (state.pendingAI) {
+    state.pendingAI.metadata!.tokens = event.tokens;
+    if (event.generationThroughput !== undefined) state.pendingAI.metadata!.generationThroughput = event.generationThroughput;
+  }
 }
 
 export function handleContextUpdate(event: Extract<Event, { type: "context_update" }>, state: RenderState): void {
@@ -220,6 +226,7 @@ export function handleMessageComplete(event: Extract<Event, { type: "message_com
     }
     state.pendingAI.metadata!.endedAt = event.endedAt;
     state.pendingAI.metadata!.tokens = event.tokens;
+    if (event.generationThroughput !== undefined) state.pendingAI.metadata!.generationThroughput = event.generationThroughput;
     state.messages.push(state.pendingAI);
     clearPendingAI(state);
   }

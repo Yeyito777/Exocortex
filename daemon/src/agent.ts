@@ -20,6 +20,7 @@ import { getMaxContext } from "./providers/registry";
 import { estimateContextTokens, isContextWindowError, shouldAutoCompact, type CompactionReason } from "./context-compaction";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
 import { createAbortError } from "./abort";
+import { ProviderGenerationTimer } from "./generation-throughput";
 
 // ── Callbacks ───────────────────────────────────────────────────────
 
@@ -42,6 +43,8 @@ export interface AgentCallbacks {
   onToolResult(block: ToolResultBlock): void;
   /** Accumulated output token count updated (fires after each API round). */
   onTokensUpdate(tokens: number): void;
+  /** Completed API-round output rate (TTFT + generation), before any tools execute. */
+  onGenerationRate?(tokensPerSecond: number): void;
   /** Input (context) token count from the latest API round. */
   onContextUpdate(contextTokens: number, inputMessages?: ApiMessage[]): void;
   /** Response headers received (fires once per API round, carries rate-limit info). */
@@ -166,6 +169,8 @@ export async function runAgentLoop(
     state?: AgentState;
     /** Test seam for provider streaming. Production always uses streamMessage. */
     streamMessageFn?: typeof streamMessage;
+    /** Monotonic clock seam for generation-rate measurement. */
+    generationNow?: () => number;
     /** Resolve the current logical window after a compaction replacement. */
     getCodexWindowId?: () => string | undefined;
     /** One-way provider-account identity frozen by the turn orchestrator. */
@@ -204,11 +209,14 @@ export async function runAgentLoop(
     let result;
     let retriedAfterContextError = false;
     let roundEmittedOutput = false;
+    const generationTimer = new ProviderGenerationTimer(options.generationNow);
+    let generationRate: number | null = null;
     while (true) {
       try {
         const diagnosticMessages = PERFORMANCE_PROFILING_ENABLED
           ? messages.filter(message => !diagnosticsSubmittedMessages.has(message))
           : [];
+        generationTimer.reset();
         result = await (options.streamMessageFn ?? streamMessage)(provider, messages, model, {
           onText: (text) => { roundEmittedOutput = true; callbacks.onTextChunk(text); },
           onThinking: (text) => { roundEmittedOutput = true; callbacks.onThinkingChunk(text); },
@@ -226,9 +234,10 @@ export async function runAgentLoop(
             // Reset this guard too so a clean retry that hits a context error can
             // still compact rather than being blocked by already-discarded text.
             roundEmittedOutput = false;
+            generationTimer.retry();
             callbacks.onRetry?.(attempt, maxAttempts, errorMessage, delaySec, metadata);
           },
-          onRetryWaitStart: callbacks.onRetryWaitStart,
+          onRetryWaitStart: () => { generationTimer.retry(); callbacks.onRetryWaitStart?.(); },
           onRetryWaitEnd: callbacks.onRetryWaitEnd,
         }, {
           system: options.system,
@@ -247,6 +256,7 @@ export async function runAgentLoop(
           codexTurnStartedAtMs: options.codexTurnStartedAtMs,
           diagnosticMessages,
         });
+        generationRate = generationTimer.rate(result.outputTokens);
         for (const message of messages) diagnosticsSubmittedMessages.add(message);
         break;
       } catch (error) {
@@ -266,6 +276,7 @@ export async function runAgentLoop(
     }
 
     lastOutputTokens = result.outputTokens ?? 0;
+    if (generationRate !== null) callbacks.onGenerationRate?.(generationRate);
     if (result.outputTokens) {
       totalOutputTokens += result.outputTokens;
       callbacks.onTokensUpdate(totalOutputTokens);

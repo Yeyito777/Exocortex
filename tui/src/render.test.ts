@@ -323,6 +323,7 @@ describe("render caching and frame diffing", () => {
     state.showDiagnostics = false;
     state.messages[1].metadata = {
       startedAt: 1_000, endedAt: 3_000, model: state.model, tokens: 1234,
+      generationThroughput: { provider: state.provider, model: state.model, rates: [617] },
     };
     renderSilently(state);
     const firstLines = state.historyLines;

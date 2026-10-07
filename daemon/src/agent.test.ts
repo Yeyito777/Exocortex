@@ -28,6 +28,72 @@ function state(): AgentState {
   };
 }
 
+describe("per-API-round throughput", () => {
+  test("samples each request separately before tools, excluding tool and inter-round work", async () => {
+    let now = 0;
+    let calls = 0;
+    const rates: number[] = [];
+    const fakeStream = (async () => {
+      const first = ++calls === 1;
+      now += first ? 2_000 : 1_000;
+      return {
+        text: "", thinking: "", stopReason: first ? "tool_use" : "stop", blocks: [],
+        toolCalls: first ? [{ id: "call", name: "read", input: {} }] : [],
+        outputTokens: first ? 100 : 300,
+      } satisfies StreamResult;
+    }) as typeof streamMessage;
+    const result = await runAgentLoop([], "openai", "gpt-5.4", callbacks({
+      onGenerationRate: rate => rates.push(rate),
+      onRoundComplete: () => { now += 600_000; },
+    }), {
+      streamMessageFn: fakeStream,
+      generationNow: () => now,
+      executor: async () => {
+        expect(rates).toEqual([50]);
+        now += 3_600_000;
+        return [{ toolCallId: "call", toolName: "read", output: "ok", isError: false }];
+      },
+    });
+    expect(rates).toEqual([50, 300]);
+    expect(result.tokens).toBe(400);
+  });
+
+  test("excludes failed context requests and compaction before a successful retry", async () => {
+    let now = 0;
+    let calls = 0;
+    const rates: number[] = [];
+    const fakeStream = (async () => {
+      if (++calls === 1) {
+        now += 100_000;
+        throw new Error("maximum context length exceeded");
+      }
+      now += 1_000;
+      return { text: "", thinking: "", stopReason: "stop", blocks: [], toolCalls: [], outputTokens: 50 };
+    }) as typeof streamMessage;
+    await runAgentLoop([], "openai", "gpt-5.4", callbacks({
+      onGenerationRate: rate => rates.push(rate),
+      compactContext: async () => { now += 600_000; return []; },
+    }), { streamMessageFn: fakeStream, generationNow: () => now });
+    expect(rates).toEqual([50]);
+  });
+
+  test("skips a response whose request included provider retry/backoff", async () => {
+    let now = 0;
+    const rates: number[] = [];
+    const fakeStream = (async (_provider, _messages, _model, cb) => {
+      now += 1_000;
+      cb.onRetry?.(1, 6, "retry", 60);
+      now += 62_000;
+      return { text: "", thinking: "", stopReason: "stop", blocks: [], toolCalls: [], outputTokens: 100 };
+    }) as typeof streamMessage;
+    const result = await runAgentLoop([], "openai", "gpt-5.4",
+      callbacks({ onGenerationRate: rate => rates.push(rate) }),
+      { streamMessageFn: fakeStream, generationNow: () => now });
+    expect(rates).toEqual([]);
+    expect(result.tokens).toBe(100);
+  });
+});
+
 describe("automatic agent compaction", () => {
   test("forwards hidden provider activity without treating it as committed output", async () => {
     let activity = 0;

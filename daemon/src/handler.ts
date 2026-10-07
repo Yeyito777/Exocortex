@@ -2960,6 +2960,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
               blocks: pendingAI.blocks,
               blockOffset: pendingAI.blockOffset,
               tokens: pendingAI.metadata?.tokens ?? 0,
+              generationThroughput: pendingAI.metadata?.generationThroughput,
               compactionStartedAt: convStore.getContextCompactionStartedAt(loadedConvId) ?? null,
             });
           }

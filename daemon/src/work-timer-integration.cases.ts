@@ -19,14 +19,18 @@ test("work timer survives canonical persistence, late join, automatic continuati
     metadata: {
       startedAt: startedAt - 137_000, endedAt: startedAt - 3_000,
       workTimerStartedAt: startedAt - 137_000, model: "gpt-6-sol", tokens: 42,
+      generationThroughput: { provider: "openai", model: "gpt-6-sol", rates: [100] },
     },
   }]);
   let expectedOrigin = startedAt - 134_000;
+  let expectedGenerationSamples = 1;
   const callbacks: OrchestrationCallbacks = {
     onHeaders() {}, onComplete() {},
     streamMessageFn: async (_provider, _messages, _model, streamCallbacks) => {
       expect(conversations.getPendingStreamSnapshot(id)?.metadata?.workTimerStartedAt).toBe(expectedOrigin);
       expect(events.findLast(event => event.type === "streaming_started")?.workTimerStartedAt).toBe(expectedOrigin);
+      expect(conversations.getPendingStreamSnapshot(id)?.metadata?.generationThroughput?.rates)
+        .toHaveLength(expectedGenerationSamples);
       streamCallbacks.onText("continued answer");
       return {
         text: "continued answer", thinking: "", stopReason: "stop",
@@ -40,11 +44,15 @@ test("work timer survives canonical persistence, late join, automatic continuati
       undefined, { automation: { kind: "external_notification" } });
     expect(result.ok).toBe(true);
     expect(load(id)!.messages.at(-1)?.metadata?.workTimerStartedAt).toBe(expectedOrigin);
+    expect(load(id)!.messages.at(-1)?.metadata?.generationThroughput?.rates).toHaveLength(2);
+    expect(events.findLast(event => event.type === "message_complete")?.generationThroughput?.rates).toHaveLength(2);
     expect(conversations.getPendingStreamSnapshot(id)).toBeNull();
     expectedOrigin = Date.now();
+    expectedGenerationSamples = 2;
     const next = await orchestrateSendMessage(server, null, undefined, id, "human follow-up", expectedOrigin, callbacks);
     expect(next.ok).toBe(true);
     expect(load(id)!.messages.at(-1)?.metadata?.workTimerStartedAt).toBe(expectedOrigin);
+    expect(load(id)!.messages.at(-1)?.metadata?.generationThroughput?.rates).toHaveLength(3);
     for (const automated of [true, false]) {
       conversations.pushQueuedMessage(id, "queued interjection", "next-turn",
         undefined, undefined, undefined, `queue-${automated}`, undefined,

@@ -36,6 +36,7 @@ export {
   isStreaming, isStreamHandoffActive, getStreamHandoffToken, beginStreamHandoff, tryBeginStreamHandoff, clearStreamHandoff,
   setActiveJob, getActiveJob, getActiveJobKind, isRestartRecoverableJob, clearActiveJob, getStreamingStartedAt,
   setStreamingTokens, getStreamingTokens, nextStreamSeq, getStreamSeq,
+  setStreamingGenerationThroughput, getStreamingGenerationThroughput,
   setStreamingWorkTimerStartedAt, getStreamingWorkTimerStartedAt,
   setContextCompactionStartedAt, getContextCompactionStartedAt,
   requestHistoryUnwind, isHistoryUnwindPending, clearHistoryUnwindPending,
@@ -2830,6 +2831,7 @@ export function getPendingStreamSnapshot(id: string): PendingStreamSnapshot | nu
         { tokens: streaming.getStreamingTokens(id) },
       ),
       workTimerStartedAt: streaming.getStreamingWorkTimerStartedAt(id),
+      generationThroughput: streaming.getStreamingGenerationThroughput(id),
     },
     committedMessageCount: storedMessageCount(conv.messages),
   };

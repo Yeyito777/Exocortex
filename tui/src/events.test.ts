@@ -5,6 +5,7 @@ import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, cre
 import { createInitialState, isStreaming, canInterrupt } from "./state";
 import { prepareConversationOpen } from "./conversationscroll";
 import type { Event } from "./protocol";
+import { generationTokensPerSecond } from "@exocortex/shared/generation-throughput";
 
 const daemon: DaemonActions = {
   subscribe() {},
@@ -13,6 +14,30 @@ const daemon: DaemonActions = {
   setSystemInstructions() {},
   loadToolOutputs() {},
 };
+
+describe("generation throughput events", () => {
+  test("hydrates, updates, and preserves round samples through completion", () => {
+    const state = createInitialState();
+    state.convId = "throughput";
+    const first = { provider: "openai" as const, model: "gpt-5.4", rates: [100] };
+    handleEvent({
+      type: "streaming_started", convId: state.convId, provider: "openai", model: "gpt-5.4",
+      startedAt: 1_000, snapshotKind: "catchup", generationThroughput: first,
+    }, state, daemon);
+    expect(generationTokensPerSecond(state.pendingAI?.metadata?.generationThroughput)).toBe(100);
+    const latest = { ...first, rates: [100, 200] };
+    handleEvent({
+      type: "tokens_update", convId: state.convId, tokens: 300, generationThroughput: latest,
+    }, state, daemon);
+    expect(generationTokensPerSecond(state.pendingAI?.metadata?.generationThroughput)).toBeCloseTo(155);
+    handleEvent({
+      type: "message_complete", convId: state.convId, endedAt: 3_600_000,
+      blocks: [], tokens: 300, generationThroughput: latest,
+    }, state, daemon);
+    expect(state.pendingAI).toBeNull();
+    expect(state.messages.at(-1)?.metadata?.generationThroughput).toEqual(latest);
+  });
+});
 
 describe("auth browser opener", () => {
   test("uses macOS open on Darwin", () => {

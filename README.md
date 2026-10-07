@@ -302,9 +302,18 @@ Both native and cross-build methods produce standalone Windows executables in
 ## TUI AI metadata
 
 AI metadata shows the model, average output `tokens/s`, and elapsed work time.
-Throughput uses the response's start/end timestamps, including tool time; it is
-not raw provider decoding speed. The work timer can span earlier responses and
-is kept separate from the throughput calculation.
+Each API round is sampled separately: provider-reported output tokens divided
+by that request's time (time-to-first-token + generation). Tool execution,
+compaction, retry backoff, and gaps between rounds are excluded. Retried rounds
+are not sampled. These APIs do not expose reliable server-side generation-only
+timing, so this is request throughput, not a raw decoding benchmark.
+
+The display uses normalized exponential weights (`alpha = 2/11`) over at most
+the latest ten measured rounds, with a hard cutoff at ten. Samples carry across
+messages and reconnects for the same conversation/provider/model, resetting on
+model/provider changes. During tools the rate stays fixed. Historical messages
+without measured rates show `— tokens/s`; message/work elapsed time is never a
+fallback.
 
 `/diagnostics` toggles raw output-token counts alongside this metadata.
 `/diagnostics on` and `/diagnostics off` set it explicitly. This TUI-only

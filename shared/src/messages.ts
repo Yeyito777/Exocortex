@@ -228,10 +228,15 @@ export function isUserMessageAutomation(value: unknown): value is UserMessageAut
     && (candidate.sourceId === undefined || typeof candidate.sourceId === "string");
 }
 
-/**
- * Metadata attached to a message. Persisted by the daemon,
- * rendered by the client.
- */
+/** Persistent, provider/model-scoped request throughput samples. */
+export interface GenerationThroughput {
+  provider: ProviderId;
+  model: ModelId;
+  /** Output tokens / request seconds (TTFT + generation) for the last ten API rounds. */
+  rates: number[];
+}
+
+/** Metadata attached to a message, persisted by the daemon and rendered by clients. */
 export interface MessageMetadata {
   /** When the client sent this message. Client-originated. */
   startedAt: number;
@@ -246,6 +251,8 @@ export interface MessageMetadata {
   model: ModelId;
   /** Accumulated output tokens. Starts at 0, daemon sends periodic updates. */
   tokens: number;
+  /** Independent of message/work elapsed time; never derived from accumulated tokens. */
+  generationThroughput?: GenerationThroughput;
   /**
    * True for daemon-authored messages that should be visible to the model but
    * treated like system/UI notices instead of real user messages in clients.

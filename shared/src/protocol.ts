@@ -1,6 +1,7 @@
 import type { FastMode } from "./messages";
 import type { ConversationDefaults } from "./config";
 import type { ActiveTaskInfo } from "./messages";
+import type { GenerationThroughput } from "./messages";
 /**
  * @exocortex/shared — IPC protocol.
  *
@@ -1246,6 +1247,7 @@ export interface StreamingStartedEvent {
   blockOffset?: number;
   /** Accumulated output tokens so far — included for late-joining clients and periodic catch-up snapshots. */
   tokens?: number;
+  generationThroughput?: GenerationThroughput;
   /** Active context-compaction start time for late-join/catch-up status rendering. */
   compactionStartedAt?: number | null;
 }
@@ -1325,6 +1327,7 @@ export interface TokensUpdateEvent {
   /** Monotonic daemon event sequence for the active stream (diagnostics). */
   streamSeq?: number;
   tokens: number;
+  generationThroughput?: GenerationThroughput;
 }
 
 export interface ContextUpdateEvent {
@@ -1343,6 +1346,7 @@ export interface MessageCompleteEvent {
   blocks: Block[];
   endedAt: number;
   tokens: number;
+  generationThroughput?: GenerationThroughput;
 }
 
 export interface UsageUpdateEvent {

@@ -26,6 +26,7 @@ describe("assistant metadata pane boundaries", () => {
       message.blocks = [{ type: "text", text: "Done." }];
       message.metadata!.tokens = 3161;
       message.metadata!.endedAt = 290_000;
+      message.metadata!.generationThroughput = { provider: "openai", model: message.metadata!.model, rates: [123.4] };
       if (source === "transcript" || source === "call draft") {
         message.metadata!.kind = REALTIME_TRANSCRIPT_KIND;
       }
@@ -42,7 +43,7 @@ describe("assistant metadata pane boundaries", () => {
           expect(visibleLength(lines[0])).toBeLessThanOrEqual(width);
           if (width < 37) expect(lines[0]).toContain("…");
           else {
-            expect(stripAnsi(lines[0])).toContain("GPT-6-Astra | 10.9 tokens/s | 4m 49s");
+            expect(stripAnsi(lines[0])).toContain("GPT-6-Astra | 123.4 tokens/s | 4m 49s");
             expect(stripAnsi(lines[0]).includes("3,161 tokens")).toBe(diagnostics);
           }
         }
@@ -351,7 +352,7 @@ describe("call transcript rendering", () => {
     expect(labels).toHaveLength(1);
     expect(labels[0]!.index).toBeGreaterThan(userIndex);
     expect(labels[0]!.index).toBeLessThan(assistantIndex);
-    expect(rendered).toContainEqual(expect.stringContaining("Gpt-live-1-boulder-alpha | 4.8 tokens/s | 2s"));
+    expect(rendered).toContainEqual(expect.stringContaining("Gpt-live-1-boulder-alpha | — tokens/s | 2s"));
   });
 
   test("keeps live call drafts at the tail below a delegated agent stream", () => {
@@ -1255,13 +1256,14 @@ describe("assistant metadata spacing", () => {
       const second = createPendingAI(3_000, "gpt-5.4");
       second.metadata!.endedAt = 4_000;
       second.metadata!.tokens = 20;
+      second.metadata!.generationThroughput = { provider: "openai", model: "gpt-5.4", rates: [100, 200] };
       second.blocks = [{ type: "text", text: "Second round" }];
       state.messages = [first];
       if (pending) state.pendingAI = second;
       else state.messages.push(second);
 
       expect(buildMessageLines(state, 120).lines.map(stripAnsi))
-        .toContain("  Gpt-5.4 | 10.0 tokens/s | 3s | 30 tokens");
+        .toContain("  Gpt-5.4 | 155.0 tokens/s | 3s | 30 tokens");
       expect(first.metadata!.tokens).toBe(10);
       expect(second.metadata!.tokens).toBe(20);
     }
@@ -1293,7 +1295,7 @@ describe("assistant metadata spacing", () => {
       "  ",
       "  Pushed to:",
       "  - origin/main",
-      "  Gpt-5.4 | 29.3 tokens/s | 12s",
+      "  Gpt-5.4 | — tokens/s | 12s",
     ]);
   });
 
@@ -1314,7 +1316,7 @@ describe("assistant metadata spacing", () => {
 
     expect(buildMessageLines(state, 120).lines.map(stripAnsi)).toEqual([
       "  Streaming reply",
-      "  Gpt-5.4 | 8.4 tokens/s | 5s",
+      "  Gpt-5.4 | — tokens/s | 5s",
     ]);
   });
 
@@ -1343,11 +1345,11 @@ describe("assistant metadata spacing", () => {
     expect(buildMessageLines(state, 120).lines.map(stripAnsi)).toEqual([
       "  Initial progress",
       "  Final result",
-      "  Gpt-5.4 | 0.0 tokens/s | 2h 0m 0s",
+      "  Gpt-5.4 | — tokens/s | 2h 0m 0s",
     ]);
     state.showDiagnostics = true;
     expect(buildMessageLines(state, 120).lines.map(stripAnsi).at(-1))
-      .toBe("  Gpt-5.4 | 0.0 tokens/s | 2h 0m 0s | 35 tokens");
+      .toBe("  Gpt-5.4 | — tokens/s | 2h 0m 0s | 35 tokens");
   });
 
   test("aggregates metadata across committed assistant messages and live pending assistant", () => {
@@ -1372,11 +1374,11 @@ describe("assistant metadata spacing", () => {
     expect(buildMessageLines(state, 120).lines.map(stripAnsi)).toEqual([
       "  Initial progress",
       "  Still working",
-      "  Gpt-5.4 | 0.0 tokens/s | 2h 0m 0s",
+      "  Gpt-5.4 | — tokens/s | 2h 0m 0s",
     ]);
     state.showDiagnostics = true;
     expect(buildMessageLines(state, 120).lines.map(stripAnsi).at(-1))
-      .toBe("  Gpt-5.4 | 0.0 tokens/s | 2h 0m 0s | 35 tokens");
+      .toBe("  Gpt-5.4 | — tokens/s | 2h 0m 0s | 35 tokens");
   });
 
   test("keeps the daemon work timer independent of token aggregation and paginated history", () => {
@@ -1392,9 +1394,9 @@ describe("assistant metadata spacing", () => {
       { role: "assistant", blocks: [{ type: "text", text: "Continued" }],
         metadata: { startedAt: 137_000, endedAt: 177_000, model: "gpt-5.5", tokens: 10, workTimerStartedAt: 3_000 } },
     );
-    expect(buildMessageLines(state, 120).lines.map(stripAnsi)).toContain("  Gpt-5.5 | 0.3 tokens/s | 2m 54s");
+    expect(buildMessageLines(state, 120).lines.map(stripAnsi)).toContain("  Gpt-5.5 | — tokens/s | 2m 54s");
     state.messages = state.messages.slice(-1);
-    expect(buildMessageLines(state, 120).lines.map(stripAnsi)).toContain("  Gpt-5.5 | 0.3 tokens/s | 2m 54s");
+    expect(buildMessageLines(state, 120).lines.map(stripAnsi)).toContain("  Gpt-5.5 | — tokens/s | 2m 54s");
   });
 
   test("keeps delegated-agent metadata when a GPT-Live transcript follows it", () => {
@@ -1422,9 +1424,9 @@ describe("assistant metadata spacing", () => {
     );
 
     const rendered = buildMessageLines(state, 120).lines.map(stripAnsi);
-    const delegatedMetadata = rendered.findIndex(line => line.includes("Gpt-5.6-sol | 8.0 tokens/s | 5s"));
+    const delegatedMetadata = rendered.findIndex(line => line.includes("Gpt-5.6-sol | — tokens/s | 5s"));
     const spokenAnswer = rendered.findIndex(line => line.includes("The spoken final answer."));
-    const spokenMetadata = rendered.findIndex(line => line.includes("Gpt-live-1-boulder-alpha | 1.7 tokens/s | 7s"));
+    const spokenMetadata = rendered.findIndex(line => line.includes("Gpt-live-1-boulder-alpha | — tokens/s | 7s"));
 
     expect(delegatedMetadata).toBeGreaterThanOrEqual(0);
     expect(spokenAnswer).toBeGreaterThan(delegatedMetadata);
@@ -1463,14 +1465,14 @@ describe("assistant metadata spacing", () => {
 
     expect(buildMessageLines(state, 120).lines.map(stripAnsi)).toEqual([
       "  Early compacted goal work",
-      "  Gpt-5.5 | 0.3 tokens/s | 1h 0m 0s",
+      "  Gpt-5.5 | — tokens/s | 1h 0m 0s",
       "  [Context warning]",
       "  Final goal result",
-      "  Gpt-5.5 | 0.2 tokens/s | 1h 30m 0s",
+      "  Gpt-5.5 | — tokens/s | 1h 30m 0s",
     ]);
     state.showDiagnostics = true;
     expect(buildMessageLines(state, 120).lines.map(stripAnsi))
-      .toContain("  Gpt-5.5 | 0.2 tokens/s | 1h 30m 0s | 1,250 tokens");
+      .toContain("  Gpt-5.5 | — tokens/s | 1h 30m 0s | 1,250 tokens");
   });
 
   test("does not apply completed goal metadata to later unrelated assistant replies", () => {
@@ -1509,16 +1511,16 @@ describe("assistant metadata spacing", () => {
 
     const rendered = buildMessageLines(state, 120).lines.map(stripAnsi);
     expect(rendered[0]).toBe("  Final goal result");
-    expect(rendered[1]).toBe("  Gpt-5.5 | 0.3 tokens/s | 1h 0m 0s");
+    expect(rendered[1]).toBe("  Gpt-5.5 | — tokens/s | 1h 0m 0s");
     expect(rendered.some((line) => line.includes("new unrelated question"))).toBe(true);
     expect(rendered.slice(-2)).toEqual([
       "  Unrelated reply",
-      "  Gpt-5.5 | 10.0 tokens/s | 5s",
+      "  Gpt-5.5 | — tokens/s | 5s",
     ]);
     state.showDiagnostics = true;
     const diagnosticLines = buildMessageLines(state, 120).lines.map(stripAnsi);
-    expect(diagnosticLines[1]).toBe("  Gpt-5.5 | 0.3 tokens/s | 1h 0m 0s | 1,000 tokens");
-    expect(diagnosticLines.at(-1)).toBe("  Gpt-5.5 | 10.0 tokens/s | 5s | 50 tokens");
+    expect(diagnosticLines[1]).toBe("  Gpt-5.5 | — tokens/s | 1h 0m 0s | 1,000 tokens");
+    expect(diagnosticLines.at(-1)).toBe("  Gpt-5.5 | — tokens/s | 5s | 50 tokens");
   });
 
   test("preserves prior goal-span display after a later user message starts a new goal", () => {
@@ -1562,14 +1564,14 @@ describe("assistant metadata spacing", () => {
     } as any;
 
     const rendered = buildMessageLines(state, 120).lines.map(stripAnsi);
-    expect(rendered).toContain("  Gpt-5.5 | 0.2 tokens/s | 2h 0m 0s");
+    expect(rendered).toContain("  Gpt-5.5 | — tokens/s | 2h 0m 0s");
     expect(rendered.slice(-2)).toEqual([
       "  New goal restarted",
-      "  Gpt-5.5 | 10.0 tokens/s | 5s",
+      "  Gpt-5.5 | — tokens/s | 5s",
     ]);
     state.showDiagnostics = true;
     expect(buildMessageLines(state, 120).lines.map(stripAnsi))
-      .toContain("  Gpt-5.5 | 0.2 tokens/s | 2h 0m 0s | 1,250 tokens");
+      .toContain("  Gpt-5.5 | — tokens/s | 2h 0m 0s | 1,250 tokens");
   });
 
   test("ignores overbroad legacy summary metadata instead of rendering idle days", () => {
@@ -1598,11 +1600,11 @@ describe("assistant metadata spacing", () => {
       "  [Summary of turns 10–100]",
       "  Legacy summary",
       "  Current work",
-      "  Gpt-5.5 | 26.6 tokens/s | 8m 0s",
+      "  Gpt-5.5 | — tokens/s | 8m 0s",
     ]);
     state.showDiagnostics = true;
     expect(buildMessageLines(state, 120).lines.map(stripAnsi).at(-1))
-      .toBe("  Gpt-5.5 | 26.6 tokens/s | 8m 0s | 12,788 tokens");
+      .toBe("  Gpt-5.5 | — tokens/s | 8m 0s | 12,788 tokens");
   });
 
   test("does not aggregate assistant metadata across large idle gaps when compaction hid boundaries", () => {
@@ -1630,11 +1632,11 @@ describe("assistant metadata spacing", () => {
     expect(buildMessageLines(state, 120).lines.map(stripAnsi)).toEqual([
       "  Old short reply",
       "  Current work",
-      "  Gpt-5.5 | 26.6 tokens/s | 8m 0s",
+      "  Gpt-5.5 | — tokens/s | 8m 0s",
     ]);
     state.showDiagnostics = true;
     expect(buildMessageLines(state, 120).lines.map(stripAnsi).at(-1))
-      .toBe("  Gpt-5.5 | 26.6 tokens/s | 8m 0s | 12,788 tokens");
+      .toBe("  Gpt-5.5 | — tokens/s | 8m 0s | 12,788 tokens");
   });
 });
 

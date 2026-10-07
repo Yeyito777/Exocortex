@@ -13,6 +13,8 @@ import { isDeepStrictEqual } from "node:util";
 import { prepareArchiveHashes } from "./conversation-loader";
 import { archiveWindow, inheritArchiveHashProof, storedMessageCount } from "./conversation-window";
 import { workTimerForTurn } from "./work-timer";
+import { appendGenerationRate } from "@exocortex/shared/generation-throughput";
+import { generationThroughputForTurn } from "./generation-throughput";
 import { hasConfiguredCredentials } from "./auth";
 import { runAgentLoop, type AgentCallbacks, type AgentState } from "./agent";
 import { getMaxContext, supportsImageInputs } from "./providers/registry";
@@ -756,6 +758,8 @@ async function orchestrateAdmittedAssistantTurn(
   // can coordinate with it normally.
   convStore.setActiveJob(convId, ac, startedAt, !manualCompaction);
   let workTimerStartedAt = workTimerForTurn(conv.messages, startedAt);
+  let generationThroughput = generationThroughputForTurn(conv.messages, conv.provider, conv.model);
+  convStore.setStreamingGenerationThroughput(convId, generationThroughput);
   convStore.setStreamingWorkTimerStartedAt(convId, workTimerStartedAt);
   convStore.initStreamingState(convId);
   convStore.setStreamingCommittedMessageCount(convId, storedMessageCount(conv.messages));
@@ -789,6 +793,7 @@ async function orchestrateAdmittedAssistantTurn(
     snapshotKind: "start",
     startedAt,
     workTimerStartedAt,
+    generationThroughput,
   });
 
   // The request surface appends current goal state after the stable system
@@ -981,6 +986,7 @@ async function orchestrateAdmittedAssistantTurn(
             startedAt: completedAt,
             endedAt: completedAt,
             workTimerStartedAt,
+            generationThroughput,
             model: liveConv.model,
             tokens: 0,
             kind: CONTEXT_COMPACTION_FINISHED_KIND,
@@ -1063,6 +1069,7 @@ async function orchestrateAdmittedAssistantTurn(
       if (message.role === "assistant" && !message.metadata) {
         message.metadata = {
           startedAt, endedAt: updatedAt, workTimerStartedAt,
+          generationThroughput,
           model: liveConv.model, tokens: agentState.tokens,
         };
       }
@@ -1149,6 +1156,7 @@ async function orchestrateAdmittedAssistantTurn(
       blocks: pendingAI.blocks,
       blockOffset: pendingAI.blockOffset,
       tokens: pendingAI.metadata?.tokens ?? 0,
+      generationThroughput: pendingAI.metadata?.generationThroughput,
       compactionStartedAt: convStore.getContextCompactionStartedAt(convId) ?? null,
     });
   }
@@ -1290,9 +1298,13 @@ async function orchestrateAdmittedAssistantTurn(
         isError: block.isError,
       });
     },
+    onGenerationRate(rate) {
+      generationThroughput = appendGenerationRate(generationThroughput, conv.provider, conv.model, rate);
+      convStore.setStreamingGenerationThroughput(convId, generationThroughput);
+    },
     onTokensUpdate(tokens) {
       convStore.setStreamingTokens(convId, tokens);
-      server.sendToSubscribers(convId, { type: "tokens_update", convId, streamSeq: convStore.nextStreamSeq(convId), tokens });
+      server.sendToSubscribers(convId, { type: "tokens_update", convId, streamSeq: convStore.nextStreamSeq(convId), tokens, generationThroughput });
     },
     onContextUpdate(contextTokens, inputMessages) {
       conv.lastContextTokens = contextTokens;
@@ -1559,6 +1571,7 @@ async function orchestrateAdmittedAssistantTurn(
           endedAt,
           model: conv.model,
           tokens: result.tokens,
+          generationThroughput,
         };
       }
 
@@ -1580,6 +1593,7 @@ async function orchestrateAdmittedAssistantTurn(
         blocks: result.blocks,
         endedAt,
         tokens: result.tokens,
+        generationThroughput,
       });
 
       log("info", `orchestrator: message complete for ${convId} (${result.tokens} tokens, ${result.blocks.length} blocks, ${endedAt - startedAt}ms)`);
@@ -1665,6 +1679,7 @@ async function orchestrateAdmittedAssistantTurn(
           endedAt,
           model: conv.model,
           tokens: agentState.tokens,
+          generationThroughput,
         };
         completedAssistantMetadataChanged = true;
       }
@@ -1723,6 +1738,7 @@ async function orchestrateAdmittedAssistantTurn(
             endedAt,
             model: conv.model,
             tokens: agentState.tokens,
+            generationThroughput,
           },
           providerData: undefined,
         });

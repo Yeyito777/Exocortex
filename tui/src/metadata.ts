@@ -8,6 +8,7 @@
 import { formatModelDisplayName, type MessageMetadata } from "./messages";
 import { theme } from "./theme";
 import { truncateToWidth } from "./textwidth";
+import { generationTokensPerSecond } from "@exocortex/shared/generation-throughput";
 
 // ── Formatting ──────────────────────────────────────────────────────
 
@@ -35,12 +36,6 @@ function formatTokenCount(tokens: number): string {
   return tokens.toLocaleString("en-US");
 }
 
-function formatTokenRate(tokens: number, elapsedMs: number): string {
-  if (!Number.isFinite(tokens) || tokens < 0 || !Number.isFinite(elapsedMs) || elapsedMs <= 0) return "—";
-  const rate = tokens / (elapsedMs / 1000);
-  return Number.isFinite(rate) ? rate.toFixed(1) : "—";
-}
-
 // ── Renderer ────────────────────────────────────────────────────────
 
 /**
@@ -48,10 +43,9 @@ function formatTokenRate(tokens: number, elapsedMs: number): string {
  *
  * Format: model | N tokens/s | Xs [| N tokens with diagnostics enabled]
  *
- * Throughput is average output tokens over the response's wall-clock span
- * (including tool time), not provider decoding speed. Use startedAt, not the
- * work-stretch timer: that timer can include earlier responses whose tokens
- * are not part of this message's count.
+ * Throughput is a ten-API-round exponentially weighted average, supplied by
+ * the daemon. Each sample is output tokens / request seconds (TTFT + generation).
+ * Tool time, message duration, and the work timer never enter this calculation.
  *
  * @param metadata  The metadata to render (null = no output).
  * @param options.active  Keep elapsed time live even if endedAt is persisted.
@@ -73,8 +67,10 @@ export function renderMetadata(
   const now = options.now ?? Date.now();
   const end = options.active ? now : metadata.endedAt ?? now;
 
-  // Output throughput over the same response span as the token count.
-  parts.push(`${formatTokenRate(metadata.tokens, end - metadata.startedAt)} tokens/s`);
+  // Never estimate generation throughput from the message's elapsed time.
+  const throughput = metadata.generationThroughput;
+  const rate = generationTokensPerSecond(throughput?.model === metadata.model ? throughput : undefined);
+  parts.push(`${rate === null ? "—" : rate.toFixed(1)} tokens/s`);
 
   // Duration retains the independent work-stretch timer.
   const elapsed = end - (metadata.workTimerStartedAt ?? metadata.startedAt);
