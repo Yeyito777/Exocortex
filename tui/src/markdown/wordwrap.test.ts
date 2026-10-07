@@ -99,6 +99,18 @@ describe("markdown fenced code block wrapping", () => {
 });
 
 describe("markdown math rendering", () => {
+  test("renders the exponential limit from conversation 1791391190536-s3rmv2", () => {
+    const rendered = markdownWordWrap(String.raw`Since the exponential function is continuous, if \(\lim_{x\to a}f(x)=L\), then
+\[
+\lim_{x\to a}e^{f(x)}=e^L.
+\]`, 140, "\x1b[0m");
+    expect(rendered.lines.map(stripAnsi)).toEqual([
+      "Since the exponential function is continuous, if lim_(x → a) f(x)=L, then",
+      "lim_(x → a) e^(f(x))=e^L.",
+    ]);
+    expect(rendered.copy?.[1]?.text).toBe("lim_(x → a) e^(f(x))=e^L.");
+  });
+
   test("preserves currency and bold formatting in the shop example", () => {
     const rendered = markdownWordWrap([
       "- Customers pay you **$100k**.",

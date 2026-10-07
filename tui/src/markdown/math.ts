@@ -15,6 +15,8 @@ import { sliceByWidth, termWidth } from "../textwidth";
 const ESCAPED_LEFT_BRACE = "\uE000";
 const ESCAPED_RIGHT_BRACE = "\uE001";
 const ESCAPED_AMPERSAND = "\uE002";
+const FRAGMENT_START = "\uE003";
+const FRAGMENT_END = "\uE004";
 
 // The converter deliberately has a small core vocabulary.  These aliases cover
 // notation commonly emitted by chat models and add spacing around binary
@@ -126,6 +128,10 @@ function readBraceGroup(input: string, open: number): GroupMatch | null {
   if (input[open] !== "{") return null;
   let depth = 0;
   for (let i = open; i < input.length; i++) {
+    if (input[i] === "\\") {
+      i++;
+      continue;
+    }
     if (input[i] === "{") depth++;
     else if (input[i] === "}" && --depth === 0) {
       return { content: input.slice(open + 1, i), end: i + 1 };
@@ -136,7 +142,7 @@ function readBraceGroup(input: string, open: number): GroupMatch | null {
 
 function skipAsciiWhitespace(input: string, from: number): number {
   let i = from;
-  while (i < input.length && (input[i] === " " || input[i] === "\t")) i++;
+  while (i < input.length && /[ \t\r\n]/.test(input[i])) i++;
   return i;
 }
 
@@ -252,6 +258,42 @@ function preprocessGroupedCommands(input: string, depth = 0): string {
 
 type MatrixEnvironment = "matrix" | "pmatrix" | "bmatrix" | "Bmatrix" | "vmatrix" | "Vmatrix" | "cases";
 
+/** Split only at this environment's separators, not nested groups/environments. */
+function splitEnvironmentBody(input: string, separator: "&" | "\\\\"): string[] {
+  const parts: string[] = [];
+  let start = 0;
+  let braces = 0;
+  let environments = 0;
+  for (let i = 0; i < input.length;) {
+    const environment = input.slice(i).match(/^\\(begin|end)\{[^}]+\}/);
+    if (environment) {
+      environments += environment[1] === "begin" ? 1 : -1;
+      i += environment[0].length;
+      continue;
+    }
+    if (braces === 0 && environments === 0 && input.startsWith(separator, i)) {
+      parts.push(input.slice(start, i));
+      i += separator.length;
+      if (separator === "\\\\") {
+        const spacing = input.slice(i).match(/^\[[^\]]*\]/);
+        if (spacing) i += spacing[0].length;
+      }
+      start = i;
+      continue;
+    }
+    if (input[i] === "\\") {
+      const command = input.slice(i).match(/^\\(?:[A-Za-z]+|.)/);
+      i += command?.[0].length ?? 1;
+      continue;
+    }
+    if (input[i] === "{") braces++;
+    else if (input[i] === "}") braces--;
+    i++;
+  }
+  parts.push(input.slice(start));
+  return parts;
+}
+
 function matrixDelimiters(environment: MatrixEnvironment, row: number, rows: number): [string, string] {
   const position = rows === 1 ? "only" : row === 0 ? "top" : row === rows - 1 ? "bottom" : "middle";
   switch (environment) {
@@ -275,10 +317,10 @@ function matrixDelimiters(environment: MatrixEnvironment, row: number, rows: num
   }
 }
 
-function renderMatrix(environment: MatrixEnvironment, body: string, display: boolean): string {
-  const rows = body
-    .split(/\\\\(?:\[[^\]]*\])?/)
-    .map(row => row.split("&").map(cell => cell.trim()).join("  ").trim())
+function renderMatrix(environment: MatrixEnvironment, body: string, display: boolean, depth: number): string {
+  const rows = splitEnvironmentBody(body, "\\\\")
+    .map(row => splitEnvironmentBody(row, "&")
+      .map(cell => convertLatexMathInternal(cell.trim(), false, depth + 1)).join(" ").trim())
     .filter((row, index, all) => row !== "" || all.length === 1 || index < all.length - 1);
 
   if (!display) {
@@ -286,7 +328,7 @@ function renderMatrix(environment: MatrixEnvironment, body: string, display: boo
       : environment === "Bmatrix" || environment === "cases" ? "{"
       : environment === "vmatrix" ? "|" : environment === "Vmatrix" ? "‖" : "[";
     const close = environment === "pmatrix" ? ")" : environment === "bmatrix" ? "]"
-      : environment === "Bmatrix" ? "}" : environment === "cases" ? ""
+      : environment === "Bmatrix" || environment === "cases" ? "}"
       : environment === "vmatrix" ? "|" : environment === "Vmatrix" ? "‖" : "]";
     return `${open}${rows.join("; ")}${close}`;
   }
@@ -297,31 +339,157 @@ function renderMatrix(environment: MatrixEnvironment, body: string, display: boo
   }).join("\n");
 }
 
-function preprocessEnvironments(input: string, display: boolean): string {
-  return input.replace(
-    /\\begin\{(matrix|pmatrix|bmatrix|Bmatrix|vmatrix|Vmatrix|cases|aligned|align\*?)\}([\s\S]*?)\\end\{\1\}/g,
-    (_whole, rawEnvironment: string, body: string) => {
-      if (rawEnvironment === "aligned" || rawEnvironment.startsWith("align")) {
-        const rows = body.split(/\\\\(?:\[[^\]]*\])?/).map(row => row.replace(/&/g, "").trim());
-        return display ? rows.join("\n") : rows.join("; ");
+function readEnvironment(input: string, start: number): (GroupMatch & { environment: string }) | null {
+  const opening = input.slice(start).match(/^\\begin\{(matrix|pmatrix|bmatrix|Bmatrix|vmatrix|Vmatrix|cases|aligned|align\*?)\}/);
+  if (!opening) return null;
+  const bodyStart = start + opening[0].length;
+  const boundaries = /\\(begin|end)\{([^}]+)\}/g;
+  boundaries.lastIndex = bodyStart;
+  const stack = [opening[1]];
+  for (let boundary; (boundary = boundaries.exec(input));) {
+    if (isEscaped(input, boundary.index)) continue;
+    if (boundary[1] === "begin") {
+      stack.push(boundary[2]);
+    } else {
+      if (stack.pop() !== boundary[2]) return null;
+      if (stack.length === 0) {
+        return { environment: opening[1], content: input.slice(bodyStart, boundary.index), end: boundaries.lastIndex };
       }
-      return renderMatrix(rawEnvironment as MatrixEnvironment, body, display);
-    },
-  );
+    }
+  }
+  return null;
+}
+
+function renderEnvironment(environment: string, body: string, display: boolean, depth: number): string {
+  if (environment === "aligned" || environment.startsWith("align")) {
+    const rows = splitEnvironmentBody(body, "\\\\")
+      .map(row => convertLatexMathInternal(splitEnvironmentBody(row, "&").join("").trim(), display, depth + 1));
+    return display ? rows.join("\n") : rows.join("; ");
+  }
+  return renderMatrix(environment as MatrixEnvironment, body, display, depth);
+}
+
+function readScriptArgument(input: string, from: number): GroupMatch | null {
+  const start = skipAsciiWhitespace(input, from);
+  if (start >= input.length) return null;
+  if (input[start] === "{") return readBraceGroup(input, start);
+  if (input[start] === "\\") {
+    const command = input.slice(start).match(/^\\(?:[A-Za-z]+|.)/);
+    if (!command) return null;
+    let end = start + command[0].length;
+    if (command[0] === "\\sqrt" && input[end] === "[") {
+      const indexEnd = input.indexOf("]", end + 1);
+      if (indexEnd >= 0) end = indexEnd + 1;
+    }
+    // Keep common macro invocations together when they are bare script arguments.
+    const argumentsCount = /^\\(?:[td]?frac|binom)$/.test(command[0]) ? 2
+      : /^\\(?:text|mathrm|mathbf|boldsymbol|operatorname|sqrt|mathbb|mathcal|mathscr|mathfrak|mathsf|mathtt|abs|norm|boxed|bar|overline|underline|hat|widehat|tilde|widetilde|dot|ddot|vec)$/.test(command[0]) ? 1 : 0;
+    for (let arg = 0; arg < argumentsCount; arg++) {
+      const group = readBraceGroup(input, skipAsciiWhitespace(input, end));
+      if (!group) break;
+      end = group.end;
+    }
+    return { content: input.slice(start, end), end };
+  }
+  const content = String.fromCodePoint(input.codePointAt(start)!);
+  return { content, end: start + content.length };
+}
+
+/** Protect complete structures before the dependency strips grouping and spacing. */
+function preprocessStructures(input: string, display: boolean, depth: number, protect: (text: string) => string): string {
+  let out = "";
+  let boundOperator = false;
+  for (let i = 0; i < input.length;) {
+    if (input[i] === "\\") {
+      const environment = readEnvironment(input, i);
+      if (environment) {
+        out += protect(renderEnvironment(environment.environment, environment.content, display, depth));
+        boundOperator = false;
+        i = environment.end;
+        continue;
+      }
+      const command = input.slice(i).match(/^\\(?:[A-Za-z]+|.)/);
+      if (command) {
+        if (!/^\\(?:no)?limits$/.test(command[0])) {
+          boundOperator = /^\\(?:lim|limsup|liminf|min|max|sup|inf|argmin|argmax|sum|prod|int)$/.test(command[0]);
+          out += command[0] === "\\_" ? protect("_") : command[0];
+        }
+        i += command[0].length;
+        continue;
+      }
+    }
+    const marker = input[i];
+    if (marker === "_" || marker === "^") {
+      const argument = readScriptArgument(input, i + 1);
+      if (argument) {
+        const content = convertLatexMathInternal(argument.content, false, depth + 1);
+        const unicode = latexToUnicode(`${marker}{${content}}`, { latexCheck: false, fallbackBehaviour: "raw" });
+        // All-or-nothing Unicode scripts avoid mixing baseline and raised text.
+        // Unsupported compound scripts need visible grouping: e^(f(x)), not e^f(x).
+        const script = unicode.startsWith(marker)
+          ? `${marker}${Array.from(content).length === 1 ? content : `(${content})`}`
+          : unicode;
+        out += protect(script);
+        i = argument.end;
+        if (boundOperator && !/[_^]/.test(input[skipAsciiWhitespace(input, i)] ?? "")) {
+          out += " ";
+          boundOperator = false;
+        }
+        continue;
+      }
+      // Leave malformed/incomplete scripts readable instead of losing braces.
+      out += protect(input.slice(i));
+      break;
+    }
+    if (!/[ \t\r\n]/.test(marker)) boundOperator = false;
+    out += input[i++];
+  }
+  return out;
+}
+
+/** Place multiline fragments side by side, rather than splicing their rows. */
+function restoreFragments(input: string, fragments: string[], display: boolean): string {
+  if (!display || fragments.length === 0) {
+    return input.replace(/\uE003(\d+)\uE004/g, (whole, index: string) => fragments[Number(index)] ?? whole);
+  }
+  const lines = [""];
+  const append = (text: string) => {
+    const column = Math.max(...lines.map(termWidth));
+    for (const [row, part] of text.split("\n").entries()) {
+      const prefix = lines[row] ?? "";
+      lines[row] = prefix + " ".repeat(column - termWidth(prefix)) + part;
+    }
+  };
+  let start = 0;
+  for (const match of input.matchAll(/\uE003(\d+)\uE004/g)) {
+    append(input.slice(start, match.index));
+    append(fragments[Number(match[1])] ?? match[0]);
+    start = match.index + match[0].length;
+  }
+  append(input.slice(start));
+  return lines.map(line => line.trimEnd()).join("\n");
 }
 
 export function convertLatexMath(source: string, display = false): string {
+  return convertLatexMathInternal(source, display, 0);
+}
+
+function convertLatexMathInternal(source: string, display: boolean, depth: number): string {
   if (!source) return "";
+  if (depth > 32) return source.trim();
   try {
+    const fragments: string[] = [];
+    const protect = (text: string) => `${FRAGMENT_START}${fragments.push(text) - 1}${FRAGMENT_END}`;
     // TeX treats physical newlines in ordinary display expressions as
     // whitespace. Collapse them before environment handling so pretty-printed
     // source does not turn every parenthesis/operator into its own terminal
     // row. Matrix/aligned/cases environments reintroduce intentional rows from
     // their `\\` separators below.
     const normalizedSource = display ? source.replace(/\s*\n\s*/g, " ") : source;
-    let prepared = preprocessEnvironments(normalizedSource, display);
+    let prepared = preprocessStructures(normalizedSource, display, depth, protect);
     prepared = preprocessGroupedCommands(prepared);
     prepared = prepared
+      .replace(/\\(qquad|quad)\b/g, (_whole, command: string) => protect(command === "qquad" ? "    " : "  "))
       .replace(/\\\{/g, ESCAPED_LEFT_BRACE)
       .replace(/\\\}/g, ESCAPED_RIGHT_BRACE)
       .replace(/\\&/g, ESCAPED_AMPERSAND)
@@ -329,12 +497,12 @@ export function convertLatexMath(source: string, display = false): string {
       .replace(/\\ /g, " ")
       .replace(/\\not\s*=/g, " ≠ ");
 
-    return latexToUnicode(prepared, {
+    const converted = latexToUnicode(prepared, {
       latexCheck: false,
       customMacros: CUSTOM_MACROS,
-      // Unicode has no subscript forms for many symbols (including ℂ). Keep
-      // those scripts in readable linear notation (`_ℂ`) instead of mixing a
-      // baseline glyph with subscript parentheses (`₍ℂ₎`).
+      // Complete scripts have already been protected above. Keep any remaining
+      // unsupported/malformed syntax raw rather than mixing baseline glyphs
+      // with super/subscript parentheses.
       fallbackBehaviour: "raw",
     })
       .replaceAll(ESCAPED_LEFT_BRACE, "{")
@@ -346,6 +514,7 @@ export function convertLatexMath(source: string, display = false): string {
       .replace(/[ \t]+\)/g, ")")
       .replace(/[ \t]{2,}/g, " ")
       .trim();
+    return restoreFragments(converted, fragments, display);
   } catch {
     // Rendering is presentation-only. A malformed expression must never make a
     // conversation disappear or crash the TUI.

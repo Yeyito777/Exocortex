@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { termWidth } from "../textwidth";
 import {
   convertLatexMath,
   renderDisplayMath,
@@ -29,10 +30,50 @@ describe("terminal LaTeX conversion", () => {
     expect(convertLatexMath(String.raw`x_1 + y^{2}`)).toBe("x₁ + y²");
   });
 
+  test("keeps compound exponents and limit bounds grouped", () => {
+    expect(convertLatexMath(String.raw`\lim_{x\to a}e^{f(x)}=e^L.`))
+      .toBe("lim_(x → a) e^(f(x))=e^L.");
+    expect(convertLatexMath(String.raw`\lim_{t\to1}g(t)=2`))
+      .toBe("lim_(t → 1) g(t)=2");
+    expect(convertLatexMath(String.raw`\lim\limits_{x\to a^+}f(x)`))
+      .toBe("lim_(x → a⁺) f(x)");
+    expect(convertLatexMath("\\lim_\n{x\\to a}f(x)")).toBe("lim_(x → a) f(x)");
+    expect(convertLatexMath(String.raw`x^{y_1+\alpha}`)).toBe("x^(y₁+α)");
+    expect(convertLatexMath(String.raw`x^\alpha + x^\mathbb{R} + x^\sqrt[3]{y}`))
+      .toBe("x^α + x^ℝ + x^(root(3, y))");
+    expect(convertLatexMath(String.raw`x^{ab} + x_{n+1}`)).toBe("xᵃᵇ + xₙ₊₁");
+    expect(convertLatexMath(String.raw`x\_1`)).toBe("x_1");
+    expect(convertLatexMath("x^2\n+ y^2")).toBe("x²\n+ y²");
+  });
+
   test("renders matrices compactly inline and structurally in display mode", () => {
     const source = String.raw`\begin{pmatrix}a&b\\c&d\end{pmatrix}`;
     expect(convertLatexMath(source)).toBe("(a b; c d)");
     expect(convertLatexMath(source, true)).toBe("⎛ a b ⎞\n⎝ c d ⎠");
+  });
+
+  test("retains inline braces and aligns side-by-side piecewise definitions", () => {
+    const f = String.raw`\begin{cases}1,&x\le0,\\1+x,&x>0,\end{cases}`;
+    const g = String.raw`\begin{cases}0,&t=1,\\2,&t\ne1.\end{cases}`;
+    expect(convertLatexMath(f)).toBe("{1, x ≤ 0,; 1+x, x>0,}");
+    expect(convertLatexMath(`f(x)=${f}\\qquad g(t)=${g}`, true)).toBe([
+      "f(x)=⎧ 1, x ≤ 0,     g(t)=⎧ 0, t=1,",
+      "     ⎩ 1+x, x>0,          ⎩ 2, t ≠ 1.",
+    ].join("\n"));
+    expect(convertLatexMath(String.raw`\begin{Bmatrix}a\\b\end{Bmatrix}`)).toBe("{a; b}");
+    expect(convertLatexMath(String.raw`f(x)=\begin{cases}1\\2\\3\end{cases}\quad g(x)=\begin{cases}4\\5\end{cases}`, true))
+      .toBe("f(x)=⎧ 1   g(x)=⎧ 4\n     ⎨ 2        ⎩ 5\n     ⎩ 3");
+  });
+
+  test("keeps nested environments and escaped separators scoped", () => {
+    expect(convertLatexMath(String.raw`\begin{pmatrix}\begin{pmatrix}a&b\\c&d\end{pmatrix}&x\\y&z\end{pmatrix}`, true))
+      .toBe("⎛ (a b; c d) x ⎞\n⎝ y z ⎠");
+    expect(convertLatexMath(String.raw`\begin{aligned}f(x)&=\begin{cases}x^2,&x>0\\0,&x\le0\end{cases}\\g(x)&=1\end{aligned}`, true))
+      .toBe("f(x)=⎧ x², x>0\n     ⎩ 0, x ≤ 0\ng(x)=1");
+    expect(convertLatexMath(String.raw`\begin{pmatrix}\text{a\&b}&\{c\}\\d&e\end{pmatrix}`, true))
+      .toBe("⎛ a&b {c} ⎞\n⎝ d e ⎠");
+    expect(convertLatexMath(String.raw`e^{\begin{pmatrix}a&b\\c&d\end{pmatrix}}`))
+      .toBe("e^((a b; c d))");
   });
 
   test("collapses pretty-printed display source while preserving structural environment rows", () => {
@@ -57,6 +98,8 @@ describe("terminal LaTeX conversion", () => {
   test("preserves unknown commands and survives malformed input", () => {
     expect(convertLatexMath(String.raw`x + \unknown{y}`)).toContain("\\unknown");
     expect(() => convertLatexMath(String.raw`\frac{{{{`)).not.toThrow();
+    expect(convertLatexMath(String.raw`e^{f(x)`)).toBe("e^{f(x)");
+    expect(convertLatexMath("x^{".repeat(100))).not.toMatch(/[\uE003\uE004]/);
   });
 });
 
@@ -145,5 +188,20 @@ describe("display math blocks", () => {
     expect(rendered.copy[0]?.text).toBe("P ∧ Q");
     expect(rendered.copy[0]?.displayStart).toBe(0);
     expect(rendered.cont).toEqual([false]);
+  });
+
+  test("wraps aligned cases without losing their layout in copied text", () => {
+    const source = String.raw`f(x)=\begin{cases}1,&x\le0\\1+x,&x>0\end{cases}\qquad g(t)=\begin{cases}0,&t=1\\2,&t\ne1\end{cases}`;
+    const logicalLines = convertLatexMath(source, true).split("\n");
+    const rendered = renderDisplayMath(source, 18);
+    expect(rendered.lines.every(line => termWidth(line) <= 18)).toBe(true);
+    const copiedLines: string[] = [];
+    for (let row = 0; row < rendered.lines.length; row++) {
+      expect(rendered.copy[row]?.text).toBe(rendered.lines[row]);
+      expect(rendered.copy[row]?.displayStart).toBe(0);
+      if (rendered.cont[row]) copiedLines[copiedLines.length - 1] += rendered.join[row] + rendered.copy[row]!.text;
+      else copiedLines.push(rendered.copy[row]!.text);
+    }
+    expect(copiedLines).toEqual(logicalLines);
   });
 });

@@ -77,6 +77,63 @@ describe("adaptive user message rendering", () => {
 });
 
 describe("assistant display math rendering", () => {
+  test("renders the piecewise counterexample from conversation 1791391190536-s3rmv2", () => {
+    const block: Block = {
+      type: "text",
+      text: String.raw`Exactly—the key is **continuity of the outer function at the inner limit**.
+
+If \(f(x)\to L\) and \(g\) is continuous at \(L\), then
+\[
+g(f(x))\to g(L).
+\]
+This applies to \(g(t)=e^t\).
+
+But knowing only \(\lim_{t\to L}g(t)\) says **nothing about \(g(L)\)**. The inner function might equal \(L\) repeatedly.
+
+For example, take \(a=0\):
+\[
+f(x)=
+\begin{cases}
+1,&x\le0,\\
+1+x,&x>0,
+\end{cases}
+\qquad
+g(t)=
+\begin{cases}
+0,&t=1,\\
+2,&t\ne1.
+\end{cases}
+\]
+Then \(f(x)\to1\) and \(\lim_{t\to1}g(t)=2\), but
+\[
+g(f(x))=
+\begin{cases}
+0,&x\le0,\\
+2,&x>0.
+\end{cases}
+\]
+So the composition has **no limit** at \(0\).`,
+    };
+    const rendered = renderBlockCached(block, 120, [], [], false);
+    const plain = rendered.lines.map(stripAnsi);
+    expect(plain).toContain("  But knowing only lim_(t → L) g(t) says nothing about g(L). The inner function might equal L repeatedly.");
+    expect(plain).toContain("  Then f(x) → 1 and lim_(t → 1) g(t)=2, but");
+    const definitions = plain.findIndex(line => line.includes("f(x)= ⎧"));
+    expect(plain.slice(definitions, definitions + 2)).toEqual([
+      "  f(x)= ⎧ 1, x ≤ 0,      g(t)= ⎧ 0, t=1,",
+      "        ⎩ 1+x, x>0,            ⎩ 2, t ≠ 1.",
+    ]);
+    expect(rendered.copy?.slice(definitions, definitions + 2)).toEqual(
+      plain.slice(definitions, definitions + 2).map(line => ({ text: line.slice(2), displayStart: 2 })),
+    );
+    const composition = plain.findIndex(line => line.includes("g(f(x))= ⎧"));
+    expect(plain.slice(composition, composition + 2)).toEqual([
+      "  g(f(x))= ⎧ 0, x ≤ 0,",
+      "           ⎩ 2, x>0.",
+    ]);
+    expect(plain.join("\n")).not.toMatch(/[\uE003\uE004]/);
+  });
+
   test("renders math after prose and preserves the indented copy projection", () => {
     const block: Block = {
       type: "text",
