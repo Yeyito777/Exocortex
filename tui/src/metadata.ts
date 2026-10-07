@@ -43,8 +43,9 @@ function formatTokenCount(tokens: number): string {
  *
  * Format: model | N tokens/s | Xs [| N tokens with diagnostics enabled]
  *
- * Throughput is a ten-API-round exponentially weighted average, supplied by
- * the daemon. Each sample is output tokens / request seconds (TTFT + generation).
+ * Throughput is an exponentially weighted average of this message's last ten
+ * API rounds, supplied by the daemon. Each sample is output tokens / request
+ * seconds (TTFT + generation). A new message starts at zero.
  * Tool time, message duration, and the work timer never enter this calculation.
  *
  * @param metadata  The metadata to render (null = no output).
@@ -69,7 +70,10 @@ export function renderMetadata(
 
   // Never estimate generation throughput from the message's elapsed time.
   const throughput = metadata.generationThroughput;
-  const rate = generationTokensPerSecond(throughput?.model === metadata.model ? throughput : undefined);
+  const measuredRate = generationTokensPerSecond(throughput?.model === metadata.model ? throughput : undefined);
+  // Optimistic messages exist before streaming_started supplies the fresh
+  // daemon history. Show zero, never a prior message's rate, while waiting.
+  const rate = measuredRate ?? (metadata.endedAt === null ? 0 : null);
   parts.push(`${rate === null ? "—" : rate.toFixed(1)} tokens/s`);
 
   // Duration retains the independent work-stretch timer.

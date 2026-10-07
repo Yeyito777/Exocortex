@@ -23,14 +23,15 @@ test("work timer survives canonical persistence, late join, automatic continuati
     },
   }]);
   let expectedOrigin = startedAt - 134_000;
-  let expectedGenerationSamples = 1;
   const callbacks: OrchestrationCallbacks = {
     onHeaders() {}, onComplete() {},
     streamMessageFn: async (_provider, _messages, _model, streamCallbacks) => {
       expect(conversations.getPendingStreamSnapshot(id)?.metadata?.workTimerStartedAt).toBe(expectedOrigin);
       expect(events.findLast(event => event.type === "streaming_started")?.workTimerStartedAt).toBe(expectedOrigin);
       expect(conversations.getPendingStreamSnapshot(id)?.metadata?.generationThroughput?.rates)
-        .toHaveLength(expectedGenerationSamples);
+        .toEqual([]);
+      expect(events.findLast(event => event.type === "streaming_started")?.generationThroughput?.rates)
+        .toEqual([]);
       streamCallbacks.onText("continued answer");
       return {
         text: "continued answer", thinking: "", stopReason: "stop",
@@ -44,15 +45,14 @@ test("work timer survives canonical persistence, late join, automatic continuati
       undefined, { automation: { kind: "external_notification" } });
     expect(result.ok).toBe(true);
     expect(load(id)!.messages.at(-1)?.metadata?.workTimerStartedAt).toBe(expectedOrigin);
-    expect(load(id)!.messages.at(-1)?.metadata?.generationThroughput?.rates).toHaveLength(2);
-    expect(events.findLast(event => event.type === "message_complete")?.generationThroughput?.rates).toHaveLength(2);
+    expect(load(id)!.messages.at(-1)?.metadata?.generationThroughput?.rates).toHaveLength(1);
+    expect(events.findLast(event => event.type === "message_complete")?.generationThroughput?.rates).toHaveLength(1);
     expect(conversations.getPendingStreamSnapshot(id)).toBeNull();
     expectedOrigin = Date.now();
-    expectedGenerationSamples = 2;
     const next = await orchestrateSendMessage(server, null, undefined, id, "human follow-up", expectedOrigin, callbacks);
     expect(next.ok).toBe(true);
     expect(load(id)!.messages.at(-1)?.metadata?.workTimerStartedAt).toBe(expectedOrigin);
-    expect(load(id)!.messages.at(-1)?.metadata?.generationThroughput?.rates).toHaveLength(3);
+    expect(load(id)!.messages.at(-1)?.metadata?.generationThroughput?.rates).toHaveLength(1);
     for (const automated of [true, false]) {
       conversations.pushQueuedMessage(id, "queued interjection", "next-turn",
         undefined, undefined, undefined, `queue-${automated}`, undefined,
@@ -79,6 +79,7 @@ test("work timer survives canonical persistence, late join, automatic continuati
       expect(injected.ok, injected.error).toBe(true);
       expect(calls).toBe(2);
       expect(load(id)!.messages.at(-1)?.metadata?.workTimerStartedAt).toBe(expectedOrigin);
+      expect(load(id)!.messages.at(-1)?.metadata?.generationThroughput?.rates).toHaveLength(2);
       const prefix = load(id)!.messages.filter(message => message.role === "assistant").at(-2)!;
       expect(prefix.metadata?.workTimerStartedAt).toBe(turnStart);
     }

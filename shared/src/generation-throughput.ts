@@ -3,6 +3,11 @@ import type { GenerationThroughput, ModelId, ProviderId } from "./messages";
 export const GENERATION_RATE_CUTOFF = 10;
 export const GENERATION_RATE_ALPHA = 2 / (GENERATION_RATE_CUTOFF + 1);
 
+/** Each assistant message owns a fresh history; only its API rounds may append. */
+export function createGenerationThroughput(provider: ProviderId, model: ModelId): GenerationThroughput {
+  return { provider, model, rates: [] };
+}
+
 function samples(throughput: GenerationThroughput | undefined): number[] {
   const rates = throughput?.rates;
   return (Array.isArray(rates) ? rates : [])
@@ -24,6 +29,8 @@ export function appendGenerationRate(
 /** Normalized exponential weights over the last ten API rounds, newest first.
  * Unlike an unbounded recursive EMA, samples older than the cutoff have no weight. */
 export function generationTokensPerSecond(throughput: GenerationThroughput | undefined): number | null {
+  const rawRates = throughput?.rates;
+  if (Array.isArray(rawRates) && rawRates.length === 0) return 0;
   const rates = samples(throughput);
   if (!rates.length) return null;
   let total = 0;

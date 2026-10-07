@@ -228,11 +228,11 @@ export function isUserMessageAutomation(value: unknown): value is UserMessageAut
     && (candidate.sourceId === undefined || typeof candidate.sourceId === "string");
 }
 
-/** Persistent, provider/model-scoped request throughput samples. */
+/** Persistent request throughput samples belonging to one assistant message. */
 export interface GenerationThroughput {
   provider: ProviderId;
   model: ModelId;
-  /** Output tokens / request seconds (TTFT + generation) for the last ten API rounds. */
+  /** Output tokens / request seconds (TTFT + generation) for this message's last ten API rounds. */
   rates: number[];
 }
 

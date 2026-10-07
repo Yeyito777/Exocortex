@@ -308,12 +308,12 @@ compaction, retry backoff, and gaps between rounds are excluded. Retried rounds
 are not sampled. These APIs do not expose reliable server-side generation-only
 timing, so this is request throughput, not a raw decoding benchmark.
 
-The display uses normalized exponential weights (`alpha = 2/11`) over at most
-the latest ten measured rounds, with a hard cutoff at ten. Samples carry across
-messages and reconnects for the same conversation/provider/model, resetting on
-model/provider changes. During tools the rate stays fixed. Historical messages
-without measured rates show `— tokens/s`; message/work elapsed time is never a
-fallback.
+Each assistant message starts at `0.0 tokens/s` with an empty sample history.
+The display uses normalized exponential weights (`alpha = 2/11`) over that
+message's latest ten measured rounds, with a hard cutoff at ten. Previous
+messages never contribute. Reconnecting preserves the current message's
+samples, and during tools the rate stays fixed. Historical messages without
+measured rates show `— tokens/s`; message/work elapsed time is never a fallback.
 
 `/diagnostics` toggles raw output-token counts alongside this metadata.
 `/diagnostics on` and `/diagnostics off` set it explicitly. This TUI-only
