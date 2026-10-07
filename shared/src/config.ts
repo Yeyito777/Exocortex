@@ -151,6 +151,8 @@ export interface ConversationDefaults {
 export interface TuiConfig {
   /** If true, the TUI censors account/email labels in status and auth UI. */
   hideSensitiveInfo?: boolean;
+  /** If true, the TUI shows output-token counts alongside response throughput. */
+  diagnostics?: boolean;
 }
 
 export interface AudioConfig {

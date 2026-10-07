@@ -35,21 +35,33 @@ function formatTokenCount(tokens: number): string {
   return tokens.toLocaleString("en-US");
 }
 
+function formatTokenRate(tokens: number, elapsedMs: number): string {
+  if (!Number.isFinite(tokens) || tokens < 0 || !Number.isFinite(elapsedMs) || elapsedMs <= 0) return "—";
+  const rate = tokens / (elapsedMs / 1000);
+  return Number.isFinite(rate) ? rate.toFixed(1) : "—";
+}
+
 // ── Renderer ────────────────────────────────────────────────────────
 
 /**
  * Render message metadata into display lines.
  *
- * Format: model · N tokens · Xs
+ * Format: model | N tokens/s | Xs [| N tokens with diagnostics enabled]
+ *
+ * Throughput is average output tokens over the response's wall-clock span
+ * (including tool time), not provider decoding speed. Use startedAt, not the
+ * work-stretch timer: that timer can include earlier responses whose tokens
+ * are not part of this message's count.
  *
  * @param metadata  The metadata to render (null = no output).
  * @param options.active  Keep elapsed time live even if endedAt is persisted.
  * @param options.width  Available pane columns, including the assistant indent.
+ * @param options.diagnostics  Also display the accumulated output-token count.
  * @returns Lines to append below the message content.
  */
 export function renderMetadata(
   metadata: MessageMetadata | null,
-  options: { active?: boolean; now?: number; width?: number } = {},
+  options: { active?: boolean; now?: number; width?: number; diagnostics?: boolean } = {},
 ): string[] {
   if (!metadata) return [];
 
@@ -58,14 +70,17 @@ export function renderMetadata(
   // Model
   parts.push(formatModelDisplayName(metadata.model));
 
-  // Tokens
-  parts.push(`${formatTokenCount(metadata.tokens)} tokens`);
-
-  // Duration
   const now = options.now ?? Date.now();
-  const elapsed = (options.active ? now : metadata.endedAt ?? now)
-    - (metadata.workTimerStartedAt ?? metadata.startedAt);
+  const end = options.active ? now : metadata.endedAt ?? now;
+
+  // Output throughput over the same response span as the token count.
+  parts.push(`${formatTokenRate(metadata.tokens, end - metadata.startedAt)} tokens/s`);
+
+  // Duration retains the independent work-stretch timer.
+  const elapsed = end - (metadata.workTimerStartedAt ?? metadata.startedAt);
   parts.push(formatDuration(elapsed));
+
+  if (options.diagnostics) parts.push(`${formatTokenCount(metadata.tokens)} tokens`);
 
   // Metadata is single-line chrome, not a wrapped content block. Include the
   // indent in its column budget so it cannot paint into a neighboring pane.

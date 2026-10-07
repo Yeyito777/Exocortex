@@ -5,6 +5,7 @@ import { CALL_COMMAND } from "./commands/call";
 import { COMPACT_COMMAND } from "./commands/compact";
 import { CONVO_COMMAND } from "./commands/convo";
 import { DEFAULT_MODEL_COMMAND } from "./commands/default-model";
+import { DIAGNOSTICS_COMMAND } from "./commands/diagnostics";
 import { EFFORT_COMMAND } from "./commands/effort";
 import { FAST_COMMAND } from "./commands/fast";
 import { ULTRAFAST_COMMAND } from "./commands/ultrafast";
@@ -62,6 +63,7 @@ const commands: SlashCommand[] = [
   TOKENS_COMMAND,
   USAGE_COMMAND,
   TIME_COMMAND,
+  DIAGNOSTICS_COMMAND,
   THEME_COMMAND,
   HIDE_COMMAND,
   PING_COMMAND,

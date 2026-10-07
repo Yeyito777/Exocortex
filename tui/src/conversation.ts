@@ -293,6 +293,7 @@ export function buildMessageLines(
   options: BuildMessageLinesOptions = {},
 ): BuildMessageLinesResult {
   const contentWidth = availableWidth - 4;
+  const metadataOptions = { width: availableWidth, diagnostics: state.showDiagnostics };
   const lines: string[] = [];
   const wrapContinuation: boolean[] = [];
   const wrapJoiners: string[] = [];
@@ -450,8 +451,8 @@ export function buildMessageLines(
           ? null
           : assistantSegmentMetadata(state.messages, messageIndex) ?? assistantRunMetadata(state.messages, messageIndex);
       const metadataLines = isCallTranscript
-        ? renderMetadata(metadata, { width: availableWidth })
-        : nextContinuesAssistantSegment ? [] : renderMetadata(metadata, { width: availableWidth, active: msg === durableSleepAssistant });
+        ? renderMetadata(metadata, metadataOptions)
+        : nextContinuesAssistantSegment ? [] : renderMetadata(metadata, { ...metadataOptions, active: msg === durableSleepAssistant });
       if (metadataLines.length > 0) trimTrailingBlankAssistantContent(contentStart);
       const contentEnd = lines.length;
       for (let i = 0; i < metadataLines.length; i++) {
@@ -522,7 +523,7 @@ export function buildMessageLines(
       && !terminalNoticePendingStop
     ));
     const metadata = pendingAssistantSegmentMetadata(state) ?? pendingAssistantRunMetadata(state);
-    const metadataLines = shouldRenderPendingMetadata ? renderMetadata(metadata, { width: availableWidth }) : [];
+    const metadataLines = shouldRenderPendingMetadata ? renderMetadata(metadata, metadataOptions) : [];
     const compactionStartedAt = state.contextCompactionStartedAt;
     const compactionActive = compactionStartedAt != null;
     if (metadataLines.length > 0 || compactionActive) trimTrailingBlankAssistantContent(start);
@@ -573,7 +574,7 @@ export function buildMessageLines(
     for (const block of msg.blocks) {
       pushBlock(block, "assistant_block", renderAssistantBlock(block));
     }
-    const metadataLines = renderMetadata(msg.metadata, { width: availableWidth });
+    const metadataLines = renderMetadata(msg.metadata, metadataOptions);
     if (metadataLines.length > 0) trimTrailingBlankAssistantContent(contentStart);
     const contentEnd = lines.length;
     for (let i = 0; i < metadataLines.length; i++) {

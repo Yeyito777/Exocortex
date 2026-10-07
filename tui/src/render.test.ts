@@ -318,6 +318,29 @@ describe("render caching and frame diffing", () => {
     expect(state.historyLines.some((line) => stripAnsi(line).includes("Loading..."))).toBe(true);
   });
 
+  test("invalidates cached history when diagnostics changes without replacing messages", () => {
+    const state = makeState();
+    state.showDiagnostics = false;
+    state.messages[1].metadata = {
+      startedAt: 1_000, endedAt: 3_000, model: state.model, tokens: 1234,
+    };
+    renderSilently(state);
+    const firstLines = state.historyLines;
+    expect(stripAnsi(firstLines.join("\n"))).toContain("617.0 tokens/s | 2s");
+    expect(stripAnsi(firstLines.join("\n"))).not.toContain("1,234 tokens");
+
+    state.showDiagnostics = true;
+    renderSilently(state);
+    const diagnosticLines = state.historyLines;
+    expect(diagnosticLines).not.toBe(firstLines);
+    expect(stripAnsi(diagnosticLines.join("\n"))).toContain("617.0 tokens/s | 2s | 1,234 tokens");
+
+    state.showDiagnostics = false;
+    renderSilently(state);
+    expect(state.historyLines).not.toBe(diagnosticLines);
+    expect(stripAnsi(state.historyLines.join("\n"))).not.toContain("1,234 tokens");
+  });
+
   test("does not reuse the static history cache while streaming", () => {
     const state = makeState();
     state.pendingAI = createPendingAI(Date.now(), state.model);
@@ -379,14 +402,14 @@ describe("render caching and frame diffing", () => {
 
     renderSilently(state);
     const firstLines = state.historyLines;
-    expect(stripAnsi(firstLines.join("\n"))).toContain("12 tokens | 10s");
+    expect(stripAnsi(firstLines.join("\n"))).toContain("tokens/s | 10s");
 
     // Advance the elapsed frame without replacing any cache-tracked references.
     assistant.metadata.startedAt -= 1_000;
     renderSilently(state);
 
     expect(state.historyLines).not.toBe(firstLines);
-    expect(stripAnsi(state.historyLines.join("\n"))).toContain("12 tokens | 11s");
+    expect(stripAnsi(state.historyLines.join("\n"))).toContain("tokens/s | 11s");
   });
 
   test("manual invalidation rebuilds cached history after in-place message edits", () => {

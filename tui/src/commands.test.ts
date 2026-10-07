@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { configuredConversationDefaults, defaultExocortexConfig, readExocortexConfig, saveConversationDefaults, writeExocortexConfig } from "@exocortex/shared/config";
 import { cycleAutocomplete, updateAutocomplete } from "./autocomplete";
-import { getCommandArgs, tryCommand, type CommandResult } from "./commands";
+import { COMMAND_LIST, getCommandArgs, tryCommand, type CommandResult } from "./commands";
 import { clearPreferredProvider } from "./preferences";
 import { createInitialState } from "./state";
 import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, defaultEffortForModelId, type ProviderInfo, type TokenStatsSnapshot, type TokenUsageTotals } from "./messages";
@@ -178,6 +178,84 @@ const tokenStats: TokenStatsSnapshot = {
 beforeEach(() => {
   clearPreferredProvider();
   writeExocortexConfig(defaultExocortexConfig());
+});
+
+describe("/diagnostics", () => {
+  test("toggles locally, clears the prompt, and persists across TUI sessions", () => {
+    const state = createInitialState();
+    expect(state.showDiagnostics).toBe(false);
+    state.inputBuffer = "/diagnostics";
+    state.cursorPos = state.inputBuffer.length;
+
+    expect(tryCommand("/diagnostics", state)).toEqual({ type: "handled" });
+    expect(state.showDiagnostics).toBe(true);
+    expect(state.inputBuffer).toBe("");
+    expect(state.cursorPos).toBe(0);
+    expect(readExocortexConfig().tui?.diagnostics).toBe(true);
+    expect(createInitialState().showDiagnostics).toBe(true);
+    expect(state.messages.at(-1)).toMatchObject({ text: "Diagnostics enabled." });
+
+    expect(tryCommand("/new", state)).toEqual({ type: "new_conversation" });
+    expect(state.showDiagnostics).toBe(true);
+    expect(tryCommand("/diagnostics", state)).toEqual({ type: "handled" });
+    expect(state.showDiagnostics).toBe(false);
+    expect(createInitialState().showDiagnostics).toBe(false);
+    expect(state.messages.at(-1)).toMatchObject({ text: "Diagnostics disabled." });
+  });
+
+  test("supports explicit on/off and preserves unrelated UI and runtime config", () => {
+    const original = {
+      ...defaultExocortexConfig(),
+      diagnostics: { performanceProfiling: true },
+      tui: { hideSensitiveInfo: true },
+    };
+    writeExocortexConfig(original);
+    const state = createInitialState();
+
+    for (const text of ["/diagnostics on", "/diagnostics ON"]) {
+      expect(tryCommand(text, state)).toEqual({ type: "handled" });
+      expect(state.showDiagnostics).toBe(true);
+    }
+    expect(readExocortexConfig()).toEqual({
+      ...original, tui: { ...original.tui, diagnostics: true },
+    });
+    expect(tryCommand("/diagnostics off", state)).toEqual({ type: "handled" });
+    expect(readExocortexConfig()).toEqual({
+      ...original, tui: { ...original.tui, diagnostics: false },
+    });
+    expect(state.hideSensitiveInfo).toBe(true);
+  });
+
+  test("rejects invalid arguments without changing the preference", () => {
+    const state = createInitialState();
+    const original = readExocortexConfig();
+    for (const text of ["/diagnostics maybe", "/diagnostics on extra"]) {
+      expect(tryCommand(text, state)).toEqual({ type: "handled" });
+      expect(state.showDiagnostics).toBe(false);
+      expect(readExocortexConfig()).toEqual(original);
+      expect(state.messages.at(-1)).toMatchObject({ text: "Usage: /diagnostics [on|off]" });
+    }
+  });
+
+  test("can toggle while streaming without altering token statistics", () => {
+    const state = createInitialState();
+    state.pendingAI = {
+      role: "assistant", blocks: [],
+      metadata: { startedAt: 1_000, endedAt: null, model: state.model, tokens: 123 },
+    };
+    expect(tryCommand("/diagnostics", state)).toEqual({ type: "handled" });
+    expect(state.pendingAI.metadata?.tokens).toBe(123);
+    expect(state.streamingTailMessages.at(-1)).toMatchObject({ text: "Diagnostics enabled." });
+  });
+
+  test("appears in help and command/argument completions", () => {
+    const state = createInitialState();
+    expect(COMMAND_LIST.some(item => item.name === "/diagnostics")).toBe(true);
+    expect(getCommandArgs(state, "/diagnostics")["/diagnostics"].map(item => item.name))
+      .toEqual(["on", "off"]);
+    tryCommand("/help", state);
+    expect(state.messages.at(-1)).toMatchObject({ text: expect.stringContaining("/diagnostics") });
+  });
 });
 
 describe("/new", () => {

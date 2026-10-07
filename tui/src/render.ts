@@ -73,6 +73,7 @@ interface HistoryRenderCacheEntry {
   historyLoadingFrame: number | null;
   durableSleepMetadataFrame: number | null;
   showToolOutput: boolean;
+  showDiagnostics: boolean;
   toolRegistryRef: RenderState["toolRegistry"];
   externalToolStylesRef: RenderState["externalToolStyles"];
   themeName: string;
@@ -111,6 +112,7 @@ function canReuseHistoryRender(
     && cached.historyLoadingFrame === historyLoadingFrame(state)
     && cached.durableSleepMetadataFrame === currentDurableSleepMetadataFrame
     && cached.showToolOutput === state.showToolOutput
+    && cached.showDiagnostics === state.showDiagnostics
     && cached.toolRegistryRef === state.toolRegistry
     && cached.externalToolStylesRef === state.externalToolStyles
     && cached.themeName === theme.name;
@@ -233,6 +235,7 @@ function getHistoryRender(
     historyLoadingFrame: historyLoadingFrame(state),
     durableSleepMetadataFrame: currentDurableSleepMetadataFrame,
     showToolOutput: state.showToolOutput,
+    showDiagnostics: state.showDiagnostics,
     toolRegistryRef: state.toolRegistry,
     externalToolStylesRef: state.externalToolStyles,
     themeName: theme.name,

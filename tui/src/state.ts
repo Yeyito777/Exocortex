@@ -12,6 +12,7 @@ import type { ProviderId, ProviderInfo, ModelId, EffortLevel, UsageData, ToolDis
 import { supportsImageInputsForModel } from "./messages";
 import type { Message, AIMessage, SystemMessage, Block } from "./messages";
 import { loadHideSensitiveInfoPreference } from "./privacy";
+import { loadDiagnosticsPreference } from "./diagnostics";
 import { theme } from "./theme";
 import type { MessageBound, RenderLineAnchor } from "./conversation";
 import type { WrapCopyLine } from "./textwrap";
@@ -283,6 +284,8 @@ export interface RenderState {
   showToolOutput: boolean;
   /** Whether user-identifying auth/account labels should be censored in the UI. */
   hideSensitiveInfo: boolean;
+  /** Whether output-token counts are shown in AI metadata. TUI-only /diagnostics. */
+  showDiagnostics: boolean;
   /** Whether the active conversation currently has historical tool outputs loaded. */
   toolOutputsLoaded: boolean;
   /** Whether a tool-output fetch is currently in flight for the active conversation. */
@@ -682,6 +685,7 @@ export function createInitialState(): RenderState {
 	    externalToolStyles: [],
 	    showToolOutput: false,
 	    hideSensitiveInfo,
+	    showDiagnostics: loadDiagnosticsPreference(),
 	    toolOutputsLoaded: false,
     toolOutputsLoading: false,
     showToolOutputAfterLoad: false,

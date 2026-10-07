@@ -299,6 +299,18 @@ Both native and cross-build methods produce standalone Windows executables in
 
 ---
 
+## TUI AI metadata
+
+AI metadata shows the model, average output `tokens/s`, and elapsed work time.
+Throughput uses the response's start/end timestamps, including tool time; it is
+not raw provider decoding speed. The work timer can span earlier responses and
+is kept separate from the throughput calculation.
+
+`/diagnostics` toggles raw output-token counts alongside this metadata.
+`/diagnostics on` and `/diagnostics off` set it explicitly. This TUI-only
+preference defaults to off and persists locally as `tui.diagnostics` in
+`config/config.json`. Token accounting and `/tokens` remain unchanged.
+
 ## `exo` tool and CLI
 
 The daemon provides a native `exo` tool for current-instance conversation and

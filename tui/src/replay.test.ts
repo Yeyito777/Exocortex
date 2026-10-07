@@ -31,7 +31,7 @@ describe("startReplayConversation", () => {
     });
     expect(state.pendingAIHydratedFromSnapshot).toBe(false);
     expect(state.pendingAICommittedIndex).toBeNull();
-    expect(stripAnsi(buildMessageLines(state, 120).lines[0])).toContain("Gpt-5.4 | 0 tokens |");
+    expect(stripAnsi(buildMessageLines(state, 120).lines[0])).toContain("Gpt-5.4 | 0.0 tokens/s |");
   });
 
   test("pins the replay placeholder to the bottom like a normal send", () => {
@@ -56,7 +56,7 @@ describe("startReplayConversation", () => {
 
     const lines = buildMessageLines(state, 120).lines.map(stripAnsi);
     expect(lines.some(line => line.includes("✗ Interrupted"))).toBe(true);
-    expect(lines.some(line => line.includes("Gpt-5.4 | 0 tokens |"))).toBe(true);
+    expect(lines.some(line => line.includes("Gpt-5.4 | 0.0 tokens/s |"))).toBe(true);
   });
 
   test("does not count idle time between an interrupted turn and its replay", () => {
@@ -79,8 +79,8 @@ describe("startReplayConversation", () => {
     state.pendingAI!.metadata!.endedAt = replayStartedAt + 1_000;
 
     const lines = buildMessageLines(state, 120).lines.map(stripAnsi);
-    expect(lines).toContain("  Gpt-5.4 | 500 tokens | 11m 0s");
-    expect(lines.at(-1)).toBe("  Gpt-5.4 | 0 tokens | 1s");
+    expect(lines).toContain("  Gpt-5.4 | 0.8 tokens/s | 11m 0s");
+    expect(lines.at(-1)).toBe("  Gpt-5.4 | 0.0 tokens/s | 1s");
   });
 
   test("shows daemon-started replay metadata immediately after a historical terminal notice", () => {
@@ -100,7 +100,7 @@ describe("startReplayConversation", () => {
 
     const lines = buildMessageLines(state, 120).lines.map(stripAnsi);
     expect(lines.some(line => line.includes("✗ Daemon restarted"))).toBe(true);
-    expect(lines.some(line => line.includes("Gpt-5.4 | 0 tokens |"))).toBe(true);
+    expect(lines.some(line => line.includes("Gpt-5.4 | 0.0 tokens/s |"))).toBe(true);
   });
 
   test("does nothing without an active conversation", () => {
