@@ -2,11 +2,11 @@ import type { ModelInfo, ReasoningEffortInfo } from "@exocortex/shared/messages"
 import { formatModelDisplayName } from "@exocortex/shared/model-display";
 
 const CLAUDE_CODE_EFFORTS: ReasoningEffortInfo[] = [
-  { effort: "low", description: "Fastest Claude Code responses." },
+  { effort: "low", description: "Fastest responses." },
   { effort: "medium", description: "Balanced speed and reasoning depth." },
-  { effort: "high", description: "Claude Code's default reasoning depth." },
+  { effort: "high", description: "Default reasoning depth." },
   { effort: "xhigh", description: "Deeper reasoning for harder tasks." },
-  { effort: "max", description: "Maximum Claude Code reasoning effort." },
+  { effort: "max", description: "Maximum reasoning effort." },
 ];
 
 function claudeModel(id: string): ModelInfo {

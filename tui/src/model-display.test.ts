@@ -13,6 +13,14 @@ describe("formatModelDisplayName", () => {
     expect(formatModelDisplayName("deepseek-v4-flash")).toBe("DeepSeek V4 Flash");
   });
 
+  test("formats Claude model ids as family-version", () => {
+    expect(formatModelDisplayName("claude-opus-5-5")).toBe("Opus-5.5");
+    expect(formatModelDisplayName("claude-fable-5-1")).toBe("Fable-5.1");
+    expect(formatModelDisplayName("claude-sonnet-5-5-20260901")).toBe("Sonnet-5.5");
+    expect(formatModelDisplayName("claude-opus-5-5[1m]")).toBe("Opus-5.5");
+    expect(formatModelDisplayName("claude-haiku-5-20260901")).toBe("Haiku-5");
+  });
+
   test("formats the canonical Ox Alpha model id", () => {
     expect(formatModelDisplayName("ox-alpha")).toBe("Ox Alpha");
   });
