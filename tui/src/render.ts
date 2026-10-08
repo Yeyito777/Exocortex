@@ -128,7 +128,6 @@ function shouldForceFullHistoryRender(state: RenderState): boolean {
     || restoreNeedsFullHistory
     || state.scrollOffset > 0
     || state.showToolOutput
-    || state.toolOutputsLoaded
     || state.search?.barOpen === true
     || (state.panelFocus === "chat" && state.chatFocus === "history");
 }

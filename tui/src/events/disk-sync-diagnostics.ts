@@ -24,7 +24,6 @@ export interface AssistantDisplaySnapshot {
   pendingBlocks: Block[] | null;
   visibleBlocks: VisibleComparableBlock[];
   showToolOutput: boolean;
-  toolOutputsLoaded: boolean;
 }
 
 interface PreservedToolResultOutput {
@@ -305,7 +304,6 @@ export function captureAssistantDisplaySnapshot(state: RenderState): AssistantDi
     pendingBlocks: state.pendingAI ? structuredClone(state.pendingAI.blocks) : null,
     visibleBlocks: visibleComparableBlocks(blocks, state.showToolOutput),
     showToolOutput: state.showToolOutput,
-    toolOutputsLoaded: state.toolOutputsLoaded,
   };
 }
 
@@ -394,8 +392,6 @@ export function buildAssistantDisplayDiffPayload(
     ...diagnostics,
     beforeShowToolOutput: before.showToolOutput,
     afterShowToolOutput: after.showToolOutput,
-    beforeToolOutputsLoaded: before.toolOutputsLoaded,
-    afterToolOutputsLoaded: after.toolOutputsLoaded,
     beforeAssistantMessages: before.assistantMessages,
     afterAssistantMessages: after.assistantMessages,
     beforeVisibleBlocks: before.visibleBlocks.length,
@@ -437,7 +433,6 @@ export function buildDiskSyncAssistantDiffPayload(
     source,
     convId,
     showToolOutput: state.showToolOutput,
-    toolOutputsLoaded: state.toolOutputsLoaded,
     toolOutputsIncluded: disk.toolOutputsIncluded,
     localAssistantMessages,
     diskAssistantMessages,
