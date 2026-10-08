@@ -17,6 +17,20 @@ afterEach(async () => {
 });
 
 describe("DaemonClient request-scoped events", () => {
+  test("prewarms reserved drafts and existing conversations without creating either", () => {
+    const client = new DaemonClient(() => {});
+    const internal = client as any;
+    const writes: string[] = [];
+    internal.socket = { write: (value: string) => { writes.push(value); } };
+    internal._connected = true;
+    client.prewarmConversation("reserved", true);
+    client.prewarmConversation("existing");
+    expect(writes.map(value => JSON.parse(value))).toEqual([
+      { type: "prewarm_conversation", convId: "reserved", draft: true },
+      { type: "prewarm_conversation", convId: "existing" },
+    ]);
+  });
+
   test("sends defaults mutations only to the active transport and never queues them offline", () => {
     const events: unknown[] = [];
     const client = new DaemonClient(event => events.push(event));

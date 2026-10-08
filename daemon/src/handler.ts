@@ -1730,10 +1730,21 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
 
       case "prewarm_conversation": {
         const summary = convStore.getSummary(cmd.convId);
-        if (!summary || summary.provider !== "openai" || convStore.isStreaming(cmd.convId)
-            || openAIAccountMutationInFlight) break;
+        const draft = !summary && cmd.draft === true && typeof cmd.convId === "string" && cmd.convId.length <= 80
+          && isSafeClientConversationId(cmd.convId) && !convStore.hasDeletedConversation(cmd.convId);
+        if ((!summary && !draft) || (summary && summary.provider !== "openai") || convStore.isStreaming(cmd.convId)
+            || openAIAccountMutationInFlight) {
+          if (cmd.reqId) server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Conversation cannot be prewarmed now." });
+          break;
+        }
         void getProviderAdapter("openai").prewarmConversation?.(cmd.convId)
-          .catch((err) => log("debug", `openai prewarm failed for ${cmd.convId}: ${err instanceof Error ? err.message : err}`));
+          .then(() => {
+            if (cmd.reqId) server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
+          })
+          .catch((err) => {
+            log("debug", `openai prewarm failed for ${cmd.convId}: ${err instanceof Error ? err.message : err}`);
+            if (cmd.reqId) server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "OpenAI prewarm failed; normal send can still connect." });
+          });
         break;
       }
 

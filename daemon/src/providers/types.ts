@@ -62,6 +62,10 @@ export interface StreamRetryMetadata {
 }
 
 export interface StreamCallbacks {
+  /** Local submission boundary, not server acknowledgement. Profiling only. */
+  onRequestSent?: (transport: "websocket" | "http", bytes: number) => void;
+  /** First response.* event per transport attempt (before accumulator work). */
+  onFirstResponseEvent?: () => void;
   onText: (chunk: string) => void;
   onThinking: (chunk: string) => void;
   /** Meaningful provider progress that need not be rendered or committed,

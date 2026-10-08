@@ -28,6 +28,7 @@ import { AbortableSemaphore } from "./semaphore";
 import { log } from "../log";
 import { providerToolNames } from "./provider-primitives";
 import type { ProviderId } from "../messages";
+import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
 
 // ── Registry ───────────────────────────────────────────────────────
 
@@ -374,11 +375,20 @@ async function executeScheduledTools(
 ): Promise<ToolExecResult[]> {
   const results: ToolExecResult[] = [];
   const canDeferToolResult = calls.length === 1;
+  const scheduledAt = PERFORMANCE_PROFILING_ENABLED ? performance.now() : 0;
+  const execute = async (call: ApiToolCall): Promise<ToolExecResult> => {
+    const startedAt = PERFORMANCE_PROFILING_ENABLED ? performance.now() : 0;
+    const result = await executeSingleTool(call, toolContext, signal, allowedTools, canDeferToolResult);
+    if (PERFORMANCE_PROFILING_ENABLED) {
+      result.timing = { schedulingWaitMs: startedAt - scheduledAt, executionDurationMs: performance.now() - startedAt };
+    }
+    return result;
+  };
 
   for (const batch of planToolExecutionBatches(calls, toolContext?.conversationId)) {
     const batchResults = batch.mode === "parallel"
-      ? await Promise.all(batch.calls.map(call => executeSingleTool(call, toolContext, signal, allowedTools, canDeferToolResult)))
-      : [await executeSingleTool(batch.calls[0], toolContext, signal, allowedTools, canDeferToolResult)];
+      ? await Promise.all(batch.calls.map(execute))
+      : [await execute(batch.calls[0])];
     results.push(...batchResults);
   }
 

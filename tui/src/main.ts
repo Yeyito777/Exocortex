@@ -62,6 +62,8 @@ import { hasInProgressModelWork } from "./taskvisibility";
 import { beginOlderHistoryLoad, INITIAL_BUFFER_ADDITIONAL_TURNS, OLDER_HISTORY_PAGE_TURNS, shouldLoadOlderHistory } from "./historypagination";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
 import { log } from "./log";
+import { ConversationPrewarmer } from "./prewarm";
+import { FirstTextUX } from "./first-text";
 import { CallMediaController } from "./call-media";
 import { formatMicGainDb, loadMicGainDb, saveMicGainDb } from "./mic-gain";
 import { applyTuiStartingState, availableStartingConversationId, captureTuiStartingState, loadTuiStartingState, saveTuiStartingState } from "./startingstate";
@@ -119,12 +121,10 @@ let daemon: DaemonClient;
 let renderTimer: ReturnType<typeof setTimeout> | null = null;
 let renderDueAt = 0;
 let streamTickTimer: ReturnType<typeof setTimeout> | null = null;
-let prewarmTimer: ReturnType<typeof setTimeout> | null = null;
 let deferredHistoryRenderTimer: ReturnType<typeof setTimeout> | null = null;
-let lastPrewarmKey: string | null = null;
-let lastPrewarmAt = 0;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let eventLoopLagTimer: ReturnType<typeof setInterval> | null = null;
+let standbyRefreshTimer: ReturnType<typeof setInterval> | null = null;
 let reconnecting = false;
 let reconnectNavigationTarget: string | null = null;
 let daemonRouteSwitchPending = false;
@@ -142,8 +142,12 @@ let pendingEditMessageUnwind: PendingEditMessageUnwind | null = null;
 // Local-only user-message echoes whose audio jobs are still transcribing. They
 // are intentionally withheld from the daemon until the TUI has final text.
 const pendingVoiceSubmissions = new Set<SubmittedVoiceTranscription>();
-const PREWARM_DEBOUNCE_MS = 700;
-const PREWARM_COOLDOWN_MS = 30_000;
+const conversationPrewarmer = new ConversationPrewarmer(
+  (convId, draft) => daemon.prewarmConversation(convId, draft), generateClientConversationId,
+);
+const firstTextUX = new FirstTextUX(PERFORMANCE_PROFILING_ENABLED
+  ? timing => log("info", `perf: first_text_frame ${JSON.stringify(timing)}`)
+  : undefined);
 
 function generateClientConversationId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -221,10 +225,8 @@ function clearStreamTick(): void {
   streamTickTimer = null;
 }
 
-function clearPrewarmTimer(): void {
-  if (!prewarmTimer) return;
-  clearTimeout(prewarmTimer);
-  prewarmTimer = null;
+function resetPrewarmer(): void {
+  conversationPrewarmer.reset();
 }
 
 function clearDeferredHistoryRenderTimer(): void {
@@ -268,6 +270,10 @@ function performRender(): number {
   const framePresented = render(state);
   const renderMs = performance.now() - renderStartedAt;
   if (!framePresented) return renderMs;
+  const startedAt = state.pendingAI?.metadata?.startedAt;
+  if (state.convId && startedAt != null && state.scrollOffset === 0 && !state.folderInstructionsDoc) {
+    firstTextUX.onFrame(state.convId, startedAt);
+  }
   if (PERFORMANCE_PROFILING_ENABLED && renderMs >= 100) {
     log("warn", `perf: tui_slow_render ${JSON.stringify({
       convId: state.convId,
@@ -377,7 +383,7 @@ function resetForDaemonRouteSwitch(): void {
   voiceInput?.cleanup();
   callMedia?.stop();
   clearStreamTick();
-  clearPrewarmTimer();
+  resetPrewarmer();
   clearDeferredHistoryRenderTimer();
   pendingNewConversationConvId = null;
   pendingLocalInterruptConvId = null;
@@ -497,6 +503,12 @@ function onDaemonEvent(event: Event): void {
 
   invalidateHistoryRenderCache(state);
   handleEvent(event, state, daemon);
+  maybePrewarmOpenAI();
+  let paintFirstText = false;
+  if (event.type === "text_chunk" && event.convId === state.convId) {
+    const startedAt = state.pendingAI?.metadata?.startedAt;
+    paintFirstText = startedAt != null && firstTextUX.onText(event.convId, startedAt, event.text);
+  }
   if (event.type === "ssh_status" && (event.state === "connected" || event.state === "failed")) {
     remotePathCompletion?.setRemoteAlias(state.sshRemote?.alias ?? null);
     // The silent status is emitted by the newly active transport. Any prompt
@@ -630,7 +642,8 @@ function onDaemonEvent(event: Event): void {
   if (event.type === "conversation_history_loaded" && state.pendingHistoryNavigation) {
     maybeRequestOlderHistory();
   }
-  scheduleRender(renderDelayForEvent(event));
+  if (paintFirstText) renderImmediately();
+  else scheduleRender(renderDelayForEvent(event));
 }
 
 // ── Input handling ──────────────────────────────────────────────────
@@ -738,14 +751,14 @@ function attachTerminalClipboardImage(image: ImageAttachment): void {
     return;
   }
 
-  const inputBefore = state.inputBuffer;
   state.pendingImages.push(image);
   focusPrompt(state);
-  maybeScheduleOpenAIPrewarm(inputBefore);
+  maybePrewarmOpenAI();
   renderAfterLocalUiMutation();
 }
 
 function startNewConversation(): void {
+  conversationPrewarmer.reset();
   const wasFolderInstructionsDoc = state.folderInstructionsDoc !== null;
   pendingNewConversationConvId = null;
   leaveConversationView(state);
@@ -757,6 +770,7 @@ function startNewConversation(): void {
     clearPrompt(state);
     state.pendingImages = [];
   }
+  maybePrewarmOpenAI();
 }
 
 function syncInlineCommandChanges(result: InlineCommandApplication, convId = state.convId): void {
@@ -778,10 +792,6 @@ function syncInlineCommandChanges(result: InlineCommandApplication, convId = sta
 
 function hasInlineCommandChanges(result: InlineCommandApplication): boolean {
   return !!result.modelSelection || result.efforts.length > 0 || result.fastModes.length > 0;
-}
-
-function hasNonWhitespaceText(text: string): boolean {
-  return /\S/.test(text);
 }
 
 function handleSubmit(): void {
@@ -1156,28 +1166,12 @@ function cancelPendingVoiceQueuePrompt(): boolean {
   return true;
 }
 
-function maybeScheduleOpenAIPrewarm(inputBefore: string): void {
-  const convId = state.convId;
-  if (!convId || state.provider !== "openai" || isStreaming(state) || state.folderInstructionsDoc) return;
-  if (!daemon.connected || !state.authByProvider.openai) return;
-
-  const beforeWasEmpty = !hasNonWhitespaceText(inputBefore);
-  const nowHasInput = hasNonWhitespaceText(state.inputBuffer) || state.pendingImages.length > 0;
-  if (!beforeWasEmpty || !nowHasInput) return;
-
-  const key = `${convId}:${state.model}:${state.effort}:${state.fastMode}`;
-  const now = Date.now();
-  if (lastPrewarmKey === key && now - lastPrewarmAt < PREWARM_COOLDOWN_MS) return;
-
-  clearPrewarmTimer();
-  prewarmTimer = setTimeout(() => {
-    prewarmTimer = null;
-    if (!running || !daemon.connected || state.convId !== convId || state.provider !== "openai" || isStreaming(state)) return;
-    lastPrewarmKey = key;
-    lastPrewarmAt = Date.now();
-    daemon.prewarmConversation(convId);
-  }, PREWARM_DEBOUNCE_MS);
-  (prewarmTimer as { unref?: () => void }).unref?.();
+function maybePrewarmOpenAI(): void {
+  conversationPrewarmer.observe({
+    convId: state.convId, provider: state.provider, model: state.model, effort: state.effort, fastMode: state.fastMode,
+    eligible: running && daemon.connected && state.authByProvider.openai && !isStreaming(state)
+      && !state.folderInstructionsDoc && !state.sshConnecting && !daemonRouteSwitchPending,
+  });
 }
 
 interface SendDirectlyOptions {
@@ -1222,7 +1216,9 @@ function sendDirectly(messageText: string, images?: ImageAttachment[], options: 
   state.pendingAI = createPendingAI(startedAt, state.model);
 
   if (!state.convId) {
-    const convId = options.convId ?? generateClientConversationId();
+    const reservedId = conversationPrewarmer.takeDraftId();
+    const convId = options.convId ?? reservedId ?? generateClientConversationId();
+    firstTextUX.start(convId, startedAt);
     pendingNewConversationConvId = convId;
     state.pendingSend.active = false;
     state.pendingSend.text = "";
@@ -1236,6 +1232,7 @@ function sendDirectly(messageText: string, images?: ImageAttachment[], options: 
       undefined, convId,
     );
   } else {
+    firstTextUX.start(state.convId, startedAt);
     daemon.sendMessage(state.convId, messageText, startedAt, images);
   }
 
@@ -1505,7 +1502,6 @@ function handleKey(key: KeyEvent): void {
     if (key.type === "escape") daemon.ssh("cancel");
     return;
   }
-  const inputBefore = state.inputBuffer;
   const voicePromptBufferBefore = state.voicePromptJobs.length > 0 || state.voicePrompt?.phase === "transcribing"
     ? state.inputBuffer
     : null;
@@ -1522,7 +1518,7 @@ function handleKey(key: KeyEvent): void {
     voiceInput?.syncPromptEdit(voicePromptBufferBefore);
   }
   if (result.type === "handled" && state.sshRemote) remotePathCompletion?.observePrompt(state);
-  maybeScheduleOpenAIPrewarm(inputBefore);
+  maybePrewarmOpenAI();
 
   switch (result.type) {
     case "submit":
@@ -1582,6 +1578,7 @@ function handleKey(key: KeyEvent): void {
       state.folderInstructionsDoc = null;
       {
         prepareConversationOpen(state, result.convId);
+        maybePrewarmOpenAI();
         const reqId = daemon.loadConversation(result.convId);
         const renderMs = renderAfterLocalUiMutation();
         if (PERFORMANCE_PROFILING_ENABLED && renderMs >= 100) {
@@ -1711,6 +1708,7 @@ function handleMouse(ev: MouseEvent): void {
       state.folderInstructionsDoc = null;
       {
         prepareConversationOpen(state, result.convId);
+        maybePrewarmOpenAI();
         const reqId = daemon.loadConversation(result.convId);
         const renderMs = renderAfterLocalUiMutation();
         if (PERFORMANCE_PROFILING_ENABLED && renderMs >= 100) {
@@ -1830,7 +1828,7 @@ function handleDaemonConnectionLost(shutdownMode: DaemonShutdownMode | null): vo
   clearPendingAI(state);
   clearStreamingTailMessages(state);
   clearStreamTick();
-  clearPrewarmTimer();
+  resetPrewarmer();
   state.historyLoadingOlder = false;
   state.historyLoadingStartedAt = null;
   state.historyLoadingRequestId = null;
@@ -1997,6 +1995,10 @@ async function main(): Promise<void> {
   process.stdin.on("data", (data: Buffer) => terminalControlBuffer?.feed(data));
 
   startEventLoopLagMonitor();
+  // Keep only the currently visible OpenAI view ready while idle, before the
+  // daemon's five-minute parked-socket expiry. This never submits model work.
+  standbyRefreshTimer = setInterval(maybePrewarmOpenAI, 4 * 60_000);
+  standbyRefreshTimer.unref?.();
   startupProfileMark("terminal_setup_done");
 
   process.stdout.on("resize", () => {
@@ -2027,8 +2029,12 @@ function cleanup(): void {
   persistStartingStateOnce();
   clearRenderTimer();
   clearStreamTick();
-  clearPrewarmTimer();
+  resetPrewarmer();
   clearReconnectTimer();
+  if (standbyRefreshTimer) {
+    clearInterval(standbyRefreshTimer);
+    standbyRefreshTimer = null;
+  }
   if (eventLoopLagTimer) {
     clearInterval(eventLoopLagTimer);
     eventLoopLagTimer = null;

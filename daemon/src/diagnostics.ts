@@ -24,7 +24,8 @@ export interface ToolCallDiagnosticsInput {
   conversationId?: string;
   round: number;
   calls: ApiToolCall[];
-  results: Array<{ toolCallId: string; toolName: string; output: string; isError: boolean }>;
+  results: Array<{ toolCallId: string; toolName: string; output: string; isError: boolean;
+    timing?: { schedulingWaitMs: number; executionDurationMs: number } }>;
   batchDurationMs: number;
 }
 
@@ -36,7 +37,9 @@ function localDay(timestamp: number): string {
   return `${year}-${month}-${day}`;
 }
 
-function diagnosticsFile(kind: "model-requests" | "tool-calls", timestamp: number): string {
+type DiagnosticKind = "model-requests" | "tool-calls" | "model-loop";
+
+function diagnosticsFile(kind: DiagnosticKind, timestamp: number): string {
   return join(diagnosticsDir(), kind, `${INSTANCE_ID}-${localDay(timestamp)}.jsonl`);
 }
 
@@ -44,7 +47,7 @@ function removeExpiredDiagnostics(timestamp: number): void {
   if (timestamp - lastRetentionCheckAt < RETENTION_CHECK_INTERVAL_MS) return;
   lastRetentionCheckAt = timestamp;
   const cutoffDay = localDay(timestamp - DIAGNOSTICS_RETENTION_DAYS * 24 * 60 * 60 * 1000);
-  for (const kind of ["model-requests", "tool-calls"] as const) {
+  for (const kind of ["model-requests", "tool-calls", "model-loop"] as const) {
     const dir = join(diagnosticsDir(), kind);
     let files: string[];
     try {
@@ -67,7 +70,7 @@ function removeExpiredDiagnostics(timestamp: number): void {
   }
 }
 
-function appendDiagnostic(kind: "model-requests" | "tool-calls", timestamp: number, record: Record<string, unknown>): void {
+function appendDiagnostic(kind: DiagnosticKind, timestamp: number, record: Record<string, unknown>): void {
   try {
     removeExpiredDiagnostics(timestamp);
     const file = diagnosticsFile(kind, timestamp);
@@ -263,6 +266,7 @@ export function recordToolCallDiagnostics(input: ToolCallDiagnosticsInput): void
       isError: result.isError,
       ...buildErrorReason(result.output, result.isError),
       batchDurationMs: input.batchDurationMs,
+      ...(result.timing ?? {}),
     });
   }
 }
@@ -272,4 +276,16 @@ export function resetDiagnosticsForTest(): void {
   lastRetentionCheckAt = 0;
   fullDiagnosticsFiles.clear();
   diagnosticsFileBytes.clear();
+}
+
+export function recordModelLoopDiagnostics(record: Record<string, unknown>): void {
+  const timestamp = Date.now();
+  appendDiagnostic("model-loop", timestamp, {
+    version: DIAGNOSTICS_VERSION,
+    type: "model_loop_round",
+    timestamp,
+    instance: INSTANCE_ID,
+    pid: process.pid,
+    ...record,
+  });
 }

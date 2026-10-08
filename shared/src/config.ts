@@ -131,8 +131,9 @@ export interface FeatureFlagsConfig {
 
 export interface DiagnosticsConfig {
   /**
-   * Collect correlated daemon/TUI conversation-open timings and event-loop lag
-   * diagnostics. Defaults to false because the extra clocks, bookkeeping, and
+   * Collect correlated daemon/TUI conversation-open timings, event-loop lag,
+   * and model/tool round traces (including OpenAI request submission).
+   * Defaults to false because the extra clocks, bookkeeping, and
    * log I/O are intended for temporary investigations. Daemon JSONL diagnostics
    * are retained for seven days and capped at 32 MiB per kind/day.
    */

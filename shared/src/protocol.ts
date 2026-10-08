@@ -338,6 +338,8 @@ export interface PrewarmConversationCommand {
   type: "prewarm_conversation";
   reqId?: string;
   convId: string;
+  /** Reserve transport for a client-generated draft ID without creating history. */
+  draft?: boolean;
 }
 
 export type ClientCapability = "targeted-unwind" | "sidebar-reorder-delta" | "sidebar-state-patch";

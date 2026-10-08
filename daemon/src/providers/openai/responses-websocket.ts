@@ -45,14 +45,7 @@ function headersFromJson(value: unknown): Headers {
  * HTTP handshake failure. Convert it to the same status-bearing error shape so
  * auth, usage-limit, and transient retry handling stay in one place.
  */
-function parseWrappedWebSocketError(text: string): OpenAIWebSocketHttpError | null {
-  let data: unknown;
-  try {
-    data = JSON.parse(text);
-  } catch {
-    return null;
-  }
-
+function parseWrappedWebSocketError(data: unknown, text: string): OpenAIWebSocketHttpError | null {
   if (!isRecord(data) || data.type !== "error") return null;
   const status = typeof data.status === "number"
     ? data.status
@@ -115,6 +108,7 @@ export async function readOpenAIResponsesWebSocket(
   const requestText = JSON.stringify({ type: "response.create", ...requestBody });
   try {
     await socket.sendText(requestText, options.signal, options.stallTimeoutMs);
+    callbacks.onRequestSent?.("websocket", Buffer.byteLength(requestText));
   } catch (err) {
     if (isWebSocketClosedTransportError(err)) {
       throw new OpenAIWebSocketClosedBeforeResponseStartedError({ connectionReused: options.connectionReused, cause: err });
@@ -142,17 +136,17 @@ export async function readOpenAIResponsesWebSocket(
       throw new Error("OpenAI websocket returned an unexpected binary event");
     }
 
-    const wrappedError = parseWrappedWebSocketError(message.text);
-    if (wrappedError) {
-      callbacks.onHeaders?.(wrappedError.headers);
-      throw wrappedError;
-    }
-
     let event: Record<string, unknown>;
     try {
       event = JSON.parse(message.text) as Record<string, unknown>;
     } catch {
       continue;
+    }
+    if (!isRecord(event)) continue;
+    const wrappedError = parseWrappedWebSocketError(event, message.text);
+    if (wrappedError) {
+      callbacks.onHeaders?.(wrappedError.headers);
+      throw wrappedError;
     }
 
     const eventType = typeof event.type === "string" ? event.type : "<missing>";
@@ -164,6 +158,7 @@ export async function readOpenAIResponsesWebSocket(
     }
 
     if (eventType.startsWith("response.")) {
+      if (!responseStarted) callbacks.onFirstResponseEvent?.();
       responseStarted = true;
     }
 
