@@ -36,6 +36,12 @@ export interface StreamResult {
   responseOutputItems?: unknown[];
   requestDiagnostics?: ModelRequestDiagnostics;
   assistantProviderData?: AssistantProviderData;
+  /**
+   * Complete replay messages for a provider that ran its own agent loop
+   * (tool_use → tool_result → … → final assistant). When present, the agent
+   * loop persists these instead of synthesizing one assistant message.
+   */
+  transcriptMessages?: ApiMessage[];
   /** Opaque provider-native context checkpoints returned by a compaction request. */
   compactionItems?: OpenAICompactionItem[];
   /** Number of compaction output_item.done events observed on the stream. */
@@ -132,6 +138,8 @@ export interface StreamOptions {
   preferHttp?: boolean;
   /** Provider-created state shared by all model rounds within one assistant turn. */
   turnSession?: ProviderTurnSession;
+  /** Conversation workspace. Providers that run their own agent (Claude Code) execute there. */
+  workingDirectory?: string;
   /** Request a provider-native context checkpoint instead of an assistant reply. */
   compaction?: boolean;
   /** Shared cap for all native-compaction request submissions and transports. */

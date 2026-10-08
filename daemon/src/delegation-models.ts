@@ -45,6 +45,7 @@ export function inferModelProvider(model: string | undefined): ProviderId | unde
   if (!lowered) return undefined;
   if (OPENAI_SIZES.some(size => size === lowered) || /^(gpt-|o1|o3|o4)/.test(lowered)) return "openai";
   if (isKnownModel("openrouter", lowered)) return "openrouter";
+  if (lowered.startsWith("claude-") || ["opus", "sonnet", "haiku", "fable"].includes(lowered)) return "anthropic";
   if (lowered === "pro" || lowered === "flash" || lowered.startsWith("deepseek-") || lowered.startsWith("v4-")) return "deepseek";
   return undefined;
 }
@@ -52,12 +53,12 @@ export function inferModelProvider(model: string | undefined): ProviderId | unde
 export function parseRequestedModel(providerValue: unknown, modelValue: unknown): { provider?: ProviderId; model?: ModelId } {
   const parseProvider = (value: unknown): ProviderId | undefined => {
     if (value === undefined || value === null || value === "") return undefined;
-    if (value === "openai" || value === "deepseek" || value === "opencode" || value === "openrouter") return value;
+    if (value === "openai" || value === "anthropic" || value === "deepseek" || value === "opencode" || value === "openrouter") return value;
     throw new Error(`Unknown provider: ${String(value)}`);
   };
   let provider = parseProvider(providerValue);
   let model = typeof modelValue === "string" && modelValue.trim() ? modelValue.trim() : undefined;
-  if (model && /^(openai|deepseek|opencode|openrouter)\//i.test(model)) {
+  if (model && /^(openai|anthropic|deepseek|opencode|openrouter)\//i.test(model)) {
     const slash = model.indexOf("/");
     const specProvider = parseProvider(model.slice(0, slash).toLowerCase());
     if (provider && provider !== specProvider) throw new Error(`Provider ${provider} conflicts with model spec provider ${specProvider}`);

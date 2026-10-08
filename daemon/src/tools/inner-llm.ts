@@ -20,6 +20,7 @@ const SUMMARY_MODEL_BY_PROVIDER: Record<ProviderId, ModelId> = {
   deepseek: "deepseek-v4-flash",
   opencode: "ox-alpha",
   openrouter: "nousresearch/hermes-4-70b",
+  anthropic: "claude-haiku-5-5",
 };
 
 const SUMMARY_SERVICE_TIER_BY_PROVIDER: Partial<Record<ProviderId, ServiceTier>> = {

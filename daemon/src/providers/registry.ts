@@ -38,6 +38,7 @@ function getFallbackProvidersById(): Record<ProviderId, ProviderInfo> {
     deepseek: buildFallbackProviderInfo("deepseek"),
     opencode: buildFallbackProviderInfo("opencode"),
     openrouter: buildFallbackProviderInfo("openrouter"),
+    anthropic: buildFallbackProviderInfo("anthropic"),
   };
   return fallbackProvidersByIdCache;
 }
@@ -49,6 +50,12 @@ function getFallbackProviders(): ProviderInfo[] {
 
 const MODEL_ID_ALIASES: Record<ProviderId, Record<string, ModelId>> = {
   openrouter: {},
+  anthropic: {
+    fable: "claude-fable-5-1",
+    opus: "claude-opus-5-5",
+    sonnet: "claude-sonnet-5-5",
+    haiku: "claude-haiku-5-5",
+  },
   openai: {},
   deepseek: {
     pro: "deepseek-v4-pro",

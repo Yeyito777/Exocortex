@@ -168,6 +168,8 @@ export async function runAgentLoop(
     tracking?: TokenTrackingContext;
     /** Provider-created state shared by all API rounds in this assistant turn. */
     turnSession?: ProviderTurnSession;
+    /** Conversation workspace, for providers that run their own agent there. */
+    workingDirectory?: string;
     /** Mutable state for abort recovery — caller reads on catch. */
     state?: AgentState;
     /** Test seam for provider streaming. Production always uses streamMessage. */
@@ -266,6 +268,7 @@ export async function runAgentLoop(
           promptCacheKey: options.promptCacheKey,
           tracking: options.tracking,
           turnSession: options.turnSession,
+          workingDirectory: options.workingDirectory,
           codexWindowId: options.getCodexWindowId?.(),
           accountScope: options.accountScope,
           codexTurnId: options.codexTurnId,
@@ -392,8 +395,14 @@ export async function runAgentLoop(
       content: assistantContent,
       ...(result.assistantProviderData ? { providerData: result.assistantProviderData } : {}),
     };
-    messages.push(assistantMsg);
-    newMessages.push(assistantMsg);
+    if (result.transcriptMessages?.length && result.toolCalls.length === 0) {
+      // The provider already executed its own tools; keep their structure.
+      messages.push(...result.transcriptMessages);
+      newMessages.push(...result.transcriptMessages);
+    } else {
+      messages.push(assistantMsg);
+      newMessages.push(assistantMsg);
+    }
 
     // ── No tool calls → done ──────────────────────────────────────
     if (result.toolCalls.length === 0) {

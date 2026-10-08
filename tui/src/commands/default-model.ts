@@ -48,7 +48,7 @@ type FastParseResult =
   | { ok: false };
 
 function isProviderId(value: string): value is ProviderId {
-  return value === "openai" || value === "deepseek" || value === "opencode" || value === "openrouter";
+  return value === "openai" || value === "anthropic" || value === "deepseek" || value === "opencode" || value === "openrouter";
 }
 
 function isEffortLevel(value: string): value is EffortLevel {

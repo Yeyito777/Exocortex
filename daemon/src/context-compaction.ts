@@ -456,7 +456,7 @@ async function nativeOpenAICompaction(
   if (result.compactionItems?.length !== 1) {
     throw new InvalidNativeCompactionResponseError(`OpenAI native compaction returned ${result.compactionItems?.length ?? 0} checkpoint items (expected exactly 1)`);
   }
-  const responseReplayScope = result.assistantProviderData?.openai.replayScope;
+  const responseReplayScope = result.assistantProviderData?.openai?.replayScope;
   const checkpointReplayScope = responseReplayScope ?? {
     model: openAIWireModel(options.model),
     ...(options.accountScope ? { accountScope: options.accountScope } : {}),
