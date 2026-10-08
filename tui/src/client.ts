@@ -775,8 +775,8 @@ export class DaemonClient {
     this.send({ type: "stop_call", convId, callId });
   }
 
-  prewarmConversation(convId: string): void {
-    this.send({ type: "prewarm_conversation", convId });
+  prewarmConversation(convId: string, draft = false): void {
+    this.send({ type: "prewarm_conversation", convId, ...(draft ? { draft: true } : {}) });
   }
 
   setModel(convId: string, provider: ProviderId, model: ModelId): void {

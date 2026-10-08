@@ -3,6 +3,8 @@ import { createAbortError, isAbortLikeError } from "../../abort";
 import { log } from "../../log";
 import { readExocortexConfig } from "@exocortex/shared/config";
 import { createHash } from "crypto";
+import { isDeepStrictEqual } from "node:util";
+import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
 import { accountScopeForKey, getCurrentAccountKey, getOpenAIAuthSessionRevision, getVerifiedSession } from "./auth";
 import { AuthError, isContextWindowProviderError, isNonRetryableProviderError, NonRetryableProviderError } from "../errors";
 import { OPENAI_CODEX_RESPONSES_URL, OPENAI_CODEX_RESPONSES_WS_URL, OPENAI_RESPONSES_LITE_HEADER } from "./constants";
@@ -42,14 +44,29 @@ export function createOpenAITurnSession(): OpenAITurnSession {
 
 export async function prewarmOpenAIConversation(promptCacheKey: string): Promise<void> {
   if (Date.now() < httpFallbackUntilMs) return;
+  const existing = pendingPrewarms.get(promptCacheKey);
+  if (existing) return existing;
+  // Never steal an active turn's transport; speculative opens are bounded.
+  if (reusableTurnSessions.get(promptCacheKey)?.inUse || pendingPrewarms.size >= MAX_CONCURRENT_PREWARMS) return;
+  const pending = openStandbySocket(promptCacheKey);
+  pendingPrewarms.set(promptCacheKey, pending);
+  try {
+    await pending;
+  } finally {
+    if (pendingPrewarms.get(promptCacheKey) === pending) pendingPrewarms.delete(promptCacheKey);
+  }
+}
+
+async function openStandbySocket(promptCacheKey: string): Promise<void> {
   const turnSession = new OpenAITurnSession();
+  const signal = AbortSignal.timeout(5_000);
   const callbacks: StreamCallbacks = {
     onText: () => {},
     onThinking: () => {},
   };
   try {
-    const session = await turnSession.getVerifiedRequestSession(callbacks);
-    await turnSession.getSocketLease(session, callbacks, { promptCacheKey });
+    const session = await turnSession.getVerifiedRequestSession(callbacks, signal);
+    await turnSession.getSocketLease(session, callbacks, { promptCacheKey, signal }, false);
     turnSession.close();
   } catch (err) {
     turnSession.destroy();
@@ -78,6 +95,8 @@ const MAX_RETRIES = 8;
 const USAGE_LIMIT_RESET_BUFFER_MS = 2_000;
 const RETRIABLE_STATUS_CODES = new Set([429, 500, 502, 503, 504, 507, 520, 521, 522, 523, 524]);
 const WEBSOCKET_IDLE_TIMEOUT_MS = 5 * 60_000;
+const MAX_IDLE_WEBSOCKET_SESSIONS = 8;
+const MAX_CONCURRENT_PREWARMS = 4;
 // A regional proxy can serve HTTPS while its WebSocket upstream is down.
 // Share a short circuit breaker with titlegen/one-shot calls, then probe WS
 // again automatically. Tool follow-ups stay on HTTPS for their logical turn.
@@ -200,6 +219,28 @@ interface OpenAITurnSessionState {
 }
 
 const reusableTurnSessions = new Map<string, OpenAITurnSessionState>();
+const pendingPrewarms = new Map<string, Promise<void>>();
+
+function pruneIdleSockets(): void {
+  const idle = [...reusableTurnSessions.values()].filter(state => !state.inUse && state.socket && !state.socket.isClosed());
+  for (const state of idle.slice(0, Math.max(0, idle.length - MAX_IDLE_WEBSOCKET_SESSIONS))) {
+    if (state.key) reusableTurnSessions.delete(state.key);
+    closeReusableTurnSession(state);
+  }
+}
+
+/** A submit joins the speculative connect, but Ctrl+Q never waits for it. */
+async function waitForPrewarm(pending: Promise<void>, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) throw createAbortError();
+  await new Promise<void>((resolve, reject) => {
+    const cleanup = () => { clearTimeout(timer); signal?.removeEventListener("abort", onAbort); };
+    const onAbort = () => { cleanup(); reject(createAbortError()); };
+    // A broken speculative connect must not hold a real request hostage.
+    const timer = setTimeout(() => { cleanup(); resolve(); }, 1_000);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    pending.then(() => { cleanup(); resolve(); }, error => { cleanup(); reject(error); });
+  });
+}
 
 function createTurnSessionState(key: string | null = null): OpenAITurnSessionState {
   return {
@@ -320,7 +361,19 @@ function hashValue(value: unknown): string {
   return `sha256:${createHash("sha256").update(stableJson(value)).digest("hex")}`;
 }
 
+function diagnosticHashes(body: Record<string, unknown>, input: unknown[]) {
+  if (!PERFORMANCE_PROFILING_ENABLED) return {};
+  return {
+    requestShapeHash: hashValue(cloneWithoutInput(body)),
+    inputPrefixHash: hashValue(input.slice(0, Math.min(input.length, 8))),
+  };
+}
+
 function valuesEqual(left: unknown, right: unknown): boolean {
+  // Wire items are rebuilt each round, but their large strings normally remain
+  // unchanged. Structural equality avoids serializing the full replay twice.
+  // Retain JSON equivalence for omitted undefined keys and other legacy shapes.
+  if (left === right || isDeepStrictEqual(left, right)) return true;
   return stableJson(left) === stableJson(right);
 }
 
@@ -373,6 +426,7 @@ async function readOpenAIResponsesHttpSse(
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let responseStarted = false;
 
   while (true) {
     if (signal?.aborted) throw createAbortError();
@@ -389,6 +443,10 @@ async function readOpenAIResponsesHttpSse(
         payload = JSON.parse(event.data) as Record<string, unknown>;
       } catch {
         continue;
+      }
+      if (!responseStarted && typeof payload.type === "string" && payload.type.startsWith("response.")) {
+        responseStarted = true;
+        callbacks.onFirstResponseEvent?.();
       }
       accumulator.handle(payload);
       if (payload.type === "response.completed" || payload.type === "response.incomplete") {
@@ -429,10 +487,12 @@ async function streamMessageHttpWithSession(
   if (cookieHeader) headers.Cookie = cookieHeader;
 
   consumeCompactionRequestAttempt(options);
+  const requestText = JSON.stringify(requestBody);
+  requestCallbacks.onRequestSent?.("http", Buffer.byteLength(requestText));
   const res = await fetch(OPENAI_CODEX_RESPONSES_URL, {
     method: "POST",
     headers,
-    body: JSON.stringify(requestBody),
+    body: requestText,
     signal: options.signal,
   });
 
@@ -457,8 +517,7 @@ async function streamMessageHttpWithSession(
     fullInputItems: input.length,
     connectionReused: false,
     fallbackReason: "http_sse",
-    requestShapeHash: hashValue(cloneWithoutInput(requestBody)),
-    inputPrefixHash: hashValue(input.slice(0, Math.min(input.length, 8))),
+    ...diagnosticHashes(requestBody, input),
   };
   return result;
 }
@@ -508,6 +567,15 @@ export class OpenAITurnSession implements ProviderTurnSession {
   private state = createTurnSessionState();
   private lastPrepareDiagnostics: StreamResult["requestDiagnostics"] | null = null;
   private lastResolvedAuthSessionRevision: string | null = null;
+  private awaitedPrewarm: Promise<void> | undefined;
+
+  async joinPrewarm(options: StreamOptions): Promise<void> {
+    const pending = options.promptCacheKey && pendingPrewarms.get(options.promptCacheKey);
+    if (!pending || pending === this.awaitedPrewarm) return;
+    this.awaitedPrewarm = pending;
+    try { await waitForPrewarm(pending, options.signal); }
+    catch (error) { if (options.signal?.aborted) throw error; }
+  }
 
   private adoptReusableState(options: StreamOptions): OpenAIRequestSession | null {
     const key = typeof options.promptCacheKey === "string" && options.promptCacheKey.length > 0
@@ -633,7 +701,9 @@ export class OpenAITurnSession implements ProviderTurnSession {
     session: OpenAIRequestSession,
     callbacks: StreamCallbacks,
     options: StreamOptions,
+    awaitPrewarm = true,
   ): Promise<OpenAIWebSocketLease> {
+    if (awaitPrewarm) await this.joinPrewarm(options);
     if (this.lastResolvedAuthSessionRevision !== getOpenAIAuthSessionRevision()) {
       throw new AuthError("OpenAI authentication changed while preparing the request; reconnecting with the updated session.");
     }
@@ -693,8 +763,7 @@ export class OpenAITurnSession implements ProviderTurnSession {
     const fullInputItems = fullInput.length;
     const baseDiagnostics = {
       fullInputItems,
-      requestShapeHash: hashValue(cloneWithoutInput(fullRequestBody)),
-      inputPrefixHash: hashValue(fullInput.slice(0, Math.min(fullInput.length, 8))),
+      ...diagnosticHashes(fullRequestBody, fullInput),
     };
 
     const fullReplay = (fallbackReason: string | null): Record<string, unknown> => {
@@ -800,6 +869,8 @@ export class OpenAITurnSession implements ProviderTurnSession {
       return;
     }
 
+    // Refresh insertion order so pruning keeps the most recently parked sockets.
+    reusableTurnSessions.delete(this.state.key);
     reusableTurnSessions.set(this.state.key, this.state);
     const timeoutMs = currentWebSocketIdleTimeoutMs();
     if (timeoutMs <= 0) {
@@ -820,6 +891,7 @@ export class OpenAITurnSession implements ProviderTurnSession {
     }, timeoutMs);
     (timer as { unref?: () => void }).unref?.();
     state.idleTimer = timer;
+    pruneIdleSockets();
   }
 
   destroy(): void {
@@ -1114,8 +1186,7 @@ export async function streamMessageWithSession(
           fullInputItems: input.length,
           connectionReused,
           fallbackReason: null,
-          requestShapeHash: hashValue(cloneWithoutInput(requestBody)),
-          inputPrefixHash: hashValue(input.slice(0, Math.min(input.length, 8))),
+          ...diagnosticHashes(requestBody, input),
         };
       }
       if (result.requestDiagnostics) result.requestDiagnostics.connectionReused = connectionReused;
@@ -1288,6 +1359,9 @@ export async function streamMessage(
   ({ model, options } = resolveOpenAIRequestSelection(model, options));
   const { signal } = options;
   const turnSession = isOpenAITurnSession(options.turnSession) ? options.turnSession : null;
+  // Join before auth resolution too, so a rapid submit does not duplicate a
+  // cold background auth verification/refresh followed by another handshake.
+  await turnSession?.joinPrewarm(options);
   const session = turnSession
     ? await turnSession.getVerifiedRequestSession(callbacks, signal)
     : await getVerifiedSessionWithRetries(callbacks, signal);

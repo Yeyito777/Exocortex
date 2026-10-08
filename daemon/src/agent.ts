@@ -21,6 +21,7 @@ import { estimateContextTokens, isContextWindowError, shouldAutoCompact, type Co
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
 import { createAbortError } from "./abort";
 import { ProviderGenerationTimer } from "./generation-throughput";
+import { ModelLoopProfile } from "./model-loop-profile";
 
 // ── Callbacks ───────────────────────────────────────────────────────
 
@@ -78,6 +79,8 @@ export interface ToolExecResult {
   image?: { mediaType: string; base64: string };
   /** Complete this tool call in a later replay instead of keeping this turn alive. */
   deferred?: DeferredToolResult;
+  /** Opt-in local executor timings, never included in model-visible output. */
+  timing?: { schedulingWaitMs: number; executionDurationMs: number };
 }
 
 /**
@@ -203,6 +206,13 @@ export async function runAgentLoop(
   }
 
   for (let round = 0; ; round++) {
+    const profile = PERFORMANCE_PROFILING_ENABLED ? new ModelLoopProfile({
+      conversationId: options.tracking?.conversationId,
+      turnId: options.codexTurnId ?? String(startTime),
+      round, provider, model,
+    }) : undefined;
+    let profileOutcome = "error";
+    try {
     log("info", `agent: round ${round}, messages=${messages.length}, provider=${provider}, model=${model}`);
 
     // ── Stream one API response ───────────────────────────────────
@@ -217,9 +227,12 @@ export async function runAgentLoop(
           ? messages.filter(message => !diagnosticsSubmittedMessages.has(message))
           : [];
         generationTimer.reset();
+        profile?.mark("provider_start");
         result = await (options.streamMessageFn ?? streamMessage)(provider, messages, model, {
-          onText: (text) => { roundEmittedOutput = true; callbacks.onTextChunk(text); },
-          onThinking: (text) => { roundEmittedOutput = true; callbacks.onThinkingChunk(text); },
+          onRequestSent: profile ? (transport, bytes) => profile.mark("request_sent", { transport, bytes }) : undefined,
+          onFirstResponseEvent: profile ? () => profile.mark("first_response") : undefined,
+          onText: (text) => { if (text) profile?.once("first_output"); if (profile && /\S/.test(text)) profile.once("first_text"); roundEmittedOutput = true; callbacks.onTextChunk(text); },
+          onThinking: (text) => { if (text) profile?.once("first_output"); if (profile && /\S/.test(text)) profile.once("first_thinking"); roundEmittedOutput = true; callbacks.onThinkingChunk(text); },
           onBlockStart: (type) => { roundEmittedOutput = true; callbacks.onBlockStart(type); },
           onBlocksUpdate: (blocks) => { if (blocks.length > 0) roundEmittedOutput = true; callbacks.onBlocksUpdate?.(blocks); },
           onSignature: (signature) => { roundEmittedOutput = true; callbacks.onSignature(signature); },
@@ -228,13 +241,16 @@ export async function runAgentLoop(
           onHeaders: callbacks.onHeaders,
           // Argument generation is liveness, not committed/rendered output.
           // Do not set roundEmittedOutput: a context-error retry can still discard it.
-          onActivity: callbacks.onProviderActivity,
+          onActivity: profile
+            ? () => { profile.once("first_output"); callbacks.onProviderActivity?.(); }
+            : callbacks.onProviderActivity,
           onRetry: (attempt, maxAttempts, errorMessage, delaySec, metadata) => {
             // Provider retries discard the current attempt's streamed output.
             // Reset this guard too so a clean retry that hits a context error can
             // still compact rather than being blocked by already-discarded text.
             roundEmittedOutput = false;
             generationTimer.retry();
+            profile?.mark("retry");
             callbacks.onRetry?.(attempt, maxAttempts, errorMessage, delaySec, metadata);
           },
           onRetryWaitStart: () => { generationTimer.retry(); callbacks.onRetryWaitStart?.(); },
@@ -256,6 +272,7 @@ export async function runAgentLoop(
           codexTurnStartedAtMs: options.codexTurnStartedAtMs,
           diagnosticMessages,
         });
+        profile?.mark("provider_end");
         generationRate = generationTimer.rate(result.outputTokens);
         for (const message of messages) diagnosticsSubmittedMessages.add(message);
         break;
@@ -287,6 +304,7 @@ export async function runAgentLoop(
       callbacks.onContextUpdate(result.inputTokens, messages);
     }
 
+    profile?.mark("presentation_start");
     // Presentation is best-effort and must never interfere with execution.
     const presentations = new Map<string, ToolCallPresentation>();
     if (options.presentationResolver) {
@@ -312,6 +330,7 @@ export async function runAgentLoop(
         if (presentation) presentations.set(result.toolCalls[index]!.id, presentation);
       }
     }
+    profile?.mark("presentation_end");
 
     // ── Collect content blocks (thinking + text) ──────────────────
     for (const block of result.blocks) {
@@ -378,6 +397,7 @@ export async function runAgentLoop(
 
     // ── No tool calls → done ──────────────────────────────────────
     if (result.toolCalls.length === 0) {
+      profileOutcome = "complete";
       log("info", `agent: round ${round} complete (no tool calls), stopReason=${result.stopReason}`);
       break;
     }
@@ -399,12 +419,15 @@ export async function runAgentLoop(
 
     // ── Execute tools ─────────────────────────────────────────────
     if (!options.executor) {
+      profileOutcome = "no_executor";
       log("info", "agent: no executor provided, stopping after tool calls");
       break;
     }
 
     const toolExecStartedAt = Date.now();
+    profile?.mark("tools_start");
     const execResults = await options.executor(result.toolCalls, options.signal);
+    profile?.mark("tools_end");
     if (PERFORMANCE_PROFILING_ENABLED) {
       recordToolCallDiagnostics({
         conversationId: options.tracking?.conversationId,
@@ -432,6 +455,7 @@ export async function runAgentLoop(
         state.tokens = totalOutputTokens;
       }
       log("info", `agent: suspending turn for deferred ${deferred.kind} result (${deferredResults[0].toolCallId})`);
+      profileOutcome = "suspended";
       return {
         blocks: allBlocks,
         newMessages,
@@ -498,6 +522,7 @@ export async function runAgentLoop(
       state.tokens = totalOutputTokens;
     }
     callbacks.onRoundComplete?.();
+    profile?.mark("recovery_committed");
 
     // Ctrl+Q can land while a tool is settling even when that tool cannot stop
     // cooperatively. Keep its completed result as recovery state, but do not
@@ -519,6 +544,7 @@ export async function runAgentLoop(
       state.contextMessages = [...messages];
     }
     callbacks.onRecoveryStateUpdate?.();
+    profile?.mark("queue_drained");
 
     const contextLimit = getMaxContext(provider, model);
     const assistantGrowthTokens = result.outputTokens != null && result.outputTokens > 0
@@ -528,7 +554,9 @@ export async function runAgentLoop(
       ? lastInputTokens + assistantGrowthTokens + estimateContextTokens([toolResultMsg, ...nextTurn], provider)
       : estimateContextTokens(messages, provider);
     if (callbacks.compactContext && shouldAutoCompact(projectedTokens, contextLimit)) {
+      profile?.mark("compaction_start");
       const replacement = await callbacks.compactContext(messages, "tool_round", projectedTokens);
+      profile?.mark("compaction_end");
       if (replacement) {
         messages.length = 0;
         messages.push(...replacement);
@@ -547,6 +575,10 @@ export async function runAgentLoop(
     }
 
     // Continue loop → next API call with tool results
+    profileOutcome = "continue";
+    } finally {
+      profile?.finish(profileOutcome);
+    }
   }
 
   return {

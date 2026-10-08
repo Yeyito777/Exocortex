@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { clearConversationDefaults, configuredConversationDefaults, productConversationDefaults, saveConversationDefaults } from "@exocortex/shared/config";
 import { conversationWorkspaceDir } from "@exocortex/shared/paths";
 import { localMacroEnvironment } from "@exocortex/shared/macro-environment";
@@ -15,6 +15,7 @@ import { resetExternalNotificationsForTest } from "./external-notifications";
 import { listPendingExternalNotificationSoftWakes, resetExternalNotificationSoftWakesForTest } from "./external-notification-soft-wakes";
 import { getExocortexToolRuntime } from "./exocortex-tool-runtime";
 import { resetConversationActivityForTest, setBackgroundTaskActive } from "./conversation-activity";
+import { getProviderAdapter } from "./providers/catalog";
 
 interface TestAssistantOutcome {
   ok: boolean;
@@ -95,6 +96,66 @@ function cleanupIds(): void {
   const subagentsFolder = findTopLevelFolderByName("subagents");
   if (subagentsFolder) deleteFolder(subagentsFolder.id);
 }
+
+describe("standby conversation IPC", () => {
+  function createPrewarmSpy() { return spyOn(getProviderAdapter("openai"), "prewarmConversation"); }
+  let prewarm: ReturnType<typeof createPrewarmSpy>;
+  beforeEach(() => { prewarm = createPrewarmSpy(); prewarm.mockResolvedValue(undefined); });
+  afterEach(() => { prewarm.mockRestore(); cleanupIds(); });
+  // Keep this spy scoped to these tests; other handler tests exercise real auth.
+  test("reserved drafts warm only the transport, without creating conversation history", async () => {
+    const id = `${Date.now()}-warm01`;
+    IDS.push(id);
+    const sent: unknown[] = [];
+    const handle = createHandler({
+      sendTo: (_client: unknown, event: unknown) => sent.push(event),
+    } as never);
+    await handle({} as never, { type: "prewarm_conversation", convId: id, draft: true, reqId: "standby" });
+    expect(prewarm).toHaveBeenCalledWith(id);
+    expect(getSummary(id)).toBeNull();
+    expect(sent).toEqual([{ type: "ack", convId: id, reqId: "standby" }]);
+  });
+
+  test("invalid, missing, deleted, non-OpenAI and active conversations do not prewarm", async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const handle = createHandler({ sendTo: (_client: unknown, event: Record<string, unknown>) => sent.push(event) } as never);
+    const deleted = `${Date.now()}-trash1`;
+    IDS.push(deleted);
+    create(deleted, "openai", DEFAULT_MODEL_BY_PROVIDER.openai);
+    remove(deleted);
+    const other = mkId("standby-other");
+    create(other, "deepseek", DEFAULT_MODEL_BY_PROVIDER.deepseek);
+    const active = mkId("standby-active");
+    create(active, "openai", DEFAULT_MODEL_BY_PROVIDER.openai);
+    setActiveJob(active, new AbortController(), Date.now());
+    const rejected = [
+      { convId: "../unsafe", draft: true },
+      { convId: `${Date.now()}-absent`, draft: false },
+      { convId: deleted, draft: true },
+      { convId: other, draft: true },
+      { convId: active, draft: false },
+    ];
+    for (const [index, command] of rejected.entries()) {
+      await handle({} as never, { type: "prewarm_conversation", reqId: `rejected-${index}`, ...command });
+    }
+    await handle({} as never, { type: "prewarm_conversation", convId: null, draft: true, reqId: "malformed" } as never);
+    expect(prewarm).not.toHaveBeenCalled();
+    expect(sent).toHaveLength(rejected.length + 1);
+    expect(sent.every(event => event.type === "error")).toBe(true);
+  });
+
+  test("speculative failures are correlated and never create a conversation", async () => {
+    prewarm.mockRejectedValue(new Error("test transport failure"));
+    const id = `${Date.now()}-warm02`;
+    IDS.push(id);
+    const sent: Array<Record<string, unknown>> = [];
+    const handle = createHandler({ sendTo: (_client: unknown, event: Record<string, unknown>) => sent.push(event) } as never);
+    await handle({} as never, { type: "prewarm_conversation", convId: id, draft: true, reqId: "failed" });
+    await Promise.resolve(); // rejection handler follows the acknowledgement chain
+    expect(sent).toContainEqual(expect.objectContaining({ type: "error", reqId: "failed", convId: id }));
+    expect(getSummary(id)).toBeNull();
+  });
+});
 
 describe("conversation default IPC", () => {
   beforeEach(clearConversationDefaults);

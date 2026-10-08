@@ -2,7 +2,7 @@ import { log } from "../../log";
 import { ContextWindowProviderError } from "../errors";
 import type { ApiToolCall } from "../types";
 import type { ContentBlock, StreamCallbacks, StreamResult } from "../types";
-import { extractReasoningRawContent, extractReasoningSummaries, finalizeReasoningItem, hasPreservableReasoning, hasRenderableReasoning, mergeReasoningSummaries } from "./reasoning";
+import { extractReasoningRawContent, extractReasoningSummaries, finalizeReasoningItem, hasPreservableReasoning, hasRenderableReasoning, mergeReasoningSummaries, projectReasoningSummaryText } from "./reasoning";
 import type { OpenAICompactionItem, OpenAIReasoningItem } from "./types";
 import { openAIToolCallItem, parseOpenAIToolInput } from "./tool-wire";
 
@@ -13,6 +13,9 @@ export interface OpenAIStreamToolState {
 }
 
 interface OpenAIReadState {
+  renderedBlocks: OpenAIRenderableBlock[];
+  renderedTail: RenderedSource | null;
+  canonicalDeltasForTest: boolean;
   responseId?: string;
   inputTokens?: number;
   cachedInputTokens?: number;
@@ -37,8 +40,11 @@ interface OpenAIReadState {
   currentRawReasoningIndexes: Map<number, number>;
 }
 
-function createReadState(): OpenAIReadState {
+function createReadState(canonicalDeltasForTest = false): OpenAIReadState {
   return {
+    renderedBlocks: [],
+    renderedTail: null,
+    canonicalDeltasForTest,
     stopReason: "",
     compactionDoneCount: 0,
     responseCompleted: false,
@@ -253,10 +259,17 @@ function handleCompletedReasoningItem(state: OpenAIReadState, item: Record<strin
 
 type OpenAIRenderableBlock = Extract<ContentBlock, { type: "thinking" | "text" }>;
 
+interface RenderedSource {
+  outputIndex: number;
+  kind: "text" | "raw" | "summary";
+  contentIndex: number;
+  /** Plain summaries cannot turn into the hidden HTML-placeholder projection. */
+  plainSummary?: boolean;
+}
+
 function buildOrderedBlocks(state: OpenAIReadState): OpenAIRenderableBlock[] {
   const orderedReasoningEntries = [...state.reasoningStates.entries()]
-    .sort((a, b) => a[0] - b[0])
-    .filter(([, item]) => hasRenderableReasoning(item));
+    .sort((a, b) => a[0] - b[0]);
   const orderedTextEntries = [...state.textStates.entries()]
     .sort((a, b) => a[0] - b[0])
     .map(([outputIndex, textParts]) => ({ outputIndex, text: joinedTextContent(textParts) }))
@@ -267,11 +280,27 @@ function buildOrderedBlocks(state: OpenAIReadState): OpenAIRenderableBlock[] {
   ].sort((a, b) => a.outputIndex - b.outputIndex);
 
   const orderedBlocks: OpenAIRenderableBlock[] = [];
+  state.renderedTail = null;
   for (const entry of orderedEntries) {
     if (entry.kind === "reasoning") {
-      finalizeReasoningItem(entry.item, orderedBlocks, { value: "" });
+      const raw = entry.item.rawContent?.some(text => text.length > 0) === true;
+      const texts = raw ? entry.item.rawContent! : entry.item.summaries;
+      for (const [contentIndex, original] of texts.entries()) {
+        const text = raw ? original : projectReasoningSummaryText(original);
+        if (!text) continue;
+        orderedBlocks.push({ type: "thinking", text, signature: "" });
+        const first = original.trimStart()[0];
+        state.renderedTail = {
+          outputIndex: entry.outputIndex, kind: raw ? "raw" : "summary", contentIndex,
+          plainSummary: !!first && first !== "*" && first !== "<",
+        };
+      }
     } else {
       orderedBlocks.push({ type: "text", text: entry.text });
+      const parts = state.textStates.get(entry.outputIndex)!;
+      let contentIndex = parts.length - 1;
+      while (contentIndex > 0 && !parts[contentIndex]) contentIndex--;
+      state.renderedTail = { outputIndex: entry.outputIndex, kind: "text", contentIndex };
     }
   }
   return orderedBlocks;
@@ -322,9 +351,34 @@ function emitOrSyncBlocks(before: OpenAIRenderableBlock[], after: OpenAIRenderab
 }
 
 function updateBlocks(state: OpenAIReadState, cb: StreamCallbacks, mutate: () => void): void {
-  const before = buildOrderedBlocks(state);
+  const before = state.canonicalDeltasForTest ? buildOrderedBlocks(state) : state.renderedBlocks;
   mutate();
-  emitOrSyncBlocks(before, buildOrderedBlocks(state), cb);
+  state.renderedBlocks = buildOrderedBlocks(state);
+  emitOrSyncBlocks(before, state.renderedBlocks, cb);
+}
+
+/**
+ * Known append-only deltas do not need an O(total output) prefix comparison.
+ * Earlier items/parts, summary projections and raw/summary switches still use
+ * canonical rebuilding. Keep previously published sync snapshots immutable.
+ */
+function canAppendRenderedTail(state: OpenAIReadState, source: RenderedSource, delta: string): boolean {
+  const tail = state.renderedTail;
+  if (state.canonicalDeltasForTest || !Number.isInteger(source.contentIndex) || source.contentIndex < 0) return false;
+  if (!delta || !tail || tail.outputIndex !== source.outputIndex || tail.kind !== source.kind) return false;
+  if (source.kind === "text" ? source.contentIndex < tail.contentIndex : source.contentIndex !== tail.contentIndex) return false;
+  if (source.kind === "summary" && !tail.plainSummary) return false;
+  return true;
+}
+
+function appendRenderedTail(state: OpenAIReadState, cb: StreamCallbacks, source: RenderedSource, delta: string): void {
+  const tail = state.renderedTail!;
+  const before = state.renderedBlocks;
+  const last = before[before.length - 1]!;
+  state.renderedBlocks = [...before.slice(0, -1), { ...last, text: last.text + delta }];
+  state.renderedTail = { ...tail, contentIndex: source.contentIndex };
+  if (last.type === "text") cb.onText(delta);
+  else cb.onThinking(delta);
 }
 
 function resolveTextContentIndex(event: Record<string, unknown>): number {
@@ -398,9 +452,14 @@ function handleStreamEvent(state: OpenAIReadState, event: Record<string, unknown
         cb.onText(delta);
         break;
       }
-      updateBlocks(state, cb, () => {
-        appendTextContent(state, outputIndex, resolveTextContentIndex(event), delta);
-      });
+      const contentIndex = resolveTextContentIndex(event);
+      const source: RenderedSource = { outputIndex, kind: "text", contentIndex };
+      if (canAppendRenderedTail(state, source, delta)) {
+        appendTextContent(state, outputIndex, contentIndex, delta);
+        appendRenderedTail(state, cb, source, delta);
+      } else {
+        updateBlocks(state, cb, () => { appendTextContent(state, outputIndex, contentIndex, delta); });
+      }
       break;
     }
 
@@ -443,10 +502,18 @@ function handleStreamEvent(state: OpenAIReadState, event: Record<string, unknown
       const contentIndex = resolveReasoningContentIndex(state, event, outputIndex);
       const reasoning = state.reasoningStates.get(outputIndex);
       if (!reasoning) break;
-      updateBlocks(state, cb, () => {
+      const delta = String(event.delta ?? "");
+      const source: RenderedSource = { outputIndex, kind: "raw", contentIndex };
+      if (canAppendRenderedTail(state, source, delta)) {
         ensureRawReasoningSlot(reasoning, contentIndex);
-        reasoning.rawContent![contentIndex] += String(event.delta ?? "");
-      });
+        reasoning.rawContent![contentIndex] += delta;
+        appendRenderedTail(state, cb, source, delta);
+      } else {
+        updateBlocks(state, cb, () => {
+          ensureRawReasoningSlot(reasoning, contentIndex);
+          reasoning.rawContent![contentIndex] += delta;
+        });
+      }
       break;
     }
 
@@ -471,9 +538,14 @@ function handleStreamEvent(state: OpenAIReadState, event: Record<string, unknown
       const summaryIndex = resolveReasoningSummaryIndex(state, event, outputIndex);
       const reasoning = ensureReasoningSummaryState(state, outputIndex, summaryIndex);
       if (!reasoning) break;
-      updateBlocks(state, cb, () => {
-        reasoning.summaries[summaryIndex] += String(event.delta ?? "");
-      });
+      const delta = String(event.delta ?? "");
+      const source: RenderedSource = { outputIndex, kind: "summary", contentIndex: summaryIndex };
+      if (canAppendRenderedTail(state, source, delta)) {
+        reasoning.summaries[summaryIndex] += delta;
+        appendRenderedTail(state, cb, source, delta);
+      } else {
+        updateBlocks(state, cb, () => { reasoning.summaries[summaryIndex] += delta; });
+      }
       break;
     }
 
@@ -699,6 +771,7 @@ function finalizeReadState(state: OpenAIReadState): StreamResult {
 export function readOpenAIEventsForTest(
   events: Record<string, unknown>[],
   callbacks: Partial<StreamCallbacks> = {},
+  canonicalDeltasForTest = false,
 ): StreamResult {
   const cb: StreamCallbacks = {
     onText: callbacks.onText ?? (() => {}),
@@ -712,7 +785,7 @@ export function readOpenAIEventsForTest(
     onHeaders: callbacks.onHeaders,
     onRetry: callbacks.onRetry,
   };
-  const state = createReadState();
+  const state = createReadState(canonicalDeltasForTest);
   for (const event of events) {
     handleStreamEvent(state, event, cb);
   }

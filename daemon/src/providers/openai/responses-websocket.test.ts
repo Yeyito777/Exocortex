@@ -5,6 +5,28 @@ import type { OpenAIWebSocketConnection } from "./websocket";
 import { clearActiveJob, getStaleStreams, setActiveJob, touchActivity } from "../../streaming";
 
 describe("OpenAI websocket rate-limit events", () => {
+  test("profiling observes local send before reading and first response only once", async () => {
+    const seen: string[] = [];
+    const events = [
+      "null", "[]", "not-json",
+      JSON.stringify({ type: "response.created", response: { id: "r" } }),
+      JSON.stringify({ type: "response.in_progress" }),
+      JSON.stringify({ type: "response.completed", response: { output: [] } }),
+    ];
+    const socket = {
+      async sendText(text: string) { seen.push(`send:${text.length}`); },
+      async nextMessage() { seen.push("read"); return { type: "text", text: events.shift()! }; },
+    } as unknown as OpenAIWebSocketConnection;
+    await readOpenAIResponsesWebSocket(socket, {}, {
+      onText() {}, onThinking() {},
+      onRequestSent: (transport, bytes) => seen.push(`${transport}:${bytes}`),
+      onFirstResponseEvent: () => seen.push("first_response"),
+    }, { stallTimeoutMs: 1000 });
+    expect(seen[0]).toStartWith("send:");
+    expect(seen[1]).toStartWith("websocket:");
+    expect(seen[2]).toBe("read");
+    expect(seen.filter(value => value === "first_response")).toHaveLength(1);
+  });
   test("preserves window duration metadata", () => {
     const headers = codexRateLimitHeadersForTest({
       type: "codex.rate_limits",

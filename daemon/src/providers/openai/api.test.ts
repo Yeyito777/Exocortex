@@ -272,6 +272,163 @@ describe("OpenAI automatic HTTPS fallback", () => {
   });
 });
 
+describe("OpenAI standby connection handoff", () => {
+  const callbacks = { onText() {}, onThinking() {} };
+  function seedAuth() {
+    const auth: StoredOpenAIAuth = {
+      tokens: { accessToken: "prewarm-test-token", refreshToken: "test-refresh", expiresAt: Date.now() + 3_600_000,
+        scopes: [], subscriptionType: null, rateLimitTier: null },
+      profile: null, updatedAt: new Date().toISOString(), source: "oauth",
+      authMode: null, accountId: null, idToken: null,
+    };
+    saveProviderAuth("openai", auth);
+    globalThis.fetch = mock(async () => new Response("{}", { status: 200 })) as unknown as typeof fetch;
+  }
+
+  function delayedConnector() {
+    let release!: () => void;
+    let entered!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let connections = 0;
+    let closed = false;
+    const socket = { isClosed: () => closed, close() { closed = true; }, destroy() { closed = true; } } as unknown as OpenAIWebSocketConnection;
+    setOpenAIWebSocketConnectorForTest(async () => {
+      connections++;
+      entered();
+      await gate;
+      return { socket, headers: new Headers() };
+    });
+    return { started, release, socket, connections: () => connections };
+  }
+
+  test("deduplicates prewarm and hands its in-flight socket to submit instead of opening another", async () => {
+    seedAuth();
+    const connector = delayedConnector();
+    const prewarm = prewarmOpenAIConversation("draft-reserved");
+    await connector.started;
+    const duplicate = prewarmOpenAIConversation("draft-reserved");
+    const turn = createOpenAITurnSession();
+    const session = await turn.getVerifiedRequestSession(callbacks);
+    const lease = turn.getSocketLease(session, callbacks, { promptCacheKey: "draft-reserved" });
+    expect(connector.connections()).toBe(1);
+    connector.release();
+    await Promise.all([prewarm, duplicate]);
+    expect((await lease).socket).toBe(connector.socket);
+    expect((await lease).reused).toBe(true);
+    expect(connector.connections()).toBe(1);
+    // Prewarming the active turn must not steal/displace its connection.
+    await prewarmOpenAIConversation("draft-reserved");
+    expect(connector.connections()).toBe(1);
+    turn.destroy();
+  });
+
+  test("Ctrl+Q cancels the handoff wait without cancelling another owner's prewarm", async () => {
+    seedAuth();
+    const connector = delayedConnector();
+    const prewarm = prewarmOpenAIConversation("abort-prewarm");
+    await connector.started;
+    const turn = createOpenAITurnSession();
+    const session = await turn.getVerifiedRequestSession(callbacks);
+    const abort = new AbortController();
+    const lease = turn.getSocketLease(session, callbacks, { promptCacheKey: "abort-prewarm", signal: abort.signal });
+    abort.abort();
+    await expect(lease).rejects.toThrow(/abort/i);
+    connector.release();
+    await prewarm;
+    turn.destroy();
+  });
+
+  test("a failed speculative connection does not prevent a normal submit", async () => {
+    seedAuth();
+    const calls = mockOpenAIWebSocket([
+      { error: new Error("speculative connect failed") }, { events: [] },
+    ]);
+    const prewarm = prewarmOpenAIConversation("failed-standby");
+    const rejected = expect(prewarm).rejects.toThrow("speculative connect failed");
+    const turn = createOpenAITurnSession();
+    await turn.joinPrewarm({ promptCacheKey: "failed-standby" });
+    await rejected;
+    const session = await turn.getVerifiedRequestSession(callbacks);
+    const lease = await turn.getSocketLease(session, callbacks, { promptCacheKey: "failed-standby" });
+    expect(lease.reused).toBe(false);
+    expect(calls).toHaveLength(2);
+    expect(calls.every(call => call.sent.length === 0)).toBe(true);
+    turn.destroy();
+  });
+
+  test("a stalled prewarm waits at most once and its late socket cannot replace the real turn", async () => {
+    seedAuth();
+    let release!: () => void;
+    let entered!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const sockets: OpenAIWebSocketConnection[] = [];
+    setOpenAIWebSocketConnectorForTest(async () => {
+      let closed = false;
+      const socket = { isClosed: () => closed, close() { closed = true; }, destroy() { closed = true; } } as unknown as OpenAIWebSocketConnection;
+      sockets.push(socket);
+      if (sockets.length === 1) { entered(); await gate; }
+      return { socket, headers: new Headers() };
+    });
+    const prewarm = prewarmOpenAIConversation("stalled-standby");
+    await started;
+    const turn = createOpenAITurnSession();
+    const before = performance.now();
+    await turn.joinPrewarm({ promptCacheKey: "stalled-standby" });
+    expect(performance.now() - before).toBeGreaterThanOrEqual(900);
+    const session = await turn.getVerifiedRequestSession(callbacks);
+    const lease = await turn.getSocketLease(session, callbacks, { promptCacheKey: "stalled-standby" });
+    expect(performance.now() - before).toBeLessThan(1_800); // no second one-second wait
+    expect(lease.socket).toBe(sockets[1]);
+    expect(lease.reused).toBe(false);
+    release();
+    await prewarm;
+    expect(sockets[0].isClosed()).toBe(true);
+    expect(sockets[1].isClosed()).toBe(false);
+    const reused = await turn.getSocketLease(session, callbacks, { promptCacheKey: "stalled-standby" });
+    expect(reused.socket).toBe(sockets[1]);
+    expect(sockets).toHaveLength(2);
+    turn.destroy();
+  });
+
+  test("background connection attempts are capped while pending", async () => {
+    seedAuth();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let connections = 0;
+    setOpenAIWebSocketConnectorForTest(async () => {
+      connections++;
+      await gate;
+      let closed = false;
+      return {
+        socket: { isClosed: () => closed, close() { closed = true; }, destroy() { closed = true; } } as unknown as OpenAIWebSocketConnection,
+        headers: new Headers(),
+      };
+    });
+    const pending = Array.from({ length: 8 }, (_, i) => prewarmOpenAIConversation(`bounded-${i}`));
+    release();
+    await Promise.all(pending);
+    expect(connections).toBe(4);
+  });
+
+  test("idle cache is bounded and does not evict an active turn", async () => {
+    const calls = mockOpenAIWebSocket(Array.from({ length: 10 }, () => ({ events: [] })));
+    const active = createOpenAITurnSession();
+    const session = { accessToken: "test-token", accountId: null };
+    await active.getSocketLease(session, callbacks, { promptCacheKey: "active" });
+    for (let i = 0; i < 9; i++) {
+      const turn = createOpenAITurnSession();
+      await turn.getSocketLease(session, callbacks, { promptCacheKey: `idle-${i}` });
+      turn.close();
+    }
+    expect(calls[0].isClosed()).toBe(false);
+    expect(calls[1].isClosed()).toBe(true);
+    expect(calls.slice(2).every(call => !call.isClosed())).toBe(true);
+    active.destroy();
+  });
+});
+
 describe("OpenAI replay input", () => {
   test("sends an unchanged Sol checkpoint to Astra on the same account, but rejects another account", async () => {
     const accountScope = accountScopeForKey("checkpoint-account")!;
