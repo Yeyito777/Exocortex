@@ -2,7 +2,9 @@
  * Autocomplete engine for the prompt line.
  *
  * Manages command, macro, inline-command, and path completion with a popup UI.
- * Command completion activates live when input starts with "/".
+ * Command completion activates live when input starts with "/". Slash words
+ * are exact substrings matched anywhere in a name, and later words search
+ * nested arguments ("/model opus" → "/model anthropic claude-opus-5-5").
  * Macro completion activates for slash tokens mid-message; only explicitly
  * registered inline commands participate in this mid-message path.
  * Path completion triggers on Tab for path-like tokens (~/, ./, ../, /).
@@ -47,43 +49,20 @@ export interface PathCompletionProvider {
   requestFilesystemMatches(pathToken: string, onReady?: () => void): void;
 }
 
-// ── Argument matching helper ─────────────────────────────────────
+// ── Slash completion search ───────────────────────────────────────
 
-/** Escape a string for use in a RegExp. */
-function escapeRegex(s: string): string {
-  return s.replace(/[/\\^$*+?.()|[\]{}]/g, "\\$&");
-}
+/** Nested argument completions available below a slash root, keyed by "/root arg …". */
+type ArgRegistryFor = (rootName: string) => Record<string, CompletionItem[]>;
 
-/**
- * Try to match argument completion against a registry.
- * If `raw` matches "/command arg…" for any entry in `registry`,
- * returns the filtered argument completions. Otherwise returns null.
- *
- * Entries are tried longest-key-first so deeper matches (e.g. "/tool install")
- * take priority over shallower ones (e.g. "/tool").
- */
-function matchArgCompletion(
-  raw: string,
-  registry: Record<string, CompletionItem[]>,
-): CompletionItem[] | null {
-  const entries = Object.entries(registry).sort((a, b) => b[0].length - a[0].length);
-  for (const [cmd, args] of entries) {
-    const re = new RegExp(`^${escapeRegex(cmd)}\\s+(.*)$`, "i");
-    const m = raw.match(re);
-    if (m) return args.filter(a => completionMatchesPrefix(a, m[1]));
-  }
-  return null;
+interface SlashQuery {
+  /** Lowercased whitespace-separated words. */
+  words: string[];
+  /** The query ends in whitespace, so its final word must be followed by a space. */
+  trailingSpace: boolean;
 }
 
 function completionInsertText(item: CompletionItem): string {
   return item.insertText ?? item.name;
-}
-
-function completionMatchesPrefix(item: CompletionItem, rawPrefix: string): boolean {
-  const prefix = rawPrefix.toLowerCase();
-  if (item.name.toLowerCase().startsWith(prefix)) return true;
-  if (item.insertText?.toLowerCase().startsWith(prefix)) return true;
-  return item.aliases?.some(alias => alias.toLowerCase().startsWith(prefix)) ?? false;
 }
 
 function hasArgumentPrefix(raw: string): boolean {
@@ -94,6 +73,207 @@ function slashBase(raw: string): string {
   return raw.split(/\s+/, 1)[0] ?? raw;
 }
 
+function parseSlashQuery(text: string): SlashQuery {
+  return {
+    words: text.toLowerCase().split(/\s+/).filter(Boolean),
+    trailingSpace: /\s$/.test(text),
+  };
+}
+
+/** Lowercased strings a segment can match: its name, insert text, and aliases. */
+function segmentForms(item: CompletionItem, isRoot: boolean): string[] {
+  const forms = [item.name, ...(item.insertText ? [item.insertText] : []), ...(item.aliases ?? [])];
+  // Root names match without their slash so "/del" can find "/model".
+  return forms.map(form => (isRoot ? form.replace(/^\//, "") : form).toLowerCase());
+}
+
+/** 0 = starts a segment, 1 = starts after punctuation or a space, 2 = mid-word. */
+function wordMatchQuality(text: string, at: number, segmentStart: number): number {
+  if (at === segmentStart) return 0;
+  return /[\p{L}\p{N}]/u.test(text[at - 1]) ? 2 : 1;
+}
+
+/**
+ * Score a completion path (lowercased segments) against query words; lower is
+ * better and null means no match.
+ *
+ * Each word is an exact substring. A later word either continues the previous
+ * one after a single space (multi-word names such as conversation titles) or
+ * starts in a later segment, so "opus" can skip the provider segment and land
+ * in "claude-opus-5-5". The final word must land in the final segment, or with
+ * a trailing space be followed by a space that leads into it.
+ */
+function scoreCompletionPath(segments: readonly string[], query: SlashQuery, firstWordSegment?: number): number | null {
+  const { words, trailingSpace } = query;
+  if (words.length === 0) return null;
+
+  const text = segments.join(" ");
+  const starts: number[] = [];
+  let offset = 0;
+  for (const segment of segments) {
+    starts.push(offset);
+    offset += segment.length + 1;
+  }
+  const segmentAt = (index: number): number => {
+    let segment = 0;
+    while (segment + 1 < starts.length && starts[segment + 1] <= index) segment++;
+    return segment;
+  };
+  const lastSegment = segments.length - 1;
+
+  const search = (wordIndex: number, prevEnd: number, prevSegment: number): number | null => {
+    const word = words[wordIndex];
+    for (let at = text.indexOf(word, prevEnd); at >= 0; at = text.indexOf(word, at + 1)) {
+      const segment = segmentAt(at);
+      if (wordIndex === 0) {
+        if (firstWordSegment !== undefined && segment !== firstWordSegment) continue;
+      } else if (segment <= prevSegment && !(at === prevEnd + 1 && text[prevEnd] === " ")) {
+        continue;
+      }
+
+      const end = at + word.length;
+      const quality = wordMatchQuality(text, at, starts[segment]);
+      if (wordIndex === words.length - 1) {
+        const landsInLast = trailingSpace
+          ? text[end] === " " && end + 1 < text.length && segmentAt(end + 1) === lastSegment
+          : segment === lastSegment;
+        if (landsInLast) return quality;
+        continue;
+      }
+
+      const rest = search(wordIndex + 1, end, segment);
+      if (rest !== null) return quality + rest;
+    }
+    return null;
+  };
+
+  return search(0, 0, 0);
+}
+
+/** Best score across the final segment's names/aliases. */
+function scorePath(path: readonly CompletionItem[], query: SlashQuery, includesRoot: boolean): number | null {
+  const lastWord = query.words[query.words.length - 1];
+  const lastForms = segmentForms(path[path.length - 1], includesRoot && path.length === 1);
+  // Cheap reject: without a trailing space the final word must sit inside the final segment.
+  const forms = query.trailingSpace ? lastForms : lastForms.filter(form => form.includes(lastWord));
+  if (forms.length === 0) return null;
+
+  const parents = path.slice(0, -1).map((item, i) => segmentForms(item, includesRoot && i === 0)[0]);
+  let best: number | null = null;
+  for (const form of forms) {
+    const score = scoreCompletionPath([...parents, form], query, includesRoot ? 0 : undefined);
+    if (score !== null && (best === null || score < best)) best = score;
+  }
+  return best;
+}
+
+/** Depth-first walk of every completion path below `key`. */
+function* completionPaths(
+  registry: Record<string, CompletionItem[]>,
+  key: string,
+  parents: readonly CompletionItem[],
+): Generator<CompletionItem[]> {
+  for (const item of registry[key] ?? []) {
+    const path = [...parents, item];
+    yield path;
+    yield* completionPaths(registry, `${key} ${item.name}`, path);
+  }
+}
+
+/** One popup row for a path; the insert text always spells out the full slash input. */
+function pathCompletion(path: readonly CompletionItem[], typedPrefix = ""): CompletionItem {
+  const last = path[path.length - 1];
+  if (path.length === 1 && !typedPrefix) return last;
+  return {
+    name: path.map(item => item.name).join(" "),
+    desc: last.desc,
+    ...(last.colorSwatches ? { colorSwatches: last.colorSwatches } : {}),
+    insertText: typedPrefix + path.map(completionInsertText).join(" "),
+  };
+}
+
+/** Shallow paths first, then stronger matches; ties keep registry order. */
+function rankPaths(
+  paths: Iterable<readonly CompletionItem[]>,
+  query: SlashQuery,
+  includesRoot: boolean,
+  typedPrefix?: string,
+): CompletionItem[] {
+  const ranked: { path: readonly CompletionItem[]; score: number }[] = [];
+  for (const path of paths) {
+    const score = scorePath(path, query, includesRoot);
+    if (score !== null) ranked.push({ path, score });
+  }
+  ranked.sort((a, b) => a.path.length - b.path.length || a.score - b.score);
+  return ranked.map(({ path }) => pathCompletion(path, typedPrefix));
+}
+
+/**
+ * Search below the deepest registry key the input spells out exactly, e.g.
+ * "/model " or "/model openai ". Returns null when no key is spelled out.
+ */
+function searchAnchoredArgs(raw: string, registry: Record<string, CompletionItem[]>): CompletionItem[] | null {
+  const keys = Object.keys(registry).sort((a, b) => b.length - a.length);
+  for (const key of keys) {
+    if (raw.slice(0, key.length).toLowerCase() !== key.toLowerCase() || !/\s/.test(raw[key.length] ?? "")) continue;
+    const rest = raw.slice(key.length).trimStart();
+    const typedPrefix = raw.slice(0, raw.length - rest.length);
+    const query = parseSlashQuery(rest);
+    if (query.words.length === 0) {
+      return (registry[key] ?? []).map(item => pathCompletion([item], typedPrefix));
+    }
+    return rankPaths(completionPaths(registry, key, []), query, false, typedPrefix);
+  }
+  return null;
+}
+
+/**
+ * Search slash roots by substring. The first word must match the root name;
+ * any further words search that root's nested arguments.
+ */
+function searchRoots(raw: string, roots: readonly CompletionItem[], argsFor: ArgRegistryFor): CompletionItem[] {
+  const body = raw.slice(1);
+  if (body === "") return [...roots];
+  if (/^\s/.test(body)) return [];
+
+  const query = parseSlashQuery(body);
+  const [rootWord] = query.words;
+  const searchArgs = query.words.length > 1 || query.trailingSpace;
+  const paths: CompletionItem[][] = [];
+  for (const root of roots) {
+    if (!segmentForms(root, true)[0].includes(rootWord)) continue;
+    paths.push([root]);
+    if (searchArgs) paths.push(...completionPaths(argsFor(root.name), root.name, [root]));
+  }
+  return rankPaths(paths, query, true);
+}
+
+/**
+ * Exact-substring slash completion across roots and their nested arguments.
+ * A fully typed command path anchors the search; otherwise roots are searched
+ * by substring, so "/model opus" finds "/model anthropic claude-opus-5-5".
+ */
+function searchSlashCompletions(raw: string, roots: readonly CompletionItem[], argsFor: ArgRegistryFor): CompletionItem[] {
+  if (!raw.startsWith("/")) return [];
+  if (hasArgumentPrefix(raw)) {
+    const anchored = searchAnchoredArgs(raw, argsFor(slashBase(raw)));
+    if (anchored) return anchored;
+  }
+  return searchRoots(raw, roots, argsFor);
+}
+
+/** Merge macro arguments with one command registry; macros are discovered at most once per search. */
+function slashArgRegistry(
+  state: RenderState,
+  commandArgs: (state: RenderState, commandName: string) => Record<string, CompletionItem[]>,
+): ArgRegistryFor {
+  let macroArgs: Record<string, CompletionItem[]> | undefined;
+  return (rootName) => {
+    macroArgs ??= getMacroArgs(undefined, macroEnvironmentForState(state));
+    return { ...macroArgs, ...commandArgs(state, rootName) };
+  };
+}
+
 // ── Command + macro matching ──────────────────────────────────────
 
 /**
@@ -101,19 +281,7 @@ function slashBase(raw: string): string {
  * Commands and macros are shown in a unified list.
  */
 function getCommandMatches(state: RenderState, input: string): CompletionItem[] {
-  const raw = input.trimStart();
-  if (!raw.startsWith("/")) return [];
-
-  // Argument completion against both command and macro registries
-  if (hasArgumentPrefix(raw)) {
-    const base = slashBase(raw);
-    const argMatch = matchArgCompletion(raw, getCommandArgs(state, base)) ?? matchArgCompletion(raw, getMacroArgs(base, macroEnvironmentForState(state)));
-    if (argMatch) return argMatch;
-  }
-
-  const prefix = raw.toLowerCase();
-  const combined = [...COMMAND_LIST, ...MACRO_LIST];
-  return combined.filter(c => c.name.startsWith(prefix));
+  return searchSlashCompletions(input.trimStart(), [...COMMAND_LIST, ...MACRO_LIST], slashArgRegistry(state, getCommandArgs));
 }
 
 /**
@@ -122,17 +290,7 @@ function getCommandMatches(state: RenderState, input: string): CompletionItem[] 
  * commands should be offered or treated as macro-like mid-prompt commands.
  */
 function getInlineSlashMatches(state: RenderState, token: string): CompletionItem[] {
-  const raw = token.trimStart();
-  if (!raw.startsWith("/")) return [];
-
-  if (hasArgumentPrefix(raw)) {
-    const base = slashBase(raw);
-    const argMatch = matchArgCompletion(raw, getInlineCommandArgs(state, base)) ?? matchArgCompletion(raw, getMacroArgs(base, macroEnvironmentForState(state)));
-    if (argMatch) return argMatch;
-  }
-
-  const prefix = raw.toLowerCase();
-  return [...MACRO_LIST, ...INLINE_COMMANDS].filter(c => c.name.startsWith(prefix));
+  return searchSlashCompletions(token.trimStart(), [...MACRO_LIST, ...INLINE_COMMANDS], slashArgRegistry(state, getInlineCommandArgs));
 }
 
 // ── Token scanning ────────────────────────────────────────────────
@@ -229,7 +387,7 @@ export function updateAutocomplete(state: RenderState): void {
         type: "command",
         selection: -1,
         prefix: state.inputBuffer,
-        tokenStart: 0,
+        tokenStart: firstNonWs,
         matches,
       };
       return;
@@ -273,56 +431,18 @@ export function cycleAutocomplete(state: RenderState, direction: 1 | -1): void {
 }
 
 /**
- * Fill a match name into the input buffer.
- * For commands (tokenStart 0): replaces the full buffer (preserving leading whitespace + command prefix for args).
- * For macros / paths: replaces only the token portion.
+ * Fill a match into the input buffer. Slash completions carry the full slash
+ * input as insert text, so every type replaces only its token: the whole
+ * single-line prompt (after leading whitespace) for commands, or the token
+ * before the cursor for macros / paths.
  */
-function singleArgumentPrefix(prefix: string, commandName: string): string | null {
-  const re = new RegExp(`^(\\s*${escapeRegex(commandName)}\\s+).*$`, "i");
-  return prefix.match(re)?.[1] ?? null;
-}
-
 function fillAutocomplete(state: RenderState, item: CompletionItem): void {
   const ac = state.autocomplete!;
-  const name = completionInsertText(item);
-
-  if (ac.type === "path" || ac.type === "macro") {
-    const before = state.inputBuffer.slice(0, ac.tokenStart);
-    const after = state.inputBuffer.slice(state.cursorPos);
-    // For macro arg completion, preserve the "/command arg1 ..." prefix
-    let fillText = name;
-    if (ac.type === "macro") {
-      const queuePrefix = singleArgumentPrefix(ac.prefix, "/queue");
-      if (queuePrefix) {
-        fillText = queuePrefix + name;
-      } else {
-        const spaceIdx = ac.prefix.lastIndexOf(" ");
-        if (spaceIdx >= 0) {
-          fillText = ac.prefix.slice(0, spaceIdx + 1) + name;
-        }
-      }
-    }
-    state.inputBuffer = before + fillText + after;
-    state.cursorPos = before.length + fillText.length;
-    return;
-  }
-
-  // Command: check if we're completing an argument ("/tool install disc" → "/tool install discord")
-  const queuePrefix = singleArgumentPrefix(ac.prefix, "/queue");
-  if (queuePrefix) {
-    state.inputBuffer = queuePrefix + name;
-  } else if (!name.startsWith("/")) {
-    // Completing an argument — preserve everything before the last word
-    const lastSpace = ac.prefix.lastIndexOf(" ");
-    if (lastSpace >= 0) {
-      state.inputBuffer = ac.prefix.slice(0, lastSpace + 1) + name;
-    } else {
-      state.inputBuffer = name;
-    }
-  } else {
-    state.inputBuffer = name;
-  }
-  state.cursorPos = state.inputBuffer.length;
+  const before = state.inputBuffer.slice(0, ac.tokenStart);
+  const after = ac.type === "command" ? "" : state.inputBuffer.slice(state.cursorPos);
+  const fillText = completionInsertText(item);
+  state.inputBuffer = before + fillText + after;
+  state.cursorPos = before.length + fillText.length;
 }
 
 /**
