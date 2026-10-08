@@ -21,6 +21,32 @@ function repo() {
 function response(status: string, ahead_by = 0): UpdateRequest {
   return (async () => Response.json({ status, ahead_by })) as UpdateRequest;
 }
+/** A commit that exists locally (as after a fetch) without moving main. */
+function commitTree(root: string, parent = "HEAD") {
+  return git(root, "commit-tree", `${parent}^{tree}`, "-p", parent, "-m", "upstream");
+}
+const pkt = (text: string) => (text.length + 4).toString(16).padStart(4, "0") + text;
+/** GitHub's smart-HTTP ref advertisement, HEAD first, as actually served. */
+function advertisement(main: string) {
+  return new Response(pkt("# service=git-upload-pack\n") + "0000"
+    + pkt(`${main} HEAD\0multi_ack symref=HEAD:refs/heads/main agent=git/github\n`)
+    + pkt(`${"f".repeat(40)} refs/heads/main-old\n`)
+    + pkt(`${main} refs/heads/main\n`)
+    + pkt(`${"e".repeat(40)} refs/pull/1/head\n`) + "0000");
+}
+/** Routes Git's ref advertisement and the rate-limited REST compare API separately. */
+function github(main: () => string, compare: UpdateRequest = async () => new Response("rate limited", { status: 403 })) {
+  const calls = { refs: 0, api: 0 };
+  const request: UpdateRequest = async (url, init) => {
+    if (url.endsWith(".git/info/refs?service=git-upload-pack")) {
+      calls.refs++;
+      return advertisement(main());
+    }
+    calls.api++;
+    return compare(url, init);
+  };
+  return { request, calls };
+}
 
 describe("mainline update eligibility", () => {
   test("accepts upstream main, including SSH origin", async () => {
@@ -56,57 +82,52 @@ describe("GitHub comparison", () => {
   test("frequent status queries share GitHub results until the two-minute cache expires", async () => {
     const root = repo();
     let time = 0;
-    let requests = 0;
-    let ahead = false;
-    const checker = createUpdateStatusChecker(root, async () => {
-      requests++;
-      return Response.json({ status: ahead ? "ahead" : "identical", ahead_by: ahead ? 1 : 0 });
-    }, () => time);
+    let main = git(root, "rev-parse", "HEAD");
+    const { request, calls } = github(() => main);
+    const checker = createUpdateStatusChecker(root, request, () => time);
     expect(await Promise.all([checker(), checker()])).toEqual(["none", "none"]);
-    expect(requests).toBe(1);
-    ahead = true;
+    expect(calls.refs).toBe(1);
+    main = commitTree(root);
     for (time = 10_000; time < UPDATE_CHECK_INTERVAL_MS; time += 10_000) {
       expect(await checker()).toBe("none");
     }
-    expect(requests).toBe(1);
+    expect(calls.refs).toBe(1);
     expect(await checker()).toBe("update_available");
-    expect(requests).toBe(2);
+    expect(calls).toEqual({ refs: 2, api: 0 });
     git(root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "downloaded update");
     time += 10_000;
     expect(await checker()).toBe("restart_needed");
-    expect(requests).toBe(2); // Disk checks bypass even a fresh GitHub cache.
+    expect(calls.refs).toBe(2); // Disk checks bypass even a fresh GitHub cache.
   });
 
   test("failed GitHub checks are throttled too, without delaying restart detection", async () => {
     const root = repo();
     let time = 0;
-    let requests = 0;
-    const checker = createUpdateStatusChecker(root, async () => {
-      requests++;
-      throw new Error("offline");
-    }, () => time);
+    const offline = async () => { throw new Error("offline"); };
+    const { request, calls } = github(() => { throw new Error("offline"); }, offline);
+    const checker = createUpdateStatusChecker(root, request, () => time);
     expect(await checker()).toBe("unknown");
     time = 10_000;
     expect(await checker()).toBe("unknown");
-    expect(requests).toBe(1);
+    expect(calls).toEqual({ refs: 1, api: 1 });
     time = UPDATE_CHECK_INTERVAL_MS;
     expect(await checker()).toBe("unknown");
-    expect(requests).toBe(2);
+    expect(calls).toEqual({ refs: 2, api: 2 });
     git(root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "offline update");
     expect(await checker()).toBe("restart_needed");
-    expect(requests).toBe(2);
+    expect(calls).toEqual({ refs: 2, api: 2 });
   });
 
   test("daemon revision is captured once; downloaded updates need restart even offline", async () => {
     const root = repo();
-    let requests = 0;
-    const request: UpdateRequest = async () => { requests++; return Response.json({ status: "identical" }); };
+    const main = git(root, "rev-parse", "HEAD");
+    const { request, calls } = github(() => main);
     const running = createUpdateStatusChecker(root, request);
     expect(await running()).toBe("none");
     git(root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "downloaded update");
     expect(await running()).toBe("restart_needed");
     expect(await running()).toBe("restart_needed");
-    expect(requests).toBe(1);
+    expect(calls).toEqual({ refs: 1, api: 0 });
     const restarted = createUpdateStatusChecker(root, request);
     expect(await restarted()).toBe("none");
     git(root, "checkout", "-b", "feature");
@@ -124,21 +145,27 @@ describe("GitHub comparison", () => {
 
   test("a pull during the upstream request yields Restart needed, not None", async () => {
     const root = repo();
-    const checker = createUpdateStatusChecker(root, async () => {
-      git(root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "update");
-      return Response.json({ status: "ahead", ahead_by: 1 });
-    });
+    const update = commitTree(root);
+    const checker = createUpdateStatusChecker(root, github(() => {
+      git(root, "merge", "--ff-only", update);
+      return update;
+    }).request);
     expect(await checker()).toBe("restart_needed");
   });
 
-  test("only signals upstream ahead; verifies URL and bounded request", async () => {
+  test("only signals upstream ahead; verifies URLs and bounded requests", async () => {
     const root = repo();
+    const urls: string[] = [];
     const request = (async (url: string, init: RequestInit) => {
-      expect(url).toBe(`https://api.github.com/repos/Yeyito777/Exocortex/compare/${git(root, "rev-parse", "HEAD")}...main`);
+      urls.push(url);
       expect(init.signal).toBeInstanceOf(AbortSignal);
-      return Response.json({ status: "ahead", ahead_by: 3 });
+      return url.includes("/info/refs") ? advertisement("a".repeat(40)) : Response.json({ status: "ahead", ahead_by: 3 });
     }) as UpdateRequest;
     expect(await checkForUpdate(root, request)).toBe(true);
+    expect(urls).toEqual([
+      "https://github.com/Yeyito777/Exocortex.git/info/refs?service=git-upload-pack",
+      `https://api.github.com/repos/Yeyito777/Exocortex/compare/${git(root, "rev-parse", "HEAD")}...main`,
+    ]);
     for (const status of ["identical", "behind", "diverged", "unexpected"]) {
       expect(await checkForUpdate(root, response(status, 3))).toBe(false);
     }
@@ -154,11 +181,49 @@ describe("GitHub comparison", () => {
   });
   test("discards a response if the checkout changes during the request", async () => {
     const root = repo();
-    const request = (async () => {
+    const update = commitTree(root);
+    const { request } = github(() => {
       git(root, "checkout", "-b", "feature");
-      return Response.json({ status: "ahead", ahead_by: 1 });
-    }) as UpdateRequest;
+      return update;
+    });
     expect(await checkForUpdate(root, request)).toBe(false);
+  });
+});
+
+describe("upstream ref advertisement", () => {
+  test("current main never touches GitHub's rate-limited REST API", async () => {
+    const root = repo();
+    const { request, calls } = github(() => git(root, "rev-parse", "HEAD"));
+    expect(await createUpdateStatusChecker(root, request)()).toBe("none");
+    expect(calls).toEqual({ refs: 1, api: 0 });
+  });
+
+  test("a locally known upstream commit is classified by ancestry, offline from the API", async () => {
+    const root = repo();
+    const initial = git(root, "rev-parse", "HEAD");
+    const update = commitTree(root);
+    const { request, calls } = github(() => update);
+    expect(await createUpdateStatusChecker(root, request)()).toBe("update_available");
+    // Unpushed local commits: GitHub's compare API would 404 on this HEAD.
+    git(root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "local work");
+    const ahead = github(() => initial);
+    expect(await createUpdateStatusChecker(root, ahead.request)()).toBe("none");
+    // Diverged: development, not a straightforward update.
+    const diverged = github(() => commitTree(root, initial));
+    expect(await createUpdateStatusChecker(root, diverged.request)()).toBe("none");
+    expect([calls.api, ahead.calls.api, diverged.calls.api]).toEqual([0, 0, 0]);
+  });
+
+  test("only an unseen upstream commit or unreadable advertisement falls back to the API", async () => {
+    const root = repo();
+    const unseen = github(() => "a".repeat(40), response("ahead", 1));
+    expect(await createUpdateStatusChecker(root, unseen.request)()).toBe("update_available");
+    expect(unseen.calls).toEqual({ refs: 1, api: 1 });
+    expect(await createUpdateStatusChecker(root, github(() => "a".repeat(40)).request)()).toBe("unknown");
+    const portal = (async (url: string) => url.includes("/info/refs")
+      ? new Response("<!DOCTYPE html><title>Sign in</title>")
+      : Response.json({ status: "identical", ahead_by: 0 })) as UpdateRequest;
+    expect(await createUpdateStatusChecker(root, portal)()).toBe("none");
   });
 });
 

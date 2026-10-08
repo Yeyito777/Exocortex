@@ -382,7 +382,13 @@ describe("autocomplete with vim Escape", () => {
     expect(state.inputBuffer).toBe("/default-model");
 
     typePromptText(state, " o");
-    expect(state.autocomplete?.matches.map(match => match.name)).toEqual(["openai"]);
+    // Direct arguments rank above deeper matches such as "openai gpt-5.4 high off".
+    expect(state.autocomplete?.matches.map(match => match.name)).toEqual([
+      "openai",
+      "openai gpt-5.3-codex-spark",
+      "openai gpt-5.4 high off",
+      "openai gpt-5.3-codex-spark medium off",
+    ]);
     expect(handleFocusedKey({ type: "tab" }, state)).toEqual({ type: "handled" });
     expect(state.inputBuffer).toBe("/default-model openai");
 
@@ -399,7 +405,7 @@ describe("autocomplete with vim Escape", () => {
     expect(state.inputBuffer).toBe("/default-model openai gpt-5.4 high");
 
     typePromptText(state, " f");
-    expect(state.autocomplete?.matches.map(match => match.name)).toEqual(["fast"]);
+    expect(state.autocomplete?.matches.map(match => match.name)).toEqual(["fast", "off"]);
     expect(handleFocusedKey({ type: "tab" }, state)).toEqual({ type: "handled" });
     expect(state.inputBuffer).toBe("/default-model openai gpt-5.4 high fast");
   });
@@ -511,6 +517,112 @@ describe("autocomplete with vim Escape", () => {
     // /model is an inline command; /rename is only a standalone command.
     typePromptText(state, "please /ren");
 
+    expect(state.autocomplete).toBeNull();
+  });
+});
+
+describe("slash autocomplete search", () => {
+  function stateWithAnthropic() {
+    const state = createInitialState();
+    state.providerRegistry = [
+      ...structuredClone(providers),
+      {
+        id: "anthropic",
+        label: "Anthropic",
+        defaultModel: "claude-opus-5-5",
+        allowsCustomModels: false,
+        supportsFastMode: false,
+        models: [
+          {
+            id: "claude-opus-5-5",
+            label: "Opus 5.5",
+            maxContext: 1_000_000,
+            supportedEfforts: [{ effort: "high", description: "Deep" }],
+            defaultEffort: "high",
+            supportsImages: true,
+          },
+          {
+            id: "claude-sonnet-5-5",
+            label: "Sonnet 5.5",
+            maxContext: 1_000_000,
+            supportedEfforts: [{ effort: "high", description: "Deep" }],
+            defaultEffort: "high",
+            supportsImages: true,
+          },
+        ],
+      },
+    ];
+    return state;
+  }
+
+  test("matches command names anywhere, ranking prefix matches first", () => {
+    const state = createInitialState();
+
+    typePromptText(state, "/mod");
+    expect(state.autocomplete?.matches.map(match => match.name)).toEqual(["/model", "/default-model"]);
+
+    clearPrompt(state);
+    typePromptText(state, "/fault");
+    expect(state.autocomplete?.matches.map(match => match.name)).toEqual(["/default-model"]);
+  });
+
+  test("searches nested subcommands below a typed command", () => {
+    const state = stateWithAnthropic();
+
+    typePromptText(state, "/model opus");
+    expect(state.autocomplete?.type).toBe("command");
+    expect(state.autocomplete?.matches.map(match => match.name)).toEqual(["anthropic claude-opus-5-5"]);
+
+    expect(handleFocusedKey({ type: "tab" }, state)).toEqual({ type: "handled" });
+    expect(state.inputBuffer).toBe("/model anthropic claude-opus-5-5");
+
+    clearPrompt(state);
+    typePromptText(state, "/model 5-5");
+    expect(state.autocomplete?.matches.map(match => match.name)).toEqual([
+      "anthropic claude-opus-5-5",
+      "anthropic claude-sonnet-5-5",
+    ]);
+  });
+
+  test("searches nested subcommands from a partial command name", () => {
+    const state = stateWithAnthropic();
+
+    typePromptText(state, "/mod opus");
+    expect(state.autocomplete?.matches.map(match => match.name)).toEqual([
+      "/model anthropic claude-opus-5-5",
+      "/default-model anthropic claude-opus-5-5",
+    ]);
+
+    expect(handleFocusedKey({ type: "tab" }, state)).toEqual({ type: "handled" });
+    expect(state.inputBuffer).toBe("/model anthropic claude-opus-5-5");
+  });
+
+  test("a later word can continue a multi-word argument or skip to a deeper one", () => {
+    const state = stateWithAnthropic();
+
+    typePromptText(state, "/model anth sonnet");
+    expect(state.autocomplete?.matches.map(match => match.name)).toEqual(["anthropic claude-sonnet-5-5"]);
+
+    clearPrompt(state);
+    state.sidebar.conversations = [
+      conversation("conv-thing", 1, { title: "Build the Thing", updatedAt: 10 }),
+      conversation("conv-stuff", 2, { title: "Build stuff", updatedAt: 20 }),
+    ];
+    typePromptText(state, "/queue Build t");
+    expect(state.autocomplete?.matches.map(match => match.name)).toEqual(["Build the Thing"]);
+  });
+
+  test("mid-message inline commands search nested subcommands and close after a finished argument", () => {
+    const state = stateWithAnthropic();
+
+    typePromptText(state, "please /model opus");
+    expect(state.autocomplete?.type).toBe("macro");
+    expect(state.autocomplete?.matches.map(match => match.name)).toEqual(["anthropic claude-opus-5-5"]);
+
+    expect(handleFocusedKey({ type: "tab" }, state)).toEqual({ type: "handled" });
+    expect(state.inputBuffer).toBe("please /model anthropic claude-opus-5-5");
+
+    typePromptText(state, " ");
     expect(state.autocomplete).toBeNull();
   });
 });
