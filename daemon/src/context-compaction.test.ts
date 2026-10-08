@@ -361,7 +361,7 @@ describe("automatic context compaction state", () => {
     const canonicalBeforeProjection = structuredClone(conv.messages);
 
     const matching = buildConversationApiContext(conv, "account-a");
-    expect(matching.messages[1].providerData?.openai.reasoningItems?.[0]?.encryptedContent).toBe("account-a-secret");
+    expect(matching.messages[1].providerData?.openai?.reasoningItems?.[0]?.encryptedContent).toBe("account-a-secret");
 
     const switchedAccount = buildConversationApiContext(conv, "account-b");
     expect(switchedAccount.messages[1].providerData).toBeUndefined();
@@ -455,7 +455,7 @@ describe("automatic context compaction state", () => {
       const conv = createConversation("portable-native", "openai", "gpt-6-astra");
       conv.messages = history();
       conv.activeContext = activeContext(conv.messages);
-      if (stamped) conv.activeContext.messages[1].providerData!.openai.replayScope = {
+      if (stamped) conv.activeContext.messages[1].providerData!.openai!.replayScope = {
         model: "gpt-5.6-sol", accountScope: "account-a",
       };
       conv.messages.push({role: "assistant", content: [], metadata: null, providerData: {openai: {
@@ -465,7 +465,7 @@ describe("automatic context compaction state", () => {
       const before = structuredClone(conv);
       const replay = buildConversationApiContext(conv, "account-a");
       expect(replay.usedActiveContext).toBe(true);
-      expect(replay.messages[1].providerData?.openai.compactionItems?.[0]?.encryptedContent).toBe("opaque");
+      expect(replay.messages[1].providerData?.openai?.compactionItems?.[0]?.encryptedContent).toBe("opaque");
       expect(replay.tailMessages[0].content).toBe("new question");
       expect(replay.tailMessages[1].providerData).toBeUndefined();
       expect(conv).toEqual(before);
@@ -560,10 +560,10 @@ describe("automatic context compaction state", () => {
     expect(result.kind).toBe("openai_native");
     expect(result.messages).toHaveLength(2);
     expect(result.messages[0].content).toBe("original request");
-    expect(result.messages[1].providerData?.openai.compactionItems).toEqual([
+    expect(result.messages[1].providerData?.openai?.compactionItems).toEqual([
       { id: "cmp_1", encryptedContent: "opaque" },
     ]);
-    expect(result.messages[1].providerData?.openai.replayScope?.accountScope).toBe("verified-account");
+    expect(result.messages[1].providerData?.openai?.replayScope?.accountScope).toBe("verified-account");
     expect(result.accountScope).toBe("verified-account");
   });
 
@@ -585,7 +585,7 @@ describe("automatic context compaction state", () => {
     });
 
     expect(result.kind).toBe("openai_native");
-    expect(result.messages.at(-1)?.providerData?.openai.compactionItems).toEqual([
+    expect(result.messages.at(-1)?.providerData?.openai?.compactionItems).toEqual([
       { encryptedContent: "valid-checkpoint" },
     ]);
   });
@@ -688,7 +688,7 @@ describe("automatic context compaction state", () => {
     expect(resets).toBe(3);
     expect(retryAttempts).toEqual([1, 2, 3]);
     expect(result.kind).toBe("openai_native");
-    expect(result.messages.at(-1)?.providerData?.openai.compactionItems).toEqual([
+    expect(result.messages.at(-1)?.providerData?.openai?.compactionItems).toEqual([
       { encryptedContent: "valid-fourth-attempt" },
     ]);
     expect(fallbackWarning).toBe("");

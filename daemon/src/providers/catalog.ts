@@ -1,4 +1,5 @@
 import { DEFAULT_PROVIDER_ORDER, type ProviderId } from "@exocortex/shared/messages";
+import { anthropicProvider } from "./anthropic";
 import { deepseekProvider } from "./deepseek";
 import { openaiProvider } from "./openai";
 import { openCodeProvider } from "./opencode";
@@ -10,6 +11,7 @@ const PROVIDERS_BY_ID: Record<ProviderId, ProviderAdapter> = {
   deepseek: deepseekProvider,
   opencode: openCodeProvider,
   openrouter: openRouterProvider,
+  anthropic: anthropicProvider,
 };
 
 export function getProviderAdapter(providerId: ProviderId): ProviderAdapter {

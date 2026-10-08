@@ -272,7 +272,7 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 function isProviderId(value: unknown): value is ProviderId {
-  return value === "openai" || value === "deepseek" || value === "opencode" || value === "openrouter";
+  return value === "openai" || value === "anthropic" || value === "deepseek" || value === "opencode" || value === "openrouter";
 }
 
 function isEffortLevel(value: unknown): value is EffortLevel {

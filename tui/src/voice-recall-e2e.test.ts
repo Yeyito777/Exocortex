@@ -107,9 +107,10 @@ function toolsAvailableEvent(): Extract<Event, { type: "tools_available" }> {
       }],
     }],
     tools: [],
-    authByProvider: { openai: true, deepseek: false, opencode: true, openrouter: false },
+    authByProvider: { openai: true, anthropic: false, deepseek: false, opencode: true, openrouter: false },
     authInfoByProvider: {
       openai: providerAuthInfo(),
+      anthropic: providerAuthInfo({ configured: false, authenticated: false, status: "not_logged_in" }),
       deepseek: providerAuthInfo({ configured: false, authenticated: false, status: "not_logged_in" }),
       opencode: providerAuthInfo({ displayName: "Public preview", source: "public" }),
       openrouter: providerAuthInfo(),

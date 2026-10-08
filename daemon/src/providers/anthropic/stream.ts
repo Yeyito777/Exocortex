@@ -1,0 +1,315 @@
+/**
+ * Translate Claude Code SDK messages into Exocortex stream callbacks and a
+ * StreamResult.
+ *
+ * Claude Code runs the whole agent loop (its own tools included), so one
+ * Exocortex provider request spans many Anthropic API calls. Live deltas come
+ * from `stream_event` partials; the canonical record comes from the complete
+ * `assistant` / tool-result `user` messages, which are kept as a normal
+ * tool_use → tool_result message sequence.
+ */
+
+import { log } from "../../log";
+import type { ApiContentBlock, ApiMessage } from "../../messages";
+import { AuthError } from "../errors";
+import type { ContentBlock, StreamCallbacks, StreamResult } from "../types";
+import { CLAUDE_RATE_LIMIT_HEADER } from "./usage";
+
+type SdkRecord = Record<string, unknown>;
+
+export class ClaudeOverageError extends Error {}
+
+export interface ClaudeStreamState {
+  callbacks: StreamCallbacks;
+  cwd: string;
+  blocks: ContentBlock[];
+  messages: ApiMessage[];
+  toolNames: Map<string, string>;
+  sessionId: string | null;
+  lastChainUuid: string | null;
+  /** Context size of the latest API call (prompt incl. cache reads/writes). */
+  inputTokens?: number;
+  cachedInputTokens?: number;
+  cacheMissInputTokens?: number;
+  outputTokens: number;
+  /** Output tokens of the API call currently streaming. */
+  currentCallOutputTokens: number;
+  /** A thinking block opened but has not produced text yet (summaries can be empty). */
+  thinkingStartPending: boolean;
+  done: boolean;
+  stopReason: string;
+}
+
+export function createClaudeStreamState(callbacks: StreamCallbacks, cwd: string): ClaudeStreamState {
+  return {
+    callbacks,
+    cwd,
+    blocks: [],
+    messages: [],
+    toolNames: new Map(),
+    sessionId: null,
+    lastChainUuid: null,
+    outputTokens: 0,
+    currentCallOutputTokens: 0,
+    thinkingStartPending: false,
+    done: false,
+    stopReason: "",
+  };
+}
+
+function asRecord(value: unknown): SdkRecord | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value as SdkRecord : null;
+}
+
+function str(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function num(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function shorten(text: string, max = 120): string {
+  const line = text.replace(/\s+/g, " ").trim();
+  return line.length > max ? `${line.slice(0, max - 1)}…` : line;
+}
+
+/** One-line display summary for a Claude Code tool call. */
+export function summarizeClaudeToolCall(name: string, input: Record<string, unknown>): string {
+  const pick = (...keys: string[]) => {
+    for (const key of keys) {
+      const value = input[key];
+      if (typeof value === "string" && value.trim()) return value;
+    }
+    return undefined;
+  };
+  const detail = pick("description", "command", "file_path", "notebook_path", "pattern", "url", "query", "prompt", "skill", "path");
+  if (name === "Bash" && typeof input.command === "string") return shorten(input.command);
+  return detail ? shorten(detail) : name;
+}
+
+function toolResultText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return content == null ? "" : JSON.stringify(content);
+  return content
+    .map((part) => {
+      const record = asRecord(part);
+      if (record?.type === "text") return str(record.text) ?? "";
+      if (record?.type === "image") return "[image]";
+      return JSON.stringify(part);
+    })
+    .join("\n");
+}
+
+/** Append to the canonical message list, merging consecutive same-role messages. */
+function pushMessageContent(state: ClaudeStreamState, role: ApiMessage["role"], block: ApiContentBlock): void {
+  const last = state.messages[state.messages.length - 1];
+  if (last && last.role === role && Array.isArray(last.content)) {
+    last.content.push(block);
+  } else {
+    state.messages.push({ role, content: [block] });
+  }
+}
+
+function handleStreamEvent(state: ClaudeStreamState, event: SdkRecord): void {
+  const cb = state.callbacks;
+  switch (event.type) {
+    case "message_start": {
+      const usage = asRecord(asRecord(event.message)?.usage);
+      if (usage) {
+        const fresh = num(usage.input_tokens);
+        const cacheRead = num(usage.cache_read_input_tokens);
+        const cacheWrite = num(usage.cache_creation_input_tokens);
+        state.inputTokens = fresh + cacheRead + cacheWrite;
+        state.cachedInputTokens = cacheRead;
+        state.cacheMissInputTokens = fresh + cacheWrite;
+      }
+      state.currentCallOutputTokens = 0;
+      cb.onFirstResponseEvent?.();
+      return;
+    }
+    case "content_block_start": {
+      const type = asRecord(event.content_block)?.type;
+      state.thinkingStartPending = type === "thinking";
+      if (type === "text") cb.onBlockStart?.(type);
+      else cb.onActivity?.();
+      return;
+    }
+    case "content_block_delta": {
+      const delta = asRecord(event.delta);
+      if (delta?.type === "text_delta") {
+        const text = str(delta.text);
+        if (text) cb.onText(text);
+      } else if (delta?.type === "thinking_delta") {
+        const thinking = str(delta.thinking);
+        if (!thinking) {
+          cb.onActivity?.();
+          return;
+        }
+        if (state.thinkingStartPending) {
+          state.thinkingStartPending = false;
+          cb.onBlockStart?.("thinking");
+        }
+        cb.onThinking(thinking);
+      } else {
+        cb.onActivity?.();
+      }
+      return;
+    }
+    case "message_delta": {
+      const usage = asRecord(event.usage);
+      if (usage && typeof usage.output_tokens === "number") {
+        // message_delta carries the cumulative output count for this API call.
+        state.outputTokens += usage.output_tokens - state.currentCallOutputTokens;
+        state.currentCallOutputTokens = usage.output_tokens;
+      }
+      return;
+    }
+    default:
+      cb.onActivity?.();
+  }
+}
+
+function handleAssistantMessage(state: ClaudeStreamState, message: SdkRecord): void {
+  const content = asRecord(message.message)?.content;
+  for (const raw of Array.isArray(content) ? content : []) {
+    const block = asRecord(raw);
+    if (!block) continue;
+    if (block.type === "text") {
+      const text = str(block.text) ?? "";
+      if (!text) continue;
+      state.blocks.push({ type: "text", text });
+      pushMessageContent(state, "assistant", { type: "text", text });
+    } else if (block.type === "thinking") {
+      const thinking = str(block.thinking) ?? "";
+      const signature = str(block.signature) ?? "";
+      if (signature) state.callbacks.onSignature?.(signature);
+      if (!thinking) continue;
+      state.blocks.push({ type: "thinking", text: thinking, signature });
+      pushMessageContent(state, "assistant", { type: "thinking", thinking, signature });
+    } else if (block.type === "tool_use") {
+      const id = str(block.id) ?? "";
+      const name = str(block.name) ?? "tool";
+      const input = asRecord(block.input) ?? {};
+      const summary = summarizeClaudeToolCall(name, input);
+      state.toolNames.set(id, name);
+      state.blocks.push({ type: "tool_call", id, name, input, summary });
+      pushMessageContent(state, "assistant", { type: "tool_use", id, name, input });
+      state.callbacks.onToolCall?.({ type: "tool_call", toolCallId: id, toolName: name, input, summary });
+    }
+  }
+}
+
+function handleUserMessage(state: ClaudeStreamState, message: SdkRecord): void {
+  const content = asRecord(message.message)?.content;
+  if (!Array.isArray(content)) return;
+  for (const raw of content) {
+    const block = asRecord(raw);
+    if (block?.type !== "tool_result") continue;
+    const toolUseId = str(block.tool_use_id) ?? "";
+    const toolName = state.toolNames.get(toolUseId) ?? "";
+    const output = toolResultText(block.content);
+    const isError = block.is_error === true;
+    state.blocks.push({ type: "tool_result", toolUseId, toolName, output, isError });
+    pushMessageContent(state, "user", { type: "tool_result", tool_use_id: toolUseId, content: output, is_error: isError });
+    state.callbacks.onToolResult?.({ type: "tool_result", toolCallId: toolUseId, toolName, output, isError });
+  }
+}
+
+function handleRateLimit(state: ClaudeStreamState, info: SdkRecord): void {
+  state.callbacks.onHeaders?.(new Headers({ [CLAUDE_RATE_LIMIT_HEADER]: JSON.stringify(info) }));
+  // Exocortex only draws on the Claude subscription. Stop instead of running
+  // a turn on paid extra usage.
+  if (info.isUsingOverage === true || info.overageInUse === true) {
+    throw new ClaudeOverageError("Claude Code started drawing on extra usage (overage) instead of the Claude subscription, so Exocortex stopped this turn. Wait for the subscription limit to reset.");
+  }
+}
+
+function resultError(message: SdkRecord): Error {
+  const errors = Array.isArray(message.errors) ? message.errors.filter((e): e is string => typeof e === "string") : [];
+  const text = errors.join("\n") || str(message.result) || `Claude Code ended with ${str(message.subtype) ?? "an error"}`;
+  if (/auth|login|401|oauth|credential/i.test(text)) {
+    return new AuthError(`${text} Run \`claude auth login\` and try again.`);
+  }
+  return new Error(`Claude Code: ${text}`);
+}
+
+/** Feed one SDK message into the state. Throws on terminal errors. */
+export function pushClaudeMessage(state: ClaudeStreamState, message: SdkRecord): void {
+  const sessionId = str(message.session_id);
+  if (sessionId) state.sessionId = sessionId;
+
+  // Subagent (Task tool) traffic: keep the watchdog alive, don't render it.
+  if (message.parent_tool_use_id) {
+    state.callbacks.onActivity?.();
+    return;
+  }
+
+  switch (message.type) {
+    case "stream_event": {
+      const event = asRecord(message.event);
+      if (event) handleStreamEvent(state, event);
+      return;
+    }
+    case "assistant": {
+      if (message.uuid) state.lastChainUuid = String(message.uuid);
+      handleAssistantMessage(state, message);
+      return;
+    }
+    case "user": {
+      if (message.isReplay) return;
+      if (message.uuid) state.lastChainUuid = String(message.uuid);
+      handleUserMessage(state, message);
+      return;
+    }
+    case "rate_limit_event": {
+      const info = asRecord(message.rate_limit_info);
+      if (info) handleRateLimit(state, info);
+      return;
+    }
+    case "result": {
+      if (message.subtype !== "success" || message.is_error === true) throw resultError(message);
+      state.done = true;
+      state.stopReason = str(message.stop_reason) ?? "end_turn";
+      return;
+    }
+    case "system": {
+      if (message.subtype === "compact_boundary") log("info", "anthropic: Claude Code compacted its session context");
+      state.callbacks.onActivity?.();
+      return;
+    }
+    default:
+      state.callbacks.onActivity?.();
+  }
+}
+
+export function finalizeClaudeStream(state: ClaudeStreamState): StreamResult {
+  if (!state.done) throw new Error("Claude Code exited before finishing the turn.");
+  const text = state.blocks.filter((b) => b.type === "text").map((b) => (b as { text: string }).text).join("\n\n");
+  const thinking = state.blocks.filter((b) => b.type === "thinking").map((b) => (b as { text: string }).text).join("\n\n");
+  const lastMessage = state.messages[state.messages.length - 1];
+  if (!lastMessage || lastMessage.role !== "assistant") {
+    // Keep the replay structurally valid: a turn must end on an assistant message.
+    state.messages.push({ role: "assistant", content: [] });
+  }
+  const final = state.messages[state.messages.length - 1];
+  if (state.sessionId && state.lastChainUuid) {
+    final.providerData = {
+      anthropic: { sessionId: state.sessionId, resumeAt: state.lastChainUuid, cwd: state.cwd },
+    };
+  }
+  return {
+    text,
+    thinking,
+    // Exocortex conventions: "stop" for a finished turn; tools already ran inside Claude Code.
+    stopReason: state.stopReason === "max_tokens" ? "max_tokens" : "stop",
+    blocks: state.blocks,
+    toolCalls: [],
+    transcriptMessages: state.messages,
+    inputTokens: state.inputTokens,
+    cachedInputTokens: state.cachedInputTokens,
+    cacheMissInputTokens: state.cacheMissInputTokens,
+    outputTokens: state.outputTokens,
+    ...(final.providerData ? { assistantProviderData: final.providerData } : {}),
+  };
+}

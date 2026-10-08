@@ -11,7 +11,7 @@
 
 // ── Providers / Models ──────────────────────────────────────────────
 
-export type ProviderId = "openai" | "deepseek" | "opencode" | "openrouter";
+export type ProviderId = "openai" | "anthropic" | "deepseek" | "opencode" | "openrouter";
 
 /** Provider-scoped model identifier. */
 export type ModelId = string;
@@ -70,11 +70,12 @@ export interface ProviderInfo {
 export const DEFAULT_PROVIDER_ID: ProviderId = "openai";
 
 /** Preferred provider ordering for UI fallbacks and provider registries. */
-export const DEFAULT_PROVIDER_ORDER: readonly ProviderId[] = [DEFAULT_PROVIDER_ID, "deepseek", "opencode", "openrouter"];
+export const DEFAULT_PROVIDER_ORDER: readonly ProviderId[] = [DEFAULT_PROVIDER_ID, "anthropic", "deepseek", "opencode", "openrouter"];
 
 /** Preferred default model per provider when the app needs a fallback selection. */
 export const DEFAULT_MODEL_BY_PROVIDER = {
   openai: "gpt-6-astra",
+  anthropic: "claude-opus-5-5",
   deepseek: "deepseek-v4-pro",
   opencode: "ox-alpha",
   openrouter: "nousresearch/hermes-4-405b",
@@ -114,6 +115,10 @@ export function supportsImageInputsForModel(
 
 /** Maximum context window size in tokens, keyed by model id. */
 export const MAX_CONTEXT: Record<string, number> = {
+  "claude-fable-5-1": 1_000_000,
+  "claude-opus-5-5": 1_000_000,
+  "claude-sonnet-5-5": 1_000_000,
+  "claude-haiku-5-5": 1_000_000,
   "gpt-5": 400_000,
   // These OpenAI models run through the ChatGPT Codex backend. Their public
   // API and configurable maximum context windows differ and should be modeled

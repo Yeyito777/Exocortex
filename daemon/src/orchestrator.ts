@@ -1526,6 +1526,7 @@ async function orchestrateAdmittedAssistantTurn(
         promptCacheKey: convId,
         tracking: { source: "conversation", conversationId: convId },
         turnSession: providerTurnSession ?? undefined,
+        workingDirectory,
         getCodexWindowId: () => currentWindowId,
         accountScope,
         codexTurnId,

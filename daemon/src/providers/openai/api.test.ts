@@ -1538,8 +1538,8 @@ describe("OpenAI replay input", () => {
     expect(compactionBody.access_programs).toEqual({ cyber: "daybreak_blue" });
     expect(compactionBody.model).toBe("gpt-6-sol");
     expect(JSON.parse(calls[0].sent[0]).model).toBe("gpt-6-sol");
-    expect(first.assistantProviderData?.openai.replayScope?.model).toBe("gpt-6-sol");
-    expect(second.assistantProviderData?.openai.replayScope?.model).toBe("gpt-6-sol");
+    expect(first.assistantProviderData?.openai?.replayScope?.model).toBe("gpt-6-sol");
+    expect(second.assistantProviderData?.openai?.replayScope?.model).toBe("gpt-6-sol");
     expect(compactionBody.input).toEqual([{ type: "compaction_trigger" }]);
     expect(JSON.parse(compactionBody.client_metadata["x-codex-turn-metadata"])).toMatchObject({
       request_kind: "compaction",
@@ -1547,11 +1547,11 @@ describe("OpenAI replay input", () => {
       compaction: { phase: "mid_turn", implementation: "responses_compaction_v2" },
     });
     expect(second.compactionItems).toEqual([{ encryptedContent: "opaque-reused" }]);
-    expect(first.assistantProviderData?.openai.replayScope).toEqual({
+    expect(first.assistantProviderData?.openai?.replayScope).toEqual({
       model: "gpt-6-sol",
       accountScope: accountScopeForKey("stable-account-a")!,
     });
-    expect(second.assistantProviderData?.openai.replayScope).toEqual(first.assistantProviderData?.openai.replayScope);
+    expect(second.assistantProviderData?.openai?.replayScope).toEqual(first.assistantProviderData?.openai?.replayScope);
     turnSession.close();
   });
 
@@ -2127,7 +2127,7 @@ describe("OpenAI reasoning summaries", () => {
       encrypted_content: "encrypted-context",
       internal_chat_message_metadata_passthrough: { turn_id: "turn_compact" },
     }]);
-    expect(result.assistantProviderData?.openai.compactionItems).toEqual([{
+    expect(result.assistantProviderData?.openai?.compactionItems).toEqual([{
       encryptedContent: "encrypted-context",
       internalChatMessageMetadataPassthrough: { turn_id: "turn_compact" },
     }]);
@@ -2623,7 +2623,7 @@ describe("OpenAI reasoning summaries", () => {
       { type: "thinking", text: "**Important conclusion**", signature: "" },
       { type: "thinking", text: "Use `<!-- -->` in JSX.", signature: "" },
     ]);
-    expect(result.assistantProviderData?.openai.reasoningItems?.[0]?.summaries).toEqual([
+    expect(result.assistantProviderData?.openai?.reasoningItems?.[0]?.summaries).toEqual([
       "**Plan**\n\nInspect the parser.",
       "**Checking tests**\n\n<!-- -->",
       "**Important conclusion**",
