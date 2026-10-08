@@ -43,6 +43,14 @@ a spurious **Local: Unknown**. Local probes survive
 SSH route changes/reconnects and are shared rather than duplicated; only active
 endpoint replies are scoped to the route generation.
 
+Upstream `main` is read from Git's smart-HTTP ref advertisement, not GitHub's
+REST API: the API allows only 60 unauthenticated requests/hour per IP, which a
+shared campus/office NAT can exhaust on its own, turning **None** into
+**Unknown**. When upstream equals HEAD, or its commit already exists locally
+(HEAD contains it, or it was fetched), ancestry decides the status offline. Only
+an upstream commit this checkout has never seen falls back to the REST compare
+API.
+
 Each daemon caches GitHub comparison results for 120 seconds across all clients,
 including failed requests. Disk revision checks bypass that cache, so downloaded
 updates show **Restart needed** on the next fast status check without another
