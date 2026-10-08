@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { StreamCallbacks } from "../types";
+import type { ProviderRound, StreamCallbacks } from "../types";
 import { ClaudeOverageError, createClaudeStreamState, finalizeClaudeStream, pushClaudeMessage } from "./stream";
 import { handleUsageHeaders } from "./usage";
 
@@ -80,6 +80,65 @@ describe("Claude Code stream translation", () => {
     expect(result.inputTokens).toBe(2 + 2067 + 20933);
     expect(result.cachedInputTokens).toBe(20933);
     expect(result.outputTokens).toBe(70);
+  });
+
+  test("hands each tool round to the agent loop as soon as its results arrive", () => {
+    const { events, callbacks } = recorder();
+    const rounds: ProviderRound[] = [];
+    callbacks.onProviderRound = (round) => {
+      events.push("round");
+      rounds.push(round);
+    };
+    const state = createClaudeStreamState(callbacks, "/work");
+    for (const message of TOOL_TURN) pushClaudeMessage(state, message);
+    const result = finalizeClaudeStream(state);
+
+    expect(events.slice(0, 3)).toEqual(["call:Bash:echo hi", "result:Bash:hi", "round"]);
+    expect(rounds).toHaveLength(1);
+    expect(rounds[0].blocks.map((b) => b.type)).toEqual(["tool_call", "tool_result"]);
+    expect(rounds[0].messages).toEqual([
+      { role: "assistant", content: [{ type: "tool_use", id: "toolu_1", name: "Bash", input: { command: "echo hi" } }] },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "hi", is_error: false }],
+        // An interrupted turn resumes the Claude Code session right after this round.
+        providerData: { anthropic: { sessionId: SESSION, resumeAt: "u-1", cwd: "/work" } },
+      },
+    ]);
+    expect(rounds[0].outputTokens).toBe(30);
+    expect(rounds[0].inputTokens).toBe(2 + 20933);
+    expect(rounds[0].generationMs).toBeGreaterThanOrEqual(0);
+
+    // The result carries only what followed the last round; usage totals still cover the request.
+    expect(result.blocks.map((b) => b.type)).toEqual(["thinking", "text"]);
+    expect(result.transcriptMessages).toEqual([{
+      role: "assistant",
+      content: [
+        { type: "thinking", thinking: "It printed hi.", signature: "sig" },
+        { type: "text", text: "It printed hi." },
+      ],
+      providerData: { anthropic: { sessionId: SESSION, resumeAt: "a-3", cwd: "/work" } },
+    }]);
+    expect(result.outputTokens).toBe(70);
+  });
+
+  test("commits parallel tool calls only once every result is in", () => {
+    const { callbacks } = recorder();
+    const rounds: ProviderRound[] = [];
+    callbacks.onProviderRound = (round) => rounds.push(round);
+    const state = createClaudeStreamState(callbacks, "/work");
+    const call = (id: string, uuid: string) => ({ type: "assistant", uuid, session_id: SESSION, parent_tool_use_id: null, message: { content: [{ type: "tool_use", id, name: "Read", input: { file_path: `/${id}` } }] } });
+    const done = (id: string, uuid: string) => ({ type: "user", uuid, session_id: SESSION, parent_tool_use_id: null, message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: id, is_error: false }] } });
+
+    pushClaudeMessage(state, call("t1", "a-1"));
+    pushClaudeMessage(state, call("t2", "a-2"));
+    pushClaudeMessage(state, done("t1", "u-1"));
+    expect(rounds).toHaveLength(0);
+    pushClaudeMessage(state, done("t2", "u-2"));
+    expect(rounds).toHaveLength(1);
+    expect(rounds[0].messages.map((m) => m.role)).toEqual(["assistant", "user"]);
+    expect(rounds[0].messages[1].content).toHaveLength(2);
+    expect(rounds[0].messages[1].providerData?.anthropic?.resumeAt).toBe("u-2");
   });
 
   test("fails when Claude Code exits without a result", () => {

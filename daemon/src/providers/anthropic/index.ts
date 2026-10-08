@@ -7,7 +7,7 @@ import type { ProviderAdapter } from "../types";
 
 export const anthropicProvider: ProviderAdapter = {
   id: "anthropic",
-  label: "Anthropic (Claude Code)",
+  label: "Anthropic",
   defaultModel: DEFAULT_MODEL_BY_PROVIDER.anthropic,
   allowsCustomModels: true,
   supportsFastMode: false,

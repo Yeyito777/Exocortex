@@ -14,7 +14,7 @@ import { log } from "./log";
 import { recordToolCallDiagnostics } from "./diagnostics";
 import { type ProviderId, type ModelId, type EffortLevel, type Block, type ToolCallBlock, type ToolResultBlock, type ToolCallPresentation, type ApiMessage, type ApiContentBlock, type TokenTrackingContext } from "./messages";
 import type { DeferredToolResult } from "./tools/types";
-import type { ContentBlock as ProviderContentBlock, ServiceTier, StreamOptions, StreamRetryMetadata } from "./providers/types";
+import type { ContentBlock as ProviderContentBlock, ProviderRound, ServiceTier, StreamOptions, StreamRetryMetadata } from "./providers/types";
 import { MAX_OUTPUT_CHARS, cap } from "./tools/util";
 import { getMaxContext } from "./providers/registry";
 import { estimateContextTokens, isContextWindowError, shouldAutoCompact, type CompactionReason } from "./context-compaction";
@@ -145,6 +145,26 @@ function defaultSummarizer(name: string, _input: Record<string, unknown>): strin
   return name;
 }
 
+function toDisplayBlock(block: ProviderContentBlock, presentation?: ToolCallPresentation): Block {
+  switch (block.type) {
+    case "thinking":
+      return { type: "thinking", text: block.text };
+    case "text":
+      return { type: "text", text: block.text };
+    case "tool_call":
+      return {
+        type: "tool_call",
+        toolCallId: block.id,
+        toolName: block.name,
+        input: block.input,
+        summary: block.summary,
+        ...(presentation ? { presentation } : {}),
+      };
+    case "tool_result":
+      return { type: "tool_result", toolCallId: block.toolUseId, toolName: block.toolName, output: block.output, isError: block.isError };
+  }
+}
+
 // ── Agent loop ──────────────────────────────────────────────────────
 
 export async function runAgentLoop(
@@ -223,6 +243,38 @@ export async function runAgentLoop(
     let roundEmittedOutput = false;
     const generationTimer = new ProviderGenerationTimer(options.generationNow);
     let generationRate: number | null = null;
+    // A provider that runs its own agent loop (Claude Code) reports each tool
+    // round as it finishes. Commit it like this loop's own rounds below, so it
+    // is persisted, displayed from canonical entries and recoverable mid-turn.
+    let providerRoundOutputTokens = 0;
+    const commitProviderRound = (providerRound: ProviderRound) => {
+      roundEmittedOutput = true;
+      if (providerRound.inputTokens) {
+        lastInputTokens = providerRound.inputTokens;
+        callbacks.onContextUpdate(providerRound.inputTokens, messages);
+      }
+      if (providerRound.outputTokens > 0) {
+        providerRoundOutputTokens += providerRound.outputTokens;
+        totalOutputTokens += providerRound.outputTokens;
+        callbacks.onTokensUpdate(totalOutputTokens);
+        if (providerRound.generationMs && providerRound.generationMs > 0) {
+          callbacks.onGenerationRate?.(providerRound.outputTokens / (providerRound.generationMs / 1000));
+        }
+      }
+      // The rest of the request is measured from here.
+      generationTimer.reset();
+      for (const block of providerRound.blocks) allBlocks.push(toDisplayBlock(block));
+      messages.push(...providerRound.messages);
+      newMessages.push(...providerRound.messages);
+      if (state) {
+        state.completedMessages = [...newMessages];
+        state.completedBlocks = [...allBlocks];
+        state.contextMessages = [...messages];
+        state.contextCompacted = contextCompacted;
+        state.tokens = totalOutputTokens;
+      }
+      callbacks.onRoundComplete?.();
+    };
     while (true) {
       try {
         const diagnosticMessages = PERFORMANCE_PROFILING_ENABLED
@@ -251,12 +303,15 @@ export async function runAgentLoop(
             // Reset this guard too so a clean retry that hits a context error can
             // still compact rather than being blocked by already-discarded text.
             roundEmittedOutput = false;
+            // A retried request reports its own totals; committed provider rounds stay counted.
+            providerRoundOutputTokens = 0;
             generationTimer.retry();
             profile?.mark("retry");
             callbacks.onRetry?.(attempt, maxAttempts, errorMessage, delaySec, metadata);
           },
           onRetryWaitStart: () => { generationTimer.retry(); callbacks.onRetryWaitStart?.(); },
           onRetryWaitEnd: callbacks.onRetryWaitEnd,
+          onProviderRound: commitProviderRound,
         }, {
           system: options.system,
           signal: options.signal,
@@ -269,6 +324,7 @@ export async function runAgentLoop(
           tracking: options.tracking,
           turnSession: options.turnSession,
           workingDirectory: options.workingDirectory,
+          toolExecutor: options.executor,
           codexWindowId: options.getCodexWindowId?.(),
           accountScope: options.accountScope,
           codexTurnId: options.codexTurnId,
@@ -276,7 +332,7 @@ export async function runAgentLoop(
           diagnosticMessages,
         });
         profile?.mark("provider_end");
-        generationRate = generationTimer.rate(result.outputTokens);
+        generationRate = generationTimer.rate(Math.max(0, (result.outputTokens ?? 0) - providerRoundOutputTokens));
         for (const message of messages) diagnosticsSubmittedMessages.add(message);
         break;
       } catch (error) {
@@ -295,10 +351,11 @@ export async function runAgentLoop(
       }
     }
 
-    lastOutputTokens = result.outputTokens ?? 0;
+    // Provider rounds committed during the request already counted their tokens.
+    lastOutputTokens = Math.max(0, (result.outputTokens ?? 0) - providerRoundOutputTokens);
     if (generationRate !== null) callbacks.onGenerationRate?.(generationRate);
-    if (result.outputTokens) {
-      totalOutputTokens += result.outputTokens;
+    if (lastOutputTokens) {
+      totalOutputTokens += lastOutputTokens;
       callbacks.onTokensUpdate(totalOutputTokens);
     }
 
@@ -337,29 +394,8 @@ export async function runAgentLoop(
 
     // ── Collect content blocks (thinking + text) ──────────────────
     for (const block of result.blocks) {
-      if (block.type === "thinking") {
-        allBlocks.push({ type: "thinking", text: block.text });
-        if (block.signature) callbacks.onSignature(block.signature);
-      } else if (block.type === "text") {
-        allBlocks.push({ type: "text", text: block.text });
-      } else if (block.type === "tool_call") {
-        allBlocks.push({
-          type: "tool_call",
-          toolCallId: block.id,
-          toolName: block.name,
-          input: block.input,
-          summary: block.summary,
-          ...(presentations.get(block.id) ? { presentation: presentations.get(block.id) } : {}),
-        });
-      } else if (block.type === "tool_result") {
-        allBlocks.push({
-          type: "tool_result",
-          toolCallId: block.toolUseId,
-          toolName: block.toolName,
-          output: block.output,
-          isError: block.isError,
-        });
-      }
+      allBlocks.push(toDisplayBlock(block, block.type === "tool_call" ? presentations.get(block.id) : undefined));
+      if (block.type === "thinking" && block.signature) callbacks.onSignature(block.signature);
     }
 
     // ── Build assistant API message for conversation continuity ───

@@ -3,6 +3,7 @@ import { chrono } from "./chrono";
 import { chronoInternalsForTest, installMigratedSchedule } from "../chrono-service";
 import { resetConversationActivityForTest, setBackgroundTaskActive, recordBackgroundTaskCompletion } from "../conversation-activity";
 import { create, remove } from "../conversations";
+import { buildExecutor } from "./registry";
 
 const conversationIds: string[] = [];
 
@@ -124,6 +125,18 @@ describe("Chrono tool", () => {
 
     expect(result.isError).toBe(true);
     expect(result.output).toContain("must be the only tool call");
+  });
+
+  test("a long sleep from Claude Code points at a wake instead of a retry, since its turn cannot suspend", async () => {
+    const conversationId = makeConversation("long-sleep-claude-code");
+    const [result] = await buildExecutor({ conversationId, provider: "anthropic" })(
+      [{ id: "toolu_long", name: "chrono", input: { action: "sleep", duration: "10m" } }],
+    );
+
+    expect(result.deferred).toBeUndefined();
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("cannot suspend a Claude Code turn");
+    expect(result.output).toContain("chrono wake");
   });
 
   test("a wait above the same five-minute cutoff suspends immediately", async () => {

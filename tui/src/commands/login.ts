@@ -13,7 +13,7 @@ function loginDescription(provider: ProviderId): string {
     case "deepseek": return "Save a DeepSeek API key";
     case "opencode": return "Check public OpenCode Zen access";
     case "openrouter": return "Save an OpenRouter API key";
-    case "anthropic": return "Sign in through Claude Code";
+    case "anthropic": return "Sign in with a Claude subscription";
   }
 }
 

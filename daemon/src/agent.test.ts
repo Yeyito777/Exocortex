@@ -493,3 +493,54 @@ describe("tool-call presentation", () => {
     expect(result.blocks.find((block) => block.type === "tool_call")).not.toHaveProperty("presentation");
   });
 });
+
+describe("provider-executed rounds", () => {
+  test("commit mid-request like the loop's own rounds, without double counting tokens", async () => {
+    let now = 0;
+    const agentState = state();
+    const events: string[] = [];
+    const rates: number[] = [];
+    const toolUse = { role: "assistant" as const, content: [{ type: "tool_use" as const, id: "toolu_1", name: "Bash", input: { command: "ls" } }] };
+    const toolResult = { role: "user" as const, content: [{ type: "tool_result" as const, tool_use_id: "toolu_1", content: "a.ts", is_error: false }] };
+    const final = { role: "assistant" as const, content: [{ type: "text" as const, text: "One file." }] };
+    const fakeStream = (async (_provider, _messages, _model, cb) => {
+      now += 1_000;
+      cb.onProviderRound?.({
+        blocks: [
+          { type: "tool_call", id: "toolu_1", name: "Bash", input: { command: "ls" }, summary: "ls" },
+          { type: "tool_result", toolUseId: "toolu_1", toolName: "Bash", output: "a.ts", isError: false },
+        ],
+        messages: [toolUse, toolResult],
+        outputTokens: 40,
+        inputTokens: 5_000,
+        generationMs: 500,
+      });
+      // The round is durable before the request ends.
+      expect(agentState.completedMessages).toEqual([toolUse, toolResult]);
+      expect(agentState.completedBlocks.map(block => block.type)).toEqual(["tool_call", "tool_result"]);
+      now += 2_000;
+      return {
+        text: "One file.", thinking: "", stopReason: "stop",
+        blocks: [{ type: "text", text: "One file." }],
+        toolCalls: [],
+        transcriptMessages: [final],
+        inputTokens: 5_100,
+        outputTokens: 100,
+      } satisfies StreamResult;
+    }) as typeof streamMessage;
+
+    const result = await runAgentLoop([], "anthropic", "claude-opus-5-5", callbacks({
+      onRoundComplete: () => events.push("round"),
+      onContextUpdate: (tokens) => events.push(`context:${tokens}`),
+      onTokensUpdate: (tokens) => events.push(`tokens:${tokens}`),
+      onGenerationRate: (rate) => rates.push(rate),
+    }), { streamMessageFn: fakeStream, generationNow: () => now, state: agentState });
+
+    expect(events).toEqual(["context:5000", "tokens:40", "round", "tokens:100", "context:5100"]);
+    expect(rates).toEqual([80, 30]);
+    expect(result.newMessages).toEqual([toolUse, toolResult, final]);
+    expect(result.blocks.map(block => block.type)).toEqual(["tool_call", "tool_result", "text"]);
+    expect(result.tokens).toBe(100);
+    expect(result.lastOutputTokens).toBe(60);
+  });
+});

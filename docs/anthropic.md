@@ -7,14 +7,27 @@ conversations:
 - Claude Code runs its own agent loop with **its** system prompt, built-in tools
   (Bash, Read, Edit, Write, Grep, WebSearch, Task, …), settings, `CLAUDE.md`,
   MCP servers and skills, exactly as `claude` would when started in the
-  conversation's workspace directory. Exocortex's own tools and system prompt
-  are not used.
+  conversation's workspace directory. Exocortex's system prompt is not used.
+- Exocortex's own tools are not used either, except `chrono`. Claude Code calls
+  it over an in-process MCP server as `mcp__exocortex__chrono`; Exocortex runs
+  it like any other chrono call, and history records it as `chrono`. Sleeps
+  and waits run inside the call for at most five minutes, since a Claude Code
+  turn cannot be suspended; longer delays use a wake with a message. Claude
+  Code's own schedulers (`ScheduleWakeup`, `CronCreate`, `CronDelete`,
+  `CronList`) are disabled in favor of chrono.
 - Tools run unattended (`bypassPermissions`); `AskUserQuestion` is disabled
   because Exocortex has no way to answer it mid-turn.
-- Each completed turn records its Claude Code session. The next turn forks that
-  session at the turn's last entry, so editing or trimming history in Exocortex
-  stays consistent. History Claude Code never saw (other providers' turns, an
-  aborted partial, an Exocortex compaction checkpoint) is sent as a transcript.
+- Each Claude Code tool round is committed to Exocortex's store as soon as its
+  last result arrives, exactly like Exocortex's own tool rounds: persisted
+  mid-turn, displayed from canonical entries (so opening a busy conversation
+  only streams the unfinished round), and kept if the turn is aborted or the
+  daemon restarts. Each round also updates the context and token meters.
+- Each committed round and each completed turn records its Claude Code session
+  and chain entry. The next turn forks that session at the latest one, so an
+  interrupted turn resumes right after its last committed round, and editing
+  or trimming history in Exocortex stays consistent. History Claude Code never
+  saw (other providers' turns, an aborted partial, an Exocortex compaction
+  checkpoint) is sent as a transcript.
 - Tool rounds are stored as normal `tool_use`/`tool_result` messages, so a
   conversation can switch to another provider afterwards.
 

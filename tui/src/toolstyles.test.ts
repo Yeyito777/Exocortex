@@ -21,6 +21,12 @@ describe("bash external tool styling", () => {
     expect(renderToolCallLogicalLines("exec_command", command, registry, externalToolStyles, { cmd: command }))
       .toEqual(renderToolCallLogicalLines("bash", command, registry, externalToolStyles, { command }));
   });
+  test("Claude Code Bash renders like Exocortex bash, external tool labels included", () => {
+    const command = "cd /tmp\ngmail search newer_than:1d";
+    const lines = renderToolCallLogicalLines("Bash", command, registry, externalToolStyles, { command, description: "Search mail" });
+    expect(lines).toEqual(renderToolCallLogicalLines("bash", command, registry, externalToolStyles, { command }));
+    expect(lines.map(line => line.display.label)).toEqual(["$", "Gmail"]);
+  });
   test("matches direct external tool invocation", () => {
     const display = resolveToolDisplay("bash", "exo status --json", registry, externalToolStyles);
 

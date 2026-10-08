@@ -48,6 +48,14 @@ function abortableSleep(durationMs: number, signal?: AbortSignal): Promise<void>
   });
 }
 
+function undeferrableLongChronoError(kind: "sleep" | "wait", context: Parameters<Tool["execute"]>[1]): string {
+  // Claude Code calls chrono over MCP inside its own agent loop, which Exocortex cannot suspend.
+  if (context?.provider === "anthropic") {
+    return `Chrono ${kind}s longer than five minutes cannot suspend a Claude Code turn. Use five minutes or less, or schedule a chrono wake with a message and end your turn.`;
+  }
+  return `Chrono ${kind}s longer than five minutes must be the only tool call in a model provider round so the turn can be suspended safely. Call chrono ${kind} again by itself.`;
+}
+
 function formatSchedule(schedule: ReturnType<typeof listChronoSchedules>[number]): string {
   const target = schedule.target.kind === "conversation" ? "hard wake" : schedule.target.hardWake ? "soft wake → hard wake" : "soft wake";
   const repeat = schedule.recurrence ? `, repeats ${schedule.recurrence.kind === "interval" ? `every ${schedule.recurrence.everyMs / 1000}s` : schedule.recurrence.kind === "calendar" ? `${schedule.recurrence.unit === "day" ? "daily" : schedule.recurrence.unit === "week" ? "weekly" : "monthly"} in ${schedule.recurrence.timezone}` : schedule.recurrence.expression}` : "";
@@ -81,10 +89,7 @@ async function execute(input: Record<string, unknown>, context: Parameters<Tool[
         return { output: err instanceof Error ? err.message : String(err), isError: true };
       }
       if (!context.toolCallId || !context.canDeferToolResult) {
-        return {
-          output: "Chrono waits longer than five minutes must be the only tool call in a model provider round so the turn can be suspended safely. Call chrono wait again by itself.",
-          isError: true,
-        };
+        return { output: undeferrableLongChronoError("wait", context), isError: true };
       }
       const deferred = deferChronoSleep({
         conversationId: convId,
@@ -155,10 +160,7 @@ async function execute(input: Record<string, unknown>, context: Parameters<Tool[
     const taskId = `chrono:sleep:${context.toolCallId ?? startedAt}`;
     if (durationMs > LONG_CHRONO_SLEEP_THRESHOLD_MS) {
       if (!context.toolCallId || !context.canDeferToolResult) {
-        return {
-          output: "Chrono sleeps longer than five minutes must be the only tool call in a model provider round so the turn can be suspended safely. Call chrono sleep again by itself.",
-          isError: true,
-        };
+        return { output: undeferrableLongChronoError("sleep", context), isError: true };
       }
       const deferred = deferChronoSleep({
         conversationId: convId,

@@ -3,7 +3,8 @@
  *
  * Conversation turns run Claude Code as-is — its system prompt, built-in
  * tools, settings, CLAUDE.md, MCP servers and skills — in the conversation's
- * workspace. Exocortex only streams and records what Claude Code does.
+ * workspace, plus a few Exocortex host tools over MCP (see host-tools.ts).
+ * Exocortex streams and records what Claude Code does.
  * One-shot helper requests (titles, summaries, compaction) run tool-free.
  *
  * Every request goes through the Claude Code CLI's claude.ai login, so usage
@@ -17,11 +18,14 @@ import type { ApiMessage, EffortLevel, ModelId } from "../../messages";
 import type { StreamCallbacks, StreamOptions, StreamResult } from "../types";
 import { requireSubscriptionAuth } from "./auth";
 import { claudeSubscriptionEnv, getClaudeBinary } from "./cli";
+import { createHostToolServer } from "./host-tools";
 import { buildClaudeHelperPrompt, buildClaudeUserContent, planClaudePrompt, type ClaudePromptPlan } from "./prompt";
 import { createClaudeStreamState, finalizeClaudeStream, pushClaudeMessage, type ClaudeStreamState } from "./stream";
 
 /** Claude Code tools that need an interactive answer Exocortex cannot give. */
 const INTERACTIVE_ONLY_TOOLS = ["AskUserQuestion"];
+/** Claude Code's own schedulers; Exocortex's chrono (a host tool) replaces them. */
+const SCHEDULER_TOOLS = ["ScheduleWakeup", "CronCreate", "CronDelete", "CronList"];
 const STDERR_TAIL_CHARS = 4000;
 /**
  * Claude Code can sit inside one long tool call (a build, a test run) without
@@ -74,6 +78,7 @@ function baseOptions(model: ModelId, options: StreamOptions, cwd: string, stderr
 }
 
 function agentTurnOptions(model: ModelId, options: StreamOptions, cwd: string, plan: ClaudePromptPlan, stderr: (data: string) => void): ClaudeQueryOptions {
+  const hostTools = createHostToolServer(options.tools, options.toolExecutor, options.signal);
   return {
     ...baseOptions(model, options, cwd, stderr),
     // Behave like the `claude` CLI started in this directory.
@@ -82,7 +87,8 @@ function agentTurnOptions(model: ModelId, options: StreamOptions, cwd: string, p
     // Exocortex has no permission prompt UI; Claude Code runs unattended.
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
-    disallowedTools: INTERACTIVE_ONLY_TOOLS,
+    disallowedTools: [...INTERACTIVE_ONLY_TOOLS, ...SCHEDULER_TOOLS],
+    ...(hostTools ? { mcpServers: { [hostTools.name]: hostTools } } : {}),
     ...(plan.resume ? { resume: plan.resume.sessionId, resumeSessionAt: plan.resume.resumeAt, forkSession: true } : {}),
   };
 }

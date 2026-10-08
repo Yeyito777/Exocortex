@@ -263,6 +263,17 @@ describe("automatic context compaction state", () => {
     expect(isValidActiveContext(plaintext, messages)).toBe(false);
   });
 
+  test("keeps Claude Code resume points in derived replay and rejects malformed ones", () => {
+    const messages = history();
+    const active = activeContext(messages);
+    expect(isValidActiveContext(active, messages)).toBe(true);
+    const user = active.messages[0];
+    user.providerData = { anthropic: { sessionId: "s1", resumeAt: "u1", cwd: "/work" } };
+    expect(isValidActiveContext(active, messages)).toBe(true);
+    user.providerData = { anthropic: { sessionId: "s1" } } as never;
+    expect(isValidActiveContext(active, messages)).toBe(false);
+  });
+
   test("rejects malformed blocks and orphaned tool results in derived replay", () => {
     const messages = history();
     const native = activeContext(messages);

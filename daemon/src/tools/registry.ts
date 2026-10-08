@@ -21,6 +21,7 @@ import { applyPatch, viewImage } from "./codex-files";
 import { exo } from "./exo";
 import { chrono } from "./chrono";
 import { goal } from "./goal";
+import { getClaudeCodeToolDisplayInfo, summarizeClaudeCodeTool } from "./claude-code";
 import { TOOL_BACKGROUND_SECONDS } from "../constants";
 import { formatToolAbortMessage, isToolTimeoutReason, toolTimeoutReason } from "../abort";
 import { evaluateToolCallSafety, formatSafetyBlock } from "../safety";
@@ -111,11 +112,14 @@ export function getToolDefs(allowedNames?: readonly string[], conversationId?: s
 // ── Display info (sent to TUI on connect) ──────────────────────────
 
 export function getToolDisplayInfo(): ToolDisplayInfo[] {
-  return getAvailableTools().map(t => ({
-    name: t.name,
-    label: t.display.label,
-    color: t.display.color,
-  }));
+  return [
+    ...getAvailableTools().map(t => ({
+      name: t.name,
+      label: t.display.label,
+      color: t.display.color,
+    })),
+    ...getClaudeCodeToolDisplayInfo(),
+  ];
 }
 
 // ── System prompt hints ────────────────────────────────────────────
@@ -131,7 +135,8 @@ export function buildToolSystemHints(allowedNames?: readonly string[], conversat
 
 export function summarizeTool(name: string, input: Record<string, unknown>, conversationId?: string): ToolSummary {
   const tool = getTool(name, conversationId);
-  if (!tool) return { label: name, detail: "" };
+  // Anything else came from Claude Code's own tools (anthropic provider).
+  if (!tool) return summarizeClaudeCodeTool(name, input);
   return tool.summarize(input);
 }
 
@@ -374,7 +379,9 @@ async function executeScheduledTools(
   allowedTools?: ReadonlySet<string>,
 ): Promise<ToolExecResult[]> {
   const results: ToolExecResult[] = [];
-  const canDeferToolResult = calls.length === 1;
+  // Claude Code (anthropic) runs its own agent loop and calls Exocortex tools
+  // over MCP, so its turn cannot be suspended and resumed by replay.
+  const canDeferToolResult = calls.length === 1 && toolContext?.provider !== "anthropic";
   const scheduledAt = PERFORMANCE_PROFILING_ENABLED ? performance.now() : 0;
   const execute = async (call: ApiToolCall): Promise<ToolExecResult> => {
     const startedAt = PERFORMANCE_PROFILING_ENABLED ? performance.now() : 0;
