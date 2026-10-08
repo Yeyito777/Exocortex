@@ -506,6 +506,10 @@ export function renderToolCallLogicalLines(
     return renderToolCallLogicalLines("bash", summary, toolRegistry, externalToolStyles,
       toolInput ? { ...toolInput, command: toolInput.cmd } : undefined);
   }
+  // Claude Code's Bash (anthropic provider) takes the same command input.
+  if (toolName === "Bash") {
+    return renderToolCallLogicalLines("bash", summary, toolRegistry, externalToolStyles, toolInput);
+  }
   const display = resolveToolDisplay(toolName, summary, toolRegistry, externalToolStyles);
   const stdinRange = toolName === "bash" ? bashStdinLineRange(summary, toolInput) : null;
 

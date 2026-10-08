@@ -2,8 +2,10 @@
  * Map Exocortex conversation history onto Claude Code sessions.
  *
  * Each completed Claude Code turn records its session id and last chain entry
- * on the final assistant message. The next turn forks that session at that
- * entry and sends only the messages added since. History Claude Code never
+ * on the final assistant message, and each committed tool round on its
+ * tool-result message. The next turn forks that session at the latest such
+ * entry and sends only the messages added since, so a turn interrupted
+ * mid-way resumes after its last committed round. History Claude Code never
  * saw (another provider's turns, an aborted partial, a compaction checkpoint)
  * is rendered into the prompt as a transcript.
  */
@@ -24,7 +26,7 @@ export interface ClaudePromptPlan {
 export function planClaudePrompt(messages: ApiMessage[], cwd: string): ClaudePromptPlan {
   for (let i = messages.length - 1; i >= 0; i--) {
     const data = messages[i].providerData?.anthropic;
-    if (messages[i].role !== "assistant" || !data) continue;
+    if (!data) continue;
     if (data.cwd !== cwd) break;
     return { resume: data, pending: messages.slice(i + 1) };
   }

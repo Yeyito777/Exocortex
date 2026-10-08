@@ -1,6 +1,7 @@
 import type { ModelId, EffortLevel, ApiMessage, ProviderId, ModelInfo, UsageData, ToolCallBlock, ToolResultBlock, TokenTrackingContext } from "../messages";
 import type { OAuthProfile, StoredTokens } from "../store";
 import type { AssistantProviderData } from "./provider-data";
+import type { ToolExecutor } from "../agent";
 import type { OpenAICompactionItem } from "./openai/types";
 import type { DeviceCodeAuthPrompt, OpenAILoginMethod, UsageResetOutcome } from "@exocortex/shared/protocol";
 
@@ -40,6 +41,7 @@ export interface StreamResult {
    * Complete replay messages for a provider that ran its own agent loop
    * (tool_use → tool_result → … → final assistant). When present, the agent
    * loop persists these instead of synthesizing one assistant message.
+   * Rounds already reported through onProviderRound are not repeated here.
    */
   transcriptMessages?: ApiMessage[];
   /** Opaque provider-native context checkpoints returned by a compaction request. */
@@ -88,6 +90,23 @@ export interface StreamCallbacks {
   /** Pause/resume stale-stream watchdogs around intentional long retry waits. */
   onRetryWaitStart?: () => void;
   onRetryWaitEnd?: () => void;
+  /** A provider running its own agent loop finished a tool round; the agent loop commits it like one of its own. */
+  onProviderRound?: (round: ProviderRound) => void;
+}
+
+/**
+ * One tool round a provider executed itself (Claude Code runs its own tools):
+ * the assistant tool-use message and the tool results that close it.
+ */
+export interface ProviderRound {
+  blocks: ContentBlock[];
+  messages: ApiMessage[];
+  /** Output tokens generated since the previous round. StreamResult totals still cover the whole request. */
+  outputTokens: number;
+  /** Context size of the round's API call. */
+  inputTokens?: number;
+  /** Time spent waiting on the model for this round, excluding tool execution. */
+  generationMs?: number;
 }
 
 export interface StreamToolExecutionResult {
@@ -140,6 +159,8 @@ export interface StreamOptions {
   turnSession?: ProviderTurnSession;
   /** Conversation workspace. Providers that run their own agent (Claude Code) execute there. */
   workingDirectory?: string;
+  /** The turn's Exocortex tool executor, for providers that run their own agent and expose some Exocortex tools to it. */
+  toolExecutor?: ToolExecutor;
   /** Request a provider-native context checkpoint instead of an assistant reply. */
   compaction?: boolean;
   /** Shared cap for all native-compaction request submissions and transports. */

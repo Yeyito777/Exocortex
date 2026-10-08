@@ -7,12 +7,19 @@
  * from `stream_event` partials; the canonical record comes from the complete
  * `assistant` / tool-result `user` messages, which are kept as a normal
  * tool_use → tool_result message sequence.
+ *
+ * Each tool round is handed to the agent loop (onProviderRound) as soon as its
+ * last result arrives, so Exocortex persists it mid-turn like its own rounds.
+ * The round's tool-result message carries the Claude Code resume point, so an
+ * interrupted turn resumes the session after its last committed round.
  */
 
 import { log } from "../../log";
 import type { ApiContentBlock, ApiMessage } from "../../messages";
+import { exocortexToolName, summarizeClaudeCodeTool } from "../../tools/claude-code";
 import { AuthError } from "../errors";
-import type { ContentBlock, StreamCallbacks, StreamResult } from "../types";
+import type { ContentBlock, ProviderRound, StreamCallbacks, StreamResult } from "../types";
+import type { AnthropicAssistantProviderData } from "./types";
 import { CLAUDE_RATE_LIMIT_HEADER } from "./usage";
 
 type SdkRecord = Record<string, unknown>;
@@ -22,9 +29,17 @@ export class ClaudeOverageError extends Error {}
 export interface ClaudeStreamState {
   callbacks: StreamCallbacks;
   cwd: string;
+  /** Blocks and messages not yet committed as a round. */
   blocks: ContentBlock[];
   messages: ApiMessage[];
   toolNames: Map<string, string>;
+  /** Tool calls of the current round still waiting for a result. */
+  openToolUses: Set<string>;
+  /** Output tokens already reported with committed rounds. */
+  committedOutputTokens: number;
+  roundStartedAt: number;
+  /** When the current round's model output last finished streaming. */
+  generationEndedAt: number | null;
   sessionId: string | null;
   lastChainUuid: string | null;
   /** Context size of the latest API call (prompt incl. cache reads/writes). */
@@ -47,6 +62,10 @@ export function createClaudeStreamState(callbacks: StreamCallbacks, cwd: string)
     blocks: [],
     messages: [],
     toolNames: new Map(),
+    openToolUses: new Set(),
+    committedOutputTokens: 0,
+    roundStartedAt: performance.now(),
+    generationEndedAt: null,
     sessionId: null,
     lastChainUuid: null,
     outputTokens: 0,
@@ -67,25 +86,6 @@ function str(value: unknown): string | undefined {
 
 function num(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
-}
-
-function shorten(text: string, max = 120): string {
-  const line = text.replace(/\s+/g, " ").trim();
-  return line.length > max ? `${line.slice(0, max - 1)}…` : line;
-}
-
-/** One-line display summary for a Claude Code tool call. */
-export function summarizeClaudeToolCall(name: string, input: Record<string, unknown>): string {
-  const pick = (...keys: string[]) => {
-    for (const key of keys) {
-      const value = input[key];
-      if (typeof value === "string" && value.trim()) return value;
-    }
-    return undefined;
-  };
-  const detail = pick("description", "command", "file_path", "notebook_path", "pattern", "url", "query", "prompt", "skill", "path");
-  if (name === "Bash" && typeof input.command === "string") return shorten(input.command);
-  return detail ? shorten(detail) : name;
 }
 
 function toolResultText(content: unknown): string {
@@ -163,6 +163,7 @@ function handleStreamEvent(state: ClaudeStreamState, event: SdkRecord): void {
         state.outputTokens += usage.output_tokens - state.currentCallOutputTokens;
         state.currentCallOutputTokens = usage.output_tokens;
       }
+      state.generationEndedAt = performance.now();
       return;
     }
     default:
@@ -189,10 +190,12 @@ function handleAssistantMessage(state: ClaudeStreamState, message: SdkRecord): v
       pushMessageContent(state, "assistant", { type: "thinking", thinking, signature });
     } else if (block.type === "tool_use") {
       const id = str(block.id) ?? "";
-      const name = str(block.name) ?? "tool";
+      const name = exocortexToolName(str(block.name) ?? "tool");
       const input = asRecord(block.input) ?? {};
-      const summary = summarizeClaudeToolCall(name, input);
+      const { label, detail } = summarizeClaudeCodeTool(name, input);
+      const summary = detail || label;
       state.toolNames.set(id, name);
+      state.openToolUses.add(id);
       state.blocks.push({ type: "tool_call", id, name, input, summary });
       pushMessageContent(state, "assistant", { type: "tool_use", id, name, input });
       state.callbacks.onToolCall?.({ type: "tool_call", toolCallId: id, toolName: name, input, summary });
@@ -200,13 +203,42 @@ function handleAssistantMessage(state: ClaudeStreamState, message: SdkRecord): v
   }
 }
 
+function resumePoint(state: ClaudeStreamState): AnthropicAssistantProviderData | undefined {
+  if (!state.sessionId || !state.lastChainUuid) return undefined;
+  return { anthropic: { sessionId: state.sessionId, resumeAt: state.lastChainUuid, cwd: state.cwd } };
+}
+
+/** Hand the finished tool round to the agent loop and start the next one. */
+function commitRound(state: ClaudeStreamState): void {
+  const onProviderRound = state.callbacks.onProviderRound;
+  if (!onProviderRound || state.messages.length === 0) return;
+  const last = state.messages[state.messages.length - 1];
+  const providerData = resumePoint(state);
+  if (providerData) last.providerData = providerData;
+  const round: ProviderRound = {
+    blocks: state.blocks,
+    messages: state.messages,
+    outputTokens: state.outputTokens - state.committedOutputTokens,
+    inputTokens: state.inputTokens,
+    ...(state.generationEndedAt !== null ? { generationMs: state.generationEndedAt - state.roundStartedAt } : {}),
+  };
+  state.blocks = [];
+  state.messages = [];
+  state.committedOutputTokens = state.outputTokens;
+  state.roundStartedAt = performance.now();
+  state.generationEndedAt = null;
+  onProviderRound(round);
+}
+
 function handleUserMessage(state: ClaudeStreamState, message: SdkRecord): void {
   const content = asRecord(message.message)?.content;
   if (!Array.isArray(content)) return;
+  let closedToolUse = false;
   for (const raw of content) {
     const block = asRecord(raw);
     if (block?.type !== "tool_result") continue;
     const toolUseId = str(block.tool_use_id) ?? "";
+    closedToolUse = state.openToolUses.delete(toolUseId) || closedToolUse;
     const toolName = state.toolNames.get(toolUseId) ?? "";
     const output = toolResultText(block.content);
     const isError = block.is_error === true;
@@ -214,6 +246,7 @@ function handleUserMessage(state: ClaudeStreamState, message: SdkRecord): void {
     pushMessageContent(state, "user", { type: "tool_result", tool_use_id: toolUseId, content: output, is_error: isError });
     state.callbacks.onToolResult?.({ type: "tool_result", toolCallId: toolUseId, toolName, output, isError });
   }
+  if (closedToolUse && state.openToolUses.size === 0) commitRound(state);
 }
 
 function handleRateLimit(state: ClaudeStreamState, info: SdkRecord): void {
@@ -293,11 +326,8 @@ export function finalizeClaudeStream(state: ClaudeStreamState): StreamResult {
     state.messages.push({ role: "assistant", content: [] });
   }
   const final = state.messages[state.messages.length - 1];
-  if (state.sessionId && state.lastChainUuid) {
-    final.providerData = {
-      anthropic: { sessionId: state.sessionId, resumeAt: state.lastChainUuid, cwd: state.cwd },
-    };
-  }
+  const providerData = resumePoint(state);
+  if (providerData) final.providerData = providerData;
   return {
     text,
     thinking,

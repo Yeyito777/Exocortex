@@ -691,13 +691,23 @@ function validApiContentBlock(value: unknown, role: ApiMessage["role"]): value i
   }
 }
 
+/** Claude Code resume point (see providers/anthropic/prompt.ts). */
+function validAnthropicProviderData(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const data = value as Record<string, unknown>;
+  return typeof data.sessionId === "string" && typeof data.resumeAt === "string" && typeof data.cwd === "string";
+}
+
 function validAssistantProviderData(value: unknown): boolean {
   // SQLite preserves explicit nulls imported from the legacy JSON transcript.
   // Treat that legacy representation exactly like an absent optional field so
   // an otherwise valid native checkpoint is not discarded after compaction.
   if (value == null) return true;
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const openai = (value as Record<string, unknown>).openai;
+  const { openai, anthropic } = value as Record<string, unknown>;
+  if (openai === undefined && anthropic === undefined) return false;
+  if (anthropic !== undefined && !validAnthropicProviderData(anthropic)) return false;
+  if (openai === undefined) return true;
   if (!openai || typeof openai !== "object" || Array.isArray(openai)) return false;
   const data = openai as Record<string, unknown>;
   if (data.replayScope !== undefined) {

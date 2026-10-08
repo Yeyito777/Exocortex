@@ -17,6 +17,22 @@ describe("Claude Code prompt planning", () => {
     expect(buildClaudeUserContent(plan.pending)).toEqual([{ type: "text", text: "next" }]);
   });
 
+  test("resumes an interrupted turn after its last committed tool round", () => {
+    const round: ApiMessage[] = [
+      { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } }] },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "t1", content: "a.txt" }],
+        providerData: { anthropic: { sessionId: "s2", resumeAt: "u2", cwd: "/work" } },
+      },
+    ];
+    const partial: ApiMessage = { role: "assistant", content: [{ type: "text", text: "There is a" }] };
+    const next: ApiMessage = { role: "user", content: "go on" };
+    const plan = planClaudePrompt([{ role: "user", content: "first" }, resumed, { role: "user", content: "list" }, ...round, partial, next], "/work");
+    expect(plan.resume).toEqual({ sessionId: "s2", resumeAt: "u2", cwd: "/work" });
+    expect(plan.pending).toEqual([partial, next]);
+  });
+
   test("starts fresh when the workspace changed", () => {
     const messages: ApiMessage[] = [resumed, { role: "user", content: "next" }];
     expect(planClaudePrompt(messages, "/elsewhere")).toEqual({ resume: null, pending: messages });
