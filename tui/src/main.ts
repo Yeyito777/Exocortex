@@ -60,6 +60,7 @@ import { stripStartupLaunchEcho } from "./startupinput";
 import { focusedConversationTasks, msUntilTaskPanelEntryUpdate } from "./activitypanel";
 import { hasInProgressModelWork } from "./taskvisibility";
 import { beginOlderHistoryLoad, INITIAL_BUFFER_ADDITIONAL_TURNS, OLDER_HISTORY_PAGE_TURNS, shouldLoadOlderHistory } from "./historypagination";
+import { requestToolOutputs, requestVisibleToolOutputs } from "./events/tool-outputs";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
 import { log } from "./log";
 import { ConversationPrewarmer } from "./prewarm";
@@ -285,6 +286,7 @@ function performRender(): number {
       showToolOutput: state.showToolOutput,
     })}`);
   }
+  requestVisibleToolOutputs(state, daemon);
   resetStreamTick();
   maybeReportStartupProfile(renderMs);
   scheduleDeferredHistoryRenderWork();
@@ -1593,7 +1595,7 @@ function handleKey(key: KeyEvent): void {
       daemon.loadFolderInstructions(result.folderId);
       break;
     case "load_tool_outputs":
-      daemon.loadToolOutputs(result.convId, result.toolCallIds);
+      requestToolOutputs(state, daemon, result.toolCallIds);
       break;
     case "new_conversation":
       startNewConversation();

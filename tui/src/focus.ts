@@ -56,7 +56,7 @@ import { sanitizePromptTextForInsertion } from "./prompttext";
 import { log } from "./log";
 import { copyToClipboard } from "./vim/clipboard";
 import { handleBtwKey } from "./btw/keys";
-import { collectDisplayedToolResultIds } from "./events/tool-outputs";
+import { omittedToolOutputIdsNearViewport } from "./events/tool-outputs";
 import { activeHistorySurface, isAnyHistoryFocused } from "./historysurface";
 
 // ── Types ───────────────────────────────────────────────────────────
@@ -72,7 +72,7 @@ export type KeyResult =
   | { type: "restart_daemon" }
   | { type: "load_conversation"; convId: string }
   | { type: "open_folder_instructions"; folderId: string }
-  | { type: "load_tool_outputs"; convId: string; toolCallIds: string[] }
+  | { type: "load_tool_outputs"; toolCallIds: string[] }
   | { type: "delete_conversation"; convId: string }
   | { type: "delete_conversations"; convIds: string[] }
   | { type: "delete_folder"; folderId: string; mode: "recursive" | "unwrap" }
@@ -362,24 +362,23 @@ export function handleFocusedKey(
     case "scroll_bottom":
       handleScrollAction(action, state);
       return { type: "handled" };
-    case "toggle_tool_output":
-      if (state.showToolOutput) {
+    case "toggle_tool_output": {
+      if (state.showToolOutput || state.showToolOutputAfterLoad) {
+        // Collapse, or cancel an expansion still waiting for its bodies.
         state.showToolOutputAfterLoad = false;
+        if (state.showToolOutput) toggleToolOutputPreservingViewport(state);
+        return { type: "handled" };
+      }
+      // Expand once the bodies around the viewport arrive so rows do not flash
+      // empty; the rest load as they scroll into view.
+      const toolCallIds = state.convId ? omittedToolOutputIdsNearViewport(state, { retry: true }) : [];
+      if (toolCallIds.length === 0) {
         toggleToolOutputPreservingViewport(state);
         return { type: "handled" };
       }
-      if (state.toolOutputsLoaded) {
-        toggleToolOutputPreservingViewport(state);
-        return { type: "handled" };
-      }
-      if (!state.convId || state.toolOutputsLoading) return { type: "handled" };
-      state.toolOutputsLoading = true;
       state.showToolOutputAfterLoad = true;
-      return {
-        type: "load_tool_outputs",
-        convId: state.convId,
-        toolCallIds: collectDisplayedToolResultIds(state),
-      };
+      return { type: "load_tool_outputs", toolCallIds };
+    }
     case "paste_image": {
       if (!modelSupportsImages(state)) {
         log("warn", `tui: clipboard image paste failed: image inputs are not supported by ${state.provider}/${state.model}`);
