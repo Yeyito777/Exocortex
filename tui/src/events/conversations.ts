@@ -19,10 +19,10 @@ import { resumeHistoryNavigation } from "../historycursor";
 import {
   clearPendingAI,
   clearStreamingTailMessages,
+  clearToolOutputRequests,
   resetNewConversationDefaults,
   resetHistoryPagination,
   resetToolOutputState,
-  setLoadedConversationToolOutputState,
 } from "../state";
 import { projectConversationBtw } from "../btw/state";
 import {
@@ -46,7 +46,6 @@ import {
 } from "./streaming-snapshot";
 import type { DaemonActions } from "./types";
 import { clearCallTranscriptDrafts, reconcileCallTranscriptDrafts } from "./call";
-import { collectDisplayedToolResultIds, collectDisplayEntryToolResultIds } from "./tool-outputs";
 import {
   beginConversationScrollRestore,
   completeInitialConversationBackfill,
@@ -194,12 +193,9 @@ export function handleConversationLoaded(
   );
   if (!sameConversation) clearCallTranscriptDrafts(state);
   const beforeApply = sameConversation ? captureAssistantDisplaySnapshot(state) : null;
-  const previousShowToolOutput = state.showToolOutput;
-  const previousToolOutputsLoaded = state.toolOutputsLoaded;
-  const shouldPreserveCompactToolOutputs = sameConversation
-    && !event.toolOutputsIncluded
-    && (state.showToolOutput || state.toolOutputsLoaded);
-  const preservedToolOutputs = shouldPreserveCompactToolOutputs
+  // Bodies already fetched (or streamed) survive a compact same-conversation
+  // reload; only results scrolled into view without one are fetched afterward.
+  const preservedToolOutputs = sameConversation && !event.toolOutputsIncluded
     ? collectDisplayedToolResultOutputs(state)
     : new Map();
 
@@ -277,7 +273,8 @@ export function handleConversationLoaded(
   state.historyLoadingStartedAt = null;
   state.historyLoadingRequestId = null;
   state.deferredHistoryRender = null;
-  setLoadedConversationToolOutputState(state, event.toolOutputsIncluded);
+  if (sameConversation) clearToolOutputRequests(state);
+  else resetToolOutputState(state);
 
   // Entries arrive in display order — just map to TUI message types.
   pushDisplayEntries(state, event.entries);
@@ -324,31 +321,17 @@ export function handleConversationLoaded(
     );
   }
 
-  const preservedToolOutputResult = !event.toolOutputsIncluded && preservedToolOutputs.size > 0
+  const preservedToolOutputResult = preservedToolOutputs.size > 0
     ? applyPreservedToolResultOutputs(state, preservedToolOutputs)
     : { patchedOutputs: 0, patchedToolNames: 0 };
-  if (shouldPreserveCompactToolOutputs) {
-    const displayedToolResultIds = collectDisplayedToolResultIds(state);
-    const allDisplayedToolOutputsPreserved = displayedToolResultIds
-      .every((toolCallId) => preservedToolOutputs.has(toolCallId));
-    state.toolOutputsLoaded = previousToolOutputsLoaded && allDisplayedToolOutputsPreserved;
-    state.showToolOutput = previousShowToolOutput || state.showToolOutput;
-    state.toolOutputsLoading = false;
-    state.showToolOutputAfterLoad = false;
-    if (preservedToolOutputResult.patchedOutputs > 0) {
-      log("info", `tui: preserved compact disk-sync tool outputs ${JSON.stringify({
-        source: "conversation_loaded",
-        convId: event.convId,
-        patchedOutputs: preservedToolOutputResult.patchedOutputs,
-        patchedToolNames: preservedToolOutputResult.patchedToolNames,
-        restoredShowToolOutput: state.showToolOutput,
-        restoredToolOutputsLoaded: state.toolOutputsLoaded,
-      })}`);
-    }
-    if (state.showToolOutput && !state.toolOutputsLoaded && displayedToolResultIds.length > 0) {
-      state.toolOutputsLoading = true;
-      daemon.loadToolOutputs(event.convId, displayedToolResultIds);
-    }
+  if (preservedToolOutputResult.patchedOutputs > 0) {
+    log("info", `tui: preserved compact disk-sync tool outputs ${JSON.stringify({
+      source: "conversation_loaded",
+      convId: event.convId,
+      patchedOutputs: preservedToolOutputResult.patchedOutputs,
+      patchedToolNames: preservedToolOutputResult.patchedToolNames,
+      showToolOutput: state.showToolOutput,
+    })}`);
   }
 
   const preservedAssistantExtensionResult = sameConversation
@@ -371,7 +354,6 @@ export function handleConversationLoaded(
 export function handleConversationHistoryLoaded(
   event: Extract<Event, { type: "conversation_history_loaded" }>,
   state: RenderState,
-  daemon: DaemonActions,
 ): void {
   if (event.convId !== state.convId) return;
   if (!event.reqId || event.reqId !== state.historyLoadingRequestId) return;
@@ -431,15 +413,4 @@ export function handleConversationHistoryLoaded(
   // A matching page is sufficient to place a saved percentage. requestSource
   // may be absent when talking to an older daemon, so key this off pending state.
   completeInitialConversationBackfill(state, event.convId);
-
-  const newToolCallIds = collectDisplayEntryToolResultIds(event.entries);
-  if (newToolCallIds.length > 0) {
-    // The compact page deliberately omitted these bodies. A later Ctrl+O must
-    // not mistake an earlier page's completed fetch for full window coverage.
-    state.toolOutputsLoaded = false;
-    if (state.showToolOutput || state.showToolOutputAfterLoad) {
-      state.toolOutputsLoading = true;
-      daemon.loadToolOutputs(event.convId, newToolCallIds);
-    }
-  }
 }

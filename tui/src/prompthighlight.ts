@@ -2,7 +2,8 @@
  * Prompt line syntax highlighting for commands and macros.
  *
  * Highlights valid slash commands and macros (and their recognized
- * arguments) with a distinctive color in the prompt input area.
+ * arguments, including shorthands submission resolves) with a distinctive
+ * color in the prompt input area.
  * ANSI-aware: output composes correctly with visual selection
  * highlighting applied afterward.
  */
@@ -12,6 +13,7 @@ import { COMMAND_LIST, getCommandArgs } from "./commands";
 import { MACRO_LIST, getMacroArgs, macroEnvironmentForState } from "./macros";
 import { INLINE_COMMANDS, getInlineCommandArgs } from "./inlineeffort";
 import { matchQueueTargetAfterCommand } from "./queuetargets";
+import { findSlashShorthands } from "./slashsearch";
 import { theme } from "./theme";
 import { wrappedLineOffsets } from "./promptline";
 
@@ -120,7 +122,7 @@ export function getPromptHighlightRanges(state: RenderState, buffer: string): Sp
   if (!buffer.includes("/")) return [];
   const validArgsByBase = new Map<string, Record<string, Set<string>>>();
   let providersWithCustomModels: Set<string> | null = null;
-  return findCommandSpans(
+  const spans = findCommandSpans(
     buffer,
     (baseName) => {
       let validArgs = validArgsByBase.get(baseName);
@@ -133,6 +135,14 @@ export function getPromptHighlightRanges(state: RenderState, buffer: string): Sp
     () => providersWithCustomModels ??= customModelProviders(state),
     (commandEnd) => matchQueueTargetAfterCommand(state, buffer, commandEnd)?.end ?? null,
   );
+
+  // Shorthand args Enter would resolve ("/model opus") are sendable, so they highlight too.
+  for (const shorthand of findSlashShorthands(state, buffer)) {
+    const span = spans.find(candidate => candidate.start === shorthand.start);
+    if (span) span.end = Math.max(span.end, shorthand.end);
+    else spans.push({ start: shorthand.start, end: shorthand.end });
+  }
+  return spans.sort((a, b) => a.start - b.start);
 }
 
 // ── Line highlighting ────────────────────────────────────────────

@@ -7,7 +7,7 @@
  */
 
 import type { RenderState } from "./state";
-import { clearPendingAI, clearStreamingTailMessages, pushSystemMessage, renderFolderInstructionsDocument, setCurrentConversationToolOutputAvailability, setFolderInstructionsDocumentText } from "./state";
+import { clearPendingAI, clearStreamingTailMessages, pushSystemMessage, renderFolderInstructionsDocument, setFolderInstructionsDocumentText } from "./state";
 import { theme } from "./theme";
 import { censorKnownAuthEmails } from "./privacy";
 import type { Event } from "./protocol";
@@ -53,7 +53,7 @@ import {
   handleToolResult,
   handleUserMessage,
 } from "./events/streaming";
-import { collectDisplayedToolResultIds, handleToolOutputsLoaded } from "./events/tool-outputs";
+import { handleToolOutputsError, handleToolOutputsLoaded } from "./events/tool-outputs";
 import { handleToolsAvailable } from "./events/provider";
 import { formatConversationDefaults, receiveConversationDefaults } from "./events/conversation-defaults";
 import { hydratePendingAIFromSnapshot } from "./events/pending-ai";
@@ -176,7 +176,10 @@ export function handleEvent(
         // restore against the opening window instead of freezing indefinitely.
         completeInitialConversationBackfill(state, event.convId);
       }
-      if (event.convId === state.convId && state.pendingAI && state.pendingAI.blocks.length === 0) clearPendingAI(state);
+      // A failed tool-output fetch (the viewport loader runs mid-stream) says
+      // nothing about the turn being streamed; keep its pending response.
+      const toolOutputsFailed = event.convId === state.convId && handleToolOutputsError(state, event.reqId);
+      if (event.convId === state.convId && !toolOutputsFailed && state.pendingAI && state.pendingAI.blocks.length === 0) clearPendingAI(state);
       pushSystemMessage(state, `✗ ${event.message}`, theme.error);
       break;
 
@@ -292,7 +295,7 @@ export function handleEvent(
       break;
 
     case "conversation_history_loaded":
-      handleConversationHistoryLoaded(event, state, daemon);
+      handleConversationHistoryLoaded(event, state);
       break;
 
     case "stream_retry":
@@ -320,13 +323,10 @@ export function handleEvent(
       // but preserve pendingAI (the active streaming response). Flush buffered
       // system messages — they reference pre-modification state.
       const beforeApply = captureAssistantDisplaySnapshot(state);
-      const previousShowToolOutput = state.showToolOutput;
-      const previousToolOutputsLoaded = state.toolOutputsLoaded;
-      const shouldPreserveCompactToolOutputs = !event.toolOutputsIncluded
-        && (state.showToolOutput || state.toolOutputsLoaded);
-      const preservedToolOutputs = shouldPreserveCompactToolOutputs
-        ? collectDisplayedToolResultOutputs(state)
-        : new Map();
+      const preservedToolOutputs = event.toolOutputsIncluded
+        ? new Map()
+        : collectDisplayedToolResultOutputs(state);
+      let preservedToolOutputResult = { patchedOutputs: 0, patchedToolNames: 0 };
       logDiskSyncAssistantDiff("history_updated", event.convId, state, {
         entries: event.entries,
         pendingAI: state.pendingAI,
@@ -354,7 +354,6 @@ export function handleEvent(
         state.deferredHistoryRender = null;
         clearStreamingTailMessages(state);
         state.contextTokens = event.contextTokens;
-        setCurrentConversationToolOutputAvailability(state, event.toolOutputsIncluded);
         pushDisplayEntries(state, event.entries);
 
         // Canonical history and its live tail are one atomic daemon snapshot.
@@ -422,27 +421,17 @@ export function handleEvent(
         state.historyLoadingOlder = false;
         state.historyLoadingStartedAt = null;
         state.historyLoadingRequestId = null;
+        // Carry loaded bodies over inside the mutation so an expanded viewport
+        // is remapped against the final layout. A result absent locally (notably
+        // a deferred Chrono sleep interrupted by a user message) is fetched by
+        // the viewport loader instead.
+        if (preservedToolOutputs.size > 0) {
+          preservedToolOutputResult = applyPreservedToolResultOutputs(state, preservedToolOutputs);
+        }
       });
       // A canonical replacement supersedes any initial page that was in flight.
       // It is now the best available document for the pending saved position.
       completeInitialConversationBackfill(state, event.convId);
-      const preservedToolOutputResult = !event.toolOutputsIncluded && preservedToolOutputs.size > 0
-        ? applyPreservedToolResultOutputs(state, preservedToolOutputs)
-        : { patchedOutputs: 0, patchedToolNames: 0 };
-      if (!event.toolOutputsIncluded && shouldPreserveCompactToolOutputs) {
-        // A compact refresh can introduce a tool result that did not exist in
-        // the local expanded window (notably when a user message interrupts a
-        // deferred Chrono sleep). Existing outputs can be restored from local
-        // state, but that does not mean the newly introduced result was loaded.
-        // Only retain the full-window loaded bit when every displayed result was
-        // present before the refresh; otherwise the fetch below must fill it in.
-        const allDisplayedToolOutputsPreserved = collectDisplayedToolResultIds(state)
-          .every((toolCallId) => preservedToolOutputs.has(toolCallId));
-        state.toolOutputsLoaded = previousToolOutputsLoaded && allDisplayedToolOutputsPreserved;
-        state.showToolOutput = previousShowToolOutput || state.showToolOutput;
-        state.toolOutputsLoading = false;
-        state.showToolOutputAfterLoad = false;
-      }
       const preservedAssistantExtensionResult = preserveLocalAssistantExtensionAfterDiskSync(
         "history_updated",
         event.convId,
@@ -457,16 +446,12 @@ export function handleEvent(
         assistantBlocksAfterDiskSync: preservedAssistantExtensionResult.afterBlocks,
         assistantBlocksAfterPreserve: preservedAssistantExtensionResult.mergedBlocks,
       });
-      if (state.showToolOutput && !state.toolOutputsLoaded && state.convId) {
-        state.toolOutputsLoading = true;
-        daemon.loadToolOutputs(state.convId, collectDisplayedToolResultIds(state));
-      }
       break;
     }
 
     case "tool_outputs_loaded":
       if (event.convId !== state.convId) break;
-      handleToolOutputsLoaded(state, event.outputs);
+      handleToolOutputsLoaded(state, event);
       break;
 
     case "auth_status":

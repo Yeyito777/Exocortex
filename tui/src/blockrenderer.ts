@@ -36,6 +36,7 @@ interface BlockCacheEntry {
 }
 
 const blockRenderCache = new WeakMap<Block, BlockCacheEntry>();
+const HIDDEN_TOOL_RESULT: WrapResult = { lines: [], cont: [], join: [], copy: [], links: [] };
 const rehydratedBlockRenderCache = new RehydratedRenderCache<BlockCacheEntry>();
 
 function wrapResultBytes(result: WrapResult): number {
@@ -108,6 +109,8 @@ export function renderBlockCached(
   showToolOutput: boolean,
   toolCallErrored = false,
 ): WrapResult {
+  // Hidden results render nothing; do not key a cache on a possibly huge body.
+  if (block.type === "tool_result" && !showToolOutput) return HIDDEN_TOOL_RESULT;
   const contentKey = blockContentKey(block);
   const rehydratedKey = `${block.type}:${contentKey}`;
   const cached = blockRenderCache.get(block) ?? rehydratedBlockRenderCache.get(rehydratedKey);
