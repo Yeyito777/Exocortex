@@ -412,7 +412,7 @@ async function executeBashImpl(
     let backgrounderCleared = false;
     let backgroundTaskTracked = false;
     let backgroundRequested = false;
-    let backgroundTrigger: "timeout" | "manual" | "explicit" = "timeout";
+    let backgroundTrigger: "timeout" | "manual" | "steer" | "explicit" = "timeout";
     let wasBackgrounded = false;
     let completionNotified = false;
     let processFailure: string | undefined;
@@ -564,7 +564,7 @@ async function executeBashImpl(
       helperKillTimer.unref?.();
     }
 
-    function backgroundNow(trigger: "timeout" | "manual" | "explicit"): boolean {
+    function backgroundNow(trigger: "timeout" | "manual" | "steer" | "explicit"): boolean {
       if (settled || backgroundRequested || !commandPid) return false;
       if (bgTimer) {
         clearTimeout(bgTimer);
@@ -696,7 +696,9 @@ async function executeBashImpl(
         ? `⏳ Command backgrounded immediately by request (PID ${commandPid}).`
         : backgroundTrigger === "manual"
           ? `⏳ Command backgrounded on user request after ${((Date.now() - startTime) / 1000).toFixed(1)}s (PID ${commandPid}).`
-          : `⏳ Command backgrounded — still running after ${Math.round((backgroundAfterMs ?? 0) / 1000)}s (PID ${commandPid}).`;
+          : backgroundTrigger === "steer"
+            ? `⏳ Command backgrounded after ${((Date.now() - startTime) / 1000).toFixed(1)}s because the user sent a message; it is still running (PID ${commandPid}).`
+            : `⏳ Command backgrounded — still running after ${Math.round((backgroundAfterMs ?? 0) / 1000)}s (PID ${commandPid}).`;
       output += [
         headline,
         ...(outputError
@@ -729,7 +731,7 @@ async function executeBashImpl(
           context.registerBackgrounder({
             toolName: "bash",
             toolCallId: context.toolCallId,
-            background: () => backgroundNow("manual"),
+            background: (reason = "manual") => backgroundNow(reason),
           });
         }
         if (backgroundImmediately) queueMicrotask(() => backgroundNow("explicit"));

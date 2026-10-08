@@ -6,7 +6,7 @@ import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { appendMessages, consumeGoalContinuationAfterStream, create, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, get, getQueuedMessageById, getQueuedMessages, getSummary, listQueuedMessages, pushGlobalIdleQueuedMessage, remove, removeQueuedMessageById, setGoal, updateGoalStatus } from "./conversations";
 import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, defaultEffortForModelId } from "./messages";
-import { appendToStreamingBlock, clearActiveJob, clearCurrentStreamingBlocks, initStreamingState, replaceCurrentStreamingBlocks, setActiveJob, setStreamingCommittedMessageCount } from "./streaming";
+import { appendToStreamingBlock, clearActiveJob, clearActiveSteerHandler, clearCurrentStreamingBlocks, initStreamingState, replaceCurrentStreamingBlocks, setActiveJob, setActiveSteerHandler, setStreamingCommittedMessageCount } from "./streaming";
 import { beginPendingSubagentNotification, listPendingSubagentNotifications, removePendingSubagentNotificationsForConversation } from "./subagent-notifications";
 import { getDaemonShutdownMode, resetDaemonShutdownModeForTest } from "./daemon-lifecycle";
 import { invalidateCredentialsCache } from "./auth";
@@ -572,6 +572,31 @@ describe("direct task-management IPC", () => {
 
 describe("handler daemon-owned queue", () => {
   afterEach(cleanupIds);
+
+  test("lets next-turn input steer the active turn immediately", async () => {
+    const id = mkId("queue-steer");
+    create(id, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
+    setActiveJob(id, new AbortController(), Date.now());
+    const steer = mock(() => {});
+    setActiveSteerHandler(id, steer);
+    const server = {
+      sendTo: mock(() => {}), broadcast: mock(() => {}), sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}), subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+    try {
+      await handle({} as never, { type: "queue_message", queueId: "steer-later", convId: id, text: "after this", timing: "message-end" });
+      expect(steer).not.toHaveBeenCalled();
+      await handle({} as never, { type: "queue_message", queueId: "steer-now", convId: id, text: "change course", timing: "next-turn" });
+      expect(steer).toHaveBeenCalledTimes(1);
+      await handle({} as never, { type: "update_queued_message", queueId: "steer-later", text: "after this", timing: "next-turn" });
+      expect(steer).toHaveBeenCalledTimes(2);
+    } finally {
+      clearActiveSteerHandler(id, steer);
+      removeQueuedMessageById("steer-later");
+      removeQueuedMessageById("steer-now");
+    }
+  });
 
   test("starts an ordinary queued message even when the conversation was already idle", async () => {
     const id = mkId("queue-idle");

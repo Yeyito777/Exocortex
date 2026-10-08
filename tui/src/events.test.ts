@@ -1535,6 +1535,36 @@ describe("disk sync assistant diagnostics", () => {
   });
 });
 
+describe("instant steering display", () => {
+  test("keeps the preempted partial reply above the steer without duplicating it on completion", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    const event = (value: Record<string, unknown>) => handleEvent({ convId: "conv-1", ...value } as Event, state, daemon);
+    event({ type: "streaming_started", provider: "openai", model: "gpt-5.5", startedAt: 1_000, snapshotKind: "start" });
+    // A reasoning summary can open without ever producing text.
+    event({ type: "block_start", blockType: "thinking" });
+    event({ type: "block_start", blockType: "text" });
+    event({ type: "text_chunk", text: "I'll draw a cozy cat" });
+    event({ type: "user_message", text: "3 ducks!", startedAt: 2_000, queueId: "steer-1" });
+    event({ type: "block_start", blockType: "text" });
+    event({ type: "text_chunk", text: "Three ducks it is!" });
+    event({
+      type: "message_complete",
+      blocks: [{ type: "text", text: "I'll draw a cozy cat" }, { type: "text", text: "Three ducks it is!" }],
+      endedAt: 3_000,
+      tokens: 5,
+    });
+
+    expect(state.messages.map(message => message.role === "assistant"
+      ? message.blocks.filter(block => block.type === "text").map(block => block.type === "text" ? block.text : "")
+      : message.text)).toEqual([
+      ["I'll draw a cozy cat"],
+      "3 ducks!",
+      ["Three ducks it is!"],
+    ]);
+  });
+});
+
 describe("streaming assistant metadata", () => {
   test("carries the work timer on start and heartbeat and resets only on injected human input", () => {
     const state = createInitialState();

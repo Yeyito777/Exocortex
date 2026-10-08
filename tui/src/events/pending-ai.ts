@@ -49,6 +49,10 @@ export function subtractPartialCommittedBlocks(
   let canonicalIndex = 0;
 
   for (const block of committedBlocks) {
+    // An empty live block (e.g. a reasoning summary that never produced text)
+    // has no canonical counterpart; the daemon drops it when it commits a
+    // preempted or interrupted partial reply.
+    if ((block.type === "text" || block.type === "thinking") && block.text.length === 0) continue;
     const canonical = remaining[canonicalIndex];
     if (!canonical || !sameCanonicalBlock(block, canonical)) return structuredClone(canonicalBlocks);
     if ((block.type === "text" || block.type === "thinking")
