@@ -19,6 +19,7 @@ import { clearPrompt } from "./promptstate";
 import { tryCommand } from "./commands";
 import { expandMacros, macroEnvironmentForState } from "./macros";
 import { applyInlineCommands, type InlineCommandApplication } from "./inlineeffort";
+import { resolveSlashShorthands } from "./slashsearch";
 import { advanceDeferredHistoryRender, hasDeferredHistoryRenderWork, render, invalidateHistoryRenderCache } from "./render";
 import { preserveViewportAcrossResize } from "./chatscroll";
 import { invalidateFrame } from "./frame";
@@ -813,6 +814,9 @@ function handleSubmit(): void {
   }
 
   if (!text && !hasImages) return;
+
+  // Expand slash shorthands such as "/model opus" before command and inline parsing.
+  text = resolveSlashShorthands(state, text);
 
   // Do not race a newly edited message against the daemon's durable unwind.
   // The prompt remains editable and intact; the canonical response normally

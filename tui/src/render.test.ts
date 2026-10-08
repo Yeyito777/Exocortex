@@ -1693,6 +1693,28 @@ describe("render caching and frame diffing", () => {
     expect(renderedTargets).not.toContain("queue-target-10");
   });
 
+  test("autocomplete popup accents the matched part of each name", () => {
+    const state = createInitialState();
+    state.cols = 100;
+    state.rows = 30;
+    state.panelFocus = "chat";
+    state.chatFocus = "prompt";
+    state.vim.mode = "insert";
+    state.inputBuffer = "/model opus";
+    state.cursorPos = state.inputBuffer.length;
+    state.autocomplete = {
+      type: "command",
+      selection: -1,
+      prefix: state.inputBuffer,
+      tokenStart: 0,
+      matches: [{ name: "anthropic claude-opus-5-5", desc: "Opus", matchRanges: [{ start: 17, end: 21 }] }],
+    };
+
+    const output = captureRenderOutput(state);
+
+    expect(output).toContain(`anthropic claude-${theme.accent}${theme.bold}opus${theme.boldOff}${theme.text}-5-5`);
+  });
+
   test("autocomplete popup dynamically sizes to visible content", () => {
     const state = createInitialState();
     state.cols = 120;
