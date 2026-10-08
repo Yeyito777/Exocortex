@@ -13,7 +13,8 @@ export type UpdateStatus = "none" | "update_available" | "restart_needed" | "dis
 async function git(root: string, ...args: string[]): Promise<string> {
   const { stdout } = await execFileAsync("git", args, {
     cwd: root, timeout: 5_000, maxBuffer: 64 * 1024,
-    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+    // Partial clones must not lazily fetch a missing upstream commit.
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_NO_LAZY_FETCH: "1" },
   });
   return stdout.trim();
 }
@@ -43,6 +44,58 @@ export async function checkForUpdate(root: string, request: UpdateRequest = fetc
 }
 
 async function compareUpstream(root: string, head: string, request: UpdateRequest): Promise<boolean | null> {
+  const upstream = await upstreamMain(request);
+  if (upstream === head) return false;
+  // Local-only commits or divergence are development, not a straightforward
+  // update. Once upstream's commit is local, ancestry answers that offline.
+  // Only an unseen upstream commit needs GitHub's rate-limited REST API.
+  const available = (upstream ? await isAncestor(root, head, upstream) : null)
+    ?? await compareWithApi(head, request);
+  if (available !== true) return available;
+  // A branch switch / pull during the network request invalidates the result.
+  return await eligibleUpdateHead(root) === head;
+}
+
+/**
+ * Upstream main from Git's smart-HTTP ref advertisement. Unlike the REST API's
+ * 60 unauthenticated requests/hour per IP, it isn't exhausted by everyone else
+ * behind a shared campus/office NAT.
+ */
+async function upstreamMain(request: UpdateRequest): Promise<string | null> {
+  try {
+    const response = await request(`https://github.com/${UPSTREAM}.git/info/refs?service=git-upload-pack`, {
+      headers: { "User-Agent": "Exocortex-update-check" },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) return null;
+    // pkt-line lengths count bytes; latin1 keeps one character per byte.
+    const advertisement = Buffer.from(await response.arrayBuffer()).toString("latin1");
+    for (let at = 0; at + 4 <= advertisement.length;) {
+      const length = advertisement.slice(at, at + 4);
+      if (!/^[a-f0-9]{4}$/i.test(length)) return null;
+      // Flush/delimiter packets (< 4) carry no payload.
+      const end = at + Math.max(4, Number.parseInt(length, 16));
+      const ref = /^([a-f0-9]{40,64}) refs\/heads\/main(?:\0|\n|$)/.exec(advertisement.slice(at + 4, end));
+      if (ref) return ref[1];
+      at = end;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/** null when either commit is missing locally or Git fails. */
+async function isAncestor(root: string, ancestor: string, descendant: string): Promise<boolean | null> {
+  try {
+    await git(root, "merge-base", "--is-ancestor", ancestor, descendant);
+    return true;
+  } catch (error) {
+    return (error as { code?: unknown }).code === 1 ? false : null;
+  }
+}
+
+async function compareWithApi(head: string, request: UpdateRequest): Promise<boolean | null> {
   try {
     const response = await request(`https://api.github.com/repos/${UPSTREAM}/compare/${head}...main`, {
       headers: { Accept: "application/vnd.github+json", "User-Agent": "Exocortex-update-check" },
@@ -51,13 +104,10 @@ async function compareUpstream(root: string, head: string, request: UpdateReques
     if (!response.ok) return null;
     const comparison = await response.json() as { status?: string; ahead_by?: number };
     if (!["ahead", "behind", "identical", "diverged"].includes(comparison.status ?? "")) return null;
-    // GitHub compares local HEAD (base) to upstream main (head). Local-only
-    // commits or divergence are development, not a straightforward update.
-    if (comparison.status !== "ahead" || !(Number(comparison.ahead_by) > 0)) return false;
-    // A branch switch / pull during the network request invalidates the result.
-    return await eligibleUpdateHead(root) === head;
+    // GitHub compares local HEAD (base) to upstream main (head).
+    return comparison.status === "ahead" && Number(comparison.ahead_by) > 0;
   } catch {
-    // Offline, rate-limited, missing Git, etc. must never disrupt startup/UI.
+    // Offline, rate-limited, etc. must never disrupt startup/UI.
     return null;
   }
 }
