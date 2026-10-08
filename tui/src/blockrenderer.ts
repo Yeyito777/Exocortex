@@ -157,7 +157,9 @@ function renderBlock(
 
   switch (block.type) {
     case "thinking": {
-      const text = sanitizeUntrustedText(block.text);
+      // Claude ends each thinking block with "\n\n"; edge newlines would render
+      // as blank rows before the next block.
+      const text = sanitizeUntrustedText(block.text).replace(/^\n+|\n+$/g, "");
       if (!text.trim()) break;
       const w = wordWrap(text, contentWidth);
       for (let i = 0; i < w.lines.length; i++) {
