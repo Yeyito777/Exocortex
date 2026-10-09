@@ -35,6 +35,7 @@ import {
   pagedUserFingerprintMatches,
 } from "./message-fingerprint";
 import { buildDisplayData } from "./display";
+import { selectHistoryWindow, type HistoryWindowOptions } from "./history-pagination";
 import { summarizeTool } from "./tools/registry";
 
 export {
@@ -101,8 +102,12 @@ export interface StoredDisplayHistoryPage {
   pinnedEntries: DisplayEntry[];
   entries: DisplayEntry[];
   startIndex: number;
+  /** Nonzero when the window begins inside the AI entry at startIndex. */
+  startBlockIndex: number;
   startUserIndex: number;
   endIndex: number;
+  /** Nonzero when the window ends with the leading blocks of the AI entry at endIndex. */
+  endBlockIndex: number;
   totalEntries: number;
   hasOlder: boolean;
   source: ConversationSourceSignature;
@@ -491,14 +496,29 @@ export function loadDisplayPage(
   id: string,
   turns: number,
   beforeEntryIndex?: number,
+  windowOptions: HistoryWindowOptions = {},
 ): StoredDisplayHistoryPage | null {
   for (let attempt = 0; attempt < 2; attempt++) {
     const source = getConversationSourceSignature(id);
     const manifest = readManifest(id);
     if (!source || !manifest || !signaturesEqual(source, manifest.source)) return null;
-    const { startIndex, startUserIndex, endIndex } = pageBounds(manifest, turns, beforeEntryIndex);
+    const bounds = pageBounds(manifest, turns, beforeEntryIndex);
+    const { endIndex } = bounds;
+    const endBlockIndex = endIndex < manifest.historyTotalEntries
+      ? Math.max(0, Math.floor(windowOptions.beforeBlockIndex ?? 0))
+      : 0;
     try {
-      const entries = readHistoryRange(id, manifest, startIndex, endIndex);
+      const range = readHistoryRange(id, manifest, bounds.startIndex, endBlockIndex > 0 ? endIndex + 1 : endIndex);
+      const window = selectHistoryWindow(
+        range.map((entry, offset) => ({ index: bounds.startIndex + offset, entry })).reverse(),
+        turns,
+        endIndex,
+        endBlockIndex,
+        windowOptions.byteBudget,
+      );
+      const { entries, startIndex, startBlockIndex } = window;
+      const startUserIndex = bounds.startUserIndex
+        + range.slice(0, startIndex - bounds.startIndex).filter((entry) => entry.type === "user").length;
       return {
         convId: id,
         provider: manifest.provider,
@@ -510,10 +530,12 @@ export function loadDisplayPage(
         pinnedEntries: manifest.pinnedEntries,
         entries,
         startIndex,
+        startBlockIndex,
         startUserIndex,
         endIndex,
+        endBlockIndex,
         totalEntries: manifest.historyTotalEntries,
-        hasOlder: startIndex > 0,
+        hasOlder: startIndex > 0 || startBlockIndex > 0,
         source,
         storedMessageCount: manifest.storedMessageCount,
       };

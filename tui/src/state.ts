@@ -160,6 +160,11 @@ export interface RenderState {
   messages: Message[];
   /** Absolute index of the oldest currently loaded non-instructions display entry. */
   historyStartIndex: number;
+  /**
+   * First loaded block of the entry at historyStartIndex. Nonzero when only the
+   * tail of a long AI entry is loaded; that entry is still a single message.
+   */
+  historyStartBlockIndex: number;
   /** Absolute index of the first user message in the loaded window. */
   historyStartUserIndex: number;
   /** Total non-instructions display entries reported by the latest canonical snapshot. */
@@ -383,6 +388,7 @@ export function clearStreamingTailMessages(state: RenderState): void {
 
 export function resetHistoryPagination(state: RenderState): void {
   state.historyStartIndex = 0;
+  state.historyStartBlockIndex = 0;
   state.historyStartUserIndex = 0;
   state.historyTotalEntries = 0;
   state.historyHasOlder = false;
@@ -608,6 +614,7 @@ export function createInitialState(): RenderState {
   const s: RenderState = {
     messages: [],
     historyStartIndex: 0,
+    historyStartBlockIndex: 0,
     historyStartUserIndex: 0,
     historyTotalEntries: 0,
     historyHasOlder: false,

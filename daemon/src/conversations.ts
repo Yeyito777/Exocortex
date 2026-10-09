@@ -28,6 +28,7 @@ import { isDeepStrictEqual } from "node:util";
 import { contextMessageChars } from "./context-token-attribution";
 import { getConversationExternalIntegrations } from "./external-notifications";
 import * as displayPageStore from "./display-page-store";
+import type { HistoryWindowOptions } from "./history-pagination";
 import { scheduleDisplayIndex } from "./display-index-backfill";
 import { loadConversationOffThread, prepareArchiveHashes, releaseArchiveWindow } from "./conversation-loader";
 import { archiveWindow, forgetFullArchiveWindow, inheritArchiveHashProof, isArchivedMessage, storedMessageCount, archivedUserCount, systemInstructionMessages } from "./conversation-window";
@@ -2649,6 +2650,7 @@ export function getStoredDisplayPage(
   turns: number,
   beforeEntryIndex?: number,
   diagnostics?: Partial<RenderSnapshotDiagnostics>,
+  windowOptions?: HistoryWindowOptions,
 ): StoredDisplayHistoryPage | null {
   const runtime = conversations.get(id);
   if (runtime && archiveWindow(runtime.messages) && dirty.has(id)) flush(id);
@@ -2658,7 +2660,7 @@ export function getStoredDisplayPage(
   if (persistence.isSqliteConversationStore()) {
     if (dirty.has(id)) return null;
     const readStartedAt = diagnostics ? performance.now() : 0;
-    const page = persistence.loadDisplayPage(id, turns, beforeEntryIndex);
+    const page = persistence.loadDisplayPage(id, turns, beforeEntryIndex, windowOptions);
     const loadedConversation = conversations.get(id);
     // Preserve the existing safety fallback for direct in-memory mutations that
     // have not yet been marked dirty/flushed (notably test and maintenance code).
@@ -2685,7 +2687,7 @@ export function getStoredDisplayPage(
     return { ...page, pinnedEntries };
   }
   let readStartedAt = diagnostics ? performance.now() : 0;
-  let page = displayPageStore.loadDisplayPage(id, turns, beforeEntryIndex);
+  let page = displayPageStore.loadDisplayPage(id, turns, beforeEntryIndex, windowOptions);
   const loadedConversation = conversations.get(id);
   if (loadedConversation && dirty.has(id)) return null;
   if (page && loadedConversation && page.storedMessageCount !== storedMessageCount(loadedConversation.messages)) {
@@ -2737,7 +2739,7 @@ export function getStoredDisplayPage(
     projectionBuildMs = projectionDiagnostics?.buildMs ?? 0;
     projectionWriteMs = projectionDiagnostics?.writeMs ?? 0;
     readStartedAt = diagnostics ? performance.now() : 0;
-    page = displayPageStore.loadDisplayPage(id, turns, beforeEntryIndex);
+    page = displayPageStore.loadDisplayPage(id, turns, beforeEntryIndex, windowOptions);
     readMs += diagnostics ? performance.now() - readStartedAt : 0;
   }
   if (!page) return null;

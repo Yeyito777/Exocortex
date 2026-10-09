@@ -65,7 +65,7 @@ import { beginDaemonShutdown, getDaemonShutdownMode } from "./daemon-lifecycle";
 import { buildBackgroundTaskNotificationText } from "./background-task-notifications";
 import { configureChronoService, cancelDeferredChronoSleep } from "./chrono-service";
 import { configureClaudeCodeSessions } from "./providers/anthropic/session";
-import { INITIAL_HISTORY_TURNS, buildHistoryUpdatedEvents, compactHistoryImages, pageDisplayHistory } from "./history-pagination";
+import { HISTORY_PAGE_BYTE_BUDGET, INITIAL_HISTORY_TURNS, buildHistoryUpdatedEvents, compactHistoryImages, pageDisplayHistory, type HistoryWindowOptions } from "./history-pagination";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
 import { randomUUID } from "crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -600,6 +600,10 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     return true;
   };
 
+  /** Clients that understand partial AI entries receive byte-bounded windows. */
+  const historyWindowOptions = (target: ConnectedClient): HistoryWindowOptions =>
+    target.capabilities?.has("history-block-pagination") ? { byteBudget: HISTORY_PAGE_BYTE_BUDGET } : {};
+
   const sendCompactConversationLoaded = (
     target: ConnectedClient,
     convId: string,
@@ -609,9 +613,10 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     cachedEntryHashes?: string[],
   ) => {
     const paginated = target.capabilities?.has("history-pagination") || turns !== undefined;
+    const windowOptions = historyWindowOptions(target);
     if (paginated) {
       const snapshotDiagnostics: Partial<convStore.RenderSnapshotDiagnostics> | undefined = metrics ? {} : undefined;
-      const page = convStore.getStoredDisplayPage(convId, turns ?? INITIAL_HISTORY_TURNS, undefined, snapshotDiagnostics);
+      const page = convStore.getStoredDisplayPage(convId, turns ?? INITIAL_HISTORY_TURNS, undefined, snapshotDiagnostics, windowOptions);
       if (page) {
         const queued = convStore.getQueuedMessages(page.convId);
         const summary = convStore.getSummary(page.convId);
@@ -629,6 +634,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           fastMode: summary?.fastMode ?? page.fastMode,
           entries: responseEntries,
           historyStartIndex: page.startIndex,
+          ...(page.startBlockIndex > 0 ? { historyStartBlockIndex: page.startBlockIndex } : {}),
           historyStartUserIndex: page.startUserIndex,
           historyTotalEntries: page.totalEntries,
           hasOlderHistory: page.hasOlder,
@@ -666,7 +672,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     const compactData = compactHistoryImages(data);
     const compactMs = metrics ? performance.now() - compactStartedAt : 0;
     const paginateStartedAt = metrics ? performance.now() : 0;
-    const page = paginated ? pageDisplayHistory(compactData.entries, turns ?? INITIAL_HISTORY_TURNS) : null;
+    const page = paginated ? pageDisplayHistory(compactData.entries, turns ?? INITIAL_HISTORY_TURNS, undefined, windowOptions) : null;
     const paginateMs = metrics ? performance.now() - paginateStartedAt : 0;
     const queued = convStore.getQueuedMessages(data.convId);
     const summary = convStore.getSummary(data.convId);
@@ -684,6 +690,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       entries: responseEntries,
       ...(page ? {
         historyStartIndex: page.startIndex,
+        ...(page.startBlockIndex > 0 ? { historyStartBlockIndex: page.startBlockIndex } : {}),
         historyStartUserIndex: page.startUserIndex,
         historyTotalEntries: page.totalEntries,
         hasOlderHistory: page.hasOlder,
@@ -711,15 +718,17 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     target: ConnectedClient,
     convId: string,
     beforeEntryIndex: number,
+    beforeBlockIndex: number,
     turns: number,
     reqId?: string,
     requestSource?: "initial-backfill" | "viewport",
     metrics?: ConversationLoadMetrics,
     cachedEntryHashes?: string[],
   ): boolean => {
+    const windowOptions: HistoryWindowOptions = { ...historyWindowOptions(target), beforeBlockIndex };
     {
       const snapshotDiagnostics: Partial<convStore.RenderSnapshotDiagnostics> | undefined = metrics ? {} : undefined;
-      const page = convStore.getStoredDisplayPage(convId, turns, beforeEntryIndex, snapshotDiagnostics);
+      const page = convStore.getStoredDisplayPage(convId, turns, beforeEntryIndex, snapshotDiagnostics, windowOptions);
       if (page) {
         const sendStartedAt = metrics ? performance.now() : 0;
         const responseBytes = server.sendTo(target, encodeHistoryDelta({
@@ -729,8 +738,10 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           requestSource,
           entries: page.entries,
           historyStartIndex: page.startIndex,
+          ...(page.startBlockIndex > 0 ? { historyStartBlockIndex: page.startBlockIndex } : {}),
           historyStartUserIndex: page.startUserIndex,
           historyEndIndex: page.endIndex,
+          ...(page.endBlockIndex > 0 ? { historyEndBlockIndex: page.endBlockIndex } : {}),
           historyTotalEntries: page.totalEntries,
           hasOlderHistory: page.hasOlder,
         }, cachedEntryHashes), metrics !== undefined);
@@ -754,7 +765,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     const compactData = compactHistoryImages(data);
     const compactMs = metrics ? performance.now() - compactStartedAt : 0;
     const paginateStartedAt = metrics ? performance.now() : 0;
-    const page = pageDisplayHistory(compactData.entries, turns, beforeEntryIndex);
+    const page = pageDisplayHistory(compactData.entries, turns, beforeEntryIndex, windowOptions);
     const paginateMs = metrics ? performance.now() - paginateStartedAt : 0;
     const sendStartedAt = metrics ? performance.now() : 0;
     const responseBytes = server.sendTo(target, encodeHistoryDelta({
@@ -764,8 +775,10 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       requestSource,
       entries: page.entries,
       historyStartIndex: page.startIndex,
+      ...(page.startBlockIndex > 0 ? { historyStartBlockIndex: page.startBlockIndex } : {}),
       historyStartUserIndex: page.startUserIndex,
       historyEndIndex: page.endIndex,
+      ...(page.endBlockIndex > 0 ? { historyEndBlockIndex: page.endBlockIndex } : {}),
       historyTotalEntries: page.totalEntries,
       hasOlderHistory: page.hasOlder,
     }, cachedEntryHashes), metrics !== undefined);
@@ -1634,7 +1647,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         for (const capability of cmd.capabilities) {
           if (capability === "targeted-unwind"
               || capability === "sidebar-reorder-delta"
-              || capability === "sidebar-state-patch") client.capabilities.add(capability);
+              || capability === "sidebar-state-patch"
+              || capability === "history-block-pagination") client.capabilities.add(capability);
         }
         break;
       }
@@ -3060,9 +3074,12 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             requestSource: cmd.requestSource ?? null,
             turns: cmd.turns,
             beforeEntryIndex: cmd.beforeEntryIndex,
+            beforeBlockIndex: cmd.beforeBlockIndex ?? null,
           })}`);
         }
+        const beforeBlockIndex = cmd.beforeBlockIndex ?? 0;
         if (!Number.isSafeInteger(cmd.beforeEntryIndex) || cmd.beforeEntryIndex < 0
+            || !Number.isSafeInteger(beforeBlockIndex) || beforeBlockIndex < 0
             || !Number.isSafeInteger(cmd.turns) || cmd.turns < 1 || cmd.turns > 100) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Invalid conversation history page request" });
           break;
@@ -3073,6 +3090,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           client,
           cmd.convId,
           cmd.beforeEntryIndex,
+          beforeBlockIndex,
           cmd.turns,
           cmd.reqId,
           cmd.requestSource,

@@ -34,6 +34,7 @@ import {
 import { applyConversationUnwound } from "./editmessage";
 import { pushDisplayEntries } from "./events/display";
 import { preserveViewportAcrossHistoryMutation } from "./chatscroll";
+import { joinSplitAssistantEntry } from "./historypagination";
 import { completeInitialConversationBackfill } from "./conversationscroll";
 import { CONV_SCOPED, observeStreamSeq } from "./events/stream-sequence";
 import {
@@ -336,21 +337,38 @@ export function handleEvent(
         toolOutputsIncluded: event.toolOutputsIncluded,
       });
       const previousHistoryStartIndex = state.historyStartIndex;
+      const previousHistoryStartBlockIndex = state.historyStartBlockIndex;
       const previousHistoryStartUserIndex = state.historyStartUserIndex;
       const previousHistoryHasOlder = state.historyHasOlder;
       const eventHistoryStartIndex = event.historyStartIndex ?? 0;
+      const eventHistoryStartBlockIndex = event.historyStartBlockIndex ?? 0;
       const canPreserveLoadedPrefix = !event.resetHistoryWindow
         && event.historyStartIndex !== undefined
-        && previousHistoryStartIndex < eventHistoryStartIndex;
+        && (previousHistoryStartIndex < eventHistoryStartIndex
+          || (previousHistoryStartIndex === eventHistoryStartIndex
+            && previousHistoryStartBlockIndex < eventHistoryStartBlockIndex));
       const prefixEntryCount = canPreserveLoadedPrefix
         ? eventHistoryStartIndex - previousHistoryStartIndex
         : 0;
       const currentMessages = state.messages;
       let currentPinnedCount = 0;
       while (currentMessages[currentPinnedCount]?.role === "system_instructions") currentPinnedCount += 1;
-      const preservedPrefix = prefixEntryCount > 0
-        ? currentMessages.slice(currentPinnedCount, currentPinnedCount + prefixEntryCount)
-        : [];
+      let preservedPrefix: typeof currentMessages | null = null;
+      const prefix = currentMessages.slice(currentPinnedCount, currentPinnedCount + prefixEntryCount);
+      if (canPreserveLoadedPrefix && prefix.length === prefixEntryCount) {
+        if (eventHistoryStartBlockIndex === 0) {
+          preservedPrefix = prefix;
+        } else {
+          // The refresh starts inside an AI entry; keep its leading blocks loaded here.
+          const loaded = currentMessages[currentPinnedCount + prefixEntryCount];
+          const headBlocks = eventHistoryStartBlockIndex - (prefixEntryCount === 0 ? previousHistoryStartBlockIndex : 0);
+          const firstIncoming = event.entries.find((entry) => entry.type !== "system_instructions");
+          if (loaded?.role === "assistant" && firstIncoming?.type === "ai"
+              && headBlocks > 0 && headBlocks <= loaded.blocks.length) {
+            preservedPrefix = [...prefix, { ...loaded, blocks: loaded.blocks.slice(0, headBlocks) }];
+          }
+        }
+      }
 
       preserveViewportAcrossHistoryMutation(state, () => {
         state.messages = [];
@@ -375,19 +393,23 @@ export function handleEvent(
           }
         }
 
-        if (preservedPrefix.length === prefixEntryCount && prefixEntryCount > 0) {
+        if (preservedPrefix) {
           let incomingPinnedCount = 0;
           while (state.messages[incomingPinnedCount]?.role === "system_instructions") incomingPinnedCount += 1;
+          const incomingMessages = state.messages.slice(incomingPinnedCount);
+          if (eventHistoryStartBlockIndex > 0) joinSplitAssistantEntry(preservedPrefix, incomingMessages);
           state.messages = [
             ...state.messages.slice(0, incomingPinnedCount),
             ...preservedPrefix,
-            ...state.messages.slice(incomingPinnedCount),
+            ...incomingMessages,
           ];
           state.historyStartIndex = previousHistoryStartIndex;
+          state.historyStartBlockIndex = previousHistoryStartBlockIndex;
           state.historyStartUserIndex = previousHistoryStartUserIndex;
           state.historyHasOlder = previousHistoryHasOlder;
         } else {
           state.historyStartIndex = eventHistoryStartIndex;
+          state.historyStartBlockIndex = eventHistoryStartBlockIndex;
           state.historyStartUserIndex = event.historyStartUserIndex ?? 0;
           state.historyHasOlder = event.hasOlderHistory ?? false;
           if (event.resetHistoryWindow) state.scrollOffset = 0;

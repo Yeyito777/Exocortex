@@ -342,7 +342,11 @@ export interface PrewarmConversationCommand {
   draft?: boolean;
 }
 
-export type ClientCapability = "targeted-unwind" | "sidebar-reorder-delta" | "sidebar-state-patch";
+/**
+ * history-block-pagination: history windows are byte-budgeted and may begin or
+ * end inside an AI entry (historyStartBlockIndex / beforeBlockIndex).
+ */
+export type ClientCapability = "targeted-unwind" | "sidebar-reorder-delta" | "sidebar-state-patch" | "history-block-pagination";
 
 /** Connection-scoped feature negotiation for backwards-compatible events. */
 export interface ClientCapabilitiesCommand {
@@ -393,6 +397,8 @@ export interface LoadConversationHistoryCommand extends CachedHistoryRequest {
   requestSource?: "initial-backfill" | "viewport";
   /** Absolute entry cursor returned by the preceding history payload. */
   beforeEntryIndex: number;
+  /** Block cursor within the entry at beforeEntryIndex; its earlier blocks end the page. */
+  beforeBlockIndex?: number;
   /** Maximum number of user turns to load before the cursor. */
   turns: number;
 }
@@ -1429,6 +1435,8 @@ export interface ConversationLoadedEvent extends CachedHistoryResponse {
   entries: DisplayEntry[];
   /** Absolute index of the first included non-instructions history entry. */
   historyStartIndex?: number;
+  /** First included block when the entry at historyStartIndex is a partial AI entry. */
+  historyStartBlockIndex?: number;
   /** Absolute index of the first loaded user message. */
   historyStartUserIndex?: number;
   /** Total number of non-instructions history entries in the snapshot. */
@@ -1459,10 +1467,14 @@ export interface ConversationHistoryLoadedEvent extends CachedHistoryResponse {
   entries: DisplayEntry[];
   /** Absolute index of the first returned entry. */
   historyStartIndex: number;
+  /** First returned block when the entry at historyStartIndex is a partial AI entry. */
+  historyStartBlockIndex?: number;
   /** Absolute index of the first returned user message. */
   historyStartUserIndex: number;
   /** Absolute exclusive end cursor for this page. */
   historyEndIndex: number;
+  /** Echo of beforeBlockIndex: the last returned entry holds blocks before it of entry historyEndIndex. */
+  historyEndBlockIndex?: number;
   /** Total entries in the snapshot used to build this page. */
   historyTotalEntries: number;
   /** Whether more history exists before historyStartIndex. */
@@ -1756,6 +1768,8 @@ export interface HistoryUpdatedEvent {
   entries: DisplayEntry[];
   /** Absolute index of the first included non-instructions history entry. */
   historyStartIndex?: number;
+  /** First included block when the entry at historyStartIndex is a partial AI entry. */
+  historyStartBlockIndex?: number;
   /** Absolute index of the first loaded user message. */
   historyStartUserIndex?: number;
   /** Total number of non-instructions history entries in the snapshot. */

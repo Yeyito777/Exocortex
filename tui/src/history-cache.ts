@@ -37,7 +37,8 @@ export class HistoryCache {
   prepare<T extends HistoryRequest>(command: T): T {
     if (!command.reqId || this.pending.has(command.reqId) || this.pending.size >= 64) return command;
     const key = JSON.stringify([command.type, command.convId, command.turns,
-      command.type === "load_conversation_history" ? command.beforeEntryIndex : null]);
+      command.type === "load_conversation_history" ? command.beforeEntryIndex : null,
+      command.type === "load_conversation_history" ? command.beforeBlockIndex ?? 0 : null]);
     let base = this.pages.get(key);
     if (base && this.pinnedBytes + base.bytes > this.budget) base = undefined;
     if (base) {

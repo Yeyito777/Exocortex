@@ -5,6 +5,7 @@ import type {
 } from "./messages";
 import type { ToolOutputInfo } from "./protocol";
 import type { StoredDisplayHistoryPage } from "./display-page-store";
+import type { HistoryWindowOptions } from "./history-pagination";
 import type {
   ConversationBtwPersistenceState,
   LoadConversationIndexResult,
@@ -73,7 +74,7 @@ export interface ConversationRepository {
 
   /** Indexed non-pinned display entry count immediately before a user turn. */
   displayEntryCountBeforeUser(id: string, userMessageIndex: number): number | null;
-  loadDisplayPage(id: string, turns: number, beforeEntryIndex?: number): StoredDisplayHistoryPage | null;
+  loadDisplayPage(id: string, turns: number, beforeEntryIndex?: number, windowOptions?: HistoryWindowOptions): StoredDisplayHistoryPage | null;
   loadToolOutputs(id: string, toolCallIds?: readonly string[]): ToolOutputInfo[] | null;
 }
 

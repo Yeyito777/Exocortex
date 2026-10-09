@@ -50,6 +50,7 @@ import type {
   TrashStackEntry,
 } from "./json-persistence";
 import type { StoredDisplayHistoryPage } from "./display-page-store";
+import { selectHistoryWindow, type HistoryWindow, type HistoryWindowCandidate, type HistoryWindowOptions } from "./history-pagination";
 import * as legacy from "./json-persistence";
 import { log } from "./log";
 import type { ConversationRepository } from "./conversation-repository";
@@ -3118,15 +3119,26 @@ export class SqliteConversationStore implements ConversationRepository {
     });
   }
 
-  loadDisplayPage(id: string, turns: number, beforeEntryIndex?: number): StoredDisplayHistoryPage | null {
-    return this.db.transaction(() => this.loadVerifiedDisplayPage(id, turns, beforeEntryIndex))();
+  loadDisplayPage(
+    id: string,
+    turns: number,
+    beforeEntryIndex?: number,
+    windowOptions: HistoryWindowOptions = {},
+  ): StoredDisplayHistoryPage | null {
+    return this.db.transaction(() => this.loadVerifiedDisplayPage(id, turns, beforeEntryIndex, windowOptions))();
   }
 
-  private loadVerifiedDisplayPage(id: string, turns: number, beforeEntryIndex?: number): StoredDisplayHistoryPage | null {
+  private loadVerifiedDisplayPage(
+    id: string,
+    turns: number,
+    beforeEntryIndex: number | undefined,
+    windowOptions: HistoryWindowOptions,
+  ): StoredDisplayHistoryPage | null {
     const row = this.row(id);
     if (!row) return null;
     const total = row.display_entry_count;
     const endIndex = Math.max(0, Math.min(beforeEntryIndex === undefined ? total : Math.floor(beforeEntryIndex), total));
+    const endBlockIndex = endIndex < total ? Math.max(0, Math.floor(windowOptions.beforeBlockIndex ?? 0)) : 0;
     // User ordinals are contiguous and only user entries have one. Seek backward
     // through the covering user index instead of counting type='user' in the
     // payload-bearing table. That count reads the entire transcript on every
@@ -3150,13 +3162,37 @@ export class SqliteConversationStore implements ConversationRepository {
       ON i.conversation_id=d.conversation_id AND i.pinned=d.pinned AND i.entry_index=d.entry_index
       WHERE d.conversation_id=? AND d.pinned=1 ORDER BY d.entry_index
     `).all(id).map((entry) => this.verifiedDisplay(entry));
-    const selected = this.db.query<ProjectionRow, [string, number, number]>(`
-      SELECT d.*,i.payload_hash FROM display_entries d LEFT JOIN display_integrity i
-      ON i.conversation_id=d.conversation_id AND i.pinned=d.pinned AND i.entry_index=d.entry_index
-      WHERE d.conversation_id=? AND d.pinned=0 AND d.entry_index>=? AND d.entry_index<? ORDER BY d.entry_index
-    `).all(id, startIndex, endIndex);
-    if(selected.length!==endIndex-startIndex || selected.some((entry,index)=>entry.entry_index!==startIndex+index))throw new ConversationIntegrityError("Requested display chunk is non-contiguous");
-    const entries=selected.map(entry=>compactOldImages(this.verifiedDisplay(entry),entry.entry_index,total));
+    let window: HistoryWindow;
+    if (windowOptions.byteBudget === undefined && endBlockIndex === 0) {
+      const selected = this.db.query<ProjectionRow, [string, number, number]>(`
+        SELECT d.*,i.payload_hash FROM display_entries d LEFT JOIN display_integrity i
+        ON i.conversation_id=d.conversation_id AND i.pinned=d.pinned AND i.entry_index=d.entry_index
+        WHERE d.conversation_id=? AND d.pinned=0 AND d.entry_index>=? AND d.entry_index<? ORDER BY d.entry_index
+      `).all(id, startIndex, endIndex);
+      if(selected.length!==endIndex-startIndex || selected.some((entry,index)=>entry.entry_index!==startIndex+index))throw new ConversationIntegrityError("Requested display chunk is non-contiguous");
+      const entries=selected.map(entry=>compactOldImages(this.verifiedDisplay(entry),entry.entry_index,total));
+      window = { entries, startIndex, startBlockIndex: 0, userEntries: usersBeforeEnd - startUserIndex };
+    } else {
+      // Read newest-first and stop at the budget: one long agent turn can hold
+      // megabytes of rounds that the client never scrolls to.
+      const lastIndex = endBlockIndex > 0 ? endIndex : endIndex - 1;
+      const store = this;
+      const candidates = function* (): Generator<HistoryWindowCandidate> {
+        let expected = lastIndex;
+        for (const entry of store.iterateRows<ProjectionRow, [string, number, number]>(`
+          SELECT d.*,i.payload_hash FROM display_entries d LEFT JOIN display_integrity i
+          ON i.conversation_id=d.conversation_id AND i.pinned=d.pinned AND i.entry_index=d.entry_index
+          WHERE d.conversation_id=? AND d.pinned=0 AND d.entry_index>=? AND d.entry_index<=? ORDER BY d.entry_index DESC
+        `, id, startIndex, lastIndex)) {
+          if (entry.entry_index !== expected--) throw new ConversationIntegrityError("Requested display chunk is non-contiguous");
+          const value = compactOldImages(store.verifiedDisplay(entry), entry.entry_index, total);
+          yield { index: entry.entry_index, entry: value, bytes: value.images?.length ? undefined : entry.payload_json.length };
+        }
+        if (expected >= startIndex) throw new ConversationIntegrityError("Requested display chunk is non-contiguous");
+      };
+      window = selectHistoryWindow(candidates(), turns, endIndex, endBlockIndex, windowOptions.byteBudget);
+    }
+    const { entries } = window;
     return {
       convId: id,
       provider: row.provider,
@@ -3167,11 +3203,13 @@ export class SqliteConversationStore implements ConversationRepository {
       toolOutputsIncluded: false,
       pinnedEntries,
       entries,
-      startIndex,
-      startUserIndex,
+      startIndex: window.startIndex,
+      startBlockIndex: window.startBlockIndex,
+      startUserIndex: usersBeforeEnd - window.userEntries,
       endIndex,
+      endBlockIndex,
       totalEntries: total,
-      hasOlder: startIndex > 0,
+      hasOlder: window.startIndex > 0 || window.startBlockIndex > 0,
       source: {
         baseSize: this.getConversationFileStat(id).fileSize,
         baseMtimeMs: row.updated_at,
