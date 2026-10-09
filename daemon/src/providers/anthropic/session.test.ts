@@ -245,15 +245,24 @@ describe("Claude Code processes outliving a turn", () => {
     expect((await next).text).toBe("ok");
   });
 
-  test("an interrupt without background tasks ends the process", async () => {
+  test("an interrupt without background tasks keeps the process for a steering message", async () => {
     const { session, runtime } = open();
     const controller = new AbortController();
-    const turn = session.run(createClaudeStreamState(callbacks(), "/work", "p1"), [{ type: "text", text: "hi" }], undefined, controller.signal);
+    const turn = session.run(createClaudeStreamState(callbacks(), "/work", "p1"), [{ type: "text", text: "write a long essay" }], undefined, controller.signal);
+    await tick();
+    runtime().emit(init, text("a1", "Once upon"));
     await tick();
     controller.abort();
     await expect(turn).rejects.toThrow();
-    expect(session.isClosed).toBe(true);
-    expect(runtime().closed).toBe(true);
+    expect(runtime().interrupts).toBe(1);
+    expect(session.isClosed).toBe(false);
+
+    // The steering turn's prompt follows the interrupted turn's result.
+    const steer = session.run(createClaudeStreamState(callbacks(), "/work", "p2"), [{ type: "text", text: "make it short" }], undefined, undefined);
+    await tick();
+    runtime().emit({ ...result("p1"), subtype: "error_during_execution", is_error: true }, init, text("a2", "Short."), result("p2"));
+    expect((await steer).text).toBe("Short.");
+    expect(runtime().prompts.map(prompt => String(prompt.uuid))).toEqual(["p1", "p2"]);
   });
 
   test("a failed turn ends the process and its tasks", async () => {

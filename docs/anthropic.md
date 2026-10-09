@@ -50,10 +50,12 @@ conversations:
     a `[notification] Background task completed` message for it and shows that
     turn's work.
 
-  The process closes 15 seconds after its last task and turn finish (a quick
-  follow-up in that window reuses it), or when the model, effort or workspace
-  changes, history is rewound past it, or the daemon stops or restarts. Its
-  tasks end with it; a resumed session reports them as stopped.
+  Even without background tasks a process stays 15 seconds after its turn
+  ends or is interrupted, so queued messages, steering and quick follow-ups
+  continue in it instead of starting and resuming a new one. It closes once it
+  has had no task or turn for that long, or when the model, effort or
+  workspace changes, history is rewound past it, or the daemon stops or
+  restarts. Its tasks end with it; a resumed session reports them as stopped.
 
 | Model ID | Alias |
 | --- | --- |

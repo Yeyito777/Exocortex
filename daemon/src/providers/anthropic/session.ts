@@ -7,7 +7,8 @@
  * the conversation's next turns send their prompts into it, its tasks show as
  * the conversation's tasks, and when Claude Code starts a turn by itself the
  * daemon queues a notification message whose turn shows that work. Without
- * background tasks a process closes as soon as its turn ends.
+ * background tasks a process still stays briefly after its turn ends or is
+ * interrupted, so queued and steering messages continue in it.
  */
 
 import { randomUUID } from "node:crypto";
@@ -51,6 +52,8 @@ export type LiveTurnInput =
 export const HEARTBEAT_INTERVAL_MS = 60_000;
 /** How long a process without background tasks stays for a late notification turn or a quick follow-up. */
 const IDLE_CLOSE_MS = 15_000;
+/** How long an interrupted turn may take to end before its process is given up. */
+const INTERRUPT_GRACE_MS = 30_000;
 /** How long a host tool call from a turn Claude Code started waits for that turn to be shown. */
 const BINDING_WAIT_MS = 60_000;
 const TERMINAL_TASK_STATUSES = new Set(["completed", "failed", "stopped", "killed"]);
@@ -194,7 +197,7 @@ export class ClaudeCodeSession {
   private notes: TaskNote[] = [];
   private tasks = new Map<string, LiveTask>();
   /** After an interrupt, the rest of the interrupted turn up to its result. */
-  private discard: { promptUuid: string | null } | null = null;
+  private discard: { promptUuid: string | null; deadline: ReturnType<typeof setTimeout> } | null = null;
   private bindingWaiters: Array<{ resolve(binding: HostToolBinding): void; reject(error: Error): void }> = [];
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private closed = false;
@@ -288,6 +291,7 @@ export class ClaudeCodeSession {
     this.closed = true;
     if (this.convId && sessions.get(this.convId) === this) sessions.delete(this.convId);
     this.clearIdleTimer();
+    if (this.discard) clearTimeout(this.discard.deadline);
     log("info", `anthropic: closing the Claude Code process for ${this.convId ?? "a turn"} (${reason})`);
     this.input.close();
     try { this.runtime.close(); } catch { /* best-effort */ }
@@ -330,7 +334,10 @@ export class ClaudeCodeSession {
     if (this.closed) return;
     if (this.discard) {
       if (message.type !== "result") return;
-      if (endsInterruptedTurn(this.discard.promptUuid, message)) this.discard = null;
+      if (endsInterruptedTurn(this.discard.promptUuid, message)) {
+        clearTimeout(this.discard.deadline);
+        this.discard = null;
+      }
       this.notes = [];
       this.settle();
       return;
@@ -378,9 +385,9 @@ export class ClaudeCodeSession {
   }
 
   /**
-   * A stopped turn keeps its in-flight tool calls. With background tasks
-   * running only the turn is interrupted, as in Claude Code itself; otherwise
-   * the process goes.
+   * A stopped turn keeps its in-flight tool calls. Only the turn is
+   * interrupted, as in Claude Code itself: background tasks keep running, and
+   * a steering message or follow-up continues in this process.
    */
   private abort(turn: Turn): void {
     if (this.turn !== turn) return;
@@ -388,11 +395,9 @@ export class ClaudeCodeSession {
     commitInterruptedRound(turn.state);
     turn.finish(null, createAbortError());
     if (this.closed) return;
-    if (this.tasks.size === 0) {
-      this.close("its turn was interrupted");
-      return;
-    }
-    this.discard = { promptUuid: turn.state.promptUuid };
+    const deadline = setTimeout(() => this.close("its interrupted turn did not end"), INTERRUPT_GRACE_MS);
+    deadline.unref?.();
+    this.discard = { promptUuid: turn.state.promptUuid, deadline };
     this.runtime.interrupt().catch((error) => this.fail(error));
   }
 
