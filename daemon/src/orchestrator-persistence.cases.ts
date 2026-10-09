@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { appendMessages, clearActiveToolBackgrounder, clearGoal, clearHistoryUnwindPending, clearStreamHandoff, create, get, getActiveJob, getQueuedMessages, getSummary, isStreaming, isUnread, pin, pushQueuedMessage, remove, requestHistoryUnwind, setActiveToolBackgrounder, setGoal, steerActiveTurn, updateGoalStatus } from "./conversations";
+import { appendMessages, clearActiveToolBackgrounder, clearGoal, clearHistoryUnwindPending, clearStreamHandoff, create, get, getActiveJob, getQueuedMessages, getSummary, isStreaming, isUnread, pin, pushQueuedMessage, remove, requestHistoryUnwind, setActiveToolBackgrounder, setGoal, steerActiveTurn, updateGoalStatus, updateQueuedMessage } from "./conversations";
 import { load as loadPersisted } from "./persistence";
 import { orchestrateCompactConversation, orchestrateGoalCycle, orchestrateReplayConversation, orchestrateSendMessage, type OrchestrationCallbacks } from "./orchestrator";
 import { streamMessage } from "./api";
@@ -411,6 +411,56 @@ describe("instant steering", () => {
     expect(getQueuedMessages(convId)).toEqual([]);
   });
 
+  for (const timing of ["next-turn", "message-end"] as const) {
+    test(`${timing} input wakes a long chrono sleep in a Claude Code turn that takes queued input itself`, async () => {
+      const convId = id(`steer-inline-sleep-subscribed-${timing}`);
+      create(convId, "anthropic", "claude-opus-5-5");
+      const queueWake = () => pushQueuedMessage(convId, "subagent finished", timing, undefined, undefined, undefined, undefined,
+        undefined, timing === "next-turn" ? { kind: "subagent_completion", sourceId: "child" } : undefined);
+      const sleepOutputs: string[] = [];
+      let requests = 0;
+      const fakeStream = (async (_provider, _messages, _model, streamCallbacks, options) => {
+        requests += 1;
+        const queued = options!.queuedInput!;
+        const unsubscribe = queued.subscribe(() => {});
+        try {
+          // Input queued before the sleep, or arriving during it, ends it as it would a suspended one.
+          if (timing === "message-end") queueWake();
+          const call = { id: "toolu_sleep", name: "chrono", input: { action: "sleep", duration: "2h" } };
+          streamCallbacks.onToolCall?.({ type: "tool_call", toolCallId: call.id, toolName: call.name, input: call.input, summary: "sleep: 2h" });
+          const sleeping = (options as any).toolExecutor([call], options?.signal);
+          if (timing === "next-turn") {
+            while (!getSummary(convId)?.tasks?.some(task => task.id === "chrono:sleep:toolu_sleep")) await Bun.sleep(1);
+            queueWake();
+            // What the daemon's queue listener does for a turn running chrono.
+            steerActiveTurn(convId);
+          }
+          const [result] = await sleeping;
+          sleepOutputs.push(result.output);
+          streamCallbacks.onToolResult?.({ type: "tool_result", toolCallId: call.id, toolName: call.name, output: result.output, isError: false });
+          await new Promise(resolve => setTimeout(resolve, 0));
+          expect(options?.signal?.aborted).toBe(false);
+
+          // Claude Code takes the message in at the boundary the woken sleep made.
+          const taken = queued.pending();
+          expect(await streamCallbacks.onQueuedInput!(taken)).toMatchObject([{ role: "user", content: "subagent finished" }]);
+          return { ...finalAnswer("read the result"), transcriptMessages: [{ role: "assistant", content: [{ type: "text", text: "read the result" }] }] };
+        } finally {
+          unsubscribe();
+        }
+      }) as typeof streamMessage;
+
+      const outcome = await orchestrateSendMessage(
+        server() as never, null, undefined, convId, "wait for the subagent", Date.now(), callbacks(fakeStream),
+      );
+
+      expect(outcome.ok).toBe(true);
+      expect(requests).toBe(1);
+      expect(sleepOutputs[0]).toMatch(/^Sleep interrupted after /);
+      expect(getQueuedMessages(convId)).toEqual([]);
+    });
+  }
+
   test("automated input does not wake a short chrono sleep", async () => {
     const convId = id("steer-inline-short-sleep");
     create(convId, "anthropic", "claude-opus-5-5");
@@ -471,6 +521,62 @@ describe("instant steering", () => {
     expect(outcome.ok).toBe(true);
     expect(requests).toBe(2);
     expect(getQueuedMessages(convId)).toEqual([]);
+  });
+
+  test("a provider taking queued input itself gets a steer at its own tool boundary, committed as it was sent", async () => {
+    const convId = id("steer-provider-input");
+    create(convId, "anthropic", "claude-opus-5-5");
+    const events: Array<Record<string, unknown>> = [];
+    const backgroundReasons: unknown[] = [];
+    let requests = 0;
+    const fakeStream = (async (_provider, _messages, _model, streamCallbacks, options) => {
+      requests += 1;
+      const queued = options!.queuedInput!;
+      const unsubscribe = queued.subscribe(() => {});
+      try {
+        // Claude Code runs a tool round of its own while a chrono sleep can be backgrounded.
+        streamCallbacks.onToolCall?.({ type: "tool_call", toolCallId: "claude-bash", toolName: "bash", input: {}, summary: "deploy" });
+        setActiveToolBackgrounder(convId, {
+          toolName: "chrono",
+          background: (reason) => { backgroundReasons.push(reason); return true; },
+        });
+        pushQueuedMessage(convId, "use the staging config", "next-turn", undefined, undefined, undefined, "steer-staging");
+        steerActiveTurn(convId);
+        clearActiveToolBackgrounder(convId);
+        streamCallbacks.onToolResult?.({ type: "tool_result", toolCallId: "claude-bash", toolName: "bash", output: "deployed", isError: false });
+        streamCallbacks.onProviderRound?.({
+          blocks: [],
+          messages: [
+            { role: "assistant", content: [{ type: "tool_use", id: "claude-bash", name: "bash", input: {} }] },
+            { role: "user", content: [{ type: "tool_result", tool_use_id: "claude-bash", content: "deployed" }] },
+          ],
+          outputTokens: 1,
+        });
+        await new Promise(resolve => setTimeout(resolve, 0));
+        expect(options?.signal?.aborted).toBe(false);
+
+        // Edited after Claude Code took it in: it joins the turn as it was sent.
+        const [input] = queued.pending();
+        updateQueuedMessage("steer-staging", "use the prod config", "next-turn");
+        expect(await streamCallbacks.onQueuedInput!([input!])).toMatchObject([{ role: "user", content: "use the staging config" }]);
+        return { ...finalAnswer("switched to staging"), transcriptMessages: [{ role: "assistant", content: [{ type: "text", text: "switched to staging" }] }] };
+      } finally {
+        unsubscribe();
+      }
+    }) as typeof streamMessage;
+
+    const outcome = await orchestrateSendMessage(
+      server(events) as never, null, undefined, convId, "deploy it", Date.now(), callbacks(fakeStream),
+    );
+
+    expect(outcome.ok).toBe(true);
+    expect(requests).toBe(1);
+    expect(backgroundReasons).toEqual(["steer"]);
+    const persisted = loadPersisted(convId)!.messages;
+    expect(persisted.map(message => message.role)).toEqual(["user", "assistant", "user", "user", "assistant"]);
+    expect(persisted[3]).toMatchObject({ content: "use the staging config", metadata: { queueEntryId: "steer-staging" } });
+    expect(getQueuedMessages(convId)).toEqual([]);
+    expect(events).toContainEqual(expect.objectContaining({ type: "user_message", queueId: "steer-staging", text: "use the staging config" }));
   });
 
   test("a steer that arrives before the request is sent joins it without a wasted request", async () => {

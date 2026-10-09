@@ -3,7 +3,7 @@ import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { isDetachedTurnError } from "../../abort";
 import { getConversationTasks, stopBackgroundTask } from "../../conversation-activity";
 import type { ApiMessage } from "../../messages";
-import type { ProviderRound, StreamCallbacks } from "../types";
+import type { ProviderRound, QueuedInput, QueuedInputSource, StreamCallbacks } from "../types";
 import {
   claudeSessionKey,
   closeAllClaudeCodeSessions,
@@ -26,6 +26,10 @@ const KEY = claudeSessionKey("claude-opus-5-5", "high", "/work");
 class FakeRuntime implements AsyncIterable<unknown> {
   prompts: SDKUserMessage[] = [];
   interrupts = 0;
+  interruptOptions: unknown[] = [];
+  withdrawn: string[] = [];
+  /** What cancelAsyncMessage answers: false once Claude Code has taken the message in. */
+  withdrawable = true;
   stopped: string[] = [];
   closed = false;
   private queue: unknown[] = [];
@@ -42,9 +46,15 @@ class FakeRuntime implements AsyncIterable<unknown> {
     this.notify?.();
   }
 
-  async interrupt() {
+  async interrupt(options?: unknown) {
     this.interrupts++;
+    this.interruptOptions.push(options);
     return { still_queued: [] };
+  }
+
+  async cancelAsyncMessage(uuid: string) {
+    this.withdrawn.push(uuid);
+    return this.withdrawable;
   }
 
   async stopTask(taskId: string) {
@@ -79,6 +89,8 @@ const result = (promptUuid: string | null, origin?: string) => ({
   ...(promptUuid ? { user_message_uuid: promptUuid, user_message_uuids: [promptUuid] } : {}),
   ...(origin ? { origin: { kind: origin } } : {}),
 });
+const lifecycle = (uuid: string, state: string) => ({ type: "command_lifecycle", command_uuid: uuid, state, session_id: SESSION });
+const answered = (...promptUuids: string[]) => ({ ...result(promptUuids[0]), user_message_uuids: promptUuids });
 const tasks = (...live: Array<{ id: string; description: string }>) => ({
   type: "system", subtype: "background_tasks_changed", session_id: SESSION,
   tasks: live.map(task => ({ task_id: task.id, task_type: "local_bash", description: task.description })),
@@ -93,6 +105,43 @@ const callbacks = (rounds: ProviderRound[] = []): StreamCallbacks => ({
   onThinking: () => {},
   onProviderRound: (round) => rounds.push(round),
 });
+
+/** Stands in for the turn's queue: next-turn messages a test queues, edits and removes. */
+class FakeQueue implements QueuedInputSource {
+  entries: QueuedInput[] = [];
+  private listeners = new Set<() => void>();
+  pending() {
+    return this.entries.map(entry => ({ ...entry }));
+  }
+  subscribe(listener: () => void) {
+    this.listeners.add(listener);
+    return () => { this.listeners.delete(listener); };
+  }
+  get subscribed() {
+    return this.listeners.size > 0;
+  }
+  set(...entries: QueuedInput[]) {
+    this.entries = entries;
+    for (const listener of this.listeners) listener();
+  }
+}
+
+/** Callbacks that take queued input in the way the agent loop does, recording the order of events. */
+function takingCallbacks(events: string[], rounds: ProviderRound[] = []): StreamCallbacks {
+  return {
+    ...callbacks(rounds),
+    onProviderRound: (round) => {
+      rounds.push(round);
+      events.push(`round:${round.messages.map(message => message.role).join(",")}`);
+    },
+    onQueuedInput: async (inputs) => {
+      events.push(`input:${inputs.map(input => input.text).join(",")}`);
+      return inputs.map(input => ({ role: "user", content: input.text }));
+    },
+  };
+}
+
+const sentInput = (runtime: FakeRuntime) => runtime.prompts.filter(prompt => prompt.priority === "next");
 
 let convCounter = 0;
 const wakes: Array<{ convId: string; text: string; id: string }> = [];
@@ -333,6 +382,151 @@ describe("Claude Code processes outliving a turn", () => {
     expect(session.canContinue(claudeSessionKey("claude-sonnet-5-5", "high", "/work"), { sessionId: SESSION, resumeAt: "a2", cwd: "/work" })).toBe(false);
     expect(session.canContinue(KEY, { sessionId: SESSION, resumeAt: "u1", cwd: "/work" })).toBe(false);
     expect(session.canContinue(KEY, null)).toBe(false);
+  });
+});
+
+describe("queued next-turn messages", () => {
+  test("are sent once the turn has started and join it at Claude Code's next tool boundary", async () => {
+    const { session, runtime } = open();
+    const queue = new FakeQueue();
+    queue.set({ id: "q1", text: "use staging" });
+    const events: string[] = [];
+    const turn = session.run(createClaudeStreamState(takingCallbacks(events), "/work", "p1"), [{ type: "text", text: "deploy" }], undefined, undefined, [], queue);
+    await tick();
+    // The turn's own prompt is taken first.
+    expect(sentInput(runtime())).toEqual([]);
+
+    runtime().emit(lifecycle("p1", "queued"), lifecycle("p1", "started"), init, call("a1", "t1", "make deploy"));
+    await tick();
+    const [sent] = sentInput(runtime());
+    expect(sent.message.content).toEqual([{ type: "text", text: "use staging" }]);
+
+    runtime().emit(output("u1", "t1", "deploying"), lifecycle(String(sent.uuid), "started"), text("a2", "Switched to staging."), answered("p1", String(sent.uuid)));
+    expect((await turn).text).toBe("Switched to staging.");
+    expect(events).toEqual(["round:assistant,user", "input:use staging"]);
+    expect(queue.subscribed).toBe(false);
+  });
+
+  test("a result before Claude Code takes one in does not end the turn: it goes on to answer it", async () => {
+    const { session, runtime } = open();
+    const queue = new FakeQueue();
+    const events: string[] = [];
+    const rounds: ProviderRound[] = [];
+    let ended = false;
+    const turn = session.run(createClaudeStreamState(takingCallbacks(events, rounds), "/work", "p1"), [{ type: "text", text: "write it" }], undefined, undefined, [], queue);
+    void turn.then(() => { ended = true; });
+    await tick();
+    runtime().emit(lifecycle("p1", "started"), init);
+    await tick();
+    queue.set({ id: "q1", text: "and test it" });
+    await tick();
+    const [sent] = sentInput(runtime());
+
+    runtime().emit(text("a1", "Written."), result("p1"));
+    await tick();
+    expect(ended).toBe(false);
+
+    runtime().emit(lifecycle("p1", "completed"), lifecycle(String(sent.uuid), "started"), init, text("a2", "Tested."), result(String(sent.uuid)));
+    const shown = await turn;
+    expect(shown.text).toBe("Tested.");
+    expect(events).toEqual(["round:assistant", "input:and test it"]);
+    // What came before the input is a round of its own, resumable after it.
+    expect(rounds[0].messages[0]).toMatchObject({ role: "assistant", providerData: { anthropic: { sessionId: SESSION, resumeAt: "a1" } } });
+  });
+
+  test("one edited or unqueued before Claude Code takes it in is withdrawn", async () => {
+    const { session, runtime } = open();
+    const queue = new FakeQueue();
+    const events: string[] = [];
+    const turn = session.run(createClaudeStreamState(takingCallbacks(events), "/work", "p1"), [{ type: "text", text: "build" }], undefined, undefined, [], queue);
+    await tick();
+    runtime().emit(lifecycle("p1", "started"), init, call("a1", "t1", "make"));
+    await tick();
+    queue.set({ id: "q1", text: "use clang" });
+    await tick();
+    queue.set({ id: "q1", text: "use gcc" });
+    await tick();
+    const [first, edited] = sentInput(runtime());
+    expect(runtime().withdrawn).toEqual([String(first.uuid)]);
+    expect(edited.message.content).toEqual([{ type: "text", text: "use gcc" }]);
+
+    queue.set();
+    await tick();
+    expect(runtime().withdrawn).toEqual([String(first.uuid), String(edited.uuid)]);
+    runtime().emit(lifecycle(String(edited.uuid), "cancelled"), output("u1", "t1", "built"), text("a2", "Built."), result("p1"));
+    expect((await turn).text).toBe("Built.");
+    expect(events).toEqual(["round:assistant,user"]);
+  });
+
+  test("one Claude Code took in before it could be withdrawn still joins the turn as it was sent", async () => {
+    const { session, runtime } = open();
+    const queue = new FakeQueue();
+    const events: string[] = [];
+    const turn = session.run(createClaudeStreamState(takingCallbacks(events), "/work", "p1"), [{ type: "text", text: "build" }], undefined, undefined, [], queue);
+    await tick();
+    runtime().emit(lifecycle("p1", "started"), init, call("a1", "t1", "make"));
+    await tick();
+    queue.set({ id: "q1", text: "use clang" });
+    await tick();
+    runtime().withdrawable = false;
+    queue.set();
+    await tick();
+    const [sent] = sentInput(runtime());
+    runtime().emit(output("u1", "t1", "built"), lifecycle(String(sent.uuid), "started"), text("a2", "Built with clang."), answered("p1", String(sent.uuid)));
+    expect((await turn).text).toBe("Built with clang.");
+    expect(events).toEqual(["round:assistant,user", "input:use clang"]);
+  });
+
+  test("an interrupt withdraws queued messages Claude Code has not taken in", async () => {
+    const { session, runtime } = open();
+    const queue = new FakeQueue();
+    const controller = new AbortController();
+    const turn = session.run(createClaudeStreamState(takingCallbacks([]), "/work", "p1"), [{ type: "text", text: "build" }], undefined, controller.signal, [], queue);
+    await tick();
+    runtime().emit(lifecycle("p1", "started"), init, call("a1", "t1", "make"));
+    await tick();
+    queue.set({ id: "q1", text: "use gcc" });
+    await tick();
+    controller.abort();
+    await expect(turn).rejects.toThrow();
+    expect(runtime().interruptOptions).toEqual([{ cancelQueued: true }]);
+    expect(queue.subscribed).toBe(false);
+  });
+
+  test("an interrupt while Claude Code answers queued input it ran after the result drops the rest of that turn", async () => {
+    const { session, runtime } = open();
+    const queue = new FakeQueue();
+    const controller = new AbortController();
+    const turn = session.run(createClaudeStreamState(takingCallbacks([]), "/work", "p1"), [{ type: "text", text: "write it" }], undefined, controller.signal, [], queue);
+    await tick();
+    runtime().emit(lifecycle("p1", "started"), init);
+    await tick();
+    queue.set({ id: "q1", text: "and test it" });
+    await tick();
+    const [sent] = sentInput(runtime());
+    runtime().emit(text("a1", "Written."), result("p1"), lifecycle(String(sent.uuid), "started"), init, text("a2", "Testing"));
+    await tick();
+    controller.abort();
+    await expect(turn).rejects.toThrow();
+    expect(runtime().interruptOptions).toEqual([undefined]);
+
+    const next = session.run(createClaudeStreamState(callbacks(), "/work", "p2"), [{ type: "text", text: "go on" }], undefined, undefined);
+    await tick();
+    runtime().emit({ ...result(String(sent.uuid)), subtype: "error_during_execution", is_error: true }, init, text("a3", "ok"), result("p2"));
+    expect((await next).text).toBe("ok");
+    expect(session.isClosed).toBe(false);
+  });
+
+  test("wait for the turn to end when Claude Code does not report what becomes of what it is sent", async () => {
+    const { session, runtime } = open();
+    const queue = new FakeQueue();
+    queue.set({ id: "q1", text: "use staging" });
+    const turn = session.run(createClaudeStreamState(takingCallbacks([]), "/work", "p1"), [{ type: "text", text: "deploy" }], undefined, undefined, [], queue);
+    await tick();
+    runtime().emit(init, call("a1", "t1", "make deploy"), output("u1", "t1", "deployed"), text("a2", "Deployed."), result("p1"));
+    expect((await turn).text).toBe("Deployed.");
+    expect(sentInput(runtime())).toEqual([]);
+    expect(queue.subscribed).toBe(false);
   });
 });
 

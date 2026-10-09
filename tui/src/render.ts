@@ -22,7 +22,7 @@ import {
 import { renderTopbar } from "./topbar";
 import { conversationActionMenuAnchorRow, renderConversationActionMenu, renderSidebar, SIDEBAR_WIDTH } from "./sidebar";
 import { createSidebarState } from "./sidebar/state";
-import { isGlobalIdleQueuedMessage } from "./queue";
+import { isGlobalIdleQueuedMessage, steersInstantly } from "./queue";
 import { getSidebarSearchBarViewport } from "./sidebarsearch";
 import { buildMessageLines, type BuildMessageLinesResult, type RenderLineSegment } from "./conversation";
 import { computeBottomLayout } from "./chatlayout";
@@ -1690,7 +1690,7 @@ export function render(state: RenderState): boolean {
 
   // ── Queue prompt overlay ───────────────────────────────────────
   if (state.queuePrompt) {
-    appendPositionedPayload(ctx, renderQueuePromptOverlay(state.queuePrompt, chatW, chatCol, bottomStartRow));
+    appendPositionedPayload(ctx, renderQueuePromptOverlay(state.queuePrompt, chatW, chatCol, bottomStartRow, steersInstantly(state.provider)));
   }
 
   // ── Edit message overlay ──────────────────────────────────────

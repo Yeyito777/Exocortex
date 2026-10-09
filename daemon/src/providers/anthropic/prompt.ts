@@ -11,7 +11,8 @@
  */
 
 import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import type { ApiContentBlock, ApiMessage } from "../../messages";
+import { buildUserContent, type ApiContentBlock, type ApiMessage } from "../../messages";
+import type { QueuedInput } from "../types";
 import type { AnthropicAssistantProviderData } from "./types";
 
 type ResumeData = AnthropicAssistantProviderData["anthropic"];
@@ -113,6 +114,11 @@ const LIVE_CONTINUE_PROMPT = "Your previous turn was interrupted before it finis
 export function buildLiveSessionContent(messages: ApiMessage[]): SdkContent {
   const content = messages.flatMap(message => toSdkContent(message.content));
   return content.length > 0 ? content : [{ type: "text", text: LIVE_CONTINUE_PROMPT }];
+}
+
+/** A queued message sent into a running turn. */
+export function buildQueuedInputContent(input: QueuedInput): SdkContent {
+  return toSdkContent(buildUserContent(input.text, input.images));
 }
 
 const INTERRUPTED_TURN_PROMPT = "Your previous turn was interrupted before it finished, and anything it still had running (tool calls, background tasks) was stopped. Continue where you left off.";

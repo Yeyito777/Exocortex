@@ -148,6 +148,19 @@ describe("Claude Code relay", () => {
     expect(Object.keys(third.relay.hello!.taskStarts)).toEqual(["agent-1"]);
   });
 
+  test("a queued message withdrawn before Claude Code took it in leaves no turn pending", async () => {
+    const first = launch();
+    const output = reader(first);
+    write(first, { type: "user", uuid: "q1", priority: "next", message: { role: "user", content: "and test it" }, parent_tool_use_id: null });
+    await output.until(message => message.type === "echo");
+    write(first, { type: "script", lines: [{ type: "command_lifecycle", command_uuid: "q1", state: "cancelled", uuid: "c1", session_id: "s1" }] });
+    await output.until(message => message.uuid === "c1");
+    first.detach();
+
+    const { relay } = await reattach();
+    expect(relay.hello).toMatchObject({ pending: false });
+  });
+
   test("drops the rest of an interrupted turn up to the result that ends it", async () => {
     const first = launch();
     const output = reader(first);

@@ -150,6 +150,9 @@ function observe(message: Json, line: string): void {
   if (message.type === "result") {
     const answered = Array.isArray(message.user_message_uuids) ? message.user_message_uuids : [message.user_message_uuid];
     for (const uuid of answered) if (typeof uuid === "string") unanswered.delete(uuid);
+  } else if (message.type === "command_lifecycle" && message.state === "cancelled") {
+    // A queued message withdrawn before Claude Code took it in gets no result.
+    unanswered.delete(str(message.command_uuid) ?? "");
   } else if (message.type === "system" && message.subtype === "session_state_changed") {
     busy = message.state !== "idle";
     checkOrphaned();

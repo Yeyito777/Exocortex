@@ -59,7 +59,7 @@ export {
   removeQueuedMessagesById, updateQueuedMessage, moveQueuedMessage,
   persistQueuedMessagesSnapshot,
   suspendQueuedMessageDelivery, resumeQueuedMessageDelivery, isQueuedMessageDeliverySuspended,
-  loadQueuedMessagesFromDisk, setQueuedMessagesChangedListener, setMessageQueuePersistenceFailureForTest,
+  loadQueuedMessagesFromDisk, setQueuedMessagesChangedListener, observeQueuedMessages, setMessageQueuePersistenceFailureForTest,
 } from "./message-queue";
 
 // ── State ───────────────────────────────────────────────────────────

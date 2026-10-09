@@ -14,7 +14,7 @@ import { log } from "./log";
 import { recordToolCallDiagnostics } from "./diagnostics";
 import { type ProviderId, type ModelId, type EffortLevel, type Block, type ToolCallBlock, type ToolResultBlock, type ToolCallPresentation, type ApiMessage, type ApiContentBlock, type TokenTrackingContext } from "./messages";
 import type { DeferredToolResult } from "./tools/types";
-import type { ContentBlock as ProviderContentBlock, ProviderRound, ServiceTier, StreamOptions, StreamRetryMetadata } from "./providers/types";
+import type { ContentBlock as ProviderContentBlock, ProviderRound, QueuedInput, QueuedInputSource, ServiceTier, StreamOptions, StreamRetryMetadata } from "./providers/types";
 import { MAX_OUTPUT_CHARS, cap } from "./tools/util";
 import { getMaxContext } from "./providers/registry";
 import { estimateContextTokens, isContextWindowError, shouldAutoCompact, type CompactionReason } from "./context-compaction";
@@ -64,8 +64,10 @@ export interface AgentCallbacks {
    * Drain "next-turn" queued messages between tool rounds.
    * Called after onRoundComplete only while the turn remains active — returns
    * user messages to inject into the conversation before the next API call.
+   * With `taken`, commits exactly those: queued input a provider running its
+   * own agent loop already took into its request.
    */
-  drainNextTurnMessages?(): ApiMessage[] | Promise<ApiMessage[]>;
+  drainNextTurnMessages?(taken?: QueuedInput[]): ApiMessage[] | Promise<ApiMessage[]>;
   /**
    * Take the text/thinking a provider attempt streamed before queued user input
    * preempted it, resetting the live partial state. The loop commits it as an
@@ -197,6 +199,8 @@ export async function runAgentLoop(
     turnSession?: ProviderTurnSession;
     /** Conversation workspace, for providers that run their own agent there. */
     workingDirectory?: string;
+    /** Queued next-turn messages, for providers that take them into their own agent loop. */
+    queuedInput?: QueuedInputSource;
     /** Mutable state for abort recovery — caller reads on catch. */
     state?: AgentState;
     /** Test seam for provider streaming. Production always uses streamMessage. */
@@ -324,6 +328,18 @@ export async function runAgentLoop(
             providerMeasuredRates = true;
             callbacks.onGenerationRate?.(rate);
           },
+          onQueuedInput: async (inputs) => {
+            const injected = await callbacks.drainNextTurnMessages?.(inputs) ?? [];
+            messages.push(...injected);
+            newMessages.push(...injected);
+            if (state) {
+              state.completedMessages = [...newMessages];
+              state.contextMessages = [...messages];
+            }
+            callbacks.onRecoveryStateUpdate?.();
+            log("info", `agent: round ${round}: provider took ${injected.length} next-turn queued message(s)`);
+            return injected;
+          },
         }, {
           system: options.system,
           signal: options.signal,
@@ -337,6 +353,7 @@ export async function runAgentLoop(
           turnSession: options.turnSession,
           workingDirectory: options.workingDirectory,
           toolExecutor: options.executor,
+          queuedInput: options.queuedInput,
           codexWindowId: options.getCodexWindowId?.(),
           accountScope: options.accountScope,
           codexTurnId: options.codexTurnId,

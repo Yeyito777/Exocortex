@@ -21,7 +21,8 @@ import { buildExecutor, summarizeTool, toolCallsRequireWatchdogPause } from "./t
 import * as convStore from "./conversations";
 import type { DaemonServer, ConnectedClient } from "./server";
 import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, MAX_EXO_SUBAGENT_DEPTH, createStoredUserContextCheckpoint, createStoredUserMessage, currentReplayHistoryPrefix, isHistoryMessage, isReplayHistoryMessage, isValidActiveContextCached, type ActiveContext, type StoredMessage, type ApiContentBlock, type ApiMessage, type Block, type UserMessageAutomation } from "./messages";
-import type { ContentBlock as ProviderContentBlock, StreamRetryMetadata } from "./providers/types";
+import type { ContentBlock as ProviderContentBlock, QueuedInput, QueuedInputSource, StreamRetryMetadata } from "./providers/types";
+import type { QueuedMessage } from "./message-queue";
 import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { BackgroundTaskCompletion, ExocortexToolRuntime, ToolExecutionContext } from "./tools/types";
 import { broadcastConversationHistoryUpdated, broadcastConversationUpdated } from "./conversation-events";
@@ -783,6 +784,35 @@ async function orchestrateAdmittedAssistantTurn(
 
   /** Tool calls (including a provider's own, e.g. Claude Code's) awaiting results. */
   const openToolCallIds = new Set<string>();
+  // A provider that runs its own agent loop (Claude Code) takes queued
+  // next-turn messages into it at its own tool boundaries. While one is
+  // subscribed, a steer waits for that boundary instead of preempting it.
+  const queuedInputSubscriptions = new Set<() => void>();
+  /** Entries as last offered, to commit one taken before it changed or left the queue. */
+  const offeredQueueEntries = new Map<string, QueuedMessage>();
+  const queuedInput: QueuedInputSource = {
+    pending() {
+      return convStore.getQueuedMessages(convId)
+        .filter(entry => entry.timing === "next-turn")
+        .map((entry) => {
+          offeredQueueEntries.set(entry.id, entry);
+          return { id: entry.id, text: entry.text, ...(entry.images ? { images: entry.images } : {}) };
+        });
+    },
+    subscribe(listener) {
+      const unsubscribe = convStore.observeQueuedMessages(listener);
+      queuedInputSubscriptions.add(unsubscribe);
+      return () => {
+        queuedInputSubscriptions.delete(unsubscribe);
+        unsubscribe();
+      };
+    },
+  };
+  const takenQueueEntry = (input: QueuedInput): QueuedMessage => {
+    const entry = convStore.getQueuedMessageById(input.id) ?? offeredQueueEntries.get(input.id)
+      ?? { id: input.id, convId, text: input.text, timing: "next-turn", source: "daemon", createdAt: Date.now() };
+    return { ...entry, text: input.text, images: input.images };
+  };
   // A steer signaled during this turn that has not been delivered yet. Input
   // queued before the turn started waits for a boundary, so the turn's own
   // prompt is sampled first.
@@ -806,7 +836,7 @@ async function orchestrateAdmittedAssistantTurn(
     }
     if (!hasQueuedSteer()) return;
     steerRequested = true;
-    if (openToolCallIds.size > 0) {
+    if (openToolCallIds.size > 0 || queuedInputSubscriptions.size > 0) {
       convStore.backgroundActiveTool(convId, "steer");
       return;
     }
@@ -1426,10 +1456,13 @@ async function orchestrateAdmittedAssistantTurn(
       // potentially long mid-turn compaction or next provider request.
       persistCompletedTurnPrefix();
     },
-    async drainNextTurnMessages() {
+    async drainNextTurnMessages(taken) {
       // Peek first. Queue entries are removed only after their user messages are
       // durably committed below, preventing a crash between dequeue and history.
-      const drained = convStore.getQueuedMessages(convId).filter(message => message.timing === "next-turn");
+      // Input the provider already took is committed as it was sent.
+      const drained = taken
+        ? taken.map(takenQueueEntry)
+        : convStore.getQueuedMessages(convId).filter(message => message.timing === "next-turn");
       if (drained.length === 0) return [];
 
       hadNextTurnInjections = true;
@@ -1476,7 +1509,7 @@ async function orchestrateAdmittedAssistantTurn(
 
       // Commit the accepted user prompts before removing their durable queue
       // copies or broadcasting them.
-      if (ac.signal.aborted || drained.some(qm => !isDeepStrictEqual(convStore.getQueuedMessageById(qm.id), qm))) return [];
+      if (ac.signal.aborted || (!taken && drained.some(qm => !isDeepStrictEqual(convStore.getQueuedMessageById(qm.id), qm)))) return [];
       const latestHuman = injectedStored.findLast(message => !message.metadata?.automation);
       const sidebarBumped = !!latestHuman && convStore.bumpToTop(convId);
       persistCompletedTurnPrefix(injectedStored);
@@ -1622,6 +1655,7 @@ async function orchestrateAdmittedAssistantTurn(
         tracking: { source: "conversation", conversationId: convId },
         turnSession: providerTurnSession ?? undefined,
         workingDirectory,
+        queuedInput,
         getCodexWindowId: () => currentWindowId,
         accountScope,
         codexTurnId,
@@ -1920,6 +1954,8 @@ async function orchestrateAdmittedAssistantTurn(
       ? "handoff"
       : streamStopReason;
     convStore.clearActiveSteerHandler(convId, steerTurn);
+    for (const unsubscribe of queuedInputSubscriptions) unsubscribe();
+    queuedInputSubscriptions.clear();
     convStore.clearActiveJob(convId);
     convStore.clearCurrentStreamingBlocks(convId);
     convStore.resetChunkCounter(convId);

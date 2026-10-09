@@ -215,8 +215,8 @@ export async function streamMessage(
     }
     try {
       return input.kind === "prompt"
-        ? await live.run(state, input.content, options.toolExecutor, signal, input.messages)
-        : await live.run(state, null, options.toolExecutor, signal);
+        ? await live.run(state, input.content, options.toolExecutor, signal, input.messages, options.queuedInput)
+        : await live.run(state, null, options.toolExecutor, signal, [], options.queuedInput);
     } catch (error) {
       if (!signal?.aborted) logStderr(error, stderr);
       throw error;
@@ -250,7 +250,7 @@ export async function streamMessage(
   const state = createClaudeStreamState(callbacks, cwd, randomUUID());
   const session = start(plan);
   try {
-    return await session.run(state, buildClaudeUserContent(plan.pending), options.toolExecutor, signal, trailingUserMessages(plan.pending));
+    return await session.run(state, buildClaudeUserContent(plan.pending), options.toolExecutor, signal, trailingUserMessages(plan.pending), options.queuedInput);
   } catch (error) {
     if (!signal?.aborted) logStderr(error, stderr);
     // A missing/unforkable session (deleted, moved, or rejected) should not
@@ -261,7 +261,7 @@ export async function streamMessage(
     const fresh: ClaudePromptPlan = { resume: null, pending: messages };
     stderr = "";
     try {
-      return await start(fresh).run(createClaudeStreamState(callbacks, cwd, randomUUID()), buildClaudeUserContent(fresh.pending), options.toolExecutor, signal, trailingUserMessages(fresh.pending));
+      return await start(fresh).run(createClaudeStreamState(callbacks, cwd, randomUUID()), buildClaudeUserContent(fresh.pending), options.toolExecutor, signal, trailingUserMessages(fresh.pending), options.queuedInput);
     } catch (freshError) {
       if (!signal?.aborted) logStderr(freshError, stderr);
       throw freshError;
