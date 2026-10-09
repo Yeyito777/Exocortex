@@ -9,7 +9,9 @@ import { exo } from "./exo";
 describe("Claude Code tool display", () => {
   test("Bash keeps the full command like Exocortex bash and drops the description", () => {
     const input = { command: "cd /tmp\ngmail search newer_than:1d", description: "Search mail", timeout: 60000 };
-    expect(summarizeClaudeCodeTool("Bash", input)).toEqual({ label: "$", detail: "cd /tmp\ngmail search newer_than:1d --timeout 60000" });
+    expect(summarizeClaudeCodeTool("Bash", input)).toEqual({ label: "$", detail: "cd /tmp\ngmail search newer_than:1d --timeout_seconds 60" });
+    expect(summarizeClaudeCodeTool("Bash", { command: "sleep 150", run_in_background: true }))
+      .toEqual(bash.summarize({ command: "sleep 150", background: true }));
   });
 
   test("file and search tools use their Exocortex counterpart's summary", () => {
@@ -30,7 +32,7 @@ describe("Claude Code tool display", () => {
   test("agent tools read like Exocortex subagent calls", () => {
     expect(summarizeClaudeCodeTool("Agent", {
       description: "Resume JS engine core", prompt: "You are resuming…", subagent_type: "general-purpose", run_in_background: true,
-    })).toEqual({ label: "Agent", detail: "Resume JS engine core --run_in_background" });
+    })).toEqual({ label: "Agent", detail: "Resume JS engine core --background" });
     expect(summarizeClaudeCodeTool("Agent", { description: "Find callers", prompt: "…", subagent_type: "Explore" }))
       .toEqual({ label: "Agent", detail: "Find callers --subagent_type Explore" });
     expect(summarizeClaudeCodeTool("SendMessage", { to: "a2770869e8f93ef5d", summary: "Wrap up and stop for now", message: "From the lead: …" }))

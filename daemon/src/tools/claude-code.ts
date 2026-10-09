@@ -65,13 +65,22 @@ function withFlags(primary: string, flags: Input): string {
   return summarizeParams(primary, flags, []).trim();
 }
 
+/** Claude Code's Bash input in Exocortex bash's terms: a timeout in seconds, `background`. */
+function bashInput({ command, timeout, run_in_background }: Input): Input {
+  return {
+    command,
+    timeout_seconds: typeof timeout === "number" ? timeout / 1000 : undefined,
+    background: run_in_background,
+  };
+}
+
 function agentDetail({ description, prompt, name, subagent_type, model, isolation, run_in_background }: Input): string {
   return withFlags(oneLine(description) || oneLine(prompt), {
     name,
     subagent_type: subagent_type === "general-purpose" ? undefined : subagent_type,
     model,
     isolation,
-    run_in_background,
+    background: run_in_background,
   });
 }
 
@@ -83,7 +92,7 @@ function workflowDetail({ name, scriptPath, script }: Input): string {
 // Built on first use: browse → llm → anthropic provider → here is an import cycle.
 function getClaudeCodeTools(): Map<string, ClaudeCodeTool> {
   return claudeCodeTools ??= new Map<string, ClaudeCodeTool>([
-    ["Bash", { like: bash, input: ({ command, timeout, run_in_background }) => ({ command, timeout, run_in_background }) }],
+    ["Bash", { like: bash, input: bashInput }],
     ["Read", { like: read, input: input => input }],
     ["Write", { like: write, input: input => input }],
     ["Edit", { like: edit, input: ({ file_path, replace_all }) => ({ path: file_path, replace_all }) }],
