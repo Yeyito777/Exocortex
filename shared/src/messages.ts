@@ -484,6 +484,8 @@ export interface ConversationTaskSummary {
   dueAt?: number;
   /** Chrono lifecycle shown by the focused-conversation Tasks UI. */
   chronoMode?: "wait" | "sleep" | "wake";
+  /** Tool running background work, e.g. `Agent` for a Claude Code background subagent. */
+  toolName?: string;
 }
 
 /** How an external notification subscription handles events for its conversation. */

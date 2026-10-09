@@ -299,6 +299,7 @@ function summaryProjection(task: InternalTaskRecord): ConversationTaskSummary {
     startedAt: task.startedAt,
     ...(task.dueAt !== undefined ? { dueAt: task.dueAt } : {}),
     ...(task.chronoMode ? { chronoMode: task.chronoMode } : {}),
+    ...(task.toolName ? { toolName: task.toolName } : {}),
   };
 }
 
@@ -319,7 +320,6 @@ function publicRecord(ownerConversationId: string, task: InternalTaskRecord): Ac
     ownerConversationId,
     ...summaryProjection(task),
     status: task.status,
-    ...(task.toolName ? { toolName: task.toolName } : {}),
     ...(task.pid !== undefined ? { pid: task.pid } : {}),
     ...(task.backgroundedAt !== undefined ? { backgroundedAt: task.backgroundedAt } : {}),
     ...(task.outputPath ? { outputPath: task.outputPath } : {}),

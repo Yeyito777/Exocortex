@@ -191,7 +191,7 @@ describe("focused conversation activity", () => {
     });
 
     expect(getConversationTasks("parent")).toEqual([
-      { id: "bash:42:nonce", kind: "background", title: "bun test daemon", startedAt: 200 },
+      { id: "bash:42:nonce", kind: "background", title: "bun test daemon", startedAt: 200, toolName: "bash" },
     ]);
     expect(listActiveConversationTasks("parent")).toEqual([
       {

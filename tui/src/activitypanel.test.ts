@@ -140,6 +140,19 @@ describe("focused conversation task panel", () => {
     expect(panel!.lines.every(line => visibleLength(line) === panel!.width)).toBe(true);
   });
 
+  test("shows a Claude Code background subagent as an agent, not a shell command", () => {
+    const state = stateWithTasks();
+    state.sidebar.conversations[0].tasks = [
+      { id: "agent-1", kind: "background", title: "JS engine core", startedAt: 1_000, toolName: "Agent" },
+      { id: "shell-1", kind: "background", title: "npm test", startedAt: 2_000, toolName: "Bash" },
+    ];
+    const panel = renderTaskPanel(state, 100, 20, 43_000)!;
+    const plain = panel.lines.map(stripAnsi);
+    expect(plain[1]).toContain("◆ Agent JS engine core");
+    expect(panel.lines[1]).toContain(hexToAnsi("#1122ee"));
+    expect(plain[2]).toContain("$ Bash npm test");
+  });
+
   test("shrinks, truncates, and reports overflow without breaking borders", () => {
     const state = stateWithTasks();
     state.sidebar.conversations[0].tasks!.push(
