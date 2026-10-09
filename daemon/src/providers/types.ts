@@ -92,6 +92,12 @@ export interface StreamCallbacks {
   onRetryWaitEnd?: () => void;
   /** A provider running its own agent loop finished a tool round; the agent loop commits it like one of its own. */
   onProviderRound?: (round: ProviderRound) => void;
+  /**
+   * A provider running its own agent loop finished one of its API calls: its
+   * output tokens over the time from sending the request to the last token,
+   * the same measure the agent loop takes of its own requests.
+   */
+  onGenerationRate?: (tokensPerSecond: number) => void;
 }
 
 /**
@@ -105,8 +111,6 @@ export interface ProviderRound {
   outputTokens: number;
   /** Context size of the round's API call. */
   inputTokens?: number;
-  /** Time spent waiting on the model for this round, excluding tool execution. */
-  generationMs?: number;
 }
 
 export interface StreamToolExecutionResult {

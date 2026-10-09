@@ -12,9 +12,10 @@ conversations:
 - Exocortex appends its additions to Claude Code's system prompt: external
   tool hints, the app-wide `config/system.md` addendum, folder and
   conversation instructions, and a scoped subagent's role note. The prompt is
-  re-rendered every turn instead of reusing the session's recorded one, so
-  edits apply on the next turn. Goal text is left out because the `goal` tool
-  is not offered to Claude Code. `/system` shows the appended text.
+  rendered for each new Claude Code process instead of reusing the session's
+  recorded one, so edits apply once the running process (see background tasks
+  below) has closed. Goal text is left out because the `goal` tool is not
+  offered to Claude Code. `/system` shows the appended text.
 - Exocortex's own tools are not used either, except `chrono`. Claude Code calls
   it over an in-process MCP server as `mcp__exocortex__chrono`; Exocortex runs
   it like any other chrono call, and history records it as `chrono`. Sleeps
@@ -30,13 +31,31 @@ conversations:
   only streams the unfinished round), and kept if the turn is aborted or the
   daemon restarts. Each round also updates the context and token meters.
 - Each committed round and each completed turn records its Claude Code session
-  and chain entry. The next turn forks that session at the latest one, so an
-  interrupted turn resumes right after its last committed round, and editing
-  or trimming history in Exocortex stays consistent. History Claude Code never
-  saw (other providers' turns, an aborted partial, an Exocortex compaction
-  checkpoint) is sent as a transcript.
+  and chain entry. A turn that starts a new Claude Code process forks that
+  session at the latest one, so an interrupted turn resumes right after its
+  last committed round, and editing or trimming history in Exocortex stays
+  consistent. History Claude Code never saw (other providers' turns, an
+  aborted partial, an Exocortex compaction checkpoint) is sent as a
+  transcript.
 - Tool rounds are stored as normal `tool_use`/`tool_result` messages, so a
   conversation can switch to another provider afterwards.
+- **Background tasks.** Claude Code runs `run_in_background` shells and
+  background agents inside its own process, so a turn that leaves any running
+  keeps that process:
+  - they show as the conversation's background tasks (sidebar badge, Tasks UI)
+    and can be stopped there;
+  - later turns send their messages into the same process, and interrupting a
+    turn stops only the turn, as in Claude Code;
+  - when a task finishes, Claude Code starts a turn of its own. Exocortex queues
+    a `[notification] Background task completed` message for it and shows that
+    turn's work.
+
+  Even without background tasks a process stays 15 seconds after its turn
+  ends or is interrupted, so queued messages, steering and quick follow-ups
+  continue in it instead of starting and resuming a new one. It closes once it
+  has had no task or turn for that long, or when the model, effort or
+  workspace changes, history is rewound past it, or the daemon stops or
+  restarts. Its tasks end with it; a resumed session reports them as stopped.
 
 | Model ID | Alias |
 | --- | --- |

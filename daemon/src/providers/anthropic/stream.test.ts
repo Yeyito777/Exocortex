@@ -107,7 +107,6 @@ describe("Claude Code stream translation", () => {
     ]);
     expect(rounds[0].outputTokens).toBe(30);
     expect(rounds[0].inputTokens).toBe(2 + 20933);
-    expect(rounds[0].generationMs).toBeGreaterThanOrEqual(0);
 
     // The result carries only what followed the last round; usage totals still cover the request.
     expect(result.blocks.map((b) => b.type)).toEqual(["thinking", "text"]);
@@ -120,6 +119,39 @@ describe("Claude Code stream translation", () => {
       providerData: { anthropic: { sessionId: SESSION, resumeAt: "a-3", cwd: "/work" } },
     }]);
     expect(result.outputTokens).toBe(70);
+  });
+
+  test("times each API call from its request to its last token, like the agent loop's own calls", () => {
+    let now = 0;
+    const rates: number[] = [];
+    const { callbacks } = recorder();
+    callbacks.onGenerationRate = (rate) => rates.push(rate);
+    const state = createClaudeStreamState(callbacks, "/work", null, () => now);
+    const requesting = { type: "system", subtype: "status", status: "requesting", session_id: SESSION };
+    const at = (time: number, message: Record<string, unknown>) => { now = time; pushClaudeMessage(state, message); };
+
+    // Recorded order from Claude Code 2.1.295: the Read result arrives while the
+    // call is still generating its second tool call.
+    at(0, requesting);
+    at(600, se({ type: "message_start", message: { usage: { input_tokens: 2, cache_read_input_tokens: 9000 } } }));
+    at(800, { type: "assistant", uuid: "a-1", session_id: SESSION, parent_tool_use_id: null, message: { content: [{ type: "tool_use", id: "t1", name: "Read", input: { file_path: "/a" } }] } });
+    at(810, { type: "user", uuid: "u-1", session_id: SESSION, parent_tool_use_id: null, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "a", is_error: false }] } });
+    at(900, requesting); // a subagent's request while this call streams
+    at(1000, { type: "assistant", uuid: "a-2", session_id: SESSION, parent_tool_use_id: null, message: { content: [{ type: "tool_use", id: "t2", name: "Bash", input: { command: "ls" } }] } });
+    at(2000, se({ type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 100 } }));
+    expect(rates).toEqual([50]);
+
+    // A retried call is not timed.
+    at(2100, requesting);
+    at(2200, { type: "system", subtype: "api_retry", attempt: 1, max_retries: 10, retry_delay_ms: 500, session_id: SESSION });
+    at(3000, se({ type: "message_start", message: { usage: { input_tokens: 2 } } }));
+    at(4000, se({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 40 } }));
+    expect(rates).toEqual([50]);
+
+    at(4100, requesting);
+    at(4500, se({ type: "message_start", message: { usage: { input_tokens: 2 } } }));
+    at(5100, se({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 40 } }));
+    expect(rates).toEqual([50, 40]);
   });
 
   test("commits parallel tool calls only once every result is in", () => {
