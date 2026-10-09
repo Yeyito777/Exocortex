@@ -63,6 +63,7 @@ import {
 import { beginDaemonShutdown, getDaemonShutdownMode } from "./daemon-lifecycle";
 import { buildBackgroundTaskNotificationText } from "./background-task-notifications";
 import { configureChronoService, cancelDeferredChronoSleep } from "./chrono-service";
+import { configureClaudeCodeSessions } from "./providers/anthropic/session";
 import { INITIAL_HISTORY_TURNS, buildHistoryUpdatedEvents, compactHistoryImages, pageDisplayHistory } from "./history-pagination";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
 import { randomUUID } from "crypto";
@@ -200,6 +201,33 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       if (!outcome.suspended) notificationRuntime.complete(sleep.conversationId, outcome);
     },
   );
+  // Claude Code processes outliving a turn report their background tasks, and
+  // queue a turn when Claude Code starts work by itself (a task finished).
+  configureClaudeCodeSessions({
+    tasksChanged: (convId) => broadcastConversationUpdated(server, convId),
+    wake: (convId, text, wakeId) => {
+      const conversation = convStore.getPolicyMetadata(convId);
+      if (!conversation || getDaemonShutdownMode()) return false;
+      convStore.pushQueuedMessage(
+        convId,
+        text,
+        "next-turn",
+        undefined,
+        conversation.subagentMaxDepth ?? null,
+        undefined,
+        undefined,
+        undefined,
+        { kind: "background_task_completion", sourceId: wakeId },
+      );
+      return true;
+    },
+    cancelWake: (convId, wakeId) => {
+      const queued = convStore.getQueuedMessages(convId).find(message => (
+        message.automation?.kind === "background_task_completion" && message.automation.sourceId === wakeId
+      ));
+      if (queued) convStore.removeQueuedMessageById(queued.id);
+    },
+  });
   setExternalNotificationsChangedListener((convIds) => {
     for (const convId of convIds) broadcastConversationUpdated(server, convId);
   });

@@ -69,7 +69,8 @@ type BackgroundTaskStop = (suppressCompletionNotification: boolean) => boolean;
 
 export interface BackgroundTaskRuntimeDetails extends TaskDetails {
   toolName: string;
-  pid: number;
+  /** Absent for tasks a provider runs inside its own process. */
+  pid?: number;
   backgroundedAt: number;
   outputPath?: string;
   cwd?: string;

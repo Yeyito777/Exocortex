@@ -29,7 +29,7 @@ export class ClaudeOverageError extends Error {}
 export interface ClaudeStreamState {
   callbacks: StreamCallbacks;
   cwd: string;
-  /** uuid of the prompt Exocortex sent; only the result answering it ends the turn. */
+  /** uuid of the prompt Exocortex sent; only the result answering it ends the turn. Null ends on any result. */
   promptUuid: string | null;
   /** Blocks and messages not yet committed as a round. */
   blocks: ContentBlock[];
@@ -276,14 +276,16 @@ export function commitInterruptedRound(state: ClaudeStreamState): void {
 
 /**
  * Whether a result answers Exocortex's prompt. Claude Code also runs turns of
- * its own: resuming a session whose process died with background tasks
- * running first reports them in a separate, model-less turn with its own result.
+ * its own: for finished background tasks, and on resuming a session whose
+ * process died with some running, a model-less report. A turn without a
+ * prompt shows one of those and ends with its result.
  */
 function answersPrompt(state: ClaudeStreamState, message: SdkRecord): boolean {
+  if (!state.promptUuid) return true;
   const uuids = Array.isArray(message.user_message_uuids)
     ? message.user_message_uuids
     : typeof message.user_message_uuid === "string" ? [message.user_message_uuid] : [];
-  if (state.promptUuid && uuids.length > 0) return uuids.includes(state.promptUuid);
+  if (uuids.length > 0) return uuids.includes(state.promptUuid);
   return asRecord(message.origin)?.kind !== "task-notification";
 }
 
