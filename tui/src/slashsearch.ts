@@ -5,7 +5,7 @@
  * Words are case-insensitive exact substrings matched anywhere in a command or
  * argument name, and later words search nested arguments, so "/model opus"
  * finds "/model anthropic claude-opus-5-5". Submission expands such shorthands
- * when exactly one completion is the best match (findSlashShorthands).
+ * to the first ranked completion, the popup's first row (findSlashShorthands).
  */
 
 import type { RenderState } from "./state";
@@ -43,11 +43,6 @@ interface SlashQuery {
   words: string[];
   /** The query ends in whitespace, so its final word must be followed by a space. */
   trailingSpace: boolean;
-}
-
-interface SearchOptions {
-  /** Reject mid-word matches; shorthand resolution only trusts word starts. */
-  wordStartsOnly?: boolean;
 }
 
 interface PathMatch {
@@ -94,12 +89,10 @@ function segmentForms(item: CompletionItem, isRoot: boolean): string[] {
   return [item.name, ...(item.insertText ? [item.insertText] : []), ...(item.aliases ?? [])].map(normalize);
 }
 
-const MID_WORD = 3;
-
 /** 0 = the whole segment, 1 = starts the segment, 2 = starts after punctuation or a space, 3 = mid-word. */
 function wordMatchQuality(text: string, at: number, end: number, segmentStart: number, segmentEnd: number): number {
   if (at === segmentStart) return end === segmentEnd ? 0 : 1;
-  return /[\p{L}\p{N}]/u.test(text[at - 1]) ? MID_WORD : 2;
+  return /[\p{L}\p{N}]/u.test(text[at - 1]) ? 3 : 2;
 }
 
 /**
@@ -114,7 +107,7 @@ function wordMatchQuality(text: string, at: number, end: number, segmentStart: n
 function matchCompletionPath(
   segments: readonly string[],
   query: SlashQuery,
-  options: SearchOptions & { firstWordSegment?: number },
+  firstWordSegment?: number,
 ): PathMatch | null {
   const { words, trailingSpace } = query;
   if (words.length === 0) return null;
@@ -139,14 +132,13 @@ function matchCompletionPath(
     for (let at = text.indexOf(word, prevEnd); at >= 0; at = text.indexOf(word, at + 1)) {
       const segment = segmentAt(at);
       if (wordIndex === 0) {
-        if (options.firstWordSegment !== undefined && segment !== options.firstWordSegment) continue;
+        if (firstWordSegment !== undefined && segment !== firstWordSegment) continue;
       } else if (segment <= prevSegment && !(at === prevEnd + 1 && text[prevEnd] === " ")) {
         continue;
       }
 
       const end = at + word.length;
       const quality = wordMatchQuality(text, at, end, starts[segment], starts[segment] + segments[segment].length);
-      if (options.wordStartsOnly && quality === MID_WORD) continue;
 
       if (wordIndex === words.length - 1) {
         const landsInLast = trailingSpace
@@ -175,20 +167,18 @@ function matchPath(
   path: readonly CompletionItem[],
   query: SlashQuery,
   includesRoot: boolean,
-  options: SearchOptions,
 ): PathMatch | null {
   const lastWord = query.words[query.words.length - 1];
   const lastForms = segmentForms(path[path.length - 1], includesRoot && path.length === 1);
   // Cheap reject: without a trailing space the final word must sit inside the final segment.
   if (!query.trailingSpace && !lastForms.some(form => form.includes(lastWord))) return null;
   const parents = path.slice(0, -1).map((item, i) => segmentForms(item, includesRoot && i === 0)[0]);
-  const pathOptions = { ...options, firstWordSegment: includesRoot ? 0 : undefined };
 
   let best: PathMatch | null = null;
   let nameRanges: MatchRange[] = [];
   for (let i = 0; i < lastForms.length; i++) {
     if (!query.trailingSpace && !lastForms[i].includes(lastWord)) continue;
-    const match = matchCompletionPath([...parents, lastForms[i]], query, pathOptions);
+    const match = matchCompletionPath([...parents, lastForms[i]], query, includesRoot ? 0 : undefined);
     if (!match) continue;
     if (i === 0) nameRanges = match.ranges;
     if (!best || match.score < best.score) best = match;
@@ -241,12 +231,11 @@ function rankPaths(
   paths: Iterable<readonly CompletionItem[]>,
   query: SlashQuery,
   includesRoot: boolean,
-  options: SearchOptions,
   typedPrefix?: string,
 ): RankedCompletion[] {
   const ranked: RankedCompletion[] = [];
   for (const path of paths) {
-    const match = matchPath(path, query, includesRoot, options);
+    const match = matchPath(path, query, includesRoot);
     if (match) {
       ranked.push({ completion: pathCompletion(path, typedPrefix, match.ranges), depth: path.length, score: match.score });
     }
@@ -258,7 +247,7 @@ function rankPaths(
  * Search below the deepest registry key the input spells out exactly, e.g.
  * "/model " or "/model openai ". Returns null when no key is spelled out.
  */
-function searchAnchoredArgs(raw: string, registry: ArgRegistry, options: SearchOptions = {}): RankedCompletion[] | null {
+function searchAnchoredArgs(raw: string, registry: ArgRegistry): RankedCompletion[] | null {
   const keys = Object.keys(registry).sort((a, b) => b.length - a.length);
   for (const key of keys) {
     if (raw.slice(0, key.length).toLowerCase() !== key.toLowerCase() || !/\s/.test(raw[key.length] ?? "")) continue;
@@ -268,7 +257,7 @@ function searchAnchoredArgs(raw: string, registry: ArgRegistry, options: SearchO
     if (query.words.length === 0) {
       return (registry[key] ?? []).map(item => ({ completion: pathCompletion([item], typedPrefix), depth: 1, score: 0 }));
     }
-    return rankPaths(completionPaths(registry, key, []), query, false, options, typedPrefix);
+    return rankPaths(completionPaths(registry, key, []), query, false, typedPrefix);
   }
   return null;
 }
@@ -291,7 +280,7 @@ function searchRoots(raw: string, roots: readonly CompletionItem[], argsFor: Arg
     paths.push([root]);
     if (searchArgs) paths.push(...completionPaths(argsFor(root.name), root.name, [root]));
   }
-  return rankPaths(paths, query, true, {}).map(ranked => ranked.completion);
+  return rankPaths(paths, query, true).map(ranked => ranked.completion);
 }
 
 /** A fully typed command path anchors the search; otherwise roots are searched by substring. */
@@ -336,13 +325,13 @@ export function inlineSlashCompletions(state: RenderState, token: string): Slash
 
 // ── Shorthand resolution ────────────────────────────────────────────
 
-const PROMPT_ROOT_NAMES = new Set([...COMMAND_LIST, ...MACRO_LIST].map(item => item.name));
-
-/** Inline commands resolve words up to the prose that follows them. */
-const INLINE_ROOT_NAMES = new Set(INLINE_COMMANDS.map(item => item.name));
+/** Inline modifiers resolve words up to the prose that follows them. */
+const INLINE_ROOT_NAMES = new Set(INLINE_COMMANDS.map(item => item.name).filter(name => name !== "/queue"));
 
 /** A /queue target is followed by free message text that a substring match could swallow. */
-const UNRESOLVED_ROOT_NAMES = new Set(["/queue"]);
+function rewritesQueueTarget(replacement: string): boolean {
+  return /^\/queue\s/i.test(replacement);
+}
 
 interface WordPosition {
   word: string;
@@ -354,53 +343,59 @@ function wordsIn(text: string): WordPosition[] {
   return [...text.matchAll(/\S+/g)].map(match => ({ word: match[0], start: match.index, end: match.index + match[0].length }));
 }
 
-/** Resolve "/root words…" to its single best word-start match: undefined when nothing matches, null when the best ties. */
-function resolveShorthand(raw: string, registry: ArgRegistry): SlashCompletion | null | undefined {
-  const ranked = searchAnchoredArgs(raw, registry, { wordStartsOnly: true });
-  if (!ranked || ranked.length === 0) return undefined;
-  const [best, next] = ranked;
-  return next && next.depth === best.depth && next.score === best.score ? null : best.completion;
+function normalizedCommandKey(text: string): string {
+  return text.toLowerCase().split(/\s+/).filter(Boolean).join(" ");
+}
+
+/** A single-line prompt starting with "/" sends the popup's first option for the same text. */
+function promptCommandShorthand(state: RenderState, text: string, first: WordPosition): SlashShorthand | null {
+  const line = text.slice(first.start).trimEnd();
+  if (line.includes("\n")) return null;
+  const [best] = commandCompletions(state, line);
+  if (!best) return null;
+  const replacement = completionInsertText(best);
+  return rewritesQueueTarget(replacement) ? null : { start: first.start, end: first.start + line.length, replacement };
 }
 
 /**
- * Find slash shorthands that submission expands. A prompt-start command or
- * macro resolves when its whole remaining input names one completion, so free
- * text such as "/goal <objective>" is left alone; inline commands resolve the
- * longest run of following words on their line that does, leaving any prose
- * after it. Exactly typed arguments resolve to themselves.
+ * Resolve the longest run of words after an inline modifier to its first
+ * complete argument. Prose follows, so "please /model op fix" names a model
+ * rather than stopping at the "openai" provider and reading "fix" as a model id.
+ */
+function inlineCommandShorthand(text: string, words: readonly WordPosition[], rootIndex: number, registry: ArgRegistry): SlashShorthand | null {
+  const root = words[rootIndex];
+  const parentKeys = new Set(Object.keys(registry).filter(key => registry[key].length > 0).map(normalizedCommandKey));
+  let shorthand: SlashShorthand | null = null;
+  for (let j = rootIndex + 1; j < words.length; j++) {
+    if (words[j].word.startsWith("/") || text.slice(words[j - 1].end, words[j].start).includes("\n")) break;
+    const ranked = searchAnchoredArgs(text.slice(root.start, words[j].end), registry);
+    // Matches only shrink as words are added, so the first miss ends the run.
+    if (!ranked?.length) break;
+    const best = ranked.find(({ completion }) => !parentKeys.has(normalizedCommandKey(completionInsertText(completion))));
+    if (best) shorthand = { start: root.start, end: words[j].end, replacement: completionInsertText(best.completion) };
+  }
+  return shorthand;
+}
+
+/**
+ * Find slash shorthands that submission expands. A single-line prompt starting
+ * with "/" resolves to the autocomplete popup's first option ("/mod opus" →
+ * "/model anthropic claude-opus-5-5"); input that matches nothing, such as
+ * "/goal <objective>", is left alone. Otherwise inline modifiers resolve their
+ * arguments and leave any prose after them. /queue targets are never rewritten.
  */
 export function findSlashShorthands(state: RenderState, text: string): SlashShorthand[] {
   if (!text.includes("/")) return [];
   const words = wordsIn(text);
-  const commandArgs = slashArgRegistry(state, getCommandArgs);
+  if (words.length === 0) return [];
+  const promptCommand = promptCommandShorthand(state, text, words[0]);
+  if (promptCommand) return [promptCommand];
+
   const inlineArgs = slashArgRegistry(state, getInlineCommandArgs);
   const shorthands: SlashShorthand[] = [];
-
   for (let i = 0; i < words.length; i++) {
-    const root = words[i];
-    if (UNRESOLVED_ROOT_NAMES.has(root.word)) continue;
-    const atPromptStart = i === 0 && PROMPT_ROOT_NAMES.has(root.word);
-    const inline = INLINE_ROOT_NAMES.has(root.word);
-    if (!atPromptStart && !inline) continue;
-
-    let shorthand: SlashShorthand | null = null;
-    if (!inline) {
-      // The command owns the rest of the prompt unless another slash word follows.
-      const raw = text.slice(root.start).trimEnd();
-      const hasArgs = words.length > 1 && !words.slice(1).some(word => word.word.startsWith("/"));
-      const best = hasArgs ? resolveShorthand(raw, commandArgs(root.word)) : null;
-      if (best) shorthand = { start: root.start, end: root.start + raw.length, replacement: completionInsertText(best) };
-    } else {
-      const registry = (atPromptStart ? commandArgs : inlineArgs)(root.word);
-      for (let j = i + 1; j < words.length; j++) {
-        if (words[j].word.startsWith("/") || text.slice(words[j - 1].end, words[j].start).includes("\n")) break;
-        const best = resolveShorthand(text.slice(root.start, words[j].end), registry);
-        // Matches only shrink as words are added, so the first miss ends the run.
-        if (best === undefined) break;
-        if (best) shorthand = { start: root.start, end: words[j].end, replacement: completionInsertText(best) };
-      }
-    }
-
+    if (!INLINE_ROOT_NAMES.has(words[i].word)) continue;
+    const shorthand = inlineCommandShorthand(text, words, i, inlineArgs(words[i].word));
     if (!shorthand) continue;
     shorthands.push(shorthand);
     while (i + 1 < words.length && words[i + 1].start < shorthand.end) i++;

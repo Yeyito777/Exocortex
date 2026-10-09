@@ -56,12 +56,27 @@ describe("slash shorthand resolution", () => {
     expect(resolveSlashShorthands(state, "/default-model opus")).toBe("/default-model anthropic claude-opus-5-5");
   });
 
-  test("leaves ambiguous, mid-word, and custom arguments unchanged", () => {
+  test("sends the popup's first option when several match", () => {
     const state = fixture();
-    expect(resolveSlashShorthands(state, "/model claude")).toBe("/model claude");
-    expect(resolveSlashShorthands(state, "/model pus")).toBe("/model pus");
+    expect(resolveSlashShorthands(state, "/model claude")).toBe("/model anthropic claude-opus-5-5");
+    expect(resolveSlashShorthands(state, "/model pus")).toBe("/model anthropic claude-opus-5-5");
+    expect(resolveSlashShorthands(state, "/mod opus")).toBe("/model anthropic claude-opus-5-5");
+    expect(resolveSlashShorthands(state, "/mod")).toBe("/model");
+    expect(resolveSlashShorthands(state, "/model op")).toBe("/model openai");
+  });
+
+  test("leaves unmatched and custom arguments unchanged", () => {
+    const state = fixture();
     expect(resolveSlashShorthands(state, "/model openai my-custom-model")).toBe("/model openai my-custom-model");
-    expect(resolveSlashShorthands(state, "/mod opus")).toBe("/mod opus");
+    expect(resolveSlashShorthands(state, "/login deepseek sk-test")).toBe("/login deepseek sk-test");
+    expect(resolveSlashShorthands(state, "/home/me/notes.txt what is this")).toBe("/home/me/notes.txt what is this");
+  });
+
+  test("a trailing space does not pick a child of the typed command", () => {
+    const state = fixture();
+    // Submission trims, and the popup's first child of "/model " is a provider.
+    expect(resolveSlashShorthands(state, "/model")).toBe("/model");
+    expect(resolveSlashShorthands(state, "/model anthropic")).toBe("/model anthropic");
   });
 
   test("prefers an exactly typed argument over longer matches", () => {
@@ -82,6 +97,10 @@ describe("slash shorthand resolution", () => {
   test("inline commands resolve up to the prose that follows", () => {
     const state = fixture();
     expect(resolveSlashShorthands(state, "please /model opus fix this")).toBe("please /model anthropic claude-opus-5-5 fix this");
+    expect(resolveSlashShorthands(state, "please /model claude fix this")).toBe("please /model anthropic claude-opus-5-5 fix this");
+    // A provider alone is incomplete inline, so the following prose is never read as a model id.
+    expect(resolveSlashShorthands(state, "please /model op fix it")).toBe("please /model anthropic claude-opus-5-5 fix it");
+    expect(resolveSlashShorthands(state, "please /model anthropic fix it")).toBe("please /model anthropic fix it");
     expect(resolveSlashShorthands(state, "/model opus /effort h go")).toBe("/model anthropic claude-opus-5-5 /effort high go");
     expect(resolveSlashShorthands(state, "explain /effort levels")).toBe("explain /effort levels");
   });
@@ -94,12 +113,13 @@ describe("slash shorthand resolution", () => {
       marked: false, pinned: false, streaming: false, unread: false, sortOrder: 1,
     }];
     expect(resolveSlashShorthands(state, "/queue fix")).toBe("/queue fix");
+    expect(resolveSlashShorthands(state, "/que fix")).toBe("/que fix");
     expect(resolveSlashShorthands(state, "do it /queue fix")).toBe("do it /queue fix");
   });
 
   test("resolved text runs as the full command or inline modifier", () => {
     const state = fixture();
-    expect(tryCommand(resolveSlashShorthands(state, "/model opus"), state)).toEqual({ type: "handled" });
+    expect(tryCommand(resolveSlashShorthands(state, "/mod opus"), state)).toEqual({ type: "handled" });
     expect(state.provider).toBe("anthropic");
     expect(state.model).toBe("claude-opus-5-5");
 
@@ -116,12 +136,15 @@ describe("slash shorthand highlighting", () => {
     expect(getPromptHighlightRanges(state, "/model opus")).toEqual([{ start: 0, end: 11 }]);
     expect(getPromptHighlightRanges(state, "/model opus ")).toEqual([{ start: 0, end: 11 }]);
     expect(getPromptHighlightRanges(state, "please /model opus fix")).toEqual([{ start: 7, end: 18 }]);
+    expect(getPromptHighlightRanges(state, "/model claude")).toEqual([{ start: 0, end: 13 }]);
+    expect(getPromptHighlightRanges(state, "/mod opus")).toEqual([{ start: 0, end: 9 }]);
   });
 
   test("does not highlight arguments Enter would not resolve", () => {
     const state = fixture();
-    expect(getPromptHighlightRanges(state, "/model claude")).toEqual([{ start: 0, end: 6 }]);
+    expect(getPromptHighlightRanges(state, "/model openai my-custom-model")).toEqual([{ start: 0, end: 29 }]);
     expect(getPromptHighlightRanges(state, "/goal use the new parser")).toEqual([{ start: 0, end: 5 }]);
+    expect(getPromptHighlightRanges(state, "/notacommand at all")).toEqual([]);
   });
 });
 
