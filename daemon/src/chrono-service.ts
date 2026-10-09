@@ -593,7 +593,7 @@ function conversationHasSleepToolResult(sleep: DeferredChronoSleep): boolean {
   return convStore.hasToolBlock(sleep.conversationId, "tool_result", sleep.toolCallId);
 }
 
-function formatElapsedDuration(durationMs: number): string {
+export function formatElapsedDuration(durationMs: number): string {
   const clamped = Math.max(0, Math.round(durationMs));
   if (clamped < 1_000) return `${clamped}ms`;
   const totalSeconds = clamped / 1_000;

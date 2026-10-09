@@ -42,7 +42,7 @@ export {
   setContextCompactionStartedAt, getContextCompactionStartedAt,
   requestHistoryUnwind, isHistoryUnwindPending, clearHistoryUnwindPending,
   touchActivity, pauseActivity, resumeActivity,
-  setActiveToolBackgrounder, clearActiveToolBackgrounder, backgroundActiveTool,
+  setActiveToolBackgrounder, clearActiveToolBackgrounder, backgroundActiveTool, getActiveBackgroundableToolName,
   setActiveSteerHandler, clearActiveSteerHandler, steerActiveTurn,
   resetChunkCounter,
   initStreamingState, getCurrentStreamingBlocks, replaceCurrentStreamingBlocks,

@@ -15,16 +15,17 @@ import { CallToolRequestSchema, ListToolsRequestSchema, type CallToolResult } fr
 import type { ToolExecutor } from "../../agent";
 import { CLAUDE_CODE_HOST_TOOL_SERVER, isClaudeCodeHostTool } from "../../tools/claude-code";
 import { exo } from "../../tools/exo";
+import { CLAUDE_CODE_INLINE_CHRONO_MAX_MS } from "../../tools/chrono-limits";
 
-/** Chrono runs sleeps and waits of up to five minutes inside the call. */
-const HOST_TOOL_TIMEOUT_MS = 10 * 60_000;
+/** Chrono runs sleeps and waits inside the call; leave room past the longest. */
+const HOST_TOOL_TIMEOUT_MS = CLAUDE_CODE_INLINE_CHRONO_MAX_MS + 10 * 60_000;
 
 /** Server instructions for each offered host tool. */
 const INSTRUCTIONS: Record<string, string | undefined> = {
   chrono: [
     "chrono is this conversation's scheduler. Use it instead of Bash sleep, cron, or polling loops to wait, sleep, or schedule future work.",
     "A wake with a message starts a new turn in this conversation at the scheduled time, after this turn has ended and across restarts.",
-    "Sleeps and waits run inside the call for at most five minutes; for longer delays, schedule a wake with a message and end your turn.",
+    "Sleeps and waits of any practical length run inside the call and end early when the user sends a message.",
   ].join(" "),
   exo: `exo starts Exocortex subagents, separate from your own Agent tool.\n${exo.systemHint}`,
 };

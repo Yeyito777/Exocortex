@@ -2715,9 +2715,14 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             waitTarget: cmd.waitTarget,
           });
         } else {
-          convStore.pushQueuedMessage(cmd.convId, cmd.text, cmd.timing, cmd.images, undefined, undefined, queueId);
+          // A turn only sleeping or waiting in chrono takes a new prompt now, as a
+          // suspended chrono sleep resumes on one.
+          const timing = cmd.timing === "message-end" && convStore.getActiveBackgroundableToolName(cmd.convId) === "chrono"
+            ? "next-turn"
+            : cmd.timing;
+          convStore.pushQueuedMessage(cmd.convId, cmd.text, timing, cmd.images, undefined, undefined, queueId);
           // Instant steering: a next-turn prompt preempts the active turn now.
-          if (cmd.timing === "next-turn") convStore.steerActiveTurn(cmd.convId);
+          if (timing === "next-turn") convStore.steerActiveTurn(cmd.convId);
         }
         if (queuedDraftSettings) {
           const { provider, model, effort, fastMode, folderId } = queuedDraftSettings;

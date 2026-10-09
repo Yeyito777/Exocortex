@@ -211,6 +211,11 @@ export function clearActiveToolBackgrounder(convId: string, backgrounder?: Activ
   activeToolBackgrounders.delete(convId);
 }
 
+/** Name of the running tool a steer would move to the background, if any. */
+export function getActiveBackgroundableToolName(convId: string): string | null {
+  return activeToolBackgrounders.get(convId)?.toolName ?? null;
+}
+
 export function backgroundActiveTool(
   convId: string,
   reason: ActiveToolBackgroundReason = "manual",

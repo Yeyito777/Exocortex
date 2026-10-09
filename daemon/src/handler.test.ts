@@ -6,7 +6,7 @@ import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { appendMessages, consumeGoalContinuationAfterStream, create, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, get, getQueuedMessageById, getQueuedMessages, getSummary, listQueuedMessages, pushGlobalIdleQueuedMessage, remove, removeQueuedMessageById, setGoal, updateGoalStatus } from "./conversations";
 import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, defaultEffortForModelId } from "./messages";
-import { appendToStreamingBlock, clearActiveJob, clearActiveSteerHandler, clearCurrentStreamingBlocks, initStreamingState, replaceCurrentStreamingBlocks, setActiveJob, setActiveSteerHandler, setStreamingCommittedMessageCount } from "./streaming";
+import { appendToStreamingBlock, clearActiveJob, clearActiveSteerHandler, clearActiveToolBackgrounder, clearCurrentStreamingBlocks, initStreamingState, replaceCurrentStreamingBlocks, setActiveJob, setActiveSteerHandler, setActiveToolBackgrounder, setStreamingCommittedMessageCount } from "./streaming";
 import { beginPendingSubagentNotification, listPendingSubagentNotifications, removePendingSubagentNotificationsForConversation } from "./subagent-notifications";
 import { getDaemonShutdownMode, resetDaemonShutdownModeForTest } from "./daemon-lifecycle";
 import { invalidateCredentialsCache } from "./auth";
@@ -595,6 +595,37 @@ describe("handler daemon-owned queue", () => {
       clearActiveSteerHandler(id, steer);
       removeQueuedMessageById("steer-later");
       removeQueuedMessageById("steer-now");
+    }
+  });
+
+  test("an ordinary message steers a turn that is only sleeping in chrono", async () => {
+    const id = mkId("queue-chrono");
+    create(id, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
+    setActiveJob(id, new AbortController(), Date.now());
+    const steer = mock(() => {});
+    setActiveSteerHandler(id, steer);
+    const server = {
+      sendTo: mock(() => {}), broadcast: mock(() => {}), sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}), subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+    const bash = { toolName: "bash", background: () => true };
+    const sleep = { toolName: "chrono", background: () => true };
+    try {
+      setActiveToolBackgrounder(id, bash);
+      await handle({} as never, { type: "queue_message", queueId: "during-bash", convId: id, text: "after this", timing: "message-end" });
+      expect(steer).not.toHaveBeenCalled();
+      expect(getQueuedMessageById("during-bash")?.timing).toBe("message-end");
+
+      setActiveToolBackgrounder(id, sleep);
+      await handle({} as never, { type: "queue_message", queueId: "during-sleep", convId: id, text: "wake up", timing: "message-end" });
+      expect(steer).toHaveBeenCalledTimes(1);
+      expect(getQueuedMessageById("during-sleep")?.timing).toBe("next-turn");
+    } finally {
+      clearActiveToolBackgrounder(id);
+      clearActiveSteerHandler(id, steer);
+      removeQueuedMessageById("during-bash");
+      removeQueuedMessageById("during-sleep");
     }
   });
 

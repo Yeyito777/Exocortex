@@ -6,11 +6,13 @@ import {
   cancelChronoSchedule,
   createChronoSchedule,
   deferChronoSleep,
+  formatElapsedDuration,
   listChronoSchedules,
   type RepeatInput,
 } from "../chrono-service";
 import { getWaitableConversationTask, waitForConversationTask } from "../conversation-activity";
 import { completedChronoWaitOutput } from "./chrono-output";
+import { CLAUDE_CODE_INLINE_CHRONO_MAX_MS } from "./chrono-limits";
 import { parseDurationMs } from "./duration";
 
 function action(input: Record<string, unknown>): string {
@@ -48,12 +50,45 @@ function abortableSleep(durationMs: number, signal?: AbortSignal): Promise<void>
   });
 }
 
+function inlineChronoLimitMs(context: Parameters<Tool["execute"]>[1]): number {
+  return context?.provider === "anthropic" ? CLAUDE_CODE_INLINE_CHRONO_MAX_MS : LONG_CHRONO_SLEEP_THRESHOLD_MS;
+}
+
 function undeferrableLongChronoError(kind: "sleep" | "wait", context: Parameters<Tool["execute"]>[1]): string {
-  // Claude Code calls chrono over MCP inside its own agent loop, which Exocortex cannot suspend.
   if (context?.provider === "anthropic") {
-    return `Chrono ${kind}s longer than five minutes cannot suspend a Claude Code turn. Use five minutes or less, or schedule a chrono wake with a message and end your turn.`;
+    return `Chrono ${kind}s longer than ${formatElapsedDuration(CLAUDE_CODE_INLINE_CHRONO_MAX_MS)} cannot run inside a Claude Code turn. Schedule a chrono wake with a message and end your turn.`;
   }
   return `Chrono ${kind}s longer than five minutes must be the only tool call in a model provider round so the turn can be suspended safely. Call chrono ${kind} again by itself.`;
+}
+
+/**
+ * Let a user message end an inline sleep or wait early, as it resumes a
+ * suspended one. A queued steer (or the manual background key) reaches the
+ * running tool through its backgrounder.
+ */
+function interruptibleByUser(context: NonNullable<Parameters<Tool["execute"]>[1]>): {
+  signal: AbortSignal;
+  /** True when the user pressed the background key rather than sending a message. */
+  manual(): boolean;
+  release(): void;
+} {
+  const interrupt = new AbortController();
+  let manual = false;
+  context.registerBackgrounder?.({
+    toolName: "chrono",
+    toolCallId: context.toolCallId,
+    background: (reason) => {
+      if (interrupt.signal.aborted) return false;
+      manual = reason === "manual";
+      interrupt.abort();
+      return true;
+    },
+  });
+  return {
+    signal: interrupt.signal,
+    manual: () => manual,
+    release: () => context.registerBackgrounder?.(null),
+  };
 }
 
 function formatSchedule(schedule: ReturnType<typeof listChronoSchedules>[number]): string {
@@ -88,28 +123,30 @@ async function execute(input: Record<string, unknown>, context: Parameters<Tool[
       } catch (err) {
         return { output: err instanceof Error ? err.message : String(err), isError: true };
       }
-      if (!context.toolCallId || !context.canDeferToolResult) {
+      if (context.toolCallId && context.canDeferToolResult) {
+        const deferred = deferChronoSleep({
+          conversationId: convId,
+          toolCallId: context.toolCallId,
+          startedAt,
+          durationMs: maxWaitMs,
+          wait: { taskId, maxWait, ownerConversationId },
+        });
+        if (!deferred.sleep) return { output: deferred.error ?? "Could not defer Chrono wait.", isError: true };
+        return {
+          output: "",
+          isError: false,
+          deferred: {
+            kind: "chrono_wait",
+            waitId: deferred.sleep.id,
+            startedAt,
+            dueAt: startedAt + maxWaitMs,
+            durationMs: maxWaitMs,
+          },
+        };
+      }
+      if (maxWaitMs > inlineChronoLimitMs(context)) {
         return { output: undeferrableLongChronoError("wait", context), isError: true };
       }
-      const deferred = deferChronoSleep({
-        conversationId: convId,
-        toolCallId: context.toolCallId,
-        startedAt,
-        durationMs: maxWaitMs,
-        wait: { taskId, maxWait, ownerConversationId },
-      });
-      if (!deferred.sleep) return { output: deferred.error ?? "Could not defer Chrono wait.", isError: true };
-      return {
-        output: "",
-        isError: false,
-        deferred: {
-          kind: "chrono_wait",
-          waitId: deferred.sleep.id,
-          startedAt,
-          dueAt: startedAt + maxWaitMs,
-          durationMs: maxWaitMs,
-        },
-      };
     }
     const waitController = new AbortController();
     const limitController = new AbortController();
@@ -120,6 +157,8 @@ async function execute(input: Record<string, unknown>, context: Parameters<Tool[
     };
     if (signal?.aborted) abort();
     else signal?.addEventListener("abort", abort, { once: true });
+    const userInterrupt = interruptibleByUser(context);
+    userInterrupt.signal.addEventListener("abort", abort, { once: true });
     const limit = abortableSleep(maxWaitMs, limitController.signal)
       .then(() => {
         limitReached = true;
@@ -142,9 +181,22 @@ async function execute(input: Record<string, unknown>, context: Parameters<Tool[
       if (limitReached && err instanceof DOMException && err.name === "AbortError") {
         return { output: JSON.stringify({ task_id: taskId, status: "wait_limit_reached", max_wait: maxWait }), isError: false };
       }
+      if (userInterrupt.signal.aborted && !signal?.aborted && err instanceof DOMException && err.name === "AbortError") {
+        return {
+          output: JSON.stringify({
+            task_id: taskId,
+            status: "wait_interrupted",
+            reason: userInterrupt.manual() ? "user_background" : "user_message",
+            elapsed: formatElapsedDuration(Date.now() - startedAt),
+            max_wait: maxWait,
+          }),
+          isError: false,
+        };
+      }
       if (err instanceof DOMException && err.name === "AbortError") throw err;
       return { output: err instanceof Error ? err.message : String(err), isError: true };
     } finally {
+      userInterrupt.release();
       limitController.abort();
       await limit;
       signal?.removeEventListener("abort", abort);
@@ -158,10 +210,7 @@ async function execute(input: Record<string, unknown>, context: Parameters<Tool[
     const startedAt = Date.now();
     const dueAt = startedAt + durationMs;
     const taskId = `chrono:sleep:${context.toolCallId ?? startedAt}`;
-    if (durationMs > LONG_CHRONO_SLEEP_THRESHOLD_MS) {
-      if (!context.toolCallId || !context.canDeferToolResult) {
-        return { output: undeferrableLongChronoError("sleep", context), isError: true };
-      }
+    if (durationMs > LONG_CHRONO_SLEEP_THRESHOLD_MS && context.toolCallId && context.canDeferToolResult) {
       const deferred = deferChronoSleep({
         conversationId: convId,
         toolCallId: context.toolCallId,
@@ -181,16 +230,27 @@ async function execute(input: Record<string, unknown>, context: Parameters<Tool[
         },
       };
     }
+    if (durationMs > inlineChronoLimitMs(context)) {
+      return { output: undeferrableLongChronoError("sleep", context), isError: true };
+    }
     context.setChronoTaskActive?.(taskId, true, {
       title: `Sleeping until ${new Date(dueAt).toISOString()}`,
       startedAt,
       dueAt,
       chronoMode: "sleep",
     });
+    const userInterrupt = interruptibleByUser(context);
     try {
-      await abortableSleep(durationMs, signal);
+      await abortableSleep(durationMs, signal ? AbortSignal.any([signal, userInterrupt.signal]) : userInterrupt.signal);
       return { output: `Sleep finished at ${new Date().toISOString()}.`, isError: false };
+    } catch (err) {
+      if (!userInterrupt.signal.aborted || signal?.aborted) throw err;
+      return {
+        output: `Sleep interrupted after ${formatElapsedDuration(Date.now() - startedAt)} because ${userInterrupt.manual() ? "the user stopped waiting" : "the user sent a message"} (requested ${formatElapsedDuration(durationMs)}).`,
+        isError: false,
+      };
     } finally {
+      userInterrupt.release();
       context.setChronoTaskActive?.(taskId, false);
     }
   }

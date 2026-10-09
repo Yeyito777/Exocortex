@@ -4,6 +4,7 @@ import { chronoInternalsForTest, installMigratedSchedule } from "../chrono-servi
 import { resetConversationActivityForTest, setBackgroundTaskActive, recordBackgroundTaskCompletion } from "../conversation-activity";
 import { create, remove } from "../conversations";
 import { buildExecutor } from "./registry";
+import type { ActiveToolBackgrounder } from "./types";
 
 const conversationIds: string[] = [];
 
@@ -127,16 +128,52 @@ describe("Chrono tool", () => {
     expect(result.output).toContain("must be the only tool call");
   });
 
-  test("a long sleep from Claude Code points at a wake instead of a retry, since its turn cannot suspend", async () => {
+  test("a long sleep from Claude Code runs inside the call and a user message ends it early", async () => {
     const conversationId = makeConversation("long-sleep-claude-code");
+    let backgrounder: ActiveToolBackgrounder | null = null;
+    const pending = buildExecutor({
+      conversationId,
+      provider: "anthropic",
+      registerBackgrounder: (next) => { backgrounder = next; },
+    })([{ id: "toolu_long", name: "chrono", input: { action: "sleep", duration: "2h" } }]);
+    while (!backgrounder) await Bun.sleep(1);
+
+    expect((backgrounder as ActiveToolBackgrounder).background("steer")).toBe(true);
+    const [result] = await pending;
+    expect(result.deferred).toBeUndefined();
+    expect(result.isError).toBe(false);
+    expect(result.output).toMatch(/^Sleep interrupted after .* because the user sent a message \(requested 2h\)\.$/);
+    expect(backgrounder).toBeNull();
+  });
+
+  test("Claude Code is pointed at a wake only past the longest sleep a call can hold", async () => {
+    const conversationId = makeConversation("too-long-sleep-claude-code");
     const [result] = await buildExecutor({ conversationId, provider: "anthropic" })(
-      [{ id: "toolu_long", name: "chrono", input: { action: "sleep", duration: "10m" } }],
+      [{ id: "toolu_too_long", name: "chrono", input: { action: "sleep", duration: "25d" } }],
     );
 
-    expect(result.deferred).toBeUndefined();
     expect(result.isError).toBe(true);
-    expect(result.output).toContain("cannot suspend a Claude Code turn");
+    expect(result.output).toContain("cannot run inside a Claude Code turn");
     expect(result.output).toContain("chrono wake");
+  });
+
+  test("a long wait from Claude Code runs inside the call until the user stops it", async () => {
+    const conversationId = makeConversation("long-wait-claude-code");
+    setBackgroundTaskActive(conversationId, "bash:slow", true, { title: "slow", startedAt: 1 });
+    let backgrounder: ActiveToolBackgrounder | null = null;
+    const pending = buildExecutor({
+      conversationId,
+      provider: "anthropic",
+      registerBackgrounder: (next) => { backgrounder = next; },
+    })([{ id: "toolu_wait", name: "chrono", input: { action: "wait", task_id: "bash:slow", max_wait: "40m" } }]);
+    while (!backgrounder) await Bun.sleep(1);
+
+    (backgrounder as ActiveToolBackgrounder).background("manual");
+    const [result] = await pending;
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.output)).toMatchObject({
+      task_id: "bash:slow", status: "wait_interrupted", reason: "user_background", max_wait: "40m",
+    });
   });
 
   test("a wait above the same five-minute cutoff suspends immediately", async () => {
