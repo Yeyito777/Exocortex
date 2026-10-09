@@ -8,6 +8,7 @@ import { getViewStartFor } from "./chatscroll";
 import { requestVisibleToolOutputs } from "./events/tool-outputs";
 import { prepareConversationOpen } from "./conversationscroll";
 import { beginConversationLoad } from "./events/conversations";
+import { focusConversationById } from "./sidebar";
 import type { Event } from "./protocol";
 import { createGenerationThroughput, generationTokensPerSecond } from "@exocortex/shared/generation-throughput";
 
@@ -676,6 +677,19 @@ describe("remote conversation open placeholder", () => {
     expect(state.messages.at(-1)).toMatchObject({ role: "assistant" });
     // The placeholder's one-line layout must not overwrite the remembered position.
     expect(state.conversationScroll.pendingRestore).toMatchObject({ convId: "target", mode: "percentage", percentage: 0.25 });
+  });
+
+  test("keeps the sidebar cursor where the user moved it during the load", () => {
+    const { state, actions } = openedState();
+    beginConversationLoad(state, "target", actions);
+    expect(state.sidebar.selectedId).toBe("target");
+
+    focusConversationById(state.sidebar, "other");
+    handleEvent(loaded("target"), state, actions);
+
+    expect(state.convId).toBe("target");
+    expect(state.sidebar.selectedItem).toEqual({ type: "conversation", id: "other" });
+    expect(state.sidebar.selectedId).toBe("other");
   });
 
   test("drops an earlier in-flight open after switching again", () => {

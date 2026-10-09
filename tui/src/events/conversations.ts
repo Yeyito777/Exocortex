@@ -154,6 +154,9 @@ export function beginConversationLoad(state: RenderState, convId: string, daemon
     delete state.lastStreamSeqByConv[previousConvId];
   }
   rememberEnteredConversation(state.sidebar, previousConvId, convId);
+  // Focus now, as a local open would. The load lands later, after the user may
+  // have browsed elsewhere in the sidebar, so it must not move the cursor.
+  focusConversationById(state.sidebar, convId);
   clearCallTranscriptDrafts(state);
   state.messages = [];
   clearPendingAI(state);
@@ -285,12 +288,13 @@ export function handleConversationLoaded(
   state.folderInstructionsDoc = null;
   state.convId = event.convId;
   state.conversationLoading = null;
-  if (sameConversation) {
+  if (sameConversation || placeholderLoading) {
     // Same-conversation loads are used for silent rehydration after daemon
-    // reconnects (and other refreshes). Do not move the sidebar into the
-    // conversation's folder in that case; the user may be browsing elsewhere in
-    // the Conversations menu. Still reconcile the selected index in case the
-    // sidebar list/order changed while disconnected.
+    // reconnects (and other refreshes), and placeholder opens focused the
+    // sidebar when the user chose the conversation. Do not move the sidebar
+    // into the conversation's folder in either case; the user may be browsing
+    // elsewhere in the Conversations menu. Still reconcile the selected index
+    // in case the sidebar list/order changed while disconnected.
     syncSelectedIndex(state.sidebar);
   } else {
     focusConversationById(state.sidebar, event.convId);
