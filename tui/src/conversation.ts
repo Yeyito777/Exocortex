@@ -7,7 +7,7 @@
  */
 
 import { CONTEXT_COMPACTION_FINISHED_KIND, REALTIME_TRANSCRIPT_KIND, combineMessageMetadata, type Message, type MessageMetadata, type UserMessageAutomation } from "./messages";
-import type { RenderState } from "./state";
+import { isActiveConversationLoading, type RenderState } from "./state";
 import { renderMetadata } from "./metadata";
 import { activeDurableSleepAssistant } from "./durable-sleep-metadata";
 import { theme } from "./theme";
@@ -32,6 +32,11 @@ export function compactionSpinnerText(startedAt: number, now = Date.now()): stri
 export function historyLoadingSpinnerText(startedAt: number, now = Date.now()): string {
   const frameIndex = Math.max(0, Math.floor((now - startedAt) / COMPACTION_SPINNER_INTERVAL_MS));
   return `${COMPACTION_SPINNER_FRAMES[frameIndex % COMPACTION_SPINNER_FRAMES.length]} Loading...`;
+}
+
+export function conversationLoadingSpinnerText(startedAt: number, now = Date.now()): string {
+  const frameIndex = Math.max(0, Math.floor((now - startedAt) / COMPACTION_SPINNER_INTERVAL_MS));
+  return `${COMPACTION_SPINNER_FRAMES[frameIndex % COMPACTION_SPINNER_FRAMES.length]} Loading conversation...`;
 }
 
 function rightAlignedProvenanceLabel(label: string, availableWidth: number): string {
@@ -228,6 +233,7 @@ export type RenderLineSegment =
   | "compaction_margin_top"
   | "compaction_spinner"
   | "history_loading"
+  | "conversation_loading"
   | "queued_content"
   | "queued_label"
   | "queued_margin_top"
@@ -403,6 +409,14 @@ export function buildMessageLines(
       firstUser = false;
       break;
     }
+  }
+
+  if (startMessageIndex === 0 && isActiveConversationLoading(state)) {
+    pushLine(
+      `  ${theme.dim}${conversationLoadingSpinnerText(state.conversationLoading!.startedAt)}${theme.reset}`,
+      state,
+      "conversation_loading",
+    );
   }
 
   for (let messageIndex = startMessageIndex; messageIndex < state.messages.length; messageIndex++) {

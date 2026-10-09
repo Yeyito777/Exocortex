@@ -1,5 +1,5 @@
 import { getViewStartFor } from "../chatscroll";
-import type { RenderState } from "../state";
+import { isActiveConversationLoading, type RenderState } from "../state";
 
 export function captureScrollPercentage(
   totalLines: number,
@@ -26,7 +26,8 @@ export function scrollOffsetForPercentage(
 
 /** Capture the active conversation's viewport before navigating away. */
 export function rememberCurrentConversationScroll(state: RenderState): void {
-  if (!state.convId || state.folderInstructionsDoc) return;
+  // A loading placeholder's layout says nothing about where the reader was.
+  if (!state.convId || state.folderInstructionsDoc || isActiveConversationLoading(state)) return;
   const percentage = captureScrollPercentage(
     state.layout.totalLines,
     state.layout.messageAreaHeight,
