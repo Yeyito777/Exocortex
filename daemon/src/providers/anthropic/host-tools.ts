@@ -14,15 +14,20 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema, type CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { ToolExecutor } from "../../agent";
 import { CLAUDE_CODE_HOST_TOOL_SERVER, isClaudeCodeHostTool } from "../../tools/claude-code";
+import { exo } from "../../tools/exo";
 
 /** Chrono runs sleeps and waits of up to five minutes inside the call. */
 const HOST_TOOL_TIMEOUT_MS = 10 * 60_000;
 
-const INSTRUCTIONS = [
-  "chrono is this conversation's scheduler. Use it instead of Bash sleep, cron, or polling loops to wait, sleep, or schedule future work.",
-  "A wake with a message starts a new turn in this conversation at the scheduled time, after this turn has ended and across restarts.",
-  "Sleeps and waits run inside the call for at most five minutes; for longer delays, schedule a wake with a message and end your turn.",
-].join(" ");
+/** Server instructions for each offered host tool. */
+const INSTRUCTIONS: Record<string, string | undefined> = {
+  chrono: [
+    "chrono is this conversation's scheduler. Use it instead of Bash sleep, cron, or polling loops to wait, sleep, or schedule future work.",
+    "A wake with a message starts a new turn in this conversation at the scheduled time, after this turn has ended and across restarts.",
+    "Sleeps and waits run inside the call for at most five minutes; for longer delays, schedule a wake with a message and end your turn.",
+  ].join(" "),
+  exo: `exo starts Exocortex subagents, separate from your own Agent tool.\n${exo.systemHint}`,
+};
 
 /** The Exocortex turn a host tool call runs under. */
 export interface HostToolBinding {
@@ -53,9 +58,10 @@ export function createHostToolServer(
   const defs = (tools ?? []).filter(isToolDef).filter(def => isClaudeCodeHostTool(def.name));
   if (!binding || defs.length === 0) return null;
 
+  const instructions = defs.flatMap(def => INSTRUCTIONS[def.name] ?? []).join("\n\n");
   const server = new McpServer(
     { name: CLAUDE_CODE_HOST_TOOL_SERVER, version: "1.0.0" },
-    { capabilities: { tools: {} }, instructions: INSTRUCTIONS },
+    { capabilities: { tools: {} }, ...(instructions ? { instructions } : {}) },
   );
   server.server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: defs.map(def => ({

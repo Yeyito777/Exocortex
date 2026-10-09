@@ -38,7 +38,7 @@ let claudeCodeTools: Map<string, ClaudeCodeTool> | undefined;
 
 export const CLAUDE_CODE_HOST_TOOL_SERVER = "exocortex";
 const HOST_TOOL_PREFIX = `mcp__${CLAUDE_CODE_HOST_TOOL_SERVER}__`;
-const HOST_TOOLS: readonly string[] = ["chrono", "goal"];
+const HOST_TOOLS: readonly string[] = ["chrono", "goal", "exo"];
 
 export function isClaudeCodeHostTool(name: string): boolean {
   return HOST_TOOLS.includes(name);
