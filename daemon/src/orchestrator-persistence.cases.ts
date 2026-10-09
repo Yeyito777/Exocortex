@@ -37,6 +37,12 @@ function server(events: Array<Record<string, unknown>> = []) {
   };
 }
 
+/** Simulate the active goal having run for its whole max-time. */
+function useUpGoalTime(convId: string): void {
+  const goal = get(convId)?.goal;
+  if (goal?.maxTimeMs != null) goal.activeSince = Date.now() - goal.maxTimeMs;
+}
+
 function callbacks(streamMessageFn: typeof streamMessage): OrchestrationCallbacks {
   return {
     onHeaders() {},
@@ -1180,6 +1186,7 @@ describe("DB-first orchestrator persistence", () => {
     let streamCalls = 0;
     const fakeStream = (async (_provider, _messages, _model, streamCallbacks) => {
       streamCalls++;
+      useUpGoalTime(convId);
       streamCallbacks.onText("worked on replacement");
       return {
         text: "worked on replacement", thinking: "", stopReason: "stop" as const,
@@ -1188,7 +1195,7 @@ describe("DB-first orchestrator persistence", () => {
       };
     }) as typeof streamMessage;
     const pending = orchestrateGoalCycle(server() as never, convId, callbacks(fakeStream));
-    setGoal(convId, "replacement objective", { maxTurns: 1 });
+    setGoal(convId, "replacement objective", { maxTimeMs: 60_000 });
 
     expect((await pending).ok).toBe(true);
     await new Promise(resolve => setTimeout(resolve, 0));
@@ -1199,8 +1206,8 @@ describe("DB-first orchestrator persistence", () => {
     expect(String(prompts[0]?.content)).toContain('"replacement objective"');
     expect(String(prompts[0]?.content)).not.toContain("obsolete objective");
     expect(persisted.goal).toMatchObject({
-      objective: "replacement objective", status: "blocked", turns: 1, maxTurns: 1,
-      reason: "Continuation budget exhausted. Set the goal with a larger budget to continue.",
+      objective: "replacement objective", status: "blocked", turns: 1, maxTimeMs: 60_000,
+      reason: "Time limit of 1m reached. Set the goal again with a larger max-time to continue.",
     });
   });
 
@@ -1211,6 +1218,7 @@ describe("DB-first orchestrator persistence", () => {
     let streamCalls = 0;
     const fakeStream = (async (_provider, _messages, _model, streamCallbacks) => {
       streamCalls += 1;
+      useUpGoalTime(convId);
       streamCallbacks.onText("worked only on the replacement");
       return {
         text: "worked only on the replacement",
@@ -1226,7 +1234,7 @@ describe("DB-first orchestrator persistence", () => {
     const stale = orchestrateGoalCycle(server() as never, convId, callbacks(fakeStream));
     updateGoalStatus(convId, "paused", { reason: "Stopped by user." });
     clearStreamHandoff(convId);
-    setGoal(convId, "replacement objective", { maxTurns: 1 });
+    setGoal(convId, "replacement objective", { maxTimeMs: 60_000 });
     const replacement = orchestrateGoalCycle(server() as never, convId, callbacks(fakeStream));
 
     const [staleOutcome, replacementOutcome] = await Promise.all([stale, replacement]);
@@ -1245,8 +1253,8 @@ describe("DB-first orchestrator persistence", () => {
       objective: "replacement objective",
       status: "blocked",
       turns: 1,
-      maxTurns: 1,
-      reason: "Continuation budget exhausted. Set the goal with a larger budget to continue.",
+      maxTimeMs: 60_000,
+      reason: "Time limit of 1m reached. Set the goal again with a larger max-time to continue.",
     });
   });
 
@@ -1358,10 +1366,10 @@ describe("DB-first orchestrator persistence", () => {
     });
   });
 
-  test("counts the final allowed continuation and blocks before exceeding maxTurns", async () => {
-    const convId = id("goal-budget");
+  test("finishes the turn that uses up the time limit and blocks before another continuation", async () => {
+    const convId = id("goal-time-limit");
     create(convId, "openai", "gpt-5.6-sol");
-    setGoal(convId, "make bounded progress", { maxTurns: 2 });
+    setGoal(convId, "make bounded progress", { maxTimeMs: 60_000 });
     const events: Array<Record<string, unknown>> = [];
     let streamCalls = 0;
     let completeCalls = 0;
@@ -1372,6 +1380,7 @@ describe("DB-first orchestrator persistence", () => {
       expect(tools.some(tool => tool.name === "goal")).toBe(true);
       expect(tools.some(tool => tool.name === "send_prompt")).toBe(false);
       streamCalls += 1;
+      if (streamCalls === 2) useUpGoalTime(convId);
       const text = `bounded turn ${streamCalls}`;
       streamCallbacks.onText(text);
       return {
@@ -1404,12 +1413,12 @@ describe("DB-first orchestrator persistence", () => {
     expect(loadPersisted(convId)?.goal).toMatchObject({
       status: "blocked",
       turns: 2,
-      maxTurns: 2,
-      reason: "Continuation budget exhausted. Set the goal with a larger budget to continue.",
+      maxTimeMs: 60_000,
+      reason: "Time limit of 1m reached. Set the goal again with a larger max-time to continue.",
     });
     expect(events).toContainEqual(expect.objectContaining({
       type: "goal_updated",
-      message: "Goal continuation budget exhausted.",
+      message: "Goal time limit reached.",
       goal: expect.objectContaining({ status: "blocked", turns: 2 }),
     }));
   });

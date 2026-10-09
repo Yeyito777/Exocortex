@@ -26,7 +26,8 @@ import type { ImageAttachment } from "@exocortex/shared/messages";
 import type { BackgroundTaskCompletion, ExocortexToolRuntime, ToolExecutionContext } from "./tools/types";
 import { broadcastConversationHistoryUpdated, broadcastConversationUpdated } from "./conversation-events";
 import { quarantineActiveContext } from "./active-context-quarantine";
-import { goalContinuationPrompt as formatGoalContinuation, updateGoalStatus } from "./goals";
+import { goalContinuationPrompt as formatGoalContinuation, goalTimeLimitReason, updateGoalStatus } from "./goals";
+import { goalRemainingMs } from "@exocortex/shared/goals";
 import { createProviderTurnSession, streamMessage } from "./api";
 import { annotateApiMessagesContextTokens, copyContextTokenAttributionsToStoredHistory } from "./context-token-attribution";
 import type { RealtimeCallSpeakerAttribution, StreamingStopReason } from "./protocol";
@@ -381,8 +382,8 @@ async function orchestrateGoalContinuation(
     settleFailedHandoff();
     return buildOutcome(false, result.message);
   }
-  if (!first && initial?.goal?.maxTurns != null && initial.goal.turns >= initial.goal.maxTurns) {
-    const result = updateGoalStatus(convId, "blocked", "Goal continuation budget exhausted.", "Continuation budget exhausted. Set the goal with a larger budget to continue.");
+  if (!first && initial?.goal && goalRemainingMs(initial.goal) === 0) {
+    const result = updateGoalStatus(convId, "blocked", "Goal time limit reached.", goalTimeLimitReason(initial.goal));
     server.sendToSubscribers(convId, { type: "goal_updated", convId, ...result });
     settleFailedHandoff();
     return buildOutcome(true);

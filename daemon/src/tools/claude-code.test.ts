@@ -32,6 +32,7 @@ describe("Claude Code tool display", () => {
 
   test("host tools called over MCP are recorded and summarized as the Exocortex tool", () => {
     expect(exocortexToolName("mcp__exocortex__chrono")).toBe("chrono");
+    expect(exocortexToolName("mcp__exocortex__goal")).toBe("goal");
     expect(exocortexToolName("mcp__exocortex__bash")).toBe("mcp__exocortex__bash");
     expect(exocortexToolName("mcp__other__chrono")).toBe("mcp__other__chrono");
     expect(exocortexToolName("Bash")).toBe("Bash");

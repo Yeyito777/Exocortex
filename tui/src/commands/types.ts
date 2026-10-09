@@ -35,7 +35,7 @@ type CommandAction =
   | { type: "trim_requested"; mode: TrimMode; count: number }
   | { type: "effort_changed"; effort: EffortLevel }
   | { type: "fast_mode_changed"; enabled: FastMode }
-  | { type: "goal"; action: GoalAction; objective?: string; maxTurns?: number }
+  | { type: "goal"; action: GoalAction; objective?: string; maxTimeMs?: number }
   | { type: "rename_conversation"; title: string }
   | { type: "generate_title" }
   | { type: "login"; provider?: ProviderId; apiKey?: string; action?: "add" | "remove"; target?: string; method?: OpenAILoginMethod }

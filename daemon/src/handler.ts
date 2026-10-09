@@ -47,6 +47,7 @@ import {
   broadcastFolderInstructionsUpdated,
 } from "./conversation-events";
 import { applyUserGoalAction, setGoal as setConversationGoal } from "./goals";
+import { scheduleGoalTimeLimit } from "./goal-time-limit";
 import { createExocortexToolRuntime } from "./exocortex-tool-runtime";
 import type { BackgroundTaskCompletion, ExocortexToolRuntime } from "./tools/types";
 import { getSubagentParentConversationId, listActiveConversationTasks, setSubagentActive, stopBackgroundTask } from "./conversation-activity";
@@ -1460,8 +1461,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         const fastMode = supportsFastMode(provider, model, requestedFastMode) ? requestedFastMode : false;
         const initialMessage = cmd.initialMessage;
         const goalObjective = cmd.goalObjective?.trim();
-        if (goalObjective && cmd.goalMaxTurns !== undefined && (!Number.isSafeInteger(cmd.goalMaxTurns) || cmd.goalMaxTurns <= 0)) {
-          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: "Goal max turns must be a positive integer." });
+        if (goalObjective && cmd.goalMaxTimeMs !== undefined && (!Number.isSafeInteger(cmd.goalMaxTimeMs) || cmd.goalMaxTimeMs <= 0)) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: "Goal max time must be a positive number of milliseconds." });
           break;
         }
         const titleContext = cmd.titleContext?.trim();
@@ -1519,8 +1520,9 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             parentSystemInstructions: "",
           });
         }
-        const goalResult = goalObjective ? setConversationGoal(id, goalObjective, { maxTurns: cmd.goalMaxTurns }) : null;
+        const goalResult = goalObjective ? setConversationGoal(id, goalObjective, { maxTimeMs: cmd.goalMaxTimeMs }) : null;
         const goal = goalResult?.goal ?? null;
+        if (goal) scheduleGoalTimeLimit(server, id);
         log("info", `handler: created conversation ${id} (provider=${provider}, model=${model}, fastMode=${fastMode}, title="${title ?? ""}", initialMessage=${Boolean(initialMessage)}, folderId=${folderId ?? "root"})`);
 
         server.sendTo(client, {
@@ -1782,11 +1784,12 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Usage: /goal <objective>" });
             break;
           }
-          const result = setConversationGoal(cmd.convId, objective, { maxTurns: cmd.maxTurns });
+          const result = setConversationGoal(cmd.convId, objective, { maxTimeMs: cmd.maxTimeMs });
           if (!result.ok) {
             server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: result.message });
             break;
           }
+          scheduleGoalTimeLimit(server, cmd.convId);
           if (cancelDeferredChronoSleep(cmd.convId)) broadcastConversationHistoryUpdated(server, cmd.convId);
           const goal = sendGoalUpdated(cmd.convId, cmd.reqId, result.message);
           log("info", `handler: set goal for ${cmd.convId}: "${objective.slice(0, 80)}"`);
@@ -1802,6 +1805,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
 
         if (cmd.action === "resume") {
           const result = applyUserGoalAction(conv, "resume");
+          if (result.ok) scheduleGoalTimeLimit(server, cmd.convId);
           const goal = sendGoalUpdated(cmd.convId, cmd.reqId, result.message);
           if (result.ok && goal?.status === "active" && !convStore.isStreaming(cmd.convId)) {
             void orchestrateGoalCycle(server, cmd.convId, buildOrchestrationCallbacks(cmd.convId), { subagentMaxDepth: null }).catch((err) => {

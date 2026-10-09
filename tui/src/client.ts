@@ -469,13 +469,13 @@ export class DaemonClient {
     convId?: string,
     titleContext?: string,
     startCall?: boolean,
-    goalMaxTurns?: number,
+    goalMaxTimeMs?: number,
   ): void {
     this.send({
       type: "new_conversation",
       ...(convId ? { convId } : {}),
       provider, model, title, titleContext, effort, fastMode, initialMessage, folderId,
-      goalObjective, goalMaxTurns, startCall,
+      goalObjective, goalMaxTimeMs, startCall,
     });
   }
 
@@ -791,8 +791,8 @@ export class DaemonClient {
     this.send({ type: "set_fast_mode", convId, enabled });
   }
 
-  setGoal(convId: string, action: GoalAction, objective?: string, maxTurns?: number): void {
-    this.send({ type: "set_goal", convId, action, objective, maxTurns });
+  setGoal(convId: string, action: GoalAction, objective?: string, maxTimeMs?: number): void {
+    this.send({ type: "set_goal", convId, action, objective, maxTimeMs });
   }
 
   trimConversation(convId: string, mode: TrimMode, count: number): void {

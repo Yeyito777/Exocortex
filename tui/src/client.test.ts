@@ -485,18 +485,18 @@ describe("DaemonClient commands", () => {
     });
   });
 
-  test("can include a continuation budget when setting a goal", () => {
+  test("can include a time limit when setting a goal", () => {
     const client = new DaemonClient(() => {});
     const internal = client as any;
 
-    client.setGoal("conv-1", "set", "finish it", 10);
+    client.setGoal("conv-1", "set", "finish it", 3_600_000);
 
     expect(internal.pendingCommands[0]).toMatchObject({
       type: "set_goal",
       convId: "conv-1",
       action: "set",
       objective: "finish it",
-      maxTurns: 10,
+      maxTimeMs: 3_600_000,
     });
   });
 
@@ -586,16 +586,16 @@ describe("DaemonClient commands", () => {
     });
   });
 
-  test("can include a continuation budget when creating a goal conversation", () => {
+  test("can include a time limit when creating a goal conversation", () => {
     const client = new DaemonClient(() => {});
     const internal = client as any;
 
-    client.createConversation("openai", "gpt-5.4", undefined, "high", false, undefined, null, "finish it", undefined, undefined, undefined, 10);
+    client.createConversation("openai", "gpt-5.4", undefined, "high", false, undefined, null, "finish it", undefined, undefined, undefined, 3_600_000);
 
     expect(internal.pendingCommands[0]).toMatchObject({
       type: "new_conversation",
       goalObjective: "finish it",
-      goalMaxTurns: 10,
+      goalMaxTimeMs: 3_600_000,
     });
   });
 

@@ -5,6 +5,7 @@ import type { ApiToolCall } from "../types";
 import { createHostToolServer } from "./host-tools";
 
 const chronoDef = { name: "chrono", description: "Schedule things.", input_schema: { type: "object" as const, properties: { action: { type: "string" } } } };
+const goalDef = { name: "goal", description: "Report on the goal.", input_schema: { type: "object" as const, properties: { action: { type: "string" } } } };
 const bashDef = { name: "bash", description: "Run a command.", input_schema: { type: "object" } };
 
 async function connect(config: NonNullable<ReturnType<typeof createHostToolServer>>): Promise<Client> {
@@ -22,9 +23,12 @@ describe("Claude Code host tools", () => {
   });
 
   test("lists only host tools, kept out of Claude Code's tool search", async () => {
-    const client = await connect(createHostToolServer([bashDef, chronoDef], async () => [], undefined)!);
+    const client = await connect(createHostToolServer([bashDef, chronoDef, goalDef], async () => [], undefined)!);
     const { tools } = await client.listTools();
-    expect(tools).toEqual([{ name: "chrono", description: "Schedule things.", inputSchema: chronoDef.input_schema, _meta: { "anthropic/alwaysLoad": true } }]);
+    expect(tools).toEqual([
+      { name: "chrono", description: "Schedule things.", inputSchema: chronoDef.input_schema, _meta: { "anthropic/alwaysLoad": true } },
+      { name: "goal", description: "Report on the goal.", inputSchema: goalDef.input_schema, _meta: { "anthropic/alwaysLoad": true } },
+    ]);
     expect(client.getInstructions()).toContain("chrono");
   });
 

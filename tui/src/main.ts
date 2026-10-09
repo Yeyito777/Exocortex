@@ -955,7 +955,7 @@ function handleSubmit(): void {
           state.pendingImages = [];
           state.scrollOffset = 0;
           if (state.convId) {
-            daemon.setGoal(state.convId, cmdResult.action, cmdResult.objective, cmdResult.maxTurns);
+            daemon.setGoal(state.convId, cmdResult.action, cmdResult.objective, cmdResult.maxTimeMs);
           } else if (cmdResult.action === "set" && cmdResult.objective?.trim()) {
             const objective = cmdResult.objective.trim();
             const selection = newConversationSelection(state);
@@ -971,7 +971,7 @@ function handleSubmit(): void {
               undefined,
               undefined,
               undefined,
-              cmdResult.maxTurns,
+              cmdResult.maxTimeMs,
             );
           } else {
             pushSystemMessage(state, "Create or open a conversation before using /goal.", theme.warning);
