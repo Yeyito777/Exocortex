@@ -107,6 +107,7 @@ export function renderQueuePromptOverlay(
   chatW: number,
   chatCol: number,
   sepRow: number,
+  steersInstantly = true,
 ): string {
   // Preview of the message being queued (truncated)
   const previewSource = qp.text.replace(/\n/g, " ");
@@ -124,7 +125,7 @@ export function renderQueuePromptOverlay(
   const titleLine = "Queue message:";
   const msgLine = `"${previewLabel}"`;
   const optLine1 = `${qp.selection === "message-end" ? "▸ " : "  "}message end`;
-  const optLine2 = `${qp.selection === "next-turn" ? "▸ " : "  "}steer now`;
+  const optLine2 = `${qp.selection === "next-turn" ? "▸ " : "  "}${steersInstantly ? "steer now" : "next turn"}`;
   const rawLines = [titleLine, msgLine, ...imageBadges, "", optLine1, optLine2];
   const innerWidth = Math.min(
     Math.max(...rawLines.map((line) => termWidth(line))) + 4,
@@ -133,7 +134,7 @@ export function renderQueuePromptOverlay(
 
   // Indices of the two option lines (always the last two)
   const opt1Idx = rawLines.length - 2; // "message end"
-  const opt2Idx = rawLines.length - 1; // "steer now"
+  const opt2Idx = rawLines.length - 1; // "steer now" / "next turn"
 
   // Build styled lines
   const styledLines: BoxOverlayLine[] = rawLines.map((line, i) => {

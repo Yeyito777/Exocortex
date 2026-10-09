@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { appendMessages, clearActiveToolBackgrounder, clearGoal, clearHistoryUnwindPending, clearStreamHandoff, create, get, getActiveJob, getQueuedMessages, getSummary, isStreaming, isUnread, pin, pushQueuedMessage, remove, requestHistoryUnwind, setActiveToolBackgrounder, setGoal, steerActiveTurn, updateGoalStatus } from "./conversations";
+import { appendMessages, clearActiveToolBackgrounder, clearGoal, clearHistoryUnwindPending, clearStreamHandoff, create, get, getActiveJob, getQueuedMessages, getSummary, isStreaming, isUnread, pin, pushQueuedMessage, remove, requestHistoryUnwind, setActiveToolBackgrounder, setGoal, steerActiveTurn, updateGoalStatus, updateQueuedMessage } from "./conversations";
 import { load as loadPersisted } from "./persistence";
 import { orchestrateCompactConversation, orchestrateGoalCycle, orchestrateReplayConversation, orchestrateSendMessage, type OrchestrationCallbacks } from "./orchestrator";
 import { streamMessage } from "./api";
@@ -373,6 +373,62 @@ describe("instant steering", () => {
     expect(outcome.ok).toBe(true);
     expect(requests).toBe(2);
     expect(getQueuedMessages(convId)).toEqual([]);
+  });
+
+  test("a provider taking queued input itself gets a steer at its own tool boundary, committed as it was sent", async () => {
+    const convId = id("steer-provider-input");
+    create(convId, "anthropic", "claude-opus-5-5");
+    const events: Array<Record<string, unknown>> = [];
+    const backgroundReasons: unknown[] = [];
+    let requests = 0;
+    const fakeStream = (async (_provider, _messages, _model, streamCallbacks, options) => {
+      requests += 1;
+      const queued = options!.queuedInput!;
+      const unsubscribe = queued.subscribe(() => {});
+      try {
+        // Claude Code runs a tool round of its own while a chrono sleep can be backgrounded.
+        streamCallbacks.onToolCall?.({ type: "tool_call", toolCallId: "claude-bash", toolName: "bash", input: {}, summary: "deploy" });
+        setActiveToolBackgrounder(convId, {
+          toolName: "chrono",
+          background: (reason) => { backgroundReasons.push(reason); return true; },
+        });
+        pushQueuedMessage(convId, "use the staging config", "next-turn", undefined, undefined, undefined, "steer-staging");
+        steerActiveTurn(convId);
+        clearActiveToolBackgrounder(convId);
+        streamCallbacks.onToolResult?.({ type: "tool_result", toolCallId: "claude-bash", toolName: "bash", output: "deployed", isError: false });
+        streamCallbacks.onProviderRound?.({
+          blocks: [],
+          messages: [
+            { role: "assistant", content: [{ type: "tool_use", id: "claude-bash", name: "bash", input: {} }] },
+            { role: "user", content: [{ type: "tool_result", tool_use_id: "claude-bash", content: "deployed" }] },
+          ],
+          outputTokens: 1,
+        });
+        await new Promise(resolve => setTimeout(resolve, 0));
+        expect(options?.signal?.aborted).toBe(false);
+
+        // Edited after Claude Code took it in: it joins the turn as it was sent.
+        const [input] = queued.pending();
+        updateQueuedMessage("steer-staging", "use the prod config", "next-turn");
+        expect(await streamCallbacks.onQueuedInput!([input!])).toMatchObject([{ role: "user", content: "use the staging config" }]);
+        return { ...finalAnswer("switched to staging"), transcriptMessages: [{ role: "assistant", content: [{ type: "text", text: "switched to staging" }] }] };
+      } finally {
+        unsubscribe();
+      }
+    }) as typeof streamMessage;
+
+    const outcome = await orchestrateSendMessage(
+      server(events) as never, null, undefined, convId, "deploy it", Date.now(), callbacks(fakeStream),
+    );
+
+    expect(outcome.ok).toBe(true);
+    expect(requests).toBe(1);
+    expect(backgroundReasons).toEqual(["steer"]);
+    const persisted = loadPersisted(convId)!.messages;
+    expect(persisted.map(message => message.role)).toEqual(["user", "assistant", "user", "user", "assistant"]);
+    expect(persisted[3]).toMatchObject({ content: "use the staging config", metadata: { queueEntryId: "steer-staging" } });
+    expect(getQueuedMessages(convId)).toEqual([]);
+    expect(events).toContainEqual(expect.objectContaining({ type: "user_message", queueId: "steer-staging", text: "use the staging config" }));
   });
 
   test("a steer that arrives before the request is sent joins it without a wasted request", async () => {

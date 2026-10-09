@@ -88,6 +88,19 @@ describe("automated user-message provenance", () => {
     });
   }
 
+  test("labels a person's next-turn message as next turn where Claude Code takes it in at a tool boundary", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.queuedMessages.push({ convId: state.convId, text: "Queued message", timing: "next-turn" });
+    const label = (provider: typeof state.provider) => {
+      state.provider = provider;
+      const rendered = buildMessageLines(state, 80);
+      return stripAnsi(rendered.lines[rendered.lineAnchors.findIndex(a => a.segment === "queued_label")]);
+    };
+    expect(label("anthropic")).toContain("queued: next turn");
+    expect(label("openai")).toContain("queued: steer");
+  });
+
   test("bounds delivered provenance and aligns Unicode labels by terminal cells", () => {
     const state = createInitialState();
     state.messages.push({

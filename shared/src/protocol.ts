@@ -748,7 +748,8 @@ export interface RedoDeleteCommand {
  * - "next-turn": joins the active turn. A person's message steers it now: the
  *   response being generated is preempted (its streamed part is kept) and a
  *   backgroundable running tool is moved to the background. Automated entries
- *   wait for the next tool boundary.
+ *   wait for the next tool boundary. Claude Code takes every entry in at its
+ *   own next tool boundary instead, without preempting.
  * - "message-end": starts a new turn after the active one ends.
  */
 export type QueueTiming = "next-turn" | "message-end";

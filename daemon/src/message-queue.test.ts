@@ -14,6 +14,7 @@ import {
   listQueuedMessages,
   loadQueuedMessagesFromDisk,
   moveQueuedMessage,
+  observeQueuedMessages,
   pushGlobalIdleQueuedMessage,
   pushQueuedMessage,
   pushRealtimeQueuedMessage,
@@ -38,6 +39,21 @@ afterAll(() => {
 });
 
 describe("durable daemon message queue", () => {
+  test("tells observers of every change to what a conversation's turn would take, until they stop", () => {
+    let changes = 0;
+    const stop = observeQueuedMessages(() => { changes += 1; });
+    pushQueuedMessage("conv-observed", "first", "next-turn", undefined, undefined, undefined, "observed-1");
+    updateQueuedMessage("observed-1", "edited", "next-turn");
+    suspendQueuedMessageDelivery("conv-observed");
+    resumeQueuedMessageDelivery("conv-observed");
+    removeQueuedMessageById("observed-1");
+    expect(changes).toBe(5);
+
+    stop();
+    pushQueuedMessage("conv-observed", "unobserved", "next-turn");
+    expect(changes).toBe(5);
+  });
+
   test("publishes realtime handoffs but drops their ownerless shadows on reload", () => {
     pushRealtimeQueuedMessage("conv-call", "[realtime delegation]\nqueued", "realtime:call:item");
     expect(listQueuedMessages()).toContainEqual(expect.objectContaining({

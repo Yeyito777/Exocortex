@@ -13,6 +13,7 @@ import {
   type QueuedCommandActions,
 } from "./queue";
 import { createInitialState } from "./state";
+import { renderQueuePromptOverlay } from "./overlays";
 
 function makeImage(): ImageAttachment {
   return {
@@ -140,6 +141,16 @@ describe("queue prompt image handling", () => {
     });
     expect(state.pendingImages).toEqual([]);
     expect(state.queuePrompt).toBeNull();
+  });
+});
+
+describe("queue prompt timing options", () => {
+  test("offers next turn instead of steer now where the provider takes the message in at a tool boundary", () => {
+    const prompt = { text: "use staging", selection: "next-turn" as const };
+    expect(renderQueuePromptOverlay(prompt, 80, 1, 20)).toContain("steer now");
+    const claude = renderQueuePromptOverlay(prompt, 80, 1, 20, false);
+    expect(claude).toContain("next turn");
+    expect(claude).not.toContain("steer now");
   });
 });
 

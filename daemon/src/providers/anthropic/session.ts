@@ -10,6 +10,12 @@
  * background tasks a process still stays briefly after its turn ends or is
  * interrupted, so queued and steering messages continue in it.
  *
+ * Messages queued for the next turn while a turn runs are sent into it as
+ * they are queued, and Claude Code takes them in at its next tool boundary,
+ * as typed input in Claude Code itself (or runs them right after the turn's
+ * result, which then goes on to answer them too). One edited or unqueued
+ * before Claude Code took it is withdrawn.
+ *
  * A process run by a relay (relay.ts) also outlives the daemon. A restart
  * detaches it instead of interrupting its turn, and the next daemon adopts it:
  * the relay replays what the old daemon had not saved, and replaying the
@@ -24,19 +30,27 @@ import { setBackgroundTaskActive } from "../../conversation-activity";
 import { getDaemonShutdownMode } from "../../daemon-lifecycle";
 import { log } from "../../log";
 import type { ApiMessage } from "../../messages";
-import type { StreamResult } from "../types";
+import type { QueuedInput, QueuedInputSource, StreamResult } from "../types";
 import type { HostToolBinding } from "./host-tools";
-import { buildLiveSessionContent, trailingUserMessages } from "./prompt";
+import { buildLiveSessionContent, buildQueuedInputContent, trailingUserMessages } from "./prompt";
 import type { ClaudeRelay } from "./relay-client";
 import { endsInterruptedTurn, startsClaudeTurn, type RelayHistoryMark, type RelayResumePoint } from "./relay-protocol";
-import { commitInterruptedRound, finalizeClaudeStream, pushClaudeMessage, type ClaudeStreamState } from "./stream";
+import { commitInterruptedRound, finalizeClaudeStream, pushClaudeMessage, takeQueuedInput, type ClaudeStreamState } from "./stream";
 import type { AnthropicAssistantProviderData } from "./types";
 
 type SdkRecord = Record<string, unknown>;
 type SdkContent = SDKUserMessage["message"]["content"];
 type ResumeData = AnthropicAssistantProviderData["anthropic"];
 
-export type ClaudeRuntime = Pick<Query, "interrupt" | "stopTask" | "close"> & AsyncIterable<unknown>;
+/** Query controls the SDK has without declaring them. */
+interface QueuedInputControls {
+  /** Withdraw a sent message Claude Code has not taken yet; false once it has. */
+  cancelAsyncMessage?(uuid: string): Promise<boolean>;
+  /** With cancelQueued, also withdraws every sent message it has not taken yet. */
+  interrupt(options?: { cancelQueued?: boolean }): Promise<unknown>;
+}
+
+export type ClaudeRuntime = Pick<Query, "stopTask" | "close"> & QueuedInputControls & AsyncIterable<unknown>;
 export type StartClaudeRuntime = (input: AsyncIterable<SDKUserMessage>, binding: () => Promise<HostToolBinding>) => ClaudeRuntime;
 
 export interface ClaudeCodeSessionHooks {
@@ -163,9 +177,105 @@ interface TaskNote {
   outputFile?: string;
 }
 
+/**
+ * A turn's queued next-turn messages, sent into it as they are queued.
+ * Claude Code reports taking one in (or dropping it) with a command_lifecycle
+ * frame for the uuid it was sent with.
+ */
+class TurnInput {
+  /** Sent and neither taken in nor dropped yet, by uuid. */
+  private readonly sent = new Map<string, QueuedInput>();
+  private readonly withdrawing = new Set<string>();
+  private readonly unsubscribe: () => void;
+  private syncScheduled = false;
+  private ended = false;
+
+  constructor(
+    private readonly source: QueuedInputSource,
+    private readonly send: (uuid: string, input: QueuedInput) => void,
+    private readonly withdraw: (uuid: string) => Promise<boolean>,
+    private readonly dropped: () => void,
+  ) {
+    this.unsubscribe = source.subscribe(() => this.scheduleSync());
+    this.sync();
+  }
+
+  /** Claude Code has messages of this turn it has not taken in yet. */
+  get waiting(): boolean {
+    return this.sent.size > 0;
+  }
+
+  get untaken(): string[] {
+    return [...this.sent.keys()];
+  }
+
+  /** Claude Code took in the message sent as `uuid`; null if it is not one of this turn's. */
+  take(uuid: string): QueuedInput | null {
+    const input = this.sent.get(uuid) ?? null;
+    this.forget(uuid);
+    return input;
+  }
+
+  /** Claude Code dropped the message sent as `uuid`. */
+  drop(uuid: string): void {
+    if (this.forget(uuid)) this.dropped();
+  }
+
+  end(): void {
+    this.ended = true;
+    this.unsubscribe();
+  }
+
+  private forget(uuid: string): boolean {
+    this.withdrawing.delete(uuid);
+    return this.sent.delete(uuid);
+  }
+
+  private scheduleSync(): void {
+    if (this.syncScheduled || this.ended) return;
+    this.syncScheduled = true;
+    queueMicrotask(() => {
+      this.syncScheduled = false;
+      if (!this.ended) this.sync();
+    });
+  }
+
+  /** Send what is newly queued; withdraw what was edited or unqueued since it was sent. */
+  private sync(): void {
+    const pending = this.source.pending();
+    for (const [uuid, sent] of this.sent) {
+      if (this.withdrawing.has(uuid) || pending.some(input => sameInput(input, sent))) continue;
+      this.withdrawing.add(uuid);
+      void this.withdraw(uuid).then((withdrawn) => {
+        if (!this.withdrawing.delete(uuid) || !withdrawn) return;
+        this.drop(uuid);
+        this.scheduleSync();
+      });
+    }
+    for (const input of pending) {
+      // Sent already, or an earlier version is still being withdrawn: Claude Code may take that in instead.
+      if ([...this.sent.values()].some(sent => sent.id === input.id)) continue;
+      const uuid = randomUUID();
+      this.sent.set(uuid, input);
+      this.send(uuid, input);
+    }
+  }
+}
+
+function sameInput(a: QueuedInput, b: QueuedInput): boolean {
+  return a.id === b.id && a.text === b.text && JSON.stringify(a.images ?? []) === JSON.stringify(b.images ?? []);
+}
+
 interface Turn {
   state: ClaudeStreamState;
   binding: HostToolBinding | null;
+  /** The turn's queued next-turn messages, sent in once Claude Code has started the turn. */
+  source: QueuedInputSource | null;
+  input: TurnInput | null;
+  /** Frames that arrive while taken input is committed, in order. */
+  backlog: SdkRecord[] | null;
+  /** The result that ended the turn, once it has. */
+  through?: string;
   finish(result: StreamResult | null, error?: unknown): void;
 }
 
@@ -239,6 +349,8 @@ export class ClaudeCodeSession {
   private discard: { promptUuid: string | null; deadline: ReturnType<typeof setTimeout>; closeAfter: boolean } | null = null;
   private bindingWaiters: Array<{ resolve(binding: HostToolBinding): void; reject(error: Error): void }> = [];
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Claude Code reports what becomes of each message it is sent; without that, queued input waits for the turn to end. */
+  private reportsLifecycle = false;
   private closed = false;
 
   constructor(private readonly convId: string | undefined, key: string, start: StartClaudeRuntime, options: ClaudeCodeSessionOptions = {}) {
@@ -291,7 +403,8 @@ export class ClaudeCodeSession {
   /**
    * Run one Exocortex turn: send `content` (stamped with the state's prompt
    * uuid) and stream until its result, or with null content show the turn
-   * Claude Code is running by itself. `sent` are the messages `content` carries.
+   * Claude Code is running by itself. `sent` are the messages `content`
+   * carries; `queued`, messages queued to join the turn.
    */
   run(
     state: ClaudeStreamState,
@@ -299,6 +412,7 @@ export class ClaudeCodeSession {
     execute: ToolExecutor | undefined,
     signal: AbortSignal | undefined,
     sent: ApiMessage[] = [],
+    queued?: QueuedInputSource,
   ): Promise<StreamResult> {
     if (this.closed) return Promise.reject(new Error("Claude Code exited before finishing the turn."));
     if (this.turn) return Promise.reject(new Error("A Claude Code turn is already running in this conversation."));
@@ -310,6 +424,9 @@ export class ClaudeCodeSession {
       const turn: Turn = {
         state,
         binding: execute ? { execute, signal } : null,
+        source: queued ?? null,
+        input: null,
+        backlog: null,
         finish: (result, error) => {
           clearInterval(heartbeat);
           signal?.removeEventListener("abort", onAbort);
@@ -354,6 +471,8 @@ export class ClaudeCodeSession {
       if (content !== null && this.turn === turn) {
         this.markDelivered(sent.map(deliveryKey));
         this.input.push({ type: "user", uuid: state.promptUuid ?? randomUUID(), message: { role: "user", content }, parent_tool_use_id: null } as SDKUserMessage);
+      } else if (this.turn === turn) {
+        this.startInput(turn);
       }
     });
   }
@@ -385,6 +504,9 @@ export class ClaudeCodeSession {
     this.clearIdleTimer();
     if (this.discard) clearTimeout(this.discard.deadline);
     log("info", `anthropic: ${detaching ? "detaching from" : "closing"} the Claude Code process for ${this.convId ?? "a turn"} (${reason})`);
+    // Queued messages it was sent stay queued for the next daemon's turn to send.
+    if (detaching) for (const uuid of this.turn?.input?.untaken ?? []) void this.withdrawInput(uuid);
+    this.turn?.input?.end();
     // Detached first, so closing the SDK side neither ends its input nor kills it.
     if (detaching) this.relay!.detach();
     this.input.close();
@@ -412,11 +534,13 @@ export class ClaudeCodeSession {
     if (this.closed) return;
     const turn = this.turn;
     this.turn = null;
+    turn?.input?.end();
     turn?.finish(null, error);
     this.close(`it stopped: ${error instanceof Error ? error.message : String(error)}`);
   }
 
   private dispatch(message: SdkRecord): void {
+    if (message.type === "command_lifecycle") this.reportsLifecycle = true;
     const sessionId = str(message.session_id);
     if (sessionId) this.sessionId = sessionId;
     const uuid = str(message.uuid);
@@ -446,7 +570,8 @@ export class ClaudeCodeSession {
       return;
     }
     if (this.turn) {
-      this.deliver(this.turn, message);
+      if (this.turn.backlog) this.turn.backlog.push(message);
+      else this.deliver(this.turn, message);
       return;
     }
     if (this.wakeId !== null || this.held) {
@@ -467,24 +592,98 @@ export class ClaudeCodeSession {
   }
 
   private deliver(turn: Turn, message: SdkRecord): void {
-    let result: StreamResult | null = null;
+    if (message.type === "command_lifecycle") {
+      this.lifecycle(turn, message);
+      return;
+    }
     try {
       this.noteProgress(message);
       pushClaudeMessage(turn.state, message);
-      if (turn.state.done) result = finalizeClaudeStream(turn.state);
     } catch (error) {
-      this.turn = null;
-      turn.finish(null, error);
-      this.close(`its turn failed: ${error instanceof Error ? error.message : String(error)}`);
+      this.failTurn(turn, error);
       return;
     }
-    if (!result) return;
+    if (message.type === "result" && turn.state.done) turn.through = str(message.uuid);
+    this.complete(turn);
+  }
+
+  /** End the turn at its result, unless Claude Code has queued input of it still to take in. */
+  private complete(turn: Turn): void {
+    if (this.turn !== turn || !turn.state.done || turn.backlog || turn.input?.waiting) return;
+    let result: StreamResult;
+    try {
+      result = finalizeClaudeStream(turn.state);
+    } catch (error) {
+      this.failTurn(turn, error);
+      return;
+    }
     this.turn = null;
+    turn.input?.end();
     turn.finish(result);
-    this.committed(result.assistantProviderData?.anthropic, str(message.uuid));
+    this.committed(result.assistantProviderData?.anthropic, turn.through);
     // Kept briefly even without tasks: a task that ended late in the turn can
     // still get a turn of its own, and a quick follow-up reuses the process.
     this.settle();
+  }
+
+  private failTurn(turn: Turn, error: unknown): void {
+    if (this.turn !== turn) return;
+    this.turn = null;
+    turn.input?.end();
+    turn.finish(null, error);
+    this.close(`its turn failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  /** What became of a message Claude Code was sent. */
+  private lifecycle(turn: Turn, message: SdkRecord): void {
+    const uuid = str(message.command_uuid);
+    if (!uuid) return;
+    if (message.state === "started") {
+      // Queued input waits until the turn's own prompt has started, so that prompt is taken first.
+      if (uuid === turn.state.promptUuid) this.startInput(turn);
+      const input = turn.input?.take(uuid);
+      if (input) this.takeInput(turn, uuid, input);
+    } else if (message.state === "cancelled") {
+      turn.input?.drop(uuid);
+    }
+  }
+
+  private startInput(turn: Turn): void {
+    if (turn.input || !turn.source || !this.reportsLifecycle || this.turn !== turn) return;
+    turn.input = new TurnInput(
+      turn.source,
+      (uuid, input) => this.input.push({ type: "user", uuid, priority: "next", message: { role: "user", content: buildQueuedInputContent(input) }, parent_tool_use_id: null } as SDKUserMessage),
+      (uuid) => this.withdrawInput(uuid),
+      () => this.complete(turn),
+    );
+  }
+
+  private withdrawInput(uuid: string): Promise<boolean> {
+    const withdrawn = this.runtime.cancelAsyncMessage?.(uuid) ?? Promise.resolve(false);
+    return withdrawn.catch((error) => {
+      log("warn", `anthropic: withdrawing a queued message from Claude Code failed: ${error instanceof Error ? error.message : error}`);
+      return false;
+    });
+  }
+
+  /**
+   * Claude Code took in queued input: commit it to the conversation where it
+   * joined the turn, holding what Claude Code sends meanwhile.
+   */
+  private takeInput(turn: Turn, uuid: string, input: QueuedInput): void {
+    const onQueuedInput = turn.state.callbacks.onQueuedInput;
+    takeQueuedInput(turn.state, uuid);
+    if (!onQueuedInput) return;
+    turn.backlog = [];
+    onQueuedInput([input]).then((messages) => {
+      this.markDelivered(messages.map(deliveryKey));
+      const backlog = turn.backlog ?? [];
+      turn.backlog = null;
+      for (const message of backlog) this.route(message);
+    }, (error) => {
+      turn.backlog = null;
+      this.failTurn(turn, error);
+    });
   }
 
   /**
@@ -500,15 +699,29 @@ export class ClaudeCodeSession {
       return;
     }
     this.turn = null;
+    // Queued messages Claude Code has not taken in stay queued for the next turn.
+    const untaken = turn.input?.untaken ?? [];
+    turn.input?.end();
     commitInterruptedRound(turn.state);
     turn.finish(null, createAbortError());
     if (this.closed) return;
-    // Everything read so far is saved; the relay drops the rest of the turn.
-    this.relay?.commit(this.lastSeenUuid, null, { promptUuid: turn.state.promptUuid });
-    const deadline = setTimeout(() => this.close("its interrupted turn did not end"), INTERRUPT_GRACE_MS);
-    deadline.unref?.();
-    this.discard = { promptUuid: turn.state.promptUuid, deadline, closeAfter: this.adopted };
-    this.runtime.interrupt().catch((error) => this.fail(error));
+    if (turn.state.done) {
+      // Its result is in: Claude Code was only still to take in queued input.
+      this.relay?.commit(this.lastSeenUuid, null);
+      for (const uuid of untaken) void this.withdrawInput(uuid);
+    } else {
+      // The Claude Code turn now running answers the last queued input it took in, or the prompt.
+      const promptUuid = turn.state.inputUuids.at(-1) ?? turn.state.promptUuid;
+      // Everything read so far is saved; the relay drops the rest of the turn.
+      this.relay?.commit(this.lastSeenUuid, null, { promptUuid });
+      const deadline = setTimeout(() => this.close("its interrupted turn did not end"), INTERRUPT_GRACE_MS);
+      deadline.unref?.();
+      this.discard = { promptUuid, deadline, closeAfter: this.adopted };
+      this.runtime.interrupt(untaken.length > 0 ? { cancelQueued: true } : undefined).catch((error) => this.fail(error));
+    }
+    const backlog = turn.backlog ?? [];
+    turn.backlog = null;
+    for (const message of backlog) this.route(message);
   }
 
   private requestWake(): void {

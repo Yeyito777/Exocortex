@@ -1,4 +1,4 @@
-import type { ModelId, EffortLevel, ApiMessage, ProviderId, ModelInfo, UsageData, ToolCallBlock, ToolResultBlock, TokenTrackingContext } from "../messages";
+import type { ModelId, EffortLevel, ApiMessage, ProviderId, ModelInfo, UsageData, ToolCallBlock, ToolResultBlock, TokenTrackingContext, ImageAttachment } from "../messages";
 import type { OAuthProfile, StoredTokens } from "../store";
 import type { AssistantProviderData } from "./provider-data";
 import type { ToolExecutor } from "../agent";
@@ -98,6 +98,33 @@ export interface StreamCallbacks {
    * the same measure the agent loop takes of its own requests.
    */
   onGenerationRate?: (tokensPerSecond: number) => void;
+  /**
+   * A provider running its own agent loop took these queued inputs (see
+   * StreamOptions.queuedInput) into its request: they join the turn here,
+   * after the rounds reported so far. Resolves with their user messages.
+   */
+  onQueuedInput?: (inputs: QueuedInput[]) => Promise<ApiMessage[]>;
+}
+
+/** A queued next-turn message. */
+export interface QueuedInput {
+  /** The queue entry it is. */
+  id: string;
+  text: string;
+  images?: ImageAttachment[];
+}
+
+/**
+ * The turn's queued next-turn messages, for a provider that runs its own
+ * agent loop and takes input into it as it goes (Claude Code, at its next
+ * tool boundary). A subscribed provider delivers them itself, so the turn
+ * does not preempt its request to steer.
+ */
+export interface QueuedInputSource {
+  /** Messages waiting to join the turn, oldest first. */
+  pending(): QueuedInput[];
+  /** Calls `listener` whenever pending() may have changed. Returns a function that unsubscribes. */
+  subscribe(listener: () => void): () => void;
 }
 
 /**
@@ -165,6 +192,8 @@ export interface StreamOptions {
   workingDirectory?: string;
   /** The turn's Exocortex tool executor, for providers that run their own agent and expose some Exocortex tools to it. */
   toolExecutor?: ToolExecutor;
+  /** The turn's queued next-turn messages, for providers that run their own agent loop. */
+  queuedInput?: QueuedInputSource;
   /** Request a provider-native context checkpoint instead of an assistant reply. */
   compaction?: boolean;
   /** Shared cap for all native-compaction request submissions and transports. */

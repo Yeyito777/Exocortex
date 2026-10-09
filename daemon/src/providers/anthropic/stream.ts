@@ -32,6 +32,8 @@ export interface ClaudeStreamState {
   cwd: string;
   /** uuid of the prompt Exocortex sent; only the result answering it ends the turn. Null ends on any result. */
   promptUuid: string | null;
+  /** uuids of queued input Claude Code took into the turn; a result answering one ends it too. */
+  inputUuids: string[];
   /** Blocks and messages not yet committed as a round. */
   blocks: ContentBlock[];
   messages: ApiMessage[];
@@ -72,6 +74,7 @@ export function createClaudeStreamState(
     callbacks,
     cwd,
     promptUuid,
+    inputUuids: [],
     blocks: [],
     messages: [],
     toolNames: new Map(),
@@ -283,6 +286,18 @@ function handleUserMessage(state: ClaudeStreamState, message: SdkRecord): void {
   if (closedToolUse && state.openToolUses.size === 0) commitRound(state);
 }
 
+/**
+ * Claude Code took queued input into the turn here: at a tool boundary, or as
+ * the turn it runs right after the result. Hand what came before it to the
+ * agent loop as a round, so the input follows it, and go on to the result
+ * that answers it.
+ */
+export function takeQueuedInput(state: ClaudeStreamState, uuid: string): void {
+  if (state.openToolUses.size === 0) commitRound(state);
+  state.inputUuids.push(uuid);
+  state.done = false;
+}
+
 const INTERRUPTED_TOOL_OUTPUT = "Interrupted before this tool call finished.";
 
 /**
@@ -312,7 +327,7 @@ function answersPrompt(state: ClaudeStreamState, message: SdkRecord): boolean {
   const uuids = Array.isArray(message.user_message_uuids)
     ? message.user_message_uuids
     : typeof message.user_message_uuid === "string" ? [message.user_message_uuid] : [];
-  if (uuids.length > 0) return uuids.includes(state.promptUuid);
+  if (uuids.length > 0) return uuids.some(uuid => uuid === state.promptUuid || state.inputUuids.includes(uuid));
   return asRecord(message.origin)?.kind !== "task-notification";
 }
 

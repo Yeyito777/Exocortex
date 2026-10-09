@@ -8,6 +8,8 @@ import { isFastMode } from "@exocortex/shared/messages";
  * - "steer now": the daemon interrupts the response being generated (keeping
  *   what was already streamed), backgrounds a running shell command, and
  *   injects the message into the same turn (QueueTiming "next-turn")
+ * - "next turn", instead of "steer now" for Claude Code, which takes the
+ *   message into the same turn at its next tool boundary
  *
  * j/k and arrow keys toggle the selection. Enter confirms, Escape cancels.
  *
@@ -17,7 +19,7 @@ import { isFastMode } from "@exocortex/shared/messages";
 
 import type { KeyEvent } from "./input";
 import { randomUUID } from "node:crypto";
-import type { ImageAttachment } from "./messages";
+import type { ImageAttachment, ProviderId } from "./messages";
 import type { RenderState, QueueTiming, QueueWaitTarget, QueuedMessage } from "./state";
 import type { QueuedCommandInvocation } from "./protocol";
 import { expandMacros } from "./macros";
@@ -48,7 +50,12 @@ export function formatQueueDueTime(dueAt: number, now = Date.now(), withSeconds 
   return `${due.toLocaleDateString("en-US", { month: "short", day: "numeric" })} ${time}`;
 }
 
-export function queueTimingLabel(message: QueuedMessage, now = Date.now()): string {
+/** Whether a person's next-turn message steers the provider's active turn at once, rather than at its next tool boundary (Claude Code). */
+export function steersInstantly(provider: ProviderId | undefined): boolean {
+  return provider !== "anthropic";
+}
+
+export function queueTimingLabel(message: QueuedMessage, now = Date.now(), provider?: ProviderId): string {
   if (isGlobalIdleQueuedMessage(message)) {
     const waitTarget = queueWaitTargetOf(message);
     if (waitTarget.type === "delay") {
@@ -63,7 +70,7 @@ export function queueTimingLabel(message: QueuedMessage, now = Date.now()): stri
   if (message.timing !== "next-turn") return "queued: message end";
   // Automated and realtime next-turn entries wait for a tool boundary; only a
   // person's next-turn message steers the active turn immediately.
-  return message.automation || message.source === "realtime" ? "queued: next turn" : "queued: steer";
+  return message.automation || message.source === "realtime" || !steersInstantly(provider) ? "queued: next turn" : "queued: steer";
 }
 
 function queueDisplayBucket(message: QueuedMessage): number {

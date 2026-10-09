@@ -37,6 +37,7 @@ type QueueChangedListener = (messages: QueuedMessageInfo[]) => void;
 
 let messages: QueuedMessage[] = [];
 let changedListener: QueueChangedListener | null = null;
+const observers = new Set<() => void>();
 /** Ephemeral delivery gates used by destructive operations such as unwind. */
 const deliverySuspended = new Set<string>();
 let persistenceFailureForTest: Error | null = null;
@@ -75,12 +76,23 @@ function mutateAndCommit<T>(mutation: () => T): T {
     throw error;
   }
   changedListener?.(listQueuedMessages());
+  notifyObservers();
   return result;
+}
+
+function notifyObservers(): void {
+  for (const observer of [...observers]) observer();
 }
 
 /** Install the daemon-server broadcaster/scheduler hook. */
 export function setQueuedMessagesChangedListener(listener: QueueChangedListener | null): void {
   changedListener = listener;
+}
+
+/** Call `observer` after every change to what getQueuedMessages returns. Returns a function that stops it. */
+export function observeQueuedMessages(observer: () => void): () => void {
+  observers.add(observer);
+  return () => { observers.delete(observer); };
 }
 
 /** Load queue state after conversations have loaded, dropping already-accepted crash-window entries. */
@@ -102,6 +114,7 @@ export function loadQueuedMessagesFromDisk(deliveredQueueIds: ReadonlySet<string
     persistence.acknowledgeRecoveredUnwindQueueCleanup();
   }
   changedListener?.(listQueuedMessages());
+  notifyObservers();
   return messages.length;
 }
 
@@ -133,10 +146,12 @@ export function hasQueuedUserSteer(convId: string): boolean {
 
 export function suspendQueuedMessageDelivery(convId: string): void {
   deliverySuspended.add(convId);
+  notifyObservers();
 }
 
 export function resumeQueuedMessageDelivery(convId: string): void {
   deliverySuspended.delete(convId);
+  notifyObservers();
 }
 
 export function isQueuedMessageDeliverySuspended(convId: string): boolean {

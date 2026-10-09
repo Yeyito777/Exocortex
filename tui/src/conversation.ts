@@ -615,7 +615,7 @@ export function buildMessageLines(
     );
     for (const qm of queued) {
       const provenance = automationProvenance(qm.automation);
-      const timingLabel = [provenance, queueTimingLabel(qm)].filter((label): label is string => Boolean(label)).join(" · ");
+      const timingLabel = [provenance, queueTimingLabel(qm, Date.now(), state.provider)].filter((label): label is string => Boolean(label)).join(" · ");
       pushLine("", qm, "queued_margin_top");
       // Render a dimmed user bubble
       const background = qm.automation ? theme.automatedUserBg : theme.userBg;
