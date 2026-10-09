@@ -255,6 +255,9 @@ export async function runAgentLoop(
     // round as it finishes. Commit it like this loop's own rounds below, so it
     // is persisted, displayed from canonical entries and recoverable mid-turn.
     let providerRoundOutputTokens = 0;
+    // Such a provider also times each of its API calls; the request as a whole
+    // spans several calls and their tools, so it is not timed here.
+    let providerMeasuredRates = false;
     const commitProviderRound = (providerRound: ProviderRound) => {
       roundEmittedOutput = true;
       if (providerRound.inputTokens) {
@@ -265,9 +268,6 @@ export async function runAgentLoop(
         providerRoundOutputTokens += providerRound.outputTokens;
         totalOutputTokens += providerRound.outputTokens;
         callbacks.onTokensUpdate(totalOutputTokens);
-        if (providerRound.generationMs && providerRound.generationMs > 0) {
-          callbacks.onGenerationRate?.(providerRound.outputTokens / (providerRound.generationMs / 1000));
-        }
       }
       // The rest of the request is measured from here.
       generationTimer.reset();
@@ -320,6 +320,10 @@ export async function runAgentLoop(
           onRetryWaitStart: () => { generationTimer.retry(); callbacks.onRetryWaitStart?.(); },
           onRetryWaitEnd: callbacks.onRetryWaitEnd,
           onProviderRound: commitProviderRound,
+          onGenerationRate: (rate) => {
+            providerMeasuredRates = true;
+            callbacks.onGenerationRate?.(rate);
+          },
         }, {
           system: options.system,
           signal: options.signal,
@@ -340,7 +344,7 @@ export async function runAgentLoop(
           diagnosticMessages,
         });
         profile?.mark("provider_end");
-        generationRate = generationTimer.rate(Math.max(0, (result.outputTokens ?? 0) - providerRoundOutputTokens));
+        generationRate = providerMeasuredRates ? null : generationTimer.rate(Math.max(0, (result.outputTokens ?? 0) - providerRoundOutputTokens));
         for (const message of messages) diagnosticsSubmittedMessages.add(message);
         break;
       } catch (error) {

@@ -587,7 +587,7 @@ describe("tool-call presentation", () => {
 });
 
 describe("provider-executed rounds", () => {
-  test("commit mid-request like the loop's own rounds, without double counting tokens", async () => {
+  test("commit mid-request like the loop's own rounds, without double counting tokens; the provider times its own calls", async () => {
     let now = 0;
     const agentState = state();
     const events: string[] = [];
@@ -605,12 +605,13 @@ describe("provider-executed rounds", () => {
         messages: [toolUse, toolResult],
         outputTokens: 40,
         inputTokens: 5_000,
-        generationMs: 500,
       });
+      cb.onGenerationRate?.(80);
       // The round is durable before the request ends.
       expect(agentState.completedMessages).toEqual([toolUse, toolResult]);
       expect(agentState.completedBlocks.map(block => block.type)).toEqual(["tool_call", "tool_result"]);
       now += 2_000;
+      cb.onGenerationRate?.(55);
       return {
         text: "One file.", thinking: "", stopReason: "stop",
         blocks: [{ type: "text", text: "One file." }],
@@ -629,7 +630,8 @@ describe("provider-executed rounds", () => {
     }), { streamMessageFn: fakeStream, generationNow: () => now, state: agentState });
 
     expect(events).toEqual(["context:5000", "tokens:40", "round", "tokens:100", "context:5100"]);
-    expect(rates).toEqual([80, 30]);
+    // Not also the whole request's tokens over its wall time (tools included).
+    expect(rates).toEqual([80, 55]);
     expect(result.newMessages).toEqual([toolUse, toolResult, final]);
     expect(result.blocks.map(block => block.type)).toEqual(["tool_call", "tool_result", "text"]);
     expect(result.tokens).toBe(100);

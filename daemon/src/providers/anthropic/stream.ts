@@ -39,9 +39,13 @@ export interface ClaudeStreamState {
   openToolUses: Set<string>;
   /** Output tokens already reported with committed rounds. */
   committedOutputTokens: number;
-  roundStartedAt: number;
-  /** When the current round's model output last finished streaming. */
-  generationEndedAt: number | null;
+  now: () => number;
+  /** When Claude Code last reported sending an API request. */
+  requestedAt: number | null;
+  /** When the main-thread API call now streaming was requested; null between calls. */
+  callStartedAt: number | null;
+  /** The call hit an API retry; like the agent loop's retried requests, it is not timed. */
+  callRetried: boolean;
   sessionId: string | null;
   lastChainUuid: string | null;
   /** Context size of the latest API call (prompt incl. cache reads/writes). */
@@ -57,7 +61,12 @@ export interface ClaudeStreamState {
   stopReason: string;
 }
 
-export function createClaudeStreamState(callbacks: StreamCallbacks, cwd: string, promptUuid: string | null = null): ClaudeStreamState {
+export function createClaudeStreamState(
+  callbacks: StreamCallbacks,
+  cwd: string,
+  promptUuid: string | null = null,
+  now: () => number = () => performance.now(),
+): ClaudeStreamState {
   return {
     callbacks,
     cwd,
@@ -67,8 +76,10 @@ export function createClaudeStreamState(callbacks: StreamCallbacks, cwd: string,
     toolNames: new Map(),
     openToolUses: new Set(),
     committedOutputTokens: 0,
-    roundStartedAt: performance.now(),
-    generationEndedAt: null,
+    now,
+    requestedAt: null,
+    callStartedAt: null,
+    callRetried: false,
     sessionId: null,
     lastChainUuid: null,
     outputTokens: 0,
@@ -128,6 +139,8 @@ function handleStreamEvent(state: ClaudeStreamState, event: SdkRecord): void {
         state.cacheMissInputTokens = fresh + cacheWrite;
       }
       state.currentCallOutputTokens = 0;
+      state.callStartedAt = state.requestedAt ?? state.now();
+      state.requestedAt = null;
       cb.onFirstResponseEvent?.();
       return;
     }
@@ -166,12 +179,28 @@ function handleStreamEvent(state: ClaudeStreamState, event: SdkRecord): void {
         state.outputTokens += usage.output_tokens - state.currentCallOutputTokens;
         state.currentCallOutputTokens = usage.output_tokens;
       }
-      state.generationEndedAt = performance.now();
+      reportCallRate(state);
       return;
     }
     default:
       cb.onActivity?.();
   }
+}
+
+/**
+ * Rate of the API call that just finished, timed like the agent loop times its
+ * own requests: from sending it to its last token. Rounds cannot be timed
+ * instead: Claude Code runs tools while the model is still generating, so a
+ * round's tool results can arrive before its call ends.
+ */
+function reportCallRate(state: ClaudeStreamState): void {
+  const startedAt = state.callStartedAt;
+  const retried = state.callRetried;
+  state.callStartedAt = null;
+  state.callRetried = false;
+  if (startedAt === null || retried || state.currentCallOutputTokens <= 0) return;
+  const seconds = (state.now() - startedAt) / 1000;
+  if (seconds > 0) state.callbacks.onGenerationRate?.(state.currentCallOutputTokens / seconds);
 }
 
 function handleAssistantMessage(state: ClaudeStreamState, message: SdkRecord): void {
@@ -227,13 +256,10 @@ function commitRound(state: ClaudeStreamState, resumable = true): void {
     messages: state.messages,
     outputTokens: state.outputTokens - state.committedOutputTokens,
     inputTokens: state.inputTokens,
-    ...(state.generationEndedAt !== null ? { generationMs: state.generationEndedAt - state.roundStartedAt } : {}),
   };
   state.blocks = [];
   state.messages = [];
   state.committedOutputTokens = state.outputTokens;
-  state.roundStartedAt = performance.now();
-  state.generationEndedAt = null;
   onProviderRound(round);
 }
 
@@ -353,6 +379,9 @@ export function pushClaudeMessage(state: ClaudeStreamState, message: SdkRecord):
     }
     case "system": {
       if (message.subtype === "compact_boundary") log("info", "anthropic: Claude Code compacted its session context");
+      // A request sent while a main-thread call streams is a subagent's.
+      if (message.subtype === "status" && message.status === "requesting" && state.callStartedAt === null) state.requestedAt = state.now();
+      if (message.subtype === "api_retry") state.callRetried = true;
       state.callbacks.onActivity?.();
       return;
     }
