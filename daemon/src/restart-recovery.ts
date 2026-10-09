@@ -263,7 +263,8 @@ function buildRecoveryCallbacks(server: DaemonServer, convId: string) {
   };
 }
 
-export function recoverInterruptedStreams(server: DaemonServer): string[] {
+/** `alsoReplay`: conversations to replay even if no stream was recorded as interrupted. */
+export function recoverInterruptedStreams(server: DaemonServer, alsoReplay: readonly string[] = []): string[] {
   let convIds: string[];
   try {
     convIds = readInterruptedStreamIds();
@@ -275,6 +276,7 @@ export function recoverInterruptedStreams(server: DaemonServer): string[] {
     // the generic interrupted-stream marker was damaged.
     convIds = [];
   }
+  convIds = normalizeConvIds([...convIds, ...alsoReplay]);
 
   const persistedRunningNotifications = listPendingSubagentNotifications({ state: "running" });
   const completedBeforeSettlement = new Set<string>();

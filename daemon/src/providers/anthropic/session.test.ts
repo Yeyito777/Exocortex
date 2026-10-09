@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import { isDetachedTurnError } from "../../abort";
 import { getConversationTasks, stopBackgroundTask } from "../../conversation-activity";
 import type { ApiMessage } from "../../messages";
 import type { ProviderRound, StreamCallbacks } from "../types";
@@ -11,7 +12,11 @@ import {
   openClaudeCodeSession,
   type ClaudeCodeSession,
   type ClaudeRuntime,
+  deliveryKey,
+  historyMark,
 } from "./session";
+import type { ClaudeRelay } from "./relay-client";
+import type { RelayHello, RelayResumePoint } from "./relay-protocol";
 import { createClaudeStreamState } from "./stream";
 
 const SESSION = "22222222-2222-2222-2222-222222222222";
@@ -102,6 +107,51 @@ function open(): { convId: string; session: ClaudeCodeSession; runtime: () => Fa
     return runtime as unknown as ClaudeRuntime;
   });
   return { convId, session, runtime: () => runtime! };
+}
+
+/** Stands in for a relay: records the bookkeeping the session reports. */
+class FakeRelay {
+  commits: Array<{ through: string | null; resume: RelayResumePoint | null; interrupted?: { promptUuid: string | null } }> = [];
+  deliveredKeys: string[] = [];
+  detached = false;
+  terminated = false;
+  constructor(readonly hello: RelayHello | null = null) {}
+  commit(through: string | null, resume: RelayResumePoint | null, interrupted?: { promptUuid: string | null }) {
+    this.commits.push({ through, resume, ...(interrupted ? { interrupted } : {}) });
+  }
+  delivered(keys: string[]) {
+    this.deliveredKeys.push(...keys);
+  }
+  detach() {
+    this.detached = true;
+  }
+  async terminate() {
+    this.terminated = true;
+  }
+}
+
+function openWithRelay(relay: FakeRelay, resume: RelayResumePoint | null = null) {
+  const convId = `claude-session-test-${Date.now()}-${convCounter++}`;
+  let runtime: FakeRuntime | null = null;
+  const session = openClaudeCodeSession(convId, KEY, (input) => {
+    runtime = new FakeRuntime(input);
+    return runtime as unknown as ClaudeRuntime;
+  }, { relay: relay as unknown as ClaudeRelay, resume: resume ? { ...resume, cwd: "/work" } : null });
+  return { convId, session, runtime: () => runtime! };
+}
+
+function adoptedHello(overrides: Partial<RelayHello> = {}): RelayHello {
+  return {
+    event: "hello",
+    version: 1,
+    pid: 1,
+    meta: { convId: "unused", key: KEY, cwd: "/work", hostTools: [], resume: null },
+    resume: { sessionId: SESSION, resumeAt: "u1" },
+    delivered: [],
+    pending: true,
+    taskStarts: {},
+    ...overrides,
+  };
 }
 
 function wakeMessage(wake: { text: string; id: string }): ApiMessage {
@@ -197,8 +247,9 @@ describe("Claude Code processes outliving a turn", () => {
     await tick();
     await session.run(createClaudeStreamState(callbacks(), "/work", null), null, undefined, undefined);
 
-    const input = session.planInput([wakeMessage(wakes[0]), { role: "user", content: "now deploy" }]);
-    expect(input).toEqual({ kind: "prompt", content: [{ type: "text", text: "now deploy" }] });
+    const deploy: ApiMessage = { role: "user", content: "now deploy" };
+    const input = session.planInput([wakeMessage(wakes[0]), deploy]);
+    expect(input).toEqual({ kind: "prompt", content: [{ type: "text", text: "now deploy" }], messages: [deploy] });
     expect(session.planInput([wakeMessage(wakes[0])])).toEqual({ kind: "none" });
   });
 
@@ -282,5 +333,94 @@ describe("Claude Code processes outliving a turn", () => {
     expect(session.canContinue(claudeSessionKey("claude-sonnet-5-5", "high", "/work"), { sessionId: SESSION, resumeAt: "a2", cwd: "/work" })).toBe(false);
     expect(session.canContinue(KEY, { sessionId: SESSION, resumeAt: "u1", cwd: "/work" })).toBe(false);
     expect(session.canContinue(KEY, null)).toBe(false);
+  });
+});
+
+describe("Claude Code processes outliving the daemon", () => {
+  test("a daemon restart detaches the turn instead of interrupting it", async () => {
+    const relay = new FakeRelay();
+    const { convId, session, runtime } = openWithRelay(relay);
+    const controller = new AbortController();
+    const turn = session.run(createClaudeStreamState(callbacks(), "/work", "p1"), [{ type: "text", text: "build it" }], undefined, controller.signal);
+    await tick();
+    runtime().emit(init, call("a1", "t1", "make"));
+    await tick();
+    controller.abort("daemon-restart");
+    const error = await turn.catch((caught: unknown) => caught);
+    expect(isDetachedTurnError(error)).toBe(true);
+    expect(runtime().interrupts).toBe(0);
+    expect(relay.detached).toBe(true);
+    expect(session.isClosed).toBe(true);
+    expect(getClaudeCodeSession(convId)).toBeUndefined();
+  });
+
+  test("reports each saved round and turn to the relay, with the messages it was sent", async () => {
+    const relay = new FakeRelay();
+    const { session, runtime } = openWithRelay(relay);
+    const prompt: ApiMessage = { role: "user", content: "build it", metadata: { startedAt: 1 } as ApiMessage["metadata"] };
+    const turn = session.run(createClaudeStreamState(callbacks(), "/work", "p1"), [{ type: "text", text: "build it" }], undefined, undefined, [prompt]);
+    await tick();
+    expect(relay.deliveredKeys).toEqual([deliveryKey(prompt)]);
+    runtime().emit(init, call("a1", "t1", "make"), output("u1", "t1", "built"), text("a2", "done"), { ...result("p1"), uuid: "r1" });
+    await turn;
+    expect(relay.commits).toEqual([
+      { through: "u1", resume: { sessionId: SESSION, resumeAt: "u1" } },
+      { through: "r1", resume: { sessionId: SESSION, resumeAt: "a2" } },
+    ]);
+  });
+
+  test("a new session continues while history still starts as it was started with", async () => {
+    const first: ApiMessage = { role: "user", content: "build it", metadata: { startedAt: 1 } as ApiMessage["metadata"] };
+    const convId = `claude-session-test-${Date.now()}-${convCounter++}`;
+    const session = openClaudeCodeSession(convId, KEY, (input) => new FakeRuntime(input) as unknown as ClaudeRuntime, { history: historyMark([first]) });
+    const followUp: ApiMessage = { role: "user", content: "and test it" };
+    expect(session.canContinue(KEY, null, [first, followUp])).toBe(true);
+    expect(session.canContinue(KEY, null, [{ ...first, content: "edited" }, followUp])).toBe(false);
+    expect(session.canContinue(KEY, { sessionId: SESSION, resumeAt: "a1", cwd: "/work" }, [followUp])).toBe(false);
+  });
+
+  test("a process forked at a resume point continues from it before its first commit", async () => {
+    const { session } = openWithRelay(new FakeRelay(), { sessionId: "forked-from", resumeAt: "r0" });
+    expect(session.canContinue(KEY, { sessionId: "forked-from", resumeAt: "r0", cwd: "/work" })).toBe(true);
+    expect(session.canContinue(KEY, { sessionId: "forked-from", resumeAt: "older", cwd: "/work" })).toBe(false);
+  });
+
+  test("an adopted process's running turn is held for the replay, which shows it without resending its prompt", async () => {
+    const sentBefore: ApiMessage = { role: "user", content: "build it", metadata: { startedAt: 1 } as ApiMessage["metadata"] };
+    const relay = new FakeRelay(adoptedHello({ delivered: [deliveryKey(sentBefore), "wake:old-wake"] }));
+    const { session, runtime } = openWithRelay(relay);
+    expect(session.canContinue(KEY, { sessionId: SESSION, resumeAt: "u1", cwd: "/work" })).toBe(true);
+
+    // Replayed and live output of the turn the previous daemon was showing.
+    runtime().emit({ ...call("a2", "t2", "make test"), exocortex_replayed: true }, output("u2", "t2", "passed"));
+    await tick();
+    expect(wakes).toHaveLength(0);
+
+    expect(session.planInput([sentBefore])).toEqual({ kind: "wake" });
+    const rounds: ProviderRound[] = [];
+    const shown = session.run(createClaudeStreamState(callbacks(rounds), "/work", null), null, undefined, undefined);
+    await tick();
+    expect(cancelled).toEqual(["old-wake"]);
+    runtime().emit(text("a3", "All green."), result("p-old"));
+    expect((await shown).text).toBe("All green.");
+    expect(rounds[0].messages.at(-1)).toMatchObject({ role: "user", content: [{ tool_use_id: "t2" }] });
+    expect(runtime().prompts).toHaveLength(0);
+  });
+
+  test("interrupting an adopted process without background tasks closes it, so the next turn starts a fresh one", async () => {
+    const relay = new FakeRelay(adoptedHello({ pending: false }));
+    const { session, runtime } = openWithRelay(relay);
+    const controller = new AbortController();
+    const turn = session.run(createClaudeStreamState(callbacks(), "/work", "p1"), [{ type: "text", text: "go" }], undefined, controller.signal);
+    await tick();
+    runtime().emit(init, text("a1", "Working"));
+    await tick();
+    controller.abort();
+    await expect(turn).rejects.toThrow();
+    expect(relay.commits.at(-1)).toEqual({ through: "a1", resume: null, interrupted: { promptUuid: "p1" } });
+    expect(session.isClosed).toBe(false);
+    runtime().emit({ ...result("p1"), subtype: "error_during_execution", is_error: true });
+    await tick();
+    expect(session.isClosed).toBe(true);
   });
 });

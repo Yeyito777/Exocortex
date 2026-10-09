@@ -6,7 +6,8 @@
  * workspace, plus a few Exocortex host tools over MCP (see host-tools.ts) and
  * Exocortex's instructions appended to the system prompt.
  * Exocortex streams and records what Claude Code does. A process with
- * background tasks running outlives its turn (see session.ts).
+ * background tasks running outlives its turn (see session.ts), and through a
+ * relay (relay.ts) the daemon too.
  * One-shot helper requests (titles, summaries, compaction) run tool-free.
  *
  * Every request goes through the Claude Code CLI's claude.ai login, so usage
@@ -21,9 +22,11 @@ import type { ApiMessage, EffortLevel, ModelId } from "../../messages";
 import type { StreamCallbacks, StreamOptions, StreamResult } from "../types";
 import { requireSubscriptionAuth } from "./auth";
 import { claudeSubscriptionEnv, getClaudeBinary } from "./cli";
-import { createHostToolServer, type HostToolBinding } from "./host-tools";
-import { buildClaudeHelperPrompt, buildClaudeUserContent, planClaudePrompt, type ClaudePromptPlan } from "./prompt";
-import { claudeSessionKey, getClaudeCodeSession, HEARTBEAT_INTERVAL_MS, openClaudeCodeSession } from "./session";
+import { createHostToolServer, hostToolDefs, type HostToolBinding } from "./host-tools";
+import { buildClaudeHelperPrompt, buildClaudeUserContent, planClaudePrompt, trailingUserMessages, type ClaudePromptPlan } from "./prompt";
+import { ClaudeRelay, reconnectRelays, relaysEnabled } from "./relay-client";
+import type { RelayMeta } from "./relay-protocol";
+import { claudeSessionKey, getClaudeCodeSession, HEARTBEAT_INTERVAL_MS, historyMark, openClaudeCodeSession } from "./session";
 import { createClaudeStreamState, finalizeClaudeStream, pushClaudeMessage, type ClaudeStreamState } from "./stream";
 
 /** Claude Code tools that need an interactive answer Exocortex cannot give. */
@@ -61,13 +64,26 @@ function isAgentTurn(options: StreamOptions): boolean {
   return Array.isArray(options.tools) && options.tools.length > 0;
 }
 
-function baseOptions(model: ModelId, options: StreamOptions, cwd: string, stderr: (data: string) => void): ClaudeQueryOptions {
-  const effort = toClaudeEffort(options.effort);
+function processOptions(cwd: string): ClaudeQueryOptions {
   return {
-    model,
     cwd,
     pathToClaudeCodeExecutable: getClaudeBinary(),
     env: { ...claudeSubscriptionEnv(), CLAUDE_AGENT_SDK_CLIENT_APP: "exocortex-daemon" },
+  };
+}
+
+/** Behave like the `claude` CLI started in the workspace, plus Exocortex's additions (see buildClaudeCodeSystemAppend). */
+function systemPromptOption(append: string | undefined): ClaudeQueryOptions["systemPrompt"] {
+  // Rendered fresh for each process rather than reusing the forked session's
+  // recorded prompt, so edited app or conversation instructions apply to the next one.
+  return { type: "preset", preset: "claude_code", ...(append ? { append } : {}), snapshot: false };
+}
+
+function baseOptions(model: ModelId, options: StreamOptions, cwd: string, stderr: (data: string) => void): ClaudeQueryOptions {
+  const effort = toClaudeEffort(options.effort);
+  return {
+    ...processOptions(cwd),
+    model,
     includePartialMessages: true,
     thinking: thinkingFor(options.effort),
     ...(effort ? { effort } : {}),
@@ -86,16 +102,7 @@ function agentTurnOptions(
   const hostTools = createHostToolServer(options.tools, options.toolExecutor ? binding : null);
   return {
     ...baseOptions(model, options, cwd, stderr),
-    // Behave like the `claude` CLI started in this directory, plus Exocortex's
-    // additions (see buildClaudeCodeSystemAppend). Render it fresh for each
-    // process rather than reusing the forked session's recorded prompt, so
-    // edited app or conversation instructions apply to the next one.
-    systemPrompt: {
-      type: "preset",
-      preset: "claude_code",
-      ...(options.system ? { append: options.system } : {}),
-      snapshot: false,
-    },
+    systemPrompt: systemPromptOption(options.system),
     settingSources: ["user", "project", "local"],
     // Exocortex has no permission prompt UI; Claude Code runs unattended.
     permissionMode: "bypassPermissions",
@@ -198,7 +205,7 @@ export async function streamMessage(
   // The conversation's Claude Code process is still running (background tasks,
   // or a quick follow-up): continue in it.
   const live = convId ? getClaudeCodeSession(convId) : undefined;
-  if (live?.canContinue(key, plan.resume)) {
+  if (live?.canContinue(key, plan.resume, plan.pending)) {
     const input = live.planInput(plan.pending);
     log("info", `anthropic: Claude Code turn in its running process (model=${model}, effort=${options.effort ?? "default"}, cwd=${cwd}, session=${live.sessionId}, input=${input.kind})`);
     const state = createClaudeStreamState(callbacks, cwd, input.kind === "prompt" ? randomUUID() : null);
@@ -207,7 +214,9 @@ export async function streamMessage(
       return finalizeClaudeStream(state);
     }
     try {
-      return await live.run(state, input.kind === "prompt" ? input.content : null, options.toolExecutor, signal);
+      return input.kind === "prompt"
+        ? await live.run(state, input.content, options.toolExecutor, signal, input.messages)
+        : await live.run(state, null, options.toolExecutor, signal);
     } catch (error) {
       if (!signal?.aborted) logStderr(error, stderr);
       throw error;
@@ -216,15 +225,32 @@ export async function streamMessage(
   // Other settings or a rewound history: the old process cannot continue.
   live?.close("the conversation moved on from it");
 
-  const start = (resumePlan: ClaudePromptPlan) => openClaudeCodeSession(convId, key, (input, binding) => query({
-    prompt: input,
-    options: agentTurnOptions(model, options, cwd, resumePlan, onStderr, binding),
-  }));
+  const start = (resumePlan: ClaudePromptPlan) => {
+    const history = resumePlan.resume ? null : historyMark(resumePlan.pending);
+    // A conversation's process runs under a relay, so it can outlive this daemon.
+    const meta: RelayMeta | null = convId && relaysEnabled() ? {
+      convId,
+      key,
+      cwd,
+      hostTools: hostToolDefs(options.tools),
+      ...(options.system ? { systemAppend: options.system } : {}),
+      resume: resumePlan.resume ? { sessionId: resumePlan.resume.sessionId, resumeAt: resumePlan.resume.resumeAt } : null,
+      history,
+    } : null;
+    const relay = meta ? new ClaudeRelay(onStderr) : null;
+    return openClaudeCodeSession(convId, key, (input, binding) => query({
+      prompt: input,
+      options: {
+        ...agentTurnOptions(model, options, cwd, resumePlan, onStderr, binding),
+        ...(relay && meta ? { spawnClaudeCodeProcess: spawnOptions => relay.launch(spawnOptions, meta) } : {}),
+      },
+    }), { relay, resume: resumePlan.resume, history });
+  };
   log("info", `anthropic: Claude Code turn (model=${model}, effort=${options.effort ?? "default"}, cwd=${cwd}, resume=${plan.resume?.sessionId ?? "none"}, pending=${plan.pending.length})`);
   const state = createClaudeStreamState(callbacks, cwd, randomUUID());
   const session = start(plan);
   try {
-    return await session.run(state, buildClaudeUserContent(plan.pending), options.toolExecutor, signal);
+    return await session.run(state, buildClaudeUserContent(plan.pending), options.toolExecutor, signal, trailingUserMessages(plan.pending));
   } catch (error) {
     if (!signal?.aborted) logStderr(error, stderr);
     // A missing/unforkable session (deleted, moved, or rejected) should not
@@ -235,10 +261,50 @@ export async function streamMessage(
     const fresh: ClaudePromptPlan = { resume: null, pending: messages };
     stderr = "";
     try {
-      return await start(fresh).run(createClaudeStreamState(callbacks, cwd, randomUUID()), buildClaudeUserContent(fresh.pending), options.toolExecutor, signal);
+      return await start(fresh).run(createClaudeStreamState(callbacks, cwd, randomUUID()), buildClaudeUserContent(fresh.pending), options.toolExecutor, signal, trailingUserMessages(fresh.pending));
     } catch (freshError) {
       if (!signal?.aborted) logStderr(freshError, stderr);
       throw freshError;
     }
   }
+}
+
+/**
+ * Take over the Claude Code processes an earlier daemon left running (see
+ * relay.ts), so their turns and background tasks carry on in this one.
+ * Returns the conversations whose process is running a turn no Exocortex turn
+ * shows: replaying them shows it.
+ */
+export async function adoptClaudeCodeProcesses(hasConversation: (convId: string) => boolean): Promise<string[]> {
+  if (!relaysEnabled()) return [];
+  const pending: string[] = [];
+  for (const relay of await reconnectRelays()) {
+    const hello = relay.hello!;
+    const { meta } = hello;
+    if (relay.exitCode !== null) continue;
+    // Relays come newest first: an older one for the same conversation is stale.
+    if (!hasConversation(meta.convId) || getClaudeCodeSession(meta.convId)) {
+      log("info", `anthropic: stopping a Claude Code process left for ${meta.convId}, which ${hasConversation(meta.convId) ? "has a newer one" : "no longer exists"}`);
+      void relay.terminate();
+      continue;
+    }
+    openClaudeCodeSession(meta.convId, meta.key, (input, binding) => {
+      const hostTools = createHostToolServer(meta.hostTools, binding);
+      return query({
+        prompt: input,
+        // Claude Code is already running: only what the SDK re-sends when it
+        // connects matters, and it matches what started the process.
+        options: {
+          ...processOptions(meta.cwd),
+          systemPrompt: systemPromptOption(meta.systemAppend),
+          perTaskStopAffordance: true,
+          ...(hostTools ? { mcpServers: { [hostTools.name]: hostTools } } : {}),
+          spawnClaudeCodeProcess: () => relay,
+        },
+      });
+    }, { relay });
+    if (hello.pending) pending.push(meta.convId);
+    log("info", `anthropic: adopted the Claude Code process for ${meta.convId} (relay pid ${hello.pid}${hello.pending ? ", turn running" : ""})`);
+  }
+  return pending;
 }

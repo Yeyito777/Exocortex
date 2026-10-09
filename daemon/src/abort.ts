@@ -12,6 +12,23 @@ export function createAbortError(message = "Aborted"): Error {
   return err;
 }
 
+const detachedTurnErrors = new WeakSet<object>();
+
+/**
+ * Abort error for a provider turn that keeps running without the daemon (a
+ * Claude Code process outliving a restart). The daemon that picks the turn up
+ * shows its unfinished output again, so it is not saved now.
+ */
+export function createDetachedTurnError(): Error {
+  const err = createAbortError();
+  detachedTurnErrors.add(err);
+  return err;
+}
+
+export function isDetachedTurnError(err: unknown): boolean {
+  return typeof err === "object" && err !== null && detachedTurnErrors.has(err);
+}
+
 /**
  * Best-effort detection for abort-like failures from fetch/streams.
  *

@@ -70,6 +70,13 @@ export function isPlainUserMessage(message: ApiMessage): boolean {
   return typeof message.content === "string" || message.content.every((block) => block.type === "text" || block.type === "image");
 }
 
+/** The trailing plain user messages: what a turn sends natively rather than as a transcript. */
+export function trailingUserMessages(messages: ApiMessage[]): ApiMessage[] {
+  let start = messages.length;
+  while (start > 0 && isPlainUserMessage(messages[start - 1])) start--;
+  return messages.slice(start);
+}
+
 function toSdkContent(content: ApiMessage["content"]): SdkContent {
   if (typeof content === "string") return [{ type: "text", text: content }];
   const out: SdkContent = [];
@@ -115,10 +122,8 @@ const INTERRUPTED_TURN_PROMPT = "Your previous turn was interrupted before it fi
  * sent natively (images included); anything earlier is a transcript preamble.
  */
 export function buildClaudeUserContent(pending: ApiMessage[]): SdkContent {
-  let tailStart = pending.length;
-  while (tailStart > 0 && isPlainUserMessage(pending[tailStart - 1])) tailStart--;
-  const history = pending.slice(0, tailStart);
-  const tail = pending.slice(tailStart);
+  const tail = trailingUserMessages(pending);
+  const history = pending.slice(0, pending.length - tail.length);
 
   const content: SdkContent = [];
   const transcript = renderTranscript(history);

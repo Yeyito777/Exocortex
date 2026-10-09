@@ -43,7 +43,8 @@ import { startExternalNotificationSoftWakeService, stopExternalNotificationSoftW
 import { startDisplayIndexBackfill } from "./display-index-backfill";
 import { broadcastConversationUpdated } from "./conversation-events";
 import { BackgroundTaskRecovery } from "./background-task-recovery";
-import { closeAllClaudeCodeSessions } from "./providers/anthropic/session";
+import { adoptClaudeCodeProcesses } from "./providers/anthropic/api";
+import { detachAllClaudeCodeSessions, stopAllClaudeCodeSessions } from "./providers/anthropic/session";
 import { runIpcProxy } from "./ipc-proxy";
 
 // ── Startup profiling ────────────────────────────────────────────────
@@ -167,9 +168,10 @@ async function startDaemon(): Promise<void> {
         }
       }
 
-      // Claude Code background tasks live in Claude Code processes and cannot
-      // outlive this daemon; resumed sessions report them as stopped.
-      closeAllClaudeCodeSessions(`daemon ${shutdownMode}`);
+      // Claude Code processes (and their background tasks) run under relays
+      // that outlive a restart: the next daemon adopts them. A stop ends them.
+      if (shutdownMode === "restart") detachAllClaudeCodeSessions("daemon restart");
+      else await stopAllClaudeCodeSessions(`daemon ${shutdownMode}`);
 
       if (shutdownMode === "stop") {
         const stoppedBackgroundTasks = stopAllBackgroundTasks();
@@ -332,7 +334,14 @@ async function startDaemon(): Promise<void> {
 
   // Before recovery, so goals whose time ran out while the daemon was down do not resume.
   scheduleActiveGoalTimeLimits(server);
-  const recoveredStreams = recoverInterruptedStreams(server);
+  // Claude Code processes a previous daemon left running; replaying a
+  // conversation whose process is mid-turn shows the rest of that turn.
+  const adoptedClaudeCodeTurns = await adoptClaudeCodeProcesses((convId) => convStore.hasConversation(convId)).catch((err) => {
+    log("error", `exocortexd: adopting Claude Code processes failed: ${formatFatal(err)}`);
+    return [];
+  });
+  profileMark("claude_code_processes_adopted", { runningTurns: adoptedClaudeCodeTurns.length });
+  const recoveredStreams = recoverInterruptedStreams(server, adoptedClaudeCodeTurns);
   if (recoveredStreams.length > 0) {
     console.log(`  replay: scheduled ${recoveredStreams.length} interrupted conversation(s): ${recoveredStreams.join(", ")}`);
     profileMark("interrupted_streams_recovered", { count: recoveredStreams.length });

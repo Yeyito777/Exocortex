@@ -19,6 +19,7 @@ import type { ApiContentBlock, ApiMessage } from "../../messages";
 import { exocortexToolName, summarizeClaudeCodeTool } from "../../tools/claude-code";
 import { AuthError } from "../errors";
 import type { ContentBlock, ProviderRound, StreamCallbacks, StreamResult } from "../types";
+import { REPLAYED_FIELD } from "./relay-protocol";
 import type { AnthropicAssistantProviderData } from "./types";
 import { CLAUDE_RATE_LIMIT_HEADER } from "./usage";
 
@@ -335,6 +336,15 @@ function resultError(message: SdkRecord): Error {
 
 /** Feed one SDK message into the state. Throws on terminal errors. */
 export function pushClaudeMessage(state: ClaudeStreamState, message: SdkRecord): void {
+  pushMessage(state, message);
+  // Replayed after a daemon restart, in a burst: the API calls it covers cannot be timed.
+  if (message[REPLAYED_FIELD] === true) {
+    state.requestedAt = null;
+    state.callStartedAt = null;
+  }
+}
+
+function pushMessage(state: ClaudeStreamState, message: SdkRecord): void {
   const sessionId = str(message.session_id);
   if (sessionId) state.sessionId = sessionId;
 

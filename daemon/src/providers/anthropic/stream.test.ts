@@ -152,6 +152,15 @@ describe("Claude Code stream translation", () => {
     at(4500, se({ type: "message_start", message: { usage: { input_tokens: 2 } } }));
     at(5100, se({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 40 } }));
     expect(rates).toEqual([50, 40]);
+
+    // Output a relay replayed after a daemon restart is not timed, nor is the call it was in the middle of.
+    const replayed = (message: Record<string, unknown>) => ({ ...message, exocortex_replayed: true });
+    at(6000, replayed(requesting));
+    at(6000, replayed(se({ type: "message_start", message: { usage: { input_tokens: 2 } } })));
+    at(6000, replayed(se({ type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 40 } })));
+    at(6000, replayed(se({ type: "message_start", message: { usage: { input_tokens: 2 } } })));
+    at(7000, se({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 40 } }));
+    expect(rates).toEqual([50, 40]);
   });
 
   test("commits parallel tool calls only once every result is in", () => {

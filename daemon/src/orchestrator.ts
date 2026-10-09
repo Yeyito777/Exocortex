@@ -28,6 +28,7 @@ import { broadcastConversationHistoryUpdated, broadcastConversationUpdated } fro
 import { quarantineActiveContext } from "./active-context-quarantine";
 import { goalContinuationPrompt as formatGoalContinuation, goalTimeLimitReason, updateGoalStatus } from "./goals";
 import { goalRemainingMs } from "@exocortex/shared/goals";
+import { isDetachedTurnError } from "./abort";
 import { createProviderTurnSession, streamMessage } from "./api";
 import { annotateApiMessagesContextTokens, copyContextTokenAttributionsToStoredHistory } from "./context-token-attribution";
 import type { RealtimeCallSpeakerAttribution, StreamingStopReason } from "./protocol";
@@ -1750,6 +1751,8 @@ async function orchestrateAdmittedAssistantTurn(
 
     // Persist the in-flight partial response (current round's streamed content),
     // dropping empty thinking placeholders while keeping non-empty reasoning text.
+    // A turn the provider keeps running is shown in full when picked up again.
+    if (isDetachedTurnError(err)) partialContent.length = 0;
     const safeContent = partialContent.filter(b => {
       if (b.type === "thinking") return isPersistableThinkingBlock(b);
       return true;

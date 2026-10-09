@@ -42,8 +42,9 @@ conversations:
 - **Background tasks.** Claude Code runs `run_in_background` shells and
   background agents inside its own process, so a turn that leaves any running
   keeps that process:
-  - they show as the conversation's background tasks (sidebar badge, Tasks UI)
-    and can be stopped there;
+  - they show as the conversation's background tasks (sidebar badge, Tasks UI;
+    a background agent as `◆ Agent`, a shell as `$ Bash`) and can be stopped
+    there;
   - later turns send their messages into the same process, and interrupting a
     turn stops only the turn, as in Claude Code;
   - when a task finishes, Claude Code starts a turn of its own. Exocortex queues
@@ -54,8 +55,28 @@ conversations:
   ends or is interrupted, so queued messages, steering and quick follow-ups
   continue in it instead of starting and resuming a new one. It closes once it
   has had no task or turn for that long, or when the model, effort or
-  workspace changes, history is rewound past it, or the daemon stops or
-  restarts. Its tasks end with it; a resumed session reports them as stopped.
+  workspace changes, history is rewound past it, or the daemon stops. Its
+  tasks end with it; a resumed session reports them as stopped.
+- **Daemon restarts.** Each process runs under a small relay
+  (`daemon/src/providers/anthropic/relay.ts`) in its own transient systemd
+  unit (`exocortex-claude-*`; started detached elsewhere), so a restart,
+  even a crash, leaves it and its background tasks running:
+  - the restarting daemon lets go of a running turn instead of interrupting
+    it, and the conversation shows `✗ Daemon restarted`;
+  - the next daemon adopts every process left running. A turn still in
+    progress is shown by the conversation's replay, picking up after the last
+    tool round the old daemon saved (the relay replays Claude Code's output
+    since then), without resending the prompt. Background tasks reappear in
+    the Tasks UI and still wake the conversation when they finish;
+  - an Exocortex tool call (`chrono`, `exo`) the old daemon was running gets
+    an "interrupted because the daemon restarted" result;
+  - an adopted process keeps the tools and instructions it started with.
+    Interrupting its turn closes it (unless background tasks are still
+    running), so the next message starts a fresh one;
+  - left without a daemon, a relay ends its idle process after 10 minutes.
+
+  `exocortexd stop` ends the processes. On Windows they still end with the
+  daemon.
 
 | Model ID | Alias |
 | --- | --- |

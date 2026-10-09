@@ -50,12 +50,18 @@ function textResult(text: string, isError: boolean): CallToolResult {
   return { content: [{ type: "text", text }], isError };
 }
 
+/** The host tools in an Exocortex tool surface. */
+export function hostToolDefs(tools: unknown[] | undefined): ToolDef[] {
+  return (tools ?? []).filter(isToolDef).filter(def => isClaudeCodeHostTool(def.name))
+    .map(({ name, description, input_schema }) => ({ name, description, input_schema }));
+}
+
 /** MCP server for the host tools in the Exocortex tool surface, or null if there are none. */
 export function createHostToolServer(
   tools: unknown[] | undefined,
   binding: (() => Promise<HostToolBinding>) | null,
 ): McpSdkServerConfigWithInstance | null {
-  const defs = (tools ?? []).filter(isToolDef).filter(def => isClaudeCodeHostTool(def.name));
+  const defs = hostToolDefs(tools);
   if (!binding || defs.length === 0) return null;
 
   const instructions = defs.flatMap(def => INSTRUCTIONS[def.name] ?? []).join("\n\n");
