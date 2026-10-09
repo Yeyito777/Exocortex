@@ -97,6 +97,8 @@ export function renderTranscript(messages: ApiMessage[]): string {
     .join("\n\n");
 }
 
+const INTERRUPTED_TURN_PROMPT = "Your previous turn was interrupted before it finished, and anything it still had running (tool calls, background tasks) was stopped. Continue where you left off.";
+
 /**
  * Build the user turn to send to Claude Code. Trailing plain user messages are
  * sent natively (images included); anything earlier is a transcript preamble.
@@ -117,7 +119,9 @@ export function buildClaudeUserContent(pending: ApiMessage[]): SdkContent {
     });
   }
   for (const message of tail) content.push(...toSdkContent(message.content));
-  if (content.length === 0) content.push({ type: "text", text: "Continue." });
+  // No new user input: this replays a turn that ended early (a daemon restart,
+  // an interrupt, an error). Say so, or the model has nothing to answer.
+  if (tail.length === 0) content.push({ type: "text", text: INTERRUPTED_TURN_PROMPT });
   return content;
 }
 

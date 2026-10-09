@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ProviderRound, StreamCallbacks } from "../types";
-import { ClaudeOverageError, createClaudeStreamState, finalizeClaudeStream, pushClaudeMessage } from "./stream";
+import { ClaudeOverageError, commitInterruptedRound, createClaudeStreamState, finalizeClaudeStream, pushClaudeMessage } from "./stream";
 import { handleUsageHeaders } from "./usage";
 
 function recorder() {
@@ -139,6 +139,49 @@ describe("Claude Code stream translation", () => {
     expect(rounds[0].messages.map((m) => m.role)).toEqual(["assistant", "user"]);
     expect(rounds[0].messages[1].content).toHaveLength(2);
     expect(rounds[0].messages[1].providerData?.anthropic?.resumeAt).toBe("u-2");
+  });
+
+  test("keeps streaming past a result Claude Code produced for its own turn", () => {
+    const { events, callbacks } = recorder();
+    const state = createClaudeStreamState(callbacks, "/work", "prompt-1");
+    // Recorded from Claude Code 2.1.295 resuming a session whose process died
+    // with background shells running: the orphan report gets a model-less turn.
+    pushClaudeMessage(state, { type: "system", subtype: "task_notification", task_id: "b1", status: "stopped", session_id: SESSION });
+    pushClaudeMessage(state, { type: "result", subtype: "success", is_error: false, num_turns: 0, stop_reason: null, origin: { kind: "task-notification" }, session_id: SESSION });
+    expect(state.done).toBe(false);
+
+    pushClaudeMessage(state, { type: "assistant", uuid: "a-1", session_id: SESSION, parent_tool_use_id: null, message: { content: [{ type: "text", text: "ok" }] } });
+    pushClaudeMessage(state, { type: "result", subtype: "success", is_error: false, num_turns: 1, stop_reason: "end_turn", user_message_uuid: "prompt-1", user_message_uuids: ["prompt-1"], session_id: SESSION });
+    expect(state.done).toBe(true);
+    expect(finalizeClaudeStream(state).text).toBe("ok");
+    expect(events).toEqual([]);
+  });
+
+  test("an interruption keeps the running tool calls, without a resume point inside them", () => {
+    const { events, callbacks } = recorder();
+    const rounds: ProviderRound[] = [];
+    callbacks.onProviderRound = (round) => rounds.push(round);
+    const state = createClaudeStreamState(callbacks, "/work");
+    pushClaudeMessage(state, { type: "assistant", uuid: "a-1", session_id: SESSION, parent_tool_use_id: null, message: { content: [{ type: "text", text: "Waiting." }] } });
+    pushClaudeMessage(state, { type: "assistant", uuid: "a-2", session_id: SESSION, parent_tool_use_id: null, message: { content: [{ type: "tool_use", id: "t1", name: "mcp__exocortex__chrono", input: { action: "sleep", duration: "4m" } }] } });
+
+    commitInterruptedRound(state);
+    expect(events.at(-1)).toBe("result:chrono:Interrupted before this tool call finished.");
+    expect(rounds).toHaveLength(1);
+    expect(rounds[0].messages).toEqual([
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "Waiting." },
+          { type: "tool_use", id: "t1", name: "chrono", input: { action: "sleep", duration: "4m" } },
+        ],
+      },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "Interrupted before this tool call finished.", is_error: true }] },
+    ]);
+
+    // Nothing in flight: the orchestrator salvages streamed text itself.
+    commitInterruptedRound(state);
+    expect(rounds).toHaveLength(1);
   });
 
   test("fails when Claude Code exits without a result", () => {

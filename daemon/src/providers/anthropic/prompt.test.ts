@@ -38,6 +38,14 @@ describe("Claude Code prompt planning", () => {
     expect(planClaudePrompt(messages, "/elsewhere")).toEqual({ resume: null, pending: messages });
   });
 
+  test("tells the model a replayed turn was interrupted when there is no new user input", () => {
+    const content = buildClaudeUserContent([{ role: "assistant", content: [{ type: "text", text: "Both are running." }] }]);
+    expect(content).toHaveLength(2);
+    expect((content[0] as { text: string }).text).toContain("Assistant:\nBoth are running.");
+    expect((content[1] as { text: string }).text).toContain("interrupted before it finished");
+    expect(buildClaudeUserContent([])).toEqual([content[1]]);
+  });
+
   test("renders unseen history as a transcript and keeps trailing user images native", () => {
     const content = buildClaudeUserContent([
       { role: "user", content: "hello" },
