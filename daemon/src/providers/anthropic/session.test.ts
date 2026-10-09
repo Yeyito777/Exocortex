@@ -102,6 +102,8 @@ const tasks = (...live: Array<{ id: string; description: string; type?: string; 
     ...(task.parent ? { parent_task_id: task.parent } : {}),
   })),
 });
+/** Claude Code starting a main-thread model call. */
+const callStart = { type: "stream_event", session_id: SESSION, parent_tool_use_id: null, event: { type: "message_start", message: { usage: { input_tokens: 1, output_tokens: 1 } } } };
 /** The result of a turn Claude Code started to answer one finished task run. */
 const answering = (runId: string) => ({ ...result(null), origin: { kind: "task-notification", runId } });
 const finished = (id: string) => ({
@@ -389,6 +391,38 @@ describe("Claude Code processes outliving a turn", () => {
     expect(wakes).toHaveLength(2);
     expect(wakes[1].text).toContain("completed: b2");
     expect(wakes[1].text).toContain("Command: test");
+  });
+
+  test("a task finishing after a prompted turn's last model call is shown with the turn that answers it", async () => {
+    const { session, runtime } = open();
+    const turn = session.run(createClaudeStreamState(callbacks(), "/work", "p1"), [{ type: "text", text: "spawn" }], undefined, undefined);
+    await tick();
+    runtime().emit(
+      init, callStart, call("a1", "t1", "make &"), tasks({ id: "b1", description: "Quick build" }), output("u1", "t1", "started b1"),
+      callStart, { ...finished("b1"), run_id: "r1" }, tasks(), text("a2", "Started."), result("p1"),
+    );
+    await turn;
+    runtime().emit(init, text("a3", "The build finished."), answering("r1"));
+    await tick();
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0].text).toContain("completed: b1");
+  });
+
+  test("a task a running turn took in is not shown as the reason for a later turn", async () => {
+    const { session, runtime } = open();
+    const turn = session.run(createClaudeStreamState(callbacks(), "/work", "p1"), [{ type: "text", text: "spawn" }], undefined, undefined);
+    await tick();
+    runtime().emit(
+      init, callStart, call("a1", "t1", "make &"), tasks({ id: "b1", description: "Quick build" }, { id: "b2", description: "Slow test" }),
+      output("u1", "t1", "started"), { ...finished("b1"), run_id: "r1" }, tasks({ id: "b2", description: "Slow test" }),
+      callStart, text("a2", "The build already finished."), result("p1"),
+    );
+    await turn;
+    runtime().emit({ ...finished("b2"), run_id: "r2" }, tasks(), init, text("a3", "Tests done."), answering("r2"));
+    await tick();
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0].text).toContain("completed: b2");
+    expect(wakes[0].text).not.toContain("b1");
   });
 
   test("a task Exocortex stopped is never shown as the reason for a turn", async () => {

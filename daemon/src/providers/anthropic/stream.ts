@@ -278,6 +278,27 @@ function commitRound(state: ClaudeStreamState, resumable = true): void {
   onProviderRound(round);
 }
 
+/**
+ * Titles of the agents a conversation's Agent calls started, read back from
+ * its history: each launch result names the agent's id.
+ */
+export function agentTitlesInHistory(messages: readonly ApiMessage[]): Map<string, string> {
+  const titles = new Map<string, string>();
+  const descriptions = new Map<string, string>();
+  for (const message of messages) {
+    if (!Array.isArray(message.content)) continue;
+    for (const block of message.content) {
+      if (block.type === "tool_use" && (block.name === "Agent" || block.name === "Task") && typeof block.input.description === "string") {
+        descriptions.set(block.id, block.input.description);
+      } else if (block.type === "tool_result" && descriptions.has(block.tool_use_id)) {
+        const agentId = /\bagentId: ([\w-]+)/.exec(toolResultText(block.content))?.[1];
+        if (agentId) titles.set(agentId, descriptions.get(block.tool_use_id)!);
+      }
+    }
+  }
+  return titles;
+}
+
 /** Learn the title of the agent an Agent call started, so later calls addressing it can name it. */
 function noteAgentTitle(state: ClaudeStreamState, toolUseId: string, toolUseResult: unknown): void {
   const description = state.agentCalls.get(toolUseId);

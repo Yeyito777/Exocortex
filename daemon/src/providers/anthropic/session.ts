@@ -35,7 +35,7 @@ import type { HostToolBinding } from "./host-tools";
 import { buildLiveSessionContent, buildQueuedInputContent, trailingUserMessages } from "./prompt";
 import type { ClaudeRelay } from "./relay-client";
 import { endsInterruptedTurn, startsClaudeTurn, type RelayHistoryMark, type RelayResumePoint } from "./relay-protocol";
-import { commitInterruptedRound, finalizeClaudeStream, pushClaudeMessage, takeQueuedInput, type ClaudeStreamState } from "./stream";
+import { agentTitlesInHistory, commitInterruptedRound, finalizeClaudeStream, pushClaudeMessage, takeQueuedInput, type ClaudeStreamState } from "./stream";
 import type { AnthropicAssistantProviderData } from "./types";
 
 type SdkRecord = Record<string, unknown>;
@@ -199,6 +199,8 @@ interface TaskNote {
   outputFile?: string;
   /** Shown as the reason for a turn Claude Code started by itself. */
   shown?: boolean;
+  /** Taken into a running turn, so no turn of its own answers it. */
+  takenIn?: boolean;
 }
 
 /**
@@ -387,11 +389,14 @@ export class ClaudeCodeSession {
   private readonly taskStarts: Record<string, number>;
   /** Finished tasks Claude Code has yet to answer, each with a turn of its own, in order. */
   private notes: TaskNote[] = [];
+  /** Main-thread model calls Claude Code has made since its last result. */
+  private callsSinceResult = 0;
   private tasks = new Map<string, LiveTask>();
   /** Every task seen, kept after it ends: its notification can arrive after it left `tasks`. */
   private readonly seenTasks = new Map<string, LiveTask>();
   /** Titles of every task and agent seen, kept after they end so later calls can name them. */
   private readonly taskTitles = new Map<string, string>();
+  private titlesFromHistory = false;
   /** After an interrupt, the rest of the interrupted turn up to its result. */
   private discard: { promptUuid: string | null; deadline: ReturnType<typeof setTimeout>; closeAfter: boolean } | null = null;
   private bindingWaiters: Array<{ resolve(binding: HostToolBinding): void; reject(error: Error): void }> = [];
@@ -453,6 +458,13 @@ export class ClaudeCodeSession {
    * Claude Code is running by itself. `sent` are the messages `content`
    * carries; `queued`, messages queued to join the turn.
    */
+  /** Learn the agents the conversation started before this process, once. */
+  rememberAgentTitles(history: readonly ApiMessage[]): void {
+    if (this.titlesFromHistory) return;
+    this.titlesFromHistory = true;
+    for (const [id, title] of agentTitlesInHistory(history)) if (!this.taskTitles.has(id)) this.taskTitles.set(id, title);
+  }
+
   run(
     state: ClaudeStreamState,
     content: SdkContent | null,
@@ -519,6 +531,8 @@ export class ClaudeCodeSession {
       for (const message of this.buffer.splice(0)) this.route(message);
       if (content !== null && this.turn === turn) {
         this.markDelivered(sent.map(deliveryKey));
+        // A prompt can carry what finished before it; at worst a later turn of its own goes unexplained.
+        this.takeInNotes();
         this.input.push({ type: "user", uuid: state.promptUuid ?? randomUUID(), message: { role: "user", content }, parent_tool_use_id: null } as SDKUserMessage);
       } else if (this.turn === turn) {
         this.startInput(turn);
@@ -634,27 +648,37 @@ export class ClaudeCodeSession {
     }
   }
 
-  /** Track the finished tasks Claude Code's turns of its own answer. */
+  /**
+   * Track the finished tasks Claude Code's turns of its own answer. Claude
+   * Code answers each finished task with a turn of its own, whose result names
+   * the task's run, unless a running turn takes it in first: a model call after
+   * a tool round carries every task that finished before it.
+   */
   private noteProgress(message: SdkRecord): void {
-    if (message.type === "result") this.answered(message);
-    else if (message.type === "system" && message.subtype === "task_notification") this.noteTask(message);
+    if (message.type === "result") {
+      this.answered(message);
+      this.callsSinceResult = 0;
+    } else if (message.type === "system" && message.subtype === "task_notification") {
+      this.noteTask(message);
+    } else if (message.type === "stream_event" && !message.parent_tool_use_id && asRecord(message.event)?.type === "message_start") {
+      if (this.callsSinceResult++ > 0) this.takeInNotes();
+    }
   }
 
-  /**
-   * Forget the finished tasks a turn answered. Claude Code answers each
-   * finished task with a turn of its own, whose result names the task's run;
-   * a prompted turn takes in everything that finished before it ends. A
-   * stopped task gets no turn, so it is forgotten at the next result.
-   */
+  private takeInNotes(): void {
+    for (const note of this.notes) note.takenIn = true;
+  }
+
+  /** Forget the finished tasks a turn answered or took in. A stopped task gets no turn. */
   private answered(result: SdkRecord): void {
     const origin = asRecord(result.origin);
-    if (origin?.kind !== "task-notification") {
-      this.notes = [];
-      return;
-    }
-    const runId = str(origin.runId);
-    const index = runId ? this.notes.findIndex(note => note.runId === runId) : this.notes.findIndex(note => note.shown);
-    this.notes = this.notes.filter((note, i) => i !== index && note.status !== "stopped" && note.status !== "killed");
+    const runId = origin?.kind === "task-notification" ? str(origin.runId) : undefined;
+    // Without a run id, Claude Code answered the task shown for the turn.
+    const answeredIndex = origin?.kind !== "task-notification" ? -1
+      : runId ? this.notes.findIndex(note => note.runId === runId)
+      : this.notes.findIndex(note => note.shown);
+    this.notes = this.notes.filter((note, i) =>
+      i !== answeredIndex && !note.takenIn && note.status !== "stopped" && note.status !== "killed");
   }
 
   private deliver(turn: Turn, message: SdkRecord): void {

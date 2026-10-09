@@ -209,6 +209,7 @@ export async function streamMessage(
     const input = live.planInput(plan.pending);
     log("info", `anthropic: Claude Code turn in its running process (model=${model}, effort=${options.effort ?? "default"}, cwd=${cwd}, session=${live.sessionId}, input=${input.kind})`);
     const state = createClaudeStreamState(callbacks, cwd, input.kind === "prompt" ? randomUUID() : null);
+    live.rememberAgentTitles(messages);
     if (input.kind === "none") {
       state.done = true;
       return finalizeClaudeStream(state);
@@ -238,13 +239,15 @@ export async function streamMessage(
       history,
     } : null;
     const relay = meta ? new ClaudeRelay(onStderr) : null;
-    return openClaudeCodeSession(convId, key, (input, binding) => query({
+    const session = openClaudeCodeSession(convId, key, (input, binding) => query({
       prompt: input,
       options: {
         ...agentTurnOptions(model, options, cwd, resumePlan, onStderr, binding),
         ...(relay && meta ? { spawnClaudeCodeProcess: spawnOptions => relay.launch(spawnOptions, meta) } : {}),
       },
     }), { relay, resume: resumePlan.resume, history });
+    session.rememberAgentTitles(messages);
+    return session;
   };
   log("info", `anthropic: Claude Code turn (model=${model}, effort=${options.effort ?? "default"}, cwd=${cwd}, resume=${plan.resume?.sessionId ?? "none"}, pending=${plan.pending.length})`);
   const state = createClaudeStreamState(callbacks, cwd, randomUUID());

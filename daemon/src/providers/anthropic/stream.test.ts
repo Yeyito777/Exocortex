@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ProviderRound, StreamCallbacks } from "../types";
-import { ClaudeOverageError, commitInterruptedRound, createClaudeStreamState, finalizeClaudeStream, pushClaudeMessage } from "./stream";
+import { agentTitlesInHistory, ClaudeOverageError, commitInterruptedRound, createClaudeStreamState, finalizeClaudeStream, pushClaudeMessage } from "./stream";
 import { handleUsageHeaders } from "./usage";
 
 function recorder() {
@@ -127,6 +127,19 @@ describe("Claude Code stream translation", () => {
     expect(state.messages.at(-1)?.content).toEqual([
       { type: "tool_use", id: "t2", name: "SendMessage", input: { to: "a2770869e8f93ef5d", summary: "Wrap up", message: "Please stop." }, presentation },
     ]);
+  });
+
+  test("agents a conversation started earlier are named from its history", () => {
+    expect(agentTitlesInHistory([
+      { role: "assistant", content: [
+        { type: "tool_use", id: "t1", name: "Agent", input: { description: "JS engine core", prompt: "…", run_in_background: true } },
+        { type: "tool_use", id: "t2", name: "Bash", input: { command: "echo agentId: nope" } },
+      ] },
+      { role: "user", content: [
+        { type: "tool_result", tool_use_id: "t1", content: "Async agent launched successfully.\nagentId: aee8904328d8f8607 (internal ID - do not mention to user.)" },
+        { type: "tool_result", tool_use_id: "t2", content: "agentId: nope" },
+      ] },
+    ])).toEqual(new Map([["aee8904328d8f8607", "JS engine core"]]));
   });
 
   test("hands each tool round to the agent loop as soon as its results arrive", () => {
