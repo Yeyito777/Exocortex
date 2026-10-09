@@ -12,6 +12,7 @@
  * bills the Claude subscription; API-key environment overrides are stripped.
  */
 
+import { randomUUID } from "node:crypto";
 import { query, type Options as ClaudeQueryOptions, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { createAbortError } from "../../abort";
 import { log } from "../../log";
@@ -21,7 +22,7 @@ import { requireSubscriptionAuth } from "./auth";
 import { claudeSubscriptionEnv, getClaudeBinary } from "./cli";
 import { createHostToolServer } from "./host-tools";
 import { buildClaudeHelperPrompt, buildClaudeUserContent, planClaudePrompt, type ClaudePromptPlan } from "./prompt";
-import { createClaudeStreamState, finalizeClaudeStream, pushClaudeMessage, type ClaudeStreamState } from "./stream";
+import { commitInterruptedRound, createClaudeStreamState, finalizeClaudeStream, pushClaudeMessage, type ClaudeStreamState } from "./stream";
 
 /** Claude Code tools that need an interactive answer Exocortex cannot give. */
 const INTERACTIVE_ONLY_TOOLS = ["AskUserQuestion"];
@@ -114,10 +115,11 @@ function helperOptions(model: ModelId, options: StreamOptions, cwd: string, stde
   };
 }
 
-function singleUserMessage(content: SDKUserMessage["message"]["content"]): AsyncIterable<SDKUserMessage> {
+/** The turn's prompt, stamped with the uuid its result will carry. */
+function singleUserMessage(content: SDKUserMessage["message"]["content"], uuid: string): AsyncIterable<SDKUserMessage> {
   return {
     async *[Symbol.asyncIterator]() {
-      yield { type: "user", message: { role: "user", content }, parent_tool_use_id: null } as SDKUserMessage;
+      yield { type: "user", uuid, message: { role: "user", content }, parent_tool_use_id: null } as SDKUserMessage;
     },
   };
 }
@@ -156,7 +158,10 @@ async function runClaudeQuery(
     if (signal?.aborted) throw createAbortError();
     return finalizeClaudeStream(state);
   } catch (error) {
-    if (signal?.aborted) throw createAbortError();
+    if (signal?.aborted) {
+      commitInterruptedRound(state);
+      throw createAbortError();
+    }
     const tail = stderrTail().trim();
     if (tail && error instanceof Error && !error.message.includes(tail)) {
       log("warn", `anthropic: Claude Code stderr: ${tail}`);
@@ -189,10 +194,11 @@ export async function streamMessage(
 
   const plan = planClaudePrompt(messages, cwd);
   log("info", `anthropic: Claude Code turn (model=${model}, effort=${options.effort ?? "default"}, cwd=${cwd}, resume=${plan.resume?.sessionId ?? "none"}, pending=${plan.pending.length})`);
-  const state = createClaudeStreamState(callbacks, cwd);
+  const promptUuid = randomUUID();
+  const state = createClaudeStreamState(callbacks, cwd, promptUuid);
   try {
     return await runClaudeQuery(
-      singleUserMessage(buildClaudeUserContent(plan.pending)),
+      singleUserMessage(buildClaudeUserContent(plan.pending), promptUuid),
       agentTurnOptions(model, options, cwd, plan, onStderr),
       state,
       signal,
@@ -205,10 +211,11 @@ export async function streamMessage(
     log("warn", `anthropic: resuming Claude Code session ${plan.resume.sessionId} failed (${error instanceof Error ? error.message : error}); starting a new session`);
     const fresh: ClaudePromptPlan = { resume: null, pending: messages };
     stderr = "";
+    const freshUuid = randomUUID();
     return runClaudeQuery(
-      singleUserMessage(buildClaudeUserContent(fresh.pending)),
+      singleUserMessage(buildClaudeUserContent(fresh.pending), freshUuid),
       agentTurnOptions(model, options, cwd, fresh, onStderr),
-      createClaudeStreamState(callbacks, cwd),
+      createClaudeStreamState(callbacks, cwd, freshUuid),
       signal,
       () => stderr,
     );

@@ -29,6 +29,8 @@ export class ClaudeOverageError extends Error {}
 export interface ClaudeStreamState {
   callbacks: StreamCallbacks;
   cwd: string;
+  /** uuid of the prompt Exocortex sent; only the result answering it ends the turn. */
+  promptUuid: string | null;
   /** Blocks and messages not yet committed as a round. */
   blocks: ContentBlock[];
   messages: ApiMessage[];
@@ -55,10 +57,11 @@ export interface ClaudeStreamState {
   stopReason: string;
 }
 
-export function createClaudeStreamState(callbacks: StreamCallbacks, cwd: string): ClaudeStreamState {
+export function createClaudeStreamState(callbacks: StreamCallbacks, cwd: string, promptUuid: string | null = null): ClaudeStreamState {
   return {
     callbacks,
     cwd,
+    promptUuid,
     blocks: [],
     messages: [],
     toolNames: new Map(),
@@ -208,12 +211,16 @@ function resumePoint(state: ClaudeStreamState): AnthropicAssistantProviderData |
   return { anthropic: { sessionId: state.sessionId, resumeAt: state.lastChainUuid, cwd: state.cwd } };
 }
 
-/** Hand the finished tool round to the agent loop and start the next one. */
-function commitRound(state: ClaudeStreamState): void {
+/**
+ * Hand the finished tool round to the agent loop and start the next one.
+ * A round closed by an interruption gets no resume point: the session stops
+ * mid-round there, so the next turn forks before it and reads it as history.
+ */
+function commitRound(state: ClaudeStreamState, resumable = true): void {
   const onProviderRound = state.callbacks.onProviderRound;
   if (!onProviderRound || state.messages.length === 0) return;
   const last = state.messages[state.messages.length - 1];
-  const providerData = resumePoint(state);
+  const providerData = resumable ? resumePoint(state) : undefined;
   if (providerData) last.providerData = providerData;
   const round: ProviderRound = {
     blocks: state.blocks,
@@ -247,6 +254,37 @@ function handleUserMessage(state: ClaudeStreamState, message: SdkRecord): void {
     state.callbacks.onToolResult?.({ type: "tool_result", toolCallId: toolUseId, toolName, output, isError });
   }
   if (closedToolUse && state.openToolUses.size === 0) commitRound(state);
+}
+
+const INTERRUPTED_TOOL_OUTPUT = "Interrupted before this tool call finished.";
+
+/**
+ * Keep the tool calls of an interrupted turn that were still running (a
+ * Bash command, a chrono sleep) instead of dropping them with the stream.
+ */
+export function commitInterruptedRound(state: ClaudeStreamState): void {
+  if (state.openToolUses.size === 0) return;
+  for (const toolUseId of state.openToolUses) {
+    const toolName = state.toolNames.get(toolUseId) ?? "";
+    state.blocks.push({ type: "tool_result", toolUseId, toolName, output: INTERRUPTED_TOOL_OUTPUT, isError: true });
+    pushMessageContent(state, "user", { type: "tool_result", tool_use_id: toolUseId, content: INTERRUPTED_TOOL_OUTPUT, is_error: true });
+    state.callbacks.onToolResult?.({ type: "tool_result", toolCallId: toolUseId, toolName, output: INTERRUPTED_TOOL_OUTPUT, isError: true });
+  }
+  state.openToolUses.clear();
+  commitRound(state, false);
+}
+
+/**
+ * Whether a result answers Exocortex's prompt. Claude Code also runs turns of
+ * its own: resuming a session whose process died with background tasks
+ * running first reports them in a separate, model-less turn with its own result.
+ */
+function answersPrompt(state: ClaudeStreamState, message: SdkRecord): boolean {
+  const uuids = Array.isArray(message.user_message_uuids)
+    ? message.user_message_uuids
+    : typeof message.user_message_uuid === "string" ? [message.user_message_uuid] : [];
+  if (state.promptUuid && uuids.length > 0) return uuids.includes(state.promptUuid);
+  return asRecord(message.origin)?.kind !== "task-notification";
 }
 
 function handleRateLimit(state: ClaudeStreamState, info: SdkRecord): void {
@@ -301,6 +339,11 @@ export function pushClaudeMessage(state: ClaudeStreamState, message: SdkRecord):
       return;
     }
     case "result": {
+      if (!answersPrompt(state, message)) {
+        log("info", `anthropic: skipping a Claude Code result that does not answer the prompt (origin=${str(asRecord(message.origin)?.kind) ?? "none"})`);
+        state.callbacks.onActivity?.();
+        return;
+      }
       if (message.subtype !== "success" || message.is_error === true) throw resultError(message);
       state.done = true;
       state.stopReason = str(message.stop_reason) ?? "end_turn";
