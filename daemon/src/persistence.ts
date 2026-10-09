@@ -9,6 +9,7 @@
 import { summarizeConversation, type Conversation, type ConversationSummary, type PersistedConversationSummary, type PersistedFolderSummary } from "./messages";
 import type { ToolOutputInfo } from "./protocol";
 import type { StoredDisplayHistoryPage } from "./display-page-store";
+import type { HistoryWindowOptions } from "./history-pagination";
 import { clonedConversationValue, type ConversationCloneTarget } from "./conversation-clone";
 import type { ConversationLoadResult } from "./conversation-load-protocol";
 import * as jsonPersistence from "./json-persistence";
@@ -373,8 +374,13 @@ export function loadAll(): ConversationSummary[] {
   return store().listSummaries().map((summary) => ({ ...summary, streaming: false, restartRecoverable: false, unread: false, subagentCount: 0, backgroundTaskCount: 0, tasks: [], integrations: [] }));
 }
 
-export function loadDisplayPage(id: string, turns: number, beforeEntryIndex?: number): StoredDisplayHistoryPage | null {
-  return backend === "sqlite" ? store().loadDisplayPage(id, turns, beforeEntryIndex) : null;
+export function loadDisplayPage(
+  id: string,
+  turns: number,
+  beforeEntryIndex?: number,
+  windowOptions?: HistoryWindowOptions,
+): StoredDisplayHistoryPage | null {
+  return backend === "sqlite" ? store().loadDisplayPage(id, turns, beforeEntryIndex, windowOptions) : null;
 }
 
 export function loadToolOutputs(id: string, toolCallIds?: readonly string[]): ToolOutputInfo[] | null {

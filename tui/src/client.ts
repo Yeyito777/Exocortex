@@ -9,7 +9,7 @@ import { connect } from "net";
 import { existsSync } from "fs";
 import { randomUUID } from "crypto";
 import { hostname } from "os";
-import type { Command, DaemonShutdownMode, Event, GoalAction, MoveSidebarItemsOptions, OpenAILoginMethod, QueuedCommandInvocation, QueueTiming, QueueWaitTarget, TrimMode, SidebarItemRef } from "./protocol";
+import type { ClientCapability, Command, DaemonShutdownMode, Event, GoalAction, MoveSidebarItemsOptions, OpenAILoginMethod, QueuedCommandInvocation, QueueTiming, QueueWaitTarget, TrimMode, SidebarItemRef } from "./protocol";
 import type { ProviderId, ModelId, EffortLevel, ImageAttachment, TokenUsageSource } from "./messages";
 import { socketPath, isWindows } from "@exocortex/shared/paths";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
@@ -29,6 +29,13 @@ import {
   type ProbedSshConnection,
   type SpawnSshProcess,
 } from "./ssh-transport";
+
+const CLIENT_CAPABILITIES: ClientCapability[] = [
+  "targeted-unwind",
+  "sidebar-reorder-delta",
+  "sidebar-state-patch",
+  "history-block-pagination",
+];
 
 export type EventHandler = (event: Event) => void;
 export type LlmCompleteCallback = (text: string) => void;
@@ -202,7 +209,7 @@ export class DaemonClient {
         }
         this._connected = true;
         resolved = true;
-        this.writeCommand({ type: "client_capabilities", capabilities: ["targeted-unwind", "sidebar-reorder-delta", "sidebar-state-patch"] });
+        this.writeCommand({ type: "client_capabilities", capabilities: CLIENT_CAPABILITIES });
         // Report the queue state atomically with the flush. Input can enqueue a
         // command while the socket attempt is still in flight, so a pre-connect
         // queue snapshot would already be stale here.
@@ -353,7 +360,7 @@ export class DaemonClient {
         active.connected = true;
         this._connected = true;
         this.handler(this.connectedRouteStatus(false, true));
-        this.writeCommand({ type: "client_capabilities", capabilities: ["targeted-unwind", "sidebar-reorder-delta", "sidebar-state-patch"] });
+        this.writeCommand({ type: "client_capabilities", capabilities: CLIENT_CAPABILITIES });
         const replayedCommands = this.flushPendingCommands();
         resolve({
           replayedCommands,
@@ -973,17 +980,19 @@ export class DaemonClient {
     beforeEntryIndex: number,
     turns: number,
     requestSource: "initial-backfill" | "viewport" = "viewport",
+    beforeBlockIndex = 0,
   ): string {
     const reqId = `history_${++this.nextReqId}_${Date.now()}`;
     if (this.performanceProfilingEnabled) {
       this.pendingConversationHistoryLoads.set(reqId, { convId, requestSource, startedAt: performance.now() });
-      log("info", `perf: conversation_history tui_request ${JSON.stringify({ reqId, convId, requestSource, beforeEntryIndex, turns, connected: this._connected })}`);
+      log("info", `perf: conversation_history tui_request ${JSON.stringify({ reqId, convId, requestSource, beforeEntryIndex, beforeBlockIndex, turns, connected: this._connected })}`);
     }
     this.send({
       type: "load_conversation_history",
       reqId,
       convId,
       beforeEntryIndex,
+      ...(beforeBlockIndex > 0 ? { beforeBlockIndex } : {}),
       turns,
       requestSource,
     });

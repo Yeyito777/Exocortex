@@ -193,22 +193,31 @@ export function logStreamingRepair(
   })}`);
 }
 
-export function subtractLoadedAssistantPrefix(localBlocks: Block[], entries: DisplayEntry[]): Block[] {
+export function subtractLoadedAssistantPrefix(
+  localBlocks: Block[],
+  entries: DisplayEntry[],
+  historyStartBlockIndex = 0,
+): Block[] {
   if (localBlocks.length === 0) return [];
   let loadedAiBlocks: Block[] | null = null;
+  let loadedBlockOffset = 0;
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i];
     if (entry.type === "ai") {
       loadedAiBlocks = entry.blocks;
+      // A window beginning inside this entry loaded only its tail.
+      if (i === entries.findIndex((candidate) => candidate.type !== "system_instructions")) {
+        loadedBlockOffset = historyStartBlockIndex;
+      }
       break;
     }
   }
   if (!loadedAiBlocks || loadedAiBlocks.length === 0) return [...localBlocks];
-  if (loadedAiBlocks.length > localBlocks.length) return [...localBlocks];
+  if (loadedBlockOffset + loadedAiBlocks.length > localBlocks.length) return [...localBlocks];
   for (let i = 0; i < loadedAiBlocks.length; i++) {
-    if (!blocksMatch(localBlocks[i], loadedAiBlocks[i])) return [...localBlocks];
+    if (!blocksMatch(localBlocks[loadedBlockOffset + i], loadedAiBlocks[i])) return [...localBlocks];
   }
-  return localBlocks.slice(loadedAiBlocks.length);
+  return localBlocks.slice(loadedBlockOffset + loadedAiBlocks.length);
 }
 
 export function clonePendingAI(msg: Pick<AIMessage, "blocks" | "metadata">): AIMessage {

@@ -10,6 +10,7 @@ import { existsSync, unlinkSync } from "fs";
 import { StringDecoder } from "node:string_decoder";
 import { isWindows } from "@exocortex/shared/paths";
 import { log } from "./log";
+import { budgetHistoryUpdatedEvent } from "./history-pagination";
 import type { ClientCapability, Command, Event } from "./protocol";
 
 // ── Client tracking ─────────────────────────────────────────────────
@@ -205,8 +206,13 @@ export class DaemonServer {
     legacyEvent: Extract<Event, { type: "history_updated" }>,
     paginatedEvent: Extract<Event, { type: "history_updated" }>,
   ): void {
+    let budgetedEvent: Extract<Event, { type: "history_updated" }> | undefined;
     for (const client of this.clients.values()) {
       if (!client.subscriptions.has(convId)) continue;
+      if (client.capabilities.has("history-block-pagination") && client.capabilities.has("history-pagination")) {
+        this.sendTo(client, budgetedEvent ??= budgetHistoryUpdatedEvent(paginatedEvent));
+        continue;
+      }
       this.sendTo(client, client.capabilities.has("history-pagination") ? paginatedEvent : legacyEvent);
     }
   }

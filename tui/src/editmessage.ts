@@ -300,7 +300,7 @@ export function applyOptimisticEditMessageUnwind(
   if (state.convId) delete state.lastStreamSeqByConv[state.convId];
   state.scrollOffset = 0;
   state.historyTotalEntries = state.historyStartIndex + retainedHistoryEntries;
-  state.historyHasOlder = state.historyStartIndex > 0;
+  state.historyHasOlder = state.historyStartIndex > 0 || state.historyStartBlockIndex > 0;
   state.historyLoadingOlder = false;
   state.historyLoadingStartedAt = null;
   state.historyLoadingRequestId = null;
@@ -334,6 +334,7 @@ export function applyConversationUnwound(
     // Keep pinned instructions; older retained history remains pageable.
     state.messages = state.messages.filter((message) => message.role === "system_instructions");
     state.historyStartIndex = event.historyTotalEntries;
+    state.historyStartBlockIndex = 0;
     state.historyStartUserIndex = event.userMessageIndex;
   }
 
@@ -342,7 +343,7 @@ export function applyConversationUnwound(
   delete state.lastStreamSeqByConv[event.convId];
   state.contextTokens = event.contextTokens;
   state.historyTotalEntries = event.historyTotalEntries;
-  state.historyHasOlder = state.historyStartIndex > 0;
+  state.historyHasOlder = state.historyStartIndex > 0 || state.historyStartBlockIndex > 0;
   state.historyLoadingOlder = false;
   state.historyLoadingStartedAt = null;
   state.historyLoadingRequestId = null;

@@ -17,6 +17,7 @@ import { focusSidebarItem } from "../sidebar/selection";
 import type { RenderState } from "../state";
 import { preserveViewportAcrossHistoryPrepend } from "../chatscroll";
 import { resumeHistoryNavigation } from "../historycursor";
+import { joinSplitAssistantEntry } from "../historypagination";
 import {
   clearPendingAI,
   clearStreamingTailMessages,
@@ -256,7 +257,7 @@ export function handleConversationLoaded(
   const preservedPendingAICommittedBlocks = structuredClone(state.pendingAIPartialCommittedBlocks);
   const legacyRebasedBlockOffset = state.pendingAIBlockOffset + preservedPendingAICommittedBlocks.length;
   const preservedPendingAIBlocks = preserveLivePendingAI
-    ? subtractLoadedAssistantPrefix(state.pendingAI!.blocks, event.entries)
+    ? subtractLoadedAssistantPrefix(state.pendingAI!.blocks, event.entries, event.historyStartBlockIndex ?? 0)
     : [];
   const loadedPendingPrefixBlocks = preserveLivePendingAI
     ? state.pendingAI!.blocks.length - preservedPendingAIBlocks.length
@@ -308,6 +309,7 @@ export function handleConversationLoaded(
   state.scrollOffset = 0;
   state.contextTokens = event.contextTokens;
   state.historyStartIndex = event.historyStartIndex ?? 0;
+  state.historyStartBlockIndex = event.historyStartBlockIndex ?? 0;
   state.historyStartUserIndex = event.historyStartUserIndex ?? 0;
   state.historyTotalEntries = event.historyTotalEntries
     ?? event.entries.filter((entry) => entry.type !== "system_instructions").length;
@@ -404,7 +406,8 @@ export function handleConversationHistoryLoaded(
 
   // A canonical history refresh may have replaced the window while this page
   // was in flight. Absolute cursors make that stale response safe to discard.
-  if (event.historyEndIndex !== state.historyStartIndex) {
+  if (event.historyEndIndex !== state.historyStartIndex
+      || (event.historyEndBlockIndex ?? 0) !== state.historyStartBlockIndex) {
     state.pendingHistoryNavigation = null;
     state.historyLoadingOlder = false;
     state.historyLoadingStartedAt = null;
@@ -423,15 +426,19 @@ export function handleConversationHistoryLoaded(
     state.messages = [];
     pushDisplayEntries(state, event.entries);
     const olderMessages = state.messages;
+    const newerMessages = currentMessages.slice(pinnedCount);
+    // A page ending inside the oldest loaded AI entry carries its leading blocks.
+    if ((event.historyEndBlockIndex ?? 0) > 0) joinSplitAssistantEntry(olderMessages, newerMessages);
     state.messages = [
       ...currentMessages.slice(0, pinnedCount),
       ...olderMessages,
-      ...currentMessages.slice(pinnedCount),
+      ...newerMessages,
     ];
     // The prepend changes every suffix index. Recompute the viewport-sized
     // suffix on the next render rather than advancing stale deferred state.
     state.deferredHistoryRender = null;
     state.historyStartIndex = event.historyStartIndex;
+    state.historyStartBlockIndex = event.historyStartBlockIndex ?? 0;
     state.historyStartUserIndex = event.historyStartUserIndex;
     state.historyTotalEntries = event.historyTotalEntries;
     state.historyHasOlder = event.hasOlderHistory;
@@ -450,7 +457,10 @@ export function handleConversationHistoryLoaded(
     && !(state.panelFocus === "chat" && state.chatFocus === "history");
   if (canFastPathInitialBackfill) prependOlderMessages();
   else preserveViewportAcrossHistoryPrepend(state, prependOlderMessages);
-  if (event.historyStartIndex >= event.historyEndIndex) state.pendingHistoryNavigation = null;
+  const pageIsEmpty = event.historyStartIndex > event.historyEndIndex
+    || (event.historyStartIndex === event.historyEndIndex
+      && (event.historyStartBlockIndex ?? 0) >= (event.historyEndBlockIndex ?? 0));
+  if (pageIsEmpty) state.pendingHistoryNavigation = null;
   // Continue from the semantic cursor, not from the new page's first row.
   // Pages without a matching human prompt/AI text leave the action pending.
   resumeHistoryNavigation(state);

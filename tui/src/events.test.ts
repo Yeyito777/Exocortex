@@ -6,6 +6,7 @@ import { createInitialState, isStreaming, canInterrupt, type RenderState } from 
 import { buildMessageLines } from "./conversation";
 import { getViewStartFor } from "./chatscroll";
 import { requestVisibleToolOutputs } from "./events/tool-outputs";
+import { subtractLoadedAssistantPrefix } from "./events/streaming-snapshot";
 import { prepareConversationOpen } from "./conversationscroll";
 import { beginConversationLoad } from "./events/conversations";
 import { focusConversationById } from "./sidebar";
@@ -1054,6 +1055,100 @@ describe("paged conversation history events", () => {
       .toEqual(["u1", "a1", "u2 canonical", "a2 canonical", "u3 canonical", "a3 canonical"]);
     expect(state.historyStartIndex).toBe(0);
     expect(state.historyStartUserIndex).toBe(0);
+  });
+
+  test("joins an older page's leading AI blocks onto the partially loaded entry", () => {
+    const text = (value: string) => ({ type: "text" as const, text: value });
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.messages = [{ role: "assistant", blocks: [text("c"), text("d")], metadata: null }];
+    state.historyStartIndex = 3;
+    state.historyStartBlockIndex = 2;
+    state.historyStartUserIndex = 2;
+    state.historyHasOlder = true;
+    state.historyLoadingOlder = true;
+    state.historyLoadingRequestId = "history-1";
+
+    const page = {
+      type: "conversation_history_loaded" as const,
+      reqId: "history-1",
+      convId: "conv-1",
+      entries: [
+        { type: "user" as const, text: "u2" },
+        { type: "ai" as const, blocks: [text("a"), text("b")], metadata: null },
+      ],
+      historyStartIndex: 2,
+      historyStartUserIndex: 1,
+      historyEndIndex: 3,
+      historyTotalEntries: 4,
+      hasOlderHistory: true,
+    };
+    // A page that does not end at the loaded block cursor is stale.
+    handleEvent(page, state, daemon);
+    expect(state.messages).toHaveLength(1);
+
+    state.historyLoadingOlder = true;
+    state.historyLoadingRequestId = "history-1";
+    handleEvent({ ...page, historyEndBlockIndex: 2 }, state, daemon);
+
+    expect(state.messages.map((message) => message.role === "assistant"
+      ? message.blocks.map((block) => block.type === "text" ? block.text : block.type).join("")
+      : message.role === "user" ? message.text : message.role)).toEqual(["u2", "abcd"]);
+    expect([state.historyStartIndex, state.historyStartBlockIndex, state.historyStartUserIndex]).toEqual([2, 0, 1]);
+  });
+
+  test("subtracts persisted rounds from live blocks when the window starts inside the active entry", () => {
+    const call = (id: string) => ({ type: "tool_call" as const, toolCallId: id, toolName: "Bash", input: {}, summary: "" });
+    const result = (id: string) => ({ type: "tool_result" as const, toolCallId: id, toolName: "Bash", output: "", isError: false });
+    const local = [
+      { type: "text" as const, text: "a" }, call("1"), result("1"),
+      { type: "text" as const, text: "b" }, call("2"), result("2"),
+      { type: "text" as const, text: "live" },
+    ];
+    const tail = { type: "ai" as const, blocks: local.slice(3, 6), metadata: null };
+
+    expect(subtractLoadedAssistantPrefix(local, [tail], 3)).toEqual([{ type: "text", text: "live" }]);
+    expect(subtractLoadedAssistantPrefix(local, [{ ...tail, blocks: local.slice(0, 6) }])).toEqual([{ type: "text", text: "live" }]);
+    // A tail that does not line up with the live blocks leaves them untouched.
+    expect(subtractLoadedAssistantPrefix(local, [tail], 2)).toEqual(local);
+  });
+
+  test("keeps loaded leading blocks when a canonical update starts inside that AI entry", () => {
+    const text = (value: string) => ({ type: "text" as const, text: value });
+    const refresh = {
+      type: "history_updated" as const,
+      convId: "conv-1",
+      entries: [{ type: "ai" as const, blocks: [text("c"), text("d"), text("e")], metadata: null }],
+      historyStartIndex: 1,
+      historyStartBlockIndex: 2,
+      historyStartUserIndex: 1,
+      historyTotalEntries: 2,
+      hasOlderHistory: true,
+      contextTokens: 10,
+      toolOutputsIncluded: false,
+    };
+    const joined = (state: RenderState) => state.messages.map((message) => message.role === "assistant"
+      ? message.blocks.map((block) => block.type === "text" ? block.text : block.type).join("")
+      : message.role === "user" ? message.text : message.role);
+
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.messages = [
+      { role: "user", text: "u1", metadata: null },
+      { role: "assistant", blocks: [text("a"), text("b"), text("c")], metadata: null },
+    ];
+    handleEvent(refresh, state, daemon);
+    expect(joined(state)).toEqual(["u1", "abcde"]);
+    expect([state.historyStartIndex, state.historyStartBlockIndex]).toEqual([0, 0]);
+
+    // Without the leading blocks locally, adopt the refresh's own window.
+    const partial = createInitialState();
+    partial.convId = "conv-1";
+    partial.messages = [{ role: "assistant", blocks: [text("a")], metadata: null }];
+    partial.historyStartIndex = 1;
+    handleEvent(refresh, partial, daemon);
+    expect(joined(partial)).toEqual(["cde"]);
+    expect([partial.historyStartIndex, partial.historyStartBlockIndex, partial.historyHasOlder]).toEqual([1, 2, true]);
   });
 
   test("history refresh keeps the canonical copy of a locally echoed direct turn", () => {

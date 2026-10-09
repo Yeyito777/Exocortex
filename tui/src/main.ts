@@ -374,6 +374,7 @@ function requestOlderHistory(turns: number, requestSource: "initial-backfill" | 
     request.beforeEntryIndex,
     request.turns,
     requestSource,
+    request.beforeBlockIndex,
   );
   return true;
 }

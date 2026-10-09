@@ -3,6 +3,7 @@ import { summarizeConversation, type Conversation, type PersistedConversationSum
 import { collectToolOutputs } from "./display";
 import * as json from "./json-persistence";
 import * as displayPages from "./display-page-store";
+import type { HistoryWindowOptions } from "./history-pagination";
 import { clonedConversationValue, type ConversationCloneTarget } from "./conversation-clone";
 
 /** Compatibility repository used by rollback, importer tests, and baselines. */
@@ -88,13 +89,13 @@ export class JsonConversationRepository implements ConversationRepository {
 
   displayEntryCountBeforeUser() { return null; }
 
-  loadDisplayPage(id: string, turns: number, beforeEntryIndex?: number) {
-    let page = displayPages.loadDisplayPage(id, turns, beforeEntryIndex);
+  loadDisplayPage(id: string, turns: number, beforeEntryIndex?: number, windowOptions?: HistoryWindowOptions) {
+    let page = displayPages.loadDisplayPage(id, turns, beforeEntryIndex, windowOptions);
     if (page) return page;
     const conv = json.loadForDisplayProjection(id);
     const signature = displayPages.getConversationSourceSignature(id);
     if (!conv || !signature || !displayPages.writeDisplayProjection(conv, signature)) return null;
-    page = displayPages.loadDisplayPage(id, turns, beforeEntryIndex);
+    page = displayPages.loadDisplayPage(id, turns, beforeEntryIndex, windowOptions);
     return page;
   }
 

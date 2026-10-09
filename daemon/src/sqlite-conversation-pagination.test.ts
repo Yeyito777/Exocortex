@@ -3,6 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createConversation } from "./messages";
+import type { DisplayEntry } from "./display";
+import { pageDisplayHistory } from "./history-pagination";
 import { SqliteConversationStore } from "./sqlite-conversation-store";
 
 let root: string;
@@ -97,4 +99,61 @@ test("empty and assistant-only conversations have no user ordinal", () => {
   });
   expect(store.loadDisplayPage(conv.id, 5)!.entries).toHaveLength(1);
   expect(store.loadDisplayPage("missing", 5)).toBeNull();
+});
+
+test("budgeted pages cut one long agent turn between tool rounds and match in-memory paging", () => {
+  root = mkdtempSync(join(tmpdir(), "exocortex-page-rounds-"));
+  store = new SqliteConversationStore({ path: join(root, "store.sqlite3") });
+  const conv = createConversation("page-rounds", "anthropic", "claude-opus-5-5");
+  conv.messages.push({ role: "user", content: "Short warm-up", metadata: null });
+  conv.messages.push({ role: "assistant", content: "Ready.", metadata: null });
+  conv.messages.push({ role: "user", content: "Run the long task", metadata: null });
+  for (let round = 0; round < 200; round++) {
+    conv.messages.push({
+      role: "assistant",
+      content: [
+        { type: "thinking", thinking: `Round ${round} reasoning `.repeat(60), signature: "sig" },
+        { type: "tool_use", id: `toolu_${round}`, name: "Bash", input: { command: `echo ${round}` } },
+      ],
+      metadata: null,
+    });
+    conv.messages.push({
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: `toolu_${round}`, content: `output ${round}` }],
+      metadata: null,
+    });
+  }
+  conv.messages.push({ role: "assistant", content: "All done.", metadata: null });
+  store.save(conv);
+
+  const full = store.loadDisplayPage(conv.id, 100)!;
+  expect(full.entries).toHaveLength(4);
+  const byteBudget = 24 * 1024;
+  const pages = [store.loadDisplayPage(conv.id, 5, undefined, { byteBudget })!];
+  while (pages.at(-1)!.hasOlder) {
+    const newest = pages.at(-1)!;
+    pages.push(store.loadDisplayPage(conv.id, 5, newest.startIndex, { byteBudget, beforeBlockIndex: newest.startBlockIndex })!);
+    expect(pages.length).toBeLessThan(200);
+  }
+  expect(pages[0]).toMatchObject({ startIndex: 3, startUserIndex: 2, hasOlder: true });
+  expect(pages[0]!.startBlockIndex).toBeGreaterThan(0);
+
+  let joined: DisplayEntry[] = [];
+  for (const page of pages) {
+    expect(JSON.stringify(page.entries).length).toBeLessThan(byteBudget + 4096);
+    const memory = pageDisplayHistory(full.entries, 5, page.endIndex === full.totalEntries ? undefined : page.endIndex, {
+      byteBudget,
+      beforeBlockIndex: page.endBlockIndex,
+    });
+    expect([page.entries, page.startIndex, page.startBlockIndex, page.startUserIndex, page.hasOlder])
+      .toEqual([memory.entries, memory.startIndex, memory.startBlockIndex, memory.startUserIndex, memory.hasOlder]);
+    const older = [...page.entries];
+    const head = older.at(-1);
+    if (page.endBlockIndex > 0 && head?.type === "ai" && joined[0]?.type === "ai") {
+      older.pop();
+      joined[0] = { ...joined[0], blocks: [...head.blocks, ...joined[0].blocks] };
+    }
+    joined = [...older, ...joined];
+  }
+  expect(joined).toEqual(full.entries);
 });

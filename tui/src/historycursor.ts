@@ -13,6 +13,7 @@ import type { RenderState } from "./state";
 import { buildMessageLines } from "./conversation";
 import { SIDEBAR_WIDTH } from "./sidebar";
 import { getScrollOffsetForViewStart } from "./chatscroll";
+import { hasOlderHistoryCursor } from "./historypagination";
 import {
   ensureCursorRowVisibleInViewport,
   scrollLineWithStickyCursorInViewport,
@@ -163,7 +164,7 @@ export function applyHistoryAction(action: Action, state: RenderState): boolean 
   const cur = surface.cursor;
 
   const defer = () => {
-    if (surface.kind === "chat" && state.convId && state.historyHasOlder && state.historyStartIndex > 0) {
+    if (surface.kind === "chat" && state.convId && hasOlderHistoryCursor(state)) {
       state.pendingHistoryNavigation = action;
       return true;
     }
