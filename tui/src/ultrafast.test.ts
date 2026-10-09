@@ -92,7 +92,7 @@ test("Ultrafast syntax highlights and completes consistently regardless of entit
     expect(getCommandArgs(state)["/fast"].map(item => item.name)).toEqual(["on", "off"]);
     const input = "please /ultrafast ON answer /fast off now";
     expect(getPromptHighlightRanges(state, input)).toEqual([{ start: 7, end: 20 }, { start: 28, end: 37 }]);
-    expect(highlightPromptInput(state, [input], input, 120, 0)).toEqual([
+    expect(highlightPromptInput(state, [input], input, [0])).toEqual([
       `please ${theme.command}/ultrafast ON${theme.reset} answer ${theme.command}/fast off${theme.reset} now`,
     ]);
     state.inputBuffer = "please /ultraf";

@@ -20,28 +20,63 @@ export function deleteRange(buffer: string, start: number, end: number): BufferE
 }
 
 // ── Line operators ─────────────────────────────────────────────────
+// Linewise operators take `first` (start of the first line) and `last`
+// (end of the last line: its \n or buffer.length).
 
-/** dd — delete the entire line the cursor is on. */
-export function deleteLine(buffer: string, pos: number): BufferEdit {
-  const ls = lineStartOf(buffer, pos);
-  const le = lineEndOf(buffer, pos);
-  let start = ls;
-  let end = le;
+/** The span of the cursor's line plus `delta` more lines below (+) or above (-), clamped to the buffer. */
+export function lineSpan(buffer: string, pos: number, delta: number): { first: number; last: number } {
+  let first = lineStartOf(buffer, pos);
+  let last = lineEndOf(buffer, pos);
+  for (let i = 0; i < Math.abs(delta); i++) {
+    if (delta > 0 && last < buffer.length) last = lineEndOf(buffer, last + 1);
+    else if (delta < 0 && first > 0) first = lineStartOf(buffer, first - 1);
+  }
+  return { first, last };
+}
+
+/** dd/dj/dk — delete whole lines; cursor at the start of the line that takes their place. */
+export function deleteLines(buffer: string, first: number, last: number): BufferEdit {
+  let start = first;
+  let end = last;
 
   // Include the newline: trailing if possible, else leading
   if (end < buffer.length) end++;
   else if (start > 0) start--;
 
   const newBuffer = buffer.slice(0, start) + buffer.slice(end);
-  return { buffer: newBuffer, cursor: clampNormal(newBuffer, start) };
+  return { buffer: newBuffer, cursor: lineStartOf(newBuffer, start) };
 }
 
-/** cc — clear line content (keep the line, cursor at line start). */
-export function changeLine(buffer: string, pos: number): BufferEdit {
-  const ls = lineStartOf(buffer, pos);
-  const le = lineEndOf(buffer, pos);
-  const newBuffer = buffer.slice(0, ls) + buffer.slice(le);
-  return { buffer: newBuffer, cursor: ls };
+/** cc/cj/ck — replace whole lines with one empty line (cursor at its start). */
+export function changeLines(buffer: string, first: number, last: number): BufferEdit {
+  return { buffer: buffer.slice(0, first) + buffer.slice(last), cursor: first };
+}
+
+/** yy/yj/yk — whole lines as a linewise register: always \n-terminated. */
+export function linewiseText(buffer: string, first: number, last: number): string {
+  return buffer.slice(first, last) + "\n";
+}
+
+/** p/P of linewise text — put whole lines below/above the cursor's line. */
+export function putLines(buffer: string, pos: number, text: string, below: boolean): BufferEdit {
+  // wl-paste drops the trailing newline, so restore it.
+  const lines = text.endsWith("\n") ? text : text + "\n";
+  let newBuffer: string;
+  let lineStart: number;
+  if (!below) {
+    lineStart = lineStartOf(buffer, pos);
+    newBuffer = buffer.slice(0, lineStart) + lines + buffer.slice(lineStart);
+  } else {
+    const le = lineEndOf(buffer, pos);
+    lineStart = le + 1;
+    newBuffer = le < buffer.length
+      ? buffer.slice(0, lineStart) + lines + buffer.slice(lineStart)
+      : buffer + "\n" + lines.slice(0, -1);
+  }
+  // Like Vim, land on the first nonblank of the first put line.
+  let cursor = lineStart;
+  while (newBuffer[cursor] === " " || newBuffer[cursor] === "\t") cursor++;
+  return { buffer: newBuffer, cursor: clampNormal(newBuffer, cursor) };
 }
 
 /** Shift every logical line touched by the inclusive range by one soft tab. */
@@ -62,32 +97,41 @@ export function shiftLines(buffer: string, start: number, end: number, direction
 
 // ── Character operators ────────────────────────────────────────────
 
-/** x — delete character under cursor. */
-export function deleteChar(buffer: string, pos: number): BufferEdit {
-  if (pos >= buffer.length) return { buffer, cursor: pos };
-  return deleteRange(buffer, pos, nextGraphemeEnd(buffer, pos));
+/** x — delete `count` characters from the cursor, never the line break. */
+export function deleteChars(buffer: string, pos: number, count: number): BufferEdit {
+  const le = lineEndOf(buffer, pos);
+  let end = pos;
+  for (let i = 0; i < count && end < le; i++) end = nextGraphemeEnd(buffer, end);
+  return deleteRange(buffer, pos, end);
 }
 
-/** X — delete character before cursor. */
-export function deleteCharBefore(buffer: string, pos: number): BufferEdit {
-  if (pos <= 0) return { buffer, cursor: 0 };
-  return deleteRange(buffer, previousGraphemeStart(buffer, pos), pos);
+/** X — delete `count` characters before the cursor, within the line. */
+export function deleteCharsBefore(buffer: string, pos: number, count: number): BufferEdit {
+  const ls = lineStartOf(buffer, pos);
+  let start = pos;
+  for (let i = 0; i < count && start > ls; i++) start = previousGraphemeStart(buffer, start);
+  return deleteRange(buffer, start, pos);
 }
 
 // ── To-end-of-line operators ───────────────────────────────────────
 
-/** D — delete from cursor to end of line. Stays in normal mode. */
-export function deleteToEnd(buffer: string, pos: number): BufferEdit {
-  const le = lineEndOf(buffer, pos);
-  if (pos >= le) return { buffer, cursor: clampNormal(buffer, Math.max(0, pos - 1)) };
+/** End of the line `count - 1` lines below the cursor's (D/C with a count). */
+function countedLineEnd(buffer: string, pos: number, count: number): number {
+  return lineSpan(buffer, pos, count - 1).last;
+}
+
+/** D — delete from cursor to end of line (and `count - 1` more lines). Stays in normal mode. */
+export function deleteToEnd(buffer: string, pos: number, count = 1): BufferEdit {
+  const le = countedLineEnd(buffer, pos, count);
+  if (pos >= le) return { buffer, cursor: pos };
   const edit = deleteRange(buffer, pos, le);
   edit.cursor = clampNormal(edit.buffer, edit.cursor);
   return edit;
 }
 
-/** C — delete from cursor to end of line. Caller switches to insert mode. */
-export function changeToEnd(buffer: string, pos: number): BufferEdit {
-  const le = lineEndOf(buffer, pos);
+/** C — delete from cursor to end of line (and `count - 1` more lines). Caller switches to insert mode. */
+export function changeToEnd(buffer: string, pos: number, count = 1): BufferEdit {
+  const le = countedLineEnd(buffer, pos, count);
   if (pos >= le) return { buffer, cursor: pos };
   return deleteRange(buffer, pos, le);
 }
@@ -123,7 +167,8 @@ function toggleCase(text: string): string {
 export function swapCase(buffer: string, pos: number, count: number): BufferEdit {
   const le = lineEndOf(buffer, pos);
   // Clamp count so we don't cross the newline / buffer end
-  const end = Math.min(pos + count, le);
+  let end = pos;
+  for (let i = 0; i < count && end < le; i++) end = nextGraphemeEnd(buffer, end);
   if (pos >= end) return { buffer, cursor: pos };
   const swapped = toggleCase(buffer.slice(pos, end));
   const newBuffer = buffer.slice(0, pos) + swapped + buffer.slice(end);

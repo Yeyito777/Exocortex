@@ -126,7 +126,7 @@ test("inline model completion and highlighting match standalone syntax", () => {
   updateAutocomplete(state);
   expect(state.autocomplete?.matches.map(item => item.name)).toEqual(["gpt-6.1-sol"]);
   const input = "please /model openai custom.model answer";
-  expect(highlightPromptInput(state, [input], input, 120, 0)).toEqual([
+  expect(highlightPromptInput(state, [input], input, [0])).toEqual([
     `please ${theme.command}/model openai custom.model${theme.reset} answer`,
   ]);
 });

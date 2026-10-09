@@ -6,6 +6,7 @@
  */
 
 import type { Action } from "../keybinds";
+import type { FindKind } from "./motions";
 
 // ── Mode ───────────────────────────────────────────────────────────
 
@@ -30,12 +31,14 @@ export interface VimState {
   pendingKeys: string;
   /** Numeric prefix (e.g. 3 in "3w"). Null = 1. */
   count: number | null;
+  /** Count typed before a pending operator (the 2 in "2d3w"); multiplies the motion count. */
+  operatorCount: number | null;
   /** Anchor position for visual mode selection. */
   visualAnchor: number;
   /** Waiting for a character after f/F/t/T. */
-  pendingFind: "f" | "F" | null;
-  /** Last f/F find — used by ; and , to repeat. */
-  lastFind: { char: string; direction: "f" | "F" } | null;
+  pendingFind: FindKind | null;
+  /** Last f/F/t/T find — used by ; and , to repeat. */
+  lastFind: { char: string; direction: FindKind } | null;
   /** Waiting for a character after r (replace). */
   pendingReplace: boolean;
 }
@@ -48,6 +51,7 @@ export function createVimState(): VimState {
     pendingTextObjectModifier: null,
     pendingKeys: "",
     count: null,
+    operatorCount: null,
     visualAnchor: 0,
     pendingFind: null,
     lastFind: null,
@@ -62,6 +66,7 @@ export function resetPending(vim: VimState): void {
   vim.pendingTextObjectModifier = null;
   vim.pendingKeys = "";
   vim.count = null;
+  vim.operatorCount = null;
   vim.pendingFind = null;
   vim.pendingReplace = false;
   // lastFind is intentionally NOT cleared — ; and , need it across commands
@@ -78,16 +83,19 @@ export type VimResult =
   | { type: "action"; action: Action }
   /** Buffer was edited (operator applied). Caller updates state. */
   | { type: "buffer_edit"; buffer: string; cursor: number; mode?: VimMode }
-  /** Cursor moved (motion executed). Caller updates cursorPos. */
-  | { type: "cursor_move"; cursor: number }
+  /** Cursor moved (motion executed). Caller updates cursorPos. `motion` and
+   *  `count` name the motion so the prompt can move j/k by display rows and
+   *  keep `$`'s end-of-line column. */
+  | { type: "cursor_move"; cursor: number; motion?: string; count?: number }
   /** Mode changed. Optional cursor adjustment (e.g. Esc moves cursor left). */
   | { type: "mode_change"; mode: VimMode; cursor?: number }
-  /** Text was yanked — caller copies to clipboard. Cursor stays put. */
-  | { type: "yank"; text: string }
-  /** Paste requested — caller reads clipboard, inserts at position. */
-  | { type: "paste"; position: "after" | "before" }
+  /** Text was yanked — caller copies to clipboard. Cursor stays put.
+   *  Linewise yanks (yy, yj, Vy) are put back as whole lines by p/P. */
+  | { type: "yank"; text: string; linewise?: boolean }
+  /** Paste requested — caller reads clipboard, inserts `count` copies at position. */
+  | { type: "paste"; position: "after" | "before"; count: number }
   /** Visual selection deleted/changed in prompt. Optional yank text is copied by caller. */
-  | { type: "visual_edit"; buffer: string; cursor: number; mode: VimMode; yankText?: string }
+  | { type: "visual_edit"; buffer: string; cursor: number; mode: VimMode; yankText?: string; yankLinewise?: boolean }
   /** Undo/redo requested — caller manages the stack. */
   | { type: "undo" }
   | { type: "redo" }

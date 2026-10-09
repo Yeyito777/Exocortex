@@ -15,11 +15,14 @@ import type {
 } from "./types";
 import { resetPending, keyString } from "./types";
 import { lookupCommand, isPrefix } from "./keymap";
-import { resolveMotion, findForward, findBackward } from "./motions";
+import {
+  resolveMotion, reverseFindKind, firstNonBlank, wordEnd, wordEndBig, type FindKind,
+} from "./motions";
 import { resolveTextObject, isTextObjectKey } from "./textobjects";
 import { lineStartOf, lineEndOf, clampNormal, nextGraphemeEnd, previousGraphemeStart } from "./buffer";
+import { isBufferSpace, isPunct, isWordChar } from "../chars";
 import * as ops from "./operators";
-import { handleVisualMode } from "./visual";
+import { applyFindMotion, handleVisualMode } from "./visual";
 
 // ── Process key ────────────────────────────────────────────────────
 
@@ -64,31 +67,17 @@ function handleInsertMode(key: KeyEvent, vim: VimState, buffer: string, cursor: 
 
 // ── Find helpers ──────────────────────────────────────────────────
 
-/** Resolve a find motion (f/F) to a new cursor position. */
-function resolveFind(dir: "f" | "F", char: string, buffer: string, pos: number): number {
-  return dir === "f" ? findForward(buffer, pos, char) : findBackward(buffer, pos, char);
-}
-
-/** Apply a find as a standalone motion. Only stores lastFind when storeFind is true (f/F, not ;/,). */
-function applyFindMotion(vim: VimState, dir: "f" | "F", char: string, buffer: string, cursor: number, storeFind: boolean): VimResult {
-  if (storeFind) vim.lastFind = { char, direction: dir };
-  vim.pendingFind = null;
-  const newPos = resolveFind(dir, char, buffer, cursor);
-  return { type: "cursor_move", cursor: newPos };
-}
-
-/** Apply a find with a pending operator. Only stores lastFind when storeFind is true. */
-function applyFindOperator(vim: VimState, dir: "f" | "F", char: string, buffer: string, cursor: number, storeFind: boolean): VimResult {
-  if (storeFind) vim.lastFind = { char, direction: dir };
-  vim.pendingFind = null;
-  const target = resolveFind(dir, char, buffer, cursor);
-  if (target === cursor) { resetPending(vim); return { type: "noop" }; }
-  // f is inclusive — include the found character in the range
-  const start = Math.min(cursor, target);
-  const end = Math.max(cursor, target);
-  const result = applyOperatorToRange(vim.pendingOperator!, buffer, start, end);
-  resetPending(vim);
-  return result;
+/** Apply a find with a pending operator. f/t include the target; F/T exclude the cursor's character. */
+function applyFindOperator(vim: VimState, kind: FindKind, char: string, buffer: string, cursor: number, repeat: boolean): VimResult {
+  const operator = vim.pendingOperator!;
+  const count = (vim.operatorCount ?? 1) * (vim.count ?? 1);
+  const moved = applyFindMotion(vim, kind, char, buffer, cursor, repeat, count);
+  if (moved.type !== "cursor_move") return moved;
+  const forward = kind === "f" || kind === "t";
+  const start = forward ? cursor : moved.cursor;
+  const end = forward ? nextGraphemeEnd(buffer, moved.cursor) : cursor;
+  if (start >= end) return { type: "noop" };
+  return applyOperatorToRange(operator, buffer, start, end);
 }
 
 // ── Normal mode handling ───────────────────────────────────────────
@@ -129,13 +118,13 @@ function handleNormalMode(
     return { type: "noop" };
   }
 
-  // ── Pending find (f/F waiting for character) ────────────────────
+  // ── Pending find (f/F/t/T waiting for character) ────────────────
   if (vim.pendingFind) {
-    if (key.type !== "char" || !key.char) { vim.pendingFind = null; return { type: "noop" }; }
+    if (key.type !== "char" || !key.char) { resetPending(vim); return { type: "noop" }; }
     if (vim.pendingOperator) {
-      return applyFindOperator(vim, vim.pendingFind, key.char, buffer, cursor, true);
+      return applyFindOperator(vim, vim.pendingFind, key.char, buffer, cursor, false);
     }
-    return applyFindMotion(vim, vim.pendingFind, key.char, buffer, cursor, true);
+    return applyFindMotion(vim, vim.pendingFind, key.char, buffer, cursor, false);
   }
 
   // ── Pending replace (r waiting for character) ──────────────────
@@ -160,19 +149,18 @@ function handleNormalMode(
     return { type: "pending" };
   }
 
-  // ── f/F — initiate find; ;/, — repeat last find ────────────────
-  if (ks === "f" || ks === "F") {
+  // ── f/F/t/T — initiate find; ;/, — repeat last find ────────────
+  if (ks === "f" || ks === "F" || (context === "prompt" && (ks === "t" || ks === "T"))) {
     vim.pendingFind = ks;
     return { type: "pending" };
   }
   if (ks === ";" || ks === ",") {
-    if (!vim.lastFind) return { type: "noop" };
-    const dir = ks === ";" ? vim.lastFind.direction
-      : (vim.lastFind.direction === "f" ? "F" : "f") as "f" | "F";
+    if (!vim.lastFind) { resetPending(vim); return { type: "noop" }; }
+    const kind = ks === ";" ? vim.lastFind.direction : reverseFindKind(vim.lastFind.direction);
     if (vim.pendingOperator) {
-      return applyFindOperator(vim, dir, vim.lastFind.char, buffer, cursor, false);
+      return applyFindOperator(vim, kind, vim.lastFind.char, buffer, cursor, true);
     }
-    return applyFindMotion(vim, dir, vim.lastFind.char, buffer, cursor, false);
+    return applyFindMotion(vim, kind, vim.lastFind.char, buffer, cursor, true);
   }
 
   // ── Build full key (pending multi-key + current) ───────────────
@@ -270,7 +258,8 @@ function executeCommand(
       vim.pendingOperator = cmd.name;
       // pendingOperatorKey is set by the caller (handleNormalMode)
       vim.pendingKeys = "";
-      // Don't reset count — it carries to the motion (3dw)
+      // A count before the operator multiplies the motion's (3dw, 2d3w, 3dd)
+      vim.operatorCount = vim.count;
       vim.count = null;
       return { type: "pending" };
 
@@ -282,7 +271,7 @@ function executeCommand(
       return { type: "action", action: cmd.action };
 
     case "standalone":
-      return executeStandalone(cmd.name, count, vim, buffer, cursor);
+      return executeStandalone(cmd.name, (vim.operatorCount ?? 1) * count, vim, buffer, cursor);
 
     case "noop":
       resetPending(vim);
@@ -311,10 +300,28 @@ function executeMotion(
   pos = clampNormal(buffer, pos);
 
   resetPending(vim);
-  return { type: "cursor_move", cursor: pos };
+  return { type: "cursor_move", cursor: pos, motion: name, count };
 }
 
 // ── Operator + motion execution ────────────────────────────────────
+
+/** Character class for Vim's word motions: 0 blank, 1 punctuation, 2 word. */
+function wordClass(ch: string | undefined, big: boolean): number {
+  if (ch === undefined || isBufferSpace(ch)) return 0;
+  if (big) return 2;
+  return isWordChar(ch) ? 2 : isPunct(ch) ? 1 : 0;
+}
+
+/**
+ * cw/cW on a non-blank — Vim changes to the end of the word, like ce/cE,
+ * except the cursor's own word counts even when already on its last character.
+ */
+function changeWordEnd(buffer: string, cursor: number, count: number, big: boolean): number {
+  const cls = wordClass(buffer[cursor], big);
+  let end = wordClass(buffer[cursor + 1], big) === cls ? (big ? wordEndBig : wordEnd)(buffer, cursor) : cursor;
+  for (let i = 1; i < count; i++) end = (big ? wordEndBig : wordEnd)(buffer, end);
+  return end;
+}
 
 function executeOperatorMotion(
   operator: string,
@@ -323,22 +330,70 @@ function executeOperatorMotion(
   buffer: string,
   cursor: number,
 ): VimResult {
-  const count = vim.count ?? 1;
+  const count = (vim.operatorCount ?? 1) * (vim.count ?? 1);
+
+  // j/k are linewise: operate on whole lines (dj, yk, 2cj)
+  if (motionName === "line_down" || motionName === "line_up") {
+    const span = ops.lineSpan(buffer, cursor, motionName === "line_down" ? count : -count);
+    if (span.first === lineStartOf(buffer, cursor) && span.last === lineEndOf(buffer, cursor)) {
+      return { type: "noop" };
+    }
+    return applyOperatorToLines(operator, buffer, span.first, span.last);
+  }
+
+  const isWordForward = motionName === "word_forward" || motionName === "word_forward_big";
+  if (operator === "change" && isWordForward && cursor < buffer.length && !isBufferSpace(buffer[cursor])) {
+    const end = changeWordEnd(buffer, cursor, count, motionName === "word_forward_big");
+    return applyOperatorToRange(operator, buffer, cursor, nextGraphemeEnd(buffer, end));
+  }
+
+  // dl/xl may reach the end of the line, unlike the normal-mode l motion
+  if (motionName === "char_right") {
+    const le = lineEndOf(buffer, cursor);
+    let target = cursor;
+    for (let i = 0; i < count && target < le; i++) target = nextGraphemeEnd(buffer, target);
+    return target === cursor ? { type: "noop" } : applyOperatorToRange(operator, buffer, cursor, target);
+  }
+
   const motionFn = resolveMotion(motionName);
   if (!motionFn) return { type: "noop" };
 
   // Compute the range: from cursor to where the motion lands
+  let from = cursor;
   let target = cursor;
   for (let i = 0; i < count; i++) {
+    from = target;
     target = motionFn(buffer, target);
+  }
+  if (target === cursor) return { type: "noop" };
+
+  // An operated w/W whose last word ends its line stops at that line's end
+  // rather than eating the line break (dw on a line's last word).
+  if (isWordForward && buffer.slice(from, target).includes("\n")) {
+    const le = lineEndOf(buffer, from);
+    if (le > from) target = le;
   }
 
   const start = Math.min(cursor, target);
-  const end = Math.max(cursor, target);
-
-  if (start === end) return { type: "noop" };
+  let end = Math.max(cursor, target);
+  // e/E are inclusive: the word's last character is part of the range
+  if (motionName === "word_end" || motionName === "word_end_big") end = nextGraphemeEnd(buffer, end);
 
   return applyOperatorToRange(operator, buffer, start, end);
+}
+
+/** Apply an operator to whole lines [first line start, last line end]. */
+function applyOperatorToLines(operator: string, buffer: string, first: number, last: number): VimResult {
+  switch (operator) {
+    case "delete":
+      return { type: "buffer_edit", ...ops.deleteLines(buffer, first, last) };
+    case "change":
+      return { type: "buffer_edit", ...ops.changeLines(buffer, first, last), mode: "insert" };
+    case "yank":
+      return { type: "yank", text: ops.linewiseText(buffer, first, last), linewise: true };
+    default:
+      return { type: "noop" };
+  }
 }
 
 // ── Operator + text object execution ──────────────────────────────
@@ -406,7 +461,7 @@ function executeModeChange(
   if (context === "prompt") {
     switch (cmd.cursor) {
       case "after": newCursor = Math.min(nextGraphemeEnd(buffer, cursor), lineEndOf(buffer, cursor)); break;
-      case "bol":   newCursor = lineStartOf(buffer, cursor); break;
+      case "bol":   newCursor = firstNonBlank(buffer, cursor); break;
       case "eol":   newCursor = lineEndOf(buffer, cursor); break;
       // "before" or undefined: stay at current position
     }
@@ -447,28 +502,28 @@ function executeStandalone(
     }
 
     case "delete_char":
-      edit = ops.deleteChar(buffer, cursor);
-      return { type: "buffer_edit", ...edit };
+      return editOrNoop(buffer, ops.deleteChars(buffer, cursor, count));
 
     case "delete_char_before":
-      edit = ops.deleteCharBefore(buffer, cursor);
-      return { type: "buffer_edit", ...edit };
+      return editOrNoop(buffer, ops.deleteCharsBefore(buffer, cursor, count));
 
-    case "delete_line":
-      edit = applyN(count, buffer, cursor, ops.deleteLine);
-      return { type: "buffer_edit", ...edit };
+    case "delete_line": {
+      const span = ops.lineSpan(buffer, cursor, count - 1);
+      return editOrNoop(buffer, ops.deleteLines(buffer, span.first, span.last));
+    }
 
-    case "change_line":
-      edit = ops.changeLine(buffer, cursor);
+    case "change_line": {
+      const span = ops.lineSpan(buffer, cursor, count - 1);
+      edit = ops.changeLines(buffer, span.first, span.last);
       vim.mode = "insert";
       return { type: "buffer_edit", ...edit, mode: "insert" };
+    }
 
     case "delete_to_eol":
-      edit = ops.deleteToEnd(buffer, cursor);
-      return { type: "buffer_edit", ...edit };
+      return editOrNoop(buffer, ops.deleteToEnd(buffer, cursor, count));
 
     case "change_to_eol":
-      edit = ops.changeToEnd(buffer, cursor);
+      edit = ops.changeToEnd(buffer, cursor, count);
       vim.mode = "insert";
       return { type: "buffer_edit", ...edit, mode: "insert" };
 
@@ -483,12 +538,8 @@ function executeStandalone(
       return { type: "buffer_edit", ...edit, mode: "insert" };
 
     case "yank_line": {
-      const ls = lineStartOf(buffer, cursor);
-      const le = lineEndOf(buffer, cursor);
-      // Include the trailing newline if it exists
-      const end = le < buffer.length ? le + 1 : le;
-      const text = buffer.slice(ls, end);
-      return { type: "yank", text };
+      const span = ops.lineSpan(buffer, cursor, count - 1);
+      return { type: "yank", text: ops.linewiseText(buffer, span.first, span.last), linewise: true };
     }
 
     case "swap_case":
@@ -496,10 +547,10 @@ function executeStandalone(
       return { type: "buffer_edit", ...edit };
 
     case "paste_after":
-      return { type: "paste", position: "after" };
+      return { type: "paste", position: "after", count };
 
     case "paste_before":
-      return { type: "paste", position: "before" };
+      return { type: "paste", position: "before", count };
 
     case "undo":
       return { type: "undo" };
@@ -511,20 +562,7 @@ function executeStandalone(
 
 // ── Helpers ────────────────────────────────────────────────────────
 
-/** Apply a line-level operation N times (for counted dd, etc). */
-function applyN(
-  count: number,
-  buffer: string,
-  cursor: number,
-  fn: (buf: string, pos: number) => BufferEdit,
-): BufferEdit {
-  let buf = buffer;
-  let pos = cursor;
-  for (let i = 0; i < count; i++) {
-    if (buf.length === 0) break;
-    const result = fn(buf, pos);
-    buf = result.buffer;
-    pos = result.cursor;
-  }
-  return { buffer: buf, cursor: pos };
+/** A buffer edit, or a no-op when nothing changed (so no empty undo step). */
+function editOrNoop(buffer: string, edit: BufferEdit): VimResult {
+  return edit.buffer === buffer ? { type: "noop" } : { type: "buffer_edit", ...edit };
 }

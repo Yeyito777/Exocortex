@@ -363,7 +363,7 @@ export function handleHistoryFind(key: KeyEvent, state: RenderState): boolean {
     const dir = vim.pendingFind;
     vim.lastFind = { char: key.char, direction: dir };
     vim.pendingFind = null;
-    surface.setCursor(dir === "f"
+    surface.setCursor(dir === "f" || dir === "t"
       ? findForward(surface.cursor, lines, key.char)
       : findBackward(surface.cursor, lines, key.char));
     resetHistoryCurswant(surface);
@@ -385,10 +385,9 @@ export function handleHistoryFind(key: KeyEvent, state: RenderState): boolean {
       return false;
     }
     if (!vim.lastFind) return true;
-    const dir = key.char === ";"
-      ? vim.lastFind.direction
-      : (vim.lastFind.direction === "f" ? "F" : "f") as "f" | "F";
-    surface.setCursor(dir === "f"
+    // History has no till motions; a prompt t/T repeats as f/F here.
+    const lastForward = vim.lastFind.direction === "f" || vim.lastFind.direction === "t";
+    surface.setCursor(lastForward === (key.char === ";")
       ? findForward(surface.cursor, lines, vim.lastFind.char)
       : findBackward(surface.cursor, lines, vim.lastFind.char));
     resetHistoryCurswant(surface);

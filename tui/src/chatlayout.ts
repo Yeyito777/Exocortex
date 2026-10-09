@@ -5,13 +5,11 @@
  * resize handling, and tests all agree on the same geometry.
  */
 
-import { getInputLines, type InputLinesResult } from "./promptline";
+import { getInputLines, PROMPT_PREFIX_WIDTH, type InputLinesResult } from "./promptline";
 import { renderStatusLine, type StatusLineResult } from "./statusline";
 import type { RenderState } from "./state";
 import { getRenderedVoicePrompt } from "./voice";
 
-/** Visible width of the vim mode + prompt prefix (e.g. "N > "). */
-export const PROMPT_PREFIX_WIDTH = 4;
 const MAX_INPUT_ROWS = 10;
 const NON_PROMPT_ROWS = 6;
 const MESSAGE_AREA_START_ROW = 3;

@@ -31,14 +31,18 @@ export function clampInsert(buffer: string, pos: number): number {
  * Clamp cursor position for normal mode.
  * If buffer ends with \n, allows buf.length (the implicit empty trailing line).
  * Otherwise clamps to the start of the last grapheme (sit ON the last char,
- * not past it, and never inside it).
+ * not past it, and never inside it). Likewise never rests on a non-empty
+ * line's \n — only an empty line puts the cursor on its line break.
  */
 export function clampNormal(buffer: string, pos: number): number {
   if (buffer.length === 0) return 0;
   const max = buffer[buffer.length - 1] === "\n"
     ? buffer.length
     : previousGraphemeStart(buffer, buffer.length);
-  return graphemeStartAtOrAfter(buffer, Math.max(0, Math.min(pos, max)));
+  const clamped = graphemeStartAtOrAfter(buffer, Math.max(0, Math.min(pos, max)));
+  return buffer[clamped] === "\n" && clamped > 0 && buffer[clamped - 1] !== "\n"
+    ? previousGraphemeStart(buffer, clamped)
+    : clamped;
 }
 
 export { nextGraphemeEnd, previousGraphemeStart };

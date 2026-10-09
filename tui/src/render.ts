@@ -25,8 +25,8 @@ import { createSidebarState } from "./sidebar/state";
 import { isGlobalIdleQueuedMessage } from "./queue";
 import { getSidebarSearchBarViewport } from "./sidebarsearch";
 import { buildMessageLines, type BuildMessageLinesResult, type RenderLineSegment } from "./conversation";
-import { wrappedLineOffsets } from "./promptline";
-import { computeBottomLayout, PROMPT_PREFIX_WIDTH } from "./chatlayout";
+import { computeBottomLayout } from "./chatlayout";
+import { PROMPT_PREFIX_WIDTH } from "./promptline";
 import { show_cursor, hide_cursor, cursor_block, cursor_underline, cursor_bar, applyLineBg } from "./terminal";
 import { hexToAnsi, theme } from "./theme";
 import { clampCursor, stripAnsi, contentBounds, logicalLineRange } from "./historycursor";
@@ -271,14 +271,13 @@ export function advanceDeferredHistoryRender(state: RenderState): boolean {
  */
 function highlightPromptLine(
   line: string,
-  wrappedLineIdx: number,
+  lineStart: number | undefined,
   selStart: number,
   selEnd: number,
   buffer: string,
-  offsets: number[],
   isLinewise: boolean,
 ): string {
-  if (wrappedLineIdx >= offsets.length) return line;
+  if (lineStart === undefined) return line;
 
   // For linewise: expand selection to full line boundaries in the buffer
   let effStart = selStart;
@@ -292,7 +291,6 @@ function highlightPromptLine(
 
   // Use visible length (line may contain ANSI codes from command highlighting)
   const visLen = stripAnsi(line).length;
-  const lineStart = offsets[wrappedLineIdx];
   const lineEnd = lineStart + visLen - 1;
 
   if (effStart <= lineEnd && effEnd >= lineStart) {
@@ -306,12 +304,10 @@ function highlightPromptLine(
 
 function colorPlainPromptDecorations(
   line: string,
-  wrappedLineIdx: number,
+  lineStart: number | undefined,
   ranges: Array<{ start: number; end: number; color: string }>,
-  offsets: number[],
 ): string {
-  if (wrappedLineIdx >= offsets.length) return line;
-  const lineStart = offsets[wrappedLineIdx];
+  if (lineStart === undefined) return line;
   const lineEndExclusive = lineStart + line.length;
   const relRanges = ranges
     .map(range => ({
@@ -1207,15 +1203,12 @@ function renderInputArea(
   firstInputRow: number,
   coloredInputLines: string[],
   isNewLine: boolean[],
-  maxInputWidth: number,
-  newPromptScroll: number,
+  lineStarts: number[],
   promptFocused: boolean,
 ): void {
   const { chatCol, bgLine } = ctx;
   const promptInVisual = promptFocused
     && (state.vim.mode === "visual" || state.vim.mode === "visual-line");
-  // Compute once for all visual-selection calls inside the loop
-  const inputOffsets = promptInVisual ? wrappedLineOffsets(state.inputBuffer, maxInputWidth) : [];
 
   for (let i = 0; i < inputRowCount; i++) {
     const row = firstInputRow + i;
@@ -1238,8 +1231,8 @@ function renderInputArea(
       // Apply selection highlight to prompt input line (works on ANSI-colored text)
       const selStart = Math.min(state.vim.visualAnchor, state.cursorPos);
       const selEnd = Math.max(state.vim.visualAnchor, state.cursorPos);
-      lineContent = highlightPromptLine(lineContent, newPromptScroll + i, selStart, selEnd,
-        state.inputBuffer, inputOffsets, state.vim.mode === "visual-line");
+      lineContent = highlightPromptLine(lineContent, lineStarts[i], selStart, selEnd,
+        state.inputBuffer, state.vim.mode === "visual-line");
     }
 
     emitSidebarCol(ctx, row);
@@ -1406,7 +1399,6 @@ export function render(state: RenderState): boolean {
   const bottomLayout = computeBottomLayout(state, chatW, rows);
   const {
     renderedPrompt,
-    maxInputWidth,
     input,
     inputRowCount,
     status,
@@ -1418,7 +1410,7 @@ export function render(state: RenderState): boolean {
     bottomStartRow,
     messageAreaHeight: baseMessageAreaHeight,
   } = bottomLayout;
-  const { lines: inputLines, isNewLine, cursorLine, cursorCol, scrollOffset: newPromptScroll } = input;
+  const { lines: inputLines, lineStarts, isNewLine, cursorLine, cursorCol, scrollOffset: newPromptScroll } = input;
   state.promptScrollOffset = newPromptScroll;
 
   // Syntax-highlight valid commands/macros in the rendered prompt even while
@@ -1432,15 +1424,13 @@ export function render(state: RenderState): boolean {
         .map(range => ({ ...range, color: theme.command }));
       const voiceRanges = getVoicePromptRanges(state.inputBuffer, voicePrompts)
         .map(range => ({ ...range, color: theme.accent }));
-      const offsets = wrappedLineOffsets(renderedPrompt.buffer, maxInputWidth);
       return inputLines.map((line, idx) => colorPlainPromptDecorations(
         line,
-        newPromptScroll + idx,
+        lineStarts[idx],
         [...commandRanges, ...voiceRanges],
-        offsets,
       ));
     })()
-    : highlightPromptInput(state, inputLines, state.inputBuffer, maxInputWidth, newPromptScroll);
+    : highlightPromptInput(state, inputLines, state.inputBuffer, lineStarts);
 
   const slHeight = status.height;
   const statusLines = status.lines;
@@ -1675,7 +1665,7 @@ export function render(state: RenderState): boolean {
   // ── Input rows ────────────────────────────────────────────────
   renderInputArea(
     ctx, state, inputRowCount, firstInputRow,
-    coloredInputLines, isNewLine, maxInputWidth, newPromptScroll,
+    coloredInputLines, isNewLine, lineStarts,
     promptFocused,
   );
 

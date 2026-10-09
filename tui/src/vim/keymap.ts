@@ -25,6 +25,7 @@ const KEYMAP: KeymapEntry[] = [
   { mode: "normal", context: "prompt", key: "b",  command: { type: "motion", name: "word_backward" } },
   { mode: "normal", context: "prompt", key: "e",  command: { type: "motion", name: "word_end" } },
   { mode: "normal", context: "prompt", key: "0",  command: { type: "motion", name: "line_start" } },
+  { mode: "normal", context: "prompt", key: "^",  command: { type: "motion", name: "first_non_blank" } },
   { mode: "normal", context: "prompt", key: "$",  command: { type: "motion", name: "line_end" } },
   { mode: "normal", context: "prompt", key: "W",  command: { type: "motion", name: "word_forward_big" } },
   { mode: "normal", context: "prompt", key: "B",  command: { type: "motion", name: "word_backward_big" } },
@@ -137,6 +138,7 @@ const KEYMAP: KeymapEntry[] = [
   { mode: "visual", context: "prompt", key: "B",  command: { type: "motion", name: "word_backward_big" } },
   { mode: "visual", context: "prompt", key: "E",  command: { type: "motion", name: "word_end_big" } },
   { mode: "visual", context: "prompt", key: "0",  command: { type: "motion", name: "line_start" } },
+  { mode: "visual", context: "prompt", key: "^",  command: { type: "motion", name: "first_non_blank" } },
   { mode: "visual", context: "prompt", key: "$",  command: { type: "motion", name: "line_end" } },
   { mode: "visual", context: "prompt", key: "gg", command: { type: "motion", name: "buffer_start" } },
   { mode: "visual", context: "prompt", key: "G",  command: { type: "motion", name: "buffer_end" } },
@@ -146,6 +148,7 @@ const KEYMAP: KeymapEntry[] = [
   { mode: "visual", context: "prompt", key: "c",  command: { type: "standalone", name: "visual_change" } },
   { mode: "visual", context: "prompt", key: "y",  command: { type: "standalone", name: "visual_yank" } },
   { mode: "visual", context: "prompt", key: "~",  command: { type: "standalone", name: "visual_swap_case" } },
+  { mode: "visual", context: "prompt", key: "o",  command: { type: "standalone", name: "visual_swap_ends" } },
   { mode: "visual", context: "prompt", key: ">>", command: { type: "standalone", name: "visual_shift_right" } },
   { mode: "visual", context: "prompt", key: "<<", command: { type: "standalone", name: "visual_shift_left" } },
 
@@ -180,6 +183,7 @@ const KEYMAP: KeymapEntry[] = [
   { mode: "visual-line", context: "prompt", key: "c",  command: { type: "standalone", name: "visual_change" } },
   { mode: "visual-line", context: "prompt", key: "y",  command: { type: "standalone", name: "visual_yank" } },
   { mode: "visual-line", context: "prompt", key: "~",  command: { type: "standalone", name: "visual_swap_case" } },
+  { mode: "visual-line", context: "prompt", key: "o",  command: { type: "standalone", name: "visual_swap_ends" } },
   { mode: "visual-line", context: "prompt", key: ">>", command: { type: "standalone", name: "visual_shift_right" } },
   { mode: "visual-line", context: "prompt", key: "<<", command: { type: "standalone", name: "visual_shift_left" } },
 

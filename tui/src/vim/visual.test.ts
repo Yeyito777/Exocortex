@@ -17,6 +17,7 @@ describe("visual prompt deletion", () => {
       cursor: 0,
       mode: "normal",
       yankText: "hello",
+      yankLinewise: false,
     });
   });
 });

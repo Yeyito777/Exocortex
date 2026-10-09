@@ -15,7 +15,6 @@ import { INLINE_COMMANDS, getInlineCommandArgs } from "./inlineeffort";
 import { matchQueueTargetAfterCommand } from "./queuetargets";
 import { findSlashShorthands } from "./slashsearch";
 import { theme } from "./theme";
-import { wrappedLineOffsets } from "./promptline";
 
 // ── Valid names & args ────────────────────────────────────────────
 
@@ -152,27 +151,21 @@ export function getPromptHighlightRanges(state: RenderState, buffer: string): Sp
  *
  * Takes the visible lines from getInputLines (which may be a scrolled
  * window into the full set of wrapped lines), the original buffer,
- * the wrapping width, and the scroll offset so we can map each
- * visible line back to its buffer position.
+ * and each visible line's buffer start offset (`lineStarts`).
  */
 export function highlightPromptInput(
   state: RenderState,
   lines: string[],
   buffer: string,
-  maxWidth: number,
-  scrollOffset: number,
+  lineStarts: number[],
 ): string[] {
   if (!buffer.includes("/")) return lines;
   const spans = getPromptHighlightRanges(state, buffer);
   if (spans.length === 0) return lines;
 
-  const offsets = wrappedLineOffsets(buffer, maxWidth);
-
   return lines.map((line, i) => {
-    const wrappedIdx = scrollOffset + i;
-    if (wrappedIdx >= offsets.length) return line;
-
-    const lineStart = offsets[wrappedIdx];
+    const lineStart = lineStarts[i];
+    if (lineStart === undefined) return line;
     const lineEnd = lineStart + line.length;
 
     // Collect overlapping highlight regions (in visible column space)

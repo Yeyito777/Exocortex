@@ -15,6 +15,7 @@ import { graphemeBoundaryAtOrAfter, nextGraphemeEnd, previousGraphemeStart } fro
 import { sliceByWidthFrom, termWidth } from "./textwidth";
 import { sanitizePromptTextForInsertion } from "./prompttext";
 import { PROMPT_TAB, promptDeleteStart, promptDeleteEnd } from "./prompttabs";
+import { SIDEBAR_WIDTH } from "./sidebar/layout";
 
 export type PromptKeyResult =
   | { type: "handled" }
@@ -29,18 +30,13 @@ function resetPromptCurswant(state: RenderState): void {
   state.promptCurswant = null;
 }
 
-function lineStartOf(buffer: string, pos: number): number {
-  return buffer.lastIndexOf("\n", pos - 1) + 1;
-}
+/** Visible width of the vim mode + prompt prefix (e.g. "N > "). */
+export const PROMPT_PREFIX_WIDTH = 4;
 
-function lineEndOf(buffer: string, pos: number): number {
-  const nextNl = buffer.indexOf("\n", pos);
-  return nextNl === -1 ? buffer.length : nextNl;
-}
-
-function promptCursorVCol(buffer: string, pos: number): number {
-  const lineStart = lineStartOf(buffer, pos);
-  return termWidth(buffer.slice(lineStart, pos));
+/** Prompt wrap width for the current terminal and sidebar layout. */
+export function promptInputWidth(state: RenderState): number {
+  const sidebarW = state.sidebar.open ? SIDEBAR_WIDTH : 0;
+  return Math.max(1, state.cols - sidebarW) - PROMPT_PREFIX_WIDTH;
 }
 
 function offsetForPromptVCol(line: string, desiredCol: number): number {
@@ -60,63 +56,45 @@ function offsetForPromptVCol(line: string, desiredCol: number): number {
   return line.length;
 }
 
-/** Move prompt cursor vertically using Vim's curswant/preferred-column behavior. */
-export function movePromptCursorVertical(
-  buffer: string,
-  cursorPos: number,
-  direction: -1 | 1,
-  desiredCol: number,
-): number | null {
-  const currentLineStart = lineStartOf(buffer, cursorPos);
-  let targetLineStart: number;
-  let targetLineEnd: number;
-
-  if (direction < 0) {
-    if (currentLineStart === 0) return null;
-    targetLineEnd = currentLineStart - 1;
-    targetLineStart = lineStartOf(buffer, targetLineEnd);
-  } else {
-    const currentLineEnd = lineEndOf(buffer, cursorPos);
-    if (currentLineEnd >= buffer.length) return null;
-    targetLineStart = currentLineEnd + 1;
-    targetLineEnd = lineEndOf(buffer, targetLineStart);
-  }
-
-  const targetLine = buffer.slice(targetLineStart, targetLineEnd);
-  return graphemeBoundaryAtOrAfter(buffer, targetLineStart + offsetForPromptVCol(targetLine, desiredCol));
-}
-
-/** Apply one or more vertical prompt moves, preserving/setting `state.promptCurswant`. */
+/**
+ * Apply one or more vertical prompt moves, preserving/setting `state.promptCurswant`.
+ *
+ * Moves by display rows (Vim `gj`/`gk`), so a wrapped line's continuation
+ * rows are reachable with j/k and the viewport scrolls one row at a time.
+ * The preferred column is a display column within the row; Infinity sticks
+ * to the end of each row (after `$`/End).
+ */
 export function movePromptCursorVerticalWithCurswant(
   state: RenderState,
   direction: -1 | 1,
   count: number = 1,
   normalMode: boolean = false,
 ): boolean {
-  const desiredCol = state.promptCurswant ?? promptCursorVCol(state.inputBuffer, state.cursorPos);
-  let pos = state.cursorPos;
-  let moved = false;
-
-  for (let i = 0; i < Math.max(1, count); i++) {
-    const next = movePromptCursorVertical(state.inputBuffer, pos, direction, desiredCol);
-    if (next === null) break;
-    pos = next;
-    moved = true;
-  }
+  const buffer = state.inputBuffer;
+  const maxWidth = Math.max(1, promptInputWidth(state));
+  const rows = promptDisplayRows(buffer, maxWidth);
+  const cell = promptCursorCell(buffer, rows, state.cursorPos);
+  // An insert cursor just past a full-width line is drawn at column 0 of its
+  // own row below it, so moving up first lands on the line's own last row.
+  const onPhantomRow = cell.col >= maxWidth;
+  const desiredCol = state.promptCurswant ?? (onPhantomRow ? 0 : cell.col);
+  const upFromPhantomRow = onPhantomRow && direction < 0;
+  const steps = Math.max(1, count) - (upFromPhantomRow ? 1 : 0);
+  const target = Math.max(0, Math.min(rows.length - 1, cell.row + direction * steps));
 
   state.promptCurswant = desiredCol;
-  if (moved) {
-    if (normalMode) {
-      const lineStart = lineStartOf(state.inputBuffer, pos);
-      const lineEnd = lineEndOf(state.inputBuffer, pos);
-      state.cursorPos = lineEnd > lineStart && pos >= lineEnd
-        ? previousGraphemeStart(state.inputBuffer, lineEnd)
-        : pos;
-    } else {
-      state.cursorPos = pos;
-    }
+  if (target === cell.row && !upFromPhantomRow) return false;
+
+  const row = rows[target];
+  let pos = row.start + offsetForPromptVCol(buffer.slice(row.start, row.end), desiredCol);
+  // A wrapped row's end offset is drawn at the start of its continuation row,
+  // and normal mode never rests past a line's last character.
+  const continues = target + 1 < rows.length && rows[target + 1].start === row.end;
+  if (pos >= row.end && row.end > row.start && (continues || normalMode)) {
+    pos = previousGraphemeStart(buffer, row.end);
   }
-  return moved;
+  state.cursorPos = pos;
+  return true;
 }
 
 /** Handle a key event in the prompt. Returns a typed result object. */
@@ -259,7 +237,8 @@ export function handlePromptKey(
     case "cursor_end": {
       const nextNl = state.inputBuffer.indexOf("\n", state.cursorPos);
       state.cursorPos = nextNl === -1 ? state.inputBuffer.length : nextNl;
-      resetPromptCurswant(state);
+      // Like Vim's <End>/$: later vertical moves stick to the end of each row.
+      state.promptCurswant = Infinity;
       return HANDLED;
     }
 
@@ -276,45 +255,59 @@ export function handlePromptKey(
 
 export { clearPrompt } from "./promptstate";
 
-// ── Wrapped-line offset mapping ──────────────────────────────────────
+// ── Display rows (vim-style hard wrap) ──────────────────────────────
 
-/**
- * Compute the buffer offset for each wrapped line.
- *
- * Given the raw input buffer and the hard-wrap width, returns an array
- * where `offsets[i]` is the character index in `buffer` where wrapped
- * line `i` begins. Used by prompt highlighting and visual selection
- * to map between buffer positions and visible wrapped lines.
- */
-export function wrappedLineOffsets(buffer: string, maxWidth: number): number[] {
-  if (maxWidth < 1) maxWidth = 1;
-  const offsets: number[] = [];
-  const lines = buffer.split("\n");
-  let pos = 0;
-
-  for (const line of lines) {
-    const [firstChunkEnd] = line.length === 0 ? [0] : sliceByWidthFrom(line, 0, maxWidth);
-    if (line.length === 0 || firstChunkEnd >= line.length) {
-      offsets.push(pos);
-    } else {
-      let rel = 0;
-      while (rel < line.length) {
-        offsets.push(pos + rel);
-        const [chunkEnd] = rel === 0 ? [firstChunkEnd] : sliceByWidthFrom(line, rel, maxWidth);
-        rel = chunkEnd > rel ? chunkEnd : nextGraphemeEnd(line, rel);
-      }
-    }
-    pos += line.length + 1; // +1 for \n
-  }
-
-  return offsets;
+/** One hard-wrapped prompt row: buffer offsets [start, end), excluding "\n". */
+export interface PromptRow {
+  start: number;
+  end: number;
 }
 
-// ── Input line wrapping (vim-style hard wrap) ───────────────────────
+/**
+ * Hard-wrap the buffer into terminal-width display rows (vim-style, no word
+ * boundaries) without splitting grapheme clusters. Every logical line,
+ * including an empty one, yields at least one row.
+ */
+export function promptDisplayRows(buffer: string, maxWidth: number): PromptRow[] {
+  // Guard against zero/negative width — would cause infinite loop in hard-wrap
+  if (maxWidth < 1) maxWidth = 1;
+  const rows: PromptRow[] = [];
+  let lineStart = 0;
+
+  for (const line of buffer.split("\n")) {
+    let rel = 0;
+    do {
+      const [chunkEnd] = sliceByWidthFrom(line, rel, maxWidth);
+      const end = chunkEnd > rel || line.length === 0 ? chunkEnd : nextGraphemeEnd(line, rel);
+      rows.push({ start: lineStart + rel, end: lineStart + end });
+      rel = end;
+    } while (rel < line.length);
+    lineStart += line.length + 1; // +1 for the \n
+  }
+
+  return rows;
+}
+
+/**
+ * Row and display column of a buffer offset. A wrapped row's end offset is
+ * also its continuation row's start; the continuation row wins. An insert
+ * cursor just past a full-width line reports a column of `maxWidth`.
+ */
+function promptCursorCell(buffer: string, rows: PromptRow[], pos: number): { row: number; col: number } {
+  let row = 0;
+  for (let i = 0; i < rows.length && rows[i].start <= pos; i++) {
+    if (pos <= rows[i].end) row = i;
+  }
+  return { row, col: termWidth(buffer.slice(rows[row].start, Math.max(rows[row].start, pos))) };
+}
+
+// ── Input line wrapping + scroll ────────────────────────────────────
 
 export interface InputLinesResult {
   /** Visible lines after wrapping + scroll. */
   lines: string[];
+  /** Buffer offset where each visible line starts. */
+  lineStarts: number[];
   /** true if this wrapped line starts a new buffer line (after a \n). */
   isNewLine: boolean[];
   /** Cursor row within the visible lines. */
@@ -342,73 +335,28 @@ export function getInputLines(
   maxRows: number,
   prevScrollOffset: number = 0,
 ): InputLinesResult {
-  // Guard against zero/negative width — would cause infinite loop in hard-wrap
   if (maxWidth < 1) maxWidth = 1;
-  const bufferLines = buffer.split("\n");
-  const wrapped: string[] = [];
-  const isNewLineArr: boolean[] = [];
+  const rows = promptDisplayRows(buffer, maxWidth);
+  const wrapped = rows.map(row => buffer.slice(row.start, row.end));
+  const lineStarts = rows.map(row => row.start);
+  const isNewLineArr = rows.map(row => row.start > 0 && buffer[row.start - 1] === "\n");
+  let { row: cursorWrappedLine, col: cursorColInLine } = promptCursorCell(buffer, rows, cursorPos);
 
-  // Track which wrapped line the cursor falls on
-  let cursorWrappedLine = 0;
-  let cursorColInLine = 0;
-  let bufOffset = 0;
-
-  for (let li = 0; li < bufferLines.length; li++) {
-    const line = bufferLines[li];
-    const [firstChunkEnd] = line.length === 0 ? [0] : sliceByWidthFrom(line, 0, maxWidth);
-
-    if (line.length === 0 || firstChunkEnd >= line.length) {
-      // Cursor within this line?
-      if (cursorPos >= bufOffset && cursorPos <= bufOffset + line.length) {
-        cursorWrappedLine = wrapped.length;
-        cursorColInLine = termWidth(line.slice(0, cursorPos - bufOffset));
-      }
-      wrapped.push(line);
-      isNewLineArr.push(li > 0);
-    } else {
-      // Hard-wrap into terminal-width chunks without splitting grapheme clusters.
-      let rel = 0;
-      while (rel < line.length) {
-        const [chunkEndIndex] = rel === 0 ? [firstChunkEnd] : sliceByWidthFrom(line, rel, maxWidth);
-        const chunkEndRel = chunkEndIndex > rel ? chunkEndIndex : nextGraphemeEnd(line, rel);
-        const chunk = line.slice(rel, chunkEndRel);
-        // Cursor within this chunk?
-        const chunkStart = bufOffset + rel;
-        const chunkEnd = bufOffset + chunkEndRel;
-        if (cursorPos >= chunkStart && cursorPos <= chunkEnd) {
-          cursorWrappedLine = wrapped.length;
-          cursorColInLine = termWidth(line.slice(rel, cursorPos - bufOffset));
-        }
-        wrapped.push(chunk);
-        isNewLineArr.push(li > 0 && rel === 0);
-        rel = chunkEndRel;
-      }
-    }
-
-    bufOffset += line.length + 1; // +1 for the \n
-  }
-
-  // Ensure at least one line
-  if (wrapped.length === 0) {
-    wrapped.push("");
-    isNewLineArr.push(false);
-  }
-
-  // Cursor at the right edge of a full-width line → drop to col 0 of next line
+  // Cursor at the right edge of a full-width line → its own empty
+  // continuation row, so it never overlaps the next line's first character.
   if (cursorColInLine >= maxWidth) {
     cursorWrappedLine++;
     cursorColInLine = 0;
-    // If there's no next line yet, insert an empty continuation line
-    if (cursorWrappedLine >= wrapped.length) {
-      wrapped.splice(cursorWrappedLine, 0, "");
-      isNewLineArr.splice(cursorWrappedLine, 0, false);
-    }
+    wrapped.splice(cursorWrappedLine, 0, "");
+    lineStarts.splice(cursorWrappedLine, 0, cursorPos);
+    isNewLineArr.splice(cursorWrappedLine, 0, false);
   }
 
   // Scroll to keep cursor visible
   if (wrapped.length <= maxRows) {
     return {
       lines: wrapped,
+      lineStarts,
       isNewLine: isNewLineArr,
       cursorLine: cursorWrappedLine,
       cursorCol: cursorColInLine,
@@ -435,6 +383,7 @@ export function getInputLines(
 
   return {
     lines: wrapped.slice(scrollStart, scrollStart + maxRows),
+    lineStarts: lineStarts.slice(scrollStart, scrollStart + maxRows),
     isNewLine: isNewLineArr.slice(scrollStart, scrollStart + maxRows),
     cursorLine: cursorWrappedLine - scrollStart,
     cursorCol: cursorColInLine,

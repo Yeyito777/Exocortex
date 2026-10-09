@@ -233,7 +233,7 @@ describe("daemon-host macro paths", () => {
       updateAutocomplete(state);
       expect(state.autocomplete?.matches.map(match => match.name)).toEqual(["remote-only"]);
       const input = "/tool uninstall remote-only";
-      expect(highlightPromptInput(state, [input], input, 120, 0)[0])
+      expect(highlightPromptInput(state, [input], input, [0])[0])
         .toBe(`${theme.command}${input}${theme.reset}`);
       for (const expanded of Object.values(getMacroMap(environment))) {
         expect(expanded).not.toContain(repoRoot());

@@ -10,15 +10,26 @@ import type { KeyEvent } from "../input";
 import type { VimState, VimCommand, VimContext, VimResult } from "./types";
 import { resetPending, keyString } from "./types";
 import { lookupCommand, isPrefix } from "./keymap";
-import { resolveMotion, findForward, findBackward } from "./motions";
+import { resolveMotion, findCharCount, reverseFindKind, type FindKind } from "./motions";
 import { resolveTextObject, isTextObjectKey } from "./textobjects";
-import { lineStartOf, lineEndOf, clampNormal } from "./buffer";
+import { lineStartOf, lineEndOf, clampNormal, nextGraphemeEnd, previousGraphemeStart } from "./buffer";
 import { shiftLines, swapCaseRange } from "./operators";
 
 // ── Helpers ──────────────────────────────────────────────────────
 
-function resolveFind(dir: "f" | "F", char: string, buffer: string, pos: number): number {
-  return dir === "f" ? findForward(buffer, pos, char) : findBackward(buffer, pos, char);
+/**
+ * Apply a find (f/F/t/T, or a ;/, repeat) as a motion, `count` times — in
+ * normal mode or to extend a selection. Only a new find (not a repeat) is
+ * stored for ; and ,.
+ */
+export function applyFindMotion(
+  vim: VimState, kind: FindKind, char: string, buffer: string, cursor: number, repeat: boolean,
+  count = vim.count ?? 1,
+): VimResult {
+  if (!repeat) vim.lastFind = { char, direction: kind };
+  const target = findCharCount(buffer, cursor, char, kind, count, repeat);
+  resetPending(vim);
+  return target === null ? { type: "noop" } : { type: "cursor_move", cursor: target };
 }
 
 function exitVisual(vim: VimState, cursor: number): VimResult {
@@ -62,17 +73,14 @@ export function handleVisualMode(
     return { type: "noop" };
   }
 
-  // Pending find (f/F waiting for character) in visual
+  // Pending find (f/F/t/T waiting for character) in visual
   if (vim.pendingFind) {
-    if (key.type !== "char" || !key.char) { vim.pendingFind = null; return { type: "noop" }; }
-    vim.lastFind = { char: key.char, direction: vim.pendingFind };
-    vim.pendingFind = null;
-    const newPos = resolveFind(vim.lastFind.direction, vim.lastFind.char, buffer, cursor);
-    return { type: "cursor_move", cursor: newPos };
+    if (key.type !== "char" || !key.char) { resetPending(vim); return { type: "noop" }; }
+    return applyFindMotion(vim, vim.pendingFind, key.char, buffer, cursor, false);
   }
 
-  // f/F — initiate find; ;/, — repeat last find (extends selection)
-  if (ks === "f" || ks === "F") {
+  // f/F/t/T — initiate find; ;/, — repeat last find (extends selection)
+  if (ks === "f" || ks === "F" || (context === "prompt" && (ks === "t" || ks === "T"))) {
     vim.pendingFind = ks;
     return { type: "pending" };
   }
@@ -82,11 +90,9 @@ export function handleVisualMode(
     const boundCommand = lookupCommand(vim.mode, context, ks);
     if (boundCommand) return executeVisualCommand(boundCommand, vim, context, buffer, cursor);
 
-    if (!vim.lastFind) return { type: "noop" };
-    const dir = ks === ";" ? vim.lastFind.direction
-      : (vim.lastFind.direction === "f" ? "F" : "f") as "f" | "F";
-    const newPos = resolveFind(dir, vim.lastFind.char, buffer, cursor);
-    return { type: "cursor_move", cursor: newPos };
+    if (!vim.lastFind) { resetPending(vim); return { type: "noop" }; }
+    const kind = ks === ";" ? vim.lastFind.direction : reverseFindKind(vim.lastFind.direction);
+    return applyFindMotion(vim, kind, vim.lastFind.char, buffer, cursor, true);
   }
 
   // ── Text objects (i/a + specifier) ─────────────────────────────
@@ -100,10 +106,16 @@ export function handleVisualMode(
       const range = resolveTextObject(modifier, ks, buffer, cursor);
       if (range && range.start !== range.end) {
         vim.visualAnchor = range.start;
-        return { type: "cursor_move", cursor: range.end - 1 };
+        return { type: "cursor_move", cursor: previousGraphemeStart(buffer, range.end) };
       }
     }
     return { type: "noop" };
+  }
+
+  // ── Count prefix (3j, 2w) ──────────────────────────────────────
+  if (context === "prompt" && (/^[1-9]$/.test(ks) || (ks === "0" && vim.count !== null))) {
+    vim.count = (vim.count ?? 0) * 10 + parseInt(ks, 10);
+    return { type: "pending" };
   }
 
   // "i" or "a" → start text object modifier
@@ -144,9 +156,12 @@ function executeVisualCommand(
     case "motion": {
       // Motion extends selection by moving cursor (anchor stays)
       const motionFn = resolveMotion(cmd.name);
+      const count = vim.count ?? 1;
+      resetPending(vim);
       if (!motionFn) return { type: "noop" };
-      const newPos = motionFn(buffer, cursor);
-      return { type: "cursor_move", cursor: newPos };
+      let newPos = cursor;
+      for (let i = 0; i < count; i++) newPos = motionFn(buffer, newPos);
+      return { type: "cursor_move", cursor: newPos, motion: cmd.name, count };
     }
 
     case "action":
@@ -155,6 +170,12 @@ function executeVisualCommand(
 
     case "standalone": {
       const anchor = vim.visualAnchor;
+      resetPending(vim);
+      if (cmd.name === "visual_swap_ends") {
+        // o — jump to the other end of the selection
+        vim.visualAnchor = cursor;
+        return { type: "cursor_move", cursor: anchor };
+      }
       if (cmd.name === "visual_shift_right" || cmd.name === "visual_shift_left") {
         const edit = shiftLines(buffer, anchor, cursor, cmd.name === "visual_shift_right" ? 1 : -1);
         const exited = exitVisual(vim, edit.cursor);
@@ -165,22 +186,25 @@ function executeVisualCommand(
       let end = Math.max(anchor, cursor);
 
       // Visual-line: expand to full lines
-      if (vim.mode === "visual-line") {
+      const linewise = vim.mode === "visual-line";
+      if (linewise) {
         start = lineStartOf(buffer, start);
         end = lineEndOf(buffer, end);
         // Include trailing newline
         if (end < buffer.length) end++;
       } else {
-        // Character visual: inclusive (end + 1 for slice)
-        end = Math.min(end + 1, buffer.length);
+        // Character visual: inclusive of the grapheme under the cursor
+        end = Math.min(nextGraphemeEnd(buffer, end), buffer.length);
       }
 
       const text = buffer.slice(start, end);
+      // A linewise register is always \n-terminated, even for the last line
+      const yankText = linewise && !text.endsWith("\n") ? text + "\n" : text;
 
       switch (cmd.name) {
         case "visual_yank":
           exitVisual(vim, cursor);
-          return { type: "yank", text };
+          return { type: "yank", text: yankText, linewise };
 
         case "visual_delete": {
           if (context !== "prompt") return exitVisual(vim, cursor);
@@ -195,7 +219,10 @@ function executeVisualCommand(
           const newBuf = buffer.slice(0, start) + buffer.slice(end);
           const newCursor = clampNormal(newBuf, start);
           exitVisual(vim, newCursor);
-          return { type: "visual_edit", buffer: newBuf, cursor: newCursor, mode: "normal", yankText: text };
+          return {
+            type: "visual_edit", buffer: newBuf, cursor: newCursor, mode: "normal",
+            yankText, yankLinewise: linewise,
+          };
         }
 
         case "visual_change": {

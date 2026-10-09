@@ -32,6 +32,11 @@ export function charRight(buffer: string, pos: number): number {
 
 // ── Word motions ───────────────────────────────────────────────────
 
+/** True when `pos` is on an empty line, where Vim's w/W/b/B stop. */
+function isEmptyLineAt(buffer: string, pos: number): boolean {
+  return (pos === 0 || buffer[pos - 1] === "\n") && (pos === buffer.length || buffer[pos] === "\n");
+}
+
 /** w — move to start of next word. */
 export function wordForward(buffer: string, pos: number): number {
   const len = buffer.length;
@@ -47,8 +52,8 @@ export function wordForward(buffer: string, pos: number): number {
     i++;
   }
 
-  // Skip whitespace
-  while (i < len && isSpace(buffer[i])) i++;
+  // Skip whitespace, stopping at an empty line
+  while (i < len && isSpace(buffer[i]) && !isEmptyLineAt(buffer, i)) i++;
 
   return i;
 }
@@ -58,8 +63,8 @@ export function wordBackward(buffer: string, pos: number): number {
   if (pos <= 0) return 0;
   let i = pos - 1;
 
-  // Skip whitespace backwards
-  while (i > 0 && isSpace(buffer[i])) i--;
+  // Skip whitespace backwards, stopping at an empty line
+  while (i > 0 && isSpace(buffer[i]) && !isEmptyLineAt(buffer, i)) i--;
 
   // Skip current word or punctuation block backwards
   if (i >= 0 && isWordChar(buffer[i])) {
@@ -100,8 +105,8 @@ export function wordForwardBig(buffer: string, pos: number): number {
   // Skip current non-whitespace
   while (i < len && !isSpace(buffer[i])) i++;
 
-  // Skip whitespace
-  while (i < len && isSpace(buffer[i])) i++;
+  // Skip whitespace, stopping at an empty line
+  while (i < len && isSpace(buffer[i]) && !isEmptyLineAt(buffer, i)) i++;
 
   return i;
 }
@@ -111,8 +116,8 @@ export function wordBackwardBig(buffer: string, pos: number): number {
   if (pos <= 0) return 0;
   let i = pos - 1;
 
-  // Skip whitespace backwards
-  while (i > 0 && isSpace(buffer[i])) i--;
+  // Skip whitespace backwards, stopping at an empty line
+  while (i > 0 && isSpace(buffer[i]) && !isEmptyLineAt(buffer, i)) i--;
 
   // Skip non-whitespace backwards
   while (i > 0 && !isSpace(buffer[i - 1])) i--;
@@ -140,6 +145,14 @@ export function wordEndBig(buffer: string, pos: number): number {
 /** 0 — move to start of current line. */
 export function lineStart(buffer: string, pos: number): number {
   return lineStartOf(buffer, pos);
+}
+
+/** ^ — move to the first non-blank character of the current line. */
+export function firstNonBlank(buffer: string, pos: number): number {
+  const end = lineEndOf(buffer, pos);
+  let i = lineStartOf(buffer, pos);
+  while (i < end && (buffer[i] === " " || buffer[i] === "\t")) i++;
+  return i;
 }
 
 /** $ — move to end of current line. */
@@ -178,29 +191,51 @@ export function lineUp(buffer: string, pos: number): number {
   return prevLs + Math.min(col, prevLineLen);
 }
 
-// ── Find motions (f/F) ─────────────────────────────────────────────
+// ── Find motions (f/F/t/T) ─────────────────────────────────────────
 
-/** f{char} — move to next occurrence of char on the current line. */
-export function findForward(buffer: string, pos: number, char: string): number {
-  const le = lineEndOf(buffer, pos);
-  let i = nextGraphemeEnd(buffer, pos);
-  while (i <= le) {
-    if (buffer.startsWith(char, i)) return i;
-    const next = nextGraphemeEnd(buffer, i);
-    if (next === i) break;
-    i = next;
-  }
-  return pos; // not found — stay put
+export type FindKind = "f" | "F" | "t" | "T";
+
+/** The opposite-direction find, for `,`. */
+export function reverseFindKind(kind: FindKind): FindKind {
+  return ({ f: "F", F: "f", t: "T", T: "t" } as const)[kind];
 }
 
-/** F{char} — move to previous occurrence of char on the current line. */
-export function findBackward(buffer: string, pos: number, char: string): number {
-  const ls = lineStartOf(buffer, pos);
-  for (let i = previousGraphemeStart(buffer, pos); i >= ls; i = previousGraphemeStart(buffer, i)) {
-    if (buffer.startsWith(char, i)) return i;
-    if (i === ls) break;
+/**
+ * f/F/t/T{char} — the next/previous `char` on the current line, or just
+ * before/after it for t/T. Returns null when there is no match. A repeat
+ * (; and ,) skips a t/T match right next to the cursor, so it can't get stuck.
+ */
+export function findChar(buffer: string, pos: number, char: string, kind: FindKind, repeat = false): number | null {
+  const till = kind === "t" || kind === "T";
+  if (kind === "f" || kind === "t") {
+    const end = lineEndOf(buffer, pos);
+    let i = nextGraphemeEnd(buffer, pos);
+    if (till && repeat && i < end) i = nextGraphemeEnd(buffer, i);
+    for (; i < end; i = nextGraphemeEnd(buffer, i)) {
+      if (buffer.startsWith(char, i)) return till ? previousGraphemeStart(buffer, i) : i;
+    }
+    return null;
   }
-  return pos; // not found — stay put
+
+  const start = lineStartOf(buffer, pos);
+  let i = pos;
+  if (till && repeat && i > start) i = previousGraphemeStart(buffer, i);
+  while (i > start) {
+    i = previousGraphemeStart(buffer, i);
+    if (buffer.startsWith(char, i)) return till ? nextGraphemeEnd(buffer, i) : i;
+  }
+  return null;
+}
+
+/** findChar repeated `count` times (2fx, 3;); null unless every repetition matches. */
+export function findCharCount(
+  buffer: string, pos: number, char: string, kind: FindKind, count: number, repeat = false,
+): number | null {
+  let target: number | null = pos;
+  for (let i = 0; i < count && target !== null; i++) {
+    target = findChar(buffer, target, char, kind, repeat || i > 0);
+  }
+  return target;
 }
 
 // ── Buffer-level motions ───────────────────────────────────────────
@@ -229,6 +264,7 @@ export function resolveMotion(name: string): ((buffer: string, pos: number) => n
     case "word_backward_big": return wordBackwardBig;
     case "word_end_big":      return wordEndBig;
     case "line_start":    return lineStart;
+    case "first_non_blank": return firstNonBlank;
     case "line_end":      return lineEnd;
     case "line_down":     return lineDown;
     case "line_up":       return lineUp;

@@ -17,6 +17,7 @@ import { focusHistory, focusPrompt } from "./state";
 import type { Action } from "./keybinds";
 import type { KeyResult } from "./focus";
 import {
+  scrollUp, scrollDown,
   scrollLineUp, scrollLineDown,
   scrollHalfUp, scrollHalfDown,
   scrollPageUp, scrollPageDown,
@@ -24,7 +25,9 @@ import {
 } from "./chat";
 import { handleSidebarAction, handleSidebarScrollAction, type SidebarKeyResult } from "./sidebar";
 import { processKey, copyToClipboard, pasteFromClipboard, type VimContext } from "./vim";
-import { clampNormal, nextGraphemeEnd } from "./vim/buffer";
+import { isLinewiseClipboardText } from "./vim/clipboard";
+import { clampNormal, nextGraphemeEnd, previousGraphemeStart } from "./vim/buffer";
+import { putLines } from "./vim/operators";
 import { pushUndo, markInsertEntry, commitInsertSession, undo as undoFn, redo as redoFn } from "./undo";
 import {
   ensureCursorVisible,
@@ -40,6 +43,11 @@ import { handleMessageTextObject } from "./vim/message";
 import { activeHistorySurface, isAnyHistoryFocused } from "./historysurface";
 
 export type AsyncUiMutationCallback = () => void;
+
+/** Arrow/Home/End keys act as their Vim motions in prompt normal/visual mode. */
+const PROMPT_ARROW_MOTIONS: Partial<Record<KeyEvent["type"], string>> = {
+  left: "h", right: "l", up: "k", down: "j", home: "0", end: "$",
+};
 
 // ── Vim context resolver ──────────────────────────────────────────
 
@@ -61,18 +69,23 @@ export function processVimKey(
 ): KeyResult | null {
   const context = getVimContext(state);
   const prevMode = state.vim.mode;
-  const preCount = state.vim.count ?? 1;
 
   const resetPromptCurswant = () => {
     if (context === "prompt") state.promptCurswant = null;
   };
 
-  const isPromptVerticalMotion = () => (
-    context === "prompt"
-    && key.type === "char"
-    && (key.char === "j" || key.char === "k")
-    && prevMode !== "insert"
-  );
+  // Outside insert mode, prompt arrows are h/j/k/l/0/$ — clamped like Vim
+  // and usable after an operator (d<Down>) — unless a find/replace awaits
+  // its character, which a non-character key cancels.
+  const arrowKey = key.type;
+  const arrowMotion = context === "prompt" && prevMode !== "insert"
+    && !state.vim.pendingFind && !state.vim.pendingReplace
+    ? PROMPT_ARROW_MOTIONS[arrowKey]
+    : undefined;
+  if (arrowMotion) {
+    if (arrowMotion === "0") state.vim.count = null; // else 0 extends a count
+    key = { type: "char", char: arrowMotion };
+  }
 
   // History-specific find handling: f/F/;/, operate on history lines, not prompt buffer
   if (context === "history" && state.vim.mode !== "insert") {
@@ -101,11 +114,18 @@ export function processVimKey(
       return { type: "handled" };
 
     case "cursor_move":
-      if (isPromptVerticalMotion()) {
-        movePromptCursorVerticalWithCurswant(state, key.char === "k" ? -1 : 1, preCount, true);
+      if (context === "prompt" && (result.motion === "line_up" || result.motion === "line_down")) {
+        const moved = movePromptCursorVerticalWithCurswant(
+          state, result.motion === "line_up" ? -1 : 1, result.count ?? 1, true,
+        );
+        // Like insert mode, Up/Down past the prompt's first/last row scroll the chat.
+        if (!moved && arrowKey === "up") scrollUp(state);
+        if (!moved && arrowKey === "down") scrollDown(state);
       } else {
         state.cursorPos = result.cursor;
         resetPromptCurswant();
+        // $ keeps later j/k at the end of each line
+        if (context === "prompt" && result.motion === "line_end") state.promptCurswant = Infinity;
       }
       return { type: "handled" };
 
@@ -130,11 +150,11 @@ export function processVimKey(
       return { type: "handled" };
 
     case "yank":
-      copyToClipboard(result.text);
+      copyToClipboard(result.text, result.linewise);
       return { type: "handled" };
 
     case "paste":
-      handlePaste(result.position, state, onAsyncUiMutation);
+      handlePaste(result.position, result.count, state, onAsyncUiMutation);
       return { type: "handled" };
 
     case "visual_edit":
@@ -149,7 +169,7 @@ export function processVimKey(
       state.cursorPos = result.cursor;
       resetPromptCurswant();
       state.vim.mode = result.mode;
-      if (result.yankText !== undefined) copyToClipboard(result.yankText);
+      if (result.yankText !== undefined) copyToClipboard(result.yankText, result.yankLinewise);
       return { type: "handled" };
 
     case "undo": {
@@ -305,9 +325,14 @@ function handleContextNavigation(dir: "up" | "down", state: RenderState): KeyRes
 
 // ── Paste handling ────────────────────────────────────────────────
 
-/** Async paste from clipboard. Reads clipboard, inserts into buffer. */
+/**
+ * Async paste from clipboard. Reads clipboard, inserts `count` copies into
+ * the buffer — as whole lines below/above the cursor's line when it holds
+ * our last linewise yank (yy, yj, Vy), like Vim's p/P.
+ */
 function handlePaste(
   position: "after" | "before",
+  count: number,
   state: RenderState,
   onAsyncUiMutation?: AsyncUiMutationCallback,
 ): void {
@@ -317,11 +342,20 @@ function handlePaste(
     pushUndo(state.undo, state.inputBuffer, state.cursorPos);
     const buf = state.inputBuffer;
     const cursor = state.cursorPos;
-    const insertAt = position === "after" ? nextGraphemeEnd(buf, cursor) : cursor;
-    const pos = Math.min(insertAt, buf.length);
 
-    state.inputBuffer = buf.slice(0, pos) + text + buf.slice(pos);
-    state.cursorPos = clampNormal(state.inputBuffer, pos + text.length - 1);
+    if (isLinewiseClipboardText(text)) {
+      const lines = text.endsWith("\n") ? text : text + "\n";
+      const edit = putLines(buf, cursor, lines.repeat(count), position === "after");
+      state.inputBuffer = edit.buffer;
+      state.cursorPos = edit.cursor;
+    } else {
+      const insertAt = position === "after" ? nextGraphemeEnd(buf, cursor) : cursor;
+      const pos = Math.min(insertAt, buf.length);
+      const pasted = text.repeat(count);
+      state.inputBuffer = buf.slice(0, pos) + pasted + buf.slice(pos);
+      // Cursor on the last pasted character
+      state.cursorPos = clampNormal(state.inputBuffer, previousGraphemeStart(state.inputBuffer, pos + pasted.length));
+    }
     state.promptCurswant = null;
     onAsyncUiMutation?.();
   });

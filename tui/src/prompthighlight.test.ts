@@ -90,7 +90,7 @@ describe("prompt highlighting", () => {
     state.providerRegistry = structuredClone(providers);
 
     const input = "/model openai gpt-5.3-codex-spark";
-    const [line] = highlightPromptInput(state, [input], input, 120, 0);
+    const [line] = highlightPromptInput(state, [input], input, [0]);
 
     expect(line).toBe(`${theme.command}${input}${theme.reset}`);
   });
@@ -100,7 +100,7 @@ describe("prompt highlighting", () => {
     state.providerRegistry = structuredClone(providers);
 
     const input = "/model openai my.custom-model";
-    const [line] = highlightPromptInput(state, [input], input, 120, 0);
+    const [line] = highlightPromptInput(state, [input], input, [0]);
 
     expect(line).toBe(`${theme.command}${input}${theme.reset}`);
   });
@@ -110,7 +110,7 @@ describe("prompt highlighting", () => {
     state.providerRegistry = structuredClone(providers);
 
     const input = "/model deepseek deepseek.future-preview";
-    const [line] = highlightPromptInput(state, [input], input, 120, 0);
+    const [line] = highlightPromptInput(state, [input], input, [0]);
 
     expect(line).toBe(`${theme.command}/model deepseek${theme.reset} deepseek.future-preview`);
   });
@@ -119,7 +119,7 @@ describe("prompt highlighting", () => {
     const state = createInitialState();
 
     const input = "Use /xenv then /tool install linkedin please";
-    const [line] = highlightPromptInput(state, [input], input, 120, 0);
+    const [line] = highlightPromptInput(state, [input], input, [0]);
 
     expect(line).toBe(`Use /xenv then ${theme.command}/tool install linkedin${theme.reset} please`);
   });
@@ -131,7 +131,7 @@ describe("prompt highlighting", () => {
     state.model = "gpt-5.4";
 
     const input = "Use /convo and /model openai gpt-5.4 and /effort high with /fast on please";
-    const [line] = highlightPromptInput(state, [input], input, 120, 0);
+    const [line] = highlightPromptInput(state, [input], input, [0]);
 
     expect(line).toBe(`Use /convo and ${theme.command}/model openai gpt-5.4${theme.reset} and ${theme.command}/effort high${theme.reset} with ${theme.command}/fast on${theme.reset} please`);
   });
@@ -141,7 +141,7 @@ describe("prompt highlighting", () => {
     state.sidebar.conversations = [conversation("conv-build", "Build the Thing")];
 
     const input = "please /queue Build the Thing answer this";
-    const [line] = highlightPromptInput(state, [input], input, 120, 0);
+    const [line] = highlightPromptInput(state, [input], input, [0]);
 
     expect(line).toBe(`please ${theme.command}/queue Build the Thing${theme.reset} answer this`);
   });
@@ -151,7 +151,7 @@ describe("prompt highlighting", () => {
     state.sidebar.folders = [folder("folder-work", "Work Projects")];
 
     const input = "/queue 📁 Work Projects do it";
-    const [line] = highlightPromptInput(state, [input], input, 120, 0);
+    const [line] = highlightPromptInput(state, [input], input, [0]);
 
     expect(line).toBe(`${theme.command}/queue 📁 Work Projects${theme.reset} do it`);
   });
@@ -161,7 +161,7 @@ describe("prompt highlighting", () => {
     state.sidebar.conversations = [conversation("conv-build", "Build the Thing")];
 
     const input = "/replay /queue Build the Thing";
-    const [line] = highlightPromptInput(state, [input], input, 120, 0);
+    const [line] = highlightPromptInput(state, [input], input, [0]);
 
     expect(line).toBe(`${theme.command}/replay${theme.reset} ${theme.command}/queue Build the Thing${theme.reset}`);
   });
