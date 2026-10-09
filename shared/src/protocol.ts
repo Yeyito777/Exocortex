@@ -756,7 +756,12 @@ export type QueueTiming = "next-turn" | "message-end";
 export type QueueWaitTarget =
   | { type: "global" }
   | { type: "conversation"; convId: string; label: string }
-  | { type: "folder"; folderId: string; label: string };
+  | { type: "folder"; folderId: string; label: string }
+  /**
+   * Due `delayMs` after the entry's daemon-assigned `createdAt`, then sent once
+   * its own conversation is idle. Timed entries never block the idle FIFO.
+   */
+  | { type: "delay"; delayMs: number; label: string };
 
 /** A slash command that the daemon can execute when a durable queue entry becomes ready. */
 export interface QueuedCommandInvocation {

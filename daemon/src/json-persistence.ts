@@ -1,5 +1,6 @@
 import { isFastMode, type FastMode } from "@exocortex/shared/messages";
 import { migrateLegacyDaybreak } from "@exocortex/shared/daybreak";
+import { isDurationMs } from "@exocortex/shared/duration";
 /**
  * Conversation persistence — versioned JSON files.
  *
@@ -1361,6 +1362,8 @@ function normalizeQueuedMessage(raw: unknown): PersistedQueuedMessage | null {
       normalized.waitTarget = { type: "conversation", convId: target.convId, label: target.label };
     } else if (target.type === "folder" && typeof target.folderId === "string" && typeof target.label === "string") {
       normalized.waitTarget = { type: "folder", folderId: target.folderId, label: target.label };
+    } else if (target.type === "delay" && isDurationMs(target.delayMs) && typeof target.label === "string") {
+      normalized.waitTarget = { type: "delay", delayMs: target.delayMs, label: target.label };
     }
   }
   if (typeof entry.subagentMaxDepth === "number" || entry.subagentMaxDepth === null) {

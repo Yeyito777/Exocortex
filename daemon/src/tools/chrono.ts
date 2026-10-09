@@ -13,7 +13,7 @@ import {
 import { getWaitableConversationTask, waitForConversationTask } from "../conversation-activity";
 import { completedChronoWaitOutput } from "./chrono-output";
 import { CLAUDE_CODE_INLINE_CHRONO_MAX_MS } from "./chrono-limits";
-import { parseDurationMs } from "./duration";
+import { parseDurationMs } from "@exocortex/shared/duration";
 
 function action(input: Record<string, unknown>): string {
   return typeof input.action === "string" ? input.action : "";

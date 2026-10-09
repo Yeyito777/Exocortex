@@ -32,7 +32,7 @@ export const INLINE_ULTRAFAST_COMMAND: CompletionItem = {
 
 export const INLINE_QUEUE_COMMAND: CompletionItem = {
   name: "/queue",
-  desc: "Send after global, conversation, or folder idle",
+  desc: "Send after a delay (5m, 2h30m) or global, conversation, or folder idle",
 };
 
 export const INLINE_COMMANDS: CompletionItem[] = [INLINE_MODEL_COMMAND, INLINE_EFFORT_COMMAND, INLINE_FAST_COMMAND, INLINE_ULTRAFAST_COMMAND, INLINE_QUEUE_COMMAND];

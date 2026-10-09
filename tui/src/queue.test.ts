@@ -246,6 +246,22 @@ describe("global idle /queue optimistic display", () => {
     expect(queueTimingLabel(queued)).toBe("queued: after Build");
   });
 
+  test("labels timed entries with the wall-clock time they send at", () => {
+    const state = createInitialState();
+    const createdAt = new Date(2026, 9, 9, 13, 0, 0).getTime();
+    const short = enqueueGlobalIdleMessage(state, "conv-1", "soon", undefined, {
+      waitTarget: { type: "delay", delayMs: 90_000, label: "90s" },
+    });
+    short.createdAt = createdAt;
+    const long = enqueueGlobalIdleMessage(state, "conv-1", "tomorrow", undefined, {
+      waitTarget: { type: "delay", delayMs: 12 * 3_600_000, label: "12h" },
+    });
+    long.createdAt = createdAt;
+
+    expect(queueTimingLabel(short, createdAt)).toBe("queued: at 13:01:30");
+    expect(queueTimingLabel(long, createdAt)).toBe("queued: at Oct 10 01:00");
+  });
+
   test("daemon user_message cleanup does not remove a same-text global idle entry", () => {
     const state = createInitialState();
     state.queuedMessages.push({ convId: "conv-1", text: "same", timing: "next-turn" });

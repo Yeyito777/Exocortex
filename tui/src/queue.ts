@@ -40,9 +40,22 @@ export function queueWaitTargetOf(message: QueuedMessage): QueueWaitTarget {
   return message.waitTarget ?? { type: "global" };
 }
 
-export function queueTimingLabel(message: QueuedMessage): string {
+/** Wall-clock send time: `14:05`, or `Oct 10 14:05` when it is not today. */
+export function formatQueueDueTime(dueAt: number, now = Date.now(), withSeconds = false): string {
+  const due = new Date(dueAt);
+  const time = due.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", ...(withSeconds ? { second: "2-digit" } : {}) });
+  if (due.toDateString() === new Date(now).toDateString()) return time;
+  return `${due.toLocaleDateString("en-US", { month: "short", day: "numeric" })} ${time}`;
+}
+
+export function queueTimingLabel(message: QueuedMessage, now = Date.now()): string {
   if (isGlobalIdleQueuedMessage(message)) {
     const waitTarget = queueWaitTargetOf(message);
+    if (waitTarget.type === "delay") {
+      // Short delays show seconds so `/queue 30s` reads as more than "this minute".
+      const dueAt = (message.createdAt ?? now) + waitTarget.delayMs;
+      return `queued: at ${formatQueueDueTime(dueAt, now, waitTarget.delayMs < 3_600_000)}`;
+    }
     if (waitTarget.type === "conversation") return `queued: after ${waitTarget.label}`;
     if (waitTarget.type === "folder") return `queued: after folder ${waitTarget.label}`;
     return GLOBAL_IDLE_QUEUE_LABEL;

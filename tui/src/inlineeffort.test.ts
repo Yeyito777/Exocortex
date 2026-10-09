@@ -225,6 +225,52 @@ describe("inline /queue command", () => {
     });
   });
 
+  test("parses compact and space-separated durations as a send delay", () => {
+    const state = stateWithEfforts();
+
+    expect(applyInlineCommands("/queue 8h3m1s check the build", state)).toEqual({
+      text: "check the build",
+      efforts: [],
+      fastModes: [],
+      queue: { type: "delay", delayMs: 28_981_000, label: "8h3m1s" },
+    });
+    expect(applyInlineCommands("please /queue 2h 30m answer this", state).queue)
+      .toEqual({ type: "delay", delayMs: 9_000_000, label: "2h 30m" });
+    expect(applyInlineCommands("/queue 9d", state).queue).toEqual({ type: "delay", delayMs: 777_600_000, label: "9d" });
+  });
+
+  test("stops the delay at message text that only starts like a duration", () => {
+    const state = stateWithEfforts();
+
+    expect(applyInlineCommands("/queue 5h 3 things to check", state)).toEqual({
+      text: "3 things to check",
+      efforts: [],
+      fastModes: [],
+      queue: { type: "delay", delayMs: 18_000_000, label: "5h" },
+    });
+    expect(applyInlineCommands("/queue 5m\n10s later", state).text.trim()).toBe("10s later");
+  });
+
+  test("prefers a duration over a conversation titled like one", () => {
+    const state = stateWithEfforts();
+    state.sidebar.conversations = [
+      { id: "conv-5m", provider: "openai", model: "gpt-5.4", effort: "medium", fastMode: false, createdAt: 1, updatedAt: 10, messageCount: 1, title: "5m", marked: false, pinned: false, streaming: false, unread: false, sortOrder: 1 },
+    ];
+
+    expect(applyInlineCommands("/queue 5m go", state).queue).toEqual({ type: "delay", delayMs: 300_000, label: "5m" });
+  });
+
+  test("lets a delay wrap a queueable command", () => {
+    const state = stateWithEfforts();
+
+    expect(previewInlineCommands("/replay /queue 1h30m", state)).toEqual({
+      text: "/replay",
+      efforts: [],
+      fastModes: [],
+      queue: { type: "delay", delayMs: 5_400_000, label: "1h30m" },
+    });
+  });
+
   test("does not let message-leading /queue prompts get swallowed by standalone command handling", () => {
     const state = stateWithEfforts();
 

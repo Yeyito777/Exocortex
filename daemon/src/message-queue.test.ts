@@ -136,6 +136,22 @@ describe("durable daemon message queue", () => {
     }]);
   });
 
+  test("persists timed /queue delays with the creation time they count from", () => {
+    pushGlobalIdleQueuedMessage("conv-a", "later", undefined, {
+      id: "delay-a",
+      waitTarget: { type: "delay", delayMs: 29_041_000, label: "8h4m1s" },
+      target: "conversation",
+      createdAt: 40,
+    });
+
+    loadQueuedMessagesFromDisk();
+    expect(getQueuedMessageById("delay-a")).toEqual(expect.objectContaining({
+      source: "global-idle",
+      waitTarget: { type: "delay", delayMs: 29_041_000, label: "8h4m1s" },
+      createdAt: 40,
+    }));
+  });
+
   test("persists generic queued command metadata across an in-process daemon reload", () => {
     pushGlobalIdleQueuedMessage("conv-a", "/replay", undefined, {
       id: "replay-a",

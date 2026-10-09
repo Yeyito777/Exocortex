@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseDurationMs } from "./duration";
+import { isDurationMs, parseDurationMs } from "./duration";
 
 describe("duration parser", () => {
   test("parses single-unit and compound durations", () => {
@@ -18,5 +18,13 @@ describe("duration parser", () => {
     expect(parseDurationMs("1m and 20s")).toBeNull();
     expect(parseDurationMs("0.1ms")).toBeNull();
     expect(parseDurationMs("999999999999999999999d")).toBeNull();
+  });
+
+  test("accepts only positive whole-millisecond wire durations", () => {
+    expect(isDurationMs(1)).toBe(true);
+    expect(isDurationMs(777_600_000)).toBe(true);
+    for (const value of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, "5m", null]) {
+      expect(isDurationMs(value)).toBe(false);
+    }
   });
 });

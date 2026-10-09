@@ -682,6 +682,124 @@ describe("handler daemon-owned queue", () => {
     removeQueuedMessageById("targeted-idle");
   });
 
+  test("sends a timed /queue entry when due without blocking the idle FIFO", async () => {
+    const delayedId = mkId("queue-delay");
+    const idleId = mkId("queue-delay-idle");
+    create(delayedId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
+    create(idleId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
+    const server = {
+      sendTo: mock(() => {}), broadcast: mock(() => {}), sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}), subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+    const callsBefore = orchestrateSendMessage.mock.calls.length;
+    // Real orchestration removes an accepted entry; mirror that so each sends once.
+    const acceptAndRemove = async (...args: unknown[]) => {
+      removeQueuedMessageById((args[8] as { queueEntryId: string }).queueEntryId);
+      return makeAssistantOutcome();
+    };
+    orchestrateSendMessage.mockImplementationOnce(acceptAndRemove).mockImplementationOnce(acceptAndRemove);
+
+    try {
+      const queuedAt = Date.now();
+      await handle({} as never, {
+        type: "queue_message",
+        queueId: "delayed-send",
+        convId: delayedId,
+        text: "delayed turn",
+        timing: "message-end",
+        source: "global-idle",
+        target: "conversation",
+        waitTarget: { type: "delay", delayMs: 450, label: "450ms" },
+      });
+      expect(getQueuedMessageById("delayed-send")?.createdAt).toBeGreaterThanOrEqual(queuedAt);
+      await handle({} as never, {
+        type: "queue_message",
+        queueId: "idle-after-delayed",
+        convId: idleId,
+        text: "idle turn",
+        timing: "message-end",
+        source: "global-idle",
+        target: "conversation",
+      });
+
+      await new Promise(resolve => setTimeout(resolve, 250));
+      expect(orchestrateSendMessage.mock.calls.length).toBe(callsBefore + 1);
+      expect((orchestrateSendMessage.mock.calls.at(-1) as unknown as unknown[])[4]).toBe("idle turn");
+      expect(getQueuedMessageById("delayed-send")).not.toBeUndefined();
+
+      await new Promise(resolve => setTimeout(resolve, 400));
+      expect(orchestrateSendMessage.mock.calls.length).toBe(callsBefore + 2);
+      expect((orchestrateSendMessage.mock.calls.at(-1) as unknown as unknown[])[4]).toBe("delayed turn");
+      expect(getQueuedMessageById("delayed-send")).toBeUndefined();
+    } finally {
+      removeQueuedMessageById("delayed-send");
+      removeQueuedMessageById("idle-after-delayed");
+    }
+  });
+
+  test("holds a due timed /queue entry until its own conversation is idle", async () => {
+    const id = mkId("queue-delay-busy");
+    create(id, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
+    setActiveJob(id, new AbortController(), Date.now());
+    const server = {
+      sendTo: mock(() => {}), broadcast: mock(() => {}), sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}), subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+    const callsBefore = orchestrateSendMessage.mock.calls.length;
+
+    try {
+      await handle({} as never, {
+        type: "queue_message",
+        queueId: "delayed-busy",
+        convId: id,
+        text: "after delay and turn",
+        timing: "message-end",
+        source: "global-idle",
+        target: "conversation",
+        waitTarget: { type: "delay", delayMs: 50, label: "50ms" },
+      });
+      await new Promise(resolve => setTimeout(resolve, 250));
+      expect(orchestrateSendMessage.mock.calls.length).toBe(callsBefore);
+
+      clearActiveJob(id);
+      await new Promise(resolve => setTimeout(resolve, 180));
+      expect(orchestrateSendMessage.mock.calls.length).toBeGreaterThan(callsBefore);
+      expect((orchestrateSendMessage.mock.calls[callsBefore] as unknown as unknown[])[4]).toBe("after delay and turn");
+    } finally {
+      removeQueuedMessageById("delayed-busy");
+    }
+  });
+
+  test("rejects malformed timed /queue delays", async () => {
+    const id = mkId("queue-delay-invalid");
+    create(id, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}), sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}), subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    for (const delayMs of [0, -5, 1.5, Number.NaN]) {
+      await handle({} as never, {
+        type: "queue_message",
+        queueId: "delayed-invalid",
+        convId: id,
+        text: "never",
+        timing: "message-end",
+        source: "global-idle",
+        target: "conversation",
+        waitTarget: { type: "delay", delayMs, label: "bad" },
+      });
+      expect(sent).toContainEqual(expect.objectContaining({ type: "error", message: "Invalid queue delay" }));
+      expect(getQueuedMessageById("delayed-invalid")).toBeUndefined();
+      sent.length = 0;
+    }
+  });
+
   test("dispatches a chained queued replay without adding a user-message send", async () => {
     const id = mkId("queue-replay");
     create(id, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);

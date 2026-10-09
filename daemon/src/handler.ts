@@ -17,6 +17,7 @@ import { localMacroEnvironment } from "@exocortex/shared/macro-environment";
 import { getDaemonUpdateStatus } from "./update-status";
 import { encodeHistoryDelta } from "@exocortex/shared/history-delta";
 import { effectiveConversationDefaults } from "@exocortex/shared/config";
+import { isDurationMs } from "@exocortex/shared/duration";
 import { conversationDefaultsSnapshot, resetDaemonConversationDefaults, setDaemonConversationDefaults } from "./conversation-defaults";
 import type { RealtimeVoice } from "@exocortex/shared/realtime";
 import type { RealtimeCallAdapter, RealtimeCallParticipant } from "@exocortex/shared/protocol";
@@ -847,6 +848,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   // ── Daemon-owned queue scheduler ──────────────────────────────────
 
   let queuePumpTimer: ReturnType<typeof setTimeout> | null = null;
+  let queuePumpAt = 0;
   const schedulerGeneration = ++queueSchedulerGeneration;
   const dispatchingQueueIds = new Set<string>();
   const dispatchingConversationIds = new Set<string>();
@@ -858,9 +860,18 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
    */
   let globalIdleDispatchInFlight = false;
   const queueRetryAfter = new Map<string, number>();
+  /** Re-check timed entries at least this often so wall-clock jumps (suspend/resume) cannot strand them. */
+  const QUEUE_DELAY_MAX_TIMER_MS = 60_000;
 
   const scheduleQueuePump = (delayMs = 120): void => {
-    if (schedulerGeneration !== queueSchedulerGeneration || getDaemonShutdownMode() || queuePumpTimer) return;
+    if (schedulerGeneration !== queueSchedulerGeneration || getDaemonShutdownMode()) return;
+    const pumpAt = Date.now() + delayMs;
+    if (queuePumpTimer) {
+      // A long timed-queue wake must not hold back an earlier readiness pump.
+      if (queuePumpAt <= pumpAt) return;
+      clearTimeout(queuePumpTimer);
+    }
+    queuePumpAt = pumpAt;
     queuePumpTimer = setTimeout(() => {
       queuePumpTimer = null;
       if (schedulerGeneration !== queueSchedulerGeneration) return;
@@ -868,8 +879,16 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     }, delayMs);
   };
 
+  /** Due time of a timed `/queue <duration>` entry, or null for idle-wait and stream entries. */
+  const queueDelayDueAt = (entry: import("./message-queue").QueuedMessage): number | null => (
+    entry.source === "global-idle" && entry.waitTarget?.type === "delay"
+      ? entry.createdAt + entry.waitTarget.delayMs
+      : null
+  );
+
   const queueWaitStatus = (entry: import("./message-queue").QueuedMessage): "ready" | "waiting" | "missing-target" => {
     const waitTarget = entry.waitTarget ?? { type: "global" as const };
+    if (waitTarget.type === "delay") return Date.now() >= entry.createdAt + waitTarget.delayMs ? "ready" : "waiting";
     const sidebar = convStore.listSidebarState();
     const hasStreamQueue = (convId: string) => convStore.isQueuedMessageDeliverySuspended(convId)
       || convStore.getQueuedMessages(convId).length > 0;
@@ -968,7 +987,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     if ((queueRetryAfter.get(entry.id) ?? 0) > Date.now()) return;
     dispatchingQueueIds.add(entry.id);
     dispatchingConversationIds.add(entry.convId);
-    if (entry.source === "global-idle") globalIdleDispatchInFlight = true;
+    const holdsIdleFifo = entry.source === "global-idle" && queueDelayDueAt(entry) === null;
+    if (holdsIdleFifo) globalIdleDispatchInFlight = true;
     try {
       const queuedCommand = entry.command && entry.source === "global-idle"
         && entry.target !== "new-conversation" && !entry.images?.length
@@ -1037,9 +1057,33 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     } finally {
       dispatchingQueueIds.delete(entry.id);
       dispatchingConversationIds.delete(entry.convId);
-      if (entry.source === "global-idle") globalIdleDispatchInFlight = false;
+      if (holdsIdleFifo) globalIdleDispatchInFlight = false;
       scheduleQueuePump();
     }
+  };
+
+  /** Recreate a queued draft conversation if the daemon died between enqueue and creation. */
+  const recoverQueuedDraftConversation = (entry: DurableQueueEntry): void => {
+    if (entry.target !== "new-conversation"
+        || convStore.hasConversation(entry.convId)
+        || convStore.hasDeletedConversation(entry.convId)) return;
+    const defaults = effectiveConversationDefaults();
+    const provider = entry.provider ?? defaults.provider;
+    if (!getProvider(provider)) return;
+    const model = entry.model && (isKnownModel(provider, entry.model) || allowsCustomModels(provider))
+      ? entry.model
+      : (provider === defaults.provider ? defaults.model : getDefaultModel(provider));
+    const effort = normalizeEffort(provider, model, entry.effort);
+    const requestedFastMode = entry.fastMode ?? false;
+    const fastMode = supportsFastMode(provider, model, requestedFastMode) ? requestedFastMode : false;
+    const folderId = entry.folderId
+      && convStore.listSidebarState().folders.some(folder => folder.id === entry.folderId)
+      ? entry.folderId
+      : null;
+    convStore.create(entry.convId, provider, model, PENDING_TITLE, effort, fastMode, folderId);
+    broadcastConversationUpdated(server, entry.convId);
+    startTitleGeneration(server, entry.convId, { extraContext: entry.text });
+    log("info", `handler: recovered queued draft conversation ${entry.convId} from durable queue ${entry.id}`);
   };
 
   const pumpQueuedMessages = (): void => {
@@ -1078,56 +1122,52 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       }
     }
 
-    // `/queue` intentionally remains one global FIFO. Its first entry blocks
-    // later idle-wait entries until its dependency is ready and its turn ends.
-    const idleEntry = queued.find(entry => entry.source === "global-idle");
-    if (idleEntry && !globalIdleDispatchInFlight && !dispatchingQueueIds.has(idleEntry.id)) {
-      if (!convStore.hasConversation(idleEntry.convId)
-          && !convStore.hasDeletedConversation(idleEntry.convId)
-          && idleEntry.target === "new-conversation") {
-        const defaults = effectiveConversationDefaults();
-        const provider = idleEntry.provider ?? defaults.provider;
-        const providerInfo = getProvider(provider);
-        if (providerInfo) {
-          const model = idleEntry.model && (isKnownModel(provider, idleEntry.model) || allowsCustomModels(provider))
-            ? idleEntry.model
-            : (provider === defaults.provider ? defaults.model : getDefaultModel(provider));
-          const effort = normalizeEffort(provider, model, idleEntry.effort);
-          const requestedFastMode = idleEntry.fastMode ?? false;
-          const fastMode = supportsFastMode(provider, model, requestedFastMode) ? requestedFastMode : false;
-          const folderId = idleEntry.folderId
-            && convStore.listSidebarState().folders.some(folder => folder.id === idleEntry.folderId)
-            ? idleEntry.folderId
-            : null;
-          convStore.create(idleEntry.convId, provider, model, PENDING_TITLE, effort, fastMode, folderId);
-          broadcastConversationUpdated(server, idleEntry.convId);
-          startTitleGeneration(server, idleEntry.convId, { extraContext: idleEntry.text });
-          log("info", `handler: recovered queued draft conversation ${idleEntry.convId} from durable queue ${idleEntry.id}`);
-        }
-      }
-      const status = queueWaitStatus(idleEntry);
-      if (status === "missing-target" || !convStore.hasConversation(idleEntry.convId)) {
-        convStore.removeQueuedMessageById(idleEntry.id);
+    const pumpIdleWaitEntry = (entry: DurableQueueEntry): void => {
+      const status = queueWaitStatus(entry);
+      if (status === "missing-target" || !convStore.hasConversation(entry.convId)) {
+        convStore.removeQueuedMessageById(entry.id);
         server.broadcast({
           type: "queue_notice",
-          queueId: idleEntry.id,
-          convId: idleEntry.convId,
+          queueId: entry.id,
+          convId: entry.convId,
           message: status === "missing-target"
             ? "Dropped queued message because its wait target no longer exists."
             : "Dropped queued message because its conversation no longer exists.",
           level: "error",
         });
       } else if (status === "ready"
-          && !convStore.isStreaming(idleEntry.convId)
-          && !convStore.isQueuedMessageDeliverySuspended(idleEntry.convId)) {
-        if (!retryIsDeferred(idleEntry.id)) void dispatchQueuedMessage(idleEntry);
+          && !convStore.isStreaming(entry.convId)
+          && !convStore.isQueuedMessageDeliverySuspended(entry.convId)) {
+        if (!retryIsDeferred(entry.id)) void dispatchQueuedMessage(entry);
       } else {
         needsReadinessPoll = true;
       }
+    };
+
+    // `/queue` intentionally remains one global FIFO. Its first entry blocks
+    // later idle-wait entries until its dependency is ready and its turn ends.
+    const idleEntry = queued.find(entry => entry.source === "global-idle" && queueDelayDueAt(entry) === null);
+    if (idleEntry && !globalIdleDispatchInFlight && !dispatchingQueueIds.has(idleEntry.id)) {
+      recoverQueuedDraftConversation(idleEntry);
+      pumpIdleWaitEntry(idleEntry);
     }
 
+    // Timed `/queue <duration>` entries run on their own clocks outside that
+    // FIFO: once due, each waits only for its own conversation to be idle.
+    let earliestDueAt = Number.POSITIVE_INFINITY;
+    for (const entry of queued) {
+      const dueAt = queueDelayDueAt(entry);
+      if (dueAt === null || dispatchingQueueIds.has(entry.id)) continue;
+      recoverQueuedDraftConversation(entry);
+      if (dueAt > now) earliestDueAt = Math.min(earliestDueAt, dueAt);
+      else pumpIdleWaitEntry(entry);
+    }
+
+    const nextWakeAt = Math.min(earliestRetryAt, earliestDueAt);
     if (needsReadinessPoll) scheduleQueuePump();
-    else if (Number.isFinite(earliestRetryAt)) scheduleQueuePump(Math.max(120, earliestRetryAt - Date.now()));
+    else if (Number.isFinite(nextWakeAt)) {
+      scheduleQueuePump(Math.min(QUEUE_DELAY_MAX_TIMER_MS, Math.max(120, nextWakeAt - Date.now())));
+    }
   };
 
   callManager = options.callManager ?? new RealtimeCallManager(server, {
@@ -2629,7 +2669,11 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         }
 
         let queuedCommandError: string | null = null;
-        if (cmd.command !== undefined) {
+        const rawWaitTarget = cmd.waitTarget as unknown as Record<string, unknown> | undefined;
+        if (rawWaitTarget?.type === "delay"
+            && (cmd.source !== "global-idle" || !isDurationMs(rawWaitTarget.delayMs) || typeof rawWaitTarget.label !== "string")) {
+          queuedCommandError = "Invalid queue delay";
+        } else if (cmd.command !== undefined) {
           const rawCommand = cmd.command as unknown;
           const name = rawCommand && typeof rawCommand === "object"
             ? (rawCommand as Record<string, unknown>).name

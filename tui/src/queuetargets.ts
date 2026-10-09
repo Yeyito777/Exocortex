@@ -1,3 +1,4 @@
+import { parseDurationMs } from "@exocortex/shared/duration";
 import type { CompletionItem } from "./commands/types";
 import type { ConversationSummary, FolderSummary } from "./messages";
 import type { QueueWaitTarget, RenderState } from "./state";
@@ -134,11 +135,37 @@ export interface QueueTargetAtMatch {
   end: number;
 }
 
+/**
+ * Match `8h3m1s`, or space-separated parts such as `2h 30m`, as a send delay.
+ * Each word must be a complete duration so ordinary message text never joins it.
+ */
+function matchQueueDelay(text: string, argStart: number): QueueTargetAtMatch | null {
+  const wordRe = /[ \t]*(\S+)/y;
+  wordRe.lastIndex = argStart;
+  let delayMs = 0;
+  let end = argStart;
+  const words: string[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = wordRe.exec(text)) !== null) {
+    const ms = parseDurationMs(match[1]);
+    if (ms === null) break;
+    delayMs += ms;
+    end = wordRe.lastIndex;
+    words.push(match[1]);
+  }
+  if (words.length === 0 || !Number.isSafeInteger(delayMs)) return null;
+  return { target: { type: "delay", delayMs, label: words.join(" ") }, end };
+}
+
 export function matchQueueTargetAfterCommand(state: RenderState, text: string, commandEnd: number): QueueTargetAtMatch | null {
   let argStart = commandEnd;
   if (argStart >= text.length || !/\s/.test(text[argStart])) return null;
   while (argStart < text.length && /\s/.test(text[argStart])) argStart++;
   if (argStart >= text.length) return null;
+
+  // A duration wins over a conversation whose title happens to look like one.
+  const delay = matchQueueDelay(text, argStart);
+  if (delay) return delay;
 
   const match = bestQueueTargetPrefixMatch(state, text.slice(argStart));
   if (!match) return null;

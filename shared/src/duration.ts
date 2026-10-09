@@ -29,3 +29,8 @@ export function parseDurationMs(value: unknown): number | null {
   const maxDurationMs = MAX_DATE_TIMESTAMP_MS - Date.now();
   return Number.isSafeInteger(result) && result > 0 && result <= maxDurationMs ? result : null;
 }
+
+/** Whether a persisted or wire value is a positive whole-millisecond duration. */
+export function isDurationMs(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
