@@ -28,6 +28,7 @@ import * as convStore from "./conversations";
 import { closeConversationPersistence, prepareConversationStoreSchema } from "./persistence";
 import { getRunningConversationIds, prepareRestartForReplay, prepareStopWithoutReplay } from "./control";
 import { clearRestartRecoveryForStop, deliverPendingSubagentNotifications, hasActiveGoalRestartMarker, prepareCatchableShutdownForReplay, prepareCatchableShutdownWithoutReplay, recoverActiveGoals, recoverInterruptedStreams } from "./restart-recovery";
+import { scheduleActiveGoalTimeLimits } from "./goal-time-limit";
 import { startChronoService, stopChronoService, listChronoSchedules, resumeDeferredChronoWaits } from "./chrono-service";
 import { startWatchdog, stopWatchdog } from "./watchdog";
 import { initExternalTools, stopExternalToolsAsync, getExternalToolCount, getSupervisedDaemonCount, getExternalToolStyles } from "./external-tools";
@@ -329,6 +330,8 @@ async function startDaemon(): Promise<void> {
   log("info", `exocortexd: ready on ${SOCKET_PATH} (auth=${authSummary}, chrono=${chronoSchedules.length})`);
   profileMark("ready", { chronoSchedules: chronoSchedules.length, externalToolCount: extToolCount, supervisedDaemonCount: supervisedCount });
 
+  // Before recovery, so goals whose time ran out while the daemon was down do not resume.
+  scheduleActiveGoalTimeLimits(server);
   const recoveredStreams = recoverInterruptedStreams(server);
   if (recoveredStreams.length > 0) {
     console.log(`  replay: scheduled ${recoveredStreams.length} interrupted conversation(s): ${recoveredStreams.join(", ")}`);

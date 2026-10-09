@@ -2404,9 +2404,9 @@ describe("handler set_goal resume", () => {
 
     for (const objective of ["first objective", "replacement objective"]) {
       await handle({} as never, {
-        type: "set_goal", reqId: "req-set-streaming", convId, action: "set", objective, maxTurns: 2,
+        type: "set_goal", reqId: "req-set-streaming", convId, action: "set", objective, maxTimeMs: 7_200_000,
       });
-      expect(get(convId)?.goal).toMatchObject({ objective, status: "active", maxTurns: 2, turns: 0 });
+      expect(get(convId)?.goal).toMatchObject({ objective, status: "active", maxTimeMs: 7_200_000, turns: 0 });
       expect(consumeGoalContinuationAfterStream(convId)).toBe(true);
       expect(controller.signal.aborted).toBe(false);
       expect(orchestrateGoalCycle).not.toHaveBeenCalled();

@@ -447,8 +447,14 @@ export interface ConversationGoal {
   pauseReason?: string;
   /** Explanation/evidence for the most recent stopped state. */
   reason?: string;
-  /** Optional maximum automatic continuation turns, across resumes. */
+  /** Legacy turn budget, ignored and stripped on load. */
   maxTurns?: number;
+  /** Optional limit on active time, across resumes. Work stops when it runs out. */
+  maxTimeMs?: number;
+  /** Active time from finished active periods; paused/blocked/complete time is excluded. */
+  activeMs?: number;
+  /** Start of the current active period; set only while active. */
+  activeSince?: number;
   /** Consecutive empty successful turns; guards against provider empty-output loops. */
   emptyTurns?: number;
 }
