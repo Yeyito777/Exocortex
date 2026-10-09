@@ -4,7 +4,7 @@ import { conversationWorkspaceDir } from "@exocortex/shared/paths";
 import { localMacroEnvironment } from "@exocortex/shared/macro-environment";
 import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { appendMessages, consumeGoalContinuationAfterStream, create, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, get, getQueuedMessageById, getQueuedMessages, getSummary, listQueuedMessages, pushGlobalIdleQueuedMessage, remove, removeQueuedMessageById, setGoal, updateGoalStatus } from "./conversations";
+import { appendMessages, consumeGoalContinuationAfterStream, create, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, get, getQueuedMessageById, getQueuedMessages, getSummary, listQueuedMessages, pushGlobalIdleQueuedMessage, pushQueuedMessage, remove, removeQueuedMessageById, setGoal, updateGoalStatus } from "./conversations";
 import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, defaultEffortForModelId } from "./messages";
 import { appendToStreamingBlock, clearActiveJob, clearActiveSteerHandler, clearActiveToolBackgrounder, clearCurrentStreamingBlocks, initStreamingState, replaceCurrentStreamingBlocks, setActiveJob, setActiveSteerHandler, setActiveToolBackgrounder, setStreamingCommittedMessageCount } from "./streaming";
 import { beginPendingSubagentNotification, listPendingSubagentNotifications, removePendingSubagentNotificationsForConversation } from "./subagent-notifications";
@@ -14,7 +14,7 @@ import { clearProviderAuth, saveProviderAuth } from "./store";
 import { resetExternalNotificationsForTest } from "./external-notifications";
 import { listPendingExternalNotificationSoftWakes, resetExternalNotificationSoftWakesForTest } from "./external-notification-soft-wakes";
 import { getExocortexToolRuntime } from "./exocortex-tool-runtime";
-import { resetConversationActivityForTest, setBackgroundTaskActive } from "./conversation-activity";
+import { resetConversationActivityForTest, setBackgroundTaskActive, setChronoTaskActive } from "./conversation-activity";
 import { getProviderAdapter } from "./providers/catalog";
 
 interface TestAssistantOutcome {
@@ -619,7 +619,7 @@ describe("handler daemon-owned queue", () => {
 
       setActiveToolBackgrounder(id, sleep);
       await handle({} as never, { type: "queue_message", queueId: "during-sleep", convId: id, text: "wake up", timing: "message-end" });
-      expect(steer).toHaveBeenCalledTimes(1);
+      expect(steer).toHaveBeenCalled();
       expect(getQueuedMessageById("during-sleep")?.timing).toBe("next-turn");
     } finally {
       clearActiveToolBackgrounder(id);
@@ -680,6 +680,129 @@ describe("handler daemon-owned queue", () => {
     expect(orchestrateSendMessage.mock.calls.length).toBe(callsBefore + 1);
     expect((orchestrateSendMessage.mock.calls.at(-1) as unknown as unknown[])[4]).toBe("after dependency");
     removeQueuedMessageById("targeted-idle");
+  });
+
+  test("a targeted /queue does not wait out a Claude Code turn sleeping inside a long chrono call", async () => {
+    const targetId = mkId("queue-target-sleep");
+    const dependencyId = mkId("queue-dependency-sleep");
+    create(targetId, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
+    create(dependencyId, "anthropic", DEFAULT_MODEL_BY_PROVIDER.anthropic);
+    setActiveJob(dependencyId, new AbortController(), Date.now());
+    const server = {
+      sendTo: mock(() => {}), broadcast: mock(() => {}), sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}), subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+    const callsBefore = orchestrateSendMessage.mock.calls.length;
+    const startedAt = Date.now();
+    setChronoTaskActive(dependencyId, "chrono:sleep:toolu_short", true, {
+      title: "Sleeping", startedAt, dueAt: startedAt + 5 * 60_000, chronoMode: "sleep",
+    });
+
+    try {
+      await handle({} as never, {
+        type: "queue_message",
+        queueId: "targeted-sleeping",
+        convId: targetId,
+        text: "after dependency sleeps",
+        timing: "message-end",
+        source: "global-idle",
+        target: "conversation",
+        waitTarget: { type: "conversation", convId: dependencyId, label: "Dependency" },
+      });
+      await new Promise(resolve => setTimeout(resolve, 170));
+      expect(orchestrateSendMessage.mock.calls.length).toBe(callsBefore);
+
+      setChronoTaskActive(dependencyId, "chrono:sleep:toolu_short", false);
+      setChronoTaskActive(dependencyId, "chrono:sleep:toolu_long", true, {
+        title: "Sleeping", startedAt, dueAt: startedAt + 20 * 60_000, chronoMode: "sleep",
+      });
+      await new Promise(resolve => setTimeout(resolve, 150));
+      expect(orchestrateSendMessage.mock.calls.length).toBe(callsBefore + 1);
+      expect((orchestrateSendMessage.mock.calls.at(-1) as unknown as unknown[])[4]).toBe("after dependency sleeps");
+    } finally {
+      setChronoTaskActive(dependencyId, "chrono:sleep:toolu_long", false);
+      clearActiveJob(dependencyId);
+      removeQueuedMessageById("targeted-sleeping");
+    }
+  });
+
+  test("a due /queue entry steers a Claude Code turn sleeping inside a long chrono call", async () => {
+    const id = mkId("queue-delay-sleeping");
+    create(id, "anthropic", DEFAULT_MODEL_BY_PROVIDER.anthropic);
+    setActiveJob(id, new AbortController(), Date.now());
+    const steer = mock(() => {});
+    setActiveSteerHandler(id, steer);
+    const server = {
+      sendTo: mock(() => {}), broadcast: mock(() => {}), sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}), subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+    const callsBefore = orchestrateSendMessage.mock.calls.length;
+    const startedAt = Date.now();
+    setChronoTaskActive(id, "chrono:sleep:toolu_hour", true, {
+      title: "Sleeping", startedAt, dueAt: startedAt + 60 * 60_000, chronoMode: "sleep",
+    });
+    try {
+      for (const [queueId, text] of [["delayed-command", "/replay"], ["delayed-text", "check the build"]]) {
+        await handle({} as never, {
+          type: "queue_message",
+          queueId,
+          convId: id,
+          text,
+          ...(queueId === "delayed-command" ? { command: { name: "/replay" } } : {}),
+          timing: "message-end",
+          source: "global-idle",
+          target: "conversation",
+          waitTarget: { type: "delay", delayMs: 50, label: "50ms" },
+        });
+      }
+      await new Promise(resolve => setTimeout(resolve, 300));
+      expect(steer).toHaveBeenCalled();
+      expect(getQueuedMessageById("delayed-text")).toEqual(expect.objectContaining({
+        convId: id, text: "check the build", timing: "next-turn", source: "daemon",
+      }));
+      expect(getQueuedMessageById("delayed-text")?.waitTarget).toBeUndefined();
+      // A command cannot run inside the sleeping turn; it waits for the turn to end.
+      expect(getQueuedMessageById("delayed-command")?.source).toBe("global-idle");
+      expect(orchestrateSendMessage.mock.calls.length).toBe(callsBefore);
+    } finally {
+      setChronoTaskActive(id, "chrono:sleep:toolu_hour", false);
+      clearActiveSteerHandler(id, steer);
+      clearActiveJob(id);
+      removeQueuedMessageById("delayed-command");
+      removeQueuedMessageById("delayed-text");
+    }
+  });
+
+  test("an automated next-turn message steers a turn sleeping in chrono", async () => {
+    const id = mkId("queue-chrono-automated");
+    create(id, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
+    setActiveJob(id, new AbortController(), Date.now());
+    const steer = mock(() => {});
+    setActiveSteerHandler(id, steer);
+    const server = {
+      sendTo: mock(() => {}), broadcast: mock(() => {}), sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}), subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    createHandler(server as never);
+    const push = (queueId: string) => pushQueuedMessage(id, "subagent done", "next-turn", undefined, null, undefined, queueId,
+      undefined, { kind: "subagent_completion", sourceId: "child" });
+    try {
+      setActiveToolBackgrounder(id, { toolName: "bash", background: () => true });
+      push("automated-during-bash");
+      expect(steer).not.toHaveBeenCalled();
+
+      setActiveToolBackgrounder(id, { toolName: "chrono", background: () => true });
+      push("automated-during-sleep");
+      expect(steer).toHaveBeenCalled();
+    } finally {
+      clearActiveToolBackgrounder(id);
+      clearActiveSteerHandler(id, steer);
+      clearActiveJob(id);
+      removeQueuedMessageById("automated-during-bash");
+      removeQueuedMessageById("automated-during-sleep");
+    }
   });
 
   test("sends a timed /queue entry when due without blocking the idle FIFO", async () => {

@@ -1,14 +1,13 @@
+import { isTurnChronoSleep } from "@exocortex/shared/chrono";
 import type { ConversationSummary, ConversationTaskSummary } from "./messages";
+
+export { inlineLongSleepStartedAt } from "@exocortex/shared/chrono";
 
 /** Whether a durable Chrono sleep or wait currently suspends a conversation. */
 export function isDurablySleeping(
   conversation: Pick<ConversationSummary, "streaming" | "tasks">,
 ): boolean {
-  return !conversation.streaming && conversation.tasks?.some(
-    task => task.kind === "chrono" && (task.chronoMode === "sleep" || (
-      task.chronoMode === "wait" && task.id.startsWith("chrono:wait:")
-    )),
-  ) === true;
+  return !conversation.streaming && conversation.tasks?.some(isTurnChronoSleep) === true;
 }
 
 /**

@@ -51,7 +51,7 @@ import { generateTitle, PENDING_TITLE } from "./titlegen";
 import { theme } from "./theme";
 import { RemoteFileLinkController } from "./remote-file-links";
 import { msUntilNextElapsedSecond } from "./time";
-import { activeDurableSleepMetadataStartedAt } from "./durable-sleep-metadata";
+import { activeDurableSleepMetadataStartedAt, focusedInlineSleepStartedAt, inlineSleepMetadataEndedAt } from "./durable-sleep-metadata";
 import type { DaemonShutdownMode, Event, QueueTiming } from "./protocol";
 import { createVoiceInputController, type SubmittedVoiceTranscription, type VoiceInputController } from "./voiceinput";
 import { editItemLooksLikePendingVoiceSubmission, pendingVoicePreviewTextsMatch, pendingVoiceSubmissionsMatch, removePendingVoiceEchoes } from "./pendingvoice";
@@ -350,7 +350,7 @@ function resetStreamTick(): void {
   }
   const tickDelays: number[] = [];
   const startedAt = state.pendingAI?.metadata?.workTimerStartedAt ?? state.pendingAI?.metadata?.startedAt;
-  if (isStreaming(state) && typeof startedAt === "number") {
+  if (isStreaming(state) && typeof startedAt === "number" && inlineSleepMetadataEndedAt(state) === null) {
     tickDelays.push(msUntilNextElapsedSecond(startedAt));
   }
   const durableSleepStartedAt = activeDurableSleepMetadataStartedAt(state);
@@ -1104,6 +1104,12 @@ function handleSubmit(): void {
     // commands are the exception: they have already run and been stripped so
     // the queued send honors the selected settings.
     openQueuePrompt(state, text);
+    // A turn sleeping inside a long chrono call wakes for a message, as a
+    // suspended one does, so there is no timing to choose.
+    if (focusedInlineSleepStartedAt(state) !== null) {
+      state.queuePrompt!.selection = "next-turn";
+      confirmQueuePrompt();
+    }
     scheduleRender();
     return;
   }
@@ -1134,6 +1140,20 @@ function handleSubmit(): void {
 function openPendingVoiceQueuePrompt(previewText: string): void {
   pendingVoiceQueuePrompt = true;
   openQueuePrompt(state, previewText);
+  if (focusedInlineSleepStartedAt(state) !== null) {
+    state.queuePrompt!.selection = "next-turn";
+    confirmPendingVoiceQueuePrompt();
+  }
+}
+
+function confirmQueuePrompt(): void {
+  const qr = confirmQueueMessage(state);
+  if (qr.action === "send_direct") {
+    clearPrompt(state);
+    sendDirectly(qr.text, qr.images);
+  } else if (qr.action === "queue") {
+    daemon.queueMessage(qr.convId, qr.text, qr.timing, qr.images, { queueId: qr.queueId });
+  }
 }
 
 function confirmPendingVoiceQueuePrompt(): boolean {
@@ -1549,13 +1569,7 @@ function handleKey(key: KeyEvent): void {
       return;
     case "queue_confirm": {
       if (confirmPendingVoiceQueuePrompt()) break;
-      const qr = confirmQueueMessage(state);
-      if (qr.action === "send_direct") {
-        clearPrompt(state);
-        sendDirectly(qr.text, qr.images);
-      } else if (qr.action === "queue") {
-        daemon.queueMessage(qr.convId, qr.text, qr.timing, qr.images, { queueId: qr.queueId });
-      }
+      confirmQueuePrompt();
       break;
     }
     case "queue_cancel":

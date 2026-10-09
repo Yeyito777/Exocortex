@@ -65,6 +65,7 @@ import {
 import { beginDaemonShutdown, getDaemonShutdownMode } from "./daemon-lifecycle";
 import { buildBackgroundTaskNotificationText } from "./background-task-notifications";
 import { configureChronoService, cancelDeferredChronoSleep } from "./chrono-service";
+import { inlineLongSleepStartedAt } from "@exocortex/shared/chrono";
 import { configureClaudeCodeSessions } from "./providers/anthropic/session";
 import { HISTORY_PAGE_BYTE_BUDGET, INITIAL_HISTORY_TURNS, buildHistoryUpdatedEvents, compactHistoryImages, pageDisplayHistory, type HistoryWindowOptions } from "./history-pagination";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
@@ -892,16 +893,20 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     const sidebar = convStore.listSidebarState();
     const hasStreamQueue = (convId: string) => convStore.isQueuedMessageDeliverySuspended(convId)
       || convStore.getQueuedMessages(convId).length > 0;
+    // A Claude Code turn sleeping inside a long chrono call is as idle as a
+    // suspended one, which no longer streams.
+    const isWorking = (conversation: (typeof sidebar.conversations)[number]) => conversation.streaming
+      && inlineLongSleepStartedAt(conversation) === null;
 
     if (waitTarget.type === "global") {
-      if (sidebar.conversations.some(conversation => conversation.streaming)) return "waiting";
+      if (sidebar.conversations.some(isWorking)) return "waiting";
       if (convStore.listInternalQueuedMessages().some(message => message.source === "daemon")) return "waiting";
       return "ready";
     }
     if (waitTarget.type === "conversation") {
       const conversation = sidebar.conversations.find(candidate => candidate.id === waitTarget.convId);
       if (!conversation) return "missing-target";
-      return conversation.streaming || hasStreamQueue(conversation.id) ? "waiting" : "ready";
+      return isWorking(conversation) || hasStreamQueue(conversation.id) ? "waiting" : "ready";
     }
 
     const folderIds = new Set<string>([waitTarget.folderId]);
@@ -917,7 +922,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       }
     }
     return sidebar.conversations.some(conversation => conversation.folderId && folderIds.has(conversation.folderId)
-      && (conversation.streaming || hasStreamQueue(conversation.id))) ? "waiting" : "ready";
+      && (isWorking(conversation) || hasStreamQueue(conversation.id))) ? "waiting" : "ready";
   };
 
   type DurableQueueEntry = import("./message-queue").QueuedMessage;
@@ -1122,6 +1127,12 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       }
     }
 
+    const sleepsInline = (entry: DurableQueueEntry): boolean => {
+      if (entry.command || entry.target === "new-conversation" || convStore.isQueuedMessageDeliverySuspended(entry.convId)) return false;
+      const summary = convStore.getSummary(entry.convId);
+      return !!summary && inlineLongSleepStartedAt(summary) !== null;
+    };
+
     const pumpIdleWaitEntry = (entry: DurableQueueEntry): void => {
       const status = queueWaitStatus(entry);
       if (status === "missing-target" || !convStore.hasConversation(entry.convId)) {
@@ -1139,6 +1150,11 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           && !convStore.isStreaming(entry.convId)
           && !convStore.isQueuedMessageDeliverySuspended(entry.convId)) {
         if (!retryIsDeferred(entry.id)) void dispatchQueuedMessage(entry);
+      } else if (status === "ready" && sleepsInline(entry)
+          && convStore.steerGlobalIdleQueuedMessage(entry.id)) {
+        // A turn sleeping inside a long chrono call takes the message now, as
+        // a suspended one would by starting a turn for it.
+        convStore.steerActiveTurn(entry.convId);
       } else {
         needsReadinessPoll = true;
       }
@@ -1248,6 +1264,14 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
 
   convStore.setQueuedMessagesChangedListener((messages) => {
     server.broadcast({ type: "queue_updated", messages });
+    // Automated and message-end input waits for a boundary, but would end a
+    // suspended chrono sleep; let a turn sleeping inside a chrono call decide.
+    const queuedConvIds = new Set(messages
+      .filter(message => message.source === "daemon")
+      .map(message => message.convId));
+    for (const convId of queuedConvIds) {
+      if (convStore.getActiveBackgroundableToolName(convId) === "chrono") convStore.steerActiveTurn(convId);
+    }
     scheduleQueuePump();
   });
 

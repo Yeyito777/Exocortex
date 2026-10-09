@@ -339,6 +339,104 @@ describe("instant steering", () => {
     ]);
   });
 
+  for (const queuedBeforeSleep of [false, true]) {
+    test(`automated input ${queuedBeforeSleep ? "already queued" : "queued later"} wakes a Claude Code turn sleeping inside a long chrono call`, async () => {
+      const convId = id(`steer-inline-sleep-${queuedBeforeSleep}`);
+      create(convId, "anthropic", "claude-opus-5-5");
+      const queueWake = () => pushQueuedMessage(convId, "subagent finished", "next-turn", undefined, undefined, undefined,
+        undefined, undefined, { kind: "subagent_completion", sourceId: "child" });
+      const sleepOutputs: string[] = [];
+      let requests = 0;
+      const fakeStream = (async (_provider, messages, _model, streamCallbacks, options) => {
+        requests += 1;
+        if (requests > 1) {
+          expect(messages.at(-1)?.content).toBe("subagent finished");
+          return finalAnswer("read the result");
+        }
+        // Claude Code runs chrono over MCP inside its own call.
+        const call = { id: "toolu_sleep", name: "chrono", input: { action: "sleep", duration: "2h" } };
+        streamCallbacks.onToolCall?.({ type: "tool_call", toolCallId: call.id, toolName: call.name, input: call.input, summary: "sleep: 2h" });
+        if (queuedBeforeSleep) queueWake();
+        const sleeping = (options as any).toolExecutor([call], options?.signal);
+        if (!queuedBeforeSleep) {
+          while (!getSummary(convId)?.tasks?.some(task => task.id === "chrono:sleep:toolu_sleep")) await Bun.sleep(1);
+          queueWake();
+          // What the daemon's queue listener does for a turn running chrono.
+          steerActiveTurn(convId);
+        }
+        const [result] = await sleeping;
+        sleepOutputs.push(result.output);
+        streamCallbacks.onToolResult?.({ type: "tool_result", toolCallId: call.id, toolName: call.name, output: result.output, isError: false });
+        return waitForAbort(options?.signal);
+      }) as typeof streamMessage;
+
+      const outcome = await orchestrateSendMessage(
+        server() as never, null, undefined, convId, "wait for the subagent", Date.now(), callbacks(fakeStream),
+      );
+
+      expect(outcome.ok).toBe(true);
+      expect(requests).toBe(2);
+      expect(sleepOutputs[0]).toMatch(/^Sleep interrupted after /);
+      expect(getQueuedMessages(convId)).toEqual([]);
+    });
+  }
+
+  test("message-end input queued before a long chrono sleep inside a Claude Code call wakes it", async () => {
+    const convId = id("steer-inline-sleep-message-end");
+    create(convId, "anthropic", "claude-opus-5-5");
+    const sleepOutputs: string[] = [];
+    let requests = 0;
+    const fakeStream = (async (_provider, messages, _model, streamCallbacks, options) => {
+      requests += 1;
+      if (requests > 1) {
+        expect(messages.at(-1)?.content).toBe("check this instead");
+        return finalAnswer("checking");
+      }
+      pushQueuedMessage(convId, "check this instead", "message-end", undefined, undefined, undefined, "after-this");
+      const call = { id: "toolu_sleep_2h", name: "chrono", input: { action: "sleep", duration: "2h" } };
+      streamCallbacks.onToolCall?.({ type: "tool_call", toolCallId: call.id, toolName: call.name, input: call.input, summary: "sleep: 2h" });
+      const [result] = await (options as any).toolExecutor([call], options?.signal);
+      sleepOutputs.push(result.output);
+      streamCallbacks.onToolResult?.({ type: "tool_result", toolCallId: call.id, toolName: call.name, output: result.output, isError: false });
+      return waitForAbort(options?.signal);
+    }) as typeof streamMessage;
+
+    const outcome = await orchestrateSendMessage(
+      server() as never, null, undefined, convId, "work, then sleep", Date.now(), callbacks(fakeStream),
+    );
+
+    expect(outcome.ok).toBe(true);
+    expect(requests).toBe(2);
+    expect(sleepOutputs[0]).toMatch(/^Sleep interrupted after /);
+    expect(getQueuedMessages(convId)).toEqual([]);
+  });
+
+  test("automated input does not wake a short chrono sleep", async () => {
+    const convId = id("steer-inline-short-sleep");
+    create(convId, "anthropic", "claude-opus-5-5");
+    let requests = 0;
+    const fakeStream = (async (_provider, messages, _model, _streamCallbacks, options) => {
+      requests += 1;
+      if (requests > 1) return finalAnswer("done");
+      pushQueuedMessage(convId, "subagent finished", "next-turn", undefined, undefined, undefined,
+        undefined, undefined, { kind: "subagent_completion", sourceId: "child" });
+      const [result] = await (options as any).toolExecutor(
+        [{ id: "toolu_short", name: "chrono", input: { action: "sleep", duration: "50ms" } }], options?.signal);
+      expect(result.output).toMatch(/^Sleep finished at /);
+      expect(options?.signal?.aborted).toBe(false);
+      return {
+        text: "", thinking: "", stopReason: "tool_use" as const, blocks: [],
+        toolCalls: [{ id: "short-sleep-read", name: "read", input: { file_path: "/etc/hosts" } }],
+      };
+    }) as typeof streamMessage;
+
+    const outcome = await orchestrateSendMessage(
+      server() as never, null, undefined, convId, "nap", Date.now(), callbacks(fakeStream),
+    );
+    expect(outcome.ok).toBe(true);
+    expect(requests).toBe(2);
+  });
+
   test("a steer backgrounds a running tool and preempts only after provider-run tools settle", async () => {
     const convId = id("steer-provider-tool");
     create(convId, "openai", "gpt-5.6-sol");

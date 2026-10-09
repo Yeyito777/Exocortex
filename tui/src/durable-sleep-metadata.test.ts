@@ -4,7 +4,9 @@ import {
   activeDurableSleepAssistant,
   activeDurableSleepMetadataStartedAt,
   durableSleepMetadataFrame,
+  inlineSleepMetadataEndedAt,
 } from "./durable-sleep-metadata";
+import { createPendingAI } from "./messages";
 
 function sleepingState(streaming = false) {
   const state = createInitialState();
@@ -84,6 +86,18 @@ describe("durable Chrono sleep metadata", () => {
 
     expect(activeDurableSleepAssistant(state)).toBeNull();
     expect(durableSleepMetadataFrame(state, 6_999)).toBeNull();
+  });
+
+  test("stops a streaming turn's clock while it sleeps inside a long Chrono call", () => {
+    const { state } = sleepingState(true);
+    state.pendingAI = createPendingAI(1_000, state.model);
+    expect(inlineSleepMetadataEndedAt(state)).toBe(2_000);
+
+    state.sidebar.conversations[0].tasks![0].dueAt = 2_000 + 5 * 60_000;
+    expect(inlineSleepMetadataEndedAt(state)).toBeNull();
+    state.sidebar.conversations[0].tasks![0].dueAt = 602_000;
+    state.sidebar.conversations[0].streaming = false;
+    expect(inlineSleepMetadataEndedAt(state)).toBeNull();
   });
 
   test("requires the active sleep task to match the committed tool call", () => {

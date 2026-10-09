@@ -9,7 +9,7 @@
 import { CONTEXT_COMPACTION_FINISHED_KIND, REALTIME_TRANSCRIPT_KIND, combineMessageMetadata, type Message, type MessageMetadata, type UserMessageAutomation } from "./messages";
 import { isActiveConversationLoading, type RenderState } from "./state";
 import { renderMetadata } from "./metadata";
-import { activeDurableSleepAssistant } from "./durable-sleep-metadata";
+import { activeDurableSleepAssistant, inlineSleepMetadataEndedAt } from "./durable-sleep-metadata";
 import { theme } from "./theme";
 import {
   renderBlockCached,
@@ -537,7 +537,9 @@ export function buildMessageLines(
       && !terminalNoticePendingStop
     ));
     const metadata = pendingAssistantSegmentMetadata(state) ?? pendingAssistantRunMetadata(state);
-    const metadataLines = shouldRenderPendingMetadata ? renderMetadata(metadata, metadataOptions) : [];
+    const metadataLines = shouldRenderPendingMetadata
+      ? renderMetadata(metadata, { ...metadataOptions, now: inlineSleepMetadataEndedAt(state) ?? undefined })
+      : [];
     const compactionStartedAt = state.contextCompactionStartedAt;
     const compactionActive = compactionStartedAt != null;
     if (metadataLines.length > 0 || compactionActive) trimTrailingBlankAssistantContent(start);

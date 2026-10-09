@@ -11,6 +11,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync 
 import { join } from "node:path";
 import { dataDir } from "@exocortex/shared/paths";
 import { agentWorkingDirectory } from "@exocortex/shared/config";
+import { LONG_CHRONO_SLEEP_THRESHOLD_MS } from "@exocortex/shared/chrono";
 import * as convStore from "./conversations";
 import { setChronoTaskActive, waitForConversationTask } from "./conversation-activity";
 import { onConversationRemoved, onConversationRemoving } from "./conversation-lifecycle";
@@ -24,7 +25,6 @@ const STATE_VERSION = 1;
 const MAX_TIMER_MS = 2_000_000_000;
 const MAX_COMMAND_OUTPUT_IN_WAKE = 8_000;
 const DEFERRED_SLEEP_ACTIVE_RETRY_MS = 30_000;
-export const LONG_CHRONO_SLEEP_THRESHOLD_MS = 5 * 60 * 1_000;
 const WEEKDAY_INDEX: Record<string, number> = {
   sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6,
 };

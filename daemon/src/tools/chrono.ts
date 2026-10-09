@@ -1,7 +1,6 @@
 import type { Tool, ToolResult } from "./types";
 import { summarizeParams } from "./util";
 import {
-  LONG_CHRONO_SLEEP_THRESHOLD_MS,
   adoptChronoSchedule,
   cancelChronoSchedule,
   createChronoSchedule,
@@ -14,6 +13,7 @@ import { getWaitableConversationTask, waitForConversationTask } from "../convers
 import { completedChronoWaitOutput } from "./chrono-output";
 import { CLAUDE_CODE_INLINE_CHRONO_MAX_MS } from "./chrono-limits";
 import { parseDurationMs } from "@exocortex/shared/duration";
+import { LONG_CHRONO_SLEEP_THRESHOLD_MS } from "@exocortex/shared/chrono";
 
 function action(input: Record<string, unknown>): string {
   return typeof input.action === "string" ? input.action : "";

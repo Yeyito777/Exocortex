@@ -12,7 +12,7 @@ import { log } from "./log";
 import { isDeepStrictEqual } from "node:util";
 import { prepareArchiveHashes } from "./conversation-loader";
 import { archiveWindow, inheritArchiveHashProof, storedMessageCount } from "./conversation-window";
-import { workTimerForTurn } from "./work-timer";
+import { resumeWorkTimer, workTimerForTurn } from "./work-timer";
 import { appendGenerationRate, createGenerationThroughput } from "@exocortex/shared/generation-throughput";
 import { hasConfiguredCredentials } from "./auth";
 import { runAgentLoop, type AgentCallbacks, type AgentState } from "./agent";
@@ -28,6 +28,7 @@ import { broadcastConversationHistoryUpdated, broadcastConversationUpdated } fro
 import { quarantineActiveContext } from "./active-context-quarantine";
 import { goalContinuationPrompt as formatGoalContinuation, goalTimeLimitReason, updateGoalStatus } from "./goals";
 import { goalRemainingMs } from "@exocortex/shared/goals";
+import { LONG_CHRONO_SLEEP_THRESHOLD_MS } from "@exocortex/shared/chrono";
 import { isDetachedTurnError } from "./abort";
 import { createProviderTurnSession, streamMessage } from "./api";
 import { annotateApiMessagesContextTokens, copyContextTokenAttributionsToStoredHistory } from "./context-token-attribution";
@@ -787,8 +788,23 @@ async function orchestrateAdmittedAssistantTurn(
   // prompt is sampled first.
   let steerRequested = false;
   let preemptionsWithoutDelivery = 0;
+  // A Claude Code turn runs long chrono sleeps and waits inside the call rather
+  // than suspending: the chrono task ids of those in progress, and when the
+  // turn started sleeping in them.
+  const inlineLongSleeps = new Set<string>();
+  let inlineSleepSince: number | null = null;
+  // Any queued message, automated or message-end ones too, ends a suspended
+  // sleep by starting a turn. One queued during an inline long sleep steers
+  // like a person's until it is delivered.
+  let inlineSleepWoken = false;
+  const hasQueuedSteer = () => convStore.hasQueuedUserSteer(convId)
+    || (inlineSleepWoken && convStore.hasQueuedNextTurn(convId));
   const steerTurn = () => {
-    if (!convStore.hasQueuedUserSteer(convId)) return;
+    if (inlineLongSleeps.size > 0) {
+      convStore.advanceQueuedMessagesToNextTurn(convId);
+      if (convStore.hasQueuedNextTurn(convId)) inlineSleepWoken = true;
+    }
+    if (!hasQueuedSteer()) return;
     steerRequested = true;
     if (openToolCallIds.size > 0) {
       convStore.backgroundActiveTool(convId, "steer");
@@ -811,7 +827,7 @@ async function orchestrateAdmittedAssistantTurn(
     // Steering that arrived while no request was running (pre-turn or
     // mid-turn compaction, the end of a tool round) joins this request.
     if (steerRequested && preemptionsWithoutDelivery < MAX_PREEMPTIONS_WITHOUT_DELIVERY
-        && convStore.hasQueuedUserSteer(convId)) {
+        && hasQueuedSteer()) {
       throw new StreamPreemptedError();
     }
     return runWithStaleStreamRetries(
@@ -889,6 +905,22 @@ async function orchestrateAdmittedAssistantTurn(
       }
     },
     setChronoTaskActive: (taskId, active, details) => {
+      if (active && details?.dueAt !== undefined && (details.chronoMode === "sleep" || details.chronoMode === "wait")
+          && details.dueAt - details.startedAt > LONG_CHRONO_SLEEP_THRESHOLD_MS) {
+        inlineLongSleeps.add(taskId);
+        inlineSleepSince = Math.min(inlineSleepSince ?? details.startedAt, details.startedAt);
+        // A message queued earlier would end a suspended sleep at once.
+        queueMicrotask(steerTurn);
+      }
+      if (!active && inlineLongSleeps.delete(taskId) && inlineLongSleeps.size === 0 && inlineSleepSince !== null) {
+        // Charge the sleep to the work timer as a suspended turn would: not at
+        // all. Overlapping sleeps are one idle stretch.
+        workTimerStartedAt = resumeWorkTimer(workTimerStartedAt, inlineSleepSince, Date.now());
+        inlineSleepSince = null;
+        convStore.setStreamingWorkTimerStartedAt(convId, workTimerStartedAt);
+        // Before the task leaves the sidebar, which unfreezes the TUI clock.
+        sendStreamingSnapshot();
+      }
       if (setConversationChronoTaskActive(convId, taskId, active, details)) {
         broadcastConversationUpdated(server, convId);
       }
@@ -1472,7 +1504,8 @@ async function orchestrateAdmittedAssistantTurn(
         });
       }
       if (sidebarBumped) broadcastConversationUpdated(server, convId);
-      steerRequested = convStore.hasQueuedUserSteer(convId);
+      inlineSleepWoken = false;
+      steerRequested = hasQueuedSteer();
       preemptionsWithoutDelivery = 0;
       return apiMsgs;
     },

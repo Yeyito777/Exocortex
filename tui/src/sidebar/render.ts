@@ -15,7 +15,7 @@ import {
   getSidebarSearchBarViewport,
 } from "../sidebarsearch";
 import { theme } from "../theme";
-import { hasInProgressModelWork, isDurablySleeping, shouldDisplayConversationTask } from "../taskvisibility";
+import { hasInProgressModelWork, inlineLongSleepStartedAt, isDurablySleeping, shouldDisplayConversationTask } from "../taskvisibility";
 import { padRightToWidth, termWidth, truncateToWidth } from "../textwidth";
 import type { ConversationTaskSummary } from "../messages";
 import type { DisplayUpdateStatus } from "../update-status";
@@ -32,7 +32,7 @@ const UPDATE_LABELS: Record<DisplayUpdateStatus, string> = {
 interface FolderAggregate {
   count: number;
   streamingCount: number;
-  durableSleep: boolean;
+  longSleep: boolean;
   globalIdle: boolean;
   unread: boolean;
   unreadCount: number;
@@ -45,8 +45,8 @@ interface FolderAggregate {
 function countChronoTasks(tasks: readonly ConversationTaskSummary[] | undefined): number {
   let count = 0;
   for (const task of tasks ?? []) {
-    // A sleep is represented by the blue connected-stream or yellow durable-
-    // sleep indicator rather than an additional green Chrono badge.
+    // A sleep is represented by the blue streaming or yellow long-sleep
+    // indicator rather than an additional green Chrono badge.
     if (task.kind !== "chrono" || task.chronoMode === "sleep" || !shouldDisplayConversationTask(task)) continue;
     count++;
   }
@@ -65,7 +65,7 @@ function buildFolderAggregates(
     aggregates.set(folder.id, {
       count: 0,
       streamingCount: 0,
-      durableSleep: false,
+      longSleep: false,
       globalIdle: false,
       unread: false,
       unreadCount: 0,
@@ -80,7 +80,8 @@ function buildFolderAggregates(
   for (const conv of sidebar.conversations) {
     const hasGlobalIdle = globalIdleConvIds.has(conv.id);
     const hasOptimisticStreaming = conv.id === optimisticStreamingConvId;
-    const hasDurableSleep = isDurablySleeping(conv);
+    const hasInlineSleep = inlineLongSleepStartedAt(conv) !== null;
+    const hasLongSleep = hasInlineSleep || isDurablySleeping(conv);
     const hasModelWork = hasInProgressModelWork(conv) || hasOptimisticStreaming;
     const hasUnread = conv.unread && !hasModelWork;
     const chronoTaskCount = countChronoTasks(conv.tasks);
@@ -90,8 +91,8 @@ function buildFolderAggregates(
       seen.add(folderId);
       const aggregate = aggregates.get(folderId)!;
       aggregate.count++;
-      if (conv.streaming || hasOptimisticStreaming) aggregate.streamingCount++;
-      aggregate.durableSleep ||= hasDurableSleep;
+      if ((conv.streaming || hasOptimisticStreaming) && !hasInlineSleep) aggregate.streamingCount++;
+      aggregate.longSleep ||= hasLongSleep;
       aggregate.globalIdle ||= hasGlobalIdle;
       aggregate.unread ||= hasUnread;
       if (hasUnread) aggregate.unreadCount++;
@@ -302,10 +303,10 @@ export function renderSidebar(
       explicitlyMuted = folder?.muted === true;
       rawTitle = folder ? `📁 ${folder.name}/ ${aggregate?.count ?? 0}` : "📁 folder/";
       const streamingCount = aggregate?.streamingCount ?? 0;
-      const hasDurableSleep = aggregate?.durableSleep ?? false;
+      const hasLongSleep = aggregate?.longSleep ?? false;
       const hasGlobalIdle = aggregate?.globalIdle ?? false;
       const hasUnread = !notificationsMuted && (aggregate?.unread ?? false);
-      const hasWarningActivity = hasDurableSleep || hasGlobalIdle;
+      const hasWarningActivity = hasLongSleep || hasGlobalIdle;
       streamIcon = streamingCount > 0 ? folderStreamingIndicator(streamingCount) : hasWarningActivity ? "◉ " : hasUnread ? "◉ " : "";
       streamIconColor = streamingCount > 0 ? theme.accent : hasWarningActivity ? theme.warning : hasUnread ? theme.success : "";
       subagentIcon = subagentIndicator(aggregate?.subagentCount ?? 0);
@@ -325,11 +326,14 @@ export function renderSidebar(
       // input immediately instead of leaving the sidebar idle while a cold
       // canonical transcript is loaded and durably appended by the daemon.
       const hasOptimisticStreaming = conv.id === optimisticStreamingConvId;
-      const hasDurableSleep = isDurablySleeping(conv);
+      // A Claude Code turn sleeping inside a long chrono call still streams,
+      // and its pendingAI is that sleeping turn rather than an optimistic send.
+      const hasInlineSleep = inlineLongSleepStartedAt(conv) !== null;
+      const hasLongSleep = hasInlineSleep || isDurablySleeping(conv);
       const hasModelWork = hasInProgressModelWork(conv) || hasOptimisticStreaming;
       const hasUnread = !notificationsMuted && conv.unread && !hasModelWork;
-      const hasStreamingIndicator = conv.streaming || hasOptimisticStreaming;
-      const hasWarningActivity = hasDurableSleep || hasGlobalIdle;
+      const hasStreamingIndicator = (conv.streaming || hasOptimisticStreaming) && !hasInlineSleep;
+      const hasWarningActivity = hasLongSleep || hasGlobalIdle;
       streamIcon = hasStreamingIndicator ? "◉ " : hasWarningActivity ? "◉ " : hasUnread ? "◉ " : "";
       streamIconColor = hasStreamingIndicator ? theme.accent : hasWarningActivity ? theme.warning : hasUnread ? theme.success : "";
       subagentIcon = subagentIndicator(conv.subagentCount ?? 0);

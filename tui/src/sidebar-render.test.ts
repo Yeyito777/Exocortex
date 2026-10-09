@@ -449,6 +449,42 @@ describe("sidebar rendering", () => {
     expect(rows.every(row => visibleLength(row) === SIDEBAR_WIDTH)).toBe(true);
   });
 
+  test("renders a streaming turn sleeping inside a long Chrono call like a durable sleep", () => {
+    const sidebar = createSidebarState();
+    sidebar.folders = [{ id: "folder", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 }];
+    const sleep = { kind: "chrono" as const, title: "Sleeping", startedAt: 0, dueAt: 20 * 60_000 };
+    sidebar.conversations = [
+      conversation("inline-sleep", 0, {
+        title: "Inline sleep",
+        folderId: "folder",
+        streaming: true,
+        tasks: [{ ...sleep, id: "chrono:sleep:toolu_sleep", chronoMode: "sleep" }],
+      }),
+      conversation("inline-wait", 1, {
+        title: "Inline wait",
+        streaming: true,
+        tasks: [{ ...sleep, id: "chrono:wait:toolu_wait", chronoMode: "wait" }],
+      }),
+      conversation("short-sleep", 2, {
+        title: "Short sleep",
+        streaming: true,
+        tasks: [{ ...sleep, id: "chrono:sleep:toolu_short", chronoMode: "sleep", dueAt: 5 * 60_000 }],
+      }),
+    ];
+
+    // The focused conversation's pendingAI is the sleeping turn, not an optimistic send.
+    let rows = renderSidebar(sidebar, 8, true, "inline-sleep", new Set(), "inline-sleep");
+    expect(rows.find(row => row.includes("Work"))).toContain(`${theme.warning}◉ `);
+    expect(rows.find(row => row.includes("Inline wait"))).toContain(`${theme.warning}◉ `);
+    expect(rows.find(row => row.includes("Short sleep"))).toContain(`${theme.accent}◉ `);
+
+    sidebar.currentFolderId = "folder";
+    rows = renderSidebar(sidebar, 8, true, "inline-sleep", new Set(), "inline-sleep");
+    expect(rows.find(row => row.includes("Inline sleep"))).toContain(`${theme.warning}◉ `);
+    expect(rows.find(row => row.includes("Inline sleep"))).not.toContain(`${theme.accent}◉ `);
+    expect(rows.find(row => row.includes("Inline sleep"))).not.toContain("◷");
+  });
+
   test("omits goal badges while aggregating other activity through folder trees", () => {
     const sidebar = createSidebarState();
     sidebar.folders = [

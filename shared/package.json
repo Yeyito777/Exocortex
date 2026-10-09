@@ -19,7 +19,8 @@
     "./history-delta": "./src/history-delta.ts",
     "./realtime": "./src/realtime.ts",
     "./paths": "./src/paths.ts",
-    "./duration": "./src/duration.ts"
+    "./duration": "./src/duration.ts",
+    "./chrono": "./src/chrono.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",

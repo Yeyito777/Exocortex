@@ -123,6 +123,22 @@ export function getQueuedMessages(convId: string): QueuedMessage[] {
     .map(cloneEntry);
 }
 
+/** Deliver a conversation's message-end entries at the next turn boundary instead. */
+export function advanceQueuedMessagesToNextTurn(convId: string): boolean {
+  const entries = getQueuedMessages(convId).filter(entry => entry.timing === "message-end").map(entry => entry.id);
+  if (entries.length === 0) return false;
+  const ids = new Set(entries);
+  mutateAndCommit(() => {
+    for (const entry of messages) if (ids.has(entry.id)) entry.timing = "next-turn";
+  });
+  return true;
+}
+
+/** Whether any next-turn input, automated or not, is queued for a conversation. */
+export function hasQueuedNextTurn(convId: string): boolean {
+  return getQueuedMessages(convId).some(entry => entry.timing === "next-turn");
+}
+
 /**
  * Whether a person queued next-turn input that should steer the active turn
  * now. Automated next-turn entries (wakes, notifications) wait for a boundary.
@@ -262,6 +278,21 @@ export function persistQueuedMessagesSnapshot(): void {
 export function removeQueuedMessage(convId: string, text: string): boolean {
   const entry = messages.find(candidate => candidate.source === "daemon" && candidate.convId === convId && candidate.text === text);
   return entry ? removeQueuedMessageById(entry.id) : false;
+}
+
+/** Hand a ready plain `/queue` entry to its conversation's active turn as a steer. */
+export function steerGlobalIdleQueuedMessage(id: string): boolean {
+  const index = messages.findIndex(entry => entry.id === id && entry.source === "global-idle" && !entry.command);
+  if (index === -1) return false;
+  const { convId, text, images, createdAt, automation } = messages[index];
+  mutateAndCommit(() => {
+    messages[index] = {
+      id, convId, text, timing: "next-turn", source: "daemon", createdAt,
+      ...(images ? { images } : {}),
+      ...(automation ? { automation } : {}),
+    };
+  });
+  return true;
 }
 
 /** Replace user-editable content while retaining identity, dependencies, and FIFO position. */

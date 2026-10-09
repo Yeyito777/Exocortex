@@ -1,6 +1,6 @@
 import type { AIMessage } from "./messages";
 import type { RenderState } from "./state";
-import { isDurablySleeping } from "./taskvisibility";
+import { inlineLongSleepStartedAt, isDurablySleeping } from "./taskvisibility";
 
 const CHRONO_SUSPENDED_TASK_PREFIXES = ["chrono:sleep:", "chrono:wait:"];
 
@@ -39,6 +39,21 @@ export function activeDurableSleepAssistant(state: RenderState): AIMessage | nul
   }
 
   return null;
+}
+
+/** Start of the long Chrono call the focused conversation's live turn sleeps in, or null. */
+export function focusedInlineSleepStartedAt(state: RenderState): number | null {
+  if (!state.convId) return null;
+  const conversation = state.sidebar?.conversations.find(candidate => candidate.id === state.convId);
+  return conversation ? inlineLongSleepStartedAt(conversation) : null;
+}
+
+/**
+ * Where the live turn's metadata clock stops while it sleeps inside a long
+ * Chrono call, as a suspended turn's clock stops; null while it works.
+ */
+export function inlineSleepMetadataEndedAt(state: RenderState): number | null {
+  return state.pendingAI ? focusedInlineSleepStartedAt(state) : null;
 }
 
 /** Start time of the assistant metadata clock that remains live while sleeping. */
