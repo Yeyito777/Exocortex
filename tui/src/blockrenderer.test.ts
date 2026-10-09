@@ -59,6 +59,13 @@ describe("rehydrated block render caching", () => {
   });
 });
 
+describe("thinking block rendering", () => {
+  test("drops edge newlines but keeps paragraph breaks", () => {
+    const rendered = renderBlockCached({ type: "thinking", text: "\nFirst.\n\nSecond.\n\n" }, 80, [], [], false);
+    expect(rendered.lines.map(line => stripAnsi(line).trimEnd())).toEqual(["  First.", "", "  Second."]);
+  });
+});
+
 describe("adaptive user message rendering", () => {
   test("sizes a partially visible bubble from the longest line in the complete message", () => {
     const cols = 80;

@@ -22,6 +22,7 @@ import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-pro
 import { createAbortError } from "./abort";
 import { ProviderGenerationTimer } from "./generation-throughput";
 import { ModelLoopProfile } from "./model-loop-profile";
+import { isStreamPreemptedError } from "./watchdog-retry";
 
 // ── Callbacks ───────────────────────────────────────────────────────
 
@@ -65,6 +66,12 @@ export interface AgentCallbacks {
    * user messages to inject into the conversation before the next API call.
    */
   drainNextTurnMessages?(): ApiMessage[] | Promise<ApiMessage[]>;
+  /**
+   * Take the text/thinking a provider attempt streamed before queued user input
+   * preempted it, resetting the live partial state. The loop commits it as an
+   * assistant message ahead of the drained steering messages.
+   */
+  takePreemptedOutput?(): ApiContentBlock[];
   /** Atomically replace active provider replay with an automatic checkpoint. */
   compactContext?(messages: ApiMessage[], reason: CompactionReason, projectedTokens: number): Promise<ApiMessage[] | null>;
 }
@@ -238,7 +245,8 @@ export async function runAgentLoop(
     log("info", `agent: round ${round}, messages=${messages.length}, provider=${provider}, model=${model}`);
 
     // ── Stream one API response ───────────────────────────────────
-    let result;
+    // Stays null only when queued user input preempted the request.
+    let result: Awaited<ReturnType<typeof streamMessage>> | null = null;
     let retriedAfterContextError = false;
     let roundEmittedOutput = false;
     const generationTimer = new ProviderGenerationTimer(options.generationNow);
@@ -336,6 +344,7 @@ export async function runAgentLoop(
         for (const message of messages) diagnosticsSubmittedMessages.add(message);
         break;
       } catch (error) {
+        if (isStreamPreemptedError(error) && !options.signal?.aborted) break;
         if (roundEmittedOutput || retriedAfterContextError || !callbacks.compactContext || !isContextWindowError(error)) throw error;
         retriedAfterContextError = true;
         const replacement = await callbacks.compactContext(messages, "context_error", Number.POSITIVE_INFINITY);
@@ -349,6 +358,42 @@ export async function runAgentLoop(
         }
         log("info", `agent: compacted after context-window error; retrying round ${round}`);
       }
+    }
+
+    // ── Preempted by queued user input (instant steering) ─────────
+    // Keep what was already streamed, as an abort would, then deliver the
+    // steer and request again instead of finishing the outdated response.
+    if (!result) {
+      const partial = callbacks.takePreemptedOutput?.() ?? [];
+      if (partial.length > 0) {
+        const partialMsg: ApiMessage = { role: "assistant", content: partial };
+        messages.push(partialMsg);
+        newMessages.push(partialMsg);
+        for (const block of partial) {
+          if (block.type === "text") allBlocks.push({ type: "text", text: block.text });
+          else if (block.type === "thinking") allBlocks.push({ type: "thinking", text: block.thinking });
+        }
+      }
+      if (state) {
+        state.completedMessages = [...newMessages];
+        state.completedBlocks = [...allBlocks];
+        state.contextMessages = [...messages];
+        state.contextCompacted = contextCompacted;
+        state.tokens = totalOutputTokens;
+      }
+      callbacks.onRoundComplete?.();
+      if (options.signal?.aborted) throw createAbortError();
+      const steering = await callbacks.drainNextTurnMessages?.() ?? [];
+      messages.push(...steering);
+      newMessages.push(...steering);
+      if (state) {
+        state.completedMessages = [...newMessages];
+        state.contextMessages = [...messages];
+      }
+      callbacks.onRecoveryStateUpdate?.();
+      log("info", `agent: round ${round} preempted by queued user input (partial blocks=${partial.length}, injected=${steering.length})`);
+      profileOutcome = "preempted";
+      continue;
     }
 
     // Provider rounds committed during the request already counted their tokens.

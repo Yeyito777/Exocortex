@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { runAgentLoop, type AgentCallbacks, type AgentState } from "./agent";
 import type { StreamResult } from "./providers/types";
 import type { streamMessage } from "./api";
+import type { ApiMessage } from "./messages";
+import { StreamPreemptedError } from "./watchdog-retry";
 
 function callbacks(overrides: Partial<AgentCallbacks> = {}): AgentCallbacks {
   return {
@@ -394,6 +396,96 @@ describe("queued-message handoff", () => {
     expect(streamCalls).toBe(1);
     expect(drainCalls).toBe(0);
     expect(recovery.completedMessages).toHaveLength(2);
+  });
+});
+
+describe("instant steering", () => {
+  test("commits the partial reply, injects the steer and requests again", async () => {
+    const recovery = state();
+    const requests: ApiMessage[][] = [];
+    const roundCompletions: number[] = [];
+    const fakeStream = (async (_provider, messages) => {
+      requests.push([...messages]);
+      if (requests.length === 1) throw new StreamPreemptedError();
+      return {
+        text: "Three ducks it is!", thinking: "", stopReason: "stop",
+        blocks: [{ type: "text", text: "Three ducks it is!" }], toolCalls: [],
+      } satisfies StreamResult;
+    }) as typeof streamMessage;
+
+    const result = await runAgentLoop(
+      [{ role: "user", content: "draw a cat" }],
+      "openai",
+      "gpt-5.6-sol",
+      callbacks({
+        takePreemptedOutput: () => [
+          { type: "thinking", thinking: "Planning a cat portrait", signature: "" },
+          { type: "text", text: "I'll draw a cozy cat" },
+        ],
+        onRoundComplete: () => roundCompletions.push(recovery.completedMessages.length),
+        drainNextTurnMessages: () => [{ role: "user", content: "3 ducks!" }],
+      }),
+      { state: recovery, streamMessageFn: fakeStream },
+    );
+
+    expect(requests).toHaveLength(2);
+    expect(requests[1]).toEqual([
+      { role: "user", content: "draw a cat" },
+      { role: "assistant", content: [
+        { type: "thinking", thinking: "Planning a cat portrait", signature: "" },
+        { type: "text", text: "I'll draw a cozy cat" },
+      ] },
+      { role: "user", content: "3 ducks!" },
+    ]);
+    // The partial reply is durable before the steer is drained behind it.
+    expect(roundCompletions).toEqual([1]);
+    expect(result.newMessages.map(message => message.role)).toEqual(["assistant", "user", "assistant"]);
+    expect(result.blocks).toEqual([
+      { type: "thinking", text: "Planning a cat portrait" },
+      { type: "text", text: "I'll draw a cozy cat" },
+      { type: "text", text: "Three ducks it is!" },
+    ]);
+  });
+
+  test("adds no assistant message when nothing was streamed before preemption", async () => {
+    const requests: ApiMessage[][] = [];
+    const fakeStream = (async (_provider, messages) => {
+      requests.push([...messages]);
+      if (requests.length === 1) throw new StreamPreemptedError();
+      return { text: "ok", thinking: "", stopReason: "stop", blocks: [{ type: "text", text: "ok" }], toolCalls: [] } satisfies StreamResult;
+    }) as typeof streamMessage;
+
+    const result = await runAgentLoop(
+      [{ role: "user", content: "first" }],
+      "openai",
+      "gpt-5.6-sol",
+      callbacks({
+        takePreemptedOutput: () => [],
+        drainNextTurnMessages: () => [{ role: "user", content: "second" }],
+      }),
+      { streamMessageFn: fakeStream },
+    );
+
+    expect(requests[1]).toEqual([{ role: "user", content: "first" }, { role: "user", content: "second" }]);
+    expect(result.newMessages.map(message => message.role)).toEqual(["user", "assistant"]);
+  });
+
+  test("an interrupt wins over a concurrent preemption", async () => {
+    const controller = new AbortController();
+    let drainCalls = 0;
+    const fakeStream = (async () => {
+      controller.abort();
+      throw new StreamPreemptedError();
+    }) as typeof streamMessage;
+
+    await expect(runAgentLoop(
+      [{ role: "user", content: "first" }],
+      "openai",
+      "gpt-5.6-sol",
+      callbacks({ drainNextTurnMessages: () => { drainCalls += 1; return []; } }),
+      { signal: controller.signal, streamMessageFn: fakeStream },
+    )).rejects.toBeInstanceOf(StreamPreemptedError);
+    expect(drainCalls).toBe(0);
   });
 });
 

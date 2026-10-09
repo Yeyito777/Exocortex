@@ -42,6 +42,7 @@ export {
   requestHistoryUnwind, isHistoryUnwindPending, clearHistoryUnwindPending,
   touchActivity, pauseActivity, resumeActivity,
   setActiveToolBackgrounder, clearActiveToolBackgrounder, backgroundActiveTool,
+  setActiveSteerHandler, clearActiveSteerHandler, steerActiveTurn,
   resetChunkCounter,
   initStreamingState, getCurrentStreamingBlocks, replaceCurrentStreamingBlocks,
   setStreamingCommittedBlockCount, getStreamingCommittedBlockCount,
@@ -50,7 +51,7 @@ export {
   requestGoalContinuationAfterStream, consumeGoalContinuationAfterStream, clearGoalContinuationAfterStream,
 } from "./streaming";
 export {
-  getQueuedMessages, getQueuedMessageById, listQueuedMessages, listInternalQueuedMessages,
+  getQueuedMessages, getQueuedMessageById, listQueuedMessages, listInternalQueuedMessages, hasQueuedUserSteer,
   pushQueuedMessage, pushRealtimeQueuedMessage, pushGlobalIdleQueuedMessage, drainQueuedMessages,
   clearQueuedMessages, clearAllQueuedMessages, removeQueuedMessage, removeQueuedMessageById,
   removeQueuedMessagesById, updateQueuedMessage, moveQueuedMessage,

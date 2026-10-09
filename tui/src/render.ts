@@ -128,7 +128,6 @@ function shouldForceFullHistoryRender(state: RenderState): boolean {
     || restoreNeedsFullHistory
     || state.scrollOffset > 0
     || state.showToolOutput
-    || state.toolOutputsLoaded
     || state.search?.barOpen === true
     || (state.panelFocus === "chat" && state.chatFocus === "history");
 }
@@ -1082,6 +1081,31 @@ function autocompleteDisplayText(text: string): string {
   return text.replace(/[\r\n\t]+/g, " ").replace(/[\x00-\x1F\x7F]/g, "");
 }
 
+/** Pad an autocomplete name, accenting the matched characters that survive truncation. */
+function renderAutocompleteName(
+  match: NonNullable<RenderState["autocomplete"]>["matches"][number],
+  displayName: string,
+  width: number,
+): string {
+  const padded = padRightToWidth(displayName, width);
+  const ranges = match.matchRanges;
+  // Ranges index the raw name; skip them if display sanitizing changed it.
+  if (!ranges?.length || displayName !== match.name) return padded;
+
+  let visible = 0;
+  while (visible < displayName.length && padded[visible] === displayName[visible]) visible++;
+  let result = "";
+  let pos = 0;
+  for (const { start, end } of ranges) {
+    const from = Math.max(start, pos);
+    const to = Math.min(end, visible);
+    if (from >= to) continue;
+    result += padded.slice(pos, from) + theme.accent + theme.bold + padded.slice(from, to) + theme.boldOff + theme.text;
+    pos = to;
+  }
+  return result + padded.slice(pos);
+}
+
 function renderAutocompleteDescription(
   match: NonNullable<RenderState["autocomplete"]>["matches"][number],
   text: string,
@@ -1140,7 +1164,7 @@ function renderAutocompletePopup(
     const isSelected = sel === i;
     const bg = isSelected ? theme.sidebarSelBg : theme.sidebarBg;
     const marker = markerWidth > 0 ? padRightToWidth(isSelected ? "▸ " : "  ", markerWidth) : "";
-    const name = padRightToWidth(visibleNames[vi], nameWidth);
+    const name = renderAutocompleteName(visibleMatches[vi], visibleNames[vi], nameWidth);
     const desc = renderAutocompleteDescription(visibleMatches[vi], visibleDescs[vi], descWidth);
     const upIndicator = vi === 0 && winStart > 0;
     const downIndicator = vi === winSize - 1 && winStart + winSize < total;

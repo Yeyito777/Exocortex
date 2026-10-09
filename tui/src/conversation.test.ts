@@ -82,7 +82,7 @@ describe("automated user-message provenance", () => {
         const rendered = buildMessageLines(state, width);
         const label = rendered.lines[rendered.lineAnchors.findIndex(a => a.segment === "queued_label")];
         expect(visibleLength(label)).toBeLessThanOrEqual(width);
-        if (width === 80) expect(stripAnsi(label)).toContain("queued: next turn");
+        if (width === 80) expect(stripAnsi(label)).toContain(automated ? "queued: next turn" : "queued: steer");
         else if (automated || width < 17) expect(label).toContain("…");
       }
     });

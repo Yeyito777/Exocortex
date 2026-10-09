@@ -5,8 +5,9 @@ import { isFastMode } from "@exocortex/shared/messages";
  * When the user submits a message while the AI is still streaming,
  * a modal appears letting them choose when to deliver it:
  * - "message end": sent after the current stream ends
- * - "next turn": injected between tool-use rounds if possible,
- *   otherwise sent after the stream ends
+ * - "steer now": the daemon interrupts the response being generated (keeping
+ *   what was already streamed), backgrounds a running shell command, and
+ *   injects the message into the same turn (QueueTiming "next-turn")
  *
  * j/k and arrow keys toggle the selection. Enter confirms, Escape cancels.
  *
@@ -46,7 +47,10 @@ export function queueTimingLabel(message: QueuedMessage): string {
     if (waitTarget.type === "folder") return `queued: after folder ${waitTarget.label}`;
     return GLOBAL_IDLE_QUEUE_LABEL;
   }
-  return message.timing === "next-turn" ? "queued: next turn" : "queued: message end";
+  if (message.timing !== "next-turn") return "queued: message end";
+  // Automated and realtime next-turn entries wait for a tool boundary; only a
+  // person's next-turn message steers the active turn immediately.
+  return message.automation || message.source === "realtime" ? "queued: next turn" : "queued: steer";
 }
 
 function queueDisplayBucket(message: QueuedMessage): number {

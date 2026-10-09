@@ -3,6 +3,7 @@ import {
   RetryableStreamAbortController,
   STALE_STREAM_ERROR_MESSAGE,
   StaleStreamRetriesExhaustedError,
+  StreamPreemptedError,
   runWithStaleStreamRetries,
 } from "./watchdog-retry";
 
@@ -169,5 +170,105 @@ describe("retryable stale-stream watchdog", () => {
 
     expect(controller.signal.aborted).toBe(true);
     expect(controller.signal.reason).toBe("watchdog");
+  });
+});
+
+describe("steer preemption", () => {
+  test("ends the active attempt without retrying or aborting the turn", async () => {
+    const controller = new RetryableStreamAbortController();
+    const retries: unknown[] = [];
+    let calls = 0;
+    let attemptStarted!: () => void;
+    const started = new Promise<void>((resolve) => { attemptStarted = resolve; });
+
+    const resultPromise = runWithStaleStreamRetries(
+      controller,
+      { onText: () => {}, onThinking: () => {}, onRetry: (...args) => retries.push(args) },
+      async (signal) => {
+        calls += 1;
+        attemptStarted();
+        return rejectOnAbort(signal);
+      },
+      { retryDelayMs: () => 0 },
+    );
+
+    await started;
+    expect(controller.preemptAttempt()).toBe(true);
+
+    await expect(resultPromise).rejects.toBeInstanceOf(StreamPreemptedError);
+    expect(calls).toBe(1);
+    expect(retries).toEqual([]);
+    expect(controller.signal.aborted).toBe(false);
+  });
+
+  test("does not accept a result the preempted attempt normalized into success", async () => {
+    const controller = new RetryableStreamAbortController();
+    const resultPromise = runWithStaleStreamRetries(
+      controller,
+      { onText: () => {}, onThinking: () => {} },
+      async (signal) => {
+        await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+        return "cut short";
+      },
+    );
+
+    await Promise.resolve();
+    controller.preemptAttempt();
+
+    await expect(resultPromise).rejects.toBeInstanceOf(StreamPreemptedError);
+  });
+
+  test("cuts a watchdog retry backoff short", async () => {
+    const controller = new RetryableStreamAbortController();
+    let calls = 0;
+    let backoffStarted!: () => void;
+    const inBackoff = new Promise<void>((resolve) => { backoffStarted = resolve; });
+
+    const resultPromise = runWithStaleStreamRetries(
+      controller,
+      { onText: () => {}, onThinking: () => {}, onRetry: () => backoffStarted() },
+      async (signal) => {
+        calls += 1;
+        return rejectOnAbort(signal);
+      },
+      { retryDelayMs: () => 60_000 },
+    );
+
+    await Promise.resolve();
+    controller.abort("watchdog");
+    await inBackoff;
+    expect(controller.preemptAttempt()).toBe(true);
+
+    await expect(resultPromise).rejects.toBeInstanceOf(StreamPreemptedError);
+    expect(calls).toBe(1);
+    expect(controller.signal.aborted).toBe(false);
+  });
+
+  test("keeps a watchdog tick during retry backoff terminal", async () => {
+    const controller = new RetryableStreamAbortController();
+    let backoffStarted!: () => void;
+    const inBackoff = new Promise<void>((resolve) => { backoffStarted = resolve; });
+
+    const resultPromise = runWithStaleStreamRetries(
+      controller,
+      { onText: () => {}, onThinking: () => {}, onRetry: () => backoffStarted() },
+      async (signal) => rejectOnAbort(signal),
+      { retryDelayMs: () => 60_000 },
+    );
+
+    await Promise.resolve();
+    controller.abort("watchdog");
+    await inBackoff;
+    controller.abort("watchdog");
+
+    await expect(resultPromise).rejects.toMatchObject({ name: "AbortError" });
+    expect(controller.signal.reason).toBe("watchdog");
+  });
+
+  test("reports that there was nothing to preempt between provider attempts", () => {
+    const controller = new RetryableStreamAbortController();
+
+    expect(controller.preemptAttempt()).toBe(false);
+    expect(controller.signal.aborted).toBe(false);
   });
 });

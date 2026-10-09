@@ -7,7 +7,7 @@ import { buildDisplayRows, renderSidebar, sidebarHitTest, SIDEBAR_WIDTH } from "
 import { theme } from "./theme";
 import { createInitialState } from "./state";
 import { clearPrompt } from "./promptstate";
-import type { ConversationSummary, FolderSummary, ProviderInfo } from "./messages";
+import { createPendingAI, type ConversationSummary, type FolderSummary, type ProviderInfo } from "./messages";
 import { setClipboardSystemForTest } from "./clipboard";
 
 const PNG_BYTES = Buffer.from(
@@ -632,7 +632,6 @@ function buildToolToggleState(showToolOutput: boolean) {
   state.cols = 80;
   state.layout.messageAreaHeight = 8;
   state.showToolOutput = showToolOutput;
-  state.toolOutputsLoaded = true;
   state.messages = [{
     role: "assistant",
     blocks: [
@@ -756,36 +755,54 @@ describe("tool output toggle scroll preservation", () => {
     expect(state.layout.totalLines).toBe(rendered.length);
   });
 
-  test("Ctrl+O requests tool outputs before expanding when historical outputs were omitted", () => {
+  test("Ctrl+O requests only omitted bodies around the viewport before expanding", () => {
     const state = createInitialState();
     state.convId = "conv-1";
-    state.toolOutputsLoaded = false;
-    state.toolOutputsLoading = false;
+    state.cols = 80;
     state.messages.push({
       role: "assistant",
-      blocks: [
-        { type: "tool_result", toolCallId: "visible-1", toolName: "bash", output: "", isError: false },
-        { type: "tool_result", toolCallId: "visible-2", toolName: "read", output: "", isError: false },
-      ],
+      blocks: Array.from({ length: 60 }, (_, i) => [
+        { type: "tool_call" as const, toolCallId: `call-${i}`, toolName: "bash", input: {}, summary: `echo ${i}` },
+        { type: "tool_result" as const, toolCallId: `call-${i}`, toolName: "bash", output: i === 58 ? "loaded" : "", isError: false },
+      ]).flat(),
       metadata: null,
     });
+    const rendered = buildMessageLines(state, state.cols);
+    state.historyLines = rendered.lines;
+    state.historyLineAnchors = rendered.lineAnchors;
+    state.layout.totalLines = rendered.lines.length;
+    state.layout.messageAreaHeight = 10;
+    expect(rendered.lines).toHaveLength(60);
 
     const result = handleFocusedKey({ type: "ctrl-o" }, state);
 
-    expect(result).toEqual({
-      type: "load_tool_outputs",
-      convId: "conv-1",
-      toolCallIds: ["visible-1", "visible-2"],
-    });
+    // Bottom-pinned rows 50-59 plus one viewport of margin; call-58 is loaded.
+    const expected = Array.from({ length: 20 }, (_, i) => `call-${40 + i}`).filter(id => id !== "call-58");
+    expect(result).toEqual({ type: "load_tool_outputs", toolCallIds: expected });
     expect(state.showToolOutput).toBe(false);
-    expect(state.toolOutputsLoading).toBe(true);
     expect(state.showToolOutputAfterLoad).toBe(true);
+
+    // A second press cancels the pending expansion instead of queueing another.
+    expect(handleFocusedKey({ type: "ctrl-o" }, state)).toEqual({ type: "handled" });
+    expect(state.showToolOutputAfterLoad).toBe(false);
+    expect(state.showToolOutput).toBe(false);
+  });
+
+  test("Ctrl+O expands immediately when the bodies in view are already loaded", () => {
+    const state = buildToolToggleState(false);
+    state.convId = "conv-1";
+    const rendered = buildMessageLines(state, state.cols);
+    state.historyLines = rendered.lines;
+    state.historyLineAnchors = rendered.lineAnchors;
+    state.layout.totalLines = rendered.lines.length;
+
+    expect(handleFocusedKey({ type: "ctrl-o" }, state)).toEqual({ type: "handled" });
+    expect(state.showToolOutput).toBe(true);
   });
 
   test("tool_outputs_loaded fills outputs and completes the deferred expand", () => {
     const state = buildToolToggleState(false);
     state.convId = "conv-1";
-    state.toolOutputsLoaded = false;
     state.toolOutputsLoading = true;
     state.showToolOutputAfterLoad = true;
     const assistant = state.messages[0];
@@ -803,7 +820,6 @@ describe("tool output toggle scroll preservation", () => {
     }, state, { unsubscribe() {}, subscribe() {}, sendMessage() {}, setSystemInstructions() {}, loadToolOutputs() {} });
 
     expect(state.showToolOutput).toBe(true);
-    expect(state.toolOutputsLoaded).toBe(true);
     expect(state.toolOutputsLoading).toBe(false);
     expect(state.showToolOutputAfterLoad).toBe(false);
     expect(topVisibleLine(state)).toBe("  after 28");
@@ -823,7 +839,53 @@ describe("tool output toggle scroll preservation", () => {
       outputs: [{ toolCallId: "old-call", output: "old output" }],
     }, state, { unsubscribe() {}, subscribe() {}, sendMessage() {}, setSystemInstructions() {}, loadToolOutputs() {} });
 
-    expect(state.toolOutputsLoaded).toBe(false);
+    expect(state.toolOutputsLoading).toBe(true);
+    expect(state.showToolOutputAfterLoad).toBe(true);
+    expect(state.showToolOutput).toBe(false);
+  });
+
+  test("a rejected fetch releases Ctrl+O instead of leaving it waiting forever", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.toolOutputsLoading = true;
+    state.toolOutputsRequestId = "tool_outputs_7";
+    state.showToolOutputAfterLoad = true;
+    const pendingAI = createPendingAI(Date.now(), state.model);
+    state.pendingAI = pendingAI;
+
+    handleEvent({
+      type: "error",
+      reqId: "tool_outputs_7",
+      convId: "conv-1",
+      message: "Could not load verified archive output: blob checksum mismatch",
+    }, state, { unsubscribe() {}, subscribe() {}, sendMessage() {}, setSystemInstructions() {}, loadToolOutputs() {} });
+
+    expect(state.toolOutputsLoading).toBe(false);
+    expect(state.toolOutputsRequestId).toBeNull();
+    expect(state.showToolOutputAfterLoad).toBe(false);
+    expect(state.showToolOutput).toBe(false);
+    // The failure belongs to the fetch, not to the turn awaiting its first block.
+    expect(state.pendingAI).toBe(pendingAI);
+  });
+
+  test("a superseded response fills bodies but leaves the newer request in flight", () => {
+    const state = buildToolToggleState(false);
+    state.convId = "conv-1";
+    state.toolOutputsLoading = true;
+    state.toolOutputsRequestId = "tool_outputs_9";
+    state.showToolOutputAfterLoad = true;
+    const assistant = state.messages[0];
+    if (assistant.role !== "assistant" || assistant.blocks[2].type !== "tool_result") throw new Error("expected tool result");
+    assistant.blocks[2].output = "";
+
+    handleEvent({
+      type: "tool_outputs_loaded",
+      reqId: "tool_outputs_8",
+      convId: "conv-1",
+      outputs: [{ toolCallId: "1", output: "stale but valid" }],
+    }, state, { unsubscribe() {}, subscribe() {}, sendMessage() {}, setSystemInstructions() {}, loadToolOutputs() {} });
+
+    expect(assistant.blocks[2].output).toBe("stale but valid");
     expect(state.toolOutputsLoading).toBe(true);
     expect(state.showToolOutputAfterLoad).toBe(true);
     expect(state.showToolOutput).toBe(false);

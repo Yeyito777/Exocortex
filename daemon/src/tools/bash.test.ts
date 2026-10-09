@@ -293,6 +293,32 @@ describe("bash process-tree timeout", () => {
 });
 
 describe("bash manual backgrounding", () => {
+  test("a user steer backgrounds a running command with a steer-specific notice", async () => {
+    let background: ((reason?: "manual" | "steer") => boolean) | null = null;
+
+    const promise = executeBashBackgroundable(
+      { command: "sleep 0.2", await: 60 },
+      undefined,
+      60_000,
+      {
+        toolCallId: "call-bash-steer",
+        registerBackgrounder: (backgrounder) => {
+          background = backgrounder?.background ?? null;
+        },
+      },
+    );
+
+    for (let i = 0; i < 20 && !background; i++) {
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+
+    expect(background!("steer")).toBe(true);
+    const result = await promise;
+    expect(result.isError).toBe(false);
+    expect(result.output).toContain("because the user sent a message; it is still running");
+    await new Promise(resolve => setTimeout(resolve, 300));
+  });
+
   test("registered backgrounder resolves a running command immediately", async () => {
     let background: (() => boolean) | null = null;
 

@@ -449,7 +449,8 @@ describe("streaming system-message tail", () => {
         blocks: [
           { type: "text", text: "planning" },
           { type: "tool_call", toolCallId: "call-1", toolName: "bash", input: { command: "pwd", timeout: 10000 }, summary: "$ pwd" },
-          { type: "tool_result", toolCallId: "call-1", output: "", isError: false },
+          // The body streamed live survives the compact reload; no refetch needed.
+          { type: "tool_result", toolCallId: "call-1", output: "/tmp", isError: false },
         ],
       },
     ]);

@@ -135,11 +135,14 @@ export interface DeferredChronoWaitResult {
 
 export type DeferredToolResult = DeferredChronoSleepResult | DeferredChronoWaitResult;
 
+/** Why a running tool call is moved to the background: an explicit request, or a user steer. */
+export type ActiveToolBackgroundReason = "manual" | "steer";
+
 export interface ActiveToolBackgrounder {
   toolName: string;
   toolCallId?: string;
   /** Return true when this call was backgrounded by this request. */
-  background(): boolean;
+  background(reason?: ActiveToolBackgroundReason): boolean;
 }
 
 // ── Display data (sent to TUI) ─────────────────────────────────────

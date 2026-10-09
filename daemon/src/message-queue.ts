@@ -123,6 +123,14 @@ export function getQueuedMessages(convId: string): QueuedMessage[] {
     .map(cloneEntry);
 }
 
+/**
+ * Whether a person queued next-turn input that should steer the active turn
+ * now. Automated next-turn entries (wakes, notifications) wait for a boundary.
+ */
+export function hasQueuedUserSteer(convId: string): boolean {
+  return getQueuedMessages(convId).some(entry => entry.timing === "next-turn" && !entry.automation);
+}
+
 export function suspendQueuedMessageDelivery(convId: string): void {
   deliverySuspended.add(convId);
 }

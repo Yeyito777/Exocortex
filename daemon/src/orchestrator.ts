@@ -51,6 +51,7 @@ import { BUFFERED_HISTORY_TURNS, buildHistoryUpdatedEvents, buildStoredHistoryUp
 import {
   RetryableStreamAbortController,
   StaleStreamRetriesExhaustedError,
+  StreamPreemptedError,
   runWithStaleStreamRetries,
 } from "./watchdog-retry";
 import {
@@ -121,6 +122,11 @@ function interleaveTranscriptMarkers(
 }
 
 const STREAMING_SNAPSHOT_INTERVAL_MS = 5_000;
+/**
+ * Back-to-back steer preemptions that deliver nothing (e.g. a drain racing a
+ * queue edit) before a turn stops preempting, so a stuck entry cannot spin it.
+ */
+const MAX_PREEMPTIONS_WITHOUT_DELIVERY = 3;
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -765,6 +771,31 @@ async function orchestrateAdmittedAssistantTurn(
   convStore.initStreamingState(convId);
   convStore.setStreamingCommittedMessageCount(convId, storedMessageCount(conv.messages));
 
+  // ── Instant steering ──────────────────────────────────────────────
+  // Queued user steering should reach the model now rather than at the next
+  // tool boundary. A steer preempts the provider request (or retry backoff)
+  // in flight; the agent loop keeps the partial reply, injects the steer and
+  // requests again. Tool output is never discarded: running tools are moved
+  // to the background when they can be, and are otherwise awaited.
+
+  /** Tool calls (including a provider's own, e.g. Claude Code's) awaiting results. */
+  const openToolCallIds = new Set<string>();
+  // A steer signaled during this turn that has not been delivered yet. Input
+  // queued before the turn started waits for a boundary, so the turn's own
+  // prompt is sampled first.
+  let steerRequested = false;
+  let preemptionsWithoutDelivery = 0;
+  const steerTurn = () => {
+    if (!convStore.hasQueuedUserSteer(convId)) return;
+    steerRequested = true;
+    if (openToolCallIds.size > 0) {
+      convStore.backgroundActiveTool(convId, "steer");
+      return;
+    }
+    ac.preemptAttempt();
+  };
+  convStore.setActiveSteerHandler(convId, steerTurn);
+
   // The app watchdog interrupts only the current provider invocation. Give each
   // retry a fresh child signal while preserving `ac.signal` as the terminal turn
   // signal used by user interrupts and daemon lifecycle operations.
@@ -774,14 +805,22 @@ async function orchestrateAdmittedAssistantTurn(
     model,
     callbacks,
     streamOptions = {},
-  ) => runWithStaleStreamRetries(
-    ac,
-    callbacks,
-    (attemptSignal) => (ext.streamMessageFn ?? streamMessage)(provider, messages, model, callbacks, {
-      ...streamOptions,
-      signal: attemptSignal,
-    }),
-  );
+  ) => {
+    // Steering that arrived while no request was running (pre-turn or
+    // mid-turn compaction, the end of a tool round) joins this request.
+    if (steerRequested && preemptionsWithoutDelivery < MAX_PREEMPTIONS_WITHOUT_DELIVERY
+        && convStore.hasQueuedUserSteer(convId)) {
+      throw new StreamPreemptedError();
+    }
+    return runWithStaleStreamRetries(
+      ac,
+      callbacks,
+      (attemptSignal) => (ext.streamMessageFn ?? streamMessage)(provider, messages, model, callbacks, {
+        ...streamOptions,
+        signal: attemptSignal,
+      }),
+    );
+  };
 
   // Broadcast sidebar update (streaming indicator)
   broadcastConversationUpdated(server, convId);
@@ -854,8 +893,13 @@ async function orchestrateAdmittedAssistantTurn(
     },
     onBackgroundTaskComplete: ext.onBackgroundTaskComplete,
     registerBackgrounder: (backgrounder) => {
-      if (backgrounder) convStore.setActiveToolBackgrounder(convId, backgrounder);
-      else convStore.clearActiveToolBackgrounder(convId);
+      if (!backgrounder) {
+        convStore.clearActiveToolBackgrounder(convId);
+        return;
+      }
+      convStore.setActiveToolBackgrounder(convId, backgrounder);
+      // A steer signaled before this tool started still should not wait for it.
+      if (steerRequested) queueMicrotask(steerTurn);
     },
   };
 
@@ -1263,6 +1307,7 @@ async function orchestrateAdmittedAssistantTurn(
     },
     onToolCall(block) {
       convStore.touchActivity(convId);
+      openToolCallIds.add(block.toolCallId);
       server.sendToSubscribers(convId, {
         type: "tool_call", convId,
         streamSeq: convStore.nextStreamSeq(convId),
@@ -1283,6 +1328,9 @@ async function orchestrateAdmittedAssistantTurn(
     },
     onToolResult(block) {
       convStore.touchActivity(convId);
+      // A steer deferred behind a provider-run tool can preempt once its round
+      // settles. Defer the check so the provider commits that round first.
+      if (openToolCallIds.delete(block.toolCallId) && openToolCallIds.size === 0) queueMicrotask(steerTurn);
       server.sendToSubscribers(convId, {
         type: "tool_result", convId,
         streamSeq: convStore.nextStreamSeq(convId),
@@ -1422,7 +1470,19 @@ async function orchestrateAdmittedAssistantTurn(
         });
       }
       if (sidebarBumped) broadcastConversationUpdated(server, convId);
+      steerRequested = convStore.hasQueuedUserSteer(convId);
+      preemptionsWithoutDelivery = 0;
       return apiMsgs;
+    },
+    takePreemptedOutput() {
+      preemptionsWithoutDelivery += 1;
+      // Same salvage rule as an interrupted stream, minus empty blocks: the
+      // result becomes a normal assistant message in provider replay.
+      const output = partialContent.filter(block => block.type === "thinking"
+        ? isPersistableThinkingBlock(block)
+        : block.type === "text" && block.text.length > 0);
+      partialContent.length = 0;
+      return output;
     },
     onRecoveryStateUpdate() {
       // The agent invokes this again after queued next-turn messages have been
@@ -1822,6 +1882,7 @@ async function orchestrateAdmittedAssistantTurn(
     const publishedStopReason: StreamingStopReason | undefined = streamChainContinues
       ? "handoff"
       : streamStopReason;
+    convStore.clearActiveSteerHandler(convId, steerTurn);
     convStore.clearActiveJob(convId);
     convStore.clearCurrentStreamingBlocks(convId);
     convStore.resetChunkCounter(convId);

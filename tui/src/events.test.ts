@@ -2,7 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { browserOpenCommand, handleEvent, type DaemonActions } from "./events";
 import { buildDiskSyncAssistantDiffPayload } from "./events/disk-sync-diagnostics";
 import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, createPendingAI, type ConversationSummary } from "./messages";
-import { createInitialState, isStreaming, canInterrupt } from "./state";
+import { createInitialState, isStreaming, canInterrupt, type RenderState } from "./state";
+import { buildMessageLines } from "./conversation";
+import { getViewStartFor } from "./chatscroll";
+import { requestVisibleToolOutputs } from "./events/tool-outputs";
 import { prepareConversationOpen } from "./conversationscroll";
 import type { Event } from "./protocol";
 import { createGenerationThroughput, generationTokensPerSecond } from "@exocortex/shared/generation-throughput";
@@ -14,6 +17,15 @@ const daemon: DaemonActions = {
   setSystemInstructions() {},
   loadToolOutputs() {},
 };
+
+/** Mirror a presented frame: the viewport loader reads the last rendered rows. */
+function presentHistory(state: RenderState, messageAreaHeight = 40): void {
+  const rendered = buildMessageLines(state, state.cols);
+  state.historyLines = rendered.lines;
+  state.historyLineAnchors = rendered.lineAnchors;
+  state.layout.totalLines = rendered.lines.length;
+  state.layout.messageAreaHeight = messageAreaHeight;
+}
 
 describe("generation throughput events", () => {
   test("hydrates, updates, and preserves round samples through completion", () => {
@@ -854,7 +866,7 @@ describe("paged conversation history events", () => {
     expect(state.conversationScroll.pendingRestore?.waitForInitialBackfill).toBe(false);
   });
 
-  test("loads only newly prepended tool outputs while output is expanded", () => {
+  test("fetches only the omitted body of a prepended page while expanded", () => {
     const requests: Array<{ convId: string; toolCallIds?: string[] }> = [];
     const localDaemon: DaemonActions = {
       ...daemon,
@@ -863,7 +875,6 @@ describe("paged conversation history events", () => {
     const state = createInitialState();
     state.convId = "conv-1";
     state.showToolOutput = true;
-    state.toolOutputsLoaded = true;
     state.messages = [{
       role: "assistant",
       blocks: [{ type: "tool_result", toolCallId: "newer-call", toolName: "bash", output: "already loaded", isError: false }],
@@ -892,9 +903,15 @@ describe("paged conversation history events", () => {
       hasOlderHistory: false,
     }, state, localDaemon);
 
+    expect(requests).toEqual([]);
+    presentHistory(state);
+    requestVisibleToolOutputs(state, localDaemon);
     expect(requests).toEqual([{ convId: "conv-1", toolCallIds: ["older-call"] }]);
-    expect(state.toolOutputsLoaded).toBe(false);
     expect(state.toolOutputsLoading).toBe(true);
+
+    // The in-flight request gates the per-frame loader.
+    requestVisibleToolOutputs(state, localDaemon);
+    expect(requests).toHaveLength(1);
   });
 
   test("keeps already-loaded older entries across a non-destructive canonical update", () => {
@@ -1299,7 +1316,6 @@ describe("disk sync assistant diagnostics", () => {
     const state = createInitialState();
     state.convId = "conv-1";
     state.showToolOutput = true;
-    state.toolOutputsLoaded = true;
     state.messages.push({
       role: "assistant",
       blocks: [
@@ -1329,7 +1345,6 @@ describe("disk sync assistant diagnostics", () => {
     }, state, daemon);
 
     expect(state.showToolOutput).toBe(true);
-    expect(state.toolOutputsLoaded).toBe(true);
     expect(state.messages[0]).toMatchObject({
       role: "assistant",
       blocks: [
@@ -1339,7 +1354,7 @@ describe("disk sync assistant diagnostics", () => {
     });
   });
 
-  test("loads a tool result introduced by a compact same-conversation load while expanded", () => {
+  test("fetches only the result a compact same-conversation load introduced", () => {
     const loadRequests: string[][] = [];
     const localDaemon: DaemonActions = {
       ...daemon,
@@ -1348,7 +1363,6 @@ describe("disk sync assistant diagnostics", () => {
     const state = createInitialState();
     state.convId = "conv-1";
     state.showToolOutput = true;
-    state.toolOutputsLoaded = true;
     state.messages.push({
       role: "assistant",
       blocks: [
@@ -1380,9 +1394,70 @@ describe("disk sync assistant diagnostics", () => {
     }, state, localDaemon);
 
     expect(state.showToolOutput).toBe(true);
-    expect(state.toolOutputsLoaded).toBe(false);
-    expect(state.toolOutputsLoading).toBe(true);
-    expect(loadRequests).toEqual([["call-1", "sleep-1"]]);
+    expect(loadRequests).toEqual([]);
+    presentHistory(state);
+    requestVisibleToolOutputs(state, localDaemon);
+    expect(loadRequests).toEqual([["sleep-1"]]);
+  });
+
+  test("does not re-request a body that loaded empty on every frame", () => {
+    const requests: string[][] = [];
+    const localDaemon: DaemonActions = {
+      ...daemon,
+      loadToolOutputs(_convId, toolCallIds) { requests.push(toolCallIds ?? []); return `req-${requests.length}`; },
+    };
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.showToolOutput = true;
+    state.messages.push({
+      role: "assistant",
+      blocks: [
+        { type: "tool_call", toolCallId: "quiet", toolName: "bash", input: {}, summary: "$ true" },
+        { type: "tool_result", toolCallId: "quiet", toolName: "", output: "", isError: false },
+      ],
+      metadata: null,
+    });
+    presentHistory(state);
+    requestVisibleToolOutputs(state, localDaemon);
+    expect(requests).toEqual([["quiet"]]);
+
+    handleEvent({ type: "tool_outputs_loaded", reqId: "req-1", convId: "conv-1", outputs: [{ toolCallId: "quiet", output: "" }] }, state, localDaemon);
+    presentHistory(state);
+    requestVisibleToolOutputs(state, localDaemon);
+    requestVisibleToolOutputs(state, localDaemon);
+
+    expect(requests).toEqual([["quiet"]]);
+    expect(state.toolOutputsLoading).toBe(false);
+  });
+
+  test("keeps an expanded, scrolled viewport on the same output row across a compact history update", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.cols = 80;
+    state.showToolOutput = true;
+    state.layout.messageAreaHeight = 8;
+    const blocks = (output: string) => [
+      { type: "tool_call" as const, toolCallId: "call-1", toolName: "bash", input: {}, summary: "$ make" },
+      { type: "tool_result" as const, toolCallId: "call-1", toolName: "bash", output, isError: false },
+      { type: "text" as const, text: Array.from({ length: 30 }, (_, i) => `after ${i + 1}`).join("\n") },
+    ];
+    state.messages.push({ role: "assistant", blocks: blocks(Array.from({ length: 30 }, (_, i) => `out ${i + 1}`).join("\n")), metadata: null });
+    state.scrollOffset = 40;
+    const topVisibleLine = () => {
+      const lines = buildMessageLines(state, state.cols).lines.map(line => line.replace(/\x1b\[[0-9;]*m/g, ""));
+      return lines[getViewStartFor(lines.length, state.layout.messageAreaHeight, state.scrollOffset)];
+    };
+    expect(topVisibleLine()).toBe("    out 13");
+
+    handleEvent({
+      type: "history_updated",
+      convId: "conv-1",
+      entries: [{ type: "ai", blocks: blocks(""), metadata: null }],
+      contextTokens: null,
+      toolOutputsIncluded: false,
+    }, state, daemon);
+
+    expect(topVisibleLine()).toBe("    out 13");
   });
 
   test("preserves expanded tool output across a compact history update", () => {
@@ -1394,7 +1469,6 @@ describe("disk sync assistant diagnostics", () => {
     const state = createInitialState();
     state.convId = "conv-1";
     state.showToolOutput = true;
-    state.toolOutputsLoaded = true;
     state.messages.push({
       role: "assistant",
       blocks: [
@@ -1420,7 +1494,8 @@ describe("disk sync assistant diagnostics", () => {
     }, state, localDaemon);
 
     expect(state.showToolOutput).toBe(true);
-    expect(state.toolOutputsLoaded).toBe(true);
+    presentHistory(state);
+    requestVisibleToolOutputs(state, localDaemon);
     expect(loadToolOutputsCalls).toBe(0);
     expect(state.messages[0]).toMatchObject({
       role: "assistant",
@@ -1431,7 +1506,7 @@ describe("disk sync assistant diagnostics", () => {
     });
   });
 
-  test("loads a newly introduced deferred-sleep result after a compact history update", () => {
+  test("fetches only a newly introduced deferred-sleep result after a compact history update", () => {
     const loadRequests: string[][] = [];
     const localDaemon: DaemonActions = {
       ...daemon,
@@ -1440,7 +1515,6 @@ describe("disk sync assistant diagnostics", () => {
     const state = createInitialState();
     state.convId = "conv-1";
     state.showToolOutput = true;
-    state.toolOutputsLoaded = true;
     state.messages.push({
       role: "assistant",
       blocks: [
@@ -1469,20 +1543,20 @@ describe("disk sync assistant diagnostics", () => {
     }, state, localDaemon);
 
     expect(state.showToolOutput).toBe(true);
-    expect(state.toolOutputsLoaded).toBe(false);
+    presentHistory(state);
+    requestVisibleToolOutputs(state, localDaemon);
     expect(state.toolOutputsLoading).toBe(true);
-    expect(loadRequests).toEqual([["call-1", "sleep-1"]]);
+    expect(loadRequests).toEqual([["sleep-1"]]);
 
     handleEvent({
       type: "tool_outputs_loaded",
       convId: "conv-1",
       outputs: [
-        { toolCallId: "call-1", output: "full output" },
         { toolCallId: "sleep-1", output: "Sleep interrupted after 9s because the user sent a message (requested 1h)." },
       ],
     }, state, localDaemon);
 
-    expect(state.toolOutputsLoaded).toBe(true);
+    expect(state.toolOutputsLoading).toBe(false);
     expect(state.messages[0]).toMatchObject({
       role: "assistant",
       blocks: [
@@ -1532,6 +1606,36 @@ describe("disk sync assistant diagnostics", () => {
         disk: { type: "tool_result", outputChars: 0, outputPreview: "" },
       },
     });
+  });
+});
+
+describe("instant steering display", () => {
+  test("keeps the preempted partial reply above the steer without duplicating it on completion", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    const event = (value: Record<string, unknown>) => handleEvent({ convId: "conv-1", ...value } as Event, state, daemon);
+    event({ type: "streaming_started", provider: "openai", model: "gpt-5.5", startedAt: 1_000, snapshotKind: "start" });
+    // A reasoning summary can open without ever producing text.
+    event({ type: "block_start", blockType: "thinking" });
+    event({ type: "block_start", blockType: "text" });
+    event({ type: "text_chunk", text: "I'll draw a cozy cat" });
+    event({ type: "user_message", text: "3 ducks!", startedAt: 2_000, queueId: "steer-1" });
+    event({ type: "block_start", blockType: "text" });
+    event({ type: "text_chunk", text: "Three ducks it is!" });
+    event({
+      type: "message_complete",
+      blocks: [{ type: "text", text: "I'll draw a cozy cat" }, { type: "text", text: "Three ducks it is!" }],
+      endedAt: 3_000,
+      tokens: 5,
+    });
+
+    expect(state.messages.map(message => message.role === "assistant"
+      ? message.blocks.filter(block => block.type === "text").map(block => block.type === "text" ? block.text : "")
+      : message.text)).toEqual([
+      ["I'll draw a cozy cat"],
+      "3 ducks!",
+      ["Three ducks it is!"],
+    ]);
   });
 });
 

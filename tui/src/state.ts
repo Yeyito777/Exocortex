@@ -286,10 +286,12 @@ export interface RenderState {
   hideSensitiveInfo: boolean;
   /** Whether output-token counts are shown in AI metadata. TUI-only /diagnostics. */
   showDiagnostics: boolean;
-  /** Whether the active conversation currently has historical tool outputs loaded. */
-  toolOutputsLoaded: boolean;
   /** Whether a tool-output fetch is currently in flight for the active conversation. */
   toolOutputsLoading: boolean;
+  /** Daemon reqId of the newest in-flight tool-output fetch (null when unknown or idle). */
+  toolOutputsRequestId: string | null;
+  /** Tool results already requested for this transcript; automatic fetches never repeat them. */
+  requestedToolOutputIds: Set<string>;
   /** Whether Ctrl+O should auto-expand once the in-flight tool-output fetch completes. */
   showToolOutputAfterLoad: boolean;
   /** Cursor position in chat history (active when chatFocus === "history"). */
@@ -387,30 +389,18 @@ export function resetHistoryPagination(state: RenderState): void {
 /** Fully reset historical tool-output state (used when clearing/switching chats). */
 export function resetToolOutputState(state: RenderState): void {
   state.showToolOutput = false;
-  state.toolOutputsLoaded = false;
-  state.toolOutputsLoading = false;
-  state.showToolOutputAfterLoad = false;
+  clearToolOutputRequests(state);
 }
 
 /**
- * Apply the daemon's historical tool-output availability for a freshly loaded
- * conversation. Compact loads always start collapsed; full loads preserve the
- * ability to expand immediately.
+ * Forget fetch bookkeeping when a transcript is reloaded. An in-flight reply may
+ * never arrive (reconnects), and loaded bodies are carried over separately.
  */
-export function setLoadedConversationToolOutputState(state: RenderState, included: boolean): void {
-  state.toolOutputsLoaded = included;
+export function clearToolOutputRequests(state: RenderState): void {
   state.toolOutputsLoading = false;
+  state.toolOutputsRequestId = null;
+  state.requestedToolOutputIds.clear();
   state.showToolOutputAfterLoad = false;
-  if (!included) state.showToolOutput = false;
-}
-
-/**
- * Apply updated historical tool-output availability for the current
- * conversation without overriding the user's current expansion preference.
- */
-export function setCurrentConversationToolOutputAvailability(state: RenderState, included: boolean): void {
-  state.toolOutputsLoaded = included;
-  state.toolOutputsLoading = false;
 }
 
 /** Semantic system-notice colors accepted by TUI call sites and daemon events. */
@@ -689,8 +679,9 @@ export function createInitialState(): RenderState {
 	    showToolOutput: false,
 	    hideSensitiveInfo,
 	    showDiagnostics: loadDiagnosticsPreference(),
-	    toolOutputsLoaded: false,
     toolOutputsLoading: false,
+    toolOutputsRequestId: null,
+    requestedToolOutputIds: new Set(),
     showToolOutputAfterLoad: false,
     historyCursor: createHistoryCursor(),
     historyCurswant: null,

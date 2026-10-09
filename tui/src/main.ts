@@ -19,6 +19,7 @@ import { clearPrompt } from "./promptstate";
 import { tryCommand } from "./commands";
 import { expandMacros, macroEnvironmentForState } from "./macros";
 import { applyInlineCommands, type InlineCommandApplication } from "./inlineeffort";
+import { resolveSlashShorthands } from "./slashsearch";
 import { advanceDeferredHistoryRender, hasDeferredHistoryRenderWork, render, invalidateHistoryRenderCache } from "./render";
 import { preserveViewportAcrossResize } from "./chatscroll";
 import { invalidateFrame } from "./frame";
@@ -60,6 +61,7 @@ import { stripStartupLaunchEcho } from "./startupinput";
 import { focusedConversationTasks, msUntilTaskPanelEntryUpdate } from "./activitypanel";
 import { hasInProgressModelWork } from "./taskvisibility";
 import { beginOlderHistoryLoad, INITIAL_BUFFER_ADDITIONAL_TURNS, OLDER_HISTORY_PAGE_TURNS, shouldLoadOlderHistory } from "./historypagination";
+import { requestToolOutputs, requestVisibleToolOutputs } from "./events/tool-outputs";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
 import { log } from "./log";
 import { ConversationPrewarmer } from "./prewarm";
@@ -285,6 +287,7 @@ function performRender(): number {
       showToolOutput: state.showToolOutput,
     })}`);
   }
+  requestVisibleToolOutputs(state, daemon);
   resetStreamTick();
   maybeReportStartupProfile(renderMs);
   scheduleDeferredHistoryRenderWork();
@@ -813,6 +816,9 @@ function handleSubmit(): void {
   }
 
   if (!text && !hasImages) return;
+
+  // Expand slash shorthands such as "/model opus" before command and inline parsing.
+  text = resolveSlashShorthands(state, text);
 
   // Do not race a newly edited message against the daemon's durable unwind.
   // The prompt remains editable and intact; the canonical response normally
@@ -1593,7 +1599,7 @@ function handleKey(key: KeyEvent): void {
       daemon.loadFolderInstructions(result.folderId);
       break;
     case "load_tool_outputs":
-      daemon.loadToolOutputs(result.convId, result.toolCallIds);
+      requestToolOutputs(state, daemon, result.toolCallIds);
       break;
     case "new_conversation":
       startNewConversation();

@@ -10,7 +10,7 @@
  */
 
 import type { Block, GenerationThroughput } from "./messages";
-import type { ActiveToolBackgrounder } from "./tools/types";
+import type { ActiveToolBackgrounder, ActiveToolBackgroundReason } from "./tools/types";
 
 // ── State ───────────────────────────────────────────────────────────
 
@@ -48,6 +48,8 @@ const lastActivityAt = new Map<string, number>();
 const pausedStreams = new Set<string>();
 /** Currently executing tool call that can be manually backgrounded by the user. */
 const activeToolBackgrounders = new Map<string, ActiveToolBackgrounder>();
+/** Active turn's reaction to newly queued user steering (instant steering). */
+const activeSteerHandlers = new Map<string, () => void>();
 interface PendingHistoryUnwind {
   operationId: string;
   controller: AbortController | null;
@@ -209,10 +211,28 @@ export function clearActiveToolBackgrounder(convId: string, backgrounder?: Activ
   activeToolBackgrounders.delete(convId);
 }
 
-export function backgroundActiveTool(convId: string): BackgroundActiveToolResult {
+export function backgroundActiveTool(
+  convId: string,
+  reason: ActiveToolBackgroundReason = "manual",
+): BackgroundActiveToolResult {
   const backgrounder = activeToolBackgrounders.get(convId);
   if (!backgrounder) return "none";
-  return backgrounder.background() ? "backgrounded" : "already-settled";
+  return backgrounder.background(reason) ? "backgrounded" : "already-settled";
+}
+
+// ── Instant steering ─────────────────────────────────────────────────
+
+export function setActiveSteerHandler(convId: string, handler: () => void): void {
+  activeSteerHandlers.set(convId, handler);
+}
+
+export function clearActiveSteerHandler(convId: string, handler: () => void): void {
+  if (activeSteerHandlers.get(convId) === handler) activeSteerHandlers.delete(convId);
+}
+
+/** Let the active turn yield to user steering that was just queued for it. */
+export function steerActiveTurn(convId: string): void {
+  activeSteerHandlers.get(convId)?.();
 }
 
 export function getStreamingStartedAt(convId: string): number | undefined {

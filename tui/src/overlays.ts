@@ -124,7 +124,7 @@ export function renderQueuePromptOverlay(
   const titleLine = "Queue message:";
   const msgLine = `"${previewLabel}"`;
   const optLine1 = `${qp.selection === "message-end" ? "▸ " : "  "}message end`;
-  const optLine2 = `${qp.selection === "next-turn" ? "▸ " : "  "}next turn`;
+  const optLine2 = `${qp.selection === "next-turn" ? "▸ " : "  "}steer now`;
   const rawLines = [titleLine, msgLine, ...imageBadges, "", optLine1, optLine2];
   const innerWidth = Math.min(
     Math.max(...rawLines.map((line) => termWidth(line))) + 4,
@@ -133,7 +133,7 @@ export function renderQueuePromptOverlay(
 
   // Indices of the two option lines (always the last two)
   const opt1Idx = rawLines.length - 2; // "message end"
-  const opt2Idx = rawLines.length - 1; // "next turn"
+  const opt2Idx = rawLines.length - 1; // "steer now"
 
   // Build styled lines
   const styledLines: BoxOverlayLine[] = rawLines.map((line, i) => {

@@ -2664,6 +2664,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           });
         } else {
           convStore.pushQueuedMessage(cmd.convId, cmd.text, cmd.timing, cmd.images, undefined, undefined, queueId);
+          // Instant steering: a next-turn prompt preempts the active turn now.
+          if (cmd.timing === "next-turn") convStore.steerActiveTurn(cmd.convId);
         }
         if (queuedDraftSettings) {
           const { provider, model, effort, fastMode, folderId } = queuedDraftSettings;
@@ -2722,6 +2724,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         const ok = !!existing && convStore.updateQueuedMessage(cmd.queueId, cmd.text, cmd.timing, cmd.images);
         if (ok) server.sendTo(client, { type: "ack", reqId: cmd.reqId });
         else server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Queued message ${cmd.queueId} not found` });
+        if (ok && cmd.timing === "next-turn") convStore.steerActiveTurn(existing.convId);
         break;
       }
 

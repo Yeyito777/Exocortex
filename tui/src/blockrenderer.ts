@@ -36,6 +36,7 @@ interface BlockCacheEntry {
 }
 
 const blockRenderCache = new WeakMap<Block, BlockCacheEntry>();
+const HIDDEN_TOOL_RESULT: WrapResult = { lines: [], cont: [], join: [], copy: [], links: [] };
 const rehydratedBlockRenderCache = new RehydratedRenderCache<BlockCacheEntry>();
 
 function wrapResultBytes(result: WrapResult): number {
@@ -108,6 +109,8 @@ export function renderBlockCached(
   showToolOutput: boolean,
   toolCallErrored = false,
 ): WrapResult {
+  // Hidden results render nothing; do not key a cache on a possibly huge body.
+  if (block.type === "tool_result" && !showToolOutput) return HIDDEN_TOOL_RESULT;
   const contentKey = blockContentKey(block);
   const rehydratedKey = `${block.type}:${contentKey}`;
   const cached = blockRenderCache.get(block) ?? rehydratedBlockRenderCache.get(rehydratedKey);
@@ -157,7 +160,9 @@ function renderBlock(
 
   switch (block.type) {
     case "thinking": {
-      const text = sanitizeUntrustedText(block.text);
+      // Claude ends each thinking block with "\n\n"; edge newlines would render
+      // as blank rows before the next block.
+      const text = sanitizeUntrustedText(block.text).replace(/^\n+|\n+$/g, "");
       if (!text.trim()) break;
       const w = wordWrap(text, contentWidth);
       for (let i = 0; i < w.lines.length; i++) {

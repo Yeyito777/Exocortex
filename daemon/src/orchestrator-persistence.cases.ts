@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { appendMessages, clearGoal, clearHistoryUnwindPending, clearStreamHandoff, create, get, getActiveJob, getQueuedMessages, getSummary, isStreaming, isUnread, pin, pushQueuedMessage, remove, requestHistoryUnwind, setGoal, updateGoalStatus } from "./conversations";
+import { appendMessages, clearActiveToolBackgrounder, clearGoal, clearHistoryUnwindPending, clearStreamHandoff, create, get, getActiveJob, getQueuedMessages, getSummary, isStreaming, isUnread, pin, pushQueuedMessage, remove, requestHistoryUnwind, setActiveToolBackgrounder, setGoal, steerActiveTurn, updateGoalStatus } from "./conversations";
 import { load as loadPersisted } from "./persistence";
 import { orchestrateCompactConversation, orchestrateGoalCycle, orchestrateReplayConversation, orchestrateSendMessage, type OrchestrationCallbacks } from "./orchestrator";
 import { streamMessage } from "./api";
@@ -252,6 +252,173 @@ describe("human-only sidebar bumps", () => {
       });
     }
   }
+});
+
+describe("instant steering", () => {
+  const finalAnswer = (text: string) => ({
+    text, thinking: "", stopReason: "stop" as const,
+    blocks: [{ type: "text" as const, text }], toolCalls: [], inputTokens: 10, outputTokens: 2,
+  });
+
+  function waitForAbort(signal: AbortSignal | undefined): Promise<never> {
+    return new Promise((_, reject) => {
+      const rejectAbort = () => reject(new DOMException("The operation was aborted", "AbortError"));
+      if (signal?.aborted) rejectAbort();
+      else signal?.addEventListener("abort", rejectAbort, { once: true });
+    });
+  }
+
+  test("a user steer preempts the live response and is answered in the same turn", async () => {
+    const convId = id("steer-preempts");
+    create(convId, "openai", "gpt-5.6-sol");
+    const events: Array<Record<string, unknown>> = [];
+    const requests: Array<Array<{ role: string; content: unknown }>> = [];
+    const fakeStream = (async (_provider, messages, _model, streamCallbacks, options) => {
+      requests.push(messages.map(message => ({ role: message.role, content: message.content })));
+      if (requests.length > 1) return finalAnswer("Three ducks it is!");
+      streamCallbacks.onBlockStart?.("text");
+      streamCallbacks.onText("I'll draw a cozy cat");
+      pushQueuedMessage(convId, "3 ducks!", "next-turn", undefined, undefined, undefined, "steer-ducks");
+      steerActiveTurn(convId);
+      expect(options?.signal?.aborted).toBe(true);
+      return waitForAbort(options?.signal);
+    }) as typeof streamMessage;
+
+    const outcome = await orchestrateSendMessage(
+      server(events) as never, null, undefined, convId, "draw a cat", Date.now(), callbacks(fakeStream),
+    );
+
+    expect(outcome.ok).toBe(true);
+    expect(requests).toHaveLength(2);
+    expect(requests[1]).toEqual([
+      { role: "user", content: "draw a cat" },
+      { role: "assistant", content: [{ type: "text", text: "I'll draw a cozy cat" }] },
+      { role: "user", content: "3 ducks!" },
+    ]);
+    const persisted = loadPersisted(convId)!.messages;
+    expect(persisted.map(message => message.role)).toEqual(["user", "assistant", "user", "assistant"]);
+    expect(persisted[2]?.metadata?.queueEntryId).toBe("steer-ducks");
+    expect(persisted[3]?.content).toEqual([{ type: "text", text: "Three ducks it is!" }]);
+    expect(getQueuedMessages(convId)).toEqual([]);
+    expect(events).toContainEqual(expect.objectContaining({ type: "user_message", queueId: "steer-ducks" }));
+    expect(events.some(event => event.type === "stream_retry" || event.type === "system_message")).toBe(false);
+  });
+
+  test("automated next-turn input waits for the tool boundary", async () => {
+    const convId = id("steer-automation");
+    create(convId, "openai", "gpt-5.6-sol");
+    const requests: unknown[][] = [];
+    const fakeStream = (async (_provider, messages, _model, _streamCallbacks, options) => {
+      requests.push(messages.map(message => message.content));
+      if (requests.length > 1) return finalAnswer("done");
+      pushQueuedMessage(convId, "wake up", "next-turn", undefined, undefined, undefined, undefined, undefined,
+        { kind: "chrono_wake", sourceId: "chrono:steer-test" });
+      steerActiveTurn(convId);
+      expect(options?.signal?.aborted).toBe(false);
+      return {
+        text: "", thinking: "", stopReason: "tool_use" as const, blocks: [],
+        toolCalls: [{ id: "steer-automation-read", name: "read", input: { file_path: "/etc/hosts" } }],
+      };
+    }) as typeof streamMessage;
+
+    const outcome = await orchestrateSendMessage(
+      server() as never, null, undefined, convId, "inspect", Date.now(), callbacks(fakeStream),
+    );
+
+    expect(outcome.ok).toBe(true);
+    expect(requests).toHaveLength(2);
+    expect(requests[1]?.at(-1)).toBe("wake up");
+    expect(loadPersisted(convId)!.messages.map(message => message.role)).toEqual([
+      "user", "assistant", "user", "user", "assistant",
+    ]);
+  });
+
+  test("a steer backgrounds a running tool and preempts only after provider-run tools settle", async () => {
+    const convId = id("steer-provider-tool");
+    create(convId, "openai", "gpt-5.6-sol");
+    const backgroundReasons: unknown[] = [];
+    let requests = 0;
+    const fakeStream = (async (_provider, messages, _model, streamCallbacks, options) => {
+      requests += 1;
+      if (requests > 1) {
+        expect(messages.at(-1)?.content).toBe("use the staging config");
+        return finalAnswer("switched to staging");
+      }
+      // A provider that runs its own tools (Claude Code) reports them live.
+      streamCallbacks.onToolCall?.({ type: "tool_call", toolCallId: "provider-bash", toolName: "bash", input: {}, summary: "deploy" });
+      setActiveToolBackgrounder(convId, {
+        toolName: "bash",
+        background: (reason) => { backgroundReasons.push(reason); return true; },
+      });
+      pushQueuedMessage(convId, "use the staging config", "next-turn");
+      steerActiveTurn(convId);
+      expect(backgroundReasons).toEqual(["steer"]);
+      expect(options?.signal?.aborted).toBe(false);
+      clearActiveToolBackgrounder(convId);
+      streamCallbacks.onToolResult?.({ type: "tool_result", toolCallId: "provider-bash", toolName: "bash", output: "deployed", isError: false });
+      expect(options?.signal?.aborted).toBe(false);
+      return waitForAbort(options?.signal);
+    }) as typeof streamMessage;
+
+    const outcome = await orchestrateSendMessage(
+      server() as never, null, undefined, convId, "deploy it", Date.now(), callbacks(fakeStream),
+    );
+
+    expect(outcome.ok).toBe(true);
+    expect(requests).toBe(2);
+    expect(getQueuedMessages(convId)).toEqual([]);
+  });
+
+  test("a steer that arrives before the request is sent joins it without a wasted request", async () => {
+    const convId = id("steer-before-request");
+    create(convId, "openai", "gpt-5.6-sol");
+    const daemonServer = server();
+    const sendToSubscribers = daemonServer.sendToSubscribers;
+    daemonServer.sendToSubscribers = (target, event) => {
+      sendToSubscribers(target, event);
+      // No provider request is running yet, as during pre-turn compaction.
+      if (event.type === "streaming_started" && event.snapshotKind === "start") {
+        pushQueuedMessage(convId, "and keep it short", "next-turn", undefined, undefined, undefined, "steer-early");
+        steerActiveTurn(convId);
+      }
+    };
+    const requests: unknown[][] = [];
+    const fakeStream = (async (_provider, messages) => {
+      requests.push(messages.map(message => message.content));
+      return finalAnswer("short answer");
+    }) as typeof streamMessage;
+
+    const outcome = await orchestrateSendMessage(
+      daemonServer as never, null, undefined, convId, "explain it", Date.now(), callbacks(fakeStream),
+    );
+
+    expect(outcome.ok).toBe(true);
+    expect(requests).toEqual([["explain it", "and keep it short"]]);
+    expect(loadPersisted(convId)!.messages.map(message => message.role)).toEqual(["user", "user", "assistant"]);
+  });
+
+  test("input queued before the turn started waits so the turn's own prompt is sampled first", async () => {
+    const convId = id("steer-queued-earlier");
+    create(convId, "openai", "gpt-5.6-sol");
+    pushQueuedMessage(convId, "queued earlier", "next-turn", undefined, undefined, undefined, "steer-earlier");
+    const requests: unknown[][] = [];
+    const fakeStream = (async (_provider, messages) => {
+      requests.push(messages.map(message => message.content));
+      if (requests.length > 1) return finalAnswer("done");
+      return {
+        text: "", thinking: "", stopReason: "tool_use" as const, blocks: [],
+        toolCalls: [{ id: "steer-earlier-read", name: "read", input: { file_path: "/etc/hosts" } }],
+      };
+    }) as typeof streamMessage;
+
+    const outcome = await orchestrateSendMessage(
+      server() as never, null, undefined, convId, "own prompt", Date.now(), callbacks(fakeStream),
+    );
+
+    expect(outcome.ok).toBe(true);
+    expect(requests[0]).toEqual(["own prompt"]);
+    expect(requests[1]?.at(-1)).toBe("queued earlier");
+  });
 });
 
 describe("DB-first orchestrator persistence", () => {
