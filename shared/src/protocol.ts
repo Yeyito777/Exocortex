@@ -124,8 +124,8 @@ export interface NewConversationCommand {
   subagent?: boolean;
   /** Optional goal to set immediately after creating the conversation. */
   goalObjective?: string;
-  /** Optional automatic continuation turn budget. */
-  goalMaxTurns?: number;
+  /** Optional goal active-time limit in milliseconds. */
+  goalMaxTimeMs?: number;
   /** Start a realtime call owned by the new conversation immediately after creation. */
   startCall?: boolean;
   /** Optional explicit voice for the initial realtime call. */
@@ -440,7 +440,8 @@ export interface SetGoalCommand {
   convId: string;
   action: GoalAction;
   objective?: string;
-  maxTurns?: number;
+  /** Optional active-time limit in milliseconds for `set`. */
+  maxTimeMs?: number;
 }
 
 export type TrimMode = "messages" | "thinking" | "toolresults";

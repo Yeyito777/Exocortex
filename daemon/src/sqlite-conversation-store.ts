@@ -1,5 +1,5 @@
 import { Database, type SQLQueryBindings } from "bun:sqlite";
-import { normalizeConversationGoal } from "@exocortex/shared/goals";
+import { applyGoalStatus, normalizeConversationGoal } from "@exocortex/shared/goals";
 import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
@@ -1966,12 +1966,7 @@ export class SqliteConversationStore implements ConversationRepository {
     const row = this.row(id);
     const goal = row ? normalizeConversationGoal(parseOptional(row.goal_json)) : null;
     if (!goal) return null;
-    goal.status = status;
-    goal.reason = reason?.trim() || undefined;
-    delete goal.pausedBy;
-    delete goal.pauseReason;
-    if (status === "active") goal.emptyTurns = 0;
-    goal.updatedAt = Date.now();
+    applyGoalStatus(goal, status, reason);
     this.db.query("UPDATE conversations SET goal_json=?, storage_generation=storage_generation+1 WHERE id=? AND deleted_at IS NULL")
       .run(JSON.stringify(goal), id);
     return goal;

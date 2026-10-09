@@ -2,8 +2,10 @@
  * Exocortex tools offered to Claude Code as an in-process MCP server.
  *
  * Claude Code sees them as `mcp__exocortex__<name>`. Calls run through the
- * turn's own Exocortex tool executor, so they keep the conversation context,
- * safety checks and Tasks UI entries they get under other providers.
+ * Exocortex tool executor of the turn showing them, so they keep the
+ * conversation context, safety checks and Tasks UI entries they get under
+ * other providers. A Claude Code process can outlive a turn (see session.ts),
+ * so the executor is looked up per call.
  */
 
 import { randomUUID } from "node:crypto";
@@ -22,6 +24,12 @@ const INSTRUCTIONS = [
   "Sleeps and waits run inside the call for at most five minutes; for longer delays, schedule a wake with a message and end your turn.",
 ].join(" ");
 
+/** The Exocortex turn a host tool call runs under. */
+export interface HostToolBinding {
+  execute: ToolExecutor;
+  signal?: AbortSignal;
+}
+
 interface ToolDef {
   name: string;
   description: string;
@@ -37,14 +45,13 @@ function textResult(text: string, isError: boolean): CallToolResult {
   return { content: [{ type: "text", text }], isError };
 }
 
-/** MCP server for the host tools in this turn's Exocortex tool surface, or null if there are none. */
+/** MCP server for the host tools in the Exocortex tool surface, or null if there are none. */
 export function createHostToolServer(
   tools: unknown[] | undefined,
-  execute: ToolExecutor | undefined,
-  signal: AbortSignal | undefined,
+  binding: (() => Promise<HostToolBinding>) | null,
 ): McpSdkServerConfigWithInstance | null {
   const defs = (tools ?? []).filter(isToolDef).filter(def => isClaudeCodeHostTool(def.name));
-  if (!execute || defs.length === 0) return null;
+  if (!binding || defs.length === 0) return null;
 
   const server = new McpServer(
     { name: CLAUDE_CODE_HOST_TOOL_SERVER, version: "1.0.0" },
@@ -65,9 +72,15 @@ export function createHostToolServer(
     // Reuse Claude Code's tool_use id so Tasks UI entries match the recorded call.
     const toolUseId = request.params._meta?.["claudecode/toolUseId"];
     const id = typeof toolUseId === "string" && toolUseId ? toolUseId : `exocortex-${randomUUID()}`;
-    const [result] = await execute(
+    let turn: HostToolBinding;
+    try {
+      turn = await binding();
+    } catch (error) {
+      return textResult(error instanceof Error ? error.message : String(error), true);
+    }
+    const [result] = await turn.execute(
       [{ id, name, input: request.params.arguments ?? {} }],
-      signal ? AbortSignal.any([signal, extra.signal]) : extra.signal,
+      turn.signal ? AbortSignal.any([turn.signal, extra.signal]) : extra.signal,
     );
     return result ? textResult(result.output, result.isError) : textResult(`${name} returned no result.`, true);
   });

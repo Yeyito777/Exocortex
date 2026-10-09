@@ -65,7 +65,7 @@ export function renderMessageContent(content: ApiMessage["content"]): string {
   return content.map(renderBlock).filter(Boolean).join("\n\n").trim();
 }
 
-function isPlainUserMessage(message: ApiMessage): boolean {
+export function isPlainUserMessage(message: ApiMessage): boolean {
   if (message.role !== "user") return false;
   return typeof message.content === "string" || message.content.every((block) => block.type === "text" || block.type === "image");
 }
@@ -95,6 +95,17 @@ export function renderTranscript(messages: ApiMessage[]): string {
     })
     .filter(Boolean)
     .join("\n\n");
+}
+
+const LIVE_CONTINUE_PROMPT = "Your previous turn was interrupted before it finished. Continue where you left off.";
+
+/**
+ * The user turn for a Claude Code process that is still running (see
+ * session.ts): it has seen everything but these new user messages.
+ */
+export function buildLiveSessionContent(messages: ApiMessage[]): SdkContent {
+  const content = messages.flatMap(message => toSdkContent(message.content));
+  return content.length > 0 ? content : [{ type: "text", text: LIVE_CONTINUE_PROMPT }];
 }
 
 const INTERRUPTED_TURN_PROMPT = "Your previous turn was interrupted before it finished, and anything it still had running (tool calls, background tasks) was stopped. Continue where you left off.";
