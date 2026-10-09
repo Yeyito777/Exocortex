@@ -1176,10 +1176,27 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     "btw_query", "btw_followup", "set_goal", "set_model", "set_effort",
     "set_fast_mode", "get_system_prompt",
   ]);
+  // Commands for one conversation take effect in arrival order. An inline
+  // `/model` arrives as set_model … send_message in one burst; without this the
+  // warm-up let the turn be admitted first, under the old model. A command
+  // waits only behind an earlier one that is still warming.
+  const startingConversationCommands = new Map<string, Promise<void>>();
   const handleCommand = async function handleCommand(client: ConnectedClient, cmd: Command): Promise<void> {
+    const convId = "convId" in cmd && typeof cmd.convId === "string" ? cmd.convId : null;
+    const earlier = convId === null ? undefined : startingConversationCommands.get(convId);
+    const warms = warmCommands.has(cmd.type) || cmd.type === "trim_conversation" || cmd.type === "set_system_instructions";
+    let markStarted: (() => void) | undefined;
+    if (convId !== null && (earlier || warms)) {
+      const started = new Promise<void>(resolve => { markStarted = resolve; });
+      startingConversationCommands.set(convId, started);
+      void started.then(() => {
+        if (startingConversationCommands.get(convId) === started) startingConversationCommands.delete(convId);
+      });
+    }
     try {
-      if (warmCommands.has(cmd.type) && "convId" in cmd && typeof cmd.convId === "string") {
-        await convStore.getAsync(cmd.convId);
+      if (earlier) await earlier;
+      if (warmCommands.has(cmd.type) && convId !== null) {
+        await convStore.getAsync(convId);
       }
       if (cmd.type === "trim_conversation" || cmd.type === "set_system_instructions") {
         if (convStore.isStreaming(cmd.convId)) {
@@ -1195,6 +1212,9 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         message: `Could not load verified conversation: ${error instanceof Error ? error.message : String(error)}`,
       });
       return;
+    } finally {
+      // Waiters resume in a microtask, after this command's synchronous body.
+      markStarted?.();
     }
     try { switch (cmd.type) {
 

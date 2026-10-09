@@ -3302,3 +3302,49 @@ describe("handler load_conversation late-join streaming snapshots", () => {
     });
   });
 });
+
+describe("handler per-conversation command order", () => {
+  beforeEach(() => { orchestrateSendMessage.mockClear(); cleanupIds(); });
+  afterEach(cleanupIds);
+
+  function fixture() {
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}), sendToSubscribers: mock(() => {}), sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    return { sent, handle: createHandler(server as never) };
+  }
+
+  test("an inline model switch takes effect before the message sent right after it", async () => {
+    const convId = mkId("ordered-switch");
+    create(convId, "openai", "gpt-6.1-sol", "ordered", "low", true);
+    let admitted: Record<string, unknown> | undefined;
+    orchestrateSendMessage.mockImplementationOnce(async () => {
+      const conv = get(convId)!;
+      admitted = { provider: conv.provider, model: conv.model, effort: conv.effort, fastMode: conv.fastMode };
+      return makeAssistantOutcome();
+    });
+    const { sent, handle } = fixture();
+    // The socket reader dispatches every line of a chunk without awaiting the
+    // previous command, exactly like a TUI's inline /model burst over SSH.
+    await Promise.all([
+      handle({} as never, { type: "set_model", convId, provider: "deepseek", model: "deepseek-v4-pro" }),
+      handle({} as never, { type: "set_effort", convId, effort: "max" }),
+      handle({} as never, { type: "set_fast_mode", convId, enabled: false }),
+      handle({} as never, { type: "send_message", convId, text: "hello", startedAt: Date.now() }),
+    ]);
+    expect(sent.filter(event => event.type === "error")).toEqual([]);
+    expect(admitted).toEqual({ provider: "deepseek", model: "deepseek-v4-pro", effort: "max", fastMode: false });
+  });
+
+  test("a message with no earlier pending command is admitted synchronously", async () => {
+    const convId = mkId("ordered-direct");
+    create(convId, "openai", "gpt-6.1-sol", "ordered");
+    const { handle } = fixture();
+    const pending = handle({} as never, { type: "send_message", convId, text: "hello", startedAt: Date.now() });
+    expect(orchestrateSendMessage).toHaveBeenCalledTimes(1);
+    await pending;
+  });
+});
