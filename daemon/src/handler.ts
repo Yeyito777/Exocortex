@@ -23,7 +23,7 @@ import type { RealtimeCallAdapter, RealtimeCallParticipant } from "@exocortex/sh
 import { consumeUsageReset, refreshUsage, handleUsageHeaders, getLastUsage, clearUsage } from "./usage";
 import { orchestrateCompactConversation, orchestrateGoalCycle, orchestrateRealtimeDelegation, orchestrateReplayConversation, orchestrateSendMessage, type AssistantTurnOutcome } from "./orchestrator";
 import { complete } from "./llm";
-import { buildSystemPrompt } from "./system";
+import { buildClaudeCodeSystemAppend, buildSystemPrompt } from "./system";
 import { createConversationWorkspace, ensureConversationWorkspace } from "./workspace-service";
 import { scopedSubagentPromptOptions } from "./subagent-policy";
 import { assertDelegationModel, parseRequestedModel, resolveDelegationModel } from "./delegation-models";
@@ -3054,6 +3054,20 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         const scopedPromptOptions = conversation
           ? scopedSubagentPromptOptions(conversation, subagentMaxDepth)
           : null;
+        if (conversation?.provider === "anthropic") {
+          const append = buildClaudeCodeSystemAppend({
+            conversationInstructions: instructions ?? undefined,
+            ...(scopedPromptOptions ?? {}),
+          });
+          server.sendTo(client, {
+            type: "system_prompt",
+            reqId: cmd.reqId,
+            systemPrompt: append
+              ? `Claude Code's own system prompt, with Exocortex appending:\n\n${append}`
+              : "Claude Code's own system prompt (Exocortex appends nothing).",
+          });
+          break;
+        }
         const workingDirectory = conversation ? ensureConversationWorkspace(conversation.id) : undefined;
         server.sendTo(client, {
           type: "system_prompt",

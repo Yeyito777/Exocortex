@@ -3,7 +3,8 @@
  *
  * Conversation turns run Claude Code as-is — its system prompt, built-in
  * tools, settings, CLAUDE.md, MCP servers and skills — in the conversation's
- * workspace, plus a few Exocortex host tools over MCP (see host-tools.ts).
+ * workspace, plus a few Exocortex host tools over MCP (see host-tools.ts) and
+ * Exocortex's instructions appended to the system prompt.
  * Exocortex streams and records what Claude Code does.
  * One-shot helper requests (titles, summaries, compaction) run tool-free.
  *
@@ -81,8 +82,16 @@ function agentTurnOptions(model: ModelId, options: StreamOptions, cwd: string, p
   const hostTools = createHostToolServer(options.tools, options.toolExecutor, options.signal);
   return {
     ...baseOptions(model, options, cwd, stderr),
-    // Behave like the `claude` CLI started in this directory.
-    systemPrompt: { type: "preset", preset: "claude_code" },
+    // Behave like the `claude` CLI started in this directory, plus Exocortex's
+    // additions (see buildClaudeCodeSystemAppend). Render it fresh every turn
+    // rather than reusing the forked session's recorded prompt, so edited app
+    // or conversation instructions apply on the next turn.
+    systemPrompt: {
+      type: "preset",
+      preset: "claude_code",
+      ...(options.system ? { append: options.system } : {}),
+      snapshot: false,
+    },
     settingSources: ["user", "project", "local"],
     // Exocortex has no permission prompt UI; Claude Code runs unattended.
     permissionMode: "bypassPermissions",

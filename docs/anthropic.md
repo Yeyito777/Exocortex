@@ -7,7 +7,14 @@ conversations:
 - Claude Code runs its own agent loop with **its** system prompt, built-in tools
   (Bash, Read, Edit, Write, Grep, WebSearch, Task, …), settings, `CLAUDE.md`,
   MCP servers and skills, exactly as `claude` would when started in the
-  conversation's workspace directory. Exocortex's system prompt is not used.
+  conversation's workspace directory. Exocortex's own system prompt (identity,
+  environment, internal tool guidance) is not used.
+- Exocortex appends its additions to Claude Code's system prompt: external
+  tool hints, the app-wide `config/system.md` addendum, folder and
+  conversation instructions, and a scoped subagent's role note. The prompt is
+  re-rendered every turn instead of reusing the session's recorded one, so
+  edits apply on the next turn. Goal text is left out because the `goal` tool
+  is not offered to Claude Code. `/system` shows the appended text.
 - Exocortex's own tools are not used either, except `chrono`. Claude Code calls
   it over an in-process MCP server as `mcp__exocortex__chrono`; Exocortex runs
   it like any other chrono call, and history records it as `chrono`. Sleeps

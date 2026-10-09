@@ -2,7 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { configDir } from "@exocortex/shared/paths";
-import { buildSystemPrompt, getUserAddendum, reloadUserAddendum, setUserAddendum } from "./system";
+import { buildClaudeCodeSystemAppend, buildSystemPrompt, getUserAddendum, reloadUserAddendum, setUserAddendum } from "./system";
+import { buildConversationRequestSurface } from "./conversation-request-surface";
+import { setLoadedExternalToolsForTest } from "./external-tools";
+import type { Conversation } from "./messages";
 import { getConversationToolNames, getToolDefs } from "./tools/registry";
 import { SCOPED_SUBAGENT_IDENTITY, SCOPED_SUBAGENT_WRAPPER_NOTE } from "./subagent-policy";
 
@@ -124,6 +127,63 @@ describe("system prompt", () => {
       expect(getUserAddendum()).toBe("External instructions");
     } finally {
       rmSync(path, { recursive: true, force: true });
+      setUserAddendum(original);
+    }
+  });
+
+  test("Claude Code append carries only Exocortex's additions", () => {
+    const original = getUserAddendum();
+    const restoreTools = setLoadedExternalToolsForTest([{
+      manifest: { name: "demo", bin: "demo", systemHint: "Run `demo -h`.", display: { label: "Demo", color: "#ffffff" } },
+      binDir: "/tmp/demo/bin",
+      toolDir: "/tmp/demo",
+    }]);
+    try {
+      setUserAddendum("App-wide instruction");
+      const append = buildClaudeCodeSystemAppend({ conversationInstructions: "Conversation rule" });
+      expect(append).toBe([
+        "# External tools\n## demo\nRun `demo -h`.",
+        "App-wide instruction",
+        "# Conversation instructions\nConversation rule",
+      ].join("\n\n"));
+
+      const scoped = buildClaudeCodeSystemAppend({
+        identity: SCOPED_SUBAGENT_IDENTITY,
+        wrapperNote: SCOPED_SUBAGENT_WRAPPER_NOTE,
+        includeExternalToolHints: false,
+      });
+      expect(scoped).toBe(`${SCOPED_SUBAGENT_IDENTITY}\n\n${SCOPED_SUBAGENT_WRAPPER_NOTE}\n\nApp-wide instruction`);
+
+      setUserAddendum("");
+      expect(buildClaudeCodeSystemAppend({ includeExternalToolHints: false })).toBe("");
+    } finally {
+      restoreTools();
+      setUserAddendum(original);
+    }
+  });
+
+  test("anthropic request surface sends the Claude Code append instead of the Exo prompt", () => {
+    const original = getUserAddendum();
+    try {
+      setUserAddendum("App-wide instruction");
+      const conversation = {
+        id: "claude-surface",
+        provider: "anthropic",
+        model: "claude-opus-5-5",
+        goal: { status: "active", objective: "Ship it" },
+      } as unknown as Conversation;
+      const surface = buildConversationRequestSurface(conversation, {
+        conversationId: conversation.id,
+        workingDirectory: "/tmp/claude-surface",
+        conversationInstructions: "Conversation rule",
+      });
+
+      expect(surface.system).toBe(buildClaudeCodeSystemAppend({ conversationInstructions: "Conversation rule" }));
+      expect(surface.system).toContain("App-wide instruction");
+      expect(surface.system).not.toContain("You are Exo");
+      expect(surface.system).not.toContain("# Internal tools");
+      expect(surface.system).not.toContain("# Conversation goal");
+    } finally {
       setUserAddendum(original);
     }
   });

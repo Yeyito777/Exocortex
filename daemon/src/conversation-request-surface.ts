@@ -1,6 +1,6 @@
 import type { Conversation } from "./messages";
 import { scopedSubagentPromptOptions } from "./subagent-policy";
-import { buildSystemPrompt } from "./system";
+import { buildClaudeCodeSystemAppend, buildSystemPrompt } from "./system";
 import { getConversationToolNames, getToolDefs } from "./tools/registry";
 import { getModelInfo } from "./providers/registry";
 
@@ -33,7 +33,13 @@ export function buildConversationRequestSurface(
       : "Autonomous goal work is stopped. Answer new user requests normally, but do not autonomously resume this goal; only the user can resume or replace it.",
   ].join("\n") : "";
   return {
-    system: buildSystemPrompt({
+    // Claude Code (anthropic) keeps its own prompt and tools; Exocortex only
+    // appends its additions. The goal tool is not offered there, so no goal text.
+    system: conversation.provider === "anthropic" ? buildClaudeCodeSystemAppend({
+      conversationInstructions: options.conversationInstructions,
+      ...(scopedPromptOptions ?? {}),
+      includeExternalToolHints: !chatOnly,
+    }) : buildSystemPrompt({
       conversationInstructions: options.conversationInstructions,
       conversationId: options.conversationId,
       workingDirectory: options.workingDirectory,

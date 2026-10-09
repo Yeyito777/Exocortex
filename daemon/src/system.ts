@@ -97,6 +97,19 @@ export interface BuildSystemPromptOptions {
   identity?: string;
 }
 
+/** External tools, app-wide addendum and conversation instructions: context every agent runtime needs. */
+function buildAdditionParts(options: { conversationInstructions?: string; includeExternalHints: boolean }): string[] {
+  const parts: string[] = [];
+  if (options.includeExternalHints) {
+    const externalHints = getExternalToolHints();
+    if (externalHints) parts.push("# External tools\n" + externalHints);
+  }
+
+  if (_userAddendum) parts.push(_userAddendum);
+  if (options.conversationInstructions) parts.push("# Conversation instructions\n" + options.conversationInstructions);
+  return parts;
+}
+
 function buildPromptParts(options: BuildSystemPromptOptions & {
   includeToolHints: boolean;
   includeExternalHints: boolean;
@@ -116,13 +129,7 @@ function buildPromptParts(options: BuildSystemPromptOptions & {
     if (depth === 0) parts.push("This is a depth-zero turn: do not delegate further. Administration uses direct daemon IPC.");
   }
 
-  if (options.includeExternalHints) {
-    const externalHints = getExternalToolHints();
-    if (externalHints) parts.push("# External tools\n" + externalHints);
-  }
-
-  if (_userAddendum) parts.push(_userAddendum);
-  if (options.conversationInstructions) parts.push("# Conversation instructions\n" + options.conversationInstructions);
+  parts.push(...buildAdditionParts(options));
 
   // User addenda and external manifests may still use the older tool names.
   const names = new Set(options.toolNames);
@@ -154,4 +161,23 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
     includeExternalHints: options.includeExternalToolHints ?? true,
     ...options,
   }).join("\n\n");
+}
+
+/**
+ * Text appended to Claude Code's own system prompt on anthropic turns. Claude
+ * Code supplies identity, environment and tool guidance, so Exocortex adds only
+ * what it cannot know: a scoped subagent's role, external tools, and the app
+ * and conversation instructions.
+ */
+export function buildClaudeCodeSystemAppend(options: Pick<BuildSystemPromptOptions,
+  "conversationInstructions" | "includeExternalToolHints" | "identity" | "wrapperNote"
+> = {}): string {
+  return [
+    ...(options.identity ? [options.identity] : []),
+    ...(options.wrapperNote ? [options.wrapperNote] : []),
+    ...buildAdditionParts({
+      conversationInstructions: options.conversationInstructions,
+      includeExternalHints: options.includeExternalToolHints ?? true,
+    }),
+  ].join("\n\n");
 }
