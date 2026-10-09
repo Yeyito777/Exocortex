@@ -619,6 +619,18 @@ export interface ToolDisplayInfo {
 }
 
 /**
+ * An MCP tool Claude Code calls as `mcp__<server>__<tool>`. Its label is the
+ * server, readable, the way a bash call to an external tool shows that tool's
+ * name; the tool itself leads the call's detail. Null for other names.
+ */
+export function parseMcpToolName(name: string): { label: string; tool: string } | null {
+  const match = /^mcp__(.+?)__(.+)$/.exec(name);
+  if (!match) return null;
+  const label = match[1].replace(/^claude_ai_/, "").replace(/_/g, " ").trim() || match[1];
+  return { label, tool: match[2] };
+}
+
+/**
  * Bash command style — maps a command prefix to TUI display properties.
  * Global external-tool styles are sent alongside ToolDisplayInfo; local styles
  * may instead be snapshotted on an individual tool call.

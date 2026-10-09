@@ -9,7 +9,7 @@
  * re-broadcast when tools are added/removed at runtime).
  */
 
-import type { ToolDisplayInfo, ExternalToolStyle } from "./messages";
+import { parseMcpToolName, type ToolDisplayInfo, type ExternalToolStyle } from "./messages";
 import { splitTopLevelShellSegments } from "./bashsegments";
 import { theme, hexToAnsi } from "./theme";
 
@@ -396,13 +396,8 @@ export function resolveToolDisplay(
     if (match) return match;
   }
 
-  if (info) {
-    return {
-      label: info.label,
-      detail: summary,
-      fg: hexToAnsi(info.color),
-    };
-  }
-
-  return { label: toolName, detail: summary, fg: theme.tool };
+  const label = info?.label ?? parseMcpToolName(toolName)?.label ?? toolName;
+  // A call with nothing to add is summarized by its label alone.
+  const detail = summary === label ? "" : summary;
+  return { label, detail, fg: info ? hexToAnsi(info.color) : theme.tool };
 }

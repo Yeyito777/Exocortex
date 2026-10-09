@@ -10,7 +10,7 @@
 
 import type { ConversationGoalStatus, ConversationTaskSummary, ExternalIntegrationSummary } from "./messages";
 import type { RenderState } from "./state";
-import { shouldDisplayConversationTask } from "./taskvisibility";
+import { isAgentBackgroundTask, shouldDisplayConversationTask } from "./taskvisibility";
 import { padRightToWidth, termWidth } from "./textwidth";
 import { hexToAnsi, hexToAnsiBg, theme } from "./theme";
 
@@ -144,6 +144,11 @@ export function msUntilTaskPanelEntryUpdate(task: TaskPanelEntry, now = Date.now
         ? 60 * 60 * 1000
         : 24 * 60 * 60 * 1000;
   return msUntilNextUnitBoundary(elapsedMs, unitMs);
+}
+
+/** Name of the tool running a background command: Exocortex's shells are Bash, like Claude Code's. */
+function backgroundTaskName(toolName: string | undefined): string {
+  return !toolName || toolName === "bash" || toolName === "exec_command" ? "Bash" : toolName;
 }
 
 function taskColor(state: RenderState, toolName: "exo" | "bash" | "goal" | "chrono", fallback: string): string {
@@ -284,14 +289,16 @@ export function renderTaskPanel(
 
   for (const task of visible.tasks) {
     const isSubagent = task.kind === "subagent";
-    // A Claude Code background subagent (its Agent tool) runs inside Claude Code, not as an Exocortex conversation.
-    const isAgent = task.kind === "background" && task.toolName === "Agent";
+    // Claude Code's background agents and workflows run inside Claude Code, not as Exocortex conversations.
+    const isAgent = isAgentBackgroundTask(task);
     const isGoal = task.kind === "goal";
     const isChrono = task.kind === "chrono";
     const color = isGoal ? goal : isSubagent || isAgent ? exocortex : isChrono ? chrono : bash;
-    const label = panelWidth >= 38
-      ? (isGoal ? `${task.goalStatus !== "active" ? "◇" : "◆"} Goal` : isSubagent ? "◆ Exocortex" : isAgent ? "◆ Agent" : isChrono ? "◷ Chrono" : "$ Bash")
-      : (isGoal ? `${task.goalStatus !== "active" ? "◇" : "◆"} Goal` : isSubagent ? "◆ Exo" : isAgent ? "◆ Agent" : isChrono ? "◷ Chrono" : "$ Bash");
+    const label = isGoal ? `${task.goalStatus !== "active" ? "◇" : "◆"} Goal`
+      : isSubagent ? (panelWidth >= 38 ? "◆ Exocortex" : "◆ Exo")
+      : isAgent ? `◆ ${task.toolName}`
+      : isChrono ? "◷ Chrono"
+      : `$ ${backgroundTaskName(task.toolName)}`;
     const fallbackTitle = isGoal ? "Conversation goal" : isSubagent || isAgent ? "Subagent task" : isChrono ? "Chrono task" : "Background task";
     const title = cleanPanelText(task.title) || fallbackTitle;
     const elapsed = isGoal && task.goalStatus !== "active"

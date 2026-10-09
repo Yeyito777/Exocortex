@@ -364,6 +364,31 @@ describe("sidebar rendering", () => {
     expect(rows.every(row => visibleLength(row) === SIDEBAR_WIDTH)).toBe(true);
   });
 
+  test("counts Claude Code background agents as subagents rather than shell tasks", () => {
+    const sidebar = createSidebarState();
+    sidebar.folders = [{ id: "folder", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 }];
+    sidebar.conversations = [conversation("lead", 0, {
+      title: "Lead",
+      folderId: "folder",
+      backgroundTaskCount: 3,
+      tasks: [
+        { id: "a1", kind: "background", title: "JS engine", startedAt: 0, toolName: "Agent" },
+        { id: "a2", kind: "background", title: "CSS engine", startedAt: 0, toolName: "Agent" },
+        { id: "b1", kind: "background", title: "make test", startedAt: 0, toolName: "Bash" },
+      ],
+    })];
+
+    let row = renderSidebar(sidebar, 8, true, null).find(candidate => candidate.includes("Work"));
+    expect(row).toContain(`${theme.accent}◆2 `);
+    expect(row).toContain(`${theme.warning}$ `);
+    expect(row).not.toContain("$3 ");
+
+    sidebar.currentFolderId = "folder";
+    row = renderSidebar(sidebar, 8, true, null).find(candidate => candidate.includes("Lead"));
+    expect(row).toContain(`${theme.accent}◆2 `);
+    expect(row).toContain(`${theme.warning}$ `);
+  });
+
   test("marks overflowing background task counts explicitly", () => {
     const sidebar = createSidebarState();
     sidebar.conversations = [conversation("worker", 0, { title: "Worker", backgroundTaskCount: 100 })];

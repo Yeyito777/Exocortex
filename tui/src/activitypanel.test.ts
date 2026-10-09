@@ -153,6 +153,23 @@ describe("focused conversation task panel", () => {
     expect(plain[2]).toContain("$ Bash npm test");
   });
 
+  test("names other Claude Code background work by what runs it, never as Bash", () => {
+    const state = stateWithTasks();
+    state.sidebar.conversations[0].tasks = [
+      { id: "workflow-1", kind: "background", title: "Review changes", startedAt: 1_000, toolName: "Workflow" },
+      { id: "monitor-1", kind: "background", title: "deploy errors", startedAt: 2_000, toolName: "Monitor" },
+      { id: "mcp-1", kind: "background", title: "Export doc", startedAt: 3_000, toolName: "MCP" },
+      { id: "bash:1", kind: "background", title: "bun test", startedAt: 4_000, toolName: "bash" },
+    ];
+    const panel = renderTaskPanel(state, 100, 20, 43_000)!;
+    const plain = panel.lines.map(stripAnsi);
+    expect(plain[1]).toContain("◆ Workflow Review changes");
+    expect(panel.lines[1]).toContain(hexToAnsi("#1122ee"));
+    expect(plain[2]).toContain("$ Monitor deploy errors");
+    expect(plain[3]).toContain("$ MCP Export doc");
+    expect(plain[4]).toContain("$ Bash bun test");
+  });
+
   test("shrinks, truncates, and reports overflow without breaking borders", () => {
     const state = stateWithTasks();
     state.sidebar.conversations[0].tasks!.push(

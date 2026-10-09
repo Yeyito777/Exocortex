@@ -14,6 +14,19 @@ const externalToolStyles: ExternalToolStyle[] = [
   { cmd: "whatsapp", label: "WhatsApp", color: "#25d366" },
 ];
 
+describe("tool call labels", () => {
+  test("a call whose summary is only its label shows the label once", () => {
+    const tools: ToolDisplayInfo[] = [{ name: "ListAgents", label: "ListAgents", color: "#1d9bf0" }];
+    expect(resolveToolDisplay("ListAgents", "ListAgents", tools).detail).toBe("");
+    expect(resolveToolDisplay("ExitPlanMode", "ExitPlanMode", tools)).toMatchObject({ label: "ExitPlanMode", detail: "" });
+    expect(renderToolCallLogicalLines("ExitPlanMode", "ExitPlanMode", tools, []).map(line => line.text)).toEqual(["ExitPlanMode"]);
+  });
+
+  test("Claude Code MCP calls are labeled by their server", () => {
+    expect(resolveToolDisplay("mcp__claude_ai_Claude_Docs__batch", "batch", registry)).toMatchObject({ label: "Claude Docs", detail: "batch" });
+  });
+});
+
 describe("bash external tool styling", () => {
   test("Codex exec_command retains CLI labels and segmented command rendering", () => {
     expect(resolveToolDisplay("exec_command", "gmail search newer_than:1d", registry, externalToolStyles).label).toBe("Gmail");

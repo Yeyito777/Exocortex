@@ -12,7 +12,7 @@
  * under their own name.
  */
 
-import type { ToolDisplayInfo } from "@exocortex/shared/messages";
+import { parseMcpToolName, type ToolDisplayInfo } from "@exocortex/shared/messages";
 import type { Tool, ToolSummary } from "./types";
 import { bash } from "./bash";
 import { read } from "./read";
@@ -23,15 +23,18 @@ import { glob } from "./glob";
 import { browse } from "./browse";
 import { exo } from "./exo";
 import { getRegisteredTools } from "./registry";
+import { summarizeParams } from "./util";
 
 type Input = Record<string, unknown>;
 
 interface ClaudeCodeTool {
-  /** Exocortex tool whose label and color the call borrows. */
-  like: Tool;
+  /** Exocortex tool whose color the call borrows, and its label unless `label` is set. */
+  like?: Tool;
   label?: string;
-  /** Rewrite the input into `like`'s shape and use its summary; omit for a generic summary. */
+  /** Rewrite the input into `like`'s shape and use its summary. */
   input?: (input: Input) => Input;
+  /** The call's detail; with neither this nor `input`, a generic one. */
+  detail?: (input: Input) => string;
 }
 
 let claudeCodeTools: Map<string, ClaudeCodeTool> | undefined;
@@ -50,6 +53,33 @@ export function exocortexToolName(claudeCodeName: string): string {
   return isClaudeCodeHostTool(name) ? name : claudeCodeName;
 }
 
+/** A string input value on one line, capped. */
+function oneLine(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const line = value.replace(/\s+/g, " ").trim();
+  return line.length > 120 ? `${line.slice(0, 119)}…` : line;
+}
+
+/** `primary` followed by the set flags, like Exocortex tool summaries. */
+function withFlags(primary: string, flags: Input): string {
+  return summarizeParams(primary, flags, []).trim();
+}
+
+function agentDetail({ description, prompt, name, subagent_type, model, isolation, run_in_background }: Input): string {
+  return withFlags(oneLine(description) || oneLine(prompt), {
+    name,
+    subagent_type: subagent_type === "general-purpose" ? undefined : subagent_type,
+    model,
+    isolation,
+    run_in_background,
+  });
+}
+
+function workflowDetail({ name, scriptPath, script }: Input): string {
+  const metaName = typeof script === "string" ? /\bname:\s*['"`]([^'"`]+)['"`]/.exec(script)?.[1] : undefined;
+  return oneLine(name) || oneLine(scriptPath) || oneLine(metaName);
+}
+
 // Built on first use: browse → llm → anthropic provider → here is an import cycle.
 function getClaudeCodeTools(): Map<string, ClaudeCodeTool> {
   return claudeCodeTools ??= new Map<string, ClaudeCodeTool>([
@@ -63,19 +93,47 @@ function getClaudeCodeTools(): Map<string, ClaudeCodeTool> {
     ["Glob", { like: glob, input: input => input }],
     ["WebFetch", { like: browse, input: ({ url }) => ({ url }) }],
     ["WebSearch", { like: browse, label: "Search" }],
-    ["Agent", { like: exo, label: "Agent" }],
-    ["Task", { like: exo, label: "Agent" }],
+    ["Monitor", {
+      like: bash,
+      label: "Monitor",
+      detail: ({ description, command, ws }) => oneLine(description) || oneLine(command) || oneLine((ws as Input | undefined)?.url),
+    }],
+    ["Agent", { like: exo, label: "Agent", detail: agentDetail }],
+    ["Task", { like: exo, label: "Agent", detail: agentDetail }],
+    ["SendMessage", {
+      like: exo,
+      label: "Message",
+      detail: ({ to, summary, message, notify_when_idle }) =>
+        withFlags(oneLine(summary) || oneLine(typeof message === "string" ? message.split("\n")[0] : undefined), { to, notify_when_idle }),
+    }],
+    ["ListAgents", { like: exo, label: "ListAgents" }],
+    ["Workflow", { like: exo, label: "Workflow", detail: workflowDetail }],
+    ["TaskStop", { detail: ({ task_id, shell_id }) => oneLine(task_id) || oneLine(shell_id) }],
+    ["KillShell", { detail: ({ shell_id }) => oneLine(shell_id) }],
+    ["TaskOutput", { detail: ({ task_id, ...flags }) => withFlags(oneLine(task_id), flags) }],
+    ["BashOutput", { detail: ({ bash_id, ...flags }) => withFlags(oneLine(bash_id), flags) }],
+    ["Skill", { detail: ({ skill, args }) => [oneLine(skill), oneLine(args)].filter(Boolean).join(" ") }],
+    ["LSP", {
+      detail: ({ operation, filePath, line, character, query }) =>
+        [oneLine(operation), filePath ? `${oneLine(filePath)}:${line}:${character}` : "", oneLine(query)].filter(Boolean).join(" "),
+    }],
   ]);
 }
 
-const DETAIL_KEYS = ["description", "command", "file_path", "notebook_path", "pattern", "url", "query", "prompt", "skill", "path"];
+const DETAIL_KEYS = [
+  "description", "command", "file_path", "notebook_path", "pattern", "url", "query", "prompt", "skill", "path",
+  "subject", "summary", "message", "name", "task_id", "action",
+];
 
+/** The most telling string input, so a call never shows just its name. */
 function genericDetail(input: Input): string {
   for (const key of DETAIL_KEYS) {
-    const value = input[key];
-    if (typeof value !== "string" || !value.trim()) continue;
-    const line = value.replace(/\s+/g, " ").trim();
-    return line.length > 120 ? `${line.slice(0, 119)}…` : line;
+    const line = oneLine(input[key]);
+    if (line) return line;
+  }
+  for (const value of Object.values(input)) {
+    const line = oneLine(value);
+    if (line) return line;
   }
   return "";
 }
@@ -84,17 +142,33 @@ function genericDetail(input: Input): string {
 export function summarizeClaudeCodeTool(name: string, input: Input): ToolSummary {
   const host = isClaudeCodeHostTool(name) ? getRegisteredTools().find(tool => tool.name === name) : undefined;
   if (host) return host.summarize(input);
+  const mcp = parseMcpToolName(name);
+  if (mcp) return { label: mcp.label, detail: [mcp.tool, genericDetail(input)].filter(Boolean).join(" ") };
   const tool = getClaudeCodeTools().get(name);
-  const label = tool?.label ?? tool?.like.display.label ?? name;
-  if (tool?.input) return { ...tool.like.summarize(tool.input(input)), label };
-  return { label, detail: genericDetail(input) };
+  const label = tool?.label ?? tool?.like?.display.label ?? name;
+  if (tool?.like && tool.input) return { ...tool.like.summarize(tool.input(input)), label };
+  return { label, detail: tool?.detail ? tool.detail(input) : genericDetail(input) };
 }
 
-/** TUI display entries for Claude Code tools that have an Exocortex counterpart. */
+/** Claude Code tools that answer with a JSON status whose `message` says what happened. */
+const STATUS_RESULT_TOOLS = new Set(["SendMessage", "TaskStop", "KillShell"]);
+
+/** A Claude Code tool's result as text, like an Exocortex tool's, rather than a JSON status. */
+export function claudeCodeResultText(name: string, output: string): string {
+  if (!STATUS_RESULT_TOOLS.has(name)) return output;
+  try {
+    const message = (JSON.parse(output) as Input | null)?.message;
+    return typeof message === "string" && message ? message : output;
+  } catch {
+    return output;
+  }
+}
+
+/** TUI display entries for Claude Code tools styled like an Exocortex tool. */
 export function getClaudeCodeToolDisplayInfo(): ToolDisplayInfo[] {
-  return [...getClaudeCodeTools()].map(([name, tool]) => ({
+  return [...getClaudeCodeTools()].flatMap(([name, tool]) => tool.like ? [{
     name,
     label: tool.label ?? tool.like.display.label,
     color: tool.like.display.color,
-  }));
+  }] : []);
 }

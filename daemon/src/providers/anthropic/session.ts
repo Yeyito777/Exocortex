@@ -88,7 +88,22 @@ const INTERRUPT_GRACE_MS = 30_000;
 /** How long a host tool call from a turn Claude Code started waits for that turn to be shown. */
 const BINDING_WAIT_MS = 60_000;
 const TERMINAL_TASK_STATUSES = new Set(["completed", "failed", "stopped", "killed"]);
-const BACKGROUND_TASK_TOOLS: Record<string, string> = { local_bash: "Bash", local_agent: "Agent" };
+/** Claude Code's background task types, named for what runs them. */
+const BACKGROUND_TASK_TOOLS: Record<string, string> = {
+  local_bash: "Bash",
+  local_agent: "Agent",
+  remote_agent: "Agent",
+  in_process_teammate: "Agent",
+  local_workflow: "Workflow",
+  monitor_mcp: "Monitor",
+  monitor_ws: "Monitor",
+  mcp_task: "MCP",
+  dream: "Dream",
+};
+/** Tasks run by an agent rather than a command, reported like Exocortex subagents. */
+const AGENT_TASK_TOOLS = new Set(["Agent", "Workflow"]);
+/** How much of an agent's final report a completion notification carries, as for Exocortex subagents. */
+const AGENT_RESULT_CHARS = 6000;
 const WAKE_AUTOMATION_KIND = "background_task_completion";
 const WAKE_KEY_PREFIX = "wake:";
 
@@ -167,12 +182,17 @@ class PromptQueue implements AsyncIterable<SDKUserMessage> {
 interface LiveTask {
   title: string;
   toolName: string;
+  /** Set once the task is mirrored into the conversation's tasks. */
+  startedAt?: number;
+  /** The subagent task that launched it; its notifications are that agent's. */
+  parentTaskId?: string;
 }
 
 interface TaskNote {
   id: string;
   status: string;
   title: string;
+  toolName: string;
   summary?: string;
   outputFile?: string;
 }
@@ -306,15 +326,34 @@ export function historyMark(messages: ApiMessage[]): RelayHistoryMark {
   return { count: messages.length, key: hash.digest("hex").slice(0, 32) };
 }
 
-/** The notification message shown before a turn Claude Code started by itself. */
+function capText(text: string, maxChars: number): string {
+  return text.length <= maxChars ? text : `${text.slice(0, maxChars - 1).trimEnd()}…`;
+}
+
+/**
+ * The notification message shown before a turn Claude Code started by itself,
+ * in the format of Exocortex's own notifications: agents like a finished
+ * subagent, other tasks like a finished background command.
+ */
 export function buildWakeText(notes: readonly TaskNote[]): string {
   if (notes.length === 0) return "[notification] Claude Code resumed work on its own.";
-  return notes.map(note => [
-    `[notification] Background task ${note.status === "completed" || note.status === "failed" ? note.status : "stopped"}: ${note.id}`,
-    `Command: ${note.title}`,
-    ...(note.summary ? [`Status: ${note.summary}`] : []),
-    ...(note.outputFile ? [`Output: ${note.outputFile}`] : []),
-  ].join("\n")).join("\n\n");
+  return notes.map((note) => {
+    const status = note.status === "completed" || note.status === "failed" ? note.status : "stopped";
+    // Claude Code often reports a task's description as its summary.
+    const summary = note.summary && note.summary !== note.title ? note.summary : undefined;
+    if (AGENT_TASK_TOOLS.has(note.toolName)) return [
+      `[notification] ${note.toolName} ${status}: ${note.id}`,
+      `Task: ${note.title}`,
+      ...(summary ? ["", `${status === "failed" ? "Error" : "Result"}:`, capText(summary, AGENT_RESULT_CHARS)] : []),
+      ...(note.outputFile ? ["", `Output: ${note.outputFile}`] : []),
+    ].join("\n");
+    return [
+      `[notification] Background task ${status}: ${note.id}`,
+      `${note.toolName === "Bash" ? "Command" : "Task"}: ${note.title}`,
+      ...(summary ? [`Status: ${summary}`] : []),
+      ...(note.outputFile ? [`Output: ${note.outputFile}`] : []),
+    ].join("\n");
+  }).join("\n\n");
 }
 
 export class ClaudeCodeSession {
@@ -753,11 +792,15 @@ export class ClaudeCodeSession {
     const id = str(message.task_id);
     const status = str(message.status);
     if (!id || !status || !TERMINAL_TASK_STATUSES.has(status)) return;
+    const task = this.tasks.get(id);
+    // A task a subagent launched reports to that subagent, as an Exocortex subagent's own tasks do.
+    if (task?.parentTaskId) return;
     const summary = str(message.summary);
     this.notes.push({
       id,
       status,
-      title: this.tasks.get(id)?.title ?? summary ?? id,
+      title: task?.title ?? summary ?? id,
+      toolName: task?.toolName ?? "Task",
       ...(summary ? { summary } : {}),
       ...(str(message.output_file) ? { outputFile: str(message.output_file) } : {}),
     });
@@ -771,7 +814,12 @@ export class ClaudeCodeSession {
       // Ambient tasks (watchers) are not activity.
       if (!task || !id || task.ambient === true) continue;
       const taskType = str(task.task_type) ?? "task";
-      live.set(id, { title: str(task.description) || id, toolName: BACKGROUND_TASK_TOOLS[taskType] ?? taskType });
+      const parentTaskId = str(task.parent_task_id);
+      live.set(id, {
+        title: str(task.description) || id,
+        toolName: task.shell_kind === "monitor" ? "Monitor" : BACKGROUND_TASK_TOOLS[taskType] ?? taskType,
+        ...(parentTaskId ? { parentTaskId } : {}),
+      });
     }
     this.setTasks(live);
     this.settle();
@@ -789,8 +837,11 @@ export class ClaudeCodeSession {
       if (!live.has(id)) changed = setBackgroundTaskActive(convId, id, false) || changed;
     }
     for (const [id, task] of live) {
-      if (this.tasks.has(id)) continue;
-      const startedAt = this.taskStarts[id] ?? Date.now();
+      const known = this.tasks.get(id);
+      task.startedAt = known?.startedAt ?? this.taskStarts[id] ?? Date.now();
+      // A known task is updated only when its description or kind changed.
+      if (known && known.title === task.title && known.toolName === task.toolName) continue;
+      const startedAt = task.startedAt;
       changed = setBackgroundTaskActive(convId, id, true, {
         title: task.title,
         startedAt,

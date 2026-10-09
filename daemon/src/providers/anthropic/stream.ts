@@ -16,7 +16,7 @@
 
 import { log } from "../../log";
 import type { ApiContentBlock, ApiMessage } from "../../messages";
-import { exocortexToolName, summarizeClaudeCodeTool } from "../../tools/claude-code";
+import { claudeCodeResultText, exocortexToolName, summarizeClaudeCodeTool } from "../../tools/claude-code";
 import { AuthError } from "../errors";
 import type { ContentBlock, ProviderRound, StreamCallbacks, StreamResult } from "../types";
 import { REPLAYED_FIELD } from "./relay-protocol";
@@ -114,6 +114,8 @@ function toolResultText(content: unknown): string {
       const record = asRecord(part);
       if (record?.type === "text") return str(record.text) ?? "";
       if (record?.type === "image") return "[image]";
+      // ToolSearch answers with the tools it loaded.
+      if (record?.type === "tool_reference" && str(record.tool_name)) return `Loaded ${record.tool_name}`;
       return JSON.stringify(part);
     })
     .join("\n");
@@ -277,7 +279,7 @@ function handleUserMessage(state: ClaudeStreamState, message: SdkRecord): void {
     const toolUseId = str(block.tool_use_id) ?? "";
     closedToolUse = state.openToolUses.delete(toolUseId) || closedToolUse;
     const toolName = state.toolNames.get(toolUseId) ?? "";
-    const output = toolResultText(block.content);
+    const output = claudeCodeResultText(toolName, toolResultText(block.content));
     const isError = block.is_error === true;
     state.blocks.push({ type: "tool_result", toolUseId, toolName, output, isError });
     pushMessageContent(state, "user", { type: "tool_result", tool_use_id: toolUseId, content: output, is_error: isError });

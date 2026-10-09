@@ -15,7 +15,7 @@ import {
   getSidebarSearchBarViewport,
 } from "../sidebarsearch";
 import { theme } from "../theme";
-import { hasInProgressModelWork, inlineLongSleepStartedAt, isDurablySleeping, shouldDisplayConversationTask } from "../taskvisibility";
+import { conversationWorkCounts, hasInProgressModelWork, inlineLongSleepStartedAt, isDurablySleeping, shouldDisplayConversationTask } from "../taskvisibility";
 import { padRightToWidth, termWidth, truncateToWidth } from "../textwidth";
 import type { ConversationTaskSummary } from "../messages";
 import type { DisplayUpdateStatus } from "../update-status";
@@ -85,6 +85,7 @@ function buildFolderAggregates(
     const hasModelWork = hasInProgressModelWork(conv) || hasOptimisticStreaming;
     const hasUnread = conv.unread && !hasModelWork;
     const chronoTaskCount = countChronoTasks(conv.tasks);
+    const work = conversationWorkCounts(conv);
     let folderId = conv.folderId ?? null;
     const seen = new Set<string>();
     while (folderId && aggregates.has(folderId) && !seen.has(folderId)) {
@@ -96,8 +97,8 @@ function buildFolderAggregates(
       aggregate.globalIdle ||= hasGlobalIdle;
       aggregate.unread ||= hasUnread;
       if (hasUnread) aggregate.unreadCount++;
-      aggregate.subagentCount += conv.subagentCount ?? 0;
-      aggregate.backgroundTaskCount += conv.backgroundTaskCount ?? 0;
+      aggregate.subagentCount += work.subagents;
+      aggregate.backgroundTaskCount += work.commands;
       aggregate.chronoTaskCount += chronoTaskCount;
       if (activeCallConvIds.has(conv.id)) aggregate.activeCallCount++;
       folderId = parentById.get(folderId) ?? null;
@@ -336,8 +337,9 @@ export function renderSidebar(
       const hasWarningActivity = hasLongSleep || hasGlobalIdle;
       streamIcon = hasStreamingIndicator ? "◉ " : hasWarningActivity ? "◉ " : hasUnread ? "◉ " : "";
       streamIconColor = hasStreamingIndicator ? theme.accent : hasWarningActivity ? theme.warning : hasUnread ? theme.success : "";
-      subagentIcon = subagentIndicator(conv.subagentCount ?? 0);
-      backgroundTaskIcon = backgroundTaskIndicator(conv.backgroundTaskCount ?? 0);
+      const work = conversationWorkCounts(conv);
+      subagentIcon = subagentIndicator(work.subagents);
+      backgroundTaskIcon = backgroundTaskIndicator(work.commands);
       chronoTaskIcon = chronoTaskIndicator(countChronoTasks(conv.tasks));
       callIcon = activeCallConvIds.has(conv.id) ? "☎ " : "";
       starIcon = conv.marked ? "★ " : "";

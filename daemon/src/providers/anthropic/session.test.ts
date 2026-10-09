@@ -91,9 +91,12 @@ const result = (promptUuid: string | null, origin?: string) => ({
 });
 const lifecycle = (uuid: string, state: string) => ({ type: "command_lifecycle", command_uuid: uuid, state, session_id: SESSION });
 const answered = (...promptUuids: string[]) => ({ ...result(promptUuids[0]), user_message_uuids: promptUuids });
-const tasks = (...live: Array<{ id: string; description: string }>) => ({
+const tasks = (...live: Array<{ id: string; description: string; type?: string; parent?: string }>) => ({
   type: "system", subtype: "background_tasks_changed", session_id: SESSION,
-  tasks: live.map(task => ({ task_id: task.id, task_type: "local_bash", description: task.description })),
+  tasks: live.map(task => ({
+    task_id: task.id, task_type: task.type ?? "local_bash", description: task.description,
+    ...(task.parent ? { parent_task_id: task.parent } : {}),
+  })),
 });
 const finished = (id: string) => ({
   type: "system", subtype: "task_notification", session_id: SESSION, task_id: id, status: "completed",
@@ -267,6 +270,52 @@ describe("Claude Code processes outliving a turn", () => {
     expect(shown.text).toBe("It finished.");
     expect(runtime().prompts).toHaveLength(1);
     expect(session.canContinue(KEY, { sessionId: SESSION, resumeAt: "a3", cwd: "/work" })).toBe(true);
+  });
+
+  test("a finished background agent is reported like an Exocortex subagent; the commands it ran stay its own", async () => {
+    const { convId, session, runtime } = open();
+    const state = createClaudeStreamState(callbacks(), "/work", "p1");
+    const turn = session.run(state, [{ type: "text", text: "spawn an agent" }], undefined, undefined);
+    await tick();
+    const agent = { id: "a1", description: "JS engine core", type: "local_agent" };
+    const command = { id: "b2", description: "Run engine tests", parent: "a1" };
+    runtime().emit(init, tasks(agent), tasks(agent, command), text("a2", "spawned"), result("p1"));
+    await turn;
+    expect(getConversationTasks(convId)).toMatchObject([
+      { id: "a1", kind: "background", title: "JS engine core", toolName: "Agent" },
+      { id: "b2", kind: "background", title: "Run engine tests", toolName: "Bash" },
+    ]);
+
+    runtime().emit(
+      finished("b2"),
+      tasks(agent),
+      { ...finished("a1"), summary: "The engine runs every test." },
+      tasks(),
+      init,
+      text("a3", "The agent is done."),
+      result(null, "task-notification"),
+    );
+    await tick();
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0].text).toBe([
+      "[notification] Agent completed: a1",
+      "Task: JS engine core",
+      "",
+      "Result:",
+      "The engine runs every test.",
+      "",
+      "Output: /tmp/tasks/a1.output",
+    ].join("\n"));
+  });
+
+  test("a task Claude Code renames is renamed in the conversation's tasks without restarting its clock", async () => {
+    const { convId, session, runtime } = open();
+    await startBackgroundTask(session, runtime);
+    const [before] = getConversationTasks(convId);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    runtime().emit(tasks({ id: "b1", description: "Sleep twenty seconds" }));
+    await tick();
+    expect(getConversationTasks(convId)).toEqual([{ ...before, title: "Sleep twenty seconds" }]);
   });
 
   test("each turn Claude Code starts by itself gets its own wake, even when they queue up", async () => {

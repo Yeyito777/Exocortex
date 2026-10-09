@@ -82,6 +82,29 @@ describe("Claude Code stream translation", () => {
     expect(result.outputTokens).toBe(70);
   });
 
+  test("agent tools are summarized like Exocortex calls and answer in text rather than JSON", () => {
+    const { events, callbacks } = recorder();
+    const state = createClaudeStreamState(callbacks, "/work");
+    const call = (id: string, name: string, input: Record<string, unknown>) =>
+      ({ type: "assistant", uuid: `a-${id}`, session_id: SESSION, parent_tool_use_id: null, message: { content: [{ type: "tool_use", id, name, input }] } });
+    const answer = (id: string, content: unknown) =>
+      ({ type: "user", uuid: `u-${id}`, session_id: SESSION, parent_tool_use_id: null, message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content, is_error: false }] } });
+    for (const message of [
+      { type: "system", subtype: "init", session_id: SESSION },
+      call("t1", "SendMessage", { to: "worker", summary: "Wrap up now", message: "Please stop." }),
+      answer("t1", [{ type: "text", text: JSON.stringify({ success: true, message: "Message queued for delivery to worker at its next tool round.", pin: { id: "worker" } }) }]),
+      call("t2", "ToolSearch", { query: "select:SendMessage,TaskStop" }),
+      answer("t2", [{ type: "tool_reference", tool_name: "SendMessage" }, { type: "tool_reference", tool_name: "TaskStop" }]),
+    ]) pushClaudeMessage(state, message);
+
+    expect(events).toEqual([
+      "call:SendMessage:Wrap up now --to worker",
+      "result:SendMessage:Message queued for delivery to worker at its next tool round.",
+      "call:ToolSearch:select:SendMessage,TaskStop",
+      "result:ToolSearch:Loaded SendMessage\nLoaded TaskStop",
+    ]);
+  });
+
   test("hands each tool round to the agent loop as soon as its results arrive", () => {
     const { events, callbacks } = recorder();
     const rounds: ProviderRound[] = [];
