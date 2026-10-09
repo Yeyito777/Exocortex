@@ -24,10 +24,11 @@ import { advanceDeferredHistoryRender, hasDeferredHistoryRenderWork, render, inv
 import { preserveViewportAcrossResize } from "./chatscroll";
 import { invalidateFrame } from "./frame";
 import { enter_alt, leave_alt, hide_cursor, show_cursor, enable_bracketed_paste, disable_bracketed_paste, query_clipboard_paste_events, enable_clipboard_paste_events, disable_clipboard_paste_events, enable_kitty_kbd, disable_kitty_kbd, enable_mouse, disable_mouse, set_cursor_color, reset_cursor_color } from "./terminal";
-import { createInitialState, isStreaming, canInterrupt, clearPendingAI, clearStreamingTailMessages, focusPrompt, modelSupportsImages, newConversationSelection, openFolderInstructionsDocument, pushSystemMessage, renderFolderInstructionsDocument, resetDraftConversationState, resetHistoryPagination, resetNewConversationDefaults, resetToolOutputState } from "./state";
+import { createInitialState, isStreaming, canInterrupt, clearPendingAI, clearStreamingTailMessages, focusPrompt, isActiveConversationLoading, modelSupportsImages, newConversationSelection, openFolderInstructionsDocument, pushSystemMessage, renderFolderInstructionsDocument, resetDraftConversationState, resetHistoryPagination, resetNewConversationDefaults, resetToolOutputState } from "./state";
 import { createMessageMetadata, createPendingAI, type ImageAttachment, type UserMessage } from "./messages";
 import { loginPromptProviders } from "./providerselection";
 import { handleEvent } from "./events";
+import { beginConversationLoad } from "./events/conversations";
 import { CONV_SCOPED } from "./events/stream-sequence";
 import {
   clearAllQueuedMessagesForConversation,
@@ -342,7 +343,8 @@ function renderDelayForEvent(event: Event): number {
 /** Re-render active stream/task durations on the next exact second boundary. */
 function resetStreamTick(): void {
   clearStreamTick();
-  if (state.sshConnecting || state.contextCompactionStartedAt != null || state.historyLoadingOlder) {
+  if (state.sshConnecting || state.contextCompactionStartedAt != null || state.historyLoadingOlder
+      || isActiveConversationLoading(state)) {
     streamTickTimer = setTimeout(scheduleRender, 80);
     return;
   }
@@ -760,6 +762,20 @@ function attachTerminalClipboardImage(image: ImageAttachment): void {
   renderAfterLocalUiMutation();
 }
 
+function openConversation(convId: string, input: "keyboard" | "mouse"): void {
+  state.folderInstructionsDoc = null;
+  prepareConversationOpen(state, convId);
+  // Local loads land within a frame. Remote ones cross the network, so open
+  // the chat now and let its spinner cover the round trip.
+  if (daemon.remoteAlias) beginConversationLoad(state, convId, daemon);
+  maybePrewarmOpenAI();
+  const reqId = daemon.loadConversation(convId);
+  const renderMs = renderAfterLocalUiMutation();
+  if (PERFORMANCE_PROFILING_ENABLED && renderMs >= 100) {
+    log("warn", `perf: conversation_open tui_request_render ${JSON.stringify({ reqId, convId, renderMs, input })}`);
+  }
+}
+
 function startNewConversation(): void {
   conversationPrewarmer.reset();
   const wasFolderInstructionsDoc = state.folderInstructionsDoc !== null;
@@ -955,7 +971,7 @@ function handleSubmit(): void {
           state.pendingImages = [];
           state.scrollOffset = 0;
           if (state.convId) {
-            daemon.setGoal(state.convId, cmdResult.action, cmdResult.objective, cmdResult.maxTurns);
+            daemon.setGoal(state.convId, cmdResult.action, cmdResult.objective, cmdResult.maxTimeMs);
           } else if (cmdResult.action === "set" && cmdResult.objective?.trim()) {
             const objective = cmdResult.objective.trim();
             const selection = newConversationSelection(state);
@@ -971,7 +987,7 @@ function handleSubmit(): void {
               undefined,
               undefined,
               undefined,
-              cmdResult.maxTurns,
+              cmdResult.maxTimeMs,
             );
           } else {
             pushSystemMessage(state, "Create or open a conversation before using /goal.", theme.warning);
@@ -1581,16 +1597,7 @@ function handleKey(key: KeyEvent): void {
       requestDaemonRestart();
       break;
     case "load_conversation":
-      state.folderInstructionsDoc = null;
-      {
-        prepareConversationOpen(state, result.convId);
-        maybePrewarmOpenAI();
-        const reqId = daemon.loadConversation(result.convId);
-        const renderMs = renderAfterLocalUiMutation();
-        if (PERFORMANCE_PROFILING_ENABLED && renderMs >= 100) {
-          log("warn", `perf: conversation_open tui_request_render ${JSON.stringify({ reqId, convId: result.convId, renderMs, input: "keyboard" })}`);
-        }
-      }
+      openConversation(result.convId, "keyboard");
       return;
     case "open_folder_instructions":
       leaveConversationView(state);
@@ -1711,16 +1718,7 @@ function handleMouse(ev: MouseEvent): void {
 
   switch (result.type) {
     case "load_conversation":
-      state.folderInstructionsDoc = null;
-      {
-        prepareConversationOpen(state, result.convId);
-        maybePrewarmOpenAI();
-        const reqId = daemon.loadConversation(result.convId);
-        const renderMs = renderAfterLocalUiMutation();
-        if (PERFORMANCE_PROFILING_ENABLED && renderMs >= 100) {
-          log("warn", `perf: conversation_open tui_request_render ${JSON.stringify({ reqId, convId: result.convId, renderMs, input: "mouse" })}`);
-        }
-      }
+      openConversation(result.convId, "mouse");
       return;
     case "open_folder_instructions":
       leaveConversationView(state);

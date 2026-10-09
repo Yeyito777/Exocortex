@@ -202,6 +202,8 @@ export interface RenderState {
   fastMode: FastMode;
   goal: ConversationGoal | null;
   convId: string | null;
+  /** Conversation opened ahead of its canonical load (remote routes); shown as a spinner. */
+  conversationLoading: { convId: string; startedAt: number } | null;
   /** Selected remote daemon route. Null means the local daemon. */
   sshRemote: { alias: string; connected: boolean } | null;
   macroEnvironment: MacroEnvironment | null;
@@ -369,6 +371,11 @@ export function clearPendingAI(state: RenderState): void {
   state.suppressPendingAIMetadataStartedAt = null;
 }
 
+/** Whether the active conversation is still waiting for its first canonical load. */
+export function isActiveConversationLoading(state: RenderState): boolean {
+  return state.conversationLoading != null && state.conversationLoading.convId === state.convId;
+}
+
 /** Clear the live streaming tail used for user-invoked notices. */
 export function clearStreamingTailMessages(state: RenderState): void {
   state.streamingTailMessages = [];
@@ -462,6 +469,7 @@ export function renderDraftFolderInstructions(state: RenderState): void {
 export function resetDraftConversationState(state: RenderState): void {
   state.folderInstructionsDoc = null;
   state.convId = null;
+  state.conversationLoading = null;
   // Starting a draft chooses its destination. Navigating the sidebar afterward
   // is only browsing and must not silently move the eventual conversation.
   state.draftFolderId = state.sidebar.currentFolderId;
@@ -490,6 +498,7 @@ export function openFolderInstructionsDocument(state: RenderState, folderId: str
   state.sidebar.selectedItem = { type: "folder_instructions", folderId };
   state.sidebar.selectedId = null;
   state.convId = null;
+  state.conversationLoading = null;
   state.contextTokens = 0;
   state.goal = null;
   state.btw = null;
@@ -621,6 +630,7 @@ export function createInitialState(): RenderState {
     fastMode: defaults.fastMode,
     goal: null,
     convId: null,
+    conversationLoading: null,
     sshRemote: null,
     macroEnvironment: null,
     sshConnecting: null,

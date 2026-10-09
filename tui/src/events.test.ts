@@ -7,6 +7,7 @@ import { buildMessageLines } from "./conversation";
 import { getViewStartFor } from "./chatscroll";
 import { requestVisibleToolOutputs } from "./events/tool-outputs";
 import { prepareConversationOpen } from "./conversationscroll";
+import { beginConversationLoad } from "./events/conversations";
 import type { Event } from "./protocol";
 import { createGenerationThroughput, generationTokensPerSecond } from "@exocortex/shared/generation-throughput";
 
@@ -615,6 +616,93 @@ describe("conversation scroll restoration", () => {
       mode: "unread-response",
       waitForInitialBackfill: false,
     });
+  });
+});
+
+describe("remote conversation open placeholder", () => {
+  const loaded = (convId: string, text = "answer"): Extract<Event, { type: "conversation_loaded" }> => ({
+    type: "conversation_loaded",
+    convId,
+    provider: "openai",
+    model: "gpt-5.5",
+    effort: "high",
+    fastMode: false,
+    entries: [{ type: "ai", blocks: [{ type: "text", text }], metadata: null }],
+    contextTokens: 100,
+    toolOutputsIncluded: false,
+  });
+
+  function openedState(): { state: RenderState; unsubscribed: string[]; actions: DaemonActions } {
+    const state = createInitialState();
+    state.convId = "current";
+    state.messages = [{ role: "system", text: "old transcript", metadata: null }];
+    state.sidebar.conversations = [
+      summary({ id: "current" }),
+      summary({ id: "target", title: "Remote chat", model: "gpt-5.4", effort: "low" }),
+      summary({ id: "other" }),
+    ];
+    const unsubscribed: string[] = [];
+    return { state, unsubscribed, actions: { ...daemon, unsubscribe: convId => unsubscribed.push(convId) } };
+  }
+
+  test("switches to the chat immediately and shows a loading spinner", () => {
+    const { state, unsubscribed, actions } = openedState();
+
+    prepareConversationOpen(state, "target");
+    beginConversationLoad(state, "target", actions);
+
+    expect(state.convId).toBe("target");
+    expect(state.messages).toEqual([]);
+    expect(state.model).toBe("gpt-5.4");
+    expect(state.effort).toBe("low");
+    expect(state.contextTokens).toBeNull();
+    expect(unsubscribed).toEqual(["current"]);
+    expect(state.sidebar.previousEnteredId).toBe("current");
+    const lines = buildMessageLines(state, 80).lines.map(line => line.replace(/\x1b\[[0-9;]*m/g, ""));
+    expect(lines).toEqual([expect.stringMatching(/^  . Loading conversation\.\.\.$/)]);
+  });
+
+  test("replaces the spinner with the loaded transcript as a fresh open", () => {
+    const { state, actions } = openedState();
+    state.conversationScroll.positions.set("target", 0.25);
+    prepareConversationOpen(state, "target");
+    beginConversationLoad(state, "target", actions);
+    presentHistory(state, 20);
+
+    handleEvent({ ...loaded("target"), hasOlderHistory: true }, state, actions);
+
+    expect(state.conversationLoading).toBeNull();
+    expect(buildMessageLines(state, 80).lines.join("\n")).not.toContain("Loading conversation");
+    expect(state.messages.at(-1)).toMatchObject({ role: "assistant" });
+    // The placeholder's one-line layout must not overwrite the remembered position.
+    expect(state.conversationScroll.pendingRestore).toMatchObject({ convId: "target", mode: "percentage", percentage: 0.25 });
+  });
+
+  test("drops an earlier in-flight open after switching again", () => {
+    const { state, unsubscribed, actions } = openedState();
+    beginConversationLoad(state, "other", actions);
+    beginConversationLoad(state, "target", actions);
+    expect(unsubscribed).toEqual(["current", "other"]);
+
+    handleEvent(loaded("other", "stale"), state, actions);
+    expect(state.convId).toBe("target");
+    expect(state.messages).toEqual([]);
+    expect(state.conversationLoading?.convId).toBe("target");
+
+    handleEvent(loaded("target", "fresh"), state, actions);
+    expect(state.convId).toBe("target");
+    expect(state.conversationLoading).toBeNull();
+    expect(unsubscribed).toEqual(["current", "other"]);
+  });
+
+  test("stops the spinner when the load fails", () => {
+    const { state, actions } = openedState();
+    beginConversationLoad(state, "target", actions);
+
+    handleEvent({ type: "error", reqId: "conversation_1", convId: "target", message: "Conversation target not found" }, state, actions);
+
+    expect(state.conversationLoading).toBeNull();
+    expect(buildMessageLines(state, 80).lines.join("\n")).not.toContain("Loading conversation");
   });
 });
 

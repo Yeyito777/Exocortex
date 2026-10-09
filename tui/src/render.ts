@@ -11,7 +11,7 @@
  * functions can use them between render passes.
  */
 
-import type { RenderState } from "./state";
+import { isActiveConversationLoading, type RenderState } from "./state";
 import type { ImageAttachment } from "./messages";
 import { getViewStart } from "./chatscroll";
 import {
@@ -71,6 +71,7 @@ interface HistoryRenderCacheEntry {
   voiceMessageFrameIndex: number | null;
   voiceMessagePhase: string | null;
   historyLoadingFrame: number | null;
+  conversationLoadingFrame: number | null;
   durableSleepMetadataFrame: number | null;
   showToolOutput: boolean;
   showDiagnostics: boolean;
@@ -92,6 +93,11 @@ function historyLoadingFrame(state: RenderState): number | null {
   return Math.max(0, Math.floor((Date.now() - (state.historyLoadingStartedAt ?? Date.now())) / HISTORY_LOADING_FRAME_INTERVAL_MS));
 }
 
+function conversationLoadingFrame(state: RenderState): number | null {
+  if (!isActiveConversationLoading(state)) return null;
+  return Math.max(0, Math.floor((Date.now() - state.conversationLoading!.startedAt) / HISTORY_LOADING_FRAME_INTERVAL_MS));
+}
+
 function canReuseHistoryRender(
   cached: HistoryRenderCacheEntry,
   state: RenderState,
@@ -110,6 +116,7 @@ function canReuseHistoryRender(
     && cached.voiceMessageFrameIndex === (state.voiceMessage?.frameIndex ?? null)
     && cached.voiceMessagePhase === (state.voiceMessage?.phase ?? null)
     && cached.historyLoadingFrame === historyLoadingFrame(state)
+    && cached.conversationLoadingFrame === conversationLoadingFrame(state)
     && cached.durableSleepMetadataFrame === currentDurableSleepMetadataFrame
     && cached.showToolOutput === state.showToolOutput
     && cached.showDiagnostics === state.showDiagnostics
@@ -232,6 +239,7 @@ function getHistoryRender(
     voiceMessageFrameIndex: state.voiceMessage?.frameIndex ?? null,
     voiceMessagePhase: state.voiceMessage?.phase ?? null,
     historyLoadingFrame: historyLoadingFrame(state),
+    conversationLoadingFrame: conversationLoadingFrame(state),
     durableSleepMetadataFrame: currentDurableSleepMetadataFrame,
     showToolOutput: state.showToolOutput,
     showDiagnostics: state.showDiagnostics,

@@ -167,6 +167,9 @@ export function handleEvent(
     case "error":
       // Only show errors for the current conversation (or unscoped errors).
       if (event.convId && event.convId !== state.convId) break;
+      // The opened conversation may have been deleted remotely. Stop the
+      // spinner; the authoritative list update then clears the chat.
+      if (event.convId && state.conversationLoading?.convId === event.convId) state.conversationLoading = null;
       if (event.convId === state.convId && event.reqId === state.historyLoadingRequestId) {
         state.pendingHistoryNavigation = null;
         state.historyLoadingOlder = false;

@@ -28,6 +28,7 @@ import * as convStore from "./conversations";
 import { closeConversationPersistence, prepareConversationStoreSchema } from "./persistence";
 import { getRunningConversationIds, prepareRestartForReplay, prepareStopWithoutReplay } from "./control";
 import { clearRestartRecoveryForStop, deliverPendingSubagentNotifications, hasActiveGoalRestartMarker, prepareCatchableShutdownForReplay, prepareCatchableShutdownWithoutReplay, recoverActiveGoals, recoverInterruptedStreams } from "./restart-recovery";
+import { scheduleActiveGoalTimeLimits } from "./goal-time-limit";
 import { startChronoService, stopChronoService, listChronoSchedules, resumeDeferredChronoWaits } from "./chrono-service";
 import { startWatchdog, stopWatchdog } from "./watchdog";
 import { initExternalTools, stopExternalToolsAsync, getExternalToolCount, getSupervisedDaemonCount, getExternalToolStyles } from "./external-tools";
@@ -42,6 +43,7 @@ import { startExternalNotificationSoftWakeService, stopExternalNotificationSoftW
 import { startDisplayIndexBackfill } from "./display-index-backfill";
 import { broadcastConversationUpdated } from "./conversation-events";
 import { BackgroundTaskRecovery } from "./background-task-recovery";
+import { closeAllClaudeCodeSessions } from "./providers/anthropic/session";
 import { runIpcProxy } from "./ipc-proxy";
 
 // ── Startup profiling ────────────────────────────────────────────────
@@ -164,6 +166,10 @@ async function startDaemon(): Promise<void> {
           log("warn", `exocortexd: ${stopPrep.stillStreaming.length} conversation(s) still shutting down after stop timeout: ${stopPrep.stillStreaming.join(", ")}`);
         }
       }
+
+      // Claude Code background tasks live in Claude Code processes and cannot
+      // outlive this daemon; resumed sessions report them as stopped.
+      closeAllClaudeCodeSessions(`daemon ${shutdownMode}`);
 
       if (shutdownMode === "stop") {
         const stoppedBackgroundTasks = stopAllBackgroundTasks();
@@ -324,6 +330,8 @@ async function startDaemon(): Promise<void> {
   log("info", `exocortexd: ready on ${SOCKET_PATH} (auth=${authSummary}, chrono=${chronoSchedules.length})`);
   profileMark("ready", { chronoSchedules: chronoSchedules.length, externalToolCount: extToolCount, supervisedDaemonCount: supervisedCount });
 
+  // Before recovery, so goals whose time ran out while the daemon was down do not resume.
+  scheduleActiveGoalTimeLimits(server);
   const recoveredStreams = recoverInterruptedStreams(server);
   if (recoveredStreams.length > 0) {
     console.log(`  replay: scheduled ${recoveredStreams.length} interrupted conversation(s): ${recoveredStreams.join(", ")}`);

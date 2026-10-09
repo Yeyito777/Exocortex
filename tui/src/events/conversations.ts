@@ -1,4 +1,5 @@
 import { log } from "../log";
+import type { ConversationSummary } from "../messages";
 import type { Event } from "../protocol";
 import { syncChosenProvider } from "../providerselection";
 import { clearAllQueuedMessagesForConversation } from "../queue";
@@ -20,6 +21,7 @@ import {
   clearPendingAI,
   clearStreamingTailMessages,
   clearToolOutputRequests,
+  isActiveConversationLoading,
   resetNewConversationDefaults,
   resetHistoryPagination,
   resetToolOutputState,
@@ -103,6 +105,7 @@ export function handleConversationsList(event: Extract<Event, { type: "conversat
 function clearRemovedActiveConversation(state: RenderState, convId: string): void {
   forgetConversationScroll(state, convId);
   state.convId = null;
+  state.conversationLoading = null;
   state.draftFolderId = state.sidebar.currentFolderId;
   state.messages = [];
   state.callAssistantDraft = null;
@@ -123,17 +126,48 @@ export function handleConversationUpdated(event: Extract<Event, { type: "convers
 
   updateConversation(state.sidebar, summary);
   // Sync provider/model/effort if this is the active conversation.
-  if (summary.id === state.convId) {
-    const nextProvider = summary.provider ?? fallbackProvider(state);
-    const nextModel = summary.model ?? state.model;
-    const providerOrModelChanged = nextProvider !== state.provider || nextModel !== state.model;
-    syncChosenProvider(state, nextProvider);
-    state.model = nextModel;
-    state.effort = summary.effort ?? state.effort;
-    state.fastMode = summary.fastMode ?? state.fastMode;
-    state.goal = summary.goal ?? null;
-    if (providerOrModelChanged && state.contextTokens !== 0) state.contextTokens = null;
+  if (summary.id === state.convId) syncActiveConversationSummary(state, summary);
+}
+
+function syncActiveConversationSummary(state: RenderState, summary: ConversationSummary): void {
+  const nextProvider = summary.provider ?? fallbackProvider(state);
+  const nextModel = summary.model ?? state.model;
+  const providerOrModelChanged = nextProvider !== state.provider || nextModel !== state.model;
+  syncChosenProvider(state, nextProvider);
+  state.model = nextModel;
+  state.effort = summary.effort ?? state.effort;
+  state.fastMode = summary.fastMode ?? state.fastMode;
+  state.goal = summary.goal ?? null;
+  if (providerOrModelChanged && state.contextTokens !== 0) state.contextTokens = null;
+}
+
+/**
+ * Switch to a conversation before its canonical load arrives. Over SSH the load
+ * is a network round trip; the empty transcript shows a spinner meanwhile
+ * instead of leaving the previous conversation on screen with no feedback.
+ */
+export function beginConversationLoad(state: RenderState, convId: string, daemon: DaemonActions): void {
+  const previousConvId = state.convId;
+  if (previousConvId === convId) return;
+  if (previousConvId) {
+    daemon.unsubscribe(previousConvId);
+    delete state.lastStreamSeqByConv[previousConvId];
   }
+  rememberEnteredConversation(state.sidebar, previousConvId, convId);
+  clearCallTranscriptDrafts(state);
+  state.messages = [];
+  clearPendingAI(state);
+  clearStreamingTailMessages(state);
+  state.folderInstructionsDoc = null;
+  state.convId = convId;
+  state.conversationLoading = { convId, startedAt: Date.now() };
+  state.btw = null;
+  state.scrollOffset = 0;
+  state.contextTokens = null;
+  const summary = state.sidebar.conversations.find(conversation => conversation.id === convId);
+  if (summary) syncActiveConversationSummary(state, summary);
+  resetHistoryPagination(state);
+  resetToolOutputState(state);
 }
 
 export function handleConversationRestored(event: Extract<Event, { type: "conversation_restored" }>, state: RenderState): void {
@@ -183,8 +217,13 @@ export function handleConversationLoaded(
   state: RenderState,
   daemon: DaemonActions,
 ): void {
+  const placeholderLoading = isActiveConversationLoading(state);
+  // An older in-flight open must not navigate away from the conversation the
+  // user has already switched to; that switch also unsubscribed it.
+  if (placeholderLoading && event.convId !== state.convId) return;
   const previousConvId = state.convId;
-  const sameConversation = previousConvId === event.convId;
+  // A placeholder has no transcript to reconcile: apply its load as a fresh open.
+  const sameConversation = previousConvId === event.convId && !placeholderLoading;
   beginConversationScrollRestore(
     state,
     event.convId,
@@ -245,6 +284,7 @@ export function handleConversationLoaded(
   rememberEnteredConversation(state.sidebar, previousConvId, event.convId);
   state.folderInstructionsDoc = null;
   state.convId = event.convId;
+  state.conversationLoading = null;
   if (sameConversation) {
     // Same-conversation loads are used for silent rehydration after daemon
     // reconnects (and other refreshes). Do not move the sidebar into the

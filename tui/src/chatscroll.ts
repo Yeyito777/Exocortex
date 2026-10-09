@@ -392,7 +392,8 @@ function firstMovableHistoryRowInViewport(
   const viewEnd = Math.min(oldRender.lines.length, oldViewStart + messageAreaHeight);
   for (let row = oldViewStart; row < viewEnd; row++) {
     const segment = oldRender.lineAnchors[row]?.segment;
-    if (segment === "history_loading" || segment?.startsWith("system_instructions_")) continue;
+    if (segment === "history_loading" || segment === "conversation_loading"
+        || segment?.startsWith("system_instructions_")) continue;
     return row;
   }
   return oldViewStart;

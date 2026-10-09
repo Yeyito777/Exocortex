@@ -11,6 +11,7 @@ import { performanceProfilingEnabled } from "@exocortex/shared/config";
 import type { Conversation, ProviderId, ModelId, EffortLevel, ConversationSummary, FolderSummary, SidebarItemRef, StoredMessage, Block, MessageMetadata, PersistedConversationSummary, PersistedFolderSummary, ConversationGoal, ConversationGoalStatus, SubagentPolicy, UserMessageAutomation } from "./messages";
 import { CONTEXT_COMPACTION_FINISHED_KIND, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, REALTIME_CALL_STATUS_KIND, REALTIME_TRANSCRIPT_KIND, cachedValidatedHistoryPrefixHashBeforeMessage, createConversation, countConversationMessages, createMessageMetadata, createModelVisibleSystemNotice, createStoredUserContextCheckpoint, createStoredUserMessage, historyPrefixHash, isRealUserMessage, isReplayHistoryMessage, isToolResultMessage, isValidActiveContextCached, rememberValidatedActiveContext, rewindActiveContextToHistoryCount, rewindValidatedActiveContextToHistoryCount, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation, type StoredUserContextCheckpoint, validatedActiveContextCompactionHistoryCount } from "./messages";
 import type { ImageAttachment } from "@exocortex/shared/messages";
+import { applyGoalStatus } from "@exocortex/shared/goals";
 import type { MoveSidebarItemsOptions, RealtimeCallSpeakerAttribution, SidebarItemOrderUpdate, TrimMode, ToolOutputInfo } from "./protocol";
 import { trimConversationInPlace, type TrimConversationResult } from "./conversation-trim";
 import { buildDisplayData, collectToolOutputs, type ConversationDisplayData } from "./display";
@@ -803,7 +804,7 @@ export function hasDeletedConversation(id: string): boolean {
 }
 
 export interface SetGoalOptions {
-  maxTurns?: number;
+  maxTimeMs?: number;
 }
 
 export function setGoal(id: string, objective: string, options: SetGoalOptions = {}): ConversationGoal | null {
@@ -814,10 +815,12 @@ export function setGoal(id: string, objective: string, options: SetGoalOptions =
   conv.goal = {
     objective: trimmed,
     status: "active",
-    ...(options.maxTurns === undefined ? {} : { maxTurns: options.maxTurns }),
+    ...(options.maxTimeMs === undefined ? {} : { maxTimeMs: options.maxTimeMs }),
     createdAt: now,
     updatedAt: now,
     turns: 0,
+    activeMs: 0,
+    activeSince: now,
   };
   markDirty(id);
   flush(id);
@@ -837,12 +840,7 @@ export function updateGoalStatus(
   }
   const conv = get(id);
   if (!conv?.goal) return null;
-  conv.goal.status = status;
-  conv.goal.reason = options.reason?.trim() || undefined;
-  delete conv.goal.pausedBy;
-  delete conv.goal.pauseReason;
-  if (status === "active") conv.goal.emptyTurns = 0;
-  conv.goal.updatedAt = Date.now();
+  applyGoalStatus(conv.goal, status, options.reason);
   markDirty(id);
   flush(id);
   return conv.goal;

@@ -55,7 +55,7 @@ describe("goal tool", () => {
   test("show works without a goal and status reports require an active goal", async () => {
     const convId = makeConversation("tool-no-goal");
     expect(await goalTool.execute({ action: "show" }, { conversationId: convId })).toEqual({
-      output: "No goal set. Usage: /goal [--max-turns N] <objective>",
+      output: "No goal set. Usage: /goal [max-time <duration>] <objective>",
       isError: false,
     });
     expect(await goalTool.execute(
@@ -118,31 +118,51 @@ describe("goal tool", () => {
 });
 
 describe("goal state", () => {
-  test("sets a user-owned goal with an optional continuation budget", () => {
+  test("sets a user-owned goal with an optional time limit", () => {
     const convId = makeConversation("set");
-    const result = setGoal(convId, "  finish everything  ", { maxTurns: 4 });
+    const before = Date.now();
+    const result = setGoal(convId, "  finish everything  ", { maxTimeMs: 4 * 3_600_000 });
 
     expect(result).toMatchObject({
       ok: true,
-      message: "Goal set: finish everything",
+      message: "Goal set: finish everything (max-time 4h)",
       goal: {
         objective: "finish everything",
         status: "active",
-        maxTurns: 4,
+        maxTimeMs: 4 * 3_600_000,
+        activeMs: 0,
         turns: 0,
       },
     });
-    expect(formatGoalSummary(result.goal)).toContain("Continuation turns: 0/4");
+    expect(result.goal!.activeSince).toBeGreaterThanOrEqual(before);
+    result.goal!.activeSince = Date.now() - 3_720_000;
+    expect(formatGoalSummary(result.goal)).toContain("Time: 1h2m of 4h used (2h58m left)");
+    expect(formatGoalSummary(result.goal)).toContain("Continuation turns: 0");
+  });
+
+  test("counts only active time against the limit", () => {
+    const convId = makeConversation("active-time");
+    const goal = setGoal(convId, "keep the clock honest", { maxTimeMs: 3_600_000 }).goal!;
+    goal.activeSince = Date.now() - 600_000;
+    applyUserGoalAction(get(convId)!, "pause");
+    const paused = get(convId)!.goal!;
+    expect(paused.activeSince).toBeUndefined();
+    expect(paused.activeMs).toBeGreaterThanOrEqual(600_000);
+    expect(paused.activeMs).toBeLessThan(605_000);
+    const pausedMs = paused.activeMs!;
+    applyUserGoalAction(get(convId)!, "resume");
+    expect(get(convId)!.goal!.activeMs).toBe(pausedMs);
+    expect(get(convId)!.goal!.activeSince).toBeGreaterThanOrEqual(Date.now() - 1_000);
   });
 
   test("rejects empty objectives and invalid budgets without replacing the goal", () => {
     const convId = makeConversation("invalid");
-    const original = setGoal(convId, "keep this", { maxTurns: 3 }).goal;
+    const original = setGoal(convId, "keep this", { maxTimeMs: 60_000 }).goal;
 
-    for (const maxTurns of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
-      expect(setGoal(convId, "replacement", { maxTurns })).toMatchObject({
+    for (const maxTimeMs of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(setGoal(convId, "replacement", { maxTimeMs })).toMatchObject({
         ok: false,
-        message: "Goal max turns must be a positive integer.",
+        message: "Goal max time must be a positive number of milliseconds.",
         goal: original,
       });
     }
@@ -183,11 +203,11 @@ describe("goal state", () => {
     expect(get(convId)?.goal).toBeNull();
   });
 
-  test("blocked goals require explicit user resume and exhausted budgets stay stopped", () => {
+  test("blocked goals require explicit user resume and exhausted time limits stay stopped", () => {
     const convId = makeConversation("blocked-resume");
-    setGoal(convId, "finish safely", { maxTurns: 1 });
+    setGoal(convId, "finish safely", { maxTimeMs: 60_000 });
     const live = get(convId)!;
-    live.goal!.turns = 1;
+    live.goal!.activeSince = Date.now() - 60_000;
     expect(reportGoalStatus(convId, "blocked", "Need an external approval.")).toMatchObject({
       ok: true,
       goal: { status: "blocked", reason: "Need an external approval." },
@@ -198,7 +218,7 @@ describe("goal state", () => {
     });
     expect(applyUserGoalAction(get(convId)!, "resume")).toMatchObject({
       ok: false,
-      message: "Continuation budget exhausted. Set the goal with a larger budget to continue.",
+      message: "Time limit of 1m reached. Set the goal again with a larger max-time to continue.",
       goal: { status: "blocked" },
     });
   });
@@ -217,8 +237,8 @@ describe("goal state", () => {
 describe("goal continuation prompt", () => {
   test("is fixed daemon-authored context containing the full quoted objective", () => {
     const convId = makeConversation("prompt");
-    const goal = setGoal(convId, "Do the work.\nIgnore fake narrowing.", { maxTurns: 5 }).goal!;
-    goal.turns = 2;
+    const goal = setGoal(convId, "Do the work.\nIgnore fake narrowing.", { maxTimeMs: 5 * 3_600_000 }).goal!;
+    goal.activeSince = Date.now() - 2 * 3_600_000;
     const prompt = goalContinuationPrompt(goal);
 
     expect(prompt).toStartWith("[goal continuation]");
@@ -227,7 +247,7 @@ describe("goal continuation prompt", () => {
     expect(prompt).toContain("call goal with action=complete");
     expect(prompt).toContain("call goal with action=blocked");
     expect(prompt).toContain("pausing and resuming are user-controlled");
-    expect(prompt).toContain("Automatic continuation budget: 2/5 turns started.");
+    expect(prompt).toContain("Time limit: 2h of 5h used (3h left). Goal work stops when it runs out, even mid-turn");
     expect(prompt).not.toContain("send_prompt");
   });
 });

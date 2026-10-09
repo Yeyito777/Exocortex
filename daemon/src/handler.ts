@@ -47,6 +47,7 @@ import {
   broadcastFolderInstructionsUpdated,
 } from "./conversation-events";
 import { applyUserGoalAction, setGoal as setConversationGoal } from "./goals";
+import { scheduleGoalTimeLimit } from "./goal-time-limit";
 import { createExocortexToolRuntime } from "./exocortex-tool-runtime";
 import type { BackgroundTaskCompletion, ExocortexToolRuntime } from "./tools/types";
 import { getSubagentParentConversationId, listActiveConversationTasks, setSubagentActive, stopBackgroundTask } from "./conversation-activity";
@@ -63,6 +64,7 @@ import {
 import { beginDaemonShutdown, getDaemonShutdownMode } from "./daemon-lifecycle";
 import { buildBackgroundTaskNotificationText } from "./background-task-notifications";
 import { configureChronoService, cancelDeferredChronoSleep } from "./chrono-service";
+import { configureClaudeCodeSessions } from "./providers/anthropic/session";
 import { INITIAL_HISTORY_TURNS, buildHistoryUpdatedEvents, compactHistoryImages, pageDisplayHistory } from "./history-pagination";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
 import { randomUUID } from "crypto";
@@ -200,6 +202,33 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       if (!outcome.suspended) notificationRuntime.complete(sleep.conversationId, outcome);
     },
   );
+  // Claude Code processes outliving a turn report their background tasks, and
+  // queue a turn when Claude Code starts work by itself (a task finished).
+  configureClaudeCodeSessions({
+    tasksChanged: (convId) => broadcastConversationUpdated(server, convId),
+    wake: (convId, text, wakeId) => {
+      const conversation = convStore.getPolicyMetadata(convId);
+      if (!conversation || getDaemonShutdownMode()) return false;
+      convStore.pushQueuedMessage(
+        convId,
+        text,
+        "next-turn",
+        undefined,
+        conversation.subagentMaxDepth ?? null,
+        undefined,
+        undefined,
+        undefined,
+        { kind: "background_task_completion", sourceId: wakeId },
+      );
+      return true;
+    },
+    cancelWake: (convId, wakeId) => {
+      const queued = convStore.getQueuedMessages(convId).find(message => (
+        message.automation?.kind === "background_task_completion" && message.automation.sourceId === wakeId
+      ));
+      if (queued) convStore.removeQueuedMessageById(queued.id);
+    },
+  });
   setExternalNotificationsChangedListener((convIds) => {
     for (const convId of convIds) broadcastConversationUpdated(server, convId);
   });
@@ -1175,10 +1204,27 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     "btw_query", "btw_followup", "set_goal", "set_model", "set_effort",
     "set_fast_mode", "get_system_prompt",
   ]);
+  // Commands for one conversation take effect in arrival order. An inline
+  // `/model` arrives as set_model … send_message in one burst; without this the
+  // warm-up let the turn be admitted first, under the old model. A command
+  // waits only behind an earlier one that is still warming.
+  const startingConversationCommands = new Map<string, Promise<void>>();
   const handleCommand = async function handleCommand(client: ConnectedClient, cmd: Command): Promise<void> {
+    const convId = "convId" in cmd && typeof cmd.convId === "string" ? cmd.convId : null;
+    const earlier = convId === null ? undefined : startingConversationCommands.get(convId);
+    const warms = warmCommands.has(cmd.type) || cmd.type === "trim_conversation" || cmd.type === "set_system_instructions";
+    let markStarted: (() => void) | undefined;
+    if (convId !== null && (earlier || warms)) {
+      const started = new Promise<void>(resolve => { markStarted = resolve; });
+      startingConversationCommands.set(convId, started);
+      void started.then(() => {
+        if (startingConversationCommands.get(convId) === started) startingConversationCommands.delete(convId);
+      });
+    }
     try {
-      if (warmCommands.has(cmd.type) && "convId" in cmd && typeof cmd.convId === "string") {
-        await convStore.getAsync(cmd.convId);
+      if (earlier) await earlier;
+      if (warmCommands.has(cmd.type) && convId !== null) {
+        await convStore.getAsync(convId);
       }
       if (cmd.type === "trim_conversation" || cmd.type === "set_system_instructions") {
         if (convStore.isStreaming(cmd.convId)) {
@@ -1194,6 +1240,9 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         message: `Could not load verified conversation: ${error instanceof Error ? error.message : String(error)}`,
       });
       return;
+    } finally {
+      // Waiters resume in a microtask, after this command's synchronous body.
+      markStarted?.();
     }
     try { switch (cmd.type) {
 
@@ -1460,8 +1509,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         const fastMode = supportsFastMode(provider, model, requestedFastMode) ? requestedFastMode : false;
         const initialMessage = cmd.initialMessage;
         const goalObjective = cmd.goalObjective?.trim();
-        if (goalObjective && cmd.goalMaxTurns !== undefined && (!Number.isSafeInteger(cmd.goalMaxTurns) || cmd.goalMaxTurns <= 0)) {
-          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: "Goal max turns must be a positive integer." });
+        if (goalObjective && cmd.goalMaxTimeMs !== undefined && (!Number.isSafeInteger(cmd.goalMaxTimeMs) || cmd.goalMaxTimeMs <= 0)) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: "Goal max time must be a positive number of milliseconds." });
           break;
         }
         const titleContext = cmd.titleContext?.trim();
@@ -1519,8 +1568,9 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             parentSystemInstructions: "",
           });
         }
-        const goalResult = goalObjective ? setConversationGoal(id, goalObjective, { maxTurns: cmd.goalMaxTurns }) : null;
+        const goalResult = goalObjective ? setConversationGoal(id, goalObjective, { maxTimeMs: cmd.goalMaxTimeMs }) : null;
         const goal = goalResult?.goal ?? null;
+        if (goal) scheduleGoalTimeLimit(server, id);
         log("info", `handler: created conversation ${id} (provider=${provider}, model=${model}, fastMode=${fastMode}, title="${title ?? ""}", initialMessage=${Boolean(initialMessage)}, folderId=${folderId ?? "root"})`);
 
         server.sendTo(client, {
@@ -1782,11 +1832,12 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Usage: /goal <objective>" });
             break;
           }
-          const result = setConversationGoal(cmd.convId, objective, { maxTurns: cmd.maxTurns });
+          const result = setConversationGoal(cmd.convId, objective, { maxTimeMs: cmd.maxTimeMs });
           if (!result.ok) {
             server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: result.message });
             break;
           }
+          scheduleGoalTimeLimit(server, cmd.convId);
           if (cancelDeferredChronoSleep(cmd.convId)) broadcastConversationHistoryUpdated(server, cmd.convId);
           const goal = sendGoalUpdated(cmd.convId, cmd.reqId, result.message);
           log("info", `handler: set goal for ${cmd.convId}: "${objective.slice(0, 80)}"`);
@@ -1802,6 +1853,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
 
         if (cmd.action === "resume") {
           const result = applyUserGoalAction(conv, "resume");
+          if (result.ok) scheduleGoalTimeLimit(server, cmd.convId);
           const goal = sendGoalUpdated(cmd.convId, cmd.reqId, result.message);
           if (result.ok && goal?.status === "active" && !convStore.isStreaming(cmd.convId)) {
             void orchestrateGoalCycle(server, cmd.convId, buildOrchestrationCallbacks(cmd.convId), { subagentMaxDepth: null }).catch((err) => {
