@@ -105,6 +105,30 @@ describe("Claude Code stream translation", () => {
     ]);
   });
 
+  test("a message to an agent started earlier names it, and keeps that name in history", () => {
+    const { events, callbacks } = recorder();
+    const state = createClaudeStreamState(callbacks, "/work");
+    const call = (id: string, name: string, input: Record<string, unknown>) =>
+      ({ type: "assistant", uuid: `a-${id}`, session_id: SESSION, parent_tool_use_id: null, message: { content: [{ type: "tool_use", id, name, input }] } });
+    for (const message of [
+      { type: "system", subtype: "init", session_id: SESSION },
+      call("t1", "Agent", { description: "CDP server module", prompt: "Build it.", run_in_background: true }),
+      {
+        type: "user", uuid: "u-t1", session_id: SESSION, parent_tool_use_id: null,
+        message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "Async agent launched successfully.", is_error: false }] },
+        tool_use_result: { status: "async_launched", agentId: "a2770869e8f93ef5d", description: "CDP server module", prompt: "Build it." },
+      },
+      call("t2", "SendMessage", { to: "a2770869e8f93ef5d", summary: "Wrap up", message: "Please stop." }),
+    ]) pushClaudeMessage(state, message);
+
+    expect(events).toContain("call:SendMessage:Wrap up --to CDP server module");
+    const presentation = { detail: "Wrap up --to CDP server module" };
+    expect(state.blocks.at(-1)).toMatchObject({ type: "tool_call", name: "SendMessage", presentation });
+    expect(state.messages.at(-1)?.content).toEqual([
+      { type: "tool_use", id: "t2", name: "SendMessage", input: { to: "a2770869e8f93ef5d", summary: "Wrap up", message: "Please stop." }, presentation },
+    ]);
+  });
+
   test("hands each tool round to the agent loop as soon as its results arrive", () => {
     const { events, callbacks } = recorder();
     const rounds: ProviderRound[] = [];

@@ -375,6 +375,17 @@ export function stopBackgroundTask(
   return { result: "not-found" };
 }
 
+/** A stop a task's tool accepted but then failed to carry out: the task runs on. */
+export function restoreRunningBackgroundTask(taskId: string): boolean {
+  for (const tasks of backgroundTasksByConversation.values()) {
+    const task = tasks.get(taskId);
+    if (task?.status !== "stopping") continue;
+    task.status = "running";
+    return true;
+  }
+  return false;
+}
+
 /** Stop every background process owned by a conversation, e.g. before deletion. */
 export function stopBackgroundTasksForConversation(convId: string): number {
   const ids = [...(backgroundTasksByConversation.get(convId)?.keys() ?? [])];

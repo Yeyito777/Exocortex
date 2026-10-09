@@ -121,7 +121,7 @@ export function buildDisplayData(
             toolCallId: c.id,
             toolName: c.name,
             input: c.input,
-            summary: s.detail || s.label,
+            summary: c.presentation?.detail || s.detail || s.label,
             ...(c.presentation ? { presentation: c.presentation } : {}),
           });
         } else if (c.type === "tool_result") {

@@ -168,6 +168,11 @@ export interface ToolCallPresentation {
   bashStyles?: ExternalToolStyle[];
   /** Invocation-local style for a conversation-scoped internal tool. */
   toolStyle?: ToolDisplayInfo;
+  /**
+   * Detail that depends on state gone after the call, such as the name of the
+   * Claude Code agent a message went to. Shown instead of the input's summary.
+   */
+  detail?: string;
 }
 
 export interface ToolCallBlock {

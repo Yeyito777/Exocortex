@@ -1,4 +1,4 @@
-import type { ModelId, EffortLevel, ApiMessage, ProviderId, ModelInfo, UsageData, ToolCallBlock, ToolResultBlock, TokenTrackingContext, ImageAttachment } from "../messages";
+import type { ModelId, EffortLevel, ApiMessage, ProviderId, ModelInfo, UsageData, ToolCallBlock, ToolResultBlock, TokenTrackingContext, ImageAttachment, ToolCallPresentation } from "../messages";
 import type { OAuthProfile, StoredTokens } from "../store";
 import type { AssistantProviderData } from "./provider-data";
 import type { ToolExecutor } from "../agent";
@@ -16,7 +16,7 @@ export interface ApiToolCall {
 export type ContentBlock =
   | { type: "thinking"; text: string; signature: string }
   | { type: "text"; text: string }
-  | { type: "tool_call"; id: string; name: string; input: Record<string, unknown>; summary: string }
+  | { type: "tool_call"; id: string; name: string; input: Record<string, unknown>; summary: string; presentation?: ToolCallPresentation }
   | { type: "tool_result"; toolUseId: string; toolName: string; output: string; isError: boolean };
 
 export interface StreamResult {

@@ -57,8 +57,12 @@ class FakeRuntime implements AsyncIterable<unknown> {
     return this.withdrawable;
   }
 
+  /** Whether stopTask fails after accepting the request. */
+  stopFails = false;
+
   async stopTask(taskId: string) {
     this.stopped.push(taskId);
+    if (this.stopFails) throw new Error("no such task");
   }
 
   close(): void {
@@ -98,6 +102,8 @@ const tasks = (...live: Array<{ id: string; description: string; type?: string; 
     ...(task.parent ? { parent_task_id: task.parent } : {}),
   })),
 });
+/** The result of a turn Claude Code started to answer one finished task run. */
+const answering = (runId: string) => ({ ...result(null), origin: { kind: "task-notification", runId } });
 const finished = (id: string) => ({
   type: "system", subtype: "task_notification", session_id: SESSION, task_id: id, status: "completed",
   summary: `Background command "${id}" completed (exit code 0)`, output_file: `/tmp/tasks/${id}.output`,
@@ -336,6 +342,104 @@ describe("Claude Code processes outliving a turn", () => {
     expect(wakes[1].text).toContain("completed: b2");
     expect(wakes[1].text).not.toContain("b1");
     expect((await session.run(createClaudeStreamState(callbacks(), "/work", null), null, undefined, undefined)).text).toBe("Tests done.");
+  });
+
+  test("tasks that finish together are each shown with the turn that answers them", async () => {
+    const { session, runtime } = open();
+    const first = session.run(createClaudeStreamState(callbacks(), "/work", "p1"), [{ type: "text", text: "start two" }], undefined, undefined);
+    await tick();
+    const one = { id: "a1", description: "Agent one", type: "local_agent" };
+    const two = { id: "a2", description: "Agent two", type: "local_agent" };
+    runtime().emit(init, tasks(one, two), text("a0", "started"), result("p1"));
+    await first;
+
+    runtime().emit(
+      { ...finished("a1"), run_id: "r1", summary: "One is done." }, tasks(two),
+      { ...finished("a2"), run_id: "r2", summary: "Two is done." }, tasks(),
+      init, text("t1", "Noted one."), answering("r1"),
+      init, text("t2", "Noted two."), answering("r2"),
+    );
+    await tick();
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0].text).toContain("[notification] Agent completed: a1");
+    expect(wakes[0].text).not.toContain("a2");
+
+    expect((await session.run(createClaudeStreamState(callbacks(), "/work", null), null, undefined, undefined)).text).toBe("Noted one.");
+    expect(wakes).toHaveLength(2);
+    expect(wakes[1].text).toContain("[notification] Agent completed: a2");
+    expect(wakes[1].text).toContain("Two is done.");
+    expect((await session.run(createClaudeStreamState(callbacks(), "/work", null), null, undefined, undefined)).text).toBe("Noted two.");
+  });
+
+  test("a task finishing during a turn Claude Code started is shown with the next one", async () => {
+    const { session, runtime } = open();
+    const first = session.run(createClaudeStreamState(callbacks(), "/work", "p1"), [{ type: "text", text: "start two" }], undefined, undefined);
+    await tick();
+    runtime().emit(init, tasks({ id: "b1", description: "build" }, { id: "b2", description: "test" }), text("a1", "started"), result("p1"));
+    await first;
+
+    runtime().emit(
+      { ...finished("b1"), run_id: "r1" }, tasks({ id: "b2", description: "test" }), init,
+      { ...finished("b2"), run_id: "r2" }, tasks(), text("t1", "Build done."), answering("r1"),
+      init, text("t2", "Tests done."), answering("r2"),
+    );
+    await tick();
+    expect(wakes[0].text).toContain("completed: b1");
+    await session.run(createClaudeStreamState(callbacks(), "/work", null), null, undefined, undefined);
+    expect(wakes).toHaveLength(2);
+    expect(wakes[1].text).toContain("completed: b2");
+    expect(wakes[1].text).toContain("Command: test");
+  });
+
+  test("a task Exocortex stopped is never shown as the reason for a turn", async () => {
+    const { session, runtime } = open();
+    const first = session.run(createClaudeStreamState(callbacks(), "/work", "p1"), [{ type: "text", text: "start two" }], undefined, undefined);
+    await tick();
+    runtime().emit(init, tasks({ id: "b1", description: "build" }, { id: "b2", description: "test" }), text("a1", "started"), result("p1"));
+    await first;
+
+    expect(stopBackgroundTask("b1", true).result).toBe("stopping");
+    // Claude Code reports the stop but starts no turn for it.
+    runtime().emit({ ...finished("b1"), status: "stopped", run_id: "r1" }, tasks({ id: "b2", description: "test" }));
+    runtime().emit({ ...finished("b2"), run_id: "r2" }, tasks(), init, text("t2", "Tests done."), answering("r2"));
+    await tick();
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0].text).toContain("completed: b2");
+    expect(wakes[0].text).not.toContain("b1");
+  });
+
+  test("a stop Claude Code fails to carry out leaves the task running and stoppable", async () => {
+    const { session, runtime } = open();
+    await startBackgroundTask(session, runtime);
+    runtime().stopFails = true;
+    expect(stopBackgroundTask("b1", true).result).toBe("stopping");
+    await tick();
+    expect(stopBackgroundTask("b1", true).result).toBe("stopping");
+    expect(runtime().stopped).toEqual(["b1", "b1"]);
+  });
+
+  test("a message to a background agent names it, even after the agent finished", async () => {
+    const { session, runtime } = open();
+    const first = session.run(createClaudeStreamState(callbacks(), "/work", "p1"), [{ type: "text", text: "spawn" }], undefined, undefined);
+    await tick();
+    runtime().emit(init, tasks({ id: "a1", description: "JS engine core", type: "local_agent" }), text("a0", "spawned"), result("p1"));
+    await first;
+    runtime().emit({ ...finished("a1"), run_id: "r1" }, tasks(), init, text("t1", "Agent done."), answering("r1"));
+    await tick();
+    await session.run(createClaudeStreamState(callbacks(), "/work", null), null, undefined, undefined);
+
+    const rounds: ProviderRound[] = [];
+    const turn = session.run(createClaudeStreamState(callbacks(rounds), "/work", "p2"), [{ type: "text", text: "ask it again" }], undefined, undefined);
+    await tick();
+    runtime().emit(
+      init,
+      { type: "assistant", uuid: "m1", session_id: SESSION, parent_tool_use_id: null, message: { content: [{ type: "tool_use", id: "s1", name: "SendMessage", input: { to: "a1", summary: "One more thing", message: "…" } }] } },
+      output("m2", "s1", "Message queued for delivery to a1 at its next tool round."),
+      text("m3", "Sent."),
+      result("p2"),
+    );
+    await turn;
+    expect(rounds[0].blocks[0]).toMatchObject({ type: "tool_call", summary: "One more thing --to JS engine core" });
   });
 
   test("later prompts go into the running process, without the notifications it raised itself", async () => {

@@ -33,9 +33,12 @@ interface ClaudeCodeTool {
   label?: string;
   /** Rewrite the input into `like`'s shape and use its summary. */
   input?: (input: Input) => Input;
-  /** The call's detail; with neither this nor `input`, a generic one. */
-  detail?: (input: Input) => string;
+  /** The call's detail, naming tasks by `titleOf`; with neither this nor `input`, a generic one. */
+  detail?: (input: Input, titleOf: (id: unknown) => string) => string;
 }
+
+/** Titles of Claude Code tasks by id (agent ids included), to name the task a call addresses. */
+export type ClaudeCodeTaskTitles = ReadonlyMap<string, string>;
 
 let claudeCodeTools: Map<string, ClaudeCodeTool> | undefined;
 
@@ -112,15 +115,18 @@ function getClaudeCodeTools(): Map<string, ClaudeCodeTool> {
     ["SendMessage", {
       like: exo,
       label: "Message",
-      detail: ({ to, summary, message, notify_when_idle }) =>
-        withFlags(oneLine(summary) || oneLine(typeof message === "string" ? message.split("\n")[0] : undefined), { to, notify_when_idle }),
+      detail: ({ to, summary, message, notify_when_idle }, titleOf) =>
+        withFlags(oneLine(summary) || oneLine(typeof message === "string" ? message.split("\n")[0] : undefined), {
+          to: titleOf(to) || undefined,
+          notify_when_idle,
+        }),
     }],
     ["ListAgents", { like: exo, label: "ListAgents" }],
     ["Workflow", { like: exo, label: "Workflow", detail: workflowDetail }],
-    ["TaskStop", { detail: ({ task_id, shell_id }) => oneLine(task_id) || oneLine(shell_id) }],
-    ["KillShell", { detail: ({ shell_id }) => oneLine(shell_id) }],
-    ["TaskOutput", { detail: ({ task_id, ...flags }) => withFlags(oneLine(task_id), flags) }],
-    ["BashOutput", { detail: ({ bash_id, ...flags }) => withFlags(oneLine(bash_id), flags) }],
+    ["TaskStop", { detail: ({ task_id, shell_id }, titleOf) => titleOf(task_id) || titleOf(shell_id) }],
+    ["KillShell", { detail: ({ shell_id }, titleOf) => titleOf(shell_id) }],
+    ["TaskOutput", { detail: ({ task_id, ...flags }, titleOf) => withFlags(titleOf(task_id), flags) }],
+    ["BashOutput", { detail: ({ bash_id, ...flags }, titleOf) => withFlags(titleOf(bash_id), flags) }],
     ["Skill", { detail: ({ skill, args }) => [oneLine(skill), oneLine(args)].filter(Boolean).join(" ") }],
     ["LSP", {
       detail: ({ operation, filePath, line, character, query }) =>
@@ -147,8 +153,11 @@ function genericDetail(input: Input): string {
   return "";
 }
 
-/** Summary for a Claude Code tool call, in its Exocortex counterpart's format when it has one. */
-export function summarizeClaudeCodeTool(name: string, input: Input): ToolSummary {
+/**
+ * Summary for a Claude Code tool call, in its Exocortex counterpart's format
+ * when it has one. With `taskTitles`, a call addressing a task names it.
+ */
+export function summarizeClaudeCodeTool(name: string, input: Input, taskTitles?: ClaudeCodeTaskTitles): ToolSummary {
   const host = isClaudeCodeHostTool(name) ? getRegisteredTools().find(tool => tool.name === name) : undefined;
   if (host) return host.summarize(input);
   const mcp = parseMcpToolName(name);
@@ -156,7 +165,8 @@ export function summarizeClaudeCodeTool(name: string, input: Input): ToolSummary
   const tool = getClaudeCodeTools().get(name);
   const label = tool?.label ?? tool?.like?.display.label ?? name;
   if (tool?.like && tool.input) return { ...tool.like.summarize(tool.input(input)), label };
-  return { label, detail: tool?.detail ? tool.detail(input) : genericDetail(input) };
+  const titleOf = (id: unknown) => oneLine(typeof id === "string" ? taskTitles?.get(id) ?? id : id);
+  return { label, detail: tool?.detail ? tool.detail(input, titleOf) : genericDetail(input) };
 }
 
 /** Claude Code tools that answer with a JSON status whose `message` says what happened. */

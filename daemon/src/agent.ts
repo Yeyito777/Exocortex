@@ -167,7 +167,7 @@ function toDisplayBlock(block: ProviderContentBlock, presentation?: ToolCallPres
         toolName: block.name,
         input: block.input,
         summary: block.summary,
-        ...(presentation ? { presentation } : {}),
+        ...(presentation ?? block.presentation ? { presentation: presentation ?? block.presentation } : {}),
       };
     case "tool_result":
       return { type: "tool_result", toolCallId: block.toolUseId, toolName: block.toolName, output: block.output, isError: block.isError };

@@ -38,6 +38,10 @@ export interface ClaudeStreamState {
   blocks: ContentBlock[];
   messages: ApiMessage[];
   toolNames: Map<string, string>;
+  /** Titles of Claude Code's tasks and agents by id, shared with its process's later turns. */
+  taskTitles: Map<string, string>;
+  /** Descriptions of this turn's Agent calls by tool use id, to title the agents they start. */
+  agentCalls: Map<string, string>;
   /** Tool calls of the current round still waiting for a result. */
   openToolUses: Set<string>;
   /** Output tokens already reported with committed rounds. */
@@ -78,6 +82,8 @@ export function createClaudeStreamState(
     blocks: [],
     messages: [],
     toolNames: new Map(),
+    taskTitles: new Map(),
+    agentCalls: new Map(),
     openToolUses: new Set(),
     committedOutputTokens: 0,
     now,
@@ -230,13 +236,16 @@ function handleAssistantMessage(state: ClaudeStreamState, message: SdkRecord): v
       const id = str(block.id) ?? "";
       const name = exocortexToolName(str(block.name) ?? "tool");
       const input = asRecord(block.input) ?? {};
-      const { label, detail } = summarizeClaudeCodeTool(name, input);
+      const { label, detail } = summarizeClaudeCodeTool(name, input, state.taskTitles);
       const summary = detail || label;
+      // A task named only while its process remembers it keeps that name in history.
+      const named = detail !== summarizeClaudeCodeTool(name, input).detail ? { presentation: { detail } } : {};
       state.toolNames.set(id, name);
+      if ((name === "Agent" || name === "Task") && typeof input.description === "string") state.agentCalls.set(id, input.description);
       state.openToolUses.add(id);
-      state.blocks.push({ type: "tool_call", id, name, input, summary });
-      pushMessageContent(state, "assistant", { type: "tool_use", id, name, input });
-      state.callbacks.onToolCall?.({ type: "tool_call", toolCallId: id, toolName: name, input, summary });
+      state.blocks.push({ type: "tool_call", id, name, input, summary, ...named });
+      pushMessageContent(state, "assistant", { type: "tool_use", id, name, input, ...named });
+      state.callbacks.onToolCall?.({ type: "tool_call", toolCallId: id, toolName: name, input, summary, ...named });
     }
   }
 }
@@ -269,6 +278,15 @@ function commitRound(state: ClaudeStreamState, resumable = true): void {
   onProviderRound(round);
 }
 
+/** Learn the title of the agent an Agent call started, so later calls addressing it can name it. */
+function noteAgentTitle(state: ClaudeStreamState, toolUseId: string, toolUseResult: unknown): void {
+  const description = state.agentCalls.get(toolUseId);
+  if (description === undefined) return;
+  state.agentCalls.delete(toolUseId);
+  const agentId = str(asRecord(toolUseResult)?.agentId);
+  if (agentId && description) state.taskTitles.set(agentId, description);
+}
+
 function handleUserMessage(state: ClaudeStreamState, message: SdkRecord): void {
   const content = asRecord(message.message)?.content;
   if (!Array.isArray(content)) return;
@@ -279,6 +297,7 @@ function handleUserMessage(state: ClaudeStreamState, message: SdkRecord): void {
     const toolUseId = str(block.tool_use_id) ?? "";
     closedToolUse = state.openToolUses.delete(toolUseId) || closedToolUse;
     const toolName = state.toolNames.get(toolUseId) ?? "";
+    noteAgentTitle(state, toolUseId, message.tool_use_result);
     const output = claudeCodeResultText(toolName, toolResultText(block.content));
     const isError = block.is_error === true;
     state.blocks.push({ type: "tool_result", toolUseId, toolName, output, isError });

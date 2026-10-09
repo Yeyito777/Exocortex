@@ -26,7 +26,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { Query, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { createAbortError, createDetachedTurnError } from "../../abort";
 import type { ToolExecutor } from "../../agent";
-import { setBackgroundTaskActive } from "../../conversation-activity";
+import { restoreRunningBackgroundTask, setBackgroundTaskActive } from "../../conversation-activity";
 import { getDaemonShutdownMode } from "../../daemon-lifecycle";
 import { log } from "../../log";
 import type { ApiMessage } from "../../messages";
@@ -190,11 +190,15 @@ interface LiveTask {
 
 interface TaskNote {
   id: string;
+  /** The task run it reports; the result of the turn that answers it names the same run. */
+  runId?: string;
   status: string;
   title: string;
   toolName: string;
   summary?: string;
   outputFile?: string;
+  /** Shown as the reason for a turn Claude Code started by itself. */
+  shown?: boolean;
 }
 
 /**
@@ -381,9 +385,13 @@ export class ClaudeCodeSession {
   private lastSeenUuid: string | null = null;
   /** For an adopted process, when its relay first saw each task. */
   private readonly taskStarts: Record<string, number>;
-  /** Finished tasks since Claude Code's last result: what its next turn of its own answers. */
+  /** Finished tasks Claude Code has yet to answer, each with a turn of its own, in order. */
   private notes: TaskNote[] = [];
   private tasks = new Map<string, LiveTask>();
+  /** Every task seen, kept after it ends: its notification can arrive after it left `tasks`. */
+  private readonly seenTasks = new Map<string, LiveTask>();
+  /** Titles of every task and agent seen, kept after they end so later calls can name them. */
+  private readonly taskTitles = new Map<string, string>();
   /** After an interrupt, the rest of the interrupted turn up to its result. */
   private discard: { promptUuid: string | null; deadline: ReturnType<typeof setTimeout>; closeAfter: boolean } | null = null;
   private bindingWaiters: Array<{ resolve(binding: HostToolBinding): void; reject(error: Error): void }> = [];
@@ -456,6 +464,8 @@ export class ClaudeCodeSession {
     if (this.closed) return Promise.reject(new Error("Claude Code exited before finishing the turn."));
     if (this.turn) return Promise.reject(new Error("A Claude Code turn is already running in this conversation."));
     if (signal?.aborted) return Promise.reject(createAbortError());
+    // Every turn of this process names the tasks and agents it has seen.
+    state.taskTitles = this.taskTitles;
 
     return new Promise<StreamResult>((resolve, reject) => {
       const heartbeat = setInterval(() => state.callbacks.onActivity?.(), HEARTBEAT_INTERVAL_MS);
@@ -624,10 +634,27 @@ export class ClaudeCodeSession {
     }
   }
 
-  /** Track finished tasks since Claude Code's last result: what its next turn answers. */
+  /** Track the finished tasks Claude Code's turns of its own answer. */
   private noteProgress(message: SdkRecord): void {
-    if (message.type === "result") this.notes = [];
+    if (message.type === "result") this.answered(message);
     else if (message.type === "system" && message.subtype === "task_notification") this.noteTask(message);
+  }
+
+  /**
+   * Forget the finished tasks a turn answered. Claude Code answers each
+   * finished task with a turn of its own, whose result names the task's run;
+   * a prompted turn takes in everything that finished before it ends. A
+   * stopped task gets no turn, so it is forgotten at the next result.
+   */
+  private answered(result: SdkRecord): void {
+    const origin = asRecord(result.origin);
+    if (origin?.kind !== "task-notification") {
+      this.notes = [];
+      return;
+    }
+    const runId = str(origin.runId);
+    const index = runId ? this.notes.findIndex(note => note.runId === runId) : this.notes.findIndex(note => note.shown);
+    this.notes = this.notes.filter((note, i) => i !== index && note.status !== "stopped" && note.status !== "killed");
   }
 
   private deliver(turn: Turn, message: SdkRecord): void {
@@ -768,8 +795,10 @@ export class ClaudeCodeSession {
     this.wakeId = wakeId;
     this.markDelivered([`${WAKE_KEY_PREFIX}${wakeId}`]);
     this.clearIdleTimer();
-    const text = buildWakeText(this.notes);
-    this.notes = [];
+    // Claude Code answers finished tasks in order, one turn each.
+    const note = this.notes.find(candidate => !candidate.shown && (candidate.status === "completed" || candidate.status === "failed"));
+    if (note) note.shown = true;
+    const text = buildWakeText(note ? [note] : []);
     if (this.convId && hooks?.wake(this.convId, text, wakeId)) return;
     // A restarting daemon queues nothing; the next one adopts the process and shows the turn.
     if (getDaemonShutdownMode() === "restart") this.detach("the daemon is restarting");
@@ -791,13 +820,16 @@ export class ClaudeCodeSession {
   private noteTask(message: SdkRecord): void {
     const id = str(message.task_id);
     const status = str(message.status);
-    if (!id || !status || !TERMINAL_TASK_STATUSES.has(status)) return;
-    const task = this.tasks.get(id);
+    // Ambient tasks (watchers) are not activity.
+    if (!id || !status || !TERMINAL_TASK_STATUSES.has(status) || message.ambient === true) return;
+    const task = this.tasks.get(id) ?? this.seenTasks.get(id);
     // A task a subagent launched reports to that subagent, as an Exocortex subagent's own tasks do.
     if (task?.parentTaskId) return;
     const summary = str(message.summary);
+    const runId = str(message.run_id);
     this.notes.push({
       id,
+      ...(runId ? { runId } : {}),
       status,
       title: task?.title ?? summary ?? id,
       toolName: task?.toolName ?? "Task",
@@ -815,11 +847,14 @@ export class ClaudeCodeSession {
       if (!task || !id || task.ambient === true) continue;
       const taskType = str(task.task_type) ?? "task";
       const parentTaskId = str(task.parent_task_id);
-      live.set(id, {
+      const seen: LiveTask = {
         title: str(task.description) || id,
         toolName: task.shell_kind === "monitor" ? "Monitor" : BACKGROUND_TASK_TOOLS[taskType] ?? taskType,
         ...(parentTaskId ? { parentTaskId } : {}),
-      });
+      };
+      this.seenTasks.set(id, { ...seen });
+      this.taskTitles.set(id, seen.title);
+      live.set(id, seen);
     }
     this.setTasks(live);
     this.settle();
@@ -847,8 +882,14 @@ export class ClaudeCodeSession {
         startedAt,
         toolName: task.toolName,
         backgroundedAt: startedAt,
+        // Claude Code starts no turn for a task it was told to stop, and a
+        // stopped task is never shown as a turn's reason: nothing to suppress.
         stop: () => {
-          this.runtime.stopTask(id).catch((error) => log("warn", `anthropic: stopping Claude Code task ${id} failed: ${error instanceof Error ? error.message : error}`));
+          this.runtime.stopTask(id).catch((error) => {
+            log("warn", `anthropic: stopping Claude Code task ${id} failed: ${error instanceof Error ? error.message : error}`);
+            // It runs on, so it can be stopped again.
+            restoreRunningBackgroundTask(id);
+          });
           return true;
         },
       }) || changed;

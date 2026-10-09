@@ -46,6 +46,17 @@ describe("Claude Code tool display", () => {
       .toEqual({ label: "Monitor", detail: "errors in deploy.log" });
   });
 
+  test("calls addressing a known task name it", () => {
+    const titles = new Map([["a2770869e8f93ef5d", "CDP server module"], ["b8u2nm9qr", "Run engine tests"]]);
+    expect(summarizeClaudeCodeTool("SendMessage", { to: "a2770869e8f93ef5d", summary: "Wrap up", message: "…" }, titles))
+      .toEqual({ label: "Message", detail: "Wrap up --to CDP server module" });
+    expect(summarizeClaudeCodeTool("SendMessage", { to: "main", summary: "Done" }, titles))
+      .toEqual({ label: "Message", detail: "Done --to main" });
+    expect(summarizeClaudeCodeTool("TaskStop", { task_id: "b8u2nm9qr" }, titles)).toEqual({ label: "TaskStop", detail: "Run engine tests" });
+    expect(summarizeClaudeCodeTool("TaskOutput", { task_id: "b8u2nm9qr", block: true }, titles))
+      .toEqual({ label: "TaskOutput", detail: "Run engine tests --block" });
+  });
+
   test("JSON status results read as the message they carry", () => {
     const queued = JSON.stringify({ success: true, message: "Message queued for delivery to worker at its next tool round.", pin: { id: "worker" } });
     expect(claudeCodeResultText("SendMessage", queued)).toBe("Message queued for delivery to worker at its next tool round.");

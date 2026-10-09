@@ -320,6 +320,18 @@ describe("assistant messages", () => {
     });
   });
 
+  test("tool_use summary: a detail snapshotted with the call wins over the input's", () => {
+    const content: ApiContentBlock[] = [{
+      type: "tool_use",
+      id: "tu-msg",
+      name: "SendMessage",
+      input: { to: "a2770869e8f93ef5d", summary: "Wrap up" },
+      presentation: { detail: "Wrap up --to CDP server module" },
+    }];
+    const { entries } = build([{ role: "assistant", content, metadata: null }]);
+    expect(aiEntry(entries[0]).blocks[0]).toMatchObject({ summary: "Wrap up --to CDP server module" });
+  });
+
   test("tool_use summary: uses detail when non-empty", () => {
     const input = { path: "/tmp/f" };
     const content: ApiContentBlock[] = [
