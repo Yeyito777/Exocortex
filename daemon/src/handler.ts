@@ -50,7 +50,8 @@ import {
 import { applyUserGoalAction, setGoal as setConversationGoal } from "./goals";
 import { scheduleGoalTimeLimit } from "./goal-time-limit";
 import { createExocortexToolRuntime } from "./exocortex-tool-runtime";
-import { CLIENT_HOST_NOTICE_KIND, attachClientHost, clientHostNotice, settleClientExec } from "./client-hosts";
+import { attachClientHost, settleClientExec } from "./client-hosts";
+import { pendingTurnNotices } from "./turn-notices";
 import type { BackgroundTaskCompletion, ExocortexToolRuntime } from "./tools/types";
 import { getSubagentParentConversationId, listActiveConversationTasks, setSubagentActive, stopBackgroundTask } from "./conversation-activity";
 import {
@@ -1624,10 +1625,14 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           break;
         }
         const folderId = subagentFolder?.id ?? cmd.folderId ?? null;
-        // A new conversation is told about the client machine like any other.
-        const hostNotice = initialMessage && !cmd.subagent
-          ? clientHostNotice({ id, messages: [], subagentPolicy: null })
-          : null;
+        // Its first message is told about the client machine and the goal (set
+        // just below) like any other.
+        const notices = initialMessage ? pendingTurnNotices({
+          id,
+          messages: [],
+          subagentPolicy: cmd.subagent ? { parentConversationId: null, allowEdits: false, parentSystemInstructions: "" } : null,
+          goal: goalObjective ? { status: "active", objective: goalObjective } : null,
+        }) : [];
         if (initialMessage) {
           convStore.createWithInitialUserMessage(
             id,
@@ -1641,7 +1646,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
               : initialMessage,
             folderId,
             false,
-            hostNotice ? [createModelVisibleSystemNotice(hostNotice, model, CLIENT_HOST_NOTICE_KIND, initialMessage.startedAt)] : [],
+            notices.map(notice => createModelVisibleSystemNotice(notice.text, model, notice.kind, initialMessage.startedAt)),
           );
         } else {
           convStore.create(id, provider, model, title, effort, fastMode, folderId);
@@ -1689,8 +1694,6 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           // Subscribe it before starting the turn so it receives the stream as
           // soon as it processes the preceding conversation_created event.
           server.subscribe(client, id);
-          // Its local echo lacks the notice ahead of the message.
-          if (hostNotice) broadcastConversationHistoryUpdated(server, id);
           const turn = orchestrateReplayConversation(
             server,
             client,

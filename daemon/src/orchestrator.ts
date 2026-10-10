@@ -47,7 +47,7 @@ import {
 import { getCurrentAccountScope as getCurrentOpenAIAccountScope } from "./providers/openai/auth";
 import { buildCodexWindowId } from "./providers/openai/identity";
 import { resolveToolCallPresentation } from "./helper-tool-manifest";
-import { CLIENT_HOST_NOTICE_KIND, clientHostNotice } from "./client-hosts";
+import { pendingTurnNotices } from "./turn-notices";
 import { setBackgroundTaskActive as setConversationBackgroundTaskActive, setChronoTaskActive as setConversationChronoTaskActive } from "./conversation-activity";
 import { acknowledgeSubagentNotification, settlePendingSubagentNotifications } from "./subagent-notifications";
 import { getDaemonShutdownMode } from "./daemon-lifecycle";
@@ -676,7 +676,6 @@ async function orchestrateAdmittedAssistantTurn(
   // ── Start stream and broadcast initial state ──────────────────────
 
   let acceptedUserMessage: StoredMessage | null = null;
-  let clientHostNoticeAdded = false;
   if (userMessage) {
     try {
       const handoffCancelled = () => {
@@ -688,13 +687,13 @@ async function orchestrateAdmittedAssistantTurn(
       await prepareArchiveHashes(conv.messages);
       const cancelled = handoffCancelled();
       if (cancelled) return cancelled;
-      // Tell the model when the machine client_bash reaches has changed. The
-      // notice precedes the message's checkpoint, so unwinding the message
-      // keeps the notice that was true when it was sent.
-      const hostNotice = clientHostNotice(conv);
-      if (hostNotice) {
-        convStore.appendMessages(convId, [createModelVisibleSystemNotice(hostNotice, conv.model, CLIENT_HOST_NOTICE_KIND, startedAt)]);
-        clientHostNoticeAdded = true;
+      // Tell the model about state that changed since it was last told (the
+      // client machine, the goal). Clients do not show these notices. They
+      // precede the message's checkpoint, so unwinding the message keeps what
+      // was true when it was sent.
+      const notices = pendingTurnNotices(conv);
+      if (notices.length > 0) {
+        convStore.appendMessages(convId, notices.map(notice => createModelVisibleSystemNotice(notice.text, conv.model, notice.kind, startedAt)));
         await prepareArchiveHashes(conv.messages);
         const cancelledAfterNotice = handoffCancelled();
         if (cancelledAfterNotice) return cancelledAfterNotice;
@@ -726,17 +725,15 @@ async function orchestrateAdmittedAssistantTurn(
     convStore.flush(convId);
   }
 
-  const rebuildHistory = interruptedSleep || clientHostNoticeAdded;
-  if (rebuildHistory) {
-    // Rebuild only after both the deferred tool result (or client host notice)
-    // and incoming user message are canonical. Rebuilding earlier would erase
-    // the sender's optimistic user bubble, while a later incremental
-    // user_message would duplicate it.
+  if (interruptedSleep) {
+    // Rebuild only after both the deferred tool result and incoming user message
+    // are canonical. Rebuilding earlier would erase the sender's optimistic user
+    // bubble, while a later incremental user_message would duplicate it.
     broadcastConversationHistoryUpdated(server, convId);
     broadcastConversationUpdated(server, convId);
   }
 
-  if (userMessage && !rebuildHistory) {
+  if (userMessage && !interruptedSleep) {
 
     // Notify subscribers about the user message.
     // When client is set, it already added the message locally — skip it.

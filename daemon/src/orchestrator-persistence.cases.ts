@@ -841,7 +841,10 @@ describe("DB-first orchestrator persistence", () => {
     expect(offeredToolNames.every(names => names.includes("goal"))).toBe(true);
     expect(offeredToolNames.flat()).not.toContain("send_prompt");
     expect(loadPersisted(convId)!.sortOrder).toBe(originalOrder);
-    expect(loadPersisted(convId)!.messages[0]?.metadata?.automation).toEqual({ kind: "goal_continuation" });
+    // The goal reaches the model as a notice ahead of the continuation, not in the system prompt.
+    expect(loadPersisted(convId)!.messages[0]).toMatchObject({ role: "user", metadata: { system: true, kind: "conversation_goal" } });
+    expect(loadPersisted(convId)!.messages[0]?.content).toContain('Conversation goal (active): "finish the migration"');
+    expect(loadPersisted(convId)!.messages[1]?.metadata?.automation).toEqual({ kind: "goal_continuation" });
     expect(events).toContainEqual(expect.objectContaining({
       type: "user_message",
       automation: { kind: "goal_continuation" },

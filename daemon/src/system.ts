@@ -2,16 +2,27 @@
  * System prompt builders for exocortexd.
  */
 
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "fs";
 import { join } from "path";
 import { buildToolSystemHints } from "./tools/registry";
 import { getExternalToolHints } from "./external-tools";
 import { configDir } from "@exocortex/shared/paths";
 
 let _userAddendum = "";
+/** The file's mtime and size when it was last read; a different one means it was edited. */
+let _userAddendumStamp: string | null = null;
 
 function userAddendumPath(): string {
   return join(configDir(), "system.md");
+}
+
+function userAddendumStamp(): string | null {
+  try {
+    const stat = statSync(userAddendumPath());
+    return `${stat.mtimeMs}:${stat.size}`;
+  } catch {
+    return null;
+  }
 }
 
 function readUserAddendumFile(): string {
@@ -24,6 +35,7 @@ function readUserAddendumFile(): string {
 }
 
 function loadUserAddendum(): void {
+  _userAddendumStamp = userAddendumStamp();
   try {
     _userAddendum = readUserAddendumFile();
   } catch {
@@ -32,14 +44,26 @@ function loadUserAddendum(): void {
 }
 loadUserAddendum();
 
+/** The app-wide addendum, re-read when the file has been edited. A read error keeps the last one. */
 export function getUserAddendum(): string {
+  const stamp = userAddendumStamp();
+  if (stamp !== _userAddendumStamp) {
+    try {
+      _userAddendum = readUserAddendumFile();
+      _userAddendumStamp = stamp;
+    } catch {
+      // Keep the last good instructions.
+    }
+  }
   return _userAddendum;
 }
 
 /** Reload the app-wide addendum before a compare-and-set operation. */
 export function reloadUserAddendum(): string {
+  const stamp = userAddendumStamp();
   const text = readUserAddendumFile();
   _userAddendum = text;
+  _userAddendumStamp = stamp;
   return _userAddendum;
 }
 
@@ -56,6 +80,7 @@ export function setUserAddendum(text: string, expectedText?: string): void {
     writeFileSync(tmp, normalized ? `${normalized}\n` : "", { mode: 0o644 });
     renameSync(tmp, path);
     _userAddendum = normalized;
+    _userAddendumStamp = userAddendumStamp();
   } finally {
     rmSync(tmp, { force: true });
   }
@@ -105,7 +130,8 @@ function buildAdditionParts(options: { conversationInstructions?: string; includ
     if (externalHints) parts.push("# External tools\n" + externalHints);
   }
 
-  if (_userAddendum) parts.push(_userAddendum);
+  const userAddendum = getUserAddendum();
+  if (userAddendum) parts.push(userAddendum);
   if (options.conversationInstructions) parts.push("# Conversation instructions\n" + options.conversationInstructions);
   return parts;
 }

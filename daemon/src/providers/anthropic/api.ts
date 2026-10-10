@@ -197,7 +197,8 @@ export async function streamMessage(
   // The conversation's Claude Code process is still running (background tasks,
   // or a quick follow-up): continue in it.
   const live = convId ? getClaudeCodeSession(convId) : undefined;
-  if (live?.canContinue(key, plan.resume, plan.pending)) {
+  const system = options.system ?? "";
+  if (live?.canContinue(key, plan.resume, plan.pending, system)) {
     const input = live.planInput(plan.pending);
     log("info", `anthropic: Claude Code turn in its running process (model=${model}, effort=${options.effort ?? "default"}, cwd=${cwd}, session=${live.sessionId}, input=${input.kind})`);
     const state = createClaudeStreamState(callbacks, cwd, input.kind === "prompt" ? randomUUID() : null);
@@ -215,8 +216,8 @@ export async function streamMessage(
       throw error;
     }
   }
-  // Other settings or a rewound history: the old process cannot continue.
-  live?.close("the conversation moved on from it");
+  // Other settings, a changed system prompt, or a rewound history: the old process cannot continue.
+  live?.close(live.key === key && !live.systemMatches(system) ? "its system prompt changed" : "the conversation moved on from it");
 
   const start = (resumePlan: ClaudePromptPlan) => {
     const history = resumePlan.resume ? null : historyMark(resumePlan.pending);
@@ -237,7 +238,7 @@ export async function streamMessage(
         ...agentTurnOptions(model, options, cwd, resumePlan, onStderr, binding),
         ...(relay && meta ? { spawnClaudeCodeProcess: spawnOptions => relay.launch(spawnOptions, meta) } : {}),
       },
-    }), { relay, resume: resumePlan.resume, history });
+    }), { relay, resume: resumePlan.resume, history, system });
     session.rememberAgentTitles(messages);
     return session;
   };
@@ -297,7 +298,7 @@ export async function adoptClaudeCodeProcesses(hasConversation: (convId: string)
           spawnClaudeCodeProcess: () => relay,
         },
       });
-    }, { relay });
+    }, { relay, system: meta.systemAppend ?? "" });
     if (hello.pending) pending.push(meta.convId);
     log("info", `anthropic: adopted the Claude Code process for ${meta.convId} (relay pid ${hello.pid}${hello.pending ? ", turn running" : ""})`);
   }

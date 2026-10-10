@@ -10,12 +10,7 @@
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import type { ClientExecRequestEvent, ClientExecResultCommand, ClientHostInfo, Event } from "@exocortex/shared/protocol";
-import type { Conversation, StoredMessage } from "./messages";
 import type { ConnectedClient } from "./server";
-import { isScopedSubagent } from "./subagent-policy";
-
-/** Kind of the model-visible notice saying which machine client_bash reaches. */
-export const CLIENT_HOST_NOTICE_KIND = "client_host";
 
 /** How long past its own timeout a command may go unanswered before it is given up on. */
 const RESPONSE_GRACE_MS = 30_000;
@@ -146,31 +141,15 @@ function platformName(platform: string): string {
   return platform === "darwin" ? "macOS" : platform === "win32" ? "Windows" : platform === "linux" ? "Linux" : platform;
 }
 
-function noticeText(info: ClientHostInfo | null): string {
-  if (!info) {
-    return "The user's SSH client machine is no longer connected; client_bash is unavailable until they reconnect with /ssh.";
-  }
+/** Told to a conversation when the machine client_bash reached is no longer connected. */
+export const CLIENT_HOST_DETACHED_NOTICE = "The user's SSH client machine is no longer connected; client_bash is unavailable until they reconnect with /ssh.";
+
+/** What to tell a conversation about the machine client_bash reaches, or null when none is connected. */
+export function clientHostNoticeText(convId?: string): string | null {
+  const info = attachedClientHost(convId);
+  if (!info) return null;
   return `The user is connected over /ssh from ${describeClientHost(info)} (${platformName(info.platform)}, home ${info.home}). `
     + `client_bash runs commands on that machine; every other tool still runs on ${hostname()}.`;
-}
-
-/**
- * The notice to add before a conversation's next message when the machine
- * client_bash reaches has changed since the conversation was last told, else
- * null. Subagents never get client_bash, so they are never told.
- */
-export function clientHostNotice(conv: Pick<Conversation, "id" | "messages" | "subagentPolicy">): string | null {
-  if (isScopedSubagent(conv)) return null;
-  const current = noticeText(attachedClientHost(conv.id));
-  let previous: StoredMessage | undefined;
-  for (let i = conv.messages.length - 1; i >= 0; i--) {
-    if (conv.messages[i].metadata?.kind === CLIENT_HOST_NOTICE_KIND) {
-      previous = conv.messages[i];
-      break;
-    }
-  }
-  if (!previous) return attachedClientHost(conv.id) ? current : null;
-  return previous.content === current ? null : current;
 }
 
 export function resetClientHostsForTest(): void {

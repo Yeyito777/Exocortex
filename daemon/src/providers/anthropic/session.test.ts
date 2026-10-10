@@ -280,6 +280,24 @@ describe("Claude Code processes outliving a turn", () => {
     expect(session.canContinue(KEY, { sessionId: SESSION, resumeAt: "a3", cwd: "/work" })).toBe(true);
   });
 
+  test("a changed system prompt starts a new process, but not while the old one has work running", async () => {
+    const { session, runtime } = open();
+    const edited = "Edited app instructions";
+    await startBackgroundTask(session, runtime);
+    expect(session.systemMatches("")).toBe(true);
+    expect(session.systemMatches(edited)).toBe(false);
+    // A new process would stop the background task.
+    expect(session.canContinue(KEY, { sessionId: SESSION, resumeAt: "a2", cwd: "/work" }, [], edited)).toBe(true);
+
+    runtime().emit(finished("b1"), tasks(), init, text("a3", "It finished."), result(null, "task-notification"));
+    await tick();
+    // Nor before it has shown the turn Claude Code started for it.
+    expect(session.canContinue(KEY, { sessionId: SESSION, resumeAt: "a2", cwd: "/work" }, [], edited)).toBe(true);
+    await session.run(createClaudeStreamState(callbacks(), "/work", null), null, undefined, undefined);
+    expect(session.canContinue(KEY, { sessionId: SESSION, resumeAt: "a3", cwd: "/work" }, [], "")).toBe(true);
+    expect(session.canContinue(KEY, { sessionId: SESSION, resumeAt: "a3", cwd: "/work" }, [], edited)).toBe(false);
+  });
+
   test("a finished background agent is reported like an Exocortex subagent; the commands it ran stay its own", async () => {
     const { convId, session, runtime } = open();
     const state = createClaudeStreamState(callbacks(), "/work", "p1");
