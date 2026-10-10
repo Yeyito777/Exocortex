@@ -21,7 +21,7 @@ import { log } from "../../log";
 import type { ApiMessage, EffortLevel, ModelId } from "../../messages";
 import type { StreamCallbacks, StreamOptions, StreamResult } from "../types";
 import { requireSubscriptionAuth } from "./auth";
-import { claudeSubscriptionEnv, getClaudeBinary } from "./cli";
+import { claudeProcessOptions } from "./cli";
 import { createHostToolServer, hostToolDefs, type HostToolBinding } from "./host-tools";
 import { buildClaudeHelperPrompt, buildClaudeUserContent, planClaudePrompt, trailingUserMessages, type ClaudePromptPlan } from "./prompt";
 import { ClaudeRelay, reconnectRelays, relaysEnabled } from "./relay-client";
@@ -64,14 +64,6 @@ function isAgentTurn(options: StreamOptions): boolean {
   return Array.isArray(options.tools) && options.tools.length > 0;
 }
 
-function processOptions(cwd: string): ClaudeQueryOptions {
-  return {
-    cwd,
-    pathToClaudeCodeExecutable: getClaudeBinary(),
-    env: { ...claudeSubscriptionEnv(), CLAUDE_AGENT_SDK_CLIENT_APP: "exocortex-daemon" },
-  };
-}
-
 /** Behave like the `claude` CLI started in the workspace, plus Exocortex's additions (see buildClaudeCodeSystemAppend). */
 function systemPromptOption(append: string | undefined): ClaudeQueryOptions["systemPrompt"] {
   // Rendered fresh for each process rather than reusing the forked session's
@@ -82,7 +74,7 @@ function systemPromptOption(append: string | undefined): ClaudeQueryOptions["sys
 function baseOptions(model: ModelId, options: StreamOptions, cwd: string, stderr: (data: string) => void): ClaudeQueryOptions {
   const effort = toClaudeEffort(options.effort);
   return {
-    ...processOptions(cwd),
+    ...claudeProcessOptions(cwd),
     model,
     includePartialMessages: true,
     thinking: thinkingFor(options.effort),
@@ -298,7 +290,7 @@ export async function adoptClaudeCodeProcesses(hasConversation: (convId: string)
         // Claude Code is already running: only what the SDK re-sends when it
         // connects matters, and it matches what started the process.
         options: {
-          ...processOptions(meta.cwd),
+          ...claudeProcessOptions(meta.cwd),
           systemPrompt: systemPromptOption(meta.systemAppend),
           perTaskStopAffordance: true,
           ...(hostTools ? { mcpServers: { [hostTools.name]: hostTools } } : {}),

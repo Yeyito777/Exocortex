@@ -6,6 +6,7 @@
  * an API key that happens to be present in the daemon environment.
  */
 
+import type { Options as ClaudeQueryOptions } from "@anthropic-ai/claude-agent-sdk";
 import { existsSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
@@ -54,6 +55,15 @@ export function claudeSubscriptionEnv(base: NodeJS.ProcessEnv = process.env): Re
   const env: Record<string, string | undefined> = { ...base };
   for (const name of NON_SUBSCRIPTION_ENV_VARS) delete env[name];
   return env;
+}
+
+/** Agent SDK options that run this Claude Code binary on the subscription in `cwd`. */
+export function claudeProcessOptions(cwd: string): ClaudeQueryOptions {
+  return {
+    cwd,
+    pathToClaudeCodeExecutable: getClaudeBinary(),
+    env: { ...claudeSubscriptionEnv(), CLAUDE_AGENT_SDK_CLIENT_APP: "exocortex-daemon" },
+  };
 }
 
 export interface ClaudeCommandResult {
