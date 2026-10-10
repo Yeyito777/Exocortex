@@ -69,6 +69,8 @@ export interface ClaudeCodeSessionOptions {
   resume?: ResumeData | null;
   /** For a new session (no resume point), the history it was started with. */
   history?: RelayHistoryMark | null;
+  /** What Exocortex appended to Claude Code's system prompt when the process started. */
+  system?: string;
 }
 
 /** What a turn sends into a running process. */
@@ -149,6 +151,10 @@ export function detachAllClaudeCodeSessions(reason: string): void {
 /** Close every process and wait (briefly) until their relays have stopped them. */
 export async function stopAllClaudeCodeSessions(reason: string): Promise<void> {
   await Promise.all([...sessions.values()].map(session => session.stop(reason)));
+}
+
+function systemFingerprint(system: string): string {
+  return createHash("sha256").update(system).digest("hex").slice(0, 32);
 }
 
 /** Settings a running process was started with; a turn needing others starts a new one. */
@@ -370,6 +376,8 @@ export function buildWakeText(notes: readonly TaskNote[]): string {
 
 export class ClaudeCodeSession {
   readonly key: string;
+  /** Fingerprint of the system prompt addition the process started with. */
+  private readonly system: string;
   sessionId: string | null = null;
   private readonly input = new PromptQueue();
   private readonly runtime: ClaudeRuntime;
@@ -413,6 +421,7 @@ export class ClaudeCodeSession {
 
   constructor(private readonly convId: string | undefined, key: string, start: StartClaudeRuntime, options: ClaudeCodeSessionOptions = {}) {
     this.key = key;
+    this.system = systemFingerprint(options.system ?? "");
     this.relay = options.relay ?? null;
     const hello = this.relay?.hello ?? null;
     this.adopted = hello !== null;
@@ -437,8 +446,13 @@ export class ClaudeCodeSession {
    * where this process does (`pending` follows `resume`, the history's latest
    * resume point).
    */
-  canContinue(key: string, resume: ResumeData | null, pending: ApiMessage[] = []): boolean {
+  canContinue(key: string, resume: ResumeData | null, pending: ApiMessage[] = [], system?: string): boolean {
     if (this.closed || this.turn || key !== this.key) return false;
+    // A process only takes its system prompt when it starts. When that prompt
+    // has since changed, start a new one, unless this one still has work
+    // running that a new process would stop.
+    if (system !== undefined && !this.systemMatches(system)
+        && this.tasks.size === 0 && this.wakeId === null && !this.held) return false;
     if (this.resumePoint) {
       return resume?.sessionId === this.resumePoint.sessionId && resume.resumeAt === this.resumePoint.resumeAt;
     }
@@ -446,6 +460,11 @@ export class ClaudeCodeSession {
     const history = this.history;
     return resume === null && history !== null && pending.length >= history.count
       && historyMark(pending.slice(0, history.count)).key === history.key;
+  }
+
+  /** Whether the process started with this system prompt addition. */
+  systemMatches(system: string): boolean {
+    return systemFingerprint(system) === this.system;
   }
 
   /** The process has seen everything but user messages it was not sent; notifications it raised itself are not new. */

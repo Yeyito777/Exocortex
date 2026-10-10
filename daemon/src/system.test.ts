@@ -131,6 +131,19 @@ describe("system prompt", () => {
     }
   });
 
+  test("picks up edits made to system.md by hand", () => {
+    const original = getUserAddendum();
+    const path = join(configDir(), "system.md");
+    try {
+      setUserAddendum("Before");
+      writeFileSync(path, "After the edit\n");
+      expect(getUserAddendum()).toBe("After the edit");
+      expect(buildClaudeCodeSystemAppend({ includeExternalToolHints: false })).toBe("After the edit");
+    } finally {
+      setUserAddendum(original);
+    }
+  });
+
   test("Claude Code append carries only Exocortex's additions", () => {
     const original = getUserAddendum();
     const restoreTools = setLoadedExternalToolsForTest([{
