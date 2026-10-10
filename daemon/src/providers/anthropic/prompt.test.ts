@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ApiMessage } from "../../messages";
-import { buildClaudeUserContent, planClaudePrompt } from "./prompt";
+import { buildClaudeUserContent, buildLiveSessionContent, planClaudePrompt } from "./prompt";
 
 const resumed: ApiMessage = {
   role: "assistant",
@@ -42,6 +42,7 @@ describe("Claude Code prompt planning", () => {
     const content = buildClaudeUserContent([{ role: "assistant", content: [{ type: "text", text: "Both are running." }] }]);
     expect(content).toHaveLength(2);
     expect((content[0] as { text: string }).text).toContain("Assistant:\nBoth are running.");
+    expect((content[0] as { text: string }).text).toEndWith("</conversation_history>\n\n");
     expect((content[1] as { text: string }).text).toContain("interrupted before it finished");
     expect(buildClaudeUserContent([])).toEqual([content[1]]);
   });
@@ -60,7 +61,21 @@ describe("Claude Code prompt planning", () => {
     expect(preamble.text).toContain("[tool call bash t1]");
     expect(preamble.text).toContain("[tool result t1]\na.txt");
     expect(preamble.text).toContain("Assistant:\nthere is a.txt");
+    expect(preamble.text).toEndWith("</conversation_history>\n\n");
     expect(content[1]).toEqual({ type: "text", text: "look" });
     expect(content[2]).toMatchObject({ type: "image", source: { data: "AAAA" } });
+  });
+
+  test("separates a notice from the message after it", () => {
+    const notice: ApiMessage = { role: "user", content: "The user is connected over /ssh from laptop." };
+    const message: ApiMessage = { role: "user", content: [{ type: "text", text: "Ok! Let's test it." }] };
+    const separated: Array<{ type: "text"; text: string }> = [
+      { type: "text", text: "The user is connected over /ssh from laptop.\n\n" },
+      { type: "text", text: "Ok! Let's test it." },
+    ];
+    expect(buildClaudeUserContent([notice, message])).toEqual(separated);
+    expect(buildLiveSessionContent([notice, message])).toEqual(separated);
+    const image: ApiMessage = { role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } }] };
+    expect(buildClaudeUserContent([notice, image])[0]).toEqual({ type: "text", text: "The user is connected over /ssh from laptop." });
   });
 });

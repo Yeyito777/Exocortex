@@ -94,6 +94,22 @@ function toSdkContent(content: ApiMessage["content"]): SdkContent {
   return out;
 }
 
+/**
+ * One user turn from several messages' content. Claude Code runs adjacent
+ * text blocks together, so a message that ends in text is separated from text
+ * that follows it by a blank line, as a system notice is from the message
+ * after it.
+ */
+function joinContent(parts: SdkContent[]): SdkContent {
+  const out: SdkContent = [];
+  for (const part of parts) {
+    const last = out.at(-1);
+    if (last?.type === "text" && part[0]?.type === "text") out[out.length - 1] = { ...last, text: `${last.text}\n\n` };
+    out.push(...part);
+  }
+  return out;
+}
+
 /** Render prior history as a plain-text transcript. */
 export function renderTranscript(messages: ApiMessage[]): string {
   return messages
@@ -112,7 +128,7 @@ const LIVE_CONTINUE_PROMPT = "Your previous turn was interrupted before it finis
  * session.ts): it has seen everything but these new user messages.
  */
 export function buildLiveSessionContent(messages: ApiMessage[]): SdkContent {
-  const content = messages.flatMap(message => toSdkContent(message.content));
+  const content = joinContent(messages.map(message => toSdkContent(message.content)));
   return content.length > 0 ? content : [{ type: "text", text: LIVE_CONTINUE_PROMPT }];
 }
 
@@ -131,20 +147,20 @@ export function buildClaudeUserContent(pending: ApiMessage[]): SdkContent {
   const tail = trailingUserMessages(pending);
   const history = pending.slice(0, pending.length - tail.length);
 
-  const content: SdkContent = [];
+  const parts: SdkContent[] = [];
   const transcript = renderTranscript(history);
   if (transcript) {
-    content.push({
+    parts.push([{
       type: "text",
       text: "<conversation_history>\nEarlier messages in this conversation that you have not seen in this session:\n\n"
         + `${transcript}\n</conversation_history>`,
-    });
+    }]);
   }
-  for (const message of tail) content.push(...toSdkContent(message.content));
+  for (const message of tail) parts.push(toSdkContent(message.content));
   // No new user input: this replays a turn that ended early (a daemon restart,
   // an interrupt, an error). Say so, or the model has nothing to answer.
-  if (tail.length === 0) content.push({ type: "text", text: INTERRUPTED_TURN_PROMPT });
-  return content;
+  if (tail.length === 0) parts.push([{ type: "text", text: INTERRUPTED_TURN_PROMPT }]);
+  return joinContent(parts);
 }
 
 /** Plain-text prompt for one-shot helper requests (titles, summaries, compaction). */
