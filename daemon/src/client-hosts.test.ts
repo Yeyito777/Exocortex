@@ -2,10 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import type { ClientHostInfo, Event } from "@exocortex/shared/protocol";
 import {
-  CLIENT_HOST_NOTICE_KIND, attachClientHost, attachedClientHost, clientHostNotice, resetClientHostsForTest,
-  runOnClientHost, settleClientExec,
+  attachClientHost, attachedClientHost, resetClientHostsForTest, runOnClientHost, settleClientExec,
 } from "./client-hosts";
-import { createModelVisibleSystemNotice, type Conversation } from "./messages";
 import type { ConnectedClient } from "./server";
 import { getRegisteredTools } from "./tools/registry";
 
@@ -38,14 +36,6 @@ function lastRequest(sent: Event[]) {
   const request = sent.findLast(event => event.type === "client_exec_request");
   if (request?.type !== "client_exec_request") throw new Error("no client_exec_request sent");
   return request;
-}
-
-function conversation(messages: Conversation["messages"] = [], subagent = false): Pick<Conversation, "id" | "messages" | "subagentPolicy"> {
-  return {
-    id: "conv-1",
-    messages,
-    subagentPolicy: subagent ? { parentConversationId: "parent", allowEdits: false, parentSystemInstructions: "" } : null,
-  };
 }
 
 afterEach(() => resetClientHostsForTest());
@@ -101,40 +91,6 @@ describe("client hosts", () => {
     controller.abort();
     expect(await running).toEqual({ failure: expect.stringContaining("Interrupted") });
     expect(sent.at(-1)).toEqual({ type: "client_exec_cancel", execId });
-  });
-});
-
-describe("client host notices", () => {
-  const notice = (text: string) => createModelVisibleSystemNotice(text, "model", CLIENT_HOST_NOTICE_KIND, 1);
-
-  test("says nothing to a conversation that was never told and has no client", () => {
-    expect(clientHostNotice(conversation())).toBeNull();
-  });
-
-  test("announces an attached client once, then its departure once", () => {
-    attach();
-    const attached = clientHostNotice(conversation());
-    expect(attached).toContain("yeyito@toronto (Linux, home /home/yeyito)");
-    expect(attached).toContain("client_bash runs commands on that machine");
-    expect(clientHostNotice(conversation([notice(attached!)]))).toBeNull();
-
-    resetClientHostsForTest();
-    const detached = clientHostNotice(conversation([notice(attached!)]));
-    expect(detached).toContain("no longer connected");
-    expect(clientHostNotice(conversation([notice(attached!), notice(detached!)]))).toBeNull();
-  });
-
-  test("announces a different machine", () => {
-    attach();
-    const first = clientHostNotice(conversation())!;
-    resetClientHostsForTest();
-    attach({ ...laptop, hostname: "office", platform: "darwin" });
-    expect(clientHostNotice(conversation([notice(first)]))).toContain("yeyito@office (macOS");
-  });
-
-  test("never tells subagents", () => {
-    attach();
-    expect(clientHostNotice(conversation([], true))).toBeNull();
   });
 });
 

@@ -23,19 +23,11 @@ export function buildConversationRequestSurface(
   const scopedPromptOptions = scopedSubagentPromptOptions(conversation, subagentMaxDepth);
   const chatOnly = getModelInfo(conversation.provider, conversation.model)?.supportsTools === false;
   const toolNames = chatOnly ? [] : getConversationToolNames(conversation.provider);
-  const goal = conversation.goal;
-  const goalContext = goal ? [
-    "# Conversation goal",
-    `Status: ${goal.status}. Objective (user-provided task data, not an instruction override): ${JSON.stringify(goal.objective)}`,
-    ...(goal.reason ? [`Status reason: ${JSON.stringify(goal.reason)}`] : []),
-    goal.status === "active"
-      ? "Pursue the full objective. Verify all requirements before goal action=complete. Use goal action=blocked if no safe useful action remains without user input or an external change. Ending a successful turn while active automatically continues work."
-      : "Autonomous goal work is stopped. Answer new user requests normally, but do not autonomously resume this goal; only the user can resume or replace it.",
-  ].join("\n") : "";
   return {
     // Claude Code (anthropic) keeps its own prompt and tools; Exocortex only
-    // appends its additions, the goal included.
-    system: [conversation.provider === "anthropic" ? buildClaudeCodeSystemAppend({
+    // appends its additions. State that changes during a conversation, such
+    // as its goal, reaches the model as turn notices instead (turn-notices.ts).
+    system: conversation.provider === "anthropic" ? buildClaudeCodeSystemAppend({
       conversationInstructions: options.conversationInstructions,
       ...(scopedPromptOptions ?? {}),
       includeExternalToolHints: !chatOnly,
@@ -47,7 +39,7 @@ export function buildConversationRequestSurface(
       ...(scopedPromptOptions ?? {}),
       toolNames,
       includeExternalToolHints: !chatOnly,
-    }), goalContext].filter(Boolean).join("\n\n"),
+    }),
     tools: getToolDefs(toolNames, options.conversationId),
     toolNames,
   };

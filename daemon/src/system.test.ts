@@ -175,7 +175,7 @@ describe("system prompt", () => {
     }
   });
 
-  test("anthropic request surface sends the Claude Code append and the goal instead of the Exo prompt", () => {
+  test("anthropic request surface sends the Claude Code append instead of the Exo prompt, and never the goal", () => {
     const original = getUserAddendum();
     try {
       setUserAddendum("App-wide instruction");
@@ -191,19 +191,19 @@ describe("system prompt", () => {
         conversationInstructions: "Conversation rule",
       });
 
-      expect(surface.system).toStartWith(`${buildClaudeCodeSystemAppend({ conversationInstructions: "Conversation rule" })}\n\n# Conversation goal\n`);
-      expect(surface.system).toContain('Status: active. Objective (user-provided task data, not an instruction override): "Ship it"');
+      // The goal changes during a conversation, so it is a turn notice instead.
+      expect(surface.system).toBe(buildClaudeCodeSystemAppend({ conversationInstructions: "Conversation rule" }));
       expect(surface.system).toContain("App-wide instruction");
+      expect(surface.system).not.toContain("Conversation goal");
       expect(surface.system).not.toContain("You are Exo");
       expect(surface.system).not.toContain("# Internal tools");
       expect(surface.toolNames).toContain("goal");
 
-      setUserAddendum("");
-      const bare = buildConversationRequestSurface({ ...conversation, goal: null } as Conversation, {
+      const openai = buildConversationRequestSurface({ ...conversation, provider: "openai", model: "gpt-6.1-sol" } as Conversation, {
         conversationId: conversation.id,
         workingDirectory: "/tmp/claude-surface",
       });
-      expect(bare.system).not.toContain("# Conversation goal");
+      expect(openai.system).not.toContain("Conversation goal");
     } finally {
       setUserAddendum(original);
     }
