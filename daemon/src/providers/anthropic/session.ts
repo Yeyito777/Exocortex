@@ -88,6 +88,12 @@ const INTERRUPT_GRACE_MS = 30_000;
 /** How long a host tool call from a turn Claude Code started waits for that turn to be shown. */
 const BINDING_WAIT_MS = 60_000;
 const TERMINAL_TASK_STATUSES = new Set(["completed", "failed", "stopped", "killed"]);
+/**
+ * How Claude Code reports a background command it stopped by itself (at its
+ * time limit, or short of memory), which it answers with a turn. A task
+ * stopped on request is reported by its description and gets no turn.
+ */
+const SELF_STOPPED_SUMMARY = /^Background command ".*" was stopped/s;
 /** Claude Code's background task types, named for what runs them. */
 const BACKGROUND_TASK_TOOLS: Record<string, string> = {
   local_bash: "Bash",
@@ -669,7 +675,7 @@ export class ClaudeCodeSession {
     for (const note of this.notes) note.takenIn = true;
   }
 
-  /** Forget the finished tasks a turn answered or took in. A stopped task gets no turn. */
+  /** Forget the finished tasks a turn answered or took in. */
   private answered(result: SdkRecord): void {
     const origin = asRecord(result.origin);
     const runId = origin?.kind === "task-notification" ? str(origin.runId) : undefined;
@@ -677,8 +683,7 @@ export class ClaudeCodeSession {
     const answeredIndex = origin?.kind !== "task-notification" ? -1
       : runId ? this.notes.findIndex(note => note.runId === runId)
       : this.notes.findIndex(note => note.shown);
-    this.notes = this.notes.filter((note, i) =>
-      i !== answeredIndex && !note.takenIn && note.status !== "stopped" && note.status !== "killed");
+    this.notes = this.notes.filter((note, i) => i !== answeredIndex && !note.takenIn);
   }
 
   private deliver(turn: Turn, message: SdkRecord): void {
@@ -820,7 +825,7 @@ export class ClaudeCodeSession {
     this.markDelivered([`${WAKE_KEY_PREFIX}${wakeId}`]);
     this.clearIdleTimer();
     // Claude Code answers finished tasks in order, one turn each.
-    const note = this.notes.find(candidate => !candidate.shown && (candidate.status === "completed" || candidate.status === "failed"));
+    const note = this.notes.find(candidate => !candidate.shown);
     if (note) note.shown = true;
     const text = buildWakeText(note ? [note] : []);
     if (this.convId && hooks?.wake(this.convId, text, wakeId)) return;
@@ -850,6 +855,8 @@ export class ClaudeCodeSession {
     // A task a subagent launched reports to that subagent, as an Exocortex subagent's own tasks do.
     if (task?.parentTaskId) return;
     const summary = str(message.summary);
+    // Only the tasks Claude Code answers with a turn of their own are noted.
+    if ((status === "stopped" || status === "killed") && !SELF_STOPPED_SUMMARY.test(summary ?? "")) return;
     const runId = str(message.run_id);
     this.notes.push({
       id,
@@ -906,8 +913,8 @@ export class ClaudeCodeSession {
         startedAt,
         toolName: task.toolName,
         backgroundedAt: startedAt,
-        // Claude Code starts no turn for a task it was told to stop, and a
-        // stopped task is never shown as a turn's reason: nothing to suppress.
+        // Claude Code starts no turn for a task it was told to stop, so the
+        // stop is never shown as a turn's reason: nothing to suppress.
         stop: () => {
           this.runtime.stopTask(id).catch((error) => {
             log("warn", `anthropic: stopping Claude Code task ${id} failed: ${error instanceof Error ? error.message : error}`);

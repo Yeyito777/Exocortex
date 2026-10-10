@@ -433,13 +433,34 @@ describe("Claude Code processes outliving a turn", () => {
     await first;
 
     expect(stopBackgroundTask("b1", true).result).toBe("stopping");
-    // Claude Code reports the stop but starts no turn for it.
-    runtime().emit({ ...finished("b1"), status: "stopped", run_id: "r1" }, tasks({ id: "b2", description: "test" }));
+    // Claude Code reports the stop by the task's description but starts no turn for it.
+    runtime().emit({ ...finished("b1"), status: "stopped", run_id: "r1", summary: "build" }, tasks({ id: "b2", description: "test" }));
     runtime().emit({ ...finished("b2"), run_id: "r2" }, tasks(), init, text("t2", "Tests done."), answering("r2"));
     await tick();
     expect(wakes).toHaveLength(1);
     expect(wakes[0].text).toContain("completed: b2");
     expect(wakes[0].text).not.toContain("b1");
+  });
+
+  test("a command Claude Code stopped by itself is shown with the turn it starts for it", async () => {
+    const { session, runtime } = open();
+    const turn = session.run(createClaudeStreamState(callbacks(), "/work", "p1"), [{ type: "text", text: "spawn" }], undefined, undefined);
+    await tick();
+    const summary = 'Background command "Wait for tests" was stopped after reaching its background time limit';
+    runtime().emit(
+      init, callStart, call("a1", "t1", "wait-for-tests &"), tasks({ id: "b1", description: "Wait for tests" }), output("u1", "t1", "started b1"),
+      callStart, { ...finished("b1"), status: "stopped", run_id: "r1", summary }, tasks(), text("a2", "Started."), result("p1"),
+    );
+    await turn;
+    runtime().emit(init, text("a3", "It hit its time limit."), answering("r1"));
+    await tick();
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0].text).toBe([
+      "[notification] Background task stopped: b1",
+      "Command: Wait for tests",
+      `Status: ${summary}`,
+      "Output: /tmp/tasks/b1.output",
+    ].join("\n"));
   });
 
   test("a stop Claude Code fails to carry out leaves the task running and stoppable", async () => {
