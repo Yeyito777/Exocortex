@@ -14,6 +14,7 @@ import type { ProviderId, ModelId, EffortLevel, ImageAttachment, TokenUsageSourc
 import { socketPath, isWindows } from "@exocortex/shared/paths";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
 import type { RealtimeVoice } from "@exocortex/shared/realtime";
+import type { ChronoRequest } from "./chronoschedule";
 import { log } from "./log";
 import type { UpdateStatus } from "@exocortex/shared/updatecheck";
 import { BtwMutationReplay, isBtwMutation } from "./btw/replay";
@@ -800,6 +801,21 @@ export class DaemonClient {
 
   setGoal(convId: string, action: GoalAction, objective?: string, maxTimeMs?: number): void {
     this.send({ type: "set_goal", convId, action, objective, maxTimeMs });
+  }
+
+  chrono(convId: string, request: ChronoRequest): void {
+    if (request.action !== "create") {
+      this.send({ type: "chrono", convId, ...request });
+      return;
+    }
+    const { at, ...schedule } = request;
+    this.send({
+      type: "chrono",
+      convId,
+      ...schedule,
+      at: new Date(at).toISOString(),
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    });
   }
 
   trimConversation(convId: string, mode: TrimMode, count: number): void {

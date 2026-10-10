@@ -994,6 +994,17 @@ function handleSubmit(): void {
             pushSystemMessage(state, "Create or open a conversation before using /goal.", theme.warning);
           }
           break;
+        case "chrono":
+          if (!state.convId) {
+            pushSystemMessage(state, "Open a conversation before using /chrono: scheduled messages are sent to it.", theme.warning);
+            break;
+          }
+          clearPrompt(state);
+          state.scrollOffset = 0;
+          daemon.chrono(state.convId, cmdResult.request.action === "create" && cmdResult.request.message
+            ? { ...cmdResult.request, message: expandMacros(cmdResult.request.message, macroEnvironmentForState(state)) }
+            : cmdResult.request);
+          break;
         case "rename_conversation":
           if (state.convId) daemon.renameConversation(state.convId, cmdResult.title);
           break;

@@ -4,6 +4,7 @@ import type { RenderState } from "../state";
 import type { GoalAction, OpenAILoginMethod, QueuedCommandInvocation, QueueWaitTarget, TrimMode } from "../protocol";
 import type { ProviderId, ModelId, EffortLevel } from "../messages";
 import type { RealtimeVoice } from "@exocortex/shared/realtime";
+import type { ChronoRequest } from "../chronoschedule";
 
 export interface CompletionItem {
   name: string;
@@ -36,6 +37,7 @@ type CommandAction =
   | { type: "effort_changed"; effort: EffortLevel }
   | { type: "fast_mode_changed"; enabled: FastMode }
   | { type: "goal"; action: GoalAction; objective?: string; maxTimeMs?: number }
+  | { type: "chrono"; request: ChronoRequest }
   | { type: "rename_conversation"; title: string }
   | { type: "generate_title" }
   | { type: "login"; provider?: ProviderId; apiKey?: string; action?: "add" | "remove"; target?: string; method?: OpenAILoginMethod }

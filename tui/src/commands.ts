@@ -2,6 +2,7 @@ import type { RenderState } from "./state";
 import { ACCOUNT_COMMAND } from "./commands/account";
 import { BTW_COMMAND } from "./btw/command";
 import { CALL_COMMAND } from "./commands/call";
+import { CHRONO_COMMAND } from "./commands/chrono";
 import { COMPACT_COMMAND } from "./commands/compact";
 import { CONVO_COMMAND } from "./commands/convo";
 import { DEFAULT_MODEL_COMMAND } from "./commands/default-model";
@@ -59,6 +60,7 @@ const commands: SlashCommand[] = [
   ULTRAFAST_COMMAND,
   QUEUE_COMMAND,
   GOAL_COMMAND,
+  CHRONO_COMMAND,
   CONVO_COMMAND,
   TOKENS_COMMAND,
   USAGE_COMMAND,

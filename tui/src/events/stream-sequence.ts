@@ -7,7 +7,7 @@ export const CONV_SCOPED: ReadonlySet<string> = new Set([
   "streaming_started", "block_start", "text_chunk", "thinking_chunk", "streaming_sync",
   "tool_call", "tool_result", "tokens_update", "context_update",
   "message_complete", "streaming_stopped", "user_message", "system_message",
-  "stream_retry", "history_updated", "tool_outputs_loaded", "goal_updated",
+  "stream_retry", "history_updated", "tool_outputs_loaded", "goal_updated", "chrono_result",
   "context_compaction_status", "conversation_history_loaded",
   "btw_started", "btw_followup_started", "btw_block_start", "btw_text_chunk", "btw_thinking_chunk", "btw_content",
   "btw_tool_call", "btw_tool_result", "btw_status",

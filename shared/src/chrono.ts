@@ -1,5 +1,35 @@
 import type { ConversationSummary, ConversationTaskSummary } from "./messages";
 
+/** A fixed-period Chrono repeat (minutes or hours). */
+export interface IntervalRecurrence {
+  kind: "interval";
+  everyMs: number;
+  anchorAt: number;
+}
+
+/** A day/week/month Chrono repeat that keeps its wall-clock time in `timezone`. */
+export interface CalendarRecurrence {
+  kind: "calendar";
+  unit: "day" | "week" | "month";
+  interval: number;
+  timezone: string;
+  hour: number;
+  minute: number;
+  second: number;
+  anchorDate: string;
+  /** 0 = Sunday. */
+  weekdays?: number[];
+  dayOfMonth?: number;
+}
+
+export interface CronRecurrence {
+  /** Legacy migration compatibility. New model-created schedules are structured. */
+  kind: "cron";
+  expression: string;
+}
+
+export type ChronoRecurrence = IntervalRecurrence | CalendarRecurrence | CronRecurrence;
+
 /**
  * Chrono sleeps and waits longer than this suspend the model turn: a native
  * provider turn ends and resumes by replay, while a Claude Code turn, which
@@ -33,4 +63,9 @@ export function inlineLongSleepStartedAt(
     startedAt = Math.min(startedAt ?? task.startedAt, task.startedAt);
   }
   return startedAt;
+}
+
+/** The short form of a Chrono schedule id that `/chrono` shows and accepts. */
+export function chronoShortId(id: string): string {
+  return id.replace(/^chrono:/, "").slice(0, 8);
 }

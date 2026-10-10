@@ -18,3 +18,16 @@ that cannot be recovered closes the wait with a tool error.
 
 Implementation: `daemon/src/tools/chrono.ts`, `daemon/src/chrono-service.ts`,
 and `tui/src/taskvisibility.ts`.
+
+## `/chrono`
+
+Users schedule wakes without asking the model: `/chrono 30m <message>`,
+`/chrono tomorrow 9am <message>`, `/chrono every weekday at 8:30 <message>`,
+`/chrono [list]`, `/chrono cancel <id|all>`. A leading `!` makes the payload a
+shell soft wake. The TUI parses times in its own timezone and sends the
+daemon's `chrono` command an exact instant plus that timezone for calendar
+repeats. Schedules are ordinary ones owned by the open conversation, so the
+model can list and cancel them too.
+
+Implementation: `tui/src/chronoschedule.ts`, `tui/src/commands/chrono.ts`, and
+`daemon/src/chrono-commands.ts`.

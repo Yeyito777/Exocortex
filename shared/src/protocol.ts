@@ -15,6 +15,7 @@ import type { GenerationThroughput } from "./messages";
 import type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ToolCallPresentation, ImageAttachment, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus, ConversationBtw, UserMessageContextCheckpoint, ExternalNotificationDelivery, UserMessageAutomation } from "./messages";
 import type { RealtimeVoice } from "./realtime";
 import type { UpdateStatus } from "./updatecheck";
+import type { ChronoRecurrence } from "./chrono";
 export type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ToolCallPresentation, ImageAttachment, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus, ConversationBtw, UserMessageContextCheckpoint, ExternalNotificationDelivery, UserMessageAutomation };
 
 // ── Commands (client → daemon) ──────────────────────────────────────
@@ -448,6 +449,33 @@ export interface SetGoalCommand {
   objective?: string;
   /** Optional active-time limit in milliseconds for `set`. */
   maxTimeMs?: number;
+}
+
+export type ChronoAction = "list" | "create" | "cancel";
+
+/** A Chrono repeat as typed by a user or model; the daemon resolves it to a ChronoRecurrence. */
+export interface ChronoRepeat {
+  unit: "minute" | "hour" | "day" | "week" | "month";
+  interval?: number;
+  weekdays?: Array<"sun" | "mon" | "tue" | "wed" | "thu" | "fri" | "sat">;
+}
+
+/** User-managed Chrono schedules owned by one conversation (`/chrono`). */
+export interface ChronoCommand {
+  type: "chrono";
+  reqId?: string;
+  convId: string;
+  action: ChronoAction;
+  /** For create: first occurrence as an ISO-8601 instant with an explicit offset. */
+  at?: string;
+  repeat?: ChronoRepeat;
+  /** For create: IANA timezone whose wall clock day/week/month repeats keep. */
+  timezone?: string;
+  /** For create: exactly one of a message (starts a model turn) or a shell command (runs without one). */
+  message?: string;
+  command?: string;
+  /** For cancel: an exact schedule id, a unique prefix of its short id, or `all`. */
+  scheduleId?: string;
 }
 
 export type TrimMode = "messages" | "thinking" | "toolresults";
@@ -1003,6 +1031,7 @@ export type Command =
   | SetEffortCommand
   | SetFastModeCommand
   | SetGoalCommand
+  | ChronoCommand
   | ManageExternalToolDaemonCommand
   | RegisterExternalNotificationSourceCommand
   | ListExternalNotificationSourcesCommand
@@ -1495,6 +1524,30 @@ export interface GoalUpdatedEvent {
   message?: string;
 }
 
+/** A Chrono schedule as shown to the user who manages it. */
+export interface ChronoScheduleSummary {
+  id: string;
+  title: string;
+  nextAt: number;
+  /** A message wake starts a model turn; a command wake runs in the shell without one. */
+  kind: "message" | "command";
+  /** The message text or shell command. */
+  payload: string;
+  recurrence?: ChronoRecurrence;
+  status: "scheduled" | "pending" | "running";
+}
+
+export interface ChronoResultEvent {
+  type: "chrono_result";
+  reqId?: string;
+  convId: string;
+  action: ChronoAction;
+  /** The conversation's schedules after the action, soonest first. */
+  schedules: ChronoScheduleSummary[];
+  created?: ChronoScheduleSummary;
+  cancelled?: Array<{ id: string; title: string }>;
+}
+
 export interface ConversationUpdatedEvent {
   type: "conversation_updated";
   summary: ConversationSummary;
@@ -1957,6 +2010,7 @@ export type Event =
   | ConversationLoadedEvent
   | ConversationHistoryLoadedEvent
   | GoalUpdatedEvent
+  | ChronoResultEvent
   | ConversationUpdatedEvent
   | ConversationUnwoundEvent
   | ConversationDeletedEvent

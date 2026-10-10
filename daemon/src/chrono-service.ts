@@ -11,7 +11,13 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync 
 import { join } from "node:path";
 import { dataDir } from "@exocortex/shared/paths";
 import { agentWorkingDirectory } from "@exocortex/shared/config";
-import { LONG_CHRONO_SLEEP_THRESHOLD_MS } from "@exocortex/shared/chrono";
+import {
+  LONG_CHRONO_SLEEP_THRESHOLD_MS,
+  type CalendarRecurrence,
+  type ChronoRecurrence,
+  type CronRecurrence,
+  type IntervalRecurrence,
+} from "@exocortex/shared/chrono";
 import * as convStore from "./conversations";
 import { setChronoTaskActive, waitForConversationTask } from "./conversation-activity";
 import { onConversationRemoved, onConversationRemoving } from "./conversation-lifecycle";
@@ -31,32 +37,7 @@ const WEEKDAY_INDEX: Record<string, number> = {
 
 export type ChronoMode = "wait" | "sleep" | "wake";
 
-export interface IntervalRecurrence {
-  kind: "interval";
-  everyMs: number;
-  anchorAt: number;
-}
-
-export interface CalendarRecurrence {
-  kind: "calendar";
-  unit: "day" | "week" | "month";
-  interval: number;
-  timezone: string;
-  hour: number;
-  minute: number;
-  second: number;
-  anchorDate: string;
-  weekdays?: number[];
-  dayOfMonth?: number;
-}
-
-export interface CronRecurrence {
-  /** Legacy migration compatibility. New model-created schedules are structured. */
-  kind: "cron";
-  expression: string;
-}
-
-export type ChronoRecurrence = IntervalRecurrence | CalendarRecurrence | CronRecurrence;
+export type { CalendarRecurrence, ChronoRecurrence, CronRecurrence, IntervalRecurrence };
 
 export interface ConversationWakeTarget {
   kind: "conversation";

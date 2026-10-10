@@ -65,6 +65,7 @@ import {
 import { beginDaemonShutdown, getDaemonShutdownMode } from "./daemon-lifecycle";
 import { buildBackgroundTaskNotificationText } from "./background-task-notifications";
 import { configureChronoService, cancelDeferredChronoSleep } from "./chrono-service";
+import { runChronoCommand } from "./chrono-commands";
 import { inlineLongSleepStartedAt } from "@exocortex/shared/chrono";
 import { configureClaudeCodeSessions } from "./providers/anthropic/session";
 import { HISTORY_PAGE_BYTE_BUDGET, INITIAL_HISTORY_TURNS, buildHistoryUpdatedEvents, compactHistoryImages, pageDisplayHistory, type HistoryWindowOptions } from "./history-pagination";
@@ -1959,6 +1960,17 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         if (cmd.action !== "show") server.sendToSubscribersExcept(cmd.convId, goalEvent, client);
         if (cmd.action !== "show") broadcastConversationUpdated(server, cmd.convId);
 
+        break;
+      }
+
+      case "chrono": {
+        if (!convStore.hasConversation(cmd.convId)) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
+          break;
+        }
+        const outcome = runChronoCommand(cmd);
+        server.sendTo(client, outcome.event ?? { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: outcome.error ?? "Chrono command failed." });
+        if (cmd.action !== "list" && outcome.event) log("info", `handler: /chrono ${cmd.action} for ${cmd.convId}`);
         break;
       }
 

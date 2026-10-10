@@ -61,6 +61,7 @@ import { hydratePendingAIFromSnapshot } from "./events/pending-ai";
 import type { DaemonActions } from "./events/types";
 import { handleCallTranscript, reconcileCallTranscriptDrafts } from "./events/call";
 import { handleBtwEvent } from "./btw/events";
+import { formatChronoResult } from "./chronoschedule";
 
 export type { DaemonActions } from "./events/types";
 
@@ -236,6 +237,10 @@ export function handleEvent(
     case "goal_updated":
       state.goal = event.goal ?? null;
       if (event.message) pushSystemMessage(state, event.message, theme.muted);
+      break;
+
+    case "chrono_result":
+      pushSystemMessage(state, formatChronoResult(event), theme.muted);
       break;
 
     case "conversation_restored":

@@ -16,7 +16,7 @@ Common commands include `list_conversations`, `load_conversation`,
 `move_sidebar_items`. Read their exact fields in the spec before sending.
 Managed task inspection/stopping uses `list_tasks` / `stop_task`; task IDs are
 not raw PIDs. Use `abort` for subagent conversations and Chrono cancellation
-for schedules.
+for schedules: `chrono` lists, creates, or cancels a conversation's schedules.
 Never restart the main daemon.
 
 Daybreak uses ordinary model selection: `provider: "openai"` and
