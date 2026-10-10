@@ -676,7 +676,6 @@ async function orchestrateAdmittedAssistantTurn(
   // ── Start stream and broadcast initial state ──────────────────────
 
   let acceptedUserMessage: StoredMessage | null = null;
-  let turnNoticesAdded = false;
   if (userMessage) {
     try {
       const handoffCancelled = () => {
@@ -689,12 +688,12 @@ async function orchestrateAdmittedAssistantTurn(
       const cancelled = handoffCancelled();
       if (cancelled) return cancelled;
       // Tell the model about state that changed since it was last told (the
-      // client machine, the goal). The notices precede the message's
-      // checkpoint, so unwinding the message keeps what was true when it was sent.
+      // client machine, the goal). Clients do not show these notices. They
+      // precede the message's checkpoint, so unwinding the message keeps what
+      // was true when it was sent.
       const notices = pendingTurnNotices(conv);
       if (notices.length > 0) {
         convStore.appendMessages(convId, notices.map(notice => createModelVisibleSystemNotice(notice.text, conv.model, notice.kind, startedAt)));
-        turnNoticesAdded = true;
         await prepareArchiveHashes(conv.messages);
         const cancelledAfterNotice = handoffCancelled();
         if (cancelledAfterNotice) return cancelledAfterNotice;
@@ -726,17 +725,14 @@ async function orchestrateAdmittedAssistantTurn(
     convStore.flush(convId);
   }
 
-  if (interruptedSleep || turnNoticesAdded) {
-    // Rebuild only after both the deferred tool result (or turn notices, which
-    // the sender's optimistic user bubble lacks) and incoming user message are
-    // canonical. Rebuilding earlier would erase that bubble.
+  if (interruptedSleep) {
+    // Rebuild only after both the deferred tool result and incoming user message
+    // are canonical. Rebuilding earlier would erase the sender's optimistic user
+    // bubble, while a later incremental user_message would duplicate it.
     broadcastConversationHistoryUpdated(server, convId);
     broadcastConversationUpdated(server, convId);
   }
 
-  // After an interrupted sleep's rebuild, an incremental user_message would
-  // duplicate the message. Clients recognize one that a notice rebuild already
-  // made canonical, and still settle its queue entry.
   if (userMessage && !interruptedSleep) {
 
     // Notify subscribers about the user message.

@@ -6,14 +6,15 @@
  * model as a notice before its next message instead, once per change: the
  * machine client_bash reaches and the conversation goal. A compaction can
  * summarize a notice away, so one still in effect is repeated after it.
+ * Clients do not show these notices (MODEL_ONLY_NOTICE_KINDS).
  */
 
-import { CONTEXT_COMPACTION_FINISHED_KIND, isModelVisibleSystemNotice, type ConversationGoal, type StoredMessage, type SubagentPolicy } from "./messages";
+import {
+  CLIENT_HOST_NOTICE_KIND, CONTEXT_COMPACTION_FINISHED_KIND, GOAL_NOTICE_KIND, isModelVisibleSystemNotice,
+  type ConversationGoal, type StoredMessage, type SubagentPolicy,
+} from "./messages";
 import { CLIENT_HOST_DETACHED_NOTICE, clientHostNoticeText } from "./client-hosts";
 import { isScopedSubagent } from "./subagent-policy";
-
-export const CLIENT_HOST_NOTICE_KIND = "client_host";
-export const GOAL_NOTICE_KIND = "conversation_goal";
 
 /** Told to a conversation when its goal is cleared. */
 const GOAL_CLEARED_NOTICE = "The conversation goal was cleared.";

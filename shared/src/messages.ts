@@ -202,6 +202,14 @@ export const CONTEXT_COMPACTION_FINISHED_KIND = "context_compaction_finished";
 export const CONTEXT_COMPACTION_FINISHED_TEXT = "--- Compaction finished ---";
 export const REALTIME_TRANSCRIPT_KIND = "realtime_transcript";
 export const REALTIME_CALL_STATUS_KIND = "realtime_call_status";
+/**
+ * Notices that keep the model up to date on conversation state (the machine
+ * client_bash reaches, the conversation goal). They are for the model alone:
+ * clients do not show them.
+ */
+export const CLIENT_HOST_NOTICE_KIND = "client_host";
+export const GOAL_NOTICE_KIND = "conversation_goal";
+export const MODEL_ONLY_NOTICE_KINDS: readonly string[] = [CLIENT_HOST_NOTICE_KIND, GOAL_NOTICE_KIND];
 
 /**
  * Machine-readable provenance for daemon/model-authored prompts that travel

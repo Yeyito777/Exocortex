@@ -2,9 +2,9 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import type { ClientHostInfo } from "@exocortex/shared/protocol";
 import { attachClientHost, resetClientHostsForTest } from "./client-hosts";
-import { CONTEXT_COMPACTION_FINISHED_KIND, createModelVisibleSystemNotice, type StoredMessage } from "./messages";
+import { CLIENT_HOST_NOTICE_KIND, CONTEXT_COMPACTION_FINISHED_KIND, GOAL_NOTICE_KIND, createModelVisibleSystemNotice, type StoredMessage } from "./messages";
 import type { ConnectedClient } from "./server";
-import { CLIENT_HOST_NOTICE_KIND, GOAL_NOTICE_KIND, pendingTurnNotices, type TurnNotice, type TurnNoticeState } from "./turn-notices";
+import { pendingTurnNotices, type TurnNotice, type TurnNoticeState } from "./turn-notices";
 
 const laptop: ClientHostInfo = { hostname: "toronto", user: "yeyito", platform: "linux", home: "/home/yeyito" };
 

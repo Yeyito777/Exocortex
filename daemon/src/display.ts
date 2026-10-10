@@ -7,7 +7,7 @@ import type { FastMode } from "@exocortex/shared/messages";
  * reach into the tool layer.
  */
 
-import { CONTEXT_COMPACTION_FINISHED_KIND, REALTIME_CALL_STATUS_KIND, REALTIME_TRANSCRIPT_KIND, combineMessageMetadata, type Block, type MessageMetadata, type ImageAttachment } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, MODEL_ONLY_NOTICE_KINDS, REALTIME_CALL_STATUS_KIND, REALTIME_TRANSCRIPT_KIND, combineMessageMetadata, type Block, type MessageMetadata, type ImageAttachment } from "./messages";
 import { isModelVisibleSystemNotice, isReplayHistoryMessage, userMessageUnwindFingerprints, type StoredMessage, type ApiContentBlock } from "./messages";
 import type { ProviderId, ModelId, EffortLevel } from "./messages";
 import type { DisplayEntry, ToolOutputInfo } from "@exocortex/shared/protocol";
@@ -165,6 +165,7 @@ export function buildDisplayData(
     }
     if (isModelVisibleSystemNotice(msg)) {
       flushAI();
+      if (MODEL_ONLY_NOTICE_KINDS.includes(msg.metadata?.kind ?? "")) continue;
       const text = typeof msg.content === "string"
         ? msg.content
         : msg.content

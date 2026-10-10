@@ -8,7 +8,7 @@
 
 import { describe, test, expect } from "bun:test";
 import { buildDisplayData, type BuildDisplayOptions } from "./display";
-import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, REALTIME_CALL_STATUS_KIND, REALTIME_TRANSCRIPT_KIND, type StoredMessage, type ApiContentBlock } from "./messages";
+import { CLIENT_HOST_NOTICE_KIND, CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, GOAL_NOTICE_KIND, REALTIME_CALL_STATUS_KIND, REALTIME_TRANSCRIPT_KIND, createModelVisibleSystemNotice, type StoredMessage, type ApiContentBlock } from "./messages";
 import type { MessageMetadata } from "./messages";
 import type { ToolSummarizerFn } from "./display";
 
@@ -625,6 +625,17 @@ describe("tool-result folding", () => {
     expect(entries[0].type).toBe("ai");
     expect(entries[1]).toEqual({ type: "system", text: "[Context: 900k/1,000k tokens — context is getting full.]" });
     expect(entries[2].type).toBe("ai");
+  });
+
+  test("client host and goal notices are for the model alone and are not shown", () => {
+    const { entries } = build([
+      { role: "assistant", content: "Earlier answer", metadata: null },
+      createModelVisibleSystemNotice("The user is connected over /ssh from laptop.", "gpt-5.5", CLIENT_HOST_NOTICE_KIND, 1_000),
+      createModelVisibleSystemNotice('Conversation goal (active): "Ship it".', "gpt-5.5", GOAL_NOTICE_KIND, 1_000),
+      { role: "user", content: "what can you run?", metadata: { startedAt: 1_000, endedAt: 1_000, model: "gpt-5.5", tokens: 0 } },
+    ]);
+
+    expect(entries.map(entry => entry.type)).toEqual(["ai", "user"]);
   });
 
   test("automated model-visible system notice → forwards automation metadata", () => {

@@ -1694,8 +1694,6 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           // Subscribe it before starting the turn so it receives the stream as
           // soon as it processes the preceding conversation_created event.
           server.subscribe(client, id);
-          // Its local echo lacks the notices ahead of the message.
-          if (notices.length > 0) broadcastConversationHistoryUpdated(server, id);
           const turn = orchestrateReplayConversation(
             server,
             client,
