@@ -76,6 +76,14 @@ export { createSidebarState } from "./sidebar/state";
 export type { SidebarState } from "./sidebar/state";
 export type { SidebarKeyResult } from "./sidebar/types";
 export { applySidebarItemOrderUpdates, applySidebarStatePatch, syncSelectedIndex, updateConversation, updateConversationList } from "./sidebar/updates";
+export {
+  acknowledgeOptimisticConversation,
+  addOptimisticConversation,
+  bumpConversationToTop,
+  isOptimisticConversation,
+  removeOptimisticConversation,
+} from "./sidebar/optimisticconversations";
+export type { OptimisticConversation } from "./sidebar/optimisticconversations";
 
 /** Run an action against a specific conversation selected by an action menu. */
 export function handleSidebarConversationAction(

@@ -1,15 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import { browserOpenCommand, handleEvent, type DaemonActions } from "./events";
 import { buildDiskSyncAssistantDiffPayload } from "./events/disk-sync-diagnostics";
-import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, createPendingAI, type ConversationSummary } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, createPendingAI, type ConversationSummary, type FolderSummary } from "./messages";
 import { createInitialState, isStreaming, canInterrupt, type RenderState } from "./state";
 import { buildMessageLines } from "./conversation";
 import { getViewStartFor } from "./chatscroll";
 import { requestVisibleToolOutputs } from "./events/tool-outputs";
 import { subtractLoadedAssistantPrefix } from "./events/streaming-snapshot";
 import { prepareConversationOpen } from "./conversationscroll";
-import { beginConversationLoad } from "./events/conversations";
-import { focusConversationById } from "./sidebar";
+import { beginConversationLoad, beginOptimisticConversation } from "./events/conversations";
+import { bumpConversationToTop, focusConversationById, isOptimisticConversation } from "./sidebar";
 import type { Event } from "./protocol";
 import { createGenerationThroughput, generationTokensPerSecond } from "@exocortex/shared/generation-throughput";
 
@@ -1340,6 +1340,165 @@ describe("conversation creation sidebar selection", () => {
       expect(state.sidebar.pendingFocusItem).toBeNull();
     });
   }
+});
+
+describe("optimistic conversation creation", () => {
+  function folder(id: string, parentId: string | null = null): FolderSummary {
+    return { id, name: id, parentId, createdAt: 1, updatedAt: 1, pinned: false, sortOrder: 0 };
+  }
+
+  function recordingDaemon(): { actions: DaemonActions; calls: string[] } {
+    const calls: string[] = [];
+    return {
+      calls,
+      actions: {
+        ...daemon,
+        subscribe(convId) { calls.push(`subscribe:${convId}`); },
+        unsubscribe(convId) { calls.push(`unsubscribe:${convId}`); },
+      },
+    };
+  }
+
+  /** A draft in folder "work" whose first message was just sent as "new-conv". */
+  function sentDraft(): RenderState {
+    const state = createInitialState();
+    state.sidebar.open = true;
+    state.sidebar.folders = [folder("work"), folder("other")];
+    state.sidebar.conversations = [
+      summary({ id: "work-chat", folderId: "work", sortOrder: -2 }),
+      summary({ id: "other-chat", folderId: "other", sortOrder: -1 }),
+    ];
+    state.sidebar.currentFolderId = "other";
+    state.sidebar.selectedItem = { type: "conversation", id: "other-chat" };
+    state.pendingAI = createPendingAI(1_000, "gpt-5.5");
+    beginOptimisticConversation(state, {
+      convId: "new-conv", provider: "openai", model: "gpt-5.5", effort: "high", fastMode: false,
+      folderId: "work", title: "pending",
+    });
+    return state;
+  }
+
+  test("opens and focuses the conversation at the top of its folder before the daemon answers", () => {
+    const state = sentDraft();
+
+    expect(state.convId).toBe("new-conv");
+    expect(state.sidebar.currentFolderId).toBe("work");
+    expect(state.sidebar.selectedItem).toEqual({ type: "conversation", id: "new-conv" });
+    const row = state.sidebar.conversations.find(conv => conv.id === "new-conv")!;
+    expect(row).toMatchObject({ folderId: "work", streaming: true, sortOrder: -3 });
+    expect(isOptimisticConversation(state.sidebar, "new-conv")).toBe(true);
+  });
+
+  test("acceptance adopts settings without moving the cursor the user moved", () => {
+    const state = sentDraft();
+    const { actions, calls } = recordingDaemon();
+    // The user browses back to another folder while creation crosses the network.
+    focusConversationById(state.sidebar, "other-chat");
+
+    handleEvent({ type: "conversation_created", convId: "new-conv", provider: "openai", model: "gpt-5.5", effort: "xhigh", fastMode: false }, state, actions);
+    expect(state.effort).toBe("xhigh");
+    handleEvent({ type: "conversation_updated", summary: summary({ id: "new-conv", folderId: "work", sortOrder: -3, streaming: true }) }, state, actions);
+
+    expect(state.convId).toBe("new-conv");
+    expect(state.sidebar.currentFolderId).toBe("other");
+    expect(state.sidebar.selectedItem).toEqual({ type: "conversation", id: "other-chat" });
+    expect(isOptimisticConversation(state.sidebar, "new-conv")).toBe(false);
+    expect(state.sidebar.conversations.filter(conv => conv.id === "new-conv")).toHaveLength(1);
+    expect(calls).toEqual(["subscribe:new-conv"]);
+  });
+
+  test("acceptance after the user opened another conversation does not navigate back", () => {
+    const state = sentDraft();
+    const { actions, calls } = recordingDaemon();
+    beginConversationLoad(state, "other-chat", actions);
+    calls.length = 0;
+
+    handleEvent({ type: "conversation_created", convId: "new-conv", provider: "openai", model: "gpt-5.5", effort: "high", fastMode: false }, state, actions);
+    handleEvent({ type: "conversation_updated", summary: summary({ id: "new-conv", folderId: "work", sortOrder: -3, streaming: true }) }, state, actions);
+
+    expect(state.convId).toBe("other-chat");
+    expect(state.sidebar.currentFolderId).toBe("other");
+    expect(state.sidebar.selectedItem).toEqual({ type: "conversation", id: "other-chat" });
+    expect(calls).toEqual(["unsubscribe:new-conv"]);
+  });
+
+  test("a conversation created by another flow never replaces an open conversation", () => {
+    const state = createInitialState();
+    state.convId = "open-conv";
+    state.sidebar.conversations = [summary({ id: "open-conv" })];
+    state.sidebar.selectedItem = { type: "conversation", id: "open-conv" };
+    const { actions, calls } = recordingDaemon();
+
+    handleEvent({ type: "conversation_created", convId: "background", provider: "openai", model: "gpt-5.5", effort: "high", fastMode: false }, state, actions);
+    handleEvent({ type: "conversation_updated", summary: summary({ id: "background", sortOrder: -1 }) }, state, actions);
+
+    expect(state.convId).toBe("open-conv");
+    expect(state.sidebar.selectedItem).toEqual({ type: "conversation", id: "open-conv" });
+    expect(calls).toEqual(["unsubscribe:background"]);
+  });
+
+  test("a list sent before the daemon processed the creation keeps the row and the open view", () => {
+    const state = sentDraft();
+    const listed = state.sidebar.conversations.filter(conv => conv.id !== "new-conv");
+
+    handleEvent({ type: "conversations_list", conversations: listed, folders: state.sidebar.folders }, state, daemon);
+
+    expect(state.convId).toBe("new-conv");
+    expect(state.sidebar.conversations.map(conv => conv.id)).toContain("new-conv");
+    expect(isOptimisticConversation(state.sidebar, "new-conv")).toBe(true);
+
+    handleEvent({ type: "conversations_list", conversations: [...listed, summary({ id: "new-conv", folderId: "work", sortOrder: -3 })], folders: state.sidebar.folders }, state, daemon);
+    expect(isOptimisticConversation(state.sidebar, "new-conv")).toBe(false);
+  });
+
+  test("a rejected creation reports the error and returns to the draft", () => {
+    const state = sentDraft();
+
+    handleEvent({ type: "error", convId: "new-conv", message: "Not authenticated for provider openai." }, state, daemon);
+
+    expect(state.convId).toBeNull();
+    expect(state.pendingAI).toBeNull();
+    expect(state.sidebar.conversations.map(conv => conv.id)).not.toContain("new-conv");
+    expect(state.sidebar.selectedItem?.type).toBe("conversation");
+    expect(state.messages.at(-1)).toMatchObject({ role: "system", text: "✗ Not authenticated for provider openai." });
+  });
+
+  test("a creation rejected after the user left it is still reported", () => {
+    const state = sentDraft();
+    beginConversationLoad(state, "other-chat", daemon);
+
+    handleEvent({ type: "error", convId: "new-conv", message: "Unknown provider: nope" }, state, daemon);
+
+    expect(state.convId).toBe("other-chat");
+    expect(state.sidebar.conversations.map(conv => conv.id)).not.toContain("new-conv");
+    expect(state.messages.at(-1)).toMatchObject({ role: "system", text: "✗ Could not create conversation: Unknown provider: nope" });
+  });
+});
+
+describe("optimistic reordering on send", () => {
+  test("moves an unpinned conversation to the top of its folder and keeps it selected", () => {
+    const sidebar = createInitialState().sidebar;
+    sidebar.conversations = [
+      summary({ id: "top", folderId: "work", sortOrder: -5 }),
+      summary({ id: "sent", folderId: "work", sortOrder: -1 }),
+      summary({ id: "root", folderId: null, sortOrder: -9 }),
+    ];
+    focusConversationById(sidebar, "sent");
+
+    expect(bumpConversationToTop(sidebar, "sent")).toBe(true);
+
+    expect(sidebar.conversations.find(conv => conv.id === "sent")?.sortOrder).toBe(-6);
+    expect(sidebar.selectedItem).toEqual({ type: "conversation", id: "sent" });
+    expect(bumpConversationToTop(sidebar, "sent")).toBe(false);
+  });
+
+  test("leaves pinned conversations in place, as the daemon does", () => {
+    const sidebar = createInitialState().sidebar;
+    sidebar.conversations = [summary({ id: "pinned", pinned: true, sortOrder: 3 }), summary({ id: "other", sortOrder: -1 })];
+
+    expect(bumpConversationToTop(sidebar, "pinned")).toBe(false);
+    expect(sidebar.conversations.find(conv => conv.id === "pinned")?.sortOrder).toBe(3);
+  });
 });
 
 describe("disk sync assistant diagnostics", () => {

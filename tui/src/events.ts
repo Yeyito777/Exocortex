@@ -23,6 +23,7 @@ import {
   handleConversationsList,
   handleConversationUpdated,
 } from "./events/conversations";
+import { removeOptimisticConversation } from "./sidebar";
 import {
   applyPreservedToolResultOutputs,
   captureAssistantDisplaySnapshot,
@@ -166,9 +167,16 @@ export function handleEvent(
       // Consumed by the media adapter that supplied the matching offer.
       break;
 
-    case "error":
+    case "error": {
+      // The daemon rejected a creation shown optimistically. Its row goes now;
+      // an opened one returns to the draft once the error is shown below.
+      const rejectedCreation = event.convId !== undefined && removeOptimisticConversation(state.sidebar, event.convId);
       // Only show errors for the current conversation (or unscoped errors).
-      if (event.convId && event.convId !== state.convId) break;
+      if (event.convId && event.convId !== state.convId) {
+        // The user left a rejected creation; its message is gone, so say so here.
+        if (rejectedCreation) pushSystemMessage(state, `✗ Could not create conversation: ${event.message}`, theme.error);
+        break;
+      }
       // The opened conversation may have been deleted remotely. Stop the
       // spinner; the authoritative list update then clears the chat.
       if (event.convId && state.conversationLoading?.convId === event.convId) state.conversationLoading = null;
@@ -186,7 +194,13 @@ export function handleEvent(
       const toolOutputsFailed = event.convId === state.convId && handleToolOutputsError(state, event.reqId);
       if (event.convId === state.convId && !toolOutputsFailed && state.pendingAI && state.pendingAI.blocks.length === 0) clearPendingAI(state);
       pushSystemMessage(state, `✗ ${event.message}`, theme.error);
+      if (rejectedCreation) {
+        // Keep the echoed message and error; the next send creates a fresh conversation.
+        state.convId = null;
+        state.conversationLoading = null;
+      }
       break;
+    }
 
     case "usage_update":
       state.usageByProvider[event.provider] = event.usage;

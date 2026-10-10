@@ -4,13 +4,17 @@ import type { Event } from "../protocol";
 import { syncChosenProvider } from "../providerselection";
 import { clearAllQueuedMessagesForConversation } from "../queue";
 import {
+  acknowledgeOptimisticConversation,
+  addOptimisticConversation,
   focusConversationById,
   applySidebarItemOrderUpdates,
   applySidebarStatePatch,
+  isOptimisticConversation,
   rememberEnteredConversation,
   syncSelectedIndex,
   updateConversation,
   updateConversationList,
+  type OptimisticConversation,
 } from "../sidebar";
 import { focusTargetAfterRemovingSidebarItems } from "../sidebar/removal";
 import { focusSidebarItem } from "../sidebar/selection";
@@ -56,11 +60,54 @@ import {
   pruneConversationScrollPositions,
 } from "../conversationscroll";
 
+/**
+ * Open a conversation the moment its first message is sent, as a local open
+ * would. Over SSH creation is a network round trip; the sidebar row, cursor and
+ * active conversation would otherwise lag the message already echoed.
+ */
+export function beginOptimisticConversation(state: RenderState, conversation: OptimisticConversation): void {
+  addOptimisticConversation(state.sidebar, conversation);
+  state.folderInstructionsDoc = null;
+  state.convId = conversation.convId;
+  state.goal = null;
+  state.btw = null;
+  resetHistoryPagination(state);
+  // Focus now. The daemon's acceptance lands later, after the user may have
+  // browsed elsewhere in the sidebar, so it must not move the cursor.
+  focusConversationById(state.sidebar, conversation.convId);
+}
+
+function syncCreatedConversationSettings(
+  state: RenderState,
+  event: Extract<Event, { type: "conversation_created" }>,
+): void {
+  syncChosenProvider(state, event.provider ?? fallbackProvider(state));
+  state.model = event.model ?? state.model;
+  state.effort = event.effort ?? state.effort;
+  state.fastMode = event.fastMode ?? state.fastMode;
+  state.goal = event.goal ?? null;
+}
+
 export function handleConversationCreated(
   event: Extract<Event, { type: "conversation_created" }>,
   state: RenderState,
   daemon: DaemonActions,
 ): void {
+  const wasOptimistic = acknowledgeOptimisticConversation(state.sidebar, event.convId);
+  if (state.convId === event.convId) {
+    // Opened when its message was sent; adopt only the daemon-resolved settings.
+    syncCreatedConversationSettings(state, event);
+    daemon.subscribe(event.convId);
+    return;
+  }
+  if (wasOptimistic || state.convId !== null) {
+    // The user moved on before the daemon accepted it, or it was created in the
+    // background. Never navigate back to it, and drop the subscription the
+    // daemon gives the creating client.
+    daemon.unsubscribe(event.convId);
+    return;
+  }
+
   rememberEnteredConversation(state.sidebar, state.convId, event.convId);
   // The summary arrives in the following conversation_updated event. Remember
   // which row to select so creation moves the sidebar cursor even when keyboard
@@ -68,11 +115,7 @@ export function handleConversationCreated(
   state.sidebar.pendingFocusItem = { type: "conversation", id: event.convId };
   state.folderInstructionsDoc = null;
   state.convId = event.convId;
-  syncChosenProvider(state, event.provider ?? fallbackProvider(state));
-  state.model = event.model ?? state.model;
-  state.effort = event.effort ?? state.effort;
-  state.fastMode = event.fastMode ?? state.fastMode;
-  state.goal = event.goal ?? null;
+  syncCreatedConversationSettings(state, event);
   state.btw = null;
   resetHistoryPagination(state);
   daemon.subscribe(event.convId);
@@ -95,7 +138,8 @@ export function handleConversationsList(event: Extract<Event, { type: "conversat
   updateConversationList(state.sidebar, event.conversations, event.folders ?? []);
   pruneConversationScrollPositions(state, event.conversations.map(conversation => conversation.id));
   const activeConvId = state.convId;
-  if (activeConvId && !event.conversations.some(conversation => conversation.id === activeConvId)) {
+  if (activeConvId && !event.conversations.some(conversation => conversation.id === activeConvId)
+      && !isOptimisticConversation(state.sidebar, activeConvId)) {
     // The list is authoritative reconnect catch-up. If this client missed a
     // deletion while offline, do not leave its conversation-owned BTW orphaned.
     clearRemovedActiveConversation(state, activeConvId);

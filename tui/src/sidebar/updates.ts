@@ -121,7 +121,20 @@ export function focusNearestSidebarDisplayEntry(sidebar: SidebarState, preferred
   return true;
 }
 
+/**
+ * An authoritative list acknowledges the optimistic rows it contains. One sent
+ * before the daemon processed a creation (such as the reconnect bootstrap that
+ * precedes a replayed create) must not drop that row.
+ */
+function keepOptimisticConversations(sidebar: SidebarState, conversations: ConversationSummary[]): ConversationSummary[] {
+  if (sidebar.optimisticConversationIds.size === 0) return conversations;
+  for (const conv of conversations) sidebar.optimisticConversationIds.delete(conv.id);
+  const pending = sidebar.conversations.filter(conv => sidebar.optimisticConversationIds.has(conv.id));
+  return pending.length === 0 ? conversations : [...pending, ...conversations].sort(compareSidebarOrder);
+}
+
 export function updateConversationList(sidebar: SidebarState, conversations: ConversationSummary[], folders: FolderSummary[] = sidebar.folders): void {
+  conversations = keepOptimisticConversations(sidebar, conversations);
   const previousSelectedItem = sidebar.selectedItem;
   const previousSelectedRow = selectedSidebarDisplayRow(sidebar);
   const focusTarget = isMovableSidebarItem(previousSelectedItem)
@@ -168,6 +181,7 @@ export function updateConversationList(sidebar: SidebarState, conversations: Con
 
 export function updateConversation(sidebar: SidebarState, summary: ConversationSummary | null | undefined): void {
   if (!summary) return;
+  sidebar.optimisticConversationIds.delete(summary.id);
   const idx = sidebar.conversations.findIndex(c => c.id === summary.id);
   if (idx !== -1) {
     sidebar.conversations[idx] = summary;

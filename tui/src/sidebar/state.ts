@@ -20,6 +20,8 @@ export interface SidebarState {
   visualAnchor: SidebarItemRef | null;
   pendingFocusItem: SidebarSelectableItem | null;
   pendingFocusFolder: { name: string; parentId: string | null } | null;
+  /** Rows shown for creations the daemon has not acknowledged yet. */
+  optimisticConversationIds: Set<string>;
   prompt: SidebarPromptState | null;
   search: SidebarSearchState | null;
   conversationActionMenu: ConversationActionMenuState | null;
@@ -41,6 +43,7 @@ export function createSidebarState(): SidebarState {
     visualAnchor: null,
     pendingFocusItem: null,
     pendingFocusFolder: null,
+    optimisticConversationIds: new Set(),
     prompt: null,
     search: null,
     conversationActionMenu: null,

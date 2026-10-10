@@ -28,7 +28,7 @@ import { createInitialState, isStreaming, canInterrupt, clearPendingAI, clearStr
 import { createMessageMetadata, createPendingAI, type ImageAttachment, type UserMessage } from "./messages";
 import { loginPromptProviders } from "./providerselection";
 import { handleEvent } from "./events";
-import { beginConversationLoad } from "./events/conversations";
+import { beginConversationLoad, beginOptimisticConversation } from "./events/conversations";
 import { CONV_SCOPED } from "./events/stream-sequence";
 import {
   clearAllQueuedMessagesForConversation,
@@ -72,6 +72,7 @@ import { formatMicGainDb, loadMicGainDb, saveMicGainDb } from "./mic-gain";
 import { applyTuiStartingState, availableStartingConversationId, captureTuiStartingState, loadTuiStartingState, saveTuiStartingState } from "./startingstate";
 import { closeBtwSession, startBtwSession } from "./btw/controller";
 import { createSidebarState } from "./sidebar/state";
+import { addOptimisticConversation, bumpConversationToTop, rememberEnteredConversation } from "./sidebar";
 import { formatConnectionLostNotice } from "./events/notices";
 import { RemotePathCompletionController } from "./remote-path-completion";
 import {
@@ -781,6 +782,8 @@ function startNewConversation(): void {
   conversationPrewarmer.reset();
   const wasFolderInstructionsDoc = state.folderInstructionsDoc !== null;
   pendingNewConversationConvId = null;
+  // Going back from the conversation the draft becomes returns here.
+  rememberEnteredConversation(state.sidebar, state.convId, null);
   leaveConversationView(state);
   if (state.convId) {
     unsubscribeConversation(state.convId);
@@ -1272,21 +1275,26 @@ function sendDirectly(messageText: string, images?: ImageAttachment[], options: 
   if (!state.convId) {
     const reservedId = conversationPrewarmer.takeDraftId();
     const convId = options.convId ?? reservedId ?? generateClientConversationId();
+    const folderId = options.folderId === undefined ? state.draftFolderId : options.folderId;
     firstTextUX.start(convId, startedAt);
-    pendingNewConversationConvId = convId;
     state.pendingSend.active = false;
     state.pendingSend.text = "";
     state.pendingSend.images = undefined;
     state.pendingGenerateTitleOnCreate = false;
     const selection = newConversationSelection(state);
+    beginOptimisticConversation(state, {
+      convId, provider: state.provider, model: state.model, effort: state.effort, fastMode: state.fastMode,
+      folderId, title: PENDING_TITLE,
+    });
     daemon.createConversation(
       selection.provider, selection.model, PENDING_TITLE, selection.effort, selection.fastMode,
       { text: messageText, startedAt, images },
-      options.folderId === undefined ? state.draftFolderId : options.folderId,
+      folderId,
       undefined, convId,
     );
   } else {
     firstTextUX.start(state.convId, startedAt);
+    bumpConversationToTop(state.sidebar, state.convId);
     daemon.sendMessage(state.convId, messageText, startedAt, images);
   }
 
@@ -1385,6 +1393,7 @@ function completePendingVoiceTranscription(submission: SubmittedVoiceTranscripti
         removePendingVoiceEcho(submission);
         state.messages.push(submission.message);
         state.pendingAI = createPendingAI(submission.startedAt, submission.model);
+        bumpConversationToTop(state.sidebar, submission.convId);
         daemon.sendMessage(submission.convId, messageText, submission.startedAt, submission.images);
       } else {
         const queueId = submission.queuedMessage.id ?? randomUUID();
@@ -1416,6 +1425,7 @@ function completePendingVoiceTranscription(submission: SubmittedVoiceTranscripti
     if (visible) {
       state.pendingAI = createPendingAI(submission.startedAt, submission.model);
     }
+    bumpConversationToTop(state.sidebar, submission.convId);
     daemon.sendMessage(submission.convId, messageText, submission.startedAt, submission.images);
     scheduleRender();
     return;
@@ -1435,11 +1445,17 @@ function completePendingVoiceTranscription(submission: SubmittedVoiceTranscripti
     return;
   }
 
+  // The user left the draft while it transcribed: create it in the background.
+  const convId = generateClientConversationId();
+  addOptimisticConversation(state.sidebar, {
+    convId, provider: submission.provider, model: submission.model, effort: submission.effort,
+    fastMode: submission.fastMode, folderId: submission.folderId, title: PENDING_TITLE,
+  });
   daemon.createConversation(submission.provider, submission.model, PENDING_TITLE, submission.effort, submission.fastMode, {
     text: messageText,
     startedAt: submission.startedAt,
     images: submission.images,
-  }, submission.folderId);
+  }, submission.folderId, undefined, convId);
   scheduleRender();
 }
 
