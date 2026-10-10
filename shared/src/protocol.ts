@@ -353,6 +353,34 @@ export type ClientCapability = "targeted-unwind" | "sidebar-reorder-delta" | "si
 export interface ClientCapabilitiesCommand {
   type: "client_capabilities";
   capabilities: ClientCapability[];
+  /**
+   * The machine a TUI connected over /ssh runs on. The daemon sends that
+   * connection client_exec_request for the model's client_bash calls.
+   */
+  clientHost?: ClientHostInfo;
+}
+
+/** The user's own machine, as announced by an SSH-connected TUI. */
+export interface ClientHostInfo {
+  hostname: string;
+  user: string;
+  /** Node's process.platform, e.g. "linux", "darwin", "win32". */
+  platform: string;
+  home: string;
+}
+
+/** The outcome of one client_exec_request, run on the TUI's machine. */
+export interface ClientExecResultCommand {
+  type: "client_exec_result";
+  execId: string;
+  /** Interleaved stdout and stderr, at most 1MB. */
+  output: string;
+  byteTruncated: boolean;
+  exitCode: number | null;
+  signal: string | null;
+  timedOut: boolean;
+  /** Why the command could not start or finish, if it could not. */
+  error?: string;
 }
 
 export interface SubscribeCommand {
@@ -1018,6 +1046,7 @@ export type Command =
   | ListPathDirectoryCommand
   | ResolveFileLinkCommand
   | ClientCapabilitiesCommand
+  | ClientExecResultCommand
   | PrepareShutdownCommand
   | RestartDaemonCommand
   | NewConversationCommand
@@ -1122,6 +1151,22 @@ export interface FileLinkResolvedEvent {
   path: string;
   kind: "file" | "directory";
   size: number;
+}
+
+/** Run a model's client_bash command on the machine of the TUI that receives it. */
+export interface ClientExecRequestEvent {
+  type: "client_exec_request";
+  execId: string;
+  command: string;
+  /** Working directory on the client machine; defaults to its home directory. */
+  cwd?: string;
+  timeoutMs: number;
+}
+
+/** Stop a client_exec_request that is still running. */
+export interface ClientExecCancelEvent {
+  type: "client_exec_cancel";
+  execId: string;
 }
 
 /** Sent before a graceful daemon shutdown so clients can classify the disconnect. */
@@ -1975,6 +2020,8 @@ export type Event =
   | ConversationDefaultsEvent
   | PathDirectoryEntriesEvent
   | FileLinkResolvedEvent
+  | ClientExecRequestEvent
+  | ClientExecCancelEvent
   | DaemonShutdownEvent
   | AckEvent
   | ConversationCreatedEvent

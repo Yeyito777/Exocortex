@@ -20,7 +20,7 @@ import { getMaxContext, supportsImageInputs } from "./providers/registry";
 import { buildExecutor, summarizeTool, toolCallsRequireWatchdogPause } from "./tools/registry";
 import * as convStore from "./conversations";
 import type { DaemonServer, ConnectedClient } from "./server";
-import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, MAX_EXO_SUBAGENT_DEPTH, createStoredUserContextCheckpoint, createStoredUserMessage, currentReplayHistoryPrefix, isHistoryMessage, isReplayHistoryMessage, isValidActiveContextCached, type ActiveContext, type StoredMessage, type ApiContentBlock, type ApiMessage, type Block, type UserMessageAutomation } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, MAX_EXO_SUBAGENT_DEPTH, createModelVisibleSystemNotice, createStoredUserContextCheckpoint, createStoredUserMessage, currentReplayHistoryPrefix, isHistoryMessage, isReplayHistoryMessage, isValidActiveContextCached, type ActiveContext, type StoredMessage, type ApiContentBlock, type ApiMessage, type Block, type UserMessageAutomation } from "./messages";
 import type { ContentBlock as ProviderContentBlock, QueuedInput, QueuedInputSource, StreamRetryMetadata } from "./providers/types";
 import type { QueuedMessage } from "./message-queue";
 import type { ImageAttachment } from "@exocortex/shared/messages";
@@ -47,6 +47,7 @@ import {
 import { getCurrentAccountScope as getCurrentOpenAIAccountScope } from "./providers/openai/auth";
 import { buildCodexWindowId } from "./providers/openai/identity";
 import { resolveToolCallPresentation } from "./helper-tool-manifest";
+import { CLIENT_HOST_NOTICE_KIND, clientHostNotice } from "./client-hosts";
 import { setBackgroundTaskActive as setConversationBackgroundTaskActive, setChronoTaskActive as setConversationChronoTaskActive } from "./conversation-activity";
 import { acknowledgeSubagentNotification, settlePendingSubagentNotifications } from "./subagent-notifications";
 import { getDaemonShutdownMode } from "./daemon-lifecycle";
@@ -675,13 +676,28 @@ async function orchestrateAdmittedAssistantTurn(
   // ── Start stream and broadcast initial state ──────────────────────
 
   let acceptedUserMessage: StoredMessage | null = null;
+  let clientHostNoticeAdded = false;
   if (userMessage) {
     try {
-      await prepareArchiveHashes(conv.messages);
-      if (convStore.getStreamHandoffToken(convId) !== acceptedHandoffToken || options.externalAbortSignal?.aborted) {
+      const handoffCancelled = () => {
+        if (convStore.getStreamHandoffToken(convId) === acceptedHandoffToken && !options.externalAbortSignal?.aborted) return null;
         const message = "Turn handoff cancelled.";
         if (client) server.sendTo(client, { type: "error", reqId, convId, message });
         return buildErrorOutcome(message);
+      };
+      await prepareArchiveHashes(conv.messages);
+      const cancelled = handoffCancelled();
+      if (cancelled) return cancelled;
+      // Tell the model when the machine client_bash reaches has changed. The
+      // notice precedes the message's checkpoint, so unwinding the message
+      // keeps the notice that was true when it was sent.
+      const hostNotice = clientHostNotice(conv);
+      if (hostNotice) {
+        convStore.appendMessages(convId, [createModelVisibleSystemNotice(hostNotice, conv.model, CLIENT_HOST_NOTICE_KIND, startedAt)]);
+        clientHostNoticeAdded = true;
+        await prepareArchiveHashes(conv.messages);
+        const cancelledAfterNotice = handoffCancelled();
+        if (cancelledAfterNotice) return cancelledAfterNotice;
       }
       const contextCheckpoint = createStoredUserContextCheckpoint(conv);
       acceptedUserMessage = createStoredUserMessage(userMessage.text, conv.model, startedAt, userMessage.images, {
@@ -710,15 +726,17 @@ async function orchestrateAdmittedAssistantTurn(
     convStore.flush(convId);
   }
 
-  if (interruptedSleep) {
-    // Rebuild only after both the deferred tool result and incoming user message
-    // are canonical. Rebuilding earlier would erase the sender's optimistic user
-    // bubble, while a later incremental user_message would duplicate it.
+  const rebuildHistory = interruptedSleep || clientHostNoticeAdded;
+  if (rebuildHistory) {
+    // Rebuild only after both the deferred tool result (or client host notice)
+    // and incoming user message are canonical. Rebuilding earlier would erase
+    // the sender's optimistic user bubble, while a later incremental
+    // user_message would duplicate it.
     broadcastConversationHistoryUpdated(server, convId);
     broadcastConversationUpdated(server, convId);
   }
 
-  if (userMessage && !interruptedSleep) {
+  if (userMessage && !rebuildHistory) {
 
     // Notify subscribers about the user message.
     // When client is set, it already added the message locally — skip it.

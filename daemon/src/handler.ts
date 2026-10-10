@@ -30,7 +30,7 @@ import { scopedSubagentPromptOptions } from "./subagent-policy";
 import { assertDelegationModel, parseRequestedModel, resolveDelegationModel } from "./delegation-models";
 import { getConversationToolNames, getToolDisplayInfo } from "./tools/registry";
 import { getExternalToolStyles, manageExternalToolDaemon } from "./external-tools";
-import { EFFORT_LEVELS, SUBAGENTS_FOLDER_NAME } from "./messages";
+import { EFFORT_LEVELS, SUBAGENTS_FOLDER_NAME, createModelVisibleSystemNotice } from "./messages";
 import { getDefaultProvider, getDefaultModel, getProvider, getProviders, isKnownModel, allowsCustomModels, refreshProviders, normalizeEffort, supportsEffort, getSupportedEfforts, supportsFastMode, supportsImageInputs } from "./providers/registry";
 import { transcribeAudioBytes } from "./transcription";
 import { startTitleGeneration, isPendingTitle, PENDING_TITLE } from "./titlegen";
@@ -50,6 +50,7 @@ import {
 import { applyUserGoalAction, setGoal as setConversationGoal } from "./goals";
 import { scheduleGoalTimeLimit } from "./goal-time-limit";
 import { createExocortexToolRuntime } from "./exocortex-tool-runtime";
+import { CLIENT_HOST_NOTICE_KIND, attachClientHost, clientHostNotice, settleClientExec } from "./client-hosts";
 import type { BackgroundTaskCompletion, ExocortexToolRuntime } from "./tools/types";
 import { getSubagentParentConversationId, listActiveConversationTasks, setSubagentActive, stopBackgroundTask } from "./conversation-activity";
 import {
@@ -1623,6 +1624,10 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           break;
         }
         const folderId = subagentFolder?.id ?? cmd.folderId ?? null;
+        // A new conversation is told about the client machine like any other.
+        const hostNotice = initialMessage && !cmd.subagent
+          ? clientHostNotice({ id, messages: [], subagentPolicy: null })
+          : null;
         if (initialMessage) {
           convStore.createWithInitialUserMessage(
             id,
@@ -1635,6 +1640,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
               ? { ...initialMessage, automation: { kind: "exo_send" } }
               : initialMessage,
             folderId,
+            false,
+            hostNotice ? [createModelVisibleSystemNotice(hostNotice, model, CLIENT_HOST_NOTICE_KIND, initialMessage.startedAt)] : [],
           );
         } else {
           convStore.create(id, provider, model, title, effort, fastMode, folderId);
@@ -1682,6 +1689,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           // Subscribe it before starting the turn so it receives the stream as
           // soon as it processes the preceding conversation_created event.
           server.subscribe(client, id);
+          // Its local echo lacks the notice ahead of the message.
+          if (hostNotice) broadcastConversationHistoryUpdated(server, id);
           const turn = orchestrateReplayConversation(
             server,
             client,
@@ -1715,6 +1724,12 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
               || capability === "sidebar-state-patch"
               || capability === "history-block-pagination") client.capabilities.add(capability);
         }
+        if (cmd.clientHost) attachClientHost(client, cmd.clientHost, event => server.sendTo(client, event));
+        break;
+      }
+
+      case "client_exec_result": {
+        settleClientExec(client, cmd);
         break;
       }
       case "unsubscribe": {

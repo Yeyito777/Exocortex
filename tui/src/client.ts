@@ -8,8 +8,8 @@ import type { FastMode } from "@exocortex/shared/messages";
 import { connect } from "net";
 import { existsSync } from "fs";
 import { randomUUID } from "crypto";
-import { hostname } from "os";
-import type { ClientCapability, Command, DaemonShutdownMode, Event, GoalAction, MoveSidebarItemsOptions, OpenAILoginMethod, QueuedCommandInvocation, QueueTiming, QueueWaitTarget, TrimMode, SidebarItemRef } from "./protocol";
+import { homedir, hostname, userInfo } from "os";
+import type { ClientCapability, ClientHostInfo, Command, DaemonShutdownMode, Event, GoalAction, MoveSidebarItemsOptions, OpenAILoginMethod, QueuedCommandInvocation, QueueTiming, QueueWaitTarget, TrimMode, SidebarItemRef } from "./protocol";
 import type { ProviderId, ModelId, EffortLevel, ImageAttachment, TokenUsageSource } from "./messages";
 import { socketPath, isWindows } from "@exocortex/shared/paths";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
@@ -20,6 +20,7 @@ import type { UpdateStatus } from "@exocortex/shared/updatecheck";
 import { BtwMutationReplay, isBtwMutation } from "./btw/replay";
 import { HistoryCache } from "./history-cache";
 import { transcribeLocally } from "./local-transcription";
+import { ClientExecutor } from "./client-exec";
 import {
   DEFAULT_SSH_PROBE_TIMEOUT_MS,
   appendSshStderr,
@@ -149,6 +150,8 @@ export class DaemonClient {
   private readonly transcriptionTimeoutMs: number;
   private readonly transcriptionMaxAttempts: number;
   private sshAlias: string | null = null;
+  /** Runs client_bash commands from the SSH daemon on this machine. */
+  private readonly clientExecutor = new ClientExecutor();
   private sshSwitchingTo: string | null = null;
   private sshSwitchGeneration = 0;
   private cancelSshProbe: ((reason: string) => void) | null = null;
@@ -361,7 +364,7 @@ export class DaemonClient {
         active.connected = true;
         this._connected = true;
         this.handler(this.connectedRouteStatus(false, true));
-        this.writeCommand({ type: "client_capabilities", capabilities: CLIENT_CAPABILITIES });
+        this.writeCommand({ type: "client_capabilities", capabilities: CLIENT_CAPABILITIES, clientHost: this.clientHostInfo() });
         const replayedCommands = this.flushPendingCommands();
         resolve({
           replayedCommands,
@@ -387,6 +390,7 @@ export class DaemonClient {
     const wasCurrentSocket = this.socket === socket;
     const shutdownMode = wasCurrentSocket ? this.announcedShutdownMode : null;
     if (wasCurrentSocket) {
+      this.clientExecutor.cancelAll();
       this.clearUpdateRequests();
       this._connected = false;
       this.socket = null;
@@ -398,6 +402,7 @@ export class DaemonClient {
   }
 
   disconnect(): void {
+    this.clientExecutor.cancelAll();
     this.clearUpdateRequests();
     this.cancelTranscriptions();
     this.intentionalDisconnect = true;
@@ -747,6 +752,7 @@ export class DaemonClient {
 
   private closeCurrentTransportForRouteSwitch(): void {
     this.cancelTranscriptions();
+    this.clientExecutor.cancelAll();
     if (this.activeSshConnection) this.activeSshConnection.intentionalClose = true;
     try { this.socket?.end(); } catch { /* already closed */ }
     try { this.socket?.destroy(); } catch { /* already closed */ }
@@ -1135,6 +1141,31 @@ export class DaemonClient {
     this.pendingCommands = this.pendingCommands.filter(command => command.type !== "transcribe_audio");
   }
 
+  private clientHostInfo(): ClientHostInfo {
+    let user = process.env.USER ?? process.env.USERNAME ?? "";
+    try { user = userInfo().username; } catch { /* no passwd entry */ }
+    return { hostname: this.localHostname, user, platform: process.platform, home: homedir() };
+  }
+
+  /**
+   * Run (or stop) a client_bash command on this machine. Only the SSH daemon
+   * this TUI announced itself to may do so, and only over that connection.
+   */
+  private handleClientExec(event: Extract<Event, { type: "client_exec_request" | "client_exec_cancel" }>): void {
+    if (event.type === "client_exec_cancel") {
+      this.clientExecutor.cancel(event.execId);
+      return;
+    }
+    const transport = this.socket;
+    if (!this.sshAlias || !transport || this.activeSshConnection?.transport !== transport) return;
+    this.clientExecutor.run(event, outcome => {
+      if (this.socket !== transport || !this._connected) return;
+      try {
+        transport.write(JSON.stringify({ type: "client_exec_result", execId: event.execId, ...outcome } satisfies Command) + "\n");
+      } catch { /* the daemon fails the call when the connection drops */ }
+    });
+  }
+
   private socketMissingError(): Error {
     return new Error(
       "exocortexd socket not found. Is the daemon running?\n" +
@@ -1235,6 +1266,10 @@ export class DaemonClient {
       try {
         const parseStartedAt = this.performanceProfilingEnabled ? performance.now() : 0;
         const parsed = JSON.parse(line) as Event;
+        if (parsed.type === "client_exec_request" || parsed.type === "client_exec_cancel") {
+          this.handleClientExec(parsed);
+          continue;
+        }
         if (parsed.type === "pong" && parsed.reqId?.startsWith("update_")) {
           const status = parsed.updateStatus;
           this.updateRequests.get(parsed.reqId)?.(

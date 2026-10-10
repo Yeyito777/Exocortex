@@ -9,6 +9,7 @@ import type { ToolDisplayInfo } from "@exocortex/shared/messages";
 import type { ApiToolCall } from "../api";
 import type { ToolExecResult } from "../agent";
 import { bash, executeBashBackgroundable } from "./bash";
+import { clientBash } from "./client-bash";
 import { read } from "./read";
 import { write } from "./write";
 import { glob } from "./glob";
@@ -49,6 +50,7 @@ const TOOLS: Tool[] = [
   exo,
   chrono,
   goal,
+  clientBash,
 ];
 
 // External manifests intentionally do not become native entries in TOOLS.

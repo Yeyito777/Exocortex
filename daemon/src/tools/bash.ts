@@ -233,7 +233,7 @@ function inlineOutputBudget(input: Record<string, unknown>): number {
  * text to a temp file and return a head+tail preview with the file path.
  * If the temp-file write fails, degrade gracefully instead of crashing.
  */
-export function spillAndPreviewForTest(
+export function spillAndPreview(
   output: string,
   byteTruncated: boolean,
   writer: (spillPath: string, contents: string) => void = writeFileSync,
@@ -249,6 +249,12 @@ export function spillAndPreviewForTest(
     log("warn", `bash: failed to spill oversized output to temp file: ${message}`);
     return buildSpillPreview(output, byteTruncated, inlineBudget, undefined, message);
   }
+}
+
+/** Command output for a tool result: inline when it fits, else spilled with a preview. */
+export function formatCommandOutput(output: string, byteTruncated: boolean): string {
+  if (output.length > DEFAULT_INLINE_OUTPUT_CHARS) return spillAndPreview(output, byteTruncated);
+  return byteTruncated ? `${output}\n... (output byte-truncated at 1MB)` : output;
 }
 
 // ── Process group kill ─────────────────────────────────────────────

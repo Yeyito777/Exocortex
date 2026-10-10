@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { spawn } from "child_process";
-import { bash, executeBashBackgroundable, intentionalBackgroundTaskStopPidsForTest, spillAndPreviewForTest } from "./bash";
+import { bash, executeBashBackgroundable, intentionalBackgroundTaskStopPidsForTest, spillAndPreview } from "./bash";
 import type { BackgroundTaskCompletion } from "./types";
 import { backgroundTaskRecordPath, isBackgroundTaskNotificationSuppressed, readBackgroundTaskRecord } from "../background-task-state";
 
@@ -29,7 +29,7 @@ function makeLargeOutput(): string {
 describe("bash spill preview", () => {
   test("includes spill path instructions when temp write succeeds", () => {
     const written: Array<{ path: string; contents: string }> = [];
-    const output = spillAndPreviewForTest(makeLargeOutput(), false, (path, contents) => {
+    const output = spillAndPreview(makeLargeOutput(), false, (path, contents) => {
       written.push({ path, contents });
     });
 
@@ -42,7 +42,7 @@ describe("bash spill preview", () => {
   test("honors a smaller inline output budget", () => {
     const written: Array<{ path: string; contents: string }> = [];
     const full = makeLargeOutput();
-    const output = spillAndPreviewForTest(full, false, (path, contents) => {
+    const output = spillAndPreview(full, false, (path, contents) => {
       written.push({ path, contents });
     }, 4_000);
 
@@ -55,7 +55,7 @@ describe("bash spill preview", () => {
   });
 
   test("degrades gracefully when temp write fails", () => {
-    const output = spillAndPreviewForTest(makeLargeOutput(), true, () => {
+    const output = spillAndPreview(makeLargeOutput(), true, () => {
       throw new Error("EDQUOT: quota exceeded");
     });
 

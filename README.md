@@ -95,6 +95,12 @@ back to the remote daemon if local transcription is unavailable. Prompt editing,
 pending-message recall, and optimistic queuing still work normally; final text
 goes to the selected conversation daemon. Voice jobs survive SSH reconnects.
 
+While a TUI is connected over `/ssh`, the model's `client_bash` tool runs
+commands on the machine that TUI runs on, rather than on the daemon's host.
+The TUI runs them in their own process group and stops them on timeout,
+interrupt, or when its SSH connection ends. Conversations get a short notice
+when that machine connects or disconnects.
+
 To select the SSH route as soon as the TUI launches, pass the same alias on the
 command line:
 

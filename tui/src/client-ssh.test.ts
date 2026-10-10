@@ -560,6 +560,55 @@ describe("DaemonClient SSH routing", () => {
     expect((events.at(-1) as { message: string }).message).toContain("Permission denied");
   });
 
+  test.skipIf(process.platform === "win32")("runs client_bash requests from the SSH daemon here and answers on the same transport", async () => {
+    const spawned: FakeProcess[] = [];
+    const events: Array<{ type: string }> = [];
+    const client = new DaemonClient(event => events.push(event), "/tmp/local.sock", false, {
+      localHostname: "laptop",
+      spawnSshProcess: () => {
+        const child = respondingProbe();
+        spawned.push(child);
+        return child;
+      },
+    });
+    const results = (child: FakeProcess) => child.input.split("\n").filter(Boolean).map(line => JSON.parse(line))
+      .filter(command => command.type === "client_exec_result");
+    try {
+      client.ssh("connect", "whale");
+      await waitFor(() => client.remoteAlias === "whale");
+      (await client.connect()).releaseBootstrapEvents?.();
+      const [ssh] = spawned;
+      const capabilities = ssh.input.split("\n").filter(Boolean).map(line => JSON.parse(line))
+        .find(command => command.type === "client_capabilities");
+      expect(capabilities.clientHost).toMatchObject({ hostname: "laptop", platform: process.platform });
+
+      ssh.stdout.write(JSON.stringify({ type: "client_exec_request", execId: "e1", command: "echo from-laptop; exit 2", timeoutMs: 5_000 }) + "\n");
+      await waitFor(() => results(ssh).length === 1);
+      expect(results(ssh)[0]).toEqual({
+        type: "client_exec_result", execId: "e1", output: "from-laptop\n", byteTruncated: false, exitCode: 2, signal: null, timedOut: false,
+      });
+
+      ssh.stdout.write(JSON.stringify({ type: "client_exec_request", execId: "e2", command: "sleep 30", timeoutMs: 60_000 }) + "\n");
+      await waitFor(() => (client as any).clientExecutor.size === 1);
+      ssh.stdout.write(JSON.stringify({ type: "client_exec_cancel", execId: "e2" }) + "\n");
+      await waitFor(() => results(ssh).length === 2);
+      expect(results(ssh)[1]).toMatchObject({ execId: "e2", signal: "SIGTERM" });
+      expect(events.some(event => event.type.startsWith("client_exec"))).toBe(false);
+    } finally {
+      client.disconnect();
+    }
+  });
+
+  test("ignores client_bash requests from a local daemon", () => {
+    const client = new DaemonClient(() => {}, "/tmp/local.sock", false);
+    const writes: string[] = [];
+    (client as any).socket = { write: (data: string) => writes.push(data), end() {}, destroy() {} };
+    (client as any)._connected = true;
+    (client as any).onData(JSON.stringify({ type: "client_exec_request", execId: "e1", command: "touch /tmp/never", timeoutMs: 1_000 }) + "\n");
+    expect((client as any).clientExecutor.size).toBe(0);
+    expect(writes).toEqual([]);
+  });
+
   test("does not queue ephemeral path reads while disconnected", () => {
     const client = new DaemonClient(() => {}, "/tmp/local.sock", false);
     expect(client.requestPathDirectory("~/", "W")).toBeNull();

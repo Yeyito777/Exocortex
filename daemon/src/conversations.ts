@@ -605,6 +605,8 @@ export function createWithInitialUserMessage(
   message: { text: string; startedAt: number; images?: ImageAttachment[]; automation?: UserMessageAutomation },
   folderId: string | null = null,
   adoptExistingWorkspace = false,
+  /** Model-visible notices that precede the message, such as the client host notice. */
+  leadingNotices: readonly StoredMessage[] = [],
 ): Conversation {
   if (hasConversation(id) || persistence.hasDeletedConversation(id)) {
     throw new Error(`Conversation ${id} already exists or is recoverable from trash`);
@@ -612,6 +614,7 @@ export function createWithInitialUserMessage(
   createConversationWorkspace(id, { adoptExisting: adoptExistingWorkspace });
   const parentId = folderId && folders.has(folderId) ? folderId : null;
   const conv = createConversation(id, provider, model, nextUnpinnedOrderInFolder(parentId), title, effort, fastMode, parentId);
+  conv.messages.push(...leadingNotices);
   conv.messages.push(createStoredUserMessage(message.text, model, message.startedAt, message.images, {
     automation: message.automation,
     contextCheckpoint: createStoredUserContextCheckpoint(conv),

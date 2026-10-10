@@ -87,7 +87,7 @@ describe("system prompt", () => {
     expect(prompt).not.toContain("### subscriptions");
     expect(prompt).not.toContain("### subagents");
     expect(getToolDefs(readOnlyTools).map(tool => tool.name)).toEqual([
-      "browse", "exec_command", "write_stdin", "apply_patch", "view_image", "exo", "chrono", "goal",
+      "browse", "exec_command", "write_stdin", "apply_patch", "view_image", "exo", "chrono", "goal", "client_bash",
     ]);
   });
 
