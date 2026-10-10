@@ -21,6 +21,7 @@ const FILE_VERSION = 1;
 const RECEIPTS_PER_SUBSCRIPTION = 200;
 const MAX_ID_LENGTH = 300;
 const MAX_LABEL_LENGTH = 300;
+const MAX_NAME_LENGTH = 48;
 const MAX_DESCRIPTION_LENGTH = 2_000;
 const MAX_COMMAND_LENGTH = 100_000;
 const MAX_HARD_WAKE_MESSAGE_LENGTH = 10_000;
@@ -65,6 +66,17 @@ function cleanOptional(value: string | undefined, field: string, maxLength: numb
   if (!clean) return undefined;
   if (clean.length > maxLength) throw new Error(`${field} is too long (max ${maxLength})`);
   if (/\0/.test(clean)) throw new Error(`${field} contains invalid control characters`);
+  return clean;
+}
+
+/** User-set display name; an empty or whitespace-only value means no name. */
+function cleanName(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") throw new Error("name must be a string");
+  const clean = value.trim();
+  if (!clean) return undefined;
+  if (clean.length > MAX_NAME_LENGTH) throw new Error(`name is too long (max ${MAX_NAME_LENGTH})`);
+  if (/[\r\n\0]/.test(clean)) throw new Error("name contains invalid control characters");
   return clean;
 }
 
@@ -168,6 +180,9 @@ function normalizeSubscription(raw: unknown): ExternalNotificationSubscription |
     const sourceId = cleanRequired(value.sourceId ?? "", "sourceId");
     const sourceLabel = cleanRequired(value.sourceLabel ?? "", "sourceLabel", MAX_LABEL_LENGTH);
     const sourceDescription = cleanOptional(value.sourceDescription, "sourceDescription", MAX_DESCRIPTION_LENGTH);
+    // A bad display name must not drop the route it labels.
+    let name: string | undefined;
+    try { name = cleanName(value.name); } catch { name = undefined; }
     const convId = cleanRequired(value.convId ?? "", "convId");
     const delivery = normalizeDelivery(value.delivery);
     const softWake = normalizeSoftWake(value.softWake, delivery);
@@ -180,6 +195,7 @@ function normalizeSubscription(raw: unknown): ExternalNotificationSubscription |
       sourceId,
       sourceLabel,
       ...(sourceDescription ? { sourceDescription } : {}),
+      ...(name ? { name } : {}),
       convId,
       delivery,
       ...(softWake ? { softWake } : {}),
@@ -366,6 +382,7 @@ export function subscribeExternalNotification(input: {
   sourceId: string;
   sourceLabel?: string;
   sourceDescription?: string;
+  name?: string;
   convId: string;
   delivery?: ExternalNotificationDelivery;
   softWake?: ExternalNotificationSoftWake;
@@ -378,6 +395,7 @@ export function subscribeExternalNotification(input: {
   const sourceLabel = cleanOptional(input.sourceLabel, "sourceLabel", MAX_LABEL_LENGTH) ?? source?.label;
   if (!sourceLabel) throw new Error(`External notification source not registered: ${toolName}/${sourceId}; sourceLabel is required for migration`);
   const sourceDescription = cleanOptional(input.sourceDescription, "sourceDescription", MAX_DESCRIPTION_LENGTH) ?? source?.description;
+  const name = cleanName(input.name);
   const delivery = normalizeDelivery(input.delivery);
   const softWake = normalizeSoftWake(input.softWake, delivery);
   const existing = [...subscriptions.values()].find(candidate =>
@@ -388,6 +406,8 @@ export function subscribeExternalNotification(input: {
     ...existing,
     sourceLabel,
     ...(sourceDescription ? { sourceDescription } : { sourceDescription: undefined }),
+    // Tools re-subscribe without a name; keep the one the user chose.
+    ...(name ? { name } : {}),
     delivery,
     ...(softWake ? { softWake } : { softWake: undefined }),
     enabled: true,
@@ -398,6 +418,7 @@ export function subscribeExternalNotification(input: {
     sourceId,
     sourceLabel,
     ...(sourceDescription ? { sourceDescription } : {}),
+    ...(name ? { name } : {}),
     convId,
     delivery,
     ...(softWake ? { softWake } : {}),
@@ -469,15 +490,16 @@ export function pruneExternalNotificationSubscriptions(validConversationIds: Rea
 
 export function updateExternalNotificationSubscription(
   subscriptionId: string,
-  patch: { delivery?: ExternalNotificationDelivery; softWake?: ExternalNotificationSoftWake; enabled?: boolean },
+  patch: { delivery?: ExternalNotificationDelivery; softWake?: ExternalNotificationSoftWake; enabled?: boolean; name?: string },
 ): ExternalNotificationSubscription {
   ensureLoaded();
   const id = cleanRequired(subscriptionId, "subscriptionId");
   const existing = subscriptions.get(id);
   if (!existing) throw new Error(`External notification subscription not found: ${id}`);
-  if (patch.delivery === undefined && patch.softWake === undefined && patch.enabled === undefined) {
-    throw new Error("delivery, softWake, or enabled is required");
+  if (patch.delivery === undefined && patch.softWake === undefined && patch.enabled === undefined && patch.name === undefined) {
+    throw new Error("delivery, softWake, enabled, or name is required");
   }
+  const name = patch.name === undefined ? existing.name : cleanName(patch.name);
   const delivery = patch.delivery === undefined ? existing.delivery : normalizeDelivery(patch.delivery);
   const softWake = normalizeSoftWake(
     patch.softWake ?? (delivery === "soft" && existing.delivery === "soft" ? existing.softWake : undefined),
@@ -488,6 +510,7 @@ export function updateExternalNotificationSubscription(
     delivery,
     ...(softWake ? { softWake } : { softWake: undefined }),
     ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
+    ...(name ? { name } : { name: undefined }),
     updatedAt: Date.now(),
   };
   mutateRegistryDurably(() => subscriptions.set(id, updated));
@@ -503,7 +526,8 @@ export function getConversationExternalIntegrations(convId: string): ExternalInt
       id: subscription.id,
       toolName: subscription.toolName,
       sourceId: subscription.sourceId,
-      label: subscription.sourceLabel,
+      label: subscription.name ?? subscription.sourceLabel,
+      ...(subscription.name ? { sourceLabel: subscription.sourceLabel } : {}),
       ...(subscription.sourceDescription ? { description: subscription.sourceDescription } : {}),
       delivery: subscription.delivery,
       status: !subscription.enabled ? "disabled" : online ? "active" : "offline",
@@ -572,6 +596,12 @@ export function resetExternalNotificationsForTest(): void {
   routesChangedListener = null;
   persistenceFailureForTest = null;
   try { unlinkSync(externalNotificationsPath()); } catch { /* absent */ }
+}
+
+/** Drop in-memory state so the next access reloads the persisted file. */
+export function reloadExternalNotificationsForTest(): void {
+  activeSources.clear();
+  loaded = false;
 }
 
 export function setExternalNotificationPersistenceFailureForTest(error: Error | null): void {

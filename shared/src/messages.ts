@@ -515,8 +515,10 @@ export interface ExternalIntegrationSummary {
   toolName: string;
   /** Tool-owned opaque source id. */
   sourceId: string;
-  /** Human-readable source label supplied by the external tool. */
+  /** Display label: the user-set subscription name, else the tool's source label. */
   label: string;
+  /** Tool-supplied source label, present only when a user-set name replaces it in `label`. */
+  sourceLabel?: string;
   /** Optional longer explanation of which external events this source emits. */
   description?: string;
   delivery: ExternalNotificationDelivery;

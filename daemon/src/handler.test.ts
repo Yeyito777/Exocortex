@@ -1274,6 +1274,52 @@ describe("handler external notification routing", () => {
     cleanupIds();
   });
 
+  test("names a subscription on subscribe and renames it through update", async () => {
+    resetExternalNotificationsForTest();
+    const id = mkId("external-name");
+    create(id, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID], "External target");
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendHistoryUpdatedToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({} as never, {
+      type: "register_external_notification_source",
+      reqId: "source",
+      toolName: "discord",
+      source: { id: "account:paramount:notifications", label: "Paramount · DMs and @mentions" },
+    });
+    await handle({} as never, {
+      type: "subscribe_external_notification",
+      reqId: "subscribe",
+      toolName: "discord",
+      sourceId: "account:paramount:notifications",
+      convId: id,
+      name: "Paramount DMs",
+    });
+    const subscribed = sent.find(event => event.reqId === "subscribe")?.subscription as { id: string; name?: string };
+    expect(subscribed.name).toBe("Paramount DMs");
+
+    await handle({} as never, {
+      type: "update_external_notification_subscription",
+      reqId: "rename",
+      subscriptionId: subscribed.id,
+      name: "Paramount pings",
+    });
+    expect(sent.find(event => event.reqId === "rename")).toEqual(expect.objectContaining({
+      type: "external_notification_subscription",
+      subscription: expect.objectContaining({ id: subscribed.id, name: "Paramount pings" }),
+    }));
+  });
+
   test("registers, subscribes, durably queues, and deduplicates wake notifications", async () => {
     resetExternalNotificationsForTest();
     const id = mkId("external-wake");

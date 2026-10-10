@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { notifyConversationRemoved } from "./conversation-lifecycle";
 import {
   buildExternalNotificationEnvelope,
@@ -11,6 +12,7 @@ import {
   recordExternalNotificationReceipt,
   registerExternalNotificationSource,
   pruneExternalNotificationSubscriptions,
+  reloadExternalNotificationsForTest,
   resetExternalNotificationsForTest,
   setExternalNotificationToolOnline,
   setExternalNotificationPersistenceFailureForTest,
@@ -204,5 +206,88 @@ describe("external notification registry", () => {
     subscribeExternalNotification({ toolName: "discord", sourceId: "dm", convId: "stale" });
     expect(pruneExternalNotificationSubscriptions(new Set(["kept"]))).toBe(1);
     expect(listExternalNotificationSubscriptions()).toEqual([expect.objectContaining({ convId: "kept" })]);
+  });
+
+  test("sets, renames, and clears a user-set name shown instead of the source label", () => {
+    registerExternalNotificationSource({
+      toolName: "discord",
+      id: "account:paramount:notifications",
+      label: "paramount — Paramount (@paramount.available) [assistant] · DMs and @mentions",
+    });
+    const subscription = subscribeExternalNotification({
+      toolName: "discord",
+      sourceId: "account:paramount:notifications",
+      convId: "700-testgg",
+      name: "  Paramount DMs  ",
+    });
+    expect(subscription.name).toBe("Paramount DMs");
+    expect(getConversationExternalIntegrations("700-testgg")[0]).toEqual(expect.objectContaining({
+      label: "Paramount DMs",
+      sourceLabel: "paramount — Paramount (@paramount.available) [assistant] · DMs and @mentions",
+    }));
+
+    // Tool-driven re-subscribes omit the name and must not erase it.
+    expect(subscribeExternalNotification({
+      toolName: "discord",
+      sourceId: "account:paramount:notifications",
+      convId: "700-testgg",
+      delivery: "inbox",
+    }).name).toBe("Paramount DMs");
+
+    const renamed = updateExternalNotificationSubscription(subscription.id, { name: "Paramount mentions" });
+    expect(renamed.name).toBe("Paramount mentions");
+    expect(renamed.delivery).toBe("inbox");
+    expect(getConversationExternalIntegrations("700-testgg")[0].label).toBe("Paramount mentions");
+
+    const cleared = updateExternalNotificationSubscription(subscription.id, { name: "" });
+    expect(cleared.name).toBeUndefined();
+    expect("name" in JSON.parse(readFileSync(externalNotificationsPath(), "utf-8")).subscriptions[0]).toBe(false);
+    const integration = getConversationExternalIntegrations("700-testgg")[0];
+    expect(integration.label).toBe("paramount — Paramount (@paramount.available) [assistant] · DMs and @mentions");
+    expect(integration.sourceLabel).toBeUndefined();
+  });
+
+  test("rejects invalid names", () => {
+    registerExternalNotificationSource({ toolName: "discord", id: "dm", label: "Discord DMs" });
+    expect(() => subscribeExternalNotification({ toolName: "discord", sourceId: "dm", convId: "c1", name: "x".repeat(49) }))
+      .toThrow("name is too long (max 48)");
+    const subscription = subscribeExternalNotification({ toolName: "discord", sourceId: "dm", convId: "c1" });
+    expect(() => updateExternalNotificationSubscription(subscription.id, { name: "two\nlines" }))
+      .toThrow("name contains invalid control characters");
+    expect(() => updateExternalNotificationSubscription(subscription.id, { name: 5 as unknown as string }))
+      .toThrow("name must be a string");
+    expect(listExternalNotificationSubscriptions()[0].name).toBeUndefined();
+  });
+
+  test("keeps the name across source re-registration and a daemon reload", () => {
+    registerExternalNotificationSource({ toolName: "discord", id: "dm", label: "Old label" });
+    const subscription = subscribeExternalNotification({ toolName: "discord", sourceId: "dm", convId: "c2", name: "Fede DMs" });
+    registerExternalNotificationSource({ toolName: "discord", id: "dm", label: "New label", description: "DMs" });
+
+    reloadExternalNotificationsForTest();
+    const [reloaded] = listExternalNotificationSubscriptions();
+    expect(reloaded).toEqual(expect.objectContaining({ id: subscription.id, name: "Fede DMs", sourceLabel: "New label" }));
+    expect(getConversationExternalIntegrations("c2")[0]).toEqual(expect.objectContaining({ label: "Fede DMs", sourceLabel: "New label" }));
+  });
+
+  test("loads persisted routes written before names existed", () => {
+    const path = externalNotificationsPath();
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify({
+      version: 1,
+      updatedAt: 1,
+      sources: [{ toolName: "whatsapp", id: "incoming", label: "Incoming messages", registeredAt: 1 }],
+      subscriptions: [
+        { id: "legacy", toolName: "whatsapp", sourceId: "incoming", sourceLabel: "Incoming messages", convId: "c3", delivery: "wake", enabled: true, createdAt: 1, updatedAt: 1 },
+        { id: "bad-name", toolName: "whatsapp", sourceId: "incoming", sourceLabel: "Incoming messages", name: "x".repeat(100), convId: "c4", delivery: "inbox", enabled: true, createdAt: 2, updatedAt: 2 },
+      ],
+      receipts: {},
+    }));
+    reloadExternalNotificationsForTest();
+
+    const loaded = listExternalNotificationSubscriptions();
+    expect(loaded.map(subscription => subscription.id)).toEqual(["legacy", "bad-name"]);
+    expect(loaded.every(subscription => !("name" in subscription))).toBe(true);
+    expect(getConversationExternalIntegrations("c3")[0].label).toBe("Incoming messages");
   });
 });

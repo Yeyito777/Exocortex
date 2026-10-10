@@ -558,6 +558,8 @@ export interface ExternalNotificationSubscription {
   sourceId: string;
   sourceLabel: string;
   sourceDescription?: string;
+  /** Short user-set display name; shown instead of `sourceLabel` when present. */
+  name?: string;
   convId: string;
   delivery: ExternalNotificationDelivery;
   /** Required when delivery is `soft`; external event content is provided as JSON on stdin. */
@@ -600,6 +602,8 @@ export interface SubscribeExternalNotificationCommand {
   /** Snapshot metadata permits migration before a source daemon has registered. */
   sourceLabel?: string;
   sourceDescription?: string;
+  /** Short display name (max 48 chars). Omitted keeps an existing route's name. */
+  name?: string;
   convId: string;
   delivery?: ExternalNotificationDelivery;
   softWake?: ExternalNotificationSoftWake;
@@ -621,6 +625,8 @@ export interface UpdateExternalNotificationSubscriptionCommand {
   delivery?: ExternalNotificationDelivery;
   softWake?: ExternalNotificationSoftWake;
   enabled?: boolean;
+  /** Rename the route (max 48 chars); an empty string clears the name. */
+  name?: string;
 }
 
 export interface PublishExternalNotificationCommand {

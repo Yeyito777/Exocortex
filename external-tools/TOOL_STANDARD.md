@@ -263,7 +263,14 @@ daemon registry rather than editing a tool-local routing file:
 {"type":"list_external_notification_subscriptions","reqId":"4","toolName":"discord","sourceId":"account:paramount:notifications"}
 {"type":"unsubscribe_external_notification","reqId":"5","subscriptionId":"<subscription-id>"}
 {"type":"update_external_notification_subscription","reqId":"6","subscriptionId":"<subscription-id>","delivery":"inbox","enabled":true}
+{"type":"update_external_notification_subscription","reqId":"7","subscriptionId":"<subscription-id>","name":"Paramount DMs"}
 ```
+
+A subscription may carry an optional user-set `name` (at most 48 characters,
+single line) that the UI shows instead of the source label. Set it on
+`subscribe_external_notification` or `update_external_notification_subscription`;
+an empty `name` on update clears it. Tools re-subscribing without `name` keep the
+existing one, and source re-registration refreshes `sourceLabel` without touching it.
 
 `delivery` is one of:
 

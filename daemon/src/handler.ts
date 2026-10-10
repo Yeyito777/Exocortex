@@ -2046,6 +2046,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             sourceId: cmd.sourceId,
             sourceLabel: cmd.sourceLabel,
             sourceDescription: cmd.sourceDescription,
+            name: cmd.name,
             convId: cmd.convId,
             delivery: cmd.delivery,
             softWake: cmd.softWake,
@@ -2087,6 +2088,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             delivery: cmd.delivery,
             softWake: cmd.softWake,
             enabled: cmd.enabled,
+            name: cmd.name,
           });
           server.sendTo(client, { type: "external_notification_subscription", reqId: cmd.reqId, subscription });
         } catch (err) {
