@@ -69,6 +69,53 @@ describe("system instructions spacing", () => {
   });
 });
 
+describe("user message top margin", () => {
+  function segmentsAroundUser(state: ReturnType<typeof createInitialState>, options = {}): string[] {
+    const rendered = buildMessageLines(state, 80, options);
+    const userIndex = rendered.lineAnchors.findIndex(anchor => anchor.segment === "user_content");
+    return rendered.lineAnchors.slice(0, userIndex + 1).map(anchor => anchor.segment);
+  }
+
+  test("the opening message of the transcript has no blank row above it", () => {
+    const state = createInitialState();
+    state.messages.push({ role: "user", text: "Hello", metadata: null });
+
+    expect(segmentsAroundUser(state)).toEqual(["user_content"]);
+  });
+
+  test("a paged window that opens mid-turn still separates the next user message", () => {
+    const state = createInitialState();
+    // The older user message that started this assistant turn is not loaded.
+    const reply = createPendingAI(1_000, "gpt-6-astra");
+    reply.blocks = [{ type: "text", text: "Tell me when you're satisfied." }];
+    reply.metadata!.endedAt = 2_000;
+    state.messages.push(reply, { role: "user", text: "Merge it.", metadata: null });
+
+    const segments = segmentsAroundUser(state);
+    expect(segments.slice(-3)).toEqual(["assistant_metadata", "user_margin_top", "user_content"]);
+  });
+
+  test("a user message after a system notice is separated even when no earlier user message is loaded", () => {
+    const state = createInitialState();
+    state.messages.push(
+      { role: "system", text: "Goal set.", metadata: null },
+      { role: "user", text: "Go", metadata: null },
+    );
+
+    expect(segmentsAroundUser(state).slice(-2)).toEqual(["user_margin_top", "user_content"]);
+  });
+
+  test("a partial render keeps the margin the full render gives", () => {
+    const state = createInitialState();
+    const reply = createPendingAI(1_000, "gpt-6-astra");
+    reply.blocks = [{ type: "text", text: "Done." }];
+    reply.metadata!.endedAt = 2_000;
+    state.messages.push(reply, { role: "user", text: "Next", metadata: null });
+
+    expect(segmentsAroundUser(state, { startMessageIndex: 1, partial: true })).toEqual(["user_margin_top", "user_content"]);
+  });
+});
+
 describe("automated user-message provenance", () => {
   for (const automated of [false, true]) {
     test(`bounds ${automated ? "automated" : "regular"} queued labels at narrow widths`, () => {

@@ -101,6 +101,22 @@ import { isNewConversationQueuedMessage, queuedMessagesInDisplayOrder, queueTimi
 
 export { wordWrap, type WrapResult } from "./textwrap";
 
+/**
+ * Whether a user message at `index` needs a blank line above it. Only the top of
+ * the transcript, or a block that already ends in its own margin, goes without.
+ * A paged window can open mid-turn, so this asks what precedes the message
+ * rather than whether an earlier user message happens to be loaded.
+ */
+function userMessageNeedsTopMargin(messages: Message[], index: number): boolean {
+  for (let i = index - 1; i >= 0; i--) {
+    const previous = messages[i];
+    if (previous.role !== "system_instructions") return true;
+    // A non-empty instructions box renders its own bottom margin.
+    if (previous.text.trim()) return false;
+  }
+  return false;
+}
+
 function isTerminalStreamNotice(msg: Message | undefined): boolean {
   return msg?.role === "system" && (msg.text.startsWith("✗") || msg.color === theme.error);
 }
@@ -403,14 +419,6 @@ export function buildMessageLines(
       "history_loading",
     );
   };
-  let firstUser = true;
-  for (let i = 0; i < startMessageIndex; i++) {
-    if (state.messages[i]?.role === "user") {
-      firstUser = false;
-      break;
-    }
-  }
-
   if (startMessageIndex === 0 && isActiveConversationLoading(state)) {
     pushLine(
       `  ${theme.dim}${conversationLoadingSpinnerText(state.conversationLoading!.startedAt)}${theme.reset}`,
@@ -426,7 +434,7 @@ export function buildMessageLines(
     const msg = state.messages[messageIndex];
     const start = lines.length;
     if (msg.role === "user") {
-      if (!firstUser) pushLine("", msg, "user_margin_top");  // top margin (skip for first)
+      if (userMessageNeedsTopMargin(state.messages, messageIndex)) pushLine("", msg, "user_margin_top");
       const contentStart = lines.length;
       const background = msg.metadata?.automation ? theme.automatedUserBg : theme.userBg;
       const rendered = renderUserMessageCached(msg, msg.text, availableWidth, msg.images, background);
@@ -444,8 +452,7 @@ export function buildMessageLines(
       if (provenance) {
         pushLine(rightAlignedProvenanceLabel(provenance, availableWidth), msg, msg.metadata?.automation ? "automation_label" : "transcript_label");
       }
-      pushLine("", msg, "user_margin_bottom");               // bottom margin
-      firstUser = false;
+      pushLine("", msg, "user_margin_bottom");
       pushMessageBound(msg.role, start, contentStart, contentEnd);
     } else if (msg.role === "assistant") {
       // AI messages: content blocks, then metadata
@@ -564,7 +571,9 @@ export function buildMessageLines(
   if (state.callUserDraft) {
     const msg = state.callUserDraft.message;
     const start = lines.length;
-    if (!firstUser) pushLine("", msg, "user_margin_top");
+    if (state.pendingAI || userMessageNeedsTopMargin(state.messages, state.messages.length)) {
+      pushLine("", msg, "user_margin_top");
+    }
     const contentStart = lines.length;
     const rendered = renderUserMessageCached(msg, msg.text, availableWidth, msg.images);
     pushBlock(msg, "user_content", rendered);
@@ -579,7 +588,6 @@ export function buildMessageLines(
     }
     pushLine(rightAlignedProvenanceLabel(callTranscriptProvenance(msg.metadata), availableWidth), msg, "transcript_label");
     pushLine("", msg, "user_margin_bottom");
-    firstUser = false;
     pushMessageBound(msg.role, start, contentStart, contentEnd);
   }
 
