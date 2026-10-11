@@ -659,7 +659,7 @@ function composeViewportFrom(
       });
 
       // Image rows are pictures, not text: clip instead of wrapping.
-      if (wrapped.lines.length <= 1 || lineAnchors[lineIndex]?.image) break;
+      if (wrapped.lines.length <= 1 || lineAnchors[lineIndex]?.images) break;
       startCol += Math.max(0, stripAnsi(line).length - displayPrefix.length)
         + (wrapped.joins[1]?.length ?? 0);
       remainder = wrapped.lines.slice(1)
@@ -752,7 +752,7 @@ function composeFixedWidthRows(
       displayPrefixWidth: firstPrefix.length,
       sourceRemainder: sourceLine,
     });
-    if (firstWrap.lines.length <= 1 || anchor?.image) continue;
+    if (firstWrap.lines.length <= 1 || anchor?.images) continue;
 
     sourceCol += stripAnsi(firstLine).length + (firstWrap.joins[1]?.length ?? 0);
     const remainder = firstWrap.lines.slice(1)
@@ -1753,6 +1753,7 @@ export function render(state: RenderState): boolean {
       maxCol: chatCol + chatW - 1,
       obstructions: imageObstructions,
       cursorLineIndex: historyFocused ? state.historyCursor.row : null,
+      cursorCol: state.historyCursor.col,
     })
     : [];
 

@@ -30,6 +30,7 @@ import { focusSidebarItem } from "./sidebar/selection";
 import { imageAtHistoryPosition, openableTargetAtHistoryPosition } from "./historyopenable";
 import { nextGrapheme } from "./textwidth";
 import { stripAnsi } from "./historymotions";
+import type { InlineImageTarget } from "./inlineimages";
 
 // ── Constants ─────────────────────────────────────────────────────
 
@@ -80,6 +81,26 @@ function screenToHistoryPos(
   }
   const col = clampCol(offset, lines, lineIdx);
   return { row: lineIdx, col };
+}
+
+/** Exact hit test for images: in a strip, the click must land on a thumbnail, caption, or `› +N`. */
+function imageAtScreen(col: number, row: number, state: RenderState): InlineImageTarget | null {
+  const viewport = state.layout.historyViewportRows[row - 3];
+  if (!viewport) return null;
+  const plain = stripAnsi(state.historyLines[viewport.lineIndex] ?? "");
+  const column = col - state.layout.chatCol - viewport.displayPrefixWidth;
+  if (column < 0) return null;
+  let width = 0;
+  let offset = viewport.startCol;
+  while (offset < plain.length) {
+    const [size, end] = nextGrapheme(plain, offset);
+    if (column < width + size) break;
+    width += size;
+    offset = end;
+  }
+  // Past the end of the row, columns continue one per cell.
+  if (offset >= plain.length) offset += column - width;
+  return imageAtHistoryPosition({ lineAnchors: state.historyLineAnchors }, { row: viewport.lineIndex, col: offset }, true);
 }
 
 /** Exact hit test: unlike selection, whitespace beyond a row must not clamp onto its last link. */
@@ -292,7 +313,7 @@ export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult 
     if (pos) {
       const target = linkAtScreen(col, row, state);
       state.mouseLinkPress = target ? { col, row, target } : null;
-      const image = imageAtHistoryPosition({ lineAnchors: state.historyLineAnchors }, pos);
+      const image = imageAtScreen(col, row, state);
       state.mouseImagePress = image ? { col, row, image } : null;
       focusHistory(state);
       state.vim.mode = "visual";
@@ -322,7 +343,7 @@ export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult 
     state.mouseImagePress = null;
     if (pressedImage && pressedImage.col === col && pressedImage.row === row) {
       state.vim.mode = "normal";
-      return { type: "open_image", image: pressedImage.image };
+      return { type: "open_image", target: pressedImage.image };
     }
     if (state.vim.mode === "visual" && state.chatFocus === "history") {
       // Update cursor to release position

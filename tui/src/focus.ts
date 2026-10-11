@@ -58,7 +58,7 @@ import { copyToClipboard } from "./vim/clipboard";
 import { handleBtwKey } from "./btw/keys";
 import { omittedToolOutputIdsNearViewport } from "./events/tool-outputs";
 import { activeHistorySurface, isAnyHistoryFocused } from "./historysurface";
-import type { InlineImageSource } from "./inlineimages";
+import type { InlineImageTarget } from "./inlineimages";
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -99,7 +99,7 @@ export type KeyResult =
   | { type: "edit_message_cancel" }
   | { type: "btw_close" }
   | { type: "open_target"; target: string }
-  | { type: "open_image"; image: InlineImageSource };
+  | { type: "open_image"; target: InlineImageTarget };
 
 // ── Key routing ─────────────────────────────────────────────────────
 
@@ -402,7 +402,7 @@ export function handleFocusedKey(
 
   if (action === "submit" && isAnyHistoryFocused(state)) {
     const image = imageAtHistoryCursor(state);
-    if (image) return { type: "open_image", image };
+    if (image) return { type: "open_image", target: image };
     const target = openableTargetAtHistoryCursor(state);
     return target ? { type: "open_target", target } : { type: "handled" };
   }

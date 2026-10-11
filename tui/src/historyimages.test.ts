@@ -24,7 +24,7 @@ function history(before: number): { anchors: RenderLineAnchor[]; layout: InlineI
   const layout: InlineImageLayout = { source, col: 2, cols: 20, rows: 10, owner, index: 0 };
   const anchors: RenderLineAnchor[] = [];
   for (let i = 0; i < before; i++) anchors.push({ owner: {}, segment: "assistant_block", index: i, subIndex: 0 });
-  for (let row = 0; row < 10; row++) anchors.push({ owner, segment: "assistant_image", index: 0, subIndex: row, image: { layout, row } });
+  for (let row = 0; row < 10; row++) anchors.push({ owner, segment: "assistant_image", index: 0, subIndex: row, images: [{ layout, row }] });
   for (let i = 0; i < 5; i++) anchors.push({ owner: {}, segment: "assistant_block", index: i, subIndex: 0 });
   return { anchors, layout };
 }
@@ -130,7 +130,7 @@ describe("history layout", () => {
       },
     ];
     const { lines, lineAnchors } = buildMessageLines(state, 80);
-    const imageRows = lineAnchors.flatMap((anchor, index) => anchor.image ? [index] : []);
+    const imageRows = lineAnchors.flatMap((anchor, index) => anchor.images ? [index] : []);
     expect(imageRows.length).toBeGreaterThan(0);
     const textRow = lines.findIndex(line => stripAnsi(line).includes("Here is the chart."));
     const captionRow = lines.findIndex(line => stripAnsi(line).includes("chart.png · 200×100"));
@@ -139,7 +139,7 @@ describe("history layout", () => {
     expect(captionRow).toBe(imageRows.at(-1)! + 1);
     expect(metadataRow).toBeGreaterThan(captionRow);
     // Rows are contiguous and numbered from the top of the image.
-    expect(imageRows.map(index => lineAnchors[index].image!.row)).toEqual(imageRows.map((_, row) => row));
+    expect(imageRows.map(index => lineAnchors[index].images![0].row)).toEqual(imageRows.map((_, row) => row));
   });
 
   test("with images off (daemon flag unset, or EXOCORTEX_TUI_IMAGES=off) history renders as before", async () => {
@@ -159,13 +159,13 @@ describe("history layout", () => {
       },
     ];
     const withImages = buildMessageLines(state, 80);
-    expect(withImages.lineAnchors.some(anchor => anchor.image)).toBe(true);
+    expect(withImages.lineAnchors.some(anchor => anchor.images)).toBe(true);
 
     for (const disable of [() => setInlineImagesEnabled(false), () => setInlineImageMode("off")]) {
       inlineImagesInternalsForTest.reset();
       disable();
       const { lines, lineAnchors } = buildMessageLines(state, 80);
-      expect(lineAnchors.some(anchor => anchor.image || anchor.openImage)).toBe(false);
+      expect(lineAnchors.some(anchor => anchor.images || anchor.openImages)).toBe(false);
       expect(lines.some(line => stripAnsi(line).includes("200×100"))).toBe(false);
       // The pasted image keeps its old badge.
       expect(lines.some(line => stripAnsi(line).includes("📎 PNG"))).toBe(true);
@@ -178,8 +178,8 @@ describe("history layout", () => {
     state.convId = "conv";
     state.messages = [{ role: "user", text: "look", images: [{ mediaType: "image/png", base64: "", sizeBytes: 1000, imageId: source.imageId, width: 200, height: 100 }], metadata: null }];
     const { lineAnchors } = buildMessageLines(state, 80);
-    const image = lineAnchors.find(anchor => anchor.image)?.image;
+    const image = lineAnchors.find(anchor => anchor.images)?.images?.[0];
     expect(image?.layout.col).toBe(80 - 2 - image!.layout.cols);
-    expect(lineAnchors.find(anchor => anchor.image)?.segment).toBe("user_image");
+    expect(lineAnchors.find(anchor => anchor.images)?.segment).toBe("user_image");
   });
 });

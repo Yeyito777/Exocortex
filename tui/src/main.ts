@@ -1585,8 +1585,11 @@ function handleKey(key: KeyEvent): void {
   // The image viewer owns the keyboard until it closes; Ctrl-C still quits.
   if (state.imageModal && key.type !== "ctrl-c") {
     if (key.event === "release") return;
-    if (handleImageModalKey(key) === "close") {
+    const shown = state.imageModal.index;
+    if (handleImageModalKey(key, state.imageModal) === "close") {
       state.imageModal = null;
+      renderAfterLocalUiMutation();
+    } else if (state.imageModal.index !== shown) {
       renderAfterLocalUiMutation();
     }
     return;
@@ -1633,7 +1636,7 @@ function handleKey(key: KeyEvent): void {
       remoteFileLinks?.open(result.target);
       break;
     case "open_image":
-      state.imageModal = { source: result.image };
+      state.imageModal = { images: result.target.images, index: result.target.index };
       break;
     case "quit":
       running = false;
@@ -1811,7 +1814,7 @@ function handleMouse(ev: MouseEvent): void {
       remoteFileLinks?.open(result.target);
       break;
     case "open_image":
-      state.imageModal = { source: result.image };
+      state.imageModal = { images: result.target.images, index: result.target.index };
       break;
     case "handled":
       break;

@@ -10,7 +10,7 @@
  */
 
 import type { RenderLineAnchor } from "./conversation";
-import { kittyPreview, type InlineImageLayout } from "./inlineimages";
+import { imageHitAt, kittyPreview, type InlineImageLayout } from "./inlineimages";
 import { KittyImageSync, type KittyPlacement } from "./kittyimages";
 import { parseKittyGraphicsResponse } from "./terminalgraphics";
 
@@ -40,6 +40,8 @@ export interface CollectHistoryImagesOptions {
   obstructions: readonly ScreenRect[];
   /** History line under the focused history cursor; its image is tinted as selected. */
   cursorLineIndex?: number | null;
+  /** The cursor's column, which picks the image in a strip. */
+  cursorCol?: number;
 }
 
 const placementIds = new WeakMap<object, Map<number, number>>();
@@ -95,19 +97,22 @@ export function collectHistoryImagePlacements(options: CollectHistoryImagesOptio
   const visible = new Map<InlineImageLayout, VisibleImageRow[]>();
   options.viewportRows.forEach((viewportRow, index) => {
     if (!viewportRow) return;
-    const image = options.lineAnchors[viewportRow.lineIndex]?.image;
-    if (!image || image.layout.rows <= 0) return;
     const screenRow = options.messageAreaStart + index;
-    const screenCol = options.chatCol + image.layout.col - viewportRow.startCol + viewportRow.displayPrefixWidth;
-    const right = screenCol + image.layout.cols - 1;
-    if (screenCol < options.chatCol || right > options.maxCol) return;
-    if (options.obstructions.some(rect => blocked(rect, screenRow, screenCol, right))) return;
-    const rows = visible.get(image.layout) ?? [];
-    rows.push({ screenRow, screenCol, imageRow: image.row });
-    visible.set(image.layout, rows);
+    for (const image of options.lineAnchors[viewportRow.lineIndex]?.images ?? []) {
+      if (image.layout.rows <= 0) continue;
+      const screenCol = options.chatCol + image.layout.col - viewportRow.startCol + viewportRow.displayPrefixWidth;
+      const right = screenCol + image.layout.cols - 1;
+      if (screenCol < options.chatCol || right > options.maxCol) continue;
+      if (options.obstructions.some(rect => blocked(rect, screenRow, screenCol, right))) continue;
+      const rows = visible.get(image.layout) ?? [];
+      rows.push({ screenRow, screenCol, imageRow: image.row });
+      visible.set(image.layout, rows);
+    }
   });
 
-  const cursorImage = options.cursorLineIndex == null ? null : options.lineAnchors[options.cursorLineIndex]?.openImage;
+  const cursorImage = options.cursorLineIndex == null
+    ? null
+    : imageHitAt(options.lineAnchors[options.cursorLineIndex]?.openImages, options.cursorCol ?? 0)?.layout;
   const placements: KittyPlacement[] = [];
   for (const [layout, rows] of visible) {
     const preview = kittyPreview(layout.source, { cols: layout.cols, rows: layout.rows });
@@ -127,7 +132,7 @@ export function collectHistoryImagePlacements(options: CollectHistoryImagesOptio
       columns: layout.cols,
       rows: run.length,
       ...(complete ? {} : { sourceY, sourceHeight: Math.max(1, sourceEnd - sourceY) }),
-      ...(cursorImage === layout.source ? { selected: true } : {}),
+      ...(cursorImage === layout ? { selected: true } : {}),
     });
   }
   return placements;

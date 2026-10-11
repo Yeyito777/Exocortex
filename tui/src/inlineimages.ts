@@ -14,6 +14,8 @@
  *   as is, with no round trip.
  * - rows: Kitty mode reserves blank rows that the renderer covers with a
  *   terminal placement; the half-block fallback draws the pixels as text.
+ * - strips: a message with several images lays them out side by side; those
+ *   that don't fit hide behind a `› +N` that opens the viewer on them.
  */
 
 import type { ImageAttachment, ImageMediaType, ImageRef } from "./messages";
@@ -22,6 +24,7 @@ import type { TerminalImageMode } from "./terminalgraphics";
 import { theme, terminalColorLevel } from "./theme";
 import { hexToRgb, rgbToAnsi, type TerminalColorLevel } from "./terminalcolors";
 import { log } from "./log";
+import { padRightToWidth, termWidth, truncateToWidth } from "./textwidth";
 import { imageIdForBytes, sniffImage } from "@exocortex/shared/image-sniff";
 
 // ── Sources ─────────────────────────────────────────────────────────
@@ -509,6 +512,210 @@ export function renderInlineImage(
   }
   const lines = Array.from({ length: box.rows }, (_, row) => row === 0 ? `${indent}${theme.dim}${status.slice(0, Math.max(1, box.cols + 20))}${theme.reset}` : "");
   return { layout, lines: [...lines, caption], copy };
+}
+
+// ── Strips ──────────────────────────────────────────────────────────
+
+/** The images of one message, in order, and the one to show; the viewer pages through them. */
+export interface InlineImageTarget {
+  images: readonly InlineImageSource[];
+  index: number;
+}
+
+/** Columns of a history row that open an image: a thumbnail, its caption, or a strip's `› +N`. */
+export interface InlineImageHit {
+  start: number;
+  end: number;
+  target: InlineImageTarget;
+  /** The thumbnail this hit is, tinted while the history cursor is on it. */
+  layout?: InlineImageLayout;
+}
+
+/**
+ * The image a column of a row opens. The history cursor takes the nearest hit
+ * (it can rest between thumbnails); a click must land on one.
+ */
+export function imageHitAt(hits: readonly InlineImageHit[] | undefined, col: number, exact = false): InlineImageHit | null {
+  let best: InlineImageHit | null = null;
+  let bestDistance = Infinity;
+  for (const hit of hits ?? []) {
+    const distance = col < hit.start ? hit.start - col : col >= hit.end ? col - hit.end + 1 : 0;
+    if (distance < bestDistance) {
+      best = hit;
+      bestDistance = distance;
+    }
+  }
+  return exact && bestDistance > 0 ? null : best;
+}
+
+const STRIP_GAP = 2;
+/** Narrow thumbnails still get room for a legible caption. */
+const STRIP_MIN_SLOT = 10;
+/** Blank image cells: invisible, but not whitespace to the history cursor, so it can cross the strip. */
+const IMAGE_CELL = "\u00a0";
+
+function overflowLabel(hidden: number): string {
+  return `› +${hidden}`;
+}
+
+export interface InlineImageStripLayout {
+  /** Thumbnails that fit, from the left. The rest are behind the overflow label. */
+  boxes: InlineImageBox[];
+  /** Left edge and width of each visible thumbnail's slot (image plus caption), from the strip's left. */
+  slots: Array<{ start: number; width: number }>;
+  rows: number;
+  overflow: { start: number; label: string } | null;
+  width: number;
+}
+
+/**
+ * Lay out several images side by side within `maxWidth` columns. Each is
+ * fitted to the thumbnail limits on its own, so images of one shape share a
+ * height; the strip is as tall as its tallest. When they don't all fit, as
+ * many as do are shown, followed by an overflow label (at least one image is
+ * always shown, shrunk if it must be).
+ */
+export function layoutInlineImageStrip(
+  images: readonly { width: number; height: number }[],
+  limits: InlineImageBox,
+  maxWidth: number,
+  cell: CellSize,
+): InlineImageStripLayout {
+  const fitted = images.map(image => fitImageBox(image, limits.cols, limits.rows, cell));
+  const slotWidth = (box: InlineImageBox) => Math.max(box.cols, STRIP_MIN_SLOT);
+  const widthOf = (count: number) => fitted.slice(0, count).reduce((sum, box, index) => sum + slotWidth(box) + (index > 0 ? STRIP_GAP : 0), 0);
+
+  let count = images.length;
+  let boxes = fitted;
+  let widths = fitted.map(slotWidth);
+  if (widthOf(count) > maxWidth) {
+    const room = (shown: number) => maxWidth - STRIP_GAP - termWidth(overflowLabel(images.length - shown));
+    count = images.length - 1;
+    while (count > 0 && widthOf(count) > room(count)) count--;
+    if (count === 0) {
+      count = 1;
+      const width = Math.max(1, room(1));
+      boxes = [fitImageBox(images[0], width, limits.rows, cell)];
+      widths = [Math.min(width, slotWidth(boxes[0]))];
+    }
+    boxes = boxes.slice(0, count);
+    widths = widths.slice(0, count);
+  }
+
+  const slots: InlineImageStripLayout["slots"] = [];
+  let width = 0;
+  for (const slot of widths) {
+    if (slots.length > 0) width += STRIP_GAP;
+    slots.push({ start: width, width: slot });
+    width += slot;
+  }
+  let overflow: InlineImageStripLayout["overflow"] = null;
+  if (count < images.length) {
+    overflow = { start: width + STRIP_GAP, label: overflowLabel(images.length - count) };
+    width = overflow.start + termWidth(overflow.label);
+  }
+  return { boxes, slots, rows: Math.max(...boxes.map(box => box.rows)), overflow, width };
+}
+
+/** As much of the caption as fits under the thumbnail: all of it, name and size, or the name, truncated. */
+function stripCaption(source: InlineImageSource, width: number): string {
+  const clean = (text: string) => text.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ");
+  const name = clean(source.name ?? source.mediaType.slice("image/".length).toUpperCase());
+  const fitting = [clean(imageCaption(source)), `${name} · ${source.width}×${source.height}`]
+    .find(caption => termWidth(caption) <= width);
+  return fitting ?? truncateToWidth(name, width);
+}
+
+/** A thumbnail's image rows, each exactly `box.cols` wide (a status notice in the first while it has no pixels). */
+function stripImageRows(source: InlineImageSource, box: InlineImageBox): string[] {
+  const blank = IMAGE_CELL.repeat(box.cols);
+  const blanks = Array.from({ length: box.rows }, () => blank);
+  let status = "loading image…";
+  if (environment.mode === "kitty") {
+    const preview = kittyPreview(source, box);
+    if (preview.phase === "ready") return blanks;
+    if (preview.phase === "error") status = "⚠ image unavailable";
+  } else if (environment.mode === "halfblock") {
+    const preview = rgbaPreview(source, box);
+    if (preview.phase === "ready") return renderHalfBlockRows(preview.value);
+    if (preview.phase === "error") status = "⚠ image unavailable";
+  }
+  const text = truncateToWidth(status, box.cols);
+  blanks[0] = `${theme.dim}${text}${theme.reset}${IMAGE_CELL.repeat(Math.max(0, box.cols - termWidth(text)))}`;
+  return blanks;
+}
+
+export interface RenderedInlineImageStrip {
+  layouts: InlineImageLayout[];
+  /** Image rows followed by one caption row. */
+  lines: string[];
+  copy: string[];
+  /** The thumbnails covering each image row, and which of their rows it is. */
+  rowImages: Array<Array<{ layout: InlineImageLayout; row: number }>>;
+  /** Columns of every strip row that open an image. */
+  hits: InlineImageHit[];
+}
+
+/**
+ * History rows for a strip starting at column `col`. Thumbnails sit on a
+ * common baseline above their captions; the overflow label is centered
+ * beside them and opens the first hidden image.
+ */
+export function renderInlineImageStrip(
+  items: readonly { source: InlineImageSource; owner: object; index: number }[],
+  strip: InlineImageStripLayout,
+  col: number,
+): RenderedInlineImageStrip {
+  const images = items.map(item => item.source);
+  const layouts = strip.boxes.map((box, index): InlineImageLayout => ({
+    source: items[index].source,
+    col: col + strip.slots[index].start,
+    cols: box.cols,
+    rows: box.rows,
+    owner: items[index].owner,
+    index: items[index].index,
+  }));
+  const hits: InlineImageHit[] = layouts.map((layout, index) => ({
+    start: layout.col,
+    end: layout.col + strip.slots[index].width,
+    target: { images, index },
+    layout,
+  }));
+  if (strip.overflow) {
+    const start = col + strip.overflow.start;
+    hits.push({ start, end: start + termWidth(strip.overflow.label), target: { images, index: layouts.length } });
+  }
+
+  const indent = " ".repeat(col);
+  const overflowRow = Math.floor((strip.rows - 1) / 2);
+  const pixels = layouts.map(layout => stripImageRows(layout.source, { cols: layout.cols, rows: layout.rows }));
+  const lines: string[] = [];
+  const rowImages: RenderedInlineImageStrip["rowImages"] = [];
+  for (let row = 0; row < strip.rows; row++) {
+    const covering: Array<{ layout: InlineImageLayout; row: number }> = [];
+    let line = indent;
+    layouts.forEach((layout, index) => {
+      if (index > 0) line += " ".repeat(STRIP_GAP);
+      const imageRow = row - (strip.rows - layout.rows);
+      const width = strip.slots[index].width;
+      if (imageRow < 0) {
+        line += " ".repeat(width);
+        return;
+      }
+      covering.push({ layout, row: imageRow });
+      line += (pixels[index][imageRow] ?? "") + " ".repeat(width - layout.cols);
+    });
+    if (strip.overflow && row === overflowRow) line += `${" ".repeat(STRIP_GAP)}${theme.accent}${strip.overflow.label}${theme.reset}`;
+    lines.push(line.replace(/ +$/, ""));
+    rowImages.push(covering);
+  }
+  const captions = layouts.map((layout, index) => padRightToWidth(stripCaption(layout.source, strip.slots[index].width), strip.slots[index].width));
+  lines.push(`${indent}${theme.dim}${captions.join(" ".repeat(STRIP_GAP)).replace(/ +$/, "")}${theme.reset}`);
+  const copy = [
+    ...Array.from({ length: strip.rows }, () => ""),
+    images.map(source => `[image: ${imageCaption(source)}]`).join(" "),
+  ];
+  return { layouts, lines, copy, rowImages, hits };
 }
 
 export const inlineImagesInternalsForTest = {
