@@ -9,9 +9,25 @@ import type { RenderState } from "./state";
 import { convDisplayName, formatModelDisplayName } from "./messages";
 import { termWidth, truncateToWidth } from "./textwidth";
 import { theme } from "./theme";
+import { activeProviderProxy } from "./provider-proxies";
 
 /** Max visible length for a conversation preview used as label. */
 const PREVIEW_MAX = 30;
+
+/**
+ * " — via <alias>" while the conversation's provider goes through /proxy, so a
+ * borrowed login is visible next to the model it serves. Says so when the
+ * link is not usable.
+ */
+function proxyLabel(state: RenderState): string {
+  const proxy = activeProviderProxy(state);
+  if (!proxy) return "";
+  const problem = proxy.state === "connecting" ? " (connecting)"
+    : proxy.state === "disconnected" ? " (down)"
+      : proxy.remoteLoggedIn === false ? " (not logged in)"
+        : "";
+  return ` — via ${proxy.alias}${problem}`;
+}
 
 /** Resolve a display label for the current conversation from the sidebar list. */
 function convLabel(state: RenderState): string {
@@ -35,7 +51,7 @@ export function renderTopbar(state: RenderState, width?: number): string {
     const providerId = typeof state.provider === "string" && state.provider.length > 0 ? state.provider : "unknown";
     const providerLabel = state.providerRegistry.find((provider) => provider.id === providerId)?.label
       ?? (providerId === "openai" ? "OpenAI" : providerId.charAt(0).toUpperCase() + providerId.slice(1));
-    rightLabel = `${providerLabel}/${formatModelDisplayName(state.model)} — ${state.effort}${state.fastMode === "ultrafast" ? " — ultrafast" : state.fastMode ? " — fast" : ""}`;
+    rightLabel = `${providerLabel}/${formatModelDisplayName(state.model)} — ${state.effort}${state.fastMode === "ultrafast" ? " — ultrafast" : state.fastMode ? " — fast" : ""}${proxyLabel(state)}`;
   }
 
   const maxLeftWidth = Math.max(0, w - (rightLabel ? termWidth(rightLabel) + 1 : 0));
