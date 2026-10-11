@@ -57,7 +57,8 @@ import {
 } from "./frame";
 import { pinBottomRelativeScrollOffset } from "./viewportscroll";
 import { durableSleepMetadataFrame } from "./durable-sleep-metadata";
-import { inlineImageGeneration, inlineImageMode } from "./inlineimages";
+import { inlineImageCellSize, inlineImageGeneration, inlineImageMode } from "./inlineimages";
+import { renderImageModal } from "./imagemodal";
 import { collectHistoryImagePlacements, historyImagesPlaced, syncHistoryImages, type ScreenRect } from "./historyimages";
 
 interface HistoryRenderCacheEntry {
@@ -1275,6 +1276,7 @@ function buildCursorPayload(
   chatCol: number,
   chatW: number,
 ): string {
+  if (state.imageModal) return hide_cursor;
   const out: string[] = [];
 
   if (state.panelFocus === "sidebar" && state.sidebar.search?.barOpen) {
@@ -1740,7 +1742,7 @@ export function render(state: RenderState): boolean {
   const imageObstructions: ScreenRect[] = [state.layout.taskPanelRect, autocompleteRect]
     .filter((rect): rect is ScreenRect => rect !== null);
   const hadHistoryImages = historyImagesPlaced(state);
-  const historyImagePlacements = inlineImageMode() === "kitty" && !historyOverlayOpen
+  const historyImagePlacements = inlineImageMode() === "kitty" && !historyOverlayOpen && !state.imageModal
     ? collectHistoryImagePlacements({
       viewportRows: state.layout.historyViewportRows,
       lineAnchors,
@@ -1748,8 +1750,18 @@ export function render(state: RenderState): boolean {
       chatCol,
       maxCol: chatCol + chatW - 1,
       obstructions: imageObstructions,
+      cursorLineIndex: historyFocused ? state.historyCursor.row : null,
     })
     : [];
+
+  // ── Full-size image viewer (top-most) ─────────────────────────
+  // While it is open it is the only image on screen; closing it lets the next
+  // frame delete its placement and restore the thumbnails.
+  if (state.imageModal) {
+    const modal = renderImageModal(state.imageModal, rows, cols, inlineImageCellSize(), inlineImageMode());
+    appendPositionedPayload(ctx, modal.payload);
+    if (modal.placement) historyImagePlacements.push(modal.placement);
+  }
   const graphics = syncHistoryImages(state, historyImagePlacements);
 
   const canScrollMessageRegion = !sidebarOpen
@@ -1759,6 +1771,7 @@ export function render(state: RenderState): boolean {
     && !state.queuePrompt
     && !state.editMessagePrompt
     && !state.btw
+    && !state.imageModal
     // Placements are positioned explicitly; terminal scrolling would move them first.
     && !hadHistoryImages
     && historyImagePlacements.length === 0

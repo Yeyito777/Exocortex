@@ -40,6 +40,8 @@ export interface KittyPlacement {
   /** Visible source rows, in image pixels, when the image is partly scrolled out. */
   sourceY?: number;
   sourceHeight?: number;
+  /** Tint as one selected object (st's `V=1`; other terminals ignore the key). */
+  selected?: boolean;
 }
 
 function command(controls: string, payload = ""): string {
@@ -70,7 +72,7 @@ export function placeImage(placement: KittyPlacement): string {
     : "";
   // C=1 keeps the cursor still; q=1 reports only failures (an evicted image).
   return moveTo(placement.row, placement.col)
-    + command(`a=p,i=${image.kittyId},p=${placement.placementId},c=${placement.columns},r=${placement.rows}${crop},C=1,z=1,q=1`);
+    + command(`a=p,i=${image.kittyId},p=${placement.placementId},c=${placement.columns},r=${placement.rows}${crop},C=1,z=1${placement.selected ? ",V=1" : ""},q=1`);
 }
 
 export function deletePlacement(kittyId: number, placementId: number): string {
@@ -90,6 +92,7 @@ function fingerprint(placement: KittyPlacement): string {
   return [
     placement.row, placement.col, placement.columns, placement.rows,
     placement.sourceY ?? 0, placement.sourceHeight ?? placement.image.pixelHeight,
+    placement.selected ? 1 : 0,
   ].join(":");
 }
 

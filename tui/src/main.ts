@@ -16,6 +16,7 @@ import { TerminalClipboardClient, TerminalControlBuffer } from "./terminalclipbo
 import { CELL_SIZE_QUERY, TerminalGraphicsDetector, parseCellSizeResponse } from "./terminalgraphics";
 import { configureInlineImages, setInlineImageCellSize, setInlineImageMode } from "./inlineimages";
 import { disposeHistoryImages, handleHistoryImageResponse, invalidateHistoryImagePlacements } from "./historyimages";
+import { handleImageModalKey } from "./imagemodal";
 import { handleFocusedKey } from "./focus";
 import { handleMouseEvent } from "./mouse";
 import { clearPrompt } from "./promptstate";
@@ -1581,6 +1582,15 @@ function handleKey(key: KeyEvent): void {
   const voicePromptBufferBefore = state.voicePromptJobs.length > 0 || state.voicePrompt?.phase === "transcribing"
     ? state.inputBuffer
     : null;
+  // The image viewer owns the keyboard until it closes; Ctrl-C still quits.
+  if (state.imageModal && key.type !== "ctrl-c") {
+    if (key.event === "release") return;
+    if (handleImageModalKey(key) === "close") {
+      state.imageModal = null;
+      renderAfterLocalUiMutation();
+    }
+    return;
+  }
   if (voiceInput?.handleKey(key)) return;
   if (key.event === "release") return;
 
@@ -1621,6 +1631,9 @@ function handleKey(key: KeyEvent): void {
       break;
     case "open_target":
       remoteFileLinks?.open(result.target);
+      break;
+    case "open_image":
+      state.imageModal = { source: result.image };
       break;
     case "quit":
       running = false;
@@ -1742,6 +1755,14 @@ function handleMouse(ev: MouseEvent): void {
   // Hidden old-route controls must not remain clickable during the transition.
   if (state.sshConnecting) return;
   if (voiceInput?.isBlockingMouse()) return;
+  // A click anywhere closes the image viewer; other mouse input is ignored under it.
+  if (state.imageModal) {
+    if (ev.button === 0 && ev.action === "press") {
+      state.imageModal = null;
+      renderAfterLocalUiMutation();
+    }
+    return;
+  }
 
   // Motion events: only render if something visual changed (focus switch, drag selection)
   if (ev.action === "motion") {
@@ -1788,6 +1809,9 @@ function handleMouse(ev: MouseEvent): void {
       break;
     case "open_target":
       remoteFileLinks?.open(result.target);
+      break;
+    case "open_image":
+      state.imageModal = { source: result.image };
       break;
     case "handled":
       break;

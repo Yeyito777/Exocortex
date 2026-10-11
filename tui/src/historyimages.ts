@@ -38,6 +38,8 @@ export interface CollectHistoryImagesOptions {
   maxCol: number;
   /** Screen regions drawn on top of history (task panel and the like). */
   obstructions: readonly ScreenRect[];
+  /** History line under the focused history cursor; its image is tinted as selected. */
+  cursorLineIndex?: number | null;
 }
 
 const placementIds = new WeakMap<object, Map<number, number>>();
@@ -105,6 +107,7 @@ export function collectHistoryImagePlacements(options: CollectHistoryImagesOptio
     visible.set(image.layout, rows);
   });
 
+  const cursorImage = options.cursorLineIndex == null ? null : options.lineAnchors[options.cursorLineIndex]?.openImage;
   const placements: KittyPlacement[] = [];
   for (const [layout, rows] of visible) {
     const preview = kittyPreview(layout.source, { cols: layout.cols, rows: layout.rows });
@@ -124,6 +127,7 @@ export function collectHistoryImagePlacements(options: CollectHistoryImagesOptio
       columns: layout.cols,
       rows: run.length,
       ...(complete ? {} : { sourceY, sourceHeight: Math.max(1, sourceEnd - sourceY) }),
+      ...(cursorImage === layout.source ? { selected: true } : {}),
     });
   }
   return placements;

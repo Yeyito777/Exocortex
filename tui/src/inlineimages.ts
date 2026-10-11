@@ -118,11 +118,15 @@ export function fitImageBox(
   };
 }
 
-/** Default box limits for history images, from the chat width and terminal height. */
+/** Inline images are thumbnails; Enter or a click opens the full-size viewer. */
+export const INLINE_IMAGE_MAX_COLUMNS = 56;
+export const INLINE_IMAGE_MAX_ROWS = 12;
+
+/** Box limits for history thumbnails, from the chat width and terminal height. */
 export function historyImageLimits(availableWidth: number, terminalRows: number): InlineImageBox {
   return {
-    cols: Math.max(4, Math.min(availableWidth - 4, 96)),
-    rows: Math.max(4, Math.min(28, Math.floor((terminalRows - 8) * 0.7))),
+    cols: Math.max(4, Math.min(availableWidth - 4, INLINE_IMAGE_MAX_COLUMNS)),
+    rows: Math.max(3, Math.min(INLINE_IMAGE_MAX_ROWS, Math.floor((terminalRows - 8) / 2))),
   };
 }
 

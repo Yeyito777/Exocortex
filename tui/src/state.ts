@@ -32,6 +32,8 @@ import type { ConversationDefaultsSnapshot, ConversationGoal, MacroEnvironment, 
 import type { VoiceChatMessageState, VoicePromptState } from "./voice";
 import type { BtwPanelState } from "./btw/state";
 import { createConversationScrollState, type ConversationScrollState } from "./conversationscroll/types";
+import type { InlineImageSource } from "./inlineimages";
+import type { ImageModalState } from "./imagemodal";
 
 // ── Queue types ────────────────────────────────────────────────────
 
@@ -351,6 +353,10 @@ export interface RenderState {
   mouseCursor: "pointer" | "text" | "hand";
   /** Open only on release at the original link, never when dragging to select. */
   mouseLinkPress?: { row: number; col: number; target: string } | null;
+  /** Left press on an inline image; a release on the same cell opens the viewer. */
+  mouseImagePress?: { row: number; col: number; image: InlineImageSource } | null;
+  /** Full-size image viewer opened from history (Enter or click on a thumbnail). */
+  imageModal: ImageModalState | null;
 }
 
 /** The daemon's streaming bit also covers handoffs between ordinary turns. */
@@ -709,6 +715,7 @@ export function createInitialState(): RenderState {
     historyCopyLines: [],
     historyMessageBounds: [],
     historyLineAnchors: [],
+    imageModal: null,
     undo: createUndoState(),
     autocomplete: null,
     promptScrollOffset: 0,

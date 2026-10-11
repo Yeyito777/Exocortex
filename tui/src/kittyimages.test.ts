@@ -47,6 +47,13 @@ describe("escape generation", () => {
       .toBe("\x1b[5;4H\x1b_Ga=p,i=7,p=3,c=20,r=4,x=0,y=60,w=200,h=40,C=1,z=1,q=1;\x1b\\");
   });
 
+  test("a selected placement carries st's V=1 tint", () => {
+    expect(placeImage(placement({ selected: true }))).toContain(",z=1,V=1,q=1;");
+    const sync = new KittyImageSync();
+    sync.sync([placement()]);
+    expect(controls(sync.sync([placement({ selected: true })]))).toEqual(["a=p,i=7,p=3,c=20,r=10,C=1,z=1,V=1,q=1"]);
+  });
+
   test("deletes placements softly and images hard", () => {
     expect(deletePlacement(7, 3)).toBe("\x1b_Ga=d,d=i,i=7,p=3,q=2;\x1b\\");
     expect(deleteImage(7)).toBe("\x1b_Ga=d,d=I,i=7,q=2;\x1b\\");

@@ -295,6 +295,8 @@ export interface RenderLineAnchor {
   userFlowEnd?: UserMessageFlowCursor;
   /** Inline image covering this row, and which of its rows this is. */
   image?: { layout: InlineImageLayout; row: number };
+  /** Image that Enter or a click on this row (its thumbnail or caption) opens. */
+  openImage?: InlineImageSource;
 }
 
 /** An image to draw in history, with the object that owns its placement. */
@@ -446,7 +448,9 @@ export function buildMessageLines(
         pushAnchoredLine(text, false, "", image.owner, segment, image.index, row, isImageRow
           ? { text: "", displayStart: 0, skip: true }
           : { text: rendered.copy[row] ?? "", displayStart: col });
-        if (isImageRow) lineAnchors[lineAnchors.length - 1].image = { layout: rendered.layout, row };
+        const anchor = lineAnchors[lineAnchors.length - 1];
+        if (isImageRow) anchor.image = { layout: rendered.layout, row };
+        anchor.openImage = image.source;
       });
     }
   };

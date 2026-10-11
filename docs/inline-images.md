@@ -17,7 +17,13 @@ refs travel beside its text result in-process
 (`providers/anthropic/host-tool-attachments.ts`).
 
 The TUI draws attached images after the whole visible assistant message, just
-above its metadata line. Pasted images are drawn under the user's bubble. The
+above its metadata line. Pasted images are drawn under the user's bubble.
+Inline images are thumbnails (at most 56 columns × 12 rows, aspect preserved,
+never enlarged) with a caption row. Enter on a thumbnail or its caption with
+the history cursor, or a click on it, opens the full-size viewer
+(`tui/src/imagemodal.ts`): a centered box sized to the image and the terminal,
+closed with Enter, Esc, `q`, or a click. While it is open it is the only image
+on screen; in st the thumbnail under the history cursor is tinted (`V=1`). The
 history projection adds `imageId` (sha256), `width`, and `height` to pasted
 `ImageAttachment`s so they stay fetchable after the payload is compacted.
 
