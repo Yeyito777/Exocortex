@@ -250,7 +250,7 @@ function macroDefinitions(environment: MacroEnvironment | null = localMacroEnvir
       },
     ],
   },
-  { name: "/update", desc: "Update Exocortex", expansion: "Update Exocortex. Pull the latest changes from github, install anything that needs to be installed and then tell me to run \"exocortexd restart\" in my terminal when ready" },
+  { name: "/update", desc: "Update Exocortex", expansion: "Update Exocortex. Pull the latest changes from github (fast-forward only) and install anything that needs to be installed. Then restart the daemon yourself with the exo tool's restart action and end your turn; you'll get a notice once it's back. Don't run exocortexd restart from a turn or ask me to restart the daemon. If the restart is refused (e.g. cooldown), schedule a Chrono wake to retry once it's allowed. If TUI code changed, tell me to restart my TUI." },
   ];
 }
 

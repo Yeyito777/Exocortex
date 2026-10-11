@@ -17,7 +17,9 @@ Common commands include `list_conversations`, `load_conversation`,
 Managed task inspection/stopping uses `list_tasks` / `stop_task`; task IDs are
 not raw PIDs. Use `abort` for subagent conversations and Chrono cancellation
 for schedules: `chrono` lists, creates, or cancels a conversation's schedules.
-Never restart the main daemon.
+Never restart the main daemon over IPC or by running `exocortexd restart` from a
+turn (the turn would be replayed and restart again); use the native `exo` tool's
+`restart` action, which runs after the turn ends.
 
 Daybreak uses ordinary model selection: `provider: "openai"` and
 `model: "gpt-6-sol-daybreak"`. The account catalog must advertise Blue on
