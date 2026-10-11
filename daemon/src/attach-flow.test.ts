@@ -149,6 +149,24 @@ describe("get_image", () => {
     expect(again.sent[0]).toMatchObject({ type: "image_data", reqId: "r4" });
   });
 
+  test("previews a just-sent image before the turn has stored its message", async () => {
+    // A TUI asks for its own paste right after send_message; the turn appends
+    // the user message only after loading the conversation.
+    const convId = `attach-flow-send-${Date.now()}`;
+    create(convId, "openai", "gpt-5.4");
+    const proc = Bun.spawnSync(["magick", "-size", "24x12", "xc:orange", "png:-"]);
+    const png = Buffer.from(proc.stdout);
+    const imageId = imageIdForBytes(png);
+    const { sent, handle } = harness();
+    const turn = handle({} as never, {
+      type: "send_message", reqId: "s1", convId, text: "look", startedAt: Date.now(),
+      images: [{ mediaType: "image/png", base64: png.toString("base64"), sizeBytes: png.length }],
+    });
+    await handle({} as never, { type: "get_image", reqId: "s2", convId, imageId, format: "png", width: 64, height: 64 });
+    expect(sent.find(event => event.reqId === "s2")).toMatchObject({ type: "image_data", imageId, width: 24, height: 12 });
+    await turn;
+  });
+
   test("rejects bad ids, bad sizes, and unknown images", async () => {
     const { sent, handle } = harness();
     await handle({} as never, { type: "get_image", reqId: "e1", imageId: "../../etc/passwd", format: "png", width: 10, height: 10 });

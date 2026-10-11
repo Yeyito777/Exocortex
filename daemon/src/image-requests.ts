@@ -4,11 +4,16 @@
  * Model-attached images are in the managed store. User-pasted images live in
  * the conversation itself (as provider image blocks); the first preview of one
  * copies it into the store, so later requests skip the conversation scan.
+ * Images a client sends are also copied into the store on arrival: the turn
+ * stores its user message only after loading the conversation, and a client's
+ * first preview of its own paste would otherwise race it.
  */
 
 import * as convStore from "./conversations";
 import { findStoredImage, imageIdForBytes, putImageBytes, sniffImage } from "./attachments";
-import type { ImageMediaType, StoredMessage } from "./messages";
+import type { ImageAttachment, ImageMediaType, StoredMessage } from "./messages";
+import { experimentalFeatures } from "./experimental";
+import { log } from "./log";
 import { readFileSync } from "node:fs";
 
 export interface ImageSource {
@@ -47,4 +52,19 @@ export async function resolveImageForPreview(imageId: string, convId?: string): 
   }
   if (found) putImageBytes(found.bytes, found.mediaType);
   return found;
+}
+
+/** Store the images of a message a client just sent, so previews never wait on the turn. */
+export function rememberSentImages(images: readonly ImageAttachment[] | undefined): void {
+  if (!images?.length || !experimentalFeatures().images) return;
+  for (const image of images) {
+    if (!image.base64) continue;
+    try {
+      const bytes = Buffer.from(image.base64, "base64");
+      const sniffed = sniffImage(bytes);
+      if (sniffed) putImageBytes(bytes, sniffed.mediaType);
+    } catch (error) {
+      log("warn", `image-requests: could not store a sent image: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
 }

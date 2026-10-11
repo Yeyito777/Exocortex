@@ -9,7 +9,9 @@
  *   every render mode, so switching modes or loading pixels never shifts text.
  * - store: previews are fetched lazily from the daemon (`get_image`) at the
  *   size they will be drawn, which bounds traffic over SSH, and kept in a
- *   small LRU.
+ *   small LRU. A pasted PNG whose bytes the TUI already holds (its own local
+ *   echo, or history that still carries the payload) goes to Kitty terminals
+ *   as is, with no round trip.
  * - rows: Kitty mode reserves blank rows that the renderer covers with a
  *   terminal placement; the half-block fallback draws the pixels as text.
  */
@@ -34,6 +36,8 @@ export interface InlineImageSource {
   mediaType: ImageMediaType;
   sizeBytes: number;
   name?: string;
+  /** Base64 bytes already in hand (a pasted image's payload), drawable without the daemon. */
+  localBase64?: string;
 }
 
 export function sourceFromRef(ref: ImageRef, convId: string | null): InlineImageSource {
@@ -87,6 +91,7 @@ export function sourceFromAttachment(image: ImageAttachment, convId: string | nu
     height: size.height,
     mediaType: image.mediaType,
     sizeBytes: image.sizeBytes,
+    ...(image.base64 ? { localBase64: image.base64 } : {}),
   };
 }
 
@@ -218,13 +223,26 @@ export interface ImagePreviewResponse {
 export type ImagePreviewFetcher = (request: ImagePreviewRequest) => Promise<ImagePreviewResponse>;
 
 type PreviewEntry =
-  | { phase: "loading" }
+  | { phase: "loading"; retries?: number }
   | { phase: "error"; error: string; at: number }
   | { phase: "ready"; preview: ImagePreviewResponse; kitty?: KittyImageData; rgba?: Buffer };
 
 const MAX_CACHED_CHARS = 128 * 1024 * 1024;
 const MAX_IN_FLIGHT = 3;
 const ERROR_RETRY_MS = 5_000;
+/**
+ * Backoff for failures that are expected to clear on their own. A just-sent
+ * pasted image is "not found" until the daemon has stored its message, which
+ * can take a few seconds on a large conversation; until the retries run out it
+ * shows as loading rather than unavailable.
+ */
+const TRANSIENT_RETRY_MS = [250, 500, 1_000, 2_000, 4_000];
+/**
+ * Larger local payloads are fetched as a bounded preview instead. The limit is
+ * tighter when the terminal itself is at the far end of an SSH session, where
+ * every transmitted byte crosses the network.
+ */
+const MAX_LOCAL_KITTY_CHARS = process.env.SSH_TTY || process.env.SSH_CONNECTION ? 1024 * 1024 : 16 * 1024 * 1024;
 
 const previews = new Map<string, PreviewEntry>();
 let cachedChars = 0;
@@ -232,6 +250,7 @@ let inFlight = 0;
 const queued: Array<() => void> = [];
 let fetcher: ImagePreviewFetcher | null = null;
 let nextKittyId = 0x40000000;
+const retryTimers = new Set<ReturnType<typeof setTimeout>>();
 
 export function configureInlineImages(options: {
   fetch: ImagePreviewFetcher;
@@ -276,22 +295,32 @@ function runQueued(): void {
   while (inFlight < MAX_IN_FLIGHT && queued.length > 0) queued.shift()!();
 }
 
-function request(request: ImagePreviewRequest): PreviewEntry | null {
-  const key = previewKey(request);
-  const existing = previews.get(key);
-  if (existing && (existing.phase !== "error" || Date.now() - existing.at < ERROR_RETRY_MS)) {
-    touch(key, existing);
-    return existing;
-  }
-  if (!fetcher) return null;
-  const fetch = fetcher;
-  store(key, { phase: "loading" });
+function isTransientFailure(message: string, request: ImagePreviewRequest): boolean {
+  // Only a pasted image (looked up in its conversation) can be not-yet-stored.
+  return (Boolean(request.convId) && /image not found/.test(message)) || /timed out/.test(message);
+}
+
+function enqueueFetch(key: string, request: ImagePreviewRequest, fetch: ImagePreviewFetcher, retries: number): void {
   queued.push(() => {
     inFlight++;
     fetch(request).then(preview => {
       store(key, { phase: "ready", preview });
     }, error => {
       const message = error instanceof Error ? error.message : String(error);
+      const delay = TRANSIENT_RETRY_MS[retries];
+      if (delay !== undefined && isTransientFailure(message, request)) {
+        store(key, { phase: "loading", retries: retries + 1 });
+        const timer = setTimeout(() => {
+          retryTimers.delete(timer);
+          // Dropped (evicted or reset) entries are fetched again on demand.
+          const entry = previews.get(key);
+          if (entry?.phase === "loading" && entry.retries === retries + 1) enqueueFetch(key, request, fetch, retries + 1);
+          runQueued();
+        }, delay);
+        timer.unref?.();
+        retryTimers.add(timer);
+        return;
+      }
       log("warn", `tui: image preview ${request.imageId.slice(0, 12)} failed: ${message}`);
       store(key, { phase: "error", error: message, at: Date.now() });
     }).finally(() => {
@@ -300,7 +329,33 @@ function request(request: ImagePreviewRequest): PreviewEntry | null {
       changed();
     });
   });
+}
+
+function request(request: ImagePreviewRequest): PreviewEntry | null {
+  const key = previewKey(request);
+  const existing = previews.get(key);
+  if (existing && (existing.phase !== "error" || Date.now() - existing.at < ERROR_RETRY_MS)) {
+    touch(key, existing);
+    return existing;
+  }
+  if (!fetcher) return null;
+  store(key, { phase: "loading", retries: 0 });
+  enqueueFetch(key, request, fetcher, 0);
   runQueued();
+  return previews.get(key) ?? null;
+}
+
+/** A pasted PNG's own bytes, ready for Kitty: the terminal scales it to the cell box. */
+function localKittyEntry(source: InlineImageSource): PreviewEntry | null {
+  const base64 = source.localBase64;
+  if (!base64 || source.mediaType !== "image/png" || base64.length > MAX_LOCAL_KITTY_CHARS) return null;
+  const key = `${source.imageId}:local`;
+  const existing = previews.get(key);
+  if (existing) {
+    touch(key, existing);
+    return existing;
+  }
+  store(key, { phase: "ready", preview: { format: "png", width: source.width, height: source.height, base64 } });
   return previews.get(key) ?? null;
 }
 
@@ -309,7 +364,7 @@ export type PreviewState<T> = { phase: "loading" } | { phase: "error"; error: st
 /** PNG preview for terminal graphics, sized to the cell box it fills. */
 export function kittyPreview(source: InlineImageSource, box: InlineImageBox): PreviewState<KittyImageData> {
   const cell = environment.cell;
-  const entry = request({
+  const entry = localKittyEntry(source) ?? request({
     imageId: source.imageId,
     ...(source.convId ? { convId: source.convId } : {}),
     format: "png",
@@ -464,6 +519,8 @@ export const inlineImagesInternalsForTest = {
     everEnabled = false;
   },
   reset(): void {
+    for (const timer of retryTimers) clearTimeout(timer);
+    retryTimers.clear();
     previews.clear();
     cachedChars = 0;
     inFlight = 0;

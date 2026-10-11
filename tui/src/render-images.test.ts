@@ -6,6 +6,8 @@ import { handleImageModalKey, renderImageModal } from "./imagemodal";
 import { handleFocusedKey } from "./focus";
 import { handleMouseEvent } from "./mouse";
 import { disposeHistoryImages } from "./historyimages";
+import { buildMessageLines } from "./conversation";
+import { stripAnsi } from "./historycursor";
 
 function capture(state: RenderState): string {
   let out = "";
@@ -239,5 +241,64 @@ describe("render with Kitty images", () => {
     const out = await readyFrame(state);
     expect(out).toContain("▀▀▀▀");
     expect(out).not.toContain("\x1b_G");
+  });
+});
+
+describe("a just-sent pasted image", () => {
+  // 400×200 PNG header: enough for sizing; the terminal gets these bytes as is.
+  const png = Buffer.from("89504e470d0a1a0a0000000d4948445200000190000000c80806000000", "hex").toString("base64");
+
+  /** The TUI's local echo of a message with a paste: bytes, but no daemon id or size yet. */
+  function sentState(): RenderState {
+    const state = createInitialState();
+    state.cols = 100;
+    state.rows = 40;
+    state.convId = "conv";
+    state.messages = [{ role: "user", text: "look at this", images: [{ mediaType: "image/png", base64: png, sizeBytes: 101_000 }], metadata: null }];
+    return state;
+  }
+
+  test("Kitty terminals draw it from the local bytes on the first frame, without asking the daemon", () => {
+    let fetches = 0;
+    configureInlineImages({ fetch: async () => { fetches++; throw new Error("get_image: image not found"); }, onChange: () => {} });
+    setInlineImageMode("kitty");
+    const state = sentState();
+    const out = capture(state);
+    expect(out).toContain(`a=t,t=d,f=100`);
+    expect(out).toContain(png);
+    expect(placements(out).length).toBe(1);
+    expect(out).not.toContain("image unavailable");
+    expect(fetches).toBe(0);
+    disposeHistoryImages(state);
+  });
+
+  test("a fetch that races the daemon storing the message shows loading, then the image", async () => {
+    // The half-block fallback needs a daemon preview; the first one arrives
+    // before the daemon has stored the message.
+    let fetches = 0;
+    let changes = 0;
+    configureInlineImages({
+      fetch: async request => {
+        if (++fetches === 1) throw new Error("get_image: image not found");
+        return { format: "rgba", width: request.width, height: request.height, base64: Buffer.alloc(request.width * request.height * 4, 128).toString("base64") };
+      },
+      onChange: () => { changes++; },
+    });
+    setInlineImageMode("halfblock");
+    const state = sentState();
+    const history = () => stripAnsi(buildMessageLines(state, 96).lines.join("\n"));
+    expect(history()).toContain("loading image…");
+    await Bun.sleep(0);
+    expect(fetches).toBe(1);
+    expect(history()).toContain("loading image…");
+    expect(history()).not.toContain("image unavailable");
+
+    // The retry needs no user action: it fires on its own and asks for a frame.
+    const changesBefore = changes;
+    await Bun.sleep(400);
+    expect(fetches).toBe(2);
+    expect(changes).toBeGreaterThan(changesBefore);
+    expect(history()).toContain("▀▀▀▀");
+    expect(history()).not.toContain("loading image…");
   });
 });
