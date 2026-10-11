@@ -39,7 +39,13 @@ import { renderEditMessageOverlay } from "./overlays";
 import { findSearchMatches, getActiveSearchQuery, getSearchBarViewport } from "./search";
 import { padRightToWidth, termWidth, visibleLength } from "./textwidth";
 import { getVoicePromptRanges } from "./voice";
-import { layoutTaskPanel, renderTaskPanel } from "./activitypanel";
+import {
+  hasFocusedConversationIntegrations,
+  hasFocusedConversationTasks,
+  isTaskPanelExpanded,
+  layoutTaskPanel,
+  renderTaskPanel,
+} from "./activitypanel";
 import { trimAnsiLeadingSpaces, wrapAnsiLine } from "./ansiwrap";
 import { getBtwPanelPreferredHeight, MAX_BTW_PANEL_HEIGHT, renderBtwPanel } from "./btw/panel";
 import { wordWrap } from "./textwrap";
@@ -1494,6 +1500,11 @@ export function render(state: RenderState): boolean {
 
   // ── Message area (rows 3 to bottomStartRow-1) ──────────────────
   const messageAreaStart = 3;
+  // An expanded panel belongs to the conversation it was opened in, and ends with its last entry.
+  if (state.taskPanelExpansion && (!isTaskPanelExpanded(state)
+    || (!hasFocusedConversationTasks(state) && !hasFocusedConversationIntegrations(state)))) {
+    state.taskPanelExpansion = null;
+  }
   const taskLayout = layoutTaskPanel(state, chatW, messageAreaHeight);
   const historyWidth = taskLayout.historyWidth;
   const deferredTargetLines = Math.max(1, messageAreaHeight * DEFERRED_HISTORY_TARGET_VIEWPORTS);
@@ -1663,6 +1674,8 @@ export function render(state: RenderState): boolean {
 
   // ── Active task panel (top-right float) ────────────────────────
   state.layout.taskPanelRect = null;
+  state.layout.taskPanelMaxScroll = taskPanel?.maxScroll ?? 0;
+  if (state.taskPanelExpansion && taskPanel) state.taskPanelExpansion.scroll = taskPanel.scroll;
   if (taskPanel) {
     const panelCol = chatCol + chatW - taskPanel.width;
     const panelTop = messageAreaStart + taskPanelTopOffset;

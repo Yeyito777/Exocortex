@@ -12,6 +12,7 @@ import type { RenderState } from "./state";
 import { focusHistory, focusPrompt, focusSidebar } from "./state";
 import { handleConversationActionMenuResult, type KeyResult } from "./focus";
 import { scrollBy } from "./chat";
+import { isTaskPanelExpanded, scrollTaskPanel, toggleTaskPanelExpansion } from "./activitypanel";
 import {
   activateSidebarItem,
   conversationActionMenuAnchorRow,
@@ -149,7 +150,7 @@ type CursorShape = "pointer" | "text" | "hand";
 /**
  * Determine the desired cursor shape for a mouse position.
  * - "hand" for anything a click acts on (sidebar entries, menu actions,
- *   edit-message picker rows, history links/paths/images)
+ *   edit-message picker rows, history links/paths/images, the task panel)
  * - "text" for text-content areas (prompt, chat history)
  * - "pointer" for non-interactive chrome (topbar, separators, statusbar, sidebar header)
  *   and modal backdrops whose click only dismisses (image viewer, menus)
@@ -187,10 +188,10 @@ export function cursorZone(col: number, row: number, state: RenderState): Cursor
     return sidebarHitTest(row, state.rows, sidebar) !== null ? "hand" : "pointer";
   }
 
-  // Message area (chat history) → text, except for the task panel itself.
+  // Message area (chat history) → text, except for the task panel, which a click expands or collapses.
   // The queue prompt swallows clicks, so nothing under it is clickable.
   if (row >= 3 && layout.sepAbove > 0 && row < layout.sepAbove) {
-    if (isInsideTaskPanel(col, row, state)) return "pointer";
+    if (isInsideTaskPanel(col, row, state)) return state.queuePrompt ? "pointer" : "hand";
     return !state.queuePrompt && historyClickableAtScreen(col, row, state) ? "hand" : "text";
   }
 
@@ -311,6 +312,12 @@ export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult 
       return { type: "handled" };
     }
 
+    // An expanded panel too tall for the message area scrolls itself, never the history under it.
+    if (isInsideTaskPanel(col, row, state) && isTaskPanelExpanded(state) && layout.taskPanelMaxScroll > 0) {
+      scrollTaskPanel(state, -delta);
+      return { type: "handled" };
+    }
+
     // Chat message area or anywhere else: scroll messages
     scrollBy(state, delta);
     return { type: "handled" };
@@ -342,6 +349,12 @@ export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult 
       return { type: "handled" };
     }
 
+    // The task panel is one toggle: expand to every entry in full, or back to the compact card.
+    if (isInsideTaskPanel(col, row, state)) {
+      toggleTaskPanelExpansion(state);
+      return { type: "handled" };
+    }
+
     // Click in message area → start visual selection at clicked position
     const pos = screenToHistoryPos(col, row, state);
     if (pos) {
@@ -365,6 +378,8 @@ export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult 
   }
 
   // ── Left button release — finalize visual selection ─────────────
+  // The panel acted on press; its release must not end a selection in the history below.
+  if (button === 0 && action === "release" && isInsideTaskPanel(col, row, state)) return { type: "handled" };
   if (button === 0 && action === "release") {
     const pressedLink = state.mouseLinkPress;
     state.mouseLinkPress = null;
