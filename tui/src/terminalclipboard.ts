@@ -17,6 +17,8 @@ export {
 
 const ESC = "\x1b";
 const OSC_5522_PREFIX = `${ESC}]5522;`;
+const APC_PREFIX = `${ESC}_G`;
+const MAX_APC_FRAME_CHARS = 16 * 1024;
 const ST = `${ESC}\\`;
 const PASTE_START = `${ESC}[200~`;
 const PASTE_END = `${ESC}[201~`;
@@ -432,6 +434,28 @@ export class TerminalControlBuffer {
         continue;
       }
 
+      // Kitty graphics replies (ESC _ G ... ESC \) never carry key input.
+      if (APC_PREFIX.startsWith(this.buffer)) {
+        this.armTimer(100, false);
+        return;
+      }
+      if (this.buffer.startsWith(APC_PREFIX)) {
+        const stIndex = this.buffer.indexOf(ST, APC_PREFIX.length);
+        if (stIndex === -1) {
+          if (this.buffer.length > MAX_APC_FRAME_CHARS) {
+            this.buffer = "";
+            return;
+          }
+          this.armTimer(1000, true);
+          return;
+        }
+        const end = stIndex + ST.length;
+        const sequence = this.buffer.slice(0, end);
+        this.buffer = this.buffer.slice(end);
+        this.onControlSequence(sequence);
+        continue;
+      }
+
       if (this.buffer.startsWith(`${ESC}[`)) {
         let final = 2;
         while (final < this.buffer.length) {
@@ -446,7 +470,8 @@ export class TerminalControlBuffer {
 
         const sequence = this.buffer.slice(0, final + 1);
         this.buffer = this.buffer.slice(final + 1);
-        if (/^\x1b\[\?5522;[0-4]\$y$/.test(sequence)) {
+        // Clipboard mode reports, DA1 (ESC [ ? … c), and cell size (ESC [ 6 ; h ; w t).
+        if (/^\x1b\[\?5522;[0-4]\$y$/.test(sequence) || /^\x1b\[\?[\d;]*c$/.test(sequence) || /^\x1b\[6;\d+;\d+t$/.test(sequence)) {
           this.onControlSequence(sequence);
         } else {
           this.emitInput(sequence);

@@ -202,7 +202,13 @@ describe("user messages", () => {
     const u = userEntry(entries[0]);
     expect(u.text).toBe("Look at this");
     expect(u.images).toHaveLength(1);
-    expect(u.images![0]).toEqual({ mediaType: "image/png", base64: b64, sizeBytes: 5 });
+    // Not a real image: the id lets clients fetch it, but there is no size to sniff.
+    expect(u.images![0]).toEqual({
+      mediaType: "image/png",
+      base64: b64,
+      sizeBytes: 5,
+      imageId: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+    });
   });
 
   test("user message with image only (no text) → text is empty string", () => {

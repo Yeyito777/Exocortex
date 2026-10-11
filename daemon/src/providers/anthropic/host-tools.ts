@@ -16,6 +16,7 @@ import { CLAUDE_CODE_HOST_TOOL_SERVER, isClaudeCodeHostTool } from "../../tools/
 import { exo } from "../../tools/exo";
 import { CLAUDE_CODE_INLINE_CHRONO_MAX_MS } from "../../tools/chrono-limits";
 import { claudeSdks } from "./sdk";
+import { rememberHostToolAttachments } from "./host-tool-attachments";
 
 /** Chrono runs sleeps and waits inside the call; leave room past the longest. */
 const HOST_TOOL_TIMEOUT_MS = CLAUDE_CODE_INLINE_CHRONO_MAX_MS + 10 * 60_000;
@@ -96,6 +97,7 @@ export function createHostToolServer(
       [{ id, name, input: request.params.arguments ?? {} }],
       turn.signal ? AbortSignal.any([turn.signal, extra.signal]) : extra.signal,
     );
+    if (result?.attachments?.length) rememberHostToolAttachments(id, result.attachments);
     return result ? textResult(result.output, result.isError) : textResult(`${name} returned no result.`, true);
   });
 

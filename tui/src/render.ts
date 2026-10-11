@@ -57,6 +57,8 @@ import {
 } from "./frame";
 import { pinBottomRelativeScrollOffset } from "./viewportscroll";
 import { durableSleepMetadataFrame } from "./durable-sleep-metadata";
+import { inlineImageGeneration, inlineImageMode } from "./inlineimages";
+import { collectHistoryImagePlacements, historyImagesPlaced, syncHistoryImages, type ScreenRect } from "./historyimages";
 
 interface HistoryRenderCacheEntry {
   width: number;
@@ -78,6 +80,8 @@ interface HistoryRenderCacheEntry {
   toolRegistryRef: RenderState["toolRegistry"];
   externalToolStylesRef: RenderState["externalToolStyles"];
   themeName: string;
+  terminalRows: number;
+  imageGeneration: number;
   result: BuildMessageLinesResult;
 }
 
@@ -122,7 +126,9 @@ function canReuseHistoryRender(
     && cached.showDiagnostics === state.showDiagnostics
     && cached.toolRegistryRef === state.toolRegistry
     && cached.externalToolStylesRef === state.externalToolStyles
-    && cached.themeName === theme.name;
+    && cached.themeName === theme.name
+    && cached.terminalRows === state.rows
+    && cached.imageGeneration === inlineImageGeneration();
 }
 
 function shouldForceFullHistoryRender(state: RenderState): boolean {
@@ -246,6 +252,8 @@ function getHistoryRender(
     toolRegistryRef: state.toolRegistry,
     externalToolStylesRef: state.externalToolStyles,
     themeName: theme.name,
+    terminalRows: state.rows,
+    imageGeneration: inlineImageGeneration(),
     result,
   });
   return result;
@@ -467,6 +475,7 @@ function isRightAlignedHistorySegment(segment: RenderLineSegment | undefined): b
 /** Rows whose leading spaces express viewport alignment rather than semantic indentation. */
 function shiftsWithNarrowHistory(segment: RenderLineSegment | undefined): boolean {
   return segment === "user_content"
+    || segment === "user_image"
     || segment === "queued_content"
     || isRightAlignedHistorySegment(segment);
 }
@@ -648,7 +657,8 @@ function composeViewportFrom(
         sourceRemainder: remainder,
       });
 
-      if (wrapped.lines.length <= 1) break;
+      // Image rows are pictures, not text: clip instead of wrapping.
+      if (wrapped.lines.length <= 1 || lineAnchors[lineIndex]?.image) break;
       startCol += Math.max(0, stripAnsi(line).length - displayPrefix.length)
         + (wrapped.joins[1]?.length ?? 0);
       remainder = wrapped.lines.slice(1)
@@ -741,7 +751,7 @@ function composeFixedWidthRows(
       displayPrefixWidth: firstPrefix.length,
       sourceRemainder: sourceLine,
     });
-    if (firstWrap.lines.length <= 1) continue;
+    if (firstWrap.lines.length <= 1 || anchor?.image) continue;
 
     sourceCol += stripAnsi(firstLine).length + (firstWrap.joins[1]?.length ?? 0);
     const remainder = firstWrap.lines.slice(1)
@@ -1132,8 +1142,8 @@ function renderAutocompletePopup(
   state: RenderState,
   chatW: number,
   sepAbove: number,
-): void {
-  if (!state.autocomplete || state.autocomplete.matches.length === 0) return;
+): ScreenRect | null {
+  if (!state.autocomplete || state.autocomplete.matches.length === 0) return null;
 
   const { chatCol } = ctx;
   const { matches, selection: sel } = state.autocomplete;
@@ -1182,6 +1192,7 @@ function renderAutocompletePopup(
       bg + theme.accent + marker + theme.text + name + desc + indicator + theme.reset,
     );
   }
+  return { top: topRow, bottom: sepAbove - 1, left: chatCol, right: chatCol + desiredPopupWidth - 1 };
 }
 
 /** Render the vim-style chat-history search bar. */
@@ -1349,7 +1360,7 @@ export function render(state: RenderState): boolean {
     lines.slice(0, progressRows).forEach((line, index) => writeChatRow(
       index + 3, `${theme.warning}${chatW > 1 ? " " : ""}${line}${theme.reset}`,
     ));
-    flushFrame(state, { rows: frameRows, cursor: hide_cursor, scrollRegion: null, viewStart: 0 });
+    flushFrame(state, { rows: frameRows, cursor: hide_cursor, scrollRegion: null, viewStart: 0, graphics: syncHistoryImages(state, []) });
     return true;
   }
   if (isConversationScrollRestoreWaitingForInitialBackfill(state)) return false;
@@ -1652,7 +1663,7 @@ export function render(state: RenderState): boolean {
   }
 
   // ── Autocomplete popup (overlays message area above input) ────
-  renderAutocompletePopup(ctx, state, chatW, bottomStartRow);
+  const autocompleteRect = renderAutocompletePopup(ctx, state, chatW, bottomStartRow);
 
   // ── Search bar ────────────────────────────────────────────────
   if (searchBarRow > 0) {
@@ -1720,6 +1731,27 @@ export function render(state: RenderState): boolean {
     appendPositionedPayload(ctx, btwPanel.payload);
   }
 
+  // ── Inline history images (Kitty graphics placements) ─────────
+  // Floating overlays are drawn as text, which images (z above text) would
+  // cover. Modal prompts hide images; the task panel and autocomplete crop them.
+  const historyOverlayOpen = !!state.queuePrompt
+    || !!state.editMessagePrompt
+    || !!(sidebarOpen && state.sidebar.conversationActionMenu);
+  const imageObstructions: ScreenRect[] = [state.layout.taskPanelRect, autocompleteRect]
+    .filter((rect): rect is ScreenRect => rect !== null);
+  const hadHistoryImages = historyImagesPlaced(state);
+  const historyImagePlacements = inlineImageMode() === "kitty" && !historyOverlayOpen
+    ? collectHistoryImagePlacements({
+      viewportRows: state.layout.historyViewportRows,
+      lineAnchors,
+      messageAreaStart,
+      chatCol,
+      maxCol: chatCol + chatW - 1,
+      obstructions: imageObstructions,
+    })
+    : [];
+  const graphics = syncHistoryImages(state, historyImagePlacements);
+
   const canScrollMessageRegion = !sidebarOpen
     && !state.autocomplete
     && !taskPanel
@@ -1727,6 +1759,9 @@ export function render(state: RenderState): boolean {
     && !state.queuePrompt
     && !state.editMessagePrompt
     && !state.btw
+    // Placements are positioned explicitly; terminal scrolling would move them first.
+    && !hadHistoryImages
+    && historyImagePlacements.length === 0
     && messageAreaHeight > 0;
 
   flushFrame(state, {
@@ -1746,6 +1781,7 @@ export function render(state: RenderState): boolean {
       ? { start: messageAreaStart, end: messageAreaStart + messageAreaHeight - 1 }
       : null,
     viewStart,
+    graphics,
   });
   return true;
 }

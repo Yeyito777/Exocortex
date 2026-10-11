@@ -35,6 +35,8 @@ import { getDefaultProvider, getDefaultModel, getProvider, getProviders, isKnown
 import { transcribeAudioBytes } from "./transcription";
 import { startTitleGeneration, isPendingTitle, PENDING_TITLE } from "./titlegen";
 import * as convStore from "./conversations";
+import { resolveImageForPreview } from "./image-requests";
+import { renderImagePreview, validatePreviewRequest, isImageId } from "./attachments";
 import { DaemonServer, type ConnectedClient } from "./server";
 import type { Command, Event, SidebarItemOrderUpdate } from "./protocol";
 import { clearAuth, ensureAuthenticated, getAuthByProvider, getAuthInfoByProvider, hasConfiguredCredentials, invalidateCredentialsCache } from "./auth";
@@ -3046,6 +3048,36 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         // Applied results were published by the synchronous commit callback.
         // Replays only need a correlated response for their requesting client.
         if (result.status === "already_applied") deliverResult(result, false, false);
+        break;
+      }
+
+      case "get_image": {
+        const request = { format: cmd.format, width: cmd.width, height: cmd.height };
+        const invalid = !isImageId(cmd.imageId) ? "Invalid image id" : validatePreviewRequest(request);
+        if (invalid) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `get_image: ${invalid}` });
+          break;
+        }
+        try {
+          const source = await resolveImageForPreview(cmd.imageId, cmd.convId);
+          if (!source) {
+            server.sendTo(client, { type: "error", reqId: cmd.reqId, message: "get_image: image not found" });
+            break;
+          }
+          const preview = await renderImagePreview(cmd.imageId, source, request);
+          server.sendTo(client, {
+            type: "image_data",
+            reqId: cmd.reqId,
+            imageId: cmd.imageId,
+            format: preview.format,
+            width: preview.width,
+            height: preview.height,
+            base64: preview.data.toString("base64"),
+          });
+        } catch (error) {
+          log("warn", `get_image ${cmd.imageId.slice(0, 12)} failed: ${error instanceof Error ? error.message : String(error)}`);
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `get_image: ${error instanceof Error ? error.message : String(error)}` });
+        }
         break;
       }
 

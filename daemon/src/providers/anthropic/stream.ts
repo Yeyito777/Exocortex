@@ -20,6 +20,7 @@ import { claudeCodeResultText, exocortexToolName, summarizeClaudeCodeTool } from
 import { AuthError } from "../errors";
 import type { ContentBlock, ProviderRound, StreamCallbacks, StreamResult } from "../types";
 import { REPLAYED_FIELD } from "./relay-protocol";
+import { takeHostToolAttachments } from "./host-tool-attachments";
 import type { AnthropicAssistantProviderData } from "./types";
 import { CLAUDE_RATE_LIMIT_HEADER } from "./usage";
 
@@ -321,9 +322,14 @@ function handleUserMessage(state: ClaudeStreamState, message: SdkRecord): void {
     noteAgentTitle(state, toolUseId, message.tool_use_result);
     const output = claudeCodeResultText(toolName, toolResultText(block.content));
     const isError = block.is_error === true;
-    state.blocks.push({ type: "tool_result", toolUseId, toolName, output, isError });
-    pushMessageContent(state, "user", { type: "tool_result", tool_use_id: toolUseId, content: output, is_error: isError });
-    state.callbacks.onToolResult?.({ type: "tool_result", toolCallId: toolUseId, toolName, output, isError });
+    const images = takeHostToolAttachments(toolUseId);
+    const shown = images?.length ? { images } : {};
+    state.blocks.push({ type: "tool_result", toolUseId, toolName, output, isError, ...shown });
+    pushMessageContent(state, "user", {
+      type: "tool_result", tool_use_id: toolUseId, content: output, is_error: isError,
+      ...(images?.length ? { attachments: images } : {}),
+    });
+    state.callbacks.onToolResult?.({ type: "tool_result", toolCallId: toolUseId, toolName, output, isError, ...shown });
   }
   if (closedToolUse && state.openToolUses.size === 0) commitRound(state);
 }

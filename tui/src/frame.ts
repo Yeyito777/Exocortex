@@ -28,6 +28,8 @@ export interface RenderFrame {
   scrollRegion: ScrollRegion | null;
   /** First history line visible in the message area. Used to detect scrolls. */
   viewStart: number;
+  /** Terminal graphics commands (image placements) applied with this frame. */
+  graphics?: string;
 }
 
 const lastRenderedFrames = new WeakMap<object, RenderFrame>();
@@ -158,6 +160,13 @@ export function flushFrame(owner: object, nextFrame: RenderFrame): void {
     }
   }
 
+  // Images draw above text, so placing them after the rows is equivalent and
+  // keeps both inside the same synchronized update.
+  if (nextFrame.graphics) {
+    out.push(nextFrame.graphics);
+    hasDrawingUpdates = true;
+  }
+
   if (out.length > 0 || !prevFrame || prevFrame.cursor !== nextFrame.cursor) {
     out.push(nextFrame.cursor);
   }
@@ -171,5 +180,5 @@ export function flushFrame(owner: object, nextFrame: RenderFrame): void {
     else process.stdout.write(payload);
   }
 
-  lastRenderedFrames.set(owner, nextFrame);
+  lastRenderedFrames.set(owner, { ...nextFrame, graphics: undefined });
 }

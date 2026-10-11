@@ -12,11 +12,11 @@ import type { GenerationThroughput } from "./messages";
  * Commands flow client → daemon. Events flow daemon → client.
  */
 
-import type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ToolCallPresentation, ImageAttachment, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus, ConversationBtw, UserMessageContextCheckpoint, ExternalNotificationDelivery, UserMessageAutomation } from "./messages";
+import type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ToolCallPresentation, ImageAttachment, ImageRef, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus, ConversationBtw, UserMessageContextCheckpoint, ExternalNotificationDelivery, UserMessageAutomation } from "./messages";
 import type { RealtimeVoice } from "./realtime";
 import type { UpdateStatus } from "./updatecheck";
 import type { ChronoRecurrence } from "./chrono";
-export type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ToolCallPresentation, ImageAttachment, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus, ConversationBtw, UserMessageContextCheckpoint, ExternalNotificationDelivery, UserMessageAutomation };
+export type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ToolCallPresentation, ImageAttachment, ImageRef, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus, ConversationBtw, UserMessageContextCheckpoint, ExternalNotificationDelivery, UserMessageAutomation };
 
 // ── Commands (client → daemon) ──────────────────────────────────────
 
@@ -437,6 +437,23 @@ export interface LoadConversationHistoryCommand extends CachedHistoryRequest {
   beforeBlockIndex?: number;
   /** Maximum number of user turns to load before the cursor. */
   turns: number;
+}
+
+/**
+ * Fetch a bounded preview of a stored or user-pasted image for display.
+ * `png` is for terminal graphics; `rgba` returns raw 8-bit RGBA pixels at
+ * exactly the requested size (for character-cell fallbacks).
+ */
+export interface GetImageCommand {
+  type: "get_image";
+  reqId: string;
+  /** Needed for user-pasted images, which live in the conversation itself. */
+  convId?: string;
+  imageId: string;
+  format: "png" | "rgba";
+  /** png: fit within these bounds (never upscaled). rgba: exact output size. */
+  width: number;
+  height: number;
 }
 
 export interface LoadToolOutputsCommand {
@@ -1098,6 +1115,7 @@ export type Command =
   | LoadConversationCommand
   | LoadConversationHistoryCommand
   | LoadToolOutputsCommand
+  | GetImageCommand
   | DeleteConversationCommand
   | DeleteConversationsCommand
   | MarkConversationCommand
@@ -1439,6 +1457,7 @@ export interface ToolResultEvent {
   toolName: string;
   output: string;
   isError: boolean;
+  images?: ImageRef[];
 }
 
 export interface TokensUpdateEvent {
@@ -1913,6 +1932,16 @@ export interface HistoryUpdatedEvent {
   pendingAI?: AIMessagePayload | null;
 }
 
+export interface ImageDataEvent {
+  type: "image_data";
+  reqId: string;
+  imageId: string;
+  format: "png" | "rgba";
+  width: number;
+  height: number;
+  base64: string;
+}
+
 export interface ToolOutputsLoadedEvent {
   type: "tool_outputs_loaded";
   reqId?: string;
@@ -2104,6 +2133,7 @@ export type Event =
   | ToolsAvailableEvent
   | HistoryUpdatedEvent
   | ToolOutputsLoadedEvent
+  | ImageDataEvent
   | SystemInstructionsUpdatedEvent
   | FolderInstructionsLoadedEvent
   | FolderInstructionsUpdatedEvent

@@ -22,6 +22,7 @@ import { applyPatch, viewImage } from "./codex-files";
 import { exo } from "./exo";
 import { chrono } from "./chrono";
 import { goal } from "./goal";
+import { attach } from "./attach";
 import { getClaudeCodeToolDisplayInfo, summarizeClaudeCodeTool } from "./claude-code";
 import { TOOL_BACKGROUND_SECONDS } from "../constants";
 import { formatToolAbortMessage, isToolTimeoutReason, toolTimeoutReason } from "../abort";
@@ -51,6 +52,7 @@ const TOOLS: Tool[] = [
   chrono,
   goal,
   clientBash,
+  attach,
 ];
 
 // External manifests intentionally do not become native entries in TOOLS.
@@ -212,6 +214,7 @@ async function execTool(
       output: result.output,
       isError: result.isError,
       image: result.image,
+      ...(result.attachments?.length ? { attachments: result.attachments } : {}),
       deferred: result.deferred,
     };
   } catch (err) {
@@ -322,6 +325,14 @@ async function executeSingleTool(
   if (legacySafetyCall) {
     const legacySafety = evaluateToolCallSafety(legacySafetyCall.name, legacySafetyCall.input);
     if (!legacySafety.allowed) return { toolCallId: call.id, toolName: call.name, output: formatSafetyBlock(legacySafety), isError: true };
+  }
+  // attach reads files, so it honors the read tool's denylist for every path.
+  if (call.name === "attach" && Array.isArray(call.input.paths)) {
+    for (const path of call.input.paths) {
+      if (typeof path !== "string") continue;
+      const readSafety = evaluateToolCallSafety("read", { file_path: path });
+      if (!readSafety.allowed) return { toolCallId: call.id, toolName: call.name, output: formatSafetyBlock(readSafety), isError: true };
+    }
   }
 
   const tool = getTool(call.name, toolContext?.conversationId);

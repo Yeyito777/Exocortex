@@ -60,6 +60,7 @@ import { adoptArchiveWindow, archiveWindow, assertCanonicalMessage, freezeArchiv
 import { MAX_TITLE_CONTEXT_CHARS, setArchivedTitleContext, titleUserText } from "./conversation-title-context";
 import type { ConversationLoadResult } from "./conversation-load-protocol";
 import { canonicalArchiveContent } from "./canonical-archive-content";
+import { copyStoredImages } from "./attachments";
 import { checkpointTailHasher, updateCheckpointTailHash, integritySha, ConversationIntegrityError, type CheckpointHashAnchor, type ReplayHash } from "./checkpoint-tail-integrity";
 
 const SCHEMA_VERSION = 14;
@@ -3296,8 +3297,18 @@ export class SqliteConversationStore implements ConversationRepository {
     const deletedDir = join(dest, "trash");
     mkdirSync(deletedDir, { recursive: true, mode: 0o700 });
     const manifest: ExportManifest = { version: 1, exportedAt: Date.now(), conversations: [], files: {} };
+    const imageIds = new Set<string>();
+    const collectImages = (value: Record<string, unknown>) => {
+      for (const message of value.messages as StoredMessage[]) {
+        if (!Array.isArray(message.content)) continue;
+        for (const block of message.content) {
+          if (block.type === "tool_result") for (const image of block.attachments ?? []) imageIds.add(image.id);
+        }
+      }
+    };
     for (const summary of this.listSummaries()) {
       const value = this.exportConversation(summary.id)!;
+      collectImages(value);
       const body = JSON.stringify(value, null, 2);
       writeFileSync(join(convDir, `${summary.id}.json`), body, { mode: 0o600 });
       manifest.conversations.push({ id: summary.id, sha256: sha256(body), bytes: Buffer.byteLength(body) });
@@ -3307,6 +3318,7 @@ export class SqliteConversationStore implements ConversationRepository {
     ).all().map((row) => row.id);
     for (const id of deletedIds) {
       const value = this.exportConversation(id, true)!;
+      collectImages(value);
       const body = JSON.stringify(value, null, 2);
       writeFileSync(join(deletedDir, `${id}.json`), body, { mode: 0o600 });
       manifest.conversations.push({ id, sha256: sha256(body), bytes: Buffer.byteLength(body), deleted: true });
@@ -3328,6 +3340,10 @@ export class SqliteConversationStore implements ConversationRepository {
       const body = JSON.stringify(value, null, 2);
       writeFileSync(join(dest, name), body, { mode: 0o600 });
       manifest.files[name] = sha256(body);
+    }
+    // Attached images live outside the database, content-addressed by sha256.
+    for (const name of copyStoredImages(imageIds, join(dest, "attachments"))) {
+      manifest.files[`attachments/${name}`] = sha256(readFileSync(join(dest, "attachments", name)));
     }
     writeFileSync(join(dest, "manifest.json"), JSON.stringify(manifest, null, 2), { mode: 0o600 });
     return manifest;

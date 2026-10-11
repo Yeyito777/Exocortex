@@ -9,7 +9,7 @@ import { connect } from "net";
 import { existsSync } from "fs";
 import { randomUUID } from "crypto";
 import { homedir, hostname, userInfo } from "os";
-import type { ClientCapability, ClientHostInfo, Command, DaemonShutdownMode, Event, GoalAction, MoveSidebarItemsOptions, OpenAILoginMethod, QueuedCommandInvocation, QueueTiming, QueueWaitTarget, TrimMode, SidebarItemRef } from "./protocol";
+import type { ClientCapability, ClientHostInfo, Command, DaemonShutdownMode, Event, GoalAction, MoveSidebarItemsOptions, OpenAILoginMethod, QueuedCommandInvocation, QueueTiming, QueueWaitTarget, TrimMode, SidebarItemRef, GetImageCommand, ImageDataEvent } from "./protocol";
 import type { ProviderId, ModelId, EffortLevel, ImageAttachment, TokenUsageSource } from "./messages";
 import { socketPath, isWindows } from "@exocortex/shared/paths";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
@@ -130,6 +130,7 @@ export class DaemonClient {
   private commandSequences = new WeakMap<Command, number>();
   private nextCommandSequence = 0;
   private llmCallbacks = new Map<string, { onSuccess: LlmCompleteCallback; onError?: LlmErrorCallback }>();
+  private imageCallbacks = new Map<string, { resolve: (event: ImageDataEvent) => void; reject: (error: Error) => void }>();
   private transcriptionCallbacks = new Map<string, { onSuccess: TranscriptionCallback; onError?: TranscriptionErrorCallback }>();
   // Upload/ack is not completion. Recover ambiguous ASR requests after an
   // unexpected disconnect, but bound both audio retention and repeated uploads.
@@ -1054,6 +1055,23 @@ export class DaemonClient {
     this.send({ type: "get_system_prompt", convId });
   }
 
+  /** Fetch an image preview (see GetImageCommand). Rejects on error, disconnect, or after 30 s. */
+  getImage(request: Omit<GetImageCommand, "type" | "reqId">): Promise<ImageDataEvent> {
+    const reqId = `image_${++this.nextReqId}_${Date.now()}`;
+    return new Promise<ImageDataEvent>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.imageCallbacks.delete(reqId);
+        reject(new Error("image request timed out"));
+      }, 30_000);
+      timer.unref?.();
+      this.imageCallbacks.set(reqId, {
+        resolve: event => { clearTimeout(timer); resolve(event); },
+        reject: error => { clearTimeout(timer); reject(error); },
+      });
+      this.send({ type: "get_image", reqId, ...request });
+    });
+  }
+
   llmComplete(
     system: string, userText: string,
     onSuccess: LlmCompleteCallback, onError?: LlmErrorCallback,
@@ -1347,7 +1365,15 @@ export class DaemonClient {
 
         // Intercept request-scoped responses so they do not also surface as
         // generic global events.
-        if (event.type === "llm_complete_result" && event.reqId) {
+        if (event.type === "image_data") {
+          this.imageCallbacks.get(event.reqId)?.resolve(event);
+          this.imageCallbacks.delete(event.reqId);
+          handledByCallback = true;
+        } else if (event.type === "error" && event.reqId && this.imageCallbacks.has(event.reqId)) {
+          this.imageCallbacks.get(event.reqId)!.reject(new Error(event.message));
+          this.imageCallbacks.delete(event.reqId);
+          handledByCallback = true;
+        } else if (event.type === "llm_complete_result" && event.reqId) {
           const cbs = this.llmCallbacks.get(event.reqId);
           if (cbs) {
             this.llmCallbacks.delete(event.reqId);

@@ -192,6 +192,7 @@ export function handleToolResult(event: Extract<Event, { type: "tool_result" }>,
       toolName: event.toolName,
       output: event.output,
       isError: event.isError,
+      ...(event.images?.length ? { images: event.images } : {}),
     });
   }
 }

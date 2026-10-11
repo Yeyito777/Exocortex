@@ -3151,8 +3151,9 @@ describe("handler load_conversation late-join streaming snapshots", () => {
 
     await handle({} as never, { type: "load_conversation", convId });
 
-    const firstEntry = (sent[0] as { entries: Array<{ images?: Array<{ mediaType: string; base64: string; sizeBytes: number }> }> }).entries[0];
-    expect(firstEntry.images?.[0]).toEqual({ mediaType: "image/png", base64: "", sizeBytes: 768 });
+    const firstEntry = (sent[0] as { entries: Array<{ images?: Array<{ mediaType: string; base64: string; sizeBytes: number; imageId?: string }> }> }).entries[0];
+    // The content id survives compaction so the client can fetch a preview.
+    expect(firstEntry.images?.[0]).toEqual({ mediaType: "image/png", base64: "", sizeBytes: 768, imageId: "2886dc386b60485cd75eaf1c5459452c76ea567fe6097097f753868f75e93dce" });
   });
 
   test("keeps recent image base64 in compact conversation load payloads", async () => {
@@ -3181,8 +3182,8 @@ describe("handler load_conversation late-join streaming snapshots", () => {
 
     await handle({} as never, { type: "load_conversation", convId });
 
-    const userEntry = (sent[0] as { entries: Array<{ type: string; images?: Array<{ mediaType: string; base64: string; sizeBytes: number }> }> }).entries.find(entry => entry.type === "user");
-    expect(userEntry?.images?.[0]).toEqual({ mediaType: "image/png", base64: recentImageBase64, sizeBytes: 768 });
+    const userEntry = (sent[0] as { entries: Array<{ type: string; images?: Array<{ mediaType: string; base64: string; sizeBytes: number; imageId?: string }> }> }).entries.find(entry => entry.type === "user");
+    expect(userEntry?.images?.[0]).toEqual({ mediaType: "image/png", base64: recentImageBase64, sizeBytes: 768, imageId: "6b81cfb62dddd69347058867602926cc8751b3d28e83e778a3951522674bcb0c" });
   });
 
   test("defers tool-result bodies until the client explicitly loads them", async () => {
