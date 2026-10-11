@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { render } from "./render";
 import { createInitialState, type RenderState } from "./state";
-import { configureInlineImages, inlineImagesInternalsForTest, setInlineImageCellSize, setInlineImageMode, type InlineImageSource } from "./inlineimages";
+import { configureInlineImages, inlineImagesInternalsForTest, setInlineImageCellSize, setInlineImageMode, type InlineImageTarget } from "./inlineimages";
 import { handleImageModalKey, renderImageModal } from "./imagemodal";
 import { handleFocusedKey } from "./focus";
 import { handleMouseEvent } from "./mouse";
@@ -61,7 +61,7 @@ afterEach(() => inlineImagesInternalsForTest.reset());
 function showImage(state: RenderState): void {
   capture(state);
   state.scrollOffset = state.layout.totalLines - state.layout.messageAreaHeight
-    - state.historyLineAnchors.findIndex(anchor => anchor.image) + 5;
+    - state.historyLineAnchors.findIndex(anchor => anchor.images) + 5;
 }
 
 const pngFetch = async (request: { width: number; height: number; format: string }) => request.format === "png"
@@ -81,13 +81,14 @@ describe("image viewer", () => {
     // Focus history and put the cursor on the thumbnail.
     state.panelFocus = "chat";
     state.chatFocus = "history";
-    state.historyCursor = { row: state.historyLineAnchors.findIndex(anchor => anchor.image) + 2, col: 4 };
+    state.historyCursor = { row: state.historyLineAnchors.findIndex(anchor => anchor.images) + 2, col: 4 };
     const tinted = capture(state);
     expect(tinted).toMatch(/a=p[^;]*,V=1,/);
 
     const result = handleFocusedKey({ type: "enter" }, state);
-    expect(result).toMatchObject({ type: "open_image", image: { imageId: "e".repeat(64) } });
-    state.imageModal = { source: (result as { image: InlineImageSource }).image };
+    expect(result).toMatchObject({ type: "open_image", target: { images: [{ imageId: "e".repeat(64) }], index: 0 } });
+    const { target } = result as { target: InlineImageTarget };
+    state.imageModal = { images: target.images, index: target.index };
     const opening = capture(state);
     await Bun.sleep(0);
     const open = capture(state);
@@ -113,7 +114,7 @@ describe("image viewer", () => {
     configureInlineImages({ fetch: pngFetch, onChange: () => {} });
     setInlineImageMode("halfblock");
     const state = imageState();
-    state.imageModal = { source: { imageId: "e".repeat(64), width: 400, height: 200, mediaType: "image/png", sizeBytes: 5000 } };
+    state.imageModal = { images: [{ imageId: "e".repeat(64), width: 400, height: 200, mediaType: "image/png", sizeBytes: 5000 }], index: 0 };
     const loading = capture(state);
     await Bun.sleep(0);
     const out = loading + capture(state);
@@ -131,7 +132,7 @@ describe("image viewer", () => {
     const press = handleMouseEvent({ type: "mouse", button: 0, action: "press", shift: false, meta: false, ctrl: false, col: thumb.col + 3, row: thumb.row + 2 }, state);
     expect(press).toEqual({ type: "handled" });
     const release = handleMouseEvent({ type: "mouse", button: 0, action: "release", shift: false, meta: false, ctrl: false, col: thumb.col + 3, row: thumb.row + 2 }, state);
-    expect(release).toMatchObject({ type: "open_image", image: { name: "chart.png" } });
+    expect(release).toMatchObject({ type: "open_image", target: { images: [{ name: "chart.png" }], index: 0 } });
     expect(state.vim.mode).toBe("normal");
 
     // A drag is a selection, not an open.
@@ -156,7 +157,7 @@ describe("image viewer", () => {
   });
 
   test("a tiny terminal gets a notice instead of a broken box", () => {
-    const rendered = renderImageModal({ source: { imageId: "e".repeat(64), width: 400, height: 200, mediaType: "image/png", sizeBytes: 5000 } }, 5, 8, { width: 8, height: 16 }, "kitty");
+    const rendered = renderImageModal({ images: [{ imageId: "e".repeat(64), width: 400, height: 200, mediaType: "image/png", sizeBytes: 5000 }], index: 0 }, 5, 8, { width: 8, height: 16 }, "kitty");
     expect(rendered.placement).toBeNull();
     expect(rendered.payload).toContain("Image");
   });
@@ -173,7 +174,7 @@ describe("render with Kitty images", () => {
     // Put the image's top on viewport row 5 (screen row 8).
     capture(state);
     const offsetFor = (viewportRow: number) => {
-      const imageLine = state.historyLineAnchors.findIndex(anchor => anchor.image);
+      const imageLine = state.historyLineAnchors.findIndex(anchor => anchor.images);
       return state.layout.totalLines - state.layout.messageAreaHeight - (imageLine - viewportRow);
     };
     state.scrollOffset = offsetFor(5);
@@ -221,7 +222,7 @@ describe("render with Kitty images", () => {
     setInlineImageMode("kitty");
     const state = imageState();
     capture(state);
-    state.scrollOffset = state.layout.totalLines - state.layout.messageAreaHeight - state.historyLineAnchors.findIndex(anchor => anchor.image) + 5;
+    state.scrollOffset = state.layout.totalLines - state.layout.messageAreaHeight - state.historyLineAnchors.findIndex(anchor => anchor.images) + 5;
     expect(placements(await readyFrame(state)).length).toBe(1);
     state.queuePrompt = { text: "queued", images: [], selection: "next-turn" } as never;
     expect(capture(state)).toContain("a=d,d=i");

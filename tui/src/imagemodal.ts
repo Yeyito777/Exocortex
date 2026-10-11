@@ -4,7 +4,8 @@
  * its pixels) and the terminal; the preview is fetched at the box's pixel size
  * through the same get_image path as thumbnails. Kitty terminals get one
  * placement, cleared by the next frame after the viewer closes; other
- * terminals get half-block cells.
+ * terminals get half-block cells. When the message has several images, j/k
+ * (or l/h, →/←) page through them.
  */
 
 import type { KeyEvent } from "./input";
@@ -36,15 +37,22 @@ const MAX_HALFBLOCK_CELLS = 512 * 256;
 const MODAL_PLACEMENT_OWNER = {};
 
 export interface ImageModalState {
-  source: InlineImageSource;
+  /** The images of the message the viewer was opened from, in order. */
+  images: readonly InlineImageSource[];
+  index: number;
 }
 
 export type ImageModalKeyResult = "close" | "handled";
 
-/** The viewer owns the keyboard: Enter, Esc, or q closes it. */
-export function handleImageModalKey(key: Readonly<KeyEvent>): ImageModalKeyResult {
+/** The viewer owns the keyboard: Enter, Esc, or q closes it; j/k page, stopping at either end. */
+export function handleImageModalKey(key: Readonly<KeyEvent>, state?: ImageModalState): ImageModalKeyResult {
   if (key.type === "escape" || key.type === "enter") return "close";
-  if (key.type === "char" && key.char === "q") return "close";
+  const char = key.type === "char" ? key.char : undefined;
+  if (char === "q") return "close";
+  const step = char === "j" || char === "l" || key.type === "right" ? 1
+    : char === "k" || char === "h" || key.type === "left" ? -1
+      : 0;
+  if (state && step) state.index = Math.max(0, Math.min(state.images.length - 1, state.index + step));
   return "handled";
 }
 
@@ -99,7 +107,8 @@ export function renderImageModal(
   cell: CellSize,
   mode: TerminalImageMode,
 ): RenderedImageModal {
-  const layout = imageModalLayout(state.source, totalRows, totalCols, cell, mode);
+  const source = state.images[state.index];
+  const layout = source ? imageModalLayout(source, totalRows, totalCols, cell, mode) : null;
   if (!layout) {
     const lines = ["Image viewer", "Terminal too small", "Esc to close"];
     const payload = lines.slice(0, Math.max(0, totalRows)).map((line, index) => (
@@ -118,7 +127,7 @@ export function renderImageModal(
   let placement: KittyPlacement | null = null;
   let status = "";
   if (mode === "kitty") {
-    const preview = kittyPreview(state.source, box);
+    const preview = kittyPreview(source, box);
     if (preview.phase === "ready") {
       placement = {
         image: preview.value,
@@ -132,16 +141,22 @@ export function renderImageModal(
       status = preview.phase === "error" ? `⚠ ${preview.error}` : "loading image…";
     }
   } else if (mode === "halfblock") {
-    const preview = rgbaPreview(state.source, box);
+    const preview = rgbaPreview(source, box);
     if (preview.phase === "ready") body = renderHalfBlockRows(preview.value);
     else status = preview.phase === "error" ? `⚠ ${preview.error}` : "loading image…";
   } else {
     status = "Images are turned off (EXOCORTEX_TUI_IMAGES=off)";
   }
 
+  // Once this image has loaded, fetch the next one so paging is instant (also over SSH).
+  const next = state.images[state.index + 1];
+  const nextLayout = !status && next ? imageModalLayout(next, totalRows, totalCols, cell, mode) : null;
+  if (nextLayout && mode === "kitty") kittyPreview(next, nextLayout.box);
+  else if (nextLayout && mode === "halfblock") rgbaPreview(next, nextLayout.box);
+
   const out = [
     moveTo(top, left) + border + `╭${"─".repeat(inner)}╮` + theme.reset,
-    row(top + 1, theme.text + centered(imageCaption(state.source), inner)),
+    row(top + 1, theme.text + centered(imageCaption(source), inner)),
   ];
   for (let index = 0; index < box.rows; index++) {
     const content = status && index === Math.floor(box.rows / 2)
@@ -149,7 +164,10 @@ export function renderImageModal(
       : ` ${body[index] ? body[index] + theme.sidebarBg : " ".repeat(box.cols)} `;
     out.push(row(top + 2 + index, content));
   }
-  out.push(row(top + 2 + box.rows, theme.muted + centered("Enter or Esc to close", inner)));
+  const footer = state.images.length > 1
+    ? `${state.index + 1}/${state.images.length} · j/k for more · Enter or Esc to close`
+    : "Enter or Esc to close";
+  out.push(row(top + 2 + box.rows, theme.muted + centered(footer, inner)));
   out.push(moveTo(top + layout.height - 1, left) + border + `╰${"─".repeat(inner)}╯` + theme.reset);
   return { payload: out.join(""), placement };
 }

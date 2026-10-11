@@ -5,19 +5,21 @@ import { nextGraphemeEnd } from "./graphemes";
 import type { RenderState } from "./state";
 import type { HistorySurface } from "./historysurface";
 import type { HistoryCursor } from "./historycursor";
-import type { InlineImageSource } from "./inlineimages";
+import { imageHitAt, type InlineImageTarget } from "./inlineimages";
 
-/** The inline image (thumbnail or caption row) under the history cursor. */
-export function imageAtHistoryCursor(state: RenderState): InlineImageSource | null {
+/** The inline image (thumbnail, caption, or a strip's `› +N`) under the history cursor. */
+export function imageAtHistoryCursor(state: RenderState): InlineImageTarget | null {
   const surface = activeHistorySurface(state);
   return imageAtHistoryPosition(surface, surface.cursor);
 }
 
+/** `exact` (clicks) requires the column to be on the image; the cursor takes the nearest one in a strip. */
 export function imageAtHistoryPosition(
   surface: Pick<HistorySurface, "lineAnchors">,
   position: HistoryCursor,
-): InlineImageSource | null {
-  return surface.lineAnchors[position.row]?.openImage ?? null;
+  exact = false,
+): InlineImageTarget | null {
+  return imageHitAt(surface.lineAnchors[position.row]?.openImages, position.col, exact)?.target ?? null;
 }
 
 /**

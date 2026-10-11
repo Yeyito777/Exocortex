@@ -35,11 +35,22 @@ refs travel beside its text result in-process
 The TUI draws attached images after the whole visible assistant message, just
 above its metadata line. Pasted images are drawn under the user's bubble.
 Inline images are thumbnails (at most 56 columns × 12 rows, aspect preserved,
-never enlarged) with a caption row. Enter on a thumbnail or its caption with
-the history cursor, or a click on it, opens the full-size viewer
-(`tui/src/imagemodal.ts`): a centered box sized to the image and the terminal,
-closed with Enter, Esc, `q`, or a click. While it is open it is the only image
-on screen; in st the thumbnail under the history cursor is tinted (`V=1`). The
+never enlarged) with a caption row. Several images in one message form a strip:
+side by side with a 2-column gap, each fitted to those limits on its own so
+images of one shape share a height, bottom-aligned above a caption each (the
+full caption when it fits under the thumbnail, otherwise its name, truncated).
+When they don't all fit the chat width, as many as fit are shown, followed by
+`› +N` beside them. Kitty strip rows are filled with no-break spaces, so the
+history cursor can cross them like text.
+
+Enter on a thumbnail or its caption with the history cursor, or a click on it,
+opens the full-size viewer (`tui/src/imagemodal.ts`) on that image; `› +N`
+opens it on the first hidden one. The viewer is a centered box sized to the
+image and the terminal. With several images, `j`/`l`/`→` and `k`/`h`/`←` page
+to the next and previous image of the same message, stopping at either end;
+the footer shows the position (`2/5`) and the next image is fetched ahead.
+Enter, Esc, `q`, or a click close it. While it is open it is the only image on
+screen; in st the thumbnail under the history cursor is tinted (`V=1`). The
 history projection adds `imageId` (sha256), `width`, and `height` to pasted
 `ImageAttachment`s so they stay fetchable after the payload is compacted.
 

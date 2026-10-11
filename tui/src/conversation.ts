@@ -12,9 +12,12 @@ import {
   historyImageLimits,
   inlineImageCellSize,
   inlineImagesActive,
+  layoutInlineImageStrip,
   renderInlineImage,
+  renderInlineImageStrip,
   sourceFromAttachment,
   sourceFromRef,
+  type InlineImageHit,
   type InlineImageLayout,
   type InlineImageSource,
 } from "./inlineimages";
@@ -294,10 +297,10 @@ export interface RenderLineAnchor {
   userFlowDocument?: UserMessageFlowDocument;
   userFlowStart?: UserMessageFlowCursor;
   userFlowEnd?: UserMessageFlowCursor;
-  /** Inline image covering this row, and which of its rows this is. */
-  image?: { layout: InlineImageLayout; row: number };
-  /** Image that Enter or a click on this row (its thumbnail or caption) opens. */
-  openImage?: InlineImageSource;
+  /** Inline images covering this row (several side by side in a strip), and which of their rows this is. */
+  images?: Array<{ layout: InlineImageLayout; row: number }>;
+  /** Columns where Enter or a click on this row (a thumbnail, a caption, a strip's `› +N`) opens an image. */
+  openImages?: InlineImageHit[];
 }
 
 /** An image to draw in history, with the object that owns its placement. */
@@ -433,28 +436,50 @@ export function buildMessageLines(
 
   const imageLimits = historyImageLimits(availableWidth, state.rows);
   const imageCell = inlineImageCellSize();
-  /** Append inline images, each preceded by a blank row. User images align right like their bubble. */
+  /**
+   * Append a message's inline images after a blank row: one thumbnail, or a
+   * strip of them side by side. User images align right like their bubble.
+   */
   const pushImages = (images: readonly HistoryImage[], segment: "assistant_image" | "user_image") => {
-    if (!inlineImagesActive()) return;
-    for (const image of images) {
-      const box = fitImageBox(image.source, imageLimits.cols, imageLimits.rows, imageCell);
-      const col = segment === "user_image"
-        ? Math.max(0, availableWidth - USER_IMAGE_RIGHT_MARGIN - box.cols)
-        : ASSISTANT_IMAGE_INDENT;
-      const rendered = renderInlineImage(image.source, box, col, image.owner, image.index);
-      pushLine("", image.owner, segment, image.index);
+    if (!inlineImagesActive() || images.length === 0) return;
+    const owner = images[0].owner;
+    const placeAt = (width: number) => segment === "user_image"
+      ? Math.max(0, availableWidth - USER_IMAGE_RIGHT_MARGIN - width)
+      : ASSISTANT_IMAGE_INDENT;
+    pushLine("", owner, segment, images[0].index);
+    const pushRows = (
+      rendered: { lines: string[]; copy: string[] },
+      imageRows: number,
+      col: number,
+      covering: (row: number) => NonNullable<RenderLineAnchor["images"]>,
+      hits: InlineImageHit[],
+    ) => {
       rendered.lines.forEach((line, row) => {
-        const isImageRow = row < rendered.layout.rows;
+        const isImageRow = row < imageRows;
         // Kitty rows are blank; keep the indent so narrow-history shifting stays exact.
         const text = isImageRow && line === "" ? " ".repeat(col) : line;
-        pushAnchoredLine(text, false, "", image.owner, segment, image.index, row, isImageRow
+        pushAnchoredLine(text, false, "", owner, segment, images[0].index, row, isImageRow
           ? { text: "", displayStart: 0, skip: true }
           : { text: rendered.copy[row] ?? "", displayStart: col });
         const anchor = lineAnchors[lineAnchors.length - 1];
-        if (isImageRow) anchor.image = { layout: rendered.layout, row };
-        anchor.openImage = image.source;
+        if (isImageRow) anchor.images = covering(row);
+        anchor.openImages = hits;
       });
+    };
+
+    if (images.length === 1) {
+      const [image] = images;
+      const box = fitImageBox(image.source, imageLimits.cols, imageLimits.rows, imageCell);
+      const col = placeAt(box.cols);
+      const rendered = renderInlineImage(image.source, box, col, image.owner, image.index);
+      const hits = [{ start: 0, end: Infinity, target: { images: [image.source], index: 0 }, layout: rendered.layout }];
+      pushRows(rendered, rendered.layout.rows, col, row => [{ layout: rendered.layout, row }], hits);
+      return;
     }
+    const strip = layoutInlineImageStrip(images.map(image => image.source), imageLimits, Math.max(4, availableWidth - 4), imageCell);
+    const col = placeAt(strip.width);
+    const rendered = renderInlineImageStrip(images, strip, col);
+    pushRows(rendered, strip.rows, col, row => rendered.rowImages[row], rendered.hits);
   };
 
   const trimTrailingBlankAssistantContent = (minLength: number) => {
