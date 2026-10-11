@@ -27,7 +27,7 @@ import { clampCol, ensureCursorVisible } from "./historycursor";
 import { editMessageItemIndexAtMouse } from "./editmessage";
 import { sameSidebarItem } from "./sidebar/items";
 import { focusSidebarItem } from "./sidebar/selection";
-import { openableTargetAtHistoryPosition } from "./historyopenable";
+import { imageAtHistoryPosition, openableTargetAtHistoryPosition } from "./historyopenable";
 import { nextGrapheme } from "./textwidth";
 import { stripAnsi } from "./historymotions";
 
@@ -178,6 +178,8 @@ function updateMouseCursor(col: number, row: number, state: RenderState): void {
 export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult {
   if (ev.action === "press" || (ev.action === "motion" && state.mouseLinkPress
       && (ev.col !== state.mouseLinkPress.col || ev.row !== state.mouseLinkPress.row))) state.mouseLinkPress = null;
+  if (ev.action === "press" || (ev.action === "motion" && state.mouseImagePress
+      && (ev.col !== state.mouseImagePress.col || ev.row !== state.mouseImagePress.row))) state.mouseImagePress = null;
   // Always update cursor shape on any mouse event (motion, press, scroll)
   updateMouseCursor(ev.col, ev.row, state);
 
@@ -290,6 +292,8 @@ export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult 
     if (pos) {
       const target = linkAtScreen(col, row, state);
       state.mouseLinkPress = target ? { col, row, target } : null;
+      const image = imageAtHistoryPosition({ lineAnchors: state.historyLineAnchors }, pos);
+      state.mouseImagePress = image ? { col, row, image } : null;
       focusHistory(state);
       state.vim.mode = "visual";
       state.historyCursor = pos;
@@ -313,6 +317,12 @@ export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult 
         && linkAtScreen(col, row, state) === pressedLink.target) {
       state.vim.mode = "normal";
       return { type: "open_target", target: pressedLink.target };
+    }
+    const pressedImage = state.mouseImagePress;
+    state.mouseImagePress = null;
+    if (pressedImage && pressedImage.col === col && pressedImage.row === row) {
+      state.vim.mode = "normal";
+      return { type: "open_image", image: pressedImage.image };
     }
     if (state.vim.mode === "visual" && state.chatFocus === "history") {
       // Update cursor to release position

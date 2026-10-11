@@ -23,6 +23,7 @@ import { stopConversationLoader } from "./conversation-loader";
 import { getAuthByProvider, getAuthInfoByProvider, hasConfiguredCredentials } from "./auth";
 import { DaemonServer } from "./server";
 import { createHandler } from "./handler";
+import { experimentalFeatures } from "./experimental";
 import { conversationDefaultsSnapshot } from "./conversation-defaults";
 import { handleLogin } from "./cli";
 import * as convStore from "./conversations";
@@ -295,6 +296,7 @@ async function startDaemon(): Promise<void> {
       type: "tools_available",
       macroEnvironment: localMacroEnvironment(),
       conversationDefaults: conversationDefaultsSnapshot(),
+      experimental: experimentalFeatures(),
       providers: getProviders(),
       tools: getToolDisplayInfo(),
       authByProvider: getAuthByProvider(),

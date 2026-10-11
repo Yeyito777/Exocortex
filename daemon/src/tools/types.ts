@@ -113,6 +113,8 @@ export interface ToolResult {
   /** Internal execution classification used by durable automation retry loops. */
   failureKind?: "infrastructure";
   image?: ImageData;
+  /** Images to show the user after the assistant's message (attach tool). Not sent to the model. */
+  attachments?: import("../messages").ImageRef[];
   /** Internal control result. No tool_result is emitted until the deferred operation resumes. */
   deferred?: DeferredToolResult;
 }

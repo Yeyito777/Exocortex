@@ -1418,6 +1418,7 @@ async function orchestrateAdmittedAssistantTurn(
         toolName: block.toolName,
         output: block.output,
         isError: block.isError,
+        ...(block.images?.length ? { images: block.images } : {}),
       });
       convStore.pushStreamingBlock(convId, {
         type: "tool_result",
@@ -1425,6 +1426,7 @@ async function orchestrateAdmittedAssistantTurn(
         toolName: block.toolName,
         output: block.output,
         isError: block.isError,
+        ...(block.images?.length ? { images: block.images } : {}),
       });
     },
     onGenerationRate(rate) {

@@ -3,6 +3,9 @@
   "features": {
     "goalTool": true
   },
+  "experimental": {
+    "images": false
+  },
   "agent": {
     "workingDirectory": ".exocortex-cwd"
   },

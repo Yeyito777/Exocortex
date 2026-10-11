@@ -20,7 +20,8 @@
     "./realtime": "./src/realtime.ts",
     "./paths": "./src/paths.ts",
     "./duration": "./src/duration.ts",
-    "./chrono": "./src/chrono.ts"
+    "./chrono": "./src/chrono.ts",
+    "./image-sniff": "./src/image-sniff.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",

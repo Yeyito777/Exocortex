@@ -6,7 +6,18 @@
  * in blockrenderer.ts.
  */
 
-import { CONTEXT_COMPACTION_FINISHED_KIND, REALTIME_TRANSCRIPT_KIND, combineMessageMetadata, type Message, type MessageMetadata, type UserMessageAutomation } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, REALTIME_TRANSCRIPT_KIND, combineMessageMetadata, type Block, type ImageAttachment, type Message, type MessageMetadata, type UserMessageAutomation } from "./messages";
+import {
+  fitImageBox,
+  historyImageLimits,
+  inlineImageCellSize,
+  inlineImagesActive,
+  renderInlineImage,
+  sourceFromAttachment,
+  sourceFromRef,
+  type InlineImageLayout,
+  type InlineImageSource,
+} from "./inlineimages";
 import { isActiveConversationLoading, type RenderState } from "./state";
 import { renderMetadata } from "./metadata";
 import { activeDurableSleepAssistant, inlineSleepMetadataEndedAt } from "./durable-sleep-metadata";
@@ -244,6 +255,7 @@ export interface MessageBound {
 
 export type RenderLineSegment =
   | "assistant_block"
+  | "assistant_image"
   | "assistant_metadata"
   | "compaction_finished"
   | "compaction_margin_bottom"
@@ -263,6 +275,7 @@ export type RenderLineSegment =
   | "automation_label"
   | "transcript_label"
   | "user_content"
+  | "user_image"
   | "user_margin_bottom"
   | "user_margin_top";
 
@@ -281,7 +294,40 @@ export interface RenderLineAnchor {
   userFlowDocument?: UserMessageFlowDocument;
   userFlowStart?: UserMessageFlowCursor;
   userFlowEnd?: UserMessageFlowCursor;
+  /** Inline image covering this row, and which of its rows this is. */
+  image?: { layout: InlineImageLayout; row: number };
+  /** Image that Enter or a click on this row (its thumbnail or caption) opens. */
+  openImage?: InlineImageSource;
 }
+
+/** An image to draw in history, with the object that owns its placement. */
+interface HistoryImage {
+  source: InlineImageSource;
+  owner: object;
+  index: number;
+}
+
+/** Images the attach tool added to these assistant blocks, in call order. */
+export function attachedImages(blocks: readonly Block[], convId: string | null): HistoryImage[] {
+  const images: HistoryImage[] = [];
+  for (const block of blocks) {
+    if (block.type !== "tool_result" || !block.images?.length) continue;
+    block.images.forEach((ref, index) => images.push({ source: sourceFromRef(ref, convId), owner: block, index }));
+  }
+  return images;
+}
+
+function pastedImages(owner: object, images: readonly ImageAttachment[] | undefined, convId: string | null): HistoryImage[] {
+  const out: HistoryImage[] = [];
+  images?.forEach((image, index) => {
+    const source = sourceFromAttachment(image, convId);
+    if (source) out.push({ source, owner, index });
+  });
+  return out;
+}
+
+const USER_IMAGE_RIGHT_MARGIN = 2;
+const ASSISTANT_IMAGE_INDENT = 2;
 
 export interface BuildMessageLinesResult {
   lines: string[];
@@ -385,6 +431,32 @@ export function buildMessageLines(
     pushAnchoredLine(line, false, "", owner, segment, index, 0);
   };
 
+  const imageLimits = historyImageLimits(availableWidth, state.rows);
+  const imageCell = inlineImageCellSize();
+  /** Append inline images, each preceded by a blank row. User images align right like their bubble. */
+  const pushImages = (images: readonly HistoryImage[], segment: "assistant_image" | "user_image") => {
+    if (!inlineImagesActive()) return;
+    for (const image of images) {
+      const box = fitImageBox(image.source, imageLimits.cols, imageLimits.rows, imageCell);
+      const col = segment === "user_image"
+        ? Math.max(0, availableWidth - USER_IMAGE_RIGHT_MARGIN - box.cols)
+        : ASSISTANT_IMAGE_INDENT;
+      const rendered = renderInlineImage(image.source, box, col, image.owner, image.index);
+      pushLine("", image.owner, segment, image.index);
+      rendered.lines.forEach((line, row) => {
+        const isImageRow = row < rendered.layout.rows;
+        // Kitty rows are blank; keep the indent so narrow-history shifting stays exact.
+        const text = isImageRow && line === "" ? " ".repeat(col) : line;
+        pushAnchoredLine(text, false, "", image.owner, segment, image.index, row, isImageRow
+          ? { text: "", displayStart: 0, skip: true }
+          : { text: rendered.copy[row] ?? "", displayStart: col });
+        const anchor = lineAnchors[lineAnchors.length - 1];
+        if (isImageRow) anchor.image = { layout: rendered.layout, row };
+        anchor.openImage = image.source;
+      });
+    }
+  };
+
   const trimTrailingBlankAssistantContent = (minLength: number) => {
     while (lines.length > minLength) {
       const anchor = lineAnchors[lineAnchors.length - 1];
@@ -428,6 +500,7 @@ export function buildMessageLines(
     );
   }
 
+  let segmentImages: HistoryImage[] = [];
   for (let messageIndex = startMessageIndex; messageIndex < state.messages.length; messageIndex++) {
     if (state.historyLoadingOlder && messageIndex === historyLoadingInsertIndex) {
       pushHistoryLoadingLine();
@@ -453,6 +526,7 @@ export function buildMessageLines(
       if (provenance) {
         pushLine(rightAlignedProvenanceLabel(provenance, availableWidth), msg, msg.metadata?.automation ? "automation_label" : "transcript_label");
       }
+      pushImages(pastedImages(msg, msg.images, state.convId), "user_image");
       pushLine("", msg, "user_margin_bottom");
       pushMessageBound(msg.role, start, contentStart, contentEnd);
     } else if (msg.role === "assistant") {
@@ -461,6 +535,7 @@ export function buildMessageLines(
       for (const block of msg.blocks) {
         pushBlock(block, "assistant_block", renderAssistantBlock(block));
       }
+      segmentImages.push(...attachedImages(msg.blocks, state.convId));
       const nextMessage = state.messages[messageIndex + 1];
       const nextContinuesAssistantSegment = (
         nextMessage?.role === "assistant"
@@ -476,6 +551,11 @@ export function buildMessageLines(
         ? renderMetadata(metadata, metadataOptions)
         : nextContinuesAssistantSegment ? [] : renderMetadata(metadata, { ...metadataOptions, active: msg === durableSleepAssistant });
       if (metadataLines.length > 0) trimTrailingBlankAssistantContent(contentStart);
+      // Attached images close the visible message (the run of fragments), right before its metadata.
+      if (isCallTranscript || !nextContinuesAssistantSegment) {
+        pushImages(segmentImages, "assistant_image");
+        segmentImages = [];
+      }
       const contentEnd = lines.length;
       for (let i = 0; i < metadataLines.length; i++) {
         pushLine(metadataLines[i], msg, "assistant_metadata", i);
@@ -532,6 +612,8 @@ export function buildMessageLines(
     for (const block of state.pendingAI.blocks) {
       pushBlock(block, "assistant_block", renderAssistantBlock(block));
     }
+    const pendingImages = [...segmentImages, ...attachedImages(state.pendingAI.blocks, state.convId)];
+    segmentImages = [];
     // Terminal stream notices (abort/error/watchdog) arrive just before
     // streaming_stopped. Keep pendingAI around for reconciliation, but do not
     // render metadata-only pending state next to the notice: if no assistant
@@ -551,6 +633,7 @@ export function buildMessageLines(
     const compactionStartedAt = state.contextCompactionStartedAt;
     const compactionActive = compactionStartedAt != null;
     if (metadataLines.length > 0 || compactionActive) trimTrailingBlankAssistantContent(start);
+    pushImages(pendingImages, "assistant_image");
     const contentEnd = lines.length;
     for (let i = 0; i < metadataLines.length; i++) pushLine(metadataLines[i], state.pendingAI, "assistant_metadata", i);
     if (compactionActive) {

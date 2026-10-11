@@ -13,7 +13,7 @@ export * from "@exocortex/shared/messages";
 
 // ── API-level types (for stored conversations / API replay) ─────────
 
-import { CONTEXT_COMPACTION_FINISHED_KIND, DEFAULT_EFFORT, REALTIME_CALL_STATUS_KIND, createMessageMetadata, type ProviderId, type ModelId, type EffortLevel, type MessageMetadata, type ConversationSummary, type FolderSummary, type ImageAttachment, type ConversationGoal, type ToolCallPresentation, type UserMessageAutomation } from "@exocortex/shared/messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, DEFAULT_EFFORT, REALTIME_CALL_STATUS_KIND, createMessageMetadata, type ProviderId, type ModelId, type EffortLevel, type MessageMetadata, type ConversationSummary, type FolderSummary, type ImageAttachment, type ImageRef, type ConversationGoal, type ToolCallPresentation, type UserMessageAutomation } from "@exocortex/shared/messages";
 import type { AssistantProviderData } from "./providers/provider-data";
 import { createHash } from "crypto";
 import { archiveWindow, provenArchiveHashes, assertCanonicalMessage, replayHistoryCount, type ArchiveWindow } from "./conversation-window";
@@ -50,7 +50,14 @@ export type ApiContentBlock =
   | { type: "image"; source: { type: "base64"; media_type: string; data: string } }
   | { type: "thinking"; thinking: string; signature: string }
   | { type: "tool_use"; id: string; name: string; input: Record<string, unknown>; presentation?: ToolCallPresentation }
-  | { type: "tool_result"; tool_use_id: string; content: string | unknown[]; is_error?: boolean };
+  | {
+    type: "tool_result";
+    tool_use_id: string;
+    content: string | unknown[];
+    is_error?: boolean;
+    /** Daemon-only: images this call showed the user (attach tool). Provider request builders ignore it. */
+    attachments?: ImageRef[];
+  };
 
 export interface ApiMessage {
   role: "user" | "assistant";

@@ -148,6 +148,29 @@ export interface ImageAttachment {
   mediaType: ImageMediaType;
   base64: string;       // base64-encoded image data
   sizeBytes: number;    // original byte size for display
+  /**
+   * Content hash of the decoded bytes, set by the daemon's history projection
+   * so clients can fetch a display preview after the payload is compacted.
+   */
+  imageId?: string;
+  width?: number;
+  height?: number;
+}
+
+/**
+ * A daemon-stored image shown to the user (for example one the model attached
+ * to its message). The bytes live in daemon-managed storage; clients fetch a
+ * bounded preview by `id` with the get_image command.
+ */
+export interface ImageRef {
+  /** sha256 (hex) of the stored image bytes. */
+  id: string;
+  mediaType: ImageMediaType;
+  width: number;
+  height: number;
+  sizeBytes: number;
+  /** Original file name, for captions. */
+  name?: string;
 }
 
 // ── Blocks ──────────────────────────────────────────────────────────
@@ -191,6 +214,8 @@ export interface ToolResultBlock {
   toolName: string;
   output: string;
   isError: boolean;
+  /** Images this call attached to the assistant message (the attach tool). Shown after its text. */
+  images?: ImageRef[];
 }
 
 export type Block = ThinkingBlock | TextBlock | ToolCallBlock | ToolResultBlock;

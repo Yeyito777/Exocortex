@@ -204,6 +204,8 @@ const compactImageForHistory = (image: ImageAttachment): ImageAttachment => ({
   mediaType: image.mediaType,
   base64: "",
   sizeBytes: image.sizeBytes,
+  ...(image.imageId ? { imageId: image.imageId } : {}),
+  ...(image.width ? { width: image.width, height: image.height } : {}),
 });
 
 export function compactHistoryImages(data: ConversationRenderSnapshot): ConversationRenderSnapshot {

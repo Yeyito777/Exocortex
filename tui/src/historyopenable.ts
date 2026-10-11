@@ -5,6 +5,20 @@ import { nextGraphemeEnd } from "./graphemes";
 import type { RenderState } from "./state";
 import type { HistorySurface } from "./historysurface";
 import type { HistoryCursor } from "./historycursor";
+import type { InlineImageSource } from "./inlineimages";
+
+/** The inline image (thumbnail or caption row) under the history cursor. */
+export function imageAtHistoryCursor(state: RenderState): InlineImageSource | null {
+  const surface = activeHistorySurface(state);
+  return imageAtHistoryPosition(surface, surface.cursor);
+}
+
+export function imageAtHistoryPosition(
+  surface: Pick<HistorySurface, "lineAnchors">,
+  position: HistoryCursor,
+): InlineImageSource | null {
+  return surface.lineAnchors[position.row]?.openImage ?? null;
+}
 
 /**
  * Return the configured-openable target currently under the history cursor.

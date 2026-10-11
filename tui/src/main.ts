@@ -13,6 +13,10 @@ import { queryLocalUpdateStatus, UpdateStatusMonitor } from "./update-status";
 import { DaemonClient } from "./client";
 import { parseInput, PasteBuffer, type KeyEvent, type MouseEvent } from "./input";
 import { TerminalClipboardClient, TerminalControlBuffer } from "./terminalclipboard";
+import { CELL_SIZE_QUERY, TerminalGraphicsDetector, parseCellSizeResponse } from "./terminalgraphics";
+import { configureInlineImages, setInlineImageCellSize, setInlineImageMode } from "./inlineimages";
+import { disposeHistoryImages, handleHistoryImageResponse, invalidateHistoryImagePlacements } from "./historyimages";
+import { handleImageModalKey } from "./imagemodal";
 import { handleFocusedKey } from "./focus";
 import { handleMouseEvent } from "./mouse";
 import { clearPrompt } from "./promptstate";
@@ -137,6 +141,7 @@ let daemonRouteSwitchPending = false;
 let terminalSetUp = false;
 let terminalClipboardClient: TerminalClipboardClient | null = null;
 let terminalControlBuffer: TerminalControlBuffer | null = null;
+let terminalGraphicsDetector: TerminalGraphicsDetector | null = null;
 let voiceInput: VoiceInputController | null = null;
 let callMedia: CallMediaController | null = null;
 let remotePathCompletion: RemotePathCompletionController | null = null;
@@ -1577,6 +1582,15 @@ function handleKey(key: KeyEvent): void {
   const voicePromptBufferBefore = state.voicePromptJobs.length > 0 || state.voicePrompt?.phase === "transcribing"
     ? state.inputBuffer
     : null;
+  // The image viewer owns the keyboard until it closes; Ctrl-C still quits.
+  if (state.imageModal && key.type !== "ctrl-c") {
+    if (key.event === "release") return;
+    if (handleImageModalKey(key) === "close") {
+      state.imageModal = null;
+      renderAfterLocalUiMutation();
+    }
+    return;
+  }
   if (voiceInput?.handleKey(key)) return;
   if (key.event === "release") return;
 
@@ -1617,6 +1631,9 @@ function handleKey(key: KeyEvent): void {
       break;
     case "open_target":
       remoteFileLinks?.open(result.target);
+      break;
+    case "open_image":
+      state.imageModal = { source: result.image };
       break;
     case "quit":
       running = false;
@@ -1738,6 +1755,14 @@ function handleMouse(ev: MouseEvent): void {
   // Hidden old-route controls must not remain clickable during the transition.
   if (state.sshConnecting) return;
   if (voiceInput?.isBlockingMouse()) return;
+  // A click anywhere closes the image viewer; other mouse input is ignored under it.
+  if (state.imageModal) {
+    if (ev.button === 0 && ev.action === "press") {
+      state.imageModal = null;
+      renderAfterLocalUiMutation();
+    }
+    return;
+  }
 
   // Motion events: only render if something visual changed (focus switch, drag selection)
   if (ev.action === "motion") {
@@ -1784,6 +1809,9 @@ function handleMouse(ev: MouseEvent): void {
       break;
     case "open_target":
       remoteFileLinks?.open(result.target);
+      break;
+    case "open_image":
+      state.imageModal = { source: result.image };
       break;
     case "handled":
       break;
@@ -1893,7 +1921,7 @@ function handleDaemonConnectionLost(shutdownMode: DaemonShutdownMode | null): vo
 
 function setupTerminal(): void {
   const cursorColorSeq = theme.cursorColor ? set_cursor_color(theme.cursorColor) : '';
-  process.stdout.write(enter_alt + hide_cursor + enable_bracketed_paste + query_clipboard_paste_events + enable_clipboard_paste_events + enable_kitty_kbd + enable_mouse + cursorColorSeq);
+  process.stdout.write(enter_alt + hide_cursor + CELL_SIZE_QUERY + enable_bracketed_paste + query_clipboard_paste_events + enable_clipboard_paste_events + enable_kitty_kbd + enable_mouse + cursorColorSeq);
   if (process.stdin.isTTY) process.stdin.setRawMode(true);
   process.stdin.resume();
   terminalSetUp = true;
@@ -1924,6 +1952,8 @@ function restoreTerminal(): void {
   if (!terminalSetUp) return;
   if (process.stdin.isTTY) process.stdin.setRawMode(false);
   const cursorResetSeq = theme.cursorColor ? reset_cursor_color : '';
+  terminalGraphicsDetector?.dispose();
+  process.stdout.write(disposeHistoryImages(state));
   process.stdout.write(disable_mouse + disable_kitty_kbd + disable_clipboard_paste_events + disable_bracketed_paste + show_cursor + cursorResetSeq + leave_alt);
   terminalSetUp = false;
 }
@@ -2025,8 +2055,35 @@ async function main(): Promise<void> {
       const ready = pasteBuffer.feed(Buffer.from(data));
       if (ready !== null) processInput(ready);
     },
-    sequence => terminalClipboardClient?.handleControlSequence(sequence),
+    sequence => {
+      const cell = parseCellSizeResponse(sequence);
+      if (cell) {
+        setInlineImageCellSize(cell);
+        return;
+      }
+      if (terminalGraphicsDetector?.handleControlSequence(sequence)) return;
+      if (handleHistoryImageResponse(state, sequence)) {
+        scheduleRender();
+        return;
+      }
+      terminalClipboardClient?.handleControlSequence(sequence);
+    },
   );
+
+  // Inline history images: previews come from the daemon, sized for this terminal.
+  // Images are experimental: terminal detection waits until a daemon enables them.
+  terminalGraphicsDetector = new TerminalGraphicsDetector({
+    write: sequence => process.stdout.write(sequence),
+    onModeChanged: mode => {
+      if (mode !== "kitty") process.stdout.write(disposeHistoryImages(state));
+      setInlineImageMode(mode);
+    },
+  });
+  configureInlineImages({
+    fetch: request => daemon.getImage(request),
+    onChange: () => scheduleRender(),
+    onFirstEnabled: () => terminalGraphicsDetector?.start(),
+  });
 
   function processInput(str: string): void {
     if (!running) return;
@@ -2058,6 +2115,8 @@ async function main(): Promise<void> {
       process.stdout.rows || 24,
     );
     invalidateFrame(state);
+    invalidateHistoryImagePlacements(state);
+    process.stdout.write(CELL_SIZE_QUERY);
     // Resize/expose repaints should not wait for the normal frame throttle:
     // the terminal may have just revealed stale cells from the previous window
     // geometry, so repaint the invalidated full frame immediately.

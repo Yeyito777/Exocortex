@@ -43,7 +43,7 @@ import {
 } from "./sidebarsearch";
 import { pushUndo } from "./undo";
 import { placeAtVisibleBottom } from "./historycursor";
-import { openableTargetAtHistoryCursor } from "./historyopenable";
+import { imageAtHistoryCursor, openableTargetAtHistoryCursor } from "./historyopenable";
 import { acceptAutocomplete, type PathCompletionProvider } from "./autocomplete";
 import { handleQueuePromptKey } from "./queue";
 import { handleEditMessageKey, openEditMessageModal } from "./editmessage";
@@ -58,6 +58,7 @@ import { copyToClipboard } from "./vim/clipboard";
 import { handleBtwKey } from "./btw/keys";
 import { omittedToolOutputIdsNearViewport } from "./events/tool-outputs";
 import { activeHistorySurface, isAnyHistoryFocused } from "./historysurface";
+import type { InlineImageSource } from "./inlineimages";
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -97,7 +98,8 @@ export type KeyResult =
   | { type: "edit_message_confirm" }
   | { type: "edit_message_cancel" }
   | { type: "btw_close" }
-  | { type: "open_target"; target: string };
+  | { type: "open_target"; target: string }
+  | { type: "open_image"; image: InlineImageSource };
 
 // ── Key routing ─────────────────────────────────────────────────────
 
@@ -399,6 +401,8 @@ export function handleFocusedKey(
   }
 
   if (action === "submit" && isAnyHistoryFocused(state)) {
+    const image = imageAtHistoryCursor(state);
+    if (image) return { type: "open_image", image };
     const target = openableTargetAtHistoryCursor(state);
     return target ? { type: "open_target", target } : { type: "handled" };
   }

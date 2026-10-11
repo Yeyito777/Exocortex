@@ -86,6 +86,8 @@ export interface ToolExecResult {
   output: string;
   isError: boolean;
   image?: { mediaType: string; base64: string };
+  /** Images shown to the user after the message; persisted on the tool_result, never sent to the model. */
+  attachments?: import("./messages").ImageRef[];
   /** Complete this tool call in a later replay instead of keeping this turn alive. */
   deferred?: DeferredToolResult;
   /** Opt-in local executor timings, never included in model-visible output. */
@@ -170,7 +172,10 @@ function toDisplayBlock(block: ProviderContentBlock, presentation?: ToolCallPres
         ...(presentation ?? block.presentation ? { presentation: presentation ?? block.presentation } : {}),
       };
     case "tool_result":
-      return { type: "tool_result", toolCallId: block.toolUseId, toolName: block.toolName, output: block.output, isError: block.isError };
+      return {
+        type: "tool_result", toolCallId: block.toolUseId, toolName: block.toolName, output: block.output, isError: block.isError,
+        ...(block.images?.length ? { images: block.images } : {}),
+      };
   }
 }
 
@@ -480,7 +485,10 @@ export async function runAgentLoop(
           ...(presentations.get(block.id) ? { presentation: presentations.get(block.id) } : {}),
         });
       } else if (block.type === "tool_result") {
-        assistantContent.push({ type: "tool_result", tool_use_id: block.toolUseId, content: block.output, is_error: block.isError });
+        assistantContent.push({
+          type: "tool_result", tool_use_id: block.toolUseId, content: block.output, is_error: block.isError,
+          ...(block.images?.length ? { attachments: block.images } : {}),
+        });
       }
     }
     for (const tc of result.toolCalls) {
@@ -595,6 +603,7 @@ export async function runAgentLoop(
         toolName: r.toolName,
         output: r.output,
         isError: r.isError,
+        ...(r.attachments?.length ? { images: r.attachments } : {}),
       };
       allBlocks.push(block);
       callbacks.onToolResult(block);
@@ -609,6 +618,7 @@ export async function runAgentLoop(
             { type: "text", text: r.output },
           ] as unknown[],
           is_error: r.isError,
+          ...(r.attachments?.length ? { attachments: r.attachments } : {}),
         });
       } else {
         toolResultContent.push({
@@ -616,6 +626,7 @@ export async function runAgentLoop(
           tool_use_id: r.toolCallId,
           content: r.output,
           is_error: r.isError,
+          ...(r.attachments?.length ? { attachments: r.attachments } : {}),
         });
       }
     }

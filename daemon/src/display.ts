@@ -11,6 +11,7 @@ import { CONTEXT_COMPACTION_FINISHED_KIND, MODEL_ONLY_NOTICE_KINDS, REALTIME_CAL
 import { isModelVisibleSystemNotice, isReplayHistoryMessage, userMessageUnwindFingerprints, type StoredMessage, type ApiContentBlock } from "./messages";
 import type { ProviderId, ModelId, EffortLevel } from "./messages";
 import type { DisplayEntry, ToolOutputInfo } from "@exocortex/shared/protocol";
+import { imageIdForBytes, sniffImage } from "@exocortex/shared/image-sniff";
 
 export type { DisplayEntry };
 
@@ -131,6 +132,7 @@ export function buildDisplayData(
             toolName: "",
             output: includeToolOutputs ? stringifyToolResultContent(c.content as string | ContentPart[]) : "",
             isError: c.is_error ?? false,
+            ...(c.attachments?.length ? { images: c.attachments } : {}),
           });
         }
       }
@@ -215,6 +217,7 @@ export function buildDisplayData(
                 mediaType: src.media_type as ImageAttachment["mediaType"],
                 base64: src.data,
                 sizeBytes: Math.ceil(src.data.length * 3 / 4) - (src.data.match(/=+$/) || [""])[0].length,
+                ...userImageIdentity(c),
               };
             });
           entries.push({
@@ -262,6 +265,27 @@ export function buildDisplayData(
     contextTokens: lastContextTokens,
     toolOutputsIncluded: includeToolOutputs,
   };
+}
+
+const userImageIdentities = new WeakMap<object, Pick<ImageAttachment, "imageId" | "width" | "height">>();
+
+/**
+ * Content id and size of a pasted image, so clients can fetch a preview after
+ * the history payload drops its bytes. Cached per stored block: hashing a
+ * large paste on every projection would be wasted work.
+ */
+function userImageIdentity(block: ApiContentBlock): Pick<ImageAttachment, "imageId" | "width" | "height"> {
+  if (block.type !== "image" || !block.source.data) return {};
+  const cached = userImageIdentities.get(block);
+  if (cached) return cached;
+  const bytes = Buffer.from(block.source.data, "base64");
+  const sniffed = sniffImage(bytes);
+  const identity = {
+    imageId: imageIdForBytes(bytes),
+    ...(sniffed ? { width: sniffed.width, height: sniffed.height } : {}),
+  };
+  userImageIdentities.set(block, identity);
+  return identity;
 }
 
 function userContextCheckpoint(
