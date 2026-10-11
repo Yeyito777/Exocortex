@@ -19,6 +19,17 @@ that cannot be recovered closes the wait with a tool error.
 Implementation: `daemon/src/tools/chrono.ts`, `daemon/src/chrono-service.ts`,
 and `tui/src/taskvisibility.ts`.
 
+## Batch wakes
+
+`wake` takes either one wake as top-level fields or a `wakes` array of up to
+50 items, each with exactly the fields a single wake accepts. The two forms do
+not mix: top-level wake fields alongside `wakes` are rejected, so no field is
+silently shared or overridden. Every item is validated against one shared
+"now" before any is created; any invalid item schedules nothing and the error
+names each bad `wakes[i]`. Output is `Scheduled N of M Chrono wakes:` with one
+line per item, and the call errors only when nothing was scheduled. A one-item
+array reads exactly like the single form.
+
 ## `/chrono`
 
 Users schedule wakes without asking the model: `/chrono 30m <message>`,

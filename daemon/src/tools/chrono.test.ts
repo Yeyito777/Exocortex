@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
+import { chmodSync, mkdirSync } from "node:fs";
+import { dataDir } from "@exocortex/shared/paths";
 import { chrono } from "./chrono";
 import { chronoInternalsForTest, installMigratedSchedule } from "../chrono-service";
 import { resetConversationActivityForTest, setBackgroundTaskActive, recordBackgroundTaskCompletion } from "../conversation-activity";
@@ -343,5 +345,119 @@ describe("Chrono tool", () => {
     expect(chrono.summarize({ action: "cancel", schedule_id: "chrono:a" }).detail).toBe("cancel: chrono:a");
     expect(chrono.summarize({ action: "cancel", schedule_id: "chrono:a", schedule_ids: ["chrono:b", "chrono:a"] }).detail)
       .toBe("cancel: 2 schedules: chrono:a, chrono:b");
+  });
+
+  const FUTURE = "2099-01-02T03:04:05.000Z";
+
+  test("a single top-level wake is unchanged and matches a one-item wakes batch", async () => {
+    const single = await chrono.execute({ action: "wake", at: FUTURE, title: "Solo", message: "solo" }, { conversationId: "parent" });
+    const id = single.output.match(/chrono:[0-9a-f-]+/)?.[0];
+    expect(single).toEqual({ output: `Scheduled hard wake:\n${id} — Solo — hard wake at ${FUTURE}`, isError: false });
+
+    const batched = await chrono.execute({ action: "wake", wakes: [{ at: FUTURE, title: "Solo", command: "true" }] }, { conversationId: "parent" });
+    const batchedId = batched.output.match(/chrono:[0-9a-f-]+/)?.[0];
+    expect(batched).toEqual({ output: `Scheduled soft wake:\n${batchedId} — Solo — soft wake at ${FUTURE}`, isError: false });
+
+    const invalidOne = await chrono.execute({ action: "wake", wakes: [{ at: FUTURE }] }, { conversationId: "parent" });
+    expect(invalidOne).toEqual({ output: "Wake requires exactly one of 'message' or 'command'.", isError: true });
+  });
+
+  test("schedules several mixed wakes in one call", async () => {
+    const before = Date.now();
+    const result = await chrono.execute({
+      action: "wake",
+      wakes: [
+        { at: FUTURE, title: "Nag", message: "Deadline soon." },
+        { after_seconds: 600, title: "Check", command: "true", hard_wake: { when: "always", message: "Look." } },
+        { at: FUTURE, title: "Daily", message: "Daily check.", repeat: { unit: "day" }, timezone: "UTC" },
+        { after_seconds: 60, command: "echo plain", timeout_seconds: 5 },
+      ],
+    }, { conversationId: "parent" });
+    expect(result.isError).toBe(false);
+    const lines = result.output.split("\n");
+    expect(lines[0]).toBe("Scheduled 4 of 4 Chrono wakes:");
+    expect(lines[1]).toMatch(new RegExp(`^scheduled: chrono:[0-9a-f-]+ — Nag — hard wake at ${FUTURE}$`));
+    expect(lines[2]).toMatch(/^scheduled: chrono:[0-9a-f-]+ — Check — soft wake → hard wake at \S+$/);
+    expect(lines[3]).toMatch(new RegExp(`^scheduled: chrono:[0-9a-f-]+ — Daily — hard wake at ${FUTURE}, repeats daily in UTC$`));
+    expect(lines[4]).toMatch(/^scheduled: chrono:[0-9a-f-]+ — echo plain — soft wake at \S+$/);
+    expect(lines).toHaveLength(5);
+    const checkAt = Date.parse(lines[2].split(" at ")[1]);
+    expect(checkAt).toBeGreaterThanOrEqual(before + 600_000);
+    expect(checkAt).toBeLessThanOrEqual(Date.now() + 600_000);
+
+    const listed = (await chrono.execute({ action: "list" }, { conversationId: "parent" })).output.split("\n");
+    expect(listed).toHaveLength(5);
+    for (const line of lines.slice(1)) expect(listed).toContain(line.replace("scheduled: ", ""));
+  });
+
+  test("an invalid wake in a batch schedules nothing and names every bad index", async () => {
+    const result = await chrono.execute({
+      action: "wake",
+      wakes: [
+        { after_seconds: 60, message: "fine" },
+        { after_seconds: 60, message: "both", command: "true" },
+        { at: "2000-01-01T00:00:00Z", message: "past" },
+        { after_seconds: 60, command: "true", repeat: { unit: "fortnight" } },
+      ],
+    }, { conversationId: "parent" });
+    expect(result).toEqual({
+      output: [
+        "Invalid wakes; nothing was scheduled:",
+        "wakes[1]: Wake requires exactly one of 'message' or 'command'.",
+        "wakes[2]: Wake time must be in the future.",
+        "wakes[3]: repeat.unit must be minute, hour, day, week, or month.",
+      ].join("\n"),
+      isError: true,
+    });
+    const nonObject = await chrono.execute({ action: "wake", wakes: [{ after_seconds: 60, message: "fine" }, "soon", null] }, { conversationId: "parent" });
+    expect(nonObject.isError).toBe(true);
+    expect(nonObject.output).toBe([
+      "Invalid wakes; nothing was scheduled:",
+      "wakes[1]: must be an object with the same fields as a single wake.",
+      "wakes[2]: must be an object with the same fields as a single wake.",
+    ].join("\n"));
+    expect((await chrono.execute({ action: "list" }, { conversationId: "parent" })).output).toBe("No Chrono schedules for this conversation.");
+  });
+
+  test("wakes refuses empty, non-array, oversized, and mixed-with-top-level input", async () => {
+    const run = (input: Record<string, unknown>) => chrono.execute({ action: "wake", ...input }, { conversationId: "parent" });
+    expect(await run({ wakes: [] })).toEqual({ output: "wakes must contain at least one wake.", isError: true });
+    expect(await run({ wakes: { after_seconds: 60, message: "x" } })).toEqual({ output: "wakes must be an array of wake objects.", isError: true });
+    const tooMany = await run({ wakes: Array.from({ length: 51 }, (_, index) => ({ after_seconds: 60 + index, message: `n${index}` })) });
+    expect(tooMany.isError).toBe(true);
+    expect(tooMany.output).toContain("at most 50");
+    const mixed = await run({ title: "Shared", after_seconds: 60, wakes: [{ after_seconds: 60, message: "x" }] });
+    expect(mixed.isError).toBe(true);
+    expect(mixed.output).toContain("top-level after_seconds, title cannot be combined with wakes");
+    expect((await chrono.execute({ action: "list" }, { conversationId: "parent" })).output).toBe("No Chrono schedules for this conversation.");
+
+    const fifty = await run({ wakes: Array.from({ length: 50 }, (_, index) => ({ after_seconds: 60 + index, message: `n${index}` })) });
+    expect(fifty.output).toStartWith("Scheduled 50 of 50 Chrono wakes:");
+  });
+
+  test("a batch that validates but cannot be saved reports each item and leaves nothing behind", async () => {
+    const dir = dataDir();
+    mkdirSync(dir, { recursive: true });
+    chmodSync(dir, 0o500);
+    let result;
+    try {
+      result = await chrono.execute({ action: "wake", wakes: [{ after_seconds: 60, message: "a" }, { after_seconds: 60, message: "b" }] }, { conversationId: "parent" });
+    } finally {
+      chmodSync(dir, 0o700);
+    }
+    expect(result.isError).toBe(true);
+    const lines = result.output.split("\n");
+    expect(lines[0]).toBe("Scheduled 0 of 2 Chrono wakes:");
+    expect(lines[1]).toStartWith("error: wakes[0]: Could not save Chrono schedule:");
+    expect(lines[2]).toStartWith("error: wakes[1]: Could not save Chrono schedule:");
+    expect((await chrono.execute({ action: "list" }, { conversationId: "parent" })).output).toBe("No Chrono schedules for this conversation.");
+  });
+
+  test("summarizes batch wakes readably", () => {
+    expect(chrono.summarize({ action: "wake", title: "Solo", message: "x" }).detail).toBe("wake: Solo");
+    expect(chrono.summarize({ action: "wake", wakes: [{ title: "Solo", message: "x" }] }).detail).toBe("wake: Solo");
+    expect(chrono.summarize({ action: "wake", wakes: [{ title: "16:00", message: "x" }, { command: "notify" }, { title: "16:53", message: "y" }] }).detail)
+      .toBe("wake: 3 schedules: 16:00, notify, 16:53");
+    expect(chrono.summarize({ action: "wake", wakes: [] }).detail).toBe("wake");
   });
 });

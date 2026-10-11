@@ -773,7 +773,8 @@ export function cancelDeferredChronoSleep(conversationId: string): boolean {
   return sleeps.length > 0;
 }
 
-export function createChronoSchedule(input: CreateScheduleInput, now = Date.now()): { schedule?: ChronoSchedule; error?: string } {
+/** Validate a wake and build its schedule without installing it. */
+function buildChronoSchedule(input: CreateScheduleInput, now: number): { schedule?: ChronoSchedule; error?: string } {
   const when = parseAt(input.at, input.afterSeconds, now);
   if (when.error || when.value === undefined) return { error: when.error };
   const hasMessage = !!input.message?.trim();
@@ -821,11 +822,51 @@ export function createChronoSchedule(input: CreateScheduleInput, now = Date.now(
     target,
     source: "model",
   };
+  return { schedule };
+}
+
+function installSchedule(schedule: ChronoSchedule): void {
   schedules.set(schedule.id, schedule);
-  persist();
+  try {
+    persist();
+  } catch (err) {
+    schedules.delete(schedule.id);
+    throw err;
+  }
   publishSchedule(schedule, true);
+}
+
+export function createChronoSchedule(input: CreateScheduleInput, now = Date.now()): { schedule?: ChronoSchedule; error?: string } {
+  const built = buildChronoSchedule(input, now);
+  if (!built.schedule) return built;
+  installSchedule(built.schedule);
   armTimer();
-  return { schedule: { ...schedule } };
+  return { schedule: { ...built.schedule } };
+}
+
+/**
+ * Validate every wake before creating any, so one invalid item leaves nothing
+ * scheduled. Items share one `now`, so their after_seconds offsets line up.
+ * A failure while installing an already-validated item is reported in its
+ * slot and does not stop the rest.
+ */
+export function createChronoSchedules(
+  inputs: CreateScheduleInput[],
+  now = Date.now(),
+): { invalid: { index: number; error: string }[] } | { results: { schedule?: ChronoSchedule; error?: string }[] } {
+  const built = inputs.map(input => buildChronoSchedule(input, now));
+  const invalid = built.flatMap((result, index) => result.schedule ? [] : [{ index, error: result.error ?? "Could not create Chrono schedule." }]);
+  if (invalid.length) return { invalid };
+  const results = built.map(({ schedule }) => {
+    try {
+      installSchedule(schedule!);
+      return { schedule: { ...schedule! } };
+    } catch (err) {
+      return { error: `Could not save Chrono schedule: ${err instanceof Error ? err.message : String(err)}` };
+    }
+  });
+  armTimer();
+  return { results };
 }
 
 export function installMigratedSchedule(schedule: ChronoSchedule): boolean {
