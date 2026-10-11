@@ -4,9 +4,11 @@ import {
   adoptChronoSchedule,
   cancelChronoSchedule,
   createChronoSchedule,
+  createChronoSchedules,
   deferChronoSleep,
   formatElapsedDuration,
   listChronoSchedules,
+  type CreateScheduleInput,
   type RepeatInput,
 } from "../chrono-service";
 import { getWaitableConversationTask, waitForConversationTask } from "../conversation-activity";
@@ -103,6 +105,60 @@ function cancelScheduleIds(input: Record<string, unknown>): string[] | { error: 
   }
   if (raw.some(id => typeof id !== "string")) return { error: "Chrono schedule ids must be strings." };
   return [...new Set((raw as string[]).map(id => id.trim()).filter(Boolean))];
+}
+
+const MAX_WAKES = 50;
+const WAKE_FIELDS = ["at", "after_seconds", "title", "message", "command", "timeout_seconds", "timezone", "repeat", "hard_wake"] as const;
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function wakeScheduleInput(fields: Record<string, unknown>, ownerConversationId: string): CreateScheduleInput {
+  const repeat = isPlainObject(fields.repeat) ? fields.repeat as unknown as RepeatInput : undefined;
+  const hardWake = isPlainObject(fields.hard_wake)
+    ? fields.hard_wake as { when?: "failure" | "always"; message?: string; include_output?: boolean }
+    : undefined;
+  return {
+    ownerConversationId,
+    at: typeof fields.at === "string" ? fields.at : undefined,
+    afterSeconds: typeof fields.after_seconds === "number" ? fields.after_seconds : undefined,
+    repeat,
+    timezone: typeof fields.timezone === "string" ? fields.timezone : undefined,
+    message: typeof fields.message === "string" ? fields.message : undefined,
+    command: typeof fields.command === "string" ? fields.command : undefined,
+    title: typeof fields.title === "string" ? fields.title : undefined,
+    timeoutSeconds: typeof fields.timeout_seconds === "number" ? fields.timeout_seconds : undefined,
+    hardWake: hardWake ? {
+      when: hardWake.when,
+      message: hardWake.message,
+      includeOutput: hardWake.include_output,
+    } : undefined,
+  };
+}
+
+/** The wakes array, or an error when it is malformed or mixed with top-level wake fields. */
+function batchWakes(input: Record<string, unknown>): Record<string, unknown>[] | { error: string } {
+  if (!Array.isArray(input.wakes)) return { error: "wakes must be an array of wake objects." };
+  const mixed = WAKE_FIELDS.filter(field => input[field] !== undefined);
+  if (mixed.length) {
+    return { error: `Put every wake's fields inside its wakes item; top-level ${mixed.join(", ")} cannot be combined with wakes. Nothing was scheduled.` };
+  }
+  if (input.wakes.length === 0) return { error: "wakes must contain at least one wake." };
+  if (input.wakes.length > MAX_WAKES) {
+    return { error: `wake accepts at most ${MAX_WAKES} wakes per call; got ${input.wakes.length}. Nothing was scheduled.` };
+  }
+  const notObjects = input.wakes.flatMap((item, index) => isPlainObject(item) ? [] : [`wakes[${index}]: must be an object with the same fields as a single wake.`]);
+  if (notObjects.length) return { error: `Invalid wakes; nothing was scheduled:\n${notObjects.join("\n")}` };
+  return input.wakes as Record<string, unknown>[];
+}
+
+function wakeSummary(fields: Record<string, unknown>): string {
+  return String(fields.title ?? fields.message ?? fields.command ?? fields.at ?? "");
+}
+
+function scheduledWakeOutput(schedule: NonNullable<ReturnType<typeof createChronoSchedule>["schedule"]>): string {
+  return `Scheduled ${schedule.target.kind === "command" ? "soft wake" : "hard wake"}:\n${formatSchedule(schedule)}`;
 }
 
 function formatSchedule(schedule: ReturnType<typeof listChronoSchedules>[number]): string {
@@ -270,34 +326,33 @@ async function execute(input: Record<string, unknown>, context: Parameters<Tool[
   }
 
   if (selected === "wake") {
-    const repeatRaw = input.repeat;
-    const repeat = repeatRaw && typeof repeatRaw === "object" && !Array.isArray(repeatRaw)
-      ? repeatRaw as unknown as RepeatInput
-      : undefined;
-    const hardWakeRaw = input.hard_wake;
-    const hardWake = hardWakeRaw && typeof hardWakeRaw === "object" && !Array.isArray(hardWakeRaw)
-      ? hardWakeRaw as { when?: "failure" | "always"; message?: string; include_output?: boolean }
-      : undefined;
-    const result = createChronoSchedule({
-      ownerConversationId: convId,
-      at: typeof input.at === "string" ? input.at : undefined,
-      afterSeconds: typeof input.after_seconds === "number" ? input.after_seconds : undefined,
-      repeat,
-      timezone: typeof input.timezone === "string" ? input.timezone : undefined,
-      message: typeof input.message === "string" ? input.message : undefined,
-      command: typeof input.command === "string" ? input.command : undefined,
-      title: typeof input.title === "string" ? input.title : undefined,
-      timeoutSeconds: typeof input.timeout_seconds === "number" ? input.timeout_seconds : undefined,
-      hardWake: hardWake ? {
-        when: hardWake.when,
-        message: hardWake.message,
-        includeOutput: hardWake.include_output,
-      } : undefined,
-    });
-    if (!result.schedule) return { output: result.error ?? "Could not create Chrono schedule.", isError: true };
+    if (input.wakes === undefined) {
+      const result = createChronoSchedule(wakeScheduleInput(input, convId));
+      if (!result.schedule) return { output: result.error ?? "Could not create Chrono schedule.", isError: true };
+      return { output: scheduledWakeOutput(result.schedule), isError: false };
+    }
+    const wakes = batchWakes(input);
+    if ("error" in wakes) return { output: wakes.error, isError: true };
+    const created = createChronoSchedules(wakes.map(fields => wakeScheduleInput(fields, convId)));
+    if ("invalid" in created) {
+      if (wakes.length === 1) return { output: created.invalid[0].error, isError: true };
+      const lines = created.invalid.map(({ index, error }) => `wakes[${index}]: ${error}`);
+      return { output: `Invalid wakes; nothing was scheduled:\n${lines.join("\n")}`, isError: true };
+    }
+    const { results } = created;
+    if (wakes.length === 1) {
+      const [result] = results;
+      return result.schedule
+        ? { output: scheduledWakeOutput(result.schedule), isError: false }
+        : { output: result.error ?? "Could not create Chrono schedule.", isError: true };
+    }
+    const scheduled = results.filter(result => result.schedule).length;
+    const lines = results.map((result, index) => result.schedule
+      ? `scheduled: ${formatSchedule(result.schedule)}`
+      : `error: wakes[${index}]: ${result.error ?? "Could not create Chrono schedule."}`);
     return {
-      output: `Scheduled ${result.schedule.target.kind === "command" ? "soft wake" : "hard wake"}:\n${formatSchedule(result.schedule)}`,
-      isError: false,
+      output: `Scheduled ${scheduled} of ${results.length} Chrono wakes:\n${lines.join("\n")}`,
+      isError: scheduled === 0,
     };
   }
 
@@ -357,9 +412,41 @@ async function execute(input: Record<string, unknown>, context: Parameters<Tool[
   return { output: "Invalid Chrono action. Use wait, sleep, wake, list, adopt, or cancel.", isError: true };
 }
 
+/** Per-wake fields, accepted at the top level for one wake or inside each wakes item. */
+const WAKE_PROPERTIES = {
+  at: { type: "string", description: "For wake: future ISO-8601 date/time with an explicit timezone offset." },
+  after_seconds: { type: "number", exclusiveMinimum: 0, description: "For wake: relative delay; cannot be combined with at." },
+  title: { type: "string", description: "Short Tasks UI title for the scheduled wake." },
+  message: { type: "string", description: "Hard wake payload: starts/queues a model turn in this conversation." },
+  command: { type: "string", description: "Soft wake payload: runs directly without a model. Exactly one of message or command is required. Execution is at-least-once after crashes; CHRONO_OCCURRENCE_ID is exported for deduplication." },
+  timeout_seconds: { type: "number", exclusiveMinimum: 0, maximum: 86400, description: "Soft-wake command timeout; defaults to 300 seconds." },
+  timezone: { type: "string", description: "IANA timezone for daily/weekly/monthly recurrence; defaults to daemon local timezone." },
+  repeat: {
+    type: "object",
+    description: "Optional structured recurrence. Minute/hour are fixed intervals; day/week/month preserve local wall time.",
+    properties: {
+      unit: { type: "string", enum: ["minute", "hour", "day", "week", "month"] },
+      interval: { type: "integer", minimum: 1, maximum: 10000 },
+      weekdays: { type: "array", items: { type: "string", enum: ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] } },
+    },
+    required: ["unit"],
+    additionalProperties: false,
+  },
+  hard_wake: {
+    type: "object",
+    description: "For command soft-wakes: conditionally wake the model. With when=failure, the command can define any escalation condition by exiting non-zero.",
+    properties: {
+      when: { type: "string", enum: ["failure", "always"], description: "Defaults to failure." },
+      message: { type: "string", description: "Instruction delivered to the model on escalation." },
+      include_output: { type: "boolean", description: "Include capped command output; defaults to true." },
+    },
+    additionalProperties: false,
+  },
+};
+
 export const chrono: Tool = {
   name: "chrono",
-  description: "Wait for an active task up to a required limit, sleep the current model turn, or manage durable one-shot/recurring wakes. Sleeps and waits with limits longer than five minutes suspend the provider turn and resume it by replay on completion, timeout, or a user message. A message is a hard wake that starts the model. A command is a soft wake that runs without a model and can escalate to a hard wake on failure or a script-defined non-zero exit.",
+  description: "Wait for an active task up to a required limit, sleep the current model turn, or manage durable one-shot/recurring wakes (several per call with wakes). Sleeps and waits with limits longer than five minutes suspend the provider turn and resume it by replay on completion, timeout, or a user message. A message is a hard wake that starts the model. A command is a soft wake that runs without a model and can escalate to a hard wake on failure or a script-defined non-zero exit.",
   systemHint: "Prefer chrono over shell sleep or cron. Use native session polling for shell tools that provide it; use chrono wait for other active tasks. `wait` requires a `max_wait` safety limit and wakes immediately when the task finishes. `sleep` pauses this turn until the duration elapses; `wake` persists across daemon restarts; message wakes start a model turn, while command soft-wakes can use hard_wake to escalate failures or command-defined non-zero conditions.",
   inputSchema: {
     type: "object",
@@ -368,33 +455,11 @@ export const chrono: Tool = {
       task_id: { type: "string", description: "For wait: exact active task id from the Tasks UI, exec_command, or daemon IPC list_tasks." },
       max_wait: { type: "string", description: "Required for wait: maximum duration to wait, such as 30s, 1m20s, 2h 30m, or 1d." },
       duration: { type: "string", description: "For sleep: positive duration such as 30s, 1m20s, 2h 30m, or 1d." },
-      at: { type: "string", description: "For wake: future ISO-8601 date/time with an explicit timezone offset." },
-      after_seconds: { type: "number", exclusiveMinimum: 0, description: "For wake: relative delay; cannot be combined with at." },
-      title: { type: "string", description: "Short Tasks UI title for the scheduled wake." },
-      message: { type: "string", description: "Hard wake payload: starts/queues a model turn in this conversation." },
-      command: { type: "string", description: "Soft wake payload: runs directly without a model. Exactly one of message or command is required. Execution is at-least-once after crashes; CHRONO_OCCURRENCE_ID is exported for deduplication." },
-      timeout_seconds: { type: "number", exclusiveMinimum: 0, maximum: 86400, description: "Soft-wake command timeout; defaults to 300 seconds." },
-      timezone: { type: "string", description: "IANA timezone for daily/weekly/monthly recurrence; defaults to daemon local timezone." },
-      repeat: {
-        type: "object",
-        description: "Optional structured recurrence. Minute/hour are fixed intervals; day/week/month preserve local wall time.",
-        properties: {
-          unit: { type: "string", enum: ["minute", "hour", "day", "week", "month"] },
-          interval: { type: "integer", minimum: 1, maximum: 10000 },
-          weekdays: { type: "array", items: { type: "string", enum: ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] } },
-        },
-        required: ["unit"],
-        additionalProperties: false,
-      },
-      hard_wake: {
-        type: "object",
-        description: "For command soft-wakes: conditionally wake the model. With when=failure, the command can define any escalation condition by exiting non-zero.",
-        properties: {
-          when: { type: "string", enum: ["failure", "always"], description: "Defaults to failure." },
-          message: { type: "string", description: "Instruction delivered to the model on escalation." },
-          include_output: { type: "boolean", description: "Include capped command output; defaults to true." },
-        },
-        additionalProperties: false,
+      ...WAKE_PROPERTIES,
+      wakes: {
+        type: "array",
+        items: { type: "object", properties: WAKE_PROPERTIES, additionalProperties: false },
+        description: `For wake: schedule several wakes in one call (at most ${MAX_WAKES}). Each item takes the same fields as a single wake (at or after_seconds, message or command, title, repeat, timezone, timeout_seconds, hard_wake); do not also set those fields at the top level. Every item is validated before any is created, and each is reported on its own line.`,
       },
       schedule_id: { type: "string", description: "For adopt/cancel: exact Chrono schedule id. Adopt transfers an ownerless command schedule to this conversation and configures failure escalation." },
       schedule_ids: { type: "array", items: { type: "string" }, description: `For cancel: exact Chrono schedule ids to cancel in one call (at most ${MAX_CANCEL_SCHEDULE_IDS}); merged with schedule_id. Each id is cancelled independently and reported on its own line.` },
@@ -420,8 +485,13 @@ export const chrono: Tool = {
           : ids[0] ?? "";
       return { label: "Chrono", detail: detail ? `cancel: ${detail}` : "cancel" };
     }
+    if (selected === "wake" && Array.isArray(input.wakes)) {
+      const titles = input.wakes.map(item => isPlainObject(item) ? wakeSummary(item) : "").filter(Boolean);
+      const detail = input.wakes.length > 1 ? `${input.wakes.length} schedules: ${titles.join(", ")}` : titles[0] ?? "";
+      return { label: "Chrono", detail: detail ? `wake: ${detail}` : "wake" };
+    }
     const detail = selected === "sleep" ? String(input.duration ?? "")
-      : selected === "wake" ? String(input.title ?? input.message ?? input.command ?? input.at ?? "")
+      : selected === "wake" ? wakeSummary(input)
         : selected === "adopt" ? String(input.schedule_id ?? "")
           : "";
     return { label: "Chrono", detail: detail ? `${selected}: ${detail}` : selected };
