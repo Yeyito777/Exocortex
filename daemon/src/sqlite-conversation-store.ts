@@ -427,6 +427,28 @@ export function sqliteConversationStorePath(): string {
   return join(dataDir(), DEFAULT_FILE);
 }
 
+/**
+ * True when opening `path` for writing would neither migrate the schema nor run
+ * the legacy import, so startup can skip the schema worker (whose module graph
+ * alone costs ~200ms). Any doubt, including a missing file, answers false.
+ */
+export function sqliteConversationStoreIsCurrent(path: string, importLegacy: boolean): boolean {
+  if (!existsSync(path)) return false;
+  let db: Database | null = null;
+  try {
+    db = new Database(path, { readonly: true });
+    const version = db.query<{ version: number | null }, []>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version;
+    if (version !== SCHEMA_VERSION) return false;
+    return !importLegacy || db.query<{ value: string }, [string]>(
+      "SELECT value FROM store_metadata WHERE key=?",
+    ).get("legacy_import_complete")?.value === "1";
+  } catch {
+    return false;
+  } finally {
+    try { db?.close(); } catch { /* best effort */ }
+  }
+}
+
 export class SqliteConversationStore implements ConversationRepository {
   readonly path: string;
   readonly db: Database;

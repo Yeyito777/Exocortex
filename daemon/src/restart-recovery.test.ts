@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { existsSync, readFileSync } from "fs";
 import { clearActiveJob, consumeGoalContinuationAfterStream, conversationCacheInternalsForTest, create, get, getQueuedMessages, getSummary, pushQueuedMessage, remove, requestGoalContinuationAfterStream, setActiveJob, setGoal, updateGoalStatus } from "./conversations";
 import { DEFAULT_EFFORT } from "./messages";
+import { beginStreamHandoff, clearStreamHandoff } from "./streaming";
 
 const orchestrateReplayConversation = mock(async () => ({ ok: true }));
 const orchestrateGoalCycle = mock(async () => ({ ok: true }));
@@ -129,6 +130,34 @@ describe("restart recovery file", () => {
     expect(ac.signal.aborted).toBe(true);
     expect(ac.signal.reason).toBe("daemon-restart");
     expect(readInterruptedStreamIds()).toEqual([convId]);
+  });
+
+  test("catchable shutdown returns as soon as interrupted turns settle", async () => {
+    const convId = makeConversation("prompt-settle");
+    const ac = new AbortController();
+    setActiveJob(convId, ac, Date.now());
+    ac.signal.addEventListener("abort", () => setTimeout(() => clearActiveJob(convId), 20));
+
+    const startedAt = performance.now();
+    const result = await prepareCatchableShutdownForReplay(5_000);
+
+    expect(result.stillStreaming).toEqual([]);
+    // The settle wait used to step in 250ms increments.
+    expect(performance.now() - startedAt).toBeLessThan(150);
+  });
+
+  test("catchable shutdown does not schedule replay for a handoff without a model turn", async () => {
+    const convId = makeConversation("handoff");
+    beginStreamHandoff(convId);
+    try {
+      const result = await prepareCatchableShutdownForReplay(30);
+
+      expect(result.convIds).toEqual([]);
+      expect(result.stillStreaming).toEqual([convId]);
+      expect(readInterruptedStreamIds()).toEqual([]);
+    } finally {
+      clearStreamHandoff(convId);
+    }
   });
 
   test("catchable shutdown aborts maintenance jobs without scheduling an assistant replay", async () => {

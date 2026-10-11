@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { REALTIME_CALL_STATUS_KIND, REALTIME_TRANSCRIPT_KIND, createConversation, historyPrefixHash, type StoredMessage } from "./messages";
-import { SqliteConversationStore } from "./sqlite-conversation-store";
+import { SqliteConversationStore, sqliteConversationStoreIsCurrent } from "./sqlite-conversation-store";
 import { clonedConversationValue } from "./conversation-clone";
 import { buildConversationApiContext } from "./context-compaction";
 
@@ -1108,5 +1108,23 @@ describe("SQLite maintenance", () => {
     expect(unchanged.query<{ version: number }, []>("SELECT version FROM schema_migrations").get()?.version).toBe(999);
     expect(unchanged.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM sqlite_schema WHERE type='table' AND name<>'schema_migrations'").get()?.count).toBe(0);
     unchanged.close();
+  });
+});
+
+describe("startup schema fast path", () => {
+  test("is taken only for a current schema whose legacy import finished", () => {
+    const { path } = pathFor("is-current");
+    expect(sqliteConversationStoreIsCurrent(path, false)).toBe(false);
+
+    const old = new SqliteConversationStore({ path, targetSchemaVersion: 13 });
+    old.close();
+    expect(sqliteConversationStoreIsCurrent(path, false)).toBe(false);
+
+    const store = new SqliteConversationStore({ path });
+    expect(sqliteConversationStoreIsCurrent(path, false)).toBe(true);
+    expect(sqliteConversationStoreIsCurrent(path, true)).toBe(false);
+    store.importLegacyIfNeeded();
+    expect(sqliteConversationStoreIsCurrent(path, true)).toBe(true);
+    store.close();
   });
 });

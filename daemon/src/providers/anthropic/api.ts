@@ -15,7 +15,8 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { query, type Options as ClaudeQueryOptions } from "@anthropic-ai/claude-agent-sdk";
+import type { Options as ClaudeQueryOptions } from "@anthropic-ai/claude-agent-sdk";
+import { claudeSdks, loadClaudeSdks } from "./sdk";
 import { createAbortError } from "../../abort";
 import { log } from "../../log";
 import type { ApiMessage, EffortLevel, ModelId } from "../../messages";
@@ -139,7 +140,7 @@ async function runClaudeQuery(
   signal: AbortSignal | undefined,
   stderrTail: () => string,
 ): Promise<StreamResult> {
-  const runtime = query({ prompt, options: queryOptions });
+  const runtime = claudeSdks().claude.query({ prompt, options: queryOptions });
   const heartbeat = setInterval(() => state.callbacks.onActivity?.(), HEARTBEAT_INTERVAL_MS);
   const onAbort = () => {
     clearInterval(heartbeat);
@@ -179,6 +180,7 @@ export async function streamMessage(
 ): Promise<StreamResult> {
   const { signal } = options;
   await requireSubscriptionAuth(signal);
+  await loadClaudeSdks();
 
   let stderr = "";
   const onStderr = (data: string) => { stderr = (stderr + data).slice(-STDERR_TAIL_CHARS); };
@@ -232,7 +234,7 @@ export async function streamMessage(
       history,
     } : null;
     const relay = meta ? new ClaudeRelay(onStderr) : null;
-    const session = openClaudeCodeSession(convId, key, (input, binding) => query({
+    const session = openClaudeCodeSession(convId, key, (input, binding) => claudeSdks().claude.query({
       prompt: input,
       options: {
         ...agentTurnOptions(model, options, cwd, resumePlan, onStderr, binding),
@@ -274,7 +276,9 @@ export async function streamMessage(
 export async function adoptClaudeCodeProcesses(hasConversation: (convId: string) => boolean): Promise<string[]> {
   if (!relaysEnabled()) return [];
   const pending: string[] = [];
-  for (const relay of await reconnectRelays()) {
+  const relays = await reconnectRelays();
+  if (relays.length > 0) await loadClaudeSdks();
+  for (const relay of relays) {
     const hello = relay.hello!;
     const { meta } = hello;
     if (relay.exitCode !== null) continue;
@@ -286,7 +290,7 @@ export async function adoptClaudeCodeProcesses(hasConversation: (convId: string)
     }
     openClaudeCodeSession(meta.convId, meta.key, (input, binding) => {
       const hostTools = createHostToolServer(meta.hostTools, binding);
-      return query({
+      return claudeSdks().claude.query({
         prompt: input,
         // Claude Code is already running: only what the SDK re-sends when it
         // connects matters, and it matches what started the process.

@@ -9,6 +9,7 @@ import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, defaultEffortForModelId
 import { appendToStreamingBlock, clearActiveJob, clearActiveSteerHandler, clearActiveToolBackgrounder, clearCurrentStreamingBlocks, initStreamingState, replaceCurrentStreamingBlocks, setActiveJob, setActiveSteerHandler, setActiveToolBackgrounder, setStreamingCommittedMessageCount } from "./streaming";
 import { beginPendingSubagentNotification, listPendingSubagentNotifications, removePendingSubagentNotificationsForConversation } from "./subagent-notifications";
 import { getDaemonShutdownMode, resetDaemonShutdownModeForTest } from "./daemon-lifecycle";
+import { clearActiveGoalRestartMarker, clearInterruptedStreamIds, hasActiveGoalRestartMarker, readInterruptedStreamIds } from "./restart-markers";
 import { invalidateCredentialsCache } from "./auth";
 import { clearProviderAuth, saveProviderAuth } from "./store";
 import { resetExternalNotificationsForTest } from "./external-notifications";
@@ -342,6 +343,59 @@ describe("handler shutdown preparation", () => {
 
     expect(getDaemonShutdownMode()).toBe("stop");
     expect(sent).toContainEqual({ type: "ack", reqId: "prepare-stop" });
+  });
+
+  test("interrupts running turns for replay in-process and reports them once settled", async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+    const id = mkId("prepare-restart");
+    create(id, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
+    const ac = new AbortController();
+    setActiveJob(id, ac, Date.now());
+    ac.signal.addEventListener("abort", () => setTimeout(() => clearActiveJob(id), 20));
+
+    try {
+      await handle({} as never, { type: "prepare_shutdown", reqId: "prepare-restart", mode: "restart", interruptForReplay: true, timeoutMs: 5_000 });
+
+      expect(getDaemonShutdownMode()).toBe("restart");
+      expect(ac.signal.reason).toBe("daemon-restart");
+      expect(readInterruptedStreamIds()).toEqual([id]);
+      expect(hasActiveGoalRestartMarker()).toBe(true);
+      expect(sent).toContainEqual({ type: "shutdown_prepared", reqId: "prepare-restart", convIds: [id], stillStreaming: [] });
+    } finally {
+      clearInterruptedStreamIds();
+      clearActiveGoalRestartMarker();
+    }
+  });
+
+  test("leaves replay preparation to the caller once a stop is already underway", async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({} as never, { type: "prepare_shutdown", reqId: "stop", mode: "stop" });
+    await handle({} as never, { type: "prepare_shutdown", reqId: "late-restart", mode: "restart", interruptForReplay: true });
+
+    expect(getDaemonShutdownMode()).toBe("stop");
+    expect(hasActiveGoalRestartMarker()).toBe(false);
+    expect(sent).toContainEqual({ type: "ack", reqId: "late-restart" });
   });
 
   test("acknowledges an instance-local restart before invoking its owner", async () => {

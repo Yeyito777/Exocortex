@@ -84,6 +84,13 @@ export interface PrepareShutdownCommand {
   type: "prepare_shutdown";
   reqId?: string;
   mode: DaemonShutdownMode;
+  /**
+   * Restart only: also interrupt running turns for replay and answer with
+   * shutdown_prepared once they settle. Daemons predating this answer ack.
+   */
+  interruptForReplay?: boolean;
+  /** Upper bound on waiting for interrupted turns to settle. */
+  timeoutMs?: number;
 }
 
 /** Ask the daemon on this connection to restart its own process instance. */
@@ -1181,6 +1188,16 @@ export interface DaemonShutdownEvent {
   mode: DaemonShutdownMode;
 }
 
+/** Answer to prepare_shutdown with interruptForReplay. */
+export interface ShutdownPreparedEvent {
+  type: "shutdown_prepared";
+  reqId?: string;
+  /** Conversations recorded for replay after the restart. */
+  convIds: string[];
+  /** Conversations still running when the settle deadline passed. */
+  stillStreaming: string[];
+}
+
 export interface AckEvent {
   type: "ack";
   reqId?: string;
@@ -2029,6 +2046,7 @@ export type Event =
   | ClientExecRequestEvent
   | ClientExecCancelEvent
   | DaemonShutdownEvent
+  | ShutdownPreparedEvent
   | AckEvent
   | ConversationCreatedEvent
   | BtwStartedEvent

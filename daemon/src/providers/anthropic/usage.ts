@@ -11,7 +11,8 @@
  * The last snapshot is kept on disk so it shows as soon as a client connects.
  */
 
-import { query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import { loadClaudeSdks } from "./sdk";
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 import { runtimeDir } from "@exocortex/shared/paths";
@@ -142,6 +143,7 @@ function silentInput(signal: AbortSignal): AsyncIterable<SDKUserMessage> {
 
 /** Ask a bare Claude Code process for the plan's rate limits (the data behind `/usage`). */
 async function fetchPlanRateLimits(): Promise<Record<string, unknown> | null> {
+  const { claude: { query } } = await loadClaudeSdks();
   const stop = new AbortController();
   const runtime = query({
     prompt: silentInput(stop.signal),

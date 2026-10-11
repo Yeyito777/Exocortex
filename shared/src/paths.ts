@@ -23,6 +23,7 @@
  */
 
 import { execSync } from "child_process";
+import { existsSync, readFileSync, statSync } from "fs";
 import { createHash } from "crypto";
 import { tmpdir } from "os";
 import { join, basename, resolve, dirname } from "path";
@@ -83,6 +84,12 @@ let _worktreeName: string | null | undefined; // undefined = not yet detected
 function detectWorktree(): string | null {
   if (_worktreeName !== undefined) return _worktreeName;
 
+  const fromDotGit = worktreeFromDotGit(join(REPO_ROOT, ".git"));
+  if (fromDotGit !== undefined) {
+    _worktreeName = fromDotGit;
+    return _worktreeName;
+  }
+
   try {
     const gitDir = execSync("git rev-parse --git-dir", {
       cwd: REPO_ROOT,
@@ -112,6 +119,26 @@ function detectWorktree(): string | null {
   }
 
   return _worktreeName;
+}
+
+/**
+ * Answer from the checkout's own .git entry without spawning git, which cost
+ * every daemon/TUI/CLI process ~40ms at startup. A linked worktree's .git is a
+ * file pointing at <common>/.git/worktrees/<name>, which holds a commondir
+ * file; the main checkout's .git is a directory. Returns undefined when the
+ * layout is anything else so the caller can fall back to asking git.
+ */
+export function worktreeFromDotGit(dotGit: string): string | null | undefined {
+  try {
+    if (!existsSync(dotGit)) return undefined;
+    if (statSync(dotGit).isDirectory()) return null;
+    const match = /^gitdir:\s*(.+?)\s*$/m.exec(readFileSync(dotGit, "utf-8"));
+    if (!match) return undefined;
+    const gitDir = resolve(dirname(dotGit), match[1]);
+    return existsSync(join(gitDir, "commondir")) ? basename(gitDir) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 // ── Platform ───────────────────────────────────────────────────────

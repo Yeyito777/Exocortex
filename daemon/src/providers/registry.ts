@@ -115,28 +115,45 @@ export function getProviders(): ProviderInfo[] {
   return cloneProviders(getProviderCache());
 }
 
+// Read-only views of the cache for internal lookups. Public getters hand out
+// clones because callers may mutate them; cloning the whole catalog for every
+// lookup made per-conversation normalization dominate daemon boot.
+function cachedProvider(providerId: ProviderId): ProviderInfo | null {
+  return getProviderCache().find((provider) => provider.id === providerId) ?? null;
+}
+
+function cachedModel(providerId: ProviderId, model: ModelId): ModelInfo | null {
+  return cachedProvider(providerId)?.models.find((candidate) => candidate.id === model) ?? null;
+}
+
+export function hasProvider(providerId: ProviderId): boolean {
+  return cachedProvider(providerId) !== null;
+}
+
 export function getProvider(providerId: ProviderId): ProviderInfo | null {
-  return getProviders().find((provider) => provider.id === providerId) ?? null;
+  const provider = cachedProvider(providerId);
+  return provider ? structuredClone(provider) : null;
 }
 
 export function getDefaultProvider(): ProviderInfo {
-  return getProviders()[0];
+  return structuredClone(getProviderCache()[0]);
 }
 
 export function getDefaultModel(providerId: ProviderId): ModelId {
-  return getProvider(providerId)?.defaultModel ?? getDefaultProvider().defaultModel;
+  return cachedProvider(providerId)?.defaultModel ?? getProviderCache()[0].defaultModel;
 }
 
 export function getModelInfo(providerId: ProviderId, model: ModelId): ModelInfo | null {
-  return getProvider(providerId)?.models.find((candidate) => candidate.id === model) ?? null;
+  const info = cachedModel(providerId, model);
+  return info ? structuredClone(info) : null;
 }
 
 export function canonicalizeModel(providerId: ProviderId, model: ModelId): ModelId {
-  return getModelInfo(providerId, model)?.id ?? MODEL_ID_ALIASES[providerId][model] ?? model;
+  return cachedModel(providerId, model)?.id ?? MODEL_ID_ALIASES[providerId][model] ?? model;
 }
 
 export function getMaxContext(providerId: ProviderId, model: ModelId): number | null {
-  return getModelInfo(providerId, model)?.maxContext ?? MAX_CONTEXT[providerId === "openai" ? openAIWireModel(model) : model] ?? null;
+  return cachedModel(providerId, model)?.maxContext ?? MAX_CONTEXT[providerId === "openai" ? openAIWireModel(model) : model] ?? null;
 }
 
 export function getSupportedEfforts(providerId: ProviderId, model: ModelId): ReasoningEffortInfo[] {
@@ -144,43 +161,43 @@ export function getSupportedEfforts(providerId: ProviderId, model: ModelId): Rea
 }
 
 export function getDefaultEffort(providerId: ProviderId, model: ModelId): EffortLevel {
-  return getModelInfo(providerId, model)?.defaultEffort ?? defaultEffortForModelId(providerId, model);
+  return cachedModel(providerId, model)?.defaultEffort ?? defaultEffortForModelId(providerId, model);
 }
 
 export function normalizeEffort(providerId: ProviderId, model: ModelId, effort: EffortLevel | null | undefined): EffortLevel {
-  const modelInfo = getModelInfo(providerId, model);
+  const modelInfo = cachedModel(providerId, model);
   if (modelInfo) return normalizeEffortForModel(modelInfo, effort);
   return effort ?? defaultEffortForModelId(providerId, model);
 }
 
 export function supportsEffort(providerId: ProviderId, model: ModelId, effort: EffortLevel): boolean {
-  return getSupportedEfforts(providerId, model).some((candidate) => candidate.effort === effort);
+  return (cachedModel(providerId, model)?.supportedEfforts ?? []).some((candidate) => candidate.effort === effort);
 }
 
 export function isKnownModel(providerId: ProviderId, model: ModelId): boolean {
-  return getProvider(providerId)?.models.some((candidate) => candidate.id === model) ?? false;
+  return cachedModel(providerId, model) !== null;
 }
 
 export function allowsCustomModels(providerId: ProviderId): boolean {
-  return getProvider(providerId)?.allowsCustomModels ?? false;
+  return cachedProvider(providerId)?.allowsCustomModels ?? false;
 }
 
 export function supportsFastMode(providerId: ProviderId, model?: ModelId, mode: FastMode = true): boolean {
-  const provider = getProvider(providerId);
+  const provider = cachedProvider(providerId);
   if (!provider?.supportsFastMode) return false;
-  if (mode === "ultrafast") return !!model && getModelInfo(providerId, model)?.supportsUltrafastMode === true;
-  return !model || getModelInfo(providerId, model)?.supportsFastMode !== false;
+  if (mode === "ultrafast") return !!model && cachedModel(providerId, model)?.supportsUltrafastMode === true;
+  return !model || cachedModel(providerId, model)?.supportsFastMode !== false;
 }
 
 export function supportsImageInputs(providerId: ProviderId, model: ModelId): boolean {
-  return supportsImageInputsForModel(getModelInfo(providerId, model));
+  return supportsImageInputsForModel(cachedModel(providerId, model));
 }
 
 /** Fail closed for our reserved product aliases, even on custom-model providers. */
 export function daybreakSelectionError(providerId: ProviderId, model: ModelId): string | null {
   if (!isDaybreakModelId(model)) return null;
   if (providerId !== "openai" || model !== DAYBREAK_MODEL_ID) return DAYBREAK_RETIRED_MODEL;
-  return modelSupportsDaybreak(providerId, getModelInfo(providerId, DAYBREAK_BASE_MODEL_ID))
+  return modelSupportsDaybreak(providerId, cachedModel(providerId, DAYBREAK_BASE_MODEL_ID))
     ? null : DAYBREAK_UNAVAILABLE;
 }
 
@@ -191,7 +208,7 @@ export function cyberAccessProgramForSelection(providerId: ProviderId, model: Mo
   if (model === DAYBREAK_MODEL_ID) {
     return "daybreak_blue";
   }
-  return providerId === "openai" && getModelInfo(providerId, model)?.supportsStandardCyber
+  return providerId === "openai" && cachedModel(providerId, model)?.supportsStandardCyber
     ? "standard" : undefined;
 }
 

@@ -1,8 +1,11 @@
-import { describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { ApiToolCall } from "../types";
 import { createHostToolServer, type HostToolBinding } from "./host-tools";
+import { loadClaudeSdks } from "./sdk";
+
+beforeAll(async () => { await loadClaudeSdks(); });
 
 const chronoDef = { name: "chrono", description: "Schedule things.", input_schema: { type: "object" as const, properties: { action: { type: "string" } } } };
 const goalDef = { name: "goal", description: "Report on the goal.", input_schema: { type: "object" as const, properties: { action: { type: "string" } } } };

@@ -55,7 +55,8 @@ const STARTUP_PROFILE = process.env.EXOCORTEX_PROFILE_STARTUP === "1" || process
 
 function profileMark(event: string, details: object = {}): void {
   if (!STARTUP_PROFILE) return;
-  console.error(`[startup-profile] ${JSON.stringify({ process: "daemon", event, elapsedMs: Math.round(performance.now() * 1000) / 1000, ...details })}`);
+  const now = performance.now();
+  console.error(`[startup-profile] ${JSON.stringify({ process: "daemon", event, elapsedMs: Math.round(now * 1000) / 1000, epochMs: Math.round((performance.timeOrigin + now) * 1000) / 1000, ...details })}`);
 }
 
 // ── Working directory / paths ───────────────────────────────────────
@@ -143,6 +144,7 @@ async function startDaemon(): Promise<void> {
       const requestedMode = resolveDaemonShutdownMode(exitCode, hasActiveGoalRestartMarker());
       const shutdownMode = beginDaemonShutdown(requestedMode);
       log("info", `exocortexd: shutting down (${reason}, mode=${shutdownMode})`);
+      profileMark("shutdown_begin", { reason, mode: shutdownMode });
       // Give connected clients the graceful shutdown reason while the socket is
       // still writable. In particular, this keeps a planned restart from also
       // looking like an unrelated transport failure in the TUI.
@@ -150,6 +152,9 @@ async function startDaemon(): Promise<void> {
       stopWatchdog();
       stopExternalNotificationSoftWakeService();
       stopChronoService();
+      // Supervised tool daemons take the longest to exit and depend on none of
+      // the conversation work below, so signal them first and await them later.
+      const externalToolsStopped = isWindows ? Promise.resolve() : stopExternalToolsAsync();
       await commandHandler?.stop();
 
       if (shutdownMode === "restart") {
@@ -169,6 +174,8 @@ async function startDaemon(): Promise<void> {
           log("warn", `exocortexd: ${stopPrep.stillStreaming.length} conversation(s) still shutting down after stop timeout: ${stopPrep.stillStreaming.join(", ")}`);
         }
       }
+
+      profileMark("shutdown_streams_settled");
 
       // Claude Code processes (and their background tasks) run under relays
       // that outlive a restart: the next daemon adopts them. A stop ends them.
@@ -192,14 +199,15 @@ async function startDaemon(): Promise<void> {
       }
       backgroundTaskRecovery?.stop();
 
-      if (!isWindows) {
-        await stopExternalToolsAsync();
-      }
+      await externalToolsStopped;
+      profileMark("shutdown_external_tools_stopped");
       convStore.flushAll();
       stopConversationLoader();
       closeConversationPersistence();
+      profileMark("shutdown_persistence_closed");
       await server.stop();
       try { unlinkSync(PID_PATH); } catch { /* best-effort cleanup */ }
+      profileMark("shutdown_exit", { exitCode });
       process.exit(exitCode);
     })().catch((err) => {
       log("error", `exocortexd: shutdown failed: ${formatFatal(err)}`);

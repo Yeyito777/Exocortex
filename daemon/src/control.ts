@@ -2,7 +2,7 @@ import { existsSync } from "fs";
 import { connect as netConnect } from "net";
 import type { Event } from "./protocol";
 import { isWindows, socketPath } from "@exocortex/shared/paths";
-import { clearRestartRecoveryForStop, readInterruptedStreamIds, writeActiveGoalRestartMarker, writeInterruptedStreamIds } from "./restart-recovery";
+import { PREPARE_RESTART_MAX_SETTLE_MS, readInterruptedStreamIds, writeActiveGoalRestartMarker, writeInterruptedStreamIds } from "./restart-markers";
 
 function makeReqId(prefix: string): string {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -151,28 +151,29 @@ async function abortConversation(convId: string, timeoutMs = 2_000): Promise<voi
   });
 }
 
-/** Send one command and resolve on its matching acknowledgement. */
-async function sendAcknowledgedCommand(
+/** Send one command and resolve with its matching reply (ack, or `replyTypes`). */
+async function sendCommand(
   command: { type: string } & Record<string, unknown>,
   description: string,
   timeoutMs = 2_000,
-): Promise<void> {
+  replyTypes: readonly Event["type"][] = ["ack"],
+): Promise<Event> {
   const path = ensureSocketExists();
   return new Promise((resolve, reject) => {
     const reqId = makeReqId(command.type);
     const socket = netConnect(path);
     let buffer = "";
     let settled = false;
-    const finish = (error?: Error) => {
+    const finish = (result: { event?: Event; error?: Error }) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       socket.destroy();
-      if (error) reject(error);
-      else resolve();
+      if (result.error) reject(result.error);
+      else resolve(result.event!);
     };
     const timer = setTimeout(() => {
-      finish(new Error(`Timed out after ${timeoutMs}ms waiting for exocortexd to ${description}`));
+      finish({ error: new Error(`Timed out after ${timeoutMs}ms waiting for exocortexd to ${description}`) });
     }, timeoutMs);
 
     socket.on("connect", () => {
@@ -187,27 +188,37 @@ async function sendAcknowledgedCommand(
         if (line) {
           try {
             const event = JSON.parse(line) as Event;
-            if (event.type === "ack" && event.reqId === reqId) {
-              finish();
-              return;
-            }
-            if (event.type === "error" && event.reqId === reqId) {
-              finish(new Error(event.message));
-              return;
+            if ("reqId" in event && event.reqId === reqId) {
+              if (event.type === "error") {
+                finish({ error: new Error(event.message) });
+                return;
+              }
+              if (replyTypes.includes(event.type)) {
+                finish({ event });
+                return;
+              }
             }
           } catch (error) {
-            finish(error instanceof Error ? error : new Error(String(error)));
+            finish({ error: error instanceof Error ? error : new Error(String(error)) });
             return;
           }
         }
         newlineIndex = buffer.indexOf("\n");
       }
     });
-    socket.on("error", (error) => finish(error));
+    socket.on("error", (error) => finish({ error }));
     socket.on("close", () => {
-      if (!settled) finish(new Error(`Connection closed before exocortexd acknowledged: ${description}`));
+      if (!settled) finish({ error: new Error(`Connection closed before exocortexd acknowledged: ${description}`) });
     });
   });
+}
+
+async function sendAcknowledgedCommand(
+  command: { type: string } & Record<string, unknown>,
+  description: string,
+  timeoutMs = 2_000,
+): Promise<void> {
+  await sendCommand(command, description, timeoutMs);
 }
 
 function requestDaemonShutdownMode(mode: "stop" | "restart", timeoutMs = 2_000): Promise<void> {
@@ -221,6 +232,9 @@ export function requestInstanceRestart(timeoutMs = 2_000): Promise<void> {
 
 export async function prepareStopWithoutReplay(): Promise<void> {
   await requestDaemonShutdownMode("stop");
+  // Loaded on demand: restart-recovery pulls in the daemon's module graph,
+  // which the restart path of this control process must not pay for.
+  const { clearRestartRecoveryForStop } = await import("./restart-recovery");
   clearRestartRecoveryForStop();
 }
 
@@ -232,23 +246,34 @@ export interface PrepareRestartResult {
 /**
  * Prepare a daemon restart that should resume active conversations afterwards.
  *
- * The control process records every streaming conversation in the restart
- * recovery file, asks the live daemon to abort those streams so it can persist
- * any salvageable partial turn, and waits briefly for streaming to stop. If a
- * stream refuses to stop before the deadline, the saved recovery file is still
- * enough for the next daemon to replay from the persisted history.
+ * The live daemon quiesces, records every restart-recoverable streaming
+ * conversation in the restart recovery file, aborts the running ones so they
+ * persist any salvageable partial turn, and answers once they have settled or
+ * the deadline passed. If a stream refuses to stop in time, the saved recovery
+ * file is still enough for the next daemon to replay from persisted history.
  */
-export async function prepareRestartForReplay(timeoutMs = 30_000): Promise<PrepareRestartResult> {
-  // Quiesce the live daemon before aborting anything. Without this handshake,
-  // aborted turns can drain queues or spawn more subagents while preparation is
-  // trying to converge on an empty running set.
+export async function prepareRestartForReplay(timeoutMs = PREPARE_RESTART_MAX_SETTLE_MS): Promise<PrepareRestartResult> {
   try {
-    await requestDaemonShutdownMode("restart");
+    const reply = await sendCommand(
+      { type: "prepare_shutdown", mode: "restart", interruptForReplay: true, timeoutMs },
+      "prepare restart",
+      timeoutMs + 5_000,
+      ["ack", "shutdown_prepared"],
+    );
+    if (reply.type === "shutdown_prepared") {
+      return { convIds: reply.convIds, stillStreaming: reply.stillStreaming };
+    }
+    // A daemon predating in-process preparation only quiesced; finish here.
   } catch (err) {
     // One-upgrade compatibility: the currently running daemon may predate the
     // handshake even though this control process is executing newer source.
     console.error(`  ⚠ Live daemon did not accept restart quiescing; using legacy preparation: ${err instanceof Error ? err.message : String(err)}`);
   }
+  return prepareRestartOverSocket(timeoutMs);
+}
+
+/** Legacy preparation driven from this process: poll, record and abort over the socket. */
+async function prepareRestartOverSocket(timeoutMs: number): Promise<PrepareRestartResult> {
   const interrupted = new Set<string>();
   try {
     for (const id of readInterruptedStreamIds()) interrupted.add(id);

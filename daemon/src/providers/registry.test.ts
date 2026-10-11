@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID } from "@exocortex/shared/messages";
-import { canonicalizeModel, getDefaultModel, getDefaultProvider, isKnownModel, supportsImageInputs } from "./registry";
+import { canonicalizeModel, getDefaultModel, getDefaultProvider, getModelInfo, getProvider, hasProvider, isKnownModel, normalizeEffort, supportsImageInputs } from "./registry";
 
 describe("provider registry defaults", () => {
   test("prefers the shared default provider", () => {
@@ -25,5 +25,26 @@ describe("provider registry defaults", () => {
     expect(canonicalizeModel("opencode", "ox")).toBe("ox-alpha");
     expect(canonicalizeModel("opencode", "ox-alpha")).toBe("ox-alpha");
     expect(isKnownModel("opencode", "x-preview-f-free")).toBe(false);
+  });
+});
+
+describe("provider registry lookups", () => {
+  test("hands out copies, so callers cannot corrupt the shared catalog", () => {
+    const provider = getProvider("openai")!;
+    const model = getModelInfo("openai", DEFAULT_MODEL_BY_PROVIDER.openai)!;
+    provider.models.length = 0;
+    provider.defaultModel = "mutated";
+    model.supportedEfforts = [];
+    model.defaultEffort = "mutated" as never;
+
+    expect(getProvider("openai")!.models.length).toBeGreaterThan(0);
+    expect(getDefaultModel("openai")).toBe(DEFAULT_MODEL_BY_PROVIDER.openai);
+    expect(getModelInfo("openai", DEFAULT_MODEL_BY_PROVIDER.openai)!.defaultEffort).not.toBe("mutated");
+    expect(normalizeEffort("openai", DEFAULT_MODEL_BY_PROVIDER.openai, undefined)).not.toBe("mutated");
+  });
+
+  test("answers existence checks without a catalog copy", () => {
+    expect(hasProvider("openai")).toBe(true);
+    expect(hasProvider("not-a-provider" as never)).toBe(false);
   });
 });

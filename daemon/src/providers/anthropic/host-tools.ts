@@ -10,12 +10,12 @@
 
 import { randomUUID } from "node:crypto";
 import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { CallToolRequestSchema, ListToolsRequestSchema, type CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { ToolExecutor } from "../../agent";
 import { CLAUDE_CODE_HOST_TOOL_SERVER, isClaudeCodeHostTool } from "../../tools/claude-code";
 import { exo } from "../../tools/exo";
 import { CLAUDE_CODE_INLINE_CHRONO_MAX_MS } from "../../tools/chrono-limits";
+import { claudeSdks } from "./sdk";
 
 /** Chrono runs sleeps and waits inside the call; leave room past the longest. */
 const HOST_TOOL_TIMEOUT_MS = CLAUDE_CODE_INLINE_CHRONO_MAX_MS + 10 * 60_000;
@@ -66,6 +66,7 @@ export function createHostToolServer(
   if (!binding || defs.length === 0) return null;
 
   const instructions = defs.flatMap(def => INSTRUCTIONS[def.name] ?? []).join("\n\n");
+  const { mcpServer: { McpServer }, mcpTypes: { CallToolRequestSchema, ListToolsRequestSchema } } = claudeSdks();
   const server = new McpServer(
     { name: CLAUDE_CODE_HOST_TOOL_SERVER, version: "1.0.0" },
     { capabilities: { tools: {} }, ...(instructions ? { instructions } : {}) },

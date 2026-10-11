@@ -23,7 +23,7 @@ import * as streaming from "./streaming";
 import * as messageQueue from "./message-queue";
 import { log } from "./log";
 import { notifyConversationRemoved, notifyConversationRemoving } from "./conversation-lifecycle";
-import { getProvider, normalizeEffort } from "./providers/registry";
+import { hasProvider, normalizeEffort } from "./providers/registry";
 import { isDeepStrictEqual } from "node:util";
 import { contextMessageChars } from "./context-token-attribution";
 import { getConversationExternalIntegrations } from "./external-notifications";
@@ -1918,7 +1918,7 @@ export function loadFromDisk(): LoadFromDiskStats {
 
   let normalizedEffortCount = 0;
   for (const summary of index.summaries) {
-    if (!getProvider(summary.provider)) {
+    if (!hasProvider(summary.provider)) {
       summary.provider = DEFAULT_PROVIDER_ID;
       summary.model = DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID];
       normalizedEffortCount++;
@@ -2172,17 +2172,15 @@ export function listSidebarState(): { conversations: ConversationSummary[]; fold
 }
 
 /** List conversation IDs that currently have an in-flight stream. */
+// Restart preparation polls these while turns settle; check runtime state
+// directly instead of building and sorting every sidebar summary (~5ms each).
 export function listRunningConversationIds(): string[] {
-  return listSummaries()
-    .filter((summary) => summary.streaming)
-    .map((summary) => summary.id);
+  return [...summaries.keys()].filter((id) => streaming.isStreaming(id));
 }
 
 /** Active model turns that should be replayed after a daemon restart. */
 export function listRestartRecoverableConversationIds(): string[] {
-  return listSummaries()
-    .filter((summary) => summary.streaming && summary.restartRecoverable !== false)
-    .map((summary) => summary.id);
+  return [...summaries.keys()].filter((id) => streaming.isStreaming(id) && streaming.isRestartRecoverableJob(id));
 }
 
 // ── Conversation sidebar actions ───────────────────────────────────

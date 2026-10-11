@@ -236,17 +236,19 @@ service_is_active() {
   fi
 }
 
+# control-cli.ts rather than main.ts: it skips the daemon's module graph,
+# which otherwise added ~200ms to every restart.
 prepare_restart_for_replay() {
   (
     cd "$PROJECT_DIR/daemon"
-    bun run src/main.ts prepare-restart
+    bun run src/control-cli.ts prepare-restart
   )
 }
 
 prepare_stop_without_replay() {
   (
     cd "$PROJECT_DIR/daemon"
-    bun run src/main.ts prepare-stop
+    bun run src/control-cli.ts prepare-stop
   )
 }
 

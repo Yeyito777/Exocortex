@@ -14,7 +14,7 @@ import { clonedConversationValue, type ConversationCloneTarget } from "./convers
 import type { ConversationLoadResult } from "./conversation-load-protocol";
 import * as jsonPersistence from "./json-persistence";
 import { existsSync } from "node:fs";
-import { SqliteConversationStore, sqliteConversationStorePath, type IntegrityReport, type LegacyImportReport } from "./sqlite-conversation-store";
+import { SqliteConversationStore, sqliteConversationStoreIsCurrent, sqliteConversationStorePath, type IntegrityReport, type LegacyImportReport } from "./sqlite-conversation-store";
 
 export type {
   ConversationBtwPersistenceState,
@@ -57,6 +57,7 @@ let sqlite: SqliteConversationStore | null = null;
 /** Run schema enrollment before accepting commands; do not scan archives in startup IPC. */
 export async function prepareConversationStoreSchema(path = sqliteConversationStorePath(), importLegacy = true): Promise<void> {
   if (backend !== "sqlite") return;
+  if (sqliteConversationStoreIsCurrent(path, importLegacy)) return;
   const source = new URL("./conversation-schema-worker.ts", import.meta.url);
   const worker = new Worker((existsSync(source) ? source : new URL("./conversation-schema-worker.js", import.meta.url)).href, { type: "module" });
   try {

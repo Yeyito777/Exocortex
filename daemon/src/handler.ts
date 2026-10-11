@@ -65,6 +65,8 @@ import {
   type PendingSubagentNotification,
 } from "./subagent-notifications";
 import { beginDaemonShutdown, getDaemonShutdownMode } from "./daemon-lifecycle";
+import { prepareCatchableShutdownForReplay } from "./restart-recovery";
+import { PREPARE_RESTART_MAX_SETTLE_MS, writeActiveGoalRestartMarker } from "./restart-markers";
 import { buildBackgroundTaskNotificationText } from "./background-task-notifications";
 import { configureChronoService, cancelDeferredChronoSleep } from "./chrono-service";
 import { runChronoCommand } from "./chrono-commands";
@@ -1503,6 +1505,18 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       case "prepare_shutdown": {
         const mode = beginDaemonShutdown(cmd.mode);
         log("info", `handler: service requested daemon shutdown mode=${mode}`);
+        if (cmd.interruptForReplay && mode === "restart") {
+          // One round trip instead of the control process polling and aborting
+          // over the socket: settle in-process, then report what will replay.
+          writeActiveGoalRestartMarker();
+          const timeoutMs = typeof cmd.timeoutMs === "number" && Number.isFinite(cmd.timeoutMs)
+            ? Math.min(Math.max(cmd.timeoutMs, 0), PREPARE_RESTART_MAX_SETTLE_MS)
+            : PREPARE_RESTART_MAX_SETTLE_MS;
+          const prepared = await prepareCatchableShutdownForReplay(timeoutMs);
+          if (prepared.convIds.length > 0) log("info", `handler: interrupted for restart replay: ${prepared.convIds.join(", ")}`);
+          server.sendTo(client, { type: "shutdown_prepared", reqId: cmd.reqId, convIds: prepared.convIds, stillStreaming: prepared.stillStreaming });
+          break;
+        }
         server.sendTo(client, { type: "ack", reqId: cmd.reqId });
         break;
       }
