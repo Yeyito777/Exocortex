@@ -77,6 +77,7 @@ export interface TerminalGraphicsDetectorOptions {
 
 export class TerminalGraphicsDetector {
   private mode: TerminalImageMode = "pending";
+  private started = false;
   private timeout: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly options: TerminalGraphicsDetectorOptions) {}
@@ -85,7 +86,10 @@ export class TerminalGraphicsDetector {
     return this.mode;
   }
 
+  /** Detect once; later calls do nothing. */
   start(env: NodeJS.ProcessEnv = process.env): void {
+    if (this.started) return;
+    this.started = true;
     const forced = forcedImageMode(env);
     if (forced) {
       this.setMode(forced);

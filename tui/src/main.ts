@@ -2071,10 +2071,7 @@ async function main(): Promise<void> {
   );
 
   // Inline history images: previews come from the daemon, sized for this terminal.
-  configureInlineImages({
-    fetch: request => daemon.getImage(request),
-    onChange: () => scheduleRender(),
-  });
+  // Images are experimental: terminal detection waits until a daemon enables them.
   terminalGraphicsDetector = new TerminalGraphicsDetector({
     write: sequence => process.stdout.write(sequence),
     onModeChanged: mode => {
@@ -2082,7 +2079,11 @@ async function main(): Promise<void> {
       setInlineImageMode(mode);
     },
   });
-  terminalGraphicsDetector.start();
+  configureInlineImages({
+    fetch: request => daemon.getImage(request),
+    onChange: () => scheduleRender(),
+    onFirstEnabled: () => terminalGraphicsDetector?.start(),
+  });
 
   function processInput(str: string): void {
     if (!running) return;

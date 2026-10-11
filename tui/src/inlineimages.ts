@@ -143,6 +143,10 @@ const environment: InlineImageEnvironment = {
 };
 let generation = 0;
 let onChange: () => void = () => {};
+let onFirstEnabled: () => void = () => {};
+/** The connected daemon's `experimental.images` flag, from its bootstrap. */
+let daemonEnabled = false;
+let everEnabled = false;
 
 export function inlineImageMode(): TerminalImageMode {
   return environment.mode;
@@ -160,6 +164,26 @@ export function inlineImageGeneration(): number {
 function changed(): void {
   generation++;
   onChange();
+}
+
+/** Follow the connected daemon's `experimental.images` flag. */
+export function setInlineImagesEnabled(enabled: boolean): void {
+  if (daemonEnabled === enabled) return;
+  daemonEnabled = enabled;
+  if (enabled && !everEnabled) {
+    everEnabled = true;
+    onFirstEnabled();
+  }
+  changed();
+}
+
+/**
+ * Whether history shows images at all. Off unless the daemon enables the
+ * experiment; EXOCORTEX_TUI_IMAGES=off turns it off locally. When off, history
+ * renders as it did before inline images (pasted images keep their badge).
+ */
+export function inlineImagesActive(): boolean {
+  return daemonEnabled && environment.mode !== "off";
 }
 
 export function setInlineImageMode(mode: TerminalImageMode): void {
@@ -209,9 +233,16 @@ const queued: Array<() => void> = [];
 let fetcher: ImagePreviewFetcher | null = null;
 let nextKittyId = 0x40000000;
 
-export function configureInlineImages(options: { fetch: ImagePreviewFetcher; onChange: () => void }): void {
+export function configureInlineImages(options: {
+  fetch: ImagePreviewFetcher;
+  onChange: () => void;
+  /** Called once, when a daemon first enables images (start terminal detection then). */
+  onFirstEnabled?: () => void;
+}): void {
   fetcher = options.fetch;
   onChange = options.onChange;
+  onFirstEnabled = options.onFirstEnabled ?? (() => {});
+  if (everEnabled) onFirstEnabled();
 }
 
 function previewKey(request: ImagePreviewRequest): string {
@@ -405,10 +436,6 @@ export function renderInlineImage(
   const copy = [...Array.from({ length: box.rows }, () => ""), `[image: ${imageCaption(source)}]`];
   const mode = environment.mode;
 
-  if (mode === "off") {
-    return { layout: { ...layout, rows: 0 }, lines: [`${indent}${theme.dim}🖼 ${imageCaption(source)}${theme.reset}`], copy: [copy[copy.length - 1]] };
-  }
-
   let status = "";
   if (mode === "kitty") {
     const preview = kittyPreview(source, box);
@@ -430,6 +457,12 @@ export function renderInlineImage(
 }
 
 export const inlineImagesInternalsForTest = {
+  /** Back to process start: no daemon has enabled images yet. */
+  resetToStartup(): void {
+    this.reset();
+    daemonEnabled = false;
+    everEnabled = false;
+  },
   reset(): void {
     previews.clear();
     cachedChars = 0;
@@ -440,5 +473,8 @@ export const inlineImagesInternalsForTest = {
     environment.mode = "pending";
     environment.cell = { width: 8, height: 16 };
     generation = 0;
+    onFirstEnabled = () => {};
+    daemonEnabled = true;
+    everEnabled = true;
   },
 };

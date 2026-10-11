@@ -63,6 +63,7 @@ import type { DaemonActions } from "./events/types";
 import { handleCallTranscript, reconcileCallTranscriptDrafts } from "./events/call";
 import { handleBtwEvent } from "./btw/events";
 import { formatChronoResult } from "./chronoschedule";
+import { setInlineImagesEnabled } from "./inlineimages";
 
 export type { DaemonActions } from "./events/types";
 
@@ -530,6 +531,7 @@ export function handleEvent(
       } else if (event.state === "connected" && event.switched) {
         state.macroEnvironment = null;
         state.conversationDefaults = null;
+        setInlineImagesEnabled(false);
         state.sshConnecting = {
           phase: "loading",
           message: event.mode === "remote"

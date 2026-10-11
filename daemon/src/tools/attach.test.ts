@@ -1,3 +1,5 @@
+import { writeExocortexConfig } from "@exocortex/shared/config";
+import { resetExperimentalFeaturesForTest } from "../experimental";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -8,6 +10,16 @@ import { buildExecutor } from "./registry";
 import { isClaudeCodeHostTool } from "./claude-code";
 
 let dir: string;
+
+// Inline images are experimental: these tests run with the flag on.
+beforeAll(() => {
+  writeExocortexConfig({ experimental: { images: true } });
+  resetExperimentalFeaturesForTest();
+});
+afterAll(() => {
+  writeExocortexConfig({});
+  resetExperimentalFeaturesForTest();
+});
 
 beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), "exo-attach-tool-"));

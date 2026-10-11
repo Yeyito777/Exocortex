@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   configureInlineImages,
   fitImageBox,
@@ -10,6 +10,8 @@ import {
   renderInlineImage,
   setInlineImageCellSize,
   setInlineImageMode,
+  setInlineImagesEnabled,
+  inlineImagesActive,
   sourceFromAttachment,
   sourceFromRef,
   type ImagePreviewRequest,
@@ -19,6 +21,7 @@ import { stripAnsi } from "./historycursor";
 
 const source: InlineImageSource = { imageId: "a".repeat(64), width: 800, height: 400, mediaType: "image/png", sizeBytes: 90_000, name: "chart.png" };
 
+beforeEach(() => inlineImagesInternalsForTest.reset());
 afterEach(() => inlineImagesInternalsForTest.reset());
 
 describe("layout", () => {
@@ -142,13 +145,6 @@ describe("renderInlineImage", () => {
     expect(stripAnsi(drawn[0])).toBe(`  ${"▀".repeat(20)}`);
   });
 
-  test("off mode is a one-line caption", () => {
-    setInlineImageMode("off");
-    const rendered = renderInlineImage(source, box, 2, {}, 0);
-    expect(rendered.layout.rows).toBe(0);
-    expect(rendered.lines.map(stripAnsi)).toEqual(["  🖼 chart.png · 800×400 · 88 KB"]);
-  });
-
   test("mode and cell-size changes bump the render generation", () => {
     const start = inlineImageGeneration();
     setInlineImageMode("kitty");
@@ -156,4 +152,50 @@ describe("renderInlineImage", () => {
     setInlineImageCellSize({ width: 9, height: 18 });
     expect(inlineImageGeneration()).toBe(start + 2);
   });
+});
+
+describe("experimental flag", () => {
+  test("a fresh TUI shows no images and does not probe the terminal until a daemon enables them", () => {
+    inlineImagesInternalsForTest.resetToStartup();
+    let starts = 0;
+    configureInlineImages({ fetch: async () => { throw new Error("unused"); }, onChange: () => {}, onFirstEnabled: () => { starts++; } });
+    expect(inlineImagesActive()).toBe(false);
+    expect(starts).toBe(0);
+
+    const before = inlineImageGeneration();
+    setInlineImagesEnabled(true);
+    expect(starts).toBe(1);
+    expect(inlineImagesActive()).toBe(true);
+    expect(inlineImageGeneration()).toBe(before + 1);
+
+    // A switch to a daemon without the flag turns them off again; detection never repeats.
+    setInlineImagesEnabled(false);
+    expect(inlineImagesActive()).toBe(false);
+    setInlineImagesEnabled(true);
+    expect(starts).toBe(1);
+
+    // EXOCORTEX_TUI_IMAGES=off wins locally.
+    setInlineImageMode("off");
+    expect(inlineImagesActive()).toBe(false);
+  });
+});
+
+test("the daemon's tools_available bootstrap carries the flag; an SSH switch clears it", async () => {
+  const { handleToolsAvailable } = await import("./events/provider");
+  const { handleEvent } = await import("./events");
+  const { createInitialState } = await import("./state");
+  inlineImagesInternalsForTest.resetToStartup();
+  const state = createInitialState();
+  const bootstrap = (experimental?: { images: boolean }) => handleToolsAvailable({
+    type: "tools_available", providers: [], tools: [], authByProvider: {} as never, authInfoByProvider: {} as never,
+    ...(experimental ? { experimental } : {}),
+  }, state);
+  bootstrap();
+  expect(inlineImagesActive()).toBe(false);
+  bootstrap({ images: true });
+  expect(inlineImagesActive()).toBe(true);
+  handleEvent({ type: "ssh_status", state: "connected", switched: true, mode: "remote", alias: "kitsune", message: "" } as never, state, {} as never);
+  expect(inlineImagesActive()).toBe(false);
+  bootstrap({ images: false });
+  expect(inlineImagesActive()).toBe(false);
 });

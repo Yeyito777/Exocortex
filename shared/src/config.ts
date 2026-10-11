@@ -129,6 +129,18 @@ export interface FeatureFlagsConfig {
   [feature: string]: unknown;
 }
 
+export interface ExperimentalConfig {
+  /**
+   * Inline images: the model-facing `attach` tool, history thumbnails, and the
+   * full-size viewer. Defaults to false. Read once at daemon start; connected
+   * TUIs learn it from the daemon's bootstrap, so changing it needs a daemon
+   * restart (and a TUI reconnect).
+   */
+  images?: boolean;
+  /** Preserve unknown future experiments. */
+  [experiment: string]: unknown;
+}
+
 export interface DiagnosticsConfig {
   /**
    * Collect correlated daemon/TUI conversation-open timings, event-loop lag,
@@ -168,6 +180,8 @@ export interface ExocortexConfig {
   theme?: string;
   /** Experimental/product feature gates. */
   features?: FeatureFlagsConfig;
+  /** Opt-in experimental features, all off by default. */
+  experimental?: ExperimentalConfig;
   /** Opt-in runtime diagnostics. */
   diagnostics?: DiagnosticsConfig;
   /** User-overridable app defaults. */
@@ -232,11 +246,17 @@ export function defaultExocortexConfig(): ExocortexConfig {
   return {
     theme: "whale",
     features: { goalTool: true },
+    experimental: { images: false },
     diagnostics: { performanceProfiling: false },
     agent: { workingDirectory: ".exocortex-cwd" },
     ping: { mode: null, sound: null },
     openers: defaultOpenersConfig(),
   };
+}
+
+/** Whether experimental inline images (attach tool, thumbnails, viewer) are enabled. */
+export function experimentalImagesEnabled(config: ExocortexConfig = readExocortexConfig()): boolean {
+  return config.experimental?.images === true;
 }
 
 /** Whether the temporary correlated daemon/TUI performance profiler is enabled. */

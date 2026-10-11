@@ -1890,6 +1890,13 @@ export interface ToolsAvailableEvent {
   macroEnvironment?: MacroEnvironment;
   /** Small connection/bootstrap snapshot; absent on older daemons. */
   conversationDefaults?: ConversationDefaultsSnapshot;
+  /** The daemon's `experimental` config flags; absent means all off. */
+  experimental?: ExperimentalFeatures;
+}
+
+export interface ExperimentalFeatures {
+  /** Inline images: attach tool, history thumbnails, get_image, viewer. */
+  images: boolean;
 }
 
 export interface ConversationDefaultsSnapshot {

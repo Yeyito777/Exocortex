@@ -57,7 +57,7 @@ import {
 } from "./frame";
 import { pinBottomRelativeScrollOffset } from "./viewportscroll";
 import { durableSleepMetadataFrame } from "./durable-sleep-metadata";
-import { inlineImageCellSize, inlineImageGeneration, inlineImageMode } from "./inlineimages";
+import { inlineImageCellSize, inlineImageGeneration, inlineImageMode, inlineImagesActive } from "./inlineimages";
 import { renderImageModal } from "./imagemodal";
 import { collectHistoryImagePlacements, historyImagesPlaced, syncHistoryImages, type ScreenRect } from "./historyimages";
 
@@ -1741,6 +1741,8 @@ export function render(state: RenderState): boolean {
     || !!(sidebarOpen && state.sidebar.conversationActionMenu);
   const imageObstructions: ScreenRect[] = [state.layout.taskPanelRect, autocompleteRect]
     .filter((rect): rect is ScreenRect => rect !== null);
+  // A daemon switch can turn images off under an open viewer.
+  if (state.imageModal && !inlineImagesActive()) state.imageModal = null;
   const hadHistoryImages = historyImagesPlaced(state);
   const historyImagePlacements = inlineImageMode() === "kitty" && !historyOverlayOpen && !state.imageModal
     ? collectHistoryImagePlacements({

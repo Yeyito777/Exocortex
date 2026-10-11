@@ -77,6 +77,8 @@ test("status-only ping returns the host's runtime status without sidebar/usage b
     .toEqual(localMacroEnvironment());
   expect(sent.find(event => event.type === "tools_available")?.conversationDefaults)
     .toEqual({ defaults: productConversationDefaults(), configured: false });
+  // Experimental flags ride along so remote TUIs never read a local config.
+  expect(sent.find(event => event.type === "tools_available")?.experimental).toEqual({ images: false });
 });
 
 const IDS: string[] = [];

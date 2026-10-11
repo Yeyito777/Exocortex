@@ -18,6 +18,7 @@ import { getDaemonUpdateStatus } from "./update-status";
 import { encodeHistoryDelta } from "@exocortex/shared/history-delta";
 import { effectiveConversationDefaults } from "@exocortex/shared/config";
 import { isDurationMs } from "@exocortex/shared/duration";
+import { experimentalFeatures } from "./experimental";
 import { conversationDefaultsSnapshot, resetDaemonConversationDefaults, setDaemonConversationDefaults } from "./conversation-defaults";
 import type { RealtimeVoice } from "@exocortex/shared/realtime";
 import type { RealtimeCallAdapter, RealtimeCallParticipant } from "@exocortex/shared/protocol";
@@ -329,6 +330,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       type: "tools_available",
       macroEnvironment: localMacroEnvironment(),
       conversationDefaults: conversationDefaultsSnapshot(),
+      experimental: experimentalFeatures(),
       providers: getProviders(),
       tools: getToolDisplayInfo(),
       authByProvider: getAuthByProvider(),
@@ -1373,6 +1375,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           type: "tools_available",
           macroEnvironment: localMacroEnvironment(),
           conversationDefaults: conversationDefaultsSnapshot(),
+      experimental: experimentalFeatures(),
           providers: getProviders(),
           tools: getToolDisplayInfo(),
           authByProvider: getAuthByProvider(),
@@ -3052,6 +3055,10 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       }
 
       case "get_image": {
+        if (!experimentalFeatures().images) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: "get_image: inline images are disabled on this daemon (set experimental.images to true in config.json and restart the daemon)" });
+          break;
+        }
         const request = { format: cmd.format, width: cmd.width, height: cmd.height };
         const invalid = !isImageId(cmd.imageId) ? "Invalid image id" : validatePreviewRequest(request);
         if (invalid) {

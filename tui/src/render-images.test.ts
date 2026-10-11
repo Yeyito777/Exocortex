@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { render } from "./render";
 import { createInitialState, type RenderState } from "./state";
 import { configureInlineImages, inlineImagesInternalsForTest, setInlineImageCellSize, setInlineImageMode, type InlineImageSource } from "./inlineimages";
@@ -52,6 +52,7 @@ async function readyFrame(state: RenderState): Promise<string> {
   return capture(state);
 }
 
+beforeEach(() => inlineImagesInternalsForTest.reset());
 afterEach(() => inlineImagesInternalsForTest.reset());
 
 /** Scroll so the image's top sits on viewport row 5. */

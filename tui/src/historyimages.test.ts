@@ -1,6 +1,6 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { collectHistoryImagePlacements, disposeHistoryImages, handleHistoryImageResponse, historyImagesPlaced, placementIdFor, syncHistoryImages } from "./historyimages";
-import { configureInlineImages, inlineImagesInternalsForTest, kittyPreview, setInlineImageMode, type InlineImageLayout } from "./inlineimages";
+import { configureInlineImages, inlineImagesInternalsForTest, kittyPreview, setInlineImageMode, setInlineImagesEnabled, type InlineImageLayout } from "./inlineimages";
 import type { RenderLineAnchor } from "./conversation";
 import { buildMessageLines } from "./conversation";
 import { createInitialState } from "./state";
@@ -15,6 +15,7 @@ async function readyImage(): Promise<void> {
   await Bun.sleep(0);
 }
 
+beforeEach(() => inlineImagesInternalsForTest.reset());
 afterEach(() => inlineImagesInternalsForTest.reset());
 
 /** History with `before` text rows, a 10-row image, then text. */
@@ -139,6 +140,36 @@ describe("history layout", () => {
     expect(metadataRow).toBeGreaterThan(captionRow);
     // Rows are contiguous and numbered from the top of the image.
     expect(imageRows.map(index => lineAnchors[index].image!.row)).toEqual(imageRows.map((_, row) => row));
+  });
+
+  test("with images off (daemon flag unset, or EXOCORTEX_TUI_IMAGES=off) history renders as before", async () => {
+    await readyImage();
+    const state = createInitialState();
+    state.convId = "conv";
+    const ref = { id: source.imageId, mediaType: "image/png" as const, width: 200, height: 100, sizeBytes: 1000, name: "chart.png" };
+    state.messages = [
+      { role: "user", text: "look", images: [{ mediaType: "image/png", base64: "", sizeBytes: 1000, imageId: source.imageId, width: 200, height: 100 }], metadata: null },
+      {
+        role: "assistant",
+        blocks: [
+          { type: "tool_result", toolCallId: "c1", toolName: "attach", output: "Attached 1 image", isError: false, images: [ref] },
+          { type: "text", text: "Here it is." },
+        ],
+        metadata: null,
+      },
+    ];
+    const withImages = buildMessageLines(state, 80);
+    expect(withImages.lineAnchors.some(anchor => anchor.image)).toBe(true);
+
+    for (const disable of [() => setInlineImagesEnabled(false), () => setInlineImageMode("off")]) {
+      inlineImagesInternalsForTest.reset();
+      disable();
+      const { lines, lineAnchors } = buildMessageLines(state, 80);
+      expect(lineAnchors.some(anchor => anchor.image || anchor.openImage)).toBe(false);
+      expect(lines.some(line => stripAnsi(line).includes("200×100"))).toBe(false);
+      // The pasted image keeps its old badge.
+      expect(lines.some(line => stripAnsi(line).includes("📎 PNG"))).toBe(true);
+    }
   });
 
   test("pasted images render under the user bubble, right-aligned", async () => {

@@ -13,6 +13,7 @@ import { basename, isAbsolute, resolve } from "node:path";
 import type { Tool } from "./types";
 import type { ImageRef } from "../messages";
 import { storeImageFile } from "../attachments";
+import { imagesEnabled } from "../experimental";
 
 export const MAX_ATTACH_IMAGES = 8;
 
@@ -55,6 +56,8 @@ export const attach: Tool = {
     additionalProperties: false,
   },
   display: { label: "Attach", color: "#f78c6c" },
+  /** Experimental: offered only with `experimental.images` (see docs/inline-images.md). */
+  isAvailable: imagesEnabled,
   parallelSafety: "safe",
   defaultTimeoutMs: 60_000,
   summarize(input) {

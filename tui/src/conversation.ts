@@ -11,6 +11,7 @@ import {
   fitImageBox,
   historyImageLimits,
   inlineImageCellSize,
+  inlineImagesActive,
   renderInlineImage,
   sourceFromAttachment,
   sourceFromRef,
@@ -434,6 +435,7 @@ export function buildMessageLines(
   const imageCell = inlineImageCellSize();
   /** Append inline images, each preceded by a blank row. User images align right like their bubble. */
   const pushImages = (images: readonly HistoryImage[], segment: "assistant_image" | "user_image") => {
+    if (!inlineImagesActive()) return;
     for (const image of images) {
       const box = fitImageBox(image.source, imageLimits.cols, imageLimits.rows, imageCell);
       const col = segment === "user_image"
