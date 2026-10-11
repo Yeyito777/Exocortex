@@ -4,7 +4,7 @@
  * History rendering reserves blank rows for each image and tags them with a
  * line anchor. After the viewport is composed, this module finds the image
  * rows actually on screen, crops each image to its visible, unobstructed run
- * of rows, and reconciles the terminal through KittyImageSync. Placements are
+ * of rows (and around the image viewer, if open), and reconciles the terminal through KittyImageSync. Placements are
  * recomputed every frame from scratch, so scrolling, resizing, switching
  * conversations, and overlays can never leave a stale image behind.
  */
@@ -36,8 +36,13 @@ export interface CollectHistoryImagesOptions {
   chatCol: number;
   /** Last screen column images may cover. */
   maxCol: number;
-  /** Screen regions drawn on top of history (task panel and the like). */
+  /** Screen regions drawn on top of history (task panel and the like); image rows under them are dropped. */
   obstructions: readonly ScreenRect[];
+  /**
+   * A box drawn on top of everything (the image viewer). Images keep every
+   * cell outside it, as up to four cropped placements around it.
+   */
+  cover?: ScreenRect | null;
   /** History line under the focused history cursor; its image is tinted as selected. */
   cursorLineIndex?: number | null;
   /** The cursor's column, which picks the image in a strip. */
@@ -45,6 +50,8 @@ export interface CollectHistoryImagesOptions {
 }
 
 const placementIds = new WeakMap<object, Map<number, number>>();
+/** Owners for the extra placements of an image split around a cover. */
+const pieceOwners = new WeakMap<object, object>();
 let nextPlacementId = 1;
 
 /** Stable placement id for one rendered occurrence of an image. */
@@ -92,6 +99,28 @@ function longestRun(rows: VisibleImageRow[]): VisibleImageRow[] {
   return best;
 }
 
+/** The parts of `rect` outside `cover`: bands above and below, then the sides. */
+function uncovered(rect: ScreenRect, cover: ScreenRect | null | undefined): ScreenRect[] {
+  if (!cover || cover.top > rect.bottom || cover.bottom < rect.top || cover.left > rect.right || cover.right < rect.left) return [rect];
+  const pieces: ScreenRect[] = [];
+  const top = Math.max(rect.top, cover.top);
+  const bottom = Math.min(rect.bottom, cover.bottom);
+  if (rect.top < cover.top) pieces.push({ ...rect, bottom: cover.top - 1 });
+  if (rect.left < cover.left) pieces.push({ top, bottom, left: rect.left, right: cover.left - 1 });
+  if (rect.right > cover.right) pieces.push({ top, bottom, left: cover.right + 1, right: rect.right });
+  if (rect.bottom > cover.bottom) pieces.push({ ...rect, top: cover.bottom + 1 });
+  return pieces;
+}
+
+function pieceOwner(owner: object): object {
+  let piece = pieceOwners.get(owner);
+  if (!piece) {
+    piece = {};
+    pieceOwners.set(owner, piece);
+  }
+  return piece;
+}
+
 /** Placements for the image rows on screen, each cropped to what is visible. */
 export function collectHistoryImagePlacements(options: CollectHistoryImagesOptions): KittyPlacement[] {
   const visible = new Map<InlineImageLayout, VisibleImageRow[]>();
@@ -120,19 +149,36 @@ export function collectHistoryImagePlacements(options: CollectHistoryImagesOptio
     const run = longestRun(rows);
     if (run.length === 0) continue;
     const image = preview.value;
-    const first = run[0].imageRow;
-    const complete = first === 0 && run.length === layout.rows;
-    const sourceY = Math.round((first * image.pixelHeight) / layout.rows);
-    const sourceEnd = Math.round(((first + run.length) * image.pixelHeight) / layout.rows);
-    placements.push({
-      image,
-      placementId: placementIdFor(layout.owner, layout.index),
-      row: run[0].screenRow,
-      col: run[0].screenCol,
-      columns: layout.cols,
-      rows: run.length,
-      ...(complete ? {} : { sourceY, sourceHeight: Math.max(1, sourceEnd - sourceY) }),
-      ...(cursorImage === layout ? { selected: true } : {}),
+    const visibleRect = {
+      top: run[0].screenRow,
+      bottom: run[run.length - 1].screenRow,
+      left: run[0].screenCol,
+      right: run[0].screenCol + layout.cols - 1,
+    };
+    uncovered(visibleRect, options.cover).forEach((piece, pieceIndex) => {
+      const firstRow = run[0].imageRow + piece.top - visibleRect.top;
+      const pieceRows = piece.bottom - piece.top + 1;
+      const firstCol = piece.left - visibleRect.left;
+      const columns = piece.right - piece.left + 1;
+      const sourceY = Math.round((firstRow * image.pixelHeight) / layout.rows);
+      const sourceBottom = Math.round(((firstRow + pieceRows) * image.pixelHeight) / layout.rows);
+      const sourceX = Math.round((firstCol * image.pixelWidth) / layout.cols);
+      const sourceRight = Math.round(((firstCol + columns) * image.pixelWidth) / layout.cols);
+      const wholeHeight = firstRow === 0 && pieceRows === layout.rows;
+      const wholeWidth = columns === layout.cols;
+      placements.push({
+        image,
+        placementId: pieceIndex === 0
+          ? placementIdFor(layout.owner, layout.index)
+          : placementIdFor(pieceOwner(layout.owner), layout.index * 4 + pieceIndex),
+        row: piece.top,
+        col: piece.left,
+        columns,
+        rows: pieceRows,
+        ...(wholeHeight ? {} : { sourceY, sourceHeight: Math.max(1, sourceBottom - sourceY) }),
+        ...(wholeWidth ? {} : { sourceX, sourceWidth: Math.max(1, sourceRight - sourceX) }),
+        ...(cursorImage === layout ? { selected: true } : {}),
+      });
     });
   }
   return placements;

@@ -76,6 +76,40 @@ describe("collectHistoryImagePlacements", () => {
     expect(beside).toMatchObject({ row: 3, rows: 10 });
   });
 
+  test("a cover (the image viewer) keeps every cell outside it, split into cropped pieces", async () => {
+    await readyImage();
+    const { anchors, layout } = history(0);
+    const collect = (cover: { top: number; bottom: number; left: number; right: number }) => collectHistoryImagePlacements({
+      ...base, viewportRows: viewport(0, 15), lineAnchors: anchors, cover,
+    });
+    // The image covers rows 3–12, columns 3–22; 200×100 source pixels, 10×10 per cell.
+    // Beside the image: untouched.
+    expect(collect({ top: 1, bottom: 20, left: 30, right: 60 })).toEqual([
+      expect.objectContaining({ row: 3, col: 3, columns: 20, rows: 10, placementId: placementIdFor(layout.owner, 0) }),
+    ]);
+    expect(collect({ top: 1, bottom: 20, left: 30, right: 60 })[0].sourceX).toBeUndefined();
+    // Over its right part from row 6 down: a band above and the left strip beside it.
+    const [above, left, ...rest] = collect({ top: 6, bottom: 20, left: 13, right: 60 });
+    expect(rest).toHaveLength(0);
+    expect(above).toMatchObject({ row: 3, col: 3, columns: 20, rows: 3, sourceY: 0, sourceHeight: 30, placementId: placementIdFor(layout.owner, 0) });
+    expect(above.sourceX).toBeUndefined();
+    expect(left).toMatchObject({ row: 6, col: 3, columns: 10, rows: 7, sourceX: 0, sourceWidth: 100, sourceY: 30, sourceHeight: 70 });
+    expect(left.placementId).not.toBe(above.placementId);
+    // Through its middle: four pieces around the hole, each with its own placement.
+    const pieces = collect({ top: 5, bottom: 8, left: 8, right: 15 });
+    expect(pieces.map(({ row, col, columns, rows }) => ({ row, col, columns, rows }))).toEqual([
+      { row: 3, col: 3, columns: 20, rows: 2 },
+      { row: 5, col: 3, columns: 5, rows: 4 },
+      { row: 5, col: 16, columns: 7, rows: 4 },
+      { row: 9, col: 3, columns: 20, rows: 4 },
+    ]);
+    expect(pieces[2]).toMatchObject({ sourceX: 130, sourceWidth: 70, sourceY: 20, sourceHeight: 40 });
+    expect(pieces[3]).toMatchObject({ sourceY: 60, sourceHeight: 40 });
+    expect(new Set(pieces.map(piece => piece.placementId)).size).toBe(4);
+    // Entirely under it: nothing to place.
+    expect(collect({ top: 1, bottom: 20, left: 1, right: 60 })).toEqual([]);
+  });
+
   test("off-screen or not-yet-loaded images are not placed", async () => {
     const { anchors } = history(30);
     configureInlineImages({ fetch: () => new Promise(() => {}), onChange: () => {} });

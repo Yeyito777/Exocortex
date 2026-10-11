@@ -69,7 +69,7 @@ const pngFetch = async (request: { width: number; height: number; format: string
   : { format: "rgba" as const, width: request.width, height: request.height, base64: Buffer.alloc(request.width * request.height * 4, 128).toString("base64") };
 
 describe("image viewer", () => {
-  test("Enter on a thumbnail opens a centered viewer; closing it removes its placement", async () => {
+  test("Enter on a thumbnail opens a centered viewer over it; closing restores the thumbnail", async () => {
     const requests: Array<{ width: number; height: number; format: string }> = [];
     configureInlineImages({ fetch: async request => { requests.push(request); return pngFetch(request); }, onChange: () => {} });
     setInlineImageMode("kitty");
@@ -84,6 +84,9 @@ describe("image viewer", () => {
     state.historyCursor = { row: state.historyLineAnchors.findIndex(anchor => anchor.images) + 2, col: 4 };
     const tinted = capture(state);
     expect(tinted).toMatch(/a=p[^;]*,V=1,/);
+    const [thumbnail] = placements(tinted);
+    expect(thumbnail).toMatchObject({ row: 8, col: 3 });
+    expect(thumbnail.controls).toContain("c=48,r=12,");
 
     const result = handleFocusedKey({ type: "enter" }, state);
     expect(result).toMatchObject({ type: "open_image", target: { images: [{ imageId: "e".repeat(64) }], index: 0 } });
@@ -96,17 +99,57 @@ describe("image viewer", () => {
     expect(opening + open).toContain("Enter or Esc to close");
     // The viewer asked for a bigger preview than the thumbnail, bounded by the screen.
     expect(Math.max(...requests.map(request => request.width))).toBeGreaterThan(requests[0].width);
-    const shown = placements(open);
-    expect(shown).toHaveLength(1);
-    // The thumbnail placement made way for the viewer's.
-    expect(opening).toContain("a=d,d=i");
-    expect(shown[0].controls).toContain("c=50,");
+    // The thumbnail is not deleted: it keeps what lies outside the box (rows
+    // 12–28, columns 24–77) as a band above it and a strip to its left, still
+    // tinted, so the cursor-line highlight behind it stays hidden as before.
+    expect(opening).not.toContain("a=d,");
+    const kept = placements(opening);
+    expect(kept).toHaveLength(2);
+    expect(kept.every(placement => placement.controls.includes(",V=1,"))).toBe(true);
+    expect(kept[0]).toMatchObject({ row: 8, col: 3 });
+    expect(kept[0].controls).toContain(`p=${/p=(\d+)/.exec(thumbnail.controls)![1]},c=48,r=4,x=0,y=0,w=384,h=64,`);
+    expect(kept[1]).toMatchObject({ row: 12, col: 3 });
+    expect(kept[1].controls).toContain("c=21,r=8,x=0,y=64,w=168,h=128,");
+    const [viewer] = placements(open);
+    expect(placements(open)).toHaveLength(1);
+    expect(viewer).toMatchObject({ row: 14, col: 26 });
+    expect(viewer.controls).toContain("c=50,");
+    expect(viewer.controls).toContain(",z=2,");
 
     state.imageModal = null;
     const closed = capture(state);
-    expect(closed).toMatch(new RegExp(`a=d,d=i,i=\\d+,p=${/p=(\d+)/.exec(shown[0].controls)![1]},`));
-    expect(placements(closed)).toHaveLength(1);
+    expect(closed).toMatch(new RegExp(`a=d,d=i,i=\\d+,p=${/p=(\d+)/.exec(viewer.controls)![1]},`));
+    expect(closed).toMatch(new RegExp(`a=d,d=i,i=\\d+,p=${/p=(\d+)/.exec(kept[1].controls)![1]},`));
+    const restored = placements(closed);
+    expect(restored).toHaveLength(1);
+    expect(restored[0]).toMatchObject({ row: 8, col: 3 });
+    expect(restored[0].controls).toContain("c=48,r=12,C=1,z=1,V=1,");
+    expect(placements(capture(state))).toHaveLength(0);
     expect(closed).not.toContain("Enter or Esc to close");
+    disposeHistoryImages(state);
+  });
+
+  test("thumbnails outside the viewer stay placed untouched while it is open", async () => {
+    configureInlineImages({ fetch: async request => pngFetch(request), onChange: () => {} });
+    setInlineImageMode("kitty");
+    setInlineImageCellSize({ width: 8, height: 16 });
+    const state = imageState();
+    showImage(state);
+    state.scrollOffset -= 5;
+    const [thumbnail] = placements(await readyFrame(state));
+    expect(thumbnail).toMatchObject({ row: 3, col: 3 });
+    // A wide 400×40 image gets a short viewer box (rows 17–23) below the thumbnail (rows 3–14).
+    state.imageModal = { images: [{ imageId: "f".repeat(64), width: 400, height: 40, mediaType: "image/png", sizeBytes: 900 }], index: 0 };
+    const opening = capture(state);
+    await Bun.sleep(0);
+    const open = capture(state);
+    expect(opening + open).not.toContain("a=d,");
+    expect(placements(opening)).toHaveLength(0);
+    expect(placements(open).every(placement => placement.controls.includes(",z=2,"))).toBe(true);
+    state.imageModal = null;
+    const closed = capture(state);
+    expect(placements(closed)).toHaveLength(0);
+    expect(closed.match(/a=d,/g)).toHaveLength(1);
     disposeHistoryImages(state);
   });
 

@@ -1769,8 +1769,15 @@ export function render(state: RenderState): boolean {
     .filter((rect): rect is ScreenRect => rect !== null);
   // A daemon switch can turn images off under an open viewer.
   if (state.imageModal && !inlineImagesActive()) state.imageModal = null;
+  // ── Full-size image viewer (top-most) ─────────────────────────
+  // Thumbnails stay where they are around it; closing it lets the next frame
+  // delete its placement and restore what it covered.
+  const modal = state.imageModal
+    ? renderImageModal(state.imageModal, rows, cols, inlineImageCellSize(), inlineImageMode())
+    : null;
+  if (modal) appendPositionedPayload(ctx, modal.payload);
   const hadHistoryImages = historyImagesPlaced(state);
-  const historyImagePlacements = inlineImageMode() === "kitty" && !historyOverlayOpen && !state.imageModal
+  const historyImagePlacements = inlineImageMode() === "kitty" && !historyOverlayOpen
     ? collectHistoryImagePlacements({
       viewportRows: state.layout.historyViewportRows,
       lineAnchors,
@@ -1778,19 +1785,12 @@ export function render(state: RenderState): boolean {
       chatCol,
       maxCol: chatCol + chatW - 1,
       obstructions: imageObstructions,
+      cover: modal?.rect,
       cursorLineIndex: historyFocused ? state.historyCursor.row : null,
       cursorCol: state.historyCursor.col,
     })
     : [];
-
-  // ── Full-size image viewer (top-most) ─────────────────────────
-  // While it is open it is the only image on screen; closing it lets the next
-  // frame delete its placement and restore the thumbnails.
-  if (state.imageModal) {
-    const modal = renderImageModal(state.imageModal, rows, cols, inlineImageCellSize(), inlineImageMode());
-    appendPositionedPayload(ctx, modal.payload);
-    if (modal.placement) historyImagePlacements.push(modal.placement);
-  }
+  if (modal?.placement) historyImagePlacements.push(modal.placement);
   const graphics = syncHistoryImages(state, historyImagePlacements);
 
   const canScrollMessageRegion = !sidebarOpen
