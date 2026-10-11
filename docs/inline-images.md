@@ -35,15 +35,19 @@ refs travel beside its text result in-process
 The TUI draws attached images after the whole visible assistant message, just
 above its metadata line. Pasted images are drawn under the user's bubble.
 Inline images are thumbnails (at most 56 columns × 12 rows, aspect preserved,
-never enlarged) with a caption row. Several images in one message form a strip:
-side by side with a 2-column gap, each fitted to those limits on its own so
-images of one shape share a height, bottom-aligned above a caption each (the
-full caption when it fits under the thumbnail, otherwise its name, truncated).
-When they don't all fit the chat width, as many as fit are shown, followed by
-`› +N` beside them. Kitty strip rows are filled with no-break spaces, so the
-history cursor can cross them like text.
+never enlarged) with no caption: the viewer shows the name or type,
+resolution, and size, and a pasted image's bubble already has its 📎 badge.
+Several images in one message form a strip: side by side with a 2-column gap,
+each fitted to those limits on its own so images of one shape share a height,
+bottom-aligned. When they don't all fit the chat width, as many as fit are
+shown, followed by `› +N` beside them. Kitty strip rows are filled with
+no-break spaces, so the history cursor can cross them like text. While an
+image has no pixels its first row says "loading image…" or why it is
+unavailable, cut to the image's width (beside an assistant image, to the
+pane): history rows are drawn as built, so a row wider than the pane would
+wrap into the sidebar. Image rows are also clipped to the pane when drawn.
 
-Enter on a thumbnail or its caption with the history cursor, or a click on it,
+Enter on a thumbnail with the history cursor, or a click on it,
 opens the full-size viewer (`tui/src/imagemodal.ts`) on that image; `› +N`
 opens it on the first hidden one. The viewer is a centered box sized to the
 image and the terminal. With several images, `j`/`l`/`→` and `k`/`h`/`←` page

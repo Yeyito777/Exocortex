@@ -24,7 +24,7 @@ import type { TerminalImageMode } from "./terminalgraphics";
 import { theme, terminalColorLevel } from "./theme";
 import { hexToRgb, rgbToAnsi, type TerminalColorLevel } from "./terminalcolors";
 import { log } from "./log";
-import { padRightToWidth, termWidth, truncateToWidth } from "./textwidth";
+import { termWidth, truncateToWidth } from "./textwidth";
 import { imageIdForBytes, sniffImage } from "@exocortex/shared/image-sniff";
 
 // ── Sources ─────────────────────────────────────────────────────────
@@ -43,10 +43,14 @@ export interface InlineImageSource {
   localBase64?: string;
 }
 
-export function sourceFromRef(ref: ImageRef, convId: string | null): InlineImageSource {
+/**
+ * An attached image lives only in the daemon's store, so it carries no
+ * conversation: its "not found" is final, not a paste the daemon has yet to
+ * store (which is retried).
+ */
+export function sourceFromRef(ref: ImageRef): InlineImageSource {
   return {
     imageId: ref.id,
-    ...(convId ? { convId } : {}),
     width: ref.width,
     height: ref.height,
     mediaType: ref.mediaType,
@@ -422,7 +426,7 @@ export interface InlineImageLayout {
 
 export interface RenderedInlineImage {
   layout: InlineImageLayout;
-  /** Image rows followed by one caption row. */
+  /** One row per image row; the first carries a status while there are no pixels. */
   lines: string[];
   copy: string[];
 }
@@ -431,6 +435,7 @@ function formatSize(bytes: number): string {
   return bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
 
+/** Name (or type), size, and bytes: the viewer's title and what a yank of the image copies. */
 export function imageCaption(source: InlineImageSource): string {
   const kind = source.mediaType.slice("image/".length).toUpperCase();
   return [source.name ?? kind, `${source.width}×${source.height}`, formatSize(source.sizeBytes)].join(" · ");
@@ -477,9 +482,22 @@ export function renderHalfBlockRows(
 }
 
 /**
- * History rows for one image: `box.rows` image rows plus a caption. In Kitty
- * mode the image rows stay blank (the placement covers them) once pixels are
- * ready; otherwise the first row explains what is missing.
+ * The loading or error notice drawn in place of missing pixels, cut to `width`
+ * terminal columns: history rows are drawn as is, so a longer notice would
+ * run past the pane and wrap into the sidebar.
+ */
+function imageStatus(preview: PreviewState<unknown> | null, width: number): string {
+  const text = preview?.phase === "error"
+    ? `⚠ image unavailable: ${preview.error.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")}`
+    : "loading image…";
+  return truncateToWidth(text, Math.max(1, width));
+}
+
+/**
+ * History rows for one image: `box.rows` rows, no caption (the viewer shows
+ * its name and size). In Kitty mode the rows stay blank (the placement covers
+ * them) once pixels are ready; otherwise the first row explains what is
+ * missing in at most `statusWidth` columns.
  */
 export function renderInlineImage(
   source: InlineImageSource,
@@ -487,31 +505,25 @@ export function renderInlineImage(
   col: number,
   owner: object,
   index: number,
+  statusWidth = box.cols,
 ): RenderedInlineImage {
   const layout: InlineImageLayout = { source, col, cols: box.cols, rows: box.rows, owner, index };
   const indent = " ".repeat(col);
-  const caption = `${indent}${theme.dim}${imageCaption(source)}${theme.reset}`;
-  const copy = [...Array.from({ length: box.rows }, () => ""), `[image: ${imageCaption(source)}]`];
-  const mode = environment.mode;
+  const copy = Array.from({ length: box.rows }, (_, row) => row === 0 ? `[image: ${imageCaption(source)}]` : "");
+  const blank = () => Array.from({ length: box.rows }, () => "");
 
-  let status = "";
-  if (mode === "kitty") {
-    const preview = kittyPreview(source, box);
-    if (preview.phase === "ready") {
-      return { layout, lines: [...Array.from({ length: box.rows }, () => ""), caption], copy };
-    }
-    status = preview.phase === "error" ? `⚠ image unavailable: ${preview.error}` : "loading image…";
-  } else if (mode === "halfblock") {
-    const preview = rgbaPreview(source, box);
-    if (preview.phase === "ready") {
-      return { layout, lines: [...renderHalfBlockRows(preview.value).map(row => indent + row), caption], copy };
-    }
-    status = preview.phase === "error" ? `⚠ image unavailable: ${preview.error}` : "loading image…";
-  } else {
-    status = "loading image…";
+  let preview: PreviewState<unknown> | null = null;
+  if (environment.mode === "kitty") {
+    preview = kittyPreview(source, box);
+    if (preview.phase === "ready") return { layout, lines: blank(), copy };
+  } else if (environment.mode === "halfblock") {
+    const pixels = rgbaPreview(source, box);
+    if (pixels.phase === "ready") return { layout, lines: renderHalfBlockRows(pixels.value).map(row => indent + row), copy };
+    preview = pixels;
   }
-  const lines = Array.from({ length: box.rows }, (_, row) => row === 0 ? `${indent}${theme.dim}${status.slice(0, Math.max(1, box.cols + 20))}${theme.reset}` : "");
-  return { layout, lines: [...lines, caption], copy };
+  const lines = blank();
+  lines[0] = `${indent}${theme.dim}${imageStatus(preview, statusWidth)}${theme.reset}`;
+  return { layout, lines, copy };
 }
 
 // ── Strips ──────────────────────────────────────────────────────────
@@ -522,7 +534,7 @@ export interface InlineImageTarget {
   index: number;
 }
 
-/** Columns of a history row that open an image: a thumbnail, its caption, or a strip's `› +N`. */
+/** Columns of a history row that open an image: a thumbnail or a strip's `› +N`. */
 export interface InlineImageHit {
   start: number;
   end: number;
@@ -549,8 +561,6 @@ export function imageHitAt(hits: readonly InlineImageHit[] | undefined, col: num
 }
 
 const STRIP_GAP = 2;
-/** Narrow thumbnails still get room for a legible caption. */
-const STRIP_MIN_SLOT = 10;
 /** Blank image cells: invisible, but not whitespace to the history cursor, so it can cross the strip. */
 const IMAGE_CELL = "\u00a0";
 
@@ -561,7 +571,7 @@ function overflowLabel(hidden: number): string {
 export interface InlineImageStripLayout {
   /** Thumbnails that fit, from the left. The rest are behind the overflow label. */
   boxes: InlineImageBox[];
-  /** Left edge and width of each visible thumbnail's slot (image plus caption), from the strip's left. */
+  /** Left edge and width of each visible thumbnail, from the strip's left. */
   slots: Array<{ start: number; width: number }>;
   rows: number;
   overflow: { start: number; label: string } | null;
@@ -582,7 +592,7 @@ export function layoutInlineImageStrip(
   cell: CellSize,
 ): InlineImageStripLayout {
   const fitted = images.map(image => fitImageBox(image, limits.cols, limits.rows, cell));
-  const slotWidth = (box: InlineImageBox) => Math.max(box.cols, STRIP_MIN_SLOT);
+  const slotWidth = (box: InlineImageBox) => box.cols;
   const widthOf = (count: number) => fitted.slice(0, count).reduce((sum, box, index) => sum + slotWidth(box) + (index > 0 ? STRIP_GAP : 0), 0);
 
   let count = images.length;
@@ -617,37 +627,26 @@ export function layoutInlineImageStrip(
   return { boxes, slots, rows: Math.max(...boxes.map(box => box.rows)), overflow, width };
 }
 
-/** As much of the caption as fits under the thumbnail: all of it, name and size, or the name, truncated. */
-function stripCaption(source: InlineImageSource, width: number): string {
-  const clean = (text: string) => text.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ");
-  const name = clean(source.name ?? source.mediaType.slice("image/".length).toUpperCase());
-  const fitting = [clean(imageCaption(source)), `${name} · ${source.width}×${source.height}`]
-    .find(caption => termWidth(caption) <= width);
-  return fitting ?? truncateToWidth(name, width);
-}
-
 /** A thumbnail's image rows, each exactly `box.cols` wide (a status notice in the first while it has no pixels). */
 function stripImageRows(source: InlineImageSource, box: InlineImageBox): string[] {
-  const blank = IMAGE_CELL.repeat(box.cols);
-  const blanks = Array.from({ length: box.rows }, () => blank);
-  let status = "loading image…";
+  const blanks = Array.from({ length: box.rows }, () => IMAGE_CELL.repeat(box.cols));
+  let preview: PreviewState<unknown> | null = null;
   if (environment.mode === "kitty") {
-    const preview = kittyPreview(source, box);
+    preview = kittyPreview(source, box);
     if (preview.phase === "ready") return blanks;
-    if (preview.phase === "error") status = "⚠ image unavailable";
   } else if (environment.mode === "halfblock") {
-    const preview = rgbaPreview(source, box);
-    if (preview.phase === "ready") return renderHalfBlockRows(preview.value);
-    if (preview.phase === "error") status = "⚠ image unavailable";
+    const pixels = rgbaPreview(source, box);
+    if (pixels.phase === "ready") return renderHalfBlockRows(pixels.value);
+    preview = pixels;
   }
-  const text = truncateToWidth(status, box.cols);
-  blanks[0] = `${theme.dim}${text}${theme.reset}${IMAGE_CELL.repeat(Math.max(0, box.cols - termWidth(text)))}`;
+  const status = imageStatus(preview, box.cols);
+  blanks[0] = `${theme.dim}${status}${theme.reset}${IMAGE_CELL.repeat(Math.max(0, box.cols - termWidth(status)))}`;
   return blanks;
 }
 
 export interface RenderedInlineImageStrip {
   layouts: InlineImageLayout[];
-  /** Image rows followed by one caption row. */
+  /** One row per strip row, no captions (the viewer shows each image's name and size). */
   lines: string[];
   copy: string[];
   /** The thumbnails covering each image row, and which of their rows it is. */
@@ -658,8 +657,8 @@ export interface RenderedInlineImageStrip {
 
 /**
  * History rows for a strip starting at column `col`. Thumbnails sit on a
- * common baseline above their captions; the overflow label is centered
- * beside them and opens the first hidden image.
+ * common baseline; the overflow label is centered beside them and opens the
+ * first hidden image.
  */
 export function renderInlineImageStrip(
   items: readonly { source: InlineImageSource; owner: object; index: number }[],
@@ -709,12 +708,7 @@ export function renderInlineImageStrip(
     lines.push(line.replace(/ +$/, ""));
     rowImages.push(covering);
   }
-  const captions = layouts.map((layout, index) => padRightToWidth(stripCaption(layout.source, strip.slots[index].width), strip.slots[index].width));
-  lines.push(`${indent}${theme.dim}${captions.join(" ".repeat(STRIP_GAP)).replace(/ +$/, "")}${theme.reset}`);
-  const copy = [
-    ...Array.from({ length: strip.rows }, () => ""),
-    images.map(source => `[image: ${imageCaption(source)}]`).join(" "),
-  ];
+  const copy = lines.map((_, row) => row === 0 ? images.map(source => `[image: ${imageCaption(source)}]`).join(" ") : "");
   return { layouts, lines, copy, rowImages, hits };
 }
 

@@ -16,6 +16,7 @@ import { disposeHistoryImages } from "./historyimages";
 import { buildMessageLines } from "./conversation";
 import { stripAnsi } from "./historycursor";
 import type { ImageRef } from "./messages";
+import { termWidth } from "./textwidth";
 
 function capture(state: RenderState): string {
   let out = "";
@@ -152,21 +153,26 @@ describe("strip layout", () => {
     expect(lineAnchors[rows.at(-1)!].images!.length).toBe(2);
     const wide = lineAnchors[rows.at(-1)!].images!.find(image => image.layout.source.width === 3000)!;
     expect(wide.row).toBe(wide.layout.rows - 1);
-    expect(stripAnsi(lines[rows.at(-1)! + 1])).toMatch(/shot-1\.png.*shot-2\.png/);
+    // The strip ends the message: its metadata follows the last image row.
+    expect(lineAnchors[rows.at(-1)! + 1].segment).toBe("assistant_metadata");
+    expect(lines.some(line => line.includes("3000×300"))).toBe(false);
   });
 });
 
 describe("strip in history", () => {
-  test("a single image renders as before: one thumbnail, its full caption", () => {
+  test("a single image is one thumbnail with no legend; a yank still names it", () => {
     kitty();
-    const { lines, lineAnchors } = buildMessageLines(stripState(refs(1)), 116);
-    const rows = lineAnchors.filter(anchor => anchor.images);
-    expect(rows.every(anchor => anchor.images!.length === 1)).toBe(true);
-    expect(lines.some(line => stripAnsi(line) === "  shot-1.png · 945×1253 · 521 KB")).toBe(true);
+    const { lines, lineAnchors, copyLines } = buildMessageLines(stripState(refs(1)), 116);
+    const rows = lineAnchors.flatMap((anchor, index) => anchor.images ? [index] : []);
+    expect(rows.length).toBe(12);
+    expect(rows.every(row => lineAnchors[row].images!.length === 1)).toBe(true);
+    expect(lines.some(line => line.includes("945×1253"))).toBe(false);
     expect(lines.some(line => line.includes("› +"))).toBe(false);
+    expect(copyLines[rows[0]]?.text).toBe("[image: shot-1.png · 945×1253 · 521 KB]");
+    expect(rows.slice(1).every(row => copyLines[row]?.skip)).toBe(true);
   });
 
-  test("several images form one row of thumbnails with a caption under each", async () => {
+  test("several images form one row of thumbnails, with no legend under them", async () => {
     kitty();
     const state = stripState(refs(3));
     showStrip(state);
@@ -174,21 +180,70 @@ describe("strip in history", () => {
     expect(shown.length).toBe(3);
     expect(new Set(shown.map(placement => placement.row)).size).toBe(1);
     expect(shown.map(placement => placement.col)).toEqual([...shown.map(placement => placement.col)].sort((a, b) => a - b));
-    const caption = stripAnsi(state.historyLines.find(line => stripAnsi(line).includes("shot-1.png"))!);
-    expect(caption).toMatch(/shot-1\.png +shot-2\.png +shot-3\.png/);
+    expect(state.historyLines.some(line => line.includes("945×1253"))).toBe(false);
     expect(state.historyLines.some(line => line.includes("› +"))).toBe(false);
+    // The last image row is followed directly by the message's metadata.
+    const last = state.historyLineAnchors.findLastIndex(anchor => anchor.images);
+    expect(state.historyLineAnchors[last + 1].segment).toBe("assistant_metadata");
     disposeHistoryImages(state);
   });
 
-  test("captions shrink to fit their thumbnail: full, then name and size, then the name", () => {
-    kitty();
-    const captionOf = (size: { width: number; height: number }) => {
-      const { lines } = buildMessageLines(stripState(refs(2, size), 200), 196);
-      return stripAnsi(lines.find(line => stripAnsi(line).includes("shot-1.png"))!);
-    };
-    expect(captionOf({ width: 1600, height: 900 })).toMatch(/shot-1\.png · 1600×900 · 521 KB +shot-2\.png · 1600×900 · 521 KB$/);
-    expect(captionOf({ width: 1200, height: 1000 })).toMatch(/shot-1\.png · 1200×1000 +shot-2\.png · 1200×1000$/);
-    expect(captionOf({ width: 400, height: 1000 })).toMatch(/^ +shot-1\.png +shot-2\.png$/);
+  test("notices stay inside the pane at every width, sidebar open or not", async () => {
+    const failing = async () => { throw new Error("get_image: image not found in the daemon's image store"); };
+    for (const mode of ["kitty", "halfblock"] as const) {
+      for (const sidebar of [false, true]) {
+        for (const cols of [44, 52, 60, 72, 90, 120]) {
+          for (const shape of ["user", "assistant", "user strip", "assistant strip"] as const) {
+            inlineImagesInternalsForTest.reset();
+            configureInlineImages({ fetch: failing, onChange: () => {} });
+            setInlineImageMode(mode);
+            const count = shape.endsWith("strip") ? 4 : 1;
+            const state = stripState(refs(count, { width: 796, height: 306 }), cols);
+            state.convId = null;
+            state.sidebar.open = sidebar;
+            if (shape.startsWith("user")) {
+              state.messages = [{
+                role: "user",
+                text: "look",
+                images: refs(count, { width: 796, height: 306 }).map(ref => ({ mediaType: "image/png" as const, base64: "", sizeBytes: 101_000, imageId: ref.id, width: 796, height: 306 })),
+                metadata: null,
+              }];
+            }
+            capture(state);
+            await Bun.sleep(0);
+            const out = capture(state) + capture(state);
+            expect(stripAnsi(state.historyLines.join("\n"))).toContain("⚠");
+            // Every positioned write ends inside the screen, so nothing autowraps into the sidebar.
+            for (const write of out.matchAll(/\x1b\[(\d+);(\d+)H((?:(?!\x1b\[\d+;\d+H)[\s\S])*)/g)) {
+              const text = write[3].replace(/\x1b_G[^\x1b]*\x1b\\/g, "").replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, "").replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, "");
+              const end = Number(write[2]) + termWidth(text) - 1;
+              if (end > cols) throw new Error(`${mode} sidebar=${sidebar} cols=${cols} ${shape}: row ${write[1]} col ${write[2]} runs to ${end}: ${JSON.stringify(text)}`);
+            }
+            // And every image row is built to fit the chat pane.
+            const paneWidth = cols - (state.layout.chatCol - 1);
+            state.historyLines.forEach((line, index) => {
+              if (state.historyLineAnchors[index].images) expect(termWidth(stripAnsi(line))).toBeLessThanOrEqual(paneWidth);
+            });
+            disposeHistoryImages(state);
+          }
+        }
+      }
+    }
+  });
+
+  test("an attached image missing from the store shows unavailable at once and stays so", async () => {
+    let fetches = 0;
+    configureInlineImages({ fetch: async () => { fetches++; throw new Error("get_image: image not found"); }, onChange: () => {} });
+    setInlineImageMode("kitty");
+    const state = stripState(refs(1));
+    const history = () => stripAnsi(buildMessageLines(state, 116).lines.join("\n"));
+    expect(history()).toContain("loading image…");
+    await Bun.sleep(0);
+    // Unlike a just-sent paste, there is nothing to wait for: no retries.
+    expect(history()).toContain("⚠ image unavailable: get_image: image not found");
+    await Bun.sleep(600);
+    expect(fetches).toBe(1);
+    expect(history()).not.toContain("loading image…");
   });
 
   test("overflow: as many as fit, then `› +N` that a click or the cursor plus Enter opens", async () => {

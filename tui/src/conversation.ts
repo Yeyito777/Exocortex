@@ -299,7 +299,7 @@ export interface RenderLineAnchor {
   userFlowEnd?: UserMessageFlowCursor;
   /** Inline images covering this row (several side by side in a strip), and which of their rows this is. */
   images?: Array<{ layout: InlineImageLayout; row: number }>;
-  /** Columns where Enter or a click on this row (a thumbnail, a caption, a strip's `› +N`) opens an image. */
+  /** Columns where Enter or a click on this row (a thumbnail, a strip's `› +N`) opens an image. */
   openImages?: InlineImageHit[];
 }
 
@@ -311,11 +311,11 @@ interface HistoryImage {
 }
 
 /** Images the attach tool added to these assistant blocks, in call order. */
-export function attachedImages(blocks: readonly Block[], convId: string | null): HistoryImage[] {
+export function attachedImages(blocks: readonly Block[]): HistoryImage[] {
   const images: HistoryImage[] = [];
   for (const block of blocks) {
     if (block.type !== "tool_result" || !block.images?.length) continue;
-    block.images.forEach((ref, index) => images.push({ source: sourceFromRef(ref, convId), owner: block, index }));
+    block.images.forEach((ref, index) => images.push({ source: sourceFromRef(ref), owner: block, index }));
   }
   return images;
 }
@@ -439,6 +439,7 @@ export function buildMessageLines(
   /**
    * Append a message's inline images after a blank row: one thumbnail, or a
    * strip of them side by side. User images align right like their bubble.
+   * There is no caption row; the viewer shows each image's name and size.
    */
   const pushImages = (images: readonly HistoryImage[], segment: "assistant_image" | "user_image") => {
     if (!inlineImagesActive() || images.length === 0) return;
@@ -449,20 +450,19 @@ export function buildMessageLines(
     pushLine("", owner, segment, images[0].index);
     const pushRows = (
       rendered: { lines: string[]; copy: string[] },
-      imageRows: number,
       col: number,
       covering: (row: number) => NonNullable<RenderLineAnchor["images"]>,
       hits: InlineImageHit[],
     ) => {
       rendered.lines.forEach((line, row) => {
-        const isImageRow = row < imageRows;
         // Kitty rows are blank; keep the indent so narrow-history shifting stays exact.
-        const text = isImageRow && line === "" ? " ".repeat(col) : line;
-        pushAnchoredLine(text, false, "", owner, segment, images[0].index, row, isImageRow
-          ? { text: "", displayStart: 0, skip: true }
-          : { text: rendered.copy[row] ?? "", displayStart: col });
+        const text = line === "" ? " ".repeat(col) : line;
+        // A yank copies the first row as `[image: …]`.
+        pushAnchoredLine(text, false, "", owner, segment, images[0].index, row, rendered.copy[row]
+          ? { text: rendered.copy[row], displayStart: col }
+          : { text: "", displayStart: 0, skip: true });
         const anchor = lineAnchors[lineAnchors.length - 1];
-        if (isImageRow) anchor.images = covering(row);
+        anchor.images = covering(row);
         anchor.openImages = hits;
       });
     };
@@ -471,15 +471,17 @@ export function buildMessageLines(
       const [image] = images;
       const box = fitImageBox(image.source, imageLimits.cols, imageLimits.rows, imageCell);
       const col = placeAt(box.cols);
-      const rendered = renderInlineImage(image.source, box, col, image.owner, image.index);
+      // A notice may use the width beside an assistant image; a user image's ends at its right edge.
+      const statusWidth = Math.max(box.cols, availableWidth - USER_IMAGE_RIGHT_MARGIN - col);
+      const rendered = renderInlineImage(image.source, box, col, image.owner, image.index, statusWidth);
       const hits = [{ start: 0, end: Infinity, target: { images: [image.source], index: 0 }, layout: rendered.layout }];
-      pushRows(rendered, rendered.layout.rows, col, row => [{ layout: rendered.layout, row }], hits);
+      pushRows(rendered, col, row => [{ layout: rendered.layout, row }], hits);
       return;
     }
     const strip = layoutInlineImageStrip(images.map(image => image.source), imageLimits, Math.max(4, availableWidth - 4), imageCell);
     const col = placeAt(strip.width);
     const rendered = renderInlineImageStrip(images, strip, col);
-    pushRows(rendered, strip.rows, col, row => rendered.rowImages[row], rendered.hits);
+    pushRows(rendered, col, row => rendered.rowImages[row], rendered.hits);
   };
 
   const trimTrailingBlankAssistantContent = (minLength: number) => {
@@ -560,7 +562,7 @@ export function buildMessageLines(
       for (const block of msg.blocks) {
         pushBlock(block, "assistant_block", renderAssistantBlock(block));
       }
-      segmentImages.push(...attachedImages(msg.blocks, state.convId));
+      segmentImages.push(...attachedImages(msg.blocks));
       const nextMessage = state.messages[messageIndex + 1];
       const nextContinuesAssistantSegment = (
         nextMessage?.role === "assistant"
@@ -637,7 +639,7 @@ export function buildMessageLines(
     for (const block of state.pendingAI.blocks) {
       pushBlock(block, "assistant_block", renderAssistantBlock(block));
     }
-    const pendingImages = [...segmentImages, ...attachedImages(state.pendingAI.blocks, state.convId)];
+    const pendingImages = [...segmentImages, ...attachedImages(state.pendingAI.blocks)];
     segmentImages = [];
     // Terminal stream notices (abort/error/watchdog) arrive just before
     // streaming_stopped. Keep pendingAI around for reconciliation, but do not
