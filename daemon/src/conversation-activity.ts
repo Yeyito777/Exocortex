@@ -64,7 +64,7 @@ export interface ConversationActivityCounts {
   backgroundTaskCount: number;
 }
 
-type TaskDetails = Pick<ConversationTaskSummary, "title" | "startedAt" | "dueAt" | "chronoMode">;
+type TaskDetails = Pick<ConversationTaskSummary, "title" | "startedAt" | "dueAt" | "chronoMode" | "chronoRunning">;
 type BackgroundTaskStop = (suppressCompletionNotification: boolean) => boolean;
 
 export interface BackgroundTaskRuntimeDetails extends TaskDetails {
@@ -105,6 +105,7 @@ function recordsEqual(a: InternalTaskRecord, b: InternalTaskRecord): boolean {
     && a.startedAt === b.startedAt
     && a.dueAt === b.dueAt
     && a.chronoMode === b.chronoMode
+    && a.chronoRunning === b.chronoRunning
     && a.status === b.status
     && a.toolName === b.toolName
     && a.pid === b.pid
@@ -138,6 +139,8 @@ function setEntry(
       startedAt: details?.startedAt ?? existing?.startedAt ?? Date.now(),
       ...(details?.dueAt !== undefined ? { dueAt: details.dueAt } : existing?.dueAt !== undefined ? { dueAt: existing.dueAt } : {}),
       ...(details?.chronoMode ? { chronoMode: details.chronoMode } : existing?.chronoMode ? { chronoMode: existing.chronoMode } : {}),
+      // A running state is a whole-state flag, not a field to inherit from the previous publication.
+      ...((details ? details.chronoRunning : existing?.chronoRunning) ? { chronoRunning: true as const } : {}),
       status: existing?.status ?? "running",
       ...(background?.toolName ? { toolName: background.toolName } : existing?.toolName ? { toolName: existing.toolName } : {}),
       ...(background?.pid !== undefined ? { pid: background.pid } : existing?.pid !== undefined ? { pid: existing.pid } : {}),
@@ -299,6 +302,7 @@ function summaryProjection(task: InternalTaskRecord): ConversationTaskSummary {
     startedAt: task.startedAt,
     ...(task.dueAt !== undefined ? { dueAt: task.dueAt } : {}),
     ...(task.chronoMode ? { chronoMode: task.chronoMode } : {}),
+    ...(task.chronoRunning ? { chronoRunning: true } : {}),
     ...(task.toolName ? { toolName: task.toolName } : {}),
   };
 }

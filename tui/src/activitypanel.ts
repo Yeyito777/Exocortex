@@ -102,6 +102,11 @@ export function formatTaskCountdown(dueAt: number, now = Date.now()): string {
   return `in ${Math.ceil(remainingHours / 24)}d`;
 }
 
+/** Scheduled Chrono work counts down to its due time; a running occurrence shows elapsed time instead. */
+function isChronoCountdown(task: TaskPanelEntry): task is TaskPanelEntry & { dueAt: number } {
+  return task.kind === "chrono" && task.chronoMode !== "wait" && !task.chronoRunning && task.dueAt !== undefined;
+}
+
 function msUntilNextUnitBoundary(value: number, unitMs: number): number {
   const remainder = value % unitMs;
   return remainder === 0 ? unitMs : unitMs - remainder;
@@ -118,7 +123,7 @@ export function msUntilTaskPanelEntryUpdate(task: TaskPanelEntry, now = Date.now
   if (!Number.isFinite(now) || !Number.isFinite(task.startedAt)) return null;
   if (task.kind === "goal" && task.goalStatus !== "active") return null;
 
-  if (task.kind === "chrono" && task.chronoMode !== "wait" && task.dueAt !== undefined) {
+  if (isChronoCountdown(task)) {
     if (!Number.isFinite(task.dueAt)) return null;
     const remainingMs = task.dueAt - now;
     if (remainingMs <= 0) return null;
@@ -303,7 +308,7 @@ export function renderTaskPanel(
     const title = cleanPanelText(task.title) || fallbackTitle;
     const elapsed = isGoal && task.goalStatus !== "active"
       ? task.goalStatus ?? "paused"
-      : isChrono && task.chronoMode !== "wait" && task.dueAt !== undefined
+      : isChronoCountdown(task)
         ? formatTaskCountdown(task.dueAt, now)
       : formatTaskElapsed(task.startedAt, now);
     const titleWidth = innerWidth - termWidth(label) - ELAPSED_WIDTH - 3;

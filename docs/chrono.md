@@ -42,3 +42,15 @@ model can list and cancel them too.
 
 Implementation: `tui/src/chronoschedule.ts`, `tui/src/commands/chrono.ts`, and
 `daemon/src/chrono-commands.ts`.
+
+## Tasks row
+
+Each schedule is one row in its owner's Tasks panel. While an occurrence is
+pending the row stands for it: `due`, then `Running: <title>` with elapsed time
+for a command soft-wake. Afterwards it counts down to the next occurrence; a
+finished one-shot leaves. Firing never adds a sibling row or removes and
+re-adds the schedule's row, so a run does not resize the panel or reflow the
+history beside it.
+
+Implementation: `publishSchedule` in `daemon/src/chrono-service.ts` and
+`tui/src/activitypanel.ts`.

@@ -523,6 +523,11 @@ export interface ConversationTaskSummary {
   dueAt?: number;
   /** Chrono lifecycle shown by the focused-conversation Tasks UI. */
   chronoMode?: "wait" | "sleep" | "wake";
+  /**
+   * A Chrono schedule whose occurrence is executing now: `startedAt` is when
+   * the run began and `dueAt` is the occurrence it is running.
+   */
+  chronoRunning?: true;
   /** Tool running background work, e.g. `Agent` for a Claude Code background subagent. */
   toolName?: string;
 }
