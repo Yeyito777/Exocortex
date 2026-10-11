@@ -6,15 +6,23 @@
  * The daemon supplies conversation summaries;
  * this module adds the durable goal and owns all visual formatting and
  * horizontal space reservation for the panel.
+ *
+ * A click toggles the card between its compact one-row-per-entry form and an
+ * expanded form that lists every entry in full, scrolling when it outgrows
+ * the message area.
  */
 
 import type { ConversationGoalStatus, ConversationTaskSummary, ExternalIntegrationSummary } from "./messages";
 import type { RenderState } from "./state";
+import { formatQueueDueTime } from "./queue";
 import { isAgentBackgroundTask, shouldDisplayConversationTask } from "./taskvisibility";
-import { padRightToWidth, termWidth } from "./textwidth";
+import { padRightToWidth, termWidth, visibleLength } from "./textwidth";
+import { wordWrap } from "./textwrap";
 import { hexToAnsi, hexToAnsiBg, theme } from "./theme";
 
 const MAX_PANEL_WIDTH = 50;
+/** Wide enough for most titles on one or two rows without becoming a page. */
+const EXPANDED_MAX_PANEL_WIDTH = 72;
 const MIN_PANEL_WIDTH = 30;
 /** Keep the floating card compact even when a conversation owns many schedules. */
 export const MAX_TASK_PANEL_HEIGHT = 12;
@@ -38,6 +46,10 @@ export interface TaskPanelEntry extends Omit<ConversationTaskSummary, "kind"> {
 export interface TaskPanelRender {
   width: number;
   lines: string[];
+  /** Expanded body rows scrolled out of view above the card. */
+  scroll: number;
+  /** Largest useful `scroll`; 0 when the whole card fits or it is collapsed. */
+  maxScroll: number;
 }
 
 export interface TaskPanelLayout {
@@ -61,6 +73,28 @@ export function focusedConversationTasks(state: RenderState): TaskPanelEntry[] {
       }]
     : [];
   return [...goalTask, ...activityTasks];
+}
+
+/** Whether the focused conversation's panel is expanded; another conversation's expansion never carries over. */
+export function isTaskPanelExpanded(state: RenderState): boolean {
+  return state.convId !== null && state.taskPanelExpansion?.convId === state.convId;
+}
+
+/** Expand the focused conversation's panel at its top, or collapse it. */
+export function toggleTaskPanelExpansion(state: RenderState): void {
+  state.taskPanelExpansion = isTaskPanelExpanded(state) || !state.convId
+    ? null
+    : { convId: state.convId, scroll: 0 };
+}
+
+/** Scroll the expanded panel by `delta` rows within what the last frame could show; true when it moved. */
+export function scrollTaskPanel(state: RenderState, delta: number): boolean {
+  const expansion = state.taskPanelExpansion;
+  if (!expansion || !isTaskPanelExpanded(state)) return false;
+  const scroll = Math.max(0, Math.min(state.layout.taskPanelMaxScroll, expansion.scroll + delta));
+  if (scroll === expansion.scroll) return false;
+  expansion.scroll = scroll;
+  return true;
 }
 
 export function hasFocusedConversationTasks(state: RenderState): boolean {
@@ -243,12 +277,191 @@ function fitTasksAndSubscriptions(
   };
 }
 
+interface PanelPalette {
+  outline: string;
+  topOutline: string;
+  exocortex: string;
+  bash: string;
+  goal: string;
+  chrono: string;
+  withPanelBg: (line: string) => string;
+}
+
+function panelPalette(state: RenderState): PanelPalette {
+  const panelBg = hexToAnsiBg(PANEL_BG_HEX);
+  return {
+    outline: `${theme.dim}${theme.text}`,
+    topOutline: `${theme.bold}${theme.muted}`,
+    exocortex: taskColor(state, "exo", EXOCORTEX_FALLBACK_HEX),
+    bash: taskColor(state, "bash", BASH_FALLBACK_HEX),
+    goal: taskColor(state, "goal", GOAL_FALLBACK_HEX),
+    chrono: taskColor(state, "chrono", CHRONO_FALLBACK_HEX),
+    withPanelBg: (line: string) => {
+      const persistentBg = line.replaceAll(theme.reset, `${theme.reset}${panelBg}`);
+      return `${panelBg}${persistentBg}${theme.reset}`;
+    },
+  };
+}
+
+interface TaskRowParts {
+  color: string;
+  label: string;
+  title: string;
+  /** Countdown, elapsed time, or a paused goal's status. */
+  time: string;
+}
+
+function taskRowParts(task: TaskPanelEntry, palette: PanelPalette, compactExocortex: boolean, now: number): TaskRowParts {
+  const isSubagent = task.kind === "subagent";
+  // Claude Code's background agents and workflows run inside Claude Code, not as Exocortex conversations.
+  const isAgent = isAgentBackgroundTask(task);
+  const isGoal = task.kind === "goal";
+  const isChrono = task.kind === "chrono";
+  const color = isGoal ? palette.goal : isSubagent || isAgent ? palette.exocortex : isChrono ? palette.chrono : palette.bash;
+  const label = isGoal ? `${task.goalStatus !== "active" ? "◇" : "◆"} Goal`
+    : isSubagent ? (compactExocortex ? "◆ Exo" : "◆ Exocortex")
+    : isAgent ? `◆ ${task.toolName}`
+    : isChrono ? "◷ Chrono"
+    : `$ ${backgroundTaskName(task.toolName)}`;
+  const fallbackTitle = isGoal ? "Conversation goal" : isSubagent || isAgent ? "Subagent task" : isChrono ? "Chrono task" : "Background task";
+  const time = isGoal && task.goalStatus !== "active"
+    ? task.goalStatus ?? "paused"
+    : isChronoCountdown(task)
+      ? formatTaskCountdown(task.dueAt, now)
+    : formatTaskElapsed(task.startedAt, now);
+  return { color, label, title: cleanPanelText(task.title) || fallbackTitle, time };
+}
+
+/** What the compact row leaves out: the kind of work, Chrono's mode and its wall-clock times. */
+function expandedTaskDetails(task: TaskPanelEntry, now: number): string[] {
+  const at = (time: number) => formatQueueDueTime(time, now);
+  if (task.kind === "goal") return [task.goalStatus ?? "active", `set ${at(task.startedAt)}`];
+  if (task.kind === "subagent") return ["subagent", `started ${at(task.startedAt)}`];
+  if (task.kind === "background") {
+    return [isAgentBackgroundTask(task) ? "background agent" : "background command", `started ${at(task.startedAt)}`];
+  }
+  const details: string[] = [task.chronoMode ?? "wake"];
+  if (task.chronoRunning) details.push(`running since ${at(task.startedAt)}`);
+  else if (task.dueAt !== undefined) details.push(`due ${at(task.dueAt)}`);
+  return details;
+}
+
+/** One bordered row holding pre-styled `content` of the given visible width. */
+function panelRow(palette: PanelPalette, innerWidth: number, content: string): string {
+  const padding = " ".repeat(Math.max(0, innerWidth - 2 - visibleLength(content)));
+  return palette.withPanelBg(`${palette.outline}│${theme.reset} ${content}${theme.reset}${padding} ${palette.outline}│`);
+}
+
+/**
+ * An expanded entry's heading: label and time, with `· details` beside the
+ * label when they fit, else wrapped on their own rows below it.
+ */
+function expandedEntryHeading(
+  palette: PanelPalette,
+  innerWidth: number,
+  color: string,
+  label: string,
+  details: string,
+  time: string,
+): string[] {
+  const contentWidth = innerWidth - 2;
+  const timeWidth = Math.min(termWidth(time), Math.max(0, contentWidth - 2));
+  const leftWidth = Math.max(1, contentWidth - timeWidth - (timeWidth > 0 ? 1 : 0));
+  const shownLabel = padRightToWidth(label, leftWidth).trimEnd();
+  const inlineDetails = details ? ` · ${details}` : "";
+  const detailsInline = termWidth(shownLabel) + termWidth(inlineDetails) <= leftWidth;
+  const shownDetails = padRightToWidth(detailsInline ? inlineDetails : "", leftWidth - termWidth(shownLabel));
+  const shownTime = timeWidth > 0 ? ` ${padLeftToWidth(time, timeWidth)}` : "";
+  return [
+    panelRow(palette, innerWidth, `${color}${shownLabel}${theme.muted}${shownDetails}${shownTime}`),
+    ...(details && !detailsInline ? expandedEntryText(palette, innerWidth, theme.muted, details) : []),
+  ];
+}
+
+/** Full text wrapped under an entry's heading, indented past its icon. */
+function expandedEntryText(palette: PanelPalette, innerWidth: number, style: string, text: string): string[] {
+  const indent = "  ";
+  const width = Math.max(1, innerWidth - 2 - indent.length);
+  return wordWrap(text, width).lines.map(line => panelRow(palette, innerWidth, `${style}${indent}${line.trimEnd()}`));
+}
+
+function sectionDivider(palette: PanelPalette, innerWidth: number, title: string, count: number): string {
+  const left = `─ ${title} `;
+  const right = ` ${count} ─`;
+  const fill = "─".repeat(Math.max(0, innerWidth - termWidth(left) - termWidth(right)));
+  return palette.withPanelBg(
+    `${palette.outline}├─ ${theme.reset}${theme.muted}${title}${palette.outline} ${fill}`
+    + `${theme.reset}${theme.muted} ${count}${palette.outline} ─┤`,
+  );
+}
+
+function integrationStyle(state: RenderState, integration: ExternalIntegrationSummary): { label: string; color: string } {
+  const style = state.externalToolStyles.find(candidate => candidate.cmd === integration.toolName);
+  return {
+    label: cleanPanelText(style?.label ?? integration.toolName) || "External",
+    color: style ? hexToAnsi(style.color) : theme.tool,
+  };
+}
+
+function integrationTitle(integration: ExternalIntegrationSummary): string {
+  const fallbackTitle = cleanPanelText(integration.description ?? "")
+    || cleanPanelText(integration.sourceId)
+    || "Subscription";
+  return cleanPanelText(integration.label) || fallbackTitle;
+}
+
+/** Every entry in full: a heading with its details and time, then the wrapped title. */
+function expandedPanelBody(
+  state: RenderState,
+  palette: PanelPalette,
+  innerWidth: number,
+  tasks: TaskPanelEntry[],
+  integrations: ExternalIntegrationSummary[],
+  now: number,
+): string[] {
+  const body: string[] = [];
+  for (const task of tasks) {
+    const parts = taskRowParts(task, palette, false, now);
+    body.push(...expandedEntryHeading(palette, innerWidth, parts.color, parts.label, expandedTaskDetails(task, now).join(" · "), parts.time));
+    body.push(...expandedEntryText(palette, innerWidth, theme.text, parts.title));
+  }
+  if (tasks.length > 0 && integrations.length > 0) {
+    body.push(sectionDivider(palette, innerWidth, "Subscriptions", integrations.length));
+  }
+  for (const integration of integrations) {
+    const { label, color } = integrationStyle(state, integration);
+    const title = integrationTitle(integration);
+    const sourceLabel = cleanPanelText(integration.sourceLabel ?? "");
+    const description = cleanPanelText(integration.description ?? "");
+    body.push(...expandedEntryHeading(palette, innerWidth, color, label, sourceLabel, formatIntegrationDeliveryStatus(integration)));
+    body.push(...expandedEntryText(palette, innerWidth, theme.text, title));
+    if (description && description !== title) body.push(...expandedEntryText(palette, innerWidth, theme.muted, description));
+  }
+  return body;
+}
+
+/** Bottom border of the expanded card: hidden rows on the left, how to collapse on the right. */
+function expandedPanelFooter(palette: PanelPalette, innerWidth: number, above: number, below: number): string {
+  const scrollText = [above > 0 ? `↑ ${above} above` : "", below > 0 ? `↓ ${below} below` : ""].filter(Boolean).join(" · ");
+  // Each text is framed as `─ text ` or ` text ─`; narrow cards drop the hint first, then the scroll counts.
+  const framed = (text: string) => text ? termWidth(text) + 3 : 0;
+  const hint = ["click to collapse", "collapse", ""].find(text => framed(scrollText) + framed(text) <= innerWidth) ?? "";
+  const scroll = framed(scrollText) + framed(hint) <= innerWidth ? scrollText : "";
+  const fill = "─".repeat(Math.max(0, innerWidth - framed(scroll) - framed(hint)));
+  const muted = (text: string) => `${theme.reset}${theme.muted}${text}${palette.outline}`;
+  return palette.withPanelBg(
+    `${palette.outline}╰${scroll ? `─ ${muted(scroll)} ` : ""}${fill}${hint ? ` ${muted(hint)} ─` : ""}╯`,
+  );
+}
+
 /**
  * Build the activity panel for the focused conversation.
  *
- * `maxHeight` is the available message-area height. When every entry cannot fit,
- * the final content row reports how many entries are hidden while the header
- * keeps the total count visible.
+ * `maxHeight` is the available message-area height. Collapsed, the card is
+ * capped at MAX_TASK_PANEL_HEIGHT; when every entry cannot fit, the final
+ * content row reports how many entries are hidden and invites a click, while
+ * the header keeps the total count visible. Expanded, the card grows wider and
+ * up to `maxHeight`, and scrolls by `state.taskPanelExpansion.scroll` rows.
  */
 export function renderTaskPanel(
   state: RenderState,
@@ -259,26 +472,16 @@ export function renderTaskPanel(
   const tasks = focusedConversationTasks(state);
   const integrations = focusedConversationIntegrations(state);
   const totalEntries = tasks.length + integrations.length;
-  const panelHeight = Math.min(maxHeight, MAX_TASK_PANEL_HEIGHT);
+  const expanded = isTaskPanelExpanded(state);
+  const panelHeight = expanded ? maxHeight : Math.min(maxHeight, MAX_TASK_PANEL_HEIGHT);
   if (totalEntries === 0 || chatWidth < MIN_PANEL_WIDTH || panelHeight < 3) return null;
 
-  const panelWidth = Math.min(MAX_PANEL_WIDTH, chatWidth);
+  const panelWidth = Math.min(expanded ? EXPANDED_MAX_PANEL_WIDTH : MAX_PANEL_WIDTH, chatWidth);
   const innerWidth = panelWidth - 2;
   const maxContentRows = panelHeight - 2;
   const visible = fitTasksAndSubscriptions(tasks, integrations, maxContentRows);
-
-  const panelBg = hexToAnsiBg(PANEL_BG_HEX);
-  const outline = `${theme.dim}${theme.text}`;
-  const topOutline = `${theme.bold}${theme.muted}`;
-  const exocortex = taskColor(state, "exo", EXOCORTEX_FALLBACK_HEX);
-  const bash = taskColor(state, "bash", BASH_FALLBACK_HEX);
-  const goal = taskColor(state, "goal", GOAL_FALLBACK_HEX);
-  const chrono = taskColor(state, "chrono", CHRONO_FALLBACK_HEX);
-
-  const withPanelBg = (line: string) => {
-    const persistentBg = line.replaceAll(theme.reset, `${theme.reset}${panelBg}`);
-    return `${panelBg}${persistentBg}${theme.reset}`;
-  };
+  const palette = panelPalette(state);
+  const { outline, topOutline, withPanelBg } = palette;
 
   const headerTitle = visible.headerTitle;
   const entryCount = String(totalEntries);
@@ -292,53 +495,33 @@ export function renderTaskPanel(
     ),
   ];
 
+  if (expanded) {
+    const body = expandedPanelBody(state, palette, innerWidth, tasks, integrations, now);
+    const maxScroll = Math.max(0, body.length - maxContentRows);
+    const scroll = Math.max(0, Math.min(maxScroll, state.taskPanelExpansion?.scroll ?? 0));
+    const shown = body.slice(scroll, scroll + maxContentRows);
+    lines.push(...shown);
+    lines.push(expandedPanelFooter(palette, innerWidth, scroll, body.length - scroll - shown.length));
+    return { width: panelWidth, lines, scroll, maxScroll };
+  }
+
   for (const task of visible.tasks) {
-    const isSubagent = task.kind === "subagent";
-    // Claude Code's background agents and workflows run inside Claude Code, not as Exocortex conversations.
-    const isAgent = isAgentBackgroundTask(task);
-    const isGoal = task.kind === "goal";
-    const isChrono = task.kind === "chrono";
-    const color = isGoal ? goal : isSubagent || isAgent ? exocortex : isChrono ? chrono : bash;
-    const label = isGoal ? `${task.goalStatus !== "active" ? "◇" : "◆"} Goal`
-      : isSubagent ? (panelWidth >= 38 ? "◆ Exocortex" : "◆ Exo")
-      : isAgent ? `◆ ${task.toolName}`
-      : isChrono ? "◷ Chrono"
-      : `$ ${backgroundTaskName(task.toolName)}`;
-    const fallbackTitle = isGoal ? "Conversation goal" : isSubagent || isAgent ? "Subagent task" : isChrono ? "Chrono task" : "Background task";
-    const title = cleanPanelText(task.title) || fallbackTitle;
-    const elapsed = isGoal && task.goalStatus !== "active"
-      ? task.goalStatus ?? "paused"
-      : isChronoCountdown(task)
-        ? formatTaskCountdown(task.dueAt, now)
-      : formatTaskElapsed(task.startedAt, now);
+    const { color, label, title, time } = taskRowParts(task, palette, panelWidth < 38, now);
     const titleWidth = innerWidth - termWidth(label) - ELAPSED_WIDTH - 3;
     lines.push(withPanelBg(
       `${outline}│${theme.reset} ${color}${label}`
       + `${theme.text} ${padRightToWidth(title, titleWidth)}`
-      + `${theme.muted}${padLeftToWidth(elapsed, ELAPSED_WIDTH)}${theme.reset} ${outline}│`,
+      + `${theme.muted}${padLeftToWidth(time, ELAPSED_WIDTH)}${theme.reset} ${outline}│`,
     ));
   }
 
   if (visible.showSubscriptionsDivider) {
-    const sectionTitle = "Subscriptions";
-    const sectionCount = String(integrations.length);
-    const sectionLeft = `─ ${sectionTitle} `;
-    const sectionRight = ` ${sectionCount} ─`;
-    const sectionFill = "─".repeat(Math.max(0, innerWidth - termWidth(sectionLeft) - termWidth(sectionRight)));
-    lines.push(withPanelBg(
-      `${outline}├─ ${theme.reset}${theme.muted}${sectionTitle}${outline} ${sectionFill}`
-      + `${theme.reset}${theme.muted} ${sectionCount}${outline} ─┤`,
-    ));
+    lines.push(sectionDivider(palette, innerWidth, "Subscriptions", integrations.length));
   }
 
   for (const integration of visible.integrations) {
-    const style = state.externalToolStyles.find(candidate => candidate.cmd === integration.toolName);
-    const rawToolLabel = cleanPanelText(style?.label ?? integration.toolName) || "External";
-    const color = style ? hexToAnsi(style.color) : theme.tool;
-    const fallbackTitle = cleanPanelText(integration.description ?? "")
-      || cleanPanelText(integration.sourceId)
-      || "Subscription";
-    const title = cleanPanelText(integration.label) || fallbackTitle;
+    const { label: rawToolLabel, color } = integrationStyle(state, integration);
+    const title = integrationTitle(integration);
     const deliveryStatus = formatIntegrationDeliveryStatus(integration);
     const labelAndTitleWidth = innerWidth - INTEGRATION_STATE_WIDTH - 3;
     const labelWidth = Math.min(termWidth(rawToolLabel), Math.max(1, labelAndTitleWidth - 1));
@@ -352,14 +535,18 @@ export function renderTaskPanel(
   }
 
   if (visible.hiddenCount > 0) {
+    // The overflow row is the way in to the rest: say so when it fits.
+    const more = `▸ ${visible.hiddenCount} more`;
+    const invitation = `${more} · click to expand`;
+    const overflow = termWidth(invitation) <= innerWidth - 2 ? invitation : more;
     lines.push(withPanelBg(
       `${outline}│${theme.reset} ${theme.muted}`
-      + `${padRightToWidth(`… ${visible.hiddenCount} more`, innerWidth - 2)}${theme.reset} ${outline}│`,
+      + `${padRightToWidth(overflow, innerWidth - 2)}${theme.reset} ${outline}│`,
     ));
   }
 
   lines.push(withPanelBg(`${outline}╰${"─".repeat(innerWidth)}╯`));
-  return { width: panelWidth, lines };
+  return { width: panelWidth, lines, scroll: 0, maxScroll: 0 };
 }
 
 /**

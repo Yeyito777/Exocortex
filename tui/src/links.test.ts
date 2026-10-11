@@ -202,8 +202,10 @@ describe("link activation", () => {
     expect(state.mouseCursor).toBe("text");
     state.layout.taskPanelRect = { left: col, right: col + 15, top: event.row, bottom: event.row + 2 };
     handleMouseEvent({ ...event, button: 3, action: "motion" }, state);
-    expect(state.mouseCursor).toBe("pointer");
+    // The panel over the link is its own click target: it toggles, and the link underneath never opens.
+    expect(state.mouseCursor).toBe("hand");
     expect(handleMouseEvent({ ...event, action: "press" }, state)).toEqual({ type: "handled" });
+    expect(handleMouseEvent({ ...event, action: "release" }, state)).toEqual({ type: "handled" });
   });
 
   test("dragging from a link selects text without opening, including drag back", () => {

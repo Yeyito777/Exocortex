@@ -180,7 +180,7 @@ describe("focused conversation task panel", () => {
     const panel = renderTaskPanel(state, 32, 5, 50_000);
     expect(panel?.width).toBe(32);
     expect(panel?.lines).toHaveLength(5);
-    expect(panel?.lines.map(stripAnsi).join("\n")).toContain("… 2 more");
+    expect(panel?.lines.map(stripAnsi).join("\n")).toContain("▸ 2 more");
     expect(panel?.lines.every(line => termWidth(stripAnsi(line)) === 32)).toBe(true);
   });
 
@@ -197,7 +197,7 @@ describe("focused conversation task panel", () => {
 
     const panel = renderTaskPanel(state, 100, 60, 0)!;
     expect(panel.lines).toHaveLength(MAX_TASK_PANEL_HEIGHT);
-    expect(panel.lines.map(stripAnsi).join("\n")).toContain("… 18 more");
+    expect(panel.lines.map(stripAnsi).join("\n")).toContain("▸ 18 more · click to expand");
   });
 
   test("is absent without focused tasks or enough room", () => {
@@ -385,7 +385,7 @@ describe("focused conversation subscriptions", () => {
     expect(plain[0]).toContain("Tasks");
     expect(plain.join("\n")).toContain("Subscriptions");
     expect(plain.join("\n")).toContain("inbox disabled");
-    expect(plain.join("\n")).toContain("… 5 more");
+    expect(plain.join("\n")).toContain("▸ 5 more");
     expect(panel.lines.every(line => termWidth(stripAnsi(line)) === 30)).toBe(true);
   });
 
@@ -413,7 +413,7 @@ describe("focused conversation subscriptions", () => {
     expect(plain).toContain("Subscription one");
     expect(plain).toContain("Subscription two");
     expect(plain).toContain("Subscription three");
-    expect(plain).toContain("… 3 more");
+    expect(plain).toContain("▸ 3 more");
   });
 
   test("falls back to the manifest name and generic tool color when no external style is available", () => {

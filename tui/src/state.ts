@@ -117,8 +117,10 @@ export interface LayoutCache {
   messageAreaHeight: number; // visible rows for messages
   /** Width used only for history rows vertically beside a right-hand task panel. */
   historyWidth: number;
-  /** Screen rectangle occupied by the non-interactive task panel. */
+  /** Screen rectangle occupied by the task panel; a click there toggles its expansion. */
   taskPanelRect: { top: number; bottom: number; left: number; right: number } | null;
+  /** Rows the expanded task panel can scroll; 0 when everything fits or it is collapsed. */
+  taskPanelMaxScroll: number;
   /** Canonical history row and source/display offsets rendered on each message-area row. */
   historyViewportRows: Array<{ lineIndex: number; startCol: number; displayPrefixWidth: number; endCol?: number } | null>;
   chatCol: number;         // 1-based column where chat area starts
@@ -361,6 +363,12 @@ export interface RenderState {
   mouseImagePress?: { row: number; col: number; image: InlineImageTarget } | null;
   /** Full-size image viewer opened from history (Enter or click on a thumbnail). */
   imageModal: ImageModalState | null;
+  /**
+   * The Tasks panel expanded by a click to show every entry in full, with its
+   * scroll offset in panel rows. Session-only and tied to one conversation:
+   * the panel collapses when another conversation is shown.
+   */
+  taskPanelExpansion: { convId: string; scroll: number } | null;
 }
 
 /** The daemon's streaming bit also covers handoffs between ordinary turns. */
@@ -688,7 +696,7 @@ export function createInitialState(): RenderState {
     chatFocus: "prompt",
     sidebar: createSidebarState(),
     vim: createVimState(),
-    layout: { totalLines: 0, messageAreaHeight: 0, historyWidth: 0, taskPanelRect: null, historyViewportRows: [], chatCol: 1, sepAbove: 0, firstInputRow: 0, sepBelow: 0 },
+    layout: { totalLines: 0, messageAreaHeight: 0, historyWidth: 0, taskPanelRect: null, taskPanelMaxScroll: 0, historyViewportRows: [], chatCol: 1, sepAbove: 0, firstInputRow: 0, sepBelow: 0 },
     deferredHistoryRender: null,
     pendingSend: { active: false, text: "" },
     pendingAuthQueue: [],
@@ -722,6 +730,7 @@ export function createInitialState(): RenderState {
     historyMessageBounds: [],
     historyLineAnchors: [],
     imageModal: null,
+    taskPanelExpansion: null,
     undo: createUndoState(),
     autocomplete: null,
     promptScrollOffset: 0,
