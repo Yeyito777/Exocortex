@@ -2,7 +2,7 @@
  * Kitty graphics protocol output for inline history images.
  *
  * The renderer describes, every frame, which images should be visible where
- * (cell rectangle plus vertical source crop). `KittyImageSync` turns that into
+ * (cell rectangle plus source crop). `KittyImageSync` turns that into
  * the minimal protocol traffic: transmit image data once (direct `t=d`
  * transport, chunked, so it works over SSH), move or crop a placement only
  * when its geometry changed, and delete placements that are no longer wanted.
@@ -37,9 +37,13 @@ export interface KittyPlacement {
   col: number;
   columns: number;
   rows: number;
-  /** Visible source rows, in image pixels, when the image is partly scrolled out. */
+  /** Visible source rectangle, in image pixels, when the image is partly scrolled out or covered. */
+  sourceX?: number;
   sourceY?: number;
+  sourceWidth?: number;
   sourceHeight?: number;
+  /** Stacking order; thumbnails use 1, the image viewer draws above them. */
+  z?: number;
   /** Tint as one selected object (st's `V=1`; other terminals ignore the key). */
   selected?: boolean;
 }
@@ -65,14 +69,16 @@ export function transmitPng(image: KittyImageData): string {
 
 export function placeImage(placement: KittyPlacement): string {
   const { image } = placement;
+  const sourceX = Math.max(0, Math.floor(placement.sourceX ?? 0));
   const sourceY = Math.max(0, Math.floor(placement.sourceY ?? 0));
+  const sourceWidth = Math.max(1, Math.min(image.pixelWidth - sourceX, Math.floor(placement.sourceWidth ?? image.pixelWidth)));
   const sourceHeight = Math.max(1, Math.min(image.pixelHeight - sourceY, Math.floor(placement.sourceHeight ?? image.pixelHeight)));
-  const crop = sourceY > 0 || sourceHeight < image.pixelHeight
-    ? `,x=0,y=${sourceY},w=${image.pixelWidth},h=${sourceHeight}`
+  const crop = sourceX > 0 || sourceY > 0 || sourceWidth < image.pixelWidth || sourceHeight < image.pixelHeight
+    ? `,x=${sourceX},y=${sourceY},w=${sourceWidth},h=${sourceHeight}`
     : "";
   // C=1 keeps the cursor still; q=1 reports only failures (an evicted image).
   return moveTo(placement.row, placement.col)
-    + command(`a=p,i=${image.kittyId},p=${placement.placementId},c=${placement.columns},r=${placement.rows}${crop},C=1,z=1${placement.selected ? ",V=1" : ""},q=1`);
+    + command(`a=p,i=${image.kittyId},p=${placement.placementId},c=${placement.columns},r=${placement.rows}${crop},C=1,z=${placement.z ?? 1}${placement.selected ? ",V=1" : ""},q=1`);
 }
 
 export function deletePlacement(kittyId: number, placementId: number): string {
@@ -91,8 +97,9 @@ function placementKey(kittyId: number, placementId: number): string {
 function fingerprint(placement: KittyPlacement): string {
   return [
     placement.row, placement.col, placement.columns, placement.rows,
-    placement.sourceY ?? 0, placement.sourceHeight ?? placement.image.pixelHeight,
-    placement.selected ? 1 : 0,
+    placement.sourceX ?? 0, placement.sourceY ?? 0,
+    placement.sourceWidth ?? placement.image.pixelWidth, placement.sourceHeight ?? placement.image.pixelHeight,
+    placement.z ?? 1, placement.selected ? 1 : 0,
   ].join(":");
 }
 

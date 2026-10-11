@@ -53,10 +53,13 @@ opens it on the first hidden one. The viewer is a centered box sized to the
 image and the terminal. With several images, `j`/`l`/`→` and `k`/`h`/`←` page
 to the next and previous image of the same message, stopping at either end;
 the footer shows the position (`2/5`) and the next image is fetched ahead.
-Enter, Esc, `q`, or a click close it. While it is open it is the only image on
-screen; in st the thumbnail under the history cursor is tinted (`V=1`). The
-history projection adds `imageId` (sha256), `width`, and `height` to pasted
-`ImageAttachment`s so they stay fetchable after the payload is compacted.
+Enter, Esc, `q`, or a click close it. It sits on top of the screen: thumbnails
+stay where they are, and one it partly covers keeps the part outside the box
+(up to four cropped placements around it), so closing it only has to restore
+what it covered. In st the thumbnail under the history cursor is tinted
+(`V=1`), also while the viewer is open. The history projection adds `imageId`
+(sha256), `width`, and `height` to pasted `ImageAttachment`s so they stay
+fetchable after the payload is compacted.
 
 ## Previews
 
@@ -88,7 +91,8 @@ used without a query. `EXOCORTEX_TUI_IMAGES=kitty|halfblock|off` overrides.
   `kittyimages.ts` reconciles placements (direct `t=d` transmission in 4096-byte
   chunks, `a=p` with source crop, `a=d` for placements that left). The frame
   renderer's scroll-region optimization is disabled while images are placed.
-  The task panel and autocomplete crop images; modal prompts hide them.
+  The task panel and autocomplete crop images; modal prompts hide them; the
+  image viewer (`z=2`) crops them to what lies outside its box.
 - The fallback draws `▀` cells from the RGBA preview.
 
 The image box is identical in every mode, so loading pixels or switching modes

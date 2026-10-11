@@ -3,7 +3,8 @@
  * thumbnail. A centered bordered box sized to the image (never enlarged past
  * its pixels) and the terminal; the preview is fetched at the box's pixel size
  * through the same get_image path as thumbnails. Kitty terminals get one
- * placement, cleared by the next frame after the viewer closes; other
+ * placement above the thumbnails, which stay placed around the box; it is
+ * cleared by the next frame after the viewer closes. Other
  * terminals get half-block cells. When the message has several images, j/k
  * (or l/h, →/←) page through them.
  */
@@ -22,7 +23,7 @@ import {
 } from "./inlineimages";
 import type { KittyPlacement } from "./kittyimages";
 import type { TerminalImageMode } from "./terminalgraphics";
-import { placementIdFor } from "./historyimages";
+import { placementIdFor, type ScreenRect } from "./historyimages";
 import { theme } from "./theme";
 import { termWidth, truncateToWidth } from "./textwidth";
 
@@ -98,6 +99,8 @@ export interface RenderedImageModal {
   payload: string;
   /** Terminal placement for Kitty mode once the preview has loaded. */
   placement: KittyPlacement | null;
+  /** Screen cells the viewer draws over; history images keep the rest. */
+  rect: ScreenRect;
 }
 
 export function renderImageModal(
@@ -114,7 +117,7 @@ export function renderImageModal(
     const payload = lines.slice(0, Math.max(0, totalRows)).map((line, index) => (
       moveTo(index + 1, 1) + theme.sidebarBg + theme.warning + centered(line, Math.max(1, totalCols)) + theme.reset
     )).join("");
-    return { payload, placement: null };
+    return { payload, placement: null, rect: { top: 1, bottom: Math.min(lines.length, totalRows), left: 1, right: totalCols } };
   }
 
   const { top, left, box } = layout;
@@ -136,6 +139,7 @@ export function renderImageModal(
         col: left + 2,
         columns: box.cols,
         rows: box.rows,
+        z: 2,
       };
     } else {
       status = preview.phase === "error" ? `⚠ ${preview.error}` : "loading image…";
@@ -169,5 +173,6 @@ export function renderImageModal(
     : "Enter or Esc to close";
   out.push(row(top + 2 + box.rows, theme.muted + centered(footer, inner)));
   out.push(moveTo(top + layout.height - 1, left) + border + `╰${"─".repeat(inner)}╯` + theme.reset);
-  return { payload: out.join(""), placement };
+  const rect = { top, bottom: top + layout.height - 1, left, right: left + layout.width - 1 };
+  return { payload: out.join(""), placement, rect };
 }

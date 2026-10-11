@@ -45,6 +45,17 @@ describe("escape generation", () => {
     expect(placeImage(placement())).toBe("\x1b[5;4H\x1b_Ga=p,i=7,p=3,c=20,r=10,C=1,z=1,q=1;\x1b\\");
     expect(placeImage(placement({ rows: 4, sourceY: 60, sourceHeight: 40 })))
       .toBe("\x1b[5;4H\x1b_Ga=p,i=7,p=3,c=20,r=4,x=0,y=60,w=200,h=40,C=1,z=1,q=1;\x1b\\");
+    expect(placeImage(placement({ columns: 8, sourceX: 120, sourceWidth: 80 })))
+      .toBe("\x1b[5;4H\x1b_Ga=p,i=7,p=3,c=8,r=10,x=120,y=0,w=80,h=100,C=1,z=1,q=1;\x1b\\");
+  });
+
+  test("a higher z stacks a placement above the rest and re-places on change", () => {
+    expect(placeImage(placement({ z: 2 }))).toContain(",C=1,z=2,q=1;");
+    const sync = new KittyImageSync();
+    sync.sync([placement()]);
+    expect(controls(sync.sync([placement({ z: 2 })]))).toEqual(["a=p,i=7,p=3,c=20,r=10,C=1,z=2,q=1"]);
+    expect(controls(sync.sync([placement({ z: 2, columns: 8, sourceX: 120, sourceWidth: 80 })])))
+      .toEqual(["a=p,i=7,p=3,c=8,r=10,x=120,y=0,w=80,h=100,C=1,z=2,q=1"]);
   });
 
   test("a selected placement carries st's V=1 tint", () => {
