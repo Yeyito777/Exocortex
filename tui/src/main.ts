@@ -83,6 +83,7 @@ import {
   prepareConversationOpen,
 } from "./conversationscroll";
 import { applyTuiLaunchOptions, parseTuiLaunchArgs, TUI_USAGE, type TuiLaunchOptions } from "./launchargs";
+import { reconnectDelayMs } from "./reconnect-delay";
 
 // ── State ───────────────────────────────────────────────────────────
 
@@ -103,7 +104,6 @@ const state = createInitialState();
 if (savedStartingState) applyTuiStartingState(state, savedStartingState);
 let pendingStartingState = savedStartingState;
 let startingConversationLoad: { convId: string; reqId: string } | null = null;
-const RECONNECT_DELAY_MS = 1000;
 const STARTUP_PROFILE = process.env.EXOCORTEX_PROFILE_STARTUP === "1" || launchOptions.profileStartup;
 const STARTUP_INPUT_SANITIZE_MS = 1000;
 
@@ -130,6 +130,8 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let eventLoopLagTimer: ReturnType<typeof setInterval> | null = null;
 let standbyRefreshTimer: ReturnType<typeof setInterval> | null = null;
 let reconnecting = false;
+/** Failed attempts in the current outage; picks the next reconnect delay. */
+let failedReconnectAttempts = 0;
 let reconnectNavigationTarget: string | null = null;
 let daemonRouteSwitchPending = false;
 let terminalSetUp = false;
@@ -1800,7 +1802,7 @@ function scheduleReconnectAttempt(): void {
     reconnectTimer = null;
     reconnecting = false;
     void reconnectToDaemon();
-  }, RECONNECT_DELAY_MS);
+  }, reconnectDelayMs(failedReconnectAttempts++, Boolean(daemon.remoteAlias)));
 }
 
 function restoreDaemonSessionAfterReconnect(
@@ -1840,6 +1842,7 @@ async function reconnectToDaemon(): Promise<void> {
       || (command.type === "unwind_conversation" && command.convId === state.convId)
     );
     reconnecting = false;
+    failedReconnectAttempts = 0;
     clearReconnectTimer();
     restoreDaemonSessionAfterReconnect(conversationWillReload, bootstrapAlreadyRequested);
     // The adopted probe already has the remote ping bootstrap in flight. Release
@@ -1882,6 +1885,7 @@ function handleDaemonConnectionLost(shutdownMode: DaemonShutdownMode | null): vo
     pushSystemMessage(state, formatConnectionLostNotice(shutdownMode), theme.error);
   }
   scheduleRender();
+  failedReconnectAttempts = 0;
   void reconnectToDaemon();
 }
 
