@@ -5,10 +5,11 @@ export const EXO_MODELS = ["sol fast", "astra"] as const;
 
 export const exo: Tool = {
   name: "exo",
-  description: "Start a subagent or abort a conversation.",
+  description: "Start a subagent, abort a conversation, or restart the daemon.",
   systemHint: [
     "Almost never use subagents: do implementation, research, review, and testing yourself; size, parallelism, and end-to-end testing are not reasons to delegate. Delegate only on explicit request or for a rare compelling benefit unavailable by working yourself. Never bypass a user's prohibition.",
     "Children have their own workspace and the same tools; include the absolute target directory and context. They cannot delegate further. Default: sol fast; use Astra for substantial implementation, architecture, or correctness-sensitive work. Completion notifies you unless detach:true.",
+    "restart gracefully restarts this daemon (e.g. to deploy merged daemon changes) once your current turn ends; use it instead of running exocortexd restart from a turn. Other active conversations are interrupted and replayed; yours is not, and gets a notice after boot. Refused within 5 minutes of daemon start or while a restart is pending; aborting your turn cancels it.",
     `For administration (inspect/create conversations, history, tasks, folders), send commands directly to this daemon; read ${repoRoot()}/docs/daemon-ipc.md and ${repoRoot()}/shared/src/protocol.ts first.`,
   ].join("\n"),
   inputSchema: {
@@ -24,6 +25,7 @@ export const exo: Tool = {
         additionalProperties: false,
       },
       abort: { type: "string", description: "Exact conversation ID to abort; never the current conversation." },
+      restart: { type: "string", description: "Restart the daemon after this turn ends. Value: short reason (may be empty)." },
     },
     additionalProperties: false,
   },
@@ -32,9 +34,10 @@ export const exo: Tool = {
   watchdogExempt: true,
   display: { label: "Exocortex", color: "#1d9bf0" },
   summarize(input) {
-    const value = input.subagent ?? input.abort;
+    const action = input.subagent !== undefined ? "subagent" : input.restart !== undefined ? "restart" : "abort";
+    const value = input[action];
     const text = typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
-    return { label: "Exocortex", detail: `${input.subagent !== undefined ? "subagent" : "abort"}: ${text.slice(0, 100)}` };
+    return { label: "Exocortex", detail: `${action}: ${text.slice(0, 100)}` };
   },
   async execute(input, context, signal) {
     if (!context?.exocortex) {

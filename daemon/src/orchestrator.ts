@@ -50,6 +50,7 @@ import { resolveToolCallPresentation } from "./helper-tool-manifest";
 import { pendingTurnNotices } from "./turn-notices";
 import { setBackgroundTaskActive as setConversationBackgroundTaskActive, setChronoTaskActive as setConversationChronoTaskActive } from "./conversation-activity";
 import { acknowledgeSubagentNotification, settlePendingSubagentNotifications } from "./subagent-notifications";
+import { noteRequestedRestartTurnEnded } from "./requested-restart";
 import { getDaemonShutdownMode } from "./daemon-lifecycle";
 import { ensureConversationWorkspace } from "./workspace-service";
 import { BUFFERED_HISTORY_TURNS, buildHistoryUpdatedEvents, buildStoredHistoryUpdatedEvent } from "./history-pagination";
@@ -2038,6 +2039,8 @@ async function orchestrateAdmittedAssistantTurn(
     }
 
     ext.onComplete();
+    // Releases (or, when aborted, cancels) a daemon restart this turn requested.
+    if (!shutdownMode) noteRequestedRestartTurnEnded(convId, outcome?.aborted === true);
 
     const settleFailedStreamHandoff = () => {
       // A successor can fail preflight before setActiveJob atomically replaces

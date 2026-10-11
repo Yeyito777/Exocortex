@@ -69,6 +69,7 @@ const AUTOMATION_LABELS: Record<UserMessageAutomation["kind"], string> = {
   subagent_completion: "Subagent completion",
   goal_continuation: "Goal continuation",
   realtime_delegation: "Realtime handoff",
+  daemon_restart: "Daemon restart",
 };
 
 function automationProvenance(automation: UserMessageAutomation | undefined): string | null {

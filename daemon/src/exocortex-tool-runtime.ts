@@ -8,6 +8,7 @@ import {
 } from "./conversation-activity";
 import { broadcastConversationHistoryUpdated, broadcastConversationUpdated } from "./conversation-events";
 import { log } from "./log";
+import { requestDaemonRestart, type RestartRequestOptions } from "./requested-restart";
 import {
   MAX_ACTIVE_EXO_SUBAGENTS_GLOBAL, MAX_ACTIVE_EXO_SUBAGENTS_PER_PARENT, SUBAGENTS_FOLDER_NAME,
   type ProviderId,
@@ -35,6 +36,8 @@ export interface ExocortexToolRuntimeDependencies {
   notifyParent?(parentConvId: string, childConvId: string, task: string, outcome: AssistantTurnOutcome): void;
   cannotStart?(provider: ProviderId): string | null;
   hasCredentials?(provider: ProviderId): boolean;
+  /** Overrides for the restart guards/scheduler (tests). */
+  restart?: RestartRequestOptions;
 }
 
 function result(value: unknown, isError = false): ToolResult {
@@ -51,10 +54,24 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       try {
         validateCommandArgs(exo.inputSchema, input, "exo");
         const spawning = input.subagent !== undefined;
-        if (spawning === (input.abort !== undefined)) throw new Error("Specify exactly one of subagent or abort.");
+        const actions = [input.subagent, input.abort, input.restart].filter(value => value !== undefined).length;
+        if (actions !== 1) throw new Error("Specify exactly one of subagent, abort, or restart.");
         if (!spawning && input.args !== undefined) throw new Error("args is only available with subagent.");
         if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
         const parent = parentId ? convStore.get(parentId) : undefined;
+
+        if (input.restart !== undefined) {
+          if (!parentId || !parent) throw new Error("restart requires an active conversation.");
+          if (callerMaxDepth === 0 || parent.subagentPolicy) throw new Error("Subagents cannot restart the daemon; ask the parent conversation.");
+          const request = requestDaemonRestart(parentId, input.restart as string, deps.restart);
+          return result({
+            status: "scheduled",
+            token: request.token,
+            reason: request.reason,
+            runs: "after this turn ends",
+            note: "Finish this turn normally and do not request another restart. Other active conversations will be interrupted and replayed; this one will not. You will receive a notice once the new daemon has started.",
+          });
+        }
 
         if (!spawning) {
           const convId = (input.abort as string).trim();

@@ -228,6 +228,7 @@ export const USER_MESSAGE_AUTOMATION_KINDS = [
   "subagent_completion",
   "goal_continuation",
   "realtime_delegation",
+  "daemon_restart",
 ] as const;
 
 export type UserMessageAutomationKind = typeof USER_MESSAGE_AUTOMATION_KINDS[number];

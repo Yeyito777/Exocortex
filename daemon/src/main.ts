@@ -8,6 +8,7 @@
  *   bun run src/main.ts          Start the daemon
  *   bun run src/main.ts login [provider] [browser|code]    Authenticate a provider
  *   bun run src/main.ts prepare-restart     Save/interrupt streams before service restart
+ *   bun run src/main.ts run-requested-restart <token>   Executor for an exo-requested restart
  */
 
 import { loadEnvFile } from "./env";
@@ -29,6 +30,7 @@ import { closeConversationPersistence, prepareConversationStoreSchema } from "./
 import { getRunningConversationIds, prepareRestartForReplay, prepareStopWithoutReplay } from "./control";
 import { clearRestartRecoveryForStop, deliverPendingSubagentNotifications, hasActiveGoalRestartMarker, prepareCatchableShutdownForReplay, prepareCatchableShutdownWithoutReplay, recoverActiveGoals, recoverInterruptedStreams } from "./restart-recovery";
 import { scheduleActiveGoalTimeLimits } from "./goal-time-limit";
+import { finishRequestedRestartBoot, prepareRequestedRestartBoot, runRequestedRestart } from "./requested-restart";
 import { startChronoService, stopChronoService, listChronoSchedules, resumeDeferredChronoWaits } from "./chrono-service";
 import { startWatchdog, stopWatchdog } from "./watchdog";
 import { initExternalTools, stopExternalToolsAsync, getExternalToolCount, getSupervisedDaemonCount, getExternalToolStyles } from "./external-tools";
@@ -341,6 +343,7 @@ async function startDaemon(): Promise<void> {
     return [];
   });
   profileMark("claude_code_processes_adopted", { runningTurns: adoptedClaudeCodeTurns.length });
+  const requestedRestart = prepareRequestedRestartBoot();
   const recoveredStreams = recoverInterruptedStreams(server, adoptedClaudeCodeTurns);
   if (recoveredStreams.length > 0) {
     console.log(`  replay: scheduled ${recoveredStreams.length} interrupted conversation(s): ${recoveredStreams.join(", ")}`);
@@ -351,6 +354,7 @@ async function startDaemon(): Promise<void> {
     console.log(`  goals: scheduled ${recoveredGoals.length} active goal continuation(s): ${recoveredGoals.join(", ")}`);
     profileMark("active_goals_recovered", { count: recoveredGoals.length });
   }
+  if (requestedRestart) finishRequestedRestartBoot(requestedRestart);
   const pendingNotifications = deliverPendingSubagentNotifications(server);
   if (pendingNotifications > 0) {
     console.log(`  subagents: resumed delivery of ${pendingNotifications} parent notification(s)`);
@@ -424,6 +428,24 @@ async function main(): Promise<void> {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`\n  ✗ Failed to prepare stop: ${message}\n`);
+      process.exit(1);
+    }
+  }
+
+  if (command === "run-requested-restart") {
+    const token = process.argv[3];
+    if (!token) {
+      console.error("  ✗ Usage: run-requested-restart <token>");
+      process.exit(2);
+    }
+    try {
+      const outcome = await runRequestedRestart(token);
+      console.log(`  requested restart ${token}: ${outcome}`);
+      return;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log("error", `requested-restart: executor ${token} failed: ${message}`);
+      console.error(`\n  ✗ Requested restart failed: ${message}\n`);
       process.exit(1);
     }
   }

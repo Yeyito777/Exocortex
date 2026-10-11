@@ -151,10 +151,15 @@ async function abortConversation(convId: string, timeoutMs = 2_000): Promise<voi
   });
 }
 
-async function requestDaemonShutdownMode(mode: "stop" | "restart", timeoutMs = 2_000): Promise<void> {
+/** Send one command and resolve on its matching acknowledgement. */
+async function sendAcknowledgedCommand(
+  command: { type: string } & Record<string, unknown>,
+  description: string,
+  timeoutMs = 2_000,
+): Promise<void> {
   const path = ensureSocketExists();
   return new Promise((resolve, reject) => {
-    const reqId = makeReqId(`prepare_${mode}`);
+    const reqId = makeReqId(command.type);
     const socket = netConnect(path);
     let buffer = "";
     let settled = false;
@@ -167,11 +172,11 @@ async function requestDaemonShutdownMode(mode: "stop" | "restart", timeoutMs = 2
       else resolve();
     };
     const timer = setTimeout(() => {
-      finish(new Error(`Timed out after ${timeoutMs}ms waiting for exocortexd to prepare ${mode}`));
+      finish(new Error(`Timed out after ${timeoutMs}ms waiting for exocortexd to ${description}`));
     }, timeoutMs);
 
     socket.on("connect", () => {
-      socket.write(JSON.stringify({ type: "prepare_shutdown", reqId, mode }) + "\n");
+      socket.write(JSON.stringify({ ...command, reqId }) + "\n");
     });
     socket.on("data", (data) => {
       buffer += typeof data === "string" ? data : data.toString("utf-8");
@@ -200,9 +205,18 @@ async function requestDaemonShutdownMode(mode: "stop" | "restart", timeoutMs = 2
     });
     socket.on("error", (error) => finish(error));
     socket.on("close", () => {
-      if (!settled) finish(new Error(`Connection closed before exocortexd prepared ${mode}`));
+      if (!settled) finish(new Error(`Connection closed before exocortexd acknowledged: ${description}`));
     });
   });
+}
+
+function requestDaemonShutdownMode(mode: "stop" | "restart", timeoutMs = 2_000): Promise<void> {
+  return sendAcknowledgedCommand({ type: "prepare_shutdown", mode }, `prepare ${mode}`, timeoutMs);
+}
+
+/** Ask an instance-local daemon to exit for its supervisor to relaunch (exotest). */
+export function requestInstanceRestart(timeoutMs = 2_000): Promise<void> {
+  return sendAcknowledgedCommand({ type: "restart_daemon" }, "restart", timeoutMs);
 }
 
 export async function prepareStopWithoutReplay(): Promise<void> {

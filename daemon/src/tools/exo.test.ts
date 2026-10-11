@@ -8,6 +8,7 @@ import { setLoadedExternalToolsForTest } from "../external-tools";
 import { latestSizeModel } from "../delegation-models";
 import { getProvider } from "../providers/registry";
 import { MAX_ACTIVE_EXO_SUBAGENTS_PER_PARENT } from "../messages";
+import { readRequestedRestart, resetRequestedRestartForTest, RESTART_MIN_UPTIME_MS } from "../requested-restart";
 import { exo } from "./exo";
 
 const ids = new Set<string>();
@@ -47,13 +48,15 @@ afterEach(async () => {
 });
 
 describe("minimal native exo", () => {
-  test("schema exposes only subagent/args/abort with two model choices", () => {
+  test("schema exposes only subagent/args/abort/restart with two model choices", () => {
     const properties = exo.inputSchema.properties as Record<string, any>;
-    expect(Object.keys(properties)).toEqual(["subagent", "args", "abort"]);
+    expect(Object.keys(properties)).toEqual(["subagent", "args", "abort", "restart"]);
     expect(Object.keys(properties.args.properties)).toEqual(["detach", "model"]);
     expect(properties.args.properties.model.enum).toEqual(["sol fast", "astra"]);
     expect(exo.systemHint).toContain("Almost never use subagents");
     expect(exo.systemHint).toContain("shared/src/protocol.ts");
+    expect(exo.systemHint).toContain("restart gracefully restarts this daemon");
+    expect(exo.summarize!({ restart: "deploy fix" }).detail).toBe("restart: deploy fix");
   });
   test("Sol fast is the default independently of user defaults; Astra is the only override", async () => {
     saveConversationDefaults({ provider: "openai", model: "gpt-6-astra", effort: "high", fastMode: false });
@@ -117,6 +120,7 @@ describe("minimal native exo", () => {
       { subagent: "do it", args: { external_tools: ["fixture"] } },
       { subagent: "do it", args: { model: "sol" } }, { subagent: "do it", args: { model: "terra" } },
       { subagent: "do it", args: { model: "gpt-6-astra" } }, { subagent: "do it", args: { detach: "yes" } },
+      { restart: "x", abort: p.id }, { restart: "x", subagent: "do it" }, { restart: "x", args: {} }, { restart: true },
     ]) expect((await h.runtime.execute(input, p.id)).isError).toBe(true);
     expect(h.runTurn).not.toHaveBeenCalled();
     expect(getConversationActivityCounts(p.id).subagentCount).toBe(0);
@@ -187,5 +191,50 @@ describe("minimal native exo", () => {
     expect(target.goal?.status).toBe("paused");
     const child = await spawn(h.runtime, p.id);
     expect((await h.runtime.execute({ abort: p.id }, child.id)).isError).toBe(true);
+  });
+  describe("restart", () => {
+    afterEach(() => resetRequestedRestartForTest());
+    const restartOptions = (startedAgoMs: number) => {
+      const schedule = mock((token: string) => `unit-${token}`);
+      return { schedule, restart: { startedAt: Date.now() - startedAgoMs, target: "service" as const, schedule } };
+    };
+
+    test("schedules an after-turn restart for the calling conversation", async () => {
+      const p = parent();
+      const { schedule, restart } = restartOptions(RESTART_MIN_UPTIME_MS + 60_000);
+      const response = await harness({ restart }).runtime.execute({ restart: "deploy merged fix" }, p.id);
+      expect(response.isError).toBe(false);
+      const body = JSON.parse(response.output);
+      expect(body).toMatchObject({ status: "scheduled", reason: "deploy merged fix", runs: "after this turn ends" });
+      expect(schedule).toHaveBeenCalledWith(body.token);
+      expect(readRequestedRestart()).toMatchObject({ token: body.token, requestedBy: p.id, state: "scheduled" });
+    });
+
+    test("cooldown and already-pending requests are refused with clear messages", async () => {
+      const p = parent();
+      const fresh = restartOptions(30_000);
+      const early = await harness({ restart: fresh.restart }).runtime.execute({ restart: "" }, p.id);
+      expect(early.isError).toBe(true);
+      expect(JSON.parse(early.output).error).toMatch(/Refusing restart: the daemon started 0m 30s ago/);
+      expect(fresh.schedule).not.toHaveBeenCalled();
+
+      const ok = restartOptions(RESTART_MIN_UPTIME_MS + 60_000);
+      expect((await harness({ restart: ok.restart }).runtime.execute({ restart: "" }, p.id)).isError).toBe(false);
+      const again = await harness({ restart: ok.restart }).runtime.execute({ restart: "" }, parent().id);
+      expect(again.isError).toBe(true);
+      expect(JSON.parse(again.output).error).toMatch(/already pending/);
+      expect(ok.schedule).toHaveBeenCalledTimes(1);
+    });
+
+    test("subagents and depth-zero turns cannot restart the daemon", async () => {
+      const p = parent();
+      const { schedule, restart } = restartOptions(RESTART_MIN_UPTIME_MS + 60_000);
+      const h = harness({ restart });
+      const child = await spawn(h.runtime, p.id);
+      expect((await h.runtime.execute({ restart: "" }, child.id)).isError).toBe(true);
+      expect((await h.runtime.execute({ restart: "" }, p.id, undefined, 0)).isError).toBe(true);
+      expect((await h.runtime.execute({ restart: "" }, undefined)).isError).toBe(true);
+      expect(schedule).not.toHaveBeenCalled();
+    });
   });
 });
