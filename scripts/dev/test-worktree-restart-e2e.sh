@@ -16,7 +16,8 @@ fi
 WT_NAME="$(basename "$GIT_DIR")"
 RUNTIME_DIR="$WORKTREE_DIR/config/runtime/$WT_NAME"
 PID_FILE="$RUNTIME_DIR/exocortexd.pid"
-SOCKET="$RUNTIME_DIR/exocortexd.sock"
+# Deep worktree paths hash the socket into /tmp; resolve it like exotest does.
+SOCKET="$(cd "$WORKTREE_DIR" && bun -e 'import { socketPath } from "./shared/src/paths"; process.stdout.write(socketPath())')"
 XENV_NAME="exo-restart-e2e-$$"
 TERMINAL_PID=""
 EXOTEST_PID=""
