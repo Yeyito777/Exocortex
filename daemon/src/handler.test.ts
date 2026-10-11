@@ -17,6 +17,7 @@ import { listPendingExternalNotificationSoftWakes, resetExternalNotificationSoft
 import { getExocortexToolRuntime } from "./exocortex-tool-runtime";
 import { resetConversationActivityForTest, setBackgroundTaskActive, setChronoTaskActive } from "./conversation-activity";
 import { getProviderAdapter } from "./providers/catalog";
+import { HISTORY_PAGE_BYTE_BUDGET } from "./history-pagination";
 
 interface TestAssistantOutcome {
   ok: boolean;
@@ -3083,6 +3084,55 @@ describe("handler load_conversation late-join streaming snapshots", () => {
     expect((sent[0].entries as Array<{ type: string; text?: string }>)
       .filter((entry) => entry.type === "user")).toHaveLength(7);
     expect(sent[0]).not.toHaveProperty("historyStartIndex");
+  });
+
+  test("honors a screen-sized opening window and still byte-bounds it", async () => {
+    const shortId = mkId("screen-sized-short");
+    create(shortId, "openai", "gpt-5.4");
+    const short = get(shortId)!;
+    for (let turn = 1; turn <= 120; turn++) {
+      short.messages.push({ role: "user", content: `u${turn}`, metadata: null });
+      short.messages.push({ role: "assistant", content: `a${turn}`, metadata: null });
+    }
+    const longId = mkId("screen-sized-long");
+    create(longId, "openai", "gpt-5.4");
+    const long = get(longId)!;
+    for (let turn = 1; turn <= 40; turn++) {
+      long.messages.push({ role: "user", content: `u${turn}`, metadata: null });
+      long.messages.push({ role: "assistant", content: `a${turn} ${"x".repeat(60_000)}`, metadata: null });
+    }
+
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+    const client = { capabilities: new Set<string>(["history-block-pagination"]) };
+    const users = (event: Record<string, unknown>) =>
+      (event.entries as Array<{ type: string }>).filter((entry) => entry.type === "user").length;
+
+    // Tall TUIs ask for up to 100 turns in the opening request.
+    await handle(client as never, { type: "load_conversation", convId: shortId, turns: 40 });
+    expect(sent[0]).toMatchObject({ type: "conversation_loaded", historyStartUserIndex: 80, hasOlderHistory: true });
+    expect(users(sent[0])).toBe(40);
+
+    // Long turns stay within the page byte budget however many turns are asked for.
+    sent.length = 0;
+    await handle(client as never, { type: "load_conversation", convId: longId, turns: 100 });
+    expect(sent[0]).toMatchObject({ type: "conversation_loaded", hasOlderHistory: true });
+    expect(users(sent[0])).toBe(2);
+    expect(JSON.stringify(sent[0].entries).length).toBeLessThanOrEqual(HISTORY_PAGE_BYTE_BUDGET);
+
+    // The TUI clamps to the limit every daemon version enforces.
+    sent.length = 0;
+    await handle(client as never, { type: "load_conversation", convId: shortId, turns: 101 });
+    expect(sent[0]).toMatchObject({ type: "error", message: "Invalid conversation history turn count" });
   });
 
   test("does not send streaming_started after the final assistant reply is already committed", async () => {
