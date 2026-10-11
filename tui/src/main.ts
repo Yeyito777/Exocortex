@@ -18,7 +18,7 @@ import { configureInlineImages, setInlineImageCellSize, setInlineImageMode } fro
 import { disposeHistoryImages, handleHistoryImageResponse, invalidateHistoryImagePlacements } from "./historyimages";
 import { handleImageModalKey } from "./imagemodal";
 import { handleFocusedKey } from "./focus";
-import { handleMouseEvent } from "./mouse";
+import { handleMouseEvent, refreshMouseCursor, trackMouseCursor } from "./mouse";
 import { clearPrompt } from "./promptstate";
 import { tryCommand } from "./commands";
 import { expandMacros, macroEnvironmentForState } from "./macros";
@@ -281,6 +281,8 @@ function performRender(): number {
   const framePresented = render(state);
   const renderMs = performance.now() - renderStartedAt;
   if (!framePresented) return renderMs;
+  // Scrolling, streaming and overlays move what is under a still pointer.
+  refreshMouseCursor(state);
   const startedAt = state.pendingAI?.metadata?.startedAt;
   if (state.convId && startedAt != null && state.scrollOffset === 0 && !state.folderInstructionsDoc) {
     firstTextUX.onFrame(state.convId, startedAt);
@@ -1760,6 +1762,7 @@ function handleMouse(ev: MouseEvent): void {
   if (voiceInput?.isBlockingMouse()) return;
   // A click anywhere closes the image viewer; other mouse input is ignored under it.
   if (state.imageModal) {
+    trackMouseCursor(ev, state);
     if (ev.button === 0 && ev.action === "press") {
       state.imageModal = null;
       renderAfterLocalUiMutation();

@@ -131,18 +131,38 @@ function linkAtScreen(col: number, row: number, state: RenderState): string | nu
   return null;
 }
 
+/**
+ * Whether a left click at this history cell opens something: a link or
+ * openable path (release on the same cell) or an inline image, strip
+ * thumbnail, caption or `› +N` (exact hit, so strip gaps do not count).
+ * Mirrors the press handler's own hit tests so hover and click agree.
+ */
+function historyClickableAtScreen(col: number, row: number, state: RenderState): boolean {
+  if (!screenToHistoryPos(col, row, state)) return false;
+  return linkAtScreen(col, row, state) !== null || imageAtScreen(col, row, state) !== null;
+}
+
 // ── Cursor shape ──────────────────────────────────────────────────
 
 type CursorShape = "pointer" | "text" | "hand";
 
 /**
  * Determine the desired cursor shape for a mouse position.
+ * - "hand" for anything a click acts on (sidebar entries, menu actions,
+ *   edit-message picker rows, history links/paths/images)
  * - "text" for text-content areas (prompt, chat history)
- * - "hand" for clickable elements (sidebar conversation entries)
  * - "pointer" for non-interactive chrome (topbar, separators, statusbar, sidebar header)
+ *   and modal backdrops whose click only dismisses (image viewer, menus)
  */
-function cursorZone(col: number, row: number, state: RenderState): CursorShape {
+export function cursorZone(col: number, row: number, state: RenderState): CursorShape {
   const { layout, sidebar } = state;
+
+  // The image viewer covers everything; a click anywhere only closes it.
+  if (state.imageModal) return "pointer";
+
+  if (state.editMessagePrompt) {
+    return editMessageItemIndexAtMouse(state, col, row) !== null ? "hand" : "pointer";
+  }
 
   const menu = sidebar.conversationActionMenu;
   if (menu) {
@@ -168,8 +188,10 @@ function cursorZone(col: number, row: number, state: RenderState): CursorShape {
   }
 
   // Message area (chat history) → text, except for the task panel itself.
+  // The queue prompt swallows clicks, so nothing under it is clickable.
   if (row >= 3 && layout.sepAbove > 0 && row < layout.sepAbove) {
-    return isInsideTaskPanel(col, row, state) ? "pointer" : linkAtScreen(col, row, state) ? "hand" : "text";
+    if (isInsideTaskPanel(col, row, state)) return "pointer";
+    return !state.queuePrompt && historyClickableAtScreen(col, row, state) ? "hand" : "text";
   }
 
   // Prompt input area → text
@@ -194,6 +216,18 @@ function updateMouseCursor(col: number, row: number, state: RenderState): void {
   }
 }
 
+/** Remember the pointer cell and update its shape, even for input an overlay swallows. */
+export function trackMouseCursor(ev: Pick<MouseEvent, "col" | "row">, state: RenderState): void {
+  state.mousePosition = { col: ev.col, row: ev.row };
+  updateMouseCursor(ev.col, ev.row, state);
+}
+
+/** Re-evaluate the shape at the last pointer cell once a render moved content or overlays under it. */
+export function refreshMouseCursor(state: RenderState): void {
+  const position = state.mousePosition;
+  if (position) updateMouseCursor(position.col, position.row, state);
+}
+
 // ── Event handler ─────────────────────────────────────────────────
 
 export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult {
@@ -202,7 +236,7 @@ export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult 
   if (ev.action === "press" || (ev.action === "motion" && state.mouseImagePress
       && (ev.col !== state.mouseImagePress.col || ev.row !== state.mouseImagePress.row))) state.mouseImagePress = null;
   // Always update cursor shape on any mouse event (motion, press, scroll)
-  updateMouseCursor(ev.col, ev.row, state);
+  trackMouseCursor(ev, state);
 
   // Modal overlays intercept mouse events.  The edit-message modal is clickable:
   // clicking a visible item selects it and confirms, matching Enter on that row.
