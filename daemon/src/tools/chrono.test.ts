@@ -270,4 +270,78 @@ describe("Chrono tool", () => {
     const listed = await chrono.execute({ action: "list" }, { conversationId: "pmv4-owner" });
     expect(listed.output).toContain("Recorder monitor");
   });
+
+  async function scheduleWake(conversationId: string, title: string): Promise<string> {
+    const created = await chrono.execute({ action: "wake", after_seconds: 60, title, message: title }, { conversationId });
+    const id = created.output.match(/chrono:[0-9a-f-]+/)?.[0];
+    if (!id) throw new Error(`No schedule id in: ${created.output}`);
+    return id;
+  }
+
+  test("cancel still accepts a single schedule_id", async () => {
+    const id = await scheduleWake("parent", "Solo");
+    const result = await chrono.execute({ action: "cancel", schedule_id: id }, { conversationId: "parent" });
+    expect(result).toEqual({ output: `Cancelled Chrono schedule: ${id} (Solo)`, isError: false });
+    const missing = await chrono.execute({ action: "cancel", schedule_id: id }, { conversationId: "parent" });
+    expect(missing).toEqual({ output: `Chrono schedule not found: ${id}`, isError: true });
+  });
+
+  test("cancels several owned schedules in one call", async () => {
+    const ids = [await scheduleWake("parent", "One"), await scheduleWake("parent", "Two"), await scheduleWake("parent", "Three")];
+    const result = await chrono.execute({ action: "cancel", schedule_id: ids[0], schedule_ids: ids.slice(1) }, { conversationId: "parent" });
+    expect(result.isError).toBe(false);
+    expect(result.output).toBe([
+      "Cancelled 3 of 3 Chrono schedules:",
+      `cancelled: ${ids[0]} (One)`,
+      `cancelled: ${ids[1]} (Two)`,
+      `cancelled: ${ids[2]} (Three)`,
+    ].join("\n"));
+    const listed = await chrono.execute({ action: "list" }, { conversationId: "parent" });
+    expect(listed.output).toBe("No Chrono schedules for this conversation.");
+  });
+
+  test("batch cancel reports each missing or foreign id and only errors when nothing was cancelled", async () => {
+    const mine = await scheduleWake("parent", "Mine");
+    const theirs = await scheduleWake("other", "Theirs");
+    const result = await chrono.execute({ action: "cancel", schedule_ids: [mine, "chrono:missing", theirs] }, { conversationId: "parent" });
+    expect(result.isError).toBe(false);
+    expect(result.output).toBe([
+      "Cancelled 1 of 3 Chrono schedules:",
+      `cancelled: ${mine} (Mine)`,
+      "error: Chrono schedule not found: chrono:missing",
+      `error: Chrono schedule not found: ${theirs}`,
+    ].join("\n"));
+    const otherList = await chrono.execute({ action: "list" }, { conversationId: "other" });
+    expect(otherList.output).toContain("Theirs");
+
+    const none = await chrono.execute({ action: "cancel", schedule_ids: [mine, theirs] }, { conversationId: "parent" });
+    expect(none.isError).toBe(true);
+    expect(none.output).toStartWith("Cancelled 0 of 2 Chrono schedules:");
+  });
+
+  test("batch cancel de-duplicates ids and refuses prefixes, all, and oversized batches", async () => {
+    const id = await scheduleWake("parent", "Once");
+    const deduped = await chrono.execute({ action: "cancel", schedule_id: id, schedule_ids: [id, ` ${id} `] }, { conversationId: "parent" });
+    expect(deduped).toEqual({ output: `Cancelled Chrono schedule: ${id} (Once)`, isError: false });
+
+    const kept = await scheduleWake("parent", "Kept");
+    const fuzzy = await chrono.execute({ action: "cancel", schedule_ids: ["all", kept.slice(0, 12)] }, { conversationId: "parent" });
+    expect(fuzzy.isError).toBe(true);
+    const tooMany = await chrono.execute({
+      action: "cancel",
+      schedule_ids: [kept, ...Array.from({ length: 50 }, (_, index) => `chrono:missing-${index}`)],
+    }, { conversationId: "parent" });
+    expect(tooMany.isError).toBe(true);
+    expect(tooMany.output).toContain("at most 50");
+    expect((await chrono.execute({ action: "list" }, { conversationId: "parent" })).output).toContain("Kept");
+
+    expect((await chrono.execute({ action: "cancel", schedule_ids: [] }, { conversationId: "parent" })).isError).toBe(true);
+    expect((await chrono.execute({ action: "cancel", schedule_ids: [42] }, { conversationId: "parent" })).isError).toBe(true);
+  });
+
+  test("summarizes batch cancels readably", () => {
+    expect(chrono.summarize({ action: "cancel", schedule_id: "chrono:a" }).detail).toBe("cancel: chrono:a");
+    expect(chrono.summarize({ action: "cancel", schedule_id: "chrono:a", schedule_ids: ["chrono:b", "chrono:a"] }).detail)
+      .toBe("cancel: 2 schedules: chrono:a, chrono:b");
+  });
 });

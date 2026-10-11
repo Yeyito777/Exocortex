@@ -91,6 +91,20 @@ function interruptibleByUser(context: NonNullable<Parameters<Tool["execute"]>[1]
   };
 }
 
+const MAX_CANCEL_SCHEDULE_IDS = 50;
+
+/** Exact ids from schedule_id and schedule_ids, merged and de-duplicated in order. */
+function cancelScheduleIds(input: Record<string, unknown>): string[] | { error: string } {
+  const raw: unknown[] = [];
+  if (input.schedule_id !== undefined) raw.push(input.schedule_id);
+  if (input.schedule_ids !== undefined) {
+    if (!Array.isArray(input.schedule_ids)) return { error: "schedule_ids must be an array of exact schedule ids." };
+    raw.push(...input.schedule_ids);
+  }
+  if (raw.some(id => typeof id !== "string")) return { error: "Chrono schedule ids must be strings." };
+  return [...new Set((raw as string[]).map(id => id.trim()).filter(Boolean))];
+}
+
 function formatSchedule(schedule: ReturnType<typeof listChronoSchedules>[number]): string {
   const target = schedule.target.kind === "conversation" ? "hard wake" : schedule.target.hardWake ? "soft wake → hard wake" : "soft wake";
   const repeat = schedule.recurrence ? `, repeats ${schedule.recurrence.kind === "interval" ? `every ${schedule.recurrence.everyMs / 1000}s` : schedule.recurrence.kind === "calendar" ? `${schedule.recurrence.unit === "day" ? "daily" : schedule.recurrence.unit === "week" ? "weekly" : "monthly"} in ${schedule.recurrence.timezone}` : schedule.recurrence.expression}` : "";
@@ -317,12 +331,27 @@ async function execute(input: Record<string, unknown>, context: Parameters<Tool[
   }
 
   if (selected === "cancel") {
-    const scheduleId = typeof input.schedule_id === "string" ? input.schedule_id.trim() : "";
-    if (!scheduleId) return { output: "cancel requires schedule_id.", isError: true };
-    const result = cancelChronoSchedule(scheduleId, convId);
-    return result.cancelled
-      ? { output: `Cancelled Chrono schedule: ${result.cancelled.id} (${result.cancelled.title})`, isError: false }
-      : { output: result.error ?? "Chrono schedule not found.", isError: true };
+    const ids = cancelScheduleIds(input);
+    if ("error" in ids) return { output: ids.error, isError: true };
+    if (ids.length === 0) return { output: "cancel requires schedule_id or schedule_ids.", isError: true };
+    if (ids.length > MAX_CANCEL_SCHEDULE_IDS) {
+      return { output: `cancel accepts at most ${MAX_CANCEL_SCHEDULE_IDS} schedule ids per call; got ${ids.length}. Nothing was cancelled.`, isError: true };
+    }
+    const results = ids.map(id => cancelChronoSchedule(id, convId));
+    if (ids.length === 1) {
+      const [result] = results;
+      return result.cancelled
+        ? { output: `Cancelled Chrono schedule: ${result.cancelled.id} (${result.cancelled.title})`, isError: false }
+        : { output: result.error ?? "Chrono schedule not found.", isError: true };
+    }
+    const cancelled = results.filter(result => result.cancelled).length;
+    const lines = results.map((result, index) => result.cancelled
+      ? `cancelled: ${result.cancelled.id} (${result.cancelled.title})`
+      : `error: ${result.error ?? `Chrono schedule not found: ${ids[index]}`}`);
+    return {
+      output: `Cancelled ${cancelled} of ${ids.length} Chrono schedules:\n${lines.join("\n")}`,
+      isError: cancelled === 0,
+    };
   }
 
   return { output: "Invalid Chrono action. Use wait, sleep, wake, list, adopt, or cancel.", isError: true };
@@ -368,6 +397,7 @@ export const chrono: Tool = {
         additionalProperties: false,
       },
       schedule_id: { type: "string", description: "For adopt/cancel: exact Chrono schedule id. Adopt transfers an ownerless command schedule to this conversation and configures failure escalation." },
+      schedule_ids: { type: "array", items: { type: "string" }, description: `For cancel: exact Chrono schedule ids to cancel in one call (at most ${MAX_CANCEL_SCHEDULE_IDS}); merged with schedule_id. Each id is cancelled independently and reported on its own line.` },
     },
     required: ["action"],
     additionalProperties: false,
@@ -383,9 +413,16 @@ export const chrono: Tool = {
       const primary = taskId ? `wait: ${taskId}` : "wait";
       return { label: "Chrono", detail: summarizeParams(primary, input, ["action", "task_id"]) };
     }
+    if (selected === "cancel") {
+      const ids = cancelScheduleIds(input);
+      const detail = "error" in ids ? String(input.schedule_id ?? "")
+        : ids.length > 1 ? `${ids.length} schedules: ${ids.join(", ")}`
+          : ids[0] ?? "";
+      return { label: "Chrono", detail: detail ? `cancel: ${detail}` : "cancel" };
+    }
     const detail = selected === "sleep" ? String(input.duration ?? "")
       : selected === "wake" ? String(input.title ?? input.message ?? input.command ?? input.at ?? "")
-        : selected === "adopt" || selected === "cancel" ? String(input.schedule_id ?? "")
+        : selected === "adopt" ? String(input.schedule_id ?? "")
           : "";
     return { label: "Chrono", detail: detail ? `${selected}: ${detail}` : selected };
   },
