@@ -968,18 +968,19 @@ export class DaemonClient {
     this.send({ type: "list_conversations" });
   }
 
-  loadConversation(convId: string): string {
+  /** `turns` sizes the opening window; callers pass enough to fill their screen. */
+  loadConversation(convId: string, turns = 5): string {
     const requestedAt = Date.now();
     const reqId = `conversation_${++this.nextReqId}_${requestedAt}`;
     if (this.performanceProfilingEnabled) {
       this.pendingConversationLoads.set(reqId, { convId, startedAt: performance.now() });
-      log("info", `perf: conversation_open tui_request ${JSON.stringify({ reqId, convId, requestedAt, connected: this._connected })}`);
+      log("info", `perf: conversation_open tui_request ${JSON.stringify({ reqId, convId, turns, requestedAt, connected: this._connected })}`);
     }
     this.send({
       type: "load_conversation",
       reqId,
       convId,
-      turns: 5,
+      turns,
       ...(this.performanceProfilingEnabled ? { requestedAt } : {}),
     });
     if (this.performanceProfilingEnabled) {

@@ -661,6 +661,22 @@ describe("DaemonClient commands", () => {
     expect(internal.pendingConversationLoads.size).toBe(0);
     expect(internal.pendingConversationHistoryLoads.size).toBe(0);
   });
+
+  test("sends a screen-sized opening window as the plain turns field every daemon accepts", () => {
+    const client = new DaemonClient(() => {}, undefined, false);
+    const internal = client as any;
+
+    client.loadConversation("conv-1", 40);
+
+    // No new protocol field: daemons that predate screen sizing honor turns
+    // (1..100) and still byte-bound the window for block-paginated clients.
+    expect(internal.pendingCommands[0]).toEqual({
+      type: "load_conversation",
+      reqId: expect.stringMatching(/^conversation_/),
+      convId: "conv-1",
+      turns: 40,
+    });
+  });
 });
 
 describe("DaemonClient reconnect behavior", () => {

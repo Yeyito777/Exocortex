@@ -421,7 +421,11 @@ export interface LoadConversationCommand extends CachedHistoryRequest {
   convId: string;
   /** Client wall-clock time used only to diagnose IPC/event-loop queue delay. */
   requestedAt?: number;
-  /** Number of newest user turns to include in the opening payload. */
+  /**
+   * Number of newest user turns (1..100) to include in the opening payload.
+   * The TUI sizes this to its terminal height; byte-budgeted clients still
+   * receive at most HISTORY_PAGE_BYTE_BUDGET of history.
+   */
   turns?: number;
 }
 

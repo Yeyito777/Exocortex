@@ -65,7 +65,15 @@ import { runStreamFinishedPing, shouldPingForStreamCompletion } from "./ping";
 import { stripStartupLaunchEcho } from "./startupinput";
 import { focusedConversationTasks, msUntilTaskPanelEntryUpdate } from "./activitypanel";
 import { hasInProgressModelWork } from "./taskvisibility";
-import { beginOlderHistoryLoad, INITIAL_BUFFER_ADDITIONAL_TURNS, OLDER_HISTORY_PAGE_TURNS, shouldLoadOlderHistory } from "./historypagination";
+import {
+  beginOlderHistoryLoad,
+  beginOpeningFillHold,
+  INITIAL_BUFFER_ADDITIONAL_TURNS,
+  OLDER_HISTORY_PAGE_TURNS,
+  OPENING_FILL_HOLD_MS,
+  openingHistoryTurns,
+  shouldLoadOlderHistory,
+} from "./historypagination";
 import { requestToolOutputs, requestVisibleToolOutputs } from "./events/tool-outputs";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
 import { log } from "./log";
@@ -129,6 +137,7 @@ let daemon: DaemonClient;
 let renderTimer: ReturnType<typeof setTimeout> | null = null;
 let renderDueAt = 0;
 let streamTickTimer: ReturnType<typeof setTimeout> | null = null;
+let openingFillTimer: ReturnType<typeof setTimeout> | undefined;
 let deferredHistoryRenderTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let eventLoopLagTimer: ReturnType<typeof setInterval> | null = null;
@@ -389,6 +398,11 @@ function requestOlderHistory(turns: number, requestSource: "initial-backfill" | 
   return true;
 }
 
+/** Open (or reload) a conversation with a window sized to fill this screen. */
+function loadConversationWindow(convId: string): string {
+  return daemon.loadConversation(convId, openingHistoryTurns(state.rows));
+}
+
 function maybeRequestOlderHistory(): void {
   if (shouldLoadOlderHistory(state)) requestOlderHistory(OLDER_HISTORY_PAGE_TURNS);
 }
@@ -465,7 +479,7 @@ function onDaemonEvent(event: Event): void {
       if (event.type === "conversation_unwound"
           && event.status === "already_applied"
           && state.convId === pending.convId) {
-        daemon.loadConversation(pending.convId);
+        loadConversationWindow(pending.convId);
       }
       // The targeted event patches the sidebar everywhere but mutates transcript
       // state only when this conversation is still open, so it cannot navigate
@@ -475,7 +489,7 @@ function onDaemonEvent(event: Event): void {
       // The local transcript was only an optimistic projection. Restore the
       // daemon's untouched canonical history when validation or abort cleanup
       // made the durable unwind fail.
-      if (state.convId === pending.convId) daemon.loadConversation(pending.convId);
+      if (state.convId === pending.convId) loadConversationWindow(pending.convId);
     }
   }
   if (event.type === "conversation_loaded" && event.convId === reconnectNavigationTarget) {
@@ -485,7 +499,7 @@ function onDaemonEvent(event: Event): void {
     // reconnect. Restore the previously active socket subscription instead of
     // leaving this TUI detached from every conversation.
     reconnectNavigationTarget = null;
-    if (state.convId && state.convId !== event.convId) daemon.loadConversation(state.convId);
+    if (state.convId && state.convId !== event.convId) loadConversationWindow(state.convId);
   }
 
   if (event.type === "conversation_created" && event.convId === pendingNewConversationConvId) {
@@ -568,7 +582,7 @@ function onDaemonEvent(event: Event): void {
       if (convId && state.convId === convId) {
         if (startingConversationLoad?.convId !== convId) {
           prepareConversationOpen(state, convId);
-          daemon.loadConversation(convId);
+          loadConversationWindow(convId);
         }
       }
       startingConversationLoad = null;
@@ -623,11 +637,22 @@ function onDaemonEvent(event: Event): void {
   }
 
   if (event.type === "conversation_loaded") {
-    // Normally paint the five-turn opening window before silently expanding it to
-    // the fifteen-turn in-chat buffer. A saved position needs the expanded window,
-    // though, so render() keeps the previous frame until that backfill is ready.
+    // The opening window is sized to fill the screen, so it normally paints at
+    // once and the follow-up backfill only extends the scrollback above it. When
+    // it cannot fill the screen, render() keeps the spinner up to
+    // OPENING_FILL_HOLD_MS for older history instead of painting a partial
+    // screen. A saved position needs the expanded window, so render() also keeps
+    // the previous frame until that backfill is ready.
     const applyMs = PERFORMANCE_PROFILING_ENABLED ? performance.now() - eventStartedAt : 0;
     const restoreWaitingForBackfill = isConversationScrollRestoreWaitingForInitialBackfill(state);
+    if (event.convId === state.convId) {
+      beginOpeningFillHold(state);
+      clearTimeout(openingFillTimer);
+      openingFillTimer = setTimeout(() => {
+        state.historyOpeningFillUntil = null;
+        scheduleRender(0);
+      }, OPENING_FILL_HOLD_MS);
+    }
     let renderMs = renderImmediately();
     const initialBackfillRequested = requestOlderHistory(INITIAL_BUFFER_ADDITIONAL_TURNS, "initial-backfill");
     if (initialBackfillRequested) {
@@ -655,8 +680,17 @@ function onDaemonEvent(event: Event): void {
     return;
   }
 
-  if (event.type === "conversation_history_loaded" && state.pendingHistoryNavigation) {
-    maybeRequestOlderHistory();
+  if (event.type === "conversation_history_loaded") {
+    if (state.pendingHistoryNavigation) {
+      maybeRequestOlderHistory();
+    } else if (event.entries.length > 0) {
+      // Keep paging while the viewport still reaches the top of the loaded
+      // window (e.g. a short opening window on a tall screen) instead of
+      // waiting for input. The layout must first include the page that just
+      // arrived; an empty page cannot advance the cursor, so it never chains.
+      renderImmediately();
+      maybeRequestOlderHistory();
+    }
   }
   if (paintFirstText) renderImmediately();
   else scheduleRender(renderDelayForEvent(event));
@@ -780,7 +814,7 @@ function openConversation(convId: string, input: "keyboard" | "mouse"): void {
   // the chat now and let its spinner cover the round trip.
   if (daemon.remoteAlias) beginConversationLoad(state, convId, daemon);
   maybePrewarmOpenAI();
-  const reqId = daemon.loadConversation(convId);
+  const reqId = loadConversationWindow(convId);
   const renderMs = renderAfterLocalUiMutation();
   if (PERFORMANCE_PROFILING_ENABLED && renderMs >= 100) {
     log("warn", `perf: conversation_open tui_request_render ${JSON.stringify({ reqId, convId, renderMs, input })}`);
@@ -1854,7 +1888,7 @@ function restoreDaemonSessionAfterReconnect(
   // state a second time.
   if (!bootstrapAlreadyRequested) daemon.ping();
   updateMonitor?.setRoute(daemon.remoteAlias);
-  if (!conversationWillReload && state.convId) daemon.loadConversation(state.convId);
+  if (!conversationWillReload && state.convId) loadConversationWindow(state.convId);
 }
 
 async function reconnectToDaemon(): Promise<void> {
@@ -2023,7 +2057,7 @@ async function main(): Promise<void> {
     prepareConversationOpen(state, startingConvId);
     startingConversationLoad = {
       convId: startingConvId,
-      reqId: daemon.loadConversation(startingConvId),
+      reqId: loadConversationWindow(startingConvId),
     };
   }
 

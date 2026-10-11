@@ -4,6 +4,47 @@ import type { RenderState } from "./state";
 
 export const INITIAL_BUFFER_ADDITIONAL_TURNS = 10;
 export const OLDER_HISTORY_PAGE_TURNS = 15;
+/** Daemons reject history requests outside 1..100 turns. */
+export const MAX_HISTORY_REQUEST_TURNS = 100;
+/** Rows of the shortest ordinary turn: prompt, reply, metadata and a gap. */
+const MIN_RENDERED_TURN_ROWS = 4;
+/** Coarse steps keep the transport cache key stable across small resizes. */
+const OPENING_TURNS_STEP = 5;
+/**
+ * Longest the first paint of an opening window waits for older history when
+ * that window cannot fill the screen (e.g. byte-budgeted tool-heavy turns).
+ */
+export const OPENING_FILL_HOLD_MS = 300;
+
+/**
+ * Turns to request when opening a conversation: enough for a screen of the
+ * shortest turns, so the first paint fills the viewport in one round trip.
+ * The daemon's byte budget still bounds what long tool-heavy turns transfer.
+ */
+export function openingHistoryTurns(terminalRows: number): number {
+  const rows = Number.isFinite(terminalRows) ? Math.max(1, terminalRows) : 24;
+  const turns = Math.ceil(rows / MIN_RENDERED_TURN_ROWS / OPENING_TURNS_STEP) * OPENING_TURNS_STEP;
+  return Math.min(MAX_HISTORY_REQUEST_TURNS, Math.max(OPENING_TURNS_STEP, turns));
+}
+
+/** Start holding presentation of a just-opened window until it fills the screen. */
+export function beginOpeningFillHold(state: RenderState, now = Date.now()): void {
+  state.historyOpeningFillUntil = now + OPENING_FILL_HOLD_MS;
+}
+
+/**
+ * Whether painting the rendered window now would show a partially filled
+ * screen that older history, already on its way, is about to push down.
+ * Ends the hold once a frame may be presented.
+ */
+export function shouldHoldOpeningFrame(state: RenderState, now = Date.now()): boolean {
+  const until = state.historyOpeningFillUntil;
+  if (until === null) return false;
+  if (now < until && hasOlderHistoryCursor(state)
+      && state.layout.totalLines < state.layout.messageAreaHeight) return true;
+  state.historyOpeningFillUntil = null;
+  return false;
+}
 
 export interface OlderHistoryRequest {
   convId: string;

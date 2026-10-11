@@ -14,6 +14,7 @@
 import { isActiveConversationLoading, type RenderState } from "./state";
 import type { ImageAttachment } from "./messages";
 import { getViewStart } from "./chatscroll";
+import { shouldHoldOpeningFrame } from "./historypagination";
 import {
   applyChatConversationScroll,
   hasReadyConversationScrollRestore,
@@ -1526,6 +1527,9 @@ export function render(state: RenderState): boolean {
   state.layout.sepAbove = bottomStartRow;
   state.layout.firstInputRow = firstInputRow;
   state.layout.sepBelow = sepBelow;
+  // Keep the previous frame (the opening spinner) rather than paint a partial
+  // screen that the in-flight older history would immediately push down.
+  if (shouldHoldOpeningFrame(state)) return false;
 
   const taskPanelFlowHeight = taskLayout.panel
     ? Math.min(messageAreaHeight, taskLayout.panel.lines.length + 1)
