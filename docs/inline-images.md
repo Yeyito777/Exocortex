@@ -52,6 +52,16 @@ character cells. A pasted image is found in its conversation on first request
 and then copied into the store. Previews are rendered by ImageMagick and cached
 in memory.
 
+Pasted images are also copied into the store when `send_message`,
+`queue_message`, or `update_queued_message` arrives, because a turn stores its
+user message only after loading the conversation and a client asks for its own
+paste right away. A pasted PNG whose bytes the TUI still holds (its local echo,
+or history that carries the payload) goes to Kitty terminals as is, with no
+`get_image` at all (up to 16 MB of base64, 1 MB when the TUI's own terminal is
+reached over SSH). The TUI shows "loading image…" while a preview is pending and
+retries, with backoff for about 8 s, a pasted image the daemon reports not found
+and any request that timed out; other errors show as "image unavailable".
+
 ## Terminal rendering
 
 `tui/src/terminalgraphics.ts` detects Kitty graphics with an `a=q` query

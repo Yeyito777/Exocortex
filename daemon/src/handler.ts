@@ -36,7 +36,7 @@ import { getDefaultProvider, getDefaultModel, getProvider, getProviders, isKnown
 import { transcribeAudioBytes } from "./transcription";
 import { startTitleGeneration, isPendingTitle, PENDING_TITLE } from "./titlegen";
 import * as convStore from "./conversations";
-import { resolveImageForPreview } from "./image-requests";
+import { rememberSentImages, resolveImageForPreview } from "./image-requests";
 import { renderImagePreview, validatePreviewRequest, isImageId } from "./attachments";
 import { DaemonServer, type ConnectedClient } from "./server";
 import type { Command, Event, SidebarItemOrderUpdate } from "./protocol";
@@ -2226,6 +2226,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       // ── Assistant turn commands ───────────────────────────────────
 
       case "send_message": {
+        rememberSentImages(cmd.images);
         const target = convStore.getPolicyMetadata(cmd.convId);
         if (target && (cmd.delegation || target.subagentPolicy)) {
           try { assertDelegationModel(target.provider, target.model, cmd.legacy); }
@@ -2706,6 +2707,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       // ── Queue/system/history commands ─────────────────────────────
 
       case "queue_message": {
+        rememberSentImages(cmd.images);
         const delegationTarget = convStore.getPolicyMetadata(cmd.convId);
         if (delegationTarget && (cmd.delegation || delegationTarget.subagentPolicy)) {
           try { assertDelegationModel(delegationTarget.provider, delegationTarget.model, cmd.legacy); }
@@ -2900,6 +2902,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       }
 
       case "update_queued_message": {
+        rememberSentImages(cmd.images);
         const existing = convStore.getQueuedMessageById(cmd.queueId);
         if (existing?.command) {
           const definition = queuedCommandDefinitions.get(existing.command.name);

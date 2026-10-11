@@ -89,6 +89,34 @@ describe("previews", () => {
   });
 });
 
+describe("pasted images", () => {
+  const pasted: InlineImageSource = { ...source, convId: "conv", localBase64: "iVBORw0KGgo=" };
+
+  test("a PNG already in hand goes to Kitty as is; other formats and the fallback fetch a preview", async () => {
+    const requests: ImagePreviewRequest[] = [];
+    configureInlineImages({
+      fetch: async request => { requests.push(request); return { format: "png", width: 10, height: 5, base64: "UE5H" }; },
+      onChange: () => {},
+    });
+    const local = kittyPreview(pasted, { cols: 40, rows: 10 });
+    expect(local.phase).toBe("ready");
+    if (local.phase === "ready") expect(local.value).toMatchObject({ base64: pasted.localBase64, pixelWidth: 800, pixelHeight: 400 });
+    expect(kittyPreview({ ...pasted, mediaType: "image/jpeg" }, { cols: 40, rows: 10 })).toEqual({ phase: "loading" });
+    await Bun.sleep(0);
+    expect(requests).toHaveLength(1);
+  });
+
+  test("permanent errors are not retried", async () => {
+    let calls = 0;
+    configureInlineImages({ fetch: async () => { calls++; throw new Error("get_image: inline images are disabled on this daemon"); }, onChange: () => {} });
+    const { localBase64: _, ...remote } = pasted;
+    kittyPreview(remote, { cols: 4, rows: 2 });
+    await Bun.sleep(300);
+    expect(kittyPreview(remote, { cols: 4, rows: 2 })).toMatchObject({ phase: "error" });
+    expect(calls).toBe(1);
+  });
+});
+
 describe("half-block fallback", () => {
   test("upper pixel is the foreground, lower the background, alpha blended over the app background", () => {
     // 1×2: opaque red over transparent.
