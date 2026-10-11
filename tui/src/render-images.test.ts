@@ -123,7 +123,7 @@ describe("image viewer", () => {
     expect(out).not.toContain("\x1b_G");
   });
 
-  test("a click on a thumbnail (press and release on the same cell) opens it; Enter on its caption too", async () => {
+  test("a click on a thumbnail (press and release on the same cell) opens it; Enter on its bottom row too", async () => {
     configureInlineImages({ fetch: pngFetch, onChange: () => {} });
     setInlineImageMode("kitty");
     const state = imageState();
@@ -143,8 +143,9 @@ describe("image viewer", () => {
     state.vim.mode = "normal";
     state.panelFocus = "chat";
     state.chatFocus = "history";
-    const caption = state.historyLines.findIndex(line => line.includes("chart.png · 400×200"));
-    state.historyCursor = { row: caption, col: 2 };
+    expect(state.historyLines.some(line => line.includes("400×200"))).toBe(false);
+    const bottom = state.historyLineAnchors.findLastIndex(anchor => anchor.images);
+    state.historyCursor = { row: bottom, col: 2 };
     expect(handleFocusedKey({ type: "enter" }, state)).toMatchObject({ type: "open_image" });
     disposeHistoryImages(state);
   });

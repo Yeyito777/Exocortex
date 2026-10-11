@@ -40,8 +40,8 @@ describe("layout", () => {
 
 describe("sources", () => {
   test("refs and pasted images share one shape", () => {
-    expect(sourceFromRef({ id: "b".repeat(64), mediaType: "image/jpeg", width: 10, height: 20, sizeBytes: 5, name: "x.jpg" }, "conv"))
-      .toEqual({ imageId: "b".repeat(64), convId: "conv", width: 10, height: 20, mediaType: "image/jpeg", sizeBytes: 5, name: "x.jpg" });
+    expect(sourceFromRef({ id: "b".repeat(64), mediaType: "image/jpeg", width: 10, height: 20, sizeBytes: 5, name: "x.jpg" }))
+      .toEqual({ imageId: "b".repeat(64), width: 10, height: 20, mediaType: "image/jpeg", sizeBytes: 5, name: "x.jpg" });
     expect(sourceFromAttachment({ mediaType: "image/png", base64: "", sizeBytes: 5, imageId: "c".repeat(64), width: 3, height: 4 }, null))
       .toEqual({ imageId: "c".repeat(64), width: 3, height: 4, mediaType: "image/png", sizeBytes: 5 });
   });
@@ -132,7 +132,7 @@ describe("half-block fallback", () => {
 describe("renderInlineImage", () => {
   const box = { cols: 20, rows: 5 };
 
-  test("reserves rows plus a caption in every mode, so layout never shifts", async () => {
+  test("reserves the same rows in every mode, with no caption, so layout never shifts", async () => {
     configureInlineImages({
       fetch: async request => request.format === "png"
         ? { format: "png", width: 160, height: 80, base64: "UE5H" }
@@ -143,11 +143,13 @@ describe("renderInlineImage", () => {
     for (const mode of ["pending", "kitty", "halfblock"] as const) {
       setInlineImageMode(mode);
       const before = renderInlineImage(source, box, 2, owner, 0);
-      expect(before.lines).toHaveLength(6);
+      expect(before.lines).toHaveLength(5);
       await Bun.sleep(0);
       const after = renderInlineImage(source, box, 2, owner, 0);
-      expect(after.lines).toHaveLength(6);
-      expect(stripAnsi(after.lines[5])).toBe("  chart.png · 800×400 · 88 KB");
+      expect(after.lines).toHaveLength(5);
+      expect(after.lines.some(line => line.includes("800×400"))).toBe(false);
+      // A yank of the image still says what it is.
+      expect(after.copy[0]).toBe("[image: chart.png · 800×400 · 88 KB]");
       expect(after.layout).toMatchObject({ col: 2, cols: 20, rows: 5 });
     }
   });

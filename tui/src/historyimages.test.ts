@@ -133,11 +133,11 @@ describe("history layout", () => {
     const imageRows = lineAnchors.flatMap((anchor, index) => anchor.images ? [index] : []);
     expect(imageRows.length).toBeGreaterThan(0);
     const textRow = lines.findIndex(line => stripAnsi(line).includes("Here is the chart."));
-    const captionRow = lines.findIndex(line => stripAnsi(line).includes("chart.png · 200×100"));
     const metadataRow = lineAnchors.findIndex(anchor => anchor.segment === "assistant_metadata");
     expect(textRow).toBeLessThan(imageRows[0]);
-    expect(captionRow).toBe(imageRows.at(-1)! + 1);
-    expect(metadataRow).toBeGreaterThan(captionRow);
+    // No caption: the viewer shows the name and size.
+    expect(lines.some(line => stripAnsi(line).includes("200×100"))).toBe(false);
+    expect(metadataRow).toBe(imageRows.at(-1)! + 1);
     // Rows are contiguous and numbered from the top of the image.
     expect(imageRows.map(index => lineAnchors[index].images![0].row)).toEqual(imageRows.map((_, row) => row));
   });

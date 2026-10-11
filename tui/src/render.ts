@@ -36,7 +36,7 @@ import { formatSize, imageLabel } from "./clipboard";
 import { renderQueuePromptOverlay } from "./overlays";
 import { renderEditMessageOverlay } from "./overlays";
 import { findSearchMatches, getActiveSearchQuery, getSearchBarViewport } from "./search";
-import { padRightToWidth, termWidth } from "./textwidth";
+import { padRightToWidth, termWidth, visibleLength } from "./textwidth";
 import { getVoicePromptRanges } from "./voice";
 import { layoutTaskPanel, renderTaskPanel } from "./activitypanel";
 import { trimAnsiLeadingSpaces, wrapAnsiLine } from "./ansiwrap";
@@ -797,15 +797,24 @@ function composeFixedWidthRows(
   return rows;
 }
 
+/**
+ * History rows as built, which fit the width they were built for. Image rows
+ * are clipped to it anyway: a row drawn past the pane would wrap into the
+ * sidebar on the terminal's next row.
+ */
 function canonicalViewportRows(
   allLines: string[],
   startLineIndex: number,
   endLineIndex: number,
+  clip?: { lineAnchors: BuildMessageLinesResult["lineAnchors"]; width: number },
 ): ViewportHistoryRow[] {
   const rows: ViewportHistoryRow[] = [];
   for (let lineIndex = startLineIndex; lineIndex < endLineIndex; lineIndex++) {
-    const line = allLines[lineIndex];
+    let line = allLines[lineIndex];
     if (line === undefined) continue;
+    if (clip?.lineAnchors[lineIndex]?.images && visibleLength(line) > clip.width) {
+      line = wrapRenderedHistoryLine(line, Math.max(1, clip.width)).lines[0] ?? "";
+    }
     rows.push({
       line,
       lineIndex,
@@ -855,7 +864,7 @@ function composeFloatingHistoryViewport(
   if (viewStart >= endLineIndex) return [];
 
   if (panelHeight <= 0 || narrowWidth === fullWidth) {
-    const rows = canonicalViewportRows(allLines, viewStart, endLineIndex);
+    const rows = canonicalViewportRows(allLines, viewStart, endLineIndex, { lineAnchors, width: fullWidth });
     floatingHistoryViewportCache.set(allLines, {
       lineAnchors,
       viewStart,
