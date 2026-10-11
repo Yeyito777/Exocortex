@@ -11,6 +11,7 @@ import { AuthError } from "../errors";
 import type { EnsureAuthResult, LoginCallbacks, LoginResult } from "../types";
 import { getClaudeAuthStatus, getClaudeAuthStatusSync, getClaudeVersion, isSubscriptionAuth, loginWithClaudeCli } from "./cli";
 import type { ClaudeAuthStatus } from "./types";
+import { isProviderProxied, providerProxyReady } from "../../provider-proxy/route";
 
 const PROVIDER_ID = "anthropic";
 const NEVER_EXPIRES = Number.MAX_SAFE_INTEGER;
@@ -72,8 +73,21 @@ function subscriptionError(status: ClaudeAuthStatus): AuthError {
   );
 }
 
-/** Verify Claude Code is installed and signed in with a Claude subscription. */
+/**
+ * Verify Claude Code is installed and signed in with a Claude subscription.
+ * Under /proxy the remote machine's login is what counts: wait for its link
+ * and check that it can serve Anthropic instead.
+ */
 export async function requireSubscriptionAuth(signal?: AbortSignal): Promise<ClaudeAuthStatus> {
+  if (isProviderProxied(PROVIDER_ID)) {
+    const remote = await providerProxyReady(PROVIDER_ID, signal);
+    return {
+      loggedIn: true,
+      authMethod: "claude.ai",
+      email: remote.authInfo?.email ?? undefined,
+      subscriptionType: remote.authInfo?.subscriptionType ?? undefined,
+    };
+  }
   if (loadStored()?.source === "disconnected") {
     throw new AuthError("Anthropic is disconnected. Run /login anthropic to use Claude Code again.");
   }

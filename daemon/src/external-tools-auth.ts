@@ -1,5 +1,6 @@
 import type { LoadedTool } from "./external-tools-types";
 import { getVerifiedSession as getVerifiedOpenAISession } from "./providers/openai/auth";
+import { providerProxyRoute } from "./provider-proxy/route";
 
 export const EXTERNAL_TOOL_OPENAI_AUTH_ARG = "--exocortex-auth-openai";
 
@@ -16,6 +17,9 @@ function encodeAuthPayload(payload: ExternalToolAuthPayload): string {
 async function buildProviderAuthArg(provider: string): Promise<[string, string]> {
   switch (provider) {
     case "openai": {
+      // A proxied login stays on the remote machine; there is no token to lend.
+      const route = providerProxyRoute("openai");
+      if (route) throw new Error(`OpenAI goes through /proxy on ${route.alias}, so its login is not available to external tools on this machine. Run /proxy openai off, or use the tool on ${route.alias}.`);
       const session = await getVerifiedOpenAISession();
       return [
         EXTERNAL_TOOL_OPENAI_AUTH_ARG,

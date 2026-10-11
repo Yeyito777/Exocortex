@@ -13,6 +13,7 @@ import {
 import { AuthError } from "../errors";
 import type { EnsureAuthResult, LoginCallbacks, LoginOptions, LoginResult } from "../types";
 import { createHash } from "node:crypto";
+import { providerProxyReady, providerProxyRemoteStatus, providerProxyRoute } from "../../provider-proxy/route";
 
 export interface StoredOpenAIAuthPool extends StoredOpenAIAuth {
   /**
@@ -572,7 +573,25 @@ function cachedVerifiedSessionFor(stored: StoredOpenAIAuth): VerifiedOpenAISessi
   };
 }
 
+/**
+ * Under /proxy the remote machine authenticates requests: they carry the local
+ * forwarder's secret, which the remote replaces with its own token, and the
+ * remote's account scopes replayed reasoning.
+ */
+async function proxiedSession(): Promise<VerifiedOpenAISession | null> {
+  const route = providerProxyRoute("openai");
+  if (!route) return null;
+  const remote = await providerProxyReady("openai");
+  return { accessToken: route.token, accountId: null, accountKey: proxiedAccountKey(remote.accountScope, route.alias) };
+}
+
+function proxiedAccountKey(remoteScope: string | null | undefined, alias: string): string {
+  return `proxy:${remoteScope ?? alias}`;
+}
+
 export async function getVerifiedSession(opts: { forceRefresh?: boolean } = {}): Promise<VerifiedOpenAISession> {
+  const proxied = await proxiedSession();
+  if (proxied) return proxied;
   const pool = loadStoredAuthPool();
   if (pool.accounts.length === 0) {
     throw new AuthError("OpenAI is not authenticated. Run `/login openai`.");
@@ -621,6 +640,8 @@ export async function getVerifiedSession(opts: { forceRefresh?: boolean } = {}):
 }
 
 export function getCurrentAccountKey(): string | null {
+  const route = providerProxyRoute("openai");
+  if (route) return proxiedAccountKey(providerProxyRemoteStatus("openai")?.accountScope, route.alias);
   const stored = loadStoredAuth();
   return stored ? getAccountKey(stored) : null;
 }

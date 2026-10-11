@@ -108,6 +108,11 @@ command line:
 exocortex --ssh <alias>
 ```
 
+`/proxy <openai|anthropic> <alias>` is narrower: conversations, tools and files
+stay on this machine, and only that provider's model requests go through the
+other machine's daemon, which adds its own login. See
+[docs/provider-proxy.md](docs/provider-proxy.md).
+
 #### Update
 
 ```bash

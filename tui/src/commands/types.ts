@@ -47,7 +47,8 @@ type CommandAction =
   | { type: "theme_changed" }
   | { type: "get_system_prompt" }
   | { type: "set_system_instructions"; text: string }
-  | { type: "ssh"; action: "connect" | "status" | "cancel"; alias?: string };
+  | { type: "ssh"; action: "connect" | "status" | "cancel"; alias?: string }
+  | { type: "provider_proxy"; action: "status" | "set" | "off"; provider?: ProviderId; alias?: string };
 
 /** Modifiers composed around a successfully parsed primary slash command. */
 export interface CommandComposition {

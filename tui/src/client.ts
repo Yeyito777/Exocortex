@@ -20,7 +20,7 @@ import type { UpdateStatus } from "@exocortex/shared/updatecheck";
 import { BtwMutationReplay, isBtwMutation } from "./btw/replay";
 import { HistoryCache } from "./history-cache";
 import { transcribeLocally } from "./local-transcription";
-import { ClientExecutor } from "./client-exec";
+import { ClientExecutor } from "@exocortex/shared/command-exec";
 import {
   DEFAULT_SSH_PROBE_TIMEOUT_MS,
   appendSshStderr,
@@ -30,7 +30,7 @@ import {
   validateSshAlias,
   type ProbedSshConnection,
   type SpawnSshProcess,
-} from "./ssh-transport";
+} from "@exocortex/shared/ssh-transport";
 
 const CLIENT_CAPABILITIES: ClientCapability[] = [
   "targeted-unwind",
@@ -1050,6 +1050,11 @@ export class DaemonClient {
 
   logout(provider?: ProviderId): void {
     this.send({ type: "logout", provider });
+  }
+
+  /** /proxy: list, enable or disable a provider proxy on the connected daemon. */
+  providerProxy(action: "status" | "set" | "off", provider?: ProviderId, alias?: string): void {
+    this.send({ type: "provider_proxy", reqId: `proxy_${Date.now().toString(36)}`, action, ...(provider ? { provider } : {}), ...(alias ? { alias } : {}) });
   }
 
   getSystemPrompt(convId?: string): void {

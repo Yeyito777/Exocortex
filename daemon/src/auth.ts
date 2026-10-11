@@ -5,6 +5,7 @@ import { getProviderAdapter } from "./providers/catalog";
 import type { EnsureAuthResult, LoginCallbacks, LoginOptions, LoginResult } from "./providers/types";
 import { AuthError } from "./providers/errors";
 import { isTokenExpired, loadProviderAuth, type StoredAuth } from "./store";
+import { providerProxyRemoteStatus, providerProxyRoute } from "./provider-proxy/route";
 
 export { AuthError };
 export type { LoginResult, LoginCallbacks, EnsureAuthResult };
@@ -87,6 +88,8 @@ export function clearAuth(provider: ProviderId): boolean {
 }
 
 export function hasConfiguredCredentials(provider: ProviderId): boolean {
+  // A proxied provider uses the remote's login; whether that works is checked per request.
+  if (providerProxyRoute(provider)) return true;
   const now = Date.now();
   const cached = credentialsCache.get(provider);
   if (cached && cached.expiresAt > now) return cached.value;
@@ -106,7 +109,28 @@ export function getAuthByProvider(): Record<ProviderId, boolean> {
   };
 }
 
+/** A proxied provider shows the remote account (no tokens), marked with the alias it goes through. */
+function proxiedAuthInfo(provider: ProviderId): ProviderAuthInfo | null {
+  const route = providerProxyRoute(provider);
+  if (!route) return null;
+  const remote = providerProxyRemoteStatus(route.provider);
+  const info = remote?.authInfo ?? createEmptyProviderAuthInfo();
+  const loggedIn = remote?.loggedIn ?? true;
+  return {
+    ...info,
+    configured: true,
+    authenticated: loggedIn,
+    status: loggedIn ? "logged_in" : "not_logged_in",
+    // One remote account; account switching happens on the remote.
+    accounts: undefined,
+    currentAccount: undefined,
+    source: `proxy:${route.alias}`,
+  };
+}
+
 export function getAuthInfo(provider: ProviderId): ProviderAuthInfo {
+  const proxied = proxiedAuthInfo(provider);
+  if (proxied) return proxied;
   const { accounts, currentIndex } = normalizeAuthRecords(loadProviderAuth<unknown>(provider));
   const stored = currentIndex >= 0 ? accounts[currentIndex] : null;
   if (!stored?.tokens) {

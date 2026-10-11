@@ -28,7 +28,7 @@ import type { SearchDirection } from "./search";
 import type { UndoState } from "./undo";
 import { commitInsertSession, createUndoState, markInsertEntry } from "./undo";
 import type { AutocompleteState } from "./autocomplete";
-import type { ConversationDefaultsSnapshot, ConversationGoal, MacroEnvironment, ProviderAuthInfo, QueuedCommandInvocation, QueueTiming, QueueWaitTarget as ProtocolQueueWaitTarget, UserMessageAutomation } from "./protocol";
+import type { ConversationDefaultsSnapshot, ConversationGoal, MacroEnvironment, ProviderAuthInfo, ProviderProxyInfo, QueuedCommandInvocation, QueueTiming, QueueWaitTarget as ProtocolQueueWaitTarget, UserMessageAutomation } from "./protocol";
 import type { VoiceChatMessageState, VoicePromptState } from "./voice";
 import type { BtwPanelState } from "./btw/state";
 import { createConversationScrollState, type ConversationScrollState } from "./conversationscroll/types";
@@ -237,6 +237,8 @@ export interface RenderState {
   authInfoByProvider: Record<ProviderId, ProviderAuthInfo>;
   /** Rate-limit usage data keyed by provider. Null until first update per provider. */
   usageByProvider: Record<ProviderId, UsageData | null>;
+  /** Providers the daemon sends through /proxy; null when the daemon predates /proxy. */
+  providerProxies: ProviderProxyInfo[] | null;
   /** Persistent token-accounting snapshot from the daemon. */
   tokenStats: TokenStatsSnapshot | null;
   /** Input tokens from the latest API round. Zero for a blank chat; null when unknown. */
@@ -690,6 +692,7 @@ export function createInitialState(): RenderState {
       openrouter: null,
       anthropic: null,
     },
+    providerProxies: null,
     tokenStats: null,
     contextTokens: 0,
     panelFocus: "chat",

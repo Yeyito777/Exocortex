@@ -14,6 +14,7 @@ import { createAbortError } from "../../abort";
 import type { LoginCallbacks } from "../types";
 import { AuthError } from "../errors";
 import type { ClaudeAuthStatus } from "./types";
+import { providerProxyRoute } from "../../provider-proxy/route";
 
 /**
  * The daemon usually runs as a systemd user service whose PATH lacks
@@ -57,12 +58,29 @@ export function claudeSubscriptionEnv(base: NodeJS.ProcessEnv = process.env): Re
   return env;
 }
 
+/**
+ * Under /proxy, Claude Code sends its API requests to the local forwarder,
+ * authenticated with the forwarder's secret; the remote machine replaces it
+ * with its own Claude login (docs/provider-proxy.md). Telemetry and other
+ * nonessential traffic would go to Anthropic directly with that placeholder,
+ * so it is turned off.
+ */
+function claudeProxyEnv(): Record<string, string> {
+  const route = providerProxyRoute("anthropic");
+  if (!route) return {};
+  return {
+    ANTHROPIC_BASE_URL: route.baseUrl,
+    CLAUDE_CODE_OAUTH_TOKEN: route.token,
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+  };
+}
+
 /** Agent SDK options that run this Claude Code binary on the subscription in `cwd`. */
 export function claudeProcessOptions(cwd: string): ClaudeQueryOptions {
   return {
     cwd,
     pathToClaudeCodeExecutable: getClaudeBinary(),
-    env: { ...claudeSubscriptionEnv(), CLAUDE_AGENT_SDK_CLIENT_APP: "exocortex-daemon" },
+    env: { ...claudeSubscriptionEnv(), ...claudeProxyEnv(), CLAUDE_AGENT_SDK_CLIENT_APP: "exocortex-daemon" },
   };
 }
 

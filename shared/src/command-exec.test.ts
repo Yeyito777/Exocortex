@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ClientExecutor, resolveClientCwd, type ClientExecOutcome } from "./client-exec";
+import { ClientExecutor, resolveClientCwd, type ClientExecOutcome } from "./command-exec";
 
 const dirs: string[] = [];
 function tempHome(): string {

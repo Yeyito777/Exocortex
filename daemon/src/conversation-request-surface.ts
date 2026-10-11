@@ -40,7 +40,7 @@ export function buildConversationRequestSurface(
       toolNames,
       includeExternalToolHints: !chatOnly,
     }),
-    tools: getToolDefs(toolNames, options.conversationId),
+    tools: getToolDefs(toolNames, options.conversationId, conversation.provider),
     toolNames,
   };
 }

@@ -30,6 +30,7 @@ export function handleToolsAvailable(event: Extract<Event, { type: "tools_availa
     state.authInfoByProvider = event.authInfoByProvider;
   }
   state.externalToolStyles = event.externalToolStyles ?? [];
+  state.providerProxies = Array.isArray(event.providerProxies) ? event.providerProxies : null;
   if (event.conversationDefaults) receiveConversationDefaults(state, event.conversationDefaults);
   // Experimental features follow the connected daemon, never a local config file.
   setInlineImagesEnabled(event.experimental?.images === true);

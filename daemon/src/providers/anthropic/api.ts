@@ -23,6 +23,7 @@ import type { ApiMessage, EffortLevel, ModelId } from "../../messages";
 import type { StreamCallbacks, StreamOptions, StreamResult } from "../types";
 import { requireSubscriptionAuth } from "./auth";
 import { claudeProcessOptions } from "./cli";
+import { providerProxyRoute } from "../../provider-proxy/route";
 import { createHostToolServer, hostToolDefs, type HostToolBinding } from "./host-tools";
 import { buildClaudeHelperPrompt, buildClaudeUserContent, planClaudePrompt, trailingUserMessages, type ClaudePromptPlan } from "./prompt";
 import { ClaudeRelay, reconnectRelays, relaysEnabled } from "./relay-client";
@@ -194,7 +195,7 @@ export async function streamMessage(
 
   const plan = planClaudePrompt(messages, cwd);
   const convId = options.tracking?.conversationId;
-  const key = claudeSessionKey(model, options.effort, cwd);
+  const key = claudeSessionKey(model, options.effort, cwd, providerProxyRoute("anthropic")?.alias);
 
   // The conversation's Claude Code process is still running (background tasks,
   // or a quick follow-up): continue in it.

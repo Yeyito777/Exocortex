@@ -21,7 +21,10 @@
     "./paths": "./src/paths.ts",
     "./duration": "./src/duration.ts",
     "./chrono": "./src/chrono.ts",
-    "./image-sniff": "./src/image-sniff.ts"
+    "./image-sniff": "./src/image-sniff.ts",
+    "./ssh-transport": "./src/ssh-transport.ts",
+    "./command-exec": "./src/command-exec.ts",
+    "./provider-proxy": "./src/provider-proxy.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",

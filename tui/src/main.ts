@@ -1084,6 +1084,12 @@ function handleSubmit(): void {
         case "ssh":
           daemon.ssh(cmdResult.action, cmdResult.alias);
           break;
+        case "provider_proxy":
+          if (cmdResult.action === "set") {
+            pushSystemMessage(state, `Connecting to ${cmdResult.alias} for ${cmdResult.provider}…`, theme.muted);
+          }
+          daemon.providerProxy(cmdResult.action, cmdResult.provider, cmdResult.alias);
+          break;
         case "handled":
           break;
       }

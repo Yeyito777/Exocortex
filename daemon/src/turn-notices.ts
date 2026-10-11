@@ -4,17 +4,21 @@
  * Changing the system prompt costs the whole prompt cache, and under Claude
  * Code a new process, so state that changes during a conversation reaches the
  * model as a notice before its next message instead, once per change: the
- * machine client_bash reaches and the conversation goal. A compaction can
+ * machines client_bash and remote_bash reach and the conversation goal. A compaction can
  * summarize a notice away, so one still in effect is repeated after it.
  * Clients do not show these notices (MODEL_ONLY_NOTICE_KINDS).
  */
 
 import {
-  CLIENT_HOST_NOTICE_KIND, CONTEXT_COMPACTION_FINISHED_KIND, GOAL_NOTICE_KIND, isModelVisibleSystemNotice,
+  CLIENT_HOST_NOTICE_KIND, CONTEXT_COMPACTION_FINISHED_KIND, GOAL_NOTICE_KIND, REMOTE_HOST_NOTICE_KIND, isModelVisibleSystemNotice,
   type ConversationGoal, type StoredMessage, type SubagentPolicy,
 } from "./messages";
 import { CLIENT_HOST_DETACHED_NOTICE, clientHostNoticeText } from "./client-hosts";
+import { activeProviderProxyManager } from "./provider-proxy/manager";
 import { isScopedSubagent } from "./subagent-policy";
+
+/** Told to a conversation whose provider stopped going through /proxy. */
+const REMOTE_HOST_DETACHED_NOTICE = "This conversation's model no longer goes through /proxy; remote_bash is no longer available.";
 
 /** Told to a conversation when its goal is cleared. */
 const GOAL_CLEARED_NOTICE = "The conversation goal was cleared.";
@@ -40,6 +44,8 @@ export interface TurnNoticeState {
   messages: readonly StoredMessage[];
   subagentPolicy?: SubagentPolicy | null;
   goal?: Pick<ConversationGoal, "status" | "objective" | "reason"> | null;
+  /** The conversation's provider; remote_bash follows whether it is proxied. */
+  provider?: string;
 }
 
 /** The latest notice of a kind the model still sees: none from before the latest compaction. */
@@ -68,9 +74,11 @@ function changedNotice(messages: readonly StoredMessage[], kind: string, current
 /** Notices to add before a conversation's next message, in order. */
 export function pendingTurnNotices(conv: TurnNoticeState): TurnNotice[] {
   const notices = [
-    // Subagents never get client_bash.
+    // Subagents never get client_bash or remote_bash.
     isScopedSubagent(conv) ? null
       : changedNotice(conv.messages, CLIENT_HOST_NOTICE_KIND, clientHostNoticeText(conv.id), CLIENT_HOST_DETACHED_NOTICE),
+    isScopedSubagent(conv) ? null
+      : changedNotice(conv.messages, REMOTE_HOST_NOTICE_KIND, activeProviderProxyManager()?.remoteHostNotice(conv.provider) ?? null, REMOTE_HOST_DETACHED_NOTICE),
     changedNotice(conv.messages, GOAL_NOTICE_KIND, conv.goal ? goalNoticeText(conv.goal) : null, GOAL_CLEARED_NOTICE),
   ];
   return notices.filter((notice): notice is TurnNotice => notice !== null);

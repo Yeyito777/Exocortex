@@ -8,7 +8,7 @@ import { tryCommand } from "./commands";
 import { expandMacros, getMacroArgs, macroEnvironmentForState } from "./macros";
 import { repoRoot } from "@exocortex/shared/paths";
 import type { MacroEnvironment } from "@exocortex/shared/protocol";
-import type { SshProcess } from "./ssh-transport";
+import type { SshProcess } from "@exocortex/shared/ssh-transport";
 import { encodeHistoryDelta, type HistoryResponse } from "@exocortex/shared/history-delta";
 
 class FakeProcess extends EventEmitter implements SshProcess {
