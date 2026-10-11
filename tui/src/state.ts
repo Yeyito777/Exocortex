@@ -351,6 +351,8 @@ export interface RenderState {
   folderInstructionsDoc: FolderInstructionsDocumentState | null;
   /** Current mouse cursor shape — used to avoid redundant cursor shape OSC writes. */
   mouseCursor: "pointer" | "text" | "hand";
+  /** Last reported pointer cell, so the shape can follow content that moves under a still mouse. */
+  mousePosition?: { col: number; row: number } | null;
   /** Open only on release at the original link, never when dragging to select. */
   mouseLinkPress?: { row: number; col: number; target: string } | null;
   /** Left press on an inline image; a release on the same cell opens the viewer. */
