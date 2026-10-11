@@ -567,6 +567,51 @@ describe("Chrono scheduler", () => {
     expect(listChronoSchedules(owner).map(schedule => schedule.id)).toEqual([id]);
   });
 
+  test("a recurring command run keeps the schedule's single Tasks row in place", async () => {
+    const owner = makeConversation("stable-recurring-row");
+    const marker = join(conversationWorkspaceDir(owner), "chrono-ran.txt");
+    const snapshots: ReturnType<typeof getConversationTasks>[] = [];
+    configureChronoService(id => { if (id === owner) snapshots.push(getConversationTasks(owner)); });
+    await startChronoService();
+    const later = createChronoSchedule({ ownerConversationId: owner, afterSeconds: 3_600, message: "later" }).schedule!;
+    const monitor = createChronoSchedule({
+      ownerConversationId: owner,
+      afterSeconds: 0.05,
+      repeat: { unit: "minute" },
+      title: "Monitor",
+      command: "sleep 0.2; printf done > chrono-ran.txt",
+    }).schedule!;
+
+    await waitUntil(() => existsSync(marker) && getConversationTasks(owner)[0]?.title === "Monitor");
+    // Every published state lists the same rows in the same order: the run
+    // never adds a sibling row that grows and then shrinks the panel.
+    for (const tasks of snapshots.slice(2)) expect(tasks.map(task => task.id)).toEqual([monitor.id, later.id]);
+    const running = snapshots.map(tasks => tasks[0]).find(task => task.chronoRunning);
+    expect(running).toMatchObject({ id: monitor.id, title: "Running: Monitor", chronoMode: "wake" });
+    expect(getConversationTasks(owner)[0]).toMatchObject({ id: monitor.id, title: "Monitor", dueAt: monitor.nextAt + 60_000 });
+    expect(getConversationTasks(owner)[0].chronoRunning).toBeUndefined();
+  });
+
+  test("a fired one-shot command keeps its Tasks row until the command finishes", async () => {
+    const owner = makeConversation("stable-oneshot-row");
+    const marker = join(conversationWorkspaceDir(owner), "chrono-ran.txt");
+    const snapshots: string[][] = [];
+    configureChronoService(id => { if (id === owner) snapshots.push(getConversationTasks(owner).map(task => task.id)); });
+    await startChronoService();
+    const once = createChronoSchedule({
+      ownerConversationId: owner,
+      afterSeconds: 0.05,
+      title: "Once",
+      command: "sleep 0.2; printf done > chrono-ran.txt",
+    }).schedule!;
+
+    await waitUntil(() => existsSync(marker) && getConversationTasks(owner).length === 0);
+    // One row from creation until the run completes, then gone exactly once.
+    const firstEmpty = snapshots.findIndex(ids => ids.length === 0);
+    expect(snapshots.slice(0, firstEmpty).every(ids => ids.length === 1 && ids[0] === once.id)).toBe(true);
+    expect(snapshots.slice(firstEmpty)).toEqual([[]]);
+  });
+
   test("cancel stops an already-running soft-wake before it can escalate", async () => {
     const owner = makeConversation("cancel-running");
     await startChronoService();

@@ -164,6 +164,8 @@ const schedules = new Map<string, ChronoSchedule>();
 const pending = new Map<string, PendingOccurrence>();
 const deferredSleeps = new Map<string, DeferredChronoSleep>();
 const processing = new Set<string>();
+/** Start time of each command occurrence currently executing, by occurrence id. */
+const runningCommands = new Map<string, number>();
 const processingSleeps = new Set<string>();
 const deferredWaitControllers = new Map<string, AbortController>();
 const activeCommandControllers = new Map<string, AbortController>();
@@ -283,24 +285,37 @@ function notifyConversation(conversationId: string | undefined): void {
   if (conversationId) changedListener?.(conversationId);
 }
 
-function publishSchedule(schedule: ChronoSchedule, active: boolean): void {
-  const owner = schedule.ownerConversationId;
+/**
+ * Project a schedule into its owner's Tasks UI as one row.
+ *
+ * While an occurrence is pending the row stands for it (due, then running);
+ * afterwards it shows the schedule's next countdown, and a finished one-shot
+ * leaves. Firing and running thus update one row in place. Publishing runs
+ * as sibling rows, or removing and re-adding the schedule's row, resized and
+ * reflowed the panel on every fire.
+ */
+function publishSchedule(owner: string | undefined, scheduleId: string): void {
   if (!owner) return;
-  if (setChronoTaskActive(owner, schedule.id, active, active ? {
-    title: schedule.title,
-    startedAt: schedule.createdAt,
-    dueAt: schedule.nextAt,
-    chronoMode: "wake",
-  } : undefined)) notifyConversation(owner);
-}
-
-function replacePublishedSchedule(before: ChronoSchedule, after?: ChronoSchedule): void {
-  if (after && before.id === after.id) publishSchedule(after, true);
-  else publishSchedule(before, false);
+  const schedule = schedules.get(scheduleId);
+  const occurrence = [...pending.values()].find(item => item.scheduleId === scheduleId);
+  const runningSince = occurrence && runningCommands.get(occurrence.id);
+  const details = occurrence
+    ? {
+        title: runningSince === undefined ? occurrence.title : `Running: ${occurrence.title}`,
+        startedAt: runningSince ?? schedule?.createdAt ?? occurrence.dueAt,
+        dueAt: occurrence.dueAt,
+        chronoMode: "wake" as const,
+        ...(runningSince === undefined ? {} : { chronoRunning: true as const }),
+      }
+    : schedule
+      ? { title: schedule.title, startedAt: schedule.createdAt, dueAt: schedule.nextAt, chronoMode: "wake" as const }
+      : undefined;
+  if (setChronoTaskActive(owner, scheduleId, details !== undefined, details)) notifyConversation(owner);
 }
 
 function publishAllSchedules(): void {
-  for (const schedule of schedules.values()) publishSchedule(schedule, true);
+  for (const schedule of schedules.values()) publishSchedule(schedule.ownerConversationId, schedule.id);
+  for (const occurrence of pending.values()) publishSchedule(occurrence.ownerConversationId, occurrence.scheduleId);
 }
 
 function publishDeferredSleep(sleep: DeferredChronoSleep, active: boolean): void {
@@ -833,7 +848,7 @@ function installSchedule(schedule: ChronoSchedule): void {
     schedules.delete(schedule.id);
     throw err;
   }
-  publishSchedule(schedule, true);
+  publishSchedule(schedule.ownerConversationId, schedule.id);
 }
 
 export function createChronoSchedule(input: CreateScheduleInput, now = Date.now()): { schedule?: ChronoSchedule; error?: string } {
@@ -873,7 +888,7 @@ export function installMigratedSchedule(schedule: ChronoSchedule): boolean {
   if (schedules.has(schedule.id)) return false;
   schedules.set(schedule.id, schedule);
   persist();
-  publishSchedule(schedule, true);
+  publishSchedule(schedule.ownerConversationId, schedule.id);
   armTimer();
   return true;
 }
@@ -916,7 +931,7 @@ export function adoptChronoSchedule(input: AdoptScheduleInput): { schedule?: Chr
   };
   schedules.set(adopted.id, adopted);
   persist();
-  publishSchedule(adopted, true);
+  publishSchedule(adopted.ownerConversationId, adopted.id);
   armTimer();
   return { schedule: structuredClone(adopted) };
 }
@@ -958,12 +973,9 @@ export function cancelChronoSchedule(id: string, ownerConversationId?: string): 
       cancelledOccurrences.add(occurrence.id);
       controller.abort("Chrono schedule cancelled");
     }
-    if (occurrence.ownerConversationId && setChronoTaskActive(occurrence.ownerConversationId, occurrence.id, false)) {
-      notifyConversation(occurrence.ownerConversationId);
-    }
   }
   persist();
-  if (schedule) publishSchedule(schedule, false);
+  publishSchedule(schedule?.ownerConversationId ?? occurrences[0].ownerConversationId, id);
   armTimer();
   return { cancelled: { id, title: schedule?.title ?? occurrences[0].title } };
 }
@@ -1043,12 +1055,10 @@ function enqueueHardWake(occurrence: PendingOccurrence, hardWake: CommandHardWak
 async function executeOccurrence(occurrence: PendingOccurrence): Promise<void> {
   if (processing.has(occurrence.id)) return;
   processing.add(occurrence.id);
-  const commandOwner = occurrence.target.kind === "command" ? occurrence.ownerConversationId : undefined;
-  if (commandOwner && setChronoTaskActive(commandOwner, occurrence.id, true, {
-    title: `Running: ${occurrence.title}`,
-    startedAt: Date.now(),
-    chronoMode: "wake",
-  })) notifyConversation(commandOwner);
+  if (occurrence.target.kind === "command") {
+    runningCommands.set(occurrence.id, Date.now());
+    publishSchedule(occurrence.ownerConversationId, occurrence.scheduleId);
+  }
   try {
     if (occurrence.source === "model" && occurrence.ownerConversationId && !convStore.hasConversation(occurrence.ownerConversationId)) {
       log("warn", `chrono: dropping ${occurrence.id}; its owning conversation no longer exists`);
@@ -1135,10 +1145,11 @@ async function executeOccurrence(occurrence: PendingOccurrence): Promise<void> {
       persist();
     }
   } finally {
-    if (commandOwner && setChronoTaskActive(commandOwner, occurrence.id, false)) notifyConversation(commandOwner);
     processing.delete(occurrence.id);
+    runningCommands.delete(occurrence.id);
     activeCommandControllers.delete(occurrence.id);
     cancelledOccurrences.delete(occurrence.id);
+    publishSchedule(occurrence.ownerConversationId, occurrence.scheduleId);
     armTimer();
   }
 }
@@ -1215,7 +1226,7 @@ async function processPendingAndDue(now = Date.now()): Promise<void> {
       const missingModelOwner = schedule.source === "model" && schedule.ownerConversationId && !convStore.hasConversation(schedule.ownerConversationId);
       if (missingConversationTarget || missingModelOwner) {
         schedules.delete(schedule.id);
-        replacePublishedSchedule(schedule);
+        publishSchedule(schedule.ownerConversationId, schedule.id);
         log("warn", `chrono: cancelled ${schedule.id}; its conversation no longer exists`);
         continue;
       }
@@ -1239,14 +1250,9 @@ async function processPendingAndDue(now = Date.now()): Promise<void> {
         log("error", `chrono: cancelling invalid recurrence ${schedule.id}: ${err instanceof Error ? err.message : String(err)}`);
         nextAt = null;
       }
-      if (nextAt === null) {
-        schedules.delete(schedule.id);
-        replacePublishedSchedule(schedule);
-      } else {
-        const updated = { ...schedule, nextAt };
-        schedules.set(schedule.id, updated);
-        replacePublishedSchedule(schedule, updated);
-      }
+      if (nextAt === null) schedules.delete(schedule.id);
+      else schedules.set(schedule.id, { ...schedule, nextAt });
+      publishSchedule(schedule.ownerConversationId, schedule.id);
     }
     persist();
     for (const occurrence of pending.values()) {
@@ -1347,6 +1353,7 @@ export const chronoInternalsForTest = {
     pending.clear();
     deferredSleeps.clear();
     processing.clear();
+    runningCommands.clear();
     processingSleeps.clear();
     cancelledOccurrences.clear();
     changedListener = null;

@@ -273,6 +273,21 @@ describe("focused conversation task panel", () => {
     expect(renderTaskPanel(state, 100, 20, 0)).toBeNull();
   });
 
+  test("shows a running Chrono occurrence's elapsed time on its schedule row", () => {
+    const state = stateWithTasks();
+    const running = {
+      id: "chrono:monitor", kind: "chrono" as const, title: "Running: Monitor", startedAt: 60_000,
+      dueAt: 60_000, chronoMode: "wake" as const, chronoRunning: true as const,
+    };
+    state.sidebar.conversations[0].tasks = [running];
+
+    const plain = renderTaskPanel(state, 100, 20, 63_000)!.lines.map(stripAnsi).join("\n");
+    expect(plain).toContain("Running: Monitor");
+    expect(plain).toContain("3s");
+    expect(plain).not.toContain("due");
+    expect(msUntilTaskPanelEntryUpdate(running, 63_250)).toBe(750);
+  });
+
   test("uses Chrono's fallback color when it is absent from the tool registry", () => {
     const state = stateWithTasks();
     state.toolRegistry = state.toolRegistry.filter(tool => tool.name !== "chrono");
