@@ -16,6 +16,8 @@ import type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMeta
 import type { RealtimeVoice } from "./realtime";
 import type { UpdateStatus } from "./updatecheck";
 import type { ChronoRecurrence } from "./chrono";
+import type { ProviderProxiesEvent, ProviderProxyCommand, ProviderProxyInfo, ProviderProxyLinkCommand, ProviderProxyLinkEvent } from "./provider-proxy";
+export type * from "./provider-proxy";
 export type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ToolCallPresentation, ImageAttachment, ImageRef, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus, ConversationBtw, UserMessageContextCheckpoint, ExternalNotificationDelivery, UserMessageAutomation };
 
 // ── Commands (client → daemon) ──────────────────────────────────────
@@ -1075,6 +1077,8 @@ export interface LogoutCommand {
 
 export type Command =
   | PingCommand
+  | ProviderProxyCommand
+  | ProviderProxyLinkCommand
   | SetConversationDefaultsCommand
   | ResetConversationDefaultsCommand
   | ListPathDirectoryCommand
@@ -1896,6 +1900,8 @@ export interface ToolsAvailableEvent {
   conversationDefaults?: ConversationDefaultsSnapshot;
   /** The daemon's `experimental` config flags; absent means all off. */
   experimental?: ExperimentalFeatures;
+  /** Providers this daemon sends through /proxy; absent on older daemons. */
+  providerProxies?: ProviderProxyInfo[];
 }
 
 export interface ExperimentalFeatures {
@@ -2080,6 +2086,8 @@ export interface ErrorEvent {
 
 export type Event =
   | PongEvent
+  | ProviderProxiesEvent
+  | ProviderProxyLinkEvent
   | ConversationDefaultsEvent
   | PathDirectoryEntriesEvent
   | FileLinkResolvedEvent

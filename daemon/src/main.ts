@@ -182,6 +182,7 @@ async function startDaemon(): Promise<void> {
       // that outlive a restart: the next daemon adopts them. A stop ends them.
       if (shutdownMode === "restart") detachAllClaudeCodeSessions("daemon restart");
       else await stopAllClaudeCodeSessions(`daemon ${shutdownMode}`);
+      commandHandler?.providerProxies.stop();
 
       if (shutdownMode === "stop") {
         const stoppedBackgroundTasks = stopAllBackgroundTasks();
@@ -251,6 +252,12 @@ async function startDaemon(): Promise<void> {
 
   await server.start();
   profileMark("clients_can_connect", { socket: SOCKET_PATH });
+  // /proxy: restore saved provider proxies and start connecting their links.
+  try {
+    commandHandler.providerProxies.start();
+  } catch (err) {
+    log("error", `exocortexd: starting /proxy failed: ${formatFatal(err)}`);
+  }
 
   // Load persisted conversations
   const conversationLoadStats = convStore.loadFromDisk();
@@ -302,6 +309,7 @@ async function startDaemon(): Promise<void> {
       authByProvider: getAuthByProvider(),
       authInfoByProvider: getAuthInfoByProvider(),
       ...(externalStyles.length > 0 ? { externalToolStyles: externalStyles } : {}),
+      ...(commandHandler ? { providerProxies: commandHandler.providerProxies.list() } : {}),
     });
   };
 

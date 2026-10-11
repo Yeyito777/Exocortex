@@ -94,8 +94,11 @@ Claude subscription's usage limits:
 
 - `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL` and the
   Bedrock/Vertex/Foundry switches are stripped from Claude Code's environment.
+  Under [/proxy](provider-proxy.md), Exocortex itself sets
+  `ANTHROPIC_BASE_URL` to its loopback forwarder and `CLAUDE_CODE_OAUTH_TOKEN`
+  to the forwarder's secret; the remote machine's Claude Code login is used.
 - Every send checks `claude auth status` and refuses unless it reports a
-  `claude.ai` login.
+  `claude.ai` login (under /proxy, the remote's).
 - If Claude Code reports that a turn is running on extra usage (overage), the
   turn is stopped.
 

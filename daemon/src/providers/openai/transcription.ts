@@ -1,5 +1,6 @@
 import { getVerifiedSession } from "./auth";
-import { OPENAI_TRANSCRIBE_URL } from "./constants";
+import { CHATGPT_BASE_URL, OPENAI_TRANSCRIBE_URL } from "./constants";
+import { proxiedProviderUrl } from "../../provider-proxy/route";
 import { buildOpenAIHeaders } from "./http";
 import { log } from "../../log";
 
@@ -84,7 +85,7 @@ export async function transcribeAudioWithSession(
     const form = new FormData();
     form.append("file", new Blob([Buffer.from(audioBytes)], { type: mimeType }), options.filename ?? "audio.wav");
 
-    const res = await fetch(OPENAI_TRANSCRIBE_URL, {
+    const res = await fetch(proxiedProviderUrl("openai", OPENAI_TRANSCRIBE_URL, CHATGPT_BASE_URL), {
       method: "POST",
       headers,
       body: form,

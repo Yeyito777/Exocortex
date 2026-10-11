@@ -30,6 +30,10 @@ toggle or IPC flag. Select `gpt-6-sol` for standard access. Internally the alias
 sends the base model plus `access_programs.cyber: "daybreak_blue"`, independently
 of effort and speed.
 
+`provider_proxy` lists, enables or disables [/proxy](provider-proxy.md);
+daemons also speak the `provider_proxy_*` link messages to each other over
+`exocortexd proxy`.
+
 ## New-conversation defaults
 
 The connected daemon owns `defaults.conversation` in its host's config.

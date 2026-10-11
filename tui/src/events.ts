@@ -10,6 +10,7 @@ import type { RenderState } from "./state";
 import { clearPendingAI, clearStreamingTailMessages, pushSystemMessage, renderFolderInstructionsDocument, setFolderInstructionsDocumentText } from "./state";
 import { theme } from "./theme";
 import { censorKnownAuthEmails } from "./privacy";
+import { formatProviderProxies } from "./provider-proxies";
 import type { Event } from "./protocol";
 import {
   handleConversationCreated,
@@ -194,7 +195,9 @@ export function handleEvent(
       // nothing about the turn being streamed; keep its pending response.
       const toolOutputsFailed = event.convId === state.convId && handleToolOutputsError(state, event.reqId);
       if (event.convId === state.convId && !toolOutputsFailed && state.pendingAI && state.pendingAI.blocks.length === 0) clearPendingAI(state);
-      pushSystemMessage(state, `✗ ${event.message}`, theme.error);
+      pushSystemMessage(state, /^Unknown command: provider_proxy\b/.test(event.message)
+        ? "✗ The connected Exocortex daemon does not support /proxy; update it."
+        : `✗ ${event.message}`, theme.error);
       if (rejectedCreation) {
         // Keep the echoed message and error; the next send creates a fresh conversation.
         state.convId = null;
@@ -202,6 +205,15 @@ export function handleEvent(
       }
       break;
     }
+
+    case "provider_proxies":
+      state.providerProxies = Array.isArray(event.proxies) ? event.proxies : [];
+      // Only the answer to this TUI's /proxy prints; link changes just update the status line.
+      if (event.reqId) {
+        if (event.message) pushSystemMessage(state, censorKnownAuthEmails(state, event.message), event.error ? theme.error : theme.muted);
+        else pushSystemMessage(state, formatProviderProxies(state), theme.muted);
+      }
+      break;
 
     case "usage_update":
       state.usageByProvider[event.provider] = event.usage;

@@ -1,0 +1,99 @@
+/**
+ * Where a proxied provider's requests go, for the provider adapters.
+ *
+ * Kept free of the link and forwarder so providers can consult it without
+ * import cycles. The manager (manager.ts) fills it in; a provider with no
+ * route here talks to its API directly, exactly as without /proxy.
+ */
+
+import type { ProviderId, UsageData } from "../messages";
+import type { ProviderProxyRemoteStatus, ProxyableProviderId } from "@exocortex/shared/provider-proxy";
+import { PROVIDER_PROXY_ORIGINS, isProxyableProvider } from "@exocortex/shared/provider-proxy";
+
+export interface ProviderProxyRoute {
+  provider: ProxyableProviderId;
+  alias: string;
+  /** Loopback forwarder base for this provider, e.g. http://127.0.0.1:41234/anthropic. */
+  baseUrl: string;
+  /** Per-daemon secret the forwarder requires as the bearer token; the remote replaces it. */
+  token: string;
+}
+
+/** What the manager offers the providers beyond the route. */
+export interface ProviderProxyHooks {
+  /** Wait (bounded) until the link is up and the remote can serve `provider`; throws a clear error otherwise. */
+  ready(provider: ProxyableProviderId, signal?: AbortSignal): Promise<ProviderProxyRemoteStatus>;
+  /** The remote's last known status for `provider`. */
+  remoteStatus(provider: ProxyableProviderId): ProviderProxyRemoteStatus | null;
+  /** Ask the remote for fresh usage of its account. */
+  refreshUsage(provider: ProxyableProviderId): Promise<UsageData | null>;
+  /** Spend one of the remote account's usage resets. */
+  consumeReset(provider: ProxyableProviderId): Promise<{ outcome: string; windowsReset: number; remainingResets?: number }>;
+}
+
+const routes = new Map<ProxyableProviderId, ProviderProxyRoute>();
+let hooks: ProviderProxyHooks | null = null;
+/** The remote account's usage, kept apart from this machine's own (see daemon/src/usage.ts). */
+const proxiedUsage = new Map<ProxyableProviderId, UsageData | null>();
+
+export function providerProxyRoute(provider: ProviderId | string | undefined): ProviderProxyRoute | null {
+  return isProxyableProvider(provider) ? routes.get(provider) ?? null : null;
+}
+
+export function isProviderProxied(provider: ProviderId | string | undefined): boolean {
+  return providerProxyRoute(provider) !== null;
+}
+
+export function setProviderProxyRoute(provider: ProxyableProviderId, route: ProviderProxyRoute | null): void {
+  if (route) routes.set(provider, route);
+  else routes.delete(provider);
+}
+
+export function configureProviderProxyHooks(next: ProviderProxyHooks | null): void {
+  hooks = next;
+}
+
+export async function providerProxyReady(provider: ProxyableProviderId, signal?: AbortSignal): Promise<ProviderProxyRemoteStatus> {
+  if (!hooks) throw new Error(`${provider} is set to /proxy but the proxy is not running.`);
+  return hooks.ready(provider, signal);
+}
+
+export function providerProxyRemoteStatus(provider: ProxyableProviderId): ProviderProxyRemoteStatus | null {
+  return hooks?.remoteStatus(provider) ?? null;
+}
+
+export function providerProxyHooks(): ProviderProxyHooks | null {
+  return hooks;
+}
+
+export function getProxiedUsage(provider: ProxyableProviderId): UsageData | null {
+  return proxiedUsage.get(provider) ?? null;
+}
+
+export function setProxiedUsage(provider: ProxyableProviderId, usage: UsageData | null): void {
+  proxiedUsage.set(provider, usage);
+}
+
+/**
+ * A provider API URL, rewritten to the forwarder when the provider is proxied.
+ * `directOrigin` is the origin the adapter normally uses (it may be overridden
+ * for tests); the remote always uses its own allowlisted origin.
+ */
+export function proxiedProviderUrl(provider: ProxyableProviderId, url: string, directOrigin = PROVIDER_PROXY_ORIGINS[provider]): string {
+  const route = routes.get(provider);
+  if (!route) return url;
+  const origin = directOrigin.replace(/\/+$/, "");
+  const websocket = /^wss?:/.test(url);
+  const httpUrl = websocket ? url.replace(/^ws/, "http") : url;
+  if (!httpUrl.startsWith(origin)) return url;
+  const rest = httpUrl.slice(origin.length);
+  if (rest !== "" && !rest.startsWith("/") && !rest.startsWith("?")) return url;
+  const proxied = `${route.baseUrl}${rest.startsWith("/") ? rest : `/${rest}`}`;
+  return websocket ? proxied.replace(/^http/, "ws") : proxied;
+}
+
+export function resetProviderProxyRoutesForTest(): void {
+  routes.clear();
+  proxiedUsage.clear();
+  hooks = null;
+}

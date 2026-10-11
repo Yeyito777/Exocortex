@@ -157,9 +157,13 @@ function systemFingerprint(system: string): string {
   return createHash("sha256").update(system).digest("hex").slice(0, 32);
 }
 
-/** Settings a running process was started with; a turn needing others starts a new one. */
-export function claudeSessionKey(model: string, effort: string | undefined, cwd: string): string {
-  return JSON.stringify([model, effort ?? null, cwd]);
+/**
+ * Settings a running process was started with; a turn needing others starts a
+ * new one. `proxyAlias` is the /proxy alias its requests go through, if any:
+ * its environment points there, so toggling /proxy needs a new process.
+ */
+export function claudeSessionKey(model: string, effort: string | undefined, cwd: string, proxyAlias?: string | null): string {
+  return JSON.stringify(proxyAlias ? [model, effort ?? null, cwd, `proxy:${proxyAlias}`] : [model, effort ?? null, cwd]);
 }
 
 /** Prompt stream that stays open, so later turns can send into the same process. */

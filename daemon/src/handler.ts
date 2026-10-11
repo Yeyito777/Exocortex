@@ -55,6 +55,9 @@ import { scheduleGoalTimeLimit } from "./goal-time-limit";
 import { createExocortexToolRuntime } from "./exocortex-tool-runtime";
 import { attachClientHost, settleClientExec } from "./client-hosts";
 import { pendingTurnNotices } from "./turn-notices";
+import { ProviderProxyManager, setActiveProviderProxyManager } from "./provider-proxy/manager";
+import { ProviderProxyEndpoint } from "./provider-proxy/endpoint";
+import type { ProviderProxyLinkCommand } from "@exocortex/shared/provider-proxy";
 import type { BackgroundTaskCompletion, ExocortexToolRuntime } from "./tools/types";
 import { getSubagentParentConversationId, listActiveConversationTasks, setSubagentActive, stopBackgroundTask } from "./conversation-activity";
 import {
@@ -111,6 +114,8 @@ export interface DaemonCommandHandler {
   (client: ConnectedClient, cmd: Command): Promise<void>;
   stop(): Promise<void>;
   backgroundTaskComplete(convId: string, completion: BackgroundTaskCompletion): void;
+  /** /proxy links of this daemon; main.ts starts and stops them. */
+  providerProxies: ProviderProxyManager;
 }
 
 type RealtimeCallController = Pick<RealtimeCallManager,
@@ -119,6 +124,7 @@ type RealtimeCallController = Pick<RealtimeCallManager,
 
 export interface HandlerOptions extends HandlerLifecycle {
   callManager?: RealtimeCallController;
+  providerProxies?: ProviderProxyManager;
 }
 
 export function createHandler(server: DaemonServer, options: HandlerOptions = {}): DaemonCommandHandler {
@@ -246,6 +252,71 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   const broadcastUsage = (provider: import("./messages").ProviderId, usage: import("./messages").UsageData | null) => {
     server.broadcast({ type: "usage_update", provider, usage });
   };
+
+  // ── /proxy ────────────────────────────────────────────────────────
+
+  const providerProxies = options.providerProxies ?? new ProviderProxyManager();
+  setActiveProviderProxyManager(providerProxies);
+  let providerProxyBroadcastQueued = false;
+  providerProxies.setListeners({
+    onChange: () => {
+      // Link state and the remote's account change together; send one update.
+      if (providerProxyBroadcastQueued) return;
+      providerProxyBroadcastQueued = true;
+      queueMicrotask(() => {
+        providerProxyBroadcastQueued = false;
+        server.broadcast({ type: "provider_proxies", proxies: providerProxies.list() });
+        broadcastToolsAvailable();
+        for (const proxy of providerProxies.list()) broadcastUsage(proxy.provider, getLastUsage(proxy.provider));
+      });
+    },
+    onRouteChange: (provider) => {
+      // The other account's usage must not linger: the bars follow the route.
+      getProviderAdapter(provider).usage.clearUsage();
+      invalidateCredentialsCache(provider);
+      broadcastUsage(provider, getLastUsage(provider));
+      if (hasConfiguredCredentials(provider)) refreshUsage(provider, (usage) => broadcastUsage(provider, usage));
+      void refreshProviders(true).then(() => broadcastToolsAvailable()).catch((err) => {
+        log("warn", `handler: provider refresh after /proxy change failed: ${err instanceof Error ? err.message : err}`);
+      });
+    },
+  });
+  /** Remote end of /proxy links: one endpoint per connection that said provider_proxy_hello. */
+  const providerProxyEndpoints = new Map<ConnectedClient, ProviderProxyEndpoint>();
+  const providerProxyEndpointFor = (client: ConnectedClient, create: boolean): ProviderProxyEndpoint | null => {
+    const existing = providerProxyEndpoints.get(client);
+    if (existing || !create) return existing ?? null;
+    client.providerProxyLink = true;
+    const endpoint = new ProviderProxyEndpoint({
+      send: (event) => { server.sendTo(client, event); },
+      needsDrain: () => client.socket.writableNeedDrain,
+      waitDrain: () => new Promise<void>(resolve => {
+        const done = () => {
+          client.socket.off("drain", done);
+          client.socket.off("close", done);
+          resolve();
+        };
+        client.socket.once("drain", done);
+        client.socket.once("close", done);
+      }),
+    });
+    providerProxyEndpoints.set(client, endpoint);
+    client.socket.once("close", () => {
+      endpoint.close();
+      providerProxyEndpoints.delete(client);
+    });
+    return endpoint;
+  };
+  const rejectProxiedProviderAuth = (client: ConnectedClient, reqId: string | undefined, provider: string, action: string): boolean => {
+    const alias = providerProxies.aliasFor(provider);
+    if (!alias) return false;
+    server.sendTo(client, {
+      type: "auth_status",
+      reqId,
+      message: `${getProviderAdapter(provider as import("./messages").ProviderId).label} goes through /proxy on ${alias}, which uses that machine's login: ${action} there, or run /proxy ${provider} off first.`,
+    });
+    return true;
+  };
   const broadcastTokenStats = () => {
     server.broadcast({ type: "token_stats", stats: getTokenStatsSnapshot() });
   };
@@ -336,6 +407,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       authByProvider: getAuthByProvider(),
       authInfoByProvider: getAuthInfoByProvider(),
       ...(externalStyles.length > 0 ? { externalToolStyles: externalStyles } : {}),
+      providerProxies: providerProxies.list(),
     });
   };
   const buildOrchestrationCallbacks = (convId: string, onAssistantTextChunk?: (chunk: string) => void) => ({
@@ -1381,6 +1453,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           authByProvider: getAuthByProvider(),
           authInfoByProvider: getAuthInfoByProvider(),
           ...(externalStyles.length > 0 ? { externalToolStyles: externalStyles } : {}),
+          providerProxies: providerProxies.list(),
         });
         for (const provider of getProviders()) {
           const lastUsage = getLastUsage(provider.id);
@@ -1648,6 +1721,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         // just below) like any other.
         const notices = initialMessage ? pendingTurnNotices({
           id,
+          provider,
           messages: [],
           subagentPolicy: cmd.subagent ? { parentConversationId: null, allowEdits: false, parentSystemInstructions: "" } : null,
           goal: goalObjective ? { status: "active", objective: goalObjective } : null,
@@ -1752,6 +1826,47 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
 
       case "client_exec_result": {
         settleClientExec(client, cmd);
+        break;
+      }
+
+      // ── /proxy ─────────────────────────────────────────────────────
+
+      case "provider_proxy": {
+        const reply = (message?: string, error = false) => server.sendTo(client, {
+          type: "provider_proxies", reqId: cmd.reqId, proxies: providerProxies.list(),
+          ...(message ? { message } : {}), ...(error ? { error } : {}),
+        });
+        try {
+          if (cmd.action === "status") reply();
+          else if (cmd.action === "off") reply(providerProxies.off(String(cmd.provider ?? "")));
+          else if (cmd.action === "set") reply(await providerProxies.set(String(cmd.provider ?? ""), String(cmd.alias ?? "")));
+          else reply(`Unknown /proxy action: ${String(cmd.action)}`, true);
+        } catch (error) {
+          reply(error instanceof Error ? error.message : String(error), true);
+        }
+        break;
+      }
+
+      case "provider_proxy_hello":
+        providerProxyEndpointFor(client, true)!.handle(cmd);
+        break;
+
+      case "provider_proxy_open":
+      case "provider_proxy_ws_send":
+      case "provider_proxy_cancel":
+      case "provider_proxy_status":
+      case "provider_proxy_consume_reset":
+      case "provider_proxy_exec":
+      case "provider_proxy_exec_cancel": {
+        const endpoint = providerProxyEndpointFor(client, false);
+        if (endpoint) {
+          endpoint.handle(cmd as ProviderProxyLinkCommand);
+          break;
+        }
+        const message = "Send provider_proxy_hello first.";
+        if (cmd.type === "provider_proxy_open") server.sendTo(client, { type: "provider_proxy_end", streamId: cmd.streamId, error: message });
+        else if (cmd.type === "provider_proxy_exec") server.sendTo(client, { type: "provider_proxy_exec_result", execId: cmd.execId, output: "", byteTruncated: false, exitCode: null, signal: null, timedOut: false, error: message });
+        else server.sendTo(client, { type: "error", reqId: "reqId" in cmd ? cmd.reqId : undefined, message });
         break;
       }
       case "unsubscribe": {
@@ -3434,6 +3549,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         };
 
         const provider = cmd.provider ?? getDefaultProvider().id;
+        if (rejectProxiedProviderAuth(client, cmd.reqId, provider, "log in")) break;
 
         if (provider === "openai" && cmd.action) {
           if (rejectDuringOpenAIAccountMutation(client, cmd.reqId)) break;
@@ -3559,6 +3675,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Account switching is only supported for OpenAI.` });
           break;
         }
+        if (rejectProxiedProviderAuth(client, cmd.reqId, provider, "switch accounts")) break;
 
         if (!cmd.target?.trim()) {
           server.sendTo(client, { type: "auth_status", reqId: cmd.reqId, message: formatOpenAIAccountList() });
@@ -3587,6 +3704,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
 
       case "logout": {
         const provider = cmd.provider ?? getDefaultProvider().id;
+        if (rejectProxiedProviderAuth(client, cmd.reqId, provider, "log out")) break;
         if (getProviderAdapter(provider).auth.publicAccessLabel) {
           server.sendTo(client, { type: "auth_status", reqId: cmd.reqId, message: `${getProviderAdapter(provider).label} uses public access and has no session to log out.` });
           break;
@@ -3623,5 +3741,6 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   return Object.assign(handleCommand, {
     stop: () => callManager.stopAll(),
     backgroundTaskComplete: enqueueBackgroundTaskCompletion,
+    providerProxies,
   });
 }

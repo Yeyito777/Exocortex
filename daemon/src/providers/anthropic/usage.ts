@@ -191,6 +191,18 @@ export async function refreshRemoteUsage(): Promise<UsageData | null> {
   return refresh;
 }
 
+/**
+ * Start a bare Claude Code process that asks for the plan's usage. Claude Code
+ * refreshes an expiring OAuth login before it can answer, with its own locking
+ * and refresh-token rotation, so /proxy uses this rather than refreshing the
+ * token itself (see provider-proxy/upstream-auth.ts).
+ */
+export async function refreshClaudeCodeLogin(): Promise<void> {
+  const generation = usageGeneration;
+  const usage = usageFromPlanRateLimits(await fetchPlanRateLimits(), lastUsage);
+  if (usage && generation === usageGeneration) commitUsage(usage);
+}
+
 export function handleUsageHeaders(headers: Headers, onUpdate: (usage: UsageData) => void): void {
   const raw = headers.get(CLAUDE_RATE_LIMIT_HEADER);
   if (!raw) return;

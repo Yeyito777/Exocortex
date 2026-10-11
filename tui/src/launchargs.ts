@@ -1,4 +1,4 @@
-import { validateSshAlias } from "./ssh-transport";
+import { validateSshAlias } from "@exocortex/shared/ssh-transport";
 
 export interface TuiLaunchOptions {
   sshAlias: string | null;

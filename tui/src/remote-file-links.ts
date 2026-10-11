@@ -7,7 +7,7 @@ import { runtimeDir } from "@exocortex/shared/paths";
 import type { Event, FileLinkResolvedEvent } from "./protocol";
 import { isWebUrl, localPathFromTarget } from "./links";
 import { openCommandDetached, openConversationTarget, openTargetDetached, resolveRemoteOpenCommand, type OpenCommand } from "./openable";
-import { validateSshAlias } from "./ssh-transport";
+import { validateSshAlias } from "@exocortex/shared/ssh-transport";
 import { isEditableTextFile } from "./text-file";
 
 const MAX_FILE_BYTES = 128 * 1024 * 1024;

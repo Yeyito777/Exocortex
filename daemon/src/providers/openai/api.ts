@@ -7,7 +7,8 @@ import { isDeepStrictEqual } from "node:util";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
 import { accountScopeForKey, getCurrentAccountKey, getOpenAIAuthSessionRevision, getVerifiedSession } from "./auth";
 import { AuthError, isContextWindowProviderError, isNonRetryableProviderError, NonRetryableProviderError } from "../errors";
-import { OPENAI_CODEX_RESPONSES_URL, OPENAI_CODEX_RESPONSES_WS_URL, OPENAI_RESPONSES_LITE_HEADER } from "./constants";
+import { CHATGPT_BASE_URL, OPENAI_CODEX_RESPONSES_URL, OPENAI_CODEX_RESPONSES_WS_URL, OPENAI_RESPONSES_LITE_HEADER } from "./constants";
+import { proxiedProviderUrl } from "../../provider-proxy/route";
 import { usesOpenAIResponsesLite } from "./capabilities";
 import { buildOpenAIRequestHeaders, type OpenAIRequestSession } from "./cache";
 import { buildCloudflareCookieHeader, storeCloudflareCookiesFromHeaders } from "./cookies";
@@ -19,6 +20,15 @@ import { createOpenAIEventAccumulator, readOpenAIEventsForTest } from "./stream"
 import { connectOpenAIWebSocket, OpenAIWebSocketHttpError, type OpenAIWebSocketConnection } from "./websocket";
 import { OPENAI_USAGE_ACCOUNT_KEY_HEADER } from "./usage";
 import type { ProviderTurnSession, StreamCallbacks, StreamOptions, StreamResult } from "../types";
+
+/** The Responses endpoints, through the /proxy forwarder when OpenAI is proxied. */
+function responsesUrl(): string {
+  return proxiedProviderUrl("openai", OPENAI_CODEX_RESPONSES_URL, CHATGPT_BASE_URL);
+}
+
+function responsesWebSocketUrl(): string {
+  return proxiedProviderUrl("openai", OPENAI_CODEX_RESPONSES_WS_URL, CHATGPT_BASE_URL);
+}
 
 export {
   AuthError,
@@ -483,20 +493,20 @@ async function streamMessageHttpWithSession(
   if (usesOpenAIResponsesLite(model)) {
     headers[OPENAI_RESPONSES_LITE_HEADER] = "true";
   }
-  const cookieHeader = buildCloudflareCookieHeader(OPENAI_CODEX_RESPONSES_URL);
+  const cookieHeader = buildCloudflareCookieHeader(responsesUrl());
   if (cookieHeader) headers.Cookie = cookieHeader;
 
   consumeCompactionRequestAttempt(options);
   const requestText = JSON.stringify(requestBody);
   requestCallbacks.onRequestSent?.("http", Buffer.byteLength(requestText));
-  const res = await fetch(OPENAI_CODEX_RESPONSES_URL, {
+  const res = await fetch(responsesUrl(), {
     method: "POST",
     headers,
     body: requestText,
     signal: options.signal,
   });
 
-  storeCloudflareCookiesFromHeaders(OPENAI_CODEX_RESPONSES_URL, res.headers);
+  storeCloudflareCookiesFromHeaders(responsesUrl(), res.headers);
   requestCallbacks.onHeaders?.(res.headers);
 
   if (!res.ok) {
@@ -742,14 +752,14 @@ export class OpenAITurnSession implements ProviderTurnSession {
     if (this.state.turnState) {
       headers["x-codex-turn-state"] = this.state.turnState;
     }
-    const cookieHeader = buildCloudflareCookieHeader(OPENAI_CODEX_RESPONSES_WS_URL);
+    const cookieHeader = buildCloudflareCookieHeader(responsesWebSocketUrl());
     if (cookieHeader) {
       headers.Cookie = cookieHeader;
     }
 
-    const connection = await connectOpenAIWebSocket(OPENAI_CODEX_RESPONSES_WS_URL, headers, options.signal);
+    const connection = await connectOpenAIWebSocket(responsesWebSocketUrl(), headers, options.signal);
     this.state.socket = connection.socket;
-    storeCloudflareCookiesFromHeaders(OPENAI_CODEX_RESPONSES_WS_URL, connection.headers);
+    storeCloudflareCookiesFromHeaders(responsesWebSocketUrl(), connection.headers);
     callbacks.onHeaders?.(connection.headers);
     const nextTurnState = connection.headers.get("x-codex-turn-state");
     if (nextTurnState && !this.state.turnState) {
@@ -1155,14 +1165,14 @@ export async function streamMessageWithSession(
         const headers = {
           ...buildOpenAIRequestHeaders(session, options),
         };
-        const cookieHeader = buildCloudflareCookieHeader(OPENAI_CODEX_RESPONSES_WS_URL);
+        const cookieHeader = buildCloudflareCookieHeader(responsesWebSocketUrl());
         if (cookieHeader) {
           headers.Cookie = cookieHeader;
         }
 
-        const connection = await connectOpenAIWebSocket(OPENAI_CODEX_RESPONSES_WS_URL, headers, signal);
+        const connection = await connectOpenAIWebSocket(responsesWebSocketUrl(), headers, signal);
         socket = connection.socket;
-        storeCloudflareCookiesFromHeaders(OPENAI_CODEX_RESPONSES_WS_URL, connection.headers);
+        storeCloudflareCookiesFromHeaders(responsesWebSocketUrl(), connection.headers);
         requestCallbacks.onHeaders?.(connection.headers);
       }
 

@@ -18,6 +18,7 @@ selects another daemon without moving client-side UI operations to that host.
 - [Conversation display pages](conversation-display-pages.md)
 - [Conversation workspaces](conversation-workspaces.md)
 - [SSH history cache](ssh-history-cache.md)
+- [/proxy: another machine's provider login](provider-proxy.md)
 - [Goals](goals.md)
 - [Delegation models](delegation-models.md)
 - [External call adapters and realtime delegation](external-call-adapters.md)

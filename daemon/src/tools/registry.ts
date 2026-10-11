@@ -10,6 +10,7 @@ import type { ApiToolCall } from "../api";
 import type { ToolExecResult } from "../agent";
 import { bash, executeBashBackgroundable } from "./bash";
 import { clientBash } from "./client-bash";
+import { remoteBash } from "./remote-bash";
 import { read } from "./read";
 import { write } from "./write";
 import { glob } from "./glob";
@@ -30,6 +31,7 @@ import { evaluateToolCallSafety, formatSafetyBlock } from "../safety";
 import { AbortableSemaphore } from "./semaphore";
 import { log } from "../log";
 import { providerToolNames } from "./provider-primitives";
+import { isProviderProxied } from "../provider-proxy/route";
 import type { ProviderId } from "../messages";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
 
@@ -52,6 +54,7 @@ const TOOLS: Tool[] = [
   chrono,
   goal,
   clientBash,
+  remoteBash,
   attach,
 ];
 
@@ -82,7 +85,8 @@ function getAvailableTools(conversationId?: string): Tool[] {
 function getSelectedAvailableTools(allowedNames?: readonly string[], conversationId?: string): Tool[] {
   const available = getAvailableTools(conversationId);
   if (!allowedNames) {
-    const defaults = new Set(providerToolNames(available.map(tool => tool.name)));
+    // Without a conversation's provider there is no /proxy machine for remote_bash.
+    const defaults = new Set(providerToolNames(available.map(tool => tool.name)).filter(name => name !== remoteBash.name));
     return available.filter(tool => defaults.has(tool.name));
   }
   const allowed = new Set(allowedNames);
@@ -97,17 +101,21 @@ export function getRegisteredTools(conversationId?: string): Tool[] {
   return [...getAvailableTools(conversationId)];
 }
 
-/** Provider adaptation only; old persisted selections have no effect. */
+/**
+ * Provider adaptation only; old persisted selections have no effect.
+ * remote_bash is offered only while the provider goes through /proxy.
+ */
 export function getConversationToolNames(provider?: ProviderId): string[] {
-  return providerToolNames(getAvailableTools().map(tool => tool.name), provider);
+  const names = providerToolNames(getAvailableTools().map(tool => tool.name), provider);
+  return isProviderProxied(provider) ? names : names.filter(name => name !== remoteBash.name);
 }
 
 // ── API tool definitions (sent to model providers) ─────────────────
 
-export function getToolDefs(allowedNames?: readonly string[], conversationId?: string): { name: string; description: string; input_schema: Record<string, unknown>; freeform?: Tool["freeform"] }[] {
+export function getToolDefs(allowedNames?: readonly string[], conversationId?: string, provider?: ProviderId): { name: string; description: string; input_schema: Record<string, unknown>; freeform?: Tool["freeform"] }[] {
   return getSelectedAvailableTools(allowedNames, conversationId).map(t => ({
     name: t.name,
-    description: t.description,
+    description: t.describe?.(provider) ?? t.description,
     input_schema: t.inputSchema,
     ...(t.freeform ? { freeform: t.freeform } : {}),
   }));

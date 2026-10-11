@@ -4,7 +4,8 @@ import { DAYBREAK_BASE_MODEL_ID, DAYBREAK_MODEL_ID, isDaybreakModelId } from "@e
 import { log } from "../../log";
 import { getVerifiedSession } from "./auth";
 import { supportsOpenAIFastServiceTier, supportsOpenAIImageInputs, supportsOpenAIUltraReasoningEffort } from "./capabilities";
-import { OPENAI_CODEX_CLIENT_VERSION, OPENAI_MODELS_URL } from "./constants";
+import { CHATGPT_BASE_URL, OPENAI_CODEX_CLIENT_VERSION, OPENAI_MODELS_URL } from "./constants";
+import { proxiedProviderUrl } from "../../provider-proxy/route";
 import { buildOpenAIJsonHeaders } from "./http";
 
 const DEFAULT_OPENAI_CONTEXT_TOKENS = 272_000;
@@ -281,7 +282,7 @@ export function selectOpenAIModelsForTest(models: OpenAICodexModel[]): ModelInfo
 
 export async function fetchOpenAIModels(): Promise<ModelInfo[]> {
   const session = await getVerifiedSession();
-  const url = `${OPENAI_MODELS_URL}?client_version=${encodeURIComponent(OPENAI_CODEX_CLIENT_VERSION)}`;
+  const url = `${proxiedProviderUrl("openai", OPENAI_MODELS_URL, CHATGPT_BASE_URL)}?client_version=${encodeURIComponent(OPENAI_CODEX_CLIENT_VERSION)}`;
   const res = await fetch(url, {
     headers: {
       ...buildOpenAIJsonHeaders({

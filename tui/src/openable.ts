@@ -5,7 +5,7 @@ import { conversationWorkspaceDir } from "@exocortex/shared/paths";
 import { defaultOpenersConfig, readExocortexConfig } from "@exocortex/shared/config";
 import { isWebUrl, localPathFromTarget, trimUrlPunctuation } from "./links";
 import { isEditableTextFile } from "./text-file";
-import { validateSshAlias } from "./ssh-transport";
+import { validateSshAlias } from "@exocortex/shared/ssh-transport";
 
 export interface OpenableTargetMatch {
   target: string;

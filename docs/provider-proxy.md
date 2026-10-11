@@ -1,0 +1,137 @@
+# /proxy: use another machine's provider login
+
+`/proxy <provider> <ssh-alias>` sends one provider's model requests through the
+Exocortex daemon on another machine, which adds its own login. Everything else
+stays local: conversations are stored here, tools run here, files are read and
+written here. Typical use: a laptop borrows a desktop's Claude or ChatGPT
+subscription without logging in on the laptop. Supported providers: `openai`
+and `anthropic`.
+
+Compare `/ssh`, which moves the whole TUI to the other daemon.
+
+```
+ laptop daemon                                            remote daemon (whale)
+ ─────────────                                            ─────────────────────
+ Claude Code CLI ─┐  ANTHROPIC_BASE_URL                  ┌─ ProviderProxyEndpoint
+ OpenAI client ───┤  http://127.0.0.1:<port>/<provider>  │   allowlist check
+                  ▼  bearer = forwarder secret           │   drop client auth/cookies
+           loopback forwarder ── ProviderProxyLink ──────┤   add whale's credentials
+                                 one per alias:          │   (Claude Code OAuth /
+                                 ssh -T whale             │    OpenAI session)
+                                   exocortexd proxy ─────┘        │
+                                 (JSON lines, streams              ▼
+                                  multiplexed, base64)   api.anthropic.com / chatgpt.com
+```
+
+## Using it
+
+| Command | Effect |
+|---|---|
+| `/proxy anthropic whale` | Check that `whale` is reachable, runs a daemon with `/proxy`, and is logged in to Anthropic; then route Anthropic there. |
+| `/proxy openai off` | Use this machine's own OpenAI login again. |
+| `/proxy` | List proxied providers and their link state. |
+
+The setting is saved in `config/config.json` as
+`providers.<provider>.proxy.ssh` and restored when the daemon starts, so a
+proxied provider never silently falls back to a local login. The status line
+shows `Proxy: <alias> connected|connecting|down` (and the remote account)
+while the current provider is proxied; `/proxy` lists the reasons for a down
+link. While proxied, the provider's account info and 5-hour/weekly bars show
+the remote account, and `/login`, `/logout` and `/account` for that provider
+explain that the login lives on the remote.
+
+The alias is an OpenSSH host alias, resolved by the daemon's own `ssh` (same
+flags as `/ssh`: `BatchMode=yes`, keepalives, `ControlPath=none`). The daemon
+runs `ssh` non-interactively, so the key must not need a prompt (on macOS:
+`ssh-add --apple-use-keychain`). Anthropic still runs the Claude Code CLI
+locally (it is the agent loop), so it must be installed here, but it does not
+need to be signed in.
+
+Not carried: realtime voice calls, and external tools that borrow the OpenAI
+login (`image`, `transcribe`); both say so. Hold-to-talk transcription is
+carried.
+
+## remote_bash
+
+While a conversation's provider is proxied, its model also gets `remote_bash`
+(Claude Code: `mcp__exocortex__remote_bash`): `client_bash`'s counterpart for the
+proxy's machine. `client_bash` reaches the machine the user's TUI runs on;
+`remote_bash` reaches the machine whose login the conversation borrows. It runs
+over the same SSH link, as the remote daemon's user (the SSH user), with the
+same timeout, working-directory and 1 MB output rules as `client_bash`.
+
+- Offered only while the conversation's provider is proxied; switching the
+  conversation to another provider or turning the proxy off removes it.
+- Refused while the link is down, with the reason.
+- The tool description and a model-only turn notice name the alias; a notice
+  withdraws it when the proxy goes away.
+- Scoped subagents never get it, like `client_bash`.
+
+## Behavior when things go wrong
+
+- **Link drops mid-turn:** every request in flight fails at once, like a
+  dropped network connection. Claude Code and the OpenAI client then retry as
+  they would for a network error, and the link reconnects with backoff (1s up
+  to 60s; a request waiting for the link triggers an immediate attempt and
+  waits up to 20s). Nothing hangs: SSH keepalives detect a dead peer in ~45s.
+- **Proxy toggled mid-turn:** the turn finishes on the link it started on (the
+  old link closes once idle); the next turn uses the new route. Claude Code
+  processes carry the route in their key, so toggling starts a new process.
+- **Remote not logged in:** `/proxy` refuses to enable; later turns fail with
+  the remote's reason (e.g. "Claude Code is not signed in").
+- **Version skew:** a remote without `/proxy` answers
+  `Unknown command: provider_proxy_hello`, reported as "The Exocortex daemon
+  on whale does not support /proxy; update Exocortex there". A protocol
+  version mismatch names which side to update. A TUI newer than its daemon
+  shows "The connected Exocortex daemon does not support /proxy; update it".
+  Nothing changes for daemons and clients that never use `/proxy`.
+- **Chained proxies:** a daemon that proxies a provider itself does not relay
+  it further.
+
+## Security
+
+- The remote end is reached only through the authenticated SSH session (or
+  the remote user's own daemon socket, which is already that user's).
+- The remote makes only allowlisted requests: exact paths on the provider's
+  own origin (`POST /v1/messages`, `/v1/messages/count_tokens` on
+  api.anthropic.com; the Codex Responses HTTP/websocket endpoint, model list and
+  transcription on chatgpt.com), never following redirects. The allowlist is in
+  `shared/src/provider-proxy.ts`; the upstream origin can be pointed at a mock
+  only in test processes (`EXOCORTEX_TEST=1`).
+- Client-sent `Authorization`, `x-api-key`, cookies and account headers are
+  dropped; the remote attaches its own. Responses never carry `Set-Cookie` or
+  auth headers back, and tokens are never logged or sent over the link.
+- Anthropic tokens come from Claude Code's own login on the remote; an expiring
+  token is refreshed by Claude Code itself (a bare usage probe), so its
+  refresh-token rotation stays in one place. OpenAI uses the remote daemon's
+  normal session refresh. A 401 is retried once after refreshing.
+- The local forwarder listens on 127.0.0.1 only, checks the `Host` header, and
+  requires a 32-byte per-daemon secret as the bearer token. The secret is what
+  the local Claude Code process holds instead of a credential. Port and secret
+  persist in `config/runtime/provider-proxy.json` (mode 0600) so Claude Code
+  processes that outlive a daemon restart keep working.
+- Request bodies and websocket messages are capped at 32 MiB.
+
+## Wire protocol
+
+Messages and the allowlist: `shared/src/provider-proxy.ts`. A link starts with
+`provider_proxy_hello`, which also stops the remote from sending that
+connection its broadcasts; then `provider_proxy_open` / `_ws_send` / `_cancel`
+streams (`provider_proxy_response`, `_data`, `_end`), `provider_proxy_status`
+(login + usage), `provider_proxy_consume_reset` and `provider_proxy_exec`
+(remote_bash). Clients use `provider_proxy` (`status`/`set`/`off`) and receive
+`provider_proxies`, which `tools_available` also carries.
+
+Code: `daemon/src/provider-proxy/` (`manager.ts` local state and config,
+`link.ts` SSH link, `forwarder.ts` loopback endpoint, `endpoint.ts` and
+`upstream-auth.ts` remote side, `route.ts` what providers consult).
+
+## Testing
+
+- Unit tests: `daemon/src/provider-proxy/*.test.ts`,
+  `shared/src/provider-proxy.test.ts`, `tui/src/commands/proxy.test.ts`.
+- End to end, no real accounts: `bun scripts/dev/provider-proxy-e2e.ts` starts
+  a client and a remote daemon joined by a fake `ssh`, with a mock upstream and
+  the real Claude Code CLI on the client. Set `OLD_EXOCORTEX_ROOT` to a checkout
+  without `/proxy` (one without external-tool daemons, e.g. a detached
+  worktree) to also check an outdated remote.

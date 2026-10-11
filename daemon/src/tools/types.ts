@@ -163,6 +163,9 @@ export interface Tool {
   /** Description the model sees in the tool list. */
   description: string;
 
+  /** The description for a conversation on `provider`, when it depends on the provider's state. */
+  describe?: (provider?: ProviderId) => string;
+
   /** JSON Schema for the tool's input parameters. */
   inputSchema: Record<string, unknown>;
 

@@ -28,6 +28,7 @@ import { RENAME_COMMAND } from "./commands/rename";
 import { REPLAY_COMMAND } from "./commands/replay";
 import { SYSTEM_COMMAND } from "./commands/system";
 import { SSH_COMMAND } from "./commands/ssh";
+import { PROXY_COMMAND } from "./commands/proxy";
 import { THEME_COMMAND } from "./commands/theme";
 import { TIME_COMMAND } from "./commands/time";
 import { TOKENS_COMMAND } from "./commands/tokens";
@@ -70,6 +71,7 @@ const commands: SlashCommand[] = [
   HIDE_COMMAND,
   PING_COMMAND,
   SSH_COMMAND,
+  PROXY_COMMAND,
   INSTRUCTIONS_COMMAND,
   SYSTEM_COMMAND,
   LOGIN_COMMAND,

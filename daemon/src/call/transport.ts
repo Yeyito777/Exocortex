@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { buildOpenAIHeaders } from "../providers/openai/http";
 import { OPENAI_CODEX_REALTIME_CALLS_URL } from "../providers/openai/constants";
 import { getVerifiedSession, type VerifiedOpenAISession } from "../providers/openai/auth";
+import { isProviderProxied } from "../provider-proxy/route";
 import { log } from "../log";
 import {
   buildDelegationAppend,
@@ -111,7 +112,11 @@ export class ChatGptRealtimeTransport implements NativeRealtimeTransport {
   constructor(options: NativeRealtimeTransportOptions = {}) {
     this.fetchFn = options.fetch ?? fetch;
     this.createSocket = options.createWebSocket ?? defaultWebSocket;
-    this.getSession = options.getSession ?? getVerifiedSession;
+    this.getSession = options.getSession ?? (async (opts?: { forceRefresh?: boolean }) => {
+      // Calls connect to OpenAI directly (WebRTC), which /proxy does not carry.
+      if (isProviderProxied("openai")) throw new Error("Voice calls are not available while OpenAI goes through /proxy; run /proxy openai off to call.");
+      return getVerifiedSession(opts);
+    });
     this.callsUrl = options.callsUrl ?? OPENAI_CODEX_REALTIME_CALLS_URL;
     this.sidebandBaseUrl = options.sidebandBaseUrl ?? "wss://api.openai.com/v1/live";
     this.onEvent = options.onEvent ?? (() => {});

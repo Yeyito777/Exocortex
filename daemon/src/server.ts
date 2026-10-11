@@ -12,6 +12,7 @@ import { isWindows } from "@exocortex/shared/paths";
 import { log } from "./log";
 import { budgetHistoryUpdatedEvent } from "./history-pagination";
 import type { ClientCapability, Command, Event } from "./protocol";
+import { PROVIDER_PROXY_LINK_EVENT_TYPES } from "@exocortex/shared/provider-proxy";
 
 // ── Client tracking ─────────────────────────────────────────────────
 
@@ -25,6 +26,11 @@ export interface ConnectedClient {
   /** Per-connection UTF-8 state; bytes can split a character across reads. */
   decoder?: StringDecoder;
   capabilities: Set<"history-pagination" | ClientCapability>;
+  /**
+   * A /proxy link from another daemon (provider_proxy_hello). It gets only
+   * provider-proxy events and errors, never broadcasts.
+   */
+  providerProxyLink?: boolean;
 }
 
 export type CommandHandler = (client: ConnectedClient, command: Command) => void | Promise<void>;
@@ -136,6 +142,7 @@ export class DaemonServer {
 
   sendTo(client: ConnectedClient, event: Event, measureBytes = false): number {
     if (client.socket.destroyed) return 0;
+    if (client.providerProxyLink && event.type !== "error" && !PROVIDER_PROXY_LINK_EVENT_TYPES.has(event.type)) return 0;
     try {
       const payload = JSON.stringify(event) + "\n";
       client.socket.write(payload);

@@ -1,4 +1,7 @@
-/** TUI-owned SSH transport for connecting directly to a remote daemon proxy. */
+/**
+ * SSH transport to a remote daemon's `exocortexd proxy`: the TUI's /ssh route
+ * and the daemon's /proxy links both carry the daemon protocol over it.
+ */
 
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";

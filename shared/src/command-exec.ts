@@ -1,6 +1,8 @@
 /**
- * Runs the model's client_bash commands on this machine for a daemon reached
- * over /ssh.
+ * Runs a model's shell command on this machine for another Exocortex daemon:
+ * client_bash for a daemon reached over /ssh (run by the TUI), and remote_bash
+ * for a daemon that borrows this one's provider through /proxy (run by this
+ * daemon).
  *
  * Each command runs in its own process group, so a timeout, a cancel from the
  * daemon, a lost connection, or the TUI exiting stops everything it started.
