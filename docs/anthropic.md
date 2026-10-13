@@ -16,10 +16,15 @@ conversations:
   recorded one, so edits apply once the running process (see background tasks
   below) has closed. Goal text is left out because the `goal` tool is not
   offered to Claude Code. `/system` shows the appended text.
-- Exocortex's own tools are not used either, except `chrono`. Claude Code calls
-  it over an in-process MCP server as `mcp__exocortex__chrono`; Exocortex runs
-  it like any other chrono call, and history records it as `chrono`. Sleeps
-  and waits run inside the call for at most five minutes, since a Claude Code
+- Exocortex's own tools are not used either, except `chrono` and `exo`. Claude
+  Code calls them over an in-process MCP server as `mcp__exocortex__chrono` and
+  `mcp__exocortex__exo`; Exocortex runs them like any other call, and history
+  records them as `chrono` and `exo`. The server's instructions make `exo`
+  subagents the default for real work and keep Claude Code's Agent tool to
+  quick read-only fan-out within a turn (see
+  [delegation defaults](delegation-models.md)); `exo` from a Claude
+  conversation starts Claude Opus at high effort unless told otherwise. Chrono
+  sleeps and waits run inside the call for at most five minutes, since a Claude Code
   turn cannot be suspended; longer delays use a wake with a message. Claude
   Code's own schedulers (`ScheduleWakeup`, `CronCreate`, `CronDelete`,
   `CronList`) are disabled in favor of chrono.

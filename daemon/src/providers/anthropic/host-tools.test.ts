@@ -37,7 +37,9 @@ describe("Claude Code host tools", () => {
       { name: "exo", description: "Start a subagent.", inputSchema: exoDef.input_schema, _meta: { "anthropic/alwaysLoad": true } },
     ]);
     expect(client.getInstructions()).toContain("chrono");
-    expect(client.getInstructions()).toContain("Almost never use subagents");
+    expect(client.getInstructions()).toContain("Use the Agent tool only for quick read-only fan-out");
+    expect(client.getInstructions()).toContain("Subagents are the default for real work");
+    expect(client.getInstructions()).toContain("default is opus at high effort");
   });
 
   test("instructs only on the tools it offers", async () => {

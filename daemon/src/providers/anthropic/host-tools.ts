@@ -28,7 +28,11 @@ const INSTRUCTIONS: Record<string, string | undefined> = {
     "A wake with a message starts a new turn in this conversation at the scheduled time, after this turn has ended and across restarts.",
     "Sleeps and waits of any practical length run inside the call and end early when the user sends a message.",
   ].join(" "),
-  exo: `exo starts Exocortex subagents, separate from your own Agent tool.\n${exo.systemHint}`,
+  exo: [
+    "exo starts Exocortex subagents, separate from your own Agent tool.",
+    "Use the Agent tool only for quick read-only fan-out within this turn (search or exploration where only the conclusion matters); delegate anything else with exo.",
+    exo.systemHint,
+  ].join("\n"),
 };
 
 /** The Exocortex turn a host tool call runs under. */

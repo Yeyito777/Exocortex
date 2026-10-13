@@ -26,6 +26,15 @@ export function latestSizeModel(size: string, models: readonly string[]): string
     .sort((a, b) => compareVersions(sizedModel.exec(b)![1], sizedModel.exec(a)![1]))[0];
 }
 
+const claudeModel = /^claude-([a-z]+)-(\d+(?:-\d+)*)$/;
+
+/** Latest catalog Claude model of a family (opus, sonnet, ...), e.g. claude-opus-5-5. */
+export function latestClaudeModel(family: string, models: readonly string[]): string | undefined {
+  const version = (id: string) => claudeModel.exec(id)![2].replaceAll("-", ".");
+  return models.filter(id => claudeModel.exec(id)?.[1] === family)
+    .sort((a, b) => compareVersions(version(b), version(a)))[0];
+}
+
 export function isLegacyDelegationModel(provider: ProviderId, model: string, models: readonly string[]): boolean {
   if (provider !== "openai") return false;
   const sized = sizedModel.exec(model);
