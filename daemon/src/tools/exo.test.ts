@@ -5,17 +5,17 @@ import * as conversations from "../conversations";
 import { getConversationActivityCounts, resetConversationActivityForTest, setSubagentActive } from "../conversation-activity";
 import { buildConversationRequestSurface } from "../conversation-request-surface";
 import { setLoadedExternalToolsForTest } from "../external-tools";
-import { latestSizeModel } from "../delegation-models";
+import { latestClaudeModel, latestSizeModel } from "../delegation-models";
 import { getProvider } from "../providers/registry";
 import { MAX_ACTIVE_EXO_SUBAGENTS_PER_PARENT } from "../messages";
 import { readRequestedRestart, resetRequestedRestartForTest, RESTART_MIN_UPTIME_MS } from "../requested-restart";
 import { exo } from "./exo";
 
 const ids = new Set<string>();
-function parent() {
+function parent(provider: "openai" | "anthropic" = "openai") {
   const id = `simple-exo-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   ids.add(id);
-  return conversations.create(id, "openai", "gpt-6-astra", "parent");
+  return conversations.create(id, provider, provider === "openai" ? "gpt-6-astra" : "claude-sonnet-5-5", "parent");
 }
 const outcome = { ok: true, blocks: [{ type: "text" as const, text: "done" }], tokens: 1, durationMs: 1, endedAt: Date.now() };
 function harness(overrides: Partial<ExocortexToolRuntimeDependencies> = {}) {
@@ -48,12 +48,15 @@ afterEach(async () => {
 });
 
 describe("minimal native exo", () => {
-  test("schema exposes only subagent/args/abort/restart with two model choices", () => {
+  test("schema exposes only subagent/args/abort/restart with model and effort choices", () => {
     const properties = exo.inputSchema.properties as Record<string, any>;
     expect(Object.keys(properties)).toEqual(["subagent", "args", "abort", "restart"]);
-    expect(Object.keys(properties.args.properties)).toEqual(["detach", "model"]);
-    expect(properties.args.properties.model.enum).toEqual(["sol fast", "astra"]);
-    expect(exo.systemHint).toContain("Almost never use subagents");
+    expect(Object.keys(properties.args.properties)).toEqual(["detach", "model", "effort"]);
+    expect(properties.args.properties.model.description).toContain("claude-opus-5-5");
+    expect(properties.args.properties.effort.enum).toContain("xhigh");
+    expect(exo.systemHint).toContain("Subagents are the default for real work");
+    expect(exo.systemHint).toContain("Do trivial or quick work yourself");
+    expect(exo.systemHint).not.toContain("Almost never");
     expect(exo.systemHint).toContain("shared/src/protocol.ts");
     expect(exo.systemHint).toContain("restart gracefully restarts this daemon");
     expect(exo.summarize!({ restart: "deploy fix" }).detail).toBe("restart: deploy fix");
@@ -74,6 +77,40 @@ describe("minimal native exo", () => {
     expect(h.beginParentNotification).toHaveBeenCalledTimes(2);
     expect(h.completeParentNotification).toHaveBeenCalledTimes(2);
     expect(getConversationActivityCounts(p.id).subagentCount).toBe(0);
+  });
+  test("Claude parents default to Opus at high effort; either family is selectable with an effort", async () => {
+    const claude = getProvider("anthropic")!.models.map(model => model.id);
+    const openai = getProvider("openai")!.models.map(model => model.id);
+    const h = harness();
+    const claudeParent = parent("anthropic");
+    const opus = await spawn(h.runtime, claudeParent.id);
+    expect([opus.provider, opus.model, opus.effort, opus.fastMode]).toEqual(["anthropic", latestClaudeModel("opus", claude)!, "high", false]);
+    expect(opus.subagentMaxDepth).toBe(0);
+    const sonnet = await spawn(h.runtime, claudeParent.id, { model: "sonnet", effort: "medium" });
+    expect([sonnet.model, sonnet.effort]).toEqual([latestClaudeModel("sonnet", claude)!, "medium"]);
+    const exact = await spawn(h.runtime, parent().id, { model: "claude-opus-5-5", effort: "max" });
+    expect([exact.provider, exact.model, exact.effort]).toEqual(["anthropic", "claude-opus-5-5", "max"]);
+    const sol = await spawn(h.runtime, claudeParent.id, { model: "sol fast" });
+    expect([sol.provider, sol.model, sol.fastMode]).toEqual(["openai", latestSizeModel("sol", openai)!, true]);
+    const response = await h.runtime.execute({ subagent: "Inspect", args: { model: "opus" } }, claudeParent.id);
+    ids.add(JSON.parse(response.output).conversation_id);
+    expect(JSON.parse(response.output)).toMatchObject({ provider: "anthropic", model: latestClaudeModel("opus", claude), effort: "high" });
+  });
+  test("rejects models outside the catalog, unsupported efforts, and signed-out providers", async () => {
+    const claudeParent = parent("anthropic");
+    const h = harness();
+    for (const args of [
+      { model: "claude-opus-1-0" }, { model: "gpt-6-sol" }, { model: "opus", effort: "ultra" },
+      { model: "astra", effort: "minimal" }, { effort: "turbo" },
+    ]) expect((await h.runtime.execute({ subagent: "do it", args }, claudeParent.id)).isError).toBe(true);
+    const noClaude = harness({ hasCredentials: provider => provider !== "anthropic" });
+    const refused = await noClaude.runtime.execute({ subagent: "do it" }, claudeParent.id);
+    expect(JSON.parse(refused.output).error).toBe("Not authenticated for provider anthropic");
+    await spawn(noClaude.runtime, claudeParent.id, { model: "sol fast" });
+    const blocked = harness({ cannotStart: provider => provider === "anthropic" ? "blocked" : null });
+    expect((await blocked.runtime.execute({ subagent: "do it", args: { model: "opus" } }, parent().id)).isError).toBe(true);
+    expect(h.runTurn).not.toHaveBeenCalled();
+    expect(blocked.runTurn).not.toHaveBeenCalled();
   });
   test("detach means no parent notification, not no task tracking", async () => {
     let resolve!: (value: typeof outcome) => void;
@@ -119,6 +156,7 @@ describe("minimal native exo", () => {
       { subagent: "do it", allow_edits: true }, { subagent: "do it", internal_tools: ["read"] },
       { subagent: "do it", args: { external_tools: ["fixture"] } },
       { subagent: "do it", args: { model: "sol" } }, { subagent: "do it", args: { model: "terra" } },
+      { subagent: "do it", args: { model: 5 } }, { subagent: "do it", args: { effort: "high", extra: true } },
       { subagent: "do it", args: { model: "gpt-6-astra" } }, { subagent: "do it", args: { detach: "yes" } },
       { restart: "x", abort: p.id }, { restart: "x", subagent: "do it" }, { restart: "x", args: {} }, { restart: true },
     ]) expect((await h.runtime.execute(input, p.id)).isError).toBe(true);

@@ -1,14 +1,14 @@
+import { EFFORT_LEVELS } from "@exocortex/shared/messages";
 import { repoRoot } from "@exocortex/shared/paths";
 import type { Tool } from "./types";
-
-export const EXO_MODELS = ["sol fast", "astra"] as const;
 
 export const exo: Tool = {
   name: "exo",
   description: "Start a subagent, abort a conversation, or restart the daemon.",
   systemHint: [
-    "Almost never use subagents: do implementation, research, review, and testing yourself; size, parallelism, and end-to-end testing are not reasons to delegate. Delegate only on explicit request or for a rare compelling benefit unavailable by working yourself. Never bypass a user's prohibition.",
-    "Children have their own workspace and the same tools; include the absolute target directory and context. They cannot delegate further. Default: sol fast; use Astra for substantial implementation, architecture, or correctness-sensitive work. Completion notifies you unless detach:true.",
+    "Subagents are the default for real work: building, fixing, or researching that takes more than a few minutes, and anything that should survive daemon restarts, model changes, or network outages, that the user may open or continue in the TUI, that should report back to you, or that commits to a repo. Do trivial or quick work yourself. Never bypass a user's prohibition.",
+    "Children have their own workspace and the same tools; include the absolute target directory and context. Subagents cannot delegate further; as one, do the work yourself. Completion notifies you unless detach:true.",
+    "Model: from a Claude conversation the default is opus at high effort (sonnet for lighter work); otherwise sol fast, or astra for substantial implementation, architecture, or correctness-sensitive work. Either family works from any conversation whose provider is signed in.",
     "restart gracefully restarts this daemon (e.g. to deploy merged daemon changes) once your current turn ends; use it instead of running exocortexd restart from a turn. Other active conversations are interrupted and replayed; yours is not, and gets a notice after boot. Refused within 5 minutes of daemon start or while a restart is pending; aborting your turn cancels it.",
     `For administration (inspect/create conversations, history, tasks, folders), send commands directly to this daemon; read ${repoRoot()}/docs/daemon-ipc.md and ${repoRoot()}/shared/src/protocol.ts first.`,
   ].join("\n"),
@@ -20,7 +20,8 @@ export const exo: Tool = {
         type: "object",
         properties: {
           detach: { type: "boolean", description: "Do not notify the parent on completion. Default false." },
-          model: { type: "string", enum: [...EXO_MODELS], description: "Default sol fast. Only sol fast or astra." },
+          model: { type: "string", description: "sol fast, astra, opus, sonnet, or an exact Claude catalog id such as claude-opus-5-5. Default: opus from a Claude conversation, otherwise sol fast." },
+          effort: { type: "string", enum: [...EFFORT_LEVELS], description: "Reasoning effort; must be supported by the model. Default: high for Claude, otherwise the model's default." },
         },
         additionalProperties: false,
       },

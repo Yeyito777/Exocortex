@@ -49,7 +49,7 @@ try {
     ids.push(created.convId);
     const prompt = await request({ type: "get_system_prompt", convId: created.convId });
     assert.equal(prompt.type, "system_prompt");
-    for (const text of ["Default: sol fast", "docs/daemon-ipc.md", "## exec_command", "## apply_patch", "# External tools"]) {
+    for (const text of ["otherwise sol fast", "docs/daemon-ipc.md", "## exec_command", "## apply_patch", "# External tools"]) {
       assert(prompt.systemPrompt.includes(text), `Missing ${text} in ${subagent ? "child" : "parent"} prompt`);
     }
     assert(!prompt.systemPrompt.includes("Use exo tasks"));

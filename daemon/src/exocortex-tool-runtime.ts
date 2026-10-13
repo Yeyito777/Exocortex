@@ -1,5 +1,5 @@
 /** Native delegation only. Administration uses the daemon's JSON-lines IPC. */
-import { latestSizeModel } from "./delegation-models";
+import { latestClaudeModel, latestSizeModel } from "./delegation-models";
 import { hasConfiguredCredentials } from "./auth";
 import { cancelDeferredChronoSleep } from "./chrono-service";
 import * as convStore from "./conversations";
@@ -11,11 +11,13 @@ import { log } from "./log";
 import { requestDaemonRestart, type RestartRequestOptions } from "./requested-restart";
 import {
   MAX_ACTIVE_EXO_SUBAGENTS_GLOBAL, MAX_ACTIVE_EXO_SUBAGENTS_PER_PARENT, SUBAGENTS_FOLDER_NAME,
-  type ProviderId,
+  type EffortLevel, type ProviderId,
 } from "./messages";
 import type { UserMessageAutomation } from "@exocortex/shared/protocol";
 import type { AssistantTurnOutcome } from "./orchestrator";
-import { getProvider, normalizeEffort, supportsFastMode } from "./providers/registry";
+import {
+  getSupportedEfforts, getProvider, normalizeEffort, supportsEffort, supportsFastMode,
+} from "./providers/registry";
 import type { DaemonServer } from "./server";
 import { validateCommandArgs } from "./tools/command-schema";
 import { exo } from "./tools/exo";
@@ -42,6 +44,39 @@ export interface ExocortexToolRuntimeDependencies {
 
 function result(value: unknown, isError = false): ToolResult {
   return { output: JSON.stringify(value, null, 2), isError };
+}
+
+interface SubagentModel { provider: ProviderId; model: string; effort: EffortLevel; fastMode: boolean }
+
+/**
+ * Claude parents default to Opus at high effort, others to Sol fast. OpenAI
+ * offers only sol fast and astra; Claude accepts a catalog family or exact id.
+ */
+export function resolveSubagentModel(parentProvider: ProviderId, requested?: string, effort?: EffortLevel): SubagentModel {
+  const choice = (requested ?? (parentProvider === "anthropic" ? "opus" : "sol fast")).trim().toLowerCase();
+  const catalog = (provider: ProviderId) => getProvider(provider)?.models.map(model => model.id) ?? [];
+  let selection: Omit<SubagentModel, "effort">;
+  if (choice === "sol fast" || choice === "astra") {
+    const size = choice === "astra" ? "astra" : "sol";
+    const model = latestSizeModel(size, catalog("openai"));
+    if (!model) throw new Error(`Model ${size} is unavailable.`);
+    const fastMode = size === "sol";
+    if (fastMode && !supportsFastMode("openai", model)) throw new Error("Sol fast is unavailable.");
+    selection = { provider: "openai", model, fastMode };
+  } else {
+    const claude = catalog("anthropic");
+    const model = claude.find(id => id === choice) ?? latestClaudeModel(choice, claude);
+    if (!model) {
+      throw new Error(`Unknown subagent model "${requested}". Use sol fast, astra, opus, sonnet, or a Claude catalog id (${claude.join(", ") || "none available"}).`);
+    }
+    selection = { provider: "anthropic", model, fastMode: false };
+  }
+  if (effort !== undefined && !supportsEffort(selection.provider, selection.model, effort)) {
+    const supported = getSupportedEfforts(selection.provider, selection.model).map(info => info.effort);
+    throw new Error(`${selection.model} does not support effort ${effort}. Supported: ${supported.join(", ") || "none"}.`);
+  }
+  const fallback = selection.provider === "anthropic" ? "high" : undefined;
+  return { ...selection, effort: normalizeEffort(selection.provider, selection.model, effort ?? fallback) };
 }
 
 export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencies): ExocortexToolRuntime {
@@ -101,14 +136,10 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
         if (callerMaxDepth === 0 || parent.subagentPolicy) throw new Error("Subagents cannot delegate further.");
         const prompt = (input.subagent as string).trim();
         if (!prompt) throw new Error("subagent requires a non-empty prompt.");
-        const args = (input.args ?? {}) as { detach?: boolean; model?: "sol fast" | "astra" };
-        const size = args.model === "astra" ? "astra" : "sol";
-        const model = latestSizeModel(size, getProvider("openai")?.models.map(model => model.id) ?? []);
-        if (!model) throw new Error(`Model ${size} is unavailable.`);
-        const fastMode = size === "sol";
-        if (fastMode && !supportsFastMode("openai", model)) throw new Error("Sol fast is unavailable.");
-        if (!(deps.hasCredentials ?? hasConfiguredCredentials)("openai")) throw new Error("Not authenticated for provider openai");
-        const blocked = deps.cannotStart?.("openai");
+        const args = (input.args ?? {}) as { detach?: boolean; model?: string; effort?: EffortLevel };
+        const { provider, model, effort, fastMode } = resolveSubagentModel(parent.provider, args.model, args.effort);
+        if (!(deps.hasCredentials ?? hasConfiguredCredentials)(provider)) throw new Error(`Not authenticated for provider ${provider}`);
+        const blocked = deps.cannotStart?.(provider);
         if (blocked) throw new Error(blocked);
         if (getConversationActivityCounts(parentId).subagentCount >= MAX_ACTIVE_EXO_SUBAGENTS_PER_PARENT) {
           throw new Error(`Already at the ${MAX_ACTIVE_EXO_SUBAGENTS_PER_PARENT}-subagent parent limit.`);
@@ -120,7 +151,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
         if (!folder) throw new Error(`Failed to create ${SUBAGENTS_FOLDER_NAME} folder`);
         const convId = convStore.generateId();
         const title = prompt.replace(/\s+/g, " ").split(" ").slice(0, 6).join(" ").slice(0, 60);
-        const child = convStore.create(convId, "openai", model, title, normalizeEffort("openai", model, undefined), fastMode, folder.id);
+        const child = convStore.create(convId, provider, model, title, effort, fastMode, folder.id);
         child.subagentMaxDepth = 0;
         convStore.setSubagentPolicy(convId, {
           parentConversationId: parentId,
@@ -152,7 +183,10 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
           finish({ ok: false, blocks: [], tokens: 0, durationMs: 0, endedAt: Date.now(),
             error: error instanceof Error ? error.message : String(error) });
         });
-        return result({ conversation_id: convId, status: "running", model: args.model ?? "sol fast", notify_parent: notify });
+        return result({
+          conversation_id: convId, status: "running", provider, model, effort,
+          ...(fastMode ? { fast_mode: true } : {}), notify_parent: notify,
+        });
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") throw error;
         return result({ error: error instanceof Error ? error.message : String(error) }, true);

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { clearConversationDefaults, effectiveConversationDefaults, saveConversationDefaults } from "@exocortex/shared/config";
-import { assertDelegationModel, isLegacyDelegationModel, latestSizeModel, parseRequestedModel, resolveDelegationModel } from "./delegation-models";
+import { assertDelegationModel, isLegacyDelegationModel, latestClaudeModel, latestSizeModel, parseRequestedModel, resolveDelegationModel } from "./delegation-models";
 
 afterEach(() => clearConversationDefaults());
 
@@ -15,6 +15,14 @@ describe("delegation model policy", () => {
     expect(isLegacyDelegationModel("openai", "gpt-6.9-sol", models)).toBe(true);
     expect(isLegacyDelegationModel("openai", "gpt-5.6-terra", models)).toBe(false);
     expect(isLegacyDelegationModel("openai", "gpt-5.4", models)).toBe(true);
+  });
+
+  test("resolves the latest Claude model per family", () => {
+    const models = ["claude-opus-4-9", "claude-opus-5-10", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"];
+    expect(latestClaudeModel("opus", models)).toBe("claude-opus-5-10");
+    expect(latestClaudeModel("sonnet", models)).toBe("claude-sonnet-5-5");
+    expect(latestClaudeModel("fable", models)).toBeUndefined();
+    expect(latestClaudeModel("claude", models)).toBeUndefined();
   });
 
   test("uses the configured default and effort, upgrading only an implicit outdated size", () => {
