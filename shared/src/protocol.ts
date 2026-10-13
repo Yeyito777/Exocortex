@@ -1396,6 +1396,8 @@ export interface StreamingStartedEvent {
   generationThroughput?: GenerationThroughput;
   /** Active context-compaction start time for late-join/catch-up status rendering. */
   compactionStartedAt?: number | null;
+  /** When the turn started waiting for the network to return, for late-join rendering. */
+  connectionWaitStartedAt?: number | null;
 }
 
 export type StreamingStopReason = "daemon-restart" | "handoff" | "unwind" | "suspended";
@@ -1781,6 +1783,31 @@ export interface ContextCompactionStatusEvent {
   completedAt?: number;
 }
 
+/**
+ * The turn cannot reach its provider because the network is down. It keeps its
+ * input and resumes by itself once the daemon's connectivity probe succeeds;
+ * Stop (abort) cancels it like any turn.
+ */
+export interface ConnectionWaitStatusEvent {
+  type: "connection_wait_status";
+  convId: string;
+  /** Monotonic daemon event sequence for the active stream. */
+  streamSeq?: number;
+  active: boolean;
+  /** When the turn started waiting (stable across brief reconnect attempts). */
+  startedAt?: number;
+}
+
+/** The daemon's shared connectivity monitor (one per daemon, not per conversation). */
+export interface ConnectivityStatusEvent {
+  type: "connectivity_status";
+  online: boolean;
+  /** When the daemon last found the network unreachable; null while online. */
+  offlineSince: number | null;
+  /** When the next probe runs while offline. */
+  nextProbeAt: number | null;
+}
+
 export interface SystemMessageEvent {
   type: "system_message";
   convId: string;
@@ -2144,6 +2171,8 @@ export type Event =
   | UserMessageEvent
   | StreamRetryEvent
   | ContextCompactionStatusEvent
+  | ConnectionWaitStatusEvent
+  | ConnectivityStatusEvent
   | SystemMessageEvent
   | CallStateEvent
   | CallActivityEvent

@@ -56,6 +56,8 @@ export interface AgentCallbacks {
   /** Pause/resume stale-stream watchdogs around intentional long retry waits. */
   onRetryWaitStart?(): void;
   onRetryWaitEnd?(): void;
+  /** A provider retrying by itself hit a request that got no response (see StreamCallbacks). */
+  onNetworkTrouble?(): void;
   /** A tool-use round completed — all tool results received, next API call starting. */
   onRoundComplete?(): void;
   /** Completed raw messages (including queued injections) are safe to persist. */
@@ -330,6 +332,7 @@ export async function runAgentLoop(
           },
           onRetryWaitStart: () => { generationTimer.retry(); callbacks.onRetryWaitStart?.(); },
           onRetryWaitEnd: callbacks.onRetryWaitEnd,
+          onNetworkTrouble: callbacks.onNetworkTrouble,
           onProviderRound: commitProviderRound,
           onProviderCompaction: callbacks.onProviderCompaction,
           onGenerationRate: (rate) => {

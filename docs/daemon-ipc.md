@@ -34,6 +34,16 @@ of effort and speed.
 daemons also speak the `provider_proxy_*` link messages to each other over
 `exocortexd proxy`.
 
+## Connectivity
+
+One connectivity monitor per daemon decides whether the network is reachable
+(see [network outages](network-outages.md)). `connectivity_status` carries
+`online`, `offlineSince` and `nextProbeAt`; it is broadcast on every change and
+sent after `ping`. A turn waiting for the network sends its subscribers
+`connection_wait_status` (`active`, `startedAt`), and `streaming_started`
+snapshots carry `connectionWaitStartedAt` for late joiners. Stop it with
+`abort` like any turn.
+
 ## New-conversation defaults
 
 The connected daemon owns `defaults.conversation` in its host's config.

@@ -90,6 +90,12 @@ export interface StreamCallbacks {
   /** Pause/resume stale-stream watchdogs around intentional long retry waits. */
   onRetryWaitStart?: () => void;
   onRetryWaitEnd?: () => void;
+  /**
+   * A provider that retries inside its own loop without reporting onRetry
+   * (Claude Code) hit a request that got no HTTP response. Exocortex checks
+   * connectivity and shows the turn as waiting for it while the network is down.
+   */
+  onNetworkTrouble?: () => void;
   /** A provider running its own agent loop finished a tool round; the agent loop commits it like one of its own. */
   onProviderRound?: (round: ProviderRound) => void;
   /**

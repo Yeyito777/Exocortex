@@ -17,6 +17,7 @@
 import { randomUUID } from "node:crypto";
 import type { Options as ClaudeQueryOptions } from "@anthropic-ai/claude-agent-sdk";
 import { claudeSdks, loadClaudeSdks } from "./sdk";
+import { classifyNetworkFailure } from "../errors";
 import { createAbortError } from "../../abort";
 import { log } from "../../log";
 import type { ApiMessage, EffortLevel, ModelId } from "../../messages";
@@ -254,7 +255,8 @@ export async function streamMessage(
     if (!signal?.aborted) logStderr(error, stderr);
     // A missing/unforkable session (deleted, moved, or rejected) should not
     // strand the conversation: replay the whole history into a new session.
-    if (!plan.resume || signal?.aborted || hasOutput(state)) throw error;
+    // A network failure is not that: the same session resumes once the network is back.
+    if (!plan.resume || signal?.aborted || hasOutput(state) || classifyNetworkFailure(error)) throw error;
     log("warn", `anthropic: resuming Claude Code session ${plan.resume.sessionId} failed (${error instanceof Error ? error.message : error}); starting a new session`);
     session.close("resuming its session failed");
     const fresh: ClaudePromptPlan = { resume: null, pending: messages };

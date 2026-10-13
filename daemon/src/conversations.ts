@@ -41,6 +41,7 @@ export {
   setStreamingGenerationThroughput, getStreamingGenerationThroughput,
   setStreamingWorkTimerStartedAt, getStreamingWorkTimerStartedAt,
   setContextCompactionStartedAt, getContextCompactionStartedAt,
+  setConnectionWaitStartedAt, getConnectionWaitStartedAt,
   requestHistoryUnwind, isHistoryUnwindPending, clearHistoryUnwindPending,
   touchActivity, pauseActivity, resumeActivity,
   setActiveToolBackgrounder, clearActiveToolBackgrounder, backgroundActiveTool, getActiveBackgroundableToolName,

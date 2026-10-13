@@ -89,6 +89,9 @@ conversations:
     Interrupting its turn closes it (unless background tasks are still
     running), so the next message starts a fresh one;
   - left without a daemon, a relay ends its idle process after 10 minutes.
+- **Network outages.** A turn that cannot reach the API waits for the network
+  instead of failing, then resumes the same session after its last committed
+  round (see [network outages](network-outages.md)).
 
   `exocortexd stop` ends the processes. On Windows they still end with the
   daemon.

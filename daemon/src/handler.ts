@@ -23,6 +23,7 @@ import { conversationDefaultsSnapshot, resetDaemonConversationDefaults, setDaemo
 import type { RealtimeVoice } from "@exocortex/shared/realtime";
 import type { RealtimeCallAdapter, RealtimeCallParticipant } from "@exocortex/shared/protocol";
 import { consumeUsageReset, refreshUsage, handleUsageHeaders, getLastUsage, clearUsage } from "./usage";
+import { connectivity } from "./connectivity";
 import { orchestrateCompactConversation, orchestrateGoalCycle, orchestrateRealtimeDelegation, orchestrateReplayConversation, orchestrateSendMessage, type AssistantTurnOutcome } from "./orchestrator";
 import { complete } from "./llm";
 import { buildClaudeCodeSystemAppend, buildSystemPrompt } from "./system";
@@ -1343,6 +1344,11 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     }
   };
 
+  // One monitor per daemon: every client sees the same online/offline state.
+  const unsubscribeConnectivity = connectivity.subscribe((snapshot) => {
+    server.broadcast({ type: "connectivity_status", ...snapshot });
+  });
+
   convStore.setQueuedMessagesChangedListener((messages) => {
     server.broadcast({ type: "queue_updated", messages });
     // Automated and message-end input waits for a boundary, but would end a
@@ -1464,6 +1470,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         server.sendTo(client, { type: "conversations_list", ...convStore.listSidebarState() });
         server.sendTo(client, { type: "token_stats", stats: getTokenStatsSnapshot() });
         server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages() });
+        server.sendTo(client, { type: "connectivity_status", ...connectivity.snapshot() });
         for (const provider of getProviders()) {
           if (!hasConfiguredCredentials(provider.id)) continue;
           refreshUsage(provider.id, (usage) => broadcastUsage(provider.id, usage));
@@ -3319,6 +3326,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
               tokens: pendingAI.metadata?.tokens ?? 0,
               generationThroughput: pendingAI.metadata?.generationThroughput,
               compactionStartedAt: convStore.getContextCompactionStartedAt(loadedConvId) ?? null,
+              connectionWaitStartedAt: convStore.getConnectionWaitStartedAt(loadedConvId) ?? null,
             });
           }
         }
@@ -3739,7 +3747,10 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   };
 
   return Object.assign(handleCommand, {
-    stop: () => callManager.stopAll(),
+    stop: () => {
+      unsubscribeConnectivity();
+      return callManager.stopAll();
+    },
     backgroundTaskComplete: enqueueBackgroundTaskCompletion,
     providerProxies,
   });

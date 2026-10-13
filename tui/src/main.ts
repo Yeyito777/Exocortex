@@ -362,7 +362,8 @@ function renderDelayForEvent(event: Event): number {
 /** Re-render active stream/task durations on the next exact second boundary. */
 function resetStreamTick(): void {
   clearStreamTick();
-  if (state.sshConnecting || state.contextCompactionStartedAt != null || state.historyLoadingOlder
+  if (state.sshConnecting || state.contextCompactionStartedAt != null || state.connectionWaitStartedAt != null
+      || state.historyLoadingOlder
       || isActiveConversationLoading(state)) {
     streamTickTimer = setTimeout(scheduleRender, 80);
     return;

@@ -34,6 +34,7 @@ import { scheduleActiveGoalTimeLimits } from "./goal-time-limit";
 import { finishRequestedRestartBoot, prepareRequestedRestartBoot, runRequestedRestart } from "./requested-restart";
 import { startChronoService, stopChronoService, listChronoSchedules, resumeDeferredChronoWaits } from "./chrono-service";
 import { startWatchdog, stopWatchdog } from "./watchdog";
+import { connectivity } from "./connectivity";
 import { initExternalTools, stopExternalToolsAsync, getExternalToolCount, getSupervisedDaemonCount, getExternalToolStyles } from "./external-tools";
 import { recoverPendingTitles } from "./titlegen";
 import { beginDaemonShutdown, DAEMON_RESTART_EXIT_CODE, resolveDaemonShutdownMode } from "./daemon-lifecycle";
@@ -151,6 +152,7 @@ async function startDaemon(): Promise<void> {
       // looking like an unrelated transport failure in the TUI.
       server.broadcast({ type: "daemon_shutdown", mode: shutdownMode });
       stopWatchdog();
+      connectivity.stop();
       stopExternalNotificationSoftWakeService();
       stopChronoService();
       // Supervised tool daemons take the longest to exit and depend on none of
