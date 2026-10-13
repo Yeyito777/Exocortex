@@ -4,7 +4,7 @@
  * History rendering reserves blank rows for each image and tags them with a
  * line anchor. After the viewport is composed, this module finds the image
  * rows actually on screen, crops each image to its visible, unobstructed run
- * of rows (and around the image viewer, if open), and reconciles the terminal through KittyImageSync. Placements are
+ * of rows (and around the image viewer or edit menu, if open), and reconciles the terminal through KittyImageSync. Placements are
  * recomputed every frame from scratch, so scrolling, resizing, switching
  * conversations, and overlays can never leave a stale image behind.
  */
@@ -39,10 +39,10 @@ export interface CollectHistoryImagesOptions {
   /** Screen regions drawn on top of history (task panel and the like); image rows under them are dropped. */
   obstructions: readonly ScreenRect[];
   /**
-   * A box drawn on top of everything (the image viewer). Images keep every
-   * cell outside it, as up to four cropped placements around it.
+   * Boxes drawn on top of everything (the image viewer, the edit menu). Images
+   * keep every cell outside them, as cropped placements around each box.
    */
-  cover?: ScreenRect | null;
+  covers?: readonly ScreenRect[];
   /** History line under the focused history cursor; its image is tinted as selected. */
   cursorLineIndex?: number | null;
   /** The cursor's column, which picks the image in a strip. */
@@ -50,8 +50,8 @@ export interface CollectHistoryImagesOptions {
 }
 
 const placementIds = new WeakMap<object, Map<number, number>>();
-/** Owners for the extra placements of an image split around a cover. */
-const pieceOwners = new WeakMap<object, object>();
+/** Owners for the extra placements of an image split around covers, by image index. */
+const pieceOwners = new WeakMap<object, Map<number, object>>();
 let nextPlacementId = 1;
 
 /** Stable placement id for one rendered occurrence of an image. */
@@ -100,8 +100,8 @@ function longestRun(rows: VisibleImageRow[]): VisibleImageRow[] {
 }
 
 /** The parts of `rect` outside `cover`: bands above and below, then the sides. */
-function uncovered(rect: ScreenRect, cover: ScreenRect | null | undefined): ScreenRect[] {
-  if (!cover || cover.top > rect.bottom || cover.bottom < rect.top || cover.left > rect.right || cover.right < rect.left) return [rect];
+function uncovered(rect: ScreenRect, cover: ScreenRect): ScreenRect[] {
+  if (cover.top > rect.bottom || cover.bottom < rect.top || cover.left > rect.right || cover.right < rect.left) return [rect];
   const pieces: ScreenRect[] = [];
   const top = Math.max(rect.top, cover.top);
   const bottom = Math.min(rect.bottom, cover.bottom);
@@ -112,11 +112,16 @@ function uncovered(rect: ScreenRect, cover: ScreenRect | null | undefined): Scre
   return pieces;
 }
 
-function pieceOwner(owner: object): object {
-  let piece = pieceOwners.get(owner);
+function pieceOwner(owner: object, index: number): object {
+  let byIndex = pieceOwners.get(owner);
+  if (!byIndex) {
+    byIndex = new Map();
+    pieceOwners.set(owner, byIndex);
+  }
+  let piece = byIndex.get(index);
   if (!piece) {
     piece = {};
-    pieceOwners.set(owner, piece);
+    byIndex.set(index, piece);
   }
   return piece;
 }
@@ -155,7 +160,11 @@ export function collectHistoryImagePlacements(options: CollectHistoryImagesOptio
       left: run[0].screenCol,
       right: run[0].screenCol + layout.cols - 1,
     };
-    uncovered(visibleRect, options.cover).forEach((piece, pieceIndex) => {
+    const pieces = (options.covers ?? []).reduce<ScreenRect[]>(
+      (remaining, cover) => remaining.flatMap(piece => uncovered(piece, cover)),
+      [visibleRect],
+    );
+    pieces.forEach((piece, pieceIndex) => {
       const firstRow = run[0].imageRow + piece.top - visibleRect.top;
       const pieceRows = piece.bottom - piece.top + 1;
       const firstCol = piece.left - visibleRect.left;
@@ -170,7 +179,7 @@ export function collectHistoryImagePlacements(options: CollectHistoryImagesOptio
         image,
         placementId: pieceIndex === 0
           ? placementIdFor(layout.owner, layout.index)
-          : placementIdFor(pieceOwner(layout.owner), layout.index * 4 + pieceIndex),
+          : placementIdFor(pieceOwner(layout.owner, layout.index), pieceIndex),
         row: piece.top,
         col: piece.left,
         columns,

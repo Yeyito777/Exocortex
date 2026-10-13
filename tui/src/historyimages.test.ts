@@ -80,7 +80,7 @@ describe("collectHistoryImagePlacements", () => {
     await readyImage();
     const { anchors, layout } = history(0);
     const collect = (cover: { top: number; bottom: number; left: number; right: number }) => collectHistoryImagePlacements({
-      ...base, viewportRows: viewport(0, 15), lineAnchors: anchors, cover,
+      ...base, viewportRows: viewport(0, 15), lineAnchors: anchors, covers: [cover],
     });
     // The image covers rows 3–12, columns 3–22; 200×100 source pixels, 10×10 per cell.
     // Beside the image: untouched.
@@ -108,6 +108,28 @@ describe("collectHistoryImagePlacements", () => {
     expect(new Set(pieces.map(piece => piece.placementId)).size).toBe(4);
     // Entirely under it: nothing to place.
     expect(collect({ top: 1, bottom: 20, left: 1, right: 60 })).toEqual([]);
+  });
+
+  test("several covers each cut their own hole; every piece has its own placement", async () => {
+    await readyImage();
+    const { anchors, layout } = history(0);
+    // The image covers rows 3–12, columns 3–22. One box over its top right, one over its bottom left.
+    const covers = [{ top: 1, bottom: 5, left: 13, right: 60 }, { top: 10, bottom: 20, left: 1, right: 8 }];
+    const pieces = collectHistoryImagePlacements({ ...base, viewportRows: viewport(0, 15), lineAnchors: anchors, covers });
+    expect(pieces.map(({ row, col, columns, rows }) => ({ row, col, columns, rows }))).toEqual([
+      { row: 3, col: 3, columns: 10, rows: 3 },
+      { row: 6, col: 3, columns: 20, rows: 4 },
+      { row: 10, col: 9, columns: 14, rows: 3 },
+    ]);
+    expect(pieces[0].placementId).toBe(placementIdFor(layout.owner, 0));
+    expect(new Set(pieces.map(piece => piece.placementId)).size).toBe(3);
+    for (const piece of pieces) {
+      for (const cover of covers) {
+        const overlaps = piece.row <= cover.bottom && piece.row + piece.rows - 1 >= cover.top
+          && piece.col <= cover.right && piece.col + piece.columns - 1 >= cover.left;
+        expect(overlaps).toBe(false);
+      }
+    }
   });
 
   test("off-screen or not-yet-loaded images are not placed", async () => {
