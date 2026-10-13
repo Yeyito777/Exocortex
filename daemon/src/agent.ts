@@ -14,7 +14,7 @@ import { log } from "./log";
 import { recordToolCallDiagnostics } from "./diagnostics";
 import { type ProviderId, type ModelId, type EffortLevel, type Block, type ToolCallBlock, type ToolResultBlock, type ToolCallPresentation, type ApiMessage, type ApiContentBlock, type TokenTrackingContext } from "./messages";
 import type { DeferredToolResult } from "./tools/types";
-import type { ContentBlock as ProviderContentBlock, ProviderRound, QueuedInput, QueuedInputSource, ServiceTier, StreamOptions, StreamRetryMetadata } from "./providers/types";
+import type { ContentBlock as ProviderContentBlock, ProviderCompaction, ProviderRound, QueuedInput, QueuedInputSource, ServiceTier, StreamOptions, StreamRetryMetadata } from "./providers/types";
 import { MAX_OUTPUT_CHARS, cap } from "./tools/util";
 import { getMaxContext } from "./providers/registry";
 import { estimateContextTokens, isContextWindowError, shouldAutoCompact, type CompactionReason } from "./context-compaction";
@@ -74,6 +74,8 @@ export interface AgentCallbacks {
    * assistant message ahead of the drained steering messages.
    */
   takePreemptedOutput?(): ApiContentBlock[];
+  /** A provider managing its own session context (Claude Code) compacted it. */
+  onProviderCompaction?(compaction: ProviderCompaction): void;
   /** Atomically replace active provider replay with an automatic checkpoint. */
   compactContext?(messages: ApiMessage[], reason: CompactionReason, projectedTokens: number): Promise<ApiMessage[] | null>;
 }
@@ -329,6 +331,7 @@ export async function runAgentLoop(
           onRetryWaitStart: () => { generationTimer.retry(); callbacks.onRetryWaitStart?.(); },
           onRetryWaitEnd: callbacks.onRetryWaitEnd,
           onProviderRound: commitProviderRound,
+          onProviderCompaction: callbacks.onProviderCompaction,
           onGenerationRate: (rate) => {
             providerMeasuredRates = true;
             callbacks.onGenerationRate?.(rate);

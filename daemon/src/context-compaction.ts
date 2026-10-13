@@ -1,6 +1,7 @@
 import { streamMessage } from "./api";
 import { openAIWireModel } from "@exocortex/shared/daybreak";
 import { log } from "./log";
+import { findStoredImage, imageIdForBytes, putImageBytes, sniffImage } from "./attachments";
 import {
   createModelVisibleSystemNotice,
   isReplayHistoryMessage,
@@ -43,6 +44,8 @@ Include:
 - unresolved questions, risks, and constraints
 
 Be concise but preserve operational detail. Do not continue the task. Output only the handoff summary.`;
+
+const IMAGE_REFERENCE_INSTRUCTION = "Images appear as references without their pixels: keep each image's path (or image_id) together with what the conversation says it shows, so it can be opened again.";
 
 const SUMMARY_PREFIX = "Another language model started this task and produced the following continuation checkpoint. Use it as working context while honoring the original user messages that follow or precede it:\n\n";
 
@@ -332,6 +335,8 @@ export function isContextWindowError(error: unknown): boolean {
   return value.includes("context_length_exceeded")
     || value.includes("maximum context length")
     || value.includes("too many tokens")
+    // Anthropic / Claude Code: "Prompt is too long: 1012345 tokens > 1000000 maximum".
+    || value.includes("prompt is too long")
     || (value.includes("context window") && (value.includes("exceed") || value.includes("too large")))
     || (value.includes("input") && value.includes("exceed") && value.includes("context"));
 }
@@ -495,21 +500,49 @@ function hasOpaqueCompactionItem(messages: ApiMessage[]): boolean {
   return messages.some((message) => (message.providerData?.openai?.compactionItems?.length ?? 0) > 0);
 }
 
+/**
+ * A textual stand-in for an image in hierarchical summary input. The bytes go
+ * into the attachment store (content-addressed, idempotent), so the reference
+ * stays resolvable: the model can open `path` again and clients can fetch
+ * `image_id` with get_image.
+ */
+function summaryImageReference(source: Record<string, unknown>): Record<string, unknown> {
+  const declaredType = typeof source.media_type === "string" ? source.media_type : "unknown";
+  const data = typeof source.data === "string" ? source.data : "";
+  if (!data) return { type: "image", media_type: declaredType, note: "image omitted from textual checkpoint input" };
+  const bytes = Buffer.from(data, "base64");
+  const imageId = imageIdForBytes(bytes);
+  const sniffed = sniffImage(bytes);
+  let path = findStoredImage(imageId)?.path;
+  if (!path && sniffed) {
+    try {
+      putImageBytes(bytes, sniffed.mediaType);
+      path = findStoredImage(imageId)?.path;
+    } catch (error) {
+      log("warn", `context compaction: could not store image ${imageId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return {
+    type: "image",
+    image_id: imageId,
+    ...(path ? { path } : {}),
+    media_type: sniffed?.mediaType ?? declaredType,
+    ...(sniffed ? { width: sniffed.width, height: sniffed.height } : {}),
+    byte_length: bytes.length,
+    note: path
+      ? "image pixels omitted from textual checkpoint input; the file at path shows the image again"
+      : "image pixels omitted from textual checkpoint input",
+  };
+}
+
 function summarySafeUnknown(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(summarySafeUnknown);
   if (!value || typeof value !== "object") return value;
   const record = value as Record<string, unknown>;
   if (record.type === "image") {
-    const source = record.source && typeof record.source === "object"
+    return summaryImageReference(record.source && typeof record.source === "object"
       ? record.source as Record<string, unknown>
-      : {};
-    const data = typeof source.data === "string" ? source.data : "";
-    return {
-      type: "image",
-      media_type: typeof source.media_type === "string" ? source.media_type : "unknown",
-      byte_length: data ? Math.floor(data.length * 0.75) : undefined,
-      note: "binary image omitted from textual checkpoint input",
-    };
+      : {});
   }
   return Object.fromEntries(Object.entries(record).map(([key, item]) => [key, summarySafeUnknown(item)]));
 }
@@ -562,17 +595,6 @@ function packSummaryUnits(units: string[], maxChars: number): string[] {
   }
   if (current) segments.push(current);
   return segments.length > 0 ? segments : [""];
-}
-
-function containsImage(value: unknown): boolean {
-  if (Array.isArray(value)) return value.some(containsImage);
-  if (!value || typeof value !== "object") return false;
-  const record = value as Record<string, unknown>;
-  return record.type === "image" || Object.values(record).some(containsImage);
-}
-
-function hasImageContent(messages: ApiMessage[]): boolean {
-  return messages.some((message) => containsImage(message.content));
 }
 
 interface SummaryAccumulator {
@@ -680,9 +702,10 @@ async function createFaithfulPlaintextSummary(
   if (hasOpaqueCompactionItem(messages)) {
     throw new Error("Plaintext compaction input with an opaque checkpoint exceeds the provider context window");
   }
-  if (hasImageContent(messages)) {
-    throw new Error("Oversized multimodal context cannot be hierarchically compacted without losing image contents");
-  }
+  // Images cannot travel through textual segments. Each becomes a reference to
+  // its stored copy (see summaryImageReference) that the summaries keep; the
+  // newest user messages, images included, are retained verbatim beside the
+  // checkpoint (retainRecentUserMessages).
 
   const maxSegmentChars = Math.max(8_000, (budget - promptTokens - 1_000) * 4);
   const segments = packSummaryUnits(serializeMessagesForHierarchicalSummary(messages), maxSegmentChars);
@@ -690,7 +713,7 @@ async function createFaithfulPlaintextSummary(
   for (let index = 0; index < segments.length; index++) {
     summaries.push(await summarizeTextAdaptively(
       segments[index],
-      `Transcript checkpoint segment ${index + 1}/${segments.length}. Preserve every durable fact, identifier, decision, error, and unfinished task from this segment.`,
+      `Transcript checkpoint segment ${index + 1}/${segments.length}. Preserve every durable fact, identifier, decision, error, and unfinished task from this segment. ${IMAGE_REFERENCE_INSTRUCTION}`,
       options,
       totals,
     ));
@@ -700,7 +723,7 @@ async function createFaithfulPlaintextSummary(
     .join("\n\n");
   return summarizeTextAdaptively(
     combined,
-    "Merge these ordered segment summaries into one faithful continuation checkpoint. Do not omit information merely because it appears only in an early segment.",
+    `Merge these ordered segment summaries into one faithful continuation checkpoint. Do not omit information merely because it appears only in an early segment. ${IMAGE_REFERENCE_INSTRUCTION}`,
     options,
     totals,
   );

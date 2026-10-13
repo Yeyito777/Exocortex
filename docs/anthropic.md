@@ -44,6 +44,16 @@ conversations:
   transcript.
 - Tool rounds are stored as normal `tool_use`/`tool_result` messages, so a
   conversation can switch to another provider afterwards.
+- **Context compaction.** Claude Code compacts its own session, from the API's
+  real usage: automatically near the window (967k of a 1M window) and when a
+  request is still too long. Exocortex shows each such compaction ("Claude
+  Code automatically compacted its context (968,000 → 41,000 tokens).") and
+  takes the new size for the context meter. Exocortex's own automatic
+  compaction runs only on what a turn sends Claude Code as one prompt, history
+  its session has not seen, when that would not fit; a resumed session is
+  never compacted by Exocortex. If Claude Code still reports the prompt as too
+  long, Exocortex compacts its replay and starts a fresh session once. `/compact`
+  is Exocortex's compaction and starts a fresh session from its checkpoint.
 - **Background tasks.** Claude Code runs `run_in_background` shells and
   background agents inside its own process, so a turn that leaves any running
   keeps that process:

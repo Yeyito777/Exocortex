@@ -83,4 +83,29 @@ describe("context token attribution", () => {
     expect(deepseek.toolResultImage).toBe(base64.length);
     expect(openai.toolResultImage).toBeLessThan(base64.length / 10);
   });
+
+  test("Anthropic image replay attribution uses Claude's pixel-based image tokens, not raw base64 size", () => {
+    const png = (width: number, height: number) => {
+      const bytes = Buffer.alloc(1_000_000);
+      bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+      bytes.write("IHDR", 12, "ascii");
+      bytes.writeUInt32BE(width, 16);
+      bytes.writeUInt32BE(height, 20);
+      return bytes.toString("base64");
+    };
+    const userImage = (data: string): StoredMessage => ({
+      role: "user",
+      metadata: null,
+      content: [{ type: "image", source: { type: "base64", media_type: "image/png", data } }],
+    });
+
+    const small = png(1024, 768);
+    expect(contextMessageCharBreakdown(userImage(small), "anthropic").userImage).toBe(Math.ceil(1024 * 768 / 750) * 4);
+    // A 1 MB screenshot was estimated at ~333k tokens; Claude bills a few thousand at most.
+    expect(contextMessageCharBreakdown(userImage(small), "anthropic").userImage).toBeLessThan(small.length / 100);
+    // Larger images are downscaled to the input size first.
+    expect(contextMessageCharBreakdown(userImage(png(5152, 2576)), "anthropic").userImage).toBe(Math.ceil(2576 * 1288 / 750) * 4);
+    // Unknown dimensions fall back to the largest image cost, not the payload size.
+    expect(contextMessageCharBreakdown(userImage(Buffer.alloc(500_000).toString("base64")), "anthropic").userImage).toBe(5_000 * 4);
+  });
 });

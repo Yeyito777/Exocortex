@@ -104,6 +104,15 @@ export interface StreamCallbacks {
    * after the rounds reported so far. Resolves with their user messages.
    */
   onQueuedInput?: (inputs: QueuedInput[]) => Promise<ApiMessage[]>;
+  /** A provider managing its own session context (Claude Code) compacted it. */
+  onProviderCompaction?: (compaction: ProviderCompaction) => void;
+}
+
+/** A provider-side context compaction, with the provider's own token counts. */
+export interface ProviderCompaction {
+  trigger: "auto" | "manual";
+  preTokens?: number;
+  postTokens?: number;
 }
 
 /** A queued next-turn message. */

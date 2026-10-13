@@ -45,6 +45,19 @@ const TOOL_TURN = [
 ];
 
 describe("Claude Code stream translation", () => {
+  test("reports Claude Code's own context compaction with its token counts", () => {
+    const { callbacks } = recorder();
+    const compactions: unknown[] = [];
+    const state = createClaudeStreamState({ ...callbacks, onProviderCompaction: (compaction) => compactions.push(compaction) }, "/work");
+    pushClaudeMessage(state, {
+      type: "system",
+      subtype: "compact_boundary",
+      compact_metadata: { trigger: "auto", pre_tokens: 968_000, post_tokens: 41_000 },
+      session_id: SESSION,
+    });
+    expect(compactions).toEqual([{ trigger: "auto", preTokens: 968_000, postTokens: 41_000 }]);
+  });
+
   test("streams live deltas and records tool rounds as tool_use/tool_result messages", () => {
     const { events, callbacks } = recorder();
     const state = createClaudeStreamState(callbacks, "/work");
