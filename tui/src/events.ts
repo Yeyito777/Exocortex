@@ -43,6 +43,7 @@ import {
   handleBlockStart,
   handleContextUpdate,
   handleContextCompactionStatus,
+  handleConnectionWaitStatus,
   handleMessageComplete,
   handleStreamRetry,
   handleStreamingStarted,
@@ -340,6 +341,14 @@ export function handleEvent(
 
     case "context_compaction_status":
       handleContextCompactionStatus(event, state);
+      break;
+
+    case "connection_wait_status":
+      handleConnectionWaitStatus(event, state);
+      break;
+
+    case "connectivity_status":
+      state.daemonOfflineSince = event.online ? null : (event.offlineSince ?? Date.now());
       break;
 
     case "user_message":

@@ -25,6 +25,7 @@ selects another daemon without moving client-side UI operations to that host.
 - [Local links](local-links.md)
 - [Inline images](inline-images.md)
 - [Update status](update-status.md)
+- [Network outages](network-outages.md)
 
 ## Keyboard reference
 

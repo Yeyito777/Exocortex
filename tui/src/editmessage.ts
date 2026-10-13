@@ -372,6 +372,7 @@ const EVENTS_SUPERSEDED_BY_PENDING_UNWIND: ReadonlySet<Event["type"]> = new Set(
   "streaming_stopped",
   "stream_retry",
   "context_compaction_status",
+  "connection_wait_status",
   "user_message",
   "system_message",
   "history_updated",

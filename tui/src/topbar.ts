@@ -42,8 +42,10 @@ function convLabel(state: RenderState): string {
 export function renderTopbar(state: RenderState, width?: number): string {
   const w = width ?? state.cols;
 
-  const titleStyled = `${theme.bold} Exocortex${theme.boldOff}`;
-  const titlePlain = " Exocortex";
+  // The daemon cannot reach the network; turns wait for it to come back.
+  const offline = state.daemonOfflineSince != null ? " ⚠ offline" : "";
+  const titleStyled = `${theme.bold} Exocortex${offline}${theme.boldOff}`;
+  const titlePlain = ` Exocortex${offline}`;
   let label = convLabel(state);
 
   let rightLabel = "";

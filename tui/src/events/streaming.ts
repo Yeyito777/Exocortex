@@ -66,6 +66,9 @@ export function handleStreamingStarted(event: Extract<Event, { type: "streaming_
   if (event.compactionStartedAt !== undefined) {
     state.contextCompactionStartedAt = event.compactionStartedAt;
   }
+  if (event.connectionWaitStartedAt !== undefined) {
+    state.connectionWaitStartedAt = event.connectionWaitStartedAt;
+  }
   // Late-joining client: create pendingAI so future chunks are captured.
   // Original client already has pendingAI from handleSubmit.
   if (!state.pendingAI) {
@@ -290,6 +293,13 @@ export function handleStreamRetry(event: Extract<Event, { type: "stream_retry" }
     if (finalized) state.messages.push(finalized);
   }
   pushInlineSystemNotice(state, formatStreamRetryNotice(event), theme.warning);
+}
+
+export function handleConnectionWaitStatus(
+  event: Extract<Event, { type: "connection_wait_status" }>,
+  state: RenderState,
+): void {
+  state.connectionWaitStartedAt = event.active ? (event.startedAt ?? Date.now()) : null;
 }
 
 export function handleContextCompactionStatus(

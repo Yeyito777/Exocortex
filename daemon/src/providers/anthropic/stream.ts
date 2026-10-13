@@ -463,7 +463,11 @@ function pushMessage(state: ClaudeStreamState, message: SdkRecord): void {
       }
       // A request sent while a main-thread call streams is a subagent's.
       if (message.subtype === "status" && message.status === "requesting" && state.callStartedAt === null) state.requestedAt = state.now();
-      if (message.subtype === "api_retry") state.callRetried = true;
+      if (message.subtype === "api_retry") {
+        state.callRetried = true;
+        // No HTTP status: the request never got a response (DNS, connection).
+        if (message.error_status === null || message.error_status === undefined) state.callbacks.onNetworkTrouble?.();
+      }
       state.callbacks.onActivity?.();
       return;
     }

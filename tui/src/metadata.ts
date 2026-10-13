@@ -12,7 +12,7 @@ import { generationTokensPerSecond } from "@exocortex/shared/generation-throughp
 
 // ── Formatting ──────────────────────────────────────────────────────
 
-function formatDuration(ms: number): string {
+export function formatDuration(ms: number): string {
   if (ms < 1000) return "0s";
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
   if (totalSeconds < 60) return `${totalSeconds}s`;

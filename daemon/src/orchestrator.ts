@@ -69,6 +69,9 @@ import {
   type DeferredChronoSleep,
 } from "./chrono-service";
 import { buildConversationRequestSurface } from "./conversation-request-surface";
+import { connectivity as daemonConnectivity, type ConnectivityMonitor } from "./connectivity";
+import { runWithNetworkWait } from "./network-wait";
+import { classifyNetworkFailureMessage } from "./providers/errors";
 import { getModelInfo, cyberAccessProgramForSelection, refreshProviders } from "./providers/registry";
 import { isDaybreakModelId } from "@exocortex/shared/daybreak";
 
@@ -148,6 +151,8 @@ export interface OrchestrationCallbacks {
   onBackgroundTaskComplete?: (completion: BackgroundTaskCompletion) => void;
   /** Test seam for provider streaming across compaction and assistant requests. */
   streamMessageFn?: typeof streamMessage;
+  /** Test seam for the daemon's shared connectivity monitor. */
+  connectivity?: ConnectivityMonitor;
   /** Optional realtime consumer for user-facing assistant text as it streams. */
   onAssistantTextChunk?: (chunk: string) => void;
 }
@@ -861,6 +866,49 @@ async function orchestrateAdmittedAssistantTurn(
   };
   convStore.setActiveSteerHandler(convId, steerTurn);
 
+  // ── Network outages ───────────────────────────────────────────────
+  // While the network is down the turn waits for it instead of failing (see
+  // network-wait.ts), and clients show "Waiting for connection" with the time
+  // since the turn first lost it. A provider still retrying by itself (Claude
+  // Code) shows the same while the shared monitor finds the network down.
+  const connectivity = ext.connectivity ?? daemonConnectivity;
+  /** In runWithNetworkWait's wait (probe or outage). */
+  let awaitingConnectivity = false;
+  /** The provider's own retry hit a network-level error and it has made no progress since. */
+  let providerNetworkTrouble = false;
+  /** When the turn first lost the network; kept across brief reconnects until the provider makes progress. */
+  let connectionLostAt: number | null = null;
+  let connectionWaitShown = false;
+  const syncConnectionWait = () => {
+    const show = !connectivity.isOnline() && (awaitingConnectivity || providerNetworkTrouble);
+    if (show) connectionLostAt ??= Date.now();
+    if (show === connectionWaitShown) return;
+    connectionWaitShown = show;
+    const waitStartedAt = show ? connectionLostAt : null;
+    convStore.setConnectionWaitStartedAt(convId, waitStartedAt);
+    server.sendToSubscribers(convId, {
+      type: "connection_wait_status",
+      convId,
+      streamSeq: convStore.nextStreamSeq(convId),
+      active: show,
+      ...(waitStartedAt != null ? { startedAt: waitStartedAt } : {}),
+    });
+  };
+  const noteNetworkTrouble = () => {
+    providerNetworkTrouble = true;
+    connectivity.reportTrouble();
+    syncConnectionWait();
+  };
+  /** The provider responded: the connection is fine again. */
+  const noteProviderProgress = () => {
+    if (!providerNetworkTrouble && connectionLostAt === null) return;
+    providerNetworkTrouble = false;
+    if (!awaitingConnectivity) connectionLostAt = null;
+    connectivity.reportSuccess();
+    syncConnectionWait();
+  };
+  const unsubscribeConnectivity = connectivity.subscribe(syncConnectionWait);
+
   // The app watchdog interrupts only the current provider invocation. Give each
   // retry a fresh child signal while preserving `ac.signal` as the terminal turn
   // signal used by user interrupts and daemon lifecycle operations.
@@ -877,14 +925,28 @@ async function orchestrateAdmittedAssistantTurn(
         && hasQueuedSteer()) {
       throw new StreamPreemptedError();
     }
-    return runWithStaleStreamRetries(
+    // `messages` is the agent loop's live array: rounds the provider commits
+    // during a failed attempt are in it, so a retry resumes after them.
+    return runWithNetworkWait(ac, connectivity, () => runWithStaleStreamRetries(
       ac,
       callbacks,
       (attemptSignal) => (ext.streamMessageFn ?? streamMessage)(provider, messages, model, callbacks, {
         ...streamOptions,
         signal: attemptSignal,
       }),
-    );
+    ), {
+      onWaitStart() {
+        awaitingConnectivity = true;
+        // A wait can last hours; it is not a stalled stream.
+        convStore.pauseActivity(convId);
+        syncConnectionWait();
+      },
+      onWaitEnd() {
+        awaitingConnectivity = false;
+        convStore.resumeActivity(convId);
+        syncConnectionWait();
+      },
+    }, { label: convId });
   };
 
   // Broadcast sidebar update (streaming indicator)
@@ -1331,6 +1393,7 @@ async function orchestrateAdmittedAssistantTurn(
       tokens: pendingAI.metadata?.tokens ?? 0,
       generationThroughput: pendingAI.metadata?.generationThroughput,
       compactionStartedAt: convStore.getContextCompactionStartedAt(convId) ?? null,
+      connectionWaitStartedAt: convStore.getConnectionWaitStartedAt(convId) ?? null,
     });
   }
 
@@ -1387,6 +1450,7 @@ async function orchestrateAdmittedAssistantTurn(
     },
     onBlockStart(blockType) {
       convStore.touchActivity(convId);
+      noteProviderProgress();
       server.sendToSubscribers(convId, { type: "block_start", convId, streamSeq: convStore.nextStreamSeq(convId), blockType });
       if (blockType === "text") {
         partialContent.push({ type: "text", text: "" });
@@ -1435,6 +1499,7 @@ async function orchestrateAdmittedAssistantTurn(
     },
     onToolCall(block) {
       convStore.touchActivity(convId);
+      noteProviderProgress();
       openToolCallIds.add(block.toolCallId);
       server.sendToSubscribers(convId, {
         type: "tool_call", convId,
@@ -1482,6 +1547,7 @@ async function orchestrateAdmittedAssistantTurn(
       convStore.setStreamingGenerationThroughput(convId, generationThroughput);
     },
     onTokensUpdate(tokens) {
+      noteProviderProgress();
       convStore.setStreamingTokens(convId, tokens);
       server.sendToSubscribers(convId, { type: "tokens_update", convId, streamSeq: convStore.nextStreamSeq(convId), tokens, generationThroughput });
     },
@@ -1517,9 +1583,11 @@ async function orchestrateAdmittedAssistantTurn(
     },
     onHeaders(headers) {
       convStore.touchActivity(convId);
+      noteProviderProgress();
       ext.onHeaders(headers);
     },
     onRetry(attempt, maxAttempts, errorMessage, delaySec, metadata) {
+      if (classifyNetworkFailureMessage(errorMessage)) noteNetworkTrouble();
       recordStreamRetry(attempt, maxAttempts, errorMessage, delaySec, metadata);
     },
     onRetryWaitStart() {
@@ -1527,6 +1595,9 @@ async function orchestrateAdmittedAssistantTurn(
     },
     onRetryWaitEnd() {
       convStore.resumeActivity(convId);
+    },
+    onNetworkTrouble() {
+      noteNetworkTrouble();
     },
     onRoundComplete() {
       // Clear partial content — completed rounds are tracked via agentState.completedMessages.
@@ -2007,6 +2078,12 @@ async function orchestrateAdmittedAssistantTurn(
       }
     }
     stopStreamingSnapshotHeartbeat();
+    unsubscribeConnectivity();
+    if (connectionWaitShown) {
+      connectionWaitShown = false;
+      convStore.setConnectionWaitStartedAt(convId, null);
+      server.sendToSubscribers(convId, { type: "connection_wait_status", convId, streamSeq: convStore.nextStreamSeq(convId), active: false });
+    }
     // Decide whether the conversation remains active before clearing this turn's
     // job. The daemon owns both queues and goal continuations, so clients no
     // longer need to guess whether a streaming=false update is only transient.

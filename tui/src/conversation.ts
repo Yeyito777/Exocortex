@@ -22,7 +22,7 @@ import {
   type InlineImageSource,
 } from "./inlineimages";
 import { isActiveConversationLoading, type RenderState } from "./state";
-import { renderMetadata } from "./metadata";
+import { formatDuration, renderMetadata } from "./metadata";
 import { activeDurableSleepAssistant, inlineSleepMetadataEndedAt } from "./durable-sleep-metadata";
 import { theme } from "./theme";
 import {
@@ -41,6 +41,13 @@ const COMPACTION_SPINNER_INTERVAL_MS = 80;
 export function compactionSpinnerText(startedAt: number, now = Date.now()): string {
   const frameIndex = Math.max(0, Math.floor((now - startedAt) / COMPACTION_SPINNER_INTERVAL_MS));
   return `${COMPACTION_SPINNER_FRAMES[frameIndex % COMPACTION_SPINNER_FRAMES.length]} Compacting...`;
+}
+
+/** `⠋ Waiting for connection… 3m 12s` while a turn waits out a network outage. */
+export function connectionWaitSpinnerText(startedAt: number, now = Date.now()): string {
+  const elapsed = Math.max(0, now - startedAt);
+  const frameIndex = Math.floor(elapsed / COMPACTION_SPINNER_INTERVAL_MS);
+  return `${COMPACTION_SPINNER_FRAMES[frameIndex % COMPACTION_SPINNER_FRAMES.length]} Waiting for connection… ${formatDuration(elapsed)}`;
 }
 
 export function historyLoadingSpinnerText(startedAt: number, now = Date.now()): string {
@@ -264,6 +271,8 @@ export type RenderLineSegment =
   | "compaction_margin_bottom"
   | "compaction_margin_top"
   | "compaction_spinner"
+  | "connection_wait_margin_top"
+  | "connection_wait_spinner"
   | "history_loading"
   | "conversation_loading"
   | "queued_content"
@@ -659,7 +668,9 @@ export function buildMessageLines(
       : [];
     const compactionStartedAt = state.contextCompactionStartedAt;
     const compactionActive = compactionStartedAt != null;
-    if (metadataLines.length > 0 || compactionActive) trimTrailingBlankAssistantContent(start);
+    const connectionWaitStartedAt = state.connectionWaitStartedAt;
+    const connectionWaitActive = connectionWaitStartedAt != null;
+    if (metadataLines.length > 0 || compactionActive || connectionWaitActive) trimTrailingBlankAssistantContent(start);
     pushImages(pendingImages, "assistant_image");
     const contentEnd = lines.length;
     for (let i = 0; i < metadataLines.length; i++) pushLine(metadataLines[i], state.pendingAI, "assistant_metadata", i);
@@ -669,6 +680,14 @@ export function buildMessageLines(
         `  ${theme.dim}${compactionSpinnerText(compactionStartedAt)}${theme.reset}`,
         state.pendingAI,
         "compaction_spinner",
+      );
+    }
+    if (connectionWaitActive) {
+      pushLine("", state.pendingAI, "connection_wait_margin_top");
+      pushLine(
+        `  ${theme.warning}${connectionWaitSpinnerText(connectionWaitStartedAt)}${theme.reset}`,
+        state.pendingAI,
+        "connection_wait_spinner",
       );
     }
     pushMessageBound(state.pendingAI.role, start, start, contentEnd);

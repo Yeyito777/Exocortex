@@ -195,6 +195,10 @@ export interface RenderState {
   activeCallIdsByConversation: Map<string, Set<string>>;
   /** Start time for the transient native context-compaction spinner. */
   contextCompactionStartedAt: number | null;
+  /** When the streaming turn started waiting for the network to return (see network-wait.ts). */
+  connectionWaitStartedAt: number | null;
+  /** The daemon's shared connectivity monitor: offline since when, or null while online. */
+  daemonOfflineSince: number | null;
   /** True when pendingAI was hydrated from a daemon snapshot rather than live local chunks. */
   pendingAIHydratedFromSnapshot: boolean;
   /**
@@ -387,6 +391,7 @@ export function canInterrupt(state: RenderState): boolean {
 export function clearPendingAI(state: RenderState): void {
   state.pendingAI = null;
   state.contextCompactionStartedAt = null;
+  state.connectionWaitStartedAt = null;
   state.pendingAIHydratedFromSnapshot = false;
   state.pendingAICommittedIndex = null;
   state.pendingAICommittedBlockOffset = null;
@@ -649,6 +654,8 @@ export function createInitialState(): RenderState {
     callUserDraft: null,
     activeCallIdsByConversation: new Map(),
     contextCompactionStartedAt: null,
+    connectionWaitStartedAt: null,
+    daemonOfflineSince: null,
     pendingAIHydratedFromSnapshot: false,
     suppressPendingAIMetadataStartedAt: null,
     provider,
