@@ -11,7 +11,6 @@ import { stripAnsi } from "./historycursor";
 import { configureInlineImages, inlineImagesInternalsForTest, setInlineImageCellSize, setInlineImageMode } from "./inlineimages";
 import type { ConversationTaskSummary, ImageRef } from "./messages";
 import { cursorZone, handleMouseEvent } from "./mouse";
-import { formatQueueDueTime } from "./queue";
 import { render } from "./render";
 import { createInitialState, type RenderState } from "./state";
 import { termWidth, visibleLength } from "./textwidth";
@@ -29,6 +28,11 @@ function chronoTasks(now = NOW): ConversationTaskSummary[] {
     { id: "agent:1", kind: "background", title: "JS engine core", startedAt: now - 30_000, toolName: "Agent" },
     { id: "chrono:digest", kind: "chrono", title: "Evening digest of every open PMV5 question for the owner", startedAt: now - 60_000, dueAt: now + 5 * 3_600_000, chronoMode: "wake" },
   ];
+}
+
+/** `copies` × the seven tasks above: two copies already overflow the collapsed card. */
+function manyTasks(copies: number, now = NOW): ConversationTaskSummary[] {
+  return Array.from({ length: copies }, (_, copy) => chronoTasks(now).map(task => ({ ...task, id: `${task.id}:${copy}` }))).flat();
 }
 
 function stateWithTasks(tasks = chronoTasks()): RenderState {
@@ -74,7 +78,7 @@ const plain = (lines: string[]) => lines.map(stripAnsi);
 
 describe("collapsed task panel", () => {
   test("invites a click on its overflow row, falling back to the count alone when narrow", () => {
-    const state = stateWithTasks([1, 2, 3].flatMap(copy => chronoTasks().map(task => ({ ...task, id: `${task.id}:${copy}` }))));
+    const state = stateWithTasks(manyTasks(3));
     const panel = renderTaskPanel(state, 100, 60, NOW)!;
     expect(panel.lines).toHaveLength(MAX_TASK_PANEL_HEIGHT);
     expect(plain(panel.lines).at(-2)).toContain("▸ 12 more · click to expand");
@@ -94,63 +98,74 @@ describe("collapsed task panel", () => {
 });
 
 describe("expanded task panel", () => {
-  test("shows every entry with its full title, kind, Chrono mode, wall-clock times and tool", () => {
-    const state = stateWithTasks();
+  test("lists every entry in the collapsed panel's rows, without the overflow row", () => {
+    const state = stateWithTasks(manyTasks(3));
+    const collapsed = renderTaskPanel(state, 100, 60, NOW)!;
     toggleTaskPanelExpansion(state);
     const panel = renderTaskPanel(state, 100, 60, NOW)!;
-    expect(panel.width).toBe(72);
+    expect(panel.width).toBe(50);
+    expect(panel.lines).toHaveLength(21 + 2);
     expect(panel.maxScroll).toBe(0);
-    expect(panel.lines.every(line => visibleLength(line) === 72)).toBe(true);
-    const text = plain(panel.lines).join("\n");
-    const unwrapped = plain(panel.lines).map(line => line.slice(1, -1).trim()).join(" ");
-
-    expect(unwrapped).toContain(HOURLY);
-    expect(text).toContain(`◷ Chrono · wake · due ${formatQueueDueTime(NOW + 42 * 60_000, NOW)}`);
-    expect(text).toContain("in 42m");
-    expect(text).toContain(`◷ Chrono · wake · running since ${formatQueueDueTime(NOW - 75_000, NOW)}`);
-    expect(text).toContain("1m 15s");
-    expect(text).toContain(`◷ Chrono · sleep · due ${formatQueueDueTime(NOW + 3 * 86_400_000, NOW)}`);
-    expect(text).toContain("in 3d");
-    expect(text).toContain(`◆ Exocortex · subagent · started ${formatQueueDueTime(NOW - 200_000, NOW)}`);
-    expect(text).toContain("$ Bash · background command");
-    expect(text).toContain("bun run test --watch tui/src/activitypanel.test.ts");
-    expect(text).toContain("◆ Agent · background agent");
-    expect(text).toContain("Evening digest of every open PMV5 question for the owner");
-    expect(plain(panel.lines).at(-1)).toContain("click to collapse");
+    expect(panel.lines.every(line => visibleLength(line) === 50)).toBe(true);
+    // The same rows, styling included, for everything the collapsed card had room for.
+    expect(panel.lines.slice(0, MAX_TASK_PANEL_HEIGHT - 2)).toEqual(collapsed.lines.slice(0, -2));
+    const text = plain(panel.lines);
+    expect(text.join("\n")).not.toContain("more");
+    expect(text.join("\n")).not.toContain("yesterday");
+    expect(text.at(-2)).toContain("◷ Chrono Evening digest");
+    expect(text.at(-1)).toContain("click to collapse");
     // The header keeps the total.
-    expect(plain(panel.lines)[0].trimEnd()).toEndWith("7 ─╮");
+    expect(text[0].trimEnd()).toEndWith("21 ─╮");
   });
 
-  test("wraps within a narrow pane and caps its height, scrolling by rows", () => {
-    const state = stateWithTasks();
+  test("keeps the subscriptions divider and lists every subscription", () => {
+    const state = stateWithTasks(manyTasks(2));
+    state.sidebar.conversations[0].integrations = ["one", "two", "three"].map(id => ({
+      id: `integration:${id}`,
+      toolName: "discord",
+      sourceId: `channel:${id}`,
+      label: `Subscription ${id}`,
+      delivery: "wake" as const,
+      status: "active" as const,
+      createdAt: NOW,
+    }));
+    toggleTaskPanelExpansion(state);
+    const text = plain(renderTaskPanel(state, 100, 60, NOW)!.lines);
+    expect(text).toHaveLength(14 + 1 + 3 + 2);
+    expect(text[15]).toContain("Subscriptions");
+    expect(text.slice(16, 19).map(line => line.match(/Subscription \w+/)?.[0])).toEqual(["Subscription one", "Subscription two", "Subscription three"]);
+  });
+
+  test("caps its height to the pane, scrolling by rows", () => {
+    const state = stateWithTasks(manyTasks(3));
     toggleTaskPanelExpansion(state);
     const first = renderTaskPanel(state, 34, 12, NOW)!;
     expect(first.width).toBe(34);
     expect(first.lines).toHaveLength(12);
-    expect(first.maxScroll).toBeGreaterThan(0);
+    expect(first.maxScroll).toBe(21 - 10);
     expect(first.lines.every(line => termWidth(stripAnsi(line)) === 34)).toBe(true);
-    expect(plain(first.lines).at(-1)).toMatch(/↓ \d+ below/);
+    expect(plain(first.lines).at(-1)).toContain("↓ 11 below");
     expect(plain(first.lines).at(-1)).not.toContain("↑");
 
     state.taskPanelExpansion!.scroll = 4;
     const middle = renderTaskPanel(state, 34, 12, NOW)!;
     expect(middle.scroll).toBe(4);
     expect(plain(middle.lines)[1]).toBe(plain(renderTaskPanel({ ...state, taskPanelExpansion: { convId: "conv", scroll: 0 } }, 34, 200, NOW)!.lines)[5]);
-    expect(plain(middle.lines).at(-1)).toMatch(/↑ 4 above · ↓ \d+ below/);
+    expect(plain(middle.lines).at(-1)).toContain("↑ 4 above · ↓ 7 below");
 
     state.taskPanelExpansion!.scroll = 1_000;
     const last = renderTaskPanel(state, 34, 12, NOW)!;
     expect(last.scroll).toBe(last.maxScroll);
-    expect(plain(last.lines).at(-2)).toContain("owner");
+    expect(plain(last.lines).at(-2)).toContain("Evening");
     expect(plain(last.lines).at(-1)).not.toContain("↓");
   });
 
-  test("narrows to leave the history column and never exceeds the chat pane", () => {
+  test("keeps the collapsed width and never exceeds the chat pane", () => {
     const state = stateWithTasks();
     toggleTaskPanelExpansion(state);
     const wide = layoutTaskPanel(state, 160, 30, NOW);
-    expect(wide.panel?.width).toBe(72);
-    expect(wide.historyWidth).toBe(160 - 72 - 1);
+    expect(wide.panel?.width).toBe(50);
+    expect(wide.historyWidth).toBe(160 - 50 - 1);
     const tight = layoutTaskPanel(state, 80, 30, NOW);
     expect(tight.panel?.width).toBe(49);
     expect(tight.historyWidth).toBe(30);
@@ -207,7 +222,7 @@ const filler = (count: number, label = "history row") => Array.from({ length: co
 }));
 
 function chatState(cols = 120, rows = 30, messages: RenderState["messages"] = filler(80)): RenderState {
-  const state = stateWithTasks(chronoTasks(Date.now()));
+  const state = stateWithTasks(manyTasks(2, Date.now()));
   state.cols = cols;
   state.rows = rows;
   state.sidebar.open = false;
@@ -238,12 +253,13 @@ describe("task panel clicks", () => {
     capture(() => render(state));
     const expanded = state.layout.taskPanelRect!;
     expect(expanded.right).toBe(120);
-    expect(expanded.right - expanded.left + 1).toBe(72);
-    expect(expanded.bottom).toBeGreaterThan(collapsed.bottom);
+    expect(expanded.right - expanded.left + 1).toBe(50);
+    expect(expanded.bottom - expanded.top + 1).toBe(14 + 2);
     expect(expanded.bottom).toBeLessThan(state.layout.sepAbove);
-    expect(state.layout.historyWidth).toBe(120 - 72 - 1);
+    expect(state.layout.historyWidth).toBe(120 - 50 - 1);
     expect(cursorZone(expanded.left, expanded.bottom, state)).toBe("hand");
-    expect(screenText(state)).toContain("yesterday");
+    expect(screenText(state)).not.toContain("more");
+    expect(screenText(state).split("\n").at(-2)).toContain("Evening digest");
 
     click(state, expanded.left + 3, expanded.bottom);
     expect(isTaskPanelExpanded(state)).toBe(false);
@@ -323,15 +339,15 @@ describe("task panel clicks", () => {
     conversation.tasks = [...conversation.tasks!, { id: "bash:new", kind: "background", title: "A command that started just now", startedAt: Date.now() }];
     capture(() => render(state));
     expect(isTaskPanelExpanded(state)).toBe(true);
-    expect(state.layout.taskPanelRect!.bottom - state.layout.taskPanelRect!.top).toBe(height + 2);
-    expect(screenText(state)).toContain("A command that started just now");
-    expect(screenText(state).split("\n")[0].trimEnd()).toEndWith("8 ─╮");
+    expect(state.layout.taskPanelRect!.bottom - state.layout.taskPanelRect!.top).toBe(height + 1);
+    expect(screenText(state)).toContain("A command that started");
+    expect(screenText(state).split("\n")[0].trimEnd()).toEndWith("15 ─╮");
 
     conversation.tasks = [];
     capture(() => render(state));
     expect(state.layout.taskPanelRect).toBeNull();
     expect(state.taskPanelExpansion).toBeNull();
-    conversation.tasks = chronoTasks(Date.now());
+    conversation.tasks = manyTasks(2, Date.now());
     capture(() => render(state));
     expect(state.layout.taskPanelRect!.right - state.layout.taskPanelRect!.left + 1).toBe(50);
   });
@@ -347,8 +363,9 @@ describe("images under the expanded card", () => {
   afterEach(() => inlineImagesInternalsForTest.reset());
 
   function imageState(): RenderState {
-    return chatState(120, 40, [
-      ...filler(3, "before"),
+    // Below the compact card, wider than the history column beside a card.
+    return chatState(100, 40, [
+      ...filler(6, "before"),
       {
         role: "assistant",
         blocks: [
@@ -372,21 +389,23 @@ describe("images under the expanded card", () => {
   const placementRows = (out: string) => [...out.matchAll(/\x1b\[(\d+);(\d+)H\x1b_Ga=p[^;]*,c=(\d+),r=(\d+)/g)]
     .map(match => ({ row: Number(match[1]), col: Number(match[2]), cols: Number(match[3]), rows: Number(match[4]) }));
 
-  test("a Kitty image the wider card would cover stays clear of it", async () => {
+  test("a Kitty image the taller card would cover stays clear of it", async () => {
     configureInlineImages({ fetch: fetchPreview, onChange: () => {} });
     setInlineImageMode("kitty");
     setInlineImageCellSize({ width: 8, height: 16 });
     const state = imageState();
     const [collapsed] = placementRows(await frame(state));
-    // Beside the compact card it fits; the expanded card needs its columns.
-    expect(collapsed.col + collapsed.cols - 1).toBeGreaterThanOrEqual(120 - 72 + 1);
     const rect = state.layout.taskPanelRect!;
+    // Below the compact card it fits; the expanded card grows down over its rows and columns.
+    expect(collapsed.row).toBeGreaterThan(rect.bottom);
+    expect(collapsed.col + collapsed.cols - 1).toBeGreaterThanOrEqual(rect.left);
     click(state, rect.left + 4, rect.top + 1);
     await frame(state);
     // Re-send every placement so the frame lists all of them, not just the changes.
     invalidateHistoryImagePlacements(state);
     const out = capture(() => render(state));
     const expanded = state.layout.taskPanelRect!;
+    expect(expanded.bottom).toBeGreaterThanOrEqual(collapsed.row);
     const shown = placementRows(out);
     // The wide image still shows, clear of the card.
     expect(shown.length).toBeGreaterThan(0);
@@ -409,8 +428,8 @@ describe("images under the expanded card", () => {
     const out = capture(() => render(state));
     expect(out).not.toContain("\x1b_G");
     const expanded = state.layout.taskPanelRect!;
-    // Every panel row is written at the card's column after the history row beside it.
-    for (let row = expanded.top; row <= expanded.bottom; row++) {
+    // Every row the card grew over is written at the card's column after the history row beside it.
+    for (let row = rect.bottom + 1; row <= expanded.bottom; row++) {
       const cardAt = out.lastIndexOf(`\x1b[${row};${expanded.left}H`);
       expect(cardAt).toBeGreaterThanOrEqual(0);
       expect(cardAt).toBeGreaterThan(out.lastIndexOf(`\x1b[${row};1H`));

@@ -349,7 +349,7 @@ export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult 
       return { type: "handled" };
     }
 
-    // The task panel is one toggle: expand to every entry in full, or back to the compact card.
+    // The task panel is one toggle: expand to list every entry, or back to the capped card.
     if (isInsideTaskPanel(col, row, state)) {
       toggleTaskPanelExpansion(state);
       return { type: "handled" };

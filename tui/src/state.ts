@@ -366,7 +366,7 @@ export interface RenderState {
   /** Full-size image viewer opened from history (Enter or click on a thumbnail). */
   imageModal: ImageModalState | null;
   /**
-   * The Tasks panel expanded by a click to show every entry in full, with its
+   * The Tasks panel expanded by a click to list every entry, with its
    * scroll offset in panel rows. Session-only and tied to one conversation:
    * the panel collapses when another conversation is shown.
    */
