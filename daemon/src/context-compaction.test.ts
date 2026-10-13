@@ -6,6 +6,7 @@ import {
   compactContextMessages,
   estimateContextTokens,
   isActiveContextCompatible,
+  isContextWindowError,
   shouldAutoCompact,
 } from "./context-compaction";
 import {
@@ -39,6 +40,11 @@ test("standard and Daybreak Sol share reasoning scope without broadening model o
   expect(buildConversationApiContext(conv, "account-a").messages[1].providerData).toBeUndefined();
   conv.model = before.model;
   expect(conv).toEqual(before);
+});
+
+test("recognizes Claude Code's prompt-too-long as a context-window error", () => {
+  expect(isContextWindowError(new Error("Claude Code: Prompt is too long: 1012345 tokens > 1000000 maximum"))).toBe(true);
+  expect(isContextWindowError(new Error("Claude Code: rate limited"))).toBe(false);
 });
 
 function history(): StoredMessage[] {

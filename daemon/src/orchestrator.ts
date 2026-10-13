@@ -9,6 +9,7 @@ import { fastModeServiceTier } from "@exocortex/shared/messages";
  */
 
 import { log } from "./log";
+import { planClaudePrompt } from "./providers/anthropic/prompt";
 import { isDeepStrictEqual } from "node:util";
 import { prepareArchiveHashes } from "./conversation-loader";
 import { archiveWindow, inheritArchiveHashProof, storedMessageCount } from "./conversation-window";
@@ -1038,8 +1039,13 @@ async function orchestrateAdmittedAssistantTurn(
     try {
       return await compactContextNow(messages, reason, projectedTokens);
     } catch (error) {
-      if (ac.signal.aborted || (reason !== "pre_turn" && reason !== "tool_round")) throw error;
+      if (ac.signal.aborted || reason === "manual") throw error;
       const detail = error instanceof Error ? error.message : String(error);
+      if (reason !== "pre_turn" && reason !== "tool_round") {
+        // The provider already refused the uncompacted context, so the turn
+        // cannot continue; the user's message stays in history for a retry.
+        throw new Error(`The conversation no longer fits the model's context window, and compacting it failed: ${detail} Your message is kept; /replay retries it, or /compact first.`);
+      }
       // Nothing was installed, but a failed request must not become the
       // incremental base of the next one.
       try {
@@ -1493,6 +1499,22 @@ async function orchestrateAdmittedAssistantTurn(
       }
       server.sendToSubscribers(convId, { type: "context_update", convId, streamSeq: convStore.nextStreamSeq(convId), contextTokens });
     },
+    onProviderCompaction({ trigger, preTokens, postTokens }) {
+      const sizes = preTokens != null
+        ? ` (${preTokens.toLocaleString("en-US")}${postTokens != null ? ` → ${postTokens.toLocaleString("en-US")}` : ""} tokens)`
+        : "";
+      const text = `${conv.provider === "anthropic" ? "Claude Code" : "The provider"} ${trigger === "manual" ? "compacted" : "automatically compacted"} its context${sizes}.`;
+      log("info", `orchestrator: provider compaction for ${convId}: ${text}`);
+      transcriptMarkers.push({
+        afterIndex: agentState.completedMessages.length,
+        message: { role: "system", content: text, metadata: null },
+      });
+      server.sendToSubscribers(convId, { type: "system_message", convId, streamSeq: convStore.nextStreamSeq(convId), text });
+      if (postTokens != null) {
+        conv.lastContextTokens = postTokens;
+        server.sendToSubscribers(convId, { type: "context_update", convId, streamSeq: convStore.nextStreamSeq(convId), contextTokens: postTokens });
+      }
+    },
     onHeaders(headers) {
       convStore.touchActivity(convId);
       ext.onHeaders(headers);
@@ -1652,9 +1674,17 @@ async function orchestrateAdmittedAssistantTurn(
   try {
     if (contextPreparationError) throw contextPreparationError;
     const requestOverheadTokens = Math.ceil((systemPrompt.length + JSON.stringify(toolDefs).length) / 4);
-    const estimatedMessages = estimateContextTokens(apiMessages, conv.provider);
-    let projectedTokens = estimatedMessages + requestOverheadTokens;
-    if (!conv.activeContext || isActiveContextCompatible(conv.activeContext, conv.provider, conv.model, accountScope)) {
+    // Claude Code keeps the conversation in its own session and compacts that
+    // itself, from the API's real usage: near the window (967k of 1M) and on
+    // prompt-too-long. Exocortex compacts only what this turn sends it as one
+    // prompt: history its session has not seen (another provider's turns, a
+    // rewind, a new workspace), which Claude Code cannot compact.
+    const claudeCodePrompt = conv.provider === "anthropic" && !manualCompaction
+      ? planClaudePrompt(apiMessages, workingDirectory).pending
+      : null;
+    let projectedTokens = estimateContextTokens(claudeCodePrompt ?? apiMessages, conv.provider) + requestOverheadTokens;
+    if (!claudeCodePrompt
+        && (!conv.activeContext || isActiveContextCompatible(conv.activeContext, conv.provider, conv.model, accountScope))) {
       projectedTokens = Math.max(conv.lastContextTokens ?? 0, projectedTokens);
       if (userMessage) {
         const latestUser = [...conv.messages].reverse().find(isHistoryMessage);

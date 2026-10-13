@@ -5,6 +5,9 @@ import { createStoredUserMessage } from "./messages";
 import { orchestrateSendMessage } from "./orchestrator";
 import { getMaxContext } from "./providers/registry";
 
+// "pre_turn": a pre-emptive compaction fails. "context_error": the provider
+// rejects the context and the reactive compaction fails too.
+const scenario = (process.argv[2] ?? "pre_turn") as "pre_turn" | "context_error";
 const convId = `auto-compact-recovery-check-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 let compactionCalls = 0;
 let conversationCalls = 0;
@@ -19,7 +22,7 @@ appendMessages(convId, [
 ]);
 const limit = getMaxContext("deepseek", "deepseek-v4-pro")!;
 // Past the automatic threshold, under the real window.
-conversation.lastContextTokens = Math.floor(limit * 0.95);
+conversation.lastContextTokens = scenario === "pre_turn" ? Math.floor(limit * 0.95) : 1_000;
 
 const providerStream = (async (_provider, _messages, _model, _callbacks, options) => {
   if (options?.tracking?.source === "context_compaction") {
@@ -27,6 +30,7 @@ const providerStream = (async (_provider, _messages, _model, _callbacks, options
     return { text: "partial", thinking: "", stopReason: "max_tokens" as const, blocks: [], toolCalls: [] };
   }
   conversationCalls += 1;
+  if (scenario === "context_error") throw new Error("maximum context length exceeded");
   return {
     text: "answered anyway",
     thinking: "",
@@ -65,6 +69,9 @@ try {
     outcome: { ok: outcome.ok, error: outcome.error ?? null },
     compactionCalls,
     conversationCalls,
+    errors: subscriberEvents
+      .filter((event) => event.type === "system_message" && event.color === "error")
+      .map((event) => event.text),
     warnings: subscriberEvents
       .filter((event) => event.type === "system_message" && event.color === "warning")
       .map((event) => event.text),

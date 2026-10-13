@@ -451,7 +451,16 @@ function pushMessage(state: ClaudeStreamState, message: SdkRecord): void {
       return;
     }
     case "system": {
-      if (message.subtype === "compact_boundary") log("info", "anthropic: Claude Code compacted its session context");
+      if (message.subtype === "compact_boundary") {
+        const metadata = asRecord(message.compact_metadata);
+        const compaction = {
+          trigger: metadata?.trigger === "manual" ? "manual" as const : "auto" as const,
+          preTokens: typeof metadata?.pre_tokens === "number" ? metadata.pre_tokens : undefined,
+          postTokens: typeof metadata?.post_tokens === "number" ? metadata.post_tokens : undefined,
+        };
+        log("info", `anthropic: Claude Code compacted its session context (trigger=${compaction.trigger}, pre=${compaction.preTokens ?? "?"}, post=${compaction.postTokens ?? "?"})`);
+        state.callbacks.onProviderCompaction?.(compaction);
+      }
       // A request sent while a main-thread call streams is a subagent's.
       if (message.subtype === "status" && message.status === "requesting" && state.callStartedAt === null) state.requestedAt = state.now();
       if (message.subtype === "api_retry") state.callRetried = true;

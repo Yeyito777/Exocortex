@@ -92,7 +92,10 @@ checkpoint keeps beside what the conversation says about it, so the model can
 open the file again. The newest user messages are kept verbatim beside the
 checkpoint, images included. If an automatic compaction before a turn or
 between tool rounds still fails, the turn continues uncompacted with a
-warning; an actual context-window error still triggers its own compaction.
+warning; an actual context-window error still triggers its own compaction,
+and if that fails the turn ends with an error that keeps the message for
+`/replay`. Claude Code conversations compact differently (see
+[anthropic.md](anthropic.md)).
 
 ## Terminal rendering
 

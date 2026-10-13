@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 describe("automatic context compaction failure", () => {
   test("warns and continues the turn instead of failing it", async () => {
     const daemonDir = resolve(import.meta.dir, "..");
-    const child = Bun.spawn([process.execPath, "run", "src/auto-compaction-recovery-check.ts"], {
+    const child = Bun.spawn([process.execPath, "run", "src/auto-compaction-recovery-check.ts", "pre_turn"], {
       cwd: daemonDir,
       stdout: "pipe",
       stderr: "pipe",
@@ -31,5 +31,29 @@ describe("automatic context compaction failure", () => {
     expect(JSON.stringify(result.lastAssistant)).toContain("answered anyway");
     expect(result.activeContext).toBeNull();
     expect(result.streaming).toBe(false);
+  });
+
+  test("a failed reactive compaction keeps the user's message and says how to retry", async () => {
+    const daemonDir = resolve(import.meta.dir, "..");
+    const child = Bun.spawn([process.execPath, "run", "src/auto-compaction-recovery-check.ts", "context_error"], {
+      cwd: daemonDir,
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, DEEPSEEK_API_KEY: "test-auto-compaction-key" },
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    expect(exitCode, stderr).toBe(0);
+    const result = JSON.parse(stdout.trim().split("\n").at(-1)!);
+
+    expect(result.outcome.ok).toBe(false);
+    expect(result.outcome.error).toContain("compacting it failed: Plaintext compaction did not complete");
+    expect(result.outcome.error).toContain("Your message is kept; /replay retries it");
+    expect(result.compactionCalls).toBe(1);
+    expect(JSON.stringify(result.lastUser)).toContain("new request");
+    expect(result.activeContext).toBeNull();
   });
 });

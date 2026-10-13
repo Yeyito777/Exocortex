@@ -335,6 +335,8 @@ export function isContextWindowError(error: unknown): boolean {
   return value.includes("context_length_exceeded")
     || value.includes("maximum context length")
     || value.includes("too many tokens")
+    // Anthropic / Claude Code: "Prompt is too long: 1012345 tokens > 1000000 maximum".
+    || value.includes("prompt is too long")
     || (value.includes("context window") && (value.includes("exceed") || value.includes("too large")))
     || (value.includes("input") && value.includes("exceed") && value.includes("context"));
 }
