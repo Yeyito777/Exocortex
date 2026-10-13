@@ -168,8 +168,23 @@ function openAIImageTokenEstimate(mediaType: string, base64: string): number {
   return 85 + 170 * tiles;
 }
 
+// Claude bills an image by its pixels (about width × height / 750 tokens) after
+// downscaling it to the model's input size. Assume the largest input size
+// (2576 px long edge, high-resolution models) so the estimate stays an upper bound.
+const ANTHROPIC_IMAGE_MAX_EDGE = 2576;
+const ANTHROPIC_IMAGE_MAX_TOKENS = 5_000;
+
+function anthropicImageTokenEstimate(mediaType: string, base64: string): number {
+  const dims = imageDimensions(mediaType, base64);
+  if (!dims || dims.width <= 0 || dims.height <= 0) return ANTHROPIC_IMAGE_MAX_TOKENS;
+  const scale = Math.min(1, ANTHROPIC_IMAGE_MAX_EDGE / Math.max(dims.width, dims.height));
+  const tokens = Math.ceil((dims.width * scale) * (dims.height * scale) / 750);
+  return Math.max(1, Math.min(ANTHROPIC_IMAGE_MAX_TOKENS, tokens));
+}
+
 function imageReplayChars(mediaType: string, base64: string, provider?: ProviderId): number {
   if (provider === "openai") return openAIImageTokenEstimate(mediaType, base64) * 4;
+  if (provider === "anthropic") return anthropicImageTokenEstimate(mediaType, base64) * 4;
   return base64.length;
 }
 

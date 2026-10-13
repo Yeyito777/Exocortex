@@ -1024,7 +1024,49 @@ async function orchestrateAdmittedAssistantTurn(
   let latestCompactionAccountScope: string | undefined;
   let latestCompactedAt: number | null = null;
 
+  /**
+   * Compact, or for an automatic pre-turn/tool-round compaction that fails,
+   * warn and return null so the turn continues on its uncompacted replay.
+   * Those compactions are pre-emptive: the estimate is an upper bound, and a
+   * real context-window error still gets its own reactive compaction.
+   */
   async function performContextCompaction(
+    messages: ApiMessage[],
+    reason: CompactionReason,
+    projectedTokens: number,
+  ): Promise<ApiMessage[] | null> {
+    try {
+      return await compactContextNow(messages, reason, projectedTokens);
+    } catch (error) {
+      if (ac.signal.aborted || (reason !== "pre_turn" && reason !== "tool_round")) throw error;
+      const detail = error instanceof Error ? error.message : String(error);
+      // Nothing was installed, but a failed request must not become the
+      // incremental base of the next one.
+      try {
+        await providerTurnSession?.resetAfterCompaction?.();
+      } catch (resetError) {
+        log("warn", `orchestrator: could not reset the provider session after a failed compaction for ${convId}: ${resetError instanceof Error ? resetError.message : String(resetError)}`);
+        throw error;
+      }
+      log("warn", `orchestrator: automatic context compaction failed for ${convId} (reason=${reason}); continuing without it: ${detail}`);
+      const warning = `⚠ Automatic context compaction failed; continuing without it. ${detail}`;
+      transcriptMarkers.push({
+        afterIndex: agentState.completedMessages.length,
+        message: { role: "system", content: warning, metadata: null },
+      });
+      persistCompletedTurnPrefix();
+      server.sendToSubscribers(convId, {
+        type: "system_message",
+        convId,
+        streamSeq: convStore.nextStreamSeq(convId),
+        text: warning,
+        color: "warning",
+      });
+      return null;
+    }
+  }
+
+  async function compactContextNow(
     messages: ApiMessage[],
     reason: CompactionReason,
     projectedTokens: number,
@@ -1632,12 +1674,12 @@ async function orchestrateAdmittedAssistantTurn(
 
     assertBoundedContextReplay(projectedTokens, contextLimit);
     if (manualCompaction) {
-      apiMessages = await performContextCompaction(apiMessages, "manual", projectedTokens);
+      apiMessages = await compactContextNow(apiMessages, "manual", projectedTokens);
       await syncActiveContext(apiMessages);
       convStore.markDirty(convId);
       convStore.flush(convId);
     } else if (shouldAutoCompact(projectedTokens, contextLimit)) {
-      apiMessages = await performContextCompaction(apiMessages, "pre_turn", projectedTokens);
+      apiMessages = await performContextCompaction(apiMessages, "pre_turn", projectedTokens) ?? apiMessages;
       await syncActiveContext(apiMessages);
       convStore.markDirty(convId);
       convStore.flush(convId);

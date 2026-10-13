@@ -19,6 +19,8 @@ import {
   type StoredMessage,
 } from "./messages";
 import type { streamMessage } from "./api";
+import { findStoredImage, imageIdForBytes } from "./attachments";
+import { readFileSync } from "node:fs";
 import { NonRetryableProviderError } from "./providers/errors";
 
 test("standard and Daybreak Sol share reasoning scope without broadening model or account scope", () => {
@@ -869,7 +871,79 @@ describe("automatic context compaction state", () => {
     expect(String(result.messages.at(-1)?.content)).toContain("DENSE_LATE");
   });
 
-  test("fails atomically instead of deleting images from oversized hierarchical input", async () => {
+  test("hierarchically compacts oversized multimodal history into durable image references", async () => {
+    const png = (width: number, height: number, fill: number) => {
+      const bytes = Buffer.alloc(6_000, fill);
+      bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+      bytes.writeUInt32BE(13, 8);
+      bytes.write("IHDR", 12, "ascii");
+      bytes.writeUInt32BE(width, 16);
+      bytes.writeUInt32BE(height, 20);
+      return bytes;
+    };
+    const oldImage = png(800, 600, 1);
+    const newImage = png(640, 480, 2);
+    const oldId = imageIdForBytes(oldImage);
+    const requests: string[] = [];
+    const fakeStream: typeof streamMessage = async (_provider, requestMessages) => {
+      const input = requestMessages.map((message) => typeof message.content === "string" ? message.content : JSON.stringify(message.content)).join("\n");
+      requests.push(input);
+      const kept = [oldId, "OLD_CAPTION", "LATE_MARKER"].filter((marker) => input.includes(marker));
+      return {
+        text: `summary ${kept.join(" ")}`,
+        thinking: "",
+        stopReason: "stop",
+        blocks: [],
+        toolCalls: [],
+      };
+    };
+    const newestUser = {
+      role: "user" as const,
+      content: [
+        { type: "image" as const, source: { type: "base64" as const, media_type: "image/png", data: newImage.toString("base64") } },
+        { type: "text" as const, text: "what about this one?" },
+      ],
+    };
+
+    const result = await compactContextMessages([
+      {
+        role: "user",
+        content: [
+          { type: "image", source: { type: "base64", media_type: "image/png", data: oldImage.toString("base64") } },
+          { type: "text", text: `OLD_CAPTION the failing dashboard\n${"a".repeat(20_000)}` },
+        ],
+      },
+      { role: "assistant", content: `middle\n${"b".repeat(20_000)}` },
+      { role: "user", content: `LATE_MARKER\n${"c".repeat(20_000)}` },
+      newestUser,
+    ], {
+      provider: "anthropic",
+      model: "claude-opus-5-5",
+      contextLimit: 10_000,
+      reason: "pre_turn",
+      streamMessageFn: fakeStream,
+    });
+
+    // The segments carry references, never pixels.
+    expect(requests.length).toBeGreaterThan(2);
+    const segments = requests.join("\n");
+    expect(segments).not.toContain(oldImage.toString("base64").slice(0, 200));
+    const stored = findStoredImage(oldId);
+    expect(stored?.mediaType).toBe("image/png");
+    expect(readFileSync(stored!.path).equals(oldImage)).toBe(true);
+    expect(segments).toContain(`"image_id":"${oldId}"`);
+    expect(segments).toContain(`"path":"${stored!.path}"`);
+    expect(segments).toContain(`"width":800,"height":600`);
+    expect(segments).toContain("keep each image's path");
+    const checkpoint = String(result.messages.at(-1)?.content);
+    expect(checkpoint).toContain(oldId);
+    expect(checkpoint).toContain("OLD_CAPTION");
+    expect(checkpoint).toContain("LATE_MARKER");
+    // The newest user message keeps its image verbatim for the live turn.
+    expect(result.messages).toContainEqual(newestUser);
+  });
+
+  test("refuses archives past the replay safety ceiling before summarizing images", async () => {
     let calls = 0;
     const fakeStream: typeof streamMessage = async () => {
       calls += 1;

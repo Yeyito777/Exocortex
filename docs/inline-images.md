@@ -80,6 +80,20 @@ reached over SSH). The TUI shows "loading image…" while a preview is pending a
 retries, with backoff for about 8 s, a pasted image the daemon reports not found
 and any request that timed out; other errors show as "image unavailable".
 
+## Context compaction
+
+Pasted images count toward a conversation's context by what the provider bills
+for them, not by their payload size: OpenAI by tiles, Claude by pixels (about
+width × height / 750 tokens after downscaling to a 2576 px long edge, at most
+5,000 tokens). A history too large for one summary request is summarized in
+textual segments; each image in it becomes a reference to its stored copy
+(`image_id`, `path` in the attachment store, type, dimensions, size) that the
+checkpoint keeps beside what the conversation says about it, so the model can
+open the file again. The newest user messages are kept verbatim beside the
+checkpoint, images included. If an automatic compaction before a turn or
+between tool rounds still fails, the turn continues uncompacted with a
+warning; an actual context-window error still triggers its own compaction.
+
 ## Terminal rendering
 
 `tui/src/terminalgraphics.ts` detects Kitty graphics with an `a=q` query
