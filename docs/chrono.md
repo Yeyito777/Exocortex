@@ -52,11 +52,10 @@ finished one-shot leaves. Firing never adds a sibling row or removes and
 re-adds the schedule's row, so a run does not resize the panel or reflow the
 history beside it.
 
-The compact panel truncates titles and caps its height (`▸ N more · click to
-expand`). Clicking it expands it to every entry with its full title, kind,
-mode (`wake`/`sleep`/`wait`, running), due or start time as a local clock time,
-and the tool behind background work. A tall expanded panel scrolls with the
-wheel inside it. Clicking it again collapses it, and so does opening another
+The panel shows one row per entry with its title truncated, and caps its
+height (`▸ N more · click to expand`). Clicking it expands it to list every
+entry in the same rows. A tall expanded panel scrolls with the wheel inside
+it. Clicking it again collapses it, and so does opening another
 conversation. The expansion lasts only for the TUI session.
 
 Implementation: `publishSchedule` in `daemon/src/chrono-service.ts` and
