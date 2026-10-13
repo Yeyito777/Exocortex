@@ -1733,9 +1733,10 @@ export function render(state: RenderState): boolean {
   }
 
   // ── Edit message overlay ──────────────────────────────────────
-  if (state.editMessagePrompt) {
-    appendPositionedPayload(ctx, renderEditMessageOverlay(state.editMessagePrompt, chatW, chatCol, bottomStartRow, messageAreaHeight));
-  }
+  const editMessageOverlay = state.editMessagePrompt
+    ? renderEditMessageOverlay(state.editMessagePrompt, chatW, chatCol, bottomStartRow, messageAreaHeight)
+    : null;
+  if (editMessageOverlay) appendPositionedPayload(ctx, editMessageOverlay.payload);
 
   // ── Sidebar conversation action menu ──────────────────────────
   if (sidebarOpen && state.sidebar.conversationActionMenu) {
@@ -1761,9 +1762,10 @@ export function render(state: RenderState): boolean {
 
   // ── Inline history images (Kitty graphics placements) ─────────
   // Floating overlays are drawn as text, which images (z above text) would
-  // cover. Modal prompts hide images; the task panel and autocomplete crop them.
+  // cover. The queue prompt and conversation menu hide images; the edit menu
+  // and image viewer crop them around their box; the task panel and
+  // autocomplete drop the image rows they overlap.
   const historyOverlayOpen = !!state.queuePrompt
-    || !!state.editMessagePrompt
     || !!(sidebarOpen && state.sidebar.conversationActionMenu);
   const imageObstructions: ScreenRect[] = [state.layout.taskPanelRect, autocompleteRect]
     .filter((rect): rect is ScreenRect => rect !== null);
@@ -1785,7 +1787,7 @@ export function render(state: RenderState): boolean {
       chatCol,
       maxCol: chatCol + chatW - 1,
       obstructions: imageObstructions,
-      cover: modal?.rect,
+      covers: [modal?.rect, editMessageOverlay?.rect].filter((rect): rect is ScreenRect => !!rect),
       cursorLineIndex: historyFocused ? state.historyCursor.row : null,
       cursorCol: state.historyCursor.col,
     })

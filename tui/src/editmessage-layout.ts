@@ -9,6 +9,8 @@ export interface EditMessageOverlayLayout {
   boxWidth: number;
   innerWidth: number;
   boxTop: number;
+  /** Last screen row the box draws on (its bottom border unless the prompt cuts it off). */
+  boxBottom: number;
   firstItemRow: number;
   maxVisible: number;
   scrollStart: number;
@@ -56,6 +58,7 @@ export function computeEditMessageOverlayLayout(
     boxWidth,
     innerWidth,
     boxTop,
+    boxBottom: Math.min(boxTop + styledLineCount + 1, sepRow - 1),
     firstItemRow: boxTop + 3,
     maxVisible,
     scrollStart,

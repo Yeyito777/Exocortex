@@ -8,6 +8,8 @@ import { handleMouseEvent } from "./mouse";
 import { disposeHistoryImages } from "./historyimages";
 import { buildMessageLines } from "./conversation";
 import { stripAnsi } from "./historycursor";
+import { cancelEditMessage, confirmEditMessage, handleEditMessageKey, openEditMessageModal } from "./editmessage";
+import { computeEditMessageOverlayLayout } from "./editmessage-layout";
 
 function capture(state: RenderState): string {
   let out = "";
@@ -273,6 +275,117 @@ describe("render with Kitty images", () => {
     state.queuePrompt = null;
     expect(placements(capture(state)).length).toBe(1);
     disposeHistoryImages(state);
+  });
+
+  describe("the edit menu (Ctrl-W)", () => {
+    const parsed = (out: string) => placements(out).map(placement => ({
+      ...placement,
+      id: Number(/p=(\d+)/.exec(placement.controls)![1]),
+      columns: Number(/c=(\d+)/.exec(placement.controls)![1]),
+      rows: Number(/r=(\d+)/.exec(placement.controls)![1]),
+    }));
+    const deleted = (out: string) => [...out.matchAll(/a=d,d=i,i=\d+,p=(\d+),/g)].map(match => Number(match[1]));
+
+    function editMenuBox(state: RenderState) {
+      const layout = computeEditMessageOverlayLayout(
+        state.editMessagePrompt!,
+        state.cols - state.layout.chatCol + 1,
+        state.layout.chatCol,
+        state.layout.sepAbove,
+        state.layout.messageAreaHeight,
+      )!;
+      return { top: layout.boxTop, bottom: layout.boxBottom, left: layout.boxLeft, right: layout.boxLeft + layout.boxWidth - 1 };
+    }
+
+    async function setup(imageTopRow: (state: RenderState) => number) {
+      configureInlineImages({ fetch: async request => pngFetch(request), onChange: () => {} });
+      setInlineImageMode("kitty");
+      setInlineImageCellSize({ width: 8, height: 16 });
+      const state = imageState();
+      // A tall first message, so the image below it can be scrolled down to the menu.
+      state.messages[0] = { role: "user", text: Array.from({ length: 30 }, (_, i) => `line ${i}`).join("\n"), metadata: null };
+      state.messages.push(
+        { role: "user", text: "second question", metadata: null },
+        { role: "assistant", blocks: [{ type: "text", text: "second answer" }], metadata: { startedAt: 3, endedAt: 4, model: "gpt-5.5", tokens: 1 } },
+      );
+      capture(state);
+      const imageLine = state.historyLineAnchors.findIndex(anchor => anchor.images);
+      const viewportRow = imageTopRow(state) - 3; // messageAreaStart is row 3
+      state.scrollOffset = state.layout.totalLines - state.layout.messageAreaHeight - (imageLine - viewportRow);
+      // The preview may already be cached from an earlier setup: then the first frame places it.
+      const first = capture(state);
+      await Bun.sleep(0);
+      const [whole] = parsed(first + capture(state));
+      expect(whole).toMatchObject({ row: imageTopRow(state), columns: 48 });
+      return { state, whole };
+    }
+
+    test("leaves thumbnails it does not cover in place, untouched", async () => {
+      const { state, whole } = await setup(() => 8);
+      expect(whole.rows).toBe(12);
+      openEditMessageModal(state);
+      const open = capture(state);
+      expect(open).toContain("Edit message:");
+      const box = editMenuBox(state);
+      expect(box.top).toBeGreaterThan(whole.row + whole.rows - 1);
+      // Nothing to re-send: the placement stays exactly where it was.
+      expect(open).not.toContain("\x1b_G");
+      handleEditMessageKey({ type: "char", char: "k" } as never, state);
+      expect(capture(state)).not.toContain("\x1b_G");
+      cancelEditMessage(state);
+      const closed = capture(state);
+      expect(closed).not.toContain("Edit message:");
+      expect(closed).not.toContain("\x1b_G");
+      disposeHistoryImages(state);
+    });
+
+    test("crops a thumbnail around its box, then restores it whole on cancel or confirm", async () => {
+      // Put the thumbnail's top three rows above the box so the box covers its lower right part.
+      const probe = await setup(() => 8);
+      openEditMessageModal(probe.state);
+      capture(probe.state);
+      const boxTop = editMenuBox(probe.state).top;
+      disposeHistoryImages(probe.state);
+
+      for (const close of ["cancel", "confirm"] as const) {
+        // (The viewport also cuts off its bottom rows, so `whole` is the pre-menu placement.)
+        const { state, whole } = await setup(() => boxTop - 3);
+        openEditMessageModal(state);
+        const open = capture(state);
+        const box = editMenuBox(state);
+        expect(box.top).toBe(boxTop);
+        expect(box.left).toBeGreaterThan(whole.col);
+        expect(box.left).toBeLessThanOrEqual(whole.col + whole.columns - 1);
+        const pieces = parsed(open);
+        // A band above the box (the original placement, cropped) and the strip left of it.
+        expect(pieces).toHaveLength(2);
+        expect(pieces[0]).toMatchObject({ id: whole.id, row: whole.row, col: whole.col, columns: 48, rows: 3 });
+        expect(pieces[0].controls).toContain("x=0,y=0,w=384,h=48,");
+        expect(pieces[1]).toMatchObject({ row: box.top, col: whole.col, columns: box.left - whole.col });
+        expect(pieces[1].id).not.toBe(whole.id);
+        for (const piece of pieces) {
+          const overlaps = piece.row <= box.bottom && piece.row + piece.rows - 1 >= box.top
+            && piece.col <= box.right && piece.col + piece.columns - 1 >= box.left;
+          expect(overlaps).toBe(false);
+        }
+        expect(deleted(open)).toEqual([]);
+
+        // Moving the selection repaints the menu, not the images.
+        handleEditMessageKey({ type: "char", char: "k" } as never, state);
+        expect(capture(state)).not.toContain("\x1b_G");
+        handleEditMessageKey({ type: "char", char: "j" } as never, state);
+        expect(capture(state)).not.toContain("\x1b_G");
+
+        if (close === "cancel") cancelEditMessage(state);
+        else expect(confirmEditMessage(state)).toMatchObject({ action: "edit_sent", text: "second question" });
+        const closed = capture(state);
+        expect(closed).not.toContain("Edit message:");
+        expect(deleted(closed)).toEqual([pieces[1].id]);
+        expect(parsed(closed)).toEqual([expect.objectContaining({ id: whole.id, row: whole.row, col: whole.col, controls: whole.controls })]);
+        expect(capture(state)).not.toContain("\x1b_G");
+        disposeHistoryImages(state);
+      }
+    });
   });
 
   test("the half-block fallback draws pixels as text and sends no graphics", async () => {

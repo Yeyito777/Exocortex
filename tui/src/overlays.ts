@@ -13,6 +13,7 @@ import { theme } from "./theme";
 import { formatSize, imageLabel } from "./clipboard";
 import { padVisibleRightToWidth, termWidth, truncateToWidth } from "./textwidth";
 import { computeEditMessageOverlayLayout, EDIT_MESSAGE_TITLE } from "./editmessage-layout";
+import type { ScreenRect } from "./historyimages";
 
 // ── ANSI positioning ──────────────────────────────────────────────
 
@@ -171,15 +172,16 @@ export function renderQueuePromptOverlay(
 
 // ── Edit message overlay ──────────────────────────────────────────
 
+/** The edit menu's ANSI payload and the screen box it draws on (images are cropped around it). */
 export function renderEditMessageOverlay(
   em: EditMessageState,
   chatW: number,
   chatCol: number,
   sepRow: number,
   messageAreaHeight: number,
-): string {
+): { payload: string; rect: ScreenRect | null } {
   const layout = computeEditMessageOverlayLayout(em, chatW, chatCol, sepRow, messageAreaHeight);
-  if (!layout) return "";
+  if (!layout) return { payload: "", rect: null };
   em.scrollOffset = layout.scrollStart;
 
   // Build styled lines: title, blank, visible items
@@ -212,7 +214,7 @@ export function renderEditMessageOverlay(
     scrollIndicators.downRow = layout.firstItemRow + layout.maxVisible - 1;
   }
 
-  return renderBoxOverlay({
+  const payload = renderBoxOverlay({
     lines: styledLines,
     innerWidth: layout.innerWidth,
     chatCol,
@@ -221,4 +223,8 @@ export function renderEditMessageOverlay(
     boxTop: layout.boxTop,
     scrollIndicators,
   });
+  return {
+    payload,
+    rect: { top: layout.boxTop, bottom: layout.boxBottom, left: layout.boxLeft, right: layout.boxLeft + layout.boxWidth - 1 },
+  };
 }
