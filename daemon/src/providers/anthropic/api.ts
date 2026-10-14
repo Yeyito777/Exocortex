@@ -26,7 +26,7 @@ import { requireSubscriptionAuth } from "./auth";
 import { claudeProcessOptions } from "./cli";
 import { AuthError } from "../errors";
 import { MAIN_ACCOUNT_ID } from "./accounts";
-import { beginAccountTurn, noteAccountAuthFailure, routeClaudeTurn, touchConversationAccount } from "./account-pool";
+import { beginAccountTurn, multipleClaudeAccounts, noteAccountAuthFailure, routeClaudeTurn, touchConversationAccount } from "./account-pool";
 import { noteClaudeAccountWorking } from "./auth-cache";
 import { accountSwitchNotice } from "./routing";
 import { providerProxyRoute } from "../../provider-proxy/route";
@@ -222,6 +222,8 @@ export async function streamMessage(
   if (route.movedFrom) {
     log("info", `anthropic: conversation ${convId ?? "?"} moves from Claude account ${route.movedFrom} to ${account} (${route.reason}: ${route.detail})`);
     callbacks.onProviderNotice?.(accountSwitchNotice(route));
+  } else if (multipleClaudeAccounts()) {
+    log("info", `anthropic: Claude account ${account} for ${convId ?? "a helper request"} (${route.reason}: ${route.detail})`);
   }
   const endTurn = beginAccountTurn(account);
   if (convId) touchConversationAccount(convId, account);
