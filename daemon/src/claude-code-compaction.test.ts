@@ -32,6 +32,10 @@ describe("Claude Code context compaction", () => {
     expect(result.notices).toContain(notice);
     expect(result.transcriptNotices).toContain(notice);
     expect(result.contextUpdates).toContain(41_000);
+    // A turn that moved to another Claude account says so, live and in the transcript.
+    const switchNotice = 'Claude account switched from "main" to "max2": "main" is at a usage limit.';
+    expect(result.notices).toContain(switchNotice);
+    expect(result.transcriptNotices).toContain(switchNotice);
     expect(JSON.stringify(result.lastAssistant)).toContain("answered");
   }, 30_000);
 

@@ -49,6 +49,7 @@ import { broadcastConversationUpdated } from "./conversation-events";
 import { BackgroundTaskRecovery } from "./background-task-recovery";
 import { adoptClaudeCodeProcesses } from "./providers/anthropic/api";
 import { detachAllClaudeCodeSessions, stopAllClaudeCodeSessions } from "./providers/anthropic/session";
+import { flushAssignments } from "./providers/anthropic/account-pool";
 import { runIpcProxy } from "./ipc-proxy";
 
 // ── Startup profiling ────────────────────────────────────────────────
@@ -184,6 +185,7 @@ async function startDaemon(): Promise<void> {
       // that outlive a restart: the next daemon adopts them. A stop ends them.
       if (shutdownMode === "restart") detachAllClaudeCodeSessions("daemon restart");
       else await stopAllClaudeCodeSessions(`daemon ${shutdownMode}`);
+      flushAssignments();
       commandHandler?.providerProxies.stop();
 
       if (shutdownMode === "stop") {

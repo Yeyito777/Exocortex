@@ -22,7 +22,8 @@ import type { ContentBlock, ProviderRound, StreamCallbacks, StreamResult } from 
 import { REPLAYED_FIELD } from "./relay-protocol";
 import { takeHostToolAttachments } from "./host-tool-attachments";
 import type { AnthropicAssistantProviderData } from "./types";
-import { CLAUDE_RATE_LIMIT_HEADER } from "./usage";
+import { CLAUDE_ACCOUNT_HEADER, CLAUDE_RATE_LIMIT_HEADER } from "./usage";
+import { MAIN_ACCOUNT_ID } from "./accounts";
 
 type SdkRecord = Record<string, unknown>;
 
@@ -31,6 +32,8 @@ export class ClaudeOverageError extends Error {}
 export interface ClaudeStreamState {
   callbacks: StreamCallbacks;
   cwd: string;
+  /** Claude account (accounts.ts) the process runs on; null for `main`. */
+  account: string | null;
   /** uuid of the prompt Exocortex sent; only the result answering it ends the turn. Null ends on any result. */
   promptUuid: string | null;
   /** uuids of queued input Claude Code took into the turn; a result answering one ends it too. */
@@ -78,6 +81,7 @@ export function createClaudeStreamState(
   return {
     callbacks,
     cwd,
+    account: null,
     promptUuid,
     inputUuids: [],
     blocks: [],
@@ -253,7 +257,8 @@ function handleAssistantMessage(state: ClaudeStreamState, message: SdkRecord): v
 
 function resumePoint(state: ClaudeStreamState): AnthropicAssistantProviderData | undefined {
   if (!state.sessionId || !state.lastChainUuid) return undefined;
-  return { anthropic: { sessionId: state.sessionId, resumeAt: state.lastChainUuid, cwd: state.cwd } };
+  const account = state.account && state.account !== MAIN_ACCOUNT_ID ? { account: state.account } : {};
+  return { anthropic: { sessionId: state.sessionId, resumeAt: state.lastChainUuid, cwd: state.cwd, ...account } };
 }
 
 /**
@@ -380,7 +385,9 @@ function answersPrompt(state: ClaudeStreamState, message: SdkRecord): boolean {
 }
 
 function handleRateLimit(state: ClaudeStreamState, info: SdkRecord): void {
-  state.callbacks.onHeaders?.(new Headers({ [CLAUDE_RATE_LIMIT_HEADER]: JSON.stringify(info) }));
+  const headers = new Headers({ [CLAUDE_RATE_LIMIT_HEADER]: JSON.stringify(info) });
+  if (state.account) headers.set(CLAUDE_ACCOUNT_HEADER, state.account);
+  state.callbacks.onHeaders?.(headers);
   // Exocortex only draws on the Claude subscription. Stop instead of running
   // a turn on paid extra usage.
   if (info.isUsingOverage === true || info.overageInUse === true) {

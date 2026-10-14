@@ -79,6 +79,9 @@ import { configureChronoService, cancelDeferredChronoSleep } from "./chrono-serv
 import { runChronoCommand } from "./chrono-commands";
 import { inlineLongSleepStartedAt } from "@exocortex/shared/chrono";
 import { configureClaudeCodeSessions } from "./providers/anthropic/session";
+import { addClaudeAccount, claudeLoginCommand, removeClaudeAccount } from "./providers/anthropic/accounts";
+import { claudeAccountReports } from "./providers/anthropic/account-pool";
+import { formatClaudeAccountReports } from "./providers/anthropic/account-report";
 import { HISTORY_PAGE_BYTE_BUDGET, INITIAL_HISTORY_TURNS, buildHistoryUpdatedEvents, compactHistoryImages, pageDisplayHistory, type HistoryWindowOptions } from "./history-pagination";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
 import { randomUUID } from "crypto";
@@ -349,6 +352,48 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   const fastDefaultForSelection = (provider: import("./messages").ProviderId, model: string): FastMode => {
     const defaults = effectiveConversationDefaults();
     return provider === defaults.provider && model === defaults.model && defaults.fastMode;
+  };
+  /** `/account claude`: list Claude accounts, or add/remove one. Routing between them is automatic. */
+  const handleClaudeAccountCommand = (client: ConnectedClient, cmd: Extract<Command, { type: "account" }>): void => {
+    if (rejectProxiedProviderAuth(client, cmd.reqId, "anthropic", "manage Claude accounts")) return;
+    const sendList = (prefix: string) => {
+      void claudeAccountReports().then((reports) => {
+        const usage = getLastUsage("anthropic");
+        broadcastUsage("anthropic", usage);
+        const text = formatClaudeAccountReports(reports, usage);
+        server.sendTo(client, { type: "auth_status", reqId: cmd.reqId, message: prefix ? `${prefix}\n\n${text}` : text });
+      }).catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Checking Claude accounts failed: ${msg}` });
+      });
+    };
+    const target = cmd.target?.trim();
+    if (!cmd.action) {
+      sendList(target ? "Claude accounts are chosen per conversation automatically; there is nothing to switch." : "");
+      return;
+    }
+    if (!target) {
+      server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Usage: /account claude ${cmd.action} <name>` });
+      return;
+    }
+    try {
+      if (cmd.action === "add") {
+        const added = addClaudeAccount(target, cmd.configDir);
+        log("info", `handler: Claude account ${added.account.id} added (${added.account.configDir}, linked ${added.linked.join(", ") || "nothing"})`);
+        sendList([
+          `Added Claude account "${added.account.id}" (${added.created ? "created" : "using"} ${added.account.configDir}; shares sessions and settings with the main account).`,
+          "Sign it in from a terminal with Claude Code's own login, then run /account claude to check it:",
+          `  ${claudeLoginCommand(added.account)}`,
+        ].join("\n"));
+      } else {
+        const removed = removeClaudeAccount(target);
+        log("info", `handler: Claude account ${removed.id} removed`);
+        sendList(`Removed Claude account "${removed.id}". Its directory and login are left as they are (${removed.configDir}).`);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Claude account ${cmd.action} failed: ${msg}` });
+    }
   };
   const formatOpenAIAccount = (account: ReturnType<typeof listOpenAIAccounts>[number]): string => {
     const marker = account.current ? "*" : " ";
@@ -3686,8 +3731,12 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       case "account": {
         server.sendTo(client, { type: "ack", reqId: cmd.reqId });
         const provider = cmd.provider ?? "openai";
+        if (provider === "anthropic") {
+          handleClaudeAccountCommand(client, cmd);
+          break;
+        }
         if (provider !== "openai") {
-          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Account switching is only supported for OpenAI.` });
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Account switching is only supported for OpenAI and Claude.` });
           break;
         }
         if (rejectProxiedProviderAuth(client, cmd.reqId, provider, "switch accounts")) break;

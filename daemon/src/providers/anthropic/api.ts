@@ -24,6 +24,11 @@ import type { ApiMessage, EffortLevel, ModelId } from "../../messages";
 import type { StreamCallbacks, StreamOptions, StreamResult } from "../types";
 import { requireSubscriptionAuth } from "./auth";
 import { claudeProcessOptions } from "./cli";
+import { AuthError } from "../errors";
+import { MAIN_ACCOUNT_ID } from "./accounts";
+import { beginAccountTurn, noteAccountAuthFailure, routeClaudeTurn, touchConversationAccount } from "./account-pool";
+import { noteClaudeAccountWorking } from "./auth-cache";
+import { accountSwitchNotice } from "./routing";
 import { providerProxyRoute } from "../../provider-proxy/route";
 import { createHostToolServer, hostToolDefs, type HostToolBinding } from "./host-tools";
 import { buildClaudeHelperPrompt, buildClaudeUserContent, planClaudePrompt, trailingUserMessages, type ClaudePromptPlan } from "./prompt";
@@ -74,10 +79,10 @@ function systemPromptOption(append: string | undefined): ClaudeQueryOptions["sys
   return { type: "preset", preset: "claude_code", ...(append ? { append } : {}), snapshot: false };
 }
 
-function baseOptions(model: ModelId, options: StreamOptions, cwd: string, stderr: (data: string) => void): ClaudeQueryOptions {
+function baseOptions(model: ModelId, options: StreamOptions, cwd: string, stderr: (data: string) => void, account: string): ClaudeQueryOptions {
   const effort = toClaudeEffort(options.effort);
   return {
-    ...claudeProcessOptions(cwd),
+    ...claudeProcessOptions(cwd, account),
     model,
     includePartialMessages: true,
     thinking: thinkingFor(options.effort),
@@ -93,10 +98,11 @@ function agentTurnOptions(
   plan: ClaudePromptPlan,
   stderr: (data: string) => void,
   binding: () => Promise<HostToolBinding>,
+  account: string,
 ): ClaudeQueryOptions {
   const hostTools = createHostToolServer(options.tools, options.toolExecutor ? binding : null);
   return {
-    ...baseOptions(model, options, cwd, stderr),
+    ...baseOptions(model, options, cwd, stderr, account),
     systemPrompt: systemPromptOption(options.system),
     settingSources: ["user", "project", "local"],
     // Exocortex has no permission prompt UI; Claude Code runs unattended.
@@ -111,9 +117,9 @@ function agentTurnOptions(
   };
 }
 
-function helperOptions(model: ModelId, options: StreamOptions, cwd: string, stderr: (data: string) => void): ClaudeQueryOptions {
+function helperOptions(model: ModelId, options: StreamOptions, cwd: string, stderr: (data: string) => void, account: string): ClaudeQueryOptions {
   return {
-    ...baseOptions(model, options, cwd, stderr),
+    ...baseOptions(model, options, cwd, stderr, account),
     ...(options.system ? { systemPrompt: options.system } : {}),
     tools: [],
     settingSources: [],
@@ -174,6 +180,23 @@ async function runClaudeQuery(
   }
 }
 
+/** Callbacks that also count the account's rate-limit reports as proof that its login works. */
+function accountCallbacks(callbacks: StreamCallbacks, account: string): StreamCallbacks {
+  return {
+    ...callbacks,
+    onHeaders: (headers) => {
+      noteClaudeAccountWorking(account);
+      callbacks.onHeaders?.(headers);
+    },
+  };
+}
+
+function accountStreamState(callbacks: StreamCallbacks, cwd: string, account: string, promptUuid: string | null = null): ClaudeStreamState {
+  const state = createClaudeStreamState(callbacks, cwd, promptUuid);
+  state.account = account === MAIN_ACCOUNT_ID ? null : account;
+  return state;
+}
+
 export async function streamMessage(
   messages: ApiMessage[],
   model: ModelId,
@@ -181,31 +204,70 @@ export async function streamMessage(
   options: StreamOptions = {},
 ): Promise<StreamResult> {
   const { signal } = options;
-  await requireSubscriptionAuth(signal);
-  await loadClaudeSdks();
+  const cwd = options.workingDirectory ?? process.cwd();
+  const agentTurn = isAgentTurn(options);
+  const plan = agentTurn ? planClaudePrompt(messages, cwd) : null;
+  const convId = agentTurn ? options.tracking?.conversationId : undefined;
+  const live = convId ? getClaudeCodeSession(convId) : undefined;
 
+  // Which Claude account runs it (account-pool.ts, routing.ts).
+  const route = await routeClaudeTurn(convId, live && !live.isClosed ? {
+    account: live.account,
+    open: true,
+    backgroundWork: live.hasBackgroundWork,
+  } : null, signal, plan?.resume ? plan.resume.account ?? MAIN_ACCOUNT_ID : null);
+  const account = route.account;
+  await requireSubscriptionAuth(signal, account);
+  await loadClaudeSdks();
+  if (route.movedFrom) {
+    log("info", `anthropic: conversation ${convId ?? "?"} moves from Claude account ${route.movedFrom} to ${account} (${route.reason}: ${route.detail})`);
+    callbacks.onProviderNotice?.(accountSwitchNotice(route));
+  }
+  const endTurn = beginAccountTurn(account);
+  if (convId) touchConversationAccount(convId, account);
+  callbacks = accountCallbacks(callbacks, account);
+  try {
+    return await runStreamMessage(messages, model, callbacks, options, cwd, plan, convId, live, account);
+  } catch (error) {
+    if (error instanceof AuthError && !signal?.aborted) noteAccountAuthFailure(account, error.message);
+    throw error;
+  } finally {
+    endTurn();
+    if (convId) touchConversationAccount(convId, account);
+  }
+}
+
+async function runStreamMessage(
+  messages: ApiMessage[],
+  model: ModelId,
+  callbacks: StreamCallbacks,
+  options: StreamOptions,
+  cwd: string,
+  agentPlan: ClaudePromptPlan | null,
+  convId: string | undefined,
+  live: ReturnType<typeof getClaudeCodeSession>,
+  account: string,
+): Promise<StreamResult> {
+  const { signal } = options;
   let stderr = "";
   const onStderr = (data: string) => { stderr = (stderr + data).slice(-STDERR_TAIL_CHARS); };
-  const cwd = options.workingDirectory ?? process.cwd();
 
-  if (!isAgentTurn(options)) {
-    log("info", `anthropic: Claude Code helper request (model=${model}, effort=${options.effort ?? "default"})`);
-    const state = createClaudeStreamState(callbacks, cwd);
-    return runClaudeQuery(buildClaudeHelperPrompt(messages), helperOptions(model, options, cwd, onStderr), state, signal, () => stderr);
+  if (!agentPlan) {
+    log("info", `anthropic: Claude Code helper request (model=${model}, effort=${options.effort ?? "default"}, account=${account})`);
+    const state = accountStreamState(callbacks, cwd, account);
+    return runClaudeQuery(buildClaudeHelperPrompt(messages), helperOptions(model, options, cwd, onStderr, account), state, signal, () => stderr);
   }
 
-  const plan = planClaudePrompt(messages, cwd);
-  const convId = options.tracking?.conversationId;
-  const key = claudeSessionKey(model, options.effort, cwd, providerProxyRoute("anthropic")?.alias);
+  const plan = agentPlan;
+  const key = claudeSessionKey(model, options.effort, cwd, providerProxyRoute("anthropic")?.alias, account);
 
   // The conversation's Claude Code process is still running (background tasks,
   // or a quick follow-up): continue in it.
-  const live = convId ? getClaudeCodeSession(convId) : undefined;
   const system = options.system ?? "";
   if (live?.canContinue(key, plan.resume, plan.pending, system)) {
     const input = live.planInput(plan.pending);
-    log("info", `anthropic: Claude Code turn in its running process (model=${model}, effort=${options.effort ?? "default"}, cwd=${cwd}, session=${live.sessionId}, input=${input.kind})`);
-    const state = createClaudeStreamState(callbacks, cwd, input.kind === "prompt" ? randomUUID() : null);
+    log("info", `anthropic: Claude Code turn in its running process (model=${model}, effort=${options.effort ?? "default"}, cwd=${cwd}, account=${account}, session=${live.sessionId}, input=${input.kind})`);
+    const state = accountStreamState(callbacks, cwd, account, input.kind === "prompt" ? randomUUID() : null);
     live.rememberAgentTitles(messages);
     if (input.kind === "none") {
       state.done = true;
@@ -220,8 +282,10 @@ export async function streamMessage(
       throw error;
     }
   }
-  // Other settings, a changed system prompt, or a rewound history: the old process cannot continue.
-  live?.close(live.key === key && !live.systemMatches(system) ? "its system prompt changed" : "the conversation moved on from it");
+  // Other settings, a changed system prompt, another account, or a rewound history: the old process cannot continue.
+  live?.close(live.key === key && !live.systemMatches(system)
+    ? "its system prompt changed"
+    : live.account !== account ? "the conversation moved to another Claude account" : "the conversation moved on from it");
 
   const start = (resumePlan: ClaudePromptPlan) => {
     const history = resumePlan.resume ? null : historyMark(resumePlan.pending);
@@ -234,20 +298,21 @@ export async function streamMessage(
       ...(options.system ? { systemAppend: options.system } : {}),
       resume: resumePlan.resume ? { sessionId: resumePlan.resume.sessionId, resumeAt: resumePlan.resume.resumeAt } : null,
       history,
+      ...(account !== MAIN_ACCOUNT_ID ? { account } : {}),
     } : null;
     const relay = meta ? new ClaudeRelay(onStderr) : null;
     const session = openClaudeCodeSession(convId, key, (input, binding) => claudeSdks().claude.query({
       prompt: input,
       options: {
-        ...agentTurnOptions(model, options, cwd, resumePlan, onStderr, binding),
+        ...agentTurnOptions(model, options, cwd, resumePlan, onStderr, binding, account),
         ...(relay && meta ? { spawnClaudeCodeProcess: spawnOptions => relay.launch(spawnOptions, meta) } : {}),
       },
-    }), { relay, resume: resumePlan.resume, history, system });
+    }), { relay, resume: resumePlan.resume, history, system, account });
     session.rememberAgentTitles(messages);
     return session;
   };
-  log("info", `anthropic: Claude Code turn (model=${model}, effort=${options.effort ?? "default"}, cwd=${cwd}, resume=${plan.resume?.sessionId ?? "none"}, pending=${plan.pending.length})`);
-  const state = createClaudeStreamState(callbacks, cwd, randomUUID());
+  log("info", `anthropic: Claude Code turn (model=${model}, effort=${options.effort ?? "default"}, cwd=${cwd}, account=${account}, resume=${plan.resume?.sessionId ?? "none"}, pending=${plan.pending.length})`);
+  const state = accountStreamState(callbacks, cwd, account, randomUUID());
   const session = start(plan);
   try {
     return await session.run(state, buildClaudeUserContent(plan.pending), options.toolExecutor, signal, trailingUserMessages(plan.pending), options.queuedInput);
@@ -262,7 +327,7 @@ export async function streamMessage(
     const fresh: ClaudePromptPlan = { resume: null, pending: messages };
     stderr = "";
     try {
-      return await start(fresh).run(createClaudeStreamState(callbacks, cwd, randomUUID()), buildClaudeUserContent(fresh.pending), options.toolExecutor, signal, trailingUserMessages(fresh.pending), options.queuedInput);
+      return await start(fresh).run(accountStreamState(callbacks, cwd, account, randomUUID()), buildClaudeUserContent(fresh.pending), options.toolExecutor, signal, trailingUserMessages(fresh.pending), options.queuedInput);
     } catch (freshError) {
       if (!signal?.aborted) logStderr(freshError, stderr);
       throw freshError;
@@ -298,16 +363,16 @@ export async function adoptClaudeCodeProcesses(hasConversation: (convId: string)
         // Claude Code is already running: only what the SDK re-sends when it
         // connects matters, and it matches what started the process.
         options: {
-          ...claudeProcessOptions(meta.cwd),
+          ...claudeProcessOptions(meta.cwd, meta.account),
           systemPrompt: systemPromptOption(meta.systemAppend),
           perTaskStopAffordance: true,
           ...(hostTools ? { mcpServers: { [hostTools.name]: hostTools } } : {}),
           spawnClaudeCodeProcess: () => relay,
         },
       });
-    }, { relay, system: meta.systemAppend ?? "" });
+    }, { relay, system: meta.systemAppend ?? "", ...(meta.account ? { account: meta.account } : {}) });
     if (hello.pending) pending.push(meta.convId);
-    log("info", `anthropic: adopted the Claude Code process for ${meta.convId} (relay pid ${hello.pid}${hello.pending ? ", turn running" : ""})`);
+    log("info", `anthropic: adopted the Claude Code process for ${meta.convId} (relay pid ${hello.pid}${meta.account ? `, account ${meta.account}` : ""}${hello.pending ? ", turn running" : ""})`);
   }
   return pending;
 }

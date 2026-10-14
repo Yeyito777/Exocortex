@@ -6,6 +6,7 @@ import { orchestrateSendMessage } from "./orchestrator";
 import { ensureConversationWorkspace } from "./workspace-service";
 
 const scenario = process.argv[2] as "resumed" | "fresh";
+const SWITCH_NOTICE = 'Claude account switched from "main" to "max2": "main" is at a usage limit.';
 const convId = `claude-code-compaction-check-${scenario}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 let compactionCalls = 0;
 let conversationCalls = 0;
@@ -37,6 +38,7 @@ const providerStream = (async (_provider, messages, _model, callbacks, options) 
   }
   conversationCalls += 1;
   sentMessages = messages.length;
+  if (scenario === "resumed") callbacks.onProviderNotice?.(SWITCH_NOTICE);
   callbacks.onProviderCompaction?.({ trigger: "auto", preTokens: 968_000, postTokens: 41_000 });
   return {
     text: "answered",

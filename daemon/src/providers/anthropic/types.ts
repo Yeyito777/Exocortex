@@ -6,6 +6,8 @@ export interface AnthropicAssistantProviderData {
     resumeAt: string;
     /** Claude Code stores sessions per project directory, so resume needs the same cwd. */
     cwd: string;
+    /** Claude account (accounts.ts) the turn ran on; absent means `main`. */
+    account?: string;
   };
 }
 

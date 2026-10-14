@@ -112,6 +112,8 @@ export interface StreamCallbacks {
   onQueuedInput?: (inputs: QueuedInput[]) => Promise<ApiMessage[]>;
   /** A provider managing its own session context (Claude Code) compacted it. */
   onProviderCompaction?: (compaction: ProviderCompaction) => void;
+  /** Something the user should see in the transcript, such as the turn moving to another Claude account. */
+  onProviderNotice?: (text: string) => void;
 }
 
 /** A provider-side context compaction, with the provider's own token counts. */

@@ -1299,6 +1299,21 @@ describe("/login", () => {
     });
   });
 
+  test("returns Claude account commands", () => {
+    const state = createInitialState();
+
+    expect(tryCommand("/account claude", state)).toEqual({ type: "account", provider: "anthropic" });
+    expect(tryCommand("/account anthropic", state)).toEqual({ type: "account", provider: "anthropic" });
+    expect(tryCommand("/account claude add max2", state)).toEqual({ type: "account", provider: "anthropic", action: "add", target: "max2" });
+    expect(tryCommand("/account claude add max2 ~/claude-two", state)).toEqual({
+      type: "account", provider: "anthropic", action: "add", target: "max2", configDir: "~/claude-two",
+    });
+    expect(tryCommand("/account claude remove max2", state)).toEqual({ type: "account", provider: "anthropic", action: "remove", target: "max2" });
+    expect(tryCommand("/account claude switch max2", state)).toEqual({ type: "handled" });
+    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toContain("/account claude [add");
+    expect(getCommandArgs(state)["/account claude"].map((item) => item.name)).toEqual(["add", "remove"]);
+  });
+
   test("autocompletes OpenAI account switching and censors emails when hide mode is enabled", () => {
     const state = createInitialState();
     state.providerRegistry = structuredClone(providers);
@@ -1313,7 +1328,7 @@ describe("/login", () => {
     };
 
     const args = getCommandArgs(state);
-    expect(args["/account"].map((item) => item.name)).toEqual(["o**@example.com", "t**@example.com"]);
+    expect(args["/account"].map((item) => item.name)).toEqual(["claude", "o**@example.com", "t**@example.com"]);
     expect(args["/account"].map((item) => item.desc).join("\n")).toContain("current");
   });
 

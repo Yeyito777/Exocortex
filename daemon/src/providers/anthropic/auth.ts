@@ -9,7 +9,9 @@
 import { loadProviderAuth, saveProviderAuth, type OAuthProfile, type StoredAuth } from "../../store";
 import { AuthError } from "../errors";
 import type { EnsureAuthResult, LoginCallbacks, LoginResult } from "../types";
-import { getClaudeAuthStatus, getClaudeAuthStatusSync, getClaudeVersion, isSubscriptionAuth, loginWithClaudeCli } from "./cli";
+import { getClaudeAuthStatusSync, getClaudeVersion, isSubscriptionAuth, loginWithClaudeCli } from "./cli";
+import { MAIN_ACCOUNT_ID, claudeLoginCommand, getClaudeAccount } from "./accounts";
+import { cachedClaudeAuthStatus, invalidateClaudeAuthStatus } from "./auth-cache";
 import type { ClaudeAuthStatus } from "./types";
 import { isProviderProxied, providerProxyReady } from "../../provider-proxy/route";
 
@@ -63,7 +65,14 @@ function toStoredAuth(status: ClaudeAuthStatus, cliVersion: string | null): Stor
   };
 }
 
-function subscriptionError(status: ClaudeAuthStatus): AuthError {
+function subscriptionError(status: ClaudeAuthStatus, account = MAIN_ACCOUNT_ID): AuthError {
+  if (account !== MAIN_ACCOUNT_ID) {
+    const entry = getClaudeAccount(account);
+    const login = entry ? claudeLoginCommand(entry) : "claude auth login --claudeai";
+    return new AuthError(status.loggedIn
+      ? `Claude account "${account}" is signed in with ${status.authMethod ?? "an unknown method"}, not a Claude subscription. Run \`${login}\` in a terminal.`
+      : `Claude account "${account}" is not signed in. Run \`${login}\` in a terminal.`);
+  }
   if (!status.loggedIn) {
     return new AuthError("Claude Code is not signed in. Run `claude auth login` (or /login anthropic) and try again.");
   }
@@ -74,11 +83,12 @@ function subscriptionError(status: ClaudeAuthStatus): AuthError {
 }
 
 /**
- * Verify Claude Code is installed and signed in with a Claude subscription.
+ * Verify Claude Code is installed and signed in to `account` with a Claude
+ * subscription, from the per-account status cache (auth-cache.ts).
  * Under /proxy the remote machine's login is what counts: wait for its link
  * and check that it can serve Anthropic instead.
  */
-export async function requireSubscriptionAuth(signal?: AbortSignal): Promise<ClaudeAuthStatus> {
+export async function requireSubscriptionAuth(signal?: AbortSignal, account = MAIN_ACCOUNT_ID): Promise<ClaudeAuthStatus> {
   if (isProviderProxied(PROVIDER_ID)) {
     const remote = await providerProxyReady(PROVIDER_ID, signal);
     return {
@@ -91,15 +101,15 @@ export async function requireSubscriptionAuth(signal?: AbortSignal): Promise<Cla
   if (loadStored()?.source === "disconnected") {
     throw new AuthError("Anthropic is disconnected. Run /login anthropic to use Claude Code again.");
   }
-  const status = await getClaudeAuthStatus(signal);
-  if (!isSubscriptionAuth(status)) throw subscriptionError(status);
+  const status = await cachedClaudeAuthStatus(account, { signal });
+  if (!isSubscriptionAuth(status)) throw subscriptionError(status, account);
   return status;
 }
 
 /** Like requireSubscriptionAuth, but (re)connects and caches account metadata. */
 async function probeSubscriptionAuth(signal?: AbortSignal): Promise<ClaudeAuthStatus> {
   const version = await getClaudeVersion(signal);
-  const status = await getClaudeAuthStatus(signal);
+  const status = await cachedClaudeAuthStatus(MAIN_ACCOUNT_ID, { signal, maxAgeMs: 0 });
   if (!isSubscriptionAuth(status)) throw subscriptionError(status);
   saveProviderAuth(PROVIDER_ID, toStoredAuth(status, version));
   return status;
@@ -118,8 +128,11 @@ export async function login(callbacks?: LoginCallbacks | ((msg: string) => void)
   const cbs: LoginCallbacks = typeof callbacks === "function" ? { onProgress: callbacks } : callbacks ?? {};
   cbs.onProgress?.("Checking Claude Code installation...");
   await getClaudeVersion();
-  const current = await getClaudeAuthStatus();
-  if (!isSubscriptionAuth(current)) await loginWithClaudeCli(cbs);
+  const current = await cachedClaudeAuthStatus(MAIN_ACCOUNT_ID, { maxAgeMs: 0 });
+  if (!isSubscriptionAuth(current)) {
+    await loginWithClaudeCli(cbs);
+    invalidateClaudeAuthStatus(MAIN_ACCOUNT_ID);
+  }
   cbs.onProgress?.("Verifying Claude subscription...");
   const status = await probeSubscriptionAuth();
   return { profile: profileFromStatus(status) };

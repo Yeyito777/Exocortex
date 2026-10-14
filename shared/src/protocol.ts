@@ -1059,8 +1059,19 @@ export interface AccountCommand {
   type: "account";
   reqId?: string;
   provider?: ProviderId;
-  /** Account selector, currently OpenAI email/censored-email. Omitted to list accounts. */
+  /**
+   * Account selector: an OpenAI email/censored-email to switch to, or the
+   * Claude account name for `action`. Omitted to list accounts.
+   */
   target?: string;
+  /**
+   * Anthropic only: `add` registers Claude account `target` (a Claude Code
+   * config directory to sign in to), `remove` unregisters it. Claude accounts
+   * are chosen per conversation automatically, never switched globally.
+   */
+  action?: "add" | "remove";
+  /** Anthropic `add`: the config directory (default `~/.claude-<target>`). */
+  configDir?: string;
 }
 
 export interface ConsumeUsageResetCommand {

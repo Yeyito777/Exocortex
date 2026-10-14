@@ -78,4 +78,46 @@ describe("usage status block", () => {
     expect(stripAnsi(block!.rows[0]).length).toBe(block!.width);
     expect(stripAnsi(block!.rows[1]).length).toBe(block!.width);
   });
+
+  test("combined Claude accounts fill one bar scaled to their capacity and list the two soonest resets", () => {
+    const now = 1_700_000_000_000;
+    Date.now = () => now;
+    const H = 60 * 60 * 1000;
+
+    const state = createInitialState();
+    state.provider = "anthropic";
+    state.authByProvider.anthropic = true;
+    state.usageByProvider.anthropic = {
+      capacity: 200,
+      fiveHour: { utilization: 100, resetsAt: now + 80 * 60 * 1000, resets: [now + 80 * 60 * 1000, now + 3 * H + 5 * 60 * 1000] },
+      sevenDay: { utilization: 150, resetsAt: now + 3 * 24 * H, resets: [now + 3 * 24 * H, now + 5 * 24 * H, now + 6 * 24 * H] },
+    };
+
+    const block = usageBlock(state)!;
+    const fiveHour = stripAnsi(block.rows[0]);
+    const weekly = stripAnsi(block.rows[1]);
+    // 100 of 200: half the bar.
+    expect(fiveHour).toContain(`[${"\u2588".repeat(10)}${"\u2591".repeat(10)}]`);
+    expect(fiveHour).toContain("100/200% resets in 1h20m · 3h05m");
+    expect(weekly).toContain(`[${"\u2588".repeat(15)}${"\u2591".repeat(5)}]`);
+    expect(weekly).toContain("150/200% resets in 3d · 5d");
+    expect(weekly).not.toContain("6d");
+    expect(fiveHour.length).toBe(block.width);
+    expect(weekly.length).toBe(block.width);
+  });
+
+  test("one Claude account keeps the plain 0-100% bar", () => {
+    const now = 1_700_000_000_000;
+    Date.now = () => now;
+    const state = createInitialState();
+    state.provider = "anthropic";
+    state.authByProvider.anthropic = true;
+    state.usageByProvider.anthropic = {
+      fiveHour: { utilization: 50, resetsAt: now + 2 * 60 * 60 * 1000 },
+      sevenDay: { utilization: 25, resetsAt: now + 2 * 60 * 60 * 1000 },
+    };
+    const block = usageBlock(state)!;
+    expect(stripAnsi(block.rows[0])).toContain("50% resets in 2h:00m");
+    expect(stripAnsi(block.rows[0])).not.toContain("/100");
+  });
 });

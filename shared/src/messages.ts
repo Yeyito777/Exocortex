@@ -695,6 +695,11 @@ export interface UsageWindow {
   utilization: number;
   /** Unix timestamp (ms) when this window resets. Null if unknown. */
   resetsAt: number | null;
+  /**
+   * Combined over several accounts: each account's reset time, soonest
+   * first (`resetsAt` is the first). Omitted for a single account.
+   */
+  resets?: number[];
 }
 
 export interface UsageResetCredits {
@@ -707,6 +712,11 @@ export interface UsageResetCredits {
 export interface UsageData {
   fiveHour: UsageWindow | null;
   sevenDay: UsageWindow | null;
+  /**
+   * Percent that means "full": 100 per account combined into this usage
+   * (two Claude accounts: 0–200%). Omitted for a single account (100).
+   */
+  capacity?: number;
   /** OpenAI reset-credit metadata. Omitted for older caches and unsupported providers. */
   resetCredits?: UsageResetCredits | null;
 }

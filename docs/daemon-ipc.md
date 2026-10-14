@@ -30,6 +30,11 @@ toggle or IPC flag. Select `gpt-6-sol` for standard access. Internally the alias
 sends the base model plus `access_programs.cyber: "daybreak_blue"`, independently
 of effort and speed.
 
+`account` with `provider: "anthropic"` lists Claude accounts, or with
+`action: "add" | "remove"` and `target` registers or unregisters one (see
+[Several Claude accounts](claude-accounts.md)); the reply is an `auth_status`
+message. Claude accounts are chosen per conversation, never switched globally.
+
 `provider_proxy` lists, enables or disables [/proxy](provider-proxy.md);
 daemons also speak the `provider_proxy_*` link messages to each other over
 `exocortexd proxy`.

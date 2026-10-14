@@ -78,6 +78,8 @@ export interface AgentCallbacks {
   takePreemptedOutput?(): ApiContentBlock[];
   /** A provider managing its own session context (Claude Code) compacted it. */
   onProviderCompaction?(compaction: ProviderCompaction): void;
+  /** A provider notice for the transcript (e.g. the turn moved to another Claude account). */
+  onProviderNotice?(text: string): void;
   /** Atomically replace active provider replay with an automatic checkpoint. */
   compactContext?(messages: ApiMessage[], reason: CompactionReason, projectedTokens: number): Promise<ApiMessage[] | null>;
 }
@@ -335,6 +337,7 @@ export async function runAgentLoop(
           onNetworkTrouble: callbacks.onNetworkTrouble,
           onProviderRound: commitProviderRound,
           onProviderCompaction: callbacks.onProviderCompaction,
+          onProviderNotice: callbacks.onProviderNotice,
           onGenerationRate: (rate) => {
             providerMeasuredRates = true;
             callbacks.onGenerationRate?.(rate);

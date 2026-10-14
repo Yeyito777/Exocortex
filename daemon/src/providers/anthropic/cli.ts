@@ -15,6 +15,7 @@ import type { LoginCallbacks } from "../types";
 import { AuthError } from "../errors";
 import type { ClaudeAuthStatus } from "./types";
 import { providerProxyRoute } from "../../provider-proxy/route";
+import { claudeAccountEnv } from "./accounts";
 
 /**
  * The daemon usually runs as a systemd user service whose PATH lacks
@@ -75,12 +76,18 @@ function claudeProxyEnv(): Record<string, string> {
   };
 }
 
-/** Agent SDK options that run this Claude Code binary on the subscription in `cwd`. */
-export function claudeProcessOptions(cwd: string): ClaudeQueryOptions {
+/**
+ * Agent SDK options that run this Claude Code binary on the subscription in
+ * `cwd`, signed in as `account` (accounts.ts; default `main`). Under /proxy
+ * the remote machine's login is used instead, whatever the account.
+ */
+export function claudeProcessOptions(cwd: string, account?: string): ClaudeQueryOptions {
+  const proxy = claudeProxyEnv();
+  const accountEnv = Object.keys(proxy).length > 0 ? {} : claudeAccountEnv(account);
   return {
     cwd,
     pathToClaudeCodeExecutable: getClaudeBinary(),
-    env: { ...claudeSubscriptionEnv(), ...claudeProxyEnv(), CLAUDE_AGENT_SDK_CLIENT_APP: "exocortex-daemon" },
+    env: { ...claudeSubscriptionEnv(), ...accountEnv, ...proxy, CLAUDE_AGENT_SDK_CLIENT_APP: "exocortex-daemon" },
   };
 }
 
@@ -106,13 +113,13 @@ function isLikelyCommandMissing(error: unknown): boolean {
 
 export async function runClaudeCommand(
   args: readonly string[],
-  options: { signal?: AbortSignal; cwd?: string } = {},
+  options: { signal?: AbortSignal; cwd?: string; account?: string } = {},
 ): Promise<ClaudeCommandResult> {
   let proc: Bun.Subprocess<"ignore", "pipe", "pipe">;
   try {
     proc = Bun.spawn([CLAUDE_BINARY, ...args], {
       cwd: options.cwd ?? process.cwd(),
-      env: claudeSubscriptionEnv(),
+      env: { ...claudeSubscriptionEnv(), ...claudeAccountEnv(options.account) },
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
@@ -188,8 +195,13 @@ export function isSubscriptionAuth(status: ClaudeAuthStatus): boolean {
     && (status.apiProvider === undefined || status.apiProvider === "firstParty");
 }
 
-export async function getClaudeAuthStatus(signal?: AbortSignal): Promise<ClaudeAuthStatus> {
-  const result = await runClaudeCommand(["auth", "status", "--json"], { signal });
+/**
+ * Spawn `claude auth status`. Each run can start an OAuth refresh it may not
+ * finish saving (anthropics/claude-code#95822), so callers go through the
+ * per-account cache in account-pool.ts instead of calling this per turn.
+ */
+export async function getClaudeAuthStatus(signal?: AbortSignal, account?: string): Promise<ClaudeAuthStatus> {
+  const result = await runClaudeCommand(["auth", "status", "--json"], { signal, account });
   // `claude auth status` exits non-zero when logged out but still prints JSON.
   const parsed = parseClaudeAuthStatus(result.stdout);
   if (result.exitCode === 0 || result.stdout.trim().startsWith("{")) return parsed;
