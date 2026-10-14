@@ -243,6 +243,9 @@ export function recoverInterruptedStreams(server: DaemonServer, alsoReplay: read
       continue;
     }
     if (convStore.isStreaming(convId)) {
+      // E.g. a queued message admitted into an adopted Claude Code process. A
+      // pending subagent notification still completes when that turn ends: the
+      // orchestrator hands every turn's outcome to the notification runtime.
       log("warn", `restart-recovery: interrupted conversation ${convId} is already streaming; skipping`);
       continue;
     }

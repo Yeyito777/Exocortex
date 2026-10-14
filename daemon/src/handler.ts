@@ -537,8 +537,12 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     log("info", `handler: queued durable subagent completion notification ${record.childConvId} -> parent ${record.parentConvId}`);
   };
 
+  /** Sends admitted but not yet accepted; a repeated completion must not resend or queue them. */
+  const deliveringNotificationIds = new Set<string>();
+
   const deliverReadyParentNotifications = (childConvId?: string): void => {
     for (const record of listPendingSubagentNotifications({ childConvId, state: "ready" })) {
+      if (deliveringNotificationIds.has(record.id)) continue;
       if (hasSubagentNotificationBeenDelivered(record)) {
         acknowledgeSubagentNotification(record.id);
         continue;
@@ -569,6 +573,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       }
 
       log("info", `handler: sending durable subagent completion notification ${record.childConvId} -> parent ${record.parentConvId}`);
+      deliveringNotificationIds.add(record.id);
       void orchestrateSendMessage(
         server,
         null,
@@ -584,12 +589,14 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           automation: { kind: "subagent_completion", sourceId: record.childConvId },
         },
       ).then(() => {
+        deliveringNotificationIds.delete(record.id);
         // Preflight failures do not accept the user message and therefore leave
         // the durable record in place. Retry without duplicating accepted turns.
         if (listPendingSubagentNotifications().some((candidate) => candidate.id === record.id)) {
           scheduleNotificationRetry();
         }
       }).catch((err) => {
+        deliveringNotificationIds.delete(record.id);
         const msg = err instanceof Error ? err.message : String(err);
         log("error", `handler: parent notification send failed for ${record.parentConvId}: ${msg}`);
         scheduleNotificationRetry();
