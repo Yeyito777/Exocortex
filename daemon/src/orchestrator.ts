@@ -50,7 +50,7 @@ import { buildCodexWindowId } from "./providers/openai/identity";
 import { resolveToolCallPresentation } from "./helper-tool-manifest";
 import { pendingTurnNotices } from "./turn-notices";
 import { setBackgroundTaskActive as setConversationBackgroundTaskActive, setChronoTaskActive as setConversationChronoTaskActive } from "./conversation-activity";
-import { acknowledgeSubagentNotification, settlePendingSubagentNotifications } from "./subagent-notifications";
+import { acknowledgeSubagentNotification, getSubagentNotificationRuntime, settlePendingSubagentNotifications } from "./subagent-notifications";
 import { noteRequestedRestartTurnEnded } from "./requested-restart";
 import { getDaemonShutdownMode } from "./daemon-lifecycle";
 import { ensureConversationWorkspace } from "./workspace-service";
@@ -2126,7 +2126,15 @@ async function orchestrateAdmittedAssistantTurn(
     convStore.clearActiveJob(convId);
     convStore.clearCurrentStreamingBlocks(convId);
     convStore.resetChunkCounter(convId);
-    if (outcome && !manualCompaction && !outcome.suspended) settlePendingSubagentNotifications(convId, outcome);
+    // The turn, not whichever producer started it, owns subagent completion: after
+    // a restart the child's turn may be a queued message admitted into an adopted
+    // Claude Code process, which no starter callback follows. The runtime settles,
+    // clears the parent's task and delivers; starters completing again are no-ops.
+    if (outcome && !manualCompaction && !outcome.suspended && !(outcome.aborted && outcome.daemonRestart)) {
+      const notifications = getSubagentNotificationRuntime(server);
+      if (notifications) notifications.complete(convId, outcome);
+      else settlePendingSubagentNotifications(convId, outcome);
+    }
     if (interruptedSleep) completeDeferredChronoSleepResume(interruptedSleep.id);
     // unwindTo persists a small truncation overlay after this finalizer stops.
     // Saving the interrupted suffix here would be both obsolete and a full-file

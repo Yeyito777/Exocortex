@@ -10,6 +10,14 @@ import { getProviderAdapter } from "./providers/catalog";
 import { invalidateCredentialsCache } from "./auth";
 import { createOpenAIEventAccumulator } from "./providers/openai/stream";
 import { getStaleStreams } from "./streaming";
+import {
+  beginPendingSubagentNotification,
+  listPendingSubagentNotifications,
+  registerSubagentNotificationRuntime,
+  removePendingSubagentNotificationsForConversation,
+  settlePendingSubagentNotifications,
+  type SubagentNotificationOutcome,
+} from "./subagent-notifications";
 
 const IDS: string[] = [];
 
@@ -1979,5 +1987,84 @@ describe("DB-first orchestrator persistence", () => {
     expect(loadPersisted(convId)!.messages.map(message => message.content)).toEqual(["turn to replace"]);
     expect(events).toContainEqual(expect.objectContaining({ type: "streaming_stopped", reason: "unwind" }));
     expect(events).not.toContainEqual(expect.objectContaining({ type: "system_message" }));
+  });
+});
+
+describe("subagent completion is owned by the turn, not its starter", () => {
+  function notificationServer() {
+    const completed: Array<{ childConvId: string; outcome: SubagentNotificationOutcome }> = [];
+    const fake = server();
+    registerSubagentNotificationRuntime(fake, {
+      begin: beginPendingSubagentNotification,
+      complete: (childConvId, outcome) => {
+        completed.push({ childConvId, outcome });
+        settlePendingSubagentNotifications(childConvId, outcome);
+      },
+      deliverReady: () => {},
+    });
+    return { fake, completed };
+  }
+
+  // After a restart the child's turn can be started by the queue pump (or any
+  // other producer that has no notification callback), e.g. a queued parent
+  // message admitted into an adopted Claude Code process. Its end must still
+  // complete the parent notification and clear the parent's task.
+  test("a turn on a child started by a producer without a callback completes its parent notification", async () => {
+    const parentId = id("notify-parent");
+    const childId = id("notify-child");
+    create(parentId, "openai", "gpt-5.6-sol");
+    create(childId, "openai", "gpt-5.6-sol");
+    const pending = beginPendingSubagentNotification({ convId: parentId }, childId, "child task", 20_000, 0);
+    const { fake, completed } = notificationServer();
+    const fakeStream = (async () => ({
+      text: "child result",
+      thinking: "",
+      stopReason: "stop" as const,
+      blocks: [{ type: "text" as const, text: "child result" }],
+      toolCalls: [],
+      inputTokens: 10,
+      outputTokens: 3,
+    })) as typeof streamMessage;
+
+    try {
+      const outcome = await orchestrateSendMessage(
+        fake as never, null, undefined, childId, "FYI from the parent", Date.now(), callbacks(fakeStream),
+      );
+
+      expect(outcome.ok).toBe(true);
+      expect(completed).toEqual([{ childConvId: childId, outcome: expect.objectContaining({ ok: true }) }]);
+      expect(listPendingSubagentNotifications({ childConvId: childId })).toEqual([
+        expect.objectContaining({ id: pending.id, state: "ready", text: expect.stringContaining("child result") }),
+      ]);
+    } finally {
+      removePendingSubagentNotificationsForConversation(childId);
+    }
+  });
+
+  test("a daemon-restart abort leaves the notification running for the next daemon", async () => {
+    const parentId = id("restart-parent");
+    const childId = id("restart-child");
+    create(parentId, "openai", "gpt-5.6-sol");
+    create(childId, "openai", "gpt-5.6-sol");
+    const pending = beginPendingSubagentNotification({ convId: parentId }, childId, "child task", 30_000, 0);
+    const { fake, completed } = notificationServer();
+    const fakeStream = (async () => {
+      getActiveJob(childId)!.abort("daemon-restart");
+      throw new Error("transport closed for restart");
+    }) as typeof streamMessage;
+
+    try {
+      const outcome = await orchestrateSendMessage(
+        fake as never, null, undefined, childId, "child task", 30_000, callbacks(fakeStream),
+      );
+
+      expect(outcome).toMatchObject({ aborted: true, daemonRestart: true });
+      expect(completed).toEqual([]);
+      expect(listPendingSubagentNotifications({ childConvId: childId })).toEqual([
+        expect.objectContaining({ id: pending.id, state: "running" }),
+      ]);
+    } finally {
+      removePendingSubagentNotificationsForConversation(childId);
+    }
   });
 });

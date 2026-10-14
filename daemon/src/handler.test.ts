@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { appendMessages, consumeGoalContinuationAfterStream, create, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, get, getQueuedMessageById, getQueuedMessages, getSummary, listQueuedMessages, pushGlobalIdleQueuedMessage, pushQueuedMessage, remove, removeQueuedMessageById, setGoal, updateGoalStatus } from "./conversations";
 import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, defaultEffortForModelId } from "./messages";
 import { appendToStreamingBlock, clearActiveJob, clearActiveSteerHandler, clearActiveToolBackgrounder, clearCurrentStreamingBlocks, initStreamingState, replaceCurrentStreamingBlocks, setActiveJob, setActiveSteerHandler, setActiveToolBackgrounder, setStreamingCommittedMessageCount } from "./streaming";
-import { beginPendingSubagentNotification, listPendingSubagentNotifications, removePendingSubagentNotificationsForConversation } from "./subagent-notifications";
+import { beginPendingSubagentNotification, getSubagentNotificationRuntime, listPendingSubagentNotifications, removePendingSubagentNotificationsForConversation } from "./subagent-notifications";
 import { getDaemonShutdownMode, resetDaemonShutdownModeForTest } from "./daemon-lifecycle";
 import { clearActiveGoalRestartMarker, clearInterruptedStreamIds, hasActiveGoalRestartMarker, readInterruptedStreamIds } from "./restart-markers";
 import { invalidateCredentialsCache } from "./auth";
@@ -2091,6 +2091,84 @@ describe("handler subagent folder placement", () => {
 
     expect(getSummary(parentId)?.subagentCount).toBe(0);
     expect(orchestrateSendMessage).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("handler subagent completion delivery", () => {
+  beforeEach(() => {
+    orchestrateSendMessage.mockClear();
+    cleanupIds();
+    saveProviderAuth("openai", {
+      tokens: {
+        accessToken: "valid-access-token",
+        refreshToken: "valid-refresh-token",
+        expiresAt: Date.now() + 60 * 60_000,
+        scopes: [],
+        subscriptionType: "pro",
+        rateLimitTier: null,
+      },
+      profile: {
+        accountUuid: "acct_one",
+        email: "one@example.com",
+        displayName: null,
+        organizationUuid: null,
+        organizationName: null,
+        organizationType: null,
+        organizationRole: null,
+        workspaceRole: null,
+      },
+      updatedAt: new Date().toISOString(),
+      source: "oauth",
+      authMode: null,
+      accountId: "acct_one",
+      idToken: null,
+    });
+    invalidateCredentialsCache("openai");
+  });
+  afterEach(() => {
+    clearProviderAuth("openai");
+    invalidateCredentialsCache("openai");
+    cleanupIds();
+  });
+
+  // The orchestrator completes a child's notification when its turn ends, and
+  // the turn's starter (exo runtime, detached send, recovery) completes it again.
+  // The second completion must not send the parent a duplicate while the first
+  // parent turn is still being admitted.
+  test("completing the same child twice sends the parent one notification", async () => {
+    const parentId = mkId("double-complete-parent");
+    const childId = mkId("double-complete-child");
+    create(parentId, "openai", "gpt-5.4", "parent");
+    create(childId, "openai", "gpt-5.4", "child");
+    const pending = beginPendingSubagentNotification({ convId: parentId }, childId, "child task", 111, 0);
+    const server = {
+      sendTo: mock(() => {}),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    createHandler(server as never);
+    const runtime = getSubagentNotificationRuntime(server)!;
+    let finishParent!: (outcome: ReturnType<typeof makeAssistantOutcome>) => void;
+    orchestrateSendMessage.mockImplementationOnce(() => new Promise((resolve) => {
+      finishParent = resolve;
+    }));
+
+    runtime.complete(childId, makeAssistantOutcome());
+    runtime.complete(childId, makeAssistantOutcome());
+
+    const parentSends = () => (orchestrateSendMessage.mock.calls as unknown[][])
+      .filter(call => call[3] === parentId);
+    expect(parentSends()).toHaveLength(1);
+    expect(parentSends()[0]?.[8]).toEqual(expect.objectContaining({ subagentNotificationId: pending.id }));
+    expect(getQueuedMessages(parentId)).toEqual([]);
+
+    finishParent(makeAssistantOutcome());
+    await Promise.resolve();
+    await Promise.resolve();
   });
 });
 
