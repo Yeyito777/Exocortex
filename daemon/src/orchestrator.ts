@@ -1581,6 +1581,14 @@ async function orchestrateAdmittedAssistantTurn(
         server.sendToSubscribers(convId, { type: "context_update", convId, streamSeq: convStore.nextStreamSeq(convId), contextTokens: postTokens });
       }
     },
+    onProviderNotice(text) {
+      log("info", `orchestrator: provider notice for ${convId}: ${text}`);
+      transcriptMarkers.push({
+        afterIndex: agentState.completedMessages.length,
+        message: { role: "system", content: text, metadata: null },
+      });
+      server.sendToSubscribers(convId, { type: "system_message", convId, streamSeq: convStore.nextStreamSeq(convId), text });
+    },
     onHeaders(headers) {
       convStore.touchActivity(convId);
       noteProviderProgress();

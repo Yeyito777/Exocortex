@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { ProviderRound, StreamCallbacks } from "../types";
 import { agentTitlesInHistory, ClaudeOverageError, commitInterruptedRound, createClaudeStreamState, finalizeClaudeStream, pushClaudeMessage } from "./stream";
-import { handleUsageHeaders } from "./usage";
+import { applyUsageHeaders, CLAUDE_ACCOUNT_HEADER, getAccountUsage } from "./usage";
 
 function recorder() {
   const events: string[] = [];
@@ -318,12 +318,18 @@ describe("Claude Code stream translation", () => {
       unifiedWindows: { five_hour: { utilization: 0.25, resetsAt: 1791496800 }, seven_day: { utilization: 0.5, resetsAt: 1791619200 } },
     };
     pushClaudeMessage(state, { type: "rate_limit_event", rate_limit_info: info });
-    const updates: unknown[] = [];
-    handleUsageHeaders(headers[0], (usage) => updates.push(usage));
-    expect(updates).toEqual([{
+    expect(headers[0].get(CLAUDE_ACCOUNT_HEADER)).toBeNull();
+    expect(applyUsageHeaders(headers[0])).toBe("main");
+    expect(getAccountUsage("main")).toEqual({
       fiveHour: { utilization: 25, resetsAt: 1791496800000 },
       sevenDay: { utilization: 50, resetsAt: 1791619200000 },
-    }]);
+    });
+
+    const other = recorder();
+    const otherState = createClaudeStreamState(other.callbacks, "/work");
+    otherState.account = "max2";
+    pushClaudeMessage(otherState, { type: "rate_limit_event", rate_limit_info: info });
+    expect(other.headers[0].get(CLAUDE_ACCOUNT_HEADER)).toBe("max2");
 
     expect(() => pushClaudeMessage(state, { type: "rate_limit_event", rate_limit_info: { ...info, isUsingOverage: true } }))
       .toThrow(ClaudeOverageError);

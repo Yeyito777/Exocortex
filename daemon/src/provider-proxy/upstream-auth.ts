@@ -18,7 +18,8 @@ import { getProviderAdapter } from "../providers/catalog";
 import { getCurrentAccountScope, getVerifiedSession } from "../providers/openai/auth";
 import { buildCloudflareCookieHeader, storeCloudflareCookiesFromHeaders } from "../providers/openai/cookies";
 import { requireSubscriptionAuth } from "../providers/anthropic/auth";
-import { refreshClaudeCodeLogin } from "../providers/anthropic/usage";
+import { getAccountUsage, refreshClaudeCodeLogin } from "../providers/anthropic/usage";
+import { MAIN_ACCOUNT_ID } from "../providers/anthropic/accounts";
 import { log } from "../log";
 import { isProviderProxied } from "./route";
 
@@ -246,7 +247,8 @@ export function createLocalUpstreamAuth(overrides: Partial<UpstreamCredentialSou
         ...(error ? { error } : {}),
         authInfo,
         accountScope,
-        usage: loggedIn ? getLastUsage(provider) : null,
+        // /proxy forwards through the main Claude account only, so it reports that account's usage.
+        usage: loggedIn ? (provider === "anthropic" ? getAccountUsage(MAIN_ACCOUNT_ID) : getLastUsage(provider)) : null,
       };
     },
 

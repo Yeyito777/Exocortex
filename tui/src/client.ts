@@ -1040,8 +1040,8 @@ export class DaemonClient {
     this.send({ type: "login", provider, apiKey, action, target, method });
   }
 
-  account(provider?: ProviderId, target?: string): void {
-    this.send({ type: "account", provider, target });
+  account(provider?: ProviderId, target?: string, action?: "add" | "remove", configDir?: string): void {
+    this.send({ type: "account", provider, target, ...(action ? { action } : {}), ...(configDir ? { configDir } : {}) });
   }
 
   consumeUsageReset(provider: ProviderId = "openai"): void {

@@ -34,6 +34,7 @@ import type { QueuedInput, QueuedInputSource, StreamResult } from "../types";
 import type { HostToolBinding } from "./host-tools";
 import { buildLiveSessionContent, buildQueuedInputContent, trailingUserMessages } from "./prompt";
 import type { ClaudeRelay } from "./relay-client";
+import { MAIN_ACCOUNT_ID } from "./accounts";
 import { endsInterruptedTurn, startsClaudeTurn, type RelayHistoryMark, type RelayResumePoint } from "./relay-protocol";
 import { agentTitlesInHistory, commitInterruptedRound, finalizeClaudeStream, pushClaudeMessage, takeQueuedInput, type ClaudeStreamState } from "./stream";
 import type { AnthropicAssistantProviderData } from "./types";
@@ -71,6 +72,8 @@ export interface ClaudeCodeSessionOptions {
   history?: RelayHistoryMark | null;
   /** What Exocortex appended to Claude Code's system prompt when the process started. */
   system?: string;
+  /** Claude account (accounts.ts) the process is signed in as; default `main`. */
+  account?: string;
 }
 
 /** What a turn sends into a running process. */
@@ -161,9 +164,14 @@ function systemFingerprint(system: string): string {
  * Settings a running process was started with; a turn needing others starts a
  * new one. `proxyAlias` is the /proxy alias its requests go through, if any:
  * its environment points there, so toggling /proxy needs a new process.
+ * Likewise a process is signed in as one Claude account (other than `main`,
+ * which keeps the key it had before accounts existed).
  */
-export function claudeSessionKey(model: string, effort: string | undefined, cwd: string, proxyAlias?: string | null): string {
-  return JSON.stringify(proxyAlias ? [model, effort ?? null, cwd, `proxy:${proxyAlias}`] : [model, effort ?? null, cwd]);
+export function claudeSessionKey(model: string, effort: string | undefined, cwd: string, proxyAlias?: string | null, account?: string | null): string {
+  const key: string[] = [model, effort ?? null, cwd] as string[];
+  if (proxyAlias) key.push(`proxy:${proxyAlias}`);
+  else if (account && account !== MAIN_ACCOUNT_ID) key.push(`account:${account}`);
+  return JSON.stringify(key);
 }
 
 /** Prompt stream that stays open, so later turns can send into the same process. */
@@ -380,6 +388,8 @@ export function buildWakeText(notes: readonly TaskNote[]): string {
 
 export class ClaudeCodeSession {
   readonly key: string;
+  /** Claude account the process is signed in as. */
+  readonly account: string;
   /** Fingerprint of the system prompt addition the process started with. */
   private readonly system: string;
   sessionId: string | null = null;
@@ -425,6 +435,7 @@ export class ClaudeCodeSession {
 
   constructor(private readonly convId: string | undefined, key: string, start: StartClaudeRuntime, options: ClaudeCodeSessionOptions = {}) {
     this.key = key;
+    this.account = options.account ?? MAIN_ACCOUNT_ID;
     this.system = systemFingerprint(options.system ?? "");
     this.relay = options.relay ?? null;
     const hello = this.relay?.hello ?? null;
@@ -443,6 +454,11 @@ export class ClaudeCodeSession {
 
   get isClosed(): boolean {
     return this.closed;
+  }
+
+  /** Background tasks, or a turn Claude Code started by itself, that closing the process would stop. */
+  get hasBackgroundWork(): boolean {
+    return !this.closed && (this.tasks.size > 0 || this.wakeId !== null || this.held || this.buffer.length > 0);
   }
 
   /**

@@ -42,6 +42,8 @@ export interface RelayMeta {
   resume: RelayResumePoint | null;
   /** For a new session (no resume point): the history it was started with. */
   history?: RelayHistoryMark | null;
+  /** Claude account (accounts.ts) the process is signed in as; absent means `main`. */
+  account?: string;
 }
 
 /** The first `count` messages of a conversation, by their combined key (see historyKey). */

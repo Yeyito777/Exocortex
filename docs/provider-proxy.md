@@ -38,7 +38,9 @@ shows `Proxy: <alias> connected|connecting|down` (and the remote account)
 while the current provider is proxied; `/proxy` lists the reasons for a down
 link. While proxied, the provider's account info and 5-hour/weekly bars show
 the remote account, and `/login`, `/logout` and `/account` for that provider
-explain that the login lives on the remote.
+explain that the login lives on the remote. For Anthropic that is the remote's
+`main` Claude account; its [other Claude accounts](claude-accounts.md) are not
+reachable through /proxy.
 
 The alias is an OpenSSH host alias, resolved by the daemon's own `ssh` (same
 flags as `/ssh`: `BatchMode=yes`, keepalives, `ControlPath=none`). The daemon

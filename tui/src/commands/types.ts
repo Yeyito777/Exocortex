@@ -41,7 +41,7 @@ type CommandAction =
   | { type: "rename_conversation"; title: string }
   | { type: "generate_title" }
   | { type: "login"; provider?: ProviderId; apiKey?: string; action?: "add" | "remove"; target?: string; method?: OpenAILoginMethod }
-  | { type: "account"; provider?: ProviderId; target?: string }
+  | { type: "account"; provider?: ProviderId; target?: string; action?: "add" | "remove"; configDir?: string }
   | { type: "usage_reset_requested"; provider: ProviderId }
   | { type: "logout"; provider?: ProviderId }
   | { type: "theme_changed" }

@@ -2,7 +2,7 @@ import { DEFAULT_MODEL_BY_PROVIDER } from "@exocortex/shared/messages";
 import { streamMessage } from "./api";
 import { clearAuth, ensureAuthenticated, hasConfiguredCredentials, login, verifyAuth } from "./auth";
 import { FALLBACK_ANTHROPIC_MODELS, fetchAnthropicModels } from "./models";
-import { clearUsage, getLastUsage, handleUsageHeaders, refreshRemoteUsage, refreshUsage } from "./usage";
+import { clearUsage, getLastUsage, handleUsageHeaders, refreshRemoteUsage, refreshUsage } from "./account-pool";
 import type { ProviderAdapter } from "../types";
 
 export const anthropicProvider: ProviderAdapter = {

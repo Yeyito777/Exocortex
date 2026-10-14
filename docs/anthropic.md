@@ -115,13 +115,24 @@ Claude subscription's usage limits:
   Under [/proxy](provider-proxy.md), Exocortex itself sets
   `ANTHROPIC_BASE_URL` to its loopback forwarder and `CLAUDE_CODE_OAUTH_TOKEN`
   to the forwarder's secret; the remote machine's Claude Code login is used.
-- Every send checks `claude auth status` and refuses unless it reports a
-  `claude.ai` login (under /proxy, the remote's).
+- Sends refuse unless `claude auth status` reports a `claude.ai` login
+  (under /proxy, the remote's). The status is cached per account and checked
+  at most every 10 minutes, since each `claude auth status` can start a token
+  refresh it may not save (anthropics/claude-code#95822); a turn that reports
+  usage counts as a fresh check.
 - If Claude Code reports that a turn is running on extra usage (overage), the
   turn is stopped.
 
 The five-hour and seven-day subscription windows reported by Claude Code feed
 Exocortex's usage display.
+
+## Several Claude accounts
+
+Exocortex can use more than one Claude subscription, each signed in to its own
+Claude Code configuration directory. Conversations stay on their account
+while their prompt cache is warm, and new work goes to the account whose
+capacity expires soonest. The usage bars combine the accounts (two accounts:
+0–200%). See [Several Claude accounts](claude-accounts.md).
 
 ## Setup
 
@@ -131,5 +142,5 @@ claude auth login            # once, in a terminal (or /login anthropic)
 ```
 
 `/logout anthropic` disconnects Exocortex only; the Claude Code CLI stays signed
-in. Set `CLAUDE_CODE_BIN` if `claude` is not on the daemon's `PATH`,
+in. `/account claude` lists the Claude accounts and adds or removes one. Set `CLAUDE_CODE_BIN` if `claude` is not on the daemon's `PATH`,
 `~/.local/bin`, or `~/.claude/local`.

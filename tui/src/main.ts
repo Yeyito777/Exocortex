@@ -1074,7 +1074,7 @@ function handleSubmit(): void {
           daemon.login(cmdResult.provider ?? state.provider, cmdResult.apiKey, cmdResult.action, cmdResult.target, cmdResult.method);
           break;
         case "account":
-          daemon.account(cmdResult.provider ?? "openai", cmdResult.target);
+          daemon.account(cmdResult.provider ?? "openai", cmdResult.target, cmdResult.action, cmdResult.configDir);
           break;
         case "usage_reset_requested":
           daemon.consumeUsageReset(cmdResult.provider);
