@@ -29,7 +29,7 @@ export function usageResetsBlock(state: RenderState): StatusBlock | null {
 
   const countLabel = "  Usage Resets: ";
   const count = String(resetCredits.availableCount);
-  const expiryLabel = "  Next Expiriy: ";
+  const expiryLabel = "  Next Expiry: ";
   const expiry = formatTimeUntil(resetCredits.nextExpiresAt, Date.now());
   const countWidth = countLabel.length + count.length;
   const expiryWidth = expiryLabel.length + expiry.length;

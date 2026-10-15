@@ -38,7 +38,7 @@ describe("usage reset status block", () => {
     expect(block!.priority).toBeGreaterThan(contextBlock(state)!.priority);
     expect(block!.priority).toBeLessThan(usageBlock(state)!.priority);
     expect(stripAnsi(block!.rows[0]).trim()).toBe("Usage Resets: 3");
-    expect(stripAnsi(block!.rows[1]).trim()).toBe("Next Expiriy: 2d:3h:04m");
+    expect(stripAnsi(block!.rows[1]).trim()).toBe("Next Expiry: 2d:3h:04m");
     expect(block!.rows[0]).toContain(`${theme.accent}3`);
     expect(block!.rows[1]).toContain(`${theme.accent}2d:3h:04m`);
     expect(stripAnsi(block!.rows[0]).length).toBe(block!.width);
