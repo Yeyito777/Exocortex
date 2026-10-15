@@ -8,6 +8,7 @@
 import type { KeyEvent, MouseEvent } from "../input";
 import { moveTo } from "../frame";
 import { theme } from "../theme";
+import type { ScreenRect } from "../historyimages";
 import { padRightToWidth, termWidth, truncateToWidth } from "../textwidth";
 import { buildDisplayRows } from "./rows";
 import type { SidebarState } from "./state";
@@ -196,16 +197,16 @@ export function handleConversationActionMenuMouse(
   return activateSelectedConversationAction(menu);
 }
 
-/** Render the menu immediately to the right of the fixed-width sidebar. */
+/** Render the menu immediately to the right of the fixed-width sidebar, with the screen box it draws on (images are cropped around it). */
 export function renderConversationActionMenu(
   menu: ConversationActionMenuState,
   anchorRow: number,
   leftCol: number,
   totalRows: number,
   totalCols: number,
-): string {
+): { payload: string; rect: ScreenRect | null } {
   const layout = conversationActionMenuLayout(menu, anchorRow, leftCol, totalRows, totalCols);
-  if (!layout) return "";
+  if (!layout) return { payload: "", rect: null };
 
   const labels = ACTIONS.map(action => actionLabel(menu, action));
   const border = theme.sidebarBg + theme.accent;
@@ -232,5 +233,13 @@ export function renderConversationActionMenu(
     moveTo(layout.topRow + layout.boxHeight - 1, layout.leftCol)
     + border + `└${"─".repeat(layout.innerWidth)}┘` + theme.reset,
   );
-  return out.join("");
+  return {
+    payload: out.join(""),
+    rect: {
+      top: layout.topRow,
+      bottom: layout.topRow + layout.boxHeight - 1,
+      left: layout.leftCol,
+      right: layout.leftCol + layout.innerWidth + 1,
+    },
+  };
 }

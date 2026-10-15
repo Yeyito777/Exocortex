@@ -1729,8 +1729,11 @@ export function render(state: RenderState): boolean {
   }
 
   // ── Queue prompt overlay ───────────────────────────────────────
-  if (state.queuePrompt) {
-    appendPositionedPayload(ctx, renderQueuePromptOverlay(state.queuePrompt, chatW, chatCol, bottomStartRow, steersInstantly(state.provider)));
+  const queuePromptOverlay = state.queuePrompt
+    ? renderQueuePromptOverlay(state.queuePrompt, chatW, chatCol, bottomStartRow, steersInstantly(state.provider))
+    : null;
+  if (queuePromptOverlay) {
+    appendPositionedPayload(ctx, queuePromptOverlay.payload);
   }
 
   // ── Edit message overlay ──────────────────────────────────────
@@ -1740,15 +1743,17 @@ export function render(state: RenderState): boolean {
   if (editMessageOverlay) appendPositionedPayload(ctx, editMessageOverlay.payload);
 
   // ── Sidebar conversation action menu ──────────────────────────
+  let conversationMenuOverlay: ReturnType<typeof renderConversationActionMenu> | null = null;
   if (sidebarOpen && state.sidebar.conversationActionMenu) {
     const menu = state.sidebar.conversationActionMenu;
-    appendPositionedPayload(ctx, renderConversationActionMenu(
+    conversationMenuOverlay = renderConversationActionMenu(
       menu,
       conversationActionMenuAnchorRow(state.sidebar, menu.convId),
       SIDEBAR_WIDTH + 1,
       rows,
       cols,
-    ));
+    );
+    appendPositionedPayload(ctx, conversationMenuOverlay.payload);
   }
 
   // ── Ephemeral BTW panel (foreground, directly above the prompt) ──
@@ -1763,11 +1768,9 @@ export function render(state: RenderState): boolean {
 
   // ── Inline history images (Kitty graphics placements) ─────────
   // Floating overlays are drawn as text, which images (z above text) would
-  // cover. The queue prompt and conversation menu hide images; the edit menu
-  // and image viewer crop them around their box; the task panel and
-  // autocomplete drop the image rows they overlap.
-  const historyOverlayOpen = !!state.queuePrompt
-    || !!(sidebarOpen && state.sidebar.conversationActionMenu);
+  // cover. The queue prompt, edit menu, conversation menu, accounts screen and
+  // image viewer crop them around their box; the task panel and autocomplete
+  // drop the image rows they overlap.
   const imageObstructions: ScreenRect[] = [state.layout.taskPanelRect, autocompleteRect]
     .filter((rect): rect is ScreenRect => rect !== null);
   // A daemon switch can turn images off under an open viewer.
@@ -1785,7 +1788,7 @@ export function render(state: RenderState): boolean {
     : null;
   if (accountsOverlay) appendPositionedPayload(ctx, accountsOverlay.payload);
   const hadHistoryImages = historyImagesPlaced(state);
-  const historyImagePlacements = inlineImageMode() === "kitty" && !historyOverlayOpen
+  const historyImagePlacements = inlineImageMode() === "kitty"
     ? collectHistoryImagePlacements({
       viewportRows: state.layout.historyViewportRows,
       lineAnchors,
@@ -1793,7 +1796,7 @@ export function render(state: RenderState): boolean {
       chatCol,
       maxCol: chatCol + chatW - 1,
       obstructions: imageObstructions,
-      covers: [modal?.rect, editMessageOverlay?.rect, accountsOverlay?.rect].filter((rect): rect is ScreenRect => !!rect),
+      covers: [modal?.rect, queuePromptOverlay?.rect, editMessageOverlay?.rect, conversationMenuOverlay?.rect, accountsOverlay?.rect].filter((rect): rect is ScreenRect => !!rect),
       cursorLineIndex: historyFocused ? state.historyCursor.row : null,
       cursorCol: state.historyCursor.col,
     })

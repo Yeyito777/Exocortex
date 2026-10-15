@@ -120,7 +120,7 @@ describe("conversation action menu", () => {
 
   test("renders beside the sidebar with all options and destructive text in red", () => {
     const menu = createConversationActionMenu("conv-1", false, false);
-    const rendered = renderConversationActionMenu(menu, 3, 29, 20, 80);
+    const { payload: rendered, rect } = renderConversationActionMenu(menu, 3, 29, 20, 80);
     const plain = stripAnsi(rendered);
 
     expect(plain).toContain("Copy id");
@@ -129,11 +129,12 @@ describe("conversation action menu", () => {
     expect(plain).toContain("Delete");
     expect(rendered).toContain(theme.error);
     expect(rendered).toContain("\x1b[3;29H");
+    expect(rect).toEqual({ top: 3, bottom: 8, left: 29, right: 40 });
   });
 
   test("shows inverse labels for an already starred and pinned conversation", () => {
     const menu = createConversationActionMenu("conv-1", true, true);
-    const rendered = stripAnsi(renderConversationActionMenu(menu, 3, 29, 20, 80));
+    const rendered = stripAnsi(renderConversationActionMenu(menu, 3, 29, 20, 80).payload);
 
     expect(rendered).toContain("Unstar");
     expect(rendered).toContain("Unpin");

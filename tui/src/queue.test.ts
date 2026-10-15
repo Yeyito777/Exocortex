@@ -147,8 +147,8 @@ describe("queue prompt image handling", () => {
 describe("queue prompt timing options", () => {
   test("offers next turn instead of steer now where the provider takes the message in at a tool boundary", () => {
     const prompt = { text: "use staging", selection: "next-turn" as const };
-    expect(renderQueuePromptOverlay(prompt, 80, 1, 20)).toContain("steer now");
-    const claude = renderQueuePromptOverlay(prompt, 80, 1, 20, false);
+    expect(renderQueuePromptOverlay(prompt, 80, 1, 20).payload).toContain("steer now");
+    const claude = renderQueuePromptOverlay(prompt, 80, 1, 20, false).payload;
     expect(claude).toContain("next turn");
     expect(claude).not.toContain("steer now");
   });
