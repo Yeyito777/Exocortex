@@ -389,7 +389,7 @@ export function renderSidebar(
 
     rows.push(
       theme.reset + bg + fg +
-      prefixText + streamIconColored + callIconColored + chronoTaskIconColored + subagentIconColored + backgroundTaskIconColored + starIconColored + emojiIconColored + titleText +
+      prefixText + streamIconColored + subagentIconColored + chronoTaskIconColored + callIconColored + backgroundTaskIconColored + starIconColored + emojiIconColored + titleText +
       muteIcon +
       (notificationBadge ? ` ${notificationBadge.text}` : "") +
       theme.reset + borderBg + borderFg + "│" + theme.reset,
