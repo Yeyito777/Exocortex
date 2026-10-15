@@ -1,5 +1,7 @@
 import { clearPrompt } from "../promptstate";
-import { pushSystemMessage } from "../state";
+import { getProviderInfo, pushSystemMessage, type RenderState } from "../state";
+import { contextMeter } from "../statusblocks/context";
+import { usageSummary } from "../statusblocks/usage";
 import { terminalColorLevel, theme } from "../theme";
 import { ansiColorToRgb, rgbToAnsi as terminalRgbToAnsi } from "../terminalcolors";
 import { resolveModelTokenPricing } from "@exocortex/shared/token-pricing";
@@ -508,13 +510,41 @@ function buildCostBreakdownMessage(stats: TokenStatsSnapshot): string {
   return lines.join("\n");
 }
 
-function buildTokenStatsMessage(stats: TokenStatsSnapshot, heatmapDayCount: number): string {
+/** The open conversation's context meter and its provider's usage windows, as the status bar shows them. */
+function buildCurrentConversationLines(state: RenderState): string[] {
+  const providerLabel = getProviderInfo(state, state.provider)?.label ?? formatProviderLabel(state.provider);
+  const meter = contextMeter(state);
+  const context = meter.tokens === null ? "?" : formatTokenCount(meter.tokens);
+  const max = meter.max > 0 ? ` / ${formatTokenCount(meter.max)}` : "";
+  const percent = meter.tokens !== null && meter.max > 0 ? ` (${Math.round(meter.tokens / meter.max * 100)}%)` : "";
+  const lines = [
+    `${state.convId ? "This conversation" : "New conversation"}: ${accentText(`${providerLabel} · ${formatModelDisplayName(state.model)}`)}`,
+    `  Context: ${accentText(context)}${max} tokens${percent}`,
+  ];
+  const usage = usageSummary(state);
+  if (usage) lines.push(`  ${providerLabel} usage: ${accentText(usage)}`);
+  return lines;
+}
+
+function formatProviderSplit(bucket: TokenStatsSnapshot["today"]): string | null {
+  const entries = sortUsageEntries(Object.entries(bucket.byProvider) as Array<[ProviderId, TokenUsageTotals]>);
+  if (entries.length === 0) return null;
+  return entries
+    .map(([provider, totals]) => `${formatProviderLabel(provider)} ${accentTokenCount(totals.inputTokens)}/${accentTokenCount(totals.outputTokens)}`)
+    .join(" · ");
+}
+
+function buildTokenStatsMessage(state: RenderState, stats: TokenStatsSnapshot, heatmapDayCount: number): string {
   const today = stats.today;
   const heatmap = buildTokenHeatmap(stats, heatmapDayCount);
+  const providerSplit = formatProviderSplit(today);
   const lines: string[] = [
+    ...buildCurrentConversationLines(state),
+    "",
     ...heatmap.lines,
     "",
-    `Tokens today: ${accentTokenCount(today.totalTokens)}`,
+    `Tokens today: ${accentTokenCount(today.totalTokens)} • ${accentTokenCount(today.requests)} req`,
+    ...(providerSplit ? [`Today by provider (input/output): ${providerSplit}`] : []),
     `Input today (hit/miss-write/no-cache/unknown): ${accentTokenCount(today.cachedInputTokens)}/${accentTokenCount(today.cacheMissInputTokens)}/${accentTokenCount(today.uncachedInputTokens)}/${accentTokenCount(today.unmeasuredInputTokens)}`,
     `Output today: ${accentTokenCount(today.outputTokens)}`,
     `Maximum tokens: ${accentTokenCount(heatmap.maxTokenCount)}`,
@@ -527,7 +557,7 @@ function buildTokenStatsMessage(stats: TokenStatsSnapshot, heatmapDayCount: numb
 
 export const TOKENS_COMMAND: SlashCommand = {
   name: "/tokens",
-  description: "Show token usage totals, heatmaps, or breakdowns",
+  description: "Show context, usage limits, token totals, heatmaps, or breakdowns",
   args: [TOKEN_MODELS_ARG, TOKEN_PROVIDERS_ARG, TOKEN_SOURCES_ARG, TOKEN_COST_ARG],
   getArgs: () => ({
     "/tokens": [TOKEN_MODELS_ARG, TOKEN_PROVIDERS_ARG, TOKEN_SOURCES_ARG, TOKEN_COST_ARG],
@@ -576,7 +606,7 @@ export const TOKENS_COMMAND: SlashCommand = {
         message = buildCostBreakdownMessage(state.tokenStats);
         break;
       default:
-        message = buildTokenStatsMessage(state.tokenStats, resolvedDays);
+        message = buildTokenStatsMessage(state, state.tokenStats, resolvedDays);
         break;
     }
 

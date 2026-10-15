@@ -62,6 +62,10 @@ const providers: ProviderInfo[] = [
   },
 ];
 
+function stripAnsi(text: string): string {
+  return text.replace(/\x1b\[[0-9;]*m/g, "");
+}
+
 function localDayKey(date: Date): string {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -1017,6 +1021,50 @@ describe("/tokens", () => {
     expect(text).toContain("1,500");
     expect(text).toContain("Lifetime tokens:");
     expect(text).toContain("3,000");
+  });
+
+  test("leads with the open conversation's context meter and its provider's usage windows", () => {
+    const state = createInitialState();
+    state.providerRegistry = [...structuredClone(providers), {
+      id: "anthropic",
+      label: "Anthropic",
+      defaultModel: "claude-opus-5-5",
+      allowsCustomModels: true,
+      supportsFastMode: false,
+      models: [{ id: "claude-opus-5-5", label: "Opus 5.5", maxContext: 1_000_000, supportedEfforts: [], defaultEffort: "high" }],
+    }];
+    state.provider = "anthropic";
+    state.model = "claude-opus-5-5";
+    state.convId = "conv-claude";
+    state.contextTokens = 70_309;
+    state.authByProvider.anthropic = true;
+    const now = Date.now();
+    state.usageByProvider.anthropic = {
+      fiveHour: { utilization: 84, resetsAt: now + (3 * 60 + 11) * 60_000 + 30_000 },
+      sevenDay: { utilization: 98, resetsAt: now + ((24 + 13) * 60 + 51) * 60_000 + 30_000 },
+    };
+    const stats = structuredClone(tokenStats);
+    stats.today.byProvider.anthropic = totals(46_000, 1_200, 5, 45_000);
+    state.tokenStats = stats;
+
+    expect(tryCommand("/tokens", state)).toEqual({ type: "handled" });
+    const text = stripAnsi((state.messages.at(-1) as { text?: string } | undefined)?.text ?? "");
+    expect(text).toStartWith("This conversation: Anthropic · Opus-5.5\n  Context: 70,309 / 1,000,000 tokens (7%)\n  Anthropic usage: 5-hour 84% (resets in 3h:11m) · weekly 98% (resets in 1d:13h:51m)\n");
+    expect(text).toContain("Today by provider (input/output): Anthropic 46,000/1,200 · OpenAI 1,500/500");
+    expect(text).toContain("Tokens today: 2,000 • 3 req");
+  });
+
+  test("shows an OpenAI draft's context meter without usage it has no data for", () => {
+    const state = createInitialState();
+    state.providerRegistry = structuredClone(providers);
+    state.provider = "openai";
+    state.model = "gpt-5.4";
+    state.contextTokens = 0;
+    state.tokenStats = structuredClone(tokenStats);
+
+    tryCommand("/tokens", state);
+    const text = stripAnsi((state.messages.at(-1) as { text?: string } | undefined)?.text ?? "");
+    expect(text).toStartWith("New conversation: OpenAI · Gpt-5.4\n  Context: 0 / 272,000 tokens (0%)\n\nHeatmap (");
   });
 
   test("averages only across active days in the displayed range", () => {
