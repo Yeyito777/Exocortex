@@ -332,9 +332,57 @@ describe("sidebar tree folder view", () => {
 
     const lines = renderSidebar(sidebar, 12, true, null).map(line => stripAnsi(line));
     expect(lines[0]).toContain("Conversations");
-    expect(lines).toContainEqual(expect.stringContaining("  📂 work/ 3"));
+    expect(lines).toContainEqual(expect.stringContaining("  📂 work/"));
     expect(lines).toContainEqual(expect.stringContaining("    📁 nested/ 1"));
     expect(lines).toContainEqual(expect.stringContaining("▸   inside-a"));
     expect(lines).toContainEqual(expect.stringContaining("  root-a"));
+  });
+
+  describe("aggregate badges on folder rows", () => {
+    function badgeSidebar(view: "tree" | "navigate", muted = false): SidebarState {
+      const sidebar = createSidebarState(view);
+      updateConversationList(sidebar, [
+        conversation("busy", 2, {
+          folderId: "work",
+          unread: true,
+          subagentCount: 2,
+          backgroundTaskCount: 1,
+          tasks: [{ id: "c1", kind: "chrono", title: "wake", startedAt: 1, dueAt: 2, chronoMode: "wake" }],
+        }),
+        conversation("root-a", 3),
+      ], [folder("work", 1, { muted })]);
+      return sidebar;
+    }
+    const folderRow = (sidebar: SidebarState, icon: string): string =>
+      renderSidebar(sidebar, 12, true, null).map(line => stripAnsi(line)).find(line => line.includes(`${icon} work/`))!;
+
+    test("a collapsed tree folder keeps its aggregate badges and count", () => {
+      const row = folderRow(badgeSidebar("tree"), "📁");
+      expect(row).toMatch(/◉ ◷ ◆2 \$ 📁 work\/ 1/);
+    });
+
+    test("an open tree folder shows only its icon and name, plus its own mute bell", () => {
+      const sidebar = badgeSidebar("tree");
+      sidebar.expandedFolderIds.add("work");
+      const unmuted = folderRow(sidebar, "📂").replace(/[│\s]+$/, "");
+      expect(unmuted).toMatch(/📂 work\/$/);
+      expect(unmuted).not.toContain("🔕");
+
+      const muted = badgeSidebar("tree", true);
+      muted.expandedFolderIds.add("work");
+      const row = folderRow(muted, "📂");
+      expect(row).toContain("📂 work/ ");
+      expect(row).toContain("🔕");
+      expect(row).not.toMatch(/[◉◷◆$☎]|work\/ \d/);
+      // The child still carries its own badges.
+      const lines = renderSidebar(sidebar, 12, true, null).map(line => stripAnsi(line));
+      expect(lines.find(line => line.includes("busy"))).toMatch(/◉ ◷ ◆2 \$ busy/);
+    });
+
+    test("the navigate view keeps every folder badge", () => {
+      const sidebar = badgeSidebar("navigate");
+      const row = folderRow(sidebar, "📁");
+      expect(row).toMatch(/◉ ◷ ◆2 \$ 📁 work\/ 1/);
+    });
   });
 });

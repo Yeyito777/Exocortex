@@ -308,20 +308,27 @@ export function renderSidebar(
       const aggregate = folder ? folderAggregates?.get(folder.id) : null;
       notificationsMuted = folder ? areFolderNotificationsMuted(sidebar, folder.id) : false;
       explicitlyMuted = folder?.muted === true;
-      const icon = treeView && folder && sidebar.expandedFolderIds.has(folder.id) ? "📂" : "📁";
-      rawTitle = folder ? `${icon} ${folder.name}/ ${aggregate?.count ?? 0}` : `${icon} folder/`;
-      const streamingCount = aggregate?.streamingCount ?? 0;
-      const hasLongSleep = aggregate?.longSleep ?? false;
-      const hasGlobalIdle = aggregate?.globalIdle ?? false;
-      const hasUnread = !notificationsMuted && (aggregate?.unread ?? false);
-      const hasWarningActivity = hasLongSleep || hasGlobalIdle;
-      streamIcon = streamingCount > 0 ? folderStreamingIndicator(streamingCount) : hasWarningActivity ? "◉ " : hasUnread ? "◉ " : "";
-      streamIconColor = streamingCount > 0 ? theme.accent : hasWarningActivity ? theme.warning : hasUnread ? theme.success : "";
-      subagentIcon = subagentIndicator(aggregate?.subagentCount ?? 0);
-      backgroundTaskIcon = backgroundTaskIndicator(aggregate?.backgroundTaskCount ?? 0);
-      chronoTaskIcon = chronoTaskIndicator(aggregate?.chronoTaskCount ?? 0);
-      callIcon = countedActivityIndicator("☎", aggregate?.activeCallCount ?? 0);
-      notificationCount = notificationsMuted ? 0 : aggregate?.unreadCount ?? 0;
+      const isOpenTreeFolder = treeView && folder !== undefined && sidebar.expandedFolderIds.has(folder.id);
+      const icon = isOpenTreeFolder ? "📂" : "📁";
+      if (isOpenTreeFolder) {
+        // An open folder's children are listed right below with their own
+        // badges, so its aggregate badges and count would only repeat them.
+        rawTitle = `${icon} ${folder.name}/`;
+      } else {
+        rawTitle = folder ? `${icon} ${folder.name}/ ${aggregate?.count ?? 0}` : `${icon} folder/`;
+        const streamingCount = aggregate?.streamingCount ?? 0;
+        const hasLongSleep = aggregate?.longSleep ?? false;
+        const hasGlobalIdle = aggregate?.globalIdle ?? false;
+        const hasUnread = !notificationsMuted && (aggregate?.unread ?? false);
+        const hasWarningActivity = hasLongSleep || hasGlobalIdle;
+        streamIcon = streamingCount > 0 ? folderStreamingIndicator(streamingCount) : hasWarningActivity ? "◉ " : hasUnread ? "◉ " : "";
+        streamIconColor = streamingCount > 0 ? theme.accent : hasWarningActivity ? theme.warning : hasUnread ? theme.success : "";
+        subagentIcon = subagentIndicator(aggregate?.subagentCount ?? 0);
+        backgroundTaskIcon = backgroundTaskIndicator(aggregate?.backgroundTaskCount ?? 0);
+        chronoTaskIcon = chronoTaskIndicator(aggregate?.chronoTaskCount ?? 0);
+        callIcon = countedActivityIndicator("☎", aggregate?.activeCallCount ?? 0);
+        notificationCount = notificationsMuted ? 0 : aggregate?.unreadCount ?? 0;
+      }
       itemFg = isSelected ? theme.text : theme.muted;
     } else if (item?.type === "conversation") {
       const conv = convs[dr.convIdx ?? -1];
