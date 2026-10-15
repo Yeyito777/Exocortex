@@ -17,6 +17,7 @@
 import { log } from "../../log";
 import type { ApiContentBlock, ApiMessage } from "../../messages";
 import { claudeCodeResultText, exocortexToolName, summarizeClaudeCodeTool } from "../../tools/claude-code";
+import { resolveToolCallPresentationFromCache } from "../../helper-tool-manifest";
 import { AuthError } from "../errors";
 import type { ContentBlock, ProviderRound, StreamCallbacks, StreamResult } from "../types";
 import { REPLAYED_FIELD } from "./relay-protocol";
@@ -244,7 +245,11 @@ function handleAssistantMessage(state: ClaudeStreamState, message: SdkRecord): v
       const { label, detail } = summarizeClaudeCodeTool(name, input, state.taskTitles);
       const summary = detail || label;
       // A task named only while its process remembers it keeps that name in history.
-      const named = detail !== summarizeClaudeCodeTool(name, input).detail ? { presentation: { detail } } : {};
+      const namedDetail = detail !== summarizeClaudeCodeTool(name, input).detail ? { detail } : {};
+      // Bash calls that run a tool by path (or a variable holding one) render as that tool.
+      const bashStyles = resolveToolCallPresentationFromCache(name, input, state.cwd);
+      const presentation = { ...bashStyles, ...namedDetail };
+      const named = Object.keys(presentation).length > 0 ? { presentation } : {};
       state.toolNames.set(id, name);
       if ((name === "Agent" || name === "Task") && typeof input.description === "string") state.agentCalls.set(id, input.description);
       state.openToolUses.add(id);

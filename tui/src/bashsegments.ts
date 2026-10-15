@@ -27,6 +27,8 @@ export function splitTopLevelShellSegmentsWithState(
   let start = 0;
   let i = 0;
   let quote: ShellQuoteState = initialQuote;
+  // Open `$(` command substitutions: their control operators belong to them.
+  let substitutionDepth = 0;
 
   while (i < line.length) {
     const ch = line[i];
@@ -55,6 +57,19 @@ export function splitTopLevelShellSegmentsWithState(
 
     if (ch === "\\" && i + 1 < line.length) {
       i += 2;
+      continue;
+    }
+
+    if (ch === "$" && line[i + 1] === "(") {
+      substitutionDepth++;
+      i += 2;
+      continue;
+    }
+
+    if (substitutionDepth > 0) {
+      if (ch === "(") substitutionDepth++;
+      else if (ch === ")") substitutionDepth--;
+      i++;
       continue;
     }
 

@@ -40,7 +40,9 @@ import { recoverPendingTitles } from "./titlegen";
 import { beginDaemonShutdown, DAEMON_RESTART_EXIT_CODE, resolveDaemonShutdownMode } from "./daemon-lifecycle";
 import { getToolDisplayInfo } from "./tools/registry";
 import { getProviders, refreshProviders } from "./providers/registry";
-import { socketPath, pidPath, runtimeDir, worktreeName, isWindows } from "@exocortex/shared/paths";
+import { socketPath, pidPath, runtimeDir, worktreeName, isWindows, externalToolsDir, repoRoot } from "@exocortex/shared/paths";
+import { warmToolManifestCache } from "./helper-tool-manifest";
+import { join } from "path";
 import { getActiveBackgroundTaskCount, stopAllBackgroundTasks, waitForBackgroundTasksToStop } from "./conversation-activity";
 import { pruneExternalNotificationSubscriptions } from "./external-notifications";
 import { startExternalNotificationSoftWakeService, stopExternalNotificationSoftWakeService } from "./external-notification-soft-wakes";
@@ -322,6 +324,10 @@ async function startDaemon(): Promise<void> {
     initExternalTools(() => {
       // Broadcast updated tool styles to all connected clients
       broadcastToolsAvailable();
+    });
+    // Claude Code reports Bash calls synchronously; let it style known tools from the first call.
+    void warmToolManifestCache([externalToolsDir(), join(repoRoot(), "helper-tools")]).catch((err) => {
+      log("warn", `exocortexd: tool manifest warm-up failed: ${err instanceof Error ? err.message : err}`);
     });
   }
   profileMark("external_tools_initialized", { externalToolCount: isWindows ? 0 : getExternalToolCount(), supervisedDaemonCount: isWindows ? 0 : getSupervisedDaemonCount() });

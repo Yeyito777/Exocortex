@@ -55,6 +55,9 @@ interface HeredocSpec {
 // ── External tool matching ────────────────────────────────────────
 
 const SETUP_COMMANDS = new Set(["set", "cd", "export", "unset", "source", "."]);
+/** Reserved words that can open a compound-command segment, e.g. `do` in `for …; do tool …`. */
+const LEADING_SHELL_KEYWORDS = new Set(["!", "{", "do", "then", "else", "elif", "if", "while", "until"]);
+const TIMEOUT_OPTIONS_WITH_VALUE = new Set(["-k", "-s", "--kill-after", "--signal"]);
 
 /** Shell assignment word (NAME=value). */
 function isAssignmentWord(token: string): boolean {
@@ -172,6 +175,18 @@ function unwrapTime(tokens: ShellToken[], start: number): number | null {
   return i < tokens.length ? i : null;
 }
 
+/** `timeout [options] DURATION cmd …` → index of cmd. */
+function unwrapTimeout(tokens: ShellToken[], start: number): number | null {
+  let i = start + 1;
+  while (i < tokens.length && tokens[i].text.startsWith("-")) {
+    const option = tokens[i].text;
+    i += TIMEOUT_OPTIONS_WITH_VALUE.has(option) ? 2 : 1;
+    if (option === "--") break;
+  }
+  if (i >= tokens.length || !/^\d+(?:\.\d+)?[smhd]?$/.test(tokens[i].text)) return null;
+  return i + 1 < tokens.length ? i + 1 : null;
+}
+
 function unwrapNice(tokens: ShellToken[], start: number): number | null {
   let i = start + 1;
 
@@ -185,12 +200,20 @@ function unwrapNice(tokens: ShellToken[], start: number): number | null {
 }
 
 function unwrapCommandWrappers(tokens: ShellToken[], start: number): number | null {
-  let i = stripLeadingAssignments(tokens, start);
+  let i = start;
+  while (i < tokens.length && LEADING_SHELL_KEYWORDS.has(tokens[i].text)) i++;
+  i = stripLeadingAssignments(tokens, i);
 
   for (;;) {
     if (i >= tokens.length) return null;
 
     const t = tokens[i].text;
+    if (t === "timeout") {
+      const next = unwrapTimeout(tokens, i);
+      if (next == null) return null;
+      i = next;
+      continue;
+    }
     if (t === "env") {
       const next = unwrapEnv(tokens, i);
       if (next == null) return null;
@@ -287,7 +310,8 @@ function extractCommandCandidate(summary: string): CommandCandidate | null {
 
       const firstTokenIndex = stripLeadingAssignments(tokens);
       const firstToken = tokens[firstTokenIndex]?.text;
-      if (firstToken && SETUP_COMMANDS.has(firstToken)) {
+      // `TOOL=/path/to/tool; $TOOL …` — a bare assignment is setup, not the command.
+      if (firstToken === undefined || SETUP_COMMANDS.has(firstToken)) {
         if (heredocs.length > 0) {
           const lastHeredocLine = skipHeredocBodies(lines, lineIndex, heredocs);
           if (lastHeredocLine == null) return null;

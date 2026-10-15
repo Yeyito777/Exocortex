@@ -118,4 +118,62 @@ describe("helper tool manifests", () => {
     writeFileSync(join(scripts, "exo-manifest.json"), "not json");
     expect(await resolveHelperToolPresentation("./scripts/broken", root)).toBeUndefined();
   }));
+
+  test("a full tool manifest styles only the executable its bin names", () => withProject(async (root) => {
+    const toolDir = join(root, "mail-cli");
+    mkdirSync(join(toolDir, "bin"), { recursive: true });
+    writeFileSync(join(toolDir, "bin", "mail"), "#!/bin/sh\n", { mode: 0o755 });
+    writeFileSync(join(toolDir, "bin", "other"), "#!/bin/sh\n", { mode: 0o755 });
+    writeFileSync(join(toolDir, "manifest.json"), JSON.stringify({
+      name: "mail", bin: "./bin/mail", systemHint: "", display: { label: "Mail", color: "#4ddbb7" },
+    }));
+
+    expect(await resolveHelperToolPresentation(`${toolDir}/bin/mail read 1`, root)).toEqual({
+      bashStyles: [{ cmd: `${toolDir}/bin/mail`, label: "Mail", color: "#4ddbb7" }],
+    });
+    expect(await resolveHelperToolPresentation(`${toolDir}/bin/other`, root)).toBeUndefined();
+  }));
+
+  test("follows an absolute cd only while its && chain holds", () => withProject(async (root) => {
+    addHelperTool(root, "ops", "release", "Release", "#a6e3a1");
+    const release = { bashStyles: [{ cmd: "./release", label: "Release", color: "#a6e3a1" }] };
+    const ops = join(root, "ops");
+
+    expect(await resolveHelperToolPresentation(`cd ${ops} && ./release stable`, "/")).toEqual(release);
+    expect(await resolveHelperToolPresentation(`cd ${ops} && ./release stable | tee log`, "/")).toEqual(release);
+    expect(await resolveHelperToolPresentation(`cd ${ops} && for x in a; do ./release $x; done`, "/")).toEqual(release);
+    expect(await resolveHelperToolPresentation(`cd ${ops}; ./release stable`, "/")).toBeUndefined();
+    expect(await resolveHelperToolPresentation(`cd ${ops} && true; ./release stable`, "/")).toBeUndefined();
+    expect(await resolveHelperToolPresentation(`cd ${ops} && true || ./release stable`, "/")).toBeUndefined();
+  }));
+
+  test("resolves variables that hold one static tool path", () => withProject(async (root) => {
+    addHelperTool(root, "scripts", "deploy", "Deploy", "#7aa2f7");
+    const deploy = join(root, "scripts", "deploy");
+
+    expect(await resolveHelperToolPresentation(`T=${deploy}; "$T" production`, root)).toEqual({
+      bashStyles: [{ cmd: "\"$T\"", label: "Deploy", color: "#7aa2f7" }],
+    });
+    expect(await resolveHelperToolPresentation(`export T=${deploy}\n\${T} production`, root)).toEqual({
+      bashStyles: [{ cmd: "${T}", label: "Deploy", color: "#7aa2f7" }],
+    });
+    expect(await resolveHelperToolPresentation(`T=$(command -v deploy 2>/dev/null || echo ${deploy}); $T x`, root)).toEqual({
+      bashStyles: [{ cmd: "$T", label: "Deploy", color: "#7aa2f7" }],
+    });
+    // The fallback must name the tool command -v looks for.
+    expect(await resolveHelperToolPresentation(`T=$(command -v other || echo ${deploy}); $T x`, root)).toBeUndefined();
+    expect(await resolveHelperToolPresentation(`T=$(dirname ${deploy})/deploy; $T x`, root)).toBeUndefined();
+    expect(await resolveHelperToolPresentation("T=$X; $T production", root)).toBeUndefined();
+  }));
+
+  test("styles the tool that reads a heredoc, never its body", () => withProject(async (root) => {
+    addHelperTool(root, "scripts", "deploy", "Deploy", "#7aa2f7");
+    const style = { bashStyles: [{ cmd: "./scripts/deploy", label: "Deploy", color: "#7aa2f7" }] };
+
+    expect(await resolveHelperToolPresentation("./scripts/deploy <<'EOF'\nbody\nEOF", root)).toEqual(style);
+    expect(await resolveHelperToolPresentation("cat <<-EOF\n\t./scripts/deploy\n\tEOF\n./scripts/deploy now", root)).toEqual(style);
+    // An unterminated heredoc styles nothing rather than guess.
+    expect(await resolveHelperToolPresentation("./scripts/deploy <<EOF\nbody", root)).toBeUndefined();
+  }));
 });
+

@@ -10,6 +10,7 @@ import { getProvider } from "../providers/registry";
 import { MAX_ACTIVE_EXO_SUBAGENTS_PER_PARENT } from "../messages";
 import { readRequestedRestart, resetRequestedRestartForTest, RESTART_MIN_UPTIME_MS } from "../requested-restart";
 import { exo } from "./exo";
+import { summarizeClaudeCodeTool } from "./claude-code";
 
 const ids = new Set<string>();
 function parent(provider: "openai" | "anthropic" = "openai") {
@@ -60,6 +61,15 @@ describe("minimal native exo", () => {
     expect(exo.systemHint).toContain("shared/src/protocol.ts");
     expect(exo.systemHint).toContain("restart gracefully restarts this daemon");
     expect(exo.summarize!({ restart: "deploy fix" }).detail).toBe("restart: deploy fix");
+  });
+  test("a subagent call shows its full instructions, line breaks kept", () => {
+    const prompt = `Small TUI fix in Exocortex: ${"inline images disappear ".repeat(10)}\n\nRepo: /tmp/x. Report back.\n`;
+    expect(exo.summarize!({ subagent: prompt, args: { model: "opus" } })).toEqual({
+      label: "Exocortex",
+      detail: `subagent: ${prompt.trim()}`,
+    });
+    // Claude Code's exo host tool is summarized by the same tool.
+    expect(summarizeClaudeCodeTool("exo", { subagent: prompt })).toEqual(exo.summarize!({ subagent: prompt }));
   });
   test("Sol fast is the default independently of user defaults; Astra is the only override", async () => {
     saveConversationDefaults({ provider: "openai", model: "gpt-6-astra", effort: "high", fastMode: false });

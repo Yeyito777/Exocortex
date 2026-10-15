@@ -38,9 +38,12 @@ chmod +x ./helper-tools/deploy/deploy
 ./helper-tools/deploy/deploy production
 ```
 
-Invoke the tool through a static relative or absolute path. PATH-only names,
-interpreter arguments such as `bash deploy`, shell expansion, and command
-substitution do not receive custom presentation.
+Invoke the tool through a static relative, absolute, or `~/` path, or a
+variable assigned one earlier in the same call (`D=./helper-tools/deploy/deploy;
+$D production`). PATH-only names, interpreter arguments such as `bash deploy`,
+other shell expansion, and command substitution do not receive custom
+presentation. The full rules are in
+[TOOL_STANDARD.md](../external-tools/TOOL_STANDARD.md#contract-and-boundaries).
 
 Helper tools are not discovered or added to the model's instructions. Tell
 the model when to use one in `AGENTS.md`, project documentation, or the request.
@@ -65,6 +68,9 @@ Place `exo-manifest.json` beside the executable:
 - The manifest changes presentation only. It cannot affect execution, arguments,
   environment, permissions, output, auth, or daemon supervision.
 - Missing or invalid manifests fall back to ordinary Bash presentation.
+- A CLI-shaped helper tool with a full external-tool `manifest.json` (`name`,
+  `bin`, `display`) needs no `exo-manifest.json`: the executable its `bin`
+  names, e.g. `helper-tools/vm-cli/bin/vm`, is styled from that manifest.
 
 ## Payloads
 

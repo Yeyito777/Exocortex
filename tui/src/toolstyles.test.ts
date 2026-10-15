@@ -175,4 +175,27 @@ describe("bash external tool styling", () => {
     expect(display.detail).toBe(summary);
     expect(display.cmd).toBeUndefined();
   });
+
+  test("a bare assignment before the tool is setup, not the command", () => {
+    const styles: ExternalToolStyle[] = [{ cmd: "$G", label: "Gmail", color: "#4ddbb7" }];
+    expect(resolveToolDisplay("bash", "G=/opt/gmail-cli/bin/gmail; $G search x", registry, styles))
+      .toMatchObject({ label: "Gmail", detail: "search x" });
+    expect(resolveToolDisplay("bash", "TZ=America/Toronto; gmail search x", registry, externalToolStyles))
+      .toMatchObject({ label: "Gmail", detail: "search x" });
+  });
+
+  test("timeout and compound-command keywords are transparent", () => {
+    expect(resolveToolDisplay("bash", "timeout 60 gmail search x", registry, externalToolStyles))
+      .toMatchObject({ label: "Gmail", detail: "search x" });
+    expect(resolveToolDisplay("bash", "timeout -k 5 --foreground 2m whatsapp chats", registry, externalToolStyles))
+      .toMatchObject({ label: "WhatsApp", detail: "chats" });
+    const loop = "for id in a b; do exo status $id; done";
+    const labels = renderToolCallLogicalLines("bash", loop, registry, externalToolStyles, { command: loop })
+      .map(line => line.display.label);
+    expect(labels).toContain("Exocortex");
+  });
+
+  test("timeout without a duration is not a wrapper", () => {
+    expect(resolveToolDisplay("bash", "timeout gmail", registry, externalToolStyles).label).toBe("$");
+  });
 });

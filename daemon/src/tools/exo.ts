@@ -37,8 +37,12 @@ export const exo: Tool = {
   summarize(input) {
     const action = input.subagent !== undefined ? "subagent" : input.restart !== undefined ? "restart" : "abort";
     const value = input[action];
-    const text = typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
-    return { label: "Exocortex", detail: `${action}: ${text.slice(0, 100)}` };
+    // A subagent's instructions are shown in full, line breaks kept; the TUI
+    // collapses long ones behind its tool-output toggle.
+    const text = typeof value !== "string" ? ""
+      : action === "subagent" ? value.trim()
+      : value.replace(/\s+/g, " ").trim().slice(0, 100);
+    return { label: "Exocortex", detail: `${action}: ${text}` };
   },
   async execute(input, context, signal) {
     if (!context?.exocortex) {
