@@ -1,6 +1,6 @@
 /**
  * Accounts screen: every Claude and OpenAI account as one row of a small
- * table on a card over a blank backdrop, opened with /accounts or `g a` in
+ * table on a card drawn over the chat, opened with /accounts or `g a` in
  * normal mode. A row is a state dot, the account, and its 5-hour and weekly
  * usage with the time to each reset; a short word replaces the bars when the
  * account cannot be used. The account this conversation runs on (OpenAI: the
@@ -426,9 +426,8 @@ export interface RenderedAccountsScreen {
 }
 
 /**
- * The screen: a card sized to its table, centred over a blank backdrop that
- * covers the whole terminal so no chat text shows around it. Clamps
- * `screen.scroll` to the content.
+ * The screen: a card sized to its table, centred over the chat, which stays
+ * visible around it. Clamps `screen.scroll` to the content.
  */
 export function renderAccountsScreen(state: RenderState, screen: AccountsScreenState, totalRows: number, totalCols: number, now = Date.now()): RenderedAccountsScreen {
   const lines = accountsScreenLines(state, screen, now);
@@ -446,13 +445,7 @@ export function renderAccountsScreen(state: RenderState, screen: AccountsScreenS
   screen.scroll = scroll;
 
   const bg = theme.sidebarBg;
-  const blank = (row: number, col: number, cols: number) => cols > 0 ? moveTo(row, col) + theme.reset + " ".repeat(cols) : "";
   let payload = "";
-  for (let row = 1; row <= totalRows; row++) {
-    if (row < top || row >= top + height) payload += blank(row, 1, totalCols);
-    else payload += blank(row, 1, left - 1) + blank(row, left + width, totalCols - left - width + 1);
-  }
-
   const row = (index: number, segments: Segment[]) => moveTo(top + index, left) + bg + theme.accent + "│  " + bg + fitSegments(segments, inner, bg) + theme.accent + "  │" + theme.reset;
   payload += moveTo(top, left) + bg + borderLine(["╭", "╮"], width, TITLE, "", theme.bold + theme.text) + theme.reset;
   payload += row(1, []);
@@ -461,5 +454,5 @@ export function renderAccountsScreen(state: RenderState, screen: AccountsScreenS
   const below = content.length - scroll - bodyRows;
   const more = below > 0 ? `↓ ${below} more` : scroll > 0 ? "↑ more above" : "";
   payload += moveTo(top + height - 1, left) + bg + borderLine(["╰", "╯"], width, KEYS, more) + theme.reset;
-  return { payload, rect: { top: 1, bottom: totalRows, left: 1, right: totalCols } };
+  return { payload, rect: { top, bottom: top + height - 1, left, right: left + width - 1 } };
 }

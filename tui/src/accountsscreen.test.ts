@@ -186,14 +186,29 @@ test("the screen is one table: a row per account with its bars and times to rese
   expect(Math.abs(top - (40 - bottom - 1))).toBeLessThanOrEqual(1);
 });
 
-test("the card covers the chat: everything around it is blank", () => {
+test("the card is an overlay: the chat stays visible around it", () => {
   const { state } = openScreen();
   const behind = Array.from({ length: 40 }, (_, row) => `\x1b[${row + 1};1H${"chat text ".repeat(15)}`).join("");
   const rows = screenText(state, 40, 150, behind);
-  expect(rows.join("\n")).not.toContain("chat");
   const top = rows.findIndex(row => row.includes("╭─ Accounts"));
   expect(top).toBeGreaterThan(0);
-  expect(rows.slice(0, top).every(row => row.trim() === "")).toBe(true);
+  expect(rows.slice(0, top).every(row => row.startsWith("chat text"))).toBe(true);
+  const left = rows[top]!.indexOf("╭");
+  expect(rows[top]!.slice(0, left)).toContain("chat");
+  const bottom = rows.findIndex(row => row.includes("╰─"));
+  expect(rows.slice(bottom + 1).every(row => row.startsWith("chat text"))).toBe(true);
+});
+
+test("the overlay rect is the card, so images outside it stay placed", () => {
+  const { state } = openScreen();
+  const { rect } = renderAccountsScreen(state, state.accountsScreen!, 40, 150, NOW);
+  const rows = screenText(state, 40, 150);
+  const top = rows.findIndex(row => row.includes("╭─ Accounts"));
+  const bottom = rows.findIndex(row => row.includes("╰─"));
+  expect(rect.top).toBe(top + 1);
+  expect(rect.bottom).toBe(bottom + 1);
+  expect(rect.left).toBe(rows[top]!.indexOf("╭") + 1);
+  expect(rect.right).toBe(rows[top]!.indexOf("╮") + 1);
 });
 
 test("a short note says why new work skips an account near its limit, and only then", () => {
