@@ -4,10 +4,19 @@ Exocortex can run Claude conversations on more than one Claude subscription
 (for example two Max plans owned by the same person). Each account is its own
 Claude Code configuration directory, which is Claude Code's documented way to
 stay signed in to several accounts ("Log in with multiple accounts" in Claude
-Code's authentication docs). Exocortex only chooses which directory a Claude
-Code process starts with (`CLAUDE_CONFIG_DIR`). It never reads, copies,
-prints or forwards the OAuth tokens in those directories. Each account signs
-in through Claude Code's own login, and Claude Code refreshes its own tokens.
+Code's authentication docs). For its own turns Exocortex only chooses which
+directory a Claude Code process starts with (`CLAUDE_CONFIG_DIR`). Each
+account signs in through Claude Code's own login, and Claude Code refreshes
+its own tokens.
+
+One exception: a daemon that lends its Claude logins to another machine
+through [/proxy](provider-proxy.md) reads the access token Claude Code stored
+for the account a proxied request was routed to (its `.credentials.json`, or
+the macOS Keychain item Claude Code keeps for that directory) and puts it in
+that request's `Authorization` header. The token never leaves that daemon:
+it is not logged, not stored elsewhere, and never sent over the /proxy link.
+An expiring token is refreshed by Claude Code itself (a bare usage probe on
+that account), so refresh-token rotation stays with Claude Code.
 
 Code: `daemon/src/providers/anthropic/accounts.ts` (registry and directories),
 `routing.ts` (decisions), `account-pool.ts` (runtime state, combined usage),
@@ -114,8 +123,21 @@ The log names each decision and why, for example
 `Claude account max2 for <conv> (new: "main" is below the weekly floor)` or
 `conversation <conv> moves from Claude account max2 to main (cold-move: …)`.
 
-With one account, or under [/proxy](provider-proxy.md), every turn runs on
-`main` and nothing above applies.
+With one account every turn runs on `main` and nothing above applies.
+
+Under [/proxy](provider-proxy.md) the remote daemon routes the proxied
+machine's turns across its own accounts with the same rules, per request:
+the local daemon names each conversation (`<host>/<conversation id>`), the
+remote keeps its assignment as `proxy:<host>/<conversation id>`, and every
+response's rate-limit headers update the account that served it. A request
+refused at a usage limit is retried once on the account routing picks next,
+and an account whose login cannot be refreshed is kept out of routing as
+for a failed turn. A move is announced in the proxied conversation's
+transcript, as above. The session needs no resume: the local Claude Code
+process stays the same and only the login attached on the remote changes.
+Rule 1's live-process and background-task pins do not apply to proxied
+conversations (moving does not touch the local process); the warm cache
+still keeps them in place.
 
 ## Limits and blocked accounts
 
@@ -183,10 +205,15 @@ only when a client connects or a turn ends). During turns, each
 
 ## Gaps
 
-- **/proxy** (a Mac using whale's Claude login) always uses whale's `main`
-  account, and the Mac's bars show that account's usage. Routing a proxied
-  conversation to another whale account would need an account field in the
-  link protocol; it is not built.
+- **/proxy** (a Mac using whale's Claude logins): the Mac shows whale's pool
+  as whale does, the combined bars and `/accounts` with whale's accounts,
+  usage and where new work goes (`provider_proxy_accounts`,
+  [/proxy](provider-proxy.md)). Accounts are added, removed and signed in on
+  whale itself (`/account claude` on the Mac says so). A whale daemon older
+  than pool routing serves everything from its `main` and shares only that
+  account's usage. Processes started before the link reached a pool-routing
+  whale (e.g. adopted after a restart) do not name their conversation, so
+  their requests are routed as new work.
 - **macOS.** Claude Code keys the macOS Keychain entry to `CLAUDE_CONFIG_DIR`,
   so a Mac daemon with its own accounts works the same way: sign each one in
   with the command above on the Mac.
@@ -199,8 +226,9 @@ only when a client connects or a turn ends). During turns, each
 
 Claude Code's documentation supports signing in to several accounts, one
 configuration directory each, with the unmodified Claude Code. Exocortex keeps
-to that: only the owner's own paid accounts, official Claude Code only, no
-token handling, no synthetic "window warming" traffic, every account still
+to that: only the owner's own paid accounts, official Claude Code only,
+tokens touched only to sign the owner's own /proxy requests on the machine
+that holds them (above), no synthetic "window warming" traffic, every account still
 stops at its own limits, and every move is announced in the transcript.
 Placing new work on another account automatically is Exocortex's own policy,
 not something the documentation describes. Anthropic's usage policy

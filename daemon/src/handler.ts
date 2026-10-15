@@ -56,6 +56,8 @@ import { attachClientHost, settleClientExec } from "./client-hosts";
 import { pendingTurnNotices } from "./turn-notices";
 import { ProviderProxyManager, setActiveProviderProxyManager } from "./provider-proxy/manager";
 import { ProviderProxyEndpoint } from "./provider-proxy/endpoint";
+import { remoteAccountsSource } from "./provider-proxy/remote-accounts";
+import { createProxiedClaudeRouter } from "./provider-proxy/claude-routing";
 import type { ProviderProxyLinkCommand } from "@exocortex/shared/provider-proxy";
 import type { BackgroundTaskCompletion, ExocortexToolRuntime } from "./tools/types";
 import { getSubagentParentConversationId, listActiveConversationTasks, setSubagentActive, stopBackgroundTask } from "./conversation-activity";
@@ -269,6 +271,11 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         for (const proxy of providerProxies.list()) broadcastUsage(proxy.provider, getLastUsage(proxy.provider));
       });
     },
+    onAccountsChange: () => {
+      // The remote's Claude pool: the bars combine it, the Accounts screen lists it.
+      broadcastUsage("anthropic", getLastUsage("anthropic"));
+      accountsWatch.changed();
+    },
     onRouteChange: (provider) => {
       // The other account's usage must not linger: the bars follow the route.
       getProviderAdapter(provider).usage.clearUsage();
@@ -280,6 +287,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       });
     },
   });
+  /** Routes proxied Claude requests from other daemons across this daemon's accounts. */
+  const proxiedClaudeRouter = createProxiedClaudeRouter();
   /** Remote end of /proxy links: one endpoint per connection that said provider_proxy_hello. */
   const providerProxyEndpoints = new Map<ConnectedClient, ProviderProxyEndpoint>();
   const providerProxyEndpointFor = (client: ConnectedClient, create: boolean): ProviderProxyEndpoint | null => {
@@ -298,7 +307,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         client.socket.once("drain", done);
         client.socket.once("close", done);
       }),
-    });
+    }, { accounts: remoteAccountsSource(), claudeRouter: proxiedClaudeRouter });
     providerProxyEndpoints.set(client, endpoint);
     client.socket.once("close", () => {
       endpoint.close();
@@ -350,7 +359,20 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   };
   /** `/account claude`: list Claude accounts, or add/remove one. Routing between them is automatic. */
   const handleClaudeAccountCommand = (client: ConnectedClient, cmd: Extract<Command, { type: "account" }>): void => {
-    if (rejectProxiedProviderAuth(client, cmd.reqId, "anthropic", "manage Claude accounts")) return;
+    const proxyAlias = providerProxies.aliasFor("anthropic");
+    if (proxyAlias) {
+      // Accounts belong to the remote: adding one needs Claude Code's own login in a terminal there.
+      const pool = providerProxies.remoteAccounts();
+      const count = pool?.pool.accounts.length ?? 0;
+      const listed = count > 1 ? ` Its ${count} Claude accounts are on the Accounts screen (/accounts or g a).` : "";
+      server.sendTo(client, {
+        type: "auth_status",
+        reqId: cmd.reqId,
+        message: `Claude goes through /proxy on ${proxyAlias}, which runs this machine's turns on its main account.${listed} `
+          + `Claude accounts are managed on ${proxyAlias}: add, remove or sign them in there (for example /ssh ${proxyAlias}, then /account claude add <name>), or run /proxy anthropic off first.`,
+      });
+      return;
+    }
     const sendList = (prefix: string) => {
       void claudeAccountReports().then((reports) => {
         const usage = getLastUsage("anthropic");
@@ -1829,6 +1851,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       case "provider_proxy_cancel":
       case "provider_proxy_status":
       case "provider_proxy_consume_reset":
+      case "provider_proxy_accounts":
       case "provider_proxy_exec":
       case "provider_proxy_exec_cancel": {
         const endpoint = providerProxyEndpointFor(client, false);

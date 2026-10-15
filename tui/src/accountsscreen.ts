@@ -10,7 +10,9 @@
  * the daemon's `accounts` command, which keeps pushing snapshots while the
  * screen is open. It only opens when several accounts are set up; otherwise it
  * explains how to add one. Esc or q closes; j/k scroll a card cut short by a
- * small terminal.
+ * small terminal. While Claude goes through /proxy, the Claude rows are the
+ * remote's accounts (its pool routes this machine's turns too) and the note
+ * says so, or that the link is down.
  */
 
 import type { AccountsEvent, AccountsSnapshot, ClaudeAccountInfo, ClaudeAccountsInfo } from "./protocol";
@@ -42,6 +44,11 @@ export const ACCOUNTS_UNAVAILABLE_HINT = [
   "or another OpenAI account with /login openai add.",
 ].join("\n");
 
+export const ACCOUNTS_PROXIED_HINT = [
+  "Claude goes through /proxy, and the remote's Claude accounts are not available:",
+  "its link is not up yet, or its Exocortex is older and only lends its main account (update it there).",
+].join("\n");
+
 export interface AccountsRequester {
   accounts(options: { watch?: boolean; convId?: string | null }): string;
 }
@@ -65,7 +72,7 @@ export function handleAccountsEvent(state: RenderState, event: AccountsEvent): v
   if (request && event.reqId === request.reqId) {
     state.accountsOpenRequest = null;
     if (!event.snapshot.enabled) {
-      pushSystemMessage(state, ACCOUNTS_UNAVAILABLE_HINT, theme.muted);
+      pushSystemMessage(state, event.snapshot.claude.proxied ? ACCOUNTS_PROXIED_HINT : ACCOUNTS_UNAVAILABLE_HINT, theme.muted);
       return;
     }
     state.accountsScreen = { snapshot: event.snapshot, scroll: 0 };
@@ -212,6 +219,28 @@ function routingNote(claude: ClaudeAccountsInfo, now: number): Segment[] | null 
   return [[theme.muted, `${why} → new work goes to ${next.account}`]];
 }
 
+/** Longest /proxy problem reason in the note. */
+const MAX_PROXY_REASON = 48;
+
+/**
+ * While the accounts are the /proxy remote's: a link or login problem first,
+ * else the routing note marked with the remote's name, else whose accounts
+ * these are.
+ */
+function proxyNote(remote: NonNullable<ClaudeAccountsInfo["remote"]>, routing: Segment[] | null): Segment[] {
+  const problem = remote.state === "connecting" ? "connecting…"
+    : remote.state === "disconnected" ? "down"
+    : remote.message ? "cannot serve Claude"
+    : null;
+  if (problem) {
+    // Clipped so the card keeps its table's width; /proxy has the whole reason.
+    const reason = remote.message && remote.message.length > MAX_PROXY_REASON ? `${remote.message.slice(0, MAX_PROXY_REASON - 1)}…` : remote.message;
+    return [[remote.state === "connecting" ? theme.muted : theme.error, `/proxy ${remote.alias} ${problem}`], [theme.muted, reason ? `: ${reason}` : ""]];
+  }
+  if (routing) return [[theme.muted, `on ${remote.alias}: `], ...routing];
+  return [[theme.muted, `accounts on ${remote.alias} (/proxy)`]];
+}
+
 /** Everything the screen shows, top to bottom (no chrome). */
 export function accountsScreenLines(state: RenderState, screen: AccountsScreenState, now = Date.now()): ScreenLine[] {
   const { claude, openai } = screen.snapshot;
@@ -226,9 +255,9 @@ export function accountsScreenLines(state: RenderState, screen: AccountsScreenSt
     lines.push({ kind: "heading", label: "Claude", columns: true });
     for (const account of claude.accounts) {
       lines.push({ kind: "row", row: claudeRow(account, claude, now) });
-      if (account.loginCommand) notes.push([[theme.muted, `sign in ${account.id}: `], [theme.command, account.loginCommand]]);
+      if (account.loginCommand) notes.push([[theme.muted, `sign in ${account.id}${claude.remote ? ` on ${claude.remote.alias}` : ""}: `], [theme.command, account.loginCommand]]);
     }
-    const routing = routingNote(claude, now);
+    const routing = claude.remote ? proxyNote(claude.remote, routingNote(claude, now)) : routingNote(claude, now);
     if (routing) notes.unshift(routing);
   }
 

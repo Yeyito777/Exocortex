@@ -4,12 +4,17 @@
  * Usage combined over several accounts (Claude) fills a bar scaled to
  * `capacity` (two accounts: 0–200%) and lists the accounts' two soonest
  * reset times.
+ *
+ * While the provider goes through /proxy, the bars are the remote's; a link
+ * that is down or connecting, or a remote that is not logged in, shows beside
+ * them so it never fails silently.
  */
 
 import type { RenderState } from "../state";
 import type { StatusBlock } from "../statusline";
 import type { UsageWindow } from "../messages";
 import { theme } from "../theme";
+import { activeProviderProxy } from "../provider-proxies";
 
 /** Every usage bar's width (the status bar and the Accounts screen). */
 export const BAR_WIDTH = 20;
@@ -115,9 +120,50 @@ export function usageSummary(state: RenderState, now = Date.now()): string | nul
   return `${summarizeWindow("5-hour", usage.fiveHour, now, capacity)} · ${summarizeWindow("weekly", usage.sevenDay, now, capacity)}`;
 }
 
+/** Longest /proxy problem detail shown beside the bars. */
+const MAX_PROXY_DETAIL = 40;
+
+/** Why the current provider's /proxy cannot serve it now, as two short rows; null while it can. */
+function proxyProblemRows(state: RenderState): { rows: string[]; width: number } | null {
+  const proxy = activeProviderProxy(state);
+  if (!proxy || (proxy.state === "connected" && proxy.remoteLoggedIn !== false)) return null;
+  const [text, color] = proxy.state === "connecting" ? ["connecting…", theme.muted]
+    : proxy.state === "connected" ? ["not logged in", theme.error]
+    : ["down", theme.error];
+  const head = `/proxy ${proxy.alias} ${text}`;
+  const message = proxy.message?.trim() ?? "";
+  const detail = message.length <= MAX_PROXY_DETAIL ? message : `${message.slice(0, MAX_PROXY_DETAIL - 1)}…`;
+  const width = Math.max(head.length, detail.length);
+  return {
+    width,
+    rows: [
+      `${theme.muted}/proxy ${theme.accent}${proxy.alias} ${color}${text}${theme.reset}${" ".repeat(width - head.length)}`,
+      ...(detail ? [`${theme.muted}${detail}${theme.reset}${" ".repeat(width - detail.length)}`] : []),
+    ],
+  };
+}
+
 export function usageBlock(state: RenderState): StatusBlock | null {
   if (!state.authByProvider[state.provider]) return null;
 
+  const problem = proxyProblemRows(state);
+  const bars = usageBars(state);
+  if (!bars || !problem) return bars ?? (problem && {
+    id: "usage",
+    priority: 3,
+    width: problem.width,
+    height: problem.rows.length,
+    rows: problem.rows,
+  });
+  const gap = "  ";
+  return {
+    ...bars,
+    width: bars.width + gap.length + problem.width,
+    rows: bars.rows.map((row, index) => `${row}${gap}${problem.rows[index] ?? " ".repeat(problem.width)}`),
+  };
+}
+
+function usageBars(state: RenderState): StatusBlock | null {
   const usage = state.usageByProvider[state.provider];
   if (!usage?.fiveHour && !usage?.sevenDay) return null;
 

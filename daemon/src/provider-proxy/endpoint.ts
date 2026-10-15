@@ -11,6 +11,9 @@
 import { hostname, homedir, userInfo } from "node:os";
 import { ClientExecutor } from "@exocortex/shared/command-exec";
 import {
+  PROVIDER_PROXY_ACCOUNT_MOVE_HEADER,
+  PROVIDER_PROXY_CONVERSATION_HEADER,
+  PROVIDER_PROXY_FEATURES,
   PROVIDER_PROXY_MAX_REQUEST_BYTES,
   PROVIDER_PROXY_PROTOCOL_VERSION,
   isProxyableProvider,
@@ -28,11 +31,15 @@ import type { ErrorEvent } from "@exocortex/shared/protocol";
 import { connectOpenAIWebSocket, OpenAIWebSocketHttpError, type OpenAIWebSocketConnectResult } from "../providers/openai/websocket";
 import { log } from "../log";
 import { localUpstreamAuth, UpstreamAuthError, type UpstreamAuth } from "./upstream-auth";
+import type { RemoteAccountsSource } from "./remote-accounts";
+import { proxiedConversationKey, type ProxiedClaudeLease, type ProxiedClaudeRouter } from "./claude-routing";
 
 /** A proxied websocket may sit idle this long between messages. */
 const WEBSOCKET_IDLE_MS = 2 * 60 * 60_000;
 const HELLO_STATUS_TIMEOUT_MS = 20_000;
 const MAX_EXEC_TIMEOUT_MS = 24 * 60 * 60_000;
+/** Pool changes come in bursts (a turn's start, its usage, its end); one update per burst. */
+const ACCOUNTS_PUSH_DELAY_MS = 250;
 
 export interface ProviderProxyEndpointTransport {
   send(event: ProviderProxyLinkEvent | ErrorEvent): void;
@@ -46,6 +53,10 @@ export interface ProviderProxyEndpointDeps {
   auth?: UpstreamAuth;
   fetch?: typeof fetch;
   connectWebSocket?: (url: string, headers: Record<string, string>, signal?: AbortSignal) => Promise<OpenAIWebSocketConnectResult>;
+  /** The Claude pool shared with provider_proxy_accounts; without it the command reports none. */
+  accounts?: RemoteAccountsSource;
+  /** Picks the Claude account for each proxied request; without it every request uses `main`. */
+  claudeRouter?: ProxiedClaudeRouter;
 }
 
 interface OpenStream {
@@ -71,11 +82,16 @@ export class ProviderProxyEndpoint {
   private readonly auth: UpstreamAuth;
   private readonly fetchImpl: typeof fetch;
   private readonly connectWebSocket: NonNullable<ProviderProxyEndpointDeps["connectWebSocket"]>;
+  private readonly accounts: RemoteAccountsSource | null;
+  private readonly claudeRouter: ProxiedClaudeRouter | null;
+  private accountsWatch: { unsubscribe: () => void; timer: ReturnType<typeof setTimeout> | null; last: string } | null = null;
 
   constructor(private readonly transport: ProviderProxyEndpointTransport, deps: ProviderProxyEndpointDeps = {}) {
     this.auth = deps.auth ?? localUpstreamAuth;
     this.fetchImpl = deps.fetch ?? fetch;
     this.connectWebSocket = deps.connectWebSocket ?? connectOpenAIWebSocket;
+    this.accounts = deps.accounts ?? null;
+    this.claudeRouter = deps.claudeRouter ?? null;
   }
 
   /** The connection closed: stop every upstream request and command it started. */
@@ -85,6 +101,7 @@ export class ProviderProxyEndpoint {
     for (const stream of this.streams.values()) stream.abort.abort();
     this.streams.clear();
     this.executor.cancelAll();
+    this.unwatchAccounts();
   }
 
   handle(command: ProviderProxyLinkCommand): void {
@@ -109,6 +126,9 @@ export class ProviderProxyEndpoint {
         return;
       case "provider_proxy_consume_reset":
         void this.consumeReset(command.reqId, command.provider);
+        return;
+      case "provider_proxy_accounts":
+        this.handleAccounts(command.reqId, command.provider, command.watch);
         return;
       case "provider_proxy_exec": {
         const execId = command.execId;
@@ -146,6 +166,7 @@ export class ProviderProxyEndpoint {
       version: PROVIDER_PROXY_PROTOCOL_VERSION,
       host: { hostname: hostname(), user, platform: process.platform, home: homedir() },
       providers: Object.fromEntries(entries),
+      features: [...PROVIDER_PROXY_FEATURES],
     });
   }
 
@@ -173,6 +194,52 @@ export class ProviderProxyEndpoint {
     } catch (error) {
       if (!this.closed) this.transport.send({ type: "provider_proxy_consume_reset_result", reqId, error: errorMessage(error) });
     }
+  }
+
+  private accountsSnapshot() {
+    try {
+      return this.accounts?.snapshot() ?? null;
+    } catch (error) {
+      log("warn", `provider-proxy endpoint: reading the Claude accounts failed: ${errorMessage(error)}`);
+      return null;
+    }
+  }
+
+  private handleAccounts(reqId: string, provider: unknown, watch: unknown): void {
+    if (provider !== "anthropic") {
+      this.transport.send({ type: "error", reqId, message: `No account pool to share for ${String(provider)}.` });
+      return;
+    }
+    const accounts = this.accountsSnapshot();
+    this.transport.send({ type: "provider_proxy_accounts_result", reqId, provider, accounts });
+    if (watch === false) {
+      this.unwatchAccounts();
+    } else if (watch === true && this.accounts && !this.accountsWatch) {
+      const watching = { unsubscribe: () => {}, timer: null as ReturnType<typeof setTimeout> | null, last: JSON.stringify(accounts) };
+      const push = () => {
+        watching.timer = null;
+        if (this.closed || this.accountsWatch !== watching) return;
+        const next = this.accountsSnapshot();
+        const serialized = JSON.stringify(next);
+        if (serialized === watching.last) return;
+        watching.last = serialized;
+        this.transport.send({ type: "provider_proxy_accounts_update", provider: "anthropic", accounts: next });
+      };
+      watching.unsubscribe = this.accounts.subscribe(() => {
+        if (watching.timer || this.accountsWatch !== watching) return;
+        watching.timer = setTimeout(push, ACCOUNTS_PUSH_DELAY_MS);
+        (watching.timer as { unref?: () => void }).unref?.();
+      });
+      this.accountsWatch = watching;
+    }
+  }
+
+  private unwatchAccounts(): void {
+    const watching = this.accountsWatch;
+    if (!watching) return;
+    this.accountsWatch = null;
+    watching.unsubscribe();
+    if (watching.timer) clearTimeout(watching.timer);
   }
 
   /** Validate an open command; on refusal, end the stream with the reason. */
@@ -205,15 +272,33 @@ export class ProviderProxyEndpoint {
     const abort = new AbortController();
     this.streams.set(streamId, { abort });
     const clientHeaders = providerProxyRequestHeaders(Object.entries(command.headers ?? {}));
+    // Which conversation the request belongs to is for routing here, never for the upstream.
+    const conversation = proxiedConversationKey(clientHeaders[PROVIDER_PROXY_CONVERSATION_HEADER]);
+    delete clientHeaders[PROVIDER_PROXY_CONVERSATION_HEADER];
     const body = command.body ? Buffer.from(command.body, "base64") : undefined;
+    const router = provider === "anthropic" ? this.claudeRouter : null;
+    let lease: ProxiedClaudeLease | null = null;
     try {
       let response: Response;
-      for (let attempt = 0; ; attempt++) {
+      let authRetried = false;
+      let limitRetried = false;
+      for (;;) {
+        lease ??= router ? await router.lease(conversation, abort.signal) : null;
         let authHeaders: Record<string, string>;
         try {
-          authHeaders = await this.auth.headers(provider, url, { afterRejection: attempt > 0, clientHeaders });
+          authHeaders = await this.auth.headers(provider, url, { afterRejection: authRetried, clientHeaders, ...(lease ? { account: lease.account } : {}) });
         } catch (error) {
           if (!(error instanceof UpstreamAuthError)) throw error;
+          if (lease && !limitRetried) {
+            // This account cannot sign the request: keep it out of routing and try the pool again once.
+            lease.authFailed(error.message);
+            const failed = lease.account;
+            lease.release();
+            lease = await router!.lease(conversation, abort.signal);
+            limitRetried = true;
+            authRetried = false;
+            if (lease.account !== failed) continue;
+          }
           if (!this.closed) this.respondError(streamId, provider, 401, `${hostname()}: ${error.message}`);
           return;
         }
@@ -226,11 +311,33 @@ export class ProviderProxyEndpoint {
           redirect: "manual",
         });
         this.auth.observeResponse?.(provider, url, response.headers);
-        if (response.status !== 401 || attempt > 0) break;
-        await response.body?.cancel().catch(() => {});
+        const refused = lease?.observe(response.status, response.headers) ?? false;
+        if (response.status === 401 && !authRetried) {
+          authRetried = true;
+          await response.body?.cancel().catch(() => {});
+          continue;
+        }
+        if (refused && router && lease && !limitRetried) {
+          // At a usage limit: the account is now marked limited, so routing again moves the conversation if another account can take it.
+          limitRetried = true;
+          const limited = lease.account;
+          lease.release();
+          lease = await router.lease(conversation, abort.signal);
+          if (lease.account !== limited) {
+            authRetried = false;
+            await response.body?.cancel().catch(() => {});
+            continue;
+          }
+        }
+        break;
       }
       if (this.closed) return;
-      this.transport.send({ type: "provider_proxy_response", streamId, status: response.status, headers: providerProxyResponseHeaders(response.headers.entries()) });
+      const responseHeaders = providerProxyResponseHeaders(response.headers.entries());
+      if (lease?.moved) {
+        // The client announces the move in its conversation, as this daemon does for its own.
+        responseHeaders[PROVIDER_PROXY_ACCOUNT_MOVE_HEADER] = encodeURIComponent(JSON.stringify({ from: lease.moved.from, to: lease.account, detail: lease.moved.detail }));
+      }
+      this.transport.send({ type: "provider_proxy_response", streamId, status: response.status, headers: responseHeaders });
       if (response.body) {
         const reader = response.body.getReader();
         try {
@@ -250,6 +357,7 @@ export class ProviderProxyEndpoint {
     } catch (error) {
       if (!this.closed) this.transport.send({ type: "provider_proxy_end", streamId, error: abort.signal.aborted ? "Cancelled." : `${hostname()}: ${errorMessage(error)}` });
     } finally {
+      lease?.release();
       this.streams.delete(streamId);
     }
   }

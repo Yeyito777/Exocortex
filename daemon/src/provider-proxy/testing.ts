@@ -27,7 +27,15 @@ export function stubAuth(overrides: Partial<UpstreamAuth> = {}): UpstreamAuth & 
 }
 
 /** A fake `ssh` whose far end is a real endpoint (or an outdated daemon). */
-export function fakeSsh(options: { deps?: ProviderProxyEndpointDeps; outdated?: boolean; drain?: { needs: boolean; waiters: Array<() => void> } } = {}) {
+export function fakeSsh(options: {
+  deps?: ProviderProxyEndpointDeps;
+  outdated?: boolean;
+  /** Command types the far end answers like a daemon that predates them. */
+  unknownCommands?: string[];
+  /** Leave `features` out of the hello, like a daemon that predates them. */
+  noFeatures?: boolean;
+  drain?: { needs: boolean; waiters: Array<() => void> };
+} = {}) {
   const spawned: Array<{ process: SshProcess; endpoint: ProviderProxyEndpoint; kill(): void; commands: Array<Record<string, unknown>> }> = [];
   const spawn = (): SshProcess => {
     const emitter = new EventEmitter();
@@ -37,7 +45,11 @@ export function fakeSsh(options: { deps?: ProviderProxyEndpointDeps; outdated?: 
     const commands: Array<Record<string, unknown>> = [];
     let alive = true;
     const endpoint = new ProviderProxyEndpoint({
-      send: (event) => { if (alive) stdout.write(`${JSON.stringify(event)}\n`); },
+      send: (event) => {
+        if (!alive) return;
+        const sent = options.noFeatures && event.type === "provider_proxy_hello_result" ? { ...event, features: undefined } : event;
+        stdout.write(`${JSON.stringify(sent)}\n`);
+      },
       needsDrain: () => options.drain?.needs ?? false,
       waitDrain: () => new Promise(resolve => { options.drain?.waiters.push(resolve); }),
     }, options.deps);
@@ -49,7 +61,7 @@ export function fakeSsh(options: { deps?: ProviderProxyEndpointDeps; outdated?: 
         const command = JSON.parse(buffer.slice(0, newline));
         buffer = buffer.slice(newline + 1);
         commands.push(command);
-        if (options.outdated) stdout.write(`${JSON.stringify({ type: "error", reqId: command.reqId, message: `Unknown command: ${command.type}` })}\n`);
+        if (options.outdated || options.unknownCommands?.includes(command.type)) stdout.write(`${JSON.stringify({ type: "error", reqId: command.reqId, message: `Unknown command: ${command.type}` })}\n`);
         else endpoint.handle(command);
       }
     });

@@ -20,6 +20,7 @@ import {
   type ProviderProxyExecResultEvent,
   type ProviderProxyLinkCommand,
   type ProviderProxyLinkState,
+  type ProviderProxyRemoteAccounts,
   type ProviderProxyRemoteStatus,
   type ProviderProxyResponseEvent,
   type ProxyableProviderId,
@@ -86,9 +87,16 @@ export interface ProviderProxyLinkOptions {
   /** Providers to ask the remote about in the hello. */
   providers: () => ProxyableProviderId[];
   onChange?: () => void;
+  /** `remoteAccounts` changed. */
+  onAccounts?: () => void;
   spawnProcess?: SpawnSshProcess;
   helloTimeoutMs?: number;
   reconnectDelaysMs?: readonly number[];
+}
+
+function isRemoteAccounts(value: unknown): value is ProviderProxyRemoteAccounts {
+  return typeof value === "object" && value !== null && Array.isArray((value as ProviderProxyRemoteAccounts).accounts)
+    && typeof (value as ProviderProxyRemoteAccounts).routing === "object" && (value as ProviderProxyRemoteAccounts).routing !== null;
 }
 
 export function describeRemoteHost(host: ClientHostInfo | null, alias: string): string {
@@ -101,6 +109,14 @@ export class ProviderProxyLink {
   message: string | undefined;
   host: ClientHostInfo | null = null;
   remote: Partial<Record<ProxyableProviderId, ProviderProxyRemoteStatus>> = {};
+  /** What the remote can do beyond protocol v1 (PROVIDER_PROXY_FEATURES), from its last hello. */
+  features: string[] = [];
+  /**
+   * The remote's Claude account pool, kept current while watched; the last one
+   * received stays while the link is down. Null until received, or when the
+   * remote does not share one (it predates provider_proxy_accounts).
+   */
+  remoteAccounts: ProviderProxyRemoteAccounts | null = null;
 
   private process: SshProcess | null = null;
   private generation = 0;
@@ -110,6 +126,8 @@ export class ProviderProxyLink {
   private closed = false;
   private outdated = false;
   private failedAttempts = 0;
+  /** The connection (generation) watching the remote's accounts, if any. */
+  private accountsWatchGeneration: number | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private helloTimer: ReturnType<typeof setTimeout> | null = null;
   private attemptWaiters = new Set<{ resolve(): void; reject(error: Error): void }>();
@@ -377,6 +395,47 @@ export class ProviderProxyLink {
     return event.result as { outcome: string; windowsReset: number; remainingResets?: number };
   }
 
+  /**
+   * Receive the remote's Claude pool now and whenever it changes, for this
+   * connection (a reconnect watches again). `watch = false` stops. A remote
+   * without provider_proxy_accounts leaves `remoteAccounts` null.
+   */
+  watchAccounts(watch = true): void {
+    if (!this.isConnected()) return;
+    const generation = this.generation;
+    if (watch === (this.accountsWatchGeneration === generation)) return;
+    this.accountsWatchGeneration = watch ? generation : null;
+    if (!watch) {
+      this.trySend({ type: "provider_proxy_accounts", reqId: randomUUID(), provider: "anthropic", watch: false });
+      return;
+    }
+    this.request({ type: "provider_proxy_accounts", reqId: randomUUID(), provider: "anthropic", watch: true }, "provider_proxy_accounts_result")
+      .then((event) => {
+        if (generation !== this.generation || this.accountsWatchGeneration !== generation) return;
+        this.setRemoteAccounts(event.accounts);
+        // Have the remote check sign-ins and usage it has not looked at lately; the changes arrive as updates.
+        if (this.remoteAccounts) void this.status("anthropic", true).catch(() => {});
+      })
+      .catch((error: unknown) => {
+        if (generation !== this.generation) return;
+        if (this.accountsWatchGeneration === generation) this.accountsWatchGeneration = null;
+        const message = error instanceof Error ? error.message : String(error);
+        if (/^Unknown command: provider_proxy_accounts/.test(message)) {
+          log("info", `provider-proxy: ${this.alias} does not share its Claude accounts (older Exocortex); showing its main account only`);
+          this.setRemoteAccounts(null);
+        } else {
+          log("warn", `provider-proxy: watching ${this.alias}'s Claude accounts failed: ${message}`);
+        }
+      });
+  }
+
+  private setRemoteAccounts(accounts: unknown): void {
+    const next = isRemoteAccounts(accounts) ? accounts : null;
+    if (next === null && this.remoteAccounts === null) return;
+    this.remoteAccounts = next;
+    this.options.onAccounts?.();
+  }
+
   /** remote_bash: run a command on the remote machine. Never rejects. */
   exec(request: { command: string; cwd?: string; timeoutMs: number }, signal?: AbortSignal): Promise<ProviderProxyExecOutcome | { failure: string }> {
     if (this.state !== "connected" || !this.host) {
@@ -492,11 +551,13 @@ export class ProviderProxyLink {
       this.failedAttempts = 0;
       this.host = (event.host as ClientHostInfo | undefined) ?? null;
       this.remote = (event.providers as ProviderProxyLink["remote"] | undefined) ?? {};
+      this.features = Array.isArray(event.features) ? event.features.filter((feature): feature is string => typeof feature === "string") : [];
       this.state = "connected";
       this.message = undefined;
       log("info", `provider-proxy: connected to ${this.alias} (${describeRemoteHost(this.host, this.alias)})`);
       for (const waiter of [...this.attemptWaiters]) waiter.resolve();
       this.options.onChange?.();
+      if (this.options.providers().includes("anthropic")) this.watchAccounts();
     });
     this.send({ type: "provider_proxy_hello", reqId, version: PROVIDER_PROXY_PROTOCOL_VERSION, providers: this.options.providers() });
   }
@@ -574,9 +635,13 @@ export class ProviderProxyLink {
       case "provider_proxy_exec_result":
         this.requests.get(String(event.execId))?.(event as never);
         return;
+      case "provider_proxy_accounts_update":
+        if (this.accountsWatchGeneration === this.generation) this.setRemoteAccounts(event.accounts);
+        return;
       case "provider_proxy_hello_result":
       case "provider_proxy_status_result":
       case "provider_proxy_consume_reset_result":
+      case "provider_proxy_accounts_result":
       case "error": {
         const reqId = typeof event.reqId === "string" ? event.reqId : null;
         const handler = reqId ? this.requests.get(reqId) : undefined;

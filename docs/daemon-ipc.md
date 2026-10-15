@@ -47,6 +47,11 @@ usage, limit or running turn changes (at most every 250 ms), and refreshes
 stale sign-ins and idle usage every minute, until `watch: false` or the
 connection closes; it registers no watcher while `enabled` is false. The
 answer itself only reports what is already known, so it is immediate.
+While Claude goes through [/proxy](provider-proxy.md), `claude` holds the
+remote daemon's accounts with `claude.remote` (alias, host, link state);
+conversation rows marked `remote` are the remote's own
+and cannot be opened here. `claude.proxied` is true only while the remote's
+accounts are unknown.
 
 `provider_proxy` lists, enables or disables [/proxy](provider-proxy.md);
 daemons also speak the `provider_proxy_*` link messages to each other over

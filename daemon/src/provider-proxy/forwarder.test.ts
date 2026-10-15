@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PROVIDER_PROXY_ACCOUNT_MOVE_HEADER, PROVIDER_PROXY_CONVERSATION_HEADER, type ProviderProxyAccountMove } from "@exocortex/shared/provider-proxy";
 import { ProviderProxyForwarder } from "./forwarder";
 import { ProviderProxyUnavailableError, type ProviderProxyHttpRequest, type ProviderProxyLink, type ProviderProxyWebSocketHandlers } from "./link";
 
@@ -139,5 +140,35 @@ describe("provider proxy forwarder", () => {
     expect(second.port).toBe(port);
     expect(second.secret).toBe(secret);
     expect(statSync(file).mode & 0o777).toBe(0o600);
+  });
+});
+
+describe("Claude account moves on the remote", () => {
+  test("are taken off the response and reported for the named conversation", async () => {
+    const link = fakeLink();
+    const move = encodeURIComponent(JSON.stringify({ from: "main", to: "max2", detail: "\"main\" is at a usage limit" }));
+    Object.assign(link, {
+      async openHttp(request: ProviderProxyHttpRequest) {
+        link.requests.push(request);
+        return { status: 200, headers: { "content-type": "text/plain", [PROVIDER_PROXY_ACCOUNT_MOVE_HEADER]: move }, body: new Response("ok").body! };
+      },
+    });
+    const moves: Array<[string, ProviderProxyAccountMove]> = [];
+    const forwarder = new ProviderProxyForwarder({
+      linkFor: () => link as unknown as ProviderProxyLink,
+      onAccountMove: (conversation, accountMove) => moves.push([conversation, accountMove]),
+    });
+    forwarder.start();
+    forwarders.push(forwarder);
+    const response = await fetch(`${forwarder.baseUrl("anthropic")}/v1/messages`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${forwarder.secret}`, [PROVIDER_PROXY_CONVERSATION_HEADER]: "macbook/conv-1" },
+      body: "{}",
+    });
+    expect(await response.text()).toBe("ok");
+    expect(response.headers.get(PROVIDER_PROXY_ACCOUNT_MOVE_HEADER)).toBeNull();
+    // The conversation's name goes to the remote, which takes it off before the upstream.
+    expect(link.requests[0].headers[PROVIDER_PROXY_CONVERSATION_HEADER]).toBe("macbook/conv-1");
+    expect(moves).toEqual([["macbook/conv-1", { from: "main", to: "max2", detail: "\"main\" is at a usage limit" }]]);
   });
 });
