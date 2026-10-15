@@ -3,7 +3,6 @@ import type { ConversationDefaults } from "@exocortex/shared/config";
 import type { RenderState } from "../state";
 import type { GoalAction, OpenAILoginMethod, QueuedCommandInvocation, QueueWaitTarget, TrimMode } from "../protocol";
 import type { ProviderId, ModelId, EffortLevel } from "../messages";
-import type { RealtimeVoice } from "@exocortex/shared/realtime";
 import type { ChronoRequest } from "../chronoschedule";
 
 export interface CompletionItem {
@@ -26,10 +25,6 @@ type CommandAction =
   | { type: "compact_requested" }
   | { type: "btw_requested"; query: string }
   | { type: "btw_close_requested" }
-  | { type: "call_requested"; voice?: RealtimeVoice }
-  | { type: "hangup_requested" }
-  | { type: "mute_requested" }
-  | { type: "mic_gain_changed"; gainDb: number }
   | { type: "model_changed"; provider: ProviderId; model: ModelId }
   | { type: "conversation_defaults_changed"; defaults: ConversationDefaults }
   | { type: "conversation_defaults_reset" }

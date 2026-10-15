@@ -45,15 +45,10 @@ small attribution/checkpoint changes do not rewrite large content:
 - indexed real-user/replay-history flags
 - byte size, content hash, and normalized message hash
 
-Realtime call support requires no schema version bump. Finalized transcript and
-lifecycle messages use the existing `metadata_json` column for
-`realtimeCallId`, adapter/source identity, authenticated speaker attribution, and
-`kind` (`realtime_transcript` or `realtime_call_status`). Raw call audio, SDP,
-partial deltas, participant rosters, and active transport state have no table.
-
 `conversations.message_count` is derived with domain semantics rather than raw row
-count. In particular, model-hidden `realtime_call_status` rows remain canonical and
-auditable while being excluded from that summary count.
+count. In particular, model-hidden call status rows left by the retired realtime-call
+feature (`realtime_call_status`) remain canonical and auditable while being excluded
+from that summary count.
 
 `content_json` contains ordinary text and block structure. Large tool-result bodies
 and image base64 are replaced by empty placeholders and stored in `message_blobs`.
@@ -132,9 +127,9 @@ busy_timeout = 5000 ms
 wal_autocheckpoint = 1000 pages
 ```
 
-Clean shutdown—including an instance-local restart—stops active realtime transports,
-flushes conversations, closes the connection, and truncates the WAL. Online backup
-checkpoints, uses `VACUUM INTO` a new path, and quick-checks the result before
+Clean shutdown—including an instance-local restart—flushes conversations, closes
+the connection, and truncates the WAL. Online backup checkpoints, uses
+`VACUUM INTO` a new path, and quick-checks the result before
 publishing it.
 
 ## Migration history

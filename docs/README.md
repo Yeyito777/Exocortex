@@ -22,7 +22,6 @@ selects another daemon without moving client-side UI operations to that host.
 - [Several Claude accounts](claude-accounts.md)
 - [Goals](goals.md)
 - [Delegation models](delegation-models.md)
-- [External call adapters and realtime delegation](external-call-adapters.md)
 - [Local links](local-links.md)
 - [Inline images](inline-images.md)
 - [Update status](update-status.md)
@@ -74,10 +73,6 @@ table in step with it.
 | `/accounts` | Accounts screen: every Claude and OpenAI account, its sign-in, usage and conversations (needs more than one account; also `g a`) |
 | `/replay` | Run the assistant again on the history as it stands, without a new message; `/queue [target] /replay` defers it |
 | `/btw <query>` / `/btw close` | Ask a read-only aside in a side panel, or close it |
-| `/call [voice]` | Start a realtime call |
-| `/hangup` | End the realtime call |
-| `/mic [dB]` | Show or set the local microphone gain |
-| `/mute` | Toggle the local microphone during a call |
 | `/compact` | Compact the context now; `/queue [target] /compact` defers it. For Claude Code this starts a fresh session from the checkpoint |
 | `/rename [title]` | Rename the conversation, or generate a title |
 | `/model [<provider> [<model>]]` | Show or switch provider/model, e.g. `/model openai gpt-6-sol-daybreak` when the account advertises it |

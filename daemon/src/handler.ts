@@ -20,11 +20,9 @@ import { effectiveConversationDefaults } from "@exocortex/shared/config";
 import { isDurationMs } from "@exocortex/shared/duration";
 import { experimentalFeatures } from "./experimental";
 import { conversationDefaultsSnapshot, resetDaemonConversationDefaults, setDaemonConversationDefaults } from "./conversation-defaults";
-import type { RealtimeVoice } from "@exocortex/shared/realtime";
-import type { RealtimeCallAdapter, RealtimeCallParticipant } from "@exocortex/shared/protocol";
 import { consumeUsageReset, refreshUsage, handleUsageHeaders, getLastUsage, clearUsage } from "./usage";
 import { connectivity } from "./connectivity";
-import { orchestrateCompactConversation, orchestrateGoalCycle, orchestrateRealtimeDelegation, orchestrateReplayConversation, orchestrateSendMessage, type AssistantTurnOutcome } from "./orchestrator";
+import { orchestrateCompactConversation, orchestrateGoalCycle, orchestrateReplayConversation, orchestrateSendMessage, type AssistantTurnOutcome } from "./orchestrator";
 import { complete } from "./llm";
 import { buildClaudeCodeSystemAppend, buildSystemPrompt } from "./system";
 import { createConversationWorkspace, ensureConversationWorkspace } from "./workspace-service";
@@ -101,14 +99,12 @@ import {
 } from "./external-notifications";
 import { BtwSessionManager } from "./btw";
 import { enqueueExternalNotificationSoftWake } from "./external-notification-soft-wakes";
-import { RealtimeCallManager } from "./call/manager";
 import { listPathDirectoryWithLookahead } from "./path-completion";
 import { resolveFileLink } from "./file-links";
 
 // ── Handler ─────────────────────────────────────────────────────────
 
 let queueSchedulerGeneration = 0;
-const DEFAULT_CALL_TITLE = "voice call";
 
 export interface HandlerLifecycle {
   /** Restart the process that owns this exact server/socket instance. */
@@ -123,12 +119,7 @@ export interface DaemonCommandHandler {
   providerProxies: ProviderProxyManager;
 }
 
-type RealtimeCallController = Pick<RealtimeCallManager,
-  "hasActiveCall" | "start" | "attachMedia" | "updateParticipants" | "updateSpeakers" | "submitUtterance" | "stop" | "stopFromAgent" | "stopAll"
->;
-
 export interface HandlerOptions extends HandlerLifecycle {
-  callManager?: RealtimeCallController;
   providerProxies?: ProviderProxyManager;
 }
 
@@ -191,8 +182,6 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   let openAIUsageResetInFlight = false;
   let exocortexRuntime: ExocortexToolRuntime | undefined;
   let btwManager: BtwSessionManager;
-  let callManager: RealtimeCallController;
-  const delegatedCallByConversation = new Map<string, string>();
   const pendingBackgroundNotifications = new Map<string, { convId: string; completion: BackgroundTaskCompletion }>();
   const enqueueBackgroundTaskCompletion = (convId: string, completion: BackgroundTaskCompletion): void => {
     const id = `${convId}:${completion.taskId}:${completion.endedAt}`;
@@ -420,7 +409,6 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   const hasStreamingOpenAIConversation = (): boolean => (
     convStore.listSummaries().some((conversation) => conversation.provider === "openai" && conversation.streaming)
     || btwManager?.hasRunningProvider("openai") === true
-    || callManager?.hasActiveCall() === true
   );
   const rejectOpenAIAccountMutationWhileStreaming = (client: ConnectedClient, reqId?: string): boolean => {
     if (!hasStreamingOpenAIConversation()) return false;
@@ -464,7 +452,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     // OpenAI account switches and /proxy changes show on the Accounts screen too.
     accountsWatch.changed();
   };
-  const buildOrchestrationCallbacks = (convId: string, onAssistantTextChunk?: (chunk: string) => void) => ({
+  const buildOrchestrationCallbacks = (convId: string) => ({
     onHeaders: (h: Headers) => {
       const provider = convStore.getIndexedSummary(convId)?.provider ?? getDefaultProvider().id;
       if (provider === "openai") broadcastToolsAvailable();
@@ -478,7 +466,6 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     onBackgroundTaskComplete: (completion: BackgroundTaskCompletion) => {
       enqueueBackgroundTaskCompletion(convId, completion);
     },
-    ...(onAssistantTextChunk ? { onAssistantTextChunk } : {}),
     exocortex: exocortexRuntime,
   });
 
@@ -1334,82 +1321,6 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     }
   };
 
-  callManager = options.callManager ?? new RealtimeCallManager(server, {
-    queueDelegation: (convId, queueId, text) => {
-      convStore.pushRealtimeQueuedMessage(convId, text, queueId);
-    },
-    dequeueDelegation: (queueId) => {
-      convStore.removeQueuedMessageById(queueId);
-    },
-    delegate: async (convId, delegation, signal, onTextDelta) => {
-      const conv = await convStore.getAsync(convId);
-      if (!conv) throw new Error("Owning conversation no longer exists.");
-      if (convStore.isStreaming(convId)) throw new Error("The owning conversation is already running another turn.");
-      delegatedCallByConversation.set(convId, delegation.callId);
-      let outcome: AssistantTurnOutcome;
-      try {
-        outcome = await orchestrateRealtimeDelegation(
-          server,
-          convId,
-          delegation,
-          Date.now(),
-          buildOrchestrationCallbacks(convId, onTextDelta),
-          { subagentMaxDepth: conv.subagentMaxDepth ?? null },
-          signal,
-        );
-      } finally {
-        if (delegatedCallByConversation.get(convId) === delegation.callId) {
-          delegatedCallByConversation.delete(convId);
-        }
-      }
-      if (outcome.aborted && !outcome.watchdog && !outcome.daemonRestart) {
-        return { status: "cancelled" as const };
-      }
-      if (!outcome.ok) throw new Error(outcome.error ?? "Delegated agent turn failed.");
-      const reply = outcome.blocks
-        .flatMap(block => block.type === "text" ? [block.text] : [])
-        .join("\n")
-        .trim();
-      if (!reply) throw new Error("Delegated agent turn returned no spoken reply.");
-      return { status: "completed" as const, text: reply };
-    },
-  });
-
-  const startCall = async (
-    client: ConnectedClient,
-    convId: string,
-    reqId?: string,
-    voice?: RealtimeVoice,
-    adapter?: RealtimeCallAdapter,
-    participants: RealtimeCallParticipant[] = [],
-  ): Promise<void> => {
-    if (!await convStore.getAsync(convId)) {
-      server.sendTo(client, {
-        type: "error",
-        reqId,
-        convId,
-        message: "Conversation not found.",
-      });
-      return;
-    }
-    // The daemon owns the call request. Subscribe the initiating client before
-    // publishing lifecycle events; this also covers an atomic create + call.
-    server.subscribe(client, convId);
-    try {
-      if (adapter) await callManager.start(convId, voice, adapter, participants);
-      else if (voice) await callManager.start(convId, voice);
-      else await callManager.start(convId);
-      server.sendTo(client, { type: "ack", reqId, convId });
-    } catch (error) {
-      server.sendTo(client, {
-        type: "error",
-        reqId,
-        convId,
-        message: error instanceof Error ? error.message : String(error),
-      });
-    }
-  };
-
   // One monitor per daemon: every client sees the same online/offline state.
   const unsubscribeConnectivity = connectivity.subscribe((snapshot) => {
     server.broadcast({ type: "connectivity_status", ...snapshot });
@@ -1713,13 +1624,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           }
         }
         const inferredProvider = inferProviderForModel(cmd.model);
-        const provider = cmd.startCall
-          ? "openai"
-          : delegationSelection?.provider ?? cmd.provider ?? inferredProvider ?? conversationDefaults.provider;
-        const requestedModel = cmd.startCall && (
-          (cmd.provider !== undefined && cmd.provider !== "openai")
-          || (inferredProvider !== undefined && inferredProvider !== "openai")
-        ) ? undefined : delegationSelection?.model ?? cmd.model;
+        const provider = delegationSelection?.provider ?? cmd.provider ?? inferredProvider ?? conversationDefaults.provider;
+        const requestedModel = delegationSelection?.model ?? cmd.model;
         const providerInfo = getProvider(provider);
         if (!providerInfo) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: id, message: `Unknown provider: ${provider}` });
@@ -1776,11 +1682,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           }
         }
 
-        const title = cmd.title ?? (
-          cmd.startCall
-            ? DEFAULT_CALL_TITLE
-            : (initialMessage || goalObjective || titleContext ? PENDING_TITLE : undefined)
-        );
+        const title = cmd.title ?? (initialMessage || goalObjective || titleContext ? PENDING_TITLE : undefined);
         const previousSubagentSidebarState = cmd.subagent ? convStore.listSidebarState() : null;
         const subagentFolder = cmd.subagent
           ? convStore.ensureTopLevelFolder(SUBAGENTS_FOLDER_NAME, { mutedOnCreate: true })
@@ -1841,8 +1743,6 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         });
         broadcastConversationUpdated(server, id);
         if (previousSubagentSidebarState) broadcastSidebarStatePatch(previousSubagentSidebarState);
-
-        if (cmd.startCall) await startCall(client, id, cmd.reqId, cmd.callVoice);
 
         if (goalObjective && !initialMessage) {
           server.subscribe(client, id);
@@ -1991,95 +1891,6 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         }
         log("info", `handler: background_tool requested for ${cmd.convId}: ${result}`);
         server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
-        break;
-      }
-
-      case "start_call": {
-        await startCall(client, cmd.convId, cmd.reqId, cmd.voice, cmd.adapter, cmd.participants);
-        break;
-      }
-
-      case "attach_call_media": {
-        server.subscribe(client, cmd.convId);
-        try {
-          await callManager.attachMedia(client, cmd.convId, cmd.callId, cmd.offerSdp, cmd.reqId);
-          server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
-        } catch (error) {
-          server.sendTo(client, {
-            type: "error",
-            reqId: cmd.reqId,
-            convId: cmd.convId,
-            message: error instanceof Error ? error.message : String(error),
-          });
-        }
-        break;
-      }
-
-      case "update_call_participants": {
-        try {
-          callManager.updateParticipants(cmd.convId, cmd.callId, cmd.participants);
-          server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
-        } catch (error) {
-          server.sendTo(client, {
-            type: "error",
-            reqId: cmd.reqId,
-            convId: cmd.convId,
-            message: error instanceof Error ? error.message : String(error),
-          });
-        }
-        break;
-      }
-
-      case "update_call_speakers": {
-        try {
-          callManager.updateSpeakers(cmd.convId, cmd.callId, cmd.speakers);
-          server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
-        } catch (error) {
-          server.sendTo(client, {
-            type: "error",
-            reqId: cmd.reqId,
-            convId: cmd.convId,
-            message: error instanceof Error ? error.message : String(error),
-          });
-        }
-        break;
-      }
-
-      case "submit_call_utterance": {
-        try {
-          const audioBytes = Buffer.from(cmd.audioBase64, "base64");
-          callManager.submitUtterance(cmd.convId, cmd.callId, {
-            utteranceId: cmd.utteranceId,
-            participantId: cmd.participantId,
-            audioBytes,
-            mimeType: cmd.mimeType,
-            startedAt: cmd.startedAt,
-            endedAt: cmd.endedAt,
-          });
-          server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
-        } catch (error) {
-          server.sendTo(client, {
-            type: "error",
-            reqId: cmd.reqId,
-            convId: cmd.convId,
-            message: error instanceof Error ? error.message : String(error),
-          });
-        }
-        break;
-      }
-
-      case "stop_call": {
-        try {
-          await callManager.stop(cmd.convId, cmd.callId);
-          server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
-        } catch (error) {
-          server.sendTo(client, {
-            type: "error",
-            reqId: cmd.reqId,
-            convId: cmd.convId,
-            message: error instanceof Error ? error.message : String(error),
-          });
-        }
         break;
       }
 
@@ -3832,9 +3643,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   };
 
   return Object.assign(handleCommand, {
-    stop: () => {
+    stop: async () => {
       unsubscribeConnectivity();
-      return callManager.stopAll();
     },
     backgroundTaskComplete: enqueueBackgroundTaskCompletion,
     providerProxies,

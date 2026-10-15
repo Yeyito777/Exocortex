@@ -377,7 +377,7 @@ describe("sidebar tree folder view", () => {
       const row = folderRow(muted, "📂");
       expect(row).toContain("📂 work/ ");
       expect(row).toContain("🔕");
-      expect(row).not.toMatch(/[◉◷◆$☎]|work\/ \d/);
+      expect(row).not.toMatch(/[◉◷◆$]|work\/ \d/);
       // The child still carries its own badges.
       const lines = renderSidebar(sidebar, 12, true, null).map(line => stripAnsi(line));
       expect(lines.find(line => line.includes("busy"))).toMatch(/◉ ◆2 ◷ \$ busy/);

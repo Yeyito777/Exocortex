@@ -2,7 +2,6 @@ import type { RenderState } from "./state";
 import { ACCOUNT_COMMAND } from "./commands/account";
 import { ACCOUNTS_COMMAND } from "./commands/accounts";
 import { BTW_COMMAND } from "./btw/command";
-import { CALL_COMMAND } from "./commands/call";
 import { CHRONO_COMMAND } from "./commands/chrono";
 import { COMPACT_COMMAND } from "./commands/compact";
 import { CONVO_COMMAND } from "./commands/convo";
@@ -13,15 +12,12 @@ import { FAST_COMMAND } from "./commands/fast";
 import { FOLDERS_COMMAND } from "./commands/folders";
 import { ULTRAFAST_COMMAND } from "./commands/ultrafast";
 import { GOAL_COMMAND } from "./commands/goal";
-import { HANGUP_COMMAND } from "./commands/hangup";
 import { createHelpCommand } from "./commands/help";
 import { HIDE_COMMAND } from "./commands/hide";
 import { INSTRUCTIONS_COMMAND } from "./commands/instructions";
 import { LOGIN_COMMAND } from "./commands/login";
 import { LOGOUT_COMMAND } from "./commands/logout";
 import { MODEL_COMMAND } from "./commands/model";
-import { MIC_COMMAND } from "./commands/mic";
-import { MUTE_COMMAND } from "./commands/mute";
 import { NEW_COMMAND } from "./commands/new";
 import { PING_COMMAND } from "./commands/ping";
 import { QUEUE_COMMAND } from "./commands/queue";
@@ -50,10 +46,6 @@ const commands: SlashCommand[] = [
   ACCOUNTS_COMMAND,
   REPLAY_COMMAND,
   BTW_COMMAND,
-  CALL_COMMAND,
-  HANGUP_COMMAND,
-  MIC_COMMAND,
-  MUTE_COMMAND,
   COMPACT_COMMAND,
   RENAME_COMMAND,
   MODEL_COMMAND,

@@ -59,7 +59,7 @@ export interface QueuedMessage {
    * The daemon owns both stream-relative delivery and the global-idle `/queue`
    * FIFO. The TUI retains only an optimistic/display projection.
    */
-  source?: "daemon" | "global-idle" | "realtime";
+  source?: "daemon" | "global-idle";
   /** Machine-readable provenance for daemon/model-authored queued prompts. */
   automation?: UserMessageAutomation;
   /** New-conversation /queue entries reserve a client conversation id here. */
@@ -190,12 +190,6 @@ export interface RenderState {
   pendingHistoryNavigation: import("./keybinds").Action | null;
   /** The AI message currently being streamed (not yet finalized). */
   pendingAI: AIMessage | null;
-  /** Live GPT-Live transcript projected into history until canonical persistence arrives. */
-  callAssistantDraft: { callId: string; message: AIMessage; final: boolean } | null;
-  /** Live captured speech projected ahead of its canonical persisted user turn. */
-  callUserDraft: { callId: string; message: UserMessage; final: boolean } | null;
-  /** Active realtime call IDs grouped by conversation, including external adapters. */
-  activeCallIdsByConversation: Map<string, Set<string>>;
   /** Start time for the transient native context-compaction spinner. */
   contextCompactionStartedAt: number | null;
   /** When the streaming turn started waiting for the network to return (see network-wait.ts). */
@@ -513,8 +507,6 @@ export function resetDraftConversationState(state: RenderState, folderId = state
   // is only browsing and must not silently move the eventual conversation.
   state.draftFolderId = folderId;
   state.messages = [];
-  state.callAssistantDraft = null;
-  state.callUserDraft = null;
   clearPendingAI(state);
   clearStreamingTailMessages(state);
   state.contextTokens = 0;
@@ -547,8 +539,6 @@ export function openFolderInstructionsDocument(state: RenderState, folderId: str
   state.voiceMessage = null;
   clearPendingAI(state);
   state.messages = [];
-  state.callAssistantDraft = null;
-  state.callUserDraft = null;
   clearStreamingTailMessages(state);
   state.scrollOffset = 0;
   resetToolOutputState(state);
@@ -658,9 +648,6 @@ export function createInitialState(): RenderState {
     historyLoadingStartedAt: null,
     historyLoadingRequestId: null,
     pendingAI: null,
-    callAssistantDraft: null,
-    callUserDraft: null,
-    activeCallIdsByConversation: new Map(),
     contextCompactionStartedAt: null,
     connectionWaitStartedAt: null,
     daemonOfflineSince: null,

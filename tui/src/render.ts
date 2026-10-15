@@ -477,8 +477,7 @@ function wrapRenderedHistoryLine(line: string, width: number): { lines: string[]
 
 function isRightAlignedHistorySegment(segment: RenderLineSegment | undefined): boolean {
   return segment === "automation_label"
-    || segment === "queued_label"
-    || segment === "transcript_label";
+    || segment === "queued_label";
 }
 
 /** Rows whose leading spaces express viewport alignment rather than semantic indentation. */
@@ -1409,7 +1408,6 @@ export function render(state: RenderState): boolean {
       state.convId,
       new Set(state.queuedMessages.filter(isGlobalIdleQueuedMessage).map(message => message.convId)),
       state.pendingAI ? state.convId : null,
-      new Set(state.activeCallIdsByConversation.keys()),
       state.sshRemote?.alias ?? null,
     );
   }

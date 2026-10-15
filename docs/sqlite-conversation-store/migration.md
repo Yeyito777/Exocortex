@@ -21,9 +21,7 @@
    conversation through the v1-v18 compatibility loader. Deleted sources are inserted
    with `deleted_at` set, their canonical messages retained, and no live summary.
 5. Fold live `.sidebar` and `.unwind` overlays by importing the compatibility loader's
-   materialized `Conversation` result. Finalized realtime transcript/status messages,
-   including speaker and adapter provenance, require no special import because they
-   are ordinary v18 messages whose metadata is preserved exactly.
+   materialized `Conversation` result.
 6. Import unread, queue, BTW, and the normalized `trash/trash.json` undo and
    `trash/redo.json` redo stacks in their original order. This also runs when there
    are no live conversations and the legacy corpus consists only of trash/history.
@@ -79,14 +77,11 @@ SQLite connection, and let the instance supervisor reopen the same `dataDir()`.
 
 ## JSON export
 
-One-conversation export reproduces the current v18 normalized object, including
-finalized realtime transcript/status metadata. Full export writes live conversations
+One-conversation export reproduces the current v18 normalized object. Full export writes live conversations
 under `conversations/`, soft-deleted conversations under `trash/`, and undo/redo
 metadata as `trash/trash.json` and `trash/redo.json`, alongside folders, instructions,
 unread, queue, and BTW state. The result is directly usable as a JSON rollback tree;
-delete undo remains functional after rollback. Active call transports, raw audio,
-partial deltas, and participant/speaker windows are ephemeral and are intentionally
-absent. Export never writes into an existing legacy corpus unless an explicit empty
+delete undo remains functional after rollback. Export never writes into an existing legacy corpus unless an explicit empty
 destination is supplied.
 
 ```bash

@@ -25,7 +25,6 @@ import type {
 import {
   activeContextCompactionHistoryCount,
   CONTEXT_COMPACTION_FINISHED_KIND,
-  REALTIME_TRANSCRIPT_KIND,
   countConversationMessages,
   isRealUserMessage,
   isReplayHistoryMessage,
@@ -1099,7 +1098,7 @@ export class SqliteConversationStore implements ConversationRepository {
       // Runtime work-timer lookup must not resurrect the entire header array.
       if (row.is_real_user && !metadata?.automation) workTimer = null;
       if (metadata?.kind === CONTEXT_COMPACTION_FINISHED_KIND && metadata.workTimerStartedAt !== undefined) workTimer = metadata;
-      else if (row.role === "assistant" && metadata) workTimer = metadata.kind === REALTIME_TRANSCRIPT_KIND ? null : metadata;
+      else if (row.role === "assistant" && metadata) workTimer = metadata;
     }
     return JSON.stringify({ userCount, messageCount, instructions, workTimer });
   }

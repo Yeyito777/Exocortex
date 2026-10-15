@@ -225,8 +225,12 @@ export type Block = ThinkingBlock | TextBlock | ToolCallBlock | ToolResultBlock;
 /** Machine-readable identity and fallback text for persisted compaction dividers. */
 export const CONTEXT_COMPACTION_FINISHED_KIND = "context_compaction_finished";
 export const CONTEXT_COMPACTION_FINISHED_TEXT = "--- Compaction finished ---";
-export const REALTIME_TRANSCRIPT_KIND = "realtime_transcript";
-export const REALTIME_CALL_STATUS_KIND = "realtime_call_status";
+/**
+ * Call start/end markers persisted by the retired realtime-call feature. Old
+ * transcripts still contain them; they stay muted and out of message counts so
+ * those transcripts render and count exactly as they were stored.
+ */
+export const LEGACY_CALL_STATUS_KIND = "realtime_call_status";
 /** Informational provider notices in the transcript (a Claude account switch, Claude Code compacting its context). */
 export const PROVIDER_NOTICE_KIND = "provider_notice";
 /**
@@ -255,7 +259,6 @@ export const USER_MESSAGE_AUTOMATION_KINDS = [
   "exo_send",
   "subagent_completion",
   "goal_continuation",
-  "realtime_delegation",
   "daemon_restart",
 ] as const;
 
@@ -313,23 +316,6 @@ export interface MessageMetadata {
   queueEntryId?: string;
   /** Provenance for a non-human prompt intentionally represented as a user turn. */
   automation?: UserMessageAutomation;
-  /** Session/source identity for persisted realtime call turns and lifecycle markers. */
-  realtimeCallId?: string;
-  realtimeAdapterType?: "tui" | "external";
-  realtimeAdapterId?: string;
-  realtimeToolName?: string;
-  realtimeSourceLabel?: string;
-  realtimeAccountAlias?: string;
-  realtimeEndpointId?: string;
-  /** Adapter-authenticated source attribution for a realtime user transcript. */
-  realtimeSpeaker?: {
-    kind: "single" | "multiple" | "unknown";
-    participants: Array<{
-      id: string;
-      displayName: string;
-      trust: "owner" | "friend" | "untrusted";
-    }>;
-  };
 }
 
 /** Build standard message metadata with sensible defaults. */

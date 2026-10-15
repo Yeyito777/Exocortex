@@ -68,9 +68,9 @@ export function queueTimingLabel(message: QueuedMessage, now = Date.now(), provi
     return GLOBAL_IDLE_QUEUE_LABEL;
   }
   if (message.timing !== "next-turn") return "queued: message end";
-  // Automated and realtime next-turn entries wait for a tool boundary; only a
-  // person's next-turn message steers the active turn immediately.
-  return message.automation || message.source === "realtime" || !steersInstantly(provider) ? "queued: next turn" : "queued: steer";
+  // Automated next-turn entries wait for a tool boundary; only a person's
+  // next-turn message steers the active turn immediately.
+  return message.automation || !steersInstantly(provider) ? "queued: next turn" : "queued: steer";
 }
 
 function queueDisplayBucket(message: QueuedMessage): number {

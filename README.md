@@ -28,10 +28,10 @@ macOS runs directly from it.
 
 #### Prerequisites
 
-Install Git, Make, and the optional native-call audio dependencies:
+Install Git and Make:
 
 ```bash
-sudo pacman -S --needed git make nodejs libpulse
+sudo pacman -S --needed git make
 ```
 
 Install Bun:
@@ -155,11 +155,10 @@ curl -fsSL https://bun.sh/install | bash
 ```
 
 Open a new shell, or source the shell profile printed by Bun's installer. Voice
-input and native TUI call audio additionally require Node.js and FFmpeg; with
-Homebrew:
+input additionally requires FFmpeg; with Homebrew:
 
 ```bash
-brew install node ffmpeg
+brew install ffmpeg
 ```
 
 Text and image clipboard integration uses macOS's built-in `pbcopy`, `pbpaste`,

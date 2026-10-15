@@ -6,7 +6,7 @@
  * in blockrenderer.ts.
  */
 
-import { CONTEXT_COMPACTION_FINISHED_KIND, REALTIME_TRANSCRIPT_KIND, combineMessageMetadata, type Block, type ImageAttachment, type Message, type MessageMetadata, type UserMessageAutomation } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, combineMessageMetadata, type Block, type ImageAttachment, type Message, type MessageMetadata, type UserMessageAutomation } from "./messages";
 import {
   fitImageBox,
   historyImageLimits,
@@ -69,18 +69,6 @@ function rightAlignedProvenanceLabel(label: string, availableWidth: number): str
   return `${padding}${theme.muted}${theme.italic}${text}${theme.reset}`;
 }
 
-function callTranscriptProvenance(metadata: MessageMetadata | null | undefined): string {
-  const speaker = metadata?.realtimeSpeaker;
-  if (!speaker) return "call transcript";
-  if (speaker.kind === "unknown" || speaker.participants.length === 0) {
-    return "unknown speaker · call transcript";
-  }
-  const names = speaker.participants
-    .map(participant => `${participant.displayName} [${participant.trust}]`)
-    .join(" + ");
-  return `${names} · call transcript`;
-}
-
 const AUTOMATION_LABELS: Record<UserMessageAutomation["kind"], string> = {
   external_notification: "Notification",
   background_task_completion: "Background completion",
@@ -89,7 +77,6 @@ const AUTOMATION_LABELS: Record<UserMessageAutomation["kind"], string> = {
   exo_send: "Exo delegation",
   subagent_completion: "Subagent completion",
   goal_continuation: "Goal continuation",
-  realtime_delegation: "Realtime handoff",
   daemon_restart: "Daemon restart",
 };
 
@@ -97,13 +84,6 @@ function automationProvenance(automation: UserMessageAutomation | undefined): st
   return automation ? `⚙ ${AUTOMATION_LABELS[automation.kind]}` : null;
 }
 
-function userProvenance(metadata: MessageMetadata | null | undefined): string | null {
-  const automation = automationProvenance(metadata?.automation);
-  const transcript = metadata?.kind === REALTIME_TRANSCRIPT_KIND
-    ? callTranscriptProvenance(metadata)
-    : null;
-  return [automation, transcript].filter((label): label is string => Boolean(label)).join(" · ") || null;
-}
 
 /** Build the muted markdown-style completion divider, ending at the screen midpoint. */
 export function compactionFinishedDivider(availableWidth: number): string {
@@ -211,7 +191,6 @@ function isRealUserMessage(msg: Message): boolean {
 }
 
 function isAssistantMetadataBoundary(msg: Message): boolean {
-  if (msg.role === "assistant" && msg.metadata?.kind === REALTIME_TRANSCRIPT_KIND) return true;
   // A replay is a fresh request even though it has no new user message. The
   // terminal notice is its only durable boundary from the interrupted request;
   // crossing it would charge the idle time before /replay as active model time.
@@ -285,7 +264,6 @@ export type RenderLineSegment =
   | "system_instructions_top"
   | "system_message"
   | "automation_label"
-  | "transcript_label"
   | "user_content"
   | "user_image"
   | "user_margin_bottom"
@@ -558,10 +536,8 @@ export function buildMessageLines(
           lineAnchors[contentStart + row].userFlowEnd = flow.starts[row + 1] ?? flow.end;
         }
       }
-      const provenance = userProvenance(msg.metadata);
-      if (provenance) {
-        pushLine(rightAlignedProvenanceLabel(provenance, availableWidth), msg, msg.metadata?.automation ? "automation_label" : "transcript_label");
-      }
+      const provenance = automationProvenance(msg.metadata?.automation);
+      if (provenance) pushLine(rightAlignedProvenanceLabel(provenance, availableWidth), msg, "automation_label");
       pushImages(pastedImages(msg, msg.images, state.convId), "user_image");
       pushLine("", msg, "user_margin_bottom");
       pushMessageBound(msg.role, start, contentStart, contentEnd);
@@ -573,22 +549,15 @@ export function buildMessageLines(
       }
       segmentImages.push(...attachedImages(msg.blocks));
       const nextMessage = state.messages[messageIndex + 1];
-      const nextContinuesAssistantSegment = (
-        nextMessage?.role === "assistant"
-        && nextMessage.metadata?.kind !== REALTIME_TRANSCRIPT_KIND
-      ) || (messageIndex === state.messages.length - 1 && state.pendingAI?.role === "assistant");
-      const isCallTranscript = msg.metadata?.kind === REALTIME_TRANSCRIPT_KIND;
-      const metadata = isCallTranscript
-        ? msg.metadata
-        : nextContinuesAssistantSegment
-          ? null
-          : assistantSegmentMetadata(state.messages, messageIndex) ?? assistantRunMetadata(state.messages, messageIndex);
-      const metadataLines = isCallTranscript
-        ? renderMetadata(metadata, metadataOptions)
-        : nextContinuesAssistantSegment ? [] : renderMetadata(metadata, { ...metadataOptions, active: msg === durableSleepAssistant });
+      const nextContinuesAssistantSegment = nextMessage?.role === "assistant"
+        || (messageIndex === state.messages.length - 1 && state.pendingAI?.role === "assistant");
+      const metadata = nextContinuesAssistantSegment
+        ? null
+        : assistantSegmentMetadata(state.messages, messageIndex) ?? assistantRunMetadata(state.messages, messageIndex);
+      const metadataLines = nextContinuesAssistantSegment ? [] : renderMetadata(metadata, { ...metadataOptions, active: msg === durableSleepAssistant });
       if (metadataLines.length > 0) trimTrailingBlankAssistantContent(contentStart);
       // Attached images close the visible message (the run of fragments), right before its metadata.
-      if (isCallTranscript || !nextContinuesAssistantSegment) {
+      if (!nextContinuesAssistantSegment) {
         pushImages(segmentImages, "assistant_image");
         segmentImages = [];
       }
@@ -691,50 +660,6 @@ export function buildMessageLines(
       );
     }
     pushMessageBound(state.pendingAI.role, start, start, contentEnd);
-  }
-
-  // GPT-Live transcript projections deliberately live outside canonical
-  // state.messages. Keep them at the visual tail, after any delegated agent
-  // stream, so their position matches the canonical ordering that replaces
-  // them. Input transcription can finish after output speech starts, therefore
-  // the two drafts still render together in user → assistant order.
-  if (state.callUserDraft) {
-    const msg = state.callUserDraft.message;
-    const start = lines.length;
-    if (state.pendingAI || userMessageNeedsTopMargin(state.messages, state.messages.length)) {
-      pushLine("", msg, "user_margin_top");
-    }
-    const contentStart = lines.length;
-    const rendered = renderUserMessageCached(msg, msg.text, availableWidth, msg.images);
-    pushBlock(msg, "user_content", rendered);
-    const contentEnd = lines.length;
-    const flow = userMessageFlowMetadataCached(msg, msg.text, availableWidth, msg.images);
-    if (flow && flow.starts.length === contentEnd - contentStart) {
-      for (let row = 0; row < flow.starts.length; row++) {
-        lineAnchors[contentStart + row].userFlowDocument = flow.document;
-        lineAnchors[contentStart + row].userFlowStart = flow.starts[row];
-        lineAnchors[contentStart + row].userFlowEnd = flow.starts[row + 1] ?? flow.end;
-      }
-    }
-    pushLine(rightAlignedProvenanceLabel(callTranscriptProvenance(msg.metadata), availableWidth), msg, "transcript_label");
-    pushLine("", msg, "user_margin_bottom");
-    pushMessageBound(msg.role, start, contentStart, contentEnd);
-  }
-
-  if (state.callAssistantDraft) {
-    const msg = state.callAssistantDraft.message;
-    const start = lines.length;
-    const contentStart = lines.length;
-    for (const block of msg.blocks) {
-      pushBlock(block, "assistant_block", renderAssistantBlock(block));
-    }
-    const metadataLines = renderMetadata(msg.metadata, metadataOptions);
-    if (metadataLines.length > 0) trimTrailingBlankAssistantContent(contentStart);
-    const contentEnd = lines.length;
-    for (let i = 0; i < metadataLines.length; i++) {
-      pushLine(metadataLines[i], msg, "assistant_metadata", i);
-    }
-    pushMessageBound(msg.role, start, contentStart, contentEnd);
   }
 
   // Live user-notice tail during streaming. These are buffered in state and

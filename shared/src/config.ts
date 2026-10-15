@@ -21,7 +21,6 @@ import {
   type ProviderId,
 } from "./messages";
 import { agentCwdDir, configDir, repoRoot } from "./paths";
-import { DEFAULT_REALTIME_VOICE, isRealtimeVoice, type RealtimeVoice } from "./realtime";
 
 export type SafetyDenylistEntry = string | {
   /** Human-readable explanation shown when any pattern in this group matches. */
@@ -170,13 +169,6 @@ export interface TuiConfig {
   sidebarFolders?: "navigate" | "tree";
 }
 
-export interface AudioConfig {
-  /** Local microphone capture gain in decibels. Zero is neutral. */
-  micGainDb?: number;
-  /** Voice used for realtime calls. Defaults to cove. */
-  callVoice?: RealtimeVoice;
-}
-
 export interface ExocortexConfig {
   /** Active TUI theme name. */
   theme?: string;
@@ -194,8 +186,6 @@ export interface ExocortexConfig {
   ping?: PingConfig;
   /** TUI display/privacy preferences. */
   tui?: TuiConfig;
-  /** Local audio capture/playback preferences. */
-  audio?: AudioConfig;
   /** Legacy pre-/ping sound setting. Prefer ping.sound for new writes. */
   sound?: string | null;
   /** TUI open-on-enter commands for links and file paths. */
@@ -356,18 +346,6 @@ export function updateExocortexConfig(mutator: (config: ExocortexConfig) => Exoc
   const next = replacement ?? config;
   writeExocortexConfig(next);
   return next;
-}
-
-/** Return the persisted realtime voice, falling back to the product default. */
-export function effectiveRealtimeVoice(config: ExocortexConfig = readExocortexConfig()): RealtimeVoice {
-  return isRealtimeVoice(config.audio?.callVoice) ? config.audio.callVoice : DEFAULT_REALTIME_VOICE;
-}
-
-/** Persist the voice selected by an explicit /call invocation. */
-export function saveRealtimeVoice(voice: RealtimeVoice): void {
-  updateExocortexConfig((config) => {
-    config.audio = { ...config.audio, callVoice: voice };
-  });
 }
 
 export function productConversationDefaults(provider: ProviderId = DEFAULT_PROVIDER_ID): ConversationDefaults {

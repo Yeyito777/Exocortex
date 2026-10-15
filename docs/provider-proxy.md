@@ -49,9 +49,8 @@ runs `ssh` non-interactively, so the key must not need a prompt (on macOS:
 locally (it is the agent loop), so it must be installed here, but it does not
 need to be signed in.
 
-Not carried: realtime voice calls, and external tools that borrow the OpenAI
-login (`image`, `transcribe`); both say so. Hold-to-talk transcription is
-carried.
+Not carried: external tools that borrow the OpenAI login (`image`,
+`transcribe`); they say so. Hold-to-talk transcription is carried.
 
 ## remote_bash
 

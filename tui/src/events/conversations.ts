@@ -54,7 +54,6 @@ import {
   subtractLoadedAssistantPrefix,
 } from "./streaming-snapshot";
 import type { DaemonActions } from "./types";
-import { clearCallTranscriptDrafts, reconcileCallTranscriptDrafts } from "./call";
 import {
   beginConversationScrollRestore,
   completeInitialConversationBackfill,
@@ -158,8 +157,6 @@ function clearRemovedActiveConversation(state: RenderState, convId: string): voi
   state.conversationLoading = null;
   state.draftFolderId = state.sidebar.currentFolderId;
   state.messages = [];
-  state.callAssistantDraft = null;
-  state.callUserDraft = null;
   clearPendingAI(state);
   delete state.lastStreamSeqByConv[convId];
   state.contextTokens = 0;
@@ -207,7 +204,6 @@ export function beginConversationLoad(state: RenderState, convId: string, daemon
   // Focus now, as a local open would. The load lands later, after the user may
   // have browsed elsewhere in the sidebar, so it must not move the cursor.
   focusConversationById(state.sidebar, convId);
-  clearCallTranscriptDrafts(state);
   state.messages = [];
   clearPendingAI(state);
   clearStreamingTailMessages(state);
@@ -283,7 +279,6 @@ export function handleConversationLoaded(
     sameConversation,
     event.hasOlderHistory ?? false,
   );
-  if (!sameConversation) clearCallTranscriptDrafts(state);
   const beforeApply = sameConversation ? captureAssistantDisplaySnapshot(state) : null;
   // Bodies already fetched (or streamed) survive a compact same-conversation
   // reload; only results scrolled into view without one are fetched afterward.
@@ -373,7 +368,6 @@ export function handleConversationLoaded(
 
   // Entries arrive in display order — just map to TUI message types.
   pushDisplayEntries(state, event.entries);
-  reconcileCallTranscriptDrafts(state);
 
   if (preservedPendingAI) {
     const alignment = event.pendingAI

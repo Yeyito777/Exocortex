@@ -139,9 +139,8 @@ as `.js`, while source installations use `.ts`.
   still-open AI group from the original single-user task.
 - Cold rename/mark/mute/pin/clone and corresponding mark/rename undo use targeted
   SQL/sidebar state rather than hydrating canonical history.
-- Cache accounting charges the live tail plus descriptor overhead. Realtime owners
-  and title jobs pin their live window while asynchronous callbacks can append
-  or rename it. Voice transcript writes serialize per conversation.
+- Cache accounting charges the live tail plus descriptor overhead. Title jobs pin
+  their live window while asynchronous callbacks can rename it.
 - Titles retain bounded earliest user context from the worker rather than
   accidentally generating from only the latest tail.
 

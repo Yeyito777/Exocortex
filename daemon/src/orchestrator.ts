@@ -34,8 +34,7 @@ import { LONG_CHRONO_SLEEP_THRESHOLD_MS } from "@exocortex/shared/chrono";
 import { isDetachedTurnError } from "./abort";
 import { createProviderTurnSession, streamMessage } from "./api";
 import { annotateApiMessagesContextTokens, copyContextTokenAttributionsToStoredHistory } from "./context-token-attribution";
-import type { RealtimeCallSpeakerAttribution, StreamingStopReason } from "./protocol";
-import { buildRealtimeDelegationMessage } from "./realtime-delegation";
+import type { StreamingStopReason } from "./protocol";
 import {
   assertBoundedContextReplay,
   buildConversationApiContext,
@@ -153,8 +152,6 @@ export interface OrchestrationCallbacks {
   streamMessageFn?: typeof streamMessage;
   /** Test seam for the daemon's shared connectivity monitor. */
   connectivity?: ConnectivityMonitor;
-  /** Optional realtime consumer for user-facing assistant text as it streams. */
-  onAssistantTextChunk?: (chunk: string) => void;
 }
 
 // ── Message history/replay helpers ─────────────────────────────────
@@ -224,16 +221,6 @@ interface AssistantTurnOptions {
   automation?: UserMessageAutomation;
   /** Force one context compaction without requesting an assistant response. */
   manualCompaction?: boolean;
-  /** Promote the persisted voice transcript into a visible backend request. */
-  realtimeDelegation?: {
-    callId: string;
-    originalUserUtterance: string;
-    backendTask: string;
-    transcriptDelta: Array<{ role: "user" | "assistant"; text: string }>;
-    speaker?: RealtimeCallSpeakerAttribution;
-  };
-  /** Optional owner lifecycle that can cancel this turn without daemon IPC. */
-  externalAbortSignal?: AbortSignal;
   /** This turn is the daemon-owned successor in an already-active stream chain. */
   streamChainHandoff?: boolean;
 }
@@ -267,32 +254,6 @@ export async function orchestrateReplayConversation(
   policy: SubagentTurnPolicy = {},
 ): Promise<AssistantTurnOutcome> {
   return await orchestrateAssistantTurn(server, client, reqId, convId, startedAt, ext, policy);
-}
-
-/**
- * Start an agent turn from an existing visible call transcript. The transcript
- * is promoted in place into the sole durable backend request before replay.
- */
-export async function orchestrateRealtimeDelegation(
-  server: DaemonServer,
-  convId: string,
-  delegation: {
-    callId: string;
-    originalUserUtterance: string;
-    backendTask: string;
-    transcriptDelta: Array<{ role: "user" | "assistant"; text: string }>;
-    speaker?: RealtimeCallSpeakerAttribution;
-  },
-  startedAt: number,
-  ext: OrchestrationCallbacks,
-  policy: SubagentTurnPolicy = {},
-  signal?: AbortSignal,
-): Promise<AssistantTurnOutcome> {
-  return await orchestrateAssistantTurn(server, null, undefined, convId, startedAt, ext, {
-    ...policy,
-    realtimeDelegation: delegation,
-    externalAbortSignal: signal,
-  });
 }
 
 export async function orchestrateCompactConversation(
@@ -502,8 +463,7 @@ async function orchestrateAdmittedAssistantTurn(
     if (client) server.sendTo(client, { type: "error", reqId, convId, message });
     return { ok: false, blocks: [], tokens: 0, durationMs: Date.now() - startedAt, endedAt: Date.now(), error: message };
   }
-  if (!acceptedHandoffToken || convStore.getStreamHandoffToken(convId) !== acceptedHandoffToken
-      || options.externalAbortSignal?.aborted) {
+  if (!acceptedHandoffToken || convStore.getStreamHandoffToken(convId) !== acceptedHandoffToken) {
     const message = "Turn handoff cancelled.";
     if (client) server.sendTo(client, { type: "error", reqId, convId, message });
     return { ok: false, blocks: [], tokens: 0, durationMs: Date.now() - startedAt, endedAt: Date.now(), error: message };
@@ -530,7 +490,6 @@ async function orchestrateAdmittedAssistantTurn(
     userMessage: requestedUserMessage,
     goalContinuationPrompt,
     manualCompaction = false,
-    realtimeDelegation,
   } = options;
   // Goal continuations are daemon-authored notification turns, just like
   // background-task and subagent completion notifications. Persist and
@@ -656,26 +615,6 @@ async function orchestrateAdmittedAssistantTurn(
       return reportSendError(`Could not resume the pending Chrono sleep: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  if (realtimeDelegation) {
-    const delegatedMessage = buildRealtimeDelegationMessage(
-      realtimeDelegation.originalUserUtterance,
-      realtimeDelegation.backendTask,
-      realtimeDelegation.speaker,
-      realtimeDelegation.transcriptDelta,
-    );
-    if (!convStore.promoteRealtimeTranscript(
-      convId,
-      realtimeDelegation.originalUserUtterance,
-      delegatedMessage,
-      realtimeDelegation.callId,
-    )) {
-      return reportSendError("The realtime handoff no longer has a matching call transcript.");
-    }
-    // The transcript draft and canonical history must reconcile before backend
-    // output begins streaming, so every client observes the exact model input.
-    broadcastConversationHistoryUpdated(server, convId);
-    broadcastConversationUpdated(server, convId);
-  }
   const goalAtTurnStart = conv.goal ?? null;
   const hadGoalAtStart = !!goalAtTurnStart;
   if (goalContinuation && conv.goal?.status === "active") conv.goal.turns += 1;
@@ -686,7 +625,7 @@ async function orchestrateAdmittedAssistantTurn(
   if (userMessage) {
     try {
       const handoffCancelled = () => {
-        if (convStore.getStreamHandoffToken(convId) === acceptedHandoffToken && !options.externalAbortSignal?.aborted) return null;
+        if (convStore.getStreamHandoffToken(convId) === acceptedHandoffToken) return null;
         const message = "Turn handoff cancelled.";
         if (client) server.sendTo(client, { type: "error", reqId, convId, message });
         return buildErrorOutcome(message);
@@ -780,10 +719,6 @@ async function orchestrateAdmittedAssistantTurn(
   if (options.subagentNotificationId) acknowledgeSubagentNotification(options.subagentNotificationId);
 
   const ac = new RetryableStreamAbortController();
-  const externalAbortSignal = options.externalAbortSignal;
-  const abortFromExternalOwner = () => ac.abort(externalAbortSignal?.reason);
-  if (externalAbortSignal?.aborted) abortFromExternalOwner();
-  else externalAbortSignal?.addEventListener("abort", abortFromExternalOwner, { once: true });
   // A standalone compaction has no unfinished assistant turn to replay after a
   // daemon restart. It is still an active job so abort, queueing, and shutdown
   // can coordinate with it normally.
@@ -1476,7 +1411,6 @@ async function orchestrateAdmittedAssistantTurn(
     },
     onTextChunk(chunk) {
       server.sendToSubscribers(convId, { type: "text_chunk", convId, streamSeq: convStore.nextStreamSeq(convId), text: chunk });
-      ext.onAssistantTextChunk?.(chunk);
       const block = ensurePartialContentTail("text");
       if (block.type === "text") block.text += chunk;
       convStore.appendToStreamingBlock(convId, "text", chunk);
@@ -2073,7 +2007,6 @@ async function orchestrateAdmittedAssistantTurn(
       daemonRestart: isDaemonRestart,
     };
   } finally {
-    externalAbortSignal?.removeEventListener("abort", abortFromExternalOwner);
     if (providerTurnSession) {
       try {
         // Ordinary successful turns may park OpenAI's websocket briefly for
