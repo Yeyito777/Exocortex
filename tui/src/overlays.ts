@@ -54,9 +54,9 @@ interface BoxOverlayParams {
 
 /**
  * Render a centered box overlay with top/bottom borders and styled
- * content lines. Used by both the queue-prompt and edit-message overlays.
+ * content lines, returning the ANSI payload and the screen box it draws on. Used by both the queue-prompt and edit-message overlays.
  */
-function renderBoxOverlay(params: BoxOverlayParams): string {
+function renderBoxOverlay(params: BoxOverlayParams): { payload: string; rect: ScreenRect } {
   const { lines, innerWidth, chatCol, chatW, sepRow, boxTop, scrollIndicators } = params;
   const boxWidth = innerWidth + 2;
   const boxLeft = chatCol + Math.floor((chatW - boxWidth) / 2);
@@ -98,18 +98,23 @@ function renderBoxOverlay(params: BoxOverlayParams): string {
     result += `${theme.sidebarBg}${theme.accent}└${"─".repeat(innerWidth)}┘${theme.reset}`;
   }
 
-  return result;
+  return {
+    payload: result,
+    // Last row drawn: the bottom border, or the last content row when the input area cuts the box off.
+    rect: { top: boxTop, bottom: Math.min(bottomRow, sepRow - 1), left: boxLeft, right: boxLeft + boxWidth - 1 },
+  };
 }
 
 // ── Queue prompt overlay ──────────────────────────────────────────
 
+/** The queue prompt's ANSI payload and the screen box it draws on (images are cropped around it). */
 export function renderQueuePromptOverlay(
   qp: QueuePromptState,
   chatW: number,
   chatCol: number,
   sepRow: number,
   steersInstantly = true,
-): string {
+): { payload: string; rect: ScreenRect } {
   // Preview of the message being queued (truncated)
   const previewSource = qp.text.replace(/\n/g, " ");
   const previewLabel = truncateToWidth(previewSource, 40);
@@ -214,7 +219,7 @@ export function renderEditMessageOverlay(
     scrollIndicators.downRow = layout.firstItemRow + layout.maxVisible - 1;
   }
 
-  const payload = renderBoxOverlay({
+  const { payload } = renderBoxOverlay({
     lines: styledLines,
     innerWidth: layout.innerWidth,
     chatCol,

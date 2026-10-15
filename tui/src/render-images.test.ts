@@ -10,6 +10,10 @@ import { buildMessageLines } from "./conversation";
 import { stripAnsi } from "./historycursor";
 import { cancelEditMessage, confirmEditMessage, handleEditMessageKey, openEditMessageModal } from "./editmessage";
 import { computeEditMessageOverlayLayout } from "./editmessage-layout";
+import { renderQueuePromptOverlay } from "./overlays";
+import { steersInstantly } from "./queue";
+import { conversationActionMenuAnchorRow, renderConversationActionMenu, SIDEBAR_WIDTH } from "./sidebar";
+import { openSelectedConversationActionMenu } from "./sidebar/conversationactions";
 
 function capture(state: RenderState): string {
   let out = "";
@@ -260,32 +264,38 @@ describe("render with Kitty images", () => {
     disposeHistoryImages(state);
   });
 
-  test("hides images while a floating overlay is open", async () => {
-    configureInlineImages({
-      fetch: async request => ({ format: "png", width: request.width, height: Math.round(request.width / 2), base64: "UE5H" }),
-      onChange: () => {},
-    });
+  const parsed = (out: string) => placements(out).map(placement => ({
+    ...placement,
+    id: Number(/p=(\d+)/.exec(placement.controls)![1]),
+    columns: Number(/c=(\d+)/.exec(placement.controls)![1]),
+    rows: Number(/r=(\d+)/.exec(placement.controls)![1]),
+  }));
+  const deleted = (out: string) => [...out.matchAll(/a=d,d=i,i=\d+,p=(\d+),/g)].map(match => Number(match[1]));
+
+  async function setup(imageTopRow: (state: RenderState) => number) {
+    configureInlineImages({ fetch: async request => pngFetch(request), onChange: () => {} });
     setInlineImageMode("kitty");
+    setInlineImageCellSize({ width: 8, height: 16 });
     const state = imageState();
+    // A tall first message, so the image below it can be scrolled down to the menu.
+    state.messages[0] = { role: "user", text: Array.from({ length: 30 }, (_, i) => `line ${i}`).join("\n"), metadata: null };
+    state.messages.push(
+      { role: "user", text: "second question", metadata: null },
+      { role: "assistant", blocks: [{ type: "text", text: "second answer" }], metadata: { startedAt: 3, endedAt: 4, model: "gpt-5.5", tokens: 1 } },
+    );
     capture(state);
-    state.scrollOffset = state.layout.totalLines - state.layout.messageAreaHeight - state.historyLineAnchors.findIndex(anchor => anchor.images) + 5;
-    expect(placements(await readyFrame(state)).length).toBe(1);
-    state.queuePrompt = { text: "queued", images: [], selection: "next-turn" } as never;
-    expect(capture(state)).toContain("a=d,d=i");
-    state.queuePrompt = null;
-    expect(placements(capture(state)).length).toBe(1);
-    disposeHistoryImages(state);
-  });
+    const imageLine = state.historyLineAnchors.findIndex(anchor => anchor.images);
+    const viewportRow = imageTopRow(state) - 3; // messageAreaStart is row 3
+    state.scrollOffset = state.layout.totalLines - state.layout.messageAreaHeight - (imageLine - viewportRow);
+    // The preview may already be cached from an earlier setup: then the first frame places it.
+    const first = capture(state);
+    await Bun.sleep(0);
+    const [whole] = parsed(first + capture(state));
+    expect(whole).toMatchObject({ row: imageTopRow(state), columns: 48 });
+    return { state, whole };
+  }
 
   describe("the edit menu (Ctrl-W)", () => {
-    const parsed = (out: string) => placements(out).map(placement => ({
-      ...placement,
-      id: Number(/p=(\d+)/.exec(placement.controls)![1]),
-      columns: Number(/c=(\d+)/.exec(placement.controls)![1]),
-      rows: Number(/r=(\d+)/.exec(placement.controls)![1]),
-    }));
-    const deleted = (out: string) => [...out.matchAll(/a=d,d=i,i=\d+,p=(\d+),/g)].map(match => Number(match[1]));
-
     function editMenuBox(state: RenderState) {
       const layout = computeEditMessageOverlayLayout(
         state.editMessagePrompt!,
@@ -295,29 +305,6 @@ describe("render with Kitty images", () => {
         state.layout.messageAreaHeight,
       )!;
       return { top: layout.boxTop, bottom: layout.boxBottom, left: layout.boxLeft, right: layout.boxLeft + layout.boxWidth - 1 };
-    }
-
-    async function setup(imageTopRow: (state: RenderState) => number) {
-      configureInlineImages({ fetch: async request => pngFetch(request), onChange: () => {} });
-      setInlineImageMode("kitty");
-      setInlineImageCellSize({ width: 8, height: 16 });
-      const state = imageState();
-      // A tall first message, so the image below it can be scrolled down to the menu.
-      state.messages[0] = { role: "user", text: Array.from({ length: 30 }, (_, i) => `line ${i}`).join("\n"), metadata: null };
-      state.messages.push(
-        { role: "user", text: "second question", metadata: null },
-        { role: "assistant", blocks: [{ type: "text", text: "second answer" }], metadata: { startedAt: 3, endedAt: 4, model: "gpt-5.5", tokens: 1 } },
-      );
-      capture(state);
-      const imageLine = state.historyLineAnchors.findIndex(anchor => anchor.images);
-      const viewportRow = imageTopRow(state) - 3; // messageAreaStart is row 3
-      state.scrollOffset = state.layout.totalLines - state.layout.messageAreaHeight - (imageLine - viewportRow);
-      // The preview may already be cached from an earlier setup: then the first frame places it.
-      const first = capture(state);
-      await Bun.sleep(0);
-      const [whole] = parsed(first + capture(state));
-      expect(whole).toMatchObject({ row: imageTopRow(state), columns: 48 });
-      return { state, whole };
     }
 
     test("leaves thumbnails it does not cover in place, untouched", async () => {
@@ -385,6 +372,120 @@ describe("render with Kitty images", () => {
         expect(capture(state)).not.toContain("\x1b_G");
         disposeHistoryImages(state);
       }
+    });
+  });
+
+  describe("the queue prompt", () => {
+    function queueBox(state: RenderState) {
+      return renderQueuePromptOverlay(
+        state.queuePrompt!,
+        state.cols - state.layout.chatCol + 1,
+        state.layout.chatCol,
+        state.layout.sepAbove,
+        steersInstantly(state.provider),
+      ).rect;
+    }
+    const openQueue = (state: RenderState) => { state.queuePrompt = { text: "queued", images: [], selection: "next-turn" } as never; };
+
+    test("leaves thumbnails it does not cover in place, untouched", async () => {
+      const { state, whole } = await setup(() => 8);
+      openQueue(state);
+      const open = capture(state);
+      expect(open).toContain("Queue message:");
+      expect(queueBox(state).top).toBeGreaterThan(whole.row + whole.rows - 1);
+      expect(open).not.toContain("\x1b_G");
+      state.queuePrompt = null;
+      expect(capture(state)).not.toContain("\x1b_G");
+      disposeHistoryImages(state);
+    });
+
+    test("crops a thumbnail around its box, then restores it whole when it closes", async () => {
+      const probe = await setup(() => 8);
+      openQueue(probe.state);
+      capture(probe.state);
+      const boxTop = queueBox(probe.state).top;
+      disposeHistoryImages(probe.state);
+
+      const { state, whole } = await setup(() => boxTop - 3);
+      openQueue(state);
+      const open = capture(state);
+      const box = queueBox(state);
+      expect(box.top).toBe(boxTop);
+      expect(box.left).toBeGreaterThan(whole.col);
+      const pieces = parsed(open);
+      expect(pieces).toHaveLength(2);
+      expect(pieces[0]).toMatchObject({ id: whole.id, row: whole.row, col: whole.col, columns: 48, rows: 3 });
+      expect(pieces[1]).toMatchObject({ row: box.top, col: whole.col, columns: box.left - whole.col });
+      for (const piece of pieces) {
+        const overlaps = piece.row <= box.bottom && piece.row + piece.rows - 1 >= box.top
+          && piece.col <= box.right && piece.col + piece.columns - 1 >= box.left;
+        expect(overlaps).toBe(false);
+      }
+      expect(deleted(open)).toEqual([]);
+
+      // Moving the selection repaints the prompt, not the images.
+      (state.queuePrompt as { selection: string }).selection = "message-end";
+      expect(capture(state)).not.toContain("\x1b_G");
+
+      state.queuePrompt = null;
+      const closed = capture(state);
+      expect(closed).not.toContain("Queue message:");
+      expect(deleted(closed)).toEqual([pieces[1].id]);
+      expect(parsed(closed)).toEqual([expect.objectContaining({ id: whole.id, row: whole.row, col: whole.col, controls: whole.controls })]);
+      expect(capture(state)).not.toContain("\x1b_G");
+      disposeHistoryImages(state);
+    });
+  });
+
+  describe("the sidebar conversation menu", () => {
+    function menuBox(state: RenderState) {
+      const menu = state.sidebar.conversationActionMenu!;
+      return renderConversationActionMenu(
+        menu,
+        conversationActionMenuAnchorRow(state.sidebar, menu.convId),
+        SIDEBAR_WIDTH + 1,
+        state.rows,
+        state.cols,
+      ).rect!;
+    }
+    function openMenu(state: RenderState) {
+      state.sidebar.open = true;
+      state.sidebar.conversations = [{ id: "conv", title: "A conversation", marked: false, pinned: false }] as never;
+      state.sidebar.selectedItem = { type: "conversation", id: "conv" } as never;
+      openSelectedConversationActionMenu(state.sidebar);
+    }
+
+    test("crops a thumbnail around its box, then restores it whole when it closes", async () => {
+      const { state, whole } = await setup(() => 5);
+      state.sidebar.open = true; // the sidebar shifts the chat column, which moves the image
+      const shifted = parsed(capture(state));
+      expect(shifted).toHaveLength(1);
+      expect(shifted[0].col).toBeGreaterThan(whole.col);
+      openMenu(state);
+      const open = capture(state);
+      expect(stripAnsi(open)).toContain("Copy id");
+      const box = menuBox(state);
+      const image = shifted[0];
+      expect(box.left).toBeLessThanOrEqual(image.col + image.columns - 1);
+      expect(box.right).toBeGreaterThanOrEqual(image.col);
+      expect(box.bottom).toBeGreaterThanOrEqual(image.row);
+      expect(box.top).toBeLessThanOrEqual(image.row + image.rows - 1);
+      const pieces = parsed(open);
+      expect(pieces.length).toBeGreaterThanOrEqual(2);
+      for (const piece of pieces) {
+        const overlaps = piece.row <= box.bottom && piece.row + piece.rows - 1 >= box.top
+          && piece.col <= box.right && piece.col + piece.columns - 1 >= box.left;
+        expect(overlaps).toBe(false);
+      }
+      expect(deleted(open)).toEqual([]);
+      expect(capture(state)).not.toContain("\x1b_G");
+
+      state.sidebar.conversationActionMenu = null;
+      const closed = capture(state);
+      expect(stripAnsi(closed)).not.toContain("Copy id");
+      expect(deleted(closed)).toEqual(pieces.slice(1).map(piece => piece.id).sort((a, b) => a - b));
+      expect(parsed(closed)).toEqual([expect.objectContaining({ id: image.id, row: image.row, col: image.col, controls: image.controls })]);
+      disposeHistoryImages(state);
     });
   });
 

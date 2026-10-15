@@ -108,10 +108,10 @@ used without a query. `EXOCORTEX_TUI_IMAGES=kitty|halfblock|off` overrides.
   `kittyimages.ts` reconciles placements (direct `t=d` transmission in 4096-byte
   chunks, `a=p` with source crop, `a=d` for placements that left). The frame
   renderer's scroll-region optimization is disabled while images are placed.
-  The task panel and autocomplete crop images; the queue prompt and the
-  conversation menu hide them; the image viewer (`z=2`) and the edit-message
-  menu (Ctrl-W) crop them to what lies outside their box, so closing either
-  only restores what it covered.
+  The task panel and autocomplete drop the image rows they overlap; the image
+  viewer (`z=2`), the queue prompt, the edit-message menu (Ctrl-W), the sidebar
+  conversation menu and the accounts screen crop them to what lies outside
+  their box, so closing one only restores what it covered.
 - The fallback draws `▀` cells from the RGBA preview.
 
 The image box is identical in every mode, so loading pixels or switching modes
