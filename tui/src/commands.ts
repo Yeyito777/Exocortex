@@ -1,5 +1,6 @@
 import type { RenderState } from "./state";
 import { ACCOUNT_COMMAND } from "./commands/account";
+import { ACCOUNTS_COMMAND } from "./commands/accounts";
 import { BTW_COMMAND } from "./btw/command";
 import { CALL_COMMAND } from "./commands/call";
 import { CHRONO_COMMAND } from "./commands/chrono";
@@ -46,6 +47,7 @@ const commands: SlashCommand[] = [
   EXIT_COMMAND,
   NEW_COMMAND,
   ACCOUNT_COMMAND,
+  ACCOUNTS_COMMAND,
   REPLAY_COMMAND,
   BTW_COMMAND,
   CALL_COMMAND,

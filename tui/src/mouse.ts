@@ -159,7 +159,7 @@ export function cursorZone(col: number, row: number, state: RenderState): Cursor
   const { layout, sidebar } = state;
 
   // The image viewer covers everything; a click anywhere only closes it.
-  if (state.imageModal) return "pointer";
+  if (state.imageModal || state.accountsScreen) return "pointer";
 
   if (state.editMessagePrompt) {
     return editMessageItemIndexAtMouse(state, col, row) !== null ? "hand" : "pointer";

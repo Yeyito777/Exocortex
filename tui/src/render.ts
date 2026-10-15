@@ -65,6 +65,7 @@ import {
 import { pinBottomRelativeScrollOffset } from "./viewportscroll";
 import { durableSleepMetadataFrame } from "./durable-sleep-metadata";
 import { inlineImageCellSize, inlineImageGeneration, inlineImageMode, inlineImagesActive } from "./inlineimages";
+import { renderAccountsScreen } from "./accountsscreen";
 import { renderImageModal } from "./imagemodal";
 import { collectHistoryImagePlacements, historyImagesPlaced, syncHistoryImages, type ScreenRect } from "./historyimages";
 
@@ -1292,7 +1293,7 @@ function buildCursorPayload(
   chatCol: number,
   chatW: number,
 ): string {
-  if (state.imageModal) return hide_cursor;
+  if (state.imageModal || state.accountsScreen) return hide_cursor;
   const out: string[] = [];
 
   if (state.panelFocus === "sidebar" && state.sidebar.search?.barOpen) {
@@ -1778,6 +1779,11 @@ export function render(state: RenderState): boolean {
     ? renderImageModal(state.imageModal, rows, cols, inlineImageCellSize(), inlineImageMode())
     : null;
   if (modal) appendPositionedPayload(ctx, modal.payload);
+  // ── Accounts screen (above everything but the image viewer) ───
+  const accountsOverlay = state.accountsScreen && !modal
+    ? renderAccountsScreen(state, state.accountsScreen, rows, cols)
+    : null;
+  if (accountsOverlay) appendPositionedPayload(ctx, accountsOverlay.payload);
   const hadHistoryImages = historyImagesPlaced(state);
   const historyImagePlacements = inlineImageMode() === "kitty" && !historyOverlayOpen
     ? collectHistoryImagePlacements({
@@ -1787,7 +1793,7 @@ export function render(state: RenderState): boolean {
       chatCol,
       maxCol: chatCol + chatW - 1,
       obstructions: imageObstructions,
-      covers: [modal?.rect, editMessageOverlay?.rect].filter((rect): rect is ScreenRect => !!rect),
+      covers: [modal?.rect, editMessageOverlay?.rect, accountsOverlay?.rect].filter((rect): rect is ScreenRect => !!rect),
       cursorLineIndex: historyFocused ? state.historyCursor.row : null,
       cursorCol: state.historyCursor.col,
     })
@@ -1803,6 +1809,7 @@ export function render(state: RenderState): boolean {
     && !state.editMessagePrompt
     && !state.btw
     && !state.imageModal
+    && !state.accountsScreen
     // Placements are positioned explicitly; terminal scrolling would move them first.
     && !hadHistoryImages
     && historyImagePlacements.length === 0

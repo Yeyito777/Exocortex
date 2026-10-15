@@ -100,7 +100,8 @@ export type KeyResult =
   | { type: "edit_message_cancel" }
   | { type: "btw_close" }
   | { type: "open_target"; target: string }
-  | { type: "open_image"; target: InlineImageTarget };
+  | { type: "open_image"; target: InlineImageTarget }
+  | { type: "open_accounts" };
 
 // ── Key routing ─────────────────────────────────────────────────────
 

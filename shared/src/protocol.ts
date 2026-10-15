@@ -1074,6 +1074,107 @@ export interface AccountCommand {
   configDir?: string;
 }
 
+/**
+ * The Accounts screen's data: every Claude and OpenAI account as structured
+ * fields (`/account claude` keeps its text report). The reply is an
+ * `accounts` event with the same `reqId`. With `watch: true` the client also
+ * receives an `accounts` event (no `reqId`) whenever an account's sign-in,
+ * usage, limits or running turns change, until it sends `watch: false` or
+ * disconnects; only while `enabled` (several accounts). `convId` names the
+ * client's current conversation, reported back as `claude.currentConversation`.
+ */
+export interface AccountsCommand {
+  type: "accounts";
+  reqId?: string;
+  watch?: boolean;
+  convId?: string;
+}
+
+export type ClaudeAccountState =
+  /** Signed in with a Claude subscription and able to take turns. */
+  | "ready"
+  /** Rejected at a usage limit until `limitedUntil`. */
+  | "limited"
+  /** Failed authentication; out of routing until `blockedUntil`. */
+  | "blocked"
+  | "signed_out"
+  /** Signed in, but not with a Claude subscription (`stateDetail` names the method). */
+  | "not_subscription"
+  /** Not checked yet. */
+  | "unchecked";
+
+export interface AccountConversationInfo {
+  convId: string;
+  /** When its last request on this account was made (ms). */
+  lastUsedAt: number;
+  /** A turn is running on this account now. */
+  running: boolean;
+  /** Its prompt cache on this account is still warm (`lastUsedAt` within `routing.cacheTtlMs`). */
+  warm: boolean;
+}
+
+export interface ClaudeAccountInfo {
+  /** Account name (`main`, `max2`, …). */
+  id: string;
+  email: string | null;
+  /** Claude subscription type (`max`, `pro`, …). */
+  plan: string | null;
+  /** Claude Code config directory, `~`-relative when under home. */
+  configDir: string;
+  state: ClaudeAccountState;
+  /** Block reason or sign-in method, when `state` needs one. */
+  stateDetail: string | null;
+  limitedUntil: number | null;
+  blockedUntil: number | null;
+  /** This account's own windows (no `capacity`). */
+  usage: UsageData | null;
+  /** When `usage` was last reported (ms), null if never by this daemon. */
+  usageUpdatedAt: number | null;
+  activeTurns: number;
+  /** Conversations on this account now: running or with a warm cache, most recent first. */
+  conversations: AccountConversationInfo[];
+  /** The terminal command that signs it in, when it is not signed in with a subscription. */
+  loginCommand: string | null;
+}
+
+export interface ClaudeRoutingInfo {
+  cacheTtlMs: number;
+  fiveHourFloor: number;
+  weeklyFloor: number;
+  weeklyResetTieMs: number;
+  fiveHourResetTieMs: number;
+}
+
+export interface ClaudeAccountsInfo {
+  /** Claude runs through /proxy: the remote's login, never these accounts. */
+  proxied: boolean;
+  accounts: ClaudeAccountInfo[];
+  /** The usage bars' combined numbers (`capacity` 100 per usable account). */
+  combined: UsageData | null;
+  routing: ClaudeRoutingInfo;
+  /** Where new work would go now, and why. */
+  nextNewWork: { account: string; detail: string } | null;
+  /** The command's `convId`, with the account it last ran on (null: none yet). */
+  currentConversation?: { convId: string; account: string | null; lastUsedAt: number | null; warm: boolean };
+}
+
+export interface OpenAIAccountInfo {
+  index: number;
+  email: string | null;
+  displayName: string | null;
+  plan: string | null;
+  current: boolean;
+}
+
+export interface AccountsSnapshot {
+  generatedAt: number;
+  /** Several accounts are set up: more than one Claude account (not under /proxy), or more than one OpenAI account. */
+  enabled: boolean;
+  claude: ClaudeAccountsInfo;
+  /** OpenAI's account pool (`/account` switches the current one); `proxied`: /proxy uses the remote's login. */
+  openai: { proxied: boolean; accounts: OpenAIAccountInfo[] };
+}
+
 export interface ConsumeUsageResetCommand {
   type: "consume_usage_reset";
   reqId?: string;
@@ -1170,6 +1271,7 @@ export type Command =
   | TranscribeAudioCommand
   | LoginCommand
   | AccountCommand
+  | AccountsCommand
   | ConsumeUsageResetCommand
   | LogoutCommand;
 
@@ -1513,6 +1615,13 @@ export interface UsageUpdateEvent {
   type: "usage_update";
   provider: ProviderId;
   usage: UsageData | null;
+}
+
+/** Answer to `accounts`, and pushed to its watchers on change. */
+export interface AccountsEvent {
+  type: "accounts";
+  reqId?: string;
+  snapshot: AccountsSnapshot;
 }
 
 export type UsageResetOutcome = "reset" | "nothing_to_reset" | "no_credit" | "already_redeemed";
@@ -2161,6 +2270,7 @@ export type Event =
   | ContextUpdateEvent
   | MessageCompleteEvent
   | UsageUpdateEvent
+  | AccountsEvent
   | UsageResetResultEvent
   | TokenStatsEvent
   | ConversationsListEvent

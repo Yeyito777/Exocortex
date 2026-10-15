@@ -36,6 +36,7 @@ import type { BtwPanelState } from "./btw/state";
 import { createConversationScrollState, type ConversationScrollState } from "./conversationscroll/types";
 import type { InlineImageTarget } from "./inlineimages";
 import type { ImageModalState } from "./imagemodal";
+import type { AccountsOpenRequest, AccountsScreenState } from "./accountsscreen";
 
 // ── Queue types ────────────────────────────────────────────────────
 
@@ -371,6 +372,10 @@ export interface RenderState {
   mouseImagePress?: { row: number; col: number; image: InlineImageTarget } | null;
   /** Full-size image viewer opened from history (Enter or click on a thumbnail). */
   imageModal: ImageModalState | null;
+  /** Accounts screen (/accounts, `g a`), live while open. */
+  accountsScreen: AccountsScreenState | null;
+  /** An `accounts` request whose answer opens the screen (or explains why it cannot). */
+  accountsOpenRequest: AccountsOpenRequest | null;
   /**
    * The Tasks panel expanded by a click to list every entry, with its
    * scroll offset in panel rows. Session-only and tied to one conversation:
@@ -743,6 +748,8 @@ export function createInitialState(): RenderState {
     historyMessageBounds: [],
     historyLineAnchors: [],
     imageModal: null,
+    accountsScreen: null,
+    accountsOpenRequest: null,
     taskPanelExpansion: null,
     undo: createUndoState(),
     autocomplete: null,

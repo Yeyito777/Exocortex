@@ -1044,6 +1044,18 @@ export class DaemonClient {
     this.send({ type: "account", provider, target, ...(action ? { action } : {}), ...(configDir ? { configDir } : {}) });
   }
 
+  /** Accounts screen data; `watch` keeps it coming while the screen is open. Returns the request id. */
+  accounts(options: { watch?: boolean; convId?: string | null } = {}): string {
+    const reqId = `accounts_${++this.nextReqId}_${Date.now()}`;
+    this.send({
+      type: "accounts",
+      reqId,
+      ...(options.watch !== undefined ? { watch: options.watch } : {}),
+      ...(options.convId ? { convId: options.convId } : {}),
+    });
+    return reqId;
+  }
+
   consumeUsageReset(provider: ProviderId = "openai"): void {
     this.send({ type: "consume_usage_reset", provider });
   }

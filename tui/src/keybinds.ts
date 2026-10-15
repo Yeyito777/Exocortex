@@ -66,6 +66,8 @@ export type Action =
   | "edit_message"
   // Display toggles
   | "toggle_tool_output"
+  // Screens
+  | "open_accounts"
   // Sidebar navigation (from any panel)
   | "sidebar_next"
   | "sidebar_prev"

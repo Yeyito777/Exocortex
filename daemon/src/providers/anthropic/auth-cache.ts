@@ -9,6 +9,7 @@
  */
 
 import { log } from "../../log";
+import { emitClaudeAccountsChanged } from "./account-events";
 import { getClaudeAuthStatus, isSubscriptionAuth } from "./cli";
 import type { ClaudeAuthStatus } from "./types";
 
@@ -97,6 +98,7 @@ export async function cachedClaudeAuthStatus(
         entry.blockedUntil = null;
         entry.blockReason = null;
       }
+      emitClaudeAccountsChanged();
     }
     return status;
   }).finally(() => {
@@ -126,6 +128,7 @@ export function noteClaudeAccountAuthFailure(account: string, reason: string, no
   entry.pending = null;
   entry.blockedUntil = now + AUTH_FAILURE_BLOCK_MS;
   entry.blockReason = reason;
+  emitClaudeAccountsChanged();
 }
 
 export function claudeAccountBlock(account: string, now = Date.now()): { until: number; reason: string } | null {

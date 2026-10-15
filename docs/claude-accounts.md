@@ -34,6 +34,15 @@ Code: `daemon/src/providers/anthropic/accounts.ts` (registry and directories),
 /account claude remove max2           # unregister (the directory and login stay)
 ```
 
+`/accounts` (or `g a` in normal mode) opens the Accounts screen once more than
+one account is set up: each account's sign-in, plan, own 5-hour and weekly
+windows with their reset times, running turns and the conversations on it
+(running or with a warm cache; the current one is marked), the login command
+for a signed-out account, the combined bars and the routing rule. It updates
+live while open; j/k select a conversation, Enter opens it, Esc or q closes.
+The daemon's `accounts` command carries the same data
+([direct daemon commands](daemon-ipc.md)).
+
 After `add`, sign the account in from a terminal with Claude Code's own login.
 `/account claude add` prints the exact command:
 

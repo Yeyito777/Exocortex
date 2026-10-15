@@ -3,7 +3,16 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { addClaudeAccount, setClaudeAccountsFileForTests } from "./accounts";
-import { getCombinedUsage, routeClaudeTurn, setAssignmentsFileForTests, touchConversationAccount } from "./account-pool";
+import { onClaudeAccountsChanged } from "./account-events";
+import {
+  beginAccountTurn,
+  claudeAccountsInfo,
+  getCombinedUsage,
+  refreshClaudeAccountStatuses,
+  routeClaudeTurn,
+  setAssignmentsFileForTests,
+  touchConversationAccount,
+} from "./account-pool";
 import { claudeAuthProbeCount, setClaudeAuthProbeForTests } from "./auth-cache";
 import { applyUsageHeaders, CLAUDE_ACCOUNT_HEADER, CLAUDE_RATE_LIMIT_HEADER, clearUsage } from "./usage";
 import type { ClaudeAuthStatus } from "./types";
@@ -135,5 +144,63 @@ describe("account pool", () => {
     expect(combined?.sevenDay?.utilization).toBe(70);
     expect(combined?.fiveHour?.resets).toHaveLength(2);
     expect(combined!.fiveHour!.resets![0]).toBeLessThan(combined!.fiveHour!.resets![1]);
+  });
+});
+
+describe("Accounts screen data", () => {
+  test("each account's state, own usage, running turns and warm conversations", async () => {
+    addClaudeAccount("pool-b", join(dir, "b"));
+    signedIn["pool-b"] = false;
+    await refreshClaudeAccountStatuses({ force: true });
+    report("main", 30, 2 * H, 40, 48 * H);
+    const now = Date.now();
+    touchConversationAccount("warm-conv", "main", now - 10 * 60_000);
+    touchConversationAccount("cold-conv", "main", now - 2 * 60 * 60_000);
+    touchConversationAccount("running-conv", "main", now - 90 * 60_000);
+    const endTurn = beginAccountTurn("main", "running-conv");
+
+    const info = claudeAccountsInfo("cold-conv", now);
+    expect(info.proxied).toBe(false);
+    expect(info.accounts.map(account => account.id)).toEqual(["main", "pool-b"]);
+    const [main, b] = info.accounts;
+    expect(main).toMatchObject({ state: "ready", activeTurns: 1, loginCommand: null });
+    expect(main.usage?.fiveHour?.utilization).toBe(30);
+    // Running first, then the warm one; the cold one is not "on" the account any more.
+    expect(main.conversations.map(conv => [conv.convId, conv.running, conv.warm])).toEqual([
+      ["running-conv", true, false],
+      ["warm-conv", false, true],
+    ]);
+    expect(b).toMatchObject({ state: "signed_out", activeTurns: 0, conversations: [] });
+    expect(b.loginCommand).toContain("command claude auth login --claudeai");
+    expect(b.loginCommand).toContain("CLAUDE_CONFIG_DIR=");
+    expect(info.currentConversation).toEqual({ convId: "cold-conv", account: "main", lastUsedAt: now - 2 * 60 * 60_000, warm: false });
+    expect(info.nextNewWork?.account).toBe("main");
+    expect(info.routing.cacheTtlMs).toBe(60 * 60_000);
+    // One usable account: the bars are main's own numbers.
+    expect(info.combined?.fiveHour?.utilization).toBe(30);
+
+    endTurn();
+    expect(claudeAccountsInfo(null).accounts[0].activeTurns).toBe(0);
+    expect(claudeAccountsInfo(null).currentConversation).toBeUndefined();
+  });
+
+  test("limits and turns tell the watchers", async () => {
+    addClaudeAccount("pool-b", join(dir, "b"));
+    await refreshClaudeAccountStatuses({ force: true });
+    let changes = 0;
+    const stop = onClaudeAccountsChanged(() => { changes += 1; });
+    try {
+      report("pool-b", 100, H, 50, 24 * H, { status: "rejected", resetsAt: Math.floor(Date.now() / 1000) + H });
+      expect(changes).toBeGreaterThan(0);
+      const info = claudeAccountsInfo(null);
+      expect(info.accounts[1].state).toBe("limited");
+      expect(info.accounts[1].limitedUntil).toBeGreaterThan(Date.now());
+      expect(info.combined?.capacity).toBe(200);
+      const before = changes;
+      beginAccountTurn("main")();
+      expect(changes).toBe(before + 2);
+    } finally {
+      stop();
+    }
   });
 });

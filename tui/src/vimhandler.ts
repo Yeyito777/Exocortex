@@ -270,6 +270,8 @@ function handleVimAction(action: string, state: RenderState): KeyResult {
     case "scroll_bottom":
       handleScrollAction(action as Action, state);
       return { type: "handled" };
+    case "open_accounts":
+      return { type: "open_accounts" };
     default:
       return { type: "handled" };
   }
