@@ -5,6 +5,7 @@ import {
   chooseAccountForNewWork,
   DEFAULT_ROUTING_POLICY,
   routeConversation,
+  routeNewWork,
   type AccountRouteState,
   type ConversationRouteState,
 } from "./routing";
@@ -187,5 +188,40 @@ describe("switch notice", () => {
   test("names both accounts and the reason", () => {
     expect(accountSwitchNotice({ account: "max2", movedFrom: "main", reason: "account-limited", detail: "\"main\" is at a usage limit" }))
       .toBe("Claude account switched from \"main\" to \"max2\": \"main\" is at a usage limit.");
+  });
+});
+
+describe("why new work went where it did", () => {
+  const detail = (accounts: AccountRouteState[]) => routeNewWork(accounts, NOW)?.detail;
+
+  test("names the deciding rule", () => {
+    expect(detail([account("main", usage([20, 3 * HOUR], [40, 5 * DAY])), account("max2", usage([20, 3 * HOUR], [40, 1 * DAY]))]))
+      .toBe("its weekly limit resets soonest");
+    expect(detail([account("main", usage([20, 4 * HOUR], [40, 2 * DAY])), account("max2", usage([20, 20 * MIN], [40, 2 * DAY + HOUR]))]))
+      .toBe("its 5-hour limit resets soonest (weekly resets tie)");
+    expect(detail([account("main", usage([50, HOUR], [40, DAY])), account("max2", usage([20, HOUR], [40, DAY]))]))
+      .toBe("it has the most headroom (resets tie)");
+    expect(detail([account("main", usage([20, HOUR], [40, DAY]), { activeTurns: 2 }), account("max2", usage([20, HOUR], [40, DAY]))]))
+      .toBe("it runs the fewest turns (resets and headroom tie)");
+    expect(detail([account("main", usage([20, HOUR], [40, DAY])), account("max2", usage([20, HOUR], [40, DAY]))]))
+      .toBe("first in account order (resets and headroom tie)");
+  });
+
+  test("names the accounts it skipped and why", () => {
+    const later = usage([10, HOUR], [10, 6 * DAY]);
+    expect(detail([account("main", usage([95, HOUR], [10, DAY])), account("max2", later)])).toBe("\"main\" is below the 5-hour floor");
+    expect(detail([account("main", usage([10, HOUR], [95, DAY])), account("max2", later)])).toBe("\"main\" is below the weekly floor");
+    expect(detail([account("main", later, { limitedUntil: NOW + HOUR }), account("max2", later)])).toBe("\"main\" is at a usage limit");
+    expect(detail([account("main", later, { available: false }), account("max2", later)])).toBe("\"main\" is signed out or blocked");
+  });
+
+  test("says when every account is below a floor", () => {
+    expect(detail([account("main", usage([97, HOUR], [40, HOUR])), account("max2", usage([93, HOUR], [40, 5 * DAY]))]))
+      .toBe("every account is below a usage floor; \"max2\" has the most headroom");
+  });
+
+  test("a new conversation's decision carries the same reason", () => {
+    const accounts = [account("main", usage([20, 3 * HOUR], [40, 5 * DAY])), account("max2", usage([20, 3 * HOUR], [40, 1 * DAY]))];
+    expect(routeConversation(conversation(), accounts, NOW)).toEqual({ account: "max2", reason: "new", detail: "its weekly limit resets soonest" });
   });
 });
