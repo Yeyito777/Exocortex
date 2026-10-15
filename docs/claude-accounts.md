@@ -115,7 +115,8 @@ The log names each decision and why, for example
 `conversation <conv> moves from Claude account max2 to main (cold-move: …)`.
 
 With one account, or under [/proxy](provider-proxy.md), every turn runs on
-`main` and nothing above applies.
+`main` and nothing above applies. (Under /proxy that is the remote's `main`;
+see Gaps.)
 
 ## Limits and blocked accounts
 
@@ -184,9 +185,16 @@ only when a client connects or a turn ends). During turns, each
 ## Gaps
 
 - **/proxy** (a Mac using whale's Claude login) always uses whale's `main`
-  account, and the Mac's bars show that account's usage. Routing a proxied
-  conversation to another whale account would need an account field in the
-  link protocol; it is not built.
+  account. The Mac still shows whale's whole pool, as whale does: the
+  combined bars, and `/accounts` with whale's accounts and their usage
+  ("new work" on `main`, since that is where the Mac's turns go). The link
+  carries it
+  (`provider_proxy_accounts`, [/proxy](provider-proxy.md)); an older whale
+  daemon shares only `main`'s usage. Accounts are added, removed and signed in
+  on whale itself (`/account claude` on the Mac says so). Routing a proxied
+  conversation to another whale account would need the remote to attach that
+  account's login to proxied requests; it is not built, so the combined bars
+  can show room that only whale's own turns can use.
 - **macOS.** Claude Code keys the macOS Keychain entry to `CLAUDE_CONFIG_DIR`,
   so a Mac daemon with its own accounts works the same way: sign each one in
   with the command above on the Mac.

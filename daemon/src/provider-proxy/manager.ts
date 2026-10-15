@@ -17,14 +17,17 @@ import {
   PROXYABLE_PROVIDERS,
   isProxyableProvider,
   type ProviderProxyInfo,
+  type ProviderProxyRemoteAccounts,
   type ProviderProxyRemoteStatus,
   type ProxyableProviderId,
 } from "@exocortex/shared/provider-proxy";
+import type { ClaudeAccountsRemoteInfo } from "@exocortex/shared/protocol";
 import type { UsageData } from "../messages";
 import { AuthError } from "../providers/errors";
 import { log } from "../log";
 import { ProviderProxyForwarder } from "./forwarder";
 import { describeRemoteHost, ProviderProxyLink, ProviderProxyUnavailableError } from "./link";
+import { withMainUsage } from "./remote-accounts";
 import {
   configureProviderProxyHooks,
   getProxiedUsage,
@@ -50,6 +53,8 @@ export interface ProviderProxyManagerOptions {
   onChange?: () => void;
   /** A provider switched between direct and proxied (or to another alias). */
   onRouteChange?: (provider: ProxyableProviderId) => void;
+  /** The proxied Claude pool (`remoteAccounts`) changed. */
+  onAccountsChange?: () => void;
   reconnectDelaysMs?: readonly number[];
   helloTimeoutMs?: number;
 }
@@ -101,10 +106,10 @@ export class ProviderProxyManager {
   private readonly readConfig: () => ExocortexConfig;
   private readonly updateConfig: (mutator: (config: ExocortexConfig) => void) => void;
   private started = false;
-  private listeners: Pick<ProviderProxyManagerOptions, "onChange" | "onRouteChange">;
+  private listeners: Pick<ProviderProxyManagerOptions, "onChange" | "onRouteChange" | "onAccountsChange">;
 
   constructor(private readonly options: ProviderProxyManagerOptions = {}) {
-    this.listeners = { onChange: options.onChange, onRouteChange: options.onRouteChange };
+    this.listeners = { onChange: options.onChange, onRouteChange: options.onRouteChange, onAccountsChange: options.onAccountsChange };
     this.readConfig = options.readConfig ?? readExocortexConfig;
     this.updateConfig = options.updateConfig ?? ((mutator) => { updateExocortexConfig(mutator); });
     this.forwarder = new ProviderProxyForwarder({
@@ -116,7 +121,7 @@ export class ProviderProxyManager {
     });
   }
 
-  setListeners(listeners: Pick<ProviderProxyManagerOptions, "onChange" | "onRouteChange">): void {
+  setListeners(listeners: Pick<ProviderProxyManagerOptions, "onChange" | "onRouteChange" | "onAccountsChange">): void {
     this.listeners = listeners;
   }
 
@@ -127,6 +132,8 @@ export class ProviderProxyManager {
     configureProviderProxyHooks({
       ready: (provider, signal) => this.ready(provider, signal),
       remoteStatus: (provider) => this.remoteStatus(provider),
+      remoteAccounts: () => this.remoteAccounts(),
+      noteMainUsage: (usage) => this.noteMainUsage(usage),
       refreshUsage: (provider) => this.refreshUsage(provider),
       consumeReset: (provider) => this.consumeReset(provider),
     });
@@ -228,7 +235,11 @@ export class ProviderProxyManager {
     this.proxies.set(provider, alias);
     this.applyRoute(provider);
     setProxiedUsage(provider, status.usage);
-    if (previous && previous !== alias) this.retireIfUnused(previous);
+    if (provider === "anthropic") link.watchAccounts();
+    if (previous && previous !== alias) {
+      if (provider === "anthropic") this.links.get(previous)?.watchAccounts(false);
+      this.retireIfUnused(previous);
+    }
     this.listeners.onRouteChange?.(provider);
     this.notify();
     const account = status.authInfo?.email ? `, account ${status.authInfo.email}` : "";
@@ -249,6 +260,7 @@ export class ProviderProxyManager {
     this.proxies.delete(provider);
     setProviderProxyRoute(provider, null);
     setProxiedUsage(provider, null);
+    if (provider === "anthropic") this.links.get(alias)?.watchAccounts(false);
     this.retireIfUnused(alias);
     this.listeners.onRouteChange?.(provider);
     this.notify();
@@ -272,6 +284,32 @@ export class ProviderProxyManager {
 
   remoteStatus(provider: ProxyableProviderId): ProviderProxyRemoteStatus | null {
     return this.linkFor(provider)?.remote[provider] ?? null;
+  }
+
+  /**
+   * The remote's Claude pool while Claude goes through /proxy and the remote
+   * shares it (the last one received while the link is down), with the link's state.
+   */
+  remoteAccounts(): { pool: ProviderProxyRemoteAccounts; remote: ClaudeAccountsRemoteInfo } | null {
+    const pool = this.linkFor("anthropic")?.remoteAccounts;
+    const info = pool ? this.list().find(proxy => proxy.provider === "anthropic") : undefined;
+    if (!pool || !info) return null;
+    return {
+      pool,
+      remote: {
+        alias: info.alias,
+        host: info.remoteHost ?? null,
+        state: info.state,
+        ...(info.message ? { message: info.message } : {}),
+      },
+    };
+  }
+
+  /** This machine's proxied Claude turns reported `main`'s usage; keep the pool's copy current until the remote's next update. */
+  noteMainUsage(usage: UsageData): void {
+    const link = this.linkFor("anthropic");
+    if (!link?.remoteAccounts) return;
+    link.remoteAccounts = withMainUsage(link.remoteAccounts, usage);
   }
 
   async refreshUsage(provider: ProxyableProviderId): Promise<UsageData | null> {
@@ -307,6 +345,9 @@ export class ProviderProxyManager {
       providers: () => {
         const providers = [...this.proxies].filter(([, value]) => value === alias).map(([provider]) => provider);
         return pending && !providers.includes(pending) ? [...providers, pending] : providers;
+      },
+      onAccounts: () => {
+        if (this.proxies.get("anthropic") === alias) this.listeners.onAccountsChange?.();
       },
       onChange: () => {
         // A (re)connected link brings the remote's current usage for its providers.

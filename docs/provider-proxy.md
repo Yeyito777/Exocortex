@@ -33,14 +33,21 @@ Compare `/ssh`, which moves the whole TUI to the other daemon.
 
 The setting is saved in `config/config.json` as
 `providers.<provider>.proxy.ssh` and restored when the daemon starts, so a
-proxied provider never silently falls back to a local login. The status line
-shows `Proxy: <alias> connected|connecting|down` (and the remote account)
-while the current provider is proxied; `/proxy` lists the reasons for a down
-link. While proxied, the provider's account info and 5-hour/weekly bars show
-the remote account, and `/login`, `/logout` and `/account` for that provider
-explain that the login lives on the remote. For Anthropic that is the remote's
-`main` Claude account; its [other Claude accounts](claude-accounts.md) are not
-reachable through /proxy.
+proxied provider never silently falls back to a local login. While the
+current provider is proxied, its 5-hour/weekly bars are the remote's, and a
+link that is down or connecting, or a remote that is not logged in, shows
+beside them (`/proxy whale down` and the reason); `/proxy` lists the full
+reasons. The provider's account info is the remote account, and `/login`,
+`/logout` and `/account` for that provider explain that the login lives on
+the remote.
+
+For Anthropic, a remote with several [Claude accounts](claude-accounts.md)
+shares its pool: the bars are its combined bars (`137/200%`, the two soonest
+resets) and `/accounts` (`g a`) shows its accounts and their usage, live,
+with "new work" on `main` and a note "accounts on <alias> · turns from here
+use main (/proxy)", or "/proxy <alias> down: <reason>" while the link is down.
+Proxied turns still run on the remote's `main` account; its other accounts
+are not reachable through /proxy.
 
 The alias is an OpenSSH host alias, resolved by the daemon's own `ssh` (same
 flags as `/ssh`: `BatchMode=yes`, keepalives, `ControlPath=none`). The daemon
@@ -80,7 +87,10 @@ same timeout, working-directory and 1 MB output rules as `client_bash`.
   processes carry the route in their key, so toggling starts a new process.
 - **Remote not logged in:** `/proxy` refuses to enable; later turns fail with
   the remote's reason (e.g. "Claude Code is not signed in").
-- **Version skew:** a remote without `/proxy` answers
+- **Version skew:** a remote that predates sharing its Claude accounts shows
+  only its `main` account's bars, and `/accounts` explains that its accounts
+  are not available. An older local daemon never asks, so a newer remote
+  behaves as before. A remote without `/proxy` answers
   `Unknown command: provider_proxy_hello`, reported as "The Exocortex daemon
   on whale does not support /proxy; update Exocortex there". A protocol
   version mismatch names which side to update. A TUI newer than its daemon
@@ -119,8 +129,14 @@ Messages and the allowlist: `shared/src/provider-proxy.ts`. A link starts with
 `provider_proxy_hello`, which also stops the remote from sending that
 connection its broadcasts; then `provider_proxy_open` / `_ws_send` / `_cancel`
 streams (`provider_proxy_response`, `_data`, `_end`), `provider_proxy_status`
-(login + usage), `provider_proxy_consume_reset` and `provider_proxy_exec`
-(remote_bash). Clients use `provider_proxy` (`status`/`set`/`off`) and receive
+(login + usage), `provider_proxy_consume_reset`, `provider_proxy_exec`
+(remote_bash) and `provider_proxy_accounts`: the remote's Claude pool
+(`provider_proxy_accounts_result`, then `provider_proxy_accounts_update` on
+every change while watched). The local daemon watches it while Anthropic goes
+through the link and keeps the last pool while the link is down; usage from
+its own proxied turns updates `main` in that copy until the remote's next
+update. A remote without it answers `Unknown command`, and the bars fall back
+to its `main` account's usage. Clients use `provider_proxy` (`status`/`set`/`off`) and receive
 `provider_proxies`, which `tools_available` also carries.
 
 Code: `daemon/src/provider-proxy/` (`manager.ts` local state and config,

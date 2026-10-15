@@ -28,11 +28,14 @@ import type { ErrorEvent } from "@exocortex/shared/protocol";
 import { connectOpenAIWebSocket, OpenAIWebSocketHttpError, type OpenAIWebSocketConnectResult } from "../providers/openai/websocket";
 import { log } from "../log";
 import { localUpstreamAuth, UpstreamAuthError, type UpstreamAuth } from "./upstream-auth";
+import type { RemoteAccountsSource } from "./remote-accounts";
 
 /** A proxied websocket may sit idle this long between messages. */
 const WEBSOCKET_IDLE_MS = 2 * 60 * 60_000;
 const HELLO_STATUS_TIMEOUT_MS = 20_000;
 const MAX_EXEC_TIMEOUT_MS = 24 * 60 * 60_000;
+/** Pool changes come in bursts (a turn's start, its usage, its end); one update per burst. */
+const ACCOUNTS_PUSH_DELAY_MS = 250;
 
 export interface ProviderProxyEndpointTransport {
   send(event: ProviderProxyLinkEvent | ErrorEvent): void;
@@ -46,6 +49,8 @@ export interface ProviderProxyEndpointDeps {
   auth?: UpstreamAuth;
   fetch?: typeof fetch;
   connectWebSocket?: (url: string, headers: Record<string, string>, signal?: AbortSignal) => Promise<OpenAIWebSocketConnectResult>;
+  /** The Claude pool shared with provider_proxy_accounts; without it the command reports none. */
+  accounts?: RemoteAccountsSource;
 }
 
 interface OpenStream {
@@ -71,11 +76,14 @@ export class ProviderProxyEndpoint {
   private readonly auth: UpstreamAuth;
   private readonly fetchImpl: typeof fetch;
   private readonly connectWebSocket: NonNullable<ProviderProxyEndpointDeps["connectWebSocket"]>;
+  private readonly accounts: RemoteAccountsSource | null;
+  private accountsWatch: { unsubscribe: () => void; timer: ReturnType<typeof setTimeout> | null; last: string } | null = null;
 
   constructor(private readonly transport: ProviderProxyEndpointTransport, deps: ProviderProxyEndpointDeps = {}) {
     this.auth = deps.auth ?? localUpstreamAuth;
     this.fetchImpl = deps.fetch ?? fetch;
     this.connectWebSocket = deps.connectWebSocket ?? connectOpenAIWebSocket;
+    this.accounts = deps.accounts ?? null;
   }
 
   /** The connection closed: stop every upstream request and command it started. */
@@ -85,6 +93,7 @@ export class ProviderProxyEndpoint {
     for (const stream of this.streams.values()) stream.abort.abort();
     this.streams.clear();
     this.executor.cancelAll();
+    this.unwatchAccounts();
   }
 
   handle(command: ProviderProxyLinkCommand): void {
@@ -109,6 +118,9 @@ export class ProviderProxyEndpoint {
         return;
       case "provider_proxy_consume_reset":
         void this.consumeReset(command.reqId, command.provider);
+        return;
+      case "provider_proxy_accounts":
+        this.handleAccounts(command.reqId, command.provider, command.watch);
         return;
       case "provider_proxy_exec": {
         const execId = command.execId;
@@ -173,6 +185,52 @@ export class ProviderProxyEndpoint {
     } catch (error) {
       if (!this.closed) this.transport.send({ type: "provider_proxy_consume_reset_result", reqId, error: errorMessage(error) });
     }
+  }
+
+  private accountsSnapshot() {
+    try {
+      return this.accounts?.snapshot() ?? null;
+    } catch (error) {
+      log("warn", `provider-proxy endpoint: reading the Claude accounts failed: ${errorMessage(error)}`);
+      return null;
+    }
+  }
+
+  private handleAccounts(reqId: string, provider: unknown, watch: unknown): void {
+    if (provider !== "anthropic") {
+      this.transport.send({ type: "error", reqId, message: `No account pool to share for ${String(provider)}.` });
+      return;
+    }
+    const accounts = this.accountsSnapshot();
+    this.transport.send({ type: "provider_proxy_accounts_result", reqId, provider, accounts });
+    if (watch === false) {
+      this.unwatchAccounts();
+    } else if (watch === true && this.accounts && !this.accountsWatch) {
+      const watching = { unsubscribe: () => {}, timer: null as ReturnType<typeof setTimeout> | null, last: JSON.stringify(accounts) };
+      const push = () => {
+        watching.timer = null;
+        if (this.closed || this.accountsWatch !== watching) return;
+        const next = this.accountsSnapshot();
+        const serialized = JSON.stringify(next);
+        if (serialized === watching.last) return;
+        watching.last = serialized;
+        this.transport.send({ type: "provider_proxy_accounts_update", provider: "anthropic", accounts: next });
+      };
+      watching.unsubscribe = this.accounts.subscribe(() => {
+        if (watching.timer || this.accountsWatch !== watching) return;
+        watching.timer = setTimeout(push, ACCOUNTS_PUSH_DELAY_MS);
+        (watching.timer as { unref?: () => void }).unref?.();
+      });
+      this.accountsWatch = watching;
+    }
+  }
+
+  private unwatchAccounts(): void {
+    const watching = this.accountsWatch;
+    if (!watching) return;
+    this.accountsWatch = null;
+    watching.unsubscribe();
+    if (watching.timer) clearTimeout(watching.timer);
   }
 
   /** Validate an open command; on refusal, end the stream with the reason. */

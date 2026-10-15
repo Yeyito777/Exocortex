@@ -4,13 +4,18 @@
  * account changes. Only already-known state is sent; watching starts a
  * background refresh of stale sign-ins and usage, and repeats it each minute
  * while anyone watches, so the screen opens at once and fills in.
+ *
+ * While Claude goes through /proxy, the Claude accounts are the remote's
+ * (provider-proxy/remote-accounts.ts) and the refresh asks the remote for it.
  */
 
 import type { AccountsCommand, AccountsSnapshot, Event, OpenAIAccountInfo } from "./protocol";
 import type { ConnectedClient } from "./server";
 import type { UsageData } from "./messages";
 import { log } from "./log";
-import { isProviderProxied } from "./provider-proxy/route";
+import { isProviderProxied, providerProxyHooks, proxiedClaudeAccounts } from "./provider-proxy/route";
+import { mergeRemoteAccounts } from "./provider-proxy/remote-accounts";
+import { getLastUsage } from "./usage";
 import { onClaudeAccountsChanged } from "./providers/anthropic/account-events";
 import { claudeAccountsInfo, refreshCombinedUsage } from "./providers/anthropic/account-pool";
 import { listAccounts as listOpenAIAccounts } from "./providers/openai/auth";
@@ -28,6 +33,15 @@ export interface AccountsWatchDeps {
   openaiAccounts?: () => OpenAIAccountInfo[];
   refreshClaude?: () => Promise<UsageData | null>;
   isProxied?: (provider: "anthropic" | "openai") => boolean;
+  /** The /proxy remote's Claude pool, when Claude goes through /proxy and the remote shares it. */
+  proxiedClaude?: typeof proxiedClaudeAccounts;
+  /** Have the /proxy remote refresh its pool's sign-ins and usage. */
+  refreshProxiedClaude?: () => Promise<UsageData | null>;
+}
+
+async function refreshProxiedClaudeUsage(): Promise<UsageData | null> {
+  await providerProxyHooks()?.refreshUsage("anthropic");
+  return getLastUsage("anthropic");
 }
 
 function defaultOpenAIAccounts(): OpenAIAccountInfo[] {
@@ -39,6 +53,8 @@ export function createAccountsWatch(deps: AccountsWatchDeps) {
   const openaiAccounts = deps.openaiAccounts ?? defaultOpenAIAccounts;
   const refreshClaude = deps.refreshClaude ?? refreshCombinedUsage;
   const isProxied = deps.isProxied ?? isProviderProxied;
+  const proxiedClaude = deps.proxiedClaude ?? proxiedClaudeAccounts;
+  const refreshProxiedClaude = deps.refreshProxiedClaude ?? refreshProxiedClaudeUsage;
   const watchers = new Map<ConnectedClient, { convId: string | null }>();
   let pushTimer: ReturnType<typeof setTimeout> | null = null;
   let refreshTimer: ReturnType<typeof setInterval> | null = null;
@@ -46,10 +62,15 @@ export function createAccountsWatch(deps: AccountsWatchDeps) {
   let refreshing: Promise<void> | null = null;
   /** Several Claude accounts to keep fresh (an OpenAI pool alone needs no Claude checks). */
   let claudePool = false;
+  /** Those accounts are the /proxy remote's. */
+  let claudeRemote = false;
 
   const snapshot = (convId: string | null): AccountsSnapshot => {
-    const claude = claudeInfo(convId);
+    let claude = claudeInfo(convId);
+    const remote = claude.proxied ? proxiedClaude() : null;
+    if (remote) claude = mergeRemoteAccounts(claude, remote.pool, remote.remote);
     claudePool = !claude.proxied && claude.accounts.length > 1;
+    claudeRemote = remote !== null;
     const openaiProxied = isProxied("openai");
     const openai = openaiAccounts();
     return {
@@ -90,7 +111,7 @@ export function createAccountsWatch(deps: AccountsWatchDeps) {
 
   const refresh = () => {
     if (refreshing || !claudePool) return;
-    refreshing = refreshClaude().then((usage) => {
+    refreshing = (claudeRemote ? refreshProxiedClaude() : refreshClaude()).then((usage) => {
       deps.onClaudeUsage?.(usage);
       changed();
     }).catch((error) => {

@@ -1007,6 +1007,8 @@ export interface AccountConversationInfo {
   running: boolean;
   /** Its prompt cache on this account is still warm (`lastUsedAt` within `routing.cacheTtlMs`). */
   warm: boolean;
+  /** A conversation of the /proxy remote (`ClaudeAccountsInfo.remote`), not of this daemon: it cannot be opened here. */
+  remote?: boolean;
 }
 
 export interface ClaudeAccountInfo {
@@ -1042,8 +1044,18 @@ export interface ClaudeRoutingInfo {
 }
 
 export interface ClaudeAccountsInfo {
-  /** Claude runs through /proxy: the remote's login, never these accounts. */
+  /**
+   * Claude runs through /proxy and the remote's accounts are unknown (not
+   * received yet, or its daemon predates sharing them): nothing here applies.
+   * False when `remote` lists them instead.
+   */
   proxied: boolean;
+  /**
+   * The accounts are the /proxy remote's (its pool, usage and conversations).
+   * Turns from this machine run on the remote's `main` account; rows of this
+   * machine's conversations are listed under it.
+   */
+  remote?: ClaudeAccountsRemoteInfo;
   accounts: ClaudeAccountInfo[];
   /** The usage bars' combined numbers (`capacity` 100 per usable account). */
   combined: UsageData | null;
@@ -1052,6 +1064,17 @@ export interface ClaudeAccountsInfo {
   nextNewWork: { account: string; detail: string } | null;
   /** The command's `convId`, with the account it last ran on (null: none yet). */
   currentConversation?: { convId: string; account: string | null; lastUsedAt: number | null; warm: boolean };
+}
+
+export interface ClaudeAccountsRemoteInfo {
+  /** The SSH alias Claude goes through. */
+  alias: string;
+  /** `user@hostname` of the remote, once known. */
+  host: string | null;
+  /** The link's state; the accounts are the last ones received while it is not `connected`. */
+  state: ProviderProxyInfo["state"];
+  /** Why the link is down or the remote cannot serve Claude. */
+  message?: string;
 }
 
 export interface OpenAIAccountInfo {
@@ -1064,7 +1087,7 @@ export interface OpenAIAccountInfo {
 
 export interface AccountsSnapshot {
   generatedAt: number;
-  /** Several accounts are set up: more than one Claude account (not under /proxy), or more than one OpenAI account. */
+  /** Several accounts are set up: more than one Claude account (here, or on the /proxy remote), or more than one OpenAI account. */
   enabled: boolean;
   claude: ClaudeAccountsInfo;
   /** OpenAI's account pool (`/account` switches the current one); `proxied`: /proxy uses the remote's login. */

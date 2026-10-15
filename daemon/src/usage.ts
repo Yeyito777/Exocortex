@@ -2,26 +2,36 @@ import type { ProviderId, UsageData } from "./messages";
 import { getProviderAdapter } from "./providers/catalog";
 import type { UsageResetOutcome } from "./protocol";
 import { log } from "./log";
-import { getProxiedUsage, providerProxyHooks, providerProxyRoute, setProxiedUsage } from "./provider-proxy/route";
+import { MAIN_ACCOUNT_ID } from "./providers/anthropic/accounts";
+import { getAccountUsage } from "./providers/anthropic/usage";
+import { getProxiedUsage, providerProxyHooks, providerProxyRoute, proxiedClaudeAccounts, setProxiedUsage } from "./provider-proxy/route";
 
 // A provider that goes through /proxy reports the remote account's usage: the
 // remote answers refreshes, and response headers that come back through the
-// link update the same proxied copy (see provider-proxy/route.ts).
+// link update the same proxied copy (see provider-proxy/route.ts). For Claude,
+// a remote that shares its account pool shows the pool's combined usage, as
+// it does on the remote itself; otherwise its main account's.
+
+function proxiedUsage(provider: ProviderId): UsageData | null {
+  const route = providerProxyRoute(provider);
+  if (!route) return null;
+  const combined = route.provider === "anthropic" ? proxiedClaudeAccounts()?.pool.combined : null;
+  return combined ?? getProxiedUsage(route.provider);
+}
 
 export function getLastUsage(provider: ProviderId): UsageData | null {
-  const route = providerProxyRoute(provider);
-  if (route) return getProxiedUsage(route.provider);
+  if (providerProxyRoute(provider)) return proxiedUsage(provider);
   return getProviderAdapter(provider).usage.getLastUsage();
 }
 
 export function refreshUsage(provider: ProviderId, onUpdate: (usage: UsageData | null) => void): void {
   const route = providerProxyRoute(provider);
   if (route) {
-    onUpdate(getProxiedUsage(route.provider));
+    onUpdate(proxiedUsage(provider));
     const hooks = providerProxyHooks();
     if (!hooks) return;
     void hooks.refreshUsage(route.provider)
-      .then((usage) => { if (providerProxyRoute(provider) === route) onUpdate(usage); })
+      .then(() => { if (providerProxyRoute(provider) === route) onUpdate(proxiedUsage(provider)); })
       .catch((err) => {
         log("debug", `${provider} proxied usage refresh failed: ${err instanceof Error ? err.message : err}`);
       });
@@ -59,7 +69,9 @@ export function handleUsageHeaders(provider: ProviderId, headers: Headers, onUpd
     getProviderAdapter(provider).usage.handleUsageHeaders(headers, (usage) => {
       if (providerProxyRoute(provider) !== route) return;
       setProxiedUsage(route.provider, usage);
-      onUpdate(usage);
+      // Proxied Claude turns run on the remote's main account (recorded here as this machine's main).
+      if (route.provider === "anthropic") providerProxyHooks()?.noteMainUsage(getAccountUsage(MAIN_ACCOUNT_ID) ?? usage);
+      onUpdate(proxiedUsage(provider) ?? usage);
     });
     return;
   }

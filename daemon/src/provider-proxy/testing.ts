@@ -27,7 +27,13 @@ export function stubAuth(overrides: Partial<UpstreamAuth> = {}): UpstreamAuth & 
 }
 
 /** A fake `ssh` whose far end is a real endpoint (or an outdated daemon). */
-export function fakeSsh(options: { deps?: ProviderProxyEndpointDeps; outdated?: boolean; drain?: { needs: boolean; waiters: Array<() => void> } } = {}) {
+export function fakeSsh(options: {
+  deps?: ProviderProxyEndpointDeps;
+  outdated?: boolean;
+  /** Command types the far end answers like a daemon that predates them. */
+  unknownCommands?: string[];
+  drain?: { needs: boolean; waiters: Array<() => void> };
+} = {}) {
   const spawned: Array<{ process: SshProcess; endpoint: ProviderProxyEndpoint; kill(): void; commands: Array<Record<string, unknown>> }> = [];
   const spawn = (): SshProcess => {
     const emitter = new EventEmitter();
@@ -49,7 +55,7 @@ export function fakeSsh(options: { deps?: ProviderProxyEndpointDeps; outdated?: 
         const command = JSON.parse(buffer.slice(0, newline));
         buffer = buffer.slice(newline + 1);
         commands.push(command);
-        if (options.outdated) stdout.write(`${JSON.stringify({ type: "error", reqId: command.reqId, message: `Unknown command: ${command.type}` })}\n`);
+        if (options.outdated || options.unknownCommands?.includes(command.type)) stdout.write(`${JSON.stringify({ type: "error", reqId: command.reqId, message: `Unknown command: ${command.type}` })}\n`);
         else endpoint.handle(command);
       }
     });

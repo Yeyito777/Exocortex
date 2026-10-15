@@ -18,7 +18,6 @@ import { usageBlock } from "./statusblocks/usage";
 import { contextBlock } from "./statusblocks/context";
 import { usageResetsBlock } from "./statusblocks/usage-resets";
 import { openAIAccountBlock } from "./statusblocks/openai-account";
-import { providerProxyBlock } from "./statusblocks/provider-proxy";
 
 export interface StatusBlock {
   id: string;
@@ -35,7 +34,6 @@ const BLOCK_BUILDERS: BlockBuilder[] = [
   usageBlock,
   contextBlock,
   usageResetsBlock,
-  providerProxyBlock,
   openAIAccountBlock,
 ];
 

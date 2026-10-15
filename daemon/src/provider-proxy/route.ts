@@ -7,7 +7,8 @@
  */
 
 import type { ProviderId, UsageData } from "../messages";
-import type { ProviderProxyRemoteStatus, ProxyableProviderId } from "@exocortex/shared/provider-proxy";
+import type { ProviderProxyRemoteAccounts, ProviderProxyRemoteStatus, ProxyableProviderId } from "@exocortex/shared/provider-proxy";
+import type { ClaudeAccountsRemoteInfo } from "@exocortex/shared/protocol";
 import { PROVIDER_PROXY_ORIGINS, isProxyableProvider } from "@exocortex/shared/provider-proxy";
 
 export interface ProviderProxyRoute {
@@ -25,6 +26,10 @@ export interface ProviderProxyHooks {
   ready(provider: ProxyableProviderId, signal?: AbortSignal): Promise<ProviderProxyRemoteStatus>;
   /** The remote's last known status for `provider`. */
   remoteStatus(provider: ProxyableProviderId): ProviderProxyRemoteStatus | null;
+  /** The remote's Claude pool and the link's state, when Claude is proxied and the remote shares its pool. */
+  remoteAccounts(): { pool: ProviderProxyRemoteAccounts; remote: ClaudeAccountsRemoteInfo } | null;
+  /** Fresher usage of the remote's `main` account, from this machine's own proxied turns. */
+  noteMainUsage(usage: UsageData): void;
   /** Ask the remote for fresh usage of its account. */
   refreshUsage(provider: ProxyableProviderId): Promise<UsageData | null>;
   /** Spend one of the remote account's usage resets. */
@@ -60,6 +65,11 @@ export async function providerProxyReady(provider: ProxyableProviderId, signal?:
 
 export function providerProxyRemoteStatus(provider: ProxyableProviderId): ProviderProxyRemoteStatus | null {
   return hooks?.remoteStatus(provider) ?? null;
+}
+
+/** The remote's Claude pool while Claude is proxied, if the remote shares it. */
+export function proxiedClaudeAccounts(): { pool: ProviderProxyRemoteAccounts; remote: ClaudeAccountsRemoteInfo } | null {
+  return routes.has("anthropic") ? hooks?.remoteAccounts() ?? null : null;
 }
 
 export function providerProxyHooks(): ProviderProxyHooks | null {

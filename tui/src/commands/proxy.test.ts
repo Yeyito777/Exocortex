@@ -8,7 +8,6 @@ import { handleEvent, type DaemonActions } from "../events";
 import { stripAnsi } from "../historycursor";
 import { createInitialState } from "../state";
 import { renderStatusLine } from "../statusline";
-import { providerProxyBlock } from "../statusblocks/provider-proxy";
 import type { ProviderProxyInfo } from "../protocol";
 
 const originalConfig = process.env.EXOCORTEX_SSH_CONFIG;
@@ -81,20 +80,40 @@ describe("/proxy", () => {
   });
 });
 
-describe("/proxy status block", () => {
-  test("appears only while the current provider is proxied, naming the alias and link state", () => {
+describe("/proxy in the status bar", () => {
+  test("a working proxy adds nothing; a down, connecting or logged-out one shows beside the bars", () => {
     const state = createInitialState();
     state.provider = "anthropic";
-    expect(providerProxyBlock(state)).toBeNull();
+    state.authByProvider.anthropic = true;
+    state.usageByProvider.anthropic = {
+      fiveHour: { utilization: 88, resetsAt: Date.now() + 3_600_000, resets: [Date.now() + 3_600_000, Date.now() + 7_200_000] },
+      sevenDay: { utilization: 120, resetsAt: Date.now() + 86_400_000 },
+      capacity: 200,
+    };
     state.providerProxies = [connected];
-    const rendered = stripAnsi(renderStatusLine(state, 200).lines.join("\n"));
-    expect(rendered).toContain("Proxy: whale connected");
-    expect(rendered).toContain("someone@example.com");
-    state.hideSensitiveInfo = true;
-    expect(stripAnsi(renderStatusLine(state, 200).lines.join("\n"))).not.toContain("someone@example.com");
+    const render = () => stripAnsi(renderStatusLine(state, 200).lines.join("\n"));
+    expect(render()).toContain("88/200%");
+    expect(render()).not.toContain("Proxy");
+    expect(render()).not.toContain("whale");
+    expect(render()).not.toContain("someone@example.com");
+
     state.providerProxies = [{ provider: "anthropic", alias: "whale", state: "disconnected", message: "The SSH connection to whale was lost." }];
-    expect(stripAnsi(renderStatusLine(state, 200).lines.join("\n"))).toContain("Proxy: whale down");
+    expect(render()).toContain("88/200%");
+    expect(render()).toContain("/proxy whale down");
+    expect(render()).toContain("The SSH connection to whale was lost.");
+
+    state.providerProxies = [{ provider: "anthropic", alias: "whale", state: "connecting" }];
+    expect(render()).toContain("/proxy whale connecting…");
+
+    state.providerProxies = [{ ...connected, remoteLoggedIn: false, message: "Claude Code is not signed in" }];
+    expect(render()).toContain("/proxy whale not logged in");
+
+    // Without any usage yet, the problem still shows.
+    state.usageByProvider.anthropic = null;
+    expect(render()).toContain("/proxy whale not logged in");
+
     state.provider = "openai";
-    expect(providerProxyBlock(state)).toBeNull();
+    state.authByProvider.openai = true;
+    expect(render()).not.toContain("/proxy whale");
   });
 });

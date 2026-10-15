@@ -12,7 +12,7 @@
  * upstream allowlist and the header policy.
  */
 
-import type { ClientHostInfo, ProviderAuthInfo } from "./protocol";
+import type { ClaudeAccountsInfo, ClientHostInfo, ProviderAuthInfo } from "./protocol";
 import type { ProviderId, UsageData } from "./messages";
 
 /** Bumped when the link protocol changes incompatibly. */
@@ -173,6 +173,19 @@ export interface ProviderProxyConsumeResetCommand {
   provider: ProxyableProviderId;
 }
 
+/**
+ * The remote's Claude account pool, for the bars and the Accounts screen.
+ * Answered with provider_proxy_accounts_result; `watch: true` also asks for a
+ * provider_proxy_accounts_update whenever it changes, until `watch: false` or
+ * the link closes. Daemons without it answer `Unknown command`.
+ */
+export interface ProviderProxyAccountsCommand {
+  type: "provider_proxy_accounts";
+  reqId: string;
+  provider: "anthropic";
+  watch?: boolean;
+}
+
 /** remote_bash: run a command on the remote machine as the remote daemon's user. */
 export interface ProviderProxyExecCommand {
   type: "provider_proxy_exec";
@@ -194,6 +207,7 @@ export type ProviderProxyLinkCommand =
   | ProviderProxyCancelCommand
   | ProviderProxyStatusCommand
   | ProviderProxyConsumeResetCommand
+  | ProviderProxyAccountsCommand
   | ProviderProxyExecCommand
   | ProviderProxyExecCancelCommand;
 
@@ -229,6 +243,27 @@ export interface ProviderProxyConsumeResetResultEvent {
   reqId: string;
   result?: { outcome: string; windowsReset: number; remainingResets?: number };
   error?: string;
+}
+
+/**
+ * The remote's Claude accounts as its own Accounts screen sees them (its
+ * conversation rows are the remote's conversations).
+ * Null when the remote has no pool to share (it proxies Claude itself).
+ */
+export type ProviderProxyRemoteAccounts = Omit<ClaudeAccountsInfo, "currentConversation">;
+
+export interface ProviderProxyAccountsResultEvent {
+  type: "provider_proxy_accounts_result";
+  reqId: string;
+  provider: "anthropic";
+  accounts: ProviderProxyRemoteAccounts | null;
+}
+
+/** The watched pool changed. */
+export interface ProviderProxyAccountsUpdateEvent {
+  type: "provider_proxy_accounts_update";
+  provider: "anthropic";
+  accounts: ProviderProxyRemoteAccounts | null;
 }
 
 /** The upstream answered: HTTP status and headers (101 opens a websocket stream). */
@@ -271,6 +306,8 @@ export type ProviderProxyLinkEvent =
   | ProviderProxyHelloResultEvent
   | ProviderProxyStatusResultEvent
   | ProviderProxyConsumeResetResultEvent
+  | ProviderProxyAccountsResultEvent
+  | ProviderProxyAccountsUpdateEvent
   | ProviderProxyResponseEvent
   | ProviderProxyDataEvent
   | ProviderProxyEndEvent
@@ -280,6 +317,8 @@ export const PROVIDER_PROXY_LINK_EVENT_TYPES: ReadonlySet<string> = new Set<Prov
   "provider_proxy_hello_result",
   "provider_proxy_status_result",
   "provider_proxy_consume_reset_result",
+  "provider_proxy_accounts_result",
+  "provider_proxy_accounts_update",
   "provider_proxy_response",
   "provider_proxy_data",
   "provider_proxy_end",
