@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { addClaudeAccount, setClaudeAccountsFileForTests } from "./accounts";
@@ -7,6 +7,7 @@ import { getCombinedUsage, routeClaudeTurn, setAssignmentsFileForTests, touchCon
 import { claudeAuthProbeCount, setClaudeAuthProbeForTests } from "./auth-cache";
 import { applyUsageHeaders, CLAUDE_ACCOUNT_HEADER, CLAUDE_RATE_LIMIT_HEADER, clearUsage } from "./usage";
 import type { ClaudeAuthStatus } from "./types";
+import { DEV_ROUTING_ENV } from "./routing-dev-overrides";
 
 const SIGNED_IN: ClaudeAuthStatus = { loggedIn: true, authMethod: "claude.ai", apiProvider: "firstParty" };
 const H = 3_600;
@@ -82,6 +83,27 @@ describe("account pool", () => {
     report("pool-b", 80, 2 * H, 92, 20 * H);
     expect(await routeClaudeTurn("conv-2", null)).toMatchObject({ account: "main" });
     expect(await routeClaudeTurn("conv-1", null)).toMatchObject({ account: "pool-b", reason: "cache-warm" });
+  });
+
+  test("dev routing overrides steer routing only, and only while the env var is set", async () => {
+    addClaudeAccount("pool-b", join(dir, "b"));
+    report("main", 10, 2 * H, 30, 20 * H);
+    report("pool-b", 10, 2 * H, 30, 120 * H);
+    const file = join(dir, "dev-routing.json");
+    writeFileSync(file, JSON.stringify({ policy: { cacheTtlMs: 1 }, accounts: { main: { usage: { sevenDay: { utilization: 95, resetsInMs: 20 * H * 1000 } } } } }));
+    const saved = process.env[DEV_ROUTING_ENV];
+    process.env[DEV_ROUTING_ENV] = file;
+    try {
+      expect(await routeClaudeTurn("conv-1", null)).toMatchObject({ account: "pool-b", reason: "new", detail: "\"main\" is below the weekly floor" });
+      // The usage bars still show the real usage.
+      expect(getCombinedUsage()?.sevenDay?.utilization).toBe(60);
+      touchConversationAccount("conv-1", "main", Date.now() - 10);
+      expect(await routeClaudeTurn("conv-1", null)).toMatchObject({ account: "pool-b", reason: "cold-move", movedFrom: "main" });
+    } finally {
+      if (saved === undefined) delete process.env[DEV_ROUTING_ENV];
+      else process.env[DEV_ROUTING_ENV] = saved;
+    }
+    expect(await routeClaudeTurn("conv-2", null)).toMatchObject({ account: "main", reason: "new" });
   });
 
   test("a rejected request moves the conversation, with the old account named", async () => {

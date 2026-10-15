@@ -25,13 +25,14 @@ import {
 } from "./auth-cache";
 import { isSubscriptionAuth } from "./cli";
 import {
-  chooseAccountForNewWork,
   DEFAULT_ROUTING_POLICY,
   isAccountLimited,
   routeConversation,
+  routeNewWork,
   type AccountRouteState,
   type RouteDecision,
 } from "./routing";
+import { applyDevRoutingOverrides } from "./routing-dev-overrides";
 import type { ClaudeAuthStatus } from "./types";
 import {
   aggregateUsage,
@@ -208,10 +209,10 @@ export async function routeClaudeTurn(
   }
   await refreshClaudeAccountStatuses({ signal });
   const now = Date.now();
-  const accounts = claudeAccountStates(now);
+  const { states: accounts, policy } = applyDevRoutingOverrides(claudeAccountStates(now), now);
   if (!convId) {
-    const choice = chooseAccountForNewWork(accounts, now);
-    return { account: choice?.id ?? MAIN_ACCOUNT_ID, reason: "new", detail: "helper request" };
+    const choice = routeNewWork(accounts, now, policy);
+    return { account: choice?.account ?? MAIN_ACCOUNT_ID, reason: "new", detail: choice?.detail ?? "no account can take it" };
   }
   const assignment = getConversationAccount(convId);
   return routeConversation({
@@ -219,7 +220,7 @@ export async function routeClaudeTurn(
     lastUsedAt: assignment && (!live || live.account === assignment.account) ? assignment.lastUsedAt : null,
     liveProcess: live?.open ?? false,
     backgroundWork: live?.backgroundWork ?? false,
-  }, accounts, now, DEFAULT_ROUTING_POLICY);
+  }, accounts, now, policy);
 }
 
 /** Accounts whose usage the bars combine: signed in and not blocked. */

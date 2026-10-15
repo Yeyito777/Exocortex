@@ -166,6 +166,33 @@ function best(views: AccountView[], policy: RoutingPolicy): AccountView | null {
     || b.weekly.headroom - a.weekly.headroom || a.index - b.index)[0];
 }
 
+function whyUnfit(view: AccountView, policy: RoutingPolicy): string {
+  const id = `"${view.state.id}"`;
+  if (!view.state.available) return `${id} is signed out or blocked`;
+  if (!view.usable) return `${id} is at a usage limit`;
+  if (view.weekly.headroom < policy.weeklyFloor) return `${id} is below the weekly floor`;
+  return `${id} is below the 5-hour floor`;
+}
+
+/** Why `chosen` won over the other accounts, for logs and notices. */
+function explainChoice(chosen: AccountView, views: AccountView[], policy: RoutingPolicy): string {
+  const others = views.filter(view => view !== chosen);
+  if (!chosen.eligible) return `every account is below a usage floor; "${chosen.state.id}" has the most headroom`;
+  const unfit = others.filter(view => !view.eligible).map(view => whyUnfit(view, policy));
+  const rivals = rank(others.filter(view => view.eligible), policy);
+  let why: string | null = null;
+  const runnerUp = rivals[0];
+  if (runnerUp) {
+    const headroom = (view: AccountView) => Math.min(view.fiveHour.headroom, view.weekly.headroom);
+    if (runnerUp.weekly.resetsIn - chosen.weekly.resetsIn > policy.weeklyResetTieMs) why = "its weekly limit resets soonest";
+    else if (runnerUp.fiveHour.resetsIn - chosen.fiveHour.resetsIn > policy.fiveHourResetTieMs) why = "its 5-hour limit resets soonest (weekly resets tie)";
+    else if (headroom(chosen) > headroom(runnerUp)) why = "it has the most headroom (resets tie)";
+    else if (chosen.state.activeTurns < runnerUp.state.activeTurns) why = "it runs the fewest turns (resets and headroom tie)";
+    else why = "first in account order (resets and headroom tie)";
+  }
+  return [why, ...unfit].filter(Boolean).join("; ") || "the only account";
+}
+
 function describeWindowLimit(view: AccountView, policy: RoutingPolicy): string {
   if (view.weekly.headroom < policy.weeklyFloor) return `its weekly usage is at ${Math.round(100 - view.weekly.headroom)}%`;
   if (view.fiveHour.headroom < policy.fiveHourFloor) return `its 5-hour usage is at ${Math.round(100 - view.fiveHour.headroom)}%`;
@@ -180,6 +207,17 @@ export function chooseAccountForNewWork(
 ): AccountRouteState | null {
   const views = accounts.map((state, index) => viewOf(state, index, now, policy));
   return best(views, policy)?.state ?? null;
+}
+
+/** Like chooseAccountForNewWork, with why that account was picked. */
+export function routeNewWork(
+  accounts: AccountRouteState[],
+  now: number,
+  policy: RoutingPolicy = DEFAULT_ROUTING_POLICY,
+): { account: string; detail: string } | null {
+  const views = accounts.map((state, index) => viewOf(state, index, now, policy));
+  const chosen = best(views, policy);
+  return chosen ? { account: chosen.state.id, detail: explainChoice(chosen, views, policy) } : null;
 }
 
 /** Pick the account for a conversation's next turn. */
@@ -202,7 +240,9 @@ export function routeConversation(
       account,
       reason: "new",
       ...(movedFrom ? { movedFrom } : {}),
-      detail: movedFrom ? `account "${movedFrom}" is no longer configured` : "most capacity about to expire",
+      detail: movedFrom
+        ? `account "${movedFrom}" is no longer configured`
+        : target ? explainChoice(target, views, policy) : "no account can take it",
     };
   }
 

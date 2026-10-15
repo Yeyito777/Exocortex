@@ -92,7 +92,14 @@ A conversation that moves shows a notice in its transcript, for example
 `Claude account switched from "main" to "max2": "main" is at a usage limit.`
 Its Claude Code session resumes from the shared `projects/`. If that resume
 fails on the new account, Exocortex replays the conversation into a fresh
-session, as for any failed resume.
+session, as for any failed resume. Verified live (Claude Code 2.1.x, Oct 2026):
+a session written on one account, including thinking blocks signed for that
+account's organization, resumes on the other account in both directions
+without error, so the fallback is not needed for a move.
+
+The log names each decision and why, for example
+`Claude account max2 for <conv> (new: "main" is below the weekly floor)` or
+`conversation <conv> moves from Claude account max2 to main (cold-move: …)`.
 
 With one account, or under [/proxy](provider-proxy.md), every turn runs on
 `main` and nothing above applies.
@@ -106,6 +113,36 @@ With one account, or under [/proxy](provider-proxy.md), every turn runs on
 - A turn that fails authentication on an account keeps that account out of
   routing for 15 minutes when there are other accounts, then its sign-in is
   checked again. Signed-out accounts take no turns.
+
+## Testing routing live
+
+Real usage cannot be moved, so a test daemon can steer routing with a JSON
+file named by `EXOCORTEX_DEV_CLAUDE_ROUTING` (dev/test only; unset, nothing
+changes). It is read again at every routing decision, so a test can edit it
+while the daemon runs, and it changes only what routing sees: the usage bars
+and `/account claude` keep showing real usage
+(`routing-dev-overrides.ts`).
+
+```json
+{
+  "policy": { "cacheTtlMs": 20000, "weeklyFloor": 15, "fiveHourFloor": 10 },
+  "accounts": {
+    "main": { "usage": { "fiveHour": { "utilization": 20, "resetsInMs": 7200000 },
+                         "sevenDay": { "utilization": 95, "resetsInMs": 3600000 } } },
+    "max2": { "limitedForMs": 600000 }
+  }
+}
+```
+
+`policy` takes any `RoutingPolicy` field (`routing.ts`). Per account, `usage`
+replaces its usage snapshot (windows take `resetsAt` or `resetsInMs`),
+`limitedForMs` / `limitedUntil` mark it rejected at a limit, and
+`available: false` treats it as signed out or blocked. Start a worktree's
+daemon with it, for example
+`EXOCORTEX_DEV_CLAUDE_ROUTING=/tmp/routing.json bun run src/main.ts` in
+`daemon/`, after copying the main instance's `anthropic-accounts.json` into the
+worktree instance's data directory. The daemon logs a warning when it is
+active.
 
 ## Sign-in checks
 

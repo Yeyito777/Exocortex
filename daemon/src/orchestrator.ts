@@ -21,7 +21,7 @@ import { getMaxContext, supportsImageInputs } from "./providers/registry";
 import { buildExecutor, summarizeTool, toolCallsRequireWatchdogPause } from "./tools/registry";
 import * as convStore from "./conversations";
 import type { DaemonServer, ConnectedClient } from "./server";
-import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, MAX_EXO_SUBAGENT_DEPTH, createModelVisibleSystemNotice, createStoredUserContextCheckpoint, createStoredUserMessage, currentReplayHistoryPrefix, isHistoryMessage, isReplayHistoryMessage, isValidActiveContextCached, type ActiveContext, type StoredMessage, type ApiContentBlock, type ApiMessage, type Block, type UserMessageAutomation } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, MAX_EXO_SUBAGENT_DEPTH, PROVIDER_NOTICE_KIND, createMessageMetadata, createModelVisibleSystemNotice, createStoredUserContextCheckpoint, createStoredUserMessage, currentReplayHistoryPrefix, isHistoryMessage, isReplayHistoryMessage, isValidActiveContextCached, type ActiveContext, type StoredMessage, type ApiContentBlock, type ApiMessage, type Block, type UserMessageAutomation } from "./messages";
 import type { ContentBlock as ProviderContentBlock, QueuedInput, QueuedInputSource, StreamRetryMetadata } from "./providers/types";
 import type { QueuedMessage } from "./message-queue";
 import type { ImageAttachment } from "@exocortex/shared/messages";
@@ -1058,6 +1058,15 @@ async function orchestrateAdmittedAssistantTurn(
     contextCompacted: false,
     tokens: 0,
   };
+  /** An informational provider notice: shown muted, live and after reload (display.ts). */
+  const pushProviderNotice = (text: string): void => {
+    const now = Date.now();
+    transcriptMarkers.push({
+      afterIndex: agentState.completedMessages.length,
+      message: { role: "system", content: text, metadata: { ...createMessageMetadata(now, liveConv.model, { endedAt: now }), kind: PROVIDER_NOTICE_KIND } },
+    });
+    server.sendToSubscribers(convId, { type: "system_message", convId, streamSeq: convStore.nextStreamSeq(convId), text, color: "muted" });
+  };
   const partialContent: import("./messages").ApiContentBlock[] = [];
   /** Blocks that survived persistence on abort/error — sent to TUI so it can trim display. */
   let abortPersistedBlocks: import("./messages").Block[] | undefined;
@@ -1571,11 +1580,7 @@ async function orchestrateAdmittedAssistantTurn(
         : "";
       const text = `${conv.provider === "anthropic" ? "Claude Code" : "The provider"} ${trigger === "manual" ? "compacted" : "automatically compacted"} its context${sizes}.`;
       log("info", `orchestrator: provider compaction for ${convId}: ${text}`);
-      transcriptMarkers.push({
-        afterIndex: agentState.completedMessages.length,
-        message: { role: "system", content: text, metadata: null },
-      });
-      server.sendToSubscribers(convId, { type: "system_message", convId, streamSeq: convStore.nextStreamSeq(convId), text });
+      pushProviderNotice(text);
       if (postTokens != null) {
         conv.lastContextTokens = postTokens;
         server.sendToSubscribers(convId, { type: "context_update", convId, streamSeq: convStore.nextStreamSeq(convId), contextTokens: postTokens });
@@ -1583,11 +1588,7 @@ async function orchestrateAdmittedAssistantTurn(
     },
     onProviderNotice(text) {
       log("info", `orchestrator: provider notice for ${convId}: ${text}`);
-      transcriptMarkers.push({
-        afterIndex: agentState.completedMessages.length,
-        message: { role: "system", content: text, metadata: null },
-      });
-      server.sendToSubscribers(convId, { type: "system_message", convId, streamSeq: convStore.nextStreamSeq(convId), text });
+      pushProviderNotice(text);
     },
     onHeaders(headers) {
       convStore.touchActivity(convId);

@@ -7,7 +7,7 @@ import type { FastMode } from "@exocortex/shared/messages";
  * reach into the tool layer.
  */
 
-import { CONTEXT_COMPACTION_FINISHED_KIND, MODEL_ONLY_NOTICE_KINDS, REALTIME_CALL_STATUS_KIND, REALTIME_TRANSCRIPT_KIND, combineMessageMetadata, type Block, type MessageMetadata, type ImageAttachment } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, MODEL_ONLY_NOTICE_KINDS, PROVIDER_NOTICE_KIND, REALTIME_CALL_STATUS_KIND, REALTIME_TRANSCRIPT_KIND, combineMessageMetadata, type Block, type MessageMetadata, type ImageAttachment } from "./messages";
 import { isModelVisibleSystemNotice, isReplayHistoryMessage, userMessageUnwindFingerprints, type StoredMessage, type ApiContentBlock } from "./messages";
 import type { ProviderId, ModelId, EffortLevel } from "./messages";
 import type { DisplayEntry, ToolOutputInfo } from "@exocortex/shared/protocol";
@@ -153,7 +153,8 @@ export function buildDisplayData(
       flushAI();
       const text = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
       const isMutedStatus = msg.metadata?.kind === CONTEXT_COMPACTION_FINISHED_KIND
-        || msg.metadata?.kind === REALTIME_CALL_STATUS_KIND;
+        || msg.metadata?.kind === REALTIME_CALL_STATUS_KIND
+        || msg.metadata?.kind === PROVIDER_NOTICE_KIND;
       const color = isMutedStatus
         ? "muted"
         : text.startsWith("⟳") || text.startsWith("OpenAI usage limit reached") ? "warning" : "error";

@@ -8,7 +8,7 @@
 
 import { describe, test, expect } from "bun:test";
 import { buildDisplayData, type BuildDisplayOptions } from "./display";
-import { CLIENT_HOST_NOTICE_KIND, CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, GOAL_NOTICE_KIND, REALTIME_CALL_STATUS_KIND, REALTIME_TRANSCRIPT_KIND, createModelVisibleSystemNotice, type StoredMessage, type ApiContentBlock } from "./messages";
+import { CLIENT_HOST_NOTICE_KIND, CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, GOAL_NOTICE_KIND, PROVIDER_NOTICE_KIND, REALTIME_CALL_STATUS_KIND, REALTIME_TRANSCRIPT_KIND, createModelVisibleSystemNotice, type StoredMessage, type ApiContentBlock } from "./messages";
 import type { MessageMetadata } from "./messages";
 import type { ToolSummarizerFn } from "./display";
 
@@ -887,6 +887,21 @@ describe("system messages", () => {
     expect(entries[0].type).toBe("ai");
     expect(entries[1].type).toBe("system");
     expect(entries[2].type).toBe("ai");
+  });
+});
+
+describe("provider notices", () => {
+  test("a persisted Claude account switch stays muted, not an error", () => {
+    const text = 'Claude account switched from "max2" to "main": its weekly usage is at 95% and its cache was cold.';
+    const result = build([
+      { role: "system", content: text, metadata: { ...META, kind: PROVIDER_NOTICE_KIND } },
+      { role: "system", content: "✗ Timed out", metadata: null },
+    ]);
+
+    expect(result.entries).toEqual([
+      expect.objectContaining({ type: "system", text, color: "muted" }),
+      expect.objectContaining({ type: "system", text: "✗ Timed out", color: "error" }),
+    ]);
   });
 });
 
