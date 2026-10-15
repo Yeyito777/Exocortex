@@ -15,6 +15,7 @@ import {
 } from "./activitypanel";
 import { stripAnsi } from "./historycursor";
 import type { ExternalIntegrationSummary } from "./messages";
+import { renderSidebar } from "./sidebar/render";
 import { createInitialState } from "./state";
 import { termWidth, visibleLength } from "./textwidth";
 import { hexToAnsi, hexToAnsiBg, theme } from "./theme";
@@ -490,5 +491,88 @@ describe("task elapsed formatting", () => {
     expect(formatIntegrationDeliveryStatus({ delivery: "wake", status: "active" })).toBe("wake active");
     expect(formatIntegrationDeliveryStatus({ delivery: "inbox", status: "disabled" })).toBe("inbox disabled");
     expect(formatIntegrationDeliveryStatus({ delivery: "soft", status: "active" })).toBe("soft active");
+  });
+
+  describe("subagent rows mirror the child conversation's sidebar indicator", () => {
+    const exo = hexToAnsi("#1122ee");
+
+    function withChild(overrides: Record<string, unknown>) {
+      const state = stateWithTasks();
+      const parent = state.sidebar.conversations[0];
+      state.sidebar.conversations.push({ ...parent, id: "child", title: "Child", tasks: [], ...overrides } as typeof parent);
+      return state;
+    }
+
+    function subagentLine(state: ReturnType<typeof stateWithTasks>, width = 100): string {
+      const panel = renderTaskPanel(state, width, 20, 43_000)!;
+      return panel.lines[1];
+    }
+
+    /** Colour sequence directly preceding the row's first glyph, and the glyph itself. */
+    function glyph(line: string): { color: string; char: string } {
+      const match = line.match(/(\x1b\[[0-9;]*m)([◉◆])/);
+      return { color: match![1], char: match![2] };
+    }
+
+    test("streaming child shows the blue sidebar indicator and keeps the Exocortex label colour", () => {
+      const line = subagentLine(withChild({ streaming: true }));
+      expect(glyph(line)).toEqual({ color: theme.accent, char: "◉" });
+      expect(stripAnsi(line)).toContain("◉ Exocortex Map daemon events");
+      expect(line).toContain(`${exo} Exocortex`);
+    });
+
+    test("child suspended in a durable sleep is yellow", () => {
+      const sleep = { id: "chrono:sleep:1", kind: "chrono", title: "sleep", startedAt: 1_000, dueAt: 9_000_000, chronoMode: "sleep" };
+      const line = subagentLine(withChild({ streaming: false, tasks: [sleep] }));
+      expect(glyph(line)).toEqual({ color: theme.warning, char: "◉" });
+    });
+
+    test("child sleeping inside a streaming turn is yellow, not blue", () => {
+      const sleep = { id: "chrono:sleep:1", kind: "chrono", title: "sleep", startedAt: 1_000, dueAt: 9_000_000, chronoMode: "sleep" };
+      const line = subagentLine(withChild({ streaming: true, tasks: [sleep] }));
+      expect(glyph(line).color).toBe(theme.warning);
+    });
+
+    test("child with a message queued for global idle is yellow", () => {
+      const state = withChild({ streaming: false });
+      state.queuedMessages = [{ convId: "child", text: "go", timing: "global-idle", source: "global-idle" } as never];
+      expect(glyph(subagentLine(state))).toEqual({ color: theme.warning, char: "◉" });
+    });
+
+    test("unread child is green unless its notifications are muted", () => {
+      expect(glyph(subagentLine(withChild({ unread: true })))).toEqual({ color: theme.success, char: "◉" });
+      const muted = glyph(subagentLine(withChild({ unread: true, muted: true })));
+      expect(muted).toEqual({ color: exo, char: "◆" });
+    });
+
+    test("idle or unknown child keeps the static diamond in the Exocortex colour", () => {
+      expect(glyph(subagentLine(withChild({})))).toEqual({ color: exo, char: "◆" });
+      expect(glyph(subagentLine(stateWithTasks()))).toEqual({ color: exo, char: "◆" });
+    });
+
+    test("compact and wide cards use the same glyph and align with other rows", () => {
+      const state = withChild({ streaming: true });
+      for (const width of [100, 36]) {
+        const panel = renderTaskPanel(state, width, 20, 43_000)!;
+        expect(stripAnsi(panel.lines[1])).toContain(width === 100 ? "◉ Exocortex" : "◉ Exo ");
+        expect(panel.lines.every(line => visibleLength(line) === panel.width)).toBe(true);
+      }
+    });
+
+    test("other task kinds are untouched while a subagent is streaming", () => {
+      const panel = renderTaskPanel(withChild({ streaming: true }), 100, 20, 43_000)!;
+      expect(stripAnsi(panel.lines[2])).toContain("$ Bash bun test tui");
+    });
+
+    test("uses the same glyph and colour as the child's sidebar row", () => {
+      const sleep = { id: "chrono:sleep:1", kind: "chrono", title: "sleep", startedAt: 1_000, dueAt: 9_000_000, chronoMode: "sleep" };
+      for (const overrides of [{ streaming: true }, { tasks: [sleep] }, { unread: true }]) {
+        const state = withChild(overrides);
+        const sidebarRows = renderSidebar(state.sidebar, 20, false, "parent");
+        const childRow = sidebarRows.find(row => stripAnsi(row).includes("Child"))!;
+        const sidebarGlyph = childRow.match(/(\x1b\[[0-9;]*m)◉/)![1];
+        expect(glyph(subagentLine(state)).color).toBe(sidebarGlyph);
+      }
+    });
   });
 });
