@@ -13,6 +13,9 @@
  */
 
 import type { ConversationGoalStatus, ConversationTaskSummary, ExternalIntegrationSummary } from "./messages";
+import { ACTIVITY_GLYPH, conversationActivityIndicator, type ConversationActivityIndicator } from "./sidebar/activityindicator";
+import { areConversationNotificationsMuted } from "./sidebar/folders";
+import { isGlobalIdleQueuedMessage } from "./queue";
 import type { RenderState } from "./state";
 import { isAgentBackgroundTask, shouldDisplayConversationTask } from "./taskvisibility";
 import { padRightToWidth, termWidth } from "./textwidth";
@@ -299,8 +302,31 @@ function panelPalette(state: RenderState): PanelPalette {
   };
 }
 
+/**
+ * The sidebar's activity indicator for a subagent's child conversation, or
+ * null (keep the static diamond) when the child is unknown to the sidebar or idle.
+ */
+function subagentIndicator(state: RenderState, task: TaskPanelEntry): ConversationActivityIndicator | null {
+  if (task.kind !== "subagent") return null;
+  const child = state.sidebar.conversations.find(conversation => conversation.id === task.id);
+  if (!child) return null;
+  const indicator = conversationActivityIndicator(child, {
+    globalIdle: state.queuedMessages.some(message => message.convId === child.id && isGlobalIdleQueuedMessage(message)),
+    optimisticStreaming: Boolean(state.pendingAI) && state.convId === child.id,
+    notificationsMuted: areConversationNotificationsMuted(state.sidebar, child),
+  });
+  return indicator.icon ? indicator : null;
+}
+
 /** One compact row: label, the title truncated to fit, and the countdown, elapsed time, or a paused goal's status. */
-function taskRow(task: TaskPanelEntry, palette: PanelPalette, innerWidth: number, compactExocortex: boolean, now: number): string {
+function taskRow(
+  task: TaskPanelEntry,
+  palette: PanelPalette,
+  innerWidth: number,
+  compactExocortex: boolean,
+  now: number,
+  indicator: ConversationActivityIndicator | null = null,
+): string {
   const isSubagent = task.kind === "subagent";
   // Claude Code's background agents and workflows run inside Claude Code, not as Exocortex conversations.
   const isAgent = isAgentBackgroundTask(task);
@@ -308,7 +334,7 @@ function taskRow(task: TaskPanelEntry, palette: PanelPalette, innerWidth: number
   const isChrono = task.kind === "chrono";
   const color = isGoal ? palette.goal : isSubagent || isAgent ? palette.exocortex : isChrono ? palette.chrono : palette.bash;
   const label = isGoal ? `${task.goalStatus !== "active" ? "◇" : "◆"} Goal`
-    : isSubagent ? (compactExocortex ? "◆ Exo" : "◆ Exocortex")
+    : isSubagent ? `${indicator ? ACTIVITY_GLYPH : "◆"} ${compactExocortex ? "Exo" : "Exocortex"}`
     : isAgent ? `◆ ${task.toolName}`
     : isChrono ? "◷ Chrono"
     : `$ ${backgroundTaskName(task.toolName)}`;
@@ -321,7 +347,7 @@ function taskRow(task: TaskPanelEntry, palette: PanelPalette, innerWidth: number
     : formatTaskElapsed(task.startedAt, now);
   const titleWidth = innerWidth - termWidth(label) - ELAPSED_WIDTH - 3;
   return palette.withPanelBg(
-    `${palette.outline}│${theme.reset} ${color}${label}`
+    `${palette.outline}│${theme.reset} ${color}${indicator ? `${indicator.color}${label[0]}${color}${label.slice(1)}` : label}`
     + `${theme.text} ${padRightToWidth(title, titleWidth)}`
     + `${theme.muted}${padLeftToWidth(time, ELAPSED_WIDTH)}${theme.reset} ${palette.outline}│`,
   );
@@ -422,7 +448,7 @@ export function renderTaskPanel(
     ),
   ];
 
-  const body = visible.tasks.map(task => taskRow(task, palette, innerWidth, panelWidth < 38, now));
+  const body = visible.tasks.map(task => taskRow(task, palette, innerWidth, panelWidth < 38, now, subagentIndicator(state, task)));
   if (visible.showSubscriptionsDivider) {
     body.push(sectionDivider(palette, innerWidth, "Subscriptions", integrations.length));
   }

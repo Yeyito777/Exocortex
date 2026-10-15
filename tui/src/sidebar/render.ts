@@ -1,4 +1,5 @@
 import { getMarkFromTitle } from "../marks";
+import { conversationActivityIndicator } from "./activityindicator";
 import { areConversationNotificationsMuted, areFolderNotificationsMuted, currentFolder } from "./folders";
 import { sameSidebarItem as sameItem, sidebarItemKey as itemKey } from "./items";
 import { SIDEBAR_WIDTH } from "./layout";
@@ -336,21 +337,16 @@ export function renderSidebar(
       notificationsMuted = areConversationNotificationsMuted(sidebar, conv);
       explicitlyMuted = conv.muted === true;
       isCurrent = conv.id === currentConvId;
-      const hasGlobalIdle = globalIdleConvIds.has(conv.id);
       // Direct sends create pendingAI before IPC. Reflect that local accepted
       // input immediately instead of leaving the sidebar idle while a cold
       // canonical transcript is loaded and durably appended by the daemon.
-      const hasOptimisticStreaming = conv.id === optimisticStreamingConvId;
-      // A Claude Code turn sleeping inside a long chrono call still streams,
-      // and its pendingAI is that sleeping turn rather than an optimistic send.
-      const hasInlineSleep = inlineLongSleepStartedAt(conv) !== null;
-      const hasLongSleep = hasInlineSleep || isDurablySleeping(conv);
-      const hasModelWork = hasInProgressModelWork(conv) || hasOptimisticStreaming;
-      const hasUnread = !notificationsMuted && conv.unread && !hasModelWork;
-      const hasStreamingIndicator = (conv.streaming || hasOptimisticStreaming) && !hasInlineSleep;
-      const hasWarningActivity = hasLongSleep || hasGlobalIdle;
-      streamIcon = hasStreamingIndicator ? "◉ " : hasWarningActivity ? "◉ " : hasUnread ? "◉ " : "";
-      streamIconColor = hasStreamingIndicator ? theme.accent : hasWarningActivity ? theme.warning : hasUnread ? theme.success : "";
+      const indicator = conversationActivityIndicator(conv, {
+        globalIdle: globalIdleConvIds.has(conv.id),
+        optimisticStreaming: conv.id === optimisticStreamingConvId,
+        notificationsMuted,
+      });
+      streamIcon = indicator.icon;
+      streamIconColor = indicator.color;
       const work = conversationWorkCounts(conv);
       subagentIcon = subagentIndicator(work.subagents);
       backgroundTaskIcon = backgroundTaskIndicator(work.commands);
