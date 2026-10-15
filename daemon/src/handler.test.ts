@@ -485,6 +485,36 @@ describe("handler sidebar patches", () => {
     }));
     expect(server.broadcastSidebarStatePatched).not.toHaveBeenCalled();
   });
+
+  test("rehydrates the requesting client when a single-item reorder cannot be applied", async () => {
+    const sent: Array<Record<string, any>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      broadcastSidebarItemsReordered: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    await handle({} as never, {
+      type: "move_sidebar_item",
+      reqId: "stale-reorder",
+      item: { type: "folder", id: "missing-folder" },
+      direction: "up",
+    });
+
+    expect(sent).toContainEqual(expect.objectContaining({
+      type: "conversations_list",
+      reqId: "stale-reorder",
+      conversations: expect.any(Array),
+      folders: expect.any(Array),
+    }));
+    expect(server.broadcastSidebarItemsReordered).not.toHaveBeenCalled();
+  });
 });
 
 describe("handler conversation tool policy", () => {

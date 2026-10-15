@@ -24,6 +24,7 @@ import {
 import { sameSidebarItem as sameItem } from "./sidebar/items";
 import { reconcileNotificationMutes } from "./sidebar/folders";
 import { moveSelection, moveToMarked, moveToStreaming } from "./sidebar/navigation";
+import { applyPendingSidebarItemReorder } from "./sidebar/optimisticmove";
 import {
   focusConversationAt,
   focusSidebarItem,
@@ -347,7 +348,9 @@ export function handleSidebarAction(action: string, sidebar: SidebarState): Side
       if (sidebar.visualAnchor) return moveVisualSelectionWithinFolder(sidebar, direction);
       const item = getSelectedSidebarItem(sidebar);
       if (!item || item.type === "up" || item.type === "folder_instructions") return { type: "handled" };
-      return { type: "move_sidebar_item", item, direction };
+      // Show the swap now; the daemon's identical swap is echoed later.
+      const reqId = applyPendingSidebarItemReorder(sidebar, item, direction);
+      return reqId ? { type: "move_sidebar_item", item, direction, reqId } : { type: "handled" };
     }
 
     case "nav_next_streaming":

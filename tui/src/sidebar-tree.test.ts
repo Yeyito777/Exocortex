@@ -258,19 +258,23 @@ describe("sidebar tree folder view", () => {
     handleSidebarAction("nav_down", sidebar);
     expect(handleSidebarAction("move_up", sidebar)).toEqual({
       type: "move_sidebar_items",
+      reqId: expect.any(String),
       items: [{ type: "conversation", id: "root-a" }, { type: "conversation", id: "root-b" }],
       parentId: null,
       before: { type: "folder", id: "work" },
       preservePinned: true,
     });
 
-    handleSidebarKey({ type: "escape" } as KeyEvent, sidebar);
-    focus(sidebar, { type: "folder", id: "work" });
-    handleSidebarKey(key("V"), sidebar);
-    for (let i = 0; i < 5; i++) handleSidebarAction("nav_down", sidebar);
-    expect(sidebar.selectedItem).toEqual({ type: "conversation", id: "root-a" });
-    expect(handleSidebarAction("move_down", sidebar)).toEqual({
+    // The first move was applied locally; start over from the original order.
+    const second = treeSidebar();
+    second.expandedFolderIds.add("work");
+    focus(second, { type: "folder", id: "work" });
+    handleSidebarKey(key("V"), second);
+    for (let i = 0; i < 5; i++) handleSidebarAction("nav_down", second);
+    expect(second.selectedItem).toEqual({ type: "conversation", id: "root-a" });
+    expect(handleSidebarAction("move_down", second)).toEqual({
       type: "move_sidebar_items",
+      reqId: expect.any(String),
       items: [{ type: "folder", id: "work" }, { type: "conversation", id: "root-a" }],
       parentId: null,
       before: undefined,

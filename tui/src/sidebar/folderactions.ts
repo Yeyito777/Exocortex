@@ -4,6 +4,7 @@ import { currentFolder, descendantFolderIds, parentOfCurrentFolder } from "./fol
 import { isMovableSidebarItem, sidebarItemKey as itemKey, type SidebarSelectableItem } from "./items";
 import { compareSidebarOrder } from "./order";
 import { updateMovePromptAutocomplete } from "./moveautocomplete";
+import { applyPendingSidebarItemReorder, applyPendingSidebarItemsMove } from "./optimisticmove";
 import { focusTargetAfterRemovingSidebarItems } from "./removal";
 import { buildDisplayRows, type DisplayRow } from "./rows";
 import {
@@ -13,7 +14,7 @@ import {
   selectedVisualItems,
 } from "./selection";
 import type { SidebarState } from "./state";
-import { isTreeFolderView, revealFolderInTree, sidebarItemContainer } from "./tree";
+import { isFolderOpenInTree, isTreeFolderView, revealFolderInTree, sidebarItemContainer } from "./tree";
 import type { SidebarKeyResult } from "./types";
 import { syncSelectedIndex } from "./updates";
 
@@ -66,7 +67,10 @@ export function moveVisualSelectionWithinFolder(sidebar: SidebarState, direction
 
   const items = outermostSelectedItems(sidebar, selectedVisualItems(sidebar));
   if (items.length === 0) return { type: "handled" };
-  if (items.length === 1) return { type: "move_sidebar_item", item: items[0], direction };
+  if (items.length === 1) {
+    const reqId = applyPendingSidebarItemReorder(sidebar, items[0]!, direction);
+    return reqId ? { type: "move_sidebar_item", item: items[0]!, direction, reqId } : { type: "handled" };
+  }
 
   const parentId = sidebarItemParent(sidebar, items[0]);
   const pinned = sidebarItemPinned(sidebar, items[0]);
@@ -95,7 +99,9 @@ export function moveVisualSelectionWithinFolder(sidebar: SidebarState, direction
   }
 
   if (direction === "up") {
-    return { type: "move_sidebar_items", items, parentId, before: target, preservePinned: true };
+    const options = { preservePinned: true };
+    const reqId = applyPendingSidebarItemsMove(sidebar, items, parentId, target, options);
+    return reqId ? { type: "move_sidebar_items", items, parentId, before: target, ...options, reqId } : { type: "handled" };
   }
 
   const afterTarget = entries[targetIndex + 1]?.item;
@@ -104,7 +110,9 @@ export function moveVisualSelectionWithinFolder(sidebar: SidebarState, direction
     && sidebarItemPinned(sidebar, afterTarget) === pinned
     ? afterTarget
     : undefined;
-  return { type: "move_sidebar_items", items, parentId, before, preservePinned: true, placement: before ? undefined : "bottom" };
+  const options = { preservePinned: true, placement: before ? undefined : "bottom" as const };
+  const reqId = applyPendingSidebarItemsMove(sidebar, items, parentId, before, options);
+  return reqId ? { type: "move_sidebar_items", items, parentId, before, ...options, reqId } : { type: "handled" };
 }
 
 export function toggleVisualSelection(sidebar: SidebarState): void {
@@ -288,5 +296,9 @@ export function moveSelectionOut(sidebar: SidebarState): SidebarKeyResult {
   // In the parent folder, place the moved items immediately above the folder
   // they came from so "move out" preserves local context instead of dumping
   // them at the top of the conversation list.
-  return { type: "move_sidebar_items", items, parentId: parentOfCurrentFolder(sidebar), before };
+  const parentId = parentOfCurrentFolder(sidebar);
+  const leavesView = isTreeFolderView(sidebar) ? !isFolderOpenInTree(sidebar, parentId) : true;
+  const focus = leavesView ? focusTargetAfterRemovingSidebarItems(sidebar, items) : undefined;
+  const reqId = applyPendingSidebarItemsMove(sidebar, items, parentId, before, {}, focus);
+  return reqId ? { type: "move_sidebar_items", items, parentId, before, reqId } : { type: "handled" };
 }

@@ -2842,7 +2842,13 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
 
       case "move_sidebar_item": {
         const updates = convStore.moveSidebarItemWithUpdates(cmd.item, cmd.direction);
-        if (updates) broadcastSidebarItemOrderUpdates(updates);
+        if (updates) {
+          broadcastSidebarItemOrderUpdates(updates);
+        } else if (cmd.reqId) {
+          // The initiating TUI already swapped these rows; the authoritative
+          // list lets it roll that back.
+          server.sendTo(client, { type: "conversations_list", reqId: cmd.reqId, ...convStore.listSidebarState() });
+        }
         break;
       }
 

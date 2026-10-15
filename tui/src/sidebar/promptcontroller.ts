@@ -1,9 +1,9 @@
 import type { KeyEvent } from "../input";
 import { findFolderDestination } from "./folders";
-import { currentFolderRef, requestFocusAfterMovingItemsOutOfView, topLevelCurrentFolderRef } from "./folderactions";
+import { currentFolderRef, topLevelCurrentFolderRef } from "./folderactions";
 import { cycleMovePromptAutocomplete, updateMovePromptAutocomplete } from "./moveautocomplete";
-import { applyOptimisticSidebarItemsMove } from "./optimisticmove";
-import { focusSidebarItem } from "./selection";
+import { applyPendingSidebarItemsMove } from "./optimisticmove";
+import { focusTargetAfterRemovingSidebarItems } from "./removal";
 import type { SidebarState } from "./state";
 import { isFolderOpenInTree, isTreeFolderView } from "./tree";
 import type { SidebarKeyResult } from "./types";
@@ -38,19 +38,13 @@ export function handleSidebarPromptKey(sidebar: SidebarState, key: KeyEvent): Si
         : (!raw || raw === "/")
           ? topLevelCurrentFolderRef(sidebar)
           : undefined;
-      const leavesView = destination !== undefined && (isTreeFolderView(sidebar)
+      if (destination === undefined) return { type: "handled" };
+      const leavesView = isTreeFolderView(sidebar)
         ? !isFolderOpenInTree(sidebar, destination)
-        : destination !== sidebar.currentFolderId);
-      if (leavesView) requestFocusAfterMovingItemsOutOfView(sidebar, prompt.items);
-      if (destination !== undefined) {
-        const locallyMoved = applyOptimisticSidebarItemsMove(sidebar, prompt.items, destination, before);
-        const pendingFocusItem = sidebar.pendingFocusItem;
-        sidebar.pendingFocusItem = null;
-        if (locallyMoved && pendingFocusItem) focusSidebarItem(sidebar, pendingFocusItem);
-      }
-      return destination !== undefined
-        ? { type: "move_sidebar_items", items: prompt.items, parentId: destination, before }
-        : { type: "handled" };
+        : destination !== sidebar.currentFolderId;
+      const focus = leavesView ? focusTargetAfterRemovingSidebarItems(sidebar, prompt.items) : undefined;
+      const reqId = applyPendingSidebarItemsMove(sidebar, prompt.items, destination, before, {}, focus) ?? undefined;
+      return { type: "move_sidebar_items", items: prompt.items, parentId: destination, before, reqId };
     }
     if (prompt.purpose === "rename_folder" && prompt.folderId) {
       return input ? { type: "rename_folder", folderId: prompt.folderId, name: input } : { type: "handled" };

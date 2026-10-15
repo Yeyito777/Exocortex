@@ -16,9 +16,11 @@ import {
   updateConversationList,
   type OptimisticConversation,
 } from "../sidebar";
+import { rejectPendingSidebarMove } from "../sidebar/pendingmoves";
 import { focusTargetAfterRemovingSidebarItems } from "../sidebar/removal";
 import { focusSidebarItem } from "../sidebar/selection";
-import type { RenderState } from "../state";
+import { pushSystemMessage, type RenderState } from "../state";
+import { theme } from "../theme";
 import { preserveViewportAcrossHistoryPrepend } from "../chatscroll";
 import { resumeHistoryNavigation } from "../historycursor";
 import { joinSplitAssistantEntry } from "../historypagination";
@@ -135,7 +137,10 @@ export function handleConversationCreated(
 }
 
 export function handleConversationsList(event: Extract<Event, { type: "conversations_list" }>, state: RenderState): void {
+  // The list that answers a refused move is the authoritative rollback.
+  const rejectedMove = rejectPendingSidebarMove(state.sidebar, event.reqId);
   updateConversationList(state.sidebar, event.conversations, event.folders ?? []);
+  if (rejectedMove) pushSystemMessage(state, `✗ Could not move ${rejectedMove.label}; the sidebar was restored`, theme.error);
   pruneConversationScrollPositions(state, event.conversations.map(conversation => conversation.id));
   const activeConvId = state.convId;
   if (activeConvId && !event.conversations.some(conversation => conversation.id === activeConvId)
