@@ -35,11 +35,14 @@ Code: `daemon/src/providers/anthropic/accounts.ts` (registry and directories),
 ```
 
 `/accounts` (or `g a` in normal mode) opens the Accounts screen once more than
-one account is set up: each account's sign-in, plan, own 5-hour and weekly
-windows with their reset times, running turns and the conversations on it
-(running or with a warm cache; the current one is marked), the login command
-for a signed-out account, the combined bars and the routing rule. It updates
-live while open; j/k select a conversation, Enter opens it, Esc or q closes.
+one account is set up. It covers the terminal with one card: the combined
+5-hour and weekly bars (as a share of every account's capacity) and where new
+work goes, then each account's sign-in, plan and state, its own 5-hour and
+weekly windows with their reset times, and the conversations on it. Running
+turns and the current conversation get a row each; more than two warm-cache
+conversations fold into one row that Enter expands. A signed-out account
+shows its login command. It updates live while open; j/k select a row, Enter
+opens a conversation (or expands the warm ones), Esc or q closes.
 The daemon's `accounts` command carries the same data
 ([direct daemon commands](daemon-ipc.md)).
 
