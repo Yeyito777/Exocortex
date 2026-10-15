@@ -362,7 +362,9 @@ export function handleUserMessage(event: Extract<Event, { type: "user_message" }
       : typeof event.startedAt === "number" && message.metadata?.startedAt === event.startedAt
   ));
   if (alreadyCanonical) {
-    removeLocalQueueEntry(state, event.convId, event.text, event.queueId);
+    // The sender's own echo carries no queueId; a text match there could only
+    // hit an unrelated queued copy of the same prompt.
+    if (event.queueId) removeLocalQueueEntry(state, event.convId, event.text, event.queueId);
     return;
   }
 

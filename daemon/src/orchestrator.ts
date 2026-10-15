@@ -680,31 +680,19 @@ async function orchestrateAdmittedAssistantTurn(
   }
 
   if (userMessage && !interruptedSleep) {
-
-    // Notify subscribers about the user message.
-    // When client is set, it already added the message locally — skip it.
-    // When client is null (daemon-initiated, e.g. queued message drain), notify everyone.
-    if (client) {
-      server.sendToSubscribersExcept(convId, {
-        type: "user_message",
-        convId,
-        text: userMessage.text,
-        startedAt,
-        images: userMessage.images,
-        ...(options.queueEntryId ? { queueId: options.queueEntryId } : {}),
-        ...(automation ? { automation } : {}),
-      }, client);
-    } else {
-      server.sendToSubscribers(convId, {
-        type: "user_message",
-        convId,
-        text: userMessage.text,
-        startedAt,
-        images: userMessage.images,
-        ...(options.queueEntryId ? { queueId: options.queueEntryId } : {}),
-        ...(automation ? { automation } : {}),
-      });
-    }
+    // Notify every subscriber, the sender included. Admission above can yield,
+    // and a sender that reopened the conversation meanwhile (or reconnected)
+    // holds a snapshot without its optimistic copy. A sender that kept its
+    // copy recognizes this echo by startedAt.
+    server.sendToSubscribers(convId, {
+      type: "user_message",
+      convId,
+      text: userMessage.text,
+      startedAt,
+      images: userMessage.images,
+      ...(options.queueEntryId ? { queueId: options.queueEntryId } : {}),
+      ...(automation ? { automation } : {}),
+    });
   }
   let persistedTurnMessageCount = 0;
   // Direct reference for the rare abort-metadata update. This is not a transcript

@@ -286,11 +286,14 @@ export function handleConversationLoaded(
     ? collectDisplayedToolResultOutputs(state)
     : new Map();
 
-  logDiskSyncAssistantDiff("conversation_loaded", event.convId, state, {
-    entries: event.entries,
-    pendingAI: event.pendingAI ?? null,
-    toolOutputsIncluded: event.toolOutputsIncluded,
-  });
+  // A remote open's placeholder shows nothing yet, so it has nothing to diff.
+  if (sameConversation) {
+    logDiskSyncAssistantDiff("conversation_loaded", event.convId, state, {
+      entries: event.entries,
+      pendingAI: event.pendingAI ?? null,
+      toolOutputsIncluded: event.toolOutputsIncluded,
+    });
+  }
   // Once local active-turn segments have been committed into messages, rebuilding
   // those messages while preserving only their ledger would subtract invisible
   // content at completion. Rebase fully whenever the daemon supplies a pending
