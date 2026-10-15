@@ -64,6 +64,8 @@ export interface ClaudeStreamState {
   inputTokens?: number;
   cachedInputTokens?: number;
   cacheMissInputTokens?: number;
+  /** Input summed over every main-thread API call of the turn, for token accounting. */
+  accounted: { inputTokens: number; cachedInputTokens: number; cacheMissInputTokens: number; requests: number };
   outputTokens: number;
   /** Output tokens of the API call currently streaming. */
   currentCallOutputTokens: number;
@@ -99,6 +101,7 @@ export function createClaudeStreamState(
     sessionId: null,
     lastChainUuid: null,
     outputTokens: 0,
+    accounted: { inputTokens: 0, cachedInputTokens: 0, cacheMissInputTokens: 0, requests: 0 },
     currentCallOutputTokens: 0,
     thinkingStartPending: false,
     done: false,
@@ -155,6 +158,10 @@ function handleStreamEvent(state: ClaudeStreamState, event: SdkRecord): void {
         state.inputTokens = fresh + cacheRead + cacheWrite;
         state.cachedInputTokens = cacheRead;
         state.cacheMissInputTokens = fresh + cacheWrite;
+        state.accounted.inputTokens += state.inputTokens;
+        state.accounted.cachedInputTokens += cacheRead;
+        state.accounted.cacheMissInputTokens += fresh + cacheWrite;
+        state.accounted.requests += 1;
       }
       state.currentCallOutputTokens = 0;
       state.callStartedAt = state.requestedAt ?? state.now();
@@ -512,6 +519,7 @@ export function finalizeClaudeStream(state: ClaudeStreamState): StreamResult {
     cachedInputTokens: state.cachedInputTokens,
     cacheMissInputTokens: state.cacheMissInputTokens,
     outputTokens: state.outputTokens,
+    ...(state.accounted.requests > 0 ? { accountedUsage: { ...state.accounted, outputTokens: state.outputTokens } } : {}),
     ...(final.providerData ? { assistantProviderData: final.providerData } : {}),
   };
 }

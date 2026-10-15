@@ -92,6 +92,23 @@ function isStandaloneNoArgCommand(text: string, commandName: string): boolean {
   return parts.length === 1 && parts[0] === commandName;
 }
 
+/** The command `text` invokes on its own, or null when it is a prompt modifier inside a message. */
+function standaloneCommand(text: string): SlashCommand | null {
+  const name = text.split(/\s+/)[0];
+  const cmd = commands.find((command) => command.name === name);
+  if (!cmd) return null;
+  // A speed command followed by prose is a prompt modifier, even for a
+  // one-word prompt such as "/ultrafast hello".
+  if ((cmd === FAST_COMMAND || cmd === ULTRAFAST_COMMAND)
+    && !/^\/(?:fast|ultrafast)(?:\s+(?:on|off))?\s*$/i.test(text)) {
+    return null;
+  }
+  if (cmd === EFFORT_COMMAND && !isStandaloneOptionalArgCommand(text, cmd.name)) return null;
+  if (cmd === MODEL_COMMAND && text.trim().split(/\s+/).length > 3) return null;
+  if (cmd === QUEUE_COMMAND && !isStandaloneNoArgCommand(text, cmd.name)) return null;
+  return cmd;
+}
+
 export function tryCommand(text: string, state: RenderState): CommandResult | null {
   if (!text.startsWith("/")) return null;
 
@@ -100,6 +117,10 @@ export function tryCommand(text: string, state: RenderState): CommandResult | nu
   // cannot partially apply inline effort/fast changes.
   const preview = previewInlineCommands(text, state);
   if (preview.error) {
+    // A command typed on its own reports the error and clears the prompt;
+    // a rejected modifier keeps the message so it can be fixed and resent.
+    const standalone = preview.queue ? null : standaloneCommand(text);
+    if (standalone) return standalone.handler(text, state);
     applyInlineCommands(text, state);
     return { type: "handled" };
   }
@@ -124,20 +145,7 @@ export function tryCommand(text: string, state: RenderState): CommandResult | nu
     }
   }
 
-  const name = text.split(/\s+/)[0];
-  const cmd = commands.find((command) => command.name === name);
-  if (!cmd) return null;
-  // A speed command followed by prose is a prompt modifier, even for a
-  // one-word prompt such as "/ultrafast hello".
-  if ((cmd === FAST_COMMAND || cmd === ULTRAFAST_COMMAND)
-    && !/^\/(?:fast|ultrafast)(?:\s+(?:on|off))?\s*$/i.test(text)) {
-    return null;
-  }
-  if (cmd === EFFORT_COMMAND && !isStandaloneOptionalArgCommand(text, cmd.name)) return null;
-  if (cmd === MODEL_COMMAND && text.trim().split(/\s+/).length > 3) return null;
-  if (cmd === QUEUE_COMMAND && !isStandaloneNoArgCommand(text, cmd.name)) return null;
-
-  return cmd.handler(text, state);
+  return standaloneCommand(text)?.handler(text, state) ?? null;
 }
 
 export const COMMAND_LIST: CompletionItem[] = commands

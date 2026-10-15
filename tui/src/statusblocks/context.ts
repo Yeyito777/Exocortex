@@ -12,13 +12,18 @@ function formatTokenCount(n: number): string {
   return n.toLocaleString("en-US");
 }
 
-export function contextBlock(state: RenderState): StatusBlock | null {
+/** The context meter's reading: last known context tokens (null: unknown) and the model's max (0: unknown). */
+export function contextMeter(state: RenderState): { tokens: number | null; max: number } {
   const registry = state.providerRegistry ?? [];
   const provider = registry.find((p) => p.id === state.provider);
   const model = provider?.models.find((m) => m.id === state.model);
-  const maxCtx = model?.maxContext ?? MAX_CONTEXT[state.model] ?? 0;
+  return { tokens: state.contextTokens, max: model?.maxContext ?? MAX_CONTEXT[state.model] ?? 0 };
+}
+
+export function contextBlock(state: RenderState): StatusBlock | null {
+  const { tokens, max: maxCtx } = contextMeter(state);
   const ctxLabel = "  Context: ";
-  const ctxValue = state.contextTokens === null ? "?" : formatTokenCount(state.contextTokens);
+  const ctxValue = tokens === null ? "?" : formatTokenCount(tokens);
   const maxLabel = "  Max Context: ";
   const maxValue = maxCtx > 0 ? formatTokenCount(maxCtx) : "?";
 

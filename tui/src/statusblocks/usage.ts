@@ -94,6 +94,21 @@ function renderUnavailableWindowLine(label: string): { line: string; width: numb
   return { line, width: unavailableWindowLineWidth(label) };
 }
 
+function summarizeWindow(label: string, window: UsageWindow | null, now: number, capacity: number): string {
+  if (!window) return `${label} n/a`;
+  const pct = Math.round(window.utilization);
+  return `${label} ${capacity !== 100 ? `${pct}/${capacity}` : pct}% (resets in ${formatResetLabel(window, now)})`;
+}
+
+/** The status bar's usage windows for the current provider as one plain line; null when it shows none. */
+export function usageSummary(state: RenderState, now = Date.now()): string | null {
+  if (!state.authByProvider[state.provider]) return null;
+  const usage = state.usageByProvider[state.provider];
+  if (!usage?.fiveHour && !usage?.sevenDay) return null;
+  const capacity = usage.capacity && usage.capacity > 0 ? usage.capacity : 100;
+  return `${summarizeWindow("5-hour", usage.fiveHour, now, capacity)} · ${summarizeWindow("weekly", usage.sevenDay, now, capacity)}`;
+}
+
 export function usageBlock(state: RenderState): StatusBlock | null {
   if (!state.authByProvider[state.provider]) return null;
 

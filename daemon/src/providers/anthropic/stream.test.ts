@@ -220,6 +220,24 @@ describe("Claude Code stream translation", () => {
     expect(result.outputTokens).toBe(70);
   });
 
+  test("accounts every API call of the turn while the context meter reads the latest one", () => {
+    const { callbacks } = recorder();
+    const state = createClaudeStreamState(callbacks, "/work");
+    for (const message of TOOL_TURN) pushClaudeMessage(state, message);
+    const result = finalizeClaudeStream(state);
+
+    // The context meter shows the prompt of the call that produced the answer.
+    expect(result.inputTokens).toBe(2 + 2067 + 20933);
+    // Token stats get both calls: the tool round's prompt was billed too.
+    expect(result.accountedUsage).toEqual({
+      inputTokens: (2 + 20933) + (2 + 2067 + 20933),
+      cachedInputTokens: 20933,
+      cacheMissInputTokens: (2 + 20933) + (2 + 2067),
+      outputTokens: 70,
+      requests: 2,
+    });
+  });
+
   test("times each API call from its request to its last token, like the agent loop's own calls", () => {
     let now = 0;
     const rates: number[] = [];
