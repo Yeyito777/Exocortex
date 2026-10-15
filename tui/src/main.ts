@@ -73,6 +73,7 @@ import {
   OLDER_HISTORY_PAGE_TURNS,
   OPENING_FILL_HOLD_MS,
   openingHistoryTurns,
+  openingViewport,
   shouldLoadOlderHistory,
 } from "./historypagination";
 import { requestToolOutputs, requestVisibleToolOutputs } from "./events/tool-outputs";
@@ -403,7 +404,7 @@ function requestOlderHistory(turns: number, requestSource: "initial-backfill" | 
 
 /** Open (or reload) a conversation with a window sized to fill this screen. */
 function loadConversationWindow(convId: string): string {
-  return daemon.loadConversation(convId, openingHistoryTurns(state.rows));
+  return daemon.loadConversation(convId, openingHistoryTurns(state.rows), openingViewport(state));
 }
 
 function maybeRequestOlderHistory(): void {

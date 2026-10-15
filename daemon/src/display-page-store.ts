@@ -35,7 +35,7 @@ import {
   pagedUserFingerprintMatches,
 } from "./message-fingerprint";
 import { buildDisplayData } from "./display";
-import { selectHistoryWindow, type HistoryWindowOptions } from "./history-pagination";
+import { pageWindowLimits, selectHistoryWindow, type HistoryWindowOptions } from "./history-pagination";
 import { summarizeTool } from "./tools/registry";
 
 export {
@@ -514,7 +514,7 @@ export function loadDisplayPage(
         turns,
         endIndex,
         endBlockIndex,
-        windowOptions.byteBudget,
+        pageWindowLimits(windowOptions),
       );
       const { entries, startIndex, startBlockIndex } = window;
       const startUserIndex = bounds.startUserIndex

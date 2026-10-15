@@ -5,8 +5,12 @@ import {
   budgetHistoryUpdatedEvent,
   buildHistoryUpdatedEvents,
   buildStoredHistoryUpdatedEvent,
+  estimateEntryRows,
+  isValidHistoryViewport,
+  OPENING_WINDOW_VIEWPORTS,
   pageDisplayHistory,
   type DisplayHistoryPage,
+  type HistoryViewport,
 } from "./history-pagination";
 
 function user(text: string): DisplayEntry {
@@ -175,6 +179,134 @@ describe("byte-budgeted pagination", () => {
       ...event,
       entries: [pinned, user("u1"), ai("a1")],
     });
+  });
+});
+
+describe("viewport-sized opening windows", () => {
+  const viewport: HistoryViewport = { rows: 40, cols: 100 };
+  const target = viewport.rows * OPENING_WINDOW_VIEWPORTS;
+  const open = (entries: DisplayEntry[], byteBudget = 128 * 1024) =>
+    pageDisplayHistory(entries, 100, undefined, { byteBudget, viewport });
+  const rows = (entries: DisplayEntry[]) => entries.reduce((total, entry) => total + estimateEntryRows(entry, viewport.cols), 0);
+  const shortTurns = (count: number) =>
+    Array.from({ length: count }, (_, turn) => [user(`u${turn}`), ai(`a${turn}`)]).flat();
+  const image = (bytes: number) => ({
+    mediaType: "image/png" as const,
+    base64: "A".repeat(bytes),
+    sizeBytes: bytes,
+    imageId: `img-${bytes}`,
+    width: 800,
+    height: 600,
+  });
+
+  test("returns a short conversation whole", () => {
+    const entries = shortTurns(4);
+    expect(open(entries)).toMatchObject({ entries, startIndex: 0, startBlockIndex: 0, hasOlder: false });
+  });
+
+  test("covers two screens of rendered rows and stops there", () => {
+    const entries = shortTurns(200);
+    const page = open(entries);
+    expect(rows(page.entries)).toBeGreaterThanOrEqual(target);
+    // Without its oldest entry the window would fall short: no more than needed.
+    expect(rows(page.entries.slice(1))).toBeLessThan(target);
+    expect(page.hasOlder).toBe(true);
+    // Far more turns than the 5-turn default, far fewer than the 100 allowed.
+    expect(page.startUserIndex).toBeLessThan(200 - 5);
+    expect(page.startUserIndex).toBeGreaterThan(100);
+  });
+
+  test("counts a tool-heavy turn by its collapsed calls, not its tool payloads", () => {
+    const toolTurn = (rounds: number): DisplayEntry => ({
+      type: "ai",
+      blocks: Array.from({ length: rounds }, (_, round) => [
+        { type: "tool_call" as const, toolCallId: `c${round}`, toolName: "apply_patch", input: { patch: "x".repeat(800) }, summary: "Edit src/a.ts" },
+        // Display entries never carry tool outputs; they are fetched on expansion.
+        { type: "tool_result" as const, toolCallId: `c${round}`, toolName: "apply_patch", output: "", isError: false },
+      ]).flat(),
+      metadata: null,
+    });
+    // One summary row per call; patch bodies and results add no rows.
+    expect(estimateEntryRows(toolTurn(10), viewport.cols)).toBe(10 + 1);
+    const entries = Array.from({ length: 30 }, (_, turn) => [user(`u${turn}`), toolTurn(10)]).flat();
+    const page = open(entries);
+    // Six whole 13-row turns, then the rounds of the next reply that complete the target.
+    expect(rows(page.entries)).toBeGreaterThanOrEqual(target);
+    expect(rows(page.entries)).toBeLessThan(target + 2);
+    expect(page.entries.filter((entry) => entry.type === "user")).toHaveLength(6);
+    expect(page.startBlockIndex % 2).toBe(0);
+    expect(page.startBlockIndex).toBeGreaterThan(0);
+  });
+
+  test("cuts a newest turn taller than two screens at the round that fills them", () => {
+    const entries: DisplayEntry[] = [user("u1"), ai("a1"), user("u2"), agentTurn(100, 500)];
+    const page = open(entries);
+    expect(page).toMatchObject({ startIndex: 3, hasOlder: true });
+    expect(page.startBlockIndex).toBeGreaterThan(0);
+    expect(page.entries).toHaveLength(1);
+    expect(rows(page.entries)).toBeGreaterThanOrEqual(target);
+    // Each round is several rows, so starting one round later would fall short.
+    const tail = page.entries[0]!;
+    if (tail.type === "ai") expect(rows([{ ...tail, blocks: tail.blocks.slice(3) }])).toBeLessThan(target);
+    expect(JSON.stringify(page.entries).length).toBeLessThan(32 * 1024);
+    // Older pages continue from the cut and the turn reassembles exactly.
+    const pages = [page];
+    while (pages.at(-1)!.hasOlder) {
+      const newest = pages.at(-1)!;
+      pages.push(pageDisplayHistory(entries, 15, newest.startIndex, { byteBudget: 128 * 1024, beforeBlockIndex: newest.startBlockIndex }));
+    }
+    expect(reassemble(pages)).toEqual(entries);
+  });
+
+  test("keeps the byte budget when rows would need more", () => {
+    const entries = Array.from({ length: 50 }, (_, turn) => [user(`u${turn}`), ai(`a${turn} ${"x".repeat(20_000)}`)]).flat();
+    const page = open(entries, 64 * 1024);
+    expect(JSON.stringify(page.entries).length).toBeLessThanOrEqual(64 * 1024);
+    expect(page.hasOlder).toBe(true);
+  });
+
+  test("a large pasted image no longer crowds out the turns around it", () => {
+    const screenshot: DisplayEntry = { type: "user", text: "look", images: [image(600_000)] };
+    const small: DisplayEntry = { type: "user", text: "icon", images: [image(2_000)] };
+    const entries = [...shortTurns(40), small, ai("seen"), screenshot, ai("I see it")];
+    const page = open(entries);
+    expect(rows(page.entries)).toBeGreaterThanOrEqual(target);
+    expect(JSON.stringify(page.entries).length).toBeLessThanOrEqual(128 * 1024);
+    const users = page.entries.filter((entry) => entry.type === "user");
+    // The screenshot keeps its id and size for a preview, without its bytes;
+    // the small image still fits the budget and keeps them.
+    expect(users.at(-1)).toEqual({ ...screenshot, images: [{ ...image(600_000), base64: "" }] });
+    expect(users.at(-2)).toEqual(small);
+  });
+
+  test("backfill pages drop image bytes that do not fit instead of shrinking to one entry", () => {
+    const entries = [...shortTurns(20), { type: "user", text: "look", images: [image(600_000)] } as DisplayEntry, ...shortTurns(2)];
+    const page = pageDisplayHistory(entries, 10, entries.length - 4, { byteBudget: 128 * 1024 });
+    expect(page.entries.filter((entry) => entry.type === "user")).toHaveLength(10);
+  });
+
+  test("canonical refreshes keep image payloads as before", () => {
+    const screenshot: DisplayEntry = { type: "user", text: "look", images: [image(200_000)] };
+    const event: HistoryUpdatedEvent = {
+      type: "history_updated",
+      convId: "conv-1",
+      entries: [user("u1"), ai("a1"), screenshot, ai("a2")],
+      historyStartIndex: 0,
+      historyStartUserIndex: 0,
+      historyTotalEntries: 4,
+      hasOlderHistory: false,
+      contextTokens: null,
+      toolOutputsIncluded: false,
+    };
+    expect(budgetHistoryUpdatedEvent(event, 128 * 1024).entries).toEqual([ai("a2")]);
+  });
+
+  test("validates the viewport a client sends", () => {
+    expect(isValidHistoryViewport({ rows: 50, cols: 200 })).toBe(true);
+    expect(isValidHistoryViewport({ rows: 0, cols: 200 })).toBe(false);
+    expect(isValidHistoryViewport({ rows: 50.5, cols: 200 })).toBe(false);
+    expect(isValidHistoryViewport({ rows: 50 })).toBe(false);
+    expect(isValidHistoryViewport(null)).toBe(false);
   });
 });
 

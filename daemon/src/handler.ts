@@ -83,7 +83,7 @@ import { addClaudeAccount, claudeLoginCommand, removeClaudeAccount } from "./pro
 import { claudeAccountReports } from "./providers/anthropic/account-pool";
 import { formatClaudeAccountReports } from "./providers/anthropic/account-report";
 import { createAccountsWatch } from "./accounts-watch";
-import { HISTORY_PAGE_BYTE_BUDGET, INITIAL_HISTORY_TURNS, buildHistoryUpdatedEvents, compactHistoryImages, pageDisplayHistory, type HistoryWindowOptions } from "./history-pagination";
+import { HISTORY_PAGE_BYTE_BUDGET, INITIAL_HISTORY_TURNS, MAX_HISTORY_REQUEST_TURNS, buildHistoryUpdatedEvents, isValidHistoryViewport, compactHistoryImages, pageDisplayHistory, type HistoryViewport, type HistoryWindowOptions } from "./history-pagination";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
 import { randomUUID } from "crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -755,9 +755,15 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     turns?: number,
     metrics?: ConversationLoadMetrics,
     cachedEntryHashes?: string[],
+    viewport?: HistoryViewport,
   ) => {
     const paginated = target.capabilities?.has("history-pagination") || turns !== undefined;
     const windowOptions = historyWindowOptions(target);
+    // A byte-budgeted client's viewport sizes the window in rendered rows.
+    if (viewport && windowOptions.byteBudget !== undefined) {
+      windowOptions.viewport = viewport;
+      turns = MAX_HISTORY_REQUEST_TURNS;
+    }
     if (paginated) {
       const snapshotDiagnostics: Partial<convStore.RenderSnapshotDiagnostics> | undefined = metrics ? {} : undefined;
       const page = convStore.getStoredDisplayPage(convId, turns ?? INITIAL_HISTORY_TURNS, undefined, snapshotDiagnostics, windowOptions);
@@ -3336,16 +3342,21 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             convId: cmd.convId,
             clientId: client.id ?? null,
             turns: cmd.turns ?? null,
+            viewport: cmd.viewport ?? null,
             queueDelayMs,
           })}`);
         }
-        if (cmd.turns !== undefined && (!Number.isSafeInteger(cmd.turns) || cmd.turns < 1 || cmd.turns > 100)) {
+        if (cmd.turns !== undefined && (!Number.isSafeInteger(cmd.turns) || cmd.turns < 1 || cmd.turns > MAX_HISTORY_REQUEST_TURNS)) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Invalid conversation history turn count" });
+          break;
+        }
+        if (cmd.viewport !== undefined && !isValidHistoryViewport(cmd.viewport)) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Invalid conversation history viewport" });
           break;
         }
         if (cmd.turns !== undefined) client.capabilities?.add("history-pagination");
         const metrics = PERFORMANCE_PROFILING_ENABLED ? createConversationLoadMetrics() : undefined;
-        const loaded = sendCompactConversationLoaded(client, cmd.convId, cmd.reqId, cmd.turns, metrics, cmd.cachedEntryHashes);
+        const loaded = sendCompactConversationLoaded(client, cmd.convId, cmd.reqId, cmd.turns, metrics, cmd.cachedEntryHashes, cmd.viewport);
         if (!loaded) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
           if (PERFORMANCE_PROFILING_ENABLED) {

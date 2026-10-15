@@ -677,6 +677,22 @@ describe("DaemonClient commands", () => {
       turns: 40,
     });
   });
+
+  test("sends its history viewport so newer daemons size the opening window in rows", () => {
+    const client = new DaemonClient(() => {}, undefined, false);
+    const internal = client as any;
+
+    client.loadConversation("conv-1", 20, { rows: 55, cols: 200 });
+
+    // turns stays for daemons that predate viewport sizing.
+    expect(internal.pendingCommands[0]).toEqual({
+      type: "load_conversation",
+      reqId: expect.stringMatching(/^conversation_/),
+      convId: "conv-1",
+      turns: 20,
+      viewport: { rows: 55, cols: 200 },
+    });
+  });
 });
 
 describe("DaemonClient reconnect behavior", () => {

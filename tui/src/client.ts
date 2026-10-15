@@ -968,19 +968,24 @@ export class DaemonClient {
     this.send({ type: "list_conversations" });
   }
 
-  /** `turns` sizes the opening window; callers pass enough to fill their screen. */
-  loadConversation(convId: string, turns = 5): string {
+  /**
+   * `viewport` sizes the opening window in rendered rows on daemons that know
+   * it; `turns` is the fallback for those that don't. Callers pass enough to
+   * fill their screen.
+   */
+  loadConversation(convId: string, turns = 5, viewport?: { rows: number; cols: number }): string {
     const requestedAt = Date.now();
     const reqId = `conversation_${++this.nextReqId}_${requestedAt}`;
     if (this.performanceProfilingEnabled) {
       this.pendingConversationLoads.set(reqId, { convId, startedAt: performance.now() });
-      log("info", `perf: conversation_open tui_request ${JSON.stringify({ reqId, convId, turns, requestedAt, connected: this._connected })}`);
+      log("info", `perf: conversation_open tui_request ${JSON.stringify({ reqId, convId, turns, viewport: viewport ?? null, requestedAt, connected: this._connected })}`);
     }
     this.send({
       type: "load_conversation",
       reqId,
       convId,
       turns,
+      ...(viewport ? { viewport } : {}),
       ...(this.performanceProfilingEnabled ? { requestedAt } : {}),
     });
     if (this.performanceProfilingEnabled) {

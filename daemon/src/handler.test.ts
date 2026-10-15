@@ -17,7 +17,8 @@ import { listPendingExternalNotificationSoftWakes, resetExternalNotificationSoft
 import { getExocortexToolRuntime } from "./exocortex-tool-runtime";
 import { resetConversationActivityForTest, setBackgroundTaskActive, setChronoTaskActive } from "./conversation-activity";
 import { getProviderAdapter } from "./providers/catalog";
-import { HISTORY_PAGE_BYTE_BUDGET } from "./history-pagination";
+import { HISTORY_PAGE_BYTE_BUDGET, estimateEntryRows } from "./history-pagination";
+import type { DisplayEntry } from "./display";
 
 interface TestAssistantOutcome {
   ok: boolean;
@@ -3241,6 +3242,45 @@ describe("handler load_conversation late-join streaming snapshots", () => {
     sent.length = 0;
     await handle(client as never, { type: "load_conversation", convId: shortId, turns: 101 });
     expect(sent[0]).toMatchObject({ type: "error", message: "Invalid conversation history turn count" });
+  });
+
+  test("sizes the opening window to a sent viewport in rendered rows", async () => {
+    const convId = mkId("viewport-sized");
+    create(convId, "openai", "gpt-5.4");
+    const conv = get(convId)!;
+    for (let turn = 1; turn <= 120; turn++) {
+      conv.messages.push({ role: "user", content: `u${turn}`, metadata: null });
+      conv.messages.push({ role: "assistant", content: `a${turn}`, metadata: null });
+    }
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}),
+      sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}),
+      hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+    const client = { capabilities: new Set<string>(["history-block-pagination"]) };
+    const rows = (event: Record<string, unknown>) =>
+      (event.entries as DisplayEntry[]).reduce((total, entry) => total + estimateEntryRows(entry, 120), 0);
+
+    // Each one-line turn estimates 4 rows, so two 50-row screens need 25 turns
+    // however few `turns` the request names.
+    await handle(client as never, { type: "load_conversation", convId, turns: 5, viewport: { rows: 50, cols: 120 } });
+    expect(sent[0]).toMatchObject({ type: "conversation_loaded", hasOlderHistory: true, historyStartUserIndex: 95 });
+    expect(rows(sent[0])).toBeGreaterThanOrEqual(100);
+
+    // A client that pages whole entries keeps its turn-count window.
+    sent.length = 0;
+    await handle({ capabilities: new Set<string>() } as never, { type: "load_conversation", convId, turns: 5, viewport: { rows: 50, cols: 120 } });
+    expect(sent[0]).toMatchObject({ type: "conversation_loaded", historyStartUserIndex: 115 });
+
+    sent.length = 0;
+    await handle(client as never, { type: "load_conversation", convId, turns: 5, viewport: { rows: 0, cols: 120 } });
+    expect(sent[0]).toMatchObject({ type: "error", message: "Invalid conversation history viewport" });
   });
 
   test("does not send streaming_started after the final assistant reply is already committed", async () => {

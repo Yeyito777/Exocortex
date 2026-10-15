@@ -157,3 +157,32 @@ test("budgeted pages cut one long agent turn between tool rounds and match in-me
   }
   expect(joined).toEqual(full.entries);
 });
+
+test("a viewport-sized stored opening fills two screens past a large recent screenshot", () => {
+  root = mkdtempSync(join(tmpdir(), "exocortex-page-viewport-"));
+  store = new SqliteConversationStore({ path: join(root, "store.sqlite3") });
+  const conv = createConversation("page-viewport", "anthropic", "claude-opus-5-5");
+  for (let i = 0; i < 60; i++) {
+    conv.messages.push(
+      { role: "user", content: `Question ${i}`, metadata: null },
+      { role: "assistant", content: `Answer ${i}`, metadata: null },
+    );
+  }
+  const screenshot = Buffer.alloc(450_000, 7).toString("base64");
+  conv.messages.push(
+    { role: "user", content: [{ type: "text", text: "see this" }, { type: "image", source: { type: "base64", media_type: "image/png", data: screenshot } }], metadata: null },
+    { role: "assistant", content: "I see it", metadata: null },
+  );
+  store.save(conv);
+
+  // The screenshot alone overflows the budget; it used to end every window.
+  const byTurns = store.loadDisplayPage(conv.id, 20, undefined, { byteBudget: 128 * 1024 })!;
+  expect(byTurns.entries.filter(entry => entry.type === "user")).toHaveLength(20);
+
+  const page = store.loadDisplayPage(conv.id, 100, undefined, { byteBudget: 128 * 1024, viewport: { rows: 30, cols: 100 } })!;
+  expect(JSON.stringify(page.entries).length).toBeLessThan(16 * 1024);
+  expect(page.entries.length).toBeGreaterThan(10);
+  const shot = page.entries.at(-2)!;
+  expect(shot.type === "user" ? shot.images?.map(image => [image.base64, image.sizeBytes]) : null).toEqual([["", 450_000]]);
+  expect(page.hasOlder).toBe(true);
+});
