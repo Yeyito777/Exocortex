@@ -17,7 +17,9 @@ Local: None
 
 - **Update available**: GitHub's upstream `main` is ahead of disk HEAD.
 - **Restart needed**: the running daemon's startup revision differs from disk
-  HEAD. This takes precedence and requires no network access.
+  HEAD *and* the files changed in between can alter the daemon (see
+  [Which changes need a daemon restart](#which-changes-need-a-daemon-restart)).
+  This takes precedence and requires no network access.
 - **None**: no update or restart is needed.
 - **Checking…**: the TUI is still waiting for the endpoint's first status reply.
   This is a display-only pending state, not a daemon status or a failure.
@@ -26,6 +28,34 @@ Local: None
 - **Disabled**: the checkout is not the primary upstream checkout on `main`.
   Linked worktrees, detached HEADs, forks and development branches don't
   participate. When both endpoints are disabled, the footer stays hidden.
+
+## Which changes need a daemon restart
+
+The daemon only restarts for commits that can change *it*. A TUI-only merge
+leaves the daemon on **None** (or **Update available**); the TUI process itself
+just needs restarting by the user, and the footer says nothing about it. The
+decision lives in `shared/src/restart-impact.ts` and runs over
+`git diff --name-only <running> <disk>`:
+
+- Test files (`*.test.ts`, `test/`) never matter.
+- Source files (`.ts/.tsx/.js`) matter only if the daemon's import closure
+  contains them: every non-test file under `daemon/`, plus whatever they import,
+  following `@exocortex/shared/*` through `shared/package.json` exports and
+  relative imports. TUI-only files and shared modules the daemon doesn't import
+  never flag. For files in the closure, both revisions are run through
+  `Bun.Transpiler`; if the output is identical (type-only or comment-only edits,
+  such as adding a field to a `TuiConfig` interface) the change is inert.
+- Always flagged: `daemon/`, `shared/` and `config/` non-source files,
+  `bin/`, `external-tools/`, `helper-tools/`, `scripts/setup/`, and the root
+  `package.json`, `bun.lock`, `bunfig.toml`, `tsconfig.json`. Any path not
+  recognized also flags. Ignored: `docs/`, `tui/` non-source files,
+  `scripts/dev|windows|migrate/`, root markdown/`LICENSE`/`Makefile`.
+- Any failure (unknown or garbage-collected revision, git or transpile error,
+  unreadable tree) means **Restart needed**, as before.
+
+The baseline stays the daemon's startup revision, so inert commits accumulate
+without hiding a later real change. Each revision pair is classified once.
+A `bun.lock` change always flags, even if only TUI dependencies moved.
 
 The daemon captures its eligible revision once during startup, not when a TUI
 first asks. Restarting it captures the new revision. A daemon predating this

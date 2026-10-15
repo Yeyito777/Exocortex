@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { lstat } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { changesAffectDaemon, daemonImportClosure } from "./restart-impact";
 
 const execFileAsync = promisify(execFile);
 export const UPDATE_CHECK_INTERVAL_MS = 120_000;
@@ -115,6 +116,10 @@ async function compareWithApi(head: string, request: UpdateRequest): Promise<boo
 /**
  * Capture the running daemon's revision ONCE, at startup, not on the first
  * request. A pull changes disk HEAD but must not change this process identity.
+ *
+ * A newer disk HEAD only needs a restart if the files changed since the
+ * running revision can alter the daemon (see restart-impact.ts); TUI-only,
+ * docs-only and test-only commits don't. Any doubt means restart.
  */
 export function createUpdateStatusChecker(
   root: string,
@@ -126,23 +131,44 @@ export function createUpdateStatusChecker(
   // Shared by every client of this daemon. Cache failures too, so offline or
   // rate-limited hosts aren't retried at the faster local-status cadence.
   let upstream: { head: string; available: boolean | null; expiresAt: number } | null = null;
-  const check = async (): Promise<UpdateStatus> => {
+  // The status check runs every few seconds; classify each revision pair once.
+  let impact: { key: string; restart: Promise<boolean> } | null = null;
+  const restartNeeded = (running: string, disk: string): Promise<boolean> => {
+    if (running === disk) return Promise.resolve(false);
+    const key = `${running}..${disk}`;
+    if (impact?.key !== key) {
+      impact = {
+        key,
+        restart: daemonImportClosure(root)
+          .then(closure => changesAffectDaemon(root, running, disk, closure))
+          .catch(() => true),
+      };
+    }
+    return impact.restart;
+  };
+  const check = async (retry = true): Promise<UpdateStatus> => {
     const [running, disk] = await Promise.all([startedHead, eligibleUpdateHead(root)]);
     if (!running || !disk) {
       upstream = null;
       return "disabled";
     }
     // Restart takes precedence, works offline, and does not wait on GitHub.
-    if (running !== disk) {
+    if (await restartNeeded(running, disk)) {
       upstream = null;
       return "restart_needed";
     }
     const cached = upstream?.head === disk && now() < upstream.expiresAt ? upstream : null;
     const available = cached ? cached.available : await compareUpstream(root, disk, request);
     const current = await eligibleUpdateHead(root);
-    if (!current || current !== running) {
+    if (!current) {
       upstream = null;
-      return current ? "restart_needed" : "disabled";
+      return "disabled";
+    }
+    if (current !== disk) {
+      // Checked out or pulled during the request: classify the new revision.
+      upstream = null;
+      if (await restartNeeded(running, current)) return "restart_needed";
+      return retry ? check(false) : "unknown";
     }
     if (!cached) upstream = { head: disk, available, expiresAt: now() + UPDATE_CHECK_INTERVAL_MS };
     return available === null ? "unknown" : available ? "update_available" : "none";

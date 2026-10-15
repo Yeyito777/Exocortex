@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkForUpdate, createUpdateStatusChecker, eligibleUpdateHead, startUpdateChecks, UPDATE_CHECK_INTERVAL_MS, type UpdateRequest } from "@exocortex/shared/updatecheck";
@@ -14,12 +14,26 @@ function repo() {
   const root = mkdtempSync(join(tmpdir(), "exo-update-"));
   roots.push(root);
   git(root, "init", "-b", "main");
-  git(root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "initial");
+  mkdirSync(join(root, "daemon/src"), { recursive: true });
+  mkdirSync(join(root, "shared/src"), { recursive: true });
+  mkdirSync(join(root, "tui/src"), { recursive: true });
+  writeFileSync(join(root, "shared/package.json"), JSON.stringify({ exports: { "./config": "./src/config.ts" } }));
+  writeFileSync(join(root, "shared/src/config.ts"), "export interface Config { a?: number }\nexport const DEFAULT = 1;\n");
+  writeFileSync(join(root, "daemon/src/main.ts"), 'import { DEFAULT } from "@exocortex/shared/config";\nconsole.log(DEFAULT);\n');
+  writeFileSync(join(root, "tui/src/main.ts"), "export const tui = 1;\n");
+  git(root, "add", "-A");
+  git(root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "initial");
   git(root, "remote", "add", "origin", "https://github.com/Yeyito777/Exocortex.git");
   return root;
 }
 function response(status: string, ahead_by = 0): UpdateRequest {
   return (async () => Response.json({ status, ahead_by })) as UpdateRequest;
+}
+/** A new commit on the current branch changing one file. */
+function commitFile(root: string, path: string, content: string, message = "change") {
+  writeFileSync(join(root, path), content);
+  git(root, "add", "-A");
+  git(root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", message);
 }
 /** A commit that exists locally (as after a fetch) without moving main. */
 function commitTree(root: string, parent = "HEAD") {
@@ -94,7 +108,7 @@ describe("GitHub comparison", () => {
     expect(calls.refs).toBe(1);
     expect(await checker()).toBe("update_available");
     expect(calls).toEqual({ refs: 2, api: 0 });
-    git(root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "downloaded update");
+    commitFile(root, "daemon/src/main.ts", "console.log(2);\n");
     time += 10_000;
     expect(await checker()).toBe("restart_needed");
     expect(calls.refs).toBe(2); // Disk checks bypass even a fresh GitHub cache.
@@ -113,7 +127,7 @@ describe("GitHub comparison", () => {
     time = UPDATE_CHECK_INTERVAL_MS;
     expect(await checker()).toBe("unknown");
     expect(calls).toEqual({ refs: 2, api: 2 });
-    git(root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "offline update");
+    commitFile(root, "daemon/src/main.ts", "console.log(2);\n");
     expect(await checker()).toBe("restart_needed");
     expect(calls).toEqual({ refs: 2, api: 2 });
   });
@@ -124,7 +138,7 @@ describe("GitHub comparison", () => {
     const { request, calls } = github(() => main);
     const running = createUpdateStatusChecker(root, request);
     expect(await running()).toBe("none");
-    git(root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "downloaded update");
+    commitFile(root, "daemon/src/main.ts", "console.log(2);\n");
     expect(await running()).toBe("restart_needed");
     expect(await running()).toBe("restart_needed");
     expect(calls).toEqual({ refs: 1, api: 0 });
@@ -132,6 +146,29 @@ describe("GitHub comparison", () => {
     expect(await restarted()).toBe("none");
     git(root, "checkout", "-b", "feature");
     expect(await running()).toBe("disabled");
+  });
+
+  test("commits that cannot affect the running daemon don't need a restart", async () => {
+    const root = repo();
+    const checker = createUpdateStatusChecker(root, response("identical"));
+    expect(await checker()).toBe("none");
+    commitFile(root, "tui/src/main.ts", "export const tui = 2;\n", "tui only");
+    expect(await checker()).toBe("none");
+    commitFile(root, "shared/src/config.ts", "export interface Config { a?: number; tui?: boolean }\nexport const DEFAULT = 1;\n", "type-only shared");
+    expect(await checker()).toBe("none");
+    // The first real daemon change since the running revision flags it, and it stays flagged.
+    commitFile(root, "daemon/src/main.ts", "console.log(2);\n", "daemon");
+    expect(await checker()).toBe("restart_needed");
+    commitFile(root, "tui/src/main.ts", "export const tui = 3;\n", "tui again");
+    expect(await checker()).toBe("restart_needed");
+  });
+
+  test("a TUI-only update doesn't mask an upstream update", async () => {
+    const root = repo();
+    const checker = createUpdateStatusChecker(root, response("ahead", 1));
+    expect(await checker()).toBe("update_available");
+    commitFile(root, "tui/src/main.ts", "export const tui = 2;\n");
+    expect(await checker()).toBe("update_available");
   });
 
   test("runtime status distinguishes upstream updates from offline or unsupported responses", async () => {
@@ -145,12 +182,30 @@ describe("GitHub comparison", () => {
 
   test("a pull during the upstream request yields Restart needed, not None", async () => {
     const root = repo();
-    const update = commitTree(root);
+    git(root, "checkout", "-b", "side");
+    commitFile(root, "daemon/src/main.ts", "console.log(2);\n");
+    const update = git(root, "rev-parse", "HEAD");
+    git(root, "checkout", "main");
     const checker = createUpdateStatusChecker(root, github(() => {
       git(root, "merge", "--ff-only", update);
       return update;
     }).request);
     expect(await checker()).toBe("restart_needed");
+  });
+
+  test("a TUI-only pull during the request is classified, not reported as Restart needed", async () => {
+    const root = repo();
+    git(root, "checkout", "-b", "side");
+    commitFile(root, "tui/src/main.ts", "export const tui = 2;\n");
+    const update = git(root, "rev-parse", "HEAD");
+    git(root, "checkout", "main");
+    let pulled = false;
+    const checker = createUpdateStatusChecker(root, github(() => {
+      if (!pulled) git(root, "merge", "--ff-only", update);
+      pulled = true;
+      return update;
+    }).request);
+    expect(await checker()).toBe("none");
   });
 
   test("only signals upstream ahead; verifies URLs and bounded requests", async () => {
