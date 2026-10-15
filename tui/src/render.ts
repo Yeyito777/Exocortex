@@ -1537,6 +1537,13 @@ export function render(state: RenderState): boolean {
   state.layout.sepAbove = bottomStartRow;
   state.layout.firstInputRow = firstInputRow;
   state.layout.sepBelow = sepBelow;
+  const usagePlacement = status.placements.find(placement => placement.id === "usage");
+  state.layout.usageBlockRect = usagePlacement ? {
+    top: sepBelow + 1,
+    bottom: sepBelow + usagePlacement.height,
+    left: chatCol + usagePlacement.col,
+    right: chatCol + usagePlacement.col + usagePlacement.width - 1,
+  } : null;
   // Keep the previous frame (the opening spinner) rather than paint a partial
   // screen that the in-flight older history would immediately push down.
   if (shouldHoldOpeningFrame(state)) return false;
