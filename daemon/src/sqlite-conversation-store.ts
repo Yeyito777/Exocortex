@@ -50,7 +50,7 @@ import type {
   TrashStackEntry,
 } from "./json-persistence";
 import type { StoredDisplayHistoryPage } from "./display-page-store";
-import { selectHistoryWindow, type HistoryWindow, type HistoryWindowCandidate, type HistoryWindowOptions } from "./history-pagination";
+import { pageWindowLimits, selectHistoryWindow, type HistoryWindow, type HistoryWindowCandidate, type HistoryWindowOptions } from "./history-pagination";
 import * as legacy from "./json-persistence";
 import { log } from "./log";
 import type { ConversationRepository } from "./conversation-repository";
@@ -3213,7 +3213,7 @@ export class SqliteConversationStore implements ConversationRepository {
         }
         if (expected >= startIndex) throw new ConversationIntegrityError("Requested display chunk is non-contiguous");
       };
-      window = selectHistoryWindow(candidates(), turns, endIndex, endBlockIndex, windowOptions.byteBudget);
+      window = selectHistoryWindow(candidates(), turns, endIndex, endBlockIndex, pageWindowLimits(windowOptions));
     }
     const { entries } = window;
     return {

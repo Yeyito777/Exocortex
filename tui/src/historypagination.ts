@@ -27,6 +27,24 @@ export function openingHistoryTurns(terminalRows: number): number {
   return Math.min(MAX_HISTORY_REQUEST_TURNS, Math.max(OPENING_TURNS_STEP, turns));
 }
 
+/** Rows of the screen around history (title, prompt, status) before the first layout. */
+const NON_HISTORY_ROWS = 6;
+/** The daemon's accepted viewport range. */
+const MAX_VIEWPORT_ROWS = 1000;
+const MAX_VIEWPORT_COLS = 4000;
+
+/**
+ * History viewport sent with an open, so the daemon can size the opening
+ * window to fill it (plus a screen of scrollback) in rendered rows. Uses the
+ * last layout, or the terminal size before the first one.
+ */
+export function openingViewport(state: RenderState): { rows: number; cols: number } {
+  const rows = state.layout.messageAreaHeight > 0 ? state.layout.messageAreaHeight : state.rows - NON_HISTORY_ROWS;
+  const cols = state.layout.historyWidth > 0 ? state.layout.historyWidth : state.cols;
+  const clamp = (value: number, max: number) => Math.min(max, Math.max(1, Math.floor(Number.isFinite(value) ? value : 1)));
+  return { rows: clamp(rows, MAX_VIEWPORT_ROWS), cols: clamp(cols, MAX_VIEWPORT_COLS) };
+}
+
 /** Start holding presentation of a just-opened window until it fills the screen. */
 export function beginOpeningFillHold(state: RenderState, now = Date.now()): void {
   state.historyOpeningFillUntil = now + OPENING_FILL_HOLD_MS;
