@@ -1,15 +1,16 @@
 /**
- * Accounts screen: every Claude and OpenAI account on one large overlay, opened
- * with /accounts or `g a` in normal mode. It shows each Claude account's
- * sign-in, plan, own 5-hour and weekly windows, running turns and the
- * conversations on it (running or with a warm cache), the combined bars and
- * the routing rule, and the OpenAI pool. Data comes from the daemon's
- * `accounts` command, which keeps pushing snapshots while the screen is open.
- * It only opens when several accounts are set up; otherwise it explains how
- * to add one. j/k select a conversation, Enter opens it, Esc or q closes.
+ * Accounts screen: every Claude and OpenAI account on one full-screen card,
+ * opened with /accounts or `g a` in normal mode. It shows the combined Claude
+ * usage and where new work goes, then each Claude account's sign-in, state,
+ * own 5-hour and weekly windows, and the conversations on it: running turns
+ * one per row, warm-cache ones folded into a row that Enter expands. The
+ * OpenAI pool follows. Data comes from the daemon's `accounts` command, which
+ * keeps pushing snapshots while the screen is open. It only opens when several
+ * accounts are set up; otherwise it explains how to add one. j/k select a
+ * row, Enter opens a conversation (or expands the warm ones), Esc or q closes.
  */
 
-import type { AccountsEvent, AccountsSnapshot, ClaudeAccountInfo } from "./protocol";
+import type { AccountConversationInfo, AccountsEvent, AccountsSnapshot, ClaudeAccountInfo } from "./protocol";
 import type { UsageData, UsageWindow } from "./messages";
 import type { KeyEvent } from "./input";
 import type { RenderState } from "./state";
@@ -17,13 +18,17 @@ import type { ScreenRect } from "./historyimages";
 import { moveTo } from "./frame";
 import { maybeCensorEmail } from "./privacy";
 import { pushSystemMessage } from "./state";
+import { ACTIVITY_GLYPH } from "./sidebar/activityindicator";
+import { BAR_WIDTH, barFill } from "./statusblocks/usage";
 import { theme } from "./theme";
 import { termWidth, truncateToWidth } from "./textwidth";
 
 export interface AccountsScreenState {
   snapshot: AccountsSnapshot;
-  /** Selected conversation row; null when none is listed. */
-  selectedConvId: string | null;
+  /** Selected row: a conversation id or a warm-list toggle (`warm:<account>`); null when none is listed. */
+  selected: string | null;
+  /** Claude accounts whose warm conversations are listed one per row. */
+  expanded: Set<string>;
   /** First content row shown (set by the renderer to keep the selection visible). */
   scroll: number;
 }
@@ -65,41 +70,53 @@ export function handleAccountsEvent(state: RenderState, event: AccountsEvent): v
       pushSystemMessage(state, ACCOUNTS_UNAVAILABLE_HINT, theme.muted);
       return;
     }
-    state.accountsScreen = { snapshot: event.snapshot, selectedConvId: null, scroll: 0 };
-    const rows = selectableConvIds(state.accountsScreen, Date.now());
+    state.accountsScreen = { snapshot: event.snapshot, selected: null, expanded: new Set(), scroll: 0 };
+    const rows = selectableRows(state.accountsScreen, Date.now());
     const current = event.snapshot.claude.currentConversation?.convId;
-    state.accountsScreen.selectedConvId = current && rows.includes(current) ? current : rows[0] ?? null;
+    state.accountsScreen.selected = current && rows.includes(current) ? current : rows[0] ?? null;
     return;
   }
   const screen = state.accountsScreen;
   if (!screen) return;
   screen.snapshot = event.snapshot;
-  const rows = selectableConvIds(screen, Date.now());
-  if (!screen.selectedConvId || !rows.includes(screen.selectedConvId)) screen.selectedConvId = rows[0] ?? null;
+  const rows = selectableRows(screen, Date.now());
+  if (screen.selected && !rows.includes(screen.selected)) {
+    // A conversation whose turn ended folds into its account's warm row: keep the selection there.
+    const account = event.snapshot.claude.accounts.find(account => account.conversations.some(conv => conv.convId === screen.selected));
+    const toggle = account ? warmToggleKey(account.id) : null;
+    screen.selected = toggle && rows.includes(toggle) ? toggle : rows[0] ?? null;
+  } else if (!screen.selected) {
+    screen.selected = rows[0] ?? null;
+  }
 }
 
 // ── Keys ─────────────────────────────────────────────────────────────
 
 export type AccountsScreenKeyResult = { type: "close" } | { type: "handled" } | { type: "open"; convId: string };
 
-/** The screen owns the keyboard: j/k (or ↓/↑) select, Enter opens, Esc or q closes. */
+/** The screen owns the keyboard: j/k (or ↓/↑) select, Enter opens or expands, Esc or q closes. */
 export function handleAccountsScreenKey(key: Readonly<KeyEvent>, screen: AccountsScreenState, now = Date.now()): AccountsScreenKeyResult {
   if (key.type === "escape") return { type: "close" };
   const char = key.type === "char" ? key.char : undefined;
   if (char === "q") return { type: "close" };
   if (key.type === "enter") {
-    return screen.selectedConvId ? { type: "open", convId: screen.selectedConvId } : { type: "handled" };
+    const toggled = screen.selected ? warmToggleAccount(screen.selected) : null;
+    if (toggled !== null) {
+      if (!screen.expanded.delete(toggled)) screen.expanded.add(toggled);
+      return { type: "handled" };
+    }
+    return screen.selected ? { type: "open", convId: screen.selected } : { type: "handled" };
   }
   const step = char === "j" || key.type === "down" ? 1 : char === "k" || key.type === "up" ? -1 : 0;
-  const rows = selectableConvIds(screen, now);
+  const rows = selectableRows(screen, now);
   if (step && rows.length > 0) {
-    const index = screen.selectedConvId ? rows.indexOf(screen.selectedConvId) : -1;
-    screen.selectedConvId = rows[Math.max(0, Math.min(rows.length - 1, index < 0 ? 0 : index + step))];
+    const index = screen.selected ? rows.indexOf(screen.selected) : -1;
+    screen.selected = rows[Math.max(0, Math.min(rows.length - 1, index < 0 ? 0 : index + step))];
   } else if (char === "g" || key.type === "home") {
-    screen.selectedConvId = rows[0] ?? null;
+    screen.selected = rows[0] ?? null;
     screen.scroll = 0;
   } else if (char === "G" || key.type === "end") {
-    screen.selectedConvId = rows.at(-1) ?? null;
+    screen.selected = rows.at(-1) ?? null;
   }
   return { type: "handled" };
 }
@@ -124,22 +141,48 @@ export function formatClock(at: number, now: number): string {
   return `${date.toLocaleDateString("en-US", { weekday: "short" })} ${time}`;
 }
 
-function accountStateLabel(account: ClaudeAccountInfo, now: number): { text: string; color: string } {
+/**
+ * A conversation title for one row: markdown emphasis and code marks dropped,
+ * whitespace collapsed, and a title cut off mid-phrase (subagent titles are
+ * the prompt's first words) ending in "…" rather than a dangling comma.
+ */
+export function displayTitle(raw: string): string {
+  let title = raw
+    .replace(/\s+/g, " ")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/(\*\*|~~|\*|`)(?=\S)(.+?)(?<=\S)\1/g, "$2")
+    .replace(/\*\*|`/g, "")
+    .replace(/^#+\s+/, "")
+    .trim();
+  if (/[,:;(–—-]$/.test(title)) title = title.replace(/[\s,:;(–—-]+$/, "") + "…";
+  return title;
+}
+
+interface AccountStatus {
+  /** Short state for the header's right edge. */
+  label: string;
+  color: string;
+  /** A longer explanation on its own row, when the state needs one. */
+  detail?: string;
+}
+
+function accountStatus(account: ClaudeAccountInfo, now: number): AccountStatus {
   switch (account.state) {
-    case "ready": return { text: "ready", color: theme.success };
+    case "ready": return { label: "ready", color: theme.success };
     case "limited":
-      return {
-        text: account.limitedUntil ? `limited until ${formatClock(account.limitedUntil, now)} (${formatDuration(account.limitedUntil - now)})` : "at a usage limit",
-        color: theme.warning,
-      };
+      return account.limitedUntil
+        ? { label: `limited until ${formatClock(account.limitedUntil, now)}`, color: theme.warning }
+        : { label: "at a usage limit", color: theme.warning };
     case "blocked":
       return {
-        text: `blocked: ${account.stateDetail ?? "authentication failed"}${account.blockedUntil ? ` (checked again in ${formatDuration(account.blockedUntil - now)})` : ""}`,
+        label: "blocked",
         color: theme.error,
+        detail: `${account.stateDetail ?? "authentication failed"}${account.blockedUntil ? ` · checked again in ${formatDuration(account.blockedUntil - now)}` : ""}`,
       };
-    case "signed_out": return { text: "signed out", color: theme.error };
-    case "not_subscription": return { text: `signed in with ${account.stateDetail ?? "an unknown method"}, not a Claude subscription`, color: theme.warning };
-    case "unchecked": return { text: "not checked yet", color: theme.muted };
+    case "signed_out": return { label: "signed out", color: theme.error };
+    case "not_subscription":
+      return { label: "not a subscription", color: theme.warning, detail: `signed in with ${account.stateDetail ?? "an unknown method"}, not a Claude subscription` };
+    case "unchecked": return { label: "not checked yet", color: theme.muted };
   }
 }
 
@@ -150,131 +193,224 @@ function windowPercent(window: UsageWindow | null | undefined, now: number): num
   return Math.round(window.utilization);
 }
 
+function capitalize(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+// ── Rows ─────────────────────────────────────────────────────────────
+
+/** Up to this many warm conversations are listed outright; more fold into one row. */
+const LIST_WARM_UP_TO = 2;
+const WARM_TOGGLE_PREFIX = "warm:";
+
+function warmToggleKey(accountId: string): string {
+  return WARM_TOGGLE_PREFIX + accountId;
+}
+
+function warmToggleAccount(key: string): string | null {
+  return key.startsWith(WARM_TOGGLE_PREFIX) ? key.slice(WARM_TOGGLE_PREFIX.length) : null;
+}
+
+type ListRow =
+  | { kind: "conversation"; conv: AccountConversationInfo }
+  | { kind: "warm"; accountId: string; count: number; expanded: boolean; afterOthers: boolean };
+
+function rowKey(row: ListRow): string {
+  return row.kind === "conversation" ? row.conv.convId : warmToggleKey(row.accountId);
+}
+
+/**
+ * An account's conversation rows at `now`: running turns and this
+ * conversation first, then the warm ones, folded behind a toggle when there
+ * are more than LIST_WARM_UP_TO of them.
+ */
+function accountRows(screen: AccountsScreenState, account: ClaudeAccountInfo, now: number): ListRow[] {
+  const { snapshot } = screen;
+  const ttl = snapshot.claude.routing.cacheTtlMs;
+  const current = snapshot.claude.currentConversation?.convId;
+  const live = account.conversations.filter(conv => conv.running || conv.lastUsedAt + ttl > now);
+  const shown = [
+    ...live.filter(conv => conv.running),
+    ...live.filter(conv => !conv.running && conv.convId === current),
+  ];
+  const warm = live.filter(conv => !shown.includes(conv));
+  const rows: ListRow[] = shown.map(conv => ({ kind: "conversation", conv }));
+  const warmRows: ListRow[] = warm.map(conv => ({ kind: "conversation", conv }));
+  if (warm.length <= LIST_WARM_UP_TO) return [...rows, ...warmRows];
+  const expanded = screen.expanded.has(account.id);
+  rows.push({ kind: "warm", accountId: account.id, count: warm.length, expanded, afterOthers: shown.length > 0 });
+  return expanded ? [...rows, ...warmRows] : rows;
+}
+
+/** Selectable row keys in display order. */
+export function selectableRows(screen: AccountsScreenState, now: number): string[] {
+  const { snapshot } = screen;
+  if (snapshot.claude.proxied) return [];
+  return snapshot.claude.accounts.flatMap(account => accountRows(screen, account, now).map(rowKey));
+}
+
 // ── Lines ────────────────────────────────────────────────────────────
 
 type Segment = [color: string, text: string];
 
 interface ScreenLine {
   segments: Segment[];
-  /** Selectable conversation row. */
-  convId?: string;
+  /** Right-aligned segments (status, times). */
+  right?: Segment[];
+  /** Selectable row key. */
+  key?: string;
 }
 
-function bar(pct: number | null, capacity: number, width: number): Segment[] {
-  if (pct === null) return [[theme.text, "["], [theme.muted, "░".repeat(width)], [theme.text, "]"]];
-  const filled = Math.round((Math.max(0, Math.min(capacity, pct)) / capacity) * width);
-  return [[theme.text, "["], [theme.accent, "█".repeat(filled)], [theme.muted, "░".repeat(width - filled)], [theme.text, "]"]];
+/** Width of the "Claude" / "OpenAI" heading column. */
+const HEADING_WIDTH = 9;
+/** Indent of an account's detail rows under its name. */
+const INDENT = "   ";
+
+/** The status bar's usage bar: `[███░░░]` at the same width and colours. */
+function bar(pct: number | null, capacity = 100): Segment[] {
+  const filled = pct === null ? 0 : barFill(pct, capacity);
+  return [[theme.text, "["], [theme.accent, "█".repeat(filled)], [theme.muted, "░".repeat(BAR_WIDTH - filled)], [theme.text, "]"]];
 }
 
-function windowLine(label: string, window: UsageWindow | null | undefined, now: number): Segment[] {
+function windowLine(label: string, window: UsageWindow, now: number): ScreenLine {
   const pct = windowPercent(window, now);
-  const reset = window?.resetsAt != null && window.resetsAt > now
-    ? [[theme.muted, "  resets in "], [theme.accent, formatDuration(window.resetsAt - now)], [theme.muted, ` (${formatClock(window.resetsAt, now)})`]] as Segment[]
+  const reset: Segment[] = window.resetsAt !== null && window.resetsAt > now
+    ? [[theme.muted, " resets in "], [theme.accent, formatDuration(window.resetsAt - now)], [theme.muted, ` (${formatClock(window.resetsAt, now)})`]]
     : [];
-  return [
-    [theme.muted, `    ${label} `],
-    ...bar(pct, 100, 20),
-    [theme.accent, ` ${pct === null ? "?" : pct}%`.padEnd(5)],
-    ...reset,
-  ];
+  return {
+    segments: [
+      [theme.muted, ` ${INDENT}${label} `],
+      ...bar(pct),
+      [theme.accent, ` ${pct === null ? "?" : pct}%`.padEnd(5)],
+      ...reset,
+    ],
+  };
 }
 
-function combinedPart(label: string, window: UsageWindow | null | undefined, capacity: number, now: number): Segment[] {
-  const pct = windowPercent(window, now);
-  return [[theme.muted, `${label} `], ...bar(pct, capacity, 8), [theme.accent, ` ${pct === null ? "?" : pct}/${capacity}%`]];
+/** The 5-hour and weekly rows a usage report has (an unknown window is left out, not shown as "?"). */
+function windowLines(usage: UsageData | null | undefined, now: number): ScreenLine[] {
+  const lines: ScreenLine[] = [];
+  if (usage?.fiveHour) lines.push(windowLine("5-Hour", usage.fiveHour, now));
+  if (usage?.sevenDay) lines.push(windowLine("Weekly", usage.sevenDay, now));
+  return lines;
 }
 
-function routingRule(snapshot: AccountsSnapshot): string {
-  const routing = snapshot.claude.routing;
-  const next = snapshot.claude.nextNewWork ? ` (${snapshot.claude.nextNewWork.account})` : "";
-  return `routing: stays while cache warm (${formatDuration(routing.cacheTtlMs)}) · new work → soonest weekly reset${next}`;
+function heading(text: string): Segment[] {
+  return [[theme.text, " "], [theme.bold + theme.text, text.padEnd(HEADING_WIDTH)], [theme.boldOff, ""]];
 }
 
 function conversationTitle(state: RenderState, convId: string): string {
-  const title = state.sidebar.conversations.find(conv => conv.id === convId)?.title?.trim();
-  return title || convId.slice(0, 8);
+  const title = state.sidebar.conversations.find(conv => conv.id === convId)?.title;
+  return (title && displayTitle(title)) || convId.slice(0, 8);
 }
 
-/** Conversation rows still on their account at `now`, in display order. */
-function liveConversations(account: ClaudeAccountInfo, snapshot: AccountsSnapshot, now: number) {
-  const ttl = snapshot.claude.routing.cacheTtlMs;
-  return account.conversations.filter(conv => conv.running || conv.lastUsedAt + ttl > now);
-}
-
-export function selectableConvIds(screen: AccountsScreenState, now: number): string[] {
-  const { snapshot } = screen;
-  if (snapshot.claude.proxied) return [];
-  return snapshot.claude.accounts.flatMap(account => liveConversations(account, snapshot, now).map(conv => conv.convId));
+/** Combined bars as a share of every account's capacity, then where new work goes. */
+function claudeSummaryLines(snapshot: AccountsSnapshot, now: number): ScreenLine[] {
+  const { combined, routing, nextNewWork } = snapshot.claude;
+  const capacity = combined?.capacity && combined.capacity > 0 ? combined.capacity : 100;
+  const share = (window: UsageWindow | null | undefined): Segment[] => {
+    const pct = windowPercent(window, now);
+    const ofPool = pct === null ? null : Math.round((pct / capacity) * 100);
+    return [...bar(ofPool), [theme.accent, ` ${ofPool === null ? "?" : ofPool}%`.padEnd(5)]];
+  };
+  const lines: ScreenLine[] = [{
+    segments: [
+      ...heading("Claude"),
+      [theme.muted, "5-Hour "], ...share(combined?.fiveHour),
+      [theme.muted, "  Weekly "], ...share(combined?.sevenDay),
+      [theme.muted, "  combined"],
+    ],
+  }];
+  const stay = `conversations stay while warm (${formatDuration(routing.cacheTtlMs)})`;
+  lines.push({
+    segments: nextNewWork
+      ? [
+        [theme.muted, " ".repeat(1 + HEADING_WIDTH) + "new work → "],
+        [theme.text, nextNewWork.account],
+        [theme.muted, ` · ${nextNewWork.detail} · ${stay}`],
+      ]
+      : [[theme.muted, " ".repeat(1 + HEADING_WIDTH)], [theme.warning, "no account can take new work"], [theme.muted, ` · ${stay}`]],
+  });
+  return lines;
 }
 
 function claudeAccountLines(state: RenderState, screen: AccountsScreenState, account: ClaudeAccountInfo, now: number): ScreenLine[] {
   const { snapshot } = screen;
-  const current = snapshot.claude.currentConversation;
-  const isCurrent = current?.account === account.id && current.convId === state.convId;
+  const holdsCurrent = snapshot.claude.currentConversation?.account === account.id;
   const email = maybeCensorEmail(account.email, state.hideSensitiveInfo);
-  const who = [email, account.plan].filter(Boolean).join(" · ");
-  const status = accountStateLabel(account, now);
+  const who = [email, account.plan && capitalize(account.plan)].filter(Boolean).join(" · ");
+  const status = accountStatus(account, now);
+  const tags = [holdsCurrent ? "this conversation" : null, snapshot.claude.nextNewWork?.account === account.id ? "new work" : null]
+    .filter(Boolean).join(" · ");
   const lines: ScreenLine[] = [{
     segments: [
-      [isCurrent ? theme.accent : theme.muted, isCurrent ? "▌" : " "],
-      [theme.bold + (isCurrent ? theme.accent : theme.text), account.id],
+      [theme.accent, holdsCurrent ? "▌" : " "],
+      [theme.bold + (holdsCurrent ? theme.accent : theme.text), account.id],
       [theme.boldOff + theme.muted, who ? `  ${who}` : ""],
-      [theme.muted, "  ·  "],
-      [status.color, status.text],
-      ...(isCurrent ? [[theme.accent, "  · this conversation"] as Segment] : []),
+    ],
+    right: [
+      [theme.muted, tags ? `${tags}   ` : ""],
+      [status.color, "● "],
+      [status.label === "ready" ? theme.muted : status.color, status.label],
     ],
   }];
-  if (account.state === "ready" || account.state === "limited" || account.usage) {
-    lines.push({ segments: windowLine("5-hour", account.usage?.fiveHour, now) });
-    lines.push({ segments: windowLine("weekly", account.usage?.sevenDay, now) });
+  if (status.detail) lines.push({ segments: [[status.color, ` ${INDENT}${status.detail}`]] });
+  if (account.loginCommand) {
+    lines.push({ segments: [[theme.muted, ` ${INDENT}sign in from a terminal: `], [theme.command, account.loginCommand]] });
   }
-  const conversations = liveConversations(account, snapshot, now);
-  const warm = conversations.filter(conv => conv.lastUsedAt + snapshot.claude.routing.cacheTtlMs > now).length;
-  const activity = [
-    account.activeTurns > 0 ? `${account.activeTurns} turn${account.activeTurns === 1 ? "" : "s"} running` : null,
-    warm > 0 ? `${warm} conversation${warm === 1 ? "" : "s"} with a warm cache` : null,
-  ].filter(Boolean).join(" · ");
-  lines.push({ segments: [[theme.muted, `    ${activity || "idle"}`]] });
-  for (const conv of conversations) {
-    const left = conv.lastUsedAt + snapshot.claude.routing.cacheTtlMs - now;
-    const isCurrentConv = conv.convId === state.convId;
+  const windows = windowLines(account.usage, now);
+  if (windows.length === 0 && account.state === "ready") lines.push({ segments: [[theme.muted, ` ${INDENT}usage not reported yet`]] });
+  lines.push(...windows);
+
+  const rows = accountRows(screen, account, now);
+  const ttl = snapshot.claude.routing.cacheTtlMs;
+  for (const row of rows) {
+    if (row.kind === "warm") {
+      lines.push({
+        key: rowKey(row),
+        segments: [[theme.muted, ` ${INDENT}${row.expanded ? "▾" : "▸"} ${row.count} ${row.afterOthers ? "more" : "conversations"} with a warm cache`]],
+      });
+      continue;
+    }
+    const { conv } = row;
+    const isCurrent = conv.convId === state.convId;
     lines.push({
-      convId: conv.convId,
+      key: conv.convId,
       segments: [
-        [isCurrentConv ? theme.accent : theme.muted, isCurrentConv ? "    ▸ " : "      "],
-        [isCurrentConv ? theme.accent : theme.text, conversationTitle(state, conv.convId)],
-        [theme.muted, "  ·  "],
-        conv.running
-          ? [theme.accent, "running"]
-          : [theme.muted, `warm, ${formatDuration(left)} left`],
+        [theme.accent, ` ${INDENT}${conv.running ? ACTIVITY_GLYPH : " "} `],
+        [isCurrent ? theme.accent : theme.text, conversationTitle(state, conv.convId)],
       ],
+      right: [[theme.muted, conv.running ? "running" : `${formatDuration(conv.lastUsedAt + ttl - now)} left`]],
     });
   }
-  if (account.loginCommand) {
-    lines.push({ segments: [[theme.muted, "    sign in from a terminal: "], [theme.command, account.loginCommand]] });
+  const listedRunning = account.conversations.filter(conv => conv.running).length;
+  const otherTurns = account.activeTurns - listedRunning;
+  if (otherTurns > 0) {
+    lines.push({ segments: [[theme.accent, ` ${INDENT}${ACTIVITY_GLYPH} `], [theme.muted, `${otherTurns} other turn${otherTurns === 1 ? "" : "s"} running`]] });
   }
-  lines.push({ segments: [[theme.muted, `    ${account.configDir}`]] });
   return lines;
 }
 
 function openAILines(state: RenderState, snapshot: AccountsSnapshot, usage: UsageData | null, now: number): ScreenLine[] {
   const { accounts, proxied } = snapshot.openai;
   if (accounts.length === 0) return [];
-  const lines: ScreenLine[] = [{ segments: [] }, { segments: [[theme.bold + theme.text, "OpenAI"], [theme.boldOff + theme.muted, proxied ? "  ·  through /proxy (the remote's login)" : "  ·  /account <email> switches"]] }];
+  const lines: ScreenLine[] = [
+    { segments: [] },
+    { segments: [...heading("OpenAI"), [theme.muted, proxied ? "through /proxy: the remote's login" : "/account <email> switches"]] },
+  ];
   for (const account of accounts) {
-    const label = maybeCensorEmail(account.email, state.hideSensitiveInfo) ?? account.displayName ?? `account ${account.index}`;
+    const email = maybeCensorEmail(account.email, state.hideSensitiveInfo);
+    const label = email ?? account.displayName ?? `account ${account.index}`;
+    const extra = [email ? account.displayName : null, account.plan && capitalize(account.plan)].filter(Boolean).join(" · ");
     lines.push({
       segments: [
-        [account.current ? theme.accent : theme.muted, account.current ? "▌" : " "],
-        [theme.bold + (account.current ? theme.accent : theme.text), `${account.index}. ${label}`],
-        [theme.boldOff + theme.muted, account.plan ? `  ${account.plan}` : ""],
-        ...(account.current ? [[theme.accent, "  · current"] as Segment] : []),
+        [theme.accent, account.current ? "▌" : " "],
+        [theme.bold + (account.current ? theme.accent : theme.text), label],
+        [theme.boldOff + theme.muted, extra ? `  ${extra}` : ""],
       ],
+      right: account.current ? [[theme.muted, "current"]] : undefined,
     });
-    if (account.current && usage && (usage.fiveHour || usage.sevenDay)) {
-      lines.push({ segments: windowLine("5-hour", usage.fiveHour, now) });
-      lines.push({ segments: windowLine("weekly", usage.sevenDay, now) });
-    }
+    if (account.current) lines.push(...windowLines(usage, now));
   }
   return lines;
 }
@@ -285,21 +421,9 @@ export function accountsScreenLines(state: RenderState, screen: AccountsScreenSt
   const lines: ScreenLine[] = [];
   const claude = snapshot.claude;
   if (claude.proxied) {
-    lines.push({ segments: [[theme.bold + theme.text, "Claude"], [theme.boldOff + theme.muted, "  ·  through /proxy: the remote daemon's login runs every turn"]] });
+    lines.push({ segments: [...heading("Claude"), [theme.muted, "through /proxy: the remote daemon's login runs every turn"]] });
   } else {
-    const combined = claude.combined;
-    const capacity = combined?.capacity && combined.capacity > 0 ? combined.capacity : 100;
-    lines.push({
-      segments: [
-        [theme.bold + theme.text, "Claude "],
-        [theme.boldOff, ""],
-        ...combinedPart("5h", combined?.fiveHour, capacity, now),
-        [theme.muted, " · "],
-        ...combinedPart("wk", combined?.sevenDay, capacity, now),
-        [theme.muted, " · "],
-        [theme.muted, routingRule(snapshot)],
-      ],
-    });
+    lines.push(...claudeSummaryLines(snapshot, now));
     for (const account of claude.accounts) {
       lines.push({ segments: [] });
       lines.push(...claudeAccountLines(state, screen, account, now));
@@ -311,23 +435,61 @@ export function accountsScreenLines(state: RenderState, screen: AccountsScreenSt
 
 // ── Render ───────────────────────────────────────────────────────────
 
-const MAX_WIDTH = 140;
+const MAX_WIDTH = 104;
 const MARGIN_COLUMNS = 2;
-/** Top border (with the title), spacer, footer, bottom border. */
+/** Top border (with the title), a blank row above and below the content, bottom border (with the keys). */
 const CHROME_ROWS = 4;
-const FOOTER = "j/k select · Enter open conversation · Esc close";
 
-function fitSegments(segments: Segment[], width: number, bg: string): string {
-  let out = "";
+function cleanText(text: string): string {
+  return text.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ");
+}
+
+function segmentsWidth(segments: Segment[]): number {
+  return segments.reduce((sum, [, text]) => sum + termWidth(cleanText(text)), 0);
+}
+
+function fitSegments(segments: Segment[], width: number): { text: string; used: number } {
+  let text = "";
   let used = 0;
-  for (const [color, text] of segments) {
+  for (const [color, raw] of segments) {
     if (used >= width) break;
-    const clean = text.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ");
-    const part = truncateToWidth(clean, width - used);
-    out += color + part;
+    const part = truncateToWidth(cleanText(raw), width - used);
+    text += color + part;
     used += termWidth(part);
   }
-  return out + theme.reset + bg + " ".repeat(Math.max(0, width - used));
+  return { text, used };
+}
+
+/** One content row: left segments truncated to leave room for the right-aligned ones. */
+function fitLine(line: ScreenLine | undefined, width: number, bg: string): string {
+  const right = line?.right && segmentsWidth(line.right) > 0 ? line.right : null;
+  const rightWidth = right ? Math.min(segmentsWidth(right), Math.max(0, width - 12)) : 0;
+  const left = fitSegments(line?.segments ?? [], right ? width - rightWidth - 2 : width);
+  const out = left.text + theme.reset + bg + theme.boldOff;
+  if (!right) return out + " ".repeat(Math.max(0, width - left.used));
+  const fittedRight = fitSegments(right, rightWidth);
+  return out + " ".repeat(Math.max(0, width - left.used - fittedRight.used)) + fittedRight.text + theme.reset + bg;
+}
+
+/** `╭─ title ───── note ─╮` and `╰─ … ─╯` borders with muted texts. */
+function borderLine(corners: [string, string], width: number, leftText: string, rightText: string, leftColor = theme.muted): string {
+  const inner = width - 2;
+  const framed = (text: string) => text ? termWidth(text) + 3 : 0;
+  const right = framed(leftText) + framed(rightText) <= inner ? rightText : "";
+  const left = truncateToWidth(leftText, Math.max(0, inner - framed(right) - 3));
+  const fill = "─".repeat(Math.max(0, inner - framed(left) - framed(right)));
+  const border = theme.accent;
+  return border + corners[0]
+    + (left ? `─ ${leftColor}${left}${theme.reset}${theme.sidebarBg}${theme.boldOff}${border} ` : "")
+    + fill
+    + (right ? ` ${theme.muted}${right}${border} ─` : "")
+    + corners[1];
+}
+
+function footerKeys(screen: AccountsScreenState): string {
+  const toggled = screen.selected ? warmToggleAccount(screen.selected) : null;
+  const enter = toggled === null ? "Enter open" : screen.expanded.has(toggled) ? "Enter collapse" : "Enter expand";
+  return `j/k select · ${enter} · Esc close`;
 }
 
 export interface RenderedAccountsScreen {
@@ -335,17 +497,21 @@ export interface RenderedAccountsScreen {
   rect: ScreenRect;
 }
 
-/** The overlay, centered over the whole terminal. Updates `screen.scroll` to keep the selection visible. */
+/**
+ * The screen: a card centred over a blank backdrop that covers the whole
+ * terminal, so no chat text shows around it. Updates `screen.scroll` to keep
+ * the selection visible.
+ */
 export function renderAccountsScreen(state: RenderState, screen: AccountsScreenState, totalRows: number, totalCols: number, now = Date.now()): RenderedAccountsScreen {
   const lines = accountsScreenLines(state, screen, now);
-  const width = Math.max(10, Math.min(MAX_WIDTH, totalCols - MARGIN_COLUMNS * 2));
+  const width = Math.max(20, Math.min(MAX_WIDTH, totalCols - MARGIN_COLUMNS * 2));
   const inner = width - 4;
   const bodyRows = Math.max(1, Math.min(lines.length, totalRows - 2 - CHROME_ROWS));
   const height = bodyRows + CHROME_ROWS;
   const top = Math.max(1, Math.floor((totalRows - height) / 2) + 1);
   const left = Math.max(1, Math.floor((totalCols - width) / 2) + 1);
 
-  const selectedLine = screen.selectedConvId ? lines.findIndex(line => line.convId === screen.selectedConvId) : -1;
+  const selectedLine = screen.selected ? lines.findIndex(line => line.key === screen.selected) : -1;
   const maxScroll = Math.max(0, lines.length - bodyRows);
   let scroll = Math.max(0, Math.min(maxScroll, screen.scroll));
   if (selectedLine >= 0) {
@@ -355,20 +521,24 @@ export function renderAccountsScreen(state: RenderState, screen: AccountsScreenS
   screen.scroll = scroll;
 
   const bg = theme.sidebarBg;
-  const border = theme.accent;
-  const row = (index: number, content: string) => moveTo(top + index, left) + bg + border + "│ " + bg + content + bg + border + " │" + theme.reset;
-  const title = " Accounts ";
-  const live = ` updated ${formatClock(screen.snapshot.generatedAt, now)} `;
-  let payload = moveTo(top, left) + bg + border + "┌─" + theme.bold + title + theme.boldOff
-    + "─".repeat(Math.max(0, width - 4 - title.length - live.length)) + theme.muted + live + border + "─┐" + theme.reset;
-  for (let i = 0; i < bodyRows + 1; i++) {
-    const line = i < bodyRows ? lines[scroll + i] : undefined;
-    const selected = line?.convId !== undefined && line.convId === screen.selectedConvId;
-    const lineBg = selected ? theme.sidebarSelBg : bg;
-    payload += row(i + 1, lineBg + fitSegments(line?.segments ?? [], inner, lineBg) + bg);
+  const blank = (row: number, col: number, cols: number) => cols > 0 ? moveTo(row, col) + theme.reset + " ".repeat(cols) : "";
+  let payload = "";
+  for (let row = 1; row <= totalRows; row++) {
+    if (row < top || row >= top + height) payload += blank(row, 1, totalCols);
+    else payload += blank(row, 1, left - 1) + blank(row, left + width, totalCols - left - width + 1);
   }
-  const more = scroll + bodyRows < lines.length ? `  ↓ ${lines.length - scroll - bodyRows} more` : scroll > 0 ? "  ↑ more above" : "";
-  payload += row(bodyRows + 2, fitSegments([[theme.muted, FOOTER + more]], inner, bg));
-  payload += moveTo(top + height - 1, left) + bg + border + "└" + "─".repeat(width - 2) + "┘" + theme.reset;
-  return { payload, rect: { top, bottom: top + height - 1, left, right: left + width - 1 } };
+
+  const row = (index: number, content: string) => moveTo(top + index, left) + bg + theme.accent + "│ " + bg + content + bg + theme.accent + " │" + theme.reset;
+  payload += moveTo(top, left) + bg + borderLine(["╭", "╮"], width, "Accounts", `updated ${formatClock(screen.snapshot.generatedAt, now)}`, theme.bold + theme.text) + theme.reset;
+  payload += row(1, fitLine(undefined, inner, bg));
+  for (let i = 0; i < bodyRows; i++) {
+    const line = lines[scroll + i];
+    const lineBg = line?.key !== undefined && line.key === screen.selected ? theme.sidebarSelBg : bg;
+    payload += row(i + 2, lineBg + fitLine(line, inner, lineBg) + bg);
+  }
+  payload += row(bodyRows + 2, fitLine(undefined, inner, bg));
+  const below = lines.length - scroll - bodyRows;
+  const more = below > 0 ? `↓ ${below} more` : scroll > 0 ? "↑ more above" : "";
+  payload += moveTo(top + height - 1, left) + bg + borderLine(["╰", "╯"], width, footerKeys(screen), more) + theme.reset;
+  return { payload, rect: { top: 1, bottom: totalRows, left: 1, right: totalCols } };
 }

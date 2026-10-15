@@ -11,17 +11,23 @@ import type { StatusBlock } from "../statusline";
 import type { UsageWindow } from "../messages";
 import { theme } from "../theme";
 
-const BAR_WIDTH = 20;
+/** Every usage bar's width (the status bar and the Accounts screen). */
+export const BAR_WIDTH = 20;
 
 /** How many accounts' reset times a combined bar lists. */
 const MAX_RESETS_SHOWN = 2;
+
+/** Filled cells of a BAR_WIDTH bar showing `pct` of `capacity`. */
+export function barFill(pct: number, capacity = 100): number {
+  const clamped = Math.max(0, Math.min(capacity, pct));
+  return Math.round((clamped / capacity) * BAR_WIDTH);
+}
 
 function renderBar(pct: number | null, capacity = 100): string {
   if (pct === null) {
     return theme.muted + "\u2591".repeat(BAR_WIDTH);
   }
-  const clamped = Math.max(0, Math.min(capacity, pct));
-  const filled = Math.round((clamped / capacity) * BAR_WIDTH);
+  const filled = barFill(pct, capacity);
   const empty = BAR_WIDTH - filled;
   return theme.accent + "\u2588".repeat(filled) + theme.muted + "\u2591".repeat(empty);
 }
