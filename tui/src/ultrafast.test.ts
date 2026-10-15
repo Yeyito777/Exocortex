@@ -41,7 +41,11 @@ test("Ultrafast selection is explicit, distinct, and can be switched off", () =>
 test("unadvertised Ultrafast is rejected without changing Fast", () => {
   const state = stateWithUltrafast(false);
   state.fastMode = true;
+  state.inputBuffer = "/ultrafast";
+  state.cursorPos = state.inputBuffer.length;
   expect(tryCommand("/ultrafast", state)).toEqual({ type: "handled" });
+  // Typed alone it is a command: the prompt clears so the next input does not append to it.
+  expect(state.inputBuffer).toBe("");
   expect(state.fastMode).toBe(true);
   expect(state.messages.at(-1)).toMatchObject({ text: "Ultrafast is not advertised for this model/account." });
   expect(getInlineCommandArgs(state)["/fast"].some(item => item.name === "ultrafast")).toBe(false);
@@ -73,6 +77,15 @@ test("speed commands switch tiers rather than disabling a different tier", () =>
   state.fastMode = true;
   expect(applyInlineCommands("/ultrafast answer /fast", state).fastModes).toEqual(["ultrafast", true]);
   expect(state.fastMode).toBe(true);
+});
+
+test("a rejected inline Ultrafast keeps the message for editing", () => {
+  const state = stateWithUltrafast(false);
+  state.inputBuffer = "/ultrafast hello";
+  state.cursorPos = state.inputBuffer.length;
+  expect(tryCommand("/ultrafast hello", state)).toEqual({ type: "handled" });
+  expect(state.inputBuffer).toBe("/ultrafast hello");
+  expect(state.messages.at(-1)).toMatchObject({ text: "Ultrafast is not advertised for this model/account." });
 });
 
 test("unavailable inline Ultrafast blocks the prompt without partial setting changes", () => {
