@@ -889,12 +889,12 @@ export class DaemonClient {
     this.send({ type: "pin_sidebar_items", pins });
   }
 
-  moveSidebarItem(item: SidebarItemRef, direction: "up" | "down"): void {
-    this.send({ type: "move_sidebar_item", item, direction });
+  moveSidebarItem(item: SidebarItemRef, direction: "up" | "down", reqId?: string): void {
+    this.send({ type: "move_sidebar_item", item, direction, reqId });
   }
 
-  moveSidebarItems(items: SidebarItemRef[], parentId: string | null, before?: SidebarItemRef, options: MoveSidebarItemsOptions = {}): void {
-    this.send({ type: "move_sidebar_items", items, parentId, before, preservePinned: options.preservePinned, placement: options.placement });
+  moveSidebarItems(items: SidebarItemRef[], parentId: string | null, before?: SidebarItemRef, options: MoveSidebarItemsOptions = {}, reqId?: string): void {
+    this.send({ type: "move_sidebar_items", items, parentId, before, preservePinned: options.preservePinned, placement: options.placement, reqId });
   }
 
   deleteFolder(folderId: string, mode: "recursive" | "unwrap" = "recursive"): void {

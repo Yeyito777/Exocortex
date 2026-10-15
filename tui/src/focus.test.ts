@@ -1274,6 +1274,7 @@ describe("sidebar folders", () => {
 
     expect(handleFocusedKey({ type: "enter" }, state)).toEqual({
       type: "move_sidebar_items",
+      reqId: expect.any(String),
       items: [{ type: "conversation", id: "conv-a" }],
       parentId: "folder-work",
       before: undefined,
@@ -1302,6 +1303,7 @@ describe("sidebar folders", () => {
 
     expect(handleFocusedKey({ type: "enter" }, state)).toEqual({
       type: "move_sidebar_items",
+      reqId: expect.any(String),
       items: [{ type: "conversation", id: "conv-a" }],
       parentId: "folder-clients",
       before: undefined,
@@ -1381,6 +1383,7 @@ describe("sidebar folders", () => {
     for (const ch of "Work") expect(handleFocusedKey({ type: "char", char: ch }, state)).toEqual({ type: "handled" });
     expect(handleFocusedKey({ type: "enter" }, state)).toEqual({
       type: "move_sidebar_items",
+      reqId: expect.any(String),
       items: [{ type: "conversation", id: "conv-a" }],
       parentId: "folder-work",
     });
@@ -1414,6 +1417,7 @@ describe("sidebar folders", () => {
     for (const ch of "Archive") expect(handleFocusedKey({ type: "char", char: ch }, state)).toEqual({ type: "handled" });
     expect(handleFocusedKey({ type: "enter" }, state)).toEqual({
       type: "move_sidebar_items",
+      reqId: expect.any(String),
       items: [{ type: "folder", id: "folder-project" }],
       parentId: "folder-archive",
       before: undefined,
@@ -1438,11 +1442,12 @@ describe("sidebar folders", () => {
 
     handleFocusedKey({ type: "char", char: "F" }, state);
     for (const ch of "Archive") handleFocusedKey({ type: "char", char: ch }, state);
-    handleFocusedKey({ type: "enter" }, state);
+    const moved = handleFocusedKey({ type: "enter" }, state);
     expect(project.parentId).toBe("folder-archive");
 
     handleEvent({
       type: "conversations_list",
+      reqId: moved.type === "move_sidebar_items" ? moved.reqId : undefined,
       conversations: [],
       folders: [
         { ...archive },
@@ -1467,6 +1472,7 @@ describe("sidebar folders", () => {
 
     expect(handleFocusedKey({ type: "char", char: "<" }, state)).toEqual({
       type: "move_sidebar_items",
+      reqId: expect.any(String),
       items: [{ type: "conversation", id: "conv-a" }],
       parentId: null,
       before: { type: "folder", id: "folder-work" },
@@ -1493,6 +1499,7 @@ describe("sidebar folders", () => {
     expect(handleFocusedKey({ type: "char", char: "." }, state)).toEqual({ type: "handled" });
     expect(handleFocusedKey({ type: "enter" }, state)).toEqual({
       type: "move_sidebar_items",
+      reqId: expect.any(String),
       items: [{ type: "conversation", id: "conv-a" }],
       parentId: "folder-work",
       before: { type: "folder", id: "folder-clients" },
@@ -1518,6 +1525,7 @@ describe("sidebar folders", () => {
     expect(handleFocusedKey({ type: "char", char: "/" }, state)).toEqual({ type: "handled" });
     expect(handleFocusedKey({ type: "enter" }, state)).toEqual({
       type: "move_sidebar_items",
+      reqId: expect.any(String),
       items: [{ type: "conversation", id: "conv-a" }],
       parentId: null,
       before: { type: "folder", id: "folder-work" },
@@ -1543,6 +1551,7 @@ describe("sidebar folders", () => {
     expect(handleFocusedKey({ type: "char", char: "j" }, state)).toEqual({ type: "handled" });
     expect(handleFocusedKey({ type: "char", char: "e" }, state)).toEqual({
       type: "move_sidebar_items",
+      reqId: expect.any(String),
       items: [
         { type: "conversation", id: "conv-b" },
         { type: "conversation", id: "conv-c" },
@@ -1574,6 +1583,7 @@ describe("sidebar folders", () => {
     expect(handleFocusedKey({ type: "char", char: "j" }, state)).toEqual({ type: "handled" });
     expect(handleFocusedKey({ type: "char", char: "E" }, state)).toEqual({
       type: "move_sidebar_items",
+      reqId: expect.any(String),
       items: [
         { type: "conversation", id: "conv-b" },
         { type: "conversation", id: "conv-c" },
@@ -1605,6 +1615,7 @@ describe("sidebar folders", () => {
     expect(handleFocusedKey({ type: "char", char: "j" }, state)).toEqual({ type: "handled" });
     expect(handleFocusedKey({ type: "char", char: "E" }, state)).toEqual({
       type: "move_sidebar_items",
+      reqId: expect.any(String),
       items: [
         { type: "conversation", id: "conv-c" },
         { type: "conversation", id: "conv-d" },

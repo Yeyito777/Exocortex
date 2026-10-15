@@ -1798,10 +1798,10 @@ function handleKey(key: KeyEvent): void {
       daemon.moveConversation(result.convId, result.direction);
       break;
     case "move_sidebar_item":
-      daemon.moveSidebarItem(result.item, result.direction);
+      daemon.moveSidebarItem(result.item, result.direction, result.reqId);
       break;
     case "move_sidebar_items":
-      daemon.moveSidebarItems(result.items, result.parentId, result.before, { preservePinned: result.preservePinned, placement: result.placement });
+      daemon.moveSidebarItems(result.items, result.parentId, result.before, { preservePinned: result.preservePinned, placement: result.placement }, result.reqId);
       break;
     case "clone_conversation":
       daemon.cloneConversation(result.convId);

@@ -3,6 +3,7 @@ import type { SidebarSelectableItem } from "./items";
 import type { SidebarPromptState } from "./prompt";
 import type { SidebarSearchState } from "../sidebarsearch";
 import type { ConversationActionMenuState } from "./conversationactions";
+import type { PendingSidebarMove } from "./pendingmoves";
 import type { SidebarFolderView } from "./tree";
 
 export interface SidebarState {
@@ -27,6 +28,8 @@ export interface SidebarState {
   pendingFocusFolder: { name: string; parentId: string | null } | null;
   /** Rows shown for creations the daemon has not acknowledged yet. */
   optimisticConversationIds: Set<string>;
+  /** Moves shown locally that the daemon has not settled yet, oldest first. */
+  pendingMoves: PendingSidebarMove[];
   prompt: SidebarPromptState | null;
   search: SidebarSearchState | null;
   conversationActionMenu: ConversationActionMenuState | null;
@@ -51,6 +54,7 @@ export function createSidebarState(folderView: SidebarFolderView = "navigate"): 
     pendingFocusItem: null,
     pendingFocusFolder: null,
     optimisticConversationIds: new Set(),
+    pendingMoves: [],
     prompt: null,
     search: null,
     conversationActionMenu: null,

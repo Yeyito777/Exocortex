@@ -2,6 +2,7 @@ import type { ConversationSummary, FolderSummary } from "../messages";
 import type { SidebarItemOrderUpdate, SidebarStatePatchedEvent } from "../protocol";
 import { isMovableSidebarItem, sidebarItemKey as itemKey, type SidebarSelectableItem } from "./items";
 import { compareSidebarOrder } from "./order";
+import { acknowledgePatchEcho, acknowledgeReorderEcho, overlayPendingSidebarMoves } from "./pendingmoves";
 import { focusTargetAfterRemovingSidebarItems } from "./removal";
 import { buildDisplayRows, nearestDisplayEntry } from "./rows";
 import {
@@ -23,6 +24,10 @@ function sortSidebarCollections(sidebar: SidebarState): void {
 
 /** Apply an authoritative two-item order delta without replacing every summary. */
 export function applySidebarItemOrderUpdates(sidebar: SidebarState, updates: SidebarItemOrderUpdate[]): void {
+  // An echo of a move already shown locally must not undo presses made since.
+  const unseen = acknowledgeReorderEcho(sidebar, updates);
+  if (!unseen) return;
+  updates = unseen;
   let changed = false;
   for (const update of updates) {
     const target = update.item.type === "conversation"
@@ -33,11 +38,13 @@ export function applySidebarItemOrderUpdates(sidebar: SidebarState, updates: Sid
     changed = true;
   }
   if (!changed) return;
+  overlayPendingSidebarMoves(sidebar);
   syncSelectedIndex(sidebar);
 }
 
 /** Apply authoritative structural upserts/removals without a full sidebar snapshot. */
 export function applySidebarStatePatch(sidebar: SidebarState, patch: SidebarStatePatchedEvent): void {
+  if (acknowledgePatchEcho(sidebar, patch)) return;
   const conversations = new Map(sidebar.conversations.map(summary => [summary.id, summary]));
   const folders = new Map(sidebar.folders.map(folder => [folder.id, folder]));
   for (const id of patch.removedConversationIds ?? []) conversations.delete(id);
@@ -153,6 +160,9 @@ export function updateConversationList(sidebar: SidebarState, conversations: Con
     : null;
   sidebar.conversations = conversations;
   sidebar.folders = folders;
+  overlayPendingSidebarMoves(sidebar);
+  sidebarSort(sidebar.conversations);
+  sidebarSort(sidebar.folders);
   const actionMenuConvId = sidebar.conversationActionMenu?.convId;
   if (actionMenuConvId && !sidebar.conversations.some(conv => conv.id === actionMenuConvId)) {
     sidebar.conversationActionMenu = null;
@@ -199,6 +209,7 @@ export function updateConversation(sidebar: SidebarState, summary: ConversationS
   } else {
     sidebar.conversations.unshift(summary);
   }
+  overlayPendingSidebarMoves(sidebar);
   sortSidebarCollections(sidebar);
   const pendingFocusItem = sidebar.pendingFocusItem;
   if (pendingFocusItem?.type === "conversation" && pendingFocusItem.id === summary.id) {

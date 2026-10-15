@@ -88,8 +88,8 @@ export type KeyResult =
   | { type: "mute_folder"; folderId: string; muted: boolean }
   | { type: "pin_sidebar_items"; pins: { item: SidebarItemRef; pinned: boolean }[] }
   | { type: "move_conversation"; convId: string; direction: "up" | "down" }
-  | { type: "move_sidebar_item"; item: SidebarItemRef; direction: "up" | "down" }
-  | ({ type: "move_sidebar_items"; items: SidebarItemRef[]; parentId: string | null; before?: SidebarItemRef } & MoveSidebarItemsOptions)
+  | { type: "move_sidebar_item"; item: SidebarItemRef; direction: "up" | "down"; reqId?: string }
+  | ({ type: "move_sidebar_items"; items: SidebarItemRef[]; parentId: string | null; before?: SidebarItemRef; reqId?: string } & MoveSidebarItemsOptions)
   | { type: "clone_conversation"; convId: string }
   | { type: "create_folder"; name: string; parentId: string | null; items: SidebarItemRef[] }
   | { type: "rename_folder"; folderId: string; name: string }
