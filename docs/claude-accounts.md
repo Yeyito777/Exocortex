@@ -35,14 +35,15 @@ Code: `daemon/src/providers/anthropic/accounts.ts` (registry and directories),
 ```
 
 `/accounts` (or `g a` in normal mode) opens the Accounts screen once more than
-one account is set up. It covers the terminal with one card: the combined
-5-hour and weekly bars (as a share of every account's capacity) and where new
-work goes, then each account's sign-in, plan and state, its own 5-hour and
-weekly windows with their reset times, and the conversations on it. Running
-turns and the current conversation get a row each; more than two warm-cache
-conversations fold into one row that Enter expands. A signed-out account
-shows its login command. It updates live while open; j/k select a row, Enter
-opens a conversation (or expands the warm ones), Esc or q closes.
+one account is set up: a small card with one row per account, Claude's and
+OpenAI's, each with a state dot and its 5-hour and weekly bars and the time to
+each reset. The account this conversation runs on (OpenAI: the current login)
+is highlighted and the one new work goes to is tagged "new work". A limited
+account says for how long; a blocked, signed-out or non-subscription one shows
+that word instead of its bars. Under the table, a dim note appears only when
+it says something the rows do not: that new work skips an account near its
+limit, that no account can take it, or the command that signs an account in.
+It updates live while open; Esc or q closes.
 The daemon's `accounts` command carries the same data
 ([direct daemon commands](daemon-ipc.md)).
 

@@ -70,7 +70,7 @@ table in step with it.
 | `/quit` / `/exit` | Exit |
 | `/new` | Start a new conversation |
 | `/account [<openai-email>]` / `/account claude [add <name> [config-dir] \| remove <name>]` | List or switch OpenAI accounts; list, add or remove Claude accounts ([Claude accounts](claude-accounts.md)) |
-| `/accounts` | Accounts screen: every Claude and OpenAI account, its sign-in, usage and conversations (needs more than one account; also `g a`) |
+| `/accounts` | Accounts screen: every Claude and OpenAI account with its state and usage (needs more than one account; also `g a`) |
 | `/replay` | Run the assistant again on the history as it stands, without a new message; `/queue [target] /replay` defers it |
 | `/btw <query>` / `/btw close` | Ask a read-only aside in a side panel, or close it |
 | `/compact` | Compact the context now; `/queue [target] /compact` defers it. For Claude Code this starts a fresh session from the checkpoint |

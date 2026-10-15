@@ -2,7 +2,6 @@ import { expect, test } from "bun:test";
 import {
   ACCOUNTS_UNAVAILABLE_HINT,
   closeAccountsScreen,
-  displayTitle,
   handleAccountsScreenKey,
   renderAccountsScreen,
   requestAccountsScreen,
@@ -93,6 +92,7 @@ function openScreen(snap = snapshot()) {
   const state = createInitialState();
   state.convId = "conv-warm";
   state.sidebar.conversations = [conversation("conv-run", "Fix login bug"), conversation("conv-warm", "PMV5 review")];
+  state.usageByProvider.openai = { fiveHour: null, sevenDay: { utilization: 12, resetsAt: NOW + 48 * H } };
   const daemon = fakeDaemon();
   requestAccountsScreen(state, daemon);
   handleEvent({ type: "accounts", reqId: "accounts_1", snapshot: snap }, state, noDaemon);
@@ -104,17 +104,6 @@ function screenText(state: ReturnType<typeof createInitialState>, rows = 40, col
   if (behind) screen.feed(behind);
   screen.feed(renderAccountsScreen(state, state.accountsScreen!, rows, cols, NOW).payload);
   return screen.plainRows();
-}
-
-/** An account with one running conversation and `warm` warm ones (`<id>-warm-0` the most recent). */
-function busyAccount(id: string, warm: number): ClaudeAccountInfo {
-  return claude(id, {
-    activeTurns: 1,
-    conversations: [
-      { convId: `${id}-run`, lastUsedAt: NOW - 60_000, running: true, warm: true },
-      ...Array.from({ length: warm }, (_, i) => ({ convId: `${id}-warm-${i}`, lastUsedAt: NOW - (i + 1) * 5 * 60_000, running: false, warm: true })),
-    ],
-  });
 }
 
 test("/accounts asks for the screen; g a does too from prompt, history and sidebar normal mode", () => {
@@ -159,27 +148,42 @@ test("with one account the answer explains how to add one and no screen opens", 
   expect(ACCOUNTS_UNAVAILABLE_HINT).toContain("/login openai add");
 });
 
-test("the screen shows the combined usage, routing, each account and the conversations on it", () => {
-  const { state } = openScreen();
-  expect(state.accountsScreen?.selected).toBe("conv-warm");
+test("the screen is one table: a row per account with its bars and times to reset", () => {
+  const snap = snapshot({}, [claude("main"), claude("max2", { usage: { fiveHour: { utilization: 7, resetsAt: NOW + 4 * H }, sevenDay: { utilization: 3, resetsAt: NOW + 30 * H } } })]);
+  snap.claude.nextNewWork = { account: "max2", detail: "its weekly limit resets soonest" };
+  snap.openai.accounts = [
+    { index: 1, email: "one@example.com", displayName: "One", plan: "plus", current: true },
+    { index: 2, email: "two@example.com", displayName: null, plan: null, current: false },
+  ];
+  const { state } = openScreen(snap);
   const rows = screenText(state);
   const text = rows.join("\n");
   expect(text).toContain("╭─ Accounts ─");
-  // Combined usage as a share of both accounts' capacity (74/200 → 37%, 31/200 → 16%), not "74/200%".
-  expect(text).toMatch(/Claude {3}5-Hour \[█+░+\] 37% {3}Weekly \[█+░+\] 16% {3}combined/);
-  expect(text).not.toContain("/200");
-  expect(text).toContain("new work → main · soonest weekly reset · conversations stay while warm (1h)");
-  expect(text).toMatch(/▌main  main@example\.com · Max +this conversation · new work {3}● ready │/);
-  // Usage bars match the status bar's: 20 cells.
-  expect(text).toMatch(/5-Hour \[[█░]{20}\] 40% {2}resets in 2h \(/);
-  expect(text).toMatch(/Weekly \[[█░]{20}\] 20% {2}resets in 3d/);
-  expect(text).toMatch(/◉ Fix login bug +running │/);
-  expect(text).toMatch(/ {2}PMV5 review +50m left │/);
-  expect(text).toMatch(/max2 +● signed out │/);
-  expect(text).toContain("sign in from a terminal: CLAUDE_CONFIG_DIR=~/.claude-max2 command claude auth login --claudeai");
-  // No config-dir lines.
-  expect(text).not.toMatch(/^\s*│\s+~\/\.claude/m);
-  expect(text).toContain("╰─ j/k select · Enter open · Esc close ─");
+  expect(text).toContain("╰─ Esc close ─");
+  expect(text).toMatch(/│ {2}Claude +5-Hour +Weekly +│/);
+  expect(text).toMatch(/│ {2}● main +━{14} {2}40% {2}2h {3,}━{14} {2}20% {2}3d +│/);
+  expect(text).toMatch(/│ {2}● max2 {2}new work +━{14} {3}7% {2}4h +━{14} {3}3% {2}1d6h {2}│/);
+  // OpenAI: the current login's known window only; others are just listed.
+  expect(text).toMatch(/│ {2}● one@example\.com {20,}━{14} {2}12% {2}2d +│/);
+  expect(text).toMatch(/│ {2}● two@example\.com +│/);
+  // One set of columns for every row.
+  const barStarts = rows.filter(row => row.includes("━")).map(row => row.indexOf("━"));
+  const weeklyLabel = rows.find(row => row.includes("Weekly"))!.indexOf("Weekly");
+  expect(rows.find(row => row.includes("5-Hour"))!.indexOf("5-Hour")).toBe(barStarts[0]);
+  expect(new Set(barStarts.slice(0, 2)).size).toBe(1);
+  expect(rows.find(row => row.includes("one@example"))!.indexOf("━")).toBe(weeklyLabel);
+  // Nothing else: no emails or plans for Claude, no conversations, no combined bars, no routing prose.
+  for (const gone of ["main@example.com", "Max", "PMV5 review", "Fix login bug", "combined", "total", "?%", "resets in", "j/k", "Enter", "updated"]) {
+    expect(text).not.toContain(gone);
+  }
+  // The card fits its table and is centred.
+  const top = rows.findIndex(row => row.includes("╭─ Accounts"));
+  const left = rows[top]!.indexOf("╭");
+  const right = rows[top]!.indexOf("╮");
+  expect(right - left + 1).toBeLessThan(100);
+  expect(Math.abs(left - (150 - right - 1))).toBeLessThanOrEqual(1);
+  const bottom = rows.findIndex(row => row.includes("╰─"));
+  expect(Math.abs(top - (40 - bottom - 1))).toBeLessThanOrEqual(1);
 });
 
 test("the card covers the chat: everything around it is blank", () => {
@@ -192,97 +196,85 @@ test("the card covers the chat: everything around it is blank", () => {
   expect(rows.slice(0, top).every(row => row.trim() === "")).toBe(true);
 });
 
-test("running turns get a row each; more than two warm conversations fold into a row Enter expands", () => {
-  const snap = snapshot({}, [busyAccount("main", 5), claude("max2")]);
-  snap.claude.currentConversation = { convId: "main-warm-3", account: "main", lastUsedAt: NOW - 20 * 60_000, warm: true };
-  const { state } = openScreen(snap);
-  state.convId = "main-warm-3";
-  state.sidebar.conversations = [
-    conversation("main-run", "Busy turn"),
-    ...Array.from({ length: 5 }, (_, i) => conversation(`main-warm-${i}`, `Warm ${i}`)),
-  ];
-  const screen = state.accountsScreen!;
-  expect(screen.selected).toBe("main-warm-3");
-  let text = screenText(state).join("\n");
-  expect(text).toMatch(/◉ Busy turn +running │/);
-  // This conversation stays listed; the other four fold.
-  expect(text).toMatch(/ {2}Warm 3 +40m left │/);
-  expect(text).toContain("▸ 4 more with a warm cache");
-  expect(text).not.toContain("Warm 0");
+test("a short note says why new work skips an account near its limit, and only then", () => {
+  const near = claude("main", { usage: { fiveHour: { utilization: 40, resetsAt: NOW + 2 * H }, sevenDay: { utilization: 95, resetsAt: NOW + 72 * H } } });
+  const snap = snapshot({}, [near, claude("max2")]);
+  snap.claude.nextNewWork = { account: "max2", detail: "\"main\" is below the weekly floor" };
+  expect(screenText(openScreen(snap).state).join("\n")).toContain("main is near its weekly limit → new work goes to max2");
 
-  handleAccountsScreenKey({ type: "char", char: "j" }, screen, NOW);
-  expect(screen.selected).toBe("warm:main");
-  expect(screenText(state).join("\n")).toContain("Enter expand");
-  expect(handleAccountsScreenKey({ type: "enter" }, screen, NOW)).toEqual({ type: "handled" });
-  text = screenText(state).join("\n");
-  expect(text).toContain("▾ 4 more with a warm cache");
-  expect(text).toContain("Enter collapse");
-  expect(text).toMatch(/ {2}Warm 0 +55m left │/);
-  handleAccountsScreenKey({ type: "char", char: "j" }, screen, NOW);
-  expect(screen.selected).toBe("main-warm-0");
-  expect(handleAccountsScreenKey({ type: "enter" }, screen, NOW)).toEqual({ type: "open", convId: "main-warm-0" });
-  handleAccountsScreenKey({ type: "char", char: "k" }, screen, NOW);
-  handleAccountsScreenKey({ type: "enter" }, screen, NOW);
-  expect(screenText(state).join("\n")).toContain("▸ 4 more with a warm cache");
+  const fiveHour = snapshot({}, [claude("main", { usage: { fiveHour: { utilization: 93, resetsAt: NOW + H }, sevenDay: null } }), claude("max2")]);
+  fiveHour.claude.nextNewWork = { account: "max2", detail: "x" };
+  expect(screenText(openScreen(fiveHour).state).join("\n")).toContain("main is near its 5-hour limit → new work goes to max2");
 
-  // Two warm conversations are just listed.
-  const few = openScreen(snapshot({}, [busyAccount("main", 2), claude("max2")]));
-  text = screenText(few.state).join("\n");
-  expect(text).not.toContain("with a warm cache");
-  expect(text).toMatch(/main-war +55m left[^]*main-war +50m left/);
+  const both = snapshot({}, [near, claude("max2", { usage: near.usage })]);
+  both.claude.nextNewWork = { account: "max2", detail: "x" };
+  expect(screenText(openScreen(both).state).join("\n")).toContain("every account is near a limit → new work goes to max2");
+
+  const none = snapshot({}, [claude("main"), claude("max2")]);
+  none.claude.nextNewWork = null;
+  expect(screenText(openScreen(none).state).join("\n")).toContain("no account can take new work");
+
+  // Plenty of headroom everywhere: the "new work" tag says it all.
+  const quiet = screenText(openScreen(snapshot({}, [claude("main"), claude("max2")])).state).join("\n");
+  expect(quiet).not.toContain("→");
+  expect(quiet).toMatch(/● main {2}new work /);
 });
 
-test("titles drop markdown and end a cut-off phrase with an ellipsis", () => {
-  expect(displayTitle("You are the **web-api** agent on")).toBe("You are the web-api agent on");
-  expect(displayTitle("You have permission to edit code,")).toBe("You have permission to edit code…");
-  expect(displayTitle("Fix an Exocortex TUI/daemon sync bug:")).toBe("Fix an Exocortex TUI/daemon sync bug…");
-  expect(displayTitle("Use `snake_case` in  [the docs](https://x.dev)")).toBe("Use snake_case in the docs");
-  expect(displayTitle("## Plan *this* week")).toBe("Plan this week");
-  expect(displayTitle("my_var and other_var")).toBe("my_var and other_var");
-});
-
-test("limited and blocked accounts say so; OpenAI leaves out an unknown window", () => {
+test("limited, blocked, signed-out and other states replace the bars with a short word", () => {
   const snap = snapshot({}, [
     claude("main", { state: "limited", limitedUntil: NOW + 3 * H }),
     claude("max2", { state: "blocked", stateDetail: "token refresh failed", blockedUntil: NOW + 10 * 60_000, usage: null }),
+    claude("max3", { state: "signed_out", usage: null, loginCommand: "CLAUDE_CONFIG_DIR=~/.claude-max3 command claude auth login --claudeai" }),
+    claude("max4", { state: "not_subscription", stateDetail: "apiKey" }),
+    claude("max5", { state: "unchecked", usage: null }),
   ]);
-  snap.openai.accounts = [
-    { index: 1, email: "one@example.com", displayName: "One", plan: "plus", current: true },
-    { index: 2, email: "two@example.com", displayName: null, plan: null, current: false },
-  ];
-  const { state } = openScreen(snap);
-  state.usageByProvider.openai = { fiveHour: null, sevenDay: { utilization: 12, resetsAt: NOW + 48 * H } };
-  const text = screenText(state).join("\n");
-  expect(text).toMatch(/● limited until \d\d:\d\d │/);
-  expect(text).toMatch(/max2 .*● blocked │/);
-  expect(text).toContain("token refresh failed · checked again in 10m");
-  expect(text).toContain("OpenAI   /account <email> switches");
-  expect(text).toMatch(/▌one@example\.com  One · Plus +current │/);
-  expect(text).toMatch(/Weekly \[[█░]{20}\] 12%/);
-  expect(text).not.toContain("?%");
-  expect(text).toContain(" two@example.com");
+  snap.claude.nextNewWork = null;
+  const text = screenText(openScreen(snap).state, 40, 160).join("\n");
+  expect(text).toMatch(/● main {2}limited 3h {3}━{14} {2}40%/);
+  expect(text).toMatch(/● max2 {15}blocked: token refresh failed · retry in 10m +│/);
+  expect(text).toMatch(/● max3 {15}signed out +│/);
+  expect(text).toMatch(/● max4 {15}not a subscription \(apiKey\) +│/);
+  expect(text).toMatch(/● max5 {15}checking… +│/);
+  expect(text).toContain("sign in max3: CLAUDE_CONFIG_DIR=~/.claude-max3 command claude auth login --claudeai");
 });
 
-test("hidden sensitive info censors account emails", () => {
-  const { state } = openScreen();
+test("an account without usage yet shows no bars, not ?%", () => {
+  const snap = snapshot({}, [claude("main"), claude("max2", { usage: null })]);
+  const { state } = openScreen(snap);
+  state.usageByProvider.openai = null;
+  const text = screenText(state).join("\n");
+  expect(text).toMatch(/│ {2}● max2 +│/);
+  expect(text).not.toContain("?");
+});
+
+test("/proxy shows the remote's login instead of the Claude accounts", () => {
+  const snap = snapshot();
+  snap.claude.proxied = true;
+  snap.openai.accounts = [{ index: 1, email: "one@example.com", displayName: null, plan: null, current: true }];
+  const text = screenText(openScreen(snap).state).join("\n");
+  expect(text).toContain("the remote daemon's login (/proxy)");
+  expect(text).not.toContain("● main");
+  // The column labels move to the OpenAI table.
+  expect(text).toMatch(/OpenAI +5-Hour +Weekly/);
+});
+
+test("hidden sensitive info censors OpenAI emails", () => {
+  const snap = snapshot();
+  snap.openai.accounts = [{ index: 1, email: "one@example.com", displayName: null, plan: null, current: true }];
+  const { state } = openScreen(snap);
   state.hideSensitiveInfo = true;
   const text = screenText(state).join("\n");
-  expect(text).not.toContain("main@example.com");
-  expect(text).toContain("m***@example.com");
+  expect(text).not.toContain("one@example.com");
+  expect(text).toContain("o**@example.com");
 });
 
-test("j/k select conversations, Enter opens one, Esc and q close", () => {
+test("Esc and q close; other keys are swallowed", () => {
   const { state, daemon } = openScreen();
   const screen = state.accountsScreen!;
-  expect(handleAccountsScreenKey({ type: "char", char: "k" }, screen, NOW)).toEqual({ type: "handled" });
-  expect(screen.selected).toBe("conv-run");
-  expect(handleAccountsScreenKey({ type: "char", char: "k" }, screen, NOW)).toEqual({ type: "handled" });
-  expect(screen.selected).toBe("conv-run");
-  handleAccountsScreenKey({ type: "down" }, screen, NOW);
-  expect(screen.selected).toBe("conv-warm");
-  expect(handleAccountsScreenKey({ type: "enter" }, screen, NOW)).toEqual({ type: "open", convId: "conv-warm" });
-  expect(handleAccountsScreenKey({ type: "escape" }, screen, NOW)).toEqual({ type: "close" });
-  expect(handleAccountsScreenKey({ type: "char", char: "q" }, screen, NOW)).toEqual({ type: "close" });
+  expect(handleAccountsScreenKey({ type: "enter" }, screen)).toEqual({ type: "handled" });
+  expect(handleAccountsScreenKey({ type: "char", char: "x" }, screen)).toEqual({ type: "handled" });
+  expect(handleAccountsScreenKey({ type: "escape" }, screen)).toEqual({ type: "close" });
+  expect(handleAccountsScreenKey({ type: "char", char: "q" }, screen)).toEqual({ type: "close" });
 
   closeAccountsScreen(state, daemon);
   expect(state.accountsScreen).toBeNull();
@@ -292,44 +284,33 @@ test("j/k select conversations, Enter opens one, Esc and q close", () => {
 test("pushed snapshots update the open screen live", () => {
   const { state } = openScreen();
   const next = snapshot();
-  next.claude.accounts[0] = claude("main", { activeTurns: 0, conversations: [] });
-  next.claude.accounts[1] = claude("max2", {
-    email: "max2@example.com",
-    state: "limited",
-    limitedUntil: NOW + 3 * H,
-    activeTurns: 1,
-    conversations: [{ convId: "conv-warm", lastUsedAt: NOW, running: true, warm: true }],
-  });
-  next.claude.currentConversation = { convId: "conv-warm", account: "max2", lastUsedAt: NOW, warm: true };
+  next.claude.accounts[1] = claude("max2", { state: "limited", limitedUntil: NOW + 3 * H });
   handleEvent({ type: "accounts", snapshot: next }, state, noDaemon);
   expect(state.accountsScreen?.snapshot).toBe(next);
-  expect(state.accountsScreen?.selected).toBe("conv-warm");
-  const text = screenText(state).join("\n");
-  expect(text).toMatch(/ main  main@example\.com · Max +new work {3}● ready │/);
-  expect(text).toMatch(/▌max2  max2@example\.com · Max +this conversation {3}● limited until/);
-  expect(text).toMatch(/◉ PMV5 review +running │/);
+  expect(screenText(state).join("\n")).toMatch(/● max2 {2}limited 3h/);
   // Only the opening request opens the screen; unrelated answers do not reopen a closed one.
   state.accountsScreen = null;
   handleEvent({ type: "accounts", snapshot: next }, state, noDaemon);
   expect(state.accountsScreen).toBeNull();
 });
 
-test("a small terminal scrolls the content to keep the selection visible", () => {
-  const { state } = openScreen();
-  state.accountsScreen!.selected = "conv-warm";
-  const rows = screenText(state, 10, 100);
-  expect(rows.join("\n")).toContain("PMV5 review");
-  expect(rows.join("\n")).toMatch(/more/);
-});
+test("a narrow terminal shortens the bars; a short one scrolls with j/k", () => {
+  const { state } = openScreen(snapshot({}, [claude("main"), claude("max2")]));
+  const narrow = screenText(state, 40, 64).join("\n");
+  expect(narrow).toMatch(/● main {2}new work +━{6,13} {2}40%/);
+  expect(narrow).not.toMatch(/━{14}/);
 
-test("a selected turn that ends and folds away leaves the selection on its account's warm row", () => {
-  const { state } = openScreen(snapshot({}, [busyAccount("main", 3), claude("max2")]));
   const screen = state.accountsScreen!;
-  screen.selected = "main-run";
-  const next = snapshot({}, [busyAccount("main", 3), claude("max2")]);
-  next.claude.accounts[0]!.conversations[0] = { convId: "main-run", lastUsedAt: NOW - 60_000, running: false, warm: true };
-  next.claude.accounts[0]!.activeTurns = 0;
-  handleEvent({ type: "accounts", snapshot: next }, state, noDaemon);
-  expect(screen.selected).toBe("warm:main");
-  expect(screenText(state).join("\n")).toContain("▸ 4 conversations with a warm cache");
+  let rows = screenText(state, 8, 100).join("\n");
+  expect(rows).toContain("Claude");
+  expect(rows).toContain("↓ 1 more");
+  handleAccountsScreenKey({ type: "char", char: "j" }, screen);
+  handleAccountsScreenKey({ type: "char", char: "j" }, screen);
+  rows = screenText(state, 8, 100).join("\n");
+  expect(screen.scroll).toBe(1);
+  expect(rows).not.toContain("Claude");
+  expect(rows).toContain("● max2");
+  expect(rows).toContain("↑ more above");
+  handleAccountsScreenKey({ type: "char", char: "k" }, screen);
+  expect(screenText(state, 8, 100).join("\n")).toContain("Claude");
 });

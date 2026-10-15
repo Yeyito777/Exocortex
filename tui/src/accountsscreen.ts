@@ -1,16 +1,19 @@
 /**
- * Accounts screen: every Claude and OpenAI account on one full-screen card,
- * opened with /accounts or `g a` in normal mode. It shows the combined Claude
- * usage and where new work goes, then each Claude account's sign-in, state,
- * own 5-hour and weekly windows, and the conversations on it: running turns
- * one per row, warm-cache ones folded into a row that Enter expands. The
- * OpenAI pool follows. Data comes from the daemon's `accounts` command, which
- * keeps pushing snapshots while the screen is open. It only opens when several
- * accounts are set up; otherwise it explains how to add one. j/k select a
- * row, Enter opens a conversation (or expands the warm ones), Esc or q closes.
+ * Accounts screen: every Claude and OpenAI account as one row of a small
+ * table on a card over a blank backdrop, opened with /accounts or `g a` in
+ * normal mode. A row is a state dot, the account, and its 5-hour and weekly
+ * usage with the time to each reset; a short word replaces the bars when the
+ * account cannot be used. The account this conversation runs on (OpenAI: the
+ * current login) is highlighted and the one new work goes to is tagged. A dim
+ * note under the table says why new work skips an account near its limit and
+ * how to sign one in, only when there is something to say. Data comes from
+ * the daemon's `accounts` command, which keeps pushing snapshots while the
+ * screen is open. It only opens when several accounts are set up; otherwise it
+ * explains how to add one. Esc or q closes; j/k scroll a card cut short by a
+ * small terminal.
  */
 
-import type { AccountConversationInfo, AccountsEvent, AccountsSnapshot, ClaudeAccountInfo } from "./protocol";
+import type { AccountsEvent, AccountsSnapshot, ClaudeAccountInfo, ClaudeAccountsInfo } from "./protocol";
 import type { UsageData, UsageWindow } from "./messages";
 import type { KeyEvent } from "./input";
 import type { RenderState } from "./state";
@@ -18,18 +21,13 @@ import type { ScreenRect } from "./historyimages";
 import { moveTo } from "./frame";
 import { maybeCensorEmail } from "./privacy";
 import { pushSystemMessage } from "./state";
-import { ACTIVITY_GLYPH } from "./sidebar/activityindicator";
-import { BAR_WIDTH, barFill } from "./statusblocks/usage";
+import { barFill } from "./statusblocks/usage";
 import { theme } from "./theme";
 import { termWidth, truncateToWidth } from "./textwidth";
 
 export interface AccountsScreenState {
   snapshot: AccountsSnapshot;
-  /** Selected row: a conversation id or a warm-list toggle (`warm:<account>`); null when none is listed. */
-  selected: string | null;
-  /** Claude accounts whose warm conversations are listed one per row. */
-  expanded: Set<string>;
-  /** First content row shown (set by the renderer to keep the selection visible). */
+  /** First content row shown when the card does not fit the terminal. */
   scroll: number;
 }
 
@@ -70,60 +68,30 @@ export function handleAccountsEvent(state: RenderState, event: AccountsEvent): v
       pushSystemMessage(state, ACCOUNTS_UNAVAILABLE_HINT, theme.muted);
       return;
     }
-    state.accountsScreen = { snapshot: event.snapshot, selected: null, expanded: new Set(), scroll: 0 };
-    const rows = selectableRows(state.accountsScreen, Date.now());
-    const current = event.snapshot.claude.currentConversation?.convId;
-    state.accountsScreen.selected = current && rows.includes(current) ? current : rows[0] ?? null;
+    state.accountsScreen = { snapshot: event.snapshot, scroll: 0 };
     return;
   }
-  const screen = state.accountsScreen;
-  if (!screen) return;
-  screen.snapshot = event.snapshot;
-  const rows = selectableRows(screen, Date.now());
-  if (screen.selected && !rows.includes(screen.selected)) {
-    // A conversation whose turn ended folds into its account's warm row: keep the selection there.
-    const account = event.snapshot.claude.accounts.find(account => account.conversations.some(conv => conv.convId === screen.selected));
-    const toggle = account ? warmToggleKey(account.id) : null;
-    screen.selected = toggle && rows.includes(toggle) ? toggle : rows[0] ?? null;
-  } else if (!screen.selected) {
-    screen.selected = rows[0] ?? null;
-  }
+  if (state.accountsScreen) state.accountsScreen.snapshot = event.snapshot;
 }
 
 // ── Keys ─────────────────────────────────────────────────────────────
 
-export type AccountsScreenKeyResult = { type: "close" } | { type: "handled" } | { type: "open"; convId: string };
+export type AccountsScreenKeyResult = { type: "close" } | { type: "handled" };
 
-/** The screen owns the keyboard: j/k (or ↓/↑) select, Enter opens or expands, Esc or q closes. */
-export function handleAccountsScreenKey(key: Readonly<KeyEvent>, screen: AccountsScreenState, now = Date.now()): AccountsScreenKeyResult {
+/** The screen owns the keyboard: Esc or q closes, j/k (or ↓/↑) scroll when the card is cut short. */
+export function handleAccountsScreenKey(key: Readonly<KeyEvent>, screen: AccountsScreenState): AccountsScreenKeyResult {
   if (key.type === "escape") return { type: "close" };
   const char = key.type === "char" ? key.char : undefined;
   if (char === "q") return { type: "close" };
-  if (key.type === "enter") {
-    const toggled = screen.selected ? warmToggleAccount(screen.selected) : null;
-    if (toggled !== null) {
-      if (!screen.expanded.delete(toggled)) screen.expanded.add(toggled);
-      return { type: "handled" };
-    }
-    return screen.selected ? { type: "open", convId: screen.selected } : { type: "handled" };
-  }
   const step = char === "j" || key.type === "down" ? 1 : char === "k" || key.type === "up" ? -1 : 0;
-  const rows = selectableRows(screen, now);
-  if (step && rows.length > 0) {
-    const index = screen.selected ? rows.indexOf(screen.selected) : -1;
-    screen.selected = rows[Math.max(0, Math.min(rows.length - 1, index < 0 ? 0 : index + step))];
-  } else if (char === "g" || key.type === "home") {
-    screen.selected = rows[0] ?? null;
-    screen.scroll = 0;
-  } else if (char === "G" || key.type === "end") {
-    screen.selected = rows.at(-1) ?? null;
-  }
+  // The renderer clamps the scroll to the content.
+  if (step) screen.scroll = Math.max(0, screen.scroll + step);
   return { type: "handled" };
 }
 
 // ── Formatting ───────────────────────────────────────────────────────
 
-export function formatDuration(ms: number): string {
+function formatDuration(ms: number): string {
   const minutes = Math.max(0, Math.round(ms / 60_000));
   const days = Math.floor(minutes / 1440);
   const hours = Math.floor((minutes % 1440) / 60);
@@ -133,59 +101,6 @@ export function formatDuration(ms: number): string {
   return `${mins}m`;
 }
 
-/** Local clock time: "14:30" within a day, "Sat 09:00" further out. */
-export function formatClock(at: number, now: number): string {
-  const date = new Date(at);
-  const time = `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
-  if (at - now < 20 * 60 * 60_000) return time;
-  return `${date.toLocaleDateString("en-US", { weekday: "short" })} ${time}`;
-}
-
-/**
- * A conversation title for one row: markdown emphasis and code marks dropped,
- * whitespace collapsed, and a title cut off mid-phrase (subagent titles are
- * the prompt's first words) ending in "…" rather than a dangling comma.
- */
-export function displayTitle(raw: string): string {
-  let title = raw
-    .replace(/\s+/g, " ")
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
-    .replace(/(\*\*|~~|\*|`)(?=\S)(.+?)(?<=\S)\1/g, "$2")
-    .replace(/\*\*|`/g, "")
-    .replace(/^#+\s+/, "")
-    .trim();
-  if (/[,:;(–—-]$/.test(title)) title = title.replace(/[\s,:;(–—-]+$/, "") + "…";
-  return title;
-}
-
-interface AccountStatus {
-  /** Short state for the header's right edge. */
-  label: string;
-  color: string;
-  /** A longer explanation on its own row, when the state needs one. */
-  detail?: string;
-}
-
-function accountStatus(account: ClaudeAccountInfo, now: number): AccountStatus {
-  switch (account.state) {
-    case "ready": return { label: "ready", color: theme.success };
-    case "limited":
-      return account.limitedUntil
-        ? { label: `limited until ${formatClock(account.limitedUntil, now)}`, color: theme.warning }
-        : { label: "at a usage limit", color: theme.warning };
-    case "blocked":
-      return {
-        label: "blocked",
-        color: theme.error,
-        detail: `${account.stateDetail ?? "authentication failed"}${account.blockedUntil ? ` · checked again in ${formatDuration(account.blockedUntil - now)}` : ""}`,
-      };
-    case "signed_out": return { label: "signed out", color: theme.error };
-    case "not_subscription":
-      return { label: "not a subscription", color: theme.warning, detail: `signed in with ${account.stateDetail ?? "an unknown method"}, not a Claude subscription` };
-    case "unchecked": return { label: "not checked yet", color: theme.muted };
-  }
-}
-
 /** A window past its reset time has started over. */
 function windowPercent(window: UsageWindow | null | undefined, now: number): number | null {
   if (!window) return null;
@@ -193,252 +108,252 @@ function windowPercent(window: UsageWindow | null | undefined, now: number): num
   return Math.round(window.utilization);
 }
 
-function capitalize(text: string): string {
-  return text.charAt(0).toUpperCase() + text.slice(1);
-}
-
-// ── Rows ─────────────────────────────────────────────────────────────
-
-/** Up to this many warm conversations are listed outright; more fold into one row. */
-const LIST_WARM_UP_TO = 2;
-const WARM_TOGGLE_PREFIX = "warm:";
-
-function warmToggleKey(accountId: string): string {
-  return WARM_TOGGLE_PREFIX + accountId;
-}
-
-function warmToggleAccount(key: string): string | null {
-  return key.startsWith(WARM_TOGGLE_PREFIX) ? key.slice(WARM_TOGGLE_PREFIX.length) : null;
-}
-
-type ListRow =
-  | { kind: "conversation"; conv: AccountConversationInfo }
-  | { kind: "warm"; accountId: string; count: number; expanded: boolean; afterOthers: boolean };
-
-function rowKey(row: ListRow): string {
-  return row.kind === "conversation" ? row.conv.convId : warmToggleKey(row.accountId);
-}
-
-/**
- * An account's conversation rows at `now`: running turns and this
- * conversation first, then the warm ones, folded behind a toggle when there
- * are more than LIST_WARM_UP_TO of them.
- */
-function accountRows(screen: AccountsScreenState, account: ClaudeAccountInfo, now: number): ListRow[] {
-  const { snapshot } = screen;
-  const ttl = snapshot.claude.routing.cacheTtlMs;
-  const current = snapshot.claude.currentConversation?.convId;
-  const live = account.conversations.filter(conv => conv.running || conv.lastUsedAt + ttl > now);
-  const shown = [
-    ...live.filter(conv => conv.running),
-    ...live.filter(conv => !conv.running && conv.convId === current),
-  ];
-  const warm = live.filter(conv => !shown.includes(conv));
-  const rows: ListRow[] = shown.map(conv => ({ kind: "conversation", conv }));
-  const warmRows: ListRow[] = warm.map(conv => ({ kind: "conversation", conv }));
-  if (warm.length <= LIST_WARM_UP_TO) return [...rows, ...warmRows];
-  const expanded = screen.expanded.has(account.id);
-  rows.push({ kind: "warm", accountId: account.id, count: warm.length, expanded, afterOthers: shown.length > 0 });
-  return expanded ? [...rows, ...warmRows] : rows;
-}
-
-/** Selectable row keys in display order. */
-export function selectableRows(screen: AccountsScreenState, now: number): string[] {
-  const { snapshot } = screen;
-  if (snapshot.claude.proxied) return [];
-  return snapshot.claude.accounts.flatMap(account => accountRows(screen, account, now).map(rowKey));
-}
-
-// ── Lines ────────────────────────────────────────────────────────────
+// ── Table ────────────────────────────────────────────────────────────
 
 type Segment = [color: string, text: string];
 
-interface ScreenLine {
-  segments: Segment[];
-  /** Right-aligned segments (status, times). */
-  right?: Segment[];
-  /** Selectable row key. */
-  key?: string;
+/** One usage column of a row: a bar, its percent and the time to its reset. */
+interface UsageCell {
+  pct: number;
+  reset: string;
 }
 
-/** Width of the "Claude" / "OpenAI" heading column. */
-const HEADING_WIDTH = 9;
-/** Indent of an account's detail rows under its name. */
-const INDENT = "   ";
-
-/** The status bar's usage bar: `[███░░░]` at the same width and colours. */
-function bar(pct: number | null, capacity = 100): Segment[] {
-  const filled = pct === null ? 0 : barFill(pct, capacity);
-  return [[theme.text, "["], [theme.accent, "█".repeat(filled)], [theme.muted, "░".repeat(BAR_WIDTH - filled)], [theme.text, "]"]];
+interface TableRow {
+  dot: string;
+  name: Segment;
+  /** Short words after the name: "new work", "limited 2h". */
+  tag?: Segment;
+  /** 5-hour and weekly cells; an unknown window is left blank. */
+  windows?: [UsageCell | null, UsageCell | null];
+  /** A state that takes the usage columns' place: "blocked", "signed out". */
+  note?: Segment[];
 }
 
-function windowLine(label: string, window: UsageWindow, now: number): ScreenLine {
+type ScreenLine =
+  | { kind: "heading"; label: string; columns: boolean }
+  | { kind: "row"; row: TableRow }
+  | { kind: "text"; segments: Segment[] }
+  | { kind: "blank" };
+
+function usageCell(window: UsageWindow | null | undefined, now: number): UsageCell | null {
   const pct = windowPercent(window, now);
-  const reset: Segment[] = window.resetsAt !== null && window.resetsAt > now
-    ? [[theme.muted, " resets in "], [theme.accent, formatDuration(window.resetsAt - now)], [theme.muted, ` (${formatClock(window.resetsAt, now)})`]]
-    : [];
-  return {
-    segments: [
-      [theme.muted, ` ${INDENT}${label} `],
-      ...bar(pct),
-      [theme.accent, ` ${pct === null ? "?" : pct}%`.padEnd(5)],
-      ...reset,
-    ],
-  };
+  if (pct === null || !window) return null;
+  return { pct, reset: window.resetsAt !== null && window.resetsAt > now ? formatDuration(window.resetsAt - now) : "" };
 }
 
-/** The 5-hour and weekly rows a usage report has (an unknown window is left out, not shown as "?"). */
-function windowLines(usage: UsageData | null | undefined, now: number): ScreenLine[] {
-  const lines: ScreenLine[] = [];
-  if (usage?.fiveHour) lines.push(windowLine("5-Hour", usage.fiveHour, now));
-  if (usage?.sevenDay) lines.push(windowLine("Weekly", usage.sevenDay, now));
-  return lines;
+function usageCells(usage: UsageData | null | undefined, now: number): [UsageCell | null, UsageCell | null] | undefined {
+  const cells: [UsageCell | null, UsageCell | null] = [usageCell(usage?.fiveHour, now), usageCell(usage?.sevenDay, now)];
+  return cells[0] || cells[1] ? cells : undefined;
 }
 
-function heading(text: string): Segment[] {
-  return [[theme.text, " "], [theme.bold + theme.text, text.padEnd(HEADING_WIDTH)], [theme.boldOff, ""]];
+/** The window an account is too close to for new work, by the routing floors. */
+function nearLimit(account: ClaudeAccountInfo, claude: ClaudeAccountsInfo, now: number): "weekly" | "5-hour" | null {
+  const weekly = windowPercent(account.usage?.sevenDay, now);
+  if (weekly !== null && 100 - weekly < claude.routing.weeklyFloor) return "weekly";
+  const fiveHour = windowPercent(account.usage?.fiveHour, now);
+  if (fiveHour !== null && 100 - fiveHour < claude.routing.fiveHourFloor) return "5-hour";
+  return null;
 }
 
-function conversationTitle(state: RenderState, convId: string): string {
-  const title = state.sidebar.conversations.find(conv => conv.id === convId)?.title;
-  return (title && displayTitle(title)) || convId.slice(0, 8);
-}
-
-/** Combined bars as a share of every account's capacity, then where new work goes. */
-function claudeSummaryLines(snapshot: AccountsSnapshot, now: number): ScreenLine[] {
-  const { combined, routing, nextNewWork } = snapshot.claude;
-  const capacity = combined?.capacity && combined.capacity > 0 ? combined.capacity : 100;
-  const share = (window: UsageWindow | null | undefined): Segment[] => {
-    const pct = windowPercent(window, now);
-    const ofPool = pct === null ? null : Math.round((pct / capacity) * 100);
-    return [...bar(ofPool), [theme.accent, ` ${ofPool === null ? "?" : ofPool}%`.padEnd(5)]];
-  };
-  const lines: ScreenLine[] = [{
-    segments: [
-      ...heading("Claude"),
-      [theme.muted, "5-Hour "], ...share(combined?.fiveHour),
-      [theme.muted, "  Weekly "], ...share(combined?.sevenDay),
-      [theme.muted, "  combined"],
-    ],
-  }];
-  const stay = `conversations stay while warm (${formatDuration(routing.cacheTtlMs)})`;
-  lines.push({
-    segments: nextNewWork
-      ? [
-        [theme.muted, " ".repeat(1 + HEADING_WIDTH) + "new work → "],
-        [theme.text, nextNewWork.account],
-        [theme.muted, ` · ${nextNewWork.detail} · ${stay}`],
-      ]
-      : [[theme.muted, " ".repeat(1 + HEADING_WIDTH)], [theme.warning, "no account can take new work"], [theme.muted, ` · ${stay}`]],
-  });
-  return lines;
-}
-
-function claudeAccountLines(state: RenderState, screen: AccountsScreenState, account: ClaudeAccountInfo, now: number): ScreenLine[] {
-  const { snapshot } = screen;
-  const holdsCurrent = snapshot.claude.currentConversation?.account === account.id;
-  const email = maybeCensorEmail(account.email, state.hideSensitiveInfo);
-  const who = [email, account.plan && capitalize(account.plan)].filter(Boolean).join(" · ");
-  const status = accountStatus(account, now);
-  const tags = [holdsCurrent ? "this conversation" : null, snapshot.claude.nextNewWork?.account === account.id ? "new work" : null]
-    .filter(Boolean).join(" · ");
-  const lines: ScreenLine[] = [{
-    segments: [
-      [theme.accent, holdsCurrent ? "▌" : " "],
-      [theme.bold + (holdsCurrent ? theme.accent : theme.text), account.id],
-      [theme.boldOff + theme.muted, who ? `  ${who}` : ""],
-    ],
-    right: [
-      [theme.muted, tags ? `${tags}   ` : ""],
-      [status.color, "● "],
-      [status.label === "ready" ? theme.muted : status.color, status.label],
-    ],
-  }];
-  if (status.detail) lines.push({ segments: [[status.color, ` ${INDENT}${status.detail}`]] });
-  if (account.loginCommand) {
-    lines.push({ segments: [[theme.muted, ` ${INDENT}sign in from a terminal: `], [theme.command, account.loginCommand]] });
-  }
-  const windows = windowLines(account.usage, now);
-  if (windows.length === 0 && account.state === "ready") lines.push({ segments: [[theme.muted, ` ${INDENT}usage not reported yet`]] });
-  lines.push(...windows);
-
-  const rows = accountRows(screen, account, now);
-  const ttl = snapshot.claude.routing.cacheTtlMs;
-  for (const row of rows) {
-    if (row.kind === "warm") {
-      lines.push({
-        key: rowKey(row),
-        segments: [[theme.muted, ` ${INDENT}${row.expanded ? "▾" : "▸"} ${row.count} ${row.afterOthers ? "more" : "conversations"} with a warm cache`]],
-      });
-      continue;
+function claudeRow(account: ClaudeAccountInfo, claude: ClaudeAccountsInfo, now: number): TableRow {
+  const holdsCurrent = claude.currentConversation?.account === account.id;
+  const tags: string[] = [];
+  let tagColor = theme.muted;
+  let dot = theme.success;
+  let note: Segment[] | undefined;
+  switch (account.state) {
+    case "ready": break;
+    case "limited":
+      dot = tagColor = theme.warning;
+      tags.push(account.limitedUntil && account.limitedUntil > now ? `limited ${formatDuration(account.limitedUntil - now)}` : "limited");
+      break;
+    case "blocked": {
+      dot = theme.error;
+      const retry = account.blockedUntil && account.blockedUntil > now ? ` · retry in ${formatDuration(account.blockedUntil - now)}` : "";
+      note = [[theme.error, "blocked"], [theme.muted, `${account.stateDetail ? `: ${account.stateDetail}` : ""}${retry}`]];
+      break;
     }
-    const { conv } = row;
-    const isCurrent = conv.convId === state.convId;
-    lines.push({
-      key: conv.convId,
-      segments: [
-        [theme.accent, ` ${INDENT}${conv.running ? ACTIVITY_GLYPH : " "} `],
-        [isCurrent ? theme.accent : theme.text, conversationTitle(state, conv.convId)],
-      ],
-      right: [[theme.muted, conv.running ? "running" : `${formatDuration(conv.lastUsedAt + ttl - now)} left`]],
-    });
+    case "signed_out":
+      dot = theme.error;
+      note = [[theme.error, "signed out"]];
+      break;
+    case "not_subscription":
+      dot = theme.warning;
+      note = [[theme.warning, "not a subscription"], [theme.muted, account.stateDetail ? ` (${account.stateDetail})` : ""]];
+      break;
+    case "unchecked":
+      dot = theme.muted;
+      note = [[theme.muted, "checking…"]];
+      break;
   }
-  const listedRunning = account.conversations.filter(conv => conv.running).length;
-  const otherTurns = account.activeTurns - listedRunning;
-  if (otherTurns > 0) {
-    lines.push({ segments: [[theme.accent, ` ${INDENT}${ACTIVITY_GLYPH} `], [theme.muted, `${otherTurns} other turn${otherTurns === 1 ? "" : "s"} running`]] });
-  }
-  return lines;
+  if (claude.nextNewWork?.account === account.id) tags.push("new work");
+  return {
+    dot,
+    name: [holdsCurrent ? theme.bold + theme.accent : theme.text, account.id],
+    tag: tags.length > 0 ? [tagColor, tags.join(" · ")] : undefined,
+    windows: note ? undefined : usageCells(account.usage, now),
+    note,
+  };
 }
 
-function openAILines(state: RenderState, snapshot: AccountsSnapshot, usage: UsageData | null, now: number): ScreenLine[] {
-  const { accounts, proxied } = snapshot.openai;
-  if (accounts.length === 0) return [];
-  const lines: ScreenLine[] = [
-    { segments: [] },
-    { segments: [...heading("OpenAI"), [theme.muted, proxied ? "through /proxy: the remote's login" : "/account <email> switches"]] },
-  ];
-  for (const account of accounts) {
-    const email = maybeCensorEmail(account.email, state.hideSensitiveInfo);
-    const label = email ?? account.displayName ?? `account ${account.index}`;
-    const extra = [email ? account.displayName : null, account.plan && capitalize(account.plan)].filter(Boolean).join(" · ");
-    lines.push({
-      segments: [
-        [theme.accent, account.current ? "▌" : " "],
-        [theme.bold + (account.current ? theme.accent : theme.text), label],
-        [theme.boldOff + theme.muted, extra ? `  ${extra}` : ""],
-      ],
-      right: account.current ? [[theme.muted, "current"]] : undefined,
-    });
-    if (account.current) lines.push(...windowLines(usage, now));
+/** Why new work skips a usable account, or that none can take it; null when the "new work" tag says it all. */
+function routingNote(claude: ClaudeAccountsInfo, now: number): Segment[] | null {
+  const next = claude.nextNewWork;
+  if (!next) return claude.accounts.length > 0 ? [[theme.warning, "no account can take new work"]] : null;
+  const chosen = claude.accounts.find(account => account.id === next.account);
+  if (chosen && nearLimit(chosen, claude, now)) {
+    return [[theme.muted, `every account is near a limit → new work goes to ${next.account}`]];
   }
-  return lines;
+  const skipped = claude.accounts.filter(account => account.id !== next.account && account.state === "ready" && nearLimit(account, claude, now));
+  if (skipped.length === 0) return null;
+  const why = skipped.length === 1
+    ? `${skipped[0]!.id} is near its ${nearLimit(skipped[0]!, claude, now)} limit`
+    : `${skipped.map(account => account.id).join(", ")} are near their limits`;
+  return [[theme.muted, `${why} → new work goes to ${next.account}`]];
 }
 
 /** Everything the screen shows, top to bottom (no chrome). */
 export function accountsScreenLines(state: RenderState, screen: AccountsScreenState, now = Date.now()): ScreenLine[] {
-  const { snapshot } = screen;
+  const { claude, openai } = screen.snapshot;
+  const claudeTable = !claude.proxied && claude.accounts.length > 0;
   const lines: ScreenLine[] = [];
-  const claude = snapshot.claude;
+  const notes: Segment[][] = [];
+
   if (claude.proxied) {
-    lines.push({ segments: [...heading("Claude"), [theme.muted, "through /proxy: the remote daemon's login runs every turn"]] });
-  } else {
-    lines.push(...claudeSummaryLines(snapshot, now));
+    lines.push({ kind: "heading", label: "Claude", columns: false });
+    lines.push({ kind: "text", segments: [[theme.muted, "  the remote daemon's login (/proxy)"]] });
+  } else if (claudeTable) {
+    lines.push({ kind: "heading", label: "Claude", columns: true });
     for (const account of claude.accounts) {
-      lines.push({ segments: [] });
-      lines.push(...claudeAccountLines(state, screen, account, now));
+      lines.push({ kind: "row", row: claudeRow(account, claude, now) });
+      if (account.loginCommand) notes.push([[theme.muted, `sign in ${account.id}: `], [theme.command, account.loginCommand]]);
+    }
+    const routing = routingNote(claude, now);
+    if (routing) notes.unshift(routing);
+  }
+
+  if (openai.accounts.length > 0) {
+    if (lines.length > 0) lines.push({ kind: "blank" });
+    lines.push({ kind: "heading", label: "OpenAI", columns: !claudeTable });
+    if (openai.proxied) lines.push({ kind: "text", segments: [[theme.muted, "  the remote daemon's login (/proxy)"]] });
+    const usage = state.usageByProvider.openai ?? null;
+    for (const account of openai.accounts) {
+      const name = maybeCensorEmail(account.email, state.hideSensitiveInfo) ?? account.displayName ?? `account ${account.index}`;
+      lines.push({
+        kind: "row",
+        row: {
+          dot: account.current ? theme.success : theme.muted,
+          name: [account.current ? theme.bold + theme.accent : theme.text, name],
+          windows: account.current ? usageCells(usage, now) : undefined,
+        },
+      });
     }
   }
-  lines.push(...openAILines(state, snapshot, state.usageByProvider.openai ?? null, now));
+
+  if (notes.length > 0) {
+    lines.push({ kind: "blank" });
+    for (const note of notes) lines.push({ kind: "text", segments: note });
+  }
   return lines;
+}
+
+// ── Layout ───────────────────────────────────────────────────────────
+
+/** Space between the table's columns. */
+const COLUMN_GAP = 3;
+const DOT_WIDTH = 2;
+const PCT_WIDTH = 4;
+const MIN_BAR_WIDTH = 6;
+/** Bars stop growing here: shorter than the status bar's, so the card stays small. */
+const MAX_BAR_WIDTH = 14;
+const COLUMN_LABELS = ["5-Hour", "Weekly"] as const;
+/** A thin bar: stacked rows of full blocks would merge into one slab. */
+const BAR_GLYPH = "━";
+
+interface Columns {
+  /** The name column (names and their tags), after the dot. */
+  name: number;
+  bar: number;
+  /** Widest time to reset. */
+  reset: number;
+}
+
+function cellWidth(columns: Columns): number {
+  return columns.bar + 1 + PCT_WIDTH + (columns.reset > 0 ? 2 + columns.reset : 0);
+}
+
+function tableWidth(columns: Columns): number {
+  return DOT_WIDTH + columns.name + 2 * (COLUMN_GAP + cellWidth(columns));
+}
+
+/** Column widths for these lines, with bars as wide as `maxWidth` allows (up to MAX_BAR_WIDTH). */
+function layoutColumns(lines: ScreenLine[], maxWidth: number): Columns {
+  let name = 0;
+  let reset = 0;
+  for (const line of lines) {
+    if (line.kind === "heading") name = Math.max(name, termWidth(line.label) - DOT_WIDTH);
+    if (line.kind !== "row") continue;
+    const { row } = line;
+    name = Math.max(name, termWidth(row.name[1]) + (row.tag ? 2 + termWidth(row.tag[1]) : 0));
+    for (const cell of row.windows ?? []) if (cell) reset = Math.max(reset, cell.reset.length);
+  }
+  const fixed = tableWidth({ name, bar: 0, reset });
+  const bar = Math.max(MIN_BAR_WIDTH, Math.min(MAX_BAR_WIDTH, Math.floor((maxWidth - fixed) / 2)));
+  return { name, bar, reset };
+}
+
+function cellSegments(cell: UsageCell | null, columns: Columns): Segment[] {
+  if (!cell) return [[theme.text, " ".repeat(cellWidth(columns))]];
+  const filled = barFill(cell.pct, 100, columns.bar);
+  const segments: Segment[] = [
+    [theme.accent, BAR_GLYPH.repeat(filled)],
+    [theme.borderUnfocused, BAR_GLYPH.repeat(columns.bar - filled)],
+    [theme.accent, ` ${`${cell.pct}%`.padStart(PCT_WIDTH)}`],
+  ];
+  if (columns.reset > 0) segments.push([theme.muted, `  ${cell.reset.padEnd(columns.reset)}`]);
+  return segments;
+}
+
+function lineSegments(line: ScreenLine, columns: Columns): Segment[] {
+  const gap: Segment = [theme.text, " ".repeat(COLUMN_GAP)];
+  switch (line.kind) {
+    case "blank": return [];
+    case "text": return line.segments;
+    case "heading": {
+      const label: Segment = [theme.bold + theme.text, line.label.padEnd(DOT_WIDTH + columns.name)];
+      if (!line.columns) return [label, [theme.boldOff, ""]];
+      return [
+        label, [theme.boldOff, ""], gap,
+        [theme.muted, COLUMN_LABELS[0].padEnd(cellWidth(columns))], gap,
+        [theme.muted, COLUMN_LABELS[1]],
+      ];
+    }
+    case "row": {
+      const { row } = line;
+      const nameWidth = termWidth(row.name[1]) + (row.tag ? 2 + termWidth(row.tag[1]) : 0);
+      const segments: Segment[] = [
+        [row.dot, "● "],
+        row.name, [theme.boldOff, ""],
+        ...(row.tag ? [[theme.text, "  "], row.tag] as Segment[] : []),
+        [theme.text, " ".repeat(Math.max(0, columns.name - nameWidth))],
+        gap,
+      ];
+      if (row.note) return [...segments, ...row.note];
+      if (!row.windows) return segments;
+      return [...segments, ...cellSegments(row.windows[0], columns), gap, ...cellSegments(row.windows[1], columns)];
+    }
+  }
 }
 
 // ── Render ───────────────────────────────────────────────────────────
 
-const MAX_WIDTH = 104;
 const MARGIN_COLUMNS = 2;
-/** Top border (with the title), a blank row above and below the content, bottom border (with the keys). */
+/** Border plus two columns of padding on each side. */
+const SIDE_COLUMNS = 6;
+/** Top border, a blank row above and below the content, bottom border. */
 const CHROME_ROWS = 4;
+const TITLE = "Accounts";
+const KEYS = "Esc close";
 
 function cleanText(text: string): string {
   return text.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ");
@@ -448,7 +363,8 @@ function segmentsWidth(segments: Segment[]): number {
   return segments.reduce((sum, [, text]) => sum + termWidth(cleanText(text)), 0);
 }
 
-function fitSegments(segments: Segment[], width: number): { text: string; used: number } {
+/** One content row: segments cut to `width`, then padded to it. */
+function fitSegments(segments: Segment[], width: number, bg: string): string {
   let text = "";
   let used = 0;
   for (const [color, raw] of segments) {
@@ -457,21 +373,10 @@ function fitSegments(segments: Segment[], width: number): { text: string; used: 
     text += color + part;
     used += termWidth(part);
   }
-  return { text, used };
+  return text + theme.reset + bg + theme.boldOff + " ".repeat(Math.max(0, width - used));
 }
 
-/** One content row: left segments truncated to leave room for the right-aligned ones. */
-function fitLine(line: ScreenLine | undefined, width: number, bg: string): string {
-  const right = line?.right && segmentsWidth(line.right) > 0 ? line.right : null;
-  const rightWidth = right ? Math.min(segmentsWidth(right), Math.max(0, width - 12)) : 0;
-  const left = fitSegments(line?.segments ?? [], right ? width - rightWidth - 2 : width);
-  const out = left.text + theme.reset + bg + theme.boldOff;
-  if (!right) return out + " ".repeat(Math.max(0, width - left.used));
-  const fittedRight = fitSegments(right, rightWidth);
-  return out + " ".repeat(Math.max(0, width - left.used - fittedRight.used)) + fittedRight.text + theme.reset + bg;
-}
-
-/** `╭─ title ───── note ─╮` and `╰─ … ─╯` borders with muted texts. */
+/** `╭─ title ─────╮` and `╰─ keys ───── note ─╯` borders. */
 function borderLine(corners: [string, string], width: number, leftText: string, rightText: string, leftColor = theme.muted): string {
   const inner = width - 2;
   const framed = (text: string) => text ? termWidth(text) + 3 : 0;
@@ -486,38 +391,29 @@ function borderLine(corners: [string, string], width: number, leftText: string, 
     + corners[1];
 }
 
-function footerKeys(screen: AccountsScreenState): string {
-  const toggled = screen.selected ? warmToggleAccount(screen.selected) : null;
-  const enter = toggled === null ? "Enter open" : screen.expanded.has(toggled) ? "Enter collapse" : "Enter expand";
-  return `j/k select · ${enter} · Esc close`;
-}
-
 export interface RenderedAccountsScreen {
   payload: string;
   rect: ScreenRect;
 }
 
 /**
- * The screen: a card centred over a blank backdrop that covers the whole
- * terminal, so no chat text shows around it. Updates `screen.scroll` to keep
- * the selection visible.
+ * The screen: a card sized to its table, centred over a blank backdrop that
+ * covers the whole terminal so no chat text shows around it. Clamps
+ * `screen.scroll` to the content.
  */
 export function renderAccountsScreen(state: RenderState, screen: AccountsScreenState, totalRows: number, totalCols: number, now = Date.now()): RenderedAccountsScreen {
   const lines = accountsScreenLines(state, screen, now);
-  const width = Math.max(20, Math.min(MAX_WIDTH, totalCols - MARGIN_COLUMNS * 2));
-  const inner = width - 4;
-  const bodyRows = Math.max(1, Math.min(lines.length, totalRows - 2 - CHROME_ROWS));
+  const maxInner = Math.max(16, totalCols - MARGIN_COLUMNS * 2 - SIDE_COLUMNS);
+  const columns = layoutColumns(lines, maxInner);
+  const content = lines.map(line => lineSegments(line, columns));
+  const chromeWidth = termWidth(TITLE) + termWidth(KEYS) + 8;
+  const inner = Math.min(maxInner, Math.max(chromeWidth, ...content.map(segmentsWidth)));
+  const width = inner + SIDE_COLUMNS;
+  const bodyRows = Math.max(1, Math.min(content.length, totalRows - 2 - CHROME_ROWS));
   const height = bodyRows + CHROME_ROWS;
   const top = Math.max(1, Math.floor((totalRows - height) / 2) + 1);
   const left = Math.max(1, Math.floor((totalCols - width) / 2) + 1);
-
-  const selectedLine = screen.selected ? lines.findIndex(line => line.key === screen.selected) : -1;
-  const maxScroll = Math.max(0, lines.length - bodyRows);
-  let scroll = Math.max(0, Math.min(maxScroll, screen.scroll));
-  if (selectedLine >= 0) {
-    if (selectedLine < scroll) scroll = selectedLine;
-    else if (selectedLine >= scroll + bodyRows) scroll = selectedLine - bodyRows + 1;
-  }
+  const scroll = Math.max(0, Math.min(content.length - bodyRows, screen.scroll));
   screen.scroll = scroll;
 
   const bg = theme.sidebarBg;
@@ -528,17 +424,13 @@ export function renderAccountsScreen(state: RenderState, screen: AccountsScreenS
     else payload += blank(row, 1, left - 1) + blank(row, left + width, totalCols - left - width + 1);
   }
 
-  const row = (index: number, content: string) => moveTo(top + index, left) + bg + theme.accent + "│ " + bg + content + bg + theme.accent + " │" + theme.reset;
-  payload += moveTo(top, left) + bg + borderLine(["╭", "╮"], width, "Accounts", `updated ${formatClock(screen.snapshot.generatedAt, now)}`, theme.bold + theme.text) + theme.reset;
-  payload += row(1, fitLine(undefined, inner, bg));
-  for (let i = 0; i < bodyRows; i++) {
-    const line = lines[scroll + i];
-    const lineBg = line?.key !== undefined && line.key === screen.selected ? theme.sidebarSelBg : bg;
-    payload += row(i + 2, lineBg + fitLine(line, inner, lineBg) + bg);
-  }
-  payload += row(bodyRows + 2, fitLine(undefined, inner, bg));
-  const below = lines.length - scroll - bodyRows;
+  const row = (index: number, segments: Segment[]) => moveTo(top + index, left) + bg + theme.accent + "│  " + bg + fitSegments(segments, inner, bg) + theme.accent + "  │" + theme.reset;
+  payload += moveTo(top, left) + bg + borderLine(["╭", "╮"], width, TITLE, "", theme.bold + theme.text) + theme.reset;
+  payload += row(1, []);
+  for (let i = 0; i < bodyRows; i++) payload += row(i + 2, content[scroll + i] ?? []);
+  payload += row(bodyRows + 2, []);
+  const below = content.length - scroll - bodyRows;
   const more = below > 0 ? `↓ ${below} more` : scroll > 0 ? "↑ more above" : "";
-  payload += moveTo(top + height - 1, left) + bg + borderLine(["╰", "╯"], width, footerKeys(screen), more) + theme.reset;
+  payload += moveTo(top + height - 1, left) + bg + borderLine(["╰", "╯"], width, KEYS, more) + theme.reset;
   return { payload, rect: { top: 1, bottom: totalRows, left: 1, right: totalCols } };
 }
