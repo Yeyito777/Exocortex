@@ -101,6 +101,50 @@ function callLocalBashStyles(block: Extract<Block, { type: "tool_call" }>): Exte
   ));
 }
 
+/**
+ * An `exo` subagent call shows its full instructions. History persisted its
+ * display summary when the call was made, and older summaries cut the prompt
+ * at 100 characters; the call's input still holds all of it.
+ */
+function toolCallSummary(block: Extract<Block, { type: "tool_call" }>): string {
+  const prompt = block.toolName === "exo" && !block.presentation?.detail ? block.input?.subagent : undefined;
+  return typeof prompt === "string" && prompt.trim() ? `subagent: ${prompt.trim()}` : block.summary;
+}
+
+/**
+ * A non-shell tool call longer than this many rows (e.g. a long `exo`
+ * subagent prompt) shows only its first COLLAPSED_TOOL_CALL_ROWS while tool
+ * output is collapsed; shorter ones wrap in full like shell commands.
+ */
+const COLLAPSE_TOOL_CALL_AFTER_ROWS = 12;
+const COLLAPSED_TOOL_CALL_ROWS = 8;
+const SHELL_TOOL_NAMES = new Set(["bash", "Bash", "exec_command"]);
+
+/**
+ * Shell commands always render in full. Other tool calls whose detail is long,
+ * such as a subagent's full instructions, collapse behind the tool-output
+ * toggle instead of flooding the chat; expanding it shows every row.
+ */
+function collapseLongToolCallDetail(
+  toolName: string,
+  showToolOutput: boolean,
+  firstRow: number,
+  lines: string[],
+  cont: boolean[],
+  join: string[],
+  copy: NonNullable<WrapResult["copy"]>,
+): void {
+  const rows = lines.length - firstRow;
+  if (showToolOutput || SHELL_TOOL_NAMES.has(toolName) || rows <= COLLAPSE_TOOL_CALL_AFTER_ROWS) return;
+  const hidden = rows - COLLAPSED_TOOL_CALL_ROWS;
+  const keep = firstRow + COLLAPSED_TOOL_CALL_ROWS;
+  for (const rows of [lines, cont, join, copy]) rows.length = keep;
+  lines.push(`  ${theme.dim}… +${hidden} more lines (ctrl+o to expand)${theme.reset}`);
+  cont.push(false);
+  join.push("");
+  copy.push(null);
+}
+
 export function renderBlockCached(
   block: Block,
   contentWidth: number,
@@ -203,7 +247,7 @@ function renderBlock(
       break;
     }
     case "tool_call": {
-      const summary = sanitizeUntrustedText(block.summary);
+      const summary = sanitizeUntrustedText(toolCallSummary(block));
       const localStyles = callLocalBashStyles(block);
       const localToolRegistry = block.presentation?.toolStyle
         ? [block.presentation.toolStyle, ...toolRegistry.filter((tool) => tool.name !== block.presentation!.toolStyle!.name)]
@@ -216,6 +260,7 @@ function renderBlock(
         block.input,
       );
 
+      const firstRow = lines.length;
       for (const entry of logical) {
         const w = wordWrap(entry.text, contentWidth - 2);
         for (let j = 0; j < w.lines.length; j++) {
@@ -230,6 +275,7 @@ function renderBlock(
           copy.push(null);
         }
       }
+      collapseLongToolCallDetail(block.toolName, showToolOutput, firstRow, lines, cont, join, copy);
       if (toolCallErrored && lines.length > 0) {
         lines[lines.length - 1] += ` ${theme.error}✗${theme.reset}`;
       }

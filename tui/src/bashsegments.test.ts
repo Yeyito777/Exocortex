@@ -21,6 +21,14 @@ describe("splitTopLevelShellSegments", () => {
       ]);
   });
 
+  test("does not split separators inside command substitutions", () => {
+    expect(splitTopLevelShellSegments("Q=$(command -v quercus || echo /opt/quercus); $Q courses"))
+      .toEqual([
+        { text: "Q=$(command -v quercus || echo /opt/quercus)", start: 0, separator: ";" },
+        { text: " $Q courses", start: 45, separator: "" },
+      ]);
+  });
+
   test("does not split separators inside quotes", () => {
     expect(splitTopLevelShellSegments("echo \"a && b\" && printf 'x || y; z'"))
       .toEqual([

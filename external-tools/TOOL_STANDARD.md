@@ -93,21 +93,36 @@ directories when they need different labels or colors.
 - The helper tool is still an ordinary executable invoked through Bash. The
   manifest cannot affect arguments, stdin, environment, permissions, execution,
   output, auth, or daemon supervision.
-- The executable must be called through a static relative or absolute path.
-  PATH-only `deploy`, `bash deploy`, shell expansion, and command
-  substitution are not eligible.
-- Relative lookup uses the Bash tool's initial working directory. Relative
-  invocations after a preceding `cd`, `pushd`, `popd`, `source`, or `eval` are
-  conservatively left unstyled; use a direct path from the initial directory or
-  an absolute path instead.
+- The executable must be called through a static path: relative, absolute,
+  unquoted `~/…`, or a shell variable assigned exactly one such path earlier in
+  the same call (`T=/path/to/tool; $T …`, also `"$T"` / `${T}`, and
+  `T=$(command -v tool || echo /path/to/tool)`). PATH-only `deploy`,
+  `bash deploy`, other expansions, and command substitution are not eligible;
+  a variable assigned twice or dynamically is never resolved.
+- `env`, `command`, `time`, `nohup`, `nice`, `timeout DURATION`, and the
+  keywords that open a compound command (`do`, `then`, `if`, `!`, …) are
+  transparent, so `for x in …; do timeout 60 ./tool "$x"; done` is styled.
+  Heredoc bodies are data and never styled; the command reading one is.
+- Relative lookup uses the Bash tool's initial working directory, or the target
+  of a preceding `cd /absolute/dir &&` (or `cd ~/dir &&`) while that `&&` chain
+  continues. Relative invocations after any other `cd`, `pushd`, `popd`,
+  `source`, or `eval` are conservatively left unstyled.
 - The executable must have a non-empty basename, and the manifest must be in
-  the executable's lexical directory.
+  the executable's lexical directory. A full tool `manifest.json` (below)
+  beside the executable or one directory above it also styles the executable
+  its `bin` names, so `/path/to/tool-cli/bin/tool` renders like `tool`.
+- Each top-level command in a call is resolved on its own (up to four
+  explicit-path tools). A line whose first command is a tool is labeled by that
+  tool; otherwise each command on the line is labeled by its own tool.
 - `version` must be `1`; `display.label` is at most 64 characters and
   `display.color` is a six-digit hex color.
 - Missing, unreadable, oversized, slow, or invalid manifests fall back to
   ordinary Bash presentation and never block command execution.
 - Presentation is snapshotted into the tool call, so conversation history does
-  not change when the manifest is edited or removed later.
+  not change when the manifest is edited or removed later. Claude Code reports
+  its Bash calls synchronously, so for those the daemon answers from manifests
+  it has already read (it pre-reads `external-tools/` and `helper-tools/` at
+  startup); a tool elsewhere renders as Bash on its first call.
 - Helper tools with a primary opaque payload should follow the stdin convention
   described below. A display manifest does not make freeform inline shell
   arguments literal-safe.

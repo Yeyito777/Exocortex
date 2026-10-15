@@ -1,4 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import { warmToolManifestCache } from "../../helper-tool-manifest";
 import type { ProviderRound, StreamCallbacks } from "../types";
 import { agentTitlesInHistory, ClaudeOverageError, commitInterruptedRound, createClaudeStreamState, finalizeClaudeStream, pushClaudeMessage } from "./stream";
 import { applyUsageHeaders, CLAUDE_ACCOUNT_HEADER, getAccountUsage } from "./usage";
@@ -140,6 +144,28 @@ describe("Claude Code stream translation", () => {
     expect(state.messages.at(-1)?.content).toEqual([
       { type: "tool_use", id: "t2", name: "SendMessage", input: { to: "a2770869e8f93ef5d", summary: "Wrap up", message: "Please stop." }, presentation },
     ]);
+  });
+
+  test("a Bash call that runs a tool by path carries that tool's style", async () => {
+    const root = mkdtempSync(join(tmpdir(), "exocortex-claude-bash-"));
+    try {
+      mkdirSync(join(root, "deploy"));
+      writeFileSync(join(root, "deploy", "deploy"), "#!/bin/sh\n", { mode: 0o755 });
+      writeFileSync(join(root, "deploy", "exo-manifest.json"), JSON.stringify({ version: 1, display: { label: "Deploy", color: "#7aa2f7" } }));
+      await warmToolManifestCache([root]);
+      const { callbacks } = recorder();
+      const calls: unknown[] = [];
+      const state = createClaudeStreamState({ ...callbacks, onToolCall: (block) => calls.push(block.presentation) }, "/work");
+      const command = `D=${root}/deploy/deploy; $D production`;
+      pushClaudeMessage(state, { type: "assistant", uuid: "a-1", session_id: SESSION, parent_tool_use_id: null, message: { content: [{ type: "tool_use", id: "b1", name: "Bash", input: { command } }] } });
+
+      const presentation = { bashStyles: [{ cmd: "$D", label: "Deploy", color: "#7aa2f7" }] };
+      expect(calls).toEqual([presentation]);
+      expect(state.blocks.at(-1)).toMatchObject({ type: "tool_call", name: "Bash", presentation });
+      expect(state.messages.at(-1)?.content).toEqual([{ type: "tool_use", id: "b1", name: "Bash", input: { command }, presentation }]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("agents a conversation started earlier are named from its history", () => {
