@@ -33,6 +33,13 @@ export interface StreamResult {
   outputTokens?: number;
   /** Actual provider billing tier when the response reports it. */
   billingServiceTier?: "standard" | ServiceTier;
+  /**
+   * Token accounting summed over every API call behind this result, for a
+   * provider that ran its own agent loop (Claude Code makes one call per tool
+   * round). `inputTokens` above stays the latest call's prompt size, which is
+   * the context meter's reading. Absent: the result is one request.
+   */
+  accountedUsage?: AccountedTokenUsage;
   /** Provider-wire output items from this response, used for guarded incremental continuation. */
   responseOutputItems?: unknown[];
   requestDiagnostics?: ModelRequestDiagnostics;
@@ -50,6 +57,14 @@ export interface StreamResult {
   compactionDoneCount?: number;
   /** True only when the provider emitted response.completed (not incomplete). */
   responseCompleted?: boolean;
+}
+
+export interface AccountedTokenUsage {
+  inputTokens: number;
+  cachedInputTokens: number;
+  cacheMissInputTokens: number;
+  outputTokens: number;
+  requests: number;
 }
 
 export interface ModelRequestDiagnostics {

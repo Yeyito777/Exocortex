@@ -402,6 +402,8 @@ export function recordTokenUsage(
     cachedInputTokens?: number;
     cacheMissInputTokens?: number;
     outputTokens?: number;
+    /** API calls these totals cover (a Claude Code turn makes several). Defaults to one. */
+    requests?: number;
     billingServiceTier?: TokenPricingServiceTier;
   },
   tracking: TokenTrackingContext,
@@ -429,7 +431,7 @@ export function recordTokenUsage(
     unmeasuredInputTokens: input.unmeasuredInputTokens,
     outputTokens,
     totalTokens: input.inputTokens + outputTokens,
-    requests: 1,
+    requests: Math.max(1, normalizeNumber(usage.requests ?? 1)),
     ...cost,
   };
 

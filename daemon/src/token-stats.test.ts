@@ -21,6 +21,20 @@ describe("token stats", () => {
     resetTokenStatsForTest();
   });
 
+  test("records several API calls reported together as that many requests", () => {
+    recordTokenUsage("anthropic", "claude-opus-5-5", {
+      inputTokens: 45_000,
+      cachedInputTokens: 40_000,
+      cacheMissInputTokens: 5_000,
+      outputTokens: 900,
+      requests: 3,
+    }, { source: "conversation", conversationId: "conv-1" });
+
+    const snapshot = getTokenStatsSnapshot();
+    expect(snapshot.today.requests).toBe(3);
+    expect(snapshot.today.byModel["claude-opus-5-5"]).toMatchObject({ inputTokens: 45_000, cachedInputTokens: 40_000, cacheMissInputTokens: 5_000, outputTokens: 900, requests: 3 });
+  });
+
   test("records totals by provider, model, and source", () => {
     const first = recordTokenUsage("openai", "gpt-5.4", { inputTokens: 120, outputTokens: 30 }, { source: "conversation", conversationId: "conv-1" });
     const second = recordTokenUsage("openai", "gpt-5.4-mini", { inputTokens: 40, outputTokens: 10 }, { source: "llm_complete" });

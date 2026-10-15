@@ -42,10 +42,12 @@ export async function streamMessage(
   const result = await getProviderAdapter(provider).streamMessage(messages, model, callbacks, providerOptions);
   if (options.tracking) {
     recordTokenUsage(provider, model, {
-      inputTokens: result.inputTokens,
-      cachedInputTokens: result.cachedInputTokens,
-      cacheMissInputTokens: result.cacheMissInputTokens,
-      outputTokens: result.outputTokens,
+      ...(result.accountedUsage ?? {
+        inputTokens: result.inputTokens,
+        cachedInputTokens: result.cachedInputTokens,
+        cacheMissInputTokens: result.cacheMissInputTokens,
+        outputTokens: result.outputTokens,
+      }),
       billingServiceTier: result.billingServiceTier,
     }, options.tracking, {
       serviceTier: options.serviceTier ?? "standard",
