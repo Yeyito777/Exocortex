@@ -1597,15 +1597,10 @@ function handleKey(key: KeyEvent): void {
     }
     return;
   }
-  // The Accounts screen owns the keyboard too; Enter opens the selected conversation.
+  // The Accounts screen owns the keyboard too.
   if (state.accountsScreen && key.type !== "ctrl-c") {
     if (key.event === "release") return;
-    const action = handleAccountsScreenKey(key, state.accountsScreen);
-    if (action.type !== "handled") closeAccountsScreen(state, daemon);
-    if (action.type === "open") {
-      openConversation(action.convId, "keyboard");
-      return;
-    }
+    if (handleAccountsScreenKey(key, state.accountsScreen).type === "close") closeAccountsScreen(state, daemon);
     renderAfterLocalUiMutation();
     return;
   }

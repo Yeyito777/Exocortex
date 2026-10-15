@@ -17,10 +17,10 @@ export const BAR_WIDTH = 20;
 /** How many accounts' reset times a combined bar lists. */
 const MAX_RESETS_SHOWN = 2;
 
-/** Filled cells of a BAR_WIDTH bar showing `pct` of `capacity`. */
-export function barFill(pct: number, capacity = 100): number {
+/** Filled cells of a `width`-cell bar showing `pct` of `capacity`. */
+export function barFill(pct: number, capacity = 100, width = BAR_WIDTH): number {
   const clamped = Math.max(0, Math.min(capacity, pct));
-  return Math.round((clamped / capacity) * BAR_WIDTH);
+  return Math.round((clamped / capacity) * width);
 }
 
 function renderBar(pct: number | null, capacity = 100): string {
