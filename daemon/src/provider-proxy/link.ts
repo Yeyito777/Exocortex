@@ -411,6 +411,8 @@ export class ProviderProxyLink {
       .then((event) => {
         if (generation !== this.generation || this.accountsWatchGeneration !== generation) return;
         this.setRemoteAccounts(event.accounts);
+        // Have the remote check sign-ins and usage it has not looked at lately; the changes arrive as updates.
+        if (this.remoteAccounts) void this.status("anthropic", true).catch(() => {});
       })
       .catch((error: unknown) => {
         if (generation !== this.generation) return;

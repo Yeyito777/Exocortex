@@ -108,6 +108,8 @@ describe("the remote's Claude pool over /proxy", () => {
     await manager.set("anthropic", "whale");
     await until(() => manager.remoteAccounts() !== null);
     expect(ssh.spawned[0].commands.find(command => command.type === "provider_proxy_accounts")).toMatchObject({ provider: "anthropic", watch: true });
+    // The remote is asked to check its accounts' sign-ins and usage once the pool arrives.
+    await until(() => ssh.spawned[0].commands.some(command => command.type === "provider_proxy_status" && command.refreshUsage === true));
     expect(manager.remoteAccounts()?.remote).toMatchObject({ alias: "whale", state: "connected" });
     expect(getLastUsage("anthropic")).toMatchObject({
       capacity: 200,
