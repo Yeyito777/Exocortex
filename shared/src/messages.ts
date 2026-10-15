@@ -227,6 +227,8 @@ export const CONTEXT_COMPACTION_FINISHED_KIND = "context_compaction_finished";
 export const CONTEXT_COMPACTION_FINISHED_TEXT = "--- Compaction finished ---";
 export const REALTIME_TRANSCRIPT_KIND = "realtime_transcript";
 export const REALTIME_CALL_STATUS_KIND = "realtime_call_status";
+/** Informational provider notices in the transcript (a Claude account switch, Claude Code compacting its context). */
+export const PROVIDER_NOTICE_KIND = "provider_notice";
 /**
  * Notices that keep the model up to date on conversation state (the machines
  * client_bash and remote_bash reach, the conversation goal). They are for the
