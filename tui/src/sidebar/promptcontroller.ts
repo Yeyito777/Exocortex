@@ -5,6 +5,7 @@ import { cycleMovePromptAutocomplete, updateMovePromptAutocomplete } from "./mov
 import { applyOptimisticSidebarItemsMove } from "./optimisticmove";
 import { focusSidebarItem } from "./selection";
 import type { SidebarState } from "./state";
+import { isFolderOpenInTree, isTreeFolderView } from "./tree";
 import type { SidebarKeyResult } from "./types";
 import { graphemeBoundaryAtOrAfter, nextGraphemeEnd, previousGraphemeStart } from "../graphemes";
 
@@ -37,9 +38,10 @@ export function handleSidebarPromptKey(sidebar: SidebarState, key: KeyEvent): Si
         : (!raw || raw === "/")
           ? topLevelCurrentFolderRef(sidebar)
           : undefined;
-      if (destination !== undefined && destination !== sidebar.currentFolderId) {
-        requestFocusAfterMovingItemsOutOfView(sidebar, prompt.items);
-      }
+      const leavesView = destination !== undefined && (isTreeFolderView(sidebar)
+        ? !isFolderOpenInTree(sidebar, destination)
+        : destination !== sidebar.currentFolderId);
+      if (leavesView) requestFocusAfterMovingItemsOutOfView(sidebar, prompt.items);
       if (destination !== undefined) {
         const locallyMoved = applyOptimisticSidebarItemsMove(sidebar, prompt.items, destination, before);
         const pendingFocusItem = sidebar.pendingFocusItem;

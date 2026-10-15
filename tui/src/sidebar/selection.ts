@@ -3,6 +3,7 @@ import { hasInProgressModelWork } from "../taskvisibility";
 import { isMovableSidebarItem, sidebarItemKey as itemKey, sameSidebarItem as sameItem, type SidebarSelectableItem } from "./items";
 import { buildDisplayRows, type DisplayRow } from "./rows";
 import type { SidebarState } from "./state";
+import { isSidebarItemVisibleInTree, isTreeFolderView, revealFolderInTree, sidebarItemContainer, syncTreeFolderContext } from "./tree";
 import {
   getActiveSidebarSearchQuery,
   getVisibleConversationIndicesForQuery,
@@ -18,6 +19,13 @@ export function focusSidebarItem(sidebar: SidebarState, item: SidebarSelectableI
     sidebar.selectedId = null;
     sidebar.selectedIndex = Math.max(0, Math.min(sidebar.selectedIndex, Math.max(0, sidebar.conversations.length - 1)));
   }
+  // The tree view keeps the cursor on screen by expanding the folders above it.
+  // Browsing search results must not expand every folder the cursor passes.
+  if (item && isTreeFolderView(sidebar) && !getActiveSidebarSearchQuery(sidebar)) {
+    const container = sidebarItemContainer(sidebar, item);
+    if (container !== undefined) revealFolderInTree(sidebar, container);
+  }
+  syncTreeFolderContext(sidebar);
 }
 
 export function focusConversationAt(sidebar: SidebarState, index: number): void {
@@ -112,6 +120,9 @@ export function selectedDisplayRow(displayRows: DisplayRow[], sidebar: SidebarSt
 export function getSelectedSidebarItem(sidebar: SidebarState): SidebarSelectableItem | null {
   const selected = sidebar.selectedItem;
   if (!selected) return null;
+  if (isTreeFolderView(sidebar) && !getActiveSidebarSearchQuery(sidebar)) {
+    return isSidebarItemVisibleInTree(sidebar, selected) ? selected : null;
+  }
   if (selected.type === "up") return selected;
   if (selected.type === "conversation") {
     const convIdx = sidebar.conversations.findIndex(c => c.id === selected.id);

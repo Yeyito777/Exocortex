@@ -3,6 +3,7 @@ import type { SidebarSelectableItem } from "./items";
 import type { SidebarPromptState } from "./prompt";
 import type { SidebarSearchState } from "../sidebarsearch";
 import type { ConversationActionMenuState } from "./conversationactions";
+import type { SidebarFolderView } from "./tree";
 
 export interface SidebarState {
   updateStatus?: import("../update-status").UpdateSnapshot;
@@ -10,6 +11,10 @@ export interface SidebarState {
   conversations: ConversationSummary[];
   folders: FolderSummary[];
   currentFolderId: string | null;
+  /** How folders open: replace the list ("navigate") or expand in place ("tree"). */
+  folderView: SidebarFolderView;
+  /** Folders expanded in the tree view. */
+  expandedFolderIds: Set<string>;
   selectedId: string | null;
   previousEnteredId: string | null;
   selectedIndex: number;
@@ -27,12 +32,14 @@ export interface SidebarState {
   conversationActionMenu: ConversationActionMenuState | null;
 }
 
-export function createSidebarState(): SidebarState {
+export function createSidebarState(folderView: SidebarFolderView = "navigate"): SidebarState {
   return {
     open: false,
     conversations: [],
     folders: [],
     currentFolderId: null,
+    folderView,
+    expandedFolderIds: new Set(),
     selectedId: null,
     previousEnteredId: null,
     selectedIndex: 0,

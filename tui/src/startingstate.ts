@@ -25,6 +25,8 @@ const TUI_STARTING_STATE_VERSION = 2;
 
 interface ClosedSidebarStartingState {
   open: false;
+  /** Folders expanded in the tree folder view. */
+  expandedFolderIds?: string[];
 }
 
 interface OpenSidebarStartingState {
@@ -32,6 +34,7 @@ interface OpenSidebarStartingState {
   currentFolderId: string | null;
   selectedItem: SidebarSelectableItem | null;
   scrollOffset: number;
+  expandedFolderIds?: string[];
 }
 
 export interface TuiStartingState {
@@ -79,6 +82,12 @@ function parseSidebarItem(value: unknown): SidebarSelectableItem | null | undefi
   return undefined;
 }
 
+/** Older files have no expanded folders; a malformed list only loses expansion. */
+function parseExpandedFolderIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((id): id is string => typeof id === "string" && id.length > 0);
+}
+
 function parseStartingState(value: unknown): TuiStartingState | null {
   if (!isRecord(value) || (value.version !== 1 && value.version !== TUI_STARTING_STATE_VERSION) || !isRecord(value.sidebar)) return null;
 
@@ -89,11 +98,12 @@ function parseStartingState(value: unknown): TuiStartingState | null {
     : parseConversationScrollPositions(value.conversationScrollPositions);
   if (conversationScrollPositions === null) return null;
 
+  const expandedFolderIds = parseExpandedFolderIds(value.sidebar.expandedFolderIds);
   if (!value.sidebar.open) {
     return {
       version: TUI_STARTING_STATE_VERSION,
       focusedConversationId,
-      sidebar: { open: false },
+      sidebar: { open: false, expandedFolderIds },
       conversationScrollPositions,
     };
   }
@@ -117,20 +127,23 @@ function parseStartingState(value: unknown): TuiStartingState | null {
       currentFolderId,
       selectedItem,
       scrollOffset,
+      expandedFolderIds,
     },
     conversationScrollPositions,
   };
 }
 
 export function captureTuiStartingState(state: RenderState): TuiStartingState {
+  const expandedFolderIds = [...state.sidebar.expandedFolderIds];
   const sidebar = state.sidebar.open
     ? {
         open: true as const,
         currentFolderId: state.sidebar.currentFolderId,
         selectedItem: copySidebarItem(state.sidebar.selectedItem),
         scrollOffset: Math.max(0, Math.floor(state.sidebar.scrollOffset)),
+        expandedFolderIds,
       }
-    : { open: false as const };
+    : { open: false as const, expandedFolderIds };
 
   return {
     version: TUI_STARTING_STATE_VERSION,
@@ -145,6 +158,7 @@ export function applyTuiStartingState(state: RenderState, startingState: TuiStar
   state.convId = startingState.focusedConversationId;
   applyConversationScrollPositions(state, startingState.conversationScrollPositions);
   state.sidebar.open = startingState.sidebar.open;
+  state.sidebar.expandedFolderIds = new Set(startingState.sidebar.expandedFolderIds ?? []);
   if (!startingState.sidebar.open) return;
 
   state.sidebar.currentFolderId = startingState.sidebar.currentFolderId;

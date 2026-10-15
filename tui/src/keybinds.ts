@@ -62,6 +62,7 @@ export type Action =
   | "scroll_bottom"
   // Conversation
   | "new_conversation"
+  | "new_top_level_conversation"
   | "edit_message"
   // Display toggles
   | "toggle_tool_output"
@@ -123,7 +124,7 @@ const BINDS: Record<string, Action> = {
 
   // Conversation
   "ctrl-p":       "new_conversation",
-  "ctrl-shift-o": "new_conversation",
+  "ctrl-shift-o": "new_top_level_conversation",
 
   // Clipboard image paste
   "ctrl-v":       "paste_image",

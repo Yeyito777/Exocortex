@@ -85,6 +85,7 @@ import { applyTuiStartingState, availableStartingConversationId, captureTuiStart
 import { closeBtwSession, startBtwSession } from "./btw/controller";
 import { createSidebarState } from "./sidebar/state";
 import { addOptimisticConversation, bumpConversationToTop, rememberEnteredConversation } from "./sidebar";
+import { newConversationFolderId, type NewConversationPlacement } from "./sidebar/tree";
 import { formatConnectionLostNotice } from "./events/notices";
 import { RemotePathCompletionController } from "./remote-path-completion";
 import {
@@ -426,7 +427,8 @@ function resetForDaemonRouteSwitch(): void {
 
   const sidebarOpen = state.sidebar.open;
   const updateStatus = state.sidebar.updateStatus;
-  state.sidebar = createSidebarState();
+  // Folder ids belong to the old daemon; the folder view preference does not.
+  state.sidebar = createSidebarState(state.sidebar.folderView);
   state.sidebar.open = sidebarOpen;
   state.sidebar.updateStatus = updateStatus;
   state.queuedMessages = [];
@@ -822,7 +824,7 @@ function openConversation(convId: string, input: "keyboard" | "mouse"): void {
   }
 }
 
-function startNewConversation(): void {
+function startNewConversation(placement: NewConversationPlacement = "selected"): void {
   conversationPrewarmer.reset();
   const wasFolderInstructionsDoc = state.folderInstructionsDoc !== null;
   pendingNewConversationConvId = null;
@@ -832,7 +834,7 @@ function startNewConversation(): void {
   if (state.convId) {
     unsubscribeConversation(state.convId);
   }
-  resetDraftConversationState(state);
+  resetDraftConversationState(state, newConversationFolderId(state.sidebar, placement));
   if (wasFolderInstructionsDoc) {
     clearPrompt(state);
     state.pendingImages = [];
@@ -1716,7 +1718,7 @@ function handleKey(key: KeyEvent): void {
       requestToolOutputs(state, daemon, result.toolCallIds);
       break;
     case "new_conversation":
-      startNewConversation();
+      startNewConversation(result.placement);
       break;
     case "delete_conversation":
       deleteConversationFromUi(result.convId);

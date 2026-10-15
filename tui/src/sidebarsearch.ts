@@ -10,6 +10,7 @@ import type { ConversationSummary, FolderSummary, SidebarItemRef } from "./messa
 import type { SidebarSelectableItem } from "./sidebar/items";
 import { sidebarItemKey } from "./sidebar/items";
 import { compareSidebarOrder } from "./sidebar/order";
+import { isTreeFolderView, revealFolderInTree, syncTreeFolderContext, type SidebarFolderView } from "./sidebar/tree";
 import { convDisplayName } from "./messages";
 import { stripMark } from "./marks";
 import { theme } from "./theme";
@@ -50,6 +51,8 @@ export interface SidebarSearchableState {
   pendingDeleteItem?: SidebarItemRef | null;
   visualAnchor?: SidebarItemRef | null;
   currentFolderId?: string | null;
+  folderView?: SidebarFolderView;
+  expandedFolderIds?: Set<string>;
   selectedItem?: SidebarSelectableItem | null;
   search: SidebarSearchState | null;
 }
@@ -67,6 +70,7 @@ export function focusConversationAt(sidebar: SidebarSearchableState, index: numb
   sidebar.selectedIndex = nextIndex;
   sidebar.selectedId = nextId;
   if ("selectedItem" in sidebar) sidebar.selectedItem = nextId ? { type: "conversation", id: nextId } : null;
+  syncTreeFolderContext(sidebar);
 }
 
 export function focusSidebarItem(sidebar: SidebarSearchableState, item: SidebarSelectableItem | null): void {
@@ -83,6 +87,7 @@ export function focusSidebarItem(sidebar: SidebarSearchableState, item: SidebarS
   sidebar.selectedItem = item;
   sidebar.selectedId = null;
   sidebar.selectedIndex = Math.max(0, Math.min(sidebar.selectedIndex, Math.max(0, sidebar.conversations.length - 1)));
+  syncTreeFolderContext(sidebar);
 }
 
 export function focusConversationById(sidebar: SidebarSearchableState, convId: string): boolean {
@@ -250,6 +255,11 @@ function findNextSidebarSearchMatch(
 }
 
 function restoreSidebarSearchOrigin(sidebar: SidebarSearchableState, search: SidebarSearchState): void {
+  restoreSidebarSearchOriginItem(sidebar, search);
+  syncTreeFolderContext(sidebar);
+}
+
+function restoreSidebarSearchOriginItem(sidebar: SidebarSearchableState, search: SidebarSearchState): void {
   sidebar.scrollOffset = search.savedScrollOffset;
   if (search.savedSelectedItem && "selectedItem" in sidebar) {
     sidebar.selectedItem = { ...search.savedSelectedItem };
@@ -335,6 +345,7 @@ function revealFocusedSidebarItemAfterSearch(sidebar: SidebarSearchableState): v
     const folder = sidebar.folders.find(f => f.id === item.id);
     if (folder) {
       sidebar.currentFolderId = folder.parentId ?? null;
+      if (isTreeFolderView(sidebar)) revealFolderInTree(sidebar, sidebar.currentFolderId);
       focusSidebarItem(sidebar, item);
       return;
     }
@@ -344,6 +355,7 @@ function revealFocusedSidebarItemAfterSearch(sidebar: SidebarSearchableState): v
     const conv = sidebar.conversations.find(c => c.id === item.id);
     if (conv) {
       sidebar.currentFolderId = conv.folderId ?? null;
+      if (isTreeFolderView(sidebar)) revealFolderInTree(sidebar, sidebar.currentFolderId);
       focusSidebarItem(sidebar, item);
       return;
     }

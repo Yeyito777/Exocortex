@@ -10,6 +10,7 @@ import {
 import { buildDisplayRows, revealPrecedingSectionLabel, sidebarListRows, sidebarUpdateRows } from "./rows";
 import { selectedDisplayRow, selectedVisualItems } from "./selection";
 import type { SidebarState } from "./state";
+import { isTreeFolderView } from "./tree";
 import {
   getSearchableConversationTitle,
   getSidebarSearchBarViewport,
@@ -152,6 +153,9 @@ function contextualSidebarTitle(folderName: string | null, maxWidth: number): st
   return `${truncateSidebarTitle(folderName, maxWidth - 1)}/`;
 }
 
+/** Columns each tree-view nesting level is indented by. */
+const TREE_INDENT = "  ";
+
 /** Pad or truncate a string to exactly `width` terminal columns. */
 function pad(text: string, width: number): string {
   return padRightToWidth(text, width);
@@ -172,8 +176,9 @@ export function renderSidebar(
   const borderFg = focused ? theme.borderFocused : theme.borderUnfocused;
   const borderBg = theme.appBg ?? '';
 
-  // Row 1: header / breadcrumb
-  const folder = currentFolder(sidebar);
+  // Row 1: header / breadcrumb. The tree view shows every level at once.
+  const treeView = isTreeFolderView(sidebar);
+  const folder = treeView ? null : currentFolder(sidebar);
   const separator = " — ";
   const aliasMaxWidth = Math.min(12, innerWidth - termWidth(` ${separator}`) - 1);
   const alias = remoteAlias
@@ -260,9 +265,10 @@ export function renderSidebar(
     }
 
     if (dr.type === "delimiter") {
+      const indent = TREE_INDENT.repeat(dr.depth ?? 0);
       rows.push(
         theme.sidebarBg + theme.muted +
-        pad(" " + "─".repeat(innerWidth - 2) + " ", innerWidth) +
+        pad(" " + indent + "─".repeat(Math.max(0, innerWidth - 2 - termWidth(indent))) + " ", innerWidth) +
         theme.reset + borderBg + borderFg + "│" + theme.reset,
       );
       continue;
@@ -274,7 +280,7 @@ export function renderSidebar(
     const itemVisualKey = item?.type === "up" ? null : itemKey(item);
     const isVisual = itemVisualKey !== null && visualItemKeys.has(itemVisualKey);
     const isPendingDelete = itemVisualKey !== null && pendingDeleteKeys.has(itemVisualKey);
-    const prefix = isSelected ? "▸ " : isVisual ? "│ " : "  ";
+    const prefix = (isSelected ? "▸ " : isVisual ? "│ " : "  ") + TREE_INDENT.repeat(dr.depth ?? 0);
 
     let streamIcon = "";
     let streamIconColor = "";
@@ -302,7 +308,8 @@ export function renderSidebar(
       const aggregate = folder ? folderAggregates?.get(folder.id) : null;
       notificationsMuted = folder ? areFolderNotificationsMuted(sidebar, folder.id) : false;
       explicitlyMuted = folder?.muted === true;
-      rawTitle = folder ? `📁 ${folder.name}/ ${aggregate?.count ?? 0}` : "📁 folder/";
+      const icon = treeView && folder && sidebar.expandedFolderIds.has(folder.id) ? "📂" : "📁";
+      rawTitle = folder ? `${icon} ${folder.name}/ ${aggregate?.count ?? 0}` : `${icon} folder/`;
       const streamingCount = aggregate?.streamingCount ?? 0;
       const hasLongSleep = aggregate?.longSleep ?? false;
       const hasGlobalIdle = aggregate?.globalIdle ?? false;

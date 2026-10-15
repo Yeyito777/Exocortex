@@ -10,6 +10,7 @@ import {
 } from "../sidebarsearch";
 import { focusSidebarItem } from "./selection";
 import type { SidebarState } from "./state";
+import { isSidebarItemVisibleInTree, isTreeFolderView, sidebarItemContainer, syncTreeFolderContext } from "./tree";
 
 function sidebarSort<T extends { pinned: boolean; sortOrder: number }>(items: T[]): T[] {
   return items.sort(compareSidebarOrder);
@@ -59,6 +60,7 @@ function conversationMatchesQuery(conv: ConversationSummary, lowerQuery: string)
 }
 
 function isSidebarItemVisible(sidebar: SidebarState, item: SidebarSelectableItem): boolean {
+  if (isTreeFolderView(sidebar) && !activeLowerQuery(sidebar)) return isSidebarItemVisibleInTree(sidebar, item);
   if (item.type === "up") return sidebar.currentFolderId !== null;
   if (item.type === "folder_instructions") return item.folderId === sidebar.currentFolderId;
 
@@ -77,7 +79,16 @@ function isSidebarItemVisible(sidebar: SidebarState, item: SidebarSelectableItem
   return conversationMatchesQuery(conv, lowerQuery);
 }
 
+/** The tree view reveals any existing row it focuses; other views need it on screen already. */
+function canFocusSidebarItem(sidebar: SidebarState, item: SidebarSelectableItem): boolean {
+  if (isTreeFolderView(sidebar) && !activeLowerQuery(sidebar)) return sidebarItemContainer(sidebar, item) !== undefined;
+  return isSidebarItemVisible(sidebar, item);
+}
+
 function firstVisibleSidebarItem(sidebar: SidebarState): SidebarSelectableItem | null {
+  if (isTreeFolderView(sidebar) && !activeLowerQuery(sidebar)) {
+    return buildDisplayRows(sidebar).find(row => row.type === "entry")?.item ?? null;
+  }
   if (sidebar.currentFolderId) return { type: "up" };
 
   const lowerQuery = activeLowerQuery(sidebar);
@@ -152,7 +163,7 @@ export function updateConversationList(sidebar: SidebarState, conversations: Con
   const pendingFocusItem = sidebar.pendingFocusItem;
   if (pendingFocusItem) {
     sidebar.pendingFocusItem = null;
-    if (isSidebarItemVisible(sidebar, pendingFocusItem)) {
+    if (canFocusSidebarItem(sidebar, pendingFocusItem)) {
       focusSidebarItem(sidebar, pendingFocusItem);
       return;
     }
@@ -201,6 +212,12 @@ export function updateConversation(sidebar: SidebarState, summary: ConversationS
 
 /** Resolve selected item after list changes. */
 export function syncSelectedIndex(sidebar: SidebarState): void {
+  resolveSelectedItem(sidebar);
+  // A move can refile the selected row without refocusing it.
+  syncTreeFolderContext(sidebar);
+}
+
+function resolveSelectedItem(sidebar: SidebarState): void {
   sortSidebarCollections(sidebar);
   const item = sidebar.selectedItem;
   if (item?.type === "conversation") {

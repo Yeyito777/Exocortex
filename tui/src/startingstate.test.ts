@@ -81,6 +81,7 @@ describe("TUI starting state", () => {
         currentFolderId: "work",
         selectedItem: { type: "conversation", id: "cursor-conversation" },
         scrollOffset: 7,
+        expandedFolderIds: [],
       },
       conversationScrollPositions: {},
     });
@@ -97,7 +98,7 @@ describe("TUI starting state", () => {
     expect(captureTuiStartingState(state)).toEqual({
       version: 2,
       focusedConversationId: null,
-      sidebar: { open: false },
+      sidebar: { open: false, expandedFolderIds: [] },
       conversationScrollPositions: {},
     });
   });
@@ -157,7 +158,7 @@ describe("TUI starting state", () => {
     const first: TuiStartingState = {
       version: 2,
       focusedConversationId: "first",
-      sidebar: { open: false },
+      sidebar: { open: false, expandedFolderIds: [] },
       conversationScrollPositions: { first: 0.25 },
     };
     const second: TuiStartingState = {
@@ -168,6 +169,7 @@ describe("TUI starting state", () => {
         currentFolderId: null,
         selectedItem: { type: "folder", id: "projects" },
         scrollOffset: 2,
+        expandedFolderIds: ["projects"],
       },
       conversationScrollPositions: { second: 0.75 },
     };
@@ -217,8 +219,20 @@ describe("TUI starting state", () => {
     expect(loadTuiStartingState()).toEqual({
       version: 2,
       focusedConversationId: "conversation",
-      sidebar: { open: false },
+      sidebar: { open: false, expandedFolderIds: [] },
       conversationScrollPositions: {},
     });
+  });
+
+  test("restores tree-view folder expansion whether or not the sidebar was open", () => {
+    const state = createInitialState();
+    state.sidebar.open = false;
+    state.sidebar.expandedFolderIds = new Set(["work", "work-nested"]);
+
+    const captured = captureTuiStartingState(state);
+    const restored = createInitialState();
+    applyTuiStartingState(restored, captured);
+
+    expect(restored.sidebar.expandedFolderIds).toEqual(new Set(["work", "work-nested"]));
   });
 });

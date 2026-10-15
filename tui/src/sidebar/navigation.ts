@@ -3,6 +3,7 @@ import { sidebarItemKey as itemKey, type SidebarSelectableItem } from "./items";
 import { buildDisplayRows, type DisplayRow } from "./rows";
 import { focusConversationAt, focusSidebarItem } from "./selection";
 import type { SidebarState } from "./state";
+import { isTreeFolderView } from "./tree";
 
 export function moveSelection(sidebar: SidebarState, delta: number): void {
   const displayRows = buildDisplayRows(sidebar);
@@ -100,8 +101,15 @@ export function moveToStreaming(sidebar: SidebarState, delta: 1 | -1): void {
 /** Jump to the next (delta=1) or previous (delta=-1) boolean-marked conversation, wrapping around. */
 export function moveToMarked(sidebar: SidebarState, delta: 1 | -1): void {
   const indices: number[] = [];
-  for (let index = 0; index < sidebar.conversations.length; index++) {
-    if ((sidebar.conversations[index].folderId ?? null) === sidebar.currentFolderId) indices.push(index);
+  if (isTreeFolderView(sidebar)) {
+    // Every expanded level is on screen, in display order.
+    for (const row of buildDisplayRows(sidebar)) {
+      if (row.type === "entry" && row.convIdx !== undefined) indices.push(row.convIdx);
+    }
+  } else {
+    for (let index = 0; index < sidebar.conversations.length; index++) {
+      if ((sidebar.conversations[index].folderId ?? null) === sidebar.currentFolderId) indices.push(index);
+    }
   }
   const len = indices.length;
   if (len === 0) return;
