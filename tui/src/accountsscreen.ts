@@ -11,7 +11,8 @@
  * screen is open. It only opens when several accounts are set up; otherwise it
  * explains how to add one. Esc or q closes; j/k scroll a card cut short by a
  * small terminal. While Claude goes through /proxy, the Claude rows are the
- * remote's accounts and the note says so (or that the link is down).
+ * remote's accounts (its pool routes this machine's turns too) and the note
+ * says so, or that the link is down.
  */
 
 import type { AccountsEvent, AccountsSnapshot, ClaudeAccountInfo, ClaudeAccountsInfo } from "./protocol";
@@ -219,10 +220,11 @@ function routingNote(claude: ClaudeAccountsInfo, now: number): Segment[] | null 
 }
 
 /**
- * While the accounts are the /proxy remote's: a link or login problem, else
- * whose accounts these are and that turns from here use only its main.
+ * While the accounts are the /proxy remote's: a link or login problem first,
+ * else the routing note marked with the remote's name, else whose accounts
+ * these are.
  */
-function proxyNote(remote: NonNullable<ClaudeAccountsInfo["remote"]>, claude: ClaudeAccountsInfo): Segment[] {
+function proxyNote(remote: NonNullable<ClaudeAccountsInfo["remote"]>, routing: Segment[] | null): Segment[] {
   const problem = remote.state === "connecting" ? "connecting…"
     : remote.state === "disconnected" ? "down"
     : remote.message ? "cannot serve Claude"
@@ -230,8 +232,8 @@ function proxyNote(remote: NonNullable<ClaudeAccountsInfo["remote"]>, claude: Cl
   if (problem) {
     return [[remote.state === "connecting" ? theme.muted : theme.error, `/proxy ${remote.alias} ${problem}`], [theme.muted, remote.message ? `: ${remote.message}` : ""]];
   }
-  const via = claude.nextNewWork ? ` · turns from here use ${claude.nextNewWork.account}` : "";
-  return [[theme.muted, `accounts on ${remote.alias}${via} (/proxy)`]];
+  if (routing) return [[theme.muted, `on ${remote.alias}: `], ...routing];
+  return [[theme.muted, `accounts on ${remote.alias} (/proxy)`]];
 }
 
 /** Everything the screen shows, top to bottom (no chrome). */
@@ -250,8 +252,7 @@ export function accountsScreenLines(state: RenderState, screen: AccountsScreenSt
       lines.push({ kind: "row", row: claudeRow(account, claude, now) });
       if (account.loginCommand) notes.push([[theme.muted, `sign in ${account.id}${claude.remote ? ` on ${claude.remote.alias}` : ""}: `], [theme.command, account.loginCommand]]);
     }
-    // The remote's routing does not apply to turns sent from here.
-    const routing = claude.remote ? proxyNote(claude.remote, claude) : routingNote(claude, now);
+    const routing = claude.remote ? proxyNote(claude.remote, routingNote(claude, now)) : routingNote(claude, now);
     if (routing) notes.unshift(routing);
   }
 

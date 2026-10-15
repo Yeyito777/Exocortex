@@ -317,13 +317,19 @@ test("a narrow terminal shortens the bars; a short one scrolls with j/k", () => 
 
 test("under /proxy the remote's accounts fill the table; the note says whose, or that the link is down", () => {
   const snap = snapshot({}, [claude("main"), claude("max2")]);
-  snap.claude.nextNewWork = { account: "main", detail: "turns from here use whale's main" };
-  snap.claude.currentConversation = { convId: "conv-warm", account: "main", lastUsedAt: NOW, warm: true };
+  snap.claude.nextNewWork = { account: "max2", detail: "soonest weekly reset" };
+  snap.claude.currentConversation = { convId: "conv-warm", account: "max2", lastUsedAt: NOW, warm: true };
   snap.claude.remote = { alias: "whale", host: "yeyito@whale", state: "connected" };
   const { state } = openScreen(snap);
   let text = screenText(state).join("\n");
-  expect(text).toMatch(/main  new work/);
-  expect(text).toContain("accounts on whale · turns from here use main (/proxy)");
+  expect(text).toMatch(/max2  new work/);
+  expect(text).toContain("accounts on whale (/proxy)");
+
+  // The pool's routing note, marked with where the accounts are.
+  snap.claude.accounts[0] = claude("main", { usage: { fiveHour: { utilization: 40, resetsAt: NOW + 2 * H }, sevenDay: { utilization: 97, resetsAt: NOW + 30 * H } } });
+  state.accountsScreen!.snapshot = snap;
+  text = screenText(state).join("\n");
+  expect(text).toContain("on whale: main is near its weekly limit → new work goes to max2");
   expect(text).not.toContain("the remote daemon's login");
 
   state.accountsScreen!.snapshot = { ...snap, claude: { ...snap.claude, remote: { alias: "whale", host: null, state: "disconnected", message: "The SSH connection to whale was lost." } } };

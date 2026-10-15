@@ -3,7 +3,10 @@
  * status, attached to requests other daemons send it over a link.
  *
  * Tokens are only ever put into the upstream request headers here; nothing in
- * this module returns them to a link.
+ * this module returns them to a link or logs them. Claude requests carry the
+ * login of the account the pool routed them to (claude-routing.ts): Claude
+ * Code's own stored login in that account's configuration directory, which
+ * Claude Code itself keeps refreshed.
  */
 
 import { createHash } from "node:crypto";
@@ -18,8 +21,9 @@ import { getProviderAdapter } from "../providers/catalog";
 import { getCurrentAccountScope, getVerifiedSession } from "../providers/openai/auth";
 import { buildCloudflareCookieHeader, storeCloudflareCookiesFromHeaders } from "../providers/openai/cookies";
 import { requireSubscriptionAuth } from "../providers/anthropic/auth";
-import { getAccountUsage, refreshClaudeCodeLogin } from "../providers/anthropic/usage";
-import { MAIN_ACCOUNT_ID } from "../providers/anthropic/accounts";
+import { refreshAccountUsage } from "../providers/anthropic/usage";
+import { getClaudeAccount, MAIN_ACCOUNT_ID } from "../providers/anthropic/accounts";
+import { claudeAccountStates } from "../providers/anthropic/account-pool";
 import { log } from "../log";
 import { isProviderProxied } from "./route";
 
@@ -29,8 +33,9 @@ export interface UpstreamAuth {
   /**
    * Headers that authenticate one upstream request. `afterRejection` is set
    * when the previous attempt got 401: refresh the credentials first.
+   * `account` is the Claude account the request was routed to (default `main`).
    */
-  headers(provider: ProxyableProviderId, url: string, options: { afterRejection: boolean; clientHeaders: Record<string, string> }): Promise<Record<string, string>>;
+  headers(provider: ProxyableProviderId, url: string, options: { afterRejection: boolean; clientHeaders: Record<string, string>; account?: string }): Promise<Record<string, string>>;
   /** Upstream response headers, for cookie jars. */
   observeResponse?(provider: ProxyableProviderId, url: string, headers: Headers): void;
   /** Whether a provider can be served at all right now (logged in), for the request gate. */
@@ -62,8 +67,23 @@ interface ClaudeOAuth {
   expiresAt: number | null;
 }
 
-function claudeConfigDir(): string {
-  return process.env.CLAUDE_CONFIG_DIR?.trim() || join(homedir(), ".claude");
+function claudeConfigDir(account = MAIN_ACCOUNT_ID): string | null {
+  if (account === MAIN_ACCOUNT_ID) return process.env.CLAUDE_CONFIG_DIR?.trim() || join(homedir(), ".claude");
+  const dir = getClaudeAccount(account)?.configDir;
+  if (!dir) return null;
+  return dir === "~" ? homedir() : dir.startsWith("~/") ? join(homedir(), dir.slice(2)) : dir;
+}
+
+/**
+ * The macOS Keychain item Claude Code keeps an account's login in: the plain
+ * name for the default directory, suffixed with a hash of CLAUDE_CONFIG_DIR
+ * for any other (how it keeps several logins apart).
+ */
+function keychainService(account: string, configDir: string): string {
+  const base = "Claude Code-credentials";
+  return account === MAIN_ACCOUNT_ID && !process.env.CLAUDE_CONFIG_DIR?.trim()
+    ? base
+    : `${base}-${createHash("sha256").update(configDir).digest("hex").slice(0, 8)}`;
 }
 
 function parseClaudeCredentials(text: string): ClaudeOAuth | null {
@@ -76,9 +96,11 @@ function parseClaudeCredentials(text: string): ClaudeOAuth | null {
   }
 }
 
-/** Claude Code's stored login: its credentials file, or the macOS keychain item it uses. */
-export function readClaudeCodeOAuth(): ClaudeOAuth | null {
-  const file = join(claudeConfigDir(), ".credentials.json");
+/** An account's stored Claude Code login: its credentials file, or the macOS keychain item Claude Code uses. */
+export function readClaudeCodeOAuth(account = MAIN_ACCOUNT_ID): ClaudeOAuth | null {
+  const configDir = claudeConfigDir(account);
+  if (!configDir) return null;
+  const file = join(configDir, ".credentials.json");
   if (existsSync(file)) {
     try {
       return parseClaudeCredentials(readFileSync(file, "utf8"));
@@ -88,7 +110,7 @@ export function readClaudeCodeOAuth(): ClaudeOAuth | null {
   }
   if (process.platform === "darwin") {
     try {
-      const result = Bun.spawnSync(["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"], { stdout: "pipe", stderr: "ignore" });
+      const result = Bun.spawnSync(["security", "find-generic-password", "-s", keychainService(account, configDir), "-w"], { stdout: "pipe", stderr: "ignore" });
       if (result.exitCode === 0) return parseClaudeCredentials(result.stdout.toString());
     } catch {
       // No keychain item.
@@ -109,9 +131,11 @@ interface AnthropicLogin { loggedIn: boolean; error?: string; email?: string; or
 export interface UpstreamCredentialSources {
   /** Claude Code's subscription login status (`claude auth status`). */
   anthropicLogin(): Promise<AnthropicLogin>;
-  /** Have Claude Code refresh its own OAuth login. */
-  refreshClaudeLogin(): Promise<void>;
-  readClaudeOAuth(): ClaudeOAuth | null;
+  /** Have Claude Code refresh an account's own OAuth login. */
+  refreshClaudeLogin(account?: string): Promise<void>;
+  readClaudeOAuth(account?: string): ClaudeOAuth | null;
+  /** Another Claude account of the pool can take requests even if `main` cannot. */
+  claudePoolAvailable(): boolean;
   /** This daemon's OpenAI session, refreshed when asked to. */
   openaiSession(options: { forceRefresh?: boolean }): Promise<{ accessToken: string; accountId: string | null }>;
 }
@@ -120,9 +144,10 @@ const defaultSources: UpstreamCredentialSources = {
   anthropicLogin: () => requireSubscriptionAuth()
     .then(status => ({ loggedIn: true, email: status.email, orgId: status.orgId }))
     .catch((error: unknown) => ({ loggedIn: false, error: error instanceof Error ? error.message : String(error) })),
-  // Claude Code owns the refresh token and its rotation; let it refresh.
-  refreshClaudeLogin: refreshClaudeCodeLogin,
+  // Claude Code owns the refresh token and its rotation; a bare usage probe on the account makes it refresh.
+  refreshClaudeLogin: async (account = MAIN_ACCOUNT_ID) => { await refreshAccountUsage(account); },
   readClaudeOAuth: readClaudeCodeOAuth,
+  claudePoolAvailable: () => claudeAccountStates().some(state => state.id !== MAIN_ACCOUNT_ID && state.available),
   openaiSession: (options) => getVerifiedSession(options),
 };
 
@@ -145,32 +170,36 @@ const CHAINED_PROXY_ERROR = (provider: ProxyableProviderId) =>
 
 export function createLocalUpstreamAuth(overrides: Partial<UpstreamCredentialSources> = {}): UpstreamAuth {
   const sources: UpstreamCredentialSources = { ...defaultSources, ...overrides };
-  let claudeRefresh: Promise<void> | null = null;
+  const claudeRefreshes = new Map<string, Promise<void>>();
   let anthropicStatus: { at: number; status: Promise<AnthropicLogin> } | null = null;
 
-  const refreshClaudeLogin = (): Promise<void> => {
-    if (claudeRefresh) return claudeRefresh;
-    const refresh = sources.refreshClaudeLogin().catch((error: unknown) => {
-      log("warn", `provider-proxy: Claude Code login refresh failed: ${error instanceof Error ? error.message : String(error)}`);
-    }).finally(() => { claudeRefresh = null; });
-    claudeRefresh = refresh;
+  const refreshClaudeLogin = (account: string): Promise<void> => {
+    const running = claudeRefreshes.get(account);
+    if (running) return running;
+    const refresh = (account === MAIN_ACCOUNT_ID ? sources.refreshClaudeLogin() : sources.refreshClaudeLogin(account)).catch((error: unknown) => {
+      log("warn", `provider-proxy: Claude Code login refresh for "${account}" failed: ${error instanceof Error ? error.message : String(error)}`);
+    }).finally(() => { claudeRefreshes.delete(account); });
+    claudeRefreshes.set(account, refresh);
     return refresh;
   };
 
-  const claudeAccessToken = async (afterRejection: boolean): Promise<string> => {
-    let oauth = sources.readClaudeOAuth();
+  const whose = (account: string) => account === MAIN_ACCOUNT_ID ? "Claude Code's" : `Claude account "${account}"'s`;
+  const readClaudeOAuth = (account: string) => account === MAIN_ACCOUNT_ID ? sources.readClaudeOAuth() : sources.readClaudeOAuth(account);
+
+  const claudeAccessToken = async (afterRejection: boolean, account: string): Promise<string> => {
+    let oauth = readClaudeOAuth(account);
     const stale = !oauth || (oauth.expiresAt !== null && oauth.expiresAt - Date.now() < CLAUDE_TOKEN_REFRESH_MARGIN_MS);
     if (stale || afterRejection) {
       const before = oauth?.accessToken;
-      await refreshClaudeLogin();
-      oauth = sources.readClaudeOAuth();
+      await refreshClaudeLogin(account);
+      oauth = readClaudeOAuth(account);
       if (afterRejection && oauth?.accessToken === before) {
-        throw new UpstreamAuthError("Claude Code's login was rejected and could not be refreshed. Run `claude` once on this machine.");
+        throw new UpstreamAuthError(`${whose(account)} login was rejected and could not be refreshed. Run \`claude\` once on this machine.`);
       }
     }
-    if (!oauth) throw new UpstreamAuthError("Claude Code is not signed in on this machine. Run `claude auth login` there.");
+    if (!oauth) throw new UpstreamAuthError(`${account === MAIN_ACCOUNT_ID ? "Claude Code is" : `Claude account "${account}" is`} not signed in on this machine. Run \`claude auth login\` there.`);
     if (oauth.expiresAt !== null && oauth.expiresAt <= Date.now()) {
-      throw new UpstreamAuthError("Claude Code's login on this machine has expired and could not be refreshed. Run `claude` once there.");
+      throw new UpstreamAuthError(`${whose(account)} login on this machine has expired and could not be refreshed. Run \`claude\` once there.`);
     }
     return oauth.accessToken;
   };
@@ -189,13 +218,16 @@ export function createLocalUpstreamAuth(overrides: Partial<UpstreamCredentialSou
       return (testOrigins()[provider] ?? PROVIDER_PROXY_ORIGINS[provider]).replace(/\/+$/, "");
     },
 
-    async headers(provider, url, { afterRejection, clientHeaders }): Promise<Record<string, string>> {
+    async headers(provider, url, { afterRejection, clientHeaders, account = MAIN_ACCOUNT_ID }): Promise<Record<string, string>> {
       if (isProviderProxied(provider)) throw new UpstreamAuthError(CHAINED_PROXY_ERROR(provider));
       if (provider === "anthropic") {
-        const login = await anthropicLogin();
-        if (!login.loggedIn) throw new UpstreamAuthError(login.error ?? "Claude Code is not signed in with a Claude subscription on this machine.");
+        // The pool routes only to accounts signed in with a subscription; `main` is checked here as before.
+        if (account === MAIN_ACCOUNT_ID) {
+          const login = await anthropicLogin();
+          if (!login.loggedIn) throw new UpstreamAuthError(login.error ?? "Claude Code is not signed in with a Claude subscription on this machine.");
+        }
         return {
-          authorization: `Bearer ${await claudeAccessToken(afterRejection)}`,
+          authorization: `Bearer ${await claudeAccessToken(afterRejection, account)}`,
           "anthropic-beta": withOAuthBeta(clientHeaders["anthropic-beta"]),
         };
       }
@@ -226,8 +258,9 @@ export function createLocalUpstreamAuth(overrides: Partial<UpstreamCredentialSou
       let accountScope: string | null;
       if (provider === "anthropic") {
         const login = await anthropicLogin();
-        loggedIn = login.loggedIn;
-        error = login.error;
+        // Requests go to whichever account of the pool can take them.
+        loggedIn = login.loggedIn || sources.claudePoolAvailable();
+        error = loggedIn ? undefined : login.error;
         accountScope = scopeOf(login.orgId ?? login.email);
       } else {
         loggedIn = hasConfiguredCredentials(provider);
@@ -247,8 +280,8 @@ export function createLocalUpstreamAuth(overrides: Partial<UpstreamCredentialSou
         ...(error ? { error } : {}),
         authInfo,
         accountScope,
-        // /proxy forwards through the main Claude account only, so it reports that account's usage.
-        usage: loggedIn ? (provider === "anthropic" ? getAccountUsage(MAIN_ACCOUNT_ID) : getLastUsage(provider)) : null,
+        // For Claude, the pool's combined usage: proxied requests are routed across it.
+        usage: loggedIn ? getLastUsage(provider) : null,
       };
     },
 

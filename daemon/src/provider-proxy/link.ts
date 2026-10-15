@@ -109,6 +109,8 @@ export class ProviderProxyLink {
   message: string | undefined;
   host: ClientHostInfo | null = null;
   remote: Partial<Record<ProxyableProviderId, ProviderProxyRemoteStatus>> = {};
+  /** What the remote can do beyond protocol v1 (PROVIDER_PROXY_FEATURES), from its last hello. */
+  features: string[] = [];
   /**
    * The remote's Claude account pool, kept current while watched; the last one
    * received stays while the link is down. Null until received, or when the
@@ -549,6 +551,7 @@ export class ProviderProxyLink {
       this.failedAttempts = 0;
       this.host = (event.host as ClientHostInfo | undefined) ?? null;
       this.remote = (event.providers as ProviderProxyLink["remote"] | undefined) ?? {};
+      this.features = Array.isArray(event.features) ? event.features.filter((feature): feature is string => typeof feature === "string") : [];
       this.state = "connected";
       this.message = undefined;
       log("info", `provider-proxy: connected to ${this.alias} (${describeRemoteHost(this.host, this.alias)})`);

@@ -19,7 +19,10 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "n
 import { dirname } from "node:path";
 import type { Server, ServerWebSocket } from "bun";
 import {
+  PROVIDER_PROXY_ACCOUNT_MOVE_HEADER,
+  PROVIDER_PROXY_CONVERSATION_HEADER,
   PROVIDER_PROXY_MAX_REQUEST_BYTES,
+  type ProviderProxyAccountMove,
   isProxyableProvider,
   matchProviderProxyRoute,
   providerProxyRequestHeaders,
@@ -37,6 +40,8 @@ export interface ProviderProxyForwarderOptions {
   stateFile?: string;
   /** The link a provider is proxied through, or null when it is not proxied. */
   linkFor(provider: ProxyableProviderId): ProviderProxyLink | null;
+  /** The remote moved a named conversation (PROVIDER_PROXY_CONVERSATION_HEADER) to another Claude account. */
+  onAccountMove?(conversation: string, move: ProviderProxyAccountMove): void;
 }
 
 interface SocketState {
@@ -196,7 +201,18 @@ export class ProviderProxyForwarder {
       try {
         const body = request.method === "GET" || request.method === "HEAD" ? undefined : new Uint8Array(await request.arrayBuffer());
         const response = await link.openHttp({ provider, method: request.method, target, headers, body }, request.signal);
-        return new Response(response.body, { status: response.status, headers: response.headers });
+        const responseHeaders = { ...response.headers };
+        const move = responseHeaders[PROVIDER_PROXY_ACCOUNT_MOVE_HEADER];
+        delete responseHeaders[PROVIDER_PROXY_ACCOUNT_MOVE_HEADER];
+        const conversation = headers[PROVIDER_PROXY_CONVERSATION_HEADER];
+        if (move && conversation) {
+          try {
+            this.options.onAccountMove?.(conversation, JSON.parse(decodeURIComponent(move)) as ProviderProxyAccountMove);
+          } catch {
+            // A malformed note changes nothing about the response.
+          }
+        }
+        return new Response(response.body, { status: response.status, headers: responseHeaders });
       } catch (error) {
         if (request.signal.aborted || isAbortLikeError(error)) return new Response(null, { status: 499 });
         return jsonError(provider, 502, `Exocortex /proxy: ${error instanceof Error ? error.message : String(error)}`);

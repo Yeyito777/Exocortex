@@ -29,7 +29,7 @@ import { MAIN_ACCOUNT_ID } from "./accounts";
 import { beginAccountTurn, multipleClaudeAccounts, noteAccountAuthFailure, routeClaudeTurn, touchConversationAccount } from "./account-pool";
 import { noteClaudeAccountWorking } from "./auth-cache";
 import { accountSwitchNotice } from "./routing";
-import { providerProxyRoute } from "../../provider-proxy/route";
+import { isProviderProxied, onProxiedClaudeMove, providerProxyRoute } from "../../provider-proxy/route";
 import { createHostToolServer, hostToolDefs, type HostToolBinding } from "./host-tools";
 import { buildClaudeHelperPrompt, buildClaudeUserContent, planClaudePrompt, trailingUserMessages, type ClaudePromptPlan } from "./prompt";
 import { ClaudeRelay, reconnectRelays, relaysEnabled } from "./relay-client";
@@ -79,10 +79,10 @@ function systemPromptOption(append: string | undefined): ClaudeQueryOptions["sys
   return { type: "preset", preset: "claude_code", ...(append ? { append } : {}), snapshot: false };
 }
 
-function baseOptions(model: ModelId, options: StreamOptions, cwd: string, stderr: (data: string) => void, account: string): ClaudeQueryOptions {
+function baseOptions(model: ModelId, options: StreamOptions, cwd: string, stderr: (data: string) => void, account: string, convId?: string): ClaudeQueryOptions {
   const effort = toClaudeEffort(options.effort);
   return {
-    ...claudeProcessOptions(cwd, account),
+    ...claudeProcessOptions(cwd, account, convId),
     model,
     includePartialMessages: true,
     thinking: thinkingFor(options.effort),
@@ -99,10 +99,11 @@ function agentTurnOptions(
   stderr: (data: string) => void,
   binding: () => Promise<HostToolBinding>,
   account: string,
+  convId?: string,
 ): ClaudeQueryOptions {
   const hostTools = createHostToolServer(options.tools, options.toolExecutor ? binding : null);
   return {
-    ...baseOptions(model, options, cwd, stderr, account),
+    ...baseOptions(model, options, cwd, stderr, account, convId),
     systemPrompt: systemPromptOption(options.system),
     settingSources: ["user", "project", "local"],
     // Exocortex has no permission prompt UI; Claude Code runs unattended.
@@ -228,12 +229,18 @@ export async function streamMessage(
   const endTurn = beginAccountTurn(account, convId);
   if (convId) touchConversationAccount(convId, account);
   callbacks = accountCallbacks(callbacks, account);
+  // Under /proxy the remote picks the account per request; announce its moves as for local ones.
+  const stopMoveNotices = convId && isProviderProxied("anthropic") ? onProxiedClaudeMove(convId, (move) => {
+    log("info", `anthropic: proxied conversation ${convId} moved from Claude account ${move.from} to ${move.to} on the /proxy remote (${move.detail})`);
+    callbacks.onProviderNotice?.(accountSwitchNotice({ account: move.to, movedFrom: move.from, reason: "new", detail: move.detail }));
+  }) : null;
   try {
     return await runStreamMessage(messages, model, callbacks, options, cwd, plan, convId, live, account);
   } catch (error) {
     if (error instanceof AuthError && !signal?.aborted) noteAccountAuthFailure(account, error.message);
     throw error;
   } finally {
+    stopMoveNotices?.();
     endTurn();
     if (convId) touchConversationAccount(convId, account);
   }
@@ -306,7 +313,7 @@ async function runStreamMessage(
     const session = openClaudeCodeSession(convId, key, (input, binding) => claudeSdks().claude.query({
       prompt: input,
       options: {
-        ...agentTurnOptions(model, options, cwd, resumePlan, onStderr, binding, account),
+        ...agentTurnOptions(model, options, cwd, resumePlan, onStderr, binding, account, convId),
         ...(relay && meta ? { spawnClaudeCodeProcess: spawnOptions => relay.launch(spawnOptions, meta) } : {}),
       },
     }), { relay, resume: resumePlan.resume, history, system, account });
@@ -365,7 +372,7 @@ export async function adoptClaudeCodeProcesses(hasConversation: (convId: string)
         // Claude Code is already running: only what the SDK re-sends when it
         // connects matters, and it matches what started the process.
         options: {
-          ...claudeProcessOptions(meta.cwd, meta.account),
+          ...claudeProcessOptions(meta.cwd, meta.account, meta.convId),
           systemPrompt: systemPromptOption(meta.systemAppend),
           perTaskStopAffordance: true,
           ...(hostTools ? { mcpServers: { [hostTools.name]: hostTools } } : {}),

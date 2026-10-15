@@ -2,8 +2,6 @@ import type { ProviderId, UsageData } from "./messages";
 import { getProviderAdapter } from "./providers/catalog";
 import type { UsageResetOutcome } from "./protocol";
 import { log } from "./log";
-import { MAIN_ACCOUNT_ID } from "./providers/anthropic/accounts";
-import { getAccountUsage } from "./providers/anthropic/usage";
 import { getProxiedUsage, providerProxyHooks, providerProxyRoute, proxiedClaudeAccounts, setProxiedUsage } from "./provider-proxy/route";
 
 // A provider that goes through /proxy reports the remote account's usage: the
@@ -69,8 +67,6 @@ export function handleUsageHeaders(provider: ProviderId, headers: Headers, onUpd
     getProviderAdapter(provider).usage.handleUsageHeaders(headers, (usage) => {
       if (providerProxyRoute(provider) !== route) return;
       setProxiedUsage(route.provider, usage);
-      // Proxied Claude turns run on the remote's main account (recorded here as this machine's main).
-      if (route.provider === "anthropic") providerProxyHooks()?.noteMainUsage(getAccountUsage(MAIN_ACCOUNT_ID) ?? usage);
       onUpdate(proxiedUsage(provider) ?? usage);
     });
     return;

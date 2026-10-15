@@ -32,6 +32,8 @@ export function fakeSsh(options: {
   outdated?: boolean;
   /** Command types the far end answers like a daemon that predates them. */
   unknownCommands?: string[];
+  /** Leave `features` out of the hello, like a daemon that predates them. */
+  noFeatures?: boolean;
   drain?: { needs: boolean; waiters: Array<() => void> };
 } = {}) {
   const spawned: Array<{ process: SshProcess; endpoint: ProviderProxyEndpoint; kill(): void; commands: Array<Record<string, unknown>> }> = [];
@@ -43,7 +45,11 @@ export function fakeSsh(options: {
     const commands: Array<Record<string, unknown>> = [];
     let alive = true;
     const endpoint = new ProviderProxyEndpoint({
-      send: (event) => { if (alive) stdout.write(`${JSON.stringify(event)}\n`); },
+      send: (event) => {
+        if (!alive) return;
+        const sent = options.noFeatures && event.type === "provider_proxy_hello_result" ? { ...event, features: undefined } : event;
+        stdout.write(`${JSON.stringify(sent)}\n`);
+      },
       needsDrain: () => options.drain?.needs ?? false,
       waitDrain: () => new Promise(resolve => { options.drain?.waiters.push(resolve); }),
     }, options.deps);

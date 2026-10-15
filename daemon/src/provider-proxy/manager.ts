@@ -27,10 +27,11 @@ import { AuthError } from "../providers/errors";
 import { log } from "../log";
 import { ProviderProxyForwarder } from "./forwarder";
 import { describeRemoteHost, ProviderProxyLink, ProviderProxyUnavailableError } from "./link";
-import { withMainUsage } from "./remote-accounts";
 import {
   configureProviderProxyHooks,
+  emitProxiedClaudeMove,
   getProxiedUsage,
+  proxiedConversationName,
   setProviderProxyRoute,
   setProxiedUsage,
 } from "./route";
@@ -118,6 +119,10 @@ export class ProviderProxyManager {
         const alias = this.proxies.get(provider);
         return alias ? this.links.get(alias) ?? null : null;
       },
+      onAccountMove: (conversation, move) => {
+        const prefix = proxiedConversationName("");
+        if (conversation.startsWith(prefix)) emitProxiedClaudeMove(conversation.slice(prefix.length), move);
+      },
     });
   }
 
@@ -132,8 +137,8 @@ export class ProviderProxyManager {
     configureProviderProxyHooks({
       ready: (provider, signal) => this.ready(provider, signal),
       remoteStatus: (provider) => this.remoteStatus(provider),
+      remoteSupports: (provider, feature) => this.linkFor(provider)?.features.includes(feature) ?? false,
       remoteAccounts: () => this.remoteAccounts(),
-      noteMainUsage: (usage) => this.noteMainUsage(usage),
       refreshUsage: (provider) => this.refreshUsage(provider),
       consumeReset: (provider) => this.consumeReset(provider),
     });
@@ -303,13 +308,6 @@ export class ProviderProxyManager {
         ...(info.message ? { message: info.message } : {}),
       },
     };
-  }
-
-  /** This machine's proxied Claude turns reported `main`'s usage; keep the pool's copy current until the remote's next update. */
-  noteMainUsage(usage: UsageData): void {
-    const link = this.linkFor("anthropic");
-    if (!link?.remoteAccounts) return;
-    link.remoteAccounts = withMainUsage(link.remoteAccounts, usage);
   }
 
   async refreshUsage(provider: ProxyableProviderId): Promise<UsageData | null> {

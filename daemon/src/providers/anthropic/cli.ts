@@ -14,7 +14,8 @@ import { createAbortError } from "../../abort";
 import type { LoginCallbacks } from "../types";
 import { AuthError } from "../errors";
 import type { ClaudeAuthStatus } from "./types";
-import { providerProxyRoute } from "../../provider-proxy/route";
+import { providerProxyRoute, providerProxySupports, proxiedConversationName } from "../../provider-proxy/route";
+import { PROVIDER_PROXY_CONVERSATION_HEADER } from "@exocortex/shared/provider-proxy";
 import { claudeAccountEnv } from "./accounts";
 
 /**
@@ -66,13 +67,18 @@ export function claudeSubscriptionEnv(base: NodeJS.ProcessEnv = process.env): Re
  * nonessential traffic would go to Anthropic directly with that placeholder,
  * so it is turned off.
  */
-function claudeProxyEnv(): Record<string, string> {
+function claudeProxyEnv(base: Record<string, string | undefined>, convId?: string): Record<string, string> {
   const route = providerProxyRoute("anthropic");
   if (!route) return {};
+  // A remote that routes across its Claude accounts keeps the conversation on one by this name.
+  const conversation = convId && providerProxySupports("anthropic", "claude-pool")
+    ? `${PROVIDER_PROXY_CONVERSATION_HEADER}: ${proxiedConversationName(convId)}`
+    : null;
   return {
     ANTHROPIC_BASE_URL: route.baseUrl,
     CLAUDE_CODE_OAUTH_TOKEN: route.token,
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+    ...(conversation ? { ANTHROPIC_CUSTOM_HEADERS: [base.ANTHROPIC_CUSTOM_HEADERS, conversation].filter(Boolean).join("\n") } : {}),
   };
 }
 
@@ -81,13 +87,14 @@ function claudeProxyEnv(): Record<string, string> {
  * `cwd`, signed in as `account` (accounts.ts; default `main`). Under /proxy
  * the remote machine's login is used instead, whatever the account.
  */
-export function claudeProcessOptions(cwd: string, account?: string): ClaudeQueryOptions {
-  const proxy = claudeProxyEnv();
+export function claudeProcessOptions(cwd: string, account?: string, convId?: string): ClaudeQueryOptions {
+  const base = claudeSubscriptionEnv();
+  const proxy = claudeProxyEnv(base, convId);
   const accountEnv = Object.keys(proxy).length > 0 ? {} : claudeAccountEnv(account);
   return {
     cwd,
     pathToClaudeCodeExecutable: getClaudeBinary(),
-    env: { ...claudeSubscriptionEnv(), ...accountEnv, ...proxy, CLAUDE_AGENT_SDK_CLIENT_APP: "exocortex-daemon" },
+    env: { ...base, ...accountEnv, ...proxy, CLAUDE_AGENT_SDK_CLIENT_APP: "exocortex-daemon" },
   };
 }
 

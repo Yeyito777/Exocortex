@@ -57,6 +57,7 @@ import { pendingTurnNotices } from "./turn-notices";
 import { ProviderProxyManager, setActiveProviderProxyManager } from "./provider-proxy/manager";
 import { ProviderProxyEndpoint } from "./provider-proxy/endpoint";
 import { remoteAccountsSource } from "./provider-proxy/remote-accounts";
+import { createProxiedClaudeRouter } from "./provider-proxy/claude-routing";
 import type { ProviderProxyLinkCommand } from "@exocortex/shared/provider-proxy";
 import type { BackgroundTaskCompletion, ExocortexToolRuntime } from "./tools/types";
 import { getSubagentParentConversationId, listActiveConversationTasks, setSubagentActive, stopBackgroundTask } from "./conversation-activity";
@@ -286,6 +287,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       });
     },
   });
+  /** Routes proxied Claude requests from other daemons across this daemon's accounts. */
+  const proxiedClaudeRouter = createProxiedClaudeRouter();
   /** Remote end of /proxy links: one endpoint per connection that said provider_proxy_hello. */
   const providerProxyEndpoints = new Map<ConnectedClient, ProviderProxyEndpoint>();
   const providerProxyEndpointFor = (client: ConnectedClient, create: boolean): ProviderProxyEndpoint | null => {
@@ -304,7 +307,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         client.socket.once("drain", done);
         client.socket.once("close", done);
       }),
-    }, { accounts: remoteAccountsSource() });
+    }, { accounts: remoteAccountsSource(), claudeRouter: proxiedClaudeRouter });
     providerProxyEndpoints.set(client, endpoint);
     client.socket.once("close", () => {
       endpoint.close();

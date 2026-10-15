@@ -12,8 +12,9 @@ import { aggregateUsage, CLAUDE_RATE_LIMIT_HEADER } from "../providers/anthropic
 import { getLastUsage, handleUsageHeaders } from "../usage";
 import { ProviderProxyEndpoint } from "./endpoint";
 import { ProviderProxyManager, setActiveProviderProxyManager } from "./manager";
-import { mergeRemoteAccounts, withMainUsage, type RemoteAccountsSource } from "./remote-accounts";
-import { resetProviderProxyRoutesForTest } from "./route";
+import { mergeRemoteAccounts, type RemoteAccountsSource } from "./remote-accounts";
+import { proxiedConversationName, resetProviderProxyRoutesForTest } from "./route";
+import { claudeProcessOptions } from "../providers/anthropic/cli";
 import { fakeSsh, loggedIn, stubAuth } from "./testing";
 
 const HOUR = 3_600_000;
@@ -125,7 +126,7 @@ describe("the remote's Claude pool over /proxy", () => {
     expect(accountChanges()).toBeGreaterThan(0);
     expect(manager.remoteAccounts()?.pool.accounts[0].activeTurns).toBe(1);
 
-    // This machine's proxied turns report main's usage first; the bars use it at once.
+    // A proxied turn's own rate-limit event (its account unknown here) shows the pool's bars, not that account alone.
     const updates: Array<UsageData> = [];
     handleUsageHeaders("anthropic", new Headers({
       [CLAUDE_RATE_LIMIT_HEADER]: JSON.stringify({
@@ -133,8 +134,7 @@ describe("the remote's Claude pool over /proxy", () => {
         unifiedWindows: { five_hour: { utilization: 0.9, resetsAt: (now + 2 * HOUR) / 1000 }, seven_day: { utilization: 0.995, resetsAt: (now + 48 * HOUR) / 1000 } },
       }),
     }), update => updates.push(update));
-    expect(updates.at(-1)).toMatchObject({ capacity: 200, fiveHour: { utilization: 120 } });
-    expect(getLastUsage("anthropic")?.fiveHour?.utilization).toBe(120);
+    expect(updates.at(-1)).toMatchObject({ capacity: 200, fiveHour: { utilization: 118 } });
 
     // Identical snapshots are not pushed again.
     const received = accountChanges();
@@ -161,8 +161,18 @@ describe("the remote's Claude pool over /proxy", () => {
     expect(manager.remoteAccounts()).toBeNull();
   });
 
+  test("Claude Code names its conversation to a remote that routes across its pool, and only to one", async () => {
+    const ssh = fakeSsh({ deps: { auth: stubAuth(), accounts: fakeSource(pool([account("main"), account("max2")])).source } });
+    const { manager } = makeManager(ssh.spawn);
+    await manager.set("anthropic", "whale");
+    const env = claudeProcessOptions("/tmp", undefined, "conv-1").env as Record<string, string>;
+    expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe(`x-exocortex-proxy-conversation: ${proxiedConversationName("conv-1")}`);
+    // Helper requests carry no conversation.
+    expect((claudeProcessOptions("/tmp").env as Record<string, string>).ANTHROPIC_CUSTOM_HEADERS).toBeUndefined();
+  });
+
   test("an older remote without provider_proxy_accounts falls back to its main account's bars", async () => {
-    const ssh = fakeSsh({ deps: { auth: stubAuth() }, unknownCommands: ["provider_proxy_accounts"] });
+    const ssh = fakeSsh({ deps: { auth: stubAuth() }, unknownCommands: ["provider_proxy_accounts"], noFeatures: true });
     const { manager } = makeManager(ssh.spawn);
     await manager.set("anthropic", "whale");
     await until(() => ssh.spawned[0].commands.some(command => command.type === "provider_proxy_accounts"));
@@ -170,6 +180,8 @@ describe("the remote's Claude pool over /proxy", () => {
     expect(manager.remoteAccounts()).toBeNull();
     expect(getLastUsage("anthropic")).toEqual(loggedIn.usage);
     expect(manager.list()[0]).toMatchObject({ state: "connected", remoteLoggedIn: true });
+    // Nothing it would pass on to the upstream as an unknown header.
+    expect((claudeProcessOptions("/tmp", undefined, "conv-1").env as Record<string, string>).ANTHROPIC_CUSTOM_HEADERS).toBeUndefined();
   });
 
   test("a remote that proxies Claude itself shares no pool", async () => {
@@ -211,7 +223,7 @@ describe("the remote endpoint's provider_proxy_accounts", () => {
 });
 
 describe("presenting the remote's pool here", () => {
-  test("lists this machine's conversations under main (openable) beside the remote's (not)", () => {
+  test("this machine's conversations are found by their name on the remote; the pool's routing is this machine's", () => {
     const local: ClaudeAccountsInfo = {
       proxied: true,
       accounts: [account("main", { activeTurns: 1, conversations: [{ convId: "local-1", lastUsedAt: now - 1_000, running: true, warm: true }] })],
@@ -221,32 +233,20 @@ describe("presenting the remote's pool here", () => {
       currentConversation: { convId: "local-1", account: "main", lastUsedAt: now - 1_000, warm: true },
     };
     const remotePool = pool([
-      account("main", { activeTurns: 2, conversations: [{ convId: "remote-1", lastUsedAt: now - 5_000, running: false, warm: true }] }),
-      account("max2", { conversations: [{ convId: "remote-2", lastUsedAt: now - 9_000, running: true, warm: true }] }),
+      account("main", { activeTurns: 1, conversations: [{ convId: "remote-1", lastUsedAt: now - 5_000, running: false, warm: true }] }),
+      account("max2", { activeTurns: 1, conversations: [{ convId: "proxy:macbook/local-1", lastUsedAt: now - 2_000, running: true, warm: true }] }),
     ]);
-    const merged = mergeRemoteAccounts(local, remotePool, { alias: "whale", host: "yeyito@whale", state: "connected" });
+    const merged = mergeRemoteAccounts(local, remotePool, { alias: "whale", host: "yeyito@whale", state: "connected" }, "proxy:macbook/");
     expect(merged.proxied).toBe(false);
     expect(merged.remote).toEqual({ alias: "whale", host: "yeyito@whale", state: "connected" });
-    expect(merged.accounts.map(entry => entry.id)).toEqual(["main", "max2"]);
-    expect(merged.accounts[0].activeTurns).toBe(3);
-    expect(merged.accounts[0].conversations).toEqual([
-      { convId: "local-1", lastUsedAt: now - 1_000, running: true, warm: true },
-      { convId: "remote-1", lastUsedAt: now - 5_000, running: false, warm: true, remote: true },
-    ]);
-    expect(merged.accounts[1].conversations[0]).toMatchObject({ convId: "remote-2", remote: true });
-    expect(merged.nextNewWork).toMatchObject({ account: "main" });
-    expect(merged.currentConversation).toEqual(local.currentConversation);
-  });
+    expect(merged.accounts.map(entry => [entry.id, entry.activeTurns])).toEqual([["main", 1], ["max2", 1]]);
+    expect(merged.accounts[0].conversations).toEqual([{ convId: "remote-1", lastUsedAt: now - 5_000, running: false, warm: true, remote: true }]);
+    expect(merged.accounts[1].conversations).toEqual([{ convId: "local-1", lastUsedAt: now - 2_000, running: true, warm: true }]);
+    expect(merged.nextNewWork).toEqual(remotePool.nextNewWork);
+    expect(merged.currentConversation).toEqual({ convId: "local-1", account: "max2", lastUsedAt: now - 2_000, warm: true });
 
-  test("fresher main usage recomputes the combined bars only when the counted accounts are known", () => {
-    const remotePool = pool([account("main", { usage: usage(10, 10) }), account("max2", { usage: usage(20, 20) })]);
-    const updated = withMainUsage(remotePool, usage(50, 60), now);
-    expect(updated.accounts[0].usage?.fiveHour?.utilization).toBe(50);
-    expect(updated.combined).toMatchObject({ capacity: 200, fiveHour: { utilization: 70 }, sevenDay: { utilization: 80 } });
-    // The remote counted an account this side cannot tell apart: keep its numbers.
-    const odd = { ...remotePool, combined: { ...remotePool.combined!, capacity: 300 } };
-    expect(withMainUsage(odd, usage(50, 60), now).combined).toBe(odd.combined);
-    const single = pool([account("main", { usage: usage(10, 10) })]);
-    expect(withMainUsage(single, usage(40, 40), now).combined).toEqual(usage(40, 40));
+    // A conversation the remote has not seen (yet) runs on no known account.
+    const fresh = mergeRemoteAccounts({ ...local, currentConversation: { convId: "local-9", account: "main", lastUsedAt: null, warm: false } }, remotePool, { alias: "whale", host: null, state: "connected" }, "proxy:macbook/");
+    expect(fresh.currentConversation).toEqual({ convId: "local-9", account: null, lastUsedAt: null, warm: false });
   });
 });

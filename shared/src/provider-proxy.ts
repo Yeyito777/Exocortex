@@ -25,6 +25,35 @@ export function isProxyableProvider(value: unknown): value is ProxyableProviderI
   return typeof value === "string" && (PROXYABLE_PROVIDERS as readonly string[]).includes(value);
 }
 
+/**
+ * What a remote can do beyond protocol v1, listed in its hello. `claude-pool`:
+ * it shares its Claude account pool (provider_proxy_accounts) and routes
+ * proxied Claude requests across it by PROVIDER_PROXY_CONVERSATION_HEADER.
+ */
+export const PROVIDER_PROXY_FEATURES = ["claude-pool"] as const;
+export type ProviderProxyFeature = typeof PROVIDER_PROXY_FEATURES[number];
+
+/**
+ * Request header naming the proxied conversation (`<client host>/<conversation
+ * id>`), so a remote with several Claude accounts keeps it on one while its
+ * prompt cache is warm. The remote removes it; it never reaches the upstream.
+ */
+export const PROVIDER_PROXY_CONVERSATION_HEADER = "x-exocortex-proxy-conversation";
+
+/**
+ * Response header a `claude-pool` remote adds when it moved the conversation
+ * to another Claude account: `{ from, to, detail }` as URI-encoded JSON. The
+ * local forwarder takes it off (Claude Code never sees it) so the move is
+ * announced in the conversation, as for the remote's own conversations.
+ */
+export const PROVIDER_PROXY_ACCOUNT_MOVE_HEADER = "x-exocortex-claude-account-move";
+
+export interface ProviderProxyAccountMove {
+  from: string;
+  to: string;
+  detail: string;
+}
+
 /** Largest request body (or websocket message) a link carries; larger requests fail locally. */
 export const PROVIDER_PROXY_MAX_REQUEST_BYTES = 32 * 1024 * 1024;
 
@@ -229,6 +258,8 @@ export interface ProviderProxyHelloResultEvent {
   version: number;
   host: ClientHostInfo;
   providers: Partial<Record<ProxyableProviderId, ProviderProxyRemoteStatus>>;
+  /** Absent from remotes that predate it. */
+  features?: string[];
 }
 
 export interface ProviderProxyStatusResultEvent {

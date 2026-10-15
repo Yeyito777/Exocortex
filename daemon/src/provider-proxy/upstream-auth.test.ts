@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createLocalUpstreamAuth, readClaudeCodeOAuth, UpstreamAuthError } from "./upstream-auth";
 import { resetProviderProxyRoutesForTest, setProviderProxyRoute } from "./route";
+import { setClaudeAccountsFileForTests } from "../providers/anthropic/accounts";
 
 const dirs: string[] = [];
 const originalClaudeDir = process.env.CLAUDE_CONFIG_DIR;
@@ -61,6 +62,44 @@ describe("remote credentials for /proxy", () => {
     expect(a.authorization).toBe("Bearer new-token");
     expect(b.authorization).toBe("Bearer new-token");
     expect(refreshed).toBe(1);
+  });
+
+  test("another Claude account's request carries that account's own login, refreshed by Claude Code for that account", async () => {
+    claudeDir("main-token", Date.now() + 3_600_000);
+    const max2 = mkdtempSync(join(tmpdir(), "exocortex-claude-max2-"));
+    dirs.push(max2);
+    writeCredentials(max2, "max2-old", Date.now() + 60_000);
+    const accountsFile = join(max2, "accounts.json");
+    writeFileSync(accountsFile, JSON.stringify({ accounts: [{ id: "max2", configDir: max2 }] }));
+    setClaudeAccountsFileForTests(accountsFile);
+    try {
+      const refreshed: Array<string | undefined> = [];
+      let logins = 0;
+      const auth = createLocalUpstreamAuth({
+        anthropicLogin: async () => { logins++; return { loggedIn: false, error: "main is signed out" }; },
+        refreshClaudeLogin: async (account) => {
+          refreshed.push(account);
+          writeCredentials(max2, "max2-new", Date.now() + 3_600_000);
+        },
+      });
+      const headers = await auth.headers("anthropic", "u", { afterRejection: false, clientHeaders: {}, account: "max2" });
+      expect(headers.authorization).toBe("Bearer max2-new");
+      expect(refreshed).toEqual(["max2"]);
+      // The pool routes only to signed-in accounts; main's own login check does not gate max2.
+      expect(logins).toBe(0);
+      expect(readClaudeCodeOAuth("max2")?.accessToken).toBe("max2-new");
+      expect(readClaudeCodeOAuth("nope")).toBeNull();
+    } finally {
+      setClaudeAccountsFileForTests(null);
+    }
+  });
+
+  test("a remote whose main is signed out still serves Claude while another account of its pool can", async () => {
+    claudeDir("token", Date.now() + 3_600_000);
+    const auth = createLocalUpstreamAuth({ anthropicLogin: async () => ({ loggedIn: false, error: "signed out" }), claudePoolAvailable: () => true });
+    expect((await auth.status("anthropic")).loggedIn).toBe(true);
+    const alone = createLocalUpstreamAuth({ anthropicLogin: async () => ({ loggedIn: false, error: "signed out" }), claudePoolAvailable: () => false });
+    expect(await alone.status("anthropic")).toMatchObject({ loggedIn: false, error: "signed out" });
   });
 
   test("a rejected token that refreshing does not change fails clearly instead of looping", async () => {

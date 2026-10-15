@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { createAccountsWatch } from "./accounts-watch";
+import { proxiedConversationName } from "./provider-proxy/route";
 import { emitClaudeAccountsChanged } from "./providers/anthropic/account-events";
 import { DEFAULT_ROUTING_POLICY } from "./providers/anthropic/routing";
 import type { AccountsEvent, ClaudeAccountInfo, ClaudeAccountsInfo, Event, OpenAIAccountInfo } from "./protocol";
@@ -130,14 +131,23 @@ test("under /proxy the screen shows the remote's pool, refreshed through the rem
   expect(watch.watcherCount()).toBe(0);
 
   shared = {
-    pool: { proxied: false, accounts: [account("main"), account("max2", { conversations: [{ convId: "there", lastUsedAt: Date.now(), running: false, warm: true }] })], combined: null, routing: { ...DEFAULT_ROUTING_POLICY }, nextNewWork: null },
+    pool: {
+      proxied: false,
+      accounts: [
+        account("main", { conversations: [{ convId: `proxy:${proxiedConversationName("here")}`, lastUsedAt: Date.now(), running: true, warm: true }] }),
+        account("max2", { conversations: [{ convId: "there", lastUsedAt: Date.now(), running: false, warm: true }] }),
+      ],
+      combined: null,
+      routing: { ...DEFAULT_ROUTING_POLICY },
+      nextNewWork: { account: "max2", detail: "soonest weekly reset" },
+    },
     remote: { alias: "whale", host: "yeyito@whale", state: "connected" },
   };
   const client = fakeClient();
   watch.handle(client, { type: "accounts", reqId: "r2", watch: true });
   const snapshot = snapshots()[1];
   expect(snapshot.enabled).toBe(true);
-  expect(snapshot.claude).toMatchObject({ proxied: false, remote: { alias: "whale" }, nextNewWork: { account: "main" } });
+  expect(snapshot.claude).toMatchObject({ proxied: false, remote: { alias: "whale" }, nextNewWork: { account: "max2" } });
   expect(snapshot.claude.accounts[0].conversations.map(conv => [conv.convId, conv.remote ?? false])).toEqual([["here", false]]);
   expect(snapshot.claude.accounts[1].conversations.map(conv => [conv.convId, conv.remote ?? false])).toEqual([["there", true]]);
   await watch.settled();
