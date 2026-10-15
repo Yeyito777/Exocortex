@@ -219,6 +219,9 @@ function routingNote(claude: ClaudeAccountsInfo, now: number): Segment[] | null 
   return [[theme.muted, `${why} → new work goes to ${next.account}`]];
 }
 
+/** Longest /proxy problem reason in the note. */
+const MAX_PROXY_REASON = 48;
+
 /**
  * While the accounts are the /proxy remote's: a link or login problem first,
  * else the routing note marked with the remote's name, else whose accounts
@@ -230,7 +233,9 @@ function proxyNote(remote: NonNullable<ClaudeAccountsInfo["remote"]>, routing: S
     : remote.message ? "cannot serve Claude"
     : null;
   if (problem) {
-    return [[remote.state === "connecting" ? theme.muted : theme.error, `/proxy ${remote.alias} ${problem}`], [theme.muted, remote.message ? `: ${remote.message}` : ""]];
+    // Clipped so the card keeps its table's width; /proxy has the whole reason.
+    const reason = remote.message && remote.message.length > MAX_PROXY_REASON ? `${remote.message.slice(0, MAX_PROXY_REASON - 1)}…` : remote.message;
+    return [[remote.state === "connecting" ? theme.muted : theme.error, `/proxy ${remote.alias} ${problem}`], [theme.muted, reason ? `: ${reason}` : ""]];
   }
   if (routing) return [[theme.muted, `on ${remote.alias}: `], ...routing];
   return [[theme.muted, `accounts on ${remote.alias} (/proxy)`]];

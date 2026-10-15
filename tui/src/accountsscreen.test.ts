@@ -335,6 +335,13 @@ test("under /proxy the remote's accounts fill the table; the note says whose, or
   state.accountsScreen!.snapshot = { ...snap, claude: { ...snap.claude, remote: { alias: "whale", host: null, state: "disconnected", message: "The SSH connection to whale was lost." } } };
   text = screenText(state).join("\n");
   expect(text).toContain("/proxy whale down: The SSH connection to whale was lost.");
+
+  // A long reason is clipped rather than widening the card.
+  const long = "Could not reach the Exocortex daemon on whale over SSH (exit 1): exocortexd proxy: cannot connect to its socket";
+  state.accountsScreen!.snapshot = { ...snap, claude: { ...snap.claude, remote: { alias: "whale", host: null, state: "disconnected", message: long } } };
+  text = screenText(state).join("\n");
+  expect(text).toContain(`/proxy whale down: ${long.slice(0, 47)}…`);
+  expect(text).not.toContain("cannot connect");
   expect(text).not.toContain("accounts on whale");
 });
 
