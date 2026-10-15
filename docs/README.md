@@ -53,10 +53,12 @@ The implementation in [keybinds.ts](../tui/src/keybinds.ts) and
 | `{` / `}` | In chat normal mode, focus history and jump among user-message starts |
 | `[` / `]` | In chat normal mode, focus history and jump among final AI-response text blocks |
 | `;` | In history visual mode, quote selection into the draft |
+| `g a` | In normal mode (prompt, history or sidebar), open the Accounts screen |
 | `/new` | Start a new conversation |
 | `/model <provider> <model>` | Switch provider/model |
 | `/model openai gpt-6-sol-daybreak` | Select Sol Daybreak Blue when advertised by the connected account |
 | `/trim <mode> <n>` | Trim old context |
+| `/accounts` | Accounts screen: every Claude and OpenAI account, its sign-in, usage and conversations (needs more than one account) |
 | `/quit` | Exit |
 
 In prompt normal mode, `3>>` shifts three lines once. In visual modes, shifts

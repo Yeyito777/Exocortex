@@ -62,6 +62,7 @@ import { handleToolsAvailable } from "./events/provider";
 import { formatConversationDefaults, receiveConversationDefaults } from "./events/conversation-defaults";
 import { hydratePendingAIFromSnapshot } from "./events/pending-ai";
 import type { DaemonActions } from "./events/types";
+import { handleAccountsEvent } from "./accountsscreen";
 import { handleCallTranscript, reconcileCallTranscriptDrafts } from "./events/call";
 import { handleBtwEvent } from "./btw/events";
 import { formatChronoResult } from "./chronoschedule";
@@ -218,6 +219,10 @@ export function handleEvent(
 
     case "usage_update":
       state.usageByProvider[event.provider] = event.usage;
+      break;
+
+    case "accounts":
+      handleAccountsEvent(state, event);
       break;
 
     case "usage_reset_result": {

@@ -20,6 +20,7 @@ import { existsSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 import { runtimeDir } from "@exocortex/shared/paths";
 import type { UsageData, UsageWindow } from "../../messages";
+import { emitClaudeAccountsChanged } from "./account-events";
 import { MAIN_ACCOUNT_ID } from "./accounts";
 import { claudeProcessOptions } from "./cli";
 
@@ -93,6 +94,7 @@ function commitUsage(account: string, usage: UsageData): void {
   entry.usage = usage;
   entry.updatedAt = Date.now();
   saveToDisk();
+  emitClaudeAccountsChanged();
 }
 
 interface RateLimitWindow {
@@ -323,6 +325,7 @@ export function applyUsageHeaders(headers: Headers, now = Date.now()): string | 
       commitUsage(account, usage);
     } else if (before !== entry.limitedUntil) {
       saveToDisk();
+      emitClaudeAccountsChanged();
     } else {
       return null;
     }

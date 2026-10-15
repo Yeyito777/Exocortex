@@ -35,6 +35,19 @@ of effort and speed.
 [Several Claude accounts](claude-accounts.md)); the reply is an `auth_status`
 message. Claude accounts are chosen per conversation, never switched globally.
 
+`accounts` answers with an `accounts` event carrying an `AccountsSnapshot`, the
+structured data behind the TUI's Accounts screen (`/accounts`, `g a`): each
+Claude account's sign-in state, plan, its own windows, running turns and the
+conversations on it (running or with a warm cache), the combined usage, the
+routing policy and where new work would go, plus the OpenAI account pool.
+`enabled` says whether several accounts are set up. `convId` asks for that
+conversation's account (`claude.currentConversation`). With `watch: true` the
+daemon also pushes `accounts` events without a `reqId` whenever a sign-in,
+usage, limit or running turn changes (at most every 250 ms), and refreshes
+stale sign-ins and idle usage every minute, until `watch: false` or the
+connection closes; it registers no watcher while `enabled` is false. The
+answer itself only reports what is already known, so it is immediate.
+
 `provider_proxy` lists, enables or disables [/proxy](provider-proxy.md);
 daemons also speak the `provider_proxy_*` link messages to each other over
 `exocortexd proxy`.

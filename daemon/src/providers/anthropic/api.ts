@@ -225,7 +225,7 @@ export async function streamMessage(
   } else if (multipleClaudeAccounts()) {
     log("info", `anthropic: Claude account ${account} for ${convId ?? "a helper request"} (${route.reason}: ${route.detail})`);
   }
-  const endTurn = beginAccountTurn(account);
+  const endTurn = beginAccountTurn(account, convId);
   if (convId) touchConversationAccount(convId, account);
   callbacks = accountCallbacks(callbacks, account);
   try {

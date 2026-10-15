@@ -82,6 +82,7 @@ import { configureClaudeCodeSessions } from "./providers/anthropic/session";
 import { addClaudeAccount, claudeLoginCommand, removeClaudeAccount } from "./providers/anthropic/accounts";
 import { claudeAccountReports } from "./providers/anthropic/account-pool";
 import { formatClaudeAccountReports } from "./providers/anthropic/account-report";
+import { createAccountsWatch } from "./accounts-watch";
 import { HISTORY_PAGE_BYTE_BUDGET, INITIAL_HISTORY_TURNS, buildHistoryUpdatedEvents, compactHistoryImages, pageDisplayHistory, type HistoryWindowOptions } from "./history-pagination";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
 import { randomUUID } from "crypto";
@@ -256,6 +257,11 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   const broadcastUsage = (provider: import("./messages").ProviderId, usage: import("./messages").UsageData | null) => {
     server.broadcast({ type: "usage_update", provider, usage });
   };
+  /** The Accounts screen's structured data and its live watchers (`accounts`). */
+  const accountsWatch = createAccountsWatch({
+    send: (client, event) => { server.sendTo(client, event); },
+    onClaudeUsage: (usage) => broadcastUsage("anthropic", usage),
+  });
 
   // ── /proxy ────────────────────────────────────────────────────────
 
@@ -455,6 +461,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       ...(externalStyles.length > 0 ? { externalToolStyles: externalStyles } : {}),
       providerProxies: providerProxies.list(),
     });
+    // OpenAI account switches and /proxy changes show on the Accounts screen too.
+    accountsWatch.changed();
   };
   const buildOrchestrationCallbacks = (convId: string, onAssistantTextChunk?: (chunk: string) => void) => ({
     onHeaders: (h: Headers) => {
@@ -3727,6 +3735,10 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         });
         break;
       }
+
+      case "accounts":
+        accountsWatch.handle(client, cmd);
+        break;
 
       case "account": {
         server.sendTo(client, { type: "ack", reqId: cmd.reqId });

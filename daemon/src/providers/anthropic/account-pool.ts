@@ -11,9 +11,11 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from "fs";
 import { join } from "path";
 import { runtimeDir } from "@exocortex/shared/paths";
 import type { UsageData } from "../../messages";
+import type { AccountConversationInfo, ClaudeAccountInfo, ClaudeAccountsInfo, ClaudeAccountState } from "@exocortex/shared/protocol";
 import { log } from "../../log";
 import { isProviderProxied } from "../../provider-proxy/route";
-import { listClaudeAccounts, MAIN_ACCOUNT_ID, type ClaudeAccount } from "./accounts";
+import { emitClaudeAccountsChanged } from "./account-events";
+import { claudeLoginCommand, displayPath, listClaudeAccounts, MAIN_ACCOUNT_ID, type ClaudeAccount } from "./accounts";
 import { hasConfiguredCredentials } from "./auth";
 import {
   cachedClaudeAuthStatus,
@@ -60,11 +62,14 @@ let assignmentsFileOverride: string | null = null;
 let assignments: Map<string, Assignment> | null = null;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 const activeTurns = new Map<string, number>();
+/** Conversations with a turn running now, and the account it runs on. */
+const runningConversations = new Map<string, string>();
 
 export function setAssignmentsFileForTests(path: string | null): void {
   assignmentsFileOverride = path;
   assignments = null;
   activeTurns.clear();
+  runningConversations.clear();
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = null;
 }
@@ -127,8 +132,10 @@ export function touchConversationAccount(convId: string, account: string, now = 
   scheduleSave();
 }
 
-export function beginAccountTurn(account: string): () => void {
+export function beginAccountTurn(account: string, convId?: string): () => void {
   activeTurns.set(account, (activeTurns.get(account) ?? 0) + 1);
+  if (convId) runningConversations.set(convId, account);
+  emitClaudeAccountsChanged();
   let ended = false;
   return () => {
     if (ended) return;
@@ -136,6 +143,8 @@ export function beginAccountTurn(account: string): () => void {
     const left = (activeTurns.get(account) ?? 1) - 1;
     if (left > 0) activeTurns.set(account, left);
     else activeTurns.delete(account);
+    if (convId && runningConversations.get(convId) === account) runningConversations.delete(convId);
+    emitClaudeAccountsChanged();
   };
 }
 
@@ -314,4 +323,72 @@ export async function claudeAccountReports(): Promise<ClaudeAccountReport[]> {
       conversations: counts.get(account.id) ?? 0,
     };
   });
+}
+
+function accountState(report: Pick<ClaudeAccountReport, "status" | "block" | "limited">): { state: ClaudeAccountState; detail: string | null } {
+  if (report.block) return { state: "blocked", detail: report.block.reason };
+  if (!report.status) return { state: "unchecked", detail: null };
+  if (!report.status.loggedIn) return { state: "signed_out", detail: null };
+  if (!isSubscriptionAuth(report.status)) return { state: "not_subscription", detail: report.status.authMethod ?? null };
+  if (report.limited) return { state: "limited", detail: null };
+  return { state: "ready", detail: null };
+}
+
+/**
+ * The Accounts screen's Claude data, from what is already known (nothing is
+ * checked or fetched here; refreshCombinedUsage does that). Accounts show
+ * their real usage; where new work goes follows routing, dev overrides included.
+ */
+export function claudeAccountsInfo(currentConvId: string | null = null, now = Date.now()): ClaudeAccountsInfo {
+  const states = claudeAccountStates(now);
+  const routed = applyDevRoutingOverrides(states, now);
+  const warmSince = now - routed.policy.cacheTtlMs;
+  const byAccount = new Map<string, AccountConversationInfo[]>();
+  for (const [convId, entry] of loadAssignments()) {
+    const running = runningConversations.get(convId) === entry.account;
+    const warm = entry.lastUsedAt >= warmSince;
+    if (!running && !warm) continue;
+    const list = byAccount.get(entry.account) ?? [];
+    list.push({ convId, lastUsedAt: entry.lastUsedAt, running, warm });
+    byAccount.set(entry.account, list);
+  }
+  const accounts = listClaudeAccounts().map((account): ClaudeAccountInfo => {
+    const state = states.find(entry => entry.id === account.id)!;
+    const status = lastClaudeAuthStatus(account.id);
+    const block = claudeAccountBlock(account.id, now);
+    const { state: accountStateName, detail } = accountState({ status, block, limited: isAccountLimited(state, now) });
+    const signedIn = status !== null && isSubscriptionAuth(status);
+    const updatedAt = getAccountUsageUpdatedAt(account.id);
+    return {
+      id: account.id,
+      email: status?.email ?? null,
+      plan: status?.subscriptionType ?? null,
+      configDir: displayPath(account.configDir),
+      state: accountStateName,
+      stateDetail: detail,
+      limitedUntil: state.limitedUntil,
+      blockedUntil: block?.until ?? null,
+      usage: state.usage,
+      usageUpdatedAt: updatedAt > 0 ? updatedAt : null,
+      activeTurns: state.activeTurns,
+      conversations: (byAccount.get(account.id) ?? []).sort((a, b) => Number(b.running) - Number(a.running) || b.lastUsedAt - a.lastUsedAt),
+      loginCommand: !signedIn && !block && !state.available ? claudeLoginCommand(account) : null,
+    };
+  });
+  const current = currentConvId ? getConversationAccount(currentConvId) : null;
+  return {
+    proxied: isProviderProxied("anthropic"),
+    accounts,
+    combined: getCombinedUsage(now),
+    routing: { ...routed.policy },
+    nextNewWork: accounts.length > 1 ? routeNewWork(routed.states, now, routed.policy) : null,
+    ...(currentConvId ? {
+      currentConversation: {
+        convId: currentConvId,
+        account: current?.account ?? null,
+        lastUsedAt: current?.lastUsedAt ?? null,
+        warm: current !== null && current.lastUsedAt >= warmSince,
+      },
+    } : {}),
+  };
 }

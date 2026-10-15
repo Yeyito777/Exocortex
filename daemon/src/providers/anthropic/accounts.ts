@@ -187,7 +187,7 @@ function shellQuote(value: string): string {
   return /^[A-Za-z0-9_./~-]+$/.test(value) ? value : `'${value.replace(/'/g, "'\\''")}'`;
 }
 
-function displayPath(path: string): string {
+export function displayPath(path: string): string {
   const home = homedir();
   return path === home ? "~" : path.startsWith(`${home}/`) ? `~/${path.slice(home.length + 1)}` : path;
 }

@@ -17,6 +17,7 @@ import { CELL_SIZE_QUERY, TerminalGraphicsDetector, parseCellSizeResponse } from
 import { configureInlineImages, setInlineImageCellSize, setInlineImageMode } from "./inlineimages";
 import { disposeHistoryImages, handleHistoryImageResponse, invalidateHistoryImagePlacements } from "./historyimages";
 import { handleImageModalKey } from "./imagemodal";
+import { closeAccountsScreen, handleAccountsScreenKey, requestAccountsScreen } from "./accountsscreen";
 import { handleFocusedKey } from "./focus";
 import { handleMouseEvent, refreshMouseCursor, trackMouseCursor } from "./mouse";
 import { clearPrompt } from "./promptstate";
@@ -411,6 +412,9 @@ function maybeRequestOlderHistory(): void {
 // ── Event handler (daemon → TUI) ───────────────────────────────────
 
 function resetForDaemonRouteSwitch(): void {
+  // The Accounts screen showed the old endpoint's accounts.
+  state.accountsScreen = null;
+  state.accountsOpenRequest = null;
   voiceInput?.cleanup();
   callMedia?.stop();
   clearStreamTick();
@@ -1076,6 +1080,9 @@ function handleSubmit(): void {
         case "account":
           daemon.account(cmdResult.provider ?? "openai", cmdResult.target, cmdResult.action, cmdResult.configDir);
           break;
+        case "open_accounts":
+          requestAccountsScreen(state, daemon);
+          break;
         case "usage_reset_requested":
           daemon.consumeUsageReset(cmdResult.provider);
           break;
@@ -1637,6 +1644,18 @@ function handleKey(key: KeyEvent): void {
     }
     return;
   }
+  // The Accounts screen owns the keyboard too; Enter opens the selected conversation.
+  if (state.accountsScreen && key.type !== "ctrl-c") {
+    if (key.event === "release") return;
+    const action = handleAccountsScreenKey(key, state.accountsScreen);
+    if (action.type !== "handled") closeAccountsScreen(state, daemon);
+    if (action.type === "open") {
+      openConversation(action.convId, "keyboard");
+      return;
+    }
+    renderAfterLocalUiMutation();
+    return;
+  }
   if (voiceInput?.handleKey(key)) return;
   if (key.event === "release") return;
 
@@ -1680,6 +1699,9 @@ function handleKey(key: KeyEvent): void {
       break;
     case "open_image":
       state.imageModal = { images: result.target.images, index: result.target.index };
+      break;
+    case "open_accounts":
+      requestAccountsScreen(state, daemon);
       break;
     case "quit":
       running = false;
@@ -1801,6 +1823,15 @@ function handleMouse(ev: MouseEvent): void {
   // Hidden old-route controls must not remain clickable during the transition.
   if (state.sshConnecting) return;
   if (voiceInput?.isBlockingMouse()) return;
+  // Likewise for the Accounts screen.
+  if (state.accountsScreen) {
+    trackMouseCursor(ev, state);
+    if (ev.button === 0 && ev.action === "press") {
+      closeAccountsScreen(state, daemon);
+      renderAfterLocalUiMutation();
+    }
+    return;
+  }
   // A click anywhere closes the image viewer; other mouse input is ignored under it.
   if (state.imageModal) {
     trackMouseCursor(ev, state);
@@ -1894,6 +1925,8 @@ function restoreDaemonSessionAfterReconnect(
   // already producing this bootstrap. Do not request the same multi-megabyte
   // state a second time.
   if (!bootstrapAlreadyRequested) daemon.ping();
+  // A restarted daemon forgot this client's Accounts watch.
+  if (state.accountsScreen) daemon.accounts({ watch: true, convId: state.convId });
   updateMonitor?.setRoute(daemon.remoteAlias);
   if (!conversationWillReload && state.convId) loadConversationWindow(state.convId);
 }
