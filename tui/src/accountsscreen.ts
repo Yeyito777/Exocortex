@@ -53,6 +53,18 @@ export interface AccountsRequester {
   accounts(options: { watch?: boolean; convId?: string | null }): string;
 }
 
+/**
+ * Whether the screen would open, as far as the TUI knows without asking: the
+ * Claude bars combine several accounts (here, or the /proxy remote's pool), or
+ * several OpenAI accounts are signed in here. The status bar's usage block is
+ * clickable only then.
+ */
+export function accountsScreenAvailable(state: Pick<RenderState, "usageByProvider" | "authInfoByProvider" | "providerProxies">): boolean {
+  if ((state.usageByProvider.anthropic?.capacity ?? 0) > 100) return true;
+  const openaiProxied = state.providerProxies?.some(proxy => proxy.provider === "openai") ?? false;
+  return !openaiProxied && (state.authInfoByProvider.openai.accounts?.length ?? 0) > 1;
+}
+
 /** /accounts and `g a`: ask for a snapshot and watch it; the answer opens the screen or explains. */
 export function requestAccountsScreen(state: RenderState, daemon: AccountsRequester): void {
   if (state.accountsScreen) return;

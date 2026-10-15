@@ -1839,6 +1839,9 @@ function handleMouse(ev: MouseEvent): void {
     case "open_image":
       state.imageModal = { images: result.target.images, index: result.target.index };
       break;
+    case "open_accounts":
+      requestAccountsScreen(state, daemon);
+      break;
     case "handled":
       break;
     // Ignore result types that are not currently emitted by mouse interactions.

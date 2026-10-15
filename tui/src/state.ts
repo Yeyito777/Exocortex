@@ -124,6 +124,8 @@ export interface LayoutCache {
   taskPanelRect: { top: number; bottom: number; left: number; right: number } | null;
   /** Rows the expanded task panel can scroll; 0 when everything fits or it is collapsed. */
   taskPanelMaxScroll: number;
+  /** Screen rectangle of the status line's usage block; a click there opens the Accounts screen. */
+  usageBlockRect: { top: number; bottom: number; left: number; right: number } | null;
   /** Canonical history row and source/display offsets rendered on each message-area row. */
   historyViewportRows: Array<{ lineIndex: number; startCol: number; displayPrefixWidth: number; endCol?: number } | null>;
   chatCol: number;         // 1-based column where chat area starts
@@ -701,7 +703,7 @@ export function createInitialState(): RenderState {
     chatFocus: "prompt",
     sidebar: createSidebarState(loadSidebarFolderViewPreference()),
     vim: createVimState(),
-    layout: { totalLines: 0, messageAreaHeight: 0, historyWidth: 0, taskPanelRect: null, taskPanelMaxScroll: 0, historyViewportRows: [], chatCol: 1, sepAbove: 0, firstInputRow: 0, sepBelow: 0 },
+    layout: { totalLines: 0, messageAreaHeight: 0, historyWidth: 0, taskPanelRect: null, taskPanelMaxScroll: 0, usageBlockRect: null, historyViewportRows: [], chatCol: 1, sepAbove: 0, firstInputRow: 0, sepBelow: 0 },
     deferredHistoryRender: null,
     pendingSend: { active: false, text: "" },
     pendingAuthQueue: [],

@@ -32,6 +32,7 @@ import { imageAtHistoryPosition, openableTargetAtHistoryPosition } from "./histo
 import { nextGrapheme } from "./textwidth";
 import { stripAnsi } from "./historymotions";
 import type { InlineImageTarget } from "./inlineimages";
+import { accountsScreenAvailable } from "./accountsscreen";
 
 // ── Constants ─────────────────────────────────────────────────────
 
@@ -44,6 +45,21 @@ function isInsideTaskPanel(col: number, row: number, state: RenderState): boolea
     && row <= rect.bottom
     && col >= rect.left
     && col <= rect.right;
+}
+
+/** Whether (col, row) is on the status line's usage block as last rendered. */
+export function isInsideUsageBlock(col: number, row: number, state: RenderState): boolean {
+  const rect = state.layout.usageBlockRect;
+  return !!rect
+    && row >= rect.top
+    && row <= rect.bottom
+    && col >= rect.left
+    && col <= rect.right;
+}
+
+/** The usage block opens the Accounts screen, only when that screen would open. */
+function usageBlockClickable(col: number, row: number, state: RenderState): boolean {
+  return isInsideUsageBlock(col, row, state) && accountsScreenAvailable(state);
 }
 
 // ── Screen-to-history coordinate mapping ──────────────────────────
@@ -150,7 +166,8 @@ type CursorShape = "pointer" | "text" | "hand";
 /**
  * Determine the desired cursor shape for a mouse position.
  * - "hand" for anything a click acts on (sidebar entries, menu actions,
- *   edit-message picker rows, history links/paths/images, the task panel)
+ *   edit-message picker rows, history links/paths/images, the task panel,
+ *   the usage block while several accounts make the Accounts screen available)
  * - "text" for text-content areas (prompt, chat history)
  * - "pointer" for non-interactive chrome (topbar, separators, statusbar, sidebar header)
  *   and modal backdrops whose click only dismisses (image viewer, menus)
@@ -197,6 +214,9 @@ export function cursorZone(col: number, row: number, state: RenderState): Cursor
 
   // Prompt input area → text
   if (layout.firstInputRow > 0 && row >= layout.firstInputRow && row < layout.sepBelow) return "text";
+
+  // The usage block opens the Accounts screen when there are several accounts.
+  if (!state.queuePrompt && usageBlockClickable(col, row, state)) return "hand";
 
   // Everything else (topbar, separators, status line) → pointer
   return "pointer";
@@ -354,6 +374,8 @@ export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult 
       toggleTaskPanelExpansion(state);
       return { type: "handled" };
     }
+
+    if (usageBlockClickable(col, row, state)) return { type: "open_accounts" };
 
     // Click in message area → start visual selection at clicked position
     const pos = screenToHistoryPos(col, row, state);

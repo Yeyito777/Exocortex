@@ -101,20 +101,40 @@ function composeRow(blocks: StatusBlock[], rowIdx: number, cols: number): string
 
 // ── Public API ──────────────────────────────────────────────────────
 
+/** Where a shown block sits: `col` is its first column, counted from 0 at the status line's left edge. */
+export interface StatusBlockPlacement {
+  id: string;
+  col: number;
+  width: number;
+  height: number;
+}
+
 export interface StatusLineResult {
   height: number;
   lines: string[];
+  /** The shown blocks, in display order, as composeRow lays them out. */
+  placements: StatusBlockPlacement[];
+}
+
+function placeBlocks(blocks: StatusBlock[]): StatusBlockPlacement[] {
+  let col = 0;
+  return blocks.map((block, i) => {
+    if (i > 0) col += DELIMITER_WIDTH;
+    const placement = { id: block.id, col, width: block.width, height: block.height };
+    col += block.width;
+    return placement;
+  });
 }
 
 /** Compute and render the status line in a single pass. */
 export function renderStatusLine(state: RenderState, cols: number): StatusLineResult {
   const blocks = layoutBlocks(state, cols);
-  if (blocks.length === 0) return { height: 0, lines: [] };
+  if (blocks.length === 0) return { height: 0, lines: [], placements: [] };
 
   const height = Math.max(...blocks.map(b => b.height));
   const lines: string[] = [];
   for (let i = 0; i < height; i++) {
     lines.push(composeRow(blocks, i, cols));
   }
-  return { height, lines };
+  return { height, lines, placements: placeBlocks(blocks) };
 }
