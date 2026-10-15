@@ -264,7 +264,7 @@ test("Stop can persist a cold active-goal pause without loading its history", as
   expect(persistence.load(id)?.goal?.status).toBe("paused");
 });
 
-test("pinned realtime/title owners survive cache pressure and dirty window paging stays indexed", async () => {
+test("pinned cache owners survive cache pressure and dirty window paging stays indexed", async () => {
   const id = seed();
   const conv = (await convStore.getAsync(id))!;
   const release = convStore.pinConversationCache(id);

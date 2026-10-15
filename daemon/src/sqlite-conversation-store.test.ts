@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { REALTIME_CALL_STATUS_KIND, REALTIME_TRANSCRIPT_KIND, createConversation, historyPrefixHash, type StoredMessage } from "./messages";
+import { LEGACY_CALL_STATUS_KIND, createConversation, historyPrefixHash, type MessageMetadata, type StoredMessage } from "./messages";
 import { SqliteConversationStore, sqliteConversationStoreIsCurrent } from "./sqlite-conversation-store";
 import { clonedConversationValue } from "./conversation-clone";
 import { buildConversationApiContext } from "./context-compaction";
@@ -952,94 +952,39 @@ describe("SQLite maintenance", () => {
     store.close();
   });
 
-  test("round-trips realtime provenance and rewrites promoted transcript content", () => {
-    const { path } = pathFor("realtime-provenance");
+  test("round-trips stored messages from the retired realtime-call feature", () => {
+    const { path } = pathFor("legacy-call-messages");
     let store = new SqliteConversationStore({ path });
-    const conv = createConversation("realtime-provenance", "openai", "gpt-5.6-sol", 0, "Realtime provenance");
-    const speaker = {
-      kind: "single" as const,
-      participants: [{ id: "owner-id", displayName: "Owner", trust: "owner" as const }],
-    };
+    const conv = createConversation("legacy-call-messages", "openai", "gpt-5.6-sol", 0, "Legacy call");
+    // Old rows carry metadata fields the current schema no longer names.
+    const legacy = (metadata: Record<string, unknown>) => metadata as unknown as MessageMetadata;
+    const provenance = { realtimeCallId: "call-1", realtimeAdapterType: "external", realtimeAdapterId: "adapter-1" };
     conv.messages.push(
       {
         role: "user",
         content: "Inspect the repository",
-        metadata: {
-          startedAt: 1,
-          endedAt: 2,
-          model: conv.model,
-          tokens: 3,
-          kind: REALTIME_TRANSCRIPT_KIND,
-          realtimeCallId: "call-1",
-          realtimeAdapterType: "external",
-          realtimeAdapterId: "adapter-1",
-          realtimeToolName: "adapter-tool",
-          realtimeSourceLabel: "Test call",
-          realtimeAccountAlias: "test-account",
-          realtimeEndpointId: "endpoint-1",
-          realtimeSpeaker: speaker,
-        },
+        metadata: legacy({
+          startedAt: 1, endedAt: 2, model: conv.model, tokens: 3, kind: "realtime_transcript", ...provenance,
+          realtimeSpeaker: { kind: "single", participants: [{ id: "owner-id", displayName: "Owner", trust: "owner" }] },
+        }),
       },
       {
         role: "system",
         content: "Realtime call started.",
-        metadata: {
-          startedAt: 3,
-          endedAt: 3,
-          model: conv.model,
-          tokens: 0,
-          kind: REALTIME_CALL_STATUS_KIND,
-          realtimeCallId: "call-1",
-          realtimeAdapterType: "external",
-          realtimeAdapterId: "adapter-1",
-        },
+        metadata: legacy({ startedAt: 3, endedAt: 3, model: conv.model, tokens: 0, kind: LEGACY_CALL_STATUS_KIND, ...provenance }),
       },
       {
         role: "assistant",
         content: "I can help with that.",
-        metadata: {
-          startedAt: 4,
-          endedAt: 5,
-          model: "gpt-live-1-boulder-alpha",
-          tokens: 6,
-          kind: REALTIME_TRANSCRIPT_KIND,
-          realtimeCallId: "call-1",
-          realtimeAdapterType: "external",
-          realtimeAdapterId: "adapter-1",
-        },
+        metadata: legacy({ startedAt: 4, endedAt: 5, model: "gpt-live-1-boulder-alpha", tokens: 6, kind: "realtime_transcript", ...provenance }),
       },
     );
     store.save(conv);
     expect(store.getSummary(conv.id)?.messageCount).toBe(2);
+    store.close();
+
+    store = new SqliteConversationStore({ path });
     expect(store.load(conv.id)?.messages).toEqual(conv.messages);
-    store.close();
-
-    store = new SqliteConversationStore({ path });
-    const promoted = store.load(conv.id)!;
-    promoted.messages[0]!.content = "[realtime delegation]\nTask: Inspect the repository";
-    promoted.messages[0]!.contextTokens = null;
-    promoted.updatedAt += 1;
-    store.save(promoted, { forceMessages: true });
-    store.close();
-
-    store = new SqliteConversationStore({ path });
-    const reopened = store.load(conv.id)!;
-    expect(reopened.messages[0]).toMatchObject({
-      content: "[realtime delegation]\nTask: Inspect the repository",
-      metadata: {
-        kind: REALTIME_TRANSCRIPT_KIND,
-        realtimeCallId: "call-1",
-        realtimeAdapterType: "external",
-        realtimeAdapterId: "adapter-1",
-        realtimeToolName: "adapter-tool",
-        realtimeSourceLabel: "Test call",
-        realtimeAccountAlias: "test-account",
-        realtimeEndpointId: "endpoint-1",
-        realtimeSpeaker: speaker,
-      },
-      contextTokens: null,
-    });
-    expect(reopened.messages[1]?.metadata?.kind).toBe(REALTIME_CALL_STATUS_KIND);
     expect(store.getSummary(conv.id)?.messageCount).toBe(2);
     expect(store.integrityCheck().ok).toBe(true);
     store.close();

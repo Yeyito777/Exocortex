@@ -17,7 +17,6 @@ import {
   observeQueuedMessages,
   pushGlobalIdleQueuedMessage,
   pushQueuedMessage,
-  pushRealtimeQueuedMessage,
   removeQueuedMessageById,
   setMessageQueuePersistenceFailureForTest,
   setQueuedMessagesChangedListener,
@@ -52,18 +51,6 @@ describe("durable daemon message queue", () => {
     stop();
     pushQueuedMessage("conv-observed", "unobserved", "next-turn");
     expect(changes).toBe(5);
-  });
-
-  test("publishes realtime handoffs but drops their ownerless shadows on reload", () => {
-    pushRealtimeQueuedMessage("conv-call", "[realtime delegation]\nqueued", "realtime:call:item");
-    expect(listQueuedMessages()).toContainEqual(expect.objectContaining({
-      id: "realtime:call:item",
-      timing: "next-turn",
-      source: "realtime",
-    }));
-
-    loadQueuedMessagesFromDisk();
-    expect(getQueuedMessageById("realtime:call:item")).toBeUndefined();
   });
 
   test("rolls back in-memory mutations when durable queue persistence fails", () => {

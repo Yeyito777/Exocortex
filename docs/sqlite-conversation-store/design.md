@@ -14,10 +14,8 @@ is selected at the `persistence.ts` boundary:
 
 The repository owns lifecycle, summaries, conversations, messages, folders,
 unread state, queue state, undo/redo, BTW state, paging, import/export, backup,
-and integrity operations. Finalized realtime-call transcripts and model-hidden call
-boundary markers are ordinary canonical messages. Streaming blocks, realtime media
-sessions, transport state, process/task catalogs, live leases, and subscriber state
-remain ephemeral.
+and integrity operations. Streaming blocks, process/task catalogs, live leases, and
+subscriber state remain ephemeral.
 
 ## Connection and transaction model
 
@@ -58,37 +56,17 @@ metadata. Explicit transcript mutations force comparison/replacement from their
 first changed message. This makes append I/O proportional to new content rather
 than the historical transcript bytes.
 
-## Realtime calls and concurrent transcript writers
+## Concurrent transcript writers
 
-Realtime transport is intentionally outside the repository. WebRTC/Bidi sessions,
-SDP, PCM/audio bytes, live transcript deltas, participant rosters, active-speaker
-segments, adapter connections, utterance idempotency caches, and active call state
-are process-owned and restart-unsafe. The configured default call voice remains in
-editable instance configuration.
+The orchestrator's turn merge retains messages appended by other subsystems while a
+provider stream is active. SQLite still receives one ordered canonical history at
+each flush; ephemeral streaming mirrors are merged for display but are not
+independently persisted.
 
-Only finalized semantic history crosses the repository boundary:
-
-- finalized user and assistant utterances are stored as normal messages with
-  `metadata.kind=realtime_transcript`;
-- authenticated source/speaker attribution and call/adapter provenance live in the
-  message's `metadata_json` and therefore survive paging, export, and rollback;
-- start/end lifecycle markers are stored as model-hidden system messages with
-  `metadata.kind=realtime_call_status`; they remain auditable/displayable but are
-  excluded from the summary's user-visible message count;
-- raw audio, partial transcript deltas, and a resumable active-call record are never
-  stored in SQLite.
-
-A realtime backend handoff promotes the already-persisted user transcript in place
-instead of appending a duplicate user request. That path marks message content dirty,
-so SQLite compares hashes and atomically rewrites from the first changed sequence.
-The orchestrator's turn merge retains messages appended by calls or other subsystems
-while a provider stream is active. SQLite still receives one ordered canonical
-history at each flush; ephemeral streaming mirrors are merged for display but are
-not independently persisted.
-
-Daemon restart stops active call transports before closing the repository. Persisted
-transcripts and boundary markers survive; an in-progress call itself is not resumed.
-The instance-aware restart supervisor reopens the same per-instance database.
+Transcripts from the retired realtime-call feature keep their stored
+`metadata.kind` (`realtime_transcript`, `realtime_call_status`) and provenance in
+`metadata_json`; they load as ordinary messages, and the status markers stay
+excluded from the summary's user-visible message count.
 
 ## Display paging
 

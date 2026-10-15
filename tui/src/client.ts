@@ -13,7 +13,6 @@ import type { ClientCapability, ClientHostInfo, Command, DaemonShutdownMode, Eve
 import type { ProviderId, ModelId, EffortLevel, ImageAttachment, TokenUsageSource } from "./messages";
 import { socketPath, isWindows } from "@exocortex/shared/paths";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
-import type { RealtimeVoice } from "@exocortex/shared/realtime";
 import type { ChronoRequest } from "./chronoschedule";
 import { log } from "./log";
 import type { UpdateStatus } from "@exocortex/shared/updatecheck";
@@ -482,36 +481,13 @@ export class DaemonClient {
     goalObjective?: string,
     convId?: string,
     titleContext?: string,
-    startCall?: boolean,
     goalMaxTimeMs?: number,
   ): void {
     this.send({
       type: "new_conversation",
       ...(convId ? { convId } : {}),
       provider, model, title, titleContext, effort, fastMode, initialMessage, folderId,
-      goalObjective, goalMaxTimeMs, startCall,
-    });
-  }
-
-  createConversationForCall(
-    provider?: ProviderId,
-    model?: ModelId,
-    effort?: EffortLevel,
-    fastMode?: FastMode,
-    folderId?: string | null,
-    voice?: RealtimeVoice,
-    convId?: string,
-  ): void {
-    this.send({
-      type: "new_conversation",
-      ...(convId ? { convId } : {}),
-      provider,
-      model,
-      effort,
-      fastMode,
-      folderId,
-      startCall: true,
-      ...(voice ? { callVoice: voice } : {}),
+      goalObjective, goalMaxTimeMs,
     });
   }
 
@@ -776,18 +752,6 @@ export class DaemonClient {
     if (!this.socket || !this._connected) return false;
     this.writeCommand({ type: "restart_daemon" });
     return true;
-  }
-
-  startCall(convId: string, voice?: RealtimeVoice): void {
-    this.send({ type: "start_call", convId, ...(voice ? { voice } : {}) });
-  }
-
-  attachCallMedia(convId: string, callId: string, offerSdp: string, reqId?: string): void {
-    this.send({ type: "attach_call_media", convId, callId, offerSdp, reqId });
-  }
-
-  stopCall(convId: string, callId?: string): void {
-    this.send({ type: "stop_call", convId, callId });
   }
 
   prewarmConversation(convId: string, draft = false): void {

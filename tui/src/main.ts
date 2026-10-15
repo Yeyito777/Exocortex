@@ -81,8 +81,6 @@ import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-pro
 import { log } from "./log";
 import { ConversationPrewarmer } from "./prewarm";
 import { FirstTextUX } from "./first-text";
-import { CallMediaController } from "./call-media";
-import { formatMicGainDb, loadMicGainDb, saveMicGainDb } from "./mic-gain";
 import { applyTuiStartingState, availableStartingConversationId, captureTuiStartingState, loadTuiStartingState, saveTuiStartingState } from "./startingstate";
 import { closeBtwSession, startBtwSession } from "./btw/controller";
 import { createSidebarState } from "./sidebar/state";
@@ -155,7 +153,6 @@ let terminalClipboardClient: TerminalClipboardClient | null = null;
 let terminalControlBuffer: TerminalControlBuffer | null = null;
 let terminalGraphicsDetector: TerminalGraphicsDetector | null = null;
 let voiceInput: VoiceInputController | null = null;
-let callMedia: CallMediaController | null = null;
 let remotePathCompletion: RemotePathCompletionController | null = null;
 let remoteFileLinks: RemoteFileLinkController | null = null;
 let pendingVoiceQueuePrompt = false;
@@ -418,7 +415,6 @@ function resetForDaemonRouteSwitch(): void {
   state.accountsScreen = null;
   state.accountsOpenRequest = null;
   voiceInput?.cleanup();
-  callMedia?.stop();
   clearStreamTick();
   resetPrewarmer();
   clearDeferredHistoryRenderTimer();
@@ -473,7 +469,6 @@ function onDaemonEvent(event: Event): void {
     // conversations_list immediately reconciles the saved state.
     return;
   }
-  callMedia?.handleEvent(event);
   if (pendingEditMessageUnwind) {
     const pending = pendingEditMessageUnwind;
     const unwindEvent = classifyPendingEditMessageUnwindEvent(pending, event);
@@ -959,50 +954,6 @@ function handleSubmit(): void {
         case "btw_close_requested":
           closeBtwSession(state, daemon);
           break;
-        case "call_requested":
-          if (state.convId) {
-            daemon.startCall(state.convId, cmdResult.voice);
-          } else {
-            const selection = newConversationSelection(state);
-            daemon.createConversationForCall(
-              selection.provider,
-              selection.model,
-              selection.effort,
-              selection.fastMode,
-              state.draftFolderId,
-              cmdResult.voice,
-            );
-          }
-          break;
-        case "hangup_requested":
-          if (state.convId) {
-            const callId = callMedia?.callIdForConversation(state.convId);
-            if (callId) daemon.stopCall(state.convId, callId);
-            else pushSystemMessage(state, "No local TUI call is active for this conversation.");
-          }
-          break;
-        case "mute_requested":
-          if (state.convId) {
-            const muted = callMedia?.toggleMuted(state.convId) ?? null;
-            pushSystemMessage(state, muted === null
-              ? "No local TUI call is active for this conversation."
-              : muted ? "Microphone muted." : "Microphone unmuted.");
-          }
-          break;
-        case "mic_gain_changed": {
-          callMedia?.setMicGainDb(cmdResult.gainDb);
-          try {
-            const gainDb = saveMicGainDb(cmdResult.gainDb);
-            pushSystemMessage(state, `Microphone gain set to ${formatMicGainDb(gainDb)}.`);
-          } catch (error) {
-            pushSystemMessage(
-              state,
-              `Microphone gain changed for this TUI session, but saving failed: ${error instanceof Error ? error.message : String(error)}`,
-              theme.warning,
-            );
-          }
-          break;
-        }
         case "model_changed":
           if (state.convId) daemon.setModel(state.convId, cmdResult.provider, cmdResult.model);
           break;
@@ -1039,7 +990,6 @@ function handleSubmit(): void {
               undefined,
               state.draftFolderId,
               objective,
-              undefined,
               undefined,
               undefined,
               cmdResult.maxTimeMs,
@@ -1980,8 +1930,6 @@ function handleDaemonConnectionLost(shutdownMode: DaemonShutdownMode | null): vo
   // optimistic submissions alive; their final text can queue until reconnect.
   // An explicit endpoint switch still resets them in resetForDaemonRouteSwitch.
   if (!daemon.remoteAlias || daemonRouteSwitchPending) voiceInput?.cleanup();
-  callMedia?.stop();
-  state.activeCallIdsByConversation.clear();
   // The client retains an ambiguous unwind with its operation UUID and replays
   // it after reconnect. Keep the optimistic gate until that correlated result;
   // the normal reconnect load may still reveal the canonical state meanwhile.
@@ -2060,13 +2008,6 @@ async function main(): Promise<void> {
     },
   });
   daemon.onConnectionLost(handleDaemonConnectionLost);
-  callMedia = new CallMediaController(daemon, {
-    micGainDb: loadMicGainDb(),
-    onError: message => {
-      pushSystemMessage(state, `✗ ${message}`, theme.error);
-      scheduleRender();
-    },
-  });
   voiceInput = createVoiceInputController(state, daemon, scheduleRender, {
     submitPendingTranscription: submitPendingVoiceTranscription,
     completePendingTranscription: completePendingVoiceTranscription,
@@ -2232,7 +2173,6 @@ function cleanup(): void {
     eventLoopLagTimer = null;
   }
   voiceInput?.cleanup();
-  callMedia?.stop();
   terminalControlBuffer?.dispose();
   terminalControlBuffer = null;
   terminalClipboardClient?.dispose();

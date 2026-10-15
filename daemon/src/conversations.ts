@@ -9,10 +9,10 @@ import { performanceProfilingEnabled } from "@exocortex/shared/config";
  */
 
 import type { Conversation, ProviderId, ModelId, EffortLevel, ConversationSummary, FolderSummary, SidebarItemRef, StoredMessage, Block, MessageMetadata, PersistedConversationSummary, PersistedFolderSummary, ConversationGoal, ConversationGoalStatus, SubagentPolicy, UserMessageAutomation } from "./messages";
-import { CONTEXT_COMPACTION_FINISHED_KIND, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, REALTIME_CALL_STATUS_KIND, REALTIME_TRANSCRIPT_KIND, cachedValidatedHistoryPrefixHashBeforeMessage, createConversation, countConversationMessages, createMessageMetadata, createModelVisibleSystemNotice, createStoredUserContextCheckpoint, createStoredUserMessage, historyPrefixHash, isRealUserMessage, isReplayHistoryMessage, isToolResultMessage, isValidActiveContextCached, rememberValidatedActiveContext, rewindActiveContextToHistoryCount, rewindValidatedActiveContextToHistoryCount, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation, type StoredUserContextCheckpoint, validatedActiveContextCompactionHistoryCount } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, cachedValidatedHistoryPrefixHashBeforeMessage, createConversation, countConversationMessages, createMessageMetadata, createModelVisibleSystemNotice, createStoredUserContextCheckpoint, createStoredUserMessage, historyPrefixHash, isRealUserMessage, isReplayHistoryMessage, isToolResultMessage, isValidActiveContextCached, rememberValidatedActiveContext, rewindActiveContextToHistoryCount, rewindValidatedActiveContextToHistoryCount, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation, type StoredUserContextCheckpoint, validatedActiveContextCompactionHistoryCount } from "./messages";
 import type { ImageAttachment } from "@exocortex/shared/messages";
 import { applyGoalStatus } from "@exocortex/shared/goals";
-import type { MoveSidebarItemsOptions, RealtimeCallSpeakerAttribution, SidebarItemOrderUpdate, TrimMode, ToolOutputInfo } from "./protocol";
+import type { MoveSidebarItemsOptions, SidebarItemOrderUpdate, TrimMode, ToolOutputInfo } from "./protocol";
 import { trimConversationInPlace, type TrimConversationResult } from "./conversation-trim";
 import { buildDisplayData, collectToolOutputs, type ConversationDisplayData } from "./display";
 import { summarizeTool } from "./tools/registry";
@@ -55,7 +55,7 @@ export {
 } from "./streaming";
 export {
   getQueuedMessages, getQueuedMessageById, listQueuedMessages, listInternalQueuedMessages, hasQueuedUserSteer, hasQueuedNextTurn, advanceQueuedMessagesToNextTurn,
-  pushQueuedMessage, pushRealtimeQueuedMessage, pushGlobalIdleQueuedMessage, steerGlobalIdleQueuedMessage, drainQueuedMessages,
+  pushQueuedMessage, pushGlobalIdleQueuedMessage, steerGlobalIdleQueuedMessage, drainQueuedMessages,
   clearQueuedMessages, clearAllQueuedMessages, removeQueuedMessage, removeQueuedMessageById,
   removeQueuedMessagesById, updateQueuedMessage, moveQueuedMessage,
   persistQueuedMessagesSnapshot,
@@ -68,7 +68,7 @@ export {
 const conversations = new Map<string, Conversation>();
 const PROFILE_RUNTIME_LOADS = performanceProfilingEnabled();
 const cachePins = new Map<string, number>();
-/** Realtime owners retain the live window while their transport can append. */
+/** Owners retain the live window while they still need it resident. */
 export function pinConversationCache(id: string): () => void {
   cachePins.set(id, (cachePins.get(id) ?? 0) + 1);
   let released = false;
@@ -2986,178 +2986,6 @@ export function appendExternalInboxNotification(
   )) return false;
   markUnread(convId);
   return true;
-}
-
-/** Persist one finalized voice-call utterance as a normal provenance-tagged turn. */
-const realtimeTranscriptWrites = new Map<string, Promise<boolean>>();
-export function appendRealtimeTranscriptAsync(...args: Parameters<typeof appendRealtimeTranscript>): Promise<boolean> {
-  const [id] = args;
-  const previous = realtimeTranscriptWrites.get(id);
-  const writing = (previous ?? Promise.resolve(true)).catch(() => false).then(async () => {
-    const conv = await getAsync(id);
-    if (!conv) return false;
-    for (let attempt = 0; attempt < 8; attempt++) {
-      try { await prepareArchiveHashes(conv.messages); break; }
-      catch (error) {
-        if (attempt === 7 || !(error instanceof Error) || !error.message.includes("Transcript changed during")) throw error;
-      }
-    }
-    if (conversations.get(id) !== conv) return false;
-    return appendRealtimeTranscript(...args);
-  });
-  realtimeTranscriptWrites.set(id, writing);
-  const clear = () => { if (realtimeTranscriptWrites.get(id) === writing) realtimeTranscriptWrites.delete(id); };
-  void writing.then(clear, clear);
-  return writing;
-}
-
-export function appendRealtimeTranscript(
-  convId: string,
-  role: "user" | "assistant",
-  text: string,
-  startedAt = Date.now(),
-  details: {
-    endedAt?: number;
-    model?: ModelId;
-    tokens?: number;
-    callId?: string;
-    adapterType?: "tui" | "external";
-    adapterId?: string;
-    toolName?: string;
-    sourceLabel?: string;
-    accountAlias?: string;
-    endpointId?: string;
-    speaker?: RealtimeCallSpeakerAttribution;
-  } = {},
-): boolean {
-  const conv = get(convId);
-  const normalized = text.trim();
-  if (!conv || !normalized) return false;
-
-  let message: StoredMessage;
-  if (role === "user") {
-    message = createStoredUserMessage(normalized, conv.model, startedAt, undefined, {
-      contextCheckpoint: createStoredUserContextCheckpoint(conv),
-    });
-    Object.assign(message.metadata!, realtimeSourceMetadata(details), { kind: REALTIME_TRANSCRIPT_KIND });
-  } else {
-    message = {
-      role: "assistant",
-      content: normalized,
-      metadata: {
-        ...createMessageMetadata(startedAt, details.model ?? conv.model, {
-          endedAt: details.endedAt ?? startedAt,
-          tokens: details.tokens ?? 0,
-        }),
-        ...realtimeSourceMetadata(details),
-        kind: REALTIME_TRANSCRIPT_KIND,
-      },
-    };
-  }
-
-  return appendMessages(convId, [message], { updatedAt: Math.max(conv.updatedAt, startedAt) });
-}
-
-function visibleMessageText(content: StoredMessage["content"]): string {
-  if (typeof content === "string") return content;
-  return content
-    .filter((block): block is Extract<Block, { type: "text" }> => block.type === "text")
-    .map(block => block.text)
-    .join("\n");
-}
-
-function realtimeUtteranceKey(text: string): string {
-  return text
-    .trim()
-    .toLocaleLowerCase()
-    .replace(/[.!?]+$/u, "")
-    .replace(/\s+/gu, " ");
-}
-
-/**
- * Promote the latest matching call transcript into the one canonical user
- * request consumed by a delegated backend turn. The message keeps its original
- * timestamp/checkpoint so live transcript projections can reconcile by identity.
- */
-export function promoteRealtimeTranscript(
-  convId: string,
-  originalUserUtterance: string,
-  delegatedMessage: string,
-  callId?: string,
-): boolean {
-  const conv = get(convId);
-  const expected = realtimeUtteranceKey(originalUserUtterance);
-  const replacement = delegatedMessage.trim();
-  if (!conv || !expected || !replacement) return false;
-
-  for (let index = conv.messages.length - 1; index >= 0; index--) {
-    const message = conv.messages[index]!;
-    if (
-      message.role !== "user"
-      || message.metadata?.kind !== REALTIME_TRANSCRIPT_KIND
-      || (callId !== undefined && message.metadata.realtimeCallId !== callId)
-      || realtimeUtteranceKey(visibleMessageText(message.content)) !== expected
-    ) {
-      continue;
-    }
-
-    message.content = replacement;
-    message.contextTokens = null;
-    if (message.metadata) message.metadata.automation = {
-      kind: "realtime_delegation",
-      ...(callId ? { sourceId: callId } : {}),
-    };
-    conv.updatedAt = Date.now();
-    // This edits an existing canonical row in place rather than appending a new
-    // object. Force field-level SQLite comparison from the changed sequence.
-    markDirty(convId, "messages");
-    flush(convId);
-    return true;
-  }
-  return false;
-}
-
-function realtimeSourceMetadata(details: {
-  callId?: string;
-  adapterType?: "tui" | "external";
-  adapterId?: string;
-  toolName?: string;
-  sourceLabel?: string;
-  accountAlias?: string;
-  endpointId?: string;
-  speaker?: RealtimeCallSpeakerAttribution;
-}): Partial<MessageMetadata> {
-  return {
-    ...(details.callId ? { realtimeCallId: details.callId } : {}),
-    ...(details.adapterType ? { realtimeAdapterType: details.adapterType } : {}),
-    ...(details.adapterId ? { realtimeAdapterId: details.adapterId } : {}),
-    ...(details.toolName ? { realtimeToolName: details.toolName } : {}),
-    ...(details.sourceLabel ? { realtimeSourceLabel: details.sourceLabel } : {}),
-    ...(details.accountAlias ? { realtimeAccountAlias: details.accountAlias } : {}),
-    ...(details.endpointId ? { realtimeEndpointId: details.endpointId } : {}),
-    ...(details.speaker ? { realtimeSpeaker: structuredClone(details.speaker) } : {}),
-  };
-}
-
-/** Persist a model-hidden lifecycle marker so call boundaries survive history reloads. */
-export function appendRealtimeCallStatus(
-  convId: string,
-  text: string,
-  startedAt = Date.now(),
-  details: Parameters<typeof realtimeSourceMetadata>[0] = {},
-): boolean {
-  const conv = get(convId);
-  const normalized = text.trim();
-  if (!conv || !normalized) return false;
-  return appendMessages(convId, [{
-    role: "system",
-    content: normalized,
-    metadata: {
-      ...createMessageMetadata(startedAt, conv.model, { endedAt: startedAt }),
-      ...realtimeSourceMetadata(details),
-      kind: REALTIME_CALL_STATUS_KIND,
-    },
-  }], { updatedAt: Math.max(conv.updatedAt, startedAt) });
 }
 
 export function clearUnread(convId: string): boolean {

@@ -22,7 +22,6 @@ selects another daemon without moving client-side UI operations to that host.
 - [Several Claude accounts](claude-accounts.md)
 - [Goals](goals.md)
 - [Delegation models](delegation-models.md)
-- [External call adapters and realtime delegation](external-call-adapters.md)
 - [Local links](local-links.md)
 - [Inline images](inline-images.md)
 - [Update status](update-status.md)

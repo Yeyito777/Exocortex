@@ -12,7 +12,6 @@ export const CONV_SCOPED: ReadonlySet<string> = new Set([
   "btw_started", "btw_followup_started", "btw_block_start", "btw_text_chunk", "btw_thinking_chunk", "btw_content",
   "btw_tool_call", "btw_tool_result", "btw_status",
   "btw_finished", "btw_error", "btw_closed", "btw_mutation_settled", "btw_snapshot",
-  "call_state", "call_transcript", "call_sdp_answer",
 ]);
 
 const STREAM_SEQ_SCOPED: ReadonlySet<string> = new Set([

@@ -13,7 +13,7 @@ export * from "@exocortex/shared/messages";
 
 // ── API-level types (for stored conversations / API replay) ─────────
 
-import { CONTEXT_COMPACTION_FINISHED_KIND, DEFAULT_EFFORT, REALTIME_CALL_STATUS_KIND, createMessageMetadata, type ProviderId, type ModelId, type EffortLevel, type MessageMetadata, type ConversationSummary, type FolderSummary, type ImageAttachment, type ImageRef, type ConversationGoal, type ToolCallPresentation, type UserMessageAutomation } from "@exocortex/shared/messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, DEFAULT_EFFORT, LEGACY_CALL_STATUS_KIND, createMessageMetadata, type ProviderId, type ModelId, type EffortLevel, type MessageMetadata, type ConversationSummary, type FolderSummary, type ImageAttachment, type ImageRef, type ConversationGoal, type ToolCallPresentation, type UserMessageAutomation } from "@exocortex/shared/messages";
 import type { AssistantProviderData } from "./providers/provider-data";
 import { createHash } from "crypto";
 import { archiveWindow, provenArchiveHashes, assertCanonicalMessage, replayHistoryCount, type ArchiveWindow } from "./conversation-window";
@@ -1018,7 +1018,7 @@ export function countConversationMessages(messages: readonly StoredMessage[]): n
     msg.role !== "system_instructions"
     && !isModelVisibleSystemNotice(msg)
     && msg.metadata?.kind !== CONTEXT_COMPACTION_FINISHED_KIND
-    && msg.metadata?.kind !== REALTIME_CALL_STATUS_KIND
+    && msg.metadata?.kind !== LEGACY_CALL_STATUS_KIND
   ).length;
 }
 

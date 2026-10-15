@@ -8,7 +8,7 @@
 
 import { describe, test, expect } from "bun:test";
 import { buildDisplayData, type BuildDisplayOptions } from "./display";
-import { CLIENT_HOST_NOTICE_KIND, CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, GOAL_NOTICE_KIND, PROVIDER_NOTICE_KIND, REALTIME_CALL_STATUS_KIND, REALTIME_TRANSCRIPT_KIND, createModelVisibleSystemNotice, type StoredMessage, type ApiContentBlock } from "./messages";
+import { CLIENT_HOST_NOTICE_KIND, CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, GOAL_NOTICE_KIND, LEGACY_CALL_STATUS_KIND, PROVIDER_NOTICE_KIND, createModelVisibleSystemNotice, type StoredMessage, type ApiContentBlock } from "./messages";
 import type { MessageMetadata } from "./messages";
 import type { ToolSummarizerFn } from "./display";
 
@@ -905,37 +905,15 @@ describe("provider notices", () => {
   });
 });
 
-describe("realtime transcript projection", () => {
-  test("renders persisted call boundaries as muted system notices", () => {
+describe("legacy call status markers", () => {
+  test("renders stored call boundaries as muted system notices", () => {
     const result = build([
-      { role: "system", content: "Realtime call started.", metadata: { ...META, kind: REALTIME_CALL_STATUS_KIND } },
+      { role: "system", content: "Realtime call started.", metadata: { ...META, kind: LEGACY_CALL_STATUS_KIND } },
     ]);
 
     expect(result.entries).toEqual([
       expect.objectContaining({ type: "system", text: "Realtime call started.", color: "muted" }),
     ]);
-  });
-
-  test("keeps provenance-tagged turns in ordinary user/assistant entries and isolates assistant boundaries", () => {
-    const transcriptMeta = { ...META, kind: REALTIME_TRANSCRIPT_KIND };
-    const result = build([
-      { role: "user", content: "spoken question", metadata: transcriptMeta },
-      { role: "assistant", content: "tool-rich answer", metadata: META },
-      { role: "assistant", content: "spoken answer", metadata: transcriptMeta },
-      { role: "assistant", content: "later answer", metadata: META },
-    ]);
-
-    expect(result.entries).toHaveLength(4);
-    expect(userEntry(result.entries[0])).toMatchObject({
-      text: "spoken question",
-      metadata: { kind: REALTIME_TRANSCRIPT_KIND },
-    });
-    expect(aiEntry(result.entries[1]).blocks).toEqual([{ type: "text", text: "tool-rich answer" }]);
-    expect(aiEntry(result.entries[2])).toMatchObject({
-      blocks: [{ type: "text", text: "spoken answer" }],
-      metadata: { kind: REALTIME_TRANSCRIPT_KIND },
-    });
-    expect(aiEntry(result.entries[3]).blocks).toEqual([{ type: "text", text: "later answer" }]);
   });
 });
 

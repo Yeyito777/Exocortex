@@ -139,15 +139,12 @@ moving code to reduce file sizes.
 - [ ] Create `SchedulerService` for Chrono lifecycle.
 - [ ] Create `NotificationRegistry` for external and subagent notification state.
 - [ ] Create `ConversationEventPublisher` for post-commit event publication.
-- [ ] Formalize a `RealtimeCallService` boundary that owns ephemeral media/session
-  state and commits only finalized transcript/status messages through
-  `ConversationService`.
 - [ ] Replace shared mutable-conversation reconciliation between orchestrator,
-  realtime calls, queues, and external events with generation-aware mutation APIs.
+  queues, and external events with generation-aware mutation APIs.
 - [ ] Make command-family handlers validate input and call services.
 - [ ] Keep UI payload construction outside the repository.
 - [ ] Publish events only after the durable mutation commits.
-- [ ] Stop orchestration and call code from reaching through multiple persistence
+- [ ] Stop orchestration code from reaching through multiple persistence
   layers.
 - [ ] Reduce the responsibilities currently concentrated in:
   - `handler.ts`
@@ -163,8 +160,6 @@ Use runtime validation rather than relying only on TypeScript protocol types.
 - [ ] Parse every inbound command before dispatch.
 - [ ] Define explicit protocol versions and client capabilities.
 - [ ] Centralize defaults, enums, ID constraints, and mutually exclusive options.
-- [ ] Validate realtime adapter identity, participant trust, SDP/audio size, MIME type,
-  timestamps, and utterance idempotency fields before they reach call transports.
 - [ ] Share or derive TypeScript types from the runtime schemas.
 - [ ] Validate daemon events in development and tests.
 - [ ] Roll out sidebar deltas through capability negotiation.
@@ -215,8 +210,7 @@ they need atomic updates with conversation state.
 - [ ] Evaluate moving Chrono schedules into the per-instance database.
 - [ ] Evaluate moving external notification routes when route/receipt updates require
   atomic conversation mutations.
-- [ ] Keep human-edited user configuration—including audio/call preferences—in an
-  appropriate editable format.
+- [ ] Keep human-edited user configuration in an appropriate editable format.
 - [ ] Keep provider credentials and other secrets outside the conversation
   database.
 

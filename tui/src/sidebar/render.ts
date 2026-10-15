@@ -41,7 +41,6 @@ interface FolderAggregate {
   subagentCount: number;
   backgroundTaskCount: number;
   chronoTaskCount: number;
-  activeCallCount: number;
 }
 
 function countChronoTasks(tasks: readonly ConversationTaskSummary[] | undefined): number {
@@ -59,7 +58,6 @@ function buildFolderAggregates(
   sidebar: SidebarState,
   globalIdleConvIds: ReadonlySet<string>,
   optimisticStreamingConvId: string | null,
-  activeCallConvIds: ReadonlySet<string>,
 ): Map<string, FolderAggregate> {
   const aggregates = new Map<string, FolderAggregate>();
   const parentById = new Map<string, string | null>();
@@ -74,7 +72,6 @@ function buildFolderAggregates(
       subagentCount: 0,
       backgroundTaskCount: 0,
       chronoTaskCount: 0,
-      activeCallCount: 0,
     });
     parentById.set(folder.id, folder.parentId ?? null);
   }
@@ -102,7 +99,6 @@ function buildFolderAggregates(
       aggregate.subagentCount += work.subagents;
       aggregate.backgroundTaskCount += work.commands;
       aggregate.chronoTaskCount += chronoTaskCount;
-      if (activeCallConvIds.has(conv.id)) aggregate.activeCallCount++;
       folderId = parentById.get(folderId) ?? null;
     }
   }
@@ -169,7 +165,6 @@ export function renderSidebar(
   currentConvId: string | null,
   globalIdleConvIds: ReadonlySet<string> = new Set(),
   optimisticStreamingConvId: string | null = null,
-  activeCallConvIds: ReadonlySet<string> = new Set(),
   remoteAlias: string | null = null,
 ): string[] {
   const rows: string[] = [];
@@ -209,7 +204,7 @@ export function renderSidebar(
   const convs = sidebar.conversations;
   const displayRows = buildDisplayRows(sidebar);
   const folderAggregates = sidebar.folders.length > 0
-    ? buildFolderAggregates(sidebar, globalIdleConvIds, optimisticStreamingConvId, activeCallConvIds)
+    ? buildFolderAggregates(sidebar, globalIdleConvIds, optimisticStreamingConvId)
     : null;
   // Compute visual selection once per render. Calling selectedVisualItems() per
   // row rebuilds displayRows each time; with an active /? filter this made `v`
@@ -288,7 +283,6 @@ export function renderSidebar(
     let subagentIcon = "";
     let backgroundTaskIcon = "";
     let chronoTaskIcon = "";
-    let callIcon = "";
     let starIcon = "";
     let emojiIcon = "";
     let rawTitle = "";
@@ -327,7 +321,6 @@ export function renderSidebar(
         subagentIcon = subagentIndicator(aggregate?.subagentCount ?? 0);
         backgroundTaskIcon = backgroundTaskIndicator(aggregate?.backgroundTaskCount ?? 0);
         chronoTaskIcon = chronoTaskIndicator(aggregate?.chronoTaskCount ?? 0);
-        callIcon = countedActivityIndicator("☎", aggregate?.activeCallCount ?? 0);
         notificationCount = notificationsMuted ? 0 : aggregate?.unreadCount ?? 0;
       }
       itemFg = isSelected ? theme.text : theme.muted;
@@ -351,7 +344,6 @@ export function renderSidebar(
       subagentIcon = subagentIndicator(work.subagents);
       backgroundTaskIcon = backgroundTaskIndicator(work.commands);
       chronoTaskIcon = chronoTaskIndicator(countChronoTasks(conv.tasks));
-      callIcon = activeCallConvIds.has(conv.id) ? "☎ " : "";
       starIcon = conv.marked ? "★ " : "";
       const mark = getMarkFromTitle(conv.title);
       emojiIcon = mark ? mark.emoji + " " : "";
@@ -359,7 +351,7 @@ export function renderSidebar(
       itemFg = (isSelected || isCurrent) ? theme.text : theme.muted;
     }
 
-    const iconsWidth = termWidth(callIcon) + termWidth(chronoTaskIcon) + termWidth(subagentIcon) + termWidth(backgroundTaskIcon)
+    const iconsWidth = termWidth(chronoTaskIcon) + termWidth(subagentIcon) + termWidth(backgroundTaskIcon)
       + termWidth(starIcon) + termWidth(emojiIcon);
     const prefixWidth = termWidth(prefix) + termWidth(streamIcon) + iconsWidth;
     // The bell represents this item's durable preference, not the effective
@@ -383,13 +375,12 @@ export function renderSidebar(
     const subagentIconColored = subagentIcon ? theme.accent + subagentIcon + fg : "";
     const backgroundTaskIconColored = backgroundTaskIcon ? theme.warning + backgroundTaskIcon + fg : "";
     const chronoTaskIconColored = chronoTaskIcon ? theme.success + chronoTaskIcon + fg : "";
-    const callIconColored = callIcon ? theme.tool + callIcon + fg : "";
     const starIconColored = starIcon ? theme.warning + starIcon + fg : "";
     const emojiIconColored = emojiIcon ? theme.warning + emojiIcon + fg : "";
 
     rows.push(
       theme.reset + bg + fg +
-      prefixText + streamIconColored + subagentIconColored + chronoTaskIconColored + callIconColored + backgroundTaskIconColored + starIconColored + emojiIconColored + titleText +
+      prefixText + streamIconColored + subagentIconColored + chronoTaskIconColored + backgroundTaskIconColored + starIconColored + emojiIconColored + titleText +
       muteIcon +
       (notificationBadge ? ` ${notificationBadge.text}` : "") +
       theme.reset + borderBg + borderFg + "│" + theme.reset,

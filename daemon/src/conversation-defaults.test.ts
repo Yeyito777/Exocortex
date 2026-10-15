@@ -23,12 +23,12 @@ describe("daemon-owned conversation defaults", () => {
   test("reset preserves unrelated host configuration", () => {
     const config = readExocortexConfig();
     config.defaults = { ...config.defaults, futureDefault: "keep" };
-    config.audio = { ...config.audio, micGainDb: -7 };
+    config.ping = { ...config.ping, sound: "keep.wav" };
     writeExocortexConfig(config);
     setDaemonConversationDefaults(defaults);
     expect(resetDaemonConversationDefaults()).toEqual({ defaults: productConversationDefaults(), configured: false });
     expect(readExocortexConfig().defaults?.futureDefault).toBe("keep");
-    expect(readExocortexConfig().audio?.micGainDb).toBe(-7);
+    expect(readExocortexConfig().ping?.sound).toBe("keep.wav");
   });
 
   test.each([

@@ -63,7 +63,6 @@ import { formatConversationDefaults, receiveConversationDefaults } from "./event
 import { hydratePendingAIFromSnapshot } from "./events/pending-ai";
 import type { DaemonActions } from "./events/types";
 import { handleAccountsEvent } from "./accountsscreen";
-import { handleCallTranscript, reconcileCallTranscriptDrafts } from "./events/call";
 import { handleBtwEvent } from "./btw/events";
 import { formatChronoResult } from "./chronoschedule";
 import { setInlineImagesEnabled } from "./inlineimages";
@@ -142,33 +141,6 @@ export function handleEvent(
 
     case "streaming_stopped":
       handleStreamingStopped(event, state);
-      break;
-
-    case "call_state":
-      if (event.message) pushSystemMessage(state, event.message, event.state === "error" ? theme.error : theme.muted);
-      break;
-
-    case "call_activity":
-      if (!event.active) {
-        const calls = state.activeCallIdsByConversation.get(event.convId);
-        calls?.delete(event.callId);
-        if (calls?.size === 0) state.activeCallIdsByConversation.delete(event.convId);
-      } else {
-        let calls = state.activeCallIdsByConversation.get(event.convId);
-        if (!calls) {
-          calls = new Set();
-          state.activeCallIdsByConversation.set(event.convId, calls);
-        }
-        calls.add(event.callId);
-      }
-      break;
-
-    case "call_transcript":
-      handleCallTranscript(event, state);
-      break;
-
-    case "call_sdp_answer":
-      // Consumed by the media adapter that supplied the matching offer.
       break;
 
     case "error": {
@@ -481,11 +453,6 @@ export function handleEvent(
           dedupedReversed.push(message);
         }
         state.messages = dedupedReversed.reverse();
-        // Replace only transcript drafts actually present in this canonical
-        // snapshot. A user-turn refresh can arrive while GPT-Live is already
-        // streaming its assistant response, so clearing every draft here makes
-        // that response disappear for a frame and then jump back lower.
-        reconcileCallTranscriptDrafts(state);
         state.historyTotalEntries = event.historyTotalEntries
           ?? event.entries.filter((entry) => entry.type !== "system_instructions").length;
         state.pendingHistoryNavigation = null;
