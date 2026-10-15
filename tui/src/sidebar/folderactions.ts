@@ -1,6 +1,6 @@
 import type { SidebarItemRef } from "../messages";
 import { getActiveSidebarSearchQuery } from "../sidebarsearch";
-import { currentFolder, parentOfCurrentFolder } from "./folders";
+import { currentFolder, descendantFolderIds, parentOfCurrentFolder } from "./folders";
 import { isMovableSidebarItem, sidebarItemKey as itemKey, type SidebarSelectableItem } from "./items";
 import { compareSidebarOrder } from "./order";
 import { updateMovePromptAutocomplete } from "./moveautocomplete";
@@ -13,6 +13,7 @@ import {
   selectedVisualItems,
 } from "./selection";
 import type { SidebarState } from "./state";
+import { isTreeFolderView, revealFolderInTree, sidebarItemContainer } from "./tree";
 import type { SidebarKeyResult } from "./types";
 import { syncSelectedIndex } from "./updates";
 
@@ -63,11 +64,20 @@ export function moveVisualSelectionWithinFolder(sidebar: SidebarState, direction
   // Reordering a visual block only makes sense in an unfiltered folder view.
   if (getActiveSidebarSearchQuery(sidebar)) return { type: "handled" };
 
-  const items = selectedVisualItems(sidebar);
+  const items = outermostSelectedItems(sidebar, selectedVisualItems(sidebar));
   if (items.length === 0) return { type: "handled" };
   if (items.length === 1) return { type: "move_sidebar_item", item: items[0], direction };
 
-  const entries = buildDisplayRows(sidebar).filter((row): row is DisplayRow & { type: "entry"; item: SidebarItemRef } => row.type === "entry" && !!row.item && isMovableSidebarItem(row.item));
+  const parentId = sidebarItemParent(sidebar, items[0]);
+  const pinned = sidebarItemPinned(sidebar, items[0]);
+  if (parentId === undefined || pinned === undefined) return { type: "handled" };
+  if (!items.every(item => sidebarItemParent(sidebar, item) === parentId && sidebarItemPinned(sidebar, item) === pinned)) {
+    return { type: "handled" };
+  }
+
+  // Reorder among siblings; the tree view also lists expanded folders' contents.
+  const entries = buildDisplayRows(sidebar).filter((row): row is DisplayRow & { type: "entry"; item: SidebarItemRef } =>
+    row.type === "entry" && !!row.item && isMovableSidebarItem(row.item) && sidebarItemParent(sidebar, row.item) === parentId);
   const selectedKeys = new Set(items.map(itemKey));
   const selectedIndices = entries
     .map((row, index) => selectedKeys.has(itemKey(row.item)) ? index : -1)
@@ -76,12 +86,6 @@ export function moveVisualSelectionWithinFolder(sidebar: SidebarState, direction
 
   const firstIndex = Math.min(...selectedIndices);
   const lastIndex = Math.max(...selectedIndices);
-  const parentId = sidebarItemParent(sidebar, items[0]);
-  const pinned = sidebarItemPinned(sidebar, items[0]);
-  if (parentId === undefined || pinned === undefined) return { type: "handled" };
-  if (!items.every(item => sidebarItemParent(sidebar, item) === parentId && sidebarItemPinned(sidebar, item) === pinned)) {
-    return { type: "handled" };
-  }
 
   const targetIndex = direction === "up" ? firstIndex - 1 : lastIndex + 1;
   const target = entries[targetIndex]?.item;
@@ -111,14 +115,36 @@ export function toggleVisualSelection(sidebar: SidebarState): void {
   sidebar.pendingDeleteItem = null;
 }
 
+/**
+ * A tree-view visual block can span a folder and rows inside it. Those rows
+ * move with their folder, so only act on the outermost selected items.
+ */
+function outermostSelectedItems(sidebar: SidebarState, items: SidebarItemRef[]): SidebarItemRef[] {
+  if (!isTreeFolderView(sidebar)) return items;
+  const nestedFolderIds = new Set<string>();
+  for (const item of items) {
+    if (item.type !== "folder") continue;
+    for (const id of descendantFolderIds(sidebar, item.id)) {
+      if (id !== item.id) nestedFolderIds.add(id);
+    }
+  }
+  const selectedFolderIds = new Set(items.filter(item => item.type === "folder").map(item => item.id));
+  return items.filter(item => {
+    if (item.type === "folder") return !nestedFolderIds.has(item.id);
+    const folderId = sidebar.conversations.find(conv => conv.id === item.id)?.folderId ?? null;
+    return !folderId || (!selectedFolderIds.has(folderId) && !nestedFolderIds.has(folderId));
+  });
+}
+
 export function openCreateFolderPrompt(sidebar: SidebarState): void {
-  sidebar.prompt = { purpose: "create_folder", input: "", cursorPos: 0, items: sidebar.visualAnchor ? selectedVisualItems(sidebar) : [] };
+  const items = sidebar.visualAnchor ? outermostSelectedItems(sidebar, selectedVisualItems(sidebar)) : [];
+  sidebar.prompt = { purpose: "create_folder", input: "", cursorPos: 0, items };
   sidebar.pendingDeleteId = null;
   sidebar.pendingDeleteItem = null;
 }
 
 export function openMoveItemsPrompt(sidebar: SidebarState): void {
-  const items = selectedVisualItems(sidebar);
+  const items = outermostSelectedItems(sidebar, selectedVisualItems(sidebar));
   if (items.length === 0) return;
   sidebar.prompt = { purpose: "move_items", input: "", cursorPos: 0, items, autocomplete: null };
   updateMovePromptAutocomplete(sidebar);
@@ -143,7 +169,68 @@ export function unwrapSelectedFolder(sidebar: SidebarState): SidebarKeyResult {
   return { type: "delete_folder", folderId: item.id, mode: "unwrap" };
 }
 
+function resetFolderViewTransientState(sidebar: SidebarState): void {
+  sidebar.visualAnchor = null;
+  sidebar.pendingDeleteId = null;
+  sidebar.pendingDeleteItem = null;
+}
+
+/**
+ * A folder found by search opens where it lives: clear the filter and expand
+ * the folder along with every folder above it.
+ */
+function openSearchResultFolderInTree(sidebar: SidebarState, folderId: string): boolean {
+  if (!getActiveSidebarSearchQuery(sidebar) || !sidebar.search) return false;
+  sidebar.search.highlightsVisible = false;
+  revealFolderInTree(sidebar, folderId);
+  resetFolderViewTransientState(sidebar);
+  focusSidebarItem(sidebar, { type: "folder", id: folderId });
+  return true;
+}
+
+/** Tree view `l`: expand the folder, or step into it when it is already expanded. */
+function expandSelectedTreeFolder(sidebar: SidebarState): SidebarKeyResult {
+  const item = getSelectedSidebarItem(sidebar);
+  if (item?.type !== "folder" || openSearchResultFolderInTree(sidebar, item.id)) return { type: "handled" };
+  resetFolderViewTransientState(sidebar);
+  if (!sidebar.expandedFolderIds.has(item.id)) {
+    sidebar.expandedFolderIds.add(item.id);
+    return { type: "handled" };
+  }
+  const rows = buildDisplayRows(sidebar);
+  const folderRow = rows.findIndex(row => row.type === "entry" && row.item?.type === "folder" && row.item.id === item.id);
+  const child = rows.slice(folderRow + 1).find(row => row.type === "entry");
+  if (folderRow !== -1 && child?.item && (child.depth ?? 0) > (rows[folderRow].depth ?? 0)) focusSidebarItem(sidebar, child.item);
+  return { type: "handled" };
+}
+
+/** Tree view Enter/click: expand a collapsed folder or collapse an expanded one. */
+export function toggleSelectedTreeFolder(sidebar: SidebarState): SidebarKeyResult {
+  const item = getSelectedSidebarItem(sidebar);
+  if (item?.type !== "folder" || openSearchResultFolderInTree(sidebar, item.id)) return { type: "handled" };
+  resetFolderViewTransientState(sidebar);
+  if (!sidebar.expandedFolderIds.delete(item.id)) sidebar.expandedFolderIds.add(item.id);
+  return { type: "handled" };
+}
+
+/** Tree view `h`: collapse an expanded folder, otherwise collapse the folder listing the cursor. */
+function collapseTreeFolder(sidebar: SidebarState): SidebarKeyResult {
+  const item = getSelectedSidebarItem(sidebar);
+  if (item?.type === "folder" && sidebar.expandedFolderIds.has(item.id)) {
+    resetFolderViewTransientState(sidebar);
+    sidebar.expandedFolderIds.delete(item.id);
+    return { type: "handled" };
+  }
+  const container = item ? sidebarItemContainer(sidebar, item) : sidebar.currentFolderId;
+  if (!container) return { type: "handled" };
+  resetFolderViewTransientState(sidebar);
+  sidebar.expandedFolderIds.delete(container);
+  focusFolderById(sidebar, container);
+  return { type: "handled" };
+}
+
 export function enterSelectedFolder(sidebar: SidebarState): SidebarKeyResult {
+  if (isTreeFolderView(sidebar)) return expandSelectedTreeFolder(sidebar);
   const item = getSelectedSidebarItem(sidebar);
   if (item?.type === "folder") {
     sidebar.currentFolderId = item.id;
@@ -161,10 +248,11 @@ export function activateSidebarItem(sidebar: SidebarState, item: SidebarSelectab
   focusSidebarItem(sidebar, item);
   if (item.type === "conversation") return { type: "select", convId: item.id };
   if (item.type === "folder_instructions") return { type: "open_folder_instructions", folderId: item.folderId };
-  return enterSelectedFolder(sidebar);
+  return isTreeFolderView(sidebar) ? toggleSelectedTreeFolder(sidebar) : enterSelectedFolder(sidebar);
 }
 
 export function leaveFolder(sidebar: SidebarState): SidebarKeyResult {
+  if (isTreeFolderView(sidebar)) return collapseTreeFolder(sidebar);
   if (!sidebar.currentFolderId) return { type: "handled" };
   const leaving = sidebar.currentFolderId;
   sidebar.currentFolderId = parentOfCurrentFolder(sidebar);
@@ -193,7 +281,7 @@ export function topLevelCurrentFolderRef(sidebar: SidebarState): SidebarItemRef 
 
 export function moveSelectionOut(sidebar: SidebarState): SidebarKeyResult {
   if (!sidebar.currentFolderId) return { type: "handled" };
-  const items = selectedVisualItems(sidebar);
+  const items = outermostSelectedItems(sidebar, selectedVisualItems(sidebar));
   const before = currentFolderRef(sidebar);
   if (items.length === 0 || !before) return { type: "handled" };
   sidebar.visualAnchor = null;

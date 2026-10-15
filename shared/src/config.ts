@@ -166,6 +166,8 @@ export interface TuiConfig {
   hideSensitiveInfo?: boolean;
   /** If true, the TUI shows output-token counts alongside response throughput. */
   diagnostics?: boolean;
+  /** How sidebar folders open: replace the list ("navigate", default) or expand in place ("tree"). */
+  sidebarFolders?: "navigate" | "tree";
 }
 
 export interface AudioConfig {

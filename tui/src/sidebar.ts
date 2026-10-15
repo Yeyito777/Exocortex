@@ -17,6 +17,7 @@ import {
   openMoveItemsPrompt,
   openRenameSelectedFolderPrompt,
   requestFocusAfterRecursivelyDeletingFolder,
+  toggleSelectedTreeFolder,
   toggleVisualSelection,
   unwrapSelectedFolder,
 } from "./sidebar/folderactions";
@@ -32,6 +33,7 @@ import {
 } from "./sidebar/selection";
 import { focusTargetAfterRemovingSidebarItems } from "./sidebar/removal";
 import type { SidebarState } from "./sidebar/state";
+import { isTreeFolderView } from "./sidebar/tree";
 import type { SidebarKeyResult } from "./sidebar/types";
 
 export { activateSidebarItem } from "./sidebar/folderactions";
@@ -247,6 +249,7 @@ export function handleSidebarAction(action: string, sidebar: SidebarState): Side
       const item = getSelectedSidebarItem(sidebar);
       if (item?.type === "conversation") return { type: "select", convId: item.id };
       if (item?.type === "folder_instructions") return { type: "open_folder_instructions", folderId: item.folderId };
+      if (item?.type === "folder" && isTreeFolderView(sidebar)) return toggleSelectedTreeFolder(sidebar);
       if (item?.type === "folder" || item?.type === "up") return enterSelectedFolder(sidebar);
       return { type: "handled" };
     }

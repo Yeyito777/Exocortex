@@ -2,10 +2,13 @@ import type { SidebarItemRef } from "../messages";
 import { sidebarItemKey as itemKey, type SidebarSelectableItem } from "./items";
 import { buildDisplayRows, type DisplayRow } from "./rows";
 import type { SidebarState } from "./state";
+import { isTreeFolderView, sidebarItemContainer } from "./tree";
 
 interface RemovalEntry {
   item: SidebarSelectableItem;
   pinned: boolean | null;
+  /** Folder listing the row in the tree view, where each level is its own section. */
+  container: string | null | undefined;
 }
 
 function displayRowPinned(sidebar: SidebarState, row: DisplayRow): boolean | null {
@@ -19,9 +22,10 @@ function displayRowPinned(sidebar: SidebarState, row: DisplayRow): boolean | nul
 }
 
 function removableDisplayEntries(sidebar: SidebarState): RemovalEntry[] {
+  const treeView = isTreeFolderView(sidebar);
   return buildDisplayRows(sidebar)
     .flatMap(row => row.type === "entry" && row.item && row.item.type !== "folder_instructions"
-      ? [{ item: row.item, pinned: displayRowPinned(sidebar, row) }]
+      ? [{ item: row.item, pinned: displayRowPinned(sidebar, row), container: treeView ? sidebarItemContainer(sidebar, row.item) : null }]
       : []);
 }
 
@@ -44,12 +48,13 @@ export function focusTargetAfterRemovingSidebarItems(
   if (firstRemovedIndex === -1) return entriesBefore[0]?.item ?? null;
 
   const removedSection = entriesBefore[firstRemovedIndex].pinned;
+  const removedContainer = entriesBefore[firstRemovedIndex].container;
   const entriesAfter = entriesBefore.filter(entry => !removedKeys.has(itemKey(entry.item)));
   if (entriesAfter.length === 0) return null;
 
   const entriesAbove = entriesAfter.slice(0, firstRemovedIndex);
   const entriesBelow = entriesAfter.slice(firstRemovedIndex);
-  const sameSection = (entry: RemovalEntry): boolean => entry.pinned === removedSection;
+  const sameSection = (entry: RemovalEntry): boolean => entry.pinned === removedSection && entry.container === removedContainer;
 
   const aboveInSection = entriesAbove.findLast(sameSection);
   if (aboveInSection) return aboveInSection.item;

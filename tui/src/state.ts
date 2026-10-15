@@ -20,6 +20,8 @@ import type { PanelFocus } from "./focus";
 import type { ChatFocus } from "./chat";
 import type { SidebarState } from "./sidebar";
 import { createSidebarState } from "./sidebar";
+import { loadSidebarFolderViewPreference } from "./sidebar/folderview";
+import { isTreeFolderView, revealFolderInTree } from "./sidebar/tree";
 import type { VimState } from "./vim";
 import { createVimState } from "./vim";
 import type { HistoryCursor } from "./historycursor";
@@ -498,13 +500,13 @@ export function renderDraftFolderInstructions(state: RenderState): void {
   renderFolderInstructionsDocument(state, draftFolderEffectiveInstructions(state));
 }
 
-export function resetDraftConversationState(state: RenderState): void {
+export function resetDraftConversationState(state: RenderState, folderId = state.sidebar.currentFolderId): void {
   state.folderInstructionsDoc = null;
   state.convId = null;
   state.conversationLoading = null;
   // Starting a draft chooses its destination. Navigating the sidebar afterward
   // is only browsing and must not silently move the eventual conversation.
-  state.draftFolderId = state.sidebar.currentFolderId;
+  state.draftFolderId = folderId;
   state.messages = [];
   state.callAssistantDraft = null;
   state.callUserDraft = null;
@@ -527,6 +529,7 @@ export function resetDraftConversationState(state: RenderState): void {
 export function openFolderInstructionsDocument(state: RenderState, folderId: string): void {
   state.folderInstructionsDoc = { folderId, text: "", savedText: "", loading: true };
   state.sidebar.currentFolderId = folderId;
+  if (isTreeFolderView(state.sidebar)) revealFolderInTree(state.sidebar, folderId);
   state.sidebar.selectedItem = { type: "folder_instructions", folderId };
   state.sidebar.selectedId = null;
   state.convId = null;
@@ -704,7 +707,7 @@ export function createInitialState(): RenderState {
     contextTokens: 0,
     panelFocus: "chat",
     chatFocus: "prompt",
-    sidebar: createSidebarState(),
+    sidebar: createSidebarState(loadSidebarFolderViewPreference()),
     vim: createVimState(),
     layout: { totalLines: 0, messageAreaHeight: 0, historyWidth: 0, taskPanelRect: null, taskPanelMaxScroll: 0, historyViewportRows: [], chatCol: 1, sepAbove: 0, firstInputRow: 0, sepBelow: 0 },
     deferredHistoryRender: null,

@@ -14,6 +14,7 @@
 import type { KeyEvent } from "./input";
 import type { MoveSidebarItemsOptions, SidebarItemRef } from "./protocol";
 import type { RenderState } from "./state";
+import type { NewConversationPlacement } from "./sidebar/tree";
 import { EDIT_INDEX_INSTRUCTIONS, focusBtw, focusPrompt, focusHistory, focusSidebar, modelSupportsImages, pushSystemMessage } from "./state";
 import { resolveAction, sidebarTopShortcutIndex } from "./keybinds";
 import { handleChatKey } from "./chat";
@@ -92,7 +93,7 @@ export type KeyResult =
   | { type: "clone_conversation"; convId: string }
   | { type: "create_folder"; name: string; parentId: string | null; items: SidebarItemRef[] }
   | { type: "rename_folder"; folderId: string; name: string }
-  | { type: "new_conversation" }
+  | { type: "new_conversation"; placement?: NewConversationPlacement }
   | { type: "queue_confirm" }
   | { type: "queue_cancel" }
   | { type: "edit_message_confirm" }
@@ -312,7 +313,9 @@ export function handleFocusedKey(
       }
       return { type: "handled" };
     case "new_conversation":
-      return { type: "new_conversation" };
+      return { type: "new_conversation", placement: "selected" };
+    case "new_top_level_conversation":
+      return { type: "new_conversation", placement: "top_level" };
     case "edit_message":
       if (state.folderInstructionsDoc) {
         const text = state.folderInstructionsDoc.savedText || state.folderInstructionsDoc.text;

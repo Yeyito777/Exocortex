@@ -9,6 +9,7 @@ import { DEFAULT_MODEL_COMMAND } from "./commands/default-model";
 import { DIAGNOSTICS_COMMAND } from "./commands/diagnostics";
 import { EFFORT_COMMAND } from "./commands/effort";
 import { FAST_COMMAND } from "./commands/fast";
+import { FOLDERS_COMMAND } from "./commands/folders";
 import { ULTRAFAST_COMMAND } from "./commands/ultrafast";
 import { GOAL_COMMAND } from "./commands/goal";
 import { HANGUP_COMMAND } from "./commands/hangup";
@@ -68,6 +69,7 @@ const commands: SlashCommand[] = [
   TIME_COMMAND,
   DIAGNOSTICS_COMMAND,
   THEME_COMMAND,
+  FOLDERS_COMMAND,
   HIDE_COMMAND,
   PING_COMMAND,
   SSH_COMMAND,

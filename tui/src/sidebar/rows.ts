@@ -3,6 +3,7 @@ import type { SidebarSelectableItem } from "./items";
 import type { SidebarPromptState } from "./prompt";
 import { sidebarPromptAutocompleteVisibleRows } from "./prompt";
 import { compareSidebarOrder } from "./order";
+import { isTreeFolderView, type SidebarFolderView } from "./tree";
 import {
   getActiveSidebarSearchQuery,
   getVisibleFolderIndicesForQuery,
@@ -14,6 +15,8 @@ export interface SidebarRowsState {
   conversations: ConversationSummary[];
   folders: FolderSummary[];
   currentFolderId: string | null;
+  folderView?: SidebarFolderView;
+  expandedFolderIds?: Set<string>;
   prompt?: SidebarPromptState | null;
   search: import("../sidebarsearch").SidebarSearchState | null;
 }
@@ -24,6 +27,57 @@ export interface DisplayRow {
   folderIdx?: number;
   item?: SidebarSelectableItem;
   text?: string;
+  /** Nesting level in the tree folder view; top-level rows are 0. */
+  depth?: number;
+}
+
+type DisplayEntry = { pinned: boolean; sortOrder: number; row: DisplayRow };
+
+function folderEntry(sidebar: SidebarRowsState, index: number): DisplayEntry {
+  const folder = sidebar.folders[index];
+  return { pinned: folder.pinned, sortOrder: folder.sortOrder, row: { type: "entry", folderIdx: index, item: { type: "folder", id: folder.id } } };
+}
+
+function conversationEntry(sidebar: SidebarRowsState, index: number): DisplayEntry {
+  const conv = sidebar.conversations[index];
+  return { pinned: conv.pinned, sortOrder: conv.sortOrder, row: { type: "entry", convIdx: index, item: { type: "conversation", id: conv.id } } };
+}
+
+/** Lay out every folder level with expanded folders' contents directly below them. */
+function buildTreeDisplayRows(sidebar: SidebarRowsState): DisplayRow[] {
+  const childrenByParent = new Map<string | null, DisplayEntry[]>();
+  const addChild = (parentId: string | null, entry: DisplayEntry) => {
+    const children = childrenByParent.get(parentId);
+    if (children) children.push(entry);
+    else childrenByParent.set(parentId, [entry]);
+  };
+  sidebar.folders.forEach((folder, index) => addChild(folder.parentId ?? null, folderEntry(sidebar, index)));
+  sidebar.conversations.forEach((conv, index) => addChild(conv.folderId ?? null, conversationEntry(sidebar, index)));
+
+  const rows: DisplayRow[] = [];
+  const expanded = sidebar.expandedFolderIds;
+  const listed = new Set<string>();
+  const appendLevel = (parentId: string | null, depth: number) => {
+    const entries = (childrenByParent.get(parentId) ?? []).sort(compareSidebarOrder);
+    if (parentId) rows.push({ type: "entry", item: { type: "folder_instructions", folderId: parentId }, depth });
+    const pinned = entries.filter(entry => entry.pinned);
+    const unpinned = entries.filter(entry => !entry.pinned);
+    if (pinned.length > 0) {
+      if (!parentId) rows.push({ type: "label", text: " Pinned" });
+      for (const entry of pinned) appendEntry(entry, depth);
+      if (unpinned.length > 0) rows.push({ type: "delimiter", depth });
+    }
+    for (const entry of unpinned) appendEntry(entry, depth);
+  };
+  const appendEntry = (entry: DisplayEntry, depth: number) => {
+    rows.push({ ...entry.row, depth });
+    const item = entry.row.item;
+    if (item?.type !== "folder" || !expanded?.has(item.id) || listed.has(item.id)) return;
+    listed.add(item.id);
+    appendLevel(item.id, depth + 1);
+  };
+  appendLevel(null, 0);
+  return rows;
 }
 
 /**
@@ -32,20 +86,17 @@ export interface DisplayRow {
  * defined in one place.
  */
 export function buildDisplayRows(sidebar: SidebarRowsState): DisplayRow[] {
-  const rows: DisplayRow[] = [];
   const activeQuery = getActiveSidebarSearchQuery(sidebar);
+  // Search results stay a flat list in either folder view.
+  if (!activeQuery && isTreeFolderView(sidebar)) return buildTreeDisplayRows(sidebar);
+
+  const rows: DisplayRow[] = [];
   const visibleConvIndices = getVisibleConversationIndicesForQuery(sidebar, activeQuery);
   const visibleFolderIndices = getVisibleFolderIndicesForQuery(sidebar, activeQuery);
 
   const entries = [
-    ...visibleFolderIndices.map((index) => {
-      const folder = sidebar.folders[index];
-      return { pinned: folder.pinned, sortOrder: folder.sortOrder, row: { type: "entry" as const, folderIdx: index, item: { type: "folder" as const, id: folder.id } } };
-    }),
-    ...visibleConvIndices.map((index) => {
-      const conv = sidebar.conversations[index];
-      return { pinned: conv.pinned, sortOrder: conv.sortOrder, row: { type: "entry" as const, convIdx: index, item: { type: "conversation" as const, id: conv.id } } };
-    }),
+    ...visibleFolderIndices.map(index => folderEntry(sidebar, index)),
+    ...visibleConvIndices.map(index => conversationEntry(sidebar, index)),
   ].sort(compareSidebarOrder);
 
   if (!activeQuery && sidebar.currentFolderId) {

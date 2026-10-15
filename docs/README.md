@@ -41,7 +41,7 @@ The implementation in [keybinds.ts](../tui/src/keybinds.ts) and
 | `Ctrl+M` | Toggle sidebar |
 | `Ctrl+J` / `K` | Cycle focus between sidebar and chat |
 | `Ctrl+N` | Toggle history cursor |
-| `Ctrl+Shift+O` | New conversation |
+| `Ctrl+P` / `Ctrl+Shift+O` | New conversation (in the open folder; with `/folders tree`, `Ctrl+P` uses the sidebar cursor's folder and `Ctrl+Shift+O` the top level) |
 | `Ctrl+O` | Toggle tool output |
 | `Shift+H` / `M` / `L` | In sidebar, jump to top / middle / bottom visible conversation |
 | `Escape` | Normal mode (vim) |
@@ -54,6 +54,7 @@ The implementation in [keybinds.ts](../tui/src/keybinds.ts) and
 | `[` / `]` | In chat normal mode, focus history and jump among final AI-response text blocks |
 | `;` | In history visual mode, quote selection into the draft |
 | `/new` | Start a new conversation |
+| `/folders tree` / `navigate` | Expand sidebar folders in place (`l` expands, `h` collapses, `Enter` toggles) or open them as their own list |
 | `/model <provider> <model>` | Switch provider/model |
 | `/model openai gpt-6-sol-daybreak` | Select Sol Daybreak Blue when advertised by the connected account |
 | `/trim <mode> <n>` | Trim old context |
