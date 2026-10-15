@@ -147,6 +147,9 @@ export function trimHelpText(state: RenderState): string {
     "messages   Removes the oldest history entries first.",
     "thinking   Removes thinking blocks from the oldest assistant turns first.",
     "toolresults Replaces the oldest tool result payloads with placeholders first.",
+    ...(state.provider === "anthropic"
+      ? ["", "Claude Code resumes its own session, which keeps trimmed content; /compact shrinks its context."]
+      : []),
   ].join("\n");
 }
 

@@ -911,6 +911,15 @@ describe("/trim", () => {
     expect(text).toContain("/trim messages <n>");
     expect(text).toContain("/trim thinking <n>");
     expect(text).toContain("/trim toolresults <n>");
+    expect(text).not.toContain("/compact");
+  });
+
+  test("tells Claude Code conversations that /compact is what shrinks their context", () => {
+    const state = createInitialState();
+    state.provider = "anthropic";
+    tryCommand("/trim", state);
+    const text = (state.messages.at(-1) as { text?: string } | undefined)?.text ?? "";
+    expect(text).toEndWith("Claude Code resumes its own session, which keeps trimmed content; /compact shrinks its context.");
   });
 
   test("returns a trim request for valid input", () => {

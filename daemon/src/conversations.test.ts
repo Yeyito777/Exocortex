@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { conversationWorkspaceDir, conversationsDir, dataDir, trashedConversationWorkspaceDir, trashDir } from "@exocortex/shared/paths";
+import { CLAUDE_CODE_TRIM_NOTE } from "./conversation-trim";
 import { HistoryUnwindRefreshRequiredError, appendMessages, appendRealtimeCallStatus, appendRealtimeTranscript, bumpToTop, clearUnread, clone, conversationCacheInternalsForTest, create, createFolder, createWithInitialUserMessage, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, flush, flushAll, get, getDisplayData, getEffectiveFolderInstructions, getEffectiveSystemInstructions, getFolderInstructions, getPendingStreamSnapshot, getQueuedMessageById, getRenderSnapshot, getStoredDisplayPage, getSummary, getToolOutputs, hasConversation, isUnread, listSidebarState, listRunningConversationIds, loadFromDisk, loadQueuedMessagesFromDisk, mark, markDirty, markUnread, moveConversationToFolder, moveSidebarItem, moveSidebarItemWithUpdates, moveSidebarItems, mute, muteFolder, onChunk, pin, pinFolder, pinSidebarItems, promoteRealtimeTranscript, pushQueuedMessage, redoDelete, releaseHistoryUnwindLease, remove, removeMany, rename, renameFolder, setFolderInstructions, setModel, setSystemInstructions, trimConversation, undoDelete, unwindTo } from "./conversations";
 import { setActiveJob, replaceCurrentStreamingBlocks, setStreamingCommittedBlockCount, setStreamingCommittedMessageCount, clearActiveJob, initStreamingState, isHistoryUnwindPending } from "./streaming";
 import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, historyPrefixHash } from "./messages";
@@ -1072,6 +1073,27 @@ describe("trimConversation", () => {
     expect(get(id)?.messages).toEqual([
       { role: "assistant", content: "after tool", metadata: null },
     ]);
+  });
+
+  test("says a resumed Claude Code session keeps what was trimmed", () => {
+    const id = mkId("trim-claude-code");
+    create(id, "anthropic", "claude-opus-5-5");
+    const conv = get(id)!;
+    conv.messages.push({ role: "user", content: "first", metadata: null });
+    conv.messages.push({ role: "assistant", content: [{ type: "thinking", thinking: "plan", signature: "sig" }, { type: "text", text: "reply" }], metadata: null });
+    conv.messages.push({ role: "user", content: "second", metadata: null });
+    conv.messages.push({
+      role: "assistant",
+      content: "reply two",
+      metadata: null,
+      providerData: { anthropic: { sessionId: "session-1", resumeAt: "entry-1", cwd: "/work" } },
+    });
+
+    const result = trimConversation(id, "thinking", 1);
+
+    expect(result?.changed).toBe(true);
+    expect(result?.message).toContain("Trimmed thinking from 1 assistant turn");
+    expect(result?.message).toEndWith(`\n${CLAUDE_CODE_TRIM_NOTE}`);
   });
 
   test("strips thinking from the oldest assistant turns first", () => {

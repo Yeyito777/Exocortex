@@ -195,11 +195,18 @@ function trimToolResultsFromStart(conv: Conversation, count: number): TrimConver
   };
 }
 
-export function trimConversationInPlace(conv: Conversation, mode: TrimMode, count: number): TrimConversationResult {
-  if (!Number.isSafeInteger(count) || count <= 0) {
-    return { changed: false, message: "Trim count must be a positive integer." };
-  }
+/**
+ * A Claude Code conversation's next turn resumes its own session, which still
+ * holds what was trimmed here; only history that session never saw is sent
+ * from Exocortex's copy.
+ */
+export const CLAUDE_CODE_TRIM_NOTE = "Claude Code resumes its own session, which still holds the trimmed content. Use /compact to shrink its context.";
 
+function resumesClaudeCodeSession(conv: Conversation): boolean {
+  return conv.provider === "anthropic" && conv.messages.some((message) => message.providerData?.anthropic);
+}
+
+function trimInPlace(conv: Conversation, mode: TrimMode, count: number): TrimConversationResult {
   switch (mode) {
     case "messages":
       return trimMessagesFromStart(conv, count);
@@ -210,4 +217,15 @@ export function trimConversationInPlace(conv: Conversation, mode: TrimMode, coun
     default:
       return { changed: false, message: `Unknown trim mode: ${mode}` };
   }
+}
+
+export function trimConversationInPlace(conv: Conversation, mode: TrimMode, count: number): TrimConversationResult {
+  if (!Number.isSafeInteger(count) || count <= 0) {
+    return { changed: false, message: "Trim count must be a positive integer." };
+  }
+
+  const result = trimInPlace(conv, mode, count);
+  return result.changed && resumesClaudeCodeSession(conv)
+    ? { ...result, message: `${result.message}\n${CLAUDE_CODE_TRIM_NOTE}` }
+    : result;
 }
