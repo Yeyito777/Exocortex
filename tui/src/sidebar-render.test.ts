@@ -421,9 +421,9 @@ describe("sidebar rendering", () => {
     expect(row).toContain(`${theme.success}◷ `);
     expect(row).not.toContain(`${theme.success}◷2 `);
     expect(row).not.toContain(`${theme.tool}◆ `);
-    expect(row!.indexOf("◉ ")).toBeLessThan(row!.indexOf("◷ "));
-    expect(row!.indexOf("◷ ")).toBeLessThan(row!.indexOf("◆2 "));
-    expect(row!.indexOf("◆2 ")).toBeLessThan(row!.indexOf("$2 "));
+    expect(row!.indexOf("◉ ")).toBeLessThan(row!.indexOf("◆2 "));
+    expect(row!.indexOf("◆2 ")).toBeLessThan(row!.indexOf("◷ "));
+    expect(row!.indexOf("◷ ")).toBeLessThan(row!.indexOf("$2 "));
     expect(visibleLength(row!)).toBe(SIDEBAR_WIDTH);
   });
 
