@@ -39,6 +39,7 @@ const streamingGenerationThroughput = new Map<string, GenerationThroughput>();
 /** Context compaction currently shown to clients. */
 const contextCompactionStartedAt = new Map<string, number>();
 const connectionWaitStartedAt = new Map<string, number>();
+const connectionWaitLabels = new Map<string, string>();
 /** Monotonic event sequence per active stream, used by clients to diagnose missed IPC events. */
 const streamSequences = new Map<string, number>();
 /** Continuations explicitly requested while a stream was already active. */
@@ -183,6 +184,7 @@ export function clearActiveJob(convId: string): void {
   streamingGenerationThroughput.delete(convId);
   contextCompactionStartedAt.delete(convId);
   connectionWaitStartedAt.delete(convId);
+  connectionWaitLabels.delete(convId);
   streamSequences.delete(convId);
   streamingCommittedBlockCounts.delete(convId);
   streamingCommittedMessageCounts.delete(convId);
@@ -277,13 +279,19 @@ export function getContextCompactionStartedAt(convId: string): number | undefine
 }
 
 /** When the active turn started waiting for the network (see network-wait.ts). */
-export function setConnectionWaitStartedAt(convId: string, startedAt: number | null): void {
+export function setConnectionWaitStartedAt(convId: string, startedAt: number | null, label?: string): void {
+  if (startedAt == null || !label) connectionWaitLabels.delete(convId);
+  else connectionWaitLabels.set(convId, label);
   if (startedAt == null) connectionWaitStartedAt.delete(convId);
   else if (activeJobs.has(convId)) connectionWaitStartedAt.set(convId, startedAt);
 }
 
 export function getConnectionWaitStartedAt(convId: string): number | undefined {
   return connectionWaitStartedAt.get(convId);
+}
+
+export function getConnectionWaitLabel(convId: string): string | undefined {
+  return connectionWaitLabels.get(convId);
 }
 
 // ── Streaming event sequence numbers (diagnostics) ─────────────────

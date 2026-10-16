@@ -68,6 +68,7 @@ export function handleStreamingStarted(event: Extract<Event, { type: "streaming_
   }
   if (event.connectionWaitStartedAt !== undefined) {
     state.connectionWaitStartedAt = event.connectionWaitStartedAt;
+    state.connectionWaitLabel = event.connectionWaitLabel ?? null;
   }
   // Late-joining client: create pendingAI so future chunks are captured.
   // Original client already has pendingAI from handleSubmit.
@@ -300,6 +301,7 @@ export function handleConnectionWaitStatus(
   state: RenderState,
 ): void {
   state.connectionWaitStartedAt = event.active ? (event.startedAt ?? Date.now()) : null;
+  state.connectionWaitLabel = event.active ? event.label ?? null : null;
 }
 
 export function handleContextCompactionStatus(

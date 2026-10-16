@@ -564,6 +564,8 @@ export interface ConversationSummary {
   /** Whether this conversation is explicitly muted. */
   muted?: boolean;
   streaming: boolean;
+  /** Active provider turn is waiting for connectivity or capacity. */
+  providerWaiting?: boolean;
   /** False for maintenance jobs that must be aborted, but not replayed, across daemon restarts. */
   restartRecoverable?: boolean;
   unread: boolean;

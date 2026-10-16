@@ -196,6 +196,7 @@ export interface RenderState {
   contextCompactionStartedAt: number | null;
   /** When the streaming turn started waiting for the network to return (see network-wait.ts). */
   connectionWaitStartedAt: number | null;
+  connectionWaitLabel: string | null;
   /** The daemon's shared connectivity monitor: offline since when, or null while online. */
   daemonOfflineSince: number | null;
   /** True when pendingAI was hydrated from a daemon snapshot rather than live local chunks. */
@@ -395,6 +396,7 @@ export function clearPendingAI(state: RenderState): void {
   state.pendingAI = null;
   state.contextCompactionStartedAt = null;
   state.connectionWaitStartedAt = null;
+  state.connectionWaitLabel = null;
   state.pendingAIHydratedFromSnapshot = false;
   state.pendingAICommittedIndex = null;
   state.pendingAICommittedBlockOffset = null;
@@ -652,6 +654,7 @@ export function createInitialState(): RenderState {
     pendingAI: null,
     contextCompactionStartedAt: null,
     connectionWaitStartedAt: null,
+    connectionWaitLabel: null,
     daemonOfflineSince: null,
     pendingAIHydratedFromSnapshot: false,
     suppressPendingAIMetadataStartedAt: null,

@@ -41,7 +41,7 @@ export {
   setStreamingGenerationThroughput, getStreamingGenerationThroughput,
   setStreamingWorkTimerStartedAt, getStreamingWorkTimerStartedAt,
   setContextCompactionStartedAt, getContextCompactionStartedAt,
-  setConnectionWaitStartedAt, getConnectionWaitStartedAt,
+  setConnectionWaitStartedAt, getConnectionWaitStartedAt, getConnectionWaitLabel,
   requestHistoryUnwind, isHistoryUnwindPending, clearHistoryUnwindPending,
   touchActivity, pauseActivity, resumeActivity,
   setActiveToolBackgrounder, clearActiveToolBackgrounder, backgroundActiveTool, getActiveBackgroundableToolName,
@@ -2149,6 +2149,7 @@ export function listSummaries(): ConversationSummary[] {
     result.push({
       ...summary,
       streaming: streaming.isStreaming(summary.id),
+      providerWaiting: streaming.getConnectionWaitStartedAt(summary.id) != null,
       ...(streaming.isStreaming(summary.id) && !streaming.isRestartRecoverableJob(summary.id) ? { restartRecoverable: false } : {}),
       unread: !notificationsMuted && unread.has(summary.id),
       ...(notificationsMuted ? { notificationsMuted: true } : {}),
@@ -2586,6 +2587,7 @@ export function getSummary(id: string): ConversationSummary | null {
   return {
     ...summary,
     streaming: streaming.isStreaming(id),
+    providerWaiting: streaming.getConnectionWaitStartedAt(id) != null,
     ...(streaming.isStreaming(id) && !streaming.isRestartRecoverableJob(id) ? { restartRecoverable: false } : {}),
     unread: !notificationsMuted && unread.has(id),
     ...(notificationsMuted ? { notificationsMuted: true } : {}),
