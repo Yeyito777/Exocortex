@@ -99,7 +99,7 @@ directories when they need different labels or colors.
   `T=$(command -v tool || echo /path/to/tool)`). PATH-only `deploy`,
   `bash deploy`, other expansions, and command substitution are not eligible;
   a variable assigned twice or dynamically is never resolved.
-- `env`, `command`, `time`, `nohup`, `nice`, `timeout DURATION`, and the
+- `env`, `command`, `time` (also `/usr/bin/time -f FORMAT`), `nohup`, `nice`, `timeout DURATION`, and the
   keywords that open a compound command (`do`, `then`, `if`, `!`, …) are
   transparent, so `for x in …; do timeout 60 ./tool "$x"; done` is styled.
   Heredoc bodies are data and never styled; the command reading one is.

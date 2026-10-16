@@ -195,6 +195,13 @@ describe("bash external tool styling", () => {
     expect(labels).toContain("Exocortex");
   });
 
+  test("GNU time by path, with -f FORMAT, is transparent", () => {
+    expect(resolveToolDisplay("bash", '/usr/bin/time -f "WALL %e s" gmail search x', registry, externalToolStyles))
+      .toMatchObject({ label: "Gmail", detail: "search x" });
+    expect(resolveToolDisplay("bash", "time -p whatsapp chats", registry, externalToolStyles))
+      .toMatchObject({ label: "WhatsApp", detail: "chats" });
+  });
+
   test("timeout without a duration is not a wrapper", () => {
     expect(resolveToolDisplay("bash", "timeout gmail", registry, externalToolStyles).label).toBe("$");
   });

@@ -99,6 +99,8 @@ const CASES: Array<[string, string[]]> = [
   [`Q=~/Workspace/exocortex/helper-tools/quercus/quercus; $Q courses 2>&1 | head -12`, ["Quercus"]],
   [`U=~/Workspace/exocortex/helper-tools/utmail/utmail; timeout 120 $U show "AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0Aw98aQW-Zl0y16ZB3ojoFDQAASevRogAA" 2>&1 | sed '/^\\s*$/d' | sed -n 1,40p | cut -c1-250`, ["UTmail"]],
   [`Q=$(command -v quercus || echo ${X}/helper-tools/quercus/quercus); timeout 60 $Q announcements ECO101 --since 10h -n 5 --json 2>&1 | head -c 800`, ["Quercus"]],
+  // GNU time by path, with a quoted -f format.
+  [`cd /tmp && uptime && Q=${X}/helper-tools/quercus/quercus; /usr/bin/time -f "WALL %e s  CPU user %U s sys %S s" $Q courses 2>&1 | tail -6; uptime`, ["Quercus"]],
   // Variables in loops, with multi-line quoted scripts piped after them.
   [`Q=${X}/helper-tools/quercus/quercus; for c in 443485 445723; do $Q assignments $c --bucket upcoming --limit 30 --json 2>&1 | python3 -c "\nimport json,sys\nd=json.load(sys.stdin)\nprint('$c', len(d))\n"; done`, ["Quercus"]],
   // Heredoc bodies are data; the command reading them is still the tool.

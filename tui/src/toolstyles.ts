@@ -169,9 +169,17 @@ function unwrapCommand(tokens: ShellToken[], start: number): number | null {
   return i;
 }
 
+/** The shell keyword and GNU time's usual paths; `-f FORMAT`/`-o FILE` take a value. */
+const TIME_WRAPPERS = new Set(["time", "/usr/bin/time", "/bin/time"]);
+const TIME_OPTIONS_WITH_VALUE = new Set(["-f", "-o", "--format", "--output"]);
+
 function unwrapTime(tokens: ShellToken[], start: number): number | null {
   let i = start + 1;
-  while (i < tokens.length && tokens[i].text.startsWith("-")) i++;
+  while (i < tokens.length && tokens[i].text.startsWith("-")) {
+    const option = tokens[i].text;
+    i += TIME_OPTIONS_WITH_VALUE.has(option) ? 2 : 1;
+    if (option === "--") break;
+  }
   return i < tokens.length ? i : null;
 }
 
@@ -226,7 +234,7 @@ function unwrapCommandWrappers(tokens: ShellToken[], start: number): number | nu
       i = next;
       continue;
     }
-    if (t === "time") {
+    if (TIME_WRAPPERS.has(t)) {
       const next = unwrapTime(tokens, i);
       if (next == null) return null;
       i = next;

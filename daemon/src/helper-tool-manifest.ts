@@ -408,9 +408,13 @@ function executableTokenIndex(tokens: ShellToken[]): number | null {
       if (introspectionOnly) return null;
       continue;
     }
-    if (token === "time") {
+    if (TIME_WRAPPERS.has(token)) {
       i++;
-      while (i < tokens.length && tokens[i]!.text.startsWith("-")) i++;
+      while (i < tokens.length && tokens[i]!.text.startsWith("-")) {
+        const option = tokens[i]!.text;
+        i += TIME_OPTIONS_WITH_VALUE.has(option) ? 2 : 1;
+        if (option === "--") break;
+      }
       continue;
     }
     if (token === "nohup") {
@@ -427,6 +431,10 @@ function executableTokenIndex(tokens: ShellToken[]): number | null {
   }
 }
 
+/** The shell keyword and GNU time's usual paths; `-f FORMAT`/`-o FILE` take a value. */
+const TIME_WRAPPERS = new Set(["time", "/usr/bin/time", "/bin/time"]);
+const TIME_OPTIONS_WITH_VALUE = new Set(["-f", "-o", "--format", "--output"]);
+
 function mayChangeShellWorkingDirectory(tokens: ShellToken[]): boolean {
   let i = 0;
   while (i < tokens.length && isAssignmentWord(tokens[i]!.text)) i++;
@@ -437,7 +445,7 @@ function mayChangeShellWorkingDirectory(tokens: ShellToken[]): boolean {
       while (i < tokens.length && tokens[i]!.text.startsWith("-")) i++;
       continue;
     }
-    if (token === "time") {
+    if (TIME_WRAPPERS.has(token!)) {
       i++;
       while (i < tokens.length && tokens[i]!.text.startsWith("-")) i++;
       continue;
