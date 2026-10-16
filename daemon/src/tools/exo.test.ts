@@ -49,9 +49,15 @@ afterEach(async () => {
 });
 
 describe("minimal native exo", () => {
-  test("schema exposes only subagent/args/abort/restart with model and effort choices", () => {
+  test("schema exposes only subagent/args/message/status/abort/restart with model and effort choices", () => {
     const properties = exo.inputSchema.properties as Record<string, any>;
-    expect(Object.keys(properties)).toEqual(["subagent", "args", "abort", "restart"]);
+    expect(Object.keys(properties)).toEqual(["subagent", "args", "message", "status", "abort", "restart"]);
+    expect(Object.keys(properties.message.properties)).toEqual(["conversation", "text", "delivery"]);
+    expect(properties.message.required).toEqual(["conversation", "text"]);
+    expect(properties.message.properties.delivery.enum).toEqual(["now", "after_turn"]);
+    expect(exo.systemHint).toContain("subagent always creates a new conversation");
+    expect(exo.summarize!({ message: { conversation: "c1", text: "status   update" } }).detail).toBe("message: c1: status update");
+    expect(exo.summarize!({ status: "c1" }).detail).toBe("status: c1");
     expect(Object.keys(properties.args.properties)).toEqual(["detach", "model", "effort"]);
     expect(properties.args.properties.model.description).toContain("claude-opus-5-5");
     expect(properties.args.properties.effort.enum).toContain("xhigh");
@@ -169,6 +175,10 @@ describe("minimal native exo", () => {
       { subagent: "do it", args: { model: 5 } }, { subagent: "do it", args: { effort: "high", extra: true } },
       { subagent: "do it", args: { model: "gpt-6-astra" } }, { subagent: "do it", args: { detach: "yes" } },
       { restart: "x", abort: p.id }, { restart: "x", subagent: "do it" }, { restart: "x", args: {} }, { restart: true },
+      { message: { conversation: p.id } }, { message: { text: "hi" } }, { message: "hi" },
+      { message: { conversation: "x", text: "hi", delivery: "later" } }, { message: { conversation: "x", text: "hi", extra: 1 } },
+      { message: { conversation: "x", text: "hi" }, abort: "x" }, { message: { conversation: "x", text: "hi" }, args: {} },
+      { status: 5 }, { status: "x", abort: "x" },
     ]) expect((await h.runtime.execute(input, p.id)).isError).toBe(true);
     expect(h.runTurn).not.toHaveBeenCalled();
     expect(getConversationActivityCounts(p.id).subagentCount).toBe(0);
@@ -191,6 +201,96 @@ describe("minimal native exo", () => {
     expect((await h.runtime.execute({ abort: p.id }, p.id)).isError).toBe(true);
     expect((await h.runtime.execute({ abort: "missing" }, p.id)).isError).toBe(true);
     expect((await h.runtime.execute({ abort: " " }, p.id)).isError).toBe(true);
+  });
+  describe("message and status", () => {
+    const queued = (convId: string) => conversations.getQueuedMessages(convId);
+    afterEach(() => { for (const id of ids) for (const entry of queued(id)) conversations.removeQueuedMessageById(entry.id); });
+
+    test("refuses the caller's own conversation, missing targets, blank fields, and subagents' non-children", async () => {
+      const h = harness();
+      const p = parent();
+      const other = parent();
+      const send = (input: unknown, caller = p.id) => h.runtime.execute({ message: input }, caller);
+      const own = await send({ conversation: p.id, text: "hi" });
+      expect(own.isError).toBe(true);
+      expect(JSON.parse(own.output).error).toBe("Cannot message the conversation currently executing this tool.");
+      expect(JSON.parse((await send({ conversation: "missing", text: "hi" })).output).error).toBe("Conversation missing not found");
+      expect((await send({ conversation: " ", text: "hi" })).isError).toBe(true);
+      expect((await send({ conversation: other.id, text: " " })).isError).toBe(true);
+      expect((await h.runtime.execute({ message: { conversation: other.id, text: "hi" } }, undefined)).isError).toBe(true);
+      const child = await spawn(h.runtime, p.id);
+      expect((await send({ conversation: other.id, text: "hi" }, child.id)).isError).toBe(true);
+      expect((await send({ conversation: p.id, text: "hi" }, child.id)).isError).toBe(true);
+      await settle();
+      expect(h.runTurn).toHaveBeenCalledTimes(1);
+      expect(queued(other.id)).toEqual([]);
+    });
+
+    test("a streaming target gets a durable automated queue entry and is steered", async () => {
+      const h = harness();
+      const p = parent();
+      const target = parent();
+      conversations.setActiveJob(target.id, new AbortController(), Date.now());
+      const steer = mock(() => {});
+      conversations.setActiveSteerHandler(target.id, steer);
+      try {
+        const now = await h.runtime.execute({ message: { conversation: target.id, text: " new info " } }, p.id);
+        expect(now.isError).toBe(false);
+        const body = JSON.parse(now.output);
+        expect(body).toMatchObject({ conversation_id: target.id, status: "queued", target_status: "streaming" });
+        expect(body.delivers).toContain("next tool boundary");
+        expect(queued(target.id)).toMatchObject([{
+          id: body.queue_id, text: "new info", timing: "next-turn", automation: { kind: "exo_send", sourceId: p.id },
+        }]);
+        expect(steer).toHaveBeenCalledTimes(1);
+        const later = await h.runtime.execute({ message: { conversation: target.id, text: "after", delivery: "after_turn" } }, p.id);
+        expect(JSON.parse(later.output).delivers).toContain("after the active one ends");
+        expect(queued(target.id).map(entry => entry.timing)).toEqual(["next-turn", "message-end"]);
+        expect(steer).toHaveBeenCalledTimes(1);
+        expect(h.runTurn).not.toHaveBeenCalled();
+        const status = JSON.parse((await h.runtime.execute({ status: target.id }, p.id)).output);
+        expect(status).toMatchObject({ conversation_id: target.id, title: "parent", status: "streaming", queued_messages: 2 });
+        expect(typeof status.streaming_since).toBe("string");
+      } finally { conversations.clearActiveSteerHandler(target.id, steer); }
+    });
+
+    test("an idle child starts a turn now, is tracked again, and reports its reply to the caller", async () => {
+      let resolve!: (value: typeof outcome) => void;
+      const p = parent();
+      const h = harness();
+      const child = await spawn(h.runtime, p.id);
+      await settle();
+      h.runTurn.mockImplementation(() => new Promise(res => { resolve = res; }));
+      const response = await h.runtime.execute({ message: { conversation: child.id, text: "follow up", delivery: "after_turn" } }, p.id);
+      expect(JSON.parse(response.output)).toMatchObject({ conversation_id: child.id, status: "delivered", target_status: "idle" });
+      expect(h.runTurn).toHaveBeenCalledTimes(2);
+      expect((h.runTurn.mock.calls[1] as unknown[]).slice(0, 3)).toEqual([child.id, "follow up", 0]);
+      expect((h.runTurn.mock.calls[1] as unknown[])[4]).toEqual({ kind: "exo_send", sourceId: p.id });
+      expect(h.beginParentNotification.mock.calls[1] as unknown[]).toEqual([{ convId: p.id }, child.id, "follow up", expect.any(Number), 0, true]);
+      expect(getConversationActivityCounts(p.id).subagentCount).toBe(1);
+      expect(queued(child.id)).toEqual([]);
+      resolve(outcome);
+      await settle();
+      expect(h.completeParentNotification).toHaveBeenCalledTimes(2);
+      expect(getConversationActivityCounts(p.id).subagentCount).toBe(0);
+      expect(JSON.parse((await h.runtime.execute({ status: child.id }, p.id)).output)).toMatchObject({ status: "idle", queued_messages: 0 });
+    });
+
+    test("an idle non-child is not tracked as a subagent; signed-out providers are refused", async () => {
+      const p = parent();
+      const other = parent("anthropic");
+      const h = harness();
+      expect((await h.runtime.execute({ message: { conversation: other.id, text: "question" } }, p.id)).isError).toBe(false);
+      expect((h.beginParentNotification.mock.calls[0] as unknown[])[5]).toBe(false);
+      expect(getConversationActivityCounts(p.id).subagentCount).toBe(0);
+      await settle();
+      expect(h.completeParentNotification).toHaveBeenCalledTimes(1);
+      const signedOut = harness({ hasCredentials: provider => provider !== "anthropic" });
+      const refused = await signedOut.runtime.execute({ message: { conversation: other.id, text: "question" } }, p.id);
+      expect(JSON.parse(refused.output).error).toBe("Not authenticated for provider anthropic");
+      expect(signedOut.runTurn).not.toHaveBeenCalled();
+      expect((await h.runtime.execute({ status: "missing" }, p.id)).isError).toBe(true);
+    });
   });
   test("startup failure clears tracking and notifies once; unavailable provider creates no child", async () => {
     const p = parent();
