@@ -9,7 +9,9 @@
  * how to sign one in, only when there is something to say. Data comes from
  * the daemon's `accounts` command, which keeps pushing snapshots while the
  * screen is open. It only opens when several accounts are set up; otherwise it
- * explains how to add one. Esc or q closes; j/k scroll a card cut short by a
+ * explains how to add one. When the TUI already knows there are several
+ * accounts it opens at once, with the last snapshot it saw or a loading line,
+ * and fills in when the daemon answers. Esc or q closes; j/k scroll a card cut short by a
  * small terminal. While Claude goes through /proxy, the Claude rows are the
  * remote's accounts (its pool routes this machine's turns too) and the note
  * says so, or that the link is down.
@@ -28,7 +30,8 @@ import { theme } from "./theme";
 import { termWidth, truncateToWidth } from "./textwidth";
 
 export interface AccountsScreenState {
-  snapshot: AccountsSnapshot;
+  /** Null while the first answer is on its way: the card shows a loading line. */
+  snapshot: AccountsSnapshot | null;
   /** First content row shown when the card does not fit the terminal. */
   scroll: number;
 }
@@ -65,9 +68,16 @@ export function accountsScreenAvailable(state: Pick<RenderState, "usageByProvide
   return !openaiProxied && (state.authInfoByProvider.openai.accounts?.length ?? 0) > 1;
 }
 
-/** /accounts and `g a`: ask for a snapshot and watch it; the answer opens the screen or explains. */
+/**
+ * /accounts and `g a`: open the screen right away, showing the last snapshot
+ * this TUI saw (or a loading line), and ask for a fresh one to watch. The
+ * answer fills it in, or closes it and explains when there's nothing to show.
+ */
 export function requestAccountsScreen(state: RenderState, daemon: AccountsRequester): void {
   if (state.accountsScreen) return;
+  const cached = state.accountsSnapshotCache?.enabled ? state.accountsSnapshotCache : null;
+  // With a single account the answer only explains; don't flash a loading card first.
+  if (cached || accountsScreenAvailable(state)) state.accountsScreen = { snapshot: cached, scroll: 0 };
   state.accountsOpenRequest = { reqId: daemon.accounts({ watch: true, convId: state.convId }) };
 }
 
@@ -78,17 +88,18 @@ export function closeAccountsScreen(state: RenderState, daemon: AccountsRequeste
   daemon?.accounts({ watch: false });
 }
 
-/** Apply an `accounts` event: open (or explain) for the pending request, refresh an open screen. */
+/** Apply an `accounts` event: fill in (or close and explain) for the pending request, refresh an open screen. */
 export function handleAccountsEvent(state: RenderState, event: AccountsEvent): void {
+  state.accountsSnapshotCache = event.snapshot;
   const request = state.accountsOpenRequest;
   if (request && event.reqId === request.reqId) {
     state.accountsOpenRequest = null;
     if (!event.snapshot.enabled) {
+      state.accountsScreen = null;
       pushSystemMessage(state, event.snapshot.claude.proxied ? ACCOUNTS_PROXIED_HINT : ACCOUNTS_UNAVAILABLE_HINT, theme.muted);
       return;
     }
-    state.accountsScreen = { snapshot: event.snapshot, scroll: 0 };
-    return;
+    state.accountsScreen ??= { snapshot: event.snapshot, scroll: 0 };
   }
   if (state.accountsScreen) state.accountsScreen.snapshot = event.snapshot;
 }
@@ -255,6 +266,7 @@ function proxyNote(remote: NonNullable<ClaudeAccountsInfo["remote"]>, routing: S
 
 /** Everything the screen shows, top to bottom (no chrome). */
 export function accountsScreenLines(state: RenderState, screen: AccountsScreenState, now = Date.now()): ScreenLine[] {
+  if (!screen.snapshot) return [{ kind: "text", segments: [[theme.muted, "Loading accounts…"]] }];
   const { claude, openai } = screen.snapshot;
   const claudeTable = !claude.proxied && claude.accounts.length > 0;
   const lines: ScreenLine[] = [];

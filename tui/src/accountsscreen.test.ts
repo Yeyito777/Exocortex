@@ -136,6 +136,40 @@ test("/accounts asks for the screen; g a does too from prompt, history and sideb
   expect(typing.inputBuffer).toBe("ga");
 });
 
+test("the screen opens at once with a loading line, and fills in when the answer arrives", () => {
+  const state = createInitialState();
+  state.usageByProvider.anthropic = { fiveHour: { utilization: 40, resetsAt: NOW + H }, sevenDay: null, capacity: 200 } as never;
+  const daemon = fakeDaemon();
+  requestAccountsScreen(state, daemon);
+  expect(state.accountsScreen).not.toBeNull();
+  expect(screenText(state).join("\n")).toContain("Loading accounts…");
+  handleEvent({ type: "accounts", reqId: "accounts_1", snapshot: snapshot() }, state, noDaemon);
+  expect(state.accountsOpenRequest).toBeNull();
+  const text = screenText(state).join("\n");
+  expect(text).not.toContain("Loading accounts…");
+  expect(text).toContain("max2");
+});
+
+test("reopening shows the last snapshot right away while a fresh one is fetched", () => {
+  const { state } = openScreen();
+  closeAccountsScreen(state, null);
+  const daemon = fakeDaemon();
+  requestAccountsScreen(state, daemon);
+  expect(daemon.calls).toEqual([{ watch: true, convId: "conv-warm" }]);
+  expect(state.accountsOpenRequest).not.toBeNull();
+  const text = screenText(state).join("\n");
+  expect(text).not.toContain("Loading accounts…");
+  expect(text).toContain("max2");
+});
+
+test("without known multiple accounts it waits for the answer, then opens", () => {
+  const state = createInitialState();
+  requestAccountsScreen(state, fakeDaemon());
+  expect(state.accountsScreen).toBeNull();
+  handleEvent({ type: "accounts", reqId: "accounts_1", snapshot: snapshot() }, state, noDaemon);
+  expect(screenText(state).join("\n")).toContain("max2");
+});
+
 test("with one account the answer explains how to add one and no screen opens", () => {
   const state = createInitialState();
   const daemon = fakeDaemon();

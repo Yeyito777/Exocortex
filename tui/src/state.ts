@@ -30,7 +30,7 @@ import type { SearchDirection } from "./search";
 import type { UndoState } from "./undo";
 import { commitInsertSession, createUndoState, markInsertEntry } from "./undo";
 import type { AutocompleteState } from "./autocomplete";
-import type { ConversationDefaultsSnapshot, ConversationGoal, MacroEnvironment, ProviderAuthInfo, ProviderProxyInfo, QueuedCommandInvocation, QueueTiming, QueueWaitTarget as ProtocolQueueWaitTarget, UserMessageAutomation } from "./protocol";
+import type { AccountsSnapshot, ConversationDefaultsSnapshot, ConversationGoal, MacroEnvironment, ProviderAuthInfo, ProviderProxyInfo, QueuedCommandInvocation, QueueTiming, QueueWaitTarget as ProtocolQueueWaitTarget, UserMessageAutomation } from "./protocol";
 import type { VoiceChatMessageState, VoicePromptState } from "./voice";
 import type { BtwPanelState } from "./btw/state";
 import { createConversationScrollState, type ConversationScrollState } from "./conversationscroll/types";
@@ -373,6 +373,8 @@ export interface RenderState {
   accountsScreen: AccountsScreenState | null;
   /** An `accounts` request whose answer opens the screen (or explains why it cannot). */
   accountsOpenRequest: AccountsOpenRequest | null;
+  /** Last `accounts` snapshot seen, shown at once when the screen reopens. */
+  accountsSnapshotCache: AccountsSnapshot | null;
   /**
    * The Tasks panel expanded by a click to list every entry, with its
    * scroll offset in panel rows. Session-only and tied to one conversation:
@@ -742,6 +744,7 @@ export function createInitialState(): RenderState {
     imageModal: null,
     accountsScreen: null,
     accountsOpenRequest: null,
+    accountsSnapshotCache: null,
     taskPanelExpansion: null,
     undo: createUndoState(),
     autocomplete: null,

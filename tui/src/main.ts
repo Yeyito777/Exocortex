@@ -414,6 +414,7 @@ function resetForDaemonRouteSwitch(): void {
   // The Accounts screen showed the old endpoint's accounts.
   state.accountsScreen = null;
   state.accountsOpenRequest = null;
+  state.accountsSnapshotCache = null;
   voiceInput?.cleanup();
   clearStreamTick();
   resetPrewarmer();
