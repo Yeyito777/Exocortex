@@ -209,6 +209,29 @@ The daemon auto-discovers it, spawns the process, and supervises it
 Stdout/stderr are captured to `config/service.log`. When a tool is removed,
 its daemon is stopped automatically.
 
+The daemon runs in its own process group, and stopping it signals the whole
+group (SIGTERM, then SIGKILL after 5 s). A daemon may therefore supervise child
+processes of its own: keep them in its process group (no `setsid` or
+`start_new_session`) and they stop with it.
+
+#### Don't spawn long-lived processes from a turn
+
+Every command the model runs, your CLI included, executes inside that turn's
+transient systemd unit. When the turn ends, systemd kills the unit's whole
+cgroup. `setsid`, `nohup`, double forks and `start_new_session` do not escape
+it. A listener or worker that a CLI subcommand launches "in the background"
+therefore dies at the end of the turn that ran it, and nothing brings it back
+after a crash either.
+
+Anything that must keep running belongs to the manifest `daemon`. The CLI asks
+the daemon for it (a signal, a socket, a state file the daemon polls) instead
+of spawning it. Where what runs depends on Exocortex subscriptions, derive it
+from the subscription registry (`list_external_notification_subscriptions`):
+reconcile at daemon start, periodically, and when the CLI nudges after
+subscribe/unsubscribe. Then subscribing alone keeps the collector running. The
+Discord tool's `src/supervisor.py` is an example, with one Gateway per
+subscribed channel.
+
 ### External notification subscriptions
 
 External tools that autonomously deliver platform events into Exocortex
