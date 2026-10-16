@@ -89,8 +89,9 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
       try {
         validateCommandArgs(exo.inputSchema, input, "exo");
         const spawning = input.subagent !== undefined;
-        const actions = [input.subagent, input.abort, input.restart].filter(value => value !== undefined).length;
-        if (actions !== 1) throw new Error("Specify exactly one of subagent, abort, or restart.");
+        const actions = [input.subagent, input.message, input.status, input.abort, input.restart]
+          .filter(value => value !== undefined).length;
+        if (actions !== 1) throw new Error("Specify exactly one of subagent, message, status, abort, or restart.");
         if (!spawning && input.args !== undefined) throw new Error("args is only available with subagent.");
         if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
         const parent = parentId ? convStore.get(parentId) : undefined;
@@ -105,6 +106,90 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
             reason: request.reason,
             runs: "after this turn ends",
             note: "Finish this turn normally and do not request another restart. Other active conversations will be interrupted and replayed; this one will not. You will receive a notice once the new daemon has started.",
+          });
+        }
+
+        if (input.status !== undefined) {
+          const convId = (input.status as string).trim();
+          if (!convId) throw new Error("status requires an exact conversation ID.");
+          const summary = convStore.getSummary(convId);
+          if (!summary) throw new Error(`Conversation ${convId} not found`);
+          const streamingSince = convStore.getStreamingStartedAt(convId);
+          const iso = (ms: number | undefined) => ms === undefined ? undefined : new Date(ms).toISOString();
+          return result({
+            conversation_id: convId,
+            title: summary.title,
+            status: summary.providerWaiting ? "waiting_for_connection" : summary.streaming ? "streaming" : "idle",
+            ...(summary.streaming && streamingSince !== undefined ? { streaming_since: iso(streamingSince) } : {}),
+            ...(convStore.getActiveBackgroundableToolName(convId) ? { active_tool: convStore.getActiveBackgroundableToolName(convId) } : {}),
+            last_activity: iso(summary.updatedAt),
+            message_count: summary.messageCount,
+            model: summary.model,
+            ...(summary.goal ? { goal: summary.goal.status } : {}),
+            queued_messages: convStore.getQueuedMessages(convId).length,
+            running_tasks: summary.tasks?.length ?? 0,
+          });
+        }
+
+        if (input.message !== undefined) {
+          const message = input.message as { conversation: string; text: string; delivery?: "now" | "after_turn" };
+          const convId = message.conversation.trim();
+          const text = message.text.trim();
+          if (!convId) throw new Error("message requires an exact conversation ID.");
+          if (!text) throw new Error("message requires non-empty text.");
+          if (!parentId || !parent) throw new Error("message requires an active conversation.");
+          if (convId === parentId) throw new Error("Cannot message the conversation currently executing this tool.");
+          const target = convStore.getPolicyMetadata(convId);
+          if (!target) throw new Error(`Conversation ${convId} not found`);
+          if (parent.subagentPolicy && target.subagentPolicy?.parentConversationId !== parentId) {
+            throw new Error("Subagents can only message their own direct children.");
+          }
+          const delivery = message.delivery ?? "now";
+          const automation: UserMessageAutomation = { kind: "exo_send", sourceId: parentId };
+          if (convStore.isStreaming(convId)) {
+            // The same durable queue as a prompt queued in the TUI or by `exo queue`.
+            // A turn only sleeping or waiting in chrono takes it now either way.
+            const timing = delivery === "after_turn" && convStore.getActiveBackgroundableToolName(convId) !== "chrono"
+              ? "message-end" : "next-turn";
+            const entry = convStore.pushQueuedMessage(convId, text, timing, undefined, undefined, undefined,
+              undefined, undefined, automation);
+            if (timing === "next-turn") convStore.steerActiveTurn(convId);
+            return result({
+              conversation_id: convId, status: "queued", queue_id: entry.id, target_status: "streaming",
+              delivers: timing === "next-turn" ? "at the active turn's next tool boundary" : "as a new turn after the active one ends",
+            });
+          }
+          // An idle conversation starts its turn now, as a subagent does, and
+          // the reply is reported back to the caller when that turn ends.
+          if (!(deps.hasCredentials ?? hasConfiguredCredentials)(target.provider)) throw new Error(`Not authenticated for provider ${target.provider}`);
+          const blocked = deps.cannotStart?.(target.provider);
+          if (blocked) throw new Error(blocked);
+          const ownChild = target.subagentPolicy?.parentConversationId === parentId;
+          const startedAt = Date.now();
+          const maxDepth = target.subagentMaxDepth ?? null;
+          deps.beginParentNotification?.({ convId: parentId }, convId, text, startedAt, maxDepth, ownChild);
+          const title = convStore.getIndexedSummary(convId)?.title || "Subagent task";
+          if (ownChild) track(parentId, convId, true, { title, startedAt });
+          let finished = false;
+          const finish = (outcome: AssistantTurnOutcome) => {
+            if (outcome.suspended || finished) return;
+            finished = true;
+            if (ownChild) track(parentId, convId, false);
+            if (deps.completeParentNotification) deps.completeParentNotification(convId, outcome);
+            else deps.notifyParent?.(parentId, convId, text, outcome);
+          };
+          // Admission is synchronous, so no other turn can start in between.
+          let turn: Promise<AssistantTurnOutcome>;
+          try { turn = deps.runTurn(convId, text, maxDepth, startedAt, automation); }
+          catch (error) { turn = Promise.reject(error); }
+          void turn.then(finish).catch(error => {
+            log("error", `exo message to ${convId} failed: ${error instanceof Error ? error.message : String(error)}`);
+            finish({ ok: false, blocks: [], tokens: 0, durationMs: 0, endedAt: Date.now(),
+              error: error instanceof Error ? error.message : String(error) });
+          });
+          return result({
+            conversation_id: convId, status: "delivered", target_status: "idle",
+            delivers: "started a new turn now; its reply is reported to you when it ends",
           });
         }
 

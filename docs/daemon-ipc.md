@@ -80,7 +80,11 @@ the old endpoint's cache and adopts the new host's bootstrap.
 `/default-model` uses these commands, never local config reads/writes.
 Changes do not alter existing conversations or other clients' edited drafts.
 
-The native `exo` tool only starts a subagent or aborts a conversation. Tool
+The native `exo` tool starts a subagent, messages or reports the status of an
+existing conversation, aborts one, or restarts the daemon. A message to a
+streaming conversation is an automated entry on the durable queue (as
+`queue_message` makes); one to an idle conversation starts its turn at once and
+notifies the caller when it ends, like a subagent turn. Tool
 selection and conversation-scoped custom modules are retired; old persisted
 policies are retained as opaque historical data for lossless import/export.
 Old selection requests receive an explicit error; they have no mutation API,

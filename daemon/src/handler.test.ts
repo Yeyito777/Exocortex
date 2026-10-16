@@ -2160,6 +2160,55 @@ describe("handler subagent completion delivery", () => {
     cleanupIds();
   });
 
+  test("native exo message: a streaming target takes it from the durable queue once idle; an idle one starts and reports back", async () => {
+    const parentId = mkId("exo-message-parent");
+    const targetId = mkId("exo-message-target");
+    create(parentId, "openai", "gpt-6-astra");
+    create(targetId, "openai", "gpt-6-astra");
+    const server = {
+      sendTo: mock(() => {}), broadcast: mock(() => {}), sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}), subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    createHandler(server as never);
+    const runtime = getExocortexToolRuntime(server as never)!;
+    const acceptAndRemove = async (...args: unknown[]) => {
+      const entryId = (args[8] as { queueEntryId?: string } | undefined)?.queueEntryId;
+      if (entryId) removeQueuedMessageById(entryId);
+      return makeAssistantOutcome();
+    };
+    orchestrateSendMessage.mockImplementation(acceptAndRemove);
+    const sendsTo = (convId: string) => orchestrateSendMessage.mock.calls
+      .map(call => call as unknown as unknown[]).filter(call => call[3] === convId);
+    try {
+      setActiveJob(targetId, new AbortController(), Date.now());
+      const queued = JSON.parse((await runtime.execute({ message: { conversation: targetId, text: "while busy" } }, parentId)).output);
+      expect(queued).toMatchObject({ status: "queued", target_status: "streaming" });
+      await new Promise(resolve => setTimeout(resolve, 250));
+      expect(sendsTo(targetId)).toHaveLength(0);
+      expect(getQueuedMessageById(queued.queue_id)?.text).toBe("while busy");
+
+      clearActiveJob(targetId);
+      await new Promise(resolve => setTimeout(resolve, 400));
+      expect(sendsTo(targetId)).toHaveLength(1);
+      expect(sendsTo(targetId)[0][4]).toBe("while busy");
+      expect(sendsTo(targetId)[0][8]).toMatchObject({ queueEntryId: queued.queue_id, automation: { kind: "exo_send", sourceId: parentId } });
+      expect(getQueuedMessageById(queued.queue_id)).toBeUndefined();
+
+      const delivered = JSON.parse((await runtime.execute({ message: { conversation: targetId, text: "while idle" } }, parentId)).output);
+      expect(delivered).toMatchObject({ status: "delivered", target_status: "idle" });
+      expect(sendsTo(targetId)).toHaveLength(2);
+      expect(sendsTo(targetId)[1][4]).toBe("while idle");
+      expect(sendsTo(targetId)[1][8]).toEqual({ subagentMaxDepth: null, automation: { kind: "exo_send", sourceId: parentId } });
+      await new Promise(resolve => setTimeout(resolve, 50));
+      // The reply reaches the caller as a completion notification.
+      expect(sendsTo(parentId).at(-1)?.[8]).toMatchObject({ automation: { kind: "subagent_completion", sourceId: targetId } });
+      expect(listPendingSubagentNotifications({ childConvId: targetId })[0]?.text).toContain("Task: while idle");
+    } finally {
+      orchestrateSendMessage.mockImplementation(async () => makeAssistantOutcome());
+      for (const entry of [...getQueuedMessages(targetId), ...getQueuedMessages(parentId)]) removeQueuedMessageById(entry.id);
+    }
+  });
+
   // The orchestrator completes a child's notification when its turn ends, and
   // the turn's starter (exo runtime, detached send, recovery) completes it again.
   // The second completion must not send the parent a duplicate while the first
