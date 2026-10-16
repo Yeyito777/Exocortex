@@ -654,7 +654,7 @@ export function buildMessageLines(
     if (connectionWaitActive) {
       pushLine("", state.pendingAI, "connection_wait_margin_top");
       pushLine(
-        `  ${theme.warning}${connectionWaitSpinnerText(connectionWaitStartedAt)}${theme.reset}`,
+        `  ${theme.warning}${state.connectionWaitLabel ?? connectionWaitSpinnerText(connectionWaitStartedAt)}${theme.reset}`,
         state.pendingAI,
         "connection_wait_spinner",
       );

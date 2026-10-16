@@ -1424,6 +1424,7 @@ export interface StreamingStartedEvent {
   compactionStartedAt?: number | null;
   /** When the turn started waiting for the network to return, for late-join rendering. */
   connectionWaitStartedAt?: number | null;
+  connectionWaitLabel?: string | null;
 }
 
 export type StreamingStopReason = "daemon-restart" | "handoff" | "unwind" | "suspended";
@@ -1827,6 +1828,8 @@ export interface ConnectionWaitStatusEvent {
   /** Monotonic daemon event sequence for the active stream. */
   streamSeq?: number;
   active: boolean;
+  /** Usage waits share the same paused/yellow presentation. */
+  label?: string;
   /** When the turn started waiting (stable across brief reconnect attempts). */
   startedAt?: number;
 }

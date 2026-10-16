@@ -70,6 +70,9 @@ import {
 import { buildConversationRequestSurface } from "./conversation-request-surface";
 import { connectivity as daemonConnectivity, type ConnectivityMonitor } from "./connectivity";
 import { runWithNetworkWait } from "./network-wait";
+import { isUsageLimitError, runWithUsageLimitWait, type UsageAvailability } from "./usage-limit-wait";
+import { claudeUsageAvailability } from "./providers/anthropic/availability";
+import { isProviderProxied } from "./provider-proxy/route";
 import { classifyNetworkFailureMessage } from "./providers/errors";
 import { getModelInfo, cyberAccessProgramForSelection, refreshProviders } from "./providers/registry";
 import { isDaybreakModelId } from "@exocortex/shared/daybreak";
@@ -152,6 +155,8 @@ export interface OrchestrationCallbacks {
   streamMessageFn?: typeof streamMessage;
   /** Test seam for the daemon's shared connectivity monitor. */
   connectivity?: ConnectivityMonitor;
+  /** Test seam for capacity; production uses the local or proxied Claude pool. */
+  usageAvailability?: () => UsageAvailability;
 }
 
 // ── Message history/replay helpers ─────────────────────────────────
@@ -850,7 +855,7 @@ async function orchestrateAdmittedAssistantTurn(
     }
     // `messages` is the agent loop's live array: rounds the provider commits
     // during a failed attempt are in it, so a retry resumes after them.
-    return runWithNetworkWait(ac, connectivity, () => runWithStaleStreamRetries(
+    return runWithUsageLimitWait(ac, () => runWithNetworkWait(ac, connectivity, () => runWithStaleStreamRetries(
       ac,
       callbacks,
       (attemptSignal) => (ext.streamMessageFn ?? streamMessage)(provider, messages, model, callbacks, {
@@ -869,7 +874,33 @@ async function orchestrateAdmittedAssistantTurn(
         convStore.resumeActivity(convId);
         syncConnectionWait();
       },
-    }, { label: convId });
+    }, { label: convId }), () => provider === "anthropic"
+      ? (ext.usageAvailability?.() ?? (ext.streamMessageFn ? { ready: true, resetAt: null } : claudeUsageAvailability()))
+      : { ready: true, resetAt: null }, {
+      start(resetAt) {
+        const label = "Waiting for usage limit" + (resetAt == null ? "…" : ` · resets ${new Date(resetAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`);
+        convStore.pauseActivity(convId);
+        convStore.setConnectionWaitStartedAt(convId, Date.now(), label);
+        broadcastConversationUpdated(server, convId);
+        server.sendToSubscribers(convId, {
+          type: "connection_wait_status", convId, streamSeq: convStore.nextStreamSeq(convId),
+          active: true, startedAt: Date.now(), label,
+        });
+      },
+      end() {
+        convStore.resumeActivity(convId);
+        convStore.setConnectionWaitStartedAt(convId, null);
+        broadcastConversationUpdated(server, convId);
+        server.sendToSubscribers(convId, {
+          type: "connection_wait_status", convId, streamSeq: convStore.nextStreamSeq(convId), active: false,
+        });
+      },
+    }, {
+      shouldRetry: error => provider === "anthropic" && isUsageLimitError(error),
+      // The remote already tries an alternative account. With an old/unknown
+      // pool snapshot, do not hammer its refused request once per second.
+      retryFloorMs: isProviderProxied("anthropic") ? 30_000 : 1_000,
+    });
   };
 
   // Broadcast sidebar update (streaming indicator)
@@ -1326,6 +1357,7 @@ async function orchestrateAdmittedAssistantTurn(
       generationThroughput: pendingAI.metadata?.generationThroughput,
       compactionStartedAt: convStore.getContextCompactionStartedAt(convId) ?? null,
       connectionWaitStartedAt: convStore.getConnectionWaitStartedAt(convId) ?? null,
+      connectionWaitLabel: convStore.getConnectionWaitLabel(convId) ?? null,
     });
   }
 

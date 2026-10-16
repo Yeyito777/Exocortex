@@ -49,6 +49,20 @@ const TOOL_TURN = [
 ];
 
 describe("Claude Code stream translation", () => {
+  test("a usage refusal commits unconfirmed text deltas exactly once", () => {
+    const { callbacks } = recorder();
+    const rounds: ProviderRound[] = [];
+    const state = createClaudeStreamState({ ...callbacks, onProviderRound: round => rounds.push(round) }, "/tmp");
+    pushClaudeMessage(state, se({ type: "content_block_delta", delta: { type: "text_delta", text: "Keep this partial output." } }));
+    expect(() => pushClaudeMessage(state, {
+      type: "result", subtype: "error_during_execution", is_error: true,
+      result: "You've hit your session limit",
+    })).toThrow("session limit");
+    expect(rounds).toHaveLength(1);
+    expect(rounds[0].messages).toEqual([{ role: "assistant", content: [{ type: "text", text: "Keep this partial output." }] }]);
+    expect(state.pendingText).toBe("");
+  });
+
   test("reports Claude Code's own context compaction with its token counts", () => {
     const { callbacks } = recorder();
     const compactions: unknown[] = [];

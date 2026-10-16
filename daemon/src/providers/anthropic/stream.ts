@@ -19,6 +19,7 @@ import type { ApiContentBlock, ApiMessage } from "../../messages";
 import { claudeCodeResultText, exocortexToolName, summarizeClaudeCodeTool } from "../../tools/claude-code";
 import { resolveToolCallPresentationFromCache } from "../../helper-tool-manifest";
 import { AuthError } from "../errors";
+import { isUsageLimitError } from "../../usage-limit-wait";
 import type { ContentBlock, ProviderRound, StreamCallbacks, StreamResult } from "../types";
 import { REPLAYED_FIELD } from "./relay-protocol";
 import { takeHostToolAttachments } from "./host-tool-attachments";
@@ -42,6 +43,9 @@ export interface ClaudeStreamState {
   /** Blocks and messages not yet committed as a round. */
   blocks: ContentBlock[];
   messages: ApiMessage[];
+  /** Deltas not yet confirmed by an SDK assistant payload. */
+  pendingText: string;
+  pendingThinking: string;
   toolNames: Map<string, string>;
   /** Titles of Claude Code's tasks and agents by id, shared with its process's later turns. */
   taskTitles: Map<string, string>;
@@ -89,6 +93,8 @@ export function createClaudeStreamState(
     inputUuids: [],
     blocks: [],
     messages: [],
+    pendingText: "",
+    pendingThinking: "",
     toolNames: new Map(),
     taskTitles: new Map(),
     agentCalls: new Map(),
@@ -180,7 +186,10 @@ function handleStreamEvent(state: ClaudeStreamState, event: SdkRecord): void {
       const delta = asRecord(event.delta);
       if (delta?.type === "text_delta") {
         const text = str(delta.text);
-        if (text) cb.onText(text);
+        if (text) {
+          state.pendingText += text;
+          cb.onText(text);
+        }
       } else if (delta?.type === "thinking_delta") {
         const thinking = str(delta.thinking);
         if (!thinking) {
@@ -192,6 +201,7 @@ function handleStreamEvent(state: ClaudeStreamState, event: SdkRecord): void {
           cb.onBlockStart?.("thinking");
         }
         cb.onThinking(thinking);
+        state.pendingThinking += thinking;
       } else {
         cb.onActivity?.();
       }
@@ -234,11 +244,13 @@ function handleAssistantMessage(state: ClaudeStreamState, message: SdkRecord): v
     const block = asRecord(raw);
     if (!block) continue;
     if (block.type === "text") {
+      state.pendingText = "";
       const text = str(block.text) ?? "";
       if (!text) continue;
       state.blocks.push({ type: "text", text });
       pushMessageContent(state, "assistant", { type: "text", text });
     } else if (block.type === "thinking") {
+      state.pendingThinking = "";
       const thinking = str(block.thinking) ?? "";
       const signature = str(block.signature) ?? "";
       if (signature) state.callbacks.onSignature?.(signature);
@@ -464,7 +476,26 @@ function pushMessage(state: ClaudeStreamState, message: SdkRecord): void {
         state.callbacks.onActivity?.();
         return;
       }
-      if (message.subtype !== "success" || message.is_error === true) throw resultError(message);
+      if (message.subtype !== "success" || message.is_error === true) {
+        const error = resultError(message);
+        if (isUsageLimitError(error)) {
+          // Keep any complete assistant payload before the refusal. No resume
+          // marker: replay this tail after the last committed session boundary.
+          if (state.pendingThinking) {
+            state.blocks.push({ type: "thinking", text: state.pendingThinking, signature: "" });
+            pushMessageContent(state, "assistant", { type: "thinking", thinking: state.pendingThinking, signature: "" });
+            state.pendingThinking = "";
+          }
+          if (state.pendingText) {
+            state.blocks.push({ type: "text", text: state.pendingText });
+            pushMessageContent(state, "assistant", { type: "text", text: state.pendingText });
+            state.pendingText = "";
+          }
+          commitInterruptedRound(state);
+          commitRound(state, false);
+        }
+        throw error;
+      }
       state.done = true;
       state.stopReason = str(message.stop_reason) ?? "end_turn";
       return;

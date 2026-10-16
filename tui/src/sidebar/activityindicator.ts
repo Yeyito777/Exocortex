@@ -28,7 +28,7 @@ export interface ConversationActivityIndicator {
  * green when unread. Shared with the Tasks panel so subagent rows match.
  */
 export function conversationActivityIndicator(
-  conv: Pick<ConversationSummary, "streaming" | "tasks" | "unread">,
+  conv: Pick<ConversationSummary, "streaming" | "tasks" | "unread" | "providerWaiting">,
   context: ConversationActivityContext,
 ): ConversationActivityIndicator {
   // A Claude Code turn sleeping inside a long chrono call still streams, and
@@ -37,8 +37,8 @@ export function conversationActivityIndicator(
   const hasLongSleep = hasInlineSleep || isDurablySleeping(conv);
   const hasModelWork = hasInProgressModelWork(conv) || context.optimisticStreaming;
   const hasUnread = !context.notificationsMuted && conv.unread && !hasModelWork;
-  const isStreaming = (conv.streaming || context.optimisticStreaming) && !hasInlineSleep;
-  const isWarning = hasLongSleep || context.globalIdle;
+  const isStreaming = (conv.streaming || context.optimisticStreaming) && !hasInlineSleep && !conv.providerWaiting;
+  const isWarning = hasLongSleep || context.globalIdle || conv.providerWaiting;
   const icon = isStreaming || isWarning || hasUnread ? `${ACTIVITY_GLYPH} ` : "";
   const color = isStreaming ? theme.accent : isWarning ? theme.warning : hasUnread ? theme.success : "";
   return { icon, color };

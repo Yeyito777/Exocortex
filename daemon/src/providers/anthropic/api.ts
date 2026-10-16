@@ -27,6 +27,8 @@ import { claudeProcessOptions } from "./cli";
 import { AuthError } from "../errors";
 import { MAIN_ACCOUNT_ID } from "./accounts";
 import { beginAccountTurn, multipleClaudeAccounts, noteAccountAuthFailure, routeClaudeTurn, touchConversationAccount } from "./account-pool";
+import { isUsageLimitError } from "../../usage-limit-wait";
+import { noteAccountUsageRefusal } from "./usage";
 import { noteClaudeAccountWorking } from "./auth-cache";
 import { accountSwitchNotice } from "./routing";
 import { isProviderProxied, onProxiedClaudeMove, providerProxyRoute } from "../../provider-proxy/route";
@@ -238,6 +240,7 @@ export async function streamMessage(
     return await runStreamMessage(messages, model, callbacks, options, cwd, plan, convId, live, account);
   } catch (error) {
     if (error instanceof AuthError && !signal?.aborted) noteAccountAuthFailure(account, error.message);
+    if (!signal?.aborted && isUsageLimitError(error) && !isProviderProxied("anthropic")) noteAccountUsageRefusal(account, (error as Error).message);
     throw error;
   } finally {
     stopMoveNotices?.();
@@ -330,7 +333,7 @@ async function runStreamMessage(
     // A missing/unforkable session (deleted, moved, or rejected) should not
     // strand the conversation: replay the whole history into a new session.
     // A network failure is not that: the same session resumes once the network is back.
-    if (!plan.resume || signal?.aborted || hasOutput(state) || classifyNetworkFailure(error)) throw error;
+    if (!plan.resume || signal?.aborted || hasOutput(state) || classifyNetworkFailure(error) || isUsageLimitError(error)) throw error;
     log("warn", `anthropic: resuming Claude Code session ${plan.resume.sessionId} failed (${error instanceof Error ? error.message : error}); starting a new session`);
     session.close("resuming its session failed");
     const fresh: ClaudePromptPlan = { resume: null, pending: messages };

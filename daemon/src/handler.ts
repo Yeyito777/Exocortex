@@ -3238,6 +3238,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
               generationThroughput: pendingAI.metadata?.generationThroughput,
               compactionStartedAt: convStore.getContextCompactionStartedAt(loadedConvId) ?? null,
               connectionWaitStartedAt: convStore.getConnectionWaitStartedAt(loadedConvId) ?? null,
+              connectionWaitLabel: convStore.getConnectionWaitLabel(loadedConvId) ?? null,
             });
           }
         }

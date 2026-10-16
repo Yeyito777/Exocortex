@@ -21,6 +21,7 @@ import { join } from "path";
 import { runtimeDir } from "@exocortex/shared/paths";
 import type { UsageData, UsageWindow } from "../../messages";
 import { emitClaudeAccountsChanged } from "./account-events";
+import { claudeDailyReset } from "../../usage-limit-wait";
 import { MAIN_ACCOUNT_ID } from "./accounts";
 import { claudeProcessOptions } from "./cli";
 
@@ -87,6 +88,19 @@ function entryFor(account: string): AccountUsageEntry {
     entries.set(account, entry);
   }
   return entry;
+}
+
+/** A result can refuse usage without sending rate_limit_event first. */
+export function noteAccountUsageRefusal(account: string, message = "", now = Date.now()): void {
+  const entry = entryFor(account);
+  if (entry.limitedUntil == null || entry.limitedUntil <= now) {
+    const resets = [entry.usage?.fiveHour, entry.usage?.sevenDay]
+      .filter(window => window && window.utilization >= 100 && window.resetsAt != null && window.resetsAt > now)
+      .map(window => window!.resetsAt!);
+    entry.limitedUntil = resets.length ? Math.max(...resets) : claudeDailyReset(message, now) ?? now + 60_000;
+    saveToDisk();
+    emitClaudeAccountsChanged();
+  }
 }
 
 function commitUsage(account: string, usage: UsageData): void {
@@ -267,9 +281,22 @@ export function refreshAccountUsage(account: string): Promise<UsageData | null> 
   if (running) return running;
   const generation = usageGeneration;
   const refresh = (async () => {
-    const usage = usageFromPlanRateLimits(await fetchPlanRateLimits(account), getAccountUsage(account));
+    const limits = await fetchPlanRateLimits(account);
+    const usage = usageFromPlanRateLimits(limits, getAccountUsage(account));
     if (generation !== usageGeneration) return getAccountUsage(account);
+    // A fresh authoritative report may free an account before the old reset.
+    // Include model-specific windows (e.g. seven_day_opus), not just the bars.
+    const windows = Object.values(limits ?? {}).filter((value): value is { utilization: number } =>
+      typeof value === "object" && value !== null && "utilization" in value
+      && typeof value.utilization === "number");
+    const entry = entryFor(account);
+    const freed = entry.limitedUntil != null && windows.length > 0 && windows.every(window => window.utilization < 100);
+    if (freed) entry.limitedUntil = null;
     if (usage) commitUsage(account, usage);
+    else if (freed) {
+      saveToDisk();
+      emitClaudeAccountsChanged();
+    }
     return getAccountUsage(account);
   })();
   remoteRefreshes.set(account, refresh);
