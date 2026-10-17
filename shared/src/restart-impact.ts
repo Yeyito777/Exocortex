@@ -13,7 +13,8 @@ const execFileAsync = promisify(execFile);
 export type PathClass = "restart" | "ignore" | "source";
 
 const SOURCE = /\.(?:[cm]?[jt]s|tsx)$/;
-const TEST = /(?:^|\/)test\/|\.test\.[cm]?[jt]sx?$/;
+// Test-only sources: test/ dirs, *.test.* and the *.cases.* bodies test wrappers run in child processes.
+const TEST = /(?:^|\/)test\/|\.(?:test|cases)\.[cm]?[jt]sx?$/;
 const ROOT_RUNTIME_FILES = new Set(["package.json", "bun.lock", "bun.lockb", "bunfig.toml", "tsconfig.json"]);
 // Everything the daemon (or its service wrapper) reads, execs or installs from.
 const RUNTIME_DIRS = ["daemon/", "shared/", "config/", "bin/", "external-tools/", "helper-tools/", "scripts/setup/"];
