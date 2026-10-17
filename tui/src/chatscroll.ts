@@ -32,32 +32,63 @@ export function getViewStart(state: RenderState): number {
 }
 
 type AnchorRowMap = Map<number, number>;
-type AnchorIndex = WeakMap<object, Map<RenderLineSegment, Map<number, AnchorRowMap>>>;
+type OwnerAnchorRows = Map<RenderLineSegment, Map<number, AnchorRowMap>>;
+/** Rows of each owner's anchors, looked up by owner. */
+type AnchorIndex = (owner: object) => OwnerAnchorRows | undefined;
+
+function addAnchorRow(byOwner: OwnerAnchorRows, anchor: RenderLineAnchor, row: number): void {
+  let byIndex = byOwner.get(anchor.segment);
+  if (!byIndex) {
+    byIndex = new Map();
+    byOwner.set(anchor.segment, byIndex);
+  }
+  let bySubIndex = byIndex.get(anchor.index);
+  if (!bySubIndex) {
+    bySubIndex = new Map();
+    byIndex.set(anchor.index, bySubIndex);
+  }
+  bySubIndex.set(anchor.subIndex, row);
+}
+
 /** Content-match fallback index, built only if an anchor lookup misses. */
 type RenderedLineIndex = () => Map<string, number[]>;
 
+/** Owners scanned individually before indexing every row at once. */
+const LAZY_ANCHOR_OWNER_SCANS = 8;
+
 function buildAnchorIndex(anchors: RenderLineAnchor[]): AnchorIndex {
-  const byOwner = new WeakMap<object, Map<RenderLineSegment, Map<number, AnchorRowMap>>>();
-  for (let row = 0; row < anchors.length; row++) {
-    const anchor = anchors[row];
-    let bySegment = byOwner.get(anchor.owner);
-    if (!bySegment) {
-      bySegment = new Map();
-      byOwner.set(anchor.owner, bySegment);
+  // A remap usually resolves a few anchors from one or two owners. Indexing
+  // every row of a long history up front dominated each page prepend, so scan
+  // for the first few owners and index everything only past that.
+  const scanned = new Map<object, OwnerAnchorRows | undefined>();
+  let full: WeakMap<object, OwnerAnchorRows> | null = null;
+  return (owner) => {
+    if (full) return full.get(owner);
+    if (scanned.has(owner)) return scanned.get(owner);
+    if (scanned.size >= LAZY_ANCHOR_OWNER_SCANS) {
+      const index = new WeakMap<object, OwnerAnchorRows>();
+      for (let row = 0; row < anchors.length; row++) {
+        const anchor = anchors[row];
+        let byOwner = index.get(anchor.owner);
+        if (!byOwner) {
+          byOwner = new Map();
+          index.set(anchor.owner, byOwner);
+        }
+        addAnchorRow(byOwner, anchor, row);
+      }
+      full = index;
+      return full.get(owner);
     }
-    let byIndex = bySegment.get(anchor.segment);
-    if (!byIndex) {
-      byIndex = new Map();
-      bySegment.set(anchor.segment, byIndex);
+    let byOwner: OwnerAnchorRows | undefined;
+    for (let row = 0; row < anchors.length; row++) {
+      const anchor = anchors[row];
+      if (anchor.owner !== owner) continue;
+      byOwner ??= new Map();
+      addAnchorRow(byOwner, anchor, row);
     }
-    let bySubIndex = byIndex.get(anchor.index);
-    if (!bySubIndex) {
-      bySubIndex = new Map();
-      byIndex.set(anchor.index, bySubIndex);
-    }
-    bySubIndex.set(anchor.subIndex, row);
-  }
-  return byOwner;
+    scanned.set(owner, byOwner);
+    return byOwner;
+  };
 }
 
 function buildRenderedLineIndex(lines: string[]): RenderedLineIndex {
@@ -137,7 +168,7 @@ function findRenderedLineRow(
 
 function findAnchorRow(index: AnchorIndex, anchor: RenderLineAnchor | undefined): number {
   if (!anchor) return -1;
-  const bySubIndex = index.get(anchor.owner)?.get(anchor.segment)?.get(anchor.index);
+  const bySubIndex = index(anchor.owner)?.get(anchor.segment)?.get(anchor.index);
   if (!bySubIndex) return -1;
 
   const exact = bySubIndex.get(anchor.subIndex);
