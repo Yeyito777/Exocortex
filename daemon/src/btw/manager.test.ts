@@ -10,6 +10,7 @@ import { appendToStreamingBlock, clearActiveJob, clearCurrentStreamingBlocks, in
 import { buildExecutor, getToolDefs } from "../tools/registry";
 import { buildConversationRequestSurface } from "../conversation-request-surface";
 import { ensureConversationWorkspace } from "../workspace-service";
+import { LineSplitter } from "../line-splitter";
 
 type RunAgentLoop = typeof import("../agent").runAgentLoop;
 
@@ -18,7 +19,7 @@ function testClient(id: string, subscriptions: string[] = []): ConnectedClient {
     id,
     socket: new EventEmitter() as ConnectedClient["socket"],
     subscriptions: new Set(subscriptions),
-    buffer: "",
+    lines: new LineSplitter(),
     capabilities: new Set<"history-pagination">(),
   };
 }

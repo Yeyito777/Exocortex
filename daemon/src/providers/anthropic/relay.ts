@@ -23,6 +23,7 @@ import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { createInterface } from "node:readline";
 import { DAEMON_RESTART_TOOL_INTERRUPTED_MESSAGE } from "../../abort";
+import { LineSplitter } from "../../line-splitter";
 import {
   endsInterruptedTurn,
   RELAY_LINE_PREFIX,
@@ -274,18 +275,9 @@ function attach(socket: Socket): void {
     return;
   }
 
-  let partial = "";
+  const lines = new LineSplitter();
   socket.setEncoding("utf8");
-  socket.on("data", (chunk: string) => {
-    const text = partial + chunk;
-    let from = 0;
-    for (let newline = text.indexOf("\n"); newline !== -1; newline = text.indexOf("\n", from)) {
-      const line = text.slice(from, newline);
-      from = newline + 1;
-      if (line) fromClient(line);
-    }
-    partial = text.slice(from);
-  });
+  socket.on("data", (chunk: string) => lines.push(chunk, (line) => { if (line) fromClient(line); }));
   socket.on("error", () => { /* close follows */ });
   socket.on("close", () => release(socket));
 }

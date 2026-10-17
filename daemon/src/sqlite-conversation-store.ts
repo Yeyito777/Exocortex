@@ -62,7 +62,7 @@ import { canonicalArchiveContent } from "./canonical-archive-content";
 import { copyStoredImages } from "./attachments";
 import { checkpointTailHasher, updateCheckpointTailHash, integritySha, ConversationIntegrityError, type CheckpointHashAnchor, type ReplayHash } from "./checkpoint-tail-integrity";
 
-const SCHEMA_VERSION = 14;
+const SCHEMA_VERSION = 15;
 const INTEGRITY_TABLES = ["message_integrity", "checkpoint_integrity", "display_integrity"];
 const RUNTIME_REVISION_TRIGGERS: Record<string, string> = {};
 for (const [table, id] of [
@@ -1019,6 +1019,27 @@ export class SqliteConversationStore implements ConversationRepository {
         this.db.exec("UPDATE conversations SET model='gpt-6-sol-daybreak' WHERE provider='openai' AND model='gpt-daybreak-blue-latest';");
         this.db.query("INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)")
           .run(14, "Sol Daybreak model alias", Date.now());
+      })();
+    }
+    if (current < 15 && targetVersion >= 15) {
+      this.db.transaction(() => {
+        // Replay-history ordinals (display rebuild on every append, checkpoint
+        // floors, loads) otherwise scan every row's inline/overflow content:
+        // ~70ms per provider round in a 30k-message conversation.
+        this.db.exec("CREATE INDEX IF NOT EXISTS messages_replay_idx ON messages(conversation_id, sequence) WHERE is_replay_history=1;");
+        // Every conversation-row upsert assigns title, so the FTS trigger
+        // re-indexed an unchanged title (scanning the UNINDEXED id column) on
+        // each append: 1.7ms of a ~0.05ms row update with 5k conversations.
+        this.db.exec(`
+          DROP TRIGGER IF EXISTS conversation_title_fts_update;
+          CREATE TRIGGER conversation_title_fts_update AFTER UPDATE OF title ON conversations
+          WHEN old.title IS NOT new.title BEGIN
+            DELETE FROM conversation_title_fts WHERE conversation_id=old.id;
+            INSERT INTO conversation_title_fts(conversation_id, title) VALUES (new.id, new.title);
+          END;
+        `);
+        this.db.query("INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)")
+          .run(15, "replay history index; skip unchanged title reindex", Date.now());
       })();
     }
   }

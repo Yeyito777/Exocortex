@@ -33,7 +33,6 @@ import { goalRemainingMs } from "@exocortex/shared/goals";
 import { LONG_CHRONO_SLEEP_THRESHOLD_MS } from "@exocortex/shared/chrono";
 import { isDetachedTurnError } from "./abort";
 import { createProviderTurnSession, streamMessage } from "./api";
-import { annotateApiMessagesContextTokens, copyContextTokenAttributionsToStoredHistory } from "./context-token-attribution";
 import type { StreamingStopReason } from "./protocol";
 import {
   assertBoundedContextReplay,
@@ -1514,18 +1513,11 @@ async function orchestrateAdmittedAssistantTurn(
       convStore.setStreamingTokens(convId, tokens);
       server.sendToSubscribers(convId, { type: "tokens_update", convId, streamSeq: convStore.nextStreamSeq(convId), tokens, generationThroughput });
     },
-    onContextUpdate(contextTokens, inputMessages) {
+    onContextUpdate(contextTokens) {
+      // Per-message attribution is deliberately not recalibrated here: it has no
+      // reader, and rescaling every message hashed the whole transcript and
+      // rewrote every stored row (and its overflow content) on each round.
       conv.lastContextTokens = contextTokens;
-      if (inputMessages) {
-        annotateApiMessagesContextTokens(inputMessages, contextTokens, conv.provider, conv.model);
-        // Once a checkpoint exists, inputMessages is a compact replay rather
-        // than a positional mirror of the visible transcript.
-        const copied = !conv.activeContext && compactionsThisTurn === 0
-          ? copyContextTokenAttributionsToStoredHistory(conv.messages, inputMessages)
-          : 0;
-        if (copied > 0) convStore.markContextAttributionDirty(convId);
-        log("info", `orchestrator: context token attribution updated for ${copied} persisted history turns (provider=${conv.provider}, model=${conv.model}, total=${contextTokens}, compactReplay=${Boolean(conv.activeContext || compactionsThisTurn > 0)})`);
-      }
       server.sendToSubscribers(convId, { type: "context_update", convId, streamSeq: convStore.nextStreamSeq(convId), contextTokens });
     },
     onProviderCompaction({ trigger, preTokens, postTokens }) {

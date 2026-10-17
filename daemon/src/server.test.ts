@@ -5,10 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DaemonServer, type ConnectedClient } from "./server";
 import type { Command } from "./protocol";
+import { LineSplitter } from "./line-splitter";
 
 function client(): ConnectedClient {
   return {
-    id: "test", buffer: "", capabilities: new Set(), subscriptions: new Set(),
+    id: "test", lines: new LineSplitter(), capabilities: new Set(), subscriptions: new Set(),
     socket: { destroyed: false, write: () => true } as unknown as Socket,
   };
 }
