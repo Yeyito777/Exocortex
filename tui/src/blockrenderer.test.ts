@@ -122,21 +122,23 @@ g(f(x))=
 So the composition has **no limit** at \(0\).`,
     };
     const rendered = renderBlockCached(block, 120, [], [], false);
-    const plain = rendered.lines.map(stripAnsi);
-    expect(plain).toContain("  But knowing only lim_(t → L) g(t) says nothing about g(L). The inner function might equal L repeatedly.");
-    expect(plain).toContain("  Then f(x) → 1 and lim_(t → 1) g(t)=2, but");
-    const definitions = plain.findIndex(line => line.includes("f(x)= ⎧"));
+    const plain = rendered.lines.map(line => stripAnsi(line).replace(/\u00A0/g, " "));
+    expect(plain).toContain("  But knowing only lim_(t→L) g(t) says nothing about g(L). The inner function might equal L repeatedly.");
+    expect(plain).toContain("  Then f(x) → 1 and lim_(t→1) g(t) = 2, but");
+    const definitions = plain.findIndex(line => line.includes("f(x) = ⎧"));
     expect(plain.slice(definitions, definitions + 2)).toEqual([
-      "  f(x)= ⎧ 1, x ≤ 0,      g(t)= ⎧ 0, t=1,",
-      "        ⎩ 1+x, x>0,            ⎩ 2, t ≠ 1.",
+      "    f(x) = ⎧ 1,      x ≤ 0,     g(t) = ⎧ 0,  t = 1,",
+      "           ⎩ 1 + x,  x > 0,            ⎩ 2,  t ≠ 1.",
     ]);
-    expect(rendered.copy?.slice(definitions, definitions + 2)).toEqual(
-      plain.slice(definitions, definitions + 2).map(line => ({ text: line.slice(2), displayStart: 2 })),
-    );
-    const composition = plain.findIndex(line => line.includes("g(f(x))= ⎧"));
+    // Display rows indent by two inside the block's own two-column margin;
+    // a whole-line copy yields the TeX source.
+    expect(rendered.copy?.[definitions]).toMatchObject({ text: plain[definitions].slice(4), displayStart: 4 });
+    expect(rendered.copy?.[definitions]?.source).toStartWith(String.raw`\[` + "\nf(x)=");
+    expect(rendered.copy?.[definitions + 1]).toMatchObject({ text: plain[definitions + 1].slice(4), displayStart: 4, source: null });
+    const composition = plain.findIndex(line => line.includes("g(f(x)) = ⎧"));
     expect(plain.slice(composition, composition + 2)).toEqual([
-      "  g(f(x))= ⎧ 0, x ≤ 0,",
-      "           ⎩ 2, x>0.",
+      "    g(f(x)) = ⎧ 0,  x ≤ 0,",
+      "              ⎩ 2,  x > 0.",
     ]);
     expect(plain.join("\n")).not.toMatch(/[\uE003\uE004]/);
   });
@@ -157,12 +159,13 @@ So the composition has **no limit** at \(0\).`,
 
     expect(rendered.lines.map(stripAnsi)).toEqual([
       "  Triangle inequality gives:",
-      "  |x₁+⋯+xₙ₊₁| ≤ |x₁+⋯+xₙ|+|xₙ₊₁|.",
+      "    |x₁ + ⋯ + xₙ₊₁| ≤ |x₁ + ⋯ + xₙ| + |xₙ₊₁|.",
       "  The missing term is necessary.",
     ]);
     expect(rendered.copy?.[1]).toEqual({
-      text: "|x₁+⋯+xₙ₊₁| ≤ |x₁+⋯+xₙ|+|xₙ₊₁|.",
-      displayStart: 2,
+      text: "|x₁ + ⋯ + xₙ₊₁| ≤ |x₁ + ⋯ + xₙ| + |xₙ₊₁|.",
+      displayStart: 4,
+      source: [String.raw`\[`, String.raw`|x_1+\cdots+x_{n+1}|`, String.raw`\le |x_1+\cdots+x_n|+|x_{n+1}|.`, String.raw`\]`].join("\n"),
     });
   });
 });

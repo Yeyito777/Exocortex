@@ -53,6 +53,12 @@ export interface WrapCopyLine {
   displayStart: number;
   /** Omit this display-only row entirely from yanks/copies. */
   skip?: boolean;
+  /**
+   * Whole-row copies (line, message and visual-line yanks) use this instead
+   * of `text`; `null` omits the row from them. Rendered math sets it so those
+   * copies yield the original TeX.
+   */
+  source?: string | null;
 }
 
 function firstCodePointEnd(text: string, start: number): number {

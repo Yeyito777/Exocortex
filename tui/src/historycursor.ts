@@ -602,6 +602,7 @@ function wholeCopyLine(
 ): string | null {
   const projection = copyLines?.[row] ?? null;
   if (projection?.skip) return null;
+  if (projection?.source !== undefined) return projection.source;
   if (projection) return projection.text;
   return stripAnsi(lines[row] ?? "").trim();
 }

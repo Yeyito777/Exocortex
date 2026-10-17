@@ -175,7 +175,7 @@ describe("markdown and block rendering", () => {
     expect(pendingRenderer.pending).toBe(true);
     expect(pending.images).toBeUndefined();
     // The Unicode text rendering shows until the image is ready.
-    expect(pending.lines.map(stripAnsi).join("\n")).toContain("PS=");
+    expect(pending.lines.map(stripAnsi).join("\n")).toContain("PS = ½Q(P − 10)");
 
     await fake.flush();
     const renderer = createDisplayMathImageRenderer()!;
@@ -186,11 +186,12 @@ describe("markdown and block rendering", () => {
     const image = ready.images![rows[0]]!.image;
     expect(image).toMatchObject({ col: 15, cols: 10, rows: 2, index: 0 });
     expect(ready.lines[rows[0]]).toBe(" ".repeat(15));
-    expect(ready.lines.map(stripAnsi).join("\n")).not.toContain("PS=");
+    expect(ready.lines.map(stripAnsi).join("\n")).not.toContain("PS =");
     expect(ready.lines.map(stripAnsi).join("\n")).toContain("x₁");
     const copied = joinLogicalLines(ready.lines, ready.cont, 0, ready.lines.length - 1, ready.join, ready.copy);
     expect(copied).toContain("$$PS=\\frac12 Q(P-10)$$");
-    expect(copied).toContain("Before x₁ inline.");
+    // Whole-message copies yield inline math as its TeX source too.
+    expect(copied).toContain("Before $x_1$ inline.");
   });
 
   test("multi-line \\[…\\] blocks copy their original source lines", async () => {

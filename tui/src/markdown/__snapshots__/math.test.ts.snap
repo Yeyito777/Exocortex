@@ -1,0 +1,3415 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`real conversation corpus and targeted cases renders every message within 72 columns 1`] = `
+"=== owner example: display math with brace-less fractions and boxed answer
+|Not quite, the new supply is P=Q+10.
+|
+|Substitute into demand:
+|                            229         259
++  Q = 249 − 2(Q + 10) ⇒ Q = ───,    P = ───.
++                             3           3
+|
+|Producer surplus is the triangle above the new supply curve:
+|                     ⎛ 229 ⎞²   ┌─────────┐
++  PS = ½Q(P − 10) = ½⎜ ─── ⎟  ≈ │ 2913.39 │.
++                     ⎝  3  ⎠    └─────────┘
+=== owner example: inline variant
+|Producer surplus: PS = ½Q(P − 10) = ½(229/3)² ≈ 2913.39.
+=== all delimiters
+|Dollar x² + y² = z², slash aₙ → 0, and display:
+|
+|   n      n(n + 1)
++   ∑  i = ────────
++  i=1        2
+|
+|  ∫₀¹ x² dx = ⅓
+|
+|  E = mc²
+|
+|  f(x) = x² + 2x + 1
++       = (x + 1)²
+=== display math mid-line and trailing punctuation
+|Therefore
+|  b + 2b + (2b − 3) = 39 ⇒ b = 8.4
+|so the data are inconsistent.
+|
+|The answer is
+|      −b ± √(b² − 4ac)
++  x = ────────────────.
++             2a
+=== environments
+|  f(x) = ⎧ x²,  x ≥ 0,
++         ⎩ −x,  x < 0.
+|
+|  A = ⎛ 1  2 ⎞,  B = ⎡ a  b  c ⎤
++      ⎝ 3  4 ⎠       ⎣ d  e  f ⎦
+|
+|          ρ
++  ∇ · E = ──
++          ε₀
++
++                     ∂E
++  ∇ × B = μ₀J + μ₀ε₀ ──
++                     ∂t
+|
+|Inline matrix (a, b; c, d) and cases |x| = {x, x ≥ 0; −x, x < 0}.
+=== brace-less arguments
+|Forms: ½, ½, ½, a/b, π/2, √2, √x, x², x²3, xᵢj, xᵢⱼ, e^(iπ) + 1 = 0, ¾,
++(a + b)/c.
+=== fractions need parentheses
+|(a + b)/c, 1/(2π), C(A/T), (v − s)/v, ((v − s)/v)², (x/y)², max(1, L)/q,
++q/max(1, L), 7/12, 2⅓.
+=== operators, relations and spacing
+|a · b × c, x ≈ y, a ≤ b ≥ c ≠ d, ±1, ∞, f: A → B, P ⇒ Q ⇔ R, 1,000,
++a b c d e, 1, 2, …, n, x₁ + ⋯ + xₙ, −x, a − b, n!, f′(x), f″(x), 90°,
++¬(P ∧ Q) ⇔ (¬P ∨ ¬Q), x ∉ A, a mod n, a ≡ b (mod n).
+=== big operators with limits
+|Inline ∑ᵢ₌₁ⁿ xᵢ, ∏ₖ₌₁ᴺ k, ∫₀^∞ e⁻ˣ dx, lim_(x→0) (sin x)/x = 1, maxᵢ aᵢ.
+|
+|   n        ⎛  n       ⎞²
++   ∑  xᵢ² ≤ ⎜  ∑  |xᵢ| ⎟
++  i=1       ⎝ i=1      ⎠
+|
+|      ⎛     1 ⎞ⁿ
++  lim ⎜ 1 + ─ ⎟  = e
++  n→∞ ⎝     n ⎠
+|
+|  ∫_(−∞)^∞ e^(−x²) dx = √π
+=== text and font commands
+|if x > 0, dx, rank(A), clamp_([0,1])(x), ℝⁿ, ℕ, E[X], β, v, ℒ, λ_extra,
++E_(net,30), θ̂, x̄, v⃗, A̅B̅, x̃.
+=== scripts without Unicode forms
+|u^0.2547, e^(1.691x(t)), Wᵢ^Q, Kᵀ, xⁿ⁺¹, aₙ₋₁, 2⁻ᵏ, x^(y₁+α), σ_post²,
++x∗, A⁻¹, f⁽ⁿ⁾(x).
+=== unknown commands and malformed input
+|Unknown x + unknown y, foo, 1, x, ∛x, ⁿ√x, (½, x + y, x = 1 (3).
+=== prices are not math
+|It costs $5 and at most $10 today. Fall tuition is $33,055 and Winter is
++$33,055.
+|Pay $100k and $60k; Prices: $5-$10, $20/$30. The fee is $5 and the
++rebate is $2.
+|Shell: run echo $$ or kill -TERM $$, and use x² for squares.
+=== code spans and blocks are not math
+|Literal \\(x^2\\) and $y_1$ stay; math x² renders.
+|
+|▎ tex
+|▎ \\[
+|▎ x^2
+|▎ \\]
+|▎ $a$ and $$b$$
+|
+|▎ bash
+|▎ PID=$$
+|▎ echo "$HOME" "$PATH"
+|
+|After the block y².
+=== math across wrapped lines, lists, tables and blockquotes
+|A long sentence whose inline math ∑ₖ₌₁ⁿ 1/k² < π²/6 has to wrap
++somewhere in the middle of the paragraph at narrow widths.
+|
+|Inline math across a hard newline a + b = c still renders.
+|
+|- Item with x ∈ ℝ:
+|    x² ≥ 0
+|- Item two y = ½
+|
+|┌──────────┬──────────────┐
+|│ Quantity │ Formula      │
+|├──────────┼──────────────┤
+|│ Area     │ πr²          │
+|│ Mean     │ x̄ = 1/n ∑ xᵢ │
+|└──────────┴──────────────┘
+|
+|> Quoted E = mc² and
+|>   a² + b² = c²
+=== real-world display formulas
+|                              ⎛ QKᵀ ⎞
++  Attention(Q, K, V) = softmax⎜ ─── ⎟V
++                              ⎝ √dₖ ⎠
+|
+|          q                                        u^0.25
++  u = ─────────,    P(maker response) = ────────────────────────────
++      max(1, L)                         u^0.25 + 0.42 max(1, a)^0.30
+|
+|  3.4 GFLOPs × 4 × 3 ≈ 41 GFLOPs/sample
+|
+|  C = S [b + (1 − a)] = S (1 − book spread)
+|
+|  O(P + K + R) = O(H)
+=== 1789573187919-fn27l8#1 (gpt-6-astra)
+|Your truth value and reasoning are correct! Taking x = 5 gives
+|  (x − 4)(y + 2) = y + 2
+|for every real y.
+|
+|Your negation has the quantifiers right, but you also need to change =
++to ≠:
+|
+|Negation: For every x ∈ ℝ, there exists y ∈ ℝ such that
+|  xy + 2x − 4y − 8 ≠ y + 2.
+|
+|Original statement: True, with x = 5.
+=== 1789573187919-fn27l8#3 (gpt-6-astra)
+|Yes—your negation is correct, and the original statement is
++true.
+|
+|For any x > 0, choose a natural number
+|      1
++  n > ─.
++      x
+|Then 0 < 1/n < x. Natural numbers are unbounded, so such an n always
++exists.
+|
+|Your proposed n = 1/x has two issues: it might not be a natural number,
++and it gives 1/n = x, whereas you need strictly less.
+|
+|About 0.000… “eventually followed by a 1”:
+|- If the 1 occurs at a finite decimal position, the number is positive,
++and a sufficiently large n works.
+|- If every decimal digit is 0, the number is just 0, which is excluded
++by x > 0. There’s no position “after infinitely many zeros.”
+|
+|That’s different from incomputability; even for an incomputable positive
++real, the statement holds.
+=== 1789573187919-fn27l8#5 (gpt-6-astra)
+|Correct! Just make the proof slightly clearer by establishing x = 1
++before concluding x ≤ a:
+|
+|My set: A = {1}.
+|
+|Proof. Take a = 2. For any x ∈ A, we have x = 1. Since 1 ≤ 2, we have
++x ≤ a. Thus, A is excited.
+|
+|Follow-up: a is not unique (you wrote uppercase A): any a ≥ 1 works.
++Yes, the allowable choices of a depend on A, because a must be at least
++as large as every element of A.
+=== 1789573187919-fn27l8#7 (gpt-6-astra)
+|Yes, correct! A slightly cleaner proof:
+|
+|Take a = 1 ∈ A. For any x ∈ A = {1}, we have x = 1, so x ≤ a. Thus,
++A is happy.
+|
+|And yes, a is unique—in fact, this holds for every happy set: if
++a, b both satisfy the definition, then a ≤ b and b ≤ a, so a = b.
+|
+|For the hint: a does not depend on x; one fixed a must work for
++every x ∈ A.
+=== 1789573187919-fn27l8#9 (gpt-6-astra)
+|Exactly—a depends on the set A, but not on the individual x ∈ A.
++Those are compatible statements.
+|
+|You choose one a for the whole set, and that same a must work for every
++element x.
+=== 1783542831795-movtru#1 (gpt-5.5)
+|- Initial marbles: 3 × (7 + 5) = 36
+|- Blue marbles: 3 × 5 = 15
+|- Half of blue marbles: 15/2 = 7.5
+|- After giving those away and buying 4 red: 36 − 7.5 + 4 = 32.5
+|
+|Answer: 32.5 marbles arithmetically, but exactly half of 15 marbles
++isn’t possible with whole marbles.
+=== 1783546090447-3waupy#1 (gpt-5.5)
+|No whole-number solution.
+|
+|Let blue = b. Then red = 2b, green = 2b − 3.
+|
+|Total: 
+|  b + 2b + (2b − 3) = 39 ⇒ 5b = 42 ⇒ b = 8.4
+|
+|So the conditions are inconsistent for actual balls.
+=== 1784503528796-6ewq2p#1 (gpt-5.6-sol)
+|## Findings
+|
+|1. High — common currency ranges are misparsed as math and lose dollar
++signs. 
+|findDollarClose pairs the next $, while likelyDollarMath accepts almost
++any non-numeric content containing an alphanumeric character. Thus:
+|- Range: $5-$10. → Range: 5-10.
+|- Basic ($5) / Pro ($10) → Basic (5) / Pro (10)
+|This changes both displayed and copied meaning. The existing tests only
++cover amounts separated by whitespace, which happen to evade the
++heuristic. 
+|Refs: tui/src/markdown/math.ts:388-408,
++tui/src/markdown/math.ts:441-453, tui/src/markdown/math.test.ts:64-69.
+|
+|2. Medium — hard newlines are hidden from the dollar parser, enabling
++invalid multiline spans and currency corruption. 
+|likelyDollarMath explicitly rejects \\n, but renderInlineMathChunks
++replaces physical newlines with a private-use character before scanning.
++Consequently:
+|- ["$5", "$10"] → ["5", "10"]
+|- ["The variable is $x", "and then y$."] is incorrectly rendered as
++one math span.
+|This contradicts the parser’s intended single-line-dollar rule. 
+|Refs: tui/src/markdown/math.ts:388-393,
++tui/src/markdown/math.ts:460-480.
+|
+|3. Medium — display math immediately following prose is not recognized
++as a display block. 
+|Display blocks are checked only at the outer loop’s current line; the
++paragraph collector does not stop when it encounters a display opener.
++For:
+|▎ text
+|▎ intro
+|▎ \\[
+|▎ \\begin{pmatrix}a&b\\\\c&d\\end{pmatrix}
+|▎ \\]
+|the output contains blank delimiter rows and compact inline (a b; c d)
++instead of the structural two-row matrix and copy projections. A blank
++line before \\[ makes it work, but LaTeX display delimiters should not
++depend on that. 
+|Refs: tui/src/markdown/wordwrap.ts:106-118,
++tui/src/markdown/wordwrap.ts:143-158.
+|
+|4. Medium — malformed delimiter input has quadratic scanning behavior
++and can freeze the synchronous TUI renderer. 
+|Every unclosed \\( invokes a scan to the end, then the outer scanner
++advances only one character. A 100,000-character string of repeated
++unclosed \\( took about 4.1 seconds locally; cost grows
++quadratically. Streaming or resizing can trigger repeated renders. 
+|Refs: tui/src/markdown/math.ts:359-365,
++tui/src/markdown/math.ts:430-439.
+|
+|5. Medium — raw delimiter splitting breaks valid mathematical content
++in tables and environments.
+|- Table cells are split on every literal | before math parsing, so |
++$x|y$ | becomes two cells and the math remains unrendered.
+|- Matrices split on every & before escaped ampersands are protected, so
++\\text{A \\& B} is treated as multiple entries. Display matrices also do
++not compute/pad column widths.
+|Refs: tui/src/markdown/tables.ts:37-43,
++tui/src/markdown/math.ts:278-309, tui/src/markdown/math.ts:322-327.
+|
+|6. Medium — malformed and unsupported TeX is silently rewritten rather
++than safely preserved. 
+|The try/catch only helps if the dependency throws. With latexCheck:
++false, it tolerates malformed input and strips grouping:
+|- \\(\\frac{{{{\\) → \\frac
+|- \\(x+\\unknown{y}\\) → x+\\unknowny
+|The test named “preserves unknown commands and survives malformed input”
++merely checks that a substring remains and that no exception occurs; it
++does not check preservation or readable fallback. 
+|Refs: tui/src/markdown/math.ts:313-350,
++tui/src/markdown/math.test.ts:52-55.
+|
+|7. Low — display wrapping can split a wide supplementary code point
++into invalid UTF-16 halves at width 1. 
+|If sliceByWidth cannot fit a width-2 grapheme, the fallback uses
++rest[0]. For renderDisplayMath("😀x", 1), the emoji becomes two
++lone-surrogate rows. Narrow/wide/combining copy behavior is untested. 
+|Refs: tui/src/markdown/math.ts:521-533.
+|
+|## Dependency risk
+|
+|tui/package.json:13 adds exact-pinned @devhub-io/latex-to-unicode@2.0.1.
++Positives: it is small, MIT-licensed, has no runtime dependencies or
++install scripts, and the version is exact. However, it was first
++published only six days ago, has one maintainer, and the repository
++tracks no lockfile/integrity record. That is a meaningful
++maintenance/supply-chain risk for a core rendering path.
+|
+|## Strengths
+|
+|- Correctly protects supported fenced and inline code spans, including
++multiline inline-code spans.
+|- Limits rendering to assistant markdown mode.
+|- Uses terminal-column-aware width helpers and provides copy projections
++for display math.
+|- Covers common logic symbols, scripts, roots, fractions, environments,
++code protection, tables, and basic currency examples.
+|- Conversion exceptions are contained rather than crashing the
++conversation.
+|
+|## Validation and readiness
+|
+|- bun test: 635 passed, 0 failed.
+|- Math/word-wrap subset: 23 passed, 0 failed.
+|- git diff --check: clean.
+|- Typecheck fails on four historycursor.test.ts errors, but the same
++failures occur on local main, so they are not introduced by this branch.
+|
+|Not ready to merge. The currency corruption is a merge blocker. The
++multiline-dollar, display-block boundary, and quadratic malformed-input
++cases should also be fixed and covered by regression tests before
++merging.
+=== 1784566665055-zjr3js#5 (gpt-5.6-sol)
+|## Findings
+|
+|### 1. High — system-instructions offset can oscillate, leaving panel
++geometry inconsistent with the composed viewport
+|
+|Locations: render.ts:802-842, render.ts:1283-1320
+|
+|The bounded compositor interprets panelTopOffset as a canonical prefix
++beginning at viewStart:
+|
+|▎ ts
+|▎ const instructions = canonicalViewportRows(
+|▎   allLines,
+|▎   viewStart,
+|▎   viewStart + instructionRows,
+|▎ );
+|
+|But the outer loop recalculates the offset from the first row after
++top clipping:
+|
+|▎ ts
+|▎ const topLineIndex = viewportRows[0]?.lineIndex ?? viewStart;
+|▎ const nextOffset =
+|▎   visibleSystemInstructionsHeight(lineAnchors, topLineIndex, ...);
+|
+|If clipping removes ordinary history and exposes a later
++system-instructions box, the next attempt sets panelTopOffset to that
++box’s height. The compositor then incorrectly treats the first P
++canonical rows at the original viewStart as instructions. This can
++alternate between P = 0 and P = instruction height.
+|
+|Because the outer loop ends after three attempts even when the last
++attempt changes the offset, viewportRows can have been composed with one
++offset while taskPanelTopOffset and taskPanelRect use another.
+|
+|I reproduced this with:
+|
+|- cols = 120, rows = 30
+|- one assistant row
+|- system_instructions: "SYSTEM BOX HERE"
+|- thirteen subsequent short assistant rows
+|- 27 tasks
+|
+|The resulting state had:
+|
+|- taskPanelRect.top === 6, implying a three-row instructions prefix
+|- the first three viewport rows all mapping to the same
++system_instructions_top canonical line, meaning that border was actually
++narrow-wrapped
+|- the preceding assistant row clipped
+|
+|Thus the instruction box was not full-width even though the panel was
++positioned below it. This also causes repeated recomposition on
++subsequent uncached renders.
+|
+|The bounded layout should resolve the actual source start and
++instructions prefix together, or eliminate the outer feedback loop. At
++minimum, it must not update the panel offset after the final allowed
++attempt without recomposing with that offset.
+|
+|────────────────────────────────────────
+|
+|### 2. High for the performance objective — composition is not actually
++O(viewport height) for long user messages
+|
+|Locations: render.ts:592-645, called twice at render.ts:820-839
+|
+|For every user group touched by the narrow probe, composeFixedWidthRows:
+|
+|1. Scans backward to the beginning of the complete owner group.
+|2. Scans forward to its complete end.
+|3. Runs userMessageTextRowOffsets over the complete user text.
+|4. Runs the same work again during suffix recomposition.
+|
+|Therefore, if a user message contains M canonical rows but only 13 touch
++the viewport, cold bounded composition remains Θ(M), not Θ(H).
++userMessageTextRowOffsets also allocates offsets for the complete
++message.
+|
+|The change to a monotone canonicalLocal pointer correctly removes one
++previous quadratic mapping cost, but group discovery and full-text flow
++indexing remain unbounded by viewport height.
+|
+|A user-flow index needs to be cached by owner/canonical width, or
++canonical anchors need to carry their UserMessageFlowCursor so the
++viewport can begin at an arbitrary canonical row without rescanning the
++entire owner. Without that, this implementation removes the fixed-point
++multiplier but does not meet the stated complexity guarantee.
+|
+|────────────────────────────────────────
+|
+|### 3. Medium — the full-width portion of a user bubble bypasses suffix
++recomposition and can have incorrect bubble geometry
+|
+|Location: render.ts:841
+|
+|The narrow suffix is recomposed adaptively, but the full tail is copied
++directly:
+|
+|▎ ts
+|▎ const fullRows =
+|▎   canonicalViewportRows(allLines, fullStartIndex, endLineIndex);
+|
+|Canonical user rows were styled by renderUserMessage using the maximum
++content width of the whole message. The previous adaptive renderer
++calculates bubble width separately for each width run using only the
++rows in that run.
+|
+|Consequently, if an older/discarded portion of a user message contains a
++long row while the visible full-width tail contains only short hard
++lines, the visible tail remains unnecessarily wide. A proper full-width
++suffix composition from fullStartIndex to endLineIndex would produce the
++same canonical row count while sizing the bubble from the visible
++full-width run.
+|
+|This does not lose text—the new continuity test correctly covers source
++ordering—but it is a visual behavior regression for user and queued-user
++bubbles spanning the narrow/full boundary. The current test uses a long
++single-line word flow, where the full tail naturally contains near-full
++rows and cannot expose this case.
+|
+|A targeted test should use:
+|
+|▎ text
+|▎ <long hard line producing many rows>
+|▎ short
+|▎ tiny
+|▎ x
+|▎ ...
+|
+|with the final short hard lines occupying the full tail.
+|
+|────────────────────────────────────────
+|
+|### 4. Low — ANSI sourceRemainder is visually stable but not a true
++suffix of the canonical ANSI source
+|
+|Locations: render.ts:570-576, render.ts:685-714
+|
+|wrappedRemainders rebuilds source suffixes from wrapAnsiLine’s output
++chunks:
+|
+|▎ ts
+|▎ remainder =
+|▎   line[index] + join[index + 1] + remainder;
+|
+|Those chunks already contain synthetic resets and active-SGR prefixes
++inserted at wrap boundaries. When the selected probe row is recomposed,
++wrapping can add further empty active/reset pairs. For example, a suffix
++ending in styled text gains sequences equivalent to:
+|
+|▎ text
+|▎ ... \\x1b[0m\\x1b[36m\\x1b[0m
+|
+|The visible text, startCol, joins, and styling remained equivalent in
++the cases I checked, so this is low severity. However, it violates the
++documented meaning of sourceRemainder as an ANSI-preserving remainder of
++the canonical line and makes suffix recomposition non-idempotent at the
++byte level.
+|
+|Prefer carrying the original ANSI source offset/state or a wrap-produced
++rest value rather than reconstructing source from rendered chunks.
+|
+|## Areas that appear correct
+|
+|- startCol accounting includes omitted soft-wrap joins correctly.
+|- Continuation indentation reserves width before wrapping and is
++preserved when recomposing from a clipped assistant continuation.
+|- The monotone canonicalLocal change is correct and removes the prior
++repeated scan from zero.
+|- User-flow suffix recomposition correctly uses UserMessageFlowCursor;
++the new long-user test verifies contiguous source text across the
++boundary.
+|- Hard breaks and empty lines remained intact in an additional
++overflowing-user case I exercised.
+|- Short ordinary histories remain top-aligned when direct composition
++fits.
+|- Canonical scroll state remains independent of presentation reflow.
+|
+|## Verification
+|
+|- render.test.ts and ansiwrap.test.ts: 25 passed, 0 failed
+|- tsc --noEmit still reports four pre-existing historycursor.test.ts
++type errors unrelated to this change.
+|- No files were edited.
+=== 1784566665055-zjr3js#7 (gpt-5.6-sol)
+|## Final check
+|
+|- Finding 1 — resolved. instructionStartIndex is included in
++composition/cache state, revealed instruction boxes are copied from
++their actual canonical location, and the outer loop stabilizes against
++both offset and source index. The prior reproduction no longer shows
++mismatched panel geometry or duplicated narrow instruction rows. The
++regression test covers it.
+|
+|- Finding 3 — resolved. The full tail now uses
++composeFixedWidthRows, so user/queued bubbles receive semantic suffix
++recomposition and width-run-local bubble sizing rather than canonical
++whole-message geometry.
+|
+|- Finding 2 — improved but not fully resolved. Cached cursor ranges
++remove the full group-boundary scans and repeated
++userMessageTextRowOffsets work. However, every composeSemanticUserRows
++call invokes renderAdaptiveUserMessageRows(owner.text, ...), which
++still:
+|- runs sanitizeUntrustedText over the complete owner text, and
+|- splits the complete text into hard lines.
+|
+|A long user message can therefore still cost O(whole message length)
++during probe, narrow recomposition, and full-tail recomposition, even
++when only O(H) source rows are needed. This is a medium performance
++issue relative to the strict viewport-height goal. Caching sanitized
++hard lines or passing a cached flow document/range into the adaptive
++renderer would complete the fix.
+|
+|I found no new high/medium correctness bug in the current diff.
+|
+|Validation: render.test.ts, ansiwrap.test.ts, and conversation.test.ts
++all pass — 67 tests, 0 failures. No files edited.
+=== 1784499348103-9orxqs#4 (gpt-5.6-sol)
+|Implemented in the requested worktree.
+|
+|- Worktree: /home/yeyito/Workspace/exocortex/.worktrees/math-rendering
+|- Branch: math-rendering
+|- Commit: b899f0b Render LaTeX math in the TUI
+|
+|### Supported rendering
+|
+|- Inline math: \\(P\\land Q\\) → P ∧ Q
+|- Dollar-delimited math: $x^2 + y_1$ → x² + y₁
+|- Centered display math using \\[...\\] or $$...$$
+|- Logic, quantifiers, relations, Greek letters, arrows,
++superscripts/subscripts
+|- Fractions, roots, blackboard-bold sets, accents, binomial notation
+|- Basic matrices, cases, and aligned equations
+|- Math inside Markdown tables
+|
+|It also:
+|
+|- leaves fenced and inline code untouched, including code spans crossing
++lines;
+|- avoids interpreting currency such as $5 and $10 or $33,055 as math;
+|- falls back safely for malformed or unsupported notation;
+|- preserves readable Unicode when copying display equations.
+|
+|### Validation
+|
+|- 622 TUI tests passed
+|- Production TUI bundle completed successfully
+|- Manually tested with xenv + exotest; the referenced logic notation
++rendered correctly while currency remained unchanged
+|- git diff --check passed and the worktree is clean
+|
+|The existing TUI typecheck still reports four unrelated, pre-existing
++narrowing errors in historycursor.test.ts; this branch does not modify
++that file.
+|
+|I have not merged or cleaned the worktree yet. When you’re
++satisfied, tell me and I’ll merge it back to main and run the requested
++cleanup.
+=== 1784499348103-9orxqs#12 (gpt-5.6-sol)
+|This is primarily our rendering/parsing issue, not poor mathematical
++notation from the AI.
+|
+|The AI returned valid, reasonably structured LaTeX:
+|
+|▎ latex
+|▎ \\[
+|▎ \\forall x\\exists y\\Big(
+|▎ (y\\times y\\times y=x)
+|▎ \\land
+|▎ \\forall z\\big(
+|▎ (z\\times z\\times z=x)\\Rightarrow(z=y)
+|▎ \\big)
+|▎ \\Big).
+|▎ \\]
+|
+|In a normal KaTeX/MathJax renderer, those source newlines are treated as
++ordinary whitespace. It would appear as one coherent equation with
++properly sized parentheses.
+|
+|Our terminal renderer currently:
+|
+|1. preserves every physical newline inside display math;
+|2. removes layout commands such as \\Big and \\big;
+|3. renders each remaining source line separately.
+|
+|That leaves isolated operators and parentheses, producing the awkward
++result you noticed.
+|
+|The correct fix is to collapse source newlines into spaces for
++ordinary display equations, then let Exocortex wrap the resulting
++expression naturally to the available width. We should preserve explicit
++line structure only inside environments such as aligned, matrix, and
++cases.
+|
+|That would make this render approximately as:
+|
+|▎ text
+|▎ ∀ x∃ y((y × y × y=x) ∧ ∀ z((z × z × z=x) ⇒ (z=y))).
+|
+|So the notation itself is good; our renderer needs one more layout rule.
+=== 1784499348103-9orxqs#18 (gpt-5.6-sol)
+|## Local-main merge
+|
+|Merged local main into math-rendering successfully.
+|
+|- Merge commit: b98625e
+|- Local main: 523d624
+|- Conflicts: None
+|- Worktree status: Clean
+|- Merged into main: No — stopped as requested
+|- Worktree daemon and xenv are stopped.
+|
+|## Validation
+|
+|- TUI suite: 635 passed, 0 failed
+|- Post-merge xenv + exotest showcase check passed
+|- git diff --check: clean
+|- Full repository suite: 1,368 passed, 1 unrelated failure
+|- The failure is the environment-sensitive DeepSeek authentication test
++detecting shared credentials.
+|- Typecheck still reports four pre-existing narrowing errors in
++historycursor.test.ts; the same errors occur on local main.
+|
+|## Code assessment
+|
+|### Merge blocker: currency corruption
+|
+|The dollar-delimiter heuristic can misinterpret common currency ranges
++as math and remove their dollar signs:
+|
+|▎ text
+|▎ Range: $5-$10.            → Range: 5-10.
+|▎ Basic ($5) / Pro ($10)    → Basic (5) / Pro (10)
+|
+|This changes the meaning of rendered and copied text, so I recommend
++fixing it before merging.
+|
+|### Other issues worth addressing
+|
+|1. Dollar spans may cross hard newlines
+|- Physical newlines are temporarily replaced with private-use separators
++for multiline Markdown parsing.
+|- The dollar parser can consequently pair dollar signs from separate
++lines, even though $...$ should remain single-line.
+|
+|2. Display math immediately following prose
+|- Without a blank line before \\[, paragraph collection can absorb the
++display block and render it as inline math.
+|- The paragraph collector should stop when the next physical line begins
++a display-math block.
+|
+|3. Quadratic malformed-input scanning
+|- Repeated unclosed \\( delimiters cause repeated scans to the end of the
++input.
+|- Large malformed or streaming content could temporarily freeze the
++synchronous renderer.
+|
+|4. Raw table/matrix delimiter splitting
+|- Literal | inside table-cell math can be mistaken for a Markdown column
++separator.
+|- Escaped \\& inside matrix text can be mistaken for a matrix cell
++separator.
+|- Matrix columns with unequal widths are not padded/aligned.
+|
+|5. Malformed TeX fallback is lossy
+|- The dependency often tolerates malformed input rather than throwing,
++so our catch fallback does not activate.
+|- Unknown-command braces can be silently removed instead of preserving
++the original expression.
+|
+|6. Very narrow rendering edge case
+|- At a one-column width, a width-two supplementary Unicode character
++such as an emoji can be split into invalid UTF-16 surrogate rows.
+|
+|### Dependency assessment
+|
+|@devhub-io/latex-to-unicode@2.0.1 is:
+|
+|- exact-version pinned;
+|- MIT-licensed;
+|- small;
+|- dependency-free;
+|- free of install scripts.
+|
+|However, it is only several days old, has a very small maintenance
++footprint, and this repository intentionally tracks no
++lockfile/integrity record. That creates a moderate maintenance and
++supply-chain risk.
+|
+|## Strengths
+|
+|- The showcased logical notation now renders clearly.
+|- Display math is white and left-aligned as requested.
+|- Pretty-printed ordinary display math is collapsed correctly.
+|- Matrices, cases, and aligned environments retain intentional rows.
+|- Inline and fenced code protection is well-covered.
+|- Common symbols, quantifiers, scripts, roots, fractions, and Greek
++letters work.
+|- Terminal-width measurement and display-math copy projections are
++integrated correctly.
+|- Rendering errors are contained rather than crashing the conversation.
+|
+|## Recommendation
+|
+|Not ready to merge into main yet. The currency corruption is a
++definite blocker. I would also fix multiline dollar pairing,
++display-block boundaries, and malformed-input performance before
++requesting final merge approval.
+=== 1780228118264-soznne#1 (gpt-5.5)
+|The paper does not explicitly report training FLOPs for
++LeWorldModel. I checked the PDF/arXiv text: it gives architecture, batch
++size, epochs, datasets, and hardware, but no “we trained for X FLOPs”
++number.
+|
+|What it does state:
+|
+|- LeWM has ~15M parameters
+|- Encoder: ViT-Tiny, patch size 14, 12 layers, hidden dim 192, ~5M
++params
+|- Predictor: transformer, 6 layers, ~10M params
+|- Training: batch size 128
+|- Sequence/subtrajectory: 4 frames, each 224×224
+|- Frame skip: 5
+|- Trained for 10 epochs
+|- Hardware: single NVIDIA L40S GPU
+|- Abstract says trainable “in a few hours”
+|
+|Your local GPU appears to be a Sapphire Radeon RX 5700 XT 8GB.
+|
+|## My best FLOP estimate
+|
+|Using the architecture and dataset details, a reasonable
++training-compute estimate is:
+|
+|### Per 4-frame training sample
+|
+|A ViT-Tiny forward pass at 224×224 with 14×14 patches is roughly 3.4
++GFLOPs per image. Training forward+backward is about 3× forward,
++and each sample has 4 frames:
+|
+|  3.4 GFLOPs × 4 × 3 ≈ 41 GFLOPs/sample
+|
+|The predictor is much smaller in compute because it operates on only a
++few latent tokens, so I’d round this to about:
+|
+|  ┌──────────────────────────────────┐
++  │ 40–45 GFLOPs per training sample │
++  └──────────────────────────────────┘
+|
+|### PushT training run
+|
+|PushT dataset in the paper:
+|
+|- 20,000 episodes
+|- Average length 196 env steps
+|- Frame skip 5 → about 39 latent frames/episode
+|- 4-frame windows → about 36 usable windows/episode
+|- 10 epochs
+|
+|Approximate samples:
+|
+|  20,000 × 36 × 10 ≈ 7.2M samples
+|
+|Total training FLOPs:
+|
+|  7.2M × 41 GFLOPs ≈ 3.0 × 10¹⁷ FLOPs
+|
+|So for one LeWM run on PushT:
+|
+|  ┌───────────────────────────────┐
++  │ ≈ 3 × 10¹⁷ FLOPs ≈ 0.3 EFLOPs │
++  └───────────────────────────────┘
+|
+|Across the four main environments in the paper, one training run each is
++roughly:
+|
+|  ┌──────────────────┐
++  │ ≈ 0.6–0.7 EFLOPs │
++  └──────────────────┘
+|
+|## Time on your RX 5700 XT
+|
+|Your RX 5700 XT has roughly:
+|
+|- FP32 peak: 9.75 TFLOPs
+|- FP16 peak: 19.5 TFLOPs
+|- VRAM: 8GB
+|
+|For the estimated 0.3 EFLOPs PushT run:
+|
+|### Theoretical best case
+|
+|At FP16 peak:
+|
+|  3 × 10¹⁷/19.5 × 10¹² ≈ 15,400 s ≈ 4.3 hours
+|
+|At FP32 peak:
+|
+|  3 × 10¹⁷/9.75 × 10¹² ≈ 30,800 s ≈ 8.6 hours
+|
+|So, absolute theoretical lower bound:
+|
+|  ┌─────────────────────────────────────┐
++  │ ≈ 4–9 hours for one PushT-scale run │
++  └─────────────────────────────────────┘
+|
+|### More realistic
+|
+|Consumer AMD GPU training will not hit peak. Also, RX 5700 XT / RDNA1
++has weak/awkward ML software support compared with an NVIDIA L40S. If
++you get 20–35% effective utilization, then:
+|
+|  ┌────────────────────────────────────────────┐
++  │ ≈ 12–40 hours for one PushT-scale LeWM run │
++  └────────────────────────────────────────────┘
+|
+|For all four environments:
+|
+|  ┌────────────────────────────┐
++  │ ≈ 1.5–4 days realistically │
++  └────────────────────────────┘
+|
+|Possibly longer if ROCm/PyTorch support gives you trouble or if batch
++size 128 does not fit in 8GB VRAM.
+|
+|## Alternative interpretation: matching their L40S wall-clock compute
+|
+|If instead you interpret “how many FLOPs they used” as “L40S peak FLOPs
++× a few hours,” then the number is much larger. NVIDIA L40S peak FP16
++tensor throughput is about 733 TFLOPs. If “a few hours” means 3–5
++hours:
+|
+|  733 × 10¹² × 3–5 h ≈ 7.9–13.2 EFLOPs
+|
+|Your RX 5700 XT at 19.5 TFLOPs FP16 would need:
+|
+|  ┌─────────────────────────────────────────┐
++  │ ≈ 4.7–7.8 days at theoretical FP16 peak │
++  └─────────────────────────────────────────┘
+|
+|Realistically, perhaps:
+|
+|  ┌───────────────┐
++  │ ≈ 1–3 + weeks │
++  └───────────────┘
+|
+|But I think this is a less meaningful estimate because the L40S almost
++certainly was not running at FP16 tensor-core peak for this small
++15M-parameter ViT-style model.
+|
+|## Bottom line
+|
+|Best estimate from the paper’s actual training setup:
+|
+|  One LeWorldModel training run:  ∼ 0.1–0.3 EFLOPs depending on dataset
+|
+|For the main PushT setup:
+|
+|  ┌──────────────┐
++  │ ∼ 0.3 EFLOPs │
++  └──────────────┘
+|
+|On your RX 5700 XT:
+|
+|  ┌────────────────────────┐
++  │ Theoretical: 4–9 hours │
++  └────────────────────────┘
+|
+|  ┌───────────────────────────────────────────────┐
++  │ Realistic: 12–40 hours for one comparable run │
++  └───────────────────────────────────────────────┘
+|
+|If you wanted to reproduce all main environment runs, expect more like:
+|
+|  ┌───────────────────────────────────────────────────────────────────┐
++  │ 1.5–4 days, maybe longer due to AMD/ROCm and 8GB VRAM constraints │
++  └───────────────────────────────────────────────────────────────────┘
+=== 1779056231816-wg384n#53 (gpt-5.5)
+|Yes, I agree with the UX direction.
+|
+|Conceptually, a context summary is assistant-authored compressed
++memory, not a real user turn. So the current persisted-history shape:
+|
+|▎ text
+|▎ user: [Summary of turns A–B]
+|▎ assistant: <summary>
+|
+|is clunky. It was probably done because it gives the model an explicit
++header in the provider transcript, but UX-wise it is weird and creates a
++fake user message.
+|
+|I’d prefer a unified summary representation:
+|
+|▎ text
+|▎ assistant:
+|▎   metadata.kind = "context_summary"
+|▎   metadata.summaryOf = { start, end, scope? }
+|▎   content = <summary text>
+|
+|Rendered as an AI message with a header:
+|
+|▎ text
+|▎ Summary of turns 123–180
+|▎ <summary text>
+|
+|For current/in-progress summaries:
+|
+|▎ text
+|▎ Summary of in-progress turns 900–912
+|▎ <summary text>
+|
+|or maybe same wording if we don’t care to distinguish:
+|
+|▎ text
+|▎ Summary of turns 900–912
+|▎ <summary text>
+|
+|## Why this is better
+|
+|- No fake user message.
+|- Persisted-history and in-progress summaries render the same way.
+|- The model still sees the summary as assistant-authored content.
+|- The UI can style it as an AI summary block, not dim system text.
+|- It avoids the weird [Summary of turns] / assistant-pair split.
+|- It reduces message count: one replacement turn instead of two for
++persisted summaries.
+|
+|## One caveat
+|
+|We need the header to remain model-visible somehow.
+|
+|If we only make the header a UI-only field and send just the summary
++text to the model, the model loses the boundary information. So I’d
++either:
+|
+|1. keep the header in the assistant text content:
+|
+|▎ text
+|▎ [Summary of turns 123–180]
+|▎ <summary>
+|
+|and have TUI render that header specially, or
+|
+|2. add metadata and make provider serialization include a prefix.
+|
+|Option 1 is simpler and safer.
+|
+|## Implementation shape I’d choose
+|
+|For both persisted and current summarize replacements, create a single
++assistant message:
+|
+|▎ ts
+|▎ {
+|▎   role: "assistant",
+|▎   content: \`[Summary of turns \${start}–\${end}]\\n\${summaryText}\`,
+|▎   metadata: {
+|▎     system: true,
+|▎     kind: "context_summary",
+|▎     ...
+|▎   }
+|▎ }
+|
+|Actually, I would not set system: true if that makes the TUI render it
++as a system notice. Instead, we may want something like:
+|
+|▎ ts
+|▎ metadata: {
+|▎   kind: "context_summary",
+|▎   summaryOf: { start, end, scope }
+|▎ }
+|
+|But MessageMetadata currently has only loose kind?: string, so adding
++typed optional metadata fields may be worth it.
+|
+|Alternatively, keep metadata normal/null and rely on the text prefix:
+|
+|▎ text
+|▎ [Summary of turns A–B]
+|▎ ...
+|
+|Then update display rendering to detect this prefix inside assistant
++text and render it with a summary header. That avoids changing schema.
+|
+|## My recommendation
+|
+|Do this:
+|
+|▎ text
+|▎ assistant message only
+|▎ content:
+|▎   [Summary of turns A–B]
+|▎   <summary text>
+|▎ metadata.kind = "context_summary"
+|
+|For in-progress:
+|
+|▎ text
+|▎ assistant message only
+|▎ content:
+|▎   [Summary of in-progress turns A–B]
+|▎   <summary text>
+|▎ metadata.kind = "context_summary"
+|
+|Then the TUI renders any assistant text beginning with that summary
++prefix as:
+|
+|▎ text
+|▎ Summary of turns A–B
+|▎ <summary>
+|
+|with AI-message styling, not dim system styling.
+|
+|So yes: one AI summary message for both persisted and in-progress is
++cleaner, more truthful, and better UX.
+=== 1779056231816-wg384n#57 (gpt-5.5)
+|Implemented.
+|
+|## Behavior change
+|
+|Context summaries now always replace summarized ranges with one
++assistant message whose text includes the header inline.
+|
+|Persisted/history summary now becomes:
+|
+|▎ text
+|▎ assistant:
+|▎ [Summary of turns A–B]
+|▎ <summary text>
+|
+|In-progress/current summary now becomes:
+|
+|▎ text
+|▎ assistant:
+|▎ [Summary of in-progress turns A–B]
+|▎ <summary text>
+|
+|No fake user header message, no model-visible system notice, no special
++dim rendering path, no new TUI logic.
+|
+|## Code changes
+|
+|In:
+|
+|▎ text
+|▎ daemon/src/tools/context.ts
+|
+|Changed prepareSummarizeMutation() so replacement is always:
+|
+|▎ ts
+|▎ const header = op.scope === "current"
+|▎   ? \`[Summary of in-progress turns \${op.globalStart}–\${op.globalEnd}]\`
+|▎   : \`[Summary of turns \${op.globalStart}–\${op.globalEnd}]\`;
+|▎ 
+|▎ const replacement = [{
+|▎   role: "assistant" as const,
+|▎   content: \`\${header}\\n\${summaryText}\`,
+|▎   metadata: null,
+|▎ }];
+|
+|Also removed the now-unused createModelVisibleSystemNotice import from
++context.ts.
+|
+|Compact output now says:
+|
+|▎ text
+|▎ summarized A–B into 1 assistant summary turn
+|
+|instead of:
+|
+|▎ text
+|▎ 2 turns
+|
+|or:
+|
+|▎ text
+|▎ 1 model-visible summary notice
+|
+|## Tests updated
+|
+|Updated context tests for:
+|
+|- parallel summaries
+|- split persisted/current summaries
+|- overlapping strip_results applied before summarize
+|
+|They now assert the unified one-assistant-message shape.
+|
+|## Validation
+|
+|Passed focused tests:
+|
+|▎ bash
+|▎ bun test daemon/src/tools/context.test.ts daemon/src/display.test.ts d
++▎ aemon/src/agent.test.ts daemon/src/system.test.ts
+|
+|Passed:
+|
+|▎ bash
+|▎ bun run typecheck
+|▎ git diff --check
+|
+|Passed full suite:
+|
+|▎ bash
+|▎ bun test
+|
+|Result:
+|
+|▎ text
+|▎ 799 pass
+|▎ 0 fail
+|
+|## Current uncommitted changes
+|
+|▎ text
+|▎ M daemon/src/tools/context.ts
+|▎ M daemon/src/tools/context.test.ts
+=== 1776571736084-5543fr#5 (gpt-5.4)
+|Yes — you can do this as a Git alias.
+|
+|Git supports “shell aliases” when the alias value starts with !, so git
++sa can run a little shell script.
+|
+|Use this:
+|
+|▎ bash
+|▎ git config --global alias.sa '!f() { for d in */; do [ -d "$d/.git" ] 
++▎ || continue; printf "== %s ==\\n" "$d"; git -C "$d" status -sb; printf 
++▎ "\\n"; done; }; f'
+|
+|Then, from ~/Workspace/Exocortex/external-tools/, run:
+|
+|▎ bash
+|▎ git sa
+|
+|A few notes:
+|
+|- I used [ -d ... ] instead of [[ -d ... ]] because Git shell
++aliases should be written portably, not assuming zsh.
+|- git sa is nice if you think of this as a “git utility command”.
+|- A zsh function is nicer if you want something easier to read/edit
++later.
+|
+|My recommendation:
+|- if you want git sa, use a Git alias
+|- if you want something more customizable, put it in ~/.zshrc as a
++function
+|
+|If you want the zsh version, I’d write it like this:
+|
+|▎ zsh
+|▎ gitallstatus() {
+|▎   for d in */; do
+|▎     [[ -d "$d/.git" ]] || continue
+|▎     echo "== $d =="
+|▎     git -C "$d" status -sb
+|▎     echo
+|▎   done
+|▎ }
+|
+|Then optionally add a shell alias too:
+|
+|▎ zsh
+|▎ alias gsa=gitallstatus
+|
+|So:
+|- git sa → Git alias approach
+|- gsa or gitallstatus → zsh approach
+|
+|Honestly, for this exact use case, I slightly prefer the zsh function
++because it’s more readable and easier to tweak. But if you specifically
++want git sa, the Git alias works fine.
+|
+|If you want, I can give you a version of git sa that works on a passed
++path too, e.g. git sa ~/Workspace/Exocortex/external-tools.
+=== 1776571736084-5543fr#7 (gpt-5.4)
+|Done — git sa is now set globally.
+|
+|It’s configured as:
+|
+|▎ bash
+|▎ !f() { for d in */; do [ -d "$d/.git" ] || continue; printf "== %s ==\\
++▎ n" "$d"; git -C "$d" status -sb; printf "\\n"; done; }; f
+|
+|So when you’re in ~/Workspace/Exocortex/external-tools/, you can now
++run:
+|
+|▎ bash
+|▎ git sa
+|
+|If you want, I can also make it accept an optional path, so git sa
++~/some/parent/dir works too.
+=== 1773477726803-66405w#2 (gpt-5.6-sol)
+|SUMMARY
+|
+|Visual testing of the markdown rendering module was completed via
++screenshots of the exotest TUI (exotest markdown-rendering worktree).
++All features verified working.
+|
+|FEATURES VERIFIED VISUALLY (screenshots at /tmp/exo_md_test1.png,
++/tmp/exo_md_test2.png, /tmp/exo_edgetest.png,
++/tmp/exo_final_result.png):
+|- Code blocks with syntax highlighting: Python (purple keywords, green
++strings, blue functions), Rust (struct, types), Bash (for/do/done/if/fi,
++variables), TypeScript (interface, const, generics)
+|- All blocks show ▎ gutter character and language label
+|- Bold (text), italic (text), bold+italic (text) via ANSI codes
+|- Inline code (code) with subtle blue background tint (#162030 bg color)
+|- Tables with box-drawing characters (┌─┬─┐, │ cells │, ├─┼─┤, └─┴─┘)
++with proportional column widths
+|- Horizontal rules (─────) rendered as dimmed lines
+|- Mixed formatting in table cells (bold/italic inside cells works)
+|- Inline code mixed with bold in same paragraph works
+|
+|BUGS FIXED:
+|
+|1. isFenceClose regex fixed to match CommonMark spec:
+|Before: line.trim().startsWith("") (incorrectly accepted  with
++text after)
+|After: /^ {0,3}(\`{3,})\\s*$/.test(line) (must be only backticks +
++optional whitespace, up to 3 leading spaces)
+|File: tui/src/markdown/codeblocks.ts
+|
+|2. ANSI stripping regex fixed:
+|Before: /\\x1b\\[[^m]m/g (non-standard, would break on certain escape
++sequences)
+|After: /\\x1b\\[[0-9;]m/g (standard CSI sequence matching)
+|File: tui/src/markdown/codeblocks.ts (stripAnsi function)
+|
+|3. isBoxDrawingLine updated to:
+|- Strip leading ANSI escape sequences before checking first character
+|- Also detect ─ (U+2500, 0x2500) to catch HR lines that already have
++ANSI color applied
+|File: tui/src/markdown/tables.ts
+|Before: checked only ┌│├└ (0x250C, 0x2502, 0x251C, 0x2514)
+|After: also checks ─ (0x2500) and strips ANSI prefix before char check
+|
+|A haiku subagent code review was attempted (exo --haiku --timeout 120)
++but timed out. It wrote findings to daemon/*.md files. Its "critical"
++finding about wrapParagraph receiving markdown width was a non-issue:
++wrapParagraph runs BEFORE formatMarkdown in the pipeline, so the
++paragraph is wrapped to content width first, then ANSI codes are added
++inline during formatMarkdown — no width confusion occurs.
+|
+|COMMIT HISTORY:
+|Three fix commits were squashed into one clean commit on
++markdown-rendering branch:
+|Commit message: "Add markdown rendering to TUI" describing the full
++module (6 files, 1357 lines total in tui/src/markdown/, plus
++modifications to conversation.ts).
+|
+|FINAL STATE:
+|- TypeScript compiles clean (exit 0) for both tui/ and daemon/
+|- git log --oneline shows 2 commits total: the baseline + the new
++markdown rendering commit
+|- All 6 module files: highlight.ts (525L), formatting.ts (352L),
++tables.ts (251L), wordwrap.ts (123L), codeblocks.ts (98L), index.ts (8L)
+=== 1773477726803-66405w#38 (opus)
+|The ANSI stripping regex /\\x1b\\[[0-9;]*m/g appears in 3 places. Two
++strip all occurrences globally, one strips just a leading occurrence.
++These could share a constant for the regex, but they're all one-liners
++and the pattern is standard — this isn't worth extracting. The slight
++variation (global vs leading-only) makes a shared utility awkward.
+|
+|Let me do one final compile and then run a broader integration test:
+=== 1773526116281-9b6wy7#3 (opus)
+|Honestly, it was a mixed bag. Here's the breakdown:
+|
+|## What worked well
+|- Parallelizing independent file creation — I dispatched subagents
++for highlight.ts, formatting.ts, codeblocks.ts + tables.ts, and
++wordwrap.ts + index.ts without blocking on each other. That saved real
++time since each file was self-contained.
+|- The agents followed instructions well — They created the files
++with the right imports, the right ANSI constants, and mostly-correct
++implementations. The Mnemo regex rules were copied faithfully.
+|
+|## The hiccoughs
+|
+|1. Quality wasn't perfect on first pass. The tables.ts subagent
++introduced a type error — it tried to pass formatMarkdown() (which
++returns {text, plain}) directly to wrapCell() (which expects string).
++I had to rewrite the entire renderTableBlock function myself to match
++Mnemo's proper approach (wrap on raw markdown text, format per-cell
++during assembly). That was the biggest fix.
+|
+|2. The code review subagent timed out. I dispatched a haiku agent to
++do a thorough code quality review and it hit the 120s timeout without
++producing output. I ended up doing the review myself, which was probably
++better anyway since I had all the code in context already.
+|
+|3. isFenceClose was wrong. The codeblocks subagent wrote a naive
++version that trimmed the whole line and checked for backticks — which
++would match  \`\`\`some text\`\`\`  as a closing fence. I had to fix it to
++use Mnemo's proper regex (/^ {0,3}({3,})\\s*$/\`).
+|
+|4. The ANSI stripping regex was sloppy. One agent used
++/\\x1b\\[[^m]*m/g instead of /\\x1b\\[[0-9;]*m/g — the [^m]* variant is
++greedy in weird ways and could match across escape sequences. Small but
++important fix.
+|
+|## Takeaways
+|
+|- Subagents are great for boilerplate-heavy, spec-driven work (like
++porting 500 lines of regex rules). They saved me from having to manually
++copy all 14 language definitions.
+|- They're less reliable for architectural decisions — the tables.ts
++agent didn't understand how the formatting pipeline should flow (wrap
++first, format during assembly). That required domain understanding of
++how Mnemo does it.
+|- The orchestrator still needs to verify everything. I wouldn't
++trust subagent output without a compile check + visual test. The
++build→verify loop caught real bugs.
+|- For code reviews, I should've just done it myself from the start
++instead of waiting 2+ minutes for a timeout.
+|
+|If I were doing it again, I'd use subagents for the leaf modules
++(highlight.ts, formatting.ts) and write the integration-heavy pieces
++(tables.ts, wordwrap.ts, conversation.ts changes) myself from the start.
+=== 1773090429370-m6qmfm#1 (opus)
+|Done. Here's a summary of the changes:
+|
+|Problem: In the chat history panel, $ and 0 operated on individual
++visual (word-wrapped) lines instead of full logical (\\n-delimited)
++lines. A long paragraph wrapped across 3 visual lines would have $ stop
++at the edge of the first visual line instead of jumping to the end of
++the paragraph.
+|
+|Root cause: buildMessageLines() pre-wraps text via wordWrap() into a
++flat array of visual lines. The history motions lineStart/lineEnd in
++historymotions.ts treated each array element as a line, with no
++knowledge of which visual lines belonged to the same logical line.
+|
+|Fix across 5 files:
+|
+|┌───────┬──────────────────────────────────────────────────────────────┐
+|│ File  │ Change                                                       │
+|├───────┼──────────────────────────────────────────────────────────────┤
+|│ co    │ wordWrap() now returns { lines, cont } where cont[i] is true │
+|│ nvers │ if visual line i is a word-wrap continuation of the previous │
+|│ ation │ logical line. renderBlock() and renderUserMessage()          │
+|│ .ts   │ propagate this. buildMessageLines() collects it into a       │
+|│       │ wrapContinuation[] array.                                    │
+|│ st    │ Added historyWrapContinuation: boolean[] to RenderState.     │
+|│ ate.t │                                                              │
+|│ s     │                                                              │
+|│ re    │ Stores wrapContinuation from buildMessageLines() into state. │
+|│ nder. │                                                              │
+|│ ts    │                                                              │
+|│ hi    │ lineStart() now walks backwards through continuations to the │
+|│ story │ first visual line of the logical group. lineEnd() walks      │
+|│ motio │ forwards to the last. New wrapCont? parameter is optional —  │
+|│ ns.ts │ all other callers unaffected.                                │
+|│       │                                                              │
+|│ hi    │ Passes state.historyWrapContinuation to lineStart/lineEnd in │
+|│ story │ applyHistoryAction().                                        │
+|│ curso │                                                              │
+|│ r.ts  │                                                              │
+|│       │                                                              │
+|└───────┴──────────────────────────────────────────────────────────────┘
+=== 1773082840460-8p411t#1 (opus)
+|Now I have a clear picture. The issue is in executeModeChange in
++engine.ts, line 387:
+|
+|▎ typescript
+|▎ case "after": newCursor = Math.min(cursor + 1, buffer.length); break;
+|
+|When the cursor is at the last character of a line (the character just
++before \\n), pressing "a" moves the cursor to cursor + 1, which lands
++on the \\n itself. In insert mode, that could mean the cursor ends up at
++the start of the next line visually, crossing the line boundary. The fix
++should clamp to lineEndOf(buffer, cursor) — which returns the position
++of the \\n (or buffer.length). That's valid for insert mode (you can
++insert at the end of the line, right before the \\n).
+|
+|Wait, let me think again. lineEndOf returns the index of the \\n
++character. So if cursor is at position pos which is the last char before
++\\n, then cursor + 1 = position of \\n. And lineEndOf(buffer, cursor)
++also returns the position of \\n. So those would be equal.
+|
+|The problem must be when the cursor IS on the \\n character in normal
++mode (possible? Let me check clampNormal). Actually, in normal mode the
++clampNormal prevents the cursor from being past buffer.length - 1
++(unless buffer ends with \\n). But it doesn't prevent the cursor from
++sitting on a \\n character.
+|
+|Wait, let me re-read the issue more carefully. The user says pressing
++"a" can "go through line boundaries." Let me think about what charRight
++does vs what "a" does.
+|
+|charRight (used by "l") checks if (buffer[pos] === "\\n") return pos; —
++it won't cross a newline.
+|
+|But "a" does Math.min(cursor + 1, buffer.length) — it doesn't check if
++buffer[cursor] is \\n. So if the cursor is sitting on the last character
++of a line (not a \\n), cursor + 1 would be the \\n position, which is
++fine for insert mode (insert before the newline). But if the cursor IS
++on the \\n itself... hmm, can that happen?
+|
+|Actually wait — looking at clampNormal: it clamps to buffer.length - 1
++unless the buffer ends with \\n. It doesn't prevent sitting on interior
++\\n characters. But the motions like charRight do prevent crossing \\n.
++And lineEnd ($) goes to the \\n position. So in normal mode, the cursor
++could be at a \\n position (e.g., after pressing $ on a non-last line).
+|
+|Actually, lineEndOf returns idx which is the position of the \\n. And $
++calls lineEnd which calls lineEndOf. In normal mode with clampNormal,
++the \\n position wouldn't be clamped away (since it's not past
++buffer.length - 1 for interior newlines).
+|
+|Wait, but $ in real vim goes to the last character of the line, not to
++the \\n. Let me check — actually in this implementation, lineEnd returns
++the position of the \\n. In real vim, $ in normal mode goes to the last
++non-newline character. But this might be intentional here if the
++promptline is wrapping differently.
+|
+|OK, let me focus on the actual bug. When the cursor is at the \\n
++character (or equivalently at lineEndOf(buffer, cursor)) and you press
++a, the cursor goes to cursor + 1, which would be the start of the next
++line. That's crossing a line boundary. In vim, a should move one
++position right from the cursor but stay on the same line.
+|
+|The fix: when computing the "after" cursor position, clamp it to not go
++past lineEndOf(buffer, cursor).
+|
+|▎ typescript
+|▎ case "after": newCursor = Math.min(cursor + 1, lineEndOf(buffer, curso
++▎ r)); break;
+|
+|This ensures that a never crosses a \\n boundary, just like l doesn't.
+|
+|Let me make the fix in the worktree:
+=== 1776395204803-9oas53#excerpt (gpt-5.4)
+|                              ⎛ QKᵀ ⎞
++  Attention(Q, K, V) = softmax⎜ ─── ⎟V
++                              ⎝ √dₖ ⎠
+|
+|A masked version adds a mask M before softmax to block forbidden
++positions, which is essential for autoregressive decoding:
+|
+|         ⎛ QKᵀ     ⎞
++  softmax⎜ ─── + M ⎟V
++         ⎝ √dₖ     ⎠
+|
+|                              ⎛ QKᵀ ⎞
++  Attention(Q, K, V) = softmax⎜ ─── ⎟V
++                              ⎝ √dₖ ⎠
+|
+|- The dot products QKᵀ give relevance scores.
+|- The √dₖ scaling keeps scores from becoming too sharp.
+|- The output is a weighted sum of values; each output row lies in the
++convex hull of the value vectors.
+|
+|    MultiHead(Q, K, V) = Concat(head₁, …, headₕ)Wᴼ
+|    headᵢ = Attention(QWᵢ^Q, KWᵢᴷ, VWᵢⱽ)
+|
+|- Masked / causal attention: used in autoregressive decoders so a
++position cannot attend to future tokens. This is implemented by adding
++−∞ above the diagonal before softmax.
+|- The page also mentions older or alternative forms such as
++Bahdanau/additive attention, Luong/multiplicative attention,
++positional variants, and spatial/channel attention in CNNs.
+|
+|### Computational tradeoffs
+|The big cost is that the attention matrix is quadratic in sequence
++length (O(n²) memory and compute), which becomes expensive for long
++contexts. The page highlights two optimizations:
+|- FlashAttention: computes attention in blocks to reduce GPU memory use
++while preserving exact results.
+|- FlexAttention: a PyTorch/Meta kernel that allows score modification
++before softmax and selects efficient implementations dynamically."
+`;
+
+exports[`real conversation corpus and targeted cases renders every message within 44 columns 1`] = `
+"=== owner example: display math with brace-less fractions and boxed answer
+|Not quite, the new supply is P=Q+10.
+|
+|Substitute into demand:
+|                            229         259
++  Q = 249 − 2(Q + 10) ⇒ Q = ───,    P = ───.
++                             3           3
+|
+|Producer surplus is the triangle above the
++new supply curve:
+|                     ⎛ 229 ⎞²   ┌─────────┐
++  PS = ½Q(P − 10) = ½⎜ ─── ⎟  ≈ │ 2913.39 │.
++                     ⎝  3  ⎠    └─────────┘
+=== owner example: inline variant
+|Producer surplus: PS = ½Q(P − 10) =
++½(229/3)² ≈ 2913.39.
+=== all delimiters
+|Dollar x² + y² = z², slash aₙ → 0, and
++display:
+|
+|   n      n(n + 1)
++   ∑  i = ────────
++  i=1        2
+|
+|  ∫₀¹ x² dx = ⅓
+|
+|  E = mc²
+|
+|  f(x) = x² + 2x + 1
++       = (x + 1)²
+=== display math mid-line and trailing punctuation
+|Therefore
+|  b + 2b + (2b − 3) = 39 ⇒ b = 8.4
+|so the data are inconsistent.
+|
+|The answer is
+|      −b ± √(b² − 4ac)
++  x = ────────────────.
++             2a
+=== environments
+|  f(x) = ⎧ x²,  x ≥ 0,
++         ⎩ −x,  x < 0.
+|
+|  A = ⎛ 1  2 ⎞,  B = ⎡ a  b  c ⎤
++      ⎝ 3  4 ⎠       ⎣ d  e  f ⎦
+|
+|          ρ
++  ∇ · E = ──
++          ε₀
++
++                     ∂E
++  ∇ × B = μ₀J + μ₀ε₀ ──
++                     ∂t
+|
+|Inline matrix (a, b; c, d) and cases |x| =
++{x, x ≥ 0; −x, x < 0}.
+=== brace-less arguments
+|Forms: ½, ½, ½, a/b, π/2, √2, √x, x², x²3,
++xᵢj, xᵢⱼ, e^(iπ) + 1 = 0, ¾, (a + b)/c.
+=== fractions need parentheses
+|(a + b)/c, 1/(2π), C(A/T), (v − s)/v,
++((v − s)/v)², (x/y)², max(1, L)/q,
++q/max(1, L), 7/12, 2⅓.
+=== operators, relations and spacing
+|a · b × c, x ≈ y, a ≤ b ≥ c ≠ d, ±1, ∞,
++f: A → B, P ⇒ Q ⇔ R, 1,000, a b c d e,
++1, 2, …, n, x₁ + ⋯ + xₙ, −x, a − b, n!,
++f′(x), f″(x), 90°, ¬(P ∧ Q) ⇔ (¬P ∨ ¬Q), x ∉
++A, a mod n, a ≡ b (mod n).
+=== big operators with limits
+|Inline ∑ᵢ₌₁ⁿ xᵢ, ∏ₖ₌₁ᴺ k, ∫₀^∞ e⁻ˣ dx,
++lim_(x→0) (sin x)/x = 1, maxᵢ aᵢ.
+|
+|   n        ⎛  n       ⎞²
++   ∑  xᵢ² ≤ ⎜  ∑  |xᵢ| ⎟
++  i=1       ⎝ i=1      ⎠
+|
+|      ⎛     1 ⎞ⁿ
++  lim ⎜ 1 + ─ ⎟  = e
++  n→∞ ⎝     n ⎠
+|
+|  ∫_(−∞)^∞ e^(−x²) dx = √π
+=== text and font commands
+|if x > 0, dx, rank(A), clamp_([0,1])(x), ℝⁿ,
++ℕ, E[X], β, v, ℒ, λ_extra, E_(net,30), θ̂, x̄,
++v⃗, A̅B̅, x̃.
+=== scripts without Unicode forms
+|u^0.2547, e^(1.691x(t)), Wᵢ^Q, Kᵀ, xⁿ⁺¹,
++aₙ₋₁, 2⁻ᵏ, x^(y₁+α), σ_post², x∗, A⁻¹,
++f⁽ⁿ⁾(x).
+=== unknown commands and malformed input
+|Unknown x + unknown y, foo, 1, x, ∛x, ⁿ√x,
++(½, x + y, x = 1 (3).
+=== prices are not math
+|It costs $5 and at most $10 today. Fall
++tuition is $33,055 and Winter is $33,055.
+|Pay $100k and $60k; Prices: $5-$10, $20/$30.
++The fee is $5 and the rebate is $2.
+|Shell: run echo $$ or kill -TERM $$, and
++use x² for squares.
+=== code spans and blocks are not math
+|Literal \\(x^2\\) and $y_1$ stay; math x²
++renders.
+|
+|▎ tex
+|▎ \\[
+|▎ x^2
+|▎ \\]
+|▎ $a$ and $$b$$
+|
+|▎ bash
+|▎ PID=$$
+|▎ echo "$HOME" "$PATH"
+|
+|After the block y².
+=== math across wrapped lines, lists, tables and blockquotes
+|A long sentence whose inline math
++∑ₖ₌₁ⁿ 1/k² < π²/6 has to wrap somewhere in
++the middle of the paragraph at narrow
++widths.
+|
+|Inline math across a hard newline a + b = c
++still renders.
+|
+|- Item with x ∈ ℝ:
+|    x² ≥ 0
+|- Item two y = ½
+|
+|┌──────────┬──────────────┐
+|│ Quantity │ Formula      │
+|├──────────┼──────────────┤
+|│ Area     │ πr²          │
+|│ Mean     │ x̄ = 1/n ∑ xᵢ │
+|└──────────┴──────────────┘
+|
+|> Quoted E = mc² and
+|>   a² + b² = c²
+=== real-world display formulas
+|                              ⎛ QKᵀ ⎞
++  Attention(Q, K, V) = softmax⎜ ─── ⎟V
++                              ⎝ √dₖ ⎠
+|
+|  u = q/max(1, L),
++    P(maker response)
++    = u^0.25/(u^0.25 + 0.42 max(1, a)^0.30)
+|
+|  3.4 GFLOPs × 4 × 3 ≈ 41 GFLOPs/sample
+|
+|  C = S [b + (1 − a)] = S (1 − book spread)
+|
+|  O(P + K + R) = O(H)
+=== 1789573187919-fn27l8#1 (gpt-6-astra)
+|Your truth value and reasoning are correct!
++Taking x = 5 gives
+|  (x − 4)(y + 2) = y + 2
+|for every real y.
+|
+|Your negation has the quantifiers right, but
++you also need to change = to ≠:
+|
+|Negation: For every x ∈ ℝ, there exists y ∈
++ℝ such that
+|  xy + 2x − 4y − 8 ≠ y + 2.
+|
+|Original statement: True, with x = 5.
+=== 1789573187919-fn27l8#3 (gpt-6-astra)
+|Yes—your negation is correct, and the
++original statement is true.
+|
+|For any x > 0, choose a natural number
+|      1
++  n > ─.
++      x
+|Then 0 < 1/n < x. Natural numbers are
++unbounded, so such an n always exists.
+|
+|Your proposed n = 1/x has two issues: it
++might not be a natural number, and it gives
++1/n = x, whereas you need strictly less.
+|
+|About 0.000… “eventually followed by a 1”:
+|- If the 1 occurs at a finite decimal
++position, the number is positive, and a
++sufficiently large n works.
+|- If every decimal digit is 0, the number is
++just 0, which is excluded by x > 0. There’s
++no position “after infinitely many zeros.”
+|
+|That’s different from incomputability; even
++for an incomputable positive real, the
++statement holds.
+=== 1789573187919-fn27l8#5 (gpt-6-astra)
+|Correct! Just make the proof slightly
++clearer by establishing x = 1 before
++concluding x ≤ a:
+|
+|My set: A = {1}.
+|
+|Proof. Take a = 2. For any x ∈ A, we have
++x = 1. Since 1 ≤ 2, we have x ≤ a. Thus, A
++is excited.
+|
+|Follow-up: a is not unique (you wrote
++uppercase A): any a ≥ 1 works. Yes, the
++allowable choices of a depend on A, because
++a must be at least as large as every element
++of A.
+=== 1789573187919-fn27l8#7 (gpt-6-astra)
+|Yes, correct! A slightly cleaner proof:
+|
+|Take a = 1 ∈ A. For any x ∈ A = {1}, we
++have x = 1, so x ≤ a. Thus, A is happy.
+|
+|And yes, a is unique—in fact, this holds
++for every happy set: if a, b both satisfy
++the definition, then a ≤ b and b ≤ a, so a =
++b.
+|
+|For the hint: a does not depend on x;
++one fixed a must work for every x ∈ A.
+=== 1789573187919-fn27l8#9 (gpt-6-astra)
+|Exactly—a depends on the set A, but not on
++the individual x ∈ A. Those are compatible
++statements.
+|
+|You choose one a for the whole set, and that
++same a must work for every element x.
+=== 1783542831795-movtru#1 (gpt-5.5)
+|- Initial marbles: 3 × (7 + 5) = 36
+|- Blue marbles: 3 × 5 = 15
+|- Half of blue marbles: 15/2 = 7.5
+|- After giving those away and buying 4 red:
++36 − 7.5 + 4 = 32.5
+|
+|Answer: 32.5 marbles arithmetically, but
++exactly half of 15 marbles isn’t possible
++with whole marbles.
+=== 1783546090447-3waupy#1 (gpt-5.5)
+|No whole-number solution.
+|
+|Let blue = b. Then red = 2b, green = 2b − 3.
+|
+|Total: 
+|  b + 2b + (2b − 3) = 39 ⇒ 5b = 42 ⇒ b = 8.4
+|
+|So the conditions are inconsistent for
++actual balls.
+=== 1784503528796-6ewq2p#1 (gpt-5.6-sol)
+|## Findings
+|
+|1. High — common currency ranges are
++misparsed as math and lose dollar signs. 
+|findDollarClose pairs the next $, while
++likelyDollarMath accepts almost any
++non-numeric content containing an
++alphanumeric character. Thus:
+|- Range: $5-$10. → Range: 5-10.
+|- Basic ($5) / Pro ($10) → Basic (5) /
++Pro (10)
+|This changes both displayed and copied
++meaning. The existing tests only cover
++amounts separated by whitespace, which
++happen to evade the heuristic. 
+|Refs: tui/src/markdown/math.ts:388-408,
++tui/src/markdown/math.ts:441-453,
++tui/src/markdown/math.test.ts:64-69.
+|
+|2. Medium — hard newlines are hidden from
++the dollar parser, enabling invalid
++multiline spans and currency corruption. 
+|likelyDollarMath explicitly rejects \\n, but
++renderInlineMathChunks replaces physical
++newlines with a private-use character before
++scanning. Consequently:
+|- ["$5", "$10"] → ["5", "10"]
+|- ["The variable is $x", "and then y$."]
++is incorrectly rendered as one math span.
+|This contradicts the parser’s intended
++single-line-dollar rule. 
+|Refs: tui/src/markdown/math.ts:388-393,
++tui/src/markdown/math.ts:460-480.
+|
+|3. Medium — display math immediately
++following prose is not recognized as a
++display block. 
+|Display blocks are checked only at the outer
++loop’s current line; the paragraph collector
++does not stop when it encounters a display
++opener. For:
+|▎ text
+|▎ intro
+|▎ \\[
+|▎ \\begin{pmatrix}a&b\\\\c&d\\end{pmatrix}
+|▎ \\]
+|the output contains blank delimiter rows and
++compact inline (a b; c d) instead of the
++structural two-row matrix and copy
++projections. A blank line before \\[ makes it
++work, but LaTeX display delimiters should
++not depend on that. 
+|Refs: tui/src/markdown/wordwrap.ts:106-118,
++tui/src/markdown/wordwrap.ts:143-158.
+|
+|4. Medium — malformed delimiter input has
++quadratic scanning behavior and can freeze
++the synchronous TUI renderer. 
+|Every unclosed \\( invokes a scan to the end,
++then the outer scanner advances only one
++character. A 100,000-character string of
++repeated unclosed \\( took about 4.1
++seconds locally; cost grows quadratically.
++Streaming or resizing can trigger repeated
++renders. 
+|Refs: tui/src/markdown/math.ts:359-365,
++tui/src/markdown/math.ts:430-439.
+|
+|5. Medium — raw delimiter splitting breaks
++valid mathematical content in tables and
++environments.
+|- Table cells are split on every literal |
++before math parsing, so | $x|y$ | becomes
++two cells and the math remains unrendered.
+|- Matrices split on every & before escaped
++ampersands are protected, so \\text{A \\& B}
++is treated as multiple entries. Display
++matrices also do not compute/pad column
++widths.
+|Refs: tui/src/markdown/tables.ts:37-43,
++tui/src/markdown/math.ts:278-309,
++tui/src/markdown/math.ts:322-327.
+|
+|6. Medium — malformed and unsupported TeX
++is silently rewritten rather than safely
++preserved. 
+|The try/catch only helps if the dependency
++throws. With latexCheck: false, it
++tolerates malformed input and strips
++grouping:
+|- \\(\\frac{{{{\\) → \\frac
+|- \\(x+\\unknown{y}\\) → x+\\unknowny
+|The test named “preserves unknown commands
++and survives malformed input” merely checks
++that a substring remains and that no
++exception occurs; it does not check
++preservation or readable fallback. 
+|Refs: tui/src/markdown/math.ts:313-350,
++tui/src/markdown/math.test.ts:52-55.
+|
+|7. Low — display wrapping can split a wide
++supplementary code point into invalid UTF-16
++halves at width 1. 
+|If sliceByWidth cannot fit a width-2
++grapheme, the fallback uses rest[0]. For
++renderDisplayMath("😀x", 1), the emoji
++becomes two lone-surrogate rows.
++Narrow/wide/combining copy behavior is
++untested. 
+|Refs: tui/src/markdown/math.ts:521-533.
+|
+|## Dependency risk
+|
+|tui/package.json:13 adds exact-pinned
++@devhub-io/latex-to-unicode@2.0.1.
++Positives: it is small, MIT-licensed, has no
++runtime dependencies or install scripts, and
++the version is exact. However, it was first
++published only six days ago, has one
++maintainer, and the repository tracks no
++lockfile/integrity record. That is a
++meaningful maintenance/supply-chain risk for
++a core rendering path.
+|
+|## Strengths
+|
+|- Correctly protects supported fenced and
++inline code spans, including multiline
++inline-code spans.
+|- Limits rendering to assistant markdown
++mode.
+|- Uses terminal-column-aware width helpers
++and provides copy projections for display
++math.
+|- Covers common logic symbols, scripts,
++roots, fractions, environments, code
++protection, tables, and basic currency
++examples.
+|- Conversion exceptions are contained rather
++than crashing the conversation.
+|
+|## Validation and readiness
+|
+|- bun test: 635 passed, 0 failed.
+|- Math/word-wrap subset: 23 passed, 0
++failed.
+|- git diff --check: clean.
+|- Typecheck fails on four
++historycursor.test.ts errors, but the same
++failures occur on local main, so they are
++not introduced by this branch.
+|
+|Not ready to merge. The currency
++corruption is a merge blocker. The
++multiline-dollar, display-block boundary,
++and quadratic malformed-input cases should
++also be fixed and covered by regression
++tests before merging.
+=== 1784566665055-zjr3js#5 (gpt-5.6-sol)
+|## Findings
+|
+|### 1. High — system-instructions offset can
++oscillate, leaving panel geometry
++inconsistent with the composed viewport
+|
+|Locations: render.ts:802-842,
++render.ts:1283-1320
+|
+|The bounded compositor interprets
++panelTopOffset as a canonical prefix
++beginning at viewStart:
+|
+|▎ ts
+|▎ const instructions = canonicalViewportRows
++▎ (
+|▎   allLines,
+|▎   viewStart,
+|▎   viewStart + instructionRows,
+|▎ );
+|
+|But the outer loop recalculates the offset
++from the first row after top clipping:
+|
+|▎ ts
+|▎ const topLineIndex = viewportRows[0]?.line
++▎ Index ?? viewStart;
+|▎ const nextOffset =
+|▎   visibleSystemInstructionsHeight(lineAnch
++▎ ors, topLineIndex, ...);
+|
+|If clipping removes ordinary history and
++exposes a later system-instructions box, the
++next attempt sets panelTopOffset to that
++box’s height. The compositor then
++incorrectly treats the first P canonical
++rows at the original viewStart as
++instructions. This can alternate between P
++= 0 and P = instruction height.
+|
+|Because the outer loop ends after three
++attempts even when the last attempt changes
++the offset, viewportRows can have been
++composed with one offset while
++taskPanelTopOffset and taskPanelRect use
++another.
+|
+|I reproduced this with:
+|
+|- cols = 120, rows = 30
+|- one assistant row
+|- system_instructions: "SYSTEM BOX HERE"
+|- thirteen subsequent short assistant rows
+|- 27 tasks
+|
+|The resulting state had:
+|
+|- taskPanelRect.top === 6, implying a
++three-row instructions prefix
+|- the first three viewport rows all mapping
++to the same system_instructions_top
++canonical line, meaning that border was
++actually narrow-wrapped
+|- the preceding assistant row clipped
+|
+|Thus the instruction box was not full-width
++even though the panel was positioned below
++it. This also causes repeated recomposition
++on subsequent uncached renders.
+|
+|The bounded layout should resolve the actual
++source start and instructions prefix
++together, or eliminate the outer feedback
++loop. At minimum, it must not update the
++panel offset after the final allowed attempt
++without recomposing with that offset.
+|
+|────────────────────────────────────────
+|
+|### 2. High for the performance objective —
++composition is not actually O(viewport
++height) for long user messages
+|
+|Locations: render.ts:592-645, called twice
++at render.ts:820-839
+|
+|For every user group touched by the narrow
++probe, composeFixedWidthRows:
+|
+|1. Scans backward to the beginning of the
++complete owner group.
+|2. Scans forward to its complete end.
+|3. Runs userMessageTextRowOffsets over the
++complete user text.
+|4. Runs the same work again during suffix
++recomposition.
+|
+|Therefore, if a user message contains M
++canonical rows but only 13 touch the
++viewport, cold bounded composition remains
++Θ(M), not Θ(H). userMessageTextRowOffsets
++also allocates offsets for the complete
++message.
+|
+|The change to a monotone canonicalLocal
++pointer correctly removes one previous
++quadratic mapping cost, but group discovery
++and full-text flow indexing remain unbounded
++by viewport height.
+|
+|A user-flow index needs to be cached by
++owner/canonical width, or canonical anchors
++need to carry their UserMessageFlowCursor so
++the viewport can begin at an arbitrary
++canonical row without rescanning the entire
++owner. Without that, this implementation
++removes the fixed-point multiplier but does
++not meet the stated complexity guarantee.
+|
+|────────────────────────────────────────
+|
+|### 3. Medium — the full-width portion of a
++user bubble bypasses suffix recomposition
++and can have incorrect bubble geometry
+|
+|Location: render.ts:841
+|
+|The narrow suffix is recomposed adaptively,
++but the full tail is copied directly:
+|
+|▎ ts
+|▎ const fullRows =
+|▎   canonicalViewportRows(allLines, fullStar
++▎ tIndex, endLineIndex);
+|
+|Canonical user rows were styled by
++renderUserMessage using the maximum content
++width of the whole message. The previous
++adaptive renderer calculates bubble width
++separately for each width run using only the
++rows in that run.
+|
+|Consequently, if an older/discarded portion
++of a user message contains a long row while
++the visible full-width tail contains only
++short hard lines, the visible tail remains
++unnecessarily wide. A proper full-width
++suffix composition from fullStartIndex to
++endLineIndex would produce the same
++canonical row count while sizing the bubble
++from the visible full-width run.
+|
+|This does not lose text—the new continuity
++test correctly covers source ordering—but it
++is a visual behavior regression for user and
++queued-user bubbles spanning the narrow/full
++boundary. The current test uses a long
++single-line word flow, where the full tail
++naturally contains near-full rows and cannot
++expose this case.
+|
+|A targeted test should use:
+|
+|▎ text
+|▎ <long hard line producing many rows>
+|▎ short
+|▎ tiny
+|▎ x
+|▎ ...
+|
+|with the final short hard lines occupying
++the full tail.
+|
+|────────────────────────────────────────
+|
+|### 4. Low — ANSI sourceRemainder is
++visually stable but not a true suffix of the
++canonical ANSI source
+|
+|Locations: render.ts:570-576,
++render.ts:685-714
+|
+|wrappedRemainders rebuilds source suffixes
++from wrapAnsiLine’s output chunks:
+|
+|▎ ts
+|▎ remainder =
+|▎   line[index] + join[index + 1] + remainde
++▎ r;
+|
+|Those chunks already contain synthetic
++resets and active-SGR prefixes inserted at
++wrap boundaries. When the selected probe row
++is recomposed, wrapping can add further
++empty active/reset pairs. For example, a
++suffix ending in styled text gains sequences
++equivalent to:
+|
+|▎ text
+|▎ ... \\x1b[0m\\x1b[36m\\x1b[0m
+|
+|The visible text, startCol, joins, and
++styling remained equivalent in the cases I
++checked, so this is low severity. However,
++it violates the documented meaning of
++sourceRemainder as an ANSI-preserving
++remainder of the canonical line and makes
++suffix recomposition non-idempotent at the
++byte level.
+|
+|Prefer carrying the original ANSI source
++offset/state or a wrap-produced rest value
++rather than reconstructing source from
++rendered chunks.
+|
+|## Areas that appear correct
+|
+|- startCol accounting includes omitted
++soft-wrap joins correctly.
+|- Continuation indentation reserves width
++before wrapping and is preserved when
++recomposing from a clipped assistant
++continuation.
+|- The monotone canonicalLocal change is
++correct and removes the prior repeated scan
++from zero.
+|- User-flow suffix recomposition correctly
++uses UserMessageFlowCursor; the new
++long-user test verifies contiguous source
++text across the boundary.
+|- Hard breaks and empty lines remained
++intact in an additional overflowing-user
++case I exercised.
+|- Short ordinary histories remain
++top-aligned when direct composition fits.
+|- Canonical scroll state remains independent
++of presentation reflow.
+|
+|## Verification
+|
+|- render.test.ts and ansiwrap.test.ts: 25
++passed, 0 failed
+|- tsc --noEmit still reports four
++pre-existing historycursor.test.ts type
++errors unrelated to this change.
+|- No files were edited.
+=== 1784566665055-zjr3js#7 (gpt-5.6-sol)
+|## Final check
+|
+|- Finding 1 — resolved.
++instructionStartIndex is included in
++composition/cache state, revealed
++instruction boxes are copied from their
++actual canonical location, and the outer
++loop stabilizes against both offset and
++source index. The prior reproduction no
++longer shows mismatched panel geometry or
++duplicated narrow instruction rows. The
++regression test covers it.
+|
+|- Finding 3 — resolved. The full tail
++now uses composeFixedWidthRows, so
++user/queued bubbles receive semantic suffix
++recomposition and width-run-local bubble
++sizing rather than canonical whole-message
++geometry.
+|
+|- Finding 2 — improved but not fully
++resolved. Cached cursor ranges remove the
++full group-boundary scans and repeated
++userMessageTextRowOffsets work. However,
++every composeSemanticUserRows call invokes
++renderAdaptiveUserMessageRows(owner.text,
++...), which still:
+|- runs sanitizeUntrustedText over the
++complete owner text, and
+|- splits the complete text into hard lines.
+|
+|A long user message can therefore still cost
++O(whole message length) during probe, narrow
++recomposition, and full-tail recomposition,
++even when only O(H) source rows are needed.
++This is a medium performance issue
++relative to the strict viewport-height goal.
++Caching sanitized hard lines or passing a
++cached flow document/range into the adaptive
++renderer would complete the fix.
+|
+|I found no new high/medium correctness
++bug in the current diff.
+|
+|Validation: render.test.ts,
++ansiwrap.test.ts, and conversation.test.ts
++all pass — 67 tests, 0 failures. No
++files edited.
+=== 1784499348103-9orxqs#4 (gpt-5.6-sol)
+|Implemented in the requested worktree.
+|
+|- Worktree:
++/home/yeyito/Workspace/exocortex/.worktrees
++/math-rendering
+|- Branch: math-rendering
+|- Commit: b899f0b Render LaTeX math in the
++TUI
+|
+|### Supported rendering
+|
+|- Inline math: \\(P\\land Q\\) → P ∧ Q
+|- Dollar-delimited math: $x^2 + y_1$ → x²
+++ y₁
+|- Centered display math using \\[...\\] or
++$$...$$
+|- Logic, quantifiers, relations, Greek
++letters, arrows, superscripts/subscripts
+|- Fractions, roots, blackboard-bold sets,
++accents, binomial notation
+|- Basic matrices, cases, and aligned
++equations
+|- Math inside Markdown tables
+|
+|It also:
+|
+|- leaves fenced and inline code untouched,
++including code spans crossing lines;
+|- avoids interpreting currency such as $5
++and $10 or $33,055 as math;
+|- falls back safely for malformed or
++unsupported notation;
+|- preserves readable Unicode when copying
++display equations.
+|
+|### Validation
+|
+|- 622 TUI tests passed
+|- Production TUI bundle completed
++successfully
+|- Manually tested with xenv + exotest;
++the referenced logic notation rendered
++correctly while currency remained unchanged
+|- git diff --check passed and the worktree
++is clean
+|
+|The existing TUI typecheck still reports
++four unrelated, pre-existing narrowing
++errors in historycursor.test.ts; this branch
++does not modify that file.
+|
+|I have not merged or cleaned the worktree
++yet. When you’re satisfied, tell me and
++I’ll merge it back to main and run the
++requested cleanup.
+=== 1784499348103-9orxqs#12 (gpt-5.6-sol)
+|This is primarily our rendering/parsing
++issue, not poor mathematical notation from
++the AI.
+|
+|The AI returned valid, reasonably structured
++LaTeX:
+|
+|▎ latex
+|▎ \\[
+|▎ \\forall x\\exists y\\Big(
+|▎ (y\\times y\\times y=x)
+|▎ \\land
+|▎ \\forall z\\big(
+|▎ (z\\times z\\times z=x)\\Rightarrow(z=y)
+|▎ \\big)
+|▎ \\Big).
+|▎ \\]
+|
+|In a normal KaTeX/MathJax renderer, those
++source newlines are treated as ordinary
++whitespace. It would appear as one coherent
++equation with properly sized parentheses.
+|
+|Our terminal renderer currently:
+|
+|1. preserves every physical newline inside
++display math;
+|2. removes layout commands such as \\Big and
++\\big;
+|3. renders each remaining source line
++separately.
+|
+|That leaves isolated operators and
++parentheses, producing the awkward result
++you noticed.
+|
+|The correct fix is to collapse source
++newlines into spaces for ordinary display
++equations, then let Exocortex wrap the
++resulting expression naturally to the
++available width. We should preserve explicit
++line structure only inside environments such
++as aligned, matrix, and cases.
+|
+|That would make this render approximately
++as:
+|
+|▎ text
+|▎ ∀ x∃ y((y × y × y=x) ∧ ∀ z((z × z × z=x) ⇒
++▎  (z=y))).
+|
+|So the notation itself is good; our renderer
++needs one more layout rule.
+=== 1784499348103-9orxqs#18 (gpt-5.6-sol)
+|## Local-main merge
+|
+|Merged local main into math-rendering
++successfully.
+|
+|- Merge commit: b98625e
+|- Local main: 523d624
+|- Conflicts: None
+|- Worktree status: Clean
+|- Merged into main: No — stopped as
++requested
+|- Worktree daemon and xenv are stopped.
+|
+|## Validation
+|
+|- TUI suite: 635 passed, 0 failed
+|- Post-merge xenv + exotest showcase
++check passed
+|- git diff --check: clean
+|- Full repository suite: 1,368 passed, 1
++unrelated failure
+|- The failure is the environment-sensitive
++DeepSeek authentication test detecting
++shared credentials.
+|- Typecheck still reports four pre-existing
++narrowing errors in historycursor.test.ts;
++the same errors occur on local main.
+|
+|## Code assessment
+|
+|### Merge blocker: currency corruption
+|
+|The dollar-delimiter heuristic can
++misinterpret common currency ranges as math
++and remove their dollar signs:
+|
+|▎ text
+|▎ Range: $5-$10.            → Range: 5-10.
+|▎ Basic ($5) / Pro ($10)    → Basic (5) / Pr
++▎ o (10)
+|
+|This changes the meaning of rendered and
++copied text, so I recommend fixing it before
++merging.
+|
+|### Other issues worth addressing
+|
+|1. Dollar spans may cross hard newlines
+|- Physical newlines are temporarily replaced
++with private-use separators for multiline
++Markdown parsing.
+|- The dollar parser can consequently pair
++dollar signs from separate lines, even
++though $...$ should remain single-line.
+|
+|2. Display math immediately following
++prose
+|- Without a blank line before \\[, paragraph
++collection can absorb the display block and
++render it as inline math.
+|- The paragraph collector should stop when
++the next physical line begins a display-math
++block.
+|
+|3. Quadratic malformed-input scanning
+|- Repeated unclosed \\( delimiters cause
++repeated scans to the end of the input.
+|- Large malformed or streaming content could
++temporarily freeze the synchronous renderer.
+|
+|4. Raw table/matrix delimiter splitting
+|- Literal | inside table-cell math can be
++mistaken for a Markdown column separator.
+|- Escaped \\& inside matrix text can be
++mistaken for a matrix cell separator.
+|- Matrix columns with unequal widths are not
++padded/aligned.
+|
+|5. Malformed TeX fallback is lossy
+|- The dependency often tolerates malformed
++input rather than throwing, so our catch
++fallback does not activate.
+|- Unknown-command braces can be silently
++removed instead of preserving the original
++expression.
+|
+|6. Very narrow rendering edge case
+|- At a one-column width, a width-two
++supplementary Unicode character such as an
++emoji can be split into invalid UTF-16
++surrogate rows.
+|
+|### Dependency assessment
+|
+|@devhub-io/latex-to-unicode@2.0.1 is:
+|
+|- exact-version pinned;
+|- MIT-licensed;
+|- small;
+|- dependency-free;
+|- free of install scripts.
+|
+|However, it is only several days old, has a
++very small maintenance footprint, and this
++repository intentionally tracks no
++lockfile/integrity record. That creates a
++moderate maintenance and supply-chain risk.
+|
+|## Strengths
+|
+|- The showcased logical notation now renders
++clearly.
+|- Display math is white and left-aligned as
++requested.
+|- Pretty-printed ordinary display math is
++collapsed correctly.
+|- Matrices, cases, and aligned environments
++retain intentional rows.
+|- Inline and fenced code protection is
++well-covered.
+|- Common symbols, quantifiers, scripts,
++roots, fractions, and Greek letters work.
+|- Terminal-width measurement and
++display-math copy projections are integrated
++correctly.
+|- Rendering errors are contained rather than
++crashing the conversation.
+|
+|## Recommendation
+|
+|Not ready to merge into main yet. The
++currency corruption is a definite blocker. I
++would also fix multiline dollar pairing,
++display-block boundaries, and
++malformed-input performance before
++requesting final merge approval.
+=== 1780228118264-soznne#1 (gpt-5.5)
+|The paper does not explicitly report
++training FLOPs for LeWorldModel. I checked
++the PDF/arXiv text: it gives architecture,
++batch size, epochs, datasets, and hardware,
++but no “we trained for X FLOPs” number.
+|
+|What it does state:
+|
+|- LeWM has ~15M parameters
+|- Encoder: ViT-Tiny, patch size 14, 12
++layers, hidden dim 192, ~5M params
+|- Predictor: transformer, 6 layers, ~10M
++params
+|- Training: batch size 128
+|- Sequence/subtrajectory: 4 frames, each
++224×224
+|- Frame skip: 5
+|- Trained for 10 epochs
+|- Hardware: single NVIDIA L40S GPU
+|- Abstract says trainable “in a few
++hours”
+|
+|Your local GPU appears to be a Sapphire
++Radeon RX 5700 XT 8GB.
+|
+|## My best FLOP estimate
+|
+|Using the architecture and dataset details,
++a reasonable training-compute estimate is:
+|
+|### Per 4-frame training sample
+|
+|A ViT-Tiny forward pass at 224×224 with
++14×14 patches is roughly 3.4 GFLOPs per
++image. Training forward+backward is about
++3× forward, and each sample has 4
++frames:
+|
+|  3.4 GFLOPs × 4 × 3 ≈ 41 GFLOPs/sample
+|
+|The predictor is much smaller in compute
++because it operates on only a few latent
++tokens, so I’d round this to about:
+|
+|  ┌──────────────────────────────────┐
++  │ 40–45 GFLOPs per training sample │
++  └──────────────────────────────────┘
+|
+|### PushT training run
+|
+|PushT dataset in the paper:
+|
+|- 20,000 episodes
+|- Average length 196 env steps
+|- Frame skip 5 → about 39 latent
++frames/episode
+|- 4-frame windows → about 36 usable
++windows/episode
+|- 10 epochs
+|
+|Approximate samples:
+|
+|  20,000 × 36 × 10 ≈ 7.2M samples
+|
+|Total training FLOPs:
+|
+|  7.2M × 41 GFLOPs ≈ 3.0 × 10¹⁷ FLOPs
+|
+|So for one LeWM run on PushT:
+|
+|  ┌───────────────────────────────┐
++  │ ≈ 3 × 10¹⁷ FLOPs ≈ 0.3 EFLOPs │
++  └───────────────────────────────┘
+|
+|Across the four main environments in the
++paper, one training run each is roughly:
+|
+|  ┌──────────────────┐
++  │ ≈ 0.6–0.7 EFLOPs │
++  └──────────────────┘
+|
+|## Time on your RX 5700 XT
+|
+|Your RX 5700 XT has roughly:
+|
+|- FP32 peak: 9.75 TFLOPs
+|- FP16 peak: 19.5 TFLOPs
+|- VRAM: 8GB
+|
+|For the estimated 0.3 EFLOPs PushT run:
+|
+|### Theoretical best case
+|
+|At FP16 peak:
+|
+|  3 × 10¹⁷/19.5 × 10¹² ≈ 15,400 s
++    ≈ 4.3 hours
+|
+|At FP32 peak:
+|
+|  3 × 10¹⁷/9.75 × 10¹² ≈ 30,800 s
++    ≈ 8.6 hours
+|
+|So, absolute theoretical lower bound:
+|
+|  ┌─────────────────────────────────────┐
++  │ ≈ 4–9 hours for one PushT-scale run │
++  └─────────────────────────────────────┘
+|
+|### More realistic
+|
+|Consumer AMD GPU training will not hit peak.
++Also, RX 5700 XT / RDNA1 has weak/awkward ML
++software support compared with an NVIDIA
++L40S. If you get 20–35% effective
++utilization, then:
+|
+|  ≈ 12–40 hours for one PushT-scale LeWM run
+|
+|For all four environments:
+|
+|  ┌────────────────────────────┐
++  │ ≈ 1.5–4 days realistically │
++  └────────────────────────────┘
+|
+|Possibly longer if ROCm/PyTorch support
++gives you trouble or if batch size 128 does
++not fit in 8GB VRAM.
+|
+|## Alternative interpretation: matching
++their L40S wall-clock compute
+|
+|If instead you interpret “how many FLOPs
++they used” as “L40S peak FLOPs × a few
++hours,” then the number is much larger.
++NVIDIA L40S peak FP16 tensor throughput is
++about 733 TFLOPs. If “a few hours” means
++3–5 hours:
+|
+|  733 × 10¹² × 3–5 h ≈ 7.9–13.2 EFLOPs
+|
+|Your RX 5700 XT at 19.5 TFLOPs FP16 would
++need:
+|
+|  ≈ 4.7–7.8 days at theoretical FP16 peak
+|
+|Realistically, perhaps:
+|
+|  ┌───────────────┐
++  │ ≈ 1–3 + weeks │
++  └───────────────┘
+|
+|But I think this is a less meaningful
++estimate because the L40S almost certainly
++was not running at FP16 tensor-core peak for
++this small 15M-parameter ViT-style model.
+|
+|## Bottom line
+|
+|Best estimate from the paper’s actual
++training setup:
+|
+|  One LeWorldModel training run:  ∼ 0.1–0.3
++    EFLOPs depending on dataset
+|
+|For the main PushT setup:
+|
+|  ┌──────────────┐
++  │ ∼ 0.3 EFLOPs │
++  └──────────────┘
+|
+|On your RX 5700 XT:
+|
+|  ┌────────────────────────┐
++  │ Theoretical: 4–9 hours │
++  └────────────────────────┘
+|
+|  Realistic: 12–40 hours for one comparable
++    run
+|
+|If you wanted to reproduce all main
++environment runs, expect more like:
+|
+|  1.5–4 days, maybe longer due to AMD/ROCm
++    and 8GB VRAM constraints
+=== 1779056231816-wg384n#53 (gpt-5.5)
+|Yes, I agree with the UX direction.
+|
+|Conceptually, a context summary is
++assistant-authored compressed memory,
++not a real user turn. So the current
++persisted-history shape:
+|
+|▎ text
+|▎ user: [Summary of turns A–B]
+|▎ assistant: <summary>
+|
+|is clunky. It was probably done because it
++gives the model an explicit header in the
++provider transcript, but UX-wise it is weird
++and creates a fake user message.
+|
+|I’d prefer a unified summary representation:
+|
+|▎ text
+|▎ assistant:
+|▎   metadata.kind = "context_summary"
+|▎   metadata.summaryOf = { start, end, scope
++▎ ? }
+|▎   content = <summary text>
+|
+|Rendered as an AI message with a header:
+|
+|▎ text
+|▎ Summary of turns 123–180
+|▎ <summary text>
+|
+|For current/in-progress summaries:
+|
+|▎ text
+|▎ Summary of in-progress turns 900–912
+|▎ <summary text>
+|
+|or maybe same wording if we don’t care to
++distinguish:
+|
+|▎ text
+|▎ Summary of turns 900–912
+|▎ <summary text>
+|
+|## Why this is better
+|
+|- No fake user message.
+|- Persisted-history and in-progress
++summaries render the same way.
+|- The model still sees the summary as
++assistant-authored content.
+|- The UI can style it as an AI summary
++block, not dim system text.
+|- It avoids the weird [Summary of turns] /
++assistant-pair split.
+|- It reduces message count: one replacement
++turn instead of two for persisted summaries.
+|
+|## One caveat
+|
+|We need the header to remain model-visible
++somehow.
+|
+|If we only make the header a UI-only field
++and send just the summary text to the model,
++the model loses the boundary information. So
++I’d either:
+|
+|1. keep the header in the assistant text
++content:
+|
+|▎ text
+|▎ [Summary of turns 123–180]
+|▎ <summary>
+|
+|and have TUI render that header specially,
++or
+|
+|2. add metadata and make provider
++serialization include a prefix.
+|
+|Option 1 is simpler and safer.
+|
+|## Implementation shape I’d choose
+|
+|For both persisted and current summarize
++replacements, create a single assistant
++message:
+|
+|▎ ts
+|▎ {
+|▎   role: "assistant",
+|▎   content: \`[Summary of turns \${start}–\${e
++▎ nd}]\\n\${summaryText}\`,
+|▎   metadata: {
+|▎     system: true,
+|▎     kind: "context_summary",
+|▎     ...
+|▎   }
+|▎ }
+|
+|Actually, I would not set system: true if
++that makes the TUI render it as a system
++notice. Instead, we may want something like:
+|
+|▎ ts
+|▎ metadata: {
+|▎   kind: "context_summary",
+|▎   summaryOf: { start, end, scope }
+|▎ }
+|
+|But MessageMetadata currently has only loose
++kind?: string, so adding typed optional
++metadata fields may be worth it.
+|
+|Alternatively, keep metadata normal/null and
++rely on the text prefix:
+|
+|▎ text
+|▎ [Summary of turns A–B]
+|▎ ...
+|
+|Then update display rendering to detect this
++prefix inside assistant text and render it
++with a summary header. That avoids changing
++schema.
+|
+|## My recommendation
+|
+|Do this:
+|
+|▎ text
+|▎ assistant message only
+|▎ content:
+|▎   [Summary of turns A–B]
+|▎   <summary text>
+|▎ metadata.kind = "context_summary"
+|
+|For in-progress:
+|
+|▎ text
+|▎ assistant message only
+|▎ content:
+|▎   [Summary of in-progress turns A–B]
+|▎   <summary text>
+|▎ metadata.kind = "context_summary"
+|
+|Then the TUI renders any assistant text
++beginning with that summary prefix as:
+|
+|▎ text
+|▎ Summary of turns A–B
+|▎ <summary>
+|
+|with AI-message styling, not dim system
++styling.
+|
+|So yes: one AI summary message for both
++persisted and in-progress is cleaner, more
++truthful, and better UX.
+=== 1779056231816-wg384n#57 (gpt-5.5)
+|Implemented.
+|
+|## Behavior change
+|
+|Context summaries now always replace
++summarized ranges with one assistant
++message whose text includes the header
++inline.
+|
+|Persisted/history summary now becomes:
+|
+|▎ text
+|▎ assistant:
+|▎ [Summary of turns A–B]
+|▎ <summary text>
+|
+|In-progress/current summary now becomes:
+|
+|▎ text
+|▎ assistant:
+|▎ [Summary of in-progress turns A–B]
+|▎ <summary text>
+|
+|No fake user header message, no
++model-visible system notice, no special dim
++rendering path, no new TUI logic.
+|
+|## Code changes
+|
+|In:
+|
+|▎ text
+|▎ daemon/src/tools/context.ts
+|
+|Changed prepareSummarizeMutation() so
++replacement is always:
+|
+|▎ ts
+|▎ const header = op.scope === "current"
+|▎   ? \`[Summary of in-progress turns \${op.gl
++▎ obalStart}–\${op.globalEnd}]\`
+|▎   : \`[Summary of turns \${op.globalStart}–$
++▎ {op.globalEnd}]\`;
+|▎ 
+|▎ const replacement = [{
+|▎   role: "assistant" as const,
+|▎   content: \`\${header}\\n\${summaryText}\`,
+|▎   metadata: null,
+|▎ }];
+|
+|Also removed the now-unused
++createModelVisibleSystemNotice import from
++context.ts.
+|
+|Compact output now says:
+|
+|▎ text
+|▎ summarized A–B into 1 assistant summary tu
++▎ rn
+|
+|instead of:
+|
+|▎ text
+|▎ 2 turns
+|
+|or:
+|
+|▎ text
+|▎ 1 model-visible summary notice
+|
+|## Tests updated
+|
+|Updated context tests for:
+|
+|- parallel summaries
+|- split persisted/current summaries
+|- overlapping strip_results applied before
++summarize
+|
+|They now assert the unified
++one-assistant-message shape.
+|
+|## Validation
+|
+|Passed focused tests:
+|
+|▎ bash
+|▎ bun test daemon/src/tools/context.test.ts 
++▎ daemon/src/display.test.ts daemon/src/agen
++▎ t.test.ts daemon/src/system.test.ts
+|
+|Passed:
+|
+|▎ bash
+|▎ bun run typecheck
+|▎ git diff --check
+|
+|Passed full suite:
+|
+|▎ bash
+|▎ bun test
+|
+|Result:
+|
+|▎ text
+|▎ 799 pass
+|▎ 0 fail
+|
+|## Current uncommitted changes
+|
+|▎ text
+|▎ M daemon/src/tools/context.ts
+|▎ M daemon/src/tools/context.test.ts
+=== 1776571736084-5543fr#5 (gpt-5.4)
+|Yes — you can do this as a Git alias.
+|
+|Git supports “shell aliases” when the alias
++value starts with !, so git sa can run a
++little shell script.
+|
+|Use this:
+|
+|▎ bash
+|▎ git config --global alias.sa '!f() { for d
++▎  in */; do [ -d "$d/.git" ] || continue; p
++▎ rintf "== %s ==\\n" "$d"; git -C "$d" statu
++▎ s -sb; printf "\\n"; done; }; f'
+|
+|Then, from
++~/Workspace/Exocortex/external-tools/, run:
+|
+|▎ bash
+|▎ git sa
+|
+|A few notes:
+|
+|- I used [ -d ... ] instead of [[ -d ...
++]] because Git shell aliases should be
++written portably, not assuming zsh.
+|- git sa is nice if you think of this as a
++“git utility command”.
+|- A zsh function is nicer if you want
++something easier to read/edit later.
+|
+|My recommendation:
+|- if you want git sa, use a Git alias
+|- if you want something more customizable,
++put it in ~/.zshrc as a function
+|
+|If you want the zsh version, I’d write it
++like this:
+|
+|▎ zsh
+|▎ gitallstatus() {
+|▎   for d in */; do
+|▎     [[ -d "$d/.git" ]] || continue
+|▎     echo "== $d =="
+|▎     git -C "$d" status -sb
+|▎     echo
+|▎   done
+|▎ }
+|
+|Then optionally add a shell alias too:
+|
+|▎ zsh
+|▎ alias gsa=gitallstatus
+|
+|So:
+|- git sa → Git alias approach
+|- gsa or gitallstatus → zsh approach
+|
+|Honestly, for this exact use case, I
++slightly prefer the zsh function because
++it’s more readable and easier to tweak. But
++if you specifically want git sa, the Git
++alias works fine.
+|
+|If you want, I can give you a version of
++git sa that works on a passed path too,
++e.g. git sa
++~/Workspace/Exocortex/external-tools.
+=== 1776571736084-5543fr#7 (gpt-5.4)
+|Done — git sa is now set globally.
+|
+|It’s configured as:
+|
+|▎ bash
+|▎ !f() { for d in */; do [ -d "$d/.git" ] ||
++▎  continue; printf "== %s ==\\n" "$d"; git -
++▎ C "$d" status -sb; printf "\\n"; done; }; f
+|
+|So when you’re in
++~/Workspace/Exocortex/external-tools/, you
++can now run:
+|
+|▎ bash
+|▎ git sa
+|
+|If you want, I can also make it accept an
++optional path, so git sa ~/some/parent/dir
++works too.
+=== 1773477726803-66405w#2 (gpt-5.6-sol)
+|SUMMARY
+|
+|Visual testing of the markdown rendering
++module was completed via screenshots of the
++exotest TUI (exotest markdown-rendering
++worktree). All features verified working.
+|
+|FEATURES VERIFIED VISUALLY (screenshots at
++/tmp/exo_md_test1.png,
++/tmp/exo_md_test2.png,
++/tmp/exo_edgetest.png,
++/tmp/exo_final_result.png):
+|- Code blocks with syntax highlighting:
++Python (purple keywords, green strings, blue
++functions), Rust (struct, types), Bash
++(for/do/done/if/fi, variables), TypeScript
++(interface, const, generics)
+|- All blocks show ▎ gutter character and
++language label
+|- Bold (text), italic (text), bold+italic
++(text) via ANSI codes
+|- Inline code (code) with subtle blue
++background tint (#162030 bg color)
+|- Tables with box-drawing characters (┌─┬─┐,
++│ cells │, ├─┼─┤, └─┴─┘) with proportional
++column widths
+|- Horizontal rules (─────) rendered as
++dimmed lines
+|- Mixed formatting in table cells
++(bold/italic inside cells works)
+|- Inline code mixed with bold in same
++paragraph works
+|
+|BUGS FIXED:
+|
+|1. isFenceClose regex fixed to match
++CommonMark spec:
+|Before: line.trim().startsWith("")
++(incorrectly accepted  with text after)
+|After: /^ {0,3}(\`{3,})\\s*$/.test(line) (must
++be only backticks + optional whitespace, up
++to 3 leading spaces)
+|File: tui/src/markdown/codeblocks.ts
+|
+|2. ANSI stripping regex fixed:
+|Before: /\\x1b\\[[^m]m/g (non-standard, would
++break on certain escape sequences)
+|After: /\\x1b\\[[0-9;]m/g (standard CSI
++sequence matching)
+|File: tui/src/markdown/codeblocks.ts
++(stripAnsi function)
+|
+|3. isBoxDrawingLine updated to:
+|- Strip leading ANSI escape sequences before
++checking first character
+|- Also detect ─ (U+2500, 0x2500) to catch HR
++lines that already have ANSI color applied
+|File: tui/src/markdown/tables.ts
+|Before: checked only ┌│├└ (0x250C, 0x2502,
++0x251C, 0x2514)
+|After: also checks ─ (0x2500) and strips
++ANSI prefix before char check
+|
+|A haiku subagent code review was attempted
++(exo --haiku --timeout 120) but timed out.
++It wrote findings to daemon/*.md files. Its
++"critical" finding about wrapParagraph
++receiving markdown width was a non-issue:
++wrapParagraph runs BEFORE formatMarkdown in
++the pipeline, so the paragraph is wrapped to
++content width first, then ANSI codes are
++added inline during formatMarkdown — no
++width confusion occurs.
+|
+|COMMIT HISTORY:
+|Three fix commits were squashed into one
++clean commit on markdown-rendering branch:
+|Commit message: "Add markdown rendering to
++TUI" describing the full module (6 files,
++1357 lines total in tui/src/markdown/, plus
++modifications to conversation.ts).
+|
+|FINAL STATE:
+|- TypeScript compiles clean (exit 0) for
++both tui/ and daemon/
+|- git log --oneline shows 2 commits total:
++the baseline + the new markdown rendering
++commit
+|- All 6 module files: highlight.ts (525L),
++formatting.ts (352L), tables.ts (251L),
++wordwrap.ts (123L), codeblocks.ts (98L),
++index.ts (8L)
+=== 1773477726803-66405w#38 (opus)
+|The ANSI stripping regex /\\x1b\\[[0-9;]*m/g
++appears in 3 places. Two strip all
++occurrences globally, one strips just a
++leading occurrence. These could share a
++constant for the regex, but they're all
++one-liners and the pattern is standard —
++this isn't worth extracting. The slight
++variation (global vs leading-only) makes a
++shared utility awkward.
+|
+|Let me do one final compile and then run a
++broader integration test:
+=== 1773526116281-9b6wy7#3 (opus)
+|Honestly, it was a mixed bag. Here's the
++breakdown:
+|
+|## What worked well
+|- Parallelizing independent file
++creation — I dispatched subagents for
++highlight.ts, formatting.ts, codeblocks.ts
+++ tables.ts, and wordwrap.ts + index.ts
++without blocking on each other. That saved
++real time since each file was
++self-contained.
+|- The agents followed instructions well
++— They created the files with the right
++imports, the right ANSI constants, and
++mostly-correct implementations. The Mnemo
++regex rules were copied faithfully.
+|
+|## The hiccoughs
+|
+|1. Quality wasn't perfect on first pass.
++The tables.ts subagent introduced a type
++error — it tried to pass formatMarkdown()
++(which returns {text, plain}) directly to
++wrapCell() (which expects string). I had to
++rewrite the entire renderTableBlock function
++myself to match Mnemo's proper approach
++(wrap on raw markdown text, format per-cell
++during assembly). That was the biggest fix.
+|
+|2. The code review subagent timed out. I
++dispatched a haiku agent to do a thorough
++code quality review and it hit the 120s
++timeout without producing output. I ended up
++doing the review myself, which was probably
++better anyway since I had all the code in
++context already.
+|
+|3. isFenceClose was wrong. The
++codeblocks subagent wrote a naive version
++that trimmed the whole line and checked for
++backticks — which would match  \`\`\`some
++text\`\`\`  as a closing fence. I had to fix
++it to use Mnemo's proper regex (/^
++{0,3}({3,})\\s*$/\`).
+|
+|4. The ANSI stripping regex was sloppy.
++One agent used /\\x1b\\[[^m]*m/g instead of
++/\\x1b\\[[0-9;]*m/g — the [^m]* variant is
++greedy in weird ways and could match across
++escape sequences. Small but important fix.
+|
+|## Takeaways
+|
+|- Subagents are great for
++boilerplate-heavy, spec-driven work
++(like porting 500 lines of regex rules).
++They saved me from having to manually copy
++all 14 language definitions.
+|- They're less reliable for architectural
++decisions — the tables.ts agent didn't
++understand how the formatting pipeline
++should flow (wrap first, format during
++assembly). That required domain
++understanding of how Mnemo does it.
+|- The orchestrator still needs to verify
++everything. I wouldn't trust subagent
++output without a compile check + visual
++test. The build→verify loop caught real
++bugs.
+|- For code reviews, I should've just done it
++myself from the start instead of waiting 2+
++minutes for a timeout.
+|
+|If I were doing it again, I'd use subagents
++for the leaf modules (highlight.ts,
++formatting.ts) and write the
++integration-heavy pieces (tables.ts,
++wordwrap.ts, conversation.ts changes) myself
++from the start.
+=== 1773090429370-m6qmfm#1 (opus)
+|Done. Here's a summary of the changes:
+|
+|Problem: In the chat history panel, $ and 0
++operated on individual visual (word-wrapped)
++lines instead of full logical (\\n-delimited)
++lines. A long paragraph wrapped across 3
++visual lines would have $ stop at the edge
++of the first visual line instead of jumping
++to the end of the paragraph.
+|
+|Root cause: buildMessageLines()
++pre-wraps text via wordWrap() into a flat
++array of visual lines. The history motions
++lineStart/lineEnd in historymotions.ts
++treated each array element as a line, with
++no knowledge of which visual lines belonged
++to the same logical line.
+|
+|Fix across 5 files:
+|
+|┌─────┬────────────────────────────────────┐
+|│ Fil │ Change                             │
+|│ e   │                                    │
+|├─────┼────────────────────────────────────┤
+|│     │ wordWrap() now returns { lines,    │
+|│ con │ cont } where cont[i] is true if    │
+|│ ver │ visual line i is a word-wrap       │
+|│ sat │ continuation of the previous       │
+|│ ion │ logical line. renderBlock() and    │
+|│ .ts │ renderUserMessage() propagate      │
+|│     │ this. buildMessageLines() collects │
+|│     │ it into a wrapContinuation[]       │
+|│     │ array.                             │
+|│     │ Added historyWrapContinuation:     │
+|│ sta │ boolean[] to RenderState.          │
+|│ te. │                                    │
+|│ ts  │                                    │
+|│     │                                    │
+|│     │ Stores wrapContinuation from       │
+|│ ren │ buildMessageLines() into state.    │
+|│ der │                                    │
+|│ .ts │                                    │
+|│     │                                    │
+|│     │ lineStart() now walks backwards    │
+|│ his │ through continuations to the first │
+|│ tor │ visual line of the logical group.  │
+|│ ymo │ lineEnd() walks forwards to the    │
+|│ tio │ last. New wrapCont? parameter is   │
+|│ ns. │ optional — all other callers       │
+|│ ts  │ unaffected.                        │
+|│     │                                    │
+|│     │ Passes                             │
+|│ his │ state.historyWrapContinuation to   │
+|│ tor │ lineStart/lineEnd in               │
+|│ ycu │ applyHistoryAction().              │
+|│ rso │                                    │
+|│ r.t │                                    │
+|│ s   │                                    │
+|│     │                                    │
+|└─────┴────────────────────────────────────┘
+=== 1773082840460-8p411t#1 (opus)
+|Now I have a clear picture. The issue is in
++executeModeChange in engine.ts, line 387:
+|
+|▎ typescript
+|▎ case "after": newCursor = Math.min(cursor 
++▎ + 1, buffer.length); break;
+|
+|When the cursor is at the last character of
++a line (the character just before \\n),
++pressing "a" moves the cursor to cursor +
++1, which lands on the \\n itself. In insert
++mode, that could mean the cursor ends up at
++the start of the next line visually,
++crossing the line boundary. The fix should
++clamp to lineEndOf(buffer, cursor) — which
++returns the position of the \\n (or
++buffer.length). That's valid for insert mode
++(you can insert at the end of the line,
++right before the \\n).
+|
+|Wait, let me think again. lineEndOf returns
++the index of the \\n character. So if cursor
++is at position pos which is the last char
++before \\n, then cursor + 1 = position of
++\\n. And lineEndOf(buffer, cursor) also
++returns the position of \\n. So those would
++be equal.
+|
+|The problem must be when the cursor IS on
++the \\n character in normal mode (possible?
++Let me check clampNormal). Actually, in
++normal mode the clampNormal prevents the
++cursor from being past buffer.length - 1
++(unless buffer ends with \\n). But it doesn't
++prevent the cursor from sitting on a \\n
++character.
+|
+|Wait, let me re-read the issue more
++carefully. The user says pressing "a" can
++"go through line boundaries." Let me think
++about what charRight does vs what "a" does.
+|
+|charRight (used by "l") checks if
++(buffer[pos] === "\\n") return pos; — it
++won't cross a newline.
+|
+|But "a" does Math.min(cursor + 1,
++buffer.length) — it doesn't check if
++buffer[cursor] is \\n. So if the cursor is
++sitting on the last character of a line (not
++a \\n), cursor + 1 would be the \\n
++position, which is fine for insert mode
++(insert before the newline). But if the
++cursor IS on the \\n itself... hmm, can that
++happen?
+|
+|Actually wait — looking at clampNormal: it
++clamps to buffer.length - 1 unless the
++buffer ends with \\n. It doesn't prevent
++sitting on interior \\n characters. But the
++motions like charRight do prevent crossing
++\\n. And lineEnd ($) goes to the \\n position.
++So in normal mode, the cursor could be at a
++\\n position (e.g., after pressing $ on a
++non-last line).
+|
+|Actually, lineEndOf returns idx which is the
++position of the \\n. And $ calls lineEnd
++which calls lineEndOf. In normal mode with
++clampNormal, the \\n position wouldn't be
++clamped away (since it's not past
++buffer.length - 1 for interior newlines).
+|
+|Wait, but $ in real vim goes to the last
++character of the line, not to the \\n. Let me
++check — actually in this implementation,
++lineEnd returns the position of the \\n. In
++real vim, $ in normal mode goes to the last
++non-newline character. But this might be
++intentional here if the promptline is
++wrapping differently.
+|
+|OK, let me focus on the actual bug. When the
++cursor is at the \\n character (or
++equivalently at lineEndOf(buffer, cursor))
++and you press a, the cursor goes to cursor
+++ 1, which would be the start of the next
++line. That's crossing a line boundary. In
++vim, a should move one position right from
++the cursor but stay on the same line.
+|
+|The fix: when computing the "after" cursor
++position, clamp it to not go past
++lineEndOf(buffer, cursor).
+|
+|▎ typescript
+|▎ case "after": newCursor = Math.min(cursor 
++▎ + 1, lineEndOf(buffer, cursor)); break;
+|
+|This ensures that a never crosses a \\n
++boundary, just like l doesn't.
+|
+|Let me make the fix in the worktree:
+=== 1776395204803-9oas53#excerpt (gpt-5.4)
+|                              ⎛ QKᵀ ⎞
++  Attention(Q, K, V) = softmax⎜ ─── ⎟V
++                              ⎝ √dₖ ⎠
+|
+|A masked version adds a mask M before
++softmax to block forbidden positions, which
++is essential for autoregressive decoding:
+|
+|         ⎛ QKᵀ     ⎞
++  softmax⎜ ─── + M ⎟V
++         ⎝ √dₖ     ⎠
+|
+|                              ⎛ QKᵀ ⎞
++  Attention(Q, K, V) = softmax⎜ ─── ⎟V
++                              ⎝ √dₖ ⎠
+|
+|- The dot products QKᵀ give relevance
++scores.
+|- The √dₖ scaling keeps scores from becoming
++too sharp.
+|- The output is a weighted sum of values;
++each output row lies in the convex hull of
++the value vectors.
+|
+|    MultiHead(Q, K, V)
++      = Concat(head₁, …, headₕ)Wᴼ
+|    headᵢ = Attention(QWᵢ^Q, KWᵢᴷ, VWᵢⱽ)
+|
+|- Masked / causal attention: used in
++autoregressive decoders so a position cannot
++attend to future tokens. This is implemented
++by adding −∞ above the diagonal before
++softmax.
+|- The page also mentions older or
++alternative forms such as
++Bahdanau/additive attention,
++Luong/multiplicative attention,
++positional variants, and spatial/channel
++attention in CNNs.
+|
+|### Computational tradeoffs
+|The big cost is that the attention matrix is
++quadratic in sequence length (O(n²)
++memory and compute), which becomes expensive
++for long contexts. The page highlights two
++optimizations:
+|- FlashAttention: computes attention in
++blocks to reduce GPU memory use while
++preserving exact results.
+|- FlexAttention: a PyTorch/Meta kernel that
++allows score modification before softmax and
++selects efficient implementations
++dynamically."
+`;
