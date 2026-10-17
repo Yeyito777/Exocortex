@@ -108,6 +108,30 @@ describe("hidden provider progress reaches the app watchdog", () => {
   }
 });
 
+describe("provider context reports", () => {
+  test("update the conversation total without rewriting persisted history rows", async () => {
+    const convId = id("context-report");
+    create(convId, "openai", "gpt-5.6-sol");
+    const events: Array<Record<string, unknown>> = [];
+    const fakeStream = (async () => ({
+      text: "answer", thinking: "", stopReason: "stop" as const,
+      blocks: [{ type: "text" as const, text: "answer" }], toolCalls: [],
+      inputTokens: 100, outputTokens: 2,
+    })) as typeof streamMessage;
+    for (const prompt of ["first", "second"]) {
+      const outcome = await orchestrateSendMessage(
+        server(events) as never, null, undefined, convId, prompt, Date.now(), callbacks(fakeStream),
+      );
+      expect(outcome.ok).toBe(true);
+    }
+    expect(events.filter(event => event.type === "context_update" && event.convId === convId).length).toBeGreaterThanOrEqual(2);
+    expect(loadPersisted(convId)!.messages.length).toBeGreaterThanOrEqual(4);
+    // Rescaling per-message attributions every round rewrote every stored row
+    // (with its content) and rehashed the transcript; nothing reads them.
+    expect(loadPersisted(convId)!.messages.every(message => message.contextTokens == null)).toBe(true);
+  });
+});
+
 describe("human-only sidebar bumps", () => {
   function targetBelowNewerConversation(suffix: string): { convId: string; newerId: string; originalOrder: number } {
     const convId = id(`sidebar-${suffix}`);
