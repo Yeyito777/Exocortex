@@ -535,7 +535,7 @@ describe("render caching and frame diffing", () => {
     state.scrollOffset = 12;
     screen.feed(captureRenderOutput(state));
 
-    for (const delta of [1, 3, -2, 1, -1, 4, -3]) {
+    for (const delta of [1, 3, -2, 1, -1, 4, -3, 9, -9]) {
       state.scrollOffset += delta;
       const out = captureRenderOutput(state);
       expect(out).toMatch(/\x1b\[3;\d+r/);

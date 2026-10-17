@@ -119,7 +119,8 @@ function detectRegionScroll(prevFrame: RenderFrame, nextFrame: RenderFrame): num
   const height = region.end - region.start + 1;
   if (height < 4) return 0;
 
-  const maxShift = Math.min(10, Math.floor(height / 2), Math.abs(viewportShift));
+  // Half-page jumps still reuse the other half of the region.
+  const maxShift = Math.min(height - 3, Math.abs(viewportShift));
   let bestShift = 0;
   let bestMatches = 0;
 
