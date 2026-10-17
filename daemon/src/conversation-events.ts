@@ -44,10 +44,25 @@ export function broadcastConversationInstructionsUpdated(server: DaemonServer, c
   broadcastConversationHistoryUpdated(server, convId);
 }
 
+/**
+ * Upsert folder rows on clients with sidebar-state-patch. Older clients get
+ * the full sidebar snapshot (MBs with thousands of conversations).
+ */
+export function broadcastFolderUpserts(server: DaemonServer, folderIds?: ReadonlySet<string>): void {
+  const legacy = () => ({ type: "conversation_moved" as const, ...convStore.listSidebarState() });
+  if (typeof server.broadcastSidebarStatePatched !== "function") {
+    server.broadcast(legacy());
+    return;
+  }
+  const folders = convStore.listFolders().filter(folder => !folderIds || folderIds.has(folder.id));
+  server.broadcastSidebarStatePatched({ type: "sidebar_state_patched", folders }, legacy);
+}
+
 /** Notify clients after a folder instruction document changes. */
 export function broadcastFolderInstructionsUpdated(server: DaemonServer, folderId: string, text: string, reqId?: string): void {
   server.broadcast({ type: "folder_instructions_updated", reqId, folderId, text });
-  server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
+  // Descendant folders inherit effective instructions, so refresh every folder row.
+  broadcastFolderUpserts(server);
   for (const convId of convStore.listFolderConversationIds(folderId)) {
     broadcastConversationHistoryUpdated(server, convId);
   }

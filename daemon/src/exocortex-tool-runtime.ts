@@ -6,7 +6,7 @@ import * as convStore from "./conversations";
 import {
   getActiveSubagentCount, getConversationActivityCounts, setSubagentActive,
 } from "./conversation-activity";
-import { broadcastConversationHistoryUpdated, broadcastConversationUpdated } from "./conversation-events";
+import { broadcastConversationHistoryUpdated, broadcastConversationUpdated, broadcastFolderUpserts } from "./conversation-events";
 import { log } from "./log";
 import { requestDaemonRestart, type RestartRequestOptions } from "./requested-restart";
 import {
@@ -245,7 +245,8 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
           parentSystemInstructions: convStore.getEffectiveSystemInstructions(parentId) ?? "",
         });
         broadcastConversationUpdated(server, convId);
-        server.broadcast({ type: "conversation_moved", ...convStore.listSidebarState() });
+        // The row itself arrived with conversation_updated; the folder may be new.
+        broadcastFolderUpserts(server, new Set([folder.id]));
         const startedAt = Date.now();
         const notify = args.detach !== true;
         if (notify) deps.beginParentNotification?.({ convId: parentId }, convId, prompt, startedAt, 0, true);

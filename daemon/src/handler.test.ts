@@ -2219,6 +2219,27 @@ describe("handler subagent completion delivery", () => {
     cleanupIds();
   });
 
+  test("native exo subagent patches the sidebar instead of broadcasting the full list", async () => {
+    const parentId = mkId("exo-subagent-parent");
+    create(parentId, "openai", "gpt-6-astra");
+    const patched: Array<Record<string, any>> = [];
+    const server = {
+      sendTo: mock(() => {}), broadcast: mock(() => {}), sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}), subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+      broadcastSidebarStatePatched: mock((event: Record<string, any>) => { patched.push(event); }),
+    };
+    createHandler(server as never);
+    const runtime = getExocortexToolRuntime(server as never)!;
+    const result = await runtime.execute({ subagent: "look into the wire protocol", args: { model: "astra" } }, parentId);
+    const childId = JSON.parse(result.output).conversation_id ?? JSON.parse(result.output).conversation;
+    if (childId) IDS.push(childId);
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(server.broadcast).not.toHaveBeenCalledWith(expect.objectContaining({ type: "conversation_moved" }));
+    const subagents = findTopLevelFolderByName("subagents")!;
+    expect(patched).toEqual([{ type: "sidebar_state_patched", folders: [expect.objectContaining({ id: subagents.id })] }]);
+    expect(server.broadcast).toHaveBeenCalledWith(expect.objectContaining({ type: "conversation_updated", summary: expect.objectContaining({ folderId: subagents.id }) }));
+  });
+
   test("native exo message: a streaming target takes it from the durable queue once idle; an idle one starts and reports back", async () => {
     const parentId = mkId("exo-message-parent");
     const targetId = mkId("exo-message-target");
