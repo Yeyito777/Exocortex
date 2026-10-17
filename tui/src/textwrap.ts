@@ -59,6 +59,11 @@ export interface WrapCopyLine {
    * copies yield the original TeX.
    */
   source?: string | null;
+  /**
+   * Rows sharing this object form one unit (a display-math image): a
+   * charwise copy touching any of them yields their `text` once, whole.
+   */
+  atomic?: object;
 }
 
 function firstCodePointEnd(text: string, start: number): number {

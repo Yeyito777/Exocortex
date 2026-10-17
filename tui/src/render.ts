@@ -1041,6 +1041,7 @@ function renderMessageArea(
   hlFirst: number,
   hlLast: number,
   searchQuery: string | null,
+  lineAnchors: BuildMessageLinesResult["lineAnchors"] = [],
 ): void {
   const { chatCol, bgLine } = ctx;
 
@@ -1054,8 +1055,18 @@ function renderMessageArea(
       const canonicalPlain = stripAnsi(allLines[lineIdx]);
       const searchRanges = searchQuery ? findSearchMatches(plain, searchQuery) : [];
       let rendered = line;
+      const math = inVisual ? mathImageSpan(lineAnchors[lineIdx], lineIdx) : null;
 
-      if (inVisual && lineIdx >= vStartRow && lineIdx <= vEndRow) {
+      if (math) {
+        // A display-math image selects as one unit, like one glyph: when the
+        // selection touches any of its rows, its whole cell rectangle is selected.
+        if (math.first <= vEndRow && math.last >= vStartRow) {
+          const localStart = Math.max(displayPrefixWidth, math.col - viewportRow.startCol + displayPrefixWidth);
+          const localEnd = localStart + math.cols - 1;
+          const padded = rendered + " ".repeat(Math.max(0, localEnd + 1 - plain.length));
+          rendered = renderLineWithSelection(padded, localStart, localEnd);
+        }
+      } else if (inVisual && lineIdx >= vStartRow && lineIdx <= vEndRow) {
         // This line is part of the visual selection — text-bound highlight
         const bounds = contentBounds(canonicalPlain);
         let startCol: number;
@@ -1110,6 +1121,17 @@ function renderMessageArea(
       appendRowWrite(ctx, row, chatCol, finalLine);
     }
   }
+}
+
+/** The history rows and columns of the display-math image on line `lineIndex`, if any. */
+function mathImageSpan(
+  anchor: BuildMessageLinesResult["lineAnchors"][number] | undefined,
+  lineIndex: number,
+): { first: number; last: number; col: number; cols: number } | null {
+  const image = anchor?.images?.[0];
+  if (!image || !("kitty" in image.layout)) return null;
+  const first = lineIndex - image.row;
+  return { first, last: first + image.layout.rows - 1, col: image.layout.col, cols: image.layout.cols };
 }
 
 function autocompleteDisplayText(text: string): string {
@@ -1679,7 +1701,7 @@ export function render(state: RenderState): boolean {
     messageAreaStart, messageAreaHeight,
     historyFocused, inVisual, state.vim.mode,
     vAnchor, vCursor, vStartRow, vEndRow,
-    hlFirst, hlLast, searchQuery,
+    hlFirst, hlLast, searchQuery, lineAnchors,
   );
 
   // ── Active task panel (top-right float) ────────────────────────

@@ -9,6 +9,7 @@
 
 import type { MathRenderRequest, MathRenderResponse } from "./mathimages";
 import { layoutMathSvg } from "./mathsvg";
+import { withSelectionText } from "./mathpng";
 
 declare const self: Worker;
 
@@ -59,7 +60,8 @@ async function render(request: MathRenderRequest): Promise<MathRenderResponse> {
     const { toSvg, toPng } = await engine;
     const containerWidth = (request.maxCols ?? 200) * request.cellWidth;
     const layout = layoutMathSvg(toSvg(request.tex, request.display, request.emPx, containerWidth), request);
-    const png = toPng(layout.svg, layout.needsSystemFonts);
+    const rendered = toPng(layout.svg, layout.needsSystemFonts);
+    const png = request.text === undefined ? rendered : withSelectionText(rendered, request.text);
     return {
       id: request.id,
       ok: true,
