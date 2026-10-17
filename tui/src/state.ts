@@ -222,10 +222,11 @@ export interface RenderState {
   /**
    * Latest load_conversation this TUI still wants applied. A load for another
    * conversation navigates only when it answers this request; starting a draft
-   * or the folder-instructions editor clears it so late or replayed opens
-   * cannot yank the user back.
+   * or the folder-instructions editor replaces it with NO_CONVERSATION_OPEN so
+   * late or replayed opens cannot yank the user back. Null means untracked
+   * (nothing opened through the tracked path yet; loads apply as before).
    */
-  conversationOpenRequest: { reqId: string; convId: string } | null;
+  conversationOpenRequest: { reqId: string | null; convId: string | null } | null;
   /** Selected remote daemon route. Null means the local daemon. */
   sshRemote: { alias: string; connected: boolean } | null;
   macroEnvironment: MacroEnvironment | null;
@@ -416,6 +417,11 @@ export function clearPendingAI(state: RenderState): void {
 }
 
 /** Whether the active conversation is still waiting for its first canonical load. */
+/** Every earlier open is unwanted: the user started a draft or a folder document. */
+export function noConversationOpen(): { reqId: null; convId: null } {
+  return { reqId: null, convId: null };
+}
+
 /** Record the load_conversation request the user currently wants applied. */
 export function noteConversationOpenRequest(state: RenderState, convId: string, reqId: string): void {
   state.conversationOpenRequest = { reqId, convId };
@@ -521,7 +527,7 @@ export function resetDraftConversationState(state: RenderState, folderId = state
   state.folderInstructionsDoc = null;
   state.convId = null;
   state.conversationLoading = null;
-  state.conversationOpenRequest = null;
+  state.conversationOpenRequest = noConversationOpen();
   // Starting a draft chooses its destination. Navigating the sidebar afterward
   // is only browsing and must not silently move the eventual conversation.
   state.draftFolderId = folderId;
@@ -550,7 +556,7 @@ export function openFolderInstructionsDocument(state: RenderState, folderId: str
   state.sidebar.selectedId = null;
   state.convId = null;
   state.conversationLoading = null;
-  state.conversationOpenRequest = null;
+  state.conversationOpenRequest = noConversationOpen();
   state.contextTokens = 0;
   state.goal = null;
   state.btw = null;
