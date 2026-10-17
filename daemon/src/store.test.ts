@@ -24,7 +24,7 @@ test("an unreadable credentials file is kept aside instead of being overwritten 
   writeFileSync(credFile, '{"version":2,"providers":{"openai":{"tok');
   saveProviderAuth("deepseek", { apiKey: "k" });
 
-  expect(loadProviderAuth("deepseek")).toEqual({ apiKey: "k" });
+  expect(loadProviderAuth<{ apiKey: string }>("deepseek")).toEqual({ apiKey: "k" });
   const kept = readdirSync(secretsDir()).filter(name => name.startsWith("credentials.json.corrupt-"));
   expect(kept).toHaveLength(1);
   expect(readFileSync(join(secretsDir(), kept[0]), "utf-8")).toBe('{"version":2,"providers":{"openai":{"tok');
@@ -33,8 +33,8 @@ test("an unreadable credentials file is kept aside instead of being overwritten 
 test("credentials are replaced atomically with owner-only permissions", () => {
   saveProviderAuth("deepseek", { apiKey: "a" });
   saveProviderAuth("openrouter", { apiKey: "b" });
-  expect(loadProviderAuth("deepseek")).toEqual({ apiKey: "a" });
-  expect(loadProviderAuth("openrouter")).toEqual({ apiKey: "b" });
+  expect(loadProviderAuth<{ apiKey: string }>("deepseek")).toEqual({ apiKey: "a" });
+  expect(loadProviderAuth<{ apiKey: string }>("openrouter")).toEqual({ apiKey: "b" });
   expect(readdirSync(secretsDir()).filter(name => name.startsWith("credentials.json"))).toEqual(["credentials.json"]);
   if (process.platform !== "win32") expect(statSync(credFile).mode & 0o777).toBe(0o600);
 });
