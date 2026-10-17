@@ -7,6 +7,7 @@ import {
   MAX_STORED_DIMENSION,
   attachmentsDir,
   attachmentsInternalsForTest,
+  cachedImagePreview,
   copyStoredImages,
   findStoredImage,
   imageIdForBytes,
@@ -30,6 +31,8 @@ beforeAll(() => {
   magick(["-size", "30x10", "xc:yellow", join(dir, "anim.gif")]);
   magick(["-size", "24x12", "xc:purple", join(dir, "art.webp")]);
   magick(["-size", "5000x100", "xc:white", join(dir, "wide.png")]);
+  // Many colours, like a downscaled screenshot.
+  magick(["-size", "600x300", "plasma:fractal", join(dir, "busy.png")]);
 });
 
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -143,6 +146,52 @@ describe("previews", () => {
     // Leftmost column of the red→blue gradient is red-dominant and opaque.
     expect(pixels.data[0]).toBeGreaterThan(pixels.data[2]);
     expect(pixels.data[3]).toBe(255);
+  });
+
+  test("thumbnails are quantized to a palette; the viewer's preview keeps exact colours", async () => {
+    attachmentsInternalsForTest.clearPreviewCache();
+    const ref = await storeImageFile(join(dir, "busy.png"));
+    const stored = findStoredImage(ref.id)!;
+    const source = { bytes: readFileSync(stored.path), mediaType: stored.mediaType };
+    const full = await renderImagePreview(ref.id, source, { format: "png", width: 300, height: 300 });
+    const thumbnail = await renderImagePreview(ref.id, source, { format: "png", width: 300, height: 300, purpose: "thumbnail" });
+    expect([thumbnail.width, thumbnail.height]).toEqual([300, 150]);
+    expect(sniffImage(thumbnail.data)).toEqual({ mediaType: "image/png", width: 300, height: 150 });
+    // IHDR colour type: 3 is indexed, 2/6 truecolour.
+    expect(thumbnail.data[25]).toBe(3);
+    expect(full.data[25]).not.toBe(3);
+    expect(thumbnail.data.length).toBeLessThan(full.data.length / 2);
+    expect(validatePreviewRequest({ format: "png", width: 10, height: 10, purpose: "poster" as "thumbnail" })).toContain("purpose");
+    // Partial transparency survives quantization.
+    magick(["-size", "64x32", "gradient:rgba(255,0,0,1)-rgba(0,0,255,0)", join(dir, "fade.png")]);
+    const fade = await storeImageFile(join(dir, "fade.png"));
+    const fadeStored = findStoredImage(fade.id)!;
+    const fadeThumb = await renderImagePreview(fade.id, { bytes: readFileSync(fadeStored.path), mediaType: fadeStored.mediaType }, { format: "png", width: 32, height: 32, purpose: "thumbnail" });
+    const rgba = Bun.spawnSync(["magick", "png:-", "-depth", "8", "rgba:-"], { stdin: fadeThumb.data }).stdout;
+    const alphas = new Set(Array.from({ length: rgba.length / 4 }, (_, i) => rgba[i * 4 + 3]));
+    expect(alphas.size).toBeGreaterThan(4);
+  });
+
+  test("a rendered preview survives a restart on disk and is served without the image", async () => {
+    attachmentsInternalsForTest.clearPreviewCache();
+    const ref = await storeImageFile(join(dir, "busy.png"));
+    const stored = findStoredImage(ref.id)!;
+    const request = { format: "png" as const, width: 120, height: 120, purpose: "thumbnail" as const };
+    expect(cachedImagePreview(ref.id, request)).toBeNull();
+    const rendered = await renderImagePreview(ref.id, { bytes: readFileSync(stored.path), mediaType: stored.mediaType }, request);
+    attachmentsInternalsForTest.forgetPreviewMemory();
+    const cached = cachedImagePreview(ref.id, request);
+    expect(cached).toMatchObject({ format: "png", width: rendered.width, height: rendered.height });
+    expect(cached!.data.equals(rendered.data)).toBe(true);
+    // Another size is another preview.
+    expect(cachedImagePreview(ref.id, { ...request, width: 121 })).toBeNull();
+    // Nothing is decoded again: unreadable source bytes still get the cached preview.
+    attachmentsInternalsForTest.forgetPreviewMemory();
+    const again = await renderImagePreview(ref.id, { bytes: Buffer.alloc(0), mediaType: "image/png" }, request);
+    expect(again.data.equals(rendered.data)).toBe(true);
+    const rgba = await renderImagePreview(ref.id, { bytes: readFileSync(stored.path), mediaType: stored.mediaType }, { format: "rgba", width: 8, height: 4 });
+    attachmentsInternalsForTest.forgetPreviewMemory();
+    expect(cachedImagePreview(ref.id, { format: "rgba", width: 8, height: 4 })!.data.equals(rgba.data)).toBe(true);
   });
 
   test("converts JPEG and WebP sources to PNG", async () => {

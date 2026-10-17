@@ -15,9 +15,22 @@ const APC = "\x1b_G";
 const ST = "\x1b\\";
 const moveTo = (row: number, col: number) => `\x1b[${row};${col}H`;
 export const KITTY_CHUNK_CHARS = 4096;
-/** Terminal-side data we keep resident beyond what is on screen. */
-const MAX_RESIDENT_IMAGES = 32;
-const MAX_RESIDENT_BASE64_CHARS = 96 * 1024 * 1024;
+/**
+ * Terminal-side data we keep resident beyond what is on screen, so scrolling
+ * back re-places images instead of sending them again. Terminals hold decoded
+ * pixels: st allows 1,024 images and 320 MiB of them, evicting its least
+ * recently used unplaced image past that (a placement then reports ENOENT and
+ * the image is sent again), so stay below both.
+ */
+const MAX_RESIDENT_IMAGES = 512;
+const MAX_RESIDENT_PIXEL_BYTES = 192 * 1024 * 1024;
+/**
+ * An image reported missing this soon after it was sent was rejected rather
+ * than evicted; after this many in a row it is no longer placed (each attempt
+ * would resend it on every frame).
+ */
+const REJECTED_WITHIN_MS = 2_000;
+const MAX_REJECTIONS = 3;
 
 export interface KittyImageData {
   /** Protocol image id (`i`), unique per transmitted preview. */
@@ -105,7 +118,13 @@ function fingerprint(placement: KittyPlacement): string {
 
 interface ResidentImage {
   base64: string;
+  pixelBytes: number;
   lastUsed: number;
+  sentAt: number;
+}
+
+function pixelBytes(image: KittyImageData): number {
+  return image.pixelWidth * image.pixelHeight * 4;
 }
 
 /** Terminal-side image and placement state for one screen. */
@@ -113,6 +132,8 @@ export class KittyImageSync {
   private readonly resident = new Map<number, ResidentImage>();
   /** placement key → fingerprint last sent ("" forces a re-place). */
   private readonly placed = new Map<string, string>();
+  /** Images the terminal reported missing right after receiving them, by how many times in a row. */
+  private readonly rejected = new Map<number, number>();
   private useClock = 0;
 
   /** Whether any placement may currently be on screen. */
@@ -135,10 +156,11 @@ export class KittyImageSync {
 
     for (const [key, placement] of desired) {
       const { image } = placement;
+      if ((this.rejected.get(image.kittyId) ?? 0) >= MAX_REJECTIONS) continue;
       const resident = this.resident.get(image.kittyId);
       if (!resident || resident.base64 !== image.base64) {
         out.push(transmitPng(image));
-        this.resident.set(image.kittyId, { base64: image.base64, lastUsed: tick });
+        this.resident.set(image.kittyId, { base64: image.base64, pixelBytes: pixelBytes(image), lastUsed: tick, sentAt: Date.now() });
         for (const placedKey of this.placed.keys()) {
           if (placedKey.startsWith(`${image.kittyId}:`)) this.placed.set(placedKey, "");
         }
@@ -160,9 +182,15 @@ export class KittyImageSync {
     for (const key of this.placed.keys()) this.placed.set(key, "");
   }
 
-  /** The terminal reported an image missing (evicted): send it again next sync. */
+  /**
+   * The terminal reported an image missing (evicted): send it again next
+   * sync. One it keeps losing (rejected as too large, say) stops being placed.
+   */
   forgetImage(kittyId: number): boolean {
+    const resident = this.resident.get(kittyId);
     const known = this.resident.delete(kittyId);
+    if (resident && Date.now() - resident.sentAt < REJECTED_WITHIN_MS) this.rejected.set(kittyId, (this.rejected.get(kittyId) ?? 0) + 1);
+    else this.rejected.delete(kittyId);
     for (const key of [...this.placed.keys()]) {
       if (key.startsWith(`${kittyId}:`)) this.placed.delete(key);
     }
@@ -178,22 +206,23 @@ export class KittyImageSync {
     }
     this.resident.clear();
     this.placed.clear();
+    this.rejected.clear();
     return out.join("");
   }
 
   private evict(inUse: ReadonlySet<number>): string[] {
-    let chars = 0;
-    for (const image of this.resident.values()) chars += image.base64.length;
-    if (this.resident.size <= MAX_RESIDENT_IMAGES && chars <= MAX_RESIDENT_BASE64_CHARS) return [];
+    let bytes = 0;
+    for (const image of this.resident.values()) bytes += image.pixelBytes;
+    if (this.resident.size <= MAX_RESIDENT_IMAGES && bytes <= MAX_RESIDENT_PIXEL_BYTES) return [];
     const out: string[] = [];
     const candidates = [...this.resident.entries()]
       .filter(([kittyId]) => !inUse.has(kittyId))
       .sort((a, b) => a[1].lastUsed - b[1].lastUsed);
     for (const [kittyId, image] of candidates) {
-      if (this.resident.size <= MAX_RESIDENT_IMAGES && chars <= MAX_RESIDENT_BASE64_CHARS) break;
+      if (this.resident.size <= MAX_RESIDENT_IMAGES && bytes <= MAX_RESIDENT_PIXEL_BYTES) break;
       out.push(deleteImage(kittyId));
       this.resident.delete(kittyId);
-      chars -= image.base64.length;
+      bytes -= image.pixelBytes;
     }
     return out;
   }

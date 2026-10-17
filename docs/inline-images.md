@@ -42,10 +42,12 @@ each fitted to those limits on its own so images of one shape share a height,
 bottom-aligned. When they don't all fit the chat width, as many as fit are
 shown, followed by `› +N` beside them. Kitty strip rows are filled with
 no-break spaces, so the history cursor can cross them like text. While an
-image has no pixels its first row says "loading image…" or why it is
-unavailable, cut to the image's width (beside an assistant image, to the
-pane): history rows are drawn as built, so a row wider than the pane would
-wrap into the sidebar. Image rows are also clipped to the pane when drawn.
+image has no pixels its first visible row says "loading image…" or why it is
+unavailable, cut to the image's width (beside an image alone on its row, to
+the pane), so nothing wraps into the sidebar. In Kitty mode the frame draws
+that notice over the blank image rows, so pixels arriving never re-render
+history; the fallback writes it into the rows. Image rows are also clipped to
+the pane when drawn.
 
 Enter on a thumbnail with the history cursor, or a click on it,
 opens the full-size viewer (`tui/src/imagemodal.ts`) on that image; `› +N`
@@ -53,6 +55,8 @@ opens it on the first hidden one. The viewer is a centered box sized to the
 image and the terminal. With several images, `j`/`l`/`→` and `k`/`h`/`←` page
 to the next and previous image of the same message, stopping at either end;
 the footer shows the position (`2/5`) and the next image is fetched ahead.
+Until an image's full-size preview arrives, the box shows its thumbnail
+stretched over it, if the terminal already holds one.
 Enter, Esc, `q`, or a click close it. It sits on top of the screen: thumbnails
 stay where they are, and one it partly covers keeps the part outside the box
 (up to four cropped placements around it), so closing it only has to restore
@@ -64,21 +68,37 @@ fetchable after the payload is compacted.
 ## Previews
 
 History never carries image bytes for attachments. Clients request
-`get_image { imageId, convId?, format, width, height }` and receive
+`get_image { imageId, convId?, format, width, height, purpose? }` and receive
 `image_data`: a PNG fitted to the box (never upscaled) or exact-size RGBA for
-character cells. A pasted image is found in its conversation on first request
-and then copied into the store. Previews are rendered by ImageMagick and cached
-in memory.
+character cells. `purpose: "thumbnail"` (history thumbnails) quantizes the PNG
+to a 256-colour palette, which keeps screenshots looking the same at about a
+quarter of the bytes; the viewer asks without it. A pasted image is found in
+its conversation on first request and then copied into the store. Previews are
+rendered by ImageMagick and cached in memory and on disk
+(`attachments/previews/`, 256 MB, least recently used first), so a restarted
+daemon answers without the image or ImageMagick.
+
+The TUI fetches a thumbnail at the largest box it can be drawn at for the
+current cell size (56 × 12 cells, fitted), so resizing never fetches again;
+smaller boxes let the terminal scale it down. It fetches only thumbnails on
+screen, then those within a screen's height above and below, nearest first;
+opening a long conversation does not download every image in it.
 
 Pasted images are also copied into the store when `send_message`,
 `queue_message`, or `update_queued_message` arrives, because a turn stores its
 user message only after loading the conversation and a client asks for its own
-paste right away. A pasted PNG whose bytes the TUI still holds (its local echo,
-or history that carries the payload) goes to Kitty terminals as is, with no
-`get_image` at all (up to 16 MB of base64, 1 MB when the TUI's own terminal is
-reached over SSH). The TUI shows "loading image…" while a preview is pending and
-retries, with backoff for about 8 s, a pasted image the daemon reports not found
-and any request that timed out; other errors show as "image unavailable".
+paste right away. The `user_message` event echoes a pasted image over 128 KB
+of base64 as its id and size only: the sender keeps its own bytes (also for a
+queued message delivered later) and other clients fetch a preview. A pasted PNG
+whose bytes the TUI still holds (its local echo, or history that carries the
+payload) goes to Kitty terminals as is, with no `get_image` at all, when the
+terminal would not have to shrink it much (at most 4× the drawn pixel area, at
+most 8192 px a side, up to 16 MB of base64, 1 MB when the TUI's own terminal is
+reached over SSH); a full-resolution screenshot behind a thumbnail is fetched
+as a preview instead. The TUI shows "loading image…" while a preview is pending
+and retries, with backoff for about 8 s, a pasted image the daemon reports not
+found and any request that timed out or was cut off by a disconnect; other
+errors show as "image unavailable" until a daemon (re)connects.
 
 ## Context compaction
 
@@ -108,10 +128,13 @@ used without a query. `EXOCORTEX_TUI_IMAGES=kitty|halfblock|off` overrides.
   `kittyimages.ts` reconciles placements (direct `t=d` transmission in 4096-byte
   chunks, `a=p` with source crop, `a=d` for placements that left). The frame
   renderer's scroll-region optimization is disabled while images are placed.
-  The task panel and autocomplete drop the image rows they overlap; the image
-  viewer (`z=2`), the queue prompt, the edit-message menu (Ctrl-W), the sidebar
-  conversation menu and the accounts screen crop them to what lies outside
-  their box, so closing one only restores what it covered.
+  The task panel, autocomplete, image viewer (`z=2`), queue prompt,
+  edit-message menu (Ctrl-W), sidebar conversation menu and accounts screen
+  crop them to what lies outside their box, so closing one only restores what
+  it covered. Images stay resident in the terminal (up to 512 images and
+  192 MB of decoded pixels, below st's limits), so scrolling back re-places
+  them without sending them again; one the terminal rejects right after
+  receiving it three times is no longer placed.
 - The fallback draws `▀` cells from the RGBA preview.
 
 The image box is identical in every mode, so loading pixels or switching modes

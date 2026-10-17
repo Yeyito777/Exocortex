@@ -98,12 +98,28 @@ describe("pasted images", () => {
       fetch: async request => { requests.push(request); return { format: "png", width: 10, height: 5, base64: "UE5H" }; },
       onChange: () => {},
     });
-    const local = kittyPreview(pasted, { cols: 40, rows: 10 });
+    // 800×400 into 100×25 cells of 8×16 px: drawn at its own size.
+    const local = kittyPreview(pasted, { cols: 100, rows: 25 });
     expect(local.phase).toBe("ready");
     if (local.phase === "ready") expect(local.value).toMatchObject({ base64: pasted.localBase64, pixelWidth: 800, pixelHeight: 400 });
-    expect(kittyPreview({ ...pasted, mediaType: "image/jpeg" }, { cols: 40, rows: 10 })).toEqual({ phase: "loading" });
+    expect(kittyPreview({ ...pasted, mediaType: "image/jpeg" }, { cols: 100, rows: 25 })).toEqual({ phase: "loading" });
     await Bun.sleep(0);
     expect(requests).toHaveLength(1);
+  });
+
+  test("a full-resolution paste is not sent to the terminal for a much smaller box", async () => {
+    const requests: ImagePreviewRequest[] = [];
+    configureInlineImages({
+      fetch: async request => { requests.push(request); return { format: "png", width: 320, height: 160, base64: "UE5H" }; },
+      onChange: () => {},
+    });
+    // 800×400 behind 40×10 cells (320×160 px) would make the terminal decode six times the pixels it draws.
+    expect(kittyPreview(pasted, { cols: 40, rows: 10 })).toEqual({ phase: "loading" });
+    await Bun.sleep(0);
+    expect(requests).toEqual([{ imageId: pasted.imageId, convId: "conv", format: "png", width: 320, height: 160 }]);
+    // Larger than a Kitty terminal accepts: always a preview.
+    const huge = { ...pasted, width: 9000, height: 100 };
+    expect(kittyPreview(huge, { cols: 512, rows: 100 })).toEqual({ phase: "loading" });
   });
 
   test("permanent errors are not retried", async () => {

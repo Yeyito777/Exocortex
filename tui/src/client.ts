@@ -412,6 +412,9 @@ export class DaemonClient {
     if (wasCurrentSocket) {
       this.clientExecutor.cancelAll();
       this.clearUpdateRequests();
+      // A preview request dies with its daemon; fail it now so it is asked again after reconnecting.
+      for (const callbacks of this.imageCallbacks.values()) callbacks.reject(new Error("image request interrupted: daemon disconnected"));
+      this.imageCallbacks.clear();
       this._connected = false;
       this.socket = null;
       if (this.activeSshConnection?.transport === socket) this.activeSshConnection = null;

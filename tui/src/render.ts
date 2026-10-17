@@ -67,7 +67,7 @@ import { durableSleepMetadataFrame } from "./durable-sleep-metadata";
 import { inlineImageCellSize, inlineImageGeneration, inlineImageMode, inlineImagesActive } from "./inlineimages";
 import { renderAccountsScreen } from "./accountsscreen";
 import { renderImageModal } from "./imagemodal";
-import { collectHistoryImagePlacements, historyImagesPlaced, syncHistoryImages, type ScreenRect } from "./historyimages";
+import { collectHistoryImages, historyImagesPlaced, syncHistoryImages, type ScreenRect } from "./historyimages";
 import { mathImageGeneration, mathImagesActive } from "./mathimages";
 
 interface HistoryRenderCacheEntry {
@@ -1800,10 +1800,9 @@ export function render(state: RenderState): boolean {
 
   // ── Inline history images (Kitty graphics placements) ─────────
   // Floating overlays are drawn as text, which images (z above text) would
-  // cover. The queue prompt, edit menu, conversation menu, accounts screen and
-  // image viewer crop them around their box; the task panel and autocomplete
-  // drop the image rows they overlap.
-  const imageObstructions: ScreenRect[] = [state.layout.taskPanelRect, autocompleteRect]
+  // cover. The task panel, autocomplete, queue prompt, edit menu, conversation
+  // menu, accounts screen and image viewer crop them around their box.
+  const imageCovers: ScreenRect[] = [state.layout.taskPanelRect, autocompleteRect]
     .filter((rect): rect is ScreenRect => rect !== null);
   // A daemon switch can turn images off under an open viewer.
   if (state.imageModal && !inlineImagesActive()) state.imageModal = null;
@@ -1822,20 +1821,25 @@ export function render(state: RenderState): boolean {
   const hadHistoryImages = historyImagesPlaced(state);
   // Display math may be forced to images on a terminal that failed detection.
   const kittyHistory = inlineImageMode() === "kitty";
-  const historyImagePlacements = kittyHistory || mathImagesActive()
-    ? collectHistoryImagePlacements({
+  const collectedImages = kittyHistory || mathImagesActive()
+    ? collectHistoryImages({
       viewportRows: state.layout.historyViewportRows,
       lineAnchors,
       messageAreaStart,
       chatCol,
       maxCol: chatCol + chatW - 1,
-      obstructions: imageObstructions,
-      covers: [modal?.rect, queuePromptOverlay?.rect, editMessageOverlay?.rect, conversationMenuOverlay?.rect, accountsOverlay?.rect].filter((rect): rect is ScreenRect => !!rect),
+      obstructions: [],
+      covers: [...imageCovers, modal?.rect, queuePromptOverlay?.rect, editMessageOverlay?.rect, conversationMenuOverlay?.rect, accountsOverlay?.rect].filter((rect): rect is ScreenRect => !!rect),
       cursorLineIndex: historyFocused ? state.historyCursor.row : null,
       cursorCol: state.historyCursor.col,
       mathOnly: !kittyHistory,
     })
-    : [];
+    : { placements: [], notices: [] };
+  // Thumbnails without pixels yet say so on their first visible row.
+  for (const notice of collectedImages.notices) {
+    appendRowWrite(ctx, notice.row, notice.col, bgLine(`${theme.dim}${notice.text}${theme.reset}`));
+  }
+  const historyImagePlacements = collectedImages.placements;
   if (modal?.placement) historyImagePlacements.push(modal.placement);
   const graphics = syncHistoryImages(state, historyImagePlacements);
 

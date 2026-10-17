@@ -13,6 +13,7 @@ import {
 } from "../messages";
 import { syncChosenProvider } from "../providerselection";
 import type { Event } from "../protocol";
+import type { ImageAttachment } from "../messages";
 import { removeLocalQueueEntry } from "../queue";
 import { formatStreamRetryNotice, pushInlineSystemNotice, shouldReconcileInlineSystemNoticeOnStop } from "./notices";
 import { commitPendingAISegment, hydratePendingAIFromSnapshot, markPendingAILive, subtractPartialCommittedBlocks } from "./pending-ai";
@@ -352,6 +353,19 @@ export function handleContextCompactionStatus(
   });
 }
 
+/**
+ * The daemon echoes large pasted images as id and size only. When the message
+ * is our own queued one, keep the bytes we sent: they draw without a fetch and
+ * keep the message editable.
+ */
+function imagesWithLocalBytes(state: RenderState, event: Extract<Event, { type: "user_message" }>): ImageAttachment[] | undefined {
+  const images = event.images;
+  if (!images?.some(image => image.base64.length === 0) || !event.queueId) return images;
+  const local = state.queuedMessages.find(entry => entry.id === event.queueId)?.images;
+  if (local?.length !== images.length || local.some(image => image.base64.length === 0)) return images;
+  return local;
+}
+
 export function handleUserMessage(event: Extract<Event, { type: "user_message" }>, state: RenderState): void {
   // Queue delivery and an unrelated history refresh (for example external call
   // startup persisting its status) can cross on the socket. If the canonical
@@ -392,7 +406,7 @@ export function handleUserMessage(event: Extract<Event, { type: "user_message" }
   state.messages.push({
     role: "user",
     text: event.text,
-    images: event.images,
+    images: imagesWithLocalBytes(state, event),
     metadata,
   });
 

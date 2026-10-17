@@ -5,6 +5,7 @@ import {
   configureInlineImages,
   inlineImagesInternalsForTest,
   layoutInlineImageStrip,
+  retryFailedImagePreviews,
   setInlineImageCellSize,
   setInlineImageMode,
   type InlineImageTarget,
@@ -17,6 +18,7 @@ import { buildMessageLines } from "./conversation";
 import { stripAnsi } from "./historycursor";
 import type { ImageRef } from "./messages";
 import { termWidth } from "./textwidth";
+import { invalidateFrame } from "./frame";
 
 function capture(state: RenderState): string {
   let out = "";
@@ -31,6 +33,12 @@ function capture(state: RenderState): string {
     process.stdout.write = write as typeof process.stdout.write;
   }
   return out;
+}
+
+/** A whole frame, as after a resize: every row written, not just those that changed. */
+function invalidated(state: RenderState): string {
+  invalidateFrame(state);
+  return capture(state);
 }
 
 const placements = (out: string) => [...out.matchAll(/\x1b\[(\d+);(\d+)H\x1b_G(a=p[^;]*);/g)]
@@ -209,10 +217,12 @@ describe("strip in history", () => {
                 metadata: null,
               }];
             }
+            showStrip(state);
             capture(state);
             await Bun.sleep(0);
             const out = capture(state) + capture(state);
-            expect(stripAnsi(state.historyLines.join("\n"))).toContain("⚠");
+            // Kitty draws the notice over the image rows; the fallback writes it into them.
+            expect(stripAnsi(mode === "kitty" ? out : state.historyLines.join("\n"))).toContain("⚠");
             // Every positioned write ends inside the screen, so nothing autowraps into the sidebar.
             for (const write of out.matchAll(/\x1b\[(\d+);(\d+)H((?:(?!\x1b\[\d+;\d+H)[\s\S])*)/g)) {
               const text = write[3].replace(/\x1b_G[^\x1b]*\x1b\\/g, "").replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, "").replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, "");
@@ -236,14 +246,60 @@ describe("strip in history", () => {
     configureInlineImages({ fetch: async () => { fetches++; throw new Error("get_image: image not found"); }, onChange: () => {} });
     setInlineImageMode("kitty");
     const state = stripState(refs(1));
-    const history = () => stripAnsi(buildMessageLines(state, 116).lines.join("\n"));
-    expect(history()).toContain("loading image…");
+    showStrip(state);
+    const screen = () => stripAnsi(invalidated(state));
+    expect(screen()).toContain("loading image…");
     await Bun.sleep(0);
     // Unlike a just-sent paste, there is nothing to wait for: no retries.
-    expect(history()).toContain("⚠ image unavailable: get_image: image not found");
+    expect(screen()).toContain("⚠ image unavailable: get_image: image not found");
     await Bun.sleep(600);
     expect(fetches).toBe(1);
-    expect(history()).not.toContain("loading image…");
+    expect(screen()).not.toContain("loading image…");
+    // Nor is it asked for again every few seconds while it stays on screen; a new connection may have it.
+    const now = Date.now;
+    Date.now = () => now() + 60_000;
+    try {
+      screen();
+      await Bun.sleep(0);
+      expect(fetches).toBe(1);
+    } finally {
+      Date.now = now;
+    }
+    retryFailedImagePreviews();
+    screen();
+    await Bun.sleep(0);
+    expect(fetches).toBe(2);
+  });
+
+  test("only thumbnails on or near the screen are fetched, and their arrival does not re-render history", async () => {
+    const requested: string[] = [];
+    configureInlineImages({ fetch: async request => { requested.push(request.imageId); return fetchPreview(request); }, onChange: () => {} });
+    setInlineImageMode("kitty");
+    setInlineImageCellSize(cell);
+    const state = stripState(refs(1));
+    // Twenty more messages with an image each, far above the first.
+    const older = refs(20).map((ref, i) => ({ ...ref, id: (i + 10).toString(16).repeat(64).slice(0, 64) }));
+    state.messages.unshift(...older.flatMap((ref, i) => [
+      { role: "user" as const, text: `older ${i}`, metadata: null },
+      {
+        role: "assistant" as const,
+        blocks: [
+          { type: "tool_result" as const, toolCallId: `o${i}`, toolName: "attach", output: "Attached 1 image", isError: false, images: [ref] },
+          ...Array.from({ length: 30 }, (_, line) => ({ type: "text" as const, text: `line ${line}` })),
+        ],
+        metadata: { startedAt: 1, endedAt: 2, model: "gpt-5.5", tokens: 10 },
+      },
+    ]));
+    showStrip(state);
+    const history = state.historyLines;
+    capture(state);
+    await Bun.sleep(0);
+    const out = capture(state);
+    expect(requested[0]).toBe(refs(1)[0].id);
+    // The image on screen and at most the nearest one above; not the other nineteen.
+    expect(requested.length).toBeLessThanOrEqual(2);
+    expect(placements(out)).toHaveLength(1);
+    expect(state.historyLines).toBe(history);
   });
 
   test("overflow: as many as fit, then `› +N` that a click or the cursor plus Enter opens", async () => {

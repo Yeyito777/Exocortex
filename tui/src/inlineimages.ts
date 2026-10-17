@@ -218,6 +218,8 @@ export interface ImagePreviewRequest {
   format: "png" | "rgba";
   width: number;
   height: number;
+  /** A history thumbnail: the daemon may trade exact colours for bytes (the viewer gets the full image). */
+  purpose?: "thumbnail";
 }
 
 export interface ImagePreviewResponse {
@@ -231,12 +233,13 @@ export type ImagePreviewFetcher = (request: ImagePreviewRequest) => Promise<Imag
 
 type PreviewEntry =
   | { phase: "loading"; retries?: number }
-  | { phase: "error"; error: string; at: number }
+  /** `retryAt` is Infinity for failures only a new connection can change (missing image, bad data). */
+  | { phase: "error"; error: string; retryAt: number }
   | { phase: "ready"; preview: ImagePreviewResponse; kitty?: KittyImageData; rgba?: Buffer };
 
 const MAX_CACHED_CHARS = 128 * 1024 * 1024;
 const MAX_IN_FLIGHT = 3;
-const ERROR_RETRY_MS = 5_000;
+const NETWORK_RETRY_MS = 5_000;
 /**
  * Backoff for failures that are expected to clear on their own. A just-sent
  * pasted image is "not found" until the daemon has stored its message, which
@@ -250,11 +253,20 @@ const TRANSIENT_RETRY_MS = [250, 500, 1_000, 2_000, 4_000];
  * every transmitted byte crosses the network.
  */
 const MAX_LOCAL_KITTY_CHARS = process.env.SSH_TTY || process.env.SSH_CONNECTION ? 1024 * 1024 : 16 * 1024 * 1024;
+/**
+ * Local bytes stand in for a preview only when the terminal would not have to
+ * shrink them much: a full-resolution screenshot behind a thumbnail costs the
+ * terminal a full decode (and on st's OpenGL backend, one every time it
+ * scrolls into view) and its memory for pixels nobody sees.
+ */
+const MAX_LOCAL_AREA_RATIO = 4;
+/** Kitty terminals reject larger images (st: 8192 px), and then every placement would fail. */
+const MAX_KITTY_DIMENSION = 8192;
 
 const previews = new Map<string, PreviewEntry>();
 let cachedChars = 0;
 let inFlight = 0;
-const queued: Array<() => void> = [];
+const queued: Array<{ key: string; run: () => void }> = [];
 let fetcher: ImagePreviewFetcher | null = null;
 let nextKittyId = 0x40000000;
 const retryTimers = new Set<ReturnType<typeof setTimeout>>();
@@ -272,7 +284,7 @@ export function configureInlineImages(options: {
 }
 
 function previewKey(request: ImagePreviewRequest): string {
-  return `${request.imageId}:${request.format}:${request.width}x${request.height}`;
+  return `${request.imageId}:${request.format}:${request.width}x${request.height}${request.purpose ? `:${request.purpose}` : ""}`;
 }
 
 function entryChars(entry: PreviewEntry): number {
@@ -299,16 +311,30 @@ function store(key: string, entry: PreviewEntry): void {
 }
 
 function runQueued(): void {
-  while (inFlight < MAX_IN_FLIGHT && queued.length > 0) queued.shift()!();
+  while (inFlight < MAX_IN_FLIGHT && queued.length > 0) queued.shift()!.run();
 }
 
 function isTransientFailure(message: string, request: ImagePreviewRequest): boolean {
   // Only a pasted image (looked up in its conversation) can be not-yet-stored.
-  return (Boolean(request.convId) && /image not found/.test(message)) || /timed out/.test(message);
+  return (Boolean(request.convId) && /image not found/.test(message)) || isNetworkFailure(message);
 }
 
-function enqueueFetch(key: string, request: ImagePreviewRequest, fetch: ImagePreviewFetcher, retries: number): void {
-  queued.push(() => {
+function isNetworkFailure(message: string): boolean {
+  return /timed out|disconnected|not connected/i.test(message);
+}
+
+/**
+ * Pixels only change how history lines read in the half-block fallback; a
+ * Kitty preview is drawn by placement, so its arrival needs a new frame but
+ * not a history re-render.
+ */
+function previewSettled(request: ImagePreviewRequest): void {
+  if (request.format === "rgba") changed();
+  else onChange();
+}
+
+function enqueueFetch(key: string, request: ImagePreviewRequest, fetch: ImagePreviewFetcher, retries: number, urgent = false): void {
+  const run = () => {
     inFlight++;
     fetch(request).then(preview => {
       store(key, { phase: "ready", preview });
@@ -329,33 +355,58 @@ function enqueueFetch(key: string, request: ImagePreviewRequest, fetch: ImagePre
         return;
       }
       log("warn", `tui: image preview ${request.imageId.slice(0, 12)} failed: ${message}`);
-      store(key, { phase: "error", error: message, at: Date.now() });
+      store(key, { phase: "error", error: message, retryAt: isNetworkFailure(message) ? Date.now() + NETWORK_RETRY_MS : Infinity });
     }).finally(() => {
       inFlight--;
       runQueued();
-      changed();
+      previewSettled(request);
     });
-  });
+  };
+  if (urgent) queued.unshift({ key, run });
+  else queued.push({ key, run });
 }
 
-function request(request: ImagePreviewRequest): PreviewEntry | null {
+/** Move a queued fetch to the front: it is on screen now. */
+function prioritize(key: string): void {
+  const index = queued.findIndex(item => item.key === key);
+  if (index > 0) queued.unshift(...queued.splice(index, 1));
+}
+
+function request(request: ImagePreviewRequest, urgent = false, peek = false): PreviewEntry | null {
   const key = previewKey(request);
   const existing = previews.get(key);
-  if (existing && (existing.phase !== "error" || Date.now() - existing.at < ERROR_RETRY_MS)) {
+  if (existing && (existing.phase !== "error" || Date.now() < existing.retryAt)) {
     touch(key, existing);
+    if (urgent && existing.phase === "loading") prioritize(key);
     return existing;
   }
-  if (!fetcher) return null;
+  if (!fetcher || peek) return null;
   store(key, { phase: "loading", retries: 0 });
-  enqueueFetch(key, request, fetcher, 0);
+  enqueueFetch(key, request, fetcher, 0, urgent);
   runQueued();
   return previews.get(key) ?? null;
 }
 
-/** A pasted PNG's own bytes, ready for Kitty: the terminal scales it to the cell box. */
-function localKittyEntry(source: InlineImageSource): PreviewEntry | null {
+/**
+ * Ask again for previews that failed: a (re)connected daemon may have what
+ * the previous one did not (another endpoint, a restored store).
+ */
+export function retryFailedImagePreviews(): void {
+  let dropped = false;
+  for (const [key, entry] of previews) {
+    if (entry.phase !== "error") continue;
+    previews.delete(key);
+    dropped = true;
+  }
+  if (dropped) changed();
+}
+
+/** A pasted PNG's own bytes, ready for Kitty when the terminal can draw them at about `pixels` without waste. */
+function localKittyEntry(source: InlineImageSource, pixels: { width: number; height: number }): PreviewEntry | null {
   const base64 = source.localBase64;
   if (!base64 || source.mediaType !== "image/png" || base64.length > MAX_LOCAL_KITTY_CHARS) return null;
+  if (source.width > MAX_KITTY_DIMENSION || source.height > MAX_KITTY_DIMENSION) return null;
+  if (source.width * source.height > MAX_LOCAL_AREA_RATIO * pixels.width * pixels.height) return null;
   const key = `${source.imageId}:local`;
   const existing = previews.get(key);
   if (existing) {
@@ -368,16 +419,27 @@ function localKittyEntry(source: InlineImageSource): PreviewEntry | null {
 
 export type PreviewState<T> = { phase: "loading" } | { phase: "error"; error: string } | { phase: "ready"; value: T };
 
+export interface PreviewOptions {
+  /** On screen now: fetch ahead of prefetches. */
+  urgent?: boolean;
+  /** Only what is already here: never start a fetch. */
+  peek?: boolean;
+  purpose?: "thumbnail";
+}
+
 /** PNG preview for terminal graphics, sized to the cell box it fills. */
-export function kittyPreview(source: InlineImageSource, box: InlineImageBox): PreviewState<KittyImageData> {
+export function kittyPreview(source: InlineImageSource, box: InlineImageBox, options: PreviewOptions = {}): PreviewState<KittyImageData> {
   const cell = environment.cell;
-  const entry = localKittyEntry(source) ?? request({
+  const width = Math.min(4096, box.cols * cell.width);
+  const height = Math.min(4096, box.rows * cell.height);
+  const entry = localKittyEntry(source, { width, height }) ?? request({
     imageId: source.imageId,
     ...(source.convId ? { convId: source.convId } : {}),
     format: "png",
-    width: Math.min(4096, box.cols * cell.width),
-    height: Math.min(4096, box.rows * cell.height),
-  });
+    width,
+    height,
+    ...(options.purpose ? { purpose: options.purpose } : {}),
+  }, options.urgent, options.peek);
   if (!entry || entry.phase === "loading") return { phase: "loading" };
   if (entry.phase === "error") return { phase: "error", error: entry.error };
   if (entry.preview.format !== "png") return { phase: "error", error: "unexpected preview format" };
@@ -388,6 +450,20 @@ export function kittyPreview(source: InlineImageSource, box: InlineImageBox): Pr
     pixelHeight: entry.preview.height,
   };
   return { phase: "ready", value: entry.kitty };
+}
+
+/**
+ * The cell box a history thumbnail is fetched for: the largest it is ever
+ * drawn at for this cell size. Narrow panes, short terminals and strips draw
+ * it smaller (the terminal scales it down), so resizing never fetches again.
+ */
+export function thumbnailFetchBox(source: Pick<InlineImageSource, "width" | "height">): InlineImageBox {
+  return fitImageBox(source, INLINE_IMAGE_MAX_COLUMNS, INLINE_IMAGE_MAX_ROWS, environment.cell);
+}
+
+/** The PNG a history thumbnail draws, fetched at the size of its largest box. */
+export function kittyThumbnail(source: InlineImageSource, options: Omit<PreviewOptions, "purpose"> = {}): PreviewState<KittyImageData> {
+  return kittyPreview(source, thumbnailFetchBox(source), { ...options, purpose: "thumbnail" });
 }
 
 /** RGBA pixels for the half-block fallback: one column per cell, two rows per cell. */
@@ -486,7 +562,7 @@ export function renderHalfBlockRows(
  * terminal columns: history rows are drawn as is, so a longer notice would
  * run past the pane and wrap into the sidebar.
  */
-function imageStatus(preview: PreviewState<unknown> | null, width: number): string {
+export function imageStatus(preview: PreviewState<unknown> | null, width: number): string {
   const text = preview?.phase === "error"
     ? `⚠ image unavailable: ${preview.error.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")}`
     : "loading image…";
@@ -495,9 +571,11 @@ function imageStatus(preview: PreviewState<unknown> | null, width: number): stri
 
 /**
  * History rows for one image: `box.rows` rows, no caption (the viewer shows
- * its name and size). In Kitty mode the rows stay blank (the placement covers
- * them) once pixels are ready; otherwise the first row explains what is
- * missing in at most `statusWidth` columns.
+ * its name and size). In Kitty mode the rows are always blank: the placement
+ * covers them, and the frame draws a loading or error notice over them until
+ * it can (historyimages.ts), so pixels arriving never re-render history and
+ * only images near the screen are fetched. Otherwise the first row explains
+ * what is missing in at most `statusWidth` columns.
  */
 export function renderInlineImage(
   source: InlineImageSource,
@@ -514,8 +592,7 @@ export function renderInlineImage(
 
   let preview: PreviewState<unknown> | null = null;
   if (environment.mode === "kitty") {
-    preview = kittyPreview(source, box);
-    if (preview.phase === "ready") return { layout, lines: blank(), copy };
+    return { layout, lines: blank(), copy };
   } else if (environment.mode === "halfblock") {
     const pixels = rgbaPreview(source, box);
     if (pixels.phase === "ready") return { layout, lines: renderHalfBlockRows(pixels.value).map(row => indent + row), copy };
@@ -627,13 +704,15 @@ export function layoutInlineImageStrip(
   return { boxes, slots, rows: Math.max(...boxes.map(box => box.rows)), overflow, width };
 }
 
-/** A thumbnail's image rows, each exactly `box.cols` wide (a status notice in the first while it has no pixels). */
+/**
+ * A thumbnail's image rows, each exactly `box.cols` wide (a status notice in
+ * the first while it has no pixels; Kitty's is drawn by the frame instead).
+ */
 function stripImageRows(source: InlineImageSource, box: InlineImageBox): string[] {
   const blanks = Array.from({ length: box.rows }, () => IMAGE_CELL.repeat(box.cols));
   let preview: PreviewState<unknown> | null = null;
   if (environment.mode === "kitty") {
-    preview = kittyPreview(source, box);
-    if (preview.phase === "ready") return blanks;
+    return blanks;
   } else if (environment.mode === "halfblock") {
     const pixels = rgbaPreview(source, box);
     if (pixels.phase === "ready") return renderHalfBlockRows(pixels.value);

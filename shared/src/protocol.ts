@@ -377,6 +377,8 @@ export interface GetImageCommand {
   /** png: fit within these bounds (never upscaled). rgba: exact output size. */
   width: number;
   height: number;
+  /** png: a history thumbnail, which the daemon may quantize to 256 colours. Older daemons ignore it. */
+  purpose?: "thumbnail";
 }
 
 export interface LoadToolOutputsCommand {

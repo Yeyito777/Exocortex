@@ -139,6 +139,18 @@ describe("DaemonClient request-scoped events", () => {
 });
 
 describe("DaemonClient commands", () => {
+  test("an image preview in flight fails when its daemon disconnects, so it is asked again", async () => {
+    const client = new DaemonClient(() => {});
+    const internal = client as any;
+    const socket = { write: () => {} };
+    internal.socket = socket;
+    internal._connected = true;
+    const pending = client.getImage({ imageId: "a".repeat(64), format: "png", width: 10, height: 10 });
+    internal.handleSocketClose(socket, true);
+    await expect(pending).rejects.toThrow("disconnected");
+    expect(internal.imageCallbacks.size).toBe(0);
+  });
+
   test("requests only the materialized tool-result ids", () => {
     const client = new DaemonClient(() => {}, undefined, false);
     const internal = client as any;

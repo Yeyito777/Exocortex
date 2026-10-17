@@ -13,11 +13,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildDisplayData } from "./display";
 import type { ImageRef, StoredMessage } from "./messages";
-import { storeImageFile, imageIdForBytes, sniffImage } from "./attachments";
+import { attachmentsInternalsForTest, findStoredImage, putImageBytes, storeImageFile, imageIdForBytes, sniffImage } from "./attachments";
 import { createClaudeStreamState, finalizeClaudeStream, pushClaudeMessage } from "./providers/anthropic/stream";
 import { rememberHostToolAttachments, takeHostToolAttachments } from "./providers/anthropic/host-tool-attachments";
 import { create, get } from "./conversations";
 import { createHandler } from "./handler";
+import { ECHO_INLINE_IMAGE_CHARS, imagesForEcho } from "./image-requests";
 
 let dir: string;
 
@@ -98,6 +99,21 @@ describe("Claude Code host tool", () => {
   });
 });
 
+describe("user_message echo", () => {
+  test("large pasted images are echoed as id and size; small ones keep their bytes", () => {
+    const big = Buffer.from(Bun.spawnSync(["magick", "-size", "400x300", "plasma:fractal", "png:-"]).stdout);
+    const small = Buffer.from(Bun.spawnSync(["magick", "-size", "8x8", "xc:red", "png:-"]).stdout);
+    expect(big.toString("base64").length).toBeGreaterThan(ECHO_INLINE_IMAGE_CHARS);
+    const echoed = imagesForEcho([
+      { mediaType: "image/png", base64: big.toString("base64"), sizeBytes: big.length },
+      { mediaType: "image/png", base64: small.toString("base64"), sizeBytes: small.length },
+    ])!;
+    expect(echoed[0]).toEqual({ mediaType: "image/png", base64: "", sizeBytes: big.length, imageId: imageIdForBytes(big), width: 400, height: 300 });
+    expect(echoed[1].base64).toBe(small.toString("base64"));
+    expect(imagesForEcho(undefined)).toBeUndefined();
+  });
+});
+
 describe("get_image", () => {
   function harness() {
     const sent: Array<Record<string, unknown>> = [];
@@ -118,6 +134,23 @@ describe("get_image", () => {
     await handle({} as never, { type: "get_image", reqId: "r1", imageId: ref.id, format: "png", width: 100, height: 100 });
     expect(sent[0]).toMatchObject({ type: "image_data", reqId: "r1", imageId: ref.id, format: "png", width: 100, height: 50 });
     expect(sniffImage(Buffer.from(sent[0].base64 as string, "base64"))).toEqual({ mediaType: "image/png", width: 100, height: 50 });
+  });
+
+  test("serves a thumbnail it already rendered without reading the image again", async () => {
+    const proc = Bun.spawnSync(["magick", "-size", "300x150", "plasma:fractal", "png:-"]);
+    const png = Buffer.from(proc.stdout);
+    const imageId = putImageBytes(png, "image/png");
+    const { sent, handle } = harness();
+    const request = { type: "get_image" as const, imageId, format: "png" as const, width: 120, height: 120, purpose: "thumbnail" as const };
+    await handle({} as never, { ...request, reqId: "t1" });
+    expect(sent[0]).toMatchObject({ type: "image_data", reqId: "t1", width: 120, height: 60 });
+    // Gone from the store (and from memory, as after a restart): the rendered thumbnail still answers.
+    rmSync(findStoredImage(imageId)!.path);
+    attachmentsInternalsForTest.forgetPreviewMemory();
+    await handle({} as never, { ...request, reqId: "t2" });
+    expect(sent[1]).toMatchObject({ type: "image_data", reqId: "t2", width: 120, height: 60, base64: sent[0].base64 });
+    await handle({} as never, { ...request, reqId: "t3", width: 100 });
+    expect(sent[2]).toMatchObject({ type: "error", reqId: "t3", message: "get_image: image not found" });
   });
 
   test("serves exact-size RGBA for character-cell fallbacks", async () => {

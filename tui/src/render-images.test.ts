@@ -109,8 +109,13 @@ describe("image viewer", () => {
     // 12–28, columns 24–77) as a band above it and a strip to its left, still
     // tinted, so the cursor-line highlight behind it stays hidden as before.
     expect(opening).not.toContain("a=d,");
-    const kept = placements(opening);
+    const kept = placements(opening).filter(placement => !placement.controls.includes(",z=2,"));
     expect(kept).toHaveLength(2);
+    // Until its own preview arrives, the viewer stretches the thumbnail the terminal already holds.
+    const placeholder = placements(opening).filter(placement => placement.controls.includes(",z=2,"));
+    expect(placeholder).toHaveLength(1);
+    expect(placeholder[0].controls).toContain(`i=${/i=(\d+)/.exec(thumbnail.controls)![1]},`);
+    expect(opening).not.toContain("a=t,");
     expect(kept.every(placement => placement.controls.includes(",V=1,"))).toBe(true);
     expect(kept[0]).toMatchObject({ row: 8, col: 3 });
     expect(kept[0].controls).toContain(`p=${/p=(\d+)/.exec(thumbnail.controls)![1]},c=48,r=4,x=0,y=0,w=384,h=64,`);
@@ -156,6 +161,40 @@ describe("image viewer", () => {
     const closed = capture(state);
     expect(placements(closed)).toHaveLength(0);
     expect(closed.match(/a=d,/g)).toHaveLength(1);
+    disposeHistoryImages(state);
+  });
+
+  test("the task panel crops a thumbnail around itself instead of dropping the rows it overlaps", async () => {
+    configureInlineImages({ fetch: async request => pngFetch(request), onChange: () => {} });
+    setInlineImageMode("kitty");
+    setInlineImageCellSize({ width: 8, height: 16 });
+    const state = imageState();
+    state.cols = 80;
+    state.sidebar.conversations = [{
+      id: "conv", provider: state.provider, model: state.model, effort: state.effort, fastMode: state.fastMode,
+      createdAt: 1, updatedAt: 2, messageCount: 1, title: "Conv", marked: false, pinned: false, streaming: false, unread: false, sortOrder: 0,
+      tasks: [{ id: "child", kind: "subagent", title: "A subagent with a fairly long title", startedAt: Date.now() - 2_000 }],
+    }];
+    showImage(state);
+    state.scrollOffset -= 5;
+    const shown = placements(await readyFrame(state));
+    const panel = state.layout.taskPanelRect!;
+    expect(panel).not.toBeNull();
+    const pieces = shown.map(placement => ({
+      ...placement,
+      columns: Number(/c=(\d+)/.exec(placement.controls)![1]),
+      rows: Number(/r=(\d+)/.exec(placement.controls)![1]),
+    }));
+    // The thumbnail starts on the panel's rows and reaches under it.
+    expect(pieces[0].row).toBeLessThanOrEqual(panel.bottom);
+    expect(pieces[0].col + pieces[0].columns - 1).toBeLessThan(panel.left);
+    for (const piece of pieces) {
+      const overlaps = piece.row <= panel.bottom && piece.row + piece.rows - 1 >= panel.top
+        && piece.col <= panel.right && piece.col + piece.columns - 1 >= panel.left;
+      expect(overlaps).toBe(false);
+    }
+    // Its rows beside the panel are kept, not dropped with the part under it.
+    expect(pieces.reduce((rows, piece) => Math.max(rows, piece.row + piece.rows), 0) - Math.min(...pieces.map(piece => piece.row))).toBe(12);
     disposeHistoryImages(state);
   });
 

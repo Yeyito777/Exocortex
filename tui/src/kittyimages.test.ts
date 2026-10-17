@@ -111,14 +111,34 @@ describe("KittyImageSync", () => {
     expect(controls(sync.sync([placement()]))).toEqual(["a=t,t=d,f=100,i=7,q=2", "a=p,i=7,p=3,c=20,r=10,C=1,z=1,q=1"]);
   });
 
-  test("evicts least recently used off-screen images past the residency limit", () => {
+  test("keeps many thumbnails resident, so scrolling back re-places instead of resending", () => {
     const sync = new KittyImageSync();
-    for (let id = 1; id <= 32; id++) sync.sync([placement({ image: image(id), placementId: id })]);
-    // The 33rd image pushes residency over 32: the oldest unused one goes.
-    expect(controls(sync.sync([placement({ image: image(33), placementId: 33 })]))).toContain("a=d,d=I,i=1,q=2");
-    const next = controls(sync.sync([placement({ image: image(34), placementId: 34 })]));
-    expect(next).toContain("a=d,d=I,i=2,q=2");
+    for (let id = 1; id <= 64; id++) sync.sync([placement({ image: image(id), placementId: id })]);
+    // Back to the first image: placed again from the terminal's copy.
+    expect(controls(sync.sync([placement({ image: image(1), placementId: 1 })])))
+      .toEqual(["a=d,d=i,i=64,p=64,q=2", "a=p,i=1,p=1,c=20,r=10,C=1,z=1,q=1"]);
+  });
+
+  test("evicts least recently used off-screen images past the pixel budget", () => {
+    const sync = new KittyImageSync();
+    // 4096×3072 RGBA is 48 MiB: four fit in the 192 MiB budget.
+    const big = (kittyId: number): KittyImageData => ({ kittyId, base64: "QUJD", pixelWidth: 4096, pixelHeight: 3072 });
+    for (let id = 1; id <= 4; id++) {
+      expect(controls(sync.sync([placement({ image: big(id), placementId: id })])).filter(command => command.startsWith("a=d,d=I"))).toEqual([]);
+    }
+    expect(controls(sync.sync([placement({ image: big(5), placementId: 5 })]))).toContain("a=d,d=I,i=1,q=2");
+    const next = controls(sync.sync([placement({ image: big(6), placementId: 6 })]));
     expect(next.filter(command => command.startsWith("a=d,d=I"))).toEqual(["a=d,d=I,i=2,q=2"]);
+  });
+
+  test("an image the terminal keeps rejecting stops being resent every frame", () => {
+    const sync = new KittyImageSync();
+    for (let attempt = 0; attempt < 3; attempt++) {
+      expect(controls(sync.sync([placement()]))[0]).toBe("a=t,t=d,f=100,i=7,q=2");
+      // ENOENT right after the transmission: the terminal did not take it.
+      sync.forgetImage(7);
+    }
+    expect(sync.sync([placement()])).toBe("");
   });
 
   test("dispose frees everything it sent", () => {

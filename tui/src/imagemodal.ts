@@ -4,7 +4,8 @@
  * its pixels) and the terminal; the preview is fetched at the box's pixel size
  * through the same get_image path as thumbnails. Kitty terminals get one
  * placement above the thumbnails, which stay placed around the box; it is
- * cleared by the next frame after the viewer closes. Other
+ * cleared by the next frame after the viewer closes. While the full-size
+ * preview loads, the box shows the image's thumbnail scaled up. Other
  * terminals get half-block cells. When the message has several images, j/k
  * (or l/h, →/←) page through them.
  */
@@ -15,6 +16,7 @@ import {
   fitImageBox,
   imageCaption,
   kittyPreview,
+  kittyThumbnail,
   renderHalfBlockRows,
   rgbaPreview,
   type CellSize,
@@ -130,7 +132,13 @@ export function renderImageModal(
   let placement: KittyPlacement | null = null;
   let status = "";
   if (mode === "kitty") {
-    const preview = kittyPreview(source, box);
+    let preview = kittyPreview(source, box, { urgent: true });
+    // Until the full-size preview arrives (a round trip over SSH), stretch the
+    // thumbnail the terminal already holds over the box.
+    if (preview.phase === "loading") {
+      const thumbnail = kittyThumbnail(source, { peek: true });
+      if (thumbnail.phase === "ready") preview = thumbnail;
+    }
     if (preview.phase === "ready") {
       placement = {
         image: preview.value,
