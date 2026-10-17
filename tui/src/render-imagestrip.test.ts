@@ -151,7 +151,7 @@ describe("strip layout", () => {
     // The wide image only covers the bottom rows, the tall one all of them.
     expect(lineAnchors[rows[0]].images!.length).toBe(1);
     expect(lineAnchors[rows.at(-1)!].images!.length).toBe(2);
-    const wide = lineAnchors[rows.at(-1)!].images!.find(image => image.layout.source.width === 3000)!;
+    const wide = lineAnchors[rows.at(-1)!].images!.find(image => "source" in image.layout && image.layout.source.width === 3000)!;
     expect(wide.row).toBe(wide.layout.rows - 1);
     // The strip ends the message: its metadata follows the last image row.
     expect(lineAnchors[rows.at(-1)! + 1].segment).toBe("assistant_metadata");

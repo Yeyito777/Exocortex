@@ -6,6 +6,7 @@
  */
 import { sliceByWidthFrom } from "./textwidth";
 import type { LinkSpan } from "./links";
+import type { KittyImageData } from "./kittyimages";
 
 export interface WrapResult {
   lines: string[];
@@ -23,6 +24,26 @@ export interface WrapResult {
    * not include those display-only markers.
    */
   copy?: Array<WrapCopyLine | null>;
+  /** Rows covered by a terminal image (display math), and which of its rows each is. */
+  images?: Array<WrapImageRow | undefined>;
+  /** Some content rendered as text only because its image is not ready yet. */
+  mathPending?: boolean;
+}
+
+/** An image drawn over blank rows of a wrap result; presentation data only. */
+export interface WrapImage {
+  kitty: KittyImageData;
+  /** 0-based column of the image's left edge within the row. */
+  col: number;
+  cols: number;
+  rows: number;
+  /** Ordinal among the images of one render, for a stable placement id. */
+  index: number;
+}
+
+export interface WrapImageRow {
+  image: WrapImage;
+  row: number;
 }
 
 export interface WrapCopyLine {

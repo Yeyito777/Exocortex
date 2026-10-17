@@ -13,7 +13,8 @@ import { markdownWordWrap } from "./markdown";
 import { theme } from "./theme";
 import { sanitizeUntrustedText } from "./terminaltext";
 import { sliceByWidthFrom, termWidth } from "./textwidth";
-import { wordWrap, type WrapResult } from "./textwrap";
+import { wordWrap, type WrapImage, type WrapResult } from "./textwrap";
+import { createDisplayMathImageRenderer, mathImageCacheKey, mathImageGeneration, type DisplayMathImageRenderer } from "./mathimages";
 import { renderToolCallLogicalLines } from "./toolcalllogical";
 import { RehydratedRenderCache } from "./rehydrated-render-cache";
 
@@ -31,6 +32,10 @@ interface BlockCacheEntry {
   /** Tool style registries used by tool_call rendering. */
   toolRegistryRef: ToolDisplayInfo[];
   externalToolStylesRef: ExternalToolStyle[];
+  /** Display-math image environment ("" when this caller renders math as text). */
+  mathKey: string;
+  /** Math image generation when rendered; only matters while `result.mathPending`. */
+  mathGeneration: number;
   /** Cached render result. */
   result: WrapResult;
 }
@@ -152,10 +157,13 @@ export function renderBlockCached(
   externalToolStyles: ExternalToolStyle[],
   showToolOutput: boolean,
   toolCallErrored = false,
+  /** Draw display math as images (history only: it places them). */
+  mathImages = false,
 ): WrapResult {
   // Hidden results render nothing; do not key a cache on a possibly huge body.
   if (block.type === "tool_result" && !showToolOutput) return HIDDEN_TOOL_RESULT;
   const contentKey = blockContentKey(block);
+  const mathKey = mathImages && block.type === "text" ? mathImageCacheKey() : "";
   const rehydratedKey = `${block.type}:${contentKey}`;
   const cached = blockRenderCache.get(block) ?? rehydratedBlockRenderCache.get(rehydratedKey);
   if (
@@ -166,13 +174,17 @@ export function renderBlockCached(
     cached.toolCallErrored === toolCallErrored &&
     cached.themeName === theme.name &&
     cached.toolRegistryRef === toolRegistry &&
-    cached.externalToolStylesRef === externalToolStyles
+    cached.externalToolStylesRef === externalToolStyles &&
+    cached.mathKey === mathKey &&
+    (!cached.result.mathPending || cached.mathGeneration === mathImageGeneration())
   ) {
     blockRenderCache.set(block, cached);
     return cached.result;
   }
 
-  const result = renderBlock(block, contentWidth, toolRegistry, externalToolStyles, showToolOutput, toolCallErrored);
+  const mathGeneration = mathImageGeneration();
+  const math = mathKey && mathKey !== "text" ? createDisplayMathImageRenderer() : undefined;
+  const result = renderBlock(block, contentWidth, toolRegistry, externalToolStyles, showToolOutput, toolCallErrored, math);
   const entry: BlockCacheEntry = {
     contentKey,
     width: contentWidth,
@@ -181,6 +193,8 @@ export function renderBlockCached(
     themeName: theme.name,
     toolRegistryRef: toolRegistry,
     externalToolStylesRef: externalToolStyles,
+    mathKey,
+    mathGeneration,
     result,
   };
   blockRenderCache.set(block, entry);
@@ -195,12 +209,14 @@ function renderBlock(
   externalToolStyles: ExternalToolStyle[],
   showToolOutput: boolean,
   toolCallErrored: boolean,
+  math?: DisplayMathImageRenderer,
 ): WrapResult {
   const lines: string[] = [];
   const cont: boolean[] = [];
   const join: string[] = [];
   const copy: WrapResult["copy"] = [];
   const links: NonNullable<WrapResult["links"]> = [];
+  const images: NonNullable<WrapResult["images"]> = [];
 
   switch (block.type) {
     case "thinking": {
@@ -234,8 +250,15 @@ function renderBlock(
         // Assistant text blocks: full markdown rendering.
         // markdownWordWrap handles code blocks, tables, HRs, inline
         // formatting, and word wrapping — output is fully formatted.
-        const md = markdownWordWrap(text, contentWidth, theme.reset);
+        const md = markdownWordWrap(text, contentWidth, theme.reset, math ? { displayMath: math.render } : {});
+        const indented = new Map<WrapImage, WrapImage>();
         for (let i = 0; i < md.lines.length; i++) {
+          const imageRow = md.images?.[i];
+          if (imageRow) {
+            let image = indented.get(imageRow.image);
+            if (!image) indented.set(imageRow.image, image = { ...imageRow.image, col: imageRow.image.col + 2 });
+            images[lines.length] = { image, row: imageRow.row };
+          }
           links[lines.length] = (md.links?.[i] ?? []).map(span => ({ ...span, start: span.start + 2, end: span.end + 2 }));
           lines.push(`  ${md.lines[i]}`);
           cont.push(md.cont[i]);
@@ -306,7 +329,11 @@ function renderBlock(
     }
   }
 
-  return { lines, cont, join, copy, links };
+  return {
+    lines, cont, join, copy, links,
+    ...(images.length > 0 ? { images } : {}),
+    ...(math?.pending ? { mathPending: true } : {}),
+  };
 }
 
 const USER_BUBBLE_PADDING = 1;

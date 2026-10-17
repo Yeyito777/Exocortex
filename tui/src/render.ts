@@ -68,6 +68,7 @@ import { inlineImageCellSize, inlineImageGeneration, inlineImageMode, inlineImag
 import { renderAccountsScreen } from "./accountsscreen";
 import { renderImageModal } from "./imagemodal";
 import { collectHistoryImagePlacements, historyImagesPlaced, syncHistoryImages, type ScreenRect } from "./historyimages";
+import { mathImageGeneration, mathImagesActive } from "./mathimages";
 
 interface HistoryRenderCacheEntry {
   width: number;
@@ -91,6 +92,7 @@ interface HistoryRenderCacheEntry {
   themeName: string;
   terminalRows: number;
   imageGeneration: number;
+  mathImageGeneration: number;
   result: BuildMessageLinesResult;
 }
 
@@ -137,7 +139,8 @@ function canReuseHistoryRender(
     && cached.externalToolStylesRef === state.externalToolStyles
     && cached.themeName === theme.name
     && cached.terminalRows === state.rows
-    && cached.imageGeneration === inlineImageGeneration();
+    && cached.imageGeneration === inlineImageGeneration()
+    && cached.mathImageGeneration === mathImageGeneration();
 }
 
 function shouldForceFullHistoryRender(state: RenderState): boolean {
@@ -263,6 +266,7 @@ function getHistoryRender(
     themeName: theme.name,
     terminalRows: state.rows,
     imageGeneration: inlineImageGeneration(),
+    mathImageGeneration: mathImageGeneration(),
     result,
   });
   return result;
@@ -1793,7 +1797,9 @@ export function render(state: RenderState): boolean {
     : null;
   if (accountsOverlay) appendPositionedPayload(ctx, accountsOverlay.payload);
   const hadHistoryImages = historyImagesPlaced(state);
-  const historyImagePlacements = inlineImageMode() === "kitty"
+  // Display math may be forced to images on a terminal that failed detection.
+  const kittyHistory = inlineImageMode() === "kitty";
+  const historyImagePlacements = kittyHistory || mathImagesActive()
     ? collectHistoryImagePlacements({
       viewportRows: state.layout.historyViewportRows,
       lineAnchors,
@@ -1804,6 +1810,7 @@ export function render(state: RenderState): boolean {
       covers: [modal?.rect, queuePromptOverlay?.rect, editMessageOverlay?.rect, conversationMenuOverlay?.rect, accountsOverlay?.rect].filter((rect): rect is ScreenRect => !!rect),
       cursorLineIndex: historyFocused ? state.historyCursor.row : null,
       cursorCol: state.historyCursor.col,
+      mathOnly: !kittyHistory,
     })
     : [];
   if (modal?.placement) historyImagePlacements.push(modal.placement);

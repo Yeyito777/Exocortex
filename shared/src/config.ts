@@ -167,6 +167,8 @@ export interface TuiConfig {
   diagnostics?: boolean;
   /** How sidebar folders open: replace the list ("navigate", default) or expand in place ("tree"). */
   sidebarFolders?: "navigate" | "tree";
+  /** Display math: typeset images on Kitty-graphics terminals ("auto", default), always "text", or force "image". */
+  math?: "auto" | "text" | "image";
 }
 
 export interface ExocortexConfig {
