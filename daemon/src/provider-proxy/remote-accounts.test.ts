@@ -38,7 +38,7 @@ function pool(accounts: ClaudeAccountInfo[]): ProviderProxyRemoteAccounts {
     accounts,
     combined: aggregateUsage(accounts.filter(entry => entry.state === "ready" || entry.state === "limited").map(entry => entry.usage)),
     routing: { ...DEFAULT_ROUTING_POLICY },
-    nextNewWork: { account: "max2", detail: "soonest weekly reset" },
+    nextNewWork: { account: "max2", detail: "it is furthest behind its weekly pace (90% left over 5 days vs 60% over 6 days)" },
   };
 }
 

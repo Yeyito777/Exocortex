@@ -41,14 +41,14 @@ describe("dev routing overrides", () => {
 
   test("overrides the policy, usage, limits and availability per account", () => {
     write({
-      policy: { cacheTtlMs: 20_000, weeklyFloor: 15 },
+      policy: { cacheTtlMs: 20_000, weeklyFloor: 15, coldMoveRatio: 1.5 },
       accounts: {
         main: { usage: { sevenDay: { utilization: 95, resetsInMs: 3_600_000 } }, limitedForMs: 60_000 },
         max2: { available: false },
       },
     });
     const { states: [main, max2], policy } = applyDevRoutingOverrides(states(), NOW);
-    expect(policy).toEqual({ ...DEFAULT_ROUTING_POLICY, cacheTtlMs: 20_000, weeklyFloor: 15 });
+    expect(policy).toEqual({ ...DEFAULT_ROUTING_POLICY, cacheTtlMs: 20_000, weeklyFloor: 15, coldMoveRatio: 1.5 });
     expect(main.usage).toEqual({ fiveHour: null, sevenDay: { utilization: 95, resetsAt: NOW + 3_600_000 } });
     expect(main.limitedUntil).toBe(NOW + 60_000);
     expect(max2).toMatchObject({ available: false, usage: null, activeTurns: 1 });
