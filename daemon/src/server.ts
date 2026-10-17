@@ -11,7 +11,7 @@ import { StringDecoder } from "node:string_decoder";
 import { isWindows } from "@exocortex/shared/paths";
 import { log } from "./log";
 import { budgetHistoryUpdatedEvent } from "./history-pagination";
-import type { ClientCapability, Command, Event, TokenStatsSnapshot } from "./protocol";
+import type { ClientCapability, Command, Event, ProviderId, TokenStatsSnapshot, UsageData } from "./protocol";
 import { PROVIDER_PROXY_LINK_EVENT_TYPES } from "@exocortex/shared/provider-proxy";
 
 // ── Client tracking ─────────────────────────────────────────────────
@@ -34,6 +34,24 @@ export interface ConnectedClient {
 }
 
 export type CommandHandler = (client: ConnectedClient, command: Command) => void | Promise<void>;
+
+// ── Usage fan-out ───────────────────────────────────────────────────
+
+const lastBroadcastUsage = new WeakMap<object, Map<ProviderId, string>>();
+
+/**
+ * Usage is re-fetched after every turn and on response headers, and usually
+ * comes back unchanged. Connected clients already hold the last value (new
+ * ones get it in their bootstrap), so identical repeats are not re-sent.
+ */
+export function broadcastUsageUpdate(server: Pick<DaemonServer, "broadcast">, provider: ProviderId, usage: UsageData | null): void {
+  let last = lastBroadcastUsage.get(server);
+  if (!last) lastBroadcastUsage.set(server, last = new Map());
+  const serialized = JSON.stringify(usage);
+  if (last.get(provider) === serialized) return;
+  last.set(provider, serialized);
+  server.broadcast({ type: "usage_update", provider, usage });
+}
 
 // ── Server ──────────────────────────────────────────────────────────
 

@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DaemonServer, type ConnectedClient } from "./server";
+import { DaemonServer, broadcastUsageUpdate, type ConnectedClient } from "./server";
 import type { Command } from "./protocol";
 
 function client(): ConnectedClient {
@@ -100,5 +100,22 @@ describe("token statistics fan-out", () => {
     (server as any).clients = new Map([["c", capable]]);
     server.broadcastLegacyTokenStats(snapshot);
     expect(builds).toBe(1);
+  });
+});
+
+describe("usage fan-out", () => {
+  test("skips a broadcast identical to the provider's previous one", () => {
+    const server = new DaemonServer("unused", () => {});
+    const written: string[] = [];
+    const connection = { ...client(), socket: { destroyed: false, write: (data: string) => { written.push(data); return true; } } as unknown as Socket };
+    (server as any).clients = new Map([["a", connection]]);
+    const usage = { fiveHour: { utilization: 10, resetsAt: 1 } } as never;
+    broadcastUsageUpdate(server, "anthropic", usage);
+    broadcastUsageUpdate(server, "anthropic", structuredClone(usage));
+    broadcastUsageUpdate(server, "openai", usage);
+    broadcastUsageUpdate(server, "anthropic", { fiveHour: { utilization: 11, resetsAt: 1 } } as never);
+    broadcastUsageUpdate(server, "anthropic", null);
+    expect(written.map(line => JSON.parse(line)).map(event => [event.provider, event.usage?.fiveHour?.utilization ?? null]))
+      .toEqual([["anthropic", 10], ["openai", 10], ["anthropic", 11], ["anthropic", null]]);
   });
 });

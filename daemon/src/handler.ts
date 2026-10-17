@@ -37,7 +37,7 @@ import { startTitleGeneration, isPendingTitle, PENDING_TITLE } from "./titlegen"
 import * as convStore from "./conversations";
 import { rememberSentImages, resolveImageForPreview } from "./image-requests";
 import { renderImagePreview, validatePreviewRequest, isImageId } from "./attachments";
-import { DaemonServer, type ConnectedClient } from "./server";
+import { DaemonServer, broadcastUsageUpdate, type ConnectedClient } from "./server";
 import type { Command, Event, SidebarItemOrderUpdate } from "./protocol";
 import { clearAuth, ensureAuthenticated, getAuthByProvider, getAuthInfoByProvider, hasConfiguredCredentials, invalidateCredentialsCache } from "./auth";
 import { addAccount as addOpenAIAccount, listAccounts as listOpenAIAccounts, removeAccount as removeOpenAIAccount, switchAccount as switchOpenAIAccount } from "./providers/openai/auth";
@@ -246,7 +246,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   });
 
   const broadcastUsage = (provider: import("./messages").ProviderId, usage: import("./messages").UsageData | null) => {
-    server.broadcast({ type: "usage_update", provider, usage });
+    broadcastUsageUpdate(server, provider, usage);
   };
   /** The Accounts screen's structured data and its live watchers (`accounts`). */
   const accountsWatch = createAccountsWatch({

@@ -9,7 +9,7 @@ import {
   writeInterruptedStreamIds,
 } from "./restart-markers";
 import { orchestrateGoalCycle, orchestrateReplayConversation, orchestrateSendMessage } from "./orchestrator";
-import type { DaemonServer } from "./server";
+import { broadcastUsageUpdate, type DaemonServer } from "./server";
 import * as convStore from "./conversations";
 import { handleUsageHeaders, refreshUsage } from "./usage";
 import { getDefaultProvider } from "./providers/registry";
@@ -154,7 +154,7 @@ export async function prepareCatchableShutdownWithoutReplay(timeoutMs = 5_000): 
 
 function buildRecoveryCallbacks(server: DaemonServer, convId: string) {
   const broadcastUsage = (provider: import("./messages").ProviderId, usage: import("./messages").UsageData | null) => {
-    server.broadcast({ type: "usage_update", provider, usage });
+    broadcastUsageUpdate(server, provider, usage);
   };
   const broadcastTokenStats = () => {
     server.broadcastLegacyTokenStats(getTokenStatsSnapshot);
