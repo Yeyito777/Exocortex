@@ -11,6 +11,7 @@ import { SIDEBAR_WIDTH } from "./sidebar";
 import { renderUserMessage } from "./blockrenderer";
 import { scrollToTop } from "./chat";
 import { handleUserMessage } from "./events/streaming";
+import { TerminalScreen } from "./testhelpers/terminalscreen";
 
 function captureRenderOutput(state: RenderState): string {
   let out = "";
@@ -516,6 +517,36 @@ describe("render caching and frame diffing", () => {
     const clearCount = (out.match(/\x1b\[2K/g) || []).length;
     expect(out).toMatch(/\x1b\[3;\d+r/);
     expect(clearCount).toBeLessThan(state.layout.messageAreaHeight);
+  });
+
+  test("history scrolling in either direction uses the scroll region and matches a full repaint", () => {
+    const state = createInitialState();
+    state.cols = 60;
+    state.rows = 24;
+    state.sidebar.open = false;
+    state.messages = Array.from({ length: 40 }, (_, index) => ({
+      role: "assistant" as const,
+      blocks: [{ type: "text" as const, text: `history row ${String(index).padStart(2, "0")}` }],
+      metadata: null,
+    }));
+    const screen = new TerminalScreen(state.rows, state.cols);
+    invalidateFrame(state);
+    screen.feed(captureRenderOutput(state));
+    state.scrollOffset = 12;
+    screen.feed(captureRenderOutput(state));
+
+    for (const delta of [1, 3, -2, 1, -1, 4, -3]) {
+      state.scrollOffset += delta;
+      const out = captureRenderOutput(state);
+      expect(out).toMatch(/\x1b\[3;\d+r/);
+      expect((out.match(/\x1b\[2K/g) ?? []).length).toBeLessThan(state.layout.messageAreaHeight / 2);
+      screen.feed(out);
+
+      const repainted = new TerminalScreen(state.rows, state.cols);
+      invalidateFrame(state);
+      repainted.feed(captureRenderOutput(state));
+      expect(screen.plainRows()).toEqual(repainted.plainRows());
+    }
   });
 
   test("follows a non-goal final response, then holds its beginning when it overflows", () => {

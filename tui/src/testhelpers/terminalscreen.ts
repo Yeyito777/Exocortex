@@ -10,9 +10,13 @@ export class TerminalScreen {
   private rows: string[][];
   private row = 0;
   private col = 0;
+  /** DECSTBM scroll margins (zero-based, inclusive). */
+  private top = 0;
+  private bottom: number;
 
   constructor(private readonly rowCount = 24, private readonly colCount = 80) {
     this.rows = Array.from({ length: rowCount }, () => Array(colCount).fill(" "));
+    this.bottom = rowCount - 1;
   }
 
   feed(text: string): void {
@@ -30,7 +34,8 @@ export class TerminalScreen {
         continue;
       }
       if (ch === "\n") {
-        this.row = Math.min(this.row + 1, this.rowCount - 1);
+        if (this.row === this.bottom) this.scrollRegion(1);
+        else this.row = Math.min(this.row + 1, this.rowCount - 1);
         i++;
         continue;
       }
@@ -41,6 +46,20 @@ export class TerminalScreen {
         this.col = Math.min(this.col + 1, this.colCount - 1);
       }
       i++;
+    }
+  }
+
+  /** Move the rows between the margins up (positive) or down (negative), exposing blank rows. */
+  private scrollRegion(amount: number): void {
+    const blank = () => Array(this.colCount).fill(" ");
+    for (let n = 0; n < Math.abs(amount); n++) {
+      if (amount > 0) {
+        this.rows.splice(this.top, 1);
+        this.rows.splice(this.bottom, 0, blank());
+      } else {
+        this.rows.splice(this.bottom, 1);
+        this.rows.splice(this.top, 0, blank());
+      }
     }
   }
 
@@ -65,6 +84,13 @@ export class TerminalScreen {
       return end === -1 ? text.length : end + (end === st ? 2 : 1);
     }
 
+    // Reverse index: up one row, scrolling the region down at its top margin.
+    if (text[start + 1] === "M") {
+      if (this.row === this.top) this.scrollRegion(-1);
+      else this.row = Math.max(0, this.row - 1);
+      return start + 2;
+    }
+
     // Unknown two-byte escape: skip it.
     return start + 2;
   }
@@ -77,6 +103,11 @@ export class TerminalScreen {
       this.col = Math.max(0, Math.min((Number.isFinite(numbers[1]) ? numbers[1] : 1) - 1, this.colCount - 1));
     } else if (final === "G") {
       this.col = Math.max(0, Math.min((Number.isFinite(numbers[0]) ? numbers[0] : 1) - 1, this.colCount - 1));
+    } else if (final === "r") {
+      this.top = Number.isFinite(numbers[0]) ? Math.max(0, numbers[0] - 1) : 0;
+      this.bottom = Number.isFinite(numbers[1]) ? Math.min(this.rowCount - 1, numbers[1] - 1) : this.rowCount - 1;
+      this.row = 0;
+      this.col = 0;
     } else if (final === "K") {
       const mode = Number.isFinite(numbers[0]) ? numbers[0] : 0;
       if (mode === 2) this.rows[this.row].fill(" ");
