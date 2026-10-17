@@ -41,6 +41,7 @@ import {
   resetPendingSubagentNotificationsForTest,
 } from "./subagent-notifications";
 import { resetConversationActivityForTest } from "./conversation-activity";
+import { chronoInternalsForTest, deferChronoSleep, listDeferredChronoSleeps } from "./chrono-service";
 
 const IDS: string[] = [];
 
@@ -50,6 +51,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  chronoInternalsForTest.reset();
   clearInterruptedStreamIds();
   clearActiveGoalRestartMarker();
   orchestrateReplayConversation.mockClear();
@@ -390,6 +392,37 @@ describe("restart recovery file", () => {
     expect(listPendingSubagentNotifications({ childConvId })).toEqual([
       expect.objectContaining({ state: "ready", text: expect.stringContaining("already durable") }),
     ]);
+  });
+
+  test("a subagent suspended in a deferred chrono sleep is neither completed nor replayed at boot", () => {
+    const parentConvId = makeConversation("sleeping-child-parent");
+    const childConvId = makeConversation("sleeping-child");
+    const childStartedAt = 444_555;
+    beginPendingSubagentNotification({ convId: parentConvId }, childConvId, "build then report", childStartedAt, 0);
+    // The suspended turn persisted its chrono tool call with turn-end metadata.
+    get(childConvId)!.messages.push(
+      {
+        role: "user",
+        content: "build then report",
+        metadata: { startedAt: childStartedAt, endedAt: childStartedAt, model: "gpt-5.5", tokens: 0 },
+      },
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "Started the build; waiting for it." },
+          { type: "tool_call", toolCallId: "call-wait", toolName: "chrono", input: { action: "wait" }, summary: "wait" },
+        ],
+        metadata: { startedAt: childStartedAt, endedAt: childStartedAt + 1, model: "gpt-5.5", tokens: 1 },
+      } as never,
+    );
+    expect(deferChronoSleep({ conversationId: childConvId, toolCallId: "call-wait", startedAt: Date.now(), durationMs: 2 * 3_600_000 }).error).toBeUndefined();
+
+    const scheduled = recoverInterruptedStreams(makeServer());
+
+    expect(scheduled).not.toContain(childConvId);
+    expect(orchestrateReplayConversation).not.toHaveBeenCalled();
+    expect(listPendingSubagentNotifications({ childConvId })).toEqual([expect.objectContaining({ state: "running" })]);
+    expect(listDeferredChronoSleeps(childConvId)).toHaveLength(1);
   });
 
   test("daemon boot resumes active goals that were not in interrupted-stream recovery", () => {
