@@ -187,13 +187,13 @@ function buildDeferredHistorySuffix(
   // wildly (a single tool-heavy turn can be hundreds of terminal rows), so fixed
   // message/turn counts either leave the screen sparse or do excessive work.
   let startMessageIndex = previousHistoryTurnStart(state, state.messages.length);
-  let result = buildMessageLines(state, width, { startMessageIndex, partial: startMessageIndex > 0 });
+  let result = buildMessageLines(state, width, { startMessageIndex, partial: startMessageIndex > 0, reuseArrays: true });
 
   while (startMessageIndex > 0 && result.lines.length < targetLines) {
     const nextStartMessageIndex = previousHistoryTurnStart(state, startMessageIndex);
     if (nextStartMessageIndex === startMessageIndex) break;
     startMessageIndex = nextStartMessageIndex;
-    result = buildMessageLines(state, width, { startMessageIndex, partial: startMessageIndex > 0 });
+    result = buildMessageLines(state, width, { startMessageIndex, partial: startMessageIndex > 0, reuseArrays: true });
   }
 
   state.deferredHistoryRender = {
@@ -207,15 +207,33 @@ function buildDeferredHistorySuffix(
   return result;
 }
 
+/**
+ * A full build has every loaded row, so there is nothing left to defer at this
+ * width. Clearing the state instead restarted the progressive suffix after
+ * every streamed turn or scrolled-up frame, walking the whole loaded history
+ * back one turn per tick (seconds of CPU in a long conversation).
+ */
+function markHistoryRenderComplete(state: RenderState, width: number): void {
+  const deferred = state.deferredHistoryRender;
+  if (deferred?.complete && deferred.convId === state.convId && deferred.width === width) return;
+  state.deferredHistoryRender = {
+    convId: state.convId,
+    width,
+    startMessageIndex: 0,
+    generation: (deferred?.generation ?? 0) + 1,
+    complete: true,
+  };
+}
+
 function getHistoryRender(
   state: RenderState,
   width: number,
   targetLines: number,
 ): BuildMessageLinesResult {
   if (state.pendingAI) {
-    state.deferredHistoryRender = null;
+    markHistoryRenderComplete(state, width);
     historyRenderCache.delete(state);
-    return buildMessageLines(state, width);
+    return buildMessageLines(state, width, { reuseArrays: true });
   }
 
   const currentDurableSleepMetadataFrame = durableSleepMetadataFrame(state);
@@ -230,18 +248,18 @@ function getHistoryRender(
     && deferred.convId === state.convId
     && deferred.width === width
     && deferred.complete) {
-    result = buildMessageLines(state, width);
+    result = buildMessageLines(state, width, { reuseArrays: true });
   } else if (deferred
     && deferred.convId === state.convId
     && deferred.width === width
     && !deferred.complete
     && canUseDeferredHistoryRender(state, width)) {
-    result = buildMessageLines(state, width, { startMessageIndex: deferred.startMessageIndex, partial: deferred.startMessageIndex > 0 });
+    result = buildMessageLines(state, width, { startMessageIndex: deferred.startMessageIndex, partial: deferred.startMessageIndex > 0, reuseArrays: true });
   } else if (canUseDeferredHistoryRender(state, width)) {
     result = buildDeferredHistorySuffix(state, width, targetLines);
   } else {
-    state.deferredHistoryRender = null;
-    result = buildMessageLines(state, width);
+    markHistoryRenderComplete(state, width);
+    result = buildMessageLines(state, width, { reuseArrays: true });
   }
 
   historyRenderCache.set(state, {
@@ -284,7 +302,18 @@ export function hasDeferredHistoryRenderWork(state: RenderState): boolean {
 export function advanceDeferredHistoryRender(state: RenderState): boolean {
   const deferred = state.deferredHistoryRender;
   if (!deferred || deferred.complete || deferred.convId !== state.convId) return false;
-  const nextStart = previousHistoryTurnStart(state, deferred.startMessageIndex);
+  // Each step rebuilds the rows it includes, so grow the suffix geometrically:
+  // one turn per step made extending to a long loaded history quadratic.
+  let includedTurns = 0;
+  for (let index = deferred.startMessageIndex; index < state.messages.length; index++) {
+    if (state.messages[index]?.role === "user") includedTurns++;
+  }
+  let nextStart = deferred.startMessageIndex;
+  for (let step = 0; step < Math.max(1, includedTurns); step++) {
+    const previous = previousHistoryTurnStart(state, nextStart);
+    if (previous === nextStart) break;
+    nextStart = previous;
+  }
   if (nextStart === deferred.startMessageIndex) return false;
   deferred.startMessageIndex = nextStart;
   deferred.complete = nextStart === 0;
@@ -452,6 +481,7 @@ type ViewportSourceState = Pick<
 >;
 
 interface FloatingHistoryViewportCacheEntry {
+  revision: number;
   lineAnchors: BuildMessageLinesResult["lineAnchors"];
   viewStart: number;
   instructionStartIndex: number;
@@ -848,6 +878,7 @@ function canonicalViewportRows(
 function composeFloatingHistoryViewport(
   allLines: string[],
   lineAnchors: BuildMessageLinesResult["lineAnchors"],
+  revision: number,
   viewStart: number,
   instructionStartIndex: number,
   messageAreaHeight: number,
@@ -859,6 +890,7 @@ function composeFloatingHistoryViewport(
 ): ViewportHistoryRow[] {
   const cached = floatingHistoryViewportCache.get(allLines);
   if (cached
+    && cached.revision === revision
     && cached.lineAnchors === lineAnchors
     && cached.viewStart === viewStart
     && cached.instructionStartIndex === instructionStartIndex
@@ -877,6 +909,7 @@ function composeFloatingHistoryViewport(
   if (panelHeight <= 0 || narrowWidth === fullWidth) {
     const rows = canonicalViewportRows(allLines, viewStart, endLineIndex, { lineAnchors, width: fullWidth });
     floatingHistoryViewportCache.set(allLines, {
+      revision,
       lineAnchors,
       viewStart,
       instructionStartIndex,
@@ -907,6 +940,7 @@ function composeFloatingHistoryViewport(
       fullWidth,
     ).slice(0, messageAreaHeight);
     floatingHistoryViewportCache.set(allLines, {
+      revision,
       lineAnchors,
       viewStart,
       instructionStartIndex,
@@ -941,6 +975,7 @@ function composeFloatingHistoryViewport(
     if (atCanonicalTop || directRows.length <= messageAreaHeight) {
       const rows = directRows.slice(0, messageAreaHeight);
       floatingHistoryViewportCache.set(allLines, {
+        revision,
         lineAnchors,
         viewStart,
         instructionStartIndex,
@@ -1006,6 +1041,7 @@ function composeFloatingHistoryViewport(
   );
   const visibleRows = [...instructions, ...narrowRows, ...fullRows].slice(-messageAreaHeight);
   floatingHistoryViewportCache.set(allLines, {
+    revision,
     lineAnchors,
     viewStart,
     instructionStartIndex,
@@ -1533,7 +1569,7 @@ export function render(state: RenderState): boolean {
   const taskLayout = layoutTaskPanel(state, chatW, messageAreaHeight);
   const historyWidth = taskLayout.historyWidth;
   const deferredTargetLines = Math.max(1, messageAreaHeight * DEFERRED_HISTORY_TARGET_VIEWPORTS);
-  const { lines: allLines, messageBounds, wrapContinuation, wrapJoiners, copyLines, lineAnchors } = getHistoryRender(
+  const { lines: allLines, messageBounds, wrapContinuation, wrapJoiners, copyLines, lineAnchors, revision: historyRevision } = getHistoryRender(
     state,
     chatW,
     deferredTargetLines,
@@ -1629,6 +1665,7 @@ export function render(state: RenderState): boolean {
     viewportRows = composeFloatingHistoryViewport(
       allLines,
       lineAnchors,
+      historyRevision,
       viewStart,
       instructionStartIndex,
       messageAreaHeight,

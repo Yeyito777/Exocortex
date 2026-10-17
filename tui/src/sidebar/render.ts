@@ -54,6 +54,57 @@ function countChronoTasks(tasks: readonly ConversationTaskSummary[] | undefined)
   return count;
 }
 
+/** Every input buildFolderAggregates reads, in order. */
+function collectFolderAggregateInputs(
+  sidebar: SidebarState,
+  globalIdleConvIds: ReadonlySet<string>,
+  optimisticStreamingConvId: string | null,
+  out: unknown[],
+): void {
+  out.push(optimisticStreamingConvId, sidebar.folders.length);
+  for (const folder of sidebar.folders) out.push(folder.id, folder.parentId);
+  out.push(sidebar.conversations.length);
+  for (const conv of sidebar.conversations) {
+    out.push(conv.id, conv.folderId, conv.streaming, conv.unread, conv.tasks,
+      conv.subagentCount, conv.backgroundTaskCount, globalIdleConvIds.has(conv.id));
+  }
+}
+
+function sameInputs(a: readonly unknown[], b: readonly unknown[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+interface FolderAggregateCache {
+  inputs: unknown[];
+  aggregates: Map<string, FolderAggregate>;
+}
+
+/**
+ * Aggregates walk every conversation, so they are reused while their inputs
+ * are unchanged; with thousands of conversations this was most of each frame.
+ * Summaries are updated in place in places, so inputs are compared by value.
+ */
+const folderAggregateCaches = new WeakMap<SidebarState, FolderAggregateCache>();
+let folderAggregateScratch: unknown[] = [];
+
+function folderAggregatesFor(
+  sidebar: SidebarState,
+  globalIdleConvIds: ReadonlySet<string>,
+  optimisticStreamingConvId: string | null,
+): Map<string, FolderAggregate> {
+  const inputs = folderAggregateScratch;
+  inputs.length = 0;
+  collectFolderAggregateInputs(sidebar, globalIdleConvIds, optimisticStreamingConvId, inputs);
+  const cached = folderAggregateCaches.get(sidebar);
+  if (cached && sameInputs(cached.inputs, inputs)) return cached.aggregates;
+  const aggregates = buildFolderAggregates(sidebar, globalIdleConvIds, optimisticStreamingConvId);
+  folderAggregateScratch = cached?.inputs ?? [];
+  folderAggregateCaches.set(sidebar, { inputs, aggregates });
+  return aggregates;
+}
+
 function buildFolderAggregates(
   sidebar: SidebarState,
   globalIdleConvIds: ReadonlySet<string>,
@@ -76,6 +127,7 @@ function buildFolderAggregates(
     parentById.set(folder.id, folder.parentId ?? null);
   }
 
+  const lastVisitedBy = new Map<string, object>();
   for (const conv of sidebar.conversations) {
     const hasGlobalIdle = globalIdleConvIds.has(conv.id);
     const hasOptimisticStreaming = conv.id === optimisticStreamingConvId;
@@ -86,9 +138,9 @@ function buildFolderAggregates(
     const chronoTaskCount = countChronoTasks(conv.tasks);
     const work = conversationWorkCounts(conv);
     let folderId = conv.folderId ?? null;
-    const seen = new Set<string>();
-    while (folderId && aggregates.has(folderId) && !seen.has(folderId)) {
-      seen.add(folderId);
+    // Guards against a parent cycle without allocating a set per conversation.
+    while (folderId && aggregates.has(folderId) && lastVisitedBy.get(folderId) !== conv) {
+      lastVisitedBy.set(folderId, conv);
       const aggregate = aggregates.get(folderId)!;
       aggregate.count++;
       if ((conv.streaming || hasOptimisticStreaming) && !hasInlineSleep) aggregate.streamingCount++;
@@ -204,7 +256,7 @@ export function renderSidebar(
   const convs = sidebar.conversations;
   const displayRows = buildDisplayRows(sidebar);
   const folderAggregates = sidebar.folders.length > 0
-    ? buildFolderAggregates(sidebar, globalIdleConvIds, optimisticStreamingConvId)
+    ? folderAggregatesFor(sidebar, globalIdleConvIds, optimisticStreamingConvId)
     : null;
   // Compute visual selection once per render. Calling selectedVisualItems() per
   // row rebuilds displayRows each time; with an active /? filter this made `v`

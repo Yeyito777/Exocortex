@@ -21,6 +21,8 @@ import { RehydratedRenderCache } from "./rehydrated-render-cache";
 interface BlockCacheEntry {
   /** Exact mutable source content at render time (detects rewrites, not just growth). */
   contentKey: string;
+  /** The block fields `contentKey` was derived from, compared by identity first. */
+  sourceRefs: BlockSourceRefs;
   /** Terminal content width used for wrapping. */
   width: number;
   /** Whether tool output was shown (affects tool_result blocks). */
@@ -73,6 +75,40 @@ function imageAttachmentsKey(images: ImageAttachment[] | undefined): string {
   if (!images?.length) return "";
   return images.map(img => `${img.mediaType}:${img.sizeBytes}`).join("|");
 }
+
+type BlockSourceRefs = readonly unknown[];
+
+/**
+ * The fields that make up a block's content key. Block fields are replaced, not
+ * mutated in place, so identical references mean identical content without
+ * re-serializing a tool call's (possibly huge) input on every frame.
+ */
+function blockSourceRefs(block: Block): BlockSourceRefs {
+  switch (block.type) {
+    case "thinking":
+    case "text":
+      return [block.text];
+    case "tool_call":
+      return [block.toolName, block.summary, block.input, block.presentation];
+    case "tool_result":
+      return [block.isError, block.output];
+  }
+}
+
+function sameSourceRefs(refs: BlockSourceRefs, block: Block): boolean {
+  switch (block.type) {
+    case "thinking":
+    case "text":
+      return refs[0] === block.text;
+    case "tool_call":
+      return refs[0] === block.toolName && refs[1] === block.summary
+        && refs[2] === block.input && refs[3] === block.presentation;
+    case "tool_result":
+      return refs[0] === block.isError && refs[1] === block.output;
+  }
+}
+
+const NO_SOURCE_REFS: BlockSourceRefs = [];
 
 /** Exact mutable block content — used for cache invalidation. */
 function blockContentKey(block: Block): string {
@@ -162,23 +198,28 @@ export function renderBlockCached(
 ): WrapResult {
   // Hidden results render nothing; do not key a cache on a possibly huge body.
   if (block.type === "tool_result" && !showToolOutput) return HIDDEN_TOOL_RESULT;
-  const contentKey = blockContentKey(block);
   const mathKey = mathImages && block.type === "text" ? mathImageCacheKey() : "";
+  const own = blockRenderCache.get(block);
+  const reusable = (entry: BlockCacheEntry, contentKey?: string): boolean => (contentKey === undefined ? sameSourceRefs(entry.sourceRefs, block) : entry.contentKey === contentKey)
+    && entry.width === contentWidth
+    && entry.showToolOutput === showToolOutput
+    && entry.toolCallErrored === toolCallErrored
+    && entry.themeName === theme.name
+    && entry.toolRegistryRef === toolRegistry
+    && entry.externalToolStylesRef === externalToolStyles
+    && entry.mathKey === mathKey
+    && (!entry.result.mathPending || entry.mathGeneration === mathImageGeneration());
+  // Fast path: this exact block object with unchanged field references. Every
+  // history frame passes here for every loaded block, so it must not
+  // serialize or copy content.
+  if (own && reusable(own)) return own.result;
+
+  const sourceRefs = blockSourceRefs(block);
+  const contentKey = blockContentKey(block);
   const rehydratedKey = `${block.type}:${contentKey}`;
-  const cached = blockRenderCache.get(block) ?? rehydratedBlockRenderCache.get(rehydratedKey);
-  if (
-    cached &&
-    cached.contentKey === contentKey &&
-    cached.width === contentWidth &&
-    cached.showToolOutput === showToolOutput &&
-    cached.toolCallErrored === toolCallErrored &&
-    cached.themeName === theme.name &&
-    cached.toolRegistryRef === toolRegistry &&
-    cached.externalToolStylesRef === externalToolStyles &&
-    cached.mathKey === mathKey &&
-    (!cached.result.mathPending || cached.mathGeneration === mathImageGeneration())
-  ) {
-    blockRenderCache.set(block, cached);
+  const cached = own ?? rehydratedBlockRenderCache.get(rehydratedKey);
+  if (cached && reusable(cached, contentKey)) {
+    blockRenderCache.set(block, { ...cached, sourceRefs });
     return cached.result;
   }
 
@@ -187,6 +228,7 @@ export function renderBlockCached(
   const result = renderBlock(block, contentWidth, toolRegistry, externalToolStyles, showToolOutput, toolCallErrored, math);
   const entry: BlockCacheEntry = {
     contentKey,
+    sourceRefs,
     width: contentWidth,
     showToolOutput,
     toolCallErrored,
@@ -198,7 +240,12 @@ export function renderBlockCached(
     result,
   };
   blockRenderCache.set(block, entry);
-  rehydratedBlockRenderCache.set(rehydratedKey, entry, contentKey.length * 2 + wrapResultBytes(result));
+  // A block whose content changed in place is streaming; its intermediate
+  // prefixes would only evict reusable entries from the shared LRU.
+  const streaming = own !== undefined && own.contentKey !== contentKey;
+  if (!streaming) {
+    rehydratedBlockRenderCache.set(rehydratedKey, { ...entry, sourceRefs: NO_SOURCE_REFS }, contentKey.length * 2 + wrapResultBytes(result));
+  }
   return result;
 }
 

@@ -1,6 +1,6 @@
 /** Visible-width wrapping for already-rendered ANSI lines. */
 
-import { nextGrapheme, visibleLength } from "./textwidth";
+import { nextGrapheme } from "./textwidth";
 
 const ANSI_RESET = "\x1b[0m";
 
@@ -34,22 +34,33 @@ function updateActiveSgr(active: string, sequence: string): string {
 }
 
 interface AnsiRowTake {
-  line: string;
-  rest: string;
+  /** End of this row's text in the input. */
+  lineEnd: number;
+  /** Where the next row resumes, or -1 when this row ends the input. */
+  restStart: number;
+  /** SGR state the next row reopens with. */
+  activeSgr: string;
   join: string;
 }
 
-function takeAnsiRow(input: string, width: number): AnsiRowTake {
-  if (visibleLength(input) <= width) return { line: input, rest: "", join: "" };
+const SGR_RE = /\x1b\[[0-9;]*m/y;
+const WHITESPACE_RE = /^\s+$/u;
 
-  let cursor = 0;
+/**
+ * Take one row starting at `start`. Works on offsets into the original line:
+ * slicing the remainder for every row (or every escape) made wrapping a long
+ * streamed paragraph quadratic in its length.
+ */
+function takeAnsiRow(input: string, start: number, width: number, carriedSgr: string): AnsiRowTake {
+  let cursor = start;
   let visibleWidth = 0;
-  let activeSgr = "";
-  let lastBreak: { lineEnd: number; restStart: number; activeSgr: string; join: string } | null = null;
+  let activeSgr = carriedSgr;
+  let lastBreak: AnsiRowTake | null = null;
 
   while (cursor < input.length) {
-    if (input[cursor] === "\x1b") {
-      const match = input.slice(cursor).match(/^\x1b\[[0-9;]*m/);
+    if (input.charCodeAt(cursor) === 0x1b) {
+      SGR_RE.lastIndex = cursor;
+      const match = SGR_RE.exec(input);
       if (match) {
         activeSgr = updateActiveSgr(activeSgr, match[0]);
         cursor += match[0].length;
@@ -59,47 +70,38 @@ function takeAnsiRow(input: string, width: number): AnsiRowTake {
 
     const [glyphWidth, end] = nextGrapheme(input, cursor);
     if (visibleWidth + glyphWidth > width && visibleWidth > 0) {
-      if (lastBreak) {
-        const line = input.slice(0, lastBreak.lineEnd) + (lastBreak.activeSgr ? ANSI_RESET : "");
-        const rest = lastBreak.activeSgr + input.slice(lastBreak.restStart);
-        return { line, rest, join: lastBreak.join };
-      }
-      return {
-        line: input.slice(0, cursor) + (activeSgr ? ANSI_RESET : ""),
-        rest: activeSgr + input.slice(cursor),
-        join: "",
-      };
+      return lastBreak ?? { lineEnd: cursor, restStart: cursor, activeSgr, join: "" };
     }
 
-    const glyph = input.slice(cursor, end);
     visibleWidth += glyphWidth;
-    cursor = end;
-    if (/^\s+$/u.test(glyph) && visibleWidth > glyphWidth) {
-      lastBreak = {
-        lineEnd: cursor - glyph.length,
-        restStart: cursor,
-        activeSgr,
-        join: glyph,
-      };
+    if (visibleWidth > glyphWidth) {
+      const glyph = input.slice(cursor, end);
+      if (WHITESPACE_RE.test(glyph)) lastBreak = { lineEnd: cursor, restStart: end, activeSgr, join: glyph };
     }
+    cursor = end;
   }
 
-  return { line: input, rest: "", join: "" };
+  return { lineEnd: input.length, restStart: -1, activeSgr: "", join: "" };
 }
 
 /** Word-wrap an ANSI-authored line without splitting escape sequences. */
 export function wrapAnsiLine(line: string, width: number): { lines: string[]; joins: string[] } {
   const lines: string[] = [];
   const joins: string[] = [];
-  let remaining = line;
+  let start = 0;
+  // A row reopens the SGR state active where the previous row broke; parsing
+  // that prefix again would yield the same state, so it seeds the scan.
+  let carriedSgr = "";
   let pendingJoin = "";
 
   for (;;) {
-    const taken = takeAnsiRow(remaining, Math.max(1, width));
-    lines.push(taken.line);
+    const taken = takeAnsiRow(line, start, Math.max(1, width), carriedSgr);
+    const text = carriedSgr + line.slice(start, taken.lineEnd);
+    lines.push(taken.restStart !== -1 && taken.activeSgr ? text + ANSI_RESET : text);
     joins.push(pendingJoin);
-    if (!taken.rest) break;
-    remaining = taken.rest;
+    if (taken.restStart === -1) break;
+    carriedSgr = taken.activeSgr;
+    start = taken.restStart;
     pendingJoin = taken.join;
   }
 

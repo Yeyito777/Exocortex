@@ -554,6 +554,28 @@ describe("sidebar rendering", () => {
     expect(visibleLength(folderRow!)).toBe(SIDEBAR_WIDTH);
   });
 
+  test("folder badges follow summaries updated in place between frames", () => {
+    const sidebar = createSidebarState();
+    sidebar.folders = [
+      { id: "work", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 },
+    ];
+    sidebar.conversations = [
+      conversation("a", 0, { folderId: "work", unread: true }),
+      conversation("b", 1, { folderId: "work", unread: true }),
+    ];
+    const badge = (count: number) => `${theme.notificationBg}${theme.notificationFg} ${count} ${theme.reset}`;
+    const folderRow = () => renderSidebar(sidebar, 8, true, null).find(row => row.includes("Work"));
+
+    expect(folderRow()).toContain(badge(2));
+    sidebar.conversations[0].unread = false;
+    expect(folderRow()).toContain(badge(1));
+    sidebar.conversations[1].streaming = true;
+    expect(folderRow()).toContain(`${theme.accent}◉ `);
+    expect(folderRow()).not.toContain(badge(1));
+    sidebar.conversations.push(conversation("c", 2, { folderId: "work", unread: true }));
+    expect(folderRow()).toContain(badge(1));
+  });
+
   test("does not count streaming unread conversations in folder notification badges", () => {
     const sidebar = createSidebarState();
     sidebar.folders = [

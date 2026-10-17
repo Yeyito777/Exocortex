@@ -11,6 +11,7 @@ import {
   fitImageBox,
   historyImageLimits,
   inlineImageCellSize,
+  inlineImageGeneration,
   inlineImagesActive,
   layoutInlineImageStrip,
   renderInlineImage,
@@ -98,6 +99,7 @@ export function compactionFinishedDivider(availableWidth: number): string {
 import { termWidth, truncateToWidth } from "./textwidth";
 import { wordWrap, type WrapCopyLine, type WrapImage, type WrapResult } from "./textwrap";
 import { mathImageLayout, type HistoryImageLayout } from "./historyimages";
+import { mathImageGeneration } from "./mathimages";
 import type { LinkSpan } from "./links";
 import { isNewConversationQueuedMessage, queuedMessagesInDisplayOrder, queueTimingLabel } from "./queue";
 
@@ -337,11 +339,219 @@ export interface BuildMessageLinesResult {
   partial?: boolean;
   /** First state.messages index included when partial rendering is active. */
   startMessageIndex?: number;
+  /** Unique per build; arrays can be reused in place, so identity alone does not identify content. */
+  revision: number;
 }
 
 export interface BuildMessageLinesOptions {
   startMessageIndex?: number;
   partial?: boolean;
+  /**
+   * Let this build take over the arrays of the previous result at this width
+   * instead of copying them; that result's arrays then change underneath it.
+   * Only for the render loop, which replaces its result every frame. Callers
+   * that compare an old and a new build must not set it.
+   */
+  reuseArrays?: boolean;
+}
+
+let buildRevision = 0;
+
+// ── Committed history reuse ─────────────────────────────────────────
+
+/**
+ * Rows already built for the committed messages (everything before pendingAI,
+ * the streaming tail and queued shadows), reused by the next build at the same
+ * width. Without it every streaming frame, keypress and daemon event re-walked
+ * the whole loaded history, which costs hundreds of milliseconds per frame once
+ * a long conversation has been scrolled through.
+ *
+ * Messages and blocks are mutated in place in a few places (tool outputs,
+ * reconciled blocks, metadata), so validity is checked structurally on every
+ * build: the reference of every message, block and content field is compared
+ * with the build that produced the cached rows. Only the first changed message
+ * onward is rebuilt.
+ */
+interface CommittedHistoryCache {
+  key: readonly unknown[];
+  startMessageIndex: number;
+  messageCount: number;
+  /** Flat content references of messages [startMessageIndex, messageCount). */
+  sourceRefs: unknown[];
+  /** sourceRefs end offset after each message. */
+  sourceRefEnds: number[];
+  /** Rendered row count before each message. */
+  lineStarts: number[];
+  /** Rows after the last committed message. */
+  committedLines: number;
+  erroredToolCallIds: Set<string>;
+  /** The committed messages' share of erroredToolCallIds, reused while they are unchanged. */
+  committedErroredToolCallIds: Set<string>;
+  lastContinuesIntoPending: boolean;
+  durableSleepIndex: number;
+  /** Assistant images still waiting for the segment end when the committed rows stop. */
+  carriedImages: HistoryImage[];
+  /** Older-history spinner row text when built (null when not loading) and the message it precedes. */
+  historyLoadingRow: string | null;
+  historyLoadingInsertIndex: number;
+  /** Whether the row arrays came from a reuseArrays build, i.e. only the render loop holds them. */
+  ownsArrays: boolean;
+  lines: string[];
+  wrapContinuation: boolean[];
+  wrapJoiners: string[];
+  copyLines: Array<WrapCopyLine | null>;
+  lineAnchors: RenderLineAnchor[];
+  messageBounds: MessageBound[];
+}
+
+/** Per-state caches by width; resize and sidebar toggles build two widths back to back. */
+const committedHistoryCaches = new WeakMap<RenderState, CommittedHistoryCache[]>();
+const COMMITTED_HISTORY_CACHE_WIDTHS = 2;
+
+/** Drop reusable committed rows, e.g. after changing a render input this module cannot observe. */
+export function invalidateCommittedHistoryCache(state: RenderState): void {
+  committedHistoryCaches.delete(state);
+}
+
+function appendBlockSourceRefs(block: Block, out: unknown[]): void {
+  out.push(block);
+  switch (block.type) {
+    case "thinking":
+    case "text":
+      out.push(block.text);
+      break;
+    case "tool_call":
+      out.push(block.toolName, block.summary, block.input, block.presentation, block.toolCallId);
+      break;
+    case "tool_result":
+      out.push(block.isError, block.output, block.toolCallId, block.images);
+      break;
+  }
+}
+
+/** Every field buildMessageLines reads from a message, by reference. */
+function appendMessageSourceRefs(message: Message, out: unknown[]): void {
+  out.push(message, message.role, message.metadata);
+  switch (message.role) {
+    case "assistant":
+      out.push(message.blocks, message.blocks.length);
+      for (const block of message.blocks) appendBlockSourceRefs(block, out);
+      break;
+    case "user":
+      out.push(message.text, message.images);
+      break;
+    case "system":
+      out.push(message.text, message.color);
+      break;
+    case "system_instructions":
+      out.push(message.text);
+      break;
+  }
+}
+
+/**
+ * Whether `message` still has the references appendMessageSourceRefs recorded
+ * at refs[offset, end). Mirrors it field for field without allocating; this
+ * runs for every loaded message on every build.
+ */
+function messageSourceRefsMatch(message: Message, refs: readonly unknown[], offset: number, end: number): boolean {
+  if (refs[offset] !== message || refs[offset + 1] !== message.role || refs[offset + 2] !== message.metadata) return false;
+  let i = offset + 3;
+  switch (message.role) {
+    case "assistant": {
+      const blocks = message.blocks;
+      if (refs[i] !== blocks || refs[i + 1] !== blocks.length) return false;
+      i += 2;
+      for (const block of blocks) {
+        if (refs[i] !== block) return false;
+        switch (block.type) {
+          case "thinking":
+          case "text":
+            if (refs[i + 1] !== block.text) return false;
+            i += 2;
+            break;
+          case "tool_call":
+            if (refs[i + 1] !== block.toolName || refs[i + 2] !== block.summary || refs[i + 3] !== block.input
+              || refs[i + 4] !== block.presentation || refs[i + 5] !== block.toolCallId) return false;
+            i += 6;
+            break;
+          case "tool_result":
+            if (refs[i + 1] !== block.isError || refs[i + 2] !== block.output || refs[i + 3] !== block.toolCallId
+              || refs[i + 4] !== block.images) return false;
+            i += 5;
+            break;
+        }
+      }
+      break;
+    }
+    case "user":
+      if (refs[i] !== message.text || refs[i + 1] !== message.images) return false;
+      i += 2;
+      break;
+    case "system":
+      if (refs[i] !== message.text || refs[i + 1] !== message.color) return false;
+      i += 2;
+      break;
+    case "system_instructions":
+      if (refs[i] !== message.text) return false;
+      i += 1;
+      break;
+  }
+  return i === end;
+}
+
+function sameRefs(a: readonly unknown[], b: readonly unknown[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+function committedErroredToolCalls(messages: Message[], start: number): Set<string> {
+  const ids = new Set<string>();
+  for (let index = start; index < messages.length; index++) {
+    const message = messages[index];
+    if (message.role !== "assistant") continue;
+    for (const block of message.blocks) {
+      if (block.type === "tool_result" && block.isError) ids.add(block.toolCallId);
+    }
+  }
+  return ids;
+}
+
+function withPendingErroredToolCalls(committed: Set<string>, pending: Message | null): Set<string> {
+  if (pending?.role !== "assistant" || !pending.blocks.some(block => block.type === "tool_result" && block.isError)) return committed;
+  const ids = new Set(committed);
+  for (const block of pending.blocks) {
+    if (block.type === "tool_result" && block.isError) ids.add(block.toolCallId);
+  }
+  return ids;
+}
+
+/**
+ * Whether rows after this message are independent of every message before it:
+ * assistant metadata and segment images stop accumulating here, and a
+ * following user message gets its top margin either way.
+ */
+function isSegmentBoundary(message: Message): boolean {
+  return message.role !== "assistant" && isAssistantMetadataBoundary(message);
+}
+
+function firstChangedErroredToolCallMessage(
+  messages: Message[],
+  start: number,
+  previous: Set<string>,
+  next: Set<string>,
+): number {
+  const changed = new Set<string>();
+  for (const id of previous) if (!next.has(id)) changed.add(id);
+  for (const id of next) if (!previous.has(id)) changed.add(id);
+  if (changed.size === 0) return Infinity;
+  for (let index = start; index < messages.length; index++) {
+    const message = messages[index];
+    if (message.role !== "assistant") continue;
+    if (message.blocks.some(block => block.type === "tool_call" && changed.has(block.toolCallId))) return index;
+  }
+  return Infinity;
 }
 
 // ── Build all display lines ─────────────────────────────────────────
@@ -353,25 +563,16 @@ export function buildMessageLines(
 ): BuildMessageLinesResult {
   const contentWidth = availableWidth - 4;
   const metadataOptions = { width: availableWidth, diagnostics: state.showDiagnostics };
-  const lines: string[] = [];
-  const wrapContinuation: boolean[] = [];
-  const wrapJoiners: string[] = [];
-  const copyLines: Array<WrapCopyLine | null> = [];
-  const messageBounds: MessageBound[] = [];
-  const lineAnchors: RenderLineAnchor[] = [];
+  let lines: string[] = [];
+  let wrapContinuation: boolean[] = [];
+  let wrapJoiners: string[] = [];
+  let copyLines: Array<WrapCopyLine | null> = [];
+  let messageBounds: MessageBound[] = [];
+  let lineAnchors: RenderLineAnchor[] = [];
   const durableSleepAssistant = activeDurableSleepAssistant(state);
   const startMessageIndex = Math.max(0, Math.min(options.startMessageIndex ?? 0, state.messages.length));
-  const erroredToolCallIds = new Set<string>();
-  for (let messageIndex = startMessageIndex; messageIndex < state.messages.length; messageIndex++) {
-    const message = state.messages[messageIndex];
-    if (message.role !== "assistant") continue;
-    for (const block of message.blocks) {
-      if (block.type === "tool_result" && block.isError) erroredToolCallIds.add(block.toolCallId);
-    }
-  }
-  for (const block of state.pendingAI?.blocks ?? []) {
-    if (block.type === "tool_result" && block.isError) erroredToolCallIds.add(block.toolCallId);
-  }
+  // Tool calls whose result failed; filled once the committed rows are planned.
+  let erroredToolCallIds = new Set<string>();
 
   const renderAssistantBlock = (block: Extract<Message, { role: "assistant" }>["blocks"][number]): WrapResult =>
     renderBlockCached(
@@ -430,7 +631,6 @@ export function buildMessageLines(
   };
 
   const imageLimits = historyImageLimits(availableWidth, state.rows);
-  const imageCell = inlineImageCellSize();
   /**
    * Append a message's inline images after a blank row: one thumbnail, or a
    * strip of them side by side. User images align right like their bubble.
@@ -501,19 +701,149 @@ export function buildMessageLines(
     messageBounds.push({ role, start, end: lines.length, contentStart, contentEnd });
   };
 
+  // Plan which committed messages can keep their rows from the previous build.
+  // The opening spinner animates above the committed rows while a conversation
+  // is still loading; those frames take the full path and leave the cache alone.
+  const messages = state.messages;
+  const messageCount = messages.length;
+  const cacheable = !isActiveConversationLoading(state);
+  const lastContinuesIntoPending = state.pendingAI?.role === "assistant";
+  const imageCell = inlineImageCellSize();
+  const cacheKey: unknown[] = [
+    state.convId, contentWidth, state.showToolOutput, state.showDiagnostics, state.toolRegistry,
+    state.externalToolStyles, theme.name, state.rows, inlineImageGeneration(), mathImageGeneration(),
+    inlineImagesActive(), imageCell.width, imageCell.height, userMessageNeedsTopMargin(messages, startMessageIndex),
+  ];
+  const widthCaches = committedHistoryCaches.get(state) ?? [];
+  const cached = cacheable
+    ? widthCaches.find(entry => entry.startMessageIndex === startMessageIndex && sameRefs(entry.key, cacheKey))
+    : undefined;
+  const durableSleepIndex = durableSleepAssistant ? messages.lastIndexOf(durableSleepAssistant) : -1;
+
+  // The older-history spinner is a committed row above the oldest loaded turn.
   let historyLoadingInsertIndex = startMessageIndex;
   if (state.historyLoadingOlder && startMessageIndex === 0) {
-    while (state.messages[historyLoadingInsertIndex]?.role === "system_instructions") {
+    while (messages[historyLoadingInsertIndex]?.role === "system_instructions") {
       historyLoadingInsertIndex++;
     }
   }
-  const pushHistoryLoadingLine = () => {
-    pushLine(
-      `${theme.dim}${historyLoadingSpinnerText(state.historyLoadingStartedAt ?? Date.now())}${theme.reset}`,
-      state,
-      "history_loading",
+  const historyLoadingRow = state.historyLoadingOlder
+    ? `${theme.dim}${historyLoadingSpinnerText(state.historyLoadingStartedAt ?? Date.now())}${theme.reset}`
+    : null;
+  const pushHistoryLoadingLine = () => pushLine(historyLoadingRow!, state, "history_loading");
+
+  let rebuildFrom = startMessageIndex;
+  let rebuildTo = messageCount;
+  let sourceRefs: unknown[] = [];
+  let sourceRefEnds: number[] = [];
+  let lineStarts: number[] = [];
+  let carriedImages: HistoryImage[] = [];
+  let committedErroredToolCallIds: Set<string> | undefined;
+  /** Unchanged trailing messages whose rows are appended after rebuilding the front. */
+  let reusedSuffix: { cached: CommittedHistoryCache; oldStart: number } | null = null;
+  if (cached) {
+    const s = startMessageIndex;
+    const refStart = (entry: CommittedHistoryCache, index: number) => index === entry.startMessageIndex ? 0 : entry.sourceRefEnds[index - entry.startMessageIndex - 1];
+    const sameAsCached = (index: number, cachedIndex: number) => messageSourceRefsMatch(
+      messages[index], cached.sourceRefs, refStart(cached, cachedIndex), cached.sourceRefEnds[cachedIndex - s],
     );
-  };
+    let firstChanged = Math.min(messageCount, cached.messageCount);
+    for (let index = s; index < firstChanged; index++) {
+      if (!sameAsCached(index, index)) {
+        firstChanged = index;
+        break;
+      }
+    }
+    const unchanged = firstChanged >= messageCount && messageCount === cached.messageCount;
+    if (unchanged) committedErroredToolCallIds = cached.committedErroredToolCallIds;
+    erroredToolCallIds = withPendingErroredToolCalls(
+      committedErroredToolCallIds ??= committedErroredToolCalls(messages, s),
+      state.pendingAI,
+    );
+
+    // Other inputs that dirty one message, by index in the current messages.
+    const dirty: number[] = [];
+    if (lastContinuesIntoPending !== cached.lastContinuesIntoPending) dirty.push(messageCount - 1);
+    // An active durable sleep's metadata ticks with the clock.
+    if (durableSleepIndex >= s) dirty.push(durableSleepIndex);
+    // Its old index, both as it was and as moved by a prepend: either may be it.
+    if (cached.durableSleepIndex >= s) {
+      dirty.push(cached.durableSleepIndex, cached.durableSleepIndex + messageCount - cached.messageCount);
+    }
+    const erroredChange = firstChangedErroredToolCallMessage(messages, s, cached.erroredToolCallIds, erroredToolCallIds);
+    if (erroredChange < messageCount) dirty.push(erroredChange);
+    if (historyLoadingRow !== cached.historyLoadingRow) {
+      dirty.push(historyLoadingRow !== null ? historyLoadingInsertIndex : cached.historyLoadingInsertIndex);
+    }
+    const firstDirty = Math.min(firstChanged, ...dirty);
+
+    if (firstDirty >= messageCount && messageCount === cached.messageCount) {
+      rebuildFrom = messageCount;
+      carriedImages = cached.carriedImages;
+    } else {
+      // A message's rows depend on whether the next message continues its
+      // assistant segment, and segment images accumulate across that run, so
+      // rebuild from the start of the run before the first change.
+      rebuildFrom = Math.max(s, Math.min(firstDirty, messageCount) - 1);
+      while (rebuildFrom > s && messages[rebuildFrom - 1].role === "assistant") rebuildFrom--;
+
+      // A change near the top (an older page prepended, the loading row
+      // animating) instead keeps the unchanged tail. Its rows can move as a
+      // block from just after a segment boundary: nothing there reads earlier
+      // messages except to stop at that boundary.
+      const shift = messageCount - cached.messageCount;
+      let suffixStart = messageCount;
+      while (suffixStart > s && suffixStart - 1 - shift >= s && sameAsCached(suffixStart - 1, suffixStart - 1 - shift)) suffixStart--;
+      let boundary = Math.max(suffixStart, s) + 1;
+      while (boundary <= messageCount && !isSegmentBoundary(messages[boundary - 1])) boundary++;
+      const lastDirty = Math.max(-1, ...dirty.filter(index => index < messageCount));
+      if (boundary < messageCount && lastDirty < boundary && boundary - s < messageCount - rebuildFrom) {
+        rebuildFrom = s;
+        rebuildTo = boundary;
+        reusedSuffix = { cached, oldStart: boundary - shift };
+      }
+    }
+    // Drop the entry before reusing its arrays so a throw mid-build cannot
+    // leave a truncated entry behind.
+    committedHistoryCaches.set(state, widthCaches.filter(entry => entry !== cached));
+    if (!reusedSuffix) {
+      const kept = rebuildFrom - s;
+      const keptLines = kept === cached.messageCount - s ? cached.committedLines : cached.lineStarts[kept];
+      if (options.reuseArrays && cached.ownsArrays) {
+        // The previous result's arrays continue as this one's: copying several
+        // arrays of every loaded row on each streaming frame cost more than the
+        // rest of the build.
+        lines = cached.lines;
+        wrapContinuation = cached.wrapContinuation;
+        wrapJoiners = cached.wrapJoiners;
+        copyLines = cached.copyLines;
+        lineAnchors = cached.lineAnchors;
+        messageBounds = cached.messageBounds;
+        for (const rows of [lines, wrapContinuation, wrapJoiners, copyLines, lineAnchors]) rows.length = keptLines;
+        messageBounds.length = kept;
+      } else {
+        lines = cached.lines.slice(0, keptLines);
+        wrapContinuation = cached.wrapContinuation.slice(0, keptLines);
+        wrapJoiners = cached.wrapJoiners.slice(0, keptLines);
+        copyLines = cached.copyLines.slice(0, keptLines);
+        lineAnchors = cached.lineAnchors.slice(0, keptLines);
+        messageBounds = cached.messageBounds.slice(0, kept);
+      }
+      // Bookkeeping arrays are private to the entry this build replaces.
+      sourceRefs = cached.sourceRefs;
+      sourceRefs.length = kept > 0 ? cached.sourceRefEnds[kept - 1] : 0;
+      sourceRefEnds = cached.sourceRefEnds;
+      sourceRefEnds.length = kept;
+      lineStarts = cached.lineStarts;
+      lineStarts.length = kept;
+    }
+  }
+
+  if (!cached) {
+    committedErroredToolCallIds = committedErroredToolCalls(messages, startMessageIndex);
+    erroredToolCallIds = withPendingErroredToolCalls(committedErroredToolCallIds, state.pendingAI);
+  }
+
   if (startMessageIndex === 0 && isActiveConversationLoading(state)) {
     pushLine(
       `  ${theme.dim}${conversationLoadingSpinnerText(state.conversationLoading!.startedAt)}${theme.reset}`,
@@ -522,13 +852,16 @@ export function buildMessageLines(
     );
   }
 
-  let segmentImages: HistoryImage[] = [];
-  for (let messageIndex = startMessageIndex; messageIndex < state.messages.length; messageIndex++) {
+  let segmentImages: HistoryImage[] = carriedImages;
+  for (let messageIndex = rebuildFrom; messageIndex < rebuildTo; messageIndex++) {
     if (state.historyLoadingOlder && messageIndex === historyLoadingInsertIndex) {
       pushHistoryLoadingLine();
     }
     const msg = state.messages[messageIndex];
     const start = lines.length;
+    lineStarts.push(start);
+    appendMessageSourceRefs(msg, sourceRefs);
+    sourceRefEnds.push(sourceRefs.length);
     if (msg.role === "user") {
       if (userMessageNeedsTopMargin(state.messages, messageIndex)) pushLine("", msg, "user_margin_top");
       const contentStart = lines.length;
@@ -615,8 +948,87 @@ export function buildMessageLines(
     }
   }
 
+  if (reusedSuffix) {
+    const { cached: previous, oldStart } = reusedSuffix;
+    const s = startMessageIndex;
+    const oldLine = previous.lineStarts[oldStart - s];
+    const oldRef = previous.sourceRefEnds[oldStart - s - 1];
+    const lineShift = lines.length - oldLine;
+    const refShift = sourceRefs.length - oldRef;
+    if (options.reuseArrays && previous.ownsArrays && lineShift === 0 && refShift === 0
+      && messageCount === previous.messageCount) {
+      // Same-height front (the loading row animating): patch it into the
+      // previous arrays rather than copying every row behind it.
+      const committedBounds = previous.messageCount - s;
+      const patch = <T>(target: T[], front: T[], length: number) => {
+        for (let i = 0; i < front.length; i++) target[i] = front[i];
+        target.length = length;
+        return target;
+      };
+      lines = patch(previous.lines, lines, previous.committedLines);
+      wrapContinuation = patch(previous.wrapContinuation, wrapContinuation, previous.committedLines);
+      wrapJoiners = patch(previous.wrapJoiners, wrapJoiners, previous.committedLines);
+      copyLines = patch(previous.copyLines, copyLines, previous.committedLines);
+      lineAnchors = patch(previous.lineAnchors, lineAnchors, previous.committedLines);
+      messageBounds = patch(previous.messageBounds, messageBounds, committedBounds);
+      lineStarts = patch(previous.lineStarts, lineStarts, committedBounds);
+      sourceRefEnds = patch(previous.sourceRefEnds, sourceRefEnds, committedBounds);
+      sourceRefs = patch(previous.sourceRefs, sourceRefs, previous.sourceRefs.length);
+    } else {
+      for (let row = oldLine; row < previous.committedLines; row++) {
+        lines.push(previous.lines[row]);
+        wrapContinuation.push(previous.wrapContinuation[row]);
+        wrapJoiners.push(previous.wrapJoiners[row]);
+        copyLines.push(previous.copyLines[row]);
+        lineAnchors.push(previous.lineAnchors[row]);
+      }
+      for (let i = oldStart - s; i < previous.messageCount - s; i++) {
+        const bound = previous.messageBounds[i];
+        messageBounds.push(lineShift === 0 ? bound : {
+          ...bound,
+          start: bound.start + lineShift,
+          end: bound.end + lineShift,
+          contentStart: bound.contentStart + lineShift,
+          contentEnd: bound.contentEnd + lineShift,
+        });
+        lineStarts.push(previous.lineStarts[i] + lineShift);
+        sourceRefEnds.push(previous.sourceRefEnds[i] + refShift);
+      }
+      for (let i = oldRef; i < previous.sourceRefs.length; i++) sourceRefs.push(previous.sourceRefs[i]);
+    }
+    segmentImages = previous.carriedImages;
+  }
+
   if (state.historyLoadingOlder && historyLoadingInsertIndex === state.messages.length) {
     pushHistoryLoadingLine();
+  }
+
+  if (cacheable) {
+    const entry: CommittedHistoryCache = {
+      key: cacheKey,
+      startMessageIndex,
+      messageCount,
+      sourceRefs,
+      sourceRefEnds,
+      lineStarts,
+      committedLines: lines.length,
+      erroredToolCallIds,
+      committedErroredToolCallIds: committedErroredToolCallIds!,
+      lastContinuesIntoPending,
+      durableSleepIndex,
+      carriedImages: segmentImages,
+      historyLoadingRow,
+      historyLoadingInsertIndex,
+      ownsArrays: options.reuseArrays === true,
+      lines,
+      wrapContinuation,
+      wrapJoiners,
+      copyLines,
+      lineAnchors,
+      messageBounds,
+    };
+    const others = (committedHistoryCaches.get(state) ?? []).filter(other => other !== cached && !sameRefs(other.key, cacheKey));
+    committedHistoryCaches.set(state, [entry, ...others].slice(0, COMMITTED_HISTORY_CACHE_WIDTHS));
   }
 
   // Currently streaming AI message — no margins
@@ -718,5 +1130,6 @@ export function buildMessageLines(
     copyLines,
     lineAnchors,
     ...(options.partial ? { partial: true, startMessageIndex } : {}),
+    revision: ++buildRevision,
   };
 }

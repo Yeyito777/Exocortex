@@ -92,31 +92,45 @@ function sameScrollRegion(a: ScrollRegion | null, b: ScrollRegion | null): a is 
   return !!a && !!b && a.start === b.start && a.end === b.end;
 }
 
-function scrollUpRegion(region: ScrollRegion, amount: number): string {
-  // DECSTBM + LF at the bottom margin scrolls only the message region. This is
-  // supported by the Linux console and common terminal emulators.
-  return `${ESC}${region.start};${region.end}r${moveTo(region.end, 1)}${"\n".repeat(amount)}${ESC}r`;
+function scrollRegionBy(region: ScrollRegion, amount: number): string {
+  // DECSTBM + LF at the bottom margin scrolls only the message region up;
+  // reverse index (RI) at the top margin scrolls it down. Both are supported by
+  // the Linux console and common terminal emulators.
+  const scroll = amount > 0
+    ? moveTo(region.end, 1) + "\n".repeat(amount)
+    : moveTo(region.start, 1) + "\x1bM".repeat(-amount);
+  return `${ESC}${region.start};${region.end}r${scroll}${ESC}r`;
 }
 
-function detectUpwardScroll(prevFrame: RenderFrame, nextFrame: RenderFrame): number {
+/**
+ * Rows the message region's content moved since the previous frame: positive
+ * when it moved up (viewport toward newer history), negative when it moved down
+ * (scrolling back), 0 when terminal scrolling would not save enough redraws.
+ */
+function detectRegionScroll(prevFrame: RenderFrame, nextFrame: RenderFrame): number {
   if (!sameScrollRegion(prevFrame.scrollRegion, nextFrame.scrollRegion)) return 0;
   const region = nextFrame.scrollRegion;
   if (!region) return 0;
 
   const viewportShift = nextFrame.viewStart - prevFrame.viewStart;
-  if (viewportShift <= 0) return 0;
+  if (viewportShift === 0) return 0;
+  const direction = Math.sign(viewportShift);
 
   const height = region.end - region.start + 1;
   if (height < 4) return 0;
 
-  const maxShift = Math.min(10, Math.floor(height / 2), viewportShift);
+  // Half-page jumps still reuse the other half of the region.
+  const maxShift = Math.min(height - 3, Math.abs(viewportShift));
   let bestShift = 0;
   let bestMatches = 0;
 
-  for (let shift = viewportShift; shift <= maxShift; shift++) {
+  for (let shift = Math.abs(viewportShift); shift <= maxShift; shift++) {
     let matches = 0;
     for (let row = region.start - 1; row <= region.end - 1 - shift; row++) {
-      if (sameRowContent(prevFrame.rows[row + shift], nextFrame.rows[row])) matches++;
+      const same = direction > 0
+        ? sameRowContent(prevFrame.rows[row + shift], nextFrame.rows[row])
+        : sameRowContent(prevFrame.rows[row], nextFrame.rows[row + shift]);
+      if (same) matches++;
     }
 
     const comparableRows = height - shift;
@@ -127,7 +141,7 @@ function detectUpwardScroll(prevFrame: RenderFrame, nextFrame: RenderFrame): num
     }
   }
 
-  return bestShift;
+  return bestShift * direction;
 }
 
 /** Flush only the rows/cursor state that changed since the previous frame. */
@@ -135,12 +149,12 @@ export function flushFrame(owner: object, nextFrame: RenderFrame): void {
   const prevFrame = lastRenderedFrames.get(owner);
   const out: string[] = [];
   const rowCount = Math.max(prevFrame?.rows.length ?? 0, nextFrame.rows.length);
-  const scrollShift = prevFrame ? detectUpwardScroll(prevFrame, nextFrame) : 0;
-  const scrollRegion = scrollShift > 0 ? nextFrame.scrollRegion : null;
+  const scrollShift = prevFrame ? detectRegionScroll(prevFrame, nextFrame) : 0;
+  const scrollRegion = scrollShift !== 0 ? nextFrame.scrollRegion : null;
   let hasDrawingUpdates = false;
 
   if (scrollRegion) {
-    out.push(scrollUpRegion(scrollRegion, scrollShift));
+    out.push(scrollRegionBy(scrollRegion, scrollShift));
     hasDrawingUpdates = true;
   }
 
@@ -150,7 +164,12 @@ export function flushFrame(owner: object, nextFrame: RenderFrame): void {
 
     let unchanged = prevFrame?.rows[i] === nextRow;
     if (scrollRegion && i >= scrollRegion.start - 1 && i <= scrollRegion.end - 1) {
-      const shiftedPrevRow = i + scrollShift <= scrollRegion.end - 1 ? prevFrame?.rows[i + scrollShift] : undefined;
+      // The terminal now shows the previous frame's row i + shift here (or a
+      // blank row where scrolling exposed one).
+      const source = i + scrollShift;
+      const shiftedPrevRow = source >= scrollRegion.start - 1 && source <= scrollRegion.end - 1
+        ? prevFrame?.rows[source]
+        : undefined;
       unchanged = sameRowContent(shiftedPrevRow, nextRow);
     }
 

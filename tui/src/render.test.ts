@@ -11,6 +11,7 @@ import { SIDEBAR_WIDTH } from "./sidebar";
 import { renderUserMessage } from "./blockrenderer";
 import { scrollToTop } from "./chat";
 import { handleUserMessage } from "./events/streaming";
+import { TerminalScreen } from "./testhelpers/terminalscreen";
 
 function captureRenderOutput(state: RenderState): string {
   let out = "";
@@ -348,13 +349,15 @@ describe("render caching and frame diffing", () => {
     state.pendingAI.blocks.push({ type: "text", text: "partial reply" });
 
     renderSilently(state);
-    const firstLines = state.historyLines;
+    expect(stripAnsi(state.historyLines.join("\n"))).toContain("partial reply");
 
     state.inputBuffer = "typed while streaming";
     state.cursorPos = state.inputBuffer.length;
+    const block = state.pendingAI.blocks[0];
+    if (block.type === "text") block.text += " keeps growing";
     renderSilently(state);
 
-    expect(state.historyLines).not.toBe(firstLines);
+    expect(stripAnsi(state.historyLines.join("\n"))).toContain("partial reply keeps growing");
   });
 
   test("invalidates cached history on each durable-sleep metadata second", () => {
@@ -402,14 +405,12 @@ describe("render caching and frame diffing", () => {
     }];
 
     renderSilently(state);
-    const firstLines = state.historyLines;
-    expect(stripAnsi(firstLines.join("\n"))).toContain("tokens/s | 10s");
+    expect(stripAnsi(state.historyLines.join("\n"))).toContain("tokens/s | 10s");
 
     // Advance the elapsed frame without replacing any cache-tracked references.
     assistant.metadata.startedAt -= 1_000;
     renderSilently(state);
 
-    expect(state.historyLines).not.toBe(firstLines);
     expect(stripAnsi(state.historyLines.join("\n"))).toContain("tokens/s | 11s");
   });
 
@@ -417,7 +418,6 @@ describe("render caching and frame diffing", () => {
     const state = makeState();
 
     renderSilently(state);
-    const firstLines = state.historyLines;
 
     const assistant = state.messages[1];
     if (assistant.role !== "assistant") throw new Error("expected assistant message");
@@ -425,7 +425,6 @@ describe("render caching and frame diffing", () => {
     invalidateHistoryRenderCache(state);
     renderSilently(state);
 
-    expect(state.historyLines).not.toBe(firstLines);
     expect(stripAnsi(state.historyLines.join("\n"))).toContain("updated body");
   });
 
@@ -518,6 +517,36 @@ describe("render caching and frame diffing", () => {
     const clearCount = (out.match(/\x1b\[2K/g) || []).length;
     expect(out).toMatch(/\x1b\[3;\d+r/);
     expect(clearCount).toBeLessThan(state.layout.messageAreaHeight);
+  });
+
+  test("history scrolling in either direction uses the scroll region and matches a full repaint", () => {
+    const state = createInitialState();
+    state.cols = 60;
+    state.rows = 24;
+    state.sidebar.open = false;
+    state.messages = Array.from({ length: 40 }, (_, index) => ({
+      role: "assistant" as const,
+      blocks: [{ type: "text" as const, text: `history row ${String(index).padStart(2, "0")}` }],
+      metadata: null,
+    }));
+    const screen = new TerminalScreen(state.rows, state.cols);
+    invalidateFrame(state);
+    screen.feed(captureRenderOutput(state));
+    state.scrollOffset = 12;
+    screen.feed(captureRenderOutput(state));
+
+    for (const delta of [1, 3, -2, 1, -1, 4, -3, 9, -9]) {
+      state.scrollOffset += delta;
+      const out = captureRenderOutput(state);
+      expect(out).toMatch(/\x1b\[3;\d+r/);
+      expect((out.match(/\x1b\[2K/g) ?? []).length).toBeLessThan(state.layout.messageAreaHeight / 2);
+      screen.feed(out);
+
+      const repainted = new TerminalScreen(state.rows, state.cols);
+      invalidateFrame(state);
+      repainted.feed(captureRenderOutput(state));
+      expect(screen.plainRows()).toEqual(repainted.plainRows());
+    }
   });
 
   test("follows a non-goal final response, then holds its beginning when it overflows", () => {
@@ -1866,16 +1895,47 @@ describe("render caching and frame diffing", () => {
     expect(firstPaint).not.toContain("older-hidden");
     expect(firstPaint).not.toContain("oldest-hidden");
 
-    expect(advanceDeferredHistoryRender(state)).toBe(true);
-    renderSilently(state);
-    expect(state.deferredHistoryRender).toMatchObject({ startMessageIndex: 2, complete: false });
-    expect(stripAnsi(state.historyLines.join("\n"))).toContain("older-hidden");
-    expect(stripAnsi(state.historyLines.join("\n"))).not.toContain("oldest-hidden");
-
+    // Each step adds as many turns as are already shown: the three shown here
+    // cover the two that remain.
     expect(advanceDeferredHistoryRender(state)).toBe(true);
     renderSilently(state);
     expect(state.deferredHistoryRender).toMatchObject({ startMessageIndex: 0, complete: true });
+    expect(stripAnsi(state.historyLines.join("\n"))).toContain("older-hidden");
     expect(stripAnsi(state.historyLines.join("\n"))).toContain("oldest-hidden");
+    expect(advanceDeferredHistoryRender(state)).toBe(false);
+  });
+
+  test("deferred history grows geometrically and stays complete after full renders", () => {
+    const state = createInitialState();
+    state.cols = 120;
+    state.rows = 30;
+    state.convId = "long-conversation";
+    state.panelFocus = "sidebar";
+    for (let turn = 0; turn < 64; turn++) {
+      state.messages.push(
+        { role: "user", text: `question ${turn}`, metadata: null },
+        { role: "assistant", blocks: [{ type: "text", text: `answer ${turn}` }], metadata: null },
+      );
+    }
+
+    renderSilently(state);
+    let steps = 0;
+    while (advanceDeferredHistoryRender(state)) {
+      renderSilently(state);
+      steps++;
+    }
+    expect(state.deferredHistoryRender).toMatchObject({ startMessageIndex: 0, complete: true });
+    expect(steps).toBeLessThanOrEqual(7);
+
+    // A streamed turn renders everything; finishing it must not restart the walk.
+    state.pendingAI = createPendingAI(Date.now(), state.model);
+    state.pendingAI.blocks.push({ type: "text", text: "streaming" });
+    renderSilently(state);
+    state.messages.push(state.pendingAI);
+    state.pendingAI = null;
+    renderSilently(state);
+    expect(state.deferredHistoryRender).toMatchObject({ startMessageIndex: 0, complete: true });
+    expect(stripAnsi(state.historyLines.join("\n"))).toContain("question 0");
   });
 
   test("remembered bottom restoration does not force wrapping offscreen history", () => {
