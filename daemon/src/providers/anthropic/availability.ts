@@ -16,7 +16,9 @@ export function claudeUsageAvailability(now = Date.now()): UsageAvailability {
   })) : local.states;
   // Do not turn authentication/configuration errors into indefinite usage waits.
   const eligible = states.filter(account => account.available);
-  if (!eligible.length || chooseAccountForNewWork(states, now, remote?.routing ?? local.policy ?? DEFAULT_ROUTING_POLICY)) {
+  // A remote daemon from before pace routing sends no pace fields: the defaults fill them.
+  const policy = remote ? { ...DEFAULT_ROUTING_POLICY, ...remote.routing } : local.policy;
+  if (!eligible.length || chooseAccountForNewWork(states, now, policy)) {
     return { ready: true, resetAt: null };
   }
   const resets = eligible.map(account => Math.max(

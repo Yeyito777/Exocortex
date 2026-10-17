@@ -89,25 +89,40 @@ Decisions happen at turn boundaries, never mid-turn
    take it).
 2. **A conversation whose cache is cold** moves only when that clearly helps:
    its account is below a floor (under 10% left in its 5-hour or weekly
-   window), or another account's weekly window resets more than 6 hours
-   sooner. The next turn rewrites the cache wherever it runs, so a cold move
-   costs nothing extra.
+   window) and another account is above both, or another account scores at
+   least 1.25 times its own by rule 3. The margin keeps conversations from
+   ping-ponging between accounts at about the same pace. The next turn
+   rewrites the cache wherever it runs, so a cold move costs nothing extra.
 3. **New conversations, exo subagents and helper requests** (titles,
-   summaries, compaction) go to the account whose capacity expires soonest,
-   among accounts that are signed in, not limited, and above both floors:
-   - soonest weekly reset first. Unused capacity is lost at a reset, so the
-     account that resets soonest is burned first and the one whose capacity
-     lasts longer is saved ("first expired, first out", the same idea as
-     claude-swap's `consume-first` strategy). The weekly window decides first
-     because it is the scarcer one;
-   - weekly resets within 6 hours of each other count as a tie, broken by the
-     soonest 5-hour reset (within 30 minutes counts as a tie);
-   - then the most headroom (the smaller of the two windows' remaining
-     percent), then the fewest running turns, then account order.
+   summaries, compaction) go to the account furthest behind its weekly pace,
+   among accounts that are signed in, not limited, and above both floors.
+   The goal is that every account's weekly budget is used up right at its
+   own reset, with the accounts burned in parallel rather than one after the
+   other:
+   - an account's urgency is its weekly headroom divided by the hours until
+     its weekly window resets: the burn rate it needs to use the rest by its
+     reset. Unused capacity is lost at a reset, so the higher it is, the more
+     capacity is at risk. With equal headroom the sooner reset wins; with
+     equal resets the account with more room wins; over time the accounts
+     converge to the same pace. A window at 0% with a reset time is already
+     counting down. One with no reset time, or past its reset, is a fresh
+     week: 100% over 7 days from first use;
+   - urgency is damped by the 5-hour window: in full from 40% 5-hour headroom
+     up, fading linearly to nothing at the 10% floor. An account deep into its
+     5-hour window hands new work off before that window blocks, so bursts use
+     both accounts' 5-hour windows;
+   - scores within 10% of the best count as a tie, broken by the fewest
+     running turns (usage readings lag, so a burst of subagents would
+     otherwise all land on one account), then the higher score, then account
+     order.
 
-   A window with nothing used has not started, so its capacity cannot expire
-   yet; it ranks last. If every account is below a floor, work still runs, on
-   the account with the most headroom left.
+   If every account is below a floor, work still runs, on the account with the
+   most headroom left.
+
+   For example, with `main` at 0% weekly resetting in 154 hours and `max2` at
+   26% weekly resetting in 149 hours, `main` needs 100/154 = 0.65 points an
+   hour and `max2` 74/149 = 0.50, so new work goes to `main` until the two
+   paces meet, and from then on is shared between them.
 4. Subagents do not inherit their parent's account; each is placed by rule 3.
 
 A conversation that moves shows a notice in its transcript, for example
@@ -120,7 +135,8 @@ account's organization, resumes on the other account in both directions
 without error, so the fallback is not needed for a move.
 
 The log names each decision and why, for example
-`Claude account max2 for <conv> (new: "main" is below the weekly floor)` or
+`Claude account main for <conv> (new: it is furthest behind its weekly pace
+(100% left over 6.4 days vs 74% over 6.2 days))` or
 `conversation <conv> moves from Claude account max2 to main (cold-move: …)`.
 
 With one account every turn runs on `main` and nothing above applies.
@@ -160,7 +176,7 @@ and `/account claude` keep showing real usage
 
 ```json
 {
-  "policy": { "cacheTtlMs": 20000, "weeklyFloor": 15, "fiveHourFloor": 10 },
+  "policy": { "cacheTtlMs": 20000, "weeklyFloor": 15, "coldMoveRatio": 1.5 },
   "accounts": {
     "main": { "usage": { "fiveHour": { "utilization": 20, "resetsInMs": 7200000 },
                          "sevenDay": { "utilization": 95, "resetsInMs": 3600000 } } },
@@ -169,7 +185,9 @@ and `/account claude` keep showing real usage
 }
 ```
 
-`policy` takes any `RoutingPolicy` field (`routing.ts`). Per account, `usage`
+`policy` takes any `RoutingPolicy` field (`routing.ts`): `cacheTtlMs`,
+`fiveHourFloor`, `weeklyFloor`, `fiveHourComfort`, `scoreTie` and
+`coldMoveRatio`. Per account, `usage`
 replaces its usage snapshot (windows take `resetsAt` or `resetsInMs`),
 `limitedForMs` / `limitedUntil` mark it rejected at a limit, and
 `available: false` treats it as signed out or blocked. Start a worktree's

@@ -59,8 +59,8 @@ function snapshot(overrides: Partial<AccountsSnapshot> = {}, accounts?: ClaudeAc
         }),
       ],
       combined: { fiveHour: { utilization: 74, resetsAt: NOW + 2 * H }, sevenDay: { utilization: 31, resetsAt: NOW + 72 * H }, capacity: 200 },
-      routing: { cacheTtlMs: H, fiveHourFloor: 10, weeklyFloor: 10, weeklyResetTieMs: 6 * H, fiveHourResetTieMs: 30 * 60_000 },
-      nextNewWork: { account: "main", detail: "soonest weekly reset" },
+      routing: { cacheTtlMs: H, fiveHourFloor: 10, weeklyFloor: 10, fiveHourComfort: 40, scoreTie: 0.1, coldMoveRatio: 1.25 },
+      nextNewWork: { account: "main", detail: "it is furthest behind its weekly pace (90% left over 5 days vs 60% over 6 days)" },
       currentConversation: { convId: "conv-warm", account: "main", lastUsedAt: NOW - 10 * 60_000, warm: true },
     },
     openai: { proxied: false, accounts: [] },
@@ -184,7 +184,7 @@ test("with one account the answer explains how to add one and no screen opens", 
 
 test("the screen is one table: a row per account with its bars and times to reset", () => {
   const snap = snapshot({}, [claude("main"), claude("max2", { usage: { fiveHour: { utilization: 7, resetsAt: NOW + 4 * H }, sevenDay: { utilization: 3, resetsAt: NOW + 30 * H } } })]);
-  snap.claude.nextNewWork = { account: "max2", detail: "its weekly limit resets soonest" };
+  snap.claude.nextNewWork = { account: "max2", detail: "it is furthest behind its weekly pace (74% left over 6.2 days vs 100% over 6.4 days)" };
   snap.openai.accounts = [
     { index: 1, email: "one@example.com", displayName: "One", plan: "plus", current: true },
     { index: 2, email: "two@example.com", displayName: null, plan: null, current: false },
@@ -366,7 +366,7 @@ test("a narrow terminal shortens the bars; a short one scrolls with j/k", () => 
 
 test("under /proxy the remote's accounts fill the table; the note says whose, or that the link is down", () => {
   const snap = snapshot({}, [claude("main"), claude("max2")]);
-  snap.claude.nextNewWork = { account: "max2", detail: "soonest weekly reset" };
+  snap.claude.nextNewWork = { account: "max2", detail: "it is furthest behind its weekly pace (90% left over 5 days vs 60% over 6 days)" };
   snap.claude.currentConversation = { convId: "conv-warm", account: "max2", lastUsedAt: NOW, warm: true };
   snap.claude.remote = { alias: "whale", host: "yeyito@whale", state: "connected" };
   const { state } = openScreen(snap);

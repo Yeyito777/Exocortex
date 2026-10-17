@@ -8,12 +8,15 @@
  * tasks. It moves only when its account cannot serve it (logged out, blocked,
  * or at a limit), or when its cache is already cold and moving clearly helps.
  *
- * New work goes first to the account whose capacity expires soonest
- * ("first expired, first out"): unused capacity is lost when a window resets,
- * so an account whose weekly window resets soon is burned first and the one
- * whose capacity lasts longer is saved. The weekly window, the scarcer one,
- * decides first; the 5-hour window breaks near-ties. Floors keep an account
- * out of new work before a window blocks it.
+ * New work goes by weekly pace: each account's urgency is the weekly headroom
+ * it has left divided by the time until that window resets, the burn rate it
+ * needs to use its budget up by its reset. The account furthest behind its
+ * pace takes the work, so the accounts converge to the same pace and run out
+ * near their own resets, together rather than one after the other. Urgency is
+ * damped as an account nears its 5-hour floor, so bursts hand off before a
+ * 5-hour window blocks. Near-ties go to the account running fewer turns,
+ * since usage readings lag a burst. Floors keep an account out of new work
+ * before a window blocks it.
  */
 
 import type { UsageData, UsageWindow } from "../../messages";
@@ -47,10 +50,12 @@ export interface RoutingPolicy {
   fiveHourFloor: number;
   /** New work needs at least this much weekly headroom (percent points). */
   weeklyFloor: number;
-  /** Weekly resets closer together than this count as simultaneous. */
-  weeklyResetTieMs: number;
-  /** 5-hour resets closer together than this count as simultaneous. */
-  fiveHourResetTieMs: number;
+  /** 5-hour headroom from which weekly urgency counts in full; it fades linearly to 0 at the floor. */
+  fiveHourComfort: number;
+  /** Scores within this fraction of the best tie, broken by fewer running turns. */
+  scoreTie: number;
+  /** A cold conversation moves only to an account scoring at least this many times its own. */
+  coldMoveRatio: number;
 }
 
 /**
@@ -64,9 +69,14 @@ export const DEFAULT_ROUTING_POLICY: RoutingPolicy = {
   cacheTtlMs: 60 * 60_000,
   fiveHourFloor: 10,
   weeklyFloor: 10,
-  weeklyResetTieMs: 6 * 60 * 60_000,
-  fiveHourResetTieMs: 30 * 60_000,
+  fiveHourComfort: 40,
+  scoreTie: 0.1,
+  coldMoveRatio: 1.25,
 };
+
+const HOUR = 60 * 60_000;
+/** A weekly window that has not started yet runs this long from first use. */
+const WEEK = 7 * 24 * HOUR;
 
 export type RouteReason =
   | "new"
@@ -91,17 +101,14 @@ export interface RouteDecision {
 interface WindowView {
   /** Remaining percent points (100 − utilization), after a passed reset. */
   headroom: number;
-  /** Time until the window resets, Infinity when unknown or not started. */
-  resetsIn: number;
+  /** Time until the window resets, null when unknown or passed. A window at 0% still counts down. */
+  resetsIn: number | null;
 }
 
 function windowView(window: UsageWindow | null | undefined, now: number): WindowView {
-  if (!window) return { headroom: 100, resetsIn: Infinity };
-  if (window.resetsAt !== null && window.resetsAt <= now) return { headroom: 100, resetsIn: Infinity };
-  const headroom = Math.max(0, 100 - window.utilization);
-  // A window with nothing used has not started; its capacity does not expire yet.
-  const resetsIn = window.resetsAt === null || window.utilization <= 0 ? Infinity : window.resetsAt - now;
-  return { headroom, resetsIn };
+  if (!window) return { headroom: 100, resetsIn: null };
+  if (window.resetsAt !== null && window.resetsAt <= now) return { headroom: 100, resetsIn: null };
+  return { headroom: Math.max(0, 100 - window.utilization), resetsIn: window.resetsAt === null ? null : window.resetsAt - now };
 }
 
 interface AccountView {
@@ -109,6 +116,12 @@ interface AccountView {
   index: number;
   fiveHour: WindowView;
   weekly: WindowView;
+  /** Time left to use the weekly headroom: until its reset, or a full week from first use. */
+  weeklySpan: number;
+  /** Weekly headroom per hour left: the pace that uses it up right at its reset. */
+  urgency: number;
+  /** Urgency damped near the 5-hour floor; the highest takes new work. */
+  score: number;
   /** Can take a turn at all. */
   usable: boolean;
   /** Usable and above both floors: can take new work. */
@@ -124,34 +137,38 @@ export function isAccountLimited(state: AccountRouteState, now: number): boolean
   return false;
 }
 
+/** 0 at the 5-hour floor, rising linearly to 1 at the comfort level. */
+function fiveHourDamping(headroom: number, policy: RoutingPolicy): number {
+  const span = policy.fiveHourComfort - policy.fiveHourFloor;
+  if (span <= 0) return headroom >= policy.fiveHourFloor ? 1 : 0;
+  return Math.min(1, Math.max(0, (headroom - policy.fiveHourFloor) / span));
+}
+
 function viewOf(state: AccountRouteState, index: number, now: number, policy: RoutingPolicy): AccountView {
   const fiveHour = windowView(state.usage?.fiveHour, now);
   const weekly = windowView(state.usage?.sevenDay, now);
   const usable = state.available && !isAccountLimited(state, now);
   const eligible = usable && fiveHour.headroom >= policy.fiveHourFloor && weekly.headroom >= policy.weeklyFloor;
-  return { state, index, fiveHour, weekly, usable, eligible };
-}
-
-/** Keep the candidates whose `key` is within `tie` of the smallest. */
-function nearest(candidates: AccountView[], key: (view: AccountView) => number, tie: number): AccountView[] {
-  const best = Math.min(...candidates.map(key));
-  if (best === Infinity) return candidates.filter(view => key(view) === Infinity);
-  return candidates.filter(view => key(view) - best <= tie);
+  // A window not started yet begins a full week at first use; at least a
+  // minute, so an imminent reset ranks high without dividing by zero.
+  const weeklySpan = Math.max(60_000, weekly.resetsIn ?? WEEK);
+  const urgency = weekly.headroom / (weeklySpan / HOUR);
+  const score = urgency * fiveHourDamping(fiveHour.headroom, policy);
+  return { state, index, fiveHour, weekly, weeklySpan, urgency, score, usable, eligible };
 }
 
 /**
- * Rank candidates for new work: soonest weekly reset first (its capacity is
- * lost first), then among those resetting at about the same time the soonest
- * 5-hour reset, then the most headroom, then the fewest running turns, then
- * the account order.
+ * Rank candidates for new work: the highest score first, except that scores
+ * within `scoreTie` of the best count as a tie, broken by the fewest running
+ * turns (usage readings lag, so a burst would otherwise all land on one
+ * account), then the higher score, then the account order.
  */
 function rank(candidates: AccountView[], policy: RoutingPolicy): AccountView[] {
-  let pool = nearest(candidates, view => view.weekly.resetsIn, policy.weeklyResetTieMs);
-  pool = nearest(pool, view => view.fiveHour.resetsIn, policy.fiveHourResetTieMs);
-  const headroom = (view: AccountView) => Math.min(view.fiveHour.headroom, view.weekly.headroom);
-  const sorted = [...pool].sort((a, b) =>
-    headroom(b) - headroom(a) || a.state.activeTurns - b.state.activeTurns || a.index - b.index);
-  return [...sorted, ...candidates.filter(view => !sorted.includes(view))];
+  const byScore = [...candidates].sort((a, b) => b.score - a.score || a.index - b.index);
+  const top = byScore[0]?.score ?? 0;
+  const tied = byScore.filter(view => view.score >= top * (1 - policy.scoreTie))
+    .sort((a, b) => a.state.activeTurns - b.state.activeTurns || b.score - a.score || a.index - b.index);
+  return [...tied, ...byScore.filter(view => !tied.includes(view))];
 }
 
 function best(views: AccountView[], policy: RoutingPolicy): AccountView | null {
@@ -174,21 +191,39 @@ function whyUnfit(view: AccountView, policy: RoutingPolicy): string {
   return `${id} is below the 5-hour floor`;
 }
 
+/** "6.2 days", "5 hours", "40 minutes". */
+function formatSpan(ms: number): string {
+  const [value, unit] = ms >= 24 * HOUR ? [ms / (24 * HOUR), "day"] : ms >= HOUR ? [ms / HOUR, "hour"] : [ms / 60_000, "minute"];
+  const shown = Number(value.toFixed(unit === "minute" ? 0 : 1));
+  return `${shown} ${unit}${shown === 1 ? "" : "s"}`;
+}
+
+/**
+ * Why `ahead` scores above `behind`: further behind its weekly pace, or else
+ * `behind` is deep into its 5-hour window. `subject` names `ahead`
+ * ("it is furthest", "\"max2\" is further"), `fiveHourOf` is `behind`'s
+ * possessive ("its", "\"main\"'s").
+ */
+function paceReason(ahead: AccountView, behind: AccountView, subject: string, fiveHourOf: string): string {
+  if (ahead.urgency > behind.urgency) {
+    const pace = (view: AccountView) => `${Math.round(view.weekly.headroom)}%`;
+    return `${subject} behind its weekly pace (${pace(ahead)} left over ${formatSpan(ahead.weeklySpan)} vs ${pace(behind)} over ${formatSpan(behind.weeklySpan)})`;
+  }
+  return `${fiveHourOf} 5-hour usage is at ${Math.round(100 - behind.fiveHour.headroom)}%`;
+}
+
 /** Why `chosen` won over the other accounts, for logs and notices. */
 function explainChoice(chosen: AccountView, views: AccountView[], policy: RoutingPolicy): string {
   const others = views.filter(view => view !== chosen);
   if (!chosen.eligible) return `every account is below a usage floor; "${chosen.state.id}" has the most headroom`;
   const unfit = others.filter(view => !view.eligible).map(view => whyUnfit(view, policy));
-  const rivals = rank(others.filter(view => view.eligible), policy);
+  const runnerUp = rank(others.filter(view => view.eligible), policy)[0];
   let why: string | null = null;
-  const runnerUp = rivals[0];
   if (runnerUp) {
-    const headroom = (view: AccountView) => Math.min(view.fiveHour.headroom, view.weekly.headroom);
-    if (runnerUp.weekly.resetsIn - chosen.weekly.resetsIn > policy.weeklyResetTieMs) why = "its weekly limit resets soonest";
-    else if (runnerUp.fiveHour.resetsIn - chosen.fiveHour.resetsIn > policy.fiveHourResetTieMs) why = "its 5-hour limit resets soonest (weekly resets tie)";
-    else if (headroom(chosen) > headroom(runnerUp)) why = "it has the most headroom (resets tie)";
-    else if (chosen.state.activeTurns < runnerUp.state.activeTurns) why = "it runs the fewest turns (resets and headroom tie)";
-    else why = "first in account order (resets and headroom tie)";
+    const tie = runnerUp.score >= Math.max(chosen.score, runnerUp.score) * (1 - policy.scoreTie);
+    if (tie && chosen.state.activeTurns < runnerUp.state.activeTurns) why = "it runs fewer turns (pace tie)";
+    else if (chosen.score > runnerUp.score) why = paceReason(chosen, runnerUp, "it is furthest", `"${runnerUp.state.id}"'s`);
+    else why = "first in account order (pace tie)";
   }
   return [why, ...unfit].filter(Boolean).join("; ") || "the only account";
 }
@@ -268,14 +303,16 @@ export function routeConversation(
 
   // Cold cache: the next turn rewrites the cache wherever it runs, so moving
   // costs nothing extra. Move only when it clearly helps: its account is near
-  // a limit, or another account's weekly capacity expires clearly sooner.
+  // a limit, or another account scores clearly higher (the margin keeps
+  // conversations from ping-ponging between accounts at about the same pace).
   if (!target || target.state.id === id) return stay("sticky", "its account is still the best choice");
   if (!current.eligible) {
     if (!target.eligible) return stay("sticky", "no other account has more room");
     return move(target, "cold-move", `${describeWindowLimit(current, policy)} and its cache was cold`);
   }
-  if (target.weekly.resetsIn + policy.weeklyResetTieMs < current.weekly.resetsIn) {
-    return move(target, "cold-move", `"${target.state.id}" resets its weekly limit sooner, and the cache was cold`);
+  if (target.score > current.score && target.score >= policy.coldMoveRatio * current.score) {
+    const why = paceReason(target, current, `"${target.state.id}" is further`, "its");
+    return move(target, "cold-move", `${why}, and the cache was cold`);
   }
   return stay("sticky", "its account is still a good choice");
 }

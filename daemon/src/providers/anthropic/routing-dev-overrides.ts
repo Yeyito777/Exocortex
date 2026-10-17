@@ -10,7 +10,7 @@
  *
  * ```json
  * {
- *   "policy": { "cacheTtlMs": 20000, "weeklyFloor": 15 },
+ *   "policy": { "cacheTtlMs": 20000, "weeklyFloor": 15, "coldMoveRatio": 1.5 },
  *   "accounts": {
  *     "main": { "usage": { "sevenDay": { "utilization": 50, "resetsInMs": 3600000 } } },
  *     "max2": { "limitedForMs": 600000 }
@@ -18,6 +18,8 @@
  * }
  * ```
  *
+ * `policy` takes any `RoutingPolicy` field (floors, `fiveHourComfort`,
+ * `scoreTie`, `coldMoveRatio`, `cacheTtlMs`); the rest keep their defaults.
  * Account fields: `usage` replaces the account's usage snapshot (each window
  * `{ utilization, resetsAt }` or `{ utilization, resetsInMs }`, `null` for no
  * data); `limitedForMs` / `limitedUntil` mark it rejected at a usage limit;

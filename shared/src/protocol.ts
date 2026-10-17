@@ -1062,8 +1062,9 @@ export interface ClaudeRoutingInfo {
   cacheTtlMs: number;
   fiveHourFloor: number;
   weeklyFloor: number;
-  weeklyResetTieMs: number;
-  fiveHourResetTieMs: number;
+  fiveHourComfort: number;
+  scoreTie: number;
+  coldMoveRatio: number;
 }
 
 export interface ClaudeAccountsInfo {

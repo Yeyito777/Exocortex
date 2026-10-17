@@ -140,7 +140,7 @@ test("under /proxy the screen shows the remote's pool, refreshed through the rem
       ],
       combined: null,
       routing: { ...DEFAULT_ROUTING_POLICY },
-      nextNewWork: { account: "max2", detail: "soonest weekly reset" },
+      nextNewWork: { account: "max2", detail: "it is furthest behind its weekly pace (90% left over 5 days vs 60% over 6 days)" },
     },
     remote: { alias: "whale", host: "yeyito@whale", state: "connected" },
   };
