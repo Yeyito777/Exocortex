@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { buildMessageLines } from "./conversation";
 import { handleEvent } from "./events";
 import { createInitialState } from "./state";
+import { turnRequestId } from "./request-ids";
 import { stripAnsi } from "./historycursor";
 import { startReplayConversation, type ReplayConversationActions } from "./replay";
 
@@ -120,9 +121,23 @@ describe("startReplayConversation", () => {
     const calls: Array<{ convId: string; startedAt: number }> = [];
     startReplayConversation(state, fakeDaemon(calls), 1234);
 
-    handleEvent({ type: "error", convId: "conv-replay", message: "No conversation history to replay." }, state, null as never);
+    handleEvent({ type: "error", reqId: turnRequestId(1234, 1), convId: "conv-replay", message: "No conversation history to replay." }, state, null as never);
 
     expect(state.pendingAI).toBeNull();
     expect(state.messages.at(-1)).toMatchObject({ role: "system", text: "✗ No conversation history to replay." });
+  });
+
+  test("keeps the live turn when an unrelated error names the conversation", () => {
+    const state = createInitialState();
+    state.convId = "conv-replay";
+    startReplayConversation(state, fakeDaemon([]), 1234);
+
+    // e.g. /instructions rejected mid-stream, or an older-history page failing.
+    handleEvent({ type: "error", convId: "conv-replay", message: "Cannot rewrite conversation history while it is streaming." }, state, null as never);
+    handleEvent({ type: "error", reqId: "history_3_99", convId: "conv-replay", message: "history failed" }, state, null as never);
+    // A failure of an earlier send is not about this turn either.
+    handleEvent({ type: "error", reqId: turnRequestId(1000, 1), convId: "conv-replay", message: "Already streaming" }, state, null as never);
+
+    expect(state.pendingAI?.metadata?.startedAt).toBe(1234);
   });
 });

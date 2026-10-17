@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { createServer, type Server } from "net";
 import { unlinkSync } from "fs";
 import { DaemonClient } from "./client";
+import { turnRequestStartedAt } from "./request-ids";
 import type { Command, DaemonShutdownMode } from "./protocol";
 
 const testServers: Server[] = [];
@@ -460,6 +461,7 @@ describe("DaemonClient commands", () => {
 
     expect(internal.pendingCommands).toEqual([{
       type: "new_conversation",
+      reqId: expect.stringMatching(/^turn_456_/),
       provider: "openai",
       model: "gpt-5.4",
       title: "pending",
@@ -500,6 +502,18 @@ describe("DaemonClient commands", () => {
     });
   });
 
+  test("turn-starting commands carry a reqId tied to their pending response", () => {
+    const client = new DaemonClient(() => {});
+    const internal = client as any;
+
+    client.sendMessage("conv-1", "hi", 777);
+    client.replayConversation("conv-1", 778);
+
+    expect(turnRequestStartedAt(internal.pendingCommands[0].reqId)).toBe(777);
+    expect(turnRequestStartedAt(internal.pendingCommands[1].reqId)).toBe(778);
+    expect(internal.pendingCommands[0].reqId).not.toBe(internal.pendingCommands[1].reqId);
+  });
+
   test("can request a manual conversation compaction", () => {
     const client = new DaemonClient(() => {});
     const internal = client as any;
@@ -508,6 +522,7 @@ describe("DaemonClient commands", () => {
 
     expect(internal.pendingCommands[0]).toEqual({
       type: "compact_conversation",
+      reqId: expect.stringMatching(/^turn_123456_/),
       convId: "conv-1",
       startedAt: 123_456,
     });

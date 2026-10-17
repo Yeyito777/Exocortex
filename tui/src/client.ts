@@ -18,6 +18,7 @@ import { log } from "./log";
 import type { UpdateStatus } from "@exocortex/shared/updatecheck";
 import { BtwMutationReplay, isBtwMutation } from "./btw/replay";
 import { HistoryCache } from "./history-cache";
+import { turnRequestId } from "./request-ids";
 import { transcribeLocally } from "./local-transcription";
 import { ClientExecutor } from "@exocortex/shared/command-exec";
 import {
@@ -485,6 +486,9 @@ export class DaemonClient {
   ): void {
     this.send({
       type: "new_conversation",
+      // A creation that carries the first message starts a turn; its errors
+      // must be attributable to the optimistic response it shows.
+      ...(initialMessage ? { reqId: turnRequestId(initialMessage.startedAt, ++this.nextReqId) } : {}),
       ...(convId ? { convId } : {}),
       provider, model, title, titleContext, effort, fastMode, initialMessage, folderId,
       goalObjective, goalMaxTimeMs,
@@ -500,15 +504,15 @@ export class DaemonClient {
   }
 
   sendMessage(convId: string, text: string, startedAt: number, images?: ImageAttachment[]): void {
-    this.send({ type: "send_message", convId, text, startedAt, images: images?.length ? images : undefined });
+    this.send({ type: "send_message", reqId: turnRequestId(startedAt, ++this.nextReqId), convId, text, startedAt, images: images?.length ? images : undefined });
   }
 
   replayConversation(convId: string, startedAt: number): void {
-    this.send({ type: "replay_conversation", convId, startedAt });
+    this.send({ type: "replay_conversation", reqId: turnRequestId(startedAt, ++this.nextReqId), convId, startedAt });
   }
 
   compactConversation(convId: string, startedAt: number): void {
-    this.send({ type: "compact_conversation", convId, startedAt });
+    this.send({ type: "compact_conversation", reqId: turnRequestId(startedAt, ++this.nextReqId), convId, startedAt });
   }
 
   startBtw(convId: string, sessionId: string, query: string, startedAt: number): void {
