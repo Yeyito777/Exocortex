@@ -28,11 +28,65 @@ function isShellWhitespace(ch: string): boolean {
   return /\s/.test(ch);
 }
 
+interface PendingHeredoc {
+  delimiter: string;
+  stripTabs: boolean;
+}
+
+/** Parse a heredoc operator at `index` (`<<`, not `<<<`); returns it and where its delimiter word ends. */
+function parseHeredocOperator(command: string, index: number): { heredoc: PendingHeredoc; end: number } | null {
+  if (command[index] !== "<" || command[index + 1] !== "<" || command[index + 2] === "<") return null;
+  let i = index + 2;
+  const stripTabs = command[i] === "-";
+  if (stripTabs) i++;
+  while (i < command.length && (command[i] === " " || command[i] === "\t")) i++;
+  let delimiter = "";
+  while (i < command.length && !/[\s;&|<>()]/.test(command[i]!)) {
+    const ch = command[i]!;
+    if (ch === "'" || ch === '"') {
+      const close = command.indexOf(ch, i + 1);
+      if (close === -1) return null;
+      delimiter += command.slice(i + 1, close);
+      i = close + 1;
+      continue;
+    }
+    if (ch === "\\" && i + 1 < command.length) {
+      delimiter += command[i + 1]!;
+      i += 2;
+      continue;
+    }
+    delimiter += ch;
+    i++;
+  }
+  return delimiter ? { heredoc: { delimiter, stripTabs }, end: i } : null;
+}
+
+/** Index just past the last pending heredoc's terminating line, scanning bodies from `bodyStart`. */
+function skipHeredocBodies(command: string, bodyStart: number, heredocs: PendingHeredoc[]): number {
+  let pos = bodyStart;
+  for (const { delimiter, stripTabs } of heredocs) {
+    while (pos < command.length) {
+      const newline = command.indexOf("\n", pos);
+      const lineEnd = newline === -1 ? command.length : newline;
+      const line = command.slice(pos, lineEnd);
+      pos = lineEnd;
+      if ((stripTabs ? line.replace(/^\t+/, "") : line) === delimiter) break;
+      if (newline !== -1) pos++;
+    }
+  }
+  return Math.min(pos, command.length);
+}
+
+/**
+ * Split at top-level command separators. Heredoc bodies stay inside the segment
+ * that opened them: their lines are data, never commands.
+ */
 function splitTopLevelShellSegments(command: string): ShellSegment[] {
   const segments: ShellSegment[] = [];
   let start = 0;
   let i = 0;
   let quote: "'" | '"' | null = null;
+  let heredocs: PendingHeredoc[] = [];
 
   while (i < command.length) {
     const ch = command[i]!;
@@ -61,6 +115,27 @@ function splitTopLevelShellSegments(command: string): ShellSegment[] {
 
     if (ch === "\\" && i + 1 < command.length) {
       i += 2;
+      continue;
+    }
+
+    const heredoc = parseHeredocOperator(command, i);
+    if (heredoc) {
+      heredocs.push(heredoc.heredoc);
+      i = heredoc.end;
+      continue;
+    }
+    if (ch === "<" && command[i + 1] === "<") {
+      i += command[i + 2] === "<" ? 3 : 2;
+      continue;
+    }
+
+    if (ch === "\n" && heredocs.length > 0) {
+      const end = skipHeredocBodies(command, i + 1, heredocs);
+      heredocs = [];
+      const separator = end < command.length ? "\n" : "";
+      segments.push({ text: command.slice(start, end), separator });
+      i = end + separator.length;
+      start = i;
       continue;
     }
 
