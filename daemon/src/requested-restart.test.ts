@@ -97,6 +97,18 @@ describe("restart target detection", () => {
     expect(darwin(`gui/501/com.exocortex.daemon = {\n\tstate = running\n\tpid = ${PID}\n}`)).toBe("service");
     expect(darwin(`gui/501/com.exocortex.daemon = {\n\tpid = ${PID + 1}\n}`)).not.toBe("service");
   });
+
+  test("on macOS the signed launcher's direct child restarts the service", () => {
+    const LAUNCHER = PID - 1;
+    const output = `gui/501/com.exocortex.daemon = {\n\tstate = running\n\tpid = ${LAUNCHER}\n}`;
+    const darwin = (parent: { pid: number; launcherPid?: string }) =>
+      detectRestartTarget("darwin", () => ({ ok: true, output }), PID, parent);
+    expect(darwin({ pid: LAUNCHER, launcherPid: String(LAUNCHER) })).toBe("service");
+    // A daemon started from the main daemon's tools inherits the variable but not the parent.
+    expect(darwin({ pid: PID + 5, launcherPid: String(LAUNCHER) })).not.toBe("service");
+    // Without the launcher's marker, being launchd's job's child is not enough.
+    expect(darwin({ pid: LAUNCHER })).not.toBe("service");
+  });
 });
 
 describe("after-turn executor scheduling", () => {

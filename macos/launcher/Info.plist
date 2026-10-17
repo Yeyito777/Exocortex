@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>dev.yeyito.exocortex.daemon</string>
+	<key>CFBundleName</key>
+	<string>Exocortex Daemon</string>
+	<key>CFBundleDisplayName</key>
+	<string>Exocortex Daemon</string>
+	<key>CFBundleExecutable</key>
+	<string>exocortex-daemon</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>LSBackgroundOnly</key>
+	<true/>
+	<key>NSAppDataUsageDescription</key>
+	<string>The Exocortex daemon runs your assistant's tools, which read and write files that belong to other apps.</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>The Exocortex daemon runs from and works on files in your Desktop folder.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>The Exocortex daemon runs your assistant's tools, which work on files in your Documents folder.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>The Exocortex daemon runs your assistant's tools, which work on files in your Downloads folder.</string>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>The Exocortex daemon runs your assistant's tools, which may work on files on removable volumes.</string>
+	<key>NSNetworkVolumesUsageDescription</key>
+	<string>The Exocortex daemon runs your assistant's tools, which may work on files on network volumes.</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>The Exocortex daemon runs your assistant's tools, which may automate other apps.</string>
+</dict>
+</plist>

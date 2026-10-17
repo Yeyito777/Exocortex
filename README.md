@@ -212,6 +212,45 @@ bun run src/main.ts
 
 Press `Ctrl+C` in the daemon terminal to stop it.
 
+#### Run the daemon in the background (LaunchAgent)
+
+To keep the daemon running across logins, run it as the `com.exocortex.daemon`
+LaunchAgent through the signed launcher app:
+
+```bash
+cd Exocortex
+scripts/macos/build-launcher.sh            # build, sign, install the app; write/update the LaunchAgent
+scripts/macos/build-launcher.sh --reload   # same, then (re)load the LaunchAgent now
+```
+
+Then manage it with `exocortexd start|stop|restart|status` (link it with
+`ln -s "$PWD/bin/exocortexd" ~/.local/bin/exocortexd`).
+
+**Why a launcher.** macOS attributes privacy access (files of other apps,
+Desktop, Documents, …) to the *responsible process*: the program launchd
+started. If that is `bin/exocortexd`, it is Homebrew's bash, which is ad-hoc
+signed and changes on every `brew upgrade`, so macOS keeps asking “bash would
+like to access data from other apps”. `~/Applications/Exocortex Daemon.app`
+(`dev.yeyito.exocortex.daemon`) is a tiny native launcher signed with your
+Apple Development identity. It stays the daemon's parent, so every process the
+daemon spawns is attributed to it, and its identity survives rebuilds and
+Homebrew/Bun upgrades. It resolves Bun each time it starts, forwards
+stop/restart signals, and exits with the daemon's status, so `exocortexd` and
+launchd's restart behaviour are unchanged.
+
+**One-time consent.** The first time a prompt names “Exocortex Daemon”, choose
+**Allow**; it now sticks. To never be asked, add the app under **System
+Settings › Privacy & Security › Full Disk Access** (`+`, then
+`~/Applications/Exocortex Daemon.app`); do this before the first reload if the
+clone lives in Desktop or Documents.
+
+**Rebuild** after pulling launcher changes, or to re-sign with a new
+certificate, by re-running `scripts/macos/build-launcher.sh --reload`. It is
+idempotent and keeps your LaunchAgent's other settings (a backup of the previous
+plist goes to `config/runtime/launchd/backups/`). Homebrew or Bun upgrades need
+no rebuild. Without an Apple Development or Developer ID certificate it signs
+ad-hoc and warns: prompts will then return after each rebuild.
+
 #### Update
 
 Stop the foreground daemon, then update the source and dependencies:
