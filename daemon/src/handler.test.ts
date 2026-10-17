@@ -18,6 +18,7 @@ import { getExocortexToolRuntime } from "./exocortex-tool-runtime";
 import { resetConversationActivityForTest, setBackgroundTaskActive, setChronoTaskActive } from "./conversation-activity";
 import { getProviderAdapter } from "./providers/catalog";
 import { HISTORY_PAGE_BYTE_BUDGET, estimateEntryRows } from "./history-pagination";
+import { computeSidebarDigest } from "@exocortex/shared/sidebar-digest";
 import type { DisplayEntry } from "./display";
 
 interface TestAssistantOutcome {
@@ -104,6 +105,39 @@ test("token statistics are pushed only to clients that predate get_token_stats",
   expect(sent.some(event => event.type === "token_stats")).toBe(false);
   await handle(capable as never, { type: "get_token_stats", reqId: "tokens-1" });
   expect(sent.at(-1)).toMatchObject({ type: "token_stats", reqId: "tokens-1", stats: { days: expect.any(Array) } });
+});
+
+test("a sidebar digest answers one bootstrap with only the changed buckets", async () => {
+  const sent: Array<Record<string, any>> = [];
+  const server = {
+    sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+    broadcast: mock(() => {}), sendToSubscribers: mock(() => {}), sendToSubscribersExcept: mock(() => {}),
+    subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+  };
+  const handle = createHandler(server as never);
+  const full = async (client: object) => {
+    sent.length = 0;
+    await handle(client as never, { type: "list_conversations", reqId: "full" });
+    return sent.find(event => event.type === "conversations_list")!;
+  };
+  const baseline = await full({ capabilities: new Set() });
+  const rows = baseline.conversations.map((c: { id: string }) => [c.id, JSON.stringify(c)] as [string, string]);
+  const digest = computeSidebarDigest(rows, JSON.stringify(baseline.folders));
+
+  const legacy = { capabilities: new Set() };
+  await handle(legacy as never, { type: "client_capabilities", capabilities: [], sidebarDigest: digest });
+  expect((await full(legacy)).sidebarBuckets).toBeUndefined();
+
+  const capable = { capabilities: new Set() };
+  await handle(capable as never, { type: "client_capabilities", capabilities: ["sidebar-digest-sync"], sidebarDigest: digest });
+  sent.length = 0;
+  await handle(capable as never, { type: "ping" });
+  const answer = sent.find(event => event.type === "conversations_list")!;
+  expect(answer.sidebarBuckets).toEqual([]);
+  expect(answer.conversations).toEqual([]);
+  expect(answer.folders).toBeUndefined();
+  // Single use: later lists are complete again.
+  expect((await full(capable)).conversations).toHaveLength(baseline.conversations.length);
 });
 
 const IDS: string[] = [];

@@ -782,3 +782,21 @@ describe("DaemonClient Unicode transport", () => {
     }
   });
 });
+
+describe("DaemonClient sidebar digest", () => {
+  test("offers a digest only to the SSH host whose sidebar it holds, and rebuilds the answer", () => {
+    const events: unknown[] = [];
+    const client = new DaemonClient(event => events.push(event));
+    const internal = client as any;
+    expect(internal.probeCapabilities("whale").sidebarDigest).toBeUndefined();
+    internal.sshAlias = "whale";
+    const conversations = [{ id: "a", title: "A" }, { id: "b", title: "B" }];
+    internal.onData(Buffer.from(`${JSON.stringify({ type: "conversations_list", conversations, folders: [] })}\n`));
+    expect(internal.probeCapabilities("laptop").sidebarDigest).toBeUndefined();
+    const capabilities = internal.probeCapabilities("whale");
+    expect(capabilities.capabilities).toContain("sidebar-digest-sync");
+    expect(capabilities.sidebarDigest.buckets).toHaveLength(256);
+    internal.onData(Buffer.from(`${JSON.stringify({ type: "conversations_list", conversations: [], sidebarBuckets: [] })}\n`));
+    expect(events.at(-1)).toEqual({ type: "conversations_list", conversations, folders: [] });
+  });
+});

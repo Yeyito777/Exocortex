@@ -19,6 +19,7 @@ import { log } from "./log";
 import type { UpdateStatus } from "@exocortex/shared/updatecheck";
 import { BtwMutationReplay, isBtwMutation } from "./btw/replay";
 import { HistoryCache } from "./history-cache";
+import { SidebarCache } from "./sidebar-cache";
 import { transcribeLocally } from "./local-transcription";
 import { ClientExecutor } from "@exocortex/shared/command-exec";
 import {
@@ -38,6 +39,7 @@ const CLIENT_CAPABILITIES: ClientCapability[] = [
   "sidebar-state-patch",
   "history-block-pagination",
   "token-stats-on-demand",
+  "sidebar-digest-sync",
 ];
 
 export type EventHandler = (event: Event) => void;
@@ -110,6 +112,7 @@ export class DaemonClient {
   /** Socket and SSH reads split UTF-8 characters at arbitrary byte offsets. */
   private decoder = new StringDecoder("utf8");
   private readonly historyCache = new HistoryCache();
+  private readonly sidebarCache = new SidebarCache();
   private handler: EventHandler;
   private _connected = false;
   private socketPath: string;
@@ -246,12 +249,21 @@ export class DaemonClient {
     });
   }
 
+  /**
+   * Capabilities written ahead of the probe ping that requests the bootstrap,
+   * with a digest of the sidebar already held for this host. The client host
+   * is attached only once the connection is adopted.
+   */
+  private probeCapabilities(alias: string): Command {
+    const sidebarDigest = this.sidebarCache.beginSync(alias);
+    return { type: "client_capabilities", capabilities: CLIENT_CAPABILITIES, ...(sidebarDigest ? { sidebarDigest } : {}) };
+  }
+
   private async probeSshReconnect(alias: string): Promise<ProbedSshConnection> {
     const probe = probeSshProxy(alias, {
       spawnProcess: this.spawnSshProcess,
       timeoutMs: this.sshProbeTimeoutMs,
-      // The client host is attached only once the connection is adopted.
-      preamble: [{ type: "client_capabilities", capabilities: CLIENT_CAPABILITIES }],
+      preamble: [this.probeCapabilities(alias)],
     });
     // Keep even an unauthenticated attempt cancellable by disconnect/route
     // switches. Spawning ssh is not readiness: never flush the offline queue
@@ -659,8 +671,7 @@ export class DaemonClient {
     const probe = probeSshProxy(alias, {
       spawnProcess: this.spawnSshProcess,
       timeoutMs: this.sshProbeTimeoutMs,
-      // The client host is attached only once the connection is adopted.
-      preamble: [{ type: "client_capabilities", capabilities: CLIENT_CAPABILITIES }],
+      preamble: [this.probeCapabilities(alias)],
     });
     this.cancelSshProbe = probe.cancel;
     try {
@@ -1301,8 +1312,13 @@ export class DaemonClient {
           );
           continue;
         }
-        const event = this.historyCache.receive(parsed, command => this.writeCommand(command));
-        if (!event) continue;
+        const received = this.historyCache.receive(parsed, command => this.writeCommand(command));
+        const event = received && this.sshAlias ? this.sidebarCache.receive(received, this.sshAlias) : received;
+        if (!event) {
+          // A sidebar digest answer whose base is gone: ask for the full list.
+          if (received?.type === "conversations_list") this.writeCommand({ type: "list_conversations" });
+          continue;
+        }
         if (event.type === "daemon_shutdown") {
           // This is transport metadata rather than a user-facing event. Retain it
           // until close so the reconnecting TUI can distinguish a planned daemon

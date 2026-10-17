@@ -38,6 +38,7 @@ import * as convStore from "./conversations";
 import { rememberSentImages, resolveImageForPreview } from "./image-requests";
 import { renderImagePreview, validatePreviewRequest, isImageId } from "./attachments";
 import { DaemonServer, broadcastUsageUpdate, type ConnectedClient } from "./server";
+import { isSidebarDigest, sidebarListDelta } from "@exocortex/shared/sidebar-digest";
 import type { Command, Event, SidebarItemOrderUpdate } from "./protocol";
 import { clearAuth, ensureAuthenticated, getAuthByProvider, getAuthInfoByProvider, hasConfiguredCredentials, invalidateCredentialsCache } from "./auth";
 import { addAccount as addOpenAIAccount, listAccounts as listOpenAIAccounts, removeAccount as removeOpenAIAccount, switchAccount as switchOpenAIAccount } from "./providers/openai/auth";
@@ -324,6 +325,15 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       message: `${getProviderAdapter(provider as import("./messages").ProviderId).label} goes through /proxy on ${alias}, which uses that machine's login: ${action} there, or run /proxy ${provider} off first.`,
     });
     return true;
+  };
+  /** The sidebar bootstrap, reduced to changed rows when the client sent a digest. */
+  const conversationsListFor = (client: ConnectedClient, reqId?: string): Extract<Event, { type: "conversations_list" }> => {
+    const state = convStore.listSidebarState();
+    const digest = client.sidebarDigest;
+    if (!digest) return { type: "conversations_list", reqId, ...state };
+    client.sidebarDigest = undefined;
+    const delta = sidebarListDelta(state.conversations, state.folders, digest);
+    return { type: "conversations_list", reqId, ...(delta ?? state) };
   };
   const broadcastTokenStats = () => {
     server.broadcastLegacyTokenStats(getTokenStatsSnapshot);
@@ -1466,7 +1476,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         }
         // The sidebar is the startup-critical payload. Token statistics can be
         // large and are independent, so never put them ahead of first paint.
-        server.sendTo(client, { type: "conversations_list", ...convStore.listSidebarState() });
+        server.sendTo(client, conversationsListFor(client));
         if (!client.capabilities?.has("token-stats-on-demand")) {
           server.sendTo(client, { type: "token_stats", stats: getTokenStatsSnapshot() });
         }
@@ -1821,7 +1831,11 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
               || capability === "sidebar-reorder-delta"
               || capability === "sidebar-state-patch"
               || capability === "history-block-pagination"
-              || capability === "token-stats-on-demand") client.capabilities.add(capability);
+              || capability === "token-stats-on-demand"
+              || capability === "sidebar-digest-sync") client.capabilities.add(capability);
+        }
+        if (client.capabilities.has("sidebar-digest-sync") && isSidebarDigest(cmd.sidebarDigest)) {
+          client.sidebarDigest = cmd.sidebarDigest;
         }
         if (cmd.clientHost) attachClientHost(client, cmd.clientHost, event => server.sendTo(client, event));
         break;
@@ -2542,7 +2556,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       // ── Sidebar/list commands ─────────────────────────────────────
 
       case "list_conversations": {
-        server.sendTo(client, { type: "conversations_list", reqId: cmd.reqId, ...convStore.listSidebarState() });
+        server.sendTo(client, conversationsListFor(client, cmd.reqId));
         server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages() });
         break;
       }

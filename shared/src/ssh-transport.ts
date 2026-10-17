@@ -96,7 +96,7 @@ export interface SshProbeOptions {
    * connection's bootstrap request, so connection-scoped settings such as
    * client_capabilities must reach the daemon first to shape that bootstrap.
    */
-  preamble?: Array<Record<string, unknown>>;
+  preamble?: object[];
 }
 
 /**

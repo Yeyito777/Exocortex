@@ -13,6 +13,7 @@ import { log } from "./log";
 import { budgetHistoryUpdatedEvent } from "./history-pagination";
 import type { ClientCapability, Command, Event, ProviderId, TokenStatsSnapshot, UsageData } from "./protocol";
 import { PROVIDER_PROXY_LINK_EVENT_TYPES } from "@exocortex/shared/provider-proxy";
+import type { SidebarDigest } from "@exocortex/shared/sidebar-digest";
 
 // ── Client tracking ─────────────────────────────────────────────────
 
@@ -31,6 +32,8 @@ export interface ConnectedClient {
    * provider-proxy events and errors, never broadcasts.
    */
   providerProxyLink?: boolean;
+  /** Single-use: the list this client already holds (sidebar-digest-sync). */
+  sidebarDigest?: SidebarDigest;
 }
 
 export type CommandHandler = (client: ConnectedClient, command: Command) => void | Promise<void>;
