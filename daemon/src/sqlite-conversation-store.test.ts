@@ -1004,6 +1004,25 @@ describe("SQLite maintenance", () => {
     store.close();
   });
 
+  test("reindexes title search only when the title changes", () => {
+    const { path } = pathFor("title-fts");
+    const store = new SqliteConversationStore({ path });
+    const conv = savedFixture(store, "title-fts");
+    savedFixture(store, "title-fts-later"); // a reinsert can no longer reuse the max rowid
+    const ftsRowid = () => store.db.query<{ rowid: number }, [string]>(
+      "SELECT rowid FROM conversation_title_fts WHERE conversation_id=?",
+    ).get(conv.id)?.rowid;
+    const before = ftsRowid();
+    conv.messages.push({ role: "user", content: "more", metadata: null });
+    store.appendMessages(conv, 2);
+    expect(ftsRowid()).toBe(before!);
+    conv.title = "Renamed zebra";
+    store.save(conv);
+    expect(ftsRowid()).not.toBe(before!);
+    expect(store.searchTitles("zebra").map(summary => summary.id)).toEqual([conv.id]);
+    store.close();
+  });
+
   test("migrates every schema checkpoint through v15 transactionally", () => {
     for (let version = 1; version <= 14; version++) {
       const { path } = pathFor(`schema-v${version}`);
