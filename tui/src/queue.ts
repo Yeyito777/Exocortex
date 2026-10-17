@@ -25,6 +25,7 @@ import type { QueuedCommandInvocation } from "./protocol";
 import { expandMacros } from "./macros";
 import { isStreaming } from "./state";
 import { clearPrompt } from "./promptstate";
+import { queueIdFromRequestId, unqueueIdFromRequestId } from "./request-ids";
 
 export const GLOBAL_IDLE_QUEUE_LABEL = "queued: global idle";
 
@@ -163,6 +164,22 @@ export function enqueueQueuedCommand(
   clearPrompt(state);
   state.scrollOffset = 0;
   return true;
+}
+
+/**
+ * Settle a queue mutation the daemon rejected. A failed enqueue drops its
+ * optimistic row (it would otherwise wait forever for a canonical copy); a
+ * failed unqueue lifts the removal tombstone so the next snapshot shows the
+ * entry again. Returns whether an optimistic row was removed.
+ */
+export function settleRejectedQueueRequest(state: RenderState, reqId: string | undefined): boolean {
+  const unqueueId = unqueueIdFromRequestId(reqId);
+  if (unqueueId) state.pendingQueueRemovalIds.delete(unqueueId);
+  const queueId = queueIdFromRequestId(reqId);
+  if (!queueId) return false;
+  const before = state.queuedMessages.length;
+  state.queuedMessages = state.queuedMessages.filter(message => !(message.optimistic && message.id === queueId));
+  return state.queuedMessages.length !== before;
 }
 
 export function removeQueuedMessageByReference(state: RenderState, message: QueuedMessage): boolean {

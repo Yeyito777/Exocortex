@@ -30,7 +30,7 @@ import { advanceDeferredHistoryRender, hasDeferredHistoryRenderWork, render, inv
 import { preserveViewportAcrossResize } from "./chatscroll";
 import { invalidateFrame } from "./frame";
 import { enter_alt, leave_alt, hide_cursor, show_cursor, enable_bracketed_paste, disable_bracketed_paste, query_clipboard_paste_events, enable_clipboard_paste_events, disable_clipboard_paste_events, enable_kitty_kbd, disable_kitty_kbd, enable_mouse, disable_mouse, set_cursor_color, reset_cursor_color } from "./terminal";
-import { createInitialState, isStreaming, canInterrupt, clearPendingAI, clearStreamingTailMessages, focusPrompt, isActiveConversationLoading, modelSupportsImages, newConversationSelection, openFolderInstructionsDocument, pushSystemMessage, renderFolderInstructionsDocument, resetDraftConversationState, resetHistoryPagination, resetNewConversationDefaults, resetToolOutputState } from "./state";
+import { createInitialState, isStreaming, canInterrupt, clearPendingAI, clearStreamingTailMessages, focusPrompt, isActiveConversationLoading, modelSupportsImages, newConversationSelection, noConversationOpen, noteConversationOpenRequest, openFolderInstructionsDocument, pushSystemMessage, renderFolderInstructionsDocument, resetDraftConversationState, resetHistoryPagination, resetNewConversationDefaults, resetToolOutputState } from "./state";
 import { createMessageMetadata, createPendingAI, type ImageAttachment, type UserMessage } from "./messages";
 import { loginPromptProviders } from "./providerselection";
 import { handleEvent } from "./events";
@@ -402,7 +402,9 @@ function requestOlderHistory(turns: number, requestSource: "initial-backfill" | 
 
 /** Open (or reload) a conversation with a window sized to fill this screen. */
 function loadConversationWindow(convId: string): string {
-  return daemon.loadConversation(convId, openingHistoryTurns(state.rows), openingViewport(state));
+  const reqId = daemon.loadConversation(convId, openingHistoryTurns(state.rows), openingViewport(state));
+  noteConversationOpenRequest(state, convId, reqId);
+  return reqId;
 }
 
 function maybeRequestOlderHistory(): void {
@@ -473,7 +475,7 @@ function onDaemonEvent(event: Event): void {
   }
   if (pendingEditMessageUnwind) {
     const pending = pendingEditMessageUnwind;
-    const unwindEvent = classifyPendingEditMessageUnwindEvent(pending, event);
+    const unwindEvent = classifyPendingEditMessageUnwindEvent(pending, event, state.conversationOpenRequest?.reqId ?? null);
     if (unwindEvent === "ignore") return;
     if (unwindEvent === "complete") {
       pendingEditMessageUnwind = null;
@@ -924,6 +926,7 @@ function handleSubmit(): void {
           leaveConversationView(state);
           if (state.convId) unsubscribeConversation(state.convId);
           state.convId = null;
+          state.conversationOpenRequest = noConversationOpen();
           state.btw = null;
           resetHistoryPagination(state);
           state.contextTokens = 0;

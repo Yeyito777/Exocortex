@@ -3,6 +3,7 @@ import type { Event } from "../protocol";
 import type { RenderState } from "../state";
 import { focusPrompt } from "../state";
 import { createRunningBtw, projectConversationBtw } from "./state";
+import { btwTurnFromRequestId } from "../request-ids";
 
 function matchingSession(state: RenderState, sessionId: string) {
   return state.btw?.sessionId === sessionId ? state.btw : null;
@@ -42,6 +43,18 @@ function currentTextBlock(
   blocks.push(block);
   syncPanelFromTurn(state, turn);
   return block;
+}
+
+/** End the panel turn whose BTW query/follow-up the daemon rejected outright. */
+export function failBtwRequest(state: RenderState, reqId: string | undefined, message: string): void {
+  const target = btwTurnFromRequestId(reqId);
+  if (!target) return;
+  const turn = matchingTurn(state, target.sessionId, target.turnId);
+  if (!turn || turn.phase !== "running") return;
+  turn.phase = "error";
+  turn.status = message;
+  turn.endedAt = Date.now();
+  syncPanelFromTurn(state, turn);
 }
 
 /** Apply a BTW protocol event. Returns true when the event belongs to this feature. */

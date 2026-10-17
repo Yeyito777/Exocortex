@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { browserOpenCommand, handleEvent, type DaemonActions } from "./events";
 import { buildDiskSyncAssistantDiffPayload } from "./events/disk-sync-diagnostics";
 import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, createPendingAI, type ConversationSummary, type FolderSummary } from "./messages";
-import { createInitialState, isStreaming, canInterrupt, type RenderState } from "./state";
+import { createInitialState, isStreaming, canInterrupt, noteConversationOpenRequest, openFolderInstructionsDocument, resetDraftConversationState, type RenderState } from "./state";
 import { buildMessageLines } from "./conversation";
 import { getViewStartFor } from "./chatscroll";
 import { requestVisibleToolOutputs } from "./events/tool-outputs";
@@ -11,6 +11,7 @@ import { prepareConversationOpen } from "./conversationscroll";
 import { beginConversationLoad, beginOptimisticConversation } from "./events/conversations";
 import { bumpConversationToTop, focusConversationById, isOptimisticConversation } from "./sidebar";
 import type { Event } from "./protocol";
+import { createStartingBtw } from "./btw/state";
 import { createGenerationThroughput, generationTokensPerSecond } from "@exocortex/shared/generation-throughput";
 
 const daemon: DaemonActions = {
@@ -381,6 +382,68 @@ describe("remote conversation open placeholder", () => {
     expect(unsubscribed).toEqual(["current", "other"]);
   });
 
+  test("a late remote load does not yank the user out of a new draft", () => {
+    const { state, unsubscribed, actions } = openedState();
+    beginConversationLoad(state, "target", actions);
+    noteConversationOpenRequest(state, "target", "conversation_1");
+    resetDraftConversationState(state);
+
+    handleEvent({ ...loaded("target"), reqId: "conversation_1" }, state, actions);
+
+    expect(state.convId).toBeNull();
+    expect(state.messages.some(message => message.role === "assistant")).toBe(false);
+    expect(unsubscribed).toEqual(["current", "target"]);
+  });
+
+  test("a late local load does not yank the user out of the folder-instructions editor", () => {
+    const { state, actions } = openedState();
+    // Local opens keep the previous conversation until the load lands.
+    noteConversationOpenRequest(state, "target", "conversation_1");
+    openFolderInstructionsDocument(state, "folder-1");
+
+    handleEvent({ ...loaded("target"), reqId: "conversation_1" }, state, actions);
+
+    expect(state.convId).toBeNull();
+    expect(state.folderInstructionsDoc?.folderId).toBe("folder-1");
+  });
+
+  test("a reconnect-replayed open queued before /new is not applied", () => {
+    const { state, unsubscribed, actions } = openedState();
+    // Opened while disconnected: the load sits in the offline queue.
+    beginConversationLoad(state, "target", actions);
+    noteConversationOpenRequest(state, "target", "conversation_1");
+    resetDraftConversationState(state);
+    // The replayed load answers after reconnect.
+    handleEvent({ ...loaded("target"), reqId: "conversation_1" }, state, actions);
+
+    expect(state.convId).toBeNull();
+    expect(unsubscribed.at(-1)).toBe("target");
+  });
+
+  test("a local open still navigates when it answers the latest request", () => {
+    const { state, unsubscribed, actions } = openedState();
+    noteConversationOpenRequest(state, "other", "conversation_1");
+    noteConversationOpenRequest(state, "target", "conversation_2");
+
+    handleEvent({ ...loaded("other"), reqId: "conversation_1" }, state, actions);
+    expect(state.convId).toBe("current");
+    expect(unsubscribed).toEqual(["other"]);
+
+    handleEvent({ ...loaded("target"), reqId: "conversation_2" }, state, actions);
+    expect(state.convId).toBe("target");
+  });
+
+  test("a superseded load keeps the subscription a newer open of the same conversation needs", () => {
+    const { state, unsubscribed, actions } = openedState();
+    noteConversationOpenRequest(state, "target", "conversation_1");
+    noteConversationOpenRequest(state, "target", "conversation_2");
+
+    handleEvent({ ...loaded("target"), reqId: "conversation_1" }, state, actions);
+
+    expect(state.convId).toBe("current");
+    expect(unsubscribed).toEqual([]);
+  });
+
   test("stops the spinner when the load fails", () => {
     const { state, actions } = openedState();
     beginConversationLoad(state, "target", actions);
@@ -490,6 +553,55 @@ describe("daemon queue synchronization", () => {
 
     handleEvent({ type: "queue_updated", messages: [], settledQueueIds: ["removing"] }, state, daemon);
     expect(state.pendingQueueRemovalIds.size).toBe(0);
+  });
+});
+
+describe("rejected queue and BTW requests", () => {
+  test("a rejected enqueue drops its optimistic row instead of waiting forever", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.queuedMessages = [
+      { id: "bad", optimistic: true, convId: "conv-1", text: "never", timing: "message-end", source: "daemon", createdAt: 1 },
+      { id: "good", optimistic: true, convId: "conv-1", text: "fine", timing: "message-end", source: "daemon", createdAt: 2 },
+    ];
+
+    handleEvent({ type: "error", reqId: "queue_message:bad", convId: "conv-1", message: "Invalid queue timing" }, state, daemon);
+
+    expect(state.queuedMessages.map(message => message.id)).toEqual(["good"]);
+    expect(state.messages.at(-1)).toMatchObject({ role: "system", text: "✗ Invalid queue timing" });
+  });
+
+  test("a rejected enqueue for a background conversation is still reported", () => {
+    const state = createInitialState();
+    state.convId = "open";
+    state.queuedMessages = [{ id: "bad", optimistic: true, convId: "other", text: "never", timing: "message-end", source: "global-idle", createdAt: 1 }];
+
+    handleEvent({ type: "error", reqId: "queue_message:bad", convId: "other", message: "boom" }, state, daemon);
+
+    expect(state.queuedMessages).toEqual([]);
+    expect(state.messages.at(-1)).toMatchObject({ role: "system", text: "✗ Could not queue message: boom" });
+  });
+
+  test("a rejected unqueue lifts its tombstone so the canonical entry shows again", () => {
+    const state = createInitialState();
+    state.pendingQueueRemovalIds.add("keep");
+    const canonical = { id: "keep", convId: "conv-1", text: "still queued", timing: "message-end" as const, source: "daemon" as const, createdAt: 1 };
+
+    handleEvent({ type: "error", reqId: "unqueue_message:keep", message: "boom" }, state, daemon);
+    handleEvent({ type: "queue_updated", messages: [canonical] }, state, daemon);
+
+    expect(state.queuedMessages.map(message => message.id)).toEqual(["keep"]);
+  });
+
+  test("a rejected BTW query ends its starting panel turn", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.btw = createStartingBtw("conv-1", "btw-1", "question", "openai", "gpt-5.5", 100);
+
+    handleEvent({ type: "error", reqId: "btw:query:btw-1:btw-1", convId: "conv-1", message: "boom" }, state, daemon);
+
+    expect(state.btw?.phase).toBe("error");
+    expect(state.btw?.status).toBe("boom");
   });
 });
 

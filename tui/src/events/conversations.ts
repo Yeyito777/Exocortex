@@ -270,6 +270,16 @@ export function handleConversationLoaded(
   // An older in-flight open must not navigate away from the conversation the
   // user has already switched to; that switch also unsubscribed it.
   if (placeholderLoading && event.convId !== state.convId) return;
+  // Only the latest wanted open may navigate. A draft or folder-instructions
+  // document started meanwhile cleared it, so a late (or reconnect-replayed)
+  // load for the conversation the user left must not pull them back.
+  const wantedOpen = state.conversationOpenRequest;
+  if (wantedOpen && event.convId !== state.convId && event.reqId !== undefined
+      && event.reqId !== wantedOpen.reqId) {
+    // Its load subscribed this socket; release it unless a newer open wants it.
+    if (wantedOpen.convId !== event.convId) daemon.unsubscribe(event.convId);
+    return;
+  }
   const previousConvId = state.convId;
   // A placeholder has no transcript to reconcile: apply its load as a fresh open.
   const sameConversation = previousConvId === event.convId && !placeholderLoading;
