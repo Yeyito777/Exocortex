@@ -1,11 +1,11 @@
 /**
- * Display math images behave as text: concealed TeX under a below-text
- * placement (see mathimages.ts). Layout, copies, highlight and overlays.
+ * Display math images behave as text: one copy and selection unit under a
+ * below-text placement (see mathimages.ts). Copies, highlight and overlays.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
+  displayMathImage,
   displayMathImageRows,
-  hiddenTexRows,
   mathImagesInternalsForTest,
   type MathImage,
   type MathRenderRequest,
@@ -20,6 +20,7 @@ import { render } from "./render";
 import { createInitialState, type RenderState } from "./state";
 import { theme } from "./theme";
 import { renderQueuePromptOverlay } from "./overlays";
+import { selectionTextOf, withSelectionText } from "./mathpng";
 
 const OWNER_P = "$$P_{new} = 83 + \\frac{10}{3} = 86.33$$";
 const OWNER_Q = "$$Q_{new} = 249 - 2(86.33) = 76.33$$";
@@ -44,8 +45,6 @@ const image = (cols: number, rows: number): MathImage => ({
   rows,
 });
 
-const joinRows = (rows: { text: string; join: string }[]) => rows.map(row => row.join + row.text).join("");
-
 beforeEach(() => {
   inlineImagesInternalsForTest.reset();
   mathImagesInternalsForTest.reset({ setting: "image", rasterize: instantRasterizer });
@@ -56,70 +55,45 @@ afterEach(() => {
   mathImagesInternalsForTest.reset();
 });
 
-describe("hidden TeX layout", () => {
-  test("an equation that fits is one row, delimiters included", () => {
-    expect(hiddenTexRows(OWNER_P, 48)).toEqual([{ text: OWNER_P, join: "" }]);
-  });
-
-  test("delimiter-only lines join their neighbours, unless a comment would swallow the closer", () => {
-    expect(hiddenTexRows("$$\nx^2\n$$", 40)).toEqual([{ text: "$$x^2$$", join: "" }]);
-    expect(hiddenTexRows("\\[\n\\begin{aligned}\na &= b \\\\\nc &= d\n\\end{aligned}\n\\]", 40).map(row => row.text))
-      .toEqual(["\\[\\begin{aligned}", "a &= b \\\\", "c &= d", "\\end{aligned}\\]"]);
-    expect(hiddenTexRows("$$\nx % note\n$$", 40)).toEqual([
-      { text: "$$x % note", join: "" },
-      { text: "$$", join: "\n" },
-    ]);
-    // An escaped percent is not a comment.
-    expect(hiddenTexRows("$$\n50\\%\n$$", 40).map(row => row.text)).toEqual(["$$50\\%$$"]);
-  });
-
-  test("long lines wrap at spaces, and the rows join back into the source", () => {
-    const rows = hiddenTexRows(OWNER_P, 16);
-    expect(rows.every(row => row.text.length <= 16)).toBe(true);
-    expect(rows.map(row => row.join)).toEqual(["", " ", " "]);
-    expect(joinRows(rows)).toBe(OWNER_P);
-  });
-
-  test("without spaces, a hard break never splits a control word", () => {
-    const rows = hiddenTexRows("$$\\alpha\\beta\\gamma$$", 9);
-    expect(rows).toEqual([
-      { text: "$$\\alpha", join: "" },
-      { text: "\\beta", join: "" },
-      { text: "\\gamma$$", join: "" },
-    ]);
-  });
-
-  test("the owner's equation: concealed TeX on the image's middle row, one logical line", () => {
+describe("one copy unit", () => {
+  test("the owner's equation: blank cells under the image, one logical line, the source copied once", () => {
     const rows = displayMathImageRows(image(20, 3), 76, OWNER_P, 0);
-    expect(rows.lines).toEqual([
-      "  ",
-      `  \x1b[8m${OWNER_P}\x1b[28m`,
-      "  ",
-    ]);
+    expect(rows.lines).toEqual(["  ", "  ", "  "]);
     expect(rows.images.map(row => row?.row)).toEqual([0, 1, 2]);
     expect(rows.images[0]!.image).toMatchObject({ col: 2, cols: 20, rows: 3 });
     expect(rows.cont).toEqual([false, true, true]);
+    const unit = rows.copy[0]!.atomic;
+    expect(unit).toBeDefined();
     expect(rows.copy).toEqual([
-      { text: "", displayStart: 0, skip: true },
-      { text: OWNER_P, displayStart: 2, source: OWNER_P },
-      { text: "", displayStart: 0, skip: true },
+      { text: OWNER_P, displayStart: 2, atomic: unit, source: OWNER_P },
+      { text: OWNER_P, displayStart: 2, atomic: unit, source: null },
+      { text: OWNER_P, displayStart: 2, atomic: unit, source: null },
     ]);
+    expect(rows.copy.every(row => row!.atomic === unit)).toBe(true);
     expect(joinLogicalLines(rows.lines, rows.cont, 0, 2, rows.join, rows.copy)).toBe(OWNER_P);
-  });
-
-  test("TeX longer than the image's rows grows the block; the image stays centred in it", () => {
-    const rows = displayMathImageRows(image(10, 1), 30, OWNER_P, 0);
-    // From the image's left edge (the 2-cell indent) to the pane edge: 28 cells per row.
-    expect(rows.lines.map(stripAnsi)).toEqual(hiddenTexRows(OWNER_P, 28).map(row => `  ${row.text}`));
-    expect(rows.lines.length).toBe(2);
-    expect(rows.images.map(row => row?.row)).toEqual([0, undefined]);
-    expect(rows.cont).toEqual([false, true]);
-    expect(joinLogicalLines(rows.lines, rows.cont, 0, rows.lines.length - 1, rows.join, rows.copy)).toBe(OWNER_P);
   });
 
   test("an image as wide as the pane drops the indent", () => {
     expect(displayMathImageRows(image(29, 1), 30, "$$x$$", 0).images[0]!.image.col).toBe(1);
     expect(displayMathImageRows(image(10, 1), 20, "$$x$$", 0).images[0]!.image.col).toBe(0);
+  });
+
+  test("the PNG carries the source as its selection-text, and the source keys the render", async () => {
+    const requests: MathRenderRequest[] = [];
+    mathImagesInternalsForTest.reset({ setting: "image", rasterize: request => { requests.push(request); return instantRasterizer(request); } });
+    displayMathImage("x", 40, undefined, "$$x$$");
+    displayMathImage("x", 40, undefined, "\\[x\\]");
+    displayMathImage("x", 40, undefined, "$$x$$");
+    expect(requests.map(request => request.text)).toEqual(["$$x$$", "\\[x\\]"]);
+
+    const png = new Uint8Array(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAHnOcQAAAAABJRU5ErkJggg==", "base64"));
+    const tagged = withSelectionText(png, OWNER_P);
+    expect(selectionTextOf(tagged)).toBe(OWNER_P);
+    expect(selectionTextOf(png)).toBeNull();
+    // Still a valid PNG: the chunk sits after IHDR with a correct CRC.
+    const chunkLength = new DataView(tagged.buffer).getUint32(33);
+    const crc = new DataView(tagged.buffer).getUint32(33 + 8 + chunkLength);
+    expect(crc).toBe(Bun.hash.crc32(tagged.subarray(37, 41 + chunkLength)) >>> 0);
   });
 });
 
@@ -185,7 +159,8 @@ describe("history behaviour", () => {
     const mathRows = built.lineAnchors.flatMap((anchor, index) => (anchor.images ? [index] : []));
     expect(mathRows).toHaveLength(6);
     const middle = mathRows[1];
-    expect(stripAnsi(built.lines[middle]).trim()).toBe(OWNER_P);
+    expect(stripAnsi(built.lines[middle]).trim()).toBe("");
+    expect(built.copyLines[middle]).toMatchObject({ text: OWNER_P, atomic: built.copyLines[mathRows[0]]!.atomic });
 
     // The cursor's logical line (the history highlight) is the whole equation.
     expect(logicalLineRange(middle, built.wrapContinuation)).toEqual({ first: mathRows[0], last: mathRows[2] });
@@ -210,7 +185,7 @@ describe("history behaviour", () => {
     expect(panel.find(placement => placement.image.base64.includes("P_{new}"))).toMatchObject({ row: mathRows[0] + 2, rows: 2 });
   });
 
-  test("rendered frame: highlighted math rows keep the image whole, with the TeX concealed under it", async () => {
+  test("rendered frame: highlighted math rows keep the image whole, the highlight behind it", async () => {
     const state = ownerState();
     const first = await showEquation(state, 5);
     const frame = capture(state);
@@ -232,7 +207,6 @@ describe("history behaviour", () => {
     expect(highlighted).not.toContain("V=1");
     const rowWrites = (out: string, row: number) => out.split(/(?=\x1b\[\d+;1H)/).filter(chunk => chunk.startsWith(`\x1b[${row};1H`)).join("");
     for (const screenRow of [top, top + 1, top + 2]) expect(rowWrites(highlighted, screenRow)).toContain(theme.historyLineBg);
-    expect(stripAnsi(rowWrites(highlighted, top + 1))).toContain(OWNER_P);
     theme.historyLineBg = highlight;
 
     // A line yank of any of its rows copies the TeX.
@@ -240,6 +214,38 @@ describe("history behaviour", () => {
     state.historyVisualAnchor = { row: first, col: 0 };
     state.historyCursor = { row: first + 2, col: 0 };
     expect(getHistoryVisualSelection(state)).toBe(OWNER_P);
+    disposeHistoryImages(state);
+  });
+
+  test("the TUI's visual selection takes an equation as one unit: its rectangle, its source once", async () => {
+    const state = ownerState();
+    const first = await showEquation(state, 5);
+    const top = placements(capture(state))[0].row;
+    const selection = theme.selectionBg;
+    theme.selectionBg = "\x1b[48;5;90m";
+    state.panelFocus = "chat";
+    state.chatFocus = "history";
+    state.vim.mode = "visual";
+    // A charwise selection inside one row of the first equation.
+    state.historyVisualAnchor = { row: first + 1, col: 10 };
+    state.historyCursor = { row: first + 1, col: 12 };
+    const frame = capture(state);
+    const rowWrites = (out: string, row: number) => out.split(/(?=\x1b\[\d+;1H)/).filter(chunk => chunk.startsWith(`\x1b[${row};1H`)).join("");
+    for (const screenRow of [top, top + 1, top + 2]) {
+      const write = rowWrites(frame, screenRow);
+      // The image's 60 columns, from its indent (assistant 2 + display 2), on every row
+      // (the cursor's row draws its cursor cell inside it).
+      expect(write).toContain(theme.selectionBg);
+      expect(stripAnsi(write)).toBe(" ".repeat(4 + 60));
+      if (screenRow !== top + 1) expect(write).toContain(`${theme.selectionBg}${" ".repeat(60)}`);
+    }
+    expect(getHistoryVisualSelection(state)).toBe(OWNER_P);
+
+    // From the prose above through both equations: each source once, in order.
+    state.historyVisualAnchor = { row: first - 2, col: 2 };
+    state.historyCursor = { row: first + 5, col: 3 };
+    expect(getHistoryVisualSelection(state)).toBe(`Thus:\n\n${OWNER_P}\n\n${OWNER_Q}`);
+    theme.selectionBg = selection;
     disposeHistoryImages(state);
   });
 

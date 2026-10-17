@@ -8,12 +8,14 @@
  * (historyimages.ts), so scrolling, resizing, overlays and covers crop them
  * exactly like pasted images.
  *
- * The image behaves as text: its cells hold the equation's TeX as concealed
- * (SGR 8) text, and the placement sits below text (negative z). The terminal
- * shows the image through the concealed cells, a native mouse selection
- * copies the TeX, and cell backgrounds (the history line highlight, cursor,
- * search matches, the terminal's selection) show through the transparent
- * pixels behind the glyphs instead of covering them.
+ * The image behaves as text. Its PNG carries the equation's source in a
+ * `selection-text` chunk (st makes such an image an atomic text object: a
+ * native selection touching it highlights its whole cell rectangle and copies
+ * that text once), and the placement sits below text (negative z), so cell
+ * backgrounds (the history line highlight, cursor, selections) show through
+ * the transparent pixels behind the glyphs instead of covering them. Its
+ * cells stay blank; the TUI's own copies and visual selection treat the
+ * block as one unit the same way.
  *
  * Rendering is asynchronous: until an equation's PNG is ready (and forever if
  * its TeX is malformed or the renderer is unavailable) the block keeps the
@@ -31,7 +33,6 @@ import { readExocortexConfig } from "@exocortex/shared/config";
 import type { KittyImageData } from "./kittyimages";
 import { inlineImageCellSize, inlineImageMode, type CellSize } from "./inlineimages";
 import { log } from "./log";
-import { termWidth } from "./textwidth";
 import { theme, themes } from "./theme";
 import type { WrapCopyLine, WrapImage, WrapImageRow } from "./textwrap";
 
@@ -92,6 +93,8 @@ export interface MathRenderRequest {
   color: string;
   /** Scale a wider equation down to this many cells (or fail when it would be unreadable). */
   maxCols?: number;
+  /** Embedded in the PNG as its `selection-text`: what selecting the image copies. */
+  text?: string;
 }
 
 export type MathRenderResponse =
@@ -115,7 +118,7 @@ export function themeTextHex(): string {
 }
 
 /** Everything an image depends on besides its TeX and width cap. */
-export function mathRenderEnvironment(cell: CellSize = inlineImageCellSize(), color = themeTextHex()): Omit<MathRenderRequest, "id" | "tex" | "maxCols"> {
+export function mathRenderEnvironment(cell: CellSize = inlineImageCellSize(), color = themeTextHex()): Omit<MathRenderRequest, "id" | "tex" | "maxCols" | "text"> {
   return {
     display: true,
     emPx: Math.max(6, Math.round(cell.height * DISPLAY_MATH_EM_PER_CELL)),
@@ -126,7 +129,8 @@ export function mathRenderEnvironment(cell: CellSize = inlineImageCellSize(), co
 }
 
 export function mathRequestKey(request: Omit<MathRenderRequest, "id">): string {
-  const fit = request.maxCols === undefined ? "" : `:fit${request.maxCols}`;
+  const fit = (request.maxCols === undefined ? "" : `:fit${request.maxCols}`)
+    + (request.text === undefined ? "" : `:text${request.text.length}:${request.text}`);
   return `${request.display ? "D" : "I"}:${request.emPx}:${request.cellWidth}x${request.cellHeight}:${request.color}${fit}:${request.tex}`;
 }
 
@@ -270,10 +274,10 @@ export type MathImageState = { phase: "pending" } | { phase: "error"; error: str
  * at its natural size first; only an equation wider than the pane needs a
  * second, scaled-down render for that width.
  */
-export function displayMathImage(tex: string, maxCols: number, environment = mathRenderEnvironment()): MathImageState {
-  const natural = lookup({ ...environment, tex });
+export function displayMathImage(tex: string, maxCols: number, environment = mathRenderEnvironment(), text?: string): MathImageState {
+  const natural = lookup({ ...environment, tex, ...(text === undefined ? {} : { text }) });
   if (natural.phase !== "ready" || natural.image.cols <= maxCols) return natural;
-  return lookup({ ...environment, tex, maxCols });
+  return lookup({ ...environment, tex, maxCols, ...(text === undefined ? {} : { text }) });
 }
 
 // ── Markdown hook ───────────────────────────────────────────────────
@@ -293,114 +297,31 @@ export interface DisplayMathImageRenderer {
   pending: boolean;
 }
 
-const CONCEAL = "\x1b[8m";
-const REVEAL = "\x1b[28m";
-const DELIMITER_LINE = /^(?:\$\$|\\\[|\\\])$/;
-/** An unescaped `%` comments out the rest of a TeX line. */
-const TEX_COMMENT = /(?:^|[^\\])(?:\\\\)*%/;
-
-export interface HiddenTexRow {
-  text: string;
-  /** What joins this row to the previous one in the source: "\n", a wrapped-at space, or "" (first row, hard break). */
-  join: string;
-}
-
-/** Breaking between `chars[at - 1]` and `chars[at]` keeps every control sequence whole. */
-function texBreakSafe(chars: readonly string[], at: number): boolean {
-  if (chars[at - 1] === "\\") return false;
-  if (!/[A-Za-z]/.test(chars[at] ?? "")) return true;
-  let start = at;
-  while (start > 0 && /[A-Za-z]/.test(chars[start - 1])) start--;
-  return !(start < at && chars[start - 1] === "\\");
-}
-
-function wrapTexLine(line: string, width: number, firstJoin: string, out: HiddenTexRow[]): void {
-  let chars = Array.from(line);
-  let join = firstJoin;
-  for (;;) {
-    let used = 0;
-    let fit = 0;
-    while (fit < chars.length && used + termWidth(chars[fit]) <= width) used += termWidth(chars[fit++]);
-    if (fit >= chars.length) break;
-    // Prefer a space (it becomes the row break); then any point outside a control word.
-    let space = fit;
-    while (space > 0 && chars[space] !== " ") space--;
-    if (space > 0) {
-      out.push({ text: chars.slice(0, space).join(""), join });
-      chars = chars.slice(space + 1);
-      join = " ";
-      continue;
-    }
-    let at = Math.max(1, fit);
-    while (at > 1 && !texBreakSafe(chars, at)) at--;
-    if (!texBreakSafe(chars, at)) at = Math.max(1, fit);
-    out.push({ text: chars.slice(0, at).join(""), join });
-    chars = chars.slice(at);
-    join = "";
-  }
-  out.push({ text: chars.join(""), join });
-}
-
-/**
- * Rows of hidden TeX for a display fragment's source at most `width` cells
- * wide. Continuation lines lose the indent they share (a list item's), and
- * lines holding only a delimiter join their neighbour (`$$x$$`, not three
- * rows); longer lines wrap at spaces, else between tokens. Joining the rows
- * with their `join`s gives back that compacted source.
- */
-export function hiddenTexRows(source: string, width: number): HiddenTexRow[] {
-  const lines = source.split("\n").map(line => line.trimEnd());
-  const indent = Math.min(...lines.slice(1).filter(line => line.trim()).map(line => /^\s*/.exec(line)![0].length));
-  if (Number.isFinite(indent)) for (let i = 1; i < lines.length; i++) lines[i] = lines[i].slice(indent);
-  while (lines.length > 1 && !lines[0].trim()) lines.shift();
-  while (lines.length > 1 && !lines[lines.length - 1].trim()) lines.pop();
-  if (lines.length > 1 && DELIMITER_LINE.test(lines[0].trim())) lines.splice(0, 2, lines[0].trim() + lines[1].trimStart());
-  const last = lines.length - 1;
-  if (last > 0 && DELIMITER_LINE.test(lines[last].trim()) && !TEX_COMMENT.test(lines[last - 1])) {
-    lines.splice(last - 1, 2, lines[last - 1] + lines[last].trim());
-  }
-  const rows: HiddenTexRow[] = [];
-  lines.forEach((line, index) => wrapTexLine(line, Math.max(1, width), index === 0 ? "" : "\n", rows));
-  return rows;
-}
-
 /** Display blocks sit this far in from the text margin, like the Unicode rendering. */
 export const DISPLAY_MATH_INDENT = 2;
 
 /**
- * Rows for a ready equation: the image indented like a text display block,
- * its TeX concealed in the cells under it from its left edge (vertically
- * centred, so a line selection on its middle row takes it all). Left-aligned
- * rather than centred because a terminal selection copies the blanks before
- * the TeX: this keeps them to the indent any text line has. The block grows
- * when the TeX needs more rows than the image. All rows form one logical
- * line: the history highlight covers the whole equation and a line yank
- * copies the source.
+ * Rows for a ready equation: blank cells under the image, indented like a
+ * text display block. All rows form one logical line and one copy unit: the
+ * history highlight covers the whole equation, and any yank or visual
+ * selection touching it copies the fragment's source once.
  */
 export function displayMathImageRows(image: MathImage, width: number, source: string, index: number): DisplayMathImageRows {
   const col = Math.max(0, Math.min(width >= 24 ? DISPLAY_MATH_INDENT : 0, width - image.cols));
   const wrapImage: WrapImage = { kitty: image.kitty, col, cols: image.cols, rows: image.rows, index };
-  const hidden = hiddenTexRows(source, width - col);
-  const height = Math.max(image.rows, hidden.length);
-  const imageTop = Math.floor((height - image.rows) / 2);
-  const textTop = Math.floor((height - hidden.length) / 2);
+  const unit = {};
   const lines: string[] = [];
   const cont: boolean[] = [];
   const join: string[] = [];
   const copy: Array<WrapCopyLine | null> = [];
-  const images: Array<WrapImageRow | undefined> = [];
-  for (let row = 0; row < height; row++) {
-    const tex = hidden[row - textTop];
+  const images: WrapImageRow[] = [];
+  for (let row = 0; row < image.rows; row++) {
     // Every row keeps the image's indent so narrow-history shifting moves them together.
-    lines.push(" ".repeat(col) + (tex?.text ? CONCEAL + tex.text + REVEAL : ""));
+    lines.push(" ".repeat(col));
     cont.push(row > 0);
-    join.push(tex && row > textTop ? tex.join : "");
-    // Charwise copies take the hidden text; whole-row copies the fragment's source, once.
-    copy.push(tex
-      ? { text: tex.text, displayStart: col, source: row === textTop ? source : null }
-      : { text: "", displayStart: 0, skip: true });
-    const imageRow = row - imageTop;
-    images.push(imageRow >= 0 && imageRow < image.rows ? { image: wrapImage, row: imageRow } : undefined);
+    join.push("");
+    copy.push({ text: source, displayStart: col, atomic: unit, source: row === 0 ? source : null });
+    images.push({ image: wrapImage, row });
   }
   return { lines, cont, join, copy, images };
 }
@@ -415,7 +336,7 @@ export function createDisplayMathImageRenderer(): DisplayMathImageRenderer | und
     render(body, width, source) {
       const tex = body.trim();
       if (!tex) return null;
-      const state = displayMathImage(tex, Math.max(1, width), environment);
+      const state = displayMathImage(tex, Math.max(1, width), environment, source);
       if (state.phase === "pending") renderer.pending = true;
       if (state.phase !== "ready") return null;
       return displayMathImageRows(state.image, width, source, index++);

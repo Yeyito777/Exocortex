@@ -480,7 +480,14 @@ function extractHistoryCharwiseSelection(
   }
 
   const result: string[] = [];
+  const copiedUnits = new Set<object>();
   for (let r = start.row; r <= end.row; r++) {
+    // A unit (a display-math image) copies whole, once, from the first row touched.
+    const unit = surface.copyLines?.[r]?.atomic;
+    if (unit) {
+      if (copiedUnits.has(unit)) continue;
+      copiedUnits.add(unit);
+    }
     const plain = stripAnsi(lines[r] ?? "");
     const { start: lineStart, end: lineEnd } = contentBounds(plain);
     const sliceStart = r === start.row ? start.col : lineStart;
@@ -615,6 +622,7 @@ function copyLineSlice(
 ): string | null {
   const projection = surface.copyLines?.[row] ?? null;
   if (projection?.skip) return null;
+  if (projection?.atomic) return projection.text;
   if (projection) {
     const start = Math.max(0, Math.min(projection.text.length, startCol - projection.displayStart));
     const end = Math.max(0, Math.min(projection.text.length, endCol - projection.displayStart));

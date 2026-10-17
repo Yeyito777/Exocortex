@@ -12,6 +12,7 @@ import {
   type MathRenderResponse,
 } from "./mathimages";
 import { layoutMathSvg, MIN_FIT_SCALE } from "./mathsvg";
+import { selectionTextOf } from "./mathpng";
 import { inlineImagesInternalsForTest, setInlineImageCellSize, setInlineImageMode } from "./inlineimages";
 import { markdownWordWrap } from "./markdown";
 import { renderBlockCached } from "./blockrenderer";
@@ -185,8 +186,8 @@ describe("markdown and block rendering", () => {
     expect(rows).toHaveLength(2);
     const image = ready.images![rows[0]]!.image;
     expect(image).toMatchObject({ col: 2, cols: 10, rows: 2, index: 0 });
-    // The TeX sits concealed under the image, from its left edge; no Unicode rendering is left.
-    expect(ready.lines[rows[0]]).toBe("  \x1b[8m$$PS=\\frac12 Q(P-10)$$\x1b[28m");
+    // Blank cells under the image; no Unicode rendering is left.
+    expect(ready.lines[rows[0]]).toBe("  ");
     expect(ready.lines[rows[1]]).toBe("  ");
     expect(ready.lines.map(stripAnsi).join("\n")).not.toContain("PS =");
     expect(ready.lines.map(stripAnsi).join("\n")).toContain("x₁");
@@ -196,22 +197,21 @@ describe("markdown and block rendering", () => {
     expect(copied).toContain("Before $x_1$ inline.");
   });
 
-  test("multi-line \\[…\\] blocks copy their source, delimiters joined to their lines", async () => {
+  test("multi-line \\[…\\] blocks copy their source as written", async () => {
     const fake = fakeRasterizer();
     mathImagesInternalsForTest.reset({ setting: "image", rasterize: fake.rasterize });
     const source = "Matrix:\n  \\[\n  \\begin{pmatrix} a & b \\\\\n    c & d \\end{pmatrix}\n  \\]";
-    createDisplayMathImageRenderer()!.render("\\begin{pmatrix} a & b \\\\\n    c & d \\end{pmatrix}", 40, "");
+    markdownWordWrap(source, 40, theme.reset, { displayMath: createDisplayMathImageRenderer()!.render });
     await fake.flush();
     const renderer = createDisplayMathImageRenderer()!;
     const wrapped = markdownWordWrap(source, 40, theme.reset, { displayMath: renderer.render });
     expect(wrapped.images?.filter(Boolean)).toHaveLength(2);
-    // Hidden under the image (list indent + display indent): delimiter lines joined to their neighbours.
-    expect(wrapped.lines.slice(1).map(stripAnsi)).toEqual([
-      "    \\[\\begin{pmatrix} a & b \\\\",
-      "      c & d \\end{pmatrix}\\]",
-    ]);
+    // List indent + display indent, blank under the image.
+    expect(wrapped.lines.slice(1)).toEqual(["    ", "    "]);
     expect(wrapped.cont).toEqual([false, false, true]);
-    expect(wrapped.join[2]).toBe("\n");
+    // The fake renders the image 10 cells wide at the block's column 4.
+    expect(wrapped.images![1]!.image).toMatchObject({ col: 4, cols: 10 });
+    expect(fake.requests.at(-1)!.text).toBe("\\[\n\\begin{pmatrix} a & b \\\\\n  c & d \\end{pmatrix}\n\\]");
     // Line yanks copy the fragment's source as written.
     expect(joinLogicalLines(wrapped.lines, wrapped.cont, 0, wrapped.lines.length - 1, wrapped.join, wrapped.copy))
       .toBe("Matrix:\n\\[\n\\begin{pmatrix} a & b \\\\\n  c & d \\end{pmatrix}\n\\]");
@@ -307,7 +307,11 @@ describe("worker rasterizer", () => {
       expect(ok.pixelHeight).toBe(ok.rows * 16);
       expect(ok.rows).toBeGreaterThanOrEqual(2);
       expect(Buffer.from(ok.base64, "base64").subarray(1, 4).toString()).toBe("PNG");
+      expect(selectionTextOf(new Uint8Array(Buffer.from(ok.base64, "base64")))).toBeNull();
     }
+    // With a source, the PNG carries it as its selection-text.
+    const tagged = await workerRasterizer({ ...base, id: 4, tex: "x^2", text: "$$x^2$$ → \\[x\\]" });
+    expect(tagged.ok && selectionTextOf(new Uint8Array(Buffer.from(tagged.base64, "base64")))).toBe("$$x^2$$ → \\[x\\]");
     const bad = await workerRasterizer({ ...base, id: 2, tex: "\\frac{a" });
     expect(bad).toMatchObject({ id: 2, ok: false });
     const unknown = await workerRasterizer({ ...base, id: 3, tex: "\\notamacro x" });
