@@ -57,6 +57,20 @@ describe("TUI SSH transport", () => {
     child.kill();
   });
 
+  test("hands over bytes after the pong undecoded so a split character survives", async () => {
+    const child = new FakeProcess();
+    const event = Buffer.from(`${JSON.stringify({ type: "conversation_updated", title: "🐋" })}\n`);
+    const split = event.indexOf(Buffer.from("🐋")) + 2;
+    child.stdin.on("data", chunk => {
+      const command = JSON.parse(chunk.toString("utf8"));
+      child.stdout.write(Buffer.concat([Buffer.from(`${JSON.stringify({ type: "pong", reqId: command.reqId })}\n`), event.subarray(0, split)]));
+    });
+    const connection = await probeSshProxy("whale", { spawnProcess: () => child }).promise;
+    expect(Buffer.concat([connection.bufferedStdout, event.subarray(split)]).toString("utf8"))
+      .toBe(event.toString("utf8"));
+    child.kill();
+  });
+
   test("reports proxy stderr when the remote daemon cannot be reached", async () => {
     const child = new FakeProcess();
     const probe = probeSshProxy("missing", { spawnProcess: () => child });

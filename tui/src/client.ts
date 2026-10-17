@@ -8,6 +8,7 @@ import type { FastMode } from "@exocortex/shared/messages";
 import { connect } from "net";
 import { existsSync } from "fs";
 import { randomUUID } from "crypto";
+import { StringDecoder } from "node:string_decoder";
 import { homedir, hostname, userInfo } from "os";
 import type { ClientCapability, ClientHostInfo, Command, DaemonShutdownMode, Event, GoalAction, MoveSidebarItemsOptions, OpenAILoginMethod, QueuedCommandInvocation, QueueTiming, QueueWaitTarget, TrimMode, SidebarItemRef, GetImageCommand, ImageDataEvent } from "./protocol";
 import type { ProviderId, ModelId, EffortLevel, ImageAttachment, TokenUsageSource } from "./messages";
@@ -106,6 +107,8 @@ export class DaemonClient {
   private socket: ClientTransport | null = null;
   private activeSshConnection: ActiveSshConnection | null = null;
   private buffer = "";
+  /** Socket and SSH reads split UTF-8 characters at arbitrary byte offsets. */
+  private decoder = new StringDecoder("utf8");
   private readonly historyCache = new HistoryCache();
   private handler: EventHandler;
   private _connected = false;
@@ -183,6 +186,7 @@ export class DaemonClient {
     this.intentionalDisconnect = false;
     this.announcedShutdownMode = null;
     this.buffer = "";
+    this.decoder = new StringDecoder("utf8");
     return this.sshAlias ? this.connectSsh(this.sshAlias) : this.connectLocal();
   }
 
@@ -397,6 +401,7 @@ export class DaemonClient {
       this.socket = null;
       if (this.activeSshConnection?.transport === socket) this.activeSshConnection = null;
       this.buffer = "";
+      this.decoder = new StringDecoder("utf8");
       this.announcedShutdownMode = null;
     }
     if (connected && wasCurrentSocket && !this.intentionalDisconnect) this.onDisconnect?.(shutdownMode);
@@ -416,6 +421,7 @@ export class DaemonClient {
     this.activeSshConnection = null;
     this._connected = false;
     this.buffer = "";
+    this.decoder = new StringDecoder("utf8");
     this.announcedShutdownMode = null;
   }
 
@@ -1268,7 +1274,7 @@ export class DaemonClient {
     // Resume at its old end instead of rescanning a growing multi-megabyte JSON
     // event on every socket chunk (quadratic work for large payloads).
     let newlineSearchFrom = this.buffer.length;
-    this.buffer += typeof data === "string" ? data : data.toString("utf-8");
+    this.buffer += typeof data === "string" ? data : this.decoder.write(data);
 
     let idx: number;
     while ((idx = this.buffer.indexOf("\n", newlineSearchFrom)) !== -1) {

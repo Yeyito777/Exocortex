@@ -768,3 +768,17 @@ describe("DaemonClient reconnect behavior", () => {
     expect(disconnects).toBe(0);
   });
 });
+
+describe("DaemonClient Unicode transport", () => {
+  test("reassembles multibyte characters split across socket or SSH reads", () => {
+    const title = "🐋 café — año 日本語";
+    const bytes = Buffer.from(`${JSON.stringify({ type: "system_prompt", systemPrompt: title })}\n`);
+    for (let split = 1; split < bytes.length; split++) {
+      const events: Array<{ type: string; systemPrompt?: string }> = [];
+      const client = new DaemonClient(event => events.push(event as never));
+      (client as any).onData(bytes.subarray(0, split));
+      (client as any).onData(bytes.subarray(split));
+      expect(events).toEqual([{ type: "system_prompt", systemPrompt: title }]);
+    }
+  });
+});
