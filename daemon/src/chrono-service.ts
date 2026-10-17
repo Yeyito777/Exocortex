@@ -543,6 +543,8 @@ function parseAt(at: string | undefined, afterSeconds: number | undefined, now: 
   if (at !== undefined && afterSeconds !== undefined) return { error: "Use either 'at' or 'after_seconds', not both." };
   if (afterSeconds !== undefined) {
     if (!Number.isFinite(afterSeconds) || afterSeconds <= 0) return { error: "'after_seconds' must be greater than zero." };
+    // Past ~100 years the time is unrepresentable as a Date (and meaningless).
+    if (afterSeconds > 100 * 365 * 86_400) return { error: "'after_seconds' must be at most 100 years." };
     return { value: now + Math.round(afterSeconds * 1000) };
   }
   if (!at?.trim()) return { error: "Wake requires 'at' or 'after_seconds'." };
@@ -1123,7 +1125,7 @@ async function executeOccurrence(occurrence: PendingOccurrence): Promise<void> {
           const timeout = setTimeout(() => {
             timedOut = true;
             controller.abort(`Chrono command timed out after ${commandTarget.timeoutMs}ms`);
-          }, commandTarget.timeoutMs);
+          }, Math.min(commandTarget.timeoutMs, MAX_TIMER_MS));
           let result: Awaited<ReturnType<typeof executeBashBackgroundable>>;
           try {
             result = await executeBashBackgroundable({

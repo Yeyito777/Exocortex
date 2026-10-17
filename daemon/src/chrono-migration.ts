@@ -104,7 +104,8 @@ export function migrateLegacyCronJobs(now = Date.now()): number {
           target: {
             kind: "command",
             command: `cd ${JSON.stringify(process.env.HOME ?? ".")} && bash ${JSON.stringify(destinationPath)}`,
-            timeoutMs: Math.max(1, headers.timeoutSeconds) * 1000,
+            // Chrono's own limit; a larger delay would overflow setTimeout and fire at once.
+            timeoutMs: Math.min(86_400, Math.max(1, headers.timeoutSeconds)) * 1000,
             ...(ownerConversationId ? {
               hardWake: {
                 conversationId: ownerConversationId,

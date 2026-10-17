@@ -683,3 +683,12 @@ describe("chrono persistence failures", () => {
     }
   });
 });
+
+describe("chrono input bounds", () => {
+  test("rejects an after_seconds too large to schedule instead of installing a broken wake", () => {
+    const owner = makeConversation("huge-after");
+    const result = createChronoSchedule({ ownerConversationId: owner, afterSeconds: 9e12, message: "never" });
+    expect(result.error).toContain("at most 100 years");
+    expect(listChronoSchedules(owner)).toEqual([]);
+  });
+});
