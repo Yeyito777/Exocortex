@@ -207,6 +207,43 @@ describe("turns wait out network outages", () => {
     expect(isStreaming(convId)).toBe(false);
   });
 
+  test("text streamed before the outage is discarded when the request is retried", async () => {
+    const convId = id("partial-retry");
+    create(convId, "anthropic", "claude-opus-5-5");
+    const events: Event[] = [];
+    const { clock, probe, monitor } = offlineMonitor();
+    let requests = 0;
+    const fakeStream = (async (_provider, _messages, _model, streamCallbacks, options) => {
+      requests += 1;
+      streamCallbacks.onBlockStart?.("text");
+      if (requests === 1) {
+        streamCallbacks.onText("STALE half-sentence ");
+        throw outageError();
+      }
+      streamCallbacks.onText("fresh answer");
+      // Stop arrives mid-stream: the salvaged partial reply is persisted.
+      await new Promise<void>((_resolve, reject) => {
+        options?.signal?.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })), { once: true });
+      });
+      throw new Error("unreachable");
+    }) as typeof streamMessage;
+
+    const turn = orchestrateSendMessage(server(events) as never, null, undefined, convId, "hello", Date.now(), callbacks(fakeStream, monitor));
+    await until(() => events.some(event => event.type === "connection_wait_status" && event.active === true), "the waiting state");
+    probe.reachable = true;
+    await clock.advance(3_000);
+    await until(() => requests === 2, "the retried request");
+    await flush();
+    getActiveJob(convId)!.abort();
+    await turn;
+    await flush();
+
+    const persisted = loadPersisted(convId)!.messages;
+    const replies = persisted.filter(message => message.role === "assistant").map(text);
+    expect(replies.join("")).not.toContain("STALE");
+    expect(replies.join("")).toContain("fresh answer");
+  });
+
   test("API errors still fail the turn at once", async () => {
     const convId = id("api-error");
     create(convId, "anthropic", "claude-opus-5-5");

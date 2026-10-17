@@ -102,6 +102,12 @@ export interface StreamCallbacks {
   onToolResult?: (block: ToolResultBlock) => void;
   onHeaders?: (headers: Headers) => void;
   onRetry?: (attempt: number, maxAttempts: number, errorMessage: string, delaySec: number, metadata?: StreamRetryMetadata) => void;
+  /**
+   * The caller is re-sending a failed request without a retry notice (after a
+   * network or usage-limit wait). Discard the failed attempt's uncommitted output.
+   * Providers never call this.
+   */
+  onAttemptDiscarded?: () => void;
   /** Pause/resume stale-stream watchdogs around intentional long retry waits. */
   onRetryWaitStart?: () => void;
   onRetryWaitEnd?: () => void;

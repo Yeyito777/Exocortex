@@ -17,7 +17,7 @@ describe("turns wait out network outages", () => {
     });
     const output = `${child.stdout.toString()}${child.stderr.toString()}`;
     expect(child.exitCode, output).toBe(0);
-    expect(output).toContain("5 pass");
+    expect(output).toContain("6 pass");
     expect(output).toContain("0 fail");
   });
 });

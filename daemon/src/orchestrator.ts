@@ -854,15 +854,21 @@ async function orchestrateAdmittedAssistantTurn(
       throw new StreamPreemptedError();
     }
     // `messages` is the agent loop's live array: rounds the provider commits
-    // during a failed attempt are in it, so a retry resumes after them.
-    return runWithUsageLimitWait(ac, () => runWithNetworkWait(ac, connectivity, () => runWithStaleStreamRetries(
+    // during a failed attempt are in it, so a retry resumes after them. Its
+    // uncommitted streamed output is discarded before each re-send.
+    let attempted = false;
+    return runWithUsageLimitWait(ac, () => runWithNetworkWait(ac, connectivity, () => {
+      if (attempted) callbacks.onAttemptDiscarded?.();
+      attempted = true;
+      return runWithStaleStreamRetries(
       ac,
       callbacks,
       (attemptSignal) => (ext.streamMessageFn ?? streamMessage)(provider, messages, model, callbacks, {
         ...streamOptions,
         signal: attemptSignal,
       }),
-    ), {
+      );
+    }, {
       onWaitStart() {
         awaitingConnectivity = true;
         // A wait can last hours; it is not a stalled stream.
@@ -1301,6 +1307,13 @@ async function orchestrateAdmittedAssistantTurn(
     });
   }
 
+  /** Drop the failed attempt's uncommitted output; completed rounds stay. */
+  function resetPartialStream(): void {
+    partialContent.length = 0;
+    convStore.initStreamingState(convId);
+    convStore.setStreamingCommittedBlockCount(convId, agentState.completedBlocks.length);
+  }
+
   function recordStreamRetry(
     attempt: number,
     maxAttempts: number,
@@ -1312,9 +1325,7 @@ async function orchestrateAdmittedAssistantTurn(
     convStore.touchActivity(convId);
     // Provider retry → clear partial state so the retry starts clean.
     // Completed rounds remain visible through canonical display entries.
-    partialContent.length = 0;
-    convStore.initStreamingState(convId);
-    convStore.setStreamingCommittedBlockCount(convId, agentState.completedBlocks.length);
+    resetPartialStream();
     const sysText = formatRetryNotice(attempt, maxAttempts, errorMessage, delaySec, metadata);
     transcriptMarkers.push({
       afterIndex: agentState.completedMessages.length,
@@ -1552,6 +1563,11 @@ async function orchestrateAdmittedAssistantTurn(
     onRetry(attempt, maxAttempts, errorMessage, delaySec, metadata) {
       if (classifyNetworkFailureMessage(errorMessage)) noteNetworkTrouble();
       recordStreamRetry(attempt, maxAttempts, errorMessage, delaySec, metadata);
+    },
+    onAttemptDiscarded() {
+      resetPartialStream();
+      // Clients replace their live blocks from the snapshot.
+      sendStreamingSnapshot();
     },
     onRetryWaitStart() {
       convStore.pauseActivity(convId);
