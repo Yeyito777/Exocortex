@@ -112,6 +112,8 @@ let queueSchedulerGeneration = 0;
 export interface HandlerLifecycle {
   /** Restart the process that owns this exact server/socket instance. */
   requestRestart?: () => void;
+  /** How long a prepared restart may wait for its service before restarting itself. */
+  preparedRestartTimeoutMs?: number;
 }
 
 export interface DaemonCommandHandler {
@@ -1265,6 +1267,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   };
 
   let queueDeliveryReady = !options.holdQueueDeliveryUntilReady;
+  let preparedRestartTimer: ReturnType<typeof setTimeout> | null = null;
   const pumpQueuedMessages = (): void => {
     if (getDaemonShutdownMode() || !queueDeliveryReady) return;
     const queued = convStore.listInternalQueuedMessages();
@@ -1606,6 +1609,16 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       case "prepare_shutdown": {
         const mode = beginDaemonShutdown(cmd.mode);
         log("info", `handler: service requested daemon shutdown mode=${mode}`);
+        if (mode === "restart" && lifecycle.requestRestart && !preparedRestartTimer) {
+          // Prepared, the daemon only winds down: no queue pump, no finalizer
+          // continuations, every restart request refused. If its service never
+          // restarts it (the caller died after preparing), finish the restart.
+          preparedRestartTimer = setTimeout(() => {
+            log("warn", "handler: prepared restart was never carried out; restarting now");
+            lifecycle.requestRestart?.();
+          }, lifecycle.preparedRestartTimeoutMs ?? PREPARE_RESTART_MAX_SETTLE_MS + 90_000);
+          preparedRestartTimer.unref?.();
+        }
         if (cmd.interruptForReplay && mode === "restart") {
           // One round trip instead of the control process polling and aborting
           // over the socket: settle in-process, then report what will replay.
@@ -3691,6 +3704,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   return Object.assign(handleCommand, {
     stop: async () => {
       unsubscribeConnectivity();
+      if (preparedRestartTimer) clearTimeout(preparedRestartTimer);
     },
     backgroundTaskComplete: enqueueBackgroundTaskCompletion,
     providerProxies,

@@ -381,6 +381,26 @@ describe("handler shutdown preparation", () => {
     }
   });
 
+  test("completes a prepared restart itself when the service never restarts it", async () => {
+    const server = {
+      sendTo: mock(() => {}), broadcast: mock(() => {}), sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}), subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    const requestRestart = mock(() => {});
+    const handle = createHandler(server as never, { requestRestart, preparedRestartTimeoutMs: 50 });
+    try {
+      // E.g. `exocortexd restart` run from a turn: preparing aborts that turn,
+      // its cgroup kills the script, and systemctl restart never runs.
+      await handle({} as never, { type: "prepare_shutdown", reqId: "orphaned", mode: "restart", interruptForReplay: true, timeoutMs: 0 });
+      expect(requestRestart).not.toHaveBeenCalled();
+      await new Promise(resolve => setTimeout(resolve, 120));
+      expect(requestRestart).toHaveBeenCalledTimes(1);
+    } finally {
+      clearInterruptedStreamIds();
+      clearActiveGoalRestartMarker();
+    }
+  });
+
   test("leaves replay preparation to the caller once a stop is already underway", async () => {
     const sent: Array<Record<string, unknown>> = [];
     const server = {
