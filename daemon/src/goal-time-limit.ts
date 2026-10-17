@@ -10,8 +10,8 @@
 
 import { goalRemainingMs } from "@exocortex/shared/goals";
 import * as convStore from "./conversations";
-import { cancelDeferredChronoSleep } from "./chrono-service";
-import { broadcastConversationHistoryUpdated, broadcastConversationUpdated } from "./conversation-events";
+import { cancelSuspendedTurn } from "./suspended-turns";
+import { broadcastConversationUpdated } from "./conversation-events";
 import { goalTimeLimitReason, updateGoalStatus } from "./goals";
 import { log } from "./log";
 import type { DaemonServer } from "./server";
@@ -57,7 +57,7 @@ function stopTimedOutGoal(server: DaemonServer, convId: string): void {
   const result = updateGoalStatus(convId, "blocked", "Goal time limit reached.", goalTimeLimitReason(goal));
   convStore.clearGoalContinuationAfterStream(convId);
   convStore.clearStreamHandoff(convId);
-  if (cancelDeferredChronoSleep(convId)) broadcastConversationHistoryUpdated(server, convId);
+  cancelSuspendedTurn(server, convId);
   convStore.getActiveJob(convId)?.abort("goal-state-changed");
   server.sendToSubscribers(convId, { type: "goal_updated", convId, goal: result.goal, message: result.message });
   broadcastConversationUpdated(server, convId);

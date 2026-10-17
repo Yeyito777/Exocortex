@@ -5,6 +5,7 @@ import { localMacroEnvironment } from "@exocortex/shared/macro-environment";
 import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { resumeQueuedMessageDelivery, suspendQueuedMessageDelivery } from "./message-queue";
+import { chronoInternalsForTest, deferChronoSleep, listDeferredChronoSleeps } from "./chrono-service";
 import { appendMessages, consumeGoalContinuationAfterStream, create, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, get, getQueuedMessageById, getQueuedMessages, getSummary, listQueuedMessages, pushGlobalIdleQueuedMessage, pushQueuedMessage, remove, removeQueuedMessageById, setGoal, updateGoalStatus } from "./conversations";
 import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, defaultEffortForModelId } from "./messages";
 import { appendToStreamingBlock, clearActiveJob, clearActiveSteerHandler, clearActiveToolBackgrounder, clearCurrentStreamingBlocks, initStreamingState, replaceCurrentStreamingBlocks, setActiveJob, setActiveSteerHandler, setActiveToolBackgrounder, setStreamingCommittedMessageCount } from "./streaming";
@@ -2252,6 +2253,43 @@ describe("handler subagent completion delivery", () => {
     } finally {
       orchestrateSendMessage.mockImplementation(async () => makeAssistantOutcome());
       for (const entry of [...getQueuedMessages(targetId), ...getQueuedMessages(parentId)]) removeQueuedMessageById(entry.id);
+    }
+  });
+
+  test("native exo message and abort reach a child suspended in a deferred chrono sleep", async () => {
+    const parentId = mkId("exo-sleep-parent");
+    const childId = mkId("exo-sleep-child");
+    const abortedId = mkId("exo-sleep-aborted");
+    create(parentId, "openai", "gpt-6-astra");
+    create(childId, "openai", "gpt-6-astra");
+    create(abortedId, "openai", "gpt-6-astra");
+    const server = {
+      sendTo: mock(() => {}), broadcast: mock(() => {}), sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}), subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+      hasLegacyHistorySubscribers: mock(() => false), sendHistoryUpdatedToSubscribers: mock(() => {}),
+    };
+    createHandler(server as never);
+    const runtime = getExocortexToolRuntime(server as never)!;
+    try {
+      for (const id of [childId, abortedId]) {
+        beginPendingSubagentNotification({ convId: parentId }, id, "build, then report", 1_000, 0);
+        expect(deferChronoSleep({ conversationId: id, toolCallId: `wait-${id}`, startedAt: Date.now(), durationMs: 3_600_000 }).error).toBeUndefined();
+      }
+
+      // A message starts the child's turn now, which ends the sleep early.
+      const delivered = JSON.parse((await runtime.execute({ message: { conversation: childId, text: "status?" } }, parentId)).output);
+      expect(delivered).toMatchObject({ status: "delivered", target_status: "idle" });
+      expect(orchestrateSendMessage.mock.calls.some(call => (call as unknown as unknown[])[3] === childId)).toBe(true);
+
+      // Abort ends the suspended turn: no later wake, no lingering running task.
+      const aborted = JSON.parse((await runtime.execute({ abort: abortedId }, parentId)).output);
+      expect(aborted.status).toBe("aborted");
+      expect(listDeferredChronoSleeps(abortedId)).toEqual([]);
+      expect(listPendingSubagentNotifications({ childConvId: abortedId })).toEqual([]);
+    } finally {
+      chronoInternalsForTest.reset();
+      removePendingSubagentNotificationsForConversation(childId);
+      removePendingSubagentNotificationsForConversation(abortedId);
     }
   });
 

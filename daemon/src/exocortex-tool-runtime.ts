@@ -1,12 +1,14 @@
 /** Native delegation only. Administration uses the daemon's JSON-lines IPC. */
 import { latestClaudeModel, latestSizeModel } from "./delegation-models";
 import { hasConfiguredCredentials } from "./auth";
-import { cancelDeferredChronoSleep } from "./chrono-service";
+import { listDeferredChronoSleeps } from "./chrono-service";
+import { cancelSuspendedTurn } from "./suspended-turns";
+import { listPendingSubagentNotifications } from "./subagent-notifications";
 import * as convStore from "./conversations";
 import {
   getActiveSubagentCount, getConversationActivityCounts, setSubagentActive,
 } from "./conversation-activity";
-import { broadcastConversationHistoryUpdated, broadcastConversationUpdated } from "./conversation-events";
+import { broadcastConversationUpdated } from "./conversation-events";
 import { log } from "./log";
 import { requestDaemonRestart, type RestartRequestOptions } from "./requested-restart";
 import {
@@ -167,7 +169,13 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
           const ownChild = target.subagentPolicy?.parentConversationId === parentId;
           const startedAt = Date.now();
           const maxDepth = target.subagentMaxDepth ?? null;
-          deps.beginParentNotification?.({ convId: parentId }, convId, text, startedAt, maxDepth, ownChild);
+          // A child suspended in a deferred chrono sleep still owes this caller
+          // its task's result. This turn ends the sleep and continues that task,
+          // so its outcome settles the existing notification.
+          const continuesSleepingTask = listDeferredChronoSleeps(convId).length > 0
+            && listPendingSubagentNotifications({ childConvId: convId, state: "running" })
+              .some(record => record.parentConvId === parentId);
+          if (!continuesSleepingTask) deps.beginParentNotification?.({ convId: parentId }, convId, text, startedAt, maxDepth, ownChild);
           const title = convStore.getIndexedSummary(convId)?.title || "Subagent task";
           if (ownChild) track(parentId, convId, true, { title, startedAt });
           let finished = false;
@@ -209,12 +217,13 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
             convStore.updateGoalStatus(convId, "paused", { reason: "Interrupted. Resume explicitly to continue." });
             convStore.clearGoalContinuationAfterStream(convId);
             convStore.clearStreamHandoff(convId);
-            if (cancelDeferredChronoSleep(convId)) broadcastConversationHistoryUpdated(server, convId);
             server.sendToSubscribers(convId, { type: "goal_updated", convId, goal: convStore.getIndexedSummary(convId)?.goal ?? null });
             broadcastConversationUpdated(server, convId);
           }
+          // A turn suspended in a long chrono sleep/wait has no job to abort.
+          const endedSuspended = cancelSuspendedTurn(server, convId);
           controller?.abort();
-          return result({ conversation_id: convId, status: controller ? "aborted" : pausing ? "paused" : "idle" });
+          return result({ conversation_id: convId, status: controller || endedSuspended ? "aborted" : pausing ? "paused" : "idle" });
         }
 
         if (!parentId || !parent) throw new Error("subagent requires an active parent conversation.");

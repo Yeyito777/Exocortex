@@ -76,6 +76,7 @@ import { prepareCatchableShutdownForReplay } from "./restart-recovery";
 import { PREPARE_RESTART_MAX_SETTLE_MS, writeActiveGoalRestartMarker } from "./restart-markers";
 import { buildBackgroundTaskNotificationText } from "./background-task-notifications";
 import { configureChronoService, cancelDeferredChronoSleep } from "./chrono-service";
+import { cancelSuspendedTurn } from "./suspended-turns";
 import { runChronoCommand } from "./chrono-commands";
 import { inlineLongSleepStartedAt } from "@exocortex/shared/chrono";
 import { configureClaudeCodeSessions } from "./providers/anthropic/session";
@@ -1903,7 +1904,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             else convStore.updateGoalStatus(cmd.convId, "paused", { reason: "Paused by user." });
             convStore.clearGoalContinuationAfterStream(cmd.convId);
             convStore.clearStreamHandoff(cmd.convId);
-            if (cancelDeferredChronoSleep(cmd.convId)) broadcastConversationHistoryUpdated(server, cmd.convId);
+            cancelSuspendedTurn(server, cmd.convId);
             sendGoalUpdated(cmd.convId, cmd.reqId, "Goal paused. Use /goal resume to continue.");
           }
         }
@@ -2026,7 +2027,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           convStore.clearGoalContinuationAfterStream(cmd.convId);
           if (cmd.action === "pause") {
             convStore.clearStreamHandoff(cmd.convId);
-            if (cancelDeferredChronoSleep(cmd.convId)) broadcastConversationHistoryUpdated(server, cmd.convId);
+            cancelSuspendedTurn(server, cmd.convId);
             convStore.getActiveJob(cmd.convId)?.abort("goal-state-changed");
           }
         }
