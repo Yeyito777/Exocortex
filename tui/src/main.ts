@@ -475,7 +475,7 @@ function onDaemonEvent(event: Event): void {
   }
   if (pendingEditMessageUnwind) {
     const pending = pendingEditMessageUnwind;
-    const unwindEvent = classifyPendingEditMessageUnwindEvent(pending, event);
+    const unwindEvent = classifyPendingEditMessageUnwindEvent(pending, event, state.conversationOpenRequest?.reqId ?? null);
     if (unwindEvent === "ignore") return;
     if (unwindEvent === "complete") {
       pendingEditMessageUnwind = null;

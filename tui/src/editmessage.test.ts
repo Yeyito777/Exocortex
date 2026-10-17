@@ -8,7 +8,10 @@ import {
   openEditMessageModal,
 } from "./editmessage";
 import { createPendingAI, type UserMessage } from "./messages";
-import { createInitialState } from "./state";
+import { createInitialState, noteConversationOpenRequest } from "./state";
+import { handleEvent, type DaemonActions } from "./events";
+import { beginConversationLoad } from "./events/conversations";
+import type { Event } from "./protocol";
 
 describe("edit message modal", () => {
   test("does not offer compact history whose image payload is unavailable", () => {
@@ -407,5 +410,57 @@ describe("edit message modal", () => {
       convId: "conv-2",
       text: "unrelated",
     })).toBe("unrelated");
+  });
+
+  test("re-opening the conversation during a pending unwind still loads it", () => {
+    const daemon: DaemonActions = { subscribe() {}, unsubscribe() {}, sendMessage() {}, setSystemInstructions() {}, loadToolOutputs() {} };
+    const state = createInitialState();
+    state.convId = "conv-1";
+    const pending = { convId: "conv-1", reqId: "unwind-1" };
+    // Switch away and back (remote route) while the unwind is still pending.
+    beginConversationLoad(state, "conv-2", daemon);
+    beginConversationLoad(state, "conv-1", daemon);
+    noteConversationOpenRequest(state, "conv-1", "conversation_7");
+    const reload: Event = {
+      type: "conversation_loaded",
+      reqId: "conversation_7",
+      convId: "conv-1",
+      provider: "openai",
+      model: "gpt-5.5",
+      effort: "high",
+      fastMode: false,
+      entries: [
+        { type: "user", text: "kept", metadata: null },
+        { type: "ai", blocks: [{ type: "text", text: "kept answer" }], metadata: null },
+        { type: "user", text: "edited away", metadata: null },
+      ],
+      historyStartIndex: 0,
+      historyStartUserIndex: 0,
+      historyTotalEntries: 3,
+      contextTokens: null,
+      toolOutputsIncluded: false,
+    };
+
+    const kind = classifyPendingEditMessageUnwindEvent(pending, reload, state.conversationOpenRequest?.reqId ?? null);
+    expect(kind).toBe("unrelated");
+    handleEvent(reload, state, daemon);
+    expect(state.conversationLoading).toBeNull();
+    expect(state.messages.map(message => message.role)).toEqual(["user", "assistant", "user"]);
+
+    // The targeted unwind that follows trims the doomed suffix.
+    handleEvent({
+      type: "conversation_unwound", reqId: "unwind-1", status: "applied", operationId: "unwind-1",
+      convId: "conv-1", userMessageIndex: 1, historyTotalEntries: 2, contextTokens: null,
+      summary: { id: "conv-1" } as never,
+    }, state, daemon);
+    expect(state.messages.map(message => message.role)).toEqual(["user", "assistant"]);
+  });
+
+  test("other loads of the pending conversation are still suppressed", () => {
+    const pending = { convId: "conv-1", reqId: "unwind-1" };
+    expect(classifyPendingEditMessageUnwindEvent(pending, {
+      type: "conversation_loaded", reqId: "stale-load", convId: "conv-1", provider: "openai",
+      model: "gpt-5.5", effort: "high", fastMode: false, entries: [], contextTokens: null, toolOutputsIncluded: false,
+    }, "conversation_7")).toBe("ignore");
   });
 });
