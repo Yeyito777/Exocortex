@@ -116,11 +116,14 @@ const runCommand: CommandRunner = (argv) => {
  * "service" requires the service manager's own PID record to be this process:
  * cgroup membership and launchd's XPC_SERVICE_NAME are inherited by anything
  * the main daemon spawns, including test daemons started from its shell tools.
+ * On macOS that record may instead be the signed launcher (macos/launcher) that
+ * spawned this process; it exports its PID, and only its direct child matches.
  */
 export function detectRestartTarget(
   platform: NodeJS.Platform = process.platform,
   run: CommandRunner = runCommand,
   pid = process.pid,
+  parent: { pid: number; launcherPid?: string } = { pid: process.ppid, launcherPid: process.env.EXOCORTEX_LAUNCHER_PID },
 ): RestartTarget | null {
   if (platform === "linux") {
     const result = run(["systemctl", "--user", "show", SERVICE_UNIT, "--property=MainPID", "--value"]);
@@ -130,7 +133,9 @@ export function detectRestartTarget(
     const label = process.env.EXOCORTEX_LAUNCHD_LABEL || DEFAULT_LAUNCHD_LABEL;
     const result = run(["launchctl", "print", `gui/${uid}/${label}`]);
     const match = result.ok ? /^\s*pid = (\d+)\s*$/m.exec(result.output) : null;
-    if (match && Number.parseInt(match[1], 10) === pid) return "service";
+    const servicePid = match ? Number.parseInt(match[1], 10) : NaN;
+    if (servicePid === pid) return "service";
+    if (servicePid === parent.pid && parent.launcherPid === String(parent.pid)) return "service";
   }
   // Linked worktrees run under exotest's supervisor, which relaunches exit 75.
   return worktreeName() ? "instance" : null;
