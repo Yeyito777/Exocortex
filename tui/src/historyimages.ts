@@ -26,6 +26,14 @@ export interface MathImageLayout {
 
 export type HistoryImageLayout = InlineImageLayout | MathImageLayout;
 
+/**
+ * Math draws below text: its cells hold concealed TeX, so their backgrounds
+ * (line highlight, cursor, selections) show through the transparent pixels
+ * instead of the terminal treating the changed cells as covers. Text overlays
+ * would not hide it, so every overlay must still crop it (covers/obstructions).
+ */
+export const MATH_IMAGE_Z = -1;
+
 /** Placement geometry for one math image of a history block. */
 export function mathImageLayout(image: { kitty: KittyImageData; col: number; cols: number; rows: number; index: number }, owner: object): MathImageLayout {
   return { kitty: image.kitty, col: image.col, cols: image.cols, rows: image.rows, owner, index: image.index };
@@ -210,6 +218,7 @@ export function collectHistoryImagePlacements(options: CollectHistoryImagesOptio
         rows: pieceRows,
         ...(wholeHeight ? {} : { sourceY, sourceHeight: Math.max(1, sourceBottom - sourceY) }),
         ...(wholeWidth ? {} : { sourceX, sourceWidth: Math.max(1, sourceRight - sourceX) }),
+        ...("kitty" in layout ? { z: MATH_IMAGE_Z } : {}),
         ...(cursorImage === layout ? { selected: true } : {}),
       });
     });
