@@ -242,6 +242,13 @@ describe("turns wait out network outages", () => {
     const replies = persisted.filter(message => message.role === "assistant").map(text);
     expect(replies.join("")).not.toContain("STALE");
     expect(replies.join("")).toContain("fresh answer");
+    // Live clients drop the stale tail before the retried request streams.
+    const staleChunk = events.findIndex(event => event.type === "text_chunk" && String(event.text).includes("STALE"));
+    const reset = events.findIndex(event => event.type === "streaming_sync" && Array.isArray(event.blocks) && event.blocks.length === 0);
+    const freshChunk = events.findIndex(event => event.type === "text_chunk" && event.text === "fresh answer");
+    expect(staleChunk).toBeGreaterThanOrEqual(0);
+    expect(reset).toBeGreaterThan(staleChunk);
+    expect(freshChunk).toBeGreaterThan(reset);
   });
 
   test("API errors still fail the turn at once", async () => {

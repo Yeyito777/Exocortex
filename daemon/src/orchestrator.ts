@@ -1565,9 +1565,10 @@ async function orchestrateAdmittedAssistantTurn(
       recordStreamRetry(attempt, maxAttempts, errorMessage, delaySec, metadata);
     },
     onAttemptDiscarded() {
+      const hadPartial = partialContent.length > 0;
       resetPartialStream();
-      // Clients replace their live blocks from the snapshot.
-      sendStreamingSnapshot();
+      // An empty sync drops the client's live text/thinking tail.
+      if (hadPartial) server.sendToSubscribers(convId, { type: "streaming_sync", convId, streamSeq: convStore.nextStreamSeq(convId), blocks: [] });
     },
     onRetryWaitStart() {
       convStore.pauseActivity(convId);
