@@ -25,6 +25,11 @@ export class BtwMutationReplay {
     this.unresolved.set(command.convId, { command, sequence });
   }
 
+  /** Forget everything, e.g. when the endpoint these mutations targeted is left. */
+  clear(): void {
+    this.unresolved.clear();
+  }
+
   values(): IterableIterator<SequencedBtwCommand> {
     return this.unresolved.values();
   }

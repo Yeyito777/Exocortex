@@ -680,6 +680,7 @@ export class DaemonClient {
     }
     this.cancelSshProbe = null;
     this.sshSwitchingTo = null;
+    this.discardOldEndpointCommands();
     this.sshAlias = alias;
     this.historyCache.clear();
     log("info", `ssh transport: selected remote daemon via ${alias}`);
@@ -704,6 +705,7 @@ export class DaemonClient {
     }
 
     const previous = this.sshAlias;
+    this.discardOldEndpointCommands();
     this.sshAlias = null;
     this.historyCache.clear();
     this.discardPendingSshConnection();
@@ -729,6 +731,23 @@ export class DaemonClient {
     this.pendingSshConnection = null;
     if (!pending) return;
     try { pending.process.kill(); } catch { /* already gone */ }
+  }
+
+  /**
+   * Offline and ambiguous commands were issued against the endpoint being left:
+   * their conversation/queue/BTW ids belong to that daemon. Like host-scoped
+   * defaults and path lookups, they must never be replayed on another route.
+   * The switched status that follows makes main.ts reset the optimistic UI
+   * these commands created. Commands issued after that target the new route.
+   */
+  private discardOldEndpointCommands(): void {
+    const dropped = this.pendingCommands.length + this.unresolvedQueueCommands.size
+      + this.unresolvedUnwindCommands.size + this.btwMutationReplay.size;
+    this.pendingCommands = [];
+    this.unresolvedQueueCommands.clear();
+    this.unresolvedUnwindCommands.clear();
+    this.btwMutationReplay.clear();
+    if (dropped > 0) log("info", `ssh transport: dropped ${dropped} unsent/unresolved command(s) for the previous route`);
   }
 
   private closeCurrentTransportForRouteSwitch(): void {
