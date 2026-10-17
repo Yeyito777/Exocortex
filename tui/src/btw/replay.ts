@@ -30,6 +30,15 @@ export class BtwMutationReplay {
   }
 
   settle(event: Event): void {
+    if (event.type === "error" && event.reqId) {
+      // The daemon answered this exact mutation with a failure. Replaying it on
+      // every reconnect would repeat the failure (and a BTW query's LLM call).
+      // Persistence failures are reported without a reqId and stay replayable.
+      for (const [convId, pending] of this.unresolved) {
+        if (pending.command.reqId === event.reqId) this.unresolved.delete(convId);
+      }
+      return;
+    }
     if (!("convId" in event) || typeof event.convId !== "string") return;
     const pending = this.unresolved.get(event.convId);
     if (!pending) return;

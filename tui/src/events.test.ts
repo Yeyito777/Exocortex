@@ -11,6 +11,7 @@ import { prepareConversationOpen } from "./conversationscroll";
 import { beginConversationLoad, beginOptimisticConversation } from "./events/conversations";
 import { bumpConversationToTop, focusConversationById, isOptimisticConversation } from "./sidebar";
 import type { Event } from "./protocol";
+import { createStartingBtw } from "./btw/state";
 import { createGenerationThroughput, generationTokensPerSecond } from "@exocortex/shared/generation-throughput";
 
 const daemon: DaemonActions = {
@@ -552,6 +553,55 @@ describe("daemon queue synchronization", () => {
 
     handleEvent({ type: "queue_updated", messages: [], settledQueueIds: ["removing"] }, state, daemon);
     expect(state.pendingQueueRemovalIds.size).toBe(0);
+  });
+});
+
+describe("rejected queue and BTW requests", () => {
+  test("a rejected enqueue drops its optimistic row instead of waiting forever", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.queuedMessages = [
+      { id: "bad", optimistic: true, convId: "conv-1", text: "never", timing: "message-end", source: "daemon", createdAt: 1 },
+      { id: "good", optimistic: true, convId: "conv-1", text: "fine", timing: "message-end", source: "daemon", createdAt: 2 },
+    ];
+
+    handleEvent({ type: "error", reqId: "queue_message:bad", convId: "conv-1", message: "Invalid queue timing" }, state, daemon);
+
+    expect(state.queuedMessages.map(message => message.id)).toEqual(["good"]);
+    expect(state.messages.at(-1)).toMatchObject({ role: "system", text: "✗ Invalid queue timing" });
+  });
+
+  test("a rejected enqueue for a background conversation is still reported", () => {
+    const state = createInitialState();
+    state.convId = "open";
+    state.queuedMessages = [{ id: "bad", optimistic: true, convId: "other", text: "never", timing: "message-end", source: "global-idle", createdAt: 1 }];
+
+    handleEvent({ type: "error", reqId: "queue_message:bad", convId: "other", message: "boom" }, state, daemon);
+
+    expect(state.queuedMessages).toEqual([]);
+    expect(state.messages.at(-1)).toMatchObject({ role: "system", text: "✗ Could not queue message: boom" });
+  });
+
+  test("a rejected unqueue lifts its tombstone so the canonical entry shows again", () => {
+    const state = createInitialState();
+    state.pendingQueueRemovalIds.add("keep");
+    const canonical = { id: "keep", convId: "conv-1", text: "still queued", timing: "message-end" as const, source: "daemon" as const, createdAt: 1 };
+
+    handleEvent({ type: "error", reqId: "unqueue_message:keep", message: "boom" }, state, daemon);
+    handleEvent({ type: "queue_updated", messages: [canonical] }, state, daemon);
+
+    expect(state.queuedMessages.map(message => message.id)).toEqual(["keep"]);
+  });
+
+  test("a rejected BTW query ends its starting panel turn", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.btw = createStartingBtw("conv-1", "btw-1", "question", "openai", "gpt-5.5", 100);
+
+    handleEvent({ type: "error", reqId: "btw:query:btw-1:btw-1", convId: "conv-1", message: "boom" }, state, daemon);
+
+    expect(state.btw?.phase).toBe("error");
+    expect(state.btw?.status).toBe("boom");
   });
 });
 

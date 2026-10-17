@@ -39,3 +39,17 @@ export function queueIdFromRequestId(reqId: string | undefined): string | null {
 export function unqueueIdFromRequestId(reqId: string | undefined): string | null {
   return reqId?.startsWith(UNQUEUE_PREFIX) ? reqId.slice(UNQUEUE_PREFIX.length) || null : null;
 }
+
+const BTW_PREFIX = "btw:";
+
+/** BTW mutations are replayed until settled; the id names the panel turn they drive. */
+export function btwRequestId(mutation: "query" | "followup" | "close", sessionId = "", turnId = sessionId): string {
+  return `${BTW_PREFIX}${mutation}:${sessionId}:${turnId}`;
+}
+
+export function btwTurnFromRequestId(reqId: string | undefined): { sessionId: string; turnId: string } | null {
+  if (!reqId?.startsWith(BTW_PREFIX)) return null;
+  const [mutation, sessionId, turnId] = reqId.slice(BTW_PREFIX.length).split(":");
+  if ((mutation !== "query" && mutation !== "followup") || !sessionId || !turnId) return null;
+  return { sessionId, turnId };
+}

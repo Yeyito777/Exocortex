@@ -18,7 +18,7 @@ import { log } from "./log";
 import type { UpdateStatus } from "@exocortex/shared/updatecheck";
 import { BtwMutationReplay, isBtwMutation } from "./btw/replay";
 import { HistoryCache } from "./history-cache";
-import { turnRequestId } from "./request-ids";
+import { btwRequestId, queueRequestId, turnRequestId, unqueueRequestId } from "./request-ids";
 import { transcribeLocally } from "./local-transcription";
 import { ClientExecutor } from "@exocortex/shared/command-exec";
 import {
@@ -516,15 +516,15 @@ export class DaemonClient {
   }
 
   startBtw(convId: string, sessionId: string, query: string, startedAt: number): void {
-    this.send({ type: "btw_query", convId, sessionId, query, startedAt });
+    this.send({ type: "btw_query", reqId: btwRequestId("query", sessionId), convId, sessionId, query, startedAt });
   }
 
   followupBtw(convId: string, sessionId: string, turnId: string, query: string, startedAt: number): void {
-    this.send({ type: "btw_followup", convId, sessionId, turnId, query, startedAt });
+    this.send({ type: "btw_followup", reqId: btwRequestId("followup", sessionId, turnId), convId, sessionId, turnId, query, startedAt });
   }
 
   closeBtw(convId: string, sessionId?: string): void {
-    this.send({ type: "btw_close", convId, sessionId });
+    this.send({ type: "btw_close", reqId: btwRequestId("close", sessionId), convId, sessionId });
   }
 
   ping(): void {
@@ -899,11 +899,16 @@ export class DaemonClient {
       waitTarget?: QueueWaitTarget;
     } = {},
   ): void {
-    this.send({ type: "queue_message", convId, text, timing, ...(images?.length ? { images } : {}), ...options });
+    this.send({
+      type: "queue_message",
+      // Stable across replays: a rejection settles exactly this optimistic entry.
+      ...(options.queueId ? { reqId: queueRequestId(options.queueId) } : {}),
+      convId, text, timing, ...(images?.length ? { images } : {}), ...options,
+    });
   }
 
   unqueueMessage(queueId: string): void {
-    this.send({ type: "unqueue_message", queueId });
+    this.send({ type: "unqueue_message", reqId: unqueueRequestId(queueId), queueId });
   }
 
   updateQueuedMessage(queueId: string, text: string, timing: QueueTiming, images?: ImageAttachment[]): void {
@@ -1233,6 +1238,13 @@ export class DaemonClient {
   }
 
   private settleQueueCommands(event: Event): void {
+    if (event.type === "error" && event.reqId) {
+      // A rejected queue mutation is final; replaying it would fail again.
+      for (const [key, pending] of this.unresolvedQueueCommands) {
+        if (pending.command.reqId === event.reqId) this.unresolvedQueueCommands.delete(key);
+      }
+      return;
+    }
     if (event.type !== "queue_updated") return;
     const canonicalIds = new Set(event.messages.map(message => message.id));
     const settledIds = new Set(event.settledQueueIds ?? []);

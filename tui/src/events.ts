@@ -63,7 +63,8 @@ import { formatConversationDefaults, receiveConversationDefaults } from "./event
 import { hydratePendingAIFromSnapshot } from "./events/pending-ai";
 import type { DaemonActions } from "./events/types";
 import { handleAccountsEvent } from "./accountsscreen";
-import { handleBtwEvent } from "./btw/events";
+import { failBtwRequest, handleBtwEvent } from "./btw/events";
+import { settleRejectedQueueRequest } from "./queue";
 import { formatChronoResult } from "./chronoschedule";
 import { setInlineImagesEnabled } from "./inlineimages";
 import { turnRequestStartedAt } from "./request-ids";
@@ -154,10 +155,14 @@ export function handleEvent(
       // The daemon rejected a creation shown optimistically. Its row goes now;
       // an opened one returns to the draft once the error is shown below.
       const rejectedCreation = event.convId !== undefined && removeOptimisticConversation(state.sidebar, event.convId);
+      // Rejected queue/BTW mutations settle the optimistic UI they created.
+      const rejectedQueueEntry = settleRejectedQueueRequest(state, event.reqId);
+      failBtwRequest(state, event.reqId, event.message);
       // Only show errors for the current conversation (or unscoped errors).
       if (event.convId && event.convId !== state.convId) {
         // The user left a rejected creation; its message is gone, so say so here.
         if (rejectedCreation) pushSystemMessage(state, `✗ Could not create conversation: ${event.message}`, theme.error);
+        else if (rejectedQueueEntry) pushSystemMessage(state, `✗ Could not queue message: ${event.message}`, theme.error);
         break;
       }
       // The opened conversation may have been deleted remotely. Stop the
