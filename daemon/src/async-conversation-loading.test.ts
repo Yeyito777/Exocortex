@@ -12,4 +12,5 @@ test("real asynchronous admission, queues, compaction, rewrites and cancellation
   expect(child.exitCode, output).toBe(0);
   expect(output).toContain("0 fail");
   expect(output).toContain("15 pass");
-});
+  // A child process running every case: the default 5 s is too tight under a parallel full-suite run.
+}, 15_000);
