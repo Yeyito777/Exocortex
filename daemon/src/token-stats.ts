@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tokenStatsDir, worktreeName } from "@exocortex/shared/paths";
 import { resolveModelTokenPricing, type ModelTokenPricing, type TokenPricingServiceTier } from "@exocortex/shared/token-pricing";
@@ -185,11 +185,16 @@ function readFileIfPresent(path: string): TokenStatsFile | null {
 function writeFile(path: string, file: TokenStatsFile): void {
   mkdirSync(statsDirPath(), { recursive: true });
   const tmp = `${path}.tmp`;
-  writeFileSync(tmp, JSON.stringify(file, null, 2) + "\n", { mode: 0o600 });
+  writeFileSync(tmp, JSON.stringify(file) + "\n", { mode: 0o600 });
   renameSync(tmp, path);
 }
 
 let currentFileCache: TokenStatsFile | null = null;
+/** Bumped whenever this instance's in-memory file changes. */
+let currentRevision = 0;
+/** Other instances' files, reparsed only when their size or mtime changes. */
+const otherFiles = new Map<string, { signature: string; file: TokenStatsFile | null }>();
+let snapshotCache: { key: string; snapshot: TokenStatsSnapshot } | null = null;
 
 function getCurrentFile(): TokenStatsFile {
   if (currentFileCache) return currentFileCache;
@@ -268,22 +273,52 @@ function mergeDays(files: TokenStatsFile[]): Map<string, TokenStatsBucket> {
   return merged;
 }
 
-function loadAllFiles(): TokenStatsFile[] {
+function loadOtherFiles(): { files: TokenStatsFile[]; signature: string } {
+  const files: TokenStatsFile[] = [];
+  const signatures: string[] = [];
+  const seen = new Set<string>();
   try {
     const dir = statsDirPath();
-    if (!existsSync(dir)) return [];
-    return readdirSync(dir)
-      .filter((name) => name.endsWith(".json"))
-      .map((name) => readFileIfPresent(join(dir, name)))
-      .filter((file): file is TokenStatsFile => file !== null);
+    if (!existsSync(dir)) return { files, signature: "" };
+    const current = `${INSTANCE_ID}.json`;
+    for (const name of readdirSync(dir)) {
+      if (!name.endsWith(".json") || name === current) continue;
+      const path = join(dir, name);
+      let signature: string;
+      try {
+        const stat = statSync(path);
+        signature = `${name}:${stat.size}:${stat.mtimeMs}`;
+      } catch {
+        continue;
+      }
+      seen.add(name);
+      signatures.push(signature);
+      let cached = otherFiles.get(name);
+      if (cached?.signature !== signature) {
+        cached = { signature, file: readFileIfPresent(path) };
+        otherFiles.set(name, cached);
+      }
+      if (cached.file) files.push(cached.file);
+    }
   } catch (err) {
     log("warn", `token stats: failed to enumerate stats dir: ${err instanceof Error ? err.message : err}`);
-    return [];
   }
+  for (const name of otherFiles.keys()) if (!seen.has(name)) otherFiles.delete(name);
+  return { files, signature: signatures.join("|") };
 }
 
+/**
+ * Merged statistics for every instance. Each turn completion broadcasts this,
+ * so serve this instance from memory and only re-merge after a change: reading
+ * and re-merging ~0.75 MB of history from disk cost 7-22 ms per call.
+ * Callers must treat the returned snapshot as immutable.
+ */
 export function getTokenStatsSnapshot(): TokenStatsSnapshot {
-  const files = loadAllFiles();
+  const others = loadOtherFiles();
+  const todayKey = localDay(Date.now());
+  const key = `${currentRevision}|${todayKey}|${others.signature}`;
+  if (snapshotCache?.key === key) return snapshotCache.snapshot;
+  const files = [getCurrentFile(), ...others.files];
   const mergedDays = mergeDays(files);
   const sortedDays = [...mergedDays.keys()].sort((a, b) => b.localeCompare(a));
   const days: TokenStatsDay[] = sortedDays.map((day) => ({ day, ...cloneBucket(mergedDays.get(day)!) }));
@@ -291,9 +326,8 @@ export function getTokenStatsSnapshot(): TokenStatsSnapshot {
   const lifetime = createTokenStatsBucket();
   for (const day of days) mergeBucketInto(lifetime, day);
 
-  const todayKey = localDay(Date.now());
   const todayBucket = mergedDays.get(todayKey);
-  return {
+  const snapshot: TokenStatsSnapshot = {
     updatedAt: files.reduce<number | null>((latest, file) => {
       if (file.updatedAt == null) return latest;
       return latest == null || file.updatedAt > latest ? file.updatedAt : latest;
@@ -302,6 +336,8 @@ export function getTokenStatsSnapshot(): TokenStatsSnapshot {
     lifetime,
     days,
   };
+  snapshotCache = { key, snapshot };
+  return snapshot;
 }
 
 function optionalTokenCount(value: unknown): number | undefined {
@@ -408,11 +444,11 @@ export function recordTokenUsage(
   },
   tracking: TokenTrackingContext,
   options: RecordTokenUsageOptions = {},
-): TokenStatsSnapshot | null {
+): boolean {
   const timestamp = options.timestamp ?? Date.now();
   const input = classifyInputTokenUsage(provider, usage.inputTokens, usage.cachedInputTokens, usage.cacheMissInputTokens);
   const outputTokens = normalizeNumber(usage.outputTokens);
-  if (input.inputTokens <= 0 && outputTokens <= 0) return null;
+  if (input.inputTokens <= 0 && outputTokens <= 0) return false;
 
   const canonicalModel = canonicalizeModel(provider, model);
   const serviceTier = usage.billingServiceTier ?? options.serviceTier ?? "standard";
@@ -441,11 +477,15 @@ export function recordTokenUsage(
   addBucketEntry(bucket, provider, canonicalModel, tracking.source, entry);
   file.days[day] = bucket;
   file.updatedAt = timestamp;
+  currentRevision++;
   saveCurrentFile();
-  return getTokenStatsSnapshot();
+  return true;
 }
 
 export function resetTokenStatsForTest(): void {
   currentFileCache = null;
+  currentRevision++;
+  otherFiles.clear();
+  snapshotCache = null;
   rmSync(statsDirPath(), { recursive: true, force: true });
 }

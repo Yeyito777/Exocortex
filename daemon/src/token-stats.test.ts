@@ -39,8 +39,8 @@ describe("token stats", () => {
     const first = recordTokenUsage("openai", "gpt-5.4", { inputTokens: 120, outputTokens: 30 }, { source: "conversation", conversationId: "conv-1" });
     const second = recordTokenUsage("openai", "gpt-5.4-mini", { inputTokens: 40, outputTokens: 10 }, { source: "llm_complete" });
 
-    expect(first).not.toBeNull();
-    expect(second).not.toBeNull();
+    expect(first).toBe(true);
+    expect(second).toBe(true);
 
     const snapshot = getTokenStatsSnapshot();
     expect(snapshot.today.day).toBe(todayKey());
@@ -170,6 +170,24 @@ describe("token stats", () => {
     const lifetime = getTokenStatsSnapshot().lifetime;
     expect(lifetime.estimatedInputCostUsd).toBeCloseTo(0.363);
     expect(lifetime.estimatedOutputCostUsd).toBeCloseTo(0.396);
+  });
+
+  test("reuses the merged snapshot until this or another instance records usage", () => {
+    recordTokenUsage("openai", "gpt-5.4", { inputTokens: 10, outputTokens: 5 }, { source: "conversation" });
+    const first = getTokenStatsSnapshot();
+    expect(getTokenStatsSnapshot()).toBe(first);
+
+    recordTokenUsage("openai", "gpt-5.4", { inputTokens: 10, outputTokens: 5 }, { source: "conversation" });
+    const second = getTokenStatsSnapshot();
+    expect(second).not.toBe(first);
+    expect(second.today.requests).toBe(2);
+
+    writeFileSync(join(tokenStatsDir(), "other-instance.json"), JSON.stringify({
+      version: 2, instance: "other-instance", updatedAt: Date.now(), days: { [todayKey()]: { inputTokens: 7, outputTokens: 3, requests: 1 } },
+    }));
+    const third = getTokenStatsSnapshot();
+    expect(third).not.toBe(second);
+    expect(third.today.requests).toBe(3);
   });
 
   test("merges token stats from other instance files into the lifetime snapshot", () => {
