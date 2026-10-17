@@ -39,6 +39,23 @@ function textRowsForOwner(
   return start >= 0 && end > start ? { start, end } : null;
 }
 
+/**
+ * Rows of a pending block. The streaming message is the last assistant bound
+ * (only system tail notices follow it), so search just its rows rather than
+ * every row of a long conversation on each frame.
+ */
+function pendingTextRowsForOwner(
+  lineAnchors: RenderLineAnchor[],
+  messageBounds: MessageBound[],
+  owner: object,
+): RenderedTextRows | null {
+  for (let boundIndex = messageBounds.length - 1; boundIndex >= 0; boundIndex--) {
+    const bound = messageBounds[boundIndex];
+    if (bound.role === "assistant") return textRowsForOwner(lineAnchors, owner, bound.start, bound.end);
+  }
+  return null;
+}
+
 /** Locate the final rendered text block of the latest assistant message. */
 function latestAssistantFinalTextBlockRows(
   lineAnchors: RenderLineAnchor[],
@@ -157,7 +174,7 @@ export function applyChatConversationScroll(
   const block = blockIndex >= 0 ? pending?.blocks[blockIndex] : null;
   const hasActiveGoal = state.goal?.status === "active";
   const response = pending && block?.type === "text" && !hasActiveGoal
-    ? textRowsForOwner(lineAnchors, block, 0, lineAnchors.length)
+    ? pendingTextRowsForOwner(lineAnchors, messageBounds, block)
     : null;
   const logicalBlockIndex = state.pendingAIBlockOffset
     + state.pendingAIPartialCommittedBlocks.length

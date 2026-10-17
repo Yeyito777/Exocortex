@@ -1,0 +1,138 @@
+import { describe, expect, test } from "bun:test";
+import { buildMessageLines, invalidateCommittedHistoryCache, type BuildMessageLinesResult } from "./conversation";
+import { createInitialState, type RenderState } from "./state";
+import { createPendingAI, type Message } from "./messages";
+import { theme } from "./theme";
+
+function comparable(result: BuildMessageLinesResult) {
+  const { revision: _revision, ...rest } = result;
+  return rest;
+}
+
+/**
+ * A from-scratch build that neither reads nor disturbs the incremental cache.
+ * Cloned messages also miss the per-block caches' identity fast path.
+ */
+function freshBuild(state: RenderState, width: number) {
+  const copy = { ...state, messages: structuredClone(state.messages), pendingAI: structuredClone(state.pendingAI) };
+  return comparable(buildMessageLines(copy, width));
+}
+
+function expectIncrementalMatchesFresh(state: RenderState, width = 80, reuseArrays = true): BuildMessageLinesResult {
+  const incremental = buildMessageLines(state, width, { reuseArrays });
+  expect(comparable(incremental)).toEqual(freshBuild(state, width));
+  return incremental;
+}
+
+function assistant(blocks: Extract<Message, { role: "assistant" }>["blocks"], startedAt = 1_000): Message {
+  return { role: "assistant", blocks, metadata: { startedAt, endedAt: startedAt + 2_000, model: "gpt-6-astra", tokens: 10 } };
+}
+
+function user(text: string): Message {
+  return { role: "user", text, metadata: { startedAt: 500, endedAt: 500, model: "gpt-6-astra", tokens: 0 } };
+}
+
+function conversation(): RenderState {
+  const state = createInitialState();
+  state.convId = "conv-cache";
+  state.messages.push(
+    { role: "system_instructions", text: "Be brief.", metadata: null },
+    user("first question"),
+    assistant([
+      { type: "thinking", text: "considering" },
+      { type: "tool_call", toolCallId: "call-1", toolName: "bash", input: { command: "ls -la" }, summary: "ls -la" },
+      { type: "tool_result", toolCallId: "call-1", toolName: "bash", output: "a\nb\nc", isError: false },
+    ]),
+    assistant([{ type: "text", text: "Here is **the** answer with a [link](https://example.com)." }], 4_000),
+    user("second question that is long enough to wrap across more than one row of the bubble at this width"),
+    assistant([
+      { type: "tool_call", toolCallId: "call-2", toolName: "bash", input: { command: "false" }, summary: "false" },
+      { type: "tool_result", toolCallId: "call-2", toolName: "bash", output: "", isError: false },
+      { type: "text", text: "- one\n- two\n\n```ts\nconst x = 1;\n```" },
+    ], 8_000),
+  );
+  return state;
+}
+
+describe("incremental committed history", () => {
+  test("matches a fresh build across in-place and structural history mutations", () => {
+    const state = conversation();
+    expectIncrementalMatchesFresh(state);
+    expectIncrementalMatchesFresh(state);
+
+    const mutations: Array<[string, () => void]> = [
+      ["append a turn", () => state.messages.push(user("third"), assistant([{ type: "text", text: "third answer" }], 12_000))],
+      ["replace a middle block", () => {
+        const message = state.messages[3];
+        if (message.role === "assistant") message.blocks[0] = { type: "text", text: "Rewritten middle answer." };
+      }],
+      ["fill a tool output in place", () => {
+        const message = state.messages[5];
+        if (message.role === "assistant" && message.blocks[1].type === "tool_result") message.blocks[1].output = "now loaded";
+      }],
+      ["show tool output", () => { state.showToolOutput = true; }],
+      ["replace middle metadata", () => {
+        const message = state.messages[2];
+        if (message.role === "assistant") message.metadata = { startedAt: 1_000, endedAt: 99_000, model: "gpt-6-astra", tokens: 99 };
+      }],
+      ["start streaming that continues the last assistant", () => {
+        state.pendingAI = createPendingAI(20_000, state.model);
+        state.pendingAI.blocks.push({ type: "text", text: "streaming" });
+      }],
+      ["mark a committed tool call errored from the pending turn", () => {
+        state.pendingAI!.blocks.push({ type: "tool_result", toolCallId: "call-2", toolName: "bash", output: "boom", isError: true });
+      }],
+      ["grow the streaming text", () => {
+        const block = state.pendingAI!.blocks[0];
+        if (block.type === "text") block.text += " more";
+      }],
+      ["commit the stream", () => {
+        state.messages.push(state.pendingAI!);
+        state.pendingAI = null;
+      }],
+      ["append a terminal notice", () => state.messages.push({ role: "system", text: "✗ aborted", color: theme.error, metadata: null })],
+      ["unwind the tail", () => { state.messages.splice(4); }],
+      ["prepend older history", () => { state.messages.splice(1, 0, user("older"), assistant([{ type: "text", text: "older answer" }], 100)); }],
+      ["replace the message array", () => { state.messages = [...state.messages]; }],
+      ["toggle diagnostics", () => { state.showDiagnostics = !state.showDiagnostics; }],
+    ];
+    for (const [, mutate] of mutations) {
+      mutate();
+      expectIncrementalMatchesFresh(state);
+      expectIncrementalMatchesFresh(state, 52);
+      expectIncrementalMatchesFresh(state);
+    }
+  });
+
+  test("a copied result survives later in-place builds", () => {
+    const state = conversation();
+    buildMessageLines(state, 80, { reuseArrays: true });
+    const snapshot = buildMessageLines(state, 80);
+    const frozen = structuredClone({ lines: snapshot.lines, cont: snapshot.wrapContinuation });
+
+    state.messages.push(user("later"));
+    state.pendingAI = createPendingAI(30_000, state.model);
+    state.pendingAI.blocks.push({ type: "text", text: "live" });
+    const live = buildMessageLines(state, 80, { reuseArrays: true });
+
+    expect(live.lines).not.toBe(snapshot.lines);
+    expect({ lines: snapshot.lines, cont: snapshot.wrapContinuation }).toEqual(frozen);
+  });
+
+  test("reusing arrays gives each build a new revision", () => {
+    const state = conversation();
+    const first = buildMessageLines(state, 80, { reuseArrays: true });
+    const second = buildMessageLines(state, 80, { reuseArrays: true });
+    expect(second.lines).toBe(first.lines);
+    expect(second.revision).not.toBe(first.revision);
+  });
+
+  test("invalidation forces a full rebuild", () => {
+    const state = conversation();
+    const first = buildMessageLines(state, 80, { reuseArrays: true });
+    invalidateCommittedHistoryCache(state);
+    const second = buildMessageLines(state, 80, { reuseArrays: true });
+    expect(second.lines).not.toBe(first.lines);
+    expect(comparable(second)).toEqual(freshBuild(state, 80));
+  });
+});

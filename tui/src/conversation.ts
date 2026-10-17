@@ -11,6 +11,7 @@ import {
   fitImageBox,
   historyImageLimits,
   inlineImageCellSize,
+  inlineImageGeneration,
   inlineImagesActive,
   layoutInlineImageStrip,
   renderInlineImage,
@@ -98,6 +99,7 @@ export function compactionFinishedDivider(availableWidth: number): string {
 import { termWidth, truncateToWidth } from "./textwidth";
 import { wordWrap, type WrapCopyLine, type WrapImage, type WrapResult } from "./textwrap";
 import { mathImageLayout, type HistoryImageLayout } from "./historyimages";
+import { mathImageGeneration } from "./mathimages";
 import type { LinkSpan } from "./links";
 import { isNewConversationQueuedMessage, queuedMessagesInDisplayOrder, queueTimingLabel } from "./queue";
 
@@ -337,11 +339,207 @@ export interface BuildMessageLinesResult {
   partial?: boolean;
   /** First state.messages index included when partial rendering is active. */
   startMessageIndex?: number;
+  /** Unique per build; arrays can be reused in place, so identity alone does not identify content. */
+  revision: number;
 }
 
 export interface BuildMessageLinesOptions {
   startMessageIndex?: number;
   partial?: boolean;
+  /**
+   * Let this build take over the arrays of the previous result at this width
+   * instead of copying them; that result's arrays then change underneath it.
+   * Only for the render loop, which replaces its result every frame. Callers
+   * that compare an old and a new build must not set it.
+   */
+  reuseArrays?: boolean;
+}
+
+let buildRevision = 0;
+
+// ── Committed history reuse ─────────────────────────────────────────
+
+/**
+ * Rows already built for the committed messages (everything before pendingAI,
+ * the streaming tail and queued shadows), reused by the next build at the same
+ * width. Without it every streaming frame, keypress and daemon event re-walked
+ * the whole loaded history, which costs hundreds of milliseconds per frame once
+ * a long conversation has been scrolled through.
+ *
+ * Messages and blocks are mutated in place in a few places (tool outputs,
+ * reconciled blocks, metadata), so validity is checked structurally on every
+ * build: the reference of every message, block and content field is compared
+ * with the build that produced the cached rows. Only the first changed message
+ * onward is rebuilt.
+ */
+interface CommittedHistoryCache {
+  key: readonly unknown[];
+  startMessageIndex: number;
+  messageCount: number;
+  /** Flat content references of messages [startMessageIndex, messageCount). */
+  sourceRefs: unknown[];
+  /** sourceRefs end offset after each message. */
+  sourceRefEnds: number[];
+  /** Rendered row count before each message. */
+  lineStarts: number[];
+  /** Rows after the last committed message. */
+  committedLines: number;
+  erroredToolCallIds: Set<string>;
+  /** The committed messages' share of erroredToolCallIds, reused while they are unchanged. */
+  committedErroredToolCallIds: Set<string>;
+  lastContinuesIntoPending: boolean;
+  durableSleepIndex: number;
+  /** Assistant images still waiting for the segment end when the committed rows stop. */
+  carriedImages: HistoryImage[];
+  /** Whether the row arrays came from a reuseArrays build, i.e. only the render loop holds them. */
+  ownsArrays: boolean;
+  lines: string[];
+  wrapContinuation: boolean[];
+  wrapJoiners: string[];
+  copyLines: Array<WrapCopyLine | null>;
+  lineAnchors: RenderLineAnchor[];
+  messageBounds: MessageBound[];
+}
+
+/** Per-state caches by width; resize and sidebar toggles build two widths back to back. */
+const committedHistoryCaches = new WeakMap<RenderState, CommittedHistoryCache[]>();
+const COMMITTED_HISTORY_CACHE_WIDTHS = 2;
+
+/** Drop reusable committed rows, e.g. after changing a render input this module cannot observe. */
+export function invalidateCommittedHistoryCache(state: RenderState): void {
+  committedHistoryCaches.delete(state);
+}
+
+function appendBlockSourceRefs(block: Block, out: unknown[]): void {
+  out.push(block);
+  switch (block.type) {
+    case "thinking":
+    case "text":
+      out.push(block.text);
+      break;
+    case "tool_call":
+      out.push(block.toolName, block.summary, block.input, block.presentation, block.toolCallId);
+      break;
+    case "tool_result":
+      out.push(block.isError, block.output, block.toolCallId, block.images);
+      break;
+  }
+}
+
+/** Every field buildMessageLines reads from a message, by reference. */
+function appendMessageSourceRefs(message: Message, out: unknown[]): void {
+  out.push(message, message.role, message.metadata);
+  switch (message.role) {
+    case "assistant":
+      out.push(message.blocks, message.blocks.length);
+      for (const block of message.blocks) appendBlockSourceRefs(block, out);
+      break;
+    case "user":
+      out.push(message.text, message.images);
+      break;
+    case "system":
+      out.push(message.text, message.color);
+      break;
+    case "system_instructions":
+      out.push(message.text);
+      break;
+  }
+}
+
+/**
+ * Whether `message` still has the references appendMessageSourceRefs recorded
+ * at refs[offset, end). Mirrors it field for field without allocating; this
+ * runs for every loaded message on every build.
+ */
+function messageSourceRefsMatch(message: Message, refs: readonly unknown[], offset: number, end: number): boolean {
+  if (refs[offset] !== message || refs[offset + 1] !== message.role || refs[offset + 2] !== message.metadata) return false;
+  let i = offset + 3;
+  switch (message.role) {
+    case "assistant": {
+      const blocks = message.blocks;
+      if (refs[i] !== blocks || refs[i + 1] !== blocks.length) return false;
+      i += 2;
+      for (const block of blocks) {
+        if (refs[i] !== block) return false;
+        switch (block.type) {
+          case "thinking":
+          case "text":
+            if (refs[i + 1] !== block.text) return false;
+            i += 2;
+            break;
+          case "tool_call":
+            if (refs[i + 1] !== block.toolName || refs[i + 2] !== block.summary || refs[i + 3] !== block.input
+              || refs[i + 4] !== block.presentation || refs[i + 5] !== block.toolCallId) return false;
+            i += 6;
+            break;
+          case "tool_result":
+            if (refs[i + 1] !== block.isError || refs[i + 2] !== block.output || refs[i + 3] !== block.toolCallId
+              || refs[i + 4] !== block.images) return false;
+            i += 5;
+            break;
+        }
+      }
+      break;
+    }
+    case "user":
+      if (refs[i] !== message.text || refs[i + 1] !== message.images) return false;
+      i += 2;
+      break;
+    case "system":
+      if (refs[i] !== message.text || refs[i + 1] !== message.color) return false;
+      i += 2;
+      break;
+    case "system_instructions":
+      if (refs[i] !== message.text) return false;
+      i += 1;
+      break;
+  }
+  return i === end;
+}
+
+function sameRefs(a: readonly unknown[], b: readonly unknown[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+function committedErroredToolCalls(messages: Message[], start: number): Set<string> {
+  const ids = new Set<string>();
+  for (let index = start; index < messages.length; index++) {
+    const message = messages[index];
+    if (message.role !== "assistant") continue;
+    for (const block of message.blocks) {
+      if (block.type === "tool_result" && block.isError) ids.add(block.toolCallId);
+    }
+  }
+  return ids;
+}
+
+function withPendingErroredToolCalls(committed: Set<string>, pending: Message | null): Set<string> {
+  if (pending?.role !== "assistant" || !pending.blocks.some(block => block.type === "tool_result" && block.isError)) return committed;
+  const ids = new Set(committed);
+  for (const block of pending.blocks) {
+    if (block.type === "tool_result" && block.isError) ids.add(block.toolCallId);
+  }
+  return ids;
+}
+
+function firstChangedErroredToolCallMessage(
+  messages: Message[],
+  start: number,
+  previous: Set<string>,
+  next: Set<string>,
+): number {
+  const changed = new Set<string>();
+  for (const id of previous) if (!next.has(id)) changed.add(id);
+  for (const id of next) if (!previous.has(id)) changed.add(id);
+  if (changed.size === 0) return Infinity;
+  for (let index = start; index < messages.length; index++) {
+    const message = messages[index];
+    if (message.role !== "assistant") continue;
+    if (message.blocks.some(block => block.type === "tool_call" && changed.has(block.toolCallId))) return index;
+  }
+  return Infinity;
 }
 
 // ── Build all display lines ─────────────────────────────────────────
@@ -353,25 +551,16 @@ export function buildMessageLines(
 ): BuildMessageLinesResult {
   const contentWidth = availableWidth - 4;
   const metadataOptions = { width: availableWidth, diagnostics: state.showDiagnostics };
-  const lines: string[] = [];
-  const wrapContinuation: boolean[] = [];
-  const wrapJoiners: string[] = [];
-  const copyLines: Array<WrapCopyLine | null> = [];
-  const messageBounds: MessageBound[] = [];
-  const lineAnchors: RenderLineAnchor[] = [];
+  let lines: string[] = [];
+  let wrapContinuation: boolean[] = [];
+  let wrapJoiners: string[] = [];
+  let copyLines: Array<WrapCopyLine | null> = [];
+  let messageBounds: MessageBound[] = [];
+  let lineAnchors: RenderLineAnchor[] = [];
   const durableSleepAssistant = activeDurableSleepAssistant(state);
   const startMessageIndex = Math.max(0, Math.min(options.startMessageIndex ?? 0, state.messages.length));
-  const erroredToolCallIds = new Set<string>();
-  for (let messageIndex = startMessageIndex; messageIndex < state.messages.length; messageIndex++) {
-    const message = state.messages[messageIndex];
-    if (message.role !== "assistant") continue;
-    for (const block of message.blocks) {
-      if (block.type === "tool_result" && block.isError) erroredToolCallIds.add(block.toolCallId);
-    }
-  }
-  for (const block of state.pendingAI?.blocks ?? []) {
-    if (block.type === "tool_result" && block.isError) erroredToolCallIds.add(block.toolCallId);
-  }
+  // Tool calls whose result failed; filled once the committed rows are planned.
+  let erroredToolCallIds = new Set<string>();
 
   const renderAssistantBlock = (block: Extract<Message, { role: "assistant" }>["blocks"][number]): WrapResult =>
     renderBlockCached(
@@ -430,7 +619,6 @@ export function buildMessageLines(
   };
 
   const imageLimits = historyImageLimits(availableWidth, state.rows);
-  const imageCell = inlineImageCellSize();
   /**
    * Append a message's inline images after a blank row: one thumbnail, or a
    * strip of them side by side. User images align right like their bubble.
@@ -501,6 +689,103 @@ export function buildMessageLines(
     messageBounds.push({ role, start, end: lines.length, contentStart, contentEnd });
   };
 
+  // Plan which committed messages can keep their rows from the previous build.
+  // Loading spinners animate inside the committed rows; those rare frames take
+  // the full path and leave the cache untouched.
+  const messages = state.messages;
+  const messageCount = messages.length;
+  const cacheable = !state.historyLoadingOlder && !isActiveConversationLoading(state);
+  const lastContinuesIntoPending = state.pendingAI?.role === "assistant";
+  const imageCell = inlineImageCellSize();
+  const cacheKey: unknown[] = [
+    state.convId, contentWidth, state.showToolOutput, state.showDiagnostics, state.toolRegistry,
+    state.externalToolStyles, theme.name, state.rows, inlineImageGeneration(), mathImageGeneration(),
+    inlineImagesActive(), imageCell.width, imageCell.height, userMessageNeedsTopMargin(messages, startMessageIndex),
+  ];
+  const widthCaches = committedHistoryCaches.get(state) ?? [];
+  const cached = cacheable
+    ? widthCaches.find(entry => entry.startMessageIndex === startMessageIndex && sameRefs(entry.key, cacheKey))
+    : undefined;
+  const durableSleepIndex = durableSleepAssistant ? messages.lastIndexOf(durableSleepAssistant) : -1;
+  let rebuildFrom = startMessageIndex;
+  let sourceRefs: unknown[] = [];
+  let sourceRefEnds: number[] = [];
+  let lineStarts: number[] = [];
+  let carriedImages: HistoryImage[] = [];
+  let committedErroredToolCallIds: Set<string> | undefined;
+  if (cached) {
+    let firstChanged = Math.min(messageCount, cached.messageCount);
+    for (let index = startMessageIndex; index < firstChanged; index++) {
+      const offset = index === startMessageIndex ? 0 : cached.sourceRefEnds[index - startMessageIndex - 1];
+      if (!messageSourceRefsMatch(messages[index], cached.sourceRefs, offset, cached.sourceRefEnds[index - startMessageIndex])) {
+        firstChanged = index;
+        break;
+      }
+    }
+    if (firstChanged >= messageCount && messageCount === cached.messageCount) {
+      committedErroredToolCallIds = cached.committedErroredToolCallIds;
+    }
+    if (lastContinuesIntoPending !== cached.lastContinuesIntoPending) firstChanged = Math.min(firstChanged, messageCount - 1);
+    // An active durable sleep's metadata ticks with the clock.
+    for (const index of [durableSleepIndex, cached.durableSleepIndex]) {
+      if (index >= startMessageIndex) firstChanged = Math.min(firstChanged, index);
+    }
+    erroredToolCallIds = withPendingErroredToolCalls(
+      committedErroredToolCallIds ??= committedErroredToolCalls(messages, startMessageIndex),
+      state.pendingAI,
+    );
+    firstChanged = Math.min(firstChanged, firstChangedErroredToolCallMessage(
+      messages, startMessageIndex, cached.erroredToolCallIds, erroredToolCallIds,
+    ));
+
+    if (firstChanged >= messageCount && messageCount === cached.messageCount) {
+      rebuildFrom = messageCount;
+      carriedImages = cached.carriedImages;
+    } else {
+      // A message's rows depend on whether the next message continues its
+      // assistant segment, and segment images accumulate across that run, so
+      // rebuild from the start of the run before the first change.
+      rebuildFrom = Math.max(startMessageIndex, Math.min(firstChanged, messageCount) - 1);
+      while (rebuildFrom > startMessageIndex && messages[rebuildFrom - 1].role === "assistant") rebuildFrom--;
+    }
+    const kept = rebuildFrom - startMessageIndex;
+    const keptLines = kept === cached.messageCount - startMessageIndex ? cached.committedLines : cached.lineStarts[kept];
+    // Drop the entry before reusing its arrays so a throw mid-build cannot
+    // leave a truncated entry behind.
+    committedHistoryCaches.set(state, widthCaches.filter(entry => entry !== cached));
+    if (options.reuseArrays && cached.ownsArrays) {
+      // The previous result's arrays continue as this one's: copying several
+      // arrays of every loaded row on each streaming frame cost more than the
+      // rest of the build.
+      lines = cached.lines;
+      wrapContinuation = cached.wrapContinuation;
+      wrapJoiners = cached.wrapJoiners;
+      copyLines = cached.copyLines;
+      lineAnchors = cached.lineAnchors;
+      messageBounds = cached.messageBounds;
+      for (const rows of [lines, wrapContinuation, wrapJoiners, copyLines, lineAnchors]) rows.length = keptLines;
+      messageBounds.length = kept;
+    } else {
+      lines = cached.lines.slice(0, keptLines);
+      wrapContinuation = cached.wrapContinuation.slice(0, keptLines);
+      wrapJoiners = cached.wrapJoiners.slice(0, keptLines);
+      copyLines = cached.copyLines.slice(0, keptLines);
+      lineAnchors = cached.lineAnchors.slice(0, keptLines);
+      messageBounds = cached.messageBounds.slice(0, kept);
+    }
+    sourceRefs = cached.sourceRefs;
+    sourceRefs.length = kept > 0 ? cached.sourceRefEnds[kept - 1] : 0;
+    sourceRefEnds = cached.sourceRefEnds;
+    sourceRefEnds.length = kept;
+    lineStarts = cached.lineStarts;
+    lineStarts.length = kept;
+  }
+
+  if (!cached) {
+    committedErroredToolCallIds = committedErroredToolCalls(messages, startMessageIndex);
+    erroredToolCallIds = withPendingErroredToolCalls(committedErroredToolCallIds, state.pendingAI);
+  }
+
   let historyLoadingInsertIndex = startMessageIndex;
   if (state.historyLoadingOlder && startMessageIndex === 0) {
     while (state.messages[historyLoadingInsertIndex]?.role === "system_instructions") {
@@ -522,13 +807,16 @@ export function buildMessageLines(
     );
   }
 
-  let segmentImages: HistoryImage[] = [];
-  for (let messageIndex = startMessageIndex; messageIndex < state.messages.length; messageIndex++) {
+  let segmentImages: HistoryImage[] = carriedImages;
+  for (let messageIndex = rebuildFrom; messageIndex < state.messages.length; messageIndex++) {
     if (state.historyLoadingOlder && messageIndex === historyLoadingInsertIndex) {
       pushHistoryLoadingLine();
     }
     const msg = state.messages[messageIndex];
     const start = lines.length;
+    lineStarts.push(start);
+    appendMessageSourceRefs(msg, sourceRefs);
+    sourceRefEnds.push(sourceRefs.length);
     if (msg.role === "user") {
       if (userMessageNeedsTopMargin(state.messages, messageIndex)) pushLine("", msg, "user_margin_top");
       const contentStart = lines.length;
@@ -617,6 +905,32 @@ export function buildMessageLines(
 
   if (state.historyLoadingOlder && historyLoadingInsertIndex === state.messages.length) {
     pushHistoryLoadingLine();
+  }
+
+  if (cacheable) {
+    const entry: CommittedHistoryCache = {
+      key: cacheKey,
+      startMessageIndex,
+      messageCount,
+      sourceRefs,
+      sourceRefEnds,
+      lineStarts,
+      committedLines: lines.length,
+      erroredToolCallIds,
+      committedErroredToolCallIds: committedErroredToolCallIds!,
+      lastContinuesIntoPending,
+      durableSleepIndex,
+      carriedImages: segmentImages,
+      ownsArrays: options.reuseArrays === true,
+      lines,
+      wrapContinuation,
+      wrapJoiners,
+      copyLines,
+      lineAnchors,
+      messageBounds,
+    };
+    const others = (committedHistoryCaches.get(state) ?? []).filter(other => other !== cached && !sameRefs(other.key, cacheKey));
+    committedHistoryCaches.set(state, [entry, ...others].slice(0, COMMITTED_HISTORY_CACHE_WIDTHS));
   }
 
   // Currently streaming AI message — no margins
@@ -718,5 +1032,6 @@ export function buildMessageLines(
     copyLines,
     lineAnchors,
     ...(options.partial ? { partial: true, startMessageIndex } : {}),
+    revision: ++buildRevision,
   };
 }

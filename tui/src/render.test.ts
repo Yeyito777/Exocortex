@@ -348,13 +348,15 @@ describe("render caching and frame diffing", () => {
     state.pendingAI.blocks.push({ type: "text", text: "partial reply" });
 
     renderSilently(state);
-    const firstLines = state.historyLines;
+    expect(stripAnsi(state.historyLines.join("\n"))).toContain("partial reply");
 
     state.inputBuffer = "typed while streaming";
     state.cursorPos = state.inputBuffer.length;
+    const block = state.pendingAI.blocks[0];
+    if (block.type === "text") block.text += " keeps growing";
     renderSilently(state);
 
-    expect(state.historyLines).not.toBe(firstLines);
+    expect(stripAnsi(state.historyLines.join("\n"))).toContain("partial reply keeps growing");
   });
 
   test("invalidates cached history on each durable-sleep metadata second", () => {
@@ -402,14 +404,12 @@ describe("render caching and frame diffing", () => {
     }];
 
     renderSilently(state);
-    const firstLines = state.historyLines;
-    expect(stripAnsi(firstLines.join("\n"))).toContain("tokens/s | 10s");
+    expect(stripAnsi(state.historyLines.join("\n"))).toContain("tokens/s | 10s");
 
     // Advance the elapsed frame without replacing any cache-tracked references.
     assistant.metadata.startedAt -= 1_000;
     renderSilently(state);
 
-    expect(state.historyLines).not.toBe(firstLines);
     expect(stripAnsi(state.historyLines.join("\n"))).toContain("tokens/s | 11s");
   });
 
@@ -417,7 +417,6 @@ describe("render caching and frame diffing", () => {
     const state = makeState();
 
     renderSilently(state);
-    const firstLines = state.historyLines;
 
     const assistant = state.messages[1];
     if (assistant.role !== "assistant") throw new Error("expected assistant message");
@@ -425,7 +424,6 @@ describe("render caching and frame diffing", () => {
     invalidateHistoryRenderCache(state);
     renderSilently(state);
 
-    expect(state.historyLines).not.toBe(firstLines);
     expect(stripAnsi(state.historyLines.join("\n"))).toContain("updated body");
   });
 
