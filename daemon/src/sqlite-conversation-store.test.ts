@@ -810,7 +810,7 @@ describe("SQLite maintenance", () => {
       { type: "conversation_removed", id: "maintenance" },
     ]);
     expect(store.diagnostics()).toMatchObject({
-      schemaVersion: 14,
+      schemaVersion: 15,
       liveConversations: 1,
       deletedConversations: 1,
       messages: 4,
@@ -990,8 +990,22 @@ describe("SQLite maintenance", () => {
     store.close();
   });
 
-  test("migrates every schema checkpoint through v14 transactionally", () => {
-    for (let version = 1; version <= 13; version++) {
+  test("counts replay-history ordinals from an index, not message bodies", () => {
+    const { path } = pathFor("replay-index");
+    const store = new SqliteConversationStore({ path });
+    for (const sql of [
+      "SELECT COUNT(*) AS n FROM messages WHERE conversation_id=? AND is_replay_history=1 AND sequence<?",
+      "SELECT sequence FROM messages WHERE conversation_id=? AND is_replay_history=1 ORDER BY sequence LIMIT 1 OFFSET ?",
+    ]) {
+      const plan = store.db.query<{ detail: string }, []>(`EXPLAIN QUERY PLAN ${sql.replaceAll("?", "1")}`).all()
+        .map(row => row.detail).join("\n");
+      expect(plan).toContain("COVERING INDEX messages_replay_idx");
+    }
+    store.close();
+  });
+
+  test("migrates every schema checkpoint through v15 transactionally", () => {
+    for (let version = 1; version <= 14; version++) {
       const { path } = pathFor(`schema-v${version}`);
       let store = new SqliteConversationStore({ path, targetSchemaVersion: version });
       expect(store.db.query<{ version: number }, []>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version).toBe(version);
@@ -999,7 +1013,7 @@ describe("SQLite maintenance", () => {
       store.close();
 
       store = new SqliteConversationStore({ path });
-      expect(store.diagnostics().schemaVersion).toBe(14);
+      expect(store.diagnostics().schemaVersion).toBe(15);
       expect(store.integrityCheck().ok).toBe(true);
       store.close();
     }
