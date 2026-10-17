@@ -53,6 +53,8 @@ export interface AgentCallbacks {
   onHeaders(headers: Headers): void;
   /** A provider retry was scheduled. Reset any accumulated partial state. */
   onRetry?(attempt: number, maxAttempts: number, errorMessage: string, delaySec: number, metadata?: StreamRetryMetadata): void;
+  /** A failed request is re-sent without a retry notice. Reset uncommitted partial state. */
+  onAttemptDiscarded?(): void;
   /** Pause/resume stale-stream watchdogs around intentional long retry waits. */
   onRetryWaitStart?(): void;
   onRetryWaitEnd?(): void;
@@ -331,6 +333,12 @@ export async function runAgentLoop(
             generationTimer.retry();
             profile?.mark("retry");
             callbacks.onRetry?.(attempt, maxAttempts, errorMessage, delaySec, metadata);
+          },
+          onAttemptDiscarded: () => {
+            roundEmittedOutput = false;
+            providerRoundOutputTokens = 0;
+            generationTimer.retry();
+            callbacks.onAttemptDiscarded?.();
           },
           onRetryWaitStart: () => { generationTimer.retry(); callbacks.onRetryWaitStart?.(); },
           onRetryWaitEnd: callbacks.onRetryWaitEnd,

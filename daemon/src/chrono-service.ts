@@ -7,7 +7,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { dataDir } from "@exocortex/shared/paths";
 import { agentWorkingDirectory } from "@exocortex/shared/config";
@@ -201,8 +201,30 @@ function persist(): void {
   ensureDataDir();
   const path = statePath();
   const temp = `${path}.${process.pid}.${Date.now()}.tmp`;
-  writeFileSync(temp, JSON.stringify(snapshotState(), null, 2) + "\n", { mode: 0o600 });
-  renameSync(temp, path);
+  try {
+    writeFileSync(temp, JSON.stringify(snapshotState(), null, 2) + "\n", { mode: 0o600 });
+    renameSync(temp, path);
+  } catch (err) {
+    rmSync(temp, { force: true });
+    throw err;
+  }
+}
+
+/** Earliest time the timer may fire again after a failed processing pass. */
+let failureBackoffUntil = 0;
+const FAILURE_BACKOFF_MS = 5_000;
+
+/**
+ * Timer-driven work runs detached, and the daemon treats an unhandled
+ * rejection as fatal. A failed pass (e.g. ENOSPC writing state) is logged and
+ * retried after a backoff instead; durable state stays as it was.
+ */
+function runDetached(label: string, work: Promise<void>): void {
+  work.catch((err) => {
+    log("error", `chrono: ${label} failed: ${err instanceof Error ? err.message : String(err)}`);
+    failureBackoffUntil = Date.now() + FAILURE_BACKOFF_MS;
+    armTimer();
+  });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -265,6 +287,7 @@ function load(): void {
     const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<ChronoStateFile>;
     if (parsed.version !== STATE_VERSION) {
       log("warn", `chrono: unsupported state version ${String(parsed.version)}; starting empty`);
+      keepUnreadableState(path);
       return;
     }
     for (const schedule of parsed.schedules ?? []) {
@@ -278,7 +301,17 @@ function load(): void {
     }
   } catch (err) {
     log("error", `chrono: failed to load state: ${err instanceof Error ? err.message : String(err)}`);
+    keepUnreadableState(path);
   }
+}
+
+/** The next persist replaces the state file: keep an unreadable one (every schedule) for recovery. */
+function keepUnreadableState(path: string): void {
+  const kept = `${path}.corrupt-${Date.now()}`;
+  try {
+    copyFileSync(path, kept);
+    log("warn", `chrono: kept the unreadable state file as ${kept}`);
+  } catch { /* best effort */ }
 }
 
 function notifyConversation(conversationId: string | undefined): void {
@@ -356,8 +389,8 @@ function armTimer(): void {
     earliest = Math.min(earliest, deferredSleepReadyAt(sleep));
   }
   if (!Number.isFinite(earliest)) return;
-  const delay = Math.min(MAX_TIMER_MS, Math.max(0, earliest - Date.now()));
-  timer = setTimeout(() => { void processPendingAndDue(); }, delay);
+  const delay = Math.min(MAX_TIMER_MS, Math.max(0, earliest - Date.now(), failureBackoffUntil - Date.now()));
+  timer = setTimeout(() => { runDetached("processing due work", processPendingAndDue()); }, delay);
 }
 
 function formatter(timezone: string): Intl.DateTimeFormat {
@@ -521,6 +554,8 @@ function parseAt(at: string | undefined, afterSeconds: number | undefined, now: 
   if (at !== undefined && afterSeconds !== undefined) return { error: "Use either 'at' or 'after_seconds', not both." };
   if (afterSeconds !== undefined) {
     if (!Number.isFinite(afterSeconds) || afterSeconds <= 0) return { error: "'after_seconds' must be greater than zero." };
+    // Past ~100 years the time is unrepresentable as a Date (and meaningless).
+    if (afterSeconds > 100 * 365 * 86_400) return { error: "'after_seconds' must be at most 100 years." };
     return { value: now + Math.round(afterSeconds * 1000) };
   }
   if (!at?.trim()) return { error: "Wake requires 'at' or 'after_seconds'." };
@@ -662,14 +697,17 @@ function watchDeferredWait(sleep: DeferredChronoSleep): void {
     }
     armTimer();
   };
-  void waitForConversationTask(sleep.wait.taskId, controller.signal, sleep.wait.ownerConversationId)
-    .then(completed => save(completedChronoWaitOutput(completed), false, completed.endedAt))
-    .catch(err => {
-      if (!controller.signal.aborted) save(err instanceof Error ? err.message : String(err), true, Date.now());
-    })
+  // A failed state write must not be recorded as the waited task's failure.
+  runDetached(`deferred wait ${sleep.id}`, waitForConversationTask(sleep.wait.taskId, controller.signal, sleep.wait.ownerConversationId)
+    .then(
+      completed => save(completedChronoWaitOutput(completed), false, completed.endedAt),
+      err => {
+        if (!controller.signal.aborted) save(err instanceof Error ? err.message : String(err), true, Date.now());
+      },
+    )
     .finally(() => {
       if (deferredWaitControllers.get(sleep.id) === controller) deferredWaitControllers.delete(sleep.id);
-    });
+    }));
 }
 
 /**
@@ -1098,7 +1136,7 @@ async function executeOccurrence(occurrence: PendingOccurrence): Promise<void> {
           const timeout = setTimeout(() => {
             timedOut = true;
             controller.abort(`Chrono command timed out after ${commandTarget.timeoutMs}ms`);
-          }, commandTarget.timeoutMs);
+          }, Math.min(commandTarget.timeoutMs, MAX_TIMER_MS));
           let result: Awaited<ReturnType<typeof executeBashBackgroundable>>;
           try {
             result = await executeBashBackgroundable({
@@ -1256,12 +1294,15 @@ async function processPendingAndDue(now = Date.now()): Promise<void> {
     }
     persist();
     for (const occurrence of pending.values()) {
-      if ((occurrence.retryAt ?? 0) <= now) void executeOccurrence(occurrence);
+      if ((occurrence.retryAt ?? 0) <= now) runDetached(`occurrence ${occurrence.id}`, executeOccurrence(occurrence));
     }
     for (const sleep of deferredSleeps.values()) {
       const readyAt = deferredSleepReadyAt(sleep);
-      if (readyAt <= now) void executeDeferredSleep(sleep);
+      if (readyAt <= now) runDetached(`deferred sleep ${sleep.id}`, executeDeferredSleep(sleep));
     }
+  } catch (err) {
+    log("error", `chrono: processing due work failed: ${err instanceof Error ? err.message : String(err)}`);
+    failureBackoffUntil = Date.now() + FAILURE_BACKOFF_MS;
   } finally {
     processingDue = false;
     armTimer();
@@ -1320,7 +1361,7 @@ export async function startChronoService(options: { deferWaitSubscriptions?: boo
   if (pending.size > 0
       || [...schedules.values()].some(schedule => schedule.nextAt <= Date.now())
       || [...deferredSleeps.values()].some(sleep => deferredSleepReadyAt(sleep) <= Date.now())) {
-    void processPendingAndDue();
+    runDetached("processing due work", processPendingAndDue());
   }
   log("info", `chrono: started with ${schedules.size} schedule(s), ${pending.size} pending occurrence(s), ${deferredSleeps.size} deferred sleep(s)`);
   return schedules.size;
@@ -1356,6 +1397,7 @@ export const chronoInternalsForTest = {
     runningCommands.clear();
     processingSleeps.clear();
     cancelledOccurrences.clear();
+    failureBackoffUntil = 0;
     changedListener = null;
     deferredSleepReadyListener = null;
     rmSync(statePath(), { force: true });

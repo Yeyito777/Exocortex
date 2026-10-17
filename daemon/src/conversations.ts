@@ -2004,8 +2004,10 @@ export function markDirty(id: string, mode: "auto" | "messages" = "auto"): void 
 /** Mark only provider-derived token attribution as dirty. */
 export function markContextAttributionDirty(id: string): void {
   renderSnapshotCache.delete(id);
+  // A pending full save already writes attribution; never narrow it, or its
+  // in-place edits are recorded as saved without being written.
+  if (dirty.has(id) && !contextAttributionDirty.has(id)) return;
   dirty.add(id);
-  messageContentDirty.delete(id);
   contextAttributionDirty.add(id);
 }
 
@@ -2088,21 +2090,30 @@ export function appendMessages(
 /** Flush all dirty conversations. */
 export function flushAll(): void {
   clearSummaryIndexSaveTimer();
+  // One failed save (e.g. a stale generation) must not skip the rest, which
+  // matters most at shutdown. Failed conversations stay dirty for a retry.
+  const failed = new Set<string>();
   for (const id of dirty) {
     const conv = conversations.get(id);
     if (!conv) continue;
-    persistence.save(conv, {
-      forceMessages: messageContentDirty.has(id),
-      contextAttributionOnly: contextAttributionDirty.has(id),
-    });
+    try {
+      persistence.save(conv, {
+        forceMessages: messageContentDirty.has(id),
+        contextAttributionOnly: contextAttributionDirty.has(id),
+      });
+    } catch (err) {
+      failed.add(id);
+      log("error", `conversations: failed to save ${id}: ${err instanceof Error ? err.message : String(err)}`);
+      continue;
+    }
     streaming.setStreamingCommittedMessageCount(id, storedMessageCount(conv.messages));
     if (!persistence.isSqliteConversationStore()) scheduleDisplayIndex(id);
     setCachedFileSize(id, cachedFileSize(id));
     updateSummaryFromConversation(conv);
   }
-  dirty.clear();
-  messageContentDirty.clear();
-  contextAttributionDirty.clear();
+  for (const set of [dirty, messageContentDirty, contextAttributionDirty]) {
+    for (const id of [...set]) if (!failed.has(id)) set.delete(id);
+  }
   summaryIndexDirty = false;
   saveSummaryIndexNow();
   pruneConversationCache();

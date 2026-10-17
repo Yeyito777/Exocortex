@@ -530,6 +530,50 @@ describe("DaemonClient SSH routing", () => {
     await waitFor(() => spawned[0].killed);
   });
 
+  test("never replays commands queued for the previous endpoint after /ssh switches routes", async () => {
+    const spawned: FakeProcess[] = [];
+    let client!: DaemonClient;
+    client = new DaemonClient(event => {
+      // main.ts resets old-endpoint UI here; work issued from now on targets the new route.
+      if (event.type === "ssh_status" && event.state === "connected" && event.switched) client.listConversations();
+    }, "/tmp/local.sock", false, {
+      localHostname: "localbox",
+      spawnSshProcess: () => {
+        const child = respondingProbe();
+        spawned.push(child);
+        return child;
+      },
+    });
+    const internal = client as any;
+    // A connected-but-unanswered BTW start and enqueue on the local daemon ...
+    const localWrites: string[] = [];
+    internal.socket = { write: (line: string) => { localWrites.push(line); }, end() {}, destroy() {} };
+    internal._connected = true;
+    client.startBtw("local-conv", "btw-1", "question", 100);
+    client.queueMessage("local-conv", "queued", "message-end", undefined, { queueId: "queue-1" });
+    client.unwindConversation("local-conv", 0);
+    // ... then the local daemon drops and more work queues offline.
+    internal.socket = null;
+    internal._connected = false;
+    client.sendMessage("local-conv", "typed offline", 200);
+    client.unqueueMessage("queue-0");
+    expect(localWrites).toHaveLength(3);
+
+    client.ssh("connect", "whale");
+    await waitFor(() => client.remoteAlias === "whale");
+    const connected = await client.connect();
+
+    expect(connected.replayedCommands).toEqual([{ type: "list_conversations" }]);
+    expect(spawned).toHaveLength(1);
+    for (const type of ["btw_query", "queue_message", "unwind_conversation", "send_message", "unqueue_message"]) {
+      expect(spawned[0].input).not.toContain(`"type":"${type}"`);
+    }
+    expect(internal.unresolvedQueueCommands.size).toBe(0);
+    expect(internal.unresolvedUnwindCommands.size).toBe(0);
+    expect(internal.btwMutationReplay.size).toBe(0);
+    client.disconnect();
+  });
+
   test("keeps the current route when an SSH probe fails", async () => {
     const probe = new FakeProcess();
     const events: unknown[] = [];

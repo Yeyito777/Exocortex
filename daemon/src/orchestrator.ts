@@ -304,7 +304,17 @@ export async function orchestrateGoalCycle(
   }
   convStore.beginStreamHandoff(convId);
   broadcastConversationUpdated(server, convId);
-  return await orchestrateGoalContinuation(server, convId, ext, policy);
+  const handoffToken = convStore.getStreamHandoffToken(convId);
+  try {
+    return await orchestrateGoalContinuation(server, convId, ext, policy);
+  } catch (err) {
+    // E.g. the off-thread conversation load failed. Never leave the marker.
+    if (convStore.getStreamHandoffToken(convId) === handoffToken && !convStore.getActiveJob(convId)) {
+      convStore.clearStreamHandoff(convId);
+      broadcastConversationUpdated(server, convId);
+    }
+    throw err;
+  }
 }
 
 /** Admit an ordinary assistant turn; there is no separate model/controller. */
@@ -626,6 +636,8 @@ async function orchestrateAdmittedAssistantTurn(
   // ── Start stream and broadcast initial state ──────────────────────
 
   let acceptedUserMessage: StoredMessage | null = null;
+  let admittedText = userMessage?.text ?? "";
+  let admittedImages = userMessage?.images;
   if (userMessage) {
     try {
       const handoffCancelled = () => {
@@ -648,8 +660,18 @@ async function orchestrateAdmittedAssistantTurn(
         const cancelledAfterNotice = handoffCancelled();
         if (cancelledAfterNotice) return cancelledAfterNotice;
       }
+      // Admission yielded since this queue entry was selected: the user may
+      // have withdrawn or edited it meanwhile. Commit what the queue holds now.
+      if (options.queueEntryId) {
+        const current = convStore.getQueuedMessageById(options.queueEntryId);
+        if (!current) return buildErrorOutcome("Queued message was withdrawn before its turn started.");
+        if (!current.command) {
+          admittedText = current.text;
+          admittedImages = current.images;
+        }
+      }
       const contextCheckpoint = createStoredUserContextCheckpoint(conv);
-      acceptedUserMessage = createStoredUserMessage(userMessage.text, conv.model, startedAt, userMessage.images, {
+      acceptedUserMessage = createStoredUserMessage(admittedText, conv.model, startedAt, admittedImages, {
         subagentNotificationId: options.subagentNotificationId,
         queueEntryId: options.queueEntryId,
         automation,
@@ -691,9 +713,9 @@ async function orchestrateAdmittedAssistantTurn(
     server.sendToSubscribers(convId, {
       type: "user_message",
       convId,
-      text: userMessage.text,
+      text: admittedText,
       startedAt,
-      images: userMessage.images,
+      images: admittedImages,
       ...(options.queueEntryId ? { queueId: options.queueEntryId } : {}),
       ...(automation ? { automation } : {}),
     });
@@ -853,15 +875,21 @@ async function orchestrateAdmittedAssistantTurn(
       throw new StreamPreemptedError();
     }
     // `messages` is the agent loop's live array: rounds the provider commits
-    // during a failed attempt are in it, so a retry resumes after them.
-    return runWithUsageLimitWait(ac, () => runWithNetworkWait(ac, connectivity, () => runWithStaleStreamRetries(
+    // during a failed attempt are in it, so a retry resumes after them. Its
+    // uncommitted streamed output is discarded before each re-send.
+    let attempted = false;
+    return runWithUsageLimitWait(ac, () => runWithNetworkWait(ac, connectivity, () => {
+      if (attempted) callbacks.onAttemptDiscarded?.();
+      attempted = true;
+      return runWithStaleStreamRetries(
       ac,
       callbacks,
       (attemptSignal) => (ext.streamMessageFn ?? streamMessage)(provider, messages, model, callbacks, {
         ...streamOptions,
         signal: attemptSignal,
       }),
-    ), {
+      );
+    }, {
       onWaitStart() {
         awaitingConnectivity = true;
         // A wait can last hours; it is not a stalled stream.
@@ -1300,6 +1328,13 @@ async function orchestrateAdmittedAssistantTurn(
     });
   }
 
+  /** Drop the failed attempt's uncommitted output; completed rounds stay. */
+  function resetPartialStream(): void {
+    partialContent.length = 0;
+    convStore.initStreamingState(convId);
+    convStore.setStreamingCommittedBlockCount(convId, agentState.completedBlocks.length);
+  }
+
   function recordStreamRetry(
     attempt: number,
     maxAttempts: number,
@@ -1311,9 +1346,7 @@ async function orchestrateAdmittedAssistantTurn(
     convStore.touchActivity(convId);
     // Provider retry → clear partial state so the retry starts clean.
     // Completed rounds remain visible through canonical display entries.
-    partialContent.length = 0;
-    convStore.initStreamingState(convId);
-    convStore.setStreamingCommittedBlockCount(convId, agentState.completedBlocks.length);
+    resetPartialStream();
     const sysText = formatRetryNotice(attempt, maxAttempts, errorMessage, delaySec, metadata);
     transcriptMarkers.push({
       afterIndex: agentState.completedMessages.length,
@@ -1544,6 +1577,12 @@ async function orchestrateAdmittedAssistantTurn(
     onRetry(attempt, maxAttempts, errorMessage, delaySec, metadata) {
       if (classifyNetworkFailureMessage(errorMessage)) noteNetworkTrouble();
       recordStreamRetry(attempt, maxAttempts, errorMessage, delaySec, metadata);
+    },
+    onAttemptDiscarded() {
+      const hadPartial = partialContent.length > 0;
+      resetPartialStream();
+      // An empty sync drops the client's live text/thinking tail.
+      if (hadPartial) server.sendToSubscribers(convId, { type: "streaming_sync", convId, streamSeq: convStore.nextStreamSeq(convId), blocks: [] });
     },
     onRetryWaitStart() {
       convStore.pauseActivity(convId);
@@ -2171,17 +2210,24 @@ async function orchestrateAdmittedAssistantTurn(
       log("info", `orchestrator: draining queued message: "${first.text.slice(0, 50)}"`);
       // Await to keep queued turns in one promise. The private handoff option
       // is intentionally unavailable to ordinary callers.
-      const queuedOutcome = await orchestrateAssistantTurn(server, null, undefined, convId, Date.now(), ext, {
-        userMessage: { text: first.text, images: first.images },
-        ...(first.subagentMaxDepth !== undefined ? { subagentMaxDepth: first.subagentMaxDepth } : {}),
-        subagentNotificationId: first.subagentNotificationId,
-        queueEntryId: first.id,
-        automation: first.automation,
-        streamChainHandoff: true,
-      });
+      let queuedOk = false;
+      try {
+        queuedOk = (await orchestrateAssistantTurn(server, null, undefined, convId, Date.now(), ext, {
+          userMessage: { text: first.text, images: first.images },
+          ...(first.subagentMaxDepth !== undefined ? { subagentMaxDepth: first.subagentMaxDepth } : {}),
+          subagentNotificationId: first.subagentNotificationId,
+          queueEntryId: first.id,
+          automation: first.automation,
+          streamChainHandoff: true,
+        })).ok;
+      } catch (err) {
+        // A throwing successor preflight must not replace this turn's outcome
+        // or leave its handoff marker holding the conversation "streaming".
+        log("error", `orchestrator: queued turn failed to start for ${convId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
       // A successful queued worker may have installed its own continuation
       // handoff. Clear only a marker left unconsumed by failed preflight.
-      if (!queuedOutcome.ok && !convStore.getActiveJob(convId)) settleFailedStreamHandoff();
+      if (!queuedOk && !convStore.getActiveJob(convId)) settleFailedStreamHandoff();
     } else if (shouldContinueGoal) {
       queueMicrotask(() => {
         if (convStore.getStreamHandoffToken(convId) !== successorHandoffToken) return;

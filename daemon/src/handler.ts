@@ -76,6 +76,7 @@ import { prepareCatchableShutdownForReplay } from "./restart-recovery";
 import { PREPARE_RESTART_MAX_SETTLE_MS, writeActiveGoalRestartMarker } from "./restart-markers";
 import { buildBackgroundTaskNotificationText } from "./background-task-notifications";
 import { configureChronoService, cancelDeferredChronoSleep } from "./chrono-service";
+import { cancelSuspendedTurn } from "./suspended-turns";
 import { runChronoCommand } from "./chrono-commands";
 import { inlineLongSleepStartedAt } from "@exocortex/shared/chrono";
 import { configureClaudeCodeSessions } from "./providers/anthropic/session";
@@ -111,6 +112,8 @@ let queueSchedulerGeneration = 0;
 export interface HandlerLifecycle {
   /** Restart the process that owns this exact server/socket instance. */
   requestRestart?: () => void;
+  /** How long a prepared restart may wait for its service before restarting itself. */
+  preparedRestartTimeoutMs?: number;
 }
 
 export interface DaemonCommandHandler {
@@ -119,14 +122,29 @@ export interface DaemonCommandHandler {
   backgroundTaskComplete(convId: string, completion: BackgroundTaskCompletion): void;
   /** /proxy links of this daemon; main.ts starts and stops them. */
   providerProxies: ProviderProxyManager;
+  /** Release queue delivery held by `holdQueueDeliveryUntilReady`. */
+  startQueueDelivery(): void;
 }
 
 export interface HandlerOptions extends HandlerLifecycle {
   providerProxies?: ProviderProxyManager;
+  /**
+   * Daemon boot: dispatch no queued message until startup recovery has adopted
+   * surviving Claude Code processes and scheduled interrupted-turn replays.
+   * Otherwise a preserved queue entry starts a fresh turn that replaces the
+   * adopted process, or answers instead of the interrupted turn's replay.
+   */
+  holdQueueDeliveryUntilReady?: boolean;
 }
 
 export function createHandler(server: DaemonServer, options: HandlerOptions = {}): DaemonCommandHandler {
   const lifecycle = options;
+  /**
+   * Every durable entry for a conversation, delivery-suspended or not.
+   * Deduplication must see entries an in-progress unwind is gating.
+   */
+  const queuedEntriesFor = (convId: string) => convStore.listInternalQueuedMessages()
+    .filter(entry => entry.convId === convId && entry.source === "daemon");
   // ── Local helper functions ────────────────────────────────────────
 
   type SidebarStateSnapshot = ReturnType<typeof convStore.listSidebarState>;
@@ -555,7 +573,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       const automation = { kind: "background_task_completion" as const, sourceId: pending.completion.taskId };
       const alreadyDurable = convStore.hasMessageMetadata(pending.convId, {
         "automation.kind": automation.kind, "automation.sourceId": automation.sourceId,
-      }) || convStore.getQueuedMessages(pending.convId).some(message => (
+      }) || queuedEntriesFor(pending.convId).some(message => (
         message.automation?.kind === automation.kind
         && message.automation.sourceId === automation.sourceId
       ));
@@ -582,7 +600,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   }
 
   const queueReadyParentNotification = (record: PendingSubagentNotification): void => {
-    const alreadyQueued = convStore.getQueuedMessages(record.parentConvId)
+    const alreadyQueued = queuedEntriesFor(record.parentConvId)
       .some((message) => message.subagentNotificationId === record.id);
     if (alreadyQueued) return;
     convStore.pushQueuedMessage(
@@ -1248,8 +1266,10 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     log("info", `handler: recovered queued draft conversation ${entry.convId} from durable queue ${entry.id}`);
   };
 
+  let queueDeliveryReady = !options.holdQueueDeliveryUntilReady;
+  let preparedRestartTimer: ReturnType<typeof setTimeout> | null = null;
   const pumpQueuedMessages = (): void => {
-    if (getDaemonShutdownMode()) return;
+    if (getDaemonShutdownMode() || !queueDeliveryReady) return;
     const queued = convStore.listInternalQueuedMessages();
     const queuedIds = new Set(queued.map(entry => entry.id));
     for (const id of queueRetryAfter.keys()) {
@@ -1589,6 +1609,16 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       case "prepare_shutdown": {
         const mode = beginDaemonShutdown(cmd.mode);
         log("info", `handler: service requested daemon shutdown mode=${mode}`);
+        if (mode === "restart" && lifecycle.requestRestart && !preparedRestartTimer) {
+          // Prepared, the daemon only winds down: no queue pump, no finalizer
+          // continuations, every restart request refused. If its service never
+          // restarts it (the caller died after preparing), finish the restart.
+          preparedRestartTimer = setTimeout(() => {
+            log("warn", "handler: prepared restart was never carried out; restarting now");
+            lifecycle.requestRestart?.();
+          }, lifecycle.preparedRestartTimeoutMs ?? PREPARE_RESTART_MAX_SETTLE_MS + 90_000);
+          preparedRestartTimer.unref?.();
+        }
         if (cmd.interruptForReplay && mode === "restart") {
           // One round trip instead of the control process polling and aborting
           // over the socket: settle in-process, then report what will replay.
@@ -1887,7 +1917,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             else convStore.updateGoalStatus(cmd.convId, "paused", { reason: "Paused by user." });
             convStore.clearGoalContinuationAfterStream(cmd.convId);
             convStore.clearStreamHandoff(cmd.convId);
-            if (cancelDeferredChronoSleep(cmd.convId)) broadcastConversationHistoryUpdated(server, cmd.convId);
+            cancelSuspendedTurn(server, cmd.convId);
             sendGoalUpdated(cmd.convId, cmd.reqId, "Goal paused. Use /goal resume to continue.");
           }
         }
@@ -2010,7 +2040,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           convStore.clearGoalContinuationAfterStream(cmd.convId);
           if (cmd.action === "pause") {
             convStore.clearStreamHandoff(cmd.convId);
-            if (cancelDeferredChronoSleep(cmd.convId)) broadcastConversationHistoryUpdated(server, cmd.convId);
+            cancelSuspendedTurn(server, cmd.convId);
             convStore.getActiveJob(cmd.convId)?.abort("goal-state-changed");
           }
         }
@@ -2756,6 +2786,11 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         if (queueId && (queueId.length > 200 || /[\r\n]/.test(queueId))) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Invalid queue id" });
           server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages(), settledQueueIds: [queueId] });
+          break;
+        }
+        if (cmd.source !== "global-idle" && cmd.timing !== "next-turn" && cmd.timing !== "message-end") {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Invalid queue timing" });
+          server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages(), ...(queueId ? { settledQueueIds: [queueId] } : {}) });
           break;
         }
         if (queueId && convStore.getQueuedMessageById(queueId)) {
@@ -3669,8 +3704,14 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   return Object.assign(handleCommand, {
     stop: async () => {
       unsubscribeConnectivity();
+      if (preparedRestartTimer) clearTimeout(preparedRestartTimer);
     },
     backgroundTaskComplete: enqueueBackgroundTaskCompletion,
     providerProxies,
+    startQueueDelivery: () => {
+      if (queueDeliveryReady) return;
+      queueDeliveryReady = true;
+      scheduleQueuePump(0);
+    },
   });
 }

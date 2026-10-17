@@ -5,7 +5,7 @@
  */
 
 import { join } from "path";
-import { mkdirSync, readFileSync, writeFileSync, existsSync, unlinkSync } from "fs";
+import { mkdirSync, readFileSync, renameSync, writeFileSync, existsSync, unlinkSync } from "fs";
 import { log } from "./log";
 import { secretsDir } from "@exocortex/shared/paths";
 import type { ProviderId } from "@exocortex/shared/messages";
@@ -58,7 +58,10 @@ function ensureDir(): void {
 
 function writeStore(file: CredentialsFileV2): void {
   ensureDir();
-  writeFileSync(CRED_FILE, JSON.stringify(file, null, 2), { mode: 0o600 });
+  // Replace atomically: a crash mid-write must not truncate every provider's login.
+  const tmp = `${CRED_FILE}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(file, null, 2), { mode: 0o600 });
+  renameSync(tmp, CRED_FILE);
 }
 
 function readStore(): CredentialsFileV2 {
@@ -73,6 +76,12 @@ function readStore(): CredentialsFileV2 {
     if (parsed && typeof parsed === "object" && "tokens" in parsed) return { version: 2, providers: {} };
   } catch (err) {
     log("warn", `store: failed to parse ${CRED_FILE}: ${err}`);
+    // The next save would replace it with one provider: keep the rest recoverable.
+    const kept = `${CRED_FILE}.corrupt-${Date.now()}`;
+    try {
+      renameSync(CRED_FILE, kept);
+      log("warn", `store: moved the unreadable credentials file to ${kept}`);
+    } catch { /* already gone */ }
   }
   return { version: 2, providers: {} };
 }

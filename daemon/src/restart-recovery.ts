@@ -1,4 +1,5 @@
 import { log } from "./log";
+import { listDeferredChronoSleeps } from "./chrono-service";
 import {
   clearActiveGoalRestartMarker,
   clearInterruptedStreamIds,
@@ -190,8 +191,12 @@ export function recoverInterruptedStreams(server: DaemonServer, alsoReplay: read
   convIds = normalizeConvIds([...convIds, ...alsoReplay]);
 
   const persistedRunningNotifications = listPendingSubagentNotifications({ state: "running" });
+  // A child suspended in a deferred Chrono sleep/wait is still working: its
+  // suspended turn stamped turn-end metadata, but the sleep replays it later.
+  const sleepingChildren = new Set(listDeferredChronoSleeps().map((sleep) => sleep.conversationId));
   const completedBeforeSettlement = new Set<string>();
   const runningNotifications = persistedRunningNotifications.filter((record) => {
+    if (sleepingChildren.has(record.childConvId)) return true;
     const completedOutcome = completedSubagentOutcomeFromHistory(record);
     if (!completedOutcome) return true;
     settlePendingSubagentNotifications(record.childConvId, completedOutcome);
@@ -202,7 +207,8 @@ export function recoverInterruptedStreams(server: DaemonServer, alsoReplay: read
   if (completedBeforeSettlement.size > 0) {
     convIds = convIds.filter((convId) => !completedBeforeSettlement.has(convId));
   }
-  convIds = normalizeConvIds([...convIds, ...runningNotifications.map((record) => record.childConvId)]);
+  convIds = normalizeConvIds([...convIds, ...runningNotifications.map((record) => record.childConvId)])
+    .filter((convId) => !sleepingChildren.has(convId));
   for (const record of runningNotifications) {
     if (!record.trackAsSubagent) continue;
     const childTitle = convStore.getIndexedSummary(record.childConvId)?.title.trim()

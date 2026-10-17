@@ -332,6 +332,36 @@ describe("external-tool auth arg injection", () => {
     );
   });
 
+  test("never injects auth args into heredoc bodies", async () => {
+    const auth = async () => ["--exocortex-auth-openai", "SECRET"];
+    for (const command of [
+      "python3 - <<'EOF'\nimport sys\nimage = sys.argv\nprint(image)\nEOF",
+      "cat > notes.md <<EOF\nimage generate makes pictures\nEOF\necho done",
+      "cat <<-\"END\"\n\timage generate x\n\tEND",
+      "cat <<A <<B\nimage one\nA\nimage two\nB",
+    ]) {
+      await expect(rewriteExternalToolShellCommandForToolsWithAuth(command, [image], auth)).resolves.toBe(command);
+    }
+  });
+
+  test("still injects auth args into commands around a heredoc", async () => {
+    await expect(rewriteExternalToolShellCommandForToolsWithAuth(
+      "image generate --json <<'EOF'\n{\"prompt\": \"image of a cat\"}\nEOF\nimage list",
+      [image],
+      async () => ["--exocortex-auth-openai", "token"],
+    )).resolves.toBe(
+      "image '--exocortex-auth-openai' 'token' generate --json <<'EOF'\n{\"prompt\": \"image of a cat\"}\nEOF\nimage '--exocortex-auth-openai' 'token' list",
+    );
+  });
+
+  test("a here-string is not a heredoc", async () => {
+    await expect(rewriteExternalToolShellCommandForToolsWithAuth(
+      "cat <<< hi\nimage list",
+      [image],
+      async () => ["--exocortex-auth-openai", "token"],
+    )).resolves.toBe("cat <<< hi\nimage '--exocortex-auth-openai' 'token' list");
+  });
+
   test("does not rewrite tools when no auth args are requested", async () => {
     const command = "image generate --json";
     await expect(rewriteExternalToolShellCommandForToolsWithAuth(

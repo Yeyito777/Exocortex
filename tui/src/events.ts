@@ -63,9 +63,11 @@ import { formatConversationDefaults, receiveConversationDefaults } from "./event
 import { hydratePendingAIFromSnapshot } from "./events/pending-ai";
 import type { DaemonActions } from "./events/types";
 import { handleAccountsEvent } from "./accountsscreen";
-import { handleBtwEvent } from "./btw/events";
+import { failBtwRequest, handleBtwEvent } from "./btw/events";
+import { settleRejectedQueueRequest } from "./queue";
 import { formatChronoResult } from "./chronoschedule";
 import { setInlineImagesEnabled } from "./inlineimages";
+import { turnRequestStartedAt } from "./request-ids";
 
 export type { DaemonActions } from "./events/types";
 
@@ -73,6 +75,12 @@ export function browserOpenCommand(url: string, platform: NodeJS.Platform = proc
   if (platform === "darwin") return ["open", url];
   if (platform === "win32") return ["cmd", "/c", "start", "", url];
   return ["xdg-open", url];
+}
+
+/** Whether `reqId` belongs to the turn-starting command that created the current pendingAI. */
+function isFailedSendOfPendingAI(state: RenderState, reqId: string | undefined): boolean {
+  const startedAt = turnRequestStartedAt(reqId);
+  return startedAt !== null && startedAt === state.pendingAI?.metadata?.startedAt;
 }
 
 export function handleEvent(
@@ -147,10 +155,14 @@ export function handleEvent(
       // The daemon rejected a creation shown optimistically. Its row goes now;
       // an opened one returns to the draft once the error is shown below.
       const rejectedCreation = event.convId !== undefined && removeOptimisticConversation(state.sidebar, event.convId);
+      // Rejected queue/BTW mutations settle the optimistic UI they created.
+      const rejectedQueueEntry = settleRejectedQueueRequest(state, event.reqId);
+      failBtwRequest(state, event.reqId, event.message);
       // Only show errors for the current conversation (or unscoped errors).
       if (event.convId && event.convId !== state.convId) {
         // The user left a rejected creation; its message is gone, so say so here.
         if (rejectedCreation) pushSystemMessage(state, `✗ Could not create conversation: ${event.message}`, theme.error);
+        else if (rejectedQueueEntry) pushSystemMessage(state, `✗ Could not queue message: ${event.message}`, theme.error);
         break;
       }
       // The opened conversation may have been deleted remotely. Stop the
@@ -168,8 +180,12 @@ export function handleEvent(
       }
       // A failed tool-output fetch (the viewport loader runs mid-stream) says
       // nothing about the turn being streamed; keep its pending response.
-      const toolOutputsFailed = event.convId === state.convId && handleToolOutputsError(state, event.reqId);
-      if (event.convId === state.convId && !toolOutputsFailed && state.pendingAI && state.pendingAI.blocks.length === 0) clearPendingAI(state);
+      if (event.convId === state.convId) handleToolOutputsError(state, event.reqId);
+      // Only a failure of the send that created the optimistic response clears
+      // it. Unrelated errors on this conversation (a rejected /instructions
+      // while streaming, an older-history page) must not hide the live turn.
+      if (event.convId === state.convId && state.pendingAI && state.pendingAI.blocks.length === 0
+          && (rejectedCreation || isFailedSendOfPendingAI(state, event.reqId))) clearPendingAI(state);
       pushSystemMessage(state, /^Unknown command: provider_proxy\b/.test(event.message)
         ? "✗ The connected Exocortex daemon does not support /proxy; update it."
         : `✗ ${event.message}`, theme.error);

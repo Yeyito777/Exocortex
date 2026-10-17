@@ -4,6 +4,8 @@ import { conversationWorkspaceDir } from "@exocortex/shared/paths";
 import { localMacroEnvironment } from "@exocortex/shared/macro-environment";
 import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { resumeQueuedMessageDelivery, suspendQueuedMessageDelivery } from "./message-queue";
+import { chronoInternalsForTest, deferChronoSleep, listDeferredChronoSleeps } from "./chrono-service";
 import { appendMessages, consumeGoalContinuationAfterStream, create, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, get, getQueuedMessageById, getQueuedMessages, getSummary, listQueuedMessages, pushGlobalIdleQueuedMessage, pushQueuedMessage, remove, removeQueuedMessageById, setGoal, updateGoalStatus } from "./conversations";
 import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, defaultEffortForModelId } from "./messages";
 import { appendToStreamingBlock, clearActiveJob, clearActiveSteerHandler, clearActiveToolBackgrounder, clearCurrentStreamingBlocks, initStreamingState, replaceCurrentStreamingBlocks, setActiveJob, setActiveSteerHandler, setActiveToolBackgrounder, setStreamingCommittedMessageCount } from "./streaming";
@@ -373,6 +375,26 @@ describe("handler shutdown preparation", () => {
       expect(readInterruptedStreamIds()).toEqual([id]);
       expect(hasActiveGoalRestartMarker()).toBe(true);
       expect(sent).toContainEqual({ type: "shutdown_prepared", reqId: "prepare-restart", convIds: [id], stillStreaming: [] });
+    } finally {
+      clearInterruptedStreamIds();
+      clearActiveGoalRestartMarker();
+    }
+  });
+
+  test("completes a prepared restart itself when the service never restarts it", async () => {
+    const server = {
+      sendTo: mock(() => {}), broadcast: mock(() => {}), sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}), subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    const requestRestart = mock(() => {});
+    const handle = createHandler(server as never, { requestRestart, preparedRestartTimeoutMs: 50 });
+    try {
+      // E.g. `exocortexd restart` run from a turn: preparing aborts that turn,
+      // its cgroup kills the script, and systemctl restart never runs.
+      await handle({} as never, { type: "prepare_shutdown", reqId: "orphaned", mode: "restart", interruptForReplay: true, timeoutMs: 0 });
+      expect(requestRestart).not.toHaveBeenCalled();
+      await new Promise(resolve => setTimeout(resolve, 120));
+      expect(requestRestart).toHaveBeenCalledTimes(1);
     } finally {
       clearInterruptedStreamIds();
       clearActiveGoalRestartMarker();
@@ -947,6 +969,31 @@ describe("handler daemon-owned queue", () => {
     }
   });
 
+  test("holds boot-time queue delivery until startup recovery releases it", async () => {
+    const id = mkId("queue-boot-hold");
+    create(id, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
+    const server = {
+      sendTo: mock(() => {}), broadcast: mock(() => {}), sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}), subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never, { holdQueueDeliveryUntilReady: true });
+    const callsBefore = orchestrateSendMessage.mock.calls.length;
+    try {
+      // A queue entry preserved across the restart (e.g. withdrawn from a
+      // Claude Code process that boot has not adopted yet).
+      pushQueuedMessage(id, "queued before restart", "next-turn", undefined, null, undefined, "boot-held");
+      await new Promise(resolve => setTimeout(resolve, 300));
+      expect(orchestrateSendMessage.mock.calls.length).toBe(callsBefore);
+
+      handle.startQueueDelivery();
+      await new Promise(resolve => setTimeout(resolve, 300));
+      expect(orchestrateSendMessage.mock.calls.length).toBeGreaterThan(callsBefore);
+      expect((orchestrateSendMessage.mock.calls[callsBefore] as unknown as unknown[])[4]).toBe("queued before restart");
+    } finally {
+      removeQueuedMessageById("boot-held");
+    }
+  });
+
   test("holds a due timed /queue entry until its own conversation is idle", async () => {
     const id = mkId("queue-delay-busy");
     create(id, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
@@ -1005,6 +1052,26 @@ describe("handler daemon-owned queue", () => {
       });
       expect(sent).toContainEqual(expect.objectContaining({ type: "error", message: "Invalid queue delay" }));
       expect(getQueuedMessageById("delayed-invalid")).toBeUndefined();
+      sent.length = 0;
+    }
+  });
+
+  test("rejects a stream-relative queue entry without a valid timing", async () => {
+    const id = mkId("queue-timing-invalid");
+    create(id, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}), sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}), subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    for (const timing of [undefined, "later"]) {
+      await handle({} as never, { type: "queue_message", reqId: "q1", queueId: "timing-invalid", convId: id, text: "never", timing } as never);
+      expect(sent).toContainEqual(expect.objectContaining({ type: "error", reqId: "q1", message: "Invalid queue timing" }));
+      expect(sent).toContainEqual(expect.objectContaining({ type: "queue_updated", settledQueueIds: ["timing-invalid"] }));
+      expect(getQueuedMessageById("timing-invalid")).toBeUndefined();
       sent.length = 0;
     }
   });
@@ -2209,6 +2276,43 @@ describe("handler subagent completion delivery", () => {
     }
   });
 
+  test("native exo message and abort reach a child suspended in a deferred chrono sleep", async () => {
+    const parentId = mkId("exo-sleep-parent");
+    const childId = mkId("exo-sleep-child");
+    const abortedId = mkId("exo-sleep-aborted");
+    create(parentId, "openai", "gpt-6-astra");
+    create(childId, "openai", "gpt-6-astra");
+    create(abortedId, "openai", "gpt-6-astra");
+    const server = {
+      sendTo: mock(() => {}), broadcast: mock(() => {}), sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}), subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+      hasLegacyHistorySubscribers: mock(() => false), sendHistoryUpdatedToSubscribers: mock(() => {}),
+    };
+    createHandler(server as never);
+    const runtime = getExocortexToolRuntime(server as never)!;
+    try {
+      for (const id of [childId, abortedId]) {
+        beginPendingSubagentNotification({ convId: parentId }, id, "build, then report", 1_000, 0);
+        expect(deferChronoSleep({ conversationId: id, toolCallId: `wait-${id}`, startedAt: Date.now(), durationMs: 3_600_000 }).error).toBeUndefined();
+      }
+
+      // A message starts the child's turn now, which ends the sleep early.
+      const delivered = JSON.parse((await runtime.execute({ message: { conversation: childId, text: "status?" } }, parentId)).output);
+      expect(delivered).toMatchObject({ status: "delivered", target_status: "idle" });
+      expect(orchestrateSendMessage.mock.calls.some(call => (call as unknown as unknown[])[3] === childId)).toBe(true);
+
+      // Abort ends the suspended turn: no later wake, no lingering running task.
+      const aborted = JSON.parse((await runtime.execute({ abort: abortedId }, parentId)).output);
+      expect(aborted.status).toBe("aborted");
+      expect(listDeferredChronoSleeps(abortedId)).toEqual([]);
+      expect(listPendingSubagentNotifications({ childConvId: abortedId })).toEqual([]);
+    } finally {
+      chronoInternalsForTest.reset();
+      removePendingSubagentNotificationsForConversation(childId);
+      removePendingSubagentNotificationsForConversation(abortedId);
+    }
+  });
+
   // The orchestrator completes a child's notification when its turn ends, and
   // the turn's starter (exo runtime, detached send, recovery) completes it again.
   // The second completion must not send the parent a duplicate while the first
@@ -2314,6 +2418,29 @@ describe("handler background task notifications", () => {
         automation: { kind: "background_task_completion", sourceId: "bash:1234" },
       }),
     ]);
+  });
+
+  test("deduplicates a repeated completion while the owner's queue delivery is suspended", () => {
+    const convId = mkId("background-suspended");
+    create(convId, "openai", "gpt-5.4", "parent");
+    const server = {
+      sendTo: mock(() => {}), broadcast: mock(() => {}), sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}), subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+    const completion = {
+      taskId: "bash:9999:suspended", toolName: "bash", title: "make", startedAt: 1_000, endedAt: 2_500,
+      exitCode: 0, signal: null, outputPath: "/tmp/bash-output.tmp",
+    };
+    handle.backgroundTaskComplete(convId, completion);
+    // An unwind gates delivery; a retried completion arrives meanwhile.
+    suspendQueuedMessageDelivery(convId);
+    try {
+      handle.backgroundTaskComplete(convId, completion);
+    } finally {
+      resumeQueuedMessageDelivery(convId);
+    }
+    expect(getQueuedMessages(convId)).toHaveLength(1);
   });
 
   test("durably queues and deduplicates an idle recovered completion before model dispatch", () => {

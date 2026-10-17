@@ -18,6 +18,7 @@ import { log } from "./log";
 import type { UpdateStatus } from "@exocortex/shared/updatecheck";
 import { BtwMutationReplay, isBtwMutation } from "./btw/replay";
 import { HistoryCache } from "./history-cache";
+import { btwRequestId, queueRequestId, turnRequestId, unqueueRequestId } from "./request-ids";
 import { transcribeLocally } from "./local-transcription";
 import { ClientExecutor } from "@exocortex/shared/command-exec";
 import {
@@ -485,6 +486,9 @@ export class DaemonClient {
   ): void {
     this.send({
       type: "new_conversation",
+      // A creation that carries the first message starts a turn; its errors
+      // must be attributable to the optimistic response it shows.
+      ...(initialMessage ? { reqId: turnRequestId(initialMessage.startedAt, ++this.nextReqId) } : {}),
       ...(convId ? { convId } : {}),
       provider, model, title, titleContext, effort, fastMode, initialMessage, folderId,
       goalObjective, goalMaxTimeMs,
@@ -500,27 +504,27 @@ export class DaemonClient {
   }
 
   sendMessage(convId: string, text: string, startedAt: number, images?: ImageAttachment[]): void {
-    this.send({ type: "send_message", convId, text, startedAt, images: images?.length ? images : undefined });
+    this.send({ type: "send_message", reqId: turnRequestId(startedAt, ++this.nextReqId), convId, text, startedAt, images: images?.length ? images : undefined });
   }
 
   replayConversation(convId: string, startedAt: number): void {
-    this.send({ type: "replay_conversation", convId, startedAt });
+    this.send({ type: "replay_conversation", reqId: turnRequestId(startedAt, ++this.nextReqId), convId, startedAt });
   }
 
   compactConversation(convId: string, startedAt: number): void {
-    this.send({ type: "compact_conversation", convId, startedAt });
+    this.send({ type: "compact_conversation", reqId: turnRequestId(startedAt, ++this.nextReqId), convId, startedAt });
   }
 
   startBtw(convId: string, sessionId: string, query: string, startedAt: number): void {
-    this.send({ type: "btw_query", convId, sessionId, query, startedAt });
+    this.send({ type: "btw_query", reqId: btwRequestId("query", sessionId), convId, sessionId, query, startedAt });
   }
 
   followupBtw(convId: string, sessionId: string, turnId: string, query: string, startedAt: number): void {
-    this.send({ type: "btw_followup", convId, sessionId, turnId, query, startedAt });
+    this.send({ type: "btw_followup", reqId: btwRequestId("followup", sessionId, turnId), convId, sessionId, turnId, query, startedAt });
   }
 
   closeBtw(convId: string, sessionId?: string): void {
-    this.send({ type: "btw_close", convId, sessionId });
+    this.send({ type: "btw_close", reqId: btwRequestId("close", sessionId), convId, sessionId });
   }
 
   ping(): void {
@@ -676,6 +680,7 @@ export class DaemonClient {
     }
     this.cancelSshProbe = null;
     this.sshSwitchingTo = null;
+    this.discardOldEndpointCommands();
     this.sshAlias = alias;
     this.historyCache.clear();
     log("info", `ssh transport: selected remote daemon via ${alias}`);
@@ -700,6 +705,7 @@ export class DaemonClient {
     }
 
     const previous = this.sshAlias;
+    this.discardOldEndpointCommands();
     this.sshAlias = null;
     this.historyCache.clear();
     this.discardPendingSshConnection();
@@ -725,6 +731,23 @@ export class DaemonClient {
     this.pendingSshConnection = null;
     if (!pending) return;
     try { pending.process.kill(); } catch { /* already gone */ }
+  }
+
+  /**
+   * Offline and ambiguous commands were issued against the endpoint being left:
+   * their conversation/queue/BTW ids belong to that daemon. Like host-scoped
+   * defaults and path lookups, they must never be replayed on another route.
+   * The switched status that follows makes main.ts reset the optimistic UI
+   * these commands created. Commands issued after that target the new route.
+   */
+  private discardOldEndpointCommands(): void {
+    const dropped = this.pendingCommands.length + this.unresolvedQueueCommands.size
+      + this.unresolvedUnwindCommands.size + this.btwMutationReplay.size;
+    this.pendingCommands = [];
+    this.unresolvedQueueCommands.clear();
+    this.unresolvedUnwindCommands.clear();
+    this.btwMutationReplay.clear();
+    if (dropped > 0) log("info", `ssh transport: dropped ${dropped} unsent/unresolved command(s) for the previous route`);
   }
 
   private closeCurrentTransportForRouteSwitch(): void {
@@ -895,11 +918,16 @@ export class DaemonClient {
       waitTarget?: QueueWaitTarget;
     } = {},
   ): void {
-    this.send({ type: "queue_message", convId, text, timing, ...(images?.length ? { images } : {}), ...options });
+    this.send({
+      type: "queue_message",
+      // Stable across replays: a rejection settles exactly this optimistic entry.
+      ...(options.queueId ? { reqId: queueRequestId(options.queueId) } : {}),
+      convId, text, timing, ...(images?.length ? { images } : {}), ...options,
+    });
   }
 
   unqueueMessage(queueId: string): void {
-    this.send({ type: "unqueue_message", queueId });
+    this.send({ type: "unqueue_message", reqId: unqueueRequestId(queueId), queueId });
   }
 
   updateQueuedMessage(queueId: string, text: string, timing: QueueTiming, images?: ImageAttachment[]): void {
@@ -1229,6 +1257,13 @@ export class DaemonClient {
   }
 
   private settleQueueCommands(event: Event): void {
+    if (event.type === "error" && event.reqId) {
+      // A rejected queue mutation is final; replaying it would fail again.
+      for (const [key, pending] of this.unresolvedQueueCommands) {
+        if (pending.command.reqId === event.reqId) this.unresolvedQueueCommands.delete(key);
+      }
+      return;
+    }
     if (event.type !== "queue_updated") return;
     const canonicalIds = new Set(event.messages.map(message => message.id));
     const settledIds = new Set(event.settledQueueIds ?? []);

@@ -2,7 +2,8 @@
  * Tests for conversations.ts behavior.
  */
 
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, spyOn, test } from "bun:test";
+import * as persistenceModule from "./persistence";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { conversationWorkspaceDir, conversationsDir, dataDir, trashedConversationWorkspaceDir, trashDir } from "@exocortex/shared/paths";
@@ -790,6 +791,41 @@ describe("sidebar ordering", () => {
     expect(loadFromDisk().indexRebuilt).toBeGreaterThanOrEqual(2);
     expect(sidebarPaths.some(existsSync)).toBe(false);
     expect(rootConversationOrder(ids)).toEqual(ids);
+  });
+});
+
+describe("flushAll", () => {
+  test("one conversation's failed save does not stop the others from being saved", () => {
+    const [failing, healthy] = ["flushall-failing", "flushall-healthy"].map(mkId);
+    create(failing, "openai", "gpt-5.4", failing);
+    create(healthy, "openai", "gpt-5.4", healthy);
+    markDirty(failing);
+    markDirty(healthy);
+    const realSave = persistenceModule.save;
+    const saved: string[] = [];
+    const save = spyOn(persistenceModule, "save").mockImplementation(((conv: { id: string }, options?: unknown) => {
+      if (conv.id === failing) throw new Error("stale generation");
+      saved.push(conv.id);
+      return (realSave as (...args: unknown[]) => unknown)(conv, options);
+    }) as never);
+    try {
+      expect(() => flushAll()).not.toThrow();
+      expect(saved).toContain(healthy);
+    } finally {
+      save.mockRestore();
+    }
+    // The failed conversation stays dirty and is saved by the next flush.
+    saved.length = 0;
+    const retry = spyOn(persistenceModule, "save").mockImplementation(((conv: { id: string }, options?: unknown) => {
+      saved.push(conv.id);
+      return (realSave as (...args: unknown[]) => unknown)(conv, options);
+    }) as never);
+    try {
+      flushAll();
+      expect(saved).toEqual([failing]);
+    } finally {
+      retry.mockRestore();
+    }
   });
 });
 

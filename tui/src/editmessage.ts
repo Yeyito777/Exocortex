@@ -388,11 +388,17 @@ const EVENTS_SUPERSEDED_BY_PENDING_UNWIND: ReadonlySet<Event["type"]> = new Set(
 export function classifyPendingEditMessageUnwindEvent(
   pending: PendingEditMessageUnwind,
   event: Event,
+  openRequestReqId: string | null = null,
 ): PendingEditMessageUnwindEvent {
   if (!("convId" in event) || event.convId !== pending.convId) return "unrelated";
   if ((event.type === "conversation_unwound" || event.type === "conversation_loaded")
       && event.reqId === pending.reqId) return "complete";
   if (event.type === "error" && event.reqId === pending.reqId) return "failed";
+  // Re-opening the conversation (after switching away) must still land; its
+  // window may include the suffix being cut, but the targeted unwind that
+  // follows trims it. Dropping it left an empty transcript and endless spinner.
+  if (event.type === "conversation_loaded" && openRequestReqId !== null
+      && event.reqId === openRequestReqId) return "unrelated";
   if (EVENTS_SUPERSEDED_BY_PENDING_UNWIND.has(event.type)) return "ignore";
   return "unrelated";
 }

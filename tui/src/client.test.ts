@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { createServer, type Server } from "net";
 import { unlinkSync } from "fs";
 import { DaemonClient } from "./client";
+import { turnRequestStartedAt } from "./request-ids";
 import type { Command, DaemonShutdownMode } from "./protocol";
 
 const testServers: Server[] = [];
@@ -182,6 +183,7 @@ describe("DaemonClient commands", () => {
     expect(internal.pendingCommands).toEqual([
       {
         type: "queue_message",
+        reqId: "queue_message:queue-1",
         convId: "conv-1",
         text: "later",
         timing: "message-end",
@@ -190,7 +192,7 @@ describe("DaemonClient commands", () => {
         target: "conversation",
         waitTarget: { type: "conversation", convId: "dependency", label: "Build" },
       },
-      { type: "unqueue_message", queueId: "queue-1" },
+      { type: "unqueue_message", reqId: "unqueue_message:queue-1", queueId: "queue-1" },
       { type: "update_queued_message", queueId: "queue-1", text: "edited", timing: "next-turn" },
       { type: "move_queued_message", queueId: "queue-1", direction: "up" },
     ]);
@@ -246,7 +248,7 @@ describe("DaemonClient commands", () => {
 
     writes.length = 0;
     const replayed = internal.flushPendingCommands();
-    expect(replayed).toEqual([{ type: "unqueue_message", queueId: "queue-remove-replay" }]);
+    expect(replayed).toEqual([{ type: "unqueue_message", reqId: "unqueue_message:queue-remove-replay", queueId: "queue-remove-replay" }]);
     expect(writes.map(line => JSON.parse(line))).toEqual(replayed);
 
     internal.onData(Buffer.from(JSON.stringify({
@@ -329,7 +331,7 @@ describe("DaemonClient commands", () => {
 
     writes.length = 0;
     const replayed = internal.flushPendingCommands();
-    expect(replayed).toEqual([{ type: "btw_close", convId: "conv-1", sessionId: "btw-1" }]);
+    expect(replayed).toEqual([{ type: "btw_close", reqId: "btw:close:btw-1:btw-1", convId: "conv-1", sessionId: "btw-1" }]);
     expect(writes.map(line => JSON.parse(line))).toEqual(replayed);
 
     internal.onData(Buffer.from(`${JSON.stringify({
@@ -392,6 +394,7 @@ describe("DaemonClient commands", () => {
     client.followupBtw("conv-1", "panel-1", "turn-2", "clarify", 200);
     expect(JSON.parse(writes.at(-1)!)).toEqual({
       type: "btw_followup",
+      reqId: "btw:followup:panel-1:turn-2",
       convId: "conv-1",
       sessionId: "panel-1",
       turnId: "turn-2",
@@ -460,6 +463,7 @@ describe("DaemonClient commands", () => {
 
     expect(internal.pendingCommands).toEqual([{
       type: "new_conversation",
+      reqId: expect.stringMatching(/^turn_456_/),
       provider: "openai",
       model: "gpt-5.4",
       title: "pending",
@@ -500,6 +504,18 @@ describe("DaemonClient commands", () => {
     });
   });
 
+  test("turn-starting commands carry a reqId tied to their pending response", () => {
+    const client = new DaemonClient(() => {});
+    const internal = client as any;
+
+    client.sendMessage("conv-1", "hi", 777);
+    client.replayConversation("conv-1", 778);
+
+    expect(turnRequestStartedAt(internal.pendingCommands[0].reqId)).toBe(777);
+    expect(turnRequestStartedAt(internal.pendingCommands[1].reqId)).toBe(778);
+    expect(internal.pendingCommands[0].reqId).not.toBe(internal.pendingCommands[1].reqId);
+  });
+
   test("can request a manual conversation compaction", () => {
     const client = new DaemonClient(() => {});
     const internal = client as any;
@@ -508,9 +524,49 @@ describe("DaemonClient commands", () => {
 
     expect(internal.pendingCommands[0]).toEqual({
       type: "compact_conversation",
+      reqId: expect.stringMatching(/^turn_123456_/),
       convId: "conv-1",
       startedAt: 123_456,
     });
+  });
+
+  test("a rejected enqueue is settled by its reqId and never replayed", () => {
+    const client = new DaemonClient(() => {});
+    const internal = client as any;
+    const writes: string[] = [];
+    internal.socket = { write: (value: string) => { writes.push(value); } };
+    internal._connected = true;
+
+    client.queueMessage("conv-1", "never", "message-end", undefined, { queueId: "queue-bad" });
+    client.queueMessage("conv-1", "fine", "message-end", undefined, { queueId: "queue-good" });
+    expect(internal.unresolvedQueueCommands.size).toBe(2);
+
+    internal.onData(Buffer.from(JSON.stringify({
+      type: "error", reqId: "queue_message:queue-bad", convId: "conv-1", message: "NOT NULL constraint failed",
+    }) + "\n"));
+
+    expect([...internal.unresolvedQueueCommands.keys()]).toEqual(["enqueue:queue-good"]);
+    writes.length = 0;
+    expect(internal.flushPendingCommands().map((command: Command) => command.type === "queue_message" && command.queueId))
+      .toEqual(["queue-good"]);
+  });
+
+  test("a BTW query the daemon rejected with its reqId is not replayed on reconnect", () => {
+    const client = new DaemonClient(() => {});
+    const internal = client as any;
+    internal.socket = { write: () => {} };
+    internal._connected = true;
+
+    client.startBtw("conv-1", "btw-1", "question", 100);
+    expect(internal.btwMutationReplay.size).toBe(1);
+
+    // A persistence failure without reqId stays replayable.
+    internal.onData(Buffer.from(JSON.stringify({ type: "error", convId: "conv-1", message: "Failed to persist BTW start; it will be retried after reconnect." }) + "\n"));
+    expect(internal.btwMutationReplay.size).toBe(1);
+
+    internal.onData(Buffer.from(JSON.stringify({ type: "error", reqId: "btw:query:btw-1:btw-1", convId: "conv-1", message: "boom" }) + "\n"));
+    expect(internal.btwMutationReplay.size).toBe(0);
+    expect(internal.flushPendingCommands()).toEqual([]);
   });
 
   test("closes a BTW through its owning conversation", () => {
@@ -521,6 +577,7 @@ describe("DaemonClient commands", () => {
 
     expect(internal.pendingCommands[0]).toEqual({
       type: "btw_close",
+      reqId: "btw:close:btw-1:btw-1",
       convId: "conv-1",
       sessionId: "btw-1",
     });
