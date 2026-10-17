@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { conversationWorkspaceDir, dataDir, trashedConversationWorkspaceDir } from "@exocortex/shared/paths";
 import { appendMessages, clearActiveJob, create, get, getQueuedMessages, remove, setActiveJob } from "./conversations";
@@ -690,5 +690,21 @@ describe("chrono input bounds", () => {
     const result = createChronoSchedule({ ownerConversationId: owner, afterSeconds: 9e12, message: "never" });
     expect(result.error).toContain("at most 100 years");
     expect(listChronoSchedules(owner)).toEqual([]);
+  });
+});
+
+describe("chrono state recovery", () => {
+  test("an unreadable state file is kept aside before it is replaced", async () => {
+    const statePath = join(dataDir(), "chrono.json");
+    mkdirSync(dataDir(), { recursive: true });
+    writeFileSync(statePath, '{"version":1,"schedules":[{"id":"chrono:trunc');
+    try {
+      await startChronoService();
+      const kept = readdirSync(dataDir()).filter(name => name.startsWith("chrono.json.corrupt-"));
+      expect(kept).toHaveLength(1);
+      expect(readFileSync(join(dataDir(), kept[0]), "utf8")).toContain("chrono:trunc");
+    } finally {
+      for (const name of readdirSync(dataDir())) if (name.startsWith("chrono.json.corrupt-")) rmSync(join(dataDir(), name));
+    }
   });
 });

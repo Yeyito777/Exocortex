@@ -10,7 +10,7 @@
  * from sends to ordinary existing conversations.
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { dataDir } from "@exocortex/shared/paths";
 import type { ParentNotificationTarget } from "./protocol";
@@ -128,6 +128,8 @@ export function reloadPendingSubagentNotifications(): PendingSubagentNotificatio
     }
   } catch (err) {
     log("error", `subagent notifications: cannot read ${path}: ${err instanceof Error ? err.message : String(err)}`);
+    // The next save replaces it; keep the unreadable original for recovery.
+    try { copyFileSync(path, `${path}.corrupt-${Date.now()}`); } catch { /* best effort */ }
   }
   return listPendingSubagentNotifications();
 }

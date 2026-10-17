@@ -7,7 +7,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { dataDir } from "@exocortex/shared/paths";
 import { agentWorkingDirectory } from "@exocortex/shared/config";
@@ -287,6 +287,7 @@ function load(): void {
     const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<ChronoStateFile>;
     if (parsed.version !== STATE_VERSION) {
       log("warn", `chrono: unsupported state version ${String(parsed.version)}; starting empty`);
+      keepUnreadableState(path);
       return;
     }
     for (const schedule of parsed.schedules ?? []) {
@@ -300,7 +301,17 @@ function load(): void {
     }
   } catch (err) {
     log("error", `chrono: failed to load state: ${err instanceof Error ? err.message : String(err)}`);
+    keepUnreadableState(path);
   }
+}
+
+/** The next persist replaces the state file: keep an unreadable one (every schedule) for recovery. */
+function keepUnreadableState(path: string): void {
+  const kept = `${path}.corrupt-${Date.now()}`;
+  try {
+    copyFileSync(path, kept);
+    log("warn", `chrono: kept the unreadable state file as ${kept}`);
+  } catch { /* best effort */ }
 }
 
 function notifyConversation(conversationId: string | undefined): void {
