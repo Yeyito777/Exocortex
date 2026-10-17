@@ -114,7 +114,7 @@ ensure_launchd_service_loaded() {
   plist="$(launchd_plist)"
   if [[ ! -f "$plist" ]]; then
     print_error "LaunchAgent not found: $plist"
-    echo "    Install the daemon LaunchAgent first, then retry." >&2
+    echo "    Install it with $PROJECT_DIR/scripts/macos/build-launcher.sh, then retry." >&2
     exit 1
   fi
 

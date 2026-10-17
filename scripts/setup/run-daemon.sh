@@ -22,7 +22,7 @@ install_dependencies() {
     To repair:
       cd $PROJECT_DIR
       bun install
-      systemctl --user restart exocortex-daemon.service
+      exocortexd restart
 
 EOF
   exit 78
