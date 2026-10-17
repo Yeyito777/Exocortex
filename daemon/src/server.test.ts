@@ -81,7 +81,7 @@ describe("daemon command handler failures", () => {
   function recordingClient(): { connection: ConnectedClient; events: any[] } {
     const events: any[] = [];
     const connection: ConnectedClient = {
-      id: "test", buffer: "", capabilities: new Set(), subscriptions: new Set(),
+      id: "test", lines: new LineSplitter(), capabilities: new Set(), subscriptions: new Set(),
       socket: { destroyed: false, write: (payload: string) => { events.push(JSON.parse(payload)); return true; } } as unknown as Socket,
     };
     return { connection, events };
