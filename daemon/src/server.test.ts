@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DaemonServer, type ConnectedClient } from "./server";
+import { DaemonServer, broadcastUsageUpdate, type ConnectedClient } from "./server";
 import type { Command } from "./protocol";
 import { LineSplitter } from "./line-splitter";
 
@@ -103,5 +103,49 @@ describe("daemon command handler failures", () => {
       { type: "error", reqId: "r2", message: "boom" },
       { type: "error", reqId: "r3", message: "boom" },
     ]);
+  });
+});
+
+describe("token statistics fan-out", () => {
+  function recordingClient(capabilities: string[] = []): ConnectedClient & { written: string[] } {
+    const written: string[] = [];
+    return {
+      id: "c", lines: new LineSplitter(), capabilities: new Set(capabilities as never[]), subscriptions: new Set(), written,
+      socket: { destroyed: false, write: (data: string) => { written.push(data); return true; } } as unknown as Socket,
+    };
+  }
+
+  test("builds the snapshot once, and only for clients without token-stats-on-demand", () => {
+    const server = new DaemonServer("unused", () => {});
+    const legacyA = recordingClient(), legacyB = recordingClient(), capable = recordingClient(["token-stats-on-demand"]);
+    (server as any).clients = new Map([["a", legacyA], ["b", legacyB], ["c", capable]]);
+    let builds = 0;
+    const snapshot = () => { builds++; return { updatedAt: 1, days: [] } as never; };
+    server.broadcastLegacyTokenStats(snapshot);
+    expect(builds).toBe(1);
+    expect(legacyA.written.map(line => JSON.parse(line).type)).toEqual(["token_stats"]);
+    expect(legacyB.written).toHaveLength(1);
+    expect(capable.written).toHaveLength(0);
+
+    (server as any).clients = new Map([["c", capable]]);
+    server.broadcastLegacyTokenStats(snapshot);
+    expect(builds).toBe(1);
+  });
+});
+
+describe("usage fan-out", () => {
+  test("skips a broadcast identical to the provider's previous one", () => {
+    const server = new DaemonServer("unused", () => {});
+    const written: string[] = [];
+    const connection = { ...client(), socket: { destroyed: false, write: (data: string) => { written.push(data); return true; } } as unknown as Socket };
+    (server as any).clients = new Map([["a", connection]]);
+    const usage = { fiveHour: { utilization: 10, resetsAt: 1 } } as never;
+    broadcastUsageUpdate(server, "anthropic", usage);
+    broadcastUsageUpdate(server, "anthropic", structuredClone(usage));
+    broadcastUsageUpdate(server, "openai", usage);
+    broadcastUsageUpdate(server, "anthropic", { fiveHour: { utilization: 11, resetsAt: 1 } } as never);
+    broadcastUsageUpdate(server, "anthropic", null);
+    expect(written.map(line => JSON.parse(line)).map(event => [event.provider, event.usage?.fiveHour?.utilization ?? null]))
+      .toEqual([["anthropic", 10], ["openai", 10], ["anthropic", 11], ["anthropic", null]]);
   });
 });

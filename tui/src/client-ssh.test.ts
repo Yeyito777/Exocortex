@@ -31,15 +31,23 @@ class FakeProcess extends EventEmitter implements SshProcess {
   }
 }
 
+/** The probe's ping, once its complete line has been written. */
+function probePing(child: FakeProcess): { reqId: string } | null {
+  for (const line of child.input.split("\n").slice(0, -1)) {
+    const command = JSON.parse(line);
+    if (command.type === "ping") return command;
+  }
+  return null;
+}
+
 function respondingProbe(bufferedEvent?: Record<string, unknown>): FakeProcess {
   const child = new FakeProcess();
   let handled = false;
   child.stdin.on("data", () => {
     if (handled) return;
-    const newline = child.input.indexOf("\n");
-    if (newline === -1) return;
+    const command = probePing(child);
+    if (!command) return;
     handled = true;
-    const command = JSON.parse(child.input.slice(0, newline));
     child.stdout.write(
       `${JSON.stringify({ type: "pong", reqId: command.reqId })}\n`
       + (bufferedEvent ? `${JSON.stringify(bufferedEvent)}\n` : ""),
@@ -278,8 +286,11 @@ describe("DaemonClient SSH routing", () => {
       await Bun.sleep(1);
       expect(ready).toBe(false);
       expect(client.connected).toBe(false);
-      const ping = JSON.parse(retry.input.trim());
-      expect(ping.type).toBe("ping");
+      const sent = retry.input.split("\n").filter(Boolean).map(line => JSON.parse(line));
+      // Capabilities precede the ping so they shape the bootstrap it requests.
+      expect(sent.map(command => command.type)).toEqual(["client_capabilities", "ping"]);
+      expect(sent[0].clientHost).toBeUndefined();
+      const ping = sent[1];
       retry.stdout.write('{"type":"pong","reqId":"wrong"}\n');
       await Bun.sleep(1);
       expect(ready).toBe(false);
@@ -351,7 +362,8 @@ describe("DaemonClient SSH routing", () => {
         await expect(connecting).rejects.toThrow("cancelled");
         expect(stalled.killed).toBe(true);
         expect(client.connected).toBe(false);
-        expect(stalled.input).not.toContain("client_capabilities");
+        // Only the probe's own preamble was sent; the route was never adopted.
+        expect(stalled.input).not.toContain("clientHost");
         if (action === "cancel-route") expect(client.remoteAlias).toBeNull();
       } finally {
         client.disconnect();
@@ -623,7 +635,7 @@ describe("DaemonClient SSH routing", () => {
       (await client.connect()).releaseBootstrapEvents?.();
       const [ssh] = spawned;
       const capabilities = ssh.input.split("\n").filter(Boolean).map(line => JSON.parse(line))
-        .find(command => command.type === "client_capabilities");
+        .findLast(command => command.type === "client_capabilities");
       expect(capabilities.clientHost).toMatchObject({ hostname: "laptop", platform: process.platform });
 
       ssh.stdout.write(JSON.stringify({ type: "client_exec_request", execId: "e1", command: "echo from-laptop; exit 2", timeoutMs: 5_000 }) + "\n");

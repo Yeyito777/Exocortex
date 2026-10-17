@@ -8,6 +8,7 @@ import type { FastMode } from "@exocortex/shared/messages";
 import { connect } from "net";
 import { existsSync } from "fs";
 import { randomUUID } from "crypto";
+import { StringDecoder } from "node:string_decoder";
 import { homedir, hostname, userInfo } from "os";
 import type { ClientCapability, ClientHostInfo, Command, DaemonShutdownMode, Event, GoalAction, MoveSidebarItemsOptions, OpenAILoginMethod, QueuedCommandInvocation, QueueTiming, QueueWaitTarget, TrimMode, SidebarItemRef, GetImageCommand, ImageDataEvent } from "./protocol";
 import type { ProviderId, ModelId, EffortLevel, ImageAttachment, TokenUsageSource } from "./messages";
@@ -19,6 +20,7 @@ import type { UpdateStatus } from "@exocortex/shared/updatecheck";
 import { BtwMutationReplay, isBtwMutation } from "./btw/replay";
 import { HistoryCache } from "./history-cache";
 import { btwRequestId, queueRequestId, turnRequestId, unqueueRequestId } from "./request-ids";
+import { SidebarCache } from "./sidebar-cache";
 import { transcribeLocally } from "./local-transcription";
 import { ClientExecutor } from "@exocortex/shared/command-exec";
 import {
@@ -37,6 +39,8 @@ const CLIENT_CAPABILITIES: ClientCapability[] = [
   "sidebar-reorder-delta",
   "sidebar-state-patch",
   "history-block-pagination",
+  "token-stats-on-demand",
+  "sidebar-digest-sync",
 ];
 
 export type EventHandler = (event: Event) => void;
@@ -106,7 +110,10 @@ export class DaemonClient {
   private socket: ClientTransport | null = null;
   private activeSshConnection: ActiveSshConnection | null = null;
   private buffer = "";
+  /** Socket and SSH reads split UTF-8 characters at arbitrary byte offsets. */
+  private decoder = new StringDecoder("utf8");
   private readonly historyCache = new HistoryCache();
+  private readonly sidebarCache = new SidebarCache();
   private handler: EventHandler;
   private _connected = false;
   private socketPath: string;
@@ -183,6 +190,7 @@ export class DaemonClient {
     this.intentionalDisconnect = false;
     this.announcedShutdownMode = null;
     this.buffer = "";
+    this.decoder = new StringDecoder("utf8");
     return this.sshAlias ? this.connectSsh(this.sshAlias) : this.connectLocal();
   }
 
@@ -242,10 +250,21 @@ export class DaemonClient {
     });
   }
 
+  /**
+   * Capabilities written ahead of the probe ping that requests the bootstrap,
+   * with a digest of the sidebar already held for this host. The client host
+   * is attached only once the connection is adopted.
+   */
+  private probeCapabilities(alias: string): Command {
+    const sidebarDigest = this.sidebarCache.beginSync(alias);
+    return { type: "client_capabilities", capabilities: CLIENT_CAPABILITIES, ...(sidebarDigest ? { sidebarDigest } : {}) };
+  }
+
   private async probeSshReconnect(alias: string): Promise<ProbedSshConnection> {
     const probe = probeSshProxy(alias, {
       spawnProcess: this.spawnSshProcess,
       timeoutMs: this.sshProbeTimeoutMs,
+      preamble: [this.probeCapabilities(alias)],
     });
     // Keep even an unauthenticated attempt cancellable by disconnect/route
     // switches. Spawning ssh is not readiness: never flush the offline queue
@@ -397,6 +416,7 @@ export class DaemonClient {
       this.socket = null;
       if (this.activeSshConnection?.transport === socket) this.activeSshConnection = null;
       this.buffer = "";
+      this.decoder = new StringDecoder("utf8");
       this.announcedShutdownMode = null;
     }
     if (connected && wasCurrentSocket && !this.intentionalDisconnect) this.onDisconnect?.(shutdownMode);
@@ -416,6 +436,7 @@ export class DaemonClient {
     this.activeSshConnection = null;
     this._connected = false;
     this.buffer = "";
+    this.decoder = new StringDecoder("utf8");
     this.announcedShutdownMode = null;
   }
 
@@ -654,6 +675,7 @@ export class DaemonClient {
     const probe = probeSshProxy(alias, {
       spawnProcess: this.spawnSshProcess,
       timeoutMs: this.sshProbeTimeoutMs,
+      preamble: [this.probeCapabilities(alias)],
     });
     this.cancelSshProbe = probe.cancel;
     try {
@@ -1066,6 +1088,13 @@ export class DaemonClient {
     this.send({ type: "provider_proxy", reqId: `proxy_${Date.now().toString(36)}`, action, ...(provider ? { provider } : {}), ...(alias ? { alias } : {}) });
   }
 
+  /** Request a fresh token_stats snapshot; returns the reqId its reply carries. */
+  getTokenStats(): string {
+    const reqId = `token_stats_${++this.nextReqId}_${Date.now()}`;
+    this.send({ type: "get_token_stats", reqId });
+    return reqId;
+  }
+
   getSystemPrompt(convId?: string): void {
     this.send({ type: "get_system_prompt", convId });
   }
@@ -1295,7 +1324,7 @@ export class DaemonClient {
     // Resume at its old end instead of rescanning a growing multi-megabyte JSON
     // event on every socket chunk (quadratic work for large payloads).
     let newlineSearchFrom = this.buffer.length;
-    this.buffer += typeof data === "string" ? data : data.toString("utf-8");
+    this.buffer += typeof data === "string" ? data : this.decoder.write(data);
 
     let idx: number;
     while ((idx = this.buffer.indexOf("\n", newlineSearchFrom)) !== -1) {
@@ -1318,8 +1347,13 @@ export class DaemonClient {
           );
           continue;
         }
-        const event = this.historyCache.receive(parsed, command => this.writeCommand(command));
-        if (!event) continue;
+        const received = this.historyCache.receive(parsed, command => this.writeCommand(command));
+        const event = received && this.sshAlias ? this.sidebarCache.receive(received, this.sshAlias) : received;
+        if (!event) {
+          // A sidebar digest answer whose base is gone: ask for the full list.
+          if (received?.type === "conversations_list") this.writeCommand({ type: "list_conversations" });
+          continue;
+        }
         if (event.type === "daemon_shutdown") {
           // This is transport metadata rather than a user-facing event. Retain it
           // until close so the reconnecting TUI can distinguish a planned daemon

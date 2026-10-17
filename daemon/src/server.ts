@@ -12,8 +12,9 @@ import { isWindows } from "@exocortex/shared/paths";
 import { LineSplitter } from "./line-splitter";
 import { log } from "./log";
 import { budgetHistoryUpdatedEvent } from "./history-pagination";
-import type { ClientCapability, Command, Event } from "./protocol";
+import type { ClientCapability, Command, Event, ProviderId, TokenStatsSnapshot, UsageData } from "./protocol";
 import { PROVIDER_PROXY_LINK_EVENT_TYPES } from "@exocortex/shared/provider-proxy";
+import type { SidebarDigest } from "@exocortex/shared/sidebar-digest";
 
 // ── Client tracking ─────────────────────────────────────────────────
 
@@ -32,9 +33,29 @@ export interface ConnectedClient {
    * provider-proxy events and errors, never broadcasts.
    */
   providerProxyLink?: boolean;
+  /** Single-use: the list this client already holds (sidebar-digest-sync). */
+  sidebarDigest?: SidebarDigest;
 }
 
 export type CommandHandler = (client: ConnectedClient, command: Command) => void | Promise<void>;
+
+// ── Usage fan-out ───────────────────────────────────────────────────
+
+const lastBroadcastUsage = new WeakMap<object, Map<ProviderId, string>>();
+
+/**
+ * Usage is re-fetched after every turn and on response headers, and usually
+ * comes back unchanged. Connected clients already hold the last value (new
+ * ones get it in their bootstrap), so identical repeats are not re-sent.
+ */
+export function broadcastUsageUpdate(server: Pick<DaemonServer, "broadcast">, provider: ProviderId, usage: UsageData | null): void {
+  let last = lastBroadcastUsage.get(server);
+  if (!last) lastBroadcastUsage.set(server, last = new Map());
+  const serialized = JSON.stringify(usage);
+  if (last.get(provider) === serialized) return;
+  last.set(provider, serialized);
+  server.broadcast({ type: "usage_update", provider, usage });
+}
 
 // ── Server ──────────────────────────────────────────────────────────
 
@@ -201,6 +222,19 @@ export class DaemonServer {
         legacy ??= legacyEvent();
         this.sendTo(client, legacy);
       }
+    }
+  }
+
+  /**
+   * Push token statistics only to clients that still expect them unprompted.
+   * The snapshot is large and costly, so it is built at most once and only
+   * when such a client is connected; capable clients ask with get_token_stats.
+   */
+  broadcastLegacyTokenStats(snapshot: () => TokenStatsSnapshot): void {
+    let event: Extract<Event, { type: "token_stats" }> | undefined;
+    for (const client of this.clients.values()) {
+      if (client.capabilities.has("token-stats-on-demand") || client.providerProxyLink) continue;
+      this.sendTo(client, event ??= { type: "token_stats", stats: snapshot() });
     }
   }
 

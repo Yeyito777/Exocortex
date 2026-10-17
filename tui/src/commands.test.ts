@@ -6,6 +6,7 @@ import { clearPreferredProvider } from "./preferences";
 import { createInitialState } from "./state";
 import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, defaultEffortForModelId, type ProviderInfo, type TokenStatsSnapshot, type TokenUsageTotals } from "./messages";
 import { theme, themes } from "./theme";
+import { handleEvent, type DaemonActions } from "./events";
 
 const providers: ProviderInfo[] = [
   {
@@ -906,12 +907,33 @@ describe("/usage", () => {
   });
 });
 
+/** Run /tokens through its request and the daemon's get_token_stats reply. */
+function runTokens(text: string, state: ReturnType<typeof createInitialState>): CommandResult | null {
+  const result = tryCommand(text, state);
+  if (result?.type !== "token_stats_requested") return result;
+  const stats = state.tokenStats!;
+  state.tokenStats = null;
+  state.pendingTokenStatsView = { ...result.view, reqId: "token_stats_test" };
+  handleEvent({ type: "token_stats", reqId: "token_stats_test", stats }, state, tokensDaemon);
+  expect(state.pendingTokenStatsView).toBeNull();
+  expect(state.tokenStats as TokenStatsSnapshot | null).toBe(stats);
+  return { type: "handled" };
+}
+
+const tokensDaemon: DaemonActions = {
+  subscribe() {},
+  unsubscribe() {},
+  sendMessage() {},
+  setSystemInstructions() {},
+  loadToolOutputs() {},
+};
+
 describe("/tokens", () => {
   test("shows a github-style heatmap and bottom summary stats from cached stats", () => {
     const state = createInitialState();
     state.tokenStats = structuredClone(tokenStats);
 
-    const result = tryCommand("/tokens 2", state);
+    const result = runTokens("/tokens 2", state);
 
     expect(result).toEqual({ type: "handled" });
     const text = (state.messages.at(-1) as { text?: string } | undefined)?.text ?? "";
@@ -956,7 +978,7 @@ describe("/tokens", () => {
     stats.today.byProvider.anthropic = totals(46_000, 1_200, 5, 45_000);
     state.tokenStats = stats;
 
-    expect(tryCommand("/tokens", state)).toEqual({ type: "handled" });
+    expect(runTokens("/tokens", state)).toEqual({ type: "handled" });
     const text = stripAnsi((state.messages.at(-1) as { text?: string } | undefined)?.text ?? "");
     expect(text).toStartWith("This conversation: Anthropic · Opus-5.5\n  Context: 70,309 / 1,000,000 tokens (7%)\n  Anthropic usage: 5-hour 84% (resets in 3h:11m) · weekly 98% (resets in 1d:13h:51m)\n");
     expect(text).toContain("Today by provider (input/output): Anthropic 46,000/1,200 · OpenAI 1,500/500");
@@ -971,7 +993,7 @@ describe("/tokens", () => {
     state.contextTokens = 0;
     state.tokenStats = structuredClone(tokenStats);
 
-    tryCommand("/tokens", state);
+    runTokens("/tokens", state);
     const text = stripAnsi((state.messages.at(-1) as { text?: string } | undefined)?.text ?? "");
     expect(text).toStartWith("New conversation: OpenAI · Gpt-5.4\n  Context: 0 / 272,000 tokens (0%)\n\nHeatmap (");
   });
@@ -983,7 +1005,7 @@ describe("/tokens", () => {
     sparseStats.days = [structuredClone(tokenStats.today)];
     state.tokenStats = sparseStats;
 
-    const result = tryCommand("/tokens 3", state);
+    const result = runTokens("/tokens 3", state);
 
     expect(result).toEqual({ type: "handled" });
     const text = (state.messages.at(-1) as { text?: string } | undefined)?.text ?? "";
@@ -996,7 +1018,7 @@ describe("/tokens", () => {
     const state = createInitialState();
     state.tokenStats = structuredClone(tokenStats);
 
-    const result = tryCommand("/tokens models 2", state);
+    const result = runTokens("/tokens models 2", state);
 
     expect(result).toEqual({ type: "handled" });
     const text = (state.messages.at(-1) as { text?: string } | undefined)?.text ?? "";
@@ -1018,7 +1040,7 @@ describe("/tokens", () => {
     const state = createInitialState();
     state.tokenStats = structuredClone(tokenStats);
 
-    const result = tryCommand("/tokens providers 2", state);
+    const result = runTokens("/tokens providers 2", state);
 
     expect(result).toEqual({ type: "handled" });
     const text = (state.messages.at(-1) as { text?: string } | undefined)?.text ?? "";
@@ -1036,7 +1058,7 @@ describe("/tokens", () => {
     const state = createInitialState();
     state.tokenStats = structuredClone(tokenStats);
 
-    const result = tryCommand("/tokens sources 2", state);
+    const result = runTokens("/tokens sources 2", state);
 
     expect(result).toEqual({ type: "handled" });
     const text = (state.messages.at(-1) as { text?: string } | undefined)?.text ?? "";
@@ -1055,7 +1077,7 @@ describe("/tokens", () => {
     const state = createInitialState();
     state.tokenStats = structuredClone(tokenStats);
 
-    const result = tryCommand("/tokens cost", state);
+    const result = runTokens("/tokens cost", state);
 
     expect(result).toEqual({ type: "handled" });
     const text = (state.messages.at(-1) as { text?: string } | undefined)?.text ?? "";
@@ -1090,7 +1112,7 @@ describe("/tokens", () => {
     };
     state.tokenStats = stats;
 
-    const result = tryCommand("/tokens cost", state);
+    const result = runTokens("/tokens cost", state);
 
     expect(result).toEqual({ type: "handled" });
     const text = (state.messages.at(-1) as { text?: string } | undefined)?.text ?? "";
@@ -1110,7 +1132,7 @@ describe("/tokens", () => {
     };
     state.tokenStats = stats;
 
-    const result = tryCommand("/tokens cost", state);
+    const result = runTokens("/tokens cost", state);
 
     expect(result).toEqual({ type: "handled" });
     const text = (state.messages.at(-1) as { text?: string } | undefined)?.text ?? "";
@@ -1121,13 +1143,38 @@ describe("/tokens", () => {
     expect(text).not.toContain("No token usage recorded yet.");
   });
 
-  test("reports when stats are not available yet", () => {
+  test("reports when an older daemon has not pushed stats yet", () => {
     const state = createInitialState();
+    state.pendingTokenStatsView = { days: 2, reqId: "old" };
 
-    const result = tryCommand("/tokens", state);
+    handleEvent({ type: "error", reqId: "old", message: "Unknown command: get_token_stats" }, state, tokensDaemon);
 
-    expect(result).toEqual({ type: "handled" });
     expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toBe("Token stats are still loading. Try again in a moment.");
+  });
+
+  test("asks the daemon for fresh stats instead of rendering a cached snapshot", () => {
+    const state = createInitialState();
+    expect(tryCommand("/tokens models 7", state)).toEqual({ type: "token_stats_requested", view: { subcommand: "models", days: 7 } });
+    expect(state.messages).toHaveLength(0);
+  });
+
+  test("ignores unrelated snapshots while a request is pending", () => {
+    const state = createInitialState();
+    state.pendingTokenStatsView = { days: 2, reqId: "mine" };
+    handleEvent({ type: "token_stats", stats: structuredClone(tokenStats) }, state, tokensDaemon);
+    expect(state.messages).toHaveLength(0);
+    expect(state.pendingTokenStatsView?.reqId).toBe("mine");
+  });
+
+  test("falls back to the pushed snapshot when an older daemon rejects get_token_stats", () => {
+    const state = createInitialState();
+    state.tokenStats = structuredClone(tokenStats);
+    state.pendingTokenStatsView = { days: 2, reqId: "old" };
+    handleEvent({ type: "error", reqId: "old", message: "Unknown command: get_token_stats" }, state, tokensDaemon);
+    const text = (state.messages.at(-1) as { text?: string } | undefined)?.text ?? "";
+    expect(text).toContain("Heatmap (");
+    expect(text).not.toContain("Unknown command");
+    expect(state.pendingTokenStatsView).toBeNull();
   });
 });
 

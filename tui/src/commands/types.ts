@@ -4,6 +4,7 @@ import type { RenderState } from "../state";
 import type { GoalAction, OpenAILoginMethod, QueuedCommandInvocation, QueueWaitTarget, TrimMode } from "../protocol";
 import type { ProviderId, ModelId, EffortLevel } from "../messages";
 import type { ChronoRequest } from "../chronoschedule";
+import type { TokenStatsView } from "./tokens";
 
 export interface CompletionItem {
   name: string;
@@ -42,6 +43,7 @@ type CommandAction =
   | { type: "logout"; provider?: ProviderId }
   | { type: "theme_changed" }
   | { type: "get_system_prompt" }
+  | { type: "token_stats_requested"; view: TokenStatsView }
   | { type: "set_system_instructions"; text: string }
   | { type: "ssh"; action: "connect" | "status" | "cancel"; alias?: string }
   | { type: "provider_proxy"; action: "status" | "set" | "off"; provider?: ProviderId; alias?: string };

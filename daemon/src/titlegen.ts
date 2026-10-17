@@ -131,7 +131,7 @@ export function startTitleGeneration(server: DaemonServer, convId: string, optio
       if (!title) title = previousStableTitle || pendingTitle;
       if (markPrefix && !title.startsWith(markPrefix + " ")) title = `${markPrefix} ${title}`;
       broadcastTitle(server, convId, title, "generated title");
-      server.broadcast({ type: "token_stats", stats: getTokenStatsSnapshot() });
+      server.broadcastLegacyTokenStats(getTokenStatsSnapshot);
     })
     .catch((err) => {
       const message = err instanceof Error ? err.message : String(err);

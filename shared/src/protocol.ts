@@ -15,6 +15,7 @@ import type { GenerationThroughput } from "./messages";
 import type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ToolCallPresentation, ImageAttachment, ImageRef, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus, ConversationBtw, UserMessageContextCheckpoint, ExternalNotificationDelivery, UserMessageAutomation } from "./messages";
 import type { UpdateStatus } from "./updatecheck";
 import type { ChronoRecurrence } from "./chrono";
+import type { SidebarDigest } from "./sidebar-digest";
 import type { ProviderProxiesEvent, ProviderProxyCommand, ProviderProxyInfo, ProviderProxyLinkCommand, ProviderProxyLinkEvent } from "./provider-proxy";
 export type * from "./provider-proxy";
 export type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ToolCallPresentation, ImageAttachment, ImageRef, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus, ConversationBtw, UserMessageContextCheckpoint, ExternalNotificationDelivery, UserMessageAutomation };
@@ -243,8 +244,21 @@ export interface PrewarmConversationCommand {
 /**
  * history-block-pagination: history windows are byte-budgeted and may begin or
  * end inside an AI entry (historyStartBlockIndex / beforeBlockIndex).
+ *
+ * token-stats-on-demand: the client asks for token_stats with get_token_stats
+ * instead of receiving the (hundreds of KB) snapshot on every connect and
+ * after every completed turn.
+ *
+ * sidebar-digest-sync: the client can rebuild a conversations_list that
+ * carries `sidebarBuckets` (see ClientCapabilitiesCommand.sidebarDigest).
  */
-export type ClientCapability = "targeted-unwind" | "sidebar-reorder-delta" | "sidebar-state-patch" | "history-block-pagination";
+export type ClientCapability = "targeted-unwind" | "sidebar-reorder-delta" | "sidebar-state-patch" | "history-block-pagination" | "token-stats-on-demand" | "sidebar-digest-sync";
+
+/** Answered with token_stats carrying the same reqId. Older daemons answer with an Unknown command error. */
+export interface GetTokenStatsCommand {
+  type: "get_token_stats";
+  reqId?: string;
+}
 
 /** Connection-scoped feature negotiation for backwards-compatible events. */
 export interface ClientCapabilitiesCommand {
@@ -255,6 +269,13 @@ export interface ClientCapabilitiesCommand {
    * connection client_exec_request for the model's client_bash calls.
    */
   clientHost?: ClientHostInfo;
+  /**
+   * With sidebar-digest-sync: the conversation list the client already holds
+   * (see shared/src/sidebar-digest.ts). The connection's next
+   * conversations_list then carries only rows of buckets whose hash differs.
+   * Used once; older daemons ignore it.
+   */
+  sidebarDigest?: SidebarDigest;
 }
 
 /** The user's own machine, as announced by an SSH-connected TUI. */
@@ -1108,6 +1129,7 @@ export interface LogoutCommand {
 
 export type Command =
   | PingCommand
+  | GetTokenStatsCommand
   | ProviderProxyCommand
   | ProviderProxyLinkCommand
   | SetConversationDefaultsCommand
@@ -1562,6 +1584,13 @@ export interface ConversationsListEvent {
   reqId?: string;
   conversations: ConversationSummary[];
   folders?: FolderSummary[];
+  /**
+   * Present only in answers to a sidebarDigest: `conversations` holds just
+   * the rows of these buckets, every other bucket matched the client's copy,
+   * and `folders` is omitted when they matched too. Clients rebuild the full
+   * list before handling it.
+   */
+  sidebarBuckets?: number[];
 }
 
 export interface AIMessagePayload {

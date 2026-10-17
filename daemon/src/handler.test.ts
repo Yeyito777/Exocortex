@@ -20,6 +20,7 @@ import { getExocortexToolRuntime } from "./exocortex-tool-runtime";
 import { resetConversationActivityForTest, setBackgroundTaskActive, setChronoTaskActive } from "./conversation-activity";
 import { getProviderAdapter } from "./providers/catalog";
 import { HISTORY_PAGE_BYTE_BUDGET, estimateEntryRows } from "./history-pagination";
+import { computeSidebarDigest } from "@exocortex/shared/sidebar-digest";
 import type { DisplayEntry } from "./display";
 
 interface TestAssistantOutcome {
@@ -81,6 +82,81 @@ test("status-only ping returns the host's runtime status without sidebar/usage b
     .toEqual({ defaults: productConversationDefaults(), configured: false });
   // Experimental flags ride along so remote TUIs never read a local config.
   expect(sent.find(event => event.type === "tools_available")?.experimental).toEqual({ images: false });
+});
+
+test("token statistics are pushed only to clients that predate get_token_stats", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const server = {
+    sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+    broadcast: mock(() => {}),
+    sendToSubscribers: mock(() => {}),
+    sendToSubscribersExcept: mock(() => {}),
+    subscribe: mock(() => {}),
+    unsubscribe: mock(() => {}),
+    hasSubscribers: mock(() => false),
+  };
+  const handle = createHandler(server as never);
+  const legacy = { capabilities: new Set() };
+  const capable = { capabilities: new Set() };
+  await handle(capable as never, { type: "client_capabilities", capabilities: ["token-stats-on-demand"] });
+  await handle(legacy as never, { type: "ping" });
+  expect(sent.filter(event => event.type === "token_stats")).toHaveLength(1);
+  sent.length = 0;
+  await handle(capable as never, { type: "ping" });
+  expect(sent.some(event => event.type === "conversations_list")).toBe(true);
+  expect(sent.some(event => event.type === "token_stats")).toBe(false);
+  await handle(capable as never, { type: "get_token_stats", reqId: "tokens-1" });
+  expect(sent.at(-1)).toMatchObject({ type: "token_stats", reqId: "tokens-1", stats: { days: expect.any(Array) } });
+});
+
+test("a sidebar digest answers one bootstrap with only the changed buckets", async () => {
+  const sent: Array<Record<string, any>> = [];
+  const server = {
+    sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+    broadcast: mock(() => {}), sendToSubscribers: mock(() => {}), sendToSubscribersExcept: mock(() => {}),
+    subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+  };
+  const handle = createHandler(server as never);
+  const full = async (client: object) => {
+    sent.length = 0;
+    await handle(client as never, { type: "list_conversations", reqId: "full" });
+    return sent.find(event => event.type === "conversations_list")!;
+  };
+  const baseline = await full({ capabilities: new Set() });
+  const rows = baseline.conversations.map((c: { id: string }) => [c.id, JSON.stringify(c)] as [string, string]);
+  const digest = computeSidebarDigest(rows, JSON.stringify(baseline.folders));
+
+  const legacy = { capabilities: new Set() };
+  await handle(legacy as never, { type: "client_capabilities", capabilities: [], sidebarDigest: digest });
+  expect((await full(legacy)).sidebarBuckets).toBeUndefined();
+
+  const capable = { capabilities: new Set() };
+  await handle(capable as never, { type: "client_capabilities", capabilities: ["sidebar-digest-sync"], sidebarDigest: digest });
+  sent.length = 0;
+  await handle(capable as never, { type: "ping" });
+  const answer = sent.find(event => event.type === "conversations_list")!;
+  expect(answer.sidebarBuckets).toEqual([]);
+  expect(answer.conversations).toEqual([]);
+  expect(answer.folders).toBeUndefined();
+  // Single use: later lists are complete again.
+  expect((await full(capable)).conversations).toHaveLength(baseline.conversations.length);
+});
+
+test("repeated identical tools_available snapshots are broadcast once", async () => {
+  const broadcasts: Array<Record<string, unknown>> = [];
+  const server = {
+    sendTo: mock(() => {}),
+    broadcast: mock((event: Record<string, unknown>) => { broadcasts.push(event); }),
+    sendToSubscribers: mock(() => {}), sendToSubscribersExcept: mock(() => {}),
+    subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+  };
+  const handle = createHandler(server as never);
+  const toolsAvailable = () => broadcasts.filter(event => event.type === "tools_available").length;
+  await handle({} as never, { type: "logout", reqId: "first", provider: "deepseek" });
+  const afterFirst = toolsAvailable();
+  expect(afterFirst).toBeLessThanOrEqual(1);
+  await handle({} as never, { type: "logout", reqId: "second", provider: "deepseek" });
+  expect(toolsAvailable()).toBe(afterFirst);
 });
 
 const IDS: string[] = [];
@@ -2225,6 +2301,27 @@ describe("handler subagent completion delivery", () => {
     clearProviderAuth("openai");
     invalidateCredentialsCache("openai");
     cleanupIds();
+  });
+
+  test("native exo subagent patches the sidebar instead of broadcasting the full list", async () => {
+    const parentId = mkId("exo-subagent-parent");
+    create(parentId, "openai", "gpt-6-astra");
+    const patched: Array<Record<string, any>> = [];
+    const server = {
+      sendTo: mock(() => {}), broadcast: mock(() => {}), sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}), subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+      broadcastSidebarStatePatched: mock((event: Record<string, any>) => { patched.push(event); }),
+    };
+    createHandler(server as never);
+    const runtime = getExocortexToolRuntime(server as never)!;
+    const result = await runtime.execute({ subagent: "look into the wire protocol", args: { model: "astra" } }, parentId);
+    const childId = JSON.parse(result.output).conversation_id ?? JSON.parse(result.output).conversation;
+    if (childId) IDS.push(childId);
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(server.broadcast).not.toHaveBeenCalledWith(expect.objectContaining({ type: "conversation_moved" }));
+    const subagents = findTopLevelFolderByName("subagents")!;
+    expect(patched).toEqual([{ type: "sidebar_state_patched", folders: [expect.objectContaining({ id: subagents.id })] }]);
+    expect(server.broadcast).toHaveBeenCalledWith(expect.objectContaining({ type: "conversation_updated", summary: expect.objectContaining({ folderId: subagents.id }) }));
   });
 
   test("native exo message: a streaming target takes it from the durable queue once idle; an idle one starts and reports back", async () => {

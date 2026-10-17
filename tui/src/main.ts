@@ -444,6 +444,7 @@ function resetForDaemonRouteSwitch(): void {
   state.toolRegistry = [];
   state.externalToolStyles = [];
   state.tokenStats = null;
+  state.pendingTokenStatsView = null;
   state.lastStreamSeqByConv = {};
   state.conversationDefaults = null;
   resetDraftConversationState(state);
@@ -1031,6 +1032,9 @@ function handleSubmit(): void {
           break;
         case "get_system_prompt":
           daemon.getSystemPrompt(state.convId ?? undefined);
+          break;
+        case "token_stats_requested":
+          state.pendingTokenStatsView = { ...cmdResult.view, reqId: daemon.getTokenStats() };
           break;
         case "set_system_instructions":
           if (state.convId) daemon.setSystemInstructions(state.convId, cmdResult.text);

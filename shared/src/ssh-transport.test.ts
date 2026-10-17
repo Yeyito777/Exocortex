@@ -27,9 +27,9 @@ function respondingProbe(): FakeProcess {
   let input = "";
   child.stdin.on("data", chunk => {
     input += chunk.toString("utf8");
-    const newline = input.indexOf("\n");
-    if (newline === -1) return;
-    const command = JSON.parse(input.slice(0, newline));
+    const command = input.split("\n").slice(0, -1).map(line => JSON.parse(line)).find(line => line.type === "ping");
+    if (!command) return;
+    input = "";
     child.stdout.write(`${JSON.stringify({ type: "pong", reqId: command.reqId })}\n`);
   });
   return child;
@@ -54,6 +54,32 @@ describe("TUI SSH transport", () => {
     const connection = await probeSshProxy("whale", { spawnProcess: () => child }).promise;
     expect(connection.process).toBe(child);
     expect(child.killed).toBe(false);
+    child.kill();
+  });
+
+  test("hands over bytes after the pong undecoded so a split character survives", async () => {
+    const child = new FakeProcess();
+    const event = Buffer.from(`${JSON.stringify({ type: "conversation_updated", title: "🐋" })}\n`);
+    const split = event.indexOf(Buffer.from("🐋")) + 2;
+    child.stdin.on("data", chunk => {
+      const command = JSON.parse(chunk.toString("utf8"));
+      child.stdout.write(Buffer.concat([Buffer.from(`${JSON.stringify({ type: "pong", reqId: command.reqId })}\n`), event.subarray(0, split)]));
+    });
+    const connection = await probeSshProxy("whale", { spawnProcess: () => child }).promise;
+    expect(Buffer.concat([connection.bufferedStdout, event.subarray(split)]).toString("utf8"))
+      .toBe(event.toString("utf8"));
+    child.kill();
+  });
+
+  test("writes the preamble ahead of the ping that requests the bootstrap", async () => {
+    const child = respondingProbe();
+    let input = "";
+    child.stdin.on("data", chunk => { input += chunk.toString("utf8"); });
+    await probeSshProxy("whale", {
+      spawnProcess: () => child,
+      preamble: [{ type: "client_capabilities", capabilities: ["token-stats-on-demand"] }],
+    }).promise;
+    expect(input.split("\n").filter(Boolean).map(line => JSON.parse(line).type)).toEqual(["client_capabilities", "ping"]);
     child.kill();
   });
 

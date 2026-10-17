@@ -75,8 +75,11 @@ export function sshStderrSuffix(stderr: string): string {
 
 export interface ProbedSshConnection {
   process: SshProcess;
-  /** Protocol bytes received after the matching pong in the same data chunk. */
-  bufferedStdout: string;
+  /**
+   * Raw protocol bytes received after the matching pong in the same data
+   * chunk. Kept undecoded: they may end inside a UTF-8 character.
+   */
+  bufferedStdout: Buffer;
   stderr: string;
 }
 
@@ -88,6 +91,12 @@ export interface SshProbe {
 export interface SshProbeOptions {
   spawnProcess?: SpawnSshProcess;
   timeoutMs?: number;
+  /**
+   * Commands written before the probe ping. The ping doubles as the adopted
+   * connection's bootstrap request, so connection-scoped settings such as
+   * client_capabilities must reach the daemon first to shape that bootstrap.
+   */
+  preamble?: object[];
 }
 
 /**
@@ -111,7 +120,7 @@ export function probeSshProxy(alias: string, options: SshProbeOptions = {}): Ssh
     }
 
     const reqId = `ssh_probe_${randomUUID()}`;
-    let stdout = "";
+    let stdout = Buffer.alloc(0);
     let stderr = "";
     let settled = false;
     let timer: ReturnType<typeof setTimeout>;
@@ -119,15 +128,16 @@ export function probeSshProxy(alias: string, options: SshProbeOptions = {}): Ssh
     const onStderr = (chunk: Buffer | string) => { stderr = appendSshStderr(stderr, chunk); };
     const onStdout = (chunk: Buffer | string) => {
       if (settled) return;
-      stdout += typeof chunk === "string" ? chunk : chunk.toString("utf8");
+      stdout = Buffer.concat([stdout, typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk]);
       if (stdout.length > PROBE_OUTPUT_LIMIT) {
         finish(new Error("remote daemon returned too much data before the probe response"));
         return;
       }
       let newline: number;
-      while ((newline = stdout.indexOf("\n")) !== -1) {
-        const line = stdout.slice(0, newline).trim();
-        stdout = stdout.slice(newline + 1);
+      // A newline byte never occurs inside a multibyte UTF-8 sequence.
+      while ((newline = stdout.indexOf(0x0a)) !== -1) {
+        const line = stdout.subarray(0, newline).toString("utf8").trim();
+        stdout = stdout.subarray(newline + 1);
         if (!line) continue;
         try {
           const event = JSON.parse(line);
@@ -185,7 +195,8 @@ export function probeSshProxy(alias: string, options: SshProbeOptions = {}): Ssh
     )), timeoutMs);
     timer.unref?.();
     try {
-      process.stdin.write(`${JSON.stringify({ type: "ping", reqId })}\n`);
+      const lines = [...(options.preamble ?? []), { type: "ping", reqId }];
+      process.stdin.write(lines.map(line => `${JSON.stringify(line)}\n`).join(""));
     } catch (error) {
       finish(new Error(
         `cannot write SSH probe: ${error instanceof Error ? error.message : String(error)}${sshStderrSuffix(stderr)}`,

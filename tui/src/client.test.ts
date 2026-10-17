@@ -825,3 +825,35 @@ describe("DaemonClient reconnect behavior", () => {
     expect(disconnects).toBe(0);
   });
 });
+
+describe("DaemonClient Unicode transport", () => {
+  test("reassembles multibyte characters split across socket or SSH reads", () => {
+    const title = "🐋 café — año 日本語";
+    const bytes = Buffer.from(`${JSON.stringify({ type: "system_prompt", systemPrompt: title })}\n`);
+    for (let split = 1; split < bytes.length; split++) {
+      const events: Array<{ type: string; systemPrompt?: string }> = [];
+      const client = new DaemonClient(event => events.push(event as never));
+      (client as any).onData(bytes.subarray(0, split));
+      (client as any).onData(bytes.subarray(split));
+      expect(events).toEqual([{ type: "system_prompt", systemPrompt: title }]);
+    }
+  });
+});
+
+describe("DaemonClient sidebar digest", () => {
+  test("offers a digest only to the SSH host whose sidebar it holds, and rebuilds the answer", () => {
+    const events: unknown[] = [];
+    const client = new DaemonClient(event => events.push(event));
+    const internal = client as any;
+    expect(internal.probeCapabilities("whale").sidebarDigest).toBeUndefined();
+    internal.sshAlias = "whale";
+    const conversations = [{ id: "a", title: "A" }, { id: "b", title: "B" }];
+    internal.onData(Buffer.from(`${JSON.stringify({ type: "conversations_list", conversations, folders: [] })}\n`));
+    expect(internal.probeCapabilities("laptop").sidebarDigest).toBeUndefined();
+    const capabilities = internal.probeCapabilities("whale");
+    expect(capabilities.capabilities).toContain("sidebar-digest-sync");
+    expect(capabilities.sidebarDigest.buckets).toHaveLength(256);
+    internal.onData(Buffer.from(`${JSON.stringify({ type: "conversations_list", conversations: [], sidebarBuckets: [] })}\n`));
+    expect(events.at(-1)).toEqual({ type: "conversations_list", conversations, folders: [] });
+  });
+});

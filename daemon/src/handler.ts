@@ -37,7 +37,8 @@ import { startTitleGeneration, isPendingTitle, PENDING_TITLE } from "./titlegen"
 import * as convStore from "./conversations";
 import { rememberSentImages, resolveImageForPreview } from "./image-requests";
 import { renderImagePreview, validatePreviewRequest, isImageId } from "./attachments";
-import { DaemonServer, type ConnectedClient } from "./server";
+import { DaemonServer, broadcastUsageUpdate, type ConnectedClient } from "./server";
+import { isSidebarDigest, sidebarListDelta } from "@exocortex/shared/sidebar-digest";
 import type { Command, Event, SidebarItemOrderUpdate } from "./protocol";
 import { clearAuth, ensureAuthenticated, getAuthByProvider, getAuthInfoByProvider, hasConfiguredCredentials, invalidateCredentialsCache } from "./auth";
 import { addAccount as addOpenAIAccount, listAccounts as listOpenAIAccounts, removeAccount as removeOpenAIAccount, switchAccount as switchOpenAIAccount } from "./providers/openai/auth";
@@ -264,7 +265,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   });
 
   const broadcastUsage = (provider: import("./messages").ProviderId, usage: import("./messages").UsageData | null) => {
-    server.broadcast({ type: "usage_update", provider, usage });
+    broadcastUsageUpdate(server, provider, usage);
   };
   /** The Accounts screen's structured data and its live watchers (`accounts`). */
   const accountsWatch = createAccountsWatch({
@@ -343,8 +344,17 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     });
     return true;
   };
+  /** The sidebar bootstrap, reduced to changed rows when the client sent a digest. */
+  const conversationsListFor = (client: ConnectedClient, reqId?: string): Extract<Event, { type: "conversations_list" }> => {
+    const state = convStore.listSidebarState();
+    const digest = client.sidebarDigest;
+    if (!digest) return { type: "conversations_list", reqId, ...state };
+    client.sidebarDigest = undefined;
+    const delta = sidebarListDelta(state.conversations, state.folders, digest);
+    return { type: "conversations_list", reqId, ...(delta ?? state) };
+  };
   const broadcastTokenStats = () => {
-    server.broadcast({ type: "token_stats", stats: getTokenStatsSnapshot() });
+    server.broadcastLegacyTokenStats(getTokenStatsSnapshot);
   };
   const describeAvailableModels = (provider: import("./messages").ProviderId): string => {
     const available = getProvider(provider)?.models.map((model) => model.id) ?? [];
@@ -475,9 +485,12 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   };
   // ── Outbound status/tool broadcasts ───────────────────────────────
 
+  // Every OpenAI response re-reads account headers; the registry they feed
+  // rarely changes, so identical snapshots are not re-sent to every client.
+  let lastToolsAvailable: string | null = null;
   const broadcastToolsAvailable = () => {
     const externalStyles = getExternalToolStyles();
-    server.broadcast({
+    const event: Extract<Event, { type: "tools_available" }> = {
       type: "tools_available",
       macroEnvironment: localMacroEnvironment(),
       conversationDefaults: conversationDefaultsSnapshot(),
@@ -488,9 +501,13 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       authInfoByProvider: getAuthInfoByProvider(),
       ...(externalStyles.length > 0 ? { externalToolStyles: externalStyles } : {}),
       providerProxies: providerProxies.list(),
-    });
+    };
     // OpenAI account switches and /proxy changes show on the Accounts screen too.
     accountsWatch.changed();
+    const serialized = JSON.stringify(event);
+    if (serialized === lastToolsAvailable) return;
+    lastToolsAvailable = serialized;
+    server.broadcast(event);
   };
   const buildOrchestrationCallbacks = (convId: string) => ({
     onHeaders: (h: Headers) => {
@@ -1486,8 +1503,10 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         }
         // The sidebar is the startup-critical payload. Token statistics can be
         // large and are independent, so never put them ahead of first paint.
-        server.sendTo(client, { type: "conversations_list", ...convStore.listSidebarState() });
-        server.sendTo(client, { type: "token_stats", stats: getTokenStatsSnapshot() });
+        server.sendTo(client, conversationsListFor(client));
+        if (!client.capabilities?.has("token-stats-on-demand")) {
+          server.sendTo(client, { type: "token_stats", stats: getTokenStatsSnapshot() });
+        }
         server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages() });
         server.sendTo(client, { type: "connectivity_status", ...connectivity.snapshot() });
         for (const provider of getProviders()) {
@@ -1499,6 +1518,11 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         }).catch((err) => {
           log("warn", `handler: provider refresh failed: ${err instanceof Error ? err.message : err}`);
         });
+        break;
+      }
+
+      case "get_token_stats": {
+        server.sendTo(client, { type: "token_stats", reqId: cmd.reqId, stats: getTokenStatsSnapshot() });
         break;
       }
 
@@ -1843,7 +1867,12 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           if (capability === "targeted-unwind"
               || capability === "sidebar-reorder-delta"
               || capability === "sidebar-state-patch"
-              || capability === "history-block-pagination") client.capabilities.add(capability);
+              || capability === "history-block-pagination"
+              || capability === "token-stats-on-demand"
+              || capability === "sidebar-digest-sync") client.capabilities.add(capability);
+        }
+        if (client.capabilities.has("sidebar-digest-sync") && isSidebarDigest(cmd.sidebarDigest)) {
+          client.sidebarDigest = cmd.sidebarDigest;
         }
         if (cmd.clientHost) attachClientHost(client, cmd.clientHost, event => server.sendTo(client, event));
         break;
@@ -2564,7 +2593,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       // ── Sidebar/list commands ─────────────────────────────────────
 
       case "list_conversations": {
-        server.sendTo(client, { type: "conversations_list", reqId: cmd.reqId, ...convStore.listSidebarState() });
+        server.sendTo(client, conversationsListFor(client, cmd.reqId));
         server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages() });
         break;
       }
