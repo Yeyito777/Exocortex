@@ -36,7 +36,7 @@ import { transcribeAudioBytes } from "./transcription";
 import { startTitleGeneration, isPendingTitle, PENDING_TITLE } from "./titlegen";
 import * as convStore from "./conversations";
 import { rememberSentImages, resolveImageForPreview } from "./image-requests";
-import { renderImagePreview, validatePreviewRequest, isImageId } from "./attachments";
+import { cachedImagePreview, renderImagePreview, validatePreviewRequest, isImageId } from "./attachments";
 import { DaemonServer, type ConnectedClient } from "./server";
 import type { Command, Event, SidebarItemOrderUpdate } from "./protocol";
 import { clearAuth, ensureAuthenticated, getAuthByProvider, getAuthInfoByProvider, hasConfiguredCredentials, invalidateCredentialsCache } from "./auth";
@@ -3090,19 +3090,23 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           server.sendTo(client, { type: "error", reqId: cmd.reqId, message: "get_image: inline images are disabled on this daemon (set experimental.images to true in config.json and restart the daemon)" });
           break;
         }
-        const request = { format: cmd.format, width: cmd.width, height: cmd.height };
+        const request = { format: cmd.format, width: cmd.width, height: cmd.height, ...(cmd.purpose ? { purpose: cmd.purpose } : {}) };
         const invalid = !isImageId(cmd.imageId) ? "Invalid image id" : validatePreviewRequest(request);
         if (invalid) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `get_image: ${invalid}` });
           break;
         }
         try {
-          const source = await resolveImageForPreview(cmd.imageId, cmd.convId);
-          if (!source) {
-            server.sendTo(client, { type: "error", reqId: cmd.reqId, message: "get_image: image not found" });
-            break;
+          // A rendered preview needs neither the image's bytes nor a conversation scan.
+          let preview = cachedImagePreview(cmd.imageId, request);
+          if (!preview) {
+            const source = await resolveImageForPreview(cmd.imageId, cmd.convId);
+            if (!source) {
+              server.sendTo(client, { type: "error", reqId: cmd.reqId, message: "get_image: image not found" });
+              break;
+            }
+            preview = await renderImagePreview(cmd.imageId, source, request);
           }
-          const preview = await renderImagePreview(cmd.imageId, source, request);
           server.sendTo(client, {
             type: "image_data",
             reqId: cmd.reqId,

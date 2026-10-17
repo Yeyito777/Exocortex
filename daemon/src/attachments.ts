@@ -9,10 +9,11 @@
  * Clients never receive the stored bytes directly. They ask for a preview
  * (`get_image`): a PNG bounded to the pixels they will draw, or raw RGBA at
  * an exact size for character-cell fallbacks. Previews are produced by
- * ImageMagick and kept in a small in-memory LRU.
+ * ImageMagick and kept in a small in-memory LRU backed by a bounded disk
+ * cache (`attachments/previews/`), so a daemon restart does not redo them.
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync, copyFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, utimesSync, writeFileSync, copyFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { dataDir } from "@exocortex/shared/paths";
 import type { ImageMediaType, ImageRef } from "./messages";
@@ -31,6 +32,8 @@ export const MAX_PREVIEW_DIMENSION = 4096;
 /** rgba previews are for character cells: a few hundred pixels at most. */
 export const MAX_RGBA_PREVIEW_PIXELS = 512 * 512;
 const PREVIEW_CACHE_BYTES = 64 * 1024 * 1024;
+const PREVIEW_DISK_CACHE_BYTES = 256 * 1024 * 1024;
+const PREVIEW_DISK_PRUNE_EVERY = 64;
 const MAGICK_TIMEOUT_MS = 30_000;
 
 const IMAGE_ID_PATTERN = /^[0-9a-f]{64}$/;
@@ -206,6 +209,12 @@ export interface ImagePreviewRequest {
   format: "png" | "rgba";
   width: number;
   height: number;
+  /**
+   * A history thumbnail: quantized to 256 colours, which keeps screenshots
+   * looking the same at a quarter of the bytes. The full-size viewer asks
+   * without it and gets exact colours.
+   */
+  purpose?: "thumbnail";
 }
 
 export interface ImagePreview {
@@ -217,8 +226,28 @@ export interface ImagePreview {
 
 const previewCache = new Map<string, ImagePreview>();
 let previewCacheBytes = 0;
+let previewDiskWrites = 0;
+
+function previewKey(id: string, request: ImagePreviewRequest): string {
+  return `${id}-${request.format}-${request.width}x${request.height}${request.purpose === "thumbnail" ? "-thumb" : ""}`;
+}
+
+/**
+ * Previews are deterministic in (image, request), so they are also kept on
+ * disk: a restarted daemon serves them without running ImageMagick again.
+ */
+function previewDiskDir(): string {
+  return join(attachmentsDir(), "previews");
+}
+
+function previewDiskPath(key: string): string {
+  return join(previewDiskDir(), key);
+}
 
 function rememberPreview(key: string, preview: ImagePreview): void {
+  const previous = previewCache.get(key);
+  if (previous) previewCacheBytes -= previous.data.length;
+  previewCache.delete(key);
   previewCache.set(key, preview);
   previewCacheBytes += preview.data.length;
   for (const [oldKey, old] of previewCache) {
@@ -228,12 +257,84 @@ function rememberPreview(key: string, preview: ImagePreview): void {
   }
 }
 
+function readPreviewFromDisk(key: string, request: ImagePreviewRequest): ImagePreview | null {
+  const path = previewDiskPath(key);
+  let data: Buffer;
+  try {
+    data = readFileSync(path);
+    const now = new Date();
+    utimesSync(path, now, now);
+  } catch {
+    return null;
+  }
+  if (request.format === "rgba") {
+    return data.length === request.width * request.height * 4
+      ? { format: "rgba", width: request.width, height: request.height, data }
+      : null;
+  }
+  const sniffed = sniffImage(data);
+  return sniffed?.mediaType === "image/png" ? { format: "png", width: sniffed.width, height: sniffed.height, data } : null;
+}
+
+function writePreviewToDisk(key: string, preview: ImagePreview): void {
+  try {
+    mkdirSync(previewDiskDir(), { recursive: true, mode: 0o700 });
+    const path = previewDiskPath(key);
+    const temp = `${path}.${process.pid}.${Date.now()}.tmp`;
+    writeFileSync(temp, preview.data, { mode: 0o600 });
+    renameSync(temp, path);
+    if (++previewDiskWrites % PREVIEW_DISK_PRUNE_EVERY === 1) prunePreviewDisk();
+  } catch {
+    // The disk copy only saves work after a restart.
+  }
+}
+
+/** Drop the least recently used disk previews beyond the budget. */
+function prunePreviewDisk(): void {
+  const dir = previewDiskDir();
+  const files = readdirSync(dir).flatMap(name => {
+    try {
+      const stat = statSync(join(dir, name));
+      return stat.isFile() ? [{ path: join(dir, name), size: stat.size, mtime: stat.mtimeMs }] : [];
+    } catch {
+      return [];
+    }
+  });
+  let total = files.reduce((sum, file) => sum + file.size, 0);
+  if (total <= PREVIEW_DISK_CACHE_BYTES) return;
+  files.sort((a, b) => a.mtime - b.mtime);
+  for (const file of files) {
+    if (total <= PREVIEW_DISK_CACHE_BYTES * 0.75) break;
+    try {
+      unlinkSync(file.path);
+      total -= file.size;
+    } catch {
+      // Gone already.
+    }
+  }
+}
+
+/** A preview already rendered (in memory or on disk), without touching the image itself. */
+export function cachedImagePreview(id: string, request: ImagePreviewRequest): ImagePreview | null {
+  const key = previewKey(id, request);
+  const cached = previewCache.get(key);
+  if (cached) {
+    previewCache.delete(key);
+    previewCache.set(key, cached);
+    return cached;
+  }
+  const disk = readPreviewFromDisk(key, request);
+  if (disk) rememberPreview(key, disk);
+  return disk;
+}
+
 export function validatePreviewRequest(request: ImagePreviewRequest): string | null {
   if (request.format !== "png" && request.format !== "rgba") return "format must be png or rgba";
   const { width, height } = request;
   if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1) return "width and height must be positive integers";
   if (width > MAX_PREVIEW_DIMENSION || height > MAX_PREVIEW_DIMENSION) return `width and height must be at most ${MAX_PREVIEW_DIMENSION}`;
   if (request.format === "rgba" && width * height > MAX_RGBA_PREVIEW_PIXELS) return "rgba previews are limited to 512×512 pixels";
+  if (request.purpose !== undefined && request.purpose !== "thumbnail") return "purpose must be thumbnail";
   return null;
 }
 
@@ -246,29 +347,32 @@ export async function renderImagePreview(
   source: { bytes: Buffer; mediaType: ImageMediaType },
   request: ImagePreviewRequest,
 ): Promise<ImagePreview> {
-  const key = `${id}:${request.format}:${request.width}x${request.height}`;
-  const cached = previewCache.get(key);
-  if (cached) {
-    previewCache.delete(key);
-    previewCache.set(key, cached);
-    return cached;
-  }
+  const key = previewKey(id, request);
+  const cached = cachedImagePreview(id, request);
+  if (cached) return cached;
 
   const sniffed = sniffImage(source.bytes);
   let preview: ImagePreview;
   if (request.format === "png") {
     const fits = sniffed && sniffed.width <= request.width && sniffed.height <= request.height;
-    if (fits && source.mediaType === "image/png") {
+    const thumbnail = request.purpose === "thumbnail";
+    if (fits && source.mediaType === "image/png" && !thumbnail) {
       preview = { format: "png", width: sniffed.width, height: sniffed.height, data: source.bytes };
     } else {
       const data = await runMagick([
         magickInput(source.mediaType), "-auto-orient",
         "-resize", `${request.width}x${request.height}>`,
+        // PaletteAlpha: an indexed PNG even when quantizing leaves it many colours, keeping partial alpha.
+        ...(thumbnail ? ["-colors", "256", "-type", "PaletteAlpha"] : []),
         "-strip", "png:-",
       ], source.bytes);
       const out = sniffImage(data);
       if (!out) throw new Error("preview conversion produced no PNG");
       preview = { format: "png", width: out.width, height: out.height, data };
+      // A small PNG can already be smaller than its quantized copy.
+      if (fits && source.mediaType === "image/png" && source.bytes.length <= data.length) {
+        preview = { format: "png", width: sniffed.width, height: sniffed.height, data: source.bytes };
+      }
     }
   } else {
     const data = await runMagick([
@@ -283,11 +387,18 @@ export async function renderImagePreview(
     preview = { format: "rgba", width: request.width, height: request.height, data };
   }
   rememberPreview(key, preview);
+  writePreviewToDisk(key, preview);
   return preview;
 }
 
 export const attachmentsInternalsForTest = {
   clearPreviewCache(): void {
+    previewCache.clear();
+    previewCacheBytes = 0;
+    rmSync(previewDiskDir(), { recursive: true, force: true });
+  },
+  /** As after a daemon restart: the disk copies remain. */
+  forgetPreviewMemory(): void {
     previewCache.clear();
     previewCacheBytes = 0;
   },
