@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import type { SpawnedProcess, SpawnOptions } from "@anthropic-ai/claude-agent-sdk";
 import { runtimeDir } from "@exocortex/shared/paths";
+import { LineSplitter } from "../../line-splitter";
 import { log } from "../../log";
 import {
   RELAY_LINE_PREFIX,
@@ -105,7 +106,7 @@ export class ClaudeRelay extends EventEmitter implements SpawnedProcess {
   readonly exited: Promise<void>;
   private socket: Socket | null = null;
   private outbox: string[] = [];
-  private partial = "";
+  private readonly lines = new LineSplitter();
   private detached = false;
   private ended = false;
   private markExited!: () => void;
@@ -242,15 +243,10 @@ export class ClaudeRelay extends EventEmitter implements SpawnedProcess {
   }
 
   private read(chunk: string): void {
-    const text = this.partial + chunk;
-    let from = 0;
-    for (let newline = text.indexOf("\n"); newline !== -1; newline = text.indexOf("\n", from)) {
-      const line = text.slice(from, newline);
-      from = newline + 1;
+    this.lines.push(chunk, (line) => {
       if (line.startsWith(RELAY_LINE_PREFIX)) this.event(line);
       else if (line && !this.stdout.write(`${line}\n`)) this.socket?.pause();
-    }
-    this.partial = text.slice(from);
+    });
   }
 
   private event(line: string): void {

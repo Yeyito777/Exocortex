@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import type { Socket } from "node:net";
 import { DaemonServer, type ConnectedClient } from "../server";
+import { LineSplitter } from "../line-splitter";
 
 function client(providerProxyLink: boolean, written: string[]): ConnectedClient {
   return {
-    id: "c", buffer: "", capabilities: new Set(), subscriptions: new Set(["conv"]), providerProxyLink,
+    id: "c", lines: new LineSplitter(), capabilities: new Set(), subscriptions: new Set(["conv"]), providerProxyLink,
     socket: { destroyed: false, write: (data: string) => { written.push(data); return true; } } as unknown as Socket,
   };
 }

@@ -5,12 +5,13 @@ import { attachClientHost, resetClientHostsForTest } from "./client-hosts";
 import { CLIENT_HOST_NOTICE_KIND, CONTEXT_COMPACTION_FINISHED_KIND, GOAL_NOTICE_KIND, createModelVisibleSystemNotice, type StoredMessage } from "./messages";
 import type { ConnectedClient } from "./server";
 import { pendingTurnNotices, type TurnNotice, type TurnNoticeState } from "./turn-notices";
+import { LineSplitter } from "./line-splitter";
 
 const laptop: ClientHostInfo = { hostname: "toronto", user: "yeyito", platform: "linux", home: "/home/yeyito" };
 
 function attach(info: ClientHostInfo = laptop): void {
   const socket = Object.assign(new EventEmitter(), { destroyed: false });
-  const client = { id: "c", socket, subscriptions: new Set(), buffer: "", capabilities: new Set() } as unknown as ConnectedClient;
+  const client = { id: "c", socket, subscriptions: new Set(), lines: new LineSplitter(), capabilities: new Set() } as unknown as ConnectedClient;
   attachClientHost(client, info, () => {});
 }
 

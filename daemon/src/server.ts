@@ -9,6 +9,7 @@ import { createServer, type Server, type Socket } from "net";
 import { existsSync, unlinkSync } from "fs";
 import { StringDecoder } from "node:string_decoder";
 import { isWindows } from "@exocortex/shared/paths";
+import { LineSplitter } from "./line-splitter";
 import { log } from "./log";
 import { budgetHistoryUpdatedEvent } from "./history-pagination";
 import type { ClientCapability, Command, Event } from "./protocol";
@@ -22,7 +23,7 @@ export interface ConnectedClient {
   id: string;
   socket: Socket;
   subscriptions: Set<string>;
-  buffer: string;
+  lines: LineSplitter;
   /** Per-connection UTF-8 state; bytes can split a character across reads. */
   decoder?: StringDecoder;
   capabilities: Set<"history-pagination" | ClientCapability>;
@@ -92,7 +93,7 @@ export class DaemonServer {
       id,
       socket,
       subscriptions: new Set(),
-      buffer: "",
+      lines: new LineSplitter(),
       decoder: new StringDecoder("utf8"),
       capabilities: new Set(),
     };
@@ -111,19 +112,16 @@ export class DaemonServer {
   }
 
   private onData(client: ConnectedClient, data: Buffer | string): void {
-    client.buffer += typeof data === "string" ? data : (client.decoder ??= new StringDecoder("utf8")).write(data);
-
-    let idx: number;
-    while ((idx = client.buffer.indexOf("\n")) !== -1) {
-      const line = client.buffer.slice(0, idx).trim();
-      client.buffer = client.buffer.slice(idx + 1);
-      if (!line) continue;
+    const chunk = typeof data === "string" ? data : (client.decoder ??= new StringDecoder("utf8")).write(data);
+    client.lines.push(chunk, (rawLine) => {
+      const line = rawLine.trim();
+      if (!line) return;
 
       try {
         const parsed = JSON.parse(line);
         if (!parsed || typeof parsed !== "object" || typeof parsed.type !== "string") {
           this.sendTo(client, { type: "error", message: "Invalid command: missing 'type'" });
-          continue;
+          return;
         }
         const cmd = parsed as Command;
         const result = this.handler(client, cmd);
@@ -135,7 +133,7 @@ export class DaemonServer {
       } catch {
         this.sendTo(client, { type: "error", message: "Invalid JSON" });
       }
-    }
+    });
   }
 
   // ── Event dispatch ──────────────────────────────────────────────

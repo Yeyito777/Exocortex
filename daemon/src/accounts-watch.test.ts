@@ -5,6 +5,7 @@ import { emitClaudeAccountsChanged } from "./providers/anthropic/account-events"
 import { DEFAULT_ROUTING_POLICY } from "./providers/anthropic/routing";
 import type { AccountsEvent, ClaudeAccountInfo, ClaudeAccountsInfo, Event, OpenAIAccountInfo } from "./protocol";
 import type { ConnectedClient } from "./server";
+import { LineSplitter } from "./line-splitter";
 
 function account(id: string, extra: Partial<ClaudeAccountInfo> = {}): ClaudeAccountInfo {
   return {
@@ -15,7 +16,7 @@ function account(id: string, extra: Partial<ClaudeAccountInfo> = {}): ClaudeAcco
 }
 
 function fakeClient(): ConnectedClient {
-  return { id: "c1", socket: { destroyed: false }, subscriptions: new Set(), buffer: "", capabilities: new Set() } as unknown as ConnectedClient;
+  return { id: "c1", socket: { destroyed: false }, subscriptions: new Set(), lines: new LineSplitter(), capabilities: new Set() } as unknown as ConnectedClient;
 }
 
 function setup(claudeIds: string[], openai: OpenAIAccountInfo[] = []) {

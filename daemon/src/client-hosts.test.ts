@@ -6,6 +6,7 @@ import {
 } from "./client-hosts";
 import type { ConnectedClient } from "./server";
 import { getRegisteredTools } from "./tools/registry";
+import { LineSplitter } from "./line-splitter";
 
 // Through the registry: client-bash → conversations → registry would otherwise
 // reach the registry before client_bash is defined.
@@ -14,7 +15,7 @@ const laptop: ClientHostInfo = { hostname: "toronto", user: "yeyito", platform: 
 
 function fakeClient(subscriptions: string[] = []): { client: ConnectedClient; sent: Event[]; close(): void } {
   const socket = Object.assign(new EventEmitter(), { destroyed: false });
-  const client = { id: "c", socket, subscriptions: new Set(subscriptions), buffer: "", capabilities: new Set() } as unknown as ConnectedClient;
+  const client = { id: "c", socket, subscriptions: new Set(subscriptions), lines: new LineSplitter(), capabilities: new Set() } as unknown as ConnectedClient;
   const sent: Event[] = [];
   return {
     client,
