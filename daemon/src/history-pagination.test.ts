@@ -238,6 +238,18 @@ describe("viewport-sized opening windows", () => {
     expect(page.startBlockIndex).toBeGreaterThan(0);
   });
 
+  test("counts a long non-shell tool call as the TUI's collapsed rows", () => {
+    const call = (toolName: string, lines: number): DisplayEntry => ({
+      type: "ai",
+      blocks: [{ type: "tool_call", toolCallId: "c", toolName, input: {}, summary: Array.from({ length: lines }, (_, i) => `line ${i}`).join("\n") }],
+      metadata: null,
+    });
+    // A long subagent prompt shows 8 rows and an expand hint; shell commands show in full.
+    expect(estimateEntryRows(call("exo", 80), viewport.cols)).toBe(9 + 1);
+    expect(estimateEntryRows(call("exo", 12), viewport.cols)).toBe(12 + 1);
+    expect(estimateEntryRows(call("Bash", 80), viewport.cols)).toBe(80 + 1);
+  });
+
   test("cuts a newest turn taller than two screens at the round that fills them", () => {
     const entries: DisplayEntry[] = [user("u1"), ai("a1"), user("u2"), agentTurn(100, 500)];
     const page = open(entries);

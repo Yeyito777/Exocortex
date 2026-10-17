@@ -1559,6 +1559,7 @@ export function render(state: RenderState): boolean {
   state.layout.totalLines = totalLines;
   state.layout.messageAreaHeight = messageAreaHeight;
   state.layout.historyWidth = historyWidth;
+  state.layout.chatWidth = chatW;
   state.layout.chatCol = chatCol;
   state.layout.sepAbove = bottomStartRow;
   state.layout.firstInputRow = firstInputRow;

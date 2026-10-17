@@ -120,6 +120,8 @@ export interface LayoutCache {
   messageAreaHeight: number; // visible rows for messages
   /** Width used only for history rows vertically beside a right-hand task panel. */
   historyWidth: number;
+  /** Width history is laid out at (totalLines counts rows of this width). */
+  chatWidth: number;
   /** Screen rectangle occupied by the task panel; a click there toggles its expansion. */
   taskPanelRect: { top: number; bottom: number; left: number; right: number } | null;
   /** Rows the expanded task panel can scroll; 0 when everything fits or it is collapsed. */
@@ -708,7 +710,7 @@ export function createInitialState(): RenderState {
     chatFocus: "prompt",
     sidebar: createSidebarState(loadSidebarFolderViewPreference()),
     vim: createVimState(),
-    layout: { totalLines: 0, messageAreaHeight: 0, historyWidth: 0, taskPanelRect: null, taskPanelMaxScroll: 0, usageBlockRect: null, historyViewportRows: [], chatCol: 1, sepAbove: 0, firstInputRow: 0, sepBelow: 0 },
+    layout: { totalLines: 0, messageAreaHeight: 0, historyWidth: 0, chatWidth: 0, taskPanelRect: null, taskPanelMaxScroll: 0, usageBlockRect: null, historyViewportRows: [], chatCol: 1, sepAbove: 0, firstInputRow: 0, sepBelow: 0 },
     deferredHistoryRender: null,
     pendingSend: { active: false, text: "" },
     pendingAuthQueue: [],

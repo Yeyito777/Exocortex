@@ -116,6 +116,14 @@ const aiEntryChromeRows = (entry: Extract<DisplayEntry, { type: "ai" }>): number
 const USER_ENTRY_CHROME_ROWS = 1;
 /** Estimating megabytes of one block is wasted work once it alone fills the target. */
 const MAX_ESTIMATED_TEXT_CHARS = 256 * 1024;
+/**
+ * A non-shell tool call whose detail wraps past this many rows (e.g. a long
+ * `exo` subagent prompt) shows only its first COLLAPSED_TOOL_CALL_ROWS and an
+ * expand hint while tool output is collapsed (tui/src/blockrenderer.ts).
+ */
+const COLLAPSE_TOOL_CALL_AFTER_ROWS = 12;
+const COLLAPSED_TOOL_CALL_ROWS = 8;
+const SHELL_TOOL_NAMES = new Set(["bash", "Bash", "exec_command"]);
 
 function wrappedRows(text: string, cols: number): number {
   const width = Math.max(1, cols);
@@ -135,8 +143,12 @@ export function estimateBlockRows(block: Block, cols: number): number {
     }
     case "text":
       return wrappedRows(block.text.replace(/^\n+/, ""), contentCols);
-    case "tool_call":
-      return wrappedRows(block.summary ?? "", contentCols - 2);
+    case "tool_call": {
+      const rows = wrappedRows(block.summary ?? "", contentCols - 2);
+      return rows > COLLAPSE_TOOL_CALL_AFTER_ROWS && !SHELL_TOOL_NAMES.has(block.toolName)
+        ? COLLAPSED_TOOL_CALL_ROWS + 1
+        : rows;
+    }
     case "tool_result":
       return 0;
   }

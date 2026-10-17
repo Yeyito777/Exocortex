@@ -169,9 +169,9 @@ describe("conversation history pagination", () => {
     // Before the first layout: the terminal less the rows around history.
     expect(openingViewport(state)).toEqual({ rows: 56, cols: 200 });
     renderQuietly(state);
-    expect(openingViewport(state)).toEqual({ rows: state.layout.messageAreaHeight, cols: state.layout.historyWidth });
+    expect(openingViewport(state)).toEqual({ rows: state.layout.messageAreaHeight, cols: state.layout.chatWidth });
     state.layout.messageAreaHeight = 0;
-    state.layout.historyWidth = 0;
+    state.layout.chatWidth = 0;
     state.rows = 3;
     state.cols = 9_000;
     // Clamped to what the daemon accepts.
