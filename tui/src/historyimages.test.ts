@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { collectHistoryImagePlacements, disposeHistoryImages, handleHistoryImageResponse, historyImagesPlaced, placementIdFor, syncHistoryImages } from "./historyimages";
-import { configureInlineImages, inlineImagesInternalsForTest, kittyPreview, setInlineImageMode, setInlineImagesEnabled, type InlineImageLayout } from "./inlineimages";
+import { configureInlineImages, inlineImagesInternalsForTest, kittyThumbnail, setInlineImageMode, setInlineImagesEnabled, type InlineImageLayout } from "./inlineimages";
 import type { RenderLineAnchor } from "./conversation";
 import { buildMessageLines } from "./conversation";
 import { createInitialState } from "./state";
@@ -11,7 +11,7 @@ const source = { imageId: "d".repeat(64), width: 200, height: 100, mediaType: "i
 async function readyImage(): Promise<void> {
   configureInlineImages({ fetch: async () => ({ format: "png", width: 200, height: 100, base64: "UE5H" }), onChange: () => {} });
   setInlineImageMode("kitty");
-  kittyPreview(source, { cols: 20, rows: 10 });
+  kittyThumbnail(source);
   await Bun.sleep(0);
 }
 

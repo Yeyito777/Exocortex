@@ -7,12 +7,18 @@
  * of rows (and around the image viewer or edit menu, if open), and reconciles the terminal through KittyImageSync. Placements are
  * recomputed every frame from scratch, so scrolling, resizing, switching
  * conversations, and overlays can never leave a stale image behind.
+ *
+ * It also decides what to fetch: thumbnails on screen first, then those
+ * within a screen's height of it, so opening a long conversation never
+ * downloads every image it holds. Until one has pixels its first visible row
+ * carries a loading (or error) notice, drawn by the frame.
  */
 
 import type { RenderLineAnchor } from "./conversation";
-import { imageHitAt, kittyPreview, type InlineImageLayout } from "./inlineimages";
+import { imageHitAt, imageStatus, kittyThumbnail, type InlineImageLayout } from "./inlineimages";
 import { KittyImageSync, type KittyImageData, type KittyPlacement } from "./kittyimages";
 import { parseKittyGraphicsResponse } from "./terminalgraphics";
+import { termWidth } from "./textwidth";
 
 /** A display-math image (mathimages.ts): its pixels are rendered by the TUI, not fetched. */
 export interface MathImageLayout {
@@ -74,6 +80,21 @@ export interface CollectHistoryImagesOptions {
   cursorCol?: number;
   /** Place display-math images only (history images render as half-blocks or not at all). */
   mathOnly?: boolean;
+  /** History lines above and below the screen whose thumbnails are fetched ahead of scrolling (default: one screen). */
+  prefetchLines?: number;
+}
+
+/** Text drawn over the first visible row of a thumbnail that has no pixels yet. */
+export interface HistoryImageNotice {
+  row: number;
+  col: number;
+  /** Plain text, already cut to the columns it may use. */
+  text: string;
+}
+
+export interface CollectedHistoryImages {
+  placements: KittyPlacement[];
+  notices: HistoryImageNotice[];
 }
 
 const placementIds = new WeakMap<object, Map<number, number>>();
@@ -155,11 +176,49 @@ function pieceOwner(owner: object, index: number): object {
 
 /** Placements for the image rows on screen, each cropped to what is visible. */
 export function collectHistoryImagePlacements(options: CollectHistoryImagesOptions): KittyPlacement[] {
+  return collectHistoryImages(options).placements;
+}
+
+/** Fetch the thumbnails just off screen, so scrolling finds them ready. */
+function prefetchNearby(options: CollectHistoryImagesOptions): void {
+  let first = Infinity;
+  let last = -Infinity;
+  for (const row of options.viewportRows) {
+    if (!row) continue;
+    first = Math.min(first, row.lineIndex);
+    last = Math.max(last, row.lineIndex);
+  }
+  if (first > last) return;
+  const margin = options.prefetchLines ?? options.viewportRows.length;
+  const seen = new Set<InlineImageLayout>();
+  const visit = (lineIndex: number) => {
+    for (const image of options.lineAnchors[lineIndex]?.images ?? []) {
+      if ("kitty" in image.layout || seen.has(image.layout)) continue;
+      seen.add(image.layout);
+      kittyThumbnail(image.layout.source);
+    }
+  };
+  // Nearest first: the fetch queue runs in order.
+  for (let distance = 1; distance <= margin; distance++) {
+    if (last + distance < options.lineAnchors.length) visit(last + distance);
+    if (first - distance >= 0) visit(first - distance);
+  }
+}
+
+function covered(rects: readonly ScreenRect[], row: number, left: number, right: number): boolean {
+  return rects.some(rect => blocked(rect, row, left, right));
+}
+
+/** Placements for the image rows on screen, plus notices for those still without pixels. */
+export function collectHistoryImages(options: CollectHistoryImagesOptions): CollectedHistoryImages {
   const visible = new Map<HistoryImageLayout, VisibleImageRow[]>();
+  /** Columns a thumbnail's notice may use: its row to the right edge when it is alone on the row. */
+  const noticeWidths = new Map<HistoryImageLayout, number>();
   options.viewportRows.forEach((viewportRow, index) => {
     if (!viewportRow) return;
     const screenRow = options.messageAreaStart + index;
-    for (const image of options.lineAnchors[viewportRow.lineIndex]?.images ?? []) {
+    const anchorImages = options.lineAnchors[viewportRow.lineIndex]?.images ?? [];
+    for (const image of anchorImages) {
       if (image.layout.rows <= 0 || (options.mathOnly && !("kitty" in image.layout))) continue;
       const screenCol = options.chatCol + image.layout.col - viewportRow.startCol + viewportRow.displayPrefixWidth;
       const right = screenCol + image.layout.cols - 1;
@@ -168,6 +227,9 @@ export function collectHistoryImagePlacements(options: CollectHistoryImagesOptio
       const rows = visible.get(image.layout) ?? [];
       rows.push({ screenRow, screenCol, imageRow: image.row });
       visible.set(image.layout, rows);
+      if (!noticeWidths.has(image.layout)) {
+        noticeWidths.set(image.layout, anchorImages.length === 1 ? options.maxCol - screenCol + 1 : image.layout.cols);
+      }
     }
   });
 
@@ -175,13 +237,22 @@ export function collectHistoryImagePlacements(options: CollectHistoryImagesOptio
     ? null
     : imageHitAt(options.lineAnchors[options.cursorLineIndex]?.openImages, options.cursorCol ?? 0)?.layout;
   const placements: KittyPlacement[] = [];
+  const notices: HistoryImageNotice[] = [];
+  const covers = [...options.obstructions, ...(options.covers ?? [])];
   for (const [layout, rows] of visible) {
     let image: KittyImageData;
     if ("kitty" in layout) {
       image = layout.kitty;
     } else {
-      const preview = kittyPreview(layout.source, { cols: layout.cols, rows: layout.rows });
-      if (preview.phase !== "ready") continue;
+      const preview = kittyThumbnail(layout.source, { urgent: true });
+      if (preview.phase !== "ready") {
+        const [first] = rows;
+        const text = imageStatus(preview, Math.max(layout.cols, noticeWidths.get(layout) ?? 0));
+        if (!covered(covers, first.screenRow, first.screenCol, first.screenCol + termWidth(text) - 1)) {
+          notices.push({ row: first.screenRow, col: first.screenCol, text });
+        }
+        continue;
+      }
       image = preview.value;
     }
     const run = longestRun(rows);
@@ -223,7 +294,8 @@ export function collectHistoryImagePlacements(options: CollectHistoryImagesOptio
       });
     });
   }
-  return placements;
+  if (!options.mathOnly) prefetchNearby(options);
+  return { placements, notices };
 }
 
 // ── Per-screen terminal state ───────────────────────────────────────
