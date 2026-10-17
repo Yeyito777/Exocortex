@@ -207,13 +207,31 @@ function buildDeferredHistorySuffix(
   return result;
 }
 
+/**
+ * A full build has every loaded row, so there is nothing left to defer at this
+ * width. Clearing the state instead restarted the progressive suffix after
+ * every streamed turn or scrolled-up frame, walking the whole loaded history
+ * back one turn per tick (seconds of CPU in a long conversation).
+ */
+function markHistoryRenderComplete(state: RenderState, width: number): void {
+  const deferred = state.deferredHistoryRender;
+  if (deferred?.complete && deferred.convId === state.convId && deferred.width === width) return;
+  state.deferredHistoryRender = {
+    convId: state.convId,
+    width,
+    startMessageIndex: 0,
+    generation: (deferred?.generation ?? 0) + 1,
+    complete: true,
+  };
+}
+
 function getHistoryRender(
   state: RenderState,
   width: number,
   targetLines: number,
 ): BuildMessageLinesResult {
   if (state.pendingAI) {
-    state.deferredHistoryRender = null;
+    markHistoryRenderComplete(state, width);
     historyRenderCache.delete(state);
     return buildMessageLines(state, width, { reuseArrays: true });
   }
@@ -240,7 +258,7 @@ function getHistoryRender(
   } else if (canUseDeferredHistoryRender(state, width)) {
     result = buildDeferredHistorySuffix(state, width, targetLines);
   } else {
-    state.deferredHistoryRender = null;
+    markHistoryRenderComplete(state, width);
     result = buildMessageLines(state, width, { reuseArrays: true });
   }
 
@@ -284,7 +302,18 @@ export function hasDeferredHistoryRenderWork(state: RenderState): boolean {
 export function advanceDeferredHistoryRender(state: RenderState): boolean {
   const deferred = state.deferredHistoryRender;
   if (!deferred || deferred.complete || deferred.convId !== state.convId) return false;
-  const nextStart = previousHistoryTurnStart(state, deferred.startMessageIndex);
+  // Each step rebuilds the rows it includes, so grow the suffix geometrically:
+  // one turn per step made extending to a long loaded history quadratic.
+  let includedTurns = 0;
+  for (let index = deferred.startMessageIndex; index < state.messages.length; index++) {
+    if (state.messages[index]?.role === "user") includedTurns++;
+  }
+  let nextStart = deferred.startMessageIndex;
+  for (let step = 0; step < Math.max(1, includedTurns); step++) {
+    const previous = previousHistoryTurnStart(state, nextStart);
+    if (previous === nextStart) break;
+    nextStart = previous;
+  }
   if (nextStart === deferred.startMessageIndex) return false;
   deferred.startMessageIndex = nextStart;
   deferred.complete = nextStart === 0;

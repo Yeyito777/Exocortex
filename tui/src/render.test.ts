@@ -1864,16 +1864,47 @@ describe("render caching and frame diffing", () => {
     expect(firstPaint).not.toContain("older-hidden");
     expect(firstPaint).not.toContain("oldest-hidden");
 
-    expect(advanceDeferredHistoryRender(state)).toBe(true);
-    renderSilently(state);
-    expect(state.deferredHistoryRender).toMatchObject({ startMessageIndex: 2, complete: false });
-    expect(stripAnsi(state.historyLines.join("\n"))).toContain("older-hidden");
-    expect(stripAnsi(state.historyLines.join("\n"))).not.toContain("oldest-hidden");
-
+    // Each step adds as many turns as are already shown: the three shown here
+    // cover the two that remain.
     expect(advanceDeferredHistoryRender(state)).toBe(true);
     renderSilently(state);
     expect(state.deferredHistoryRender).toMatchObject({ startMessageIndex: 0, complete: true });
+    expect(stripAnsi(state.historyLines.join("\n"))).toContain("older-hidden");
     expect(stripAnsi(state.historyLines.join("\n"))).toContain("oldest-hidden");
+    expect(advanceDeferredHistoryRender(state)).toBe(false);
+  });
+
+  test("deferred history grows geometrically and stays complete after full renders", () => {
+    const state = createInitialState();
+    state.cols = 120;
+    state.rows = 30;
+    state.convId = "long-conversation";
+    state.panelFocus = "sidebar";
+    for (let turn = 0; turn < 64; turn++) {
+      state.messages.push(
+        { role: "user", text: `question ${turn}`, metadata: null },
+        { role: "assistant", blocks: [{ type: "text", text: `answer ${turn}` }], metadata: null },
+      );
+    }
+
+    renderSilently(state);
+    let steps = 0;
+    while (advanceDeferredHistoryRender(state)) {
+      renderSilently(state);
+      steps++;
+    }
+    expect(state.deferredHistoryRender).toMatchObject({ startMessageIndex: 0, complete: true });
+    expect(steps).toBeLessThanOrEqual(7);
+
+    // A streamed turn renders everything; finishing it must not restart the walk.
+    state.pendingAI = createPendingAI(Date.now(), state.model);
+    state.pendingAI.blocks.push({ type: "text", text: "streaming" });
+    renderSilently(state);
+    state.messages.push(state.pendingAI);
+    state.pendingAI = null;
+    renderSilently(state);
+    expect(state.deferredHistoryRender).toMatchObject({ startMessageIndex: 0, complete: true });
+    expect(stripAnsi(state.historyLines.join("\n"))).toContain("question 0");
   });
 
   test("remembered bottom restoration does not force wrapping offscreen history", () => {
