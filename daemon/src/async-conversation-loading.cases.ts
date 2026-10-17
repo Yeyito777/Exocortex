@@ -278,3 +278,21 @@ test("pinned cache owners survive cache pressure and dirty window paging stays i
   convStore.conversationCacheInternalsForTest.evictClean();
   expect(convStore.getCached(id)).toBeUndefined();
 });
+
+test("a context-attribution mark does not downgrade a pending full save", async () => {
+  const id = `async-attribution-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  ids.push(id);
+  convStore.create(id, "openai", "gpt-6.1-sol", "attribution fixture");
+  convStore.appendMessages(id, [
+    { role: "user", content: "hi", metadata: null },
+    { role: "assistant", content: "hello", metadata: { startedAt: 1, endedAt: null, model: "gpt-6.1-sol", tokens: 0 } },
+  ]);
+  const conv = (await convStore.getAsync(id))!;
+  // The aborted turn's metadata is stamped in place and flushed later; a
+  // context update lands in between.
+  conv.messages[1].metadata!.endedAt = 99;
+  convStore.markDirty(id, "messages");
+  convStore.markContextAttributionDirty(id);
+  convStore.flush(id);
+  expect(persistence.load(id)!.messages[1].metadata?.endedAt).toBe(99);
+});

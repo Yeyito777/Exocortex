@@ -2004,8 +2004,10 @@ export function markDirty(id: string, mode: "auto" | "messages" = "auto"): void 
 /** Mark only provider-derived token attribution as dirty. */
 export function markContextAttributionDirty(id: string): void {
   renderSnapshotCache.delete(id);
+  // A pending full save already writes attribution; never narrow it, or its
+  // in-place edits are recorded as saved without being written.
+  if (dirty.has(id) && !contextAttributionDirty.has(id)) return;
   dirty.add(id);
-  messageContentDirty.delete(id);
   contextAttributionDirty.add(id);
 }
 
