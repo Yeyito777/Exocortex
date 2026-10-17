@@ -2758,6 +2758,11 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages(), settledQueueIds: [queueId] });
           break;
         }
+        if (cmd.source !== "global-idle" && cmd.timing !== "next-turn" && cmd.timing !== "message-end") {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Invalid queue timing" });
+          server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages(), ...(queueId ? { settledQueueIds: [queueId] } : {}) });
+          break;
+        }
         if (queueId && convStore.getQueuedMessageById(queueId)) {
           // Idempotent replay after a socket reconnect.
           server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });

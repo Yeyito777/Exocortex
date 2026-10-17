@@ -75,3 +75,32 @@ describe("daemon JSON-lines Unicode transport", () => {
     }
   });
 });
+
+describe("daemon command handler failures", () => {
+  function recordingClient(): { connection: ConnectedClient; events: any[] } {
+    const events: any[] = [];
+    const connection: ConnectedClient = {
+      id: "test", buffer: "", capabilities: new Set(), subscriptions: new Set(),
+      socket: { destroyed: false, write: (payload: string) => { events.push(JSON.parse(payload)); return true; } } as unknown as Socket,
+    };
+    return { connection, events };
+  }
+
+  test("a rejected async handler answers the request with an error instead of leaving it pending", async () => {
+    const server = new DaemonServer("unused", async () => { throw new Error("NOT NULL constraint failed: queued_messages.timing"); });
+    const { connection, events } = recordingClient();
+    (server as any).onData(connection, Buffer.from('{"type":"queue_message","reqId":"r1","convId":"c1","text":"hi"}\n'));
+    await Bun.sleep(0);
+    expect(events).toEqual([{ type: "error", reqId: "r1", convId: "c1", message: "NOT NULL constraint failed: queued_messages.timing" }]);
+  });
+
+  test("a synchronous handler throw is not misreported as invalid JSON", () => {
+    const server = new DaemonServer("unused", () => { throw new Error("boom"); });
+    const { connection, events } = recordingClient();
+    (server as any).onData(connection, Buffer.from('{"type":"ping","reqId":"r2"}\n{"type":"ping","reqId":"r3"}\n'));
+    expect(events).toEqual([
+      { type: "error", reqId: "r2", message: "boom" },
+      { type: "error", reqId: "r3", message: "boom" },
+    ]);
+  });
+});

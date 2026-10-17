@@ -119,21 +119,32 @@ export class DaemonServer {
       client.buffer = client.buffer.slice(idx + 1);
       if (!line) continue;
 
+      let parsed: unknown;
       try {
-        const parsed = JSON.parse(line);
-        if (!parsed || typeof parsed !== "object" || typeof parsed.type !== "string") {
-          this.sendTo(client, { type: "error", message: "Invalid command: missing 'type'" });
-          continue;
-        }
-        const cmd = parsed as Command;
-        const result = this.handler(client, cmd);
-        if (result instanceof Promise) {
-          result.catch((err: Error) => {
-            log("error", `server: handler error for ${cmd.type}: ${err.message}`);
-          });
-        }
+        parsed = JSON.parse(line);
       } catch {
         this.sendTo(client, { type: "error", message: "Invalid JSON" });
+        continue;
+      }
+      if (!parsed || typeof parsed !== "object" || typeof (parsed as { type?: unknown }).type !== "string") {
+        this.sendTo(client, { type: "error", message: "Invalid command: missing 'type'" });
+        continue;
+      }
+      const cmd = parsed as Command;
+      // A failed handler still answers the request, so the client's pending
+      // reqId (and any optimistic state keyed on it) settles instead of hanging.
+      const fail = (err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        log("error", `server: handler error for ${cmd.type}: ${message}`);
+        const reqId = "reqId" in cmd && typeof cmd.reqId === "string" ? cmd.reqId : undefined;
+        const convId = "convId" in cmd && typeof cmd.convId === "string" ? cmd.convId : undefined;
+        this.sendTo(client, { type: "error", ...(reqId ? { reqId } : {}), ...(convId ? { convId } : {}), message });
+      };
+      try {
+        const result = this.handler(client, cmd);
+        if (result instanceof Promise) result.catch(fail);
+      } catch (err) {
+        fail(err);
       }
     }
   }

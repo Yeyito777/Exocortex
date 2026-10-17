@@ -1009,6 +1009,26 @@ describe("handler daemon-owned queue", () => {
     }
   });
 
+  test("rejects a stream-relative queue entry without a valid timing", async () => {
+    const id = mkId("queue-timing-invalid");
+    create(id, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
+    const sent: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock(() => {}), sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}), subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+
+    for (const timing of [undefined, "later"]) {
+      await handle({} as never, { type: "queue_message", reqId: "q1", queueId: "timing-invalid", convId: id, text: "never", timing } as never);
+      expect(sent).toContainEqual(expect.objectContaining({ type: "error", reqId: "q1", message: "Invalid queue timing" }));
+      expect(sent).toContainEqual(expect.objectContaining({ type: "queue_updated", settledQueueIds: ["timing-invalid"] }));
+      expect(getQueuedMessageById("timing-invalid")).toBeUndefined();
+      sent.length = 0;
+    }
+  });
+
   test("dispatches a chained queued replay without adding a user-message send", async () => {
     const id = mkId("queue-replay");
     create(id, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
