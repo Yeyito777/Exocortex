@@ -2,8 +2,8 @@ import { theme } from "../theme";
 import { formatMarkdownChunks, stripMarkdown, termWidth, sliceByWidth, isHorizontalRule } from "./formatting";
 import { FENCE_OPEN_RE, isFenceClose, renderCodeBlockWrapped, stripFenceIndent } from "./codeblocks";
 import { isTableLine, renderTableBlock } from "./tables";
-import { findDisplayMathBlocks, renderDisplayMath, renderInlineMathChunks, takeDisplayMathBlock } from "./math";
-import type { WrapCopyLine, WrapImageRow } from "../textwrap";
+import { DISPLAY_PLACEHOLDER, extractDisplayMath, renderDisplayMath, renderInlineMathLines, type ExtractedDisplayMath } from "./math";
+import type { WrapCopyLine, WrapImage, WrapImageRow } from "../textwrap";
 import type { LinkSpan } from "../links";
 import { wrapLinkedParagraphs } from "./linkwrap";
 
@@ -74,7 +74,8 @@ function seedLongWord(
  *
  * Processes text line by line and:
  * 1. Detects fenced code blocks and renders them with syntax highlighting
- * 2. Renders standalone TeX math blocks as left-aligned Unicode notation
+ * 2. Renders display TeX math (`$$`, `\\[`, math environments) as indented
+ *    Unicode blocks; inline math renders within its paragraph
  * 3. Detects table blocks and renders with box-drawing
  * 4. Detects horizontal rules and renders them as box-drawing lines
  * 5. For regular paragraph text, word-wraps to fit within width and
@@ -92,21 +93,38 @@ function seedLongWord(
 export function markdownWordWrap(text: string, width: number, bgRestore?: string, options: MarkdownWrapOptions = {}): MarkdownWrapResult {
   if (width < 1) return { lines: [text], cont: [false], join: [""] };
 
-  const inputLines = text.split("\n");
+  // Display math becomes placeholder lines first, so a display expression in
+  // the middle of a paragraph (or list item, or blockquote) renders as a block.
+  const displayMath = bgRestore != null ? extractDisplayMath(text, isTableLine) : null;
+  const inputLines = (displayMath?.text ?? text).split("\n");
   const result: string[] = [];
   const cont: boolean[] = [];
   const join: string[] = [];
   const copy: Array<WrapCopyLine | null> = [];
   const links: LinkSpan[][] = [];
   const images: Array<WrapImageRow | undefined> = [];
-  const pushDisplayMath = (source: string, raw: readonly string[]) => {
-    const image = options.displayMath?.(source, width, raw) ?? null;
-    image?.images.forEach((row, index) => { images[result.length + index] = row; });
-    const rendered = image ?? renderDisplayMath(source, width);
-    result.push(...rendered.lines);
+  /** One display block: an image when options.displayMath provides one, else Unicode rows. */
+  const pushDisplayMath = (block: ExtractedDisplayMath["blocks"][number]) => {
+    // A block inside a list item or blockquote keeps that line prefix.
+    const prefixWidth = termWidth(block.prefix);
+    const blockWidth = Math.max(1, width - prefixWidth);
+    const image = options.displayMath?.(block.tex, blockWidth, block.source.split("\n")) ?? null;
+    if (image) {
+      const shifted = new Map<WrapImage, WrapImage>();
+      image.images.forEach((row, index) => {
+        let moved = shifted.get(row.image);
+        if (!moved) {
+          moved = prefixWidth > 0 ? { ...row.image, col: row.image.col + prefixWidth } : row.image;
+          shifted.set(row.image, moved);
+        }
+        images[result.length + index] = { image: moved, row: row.row };
+      });
+    }
+    const rendered = image ?? renderDisplayMath(block.tex, blockWidth, { source: block.source, trailing: block.trailing });
+    result.push(...rendered.lines.map(row => (image || row || block.prefix.includes(">") ? block.prefix + row : row)));
     cont.push(...rendered.cont);
     join.push(...rendered.join);
-    copy.push(...rendered.copy);
+    copy.push(...rendered.copy.map(row => row && prefixWidth > 0 ? { ...row, displayStart: row.displayStart + prefixWidth } : row));
   };
 
   let i = 0;
@@ -133,14 +151,11 @@ export function markdownWordWrap(text: string, width: number, bgRestore?: string
       continue;
     }
 
-    // Standalone display math: \[ ... \] or $$ ... $$.
-    if (bgRestore != null && (inputLines[i].includes("\\[") || inputLines[i].includes("$$"))) {
-      const block = takeDisplayMathBlock(inputLines, i);
-      if (block) {
-        pushDisplayMath(block.source, inputLines.slice(i, block.nextLine));
-        i = block.nextLine;
-        continue;
-      }
+    const placeholder = displayMath ? displayMathBlock(inputLines[i], displayMath) : null;
+    if (placeholder) {
+      pushDisplayMath(placeholder.block);
+      i++;
+      continue;
     }
 
     // Detect table blocks: consecutive lines matching markdown table syntax
@@ -171,12 +186,12 @@ export function markdownWordWrap(text: string, width: number, bgRestore?: string
     // Regular paragraph text.  Collect consecutive non-special physical lines
     // so inline markdown can span hard newlines while preserving those line
     // breaks in the rendered output.
-    const paragraphStart = i;
     const paragraphLines: string[] = [];
     while (i < inputLines.length) {
       const line = inputLines[i];
       if (line === "") break;
       if (bgRestore != null && line.match(FENCE_OPEN_RE)) break;
+      if (displayMath && displayMathBlock(line, displayMath)) break;
       if (isTableLine(line)) break;
       if (bgRestore != null && isHorizontalRule(line)) break;
       paragraphLines.push(line);
@@ -184,23 +199,7 @@ export function markdownWordWrap(text: string, width: number, bgRestore?: string
     }
 
     if (paragraphLines.length > 0) {
-      // Display math can follow prose without a blank line. Scan the complete
-      // inline context first so a display-looking line inside multiline code
-      // does not split that code span into separate paragraphs.
-      const mathBlocks = bgRestore != null ? findDisplayMathBlocks(inputLines, paragraphStart, i) : [];
-      if (mathBlocks.length === 0) {
-        wrapParagraphBlock(paragraphLines, width, result, cont, join, copy, bgRestore, links);
-        continue;
-      }
-      let textStart = paragraphStart;
-      for (const block of mathBlocks) {
-        wrapParagraphBlock(inputLines.slice(textStart, block.startLine), width, result, cont, join, copy, bgRestore, links);
-        pushDisplayMath(block.source, inputLines.slice(block.startLine, block.nextLine));
-        textStart = block.nextLine;
-      }
-      // A math block may contain blank lines beyond the collected paragraph.
-      i = Math.max(i, textStart);
-      wrapParagraphBlock(inputLines.slice(textStart, i), width, result, cont, join, copy, bgRestore, links);
+      wrapParagraphBlock(paragraphLines, width, result, cont, join, copy, bgRestore, links);
       continue;
     }
 
@@ -209,6 +208,13 @@ export function markdownWordWrap(text: string, width: number, bgRestore?: string
   }
 
   return { lines: result, cont, join, copy, links, ...(images.length > 0 ? { images } : {}) };
+}
+
+function displayMathBlock(line: string, extracted: ExtractedDisplayMath): { block: ExtractedDisplayMath["blocks"][number] } | null {
+  if (!line.includes("\uE0F0")) return null;
+  const index = line.trimStart().replace(/^(?:>[ \t]?)*/, "").match(DISPLAY_PLACEHOLDER)?.[1];
+  const block = index === undefined ? undefined : extracted.blocks[Number(index)];
+  return block ? { block } : null;
 }
 
 interface RawWrapResult {
@@ -241,7 +247,8 @@ function wrapParagraphRaw(paragraph: string, width: number, bgRestore?: string):
 
   const wrapped: string[] = [];
   const wrappedJoin: string[] = [];
-  const words = paragraph.split(/\s+/);
+  // No-break spaces (used inside rendered math) keep their words together.
+  const words = paragraph.split(/[^\S\u00A0]+/);
   let line = "";
   let lineJoin = "";
   let lineWidth = 0;
@@ -295,7 +302,8 @@ function wrapParagraphBlock(
   bgRestore?: string,
   links: LinkSpan[][] = [],
 ): void {
-  const sourceParagraphs = bgRestore != null ? renderInlineMathChunks(paragraphs) : paragraphs;
+  const math = bgRestore != null ? renderInlineMathLines(paragraphs) : null;
+  const sourceParagraphs = math?.lines ?? paragraphs;
   if (bgRestore != null && sourceParagraphs.some(paragraph => /\]\(|https?:\/\//i.test(paragraph))) {
     const wrapped = wrapLinkedParagraphs(sourceParagraphs.map(line => line.trim().replace(/\s+/g, " ")), width, bgRestore);
     for (let row = 0; row < wrapped.lines.length; row++) links[result.length + row] = wrapped.links[row];
@@ -310,9 +318,13 @@ function wrapParagraphBlock(
   const outCont: boolean[] = [];
   const outJoin: string[] = [];
 
+  // Whole-line copies of a line with math yield its TeX source.
+  const copySources: Array<string | null | undefined> = [];
   for (let p = 0; p < sourceParagraphs.length; p++) {
     const wrapped = wrapParagraphRaw(sourceParagraphs[p], width, bgRestore);
+    const mathSource = math?.sources[p] ?? null;
     for (let i = 0; i < wrapped.lines.length; i++) {
+      copySources.push(mathSource === null ? undefined : i === 0 ? mathSource : null);
       rawLines.push(wrapped.lines[i]);
       parseJoin.push(i === 0 ? (rawLines.length === 1 ? "" : "\n") : wrapped.join[i]);
       outCont.push(i > 0);
@@ -328,5 +340,12 @@ function wrapParagraphBlock(
   result.push(...rendered);
   cont.push(...outCont);
   join.push(...outJoin);
-  copy.push(...rendered.map(() => null));
+  copy.push(...rendered.map((row, index) => {
+    const source = copySources[index];
+    return source === undefined ? null : { text: stripAnsi(row).replace(/\u00A0/g, " "), displayStart: 0, source };
+  }));
+}
+
+function stripAnsi(text: string): string {
+  return text.replace(/\x1b\[[0-9;]*m/g, "");
 }

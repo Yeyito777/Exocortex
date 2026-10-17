@@ -10,7 +10,6 @@
     "check": "bun run typecheck && bun run test"
   },
   "dependencies": {
-    "@devhub-io/latex-to-unicode": "2.0.1",
     "@exocortex/shared": "workspace:*",
     "@resvg/resvg-js": "2.6.2",
     "mathjax-full": "3.2.2"

@@ -1,540 +1,89 @@
-import { latexToUnicode } from "@devhub-io/latex-to-unicode";
 import type { WrapCopyLine } from "../textwrap";
-import { sliceByWidth, termWidth } from "../textwidth";
+import { termWidth } from "../textwidth";
+import { FENCE_OPEN_RE, isFenceClose } from "./codeblocks";
+import { stripMarkdown } from "./formatting";
+import { layoutDisplay, layoutInline } from "./mathlayout";
+import { BARE_MATH_ENVIRONMENTS, parseMath } from "./mathparse";
 
 /**
  * Terminal math rendering.
  *
- * A terminal cannot reproduce TeX's font metrics and stacked layout without
- * turning every equation into an image.  Instead, Exocortex renders delimited
- * TeX as compact Unicode math: commands become their mathematical glyphs,
- * scripts use Unicode super/subscripts, and structural forms use readable
- * terminal notation (for example `√(x)` and `(a + b)/c`).
+ * Delimited TeX in assistant Markdown is found once per message
+ * (findMathFragments), parsed with a forgiving TeX parser (mathparse.ts) and
+ * laid out as Unicode text (mathlayout.ts): inline math on one line, display
+ * math as its own indented block with stacked fractions and aligned
+ * environments where the terminal is wide enough. Copies of rendered math
+ * yield the original TeX source.
  */
 
-const ESCAPED_LEFT_BRACE = "\uE000";
-const ESCAPED_RIGHT_BRACE = "\uE001";
-const ESCAPED_AMPERSAND = "\uE002";
-const FRAGMENT_START = "\uE003";
-const FRAGMENT_END = "\uE004";
+const MAX_TEX_LENGTH = 20_000;
 
-// The converter deliberately has a small core vocabulary.  These aliases cover
-// notation commonly emitted by chat models and add spacing around binary
-// operators, which is especially important in a monospace display.
-const CUSTOM_MACROS: Record<string, string> = {
-  land: " ∧ ",
-  lor: " ∨ ",
-  iff: " ⇔ ",
-  implies: " ⇒ ",
-  impliedby: " ⇐ ",
-  not: "¬",
-  neg: "¬",
-  wedge: " ∧ ",
-  vee: " ∨ ",
-  Rightarrow: " ⇒ ",
-  Leftarrow: " ⇐ ",
-  Leftrightarrow: " ⇔ ",
-  Longrightarrow: " ⇒ ",
-  Longleftarrow: " ⇐ ",
-  Longleftrightarrow: " ⇔ ",
-  to: " → ",
-  mapsto: " ↦ ",
-  in: " ∈ ",
-  notin: " ∉ ",
-  ni: " ∋ ",
-  le: " ≤ ",
-  leq: " ≤ ",
-  ge: " ≥ ",
-  geq: " ≥ ",
-  ne: " ≠ ",
-  neq: " ≠ ",
-  approx: " ≈ ",
-  equiv: " ≡ ",
-  sim: " ∼ ",
-  simeq: " ≃ ",
-  cong: " ≅ ",
-  propto: " ∝ ",
-  subset: " ⊂ ",
-  subseteq: " ⊆ ",
-  supset: " ⊃ ",
-  supseteq: " ⊇ ",
-  cup: " ∪ ",
-  cap: " ∩ ",
-  setminus: " ∖ ",
-  times: " × ",
-  cdot: " · ",
-  div: " ÷ ",
-  pm: " ± ",
-  mp: " ∓ ",
-  oplus: " ⊕ ",
-  otimes: " ⊗ ",
-  parallel: " ∥ ",
-  perp: " ⟂ ",
-  colon: ":",
-  mid: " | ",
-  vert: "|",
-  Vert: "‖",
-  langle: "⟨",
-  rangle: "⟩",
-  lceil: "⌈",
-  rceil: "⌉",
-  lfloor: "⌊",
-  rfloor: "⌋",
-  lim: "lim",
-  limsup: "lim sup",
-  liminf: "lim inf",
-  min: "min",
-  max: "max",
-  sup: "sup",
-  inf: "inf",
-  argmin: "arg min",
-  argmax: "arg max",
-  sin: "sin",
-  cos: "cos",
-  tan: "tan",
-  cot: "cot",
-  sec: "sec",
-  csc: "csc",
-  arcsin: "arcsin",
-  arccos: "arccos",
-  arctan: "arctan",
-  sinh: "sinh",
-  cosh: "cosh",
-  tanh: "tanh",
-  log: "log",
-  ln: "ln",
-  exp: "exp",
-  det: "det",
-  gcd: "gcd",
-  ker: "ker",
-  Pr: "Pr",
-  mod: " mod ",
-  // Font commands have no faithful terminal equivalent. Preserve their content
-  // rather than exposing the command name.
-  mathbb: "",
-  mathcal: "",
-  mathscr: "",
-  mathfrak: "",
-  mathsf: "",
-  mathtt: "",
-};
-
-interface GroupMatch {
-  content: string;
-  end: number;
-}
-
-function readBraceGroup(input: string, open: number): GroupMatch | null {
-  if (input[open] !== "{") return null;
-  let depth = 0;
-  for (let i = open; i < input.length; i++) {
-    if (input[i] === "\\") {
-      i++;
-      continue;
-    }
-    if (input[i] === "{") depth++;
-    else if (input[i] === "}" && --depth === 0) {
-      return { content: input.slice(open + 1, i), end: i + 1 };
-    }
-  }
-  return null;
-}
-
-function skipAsciiWhitespace(input: string, from: number): number {
-  let i = from;
-  while (i < input.length && /[ \t\r\n]/.test(input[i])) i++;
-  return i;
-}
-
-const BLACKBOARD_BOLD: Record<string, string> = {
-  C: "ℂ",
-  H: "ℍ",
-  N: "ℕ",
-  P: "ℙ",
-  Q: "ℚ",
-  R: "ℝ",
-  Z: "ℤ",
-};
-
-const COMBINING_ACCENTS: Record<string, string> = {
-  bar: "\u0304",
-  overline: "\u0305",
-  underline: "\u0332",
-  hat: "\u0302",
-  widehat: "\u0302",
-  tilde: "\u0303",
-  widetilde: "\u0303",
-  dot: "\u0307",
-  ddot: "\u0308",
-  vec: "\u20D7",
-};
-
-function applyCombiningMark(content: string, mark: string): string {
-  // Keep TeX commands intact for the main converter (for example
-  // `\vec{\alpha}` must remain `\alpha` followed by the vector mark).
-  if (content.includes("\\") || /[^\p{L}\p{N}]/u.test(content)) return `${content}${mark}`;
-  return Array.from(content).map(char => `${char}${mark}`).join("");
-}
-
-/** Handle a few structural commands before the lightweight Unicode converter. */
-function preprocessGroupedCommands(input: string, depth = 0): string {
-  if (depth > 32 || input.indexOf("\\") < 0) return input;
-
-  let out = "";
-  let i = 0;
-  while (i < input.length) {
-    if (input[i] !== "\\") {
-      out += input[i++];
-      continue;
-    }
-
-    const commandMatch = input.slice(i).match(/^\\([A-Za-z]+)/);
-    if (!commandMatch) {
-      out += input[i++];
-      continue;
-    }
-
-    const command = commandMatch[1];
-    let argStart = skipAsciiWhitespace(input, i + commandMatch[0].length);
-
-    // Indexed roots are not handled by the dependency's one-argument \sqrt.
-    if (command === "sqrt" && input[argStart] === "[") {
-      const indexEnd = input.indexOf("]", argStart + 1);
-      if (indexEnd >= 0) {
-        const radicandStart = skipAsciiWhitespace(input, indexEnd + 1);
-        const radicand = readBraceGroup(input, radicandStart);
-        if (radicand) {
-          const index = preprocessGroupedCommands(input.slice(argStart + 1, indexEnd), depth + 1);
-          const body = preprocessGroupedCommands(radicand.content, depth + 1);
-          out += `root(${index}, ${body})`;
-          i = radicand.end;
-          continue;
-        }
-      }
-    }
-
-    // Binomial coefficients have two required grouped arguments.
-    if (command === "binom") {
-      const top = readBraceGroup(input, argStart);
-      if (top) {
-        const bottomStart = skipAsciiWhitespace(input, top.end);
-        const bottom = readBraceGroup(input, bottomStart);
-        if (bottom) {
-          out += `C(${preprocessGroupedCommands(top.content, depth + 1)}, ${preprocessGroupedCommands(bottom.content, depth + 1)})`;
-          i = bottom.end;
-          continue;
-        }
-      }
-    }
-
-    const group = readBraceGroup(input, argStart);
-    if (!group) {
-      out += commandMatch[0];
-      i += commandMatch[0].length;
-      continue;
-    }
-
-    const content = preprocessGroupedCommands(group.content, depth + 1);
-    if (command === "mathbb") {
-      out += BLACKBOARD_BOLD[content.trim()] ?? content;
-    } else if (command in COMBINING_ACCENTS) {
-      out += applyCombiningMark(content, COMBINING_ACCENTS[command]);
-    } else if (command === "abs") {
-      out += `|${content}|`;
-    } else if (command === "norm") {
-      out += `‖${content}‖`;
-    } else if (command === "boxed") {
-      out += `[${content}]`;
-    } else if (command === "pmod") {
-      out += `(mod ${content})`;
-    } else {
-      // Let latex-to-unicode handle known wrappers, fractions, and roots.
-      out += `${commandMatch[0]}{${content}}`;
-    }
-    i = group.end;
-  }
-  return out;
-}
-
-type MatrixEnvironment = "matrix" | "pmatrix" | "bmatrix" | "Bmatrix" | "vmatrix" | "Vmatrix" | "cases";
-
-/** Split only at this environment's separators, not nested groups/environments. */
-function splitEnvironmentBody(input: string, separator: "&" | "\\\\"): string[] {
-  const parts: string[] = [];
-  let start = 0;
-  let braces = 0;
-  let environments = 0;
-  for (let i = 0; i < input.length;) {
-    const environment = input.slice(i).match(/^\\(begin|end)\{[^}]+\}/);
-    if (environment) {
-      environments += environment[1] === "begin" ? 1 : -1;
-      i += environment[0].length;
-      continue;
-    }
-    if (braces === 0 && environments === 0 && input.startsWith(separator, i)) {
-      parts.push(input.slice(start, i));
-      i += separator.length;
-      if (separator === "\\\\") {
-        const spacing = input.slice(i).match(/^\[[^\]]*\]/);
-        if (spacing) i += spacing[0].length;
-      }
-      start = i;
-      continue;
-    }
-    if (input[i] === "\\") {
-      const command = input.slice(i).match(/^\\(?:[A-Za-z]+|.)/);
-      i += command?.[0].length ?? 1;
-      continue;
-    }
-    if (input[i] === "{") braces++;
-    else if (input[i] === "}") braces--;
-    i++;
-  }
-  parts.push(input.slice(start));
-  return parts;
-}
-
-function matrixDelimiters(environment: MatrixEnvironment, row: number, rows: number): [string, string] {
-  const position = rows === 1 ? "only" : row === 0 ? "top" : row === rows - 1 ? "bottom" : "middle";
-  switch (environment) {
-    case "pmatrix":
-      return position === "only" ? ["(", ")"]
-        : position === "top" ? ["⎛", "⎞"]
-        : position === "bottom" ? ["⎝", "⎠"] : ["⎜", "⎟"];
-    case "bmatrix":
-      return position === "only" ? ["[", "]"]
-        : position === "top" ? ["⎡", "⎤"]
-        : position === "bottom" ? ["⎣", "⎦"] : ["⎢", "⎥"];
-    case "Bmatrix":
-      return position === "only" ? ["{", "}"]
-        : position === "top" ? ["⎧", "⎫"]
-        : position === "bottom" ? ["⎩", "⎭"] : ["⎨", "⎬"];
-    case "vmatrix": return ["│", "│"];
-    case "Vmatrix": return ["‖", "‖"];
-    case "cases":
-      return [position === "only" ? "{" : position === "top" ? "⎧" : position === "bottom" ? "⎩" : "⎨", ""];
-    case "matrix": return ["", ""];
-  }
-}
-
-function renderMatrix(environment: MatrixEnvironment, body: string, display: boolean, depth: number): string {
-  const rows = splitEnvironmentBody(body, "\\\\")
-    .map(row => splitEnvironmentBody(row, "&")
-      .map(cell => convertLatexMathInternal(cell.trim(), false, depth + 1)).join(" ").trim())
-    .filter((row, index, all) => row !== "" || all.length === 1 || index < all.length - 1);
-
-  if (!display) {
-    const open = environment === "pmatrix" ? "(" : environment === "bmatrix" ? "["
-      : environment === "Bmatrix" || environment === "cases" ? "{"
-      : environment === "vmatrix" ? "|" : environment === "Vmatrix" ? "‖" : "[";
-    const close = environment === "pmatrix" ? ")" : environment === "bmatrix" ? "]"
-      : environment === "Bmatrix" || environment === "cases" ? "}"
-      : environment === "vmatrix" ? "|" : environment === "Vmatrix" ? "‖" : "]";
-    return `${open}${rows.join("; ")}${close}`;
-  }
-
-  return rows.map((row, index) => {
-    const [left, right] = matrixDelimiters(environment, index, rows.length);
-    return `${left} ${row} ${right}`.trimEnd();
-  }).join("\n");
-}
-
-function readEnvironment(input: string, start: number): (GroupMatch & { environment: string }) | null {
-  const opening = input.slice(start).match(/^\\begin\{(matrix|pmatrix|bmatrix|Bmatrix|vmatrix|Vmatrix|cases|aligned|align\*?)\}/);
-  if (!opening) return null;
-  const bodyStart = start + opening[0].length;
-  const boundaries = /\\(begin|end)\{([^}]+)\}/g;
-  boundaries.lastIndex = bodyStart;
-  const stack = [opening[1]];
-  for (let boundary; (boundary = boundaries.exec(input));) {
-    if (isEscaped(input, boundary.index)) continue;
-    if (boundary[1] === "begin") {
-      stack.push(boundary[2]);
-    } else {
-      if (stack.pop() !== boundary[2]) return null;
-      if (stack.length === 0) {
-        return { environment: opening[1], content: input.slice(bodyStart, boundary.index), end: boundaries.lastIndex };
-      }
-    }
-  }
-  return null;
-}
-
-function renderEnvironment(environment: string, body: string, display: boolean, depth: number): string {
-  if (environment === "aligned" || environment.startsWith("align")) {
-    const rows = splitEnvironmentBody(body, "\\\\")
-      .map(row => convertLatexMathInternal(splitEnvironmentBody(row, "&").join("").trim(), display, depth + 1));
-    return display ? rows.join("\n") : rows.join("; ");
-  }
-  return renderMatrix(environment as MatrixEnvironment, body, display, depth);
-}
-
-function readScriptArgument(input: string, from: number): GroupMatch | null {
-  const start = skipAsciiWhitespace(input, from);
-  if (start >= input.length) return null;
-  if (input[start] === "{") return readBraceGroup(input, start);
-  if (input[start] === "\\") {
-    const command = input.slice(start).match(/^\\(?:[A-Za-z]+|.)/);
-    if (!command) return null;
-    let end = start + command[0].length;
-    if (command[0] === "\\sqrt" && input[end] === "[") {
-      const indexEnd = input.indexOf("]", end + 1);
-      if (indexEnd >= 0) end = indexEnd + 1;
-    }
-    // Keep common macro invocations together when they are bare script arguments.
-    const argumentsCount = /^\\(?:[td]?frac|binom)$/.test(command[0]) ? 2
-      : /^\\(?:text|mathrm|mathbf|boldsymbol|operatorname|sqrt|mathbb|mathcal|mathscr|mathfrak|mathsf|mathtt|abs|norm|boxed|bar|overline|underline|hat|widehat|tilde|widetilde|dot|ddot|vec)$/.test(command[0]) ? 1 : 0;
-    for (let arg = 0; arg < argumentsCount; arg++) {
-      const group = readBraceGroup(input, skipAsciiWhitespace(input, end));
-      if (!group) break;
-      end = group.end;
-    }
-    return { content: input.slice(start, end), end };
-  }
-  const content = String.fromCodePoint(input.codePointAt(start)!);
-  return { content, end: start + content.length };
-}
-
-/** Protect complete structures before the dependency strips grouping and spacing. */
-function preprocessStructures(input: string, display: boolean, depth: number, protect: (text: string) => string): string {
-  let out = "";
-  let boundOperator = false;
-  for (let i = 0; i < input.length;) {
-    if (input[i] === "\\") {
-      const environment = readEnvironment(input, i);
-      if (environment) {
-        out += protect(renderEnvironment(environment.environment, environment.content, display, depth));
-        boundOperator = false;
-        i = environment.end;
-        continue;
-      }
-      const command = input.slice(i).match(/^\\(?:[A-Za-z]+|.)/);
-      if (command) {
-        if (!/^\\(?:no)?limits$/.test(command[0])) {
-          boundOperator = /^\\(?:lim|limsup|liminf|min|max|sup|inf|argmin|argmax|sum|prod|int)$/.test(command[0]);
-          out += command[0] === "\\_" ? protect("_") : command[0];
-        }
-        i += command[0].length;
-        continue;
-      }
-    }
-    const marker = input[i];
-    if (marker === "_" || marker === "^") {
-      const argument = readScriptArgument(input, i + 1);
-      if (argument) {
-        const content = convertLatexMathInternal(argument.content, false, depth + 1);
-        const unicode = latexToUnicode(`${marker}{${content}}`, { latexCheck: false, fallbackBehaviour: "raw" });
-        // All-or-nothing Unicode scripts avoid mixing baseline and raised text.
-        // Unsupported compound scripts need visible grouping: e^(f(x)), not e^f(x).
-        const script = unicode.startsWith(marker)
-          ? `${marker}${Array.from(content).length === 1 ? content : `(${content})`}`
-          : unicode;
-        out += protect(script);
-        i = argument.end;
-        if (boundOperator && !/[_^]/.test(input[skipAsciiWhitespace(input, i)] ?? "")) {
-          out += " ";
-          boundOperator = false;
-        }
-        continue;
-      }
-      // Leave malformed/incomplete scripts readable instead of losing braces.
-      out += protect(input.slice(i));
-      break;
-    }
-    if (!/[ \t\r\n]/.test(marker)) boundOperator = false;
-    out += input[i++];
-  }
-  return out;
-}
-
-/** Place multiline fragments side by side, rather than splicing their rows. */
-function restoreFragments(input: string, fragments: string[], display: boolean): string {
-  if (!display || fragments.length === 0) {
-    return input.replace(/\uE003(\d+)\uE004/g, (whole, index: string) => fragments[Number(index)] ?? whole);
-  }
-  const lines = [""];
-  const append = (text: string) => {
-    const column = Math.max(...lines.map(termWidth));
-    for (const [row, part] of text.split("\n").entries()) {
-      const prefix = lines[row] ?? "";
-      lines[row] = prefix + " ".repeat(column - termWidth(prefix)) + part;
-    }
-  };
-  let start = 0;
-  for (const match of input.matchAll(/\uE003(\d+)\uE004/g)) {
-    append(input.slice(start, match.index));
-    append(fragments[Number(match[1])] ?? match[0]);
-    start = match.index + match[0].length;
-  }
-  append(input.slice(start));
-  return lines.map(line => line.trimEnd()).join("\n");
-}
-
+/** Render TeX source (without delimiters) as terminal text. */
 export function convertLatexMath(source: string, display = false): string {
-  return convertLatexMathInternal(source, display, 0);
-}
-
-function convertLatexMathInternal(source: string, display: boolean, depth: number): string {
-  if (!source) return "";
-  if (depth > 32) return source.trim();
+  if (!source.trim()) return "";
+  if (source.length > MAX_TEX_LENGTH) return source.trim();
   try {
-    const fragments: string[] = [];
-    const protect = (text: string) => `${FRAGMENT_START}${fragments.push(text) - 1}${FRAGMENT_END}`;
-    // TeX treats physical newlines in ordinary display expressions as
-    // whitespace. Collapse them before environment handling so pretty-printed
-    // source does not turn every parenthesis/operator into its own terminal
-    // row. Matrix/aligned/cases environments reintroduce intentional rows from
-    // their `\\` separators below.
-    const normalizedSource = display ? source.replace(/\s*\n\s*/g, " ") : source;
-    let prepared = preprocessStructures(normalizedSource, display, depth, protect);
-    prepared = preprocessGroupedCommands(prepared);
-    prepared = prepared
-      .replace(/\\(qquad|quad)\b/g, (_whole, command: string) => protect(command === "qquad" ? "    " : "  "))
-      .replace(/\\\{/g, ESCAPED_LEFT_BRACE)
-      .replace(/\\\}/g, ESCAPED_RIGHT_BRACE)
-      .replace(/\\&/g, ESCAPED_AMPERSAND)
-      .replace(/\\%/g, "%")
-      .replace(/\\ /g, " ")
-      .replace(/\\not\s*=/g, " ≠ ");
-
-    const converted = latexToUnicode(prepared, {
-      latexCheck: false,
-      customMacros: CUSTOM_MACROS,
-      // Complete scripts have already been protected above. Keep any remaining
-      // unsupported/malformed syntax raw rather than mixing baseline glyphs
-      // with super/subscript parentheses.
-      fallbackBehaviour: "raw",
-    })
-      .replaceAll(ESCAPED_LEFT_BRACE, "{")
-      .replaceAll(ESCAPED_RIGHT_BRACE, "}")
-      .replaceAll(ESCAPED_AMPERSAND, "&")
-      .replace(/\*/g, "×")
-      .replace(/[ \t]+([,.;:])/g, "$1")
-      .replace(/\([ \t]+/g, "(")
-      .replace(/[ \t]+\)/g, ")")
-      .replace(/[ \t]{2,}/g, " ")
-      .trim();
-    return restoreFragments(converted, fragments, display);
+    const nodes = parseMath(source);
+    return display ? layoutDisplay(nodes).rows.join("\n") : layoutInline(nodes);
   } catch {
-    // Rendering is presentation-only. A malformed expression must never make a
-    // conversation disappear or crash the TUI.
+    // Rendering is presentation-only: never let malformed TeX hide a message.
     return source.trim();
   }
 }
+
+function inlineMath(source: string, nbsp: boolean): string {
+  if (!source.trim()) return "";
+  if (source.length > MAX_TEX_LENGTH) return source.trim();
+  try {
+    return layoutInline(parseMath(source), nbsp);
+  } catch {
+    return source.trim();
+  }
+}
+
+function displayRows(source: string, width: number): { rows: string[]; lastBase: number } {
+  const plain = { rows: [source.trim()], lastBase: 0 };
+  if (!source.trim()) return { rows: [], lastBase: 0 };
+  if (source.length > MAX_TEX_LENGTH) return plain;
+  try {
+    return layoutDisplay(parseMath(source), width);
+  } catch {
+    return plain;
+  }
+}
+
+// ── Fragment detection ─────────────────────────────────────────────────
+
+export type MathDelimiter = "$" | "$$" | "\\(" | "\\[" | "env";
+
+/** One delimited TeX expression in a Markdown text. */
+export interface MathFragment {
+  /**
+   * TeX between the delimiters (for "env", the whole `\begin…\end`). Lines
+   * inside a blockquote have their `>` markers removed.
+   */
+  tex: string;
+  /** Display math: `$$…$$`, `\[…\]`, or a bare math environment. */
+  display: boolean;
+  delimiter: MathDelimiter;
+  /** Offset of the opening delimiter in the scanned text. */
+  start: number;
+  /** Offset just past the closing delimiter; `text.slice(start, end)` is the source. */
+  end: number;
+}
+
+interface MathScan {
+  fragments: MathFragment[];
+  /** Offsets of the backslash in `\$` escapes outside code and math. */
+  escapedDollars: number[];
+}
+
+const QUOTE_PREFIX = /^[ \t]*(?:>[ \t]?)+/;
 
 function isEscaped(input: string, index: number): boolean {
   let backslashes = 0;
   for (let i = index - 1; i >= 0 && input[i] === "\\"; i--) backslashes++;
   return backslashes % 2 === 1;
-}
-
-function findUnescapedToken(input: string, token: string, from: number): number {
-  let index = input.indexOf(token, from);
-  while (index >= 0) {
-    if (!isEscaped(input, index)) return index;
-    index = input.indexOf(token, index + token.length);
-  }
-  return -1;
 }
 
 function countRun(input: string, from: number, char: string): number {
@@ -543,120 +92,347 @@ function countRun(input: string, from: number, char: string): number {
   return i - from;
 }
 
-function findCodeSpanClose(input: string, from: number, ticks: number): number {
-  let i = from;
-  while (i < input.length) {
-    if (input[i] !== "`") {
-      i++;
+/** Fenced code block ranges [start, end) by character offset. */
+function fencedRanges(text: string): Array<[number, number]> {
+  if (!text.includes("```")) return [];
+  const ranges: Array<[number, number]> = [];
+  const lines = text.split("\n");
+  let offset = 0;
+  for (let index = 0; index < lines.length; index++) {
+    const match = lines[index].match(FENCE_OPEN_RE);
+    if (!match) {
+      offset += lines[index].length + 1;
       continue;
     }
-    const run = countRun(input, i, "`");
-    if (run === ticks) return i;
-    i += run;
+    const start = offset;
+    const fenceLength = match[2].length;
+    offset += lines[index].length + 1;
+    index++;
+    while (index < lines.length && !isFenceClose(lines[index], fenceLength)) {
+      offset += lines[index].length + 1;
+      index++;
+    }
+    if (index < lines.length) offset += lines[index].length + 1;
+    ranges.push([start, Math.min(offset, text.length)]);
   }
-  return -1;
+  return ranges;
 }
 
-function likelyDollarMath(content: string, lineBoundary: string): boolean {
-  if (!content || /^\s|\s$/.test(content) || content.includes("\n") || content.includes(lineBoundary)) return false;
-  // Avoid pairing two currency amounts in prose, such as "$5 and $10".
+function likelyDollarMath(content: string): boolean {
+  if (!content || /^\s|\s$/.test(content) || content.includes("\n")) return false;
+  // Currency in prose: "$5 and $10", "$33,055 and ... $33,055".
   if (/^\d[\d,.]*$/.test(content) || (/^\d/.test(content) && /,/.test(content))) return false;
-  if (/^[A-Za-z]+(?:\s+[A-Za-z0-9]+)+$/.test(content)) return false;
+  // Plain words ("$HOME and $PATH") and shell/quoted text are not math.
+  if (/^[A-Za-z]+(?:\s+[A-Za-z0-9]+)+$/.test(content) || /["`]/.test(content)) return false;
   return /[A-Za-z0-9α-ωΑ-Ω\\_^=+*/<>()[\]{}|−∞∑∫]/u.test(content);
 }
 
-function findDollarClose(input: string, from: number, double: boolean): number {
-  const token = double ? "$$" : "$";
-  let i = from;
-  while (i < input.length) {
-    const found = input.indexOf(token, i);
-    if (found < 0) return -1;
-    if (!isEscaped(input, found) && (double || (input[found - 1] !== "$" && input[found + 1] !== "$"))) {
-      return found;
-    }
-    i = found + token.length;
+/** Prose rather than TeX between two `$$` that are not on their own lines. */
+function likelyProse(content: string): boolean {
+  return /^\s*[A-Za-z]+(?:[\s,.'’]+[A-Za-z]+){2,}[\s,.]*$/.test(content);
+}
+
+class Scanner {
+  private readonly blankLines: number[] = [];
+  private readonly fences: Array<[number, number]>;
+  private readonly searches = new Map<string, { from: number; found: number }>();
+
+  constructor(private readonly text: string) {
+    this.fences = fencedRanges(text);
+    for (const match of text.matchAll(/\n[ \t]*(?=\n)/g)) this.blankLines.push(match.index);
   }
-  return -1;
+
+  /** End of the paragraph containing `index` (the next blank line or fence). */
+  paragraphEnd(index: number): number {
+    let end = this.text.length;
+    for (const blank of this.blankLines) {
+      if (blank >= index) {
+        end = blank;
+        break;
+      }
+    }
+    return Math.min(end, this.nextFenceStart(index));
+  }
+
+  nextFenceStart(index: number): number {
+    for (const [start] of this.fences) if (start >= index) return start;
+    return this.text.length;
+  }
+
+  fenceAt(index: number): [number, number] | null {
+    for (const range of this.fences) if (index >= range[0] && index < range[1]) return range;
+    return null;
+  }
+
+  /** Next unescaped `token` at or after `from`, cached so repeated misses stay linear. */
+  nextUnescaped(token: string, from: number): number {
+    const cached = this.searches.get(token);
+    if (cached && from >= cached.from && (cached.found < 0 || cached.found >= from)) return cached.found;
+    let found = this.text.indexOf(token, from);
+    while (found >= 0 && isEscaped(this.text, found)) found = this.text.indexOf(token, found + 1);
+    this.searches.set(token, { from, found });
+    return found;
+  }
+
+  isStandaloneOpener(start: number): boolean {
+    const lineStart = this.text.lastIndexOf("\n", start - 1) + 1;
+    return /^[ \t]*(?:>[ \t]?)*[ \t]*$/.test(this.text.slice(lineStart, start));
+  }
+
+  isStandaloneCloser(end: number): boolean {
+    const lineEnd = this.text.indexOf("\n", end);
+    return /^[ \t]*[.,;:!?]?[ \t]*$/.test(this.text.slice(end, lineEnd < 0 ? this.text.length : lineEnd));
+  }
+}
+
+function blockquoteClean(text: string, start: number, tex: string): string {
+  if (!tex.includes("\n")) return tex;
+  const lineStart = text.lastIndexOf("\n", start - 1) + 1;
+  if (!QUOTE_PREFIX.test(text.slice(lineStart, start)) || !text.slice(lineStart, start).includes(">")) return tex;
+  return tex.split("\n").map((current, index) => index === 0 ? current : current.replace(QUOTE_PREFIX, "")).join("\n");
+}
+
+function scanMath(text: string): MathScan {
+  const fragments: MathFragment[] = [];
+  const escapedDollars: number[] = [];
+  if (!/[$\\]/.test(text)) return { fragments, escapedDollars };
+  const scanner = new Scanner(text);
+  const push = (start: number, contentStart: number, contentEnd: number, end: number, delimiter: MathDelimiter, display: boolean) => {
+    const raw = delimiter === "env" ? text.slice(start, end) : text.slice(contentStart, contentEnd);
+    fragments.push({ tex: blockquoteClean(text, start, raw), display, delimiter, start, end });
+  };
+
+  let i = 0;
+  while (i < text.length) {
+    const fence = text[i] === "`" || i === 0 || text[i - 1] === "\n" ? scanner.fenceAt(i) : null;
+    if (fence) {
+      i = fence[1];
+      continue;
+    }
+    const char = text[i];
+
+    if (char === "`") {
+      const ticks = countRun(text, i, "`");
+      const limit = scanner.paragraphEnd(i);
+      let close = -1;
+      for (let j = i + ticks; j < limit;) {
+        if (text[j] !== "`") {
+          j++;
+          continue;
+        }
+        const run = countRun(text, j, "`");
+        if (run === ticks) {
+          close = j;
+          break;
+        }
+        j += run;
+      }
+      i = close >= 0 ? close + ticks : i + ticks;
+      continue;
+    }
+
+    if (char === "\\") {
+      const next = text[i + 1];
+      if (next === "$") {
+        escapedDollars.push(i);
+        i += 2;
+        continue;
+      }
+      if (next === "(" || next === "[") {
+        const display = next === "[";
+        const closer = display ? "\\]" : "\\)";
+        const close = scanner.nextUnescaped(closer, i + 2);
+        const limit = display ? scanner.nextFenceStart(i) : scanner.paragraphEnd(i);
+        if (close >= 0 && close <= limit && text.slice(i + 2, close).trim()) {
+          const crossesParagraph = display && close > scanner.paragraphEnd(i);
+          if (!crossesParagraph || (scanner.isStandaloneOpener(i) && scanner.isStandaloneCloser(close + 2))) {
+            push(i, i + 2, close, close + 2, display ? "\\[" : "\\(", display);
+            i = close + 2;
+            continue;
+          }
+        }
+        i += 2;
+        continue;
+      }
+      if (text.startsWith("\\begin{", i)) {
+        const environment = readBareEnvironment(text, i, scanner.nextFenceStart(i));
+        if (environment) {
+          push(i, i, environment, environment, "env", true);
+          i = environment;
+          continue;
+        }
+      }
+      i += 2;
+      continue;
+    }
+
+    if (char === "$") {
+      if (text[i + 1] === "$") {
+        if (text[i + 2] === "$") {
+          i += countRun(text, i, "$");
+          continue;
+        }
+        const close = scanner.nextUnescaped("$$", i + 2);
+        if (close >= 0 && close < scanner.nextFenceStart(i)) {
+          const content = text.slice(i + 2, close);
+          const standalone = scanner.isStandaloneOpener(i) && scanner.isStandaloneCloser(close + 2);
+          const crossesParagraph = close > scanner.paragraphEnd(i);
+          if (content.trim() && (standalone || (!crossesParagraph && !likelyProse(content)))) {
+            push(i, i + 2, close, close + 2, "$$", true);
+            i = close + 2;
+            continue;
+          }
+        }
+        i += 2;
+        continue;
+      }
+      const lineEnd = text.indexOf("\n", i);
+      const limit = lineEnd < 0 ? text.length : lineEnd;
+      let close = -1;
+      for (let j = i + 1; j < limit; j++) {
+        if (text[j] === "$" && !isEscaped(text, j)) {
+          close = j;
+          break;
+        }
+      }
+      // Shell and template text ("$HOME", PATH="$JAVA_HOME/bin:$PATH", US$5)
+      // puts the dollar right after a word, quote or `=`.
+      const opensWord = /[A-Za-z0-9"'=/]/.test(text[i - 1] ?? "");
+      if (close >= 0 && !opensWord && text[close + 1] !== "$" && !/[0-9_]/.test(text[close + 1] ?? "")) {
+        const content = text.slice(i + 1, close);
+        if (likelyDollarMath(content)) {
+          push(i, i + 1, close, close + 1, "$", false);
+          i = close + 1;
+          continue;
+        }
+      }
+      i++;
+      continue;
+    }
+    i++;
+  }
+  return { fragments, escapedDollars };
+}
+
+/** End offset of a bare `\begin{env}…\end{env}` math environment, or null. */
+function readBareEnvironment(text: string, start: number, limit: number): number | null {
+  const opening = /^\\begin\{([A-Za-z]+\*?)\}/.exec(text.slice(start, start + 40));
+  if (!opening || !BARE_MATH_ENVIRONMENTS.test(opening[1])) return null;
+  const boundaries = /\\(begin|end)\{([^}\n]+)\}/g;
+  boundaries.lastIndex = start + opening[0].length;
+  let depth = 1;
+  for (let match; (match = boundaries.exec(text));) {
+    if (match.index >= limit) return null;
+    if (isEscaped(text, match.index)) continue;
+    depth += match[1] === "begin" ? 1 : -1;
+    if (depth === 0) return match[2] === opening[1] ? boundaries.lastIndex : null;
+  }
+  return null;
+}
+
+/**
+ * Find delimited math in an assistant Markdown message: `$…$`, `$$…$$`,
+ * `\(…\)`, `\[…\]` and bare math environments. Fenced code blocks and inline
+ * code spans are skipped, `\$` is an escaped dollar, and prose prices such as
+ * "$5 and $10" are not math.
+ */
+export function findMathFragments(markdown: string): MathFragment[] {
+  return scanMath(markdown).fragments;
+}
+
+// ── Inline rendering ───────────────────────────────────────────────────
+
+interface InlineRender {
+  /** Rendered lines; a fragment spanning a newline joins its lines. */
+  lines: string[];
+  /**
+   * Per rendered line: the copy text with math as its original TeX (and
+   * Markdown markers stripped like the rendered line), or null when the line
+   * has no math.
+   */
+  sources: Array<string | null>;
+}
+
+const PLACEHOLDER_BASE = 0xE100;
+
+function renderInline(text: string, nbsp: boolean): InlineRender {
+  const { fragments, escapedDollars } = scanMath(text);
+  if (fragments.length === 0 && escapedDollars.length === 0) {
+    const lines = text.split("\n");
+    return { lines, sources: lines.map(() => null) };
+  }
+
+  const rendered: string[] = [""];
+  const raw: string[] = [""];
+  const mathSources: string[][] = [[]];
+  const appendText = (from: number, to: number) => {
+    let cursor = from;
+    for (const escape of escapedDollars) {
+      if (escape < from || escape >= to) continue;
+      appendPlain(text.slice(cursor, escape) + "$");
+      cursor = escape + 2;
+    }
+    appendPlain(text.slice(cursor, to));
+  };
+  const appendPlain = (piece: string) => {
+    const parts = piece.split("\n");
+    parts.forEach((part, index) => {
+      if (index > 0) {
+        rendered.push("");
+        raw.push("");
+        mathSources.push([]);
+      }
+      rendered[rendered.length - 1] += part;
+      raw[raw.length - 1] += part;
+    });
+  };
+
+  let cursor = 0;
+  for (const fragment of fragments) {
+    appendText(cursor, fragment.start);
+    const sources = mathSources[mathSources.length - 1];
+    const placeholder = String.fromCodePoint(PLACEHOLDER_BASE + Math.min(sources.length, 0x17FF));
+    sources.push(text.slice(fragment.start, fragment.end).replace(/\s*\n\s*/g, " "));
+    rendered[rendered.length - 1] += inlineMath(fragment.tex, nbsp);
+    raw[raw.length - 1] += placeholder;
+    cursor = fragment.end;
+  }
+  appendText(cursor, text.length);
+
+  const sources = raw.map((line, index) => {
+    const math = mathSources[index];
+    if (math.length === 0) return null;
+    const plain = stripMarkdown(line).trim();
+    return plain.replace(/[-]/g, char => math[char.codePointAt(0)! - PLACEHOLDER_BASE] ?? char);
+  });
+  return { lines: rendered, sources };
 }
 
 /** Convert inline math while leaving Markdown code spans and ordinary currency alone. */
 export function renderInlineMath(input: string): string {
-  return renderInlineMathWithBoundary(input, "\n");
-}
-
-function renderInlineMathWithBoundary(input: string, lineBoundary: string): string {
-  if (!input || (input.indexOf("\\(") < 0 && input.indexOf("\\[") < 0 && input.indexOf("$") < 0)) {
-    return input;
-  }
-
-  let out = "";
-  let i = 0;
-  while (i < input.length) {
-    if (input[i] === "`") {
-      const ticks = countRun(input, i, "`");
-      const close = findCodeSpanClose(input, i + ticks, ticks);
-      if (close >= 0) {
-        const end = close + ticks;
-        out += input.slice(i, end);
-        i = end;
-        continue;
-      }
-    }
-
-    const slashToken = input.startsWith("\\(", i) ? ["\\(", "\\)"] as const
-      : input.startsWith("\\[", i) ? ["\\[", "\\]"] as const : null;
-    if (slashToken && !isEscaped(input, i)) {
-      const close = findUnescapedToken(input, slashToken[1], i + 2);
-      if (close >= 0) {
-        out += convertLatexMath(input.slice(i + 2, close));
-        i = close + 2;
-        continue;
-      }
-    }
-
-    if (input[i] === "$" && !isEscaped(input, i)) {
-      const double = input[i + 1] === "$";
-      const delimiterLength = double ? 2 : 1;
-      const close = findDollarClose(input, i + delimiterLength, double);
-      if (close >= 0) {
-        const content = input.slice(i + delimiterLength, close);
-        // A dollar followed by a digit starts another price, not a closing
-        // delimiter: **$100k** and **$60k** must stay Markdown, not TeX.
-        if (double || (!/[0-9]/.test(input[close + 1] ?? "") && likelyDollarMath(content, lineBoundary))) {
-          out += convertLatexMath(content);
-          i = close + delimiterLength;
-          continue;
-        }
-      }
-    }
-
-    out += input[i++];
-  }
-  return out;
+  if (!input || !/[$\\]/.test(input)) return input;
+  return renderInline(input, false).lines.join("\n");
 }
 
 /**
- * Render a paragraph while preserving code spans that cross hard newlines.
- * Private-use separators keep physical line boundaries stable while the inline
- * scanner sees one joined Markdown context.
+ * Render the physical lines of one paragraph as a single inline context, so
+ * code spans and `\(…\)` may cross hard newlines. A fragment spanning lines
+ * joins them.
  */
 export function renderInlineMathChunks(lines: string[]): string[] {
-  if (lines.length <= 1) return lines.map(renderInlineMath);
-
-  let codePoint = 0xE100;
-  let separator = String.fromCodePoint(codePoint);
-  const combined = lines.join("\n");
-  while (combined.includes(separator) && codePoint < 0xF8FF) {
-    separator = String.fromCodePoint(++codePoint);
-  }
-  if (combined.includes(separator)) {
-    // Extremely unlikely private-use exhaustion: correctness is safer than
-    // converting notation inside a potentially multiline code span.
-    return lines;
-  }
-
-  return renderInlineMathWithBoundary(lines.join(separator), separator).split(separator);
+  return renderInlineMathLines(lines).lines;
 }
+
+/**
+ * renderInlineMathChunks plus per-line copy sources with math as TeX. Math
+ * uses no-break spaces so wrapping only splits it after relations/operators.
+ */
+export function renderInlineMathLines(lines: string[]): InlineRender {
+  if (!lines.some(current => /[$\\]/.test(current))) return { lines, sources: lines.map(() => null) };
+  return renderInline(lines.join("\n"), true);
+}
+
+// ── Display blocks ─────────────────────────────────────────────────────
 
 export interface DisplayMathBlock {
   source: string;
@@ -676,10 +452,9 @@ export function takeDisplayMathBlock(lines: string[], start: number): DisplayMat
   let current = line.slice(leading + opener.length);
   for (let index = start; index < lines.length; index++) {
     if (index > start) current = lines[index];
-    const close = findUnescapedToken(current, closer, 0);
+    let close = current.indexOf(closer);
+    while (close >= 0 && isEscaped(current, close)) close = current.indexOf(closer, close + 1);
     if (close >= 0) {
-      // A block parser cannot safely consume prose following the closing token.
-      // Same-line forms with prose are still handled by renderInlineMath.
       if (current.slice(close + closer.length).trim() !== "") return null;
       chunks.push(current.slice(0, close));
       return { source: chunks.join("\n"), nextLine: index + 1 };
@@ -693,52 +468,18 @@ export interface LocatedDisplayMathBlock extends DisplayMathBlock {
   startLine: number;
 }
 
-/**
- * Find complete display blocks in a paragraph without treating multiline code
- * spans as math. Code-span lookahead is limited to the paragraph's inline
- * context; a display block itself may extend past `end` through blank lines.
- */
+/** Display fragments of `lines[start..end)` that begin and end on their own lines. */
 export function findDisplayMathBlocks(lines: string[], start: number, end: number): LocatedDisplayMathBlock[] {
-  let hasMath = false;
-  for (let index = start; index < end; index++) {
-    if (/^\s*(?:\\\[|\$\$)/.test(lines[index])) {
-      hasMath = true;
-      break;
-    }
-  }
-  if (!hasMath) return [];
-
-  const source = lines.slice(start, end).join("\n");
+  const text = lines.slice(start).join("\n");
+  const lineOf = (offset: number) => start + text.slice(0, offset).split("\n").length - 1;
+  const paragraphEnd = lines.slice(start, end).join("\n").length;
   const blocks: LocatedDisplayMathBlock[] = [];
-  let offset = 0;
-  let codeEnd = 0;
-  let index = start;
-  while (index < end) {
-    const block = offset >= codeEnd ? takeDisplayMathBlock(lines, index) : null;
-    if (block) {
-      blocks.push({ startLine: index, ...block });
-      // Do not interpret backticks in TeX as Markdown code delimiters.
-      while (index < block.nextLine) offset += lines[index++].length + 1;
-      continue;
-    }
-
-    const lineEnd = offset + lines[index].length;
-    let cursor = Math.max(offset, codeEnd);
-    while (cursor < lineEnd) {
-      const tick = source.indexOf("`", cursor);
-      if (tick < 0 || tick >= lineEnd) break;
-      const ticks = countRun(source, tick, "`");
-      const close = findCodeSpanClose(source, tick + ticks, ticks);
-      if (close >= 0) {
-        codeEnd = close + ticks;
-        cursor = codeEnd;
-      } else {
-        // Unmatched backticks are literal text, not an open code span.
-        cursor = tick + ticks;
-      }
-    }
-    offset = lineEnd + 1;
-    index++;
+  for (const fragment of findMathFragments(text)) {
+    if (!fragment.display || fragment.start > paragraphEnd || fragment.delimiter === "env") continue;
+    const lineStart = text.lastIndexOf("\n", fragment.start - 1) + 1;
+    const lineEnd = text.indexOf("\n", fragment.end);
+    if (text.slice(lineStart, fragment.start).trim() || text.slice(fragment.end, lineEnd < 0 ? text.length : lineEnd).trim()) continue;
+    blocks.push({ startLine: lineOf(fragment.start), source: fragment.tex, nextLine: lineOf(fragment.end) + 1 });
   }
   return blocks;
 }
@@ -750,41 +491,134 @@ export interface RenderedDisplayMath {
   copy: Array<WrapCopyLine | null>;
 }
 
-function breakMathLine(line: string, width: number): string[] {
-  if (line === "" || termWidth(line) <= width) return [line];
-  const chunks: string[] = [];
-  let rest = line;
-  while (rest) {
-    let [chunk, tail] = sliceByWidth(rest, width);
-    if (!chunk) {
-      chunk = rest[0];
-      tail = rest.slice(1);
-    }
-    chunks.push(chunk);
-    rest = tail;
-  }
-  return chunks;
+export interface DisplayMathOptions {
+  /** Original delimited source; whole-line copies of the block yield it. */
+  source?: string;
+  /** Punctuation that followed the closing delimiter, kept after the last row. */
+  trailing?: string;
 }
 
-/** Render a display expression as ordinary left-aligned assistant text. */
-export function renderDisplayMath(source: string, width: number): RenderedDisplayMath {
+/**
+ * Render a display expression as an indented block. Rows after the first are
+ * continuations of one logical line, so a line yank copies the whole block
+ * (as its TeX source when `options.source` is given).
+ */
+export function renderDisplayMath(source: string, width: number, options: DisplayMathOptions = {}): RenderedDisplayMath {
   const safeWidth = Math.max(1, width);
-  const converted = convertLatexMath(source, true);
-  const lines: string[] = [];
-  const cont: boolean[] = [];
-  const join: string[] = [];
-  const copy: Array<WrapCopyLine | null> = [];
-
-  for (const logicalLine of converted.split("\n")) {
-    const chunks = breakMathLine(logicalLine, safeWidth);
-    for (let index = 0; index < chunks.length; index++) {
-      const chunk = chunks[index];
-      lines.push(chunk);
-      cont.push(index > 0);
-      join.push("");
-      copy.push({ text: chunk, displayStart: 0 });
-    }
+  const indent = safeWidth >= 24 ? 2 : 0;
+  const trailing = options.trailing ?? "";
+  const layout = displayRows(source, safeWidth - indent - termWidth(trailing));
+  const rows = layout.rows.length > 0 ? layout.rows : [""];
+  if (trailing) {
+    const base = Math.min(layout.lastBase, rows.length - 1);
+    const end = Math.max(...rows.map(row => termWidth(row)));
+    // Align after the widest row so stacked fractions keep their columns.
+    rows[base] += " ".repeat(Math.max(0, end - termWidth(rows[base]))) + trailing;
   }
 
-  return { lines, cont, join, copy };
+  const pad = " ".repeat(indent);
+  const lines = rows.map(row => (row ? pad + row : row));
+  const copy = rows.map((row, index): WrapCopyLine => ({
+    text: row,
+    displayStart: row ? indent : 0,
+    ...(options.source !== undefined ? { source: index === 0 ? options.source : null } : {}),
+  }));
+  return {
+    lines,
+    cont: rows.map((_, index) => index > 0),
+    join: rows.map((_, index) => (index > 0 ? "\n" : "")),
+    copy,
+  };
+}
+
+export interface ExtractedDisplayMath {
+  /** Markdown with each display fragment replaced by one placeholder line. */
+  text: string;
+  blocks: Array<{
+    tex: string;
+    /** Original delimited source (list indentation removed) for copies. */
+    source: string;
+    /** Indentation or blockquote markers to repeat before each rendered row. */
+    prefix: string;
+    trailing: string;
+  }>;
+}
+
+/** A block's source lines without the indentation they share with its opening line (a list item's). */
+function blockSource(source: string, prefix: string): string {
+  if (!source.includes("\n") || prefix.includes(">")) return source;
+  const lines = (prefix + source).split("\n");
+  const indent = Math.min(...lines.filter(current => current.trim()).map(current => /^[ \t]*/.exec(current)![0].length));
+  return lines.map(current => current.slice(Math.min(indent, /^[ \t]*/.exec(current)![0].length)).trimEnd()).join("\n");
+}
+
+export const DISPLAY_PLACEHOLDER = /^(\d+)$/;
+
+/**
+ * Move every display fragment onto its own line so the Markdown wrapper can
+ * render it as a block, even when it appears mid-paragraph. `keepInline`
+ * vetoes lines (such as table rows) where blocks cannot be placed.
+ */
+export function extractDisplayMath(text: string, keepInline: (line: string) => boolean = () => false): ExtractedDisplayMath | null {
+  if (!/[$\\]/.test(text) || /[]/.test(text)) return null;
+  const fragments = findMathFragments(text).filter(fragment => {
+    if (!fragment.display) return false;
+    const lineStart = text.lastIndexOf("\n", fragment.start - 1) + 1;
+    const lineEnd = text.indexOf("\n", lineStart);
+    return !keepInline(text.slice(lineStart, lineEnd < 0 ? text.length : lineEnd));
+  });
+  if (fragments.length === 0) return null;
+
+  const blocks: ExtractedDisplayMath["blocks"] = [];
+  let out = "";
+  let cursor = 0;
+  let prefix = "";
+  /** The cursor is in the middle of the line a display fragment closed on. */
+  let afterFragment = false;
+  const newline = () => {
+    if (out !== "" && !out.endsWith("\n")) out += "\n";
+  };
+  /** Copy source text, starting any rest-of-line after a fragment on its own line. */
+  const emit = (lead: string, quote: string) => {
+    let rest = lead;
+    if (afterFragment) {
+      const lineBreak = rest.indexOf("\n");
+      const sameLine = lineBreak < 0 ? rest : rest.slice(0, lineBreak);
+      if (sameLine.trim()) {
+        newline();
+        out += prefix + sameLine.trim();
+      }
+      if (lineBreak < 0) return;
+      rest = rest.slice(lineBreak);
+    }
+    const lastBreak = rest.lastIndexOf("\n");
+    out += rest.slice(0, lastBreak + 1);
+    const sameLine = rest.slice(lastBreak + 1);
+    if (sameLine.trim() && sameLine.trim() !== quote.trim()) out += sameLine.trimEnd();
+  };
+  fragments.forEach((fragment, index) => {
+    const lineStart = text.lastIndexOf("\n", fragment.start - 1) + 1;
+    // The line the fragment closes on (it may span several lines).
+    const lineEndIndex = text.indexOf("\n", fragment.end);
+    const lineEnd = lineEndIndex < 0 ? text.length : lineEndIndex;
+    const lineLead = text.slice(lineStart, fragment.start);
+    const quote = lineLead.match(QUOTE_PREFIX)?.[0] ?? "";
+    if (!afterFragment || cursor < lineStart) {
+      emit(text.slice(cursor, fragment.start), quote);
+      prefix = quote.includes(">") ? quote : lineLead.match(/^[ \t]*/)?.[0] ?? "";
+    } else {
+      emit(text.slice(cursor, fragment.start), quote);
+    }
+    newline();
+    out += `${prefix}\uE0F0${blocks.length}\uE0F1`;
+
+    const nextOnLine = fragments[index + 1] !== undefined && fragments[index + 1].start < lineEnd;
+    const after = text.slice(fragment.end, lineEnd);
+    const trailing = !nextOnLine && /^[ \t]*[.,;:!?]?[ \t]*$/.test(after) ? after.trim() : "";
+    blocks.push({ tex: fragment.tex, source: blockSource(text.slice(fragment.start, fragment.end), prefix), prefix, trailing });
+    afterFragment = nextOnLine || after.trim() !== "" && !trailing;
+    cursor = afterFragment ? fragment.end : lineEnd;
+  });
+  emit(text.slice(cursor), "");
+  return { text: out, blocks };
 }
