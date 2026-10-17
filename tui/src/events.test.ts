@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { browserOpenCommand, handleEvent, type DaemonActions } from "./events";
 import { buildDiskSyncAssistantDiffPayload } from "./events/disk-sync-diagnostics";
 import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, createPendingAI, type ConversationSummary, type FolderSummary } from "./messages";
-import { createInitialState, isStreaming, canInterrupt, type RenderState } from "./state";
+import { createInitialState, isStreaming, canInterrupt, noteConversationOpenRequest, openFolderInstructionsDocument, resetDraftConversationState, type RenderState } from "./state";
 import { buildMessageLines } from "./conversation";
 import { getViewStartFor } from "./chatscroll";
 import { requestVisibleToolOutputs } from "./events/tool-outputs";
@@ -379,6 +379,68 @@ describe("remote conversation open placeholder", () => {
     expect(state.convId).toBe("target");
     expect(state.conversationLoading).toBeNull();
     expect(unsubscribed).toEqual(["current", "other"]);
+  });
+
+  test("a late remote load does not yank the user out of a new draft", () => {
+    const { state, unsubscribed, actions } = openedState();
+    beginConversationLoad(state, "target", actions);
+    noteConversationOpenRequest(state, "target", "conversation_1");
+    resetDraftConversationState(state);
+
+    handleEvent({ ...loaded("target"), reqId: "conversation_1" }, state, actions);
+
+    expect(state.convId).toBeNull();
+    expect(state.messages.some(message => message.role === "assistant")).toBe(false);
+    expect(unsubscribed).toEqual(["current", "target"]);
+  });
+
+  test("a late local load does not yank the user out of the folder-instructions editor", () => {
+    const { state, actions } = openedState();
+    // Local opens keep the previous conversation until the load lands.
+    noteConversationOpenRequest(state, "target", "conversation_1");
+    openFolderInstructionsDocument(state, "folder-1");
+
+    handleEvent({ ...loaded("target"), reqId: "conversation_1" }, state, actions);
+
+    expect(state.convId).toBeNull();
+    expect(state.folderInstructionsDoc?.folderId).toBe("folder-1");
+  });
+
+  test("a reconnect-replayed open queued before /new is not applied", () => {
+    const { state, unsubscribed, actions } = openedState();
+    // Opened while disconnected: the load sits in the offline queue.
+    beginConversationLoad(state, "target", actions);
+    noteConversationOpenRequest(state, "target", "conversation_1");
+    resetDraftConversationState(state);
+    // The replayed load answers after reconnect.
+    handleEvent({ ...loaded("target"), reqId: "conversation_1" }, state, actions);
+
+    expect(state.convId).toBeNull();
+    expect(unsubscribed.at(-1)).toBe("target");
+  });
+
+  test("a local open still navigates when it answers the latest request", () => {
+    const { state, unsubscribed, actions } = openedState();
+    noteConversationOpenRequest(state, "other", "conversation_1");
+    noteConversationOpenRequest(state, "target", "conversation_2");
+
+    handleEvent({ ...loaded("other"), reqId: "conversation_1" }, state, actions);
+    expect(state.convId).toBe("current");
+    expect(unsubscribed).toEqual(["other"]);
+
+    handleEvent({ ...loaded("target"), reqId: "conversation_2" }, state, actions);
+    expect(state.convId).toBe("target");
+  });
+
+  test("a superseded load keeps the subscription a newer open of the same conversation needs", () => {
+    const { state, unsubscribed, actions } = openedState();
+    noteConversationOpenRequest(state, "target", "conversation_1");
+    noteConversationOpenRequest(state, "target", "conversation_2");
+
+    handleEvent({ ...loaded("target"), reqId: "conversation_1" }, state, actions);
+
+    expect(state.convId).toBe("current");
+    expect(unsubscribed).toEqual([]);
   });
 
   test("stops the spinner when the load fails", () => {

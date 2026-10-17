@@ -219,6 +219,13 @@ export interface RenderState {
   convId: string | null;
   /** Conversation opened ahead of its canonical load (remote routes); shown as a spinner. */
   conversationLoading: { convId: string; startedAt: number } | null;
+  /**
+   * Latest load_conversation this TUI still wants applied. A load for another
+   * conversation navigates only when it answers this request; starting a draft
+   * or the folder-instructions editor clears it so late or replayed opens
+   * cannot yank the user back.
+   */
+  conversationOpenRequest: { reqId: string; convId: string } | null;
   /** Selected remote daemon route. Null means the local daemon. */
   sshRemote: { alias: string; connected: boolean } | null;
   macroEnvironment: MacroEnvironment | null;
@@ -409,6 +416,11 @@ export function clearPendingAI(state: RenderState): void {
 }
 
 /** Whether the active conversation is still waiting for its first canonical load. */
+/** Record the load_conversation request the user currently wants applied. */
+export function noteConversationOpenRequest(state: RenderState, convId: string, reqId: string): void {
+  state.conversationOpenRequest = { reqId, convId };
+}
+
 export function isActiveConversationLoading(state: RenderState): boolean {
   return state.conversationLoading != null && state.conversationLoading.convId === state.convId;
 }
@@ -509,6 +521,7 @@ export function resetDraftConversationState(state: RenderState, folderId = state
   state.folderInstructionsDoc = null;
   state.convId = null;
   state.conversationLoading = null;
+  state.conversationOpenRequest = null;
   // Starting a draft chooses its destination. Navigating the sidebar afterward
   // is only browsing and must not silently move the eventual conversation.
   state.draftFolderId = folderId;
@@ -537,6 +550,7 @@ export function openFolderInstructionsDocument(state: RenderState, folderId: str
   state.sidebar.selectedId = null;
   state.convId = null;
   state.conversationLoading = null;
+  state.conversationOpenRequest = null;
   state.contextTokens = 0;
   state.goal = null;
   state.btw = null;
@@ -669,6 +683,7 @@ export function createInitialState(): RenderState {
     goal: null,
     convId: null,
     conversationLoading: null,
+    conversationOpenRequest: null,
     sshRemote: null,
     macroEnvironment: null,
     sshConnecting: null,
