@@ -4,6 +4,7 @@ import { conversationWorkspaceDir } from "@exocortex/shared/paths";
 import { localMacroEnvironment } from "@exocortex/shared/macro-environment";
 import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { resumeQueuedMessageDelivery, suspendQueuedMessageDelivery } from "./message-queue";
 import { appendMessages, consumeGoalContinuationAfterStream, create, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, get, getQueuedMessageById, getQueuedMessages, getSummary, listQueuedMessages, pushGlobalIdleQueuedMessage, pushQueuedMessage, remove, removeQueuedMessageById, setGoal, updateGoalStatus } from "./conversations";
 import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, defaultEffortForModelId } from "./messages";
 import { appendToStreamingBlock, clearActiveJob, clearActiveSteerHandler, clearActiveToolBackgrounder, clearCurrentStreamingBlocks, initStreamingState, replaceCurrentStreamingBlocks, setActiveJob, setActiveSteerHandler, setActiveToolBackgrounder, setStreamingCommittedMessageCount } from "./streaming";
@@ -2359,6 +2360,29 @@ describe("handler background task notifications", () => {
         automation: { kind: "background_task_completion", sourceId: "bash:1234" },
       }),
     ]);
+  });
+
+  test("deduplicates a repeated completion while the owner's queue delivery is suspended", () => {
+    const convId = mkId("background-suspended");
+    create(convId, "openai", "gpt-5.4", "parent");
+    const server = {
+      sendTo: mock(() => {}), broadcast: mock(() => {}), sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}), subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+    const completion = {
+      taskId: "bash:9999:suspended", toolName: "bash", title: "make", startedAt: 1_000, endedAt: 2_500,
+      exitCode: 0, signal: null, outputPath: "/tmp/bash-output.tmp",
+    };
+    handle.backgroundTaskComplete(convId, completion);
+    // An unwind gates delivery; a retried completion arrives meanwhile.
+    suspendQueuedMessageDelivery(convId);
+    try {
+      handle.backgroundTaskComplete(convId, completion);
+    } finally {
+      resumeQueuedMessageDelivery(convId);
+    }
+    expect(getQueuedMessages(convId)).toHaveLength(1);
   });
 
   test("durably queues and deduplicates an idle recovered completion before model dispatch", () => {

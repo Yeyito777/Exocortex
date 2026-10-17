@@ -136,6 +136,12 @@ export interface HandlerOptions extends HandlerLifecycle {
 
 export function createHandler(server: DaemonServer, options: HandlerOptions = {}): DaemonCommandHandler {
   const lifecycle = options;
+  /**
+   * Every durable entry for a conversation, delivery-suspended or not.
+   * Deduplication must see entries an in-progress unwind is gating.
+   */
+  const queuedEntriesFor = (convId: string) => convStore.listInternalQueuedMessages()
+    .filter(entry => entry.convId === convId && entry.source === "daemon");
   // ── Local helper functions ────────────────────────────────────────
 
   type SidebarStateSnapshot = ReturnType<typeof convStore.listSidebarState>;
@@ -564,7 +570,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       const automation = { kind: "background_task_completion" as const, sourceId: pending.completion.taskId };
       const alreadyDurable = convStore.hasMessageMetadata(pending.convId, {
         "automation.kind": automation.kind, "automation.sourceId": automation.sourceId,
-      }) || convStore.getQueuedMessages(pending.convId).some(message => (
+      }) || queuedEntriesFor(pending.convId).some(message => (
         message.automation?.kind === automation.kind
         && message.automation.sourceId === automation.sourceId
       ));
@@ -591,7 +597,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   }
 
   const queueReadyParentNotification = (record: PendingSubagentNotification): void => {
-    const alreadyQueued = convStore.getQueuedMessages(record.parentConvId)
+    const alreadyQueued = queuedEntriesFor(record.parentConvId)
       .some((message) => message.subagentNotificationId === record.id);
     if (alreadyQueued) return;
     convStore.pushQueuedMessage(
