@@ -22,15 +22,15 @@ export interface MarkdownWrapResult {
 
 export interface MarkdownWrapOptions {
   /**
-   * Renders a standalone display block (`source` without delimiters, `raw` its
-   * source lines) as image rows, or returns null to keep the Unicode text.
+   * Renders a display block (`tex` without delimiters, `source` the original
+   * delimited fragment) as image rows, or returns null to keep the Unicode text.
    */
-  displayMath?: (source: string, width: number, raw: readonly string[]) => {
+  displayMath?: (tex: string, width: number, source: string) => {
     lines: string[];
     cont: boolean[];
     join: string[];
     copy: Array<WrapCopyLine | null>;
-    images: WrapImageRow[];
+    images: Array<WrapImageRow | undefined>;
   } | null;
 }
 
@@ -108,10 +108,11 @@ export function markdownWordWrap(text: string, width: number, bgRestore?: string
     // A block inside a list item or blockquote keeps that line prefix.
     const prefixWidth = termWidth(block.prefix);
     const blockWidth = Math.max(1, width - prefixWidth);
-    const image = options.displayMath?.(block.tex, blockWidth, block.source.split("\n")) ?? null;
+    const image = options.displayMath?.(block.tex, blockWidth, block.source) ?? null;
     if (image) {
       const shifted = new Map<WrapImage, WrapImage>();
       image.images.forEach((row, index) => {
+        if (!row) return;
         let moved = shifted.get(row.image);
         if (!moved) {
           moved = prefixWidth > 0 ? { ...row.image, col: row.image.col + prefixWidth } : row.image;
