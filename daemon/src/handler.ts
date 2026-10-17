@@ -467,9 +467,12 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   };
   // ── Outbound status/tool broadcasts ───────────────────────────────
 
+  // Every OpenAI response re-reads account headers; the registry they feed
+  // rarely changes, so identical snapshots are not re-sent to every client.
+  let lastToolsAvailable: string | null = null;
   const broadcastToolsAvailable = () => {
     const externalStyles = getExternalToolStyles();
-    server.broadcast({
+    const event: Extract<Event, { type: "tools_available" }> = {
       type: "tools_available",
       macroEnvironment: localMacroEnvironment(),
       conversationDefaults: conversationDefaultsSnapshot(),
@@ -480,9 +483,13 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       authInfoByProvider: getAuthInfoByProvider(),
       ...(externalStyles.length > 0 ? { externalToolStyles: externalStyles } : {}),
       providerProxies: providerProxies.list(),
-    });
+    };
     // OpenAI account switches and /proxy changes show on the Accounts screen too.
     accountsWatch.changed();
+    const serialized = JSON.stringify(event);
+    if (serialized === lastToolsAvailable) return;
+    lastToolsAvailable = serialized;
+    server.broadcast(event);
   };
   const buildOrchestrationCallbacks = (convId: string) => ({
     onHeaders: (h: Headers) => {

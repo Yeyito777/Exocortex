@@ -140,6 +140,23 @@ test("a sidebar digest answers one bootstrap with only the changed buckets", asy
   expect((await full(capable)).conversations).toHaveLength(baseline.conversations.length);
 });
 
+test("repeated identical tools_available snapshots are broadcast once", async () => {
+  const broadcasts: Array<Record<string, unknown>> = [];
+  const server = {
+    sendTo: mock(() => {}),
+    broadcast: mock((event: Record<string, unknown>) => { broadcasts.push(event); }),
+    sendToSubscribers: mock(() => {}), sendToSubscribersExcept: mock(() => {}),
+    subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+  };
+  const handle = createHandler(server as never);
+  const toolsAvailable = () => broadcasts.filter(event => event.type === "tools_available").length;
+  await handle({} as never, { type: "logout", reqId: "first", provider: "deepseek" });
+  const afterFirst = toolsAvailable();
+  expect(afterFirst).toBeLessThanOrEqual(1);
+  await handle({} as never, { type: "logout", reqId: "second", provider: "deepseek" });
+  expect(toolsAvailable()).toBe(afterFirst);
+});
+
 const IDS: string[] = [];
 
 function mkId(suffix: string): string {
