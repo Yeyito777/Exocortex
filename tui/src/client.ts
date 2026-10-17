@@ -36,6 +36,7 @@ const CLIENT_CAPABILITIES: ClientCapability[] = [
   "sidebar-reorder-delta",
   "sidebar-state-patch",
   "history-block-pagination",
+  "token-stats-on-demand",
 ];
 
 export type EventHandler = (event: Event) => void;
@@ -1036,6 +1037,13 @@ export class DaemonClient {
   /** /proxy: list, enable or disable a provider proxy on the connected daemon. */
   providerProxy(action: "status" | "set" | "off", provider?: ProviderId, alias?: string): void {
     this.send({ type: "provider_proxy", reqId: `proxy_${Date.now().toString(36)}`, action, ...(provider ? { provider } : {}), ...(alias ? { alias } : {}) });
+  }
+
+  /** Request a fresh token_stats snapshot; returns the reqId its reply carries. */
+  getTokenStats(): string {
+    const reqId = `token_stats_${++this.nextReqId}_${Date.now()}`;
+    this.send({ type: "get_token_stats", reqId });
+    return reqId;
   }
 
   getSystemPrompt(convId?: string): void {

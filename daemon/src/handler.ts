@@ -326,7 +326,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     return true;
   };
   const broadcastTokenStats = () => {
-    server.broadcast({ type: "token_stats", stats: getTokenStatsSnapshot() });
+    server.broadcastLegacyTokenStats(getTokenStatsSnapshot);
   };
   const describeAvailableModels = (provider: import("./messages").ProviderId): string => {
     const available = getProvider(provider)?.models.map((model) => model.id) ?? [];
@@ -1467,7 +1467,9 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         // The sidebar is the startup-critical payload. Token statistics can be
         // large and are independent, so never put them ahead of first paint.
         server.sendTo(client, { type: "conversations_list", ...convStore.listSidebarState() });
-        server.sendTo(client, { type: "token_stats", stats: getTokenStatsSnapshot() });
+        if (!client.capabilities?.has("token-stats-on-demand")) {
+          server.sendTo(client, { type: "token_stats", stats: getTokenStatsSnapshot() });
+        }
         server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages() });
         server.sendTo(client, { type: "connectivity_status", ...connectivity.snapshot() });
         for (const provider of getProviders()) {
@@ -1479,6 +1481,11 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         }).catch((err) => {
           log("warn", `handler: provider refresh failed: ${err instanceof Error ? err.message : err}`);
         });
+        break;
+      }
+
+      case "get_token_stats": {
+        server.sendTo(client, { type: "token_stats", reqId: cmd.reqId, stats: getTokenStatsSnapshot() });
         break;
       }
 
@@ -1813,7 +1820,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           if (capability === "targeted-unwind"
               || capability === "sidebar-reorder-delta"
               || capability === "sidebar-state-patch"
-              || capability === "history-block-pagination") client.capabilities.add(capability);
+              || capability === "history-block-pagination"
+              || capability === "token-stats-on-demand") client.capabilities.add(capability);
         }
         if (cmd.clientHost) attachClientHost(client, cmd.clientHost, event => server.sendTo(client, event));
         break;

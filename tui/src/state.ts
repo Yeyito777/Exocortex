@@ -32,6 +32,7 @@ import { commitInsertSession, createUndoState, markInsertEntry } from "./undo";
 import type { AutocompleteState } from "./autocomplete";
 import type { AccountsSnapshot, ConversationDefaultsSnapshot, ConversationGoal, MacroEnvironment, ProviderAuthInfo, ProviderProxyInfo, QueuedCommandInvocation, QueueTiming, QueueWaitTarget as ProtocolQueueWaitTarget, UserMessageAutomation } from "./protocol";
 import type { VoiceChatMessageState, VoicePromptState } from "./voice";
+import type { TokenStatsView } from "./commands/tokens";
 import type { BtwPanelState } from "./btw/state";
 import { createConversationScrollState, type ConversationScrollState } from "./conversationscroll/types";
 import type { InlineImageTarget } from "./inlineimages";
@@ -245,6 +246,8 @@ export interface RenderState {
   providerProxies: ProviderProxyInfo[] | null;
   /** Persistent token-accounting snapshot from the daemon. */
   tokenStats: TokenStatsSnapshot | null;
+  /** A /tokens report waiting for the get_token_stats reply with this reqId. */
+  pendingTokenStatsView: (TokenStatsView & { reqId: string }) | null;
   /** Input tokens from the latest API round. Zero for a blank chat; null when unknown. */
   contextTokens: number | null;
   /** Which panel has focus — sidebar or chat. */
@@ -703,6 +706,7 @@ export function createInitialState(): RenderState {
     },
     providerProxies: null,
     tokenStats: null,
+    pendingTokenStatsView: null,
     contextTokens: 0,
     panelFocus: "chat",
     chatFocus: "prompt",

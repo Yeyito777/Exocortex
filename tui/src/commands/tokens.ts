@@ -555,6 +555,22 @@ function buildTokenStatsMessage(state: RenderState, stats: TokenStatsSnapshot, h
   return lines.filter((line, index, arr) => !(line === "" && arr[index - 1] === "")).join("\n");
 }
 
+/** Which /tokens report to show once the daemon's snapshot arrives. */
+export interface TokenStatsView {
+  subcommand?: "models" | "providers" | "sources" | "cost";
+  days: number;
+}
+
+export function buildTokenStatsViewMessage(state: RenderState, stats: TokenStatsSnapshot, view: TokenStatsView): string {
+  switch (view.subcommand) {
+    case "models": return buildModelBreakdownMessage(stats, view.days);
+    case "providers": return buildProviderBreakdownMessage(stats, view.days);
+    case "sources": return buildSourceBreakdownMessage(stats, view.days);
+    case "cost": return buildCostBreakdownMessage(stats);
+    default: return buildTokenStatsMessage(state, stats, view.days);
+  }
+}
+
 export const TOKENS_COMMAND: SlashCommand = {
   name: "/tokens",
   description: "Show context, usage limits, token totals, heatmaps, or breakdowns",
@@ -584,34 +600,10 @@ export const TOKENS_COMMAND: SlashCommand = {
       return { type: "handled" };
     }
 
-    if (!state.tokenStats) {
-      pushSystemMessage(state, "Token stats are still loading. Try again in a moment.");
-      clearPrompt(state);
-      return { type: "handled" };
-    }
-
-    const resolvedDays = days ?? defaultTokenHeatmapDayCount();
-    let message: string;
-    switch (subcommand) {
-      case "models":
-        message = buildModelBreakdownMessage(state.tokenStats, resolvedDays);
-        break;
-      case "providers":
-        message = buildProviderBreakdownMessage(state.tokenStats, resolvedDays);
-        break;
-      case "sources":
-        message = buildSourceBreakdownMessage(state.tokenStats, resolvedDays);
-        break;
-      case "cost":
-        message = buildCostBreakdownMessage(state.tokenStats);
-        break;
-      default:
-        message = buildTokenStatsMessage(state, state.tokenStats, resolvedDays);
-        break;
-    }
-
-    pushSystemMessage(state, message);
     clearPrompt(state);
-    return { type: "handled" };
+    return {
+      type: "token_stats_requested",
+      view: { subcommand: hasSubcommand ? subcommand as TokenStatsView["subcommand"] : undefined, days: days ?? defaultTokenHeatmapDayCount() },
+    };
   },
 };

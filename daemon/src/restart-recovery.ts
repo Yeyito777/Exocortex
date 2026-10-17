@@ -157,7 +157,7 @@ function buildRecoveryCallbacks(server: DaemonServer, convId: string) {
     server.broadcast({ type: "usage_update", provider, usage });
   };
   const broadcastTokenStats = () => {
-    server.broadcast({ type: "token_stats", stats: getTokenStatsSnapshot() });
+    server.broadcastLegacyTokenStats(getTokenStatsSnapshot);
   };
 
   return {

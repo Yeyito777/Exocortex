@@ -8,6 +8,7 @@
 
 import type { RenderState } from "./state";
 import { clearPendingAI, clearStreamingTailMessages, pushSystemMessage, renderFolderInstructionsDocument, setFolderInstructionsDocumentText } from "./state";
+import { buildTokenStatsViewMessage } from "./commands/tokens";
 import { theme } from "./theme";
 import { censorKnownAuthEmails } from "./privacy";
 import { formatProviderProxies } from "./provider-proxies";
@@ -144,6 +145,14 @@ export function handleEvent(
       break;
 
     case "error": {
+      if (event.reqId && state.pendingTokenStatsView?.reqId === event.reqId) {
+        // Daemons predating get_token_stats still push snapshots unprompted.
+        const view = state.pendingTokenStatsView;
+        state.pendingTokenStatsView = null;
+        if (state.tokenStats) pushSystemMessage(state, buildTokenStatsViewMessage(state, state.tokenStats, view));
+        else pushSystemMessage(state, "Token stats are still loading. Try again in a moment.");
+        break;
+      }
       // The daemon rejected a creation shown optimistically. Its row goes now;
       // an opened one returns to the draft once the error is shown below.
       const rejectedCreation = event.convId !== undefined && removeOptimisticConversation(state.sidebar, event.convId);
@@ -221,6 +230,11 @@ export function handleEvent(
 
     case "token_stats":
       state.tokenStats = event.stats;
+      if (event.reqId && state.pendingTokenStatsView?.reqId === event.reqId) {
+        const view = state.pendingTokenStatsView;
+        state.pendingTokenStatsView = null;
+        pushSystemMessage(state, buildTokenStatsViewMessage(state, event.stats, view));
+      }
       break;
 
     case "conversations_list":

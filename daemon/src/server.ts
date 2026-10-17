@@ -11,7 +11,7 @@ import { StringDecoder } from "node:string_decoder";
 import { isWindows } from "@exocortex/shared/paths";
 import { log } from "./log";
 import { budgetHistoryUpdatedEvent } from "./history-pagination";
-import type { ClientCapability, Command, Event } from "./protocol";
+import type { ClientCapability, Command, Event, TokenStatsSnapshot } from "./protocol";
 import { PROVIDER_PROXY_LINK_EVENT_TYPES } from "@exocortex/shared/provider-proxy";
 
 // ── Client tracking ─────────────────────────────────────────────────
@@ -192,6 +192,19 @@ export class DaemonServer {
         legacy ??= legacyEvent();
         this.sendTo(client, legacy);
       }
+    }
+  }
+
+  /**
+   * Push token statistics only to clients that still expect them unprompted.
+   * The snapshot is large and costly, so it is built at most once and only
+   * when such a client is connected; capable clients ask with get_token_stats.
+   */
+  broadcastLegacyTokenStats(snapshot: () => TokenStatsSnapshot): void {
+    let event: Extract<Event, { type: "token_stats" }> | undefined;
+    for (const client of this.clients.values()) {
+      if (client.capabilities.has("token-stats-on-demand") || client.providerProxyLink) continue;
+      this.sendTo(client, event ??= { type: "token_stats", stats: snapshot() });
     }
   }
 

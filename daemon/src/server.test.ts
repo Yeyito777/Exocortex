@@ -75,3 +75,30 @@ describe("daemon JSON-lines Unicode transport", () => {
     }
   });
 });
+
+describe("token statistics fan-out", () => {
+  function recordingClient(capabilities: string[] = []): ConnectedClient & { written: string[] } {
+    const written: string[] = [];
+    return {
+      id: "c", buffer: "", capabilities: new Set(capabilities as never[]), subscriptions: new Set(), written,
+      socket: { destroyed: false, write: (data: string) => { written.push(data); return true; } } as unknown as Socket,
+    };
+  }
+
+  test("builds the snapshot once, and only for clients without token-stats-on-demand", () => {
+    const server = new DaemonServer("unused", () => {});
+    const legacyA = recordingClient(), legacyB = recordingClient(), capable = recordingClient(["token-stats-on-demand"]);
+    (server as any).clients = new Map([["a", legacyA], ["b", legacyB], ["c", capable]]);
+    let builds = 0;
+    const snapshot = () => { builds++; return { updatedAt: 1, days: [] } as never; };
+    server.broadcastLegacyTokenStats(snapshot);
+    expect(builds).toBe(1);
+    expect(legacyA.written.map(line => JSON.parse(line).type)).toEqual(["token_stats"]);
+    expect(legacyB.written).toHaveLength(1);
+    expect(capable.written).toHaveLength(0);
+
+    (server as any).clients = new Map([["c", capable]]);
+    server.broadcastLegacyTokenStats(snapshot);
+    expect(builds).toBe(1);
+  });
+});

@@ -243,8 +243,18 @@ export interface PrewarmConversationCommand {
 /**
  * history-block-pagination: history windows are byte-budgeted and may begin or
  * end inside an AI entry (historyStartBlockIndex / beforeBlockIndex).
+ *
+ * token-stats-on-demand: the client asks for token_stats with get_token_stats
+ * instead of receiving the (hundreds of KB) snapshot on every connect and
+ * after every completed turn.
  */
-export type ClientCapability = "targeted-unwind" | "sidebar-reorder-delta" | "sidebar-state-patch" | "history-block-pagination";
+export type ClientCapability = "targeted-unwind" | "sidebar-reorder-delta" | "sidebar-state-patch" | "history-block-pagination" | "token-stats-on-demand";
+
+/** Answered with token_stats carrying the same reqId. Older daemons answer with an Unknown command error. */
+export interface GetTokenStatsCommand {
+  type: "get_token_stats";
+  reqId?: string;
+}
 
 /** Connection-scoped feature negotiation for backwards-compatible events. */
 export interface ClientCapabilitiesCommand {
@@ -1108,6 +1118,7 @@ export interface LogoutCommand {
 
 export type Command =
   | PingCommand
+  | GetTokenStatsCommand
   | ProviderProxyCommand
   | ProviderProxyLinkCommand
   | SetConversationDefaultsCommand

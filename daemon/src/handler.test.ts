@@ -81,6 +81,31 @@ test("status-only ping returns the host's runtime status without sidebar/usage b
   expect(sent.find(event => event.type === "tools_available")?.experimental).toEqual({ images: false });
 });
 
+test("token statistics are pushed only to clients that predate get_token_stats", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const server = {
+    sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+    broadcast: mock(() => {}),
+    sendToSubscribers: mock(() => {}),
+    sendToSubscribersExcept: mock(() => {}),
+    subscribe: mock(() => {}),
+    unsubscribe: mock(() => {}),
+    hasSubscribers: mock(() => false),
+  };
+  const handle = createHandler(server as never);
+  const legacy = { capabilities: new Set() };
+  const capable = { capabilities: new Set() };
+  await handle(capable as never, { type: "client_capabilities", capabilities: ["token-stats-on-demand"] });
+  await handle(legacy as never, { type: "ping" });
+  expect(sent.filter(event => event.type === "token_stats")).toHaveLength(1);
+  sent.length = 0;
+  await handle(capable as never, { type: "ping" });
+  expect(sent.some(event => event.type === "conversations_list")).toBe(true);
+  expect(sent.some(event => event.type === "token_stats")).toBe(false);
+  await handle(capable as never, { type: "get_token_stats", reqId: "tokens-1" });
+  expect(sent.at(-1)).toMatchObject({ type: "token_stats", reqId: "tokens-1", stats: { days: expect.any(Array) } });
+});
+
 const IDS: string[] = [];
 
 function mkId(suffix: string): string {
