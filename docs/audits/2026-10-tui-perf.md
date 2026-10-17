@@ -72,8 +72,9 @@ the whole history (every frame with `pendingAI`, a scroll offset, history focus,
 search or tool output). The next idle frame then started a new progressive suffix
 and `scheduleDeferredHistoryRenderWork` walked it back one turn per
 `setTimeout(0)`, each step rebuilding every row it included. After every
-completed turn in a fully loaded chat this burned 3.8 s (Paramount, 494 steps)
-to 159 s (6k chat, 2,738 steps) of CPU at ~8-60 ms per step, competing with
+completed turn in a fully loaded chat this burned 3.8-4.2 s (Paramount, 494
+steps) to 159-285 s (6k chat, 2,738 steps; varies with host load) of CPU at
+~8-100 ms per step, competing with
 input the whole time. Same after scrolling up one line and back.
 
 Fix (`render.ts`): a full build marks deferral complete for that conversation
@@ -135,7 +136,7 @@ misses, and the anchor index scans just the owners a remap asks about.
 conversations allocating a `Set` each, ~70% of every frame while the sidebar was
 open. They are now reused while their inputs (compared by value, since summaries
 are updated in place) are unchanged, and the walk no longer allocates per
-conversation. Keypress with the sidebar open: 2.3 ms -> 0.7 ms p50 (bench);
+conversation. Keypress with the sidebar open: 1.2-2.3 ms -> 0.5-0.7 ms p50 (bench);
 ~2 ms keypress-to-output in the real `st` session.
 
 ### 5. Scroll-region use when scrolling back
