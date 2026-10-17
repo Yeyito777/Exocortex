@@ -92,7 +92,21 @@ describe("incremental committed history", () => {
       }],
       ["append a terminal notice", () => state.messages.push({ role: "system", text: "✗ aborted", color: theme.error, metadata: null })],
       ["unwind the tail", () => { state.messages.splice(4); }],
-      ["prepend older history", () => { state.messages.splice(1, 0, user("older"), assistant([{ type: "text", text: "older answer" }], 100)); }],
+      ["start loading older history", () => {
+        state.historyLoadingOlder = true;
+        state.historyLoadingStartedAt = Date.now();
+      }],
+      ["animate the loading row", () => { state.historyLoadingStartedAt! -= 80; }],
+      ["prepend older history", () => {
+        state.messages.splice(1, 0, user("older"), assistant([{ type: "text", text: "older answer" }], 100));
+        state.historyLoadingOlder = false;
+        state.historyLoadingStartedAt = null;
+      }],
+      ["prepend a page ending mid-segment", () => {
+        state.messages.splice(1, 0, user("oldest"), assistant([{ type: "text", text: "oldest answer" }], 50));
+        const joined = state.messages[3];
+        if (joined.role === "assistant") joined.blocks = [{ type: "text", text: "joined lead" }, ...joined.blocks];
+      }],
       ["replace the message array", () => { state.messages = [...state.messages]; }],
       ["toggle diagnostics", () => { state.showDiagnostics = !state.showDiagnostics; }],
     ];
@@ -102,6 +116,25 @@ describe("incremental committed history", () => {
       expectIncrementalMatchesFresh(state, 52);
       expectIncrementalMatchesFresh(state);
     }
+  });
+
+  test("a prepend that changes the oldest loaded segment rebuilds that whole segment", () => {
+    const state = createInitialState();
+    state.convId = "conv-segment";
+    const first = assistant([{ type: "text", text: "part one" }], 1_000);
+    const second = assistant([{ type: "text", text: "part two" }], 4_000);
+    const third = assistant([{ type: "text", text: "part three" }], 7_000);
+    state.messages.push(
+      { role: "system_instructions", text: "Be brief.", metadata: null },
+      first, second, third, user("later"), assistant([{ type: "text", text: "later answer" }], 90_000),
+    );
+    expectIncrementalMatchesFresh(state);
+
+    // The page's last entry joins onto the first loaded one, changing the
+    // metadata the segment's final row aggregates.
+    first.metadata = { startedAt: 1_000, endedAt: 60_000, model: "gpt-6-astra", tokens: 10 };
+    state.messages.splice(1, 0, user("older"), assistant([{ type: "text", text: "older answer" }], 100), user("next"));
+    expectIncrementalMatchesFresh(state);
   });
 
   test("a copied result survives later in-place builds", () => {

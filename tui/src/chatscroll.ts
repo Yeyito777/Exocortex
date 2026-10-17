@@ -33,7 +33,8 @@ export function getViewStart(state: RenderState): number {
 
 type AnchorRowMap = Map<number, number>;
 type AnchorIndex = WeakMap<object, Map<RenderLineSegment, Map<number, AnchorRowMap>>>;
-type RenderedLineIndex = Map<string, number[]>;
+/** Content-match fallback index, built only if an anchor lookup misses. */
+type RenderedLineIndex = () => Map<string, number[]>;
 
 function buildAnchorIndex(anchors: RenderLineAnchor[]): AnchorIndex {
   const byOwner = new WeakMap<object, Map<RenderLineSegment, Map<number, AnchorRowMap>>>();
@@ -60,15 +61,21 @@ function buildAnchorIndex(anchors: RenderLineAnchor[]): AnchorIndex {
 }
 
 function buildRenderedLineIndex(lines: string[]): RenderedLineIndex {
-  const index: RenderedLineIndex = new Map();
-  for (let row = 0; row < lines.length; row++) {
-    const line = lines[row];
-    if (isVisuallyBlankLine(line)) continue;
-    const rows = index.get(line);
-    if (rows) rows.push(row);
-    else index.set(line, [row]);
-  }
-  return index;
+  // Stripping every row of a long history dominated each viewport-preserving
+  // mutation, while exact anchors almost always resolve without it.
+  let index: Map<string, number[]> | null = null;
+  return () => {
+    if (index) return index;
+    index = new Map();
+    for (let row = 0; row < lines.length; row++) {
+      const line = lines[row];
+      if (isVisuallyBlankLine(line)) continue;
+      const rows = index.get(line);
+      if (rows) rows.push(row);
+      else index.set(line, [row]);
+    }
+    return index;
+  };
 }
 
 /**
@@ -95,7 +102,7 @@ function findRenderedLineRow(
       if (sourceRow < 0 || sourceRow >= oldLines.length) continue;
       const sourceLine = oldLines[sourceRow];
       if (isVisuallyBlankLine(sourceLine)) continue;
-      const candidates = newLineIndex.get(sourceLine);
+      const candidates = newLineIndex().get(sourceLine);
       if (!candidates) continue;
 
       let bestRow = -1;

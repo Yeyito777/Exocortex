@@ -391,6 +391,9 @@ interface CommittedHistoryCache {
   durableSleepIndex: number;
   /** Assistant images still waiting for the segment end when the committed rows stop. */
   carriedImages: HistoryImage[];
+  /** Older-history spinner row text when built (null when not loading) and the message it precedes. */
+  historyLoadingRow: string | null;
+  historyLoadingInsertIndex: number;
   /** Whether the row arrays came from a reuseArrays build, i.e. only the render loop holds them. */
   ownsArrays: boolean;
   lines: string[];
@@ -522,6 +525,15 @@ function withPendingErroredToolCalls(committed: Set<string>, pending: Message | 
     if (block.type === "tool_result" && block.isError) ids.add(block.toolCallId);
   }
   return ids;
+}
+
+/**
+ * Whether rows after this message are independent of every message before it:
+ * assistant metadata and segment images stop accumulating here, and a
+ * following user message gets its top margin either way.
+ */
+function isSegmentBoundary(message: Message): boolean {
+  return message.role !== "assistant" && isAssistantMetadataBoundary(message);
 }
 
 function firstChangedErroredToolCallMessage(
@@ -690,11 +702,11 @@ export function buildMessageLines(
   };
 
   // Plan which committed messages can keep their rows from the previous build.
-  // Loading spinners animate inside the committed rows; those rare frames take
-  // the full path and leave the cache untouched.
+  // The opening spinner animates above the committed rows while a conversation
+  // is still loading; those frames take the full path and leave the cache alone.
   const messages = state.messages;
   const messageCount = messages.length;
-  const cacheable = !state.historyLoadingOlder && !isActiveConversationLoading(state);
+  const cacheable = !isActiveConversationLoading(state);
   const lastContinuesIntoPending = state.pendingAI?.role === "assistant";
   const imageCell = inlineImageCellSize();
   const cacheKey: unknown[] = [
@@ -707,78 +719,124 @@ export function buildMessageLines(
     ? widthCaches.find(entry => entry.startMessageIndex === startMessageIndex && sameRefs(entry.key, cacheKey))
     : undefined;
   const durableSleepIndex = durableSleepAssistant ? messages.lastIndexOf(durableSleepAssistant) : -1;
+
+  // The older-history spinner is a committed row above the oldest loaded turn.
+  let historyLoadingInsertIndex = startMessageIndex;
+  if (state.historyLoadingOlder && startMessageIndex === 0) {
+    while (messages[historyLoadingInsertIndex]?.role === "system_instructions") {
+      historyLoadingInsertIndex++;
+    }
+  }
+  const historyLoadingRow = state.historyLoadingOlder
+    ? `${theme.dim}${historyLoadingSpinnerText(state.historyLoadingStartedAt ?? Date.now())}${theme.reset}`
+    : null;
+  const pushHistoryLoadingLine = () => pushLine(historyLoadingRow!, state, "history_loading");
+
   let rebuildFrom = startMessageIndex;
+  let rebuildTo = messageCount;
   let sourceRefs: unknown[] = [];
   let sourceRefEnds: number[] = [];
   let lineStarts: number[] = [];
   let carriedImages: HistoryImage[] = [];
   let committedErroredToolCallIds: Set<string> | undefined;
+  /** Unchanged trailing messages whose rows are appended after rebuilding the front. */
+  let reusedSuffix: { cached: CommittedHistoryCache; oldStart: number } | null = null;
   if (cached) {
+    const s = startMessageIndex;
+    const refStart = (entry: CommittedHistoryCache, index: number) => index === entry.startMessageIndex ? 0 : entry.sourceRefEnds[index - entry.startMessageIndex - 1];
+    const sameAsCached = (index: number, cachedIndex: number) => messageSourceRefsMatch(
+      messages[index], cached.sourceRefs, refStart(cached, cachedIndex), cached.sourceRefEnds[cachedIndex - s],
+    );
     let firstChanged = Math.min(messageCount, cached.messageCount);
-    for (let index = startMessageIndex; index < firstChanged; index++) {
-      const offset = index === startMessageIndex ? 0 : cached.sourceRefEnds[index - startMessageIndex - 1];
-      if (!messageSourceRefsMatch(messages[index], cached.sourceRefs, offset, cached.sourceRefEnds[index - startMessageIndex])) {
+    for (let index = s; index < firstChanged; index++) {
+      if (!sameAsCached(index, index)) {
         firstChanged = index;
         break;
       }
     }
-    if (firstChanged >= messageCount && messageCount === cached.messageCount) {
-      committedErroredToolCallIds = cached.committedErroredToolCallIds;
-    }
-    if (lastContinuesIntoPending !== cached.lastContinuesIntoPending) firstChanged = Math.min(firstChanged, messageCount - 1);
-    // An active durable sleep's metadata ticks with the clock.
-    for (const index of [durableSleepIndex, cached.durableSleepIndex]) {
-      if (index >= startMessageIndex) firstChanged = Math.min(firstChanged, index);
-    }
+    const unchanged = firstChanged >= messageCount && messageCount === cached.messageCount;
+    if (unchanged) committedErroredToolCallIds = cached.committedErroredToolCallIds;
     erroredToolCallIds = withPendingErroredToolCalls(
-      committedErroredToolCallIds ??= committedErroredToolCalls(messages, startMessageIndex),
+      committedErroredToolCallIds ??= committedErroredToolCalls(messages, s),
       state.pendingAI,
     );
-    firstChanged = Math.min(firstChanged, firstChangedErroredToolCallMessage(
-      messages, startMessageIndex, cached.erroredToolCallIds, erroredToolCallIds,
-    ));
 
-    if (firstChanged >= messageCount && messageCount === cached.messageCount) {
+    // Other inputs that dirty one message, by index in the current messages.
+    const dirty: number[] = [];
+    if (lastContinuesIntoPending !== cached.lastContinuesIntoPending) dirty.push(messageCount - 1);
+    // An active durable sleep's metadata ticks with the clock.
+    if (durableSleepIndex >= s) dirty.push(durableSleepIndex);
+    // Its old index, both as it was and as moved by a prepend: either may be it.
+    if (cached.durableSleepIndex >= s) {
+      dirty.push(cached.durableSleepIndex, cached.durableSleepIndex + messageCount - cached.messageCount);
+    }
+    const erroredChange = firstChangedErroredToolCallMessage(messages, s, cached.erroredToolCallIds, erroredToolCallIds);
+    if (erroredChange < messageCount) dirty.push(erroredChange);
+    if (historyLoadingRow !== cached.historyLoadingRow) {
+      dirty.push(historyLoadingRow !== null ? historyLoadingInsertIndex : cached.historyLoadingInsertIndex);
+    }
+    const firstDirty = Math.min(firstChanged, ...dirty);
+
+    if (firstDirty >= messageCount && messageCount === cached.messageCount) {
       rebuildFrom = messageCount;
       carriedImages = cached.carriedImages;
     } else {
       // A message's rows depend on whether the next message continues its
       // assistant segment, and segment images accumulate across that run, so
       // rebuild from the start of the run before the first change.
-      rebuildFrom = Math.max(startMessageIndex, Math.min(firstChanged, messageCount) - 1);
-      while (rebuildFrom > startMessageIndex && messages[rebuildFrom - 1].role === "assistant") rebuildFrom--;
+      rebuildFrom = Math.max(s, Math.min(firstDirty, messageCount) - 1);
+      while (rebuildFrom > s && messages[rebuildFrom - 1].role === "assistant") rebuildFrom--;
+
+      // A change near the top (an older page prepended, the loading row
+      // animating) instead keeps the unchanged tail. Its rows can move as a
+      // block from just after a segment boundary: nothing there reads earlier
+      // messages except to stop at that boundary.
+      const shift = messageCount - cached.messageCount;
+      let suffixStart = messageCount;
+      while (suffixStart > s && suffixStart - 1 - shift >= s && sameAsCached(suffixStart - 1, suffixStart - 1 - shift)) suffixStart--;
+      let boundary = Math.max(suffixStart, s) + 1;
+      while (boundary <= messageCount && !isSegmentBoundary(messages[boundary - 1])) boundary++;
+      const lastDirty = Math.max(-1, ...dirty.filter(index => index < messageCount));
+      if (boundary < messageCount && lastDirty < boundary && boundary - s < messageCount - rebuildFrom) {
+        rebuildFrom = s;
+        rebuildTo = boundary;
+        reusedSuffix = { cached, oldStart: boundary - shift };
+      }
     }
-    const kept = rebuildFrom - startMessageIndex;
-    const keptLines = kept === cached.messageCount - startMessageIndex ? cached.committedLines : cached.lineStarts[kept];
     // Drop the entry before reusing its arrays so a throw mid-build cannot
     // leave a truncated entry behind.
     committedHistoryCaches.set(state, widthCaches.filter(entry => entry !== cached));
-    if (options.reuseArrays && cached.ownsArrays) {
-      // The previous result's arrays continue as this one's: copying several
-      // arrays of every loaded row on each streaming frame cost more than the
-      // rest of the build.
-      lines = cached.lines;
-      wrapContinuation = cached.wrapContinuation;
-      wrapJoiners = cached.wrapJoiners;
-      copyLines = cached.copyLines;
-      lineAnchors = cached.lineAnchors;
-      messageBounds = cached.messageBounds;
-      for (const rows of [lines, wrapContinuation, wrapJoiners, copyLines, lineAnchors]) rows.length = keptLines;
-      messageBounds.length = kept;
-    } else {
-      lines = cached.lines.slice(0, keptLines);
-      wrapContinuation = cached.wrapContinuation.slice(0, keptLines);
-      wrapJoiners = cached.wrapJoiners.slice(0, keptLines);
-      copyLines = cached.copyLines.slice(0, keptLines);
-      lineAnchors = cached.lineAnchors.slice(0, keptLines);
-      messageBounds = cached.messageBounds.slice(0, kept);
+    if (!reusedSuffix) {
+      const kept = rebuildFrom - s;
+      const keptLines = kept === cached.messageCount - s ? cached.committedLines : cached.lineStarts[kept];
+      if (options.reuseArrays && cached.ownsArrays) {
+        // The previous result's arrays continue as this one's: copying several
+        // arrays of every loaded row on each streaming frame cost more than the
+        // rest of the build.
+        lines = cached.lines;
+        wrapContinuation = cached.wrapContinuation;
+        wrapJoiners = cached.wrapJoiners;
+        copyLines = cached.copyLines;
+        lineAnchors = cached.lineAnchors;
+        messageBounds = cached.messageBounds;
+        for (const rows of [lines, wrapContinuation, wrapJoiners, copyLines, lineAnchors]) rows.length = keptLines;
+        messageBounds.length = kept;
+      } else {
+        lines = cached.lines.slice(0, keptLines);
+        wrapContinuation = cached.wrapContinuation.slice(0, keptLines);
+        wrapJoiners = cached.wrapJoiners.slice(0, keptLines);
+        copyLines = cached.copyLines.slice(0, keptLines);
+        lineAnchors = cached.lineAnchors.slice(0, keptLines);
+        messageBounds = cached.messageBounds.slice(0, kept);
+      }
+      // Bookkeeping arrays are private to the entry this build replaces.
+      sourceRefs = cached.sourceRefs;
+      sourceRefs.length = kept > 0 ? cached.sourceRefEnds[kept - 1] : 0;
+      sourceRefEnds = cached.sourceRefEnds;
+      sourceRefEnds.length = kept;
+      lineStarts = cached.lineStarts;
+      lineStarts.length = kept;
     }
-    sourceRefs = cached.sourceRefs;
-    sourceRefs.length = kept > 0 ? cached.sourceRefEnds[kept - 1] : 0;
-    sourceRefEnds = cached.sourceRefEnds;
-    sourceRefEnds.length = kept;
-    lineStarts = cached.lineStarts;
-    lineStarts.length = kept;
   }
 
   if (!cached) {
@@ -786,19 +844,6 @@ export function buildMessageLines(
     erroredToolCallIds = withPendingErroredToolCalls(committedErroredToolCallIds, state.pendingAI);
   }
 
-  let historyLoadingInsertIndex = startMessageIndex;
-  if (state.historyLoadingOlder && startMessageIndex === 0) {
-    while (state.messages[historyLoadingInsertIndex]?.role === "system_instructions") {
-      historyLoadingInsertIndex++;
-    }
-  }
-  const pushHistoryLoadingLine = () => {
-    pushLine(
-      `${theme.dim}${historyLoadingSpinnerText(state.historyLoadingStartedAt ?? Date.now())}${theme.reset}`,
-      state,
-      "history_loading",
-    );
-  };
   if (startMessageIndex === 0 && isActiveConversationLoading(state)) {
     pushLine(
       `  ${theme.dim}${conversationLoadingSpinnerText(state.conversationLoading!.startedAt)}${theme.reset}`,
@@ -808,7 +853,7 @@ export function buildMessageLines(
   }
 
   let segmentImages: HistoryImage[] = carriedImages;
-  for (let messageIndex = rebuildFrom; messageIndex < state.messages.length; messageIndex++) {
+  for (let messageIndex = rebuildFrom; messageIndex < rebuildTo; messageIndex++) {
     if (state.historyLoadingOlder && messageIndex === historyLoadingInsertIndex) {
       pushHistoryLoadingLine();
     }
@@ -903,6 +948,57 @@ export function buildMessageLines(
     }
   }
 
+  if (reusedSuffix) {
+    const { cached: previous, oldStart } = reusedSuffix;
+    const s = startMessageIndex;
+    const oldLine = previous.lineStarts[oldStart - s];
+    const oldRef = previous.sourceRefEnds[oldStart - s - 1];
+    const lineShift = lines.length - oldLine;
+    const refShift = sourceRefs.length - oldRef;
+    if (options.reuseArrays && previous.ownsArrays && lineShift === 0 && refShift === 0
+      && messageCount === previous.messageCount) {
+      // Same-height front (the loading row animating): patch it into the
+      // previous arrays rather than copying every row behind it.
+      const committedBounds = previous.messageCount - s;
+      const patch = <T>(target: T[], front: T[], length: number) => {
+        for (let i = 0; i < front.length; i++) target[i] = front[i];
+        target.length = length;
+        return target;
+      };
+      lines = patch(previous.lines, lines, previous.committedLines);
+      wrapContinuation = patch(previous.wrapContinuation, wrapContinuation, previous.committedLines);
+      wrapJoiners = patch(previous.wrapJoiners, wrapJoiners, previous.committedLines);
+      copyLines = patch(previous.copyLines, copyLines, previous.committedLines);
+      lineAnchors = patch(previous.lineAnchors, lineAnchors, previous.committedLines);
+      messageBounds = patch(previous.messageBounds, messageBounds, committedBounds);
+      lineStarts = patch(previous.lineStarts, lineStarts, committedBounds);
+      sourceRefEnds = patch(previous.sourceRefEnds, sourceRefEnds, committedBounds);
+      sourceRefs = patch(previous.sourceRefs, sourceRefs, previous.sourceRefs.length);
+    } else {
+      for (let row = oldLine; row < previous.committedLines; row++) {
+        lines.push(previous.lines[row]);
+        wrapContinuation.push(previous.wrapContinuation[row]);
+        wrapJoiners.push(previous.wrapJoiners[row]);
+        copyLines.push(previous.copyLines[row]);
+        lineAnchors.push(previous.lineAnchors[row]);
+      }
+      for (let i = oldStart - s; i < previous.messageCount - s; i++) {
+        const bound = previous.messageBounds[i];
+        messageBounds.push(lineShift === 0 ? bound : {
+          ...bound,
+          start: bound.start + lineShift,
+          end: bound.end + lineShift,
+          contentStart: bound.contentStart + lineShift,
+          contentEnd: bound.contentEnd + lineShift,
+        });
+        lineStarts.push(previous.lineStarts[i] + lineShift);
+        sourceRefEnds.push(previous.sourceRefEnds[i] + refShift);
+      }
+      for (let i = oldRef; i < previous.sourceRefs.length; i++) sourceRefs.push(previous.sourceRefs[i]);
+    }
+    segmentImages = previous.carriedImages;
+  }
+
   if (state.historyLoadingOlder && historyLoadingInsertIndex === state.messages.length) {
     pushHistoryLoadingLine();
   }
@@ -921,6 +1017,8 @@ export function buildMessageLines(
       lastContinuesIntoPending,
       durableSleepIndex,
       carriedImages: segmentImages,
+      historyLoadingRow,
+      historyLoadingInsertIndex,
       ownsArrays: options.reuseArrays === true,
       lines,
       wrapContinuation,
