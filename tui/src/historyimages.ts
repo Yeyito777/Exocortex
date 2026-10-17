@@ -11,8 +11,25 @@
 
 import type { RenderLineAnchor } from "./conversation";
 import { imageHitAt, kittyPreview, type InlineImageLayout } from "./inlineimages";
-import { KittyImageSync, type KittyPlacement } from "./kittyimages";
+import { KittyImageSync, type KittyImageData, type KittyPlacement } from "./kittyimages";
 import { parseKittyGraphicsResponse } from "./terminalgraphics";
+
+/** A display-math image (mathimages.ts): its pixels are rendered by the TUI, not fetched. */
+export interface MathImageLayout {
+  kitty: KittyImageData;
+  col: number;
+  cols: number;
+  rows: number;
+  owner: object;
+  index: number;
+}
+
+export type HistoryImageLayout = InlineImageLayout | MathImageLayout;
+
+/** Placement geometry for one math image of a history block. */
+export function mathImageLayout(image: { kitty: KittyImageData; col: number; cols: number; rows: number; index: number }, owner: object): MathImageLayout {
+  return { kitty: image.kitty, col: image.col, cols: image.cols, rows: image.rows, owner, index: image.index };
+}
 
 export interface ScreenRect {
   top: number;
@@ -47,6 +64,8 @@ export interface CollectHistoryImagesOptions {
   cursorLineIndex?: number | null;
   /** The cursor's column, which picks the image in a strip. */
   cursorCol?: number;
+  /** Place display-math images only (history images render as half-blocks or not at all). */
+  mathOnly?: boolean;
 }
 
 const placementIds = new WeakMap<object, Map<number, number>>();
@@ -128,12 +147,12 @@ function pieceOwner(owner: object, index: number): object {
 
 /** Placements for the image rows on screen, each cropped to what is visible. */
 export function collectHistoryImagePlacements(options: CollectHistoryImagesOptions): KittyPlacement[] {
-  const visible = new Map<InlineImageLayout, VisibleImageRow[]>();
+  const visible = new Map<HistoryImageLayout, VisibleImageRow[]>();
   options.viewportRows.forEach((viewportRow, index) => {
     if (!viewportRow) return;
     const screenRow = options.messageAreaStart + index;
     for (const image of options.lineAnchors[viewportRow.lineIndex]?.images ?? []) {
-      if (image.layout.rows <= 0) continue;
+      if (image.layout.rows <= 0 || (options.mathOnly && !("kitty" in image.layout))) continue;
       const screenCol = options.chatCol + image.layout.col - viewportRow.startCol + viewportRow.displayPrefixWidth;
       const right = screenCol + image.layout.cols - 1;
       if (screenCol < options.chatCol || right > options.maxCol) continue;
@@ -149,11 +168,16 @@ export function collectHistoryImagePlacements(options: CollectHistoryImagesOptio
     : imageHitAt(options.lineAnchors[options.cursorLineIndex]?.openImages, options.cursorCol ?? 0)?.layout;
   const placements: KittyPlacement[] = [];
   for (const [layout, rows] of visible) {
-    const preview = kittyPreview(layout.source, { cols: layout.cols, rows: layout.rows });
-    if (preview.phase !== "ready") continue;
+    let image: KittyImageData;
+    if ("kitty" in layout) {
+      image = layout.kitty;
+    } else {
+      const preview = kittyPreview(layout.source, { cols: layout.cols, rows: layout.rows });
+      if (preview.phase !== "ready") continue;
+      image = preview.value;
+    }
     const run = longestRun(rows);
     if (run.length === 0) continue;
-    const image = preview.value;
     const visibleRect = {
       top: run[0].screenRow,
       bottom: run[run.length - 1].screenRow,

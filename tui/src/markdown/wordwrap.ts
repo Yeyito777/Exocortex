@@ -3,7 +3,7 @@ import { formatMarkdownChunks, stripMarkdown, termWidth, sliceByWidth, isHorizon
 import { FENCE_OPEN_RE, isFenceClose, renderCodeBlockWrapped, stripFenceIndent } from "./codeblocks";
 import { isTableLine, renderTableBlock } from "./tables";
 import { findDisplayMathBlocks, renderDisplayMath, renderInlineMathChunks, takeDisplayMathBlock } from "./math";
-import type { WrapCopyLine } from "../textwrap";
+import type { WrapCopyLine, WrapImageRow } from "../textwrap";
 import type { LinkSpan } from "../links";
 import { wrapLinkedParagraphs } from "./linkwrap";
 
@@ -16,6 +16,22 @@ export interface MarkdownWrapResult {
   join: string[];
   /** Optional per-row plain source projection for vim yanks/copies. */
   copy?: Array<WrapCopyLine | null>;
+  /** Rows covered by a display-math image (see MarkdownWrapOptions.displayMath). */
+  images?: Array<WrapImageRow | undefined>;
+}
+
+export interface MarkdownWrapOptions {
+  /**
+   * Renders a standalone display block (`source` without delimiters, `raw` its
+   * source lines) as image rows, or returns null to keep the Unicode text.
+   */
+  displayMath?: (source: string, width: number, raw: readonly string[]) => {
+    lines: string[];
+    cont: boolean[];
+    join: string[];
+    copy: Array<WrapCopyLine | null>;
+    images: WrapImageRow[];
+  } | null;
 }
 
 function pushStandaloneLines(result: string[], cont: boolean[], join: string[], copy: Array<WrapCopyLine | null>, lines: string[]): void {
@@ -73,7 +89,7 @@ function seedLongWord(
  *   - When null/undefined, it's a user message — keep text plain
  * @returns Wrapped, formatted lines plus continuation flags
  */
-export function markdownWordWrap(text: string, width: number, bgRestore?: string): MarkdownWrapResult {
+export function markdownWordWrap(text: string, width: number, bgRestore?: string, options: MarkdownWrapOptions = {}): MarkdownWrapResult {
   if (width < 1) return { lines: [text], cont: [false], join: [""] };
 
   const inputLines = text.split("\n");
@@ -82,6 +98,16 @@ export function markdownWordWrap(text: string, width: number, bgRestore?: string
   const join: string[] = [];
   const copy: Array<WrapCopyLine | null> = [];
   const links: LinkSpan[][] = [];
+  const images: Array<WrapImageRow | undefined> = [];
+  const pushDisplayMath = (source: string, raw: readonly string[]) => {
+    const image = options.displayMath?.(source, width, raw) ?? null;
+    image?.images.forEach((row, index) => { images[result.length + index] = row; });
+    const rendered = image ?? renderDisplayMath(source, width);
+    result.push(...rendered.lines);
+    cont.push(...rendered.cont);
+    join.push(...rendered.join);
+    copy.push(...rendered.copy);
+  };
 
   let i = 0;
   while (i < inputLines.length) {
@@ -111,11 +137,7 @@ export function markdownWordWrap(text: string, width: number, bgRestore?: string
     if (bgRestore != null && (inputLines[i].includes("\\[") || inputLines[i].includes("$$"))) {
       const block = takeDisplayMathBlock(inputLines, i);
       if (block) {
-        const rendered = renderDisplayMath(block.source, width);
-        result.push(...rendered.lines);
-        cont.push(...rendered.cont);
-        join.push(...rendered.join);
-        copy.push(...rendered.copy);
+        pushDisplayMath(block.source, inputLines.slice(i, block.nextLine));
         i = block.nextLine;
         continue;
       }
@@ -173,11 +195,7 @@ export function markdownWordWrap(text: string, width: number, bgRestore?: string
       let textStart = paragraphStart;
       for (const block of mathBlocks) {
         wrapParagraphBlock(inputLines.slice(textStart, block.startLine), width, result, cont, join, copy, bgRestore, links);
-        const rendered = renderDisplayMath(block.source, width);
-        result.push(...rendered.lines);
-        cont.push(...rendered.cont);
-        join.push(...rendered.join);
-        copy.push(...rendered.copy);
+        pushDisplayMath(block.source, inputLines.slice(block.startLine, block.nextLine));
         textStart = block.nextLine;
       }
       // A math block may contain blank lines beyond the collected paragraph.
@@ -190,7 +208,7 @@ export function markdownWordWrap(text: string, width: number, bgRestore?: string
     i++;
   }
 
-  return { lines: result, cont, join, copy, links };
+  return { lines: result, cont, join, copy, links, ...(images.length > 0 ? { images } : {}) };
 }
 
 interface RawWrapResult {

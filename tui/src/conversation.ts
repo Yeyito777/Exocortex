@@ -18,7 +18,6 @@ import {
   sourceFromAttachment,
   sourceFromRef,
   type InlineImageHit,
-  type InlineImageLayout,
   type InlineImageSource,
 } from "./inlineimages";
 import { isActiveConversationLoading, type RenderState } from "./state";
@@ -97,7 +96,8 @@ export function compactionFinishedDivider(availableWidth: number): string {
   return prefix + "─".repeat(dividerWidth - prefix.length);
 }
 import { termWidth, truncateToWidth } from "./textwidth";
-import { wordWrap, type WrapCopyLine, type WrapResult } from "./textwrap";
+import { wordWrap, type WrapCopyLine, type WrapImage, type WrapResult } from "./textwrap";
+import { mathImageLayout, type HistoryImageLayout } from "./historyimages";
 import type { LinkSpan } from "./links";
 import { isNewConversationQueuedMessage, queuedMessagesInDisplayOrder, queueTimingLabel } from "./queue";
 
@@ -284,8 +284,8 @@ export interface RenderLineAnchor {
   userFlowDocument?: UserMessageFlowDocument;
   userFlowStart?: UserMessageFlowCursor;
   userFlowEnd?: UserMessageFlowCursor;
-  /** Inline images covering this row (several side by side in a strip), and which of their rows this is. */
-  images?: Array<{ layout: InlineImageLayout; row: number }>;
+  /** Images covering this row (several side by side in a strip, or display math), and which of their rows this is. */
+  images?: Array<{ layout: HistoryImageLayout; row: number }>;
   /** Columns where Enter or a click on this row (a thumbnail, a strip's `› +N`) opens an image. */
   openImages?: InlineImageHit[];
 }
@@ -381,6 +381,7 @@ export function buildMessageLines(
       state.externalToolStyles,
       state.showToolOutput,
       block.type === "tool_call" && erroredToolCallIds.has(block.toolCallId),
+      true,
     );
 
   const pushAnchoredLine = (
@@ -404,6 +405,7 @@ export function buildMessageLines(
   const pushBlock = (owner: object, segment: RenderLineSegment, br: WrapResult) => {
     let logicalIndex = -1;
     let subIndex = 0;
+    const mathLayouts = new Map<WrapImage, HistoryImageLayout>();
     for (let i = 0; i < br.lines.length; i++) {
       if (i === 0 || !br.cont[i]) {
         logicalIndex++;
@@ -413,6 +415,12 @@ export function buildMessageLines(
       }
       pushAnchoredLine(br.lines[i], br.cont[i], br.join[i], owner, segment, logicalIndex, subIndex, br.copy?.[i] ?? null);
       if (br.links?.[i]?.length) lineAnchors[lineAnchors.length - 1].links = br.links[i];
+      const imageRow = br.images?.[i];
+      if (imageRow) {
+        let layout = mathLayouts.get(imageRow.image);
+        if (!layout) mathLayouts.set(imageRow.image, layout = mathImageLayout(imageRow.image, owner));
+        lineAnchors[lineAnchors.length - 1].images = [{ layout, row: imageRow.row }];
+      }
     }
   };
 
@@ -474,7 +482,7 @@ export function buildMessageLines(
   const trimTrailingBlankAssistantContent = (minLength: number) => {
     while (lines.length > minLength) {
       const anchor = lineAnchors[lineAnchors.length - 1];
-      if (!anchor || anchor.segment !== "assistant_block") break;
+      if (!anchor || anchor.segment !== "assistant_block" || anchor.images) break;
       if (!isVisuallyBlankLine(lines[lines.length - 1])) break;
       lines.pop();
       wrapContinuation.pop();

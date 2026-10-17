@@ -16,6 +16,7 @@ import { TerminalClipboardClient, TerminalControlBuffer } from "./terminalclipbo
 import { CELL_SIZE_QUERY, TerminalGraphicsDetector, parseCellSizeResponse } from "./terminalgraphics";
 import { configureInlineImages, setInlineImageCellSize, setInlineImageMode } from "./inlineimages";
 import { disposeHistoryImages, handleHistoryImageResponse, invalidateHistoryImagePlacements } from "./historyimages";
+import { configureMathImages, disposeMathImages, mathImagesActive, mathImagesNeedDetection } from "./mathimages";
 import { handleImageModalKey } from "./imagemodal";
 import { closeAccountsScreen, handleAccountsScreenKey, requestAccountsScreen } from "./accountsscreen";
 import { handleFocusedKey } from "./focus";
@@ -1983,6 +1984,7 @@ function restoreTerminal(): void {
   if (process.stdin.isTTY) process.stdin.setRawMode(false);
   const cursorResetSeq = theme.cursorColor ? reset_cursor_color : '';
   terminalGraphicsDetector?.dispose();
+  disposeMathImages();
   process.stdout.write(disposeHistoryImages(state));
   process.stdout.write(disable_mouse + disable_kitty_kbd + disable_clipboard_paste_events + disable_bracketed_paste + show_cursor + cursorResetSeq + leave_alt);
   terminalSetUp = false;
@@ -2098,7 +2100,7 @@ async function main(): Promise<void> {
   terminalGraphicsDetector = new TerminalGraphicsDetector({
     write: sequence => process.stdout.write(sequence),
     onModeChanged: mode => {
-      if (mode !== "kitty") process.stdout.write(disposeHistoryImages(state));
+      if (mode !== "kitty" && !mathImagesActive()) process.stdout.write(disposeHistoryImages(state));
       setInlineImageMode(mode);
     },
   });
@@ -2107,6 +2109,9 @@ async function main(): Promise<void> {
     onChange: () => scheduleRender(),
     onFirstEnabled: () => terminalGraphicsDetector?.start(),
   });
+  // Display math images need to know the terminal regardless of the images experiment.
+  configureMathImages({ onChange: () => scheduleRender() });
+  if (mathImagesNeedDetection()) terminalGraphicsDetector.start();
 
   function processInput(str: string): void {
     if (!running) return;
