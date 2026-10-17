@@ -250,6 +250,8 @@ export class DaemonClient {
     const probe = probeSshProxy(alias, {
       spawnProcess: this.spawnSshProcess,
       timeoutMs: this.sshProbeTimeoutMs,
+      // The client host is attached only once the connection is adopted.
+      preamble: [{ type: "client_capabilities", capabilities: CLIENT_CAPABILITIES }],
     });
     // Keep even an unauthenticated attempt cancellable by disconnect/route
     // switches. Spawning ssh is not readiness: never flush the offline queue
@@ -657,6 +659,8 @@ export class DaemonClient {
     const probe = probeSshProxy(alias, {
       spawnProcess: this.spawnSshProcess,
       timeoutMs: this.sshProbeTimeoutMs,
+      // The client host is attached only once the connection is adopted.
+      preamble: [{ type: "client_capabilities", capabilities: CLIENT_CAPABILITIES }],
     });
     this.cancelSshProbe = probe.cancel;
     try {

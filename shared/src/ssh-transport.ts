@@ -91,6 +91,12 @@ export interface SshProbe {
 export interface SshProbeOptions {
   spawnProcess?: SpawnSshProcess;
   timeoutMs?: number;
+  /**
+   * Commands written before the probe ping. The ping doubles as the adopted
+   * connection's bootstrap request, so connection-scoped settings such as
+   * client_capabilities must reach the daemon first to shape that bootstrap.
+   */
+  preamble?: Array<Record<string, unknown>>;
 }
 
 /**
@@ -189,7 +195,8 @@ export function probeSshProxy(alias: string, options: SshProbeOptions = {}): Ssh
     )), timeoutMs);
     timer.unref?.();
     try {
-      process.stdin.write(`${JSON.stringify({ type: "ping", reqId })}\n`);
+      const lines = [...(options.preamble ?? []), { type: "ping", reqId }];
+      process.stdin.write(lines.map(line => `${JSON.stringify(line)}\n`).join(""));
     } catch (error) {
       finish(new Error(
         `cannot write SSH probe: ${error instanceof Error ? error.message : String(error)}${sshStderrSuffix(stderr)}`,
