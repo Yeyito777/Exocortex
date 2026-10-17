@@ -15,6 +15,17 @@ const OPENING_TURNS_STEP = 5;
  * that window cannot fill the screen (e.g. byte-budgeted tool-heavy turns).
  */
 export const OPENING_FILL_HOLD_MS = 300;
+/**
+ * The same cap over /ssh, where the backfill needs a network round trip plus
+ * up to a byte-budgeted page on the wire: 300 ms is less than that on a
+ * ~100 ms link, so the partial window used to flash before older rows arrived.
+ */
+export const REMOTE_OPENING_FILL_HOLD_MS = 1500;
+
+/** How long an opening window may wait for its backfill on this transport. */
+export function openingFillHoldMs(remote: boolean): number {
+  return remote ? REMOTE_OPENING_FILL_HOLD_MS : OPENING_FILL_HOLD_MS;
+}
 
 /**
  * Turns to request when opening a conversation: enough for a screen of the
@@ -36,30 +47,49 @@ const MAX_VIEWPORT_COLS = 4000;
 /**
  * History viewport sent with an open, so the daemon can size the opening
  * window to fill it (plus a screen of scrollback) in rendered rows. Uses the
- * last layout, or the terminal size before the first one.
+ * last layout, or the terminal size before the first one. Columns are the
+ * width history is laid out at, not the narrower rows beside a task panel:
+ * estimating at that width overstated each turn's rows, so the window came
+ * back too short to fill the screen.
  */
 export function openingViewport(state: RenderState): { rows: number; cols: number } {
   const rows = state.layout.messageAreaHeight > 0 ? state.layout.messageAreaHeight : state.rows - NON_HISTORY_ROWS;
-  const cols = state.layout.historyWidth > 0 ? state.layout.historyWidth : state.cols;
+  const cols = state.layout.chatWidth > 0 ? state.layout.chatWidth : state.cols;
   const clamp = (value: number, max: number) => Math.min(max, Math.max(1, Math.floor(Number.isFinite(value) ? value : 1)));
   return { rows: clamp(rows, MAX_VIEWPORT_ROWS), cols: clamp(cols, MAX_VIEWPORT_COLS) };
 }
 
 /** Start holding presentation of a just-opened window until it fills the screen. */
-export function beginOpeningFillHold(state: RenderState, now = Date.now()): void {
-  state.historyOpeningFillUntil = now + OPENING_FILL_HOLD_MS;
+export function beginOpeningFillHold(state: RenderState, now = Date.now(), holdMs = OPENING_FILL_HOLD_MS): void {
+  state.historyOpeningFillUntil = now + holdMs;
+}
+
+/**
+ * Rows at the top of the rendered window that older history will push away:
+ * the pinned system instructions and the older-history spinner below them.
+ */
+function openingWindowLeadRows(state: RenderState): number {
+  const anchors = state.historyLineAnchors;
+  let rows = 0;
+  while (rows < anchors.length) {
+    const segment = anchors[rows]?.segment;
+    if (segment !== "history_loading" && !segment?.startsWith("system_instructions_")) break;
+    rows++;
+  }
+  return rows;
 }
 
 /**
  * Whether painting the rendered window now would show a partially filled
- * screen that older history, already on its way, is about to push down.
- * Ends the hold once a frame may be presented.
+ * screen, or the top of the window (its pinned system instructions), that
+ * older history, already on its way, is about to push down. Ends the hold
+ * once a frame may be presented.
  */
 export function shouldHoldOpeningFrame(state: RenderState, now = Date.now()): boolean {
   const until = state.historyOpeningFillUntil;
   if (until === null) return false;
   if (now < until && hasOlderHistoryCursor(state)
-      && state.layout.totalLines < state.layout.messageAreaHeight) return true;
+      && state.layout.totalLines - openingWindowLeadRows(state) < state.layout.messageAreaHeight) return true;
   state.historyOpeningFillUntil = null;
   return false;
 }

@@ -164,6 +164,7 @@ export function handleEvent(
         // A failed opening backfill still has to release frame presentation;
         // restore against the opening window instead of freezing indefinitely.
         completeInitialConversationBackfill(state, event.convId);
+        state.historyOpeningFillUntil = null;
       }
       // A failed tool-output fetch (the viewport loader runs mid-stream) says
       // nothing about the turn being streamed; keep its pending response.

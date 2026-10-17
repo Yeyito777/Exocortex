@@ -72,7 +72,7 @@ import {
   beginOpeningFillHold,
   INITIAL_BUFFER_ADDITIONAL_TURNS,
   OLDER_HISTORY_PAGE_TURNS,
-  OPENING_FILL_HOLD_MS,
+  openingFillHoldMs,
   openingHistoryTurns,
   openingViewport,
   shouldLoadOlderHistory,
@@ -645,18 +645,21 @@ function onDaemonEvent(event: Event): void {
     // The opening window is sized to fill the screen, so it normally paints at
     // once and the follow-up backfill only extends the scrollback above it. When
     // it cannot fill the screen, render() keeps the spinner up to
-    // OPENING_FILL_HOLD_MS for older history instead of painting a partial
+    // openingFillHoldMs() for older history instead of painting a partial
     // screen. A saved position needs the expanded window, so render() also keeps
     // the previous frame until that backfill is ready.
     const applyMs = PERFORMANCE_PROFILING_ENABLED ? performance.now() - eventStartedAt : 0;
     const restoreWaitingForBackfill = isConversationScrollRestoreWaitingForInitialBackfill(state);
     if (event.convId === state.convId) {
-      beginOpeningFillHold(state);
+      const holdMs = openingFillHoldMs(Boolean(daemon.remoteAlias));
+      beginOpeningFillHold(state, Date.now(), holdMs);
       clearTimeout(openingFillTimer);
       openingFillTimer = setTimeout(() => {
+        // A window that filled (or was filled by its backfill) already painted.
+        if (state.historyOpeningFillUntil === null) return;
         state.historyOpeningFillUntil = null;
         scheduleRender(0);
-      }, OPENING_FILL_HOLD_MS);
+      }, holdMs);
     }
     let renderMs = renderImmediately();
     const initialBackfillRequested = requestOlderHistory(INITIAL_BUFFER_ADDITIONAL_TURNS, "initial-backfill");
