@@ -201,8 +201,30 @@ function persist(): void {
   ensureDataDir();
   const path = statePath();
   const temp = `${path}.${process.pid}.${Date.now()}.tmp`;
-  writeFileSync(temp, JSON.stringify(snapshotState(), null, 2) + "\n", { mode: 0o600 });
-  renameSync(temp, path);
+  try {
+    writeFileSync(temp, JSON.stringify(snapshotState(), null, 2) + "\n", { mode: 0o600 });
+    renameSync(temp, path);
+  } catch (err) {
+    rmSync(temp, { force: true });
+    throw err;
+  }
+}
+
+/** Earliest time the timer may fire again after a failed processing pass. */
+let failureBackoffUntil = 0;
+const FAILURE_BACKOFF_MS = 5_000;
+
+/**
+ * Timer-driven work runs detached, and the daemon treats an unhandled
+ * rejection as fatal. A failed pass (e.g. ENOSPC writing state) is logged and
+ * retried after a backoff instead; durable state stays as it was.
+ */
+function runDetached(label: string, work: Promise<void>): void {
+  work.catch((err) => {
+    log("error", `chrono: ${label} failed: ${err instanceof Error ? err.message : String(err)}`);
+    failureBackoffUntil = Date.now() + FAILURE_BACKOFF_MS;
+    armTimer();
+  });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -356,8 +378,8 @@ function armTimer(): void {
     earliest = Math.min(earliest, deferredSleepReadyAt(sleep));
   }
   if (!Number.isFinite(earliest)) return;
-  const delay = Math.min(MAX_TIMER_MS, Math.max(0, earliest - Date.now()));
-  timer = setTimeout(() => { void processPendingAndDue(); }, delay);
+  const delay = Math.min(MAX_TIMER_MS, Math.max(0, earliest - Date.now(), failureBackoffUntil - Date.now()));
+  timer = setTimeout(() => { runDetached("processing due work", processPendingAndDue()); }, delay);
 }
 
 function formatter(timezone: string): Intl.DateTimeFormat {
@@ -662,14 +684,17 @@ function watchDeferredWait(sleep: DeferredChronoSleep): void {
     }
     armTimer();
   };
-  void waitForConversationTask(sleep.wait.taskId, controller.signal, sleep.wait.ownerConversationId)
-    .then(completed => save(completedChronoWaitOutput(completed), false, completed.endedAt))
-    .catch(err => {
-      if (!controller.signal.aborted) save(err instanceof Error ? err.message : String(err), true, Date.now());
-    })
+  // A failed state write must not be recorded as the waited task's failure.
+  runDetached(`deferred wait ${sleep.id}`, waitForConversationTask(sleep.wait.taskId, controller.signal, sleep.wait.ownerConversationId)
+    .then(
+      completed => save(completedChronoWaitOutput(completed), false, completed.endedAt),
+      err => {
+        if (!controller.signal.aborted) save(err instanceof Error ? err.message : String(err), true, Date.now());
+      },
+    )
     .finally(() => {
       if (deferredWaitControllers.get(sleep.id) === controller) deferredWaitControllers.delete(sleep.id);
-    });
+    }));
 }
 
 /**
@@ -1256,12 +1281,15 @@ async function processPendingAndDue(now = Date.now()): Promise<void> {
     }
     persist();
     for (const occurrence of pending.values()) {
-      if ((occurrence.retryAt ?? 0) <= now) void executeOccurrence(occurrence);
+      if ((occurrence.retryAt ?? 0) <= now) runDetached(`occurrence ${occurrence.id}`, executeOccurrence(occurrence));
     }
     for (const sleep of deferredSleeps.values()) {
       const readyAt = deferredSleepReadyAt(sleep);
-      if (readyAt <= now) void executeDeferredSleep(sleep);
+      if (readyAt <= now) runDetached(`deferred sleep ${sleep.id}`, executeDeferredSleep(sleep));
     }
+  } catch (err) {
+    log("error", `chrono: processing due work failed: ${err instanceof Error ? err.message : String(err)}`);
+    failureBackoffUntil = Date.now() + FAILURE_BACKOFF_MS;
   } finally {
     processingDue = false;
     armTimer();
@@ -1320,7 +1348,7 @@ export async function startChronoService(options: { deferWaitSubscriptions?: boo
   if (pending.size > 0
       || [...schedules.values()].some(schedule => schedule.nextAt <= Date.now())
       || [...deferredSleeps.values()].some(sleep => deferredSleepReadyAt(sleep) <= Date.now())) {
-    void processPendingAndDue();
+    runDetached("processing due work", processPendingAndDue());
   }
   log("info", `chrono: started with ${schedules.size} schedule(s), ${pending.size} pending occurrence(s), ${deferredSleeps.size} deferred sleep(s)`);
   return schedules.size;
@@ -1356,6 +1384,7 @@ export const chronoInternalsForTest = {
     runningCommands.clear();
     processingSleeps.clear();
     cancelledOccurrences.clear();
+    failureBackoffUntil = 0;
     changedListener = null;
     deferredSleepReadyListener = null;
     rmSync(statePath(), { force: true });
