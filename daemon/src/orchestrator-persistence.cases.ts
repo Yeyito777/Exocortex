@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { appendMessages, clearActiveToolBackgrounder, clearGoal, clearHistoryUnwindPending, clearStreamHandoff, create, get, getActiveJob, getQueuedMessages, getSummary, isStreaming, isUnread, pin, pushQueuedMessage, remove, requestHistoryUnwind, setActiveToolBackgrounder, setGoal, steerActiveTurn, updateGoalStatus, updateQueuedMessage } from "./conversations";
+import { appendMessages, clearActiveToolBackgrounder, clearGoal, clearHistoryUnwindPending, clearStreamHandoff, create, get, getActiveJob, getQueuedMessages, getSummary, isStreaming, isUnread, pin, pushQueuedMessage, remove, requestHistoryUnwind, setActiveToolBackgrounder, setGoal, steerActiveTurn, updateGoalStatus, updateQueuedMessage, removeQueuedMessageById } from "./conversations";
 import { load as loadPersisted } from "./persistence";
 import { orchestrateCompactConversation, orchestrateGoalCycle, orchestrateReplayConversation, orchestrateSendMessage, type OrchestrationCallbacks } from "./orchestrator";
 import { streamMessage } from "./api";
@@ -2091,5 +2091,41 @@ describe("a failed queued successor never leaves the conversation streaming", ()
     } finally {
       setMessageQueuePersistenceFailureForTest(null);
     }
+  });
+});
+
+describe("queued turn admission reads the queue entry as it is at commit time", () => {
+  const reply = { text: "ok", thinking: "", stopReason: "stop" as const, blocks: [{ type: "text" as const, text: "ok" }], toolCalls: [], inputTokens: 1, outputTokens: 1 };
+
+  test("an edit made during admission is the message that is sent", async () => {
+    const convId = id("admission-edit");
+    create(convId, "openai", "gpt-5.6-sol");
+    pushQueuedMessage(convId, "original", "next-turn", undefined, undefined, undefined, "admission-edit-entry");
+    const sent: string[] = [];
+    const fakeStream = (async (_provider, messages) => {
+      const last = messages.at(-1) as { content: unknown };
+      sent.push(typeof last.content === "string" ? last.content : JSON.stringify(last.content));
+      return reply;
+    }) as typeof streamMessage;
+    const turn = orchestrateSendMessage(server() as never, null, undefined, convId, "original", Date.now(), callbacks(fakeStream), undefined, { queueEntryId: "admission-edit-entry" });
+    // Admission yields before committing the user message.
+    updateQueuedMessage("admission-edit-entry", "edited", "next-turn");
+    expect((await turn).ok).toBe(true);
+    expect(sent.join("\n")).toContain("edited");
+    expect(loadPersisted(convId)!.messages.filter(message => message.role === "user").map(message => message.content)).toEqual(["edited"]);
+  });
+
+  test("an entry withdrawn during admission is not sent", async () => {
+    const convId = id("admission-unqueue");
+    create(convId, "openai", "gpt-5.6-sol");
+    pushQueuedMessage(convId, "never mind", "next-turn", undefined, undefined, undefined, "admission-unqueue-entry");
+    let calls = 0;
+    const fakeStream = (async () => { calls += 1; return reply; }) as typeof streamMessage;
+    const turn = orchestrateSendMessage(server() as never, null, undefined, convId, "never mind", Date.now(), callbacks(fakeStream), undefined, { queueEntryId: "admission-unqueue-entry" });
+    removeQueuedMessageById("admission-unqueue-entry");
+    expect((await turn).ok).toBe(false);
+    expect(calls).toBe(0);
+    expect(isStreaming(convId)).toBe(false);
+    expect((loadPersisted(convId)?.messages ?? []).some(message => message.role === "user")).toBe(false);
   });
 });

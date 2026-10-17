@@ -637,6 +637,8 @@ async function orchestrateAdmittedAssistantTurn(
   // ── Start stream and broadcast initial state ──────────────────────
 
   let acceptedUserMessage: StoredMessage | null = null;
+  let admittedText = userMessage?.text ?? "";
+  let admittedImages = userMessage?.images;
   if (userMessage) {
     try {
       const handoffCancelled = () => {
@@ -659,8 +661,18 @@ async function orchestrateAdmittedAssistantTurn(
         const cancelledAfterNotice = handoffCancelled();
         if (cancelledAfterNotice) return cancelledAfterNotice;
       }
+      // Admission yielded since this queue entry was selected: the user may
+      // have withdrawn or edited it meanwhile. Commit what the queue holds now.
+      if (options.queueEntryId) {
+        const current = convStore.getQueuedMessageById(options.queueEntryId);
+        if (!current) return buildErrorOutcome("Queued message was withdrawn before its turn started.");
+        if (!current.command) {
+          admittedText = current.text;
+          admittedImages = current.images;
+        }
+      }
       const contextCheckpoint = createStoredUserContextCheckpoint(conv);
-      acceptedUserMessage = createStoredUserMessage(userMessage.text, conv.model, startedAt, userMessage.images, {
+      acceptedUserMessage = createStoredUserMessage(admittedText, conv.model, startedAt, admittedImages, {
         subagentNotificationId: options.subagentNotificationId,
         queueEntryId: options.queueEntryId,
         automation,
@@ -702,9 +714,9 @@ async function orchestrateAdmittedAssistantTurn(
     server.sendToSubscribers(convId, {
       type: "user_message",
       convId,
-      text: userMessage.text,
+      text: admittedText,
       startedAt,
-      images: userMessage.images,
+      images: admittedImages,
       ...(options.queueEntryId ? { queueId: options.queueEntryId } : {}),
       ...(automation ? { automation } : {}),
     });
