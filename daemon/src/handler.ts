@@ -119,10 +119,19 @@ export interface DaemonCommandHandler {
   backgroundTaskComplete(convId: string, completion: BackgroundTaskCompletion): void;
   /** /proxy links of this daemon; main.ts starts and stops them. */
   providerProxies: ProviderProxyManager;
+  /** Release queue delivery held by `holdQueueDeliveryUntilReady`. */
+  startQueueDelivery(): void;
 }
 
 export interface HandlerOptions extends HandlerLifecycle {
   providerProxies?: ProviderProxyManager;
+  /**
+   * Daemon boot: dispatch no queued message until startup recovery has adopted
+   * surviving Claude Code processes and scheduled interrupted-turn replays.
+   * Otherwise a preserved queue entry starts a fresh turn that replaces the
+   * adopted process, or answers instead of the interrupted turn's replay.
+   */
+  holdQueueDeliveryUntilReady?: boolean;
 }
 
 export function createHandler(server: DaemonServer, options: HandlerOptions = {}): DaemonCommandHandler {
@@ -1248,8 +1257,9 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     log("info", `handler: recovered queued draft conversation ${entry.convId} from durable queue ${entry.id}`);
   };
 
+  let queueDeliveryReady = !options.holdQueueDeliveryUntilReady;
   const pumpQueuedMessages = (): void => {
-    if (getDaemonShutdownMode()) return;
+    if (getDaemonShutdownMode() || !queueDeliveryReady) return;
     const queued = convStore.listInternalQueuedMessages();
     const queuedIds = new Set(queued.map(entry => entry.id));
     for (const id of queueRetryAfter.keys()) {
@@ -3677,5 +3687,10 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     },
     backgroundTaskComplete: enqueueBackgroundTaskCompletion,
     providerProxies,
+    startQueueDelivery: () => {
+      if (queueDeliveryReady) return;
+      queueDeliveryReady = true;
+      scheduleQueuePump(0);
+    },
   });
 }

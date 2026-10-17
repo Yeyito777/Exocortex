@@ -947,6 +947,31 @@ describe("handler daemon-owned queue", () => {
     }
   });
 
+  test("holds boot-time queue delivery until startup recovery releases it", async () => {
+    const id = mkId("queue-boot-hold");
+    create(id, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
+    const server = {
+      sendTo: mock(() => {}), broadcast: mock(() => {}), sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}), subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never, { holdQueueDeliveryUntilReady: true });
+    const callsBefore = orchestrateSendMessage.mock.calls.length;
+    try {
+      // A queue entry preserved across the restart (e.g. withdrawn from a
+      // Claude Code process that boot has not adopted yet).
+      pushQueuedMessage(id, "queued before restart", "next-turn", undefined, null, undefined, "boot-held");
+      await new Promise(resolve => setTimeout(resolve, 300));
+      expect(orchestrateSendMessage.mock.calls.length).toBe(callsBefore);
+
+      handle.startQueueDelivery();
+      await new Promise(resolve => setTimeout(resolve, 300));
+      expect(orchestrateSendMessage.mock.calls.length).toBeGreaterThan(callsBefore);
+      expect((orchestrateSendMessage.mock.calls[callsBefore] as unknown as unknown[])[4]).toBe("queued before restart");
+    } finally {
+      removeQueuedMessageById("boot-held");
+    }
+  });
+
   test("holds a due timed /queue entry until its own conversation is idle", async () => {
     const id = mkId("queue-delay-busy");
     create(id, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);

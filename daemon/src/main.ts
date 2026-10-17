@@ -230,6 +230,7 @@ async function startDaemon(): Promise<void> {
   profileMark("conversation_schema_ready");
   commandHandler = createHandler(server, {
     requestRestart: () => { void shutdown(DAEMON_RESTART_EXIT_CODE, "client restart request"); },
+    holdQueueDeliveryUntilReady: true,
   });
 
   process.on("SIGINT", () => { void shutdown(0, "SIGINT"); });
@@ -389,6 +390,8 @@ async function startDaemon(): Promise<void> {
     profileMark("subagent_notifications_recovered", { count: pendingNotifications });
   }
   backgroundTaskRecovery.enableCompletionDelivery();
+  // Replays and adopted Claude Code turns now own their conversations.
+  commandHandler.startQueueDelivery();
   // recoverInterruptedStreams reconstructs notification-linked subagent tasks.
   // Do not mistake those targets for lost tasks while boot is still rebuilding
   // the catalog that suspended Chrono waits subscribe to.
