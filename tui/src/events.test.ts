@@ -1636,6 +1636,21 @@ describe("disk sync assistant diagnostics", () => {
   });
 });
 
+describe("user_message images", () => {
+  test("a delivered queued message keeps the bytes this client sent when the echo carries only ids", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    const sent = { mediaType: "image/png" as const, base64: "iVBORw0KGgo=", sizeBytes: 300_000 };
+    const echoed = { mediaType: "image/png" as const, base64: "", sizeBytes: 300_000, imageId: "a".repeat(64), width: 800, height: 600 };
+    state.queuedMessages.push({ id: "queue-img", optimistic: true, convId: "conv-1", text: "look", timing: "message-end", images: [sent], source: "daemon", createdAt: 1 });
+    handleEvent({ type: "user_message", convId: "conv-1", text: "look", startedAt: 5_000, queueId: "queue-img", images: [echoed] } as Event, state, daemon);
+    expect(state.messages.at(-1)).toMatchObject({ role: "user", images: [sent] });
+    // Another client's message: the ids are all there is, and a preview is fetched.
+    handleEvent({ type: "user_message", convId: "conv-1", text: "theirs", startedAt: 6_000, queueId: "queue-other", images: [echoed] } as Event, state, daemon);
+    expect(state.messages.at(-1)).toMatchObject({ role: "user", images: [echoed] });
+  });
+});
+
 describe("instant steering display", () => {
   test("keeps the preempted partial reply above the steer without duplicating it on completion", () => {
     const state = createInitialState();

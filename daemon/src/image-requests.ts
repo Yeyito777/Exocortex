@@ -68,3 +68,27 @@ export function rememberSentImages(images: readonly ImageAttachment[] | undefine
     }
   }
 }
+
+/**
+ * Pasted images larger than this travel in live events as their id and size
+ * only. The sender already holds the bytes and other clients fetch a preview
+ * sized to what they draw; echoing a multi-megabyte screenshot back would
+ * hold up the turn's first tokens behind it on a slow link.
+ */
+export const ECHO_INLINE_IMAGE_CHARS = 128 * 1024;
+
+/** A user message's images as a `user_message` event carries them. */
+export function imagesForEcho(images: readonly ImageAttachment[] | undefined): ImageAttachment[] | undefined {
+  return images?.map((image) => {
+    if (image.base64.length <= ECHO_INLINE_IMAGE_CHARS) return image;
+    let identity: Pick<ImageAttachment, "imageId" | "width" | "height"> = {};
+    try {
+      const bytes = Buffer.from(image.base64, "base64");
+      const sniffed = sniffImage(bytes);
+      identity = { imageId: image.imageId ?? imageIdForBytes(bytes), ...(sniffed ? { width: sniffed.width, height: sniffed.height } : {}) };
+    } catch {
+      return image;
+    }
+    return { mediaType: image.mediaType, base64: "", sizeBytes: image.sizeBytes, ...identity };
+  });
+}

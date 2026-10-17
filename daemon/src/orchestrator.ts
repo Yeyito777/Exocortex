@@ -25,6 +25,7 @@ import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, MAX
 import type { ContentBlock as ProviderContentBlock, QueuedInput, QueuedInputSource, StreamRetryMetadata } from "./providers/types";
 import type { QueuedMessage } from "./message-queue";
 import type { ImageAttachment } from "@exocortex/shared/messages";
+import { imagesForEcho } from "./image-requests";
 import type { BackgroundTaskCompletion, ExocortexToolRuntime, ToolExecutionContext } from "./tools/types";
 import { broadcastConversationHistoryUpdated, broadcastConversationUpdated } from "./conversation-events";
 import { quarantineActiveContext } from "./active-context-quarantine";
@@ -694,7 +695,7 @@ async function orchestrateAdmittedAssistantTurn(
       convId,
       text: userMessage.text,
       startedAt,
-      images: userMessage.images,
+      images: imagesForEcho(userMessage.images),
       ...(options.queueEntryId ? { queueId: options.queueEntryId } : {}),
       ...(automation ? { automation } : {}),
     });
@@ -1647,7 +1648,7 @@ async function orchestrateAdmittedAssistantTurn(
           streamSeq: convStore.nextStreamSeq(convId),
           text: qm.text,
           startedAt: storedUser.metadata?.startedAt ?? Date.now(),
-          images: qm.images,
+          images: imagesForEcho(qm.images),
           queueId: qm.id,
           ...(qm.automation ? { automation: qm.automation } : {}),
         });
