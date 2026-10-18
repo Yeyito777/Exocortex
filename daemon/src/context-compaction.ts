@@ -251,7 +251,7 @@ export function buildConversationApiContext(conv: Conversation, accountScope?: s
         message,
         !isMessageProviderDataCompatible(message, conv.provider, conv.model, accountScope, false),
       ));
-    assertBoundedContextReplay(estimateContextTokens(messages, conv.provider), getMaxContext(conv.provider, conv.model));
+    assertReplayBounded(conv, messages);
     return { messages, usedActiveContext: false, tailMessages: messages };
   }
 
@@ -283,12 +283,22 @@ export function buildConversationApiContext(conv: Conversation, accountScope?: s
     ));
   }
   const messages = [...structuredClone(active.messages), ...tailMessages];
-  assertBoundedContextReplay(estimateContextTokens(messages, conv.provider), getMaxContext(conv.provider, conv.model));
+  assertReplayBounded(conv, messages);
   return {
     messages,
     usedActiveContext: true,
     tailMessages,
   };
+}
+
+/**
+ * The whole replayed history is sent only to providers without a session of
+ * their own. Claude Code resumes its session and compacts it itself, so for
+ * it the orchestrator bounds just the part the session has not seen.
+ */
+function assertReplayBounded(conv: Conversation, messages: ApiMessage[]): void {
+  if (conv.provider === "anthropic") return;
+  assertBoundedContextReplay(estimateContextTokens(messages, conv.provider), getMaxContext(conv.provider, conv.model));
 }
 
 export function estimateContextTokens(messages: ApiMessage[], provider: ProviderId): number {

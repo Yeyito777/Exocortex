@@ -42,6 +42,18 @@ test("standard and Daybreak Sol share reasoning scope without broadening model o
   expect(conv).toEqual(before);
 });
 
+test("a Claude Code conversation longer than twice its window still replays (its session holds the context)", () => {
+  const conv = createConversation("long-claude", "anthropic", "claude-opus-5-5");
+  conv.messages = [
+    { role: "user", content: "x".repeat(9_000_000), metadata: null },
+    { role: "assistant", content: [{ type: "text", text: "ok" }], metadata: null },
+  ];
+  expect(buildConversationApiContext(conv).messages).toHaveLength(2);
+  const openai = createConversation("long-openai", "openai", "gpt-5.6-sol");
+  openai.messages = structuredClone(conv.messages);
+  expect(() => buildConversationApiContext(openai)).toThrow(/Refusing oversized/);
+});
+
 test("recognizes Claude Code's prompt-too-long as a context-window error", () => {
   expect(isContextWindowError(new Error("Claude Code: Prompt is too long: 1012345 tokens > 1000000 maximum"))).toBe(true);
   expect(isContextWindowError(new Error("Claude Code: rate limited"))).toBe(false);
