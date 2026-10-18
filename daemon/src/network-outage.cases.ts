@@ -13,6 +13,7 @@ import { chronoInternalsForTest } from "./chrono-service";
 import { ConnectivityMonitor } from "./connectivity";
 import { FakeClock, flush, scriptedProbe } from "./connectivity-test-helpers";
 import type { StoredMessage } from "./messages";
+import { ProviderProxyUnavailableError } from "./provider-proxy/link";
 
 const IDS: string[] = [];
 
@@ -281,5 +282,117 @@ describe("turns wait out network outages", () => {
     expect(outcome.ok).toBe(true);
     expect(monitor.isOnline()).toBe(true);
     expect(events.filter(event => event.type === "connection_wait_status").map(event => event.active)).toEqual([true, false]);
+  });
+});
+
+/** The Oct 18 failure: Claude Code's error after the forwarder's hold, as the turn sees it. */
+function proxyLinkDownError(): Error {
+  return new Error("Claude Code: API Error: 503 Exocortex /proxy (link down): Could not reach the Exocortex daemon on whale over SSH (exit 255): ssh: Could not resolve hostname yeyito.dev: nodename nor servname provided, or not known. This is a server-side issue, usually temporary — try again in a moment.");
+}
+
+/** A /proxy link that fails `failures` connection attempts (transiently), then is up. */
+function proxyLink(failures: number) {
+  const link = {
+    attempts: 0,
+    alias: () => "whale",
+    async connect() {
+      link.attempts += 1;
+      if (link.attempts <= failures) throw new ProviderProxyUnavailableError("Could not reach the Exocortex daemon on whale over SSH (exit 255): ssh: Could not resolve hostname yeyito.dev.");
+    },
+    delaysMs: [5],
+    budgetMs: 60_000,
+  };
+  return link;
+}
+
+describe("turns wait out /proxy link outages", () => {
+  test("a turn whose link drops waits for it visibly, then resumes after its committed round without repeating it", async () => {
+    const convId = id("proxy-resume");
+    create(convId, "anthropic", "claude-opus-5-5");
+    const events: Event[] = [];
+    const link = proxyLink(2);
+    const requests: string[][] = [];
+    let toolRuns = 0;
+    const fakeStream = (async (_provider, messages, _model, streamCallbacks) => {
+      requests.push(messages.map(message => text(message as StoredMessage)));
+      if (requests.length === 1) {
+        toolRuns += 1;
+        streamCallbacks.onToolCall?.({ type: "tool_call", toolCallId: "deploy", toolName: "bash", input: {}, summary: "deploy" });
+        streamCallbacks.onToolResult?.({ type: "tool_result", toolCallId: "deploy", toolName: "bash", output: "deployed", isError: false });
+        streamCallbacks.onProviderRound?.({
+          blocks: [],
+          messages: [
+            { role: "assistant", content: [{ type: "tool_use", id: "deploy", name: "bash", input: {} }] },
+            { role: "user", content: [{ type: "tool_result", tool_use_id: "deploy", content: "deployed" }] },
+          ],
+          outputTokens: 1,
+        });
+        throw proxyLinkDownError();
+      }
+      return answer("deployed and verified");
+    }) as typeof streamMessage;
+
+    const outcome = await orchestrateSendMessage(server(events) as never, null, undefined, convId, "deploy", Date.now(), {
+      ...callbacks(fakeStream, new ConnectivityMonitor({ probe: scriptedProbe(true), clock: new FakeClock() })),
+      proxyLinkWait: link,
+    });
+
+    expect(outcome.ok).toBe(true);
+    expect(toolRuns).toBe(1);
+    expect(link.attempts).toBe(3);
+    // One prompt, then the committed round: nothing re-sent twice.
+    expect(requests).toHaveLength(2);
+    expect(requests[1].filter(entry => entry === "deploy")).toHaveLength(1);
+    expect(requests[1]).toHaveLength(3);
+    const persisted = loadPersisted(convId)!.messages;
+    expect(persisted.map(message => message.role)).toEqual(["user", "assistant", "user", "assistant"]);
+    expect(persisted.filter(message => message.role === "user" && text(message) === "deploy")).toHaveLength(1);
+    const waits = events.filter(event => event.type === "connection_wait_status");
+    expect(waits.map(event => event.active)).toEqual([true, false]);
+    expect(waits[0].label).toBe("Waiting for network / whale…");
+    expect(events.some(event => event.type === "conversation_updated")).toBe(true);
+  });
+
+  test("a /proxy failure that will not clear up fails the turn at once", async () => {
+    const convId = id("proxy-permanent");
+    create(convId, "anthropic", "claude-opus-5-5");
+    const link = proxyLink(0);
+    const message = "Claude Code: API Error: 503 Exocortex /proxy: The Exocortex daemon on whale does not support /proxy; update Exocortex there (git pull, then exocortexd restart).";
+    const fakeStream = (async () => { throw new Error(message); }) as typeof streamMessage;
+    const outcome = await orchestrateSendMessage(server() as never, null, undefined, convId, "hi", Date.now(), {
+      ...callbacks(fakeStream, new ConnectivityMonitor({ probe: scriptedProbe(true), clock: new FakeClock() })),
+      proxyLinkWait: link,
+    });
+    expect(outcome.ok).toBe(false);
+    expect(outcome.error).toBe(`✗ ${message}`);
+    expect(link.attempts).toBe(0);
+  });
+
+  test("Stop during a /proxy wait ends the turn as interrupted", async () => {
+    const convId = id("proxy-stop");
+    create(convId, "anthropic", "claude-opus-5-5");
+    const events: Event[] = [];
+    const link = { ...proxyLink(Infinity), delaysMs: [20] };
+    let requests = 0;
+    const fakeStream = (async () => {
+      requests += 1;
+      throw proxyLinkDownError();
+    }) as typeof streamMessage;
+
+    const turn = orchestrateSendMessage(server(events) as never, null, undefined, convId, "hello?", Date.now(), {
+      ...callbacks(fakeStream, new ConnectivityMonitor({ probe: scriptedProbe(true), clock: new FakeClock() })),
+      proxyLinkWait: link,
+    });
+    await until(() => events.some(event => event.type === "connection_wait_status" && event.active === true), "the waiting state");
+    getActiveJob(convId)!.abort();
+    const outcome = await turn;
+    await flush();
+
+    expect(outcome.aborted).toBe(true);
+    expect(requests).toBe(1);
+    const persisted = loadPersisted(convId)!.messages;
+    expect(persisted.map(message => `${message.role}:${text(message)}`)).toEqual(["user:hello?", "system:✗ Interrupted"]);
+    expect(events.filter(event => event.type === "connection_wait_status").map(event => event.active)).toEqual([true, false]);
+    expect(isStreaming(convId)).toBe(false);
   });
 });

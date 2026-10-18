@@ -49,7 +49,7 @@ function defaultOnlineRetryDelayMs(retry: number): number {
   return Math.min(3_000 * Math.pow(2, Math.max(0, retry - 1)), 30_000);
 }
 
-function abortableDelay(delayMs: number, signal: AbortSignal): Promise<void> {
+export function abortableDelay(delayMs: number, signal: AbortSignal): Promise<void> {
   if (signal.aborted) return Promise.reject(createAbortError());
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -62,6 +62,26 @@ function abortableDelay(delayMs: number, signal: AbortSignal): Promise<void> {
     };
     signal.addEventListener("abort", onAbort, { once: true });
   });
+}
+
+/** Wait in a preemptible slot, so Stop and steering reach it like a retry backoff. */
+export async function waitPreemptibly<T>(controller: RetryableStreamAbortController, wait: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  if (controller.signal.aborted) throw createAbortError();
+  const slot = new AbortController();
+  const onRootAbort = () => slot.abort(controller.signal.reason);
+  controller.signal.addEventListener("abort", onRootAbort, { once: true });
+  controller.setAttempt(slot, true);
+  try {
+    return await wait(slot.signal);
+  } catch (error) {
+    if (!controller.signal.aborted && slot.signal.reason === STEER_PREEMPTION_REASON) {
+      throw new StreamPreemptedError();
+    }
+    throw error;
+  } finally {
+    controller.clearAttempt(slot);
+    controller.signal.removeEventListener("abort", onRootAbort);
+  }
 }
 
 /**
@@ -81,30 +101,10 @@ export async function runWithNetworkWait<T>(
   let onlineRetries = 0;
   let lastError: unknown = null;
 
-  /** Wait in a preemptible slot, so Stop and steering reach it like a retry backoff. */
-  const waitPreemptibly = async (wait: (signal: AbortSignal) => Promise<unknown>): Promise<unknown> => {
-    if (controller.signal.aborted) throw createAbortError();
-    const slot = new AbortController();
-    const onRootAbort = () => slot.abort(controller.signal.reason);
-    controller.signal.addEventListener("abort", onRootAbort, { once: true });
-    controller.setAttempt(slot, true);
-    try {
-      return await wait(slot.signal);
-    } catch (error) {
-      if (!controller.signal.aborted && slot.signal.reason === STEER_PREEMPTION_REASON) {
-        throw new StreamPreemptedError();
-      }
-      throw error;
-    } finally {
-      controller.clearAttempt(slot);
-      controller.signal.removeEventListener("abort", onRootAbort);
-    }
-  };
-
   const waitForNetwork = async (error: unknown): Promise<void> => {
     hooks.onWaitStart(error);
     try {
-      await waitPreemptibly(signal => monitor.waitForOnline(signal));
+      await waitPreemptibly(controller, signal => monitor.waitForOnline(signal));
     } finally {
       hooks.onWaitEnd();
     }
@@ -125,10 +125,10 @@ export async function runWithNetworkWait<T>(
       // The turn waits from here: through the probe, and the outage if there is one.
       hooks.onWaitStart(error);
       try {
-        const reachable = await waitPreemptibly(signal => monitor.check(signal));
+        const reachable = await waitPreemptibly(controller, signal => monitor.check(signal));
         if (!reachable) {
           log("warn", `network-wait: request failed during a network outage${label} (${message}); waiting for connectivity`);
-          await waitPreemptibly(signal => monitor.waitForOnline(signal));
+          await waitPreemptibly(controller, signal => monitor.waitForOnline(signal));
           log("info", `network-wait: connectivity returned${label}; retrying the request`);
           onlineRetries = 0;
           continue;
@@ -142,7 +142,7 @@ export async function runWithNetworkWait<T>(
       if (onlineRetries > allowed) throw error;
       const delayMs = onlineRetryDelayMs(onlineRetries);
       log("warn", `network-wait: request failed at the network level although the network is reachable${label} (${message}); retry ${onlineRetries}/${allowed} in ${Math.round(delayMs / 1000)}s`);
-      await waitPreemptibly(signal => abortableDelay(delayMs, signal));
+      await waitPreemptibly(controller, signal => abortableDelay(delayMs, signal));
     }
   }
 }

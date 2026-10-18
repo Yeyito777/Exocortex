@@ -136,6 +136,7 @@ export class ProviderProxyManager {
     this.started = true;
     configureProviderProxyHooks({
       ready: (provider, signal) => this.ready(provider, signal),
+      connect: async (provider, signal) => { await this.linkFor(provider)?.waitReady(READY_TIMEOUT_MS, signal); },
       remoteStatus: (provider) => this.remoteStatus(provider),
       remoteSupports: (provider, feature) => this.linkFor(provider)?.features.includes(feature) ?? false,
       remoteAccounts: () => this.remoteAccounts(),

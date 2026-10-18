@@ -70,9 +70,10 @@ import {
 import { buildConversationRequestSurface } from "./conversation-request-surface";
 import { connectivity as daemonConnectivity, type ConnectivityMonitor } from "./connectivity";
 import { runWithNetworkWait } from "./network-wait";
+import { runWithProxyLinkWait, type ProxyLinkWaitDeps, type ProxyLinkWaitOptions } from "./proxy-link-wait";
 import { isUsageLimitError, runWithUsageLimitWait, type UsageAvailability } from "./usage-limit-wait";
 import { claudeUsageAvailability } from "./providers/anthropic/availability";
-import { isProviderProxied } from "./provider-proxy/route";
+import { isProviderProxied, providerProxyConnect, providerProxyRoute } from "./provider-proxy/route";
 import { classifyNetworkFailureMessage } from "./providers/errors";
 import { getModelInfo, cyberAccessProgramForSelection, refreshProviders } from "./providers/registry";
 import { isDaybreakModelId } from "@exocortex/shared/daybreak";
@@ -157,6 +158,8 @@ export interface OrchestrationCallbacks {
   connectivity?: ConnectivityMonitor;
   /** Test seam for capacity; production uses the local or proxied Claude pool. */
   usageAvailability?: () => UsageAvailability;
+  /** Test seam for the /proxy link a proxied provider waits for, and how long it waits. */
+  proxyLinkWait?: ProxyLinkWaitDeps & Pick<ProxyLinkWaitOptions, "delaysMs" | "budgetMs">;
 }
 
 // ── Message history/replay helpers ─────────────────────────────────
@@ -859,6 +862,25 @@ async function orchestrateAdmittedAssistantTurn(
   };
   const unsubscribeConnectivity = connectivity.subscribe(syncConnectionWait);
 
+  /** A provider wait with its own label (usage limit, /proxy link): yellow in the sidebar, the label in the chat. */
+  const showProviderWait = (label: string) => {
+    convStore.pauseActivity(convId);
+    convStore.setConnectionWaitStartedAt(convId, Date.now(), label);
+    broadcastConversationUpdated(server, convId);
+    server.sendToSubscribers(convId, {
+      type: "connection_wait_status", convId, streamSeq: convStore.nextStreamSeq(convId),
+      active: true, startedAt: Date.now(), label,
+    });
+  };
+  const endProviderWait = () => {
+    convStore.resumeActivity(convId);
+    convStore.setConnectionWaitStartedAt(convId, null);
+    broadcastConversationUpdated(server, convId);
+    server.sendToSubscribers(convId, {
+      type: "connection_wait_status", convId, streamSeq: convStore.nextStreamSeq(convId), active: false,
+    });
+  };
+
   // The app watchdog interrupts only the current provider invocation. Give each
   // retry a fresh child signal while preserving `ac.signal` as the terminal turn
   // signal used by user interrupts and daemon lifecycle operations.
@@ -879,7 +901,7 @@ async function orchestrateAdmittedAssistantTurn(
     // during a failed attempt are in it, so a retry resumes after them. Its
     // uncommitted streamed output is discarded before each re-send.
     let attempted = false;
-    return runWithUsageLimitWait(ac, () => runWithNetworkWait(ac, connectivity, () => {
+    const attempt = () => {
       if (attempted) callbacks.onAttemptDiscarded?.();
       attempted = true;
       return runWithStaleStreamRetries(
@@ -890,7 +912,20 @@ async function orchestrateAdmittedAssistantTurn(
         signal: attemptSignal,
       }),
       );
+    };
+    // A /proxy link down for a reason that may clear up (proxy-link-wait.ts).
+    const proxyLink: ProxyLinkWaitDeps = ext.proxyLinkWait ?? {
+      alias: () => providerProxyRoute(provider)?.alias ?? null,
+      connect: (signal) => providerProxyConnect(provider as Parameters<typeof providerProxyConnect>[0], signal),
+    };
+    return runWithUsageLimitWait(ac, () => runWithNetworkWait(ac, connectivity, () => runWithProxyLinkWait(ac, attempt, proxyLink, {
+      start: (alias) => showProviderWait(`Waiting for network / ${alias}…`),
+      end: endProviderWait,
     }, {
+      label: convId,
+      delaysMs: ext.proxyLinkWait?.delaysMs,
+      budgetMs: ext.proxyLinkWait?.budgetMs,
+    }), {
       onWaitStart() {
         awaitingConnectivity = true;
         // A wait can last hours; it is not a stalled stream.
@@ -905,24 +940,8 @@ async function orchestrateAdmittedAssistantTurn(
     }, { label: convId }), () => provider === "anthropic"
       ? (ext.usageAvailability?.() ?? (ext.streamMessageFn ? { ready: true, resetAt: null } : claudeUsageAvailability()))
       : { ready: true, resetAt: null }, {
-      start(resetAt) {
-        const label = "Waiting for usage limit" + (resetAt == null ? "…" : ` · resets ${new Date(resetAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`);
-        convStore.pauseActivity(convId);
-        convStore.setConnectionWaitStartedAt(convId, Date.now(), label);
-        broadcastConversationUpdated(server, convId);
-        server.sendToSubscribers(convId, {
-          type: "connection_wait_status", convId, streamSeq: convStore.nextStreamSeq(convId),
-          active: true, startedAt: Date.now(), label,
-        });
-      },
-      end() {
-        convStore.resumeActivity(convId);
-        convStore.setConnectionWaitStartedAt(convId, null);
-        broadcastConversationUpdated(server, convId);
-        server.sendToSubscribers(convId, {
-          type: "connection_wait_status", convId, streamSeq: convStore.nextStreamSeq(convId), active: false,
-        });
-      },
+      start: (resetAt) => showProviderWait("Waiting for usage limit" + (resetAt == null ? "…" : ` · resets ${new Date(resetAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`)),
+      end: endProviderWait,
     }, {
       shouldRetry: error => provider === "anthropic" && isUsageLimitError(error),
       // The remote already tries an alternative account. With an old/unknown

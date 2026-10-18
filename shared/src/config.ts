@@ -92,6 +92,8 @@ export interface ProvidersConfig {
 export interface AgentConfig {
   /** Compatibility working directory for daemon/ownerless operations. Conversation tools use isolated workspaces. */
   workingDirectory?: string;
+  /** How long a turn waits for a /proxy link that is down for a reason that may clear up (no network, DNS, remote daemon away). Default 30. */
+  proxyOutageWaitMinutes?: number;
 }
 
 export type PingMode = "sound" | "notif" | "both";

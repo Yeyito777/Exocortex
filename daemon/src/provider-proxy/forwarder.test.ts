@@ -8,6 +8,8 @@ import { ProviderProxyUnavailableError, type ProviderProxyHttpRequest, type Prov
 
 interface FakeLink {
   ready: () => Promise<void>;
+  /** Fail this many HTTP requests as if the link dropped before the answer. */
+  dropRequests?: number;
   requests: ProviderProxyHttpRequest[];
   sockets: Array<{ sent: string[]; handlers: ProviderProxyWebSocketHandlers; closed: boolean }>;
 }
@@ -18,6 +20,10 @@ function fakeLink(overrides: Partial<FakeLink> = {}): FakeLink {
     waitReady: () => link.ready(),
     async openHttp(request: ProviderProxyHttpRequest) {
       link.requests.push(request);
+      if (link.dropRequests) {
+        link.dropRequests--;
+        throw new ProviderProxyUnavailableError("The SSH connection to whale was lost (exit 255).");
+      }
       return {
         status: 200,
         headers: { "content-type": "text/event-stream", "x-upstream": "yes" },
@@ -41,8 +47,8 @@ function fakeLink(overrides: Partial<FakeLink> = {}): FakeLink {
 
 const dirs: string[] = [];
 const forwarders: ProviderProxyForwarder[] = [];
-function start(linkFor: (provider: string) => FakeLink | null, stateFile?: string): ProviderProxyForwarder {
-  const forwarder = new ProviderProxyForwarder({ linkFor: provider => linkFor(provider) as unknown as ProviderProxyLink | null, ...(stateFile ? { stateFile } : {}) });
+function start(linkFor: (provider: string) => FakeLink | null, stateFile?: string, hold: { linkHoldMs?: number; linkHoldRetryDelaysMs?: number[] } = {}): ProviderProxyForwarder {
+  const forwarder = new ProviderProxyForwarder({ linkFor: provider => linkFor(provider) as unknown as ProviderProxyLink | null, ...(stateFile ? { stateFile } : {}), ...hold });
   forwarder.start();
   forwarders.push(forwarder);
   return forwarder;
@@ -101,11 +107,54 @@ describe("provider proxy forwarder", () => {
     expect(off.status).toBe(503);
     expect(await off.text()).toContain("openai is no longer proxied");
 
-    const down = start(() => fakeLink({ ready: async () => { throw new ProviderProxyUnavailableError("The SSH connection to whale was lost (exit 255)."); } }));
+    let attempts = 0;
+    const down = start(() => fakeLink({ ready: async () => { attempts++; throw new ProviderProxyUnavailableError("The SSH connection to whale was lost (exit 255)."); } }), undefined, { linkHoldMs: 200, linkHoldRetryDelaysMs: [20] });
     const response = await fetch(`${down.baseUrl("anthropic")}/v1/messages`, { method: "POST", headers: { authorization: `Bearer ${down.secret}` }, body: "{}" });
     expect(response.status).toBe(503);
+    // Held and retried first; then the client is told not to retry by itself: the turn waits instead.
+    expect(attempts).toBeGreaterThan(2);
+    expect(response.headers.get("x-should-retry")).toBe("false");
     const body = await response.json() as { error: { message: string } };
-    expect(body.error.message).toBe("Exocortex /proxy: The SSH connection to whale was lost (exit 255).");
+    expect(body.error.message).toBe("Exocortex /proxy (link down): The SSH connection to whale was lost (exit 255).");
+  });
+
+  test("holds a request through a short link outage and forwards it once the link is back", async () => {
+    let attempts = 0;
+    const link = fakeLink({ ready: async () => {
+      if (++attempts < 3) throw new ProviderProxyUnavailableError("Could not reach the Exocortex daemon on whale over SSH (exit 255): ssh: Could not resolve hostname yeyito.dev: nodename nor servname provided, or not known.");
+    } });
+    const forwarder = start(() => link, undefined, { linkHoldMs: 5_000, linkHoldRetryDelaysMs: [20] });
+    const response = await fetch(`${forwarder.baseUrl("anthropic")}/v1/messages`, { method: "POST", headers: { authorization: `Bearer ${forwarder.secret}` }, body: "{}" });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("data: one\n\ndata: two\n\n");
+    expect(attempts).toBe(3);
+    expect(link.requests).toHaveLength(1);
+  });
+
+  test("sends a request again when the link drops before the upstream answers", async () => {
+    const link = fakeLink({ dropRequests: 1 });
+    const forwarder = start(() => link, undefined, { linkHoldMs: 5_000, linkHoldRetryDelaysMs: [20] });
+    const response = await fetch(`${forwarder.baseUrl("anthropic")}/v1/messages`, { method: "POST", headers: { authorization: `Bearer ${forwarder.secret}` }, body: "{\"model\":\"m\"}" });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("data: one\n\ndata: two\n\n");
+    expect(link.requests).toHaveLength(2);
+    expect(new TextDecoder().decode(link.requests[1].body)).toBe("{\"model\":\"m\"}");
+  });
+
+  test("fails at once, without a hold, when the link failure will not clear up", async () => {
+    let attempts = 0;
+    const forwarder = start(() => fakeLink({ ready: async () => {
+      attempts++;
+      throw new ProviderProxyUnavailableError("Could not reach the Exocortex daemon on whale over SSH (exit 255): yeyito@whale: Permission denied (publickey).", false);
+    } }), undefined, { linkHoldMs: 60_000, linkHoldRetryDelaysMs: [20] });
+    const started = Date.now();
+    const response = await fetch(`${forwarder.baseUrl("anthropic")}/v1/messages`, { method: "POST", headers: { authorization: `Bearer ${forwarder.secret}` }, body: "{}" });
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(attempts).toBe(1);
+    expect(response.status).toBe(503);
+    expect(response.headers.get("x-should-retry")).toBe("false");
+    const body = await response.json() as { error: { message: string } };
+    expect(body.error.message).toBe("Exocortex /proxy: Could not reach the Exocortex daemon on whale over SSH (exit 255): yeyito@whale: Permission denied (publickey).");
   });
 
   test("bridges websockets to the link, passing the handshake headers", async () => {

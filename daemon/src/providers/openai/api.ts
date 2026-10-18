@@ -8,7 +8,7 @@ import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-pro
 import { accountScopeForKey, getCurrentAccountKey, getOpenAIAuthSessionRevision, getVerifiedSession } from "./auth";
 import { AuthError, isContextWindowProviderError, isNonRetryableProviderError, NonRetryableProviderError } from "../errors";
 import { CHATGPT_BASE_URL, OPENAI_CODEX_RESPONSES_URL, OPENAI_CODEX_RESPONSES_WS_URL, OPENAI_RESPONSES_LITE_HEADER } from "./constants";
-import { proxiedProviderUrl } from "../../provider-proxy/route";
+import { isProviderProxyLinkDownMessage, proxiedProviderUrl } from "../../provider-proxy/route";
 import { usesOpenAIResponsesLite } from "./capabilities";
 import { buildOpenAIRequestHeaders, type OpenAIRequestSession } from "./cache";
 import { buildCloudflareCookieHeader, storeCloudflareCookiesFromHeaders } from "./cookies";
@@ -919,6 +919,9 @@ function isRetriableOpenAIHttpError(err: OpenAIWebSocketHttpError): boolean {
   // bare 403 and no response body. That has behaved like a transient edge
   // refusal rather than an authorization error, while descriptive 403 bodies
   // should still fail fast so the user sees the actual policy/auth message.
+  // A /proxy link that stayed down through the forwarder's hold is waited for
+  // by the turn (proxy-link-wait.ts), not retried here.
+  if (isProviderProxyLinkDownMessage(err.body)) return false;
   return RETRIABLE_STATUS_CODES.has(err.status) || (err.status === 403 && err.body.trim() === "");
 }
 
