@@ -28,12 +28,23 @@ import {
   providerProxyRequestHeaders,
   type ProxyableProviderId,
 } from "@exocortex/shared/provider-proxy";
-import { isAbortLikeError } from "../abort";
+import { createAbortError, isAbortLikeError } from "../abort";
 import { log } from "../log";
-import type { ProviderProxyLink, ProviderProxyWebSocketOpenResult } from "./link";
+import { isTransientProviderProxyError, type ProviderProxyLink, type ProviderProxyWebSocketOpenResult } from "./link";
+import { PROVIDER_PROXY_LINK_DOWN_PREFIX } from "./route";
 
-/** How long a request waits for a link that is (re)connecting. */
+/** How long one connection attempt may take while a request waits for the link. */
 const LINK_READY_TIMEOUT_MS = 20_000;
+/**
+ * How long a request is held, across reconnect attempts, while the link is
+ * down for a transient reason (a Wi-Fi blip, DNS, the remote daemon
+ * restarting). Well inside Claude Code's first-byte window, so a short outage
+ * is only latency. Past it the request fails without inviting the client to
+ * retry, and the turn waits for the link visibly (proxy-link-wait.ts).
+ */
+const LINK_HOLD_MS = 45_000;
+/** Pauses between connection attempts while a request is held. */
+const LINK_HOLD_RETRY_DELAYS_MS: readonly number[] = [2_000, 5_000, 10_000];
 
 export interface ProviderProxyForwarderOptions {
   /** Where the port and secret persist; omit to use fresh ones. */
@@ -42,6 +53,10 @@ export interface ProviderProxyForwarderOptions {
   linkFor(provider: ProxyableProviderId): ProviderProxyLink | null;
   /** The remote moved a named conversation (PROVIDER_PROXY_CONVERSATION_HEADER) to another Claude account. */
   onAccountMove?(conversation: string, move: ProviderProxyAccountMove): void;
+  /** Overrides LINK_HOLD_MS (tests). */
+  linkHoldMs?: number;
+  /** Overrides LINK_HOLD_RETRY_DELAYS_MS (tests). */
+  linkHoldRetryDelaysMs?: readonly number[];
 }
 
 interface SocketState {
@@ -56,6 +71,36 @@ function jsonError(provider: string, status: number, message: string): Response 
     ? { type: "error", error: { type: status === 401 ? "authentication_error" : status === 403 ? "permission_error" : "api_error", message } }
     : { error: { type: "proxy_error", message } };
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+}
+
+/**
+ * The link could not carry the request. `x-should-retry: false` stops Claude
+ * Code's own retries: a transient failure has already been waited out here,
+ * and the turn takes over from there; the others will not clear up.
+ */
+function linkError(provider: string, error: unknown): Response {
+  if (isAbortLikeError(error)) return new Response(null, { status: 499 });
+  const message = error instanceof Error ? error.message : String(error);
+  const response = jsonError(provider, 503, isTransientProviderProxyError(error)
+    ? `${PROVIDER_PROXY_LINK_DOWN_PREFIX}${message}`
+    : `Exocortex /proxy: ${message}`);
+  response.headers.set("x-should-retry", "false");
+  return response;
+}
+
+function abortableDelay(delayMs: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(createAbortError());
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(createAbortError());
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, delayMs);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 /** A close code a server may send: the upstream's, or a generic one. */
@@ -167,6 +212,26 @@ export class ProviderProxyForwarder {
     this.server = null;
   }
 
+  /**
+   * Wait for the link until `deadline`, through reconnect attempts while it is
+   * down for a transient reason. Throws the last failure otherwise.
+   */
+  private async holdForLink(link: ProviderProxyLink, deadline: number, signal: AbortSignal): Promise<void> {
+    const delays = this.options.linkHoldRetryDelaysMs ?? LINK_HOLD_RETRY_DELAYS_MS;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await link.waitReady(Math.max(1, Math.min(deadline - Date.now(), LINK_READY_TIMEOUT_MS)), signal);
+        return;
+      } catch (error) {
+        if (signal.aborted || !isTransientProviderProxyError(error)) throw error;
+        const delay = delays[Math.min(attempt, delays.length - 1)];
+        if (Date.now() + delay >= deadline) throw error;
+        if (attempt === 0) log("info", `provider-proxy: holding a request until ${link.alias} is back: ${error instanceof Error ? error.message : error}`);
+        await abortableDelay(delay, signal);
+      }
+    }
+  }
+
   private async handle(request: Request, server: Server<SocketState>): Promise<Response | undefined> {
     const url = new URL(request.url);
     const host = request.headers.get("host") ?? "";
@@ -186,10 +251,11 @@ export class ProviderProxyForwarder {
 
     const link = this.options.linkFor(provider);
     if (!link) return jsonError(provider, 503, `Exocortex /proxy: ${provider} is no longer proxied; retry to use it directly.`);
+    const deadline = Date.now() + (this.options.linkHoldMs ?? LINK_HOLD_MS);
     try {
-      await link.waitReady(LINK_READY_TIMEOUT_MS, request.signal);
+      await this.holdForLink(link, deadline, request.signal);
     } catch (error) {
-      return jsonError(provider, 503, `Exocortex /proxy: ${error instanceof Error ? error.message : String(error)}`);
+      return linkError(provider, error);
     }
 
     const headers = providerProxyRequestHeaders(request.headers.entries());
@@ -198,9 +264,29 @@ export class ProviderProxyForwarder {
       if (declared > PROVIDER_PROXY_MAX_REQUEST_BYTES) {
         return jsonError(provider, 413, `Exocortex /proxy: request body exceeds ${PROVIDER_PROXY_MAX_REQUEST_BYTES} bytes.`);
       }
+      let body: Uint8Array | undefined;
       try {
-        const body = request.method === "GET" || request.method === "HEAD" ? undefined : new Uint8Array(await request.arrayBuffer());
-        const response = await link.openHttp({ provider, method: request.method, target, headers, body }, request.signal);
+        body = request.method === "GET" || request.method === "HEAD" ? undefined : new Uint8Array(await request.arrayBuffer());
+      } catch (error) {
+        if (request.signal.aborted || isAbortLikeError(error)) return new Response(null, { status: 499 });
+        return jsonError(provider, 502, `Exocortex /proxy: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      while (true) {
+        let response: Awaited<ReturnType<ProviderProxyLink["openHttp"]>>;
+        try {
+          response = await link.openHttp({ provider, method: request.method, target, headers, body }, request.signal);
+        } catch (error) {
+          if (request.signal.aborted || isAbortLikeError(error)) return new Response(null, { status: 499 });
+          if (!isTransientProviderProxyError(error)) return jsonError(provider, 502, `Exocortex /proxy: ${error instanceof Error ? error.message : String(error)}`);
+          // The link dropped before the upstream answered: send it again once the link is back.
+          try {
+            if (Date.now() >= deadline) throw error;
+            await this.holdForLink(link, deadline, request.signal);
+          } catch (holdError) {
+            return linkError(provider, holdError);
+          }
+          continue;
+        }
         const responseHeaders = { ...response.headers };
         const move = responseHeaders[PROVIDER_PROXY_ACCOUNT_MOVE_HEADER];
         delete responseHeaders[PROVIDER_PROXY_ACCOUNT_MOVE_HEADER];
@@ -213,9 +299,6 @@ export class ProviderProxyForwarder {
           }
         }
         return new Response(response.body, { status: response.status, headers: responseHeaders });
-      } catch (error) {
-        if (request.signal.aborted || isAbortLikeError(error)) return new Response(null, { status: 499 });
-        return jsonError(provider, 502, `Exocortex /proxy: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
 
@@ -234,6 +317,7 @@ export class ProviderProxyForwarder {
         },
       }, request.signal);
     } catch (error) {
+      if (isTransientProviderProxyError(error)) return linkError(provider, error);
       return jsonError(provider, 502, `Exocortex /proxy: ${error instanceof Error ? error.message : String(error)}`);
     }
     if (opened.status !== 101 || !("send" in opened)) {

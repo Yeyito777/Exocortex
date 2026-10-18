@@ -82,8 +82,22 @@ same timeout, working-directory and 1 MB output rules as `client_bash`.
 - **Link drops mid-turn:** every request in flight fails at once, like a
   dropped network connection. Claude Code and the OpenAI client then retry as
   they would for a network error, and the link reconnects with backoff (1s up
-  to 60s; a request waiting for the link triggers an immediate attempt and
-  waits up to 20s). Nothing hangs: SSH keepalives detect a dead peer in ~45s.
+  to 60s). Nothing hangs: SSH keepalives detect a dead peer in ~45s.
+- **Link down for a while (Wi-Fi drop, DNS failure, ssh exit 255, the remote
+  daemon restarting):** the forwarder holds a request and retries the link
+  (2s, 5s, then every 10s) for up to 45s, so a short blip is only latency; a
+  link lost before the answer started is sent again. Past the hold it answers
+  `503 Exocortex /proxy (link down): <reason>` with `x-should-retry: false`,
+  so Claude Code does not retry by itself, and the turn waits instead
+  (`daemon/src/proxy-link-wait.ts`): the conversation shows "Waiting for
+  network / <alias>…" (yellow, like a usage-limit wait), tries the link after
+  2s, 5s, 10s, 30s and then every 60s, and resends the same request once it
+  is up. Rounds already committed are not run again and the message is not
+  duplicated. Stop cancels the wait. It gives up after
+  `agent.proxyOutageWaitMinutes` in `config/config.json` (default 30).
+  Failures that will not clear up by themselves fail at once with their
+  reason: SSH authentication or host-key errors, no `exocortexd` on the
+  remote, an outdated or refusing remote.
 - **Proxy toggled mid-turn:** the turn finishes on the link it started on (the
   old link closes once idle); the next turn uses the new route. Claude Code
   processes carry the route in their key, so toggling starts a new process.

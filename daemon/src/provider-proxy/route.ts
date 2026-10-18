@@ -25,6 +25,8 @@ export interface ProviderProxyRoute {
 export interface ProviderProxyHooks {
   /** Wait (bounded) until the link is up and the remote can serve `provider`; throws a clear error otherwise. */
   ready(provider: ProxyableProviderId, signal?: AbortSignal): Promise<ProviderProxyRemoteStatus>;
+  /** Try the link `provider` goes through now (one bounded attempt); rejects with the failure. */
+  connect(provider: ProxyableProviderId, signal?: AbortSignal): Promise<void>;
   /** Whether the remote `provider` goes through lists `feature` in its hello. */
   remoteSupports(provider: ProxyableProviderId, feature: ProviderProxyFeature): boolean;
   /** The remote's last known status for `provider`. */
@@ -35,6 +37,18 @@ export interface ProviderProxyHooks {
   refreshUsage(provider: ProxyableProviderId): Promise<UsageData | null>;
   /** Spend one of the remote account's usage resets. */
   consumeReset(provider: ProxyableProviderId): Promise<{ outcome: string; windowsReset: number; remainingResets?: number }>;
+}
+
+/**
+ * Starts the error the forwarder answers when the link stayed down for a
+ * transient reason through its hold. Claude Code quotes it in its API error,
+ * so the turn can tell it apart and wait for the link (proxy-link-wait.ts).
+ */
+export const PROVIDER_PROXY_LINK_DOWN_PREFIX = "Exocortex /proxy (link down): ";
+
+/** A provider request failed because the /proxy link was down for a transient reason. */
+export function isProviderProxyLinkDownMessage(message: string): boolean {
+  return message.includes(PROVIDER_PROXY_LINK_DOWN_PREFIX);
 }
 
 const routes = new Map<ProxyableProviderId, ProviderProxyRoute>();
@@ -62,6 +76,12 @@ export function configureProviderProxyHooks(next: ProviderProxyHooks | null): vo
 export async function providerProxyReady(provider: ProxyableProviderId, signal?: AbortSignal): Promise<ProviderProxyRemoteStatus> {
   if (!hooks) throw new Error(`${provider} is set to /proxy but the proxy is not running.`);
   return hooks.ready(provider, signal);
+}
+
+/** Try the link a proxied provider goes through now; resolves at once when it is no longer proxied. */
+export async function providerProxyConnect(provider: ProxyableProviderId, signal?: AbortSignal): Promise<void> {
+  if (!routes.has(provider) || !hooks) return;
+  await hooks.connect(provider, signal);
 }
 
 export function providerProxyRemoteStatus(provider: ProxyableProviderId): ProviderProxyRemoteStatus | null {

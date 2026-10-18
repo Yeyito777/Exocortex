@@ -91,6 +91,7 @@ const NOT_NETWORK_MESSAGE_PATTERNS = [
   /\bHTTP [45]\d\d\b/,
   /\b(?:rate.?limit|overloaded|quota|usage limit|unauthori[sz]ed|forbidden|authentication)\b/i,
   /\b(?:certificate|SSL|TLS)\b/i,
+  /Exocortex \/proxy/,
   /couldn't connect through your proxy|\bERR_PROXY/i,
 ];
 
@@ -120,6 +121,8 @@ export function classifyNetworkFailure(error: unknown): NetworkFailureKind | nul
     seen.add(current);
     if (current instanceof AuthError || isNonRetryableProviderError(current)) return null;
     if (current instanceof Error && (current.name === "AbortError" || current.name === "StreamPreemptedError")) return null;
+    // /proxy link failures are waited out by proxy-link-wait.ts, not as network outages.
+    if (current instanceof Error && current.name === "ProviderProxyUnavailableError") return null;
     // An HTTP response means the provider was reached.
     const status = typeof current === "object" ? (current as { status?: unknown }).status : undefined;
     if (typeof status === "number" && status >= 100) return null;

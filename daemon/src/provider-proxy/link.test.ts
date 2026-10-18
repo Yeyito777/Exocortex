@@ -62,6 +62,35 @@ describe("provider proxy link + remote endpoint", () => {
     await expect(link.waitReady(2_000)).rejects.toThrow(/Could not reach the Exocortex daemon on whale over SSH \(exit 255\): ssh: connect to host whale port 22: Connection refused/);
   });
 
+  test("tells failures that may clear up from ones that will not", async () => {
+    const failing = (stderr: string, code = 255) => () => {
+      const emitter = new EventEmitter();
+      const process = Object.assign(emitter, { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill: () => true }) as unknown as SshProcess;
+      queueMicrotask(() => {
+        (process.stderr as PassThrough).write(`${stderr}\n`);
+        setTimeout(() => emitter.emit("close", code, null), 5);
+      });
+      return process;
+    };
+    const failure = async (spawn: () => SshProcess) => {
+      const link = makeLink(spawn, ["anthropic"], [60_000]);
+      const error = await link.waitReady(2_000).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ProviderProxyUnavailableError);
+      expect(link.downTransient).toBe((error as ProviderProxyUnavailableError).transient);
+      // A request made while it is down says the same.
+      expect(await link.openHttp({ provider: "anthropic", method: "POST", target: "/v1/messages", headers: {} }).catch((e: ProviderProxyUnavailableError) => e.transient))
+        .toBe((error as ProviderProxyUnavailableError).transient);
+      return (error as ProviderProxyUnavailableError).transient;
+    };
+    expect(await failure(failing("ssh: Could not resolve hostname yeyito.dev: nodename nor servname provided, or not known"))).toBe(true);
+    expect(await failure(failing("ssh: connect to host whale port 22: Network is unreachable"))).toBe(true);
+    expect(await failure(failing("exocortexd proxy: connect ENOENT /run/user/1000/exocortex/exocortexd.sock", 1))).toBe(true);
+    expect(await failure(failing("yeyito@whale: Permission denied (publickey)."))).toBe(false);
+    expect(await failure(failing("Host key verification failed."))).toBe(false);
+    expect(await failure(failing("zsh:1: command not found: exocortexd", 127))).toBe(false);
+    expect(await failure(fakeSsh({ outdated: true }).spawn)).toBe(false);
+  });
+
   test("replaces the link's credentials with the remote's and streams the body through", async () => {
     const calls: UpstreamCall[] = [];
     const auth = stubAuth();

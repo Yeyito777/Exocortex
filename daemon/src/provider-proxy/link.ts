@@ -41,12 +41,29 @@ const EXEC_RESPONSE_GRACE_MS = 30_000;
 /** Body bytes buffered per HTTP stream before the link stops reading from SSH. */
 const STREAM_HIGH_WATER_BYTES = 4 * 1024 * 1024;
 
-/** The link cannot carry a request right now (down, connecting, or closed). */
+/**
+ * The link cannot carry a request right now (down, connecting, or closed).
+ * `transient` failures (no network, DNS, a dropped or refused connection, the
+ * remote daemon briefly away) are worth waiting out; the others (SSH auth or
+ * host key, an outdated or refusing remote, a closed link) are not.
+ */
 export class ProviderProxyUnavailableError extends Error {
-  constructor(message: string) {
+  constructor(message: string, readonly transient = true) {
     super(message);
     this.name = "ProviderProxyUnavailableError";
   }
+}
+
+export function isTransientProviderProxyError(error: unknown): boolean {
+  return error instanceof ProviderProxyUnavailableError && error.transient;
+}
+
+/** SSH failures that retrying will not fix: authentication, host keys, configuration, no exocortexd. */
+const PERMANENT_SSH_FAILURE = /Permission denied|Host key verification failed|REMOTE HOST IDENTIFICATION HAS CHANGED|Too many authentication failures|No more authentication methods|Bad configuration option|Bad owner or permissions|command not found|exit 127\b/i;
+
+/** Whether an SSH-level failure of the link (its message, with ssh's stderr) may clear up by itself. */
+export function isTransientSshFailure(message: string): boolean {
+  return !PERMANENT_SSH_FAILURE.test(message);
 }
 
 export interface ProviderProxyHttpRequest {
@@ -126,6 +143,8 @@ export class ProviderProxyLink {
   private closed = false;
   private outdated = false;
   private failedAttempts = 0;
+  /** Whether the last failure may clear up by itself (see ProviderProxyUnavailableError). */
+  private failureTransient = true;
   /** The connection (generation) watching the remote's accounts, if any. */
   private accountsWatchGeneration: number | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -146,6 +165,8 @@ export class ProviderProxyLink {
 
   get isClosed(): boolean { return this.closed; }
   get activeStreams(): number { return this.streams.size; }
+  /** Whether the link is down for a reason that may clear up by itself. */
+  get downTransient(): boolean { return !this.closed && this.failureTransient; }
 
   /** Connect now unless already connected or connecting. */
   start(): void {
@@ -163,7 +184,7 @@ export class ProviderProxyLink {
    */
   waitReady(timeoutMs: number, signal?: AbortSignal): Promise<void> {
     if (this.state === "connected") return Promise.resolve();
-    if (this.closed) return Promise.reject(new ProviderProxyUnavailableError(`The /proxy link to ${this.alias} is closed.`));
+    if (this.closed) return Promise.reject(new ProviderProxyUnavailableError(`The /proxy link to ${this.alias} is closed.`, false));
     if (signal?.aborted) return Promise.reject(createAbortError());
     const ready = new Promise<void>((resolve, reject) => {
       const waiter = {
@@ -193,14 +214,14 @@ export class ProviderProxyLink {
     this.closed = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
-    this.teardown(this.generation, reason, { reconnect: false });
-    for (const waiter of [...this.attemptWaiters]) waiter.reject(new ProviderProxyUnavailableError(reason));
+    this.teardown(this.generation, reason, { reconnect: false, transient: false });
+    for (const waiter of [...this.attemptWaiters]) waiter.reject(new ProviderProxyUnavailableError(reason, false));
   }
 
   // ── Requests ────────────────────────────────────────────────────
 
   openHttp(request: ProviderProxyHttpRequest, signal?: AbortSignal): Promise<ProviderProxyHttpResponse> {
-    if (!this.isConnected()) return Promise.reject(new ProviderProxyUnavailableError(this.downMessage()));
+    if (!this.isConnected()) return Promise.reject(this.unavailable());
     if (signal?.aborted) return Promise.reject(createAbortError());
     if (request.body && request.body.byteLength > PROVIDER_PROXY_MAX_REQUEST_BYTES) {
       return Promise.reject(new Error(`Request body is ${request.body.byteLength} bytes; /proxy carries at most ${PROVIDER_PROXY_MAX_REQUEST_BYTES}.`));
@@ -263,7 +284,7 @@ export class ProviderProxyLink {
           cleanup();
           try { controller.close(); } catch { /* already closed */ }
         },
-        onLinkLost: (message) => fail(new ProviderProxyUnavailableError(message), false),
+        onLinkLost: (message) => fail(new ProviderProxyUnavailableError(message, this.downTransient), false),
       });
       signal?.addEventListener("abort", onAbort, { once: true });
       this.send({
@@ -284,7 +305,7 @@ export class ProviderProxyLink {
     handlers: ProviderProxyWebSocketHandlers,
     signal?: AbortSignal,
   ): Promise<ProviderProxyWebSocketOpenResult> {
-    if (!this.isConnected()) return Promise.reject(new ProviderProxyUnavailableError(this.downMessage()));
+    if (!this.isConnected()) return Promise.reject(this.unavailable());
     if (signal?.aborted) return Promise.reject(createAbortError());
     const streamId = randomUUID();
     return new Promise((resolve, reject) => {
@@ -364,7 +385,7 @@ export class ProviderProxyLink {
             cleanup();
             handlers.onClose({ error: message });
           } else {
-            fail(new ProviderProxyUnavailableError(message));
+            fail(new ProviderProxyUnavailableError(message, this.downTransient));
           }
         },
       });
@@ -491,6 +512,10 @@ export class ProviderProxyLink {
     return this.message ?? `The /proxy link to ${this.alias} is down.`;
   }
 
+  private unavailable(): ProviderProxyUnavailableError {
+    return new ProviderProxyUnavailableError(this.downMessage(), this.state === "connecting" || this.downTransient);
+  }
+
   // ── Connection ──────────────────────────────────────────────────
 
   private connect(): void {
@@ -506,19 +531,24 @@ export class ProviderProxyLink {
     try {
       process = this.spawnProcess(this.alias);
     } catch (error) {
-      this.teardown(generation, `Could not start ssh for ${this.alias}: ${error instanceof Error ? error.message : String(error)}`);
+      this.teardown(generation, `Could not start ssh for ${this.alias}: ${error instanceof Error ? error.message : String(error)}`, { transient: false });
       return;
     }
     this.process = process;
     process.stdout.on("data", (chunk: Buffer | string) => this.onStdout(generation, chunk));
     process.stderr.on("data", (chunk: Buffer | string) => { this.stderr = appendSshStderr(this.stderr, chunk); });
-    process.once("error", (error: Error) => this.teardown(generation, `ssh to ${this.alias} failed: ${error.message}${sshStderrSuffix(this.stderr)}`));
+    process.once("error", (error: Error) => {
+      const message = `ssh to ${this.alias} failed: ${error.message}${sshStderrSuffix(this.stderr)}`;
+      // ENOENT: no ssh binary at all.
+      this.teardown(generation, message, { transient: (error as NodeJS.ErrnoException).code !== "ENOENT" && isTransientSshFailure(message) });
+    });
     process.once("close", (code: number | null, signal: NodeJS.Signals | null) => {
       const result = signal ? `signal ${signal}` : `exit ${code ?? "unknown"}`;
       const wasConnected = this.state === "connected" && this.generation === generation;
-      this.teardown(generation, wasConnected
+      const message = wasConnected
         ? `The SSH connection to ${this.alias} was lost (${result})${sshStderrSuffix(this.stderr)}.`
-        : `Could not reach the Exocortex daemon on ${this.alias} over SSH (${result})${sshStderrSuffix(this.stderr)}.`);
+        : `Could not reach the Exocortex daemon on ${this.alias} over SSH (${result})${sshStderrSuffix(this.stderr)}.`;
+      this.teardown(generation, message, { transient: isTransientSshFailure(message) });
     });
     process.stdin.on("error", () => { /* the close handler reports it */ });
 
@@ -532,9 +562,9 @@ export class ProviderProxyLink {
         const message = String(event.message ?? "");
         if (/^Unknown command: provider_proxy/.test(message)) {
           this.outdated = true;
-          this.teardown(generation, `The Exocortex daemon on ${this.alias} does not support /proxy; update Exocortex there (git pull, then exocortexd restart).`);
+          this.teardown(generation, `The Exocortex daemon on ${this.alias} does not support /proxy; update Exocortex there (git pull, then exocortexd restart).`, { transient: false });
         } else {
-          this.teardown(generation, `The Exocortex daemon on ${this.alias} refused /proxy: ${message}`);
+          this.teardown(generation, `The Exocortex daemon on ${this.alias} refused /proxy: ${message}`, { transient: false });
         }
         return;
       }
@@ -543,12 +573,13 @@ export class ProviderProxyLink {
         this.outdated = version < PROVIDER_PROXY_PROTOCOL_VERSION;
         this.teardown(generation, version < PROVIDER_PROXY_PROTOCOL_VERSION
           ? `The Exocortex daemon on ${this.alias} speaks an older /proxy protocol (v${version}); update Exocortex there.`
-          : `The Exocortex daemon on ${this.alias} speaks a newer /proxy protocol (v${version}); update Exocortex here.`);
+          : `The Exocortex daemon on ${this.alias} speaks a newer /proxy protocol (v${version}); update Exocortex here.`, { transient: false });
         return;
       }
       this.requests.delete(reqId);
       this.outdated = false;
       this.failedAttempts = 0;
+      this.failureTransient = true;
       this.host = (event.host as ClientHostInfo | undefined) ?? null;
       this.remote = (event.providers as ProviderProxyLink["remote"] | undefined) ?? {};
       this.features = Array.isArray(event.features) ? event.features.filter((feature): feature is string => typeof feature === "string") : [];
@@ -562,7 +593,7 @@ export class ProviderProxyLink {
     this.send({ type: "provider_proxy_hello", reqId, version: PROVIDER_PROXY_PROTOCOL_VERSION, providers: this.options.providers() });
   }
 
-  private teardown(generation: number, message: string, options: { reconnect?: boolean } = {}): void {
+  private teardown(generation: number, message: string, options: { reconnect?: boolean; transient?: boolean } = {}): void {
     if (generation !== this.generation) return;
     // Later events from the dead process are ignored.
     this.generation++;
@@ -577,12 +608,13 @@ export class ProviderProxyLink {
     const wasConnected = this.state === "connected";
     this.state = "disconnected";
     this.message = message;
+    this.failureTransient = options.transient ?? true;
     this.blockedStreams.clear();
     for (const stream of [...this.streams.values()]) stream.onLinkLost(message);
     this.streams.clear();
     for (const handler of [...this.requests.values()]) handler({ type: "error", message });
     this.requests.clear();
-    for (const waiter of [...this.attemptWaiters]) waiter.reject(new ProviderProxyUnavailableError(message));
+    for (const waiter of [...this.attemptWaiters]) waiter.reject(new ProviderProxyUnavailableError(message, this.failureTransient));
     log(wasConnected ? "warn" : "info", `provider-proxy: ${message}`);
     if (!this.closed && options.reconnect !== false) this.scheduleReconnect();
     this.options.onChange?.();
@@ -655,7 +687,7 @@ export class ProviderProxyLink {
   }
 
   private request(command: ProviderProxyLinkCommand & { reqId: string }, resultType: string): Promise<Record<string, unknown>> {
-    if (!this.isConnected()) return Promise.reject(new ProviderProxyUnavailableError(this.downMessage()));
+    if (!this.isConnected()) return Promise.reject(this.unavailable());
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.requests.delete(command.reqId);
@@ -677,7 +709,7 @@ export class ProviderProxyLink {
 
   private send(command: ProviderProxyLinkCommand): void {
     const process = this.process;
-    if (!process) throw new ProviderProxyUnavailableError(this.downMessage());
+    if (!process) throw this.unavailable();
     process.stdin.write(`${JSON.stringify(command)}\n`);
   }
 

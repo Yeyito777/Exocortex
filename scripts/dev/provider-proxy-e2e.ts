@@ -204,6 +204,8 @@ const dirs = {
 };
 for (const dir of Object.values(dirs)) mkdirSync(dir, { recursive: true });
 const sshLog = join(work, "ssh.log");
+/** While this file exists, the fake ssh fails like a Mac whose Wi-Fi dropped. */
+const outageFlag = join(work, "network-down");
 
 writeFileSync(join(dirs.bin, "ssh"), `#!/usr/bin/env bash
 # Fake ssh: drop options, map the alias to a local daemon, run its proxy.
@@ -213,6 +215,7 @@ while [[ $i -lt \${#args[@]} ]]; do
   case "$a" in -o) i=$((i+2));; -*) i=$((i+1));; *) alias="$a"; i=$((i+1)); break;; esac
 done
 echo "$alias \${args[*]:$i}" >> ${JSON.stringify(sshLog)}
+if [[ -e ${JSON.stringify(outageFlag)} ]]; then echo "ssh: Could not resolve hostname yeyito.dev: nodename nor servname provided, or not known" >&2; exit 255; fi
 case "$alias" in
   fakehost) cd ${JSON.stringify(join(ROOT, "daemon"))} && EXOCORTEX_CONFIG_DIR=${JSON.stringify(dirs.remote)} exec bun run src/main.ts proxy ;;
   oldhost) ${OLD_ROOT ? `cd ${JSON.stringify(join(OLD_ROOT, "daemon"))} && EXOCORTEX_CONFIG_DIR=${JSON.stringify(dirs.old)} exec bun run src/main.ts proxy` : "echo 'no old checkout' >&2; exit 255"} ;;
@@ -347,6 +350,13 @@ async function historyText(ipc: Ipc, convId: string): Promise<string> {
   return JSON.stringify(loaded);
 }
 
+/** Drop the link: kill the remote ends of the fake ssh. */
+function killRemoteProxies(): void {
+  const killed = Bun.spawnSync(["pkill", "-f", `EXOCORTEX_CONFIG_DIR=${dirs.remote}`]);
+  // pkill -f matches command lines, not env: kill the remote proxies by their bridge command instead.
+  if (killed.exitCode !== 0) Bun.spawnSync(["bash", "-c", `for pid in $(pgrep -f 'src/main.ts proxy'); do if tr '\\0' '\\n' < /proc/$pid/environ 2>/dev/null | grep -qx 'EXOCORTEX_CONFIG_DIR=${dirs.remote}'; then kill $pid; fi; done`]);
+}
+
 // ── Run ──────────────────────────────────────────────────────────────
 
 let failed = false;
@@ -438,9 +448,7 @@ try {
   const held = turn(ipc, "anthropic", "claude-haiku-5-5", "HOLD this", 180_000);
   for (let i = 0; i < 300 && !anthropicHeld; i++) await Bun.sleep(100);
   assert.ok(anthropicHeld, "the held request reached the mock");
-  const killed = Bun.spawnSync(["pkill", "-f", `EXOCORTEX_CONFIG_DIR=${dirs.remote}`]);
-  // pkill -f matches command lines, not env: kill the remote proxies by their bridge command instead.
-  if (killed.exitCode !== 0) Bun.spawnSync(["bash", "-c", `for pid in $(pgrep -f 'src/main.ts proxy'); do if tr '\\0' '\\n' < /proc/$pid/environ 2>/dev/null | grep -qx 'EXOCORTEX_CONFIG_DIR=${dirs.remote}'; then kill $pid; fi; done`]);
+  killRemoteProxies();
   const startedWaiting = Date.now();
   const heldResult = await held;
   holdNextAnthropic?.();
@@ -455,6 +463,39 @@ try {
   const recovered = await turn(ipc, "anthropic", "claude-haiku-5-5", "hello again");
   assert.equal(recovered.outcome.type, "message_complete", JSON.stringify(recovered.outcome));
   log("✓ the link reconnected and the next turn worked");
+
+  // A network blip (DNS fails, ssh exits 255) shorter than the forwarder's
+  // hold: the turn only sees latency.
+  writeFileSync(outageFlag, "");
+  killRemoteProxies();
+  const blipStarted = Date.now();
+  const blip = turn(ipc, "anthropic", "claude-haiku-5-5", "hello through a blip", 180_000);
+  await Bun.sleep(6_000);
+  rmSync(outageFlag);
+  const blipResult = await blip;
+  assert.equal(blipResult.outcome.type, "message_complete", JSON.stringify(blipResult.outcome));
+  assert.ok(!ipc.events.some(event => event.convId === blipResult.convId && event.type === "connection_wait_status"), "a short blip shows no wait");
+  log(`✓ a ${Math.round((Date.now() - blipStarted) / 1000)}s network blip is held by the forwarder; the turn just completes`);
+
+  // A longer outage: past the hold, the turn waits visibly, then resumes the same turn.
+  writeFileSync(outageFlag, "");
+  killRemoteProxies();
+  const outageStarted = Date.now();
+  const outage = turn(ipc, "anthropic", "claude-haiku-5-5", "hello through an outage", 600_000);
+  const waiting = await ipc.wait(event => event.type === "connection_wait_status" && event.active === true, 150_000, "the /proxy wait");
+  const waitShownAfter = Math.round((Date.now() - outageStarted) / 1000);
+  assert.equal(waiting.label, "Waiting for network / fakehost…");
+  // Claude Code did not retry the 503 itself (each retry would be held again).
+  assert.ok(waitShownAfter < 90, `the wait showed after ${waitShownAfter}s`);
+  await Bun.sleep(8_000);
+  rmSync(outageFlag);
+  const outageResult = await outage;
+  assert.equal(outageResult.outcome.type, "message_complete", JSON.stringify(outageResult.outcome));
+  assert.ok(ipc.events.some(event => event.convId === outageResult.convId && event.type === "connection_wait_status" && event.active === false));
+  const outageHistory = await historyText(ipc, outageResult.convId);
+  assert.equal(outageHistory.split("hello through an outage").length - 1, 1, "the user's message is stored once");
+  assert.doesNotMatch(outageHistory, /API Error|link down/, "no error reached the transcript");
+  log(`✓ a longer outage shows "${waiting.label}" after ${waitShownAfter}s, then the same turn resumes (${Math.round((Date.now() - outageStarted) / 1000)}s total)`);
 
   // The setting survives a daemon restart, and the forwarder keeps its port.
   const forwarderState = join(instancePath(dirs.client, "runtimeDir"), "provider-proxy.json");
