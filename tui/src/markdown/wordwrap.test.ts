@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { markdownWordWrap } from "./wordwrap";
 import { renderDisplayMath } from "./math";
-import { termWidth } from "../textwidth";
+import { termWidth, visibleLength } from "../textwidth";
 
 function stripAnsi(s: string): string {
   return s.replace(/\x1b\[[0-9;]*m/g, "");
@@ -54,6 +54,52 @@ describe("markdown inline formatting across wraps", () => {
     expect(result.lines.join("\n")).not.toContain("**");
     const widths = result.lines.map(line => stripAnsi(line).length);
     expect(widths.every(width => width === widths[0])).toBe(true);
+  });
+});
+
+describe("markdown paragraphs with links", () => {
+  test("break at the same spaces as paragraphs without links", () => {
+    const text = "alpha beta gamma, see https://example.com/x";
+    const result = markdownWordWrap(text, 10, "\x1b[0m");
+    const plain = result.lines.map(stripAnsi);
+
+    expect(plain.slice(0, 2)).toEqual(["alpha beta", "gamma, see"]);
+    expect(plain.every(line => !line.startsWith(" "))).toBe(true);
+    expect(plain.map((line, index) => result.join[index] + line).join("")).toBe(text);
+  });
+});
+
+describe("markdown pipe lines that do not render as a table", () => {
+  const fits = (lines: string[], width: number) => lines.every(line => visibleLength(line) <= width);
+
+  test("wraps prose that starts and ends with a pipe like a paragraph", () => {
+    const text = "|a + b| is always **at most** the sum of the two magnitudes |a| + |b|";
+    const result = markdownWordWrap(text, 30, "\x1b[0m");
+
+    expect(fits(result.lines, 30)).toBe(true);
+    expect(result.lines.map(stripAnsi).join(" ")).toBe("|a + b| is always at most the sum of the two magnitudes |a| + |b|");
+    expect(result.lines.join("")).toContain("\x1b[1m");
+    expect(result.cont).toEqual(result.lines.map((_, index) => index > 0));
+  });
+
+  test("wraps a table header that is still waiting for its separator row", () => {
+    const result = markdownWordWrap("| Name | Description | Default value | Notes about the option |", 30, "\x1b[0m");
+
+    expect(fits(result.lines, 30)).toBe(true);
+    expect(result.lines.map(stripAnsi).join(" ")).toBe("| Name | Description | Default value | Notes about the option |");
+  });
+
+  test("wraps a table with too many columns for the width, keeping its rows apart", () => {
+    const rows = [
+      "| a | b | c | d | e | f | g | h | i | j | k | l | m | n | o |",
+      "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+      "| 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 |",
+    ];
+    const result = markdownWordWrap(rows.join("\n"), 40, "\x1b[0m");
+
+    expect(fits(result.lines, 40)).toBe(true);
+    expect(result.cont.filter(cont => !cont)).toHaveLength(3);
+    expect(stripAnsi(result.lines[0]).startsWith("| a | b |")).toBe(true);
   });
 });
 

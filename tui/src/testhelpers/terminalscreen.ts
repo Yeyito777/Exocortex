@@ -1,3 +1,14 @@
+import { nextGrapheme } from "../textwidth";
+
+export interface TerminalScreenOptions {
+  /**
+   * Model DECAWM like st: glyphs take their terminal width, and printing past
+   * the last column wraps onto the next row (a row written wider than the
+   * screen spills there). Off by default: the cursor clamps at the last column.
+   */
+  autowrap?: boolean;
+}
+
 /**
  * Minimal terminal-screen model for TUI process tests.
  *
@@ -13,10 +24,16 @@ export class TerminalScreen {
   /** DECSTBM scroll margins (zero-based, inclusive). */
   private top = 0;
   private bottom: number;
+  private readonly autowrap: boolean;
+  /** Autowrap mode: the last column was written; the next glyph wraps first. */
+  private wrapNext = false;
+  /** Autowrap mode: how many times output ran past the last column. */
+  autoWrapCount = 0;
 
-  constructor(private readonly rowCount = 24, private readonly colCount = 80) {
+  constructor(private readonly rowCount = 24, private readonly colCount = 80, options: TerminalScreenOptions = {}) {
     this.rows = Array.from({ length: rowCount }, () => Array(colCount).fill(" "));
     this.bottom = rowCount - 1;
+    this.autowrap = options.autowrap ?? false;
   }
 
   feed(text: string): void {
@@ -30,13 +47,17 @@ export class TerminalScreen {
 
       if (ch === "\r") {
         this.col = 0;
+        this.wrapNext = false;
         i++;
         continue;
       }
       if (ch === "\n") {
-        if (this.row === this.bottom) this.scrollRegion(1);
-        else this.row = Math.min(this.row + 1, this.rowCount - 1);
+        this.lineFeed();
         i++;
+        continue;
+      }
+      if (this.autowrap && ch >= " ") {
+        i = this.printWrapping(text, i);
         continue;
       }
       if (ch >= " ") {
@@ -47,6 +68,31 @@ export class TerminalScreen {
       }
       i++;
     }
+  }
+
+  private lineFeed(): void {
+    if (this.row === this.bottom) this.scrollRegion(1);
+    else this.row = Math.min(this.row + 1, this.rowCount - 1);
+  }
+
+  /** Print one grapheme with st's pending-wrap semantics; returns the next index. */
+  private printWrapping(text: string, start: number): number {
+    const [width, end] = nextGrapheme(text, start);
+    if (width === 0) return end;
+    if (this.wrapNext || this.col + width > this.colCount) {
+      this.autoWrapCount++;
+      this.col = 0;
+      this.lineFeed();
+    }
+    this.wrapNext = false;
+    this.rows[this.row][this.col] = text.slice(start, end);
+    if (width === 2 && this.col + 1 < this.colCount) this.rows[this.row][this.col + 1] = "";
+    if (this.col + width < this.colCount) this.col += width;
+    else {
+      this.col = this.colCount - 1;
+      this.wrapNext = true;
+    }
+    return end;
   }
 
   /** Move the rows between the margins up (positive) or down (negative), exposing blank rows. */
@@ -91,6 +137,12 @@ export class TerminalScreen {
       return start + 2;
     }
 
+    // APC (Kitty graphics): ESC _ ... ST.  Image payloads draw no text.
+    if (text[start + 1] === "_") {
+      const st = text.indexOf("\x1b\\", start + 2);
+      return st === -1 ? text.length : st + 2;
+    }
+
     // Unknown two-byte escape: skip it.
     return start + 2;
   }
@@ -98,6 +150,7 @@ export class TerminalScreen {
   private handleCsi(params: string, final: string): void {
     const cleanParams = params.replace(/^\?/, "");
     const numbers = cleanParams.split(";").map(part => part === "" ? NaN : Number.parseInt(part, 10));
+    if (final !== "m") this.wrapNext = false;
     if (final === "H" || final === "f") {
       this.row = Math.max(0, Math.min((Number.isFinite(numbers[0]) ? numbers[0] : 1) - 1, this.rowCount - 1));
       this.col = Math.max(0, Math.min((Number.isFinite(numbers[1]) ? numbers[1] : 1) - 1, this.colCount - 1));

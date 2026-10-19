@@ -26,11 +26,24 @@ export function trimAnsiLeadingSpaces(line: string, maxSpaces: number): { line: 
   return { line: prefix + line.slice(cursor), removed };
 }
 
+/**
+ * The SGR state after `sequence`. A 0 (or empty) parameter resets; the
+ * arguments of an extended color (38/48/58 followed by `5;n` or `2;r;g;b`)
+ * are not parameters, and a colon-form color (`38:2::0:5:15`) is one.
+ */
 function updateActiveSgr(active: string, sequence: string): string {
-  const params = sequence.slice(2, -1);
-  const values = params === "" ? ["0"] : params.split(";");
-  if (values.includes("0")) return values.every(value => value === "0") ? "" : sequence;
-  return active + sequence;
+  const params = sequence.slice(2, -1).split(";");
+  let lastReset = -1;
+  for (let i = 0; i < params.length; i++) {
+    const param = params[i];
+    if (param === "38" || param === "48" || param === "58") {
+      i += params[i + 1] === "5" ? 2 : params[i + 1] === "2" ? 4 : 0;
+    } else if (Number(param) === 0) {
+      lastReset = i;
+    }
+  }
+  if (lastReset === -1) return active + sequence;
+  return lastReset === params.length - 1 ? "" : sequence;
 }
 
 interface AnsiRowTake {
@@ -70,6 +83,9 @@ function takeAnsiRow(input: string, start: number, width: number, carriedSgr: st
 
     const [glyphWidth, end] = nextGrapheme(input, cursor);
     if (visibleWidth + glyphWidth > width && visibleWidth > 0) {
+      // Whitespace just past the width is the best break: the row is full.
+      const glyph = input.slice(cursor, end);
+      if (WHITESPACE_RE.test(glyph)) return { lineEnd: cursor, restStart: end, activeSgr, join: glyph };
       return lastBreak ?? { lineEnd: cursor, restStart: cursor, activeSgr, join: "" };
     }
 

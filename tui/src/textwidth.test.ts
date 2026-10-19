@@ -37,4 +37,25 @@ describe("textwidth", () => {
     expect(viewport.visibleText).toBe("🦋cd");
     expect(viewport.cursorCol).toBe(4);
   });
+
+  test("matches glibc wcwidth (what st uses) for newer wide and zero-width code points", () => {
+    // Emoji and symbols from Unicode 13-17, trigrams, enclosed ideographs.
+    for (const glyph of ["🩷", "🩵", "🫨", "🛜", "🪭", "🫟", "☰", "⚊", "🈀", "🈐", "🉠", "ꥠ", "𖿠", "𛀀", "𝌀"]) {
+      expect(termWidth(glyph)).toBe(2);
+    }
+    expect(termWidth("\u303F")).toBe(1); // ideographic half fill space
+    expect(termWidth("\u00AD")).toBe(1); // soft hyphen
+    // Hangul conjoining vowels/finals and fillers, format controls.
+    for (const glyph of ["\u1160", "\u11FF", "\uD7B0", "\u3164", "\uFFA0", "\u061C", "\u180E", "\u206A", "\u{1BCA0}", "\u{1D173}"]) {
+      expect(termWidth(glyph)).toBe(0);
+    }
+    expect(termWidth("\u1100\u1161\u11A8")).toBe(2); // conjoining jamo syllable
+  });
+
+  test("keeps the base width for a narrow base with an emoji presentation selector", () => {
+    // Terminals disagree here (st follows wcwidth: 1); left as is deliberately.
+    expect(termWidth("⚠️")).toBe(1);
+    expect(termWidth("❤️")).toBe(1);
+  });
 });
+

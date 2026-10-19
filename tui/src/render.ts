@@ -839,22 +839,41 @@ function composeFixedWidthRows(
 }
 
 /**
- * History rows as built, which fit the width they were built for. Image rows
- * are clipped to it anyway: a row drawn past the pane would wrap into the
- * sidebar on the terminal's next row.
+ * Visible widths of recently drawn history rows. Rows keep their content (and
+ * mostly their string identity) across frames, so each is measured once.
+ */
+const historyRowWidths = new Map<string, number>();
+const HISTORY_ROW_WIDTHS_MAX = 4096;
+
+function historyRowWidth(line: string): number {
+  let width = historyRowWidths.get(line);
+  if (width === undefined) {
+    if (historyRowWidths.size >= HISTORY_ROW_WIDTHS_MAX) historyRowWidths.clear();
+    width = visibleLength(line);
+    historyRowWidths.set(line, width);
+  }
+  return width;
+}
+
+/**
+ * History rows as built, which should fit the width they were built for. Any
+ * that do not (image rows, or a renderer bug) are clipped to it: a row drawn
+ * past the pane auto-wraps onto the terminal's next row, where it lingers over
+ * the sidebar or prompt after the next incremental frame.
  */
 function canonicalViewportRows(
   allLines: string[],
   startLineIndex: number,
   endLineIndex: number,
-  clip?: { lineAnchors: BuildMessageLinesResult["lineAnchors"]; width: number },
+  width: number,
 ): ViewportHistoryRow[] {
   const rows: ViewportHistoryRow[] = [];
   for (let lineIndex = startLineIndex; lineIndex < endLineIndex; lineIndex++) {
     let line = allLines[lineIndex];
     if (line === undefined) continue;
-    if (clip?.lineAnchors[lineIndex]?.images && visibleLength(line) > clip.width) {
-      line = wrapRenderedHistoryLine(line, Math.max(1, clip.width)).lines[0] ?? "";
+    // No glyph is wider than two columns per UTF-16 unit, so short rows skip measuring.
+    if (line.length * 2 > width && historyRowWidth(line) > width) {
+      line = wrapRenderedHistoryLine(line, Math.max(1, width)).lines[0] ?? "";
     }
     rows.push({
       line,
@@ -907,7 +926,7 @@ function composeFloatingHistoryViewport(
   if (viewStart >= endLineIndex) return [];
 
   if (panelHeight <= 0 || narrowWidth === fullWidth) {
-    const rows = canonicalViewportRows(allLines, viewStart, endLineIndex, { lineAnchors, width: fullWidth });
+    const rows = canonicalViewportRows(allLines, viewStart, endLineIndex, fullWidth);
     floatingHistoryViewportCache.set(allLines, {
       revision,
       lineAnchors,
@@ -1009,7 +1028,7 @@ function composeFloatingHistoryViewport(
     fullStartIndex - narrowRowCount,
   );
 
-  const instructions = canonicalViewportRows(allLines, instructionStartIndex, instructionEndIndex);
+  const instructions = canonicalViewportRows(allLines, instructionStartIndex, instructionEndIndex, fullWidth);
   const narrowProbe = narrowSourceStartIndex < fullStartIndex
     ? composeFixedWidthRows(
         allLines,

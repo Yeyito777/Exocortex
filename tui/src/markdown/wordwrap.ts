@@ -76,7 +76,8 @@ function seedLongWord(
  * 1. Detects fenced code blocks and renders them with syntax highlighting
  * 2. Renders display TeX math (`$$`, `\\[`, math environments) as indented
  *    Unicode blocks; inline math renders within its paragraph
- * 3. Detects table blocks and renders with box-drawing
+ * 3. Detects table blocks and renders with box-drawing (pipe lines that
+ *    are not a renderable table wrap like a paragraph)
  * 4. Detects horizontal rules and renders them as box-drawing lines
  * 5. For regular paragraph text, word-wraps to fit within width and
  *    applies inline markdown formatting (bold/italic/code)
@@ -165,8 +166,13 @@ export function markdownWordWrap(text: string, width: number, bgRestore?: string
       while (i < inputLines.length && isTableLine(inputLines[i])) {
         i++;
       }
+      const tableLines = inputLines.slice(start, i);
       const tableLinks: LinkSpan[][] = [];
-      const rendered = renderTableBlock(inputLines.slice(start, i), width, bgRestore, tableLinks);
+      const rendered = renderTableBlock(tableLines, width, bgRestore, tableLinks);
+      if (!rendered) {
+        wrapParagraphBlock(tableLines, width, result, cont, join, copy, bgRestore, links);
+        continue;
+      }
       for (let row = 0; row < rendered.length; row++) links[result.length + row] = tableLinks[row] ?? [];
       pushStandaloneLines(result, cont, join, copy, rendered);
       continue;
