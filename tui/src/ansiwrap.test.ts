@@ -24,3 +24,24 @@ describe("ANSI viewport wrapping", () => {
     expect(wrapped.joins).toEqual(["", " "]);
   });
 });
+
+describe("ANSI viewport wrapping SGR carry", () => {
+  test("a zero truecolor component is not a reset", () => {
+    const { lines } = wrapAnsiLine("\x1b[1m\x1b[48;2;0;5;15mhello world", 6);
+
+    expect(lines[1]).toBe("\x1b[1m\x1b[48;2;0;5;15mworld");
+  });
+
+  test("256-color index 0 is not a reset", () => {
+    const { lines } = wrapAnsiLine("\x1b[3m\x1b[38;5;0mhello world", 6);
+
+    expect(lines[1]).toBe("\x1b[3m\x1b[38;5;0mworld");
+  });
+
+  test("a reset parameter drops earlier attributes", () => {
+    expect(wrapAnsiLine("\x1b[1m\x1b[0;3mhello world", 6).lines[1]).toBe("\x1b[0;3mworld");
+    expect(wrapAnsiLine("\x1b[1m\x1b[;3mhello world", 6).lines[1]).toBe("\x1b[;3mworld");
+    expect(wrapAnsiLine("\x1b[1m\x1b[3;0mhello world", 6).lines[1]).toBe("world");
+  });
+});
+
