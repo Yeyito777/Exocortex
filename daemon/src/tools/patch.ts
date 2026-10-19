@@ -387,6 +387,16 @@ async function writeText(
   await writeFile(path, content, "utf8");
 }
 
+async function isSameFile(a: string, b: string): Promise<boolean> {
+  if (resolve(a) === resolve(b)) return true;
+  try {
+    const [first, second] = await Promise.all([stat(a), stat(b)]);
+    return first.dev === second.dev && first.ino === second.ino;
+  } catch {
+    return false;
+  }
+}
+
 function resolvePatchPath(cwd: string, patchPath: string): string {
   return resolve(cwd, patchPath);
 }
@@ -436,11 +446,13 @@ async function applyHunks(
 
     const newContents = await deriveUpdatedContents(absPath, hunk.chunks, signal);
     throwIfPatchAborted(signal);
-    if (hunk.movePath != null) {
-      const destAbs = resolvePatchPath(cwd, hunk.movePath);
+    // "Move to" its own path (a.txt, ./a.txt, a hard link or symlink to it)
+    // is an in-place update: moving would write the file, then delete it.
+    const destAbs = hunk.movePath != null ? resolvePatchPath(cwd, hunk.movePath) : null;
+    if (destAbs !== null && !await isSameFile(destAbs, absPath)) {
       await writeText(destAbs, newContents, signal, () => { affected.uncertainPath = hunk.movePath; });
       affected.uncertainPath = null;
-      affected.modified.push(hunk.movePath);
+      affected.modified.push(hunk.movePath!);
       throwIfPatchAborted(signal);
       const metadata = await stat(absPath);
       if (metadata.isDirectory()) throw new Error(`Failed to remove original ${absPath}: path is a directory`);
