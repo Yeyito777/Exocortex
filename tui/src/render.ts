@@ -839,6 +839,23 @@ function composeFixedWidthRows(
 }
 
 /**
+ * Visible widths of recently drawn history rows. Rows keep their content (and
+ * mostly their string identity) across frames, so each is measured once.
+ */
+const historyRowWidths = new Map<string, number>();
+const HISTORY_ROW_WIDTHS_MAX = 4096;
+
+function historyRowWidth(line: string): number {
+  let width = historyRowWidths.get(line);
+  if (width === undefined) {
+    if (historyRowWidths.size >= HISTORY_ROW_WIDTHS_MAX) historyRowWidths.clear();
+    width = visibleLength(line);
+    historyRowWidths.set(line, width);
+  }
+  return width;
+}
+
+/**
  * History rows as built, which should fit the width they were built for. Any
  * that do not (image rows, or a renderer bug) are clipped to it: a row drawn
  * past the pane auto-wraps onto the terminal's next row, where it lingers over
@@ -855,7 +872,7 @@ function canonicalViewportRows(
     let line = allLines[lineIndex];
     if (line === undefined) continue;
     // No glyph is wider than two columns per UTF-16 unit, so short rows skip measuring.
-    if (line.length * 2 > width && visibleLength(line) > width) {
+    if (line.length * 2 > width && historyRowWidth(line) > width) {
       line = wrapRenderedHistoryLine(line, Math.max(1, width)).lines[0] ?? "";
     }
     rows.push({
