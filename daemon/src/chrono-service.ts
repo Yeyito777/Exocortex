@@ -799,6 +799,13 @@ export function interruptDeferredChronoSleep(
   conversationId: string,
   resumedAt = Date.now(),
 ): DeferredChronoSleep | null {
+  // A sleep an earlier user turn already ended, whose turn then never started,
+  // is waiting for its 30 s retry replay. This turn is that replay: owning the
+  // record lets its finalizer retire it instead of chrono replaying again.
+  const pendingRetry = [...deferredSleeps.values()].find((candidate) =>
+    candidate.conversationId === conversationId && candidate.state === "resuming"
+    && candidate.resumeReason === "user_message" && conversationHasSleepToolResult(candidate));
+  if (pendingRetry) return structuredClone(pendingRetry);
   for (const sleep of [...deferredSleeps.values()]
     .filter((candidate) => candidate.conversationId === conversationId && candidate.state === "sleeping")
     .sort((a, b) => a.startedAt - b.startedAt)) {

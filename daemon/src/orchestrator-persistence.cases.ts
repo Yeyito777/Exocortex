@@ -3,7 +3,7 @@ import { appendMessages, clearActiveToolBackgrounder, clearGoal, clearHistoryUnw
 import { load as loadPersisted } from "./persistence";
 import { orchestrateCompactConversation, orchestrateGoalCycle, orchestrateReplayConversation, orchestrateSendMessage, type OrchestrationCallbacks } from "./orchestrator";
 import { streamMessage } from "./api";
-import { chronoInternalsForTest, configureChronoService, listDeferredChronoSleeps } from "./chrono-service";
+import { chronoInternalsForTest, configureChronoService, listDeferredChronoSleeps, startChronoService } from "./chrono-service";
 import { USER_MESSAGE_AUTOMATION_KINDS, createStoredUserMessage } from "./messages";
 import { setBackgroundTaskActive } from "./conversation-activity";
 import { getProviderAdapter } from "./providers/catalog";
@@ -1908,6 +1908,9 @@ describe("DB-first orchestrator persistence", () => {
     const convId = id("sleep-peer-target");
     create(parentId, "openai", "gpt-5.6-sol");
     create(convId, "openai", "gpt-5.6-sol");
+    // processPendingAndDue is a no-op unless the service runs; without this
+    // the "no replay" assertions below could never fail.
+    await startChronoService();
     const daemonServer = server();
     const sleepStream = (async () => ({
       text: "",
@@ -2170,5 +2173,48 @@ describe("queued turn admission reads the queue entry as it is at commit time", 
     expect(calls).toBe(0);
     expect(isStreaming(convId)).toBe(false);
     expect((loadPersisted(convId)?.messages ?? []).some(message => message.role === "user")).toBe(false);
+  });
+});
+
+describe("a deferred sleep ended by a user turn that never starts", () => {
+  // A user turn ends a deferred sleep during admission. If that turn then never
+  // starts (its queued message was withdrawn), the sleep waits for a 30 s retry
+  // replay. The user's next turn is that resumption: chrono must not replay the
+  // conversation once more afterwards, with history ending in the model's reply.
+  test("a user turn after an abandoned admission owns the ended sleep, so chrono does not replay again", async () => {
+    const convId = id("chrono-admission");
+    create(convId, "openai", "gpt-5.6-sol");
+    await startChronoService();
+    const sleepStream = (async () => ({
+      text: "", thinking: "", stopReason: "tool_use" as const, blocks: [],
+      toolCalls: [{ id: "admission-sleep-call", name: "chrono", input: { action: "sleep", duration: "2h" } }],
+      inputTokens: 1, outputTokens: 1,
+    })) as typeof streamMessage;
+    expect(await orchestrateSendMessage(server() as never, null, undefined, convId, "sleep 2h", Date.now(), callbacks(sleepStream)))
+      .toMatchObject({ ok: true, suspended: true });
+
+    let calls = 0;
+    const reply = (async () => {
+      calls += 1;
+      return { text: "ok", thinking: "", stopReason: "stop" as const, blocks: [{ type: "text" as const, text: "ok" }], toolCalls: [], inputTokens: 1, outputTokens: 1 };
+    }) as typeof streamMessage;
+    configureChronoService(null, async (sleep) => {
+      await orchestrateReplayConversation(server() as never, null, undefined, sleep.conversationId, Date.now(), callbacks(reply));
+    });
+
+    pushQueuedMessage(convId, "hello", "next-turn", undefined, undefined, undefined, "withdrawn-entry");
+    const withdrawn = orchestrateSendMessage(server() as never, null, undefined, convId, "hello", Date.now(), callbacks(reply), undefined, { queueEntryId: "withdrawn-entry" });
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    removeQueuedMessageById("withdrawn-entry");
+    expect((await withdrawn).ok).toBe(false);
+    expect(calls).toBe(0);
+
+    expect((await orchestrateSendMessage(server() as never, null, undefined, convId, "hello again", Date.now(), callbacks(reply))).ok).toBe(true);
+    expect(calls).toBe(1);
+    expect(listDeferredChronoSleeps(convId)).toEqual([]);
+
+    await chronoInternalsForTest.processPendingAndDue(Date.now() + 31_000);
+    await Bun.sleep(50);
+    expect(calls).toBe(1);
   });
 });

@@ -649,6 +649,9 @@ async function orchestrateAdmittedAssistantTurn(
     try {
       const handoffCancelled = () => {
         if (convStore.getStreamHandoffToken(convId) === acceptedHandoffToken) return null;
+        // Stop won after this turn ended a sleep: close the sleep the way Stop
+        // does, rather than leaving chrono to replay it 30 s later.
+        if (interruptedSleep) completeDeferredChronoSleepResume(interruptedSleep.id);
         const message = "Turn handoff cancelled.";
         if (client) server.sendTo(client, { type: "error", reqId, convId, message });
         return buildErrorOutcome(message);
