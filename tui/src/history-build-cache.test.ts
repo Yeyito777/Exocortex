@@ -137,6 +137,46 @@ describe("incremental committed history", () => {
     expectIncrementalMatchesFresh(state);
   });
 
+  test("the older-history loading row stays a single live row in every window shape", () => {
+    // Windows with no turn boundary below their first entry (one long agent
+    // turn, or a page opening mid-entry) used to keep each spinner frame's row
+    // and add the next one: a growing stack of frozen "Loading..." rows that
+    // stayed after the page arrived.
+    const shapes: Array<[string, () => Message[]]> = [
+      ["inside one long assistant turn", () => [
+        assistant([{ type: "text", text: "lead" }], 1_000),
+        assistant([{ type: "text", text: "middle" }], 4_000),
+        assistant([{ type: "text", text: "tail" }], 8_000),
+      ]],
+      ["assistant tail then a prompt", () => [assistant([{ type: "text", text: "tail" }], 1_000), user("next")]],
+      ["ordinary turns", () => [user("q1"), assistant([{ type: "text", text: "a1" }], 1_000), user("q2")]],
+      ["pinned instructions only", () => []],
+    ];
+    for (const [, messages] of shapes) {
+      for (const instructions of [null, "", "Be brief."]) {
+        for (const reuseArrays of [true, false]) {
+          const state = createInitialState();
+          state.convId = "conv-loading-row";
+          if (instructions !== null) state.messages.push({ role: "system_instructions", text: instructions, metadata: null });
+          state.messages.push(...messages());
+          const loadingRows = (result: BuildMessageLinesResult) => result.lineAnchors.filter(anchor => anchor.segment === "history_loading").length;
+          expectIncrementalMatchesFresh(state, 80, reuseArrays);
+
+          state.historyLoadingOlder = true;
+          state.historyLoadingStartedAt = Date.now();
+          for (let frame = 0; frame < 12; frame++) {
+            state.historyLoadingStartedAt -= 80;
+            expect(loadingRows(expectIncrementalMatchesFresh(state, 80, reuseArrays))).toBe(1);
+          }
+
+          state.historyLoadingOlder = false;
+          state.historyLoadingStartedAt = null;
+          expect(loadingRows(expectIncrementalMatchesFresh(state, 80, reuseArrays))).toBe(0);
+        }
+      }
+    }
+  });
+
   test("a copied result survives later in-place builds", () => {
     const state = conversation();
     buildMessageLines(state, 80, { reuseArrays: true });

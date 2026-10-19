@@ -380,7 +380,7 @@ interface CommittedHistoryCache {
   sourceRefs: unknown[];
   /** sourceRefs end offset after each message. */
   sourceRefEnds: number[];
-  /** Rendered row count before each message. */
+  /** Rendered row count before each message, and before any loading row above it. */
   lineStarts: number[];
   /** Rows after the last committed message. */
   committedLines: number;
@@ -854,12 +854,14 @@ export function buildMessageLines(
 
   let segmentImages: HistoryImage[] = carriedImages;
   for (let messageIndex = rebuildFrom; messageIndex < rebuildTo; messageIndex++) {
+    // The loading row counts as the first row of the message below it, so a
+    // rebuild from that message drops the old frame instead of keeping it.
+    lineStarts.push(lines.length);
     if (state.historyLoadingOlder && messageIndex === historyLoadingInsertIndex) {
       pushHistoryLoadingLine();
     }
     const msg = state.messages[messageIndex];
     const start = lines.length;
-    lineStarts.push(start);
     appendMessageSourceRefs(msg, sourceRefs);
     sourceRefEnds.push(sourceRefs.length);
     if (msg.role === "user") {
@@ -999,10 +1001,6 @@ export function buildMessageLines(
     segmentImages = previous.carriedImages;
   }
 
-  if (state.historyLoadingOlder && historyLoadingInsertIndex === state.messages.length) {
-    pushHistoryLoadingLine();
-  }
-
   if (cacheable) {
     const entry: CommittedHistoryCache = {
       key: cacheKey,
@@ -1029,6 +1027,12 @@ export function buildMessageLines(
     };
     const others = (committedHistoryCaches.get(state) ?? []).filter(other => other !== cached && !sameRefs(other.key, cacheKey));
     committedHistoryCaches.set(state, [entry, ...others].slice(0, COMMITTED_HISTORY_CACHE_WIDTHS));
+  }
+
+  // With no turn below it, the loading row trails the committed rows, outside
+  // the cache like the streaming rows, so a cached build never keeps a stale frame.
+  if (state.historyLoadingOlder && historyLoadingInsertIndex === state.messages.length) {
+    pushHistoryLoadingLine();
   }
 
   // Currently streaming AI message — no margins
