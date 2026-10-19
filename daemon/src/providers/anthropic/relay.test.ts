@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { DAEMON_RESTART_TOOL_INTERRUPTED_MESSAGE } from "../../abort";
-import { ClaudeRelay, reconnectRelays } from "./relay-client";
+import { ClaudeRelay, reconnectRelays, relaysDir } from "./relay-client";
+import { RELAY_PROTOCOL_VERSION, relayLine } from "./relay-protocol";
+import { createServer, type Socket } from "node:net";
+import { existsSync, mkdirSync } from "node:fs";
 import type { RelayMeta } from "./relay-protocol";
 
 /** Stands in for Claude Code: prints the lines it is told to, echoes everything else it is sent. */
@@ -203,4 +206,35 @@ describe("Claude Code relay", () => {
     await new Promise(resolve => setTimeout(resolve, 100));
     expect(await reconnectRelays()).toEqual([]);
   });
+});
+
+describe("relay adoption at boot", () => {
+  // A live relay that is slow to answer (swapped out, CPU-starved) used to be
+  // declared gone after 3 s: its record and socket were deleted and it ran on
+  // unreachable while a replay started a second Claude Code process.
+  test("a relay slow to say hello is adopted, not deleted", async () => {
+    mkdirSync(relaysDir(), { recursive: true });
+    const socketPath = join(dir, "slow.sock");
+    const recordPath = join(relaysDir(), "slow-relay.json");
+    const sockets: Socket[] = [];
+    const server = createServer((socket) => {
+      sockets.push(socket);
+      const hello = relayLine({ event: "hello", version: RELAY_PROTOCOL_VERSION, pid: process.pid, meta: { ...meta, convId: "slow" }, resume: null, delivered: [], pending: false, taskStarts: {} } as never);
+      setTimeout(() => { if (!socket.destroyed) socket.write(hello); }, 3_300);
+    });
+    await new Promise<void>(resolve => server.listen(socketPath, resolve));
+    writeFileSync(recordPath, JSON.stringify({ version: RELAY_PROTOCOL_VERSION, convId: "slow", socketPath, pid: process.pid, createdAt: Date.now() }));
+    try {
+      const relays = await reconnectRelays();
+      expect(relays).toHaveLength(1);
+      expect(relays[0].hello?.meta.convId).toBe("slow");
+      expect(existsSync(recordPath)).toBe(true);
+      expect(existsSync(socketPath)).toBe(true);
+      relays[0].detach();
+    } finally {
+      for (const socket of sockets) socket.destroy();
+      server.close();
+      rmSync(recordPath, { force: true });
+    }
+  }, 30_000);
 });
