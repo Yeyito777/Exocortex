@@ -179,8 +179,9 @@ function wrapCellContent(text: string, width: number): CellWrapResult {
  * Render a block of consecutive table lines using box-drawing characters.
  * When a table is too wide, columns are proportionally shrunk and cell
  * content word-wraps within each column, expanding rows downward.
- * Falls back to raw lines only if the table is malformed or the width
- * is too narrow to fit even 1 character per column.
+ * Returns null when the lines are not a table (no separator row, as in prose
+ * between pipes or a header still streaming) or the width is too narrow to
+ * fit even 1 character per column; the caller wraps them as a paragraph.
  *
  * bgRestore: when provided, formatMarkdown is applied per-cell during
  * rendering so that ANSI formatting is baked in before the line is
@@ -192,12 +193,9 @@ export function renderTableBlock(
   maxWidth: number,
   bgRestore?: string,
   links: LinkSpan[][] = [],
-): string[] {
+): string[] | null {
   const hasSeparator = tableLines.some(l => isTableSeparator(l));
-  if (!hasSeparator || tableLines.length < 2) {
-    // Not a proper table — preserve raw lines
-    return tableLines;
-  }
+  if (!hasSeparator || tableLines.length < 2) return null;
 
   const dataRows: string[][] = [];
   const isSep: boolean[] = [];
@@ -214,9 +212,7 @@ export function renderTableBlock(
 
   // Only count rows that actually have cell data (skip separator placeholders)
   const contentRows = dataRows.filter(r => r.length > 0);
-  if (contentRows.length === 0) {
-    return tableLines;
-  }
+  if (contentRows.length === 0) return null;
 
   const numCols = Math.max(...contentRows.map(r => r.length));
 
@@ -235,10 +231,8 @@ export function renderTableBlock(
   const overhead = 1 + numCols * 3;
   const available = maxWidth - overhead;
 
-  if (available < numCols) {
-    // Can't fit even 1 char per column — fall back to raw lines
-    return tableLines;
-  }
+  // Can't fit even 1 char per column.
+  if (available < numCols) return null;
 
   const totalNatural = naturalWidths.reduce((s, w) => s + w, 0);
   const colWidths = totalNatural <= available
