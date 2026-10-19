@@ -55,6 +55,29 @@ describe("usage capacity waits", () => {
     expect(calls).toBe(1);
   });
 
+  test("one stretch of waiting is shown once, not restarted on every probe", async () => {
+    const ac = new RetryableStreamAbortController();
+    let probes = 0;
+    const events: string[] = [];
+    const result = await runWithUsageLimitWait(ac, async () => "ok", () => {
+      probes++;
+      return probes <= 4 ? { ready: false, resetAt: Date.now() + 3_600_000 } : { ready: true, resetAt: null };
+    }, { start: () => events.push("start"), end: () => events.push("end") }, { probeMs: 5 });
+    expect(result).toBe("ok");
+    expect(events).toEqual(["start", "end"]);
+  });
+
+  test("a wait ended by Stop still ends its shown wait", async () => {
+    const ac = new RetryableStreamAbortController();
+    const events: string[] = [];
+    const pending = runWithUsageLimitWait(ac, async () => "never", () => ({ ready: false, resetAt: null }),
+      { start: () => events.push("start"), end: () => events.push("end") }, { probeMs: 5 });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    ac.abort();
+    await expect(pending).rejects.toThrow();
+    expect(events).toEqual(["start", "end"]);
+  });
+
   test("abort releases a long capacity wait without running the provider", async () => {
     const controller = new RetryableStreamAbortController();
     let ended = false;

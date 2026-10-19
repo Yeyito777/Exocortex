@@ -43,44 +43,59 @@ export async function runWithUsageLimitWait<T>(
   const retryFloorMs = options.retryFloorMs ?? 1_000;
   let lastAttempt = 0;
   let refused = false;
-  while (true) {
-    if (controller.signal.aborted) throw createAbortError();
-    const state = availability();
-    const cooldown = refused ? Math.max(0, lastAttempt + retryFloorMs - Date.now()) : 0;
-    if (!state.ready || cooldown > 0) {
-      hooks.start(state.resetAt);
-      const slot = new AbortController();
-      const abort = () => slot.abort(controller.signal.reason);
-      controller.signal.addEventListener("abort", abort, { once: true });
-      if (controller.signal.aborted) abort();
-      controller.setAttempt(slot, true);
-      try {
-        const untilReset = state.resetAt == null ? probeMs : Math.max(retryFloorMs, state.resetAt - Date.now());
-        await new Promise<void>((resolve, reject) => {
-          if (slot.signal.aborted) { reject(createAbortError()); return; }
-          const timer = setTimeout(() => {
-            slot.signal.removeEventListener("abort", cancel);
-            resolve();
-          }, cooldown || Math.min(probeMs, untilReset));
-          const cancel = () => { clearTimeout(timer); reject(createAbortError()); };
-          slot.signal.addEventListener("abort", cancel, { once: true });
-        });
-      } catch (error) {
-        if (!controller.signal.aborted && slot.signal.reason === STEER_PREEMPTION_REASON) throw new StreamPreemptedError();
-        throw error;
-      } finally {
-        controller.clearAttempt(slot);
-        controller.signal.removeEventListener("abort", abort);
-        hooks.end();
+  // One shown wait per stretch of waiting, not one per probe: restarting it
+  // would reset its "waiting since" time and flicker the status every probe.
+  let waiting = false;
+  const endWait = () => {
+    if (!waiting) return;
+    waiting = false;
+    hooks.end();
+  };
+  try {
+    while (true) {
+      if (controller.signal.aborted) throw createAbortError();
+      const state = availability();
+      const cooldown = refused ? Math.max(0, lastAttempt + retryFloorMs - Date.now()) : 0;
+      if (!state.ready || cooldown > 0) {
+        if (!waiting) {
+          waiting = true;
+          hooks.start(state.resetAt);
+        }
+        const slot = new AbortController();
+        const abort = () => slot.abort(controller.signal.reason);
+        controller.signal.addEventListener("abort", abort, { once: true });
+        if (controller.signal.aborted) abort();
+        controller.setAttempt(slot, true);
+        try {
+          const untilReset = state.resetAt == null ? probeMs : Math.max(retryFloorMs, state.resetAt - Date.now());
+          await new Promise<void>((resolve, reject) => {
+            if (slot.signal.aborted) { reject(createAbortError()); return; }
+            const timer = setTimeout(() => {
+              slot.signal.removeEventListener("abort", cancel);
+              resolve();
+            }, cooldown || Math.min(probeMs, untilReset));
+            const cancel = () => { clearTimeout(timer); reject(createAbortError()); };
+            slot.signal.addEventListener("abort", cancel, { once: true });
+          });
+        } catch (error) {
+          if (!controller.signal.aborted && slot.signal.reason === STEER_PREEMPTION_REASON) throw new StreamPreemptedError();
+          throw error;
+        } finally {
+          controller.clearAttempt(slot);
+          controller.signal.removeEventListener("abort", abort);
+        }
+        continue;
       }
-      continue;
+      endWait();
+      lastAttempt = Date.now();
+      try {
+        return await operation();
+      } catch (error) {
+        if (controller.signal.aborted || !(options.shouldRetry ?? isUsageLimitError)(error)) throw error;
+        refused = true;
+      }
     }
-    lastAttempt = Date.now();
-    try {
-      return await operation();
-    } catch (error) {
-      if (controller.signal.aborted || !(options.shouldRetry ?? isUsageLimitError)(error)) throw error;
-      refused = true;
-    }
+  } finally {
+    endWait();
   }
 }
