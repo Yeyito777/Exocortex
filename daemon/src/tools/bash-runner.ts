@@ -259,6 +259,17 @@ function terminateCommandTree(): void {
   try { process.kill(-pid, "SIGTERM"); } catch { try { process.kill(pid, "SIGTERM"); } catch {} }
   const forceKill = setTimeout(() => {
     try { process.kill(-pid, "SIGKILL"); } catch { /* already exited */ }
+    // A descendant that left the process group (setsid, a daemonizing
+    // command) survives the kill and keeps the output pipes open, so 'close'
+    // would wait for it and the tool call would hang. Stop reading them once
+    // the group is dead; the runner then exits (under systemd, taking that
+    // descendant's unit with it).
+    const release = setTimeout(() => {
+      if (finalSent || !commandProcess) return;
+      commandProcess.stdout.destroy();
+      commandProcess.stderr.destroy();
+    }, 300);
+    release.unref?.();
   }, 200);
   forceKill.unref?.();
 }
@@ -317,7 +328,8 @@ function start(request: StartRequest): void {
 
   send({ type: "started", pid: proc.pid });
   if (request.timeoutMs !== undefined && Number.isFinite(request.timeoutMs) && request.timeoutMs > 0) {
-    commandTimeout = setTimeout(terminateCommandTree, request.timeoutMs);
+    // Longer than setTimeout's maximum overflows to an immediate kill.
+    commandTimeout = setTimeout(terminateCommandTree, Math.min(request.timeoutMs, 2_147_483_647));
     commandTimeout.unref?.();
   }
   proc.stdin.on("error", () => { /* the command may exit before consuming all input */ });

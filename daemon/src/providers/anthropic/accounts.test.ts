@@ -64,6 +64,10 @@ describe("Claude accounts", () => {
     try {
       expect(claudeProcessOptions("/work", "max2").env).toMatchObject({ CLAUDE_CONFIG_DIR: accountDir });
       expect(claudeProcessOptions("/work", "max2").env?.ANTHROPIC_API_KEY).toBeUndefined();
+      // Claude Code's shells see the invoking conversation, like the daemon's own bash.
+      expect(claudeProcessOptions("/work", "max2", "conv-1").env).toMatchObject({
+        EXOCORTEX_PARENT_CONV_ID: "conv-1", EXOCORTEX_PARENT_PROVIDER: "anthropic", EXOCORTEX_WORKSPACE: "/work",
+      });
       expect(claudeProcessOptions("/work").env?.CLAUDE_CONFIG_DIR).toBe(mainDir);
     } finally {
       if (savedKey === undefined) delete process.env.ANTHROPIC_API_KEY;

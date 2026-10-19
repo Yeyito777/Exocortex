@@ -249,6 +249,58 @@ test("cold sidebar mutations, clones and undo do not hydrate canonical archives"
   convStore.flush(id);
 });
 
+test("undo and redo of a cold rename or mark apply without loading, and older entries stay reachable", async () => {
+  const a = seed();
+  const b = seed();
+  convStore.conversationCacheInternalsForTest.evictClean();
+  const titleB = convStore.getSummary(b)!.title;
+  expect(convStore.rename(b, "B renamed")).toBe(true);
+  expect(convStore.mark(a, true)).toBe(true);
+  expect((await convStore.undoDeleteAsync())?.type).toBe("sidebar_state");
+  expect(convStore.getSummary(a)?.marked).toBe(false);
+  expect((await convStore.undoDeleteAsync())?.type).toBe("sidebar_state");
+  expect(convStore.getSummary(b)?.title).toBe(titleB);
+  expect(convStore.getCached(a)).toBeUndefined();
+  expect(convStore.getCached(b)).toBeUndefined();
+  expect((await convStore.redoDeleteAsync())?.type).toBe("sidebar_state");
+  expect(convStore.getSummary(b)?.title).toBe("B renamed");
+  expect((await convStore.getAsync(b))!.title).toBe("B renamed");
+});
+
+test("a deleted conversation's slow-to-stop turn never touches it after undo and a new turn", async () => {
+  const id = seed();
+  // Turn 1 takes 300 ms to honor abort (a slow tool or provider teardown).
+  const slow = (async (_p: unknown, _m: unknown, _model: unknown, _cb: unknown, options: { signal: AbortSignal }) => {
+    await new Promise<void>(resolve => {
+      if (options.signal.aborted) setTimeout(resolve, 300);
+      else options.signal.addEventListener("abort", () => setTimeout(resolve, 300));
+    });
+    throw Object.assign(new Error("aborted"), { name: "AbortError" });
+  }) as unknown as typeof streamMessage;
+  const first = orchestrateSendMessage(server() as never, null, undefined, id, "first", Date.now(), callbacks(slow));
+  for (let i = 0; i < 100 && !convStore.getActiveJob(id); i++) await Bun.sleep(5);
+  expect(convStore.getActiveJob(id)).toBeDefined();
+  expect(convStore.remove(id)).toBe(true);
+  expect((await convStore.undoDeleteAsync())?.type).toBe("conversation");
+
+  let release!: () => void;
+  const held = (async () => { await new Promise<void>(resolve => { release = resolve; }); return response("second answer"); }) as typeof streamMessage;
+  const second = orchestrateSendMessage(server() as never, null, undefined, id, "second", Date.now(), callbacks(held));
+  for (let i = 0; i < 100 && !release; i++) await Bun.sleep(5);
+  const secondJob = convStore.getActiveJob(id);
+  expect(secondJob).toBeDefined();
+
+  expect((await first).aborted).toBe(true);
+  // The old turn's end left the new turn's job and transcript alone.
+  expect(convStore.getActiveJob(id)).toBe(secondJob);
+  expect(convStore.isStreaming(id)).toBe(true);
+  release();
+  expect((await second).ok).toBe(true);
+  const tail = (await convStore.getAsync(id))!.messages.slice(-3).map(m => [m.role, typeof m.content === "string" ? m.content : "blocks"]);
+  // "first" was saved before the delete; nothing of turn 1's was written after it.
+  expect(tail).toEqual([["user", "first"], ["user", "second"], ["assistant", "blocks"]]);
+});
+
 test("Stop can persist a cold active-goal pause without loading its history", async () => {
   const id = seed();
   await convStore.getAsync(id);

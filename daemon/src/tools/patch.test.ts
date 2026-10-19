@@ -56,6 +56,19 @@ describe("patch tool", () => {
     expect(existsSync(join(cwd, "old.txt"))).toBe(false);
   });
 
+  test("Move to the file's own path updates it in place instead of deleting it", async () => {
+    for (const dest of ["a.txt", "./a.txt", "sub/../a.txt"]) {
+      const cwd = tempWorkspace();
+      writeFileSync(join(cwd, "a.txt"), "one\ntwo\n");
+      const result = await patch.execute({
+        cwd,
+        input: `*** Begin Patch\n*** Update File: a.txt\n*** Move to: ${dest}\n@@\n one\n-two\n+TWO\n*** End Patch`,
+      });
+      expect(result.isError).toBe(false);
+      expect(readText(join(cwd, "a.txt"))).toBe("one\nTWO\n");
+    }
+  });
+
   test("renames an updated file with Move to", async () => {
     const cwd = tempWorkspace();
     writeFileSync(join(cwd, "source.txt"), "one\ntwo\nthree\n");

@@ -87,6 +87,39 @@ describe("Chrono scheduler", () => {
     expect(next - Date.parse(firstAt)).toBe(23 * 60 * 60 * 1000);
   });
 
+  test("a daily wall time in the spring-forward gap fires just after the gap instead of skipping the day", () => {
+    const owner = makeConversation("dst-gap");
+    const firstAt = "2026-03-07T02:30:00-05:00";
+    const result = createChronoSchedule({
+      ownerConversationId: owner, at: firstAt, repeat: { unit: "day" }, timezone: "America/Toronto", message: "nightly",
+    }, Date.parse("2026-03-06T00:00:00Z"));
+    const recurrence = result.schedule!.recurrence!;
+    if (recurrence.kind !== "calendar") throw new Error("expected calendar recurrence");
+    const gapDay = chronoInternalsForTest.nextCalendar(recurrence, Date.parse(firstAt));
+    // 02:30 does not exist on Mar 8; 03:00 EDT is the first instant after it.
+    expect(new Date(gapDay).toISOString()).toBe("2026-03-08T07:00:00.000Z");
+    expect(new Date(chronoInternalsForTest.nextCalendar(recurrence, gapDay)).toISOString()).toBe("2026-03-09T06:30:00.000Z");
+  });
+
+  test("every other week on several weekdays fires on all of them in the active weeks", () => {
+    const owner = makeConversation("biweekly");
+    // Wednesday Oct 21 2026: the first active week is Mon Oct 19 - Sun Oct 25.
+    const firstAt = "2026-10-21T09:00:00-04:00";
+    const result = createChronoSchedule({
+      ownerConversationId: owner, at: firstAt, repeat: { unit: "week", interval: 2, weekdays: ["mon", "wed"] },
+      timezone: "America/Toronto", message: "standup",
+    }, Date.parse("2026-10-20T00:00:00Z"));
+    const recurrence = result.schedule!.recurrence!;
+    if (recurrence.kind !== "calendar") throw new Error("expected calendar recurrence");
+    const fires: string[] = [];
+    let at = Date.parse(firstAt) - 1;
+    for (let i = 0; i < 5; i++) {
+      at = chronoInternalsForTest.nextCalendar(recurrence, at);
+      fires.push(new Date(at).toISOString().slice(0, 10));
+    }
+    expect(fires).toEqual(["2026-10-21", "2026-11-02", "2026-11-04", "2026-11-16", "2026-11-18"]);
+  });
+
   test("monthly recurrence preserves the anchored day and skips shorter months", () => {
     const owner = makeConversation("monthly");
     const firstAt = "2026-01-31T09:00:00-05:00";

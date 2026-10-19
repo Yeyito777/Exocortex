@@ -213,17 +213,29 @@ export class ProviderProxyForwarder {
   }
 
   /**
-   * Wait for the link until `deadline`, through reconnect attempts while it is
-   * down for a transient reason. Throws the last failure otherwise.
+   * Wait for the provider's link until `deadline`, through reconnect attempts
+   * while it is down for a transient reason. Throws the last failure otherwise.
+   * Resolves with the link to use: if /proxy is switched to another host (or
+   * turned off, null) meanwhile, a held request follows the new route instead
+   * of failing with the old link's closure.
    */
-  private async holdForLink(link: ProviderProxyLink, deadline: number, signal: AbortSignal): Promise<void> {
+  private async holdForLink(provider: ProxyableProviderId, link: ProviderProxyLink, deadline: number, signal: AbortSignal): Promise<ProviderProxyLink | null> {
     const delays = this.options.linkHoldRetryDelaysMs ?? LINK_HOLD_RETRY_DELAYS_MS;
     for (let attempt = 0; ; attempt++) {
       try {
         await link.waitReady(Math.max(1, Math.min(deadline - Date.now(), LINK_READY_TIMEOUT_MS)), signal);
-        return;
+        return link;
       } catch (error) {
-        if (signal.aborted || !isTransientProviderProxyError(error)) throw error;
+        if (signal.aborted) throw error;
+        // /proxy switched to another host or off: the held link was retired.
+        const current = link.isClosed ? this.options.linkFor(provider) : link;
+        if (current !== link) {
+          if (!current) return null;
+          log("info", `provider-proxy: a held request moves from ${link.alias} to ${current.alias}`);
+          link = current;
+          continue;
+        }
+        if (!isTransientProviderProxyError(error)) throw error;
         const delay = delays[Math.min(attempt, delays.length - 1)];
         if (Date.now() + delay >= deadline) throw error;
         if (attempt === 0) log("info", `provider-proxy: holding a request until ${link.alias} is back: ${error instanceof Error ? error.message : error}`);
@@ -249,11 +261,15 @@ export class ProviderProxyForwarder {
     const matched = matchProviderProxyRoute(provider, websocket ? "websocket" : "http", request.method, target);
     if ("error" in matched) return jsonError(provider, 403, `Exocortex /proxy: ${matched.error}.`);
 
-    const link = this.options.linkFor(provider);
-    if (!link) return jsonError(provider, 503, `Exocortex /proxy: ${provider} is no longer proxied; retry to use it directly.`);
+    const notProxied = () => jsonError(provider, 503, `Exocortex /proxy: ${provider} is no longer proxied; retry to use it directly.`);
+    const initialLink = this.options.linkFor(provider);
+    if (!initialLink) return notProxied();
     const deadline = Date.now() + (this.options.linkHoldMs ?? LINK_HOLD_MS);
+    let link: ProviderProxyLink;
     try {
-      await this.holdForLink(link, deadline, request.signal);
+      const ready = await this.holdForLink(provider, initialLink, deadline, request.signal);
+      if (!ready) return notProxied();
+      link = ready;
     } catch (error) {
       return linkError(provider, error);
     }
@@ -281,7 +297,9 @@ export class ProviderProxyForwarder {
           // The link dropped before the upstream answered: send it again once the link is back.
           try {
             if (Date.now() >= deadline) throw error;
-            await this.holdForLink(link, deadline, request.signal);
+            const ready = await this.holdForLink(provider, link, deadline, request.signal);
+            if (!ready) return notProxied();
+            link = ready;
           } catch (holdError) {
             return linkError(provider, holdError);
           }

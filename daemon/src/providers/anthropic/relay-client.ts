@@ -36,6 +36,9 @@ import {
 /** A new relay has to start Bun and Claude Code before it listens. */
 const LAUNCH_TIMEOUT_MS = 20_000;
 const RECONNECT_TIMEOUT_MS = 3_000;
+/** A relay that accepts the connection but is slow to answer (swapped out, starved) gets this much longer. */
+const SLOW_RECONNECT_TIMEOUT_MS = 20_000;
+const HELLO_TIMEOUT_MESSAGE = "The Claude Code relay did not say hello.";
 const CONNECT_RETRY_MS = 25;
 const TERMINATE_TIMEOUT_MS = 3_000;
 /** Linux sockaddr_un.sun_path holds 108 bytes. */
@@ -173,12 +176,12 @@ export class ClaudeRelay extends EventEmitter implements SpawnedProcess {
   }
 
   /** Reconnect to a relay a previous daemon started; resolves with its hello. */
-  static async reconnect(socketPath: string): Promise<ClaudeRelay> {
+  static async reconnect(socketPath: string, helloTimeoutMs = RECONNECT_TIMEOUT_MS): Promise<ClaudeRelay> {
     const socket = await connectSocket(socketPath, 0);
     const relay = new ClaudeRelay();
     const hello = new Promise<RelayHello>((resolve, reject) => {
       relay.helloWaiter = resolve;
-      setTimeout(() => reject(new Error("The Claude Code relay did not say hello.")), RECONNECT_TIMEOUT_MS).unref?.();
+      setTimeout(() => reject(new Error(HELLO_TIMEOUT_MESSAGE)), helloTimeoutMs).unref?.();
       relay.once("exit", () => reject(new Error("The Claude Code relay closed.")));
     });
     relay.attach(socket);
@@ -323,6 +326,12 @@ export async function reconnectRelays(): Promise<ClaudeRelay[]> {
   } catch {
     return [];
   }
+  const gone = (record: RelayRecord, path: string, error: unknown): null => {
+    log("info", `anthropic: Claude Code relay for ${record.convId} is gone (${error instanceof Error ? error.message : error})`);
+    rmSync(path, { force: true });
+    rmSync(record.socketPath, { force: true });
+    return null;
+  };
   const found = await Promise.all(names.map(async (name) => {
     const path = join(dir, name);
     let record: RelayRecord;
@@ -337,11 +346,20 @@ export async function reconnectRelays(): Promise<ClaudeRelay[]> {
     }
     try {
       return { record, relay: await ClaudeRelay.reconnect(record.socketPath) };
+    } catch (first) {
+      if (!(first instanceof Error) || first.message !== HELLO_TIMEOUT_MESSAGE) return gone(record, path, first);
+    }
+    // It accepted the connection: it is alive, only slow. Declaring it gone
+    // would leave it running its turn unreachable while a replay starts a
+    // second Claude Code process on the same session.
+    try {
+      return { record, relay: await ClaudeRelay.reconnect(record.socketPath, SLOW_RECONNECT_TIMEOUT_MS) };
     } catch (error) {
-      log("info", `anthropic: Claude Code relay for ${record.convId} is gone (${error instanceof Error ? error.message : error})`);
-      rmSync(path, { force: true });
-      rmSync(record.socketPath, { force: true });
-      return null;
+      if (error instanceof Error && error.message === HELLO_TIMEOUT_MESSAGE) {
+        log("warn", `anthropic: the Claude Code relay for ${record.convId} accepts connections but did not say hello; leaving it for the next start`);
+        return null;
+      }
+      return gone(record, path, error);
     }
   }));
   return found

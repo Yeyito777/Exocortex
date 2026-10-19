@@ -17,7 +17,7 @@ import {
   type TokenTrackingContext,
 } from "./messages";
 import { contextMessageChars } from "./context-token-attribution";
-import type { ProviderTurnSession, ServiceTier, StreamCallbacks, StreamOptions, StreamRequestBudget } from "./providers/types";
+import type { ProviderTurnSession, ServiceTier, StreamCallbacks, StreamOptions, StreamRequestBudget, StreamResult } from "./providers/types";
 import { isNonRetryableProviderError, isContextWindowProviderError } from "./providers/errors";
 import { getMaxContext } from "./providers/registry";
 import { assertCanonicalMessage, isArchivedMessage, archiveWindow } from "./conversation-window";
@@ -83,6 +83,16 @@ export interface ContextCompactionOptions {
   onPlaintextFallback?: (warning: string) => void;
   /** Test seam for provider streaming. Production always uses streamMessage. */
   streamMessageFn?: typeof streamMessage;
+  /** Runs each provider request inside the turn's network, /proxy and usage-limit waits. */
+  withProviderWaits?: (provider: ProviderId, request: () => Promise<StreamResult>) => Promise<StreamResult>;
+}
+
+function sendCompactionRequest(
+  options: ContextCompactionOptions,
+  provider: ProviderId,
+  request: () => Promise<StreamResult>,
+): Promise<StreamResult> {
+  return options.withProviderWaits ? options.withProviderWaits(provider, request) : request();
 }
 
 export interface ContextCompactionResult {
@@ -427,7 +437,7 @@ async function nativeOpenAICompaction(
     }
     requestBudget.attempts += 1;
   }
-  const result = await (options.streamMessageFn ?? streamMessage)("openai", messages, options.model, {
+  const result = await sendCompactionRequest(options, "openai", () => (options.streamMessageFn ?? streamMessage)("openai", messages, options.model, {
     onText: () => {},
     onThinking: () => {},
     onHeaders: options.onHeaders,
@@ -439,7 +449,7 @@ async function nativeOpenAICompaction(
       reason: options.reason === "provider_switch" ? "model_downshift" : "context_limit",
       phase: options.reason === "tool_round" ? "mid_turn" : "pre_turn",
     },
-  }));
+  })));
 
   // The collector may see unrelated function-call output alongside the single
   // checkpoint. A completed Responses stream reports that as tool_use in the
@@ -608,7 +618,7 @@ async function requestPlaintextSummary(
     ...summaryInput,
     { role: "user", content: SUMMARY_SYSTEM_PROMPT },
   ];
-  const result = await (options.streamMessageFn ?? streamMessage)(options.provider, summaryRequest, options.model, {
+  const result = await sendCompactionRequest(options, options.provider, () => (options.streamMessageFn ?? streamMessage)(options.provider, summaryRequest, options.model, {
     onText: () => {},
     onThinking: () => {},
     onHeaders: options.onHeaders,
@@ -624,7 +634,7 @@ async function requestPlaintextSummary(
     promptCacheKey: options.provider === "openai" && options.turnSession
       ? options.promptCacheKey
       : options.promptCacheKey ? `${options.promptCacheKey}-compact` : undefined,
-  }));
+  })));
 
   if (result.stopReason !== "stop") {
     throw new Error(`Plaintext compaction did not complete (stopReason=${result.stopReason || "unknown"})`);

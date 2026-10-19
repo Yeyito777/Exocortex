@@ -1178,6 +1178,17 @@ function applySidebarStackEntry(entry: persistence.TrashStackEntry, direction: S
     return { type: "sidebar_state" };
   }
 
+  if (entry.type === "conversation_marked" && !conversations.has(entry.convId) && persistence.isSqliteConversationStore()) {
+    // A conversation that isn't loaded: like mark(), change its presentation
+    // row only. A synchronous get() here throws once async loading is
+    // required, and the failed entry then sat on top of the undo stack.
+    const summary = summaries.get(entry.convId);
+    if (!summary || !persistence.updateConversationPresentation(entry.convId, { marked: entry.marked })) return null;
+    pushOppositeSidebarEntry(direction, { type: "conversation_marked", convId: entry.convId, marked: summary.marked });
+    summary.marked = entry.marked; saveSummaryIndex();
+    return { type: "sidebar_state", updatedConvIds: [entry.convId] };
+  }
+
   if (entry.type === "conversation_marked") {
     const conv = get(entry.convId);
     if (!conv) return null;
@@ -1187,6 +1198,14 @@ function applySidebarStackEntry(entry: persistence.TrashStackEntry, direction: S
     flush(conv.id);
     pushOppositeSidebarEntry(direction, inverse);
     return { type: "sidebar_state", updatedConvIds: [conv.id] };
+  }
+
+  if (entry.type === "conversation_renamed" && !conversations.has(entry.convId) && persistence.isSqliteConversationStore()) {
+    const summary = summaries.get(entry.convId);
+    if (!summary || !persistence.updateConversationPresentation(entry.convId, { title: entry.title })) return null;
+    pushOppositeSidebarEntry(direction, { type: "conversation_renamed", convId: entry.convId, title: summary.title });
+    summary.title = entry.title; saveSummaryIndex();
+    return { type: "sidebar_state", updatedConvIds: [entry.convId] };
   }
 
   if (entry.type === "conversation_renamed") {

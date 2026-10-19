@@ -448,10 +448,33 @@ function localToEpoch(parts: ZonedParts, timezone: string): number | null {
     : null;
 }
 
+/**
+ * A wall time, or when it falls in a DST gap (spring forward), the first
+ * instant that exists after it, as cron and systemd timers do; skipping the
+ * whole day would silently miss a daily schedule once a year.
+ */
+function localToEpochOrAfterGap(parts: ZonedParts, timezone: string): number | null {
+  const exact = localToEpoch(parts, timezone);
+  if (exact !== null) return exact;
+  for (let minutes = 1; minutes <= 180; minutes++) {
+    const shifted = new Date(Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute + minutes, 0));
+    const candidate = localToEpoch({
+      year: shifted.getUTCFullYear(), month: shifted.getUTCMonth() + 1, day: shifted.getUTCDate(),
+      hour: shifted.getUTCHours(), minute: shifted.getUTCMinutes(), second: 0,
+    }, timezone);
+    if (candidate !== null) return candidate;
+  }
+  return null;
+}
+
 function nextCalendar(recurrence: CalendarRecurrence, after: number): number {
   const afterLocal = zonedParts(after, recurrence.timezone);
   const startOrdinal = dateOrdinal(localDateString(afterLocal));
   const anchorOrdinal = dateOrdinal(recurrence.anchorDate);
+  // "Every N weeks" counts calendar weeks (Monday to Sunday), so every listed
+  // weekday of an active week fires, wherever the anchor day falls in it.
+  const anchorWeekday = (new Date(anchorOrdinal * 86_400_000).getUTCDay() + 6) % 7;
+  const anchorWeekStart = anchorOrdinal - anchorWeekday;
   for (let offset = 0; offset <= 3660; offset++) {
     const ordinal = startOrdinal + offset;
     const date = calendarDateFromOrdinal(ordinal);
@@ -459,7 +482,7 @@ function nextCalendar(recurrence: CalendarRecurrence, after: number): number {
     if (daysSinceAnchor < 0) continue;
     if (recurrence.unit === "day" && daysSinceAnchor % recurrence.interval !== 0) continue;
     if (recurrence.unit === "week") {
-      if (Math.floor(daysSinceAnchor / 7) % recurrence.interval !== 0) continue;
+      if (Math.floor((ordinal - anchorWeekStart) / 7) % recurrence.interval !== 0) continue;
       const weekday = new Date(Date.UTC(date.year, date.month - 1, date.day)).getUTCDay();
       if (!(recurrence.weekdays ?? []).includes(weekday)) continue;
     }
@@ -469,7 +492,7 @@ function nextCalendar(recurrence: CalendarRecurrence, after: number): number {
       if (monthsSinceAnchor < 0 || monthsSinceAnchor % recurrence.interval !== 0) continue;
       if (date.day !== recurrence.dayOfMonth) continue;
     }
-    const candidate = localToEpoch({
+    const candidate = localToEpochOrAfterGap({
       ...date,
       hour: recurrence.hour,
       minute: recurrence.minute,
@@ -1189,7 +1212,9 @@ async function executeOccurrence(occurrence: PendingOccurrence): Promise<void> {
     pending.delete(occurrence.id);
     persist();
   } catch (err) {
-    log("error", `chrono: occurrence ${occurrence.id} failed: ${err instanceof Error ? err.message : String(err)}`);
+    // A shutdown interrupting a command is expected (it re-runs after boot), not an error.
+    const interrupted = err instanceof Error && err.message === "Scheduled command interrupted before completion";
+    log(interrupted ? "info" : "error", `chrono: occurrence ${occurrence.id} ${interrupted ? "interrupted; will run again" : "failed"}: ${err instanceof Error ? err.message : String(err)}`);
     if (cancelledOccurrences.has(occurrence.id)) {
       pending.delete(occurrence.id);
       persist();
