@@ -392,3 +392,22 @@ describe("prompt insert-mode Home", () => {
     expect(state.cursorPos).toBe(3);
   });
 });
+
+describe("prompt word motions treat non-ASCII letters as word characters", () => {
+  test("dw and diw take the whole accented word", () => {
+    expect(vim("canción x", 0, "dw").buffer).toBe("x");
+    expect(vim("canción x", 1, "diw").buffer).toBe(" x");
+  });
+
+  test("w, b and e step over whole words with accents and combining marks", () => {
+    expect(vim("über naïve x", 0, "w").cursor).toBe(5);
+    expect(vim("über naïve x", 11, "b").cursor).toBe(5);
+    expect(vim("cafe\u0301s x", 0, "e").cursor).toBe(5);
+    expect(vim("cafe\u0301 x", 0, "dw").buffer).toBe("x");
+    expect(vim("Привет мир", 0, "w").cursor).toBe(7);
+  });
+
+  test("punctuation still splits words", () => {
+    expect(vim("año,mes", 0, "w").cursor).toBe(3);
+  });
+});

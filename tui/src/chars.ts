@@ -8,9 +8,11 @@
  *   the cursor traverses across line boundaries.
  */
 
-/** Word character: letters, digits, underscore. */
+const WORD_CHAR_RE = /[\p{L}\p{N}\p{M}_]/u;
+
+/** Word character: letters, digits and combining marks in any script, underscore. */
 export function isWordChar(ch: string): boolean {
-  return /\w/.test(ch);
+  return WORD_CHAR_RE.test(ch);
 }
 
 /** Inline whitespace (space or tab). For line-level operations. */
