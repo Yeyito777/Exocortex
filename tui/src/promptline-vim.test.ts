@@ -378,3 +378,17 @@ describe("prompt charwise put from the system clipboard", () => {
     expect(await putClipboard("X", "a\n", 2, "p")).toBe("a\nX");
   });
 });
+
+describe("prompt insert-mode Home", () => {
+  test("stays on the first line when the buffer starts with a newline", () => {
+    const state = prompt("\nabc", 0, "insert");
+    handleFocusedKey({ type: "home" }, state);
+    expect(state.cursorPos).toBe(0);
+  });
+
+  test("moves to the start of the cursor's line", () => {
+    const state = prompt("ab\ncd", 4, "insert");
+    handleFocusedKey({ type: "home" }, state);
+    expect(state.cursorPos).toBe(3);
+  });
+});
