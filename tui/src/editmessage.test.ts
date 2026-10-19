@@ -10,6 +10,7 @@ import {
 import { createPendingAI, type UserMessage } from "./messages";
 import { createInitialState, noteConversationOpenRequest } from "./state";
 import { handleEvent, type DaemonActions } from "./events";
+import { handleFocusedKey } from "./focus";
 import { beginConversationLoad } from "./events/conversations";
 import type { Event } from "./protocol";
 
@@ -462,5 +463,52 @@ describe("edit message modal", () => {
       type: "conversation_loaded", reqId: "stale-load", convId: "conv-1", provider: "openai",
       model: "gpt-5.5", effort: "high", fastMode: false, entries: [], contextTokens: null, toolOutputsIncluded: false,
     }, "conversation_7")).toBe("ignore");
+  });
+});
+
+describe("confirming an edit replaces the draft", () => {
+  const draftImage = { mediaType: "image/png", base64: "AAA", sizeBytes: 3 };
+
+  function editing(items: Array<{ text: string; images?: typeof draftImage[] }>) {
+    const state = createInitialState();
+    state.sidebar.open = false;
+    state.inputBuffer = "my draft";
+    state.cursorPos = 8;
+    state.vim.mode = "insert";
+    state.undo.insertEntry = { buffer: "", cursor: 0 };
+    state.pendingImages = [draftImage];
+    state.editMessagePrompt = {
+      items: items.map((item, index) => ({ userMessageIndex: index, isQueued: false, ...item })),
+      selection: 0,
+      scrollOffset: 0,
+    };
+    return state;
+  }
+
+  test("drops the draft's images when the edited message has none", () => {
+    const state = editing([{ text: "old msg" }]);
+    confirmEditMessage(state);
+    expect(state.inputBuffer).toBe("old msg");
+    expect(state.pendingImages).toEqual([]);
+  });
+
+  test("attaches the edited message's own images", () => {
+    const image = { mediaType: "image/jpeg", base64: "BBB", sizeBytes: 3 };
+    const state = editing([{ text: "old msg", images: [image] }]);
+    confirmEditMessage(state);
+    expect(state.pendingImages).toEqual([image]);
+  });
+
+  test("u brings the draft back, then the typing before it", () => {
+    const state = editing([{ text: "old msg" }]);
+    confirmEditMessage(state);
+    handleFocusedKey({ type: "char", char: "!" }, state);
+    handleFocusedKey({ type: "escape" }, state);
+    const undone: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      handleFocusedKey({ type: "char", char: "u" }, state);
+      undone.push(state.inputBuffer);
+    }
+    expect(undone).toEqual(["old msg", "my draft", ""]);
   });
 });

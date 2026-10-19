@@ -22,6 +22,7 @@ import {
 } from "./state";
 import { computeEditMessageOverlayLayout, type EditMessageOverlayLayout } from "./editmessage-layout";
 import { isNewConversationQueuedMessage, queuedMessagesInDisplayOrder } from "./queue";
+import { commitInsertSession, markInsertEntry, pushUndo } from "./undo";
 
 // ── Open modal ────────────────────────────────────────────────────
 
@@ -219,25 +220,24 @@ export function confirmEditMessage(state: RenderState): EditConfirmResult {
     return { action: "cancel" };
   }
 
-  // Place text in prompt
-  state.inputBuffer = item.text;
-  state.cursorPos = item.text.length;
-  focusPrompt(state);
+  // Conversation instructions — prepend /instructions so it routes through the slash command.
+  const text = item.userMessageIndex === EDIT_INDEX_INSTRUCTIONS && !state.folderInstructionsDoc
+    ? `/instructions ${item.text}`
+    : item.text;
 
-  // Restore image attachments so they're re-sent with the edited message
-  if (item.images?.length) {
-    state.pendingImages = [...item.images];
-  }
+  // Place text in prompt. The replaced draft stays one undo step away; commit
+  // any open insert session first so undo walks back through both in order.
+  commitInsertSession(state.undo, state.inputBuffer);
+  if (state.inputBuffer !== text) pushUndo(state.undo, state.inputBuffer, state.cursorPos);
+  state.inputBuffer = text;
+  state.cursorPos = text.length;
+  focusPrompt(state);
+  markInsertEntry(state.undo, state.inputBuffer, state.cursorPos);
+
+  // Exactly the edited message's images are re-sent; the draft's don't carry over
+  state.pendingImages = [...(item.images ?? [])];
 
   if (item.userMessageIndex === EDIT_INDEX_INSTRUCTIONS) {
-    if (state.folderInstructionsDoc) {
-      state.inputBuffer = item.text;
-      state.cursorPos = state.inputBuffer.length;
-    } else {
-      // Conversation instructions — prepend /instructions so it routes through the slash command.
-      state.inputBuffer = `/instructions ${item.text}`;
-      state.cursorPos = state.inputBuffer.length;
-    }
     return { action: "edit_instructions", text: item.text };
   }
 
