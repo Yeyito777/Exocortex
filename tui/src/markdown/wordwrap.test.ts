@@ -57,6 +57,18 @@ describe("markdown inline formatting across wraps", () => {
   });
 });
 
+describe("markdown paragraphs with links", () => {
+  test("break at the same spaces as paragraphs without links", () => {
+    const text = "alpha beta gamma, see https://example.com/x";
+    const result = markdownWordWrap(text, 10, "\x1b[0m");
+    const plain = result.lines.map(stripAnsi);
+
+    expect(plain.slice(0, 2)).toEqual(["alpha beta", "gamma, see"]);
+    expect(plain.every(line => !line.startsWith(" "))).toBe(true);
+    expect(plain.map((line, index) => result.join[index] + line).join("")).toBe(text);
+  });
+});
+
 describe("markdown pipe lines that do not render as a table", () => {
   const fits = (lines: string[], width: number) => lines.every(line => visibleLength(line) <= width);
 

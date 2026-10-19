@@ -9,4 +9,18 @@ describe("ANSI viewport wrapping", () => {
     expect(wrapped.lines.map(stripAnsi)).toEqual(["alpha beta", "gamma"]);
     expect(wrapped.joins).toEqual(["", " "]);
   });
+
+  test("breaks at a space just past the width rather than an earlier one", () => {
+    const wrapped = wrapAnsiLine("\x1b[1malpha beta gamma\x1b[0m", 10);
+
+    expect(wrapped.lines.map(stripAnsi)).toEqual(["alpha beta", "gamma"]);
+    expect(wrapped.joins).toEqual(["", " "]);
+  });
+
+  test("does not start the next row with the space after a word filling the row", () => {
+    const wrapped = wrapAnsiLine("\x1b[1mabcdefghij klm\x1b[0m", 10);
+
+    expect(wrapped.lines.map(stripAnsi)).toEqual(["abcdefghij", "klm"]);
+    expect(wrapped.joins).toEqual(["", " "]);
+  });
 });

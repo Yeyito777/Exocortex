@@ -70,6 +70,9 @@ function takeAnsiRow(input: string, start: number, width: number, carriedSgr: st
 
     const [glyphWidth, end] = nextGrapheme(input, cursor);
     if (visibleWidth + glyphWidth > width && visibleWidth > 0) {
+      // Whitespace just past the width is the best break: the row is full.
+      const glyph = input.slice(cursor, end);
+      if (WHITESPACE_RE.test(glyph)) return { lineEnd: cursor, restStart: end, activeSgr, join: glyph };
       return lastBreak ?? { lineEnd: cursor, restStart: cursor, activeSgr, join: "" };
     }
 

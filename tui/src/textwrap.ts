@@ -109,10 +109,10 @@ export function wordWrap(text: string, width: number): WrapResult {
       let breakAt = breakRel > 0 ? lineStart + breakRel : -1;
       let nextJoin = breakAt > 0 ? " " : "";
 
-      if (breakRel <= 0 && fitEnd > lineStart && rawLine[fitEnd] === " ") {
-        // Match the previous ASCII wrapper's behavior when the best break is a
-        // space exactly at the wrap boundary. The space is omitted visually but
-        // preserved as the copy/yank joiner for the continuation row.
+      if (fitEnd > lineStart && rawLine[fitEnd] === " " && rawLine[fitEnd - 1] !== " ") {
+        // A space just past the width is the best break: the row is full. The
+        // space is omitted visually but preserved as the copy/yank joiner for
+        // the continuation row.
         breakAt = fitEnd;
         nextJoin = " ";
       }
