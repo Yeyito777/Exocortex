@@ -14,7 +14,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSy
 import { dirname, join } from "path";
 import { dataDir } from "@exocortex/shared/paths";
 import type { ParentNotificationTarget } from "./protocol";
-import { MAX_EXO_SUBAGENT_DEPTH, type Block } from "./messages";
+import { MAX_EXO_SUBAGENT_DEPTH, type Block, type UserMessageAutomation } from "./messages";
 import * as convStore from "./conversations";
 import { log } from "./log";
 
@@ -64,6 +64,12 @@ export interface SubagentNotificationRuntime {
   ): PendingSubagentNotification;
   complete(childConvId: string, outcome: SubagentNotificationOutcome): void;
   deliverReady(childConvId?: string): void;
+  /**
+   * A subagent's turn was admitted with automated input (its own subagent's
+   * result, its parent's message). When no task record is reporting this
+   * turn, report it to the subagent's parent like a task.
+   */
+  relayFollowUp?(convId: string, automation: UserMessageAutomation, text: string, startedAt: number): void;
 }
 
 const notifications = new Map<string, PendingSubagentNotification>();

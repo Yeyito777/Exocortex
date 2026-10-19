@@ -700,6 +700,8 @@ async function orchestrateAdmittedAssistantTurn(
     if (!convStore.appendMessages(convId, [acceptedUserMessage], { updatedAt: conv.updatedAt })) {
       throw new Error(`Conversation ${convId} disappeared before its user turn could be committed`);
     }
+    // A subagent woken by automated input after its task reported: its reply goes up too.
+    if (automation) getSubagentNotificationRuntime(server)?.relayFollowUp?.(convId, automation, admittedText, startedAt);
   } else {
     // Replay/manual compaction has no new user message, but its metadata
     // mutation still needs an explicit commit before provider work starts.

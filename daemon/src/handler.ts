@@ -30,7 +30,7 @@ import { scopedSubagentPromptOptions } from "./subagent-policy";
 import { assertDelegationModel, parseRequestedModel, resolveDelegationModel } from "./delegation-models";
 import { getConversationToolNames, getToolDisplayInfo } from "./tools/registry";
 import { getExternalToolStyles, manageExternalToolDaemon } from "./external-tools";
-import { EFFORT_LEVELS, SUBAGENTS_FOLDER_NAME, createModelVisibleSystemNotice, type Conversation } from "./messages";
+import { EFFORT_LEVELS, SUBAGENTS_FOLDER_NAME, createModelVisibleSystemNotice, type UserMessageAutomation } from "./messages";
 import { getDefaultProvider, getDefaultModel, getProvider, getProviders, isKnownModel, allowsCustomModels, refreshProviders, normalizeEffort, supportsEffort, getSupportedEfforts, supportsFastMode, supportsImageInputs } from "./providers/registry";
 import { transcribeAudioBytes } from "./transcription";
 import { generateImage } from "./providers/openai/image-generation";
@@ -636,23 +636,30 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   };
 
   /**
-   * A subagent woken by its own subagent's completion after its task already
-   * reported has nobody waiting on this turn. Report it to its parent like a
-   * task (the turn's end completes the record), unless it was started detached.
+   * A subagent woken after its task already reported has nobody waiting on
+   * this turn: its own subagent's late result, or a message its parent queued
+   * for after its turn. Report the turn to its parent like a task (the turn's
+   * end completes the record), unless it was started detached. Runs at turn
+   * admission, so every path that starts the turn (idle delivery, a queued
+   * successor, the queue pump) is covered.
    */
   const relaySubagentFollowUp = (
     convId: string,
-    conversation: Pick<Conversation, "subagentPolicy" | "subagentMaxDepth">,
+    automation: UserMessageAutomation,
     text: string,
     startedAt: number,
   ): void => {
-    const upstreamId = conversation.subagentPolicy?.parentConversationId;
-    if (!upstreamId || upstreamId === convId || conversation.subagentPolicy?.detached) return;
+    const policy = convStore.getPolicyMetadata(convId);
+    const upstreamId = policy?.subagentPolicy?.parentConversationId;
+    if (!policy || !upstreamId || upstreamId === convId || policy.subagentPolicy?.detached) return;
+    const relayed = automation.kind === "subagent_completion"
+      || (automation.kind === "exo_send" && automation.sourceId === upstreamId);
+    if (!relayed) return;
     if (!convStore.getPolicyMetadata(upstreamId)) return;
-    // A running record (its task, or a relay awaiting a retried send) already reports this turn.
+    // A running record (its task, or an exo message's own record) already reports this turn.
     if (listPendingSubagentNotifications({ childConvId: convId, state: "running" }).length > 0) return;
     try {
-      beginPendingSubagentNotification({ convId: upstreamId }, convId, text, startedAt, conversation.subagentMaxDepth ?? null, true);
+      beginPendingSubagentNotification({ convId: upstreamId }, convId, text, startedAt, policy.subagentMaxDepth ?? null, true);
     } catch (err) {
       log("warn", `handler: could not relay follow-up of subagent ${convId} to ${upstreamId}: ${err instanceof Error ? err.message : String(err)}`);
       return;
@@ -701,7 +708,6 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       log("info", `handler: sending durable subagent completion notification ${record.childConvId} -> parent ${record.parentConvId}`);
       deliveringNotificationIds.add(record.id);
       const startedAt = Date.now();
-      relaySubagentFollowUp(record.parentConvId, parent, record.text!, startedAt);
       void orchestrateSendMessage(
         server,
         null,
@@ -754,6 +760,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     begin: beginPendingSubagentNotification,
     complete: completeParentNotification,
     deliverReady: deliverReadyParentNotifications,
+    relayFollowUp: relaySubagentFollowUp,
   };
   registerSubagentNotificationRuntime(server, notificationRuntime);
 

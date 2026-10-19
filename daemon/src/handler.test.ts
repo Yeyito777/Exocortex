@@ -2476,6 +2476,8 @@ describe("handler subagent completion delivery", () => {
       expect(sendsTo(childId)).toHaveLength(1);
       expect(sendsTo(childId)[0][8]).toMatchObject({ automation: { kind: "subagent_completion", sourceId: grandchildId } });
       expect(sendsTo(topId)).toHaveLength(0);
+      // The orchestrator relays at admission, once the child's turn has committed its input.
+      runtime.relayFollowUp!(childId, { kind: "subagent_completion", sourceId: grandchildId }, sendsTo(childId)[0][4] as string, sendsTo(childId)[0][5] as number);
       const relay = listPendingSubagentNotifications({ childConvId: childId, state: "running" });
       expect(relay).toEqual([expect.objectContaining({ parentConvId: topId, childStartedAt: sendsTo(childId)[0][5], trackAsSubagent: true })]);
       expect(getConversationActivityCounts(topId).subagentCount).toBe(1);
@@ -2492,9 +2494,37 @@ describe("handler subagent completion delivery", () => {
       beginPendingSubagentNotification({ convId: detachedId }, detachedGrandchildId, "grandchild task", 222, 0);
       runtime.complete(detachedGrandchildId, makeAssistantOutcome());
       expect(sendsTo(detachedId)).toHaveLength(1);
+      runtime.relayFollowUp!(detachedId, { kind: "subagent_completion", sourceId: detachedGrandchildId }, "late result", 333);
       expect(listPendingSubagentNotifications({ childConvId: detachedId })).toEqual([]);
     } finally {
       for (const id of [childId, grandchildId, detachedId, detachedGrandchildId]) removePendingSubagentNotificationsForConversation(id);
+      resetConversationActivityForTest();
+    }
+  });
+
+  test("a parent's queued message to a child that already reported is relayed up; anyone else's is not", async () => {
+    const topId = mkId("relay-msg-top");
+    const childId = mkId("relay-msg-child");
+    for (const id of [topId, childId]) create(id, "openai", "gpt-5.4", id);
+    setSubagentPolicy(childId, { parentConversationId: topId, allowEdits: true, parentSystemInstructions: "", depth: 1 });
+    const server = {
+      sendTo: mock(() => {}), broadcast: mock(() => {}), sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}), subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    createHandler(server as never);
+    const runtime = getSubagentNotificationRuntime(server)!;
+    try {
+      runtime.relayFollowUp!(childId, { kind: "exo_send", sourceId: "someone-else" }, "hi", 1);
+      runtime.relayFollowUp!(childId, { kind: "chrono_wake", sourceId: "s" }, "wake", 2);
+      expect(listPendingSubagentNotifications({ childConvId: childId })).toEqual([]);
+      runtime.relayFollowUp!(childId, { kind: "exo_send", sourceId: topId }, "also do X", 3);
+      expect(listPendingSubagentNotifications({ childConvId: childId, state: "running" }))
+        .toEqual([expect.objectContaining({ parentConvId: topId, childStartedAt: 3, task: "also do X" })]);
+      // Already reported by that record: a second admission does not add another.
+      runtime.relayFollowUp!(childId, { kind: "subagent_completion", sourceId: "gc" }, "late", 4);
+      expect(listPendingSubagentNotifications({ childConvId: childId })).toHaveLength(1);
+    } finally {
+      removePendingSubagentNotificationsForConversation(childId);
       resetConversationActivityForTest();
     }
   });

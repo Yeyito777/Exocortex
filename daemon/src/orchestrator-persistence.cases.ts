@@ -2088,6 +2088,42 @@ describe("subagent completion is owned by the turn, not its starter", () => {
     }
   });
 
+  // A grandchild finishing while its parent (a subagent) streams its final
+  // answer is queued, and runs as a successor turn after that answer already
+  // reported. Every turn admitted with automated input offers itself for relay,
+  // so the parent's follow-up reply still reaches the top-level conversation.
+  test("a queued successor admitted with a subagent's result is offered for relay", async () => {
+    const childId = id("relay-child");
+    create(childId, "openai", "gpt-5.6-sol");
+    const fake = server();
+    const relayed: Array<{ convId: string; kind: string; text: string }> = [];
+    registerSubagentNotificationRuntime(fake, {
+      begin: beginPendingSubagentNotification,
+      complete: (childConvId, outcome) => { settlePendingSubagentNotifications(childConvId, outcome); },
+      deliverReady: () => {},
+      relayFollowUp: (convId, automation, text) => { relayed.push({ convId, kind: automation.kind, text }); },
+    });
+    let calls = 0;
+    const fakeStream = (async () => {
+      calls += 1;
+      if (calls === 1) {
+        // The grandchild's result arrives during the final answer: no tool boundary is left to take it.
+        pushQueuedMessage(childId, "[notification] Subagent completed: exo:grandchild", "next-turn", undefined, null,
+          "grandchild-notification", undefined, undefined, { kind: "subagent_completion", sourceId: "grandchild" });
+      }
+      return {
+        text: `answer ${calls}`, thinking: "", stopReason: "stop" as const,
+        blocks: [{ type: "text" as const, text: `answer ${calls}` }], toolCalls: [], inputTokens: 1, outputTokens: 1,
+      };
+    }) as typeof streamMessage;
+
+    const outcome = await orchestrateSendMessage(fake as never, null, undefined, childId, "child task", Date.now(), callbacks(fakeStream));
+
+    expect(outcome.ok).toBe(true);
+    expect(calls).toBe(2);
+    expect(relayed).toEqual([{ convId: childId, kind: "subagent_completion", text: "[notification] Subagent completed: exo:grandchild" }]);
+  });
+
   test("a daemon-restart abort leaves the notification running for the next daemon", async () => {
     const parentId = id("restart-parent");
     const childId = id("restart-child");
