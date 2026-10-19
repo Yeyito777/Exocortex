@@ -13,6 +13,7 @@ export * from "@exocortex/shared/model-display";
 // ── TUI helpers ─────────────────────────────────────────────────────
 
 import { createMessageMetadata, type AIMessage, type Block, type ModelId, type ConversationSummary } from "@exocortex/shared/messages";
+import { sanitizeUntrustedLabel } from "./terminaltext";
 
 /** Resolve the display name for a conversation: title or fallback. */
 export function convDisplayName(
@@ -22,7 +23,8 @@ export function convDisplayName(
   let name = conv.title || fallback;
   const nl = name.indexOf("\n");
   if (nl !== -1) name = name.slice(0, nl);
-  return name;
+  // Titles can be set by any socket client and by the title model.
+  return sanitizeUntrustedLabel(name);
 }
 
 /** Create a fresh pending AI message for streaming. */

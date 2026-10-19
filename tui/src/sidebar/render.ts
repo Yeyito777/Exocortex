@@ -19,6 +19,7 @@ import {
 import { theme } from "../theme";
 import { conversationWorkCounts, hasInProgressModelWork, inlineLongSleepStartedAt, isDurablySleeping, shouldDisplayConversationTask } from "../taskvisibility";
 import { padRightToWidth, termWidth, truncateToWidth } from "../textwidth";
+import { sanitizeUntrustedLabel } from "../terminaltext";
 import type { ConversationTaskSummary } from "../messages";
 import type { DisplayUpdateStatus } from "../update-status";
 
@@ -193,7 +194,8 @@ function folderStreamingIndicator(count: number): string {
 }
 
 function truncateSidebarTitle(text: string, maxWidth: number): string {
-  return truncateToWidth(text, maxWidth);
+  // Folder names and titles come from the daemon, which takes them from any client.
+  return truncateToWidth(sanitizeUntrustedLabel(text), maxWidth);
 }
 
 function contextualSidebarTitle(folderName: string | null, maxWidth: number): string {
