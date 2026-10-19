@@ -294,3 +294,52 @@ describe("prompt linewise yank and put", () => {
     expect(isLinewiseClipboardText("ab")).toBe(false);
   });
 });
+
+describe("prompt Enter with a pending Vim command", () => {
+  function press(state: RenderState, type: KeyEvent["type"]) {
+    return handleFocusedKey({ type } as KeyEvent, state);
+  }
+
+  test("r<Enter> splits the line instead of submitting", () => {
+    const state = prompt("ab", 0);
+    keys(state, "r");
+    expect(press(state, "enter").type).not.toBe("submit");
+    expect([state.inputBuffer, state.cursorPos]).toEqual(["\nb", 1]);
+  });
+
+  test("r<Enter> on an empty line does nothing", () => {
+    const state = prompt("a\n\nb", 2);
+    keys(state, "r");
+    expect(press(state, "enter").type).not.toBe("submit");
+    expect([state.inputBuffer, state.cursorPos]).toEqual(["a\n\nb", 2]);
+  });
+
+  test("Enter cancels a pending find, operator, prefix or count", () => {
+    for (const pending of ["f", "d", "di", "g", "2"]) {
+      const state = prompt("ab ab", 0);
+      keys(state, pending);
+      expect(press(state, "enter").type).not.toBe("submit");
+      expect(state.inputBuffer).toBe("ab ab");
+      keys(state, "w");
+      expect(state.cursorPos).toBe(3);
+    }
+  });
+
+  test("Enter with nothing pending still submits", () => {
+    expect(press(prompt("ab", 0), "enter").type).toBe("submit");
+  });
+});
+
+describe("prompt non-character keys cancel a pending Vim command", () => {
+  test("Tab cancels a pending find", () => {
+    expect(vim("xx b yy b", 0, "f<tab>b").cursor).toBe(0);
+  });
+
+  test("Tab cancels a pending operator", () => {
+    expect(vim("ab cd", 0, "d<tab>w")).toEqual({ buffer: "ab cd", cursor: 3 });
+  });
+
+  test("Tab cancels a pending find in visual mode", () => {
+    expect(vim("ab xb", 0, "vf<tab>bd").buffer).toBe("b xb");
+  });
+});

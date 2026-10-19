@@ -66,7 +66,10 @@ export function handleVisualMode(
     return { type: "mode_change", mode: "visual", cursor };
   }
 
-  if (ks === null) return { type: "passthrough" };
+  if (ks === null) {
+    resetPending(vim);
+    return { type: "passthrough" };
+  }
 
   if ((vim.pendingKeys === "<" || vim.pendingKeys === ">") && ks !== vim.pendingKeys) {
     resetPending(vim);
