@@ -7,7 +7,7 @@
  */
 
 import type { RenderState } from "./state";
-import { clearPendingAI, clearStreamingTailMessages, pushSystemMessage, renderFolderInstructionsDocument, setFolderInstructionsDocumentText } from "./state";
+import { clearPendingAI, clearStreamingTailMessages, isLocalOnlyMessage, pushSystemMessage, renderFolderInstructionsDocument, setFolderInstructionsDocumentText } from "./state";
 import { buildTokenStatsViewMessage } from "./commands/tokens";
 import { theme } from "./theme";
 import { censorKnownAuthEmails } from "./privacy";
@@ -376,9 +376,13 @@ export function handleEvent(
       // but preserve pendingAI (the active streaming response). Flush buffered
       // system messages — they reference pre-modification state.
       const beforeApply = captureAssistantDisplaySnapshot(state);
-      const preservedToolOutputs = event.toolOutputsIncluded
+      // A window reset follows a destructive rewrite (/trim replaces tool
+      // results): outputs held here may no longer be what the daemon has, so
+      // nothing is carried over and the viewport loader fetches them afresh.
+      const preservedToolOutputs = event.toolOutputsIncluded || event.resetHistoryWindow
         ? new Map()
         : collectDisplayedToolResultOutputs(state);
+      if (event.resetHistoryWindow) state.requestedToolOutputIds.clear();
       let preservedToolOutputResult = { patchedOutputs: 0, patchedToolNames: 0 };
       logDiskSyncAssistantDiff("history_updated", event.convId, state, {
         entries: event.entries,
@@ -403,13 +407,24 @@ export function handleEvent(
       let currentPinnedCount = 0;
       while (currentMessages[currentPinnedCount]?.role === "system_instructions") currentPinnedCount += 1;
       let preservedPrefix: typeof currentMessages | null = null;
-      const prefix = currentMessages.slice(currentPinnedCount, currentPinnedCount + prefixEntryCount);
-      if (canPreserveLoadedPrefix && prefix.length === prefixEntryCount) {
+      // Count daemon entries, not rows: local notices (/model, /effort, …) sit
+      // between canonical rows and would otherwise shift the kept prefix by one,
+      // dropping a real entry that the refresh window no longer carries.
+      const prefix: typeof currentMessages = [];
+      let prefixCanonicalCount = 0;
+      let prefixEnd = currentPinnedCount;
+      while (prefixCanonicalCount < prefixEntryCount && prefixEnd < currentMessages.length) {
+        const message = currentMessages[prefixEnd++]!;
+        prefix.push(message);
+        if (!isLocalOnlyMessage(message)) prefixCanonicalCount += 1;
+      }
+      if (canPreserveLoadedPrefix && prefixCanonicalCount === prefixEntryCount) {
         if (eventHistoryStartBlockIndex === 0) {
           preservedPrefix = prefix;
         } else {
           // The refresh starts inside an AI entry; keep its leading blocks loaded here.
-          const loaded = currentMessages[currentPinnedCount + prefixEntryCount];
+          while (prefixEnd < currentMessages.length && isLocalOnlyMessage(currentMessages[prefixEnd]!)) prefixEnd += 1;
+          const loaded = currentMessages[prefixEnd];
           const headBlocks = eventHistoryStartBlockIndex - (prefixEntryCount === 0 ? previousHistoryStartBlockIndex : 0);
           const firstIncoming = event.entries.find((entry) => entry.type !== "system_instructions");
           if (loaded?.role === "assistant" && firstIncoming?.type === "ai"

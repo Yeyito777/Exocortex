@@ -11,7 +11,8 @@ import type { Block, ExternalToolStyle, ImageAttachment, ToolDisplayInfo } from 
 import { formatSize, imageLabel } from "./clipboard";
 import { markdownWordWrap } from "./markdown";
 import { theme } from "./theme";
-import { sanitizeUntrustedText } from "./terminaltext";
+import { wrapAnsiLine } from "./ansiwrap";
+import { sanitizeUntrustedText, sanitizeUntrustedTextKeepingSgr } from "./terminaltext";
 import { sliceByWidthFrom, termWidth } from "./textwidth";
 import { wordWrap, type WrapImage, type WrapResult } from "./textwrap";
 import { createDisplayMathImageRenderer, mathImageCacheKey, mathImageGeneration, type DisplayMathImageRenderer } from "./mathimages";
@@ -748,14 +749,17 @@ export function renderSystemMessage(text: string, availableWidth: number, color?
   const cont: boolean[] = [];
   const join: string[] = [];
 
-  for (const rawLine of text.split("\n")) {
+  // Notices carry daemon, provider and external-notification text. Styling is
+  // kept for locally built notices; any other escape reaching the terminal
+  // could write the clipboard (OSC 52), retitle the window or redraw the UI.
+  for (const rawLine of sanitizeUntrustedTextKeepingSgr(text).split("\n")) {
     if (rawLine.includes("\x1b[")) {
-      // Inline ANSI is used sparingly (for example /tokens heatmaps). Preserve
-      // the authored line rather than letting the plain word wrapper split on
-      // raw escape-sequence length instead of visible width.
-      lines.push(rawLine);
-      cont.push(false);
-      join.push("");
+      // Inline ANSI is used sparingly (for example /tokens heatmaps). Wrap by
+      // visible width without splitting escape sequences.
+      const ansiWrap = wrapAnsiLine(rawLine, width);
+      lines.push(...ansiWrap.lines);
+      cont.push(...ansiWrap.lines.map((_, index) => index > 0));
+      join.push(...ansiWrap.joins);
       continue;
     }
     const lineWrap = wordWrap(rawLine, width);

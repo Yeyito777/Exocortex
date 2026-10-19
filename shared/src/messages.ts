@@ -399,6 +399,8 @@ export interface SystemMessage {
   text: string;
   color?: string;
   metadata: MessageMetadata | null;
+  /** Client-only notice the daemon never stored: not a canonical history entry. */
+  localOnly?: true;
 }
 
 /**

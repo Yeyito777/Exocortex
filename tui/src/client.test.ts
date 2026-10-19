@@ -91,6 +91,29 @@ describe("DaemonClient request-scoped events", () => {
     ]);
   });
 
+  test("a throwing event handler never writes to the terminal and later events still flow", () => {
+    const events: unknown[] = [];
+    const client = new DaemonClient((event) => {
+      if ((event as { message?: string }).message === "throws") throw new Error("handler bug");
+      events.push(event);
+    });
+    const originalError = console.error;
+    const originalWrite = process.stderr.write;
+    const terminalWrites: unknown[] = [];
+    console.error = (...args: unknown[]) => { terminalWrites.push(args); };
+    process.stderr.write = ((chunk: unknown) => { terminalWrites.push(chunk); return true; }) as typeof process.stderr.write;
+    try {
+      (client as any).onData(Buffer.from(
+        JSON.stringify({ type: "error", message: "throws" }) + "\n" + JSON.stringify({ type: "error", message: "after" }) + "\n",
+      ));
+    } finally {
+      console.error = originalError;
+      process.stderr.write = originalWrite;
+    }
+    expect(terminalWrites).toEqual([]);
+    expect(events).toEqual([{ type: "error", message: "after" }]);
+  });
+
   test("does not forward transcription callback errors to the global handler", () => {
     const events: unknown[] = [];
     const errors: string[] = [];

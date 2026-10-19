@@ -6,6 +6,7 @@
  * arrives on stdin, it works unchanged through an SSH PTY.
  */
 
+import { StringDecoder } from "node:string_decoder";
 import type { ImageAttachment, ImageMediaType } from "./messages";
 import { convertHeic, HEIC_MIME_TYPES } from "./heic";
 import { readHeicClipboardFiles } from "./clipboard";
@@ -354,6 +355,8 @@ export class TerminalClipboardClient {
  */
 export class TerminalControlBuffer {
   private buffer = "";
+  // A read can end inside a multibyte character (large pastes); decode across reads.
+  private readonly decoder = new StringDecoder("utf8");
   private bracketedPaste = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -364,7 +367,7 @@ export class TerminalControlBuffer {
 
   feed(data: Buffer | string): void {
     this.clearTimer();
-    this.buffer += typeof data === "string" ? data : data.toString("utf8");
+    this.buffer += typeof data === "string" ? data : this.decoder.write(data);
     this.drain();
   }
 

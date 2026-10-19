@@ -17,6 +17,32 @@ export function sanitizeUntrustedText(text: string): string {
     .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, "�");
 }
 
+const SGR_SEQUENCE_RE = /\x1b\[[0-9;:]*m/g;
+
+/**
+ * Like sanitizeUntrustedText, but keeps SGR (colour/style) sequences intact.
+ *
+ * For text that may legitimately carry styling (locally built notices such as
+ * the /tokens heatmap) and is also fed daemon/provider text. Only SGR survives:
+ * OSC (clipboard writes, window titles, hyperlinks), cursor movement, screen
+ * clears and every other control byte are neutralized.
+ */
+export function sanitizeUntrustedTextKeepingSgr(text: string): string {
+  if (!text.includes("\x1b")) return sanitizeUntrustedText(text);
+  let out = "";
+  let last = 0;
+  for (const match of text.matchAll(SGR_SEQUENCE_RE)) {
+    out += sanitizeUntrustedText(text.slice(last, match.index)) + match[0];
+    last = match.index + match[0].length;
+  }
+  return out + sanitizeUntrustedText(text.slice(last));
+}
+
+/** One-line display text from untrusted input (titles, folder names, labels). */
+export function sanitizeUntrustedLabel(text: string): string {
+  return sanitizeUntrustedText(text).replace(/\n/g, " ");
+}
+
 const ANSI_ESCAPE_RE = /\x1b\[[0-9;]*m/g;
 
 export function stripAnsiStyles(text: string): string {

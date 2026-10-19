@@ -1,6 +1,7 @@
 import type { CompletionItem } from "../commands";
 import { theme } from "../theme";
 import { getViewportByWidth, padRightToWidth, termWidth } from "../textwidth";
+import { sanitizeUntrustedLabel } from "../terminaltext";
 
 export type SidebarPromptPurpose = "create_folder" | "move_items" | "rename_folder";
 
@@ -86,8 +87,9 @@ export function getSidebarPromptAutocompleteRows(
     const downIndicator = vi === winSize - 1 && winStart + winSize < total;
     const indicator = upIndicator ? "▲" : downIndicator ? "▼" : "";
     const descBodyWidth = Math.max(0, descWidth - termWidth(indicator));
-    const name = padRightToWidth(item.name, nameWidth);
-    const desc = padRightToWidth(item.desc, descBodyWidth) + indicator;
+    // Completions list conversation titles, folder names and daemon-host paths.
+    const name = padRightToWidth(sanitizeUntrustedLabel(item.name), nameWidth);
+    const desc = padRightToWidth(sanitizeUntrustedLabel(item.desc), descBodyWidth) + indicator;
     rows.push(bg + theme.accent + marker + theme.text + name + theme.dim + desc + theme.reset);
   }
   return rows;

@@ -1465,8 +1465,8 @@ export class DaemonClient {
           this.handler(event);
         }
       } catch (err) {
-        // TUI owns stdout for rendering — stderr is safe for diagnostics.
-        console.error("[daemon event error]", err);
+        // stderr is the terminal the TUI is drawing on: log instead.
+        log("error", `tui: daemon event handling failed: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
       }
     }
   }
