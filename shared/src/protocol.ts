@@ -949,6 +949,19 @@ export interface TranscribeAudioCommand {
   audioBase64: string;
   /** MIME type for the uploaded audio. */
   mimeType: string;
+  /** Upload filename for the transcription backend (e.g. the `transcribe` CLI's input file name). */
+  filename?: string;
+}
+
+/**
+ * Generate a raster image with the daemon's OpenAI login. Used by the `image`
+ * external tool, so provider credentials never leave the daemon.
+ */
+export interface GenerateImageCommand {
+  type: "generate_image";
+  reqId?: string;
+  /** Exact UTF-8 prompt. */
+  prompt: string;
 }
 
 /** OpenAI OAuth flow selected by the user. Browser remains the default. */
@@ -1207,6 +1220,7 @@ export type Command =
   | ListTasksCommand
   | StopTaskCommand
   | TranscribeAudioCommand
+  | GenerateImageCommand
   | LoginCommand
   | AccountCommand
   | AccountsCommand
@@ -2043,6 +2057,14 @@ export interface TranscriptionResultEvent {
   text: string;
 }
 
+export interface ImageGenerationResultEvent {
+  type: "image_generation_result";
+  reqId?: string;
+  /** Base64-encoded image bytes as returned by the provider. */
+  imageBase64: string;
+  revisedPrompt: string | null;
+}
+
 export interface ExternalToolDaemonStatus {
   toolName: string;
   action: ExternalToolDaemonAction;
@@ -2198,6 +2220,7 @@ export type Event =
   | TasksListEvent
   | TaskStoppedEvent
   | TranscriptionResultEvent
+  | ImageGenerationResultEvent
   | ExternalToolDaemonResultEvent
   | ExternalNotificationSourceEvent
   | ExternalNotificationSourcesEvent

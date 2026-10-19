@@ -16,6 +16,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { Options as ClaudeQueryOptions } from "@anthropic-ai/claude-agent-sdk";
+import { claudeCodeSafetyHooks } from "./safety-hooks";
 import { claudeSdks, loadClaudeSdks } from "./sdk";
 import { classifyNetworkFailure } from "../errors";
 import { createAbortError } from "../../abort";
@@ -112,6 +113,8 @@ function agentTurnOptions(
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
     disallowedTools: [...INTERACTIVE_ONLY_TOOLS, ...SCHEDULER_TOOLS],
+    // Permissions are bypassed, so the user's safety denylist is a hook.
+    hooks: claudeCodeSafetyHooks(cwd),
     // Exocortex can stop each background task (its Tasks UI), so an interrupt
     // stops only the turn and spares them, as in Claude Code itself.
     perTaskStopAffordance: true,
@@ -378,6 +381,8 @@ export async function adoptClaudeCodeProcesses(hasConversation: (convId: string)
           ...claudeProcessOptions(meta.cwd, meta.account, meta.convId),
           systemPrompt: systemPromptOption(meta.systemAppend),
           perTaskStopAffordance: true,
+          // Same hooks as at start, so the process's registered callback ids still resolve.
+          hooks: claudeCodeSafetyHooks(meta.cwd),
           ...(hostTools ? { mcpServers: { [hostTools.name]: hostTools } } : {}),
           spawnClaudeCodeProcess: () => relay,
         },

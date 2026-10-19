@@ -33,6 +33,7 @@ import { getExternalToolStyles, manageExternalToolDaemon } from "./external-tool
 import { EFFORT_LEVELS, SUBAGENTS_FOLDER_NAME, createModelVisibleSystemNotice, type Conversation } from "./messages";
 import { getDefaultProvider, getDefaultModel, getProvider, getProviders, isKnownModel, allowsCustomModels, refreshProviders, normalizeEffort, supportsEffort, getSupportedEfforts, supportsFastMode, supportsImageInputs } from "./providers/registry";
 import { transcribeAudioBytes } from "./transcription";
+import { generateImage } from "./providers/openai/image-generation";
 import { startTitleGeneration, isPendingTitle, PENDING_TITLE } from "./titlegen";
 import * as convStore from "./conversations";
 import { rememberSentImages, resolveImageForPreview } from "./image-requests";
@@ -3544,7 +3545,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         log("info", `handler: transcribe_audio (${audioBytes.length} bytes)`);
         server.sendTo(client, { type: "ack", reqId: cmd.reqId });
 
-        transcribeAudioBytes(audioBytes, { mimeType: cmd.mimeType })
+        transcribeAudioBytes(audioBytes, { mimeType: cmd.mimeType, filename: cmd.filename })
           .then((text) => {
             server.sendTo(client, { type: "transcription_result", reqId: cmd.reqId, text });
           })
@@ -3552,6 +3553,23 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             const msg = err instanceof Error ? err.message : String(err);
             log("error", `handler: transcribe_audio failed: ${msg}`);
             server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Voice transcription failed: ${msg}` });
+          });
+        break;
+      }
+
+      case "generate_image": {
+        // The `image` tool's request: the daemon makes the call with its own
+        // OpenAI login so no credential is handed to the tool's process.
+        log("info", `handler: generate_image (${cmd.prompt.length} chars)`);
+        server.sendTo(client, { type: "ack", reqId: cmd.reqId });
+        generateImage(cmd.prompt)
+          .then((image) => {
+            server.sendTo(client, { type: "image_generation_result", reqId: cmd.reqId, ...image });
+          })
+          .catch((err) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            log("error", `handler: generate_image failed: ${msg}`);
+            server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Image generation failed: ${msg}` });
           });
         break;
       }

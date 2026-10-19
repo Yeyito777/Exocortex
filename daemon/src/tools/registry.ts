@@ -27,7 +27,7 @@ import { attach } from "./attach";
 import { getClaudeCodeToolDisplayInfo, summarizeClaudeCodeTool } from "./claude-code";
 import { TOOL_BACKGROUND_SECONDS } from "../constants";
 import { formatToolAbortMessage, isToolTimeoutReason, toolTimeoutReason } from "../abort";
-import { evaluateToolCallSafety, formatSafetyBlock } from "../safety";
+import { evaluateToolCallSafety, formatSafetyBlock, evaluatePathSafety } from "../safety";
 import { AbortableSemaphore } from "./semaphore";
 import { log } from "../log";
 import { providerToolNames } from "./provider-primitives";
@@ -342,6 +342,10 @@ async function executeSingleTool(
       if (!readSafety.allowed) return { toolCallId: call.id, toolName: call.name, output: formatSafetyBlock(readSafety), isError: true };
     }
   }
+
+  // Match the denylist on the paths the call really touches, not just its text.
+  const pathSafety = evaluatePathSafety(call.name, call.input, toolContext?.cwd ?? process.cwd());
+  if (!pathSafety.allowed) return { toolCallId: call.id, toolName: call.name, output: formatSafetyBlock(pathSafety), isError: true };
 
   const tool = getTool(call.name, toolContext?.conversationId);
   if (!tool) {

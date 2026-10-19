@@ -53,6 +53,12 @@ conversation rows marked `remote` are the remote's own
 and cannot be opened here. `claude.proxied` is true only while the remote's
 accounts are unknown.
 
+`transcribe_audio` and `generate_image` run a provider call with the
+daemon's own OpenAI login and answer `transcription_result` /
+`image_generation_result`. The `transcribe` and `image` tools use them, so no
+provider credential is ever handed to a tool process, its argv, environment or
+command text.
+
 `provider_proxy` lists, enables or disables [/proxy](provider-proxy.md);
 daemons also speak the `provider_proxy_*` link messages to each other over
 `exocortexd proxy`.

@@ -12,11 +12,6 @@ export interface ManifestDaemon {
   env?: Record<string, string>;
 }
 
-export interface ManifestAuth {
-  /** Provider auth blobs to inject as hidden CLI args when this tool is invoked. */
-  providers: string[];
-}
-
 export interface Manifest {
   name: string;
   bin: string;
@@ -25,8 +20,6 @@ export interface Manifest {
     label: string;
     color: string;
   };
-  /** Optional provider auth borrowed from the daemon and passed as CLI args. */
-  auth?: ManifestAuth;
   /** Optional long-running daemon that exocortexd will spawn and supervise. */
   daemon?: ManifestDaemon;
 }
