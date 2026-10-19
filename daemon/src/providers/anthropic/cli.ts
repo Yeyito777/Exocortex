@@ -94,7 +94,13 @@ export function claudeProcessOptions(cwd: string, account?: string, convId?: str
   return {
     cwd,
     pathToClaudeCodeExecutable: getClaudeBinary(),
-    env: { ...base, ...accountEnv, ...proxy, CLAUDE_AGENT_SDK_CLIENT_APP: "exocortex-daemon" },
+    env: {
+      ...base, ...accountEnv, ...proxy, CLAUDE_AGENT_SDK_CLIENT_APP: "exocortex-daemon",
+      // What every Exocortex shell promises its tools (TOOL_STANDARD.md), as
+      // the daemon's own bash sets per call: e.g. exo-cli detaches and reports
+      // to the invoking conversation from it.
+      ...(convId ? { EXOCORTEX_PARENT_CONV_ID: convId, EXOCORTEX_PARENT_PROVIDER: "anthropic", EXOCORTEX_WORKSPACE: cwd } : {}),
+    },
   };
 }
 
