@@ -50,6 +50,14 @@ describe("bash and external tools", () => {
   });
 });
 
+describe("bash timeouts longer than a timer can wait", () => {
+  test.skipIf(isWindows)("a 30-day timeout lets the command finish instead of killing it at once", async () => {
+    const result = await executeBashBackgroundable({ command: "sleep 0.3; echo finished", timeout_seconds: 30 * 86_400 }, undefined, 60_000, { cwd: tmpdir() });
+    expect(result.isError).toBeFalsy();
+    expect(result.output).toContain("finished");
+  }, 20_000);
+});
+
 describe("bash spill preview", () => {
   test("includes spill path instructions when temp write succeeds", () => {
     const written: Array<{ path: string; contents: string }> = [];

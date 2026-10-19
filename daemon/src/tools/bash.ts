@@ -18,7 +18,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { randomUUID } from "crypto";
 import type { Tool, ToolResult, ToolSummary, ToolExecutionContext } from "./types";
-import { getString, getNumber, getBoolean, safeSlice, summarizeParams } from "./util";
+import { getString, getNumber, getBoolean, safeSlice, summarizeParams, timerDelayMs } from "./util";
 import { TOOL_BACKGROUND_SECONDS } from "../constants";
 import { formatToolAbortMessage } from "../abort";
 import { isWindows, socketPath } from "@exocortex/shared/paths";
@@ -734,7 +734,7 @@ async function executeBashImpl(
         if (backgroundImmediately) queueMicrotask(() => backgroundNow("explicit"));
         else if (backgroundAfterMs && backgroundAfterMs > 0) {
           const remaining = Math.max(1, backgroundAfterMs - (Date.now() - startTime));
-          bgTimer = setTimeout(() => backgroundNow("timeout"), remaining);
+          bgTimer = setTimeout(() => backgroundNow("timeout"), timerDelayMs(remaining));
         }
         return;
       }
@@ -827,7 +827,7 @@ async function executeBashImpl(
       if (commandPid) killProcessGroup(commandPid);
       else try { runner.kill(); } catch { /* already exited */ }
       scheduleRunnerFallbackKill();
-    }, timeoutMs);
+    }, timerDelayMs(timeoutMs));
     timeoutTimer.unref?.();
   });
 }

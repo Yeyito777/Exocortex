@@ -11,6 +11,7 @@ import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import type { ClientExecRequestEvent, ClientExecResultCommand, ClientHostInfo, Event } from "@exocortex/shared/protocol";
 import type { ConnectedClient } from "./server";
+import { timerDelayMs } from "./tools/util";
 
 /** How long past its own timeout a command may go unanswered before it is given up on. */
 const RESPONSE_GRACE_MS = 30_000;
@@ -118,7 +119,7 @@ export function runOnClientHost(
     const deadline = setTimeout(() => {
       host.send({ type: "client_exec_cancel", execId });
       finish({ failure: `${describeClientHost(host.info)} did not answer within ${Math.round((request.timeoutMs + RESPONSE_GRACE_MS) / 1000)}s.` });
-    }, request.timeoutMs + RESPONSE_GRACE_MS);
+    }, timerDelayMs(request.timeoutMs + RESPONSE_GRACE_MS));
     deadline.unref?.();
     const onAbort = () => {
       host.send({ type: "client_exec_cancel", execId });

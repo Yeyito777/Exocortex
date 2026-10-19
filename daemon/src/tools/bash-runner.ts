@@ -317,7 +317,8 @@ function start(request: StartRequest): void {
 
   send({ type: "started", pid: proc.pid });
   if (request.timeoutMs !== undefined && Number.isFinite(request.timeoutMs) && request.timeoutMs > 0) {
-    commandTimeout = setTimeout(terminateCommandTree, request.timeoutMs);
+    // Longer than setTimeout's maximum overflows to an immediate kill.
+    commandTimeout = setTimeout(terminateCommandTree, Math.min(request.timeoutMs, 2_147_483_647));
     commandTimeout.unref?.();
   }
   proc.stdin.on("error", () => { /* the command may exit before consuming all input */ });

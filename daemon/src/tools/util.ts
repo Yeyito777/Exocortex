@@ -78,3 +78,11 @@ export function summarizeParams(
   }
   return parts.join(" ");
 }
+
+/** setTimeout's largest delay (~24.8 days); a longer one overflows and fires at once. */
+export const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
+/** A timer delay that waits as long as asked, or the longest a timer can. */
+export function timerDelayMs(ms: number): number {
+  return Math.min(ms, MAX_TIMER_DELAY_MS);
+}
