@@ -249,6 +249,24 @@ test("cold sidebar mutations, clones and undo do not hydrate canonical archives"
   convStore.flush(id);
 });
 
+test("undo and redo of a cold rename or mark apply without loading, and older entries stay reachable", async () => {
+  const a = seed();
+  const b = seed();
+  convStore.conversationCacheInternalsForTest.evictClean();
+  const titleB = convStore.getSummary(b)!.title;
+  expect(convStore.rename(b, "B renamed")).toBe(true);
+  expect(convStore.mark(a, true)).toBe(true);
+  expect((await convStore.undoDeleteAsync())?.type).toBe("sidebar_state");
+  expect(convStore.getSummary(a)?.marked).toBe(false);
+  expect((await convStore.undoDeleteAsync())?.type).toBe("sidebar_state");
+  expect(convStore.getSummary(b)?.title).toBe(titleB);
+  expect(convStore.getCached(a)).toBeUndefined();
+  expect(convStore.getCached(b)).toBeUndefined();
+  expect((await convStore.redoDeleteAsync())?.type).toBe("sidebar_state");
+  expect(convStore.getSummary(b)?.title).toBe("B renamed");
+  expect((await convStore.getAsync(b))!.title).toBe("B renamed");
+});
+
 test("Stop can persist a cold active-goal pause without loading its history", async () => {
   const id = seed();
   await convStore.getAsync(id);
