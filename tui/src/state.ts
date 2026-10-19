@@ -500,8 +500,13 @@ export function resolveSystemMessageColor(color?: SystemNoticeColorName | string
  * The color may be either a semantic notice color name ("warning", "error",
  * "muted", "success") or an already-resolved ANSI style string.
  */
+/** A client-only notice, not one of the daemon's display entries. */
+export function isLocalOnlyMessage(message: Message): boolean {
+  return message.role === "system" && message.localOnly === true;
+}
+
 export function pushSystemMessage(state: RenderState, text: string, color?: SystemNoticeColorName | string): void {
-  const msg: SystemMessage = { role: "system", text, color: resolveSystemMessageColor(color), metadata: null };
+  const msg: SystemMessage = { role: "system", text, color: resolveSystemMessageColor(color), metadata: null, localOnly: true };
   if (isStreaming(state)) {
     state.streamingTailMessages.push(msg);
   } else {
