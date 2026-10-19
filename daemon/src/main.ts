@@ -13,6 +13,9 @@
 
 import { loadEnvFile } from "./env";
 loadEnvFile();
+// Every child (bash, Claude Code, tool daemons) reaches this instance's
+// socket, e.g. for tools that ask the daemon to make provider calls.
+process.env.EXOCORTEX_SOCKET = socketPath();
 
 import { mkdirSync, writeFileSync, readFileSync, unlinkSync, existsSync } from "fs";
 import { connect as netConnect } from "net";
