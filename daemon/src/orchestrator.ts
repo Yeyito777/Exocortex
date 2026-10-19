@@ -1957,7 +1957,11 @@ async function orchestrateAdmittedAssistantTurn(
     }
 
     const endedAt = Date.now();
-    const historyUnwindPendingAtAbort = convStore.isHistoryUnwindPending(convId, ac);
+    // Deleting a conversation aborts its turn and discards its job at once. If
+    // it was restored (undo), perhaps with a new turn already running, this
+    // turn no longer owns it and must write nothing into it.
+    const supersededAtAbort = convStore.getActiveJob(convId) !== ac;
+    const historyUnwindPendingAtAbort = supersededAtAbort || convStore.isHistoryUnwindPending(convId, ac);
     if (conv.goal?.status === "active" && (conv.goal === goalAtTurnStart || (isAbort && !isWatchdog))
         && !isDaemonRestart && !getDaemonShutdownMode() && !historyUnwindPendingAtAbort) {
       updateGoalStatus(convId, isAbort && !isWatchdog ? "paused" : "blocked",
@@ -2024,7 +2028,7 @@ async function orchestrateAdmittedAssistantTurn(
 
     const canAdvanceExistingContext = conv.activeContext != null
       && isActiveContextCompatible(conv.activeContext, conv.provider, conv.model, accountScope);
-    if (canAdvanceExistingContext || compactionsThisTurn > 0) {
+    if (!supersededAtAbort && (canAdvanceExistingContext || compactionsThisTurn > 0)) {
       const recoveredContext = [...agentState.contextMessages];
       if (hasContent) {
         recoveredContext.push({ role: "assistant", content: safeContent });
@@ -2100,6 +2104,17 @@ async function orchestrateAdmittedAssistantTurn(
     }
     stopStreamingSnapshotHeartbeat();
     unsubscribeConnectivity();
+    if (convStore.getActiveJob(convId) !== ac) {
+      // Deleted mid-turn (see supersededAtAbort): the conversation's streaming
+      // state, queue, job and notifications now belong to nobody or to a newer
+      // turn after an undo. Release only what this turn itself holds.
+      convStore.clearActiveSteerHandler(convId, steerTurn);
+      for (const unsubscribe of queuedInputSubscriptions) unsubscribe();
+      queuedInputSubscriptions.clear();
+      ext.onComplete();
+      // eslint-disable-next-line no-unsafe-finally
+      return outcome ?? buildErrorOutcome("Assistant turn ended without an outcome.");
+    }
     if (connectionWaitShown) {
       connectionWaitShown = false;
       convStore.setConnectionWaitStartedAt(convId, null);
@@ -2144,7 +2159,7 @@ async function orchestrateAdmittedAssistantTurn(
     convStore.clearActiveSteerHandler(convId, steerTurn);
     for (const unsubscribe of queuedInputSubscriptions) unsubscribe();
     queuedInputSubscriptions.clear();
-    convStore.clearActiveJob(convId);
+    convStore.clearActiveJob(convId, ac);
     convStore.clearCurrentStreamingBlocks(convId);
     convStore.resetChunkCounter(convId);
     // The turn, not whichever producer started it, owns subagent completion: after

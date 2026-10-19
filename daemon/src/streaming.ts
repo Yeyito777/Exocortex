@@ -173,7 +173,9 @@ export function isRestartRecoverableJob(convId: string): boolean {
   return activeJobs.has(convId) && restartRecoverableJobs.has(convId);
 }
 
-export function clearActiveJob(convId: string): void {
+/** Clear a conversation's job; with `owner`, only while that job is still the active one. */
+export function clearActiveJob(convId: string, owner?: AbortController): void {
+  if (owner && activeJobs.get(convId) !== owner) return;
   activeJobs.delete(convId);
   activeJobKinds.delete(convId);
   restartRecoverableJobs.delete(convId);
