@@ -1,5 +1,7 @@
 import { spawn } from "child_process";
+import { mkdirSync, readdirSync, rmSync, statSync } from "fs";
 import { basename, join } from "path";
+import { runtimeDir } from "@exocortex/shared/paths";
 
 /** Shared launch policy for both shell tool surfaces. Detached work must not
  * remain in the main daemon's systemd control group on Linux.
@@ -32,4 +34,29 @@ export function spawnShellRunner(options: {
   ] : args, {
     cwd: options.cwd, env: options.env, stdio: ["pipe", "pipe", "pipe"], windowsHide: windows,
   });
+}
+
+/** Untouched for this long, a capture file belongs to nothing still running. */
+const TOOL_OUTPUT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+let toolOutputSwept = false;
+
+/**
+ * Where shell tools capture command output: on disk under the runtime
+ * directory, not /tmp, which is RAM-backed (tmpfs) on Linux. Files untouched
+ * for a week are removed the first time a process asks.
+ */
+export function toolOutputPath(prefix: string, id: string): string {
+  const dir = join(runtimeDir(), "tool-output");
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  if (!toolOutputSwept) {
+    toolOutputSwept = true;
+    const cutoff = Date.now() - TOOL_OUTPUT_MAX_AGE_MS;
+    try {
+      for (const name of readdirSync(dir)) {
+        const path = join(dir, name);
+        try { if (statSync(path).mtimeMs < cutoff) rmSync(path, { force: true }); } catch { /* raced */ }
+      }
+    } catch { /* best effort */ }
+  }
+  return join(dir, `${prefix}-${process.pid}-${id}.tmp`);
 }

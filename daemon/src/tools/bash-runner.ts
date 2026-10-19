@@ -7,7 +7,7 @@
  */
 
 import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
-import { createWriteStream, type WriteStream } from "fs";
+import { closeSync, createWriteStream, openSync, readSync, renameSync, statSync, writeFileSync, type WriteStream } from "fs";
 import { createInterface } from "readline";
 import {
   readProcessStartTime,
@@ -29,6 +29,8 @@ interface StartRequest {
   shell?: string;
   login?: boolean;
   captureLimitBytes?: number;
+  /** Cap on everything captured once the command is backgrounded (default: none). */
+  backgroundCaptureLimitBytes?: number;
   terminateOnParentExit?: boolean;
   timeoutMs?: number;
   cwd: string;
@@ -58,6 +60,13 @@ let commandProcess: ChildProcessWithoutNullStreams | null = null;
 let terminalProcess: Bun.Subprocess | null = null;
 let terminal: Bun.Terminal | undefined;
 let captureLimitBytes: number | undefined;
+let backgroundCaptureLimitBytes: number | undefined;
+let outputPath: string | undefined;
+/** Bytes in the capture file, so a backgrounded capture knows when to drop its front. */
+let fileBytes = 0;
+/** While the front of the capture is being dropped, output waits here in order. */
+let rotation: Promise<void> | null = null;
+const heldOutput: Buffer[] = [];
 const commandPid = () => commandProcess?.pid ?? terminalProcess?.pid;
 let outputStream: WriteStream | null = null;
 let outputStreamFailed = false;
@@ -122,12 +131,31 @@ function resumeCommandOutput(): void {
 }
 
 function writeOutput(data: Buffer): void {
+  if (rotation) {
+    heldOutput.push(data);
+    return;
+  }
   const stream = outputStream;
   if (!stream || outputStreamFailed) return;
 
+  // A backgrounded command can write without end (a dev server, tail -f).
+  // What matters when someone checks on it is the latest output, so past the
+  // cap the front of the file is dropped, not the new output.
+  if (backgrounded && captureLimitBytes === undefined && backgroundCaptureLimitBytes !== undefined) {
+    if (fileBytes + data.length > backgroundCaptureLimitBytes && outputPath) {
+      heldOutput.push(data);
+      rotation = dropCaptureFront(outputPath, backgroundCaptureLimitBytes);
+      return;
+    }
+    fileBytes += data.length;
+    if (!stream.write(data)) pauseCommandOutput();
+    return;
+  }
+
   let chunk = data;
-  if (!backgrounded || captureLimitBytes !== undefined) {
-    const remaining = (captureLimitBytes ?? MAX_CAPTURE_BYTES) - totalCapturedBytes;
+  const limit = captureLimitBytes ?? (backgrounded ? undefined : MAX_CAPTURE_BYTES);
+  if (limit !== undefined) {
+    const remaining = limit - totalCapturedBytes;
     if (remaining <= 0) {
       byteTruncated = true;
       return;
@@ -139,8 +167,55 @@ function writeOutput(data: Buffer): void {
     totalCapturedBytes += chunk.length;
   }
 
+  fileBytes += chunk.length;
   if (chunk.length > 0 && !stream.write(chunk)) {
     pauseCommandOutput();
+  }
+}
+
+/**
+ * Keep the newest half of the capture: copy its tail behind a one-line marker
+ * into a new file and rename it over the old one (a reader that already has
+ * the old file open keeps a consistent copy), then append to the new file.
+ * Runs once each time the cap is passed, not per chunk.
+ */
+async function dropCaptureFront(path: string, limit: number): Promise<void> {
+  const keepBytes = Math.floor(limit / 2);
+  commandProcess?.stdout.pause();
+  commandProcess?.stderr.pause();
+  try {
+    const old = outputStream!;
+    outputStream = null;
+    await new Promise<void>((resolve) => old.end(resolve));
+    const size = statSync(path).size;
+    const start = Math.max(0, size - keepBytes);
+    const tail = Buffer.alloc(size - start);
+    const input = openSync(path, "r");
+    try { readSync(input, tail, 0, tail.length, start); } finally { closeSync(input); }
+    // Begin at a line boundary when one is near, so the first kept line is whole.
+    const newline = tail.indexOf(10);
+    const kept = newline >= 0 && newline < 4096 ? tail.subarray(newline + 1) : tail;
+    const marker = Buffer.from(`[earlier output dropped: kept the last ${Math.round(keepBytes / 1_048_576)} MiB; the process keeps running]\n`);
+    const next = `${path}.${process.pid}.next`;
+    writeFileSync(next, Buffer.concat([marker, kept]), { mode: 0o600 });
+    renameSync(next, path);
+    fileBytes = marker.length + kept.length;
+    byteTruncated = true;
+    outputStream = createWriteStream(path, { flags: "a", mode: 0o600 });
+    outputStream.on("error", markOutputFailed);
+    outputStream.on("drain", resumeCommandOutput);
+  } catch (err) {
+    markOutputFailed(err);
+  } finally {
+    rotation = null;
+    // Backpressure belonged to the old stream, which is gone.
+    waitingForDrain = false;
+    const held = heldOutput.splice(0);
+    for (const chunk of held) writeOutput(chunk);
+    if (!waitingForDrain) {
+      commandProcess?.stdout.resume();
+      commandProcess?.stderr.resume();
+    }
   }
 }
 
@@ -195,6 +270,11 @@ function enableBackgrounding(request: BackgroundRequest): void {
 }
 
 function finish(code: number | null, signal: string | null): void {
+  // Output still being moved into the capture is written before the exit line.
+  if (rotation) {
+    void rotation.then(() => finish(code, signal));
+    return;
+  }
   terminal?.close();
   if (commandTimeout) clearTimeout(commandTimeout);
   const done = () => {
@@ -283,6 +363,8 @@ function start(request: StartRequest): void {
   try {
     terminateOnParentExit = request.terminateOnParentExit === true;
     captureLimitBytes = request.captureLimitBytes;
+    backgroundCaptureLimitBytes = request.backgroundCaptureLimitBytes;
+    outputPath = request.outputPath;
     outputStream = createWriteStream(request.outputPath, { flags: "wx", mode: 0o600 });
     outputStream.on("error", markOutputFailed);
     outputStream.on("drain", resumeCommandOutput);

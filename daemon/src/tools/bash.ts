@@ -24,7 +24,7 @@ import { formatToolAbortMessage } from "../abort";
 import { isWindows, socketPath } from "@exocortex/shared/paths";
 import { log } from "../log";
 import { recordBackgroundTaskCompletion } from "../conversation-activity";
-import { spawnShellRunner } from "./shell-runner";
+import { spawnShellRunner, toolOutputPath } from "./shell-runner";
 import { getDaemonShutdownMode } from "../daemon-lifecycle";
 import {
   backgroundTaskRecordPath,
@@ -37,6 +37,8 @@ import {
 
 const DEFAULT_TIMEOUT_SECONDS = 3_600; // 1 hour
 const MAX_OUTPUT_BYTES = 1_000_000;   // 1MB process capture limit
+/** Most a backgrounded command keeps of its output; it keeps running past it. */
+const BACKGROUND_CAPTURE_LIMIT_BYTES = 64 * 1_048_576;
 const DEFAULT_INLINE_OUTPUT_CHARS = 12_000;
 const MIN_INLINE_OUTPUT_CHARS = 1_000;
 const MAX_INLINE_OUTPUT_CHARS = 30_000;
@@ -371,7 +373,7 @@ async function executeBashImpl(
 
   const startTime = Date.now();
   const executionId = randomUUID();
-  const capturePath = join(tmpdir(), `exocortex-bash-${process.pid}-${executionId}.tmp`);
+  const capturePath = toolOutputPath("exocortex-bash", executionId);
   const inputEnv = input.env && typeof input.env === "object" && !Array.isArray(input.env)
     ? Object.fromEntries(Object.entries(input.env).filter((entry): entry is [string, string] => typeof entry[1] === "string"))
     : {};
@@ -820,6 +822,9 @@ async function executeBashImpl(
       },
       ...(typeof input.stdin === "string" ? { stdin: input.stdin } : {}),
       terminateOnParentExit: true,
+      // A backgrounded command (a dev server, tail -f, yes) can write without
+      // end; keep at most this much of it.
+      backgroundCaptureLimitBytes: BACKGROUND_CAPTURE_LIMIT_BYTES,
       timeoutMs: typeof input.runner_timeout_ms === "number" ? input.runner_timeout_ms : timeoutMs,
     });
 
