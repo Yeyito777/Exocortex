@@ -72,6 +72,12 @@ export function resetPending(vim: VimState): void {
   // lastFind is intentionally NOT cleared — ; and , need it across commands
 }
 
+/** Whether a command is half-typed (operator, prefix, count, find or replace). */
+export function hasPending(vim: VimState): boolean {
+  return !!(vim.pendingOperator || vim.pendingTextObjectModifier || vim.pendingKeys
+    || vim.count !== null || vim.pendingFind || vim.pendingReplace);
+}
+
 // ── Result ─────────────────────────────────────────────────────────
 
 /**

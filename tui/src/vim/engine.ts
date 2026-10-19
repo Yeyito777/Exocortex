@@ -13,7 +13,7 @@ import type { KeyEvent } from "../input";
 import type {
   VimState, VimResult, VimContext, VimMode, VimCommand, BufferEdit,
 } from "./types";
-import { resetPending, keyString } from "./types";
+import { resetPending, hasPending, keyString } from "./types";
 import { lookupCommand, isPrefix } from "./keymap";
 import {
   resolveMotion, reverseFindKind, firstNonBlank, wordEnd, wordEndBig, type FindKind,
@@ -97,8 +97,12 @@ function handleNormalMode(
     return { type: "redo" };
   }
 
-  // Special keys (ctrl, arrows, etc.) pass through to existing system
-  if (ks === null) return { type: "passthrough" };
+  // Special keys (ctrl, arrows, etc.) pass through to existing system,
+  // cancelling a half-typed command (f<Tab> must not leave f waiting)
+  if (ks === null) {
+    resetPending(vim);
+    return { type: "passthrough" };
+  }
 
   // Escape in normal mode passes through (abort, etc.)
   if (ks === "escape") {
@@ -106,10 +110,18 @@ function handleNormalMode(
     return { type: "passthrough" };
   }
 
-  // Enter always passes through (submit)
+  // Enter submits only when no command is half-typed: r<Enter> splits the
+  // line like Vim, and any other pending command is cancelled.
   if (ks === "enter") {
+    const pending = hasPending(vim);
+    const replace = vim.pendingReplace;
     resetPending(vim);
-    return { type: "passthrough" };
+    if (replace) {
+      const edit = ops.replaceChar(buffer, cursor, "\n");
+      if (edit.buffer === buffer) return { type: "noop" };
+      return { type: "buffer_edit", buffer: edit.buffer, cursor: cursor + 1 };
+    }
+    return pending ? { type: "noop" } : { type: "passthrough" };
   }
 
   // A shift prefix requires the same second key, not a new find/replace/count.

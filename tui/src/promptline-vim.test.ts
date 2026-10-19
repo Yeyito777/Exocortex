@@ -243,6 +243,13 @@ describe("prompt visual mode matches Vim", () => {
   test("charwise selection across lines", () => {
     expect(vim("abc\ndef", 1, "vjd")).toEqual({ buffer: "af", cursor: 1 });
   });
+
+  test("V c leaves an empty line to type on, like cc", () => {
+    expect(vim("a\nb\nc", 2, "VcX<esc>").buffer).toBe("a\nX\nc");
+    expect(vim("a\nb\nc", 0, "VjcX<esc>").buffer).toBe("X\nc");
+    expect(vim("a\nb", 2, "VcX<esc>").buffer).toBe("a\nX");
+    expect(vim("a\n", 2, "VcX<esc>").buffer).toBe("a\nX");
+  });
 });
 
 describe("prompt linewise yank and put", () => {
@@ -292,5 +299,115 @@ describe("prompt linewise yank and put", () => {
     expect(isLinewiseClipboardText("abc\n")).toBe(true);
     expect(isLinewiseClipboardText("abc")).toBe(true);
     expect(isLinewiseClipboardText("ab")).toBe(false);
+  });
+});
+
+describe("prompt Enter with a pending Vim command", () => {
+  function press(state: RenderState, type: KeyEvent["type"]) {
+    return handleFocusedKey({ type } as KeyEvent, state);
+  }
+
+  test("r<Enter> splits the line instead of submitting", () => {
+    const state = prompt("ab", 0);
+    keys(state, "r");
+    expect(press(state, "enter").type).not.toBe("submit");
+    expect([state.inputBuffer, state.cursorPos]).toEqual(["\nb", 1]);
+  });
+
+  test("r<Enter> on an empty line does nothing", () => {
+    const state = prompt("a\n\nb", 2);
+    keys(state, "r");
+    expect(press(state, "enter").type).not.toBe("submit");
+    expect([state.inputBuffer, state.cursorPos]).toEqual(["a\n\nb", 2]);
+  });
+
+  test("Enter cancels a pending find, operator, prefix or count", () => {
+    for (const pending of ["f", "d", "di", "g", "2"]) {
+      const state = prompt("ab ab", 0);
+      keys(state, pending);
+      expect(press(state, "enter").type).not.toBe("submit");
+      expect(state.inputBuffer).toBe("ab ab");
+      keys(state, "w");
+      expect(state.cursorPos).toBe(3);
+    }
+  });
+
+  test("Enter with nothing pending still submits", () => {
+    expect(press(prompt("ab", 0), "enter").type).toBe("submit");
+  });
+});
+
+describe("prompt non-character keys cancel a pending Vim command", () => {
+  test("Tab cancels a pending find", () => {
+    expect(vim("xx b yy b", 0, "f<tab>b").cursor).toBe(0);
+  });
+
+  test("Tab cancels a pending operator", () => {
+    expect(vim("ab cd", 0, "d<tab>w")).toEqual({ buffer: "ab cd", cursor: 3 });
+  });
+
+  test("Tab cancels a pending find in visual mode", () => {
+    expect(vim("ab xb", 0, "vf<tab>bd").buffer).toBe("b xb");
+  });
+});
+
+describe("prompt charwise put from the system clipboard", () => {
+  afterEach(() => setTextClipboardSystemForTest(null));
+
+  async function putClipboard(output: string, buffer: string, cursor: number, sequence: string) {
+    setTextClipboardSystemForTest({
+      platform: "linux",
+      env: { DISPLAY: ":0" },
+      commandExists: (command) => command === "xsel",
+      paste: async () => ({ output, exitCode: 0 }),
+      copy: async () => 0,
+    });
+    const state = prompt(buffer, cursor);
+    keys(state, sequence);
+    await pasteFromClipboard();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    return state.inputBuffer;
+  }
+
+  test("p cleans clipboard text like a bracketed paste", async () => {
+    expect(await putClipboard("x\r\ny\tz\x1b[31mR", "ab", 0, "p")).toBe("ax\ny    zRb");
+  });
+
+  test("p on an empty line puts on that line", async () => {
+    expect(await putClipboard("X", "a\n\nb", 2, "p")).toBe("a\nX\nb");
+    expect(await putClipboard("X", "a\n", 2, "p")).toBe("a\nX");
+  });
+});
+
+describe("prompt insert-mode Home", () => {
+  test("stays on the first line when the buffer starts with a newline", () => {
+    const state = prompt("\nabc", 0, "insert");
+    handleFocusedKey({ type: "home" }, state);
+    expect(state.cursorPos).toBe(0);
+  });
+
+  test("moves to the start of the cursor's line", () => {
+    const state = prompt("ab\ncd", 4, "insert");
+    handleFocusedKey({ type: "home" }, state);
+    expect(state.cursorPos).toBe(3);
+  });
+});
+
+describe("prompt word motions treat non-ASCII letters as word characters", () => {
+  test("dw and diw take the whole accented word", () => {
+    expect(vim("canción x", 0, "dw").buffer).toBe("x");
+    expect(vim("canción x", 1, "diw").buffer).toBe(" x");
+  });
+
+  test("w, b and e step over whole words with accents and combining marks", () => {
+    expect(vim("über naïve x", 0, "w").cursor).toBe(5);
+    expect(vim("über naïve x", 11, "b").cursor).toBe(5);
+    expect(vim("cafe\u0301s x", 0, "e").cursor).toBe(5);
+    expect(vim("cafe\u0301 x", 0, "dw").buffer).toBe("x");
+    expect(vim("Привет мир", 0, "w").cursor).toBe(7);
+  });
+
+  test("punctuation still splits words", () => {
+    expect(vim("año,mes", 0, "w").cursor).toBe(3);
   });
 });

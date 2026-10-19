@@ -16,6 +16,7 @@ import { sliceByWidthFrom, termWidth } from "./textwidth";
 import { sanitizePromptTextForInsertion } from "./prompttext";
 import { PROMPT_TAB, promptDeleteStart, promptDeleteEnd } from "./prompttabs";
 import { SIDEBAR_WIDTH } from "./sidebar/layout";
+import { lineStartOf } from "./vim/buffer";
 
 export type PromptKeyResult =
   | { type: "handled" }
@@ -228,8 +229,7 @@ export function handlePromptKey(
       return HANDLED;
 
     case "cursor_home": {
-      const lineStart = state.inputBuffer.lastIndexOf("\n", state.cursorPos - 1) + 1;
-      state.cursorPos = lineStart;
+      state.cursorPos = lineStartOf(state.inputBuffer, state.cursorPos);
       resetPromptCurswant(state);
       return HANDLED;
     }
