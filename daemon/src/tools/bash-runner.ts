@@ -259,6 +259,17 @@ function terminateCommandTree(): void {
   try { process.kill(-pid, "SIGTERM"); } catch { try { process.kill(pid, "SIGTERM"); } catch {} }
   const forceKill = setTimeout(() => {
     try { process.kill(-pid, "SIGKILL"); } catch { /* already exited */ }
+    // A descendant that left the process group (setsid, a daemonizing
+    // command) survives the kill and keeps the output pipes open, so 'close'
+    // would wait for it and the tool call would hang. Stop reading them once
+    // the group is dead; the runner then exits (under systemd, taking that
+    // descendant's unit with it).
+    const release = setTimeout(() => {
+      if (finalSent || !commandProcess) return;
+      commandProcess.stdout.destroy();
+      commandProcess.stderr.destroy();
+    }, 300);
+    release.unref?.();
   }, 200);
   forceKill.unref?.();
 }

@@ -58,6 +58,46 @@ describe("bash timeouts longer than a timer can wait", () => {
   }, 20_000);
 });
 
+describe("bash timeouts with escaped descendants", () => {
+  test.skipIf(isWindows)("a timed-out command returns on time even when a setsid descendant holds its output open", async () => {
+    const marker = `exo-setsid-${process.pid}-${Date.now()}`;
+    const started = Date.now();
+    try {
+      const result = await executeBashBackgroundable(
+        { command: `setsid bash -c 'exec -a ${marker} sleep 6' & sleep 100`, timeout_seconds: 1, await: 60 },
+        undefined, 60_000, { cwd: tmpdir() },
+      );
+      expect(result.output).toContain("timed out");
+      expect(Date.now() - started).toBeLessThan(4_000);
+    } finally {
+      spawn("pkill", ["-f", marker]);
+    }
+  }, 20_000);
+
+  // Under systemd each call is its own unit, stopped when its runner exits.
+  test.skipIf(isWindows || !process.env.INVOCATION_ID)("abort ends the call's unit even when a setsid descendant holds its output open", async () => {
+    const marker = `exo-setsid-abort-${process.pid}-${Date.now()}`;
+    const units = () => Bun.spawnSync(["systemctl", "--user", "list-units", "--all", "--no-legend", "--plain", `exocortex-bash-${process.pid}-*`])
+      .stdout.toString().trim().split("\n").filter(Boolean);
+    const before = units().length;
+    const controller = new AbortController();
+    try {
+      const pending = executeBashBackgroundable(
+        { command: `setsid bash -c 'exec -a ${marker} sleep 30' & sleep 100`, await: 60 },
+        controller.signal, 60_000, { cwd: tmpdir() },
+      );
+      await Bun.sleep(500);
+      controller.abort();
+      await pending;
+      let after = units().length;
+      for (let i = 0; i < 40 && after > before; i++) { await Bun.sleep(100); after = units().length; }
+      expect(after).toBe(before);
+    } finally {
+      spawn("pkill", ["-f", marker]);
+    }
+  }, 20_000);
+});
+
 describe("bash spill preview", () => {
   test("includes spill path instructions when temp write succeeds", () => {
     const written: Array<{ path: string; contents: string }> = [];

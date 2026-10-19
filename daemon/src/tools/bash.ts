@@ -609,6 +609,9 @@ async function executeBashImpl(
         if (timeoutTimer) clearTimeout(timeoutTimer);
         clearRegisteredBackgrounder();
         restoreBackgroundTaskNotifications(intentionalStops);
+        // The runner also releases output held open by descendants that left
+        // the group, so it exits instead of lingering with them.
+        writeRunnerRequest({ type: "stop" });
         if (commandPid) killProcessGroup(commandPid);
         else try { runner.kill(); } catch { /* already exited */ }
         scheduleRunnerFallbackKill();
@@ -824,6 +827,7 @@ async function executeBashImpl(
       timedOut = true;
       if (bgTimer) clearTimeout(bgTimer);
       clearRegisteredBackgrounder();
+      writeRunnerRequest({ type: "stop" });
       if (commandPid) killProcessGroup(commandPid);
       else try { runner.kill(); } catch { /* already exited */ }
       scheduleRunnerFallbackKill();
