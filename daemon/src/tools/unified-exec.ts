@@ -6,13 +6,12 @@ import type { ChildProcessWithoutNullStreams } from "child_process";
 import { createInterface } from "readline";
 import { randomInt, randomUUID } from "crypto";
 import { open } from "fs/promises";
-import { join, resolve } from "path";
-import { tmpdir } from "os";
+import { resolve } from "path";
 import { socketPath } from "@exocortex/shared/paths";
 import { backgroundTaskRecordPath, removeBackgroundTaskRecord } from "../background-task-state";
 import type { Tool, ToolExecutionContext, ToolResult } from "./types";
 import { safeSlice } from "./util";
-import { spawnShellRunner } from "./shell-runner";
+import { spawnShellRunner, toolOutputPath } from "./shell-runner";
 import { bash, killProcessGroup } from "./bash";
 import { getDaemonShutdownMode } from "../daemon-lifecycle";
 import { recordBackgroundTaskCompletion } from "../conversation-activity";
@@ -218,7 +217,7 @@ async function executeCommand(input: Record<string, unknown>, context?: ToolExec
     do { id = randomInt(1, 2 ** 31); } while (sessions.has(id));
     const startedAt = Date.now();
     const ready = deferred(), done = deferred(), detached = deferred();
-    const outputPath = join(tmpdir(), `exocortex-exec-${process.pid}-${randomUUID()}.tmp`);
+    const outputPath = toolOutputPath("exocortex-exec", randomUUID());
     const env = {
       ...process.env, EXOCORTEX_SOCKET: socketPath(), EXOCORTEX_WORKSPACE: cwd,
       ...(owner ? { EXOCORTEX_PARENT_CONV_ID: owner } : {}),

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
+import { runtimeDir } from "@exocortex/shared/paths";
 import { spawn } from "child_process";
 import { bash, executeBashBackgroundable, intentionalBackgroundTaskStopPidsForTest, spillAndPreview } from "./bash";
 import type { BackgroundTaskCompletion } from "./types";
@@ -96,6 +97,50 @@ describe("bash timeouts with escaped descendants", () => {
       spawn("pkill", ["-f", marker]);
     }
   }, 20_000);
+});
+
+describe("backgrounded bash output", () => {
+  async function capture(command: string, input: Record<string, unknown> = { background: true }) {
+    const result = await executeBashBackgroundable({ command, ...input }, undefined, 60_000, { cwd: tmpdir() });
+    const path = /Output is being written to: (\S+)/.exec(result.output)?.[1];
+    expect(path).toBeDefined();
+    let text = "";
+    for (let i = 0; i < 600 && !text.includes("[process exited"); i++) {
+      await Bun.sleep(100);
+      text = existsSync(path!) ? readFileSync(path!, "utf8") : "";
+    }
+    rmSync(path!, { force: true });
+    return { path: path!, text };
+  }
+
+  test.skipIf(isWindows)("is captured on disk, keeps the newest output past 64 MiB, and the process runs on", async () => {
+    // ~110 MB of numbered lines: past the cap more than once.
+    const { path, text } = await capture("seq 1 14000000; echo still-running");
+    // Under the runtime directory (on disk in production; tests root it in a temp dir).
+    expect(path.startsWith(join(runtimeDir(), "tool-output"))).toBe(true);
+    const lines = text.split("\n");
+    expect(lines[0]).toBe("[earlier output dropped: kept the last 32 MiB; the process keeps running]");
+    // The kept part starts on a whole line and runs, in order, to the newest output.
+    const first = Number(lines[1]);
+    expect(first).toBeGreaterThan(1);
+    expect(lines[2]).toBe(String(first + 1));
+    expect(text).toContain("\n14000000\nstill-running\n");
+    expect(text).toContain("[process exited successfully]");
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(64 * 1_048_576 + 200);
+  }, 120_000);
+
+  test.skipIf(isWindows)("output a backgrounded command writes under the cap is kept whole", async () => {
+    const { text } = await capture("sleep 0.5; seq 1 1000");
+    expect(text.startsWith("1\n2\n")).toBe(true);
+    expect(text).toContain("\n1000\n");
+    expect(text).not.toContain("earlier output dropped");
+  }, 60_000);
+
+  test.skipIf(isWindows)("foreground output keeps its 1 MB cap", async () => {
+    const result = await executeBashBackgroundable({ command: "head -c 3000000 /dev/zero | tr '\\0' x" }, undefined, 60_000, { cwd: tmpdir() });
+    expect(result.output).toContain("byte-truncated at 1MB");
+    expect(result.output).not.toContain("earlier output dropped");
+  }, 60_000);
 });
 
 describe("bash spill preview", () => {
