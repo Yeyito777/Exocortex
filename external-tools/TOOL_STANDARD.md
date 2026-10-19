@@ -19,10 +19,9 @@ tool-name/
 
 Each tool is its own git repository, independently developed. Tools are
 installed by cloning into `external-tools/` — the daemon discovers them
-automatically. Newly discovered external tools default to enabled in ordinary
-conversations using the default policy. Explicit selections (including delegated
-subagent policies) remain exact: installation never adds tools or shell authority
-to them. Enable a tool explicitly, or reset to the default policy to opt in.
+automatically, and every tool-capable conversation (subagents included) sees
+every installed tool. There is no per-conversation tool selection (see
+"manifest.json" below).
 
 ## Helper tools
 
@@ -454,9 +453,9 @@ export PYTHONPATH="$PROJECT_DIR"
 cmd="$1"; shift
 case "$cmd" in
     subcmd1|subcmd2)
-        exec "$PYTHON" -c "import sys; from src.module import $cmd; $cmd(sys.argv[1:])" "$@" ;;
+        exec "$PYTHON" -P -c "import sys; from src.module import $cmd; $cmd(sys.argv[1:])" "$@" ;;
     login|logout)
-        exec "$PYTHON" -c "import sys; from src.auth import $cmd; $cmd(sys.argv[1:])" "$@" ;;
+        exec "$PYTHON" -P -c "import sys; from src.auth import $cmd; $cmd(sys.argv[1:])" "$@" ;;
     help|--help|-h)
         usage ;;
     *)
@@ -470,6 +469,13 @@ Why bash wraps the implementation:
 - Resolves venv/runtime without the user knowing about it.
 - `--help` is instant (no interpreter startup).
 - Language-agnostic pattern — works for Python, Node, Go, etc.
+
+Always pass `-P` (Python 3.11+) with `-c` or `-m`. Without it Python puts the
+caller's working directory first on `sys.path`, so running the tool inside any
+project that has its own `src` package imports that project's code instead of
+yours: the tool breaks, or foreign code runs with the tool's credentials.
+`PYTHONPATH` still finds your `src`. Add a test that runs the wrapper from a
+directory containing `src/__init__.py` (see duo-cli `tests/test_launcher.py`).
 
 ## Subcommands
 
@@ -578,19 +584,19 @@ config/*
 
 ```bash
 # Install
-git clone <repo> ~/Workspace/Exocortex/external-tools/tool-name
-cd ~/Workspace/Exocortex/external-tools/tool-name
+git clone <repo> ~/Workspace/exocortex/external-tools/tool-name
+cd ~/Workspace/exocortex/external-tools/tool-name
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt  # if Python
 # Set up config/credentials as needed
 tool-name login
 
 # Uninstall (soft-delete)
-mkdir -p ~/Workspace/Exocortex/config/data/trash/external-tools
-trash=~/Workspace/Exocortex/config/data/trash/external-tools/tool-name
+mkdir -p ~/Workspace/exocortex/config/data/trash/external-tools
+trash=~/Workspace/exocortex/config/data/trash/external-tools/tool-name
 if [ -e "$trash" ]; then
   trash="$trash-$(date +%Y%m%d-%H%M%S)"
 fi
-mv ~/Workspace/Exocortex/external-tools/tool-name "$trash"
+mv ~/Workspace/exocortex/external-tools/tool-name "$trash"
 ```
 
 No symlinks, no config files to edit, no system prompt changes.
