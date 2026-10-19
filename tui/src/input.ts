@@ -146,6 +146,23 @@ function csiUKeyType(keyCode: number, modifiers: number): KeyEvent["type"] | nul
   return null;
 }
 
+/** Kitty keypad keys (numbers in the Unicode private-use area) sent without text. */
+const KITTY_KEYPAD_CHARS: Record<number, string> = {
+  57399: "0", 57400: "1", 57401: "2", 57402: "3", 57403: "4",
+  57404: "5", 57405: "6", 57406: "7", 57407: "8", 57408: "9",
+  57409: ".", 57410: "/", 57411: "*", 57412: "-", 57413: "+", 57415: "=", 57416: ",",
+};
+const KITTY_KEYPAD_KEYS: Record<number, KeyEvent["type"]> = {
+  57417: "left", 57418: "right", 57419: "up", 57420: "down",
+  57423: "home", 57424: "end", 57426: "delete",
+};
+const KITTY_KP_ENTER = 57414;
+
+/** Kitty reports keys without a Unicode character (Shift, Caps Lock, F13…) in the private-use area. */
+function isPrivateUseCodepoint(cp: number): boolean {
+  return cp >= 0xE000 && cp <= 0xF8FF;
+}
+
 function parseCsiU(params: string): KeyEvent | null {
   const legacyType = CSI_U_MAP[params];
   if (legacyType) return { type: legacyType };
@@ -159,15 +176,84 @@ function parseCsiU(params: string): KeyEvent | null {
   if (!Number.isFinite(modifiers)) return null;
   const event = KITTY_EVENT_TYPES[modifierParts[1] ?? "1"] ?? "press";
 
-  const keyType = csiUKeyType(keyCode, modifiers);
+  const keyType = csiUKeyType(keyCode === KITTY_KP_ENTER ? 13 : keyCode, modifiers)
+    ?? (modifiers === 1 ? KITTY_KEYPAD_KEYS[keyCode] : undefined);
   if (keyType) return { type: keyType, event };
 
   // With "report all keys as escape codes" + "associated text", printable
   // input arrives as CSI u rather than raw UTF-8. Prefer the associated text
   // payload when present, and fall back to the key code for plain characters.
+  // Other functional keys (modifiers, locks, F13+, media) are not text.
+  const plain = modifiers === 1 || modifiers === 2;
   const text = decodeCodepoints(fields[2])
-    ?? (modifiers === 1 || modifiers === 2 ? String.fromCodePoint(keyCode) : null);
+    ?? (plain ? KITTY_KEYPAD_CHARS[keyCode] : undefined)
+    ?? (plain && !isPrivateUseCodepoint(keyCode) ? String.fromCodePoint(keyCode) : null);
   if (text) return { type: "char", char: text, event };
+  return null;
+}
+
+/**
+ * Legacy CSI keys: ESC [ <number> ; <modifiers>[:<event>] <final>. The kitty
+ * protocol reports repeats and releases of arrows, Home/End and ~ keys with
+ * these parameters (a repeated Left is ESC [ 1;1:2 D). Only the modifier
+ * combinations below are keys; others (Ctrl+Left, …) stay unmapped.
+ */
+function parseCsiKey(params: string, final: string): KeyEvent | null {
+  const match = /^(\d*)(?:;(\d*)(?::(\d+))?)?$/.exec(params);
+  if (!match) return null;
+  const number = match[1] ? parseInt(match[1], 10) : 1;
+  const modifiers = match[2] ? parseInt(match[2], 10) : 1;
+  const event = match[3] === undefined ? undefined : KITTY_EVENT_TYPES[match[3]];
+  if (match[3] !== undefined && !event) return null;
+  const type = csiKeyType(number, modifiers, final);
+  if (!type) return null;
+  return event ? { type, event } : { type };
+}
+
+function csiKeyType(number: number, modifiers: number, final: string): KeyEvent["type"] | null {
+  if (final === "~") {
+    if (modifiers === 1) {
+      switch (number) {
+        case 1: return "home";
+        case 3: return "delete";
+        case 4: return "end";
+      }
+    }
+    // Function keys F17-F24: CSI NN;2~ (st maps Ctrl+4 through Ctrl+-)
+    if (modifiers === 2) {
+      switch (number) {
+        case 15: return "f17";
+        case 17: return "f18";
+        case 18: return "f19";
+        case 19: return "f20";
+        case 20: return "f21";
+        case 21: return "f22";
+        case 23: return "f23";
+        case 24: return "f24";
+      }
+    }
+    return null;
+  }
+  if (number !== 1) return null;
+  if (modifiers === 1) {
+    switch (final) {
+      case "A": return "up";
+      case "B": return "down";
+      case "C": return "right";
+      case "D": return "left";
+      case "H": return "home";
+      case "F": return "end";
+      case "Z": return "backtab";
+    }
+  }
+  // Function keys F14-F16: CSI 1;2Q/R/S (Shift+F1/F2/F3 — st maps Ctrl+1/2/3)
+  if (modifiers === 2) {
+    switch (final) {
+      case "Q": return "f14";
+      case "R": return "f15";
+      case "S": return "f16";
+    }
+  }
   return null;
 }
 
@@ -355,32 +441,9 @@ export function parseInput(data: Buffer | string): InputEvent[] {
             continue;
           }
 
-          // Standard CSI sequences
-          if (params === "" && final === "A") { events.push({ type: "up" }); i += seqLen; continue; }
-          if (params === "" && final === "B") { events.push({ type: "down" }); i += seqLen; continue; }
-          if (params === "" && final === "C") { events.push({ type: "right" }); i += seqLen; continue; }
-          if (params === "" && final === "D") { events.push({ type: "left" }); i += seqLen; continue; }
-          if (params === "" && final === "H") { events.push({ type: "home" }); i += seqLen; continue; }
-          if (params === "" && final === "F") { events.push({ type: "end" }); i += seqLen; continue; }
-          if (params === "" && final === "Z") { events.push({ type: "backtab" }); i += seqLen; continue; }
-          if (params === "3" && final === "~") { events.push({ type: "delete" }); i += seqLen; continue; }
-          if (params === "1" && final === "~") { events.push({ type: "home" }); i += seqLen; continue; }
-          if (params === "4" && final === "~") { events.push({ type: "end" }); i += seqLen; continue; }
-
-          // Function keys F14-F16: CSI 1;2Q/R/S (Shift+F1/F2/F3 — st maps Ctrl+1/2/3)
-          if (params === "1;2" && final === "Q") { events.push({ type: "f14" }); i += seqLen; continue; }
-          if (params === "1;2" && final === "R") { events.push({ type: "f15" }); i += seqLen; continue; }
-          if (params === "1;2" && final === "S") { events.push({ type: "f16" }); i += seqLen; continue; }
-
-          // Function keys F17-F24: CSI NN;2~ (st maps Ctrl+4 through Ctrl+-)
-          if (params === "15;2" && final === "~") { events.push({ type: "f17" }); i += seqLen; continue; }
-          if (params === "17;2" && final === "~") { events.push({ type: "f18" }); i += seqLen; continue; }
-          if (params === "18;2" && final === "~") { events.push({ type: "f19" }); i += seqLen; continue; }
-          if (params === "19;2" && final === "~") { events.push({ type: "f20" }); i += seqLen; continue; }
-          if (params === "20;2" && final === "~") { events.push({ type: "f21" }); i += seqLen; continue; }
-          if (params === "21;2" && final === "~") { events.push({ type: "f22" }); i += seqLen; continue; }
-          if (params === "23;2" && final === "~") { events.push({ type: "f23" }); i += seqLen; continue; }
-          if (params === "24;2" && final === "~") { events.push({ type: "f24" }); i += seqLen; continue; }
+          // Standard CSI sequences (arrows, Home/End, Delete, F14-F24)
+          const csiEvent = parseCsiKey(params, final);
+          if (csiEvent) { events.push(csiEvent); i += seqLen; continue; }
 
           // Unknown CSI — skip the full sequence
           i += seqLen;
