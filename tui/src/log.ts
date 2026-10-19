@@ -12,6 +12,7 @@ import { runtimeDir } from "@exocortex/shared/paths";
 
 const LOG_DIR = runtimeDir();
 const LOG_FILE = join(LOG_DIR, "exocortex-tui.log");
+export const TUI_LOG_PATH = LOG_FILE;
 const MAX_LOG_BYTES = 5 * 1024 * 1024;
 const MAX_LOG_FILES = 3;
 

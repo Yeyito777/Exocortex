@@ -79,7 +79,8 @@ import {
 } from "./historypagination";
 import { requestToolOutputs, requestVisibleToolOutputs } from "./events/tool-outputs";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
-import { log } from "./log";
+import { log, TUI_LOG_PATH } from "./log";
+import { installFatalErrorHandlers } from "./fatal";
 import { ConversationPrewarmer } from "./prewarm";
 import { FirstTextUX } from "./first-text";
 import { applyTuiStartingState, availableStartingConversationId, captureTuiStartingState, loadTuiStartingState, saveTuiStartingState } from "./startingstate";
@@ -2220,6 +2221,13 @@ process.on("exit", () => {
 process.on("SIGINT", cleanup);
 process.on("SIGTERM", cleanup);
 process.on("SIGHUP", cleanup);
+installFatalErrorHandlers({
+  log: message => log("error", message),
+  restoreTerminal,
+  writeStderr: text => process.stderr.write(text),
+  exit: code => process.exit(code),
+  logPath: TUI_LOG_PATH,
+});
 
 main().catch((err) => {
   restoreTerminal();
