@@ -633,6 +633,8 @@ export function setSubagentPolicy(id: string, policy: SubagentPolicy): boolean {
     parentConversationId: policy.parentConversationId,
     allowEdits: policy.allowEdits === true,
     parentSystemInstructions: policy.parentSystemInstructions.trim(),
+    ...(policy.depth !== undefined ? { depth: policy.depth } : {}),
+    ...(policy.detached ? { detached: true } : {}),
   };
   markDirty(id);
   flush(id);

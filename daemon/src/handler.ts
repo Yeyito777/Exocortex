@@ -30,7 +30,7 @@ import { scopedSubagentPromptOptions } from "./subagent-policy";
 import { assertDelegationModel, parseRequestedModel, resolveDelegationModel } from "./delegation-models";
 import { getConversationToolNames, getToolDisplayInfo } from "./tools/registry";
 import { getExternalToolStyles, manageExternalToolDaemon } from "./external-tools";
-import { EFFORT_LEVELS, SUBAGENTS_FOLDER_NAME, createModelVisibleSystemNotice } from "./messages";
+import { EFFORT_LEVELS, SUBAGENTS_FOLDER_NAME, createModelVisibleSystemNotice, type Conversation } from "./messages";
 import { getDefaultProvider, getDefaultModel, getProvider, getProviders, isKnownModel, allowsCustomModels, refreshProviders, normalizeEffort, supportsEffort, getSupportedEfforts, supportsFastMode, supportsImageInputs } from "./providers/registry";
 import { transcribeAudioBytes } from "./transcription";
 import { startTitleGeneration, isPendingTitle, PENDING_TITLE } from "./titlegen";
@@ -634,6 +634,34 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     log("info", `handler: queued durable subagent completion notification ${record.childConvId} -> parent ${record.parentConvId}`);
   };
 
+  /**
+   * A subagent woken by its own subagent's completion after its task already
+   * reported has nobody waiting on this turn. Report it to its parent like a
+   * task (the turn's end completes the record), unless it was started detached.
+   */
+  const relaySubagentFollowUp = (
+    convId: string,
+    conversation: Pick<Conversation, "subagentPolicy" | "subagentMaxDepth">,
+    text: string,
+    startedAt: number,
+  ): void => {
+    const upstreamId = conversation.subagentPolicy?.parentConversationId;
+    if (!upstreamId || upstreamId === convId || conversation.subagentPolicy?.detached) return;
+    if (!convStore.getPolicyMetadata(upstreamId)) return;
+    // A running record (its task, or a relay awaiting a retried send) already reports this turn.
+    if (listPendingSubagentNotifications({ childConvId: convId, state: "running" }).length > 0) return;
+    try {
+      beginPendingSubagentNotification({ convId: upstreamId }, convId, text, startedAt, conversation.subagentMaxDepth ?? null, true);
+    } catch (err) {
+      log("warn", `handler: could not relay follow-up of subagent ${convId} to ${upstreamId}: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    if (setSubagentActive(upstreamId, convId, true, {
+      title: convStore.getIndexedSummary(convId)?.title || "Subagent task",
+      startedAt,
+    })) broadcastConversationUpdated(server, upstreamId);
+  };
+
   /** Sends admitted but not yet accepted; a repeated completion must not resend or queue them. */
   const deliveringNotificationIds = new Set<string>();
 
@@ -671,13 +699,15 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
 
       log("info", `handler: sending durable subagent completion notification ${record.childConvId} -> parent ${record.parentConvId}`);
       deliveringNotificationIds.add(record.id);
+      const startedAt = Date.now();
+      relaySubagentFollowUp(record.parentConvId, parent, record.text!, startedAt);
       void orchestrateSendMessage(
         server,
         null,
         undefined,
         record.parentConvId,
         record.text!,
-        Date.now(),
+        startedAt,
         buildOrchestrationCallbacks(record.parentConvId),
         undefined,
         {

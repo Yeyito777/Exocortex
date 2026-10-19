@@ -966,6 +966,8 @@ function fromFile(file: ConversationFile, validateActiveContext = true): Convers
       parentConversationId: typeof policy.parentConversationId === "string" ? policy.parentConversationId : null,
       allowEdits: policy.allowEdits === true,
       parentSystemInstructions: typeof policy.parentSystemInstructions === "string" ? policy.parentSystemInstructions : "",
+      ...(typeof policy.depth === "number" && Number.isInteger(policy.depth) && policy.depth >= 1 ? { depth: policy.depth } : {}),
+      ...(policy.detached === true ? { detached: true } : {}),
     };
   }
   // Retain old selection/module payloads verbatim for rollback/export, not execution.

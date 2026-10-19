@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { appendMessages, clearActiveToolBackgrounder, clearGoal, clearHistoryUnwindPending, clearStreamHandoff, create, get, getActiveJob, getQueuedMessages, getSummary, isStreaming, isUnread, pin, pushQueuedMessage, remove, requestHistoryUnwind, setActiveToolBackgrounder, setGoal, steerActiveTurn, updateGoalStatus, updateQueuedMessage, removeQueuedMessageById } from "./conversations";
+import { appendMessages, clearActiveToolBackgrounder, clearGoal, clearHistoryUnwindPending, clearStreamHandoff, create, get, getActiveJob, getQueuedMessages, getSummary, isStreaming, isUnread, pin, pushQueuedMessage, remove, requestHistoryUnwind, setActiveToolBackgrounder, setGoal, setSubagentPolicy, steerActiveTurn, updateGoalStatus, updateQueuedMessage, removeQueuedMessageById } from "./conversations";
 import { load as loadPersisted } from "./persistence";
 import { orchestrateCompactConversation, orchestrateGoalCycle, orchestrateReplayConversation, orchestrateSendMessage, type OrchestrationCallbacks } from "./orchestrator";
 import { streamMessage } from "./api";
@@ -1070,6 +1070,25 @@ describe("DB-first orchestrator persistence", () => {
       queueEntryId: "queued-injection-id",
       automation: { kind: "chrono_wake", sourceId: "chrono:test" },
     });
+  });
+
+  test("a subagent's delegation budget follows its stored depth, whoever sends the turn", async () => {
+    const convId = id("subagent-budget");
+    create(convId, "openai", "gpt-5.6-sol");
+    setSubagentPolicy(convId, { parentConversationId: "parent", allowEdits: true, parentSystemInstructions: "", depth: 1 });
+    let system = "";
+    const fakeStream = (async (_provider, _messages, _model, streamCallbacks, options) => {
+      system = String((options as { system?: unknown } | undefined)?.system ?? "");
+      streamCallbacks.onText("ok");
+      return { text: "ok", thinking: "", stopReason: "stop" as const, blocks: [{ type: "text" as const, text: "ok" }], toolCalls: [], inputTokens: 1, outputTokens: 1 };
+    }) as typeof streamMessage;
+
+    // A user typing into the subagent sends no budget (null), as the TUI does.
+    await orchestrateSendMessage(server([]) as never, null, undefined, convId, "from the user", 29_000,
+      callbacks(fakeStream), undefined, { subagentMaxDepth: null });
+
+    expect(get(convId)?.subagentMaxDepth).toBe(1);
+    expect(system).toContain("You are already a subagent, at depth 1 of 2 (parent conversation parent).");
   });
 
   test("keeps summaries streaming across a daemon-owned queued-turn handoff", async () => {

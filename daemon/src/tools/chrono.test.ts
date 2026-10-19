@@ -43,6 +43,10 @@ describe("Chrono tool", () => {
     const foreign = await chrono.execute({ action: "wait", task_id: "bash:finished", max_wait: "1s" },
       { conversationId: "foreign", subagentMaxDepth: 0 });
     expect(foreign.isError).toBe(true);
+    // A child that may still delegate is just as limited to its own tasks.
+    const delegatingChild = await chrono.execute({ action: "wait", task_id: "bash:finished", max_wait: "1s" },
+      { conversationId: "foreign", subagentMaxDepth: 1 });
+    expect(delegatingChild.isError).toBe(true);
   });
 
   test("shows the wait limit as a flag in TUI summaries", () => {

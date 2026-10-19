@@ -49,6 +49,7 @@ import { buildCodexWindowId } from "./providers/openai/identity";
 import { resolveToolCallPresentation } from "./helper-tool-manifest";
 import { pendingTurnNotices } from "./turn-notices";
 import { setBackgroundTaskActive as setConversationBackgroundTaskActive, setChronoTaskActive as setConversationChronoTaskActive } from "./conversation-activity";
+import { isScopedSubagent, remainingSubagentDepth } from "./subagent-policy";
 import { acknowledgeSubagentNotification, getSubagentNotificationRuntime, settlePendingSubagentNotifications } from "./subagent-notifications";
 import { noteRequestedRestartTurnEnded } from "./requested-restart";
 import { getDaemonShutdownMode } from "./daemon-lifecycle";
@@ -502,6 +503,8 @@ async function orchestrateAdmittedAssistantTurn(
       ? requestedDepth
       : null;
   }
+  // A subagent's budget follows its stored depth, whoever started this turn.
+  if (isScopedSubagent(conv)) conv.subagentMaxDepth = remainingSubagentDepth(conv);
   const subagentMaxDepth = conv.subagentMaxDepth ?? null;
 
   const {

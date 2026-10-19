@@ -6,7 +6,7 @@ import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { resumeQueuedMessageDelivery, suspendQueuedMessageDelivery } from "./message-queue";
 import { chronoInternalsForTest, deferChronoSleep, listDeferredChronoSleeps } from "./chrono-service";
-import { appendMessages, consumeGoalContinuationAfterStream, create, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, get, getQueuedMessageById, getQueuedMessages, getSummary, listQueuedMessages, pushGlobalIdleQueuedMessage, pushQueuedMessage, remove, removeQueuedMessageById, setGoal, updateGoalStatus } from "./conversations";
+import { appendMessages, consumeGoalContinuationAfterStream, create, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, get, getQueuedMessageById, getQueuedMessages, getSummary, listQueuedMessages, pushGlobalIdleQueuedMessage, pushQueuedMessage, remove, removeQueuedMessageById, setGoal, setSubagentPolicy, updateGoalStatus } from "./conversations";
 import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, defaultEffortForModelId } from "./messages";
 import { appendToStreamingBlock, clearActiveJob, clearActiveSteerHandler, clearActiveToolBackgrounder, clearCurrentStreamingBlocks, initStreamingState, replaceCurrentStreamingBlocks, setActiveJob, setActiveSteerHandler, setActiveToolBackgrounder, setStreamingCommittedMessageCount } from "./streaming";
 import { beginPendingSubagentNotification, getSubagentNotificationRuntime, listPendingSubagentNotifications, removePendingSubagentNotificationsForConversation } from "./subagent-notifications";
@@ -17,7 +17,7 @@ import { clearProviderAuth, saveProviderAuth } from "./store";
 import { resetExternalNotificationsForTest } from "./external-notifications";
 import { listPendingExternalNotificationSoftWakes, resetExternalNotificationSoftWakesForTest } from "./external-notification-soft-wakes";
 import { getExocortexToolRuntime } from "./exocortex-tool-runtime";
-import { resetConversationActivityForTest, setBackgroundTaskActive, setChronoTaskActive } from "./conversation-activity";
+import { getConversationActivityCounts, resetConversationActivityForTest, setBackgroundTaskActive, setChronoTaskActive } from "./conversation-activity";
 import { getProviderAdapter } from "./providers/catalog";
 import { HISTORY_PAGE_BYTE_BUDGET, estimateEntryRows } from "./history-pagination";
 import { computeSidebarDigest } from "@exocortex/shared/sidebar-digest";
@@ -2448,6 +2448,55 @@ describe("handler subagent completion delivery", () => {
     finishParent(makeAssistantOutcome());
     await Promise.resolve();
     await Promise.resolve();
+  });
+
+  // A grandchild reports to its own parent. If that child already reported its
+  // task, the turn the notification starts is relayed to the child's parent.
+  test("a grandchild's late completion wakes its parent, whose reply is relayed up", async () => {
+    const topId = mkId("relay-top");
+    const childId = mkId("relay-child");
+    const grandchildId = mkId("relay-grandchild");
+    const detachedId = mkId("relay-detached");
+    const detachedGrandchildId = mkId("relay-detached-grandchild");
+    for (const id of [topId, childId, grandchildId, detachedId, detachedGrandchildId]) create(id, "openai", "gpt-5.4", id);
+    setSubagentPolicy(childId, { parentConversationId: topId, allowEdits: true, parentSystemInstructions: "", depth: 1 });
+    setSubagentPolicy(grandchildId, { parentConversationId: childId, allowEdits: true, parentSystemInstructions: "", depth: 2 });
+    setSubagentPolicy(detachedId, { parentConversationId: topId, allowEdits: true, parentSystemInstructions: "", depth: 1, detached: true });
+    setSubagentPolicy(detachedGrandchildId, { parentConversationId: detachedId, allowEdits: true, parentSystemInstructions: "", depth: 2 });
+    const server = {
+      sendTo: mock(() => {}), broadcast: mock(() => {}), sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}), subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    createHandler(server as never);
+    const runtime = getSubagentNotificationRuntime(server)!;
+    const sendsTo = (convId: string) => (orchestrateSendMessage.mock.calls as unknown[][]).filter(call => call[3] === convId);
+    try {
+      beginPendingSubagentNotification({ convId: childId }, grandchildId, "grandchild task", 111, 0);
+      runtime.complete(grandchildId, makeAssistantOutcome());
+      expect(sendsTo(childId)).toHaveLength(1);
+      expect(sendsTo(childId)[0][8]).toMatchObject({ automation: { kind: "subagent_completion", sourceId: grandchildId } });
+      expect(sendsTo(topId)).toHaveLength(0);
+      const relay = listPendingSubagentNotifications({ childConvId: childId, state: "running" });
+      expect(relay).toEqual([expect.objectContaining({ parentConvId: topId, childStartedAt: sendsTo(childId)[0][5], trackAsSubagent: true })]);
+      expect(getConversationActivityCounts(topId).subagentCount).toBe(1);
+
+      // The orchestrator completes the child's notifications when its turn ends.
+      runtime.complete(childId, makeAssistantOutcome({ blocks: [{ type: "text", text: "merged the grandchild's fix" }] as never }));
+      await Promise.resolve();
+      expect(sendsTo(topId)).toHaveLength(1);
+      expect(sendsTo(topId)[0][4]).toContain(`exo:${childId}`);
+      expect(sendsTo(topId)[0][4]).toContain("merged the grandchild's fix");
+      expect(getConversationActivityCounts(topId).subagentCount).toBe(0);
+
+      // A child started with detach:true still hears from its own subagent, but nothing goes up.
+      beginPendingSubagentNotification({ convId: detachedId }, detachedGrandchildId, "grandchild task", 222, 0);
+      runtime.complete(detachedGrandchildId, makeAssistantOutcome());
+      expect(sendsTo(detachedId)).toHaveLength(1);
+      expect(listPendingSubagentNotifications({ childConvId: detachedId })).toEqual([]);
+    } finally {
+      for (const id of [childId, grandchildId, detachedId, detachedGrandchildId]) removePendingSubagentNotificationsForConversation(id);
+      resetConversationActivityForTest();
+    }
   });
 });
 

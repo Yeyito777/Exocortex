@@ -152,6 +152,10 @@ export interface SubagentPolicy {
   allowEdits: boolean;
   /** Snapshot of the parent's effective folder/conversation instructions at creation. */
   parentSystemInstructions: string;
+  /** Nesting depth: 1 for a top-level conversation's child, 2 for its grandchild. Absent on older records means 1. */
+  depth?: number;
+  /** Spawned with detach:true, so its follow-up turns are not relayed to the parent. */
+  detached?: boolean;
 }
 
 export interface Conversation {
