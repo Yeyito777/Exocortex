@@ -141,6 +141,30 @@ describe("provider proxy forwarder", () => {
     expect(new TextDecoder().decode(link.requests[1].body)).toBe("{\"model\":\"m\"}");
   });
 
+  test("a request held for a down link follows /proxy to another host, or off", async () => {
+    let closed = false;
+    const down = Object.defineProperty(fakeLink({ ready: async () => {
+      throw closed
+        ? new ProviderProxyUnavailableError("The /proxy link was closed.", false)
+        : new ProviderProxyUnavailableError("ssh: Could not resolve hostname old-host");
+    } }), "isClosed", { get: () => closed });
+    const up = fakeLink();
+    let route: FakeLink | null = down;
+    const forwarder = start(() => route, undefined, { linkHoldMs: 5_000, linkHoldRetryDelaysMs: [30] });
+    // The user switches /proxy while the request is held; the old link closes at once.
+    setTimeout(() => { route = up; closed = true; }, 60);
+    const response = await fetch(`${forwarder.baseUrl("anthropic")}/v1/messages`, { method: "POST", headers: { authorization: `Bearer ${forwarder.secret}` }, body: "{}" });
+    expect(response.status).toBe(200);
+    expect(up.requests).toHaveLength(1);
+
+    closed = false;
+    route = down;
+    setTimeout(() => { route = null; closed = true; }, 60);
+    const off = await fetch(`${forwarder.baseUrl("anthropic")}/v1/messages`, { method: "POST", headers: { authorization: `Bearer ${forwarder.secret}` }, body: "{}" });
+    expect(off.status).toBe(503);
+    expect(await off.text()).toContain("no longer proxied");
+  });
+
   test("fails at once, without a hold, when the link failure will not clear up", async () => {
     let attempts = 0;
     const forwarder = start(() => fakeLink({ ready: async () => {
