@@ -1450,6 +1450,40 @@ describe("unwindTo", () => {
     expect(getQueuedMessageById(laterQueueId)).toBeDefined();
   });
 
+  test("an edit keeps queued completions, wakes and notifications, and drops only the user's own follow-ups", async () => {
+    const id = mkId("unwind-keeps-obligations");
+    const conv = create(id, "openai", "gpt-5.6-sol", "unwind obligations");
+    conv.messages.push(
+      { role: "user", content: "keep", metadata: null },
+      { role: "assistant", content: "kept answer", metadata: null },
+      { role: "user", content: "remove", metadata: null },
+      { role: "assistant", content: "removed answer", metadata: null },
+    );
+    markDirty(id);
+    flush(id);
+    const own = `${id}-own`;
+    const completion = `${id}-subagent`;
+    const background = `${id}-background`;
+    const wake = `${id}-wake`;
+    pushQueuedMessage(id, "my follow-up", "message-end", undefined, undefined, undefined, own);
+    pushQueuedMessage(id, "[notification] Subagent completed", "next-turn", undefined, null, "notification-1", completion, Date.now(),
+      { kind: "subagent_completion", sourceId: "child" });
+    pushQueuedMessage(id, "[notification] task done", "next-turn", undefined, null, undefined, background, Date.now(),
+      { kind: "background_task_completion", sourceId: "task-1" });
+    pushQueuedMessage(id, "wake up", "next-turn", undefined, null, undefined, wake, Date.now(),
+      { kind: "chrono_wake", sourceId: "schedule-1" });
+
+    expect(await unwindTo(id, 1)).not.toBeNull();
+
+    expect(getQueuedMessageById(own)).toBeUndefined();
+    expect(getQueuedMessageById(completion)?.subagentNotificationId).toBe("notification-1");
+    expect(getQueuedMessageById(background)).toBeDefined();
+    expect(getQueuedMessageById(wake)).toBeDefined();
+    loadQueuedMessagesFromDisk();
+    expect(getQueuedMessageById(completion)).toBeDefined();
+    expect(getQueuedMessageById(own)).toBeUndefined();
+  });
+
   test("materializes the targeted boundary before trash so undo cannot restore the suffix", async () => {
     const id = mkId("unwind-trash-roundtrip");
     const conv = create(id, "openai", "gpt-5.6-sol", "unwind trash");

@@ -3,7 +3,7 @@ import { latestClaudeModel, latestSizeModel } from "./delegation-models";
 import { hasConfiguredCredentials } from "./auth";
 import { listDeferredChronoSleeps } from "./chrono-service";
 import { cancelSuspendedTurn } from "./suspended-turns";
-import { listPendingSubagentNotifications } from "./subagent-notifications";
+import { acknowledgeSubagentNotification, listPendingSubagentNotifications } from "./subagent-notifications";
 import * as convStore from "./conversations";
 import {
   activeSubagentDescendants, getActiveSubagentCount, getConversationActivityCounts, setSubagentActive,
@@ -87,8 +87,20 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
   const track = (parentId: string, childId: string, active: boolean, details?: { title: string; startedAt: number }) => {
     if (setSubagentActive(parentId, childId, active, details)) broadcastConversationUpdated(server, parentId);
   };
-  /** Stop a conversation's turn (live or suspended) and pause an active goal. */
+  /**
+   * Stop a conversation's turn (live or suspended) and pause an active goal.
+   * Automated input already queued for it (a parent's after_turn message, a
+   * finished subagent's or task's result, a wake) is dropped too: the turn's
+   * end would otherwise start it again at once, unreported. The user's own
+   * queued messages stay.
+   */
   const abortConversation = (convId: string): "aborted" | "paused" | "idle" => {
+    const automated = convStore.getQueuedMessages(convId).filter(entry => entry.automation).map(entry => entry.id);
+    if (automated.length > 0) convStore.removeQueuedMessagesById(automated);
+    // Results of its own subagents that were ready but not yet delivered.
+    for (const record of listPendingSubagentNotifications({ state: "ready" })) {
+      if (record.parentConvId === convId) acknowledgeSubagentNotification(record.id);
+    }
     const controller = convStore.getActiveJob(convId);
     if (!controller) convStore.clearStreamHandoff(convId);
     const pausing = convStore.getIndexedSummary(convId)?.goal?.status === "active";

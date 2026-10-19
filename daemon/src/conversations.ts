@@ -9,7 +9,7 @@ import { performanceProfilingEnabled } from "@exocortex/shared/config";
  */
 
 import type { Conversation, ProviderId, ModelId, EffortLevel, ConversationSummary, FolderSummary, SidebarItemRef, StoredMessage, Block, MessageMetadata, PersistedConversationSummary, PersistedFolderSummary, ConversationGoal, ConversationGoalStatus, SubagentPolicy, UserMessageAutomation } from "./messages";
-import { CONTEXT_COMPACTION_FINISHED_KIND, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, cachedValidatedHistoryPrefixHashBeforeMessage, createConversation, countConversationMessages, createMessageMetadata, createModelVisibleSystemNotice, createStoredUserContextCheckpoint, createStoredUserMessage, historyPrefixHash, isRealUserMessage, isReplayHistoryMessage, isToolResultMessage, isValidActiveContextCached, rememberValidatedActiveContext, rewindActiveContextToHistoryCount, rewindValidatedActiveContextToHistoryCount, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation, type StoredUserContextCheckpoint, validatedActiveContextCompactionHistoryCount } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, isQueuedObligation, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, cachedValidatedHistoryPrefixHashBeforeMessage, createConversation, countConversationMessages, createMessageMetadata, createModelVisibleSystemNotice, createStoredUserContextCheckpoint, createStoredUserMessage, historyPrefixHash, isRealUserMessage, isReplayHistoryMessage, isToolResultMessage, isValidActiveContextCached, rememberValidatedActiveContext, rewindActiveContextToHistoryCount, rewindValidatedActiveContextToHistoryCount, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation, type StoredUserContextCheckpoint, validatedActiveContextCompactionHistoryCount } from "./messages";
 import type { ImageAttachment } from "@exocortex/shared/messages";
 import { applyGoalStatus } from "@exocortex/shared/goals";
 import type { MoveSidebarItemsOptions, SidebarItemOrderUpdate, TrimMode, ToolOutputInfo } from "./protocol";
@@ -1693,8 +1693,10 @@ async function performUnwindTo(
         false,
       ).entries.filter((entry) => entry.type !== "system_instructions").length;
     const plannedSummary = summarizeConversation(plannedConversation);
+    // The user's own queued follow-ups belonged to the discarded future;
+    // completions, wakes and notifications still have to be delivered.
     const supersededQueueIds = messageQueue.listInternalQueuedMessages()
-      .filter((entry) => entry.convId === id)
+      .filter((entry) => entry.convId === id && !isQueuedObligation(entry.automation))
       .map((entry) => entry.id);
 
     if (dirty.has(id) && !contextAttributionDirty.has(id)) {

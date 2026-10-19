@@ -270,6 +270,18 @@ export interface UserMessageAutomation {
   sourceId?: string;
 }
 
+/**
+ * Automated queue entries that report something that already happened (a
+ * finished subagent or task, a fired wake, a notification, a message from
+ * another conversation). Nothing will produce them again, so editing history
+ * must not discard them the way it discards the user's own queued follow-ups.
+ */
+export function isQueuedObligation(automation: UserMessageAutomation | undefined): boolean {
+  return automation !== undefined
+    && automation.kind !== "goal_continuation"
+    && automation.kind !== "daemon_restart";
+}
+
 export function isUserMessageAutomation(value: unknown): value is UserMessageAutomation {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const candidate = value as Partial<UserMessageAutomation>;

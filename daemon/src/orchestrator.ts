@@ -649,6 +649,9 @@ async function orchestrateAdmittedAssistantTurn(
     try {
       const handoffCancelled = () => {
         if (convStore.getStreamHandoffToken(convId) === acceptedHandoffToken) return null;
+        // Stop won after this turn ended a sleep: close the sleep the way Stop
+        // does, rather than leaving chrono to replay it 30 s later.
+        if (interruptedSleep) completeDeferredChronoSleepResume(interruptedSleep.id);
         const message = "Turn handoff cancelled.";
         if (client) server.sendTo(client, { type: "error", reqId, convId, message });
         return buildErrorOutcome(message);
@@ -697,6 +700,8 @@ async function orchestrateAdmittedAssistantTurn(
     if (!convStore.appendMessages(convId, [acceptedUserMessage], { updatedAt: conv.updatedAt })) {
       throw new Error(`Conversation ${convId} disappeared before its user turn could be committed`);
     }
+    // A subagent woken by automated input after its task reported: its reply goes up too.
+    if (automation) getSubagentNotificationRuntime(server)?.relayFollowUp?.(convId, automation, admittedText, startedAt);
   } else {
     // Replay/manual compaction has no new user message, but its metadata
     // mutation still needs an explicit commit before provider work starts.
