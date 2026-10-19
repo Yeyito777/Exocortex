@@ -9,7 +9,6 @@ import { open } from "fs/promises";
 import { join, resolve } from "path";
 import { tmpdir } from "os";
 import { socketPath } from "@exocortex/shared/paths";
-import { rewriteExternalToolShellCommandForExecution } from "../external-tools";
 import { backgroundTaskRecordPath, removeBackgroundTaskRecord } from "../background-task-state";
 import type { Tool, ToolExecutionContext, ToolResult } from "./types";
 import { safeSlice } from "./util";
@@ -213,7 +212,7 @@ async function executeCommand(input: Record<string, unknown>, context?: ToolExec
     // login/interactive shell. Startup profiles can replace the daemon's PATH and
     // auth setup. Different shell/login behavior requires an explicit tool input.
     const shell = typeof input.shell === "string" ? input.shell : windows ? "powershell" : "bash";
-    const command = windows ? input.cmd : await rewriteExternalToolShellCommandForExecution(input.cmd);
+    const command = input.cmd;
     if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
     let id: number;
     do { id = randomInt(1, 2 ** 31); } while (sessions.has(id));

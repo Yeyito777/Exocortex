@@ -22,7 +22,6 @@ import { getString, getNumber, getBoolean, safeSlice, summarizeParams } from "./
 import { TOOL_BACKGROUND_SECONDS } from "../constants";
 import { formatToolAbortMessage } from "../abort";
 import { isWindows, socketPath } from "@exocortex/shared/paths";
-import { rewriteExternalToolShellCommandForExecution } from "../external-tools";
 import { log } from "../log";
 import { recordBackgroundTaskCompletion } from "../conversation-activity";
 import { spawnShellRunner } from "./shell-runner";
@@ -357,17 +356,9 @@ async function executeBashImpl(
   const maxOutputChars = inlineOutputBudget(input);
   const discardOutputFile = input.discard_output_file === true;
 
-  let rewrittenCommand: string;
-  try {
-    // External CLIs intentionally remain ordinary Bash commands. The TUI
-    // recognizes this Bash summary and replaces `$` with the manifest's own
-    // label/color. Do not route managed CLIs through a generic native broker:
-    // that changes both the model-facing call path and their established UI.
-    rewrittenCommand = isWindows ? command : await rewriteExternalToolShellCommandForExecution(command);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return { output: `Error preparing external tool command: ${msg}`, isError: true, failureKind: "infrastructure" };
-  }
+  // External CLIs are ordinary Bash commands, run exactly as written. Tools
+  // that need provider auth ask the daemon over EXOCORTEX_SOCKET; no
+  // credential is ever added to the command text, argv or environment.
   if (input.timeout !== undefined) {
     return { output: "Error: unsupported 'timeout' parameter; use 'timeout_seconds' instead", isError: true };
   }
@@ -811,7 +802,7 @@ async function executeBashImpl(
 
     writeRunnerRequest({
       type: "start",
-      command: rewrittenCommand,
+      command,
       outputPath: capturePath,
       windows: isWindows,
       cwd,

@@ -99,7 +99,6 @@ export function getToolReloadKey(tools: LoadedTool[]): string {
     bin: tool.manifest.bin,
     systemHint: tool.manifest.systemHint,
     display: tool.manifest.display,
-    auth: tool.manifest.auth ?? null,
     daemon: tool.manifest.daemon ?? null,
     binDir: tool.binDir,
     toolDir: tool.toolDir,

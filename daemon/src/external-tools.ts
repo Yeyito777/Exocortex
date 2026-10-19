@@ -11,15 +11,13 @@ import { externalToolsDir as getExternalToolsDir, repoRoot, worktreeName } from 
 import { localMacroEnvironment } from "@exocortex/shared/macro-environment";
 import type { ExternalToolStyle } from "@exocortex/shared/messages";
 import { log } from "./log";
-import { rewriteExternalToolShellCommandForToolsWithAuth } from "./external-tools-shell";
 import { scanExternalTools, getToolReloadKey } from "./external-tools-manifest";
 import { ExternalToolWatcher, getExternalToolWatchTargets } from "./external-tools-watcher";
 import { ExternalToolDaemonSupervisor } from "./external-tools-daemon";
-import { getExternalToolAuthArgs } from "./external-tools-auth";
 import type { ExternalToolDaemonAction, ExternalToolDaemonStatus, LoadedTool } from "./external-tools-types";
 import { setExternalNotificationToolOnline } from "./external-notifications";
 
-export type { ExternalToolDaemonAction, ExternalToolDaemonStatus, LoadedTool, Manifest, ManifestAuth, ManifestDaemon } from "./external-tools-types";
+export type { ExternalToolDaemonAction, ExternalToolDaemonStatus, LoadedTool, Manifest, ManifestDaemon } from "./external-tools-types";
 export { getToolReloadKey } from "./external-tools-manifest";
 export { getExternalToolWatchTargets } from "./external-tools-watcher";
 export { buildDaemonSpawnSpec, getDaemonStatePaths, isLikelyManagedDaemonPid, killProcessGroup, reapStaleManagedDaemonPid } from "./external-tools-daemon-process";
@@ -94,10 +92,6 @@ function reloadTools(onUpdate?: () => void): void {
 
   log("info", `external-tools: reloaded — ${updated.length} tool(s): ${updated.map((tool) => tool.manifest.name).join(", ") || "(none)"}`);
   onUpdate?.();
-}
-
-export async function rewriteExternalToolShellCommandForExecution(command: string, loadedTools: LoadedTool[] = tools): Promise<string> {
-  return await rewriteExternalToolShellCommandForToolsWithAuth(command, loadedTools, async (tool) => getExternalToolAuthArgs(tool as LoadedTool));
 }
 
 /** Registered external command names in stable manifest order. */

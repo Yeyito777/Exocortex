@@ -500,6 +500,11 @@ Tools that require auth should provide:
 - `tool-name login` — authenticate (opens browser, prompts for key, etc.)
 - `tool-name logout` — remove stored credentials
 
+A tool that needs one of the daemon's own provider logins (OpenAI for `image`
+and `transcribe`) never receives the credential. It asks the daemon to make
+the call over `EXOCORTEX_SOCKET` (see `docs/daemon-ipc.md`), which works from
+any shell, Claude Code's included.
+
 ## Output conventions
 
 ### List views

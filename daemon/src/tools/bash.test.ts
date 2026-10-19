@@ -5,6 +5,8 @@ import { tmpdir } from "os";
 import { spawn } from "child_process";
 import { bash, executeBashBackgroundable, intentionalBackgroundTaskStopPidsForTest, spillAndPreview } from "./bash";
 import type { BackgroundTaskCompletion } from "./types";
+import { setLoadedExternalToolsForTest } from "../external-tools";
+import type { LoadedTool } from "../external-tools-types";
 import { backgroundTaskRecordPath, isBackgroundTaskNotificationSuppressed, readBackgroundTaskRecord } from "../background-task-state";
 
 const isWindows = process.platform === "win32";
@@ -25,6 +27,28 @@ function makeLargeOutput(): string {
   }
   return lines.join("\n");
 }
+
+describe("bash and external tools", () => {
+  // Credentials used to be spliced into the command text after an external
+  // tool's name. A comment apostrophe flipped the splicer's quote tracking,
+  // so the token landed inside quoted data (files, commit messages).
+  test.skipIf(isWindows)("runs commands mentioning an external tool exactly as written", async () => {
+    const image = {
+      manifest: { name: "image", bin: "./bin/image", systemHint: "", display: { label: "Image", color: "#fff" }, auth: { providers: ["openai"] } },
+      binDir: "/nonexistent/bin", toolDir: "/nonexistent",
+    } as unknown as LoadedTool;
+    const restore = setLoadedExternalToolsForTest([image]);
+    try {
+      const command = "# Let's write the notes\necho 'x\nimage of a cat\n'";
+      const result = await executeBashBackgroundable({ command });
+      expect(result.isError).toBeFalsy();
+      expect(result.output).toContain("image of a cat");
+      expect(result.output).not.toContain("exocortex-auth");
+    } finally {
+      restore();
+    }
+  });
+});
 
 describe("bash spill preview", () => {
   test("includes spill path instructions when temp write succeeds", () => {

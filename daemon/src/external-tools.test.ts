@@ -16,7 +16,6 @@ import {
   reapStaleManagedDaemonPid,
   shouldSuperviseExternalToolDaemons,
 } from "./external-tools";
-import { rewriteExternalToolShellCommandForToolsWithAuth } from "./external-tools-shell";
 import { ExternalToolDaemonSupervisor } from "./external-tools-daemon";
 
 function makeTool(overrides: {
@@ -237,12 +236,6 @@ describe("getToolReloadKey", () => {
     const after = [makeTool({ manifest: { daemon: { command: "node daemon.js", restart: "always" } } })];
     expect(getToolReloadKey(before)).not.toBe(getToolReloadKey(after));
   });
-
-  test("auth config changes invalidate the reload key", () => {
-    const before = [makeTool()];
-    const after = [makeTool({ manifest: { auth: { providers: ["openai"] } } })];
-    expect(getToolReloadKey(before)).not.toBe(getToolReloadKey(after));
-  });
 });
 
 describe("getExternalToolHints", () => {
@@ -303,71 +296,3 @@ describe("getExternalToolWatchTargets", () => {
   });
 });
 
-describe("external-tool auth arg injection", () => {
-  const image = makeTool({
-    manifest: {
-      name: "image",
-      bin: "./bin/image",
-      display: { label: "Image", color: "#ffb86c" },
-      auth: { providers: ["openai"] },
-    },
-    toolDir: "/tmp/tools/image",
-  });
-
-  test("injects quoted auth args after the external-tool command", async () => {
-    await expect(rewriteExternalToolShellCommandForToolsWithAuth(
-      "image generate --json",
-      [image],
-      async () => ["--exocortex-auth-openai", "token with spaces"],
-    )).resolves.toBe("image '--exocortex-auth-openai' 'token with spaces' generate --json");
-  });
-
-  test("injects auth args in chains while leaving other commands unchanged", async () => {
-    await expect(rewriteExternalToolShellCommandForToolsWithAuth(
-      "echo setup && image generate --json >/tmp/result.json",
-      [image],
-      async () => ["--exocortex-auth-openai", "token"],
-    )).resolves.toBe(
-      "echo setup && image '--exocortex-auth-openai' 'token' generate --json >/tmp/result.json",
-    );
-  });
-
-  test("never injects auth args into heredoc bodies", async () => {
-    const auth = async () => ["--exocortex-auth-openai", "SECRET"];
-    for (const command of [
-      "python3 - <<'EOF'\nimport sys\nimage = sys.argv\nprint(image)\nEOF",
-      "cat > notes.md <<EOF\nimage generate makes pictures\nEOF\necho done",
-      "cat <<-\"END\"\n\timage generate x\n\tEND",
-      "cat <<A <<B\nimage one\nA\nimage two\nB",
-    ]) {
-      await expect(rewriteExternalToolShellCommandForToolsWithAuth(command, [image], auth)).resolves.toBe(command);
-    }
-  });
-
-  test("still injects auth args into commands around a heredoc", async () => {
-    await expect(rewriteExternalToolShellCommandForToolsWithAuth(
-      "image generate --json <<'EOF'\n{\"prompt\": \"image of a cat\"}\nEOF\nimage list",
-      [image],
-      async () => ["--exocortex-auth-openai", "token"],
-    )).resolves.toBe(
-      "image '--exocortex-auth-openai' 'token' generate --json <<'EOF'\n{\"prompt\": \"image of a cat\"}\nEOF\nimage '--exocortex-auth-openai' 'token' list",
-    );
-  });
-
-  test("a here-string is not a heredoc", async () => {
-    await expect(rewriteExternalToolShellCommandForToolsWithAuth(
-      "cat <<< hi\nimage list",
-      [image],
-      async () => ["--exocortex-auth-openai", "token"],
-    )).resolves.toBe("cat <<< hi\nimage '--exocortex-auth-openai' 'token' list");
-  });
-
-  test("does not rewrite tools when no auth args are requested", async () => {
-    const command = "image generate --json";
-    await expect(rewriteExternalToolShellCommandForToolsWithAuth(
-      command,
-      [image],
-      async () => [],
-    )).resolves.toBe(command);
-  });
-});
