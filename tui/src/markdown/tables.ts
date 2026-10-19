@@ -35,12 +35,36 @@ export function isBoxDrawingLine(line: string): boolean {
 }
 
 /**
+ * Splits a table row on its unescaped pipes. As in GFM, `\|` is a literal pipe
+ * (also inside code spans) and is unescaped in the cell text.
+ */
+function splitTableRow(row: string): string[] {
+  const cells: string[] = [];
+  let cell = "";
+  for (let i = 0; i < row.length; i++) {
+    const ch = row[i];
+    if (ch === "\\" && row[i + 1] === "|") {
+      cell += "|";
+      i++;
+    } else if (ch === "|") {
+      cells.push(cell);
+      cell = "";
+    } else {
+      cell += ch;
+    }
+  }
+  cells.push(cell);
+  return cells;
+}
+
+/**
  * Parses cells from a table row line
  */
 function parseTableCells(line: string, renderMath: boolean): string[] {
-  const trimmed = line.trim();
-  const inner = trimmed.slice(1, -1); // Remove leading and trailing |
-  return inner.split("|").map(cell => {
+  // Drop the empty fields before the leading pipe and after the trailing one.
+  const cells = splitTableRow(line.trim()).slice(1);
+  if (cells.length > 1 && cells[cells.length - 1] === "") cells.pop();
+  return cells.map(cell => {
     const content = cell.trim();
     return renderMath ? renderInlineMath(content) : content;
   });
