@@ -42,7 +42,7 @@ import {
   openSidebarCommandBar,
   openSidebarSearchBar,
 } from "./sidebarsearch";
-import { pushUndo } from "./undo";
+import { commitInsertSession, markInsertEntry, pushUndo } from "./undo";
 import { placeAtVisibleBottom } from "./historycursor";
 import { imageAtHistoryCursor, openableTargetAtHistoryCursor } from "./historyopenable";
 import { acceptAutocomplete, type PathCompletionProvider } from "./autocomplete";
@@ -250,6 +250,9 @@ export function handleFocusedKey(
   if (key.type === "paste" && key.text) {
     const text = sanitizePromptTextForInsertion(key.text);
     if (!text) return { type: "handled" };
+    // Typing before a mid-insert paste is its own undo step, then the paste;
+    // typing after it starts a new insert session (marked below).
+    commitInsertSession(state.undo, state.inputBuffer);
     pushUndo(state.undo, state.inputBuffer, state.cursorPos);
     const buf = state.inputBuffer;
     const pos = graphemeBoundaryAtOrAfter(buf, state.cursorPos);
@@ -259,6 +262,7 @@ export function handleFocusedKey(
     state.autocomplete = null;
     // Ensure prompt is focused and in insert mode
     focusPrompt(state);
+    markInsertEntry(state.undo, state.inputBuffer, state.cursorPos);
     return { type: "handled" };
   }
 

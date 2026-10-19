@@ -302,6 +302,46 @@ describe("image paste guard", () => {
   });
 });
 
+describe("bracketed paste undo", () => {
+  function type(state: ReturnType<typeof createInitialState>, text: string) {
+    for (const char of text) handleFocusedKey({ type: "char", char }, state);
+  }
+
+  function undoAll(state: ReturnType<typeof createInitialState>, times: number): string[] {
+    handleFocusedKey({ type: "escape" }, state);
+    const seen: string[] = [];
+    for (let i = 0; i < times; i++) {
+      handleFocusedKey({ type: "char", char: "u" }, state);
+      seen.push(state.inputBuffer);
+    }
+    return seen;
+  }
+
+  test("a paste mid-insert undoes after the typing that follows it", () => {
+    const state = createInitialState();
+    state.sidebar.open = false;
+    state.vim.mode = "insert";
+    state.undo.insertEntry = { buffer: "", cursor: 0 };
+    type(state, "abc");
+    handleFocusedKey({ type: "paste", text: "XYZ" }, state);
+    type(state, "d");
+    expect(state.inputBuffer).toBe("abcXYZd");
+    expect(undoAll(state, 3)).toEqual(["abcXYZ", "abc", ""]);
+  });
+
+  test("a paste from normal mode is its own undo step", () => {
+    const state = createInitialState();
+    state.sidebar.open = false;
+    state.inputBuffer = "ab";
+    state.cursorPos = 1;
+    state.vim.mode = "normal";
+    handleFocusedKey({ type: "paste", text: "X" }, state);
+    type(state, "y");
+    expect(state.inputBuffer).toBe("aXyb");
+    expect(undoAll(state, 2)).toEqual(["aXb", "ab"]);
+  });
+});
+
 describe("prompt control-character sanitization", () => {
   test("bracketed paste strips terminal controls before storing prompt text", () => {
     const state = createInitialState();
