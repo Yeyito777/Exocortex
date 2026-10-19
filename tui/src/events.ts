@@ -376,9 +376,13 @@ export function handleEvent(
       // but preserve pendingAI (the active streaming response). Flush buffered
       // system messages — they reference pre-modification state.
       const beforeApply = captureAssistantDisplaySnapshot(state);
-      const preservedToolOutputs = event.toolOutputsIncluded
+      // A window reset follows a destructive rewrite (/trim replaces tool
+      // results): outputs held here may no longer be what the daemon has, so
+      // nothing is carried over and the viewport loader fetches them afresh.
+      const preservedToolOutputs = event.toolOutputsIncluded || event.resetHistoryWindow
         ? new Map()
         : collectDisplayedToolResultOutputs(state);
+      if (event.resetHistoryWindow) state.requestedToolOutputIds.clear();
       let preservedToolOutputResult = { patchedOutputs: 0, patchedToolNames: 0 };
       logDiskSyncAssistantDiff("history_updated", event.convId, state, {
         entries: event.entries,
