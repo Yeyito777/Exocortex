@@ -187,17 +187,19 @@ function executeVisualCommand(
       }
       let start = Math.min(anchor, cursor);
       let end = Math.max(anchor, cursor);
+      // End of the selected text, before a linewise selection's trailing newline
+      let contentEnd = end;
 
       // Visual-line: expand to full lines
       const linewise = vim.mode === "visual-line";
       if (linewise) {
         start = lineStartOf(buffer, start);
-        end = lineEndOf(buffer, end);
+        end = contentEnd = lineEndOf(buffer, end);
         // Include trailing newline
         if (end < buffer.length) end++;
       } else {
         // Character visual: inclusive of the grapheme under the cursor
-        end = Math.min(nextGraphemeEnd(buffer, end), buffer.length);
+        end = contentEnd = Math.min(nextGraphemeEnd(buffer, end), buffer.length);
       }
 
       const text = buffer.slice(start, end);
@@ -230,7 +232,8 @@ function executeVisualCommand(
 
         case "visual_change": {
           if (context !== "prompt") return exitVisual(vim, cursor);
-          const newBuf = buffer.slice(0, start) + buffer.slice(end);
+          // Like cc, V c keeps the trailing newline: an empty line remains
+          const newBuf = buffer.slice(0, start) + buffer.slice(contentEnd);
           vim.mode = "insert";
           resetPending(vim);
           return { type: "visual_edit", buffer: newBuf, cursor: start, mode: "insert" };

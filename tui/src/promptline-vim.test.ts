@@ -243,6 +243,13 @@ describe("prompt visual mode matches Vim", () => {
   test("charwise selection across lines", () => {
     expect(vim("abc\ndef", 1, "vjd")).toEqual({ buffer: "af", cursor: 1 });
   });
+
+  test("V c leaves an empty line to type on, like cc", () => {
+    expect(vim("a\nb\nc", 2, "VcX<esc>").buffer).toBe("a\nX\nc");
+    expect(vim("a\nb\nc", 0, "VjcX<esc>").buffer).toBe("X\nc");
+    expect(vim("a\nb", 2, "VcX<esc>").buffer).toBe("a\nX");
+    expect(vim("a\n", 2, "VcX<esc>").buffer).toBe("a\nX");
+  });
 });
 
 describe("prompt linewise yank and put", () => {
