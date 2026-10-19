@@ -7,7 +7,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { clearHistoryUnwindPending, create, getActiveJob, getQueuedMessages, isStreaming, pushQueuedMessage, remove } from "./conversations";
 import { load as loadPersisted } from "./persistence";
-import { orchestrateSendMessage, type OrchestrationCallbacks } from "./orchestrator";
+import { orchestrateCompactConversation, orchestrateSendMessage, type OrchestrationCallbacks } from "./orchestrator";
+import { appendMessages } from "./conversations";
 import type { streamMessage } from "./api";
 import { chronoInternalsForTest } from "./chrono-service";
 import { ConnectivityMonitor } from "./connectivity";
@@ -304,6 +305,39 @@ function proxyLink(failures: number) {
   };
   return link;
 }
+
+describe("context compaction waits out network outages", () => {
+  // Compaction used to call the provider directly, outside the turn's waits:
+  // a dropped network failed it within seconds.
+  test("a compaction that loses the network waits for it and then completes", async () => {
+    const convId = id("compaction");
+    create(convId, "openai", "gpt-5.6-sol");
+    appendMessages(convId, [
+      { role: "user", content: "earlier work", metadata: { startedAt: 1, endedAt: 1, model: "gpt-5.6-sol", tokens: 0 } },
+      { role: "assistant", content: "earlier answer", metadata: { startedAt: 1, endedAt: 2, model: "gpt-5.6-sol", tokens: 1 } },
+    ]);
+    const events: Event[] = [];
+    const { clock, probe, monitor } = offlineMonitor();
+    let requests = 0;
+    const fakeStream = (async () => {
+      requests += 1;
+      if (requests === 1) throw new Error("fetch failed: getaddrinfo EAI_AGAIN chatgpt.com");
+      return { ...answer(""), blocks: [], compactionItems: [{ encryptedContent: "fresh-opaque" }], compactionDoneCount: 1, responseCompleted: true };
+    }) as unknown as typeof streamMessage;
+
+    const turn = orchestrateCompactConversation(server(events) as never, null, undefined, convId, Date.now(), callbacks(fakeStream, monitor));
+    await until(() => events.some(event => event.type === "connection_wait_status" && event.active === true), "the waiting state");
+    await clock.advance(3_000);
+    expect(requests).toBe(1);
+
+    probe.reachable = true;
+    await clock.advance(12_000);
+    const outcome = await turn;
+    expect(outcome.ok, outcome.error).toBe(true);
+    expect(requests).toBe(2);
+    expect(loadPersisted(convId)!.activeContext?.windowNumber).toBeGreaterThanOrEqual(1);
+  });
+});
 
 describe("turns wait out /proxy link outages", () => {
   test("a turn whose link drops waits for it visibly, then resumes after its committed round without repeating it", async () => {

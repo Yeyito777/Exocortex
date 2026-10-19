@@ -59,6 +59,7 @@ import {
   RetryableStreamAbortController,
   StaleStreamRetriesExhaustedError,
   StreamPreemptedError,
+  isStreamPreemptedError,
   runWithStaleStreamRetries,
 } from "./watchdog-retry";
 import {
@@ -870,6 +871,9 @@ async function orchestrateAdmittedAssistantTurn(
   };
   const unsubscribeConnectivity = connectivity.subscribe(syncConnectionWait);
 
+  /** Compaction keeps the watchdog paused for its whole run, through any provider waits inside it. */
+  let compacting = false;
+
   /** A provider wait with its own label (usage limit, /proxy link): yellow in the sidebar, the label in the chat. */
   const showProviderWait = (label: string) => {
     convStore.pauseActivity(convId);
@@ -881,11 +885,54 @@ async function orchestrateAdmittedAssistantTurn(
     });
   };
   const endProviderWait = () => {
-    convStore.resumeActivity(convId);
+    if (!compacting) convStore.resumeActivity(convId);
     convStore.setConnectionWaitStartedAt(convId, null);
     broadcastConversationUpdated(server, convId);
     server.sendToSubscribers(convId, {
       type: "connection_wait_status", convId, streamSeq: convStore.nextStreamSeq(convId), active: false,
+    });
+  };
+
+  /**
+   * Wait out network outages, /proxy link drops and usage limits around one
+   * provider request, sending it again after each wait. Turn requests and
+   * context compaction both go through here.
+   */
+  const runWithProviderWaits = <T>(provider: Parameters<typeof streamMessage>[0], attempt: () => Promise<T>): Promise<T> => {
+    // A /proxy link down for a reason that may clear up (proxy-link-wait.ts).
+    const proxyLink: ProxyLinkWaitDeps = ext.proxyLinkWait ?? {
+      alias: () => providerProxyRoute(provider)?.alias ?? null,
+      connect: (signal) => providerProxyConnect(provider as Parameters<typeof providerProxyConnect>[0], signal),
+    };
+    return runWithUsageLimitWait(ac, () => runWithNetworkWait(ac, connectivity, () => runWithProxyLinkWait(ac, attempt, proxyLink, {
+      start: (alias) => showProviderWait(`Waiting for network / ${alias}…`),
+      end: endProviderWait,
+    }, {
+      label: convId,
+      delaysMs: ext.proxyLinkWait?.delaysMs,
+      budgetMs: ext.proxyLinkWait?.budgetMs,
+    }), {
+      onWaitStart() {
+        awaitingConnectivity = true;
+        // A wait can last hours; it is not a stalled stream.
+        convStore.pauseActivity(convId);
+        syncConnectionWait();
+      },
+      onWaitEnd() {
+        awaitingConnectivity = false;
+        if (!compacting) convStore.resumeActivity(convId);
+        syncConnectionWait();
+      },
+    }, { label: convId }), () => provider === "anthropic"
+      ? (ext.usageAvailability?.() ?? (ext.streamMessageFn ? { ready: true, resetAt: null } : claudeUsageAvailability()))
+      : { ready: true, resetAt: null }, {
+      start: (resetAt) => showProviderWait("Waiting for usage limit" + (resetAt == null ? "…" : ` · resets ${new Date(resetAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`)),
+      end: endProviderWait,
+    }, {
+      shouldRetry: error => provider === "anthropic" && isUsageLimitError(error),
+      // The remote already tries an alternative account. With an old/unknown
+      // pool snapshot, do not hammer its refused request once per second.
+      retryFloorMs: isProviderProxied("anthropic") ? 30_000 : 1_000,
     });
   };
 
@@ -921,41 +968,7 @@ async function orchestrateAdmittedAssistantTurn(
       }),
       );
     };
-    // A /proxy link down for a reason that may clear up (proxy-link-wait.ts).
-    const proxyLink: ProxyLinkWaitDeps = ext.proxyLinkWait ?? {
-      alias: () => providerProxyRoute(provider)?.alias ?? null,
-      connect: (signal) => providerProxyConnect(provider as Parameters<typeof providerProxyConnect>[0], signal),
-    };
-    return runWithUsageLimitWait(ac, () => runWithNetworkWait(ac, connectivity, () => runWithProxyLinkWait(ac, attempt, proxyLink, {
-      start: (alias) => showProviderWait(`Waiting for network / ${alias}…`),
-      end: endProviderWait,
-    }, {
-      label: convId,
-      delaysMs: ext.proxyLinkWait?.delaysMs,
-      budgetMs: ext.proxyLinkWait?.budgetMs,
-    }), {
-      onWaitStart() {
-        awaitingConnectivity = true;
-        // A wait can last hours; it is not a stalled stream.
-        convStore.pauseActivity(convId);
-        syncConnectionWait();
-      },
-      onWaitEnd() {
-        awaitingConnectivity = false;
-        convStore.resumeActivity(convId);
-        syncConnectionWait();
-      },
-    }, { label: convId }), () => provider === "anthropic"
-      ? (ext.usageAvailability?.() ?? (ext.streamMessageFn ? { ready: true, resetAt: null } : claudeUsageAvailability()))
-      : { ready: true, resetAt: null }, {
-      start: (resetAt) => showProviderWait("Waiting for usage limit" + (resetAt == null ? "…" : ` · resets ${new Date(resetAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`)),
-      end: endProviderWait,
-    }, {
-      shouldRetry: error => provider === "anthropic" && isUsageLimitError(error),
-      // The remote already tries an alternative account. With an old/unknown
-      // pool snapshot, do not hammer its refused request once per second.
-      retryFloorMs: isProviderProxied("anthropic") ? 30_000 : 1_000,
-    });
+    return runWithProviderWaits(provider, attempt);
   };
 
   // Broadcast sidebar update (streaming indicator)
@@ -1158,6 +1171,7 @@ async function orchestrateAdmittedAssistantTurn(
     projectedTokens: number,
   ): Promise<ApiMessage[]> {
     convStore.pauseActivity(convId);
+    compacting = true;
     let compactionStatusActive = false;
     const stopCompactionStatus = () => {
       if (!compactionStatusActive) return;
@@ -1218,6 +1232,18 @@ async function orchestrateAdmittedAssistantTurn(
         // direct stream seam here so native request-budget accounting can still
         // distinguish production transports from test doubles.
         streamMessageFn: ext.streamMessageFn,
+        // Network, /proxy and usage-limit waits apply as for any turn request.
+        // A steer does not interrupt compaction: one that preempts a wait
+        // restarts it, and the steer joins the next turn request.
+        withProviderWaits: async (provider, request) => {
+          while (true) {
+            try {
+              return await runWithProviderWaits(provider, request);
+            } catch (error) {
+              if (ac.signal.aborted || !isStreamPreemptedError(error)) throw error;
+            }
+          }
+        },
       });
       // Session invalidation is part of the atomic install. If it fails, leave
       // the previous active replay/counters untouched and recover from transcript.
@@ -1256,6 +1282,7 @@ async function orchestrateAdmittedAssistantTurn(
       log("info", `orchestrator: ${trigger} context compaction complete for ${convId} (kind=${result.kind}, messages=${messages.length}->${result.messages.length})`);
       return result.messages;
     } finally {
+      compacting = false;
       stopCompactionStatus();
       convStore.resumeActivity(convId);
     }
