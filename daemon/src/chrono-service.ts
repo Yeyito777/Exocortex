@@ -1009,7 +1009,17 @@ export function cancelChronoSchedule(id: string, ownerConversationId?: string): 
     : undefined;
   const occurrences = [...pending.values()].filter(item => item.scheduleId === id
     && (!ownerConversationId || item.ownerConversationId === ownerConversationId));
-  if (!schedule && occurrences.length === 0) return { error: `Chrono schedule not found: ${id}` };
+  // A wake that already fired into a busy conversation waits in its queue
+  // until a tool boundary or the turn's end; cancelling must withdraw it too.
+  const queuedWakes = convStore.listInternalQueuedMessages().filter(entry =>
+    (entry.automation?.kind === "chrono_wake" || entry.automation?.kind === "chrono_hard_wake")
+    && entry.automation.sourceId === id
+    && (!ownerConversationId || schedule || occurrences.length > 0 || entry.convId === ownerConversationId));
+  if (!schedule && occurrences.length === 0 && queuedWakes.length === 0) return { error: `Chrono schedule not found: ${id}` };
+  if (queuedWakes.length > 0) convStore.removeQueuedMessagesById(queuedWakes.map(entry => entry.id));
+  if (!schedule && occurrences.length === 0) {
+    return { cancelled: { id, title: queuedWakes[0]!.text.split("\n")[0]!.slice(0, 80) || id } };
+  }
   if (schedule) schedules.delete(id);
   for (const occurrence of occurrences) {
     pending.delete(occurrence.id);

@@ -120,6 +120,23 @@ describe("Chrono scheduler", () => {
     expect(listChronoSchedules(owner)).toHaveLength(0);
   });
 
+  test("cancel withdraws a wake that fired but is still queued for a busy conversation", async () => {
+    const owner = makeConversation("cancel-queued");
+    await startChronoService();
+    const recurring = createChronoSchedule({ ownerConversationId: owner, afterSeconds: 0.02, repeat: { unit: "minute" }, message: "poll" });
+    await waitUntil(() => getQueuedMessages(owner).length === 1);
+    expect(cancelChronoSchedule(recurring.schedule!.id, owner).cancelled).toBeDefined();
+    expect(getQueuedMessages(owner)).toEqual([]);
+
+    // A one-shot leaves no schedule once it fires; its queued wake is still cancellable.
+    const once = createChronoSchedule({ ownerConversationId: owner, afterSeconds: 0.02, message: "once" });
+    await waitUntil(() => getQueuedMessages(owner).length === 1);
+    expect(listChronoSchedules(owner)).toHaveLength(0);
+    expect(cancelChronoSchedule(once.schedule!.id, owner).cancelled?.id).toBe(once.schedule!.id);
+    expect(getQueuedMessages(owner)).toEqual([]);
+    expect(cancelChronoSchedule(once.schedule!.id, owner).error).toContain("not found");
+  });
+
   test("reloads durable schedules across a service restart", async () => {
     const owner = makeConversation("restart");
     await startChronoService();
