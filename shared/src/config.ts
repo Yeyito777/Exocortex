@@ -94,6 +94,8 @@ export interface AgentConfig {
   workingDirectory?: string;
   /** How long a turn waits for a /proxy link that is down for a reason that may clear up (no network, DNS, remote daemon away). Default 30. */
   proxyOutageWaitMinutes?: number;
+  /** How deep native exo subagents may nest: 1 = only top-level conversations delegate, 2 (default) = their children may too. */
+  maxSubagentDepth?: number;
 }
 
 export type PingMode = "sound" | "notif" | "both";

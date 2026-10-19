@@ -6,7 +6,7 @@ import { cancelSuspendedTurn } from "./suspended-turns";
 import { listPendingSubagentNotifications } from "./subagent-notifications";
 import * as convStore from "./conversations";
 import {
-  getActiveSubagentCount, getConversationActivityCounts, setSubagentActive,
+  activeSubagentDescendants, getActiveSubagentCount, getConversationActivityCounts, setSubagentActive,
 } from "./conversation-activity";
 import { broadcastConversationHistoryUpdated, broadcastConversationUpdated, broadcastFolderUpserts } from "./conversation-events";
 import { log } from "./log";
@@ -21,6 +21,7 @@ import {
   getSupportedEfforts, getProvider, normalizeEffort, supportsEffort, supportsFastMode,
 } from "./providers/registry";
 import type { DaemonServer } from "./server";
+import { maxSubagentDepth, subagentDepth } from "./subagent-policy";
 import { validateCommandArgs } from "./tools/command-schema";
 import { exo } from "./tools/exo";
 import type { ExocortexToolRuntime, ToolResult } from "./tools/types";
@@ -85,6 +86,23 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
   const { server } = deps;
   const track = (parentId: string, childId: string, active: boolean, details?: { title: string; startedAt: number }) => {
     if (setSubagentActive(parentId, childId, active, details)) broadcastConversationUpdated(server, parentId);
+  };
+  /** Stop a conversation's turn (live or suspended) and pause an active goal. */
+  const abortConversation = (convId: string): "aborted" | "paused" | "idle" => {
+    const controller = convStore.getActiveJob(convId);
+    if (!controller) convStore.clearStreamHandoff(convId);
+    const pausing = convStore.getIndexedSummary(convId)?.goal?.status === "active";
+    if (pausing) {
+      convStore.updateGoalStatus(convId, "paused", { reason: "Interrupted. Resume explicitly to continue." });
+      convStore.clearGoalContinuationAfterStream(convId);
+      convStore.clearStreamHandoff(convId);
+      server.sendToSubscribers(convId, { type: "goal_updated", convId, goal: convStore.getIndexedSummary(convId)?.goal ?? null });
+      broadcastConversationUpdated(server, convId);
+    }
+    // A turn suspended in a long chrono sleep/wait has no job to abort.
+    const endedSuspended = cancelSuspendedTurn(server, convId);
+    controller?.abort();
+    return controller || endedSuspended ? "aborted" : pausing ? "paused" : "idle";
   };
   const runtime: ExocortexToolRuntime = {
     async execute(input, parentId, signal, callerMaxDepth) {
@@ -210,24 +228,27 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
           if (parent?.subagentPolicy && target.subagentPolicy?.parentConversationId !== parentId) {
             throw new Error("Subagents can only abort their own direct children.");
           }
-          const controller = convStore.getActiveJob(convId);
-          if (!controller) convStore.clearStreamHandoff(convId);
-          const pausing = convStore.getIndexedSummary(convId)?.goal?.status === "active";
-          if (pausing) {
-            convStore.updateGoalStatus(convId, "paused", { reason: "Interrupted. Resume explicitly to continue." });
-            convStore.clearGoalContinuationAfterStream(convId);
-            convStore.clearStreamHandoff(convId);
-            server.sendToSubscribers(convId, { type: "goal_updated", convId, goal: convStore.getIndexedSummary(convId)?.goal ?? null });
-            broadcastConversationUpdated(server, convId);
-          }
-          // A turn suspended in a long chrono sleep/wait has no job to abort.
-          const endedSuspended = cancelSuspendedTurn(server, convId);
-          controller?.abort();
-          return result({ conversation_id: convId, status: controller || endedSuspended ? "aborted" : pausing ? "paused" : "idle" });
+          // The target's running subagents (and theirs) go with it, deepest
+          // first, so none outlives it to report into an aborted conversation.
+          const descendants = activeSubagentDescendants(convId);
+          for (const descendant of [...descendants].reverse()) abortConversation(descendant);
+          const status = abortConversation(convId);
+          return result({
+            conversation_id: convId, status,
+            ...(descendants.length > 0 ? { aborted_subagents: descendants } : {}),
+          });
         }
 
         if (!parentId || !parent) throw new Error("subagent requires an active parent conversation.");
-        if (callerMaxDepth === 0 || parent.subagentPolicy) throw new Error("Subagents cannot delegate further.");
+        // A subagent's limit is its stored depth; a numeric turn budget only restricts top-level turns.
+        if (!parent.subagentPolicy && callerMaxDepth === 0) throw new Error("This turn cannot delegate.");
+        const parentDepth = subagentDepth(parent);
+        const depthLimit = maxSubagentDepth();
+        if (parentDepth >= depthLimit) {
+          throw new Error(`Subagent depth limit reached: you are a subagent at depth ${parentDepth} of ${depthLimit} and cannot start subagents. Do the work yourself.`);
+        }
+        const childDepth = parentDepth + 1;
+        const childBudget = depthLimit - childDepth;
         const prompt = (input.subagent as string).trim();
         if (!prompt) throw new Error("subagent requires a non-empty prompt.");
         const args = (input.args ?? {}) as { detach?: boolean; model?: string; effort?: EffortLevel };
@@ -246,19 +267,21 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
         const convId = convStore.generateId();
         const title = prompt.replace(/\s+/g, " ").split(" ").slice(0, 6).join(" ").slice(0, 60);
         const child = convStore.create(convId, provider, model, title, effort, fastMode, folder.id);
-        child.subagentMaxDepth = 0;
+        child.subagentMaxDepth = childBudget;
         convStore.setSubagentPolicy(convId, {
           parentConversationId: parentId,
           // Storage compatibility only; capabilities are no longer parent-selected.
           allowEdits: true,
           parentSystemInstructions: convStore.getEffectiveSystemInstructions(parentId) ?? "",
+          depth: childDepth,
+          ...(args.detach === true ? { detached: true } : {}),
         });
         broadcastConversationUpdated(server, convId);
         // The row itself arrived with conversation_updated; the folder may be new.
         broadcastFolderUpserts(server, new Set([folder.id]));
         const startedAt = Date.now();
         const notify = args.detach !== true;
-        if (notify) deps.beginParentNotification?.({ convId: parentId }, convId, prompt, startedAt, 0, true);
+        if (notify) deps.beginParentNotification?.({ convId: parentId }, convId, prompt, startedAt, childBudget, true);
         track(parentId, convId, true, { title, startedAt });
         let finished = false;
         const finish = (outcome: AssistantTurnOutcome) => {
@@ -271,7 +294,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
           }
         };
         // Promise wrapper also handles a synchronously throwing startup hook.
-        void Promise.resolve().then(() => deps.runTurn(convId, prompt, 0, startedAt, {
+        void Promise.resolve().then(() => deps.runTurn(convId, prompt, childBudget, startedAt, {
           kind: "exo_send", sourceId: parentId,
         })).then(finish).catch(error => {
           log("error", `exo subagent ${convId} failed: ${error instanceof Error ? error.message : String(error)}`);

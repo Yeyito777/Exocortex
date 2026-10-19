@@ -198,6 +198,20 @@ export function getSubagentConversationIds(parentConvId: string): string[] {
   return ids;
 }
 
+/** Running subagents under a conversation at any depth, parents before their children. */
+export function activeSubagentDescendants(convId: string): string[] {
+  const found: string[] = [];
+  const seen = new Set([convId]);
+  for (let i = -1; i < found.length; i++) {
+    for (const childId of subagentsByParent.get(i < 0 ? convId : found[i])?.keys() ?? []) {
+      if (seen.has(childId)) continue;
+      seen.add(childId);
+      found.push(childId);
+    }
+  }
+  return found;
+}
+
 /** Last known parent for a child, including after the active count was cleared. */
 export function getSubagentParentConversationId(childConvId: string): string | undefined {
   return subagentParentByChild.get(childConvId);

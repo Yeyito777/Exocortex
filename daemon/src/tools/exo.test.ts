@@ -1,13 +1,14 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { clearConversationDefaults, saveConversationDefaults } from "@exocortex/shared/config";
+import { clearConversationDefaults, saveConversationDefaults, updateExocortexConfig } from "@exocortex/shared/config";
 import { createExocortexToolRuntime, type ExocortexToolRuntimeDependencies } from "../exocortex-tool-runtime";
 import * as conversations from "../conversations";
-import { getConversationActivityCounts, resetConversationActivityForTest, setSubagentActive } from "../conversation-activity";
+import { getActiveSubagentCount, getConversationActivityCounts, resetConversationActivityForTest, setSubagentActive } from "../conversation-activity";
 import { buildConversationRequestSurface } from "../conversation-request-surface";
 import { setLoadedExternalToolsForTest } from "../external-tools";
 import { latestClaudeModel, latestSizeModel } from "../delegation-models";
 import { getProvider } from "../providers/registry";
-import { MAX_ACTIVE_EXO_SUBAGENTS_PER_PARENT } from "../messages";
+import { MAX_ACTIVE_EXO_SUBAGENTS_GLOBAL, MAX_ACTIVE_EXO_SUBAGENTS_PER_PARENT, MAX_EXO_SUBAGENT_DEPTH } from "../messages";
+import { maxSubagentDepth, subagentDepth } from "../subagent-policy";
 import { readRequestedRestart, resetRequestedRestartForTest, RESTART_MIN_UPTIME_MS } from "../requested-restart";
 import { exo } from "./exo";
 import { summarizeClaudeCodeTool } from "./claude-code";
@@ -84,7 +85,8 @@ describe("minimal native exo", () => {
     const sol = await spawn(h.runtime, p.id);
     expect(sol.model).toBe(latestSizeModel("sol", getProvider("openai")!.models.map(model => model.id))!);
     expect(sol.fastMode).toBe(true);
-    expect(sol.subagentMaxDepth).toBe(0);
+    expect(sol.subagentMaxDepth).toBe(1);
+    expect(sol.subagentPolicy?.depth).toBe(1);
     expect(sol.toolPolicy).toBeFalsy();
     const astra = await spawn(h.runtime, p.id, { model: "astra" });
     expect(astra.model).toBe(latestSizeModel("astra", getProvider("openai")!.models.map(model => model.id))!);
@@ -101,7 +103,7 @@ describe("minimal native exo", () => {
     const claudeParent = parent("anthropic");
     const opus = await spawn(h.runtime, claudeParent.id);
     expect([opus.provider, opus.model, opus.effort, opus.fastMode]).toEqual(["anthropic", latestClaudeModel("opus", claude)!, "high", false]);
-    expect(opus.subagentMaxDepth).toBe(0);
+    expect(opus.subagentMaxDepth).toBe(1);
     const sonnet = await spawn(h.runtime, claudeParent.id, { model: "sonnet", effort: "medium" });
     expect([sonnet.model, sonnet.effort]).toEqual([latestClaudeModel("sonnet", claude)!, "medium"]);
     const exact = await spawn(h.runtime, parent().id, { model: "claude-opus-5-5", effort: "max" });
@@ -183,12 +185,149 @@ describe("minimal native exo", () => {
     expect(h.runTurn).not.toHaveBeenCalled();
     expect(getConversationActivityCounts(p.id).subagentCount).toBe(0);
   });
-  test("children and depth-zero turns cannot delegate", async () => {
-    const h = harness();
-    const p = parent();
-    const child = await spawn(h.runtime, p.id);
-    expect((await h.runtime.execute({ subagent: "nested" }, child.id)).isError).toBe(true);
-    expect((await h.runtime.execute({ subagent: "nested" }, p.id, undefined, 0)).isError).toBe(true);
+  describe("nested delegation", () => {
+    afterEach(() => updateExocortexConfig(config => { if (config.agent) delete config.agent.maxSubagentDepth; }));
+    const setMaxDepth = (depth: number) => updateExocortexConfig(config => { config.agent = { ...config.agent, maxSubagentDepth: depth }; });
+    const error = async (result: Promise<{ output: string; isError: boolean }>) => {
+      const response = await result;
+      expect(response.isError).toBe(true);
+      return JSON.parse(response.output).error as string;
+    };
+
+    test("by default a child may delegate once and a grandchild is at the limit", async () => {
+      const h = harness();
+      const p = parent();
+      const child = await spawn(h.runtime, p.id);
+      const grandchild = await spawn(h.runtime, child.id);
+      expect(child.subagentPolicy).toMatchObject({ parentConversationId: p.id, depth: 1 });
+      expect(grandchild.subagentPolicy).toMatchObject({ parentConversationId: child.id, depth: 2 });
+      expect(grandchild.subagentMaxDepth).toBe(0);
+      expect((h.runTurn.mock.calls[1] as unknown[]).slice(0, 3)).toEqual([grandchild.id, "Inspect the specified file", 0]);
+      expect(await error(h.runtime.execute({ subagent: "nested" }, grandchild.id)))
+        .toBe("Subagent depth limit reached: you are a subagent at depth 2 of 2 and cannot start subagents. Do the work yourself.");
+      expect(await error(h.runtime.execute({ subagent: "nested" }, p.id, undefined, 0))).toBe("This turn cannot delegate.");
+      expect(h.runTurn).toHaveBeenCalledTimes(2);
+    });
+
+    test("the grandchild reports to its own parent, which tracks it", async () => {
+      const h = harness({ runTurn: () => new Promise(() => {}) });
+      const p = parent();
+      const child = await spawn(h.runtime, p.id);
+      const grandchild = await spawn(h.runtime, child.id);
+      expect(h.beginParentNotification.mock.calls[1] as unknown[])
+        .toEqual([{ convId: child.id }, grandchild.id, "Inspect the specified file", expect.any(Number), 0, true]);
+      expect(getConversationActivityCounts(p.id).subagentCount).toBe(1);
+      expect(getConversationActivityCounts(child.id).subagentCount).toBe(1);
+      expect(getActiveSubagentCount()).toBe(2);
+    });
+
+    test("the depth limit is configurable, and older child records count as depth 1", async () => {
+      const h = harness();
+      const p = parent();
+      setMaxDepth(1);
+      const child = await spawn(h.runtime, p.id);
+      expect(child.subagentMaxDepth).toBe(0);
+      expect(await error(h.runtime.execute({ subagent: "nested" }, child.id))).toContain("depth 1 of 1");
+      setMaxDepth(3);
+      const grandchild = await spawn(h.runtime, child.id);
+      expect(grandchild.subagentMaxDepth).toBe(1);
+      const great = await spawn(h.runtime, grandchild.id);
+      expect(great.subagentPolicy?.depth).toBe(3);
+      expect(await error(h.runtime.execute({ subagent: "nested" }, great.id))).toContain("depth 3 of 3");
+      setMaxDepth(99);
+      expect(maxSubagentDepth()).toBe(MAX_EXO_SUBAGENT_DEPTH);
+      setMaxDepth(2);
+      delete child.subagentPolicy!.depth;
+      expect(subagentDepth(child)).toBe(1);
+      await spawn(h.runtime, child.id);
+    });
+
+    test("each subagent's prompt states its depth and remaining delegation", async () => {
+      const h = harness();
+      const p = parent("anthropic");
+      const child = await spawn(h.runtime, p.id);
+      const grandchild = await spawn(h.runtime, child.id);
+      const system = (conv: typeof p) => buildConversationRequestSurface(conv, { workingDirectory: "/tmp", conversationId: conv.id }).system;
+      expect(system(p)).not.toContain("## Delegation");
+      expect(system(child)).toContain(`You are already a subagent, at depth 1 of 2 (parent conversation ${p.id}).`);
+      expect(system(child)).toContain("You may start subagents with exo, and they cannot delegate further.");
+      expect(system(child)).toContain("Never hand off your whole task, never delegate a task back to your parent");
+      expect(system(child)).toContain("chrono wait with task_id set to its conversation id");
+      expect(system(grandchild)).toContain("at depth 2 of 2");
+      expect(system(grandchild)).toContain("You cannot start subagents of your own");
+      expect(system(grandchild)).not.toContain("You may start subagents");
+      setMaxDepth(3);
+      expect(system(child)).toContain("up to 2 more levels deep");
+      expect(exo.systemHint).toContain("Nesting is bounded");
+      expect(exo.systemHint).not.toContain("cannot delegate further");
+    });
+
+    test("grandchildren count toward the daemon-wide cap", async () => {
+      const h = harness({ runTurn: () => new Promise(() => {}) });
+      const p = parent();
+      const child = await spawn(h.runtime, p.id);
+      for (let i = 0; getActiveSubagentCount() < MAX_ACTIVE_EXO_SUBAGENTS_GLOBAL - 1; i++) {
+        setSubagentActive(`elsewhere-${Math.floor(i / 4)}`, `busy-${i}`, true, { title: "busy", startedAt: Date.now() });
+      }
+      await spawn(h.runtime, child.id);
+      expect(getActiveSubagentCount()).toBe(MAX_ACTIVE_EXO_SUBAGENTS_GLOBAL);
+      expect(await error(h.runtime.execute({ subagent: "one more" }, child.id)))
+        .toBe(`Already at the ${MAX_ACTIVE_EXO_SUBAGENTS_GLOBAL}-subagent daemon limit.`);
+      expect(await error(h.runtime.execute({ subagent: "one more" }, p.id)))
+        .toBe(`Already at the ${MAX_ACTIVE_EXO_SUBAGENTS_GLOBAL}-subagent daemon limit.`);
+    });
+
+    test("a child's per-parent cap counts only its own children", async () => {
+      const h = harness({ runTurn: () => new Promise(() => {}) });
+      const p = parent();
+      const child = await spawn(h.runtime, p.id);
+      for (let i = 0; i < MAX_ACTIVE_EXO_SUBAGENTS_PER_PARENT; i++) {
+        setSubagentActive(child.id, `child-capacity-${i}`, true, { title: "busy", startedAt: Date.now() });
+      }
+      expect(await error(h.runtime.execute({ subagent: "one more" }, child.id)))
+        .toBe(`Already at the ${MAX_ACTIVE_EXO_SUBAGENTS_PER_PARENT}-subagent parent limit.`);
+      await spawn(h.runtime, p.id);
+    });
+
+    test("message and abort stay limited to direct children at every depth", async () => {
+      const h = harness({ runTurn: () => new Promise(() => {}) });
+      const p = parent();
+      const child = await spawn(h.runtime, p.id);
+      const sibling = await spawn(h.runtime, p.id);
+      const grandchild = await spawn(h.runtime, child.id);
+      const message = (target: string, caller: string) => h.runtime.execute({ message: { conversation: target, text: "hi" } }, caller);
+      expect(await error(message(child.id, grandchild.id))).toBe("Subagents can only message their own direct children.");
+      expect(await error(message(p.id, grandchild.id))).toBe("Subagents can only message their own direct children.");
+      expect(await error(message(grandchild.id, sibling.id))).toBe("Subagents can only message their own direct children.");
+      expect(await error(h.runtime.execute({ abort: child.id }, grandchild.id))).toBe("Subagents can only abort their own direct children.");
+      expect(await error(h.runtime.execute({ abort: grandchild.id }, sibling.id))).toBe("Subagents can only abort their own direct children.");
+      expect((await message(grandchild.id, child.id)).isError).toBe(false);
+      expect((await h.runtime.execute({ abort: grandchild.id }, child.id)).isError).toBe(false);
+    });
+
+    test("aborting a child aborts its running subagents too", async () => {
+      const h = harness({ runTurn: () => new Promise(() => {}) });
+      const p = parent();
+      const child = await spawn(h.runtime, p.id);
+      const grandchild = await spawn(h.runtime, child.id);
+      const controllers = new Map([child.id, grandchild.id].map(id => [id, new AbortController()]));
+      for (const [id, controller] of controllers) conversations.setActiveJob(id, controller, Date.now());
+      const response = JSON.parse((await h.runtime.execute({ abort: child.id }, p.id)).output);
+      expect(response).toEqual({ conversation_id: child.id, status: "aborted", aborted_subagents: [grandchild.id] });
+      expect(controllers.get(child.id)!.signal.aborted).toBe(true);
+      expect(controllers.get(grandchild.id)!.signal.aborted).toBe(true);
+    });
+
+    test("no subagent at any depth can restart the daemon", async () => {
+      const schedule = mock(() => "unit");
+      const h = harness({ restart: { startedAt: Date.now() - RESTART_MIN_UPTIME_MS - 60_000, target: "service", schedule } });
+      const child = await spawn(h.runtime, parent().id);
+      const grandchild = await spawn(h.runtime, child.id);
+      for (const id of [child.id, grandchild.id]) {
+        expect(await error(h.runtime.execute({ restart: "" }, id))).toBe("Subagents cannot restart the daemon; ask the parent conversation.");
+      }
+      expect(schedule).not.toHaveBeenCalled();
+    });
   });
   test("abort targets exactly one conversation and rejects self/missing targets", async () => {
     const h = harness();
@@ -264,9 +403,9 @@ describe("minimal native exo", () => {
       const response = await h.runtime.execute({ message: { conversation: child.id, text: "follow up", delivery: "after_turn" } }, p.id);
       expect(JSON.parse(response.output)).toMatchObject({ conversation_id: child.id, status: "delivered", target_status: "idle" });
       expect(h.runTurn).toHaveBeenCalledTimes(2);
-      expect((h.runTurn.mock.calls[1] as unknown[]).slice(0, 3)).toEqual([child.id, "follow up", 0]);
+      expect((h.runTurn.mock.calls[1] as unknown[]).slice(0, 3)).toEqual([child.id, "follow up", 1]);
       expect((h.runTurn.mock.calls[1] as unknown[])[4]).toEqual({ kind: "exo_send", sourceId: p.id });
-      expect(h.beginParentNotification.mock.calls[1] as unknown[]).toEqual([{ convId: p.id }, child.id, "follow up", expect.any(Number), 0, true]);
+      expect(h.beginParentNotification.mock.calls[1] as unknown[]).toEqual([{ convId: p.id }, child.id, "follow up", expect.any(Number), 1, true]);
       expect(getConversationActivityCounts(p.id).subagentCount).toBe(1);
       expect(queued(child.id)).toEqual([]);
       resolve(outcome);

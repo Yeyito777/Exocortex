@@ -28,11 +28,42 @@ a Claude (`anthropic`) parent gets the latest Opus at `high` effort; every
 other parent gets Sol fast. `effort` must be one the selected model supports;
 omitted, it is `high` for Claude and the model's default for OpenAI. The
 selected provider must be signed in (or proxied) and startable, so either
-family works from any parent. Parents cannot choose tools or additional
-delegation depth. Children get the standard provider tools and all external
-hints, and cannot delegate further. `detach: true` suppresses completion
-notifications. The tool result reports the child's `provider`, `model` and
-`effort`, plus `fast_mode: true` for Sol fast.
+family works from any parent. Parents cannot choose tools or delegation
+depth. Children get the standard provider tools and all external hints.
+`detach: true` suppresses completion notifications. The tool result reports
+the child's `provider`, `model` and `effort`, plus `fast_mode: true` for Sol
+fast.
+
+## Nested subagents
+
+Subagents may start their own, down to `agent.maxSubagentDepth` in
+`config/config.json` (default 2: top-level → child → grandchild; 1 restores
+"children cannot delegate"; at most 8). Each child stores its depth in its
+subagent policy (1 under a top-level conversation), so the limit holds
+however a turn is started, including a user typing into the subagent; a
+record from before nesting counts as depth 1. At the limit `exo subagent` is
+refused with the caller's depth.
+
+- **Prompt.** Every subagent's system prompt (both providers) gets a
+  Delegation section: it is already a subagent, at depth N of M, under parent
+  conversation X; either it may delegate (and how many more levels) or it
+  cannot. One that may delegate is told to do so only for clearly separable
+  multi-hour work, never its whole task, never back to its parent or above,
+  and to wait for its children (`chrono wait` on their conversation ids)
+  before reporting. The shared `exo` hint says only that nesting is bounded.
+- **Caps.** The per-parent cap (8) counts a conversation's own running
+  children; the daemon cap (32) counts every running subagent at any depth.
+- **Ownership.** A subagent may message or abort only its direct children, at
+  every depth. `chrono wait` from any subagent is limited to its own tasks.
+  No subagent can restart the daemon.
+- **Notifications.** A grandchild reports to its own parent, never past it.
+  If that parent already reported its task, the notification starts a new
+  turn in it, and that turn's reply is relayed to its parent as a subagent
+  completion (unless the child was started with `detach: true`).
+- **Abort.** `exo abort` cascades: the target's running subagents at every
+  depth are aborted first and listed as `aborted_subagents`. A child that
+  finishes normally, or a stop from the TUI, leaves its running children
+  alone; they report to it as above.
 
 Administration goes directly through [daemon IPC](daemon-ipc.md).
 

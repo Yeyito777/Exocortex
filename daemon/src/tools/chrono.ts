@@ -184,7 +184,8 @@ async function execute(input: Record<string, unknown>, context: Parameters<Tool[
     const maxWait = String(input.max_wait).trim();
     const startedAt = Date.now();
     const ownTaskId = `chrono:wait:${context.toolCallId ?? startedAt}`;
-    const ownerConversationId = context.subagentMaxDepth === 0 ? convId : undefined;
+    // Only subagent turns carry a delegation budget; they may wait only on their own tasks.
+    const ownerConversationId = context.subagentMaxDepth != null ? convId : undefined;
     if (maxWaitMs > LONG_CHRONO_SLEEP_THRESHOLD_MS) {
       if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
       try {
