@@ -318,6 +318,34 @@ describe("minimal native exo", () => {
       expect(controllers.get(grandchild.id)!.signal.aborted).toBe(true);
     });
 
+    test("an aborted subagent does not start again from automated input already queued for it", async () => {
+      const { beginPendingSubagentNotification, settlePendingSubagentNotifications, listPendingSubagentNotifications, removePendingSubagentNotificationsForConversation } = await import("../subagent-notifications");
+      const h = harness({ runTurn: () => new Promise(() => {}) });
+      const p = parent();
+      const child = await spawn(h.runtime, p.id);
+      const controller = new AbortController();
+      conversations.setActiveJob(child.id, controller, Date.now());
+      // Queued while it streamed: the parent's after_turn message, a finished
+      // grandchild's result, and something the user typed into it.
+      conversations.pushQueuedMessage(child.id, "also do X", "message-end", undefined, null, undefined, undefined, undefined,
+        { kind: "exo_send", sourceId: p.id });
+      conversations.pushQueuedMessage(child.id, "[notification] Subagent completed", "next-turn", undefined, null, "gc-note", undefined, undefined,
+        { kind: "subagent_completion", sourceId: "gc" });
+      conversations.pushQueuedMessage(child.id, "typed by the user", "message-end");
+      beginPendingSubagentNotification({ convId: child.id }, "late-grandchild", "task", 1, 0);
+      settlePendingSubagentNotifications("late-grandchild", { ok: true, blocks: [] });
+      try {
+        expect((await h.runtime.execute({ abort: child.id }, p.id)).isError).toBe(false);
+        expect(controller.signal.aborted).toBe(true);
+        expect(conversations.getQueuedMessages(child.id).map(entry => entry.text)).toEqual(["typed by the user"]);
+        expect(listPendingSubagentNotifications({ childConvId: "late-grandchild" })).toEqual([]);
+      } finally {
+        removePendingSubagentNotificationsForConversation("late-grandchild");
+        conversations.clearQueuedMessages(child.id);
+        conversations.clearActiveJob(child.id);
+      }
+    });
+
     test("no subagent at any depth can restart the daemon", async () => {
       const schedule = mock(() => "unit");
       const h = harness({ restart: { startedAt: Date.now() - RESTART_MIN_UPTIME_MS - 60_000, target: "service", schedule } });

@@ -58,12 +58,17 @@ refused with the caller's depth.
   No subagent can restart the daemon.
 - **Notifications.** A grandchild reports to its own parent, never past it.
   If that parent already reported its task, the notification starts a new
-  turn in it, and that turn's reply is relayed to its parent as a subagent
-  completion (unless the child was started with `detach: true`).
+  turn in it (at once, or after its current turn when it is busy), and that
+  turn's reply is relayed to its parent as a subagent completion (unless the
+  child was started with `detach: true`). The same holds for a message the
+  parent queued with `delivery: after_turn`: its reply is reported too.
 - **Abort.** `exo abort` cascades: the target's running subagents at every
-  depth are aborted first and listed as `aborted_subagents`. A child that
-  finishes normally, or a stop from the TUI, leaves its running children
-  alone; they report to it as above.
+  depth are aborted first and listed as `aborted_subagents`. Automated input
+  already queued for an aborted conversation (its parent's messages, its own
+  subagents' results, wakes) is dropped, so it does not start again; the
+  user's own queued messages stay. A child that finishes normally, or a stop
+  from the TUI, leaves its running children alone; they report to it as
+  above.
 
 Administration goes directly through [daemon IPC](daemon-ipc.md).
 
