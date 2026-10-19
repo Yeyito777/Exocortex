@@ -28,6 +28,7 @@ import { processKey, copyToClipboard, pasteFromClipboard, type VimContext } from
 import { isLinewiseClipboardText } from "./vim/clipboard";
 import { clampNormal, nextGraphemeEnd, previousGraphemeStart } from "./vim/buffer";
 import { putLines } from "./vim/operators";
+import { sanitizePromptTextForInsertion } from "./prompttext";
 import { pushUndo, markInsertEntry, commitInsertSession, undo as undoFn, redo as redoFn } from "./undo";
 import {
   ensureCursorVisible,
@@ -338,7 +339,9 @@ function handlePaste(
   state: RenderState,
   onAsyncUiMutation?: AsyncUiMutationCallback,
 ): void {
-  pasteFromClipboard().then((text) => {
+  pasteFromClipboard().then((raw) => {
+    // Same cleanup as a bracketed paste: no terminal controls, CRs or tabs
+    const text = sanitizePromptTextForInsertion(raw);
     if (!text) return;
 
     pushUndo(state.undo, state.inputBuffer, state.cursorPos);
@@ -351,7 +354,8 @@ function handlePaste(
       state.inputBuffer = edit.buffer;
       state.cursorPos = edit.cursor;
     } else {
-      const insertAt = position === "after" ? nextGraphemeEnd(buf, cursor) : cursor;
+      // On an empty line there is no character to put after
+      const insertAt = position === "after" && buf[cursor] !== "\n" ? nextGraphemeEnd(buf, cursor) : cursor;
       const pos = Math.min(insertAt, buf.length);
       const pasted = text.repeat(count);
       state.inputBuffer = buf.slice(0, pos) + pasted + buf.slice(pos);

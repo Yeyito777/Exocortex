@@ -343,3 +343,31 @@ describe("prompt non-character keys cancel a pending Vim command", () => {
     expect(vim("ab xb", 0, "vf<tab>bd").buffer).toBe("b xb");
   });
 });
+
+describe("prompt charwise put from the system clipboard", () => {
+  afterEach(() => setTextClipboardSystemForTest(null));
+
+  async function putClipboard(output: string, buffer: string, cursor: number, sequence: string) {
+    setTextClipboardSystemForTest({
+      platform: "linux",
+      env: { DISPLAY: ":0" },
+      commandExists: (command) => command === "xsel",
+      paste: async () => ({ output, exitCode: 0 }),
+      copy: async () => 0,
+    });
+    const state = prompt(buffer, cursor);
+    keys(state, sequence);
+    await pasteFromClipboard();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    return state.inputBuffer;
+  }
+
+  test("p cleans clipboard text like a bracketed paste", async () => {
+    expect(await putClipboard("x\r\ny\tz\x1b[31mR", "ab", 0, "p")).toBe("ax\ny    zRb");
+  });
+
+  test("p on an empty line puts on that line", async () => {
+    expect(await putClipboard("X", "a\n\nb", 2, "p")).toBe("a\nX\nb");
+    expect(await putClipboard("X", "a\n", 2, "p")).toBe("a\nX");
+  });
+});
