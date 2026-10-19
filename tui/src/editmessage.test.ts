@@ -7,7 +7,7 @@ import {
   editMessageItemIndexAtMouse,
   openEditMessageModal,
 } from "./editmessage";
-import { createPendingAI, type UserMessage } from "./messages";
+import { createPendingAI, type ImageAttachment, type UserMessage } from "./messages";
 import { createInitialState, noteConversationOpenRequest } from "./state";
 import { handleEvent, type DaemonActions } from "./events";
 import { handleFocusedKey } from "./focus";
@@ -467,9 +467,9 @@ describe("edit message modal", () => {
 });
 
 describe("confirming an edit replaces the draft", () => {
-  const draftImage = { mediaType: "image/png", base64: "AAA", sizeBytes: 3 };
+  const draftImage: ImageAttachment = { mediaType: "image/png", base64: "AAA", sizeBytes: 3 };
 
-  function editing(items: Array<{ text: string; images?: typeof draftImage[] }>) {
+  function editing(items: Array<{ text: string; images?: ImageAttachment[] }>) {
     const state = createInitialState();
     state.sidebar.open = false;
     state.inputBuffer = "my draft";
@@ -493,7 +493,7 @@ describe("confirming an edit replaces the draft", () => {
   });
 
   test("attaches the edited message's own images", () => {
-    const image = { mediaType: "image/jpeg", base64: "BBB", sizeBytes: 3 };
+    const image: ImageAttachment = { mediaType: "image/jpeg", base64: "BBB", sizeBytes: 3 };
     const state = editing([{ text: "old msg", images: [image] }]);
     confirmEditMessage(state);
     expect(state.pendingImages).toEqual([image]);
