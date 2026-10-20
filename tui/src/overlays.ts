@@ -11,7 +11,7 @@
 import type { QueuePromptState, EditMessageState } from "./state";
 import { theme } from "./theme";
 import { formatSize, imageLabel } from "./clipboard";
-import { padVisibleRightToWidth, termWidth, truncateToWidth } from "./textwidth";
+import { padRightToWidth, termWidth, truncateToWidth } from "./textwidth";
 import { computeEditMessageOverlayLayout, EDIT_MESSAGE_TITLE } from "./editmessage-layout";
 import type { ScreenRect } from "./historyimages";
 
@@ -55,11 +55,19 @@ interface BoxOverlayParams {
 /**
  * Render a centered box overlay with top/bottom borders and styled
  * content lines, returning the ANSI payload and the screen box it draws on. Used by both the queue-prompt and edit-message overlays.
+ *
+ * The box never extends past the chat area: the inner width is clamped to
+ * it, and each line is cut to the inner width (with "…") so the right border
+ * always lands on its column.
  */
 function renderBoxOverlay(params: BoxOverlayParams): { payload: string; rect: ScreenRect } {
-  const { lines, innerWidth, chatCol, chatW, sepRow, boxTop, scrollIndicators } = params;
+  const { lines, chatCol, chatW, sepRow, boxTop, scrollIndicators } = params;
+  const innerWidth = Math.max(0, Math.min(params.innerWidth, chatW - 2));
   const boxWidth = innerWidth + 2;
-  const boxLeft = chatCol + Math.floor((chatW - boxWidth) / 2);
+  const boxLeft = chatCol + Math.max(0, Math.floor((chatW - boxWidth) / 2));
+  if (chatW < boxWidth) {
+    return { payload: "", rect: { top: boxTop, bottom: boxTop, left: chatCol, right: chatCol } };
+  }
 
   let result = "";
 
@@ -75,12 +83,12 @@ function renderBoxOverlay(params: BoxOverlayParams): { payload: string; rect: Sc
 
     result += move_to(row, boxLeft);
     result += `${theme.sidebarBg}${theme.accent}│${entry.bg}${entry.fg}`;
-    result += padVisibleRightToWidth(entry.text, innerWidth);
+    result += padRightToWidth(entry.text, innerWidth);
     result += `${theme.reset}${theme.sidebarBg}${theme.accent}│${theme.reset}`;
   }
 
-  // Scroll indicators
-  if (scrollIndicators) {
+  // Scroll indicators (two cells at the right edge of the content)
+  if (scrollIndicators && innerWidth >= 2) {
     if (scrollIndicators.upRow !== undefined) {
       result += move_to(scrollIndicators.upRow, boxLeft + boxWidth - 3);
       result += `${theme.sidebarBg}${theme.dim} ▲${theme.reset}`;
@@ -107,6 +115,15 @@ function renderBoxOverlay(params: BoxOverlayParams): { payload: string; rect: Sc
 
 // ── Queue prompt overlay ──────────────────────────────────────────
 
+const QUEUE_PROMPT_TITLE = "Queue message:";
+const QUEUE_PROMPT_SHORT_TITLE = "Queue:";
+/** Widest the quoted preview gets, however wide the terminal. */
+const QUEUE_PROMPT_PREVIEW_MAX_WIDTH = 40;
+/** Below this many cells the preview says too little to show at all. */
+const QUEUE_PROMPT_PREVIEW_MIN_WIDTH = 8;
+/** Narrower chat areas give up the box's side margins to keep room for the text. */
+const QUEUE_PROMPT_MARGIN_MIN_WIDTH = 20;
+
 /** The queue prompt's ANSI payload and the screen box it draws on (images are cropped around it). */
 export function renderQueuePromptOverlay(
   qp: QueuePromptState,
@@ -115,9 +132,17 @@ export function renderQueuePromptOverlay(
   sepRow: number,
   steersInstantly = true,
 ): { payload: string; rect: ScreenRect } {
-  // Preview of the message being queued (truncated)
+  // Widest the content may get: the chat area minus a column of margin each
+  // side, or all of it when the area is too narrow to spare the margins.
+  const maxInnerWidth = Math.max(0, chatW - (chatW >= QUEUE_PROMPT_MARGIN_MIN_WIDTH ? 4 : 2));
+
+  // Preview of the message being queued, cut to fit the box with its quotes.
+  // When too little of it would show, it goes first, before the options do.
+  const previewWidth = Math.min(QUEUE_PROMPT_PREVIEW_MAX_WIDTH, maxInnerWidth - 3);
   const previewSource = qp.text.replace(/\n/g, " ");
-  const previewLabel = truncateToWidth(previewSource, 40);
+  const msgLines = previewWidth >= QUEUE_PROMPT_PREVIEW_MIN_WIDTH
+    ? [`"${truncateToWidth(previewSource, previewWidth)}"`]
+    : [];
 
   // Image badge lines (e.g. "📎 PNG (93.1 KB)")
   const imageBadges: string[] = [];
@@ -127,15 +152,14 @@ export function renderQueuePromptOverlay(
     }
   }
 
-  // Box content lines (plain text)
-  const titleLine = "Queue message:";
-  const msgLine = `"${previewLabel}"`;
+  // Box content lines (plain text; the box cuts any still too wide with "…")
+  const titleLine = termWidth(QUEUE_PROMPT_TITLE) <= maxInnerWidth ? QUEUE_PROMPT_TITLE : QUEUE_PROMPT_SHORT_TITLE;
   const optLine1 = `${qp.selection === "message-end" ? "▸ " : "  "}message end`;
   const optLine2 = `${qp.selection === "next-turn" ? "▸ " : "  "}${steersInstantly ? "steer now" : "next turn"}`;
-  const rawLines = [titleLine, msgLine, ...imageBadges, "", optLine1, optLine2];
+  const rawLines = [titleLine, ...msgLines, ...imageBadges, "", optLine1, optLine2];
   const innerWidth = Math.min(
     Math.max(...rawLines.map((line) => termWidth(line))) + 4,
-    chatW - 4,
+    maxInnerWidth,
   );
 
   // Indices of the two option lines (always the last two)
@@ -147,7 +171,6 @@ export function renderQueuePromptOverlay(
     let fg = theme.muted;
     let bg = theme.sidebarBg;
     if (i === 0) fg = theme.text;    // title
-    if (i === 1) fg = theme.muted;   // preview
 
     if (i === opt1Idx || i === opt2Idx) {
       // Options

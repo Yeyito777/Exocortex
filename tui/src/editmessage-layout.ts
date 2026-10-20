@@ -38,7 +38,7 @@ export function computeEditMessageOverlayLayout(
   );
   const innerWidth = Math.max(0, Math.min(maxContentLen + 4, chatW - 4));
   const boxWidth = innerWidth + 2;
-  const boxLeft = chatCol + Math.floor((chatW - boxWidth) / 2);
+  const boxLeft = chatCol + Math.max(0, Math.floor((chatW - boxWidth) / 2));
   const maxVisible = Math.min(em.items.length, Math.max(3, messageAreaHeight - 4));
 
   let scrollStart = em.scrollOffset;

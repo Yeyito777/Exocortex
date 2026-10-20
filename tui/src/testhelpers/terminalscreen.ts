@@ -113,6 +113,11 @@ export class TerminalScreen {
     return this.rows.map(row => row.join(""));
   }
 
+  /** The glyph at a zero-based cell; "" for the right half of a wide glyph. */
+  cell(row: number, col: number): string {
+    return this.rows[row]?.[col] ?? "";
+  }
+
   private consumeEscape(text: string, start: number): number {
     if (text[start + 1] === "[") {
       let end = start + 2;
