@@ -33,6 +33,14 @@ const ARROW_MOTIONS: Partial<Record<KeyEvent["type"], string>> = {
 };
 
 export const UNSAVED_WARNING = "Unsaved changes: :w saves, :q! or Esc again discards";
+export const READ_ONLY_WARNING = "Read-only: nothing here can be edited or saved";
+
+/** An edit in a read-only editor: stay in normal mode and say why. */
+function refuseEdit(editor: InstructionsEditorState): InstructionsEditorKeyResult {
+  editor.vim.mode = "normal";
+  editor.notice = { text: editor.readOnlyNotice ?? READ_ONLY_WARNING, tone: "warning" };
+  return HANDLED;
+}
 
 export function handleInstructionsEditorKey(
   key: KeyEvent,
@@ -48,6 +56,8 @@ export function handleInstructionsEditorKey(
   const confirmDiscard = editor.confirmDiscard;
   editor.confirmDiscard = false;
   editor.notice = null;
+
+  if (editor.readOnly && (key.type === "ctrl-s" || key.type === "paste")) return refuseEdit(editor);
 
   if (key.type === "ctrl-s") return { type: "save", close: false, force: false };
 
@@ -110,6 +120,11 @@ function handleCommandLineKey(key: KeyEvent, editor: InstructionsEditorState): I
 
 /** Run an ex command typed after ":". */
 export function runEditorCommand(command: string, editor: InstructionsEditorState): InstructionsEditorKeyResult {
+  if (editor.readOnly) {
+    // Nothing to write: the quitting forms just close.
+    if (["w", "write", "w!"].includes(command)) return refuseEdit(editor);
+    if (["wq", "x", "xit", "wq!", "x!"].includes(command)) return { type: "close" };
+  }
   switch (command) {
     case "":
       return HANDLED;
@@ -250,6 +265,7 @@ function applyVimKey(key: KeyEvent, editor: InstructionsEditorState, onAsyncEdit
   }
   const prevMode = vim.mode;
   const result = processKey(key, vim, "prompt", editor.buffer, editor.cursor);
+  if (editor.readOnly && refusedWhenReadOnly(result)) return refuseEdit(editor);
 
   switch (result.type) {
     case "passthrough":
@@ -327,6 +343,22 @@ function applyVimKey(key: KeyEvent, editor: InstructionsEditorState, onAsyncEdit
         editor.curswant = null;
       }
       return HANDLED;
+  }
+}
+
+/** Results that would change the text or start typing. Yanks and motions stay. */
+function refusedWhenReadOnly(result: ReturnType<typeof processKey>): boolean {
+  switch (result.type) {
+    case "buffer_edit":
+    case "visual_edit":
+    case "paste":
+    case "undo":
+    case "redo":
+      return true;
+    case "mode_change":
+      return result.mode === "insert";
+    default:
+      return false;
   }
 }
 

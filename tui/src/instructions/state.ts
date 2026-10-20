@@ -8,6 +8,7 @@
 import { createVimState, type VimState } from "../vim";
 import { createUndoState, type UndoState } from "../undo";
 import { sanitizePromptTextForInsertion } from "../prompttext";
+import type { ToolInstructionsDoc } from "./tools";
 
 export type InstructionScope = "conversation" | "folder" | "global";
 
@@ -45,7 +46,14 @@ export interface InstructionsPickerState {
 }
 
 export interface InstructionsEditorState {
+  /** Ignored when `tools` is set. */
   scope: InstructionScope;
+  /** Set for /instructions tools: the read-only tools view and its decorations. */
+  tools?: ToolInstructionsDoc;
+  /** Refuse every edit; :q and Esc close. */
+  readOnly?: boolean;
+  /** Why it is read-only, shown when an edit is refused. */
+  readOnlyNotice?: string;
   target: InstructionsTarget;
   /** The text as loaded or last saved; the buffer is dirty when it differs. */
   savedText: string;

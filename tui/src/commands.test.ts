@@ -7,6 +7,7 @@ import { createInitialState } from "./state";
 import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, defaultEffortForModelId, type ProviderInfo, type TokenStatsSnapshot, type TokenUsageTotals } from "./messages";
 import { theme, themes } from "./theme";
 import { handleEvent, type DaemonActions } from "./events";
+import { commandCompletions, resolveSlashShorthands } from "./slashsearch";
 
 const providers: ProviderInfo[] = [
   {
@@ -1547,6 +1548,53 @@ describe("/instructions", () => {
 
     expect(tryCommand("/instructions clear", state)).toEqual({ type: "set_system_instructions", text: "" });
     expect(state.messages.at(-1)).toMatchObject({ role: "system", text: "Conversation instructions cleared." });
+  });
+
+  test("a sole scope or tools word opens that view, in full or short form, in a draft or a conversation", () => {
+    for (const convId of [null, "conv-1"]) {
+      const cases: Array<[string, string]> = [
+        ["conversation", "conversation"], ["convo", "conversation"], ["c", "conversation"],
+        ["folder", "folder"], ["f", "folder"], ["global", "global"], ["G", "global"], ["tools", "tools"], ["t", "tools"],
+      ];
+      for (const [arg, view] of cases) {
+        const state = createInitialState();
+        state.convId = convId;
+        expect(tryCommand(`/instructions ${arg}`, state)).toEqual({ type: "open_instructions", view: view as never });
+        expect(state.messages).toHaveLength(0);
+        expect(state.pendingSystemInstructions).toBeNull();
+      }
+    }
+  });
+
+  test("an argument only counts as the sole word: anything longer is instructions text", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    expect(tryCommand("/instructions global rules apply", state)).toEqual({ type: "set_system_instructions", text: "global rules apply" });
+    expect(tryCommand("/instructions use the tools wisely", state)).toEqual({ type: "set_system_instructions", text: "use the tools wisely" });
+    expect(tryCommand("/instructions folder", state)).toEqual({ type: "open_instructions", view: "folder" });
+    expect(tryCommand("/instructions concise", state)).toEqual({ type: "set_system_instructions", text: "concise" });
+  });
+
+  test("submission never rewrites multi-word instructions into an argument", () => {
+    const state = createInitialState();
+    for (const text of ["/instructions be concise", "/instructions global rules apply", "/instructions use the tools wisely", "/instructions folder stuff"]) {
+      expect(resolveSlashShorthands(state, text)).toBe(text);
+    }
+    expect(resolveSlashShorthands(state, "/instructions g")).toBe("/instructions global");
+    expect(resolveSlashShorthands(state, "/instructions convo")).toBe("/instructions conversation");
+  });
+
+  test("autocomplete lists the views and clear with one-line descriptions", () => {
+    const state = createInitialState();
+    const args = getCommandArgs(state, "/instructions")["/instructions"];
+    expect(args.map(item => item.name)).toEqual(["conversation", "folder", "global", "tools", "clear"]);
+    for (const item of args) {
+      expect(item.desc.length).toBeGreaterThan(0);
+      expect(item.desc).not.toContain("\n");
+    }
+    expect(commandCompletions(state, "/instructions ").map(item => item.name)).toEqual(["conversation", "folder", "global", "tools", "clear"]);
+    expect(commandCompletions(state, "/instructions to")[0].name).toBe("tools");
+    expect(commandCompletions(state, "/instructions g")[0].name).toBe("global");
   });
 });
 

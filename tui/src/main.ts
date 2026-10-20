@@ -26,6 +26,8 @@ import {
   instructionsRouteSwitched,
   openFolderInstructionsEditor,
   openInstructionsPicker,
+  openInstructionsScope,
+  openToolInstructions,
   prefetchCurrentInstructions,
 } from "./instructions/controller";
 import { handleFocusedKey } from "./focus";
@@ -965,7 +967,9 @@ function handleSubmit(): void {
           createConversationWithInstructions(cmdResult.text);
           break;
         case "open_instructions":
-          openInstructionsPicker(state, daemon);
+          if (cmdResult.view === "tools") openToolInstructions(state, daemon);
+          else if (cmdResult.view) openInstructionsScope(state, daemon, cmdResult.view);
+          else openInstructionsPicker(state, daemon);
           break;
         case "replay_requested":
           if (startReplayConversation(state, daemon)) {

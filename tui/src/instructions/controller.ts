@@ -6,11 +6,12 @@
  */
 
 import type { KeyEvent } from "../input";
-import type { Event } from "../protocol";
+import type { Event, ModelId, ProviderId } from "../protocol";
 import { pushSystemMessage, type RenderState } from "../state";
 import { theme } from "../theme";
 import { sanitizePromptTextForInsertion } from "../prompttext";
 import { handleInstructionsEditorKey } from "./editor";
+import { buildToolInstructionsDoc, handleToolsViewKey, TOOLS_READ_ONLY_NOTICE } from "./tools";
 import {
   createInstructionsEditor,
   INSTRUCTION_SCOPES,
@@ -52,6 +53,11 @@ export interface InstructionsDaemon extends InstructionsLoader {
   setSystemInstructions(convId: string, text: string): string;
   setFolderInstructions(folderId: string, text: string): string;
   setGlobalInstructions(text: string, expectedText?: string): string;
+}
+
+/** The daemon request behind /instructions tools. */
+export interface ToolInstructionsLoader {
+  loadToolInstructions(convId: string | null, provider: ProviderId, model: ModelId): string;
 }
 
 export type InstructionsKeyOutcome =
@@ -132,14 +138,45 @@ function restoreFailedSave(state: RenderState, editor: InstructionsEditorState):
   editor.notice = { text: failureNotice(editor.scope, failure), tone: "error" };
 }
 
+/** An editor for one scope without the picker: shows what the TUI has, or waits for the daemon's text. */
+function openScopeEditor(state: RenderState, daemon: InstructionsDaemon, scope: InstructionScope, target: InstructionsTarget): void {
+  const reqId = loadInstructionsInto(state.instructionsStore, daemon, target.convId, target.folderId);
+  if (scope === "conversation" && !target.convId) {
+    // A draft: only what /instructions queued for it; saving creates the conversation.
+    state.instructionsModal = { picker: null, editor: editorFor(state, scope, target, state.pendingSystemInstructions ?? "") };
+    return;
+  }
+  const text = instructionsText(state.instructionsStore, scopeKey(scope, target)!);
+  const editor = editorFor(state, scope, target, text);
+  if (text === null) editor.loadReqId = reqId;
+  state.instructionsModal = { picker: null, editor };
+}
+
 /** The sidebar folder menu's "Edit instructions": that folder's editor, without the picker. */
 export function openFolderInstructionsEditor(state: RenderState, daemon: InstructionsDaemon, folderId: string): void {
   const folder = state.sidebar.folders.find(candidate => candidate.id === folderId);
-  const target: InstructionsTarget = { convId: null, convTitle: null, folderId, folderName: folder?.name ?? null };
-  const text = instructionsText(state.instructionsStore, instructionsKey("folder", folderId)!);
-  const reqId = loadInstructionsInto(state.instructionsStore, daemon, null, folderId);
-  const editor = editorFor(state, "folder", target, text);
-  if (text === null) editor.loadReqId = reqId;
+  openScopeEditor(state, daemon, "folder", { convId: null, convTitle: null, folderId, folderName: folder?.name ?? null });
+}
+
+/** `/instructions conversation|folder|global`: that scope's editor for the open conversation, without the picker. */
+export function openInstructionsScope(state: RenderState, daemon: InstructionsDaemon, scope: InstructionScope): void {
+  const target = currentInstructionsTarget(state);
+  if (!scopeAvailable(scope, target)) {
+    pushSystemMessage(state, "No folder instructions here: this conversation is not in a folder. Move it into one, or use /instructions global.");
+    return;
+  }
+  openScopeEditor(state, daemon, scope, target);
+}
+
+/** `/instructions tools`: what the model is told about each tool on this conversation's route, read-only. */
+export function openToolInstructions(state: RenderState, daemon: ToolInstructionsLoader): void {
+  const target = currentInstructionsTarget(state);
+  const editor = createInstructionsEditor("global", target, "");
+  editor.readOnly = true;
+  editor.readOnlyNotice = TOOLS_READ_ONLY_NOTICE;
+  editor.tools = { provider: state.provider, model: state.model, route: "", sections: [], lineStyles: [], pendingBracket: null };
+  editor.vim.mode = "normal";
+  editor.loadReqId = daemon.loadToolInstructions(state.convId, state.provider, state.model);
   state.instructionsModal = { picker: null, editor };
 }
 
@@ -207,6 +244,8 @@ function saveEditor(
   close: boolean,
   force: boolean,
 ): InstructionsKeyOutcome {
+  // The tools view shows code and manifests; nothing in it is saved.
+  if (editor.readOnly) return HANDLED;
   if (!isInstructionsEditorDirty(editor) && !force) {
     if (close) closeEditor(state, modal);
     else editor.notice = { text: "No changes to save", tone: "info" };
@@ -244,6 +283,7 @@ export function handleInstructionsModalKey(
     if (modal.picker) handlePickerKey(key, state, modal as InstructionsModalState & { picker: InstructionsPickerState });
     return HANDLED;
   }
+  if (handleToolsViewKey(key, editor)) return HANDLED;
   const result = handleInstructionsEditorKey(key, editor, onAsyncEdit);
   switch (result.type) {
     case "handled":
@@ -259,6 +299,8 @@ export function handleInstructionsModalKey(
 // ── Daemon answers ───────────────────────────────────────────────────
 
 function editorKey(editor: InstructionsEditorState): string | null {
+  // The tools view is not one of the instruction scopes.
+  if (editor.tools) return null;
   return scopeKey(editor.scope, editor.target);
 }
 
@@ -328,6 +370,13 @@ export function handleInstructionsEvent(state: RenderState, event: Event, daemon
       // Nothing to edit: close, and let the error show in the chat.
       state.instructionsModal = null;
       return false;
+    }
+    if (event.type === "tool_instructions_loaded" && editor.tools) {
+      const { text, doc } = buildToolInstructionsDoc(event);
+      setInstructionsEditorText(editor, text);
+      editor.vim.mode = "normal";
+      editor.tools = doc;
+      return true;
     }
     if (event.type === "instructions_loaded") {
       const key = editorKey(editor);
