@@ -21,7 +21,7 @@ import {
   isConversationScrollRestoreWaitingForInitialBackfill,
 } from "./conversationscroll";
 import { renderTopbar } from "./topbar";
-import { conversationActionMenuAnchorRow, renderConversationActionMenu, renderSidebar, SIDEBAR_WIDTH } from "./sidebar";
+import { renderSidebar, renderSidebarActionMenu, sidebarActionMenuAnchorRow, SIDEBAR_WIDTH } from "./sidebar";
 import { createSidebarState } from "./sidebar/state";
 import { isGlobalIdleQueuedMessage, steersInstantly } from "./queue";
 import { getSidebarSearchBarViewport } from "./sidebarsearch";
@@ -1726,18 +1726,18 @@ export function render(state: RenderState): boolean {
     : null;
   if (editMessageOverlay) appendPositionedPayload(ctx, editMessageOverlay.payload);
 
-  // ── Sidebar conversation action menu ──────────────────────────
-  let conversationMenuOverlay: ReturnType<typeof renderConversationActionMenu> | null = null;
-  if (sidebarOpen && state.sidebar.conversationActionMenu) {
-    const menu = state.sidebar.conversationActionMenu;
-    conversationMenuOverlay = renderConversationActionMenu(
+  // ── Sidebar action menu ───────────────────────────────────────
+  let sidebarMenuOverlay: ReturnType<typeof renderSidebarActionMenu> | null = null;
+  if (sidebarOpen && state.sidebar.actionMenu) {
+    const menu = state.sidebar.actionMenu;
+    sidebarMenuOverlay = renderSidebarActionMenu(
       menu,
-      conversationActionMenuAnchorRow(state.sidebar, menu.convId),
+      sidebarActionMenuAnchorRow(state.sidebar, menu.item),
       SIDEBAR_WIDTH + 1,
       rows,
       cols,
     );
-    appendPositionedPayload(ctx, conversationMenuOverlay.payload);
+    appendPositionedPayload(ctx, sidebarMenuOverlay.payload);
   }
 
   // ── Ephemeral BTW panel (foreground, directly above the prompt) ──
@@ -1786,7 +1786,7 @@ export function render(state: RenderState): boolean {
       chatCol,
       maxCol: chatCol + chatW - 1,
       obstructions: [],
-      covers: [...imageCovers, modal?.rect, queuePromptOverlay?.rect, editMessageOverlay?.rect, conversationMenuOverlay?.rect, accountsOverlay?.rect, instructionsOverlay?.rect].filter((rect): rect is ScreenRect => !!rect),
+      covers: [...imageCovers, modal?.rect, queuePromptOverlay?.rect, editMessageOverlay?.rect, sidebarMenuOverlay?.rect, accountsOverlay?.rect, instructionsOverlay?.rect].filter((rect): rect is ScreenRect => !!rect),
       cursorLineIndex: historyFocused ? state.historyCursor.row : null,
       cursorCol: state.historyCursor.col,
       mathOnly: !kittyHistory,

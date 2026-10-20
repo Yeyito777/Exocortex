@@ -52,6 +52,7 @@ The implementation in [keybinds.ts](../tui/src/keybinds.ts) and
 | `{` / `}` | In chat normal mode, focus history and jump among user-message starts |
 | `[` / `]` | In chat normal mode, focus history and jump among final AI-response text blocks |
 | `;` | In history visual mode, quote selection into the draft |
+| `;` / right click | On a sidebar conversation or folder, open its actions menu (a folder's starts on Edit instructions) |
 | `g a` | In normal mode (prompt, history or sidebar), open the Accounts screen |
 
 In prompt normal mode, `3>>` shifts three lines once. In visual modes, shifts
@@ -62,7 +63,8 @@ undo/redo; outdenting removes at most four leading spaces without removing text.
 
 Instructions are not shown in the chat. `/instructions` opens a picker of the
 three scopes: **Conversation** (this chat only), **Folder** (every chat in the
-conversation's folder; the sidebar's AGENTS.md row opens it directly) and
+conversation's folder; `;` or a right click on a sidebar folder, then Edit
+instructions, opens it directly) and
 **Global** (every conversation, `config/system.md`). Each row shows the first
 line and size, or `empty`. `j`/`k` (or `1`–`3`) choose, `Enter` edits, `Esc`
 closes.

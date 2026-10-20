@@ -10,15 +10,15 @@
 import type { MouseEvent } from "./input";
 import type { RenderState } from "./state";
 import { focusHistory, focusPrompt, focusSidebar } from "./state";
-import { handleConversationActionMenuResult, type KeyResult } from "./focus";
+import { handleSidebarActionMenuResult, type KeyResult } from "./focus";
 import { scrollBy } from "./chat";
 import { isTaskPanelExpanded, scrollTaskPanel, toggleTaskPanelExpansion } from "./activitypanel";
 import {
   activateSidebarItem,
-  conversationActionMenuAnchorRow,
-  conversationActionMenuHitTest,
-  handleConversationActionMenuMouse,
-  openSelectedConversationActionMenu,
+  handleSidebarActionMenuMouse,
+  openSelectedSidebarActionMenu,
+  sidebarActionMenuAnchorRow,
+  sidebarActionMenuHitTest,
   sidebarHitTest,
   scrollSidebar,
   SIDEBAR_WIDTH,
@@ -123,7 +123,7 @@ function imageAtScreen(col: number, row: number, state: RenderState): InlineImag
 /** Exact hit test: unlike selection, whitespace beyond a row must not clamp onto its last link. */
 function linkAtScreen(col: number, row: number, state: RenderState): string | null {
   const { layout } = state;
-  if (state.editMessagePrompt || state.queuePrompt || state.sidebar.conversationActionMenu) return null;
+  if (state.editMessagePrompt || state.queuePrompt || state.sidebar.actionMenu) return null;
   if (row < 3 || row >= layout.sepAbove || col < layout.chatCol || col > state.cols || isInsideTaskPanel(col, row, state)) return null;
   const viewport = layout.historyViewportRows[row - 3];
   if (!viewport) return null;
@@ -182,10 +182,10 @@ export function cursorZone(col: number, row: number, state: RenderState): Cursor
     return editMessageItemIndexAtMouse(state, col, row) !== null ? "hand" : "pointer";
   }
 
-  const menu = sidebar.conversationActionMenu;
+  const menu = sidebar.actionMenu;
   if (menu) {
-    const anchorRow = conversationActionMenuAnchorRow(sidebar, menu.convId);
-    const hit = conversationActionMenuHitTest(
+    const anchorRow = sidebarActionMenuAnchorRow(sidebar, menu.item);
+    const hit = sidebarActionMenuHitTest(
       menu,
       anchorRow,
       SIDEBAR_WIDTH + 1,
@@ -272,17 +272,17 @@ export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult 
     return { type: "handled" };
   }
   if (state.queuePrompt) return { type: "handled" };
-  if (state.sidebar.conversationActionMenu) {
-    const menu = state.sidebar.conversationActionMenu;
-    const result = handleConversationActionMenuMouse(
+  if (state.sidebar.actionMenu) {
+    const menu = state.sidebar.actionMenu;
+    const result = handleSidebarActionMenuMouse(
       menu,
       ev,
-      conversationActionMenuAnchorRow(state.sidebar, menu.convId),
+      sidebarActionMenuAnchorRow(state.sidebar, menu.item),
       SIDEBAR_WIDTH + 1,
       state.rows,
       state.cols,
     );
-    return handleConversationActionMenuResult(result, state);
+    return handleSidebarActionMenuResult(result, state);
   }
 
   const { col, row, button, action } = ev;
@@ -298,7 +298,7 @@ export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult 
   }
 
   // Sidebar selection follows the pointer. This makes keyboard actions such
-  // as `;` apply to the conversation currently under the mouse without loading
+  // as `;` apply to the conversation or folder under the mouse without loading
   // it; clicking still performs the existing activation behavior below.
   if (inSidebar && action === "motion") {
     const hovered = sidebarHitTest(row, state.rows, sidebar);
@@ -345,12 +345,12 @@ export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult 
 
   // ── Right click (button 2) ──────────────────────────────────────
   if (button === 2 && action === "press" && inSidebar) {
-    // Select the item under the click without activating it, then open the same
-    // conversation-actions menu as the keyboard `;` shortcut.
+    // Select the conversation or folder under the click without activating it,
+    // then open the same actions menu as the keyboard `;` shortcut.
     const item = sidebarHitTest(row, state.rows, sidebar);
     if (item) {
       focusSidebarItem(sidebar, item);
-      openSelectedConversationActionMenu(sidebar);
+      openSelectedSidebarActionMenu(sidebar);
     }
     return { type: "handled" };
   }
@@ -363,7 +363,6 @@ export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult 
       if (item) {
         const result = activateSidebarItem(sidebar, item);
         if (result.type === "select") return { type: "load_conversation", convId: result.convId };
-        if (result.type === "open_folder_instructions") return { type: "open_folder_instructions", folderId: result.folderId };
         return { type: "handled" };
       }
       return { type: "handled" };

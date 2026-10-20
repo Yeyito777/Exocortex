@@ -1835,13 +1835,13 @@ function handleMouse(ev: MouseEvent): void {
   if (ev.action === "motion") {
     const prevFocus = state.panelFocus;
     const prevSidebarItem = state.sidebar.selectedItem;
-    const prevConversationActionSelection = state.sidebar.conversationActionMenu?.selection;
+    const prevSidebarActionSelection = state.sidebar.actionMenu?.selection;
     const prevCursorRow = state.historyCursor.row;
     const prevCursorCol = state.historyCursor.col;
     handleMouseEvent(ev, state);
     if (state.panelFocus !== prevFocus
         || state.sidebar.selectedItem !== prevSidebarItem
-        || state.sidebar.conversationActionMenu?.selection !== prevConversationActionSelection
+        || state.sidebar.actionMenu?.selection !== prevSidebarActionSelection
         || state.historyCursor.row !== prevCursorRow
         || state.historyCursor.col !== prevCursorCol) {
       state.pendingHistoryNavigation = null;

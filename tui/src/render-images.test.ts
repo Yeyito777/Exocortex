@@ -12,8 +12,8 @@ import { cancelEditMessage, confirmEditMessage, handleEditMessageKey, openEditMe
 import { computeEditMessageOverlayLayout } from "./editmessage-layout";
 import { renderQueuePromptOverlay } from "./overlays";
 import { steersInstantly } from "./queue";
-import { conversationActionMenuAnchorRow, renderConversationActionMenu, SIDEBAR_WIDTH } from "./sidebar";
-import { openSelectedConversationActionMenu } from "./sidebar/conversationactions";
+import { renderSidebarActionMenu, sidebarActionMenuAnchorRow, SIDEBAR_WIDTH } from "./sidebar";
+import { openSelectedSidebarActionMenu } from "./sidebar/actionmenu";
 
 function capture(state: RenderState): string {
   let out = "";
@@ -478,10 +478,10 @@ describe("render with Kitty images", () => {
 
   describe("the sidebar conversation menu", () => {
     function menuBox(state: RenderState) {
-      const menu = state.sidebar.conversationActionMenu!;
-      return renderConversationActionMenu(
+      const menu = state.sidebar.actionMenu!;
+      return renderSidebarActionMenu(
         menu,
-        conversationActionMenuAnchorRow(state.sidebar, menu.convId),
+        sidebarActionMenuAnchorRow(state.sidebar, menu.item),
         SIDEBAR_WIDTH + 1,
         state.rows,
         state.cols,
@@ -491,7 +491,7 @@ describe("render with Kitty images", () => {
       state.sidebar.open = true;
       state.sidebar.conversations = [{ id: "conv", title: "A conversation", marked: false, pinned: false }] as never;
       state.sidebar.selectedItem = { type: "conversation", id: "conv" } as never;
-      openSelectedConversationActionMenu(state.sidebar);
+      openSelectedSidebarActionMenu(state.sidebar);
     }
 
     test("crops a thumbnail around its box, then restores it whole when it closes", async () => {
@@ -519,7 +519,7 @@ describe("render with Kitty images", () => {
       expect(deleted(open)).toEqual([]);
       expect(capture(state)).not.toContain("\x1b_G");
 
-      state.sidebar.conversationActionMenu = null;
+      state.sidebar.actionMenu = null;
       const closed = capture(state);
       expect(stripAnsi(closed)).not.toContain("Copy id");
       expect(deleted(closed)).toEqual(pieces.slice(1).map(piece => piece.id).sort((a, b) => a - b));

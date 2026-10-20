@@ -2,7 +2,7 @@ import type { ConversationSummary, FolderSummary, SidebarItemRef } from "../mess
 import type { SidebarSelectableItem } from "./items";
 import type { SidebarPromptState } from "./prompt";
 import type { SidebarSearchState } from "../sidebarsearch";
-import type { ConversationActionMenuState } from "./conversationactions";
+import type { SidebarActionMenuState } from "./actionmenu";
 import type { PendingSidebarMove } from "./pendingmoves";
 import type { SidebarFolderView } from "./tree";
 
@@ -32,7 +32,8 @@ export interface SidebarState {
   pendingMoves: PendingSidebarMove[];
   prompt: SidebarPromptState | null;
   search: SidebarSearchState | null;
-  conversationActionMenu: ConversationActionMenuState | null;
+  /** The `;` / right-click menu for a conversation or folder. */
+  actionMenu: SidebarActionMenuState | null;
 }
 
 export function createSidebarState(folderView: SidebarFolderView = "navigate"): SidebarState {
@@ -57,6 +58,6 @@ export function createSidebarState(folderView: SidebarFolderView = "navigate"): 
     pendingMoves: [],
     prompt: null,
     search: null,
-    conversationActionMenu: null,
+    actionMenu: null,
   };
 }

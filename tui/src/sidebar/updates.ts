@@ -69,7 +69,6 @@ function conversationMatchesQuery(conv: ConversationSummary, lowerQuery: string)
 function isSidebarItemVisible(sidebar: SidebarState, item: SidebarSelectableItem): boolean {
   if (isTreeFolderView(sidebar) && !activeLowerQuery(sidebar)) return isSidebarItemVisibleInTree(sidebar, item);
   if (item.type === "up") return sidebar.currentFolderId !== null;
-  if (item.type === "folder_instructions") return item.folderId === sidebar.currentFolderId;
 
   const lowerQuery = activeLowerQuery(sidebar);
   if (item.type === "folder") {
@@ -163,9 +162,11 @@ export function updateConversationList(sidebar: SidebarState, conversations: Con
   overlayPendingSidebarMoves(sidebar);
   sidebarSort(sidebar.conversations);
   sidebarSort(sidebar.folders);
-  const actionMenuConvId = sidebar.conversationActionMenu?.convId;
-  if (actionMenuConvId && !sidebar.conversations.some(conv => conv.id === actionMenuConvId)) {
-    sidebar.conversationActionMenu = null;
+  const actionMenuItem = sidebar.actionMenu?.item;
+  if (actionMenuItem && !(actionMenuItem.type === "conversation"
+    ? sidebar.conversations.some(conv => conv.id === actionMenuItem.id)
+    : sidebar.folders.some(folder => folder.id === actionMenuItem.id))) {
+    sidebar.actionMenu = null;
   }
   if (sidebar.currentFolderId && !sidebar.folders.some(f => f.id === sidebar.currentFolderId)) {
     sidebar.currentFolderId = null;
@@ -240,11 +241,6 @@ function resolveSelectedItem(sidebar: SidebarState): void {
     }
   }
   if (item?.type === "folder" && sidebar.folders.some(f => f.id === item.id)
-      && isSidebarItemVisible(sidebar, item)) {
-    sidebar.selectedId = null;
-    return;
-  }
-  if (item?.type === "folder_instructions" && item.folderId === sidebar.currentFolderId
       && isSidebarItemVisible(sidebar, item)) {
     sidebar.selectedId = null;
     return;

@@ -36,23 +36,27 @@ import { focusTargetAfterRemovingSidebarItems } from "./sidebar/removal";
 import type { SidebarState } from "./sidebar/state";
 import { isTreeFolderView } from "./sidebar/tree";
 import type { SidebarKeyResult } from "./sidebar/types";
+import type { SidebarAction } from "./sidebar/actionmenu";
 
 export { activateSidebarItem } from "./sidebar/folderactions";
 export {
-  conversationActionMenuAnchorRow,
-  conversationActionMenuHitTest,
   createConversationActionMenu,
-  handleConversationActionMenuKey,
-  handleConversationActionMenuMouse,
-  openSelectedConversationActionMenu,
-  renderConversationActionMenu,
-} from "./sidebar/conversationactions";
+  createFolderActionMenu,
+  handleSidebarActionMenuKey,
+  handleSidebarActionMenuMouse,
+  openSelectedSidebarActionMenu,
+  renderSidebarActionMenu,
+  sidebarActionMenuAnchorRow,
+  sidebarActionMenuHitTest,
+} from "./sidebar/actionmenu";
 export type {
   ConversationAction,
-  ConversationActionMenuHit,
-  ConversationActionMenuState,
-  ConversationActionMenuKeyResult,
-} from "./sidebar/conversationactions";
+  FolderAction,
+  SidebarAction,
+  SidebarActionMenuHit,
+  SidebarActionMenuKeyResult,
+  SidebarActionMenuState,
+} from "./sidebar/actionmenu";
 export { sidebarHitTest } from "./sidebar/hit";
 export { SIDEBAR_WIDTH } from "./sidebar/layout";
 export { handleSidebarMark } from "./sidebar/marks";
@@ -88,25 +92,58 @@ export {
 } from "./sidebar/optimisticconversations";
 export type { OptimisticConversation } from "./sidebar/optimisticconversations";
 
-/** Run an action against a specific conversation selected by an action menu. */
-export function handleSidebarConversationAction(
-  action: "toggle_star" | "toggle_pin" | "delete",
-  convId: string,
+/**
+ * Run an action chosen in the `;` / right-click menu against its conversation
+ * or folder. Copy id needs the clipboard and Edit instructions the daemon, so
+ * the caller handles those.
+ */
+export function handleSidebarMenuAction(
+  action: Exclude<SidebarAction, "copy_id" | "edit_instructions">,
+  item: SidebarItemRef,
   sidebar: SidebarState,
 ): SidebarKeyResult {
-  const index = sidebar.conversations.findIndex(conv => conv.id === convId);
-  if (index === -1) return { type: "handled" };
-  focusConversationAt(sidebar, index);
+  if (item.type === "conversation") {
+    const index = sidebar.conversations.findIndex(conv => conv.id === item.id);
+    if (index === -1) return { type: "handled" };
+    focusConversationAt(sidebar, index);
+  } else {
+    if (!sidebar.folders.some(folder => folder.id === item.id)) return { type: "handled" };
+    focusSidebarItem(sidebar, item);
+  }
 
-  if (action === "toggle_star") return handleSidebarAction("mark", sidebar);
-  if (action === "toggle_pin") return handleSidebarAction("pin", sidebar);
+  switch (action) {
+    case "toggle_star": return handleSidebarAction("mark", sidebar);
+    case "toggle_pin": return handleSidebarAction("pin", sidebar);
+    case "toggle_mute": return toggleSelectedMute(sidebar);
+    case "rename": return openRenameSelectedFolderPrompt(sidebar);
+    case "unwrap": return unwrapSelectedFolder(sidebar);
+    case "delete":
+      // The action menu owns the visible destructive confirmation, so prime the
+      // existing delete path and let it perform the normal optimistic removal and
+      // focus-target calculation immediately.
+      sidebar.pendingDeleteItem = item;
+      sidebar.pendingDeleteId = item.type === "conversation" ? item.id : null;
+      return handleSidebarAction("delete", sidebar);
+  }
+}
 
-  // The action menu owns the visible destructive confirmation, so prime the
-  // existing delete path and let it perform the normal optimistic removal and
-  // focus-target calculation immediately.
-  sidebar.pendingDeleteItem = { type: "conversation", id: convId };
-  sidebar.pendingDeleteId = convId;
-  return handleSidebarAction("delete", sidebar);
+function toggleSelectedMute(sidebar: SidebarState): SidebarKeyResult {
+  const item = getSelectedSidebarItem(sidebar);
+  if (item?.type === "conversation") {
+    const conversation = sidebar.conversations.find(candidate => candidate.id === item.id);
+    if (!conversation) return { type: "handled" };
+    conversation.muted = conversation.muted !== true;
+    reconcileNotificationMutes(sidebar);
+    return { type: "mute_conversation", convId: conversation.id, muted: conversation.muted };
+  }
+  if (item?.type === "folder") {
+    const folder = sidebar.folders.find(candidate => candidate.id === item.id);
+    if (!folder) return { type: "handled" };
+    folder.muted = folder.muted !== true;
+    reconcileNotificationMutes(sidebar);
+    return { type: "mute_folder", folderId: folder.id, muted: folder.muted };
+  }
+  return { type: "handled" };
 }
 
 type PlacementEntry = { id: string; pinned: boolean; sortOrder: number };
@@ -201,24 +238,8 @@ export function handleSidebarKey(key: KeyEvent, sidebar: SidebarState): SidebarK
         return openRenameSelectedFolderPrompt(sidebar);
       case "x":
         return unwrapSelectedFolder(sidebar);
-      case "M": {
-        const item = getSelectedSidebarItem(sidebar);
-        if (item?.type === "conversation") {
-          const conversation = sidebar.conversations.find(candidate => candidate.id === item.id);
-          if (!conversation) return { type: "handled" };
-          conversation.muted = conversation.muted !== true;
-          reconcileNotificationMutes(sidebar);
-          return { type: "mute_conversation", convId: conversation.id, muted: conversation.muted };
-        }
-        if (item?.type === "folder") {
-          const folder = sidebar.folders.find(candidate => candidate.id === item.id);
-          if (!folder) return { type: "handled" };
-          folder.muted = folder.muted !== true;
-          reconcileNotificationMutes(sidebar);
-          return { type: "mute_folder", folderId: folder.id, muted: folder.muted };
-        }
-        return { type: "handled" };
-      }
+      case "M":
+        return toggleSelectedMute(sidebar);
     }
   }
   const action = resolveAction(key, "navigation");
@@ -249,7 +270,6 @@ export function handleSidebarAction(action: string, sidebar: SidebarState): Side
     case "submit": {
       const item = getSelectedSidebarItem(sidebar);
       if (item?.type === "conversation") return { type: "select", convId: item.id };
-      if (item?.type === "folder_instructions") return { type: "open_folder_instructions", folderId: item.folderId };
       if (item?.type === "folder" && isTreeFolderView(sidebar)) return toggleSelectedTreeFolder(sidebar);
       if (item?.type === "folder" || item?.type === "up") return enterSelectedFolder(sidebar);
       return { type: "handled" };
@@ -257,7 +277,7 @@ export function handleSidebarAction(action: string, sidebar: SidebarState): Side
 
     case "delete": {
       const item = getSelectedSidebarItem(sidebar);
-      if (!item || item.type === "up" || item.type === "folder_instructions") return { type: "handled" };
+      if (!item || item.type === "up") return { type: "handled" };
       if (sameItem(sidebar.pendingDeleteItem, item)) {
         sidebar.pendingDeleteId = null;
         sidebar.pendingDeleteItem = null;
@@ -315,7 +335,7 @@ export function handleSidebarAction(action: string, sidebar: SidebarState): Side
 
     case "pin": {
       const item = getSelectedSidebarItem(sidebar);
-      if (!item || item.type === "up" || item.type === "folder_instructions") return { type: "handled" };
+      if (!item || item.type === "up") return { type: "handled" };
       if (sidebar.visualAnchor) {
         const selectedItems = selectedVisualItems(sidebar);
         if (selectedItems.length > 1) {
@@ -347,7 +367,7 @@ export function handleSidebarAction(action: string, sidebar: SidebarState): Side
       const direction = action === "move_up" ? "up" : "down";
       if (sidebar.visualAnchor) return moveVisualSelectionWithinFolder(sidebar, direction);
       const item = getSelectedSidebarItem(sidebar);
-      if (!item || item.type === "up" || item.type === "folder_instructions") return { type: "handled" };
+      if (!item || item.type === "up") return { type: "handled" };
       // Show the swap now; the daemon's identical swap is echoed later.
       const reqId = applyPendingSidebarItemReorder(sidebar, item, direction);
       return reqId ? { type: "move_sidebar_item", item, direction, reqId } : { type: "handled" };

@@ -79,7 +79,6 @@ function rowKeys(sidebar: SidebarState): string[] {
     const indent = "  ".repeat(row.depth ?? 0);
     if (row.type !== "entry") return `${indent}${row.type}`;
     const item = row.item!;
-    if (item.type === "folder_instructions") return `${indent}AGENTS.md`;
     return `${indent}${item.type === "up" ? ".." : item.id}`;
   });
 }
@@ -102,7 +101,6 @@ describe("sidebar tree folder view", () => {
     sidebar.expandedFolderIds.add("work");
     expect(rowKeys(sidebar)).toEqual([
       "work",
-      "  AGENTS.md",
       "  nested",
       "  inside-a",
       "  inside-b",
@@ -130,7 +128,7 @@ describe("sidebar tree folder view", () => {
     expect(sidebar.currentFolderId).toBeNull();
 
     handleSidebarKey(key("l"), sidebar);
-    expect(sidebar.selectedItem).toEqual({ type: "folder_instructions", folderId: "work" });
+    expect(sidebar.selectedItem).toEqual({ type: "folder", id: "nested" });
     expect(sidebar.currentFolderId).toBe("work");
   });
 
@@ -174,7 +172,6 @@ describe("sidebar tree folder view", () => {
     focus(sidebar, { type: "folder", id: "work" });
 
     handleSidebarAction("nav_down", sidebar);
-    handleSidebarAction("nav_down", sidebar);
     expect(sidebar.selectedItem).toEqual({ type: "folder", id: "nested" });
     expect(sidebar.currentFolderId).toBe("work");
 
@@ -194,9 +191,6 @@ describe("sidebar tree folder view", () => {
     expect(newConversationFolderId(sidebar, "top_level")).toBeNull();
 
     focus(sidebar, { type: "conversation", id: "inside-a" });
-    expect(newConversationFolderId(sidebar, "selected")).toBe("work");
-
-    focus(sidebar, { type: "folder_instructions", folderId: "work" });
     expect(newConversationFolderId(sidebar, "selected")).toBe("work");
 
     focus(sidebar, { type: "conversation", id: "root-b" });
@@ -243,7 +237,7 @@ describe("sidebar tree folder view", () => {
     sidebar.expandedFolderIds.add("work");
     focus(sidebar, { type: "folder", id: "work" });
     handleSidebarKey(key("V"), sidebar);
-    for (let i = 0; i < 4; i++) handleSidebarAction("nav_down", sidebar);
+    for (let i = 0; i < 3; i++) handleSidebarAction("nav_down", sidebar);
     expect(sidebar.selectedItem).toEqual({ type: "conversation", id: "inside-b" });
 
     handleSidebarKey(key("F"), sidebar);
@@ -270,7 +264,7 @@ describe("sidebar tree folder view", () => {
     second.expandedFolderIds.add("work");
     focus(second, { type: "folder", id: "work" });
     handleSidebarKey(key("V"), second);
-    for (let i = 0; i < 5; i++) handleSidebarAction("nav_down", second);
+    for (let i = 0; i < 4; i++) handleSidebarAction("nav_down", second);
     expect(second.selectedItem).toEqual({ type: "conversation", id: "root-a" });
     expect(handleSidebarAction("move_down", second)).toEqual({
       type: "move_sidebar_items",
@@ -325,7 +319,7 @@ describe("sidebar tree folder view", () => {
     focus(sidebar, { type: "conversation", id: "inside-a" });
     sidebar.currentFolderId = "work";
     setSidebarFolderView(sidebar, "navigate");
-    expect(rowKeys(sidebar)).toEqual(["..", "AGENTS.md", "nested", "inside-a", "inside-b"]);
+    expect(rowKeys(sidebar)).toEqual(["..", "nested", "inside-a", "inside-b"]);
     expect(sidebar.selectedItem).toEqual({ type: "conversation", id: "inside-a" });
   });
 

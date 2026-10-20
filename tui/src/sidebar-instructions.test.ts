@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildDisplayRows, handleSidebarAction, renderSidebar, updateConversationList } from "./sidebar";
+import { buildDisplayRows, handleSidebarAction, renderSidebar } from "./sidebar";
 import { createSidebarState } from "./sidebar/state";
 import { createInitialState, resetDraftConversationState } from "./state";
 import type { FolderSummary } from "./messages";
@@ -18,37 +18,35 @@ function folder(id: string, name: string, parentId: string | null = null, effect
   };
 }
 
-describe("folder AGENTS.md sidebar entry", () => {
-  test("appears at the top of folder contents after the parent row", () => {
+describe("folder instructions in the sidebar", () => {
+  test("an open folder lists no AGENTS.md row in the navigate view", () => {
     const sidebar = createSidebarState();
     sidebar.currentFolderId = "folder-a";
-    sidebar.folders = [folder("folder-a", "Project")];
+    sidebar.folders = [folder("folder-a", "Project", null, "# Context from AGENTS.md:\nRules.")];
 
     const rows = buildDisplayRows(sidebar);
 
-    expect(rows[0]).toEqual({ type: "entry", item: { type: "up" }, text: ".." });
-    expect(rows[1]).toEqual({ type: "entry", item: { type: "folder_instructions", folderId: "folder-a" } });
-    expect(renderSidebar(sidebar, 10, true, null).join("\n")).toContain("AGENTS.md");
+    expect(rows).toEqual([{ type: "entry", item: { type: "up" }, text: ".." }]);
+    expect(renderSidebar(sidebar, 10, true, null).join("\n")).not.toContain("AGENTS.md");
   });
 
-  test("selecting AGENTS.md opens the folder instructions document", () => {
+  test("an expanded folder lists no AGENTS.md row in the tree view", () => {
+    const sidebar = createSidebarState("tree");
+    sidebar.folders = [folder("folder-a", "Project", null, "# Context from AGENTS.md:\nRules.")];
+    sidebar.expandedFolderIds.add("folder-a");
+
+    expect(buildDisplayRows(sidebar).map(row => row.item)).toEqual([{ type: "folder", id: "folder-a" }]);
+    expect(renderSidebar(sidebar, 10, true, null).join("\n")).not.toContain("AGENTS.md");
+  });
+
+  test("Enter inside an empty folder opens nothing", () => {
     const sidebar = createSidebarState();
     sidebar.currentFolderId = "folder-a";
     sidebar.folders = [folder("folder-a", "Project")];
-    sidebar.selectedItem = { type: "folder_instructions", folderId: "folder-a" };
+    sidebar.selectedItem = { type: "up" };
 
-    expect(handleSidebarAction("submit", sidebar)).toEqual({ type: "open_folder_instructions", folderId: "folder-a" });
-  });
-
-  test("keeps AGENTS.md selected across sidebar refreshes", () => {
-    const sidebar = createSidebarState();
-    sidebar.currentFolderId = "folder-a";
-    sidebar.folders = [folder("folder-a", "Project")];
-    sidebar.selectedItem = { type: "folder_instructions", folderId: "folder-a" };
-
-    updateConversationList(sidebar, [], [folder("folder-a", "Project")]);
-
-    expect(sidebar.selectedItem).toEqual({ type: "folder_instructions", folderId: "folder-a" });
+    expect(handleSidebarAction("submit", sidebar)).toEqual({ type: "handled" });
+    expect(sidebar.currentFolderId).toBeNull();
   });
 
   test("blank new chats in a folder do not render its AGENTS.md instructions", () => {
