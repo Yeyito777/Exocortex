@@ -212,8 +212,10 @@ describe("/macro", () => {
     const result = tryCommand("/macro", state);
     expect(result).toEqual({ type: "handled" });
     const list = lastNotice(state);
-    expect(list).toMatch(/^Your macros \(2\):\n {2}\/go +shadowed {2}\[inactive: a built-in uses this name\]\n {2}\/standup +Daily standup\n\nBuilt-in macros \(\d+\):/);
-    expect(list).toContain("/consider");
+    expect(list).toMatch(/^Your macros \(2\):\n {2}\/go +shadowed {2}\[inactive: a built-in uses this name\]\n {2}\/standup +Daily standup\nBuilt-in macros \(\d+\):\n {2}\/consider {2}\/commit {2}/);
+    // Built-ins are packed by name to the terminal's width.
+    for (const line of list.split("\n")) expect(line.length).toBeLessThanOrEqual(Math.max(30, state.cols - 8) + 2);
+    expect(list.split("\n").at(-1)).toBe("/macro add /name [description] · /macro edit /name · /macro rm /name");
     expect(tryCommand("/macro list", state)).toEqual({ type: "handled" });
   });
 

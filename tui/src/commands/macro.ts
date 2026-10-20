@@ -54,18 +54,34 @@ function fail(state: RenderState, message: string, keepPrompt = true): CommandRe
   return { type: "handled" };
 }
 
-function formatList(reserved: ReadonlySet<string>): string {
+/** Names packed into indented lines of at most `width` columns. */
+function wrapNames(names: readonly string[], width: number): string[] {
+  const lines: string[] = [];
+  let line = "";
+  for (const name of names) {
+    if (line && line.length + 2 + name.length > width) {
+      lines.push(`  ${line}`);
+      line = "";
+    }
+    line = line ? `${line}  ${name}` : name;
+  }
+  if (line) lines.push(`  ${line}`);
+  return lines;
+}
+
+/** Yours with their descriptions; built-ins by name, since autocomplete describes them. */
+function formatList(reserved: ReadonlySet<string>, cols: number): string {
   const user = getUserMacros();
-  const width = Math.max(...[...user, ...BUILT_IN_MACRO_LIST].map(macro => macro.name.length));
-  const row = (name: string, desc: string) => `  ${name.padEnd(width)}  ${desc}`;
+  const width = Math.max(0, ...user.map(macro => macro.name.length));
   const lines = [user.length === 0 ? "Your macros: none yet." : `Your macros (${user.length}):`];
   for (const macro of user) {
     const shadowed = isBuiltInMacroName(macro.name) || reserved.has(macro.name);
-    lines.push(row(macro.name, shadowed ? `${userMacroSummary(macro)}  [inactive: a built-in uses this name]` : userMacroSummary(macro)));
+    const summary = userMacroSummary(macro);
+    lines.push(`  ${macro.name.padEnd(width)}  ${shadowed ? `${summary}  [inactive: a built-in uses this name]` : summary}`);
   }
-  lines.push("", `Built-in macros (${BUILT_IN_MACRO_LIST.length}):`);
-  for (const macro of BUILT_IN_MACRO_LIST) lines.push(row(macro.name, macro.desc));
-  lines.push("", "/macro add /name [description] · /macro edit /name · /macro rm /name");
+  lines.push(`Built-in macros (${BUILT_IN_MACRO_LIST.length}):`);
+  lines.push(...wrapNames(BUILT_IN_MACRO_LIST.map(macro => macro.name), Math.max(30, Math.min(100, cols - 8))));
+  lines.push("/macro add /name [description] · /macro edit /name · /macro rm /name");
   return lines.join("\n");
 }
 
@@ -104,7 +120,7 @@ export function createMacroCommand(reservedNames: () => Iterable<string>): Slash
 
       switch (sub) {
         case "list": {
-          pushSystemMessage(state, formatList(reserved));
+          pushSystemMessage(state, formatList(reserved, state.cols));
           clearPrompt(state);
           return { type: "handled" };
         }

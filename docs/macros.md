@@ -11,7 +11,7 @@ prompt. The built-in ones live in [macros.ts](../tui/src/macros.ts).
 
 | Command | Action |
 |---|---|
-| `/macro` or `/macro list` | Your macros, then the built-in ones |
+| `/macro` or `/macro list` | Your macros with their descriptions, then the built-in names |
 | `/macro add /name [description]` | The prompt line becomes the macro's text: type it (several lines are fine), Enter saves, Enter on an empty prompt cancels |
 | `/macro edit /name [description]` | The same, prefilled with the current text; a new description replaces the old one |
 | `/macro rm /name` (or `delete`) | Delete it; `/macro undo` restores the last one this TUI deleted |
