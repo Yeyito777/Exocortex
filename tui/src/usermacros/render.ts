@@ -1,12 +1,12 @@
 /**
- * The /macro help panel drawn above the prompt in place of the autocomplete
- * popup: the syntax with the current part lit, what that part is for, any
- * Tab completions, a preview of the macro, and what Enter will do.
+ * The /macro panel drawn above the prompt in place of the autocomplete popup:
+ * the syntax with the current part lit, then the error, the Tab completions,
+ * or what the macro expands to.
  */
 import type { SlashCompletion } from "../slashsearch";
 import { padRightToWidth, termWidth, truncateToWidth } from "../textwidth";
 import { theme } from "../theme";
-import type { MacroGuide, MacroPreviewLine } from "./guide";
+import type { MacroGuide, MacroGuideDetail } from "./guide";
 
 const UNDERLINE = "\x1b[4m";
 
@@ -36,12 +36,13 @@ function syntaxRow(guide: MacroGuide, width: number): string {
   return out + " ".repeat(Math.max(0, width - used));
 }
 
-function previewRow(line: MacroPreviewLine, width: number): string {
-  const labelColor = line.tone === "new" ? theme.success : line.tone === "removed" ? theme.error : theme.muted;
-  const textColor = line.tone === "old" ? theme.muted : theme.text;
-  const label = `   ${line.label} → `;
+function detailRow(detail: MacroGuideDetail, width: number): string {
+  if (detail.kind === "error") return cell(` ✗ ${detail.text}`, width, theme.error);
+  if (detail.kind === "note") return cell(` ${detail.text}`, width, theme.muted);
+  const labelColor = detail.tone === "new" ? theme.success : theme.error;
+  const label = `   ${detail.label} → `;
   const labelWidth = Math.min(width, termWidth(label));
-  return cell(label, labelWidth, labelColor) + cell(line.text, width - labelWidth, textColor);
+  return cell(label, labelWidth, labelColor) + cell(detail.text, width - labelWidth, theme.text);
 }
 
 function completionRow(match: SlashCompletion, selected: boolean, nameWidth: number, width: number): string {
@@ -54,7 +55,8 @@ function completionRow(match: SlashCompletion, selected: boolean, nameWidth: num
 
 /**
  * The panel's rows, top to bottom, each exactly `width` columns on the panel
- * background. At most `maxRows`: completions are cut first, then preview lines.
+ * background: the syntax, then an error, the completions (at most
+ * `maxRows - 1`, keeping the selection visible) or the detail row.
  */
 export function renderMacroGuideRows(
   guide: MacroGuide,
@@ -64,30 +66,18 @@ export function renderMacroGuideRows(
   maxRows: number,
 ): string[] {
   if (width < 12 || maxRows < 1) return [];
-  const statusColor = guide.status.tone === "error" ? theme.error : guide.status.tone === "ready" ? theme.accent : theme.muted;
-  const statusText = guide.status.tone === "ready" ? `↵ ${guide.status.text}` : guide.status.text;
-  const fixed = [
-    syntaxRow(guide, width),
-    cell(` ${guide.hint}`, width, theme.text),
-  ];
-  const status = cell(` ${statusText}`, width, statusColor);
-  let room = Math.max(0, maxRows - fixed.length - 1);
-  const preview = guide.preview.slice(0, room).map(line => previewRow(line, width));
-  room -= preview.length;
-
-  // A window of completions that keeps the selection visible.
-  const shown = Math.min(completions.length, room);
-  let start = 0;
-  if (selection >= shown) start = selection - shown + 1;
-  const visible = completions.slice(start, start + shown);
-  const nameWidth = Math.min(Math.floor(width / 3), Math.max(0, ...visible.map(match => termWidth(clean(match.name)))));
-  const rows = [
-    ...fixed,
-    ...visible.map((match, index) => completionRow(match, start + index === selection, nameWidth, width)),
-    ...preview,
-    status,
-  ];
-  return rows.slice(-maxRows).map(row => theme.sidebarBg + row + theme.reset);
+  const rows = [syntaxRow(guide, width)];
+  const room = maxRows - 1;
+  if (guide.detail?.kind === "error" || (guide.detail && completions.length === 0)) {
+    if (room > 0) rows.push(detailRow(guide.detail, width));
+  } else if (completions.length > 0 && room > 0) {
+    const shown = Math.min(completions.length, room);
+    const start = selection >= shown ? selection - shown + 1 : 0;
+    const visible = completions.slice(start, start + shown);
+    const nameWidth = Math.min(Math.floor(width / 3), Math.max(0, ...visible.map(match => termWidth(clean(match.name)))));
+    rows.push(...visible.map((match, index) => completionRow(match, start + index === selection, nameWidth, width)));
+  }
+  return rows.map(row => theme.sidebarBg + row + theme.reset);
 }
 
 /** Ghost text that fits after `usedCols` columns of a `width`-column prompt line. */

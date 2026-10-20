@@ -33,7 +33,7 @@ import { hexToAnsi, theme } from "./theme";
 import { clampCursor, stripAnsi, contentBounds, logicalLineRange } from "./historycursor";
 import { renderLineWithCursor, renderLineWithSearch, renderLineWithSelection } from "./cursorrender";
 import { getPromptHighlightRanges, highlightPromptInput } from "./prompthighlight";
-import { macroParseContext } from "./commands";
+import { macroDisplayContext } from "./commands";
 import { macroGhostText, macroGuide } from "./usermacros/guide";
 import { macroGuideContext } from "./usermacros/controller";
 import { isMacroCommandText } from "./usermacros/parse";
@@ -1235,10 +1235,11 @@ function renderMacroGuidePanel(
   sepAbove: number,
 ): ScreenRect | null {
   if (!editingMacroCommand(state)) return null;
-  const guide = macroGuide(state.inputBuffer, state.cursorPos, macroGuideContext(state, macroParseContext()));
+  const guide = macroGuide(state.inputBuffer, state.cursorPos, macroGuideContext(state, macroDisplayContext(state)));
   if (!guide) return null;
   const ac = state.autocomplete;
-  const rows = renderMacroGuideRows(guide, ac?.matches ?? [], ac?.selection ?? -1, chatW, Math.max(1, sepAbove - 3));
+  const maxRows = Math.min(AUTOCOMPLETE_MAX_VISIBLE_ROWS + 1, Math.max(1, sepAbove - 3));
+  const rows = renderMacroGuideRows(guide, ac?.matches ?? [], ac?.selection ?? -1, chatW, maxRows);
   if (rows.length === 0) return null;
   const topRow = sepAbove - rows.length;
   rows.forEach((row, index) => appendRowWrite(ctx, topRow + index, ctx.chatCol, row));
@@ -1511,7 +1512,7 @@ export function render(state: RenderState): boolean {
 
   // Dim ghost text after the cursor names the /macro parts still to type.
   if (editingMacroCommand(state) && state.vim.mode === "insert" && voicePrompts.length === 0) {
-    const ghost = macroGhostText(state.inputBuffer, state.cursorPos, macroParseContext());
+    const ghost = macroGhostText(state.inputBuffer, state.cursorPos, macroDisplayContext(state));
     const line = coloredInputLines[cursorLine];
     if (ghost && line !== undefined) {
       coloredInputLines[cursorLine] = line + fitGhostText(ghost, visibleLength(line), chatW - PROMPT_PREFIX_WIDTH);

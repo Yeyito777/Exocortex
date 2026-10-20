@@ -1,9 +1,9 @@
 /**
  * What the prompt shows while a `/macro …` command is typed: a colour per
  * part (red where it is wrong), dim ghost text for the parts still to come,
- * Tab completions, and a panel that explains the current part, previews the
- * macro and says what Enter will do. Pure functions of the parse; rendering
- * lives in ./render.
+ * and a small panel above the prompt: the syntax with the current part lit,
+ * then one detail row (the error, Tab completions, or what the macro expands
+ * to). Pure functions of the parse; rendering lives in ./render.
  */
 import type { UserMacro } from "@exocortex/shared/user-macros";
 import type { SlashCompletion } from "../slashsearch";
@@ -26,22 +26,20 @@ export interface MacroSyntaxPart {
   /** The part being typed now. */
   active: boolean;
   optional?: boolean;
-  /** The part holds the mistake the status explains. */
+  /** The part holds the mistake the error row explains. */
   wrong?: boolean;
 }
 
-export interface MacroPreviewLine {
-  label: string;
-  text: string;
-  tone: "new" | "old" | "removed";
-}
+/** The row under the syntax: why the line is wrong, or what the macro expands to. */
+export type MacroGuideDetail =
+  | { kind: "error"; text: string }
+  | { kind: "note"; text: string }
+  | { kind: "preview"; label: string; text: string; tone: "new" | "removed" };
 
 export interface MacroGuide {
   syntax: MacroSyntaxPart[];
-  hint: string;
-  preview: MacroPreviewLine[];
-  /** What Enter does now, or why it can't. */
-  status: { text: string; tone: "ready" | "pending" | "error" };
+  /** Shown unless Tab completions take the row (an error always wins). */
+  detail: MacroGuideDetail | null;
 }
 
 const UNDERLINE = "\x1b[4m";
@@ -55,7 +53,8 @@ export function roleColor(role: MacroPartRole): string {
     case "name":
       return theme.accent + theme.bold;
     case "description":
-      return theme.muted + theme.italic;
+      // Not grey: ghost text is the grey after the cursor.
+      return theme.goal + theme.italic;
     case "expansion":
       return theme.success;
     case "extra":
@@ -189,83 +188,22 @@ function syntaxParts(parse: MacroCommandParse): MacroSyntaxPart[] {
   }
 }
 
-function hintFor(parse: MacroCommandParse, context: MacroGuideContext): string {
-  const name = parse.name?.text ?? "/name";
-  switch (parse.action) {
-    case null:
-      return "Add, change or delete your own macros; Tab completes.";
-    case "list":
-      return "Shows your macros with their text, then the built-in ones.";
-    case "undo":
-      return context.lastDeleted ? `Brings back ${context.lastDeleted.name}, the macro you last deleted.` : "Nothing deleted yet in this session.";
-    case "rm":
-      return parse.focus === "name" || !parse.existing ? "Which of your macros to delete; Tab completes." : `Deletes ${name}; /macro undo brings it back.`;
-    case "add":
-      switch (parse.focus) {
-        case "name":
-        case "action":
-          return "The name you'll type: / then letters, digits, - or _, e.g. /brief.";
-        case "description":
-          return "Optional: a few words shown in autocomplete. Then = and the text it expands to.";
-        default:
-          return `What ${name} expands to, anywhere in a message. Shift+Enter adds a line.`;
-      }
-    case "edit":
-      switch (parse.focus) {
-        case "name":
-        case "action":
-          return "Which of your macros to change; Tab completes.";
-        case "description":
-          return "= new text replaces it; words before = replace the description. Enter alone opens the editor.";
-        default:
-          return `The new text for ${name}. Shift+Enter adds a line.`;
-      }
-  }
-}
-
-function previewFor(parse: MacroCommandParse): MacroPreviewLine[] {
+function detailFor(parse: MacroCommandParse, context: MacroGuideContext): MacroGuideDetail | null {
+  if (parse.error) return { kind: "error", text: parse.error.message };
   const name = parse.name?.text;
-  if (!name) return [];
-  const existing = parse.existing;
   switch (parse.action) {
     case "add":
-      return parse.expansion && !parse.error ? [{ label: name, text: expansionPreview(parse.expansion.text), tone: "new" }] : [];
     case "edit":
-      if (!existing) return [];
-      if (!parse.expansion) return [{ label: "now", text: expansionPreview(existing.expansion), tone: "old" }];
-      return [
-        { label: "new", text: expansionPreview(parse.expansion.text), tone: "new" },
-        { label: "was", text: expansionPreview(existing.expansion), tone: "old" },
-      ];
+      // Only once there is text after "=": before that the ghost text says what comes next.
+      return name && parse.expansion ? { kind: "preview", label: name, text: expansionPreview(parse.expansion.text), tone: "new" } : null;
     case "rm":
-      return existing ? [{ label: name, text: expansionPreview(existing.expansion), tone: "removed" }] : [];
+      return name && parse.existing ? { kind: "preview", label: name, text: expansionPreview(parse.existing.expansion), tone: "removed" } : null;
+    case "undo":
+      return context.lastDeleted
+        ? { kind: "preview", label: context.lastDeleted.name, text: expansionPreview(context.lastDeleted.expansion), tone: "new" }
+        : { kind: "note", text: "Nothing deleted to restore." };
     default:
-      return [];
-  }
-}
-
-function statusFor(parse: MacroCommandParse, context: MacroGuideContext): MacroGuide["status"] {
-  if (parse.error) return { text: `✗ ${parse.error.message}`, tone: "error" };
-  if (parse.incomplete) return { text: parse.incomplete, tone: "pending" };
-  const name = parse.name?.text ?? "";
-  switch (parse.action) {
-    case "list": return { text: "Enter lists them.", tone: "ready" };
-    case "undo": return context.lastDeleted
-      ? { text: `Enter restores ${context.lastDeleted.name}.`, tone: "ready" }
-      : { text: "Nothing to restore.", tone: "pending" };
-    case "rm": return { text: `Enter deletes ${name}; /macro undo restores it.`, tone: "ready" };
-    case "add":
-      return parse.expansion
-        ? { text: `Enter saves ${name}.`, tone: "ready" }
-        : { text: `Enter opens the editor for ${name}'s text; or type = and the text.`, tone: "ready" };
-    case "edit":
-      return parse.expansion
-        ? { text: `Enter saves the new text for ${name}.`, tone: "ready" }
-        : { text: `Enter opens ${name} in the editor.`, tone: "ready" };
-    default:
-      return parse.actionPart
-        ? { text: "Pick what to do.", tone: "pending" }
-        : { text: "Enter lists your macros; or pick what to do.", tone: "ready" };
+      return null;
   }
 }
 
@@ -273,5 +211,5 @@ function statusFor(parse: MacroCommandParse, context: MacroGuideContext): MacroG
 export function macroGuide(buffer: string, cursor: number, context: MacroGuideContext): MacroGuide | null {
   const parse = parseMacroCommand(buffer, cursor, context);
   if (!parse) return null;
-  return { syntax: syntaxFor(parse), hint: hintFor(parse, context), preview: previewFor(parse), status: statusFor(parse, context) };
+  return { syntax: syntaxFor(parse), detail: detailFor(parse, context) };
 }

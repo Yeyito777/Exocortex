@@ -33,7 +33,7 @@ import {
 import { handleFocusedKey } from "./focus";
 import { handleMouseEvent, refreshMouseCursor, trackMouseCursor } from "./mouse";
 import { clearPrompt } from "./promptstate";
-import { MACRO_COMMAND, tryCommand } from "./commands";
+import { MACRO_COMMAND, MACRO_ERROR_DELAY_MS, tryCommand } from "./commands";
 import { isMacroCommandText } from "./usermacros/parse";
 import { runUserMacroCommand, saveMacroFromEditor, userMacrosConnectionLost } from "./usermacros/controller";
 import { expandMacros, macroEnvironmentForState } from "./macros";
@@ -924,6 +924,19 @@ function createConversationWithInstructions(text: string): void {
   );
 }
 
+let macroErrorTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** /macro holds an error in the part being typed until typing pauses; repaint when it does. */
+function notePromptEdit(): void {
+  state.promptEditedAt = Date.now();
+  if (!isMacroCommandText(state.inputBuffer)) return;
+  if (macroErrorTimer) clearTimeout(macroErrorTimer);
+  macroErrorTimer = setTimeout(() => {
+    macroErrorTimer = null;
+    scheduleRender();
+  }, MACRO_ERROR_DELAY_MS + 10);
+}
+
 function handleSubmit(): void {
   let text = state.inputBuffer.trim();
   const hasImages = state.pendingImages.length > 0;
@@ -1667,12 +1680,14 @@ function handleKey(key: KeyEvent): void {
   if (voiceInput?.handleKey(key)) return;
   if (key.event === "release") return;
 
+  const promptBefore = state.inputBuffer;
   const result = handleFocusedKey(
     key,
     state,
     renderAfterLocalUiMutation,
     state.sshRemote ? remotePathCompletion ?? undefined : undefined,
   );
+  if (state.inputBuffer !== promptBefore) notePromptEdit();
   if (voicePromptBufferBefore !== null) {
     voiceInput?.syncPromptEdit(voicePromptBufferBefore);
   }

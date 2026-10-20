@@ -9,7 +9,7 @@
  */
 
 import type { RenderState } from "./state";
-import { COMMAND_LIST, getCommandArgs, macroParseContext } from "./commands";
+import { COMMAND_LIST, getCommandArgs, macroDisplayContext } from "./commands";
 import { macroHighlightRanges } from "./usermacros/guide";
 import { isMacroCommandText, parseMacroCommand } from "./usermacros/parse";
 import { isMacroName, getMacroArgs, macroEnvironmentForState } from "./macros";
@@ -123,7 +123,7 @@ export function getPromptHighlightRanges(state: RenderState, buffer: string): Sp
   if (!buffer.includes("/")) return [];
   // /macro colours each of its parts and marks the wrong one.
   if (isMacroCommandText(buffer)) {
-    const parse = parseMacroCommand(buffer, state.cursorPos, macroParseContext());
+    const parse = parseMacroCommand(buffer, state.cursorPos, macroDisplayContext(state));
     return parse ? macroHighlightRanges(parse) : [];
   }
   const validArgsByBase = new Map<string, Record<string, Set<string>>>();

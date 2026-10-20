@@ -230,6 +230,8 @@ export interface RenderState {
   macroStore: UserMacroStore;
   /** The macro this TUI last deleted, for /macro undo. */
   lastDeletedMacro: UserMacro | null;
+  /** When the prompt text last changed by typing (ms epoch), so /macro can hold errors briefly. */
+  promptEditedAt: number;
   /** Route transition UI is independent of chat messages and startup loads. */
   sshConnecting: { phase: "probing" | "loading"; message: string } | null;
   /** Folder captured when the current blank draft was started. Sidebar browsing must not retarget it. */
@@ -655,6 +657,7 @@ export function createInitialState(): RenderState {
     macroEnvironment: null,
     macroStore: createUserMacroStore(),
     lastDeletedMacro: null,
+    promptEditedAt: 0,
     sshConnecting: null,
     draftFolderId: null,
     inputBuffer: "",

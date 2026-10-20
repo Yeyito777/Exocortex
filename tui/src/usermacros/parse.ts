@@ -83,6 +83,11 @@ export interface MacroParseContext {
   isBuiltInMacro(name: string): boolean;
   /** Command and inline-command names a macro may not take. */
   isReservedName(name: string): boolean;
+  /**
+   * The user typed a moment ago: hold back an error in the part that ends at
+   * the cursor, so "/go" does not flash red on the way to "/gold".
+   */
+  holdTypingErrors?: boolean;
 }
 
 const COMMAND = "/macro";
@@ -123,6 +128,12 @@ function trimmed(buffer: string, from: number, to: number): MacroPart | null {
 
 /** Parse `buffer` (a whole prompt starting with /macro) with the cursor at `cursor`. */
 export function parseMacroCommand(buffer: string, cursor: number, context: MacroParseContext): MacroCommandParse | null {
+  const result = parseFully(buffer, cursor, context);
+  if (result?.error && context.holdTypingErrors && result.error.end === cursor) result.error = null;
+  return result;
+}
+
+function parseFully(buffer: string, cursor: number, context: MacroParseContext): MacroCommandParse | null {
   if (!isMacroCommandText(buffer)) return null;
   const commandStart = skipSpace(buffer, 0);
   const result: MacroCommandParse = {

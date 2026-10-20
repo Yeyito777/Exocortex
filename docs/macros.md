@@ -30,12 +30,13 @@ uses: `/macro add /name [description]` opens it empty and `/macro edit /name`
 opens it with the current text (`:w` saves, `:wq` saves and closes).
 
 While you type, each part of the line has its own colour (name, description,
-text) and a wrong part turns red: a name a built-in command or macro already
-uses, an invalid name, an existing name for `add`, an unknown one for `edit`
-or `rm`, or nothing after `=`. Dim text after the cursor names what comes
-next, and a panel above the prompt explains the current part, lists Tab
-completions (your macros, with their text, for `edit` and `rm`), previews
-what the macro expands to and says what Enter will do.
+text) and a wrong part turns red once typing pauses: a name a built-in
+command or macro already uses, an invalid name, an existing name for `add`,
+an unknown one for `edit` or `rm`, or nothing after `=`. Dim text after the
+cursor names what comes next. Above the prompt, one row shows the syntax with
+the current part lit; a second shows the reason for a red part, the Tab
+completions (subcommands, or your macros with their text for `edit` and
+`rm`), or, once there is text after `=`, what the macro expands to.
 
 Names start with `/` and use only letters, digits, `_` and `-` (at most 48
 characters). They cannot reuse a built-in command, inline command or

@@ -49,6 +49,14 @@ export function macroParseContext(): MacroParseContext {
   return defaultMacroParseContext(name => reserved.has(name));
 }
 
+/** How long after a keystroke a /macro error in the part being typed waits to show. */
+export const MACRO_ERROR_DELAY_MS = 300;
+
+/** macroParseContext for showing the prompt: errors in the part being typed wait for a pause. */
+export function macroDisplayContext(state: Pick<RenderState, "promptEditedAt">, now = Date.now()): MacroParseContext {
+  return { ...macroParseContext(), holdTypingErrors: now - state.promptEditedAt < MACRO_ERROR_DELAY_MS };
+}
+
 export const MACRO_COMMAND = createMacroCommand(macroParseContext);
 
 const commands: SlashCommand[] = [

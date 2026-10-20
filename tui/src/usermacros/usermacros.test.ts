@@ -121,10 +121,11 @@ describe("/macro syntax", () => {
     const buffer = "/macro add /brief Answer briefly = Answer in one short sentence.";
     const ranges = macroHighlightRanges(parse(buffer));
     const colourOf = (text: string) => ranges.find(range => buffer.slice(range.start, range.end) === text)?.color;
+    // The description is not the grey of the ghost text.
     expect(colourOf("/macro")).toBe(theme.command);
     expect(colourOf("add")).toBe(theme.command);
     expect(colourOf("/brief")).toBe(theme.accent + theme.bold);
-    expect(colourOf("Answer briefly")).toBe(theme.muted + theme.italic);
+    expect(colourOf("Answer briefly")).toBe(theme.goal + theme.italic);
     expect(colourOf("=")).toBe(theme.command);
     expect(colourOf("Answer in one short sentence.")).toBe(theme.success);
 
@@ -180,44 +181,57 @@ describe("/macro help while typing", () => {
     expect(state.autocomplete?.matches.map(item => item.name)).toEqual(["/brief"]);
   });
 
-  test("the panel explains the part, previews the macro and says what Enter does", () => {
+  test("the panel is the syntax plus one detail: the error, or what the macro expands to", () => {
     const ctx = { ...contextWith([BRIEF]), lastDeleted: null };
     const guide = (buffer: string) => macroGuide(buffer, buffer.length, ctx)!;
 
-    expect(guide("/macro add ")).toMatchObject({
-      hint: expect.stringContaining("e.g. /brief"),
-      status: { tone: "pending", text: "Name the macro, e.g. /brief." },
-    });
+    // Nothing to add yet: the syntax row and the ghost text say what comes next.
+    expect(guide("/macro add ")).toMatchObject({ detail: null });
     expect(guide("/macro add ").syntax.find(part => part.active)?.text).toBe("/name");
+    expect(guide("/macro add /tldr Short")).toMatchObject({ detail: null });
     expect(guide("/macro add /tldr Short").syntax.find(part => part.active)?.text).toBe("[description]");
 
-    expect(guide("/macro add /tldr = Keep it short.\nNo lists.")).toMatchObject({
-      preview: [{ label: "/tldr", text: "Keep it short. (+1 line)", tone: "new" }],
-      status: { tone: "ready", text: "Enter saves /tldr." },
-    });
-    expect(guide("/macro add /tldr").status.text).toContain("Enter opens the editor");
-    expect(guide("/macro edit /brief = Two sentences.").preview).toEqual([
-      { label: "new", text: "Two sentences.", tone: "new" },
-      { label: "was", text: "Answer in one short sentence.", tone: "old" },
-    ]);
-    expect(guide("/macro rm /brief")).toMatchObject({
-      preview: [{ label: "/brief", tone: "removed" }],
-      status: { tone: "ready", text: "Enter deletes /brief; /macro undo restores it." },
-    });
-    expect(guide("/macro add /go = x").status).toEqual({ tone: "error", text: "✗ /go is a built-in macro; pick another name." });
+    // The preview appears once there is text after "=".
+    expect(guide("/macro add /tldr = Keep it short.\nNo lists.").detail)
+      .toEqual({ kind: "preview", label: "/tldr", text: "Keep it short. (+1 line)", tone: "new" });
+    expect(guide("/macro edit /brief = Two sentences.").detail)
+      .toEqual({ kind: "preview", label: "/brief", text: "Two sentences.", tone: "new" });
+    expect(guide("/macro rm /brief").detail)
+      .toEqual({ kind: "preview", label: "/brief", text: "Answer in one short sentence.", tone: "removed" });
+    expect(guide("/macro undo").detail).toEqual({ kind: "note", text: "Nothing deleted to restore." });
+
+    expect(guide("/macro add /go = x").detail).toEqual({ kind: "error", text: "/go is a built-in macro; pick another name." });
     expect(guide("/macro add /go = x").syntax.find(part => part.wrong)?.text).toBe("/name");
   });
 
-  test("panel rows fit the width and keep the status when space is short", () => {
-    const ctx = { ...contextWith([BRIEF]), lastDeleted: null };
-    const guide = macroGuide("/macro rm ", 10, ctx)!;
-    const completions = macroCompletions("/macro rm ", 10, ctx);
-    const rows = renderMacroGuideRows(guide, completions, 0, 60, 10);
-    expect(rows.map(row => stripAnsi(row).length)).toEqual(rows.map(() => 60));
-    expect(stripAnsi(rows[2]!)).toStartWith(" ▸ /brief  Answer briefly");
-    const short = renderMacroGuideRows(guide, completions, 0, 60, 2);
-    expect(short).toHaveLength(2);
-    expect(stripAnsi(short.at(-1)!)).toContain("Which macro?");
+  test("an error in the part being typed waits for a pause", () => {
+    const typing = { ...contextWith([BRIEF]), holdTypingErrors: true };
+    // At the cursor: held, so "/go" does not flash on the way to "/gold".
+    expect(parseMacroCommand("/macro add /go", 14, typing)!.error).toBeNull();
+    // A part the cursor has left shows at once, as does everything after a pause.
+    expect(parseMacroCommand("/macro add /go = x", 18, typing)!.error?.role).toBe("name");
+    expect(parse("/macro add /go").error?.role).toBe("name");
+  });
+
+  test("the panel is two rows normally; completions take the second row and can grow", () => {
+    const ctx = { ...contextWith([BRIEF, { name: "/review", expansion: "Review this" }]), lastDeleted: null };
+    const rowsFor = (buffer: string, maxRows = 11) => {
+      const completions = macroCompletions(buffer, buffer.length, ctx);
+      return renderMacroGuideRows(macroGuide(buffer, buffer.length, ctx)!, completions, completions.length ? 0 : -1, 60, maxRows)
+        .map(row => stripAnsi(row));
+    };
+    expect(rowsFor("/macro add /x")).toHaveLength(1);
+    expect(rowsFor("/macro add /x = Hi there")).toEqual([
+      expect.stringContaining("/macro add /name [description] = text"),
+      expect.stringMatching(/^ {3}\/x → Hi there +$/),
+    ]);
+    expect(rowsFor("/macro add /go = x")[1]).toStartWith(" ✗ /go is a built-in macro");
+    const rm = rowsFor("/macro rm ");
+    expect(rm).toHaveLength(3);
+    expect(rm[1]).toStartWith(" ▸ /brief   Answer briefly · Answer in one short sentence.");
+    expect(rowsFor("/macro ")).toHaveLength(6);
+    expect(rowsFor("/macro ", 3)).toHaveLength(3);
+    for (const row of rm) expect(row.length).toBe(60);
   });
 
   test("the full render shows the panel above the prompt and the ghost text after the cursor", () => {
@@ -241,8 +255,9 @@ describe("/macro help while typing", () => {
     const rows = screen.plainRows();
     const prompt = rows.findIndex(row => row.includes("I > /macro add /tldr"));
     expect(rows[prompt]).toContain("/macro add /tldr [description] = text");
-    expect(rows.slice(0, prompt).join("\n")).toContain("Optional: a few words shown in autocomplete");
-    expect(rows.slice(0, prompt).join("\n")).toContain("Enter opens the editor for /tldr's text");
+    // Just the syntax row, with nothing else to say yet.
+    expect(rows[prompt - 2]).toContain("/macro add /name [description] = text");
+    expect(rows[prompt - 3]!.trim()).toBe("");
   });
 });
 
