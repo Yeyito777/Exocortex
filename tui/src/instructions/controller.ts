@@ -132,7 +132,7 @@ function restoreFailedSave(state: RenderState, editor: InstructionsEditorState):
   editor.notice = { text: failureNotice(editor.scope, failure), tone: "error" };
 }
 
-/** The sidebar's AGENTS.md row: that folder's editor, without the picker. */
+/** The sidebar folder menu's "Edit instructions": that folder's editor, without the picker. */
 export function openFolderInstructionsEditor(state: RenderState, daemon: InstructionsDaemon, folderId: string): void {
   const folder = state.sidebar.folders.find(candidate => candidate.id === folderId);
   const target: InstructionsTarget = { convId: null, convTitle: null, folderId, folderName: folder?.name ?? null };

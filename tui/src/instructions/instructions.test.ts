@@ -342,7 +342,7 @@ describe("instructions editor", () => {
     expect(state.instructionsModal).toBeNull();
   });
 
-  test("the sidebar's AGENTS.md opens that folder's editor directly", () => {
+  test("the sidebar folder menu opens that folder's editor directly", () => {
     const state = conversationState();
     const daemon = new FakeDaemon();
     openFolderInstructionsEditor(state, daemon, "folder-1");
