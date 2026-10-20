@@ -104,7 +104,14 @@ function pickerEntries(picker: InstructionsPickerState, inner: number): Array<{ 
       detail = spread("   No folder: this conversation is at the top level", theme.dim, "", "", inner - 2, bg);
     } else {
       const summary = summarizeInstructions(picker.texts[scope]);
-      if (!summary) detail = spread("   loading…", theme.muted, "", "", inner - 2, bg);
+      const failure = picker.failures[scope];
+      if (failure) {
+        // The reason shortens; the way back stays.
+        const hint = "Enter recovers";
+        const room = inner - 2 - termWidth(hint) - 2;
+        detail = spread(truncateToWidth(`   ✗ Not saved: ${clean(failure).replace(/\.$/, "")}`, Math.max(8, room)), theme.error, hint, theme.muted, inner - 2, bg);
+      }
+      else if (!summary) detail = spread("   loading…", theme.muted, "", "", inner - 2, bg);
       else if (!summary.preview) detail = spread("   empty", theme.dim + theme.italic, "", "", inner - 2, bg) + theme.italicOff;
       else {
         // Shorten the first line rather than drop the size beside it.
@@ -131,7 +138,7 @@ export function renderInstructionsPicker(picker: InstructionsPickerState, totalR
   const height = bodyRows + 2;
   const { top, left } = cardGeometry(totalRows, totalCols, width, height);
 
-  let payload = moveTo(top, left) + edge(["╭", "╮"], width, PICKER_TITLE, picker.loadReqId && picker.loaded ? "refreshing…" : "", theme.bold + theme.text);
+  let payload = moveTo(top, left) + edge(["╭", "╮"], width, PICKER_TITLE, "", theme.bold + theme.text);
   for (let i = 0; i < bodyRows; i++) {
     const entry = entries[i];
     payload += moveTo(top + 1 + i, left) + bodyRow(entry.text, entry.bg);
@@ -244,7 +251,7 @@ export function renderInstructionsEditor(editor: InstructionsEditorState, totalR
   const selection = selectionRange(editor);
 
   const dirty = isInstructionsEditorDirty(editor);
-  const state = editor.saving ? "saving…" : dirty ? "● modified" : "";
+  const state = dirty ? "● modified" : "";
   let payload = moveTo(top, left) + edge(["╭", "╮"], width, editorTitle(editor), state, theme.bold + theme.text, dirty ? theme.warning : theme.muted);
   payload += moveTo(top + 1, left) + bodyRow(pad(inner));
   for (let i = 0; i < bodyRows; i++) {

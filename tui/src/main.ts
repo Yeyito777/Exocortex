@@ -19,7 +19,15 @@ import { disposeHistoryImages, handleHistoryImageResponse, invalidateHistoryImag
 import { configureMathImages, disposeMathImages, mathImagesActive, mathImagesNeedDetection } from "./mathimages";
 import { handleImageModalKey } from "./imagemodal";
 import { closeAccountsScreen, handleAccountsScreenKey, requestAccountsScreen } from "./accountsscreen";
-import { handleInstructionsModalKey, openFolderInstructionsEditor, openInstructionsPicker } from "./instructions/controller";
+import {
+  handleInstructionsModalKey,
+  instructionsConnectionLost,
+  instructionsReconnected,
+  instructionsRouteSwitched,
+  openFolderInstructionsEditor,
+  openInstructionsPicker,
+  prefetchCurrentInstructions,
+} from "./instructions/controller";
 import { handleFocusedKey } from "./focus";
 import { handleMouseEvent, refreshMouseCursor, trackMouseCursor } from "./mouse";
 import { clearPrompt } from "./promptstate";
@@ -162,6 +170,8 @@ let pendingVoiceQueuePrompt = false;
 let pendingNewConversationConvId: string | null = null;
 let pendingLocalInterruptConvId: string | null = null;
 let pendingEditMessageUnwind: PendingEditMessageUnwind | null = null;
+let instructionsPrefetchTimer: ReturnType<typeof setTimeout> | null = null;
+let instructionsPrefetchFor = "";
 // Local-only user-message echoes whose audio jobs are still transcribing. They
 // are intentionally withheld from the daemon until the TUI has final text.
 const pendingVoiceSubmissions = new Set<SubmittedVoiceTranscription>();
@@ -288,7 +298,28 @@ const STREAM_CHUNK_FRAME_DELAY_MS = 50;
 const EVENT_LOOP_CHECK_INTERVAL_MS = 1_000;
 const EVENT_LOOP_LAG_WARN_MS = 250;
 
+/**
+ * Once a conversation (or draft) has stayed open a moment, fetch what
+ * /instructions would show so it opens instantly. The pause keeps sidebar
+ * browsing from loading every conversation it passes.
+ */
+const INSTRUCTIONS_PREFETCH_DELAY_MS = 1_000;
+
+function scheduleInstructionsPrefetch(): void {
+  if (!daemon) return;
+  const target = `${state.convId ?? ""}|${state.draftFolderId ?? ""}|${daemon.connected}`;
+  if (target === instructionsPrefetchFor) return;
+  instructionsPrefetchFor = target;
+  if (instructionsPrefetchTimer) clearTimeout(instructionsPrefetchTimer);
+  instructionsPrefetchTimer = setTimeout(() => {
+    instructionsPrefetchTimer = null;
+    if (running && daemon.connected) prefetchCurrentInstructions(state, daemon);
+  }, INSTRUCTIONS_PREFETCH_DELAY_MS);
+  instructionsPrefetchTimer.unref?.();
+}
+
 function performRender(): number {
+  scheduleInstructionsPrefetch();
   const renderStartedAt = performance.now();
   const framePresented = render(state);
   const renderMs = performance.now() - renderStartedAt;
@@ -422,6 +453,7 @@ function resetForDaemonRouteSwitch(): void {
   state.accountsSnapshotCache = null;
   // Its scopes belonged to the old endpoint too.
   state.instructionsModal = null;
+  instructionsRouteSwitched(state);
   voiceInput?.cleanup();
   clearStreamTick();
   resetPrewarmer();
@@ -1882,6 +1914,7 @@ function restoreDaemonSessionAfterReconnect(
   // already producing this bootstrap. Do not request the same multi-megabyte
   // state a second time.
   if (!bootstrapAlreadyRequested) daemon.ping();
+  instructionsReconnected(state, daemon);
   // A restarted daemon forgot this client's Accounts watch.
   if (state.accountsScreen) daemon.accounts({ watch: true, convId: state.convId });
   updateMonitor?.setRoute(daemon.remoteAlias);
@@ -1941,6 +1974,7 @@ function handleDaemonConnectionLost(shutdownMode: DaemonShutdownMode | null): vo
   clearStreamingTailMessages(state);
   clearStreamTick();
   resetPrewarmer();
+  instructionsConnectionLost(state);
   state.historyLoadingOlder = false;
   state.historyLoadingStartedAt = null;
   state.historyLoadingRequestId = null;

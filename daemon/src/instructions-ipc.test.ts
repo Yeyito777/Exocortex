@@ -55,6 +55,8 @@ test("real isolated daemon: the /instructions modal edits all three scopes and t
   const ENTER: KeyEvent = { type: "enter" };
   const picker = () => state.instructionsModal?.picker ?? null;
   const editor = () => state.instructionsModal?.editor ?? null;
+  // Saves show at once; this is when the daemon has confirmed them all.
+  const settled = () => [...state.instructionsStore.entries.values()].every(entry => entry.saves.length === 0);
   try {
     await waitFor(() => output.includes("Waiting for connections"), "daemon");
     await client.connect();
@@ -74,7 +76,7 @@ test("real isolated daemon: the /instructions modal edits all three scopes and t
 
     // /instructions: the picker loads every scope.
     openInstructionsPicker(state, client);
-    await waitFor(() => picker()?.loaded === true, "picker load");
+    await waitFor(() => picker()?.loadReqId === null, "picker load");
     expect(picker()!.target).toMatchObject({ convId, folderId, folderName: "Project" });
     expect(picker()!.texts).toEqual({ conversation: "", folder: "", global: "" });
 
@@ -83,20 +85,23 @@ test("real isolated daemon: the /instructions modal edits all three scopes and t
     expect(editor()?.scope).toBe("conversation");
     expect(editor()!.vim.mode).toBe("insert");
     press("Answer in haiku.", ESC, ":wq", ENTER);
-    expect(editor()?.saving).not.toBeNull();
-    await waitFor(() => editor() === null && picker()?.loadReqId === null, "conversation save");
+    expect(editor()).toBeNull();
+    expect(picker()!.texts.conversation).toBe("Answer in haiku.");
+    await waitFor(settled, "conversation save");
     expect(picker()!.texts.conversation).toBe("Answer in haiku.");
 
     // Folder: write, save with Ctrl-S, then :q once clean.
     press("j", ENTER, "Project rules.", { type: "ctrl-s" });
-    await waitFor(() => editor()?.saving === null && editor()?.notice?.text === "Saved", "folder save");
+    expect(editor()?.notice?.text).toBe("Saved");
+    await waitFor(settled, "folder save");
     press(ESC, ":q", ENTER);
-    await waitFor(() => editor() === null && picker()?.loadReqId === null, "folder close");
+    expect(editor()).toBeNull();
     expect(picker()!.texts.folder).toBe("Project rules.");
 
     // Global.
     press("j", ENTER, "Global rule.", ESC, ":wq", ENTER);
-    await waitFor(() => editor() === null && picker()?.loadReqId === null, "global save");
+    expect(editor()).toBeNull();
+    await waitFor(settled, "global save");
     expect(picker()!.texts).toEqual({ conversation: "Answer in haiku.", folder: "Project rules.", global: "Global rule." });
     expect(readFileSync(join(config, "system.md"), "utf8")).toBe("Global rule.\n");
 
@@ -106,7 +111,6 @@ test("real isolated daemon: the /instructions modal edits all three scopes and t
     expect(editor()!.vim.mode).toBe("normal");
     press(ESC);
     expect(editor()).toBeNull();
-    await waitFor(() => picker()?.loadReqId === null, "picker refresh");
 
     // The model's context still carries all three.
     client.send({ type: "get_system_prompt", reqId: "instructions-prompt", convId });
@@ -130,17 +134,18 @@ test("real isolated daemon: the /instructions modal edits all three scopes and t
     press("G", ENTER);
     expect(editor()?.scope).toBe("global");
     press("A", " More.", ESC, ":w", ENTER);
-    await waitFor(() => editor()?.saving === null && editor()?.notice?.tone === "error", "global conflict");
+    await waitFor(() => editor()?.notice?.tone === "error", "global conflict");
     expect(editor()!.notice!.text).toContain(":w! overwrites");
     expect(readFileSync(join(config, "system.md"), "utf8")).toBe("Edited elsewhere.\n");
     press(":w!", ENTER);
-    await waitFor(() => editor()?.notice?.text === "Saved", "forced global save");
+    expect(editor()?.notice?.text).toBe("Saved");
+    await waitFor(settled, "forced global save");
     expect(readFileSync(join(config, "system.md"), "utf8")).toBe("Global rule. More.\n");
 
     // Clearing a scope (saving it empty) removes it.
     press(ESC, "k", ENTER, "dd", ":wq", ENTER);
-    await waitFor(() => editor() === null && picker()?.loadReqId === null, "folder clear");
     expect(picker()!.texts.folder).toBe("");
+    await waitFor(settled, "folder clear");
     events.length = 0;
     client.send({ type: "get_system_prompt", reqId: "instructions-prompt-2", convId });
     await waitFor(() => events.some(event => event.type === "system_prompt"), "second system prompt");

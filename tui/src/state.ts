@@ -38,6 +38,7 @@ import type { InlineImageTarget } from "./inlineimages";
 import type { ImageModalState } from "./imagemodal";
 import type { AccountsOpenRequest, AccountsScreenState } from "./accountsscreen";
 import type { InstructionsModalState } from "./instructions/state";
+import { createInstructionsStore, type InstructionsStore } from "./instructions/store";
 
 // ── Queue types ────────────────────────────────────────────────────
 
@@ -363,6 +364,8 @@ export interface RenderState {
   voiceMessage: VoiceChatMessageState | null;
   /** The /instructions picker and editor, drawn over everything while open. */
   instructionsModal: InstructionsModalState | null;
+  /** Every instruction scope's text as the TUI has it, and saves on their way. */
+  instructionsStore: InstructionsStore;
   /** Current mouse cursor shape — used to avoid redundant cursor shape OSC writes. */
   mouseCursor: "pointer" | "text" | "hand";
   /** Last reported pointer cell, so the shape can follow content that moves under a still mouse. */
@@ -735,6 +738,7 @@ export function createInitialState(): RenderState {
     voicePromptJobs: [],
     voiceMessage: null,
     instructionsModal: null,
+    instructionsStore: createInstructionsStore(),
     mouseCursor: "pointer",
   };
   // App starts in insert mode — mark entry so first Esc commits the session
