@@ -4,7 +4,6 @@ import type { MoveSidebarItemsOptions } from "../protocol";
 export type SidebarKeyResult =
   | { type: "handled" }
   | { type: "select"; convId: string }
-  | { type: "open_folder_instructions"; folderId: string }
   | { type: "delete_conversation"; convId: string }
   | { type: "delete_conversations"; convIds: string[] }
   | { type: "delete_folder"; folderId: string; mode: "recursive" | "unwrap" }

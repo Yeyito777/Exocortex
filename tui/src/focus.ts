@@ -25,16 +25,16 @@ import {
   focusNextCompletedConversation,
   focusNextStreamingConversation,
   focusPreviousEnteredConversation,
-  handleConversationActionMenuKey,
-  handleSidebarConversationAction,
+  handleSidebarActionMenuKey,
   handleSidebarKey,
   handleSidebarMark,
   handleSidebarPromptKey,
+  handleSidebarMenuAction,
   handleSidebarViewportAction,
   moveSelection,
-  openSelectedConversationActionMenu,
+  openSelectedSidebarActionMenu,
   syncSelectedIndex,
-  type ConversationActionMenuKeyResult,
+  type SidebarActionMenuKeyResult,
 } from "./sidebar";
 import {
   handleSidebarSearchBarKey,
@@ -158,30 +158,36 @@ function loadActivityConversation(
     : { type: "handled" };
 }
 
-export function handleConversationActionMenuResult(
-  result: ConversationActionMenuKeyResult,
+export function handleSidebarActionMenuResult(
+  result: SidebarActionMenuKeyResult,
   state: RenderState,
 ): KeyResult {
-  const menu = state.sidebar.conversationActionMenu;
+  const menu = state.sidebar.actionMenu;
   if (!menu) return { type: "handled" };
   if (result.type === "close") {
-    state.sidebar.conversationActionMenu = null;
+    state.sidebar.actionMenu = null;
     return { type: "handled" };
   }
   if (result.type !== "action") return { type: "handled" };
 
-  state.sidebar.conversationActionMenu = null;
+  state.sidebar.actionMenu = null;
+  const { item } = menu;
   if (result.action === "copy_id") {
-    copyToClipboard(menu.convId);
+    copyToClipboard(item.id);
     return { type: "handled" };
   }
-  return mapSidebarResult(handleSidebarConversationAction(result.action, menu.convId, state.sidebar));
+  if (result.action === "edit_instructions") {
+    return item.type === "folder" ? { type: "open_folder_instructions", folderId: item.id } : { type: "handled" };
+  }
+  // Rename types into the sidebar's bottom bar, which reads keys only while the sidebar has focus.
+  if (result.action === "rename") focusSidebar(state);
+  return mapSidebarResult(handleSidebarMenuAction(result.action, item, state.sidebar));
 }
 
-function handleConversationActionMenuFocusedKey(key: KeyEvent, state: RenderState): KeyResult {
-  const menu = state.sidebar.conversationActionMenu;
+function handleSidebarActionMenuFocusedKey(key: KeyEvent, state: RenderState): KeyResult {
+  const menu = state.sidebar.actionMenu;
   if (!menu) return { type: "handled" };
-  return handleConversationActionMenuResult(handleConversationActionMenuKey(menu, key), state);
+  return handleSidebarActionMenuResult(handleSidebarActionMenuKey(menu, key), state);
 }
 
 export function handleFocusedKey(
@@ -203,9 +209,9 @@ export function handleFocusedKey(
   // prompt/modal, or vim state.
   if (key.type === "ctrl-shift-r") return { type: "restart_daemon" };
 
-  // ── Sidebar conversation action menu — intercept all keys ──────
-  if (state.sidebar.conversationActionMenu) {
-    return handleConversationActionMenuFocusedKey(key, state);
+  // ── Sidebar action menu — intercept all keys ──────────────────
+  if (state.sidebar.actionMenu) {
+    return handleSidebarActionMenuFocusedKey(key, state);
   }
 
   // ── Queue prompt modal — intercept all keys when showing ──────
@@ -444,14 +450,14 @@ export function handleFocusedKey(
     return mapSidebarResult(handleSidebarMark(state.sidebar, parseInt(key.char, 10)));
   }
 
-  // ── Sidebar conversation actions ────────────────────────────────
+  // ── Sidebar conversation and folder actions ───────────────────────
   // Like Record's server/item menu, semicolon opens a small menu beside
   // the currently hovered/selected sidebar row instead of repeating Vim find.
   if (state.panelFocus === "sidebar" && state.sidebar.open
       && state.vim.mode === "normal"
       && !vimHasPendingInput(state)
       && key.type === "char" && key.char === ";") {
-    openSelectedConversationActionMenu(state.sidebar);
+    openSelectedSidebarActionMenu(state.sidebar);
     return { type: "handled" };
   }
 

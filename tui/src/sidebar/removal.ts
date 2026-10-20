@@ -24,7 +24,7 @@ function displayRowPinned(sidebar: SidebarState, row: DisplayRow): boolean | nul
 function removableDisplayEntries(sidebar: SidebarState): RemovalEntry[] {
   const treeView = isTreeFolderView(sidebar);
   return buildDisplayRows(sidebar)
-    .flatMap(row => row.type === "entry" && row.item && row.item.type !== "folder_instructions"
+    .flatMap(row => row.type === "entry" && row.item
       ? [{ item: row.item, pinned: displayRowPinned(sidebar, row), container: treeView ? sidebarItemContainer(sidebar, row.item) : null }]
       : []);
 }

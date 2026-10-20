@@ -51,9 +51,6 @@ export function tuiStartingStatePath(): string {
 function copySidebarItem(item: SidebarSelectableItem | null): SidebarSelectableItem | null {
   if (!item) return null;
   if (item.type === "up") return { type: "up" };
-  if (item.type === "folder_instructions") {
-    return { type: "folder_instructions", folderId: item.folderId };
-  }
   return { type: item.type, id: item.id };
 }
 
@@ -71,9 +68,10 @@ function parseSidebarItem(value: unknown): SidebarSelectableItem | null | undefi
   if (!isRecord(value)) return undefined;
 
   if (value.type === "up") return { type: "up" };
+  // Older files may still select the folder AGENTS.md row the sidebar used to list.
   if (value.type === "folder_instructions") {
     const folderId = parseOptionalId(value.folderId);
-    return typeof folderId === "string" ? { type: "folder_instructions", folderId } : undefined;
+    return typeof folderId === "string" ? { type: "folder", id: folderId } : undefined;
   }
   if (value.type === "folder" || value.type === "conversation") {
     const id = parseOptionalId(value.id);

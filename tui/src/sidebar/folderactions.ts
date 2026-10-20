@@ -255,7 +255,6 @@ export function enterSelectedFolder(sidebar: SidebarState): SidebarKeyResult {
 export function activateSidebarItem(sidebar: SidebarState, item: SidebarSelectableItem): SidebarKeyResult {
   focusSidebarItem(sidebar, item);
   if (item.type === "conversation") return { type: "select", convId: item.id };
-  if (item.type === "folder_instructions") return { type: "open_folder_instructions", folderId: item.folderId };
   return isTreeFolderView(sidebar) ? toggleSelectedTreeFolder(sidebar) : enterSelectedFolder(sidebar);
 }
 

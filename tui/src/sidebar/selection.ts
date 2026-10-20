@@ -132,9 +132,6 @@ export function getSelectedSidebarItem(sidebar: SidebarState): SidebarSelectable
     const activeQuery = getActiveSidebarSearchQuery(sidebar);
     return activeQuery && getVisibleConversationIndicesForQuery(sidebar, activeQuery).includes(convIdx) ? selected : null;
   }
-  if (selected.type === "folder_instructions") {
-    return selected.folderId === sidebar.currentFolderId ? selected : null;
-  }
   const folder = sidebar.folders.find(f => f.id === selected.id);
   return folder && (folder.parentId ?? null) === sidebar.currentFolderId ? selected : null;
 }

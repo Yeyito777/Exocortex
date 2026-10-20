@@ -40,8 +40,6 @@ export function sidebarItemContainer(state: SidebarTreeState, item: SidebarSelec
       const folder = state.folders.find(candidate => candidate.id === item.id);
       return folder ? folder.parentId ?? null : undefined;
     }
-    case "folder_instructions":
-      return state.folders.some(folder => folder.id === item.folderId) ? item.folderId : undefined;
     case "up":
       return undefined;
   }

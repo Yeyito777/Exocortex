@@ -224,6 +224,25 @@ describe("TUI starting state", () => {
     });
   });
 
+  test("a saved selection on the old folder AGENTS.md row comes back as that folder", () => {
+    mkdirSync(dirname(statePath), { recursive: true });
+    writeFileSync(statePath, JSON.stringify({
+      version: 2,
+      focusedConversationId: null,
+      sidebar: {
+        open: true,
+        currentFolderId: null,
+        selectedItem: { type: "folder_instructions", folderId: "work" },
+        scrollOffset: 0,
+        expandedFolderIds: ["work"],
+      },
+      conversationScrollPositions: {},
+    }));
+
+    const loaded = loadTuiStartingState();
+    expect(loaded?.sidebar.open && loaded.sidebar.selectedItem).toEqual({ type: "folder", id: "work" });
+  });
+
   test("restores tree-view folder expansion whether or not the sidebar was open", () => {
     const state = createInitialState();
     state.sidebar.open = false;

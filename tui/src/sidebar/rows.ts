@@ -59,7 +59,6 @@ function buildTreeDisplayRows(sidebar: SidebarRowsState): DisplayRow[] {
   const listed = new Set<string>();
   const appendLevel = (parentId: string | null, depth: number) => {
     const entries = (childrenByParent.get(parentId) ?? []).sort(compareSidebarOrder);
-    if (parentId) rows.push({ type: "entry", item: { type: "folder_instructions", folderId: parentId }, depth });
     const pinned = entries.filter(entry => entry.pinned);
     const unpinned = entries.filter(entry => !entry.pinned);
     if (pinned.length > 0) {
@@ -101,7 +100,6 @@ export function buildDisplayRows(sidebar: SidebarRowsState): DisplayRow[] {
 
   if (!activeQuery && sidebar.currentFolderId) {
     rows.push({ type: "entry", item: { type: "up" }, text: ".." });
-    rows.push({ type: "entry", item: { type: "folder_instructions", folderId: sidebar.currentFolderId } });
   }
 
   const pinned = entries.filter(entry => entry.pinned);
