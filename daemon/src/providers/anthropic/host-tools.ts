@@ -35,6 +35,11 @@ const INSTRUCTIONS: Record<string, string | undefined> = {
   ].join("\n"),
 };
 
+/** The MCP server instructions a host tool contributes, if any. */
+export function hostToolInstructions(name: string): string | undefined {
+  return INSTRUCTIONS[name];
+}
+
 /** The Exocortex turn a host tool call runs under. */
 export interface HostToolBinding {
   execute: ToolExecutor;
@@ -70,7 +75,7 @@ export function createHostToolServer(
   const defs = hostToolDefs(tools);
   if (!binding || defs.length === 0) return null;
 
-  const instructions = defs.flatMap(def => INSTRUCTIONS[def.name] ?? []).join("\n\n");
+  const instructions = defs.flatMap(def => hostToolInstructions(def.name) ?? []).join("\n\n");
   const { mcpServer: { McpServer }, mcpTypes: { CallToolRequestSchema, ListToolsRequestSchema } } = claudeSdks();
   const server = new McpServer(
     { name: CLAUDE_CODE_HOST_TOOL_SERVER, version: "1.0.0" },

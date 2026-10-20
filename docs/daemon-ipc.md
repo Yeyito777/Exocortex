@@ -88,6 +88,17 @@ picker and editor use these commands. Conversation and folder instructions are
 still sent to clients as pinned `system_instructions` history entries; the TUI
 does not draw them.
 
+`load_tool_instructions` (`convId`, or a draft's `provider` and `model`) is
+read-only and answers `tool_instructions_loaded` with what that route tells the
+model about each tool: `internal` entries carry the schema `description` and
+the `hint` from the system prompt's `# Internal tools` section (under Claude
+Code, the exocortex MCP server's instructions, with `hintSource`); `external`
+entries carry each manifest's `systemHint` as injected. Every entry names its
+`source` file, and `route` says in a sentence how the text reaches the model.
+It is built from the same pieces as the request surface, so it never drifts
+from a real turn. `/instructions tools` shows it; `/instructions
+conversation|folder|global` (or `c`/`f`/`g`) open a scope's editor directly.
+
 ## New-conversation defaults
 
 The connected daemon owns `defaults.conversation` in its host's config.

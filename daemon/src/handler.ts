@@ -27,6 +27,7 @@ import { complete } from "./llm";
 import { buildClaudeCodeSystemAppend, buildSystemPrompt, getUserAddendum, reloadUserAddendum, setUserAddendum } from "./system";
 import { createConversationWorkspace, ensureConversationWorkspace } from "./workspace-service";
 import { scopedSubagentPromptOptions } from "./subagent-policy";
+import { describeToolInstructions } from "./tool-instructions";
 import { assertDelegationModel, parseRequestedModel, resolveDelegationModel } from "./delegation-models";
 import { getConversationToolNames, getToolDisplayInfo } from "./tools/registry";
 import { getExternalToolStyles, manageExternalToolDaemon } from "./external-tools";
@@ -1440,7 +1441,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   // window. Read-only paging, Stop, scheduling and turn admission stay cheap.
   const warmCommands = new Set([
     "btw_query", "btw_followup", "set_goal", "set_model", "set_effort",
-    "set_fast_mode", "get_system_prompt", "load_instructions",
+    "set_fast_mode", "get_system_prompt", "load_instructions", "load_tool_instructions",
   ]);
   // Commands for one conversation take effect in arrival order. An inline
   // `/model` arrives as set_model … send_message in one burst; without this the
@@ -3450,6 +3451,25 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       }
 
       // ── Utility/tool/auth commands ────────────────────────────────
+
+      case "load_tool_instructions": {
+        const conversation = cmd.convId ? convStore.get(cmd.convId) : undefined;
+        if (cmd.convId && !conversation) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Conversation ${cmd.convId} not found` });
+          break;
+        }
+        const provider = conversation?.provider ?? (cmd.provider && getProvider(cmd.provider) ? cmd.provider : getDefaultProvider().id);
+        const model = conversation?.model ?? cmd.model ?? getDefaultModel(provider);
+        server.sendTo(client, {
+          type: "tool_instructions_loaded",
+          reqId: cmd.reqId,
+          convId: cmd.convId ?? null,
+          provider,
+          model,
+          ...describeToolInstructions(provider, model, cmd.convId),
+        });
+        break;
+      }
 
       case "get_system_prompt": {
         const instructions = cmd.convId ? convStore.getEffectiveSystemInstructions(cmd.convId) : null;
