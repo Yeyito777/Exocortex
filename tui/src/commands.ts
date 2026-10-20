@@ -17,6 +17,8 @@ import { HIDE_COMMAND } from "./commands/hide";
 import { INSTRUCTIONS_COMMAND } from "./commands/instructions";
 import { LOGIN_COMMAND } from "./commands/login";
 import { createMacroCommand } from "./commands/macro";
+import { defaultMacroParseContext } from "./usermacros/controller";
+import type { MacroParseContext } from "./usermacros/parse";
 import { LOGOUT_COMMAND } from "./commands/logout";
 import { MODEL_COMMAND } from "./commands/model";
 import { NEW_COMMAND } from "./commands/new";
@@ -38,10 +40,16 @@ import { INLINE_COMMANDS, applyInlineCommands, previewInlineCommands } from "./i
 
 const HELP_COMMAND = createHelpCommand(() => commands);
 // User macros may not take a command's name, or one used inline in messages.
-export const MACRO_COMMAND = createMacroCommand(() => [
-  ...commands.map(command => command.name),
-  ...INLINE_COMMANDS.map(command => command.name),
-]);
+let reservedMacroNames: Set<string> | null = null;
+
+/** What /macro checks names against: the user macros, built-in macros, commands and inline commands. */
+export function macroParseContext(): MacroParseContext {
+  reservedMacroNames ??= new Set([...commands.map(command => command.name), ...INLINE_COMMANDS.map(command => command.name)]);
+  const reserved = reservedMacroNames;
+  return defaultMacroParseContext(name => reserved.has(name));
+}
+
+export const MACRO_COMMAND = createMacroCommand(macroParseContext);
 
 const commands: SlashCommand[] = [
   HELP_COMMAND,

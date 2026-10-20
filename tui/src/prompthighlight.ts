@@ -9,7 +9,9 @@
  */
 
 import type { RenderState } from "./state";
-import { COMMAND_LIST, getCommandArgs } from "./commands";
+import { COMMAND_LIST, getCommandArgs, macroParseContext } from "./commands";
+import { macroHighlightRanges } from "./usermacros/guide";
+import { isMacroCommandText, parseMacroCommand } from "./usermacros/parse";
 import { isMacroName, getMacroArgs, macroEnvironmentForState } from "./macros";
 import { INLINE_COMMANDS, getInlineCommandArgs } from "./inlineeffort";
 import { matchQueueTargetAfterCommand } from "./queuetargets";
@@ -52,7 +54,8 @@ function customModelProviders(state: RenderState): Set<string> {
 
 // ── Span detection ───────────────────────────────────────────────
 
-interface Span { start: number; end: number }
+/** A highlighted range; `color` defaults to the command colour. */
+interface Span { start: number; end: number; color?: string }
 
 interface WordPosition { word: string; start: number; end: number }
 
@@ -118,6 +121,11 @@ function findCommandSpans(
 
 export function getPromptHighlightRanges(state: RenderState, buffer: string): Span[] {
   if (!buffer.includes("/")) return [];
+  // /macro colours each of its parts and marks the wrong one.
+  if (isMacroCommandText(buffer)) {
+    const parse = parseMacroCommand(buffer, state.cursorPos, macroParseContext());
+    return parse ? macroHighlightRanges(parse) : [];
+  }
   const validArgsByBase = new Map<string, Record<string, Set<string>>>();
   let providersWithCustomModels: Set<string> | null = null;
   const spans = findCommandSpans(
@@ -168,12 +176,12 @@ export function highlightPromptInput(
     const lineEnd = lineStart + line.length;
 
     // Collect overlapping highlight regions (in visible column space)
-    const regions: { col: number; len: number }[] = [];
+    const regions: { col: number; len: number; color: string }[] = [];
     for (const span of spans) {
       if (span.end <= lineStart || span.start >= lineEnd) continue;
       const colStart = Math.max(0, span.start - lineStart);
       const colEnd = Math.min(line.length, span.end - lineStart);
-      regions.push({ col: colStart, len: colEnd - colStart });
+      regions.push({ col: colStart, len: colEnd - colStart, color: span.color ?? theme.command });
     }
 
     if (regions.length === 0) return line;
@@ -181,9 +189,9 @@ export function highlightPromptInput(
     // Build the line with ANSI color applied to highlighted regions
     let result = "";
     let pos = 0;
-    for (const { col, len } of regions) {
+    for (const { col, len, color } of regions) {
       if (col > pos) result += line.slice(pos, col);
-      result += theme.command + line.slice(col, col + len) + theme.reset;
+      result += color + line.slice(col, col + len) + theme.reset;
       pos = col + len;
     }
     if (pos < line.length) result += line.slice(pos);

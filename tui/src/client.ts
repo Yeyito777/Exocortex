@@ -508,10 +508,8 @@ export class DaemonClient {
   private sendUserMacroMutation(
     command: Extract<Command, { type: "save_user_macro" | "delete_user_macro" }>,
   ): string | null {
-    if (!this.socket || !this._connected) {
-      this.handler({ type: "error", message: "Connect to a daemon before changing macros." });
-      return null;
-    }
+    // Offline, the TUI's macro store keeps the change until it can check it.
+    if (!this.socket || !this._connected) return null;
     const reqId = `macro_${randomUUID()}`;
     this.send({ ...command, reqId });
     return reqId;

@@ -1,4 +1,5 @@
 import type { ImageAttachment } from "../messages";
+import type { UserMacro } from "@exocortex/shared/user-macros";
 
 // Minimal interface so event handling doesn't depend on DaemonClient.
 export interface DaemonActions {
@@ -11,6 +12,9 @@ export interface DaemonActions {
   loadInstructions?(convId: string | null, folderId: string | null): string;
   setFolderInstructions?(folderId: string, text: string): string;
   setGlobalInstructions?(text: string, expectedText?: string): string;
+  /** /macro: changes the store confirms in the background (see usermacros/store). */
+  saveUserMacro?(macro: UserMacro, create: boolean): string | null;
+  deleteUserMacro?(name: string): string | null;
   /** Returns the request id when the transport assigns one. */
   loadToolOutputs(convId: string, toolCallIds?: string[]): string | void;
 }

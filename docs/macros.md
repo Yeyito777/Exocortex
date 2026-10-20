@@ -7,24 +7,41 @@ prompt. The built-in ones live in [macros.ts](../tui/src/macros.ts).
 
 ## Your own macros
 
-`/macro` adds, edits and deletes macros while the app is running; no restart.
+`/macro` adds, edits and deletes macros while the app is running, in one
+prompt line:
 
-| Command | Action |
-|---|---|
-| `/macro` or `/macro list` | Your macros with their descriptions, then the built-in names |
-| `/macro add /name [description]` | The prompt line becomes the macro's text: type it (several lines are fine), Enter saves, Enter on an empty prompt cancels |
-| `/macro edit /name [description]` | The same, prefilled with the current text; a new description replaces the old one |
-| `/macro rm /name` (or `delete`) | Delete it; `/macro undo` restores the last one this TUI deleted |
+```
+/macro add /brief = Answer in one short sentence.
+/macro add /brief Answer briefly = Answer in one short sentence.
+/macro edit /brief = Two sentences at most.
+/macro rm /brief
+/macro undo
+/macro            (or /macro list)
+```
 
-Lines typed below the `/macro add` or `/macro edit` line save at once, so a
-whole macro also fits in one multi-line prompt. Without a description,
-autocomplete shows the start of the text.
+Everything after the first `=` is the macro's text, so the text may itself
+contain `=`; Shift+Enter adds a line to it. Words between the name and `=`
+are an optional description shown in autocomplete (without one, autocomplete
+shows the start of the text). `/macro edit` keeps the description unless you
+give a new one.
+
+Leave out `=` to write the text in the centred editor that `/instructions`
+uses: `/macro add /name [description]` opens it empty and `/macro edit /name`
+opens it with the current text (`:w` saves, `:wq` saves and closes).
+
+While you type, each part of the line has its own colour (name, description,
+text) and a wrong part turns red: a name a built-in command or macro already
+uses, an invalid name, an existing name for `add`, an unknown one for `edit`
+or `rm`, or nothing after `=`. Dim text after the cursor names what comes
+next, and a panel above the prompt explains the current part, lists Tab
+completions (your macros, with their text, for `edit` and `rm`), previews
+what the macro expands to and says what Enter will do.
 
 Names start with `/` and use only letters, digits, `_` and `-` (at most 48
 characters). They cannot reuse a built-in command, inline command or
 built-in macro; if a later update adds a built-in with your macro's name, the
 built-in wins and `/macro list` marks yours inactive. A macro's text is not
-itself expanded again.
+itself expanded again. `/macro undo` restores the macro this TUI last deleted.
 
 ## Where they are stored
 
@@ -34,3 +51,11 @@ connected to the whale daemon over `/ssh` therefore uses whale's macros; the
 Mac's own daemon keeps its own list. The file is plain JSON
 (`{"version": 1, "macros": [{"name", "expansion", "description"?}]}`), may be
 edited by hand, and is re-read on each connect and change.
+
+Changes take effect in the TUI at once and are confirmed in the background
+([usermacros/store.ts](../tui/src/usermacros/store.ts)), so over a slow
+`/ssh` link nothing waits on a round trip. If the daemon refuses a change, it
+is undone with a notice and the command goes back into the prompt. A change
+made while the link is down is checked against the daemon's list after
+reconnecting: sent if it still applies, dropped if it already landed, and
+reported if the macro changed elsewhere meanwhile.

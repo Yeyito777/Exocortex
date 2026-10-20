@@ -33,7 +33,11 @@ import { hexToAnsi, theme } from "./theme";
 import { clampCursor, stripAnsi, contentBounds, logicalLineRange } from "./historycursor";
 import { renderLineWithCursor, renderLineWithSearch, renderLineWithSelection } from "./cursorrender";
 import { getPromptHighlightRanges, highlightPromptInput } from "./prompthighlight";
-import { macroDraftLabel } from "./usermacros";
+import { macroParseContext } from "./commands";
+import { macroGhostText, macroGuide } from "./usermacros/guide";
+import { macroGuideContext } from "./usermacros/controller";
+import { isMacroCommandText } from "./usermacros/parse";
+import { fitGhostText, renderMacroGuideRows } from "./usermacros/render";
 import { formatSize, imageLabel } from "./clipboard";
 import { renderQueuePromptOverlay } from "./overlays";
 import { renderEditMessageOverlay } from "./overlays";
@@ -391,16 +395,6 @@ function colorPlainPromptDecorations(
 }
 
 // ── Image indicator ────────────────────────────────────────────────
-
-/** The rule above the prompt; a macro draft names itself in it. */
-function promptTopBorder(state: RenderState, width: number, color: string): string {
-  if (!state.macroDraft || width < 12) return `${color}${"─".repeat(width)}${theme.reset}`;
-  let label = macroDraftLabel(state.macroDraft);
-  const room = width - 6;
-  if (label.length > room) label = label.slice(0, Math.max(0, room - 1)) + "…";
-  const rest = Math.max(0, width - 4 - label.length);
-  return `${color}── ${theme.reset}${theme.accent}${theme.bold}${label}${theme.reset}${color} ${"─".repeat(rest)}${theme.reset}`;
-}
 
 function renderImageIndicator(images: ImageAttachment[], width: number): string {
   if (width <= 0 || images.length === 0) return "";
@@ -1227,6 +1221,30 @@ function renderAutocompletePopup(
   return { top: topRow, bottom: sepAbove - 1, left: chatCol, right: chatCol + desiredPopupWidth - 1 };
 }
 
+/** Whether the prompt holds a /macro command the user is editing. */
+function editingMacroCommand(state: RenderState): boolean {
+  return state.panelFocus === "chat" && state.chatFocus === "prompt" && !state.instructionsModal
+    && isMacroCommandText(state.inputBuffer);
+}
+
+/** The /macro help panel above the prompt, docked across the chat width. */
+function renderMacroGuidePanel(
+  ctx: RenderCtx,
+  state: RenderState,
+  chatW: number,
+  sepAbove: number,
+): ScreenRect | null {
+  if (!editingMacroCommand(state)) return null;
+  const guide = macroGuide(state.inputBuffer, state.cursorPos, macroGuideContext(state, macroParseContext()));
+  if (!guide) return null;
+  const ac = state.autocomplete;
+  const rows = renderMacroGuideRows(guide, ac?.matches ?? [], ac?.selection ?? -1, chatW, Math.max(1, sepAbove - 3));
+  if (rows.length === 0) return null;
+  const topRow = sepAbove - rows.length;
+  rows.forEach((row, index) => appendRowWrite(ctx, topRow + index, ctx.chatCol, row));
+  return { top: topRow, bottom: sepAbove - 1, left: ctx.chatCol, right: ctx.chatCol + chatW - 1 };
+}
+
 /** Render the vim-style chat-history search bar. */
 function renderSearchBar(
   ctx: RenderCtx,
@@ -1480,7 +1498,7 @@ export function render(state: RenderState): boolean {
   const coloredInputLines = voicePrompts.length > 0
     ? (() => {
       const commandRanges = getPromptHighlightRanges(state, renderedPrompt.buffer)
-        .map(range => ({ ...range, color: theme.command }));
+        .map(range => ({ ...range, color: range.color ?? theme.command }));
       const voiceRanges = getVoicePromptRanges(state.inputBuffer, voicePrompts)
         .map(range => ({ ...range, color: theme.accent }));
       return inputLines.map((line, idx) => colorPlainPromptDecorations(
@@ -1490,6 +1508,15 @@ export function render(state: RenderState): boolean {
       ));
     })()
     : highlightPromptInput(state, inputLines, state.inputBuffer, lineStarts);
+
+  // Dim ghost text after the cursor names the /macro parts still to type.
+  if (editingMacroCommand(state) && state.vim.mode === "insert" && voicePrompts.length === 0) {
+    const ghost = macroGhostText(state.inputBuffer, state.cursorPos, macroParseContext());
+    const line = coloredInputLines[cursorLine];
+    if (ghost && line !== undefined) {
+      coloredInputLines[cursorLine] = line + fitGhostText(ghost, visibleLength(line), chatW - PROMPT_PREFIX_WIDTH);
+    }
+  }
 
   const slHeight = status.height;
   const statusLines = status.lines;
@@ -1687,7 +1714,9 @@ export function render(state: RenderState): boolean {
   }
 
   // ── Autocomplete popup (overlays message area above input) ────
-  const autocompleteRect = renderAutocompletePopup(ctx, state, chatW, bottomStartRow);
+  // A /macro prompt gets its own help panel, which includes the completions.
+  const autocompleteRect = renderMacroGuidePanel(ctx, state, chatW, bottomStartRow)
+    ?? renderAutocompletePopup(ctx, state, chatW, bottomStartRow);
 
   // ── Search bar ────────────────────────────────────────────────
   if (searchBarRow > 0) {
@@ -1696,7 +1725,7 @@ export function render(state: RenderState): boolean {
 
   // ── Separator above input ─────────────────────────────────────
   emitSidebarCol(ctx, promptSepRow);
-  appendRowWrite(ctx, promptSepRow, chatCol, bgLine(promptTopBorder(state, chatW, promptColor)));
+  appendRowWrite(ctx, promptSepRow, chatCol, bgLine(`${promptColor}${"─".repeat(chatW)}${theme.reset}`));
 
   // ── Image indicator (between separator and prompt) ────────────
   if (imageIndicatorRows > 0) {

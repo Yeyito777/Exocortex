@@ -39,8 +39,7 @@ import type { ImageModalState } from "./imagemodal";
 import type { AccountsOpenRequest, AccountsScreenState } from "./accountsscreen";
 import type { InstructionsModalState } from "./instructions/state";
 import { createInstructionsStore, type InstructionsStore } from "./instructions/store";
-import type { MacroDraft } from "./commands/macro";
-import type { PendingMacroRequest } from "./usermacros";
+import { createUserMacroStore, type UserMacroStore } from "./usermacros/store";
 
 // ── Queue types ────────────────────────────────────────────────────
 
@@ -227,12 +226,10 @@ export interface RenderState {
   /** Selected remote daemon route. Null means the local daemon. */
   sshRemote: { alias: string; connected: boolean } | null;
   macroEnvironment: MacroEnvironment | null;
-  /** While set, the prompt line holds this macro's text and Enter saves it. */
-  macroDraft: MacroDraft | null;
+  /** The daemon's user macros with this TUI's unconfirmed changes (see usermacros/store). */
+  macroStore: UserMacroStore;
   /** The macro this TUI last deleted, for /macro undo. */
   lastDeletedMacro: UserMacro | null;
-  /** Macro mutations awaiting the daemon's confirmation, by request id. */
-  pendingMacroRequests: Map<string, PendingMacroRequest>;
   /** Route transition UI is independent of chat messages and startup loads. */
   sshConnecting: { phase: "probing" | "loading"; message: string } | null;
   /** Folder captured when the current blank draft was started. Sidebar browsing must not retarget it. */
@@ -656,9 +653,8 @@ export function createInitialState(): RenderState {
     conversationOpenRequest: null,
     sshRemote: null,
     macroEnvironment: null,
-    macroDraft: null,
+    macroStore: createUserMacroStore(),
     lastDeletedMacro: null,
-    pendingMacroRequests: new Map(),
     sshConnecting: null,
     draftFolderId: null,
     inputBuffer: "",

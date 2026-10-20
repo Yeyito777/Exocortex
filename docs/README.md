@@ -128,6 +128,6 @@ table in step with it.
 | `/proxy [<openai\|anthropic> <alias\|off>]` | Send one provider's model requests through another machine's login ([/proxy](provider-proxy.md)) |
 | `/instructions [text\|clear]` | Open the instructions picker and editor for this conversation, its folder or every conversation ([Instructions](#instructions)); with text, set or clear this conversation's |
 | `/system` | Show the system prompt (for Claude Code, what Exocortex appends) |
-| `/macro [list \| add /name [description] \| edit /name \| rm /name \| undo]` | List, add, edit or delete your own macros ([Macros](macros.md)) |
+| `/macro add /name [description] = text` / `/macro [list \| edit /name \| rm /name \| undo]` | Add, edit, delete or list your own macros ([Macros](macros.md)) |
 | `/login [provider [...]]` | Show login status or sign in to a provider |
 | `/logout <provider>` | Log out of a provider |

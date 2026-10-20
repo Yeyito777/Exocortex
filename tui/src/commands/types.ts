@@ -58,9 +58,10 @@ type CommandAction =
   | { type: "set_system_instructions"; text: string }
   | { type: "ssh"; action: "connect" | "status" | "cancel"; alias?: string }
   | { type: "provider_proxy"; action: "status" | "set" | "off"; provider?: ProviderId; alias?: string }
-  | { type: "save_user_macro"; draft: MacroDraft; expansion: string }
-  | { type: "delete_user_macro"; name: string }
-  | { type: "restore_user_macro"; macro: UserMacro };
+  | { type: "save_user_macro"; macro: UserMacro; create: boolean; retryText?: string }
+  | { type: "delete_user_macro"; name: string; retryText?: string }
+  | { type: "restore_user_macro"; macro: UserMacro }
+  | { type: "open_macro_editor"; draft: MacroDraft; text: string };
 
 /** Modifiers composed around a successfully parsed primary slash command. */
 export interface CommandComposition {

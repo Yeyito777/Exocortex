@@ -34,8 +34,8 @@ import { handleFocusedKey } from "./focus";
 import { handleMouseEvent, refreshMouseCursor, trackMouseCursor } from "./mouse";
 import { clearPrompt } from "./promptstate";
 import { MACRO_COMMAND, tryCommand } from "./commands";
-import { isMacroCommandText } from "./commands/macro";
-import { runUserMacroCommand, submitMacroDraft } from "./usermacros";
+import { isMacroCommandText } from "./usermacros/parse";
+import { runUserMacroCommand, saveMacroFromEditor, userMacrosConnectionLost } from "./usermacros/controller";
 import { expandMacros, macroEnvironmentForState } from "./macros";
 import { applyInlineCommands, type InlineCommandApplication } from "./inlineeffort";
 import { resolveSlashShorthands } from "./slashsearch";
@@ -928,17 +928,10 @@ function handleSubmit(): void {
   let text = state.inputBuffer.trim();
   const hasImages = state.pendingImages.length > 0;
 
-  // A macro draft owns the prompt: Enter saves its text, an empty Enter cancels.
-  if (state.macroDraft) {
-    submitMacroDraft(state, daemon, hasImages);
-    scheduleRender();
-    return;
-  }
-
   if (!text && !hasImages) return;
 
-  // /macro's own text (often several lines of macro body) must reach it verbatim,
-  // before shorthand or inline-command parsing could rewrite the body.
+  // /macro's text (its "= text" part may hold slash words and several lines)
+  // must reach it verbatim, before shorthand or inline-command parsing.
   if (!hasImages && isMacroCommandText(text)) {
     runUserMacroCommand(state, daemon, MACRO_COMMAND.handler(text, state));
     scheduleRender();
@@ -1109,6 +1102,7 @@ function handleSubmit(): void {
         case "save_user_macro":
         case "delete_user_macro":
         case "restore_user_macro":
+        case "open_macro_editor":
           runUserMacroCommand(state, daemon, cmdResult);
           break;
         case "handled":
@@ -1659,6 +1653,7 @@ function handleKey(key: KeyEvent): void {
     if (key.event === "release") return;
     const outcome = handleInstructionsModalKey(key, state, daemon, renderAfterLocalUiMutation);
     if (outcome.type === "create_conversation") createConversationWithInstructions(outcome.text);
+    else if (outcome.type === "save_macro") saveMacroFromEditor(state, daemon, outcome.draft, outcome.text);
     renderAfterLocalUiMutation();
     return;
   }
@@ -2001,6 +1996,7 @@ function handleDaemonConnectionLost(shutdownMode: DaemonShutdownMode | null): vo
   clearStreamTick();
   resetPrewarmer();
   instructionsConnectionLost(state);
+  userMacrosConnectionLost(state);
   state.historyLoadingOlder = false;
   state.historyLoadingStartedAt = null;
   state.historyLoadingRequestId = null;

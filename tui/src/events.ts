@@ -63,7 +63,7 @@ import { handleToolOutputsError, handleToolOutputsLoaded } from "./events/tool-o
 import { handleToolsAvailable } from "./events/provider";
 import { formatConversationDefaults, receiveConversationDefaults } from "./events/conversation-defaults";
 import { hydratePendingAIFromSnapshot } from "./events/pending-ai";
-import { handleUserMacroError, handleUserMacrosEvent, resetUserMacros } from "./usermacros";
+import { handleUserMacroError, handleUserMacrosEvent, userMacrosRouteSwitched } from "./usermacros/controller";
 import type { DaemonActions } from "./events/types";
 import { handleAccountsEvent } from "./accountsscreen";
 import { failBtwRequest, handleBtwEvent } from "./btw/events";
@@ -103,7 +103,7 @@ export function handleEvent(
 
   switch (event.type) {
     case "user_macros":
-      handleUserMacrosEvent(state, event);
+      handleUserMacrosEvent(state, daemon, event);
       break;
 
     case "conversation_defaults":
@@ -577,7 +577,7 @@ export function handleEvent(
         state.sshConnecting = { phase: "probing", message: event.message };
       } else if (event.state === "connected" && event.switched) {
         state.macroEnvironment = null;
-        resetUserMacros(state);
+        userMacrosRouteSwitched(state);
         state.conversationDefaults = null;
         setInlineImagesEnabled(false);
         state.sshConnecting = {

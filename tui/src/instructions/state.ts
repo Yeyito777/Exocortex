@@ -9,6 +9,7 @@ import { createVimState, type VimState } from "../vim";
 import { createUndoState, type UndoState } from "../undo";
 import { sanitizePromptTextForInsertion } from "../prompttext";
 import type { ToolInstructionsDoc } from "./tools";
+import type { MacroDraft } from "../commands/macro";
 
 export type InstructionScope = "conversation" | "folder" | "global";
 
@@ -46,7 +47,7 @@ export interface InstructionsPickerState {
 }
 
 export interface InstructionsEditorState {
-  /** Ignored when `tools` is set. */
+  /** Ignored when `tools` or `macro` is set. */
   scope: InstructionScope;
   /** Set for /instructions tools: the read-only tools view and its decorations. */
   tools?: ToolInstructionsDoc;
@@ -54,6 +55,8 @@ export interface InstructionsEditorState {
   readOnly?: boolean;
   /** Why it is read-only, shown when an edit is refused. */
   readOnlyNotice?: string;
+  /** Set when the editor writes a user macro's text (/macro add or edit) instead of instructions. */
+  macro?: MacroDraft;
   target: InstructionsTarget;
   /** The text as loaded or last saved; the buffer is dirty when it differs. */
   savedText: string;
