@@ -21,7 +21,6 @@ import type { ChatFocus } from "./chat";
 import type { SidebarState } from "./sidebar";
 import { createSidebarState } from "./sidebar";
 import { loadSidebarFolderViewPreference } from "./sidebar/folderview";
-import { isTreeFolderView, revealFolderInTree } from "./sidebar/tree";
 import type { VimState } from "./vim";
 import { createVimState } from "./vim";
 import type { HistoryCursor } from "./historycursor";
@@ -38,6 +37,7 @@ import { createConversationScrollState, type ConversationScrollState } from "./c
 import type { InlineImageTarget } from "./inlineimages";
 import type { ImageModalState } from "./imagemodal";
 import type { AccountsOpenRequest, AccountsScreenState } from "./accountsscreen";
+import type { InstructionsModalState } from "./instructions/state";
 
 // ── Queue types ────────────────────────────────────────────────────
 
@@ -90,13 +90,11 @@ export interface AuthQueuedMessage {
 
 // ── Edit message modal types ──────────────────────────────────────
 
-/** Sentinel index for system instructions in the edit message modal. */
-export const EDIT_INDEX_INSTRUCTIONS = -2;
 /** Sentinel index for queued messages in the edit message modal. */
 export const EDIT_INDEX_QUEUED = -1;
 
 export interface EditMessageItem {
-  /** Index counting only user messages (0-based). -1 for queued, -2 for system instructions. */
+  /** Index counting only user messages (0-based). -1 for queued. */
   userMessageIndex: number;
   text: string;
   isQueued: boolean;
@@ -161,13 +159,6 @@ export interface SearchState {
   originChatFocus: ChatFocus;
 }
 
-export interface FolderInstructionsDocumentState {
-  folderId: string;
-  text: string;
-  savedText: string;
-  loading: boolean;
-}
-
 export interface RenderState {
   messages: Message[];
   /** Absolute index of the oldest currently loaded non-instructions display entry. */
@@ -225,7 +216,7 @@ export interface RenderState {
   /**
    * Latest load_conversation this TUI still wants applied. A load for another
    * conversation navigates only when it answers this request; starting a draft
-   * or the folder-instructions editor replaces it with NO_CONVERSATION_OPEN so
+   * replaces it with NO_CONVERSATION_OPEN so
    * late or replayed opens cannot yank the user back. Null means untracked
    * (nothing opened through the tracked path yet; loads apply as before).
    */
@@ -370,8 +361,8 @@ export interface RenderState {
   voicePromptJobs: VoicePromptState[];
   /** Submitted voice transcription placeholder rendered as a local user message. */
   voiceMessage: VoiceChatMessageState | null;
-  /** Folder-level AGENTS.md document currently open instead of a conversation. */
-  folderInstructionsDoc: FolderInstructionsDocumentState | null;
+  /** The /instructions picker and editor, drawn over everything while open. */
+  instructionsModal: InstructionsModalState | null;
   /** Current mouse cursor shape — used to avoid redundant cursor shape OSC writes. */
   mouseCursor: "pointer" | "text" | "hand";
   /** Last reported pointer cell, so the shape can follow content that moves under a still mouse. */
@@ -514,27 +505,7 @@ export function pushSystemMessage(state: RenderState, text: string, color?: Syst
   }
 }
 
-export function renderFolderInstructionsDocument(state: RenderState, text: string): void {
-  const trimmed = text.trim();
-  state.messages = trimmed ? [{ role: "system_instructions", text: trimmed, metadata: null }] : [];
-  clearStreamingTailMessages(state);
-  state.scrollOffset = 0;
-  resetToolOutputState(state);
-  resetHistoryPagination(state);
-}
-
-export function draftFolderEffectiveInstructions(state: RenderState): string {
-  const folderId = state.draftFolderId;
-  if (!folderId) return "";
-  return state.sidebar.folders.find(folder => folder.id === folderId)?.effectiveInstructions ?? "";
-}
-
-export function renderDraftFolderInstructions(state: RenderState): void {
-  renderFolderInstructionsDocument(state, draftFolderEffectiveInstructions(state));
-}
-
 export function resetDraftConversationState(state: RenderState, folderId = state.sidebar.currentFolderId): void {
-  state.folderInstructionsDoc = null;
   state.convId = null;
   state.conversationLoading = null;
   state.conversationOpenRequest = noConversationOpen();
@@ -555,36 +526,8 @@ export function resetDraftConversationState(state: RenderState, folderId = state
   state.pendingSystemInstructions = null;
   state.pendingGenerateTitleOnCreate = false;
   state.pendingQueuedDraftConvId = null;
-  renderDraftFolderInstructions(state);
-}
-
-export function openFolderInstructionsDocument(state: RenderState, folderId: string): void {
-  state.folderInstructionsDoc = { folderId, text: "", savedText: "", loading: true };
-  state.sidebar.currentFolderId = folderId;
-  if (isTreeFolderView(state.sidebar)) revealFolderInTree(state.sidebar, folderId);
-  state.sidebar.selectedItem = { type: "folder_instructions", folderId };
-  state.sidebar.selectedId = null;
-  state.convId = null;
-  state.conversationLoading = null;
-  state.conversationOpenRequest = noConversationOpen();
-  state.contextTokens = 0;
-  state.goal = null;
-  state.btw = null;
-  state.voicePrompt = null;
-  state.voicePromptJobs = [];
-  state.voiceMessage = null;
-  clearPendingAI(state);
-  state.messages = [];
-  clearStreamingTailMessages(state);
   state.scrollOffset = 0;
-  resetToolOutputState(state);
   resetHistoryPagination(state);
-}
-
-export function setFolderInstructionsDocumentText(state: RenderState, folderId: string, text: string): void {
-  if (!state.folderInstructionsDoc || state.folderInstructionsDoc.folderId !== folderId) return;
-  state.folderInstructionsDoc = { folderId, text, savedText: text, loading: false };
-  renderFolderInstructionsDocument(state, text);
 }
 
 export function getProviderInfo(state: RenderState, provider = state.provider): ProviderInfo | null {
@@ -791,7 +734,7 @@ export function createInitialState(): RenderState {
     voicePrompt: null,
     voicePromptJobs: [],
     voiceMessage: null,
-    folderInstructionsDoc: null,
+    instructionsModal: null,
     mouseCursor: "pointer",
   };
   // App starts in insert mode — mark entry so first Esc commits the session

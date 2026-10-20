@@ -58,6 +58,22 @@ In prompt normal mode, `3>>` shifts three lines once. In visual modes, shifts
 apply to every selected logical line and return to normal mode. Shifts support
 undo/redo; outdenting removes at most four leading spaces without removing text.
 
+## Instructions
+
+Instructions are not shown in the chat. `/instructions` opens a picker of the
+three scopes: **Conversation** (this chat only), **Folder** (every chat in the
+conversation's folder; the sidebar's AGENTS.md row opens it directly) and
+**Global** (every conversation, `config/system.md`). Each row shows the first
+line and size, or `empty`. `j`/`k` (or `1`–`3`) choose, `Enter` edits, `Esc`
+closes.
+
+The editor is a centred card with the prompt's Vim keys (insert, normal, visual,
+motions, operators, undo/redo). `:w` or `Ctrl+S` saves, `:wq`/`:x` saves and
+closes, `:q` closes (refused with unsaved changes), `:q!` discards; `Esc` in
+normal mode closes, asking once more when there are unsaved changes. Saving an
+empty document clears that scope. Global saves are refused if `config/system.md`
+changed since it was opened; `:w!` overwrites it.
+
 ## Slash commands
 
 `/help` lists the same commands; the registry in
@@ -94,7 +110,7 @@ table in step with it.
 | `/ping [sound\|notif\|both [file] \| off]` | Signal when a response finishes |
 | `/ssh [<alias>\|cancel]` | Route through another machine's daemon over SSH |
 | `/proxy [<openai\|anthropic> <alias\|off>]` | Send one provider's model requests through another machine's login ([/proxy](provider-proxy.md)) |
-| `/instructions [text\|clear]` | Show, set or clear per-conversation system instructions |
+| `/instructions [text\|clear]` | Open the instructions picker and editor for this conversation, its folder or every conversation ([Instructions](#instructions)); with text, set or clear this conversation's |
 | `/system` | Show the system prompt (for Claude Code, what Exocortex appends) |
 | `/login [provider [...]]` | Show login status or sign in to a provider |
 | `/logout <provider>` | Log out of a provider |

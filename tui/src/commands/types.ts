@@ -22,6 +22,7 @@ type CommandAction =
   | { type: "quit" }
   | { type: "new_conversation" }
   | { type: "create_conversation_for_instructions"; text: string }
+  | { type: "open_instructions" }
   | { type: "replay_requested" }
   | { type: "compact_requested" }
   | { type: "btw_requested"; query: string }

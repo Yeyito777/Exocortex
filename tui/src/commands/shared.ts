@@ -9,16 +9,9 @@ import {
   type EffortLevel,
   type ReasoningEffortInfo,
 } from "../messages";
-import { clearPrompt } from "../promptstate";
-import { getModelInfo, getProviderInfo, pushSystemMessage } from "../state";
+import { getModelInfo, getProviderInfo } from "../state";
 import { availableProviders, setChosenProvider } from "../providerselection";
-import type { CommandResult, CompletionItem } from "./types";
-
-export function showNoSystemInstructions(state: RenderState): CommandResult {
-  pushSystemMessage(state, "No system instructions set for this conversation.");
-  clearPrompt(state);
-  return { type: "handled" };
-}
+import type { CompletionItem } from "./types";
 
 export function providerModels(state: RenderState, provider = state.provider): ModelId[] {
   return getProviderInfo(state, provider)?.models.map((model) => model.id) ?? [];

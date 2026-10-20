@@ -57,34 +57,41 @@ function offsetForPromptVCol(line: string, desiredCol: number): number {
   return line.length;
 }
 
+/** Where a vertical move by display rows lands, and the preferred column it keeps. */
+export interface VerticalCursorMove {
+  cursor: number;
+  curswant: number;
+  /** False when the cursor was already on the first/last row. */
+  moved: boolean;
+}
+
 /**
- * Apply one or more vertical prompt moves, preserving/setting `state.promptCurswant`.
- *
- * Moves by display rows (Vim `gj`/`gk`), so a wrapped line's continuation
- * rows are reachable with j/k and the viewport scrolls one row at a time.
+ * Move a cursor by display rows (Vim `gj`/`gk`) in a buffer hard-wrapped at
+ * `maxWidth`, so a wrapped line's continuation rows are reachable with j/k.
  * The preferred column is a display column within the row; Infinity sticks
  * to the end of each row (after `$`/End).
  */
-export function movePromptCursorVerticalWithCurswant(
-  state: RenderState,
+export function moveCursorVerticalByRows(
+  buffer: string,
+  cursor: number,
+  curswant: number | null,
+  maxWidth: number,
   direction: -1 | 1,
   count: number = 1,
   normalMode: boolean = false,
-): boolean {
-  const buffer = state.inputBuffer;
-  const maxWidth = Math.max(1, promptInputWidth(state));
+): VerticalCursorMove {
+  maxWidth = Math.max(1, maxWidth);
   const rows = promptDisplayRows(buffer, maxWidth);
-  const cell = promptCursorCell(buffer, rows, state.cursorPos);
+  const cell = promptCursorCell(buffer, rows, cursor);
   // An insert cursor just past a full-width line is drawn at column 0 of its
   // own row below it, so moving up first lands on the line's own last row.
   const onPhantomRow = cell.col >= maxWidth;
-  const desiredCol = state.promptCurswant ?? (onPhantomRow ? 0 : cell.col);
+  const desiredCol = curswant ?? (onPhantomRow ? 0 : cell.col);
   const upFromPhantomRow = onPhantomRow && direction < 0;
   const steps = Math.max(1, count) - (upFromPhantomRow ? 1 : 0);
   const target = Math.max(0, Math.min(rows.length - 1, cell.row + direction * steps));
 
-  state.promptCurswant = desiredCol;
-  if (target === cell.row && !upFromPhantomRow) return false;
+  if (target === cell.row && !upFromPhantomRow) return { cursor, curswant: desiredCol, moved: false };
 
   const row = rows[target];
   let pos = row.start + offsetForPromptVCol(buffer.slice(row.start, row.end), desiredCol);
@@ -94,8 +101,25 @@ export function movePromptCursorVerticalWithCurswant(
   if (pos >= row.end && row.end > row.start && (continues || normalMode)) {
     pos = previousGraphemeStart(buffer, row.end);
   }
-  state.cursorPos = pos;
-  return true;
+  return { cursor: pos, curswant: desiredCol, moved: true };
+}
+
+/**
+ * Apply one or more vertical prompt moves, preserving/setting `state.promptCurswant`.
+ * See moveCursorVerticalByRows.
+ */
+export function movePromptCursorVerticalWithCurswant(
+  state: RenderState,
+  direction: -1 | 1,
+  count: number = 1,
+  normalMode: boolean = false,
+): boolean {
+  const move = moveCursorVerticalByRows(
+    state.inputBuffer, state.cursorPos, state.promptCurswant, promptInputWidth(state), direction, count, normalMode,
+  );
+  state.promptCurswant = move.curswant;
+  state.cursorPos = move.cursor;
+  return move.moved;
 }
 
 /** Handle a key event in the prompt. Returns a typed result object. */

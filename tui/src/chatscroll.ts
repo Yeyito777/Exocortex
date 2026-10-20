@@ -430,19 +430,18 @@ function firstMovableHistoryRowInViewport(
   const viewEnd = Math.min(oldRender.lines.length, oldViewStart + messageAreaHeight);
   for (let row = oldViewStart; row < viewEnd; row++) {
     const segment = oldRender.lineAnchors[row]?.segment;
-    if (segment === "history_loading" || segment === "conversation_loading"
-        || segment?.startsWith("system_instructions_")) continue;
+    if (segment === "history_loading" || segment === "conversation_loading") continue;
     return row;
   }
   return oldViewStart;
 }
 
 /**
- * Prepend older history without anchoring the viewport to the fixed instructions
- * prefix or the transient loading row.
+ * Prepend older history without anchoring the viewport to the transient
+ * loading row.
  *
- * At the oldest loaded boundary those rows can occupy the top of the viewport,
- * but neither moves with the existing conversation suffix when a page is
+ * At the oldest loaded boundary that row can occupy the top of the viewport,
+ * but it does not move with the existing conversation suffix when a page is
  * inserted. Anchor the first visible conversation row at the same screen row so
  * the newly loaded page appears above it instead of replacing the viewport.
  */

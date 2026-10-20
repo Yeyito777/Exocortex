@@ -48,20 +48,22 @@ describe("assistant metadata pane boundaries", () => {
   }
 });
 
-describe("system instructions spacing", () => {
-  test("renders one blank row between the instructions box and a following user message", () => {
-    const state = createInitialState();
-    state.messages.push(
+describe("system instructions in the history", () => {
+  test("render no rows: the transcript is laid out exactly as without them", () => {
+    const withInstructions = createInitialState();
+    withInstructions.messages.push(
+      { role: "system_instructions", text: "# Context from AGENTS.md:\nFolder rules.", metadata: null },
       { role: "system_instructions", text: "Follow these rules.", metadata: null },
       { role: "user", text: "Hello", metadata: null },
     );
+    const without = createInitialState();
+    without.messages.push({ role: "user", text: "Hello", metadata: null });
 
-    const rendered = buildMessageLines(state, 80);
-    const bottomIndex = rendered.lineAnchors.findIndex((anchor) => anchor.segment === "system_instructions_bottom");
+    const rendered = buildMessageLines(withInstructions, 80);
 
-    expect(rendered.lineAnchors[bottomIndex + 1]?.segment).toBe("system_instructions_margin_bottom");
-    expect(rendered.lines[bottomIndex + 1]).toBe("");
-    expect(rendered.lineAnchors[bottomIndex + 2]?.segment).toBe("user_content");
+    expect(rendered.lines).toEqual(buildMessageLines(without, 80).lines);
+    expect(rendered.lines.join("\n")).not.toContain("rules");
+    expect(rendered.lineAnchors[0]?.segment).toBe("user_content");
   });
 });
 
@@ -335,7 +337,7 @@ describe("older history loading status", () => {
     expect(rendered.lineAnchors[0]?.segment).toBe("history_loading");
   });
 
-  test("renders the Loading row below pinned system instructions", () => {
+  test("renders the Loading row first when pinned system instructions are loaded", () => {
     const state = createInitialState();
     state.historyLoadingOlder = true;
     state.historyLoadingStartedAt = 1_000;
@@ -345,16 +347,11 @@ describe("older history loading status", () => {
     );
 
     const rendered = buildMessageLines(state, 80);
-    const loadingIndex = rendered.lineAnchors.findIndex((anchor) => anchor.segment === "history_loading");
-    const instructionsBottomIndex = rendered.lineAnchors.findIndex((anchor) => anchor.segment === "system_instructions_bottom");
-    const instructionsMarginIndex = rendered.lineAnchors.findIndex((anchor) => anchor.segment === "system_instructions_margin_bottom");
 
-    expect(instructionsBottomIndex).toBeGreaterThanOrEqual(0);
-    expect(instructionsMarginIndex).toBe(instructionsBottomIndex + 1);
-    expect(rendered.lines[instructionsMarginIndex]).toBe("");
-    expect(loadingIndex).toBe(instructionsMarginIndex + 1);
-    expect(stripAnsi(rendered.lines[loadingIndex])).toContain("Loading...");
-    expect(rendered.lineAnchors[loadingIndex + 1]?.segment).toBe("user_content");
+    expect(rendered.lineAnchors[0]?.segment).toBe("history_loading");
+    expect(stripAnsi(rendered.lines[0])).toContain("Loading...");
+    expect(rendered.lineAnchors.some(anchor => anchor.segment === "user_content")).toBe(true);
+    expect(rendered.lines.join("\n")).not.toContain("Follow these rules.");
   });
 });
 

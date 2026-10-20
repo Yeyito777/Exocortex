@@ -178,7 +178,7 @@ function shortOpeningWindow(): DisplayEntry[] {
 describe("remote conversation open frames", () => {
   for (const withTasks of [false, true]) {
     const scenario = withTasks ? " with a task panel" : "";
-    test(`never presents the pinned system instructions when the opened view will not show them${scenario}`, () => {
+    test(`never presents pinned system instructions while a remote conversation opens${scenario}`, () => {
       const open = new RemoteOpen(withTasks);
       open.click();
       // A sidebar update for the opened conversation lands before its history.
@@ -186,8 +186,8 @@ describe("remote conversation open frames", () => {
       open.receive({ type: "conversation_updated", summary: summary(CONV, withTasks, open.state) });
       open.advance(80);
       open.receiveOpeningWindow(shortOpeningWindow());
-      // The pinned box alone would fill the screen; the history below it would not.
-      expect(open.state.layout.totalLines).toBeGreaterThanOrEqual(open.state.layout.messageAreaHeight);
+      // Instructions render no rows: only the short newest turns are laid out.
+      expect(open.state.layout.totalLines).toBeLessThan(open.state.layout.messageAreaHeight);
 
       // A stale page (from an earlier visit) arrives first and is discarded.
       open.advance(150);
@@ -216,13 +216,14 @@ describe("remote conversation open frames", () => {
     });
   }
 
-  test("presents the instructions immediately when the whole conversation is on screen", () => {
+  test("presents a whole conversation immediately, without its instructions", () => {
     const open = new RemoteOpen(false);
     open.click();
     open.advance(140);
     open.receiveOpeningWindow(shortOpeningWindow(), false);
     expect(open.frames.at(-1)!.at).toBe(140);
-    expect(showsInstructions(open.frames.at(-1)!.rows)).toBe(true);
+    expect(showsInstructions(open.frames.at(-1)!.rows)).toBe(false);
+    expect(open.frames.at(-1)!.rows.some(line => line.includes("newest answer 3"))).toBe(true);
   });
 
   test("paints the opening window once the remote hold cap expires without a backfill", () => {

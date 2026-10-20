@@ -14,7 +14,6 @@ import type { UserMessage } from "./messages";
 import type { Event } from "./protocol";
 import type { RenderState, EditMessageItem } from "./state";
 import {
-  EDIT_INDEX_INSTRUCTIONS,
   EDIT_INDEX_QUEUED,
   clearPendingAI,
   clearStreamingTailMessages,
@@ -39,18 +38,6 @@ export function openEditMessageModal(state: RenderState): void {
     const voiceStartedAt = submittedVoiceMessage.metadata?.startedAt;
     if (msgStartedAt !== undefined && voiceStartedAt !== undefined && msgStartedAt === voiceStartedAt) return true;
     return msg.text.includes("Transcribing…") && submittedVoiceMessage.text.includes("Transcribing…") && msg.text === submittedVoiceMessage.text;
-  }
-
-  // Collect system instructions (shown first with special marker)
-  for (const msg of state.messages) {
-    if (msg.role === "system_instructions" && msg.text.trim()) {
-      items.push({
-        userMessageIndex: EDIT_INDEX_INSTRUCTIONS,
-        text: msg.text,
-        isQueued: false,
-      });
-      break; // There's at most one
-    }
   }
 
   // Collect sent user messages
@@ -203,7 +190,6 @@ export function editMessageItemIndexAtMouse(
 export type EditConfirmResult =
   | { action: "edit_sent"; text: string; userMessageIndex: number; expectedStartedAt?: number; targetFingerprint?: string }
   | { action: "edit_queued"; text: string; queuedMessage?: EditMessageItem["queuedMessage"] }
-  | { action: "edit_instructions"; text: string }
   | { action: "cancel" };
 
 /**
@@ -220,10 +206,7 @@ export function confirmEditMessage(state: RenderState): EditConfirmResult {
     return { action: "cancel" };
   }
 
-  // Conversation instructions — prepend /instructions so it routes through the slash command.
-  const text = item.userMessageIndex === EDIT_INDEX_INSTRUCTIONS && !state.folderInstructionsDoc
-    ? `/instructions ${item.text}`
-    : item.text;
+  const text = item.text;
 
   // Place text in prompt. The replaced draft stays one undo step away; commit
   // any open insert session first so undo walks back through both in order.
@@ -236,10 +219,6 @@ export function confirmEditMessage(state: RenderState): EditConfirmResult {
 
   // Exactly the edited message's images are re-sent; the draft's don't carry over
   state.pendingImages = [...(item.images ?? [])];
-
-  if (item.userMessageIndex === EDIT_INDEX_INSTRUCTIONS) {
-    return { action: "edit_instructions", text: item.text };
-  }
 
   if (item.isQueued) {
     return { action: "edit_queued", text: item.text, queuedMessage: item.queuedMessage };

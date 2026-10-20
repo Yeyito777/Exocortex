@@ -23,7 +23,7 @@ export const BTW_COMMAND: SlashCommand = {
       clearPrompt(state);
       return { type: "handled" };
     }
-    if (!state.convId || state.folderInstructionsDoc) {
+    if (!state.convId) {
       pushSystemMessage(state, "Open a conversation before using /btw.", "warning");
       clearPrompt(state);
       return { type: "handled" };

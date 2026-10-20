@@ -6,6 +6,8 @@ export interface DaemonActions {
   unsubscribe(convId: string): void;
   sendMessage(convId: string, text: string, startedAt: number, images?: ImageAttachment[]): void;
   setSystemInstructions(convId: string, text: string): void;
+  /** Refreshes the /instructions picker after an editor closes. */
+  loadInstructions?(convId: string | null, folderId: string | null): string;
   /** Returns the request id when the transport assigns one. */
   loadToolOutputs(convId: string, toolCallIds?: string[]): string | void;
 }

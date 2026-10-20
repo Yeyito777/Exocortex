@@ -1,5 +1,4 @@
 import type { EditMessageState } from "./state";
-import { EDIT_INDEX_INSTRUCTIONS } from "./state";
 import { termWidth, truncateToWidth } from "./textwidth";
 
 export const EDIT_MESSAGE_TITLE = "Edit message:";
@@ -18,10 +17,7 @@ export interface EditMessageOverlayLayout {
 }
 
 function buildEditMessagePreviews(em: EditMessageState, maxPreviewLen: number): string[] {
-  return em.items.map((item) => {
-    const prefix = item.userMessageIndex === EDIT_INDEX_INSTRUCTIONS ? "📌 " : "";
-    return truncateToWidth(prefix + item.text.replace(/\n/g, " "), maxPreviewLen);
-  });
+  return em.items.map((item) => truncateToWidth(item.text.replace(/\n/g, " "), maxPreviewLen));
 }
 
 export function computeEditMessageOverlayLayout(

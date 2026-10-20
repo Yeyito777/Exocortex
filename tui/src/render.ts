@@ -36,6 +36,7 @@ import { getPromptHighlightRanges, highlightPromptInput } from "./prompthighligh
 import { formatSize, imageLabel } from "./clipboard";
 import { renderQueuePromptOverlay } from "./overlays";
 import { renderEditMessageOverlay } from "./overlays";
+import { renderInstructionsModal, type RenderedInstructionsModal } from "./instructions/render";
 import { findSearchMatches, getActiveSearchQuery, getSearchBarViewport } from "./search";
 import { padRightToWidth, termWidth, visibleLength } from "./textwidth";
 import { getVoicePromptRanges } from "./voice";
@@ -44,7 +45,6 @@ import {
   hasFocusedConversationTasks,
   isTaskPanelExpanded,
   layoutTaskPanel,
-  renderTaskPanel,
 } from "./activitypanel";
 import { trimAnsiLeadingSpaces, wrapAnsiLine } from "./ansiwrap";
 import { getBtwPanelPreferredHeight, MAX_BTW_PANEL_HEIGHT, renderBtwPanel } from "./btw/panel";
@@ -455,13 +455,6 @@ function emitSidebarCol(ctx: RenderCtx, screenRow: number): void {
 
 // ── Extracted sub-functions ──────────────────────────────────────────
 
-const SYSTEM_INSTRUCTIONS_SEGMENTS = new Set([
-  "system_instructions_top",
-  "system_instructions_content",
-  "system_instructions_bottom",
-  "system_instructions_margin_bottom",
-]);
-
 interface ViewportHistoryRow {
   line: string;
   lineIndex: number;
@@ -484,9 +477,7 @@ interface FloatingHistoryViewportCacheEntry {
   revision: number;
   lineAnchors: BuildMessageLinesResult["lineAnchors"];
   viewStart: number;
-  instructionStartIndex: number;
   messageAreaHeight: number;
-  panelTopOffset: number;
   panelHeight: number;
   narrowWidth: number;
   fullWidth: number;
@@ -525,50 +516,6 @@ function shiftsWithNarrowHistory(segment: RenderLineSegment | undefined): boolea
 function continuationIndent(line: string, segment: RenderLineSegment | undefined): string {
   if (shiftsWithNarrowHistory(segment)) return "";
   return stripAnsi(line).match(/^ +(?=\S)/)?.[0] ?? "";
-}
-
-/** Number of viewport rows occupied by system instructions and their bottom margin at the top. */
-function visibleSystemInstructionsHeight(
-  lineAnchors: BuildMessageLinesResult["lineAnchors"],
-  viewStart: number,
-  messageAreaHeight: number,
-): number {
-  let height = 0;
-  while (height < messageAreaHeight) {
-    const segment = lineAnchors[viewStart + height]?.segment;
-    if (!segment || !SYSTEM_INSTRUCTIONS_SEGMENTS.has(segment)) break;
-    height++;
-  }
-  return height;
-}
-
-/**
- * Keep any system-instructions box reached by a top-anchored task card at full
- * width. The card moves just below the complete box rather than narrowing its
- * fixed-width border rows. Reflow can initially duplicate those rows, so derive
- * the offset from the adaptive viewport and count through the whole box.
- */
-function topAnchoredTaskPanelOffset(
-  viewportRows: ViewportHistoryRow[],
-  lineAnchors: BuildMessageLinesResult["lineAnchors"],
-  panelEndOffset: number,
-): number {
-  let offset = 0;
-  for (let row = 0; row < viewportRows.length && row < panelEndOffset;) {
-    const segment = lineAnchors[viewportRows[row].lineIndex]?.segment;
-    if (!segment || !SYSTEM_INSTRUCTIONS_SEGMENTS.has(segment)) {
-      row++;
-      continue;
-    }
-
-    do {
-      row++;
-    } while (row < viewportRows.length && SYSTEM_INSTRUCTIONS_SEGMENTS.has(
-      lineAnchors[viewportRows[row].lineIndex]?.segment ?? "",
-    ));
-    offset = row;
-  }
-  return offset;
 }
 
 function composeSemanticUserRows(
@@ -899,9 +846,7 @@ function composeFloatingHistoryViewport(
   lineAnchors: BuildMessageLinesResult["lineAnchors"],
   revision: number,
   viewStart: number,
-  instructionStartIndex: number,
   messageAreaHeight: number,
-  panelTopOffset: number,
   panelHeight: number,
   narrowWidth: number,
   fullWidth: number,
@@ -912,9 +857,7 @@ function composeFloatingHistoryViewport(
     && cached.revision === revision
     && cached.lineAnchors === lineAnchors
     && cached.viewStart === viewStart
-    && cached.instructionStartIndex === instructionStartIndex
     && cached.messageAreaHeight === messageAreaHeight
-    && cached.panelTopOffset === panelTopOffset
     && cached.panelHeight === panelHeight
     && cached.narrowWidth === narrowWidth
     && cached.fullWidth === fullWidth
@@ -931,9 +874,7 @@ function composeFloatingHistoryViewport(
       revision,
       lineAnchors,
       viewStart,
-      instructionStartIndex,
       messageAreaHeight,
-      panelTopOffset,
       panelHeight,
       narrowWidth,
       fullWidth,
@@ -953,7 +894,7 @@ function composeFloatingHistoryViewport(
       lineAnchors,
       canonicalSourceState(allLines, viewStart),
       endLineIndex,
-      panelTopOffset,
+      0,
       panelHeight,
       narrowWidth,
       fullWidth,
@@ -962,9 +903,7 @@ function composeFloatingHistoryViewport(
       revision,
       lineAnchors,
       viewStart,
-      instructionStartIndex,
       messageAreaHeight,
-      panelTopOffset,
       panelHeight,
       narrowWidth,
       fullWidth,
@@ -978,15 +917,14 @@ function composeFloatingHistoryViewport(
   // displaced by narrow wrapping, so keep the beginning anchored and clip any
   // reflow overflow at the bottom. Genuinely short histories also stay
   // top-aligned; a full canonical viewport can use the bottom-anchored path.
-  const atCanonicalTop = viewStart === 0 && instructionStartIndex === viewStart;
-  if (instructionStartIndex === viewStart
-    && (atCanonicalTop || endLineIndex - viewStart < messageAreaHeight)) {
+  const atCanonicalTop = viewStart === 0;
+  if (atCanonicalTop || endLineIndex - viewStart < messageAreaHeight) {
     const directRows = composeViewportFrom(
       allLines,
       lineAnchors,
       canonicalSourceState(allLines, viewStart),
       endLineIndex,
-      panelTopOffset,
+      0,
       panelHeight,
       narrowWidth,
       fullWidth,
@@ -997,9 +935,7 @@ function composeFloatingHistoryViewport(
         revision,
         lineAnchors,
         viewStart,
-        instructionStartIndex,
         messageAreaHeight,
-        panelTopOffset,
         panelHeight,
         narrowWidth,
         fullWidth,
@@ -1010,25 +946,14 @@ function composeFloatingHistoryViewport(
     }
   }
 
-  const instructionRows = Math.min(
-    panelTopOffset,
-    messageAreaHeight,
-    endLineIndex - instructionStartIndex,
-  );
-  const instructionEndIndex = instructionStartIndex + instructionRows;
-  const availableAfterInstructions = Math.max(0, messageAreaHeight - instructionRows);
-  const narrowRowCount = Math.min(panelHeight, availableAfterInstructions);
-  const fullRowCount = Math.max(0, availableAfterInstructions - narrowRowCount);
+  const narrowRowCount = Math.min(panelHeight, messageAreaHeight);
+  const fullRowCount = Math.max(0, messageAreaHeight - narrowRowCount);
 
   // Preserve the newest canonical full-width rows. Narrow wrapping above this
   // boundary is presentation-only and cannot displace the tail near the prompt.
-  const fullStartIndex = Math.max(instructionEndIndex, endLineIndex - fullRowCount);
-  const narrowSourceStartIndex = Math.max(
-    instructionEndIndex,
-    fullStartIndex - narrowRowCount,
-  );
+  const fullStartIndex = Math.max(viewStart, endLineIndex - fullRowCount);
+  const narrowSourceStartIndex = Math.max(viewStart, fullStartIndex - narrowRowCount);
 
-  const instructions = canonicalViewportRows(allLines, instructionStartIndex, instructionEndIndex, fullWidth);
   const narrowProbe = narrowSourceStartIndex < fullStartIndex
     ? composeFixedWidthRows(
         allLines,
@@ -1058,14 +983,12 @@ function composeFloatingHistoryViewport(
     fullWidth,
     fullWidth,
   );
-  const visibleRows = [...instructions, ...narrowRows, ...fullRows].slice(-messageAreaHeight);
+  const visibleRows = [...narrowRows, ...fullRows].slice(-messageAreaHeight);
   floatingHistoryViewportCache.set(allLines, {
     revision,
     lineAnchors,
     viewStart,
-    instructionStartIndex,
     messageAreaHeight,
-    panelTopOffset,
     panelHeight,
     narrowWidth,
     fullWidth,
@@ -1357,6 +1280,14 @@ function renderInputArea(
   }
 }
 
+/** The editor's cursor, shaped like the prompt's for the same Vim mode; hidden in the picker. */
+function instructionsCursorPayload(overlay: RenderedInstructionsModal): string {
+  const cursor = overlay.cursor;
+  if (!cursor) return hide_cursor;
+  const shape = cursor.shape === "bar" ? cursor_bar : cursor.shape === "underline" ? cursor_underline : cursor_block;
+  return moveTo(cursor.row, cursor.col) + shape + show_cursor;
+}
+
 /**
  * Position the terminal cursor and set its shape based on the current
  * focus and vim mode. Hides the cursor when history is focused (the
@@ -1373,7 +1304,7 @@ function buildCursorPayload(
   chatCol: number,
   chatW: number,
 ): string {
-  if (state.imageModal || state.accountsScreen) return hide_cursor;
+  if (state.imageModal || state.accountsScreen || state.instructionsModal) return hide_cursor;
   const out: string[] = [];
 
   if (state.panelFocus === "sidebar" && state.sidebar.search?.barOpen) {
@@ -1664,56 +1595,21 @@ export function render(state: RenderState): boolean {
   const viewStart = scrollUpdate.topAnchorRow ?? getViewStart(state);
   const preserveViewportTop = scrollUpdate.topAnchorRow !== null;
 
-  // Keep leading system instructions full-width, then float the task panel over
-  // only the rows it actually occupies. Re-evaluate the offset if top-row
-  // wrapping shifts the canonical history row at the viewport's top.
-  let taskPanelTopOffset = taskLayout.panel
-    ? visibleSystemInstructionsHeight(lineAnchors, viewStart, messageAreaHeight)
-    : 0;
-  let instructionStartIndex = viewStart;
-  let taskPanel = taskLayout.panel && taskPanelTopOffset > 0
-    ? renderTaskPanel(state, taskLayout.panel.width, messageAreaHeight - taskPanelTopOffset)
-    : taskLayout.panel;
-  let viewportRows: ViewportHistoryRow[] = [];
-  for (let attempt = 0; attempt < 3; attempt++) {
-    // Keep one extra history row narrow below the card as visual breathing room.
-    const panelFlowHeight = taskPanel ? Math.min(
-      messageAreaHeight - taskPanelTopOffset,
-      taskPanel.lines.length + 1,
-    ) : 0;
-    viewportRows = composeFloatingHistoryViewport(
-      allLines,
-      lineAnchors,
-      historyRevision,
-      viewStart,
-      instructionStartIndex,
-      messageAreaHeight,
-      taskPanelTopOffset,
-      panelFlowHeight,
-      taskPanel ? historyWidth : chatW,
-      chatW,
-      preserveViewportTop,
-    );
-    const topLineIndex = viewportRows[0]?.lineIndex ?? viewStart;
-    const nextOffset = taskLayout.panel
-      ? viewStart === 0
-        ? topAnchoredTaskPanelOffset(
-            viewportRows,
-            lineAnchors,
-            taskPanelTopOffset + panelFlowHeight,
-          )
-        : visibleSystemInstructionsHeight(lineAnchors, topLineIndex, messageAreaHeight)
-      : 0;
-    if (nextOffset === taskPanelTopOffset
-      && (nextOffset === 0 || topLineIndex === instructionStartIndex)) break;
-    instructionStartIndex = topLineIndex;
-    taskPanelTopOffset = nextOffset;
-    taskPanel = renderTaskPanel(
-      state,
-      taskLayout.panel!.width,
-      messageAreaHeight - taskPanelTopOffset,
-    );
-  }
+  // Float the task panel over only the history rows it actually occupies,
+  // keeping one extra row narrow below the card as visual breathing room.
+  const taskPanel = taskLayout.panel;
+  const panelFlowHeight = taskPanel ? Math.min(messageAreaHeight, taskPanel.lines.length + 1) : 0;
+  const viewportRows = composeFloatingHistoryViewport(
+    allLines,
+    lineAnchors,
+    historyRevision,
+    viewStart,
+    messageAreaHeight,
+    panelFlowHeight,
+    taskPanel ? historyWidth : chatW,
+    chatW,
+    preserveViewportTop,
+  );
   state.layout.historyViewportRows = Array.from(
     { length: messageAreaHeight },
     (_, index) => viewportRows[index]
@@ -1767,7 +1663,7 @@ export function render(state: RenderState): boolean {
   if (state.taskPanelExpansion && taskPanel) state.taskPanelExpansion.scroll = taskPanel.scroll;
   if (taskPanel) {
     const panelCol = chatCol + chatW - taskPanel.width;
-    const panelTop = messageAreaStart + taskPanelTopOffset;
+    const panelTop = messageAreaStart;
     state.layout.taskPanelRect = {
       top: panelTop,
       bottom: panelTop + taskPanel.lines.length - 1,
@@ -1874,6 +1770,11 @@ export function render(state: RenderState): boolean {
     ? renderAccountsScreen(state, state.accountsScreen, rows, cols)
     : null;
   if (accountsOverlay) appendPositionedPayload(ctx, accountsOverlay.payload);
+  // ── /instructions picker or editor ────────────────────────────
+  const instructionsOverlay = state.instructionsModal && !modal && !accountsOverlay
+    ? renderInstructionsModal(state.instructionsModal, rows, cols)
+    : null;
+  if (instructionsOverlay) appendPositionedPayload(ctx, instructionsOverlay.payload);
   const hadHistoryImages = historyImagesPlaced(state);
   // Display math may be forced to images on a terminal that failed detection.
   const kittyHistory = inlineImageMode() === "kitty";
@@ -1885,7 +1786,7 @@ export function render(state: RenderState): boolean {
       chatCol,
       maxCol: chatCol + chatW - 1,
       obstructions: [],
-      covers: [...imageCovers, modal?.rect, queuePromptOverlay?.rect, editMessageOverlay?.rect, conversationMenuOverlay?.rect, accountsOverlay?.rect].filter((rect): rect is ScreenRect => !!rect),
+      covers: [...imageCovers, modal?.rect, queuePromptOverlay?.rect, editMessageOverlay?.rect, conversationMenuOverlay?.rect, accountsOverlay?.rect, instructionsOverlay?.rect].filter((rect): rect is ScreenRect => !!rect),
       cursorLineIndex: historyFocused ? state.historyCursor.row : null,
       cursorCol: state.historyCursor.col,
       mathOnly: !kittyHistory,
@@ -1908,6 +1809,7 @@ export function render(state: RenderState): boolean {
     && !state.btw
     && !state.imageModal
     && !state.accountsScreen
+    && !state.instructionsModal
     // Placements are positioned explicitly; terminal scrolling would move them first.
     && !hadHistoryImages
     && historyImagePlacements.length === 0
@@ -1915,7 +1817,7 @@ export function render(state: RenderState): boolean {
 
   flushFrame(state, {
     rows: ctx.frameRows,
-    cursor: buildCursorPayload(
+    cursor: instructionsOverlay ? instructionsCursorPayload(instructionsOverlay) : buildCursorPayload(
       state,
       promptFocused,
       firstInputRow,

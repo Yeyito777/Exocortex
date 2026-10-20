@@ -913,12 +913,23 @@ export class DaemonClient {
     this.send({ type: "delete_folder", folderId, mode });
   }
 
-  loadFolderInstructions(folderId: string): void {
-    this.send({ type: "load_folder_instructions", folderId });
+  setFolderInstructions(folderId: string, text: string): string {
+    const reqId = `folder_instructions_${++this.nextReqId}_${Date.now()}`;
+    this.send({ type: "set_folder_instructions", reqId, folderId, text });
+    return reqId;
   }
 
-  setFolderInstructions(folderId: string, text: string): void {
-    this.send({ type: "set_folder_instructions", folderId, text });
+  /** Read the conversation, folder and global instructions for the /instructions picker. */
+  loadInstructions(convId: string | null, folderId: string | null): string {
+    const reqId = `instructions_${++this.nextReqId}_${Date.now()}`;
+    this.send({ type: "load_instructions", reqId, ...(convId ? { convId } : {}), folderId });
+    return reqId;
+  }
+
+  setGlobalInstructions(text: string, expectedText?: string): string {
+    const reqId = `global_instructions_${++this.nextReqId}_${Date.now()}`;
+    this.send({ type: "set_global_instructions", reqId, text, ...(expectedText !== undefined ? { expectedText } : {}) });
+    return reqId;
   }
 
   generateTitle(convId: string): void {
@@ -977,8 +988,10 @@ export class DaemonClient {
     return reqId;
   }
 
-  setSystemInstructions(convId: string, text: string): void {
-    this.send({ type: "set_system_instructions", convId, text });
+  setSystemInstructions(convId: string, text: string): string {
+    const reqId = `system_instructions_${++this.nextReqId}_${Date.now()}`;
+    this.send({ type: "set_system_instructions", reqId, convId, text });
+    return reqId;
   }
 
   listConversations(): void {

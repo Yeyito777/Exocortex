@@ -15,7 +15,7 @@ import type { KeyEvent } from "./input";
 import type { MoveSidebarItemsOptions, SidebarItemRef } from "./protocol";
 import type { RenderState } from "./state";
 import type { NewConversationPlacement } from "./sidebar/tree";
-import { EDIT_INDEX_INSTRUCTIONS, focusBtw, focusPrompt, focusHistory, focusSidebar, modelSupportsImages, pushSystemMessage } from "./state";
+import { focusBtw, focusPrompt, focusHistory, focusSidebar, modelSupportsImages, pushSystemMessage } from "./state";
 import { resolveAction, sidebarTopShortcutIndex } from "./keybinds";
 import { handleChatKey } from "./chat";
 import { toggleSidebarPreservingViewport, toggleToolOutputPreservingViewport } from "./chatscroll";
@@ -322,16 +322,6 @@ export function handleFocusedKey(
     case "new_top_level_conversation":
       return { type: "new_conversation", placement: "top_level" };
     case "edit_message":
-      if (state.folderInstructionsDoc) {
-        const text = state.folderInstructionsDoc.savedText || state.folderInstructionsDoc.text;
-        if (!text.trim()) return { type: "handled" };
-        state.editMessagePrompt = {
-          items: [{ userMessageIndex: EDIT_INDEX_INSTRUCTIONS, text, isQueued: false }],
-          selection: 0,
-          scrollOffset: 0,
-        };
-        return { type: "handled" };
-      }
       openEditMessageModal(state);
       return { type: "handled" };
     case "focus_history":

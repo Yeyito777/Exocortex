@@ -97,7 +97,7 @@ export function compactionFinishedDivider(availableWidth: number): string {
   return prefix + "─".repeat(dividerWidth - prefix.length);
 }
 import { termWidth, truncateToWidth } from "./textwidth";
-import { wordWrap, type WrapCopyLine, type WrapImage, type WrapResult } from "./textwrap";
+import type { WrapCopyLine, WrapImage, WrapResult } from "./textwrap";
 import { mathImageLayout, type HistoryImageLayout } from "./historyimages";
 import { mathImageGeneration } from "./mathimages";
 import type { LinkSpan } from "./links";
@@ -113,10 +113,8 @@ export { wordWrap, type WrapResult } from "./textwrap";
  */
 function userMessageNeedsTopMargin(messages: Message[], index: number): boolean {
   for (let i = index - 1; i >= 0; i--) {
-    const previous = messages[i];
-    if (previous.role !== "system_instructions") return true;
-    // A non-empty instructions box renders its own bottom margin.
-    if (previous.text.trim()) return false;
+    // Instructions render no rows, so only what precedes them counts.
+    if (messages[i].role !== "system_instructions") return true;
   }
   return false;
 }
@@ -260,10 +258,6 @@ export type RenderLineSegment =
   | "queued_label"
   | "queued_margin_top"
   | "streaming_tail"
-  | "system_instructions_bottom"
-  | "system_instructions_content"
-  | "system_instructions_margin_bottom"
-  | "system_instructions_top"
   | "system_message"
   | "automation_label"
   | "user_content"
@@ -917,31 +911,8 @@ export function buildMessageLines(
       pushLine("", msg, "compaction_margin_bottom");
       pushMessageBound(msg.role, start, contentStart, contentEnd);
     } else if (msg.role === "system_instructions") {
-      if (!msg.text.trim()) {
-        pushMessageBound(msg.role, start, start, lines.length);
-        continue;
-      }
-      const boxWidth = availableWidth;
-      const textWidth = boxWidth - 4; // │ + space + text + space + │
-      const title = " System Instructions ";
-      const topFill = Math.max(0, boxWidth - 2 - title.length); // -2 for ┌ and ┐
-      const topLine = `┌${title}${"─".repeat(topFill)}┐`;
-      const bottomLine = `└${"─".repeat(Math.max(0, boxWidth - 2))}┘`;
-
-      pushLine(`${theme.accent}${topLine}${theme.reset}`, msg, "system_instructions_top");
-      const contentStart = lines.length;
-
-      const { lines: wrapped } = wordWrap(sanitizeUntrustedText(msg.text), textWidth > 0 ? textWidth : 1);
-      for (let i = 0; i < wrapped.length; i++) {
-        const sl = wrapped[i];
-        const pad = " ".repeat(Math.max(0, textWidth - termWidth(sl)));
-        pushLine(`${theme.accent}│${theme.reset} ${theme.dim}${sl}${pad}${theme.reset} ${theme.accent}│${theme.reset}`, msg, "system_instructions_content", i);
-      }
-      const contentEnd = lines.length;
-
-      pushLine(`${theme.accent}${bottomLine}${theme.reset}`, msg, "system_instructions_bottom");
-      pushLine("", msg, "system_instructions_margin_bottom");
-      pushMessageBound(msg.role, start, contentStart, contentEnd);
+      // Instructions are read and edited in /instructions, never in the history.
+      pushMessageBound(msg.role, start, start, lines.length);
     } else {
       pushBlock(msg, "system_message", renderSystemMessage(msg.text, availableWidth, msg.color));
       const provenance = automationProvenance(msg.metadata?.automation);
@@ -1096,34 +1067,32 @@ export function buildMessageLines(
   }
 
   // Queued messages — dimmed user bubbles with timing label (after pendingAI)
-  if (state.convId || !state.folderInstructionsDoc) {
-    const queued = queuedMessagesInDisplayOrder(
-      state.convId
-        ? state.queuedMessages.filter(qm => qm.convId === state.convId)
-        : state.queuedMessages.filter(qm => isNewConversationQueuedMessage(qm) && qm.convId === state.pendingQueuedDraftConvId),
-    );
-    for (const qm of queued) {
-      const provenance = automationProvenance(qm.automation);
-      const timingLabel = [provenance, queueTimingLabel(qm, Date.now(), state.provider)].filter((label): label is string => Boolean(label)).join(" · ");
-      pushLine("", qm, "queued_margin_top");
-      // Render a dimmed user bubble
-      const background = qm.automation ? theme.automatedUserBg : theme.userBg;
-      const qr = renderUserMessageCached(qm, qm.text, availableWidth, qm.images, background);
-      const queuedContentStart = lines.length;
-      for (let i = 0; i < qr.lines.length; i++) {
-        pushLine(`${theme.muted}${qr.lines[i]}${theme.reset}`, qm, "queued_content", i);
-      }
-      const flow = userMessageFlowMetadataCached(qm, qm.text, availableWidth, qm.images, background);
-      if (flow && flow.starts.length === qr.lines.length) {
-        for (let row = 0; row < flow.starts.length; row++) {
-          lineAnchors[queuedContentStart + row].userFlowDocument = flow.document;
-          lineAnchors[queuedContentStart + row].userFlowStart = flow.starts[row];
-          lineAnchors[queuedContentStart + row].userFlowEnd = flow.starts[row + 1] ?? flow.end;
-        }
-      }
-      // Timing label — right-aligned, muted italic
-      pushLine(rightAlignedProvenanceLabel(timingLabel, availableWidth), qm, "queued_label");
+  const queued = queuedMessagesInDisplayOrder(
+    state.convId
+      ? state.queuedMessages.filter(qm => qm.convId === state.convId)
+      : state.queuedMessages.filter(qm => isNewConversationQueuedMessage(qm) && qm.convId === state.pendingQueuedDraftConvId),
+  );
+  for (const qm of queued) {
+    const provenance = automationProvenance(qm.automation);
+    const timingLabel = [provenance, queueTimingLabel(qm, Date.now(), state.provider)].filter((label): label is string => Boolean(label)).join(" · ");
+    pushLine("", qm, "queued_margin_top");
+    // Render a dimmed user bubble
+    const background = qm.automation ? theme.automatedUserBg : theme.userBg;
+    const qr = renderUserMessageCached(qm, qm.text, availableWidth, qm.images, background);
+    const queuedContentStart = lines.length;
+    for (let i = 0; i < qr.lines.length; i++) {
+      pushLine(`${theme.muted}${qr.lines[i]}${theme.reset}`, qm, "queued_content", i);
     }
+    const flow = userMessageFlowMetadataCached(qm, qm.text, availableWidth, qm.images, background);
+    if (flow && flow.starts.length === qr.lines.length) {
+      for (let row = 0; row < flow.starts.length; row++) {
+        lineAnchors[queuedContentStart + row].userFlowDocument = flow.document;
+        lineAnchors[queuedContentStart + row].userFlowStart = flow.starts[row];
+        lineAnchors[queuedContentStart + row].userFlowEnd = flow.starts[row + 1] ?? flow.end;
+      }
+    }
+    // Timing label — right-aligned, muted italic
+    pushLine(rightAlignedProvenanceLabel(timingLabel, availableWidth), qm, "queued_label");
   }
 
   return {
