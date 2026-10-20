@@ -12,7 +12,7 @@ import {
   type ToolInstructionsLoader,
 } from "./controller";
 import { renderInstructionsEditor } from "./render";
-import { buildToolInstructionsDoc, sectionAt, shortSource } from "./tools";
+import { buildToolInstructionsDoc, sectionAt, sectionSourceNotice, shortSource } from "./tools";
 
 class FakeDaemon implements InstructionsDaemon, ToolInstructionsLoader {
   connected = true;
@@ -179,6 +179,9 @@ describe("/instructions tools", () => {
     expect(shown).toContain("Tool instructions · openai · gpt-6.1-sol");
     expect(shown).toContain("read-only");
     expect(shown).toContain("]] [[ tool");
+    // A long source keeps its file name in the status line.
+    editor.notice = { text: `cal: /very/long/${"deep/".repeat(30)}external-tools/cal-cli/manifest.json`, tone: "info" };
+    expect(plain(renderInstructionsEditor(editor, 60, 110).payload)).toMatch(/…[\w/-]*external-tools\/cal-cli\/manifest\.json/);
     // The rule replaces the header line's own text.
     expect(shown).not.toMatch(/^\s*│\s+exo\s+│/m);
   });
@@ -234,6 +237,7 @@ describe("/instructions tools", () => {
     expect(editor.notice?.text).toBe("cal: /repo/external-tools/cal-cli/manifest.json");
     press(state, daemon, "gg", "gf");
     expect(editor.notice?.text).toBe(ANSWER.route);
+    expect(sectionSourceNotice(editor.tools!, editor.tools!.sections[1].offset, "/repo")).toBe("exo: ~/daemon/src/tools/exo.ts");
     // gg still goes to the top.
     expect(editor.cursor).toBe(0);
   });

@@ -223,6 +223,15 @@ function editorLine(text: string, lineStart: number, width: number, selection: {
 
 // ── Tools view decorations ───────────────────────────────────────────
 
+/** `…` and the end of `text`, in at most `width` columns. */
+function truncateStart(text: string, width: number): string {
+  const chars = [...text];
+  let used = 1;
+  let start = chars.length;
+  while (start > 0 && used + termWidth(chars[start - 1]) <= width) used += termWidth(chars[--start]);
+  return "…" + chars.slice(start).join("");
+}
+
 /** Columns before a rule's label: the label text sits where the cursor expects it. */
 const RULE_LEAD = 3;
 
@@ -360,7 +369,10 @@ export function renderInstructionsEditor(editor: InstructionsEditorState, totalR
     middle = spread(`:${shown}`, theme.text, "", "", inner - badgeWidth, bg);
     commandCursorCol = badgeWidth + 1 + termWidth(shown);
   } else if (editor.notice) {
-    middle = spread(editor.notice.text, noticeColor(editor.notice.tone), position, theme.muted, inner - badgeWidth, bg);
+    // A source path keeps its end (the file) when it does not fit.
+    const room = inner - badgeWidth;
+    const text = editor.tools && termWidth(editor.notice.text) > room ? truncateStart(editor.notice.text, room) : editor.notice.text;
+    middle = spread(text, noticeColor(editor.notice.tone), position, theme.muted, room, bg);
   } else {
     middle = spread("", "", position, theme.muted, inner - badgeWidth, bg);
   }

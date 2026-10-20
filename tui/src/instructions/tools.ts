@@ -5,6 +5,7 @@
  * are display-only decorations kept beside it, never part of the text.
  */
 
+import { homedir } from "os";
 import type { KeyEvent } from "../input";
 import type { ToolInstructionsEntry, ToolInstructionsLoadedEvent } from "../protocol";
 import { sanitizePromptTextForInsertion } from "../prompttext";
@@ -141,12 +142,17 @@ export function shortSource(path: string): string {
   return path.split("/").slice(-2).join("/");
 }
 
+/** A path with this machine's home as ~; another daemon's paths stay absolute. */
+function tildePath(path: string, home = homedir()): string {
+  return home && path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
+}
+
 /** What Enter (or gf) says about the section under the cursor. */
-export function sectionSourceNotice(doc: ToolInstructionsDoc, cursor: number): string {
+export function sectionSourceNotice(doc: ToolInstructionsDoc, cursor: number, home?: string): string {
   const section = sectionAt(doc, cursor);
   if (!section || section.kind === "group" || !section.source) return doc.route;
-  const hint = section.hintSource && section.hintSource !== section.source ? ` · instructions: ${section.hintSource}` : "";
-  return `${section.name}: ${section.source}${hint}`;
+  const hint = section.hintSource && section.hintSource !== section.source ? ` · instructions: ${tildePath(section.hintSource, home)}` : "";
+  return `${section.name}: ${tildePath(section.source, home)}${hint}`;
 }
 
 // ── Keys ─────────────────────────────────────────────────────────────
