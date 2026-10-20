@@ -4,6 +4,7 @@
   "type": "module",
   "exports": {
     "./macro-environment": "./src/macro-environment.ts",
+    "./user-macros": "./src/user-macros.ts",
     "./updatecheck": "./src/updatecheck.ts",
     "./auth": "./src/auth.ts",
     "./messages": "./src/messages.ts",

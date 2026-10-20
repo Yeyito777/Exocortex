@@ -16,6 +16,7 @@ import { createHelpCommand } from "./commands/help";
 import { HIDE_COMMAND } from "./commands/hide";
 import { INSTRUCTIONS_COMMAND } from "./commands/instructions";
 import { LOGIN_COMMAND } from "./commands/login";
+import { createMacroCommand } from "./commands/macro";
 import { LOGOUT_COMMAND } from "./commands/logout";
 import { MODEL_COMMAND } from "./commands/model";
 import { NEW_COMMAND } from "./commands/new";
@@ -33,9 +34,14 @@ import { TOKENS_COMMAND } from "./commands/tokens";
 import { TRIM_COMMAND } from "./commands/trim";
 import { USAGE_COMMAND } from "./commands/usage";
 import type { CommandResult, CompletionItem, SlashCommand } from "./commands/types";
-import { applyInlineCommands, previewInlineCommands } from "./inlineeffort";
+import { INLINE_COMMANDS, applyInlineCommands, previewInlineCommands } from "./inlineeffort";
 
 const HELP_COMMAND = createHelpCommand(() => commands);
+// User macros may not take a command's name, or one used inline in messages.
+export const MACRO_COMMAND = createMacroCommand(() => [
+  ...commands.map(command => command.name),
+  ...INLINE_COMMANDS.map(command => command.name),
+]);
 
 const commands: SlashCommand[] = [
   HELP_COMMAND,
@@ -69,6 +75,7 @@ const commands: SlashCommand[] = [
   SSH_COMMAND,
   PROXY_COMMAND,
   INSTRUCTIONS_COMMAND,
+  MACRO_COMMAND,
   SYSTEM_COMMAND,
   LOGIN_COMMAND,
   LOGOUT_COMMAND,

@@ -29,7 +29,7 @@ import type { SearchDirection } from "./search";
 import type { UndoState } from "./undo";
 import { commitInsertSession, createUndoState, markInsertEntry } from "./undo";
 import type { AutocompleteState } from "./autocomplete";
-import type { AccountsSnapshot, ConversationDefaultsSnapshot, ConversationGoal, MacroEnvironment, ProviderAuthInfo, ProviderProxyInfo, QueuedCommandInvocation, QueueTiming, QueueWaitTarget as ProtocolQueueWaitTarget, UserMessageAutomation } from "./protocol";
+import type { AccountsSnapshot, ConversationDefaultsSnapshot, ConversationGoal, MacroEnvironment, ProviderAuthInfo, UserMacro, ProviderProxyInfo, QueuedCommandInvocation, QueueTiming, QueueWaitTarget as ProtocolQueueWaitTarget, UserMessageAutomation } from "./protocol";
 import type { VoiceChatMessageState, VoicePromptState } from "./voice";
 import type { TokenStatsView } from "./commands/tokens";
 import type { BtwPanelState } from "./btw/state";
@@ -39,6 +39,8 @@ import type { ImageModalState } from "./imagemodal";
 import type { AccountsOpenRequest, AccountsScreenState } from "./accountsscreen";
 import type { InstructionsModalState } from "./instructions/state";
 import { createInstructionsStore, type InstructionsStore } from "./instructions/store";
+import type { MacroDraft } from "./commands/macro";
+import type { PendingMacroRequest } from "./usermacros";
 
 // ── Queue types ────────────────────────────────────────────────────
 
@@ -225,6 +227,12 @@ export interface RenderState {
   /** Selected remote daemon route. Null means the local daemon. */
   sshRemote: { alias: string; connected: boolean } | null;
   macroEnvironment: MacroEnvironment | null;
+  /** While set, the prompt line holds this macro's text and Enter saves it. */
+  macroDraft: MacroDraft | null;
+  /** The macro this TUI last deleted, for /macro undo. */
+  lastDeletedMacro: UserMacro | null;
+  /** Macro mutations awaiting the daemon's confirmation, by request id. */
+  pendingMacroRequests: Map<string, PendingMacroRequest>;
   /** Route transition UI is independent of chat messages and startup loads. */
   sshConnecting: { phase: "probing" | "loading"; message: string } | null;
   /** Folder captured when the current blank draft was started. Sidebar browsing must not retarget it. */
@@ -648,6 +656,9 @@ export function createInitialState(): RenderState {
     conversationOpenRequest: null,
     sshRemote: null,
     macroEnvironment: null,
+    macroDraft: null,
+    lastDeletedMacro: null,
+    pendingMacroRequests: new Map(),
     sshConnecting: null,
     draftFolderId: null,
     inputBuffer: "",

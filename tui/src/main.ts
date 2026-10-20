@@ -33,7 +33,9 @@ import {
 import { handleFocusedKey } from "./focus";
 import { handleMouseEvent, refreshMouseCursor, trackMouseCursor } from "./mouse";
 import { clearPrompt } from "./promptstate";
-import { tryCommand } from "./commands";
+import { MACRO_COMMAND, tryCommand } from "./commands";
+import { isMacroCommandText } from "./commands/macro";
+import { runUserMacroCommand, submitMacroDraft } from "./usermacros";
 import { expandMacros, macroEnvironmentForState } from "./macros";
 import { applyInlineCommands, type InlineCommandApplication } from "./inlineeffort";
 import { resolveSlashShorthands } from "./slashsearch";
@@ -926,7 +928,22 @@ function handleSubmit(): void {
   let text = state.inputBuffer.trim();
   const hasImages = state.pendingImages.length > 0;
 
+  // A macro draft owns the prompt: Enter saves its text, an empty Enter cancels.
+  if (state.macroDraft) {
+    submitMacroDraft(state, daemon, hasImages);
+    scheduleRender();
+    return;
+  }
+
   if (!text && !hasImages) return;
+
+  // /macro's own text (often several lines of macro body) must reach it verbatim,
+  // before shorthand or inline-command parsing could rewrite the body.
+  if (!hasImages && isMacroCommandText(text)) {
+    runUserMacroCommand(state, daemon, MACRO_COMMAND.handler(text, state));
+    scheduleRender();
+    return;
+  }
 
   // Expand slash shorthands such as "/model opus" before command and inline parsing.
   text = resolveSlashShorthands(state, text);
@@ -1088,6 +1105,11 @@ function handleSubmit(): void {
             pushSystemMessage(state, `Connecting to ${cmdResult.alias} for ${cmdResult.provider}…`, theme.muted);
           }
           daemon.providerProxy(cmdResult.action, cmdResult.provider, cmdResult.alias);
+          break;
+        case "save_user_macro":
+        case "delete_user_macro":
+        case "restore_user_macro":
+          runUserMacroCommand(state, daemon, cmdResult);
           break;
         case "handled":
           break;

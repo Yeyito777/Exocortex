@@ -6,6 +6,8 @@ import type { ProviderId, ModelId, EffortLevel } from "../messages";
 import type { ChronoRequest } from "../chronoschedule";
 import type { TokenStatsView } from "./tokens";
 import type { InstructionsView } from "./instructions";
+import type { MacroDraft } from "./macro";
+import type { UserMacro } from "@exocortex/shared/user-macros";
 
 export interface CompletionItem {
   name: string;
@@ -55,7 +57,10 @@ type CommandAction =
   | { type: "token_stats_requested"; view: TokenStatsView }
   | { type: "set_system_instructions"; text: string }
   | { type: "ssh"; action: "connect" | "status" | "cancel"; alias?: string }
-  | { type: "provider_proxy"; action: "status" | "set" | "off"; provider?: ProviderId; alias?: string };
+  | { type: "provider_proxy"; action: "status" | "set" | "off"; provider?: ProviderId; alias?: string }
+  | { type: "save_user_macro"; draft: MacroDraft; expansion: string }
+  | { type: "delete_user_macro"; name: string }
+  | { type: "restore_user_macro"; macro: UserMacro };
 
 /** Modifiers composed around a successfully parsed primary slash command. */
 export interface CommandComposition {

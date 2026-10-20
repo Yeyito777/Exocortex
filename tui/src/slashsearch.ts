@@ -10,7 +10,7 @@
 
 import type { RenderState } from "./state";
 import { COMMAND_LIST, getCommandArgs, type CompletionItem } from "./commands";
-import { MACRO_LIST, getMacroArgs, macroEnvironmentForState } from "./macros";
+import { macroList, getMacroArgs, macroEnvironmentForState } from "./macros";
 import { INLINE_COMMANDS, getInlineCommandArgs } from "./inlineeffort";
 
 // ── Types ───────────────────────────────────────────────────────────
@@ -343,7 +343,7 @@ function slashArgRegistry(
  * Commands and macros are shown in a unified list.
  */
 export function commandCompletions(state: RenderState, input: string): SlashCompletion[] {
-  return searchSlashCompletions(input.trimStart(), [...COMMAND_LIST, ...MACRO_LIST], slashArgRegistry(state, getCommandArgs));
+  return searchSlashCompletions(input.trimStart(), [...COMMAND_LIST, ...macroList()], slashArgRegistry(state, getCommandArgs));
 }
 
 /**
@@ -351,7 +351,7 @@ export function commandCompletions(state: RenderState, input: string): SlashComp
  * registered inline commands are valid here.
  */
 export function inlineSlashCompletions(state: RenderState, token: string): SlashCompletion[] {
-  return searchSlashCompletions(token.trimStart(), [...MACRO_LIST, ...INLINE_COMMANDS], slashArgRegistry(state, getInlineCommandArgs));
+  return searchSlashCompletions(token.trimStart(), [...macroList(), ...INLINE_COMMANDS], slashArgRegistry(state, getInlineCommandArgs));
 }
 
 // ── Shorthand resolution ────────────────────────────────────────────

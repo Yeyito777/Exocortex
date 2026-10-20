@@ -17,6 +17,8 @@ import type { UpdateStatus } from "./updatecheck";
 import type { ChronoRecurrence } from "./chrono";
 import type { SidebarDigest } from "./sidebar-digest";
 import type { ProviderProxiesEvent, ProviderProxyCommand, ProviderProxyInfo, ProviderProxyLinkCommand, ProviderProxyLinkEvent } from "./provider-proxy";
+import type { UserMacro } from "./user-macros";
+export type { UserMacro };
 export type * from "./provider-proxy";
 export type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ToolCallPresentation, ImageAttachment, ImageRef, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus, ConversationBtw, UserMessageContextCheckpoint, ExternalNotificationDelivery, UserMessageAutomation };
 
@@ -39,6 +41,21 @@ export interface SetConversationDefaultsCommand {
 export interface ResetConversationDefaultsCommand {
   type: "reset_conversation_defaults";
   reqId?: string;
+}
+
+/** User macros are persisted and validated on the connected daemon host. */
+export interface SaveUserMacroCommand {
+  type: "save_user_macro";
+  reqId?: string;
+  macro: UserMacro;
+  /** Refuse to replace an existing macro of the same name. */
+  create?: boolean;
+}
+
+export interface DeleteUserMacroCommand {
+  type: "delete_user_macro";
+  reqId?: string;
+  name: string;
 }
 
 /**
@@ -1186,6 +1203,8 @@ export type Command =
   | ProviderProxyLinkCommand
   | SetConversationDefaultsCommand
   | ResetConversationDefaultsCommand
+  | SaveUserMacroCommand
+  | DeleteUserMacroCommand
   | ListPathDirectoryCommand
   | ResolveFileLinkCommand
   | ClientCapabilitiesCommand
@@ -2013,6 +2032,17 @@ export interface ConversationDefaultsEvent extends ConversationDefaultsSnapshot 
   message?: string;
 }
 
+/**
+ * The daemon's whole user macro list. Sent after `ping` and broadcast on every
+ * change; the requesting client also gets a confirmation carrying `change`.
+ */
+export interface UserMacrosEvent {
+  type: "user_macros";
+  macros: UserMacro[];
+  reqId?: string;
+  change?: { action: "created" | "updated" | "deleted"; macro: UserMacro };
+}
+
 export interface HistoryUpdatedEvent {
   type: "history_updated";
   convId: string;
@@ -2233,6 +2263,7 @@ export type Event =
   | ProviderProxiesEvent
   | ProviderProxyLinkEvent
   | ConversationDefaultsEvent
+  | UserMacrosEvent
   | PathDirectoryEntriesEvent
   | FileLinkResolvedEvent
   | ClientExecRequestEvent

@@ -10,7 +10,7 @@
 
 import type { RenderState } from "./state";
 import { COMMAND_LIST, getCommandArgs } from "./commands";
-import { MACRO_LIST, getMacroArgs, macroEnvironmentForState } from "./macros";
+import { isMacroName, getMacroArgs, macroEnvironmentForState } from "./macros";
 import { INLINE_COMMANDS, getInlineCommandArgs } from "./inlineeffort";
 import { matchQueueTargetAfterCommand } from "./queuetargets";
 import { findSlashShorthands } from "./slashsearch";
@@ -23,7 +23,6 @@ const VALID_COMMAND_NAMES = new Set([
   "/exit",  // alias not in COMMAND_LIST (filtered out for display)
 ]);
 
-const VALID_MACRO_NAMES = new Set(MACRO_LIST.map(c => c.name));
 
 const VALID_INLINE_COMMAND_NAMES = new Set(INLINE_COMMANDS.map(c => c.name));
 
@@ -84,7 +83,7 @@ function findCommandSpans(
     // explicitly registered inline commands can appear anywhere.
     const baseCmd = firstWord.word;
     const isPromptCommand = wordIndex === 0 && VALID_COMMAND_NAMES.has(baseCmd);
-    const isInlineSlash = VALID_MACRO_NAMES.has(baseCmd) || VALID_INLINE_COMMAND_NAMES.has(baseCmd);
+    const isInlineSlash = isMacroName(baseCmd) || VALID_INLINE_COMMAND_NAMES.has(baseCmd);
     if (!isPromptCommand && !isInlineSlash) continue;
     let spanEnd = firstWord.end;
 

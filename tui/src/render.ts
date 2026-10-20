@@ -33,6 +33,7 @@ import { hexToAnsi, theme } from "./theme";
 import { clampCursor, stripAnsi, contentBounds, logicalLineRange } from "./historycursor";
 import { renderLineWithCursor, renderLineWithSearch, renderLineWithSelection } from "./cursorrender";
 import { getPromptHighlightRanges, highlightPromptInput } from "./prompthighlight";
+import { macroDraftLabel } from "./usermacros";
 import { formatSize, imageLabel } from "./clipboard";
 import { renderQueuePromptOverlay } from "./overlays";
 import { renderEditMessageOverlay } from "./overlays";
@@ -390,6 +391,16 @@ function colorPlainPromptDecorations(
 }
 
 // ── Image indicator ────────────────────────────────────────────────
+
+/** The rule above the prompt; a macro draft names itself in it. */
+function promptTopBorder(state: RenderState, width: number, color: string): string {
+  if (!state.macroDraft || width < 12) return `${color}${"─".repeat(width)}${theme.reset}`;
+  let label = macroDraftLabel(state.macroDraft);
+  const room = width - 6;
+  if (label.length > room) label = label.slice(0, Math.max(0, room - 1)) + "…";
+  const rest = Math.max(0, width - 4 - label.length);
+  return `${color}── ${theme.reset}${theme.accent}${theme.bold}${label}${theme.reset}${color} ${"─".repeat(rest)}${theme.reset}`;
+}
 
 function renderImageIndicator(images: ImageAttachment[], width: number): string {
   if (width <= 0 || images.length === 0) return "";
@@ -1685,7 +1696,7 @@ export function render(state: RenderState): boolean {
 
   // ── Separator above input ─────────────────────────────────────
   emitSidebarCol(ctx, promptSepRow);
-  appendRowWrite(ctx, promptSepRow, chatCol, bgLine(`${promptColor}${"─".repeat(chatW)}${theme.reset}`));
+  appendRowWrite(ctx, promptSepRow, chatCol, bgLine(promptTopBorder(state, chatW, promptColor)));
 
   // ── Image indicator (between separator and prompt) ────────────
   if (imageIndicatorRows > 0) {

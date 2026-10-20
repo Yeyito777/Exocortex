@@ -24,6 +24,7 @@ selects another daemon without moving client-side UI operations to that host.
 - [Delegation models](delegation-models.md)
 - [Local links](local-links.md)
 - [Inline images](inline-images.md)
+- [Macros](macros.md)
 - [Update status](update-status.md)
 - [Network outages](network-outages.md)
 
@@ -127,5 +128,6 @@ table in step with it.
 | `/proxy [<openai\|anthropic> <alias\|off>]` | Send one provider's model requests through another machine's login ([/proxy](provider-proxy.md)) |
 | `/instructions [text\|clear]` | Open the instructions picker and editor for this conversation, its folder or every conversation ([Instructions](#instructions)); with text, set or clear this conversation's |
 | `/system` | Show the system prompt (for Claude Code, what Exocortex appends) |
+| `/macro [list \| add /name [description] \| edit /name \| rm /name \| undo]` | List, add, edit or delete your own macros ([Macros](macros.md)) |
 | `/login [provider [...]]` | Show login status or sign in to a provider |
 | `/logout <provider>` | Log out of a provider |
