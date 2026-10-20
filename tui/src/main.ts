@@ -19,6 +19,7 @@ import { disposeHistoryImages, handleHistoryImageResponse, invalidateHistoryImag
 import { configureMathImages, disposeMathImages, mathImagesActive, mathImagesNeedDetection } from "./mathimages";
 import { handleImageModalKey } from "./imagemodal";
 import { closeAccountsScreen, handleAccountsScreenKey, requestAccountsScreen } from "./accountsscreen";
+import { handleInstructionsModalKey, openFolderInstructionsEditor, openInstructionsPicker } from "./instructions/controller";
 import { handleFocusedKey } from "./focus";
 import { handleMouseEvent, refreshMouseCursor, trackMouseCursor } from "./mouse";
 import { clearPrompt } from "./promptstate";
@@ -30,7 +31,7 @@ import { advanceDeferredHistoryRender, hasDeferredHistoryRenderWork, render, inv
 import { preserveViewportAcrossResize } from "./chatscroll";
 import { invalidateFrame } from "./frame";
 import { enter_alt, leave_alt, hide_cursor, show_cursor, enable_bracketed_paste, disable_bracketed_paste, query_clipboard_paste_events, enable_clipboard_paste_events, disable_clipboard_paste_events, enable_kitty_kbd, disable_kitty_kbd, enable_mouse, disable_mouse, set_cursor_color, reset_cursor_color } from "./terminal";
-import { createInitialState, isStreaming, canInterrupt, clearPendingAI, clearStreamingTailMessages, focusPrompt, isActiveConversationLoading, modelSupportsImages, newConversationSelection, noConversationOpen, noteConversationOpenRequest, openFolderInstructionsDocument, pushSystemMessage, renderFolderInstructionsDocument, resetDraftConversationState, resetHistoryPagination, resetNewConversationDefaults, resetToolOutputState } from "./state";
+import { createInitialState, isStreaming, canInterrupt, clearPendingAI, clearStreamingTailMessages, focusPrompt, isActiveConversationLoading, modelSupportsImages, newConversationSelection, noConversationOpen, noteConversationOpenRequest, pushSystemMessage, resetDraftConversationState, resetHistoryPagination, resetNewConversationDefaults, resetToolOutputState } from "./state";
 import { createMessageMetadata, createPendingAI, type ImageAttachment, type UserMessage } from "./messages";
 import { loginPromptProviders } from "./providerselection";
 import { handleEvent } from "./events";
@@ -295,7 +296,7 @@ function performRender(): number {
   // Scrolling, streaming and overlays move what is under a still pointer.
   refreshMouseCursor(state);
   const startedAt = state.pendingAI?.metadata?.startedAt;
-  if (state.convId && startedAt != null && state.scrollOffset === 0 && !state.folderInstructionsDoc) {
+  if (state.convId && startedAt != null && state.scrollOffset === 0) {
     firstTextUX.onFrame(state.convId, startedAt);
   }
   if (PERFORMANCE_PROFILING_ENABLED && renderMs >= 100) {
@@ -419,6 +420,8 @@ function resetForDaemonRouteSwitch(): void {
   state.accountsScreen = null;
   state.accountsOpenRequest = null;
   state.accountsSnapshotCache = null;
+  // Its scopes belonged to the old endpoint too.
+  state.instructionsModal = null;
   voiceInput?.cleanup();
   clearStreamTick();
   resetPrewarmer();
@@ -820,7 +823,6 @@ function attachTerminalClipboardImage(image: ImageAttachment): void {
 }
 
 function openConversation(convId: string, input: "keyboard" | "mouse"): void {
-  state.folderInstructionsDoc = null;
   prepareConversationOpen(state, convId);
   // Local loads land within a frame. Remote ones cross the network, so open
   // the chat now and let its spinner cover the round trip.
@@ -835,7 +837,6 @@ function openConversation(convId: string, input: "keyboard" | "mouse"): void {
 
 function startNewConversation(placement: NewConversationPlacement = "selected"): void {
   conversationPrewarmer.reset();
-  const wasFolderInstructionsDoc = state.folderInstructionsDoc !== null;
   pendingNewConversationConvId = null;
   // Going back from the conversation the draft becomes returns here.
   rememberEnteredConversation(state.sidebar, state.convId, null);
@@ -844,10 +845,6 @@ function startNewConversation(placement: NewConversationPlacement = "selected"):
     unsubscribeConversation(state.convId);
   }
   resetDraftConversationState(state, newConversationFolderId(state.sidebar, placement));
-  if (wasFolderInstructionsDoc) {
-    clearPrompt(state);
-    state.pendingImages = [];
-  }
   maybePrewarmOpenAI();
 }
 
@@ -872,23 +869,28 @@ function hasInlineCommandChanges(result: InlineCommandApplication): boolean {
   return !!result.modelSelection || result.efforts.length > 0 || result.fastModes.length > 0;
 }
 
+/** Start the draft as a conversation whose instructions are `text` (`/instructions <text>` in a draft). */
+function createConversationWithInstructions(text: string): void {
+  leaveConversationView(state);
+  if (state.convId) unsubscribeConversation(state.convId);
+  state.convId = null;
+  state.conversationOpenRequest = noConversationOpen();
+  state.btw = null;
+  resetHistoryPagination(state);
+  state.contextTokens = 0;
+  resetNewConversationDefaults(state);
+  state.pendingSystemInstructions = text;
+  state.pendingGenerateTitleOnCreate = false;
+  const selection = newConversationSelection(state);
+  daemon.createConversation(
+    selection.provider, selection.model, "", selection.effort, selection.fastMode,
+    undefined, state.draftFolderId,
+  );
+}
+
 function handleSubmit(): void {
   let text = state.inputBuffer.trim();
   const hasImages = state.pendingImages.length > 0;
-
-  if (state.folderInstructionsDoc) {
-    if (!hasImages && text === "/new") {
-      startNewConversation();
-      return;
-    }
-    state.folderInstructionsDoc.text = text;
-    state.folderInstructionsDoc.savedText = text;
-    state.folderInstructionsDoc.loading = false;
-    daemon.setFolderInstructions(state.folderInstructionsDoc.folderId, text);
-    renderFolderInstructionsDocument(state, text);
-    clearPrompt(state);
-    return;
-  }
 
   if (!text && !hasImages) return;
 
@@ -928,23 +930,10 @@ function handleSubmit(): void {
           startNewConversation();
           break;
         case "create_conversation_for_instructions":
-          leaveConversationView(state);
-          if (state.convId) unsubscribeConversation(state.convId);
-          state.convId = null;
-          state.conversationOpenRequest = noConversationOpen();
-          state.btw = null;
-          resetHistoryPagination(state);
-          state.contextTokens = 0;
-          resetNewConversationDefaults(state);
-          state.pendingSystemInstructions = cmdResult.text;
-          state.pendingGenerateTitleOnCreate = false;
-          {
-            const selection = newConversationSelection(state);
-            daemon.createConversation(
-              selection.provider, selection.model, "", selection.effort, selection.fastMode,
-              undefined, state.draftFolderId,
-            );
-          }
+          createConversationWithInstructions(cmdResult.text);
+          break;
+        case "open_instructions":
+          openInstructionsPicker(state, daemon);
           break;
         case "replay_requested":
           if (startReplayConversation(state, daemon)) {
@@ -1250,7 +1239,7 @@ function maybePrewarmOpenAI(): void {
   conversationPrewarmer.observe({
     convId: state.convId, provider: state.provider, model: state.model, effort: state.effort, fastMode: state.fastMode,
     eligible: running && daemon.connected && state.authByProvider.openai && !isStreaming(state)
-      && !state.folderInstructionsDoc && !state.sshConnecting && !daemonRouteSwitchPending,
+      && !state.sshConnecting && !daemonRouteSwitchPending,
   });
 }
 
@@ -1556,9 +1545,6 @@ function confirmSelectedEditMessage(): void {
     // waits for the stream to stop, then truncates.
     const reqId = daemon.unwindConversation(convId, er.userMessageIndex, er.expectedStartedAt, er.targetFingerprint);
     if (optimisticallyUnwound) pendingEditMessageUnwind = { convId, reqId };
-  } else if (er.action === "edit_instructions") {
-    // Text is placed in prompt as "/instructions <text>" — user edits and submits
-    // through the normal slash command flow. Nothing else to do here.
   }
 }
 
@@ -1608,6 +1594,14 @@ function handleKey(key: KeyEvent): void {
     } else if (state.imageModal.index !== shown) {
       renderAfterLocalUiMutation();
     }
+    return;
+  }
+  // So does the /instructions picker or editor; Ctrl-C still quits.
+  if (state.instructionsModal && key.type !== "ctrl-c") {
+    if (key.event === "release") return;
+    const outcome = handleInstructionsModalKey(key, state, daemon, renderAfterLocalUiMutation);
+    if (outcome.type === "create_conversation") createConversationWithInstructions(outcome.text);
+    renderAfterLocalUiMutation();
     return;
   }
   // The Accounts screen owns the keyboard too.
@@ -1690,10 +1684,7 @@ function handleKey(key: KeyEvent): void {
       openConversation(result.convId, "keyboard");
       return;
     case "open_folder_instructions":
-      leaveConversationView(state);
-      if (state.convId) unsubscribeConversation(state.convId);
-      openFolderInstructionsDocument(state, result.folderId);
-      daemon.loadFolderInstructions(result.folderId);
+      openFolderInstructionsEditor(state, daemon, result.folderId);
       break;
     case "load_tool_outputs":
       requestToolOutputs(state, daemon, result.toolCallIds);
@@ -1784,6 +1775,11 @@ function handleMouse(ev: MouseEvent): void {
   // Hidden old-route controls must not remain clickable during the transition.
   if (state.sshConnecting) return;
   if (voiceInput?.isBlockingMouse()) return;
+  // The /instructions modal ignores the mouse rather than risk losing edits.
+  if (state.instructionsModal) {
+    trackMouseCursor(ev, state);
+    return;
+  }
   // Likewise for the Accounts screen.
   if (state.accountsScreen) {
     trackMouseCursor(ev, state);
@@ -1829,10 +1825,7 @@ function handleMouse(ev: MouseEvent): void {
       openConversation(result.convId, "mouse");
       return;
     case "open_folder_instructions":
-      leaveConversationView(state);
-      if (state.convId) unsubscribeConversation(state.convId);
-      openFolderInstructionsDocument(state, result.folderId);
-      daemon.loadFolderInstructions(result.folderId);
+      openFolderInstructionsEditor(state, daemon, result.folderId);
       break;
     case "edit_message_confirm":
       confirmSelectedEditMessage();

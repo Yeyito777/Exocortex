@@ -24,7 +24,7 @@ import { consumeUsageReset, refreshUsage, handleUsageHeaders, getLastUsage, clea
 import { connectivity } from "./connectivity";
 import { orchestrateCompactConversation, orchestrateGoalCycle, orchestrateReplayConversation, orchestrateSendMessage, type AssistantTurnOutcome } from "./orchestrator";
 import { complete } from "./llm";
-import { buildClaudeCodeSystemAppend, buildSystemPrompt } from "./system";
+import { buildClaudeCodeSystemAppend, buildSystemPrompt, getUserAddendum, reloadUserAddendum, setUserAddendum } from "./system";
 import { createConversationWorkspace, ensureConversationWorkspace } from "./workspace-service";
 import { scopedSubagentPromptOptions } from "./subagent-policy";
 import { assertDelegationModel, parseRequestedModel, resolveDelegationModel } from "./delegation-models";
@@ -1440,7 +1440,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   // window. Read-only paging, Stop, scheduling and turn admission stay cheap.
   const warmCommands = new Set([
     "btw_query", "btw_followup", "set_goal", "set_model", "set_effort",
-    "set_fast_mode", "get_system_prompt",
+    "set_fast_mode", "get_system_prompt", "load_instructions",
   ]);
   // Commands for one conversation take effect in arrival order. An inline
   // `/model` arrives as set_model … send_message in one burst; without this the
@@ -3089,6 +3089,38 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         } else {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Folder ${cmd.folderId} not found` });
         }
+        break;
+      }
+
+      case "load_instructions": {
+        const convId = cmd.convId ?? null;
+        const folderId = cmd.folderId ?? null;
+        const conversation = convId ? convStore.getSystemInstructions(convId) ?? (convStore.get(convId) ? "" : null) : null;
+        if (convId && conversation === null) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Conversation ${convId} not found` });
+          break;
+        }
+        const folder = folderId ? convStore.getFolderInstructions(folderId) : null;
+        let global: string;
+        try {
+          global = reloadUserAddendum();
+        } catch {
+          global = getUserAddendum();
+        }
+        server.sendTo(client, { type: "instructions_loaded", reqId: cmd.reqId, convId, folderId: folder === null ? null : folderId, conversation, folder, global });
+        break;
+      }
+
+      case "set_global_instructions": {
+        try {
+          setUserAddendum(cmd.text, cmd.expectedText);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Could not save global instructions: ${message}` });
+          break;
+        }
+        server.broadcast({ type: "global_instructions_updated", reqId: cmd.reqId, text: getUserAddendum() });
+        log("info", `handler: global instructions ${cmd.text.trim() ? "set" : "cleared"}`);
         break;
       }
 

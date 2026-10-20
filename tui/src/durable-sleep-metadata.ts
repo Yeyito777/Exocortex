@@ -14,7 +14,7 @@ const CHRONO_SUSPENDED_TASK_PREFIXES = ["chrono:sleep:", "chrono:wait:"];
  * and restarted TUIs recover the live metadata clock without local-only state.
  */
 export function activeDurableSleepAssistant(state: RenderState): AIMessage | null {
-  if (!state.convId || state.folderInstructionsDoc) return null;
+  if (!state.convId) return null;
   const conversation = state.sidebar?.conversations.find(candidate => candidate.id === state.convId);
   if (!conversation || !isDurablySleeping(conversation)) return null;
 

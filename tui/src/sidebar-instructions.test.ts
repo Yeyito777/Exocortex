@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { buildDisplayRows, handleSidebarAction, renderSidebar, updateConversationList } from "./sidebar";
 import { createSidebarState } from "./sidebar/state";
-import { createInitialState, draftFolderEffectiveInstructions, openFolderInstructionsDocument, resetDraftConversationState, setFolderInstructionsDocumentText } from "./state";
+import { createInitialState, resetDraftConversationState } from "./state";
 import type { FolderSummary } from "./messages";
 import { leaveFolder } from "./sidebar/folderactions";
 
@@ -51,37 +51,7 @@ describe("folder AGENTS.md sidebar entry", () => {
     expect(sidebar.selectedItem).toEqual({ type: "folder_instructions", folderId: "folder-a" });
   });
 
-  test("opening AGENTS.md preserves the current panel focus and prompt", () => {
-    const state = createInitialState();
-    state.sidebar.open = true;
-    state.panelFocus = "sidebar";
-    state.chatFocus = "history";
-    state.inputBuffer = "draft message";
-    state.cursorPos = 5;
-
-    openFolderInstructionsDocument(state, "folder-a");
-
-    expect(state.panelFocus).toBe("sidebar");
-    expect(state.chatFocus).toBe("history");
-    expect(state.inputBuffer).toBe("draft message");
-    expect(state.cursorPos).toBe(5);
-  });
-
-  test("loading AGENTS.md renders without prefilling or clearing the prompt", () => {
-    const state = createInitialState();
-    state.inputBuffer = "draft message";
-    state.cursorPos = 5;
-    openFolderInstructionsDocument(state, "folder-a");
-
-    setFolderInstructionsDocumentText(state, "folder-a", "Remember dinosaurs.");
-
-    expect(state.inputBuffer).toBe("draft message");
-    expect(state.cursorPos).toBe(5);
-    expect(state.folderInstructionsDoc?.savedText).toBe("Remember dinosaurs.");
-    expect(state.messages[0]).toMatchObject({ role: "system_instructions", text: "Remember dinosaurs." });
-  });
-
-  test("blank new chats in a folder render effective AGENTS.md instructions synchronously", () => {
+  test("blank new chats in a folder do not render its AGENTS.md instructions", () => {
     const state = createInitialState();
     state.sidebar.currentFolderId = "folder-a";
     state.sidebar.folders = [folder("folder-a", "Project", null, "# Context from AGENTS.md:\nRemember dinosaurs.")];
@@ -92,10 +62,7 @@ describe("folder AGENTS.md sidebar entry", () => {
 
     expect(state.inputBuffer).toBe("draft message");
     expect(state.cursorPos).toBe(5);
-    expect(state.messages[0]).toMatchObject({
-      role: "system_instructions",
-      text: "# Context from AGENTS.md:\nRemember dinosaurs.",
-    });
+    expect(state.messages).toEqual([]);
   });
 
   test("blank new chats outside folders do not render folder instructions", () => {
@@ -118,6 +85,5 @@ describe("folder AGENTS.md sidebar entry", () => {
 
     expect(state.sidebar.currentFolderId).toBeNull();
     expect(state.draftFolderId).toBe("folder-a");
-    expect(draftFolderEffectiveInstructions(state)).toBe("Stay in this project.");
   });
 });

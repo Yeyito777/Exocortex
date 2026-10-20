@@ -58,7 +58,7 @@ export interface TaskPanelLayout {
 }
 
 export function focusedConversationTasks(state: RenderState): TaskPanelEntry[] {
-  if (!state.convId || state.folderInstructionsDoc) return [];
+  if (!state.convId) return [];
   const activityTasks = (state.sidebar.conversations.find(conversation => conversation.id === state.convId)?.tasks ?? [])
     .filter(shouldDisplayConversationTask);
   const goal = state.goal;
@@ -102,7 +102,7 @@ export function hasFocusedConversationTasks(state: RenderState): boolean {
 
 /** Durable external notification subscriptions targeting the focused conversation. */
 export function focusedConversationIntegrations(state: RenderState): ExternalIntegrationSummary[] {
-  if (!state.convId || state.folderInstructionsDoc) return [];
+  if (!state.convId) return [];
   return state.sidebar.conversations.find(conversation => conversation.id === state.convId)?.integrations ?? [];
 }
 

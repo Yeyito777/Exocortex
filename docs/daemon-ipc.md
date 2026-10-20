@@ -73,6 +73,21 @@ sent after `ping`. A turn waiting for the network sends its subscribers
 snapshots carry `connectionWaitStartedAt` for late joiners. Stop it with
 `abort` like any turn.
 
+## Instructions
+
+Three scopes add to the system prompt: a conversation's own instructions, its
+folder's (and every parent folder's) AGENTS.md text, and the global
+instructions every conversation gets (`config/system.md`).
+`load_instructions` (`convId`, `folderId`, both optional) answers
+`instructions_loaded` with each scope's own text, `null` for a scope that does
+not apply. `set_system_instructions`, `set_folder_instructions` and
+`set_global_instructions` write one scope; empty text clears it. The last takes
+an optional `expectedText` and is refused if `config/system.md` changed since it
+was read; it broadcasts `global_instructions_updated`. The TUI's `/instructions`
+picker and editor use these commands. Conversation and folder instructions are
+still sent to clients as pinned `system_instructions` history entries; the TUI
+does not draw them.
+
 ## New-conversation defaults
 
 The connected daemon owns `defaults.conversation` in its host's config.

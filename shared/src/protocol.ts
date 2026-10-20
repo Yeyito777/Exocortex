@@ -878,6 +878,26 @@ export interface SetSystemInstructionsCommand {
   text: string;
 }
 
+/** Read every instruction scope that applies to a conversation (or a draft in a folder). */
+export interface LoadInstructionsCommand {
+  type: "load_instructions";
+  reqId?: string;
+  /** The conversation whose own instructions to read; omit for a draft. */
+  convId?: string;
+  /** The folder whose own instructions to read; omit or null outside folders. */
+  folderId?: string | null;
+}
+
+/** Set the app-wide instructions every conversation gets (config/system.md). */
+export interface SetGlobalInstructionsCommand {
+  type: "set_global_instructions";
+  reqId?: string;
+  /** Empty string clears them. */
+  text: string;
+  /** When set, the write is refused if the current text differs (edited elsewhere meanwhile). */
+  expectedText?: string;
+}
+
 export interface LlmCompleteCommand {
   delegation?: boolean;
   legacy?: boolean;
@@ -1214,6 +1234,8 @@ export type Command =
   | MoveQueuedMessageCommand
   | UnwindConversationCommand
   | SetSystemInstructionsCommand
+  | LoadInstructionsCommand
+  | SetGlobalInstructionsCommand
   | LlmCompleteCommand
   | GetSystemPromptCommand
   | RetiredToolSelectionCommand
@@ -2039,6 +2061,26 @@ export interface FolderInstructionsUpdatedEvent {
   text: string;
 }
 
+export interface InstructionsLoadedEvent {
+  type: "instructions_loaded";
+  reqId?: string;
+  convId: string | null;
+  folderId: string | null;
+  /** The conversation's own instructions; null without a conversation. */
+  conversation: string | null;
+  /** The folder's own instructions (not its parents'); null without a folder. */
+  folder: string | null;
+  /** The app-wide instructions. */
+  global: string;
+}
+
+export interface GlobalInstructionsUpdatedEvent {
+  type: "global_instructions_updated";
+  reqId?: string;
+  /** The new text. Empty string means cleared. */
+  text: string;
+}
+
 export interface LlmCompleteResultEvent {
   type: "llm_complete_result";
   reqId?: string;
@@ -2215,6 +2257,8 @@ export type Event =
   | SystemInstructionsUpdatedEvent
   | FolderInstructionsLoadedEvent
   | FolderInstructionsUpdatedEvent
+  | InstructionsLoadedEvent
+  | GlobalInstructionsUpdatedEvent
   | LlmCompleteResultEvent
   | SystemPromptEvent
   | TasksListEvent

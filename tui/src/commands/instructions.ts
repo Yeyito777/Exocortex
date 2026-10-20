@@ -1,39 +1,25 @@
 import { clearPrompt } from "../promptstate";
 import { pushSystemMessage } from "../state";
-import { showNoSystemInstructions } from "./shared";
 import type { SlashCommand } from "./types";
 
 export const INSTRUCTIONS_COMMAND: SlashCommand = {
   name: "/instructions",
-  description: "Set, show, or clear per-conversation system instructions",
-  args: [{ name: "clear", desc: "Clear instructions" }],
+  description: "View and edit conversation, folder or global instructions; with text, set this conversation's",
+  args: [{ name: "clear", desc: "Clear this conversation's instructions" }],
   handler: (text, state) => {
-    const arg = text.slice("/instructions".length);
-    const trimmed = arg.trimStart();
-    if (!trimmed) {
-      if (!state.convId) {
-        return showNoSystemInstructions(state);
-      }
-      const instrMsg = state.messages.find((m): m is import("../messages").SystemInstructionsMessage => m.role === "system_instructions");
-      if (instrMsg?.text.trim()) {
-        pushSystemMessage(state, `Current instructions:\n${instrMsg.text}`);
-        clearPrompt(state);
-        return { type: "handled" };
-      }
-      return showNoSystemInstructions(state);
-    }
+    const trimmed = text.slice("/instructions".length).trim();
+    clearPrompt(state);
+    if (!trimmed) return { type: "open_instructions" };
     if (trimmed === "clear") {
       if (!state.convId) {
-        return showNoSystemInstructions(state);
+        pushSystemMessage(state, "This conversation has no instructions to clear yet.");
+        return { type: "handled" };
       }
-      clearPrompt(state);
+      pushSystemMessage(state, "Conversation instructions cleared.");
       return { type: "set_system_instructions", text: "" };
     }
-    if (!state.convId) {
-      clearPrompt(state);
-      return { type: "create_conversation_for_instructions", text: trimmed };
-    }
-    clearPrompt(state);
+    if (!state.convId) return { type: "create_conversation_for_instructions", text: trimmed };
+    pushSystemMessage(state, "Conversation instructions set. /instructions shows them.");
     return { type: "set_system_instructions", text: trimmed };
   },
 };

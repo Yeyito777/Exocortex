@@ -1505,17 +1505,26 @@ describe("/instructions", () => {
     expect(state.messages).toHaveLength(0);
   });
 
-  test("on a new chat with no text, reports that no instructions are set", () => {
+  test("with no text, opens the instructions picker in a draft or a conversation", () => {
+    const draft = createInitialState();
+    draft.inputBuffer = "/instructions";
+    expect(tryCommand("/instructions", draft)).toEqual({ type: "open_instructions" });
+    expect(draft.inputBuffer).toBe("");
+    expect(draft.messages).toHaveLength(0);
+
+    const open = createInitialState();
+    open.convId = "conv-1";
+    expect(tryCommand("/instructions   ", open)).toEqual({ type: "open_instructions" });
+  });
+
+  test("with text in a conversation, sets them and says how to see them", () => {
     const state = createInitialState();
+    state.convId = "conv-1";
 
-    const result = tryCommand("/instructions", state);
+    const result = tryCommand("/instructions be concise", state);
 
-    expect(result).toEqual({ type: "handled" });
-    expect(state.messages).toHaveLength(1);
-    expect(state.messages[0]).toMatchObject({
-      role: "system",
-      text: "No system instructions set for this conversation.",
-    });
+    expect(result).toEqual({ type: "set_system_instructions", text: "be concise" });
+    expect(state.messages.at(-1)).toMatchObject({ role: "system", text: "Conversation instructions set. /instructions shows them." });
   });
 
   test("on a new chat with clear, does not create a conversation", () => {
@@ -1528,8 +1537,16 @@ describe("/instructions", () => {
     expect(state.messages).toHaveLength(1);
     expect(state.messages[0]).toMatchObject({
       role: "system",
-      text: "No system instructions set for this conversation.",
+      text: "This conversation has no instructions to clear yet.",
     });
+  });
+
+  test("clear in a conversation clears them", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+
+    expect(tryCommand("/instructions clear", state)).toEqual({ type: "set_system_instructions", text: "" });
+    expect(state.messages.at(-1)).toMatchObject({ role: "system", text: "Conversation instructions cleared." });
   });
 });
 

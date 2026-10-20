@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { browserOpenCommand, handleEvent, type DaemonActions } from "./events";
 import { buildDiskSyncAssistantDiffPayload } from "./events/disk-sync-diagnostics";
 import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, createPendingAI, type ConversationSummary, type FolderSummary } from "./messages";
-import { createInitialState, isStreaming, canInterrupt, noteConversationOpenRequest, openFolderInstructionsDocument, resetDraftConversationState, type RenderState } from "./state";
+import { createInitialState, isStreaming, canInterrupt, noteConversationOpenRequest, resetDraftConversationState, type RenderState } from "./state";
 import { buildMessageLines } from "./conversation";
 import { getViewStartFor } from "./chatscroll";
 import { requestVisibleToolOutputs } from "./events/tool-outputs";
@@ -393,18 +393,6 @@ describe("remote conversation open placeholder", () => {
     expect(state.convId).toBeNull();
     expect(state.messages.some(message => message.role === "assistant")).toBe(false);
     expect(unsubscribed).toEqual(["current", "target"]);
-  });
-
-  test("a late local load does not yank the user out of the folder-instructions editor", () => {
-    const { state, actions } = openedState();
-    // Local opens keep the previous conversation until the load lands.
-    noteConversationOpenRequest(state, "target", "conversation_1");
-    openFolderInstructionsDocument(state, "folder-1");
-
-    handleEvent({ ...loaded("target"), reqId: "conversation_1" }, state, actions);
-
-    expect(state.convId).toBeNull();
-    expect(state.folderInstructionsDoc?.folderId).toBe("folder-1");
   });
 
   test("a reconnect-replayed open queued before /new is not applied", () => {

@@ -27,7 +27,7 @@ export function scrollOffsetForPercentage(
 /** Capture the active conversation's viewport before navigating away. */
 export function rememberCurrentConversationScroll(state: RenderState): void {
   // A loading placeholder's layout says nothing about where the reader was.
-  if (!state.convId || state.folderInstructionsDoc || isActiveConversationLoading(state)) return;
+  if (!state.convId || isActiveConversationLoading(state)) return;
   const percentage = captureScrollPercentage(
     state.layout.totalLines,
     state.layout.messageAreaHeight,

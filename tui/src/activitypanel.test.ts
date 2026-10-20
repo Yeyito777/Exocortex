@@ -320,7 +320,7 @@ describe("focused conversation subscriptions", () => {
 
     state.convId = "other";
     expect(focusedConversationIntegrations(state).map(item => item.id)).toEqual(["integration:other"]);
-    state.folderInstructionsDoc = { folderId: "folder", text: "", savedText: "", loading: false };
+    state.convId = null;
     expect(focusedConversationIntegrations(state)).toEqual([]);
     expect(hasFocusedConversationIntegrations(state)).toBe(false);
   });

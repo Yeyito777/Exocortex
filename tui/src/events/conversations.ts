@@ -68,7 +68,6 @@ import {
  */
 export function beginOptimisticConversation(state: RenderState, conversation: OptimisticConversation): void {
   addOptimisticConversation(state.sidebar, conversation);
-  state.folderInstructionsDoc = null;
   state.convId = conversation.convId;
   state.goal = null;
   state.btw = null;
@@ -114,7 +113,6 @@ export function handleConversationCreated(
   // which row to select so creation moves the sidebar cursor even when keyboard
   // focus remains in the chat panel.
   state.sidebar.pendingFocusItem = { type: "conversation", id: event.convId };
-  state.folderInstructionsDoc = null;
   state.convId = event.convId;
   syncCreatedConversationSettings(state, event);
   state.btw = null;
@@ -207,7 +205,6 @@ export function beginConversationLoad(state: RenderState, convId: string, daemon
   state.messages = [];
   clearPendingAI(state);
   clearStreamingTailMessages(state);
-  state.folderInstructionsDoc = null;
   state.convId = convId;
   state.conversationLoading = { convId, startedAt: Date.now() };
   state.btw = null;
@@ -343,7 +340,6 @@ export function handleConversationLoaded(
   clearPendingAI(state);
   clearStreamingTailMessages(state);
   rememberEnteredConversation(state.sidebar, previousConvId, event.convId);
-  state.folderInstructionsDoc = null;
   state.convId = event.convId;
   state.conversationLoading = null;
   if (sameConversation || placeholderLoading) {

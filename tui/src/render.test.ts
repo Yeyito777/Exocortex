@@ -1107,7 +1107,7 @@ describe("render caching and frame diffing", () => {
     expect(stripCsi(stripAnsi(firstUserWrite?.text ?? ""))).toContain("FIRST ROW");
   });
 
-  test("places tasks below system instructions and wraps chat history beside them", () => {
+  test("pinned system instructions take no rows: tasks float from the top and history wraps beside them", () => {
     const state = createInitialState();
     state.cols = 120;
     state.rows = 40;
@@ -1145,7 +1145,7 @@ describe("render caching and frame diffing", () => {
 
     const writes = positionedWrites(captureRenderOutput(state));
     const taskHeader = writes.find(write => (
-      write.row === 7
+      write.row === 3
       && write.col === 71
       && stripAnsi(write.text).includes("Tasks")
     ));
@@ -1157,26 +1157,25 @@ describe("render caching and frame diffing", () => {
     ));
     const overlappingHistoryWrites = writes.filter(write => (
       write.col === 1
-      && write.row >= 7
-      && write.row <= 9
+      && write.row >= 3
+      && write.row <= 5
       && /OVERLAP|history words|filler/.test(stripAnsi(write.text))
     ));
     const belowPanel = writes.find(write => (
       write.col === 1
-      && write.row === 12
+      && write.row === 8
       && stripAnsi(write.text).includes("AFTER")
     ));
     const bufferRow = writes.find(write => (
       write.col === 1
-      && write.row === 10
+      && write.row === 6
       && stripAnsi(write.text).includes("BELOW")
     ));
 
     expect(taskHeader).toBeDefined();
     expect(state.layout.historyWidth).toBe(69);
-    expect(instructionLines).toHaveLength(4);
-    expect(instructionLines.slice(0, -1).every(line => termWidth(stripAnsi(line)) === 120)).toBe(true);
-    expect(instructionLines.at(-1)).toBe("");
+    expect(instructionLines).toHaveLength(0);
+    expect(state.historyLines.join("\n")).not.toContain("full-width instruction box");
     expect(assistantLines).toHaveLength(4);
     expect(overlappingHistoryWrites.length).toBeGreaterThan(0);
     expect(overlappingHistoryWrites.every(write => termWidth(stripCsi(stripAnsi(write.text))) <= state.layout.historyWidth)).toBe(true);
@@ -1184,64 +1183,6 @@ describe("render caching and frame diffing", () => {
     expect(termWidth(stripCsi(stripAnsi(bufferRow!.text)))).toBeLessThanOrEqual(state.layout.historyWidth);
     expect(belowPanel).toBeDefined();
     expect(termWidth(stripCsi(stripAnsi(belowPanel!.text)))).toBeGreaterThan(state.layout.historyWidth);
-  });
-
-  test("keeps a system-instructions box full-width when top-anchored task-panel reflow reaches it", () => {
-    const state = createInitialState();
-    state.cols = 120;
-    state.rows = 30;
-    state.convId = "parent";
-    state.messages = [
-      {
-        role: "assistant",
-        blocks: [{ type: "text", text: `BEFORE ${"history words ".repeat(6)}` }],
-        metadata: null,
-      },
-      { role: "system_instructions", text: "Keep this box intact.", metadata: null },
-      {
-        role: "assistant",
-        blocks: Array.from({ length: 13 }, (_, index) => ({
-          type: "text" as const,
-          text: `AFTER${index} ${"history words ".repeat(6)}`,
-        })),
-        metadata: null,
-      },
-    ];
-    state.sidebar.conversations = [{
-      id: "parent",
-      provider: state.provider,
-      model: state.model,
-      effort: state.effort,
-      fastMode: state.fastMode,
-      createdAt: 1,
-      updatedAt: 2,
-      messageCount: 3,
-      title: "Parent",
-      marked: false,
-      pinned: false,
-      streaming: false,
-      unread: false,
-      sortOrder: 0,
-      tasks: Array.from({ length: 27 }, (_, index) => ({
-        id: `child-${index}`,
-        kind: "subagent" as const,
-        title: `Task ${index}`,
-        startedAt: Date.now() - 2_000,
-      })),
-    }];
-
-    captureRenderOutput(state);
-    const instructionRows = state.layout.historyViewportRows.filter((viewportRow) => (
-      viewportRow
-      && state.historyLineAnchors[viewportRow.lineIndex]?.segment.startsWith("system_instructions")
-    ));
-
-    expect(instructionRows.map(row => row?.lineIndex)).toEqual([1, 2, 3, 4]);
-    expect(state.layout.taskPanelRect?.top).toBe(8);
-    expect(instructionRows.slice(0, -1).every(row => (
-      row !== null && termWidth(stripAnsi(state.historyLines[row.lineIndex])) === state.cols
-    ))).toBe(true);
-    expect(state.historyLines[instructionRows.at(-1)!.lineIndex]).toBe("");
   });
 
   test("preserves assistant indentation on task-panel reflow continuations", () => {
