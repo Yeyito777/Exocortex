@@ -106,7 +106,11 @@ function pickerEntries(picker: InstructionsPickerState, inner: number): Array<{ 
       const summary = summarizeInstructions(picker.texts[scope]);
       if (!summary) detail = spread("   loading…", theme.muted, "", "", inner - 2, bg);
       else if (!summary.preview) detail = spread("   empty", theme.dim + theme.italic, "", "", inner - 2, bg) + theme.italicOff;
-      else detail = spread(`   “${summary.preview}”`, theme.text, summary.size, theme.muted, inner - 2, bg);
+      else {
+        // Shorten the first line rather than drop the size beside it.
+        const room = inner - 2 - 3 - 2 - termWidth(summary.size) - 2;
+        detail = spread(`   “${truncateToWidth(clean(summary.preview), Math.max(8, room)).replace(/\s+…$/, "…")}”`, theme.text, summary.size, theme.muted, inner - 2, bg);
+      }
     }
     rows.push({ text: "  " + bg + detail, bg });
     if (index < INSTRUCTION_SCOPES.length - 1) rows.push(blank());
@@ -228,7 +232,7 @@ export function renderInstructionsEditor(editor: InstructionsEditorState, totalR
   const inner = width - SIDE;
   // Top edge, blank, body, blank, separator, status, bottom edge.
   const chrome = 6;
-  const height = Math.max(chrome + 3, Math.min(totalRows - 2, Math.max(14, Math.round(totalRows * 0.8))));
+  const height = Math.max(chrome + 3, Math.min(totalRows - 2, Math.max(16, Math.round(totalRows * 0.65))));
   const bodyRows = Math.max(1, height - chrome);
   const { top, left } = cardGeometry(totalRows, totalCols, width, height);
   const bg = theme.sidebarBg;

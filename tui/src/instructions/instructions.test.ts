@@ -106,6 +106,15 @@ describe("/instructions picker", () => {
     expect(shown).toContain("j/k move · Enter edit · Esc close");
   });
 
+  test("shortens a long first line instead of dropping its size", () => {
+    const state = conversationState();
+    const daemon = new FakeDaemon();
+    openLoaded(state, daemon, { conversation: `${"walk ".repeat(30)}\nsecond`, folder: "", global: "" });
+    const shown = plain(renderInstructionsPicker(state.instructionsModal!.picker!, 40, 90).payload);
+    expect(shown).toContain("walk w…”");
+    expect(shown).toContain("2 lines · 157 chars");
+  });
+
   test("says when the conversation has no folder and skips that row", () => {
     const state = conversationState(false);
     const daemon = new FakeDaemon();
