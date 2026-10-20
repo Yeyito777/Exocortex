@@ -33,11 +33,12 @@ export interface InstructionsNotice {
 
 export interface InstructionsPickerState {
   target: InstructionsTarget;
-  /** Each scope's own text as last loaded; null until loaded or when the scope does not apply. */
+  /** Each scope's text as the TUI has it; null until known or when the scope does not apply. */
   texts: Record<InstructionScope, string | null>;
-  /** The load in flight; texts keep their last values meanwhile. */
+  /** Why a scope's last save failed; Enter brings its text back. */
+  failures: Record<InstructionScope, string | null>;
+  /** The background check of these texts against the daemon. */
   loadReqId: string | null;
-  loaded: boolean;
   error: string | null;
   /** Index into INSTRUCTION_SCOPES. */
   selection: number;
@@ -61,8 +62,6 @@ export interface InstructionsEditorState {
   notice: InstructionsNotice | null;
   /** Set while the text has not arrived (the editor was opened without the picker). */
   loadReqId: string | null;
-  /** A save in flight; `close` closes the editor once it lands. */
-  saving: { reqId: string; text: string; close: boolean } | null;
   /** Esc was pressed with unsaved changes: another Esc discards them. */
   confirmDiscard: boolean;
   /** Body size from the last frame, for Ctrl-D/U and wrapping. */
@@ -124,7 +123,6 @@ export function createInstructionsEditor(
     command: null,
     notice: null,
     loadReqId: null,
-    saving: null,
     confirmDiscard: false,
     viewRows: 10,
     viewWidth: 60,

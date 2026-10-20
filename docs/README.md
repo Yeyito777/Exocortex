@@ -74,6 +74,19 @@ normal mode closes, asking once more when there are unsaved changes. Saving an
 empty document clears that scope. Global saves are refused if `config/system.md`
 changed since it was opened; `:w!` overwrites it.
 
+Everything acts locally first, so it feels the same over `/ssh`: the TUI keeps
+each scope's text (fetched in the background once a conversation has been open
+a second, and kept current by the daemon's update events), the picker shows it
+at once and re-checks it in the background, and saves update the preview and
+close straight away while the daemon write follows. A save is sent only when
+the TUI knows the daemon still has the text the edit started from; otherwise it
+waits for a check and fails rather than write over newer text. A failed save
+puts the old text back on the picker row with the reason (or, when the modal is
+closed, a notice in the chat); `Enter` on that scope brings the unsaved text
+back. If the link drops before a save is confirmed, the TUI reads the scope back
+after reconnecting: the save is kept if it landed, sent again if the old text is
+still there, and failed (text kept) if it changed elsewhere meanwhile.
+
 ## Slash commands
 
 `/help` lists the same commands; the registry in
