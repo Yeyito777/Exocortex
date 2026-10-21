@@ -76,7 +76,8 @@ closes.
 The editor is a centred card with the prompt's Vim keys (insert, normal, visual,
 motions, operators, undo/redo). `:w` or `Ctrl+S` saves, `:wq`/`:x` saves and
 closes, `:q` closes (refused with unsaved changes), `:q!` discards; `Esc` in
-normal mode closes, asking once more when there are unsaved changes. Saving an
+normal mode closes, asking once more when there are unsaved changes. Closing the
+editor leaves `/instructions` altogether rather than returning to the picker. Saving an
 empty document clears that scope. Global saves are refused if `config/system.md`
 changed since it was opened; `:w!` overwrites it.
 
@@ -98,9 +99,9 @@ at once and re-checks it in the background, and saves update the preview and
 close straight away while the daemon write follows. A save is sent only when
 the TUI knows the daemon still has the text the edit started from; otherwise it
 waits for a check and fails rather than write over newer text. A failed save
-puts the old text back on the picker row with the reason (or, when the modal is
-closed, a notice in the chat); `Enter` on that scope brings the unsaved text
-back. If the link drops before a save is confirmed, the TUI reads the scope back
+rolls the preview back and says why: in the open editor, on the picker row, or,
+once `/instructions` is closed (as after `:wq`), in a notice in the chat.
+Opening that scope again brings the unsaved text back. If the link drops before a save is confirmed, the TUI reads the scope back
 after reconnecting: the save is kept if it landed, sent again if the old text is
 still there, and failed (text kept) if it changed elsewhere meanwhile.
 

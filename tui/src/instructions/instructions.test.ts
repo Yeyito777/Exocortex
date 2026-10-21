@@ -20,6 +20,7 @@ import {
 } from "./controller";
 import { renderInstructionsEditor, renderInstructionsPicker } from "./render";
 import { createInstructionsEditor, summarizeInstructions } from "./state";
+import { instructionsFailure, instructionsText } from "./store";
 import type { MacroDraft } from "../commands/macro";
 
 class FakeDaemon implements InstructionsDaemon {
@@ -153,9 +154,11 @@ describe("/instructions picker", () => {
     expect(editor.buffer).toBe("Pack light.");
     expect(editor.vim.mode).toBe("normal");
 
+    // Leaving the editor leaves /instructions, not back to the picker.
     press(state, daemon, ESC);
-    expect(state.instructionsModal?.editor).toBeNull();
-    expect(state.instructionsModal?.picker).not.toBeNull();
+    expect(state.instructionsModal).toBeNull();
+
+    openInstructionsPicker(state, daemon);
     press(state, daemon, ESC);
     expect(state.instructionsModal).toBeNull();
   });
@@ -280,16 +283,19 @@ describe("instructions editor", () => {
     press(state, daemon, "j", ENTER, "Pack light.", ESC, ":wq", ENTER);
     const folderSave = daemon.last();
     expect(folderSave).toMatchObject({ method: "setFolderInstructions", args: ["folder-1", "Pack light."] });
-    expect(state.instructionsModal!.editor).toBeNull();
+    expect(state.instructionsModal).toBeNull();
+    // Reopening shows the saved text before the daemon confirms it.
+    openInstructionsPicker(state, daemon);
     expect(state.instructionsModal!.picker!.texts.folder).toBe("Pack light.");
     handleInstructionsEvent(state, { type: "folder_instructions_updated", reqId: folderSave.reqId, folderId: "folder-1", text: "Pack light." }, daemon);
     expect(state.instructionsModal!.picker!.texts.folder).toBe("Pack light.");
 
-    press(state, daemon, "j", ENTER, "A", " Always.", ESC, ":x", ENTER);
+    press(state, daemon, "3", "A", " Always.", ESC, ":x", ENTER);
     const globalSave = daemon.last();
     // The text it was loaded as guards against overwriting an edit made elsewhere.
     expect(globalSave).toMatchObject({ method: "setGlobalInstructions", args: ["Be kind. Always.", "Be kind."] });
-    expect(state.instructionsModal!.editor).toBeNull();
+    expect(state.instructionsModal).toBeNull();
+    openInstructionsPicker(state, daemon);
     expect(state.instructionsModal!.picker!.texts.global).toBe("Be kind. Always.");
     handleInstructionsEvent(state, { type: "global_instructions_updated", reqId: globalSave.reqId, text: "Be kind. Always." }, daemon);
     expect(state.instructionsModal!.picker!.texts.global).toBe("Be kind. Always.");
@@ -299,8 +305,11 @@ describe("instructions editor", () => {
     const state = conversationState();
     const daemon = new FakeDaemon();
     openLoaded(state, daemon, { conversation: "Before.", folder: "", global: "" });
-    press(state, daemon, ENTER, "cc", "Rule.", ESC, ":wq", ENTER);
+    press(state, daemon, ENTER, "cc", "Rule.", ESC, ":w", ENTER, ESC);
     const save = daemon.last();
+    expect(save.method).toBe("setSystemInstructions");
+    // Back on the picker while the save is out.
+    openInstructionsPicker(state, daemon);
     expect(state.instructionsModal!.picker!.texts.conversation).toBe("Rule.");
 
     const consumed = handleInstructionsEvent(state, { type: "error", reqId: save.reqId, convId: "conv-1", message: "Cannot rewrite conversation history while it is streaming." }, daemon);
@@ -346,13 +355,14 @@ describe("instructions editor", () => {
     expect(state.instructionsModal!.editor).toBe(editor);
     expect(editor.notice?.tone).toBe("warning");
     press(state, daemon, ":q!", ENTER);
-    expect(state.instructionsModal!.editor).toBeNull();
+    expect(state.instructionsModal).toBeNull();
 
+    openInstructionsPicker(state, daemon);
     press(state, daemon, ENTER, "x", ESC);
     expect(state.instructionsModal!.editor).not.toBeNull();
     expect(state.instructionsModal!.editor!.notice?.text).toContain("Esc again discards");
     press(state, daemon, ESC);
-    expect(state.instructionsModal!.editor).toBeNull();
+    expect(state.instructionsModal).toBeNull();
     expect(daemon.calls.filter(call => call.method.startsWith("set"))).toEqual([]);
   });
 
@@ -437,13 +447,14 @@ describe("/instructions over a slow or dropped link", () => {
     // Scopes open without waiting.
     press(state, daemon, "2");
     expect(state.instructionsModal!.editor!.buffer).toBe("Pack light.");
-    press(state, daemon, ESC, "3");
+    press(state, daemon, ESC);
+    openInstructionsPicker(state, daemon);
+    press(state, daemon, "3");
     expect(state.instructionsModal!.editor!.buffer).toBe("You are Exo.");
 
     // The check brings an edit made elsewhere into the clean editor and the picker.
     answerLoad(state, daemon, { conversation: "Be brief.", folder: "Pack light.", global: "Edited on the laptop." });
     expect(state.instructionsModal!.editor!.buffer).toBe("Edited on the laptop.");
-    press(state, daemon, ESC);
     expect(state.instructionsModal!.picker!.texts.global).toBe("Edited on the laptop.");
   });
 
@@ -476,6 +487,8 @@ describe("/instructions over a slow or dropped link", () => {
     const [first, second] = sets(daemon);
     expect(first.args).toEqual(["conv-1", "First."]);
     expect(second.args).toEqual(["conv-1", "Second."]);
+    expect(state.instructionsModal).toBeNull();
+    openInstructionsPicker(state, daemon);
     const picker = state.instructionsModal!.picker!;
     expect(picker.texts.conversation).toBe("Second.");
 
@@ -512,7 +525,7 @@ describe("/instructions over a slow or dropped link", () => {
     const state = conversationState();
     const daemon = new FakeDaemon();
     openLoaded(state, daemon, { conversation: "", folder: "Old.", global: "" });
-    press(state, daemon, "2", "cc", "New.", ESC, ":wq", ENTER, ESC);
+    press(state, daemon, "2", "cc", "New.", ESC, ":wq", ENTER);
     expect(state.instructionsModal).toBeNull();
 
     handleInstructionsEvent(state, { type: "error", reqId: sets(daemon)[0].reqId, message: "Folder folder-1 not found" }, daemon);
@@ -527,6 +540,27 @@ describe("/instructions over a slow or dropped link", () => {
     expect(state.instructionsModal!.editor!.buffer).toBe("New.");
   });
 
+  test("a failure after :wq from a scope's own editor is announced in the chat, and reopening that editor brings the text back", () => {
+    const state = conversationState();
+    const daemon = new FakeDaemon();
+    openFolderInstructionsEditor(state, daemon, "folder-1");
+    answerLoad(state, daemon, { conversation: "", folder: "Old.", global: "" });
+    press(state, daemon, "cc", "Unsaved work.", ESC, ":wq", ENTER);
+    expect(state.instructionsModal).toBeNull();
+
+    handleInstructionsEvent(state, { type: "error", reqId: sets(daemon)[0].reqId, message: "disk full" }, daemon);
+    const notice = state.messages.at(-1);
+    expect(notice && "text" in notice ? notice.text : "").toBe("✗ Folder instructions for Travel/ were not saved: disk full. Open /instructions to get the text back.");
+    // The store keeps the text until an editor takes it back.
+    expect(instructionsFailure(state.instructionsStore, "folder:folder-1")?.text).toBe("Unsaved work.");
+
+    openFolderInstructionsEditor(state, daemon, "folder-1");
+    const editor = state.instructionsModal!.editor!;
+    expect(editor.buffer).toBe("Unsaved work.");
+    expect(editor.savedText).toBe("Old.");
+    expect(editor.notice).toEqual({ text: "Not saved: disk full; :w tries again", tone: "error" });
+  });
+
   test("a save made while disconnected waits, then is sent only if nothing changed meanwhile", () => {
     const state = conversationState();
     const daemon = new FakeDaemon();
@@ -535,8 +569,8 @@ describe("/instructions over a slow or dropped link", () => {
     daemon.connected = false;
 
     press(state, daemon, ENTER, "cc", "Offline edit.", ESC, ":wq", ENTER);
-    expect(state.instructionsModal!.editor).toBeNull();
-    expect(state.instructionsModal!.picker!.texts.conversation).toBe("Offline edit.");
+    expect(state.instructionsModal).toBeNull();
+    expect(instructionsText(state.instructionsStore, "conversation:conv-1")).toBe("Offline edit.");
     expect(sets(daemon)).toEqual([]);
 
     daemon.connected = true;
@@ -547,7 +581,8 @@ describe("/instructions over a slow or dropped link", () => {
     answerLoad(state, daemon, { conversation: "Base.", folder: null, global: "" });
     expect(sets(daemon).map(call => call.args)).toEqual([["conv-1", "Offline edit."]]);
     ack(state, daemon, sets(daemon)[0].reqId);
-    expect(state.instructionsModal!.picker!.texts.conversation).toBe("Offline edit.");
+    expect(instructionsText(state.instructionsStore, "conversation:conv-1")).toBe("Offline edit.");
+    expect(state.messages).toEqual([]);
   });
 
   test("a save waiting on a check fails, keeping its text, if the text changed elsewhere", () => {
@@ -564,6 +599,10 @@ describe("/instructions over a slow or dropped link", () => {
     expect(sets(daemon)).toEqual([]);
     answerLoad(state, daemon, { conversation: "Theirs.", folder: "", global: "" });
     expect(sets(daemon)).toEqual([]);
+    // The modal closed on :wq, so the chat says so.
+    const notice = state.messages.at(-1);
+    expect(notice && "text" in notice ? notice.text : "").toContain("were not saved: Changed elsewhere meanwhile. Open /instructions to get the text back.");
+    openInstructionsPicker(state, daemon);
     const picker = state.instructionsModal!.picker!;
     expect(picker.texts.conversation).toBe("Theirs.");
     expect(picker.failures.conversation).toBe("Changed elsewhere meanwhile");
@@ -589,8 +628,9 @@ describe("/instructions over a slow or dropped link", () => {
     // It landed: nothing to resend, nothing failed.
     answerLoad(landed, daemon, { conversation: "", folder: "Sent.", global: "" });
     expect(sets(daemon)).toHaveLength(1);
-    expect(landed.instructionsModal!.picker!.texts.folder).toBe("Sent.");
-    expect(landed.instructionsModal!.picker!.failures.folder).toBeNull();
+    expect(instructionsText(landed.instructionsStore, "folder:folder-1")).toBe("Sent.");
+    expect(instructionsFailure(landed.instructionsStore, "folder:folder-1")).toBeNull();
+    expect(landed.messages).toEqual([]);
 
     const lost = conversationState();
     const daemon2 = new FakeDaemon();
@@ -602,7 +642,7 @@ describe("/instructions over a slow or dropped link", () => {
     answerLoad(lost, daemon2, { conversation: "", folder: "Base.", global: "" });
     expect(sets(daemon2).map(call => call.args)).toEqual([["folder-1", "Sent."], ["folder-1", "Sent."]]);
     handleInstructionsEvent(lost, { type: "folder_instructions_updated", reqId: sets(daemon2)[1].reqId, folderId: "folder-1", text: "Sent." }, daemon2);
-    expect(lost.instructionsModal!.picker!.texts.folder).toBe("Sent.");
+    expect(instructionsText(lost.instructionsStore, "folder:folder-1")).toBe("Sent.");
   });
 
   test("switching daemons forgets the texts and keeps unconfirmed saves recoverable", () => {
