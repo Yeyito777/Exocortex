@@ -839,6 +839,7 @@ export const TOKEN_USAGE_SOURCES = [
   "browse_summary",
   "context_summary",
   "context_compaction",
+  // Historical accounting only; next-message suggestions were removed.
   "next_message_suggestion",
 ] as const;
 

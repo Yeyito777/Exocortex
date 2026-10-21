@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { writeExocortexConfig } from "@exocortex/shared/config";
-import { experimentalFeatures, resetExperimentalFeaturesForTest } from "./experimental";
+import { resetExperimentalFeaturesForTest } from "./experimental";
 import { getToolDefs, getToolDisplayInfo } from "./tools/registry";
 import { hostToolDefs } from "./providers/anthropic/host-tools";
 import { createHandler } from "./handler";
@@ -38,19 +38,6 @@ describe("inline images", () => {
     expect(JSON.stringify(sent)).not.toContain("disabled");
     // TUIs that predate always-on images still gate on the legacy flag.
     await handle({} as never, { type: "ping", reqId: "boot" });
-    expect(sent.find(event => event.type === "tools_available")?.experimental).toEqual({ images: true, nextMessageSuggestions: false });
-  });
-});
-
-describe("experimental.nextMessageSuggestions", () => {
-  test("is off by default and rides the bootstrap when on, read once per process", async () => {
-    useConfig({ experimental: { nextMessageSuggestions: true } });
-    const { sent, handle } = harness();
-    await handle({} as never, { type: "ping", reqId: "boot" });
-    expect(sent.find(event => event.type === "tools_available")?.experimental).toEqual({ images: true, nextMessageSuggestions: true });
-    writeExocortexConfig({});
-    expect(experimentalFeatures().nextMessageSuggestions).toBe(true);
-    resetExperimentalFeaturesForTest();
-    expect(experimentalFeatures().nextMessageSuggestions).toBe(false);
+    expect(sent.find(event => event.type === "tools_available")?.experimental).toEqual({ images: true });
   });
 });

@@ -61,7 +61,6 @@ import {
   removeQueuedMessageByReference,
 } from "./queue";
 import { forgetUnconfirmedSends, trackDirectSend } from "./sendecho";
-import { dropNextMessageSuggestion } from "./nextmessage";
 import {
   applyOptimisticEditMessageUnwind,
   cancelEditMessage,
@@ -1388,7 +1387,6 @@ function sendDirectly(messageText: string, images?: ImageAttachment[], options: 
       undefined, convId,
     );
   } else {
-    dropNextMessageSuggestion(state, state.convId);
     bumpConversationToTop(state.sidebar, state.convId);
     if (pendingEditMessageUnwind?.convId === state.convId) {
       // Shown now; sent once the daemon has cut the edited suffix.
