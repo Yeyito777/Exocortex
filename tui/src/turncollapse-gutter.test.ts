@@ -1,7 +1,7 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import { buildMessageLines, invalidateCommittedHistoryCache, type BuildMessageLinesResult } from "./conversation";
 import { createInitialState, focusHistory, type RenderState } from "./state";
-import type { Message } from "./messages";
+import { createPendingAI, type Message } from "./messages";
 import { toggleHistoryItemPreservingViewport } from "./chatscroll";
 import { handleFocusedKey } from "./focus";
 import { stripAnsi } from "./historycursor";
@@ -292,4 +292,78 @@ test("a turn a notice split leaves no lone metadata line where its first part fo
   const built = buildMessageLines(state, 100);
   toggleHistoryItemPreservingViewport(state, built.lineAnchors[built.lines.findIndex(line => stripAnsi(line).startsWith("▸"))].toggle!);
   expect(rows(state).filter(row => row.includes("GPT-6-Astra"))).toHaveLength(3);
+});
+
+describe("informational notices fold with the turn's work", () => {
+  const notice = (text: string): Message => ({ role: "system", text, color: "error", metadata: null } as Message);
+
+  test("a daemon restart mid-turn: no notice, no lone metadata line; the mark opens it; Ctrl+O shows it", () => {
+    const state = createInitialState();
+    state.messages.push(
+      user("check the VM"), assistant([{ type: "text", text: "On it." }, ...call("a", "ssh zurich uptime")]),
+      notice("✗ Daemon restarted"),
+      assistant([...call("b", "ssh zurich df"), { type: "text", text: "All healthy." }]),
+    );
+    const folded = rows(state).filter(Boolean);
+    expect(folded.some(row => row.includes("Daemon restarted"))).toBe(false);
+    expect(folded).toEqual([expect.stringContaining("check the VM"), "▸ All healthy.", expect.stringContaining("GPT-6-Astra")]);
+    freshMatchesIncremental(state);
+
+    const built = buildMessageLines(state, 100);
+    toggleHistoryItemPreservingViewport(state, built.lineAnchors[built.lines.findIndex(line => stripAnsi(line).startsWith("▸"))].toggle!);
+    const open = rows(state);
+    const at = (text: string) => open.findIndex(row => row.includes(text));
+    const order = [at("On it."), at("ssh zurich uptime"), at("Daemon restarted"), at("ssh zurich df"), at("All healthy.")];
+    expect(order.every(row => row >= 0)).toBe(true);
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+
+    state.expandedHistoryItems = new WeakSet();
+    state.showTurnWork = true;
+    expect(rows(state).some(row => row.includes("Daemon restarted"))).toBe(true);
+  });
+
+  test("interrupted, retry and compaction notices fold; real errors and warnings stay", () => {
+    const state = createInitialState();
+    state.messages.push(
+      user("go"), assistant([...call("a", "ls")]), notice("✗ Interrupted"),
+      user("again"), assistant([{ type: "text", text: "Trying." }]), notice("⟳ Overloaded — retrying in 5s (1/3)…"),
+      assistant([{ type: "text", text: "Done." }]),
+      { role: "system", text: "--- Compaction finished ---", metadata: { startedAt: 1, endedAt: 1, model: MODEL, tokens: 0, kind: "context_compaction_finished" } } as Message,
+      user("more"), assistant([{ type: "text", text: "Partial" }]), notice("✗ OpenAI API error (500): server error"),
+      user("last"), assistant([{ type: "text", text: "Ok" }]), notice("⚠ Automatic context compaction failed; continuing without it."),
+    );
+    const shown = rows(state);
+    for (const gone of ["Interrupted", "Overloaded", "Compaction finished"]) expect(shown.some(row => row.includes(gone))).toBe(false);
+    for (const kept of ["OpenAI API error", "Automatic context compaction failed"]) expect(shown.some(row => row.includes(kept))).toBe(true);
+    freshMatchesIncremental(state);
+  });
+
+  test("search finds a folded notice and opens it", () => {
+    const state = createInitialState();
+    state.cols = 100;
+    state.messages.push(user("go"), assistant([...call("a", "ls")]), notice("✗ Daemon restarted"), assistant([{ type: "text", text: "Back." }]));
+    const built = buildMessageLines(state, 100);
+    Object.assign(state, { historyLines: built.lines, historyLineAnchors: built.lineAnchors, historyWrapContinuation: built.wrapContinuation });
+    state.layout.totalLines = built.lines.length;
+    state.layout.messageAreaHeight = built.lines.length;
+    state.panelFocus = "chat";
+    state.chatFocus = "history";
+    state.vim.mode = "normal";
+    state.historyCursor = { row: 0, col: 0 };
+    openSearchBar(state, "forward");
+    for (const char of "Daemon restarted") handleSearchBarKey(state, { type: "char", char });
+    handleSearchBarKey(state, { type: "enter" });
+    expect(stripAnsi(state.historyLines[state.historyCursor.row])).toContain("Daemon restarted");
+  });
+
+  test("in the live turn: hidden under the Working row, and its interrupted part leaves no metadata line", () => {
+    const state = createInitialState();
+    state.messages.push(user("check the VM"), assistant([...call("a", "ssh zurich uptime")]), notice("✗ Daemon restarted"));
+    state.pendingAI = createPendingAI(5_000, MODEL);
+    const shown = rows(state).filter(Boolean);
+    expect(shown.some(row => row.includes("Daemon restarted"))).toBe(false);
+    const working = shown.findIndex(row => /Working/.test(row));
+    expect(shown.slice(0, working).some(row => row.includes("GPT-6-Astra"))).toBe(false);
+    expect(shown[working + 1]).toContain("ssh zurich uptime");
+  });
 });

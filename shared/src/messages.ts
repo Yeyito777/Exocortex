@@ -244,6 +244,24 @@ export const GOAL_NOTICE_KIND = "conversation_goal";
 export const MODEL_ONLY_NOTICE_KINDS: readonly string[] = [CLIENT_HOST_NOTICE_KIND, REMOTE_HOST_NOTICE_KIND, GOAL_NOTICE_KIND];
 
 /**
+ * Transcript notices that only report what happened and needed nothing from
+ * the user: a daemon restart or a stop the user asked for (the turn resumes or
+ * was meant to end), a retry in progress, a finished compaction, a provider
+ * notice. Folded history hides them with the turn's work (Ctrl+O shows them).
+ * Errors (any other `✗ …`), warnings (`⚠ …`) and a wait for a usage-limit
+ * reset stay in view.
+ */
+export function isInformationalNotice(notice: { text: string; metadata?: Pick<MessageMetadata, "kind"> | null }): boolean {
+  const kind = notice.metadata?.kind;
+  if (kind === CONTEXT_COMPACTION_FINISHED_KIND || kind === PROVIDER_NOTICE_KIND) return true;
+  const text = notice.text;
+  return text === CONTEXT_COMPACTION_FINISHED_TEXT
+    || text === "✗ Daemon restarted"
+    || text === "✗ Interrupted"
+    || text.startsWith("⟳ ");
+}
+
+/**
  * Machine-readable provenance for daemon/model-authored prompts that travel
  * through the same conversation path as user-authored messages.
  *
