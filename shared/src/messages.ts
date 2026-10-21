@@ -754,6 +754,35 @@ export function parseMcpToolName(name: string): { label: string; tool: string } 
   return { label, tool: match[2] };
 }
 
+/** Free text of an `exo` call up to this long, on one line, stays on its header line. */
+export const EXO_INLINE_TEXT_MAX = 100;
+
+/**
+ * Detail of an `exo` call. Its header names the action and its target
+ * (`message: <conversation>`, `subagent (opus)`); free text (a prompt, a
+ * message, a restart reason) follows it after `: ` when short, and otherwise
+ * on the lines after the header, in full with its line breaks kept, for
+ * clients to show as the call's body.
+ */
+export function exoCallDetail(input: Record<string, unknown>): string {
+  const action = (["subagent", "message", "status", "restart"] as const).find(key => input[key] !== undefined) ?? "abort";
+  const str = (value: unknown) => typeof value === "string" ? value : "";
+  let header: string = action;
+  let text = str(input[action]);
+  if (action === "message") {
+    const message = input.message as { conversation?: unknown; text?: unknown } | undefined;
+    header = `message: ${str(message?.conversation)}`;
+    text = str(message?.text);
+  } else if (action === "subagent") {
+    const args = input.args as { model?: unknown; effort?: unknown } | undefined;
+    const options = [str(args?.model), str(args?.effort)].filter(Boolean);
+    if (options.length) header = `subagent (${options.join(", ")})`;
+  }
+  text = text.trim();
+  if (!text) return header;
+  return !text.includes("\n") && text.length <= EXO_INLINE_TEXT_MAX ? `${header}: ${text}` : `${header}\n${text}`;
+}
+
 /**
  * Bash command style — maps a command prefix to TUI display properties.
  * Global external-tool styles are sent alongside ToolDisplayInfo; local styles

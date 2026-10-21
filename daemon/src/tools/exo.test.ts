@@ -57,7 +57,7 @@ describe("minimal native exo", () => {
     expect(properties.message.required).toEqual(["conversation", "text"]);
     expect(properties.message.properties.delivery.enum).toEqual(["now", "after_turn"]);
     expect(exo.systemHint).toContain("subagent always creates a new conversation");
-    expect(exo.summarize!({ message: { conversation: "c1", text: "status   update" } }).detail).toBe("message: c1: status update");
+    expect(exo.summarize!({ message: { conversation: "c1", text: "status update" } }).detail).toBe("message: c1: status update");
     expect(exo.summarize!({ status: "c1" }).detail).toBe("status: c1");
     expect(Object.keys(properties.args.properties)).toEqual(["detach", "model", "effort"]);
     expect(properties.args.properties.model.description).toContain("claude-opus-5-5");
@@ -73,10 +73,20 @@ describe("minimal native exo", () => {
     const prompt = `Small TUI fix in Exocortex: ${"inline images disappear ".repeat(10)}\n\nRepo: /tmp/x. Report back.\n`;
     expect(exo.summarize!({ subagent: prompt, args: { model: "opus" } })).toEqual({
       label: "Exocortex",
-      detail: `subagent: ${prompt.trim()}`,
+      detail: `subagent (opus)\n${prompt.trim()}`,
     });
+    expect(exo.summarize!({ subagent: "Fix the typo.", args: { model: "sonnet", effort: "low" } }).detail).toBe("subagent (sonnet, low): Fix the typo.");
+    expect(exo.summarize!({ subagent: "Fix the typo." }).detail).toBe("subagent: Fix the typo.");
     // Claude Code's exo host tool is summarized by the same tool.
     expect(summarizeClaudeCodeTool("exo", { subagent: prompt })).toEqual(exo.summarize!({ subagent: prompt }));
+  });
+  test("a long message keeps all its text below the header, line breaks kept", () => {
+    const text = `Two more from the owner for the same build:\n\n1. "We probably ${"don't need it ".repeat(12)}"\n2. Done.`;
+    expect(exo.summarize!({ message: { conversation: "c1", text } }).detail).toBe(`message: c1\n${text}`);
+    // One line, but past the inline limit, it still leaves the header line.
+    const long = "word ".repeat(30).trim();
+    expect(exo.summarize!({ message: { conversation: "c1", text: long } }).detail).toBe(`message: c1\n${long}`);
+    expect(exo.summarize!({ restart: "" }).detail).toBe("restart");
   });
   test("Sol fast is the default independently of user defaults; Astra is the only override", async () => {
     saveConversationDefaults({ provider: "openai", model: "gpt-6-astra", effort: "high", fastMode: false });

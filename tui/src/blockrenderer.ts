@@ -7,7 +7,7 @@
  * not leak into viewport/anchor bookkeeping.
  */
 
-import type { Block, ExternalToolStyle, ImageAttachment, ToolDisplayInfo } from "./messages";
+import { exoCallDetail, type Block, type ExternalToolStyle, type ImageAttachment, type ToolDisplayInfo } from "./messages";
 import { formatSize, imageLabel } from "./clipboard";
 import { markdownWordWrap } from "./markdown";
 import { theme } from "./theme";
@@ -147,13 +147,14 @@ function callLocalBashStyles(block: Extract<Block, { type: "tool_call" }>): Exte
 }
 
 /**
- * An `exo` subagent call shows its full instructions. History persisted its
- * display summary when the call was made, and older summaries cut the prompt
- * at 100 characters; the call's input still holds all of it.
+ * An `exo` call shows its full text. History persisted its display summary
+ * when the call was made, and older summaries cut a message at 100
+ * characters; the call's input still holds all of it.
  */
 function toolCallSummary(block: Extract<Block, { type: "tool_call" }>): string {
-  const prompt = block.toolName === "exo" && !block.presentation?.detail ? block.input?.subagent : undefined;
-  return typeof prompt === "string" && prompt.trim() ? `subagent: ${prompt.trim()}` : block.summary;
+  const input = block.toolName === "exo" && !block.presentation?.detail ? block.input : undefined;
+  if (input && ["subagent", "message", "status", "restart", "abort"].some(key => input[key] !== undefined)) return exoCallDetail(input);
+  return block.summary;
 }
 
 /**
@@ -166,12 +167,14 @@ const COLLAPSED_TOOL_CALL_ROWS = 8;
 const SHELL_TOOL_NAMES = new Set(["bash", "Bash", "exec_command"]);
 
 /**
- * Shell commands always render in full. Other tool calls whose detail is long,
- * such as a subagent's full instructions, collapse behind the tool-output
- * toggle instead of flooding the chat; expanding it shows every row.
+ * Shell commands always render in full. Other tool calls whose detail is long
+ * collapse behind the tool-output toggle instead of flooding the chat;
+ * expanding it shows every row. A call with a body block (an `exo` prompt or
+ * message) leaves the cap to that block, as a heredoc's is.
  */
 function collapseLongToolCallDetail(
   toolName: string,
+  hasPayload: boolean,
   showToolOutput: boolean,
   firstRow: number,
   lines: string[],
@@ -180,7 +183,7 @@ function collapseLongToolCallDetail(
   copy: NonNullable<WrapResult["copy"]>,
 ): void {
   const rows = lines.length - firstRow;
-  if (showToolOutput || SHELL_TOOL_NAMES.has(toolName) || rows <= COLLAPSE_TOOL_CALL_AFTER_ROWS) return;
+  if (showToolOutput || hasPayload || SHELL_TOOL_NAMES.has(toolName) || rows <= COLLAPSE_TOOL_CALL_AFTER_ROWS) return;
   const hidden = rows - COLLAPSED_TOOL_CALL_ROWS;
   const keep = firstRow + COLLAPSED_TOOL_CALL_ROWS;
   for (const rows of [lines, cont, join, copy]) rows.length = keep;
@@ -424,7 +427,7 @@ function renderBlock(
           }
         }
       }
-      collapseLongToolCallDetail(block.toolName, showToolOutput, firstRow, lines, cont, join, copy);
+      collapseLongToolCallDetail(block.toolName, logical.some(entry => entry.payload), showToolOutput, firstRow, lines, cont, join, copy);
       if (toolCallErrored && lines.length > 0) {
         lines[lines.length - 1] += ` ${theme.error}✗${theme.reset}`;
       }
