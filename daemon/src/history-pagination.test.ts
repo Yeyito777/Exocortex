@@ -332,7 +332,12 @@ describe("viewport-sized opening windows", () => {
     // An older fragment of the same turn shows nothing once a newer one holds the reply.
     expect(estimateFoldedEntryRows(toolTurn, viewport.cols, true)).toBe(0);
     const notification: DisplayEntry = { type: "user", text: "[notification] Subagent completed\n\nlong\nreport", metadata: { startedAt: 1, endedAt: 1, model: "m", tokens: 0, automation: { kind: "subagent_completion" } } };
-    expect(estimateFoldedEntryRows(notification, viewport.cols, false)).toBe(2);
+    // A notification has no row of its own (it leads its turn's work row); a parent conversation's prompt is a bubble.
+    expect(estimateFoldedEntryRows(notification, viewport.cols, false)).toBe(0);
+    const delegation: DisplayEntry = { ...notification, metadata: { startedAt: 1, endedAt: 1, model: "m", tokens: 0, automation: { kind: "exo_send" } } };
+    expect(estimateFoldedEntryRows(delegation, viewport.cols, false)).toBe(estimateEntryRows(delegation, viewport.cols));
+    const silent: DisplayEntry = { ...toolTurn, blocks: toolTurn.blocks.slice(0, -1) };
+    expect(estimateFoldedEntryRows(silent, viewport.cols, false)).toBe(0);
     expect(estimateFoldedEntryRows(user("a real\nmultiline\nprompt"), viewport.cols, false)).toBe(estimateEntryRows(user("a real\nmultiline\nprompt"), viewport.cols));
 
     // A folding client gets proportionally more of these turns in its opening window.

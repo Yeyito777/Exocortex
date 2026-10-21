@@ -171,35 +171,44 @@ export function estimateEntryRows(entry: DisplayEntry, cols: number): number {
 }
 
 /**
- * Rows of an entry in a client that folds turns (tui/src/turncollapse.ts): a
- * notification is one marker row; an assistant entry shows only the text after
- * its last tool round. Entries arrive newest first, so `newerInTurn` says
- * whether a newer assistant entry of the same turn holds its final reply, in
- * which case this one may show nothing. Like the unfolded estimate it errs
- * low: the folded-work summary row is not counted, which also covers the top
- * margin the window's first prompt may lack.
+ * Rows of an entry in a client that folds turns (tui/src/turncollapse.ts).
+ * Entries arrive newest first, so `newerInTurn` says whether a newer assistant
+ * entry of the same turn was already counted (this one then shows nothing).
+ * An assistant entry shows only the text after its last tool round; one with none is a silent
+ * turn, which folds under one row or into a run of background turns with
+ * others, so it counts nothing; a notification never has a row of its own. Like
+ * the unfolded estimate it errs low: work and run rows and margins are not counted.
  */
 export function estimateFoldedEntryRows(entry: DisplayEntry, cols: number, newerInTurn: boolean): number {
   switch (entry.type) {
     case "user": {
-      if (!isAutomatedUserPrompt(entry.text, entry.metadata)) return estimateEntryRows(entry, cols);
-      // The owner's relayed message shows as their bubble; other notifications as one row.
+      // Prompts another conversation sent read as prompts.
+      if (!isAutomatedUserPrompt(entry.text, entry.metadata) || entry.metadata?.automation?.kind === "exo_send") return estimateEntryRows(entry, cols);
+      // The owner's relayed message shows as their bubble; other notifications have
+      // no row of their own (they lead their turn's work row, which is not counted).
       const relayed = ownerRelayedText(entry.text, entry.metadata);
-      return relayed === null ? 1 + USER_ENTRY_CHROME_ROWS : estimateEntryRows({ ...entry, text: relayed }, cols);
+      if (relayed !== null) return estimateEntryRows({ ...entry, text: relayed }, cols);
+      return 0;
     }
     case "ai": {
       if (newerInTurn) return 0;
-      let rows = aiEntryChromeRows(entry);
-      for (let index = entry.blocks.length - 1; index >= 0; index--) {
-        const block = entry.blocks[index]!;
-        if (block.type === "tool_call" || block.type === "tool_result") break;
-        if (block.type === "text") rows += estimateBlockRows(block, cols);
-      }
-      return rows;
+      const reply = foldedReplyRows(entry, cols);
+      return reply > 0 ? aiEntryChromeRows(entry) + reply : 0;
     }
     default:
       return estimateEntryRows(entry, cols);
   }
+}
+
+/** Rows of the text after an assistant entry's last tool round (its reply when folded). */
+function foldedReplyRows(entry: Extract<DisplayEntry, { type: "ai" }>, cols: number): number {
+  let rows = 0;
+  for (let index = entry.blocks.length - 1; index >= 0; index--) {
+    const block = entry.blocks[index]!;
+    if (block.type === "tool_call" || block.type === "tool_result") break;
+    if (block.type === "text" && block.text.trim()) rows += estimateBlockRows(block, cols);
+  }
+  return rows;
 }
 
 function hasImagePayload(entry: DisplayEntry): boolean {

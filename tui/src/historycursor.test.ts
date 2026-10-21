@@ -281,7 +281,8 @@ describe("history brace navigation", () => {
     const automatedBound = boundFor(automated);
     const secondHumanBound = boundFor(secondHuman);
     expect(firstHumanBound).toBeDefined();
-    expect(automatedBound).toBeDefined();
+    // The notification has no row of its own: it leads its turn's work row.
+    expect(automatedBound).toBeUndefined();
     expect(secondHumanBound).toBeDefined();
 
     state.historyCursor = { row: firstHumanBound!.contentStart, col: 0 };

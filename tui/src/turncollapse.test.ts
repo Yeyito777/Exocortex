@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { buildMessageLines, invalidateCommittedHistoryCache, type BuildMessageLinesResult } from "./conversation";
 import { createInitialState, type RenderState } from "./state";
 import { createPendingAI, type Message } from "./messages";
@@ -48,9 +48,15 @@ function rows(state: RenderState, width = 100): string[] {
 
 function freshMatchesIncremental(state: RenderState, width = 100): void {
   const comparable = ({ revision: _revision, ...rest }: BuildMessageLinesResult) => rest;
-  const incremental = comparable(buildMessageLines(state, width, { reuseArrays: true }));
-  invalidateCommittedHistoryCache(state);
-  expect(incremental).toEqual(comparable(buildMessageLines(state, width)));
+  // The working row's spinner reads the clock: both builds must see the same second.
+  const clock = spyOn(Date, "now").mockReturnValue(Date.now());
+  try {
+    const incremental = comparable(buildMessageLines(state, width, { reuseArrays: true }));
+    invalidateCommittedHistoryCache(state);
+    expect(incremental).toEqual(comparable(buildMessageLines(state, width)));
+  } finally {
+    clock.mockRestore();
+  }
 }
 
 describe("folded turns", () => {
@@ -212,19 +218,54 @@ describe("notifications", () => {
     expect(notificationPreview("[chrono wake: chrono:abc] Pushy check")).toBe("Pushy check");
   });
 
-  test("a notification that opens a turn folds apart from that turn's work", () => {
+  test("a notification that starts a turn has no row: its label leads the turn's work row", () => {
     const state = createInitialState();
     state.cols = 100;
     const notification = user("[notification] Subagent completed: exo:1", { kind: "subagent_completion" });
-    state.messages.push(notification, assistant([...call("c1", "git log -1"), { type: "text", text: "Merged." }]));
+    state.messages.push(user("go"), assistant([{ type: "text", text: "ok" }]), notification, assistant([...call("c1", "git log -1"), { type: "text", text: "Merged." }]));
     const built = buildMessageLines(state, 100);
     const toggles = built.lineAnchors.filter(anchor => anchor.toggle).map(anchor => anchor.toggle!);
-    expect(toggles).toHaveLength(2);
-    expect(toggles[0]).toBe(notification);
-    toggleHistoryItemPreservingViewport(state, toggles[1]);
+    expect(toggles).toHaveLength(1);
+    const folded = rows(state);
+    expect(folded.filter(Boolean).slice(3, 5)).toEqual(["  ▸ Subagent completion · 1 tool call", "  Merged."]);
+    // A blank line still separates the turn from the one above.
+    expect(folded[folded.indexOf("  ▸ Subagent completion · 1 tool call") - 1]).toBe("");
+    toggleHistoryItemPreservingViewport(state, toggles[0]);
     const shown = rows(state);
-    expect(shown).toContain("  ▸ Subagent completion · Subagent completed: exo:1");
-    expect(shown).toContain("  ▾ 1 tool call");
+    expect(shown).toContain("  ▾ Subagent completion · 1 tool call");
+    expect(shown).toContain("  ▎ [notification] Subagent completed: exo:1");
+    expect(shown.some(row => row.includes("git log -1"))).toBe(true);
+    freshMatchesIncremental(state);
+  });
+
+  test("notifications delivered while another turn ran join the next turn's work row", () => {
+    const state = createInitialState();
+    state.messages.push(
+      user("go"), assistant([{ type: "text", text: "ok" }]),
+      user("[notification] Subagent completed: exo:1", { kind: "subagent_completion" }),
+      user("[notification] Subagent completed: exo:2", { kind: "subagent_completion" }),
+      assistant([...call("c1", "git log -1"), { type: "text", text: "Both merged." }]),
+      user("[notification] Subagent completed: exo:3", { kind: "subagent_completion" }),
+      user("typed while it ran"), assistant([{ type: "text", text: "Seen." }]),
+      user("[notification] Inbox: new mail", { kind: "external_notification" }),
+    );
+    const shown = rows(state).filter(Boolean).map(row => row.trim());
+    expect(shown).toContain("▸ Subagent completion ×2 · 1 tool call");
+    // Before a prompt it joins that turn's (here empty) work row; the last, unanswered one keeps its row.
+    expect(shown).toContain("▸ Subagent completion");
+    expect(shown.at(-1)).toBe("▸ Notification · Inbox: new mail");
+    expect(shown.some(row => row.includes("exo:1") || row.includes("exo:3"))).toBe(false);
+    freshMatchesIncremental(state);
+  });
+
+  test("prompts another conversation sent read as prompts, labelled with the sender", () => {
+    const state = createInitialState();
+    state.sidebar.conversations = [{ id: "parent-1", title: "📡 paramount" } as never];
+    state.messages.push(user("Fix vimbrowser input handling.", { kind: "exo_send", sourceId: "parent-1" }), assistant([{ type: "text", text: "On it." }]));
+    const shown = rows(state).filter(Boolean);
+    expect(shown[0]).toContain("Fix vimbrowser input handling.");
+    expect(shown[1].trim()).toBe("from 📡 paramount");
+    expect(notificationLabel(state.messages[0] as Extract<Message, { role: "user" }>)).toBeNull();
   });
 });
 
@@ -331,5 +372,118 @@ describe("search reaches folded work", () => {
     expect(cursorLine(state)).toContain("needle inside");
     expect(jumpToSearchMatch(state, "forward")).toBe(true);
     expect(cursorLine(state)).toContain("needle visible");
+  });
+});
+
+describe("runs of background turns", () => {
+  const wake = (n: number) => user(`[chrono hard wake: chrono:${n}] Scheduled command failed or returned`, { kind: "chrono_hard_wake" });
+  const silent = (id: string) => assistant([{ type: "text", text: `checking ${id}` }, ...call(`${id}a`, `look ${id}`), ...call(`${id}b`, `fix ${id}`)]);
+  const shownRows = (state: RenderState) => rows(state).filter(Boolean);
+
+  test("fold into one row with no per-turn metadata; a turn with a reply joins and keeps its reply", () => {
+    const state = createInitialState();
+    state.messages.push(
+      user("start"), assistant([{ type: "text", text: "ok" }]),
+      user("[notification] Subagent completed: exo:1", { kind: "subagent_completion" }), silent("s1"),
+      wake(1), silent("s2"),
+      wake(2), assistant([...call("r1", "restart live"), { type: "text", text: "I restarted live." }]),
+    );
+    const shown = shownRows(state);
+    expect(shown.slice(3)).toEqual([
+      "  ▸ 3 background turns · 5 tool calls",
+      "  I restarted live.",
+      expect.stringContaining("GPT-6-Astra"),
+    ]);
+    freshMatchesIncremental(state);
+  });
+
+  test("a single silent turn is its work row without metadata; a silent run at the end is one row", () => {
+    const state = createInitialState();
+    state.messages.push(user("start"), assistant([{ type: "text", text: "ok" }]), wake(1), silent("s1"));
+    expect(shownRows(state).slice(3)).toEqual(["  ▸ Chrono hard wake · 2 tool calls, 1 message"]);
+    state.messages.push(user("next prompt"));
+    const shown = rows(state);
+    const header = shown.indexOf("  ▸ Chrono hard wake · 2 tool calls, 1 message");
+    // One blank line between the run's row and the next prompt.
+    expect(shown[header + 1]).toBe("");
+    expect(shown[header + 2]).toContain("next prompt");
+  });
+
+  test("an owner's message, a typed prompt or a turn with a notice ends the run", () => {
+    const state = createInitialState();
+    state.messages.push(wake(1), silent("s1"), user("typed"), assistant([...call("t", "x")]), wake(2), silent("s2"), wake(3), silent("s3"));
+    const shown = shownRows(state);
+    expect(shown.filter(row => row.includes("background turns"))).toEqual(["  ▸ 2 background turns · 4 tool calls"]);
+    expect(shown).toContain("  ▸ Chrono hard wake · 2 tool calls, 1 message");
+    // The typed prompt's tool-only turn is folded without its metadata too.
+    expect(shown).toContain("  ▸ 1 tool call");
+    expect(shown.some(row => row.includes("GPT-6-Astra"))).toBe(false);
+  });
+
+  test("opening the run shows its turns as before, under a ▾ row that closes it", () => {
+    const state = createInitialState();
+    state.messages.push(wake(1), silent("s1"), wake(2), silent("s2"));
+    const toggle = buildMessageLines(state, 100).lineAnchors.find(anchor => anchor.toggle)!.toggle!;
+    toggleHistoryItemPreservingViewport(state, toggle);
+    const shown = shownRows(state);
+    expect(shown[0]).toBe("  ▾ 2 background turns · 4 tool calls");
+    expect(shown.filter(row => row === "  ▸ Chrono hard wake · 2 tool calls, 1 message")).toHaveLength(2);
+    expect(shown.filter(row => row.includes("GPT-6-Astra"))).toHaveLength(0);
+    freshMatchesIncremental(state);
+    toggleHistoryItemPreservingViewport(state, toggle);
+    expect(shownRows(state)).toEqual(["  ▸ 2 background turns · 4 tool calls"]);
+  });
+
+  test("a notification nothing answered stays a row and ends the run", () => {
+    const state = createInitialState();
+    state.messages.push(wake(1), silent("s1"), wake(2), silent("s2"), user("[notification] Inbox: new mail", { kind: "external_notification" }));
+    const shown = shownRows(state);
+    expect(shown[0]).toBe("  ▸ 2 background turns · 4 tool calls");
+    expect(shown[1]).toBe("  ▸ Notification · Inbox: new mail");
+  });
+
+  test("Ctrl+O shows every turn", () => {
+    const state = createInitialState();
+    state.messages.push(wake(1), silent("s1"), wake(2), silent("s2"));
+    state.showTurnWork = true;
+    expect(shownRows(state).some(row => row.includes("background turns"))).toBe(false);
+    expect(shownRows(state).filter(row => row.includes("look s"))).toHaveLength(2);
+  });
+
+  test("search opens the run and then the turn holding the match", () => {
+    const state = createInitialState();
+    state.cols = 100;
+    state.messages.push(user("start"), assistant([{ type: "text", text: "ok" }]), wake(1), silent("s1"), wake(2), silent("s2"));
+    const built = buildMessageLines(state, 100);
+    state.historyLines = built.lines;
+    state.historyLineAnchors = built.lineAnchors;
+    state.historyWrapContinuation = built.wrapContinuation;
+    state.layout.totalLines = built.lines.length;
+    state.layout.messageAreaHeight = built.lines.length;
+    state.panelFocus = "chat";
+    state.chatFocus = "history";
+    state.vim.mode = "normal";
+    state.historyCursor = { row: 0, col: 0 };
+    openSearchBar(state, "forward");
+    for (const char of "fix s2") handleSearchBarKey(state, { type: "char", char });
+    handleSearchBarKey(state, { type: "enter" });
+    expect(stripAnsi(state.historyLines[state.historyCursor.row])).toContain("fix s2");
+  });
+});
+
+describe("the owner's relayed attachments", () => {
+  const relay = (body: string) => user(`[notification] Discord/paramount · DM\nYeyito [ch:1]\n\n→ Yeyito <@3> [owner]:\n${body}\n[msg:5]\n\nAction: answer.\n\nFilter output:\nRoute: owner (Yeyito) · dm`, { kind: "external_notification" });
+  const bubble = (body: string) => {
+    const state = createInitialState();
+    state.messages.push(relay(body), assistant([{ type: "text", text: "ok" }]));
+    return rows(state).filter(Boolean).slice(0, -2).map(row => row.trim());
+  };
+
+  test("show as attachments, without the [message] placeholder", () => {
+    expect(bubble("[message]\n[attachment:1] voice-message.ogg")[0]).toBe("🎤 voice message");
+    expect(bubble("[message]\n[attachment:1] IMG_1181.png")[0]).toBe("📎 IMG_1181.png");
+    expect(bubble("explain this\n[attachment:1] image.png")).toEqual(["explain this", "📎 image.png", "via Discord/paramount · DM"]);
+    expect(bubble("[message]")[0]).toBe("📎 attachment");
+    expect(bubble("🎤 so I was thinking\nabout the panel")).toEqual(["🎤 so I was thinking", "about the panel", "via Discord/paramount · DM"]);
   });
 });
