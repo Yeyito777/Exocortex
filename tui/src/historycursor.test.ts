@@ -368,7 +368,8 @@ describe("history bracket navigation", () => {
     state.chatFocus = "history";
     state.vim.mode = "normal";
 
-    expect(finalResponseRow).toBeGreaterThan(assistantBound.contentStart);
+    // The work before it folds away; the reply is the message's first visible row.
+    expect(finalResponseRow).toBeGreaterThanOrEqual(assistantBound.contentStart);
 
     state.historyCursor = { row: userBounds[0].contentStart, col: 0 };
     applyHistoryAction("history_next_ai_message", state);

@@ -93,6 +93,8 @@ describe("render caching and frame diffing", () => {
   for (const automated of [false, true]) {
     test(`incremental ${automated ? "automated" : "regular"} queue labels cannot autowrap into the sidebar`, () => {
       const state = makeState();
+      // Automated queued messages only show with every turn's work (Ctrl+O).
+      state.showTurnWork = true;
       state.convId = "conv-1";
       state.sidebar.open = true;
       state.messages = [];

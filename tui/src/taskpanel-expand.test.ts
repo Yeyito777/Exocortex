@@ -450,7 +450,7 @@ describe("images under the expanded card", () => {
 
   function imageState(): RenderState {
     // Below the compact card, wider than the history column beside a card.
-    return chatState(100, 40, [
+    const state = chatState(100, 40, [
       ...filler(6, "before"),
       {
         role: "assistant",
@@ -463,6 +463,9 @@ describe("images under the expanded card", () => {
       },
       ...filler(3, "after"),
     ]);
+    // Row positions assume the rows fold style's work row above the image.
+    state.foldStyle = "rows";
+    return state;
   }
 
   async function frame(state: RenderState): Promise<string> {

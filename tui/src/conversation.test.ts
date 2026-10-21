@@ -118,6 +118,8 @@ describe("automated user-message provenance", () => {
   for (const automated of [false, true]) {
     test(`bounds ${automated ? "automated" : "regular"} queued labels at narrow widths`, () => {
       const state = createInitialState();
+      // Automated queued messages only show with every turn's work (Ctrl+O).
+      state.showTurnWork = true;
       state.convId = "conv-1";
       state.queuedMessages.push({
         convId: state.convId, text: "Queued message", timing: "next-turn",
@@ -126,7 +128,8 @@ describe("automated user-message provenance", () => {
       for (const width of [80, 24, 12, 3, 1, 80]) {
         const rendered = buildMessageLines(state, width);
         const label = rendered.lines[rendered.lineAnchors.findIndex(a => a.segment === "queued_label")];
-        expect(visibleLength(label)).toBeLessThanOrEqual(width);
+        // A queued notification's label row keeps its two-column indent, like a delivered one's.
+        expect(visibleLength(label)).toBeLessThanOrEqual(automated ? Math.max(width, 3) : width);
         if (width === 80) expect(stripAnsi(label)).toContain(automated ? "queued: next turn" : "queued: steer");
         else if (automated || width < 17) expect(label).toContain("…");
       }
@@ -148,6 +151,7 @@ describe("automated user-message provenance", () => {
 
   test("bounds a delivered notification's marker and header by the terminal width", () => {
     const state = createInitialState();
+    state.foldStyle = "rows";
     state.messages.push({
       role: "user", text: "Delivered message with a long tail that would otherwise wrap onto several rows",
       metadata: {
@@ -167,6 +171,7 @@ describe("automated user-message provenance", () => {
 
   test("renders notifications on the assistant's side, never in the user's bubble", () => {
     const state = createInitialState();
+    state.foldStyle = "rows";
     const human = { role: "user" as const, text: "I wrote this", metadata: null };
     const automated = {
       role: "user" as const,
@@ -203,6 +208,7 @@ describe("automated user-message provenance", () => {
 
   test("combines queued automation provenance with its timing", () => {
     const state = createInitialState();
+    state.showTurnWork = true;
     state.convId = "conv-1";
     const queued = {
       id: "queue-1",
@@ -219,9 +225,10 @@ describe("automated user-message provenance", () => {
     const contentIndex = rendered.lineAnchors.findIndex(anchor => anchor.owner === queued && anchor.segment === "queued_content");
     const labelIndex = rendered.lineAnchors.findIndex(anchor => anchor.owner === queued && anchor.segment === "queued_label");
 
-    expect(rendered.lines[contentIndex]).toContain(theme.automatedUserBg);
-    expect(stripAnsi(rendered.lines[labelIndex])).toContain("⚙ Notification");
-    expect(stripAnsi(rendered.lines[labelIndex])).toContain("next turn");
+    // Left-aligned like a delivered notification, never the owner's right-aligned bubble.
+    expect(rendered.lines[contentIndex]).not.toContain(theme.automatedUserBg);
+    expect(stripAnsi(rendered.lines[contentIndex])).toBe("  ▎ Process the latest subscription event.");
+    expect(stripAnsi(rendered.lines[labelIndex]).trim()).toBe("Notification · queued: next turn");
   });
 });
 

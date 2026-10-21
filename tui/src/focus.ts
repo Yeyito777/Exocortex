@@ -420,7 +420,9 @@ export function handleFocusedKey(
   }
 
   if (action === "submit" && isAnyHistoryFocused(state)) {
-    const toggle = state.chatFocus === "history" ? state.historyLineAnchors[state.historyCursor.row]?.toggle : undefined;
+    const anchor = state.chatFocus === "history" ? state.historyLineAnchors[state.historyCursor.row] : undefined;
+    // On a gutter mark's row, Enter toggles from the mark's columns; elsewhere it opens links as usual.
+    const toggle = anchor && (anchor.toggleCols === undefined || state.historyCursor.col < anchor.toggleCols) ? anchor.toggle : undefined;
     if (toggle) {
       toggleHistoryItemPreservingViewport(state, toggle);
       return { type: "handled" };

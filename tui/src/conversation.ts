@@ -34,7 +34,7 @@ import {
   type UserMessageFlowCursor,
 } from "./blockrenderer";
 import { isVisuallyBlankLine, sanitizeUntrustedText } from "./terminaltext";
-import { automationLabel, notificationPreview, ownerRelay, planHistory, type HistoryPlan, type NotificationPlan, type PendingPlan } from "./turncollapse";
+import { automationLabel, notificationPreview, ownerRelay, planHistory, type GutterMark, type HistoryPlan, type NotificationPlan, type PendingPlan } from "./turncollapse";
 
 const COMPACTION_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
 const COMPACTION_SPINNER_INTERVAL_MS = 80;
@@ -235,6 +235,20 @@ function workingRow(metadata: MessageMetadata | null, pending: PendingPlan, now 
   return `  ${theme.accent}${frame}${theme.reset} ${theme.muted}Working${work}${theme.reset}`;
 }
 
+/** A rendered row without its colours (to restyle it wholesale). */
+function stripSgr(line: string): string {
+  return line.replace(/\x1b\[[0-9;:]*m/g, "");
+}
+
+/** Put a faint fold mark in column 0 (the gutter) of a row, keeping the rest. */
+export function withGutterMark(line: string, mark: string): string {
+  const faint = `${theme.dim}${theme.muted}${mark}${theme.reset}`;
+  if (line === "") return faint;
+  const lead = /^((?:\x1b\[[0-9;:]*m)*) /.exec(line);
+  if (!lead) return line;
+  return `${faint}${lead[1]}${line.slice(lead[0].length)}`;
+}
+
 // ── Notifications ───────────────────────────────────────────────────
 
 const NO_EXPANDED_ITEMS = new WeakSet<object>();
@@ -256,8 +270,8 @@ function notificationLabelRow(row: string, labelEnd: number, availableWidth: num
 }
 
 /** Notification text behind a muted gutter; copies take the text without it. */
-function renderNotificationBodyCached(msg: Extract<Message, { role: "user" }>, availableWidth: number): WrapResult {
-  const cached = notificationBodyCache.get(msg);
+function renderNotificationBodyCached(msg: Extract<Message, { role: "user" }>, availableWidth: number, owner: object = msg): WrapResult {
+  const cached = notificationBodyCache.get(owner);
   if (cached && cached.text === msg.text && cached.width === availableWidth && cached.themeName === theme.name) return cached.result;
   const textStart = NOTIFICATION_INDENT + NOTIFICATION_GUTTER.length;
   const wrapped = wordWrap(sanitizeUntrustedText(msg.text), Math.max(1, availableWidth - textStart - 2));
@@ -268,7 +282,7 @@ function renderNotificationBodyCached(msg: Extract<Message, { role: "user" }>, a
     join: wrapped.join,
     copy: wrapped.lines.map(line => ({ text: line, displayStart: textStart })),
   };
-  notificationBodyCache.set(msg, { text: msg.text, width: availableWidth, themeName: theme.name, result });
+  notificationBodyCache.set(owner, { text: msg.text, width: availableWidth, themeName: theme.name, result });
   return result;
 }
 
@@ -337,6 +351,8 @@ export interface RenderLineAnchor {
   openImages?: InlineImageHit[];
   /** Folded turn or notification that Enter or a click on this row opens or closes. */
   toggle?: object;
+  /** Only its first this-many columns toggle (a gutter mark beside text). */
+  toggleCols?: number;
 }
 
 /** An image to draw in history, with the object that owns its placement. */
@@ -697,6 +713,13 @@ export function buildMessageLines(
     pushToggleLine(row, msg, "run_header", toggle);
   };
 
+  /** Gutter style: a blank row carrying a fold group's mark; the whole row toggles it. */
+  const pushGutterRow = (msg: Message, mark: GutterMark, segment: RenderLineSegment) => {
+    pushToggleLine(mark.mark ? withGutterMark("", mark.mark) : "", msg, segment, mark.toggle);
+    // Without a drawn mark the row only lets search open the group: clicks and Enter pass through.
+    if (!mark.mark) lineAnchors[lineAnchors.length - 1].toggleCols = 0;
+  };
+
   const pushNotification = (msg: Extract<Message, { role: "user" }>, notification: NotificationPlan) => {
     if (!notification.open) {
       const marker = `▸ ${notification.label} · ${notificationPreview(msg.text)}`;
@@ -795,13 +818,16 @@ export function buildMessageLines(
     pendingAI: state.pendingAI,
     collapse,
     expanded: state.expandedHistoryItems ?? NO_EXPANDED_ITEMS,
+    style: state.foldStyle ?? "gutter",
+    active: durableSleepAssistant,
+    marks: state.foldMarks !== false,
     conversationTitle: (id) => {
       const conv = state.sidebar?.conversations.find(candidate => candidate.id === id);
       return conv ? convDisplayName(conv) : null;
     },
   });
   const cacheKey: unknown[] = [
-    state.convId, contentWidth, state.showToolOutput, state.showTurnWork, state.showDiagnostics, state.toolRegistry,
+    state.convId, contentWidth, state.showToolOutput, state.showTurnWork, state.foldStyle, state.foldMarks, state.showDiagnostics, state.toolRegistry,
     state.externalToolStyles, theme.name, state.rows, inlineImageGeneration(), mathImageGeneration(),
     inlineImagesActive(), imageCell.width, imageCell.height, userMessageNeedsTopMargin(messages, startMessageIndex),
   ];
@@ -955,7 +981,21 @@ export function buildMessageLines(
     const start = lines.length;
     appendMessageSourceRefs(msg, sourceRefs);
     sourceRefEnds.push(sourceRefs.length);
-    const messagePlan = plan.messages[messageIndex - startMessageIndex];
+    let messagePlan = plan.messages[messageIndex - startMessageIndex];
+    // Gutter style: folded away (no rows), a blank row before a reply, or a row
+    // of its own carrying the mark; then the message itself while its group is open.
+    let rowAbove = false;
+    if (messagePlan?.kind === "gap") {
+      const gap = messagePlan;
+      if (gap.line) pushGutterRow(msg, gap.line, "user_margin_top");
+      else if (gap.spacer && userMessageNeedsTopMargin(state.messages, messageIndex)) pushLine("", msg, "user_margin_top");
+      rowAbove = gap.line !== null || gap.spacer;
+      if (!gap.inner) {
+        pushMessageBound(msg.role, start, lines.length, lines.length);
+        continue;
+      }
+      messagePlan = gap.inner;
+    }
     if (messagePlan?.kind === "merged") {
       // A notification folded into its turn's work row: no row of its own, only the
       // blank line that separates the turn from the one above (and an opened run's row).
@@ -977,7 +1017,7 @@ export function buildMessageLines(
         pushMessageBound(msg.role, start, start, start);
       }
     } else if (msg.role === "user" && messagePlan?.kind === "notification") {
-      if (userMessageNeedsTopMargin(state.messages, messageIndex)) pushLine("", msg, "user_margin_top");
+      if (!rowAbove && userMessageNeedsTopMargin(state.messages, messageIndex)) pushLine("", msg, "user_margin_top");
       const contentStart = lines.length;
       if (messagePlan.runHeader && messagePlan.runToggle) pushRunHeader(msg, messagePlan.runHeader, null, messagePlan.runToggle);
       pushNotification(msg, messagePlan);
@@ -986,12 +1026,14 @@ export function buildMessageLines(
       pushLine("", msg, "user_margin_bottom");
       pushMessageBound(msg.role, start, contentStart, contentEnd);
     } else if (msg.role === "user") {
-      if (userMessageNeedsTopMargin(state.messages, messageIndex)) pushLine("", msg, "user_margin_top");
+      const promptPlan = messagePlan?.kind === "prompt" ? messagePlan : null;
+      if (promptPlan?.above) pushGutterRow(msg, promptPlan.above, "user_margin_top");
+      else if (userMessageNeedsTopMargin(state.messages, messageIndex)) pushLine("", msg, "user_margin_top");
       const contentStart = lines.length;
       // The owner's own Discord/WhatsApp message reads as theirs: their words in their bubble.
       const relay = ownerRelay(msg);
       const text = relay?.text ?? msg.text;
-      const from = messagePlan?.kind === "from" ? messagePlan.label : null;
+      const from = messagePlan?.kind === "from" ? messagePlan.label : promptPlan?.from ?? null;
       const background = msg.metadata?.automation && !relay && !from ? theme.automatedUserBg : theme.userBg;
       const rendered = renderUserMessageCached(msg, text, availableWidth, msg.images, background);
       pushBlock(msg, "user_content", rendered);
@@ -1007,7 +1049,8 @@ export function buildMessageLines(
       const provenance = relay ? `via ${relay.source}` : from ?? automationProvenance(msg.metadata?.automation);
       if (provenance) pushLine(rightAlignedProvenanceLabel(provenance, availableWidth), msg, "automation_label");
       pushImages(pastedImages(msg, msg.images, state.convId), "user_image");
-      pushLine("", msg, "user_margin_bottom");
+      if (promptPlan?.below) pushGutterRow(msg, promptPlan.below, "user_margin_bottom");
+      else pushLine("", msg, "user_margin_bottom");
       pushMessageBound(msg.role, start, contentStart, contentEnd);
     } else if (msg.role === "assistant") {
       // AI messages: content blocks, then metadata
@@ -1035,6 +1078,13 @@ export function buildMessageLines(
       const contentEnd = lines.length;
       for (let i = 0; i < metadataLines.length; i++) {
         pushLine(metadataLines[i], msg, "assistant_metadata", i);
+      }
+      // Gutter style: the mark sits in the left gutter of the reply's first row.
+      if (assistantPlan?.gutter && lines.length > contentStart) {
+        const { mark, toggle } = assistantPlan.gutter;
+        if (mark) lines[contentStart] = withGutterMark(lines[contentStart], mark);
+        lineAnchors[contentStart].toggle = toggle;
+        lineAnchors[contentStart].toggleCols = mark ? 1 : 0;
       }
       pushMessageBound(msg.role, start, contentStart, contentEnd);
     } else if (msg.role === "system" && msg.metadata?.kind === CONTEXT_COMPACTION_FINISHED_KIND) {
@@ -1207,17 +1257,32 @@ export function buildMessageLines(
   }
 
   // Queued messages — dimmed user bubbles with timing label (after pendingAI)
+  // Folded history hides queued notifications too: only the owner's own (typed or
+  // relayed) messages wait at the bottom; Ctrl+O shows the rest.
+  const ownQueued = (qm: (typeof state.queuedMessages)[number]) => !collapse || !qm.automation
+    || ownerRelayedText(qm.text, { automation: qm.automation }) !== null;
   const queued = queuedMessagesInDisplayOrder(
-    state.convId
+    (state.convId
       ? state.queuedMessages.filter(qm => qm.convId === state.convId)
-      : state.queuedMessages.filter(qm => isNewConversationQueuedMessage(qm) && qm.convId === state.pendingQueuedDraftConvId),
+      : state.queuedMessages.filter(qm => isNewConversationQueuedMessage(qm) && qm.convId === state.pendingQueuedDraftConvId))
+      .filter(ownQueued),
   );
   for (const qm of queued) {
+    const relayed = ownerRelayedText(qm.text, qm.automation ? { automation: qm.automation } : null);
+    if (qm.automation && relayed === null && qm.automation.kind !== "exo_send") {
+      // A queued notification (shown with Ctrl+O) reads like the delivered ones: on the
+      // assistant's side under its label, dimmed, with when it will be delivered.
+      pushLine("", qm, "queued_margin_top");
+      const label = `${automationLabel(qm.automation)} · ${queueTimingLabel(qm, Date.now(), state.provider)}`;
+      pushLine(notificationLabelRow(label, label.length, availableWidth), qm, "queued_label");
+      const body = renderNotificationBodyCached({ role: "user", text: qm.text, metadata: null }, availableWidth, qm);
+      for (let i = 0; i < body.lines.length; i++) pushLine(`${theme.muted}${stripSgr(body.lines[i])}${theme.reset}`, qm, "queued_content", i);
+      continue;
+    }
     const provenance = automationProvenance(qm.automation);
     const timingLabel = [provenance, queueTimingLabel(qm, Date.now(), state.provider)].filter((label): label is string => Boolean(label)).join(" · ");
     pushLine("", qm, "queued_margin_top");
     // Render a dimmed user bubble
-    const relayed = ownerRelayedText(qm.text, qm.automation ? { automation: qm.automation } : null);
     const queuedText = relayed ?? qm.text;
     const background = qm.automation && !relayed ? theme.automatedUserBg : theme.userBg;
     const qr = renderUserMessageCached(qm, queuedText, availableWidth, qm.images, background);
