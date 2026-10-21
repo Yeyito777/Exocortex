@@ -197,14 +197,9 @@ export function closeInstructionsModal(state: RenderState): void {
   state.instructionsModal = null;
 }
 
-/** Leave the editor: back to the picker, or out. */
-function closeEditor(state: RenderState, modal: InstructionsModalState): void {
-  if (!modal.picker) {
-    state.instructionsModal = null;
-    return;
-  }
-  modal.editor = null;
-  syncPicker(state, modal.picker);
+/** Leave the editor (:q, :wq, :x): out of /instructions altogether, not back to the picker. */
+function closeEditor(state: RenderState, _modal: InstructionsModalState): void {
+  state.instructionsModal = null;
 }
 
 function openSelectedScope(state: RenderState, modal: InstructionsModalState & { picker: InstructionsPickerState }): void {
