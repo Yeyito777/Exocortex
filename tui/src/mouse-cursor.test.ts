@@ -194,7 +194,7 @@ describe("hand cursor over clickable history", () => {
     disposeHistoryImages(state);
   });
 
-  test("a folded turn's summary and a notification's marker show a hand and open on click", () => {
+  test("a notification and its turn's work fold into one row that shows a hand and opens both on click", () => {
     const state = createInitialState();
     state.cols = 80;
     state.rows = 30;
@@ -218,29 +218,20 @@ describe("hand cursor over clickable history", () => {
       },
     ];
     capture(state);
-    const summary = screenCellOf(state, "▸ 1 tool call");
-    const marker = screenCellOf(state, "▸ Subagent completion");
-    hover(state, summary.col + 4, summary.row);
-    expect(state.mouseCursor).toBe("hand");
-    hover(state, marker.col + 4, marker.row);
+    // The notification leads its turn's work row: one row, one click opens both.
+    const row = screenCellOf(state, "▸ Subagent completion · 1 tool call");
+    hover(state, row.col + 4, row.row);
     expect(state.mouseCursor).toBe("hand");
     expect(() => screenCellOf(state, "git log -1")).toThrow();
+    expect(() => screenCellOf(state, "Task: build it")).toThrow();
 
     captureOutput(() => {
-      handleMouseEvent(mouse(summary.col, summary.row, "press"), state);
-      handleMouseEvent(mouse(summary.col, summary.row, "release"), state);
+      handleMouseEvent(mouse(row.col, row.row, "press"), state);
+      handleMouseEvent(mouse(row.col, row.row, "release"), state);
     });
     capture(state);
     expect(screenCellOf(state, "git log -1")).toBeDefined();
-    expect(screenCellOf(state, "▾ 1 tool call")).toBeDefined();
-
-    const markerNow = screenCellOf(state, "▸ Subagent completion");
-    captureOutput(() => {
-      handleMouseEvent(mouse(markerNow.col, markerNow.row, "press"), state);
-      handleMouseEvent(mouse(markerNow.col, markerNow.row, "release"), state);
-    });
-    capture(state);
-    expect(screenCellOf(state, "▾ Subagent completion")).toBeDefined();
+    expect(screenCellOf(state, "▾ Subagent completion · 1 tool call")).toBeDefined();
     expect(screenCellOf(state, "Task: build it")).toBeDefined();
   });
 

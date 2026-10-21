@@ -218,19 +218,34 @@ describe("notifications", () => {
     expect(notificationPreview("[chrono wake: chrono:abc] Pushy check")).toBe("Pushy check");
   });
 
-  test("a notification that opens a turn folds apart from that turn's work", () => {
+  test("a notification that starts a turn has no row: its label leads the turn's work row", () => {
     const state = createInitialState();
     state.cols = 100;
     const notification = user("[notification] Subagent completed: exo:1", { kind: "subagent_completion" });
-    state.messages.push(notification, assistant([...call("c1", "git log -1"), { type: "text", text: "Merged." }]));
+    state.messages.push(user("go"), assistant([{ type: "text", text: "ok" }]), notification, assistant([...call("c1", "git log -1"), { type: "text", text: "Merged." }]));
     const built = buildMessageLines(state, 100);
     const toggles = built.lineAnchors.filter(anchor => anchor.toggle).map(anchor => anchor.toggle!);
-    expect(toggles).toHaveLength(2);
-    expect(toggles[0]).toBe(notification);
-    toggleHistoryItemPreservingViewport(state, toggles[1]);
+    expect(toggles).toHaveLength(1);
+    const folded = rows(state);
+    expect(folded.filter(Boolean).slice(3, 5)).toEqual(["  ▸ Subagent completion · 1 tool call", "  Merged."]);
+    // A blank line still separates the turn from the one above.
+    expect(folded[folded.indexOf("  ▸ Subagent completion · 1 tool call") - 1]).toBe("");
+    toggleHistoryItemPreservingViewport(state, toggles[0]);
     const shown = rows(state);
-    expect(shown).toContain("  ▸ Subagent completion · Subagent completed: exo:1");
-    expect(shown).toContain("  ▾ 1 tool call");
+    expect(shown).toContain("  ▾ Subagent completion · 1 tool call");
+    expect(shown).toContain("  ▎ [notification] Subagent completed: exo:1");
+    expect(shown.some(row => row.includes("git log -1"))).toBe(true);
+    freshMatchesIncremental(state);
+  });
+
+  test("prompts another conversation sent read as prompts, labelled with the sender", () => {
+    const state = createInitialState();
+    state.sidebar.conversations = [{ id: "parent-1", title: "📡 paramount" } as never];
+    state.messages.push(user("Fix vimbrowser input handling.", { kind: "exo_send", sourceId: "parent-1" }), assistant([{ type: "text", text: "On it." }]));
+    const shown = rows(state).filter(Boolean);
+    expect(shown[0]).toContain("Fix vimbrowser input handling.");
+    expect(shown[1].trim()).toBe("from 📡 paramount");
+    expect(notificationLabel(state.messages[0] as Extract<Message, { role: "user" }>)).toBeNull();
   });
 });
 
@@ -362,13 +377,13 @@ describe("runs of background turns", () => {
     freshMatchesIncremental(state);
   });
 
-  test("a silent run at the end is one row; a single silent turn is one row with its label", () => {
+  test("a single silent turn is its work row without metadata; a silent run at the end is one row", () => {
     const state = createInitialState();
     state.messages.push(user("start"), assistant([{ type: "text", text: "ok" }]), wake(1), silent("s1"));
-    expect(shownRows(state).slice(3)).toEqual(["  ▸ Chrono hard wake · 2 tool calls · Scheduled command failed or returned"]);
+    expect(shownRows(state).slice(3)).toEqual(["  ▸ Chrono hard wake · 2 tool calls, 1 message"]);
     state.messages.push(user("next prompt"));
     const shown = rows(state);
-    const header = shown.indexOf("  ▸ Chrono hard wake · 2 tool calls · Scheduled command failed or returned");
+    const header = shown.indexOf("  ▸ Chrono hard wake · 2 tool calls, 1 message");
     // One blank line between the run's row and the next prompt.
     expect(shown[header + 1]).toBe("");
     expect(shown[header + 2]).toContain("next prompt");
@@ -379,7 +394,10 @@ describe("runs of background turns", () => {
     state.messages.push(wake(1), silent("s1"), user("typed"), assistant([...call("t", "x")]), wake(2), silent("s2"), wake(3), silent("s3"));
     const shown = shownRows(state);
     expect(shown.filter(row => row.includes("background turns"))).toEqual(["  ▸ 2 background turns · 4 tool calls"]);
-    expect(shown).toContain("  ▸ Chrono hard wake · 2 tool calls · Scheduled command failed or returned");
+    expect(shown).toContain("  ▸ Chrono hard wake · 2 tool calls, 1 message");
+    // The typed prompt's tool-only turn is folded without its metadata too.
+    expect(shown).toContain("  ▸ 1 tool call");
+    expect(shown.some(row => row.includes("GPT-6-Astra"))).toBe(false);
   });
 
   test("opening the run shows its turns as before, under a ▾ row that closes it", () => {
@@ -389,9 +407,8 @@ describe("runs of background turns", () => {
     toggleHistoryItemPreservingViewport(state, toggle);
     const shown = shownRows(state);
     expect(shown[0]).toBe("  ▾ 2 background turns · 4 tool calls");
-    expect(shown.filter(row => row.startsWith("  ▸ Chrono hard wake · Scheduled"))).toHaveLength(2);
-    expect(shown.filter(row => row.includes("▸ 2 tool calls, 1 message"))).toHaveLength(2);
-    expect(shown.filter(row => row.includes("GPT-6-Astra"))).toHaveLength(2);
+    expect(shown.filter(row => row === "  ▸ Chrono hard wake · 2 tool calls, 1 message")).toHaveLength(2);
+    expect(shown.filter(row => row.includes("GPT-6-Astra"))).toHaveLength(0);
     freshMatchesIncremental(state);
     toggleHistoryItemPreservingViewport(state, toggle);
     expect(shownRows(state)).toEqual(["  ▸ 2 background turns · 4 tool calls"]);
@@ -431,5 +448,22 @@ describe("runs of background turns", () => {
     for (const char of "fix s2") handleSearchBarKey(state, { type: "char", char });
     handleSearchBarKey(state, { type: "enter" });
     expect(stripAnsi(state.historyLines[state.historyCursor.row])).toContain("fix s2");
+  });
+});
+
+describe("the owner's relayed attachments", () => {
+  const relay = (body: string) => user(`[notification] Discord/paramount · DM\nYeyito [ch:1]\n\n→ Yeyito <@3> [owner]:\n${body}\n[msg:5]\n\nAction: answer.\n\nFilter output:\nRoute: owner (Yeyito) · dm`, { kind: "external_notification" });
+  const bubble = (body: string) => {
+    const state = createInitialState();
+    state.messages.push(relay(body), assistant([{ type: "text", text: "ok" }]));
+    return rows(state).filter(Boolean).slice(0, -2).map(row => row.trim());
+  };
+
+  test("show as attachments, without the [message] placeholder", () => {
+    expect(bubble("[message]\n[attachment:1] voice-message.ogg")[0]).toBe("🎤 voice message");
+    expect(bubble("[message]\n[attachment:1] IMG_1181.png")[0]).toBe("📎 IMG_1181.png");
+    expect(bubble("explain this\n[attachment:1] image.png")).toEqual(["explain this", "📎 image.png", "via Discord/paramount · DM"]);
+    expect(bubble("[message]")[0]).toBe("📎 attachment");
+    expect(bubble("🎤 so I was thinking\nabout the panel")).toEqual(["🎤 so I was thinking", "about the panel", "via Discord/paramount · DM"]);
   });
 });

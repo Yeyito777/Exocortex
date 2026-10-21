@@ -11,6 +11,8 @@ import type { KeyEvent } from "./input";
 import type { Action } from "./keybinds";
 import type { RenderState } from "./state";
 import { buildMessageLines } from "./conversation";
+import { notificationLabel } from "./turncollapse";
+import type { Message } from "./messages";
 import { SIDEBAR_WIDTH } from "./sidebar";
 import { getScrollOffsetForViewStart } from "./chatscroll";
 import { hasOlderHistoryCursor } from "./historypagination";
@@ -64,14 +66,12 @@ type RenderedMessageBound = RenderState["historyMessageBounds"][number];
 
 function getUserMessageBounds(surface: HistorySurface): RenderedMessageBound[] {
   return surface.messageBounds.filter((bound) => {
-    if (bound.role !== "user") return false;
-    const owner = surface.lineAnchors[bound.contentStart]?.owner as {
-      role?: unknown;
-      metadata?: { automation?: unknown } | null;
-    } | undefined;
-    // Brace navigation is a shortcut through prompts the human actually wrote.
-    // Automated prompts remain visible and selectable, but do not become stops.
-    return !(owner?.role === "user" && owner.metadata?.automation);
+    // A notification folded into its turn's work row has no rows to stop on.
+    if (bound.role !== "user" || bound.contentEnd <= bound.contentStart) return false;
+    const owner = surface.lineAnchors[bound.contentStart]?.owner as Message | undefined;
+    // Brace navigation is a shortcut through prompts the human actually wrote
+    // (or relayed, or a parent conversation sent). Notifications do not become stops.
+    return !(owner?.role === "user" && notificationLabel(owner) !== null);
   });
 }
 

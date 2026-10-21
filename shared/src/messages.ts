@@ -327,11 +327,39 @@ export function ownerRelayedText(text: string, metadata: Pick<MessageMetadata, "
   const head = /^→ (?:[^[\n:]|\[[^\]\n]*\])*?\[owner\](?:[^[\n:]|\[[^\]\n]*\])*:(?:[ \t]+(.*))?$/.exec(trigger[0]);
   if (!head) return null;
   const lines = [head[1] ?? ""];
-  for (const line of text.slice(trigger.index + trigger[0].length + 1).split("\n")) {
+  const rest = text.slice(trigger.index + trigger[0].length + 1).split("\n");
+  for (let index = 0; index < rest.length; index++) {
+    const line = rest[index]!;
     if (/^\[msg:[^\]]*\]$/.test(line.trim())) break;
+    // Without a closing message id, the agent-facing tail still ends the owner's words.
+    if (line.trim() === "" && /^(?:Action|Filter output):/.test(rest[index + 1] ?? "")) break;
     lines.push(line);
   }
-  const body = lines.join("\n").trim();
+  return readableRelayBody(lines.join("\n"));
+}
+
+const AUDIO_ATTACHMENT = /(?:^voice-message|\.(?:ogg|oga|opus|m4a|mp3|wav|aac))$/i;
+
+/**
+ * The owner's relayed words as they read in a bubble: attachment lines
+ * (`[attachment:ID] IMG_1181.png`, `[📎 voice-message.ogg]`) become
+ * `📎 IMG_1181.png` / `🎤 voice message`, and the `[message]` placeholder
+ * Discord relays for a message with no text goes when attachments say what
+ * it was (alone, it reads `📎 attachment`).
+ */
+function readableRelayBody(raw: string): string | null {
+  let attachments = 0;
+  const attachment = (name: string) => {
+    attachments++;
+    const file = name.trim();
+    return AUDIO_ATTACHMENT.test(file) ? "🎤 voice message" : `📎 ${file || "attachment"}`;
+  };
+  const lines = raw.split("\n").map(line => line
+    .replace(/^\s*\[attachment:[^\]]*\]\s*(.*)$/, (_, name: string) => attachment(name))
+    .replace(/\[📎 ([^\]]*)\]/g, (_, name: string) => attachment(name)));
+  const kept = lines.filter(line => !(line.trim() === "[message]" && attachments > 0));
+  const body = kept.join("\n").trim();
+  if (body === "[message]") return "📎 attachment";
   return body ? body : null;
 }
 

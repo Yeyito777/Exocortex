@@ -57,6 +57,8 @@ export function ownerRelay(msg: Pick<UserMessage, "text" | "metadata">): OwnerRe
 /** Label for a user-role message that was not typed by the user, or null for a real one. */
 export function notificationLabel(msg: Pick<UserMessage, "text" | "metadata">): string | null {
   if (!isAutomatedUserPrompt(msg.text, msg.metadata) || ownerRelay(msg)) return null;
+  // A parent conversation's delegation or follow-up is this conversation's prompt.
+  if (msg.metadata?.automation?.kind === "exo_send") return null;
   return msg.metadata?.automation ? automationLabel(msg.metadata.automation) : "Notification";
 }
 
@@ -111,6 +113,23 @@ export interface AssistantPlan {
   toggle: object;
   /** The closed background run this turn's work folds into (search opens it). */
   runToggle?: object;
+  /** A folded turn with no reply drops its model/tokens/time line. */
+  metaHidden?: boolean;
+}
+
+/**
+ * A notification that started a turn: it has no row of its own, its label
+ * leads the turn's work row (`▸ Subagent completion · 2 tool calls`), and it
+ * shows in full when that row is opened.
+ */
+export interface MergedPlan {
+  kind: "merged";
+  label: string;
+  /** The turn whose work row it joined. */
+  toggle: object;
+  /** An opened background run starts here: its `▾ …` row. */
+  runHeader?: string;
+  runToggle?: object;
 }
 
 export interface NotificationPlan {
@@ -141,7 +160,13 @@ export interface RunPlan {
   gap: boolean;
 }
 
-export type MessagePlan = AssistantPlan | NotificationPlan | RunPlan | null;
+/** A prompt another conversation sent (an exo delegation or follow-up): a normal bubble, labelled with its sender. */
+export interface FromPlan {
+  kind: "from";
+  label: string;
+}
+
+export type MessagePlan = AssistantPlan | NotificationPlan | RunPlan | MergedPlan | FromPlan | null;
 
 export interface PendingPlan {
   /** Per pending block: true when hidden behind the working row. */
@@ -188,6 +213,8 @@ export interface PlanHistoryInput {
   pendingAI: AIMessage | null;
   collapse: boolean;
   expanded: WeakSet<object>;
+  /** Title of a conversation by id, for prompts other conversations sent. */
+  conversationTitle?: (id: string) => string | null;
 }
 
 const NO_SIGNATURE = "";
@@ -202,6 +229,14 @@ export function planHistory(input: PlanHistoryInput): HistoryPlan {
   for (let index = start; index < count; index++) {
     const msg = messages[index];
     if (msg.role !== "user") continue;
+    const automation = msg.metadata?.automation;
+    if (automation?.kind === "exo_send") {
+      const title = automation.sourceId ? input.conversationTitle?.(automation.sourceId) : null;
+      const label = `from ${title || "another conversation"}`;
+      plans[index - start] = { kind: "from", label };
+      signatures[index - start] = `f${label}`;
+      continue;
+    }
     const memo = notificationMemo(msg);
     if (!memo.label) continue;
     const open = !collapse || expanded.has(msg);
@@ -228,7 +263,11 @@ export function planHistory(input: PlanHistoryInput): HistoryPlan {
       if (block >= 0) reveal = { message: at, block };
     }
     planTurn(messages, start, turnStart, index, inProgress, reveal, expanded, plans, signatures);
-    if (inProgress) pending = planPending(messages, turnStart, index, pendingAI!, pendingLatest, reveal, expanded);
+    if (inProgress) {
+      const head = plans[turnStart - start];
+      const label = head?.kind === "merged" || head?.kind === "notification" ? head.label : null;
+      pending = planPending(messages, turnStart, index, pendingAI!, pendingLatest, reveal, expanded, label);
+    }
     else if (turnStart < index) turns.push(turnStart, index);
     turnStart = index;
   }
@@ -260,7 +299,7 @@ const shapeMemos = new WeakMap<object, { refs: unknown[]; label: string | null; 
 
 function turnShape(messages: readonly Message[], from: number, to: number, plans: readonly MessagePlan[], start: number): TurnShape {
   const head = plans[from - start];
-  const label = head?.kind === "notification" ? head.label : null;
+  const label = head?.kind === "notification" || head?.kind === "merged" ? head.label : null;
   const memo = shapeMemos.get(messages[from]);
   if (memo && memo.label === label && memo.refs.length === (to - from) * 3) {
     let same = true;
@@ -332,7 +371,8 @@ function planRuns(
 ): void {
   let run: RunMember[] = [];
   const flush = (closer: RunMember | null) => {
-    if (run.length > 0) applyRun(messages, start, run, closer, expanded, plans, signatures);
+    // One silent turn is already one row (its work row, without metadata).
+    if (run.length + (closer ? 1 : 0) >= 2) applyRun(messages, start, run, closer, expanded, plans, signatures);
     run = [];
   };
   for (let at = 0; at < turns.length; at += 2) {
@@ -340,7 +380,8 @@ function planRuns(
     const to = turns[at + 1];
     // Prompts the user typed (most turns) cannot be in a run: skip the shape walk. A
     // notification nothing answered (yet) is news, not background work: it stays a row.
-    if (plans[from - start]?.kind !== "notification" || to - from === 1) {
+    const kind = plans[from - start]?.kind;
+    if ((kind !== "notification" && kind !== "merged") || to - from === 1) {
       if (run.length > 0) flush(null);
       continue;
     }
@@ -367,20 +408,16 @@ function applyRun(
   const members = closer ? [...silent, closer] : silent;
   const toolCalls = members.reduce((sum, member) => sum + member.shape.toolCalls, 0);
   const work = toolCalls ? ` · ${toolCalls} tool call${toolCalls === 1 ? "" : "s"}` : "";
-  const single = members.length === 1;
-  const text = single
-    ? `${first.shape.label}${work}${first.shape.preview ? ` · ${first.shape.preview}` : ""}`
-    : `${members.length} background turns${work}`;
-  const header = `${open ? "▾" : "▸"} ${text}`;
+  const header = `${open ? "▾" : "▸"} ${members.length} background turns${work}`;
 
   if (open) {
-    const plan = plans[first.from - start] as NotificationPlan;
+    const plan = plans[first.from - start] as NotificationPlan | MergedPlan;
     plans[first.from - start] = { ...plan, runHeader: header, runToggle: toggle };
     signatures[first.from - start] += `|R${header}`;
     return;
   }
   const gap = closer !== null;
-  const label = single ? first.shape.label : null;
+  const label = null;
   let memo = runMemos.get(toggle);
   if (!memo || memo.header !== header || memo.gap !== gap || memo.label !== label) {
     memo = {
@@ -468,9 +505,11 @@ function planTurn(
   const key = turnKey(messages, from, messages[from]);
   const open = expanded.has(key);
   const memo = turnMemos.get(key);
-  if (memo && turnMemoValid(memo, messages, from, to, inProgress, reveal, open)) {
+  const headPlan = plans[from - start];
+  const label = headPlan?.kind === "notification" ? headPlan.label : null;
+  if (memo && memo.label === label && turnMemoValid(memo, messages, from, to, inProgress, reveal, open)) {
     for (let index = from; index < to; index++) {
-      if (messages[index].role !== "assistant") continue;
+      if (messages[index].role !== "assistant" && !(index === from && memo.merged)) continue;
       plans[index - start] = memo.plans[index - from];
       signatures[index - start] = memo.signatures[index - from];
     }
@@ -518,17 +557,39 @@ function planTurn(
     hiddenByMessage.push(hidden);
   }
 
-  const summaryText = workSummaryText(stats);
+  // A notification that started the turn joins its work row (the working row
+  // while it runs); one nothing answered yet keeps its own row.
+  let firstAssistant = -1;
+  let reply = false;
+  for (let index = from; index < to; index++) {
+    const msg = messages[index];
+    if (msg.role !== "assistant") continue;
+    if (firstAssistant < 0) firstAssistant = index;
+    const hidden = hiddenByMessage[index - from]!;
+    if (msg.blocks.some((block, blockIndex) => hasText(block) && !hidden[blockIndex])) reply = true;
+  }
+  const merged = label !== null && (firstAssistant >= 0 || inProgress);
+  if (merged) {
+    const plan: MessagePlan = open ? { kind: "notification", label, open: true, toggleable: false } : { kind: "merged", label, toggle: key };
+    plans[from - start] = plan;
+    signatures[from - start] = open ? "n10" : `m${label}`;
+    if (host < 0) host = firstAssistant;
+  }
+  const summaryText = [merged ? label : null, workSummaryText(stats)].filter(Boolean).join(" · ");
+  // A folded turn with nothing to read drops its metadata line.
+  const metaHidden = !open && !inProgress && !reply;
   for (let index = from; index < to; index++) {
     const msg = messages[index];
     if (msg.role !== "assistant") continue;
     const hidden = open ? null : hiddenByMessage[index - from];
     // An in-progress turn's summary is its working row under the pending blocks.
     const summary = !inProgress && index === host && summaryText ? `${open ? "▾" : "▸"} ${summaryText}` : null;
-    plans[index - start] = { kind: "assistant", hidden, summary, toggle: key };
-    signatures[index - start] = `a${summary ?? ""}|${hidden ? hidden.map(value => value ? 1 : 0).join("") : "*"}`;
+    plans[index - start] = { kind: "assistant", hidden, summary, toggle: key, ...(metaHidden ? { metaHidden } : {}) };
+    signatures[index - start] = `a${summary ?? ""}|${hidden ? hidden.map(value => value ? 1 : 0).join("") : "*"}|${metaHidden ? 1 : 0}`;
   }
   turnMemos.set(key, {
+    label,
+    merged,
     messages: messages.slice(from, to),
     blockCodes: messages.slice(from, to).map(msg => msg.role === "assistant" ? msg.blocks.map(blockCode) : null),
     inProgress,
@@ -545,6 +606,9 @@ function planTurn(
  * conversations re-derived (and re-allocated) thousands of plans per frame.
  */
 interface TurnMemo {
+  /** The label of the notification that started the turn, and whether it joined the work row. */
+  label: string | null;
+  merged: boolean;
   messages: Message[];
   /** blockCode of every block of each assistant message. */
   blockCodes: Array<number[] | null>;
@@ -601,6 +665,8 @@ function planPending(
   latest: number,
   reveal: StepRef | null,
   expanded: WeakSet<object>,
+  /** The notification that started the turn leads its working row. */
+  label: string | null,
 ): PendingPlan {
   const key = turnKey(messages, from, pendingAI);
   const open = expanded.has(key);
@@ -624,7 +690,8 @@ function planPending(
     }
     return isHidden;
   });
-  return { hidden: open ? null : hidden, summary: workSummaryText(stats), expanded: open, toggle: key };
+  const summary = [label, workSummaryText(stats)].filter(Boolean).join(" · ");
+  return { hidden: open ? null : hidden, summary: summary || null, expanded: open, toggle: key };
 }
 
 // ── Search ──────────────────────────────────────────────────────────
@@ -650,12 +717,14 @@ export function foldedSearchTexts(input: FoldedSearchInput): Map<object, string>
   plan.messages.forEach((messagePlan, offset) => {
     const msg = input.messages[input.start + offset];
     if (!messagePlan || !msg) return;
-    if (messagePlan.kind === "run") {
+    if (messagePlan.kind === "merged") {
+      if (msg.role === "user") add(messagePlan.runToggle ?? messagePlan.toggle, msg.text);
+    } else if (messagePlan.kind === "run") {
       if (msg.role === "user") add(messagePlan.toggle, msg.text);
       else if (msg.role === "assistant") addBlocks(messagePlan.toggle, msg.blocks, msg.blocks.map(() => true));
     } else if (messagePlan.kind === "notification") {
       if (!messagePlan.open && msg.role === "user") add(msg, msg.text);
-    } else if (messagePlan.hidden && msg.role === "assistant") {
+    } else if (messagePlan.kind === "assistant" && messagePlan.hidden && msg.role === "assistant") {
       addBlocks(messagePlan.runToggle ?? messagePlan.toggle, msg.blocks, messagePlan.hidden);
     }
   });

@@ -6,7 +6,7 @@
  * in blockrenderer.ts.
  */
 
-import { CONTEXT_COMPACTION_FINISHED_KIND, combineMessageMetadata, ownerRelayedText, type Block, type ImageAttachment, type Message, type MessageMetadata, type UserMessageAutomation } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, combineMessageMetadata, convDisplayName, ownerRelayedText, type Block, type ImageAttachment, type Message, type MessageMetadata, type UserMessageAutomation } from "./messages";
 import {
   fitImageBox,
   historyImageLimits,
@@ -38,6 +38,12 @@ import { automationLabel, notificationPreview, ownerRelay, planHistory, type His
 
 const COMPACTION_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
 const COMPACTION_SPINNER_INTERVAL_MS = 80;
+
+/** Whether the live turn shows its Working row (and so a turning spinner). */
+export function workingRowVisible(state: RenderState): boolean {
+  return state.pendingAI !== null && isStreaming(state) && !state.showTurnWork && !state.showToolOutput
+    && state.pendingAI.metadata?.startedAt !== state.suppressPendingAIMetadataStartedAt;
+}
 
 export function compactionSpinnerText(startedAt: number, now = Date.now()): string {
   const frameIndex = Math.max(0, Math.floor((now - startedAt) / COMPACTION_SPINNER_INTERVAL_MS));
@@ -219,12 +225,12 @@ function pendingAssistantSegmentMetadata(state: RenderState): MessageMetadata | 
 
 /**
  * `⠹ Working · ▸ 7 tool calls` above the in-progress turn's latest step. The
- * spinner advances with the elapsed-second tick that already redraws the
- * turn's timer, so it costs no extra frames (or bytes over /ssh).
+ * spinner turns at the loading spinners' rate (main.ts ticks the frame while
+ * it shows); the frame diff rewrites only the rows that changed.
  */
 function workingRow(metadata: MessageMetadata | null, pending: PendingPlan, now = Date.now()): string {
   const startedAt = metadata?.workTimerStartedAt ?? metadata?.startedAt ?? now;
-  const frame = COMPACTION_SPINNER_FRAMES[Math.max(0, Math.floor((now - startedAt) / 1000)) % COMPACTION_SPINNER_FRAMES.length];
+  const frame = COMPACTION_SPINNER_FRAMES[Math.max(0, Math.floor((now - startedAt) / COMPACTION_SPINNER_INTERVAL_MS)) % COMPACTION_SPINNER_FRAMES.length];
   const work = pending.summary ? ` · ${pending.expanded ? "▾" : "▸"} ${pending.summary}` : "";
   return `  ${theme.accent}${frame}${theme.reset} ${theme.muted}Working${work}${theme.reset}`;
 }
@@ -789,6 +795,10 @@ export function buildMessageLines(
     pendingAI: state.pendingAI,
     collapse,
     expanded: state.expandedHistoryItems ?? NO_EXPANDED_ITEMS,
+    conversationTitle: (id) => {
+      const conv = state.sidebar?.conversations.find(candidate => candidate.id === id);
+      return conv ? convDisplayName(conv) : null;
+    },
   });
   const cacheKey: unknown[] = [
     state.convId, contentWidth, state.showToolOutput, state.showTurnWork, state.showDiagnostics, state.toolRegistry,
@@ -946,7 +956,13 @@ export function buildMessageLines(
     appendMessageSourceRefs(msg, sourceRefs);
     sourceRefEnds.push(sourceRefs.length);
     const messagePlan = plan.messages[messageIndex - startMessageIndex];
-    if (messagePlan?.kind === "run") {
+    if (messagePlan?.kind === "merged") {
+      // A notification folded into its turn's work row: no row of its own, only the
+      // blank line that separates the turn from the one above (and an opened run's row).
+      if (userMessageNeedsTopMargin(state.messages, messageIndex)) pushLine("", msg, "user_margin_top");
+      if (messagePlan.runHeader && messagePlan.runToggle) pushRunHeader(msg, messagePlan.runHeader, null, messagePlan.runToggle);
+      pushMessageBound(msg.role, start, lines.length, lines.length);
+    } else if (messagePlan?.kind === "run") {
       // A closed run of background turns: one row on its first message, nothing else.
       if (messagePlan.header !== null) {
         if (userMessageNeedsTopMargin(state.messages, messageIndex)) pushLine("", msg, "user_margin_top");
@@ -974,7 +990,8 @@ export function buildMessageLines(
       // The owner's own Discord/WhatsApp message reads as theirs: their words in their bubble.
       const relay = ownerRelay(msg);
       const text = relay?.text ?? msg.text;
-      const background = msg.metadata?.automation && !relay ? theme.automatedUserBg : theme.userBg;
+      const from = messagePlan?.kind === "from" ? messagePlan.label : null;
+      const background = msg.metadata?.automation && !relay && !from ? theme.automatedUserBg : theme.userBg;
       const rendered = renderUserMessageCached(msg, text, availableWidth, msg.images, background);
       pushBlock(msg, "user_content", rendered);
       const contentEnd = lines.length;
@@ -986,7 +1003,7 @@ export function buildMessageLines(
           lineAnchors[contentStart + row].userFlowEnd = flow.starts[row + 1] ?? flow.end;
         }
       }
-      const provenance = relay ? `via ${relay.source}` : automationProvenance(msg.metadata?.automation);
+      const provenance = relay ? `via ${relay.source}` : from ?? automationProvenance(msg.metadata?.automation);
       if (provenance) pushLine(rightAlignedProvenanceLabel(provenance, availableWidth), msg, "automation_label");
       pushImages(pastedImages(msg, msg.images, state.convId), "user_image");
       pushLine("", msg, "user_margin_bottom");
@@ -1007,7 +1024,7 @@ export function buildMessageLines(
       const metadata = nextContinuesAssistantSegment
         ? null
         : assistantSegmentMetadata(state.messages, messageIndex) ?? assistantRunMetadata(state.messages, messageIndex);
-      const metadataLines = nextContinuesAssistantSegment ? [] : renderMetadata(metadata, { ...metadataOptions, active: msg === durableSleepAssistant });
+      const metadataLines = nextContinuesAssistantSegment || (assistantPlan?.metaHidden && msg !== durableSleepAssistant) ? [] : renderMetadata(metadata, { ...metadataOptions, active: msg === durableSleepAssistant });
       if (metadataLines.length > 0) trimTrailingBlankAssistantContent(contentStart);
       // Attached images close the visible message (the run of fragments), right before its metadata.
       if (!nextContinuesAssistantSegment) {

@@ -173,22 +173,22 @@ export function estimateEntryRows(entry: DisplayEntry, cols: number): number {
 /**
  * Rows of an entry in a client that folds turns (tui/src/turncollapse.ts).
  * Entries arrive newest first, so `newerInTurn` says whether a newer assistant
- * entry of the same turn was already counted (this one then shows nothing),
- * and `turnReplied` whether that turn ends with reply text. An assistant entry
- * shows only the text after its last tool round; one with none is a silent
+ * entry of the same turn was already counted (this one then shows nothing).
+ * An assistant entry shows only the text after its last tool round; one with none is a silent
  * turn, which folds under one row or into a run of background turns with
- * others, so it and its notification count nothing. A notification heading a
- * turn with a reply is one row. Like the unfolded estimate it errs low: the
- * folded-work, run and notification rows' margins are not counted.
+ * others, so it counts nothing; a notification never has a row of its own. Like
+ * the unfolded estimate it errs low: work and run rows and margins are not counted.
  */
-export function estimateFoldedEntryRows(entry: DisplayEntry, cols: number, newerInTurn: boolean, turnReplied = true): number {
+export function estimateFoldedEntryRows(entry: DisplayEntry, cols: number, newerInTurn: boolean): number {
   switch (entry.type) {
     case "user": {
-      if (!isAutomatedUserPrompt(entry.text, entry.metadata)) return estimateEntryRows(entry, cols);
-      // The owner's relayed message shows as their bubble; other notifications as one row.
+      // Prompts another conversation sent read as prompts.
+      if (!isAutomatedUserPrompt(entry.text, entry.metadata) || entry.metadata?.automation?.kind === "exo_send") return estimateEntryRows(entry, cols);
+      // The owner's relayed message shows as their bubble; other notifications have
+      // no row of their own (they lead their turn's work row, which is not counted).
       const relayed = ownerRelayedText(entry.text, entry.metadata);
       if (relayed !== null) return estimateEntryRows({ ...entry, text: relayed }, cols);
-      return turnReplied ? 1 : 0;
+      return 0;
     }
     case "ai": {
       if (newerInTurn) return 0;
@@ -286,8 +286,6 @@ export function selectHistoryWindow(
   let userEntries = 0;
   /** A newer assistant entry of the turn being walked was already counted. */
   let aiNewerInTurn = false;
-  /** The turn being walked ends with reply text (set by its newest assistant entry). */
-  let turnReplied = false;
   for (const candidate of candidates) {
     let entry = endBlockIndex > 0 && candidate.index === endIndex && candidate.entry.type === "ai"
       ? sliceAIEntry(candidate.entry, 0, endBlockIndex)
@@ -303,15 +301,10 @@ export function selectHistoryWindow(
     const rowsNeeded = rowTarget ? rowTarget.rows - usedRows : undefined;
     const overBytes = byteBudget !== undefined && usedBytes + bytes > byteBudget;
     const entryRows = !rowTarget ? 0
-      : rowTarget.folded ? estimateFoldedEntryRows(entry, rowTarget.cols, aiNewerInTurn, turnReplied)
+      : rowTarget.folded ? estimateFoldedEntryRows(entry, rowTarget.cols, aiNewerInTurn)
       : estimateEntryRows(entry, rowTarget.cols);
-    if (entry.type === "ai") {
-      if (!aiNewerInTurn) turnReplied = foldedReplyRows(entry, rowTarget?.cols ?? 80) > 0;
-      aiNewerInTurn = true;
-    } else if (entry.type === "user") {
-      aiNewerInTurn = false;
-      turnReplied = false;
-    }
+    if (entry.type === "ai") aiNewerInTurn = true;
+    else if (entry.type === "user") aiNewerInTurn = false;
     if (overBytes || (entry.type === "ai" && rowsNeeded !== undefined && entryRows > rowsNeeded)) {
       if (entry.type !== "ai") {
         if (selected.length > 0) break;
