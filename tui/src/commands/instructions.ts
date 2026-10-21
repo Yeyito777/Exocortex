@@ -30,7 +30,7 @@ export function parseInstructionsView(arg: string): InstructionsView | null {
 
 export const INSTRUCTIONS_COMMAND: SlashCommand = {
   name: "/instructions",
-  description: "View and edit conversation, folder or global instructions, or the tools'; with text, set this conversation's",
+  description: "View and edit conversation, folder or global instructions, or the tools'; with text, set this conversation's (g i)",
   args: ARGS,
   handler: (text, state) => {
     const trimmed = text.slice("/instructions".length).trim();

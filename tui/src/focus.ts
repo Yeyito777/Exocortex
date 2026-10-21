@@ -103,7 +103,8 @@ export type KeyResult =
   | { type: "btw_close" }
   | { type: "open_target"; target: string }
   | { type: "open_image"; target: InlineImageTarget }
-  | { type: "open_accounts" };
+  | { type: "open_accounts" }
+  | { type: "open_instructions" };
 
 // ── Key routing ─────────────────────────────────────────────────────
 

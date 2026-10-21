@@ -58,6 +58,7 @@ The implementation in [keybinds.ts](../tui/src/keybinds.ts) and
 | `;` | In history visual mode, quote selection into the draft |
 | `;` / right click | On a sidebar conversation or folder, open its actions menu (a folder's starts on Edit instructions) |
 | `g a` | In normal mode (prompt, history or sidebar), open the Accounts screen |
+| `g i` | In normal mode (prompt, history or sidebar), open the instructions picker, like bare `/instructions` |
 
 In prompt normal mode, `3>>` shifts three lines once. In visual modes, shifts
 apply to every selected logical line and return to normal mode. Shifts support
@@ -65,7 +66,8 @@ undo/redo; outdenting removes at most four leading spaces without removing text.
 
 ## Instructions
 
-Instructions are not shown in the chat. `/instructions` opens a picker of the
+Instructions are not shown in the chat. `/instructions` (or `g i` in normal
+mode) opens a picker of the
 three scopes: **Conversation** (this chat only), **Folder** (every chat in the
 conversation's folder; `;` or a right click on a sidebar folder, then Edit
 instructions, opens it directly) and

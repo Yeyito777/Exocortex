@@ -33,6 +33,7 @@ const KEYMAP: KeymapEntry[] = [
   { mode: "normal", context: "prompt", key: "gg", command: { type: "action", action: "scroll_top" } },
   { mode: "normal", context: "prompt", key: "G",  command: { type: "action", action: "scroll_bottom" } },
   { mode: "normal", context: "prompt", key: "ga", command: { type: "action", action: "open_accounts" } },
+  { mode: "normal", context: "prompt", key: "gi", command: { type: "action", action: "open_instructions" } },
 
   // Chat message navigation (focuses history from the prompt)
   { mode: "normal", context: "prompt", key: "{",  command: { type: "action", action: "history_prev_message" } },
@@ -90,6 +91,7 @@ const KEYMAP: KeymapEntry[] = [
   { mode: "normal", context: "history", key: "gg", command: { type: "action", action: "history_gg" } },
   { mode: "normal", context: "history", key: "G",  command: { type: "action", action: "history_G" } },
   { mode: "normal", context: "history", key: "ga", command: { type: "action", action: "open_accounts" } },
+  { mode: "normal", context: "history", key: "gi", command: { type: "action", action: "open_instructions" } },
 
   // Message navigation
   { mode: "normal", context: "history", key: "{",  command: { type: "action", action: "history_prev_message" } },
@@ -112,6 +114,7 @@ const KEYMAP: KeymapEntry[] = [
   { mode: "normal", context: "sidebar", key: "gg", command: { type: "action", action: "scroll_top" } },
   { mode: "normal", context: "sidebar", key: "G",  command: { type: "action", action: "scroll_bottom" } },
   { mode: "normal", context: "sidebar", key: "ga", command: { type: "action", action: "open_accounts" } },
+  { mode: "normal", context: "sidebar", key: "gi", command: { type: "action", action: "open_instructions" } },
   { mode: "normal", context: "sidebar", key: "d",  command: { type: "action", action: "delete" } },
   { mode: "normal", context: "sidebar", key: "m",  command: { type: "action", action: "mark" } },
   { mode: "normal", context: "sidebar", key: "p",  command: { type: "action", action: "pin" } },

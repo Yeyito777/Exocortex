@@ -1782,6 +1782,9 @@ function handleKey(key: KeyEvent): void {
     case "open_accounts":
       requestAccountsScreen(state, daemon);
       break;
+    case "open_instructions":
+      openInstructionsPicker(state, daemon);
+      break;
     case "quit":
       running = false;
       break;
