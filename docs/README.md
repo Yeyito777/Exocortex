@@ -135,7 +135,7 @@ table in step with it.
 | `/time [n]` | Timestamp of the latest (or nth-latest) chat message |
 | `/diagnostics [on\|off]` | Show output-token counts in response metadata |
 | `/theme [name]` | Show or set the theme |
-| `/folders [tree\|navigate]` | Expand sidebar folders in place (`l` expands, `h` collapses, `Enter` toggles) or open them as their own list |
+| `/folders [tree\|navigate]` | Expand sidebar folders in place (`l` expands, `h` collapses, `Enter` toggles; the default) or open them as their own list |
 | `/hide [on\|off]` | Censor emails in the UI |
 | `/ping [sound\|notif\|both [file] \| off]` | Signal when a response finishes |
 | `/ssh [<alias>\|cancel]` | Route through another machine's daemon over SSH |
