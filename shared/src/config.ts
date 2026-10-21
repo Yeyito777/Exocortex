@@ -170,6 +170,8 @@ export interface TuiConfig {
   diagnostics?: boolean;
   /** Ctrl+O: show every turn's work and every notification instead of folding them. */
   showTurnWork?: boolean;
+  /** Experimental folded-history style (/foldstyle): rows (default), inline, episode or gutter. */
+  foldStyle?: string;
   /** How sidebar folders open: replace the list ("navigate", default) or expand in place ("tree"). */
   sidebarFolders?: "navigate" | "tree";
   /** Display math: typeset images on Kitty-graphics terminals ("auto", default), always "text", or force "image". */

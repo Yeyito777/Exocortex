@@ -157,14 +157,17 @@ function linkAtScreen(col: number, row: number, state: RenderState): string | nu
  */
 function historyClickableAtScreen(col: number, row: number, state: RenderState): boolean {
   if (!screenToHistoryPos(col, row, state)) return false;
-  return linkAtScreen(col, row, state) !== null || imageAtScreen(col, row, state) !== null || toggleAtScreen(row, state) !== null;
+  return linkAtScreen(col, row, state) !== null || imageAtScreen(col, row, state) !== null || toggleAtScreen(row, state, col) !== null;
 }
 
 /** The folded turn or notification a click on this row opens or closes. */
-function toggleAtScreen(row: number, state: RenderState): object | null {
+function toggleAtScreen(row: number, state: RenderState, col?: number): object | null {
   const viewport = state.layout.historyViewportRows[row - 3];
   if (!viewport) return null;
-  return state.historyLineAnchors[viewport.lineIndex]?.toggle ?? null;
+  const anchor = state.historyLineAnchors[viewport.lineIndex];
+  // A gutter marker toggles only from its own columns; the row's text stays selectable.
+  if (anchor?.toggleCols !== undefined && (col === undefined || col - state.layout.chatCol >= anchor.toggleCols)) return null;
+  return anchor?.toggle ?? null;
 }
 
 // ── Cursor shape ──────────────────────────────────────────────────
@@ -393,7 +396,7 @@ export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult 
       state.mouseLinkPress = target ? { col, row, target } : null;
       const image = imageAtScreen(col, row, state);
       state.mouseImagePress = image ? { col, row, image } : null;
-      const toggle = target || image ? null : toggleAtScreen(row, state);
+      const toggle = target || image ? null : toggleAtScreen(row, state, col);
       state.mouseTogglePress = toggle ? { col, row, toggle } : null;
       focusHistory(state);
       state.vim.mode = "visual";

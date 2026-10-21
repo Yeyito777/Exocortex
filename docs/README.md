@@ -134,6 +134,7 @@ table in step with it.
 | `/usage reset` | Spend an earned OpenAI usage-limit reset |
 | `/time [n]` | Timestamp of the latest (or nth-latest) chat message |
 | `/diagnostics [on\|off]` | Show output-token counts in response metadata |
+| `/foldstyle rows\|inline\|episode\|gutter` | Experimental: how folded work and notifications look (a row each, a tag on the metadata line, one line per stretch between your messages, or a gutter marker) |
 | `/theme [name]` | Show or set the theme |
 | `/folders [tree\|navigate]` | Expand sidebar folders in place (`l` expands, `h` collapses, `Enter` toggles) or open them as their own list |
 | `/hide [on\|off]` | Censor emails in the UI |

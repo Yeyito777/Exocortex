@@ -7,6 +7,7 @@ import { COMPACT_COMMAND } from "./commands/compact";
 import { CONVO_COMMAND } from "./commands/convo";
 import { DEFAULT_MODEL_COMMAND } from "./commands/default-model";
 import { DIAGNOSTICS_COMMAND } from "./commands/diagnostics";
+import { FOLDSTYLE_COMMAND } from "./commands/foldstyle";
 import { EFFORT_COMMAND } from "./commands/effort";
 import { FAST_COMMAND } from "./commands/fast";
 import { FOLDERS_COMMAND } from "./commands/folders";
@@ -84,6 +85,7 @@ const commands: SlashCommand[] = [
   USAGE_COMMAND,
   TIME_COMMAND,
   DIAGNOSTICS_COMMAND,
+  FOLDSTYLE_COMMAND,
   THEME_COMMAND,
   FOLDERS_COMMAND,
   HIDE_COMMAND,

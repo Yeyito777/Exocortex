@@ -111,6 +111,35 @@ export interface AssistantPlan {
   toggle: object;
   /** The closed background run this turn's work folds into (search opens it). */
   runToggle?: object;
+  /** Style A: what folded before this reply, appended to its metadata line (`↳ chrono · 7 tools ▸`). */
+  metaTag?: string;
+  /** Style C: marker in the left gutter of this message's first row (`▸` / `▾`). */
+  gutter?: string;
+  /** Style B: metadata hidden (only an episode's last reply keeps it). */
+  metaHidden?: boolean;
+  /** The fold group the tag, gutter or reply belongs to. */
+  groupToggle?: object;
+}
+
+/**
+ * Alternative fold styles (experimental, tui.foldStyle):
+ * - rows: today's rows (a notification row, a work row per turn, runs of background turns);
+ * - inline (A): no extra rows; folded work and notifications become a tag on the reply's metadata line;
+ * - episode (B): everything between two of the owner's messages folds into one line, replies stay;
+ * - gutter (C): a marker in the left gutter of each reply that has folded work before it.
+ */
+export type FoldStyle = "rows" | "inline" | "episode" | "gutter";
+export const FOLD_STYLES: readonly FoldStyle[] = ["rows", "inline", "episode", "gutter"];
+
+/** A message inside a fold group of styles A–C. */
+export interface GroupPlan {
+  kind: "group";
+  /** hidden: no rows; spacer: one blank row (keeps replies apart); line: one dim toggle row. */
+  role: "hidden" | "spacer" | "line";
+  text: string | null;
+  toggle: object;
+  /** For a line on a message that still renders (an opened group): its own plan, after the line. */
+  inner?: MessagePlan;
 }
 
 export interface NotificationPlan {
@@ -141,7 +170,7 @@ export interface RunPlan {
   gap: boolean;
 }
 
-export type MessagePlan = AssistantPlan | NotificationPlan | RunPlan | null;
+export type MessagePlan = AssistantPlan | NotificationPlan | RunPlan | GroupPlan | null;
 
 export interface PendingPlan {
   /** Per pending block: true when hidden behind the working row. */
@@ -188,6 +217,7 @@ export interface PlanHistoryInput {
   pendingAI: AIMessage | null;
   collapse: boolean;
   expanded: WeakSet<object>;
+  style?: FoldStyle;
 }
 
 const NO_SIGNATURE = "";
@@ -232,7 +262,9 @@ export function planHistory(input: PlanHistoryInput): HistoryPlan {
     else if (turnStart < index) turns.push(turnStart, index);
     turnStart = index;
   }
-  planRuns(messages, start, turns, expanded, plans, signatures);
+  const style = input.style ?? "rows";
+  if (style === "rows") planRuns(messages, start, turns, expanded, plans, signatures);
+  else planGroups(messages, start, turns, style, expanded, plans, signatures);
   return { collapse, messages: plans, signatures, pending };
 }
 
@@ -655,10 +687,221 @@ export function foldedSearchTexts(input: FoldedSearchInput): Map<object, string>
       else if (msg.role === "assistant") addBlocks(messagePlan.toggle, msg.blocks, msg.blocks.map(() => true));
     } else if (messagePlan.kind === "notification") {
       if (!messagePlan.open && msg.role === "user") add(msg, msg.text);
-    } else if (messagePlan.hidden && msg.role === "assistant") {
+    } else if (messagePlan.kind === "assistant" && messagePlan.hidden && msg.role === "assistant") {
       addBlocks(messagePlan.runToggle ?? messagePlan.toggle, msg.blocks, messagePlan.hidden);
     }
   });
   if (plan.pending?.hidden && input.pendingAI) addBlocks(plan.pending.toggle, input.pendingAI.blocks, plan.pending.hidden);
   return out;
+}
+
+// ── Fold groups (styles A–C) ────────────────────────────────────────
+
+interface GroupTurn {
+  from: number;
+  to: number;
+  /** owner: a prompt the user typed or relayed; notification; none: the window opens mid-turn. */
+  head: "owner" | "notification" | "none";
+  shape: TurnShape;
+}
+
+const groupTokens = new WeakMap<object, object>();
+
+function groupKey(head: object): object {
+  let token = groupTokens.get(head);
+  if (!token) groupTokens.set(head, token = {});
+  return token;
+}
+
+const SHORT_LABELS: Record<string, string> = {
+  "Background completion": "task",
+  "Chrono": "chrono",
+  "Chrono hard wake": "chrono",
+  "Exo delegation": "exo",
+  "Subagent completion": "subagent",
+  "Goal continuation": "goal",
+  "Daemon restart": "restart",
+};
+
+/** `discord`, `gmail`, `chrono`, `subagent`…: the one-word source of a notification. */
+function shortSource(shape: TurnShape): string {
+  if (shape.label && SHORT_LABELS[shape.label]) return SHORT_LABELS[shape.label];
+  const source = /^([A-Za-z]+)/.exec(shape.preview)?.[1];
+  return source ? source.toLowerCase() : "notification";
+}
+
+function groupSummary(members: readonly GroupTurn[]): { notifications: number; tools: number; source: string | null } {
+  const notes = members.filter(member => member.head === "notification");
+  return {
+    notifications: notes.length,
+    tools: members.reduce((sum, member) => sum + member.shape.toolCalls, 0),
+    source: notes.length === 1 ? shortSource(notes[0].shape) : null,
+  };
+}
+
+const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
+
+function planSignature(plan: MessagePlan): string {
+  if (!plan) return "";
+  if (plan.kind === "group") return `g${plan.role}|${plan.text ?? ""}|${planSignature(plan.inner ?? null)}`;
+  if (plan.kind === "assistant") {
+    return `a${plan.summary ?? ""}|${plan.hidden ? plan.hidden.map(value => value ? 1 : 0).join("") : "*"}|${plan.metaTag ?? ""}|${plan.gutter ?? ""}|${plan.metaHidden ? 1 : 0}`;
+  }
+  if (plan.kind === "notification") return `n${plan.open ? 1 : 0}${plan.toggleable ? 1 : 0}`;
+  return `r${plan.header ?? ""}`;
+}
+
+function planGroups(
+  messages: readonly Message[],
+  start: number,
+  turns: readonly number[],
+  style: Exclude<FoldStyle, "rows">,
+  expanded: WeakSet<object>,
+  plans: MessagePlan[],
+  signatures: string[],
+): void {
+  const set = (index: number, plan: MessagePlan) => {
+    plans[index - start] = plan;
+    signatures[index - start] = planSignature(plan);
+  };
+  const all: GroupTurn[] = [];
+  for (let at = 0; at < turns.length; at += 2) {
+    const from = turns[at];
+    const to = turns[at + 1];
+    const msg = messages[from];
+    const head = msg.role !== "user" ? "none" : plans[from - start]?.kind === "notification" ? "notification" : "owner";
+    all.push({ from, to, head, shape: turnShape(messages, from, to, plans, start) });
+  }
+  const assistants = (member: GroupTurn) => {
+    const out: number[] = [];
+    for (let index = member.from; index < member.to; index++) if (messages[index].role === "assistant") out.push(index);
+    return out;
+  };
+  /** Open: render the group like Ctrl+O (every notification and all work). */
+  const openMembers = (members: readonly GroupTurn[]) => {
+    for (const member of members) {
+      for (let index = member.from; index < member.to; index++) {
+        const plan = plans[index - start];
+        if (plan?.kind === "notification") set(index, { ...plan, open: true, toggleable: false });
+        else if (plan?.kind === "assistant") set(index, { ...plan, hidden: null, summary: null });
+      }
+    }
+  };
+  /** The first message a group line can sit on: the notification, or the owner turn's first answer. */
+  const lineHost = (member: GroupTurn) => member.head === "notification" ? member.from : assistants(member)[0];
+
+  if (style === "episode") {
+    let episode: GroupTurn[] = [];
+    const flush = () => {
+      const members = episode.filter(member => !member.shape.blocking);
+      episode = [];
+      const { notifications, tools } = groupSummary(members);
+      if (members.length === 0 || (notifications === 0 && tools === 0)) return;
+      const toggle = groupKey(messages[members[0].from]);
+      const open = expanded.has(toggle);
+      const parts = [notifications ? plural(notifications, "background turn") : null, tools ? plural(tools, "tool call") : null].filter(Boolean);
+      const text = `${open ? "▾" : "▸"} ${parts.join(" · ")}`;
+      const host = lineHost(members[0]);
+      if (host === undefined) return;
+      if (open) openMembers(members);
+      const replies = members.filter(member => member.shape.reply);
+      const lastReply = replies[replies.length - 1];
+      if (!open) {
+        for (const member of members) {
+          const list = assistants(member);
+          if (member.head === "notification") set(member.from, { kind: "group", role: member.shape.reply ? "spacer" : "hidden", text: null, toggle });
+          for (const index of list) {
+            const plan = plans[index - start];
+            if (!member.shape.reply) set(index, { kind: "group", role: "hidden", text: null, toggle });
+            else if (plan?.kind === "assistant") set(index, { ...plan, hidden: plan.hidden ?? null, summary: null, metaHidden: member !== lastReply, groupToggle: toggle });
+          }
+        }
+      }
+      // The line goes first: on the first notification, or under the owner's prompt.
+      // The host still renders after its line unless the closed group hides it.
+      const current = plans[host - start];
+      const inner = current && !(current.kind === "group" && current.role === "hidden") ? current : null;
+      set(host, { kind: "group", role: "line", text, toggle, ...(inner ? { inner } : {}) });
+    };
+    for (const turn of all) {
+      if (turn.head !== "notification") flush();
+      episode.push(turn);
+    }
+    flush();
+    return;
+  }
+
+  // inline (A) and gutter (C): what folded since the last reply goes with the next reply.
+  let pending: GroupTurn[] = [];
+  const apply = (members: GroupTurn[], anchored: boolean) => {
+    const { notifications, tools, source } = groupSummary(members);
+    if (members.length === 0 || (notifications === 0 && tools === 0)) return;
+    const toggle = groupKey(messages[members[0].from]);
+    const open = expanded.has(toggle);
+    const arrow = open ? "▾" : "▸";
+    const who = notifications === 1 ? `↳ ${source}` : notifications > 1 ? `↳ ${plural(notifications, "background turn")}` : null;
+    const work = tools ? plural(tools, "tool") : null;
+    const summary = [who, work].filter(Boolean).join(" · ");
+    if (open) openMembers(members);
+    if (!anchored) {
+      // Nothing answered after them: one dim line.
+      const host = lineHost(members[0]);
+      if (host === undefined) return;
+      if (!open) {
+        for (const member of members) {
+          if (member.head === "notification") set(member.from, { kind: "group", role: "hidden", text: null, toggle });
+          for (const index of assistants(member)) set(index, { kind: "group", role: "hidden", text: null, toggle });
+        }
+      }
+      const inner = open ? plans[host - start] : null;
+      set(host, { kind: "group", role: "line", text: `${arrow} ${summary}`, toggle, ...(inner ? { inner } : {}) });
+      return;
+    }
+    const reply = members[members.length - 1];
+    if (!open) {
+      for (const member of members) {
+        if (member.head === "notification") set(member.from, { kind: "group", role: member === reply ? "spacer" : "hidden", text: null, toggle });
+        if (member === reply) continue;
+        for (const index of assistants(member)) set(index, { kind: "group", role: "hidden", text: null, toggle });
+      }
+    }
+    const list = assistants(reply);
+    // Style A tags the metadata line (the turn's last answer); C marks the reply's first row.
+    let target = list[list.length - 1];
+    if (style === "gutter") {
+      target = list.find(index => {
+        const plan = plans[index - start];
+        const msg = messages[index];
+        return msg.role === "assistant" && msg.blocks.some((block, blockIndex) => hasText(block) && !(plan?.kind === "assistant" && plan.hidden?.[blockIndex]));
+      }) ?? target;
+    }
+    for (const index of list) {
+      const plan = plans[index - start];
+      if (plan?.kind !== "assistant") continue;
+      const mark = index === target
+        ? style === "inline" ? { metaTag: `${summary} ${arrow}` } : { gutter: arrow }
+        : {};
+      set(index, { ...plan, summary: null, groupToggle: toggle, ...mark });
+    }
+  };
+  for (const turn of all) {
+    if (turn.head !== "notification") {
+      apply(pending, false);
+      pending = [];
+      if (turn.shape.reply) apply([turn], true);
+      else apply([turn], false);
+      continue;
+    }
+    if (turn.shape.blocking || turn.to - turn.from === 1) {
+      apply(pending, false);
+      pending = [];
+      continue;
+    }
+    pending.push(turn);
+    if (turn.shape.reply) {
+      apply(pending, true);
+      pending = [];
+    }
+  }
+  apply(pending, false);
 }

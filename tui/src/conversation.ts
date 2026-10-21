@@ -331,6 +331,8 @@ export interface RenderLineAnchor {
   openImages?: InlineImageHit[];
   /** Folded turn or notification that Enter or a click on this row opens or closes. */
   toggle?: object;
+  /** Only clicks in the row's first this-many columns toggle (a gutter marker). */
+  toggleCols?: number;
 }
 
 /** An image to draw in history, with the object that owns its placement. */
@@ -789,9 +791,10 @@ export function buildMessageLines(
     pendingAI: state.pendingAI,
     collapse,
     expanded: state.expandedHistoryItems ?? NO_EXPANDED_ITEMS,
+    style: state.foldStyle ?? "rows",
   });
   const cacheKey: unknown[] = [
-    state.convId, contentWidth, state.showToolOutput, state.showTurnWork, state.showDiagnostics, state.toolRegistry,
+    state.convId, contentWidth, state.showToolOutput, state.showTurnWork, state.foldStyle, state.showDiagnostics, state.toolRegistry,
     state.externalToolStyles, theme.name, state.rows, inlineImageGeneration(), mathImageGeneration(),
     inlineImagesActive(), imageCell.width, imageCell.height, userMessageNeedsTopMargin(messages, startMessageIndex),
   ];
@@ -945,7 +948,24 @@ export function buildMessageLines(
     const start = lines.length;
     appendMessageSourceRefs(msg, sourceRefs);
     sourceRefEnds.push(sourceRefs.length);
-    const messagePlan = plan.messages[messageIndex - startMessageIndex];
+    let messagePlan = plan.messages[messageIndex - startMessageIndex];
+    // Fold groups of styles A–C: rows hidden, a blank spacer, or one dim line (then the message, if it still renders).
+    let lineAbove = false;
+    if (messagePlan?.kind === "group") {
+      const group = messagePlan;
+      if (group.role === "line") {
+        if (msg.role === "user" && userMessageNeedsTopMargin(state.messages, messageIndex)) pushLine("", msg, "user_margin_top");
+        pushToggleLine(`  ${theme.muted}${truncateToWidth(group.text ?? "", Math.max(1, availableWidth - 4))}${theme.reset}`, msg, "run_header", group.toggle);
+        lineAbove = true;
+      }
+      const inner = group.role === "line" ? group.inner ?? null : group;
+      if (!inner || inner.kind === "group") {
+        if (inner?.role === "spacer") pushLine("", msg, "user_margin_top");
+        pushMessageBound(msg.role, start, start, lines.length);
+        continue;
+      }
+      messagePlan = inner;
+    }
     if (messagePlan?.kind === "run") {
       // A closed run of background turns: one row on its first message, nothing else.
       if (messagePlan.header !== null) {
@@ -960,7 +980,7 @@ export function buildMessageLines(
         pushMessageBound(msg.role, start, start, start);
       }
     } else if (msg.role === "user" && messagePlan?.kind === "notification") {
-      if (userMessageNeedsTopMargin(state.messages, messageIndex)) pushLine("", msg, "user_margin_top");
+      if (!lineAbove && userMessageNeedsTopMargin(state.messages, messageIndex)) pushLine("", msg, "user_margin_top");
       const contentStart = lines.length;
       if (messagePlan.runHeader && messagePlan.runToggle) pushRunHeader(msg, messagePlan.runHeader, null, messagePlan.runToggle);
       pushNotification(msg, messagePlan);
@@ -1000,6 +1020,13 @@ export function buildMessageLines(
         if (assistantPlan?.hidden?.[blockIndex]) return;
         pushBlock(block, "assistant_block", renderAssistantBlock(block));
       });
+      // Style C: a dim marker in the gutter of the reply's first row opens what folded before it.
+      if (assistantPlan?.gutter && assistantPlan.groupToggle && lines.length > contentStart) {
+        const first = lines[contentStart];
+        if (first.startsWith("  ")) lines[contentStart] = `${theme.muted}${assistantPlan.gutter}${theme.reset} ${first.slice(2)}`;
+        lineAnchors[contentStart].toggle = assistantPlan.groupToggle;
+        lineAnchors[contentStart].toggleCols = 2;
+      }
       segmentImages.push(...attachedImages(msg.blocks));
       const nextMessage = state.messages[messageIndex + 1];
       const nextContinuesAssistantSegment = nextMessage?.role === "assistant"
@@ -1007,7 +1034,11 @@ export function buildMessageLines(
       const metadata = nextContinuesAssistantSegment
         ? null
         : assistantSegmentMetadata(state.messages, messageIndex) ?? assistantRunMetadata(state.messages, messageIndex);
-      const metadataLines = nextContinuesAssistantSegment ? [] : renderMetadata(metadata, { ...metadataOptions, active: msg === durableSleepAssistant });
+      const metadataLines = nextContinuesAssistantSegment || assistantPlan?.metaHidden ? [] : renderMetadata(metadata, { ...metadataOptions, active: msg === durableSleepAssistant });
+      // Style A: what folded before this reply rides on its metadata line.
+      if (assistantPlan?.metaTag && metadataLines.length > 0) {
+        metadataLines[metadataLines.length - 1] += `${theme.dim} · ${assistantPlan.metaTag}${theme.reset}`;
+      }
       if (metadataLines.length > 0) trimTrailingBlankAssistantContent(contentStart);
       // Attached images close the visible message (the run of fragments), right before its metadata.
       if (!nextContinuesAssistantSegment) {
@@ -1017,6 +1048,7 @@ export function buildMessageLines(
       const contentEnd = lines.length;
       for (let i = 0; i < metadataLines.length; i++) {
         pushLine(metadataLines[i], msg, "assistant_metadata", i);
+        if (assistantPlan?.metaTag && assistantPlan.groupToggle && i === metadataLines.length - 1) lineAnchors[lineAnchors.length - 1].toggle = assistantPlan.groupToggle;
       }
       pushMessageBound(msg.role, start, contentStart, contentEnd);
     } else if (msg.role === "system" && msg.metadata?.kind === CONTEXT_COMPACTION_FINISHED_KIND) {
