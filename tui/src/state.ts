@@ -24,6 +24,7 @@ import { loadSidebarFolderViewPreference } from "./sidebar/folderview";
 import type { VimState } from "./vim";
 import { createVimState } from "./vim";
 import type { HistoryCursor } from "./historycursor";
+import type { UnconfirmedSend } from "./sendecho";
 import { createHistoryCursor } from "./historycursor";
 import type { SearchDirection } from "./search";
 import type { UndoState } from "./undo";
@@ -275,6 +276,8 @@ export interface RenderState {
   deferredHistoryRender: DeferredHistoryRenderState | null;
   /** Pending message to send after conversation is created. */
   pendingSend: { active: boolean; text: string; images?: ImageAttachment[] };
+  /** Direct sends shown before the daemon confirmed them (see sendecho.ts). */
+  unconfirmedSends: UnconfirmedSend[];
   /** Messages blocked on login; auto-sent after successful authentication. */
   pendingAuthQueue: AuthQueuedMessage[];
   /** Pending system instructions to apply after a conversation is created. */
@@ -711,6 +714,7 @@ export function createInitialState(): RenderState {
     layout: { totalLines: 0, messageAreaHeight: 0, historyWidth: 0, chatWidth: 0, taskPanelRect: null, taskPanelMaxScroll: 0, usageBlockRect: null, historyViewportRows: [], chatCol: 1, sepAbove: 0, firstInputRow: 0, sepBelow: 0 },
     deferredHistoryRender: null,
     pendingSend: { active: false, text: "" },
+    unconfirmedSends: [],
     pendingAuthQueue: [],
     pendingSystemInstructions: null,
     pendingGenerateTitleOnCreate: false,

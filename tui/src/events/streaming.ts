@@ -15,6 +15,7 @@ import { syncChosenProvider } from "../providerselection";
 import type { Event } from "../protocol";
 import type { ImageAttachment } from "../messages";
 import { removeLocalQueueEntry } from "../queue";
+import { confirmDirectSend, keepUnconfirmedSendsLast } from "../sendecho";
 import { formatStreamRetryNotice, pushInlineSystemNotice, shouldReconcileInlineSystemNoticeOnStop } from "./notices";
 import { commitPendingAISegment, hydratePendingAIFromSnapshot, markPendingAILive, subtractPartialCommittedBlocks } from "./pending-ai";
 import { fallbackProvider } from "./provider";
@@ -367,6 +368,7 @@ function imagesWithLocalBytes(state: RenderState, event: Extract<Event, { type: 
 }
 
 export function handleUserMessage(event: Extract<Event, { type: "user_message" }>, state: RenderState): void {
+  if (!event.queueId) confirmDirectSend(state, event.convId, event.startedAt);
   // Queue delivery and an unrelated history refresh (for example external call
   // startup persisting its status) can cross on the socket. If the canonical
   // snapshot wins that race, the later live event describes a user turn that is
@@ -412,6 +414,7 @@ export function handleUserMessage(event: Extract<Event, { type: "user_message" }
 
   // Remove matching local shadow — the daemon already injected it.
   removeLocalQueueEntry(state, event.convId, event.text, event.queueId);
+  keepUnconfirmedSendsLast(state, event.convId);
 
   // Incoming turns (including background completions) are not navigation.
   // Let render's normal growth pinning preserve history browsing; offset zero

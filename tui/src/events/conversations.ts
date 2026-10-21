@@ -53,6 +53,7 @@ import {
   mergeSnapshotBlocksPreservingLocalDetails,
   subtractLoadedAssistantPrefix,
 } from "./streaming-snapshot";
+import { restoreUnconfirmedSends } from "../sendecho";
 import type { DaemonActions } from "./types";
 import {
   beginConversationScrollRestore,
@@ -418,6 +419,9 @@ export function handleConversationLoaded(
       event.pendingAI.blockOffset ?? (preservedPendingAICommittedBlocks.length > 0 ? legacyRebasedBlockOffset : 0),
     );
   }
+
+  // A send made while this load was in flight is not in it yet.
+  restoreUnconfirmedSends(state, event.convId);
 
   const preservedToolOutputResult = preservedToolOutputs.size > 0
     ? applyPreservedToolResultOutputs(state, preservedToolOutputs)

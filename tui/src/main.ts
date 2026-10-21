@@ -59,6 +59,8 @@ import {
   removeNewConversationQueuedMessage,
   removeQueuedMessageByReference,
 } from "./queue";
+import { forgetUnconfirmedSends, trackDirectSend } from "./sendecho";
+import { dropNextMessageSuggestion } from "./nextmessage";
 import {
   applyOptimisticEditMessageUnwind,
   cancelEditMessage,
@@ -174,6 +176,8 @@ let pendingVoiceQueuePrompt = false;
 let pendingNewConversationConvId: string | null = null;
 let pendingLocalInterruptConvId: string | null = null;
 let pendingEditMessageUnwind: PendingEditMessageUnwind | null = null;
+/** A message sent while the edit's unwind was in flight; shown, not yet sent. */
+let deferredEditResend: { convId: string; message: UserMessage; startedAt: number } | null = null;
 let instructionsPrefetchTimer: ReturnType<typeof setTimeout> | null = null;
 let instructionsPrefetchFor = "";
 // Local-only user-message echoes whose audio jobs are still transcribing. They
@@ -465,6 +469,8 @@ function resetForDaemonRouteSwitch(): void {
   pendingNewConversationConvId = null;
   pendingLocalInterruptConvId = null;
   pendingEditMessageUnwind = null;
+  restoreDeferredEditResend();
+  forgetUnconfirmedSends(state);
   reconnectNavigationTarget = null;
   pendingStartingState = null;
   startingConversationLoad = null;
@@ -514,12 +520,14 @@ function onDaemonEvent(event: Event): void {
     // conversations_list immediately reconciles the saved state.
     return;
   }
+  let flushEditResendAfterEvent = false;
   if (pendingEditMessageUnwind) {
     const pending = pendingEditMessageUnwind;
     const unwindEvent = classifyPendingEditMessageUnwindEvent(pending, event, state.conversationOpenRequest?.reqId ?? null);
     if (unwindEvent === "ignore") return;
     if (unwindEvent === "complete") {
       pendingEditMessageUnwind = null;
+      flushEditResendAfterEvent = true;
       if (pendingLocalInterruptConvId === pending.convId) pendingLocalInterruptConvId = null;
       // A replay receipt proves the cut committed, but newer turns may have been
       // appended before reconnect. Its original suffix boundary cannot reconcile
@@ -534,6 +542,7 @@ function onDaemonEvent(event: Event): void {
       // back to a conversation the user left during abort cleanup.
     } else if (unwindEvent === "failed") {
       pendingEditMessageUnwind = null;
+      restoreDeferredEditResend();
       // The local transcript was only an optimistic projection. Restore the
       // daemon's untouched canonical history when validation or abort cleanup
       // made the durable unwind fail.
@@ -581,6 +590,7 @@ function onDaemonEvent(event: Event): void {
 
   invalidateHistoryRenderCache(state);
   handleEvent(event, state, daemon);
+  if (flushEditResendAfterEvent) flushDeferredEditResend();
   maybePrewarmOpenAI();
   let paintFirstText = false;
   if (event.type === "text_chunk" && event.convId === state.convId) {
@@ -954,10 +964,10 @@ function handleSubmit(): void {
   // Expand slash shorthands such as "/model opus" before command and inline parsing.
   text = resolveSlashShorthands(state, text);
 
-  // Do not race a newly edited message against the daemon's durable unwind.
-  // The prompt remains editable and intact; the canonical response normally
-  // arrives well before the user finishes editing.
-  if (pendingEditMessageUnwind?.convId === state.convId) {
+  // The first message after an edit is shown at once and sent when the
+  // daemon's durable unwind lands (see sendDirectly). A second one would race
+  // the deferred send through the queue, so it waits; the prompt stays intact.
+  if (pendingEditMessageUnwind?.convId === state.convId && deferredEditResend) {
     pushSystemMessage(state, "Finishing conversation rewind; submit again in a moment.", theme.warning);
     scheduleRender();
     return;
@@ -1190,7 +1200,9 @@ function handleSubmit(): void {
     }
   }
 
-  if (isStreaming(state)) {
+  // An edit stops the turn it cuts, though the daemon may not have said so
+  // yet: the message after it is a direct send, not one to queue.
+  if (isStreaming(state) && pendingEditMessageUnwind?.convId !== state.convId) {
     // Macro expansion happens only if the user confirms the modal. Inline
     // commands are the exception: they have already run and been stripped so
     // the queued send honors the selected settings.
@@ -1335,17 +1347,20 @@ function sendDirectly(messageText: string, images?: ImageAttachment[], options: 
   }
 
   const startedAt = options.startedAt ?? Date.now();
+  let echo: UserMessage;
   if (options.echoMessage) {
-    options.echoMessage.text = messageText;
-    options.echoMessage.images = images;
-    options.echoMessage.metadata = createMessageMetadata(startedAt, state.model, { endedAt: startedAt });
+    echo = options.echoMessage;
+    echo.text = messageText;
+    echo.images = images;
+    echo.metadata = createMessageMetadata(startedAt, state.model, { endedAt: startedAt });
   } else {
-    state.messages.push({
+    echo = {
       role: "user",
       text: messageText,
       images,
       metadata: createMessageMetadata(startedAt, state.model, { endedAt: startedAt }),
-    });
+    };
+    state.messages.push(echo);
   }
   state.pendingAI = createPendingAI(startedAt, state.model);
 
@@ -1370,12 +1385,49 @@ function sendDirectly(messageText: string, images?: ImageAttachment[], options: 
       undefined, convId,
     );
   } else {
-    firstTextUX.start(state.convId, startedAt);
+    dropNextMessageSuggestion(state, state.convId);
     bumpConversationToTop(state.sidebar, state.convId);
-    daemon.sendMessage(state.convId, messageText, startedAt, images);
+    if (pendingEditMessageUnwind?.convId === state.convId) {
+      // Shown now; sent once the daemon has cut the edited suffix.
+      deferredEditResend = { convId: state.convId, message: echo, startedAt };
+    } else {
+      firstTextUX.start(state.convId, startedAt);
+      daemon.sendMessage(state.convId, messageText, startedAt, images);
+      trackDirectSend(state, state.convId, echo);
+    }
   }
 
   scheduleRender();
+}
+
+/** The edit's unwind landed: send the message typed meanwhile. */
+function flushDeferredEditResend(): void {
+  const resend = deferredEditResend;
+  if (!resend) return;
+  deferredEditResend = null;
+  const { convId, message, startedAt } = resend;
+  if (state.convId === convId) {
+    // The canonical cut also removed what was shown past the boundary.
+    if (!state.messages.includes(message)) state.messages.push(message);
+    if (!state.pendingAI) state.pendingAI = createPendingAI(startedAt, message.metadata?.model ?? state.model);
+    firstTextUX.start(convId, startedAt);
+  }
+  daemon.sendMessage(convId, message.text, startedAt, message.images);
+  trackDirectSend(state, convId, message);
+}
+
+/** The edit's unwind failed: its canonical history returns, the message goes back to the prompt. */
+function restoreDeferredEditResend(): void {
+  const resend = deferredEditResend;
+  if (!resend) return;
+  deferredEditResend = null;
+  const index = state.messages.indexOf(resend.message);
+  if (index !== -1) state.messages.splice(index, 1);
+  if (state.pendingAI?.metadata?.startedAt === resend.startedAt && state.pendingAI.blocks.length === 0) clearPendingAI(state);
+  const { text, images } = resend.message;
+  state.inputBuffer = state.inputBuffer ? `${state.inputBuffer}\n${text}` : text;
+  state.cursorPos = state.inputBuffer.length;
+  if (images?.length) state.pendingImages.push(...images);
 }
 
 function submitPendingVoiceTranscription(
@@ -1472,6 +1524,7 @@ function completePendingVoiceTranscription(submission: SubmittedVoiceTranscripti
         state.pendingAI = createPendingAI(submission.startedAt, submission.model);
         bumpConversationToTop(state.sidebar, submission.convId);
         daemon.sendMessage(submission.convId, messageText, submission.startedAt, submission.images);
+        trackDirectSend(state, submission.convId, submission.message);
       } else {
         const queueId = submission.queuedMessage.id ?? randomUUID();
         submission.queuedMessage.id = queueId;
@@ -1504,6 +1557,7 @@ function completePendingVoiceTranscription(submission: SubmittedVoiceTranscripti
     }
     bumpConversationToTop(state.sidebar, submission.convId);
     daemon.sendMessage(submission.convId, messageText, submission.startedAt, submission.images);
+    if (visible) trackDirectSend(state, submission.convId, submission.message);
     scheduleRender();
     return;
   }
@@ -2008,6 +2062,7 @@ function handleDaemonConnectionLost(shutdownMode: DaemonShutdownMode | null): vo
   // the normal reconnect load may still reveal the canonical state meanwhile.
   clearPendingAI(state);
   clearStreamingTailMessages(state);
+  forgetUnconfirmedSends(state);
   clearStreamTick();
   resetPrewarmer();
   instructionsConnectionLost(state);
