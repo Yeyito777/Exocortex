@@ -279,7 +279,10 @@ export function jumpToSearchMatch(state: RenderState, direction: SearchDirection
   const startPos = () => state.chatFocus === "history" || state.chatFocus === "btw"
     ? rowColToPos(index, surface.cursor.row, surface.cursor.col)
     : Math.max(0, index.buffer.length - 1);
-  if (revealFoldedMatch(state, index, search.query, startPos(), direction)) index = buildSearchIndex(state);
+  // A run of background turns opens into folded turns, which may hold the match in turn.
+  for (let depth = 0; depth < 3 && revealFoldedMatch(state, index, search.query, startPos(), direction); depth++) {
+    index = buildSearchIndex(state);
+  }
   const fromPos = startPos();
   const matchPos = findNextMatch(index.buffer, search.query, fromPos, direction);
   if (matchPos == null) return false;

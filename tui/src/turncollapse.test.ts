@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { buildMessageLines, invalidateCommittedHistoryCache, type BuildMessageLinesResult } from "./conversation";
 import { createInitialState, type RenderState } from "./state";
 import { createPendingAI, type Message } from "./messages";
@@ -48,9 +48,15 @@ function rows(state: RenderState, width = 100): string[] {
 
 function freshMatchesIncremental(state: RenderState, width = 100): void {
   const comparable = ({ revision: _revision, ...rest }: BuildMessageLinesResult) => rest;
-  const incremental = comparable(buildMessageLines(state, width, { reuseArrays: true }));
-  invalidateCommittedHistoryCache(state);
-  expect(incremental).toEqual(comparable(buildMessageLines(state, width)));
+  // The working row's spinner reads the clock: both builds must see the same second.
+  const clock = spyOn(Date, "now").mockReturnValue(Date.now());
+  try {
+    const incremental = comparable(buildMessageLines(state, width, { reuseArrays: true }));
+    invalidateCommittedHistoryCache(state);
+    expect(incremental).toEqual(comparable(buildMessageLines(state, width)));
+  } finally {
+    clock.mockRestore();
+  }
 }
 
 describe("folded turns", () => {
@@ -331,5 +337,91 @@ describe("search reaches folded work", () => {
     expect(cursorLine(state)).toContain("needle inside");
     expect(jumpToSearchMatch(state, "forward")).toBe(true);
     expect(cursorLine(state)).toContain("needle visible");
+  });
+});
+
+describe("runs of background turns", () => {
+  const wake = (n: number) => user(`[chrono hard wake: chrono:${n}] Scheduled command failed or returned`, { kind: "chrono_hard_wake" });
+  const silent = (id: string) => assistant([{ type: "text", text: `checking ${id}` }, ...call(`${id}a`, `look ${id}`), ...call(`${id}b`, `fix ${id}`)]);
+  const shownRows = (state: RenderState) => rows(state).filter(Boolean);
+
+  test("fold into one row with no per-turn metadata; a turn with a reply joins and keeps its reply", () => {
+    const state = createInitialState();
+    state.messages.push(
+      user("start"), assistant([{ type: "text", text: "ok" }]),
+      user("[notification] Subagent completed: exo:1", { kind: "subagent_completion" }), silent("s1"),
+      wake(1), silent("s2"),
+      wake(2), assistant([...call("r1", "restart live"), { type: "text", text: "I restarted live." }]),
+    );
+    const shown = shownRows(state);
+    expect(shown.slice(3)).toEqual([
+      "  ▸ 3 background turns · 5 tool calls",
+      "  I restarted live.",
+      expect.stringContaining("GPT-6-Astra"),
+    ]);
+    freshMatchesIncremental(state);
+  });
+
+  test("a silent run at the end is one row; a single silent turn is one row with its label", () => {
+    const state = createInitialState();
+    state.messages.push(user("start"), assistant([{ type: "text", text: "ok" }]), wake(1), silent("s1"));
+    expect(shownRows(state).slice(3)).toEqual(["  ▸ Chrono hard wake · 2 tool calls · Scheduled command failed or returned"]);
+    state.messages.push(user("next prompt"));
+    const shown = rows(state);
+    const header = shown.indexOf("  ▸ Chrono hard wake · 2 tool calls · Scheduled command failed or returned");
+    // One blank line between the run's row and the next prompt.
+    expect(shown[header + 1]).toBe("");
+    expect(shown[header + 2]).toContain("next prompt");
+  });
+
+  test("an owner's message, a typed prompt or a turn with a notice ends the run", () => {
+    const state = createInitialState();
+    state.messages.push(wake(1), silent("s1"), user("typed"), assistant([...call("t", "x")]), wake(2), silent("s2"), wake(3), silent("s3"));
+    const shown = shownRows(state);
+    expect(shown.filter(row => row.includes("background turns"))).toEqual(["  ▸ 2 background turns · 4 tool calls"]);
+    expect(shown).toContain("  ▸ Chrono hard wake · 2 tool calls · Scheduled command failed or returned");
+  });
+
+  test("opening the run shows its turns as before, under a ▾ row that closes it", () => {
+    const state = createInitialState();
+    state.messages.push(wake(1), silent("s1"), wake(2), silent("s2"));
+    const toggle = buildMessageLines(state, 100).lineAnchors.find(anchor => anchor.toggle)!.toggle!;
+    toggleHistoryItemPreservingViewport(state, toggle);
+    const shown = shownRows(state);
+    expect(shown[0]).toBe("  ▾ 2 background turns · 4 tool calls");
+    expect(shown.filter(row => row.startsWith("  ▸ Chrono hard wake · Scheduled"))).toHaveLength(2);
+    expect(shown.filter(row => row.includes("▸ 2 tool calls, 1 message"))).toHaveLength(2);
+    expect(shown.filter(row => row.includes("GPT-6-Astra"))).toHaveLength(2);
+    freshMatchesIncremental(state);
+    toggleHistoryItemPreservingViewport(state, toggle);
+    expect(shownRows(state)).toEqual(["  ▸ 2 background turns · 4 tool calls"]);
+  });
+
+  test("Ctrl+O shows every turn", () => {
+    const state = createInitialState();
+    state.messages.push(wake(1), silent("s1"), wake(2), silent("s2"));
+    state.showTurnWork = true;
+    expect(shownRows(state).some(row => row.includes("background turns"))).toBe(false);
+    expect(shownRows(state).filter(row => row.includes("look s"))).toHaveLength(2);
+  });
+
+  test("search opens the run and then the turn holding the match", () => {
+    const state = createInitialState();
+    state.cols = 100;
+    state.messages.push(user("start"), assistant([{ type: "text", text: "ok" }]), wake(1), silent("s1"), wake(2), silent("s2"));
+    const built = buildMessageLines(state, 100);
+    state.historyLines = built.lines;
+    state.historyLineAnchors = built.lineAnchors;
+    state.historyWrapContinuation = built.wrapContinuation;
+    state.layout.totalLines = built.lines.length;
+    state.layout.messageAreaHeight = built.lines.length;
+    state.panelFocus = "chat";
+    state.chatFocus = "history";
+    state.vim.mode = "normal";
+    state.historyCursor = { row: 0, col: 0 };
+    openSearchBar(state, "forward");
+    for (const char of "fix s2") handleSearchBarKey(state, { type: "char", char });
+    handleSearchBarKey(state, { type: "enter" });
+    expect(stripAnsi(state.historyLines[state.historyCursor.row])).toContain("fix s2");
   });
 });
