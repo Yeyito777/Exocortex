@@ -21,7 +21,7 @@ const CLAUDE_ALIASES = new Set(["claude", "anthropic"]);
 
 const CLAUDE_ACTIONS = [
   { name: "add", desc: "Register another Claude account (its own Claude Code config dir)" },
-  { name: "remove", desc: "Unregister a Claude account (its login is left as is)" },
+  { name: "remove", desc: "Unregister a Claude account (its login is left as is)", exact: true },
 ] as const;
 
 const CLAUDE_USAGE = "Usage: /account claude [add <name> [config-dir] | remove <name>]";

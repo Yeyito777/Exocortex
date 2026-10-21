@@ -169,3 +169,55 @@ describe("slash completion match ranges", () => {
     expect(commandCompletions(state, "/model ").every(item => item.matchRanges === undefined)).toBe(true);
   });
 });
+
+describe("destructive arguments are never guessed on submit", () => {
+  test("a fragment of a destructive argument is sent as typed; the full word still works", () => {
+    const state = fixture();
+    for (const text of [
+      "/instructions lear", "/instructions cle", "/goal clea", "/usage res", "/usage rese",
+      "/login openai rem", "/account claude rem", "/account anthropic emo", "/chrono canc",
+      "/worktree cle", "/worktree lean", "/tool uninst",
+    ]) {
+      expect(resolveSlashShorthands(state, text)).toBe(text);
+    }
+    expect(resolveSlashShorthands(state, "/instructions clear")).toBe("/instructions clear");
+    expect(resolveSlashShorthands(state, "/instr clear")).toBe("/instructions clear");
+    expect(resolveSlashShorthands(state, "/goal CLEAR")).toBe("/goal clear");
+    expect(resolveSlashShorthands(state, "/usa reset")).toBe("/usage reset");
+    expect(resolveSlashShorthands(state, "/acc claude remove")).toBe("/account claude remove");
+  });
+
+  test("/instructions lear sets text instead of clearing", () => {
+    const state = fixture();
+    state.convId = "conv-1";
+    expect(tryCommand(resolveSlashShorthands(state, "/instructions lear"), state)).toEqual({ type: "set_system_instructions", text: "lear" });
+  });
+
+  test("the popup still offers them, and non-destructive arguments stay fuzzy", () => {
+    const state = fixture();
+    expect(commandCompletions(state, "/instructions lear")[0].name).toBe("clear");
+    expect(commandCompletions(state, "/worktree cle")[0].name).toBe("clean");
+    expect(resolveSlashShorthands(state, "/instructions to")).toBe("/instructions tools");
+    expect(resolveSlashShorthands(state, "/goal pau")).toBe("/goal pause");
+    expect(resolveSlashShorthands(state, "/worktree mer")).toBe("/worktree merge");
+    expect(resolveSlashShorthands(state, "/chrono lis")).toBe("/chrono list");
+  });
+
+  test("below a destructive argument every word must be typed out too", () => {
+    const state = fixture();
+    state.convId = "conv-1";
+    state.sidebar.conversations = [{
+      id: "conv-1", provider: state.provider, model: state.model, effort: state.effort, fastMode: state.fastMode,
+      createdAt: 1, updatedAt: 2, messageCount: 2, title: "Chrono", marked: false, pinned: false,
+      streaming: false, unread: false, sortOrder: 0, folderId: null,
+      tasks: [{ id: "chrono:standup-0123456789", kind: "chrono", title: "Standup", startedAt: 1, dueAt: 60_000, chronoMode: "wake" }],
+    } as never];
+    const ids = commandCompletions(state, "/chrono cancel ").map(item => item.name);
+    expect(ids).toContain("all");
+    const id = ids.find(name => name !== "all")!;
+    expect(resolveSlashShorthands(state, `/chrono cancel ${id.slice(0, 3)}`)).toBe(`/chrono cancel ${id.slice(0, 3)}`);
+    expect(resolveSlashShorthands(state, "/chrono cancel al")).toBe("/chrono cancel al");
+    expect(resolveSlashShorthands(state, `/chrono cancel ${id}`)).toBe(`/chrono cancel ${id}`);
+    expect(resolveSlashShorthands(state, "/chrono cancel all")).toBe("/chrono cancel all");
+  });
+});

@@ -24,6 +24,11 @@ export interface MatchRange {
 /** A ranked slash completion; `matchRanges` mark the matched text in `name`. */
 export interface SlashCompletion extends CompletionItem {
   matchRanges?: readonly MatchRange[];
+  /**
+   * Spellings of each path segment from the first `exact` one on; submission
+   * expands to this completion only when every one was typed as a whole word.
+   */
+  exactForms?: readonly (readonly string[])[];
 }
 
 /** A typed shorthand that submission expands, e.g. "/model opus". */
@@ -206,6 +211,7 @@ function pathCompletion(
   path: readonly CompletionItem[],
   typedPrefix = "",
   textRanges: readonly MatchRange[] = [],
+  belowExact = false,
 ): SlashCompletion {
   const last = path[path.length - 1];
   const name = path.map(item => item.name).join(" ");
@@ -215,15 +221,28 @@ function pathCompletion(
     ? textRanges.map(range => ({ start: range.start + offset, end: range.end + offset }))
     : [];
   const highlight = matchRanges.length > 0 ? { matchRanges } : {};
+  const firstExact = belowExact ? 0 : path.findIndex(item => item.exact);
+  const exact = firstExact === -1 ? {} : {
+    exactForms: path.slice(firstExact).map(item =>
+      [item.name, ...(item.insertText ? [item.insertText] : []), ...(item.aliases ?? [])].map(form => form.toLowerCase())),
+  };
 
-  if (path.length === 1 && !typedPrefix) return { ...last, ...highlight };
+  if (path.length === 1 && !typedPrefix) return { ...last, ...highlight, ...exact };
   return {
     name,
     desc: last.desc,
     ...(last.colorSwatches ? { colorSwatches: last.colorSwatches } : {}),
     insertText: typedPrefix + path.map(completionInsertText).join(" "),
     ...highlight,
+    ...exact,
   };
+}
+
+/** Whether submission may expand `typed` into `completion`: its destructive segments are typed out. */
+function typedOut(completion: SlashCompletion, typed: string): boolean {
+  if (!completion.exactForms) return true;
+  const words = new Set(typed.toLowerCase().split(/\s+/).filter(Boolean));
+  return completion.exactForms.every(forms => forms.some(form => words.has(form)));
 }
 
 /** Shallow paths first, then stronger matches; ties keep registry order. */
@@ -232,15 +251,26 @@ function rankPaths(
   query: SlashQuery,
   includesRoot: boolean,
   typedPrefix?: string,
+  belowExact = false,
 ): RankedCompletion[] {
   const ranked: RankedCompletion[] = [];
   for (const path of paths) {
     const match = matchPath(path, query, includesRoot);
     if (match) {
-      ranked.push({ completion: pathCompletion(path, typedPrefix, match.ranges), depth: path.length, score: match.score });
+      ranked.push({ completion: pathCompletion(path, typedPrefix, match.ranges, belowExact), depth: path.length, score: match.score });
     }
   }
   return ranked.sort((a, b) => a.depth - b.depth || a.score - b.score);
+}
+
+/** Whether a spelled-out key such as "/chrono cancel" passes through a destructive argument. */
+function keyBelowExact(registry: ArgRegistry, key: string): boolean {
+  const words = key.split(" ");
+  for (let i = 1; i < words.length; i++) {
+    const parent = words.slice(0, i).join(" ");
+    if (registry[parent]?.some(item => item.exact && item.name === words[i])) return true;
+  }
+  return false;
 }
 
 /**
@@ -254,10 +284,11 @@ function searchAnchoredArgs(raw: string, registry: ArgRegistry): RankedCompletio
     const rest = raw.slice(key.length).trimStart();
     const typedPrefix = raw.slice(0, raw.length - rest.length);
     const query = parseSlashQuery(rest);
+    const belowExact = keyBelowExact(registry, key);
     if (query.words.length === 0) {
-      return (registry[key] ?? []).map(item => ({ completion: pathCompletion([item], typedPrefix), depth: 1, score: 0 }));
+      return (registry[key] ?? []).map(item => ({ completion: pathCompletion([item], typedPrefix, [], belowExact), depth: 1, score: 0 }));
     }
-    return rankPaths(completionPaths(registry, key, []), query, false, typedPrefix);
+    return rankPaths(completionPaths(registry, key, []), query, false, typedPrefix, belowExact);
   }
   return null;
 }
@@ -352,7 +383,8 @@ function promptCommandShorthand(state: RenderState, text: string, first: WordPos
   const line = text.slice(first.start).trimEnd();
   if (line.includes("\n")) return null;
   const [best] = commandCompletions(state, line);
-  if (!best) return null;
+  // A destructive argument is never guessed: unless typed out, the text goes as typed.
+  if (!best || !typedOut(best, line)) return null;
   const replacement = completionInsertText(best);
   return rewritesQueueTarget(replacement) ? null : { start: first.start, end: first.start + line.length, replacement };
 }
@@ -371,7 +403,8 @@ function inlineCommandShorthand(text: string, words: readonly WordPosition[], ro
     const ranked = searchAnchoredArgs(text.slice(root.start, words[j].end), registry);
     // Matches only shrink as words are added, so the first miss ends the run.
     if (!ranked?.length) break;
-    const best = ranked.find(({ completion }) => !parentKeys.has(normalizedCommandKey(completionInsertText(completion))));
+    const typed = text.slice(root.start, words[j].end);
+    const best = ranked.find(({ completion }) => !parentKeys.has(normalizedCommandKey(completionInsertText(completion))) && typedOut(completion, typed));
     if (best) shorthand = { start: root.start, end: words[j].end, replacement: completionInsertText(best.completion) };
   }
   return shorthand;

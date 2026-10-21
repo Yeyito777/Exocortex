@@ -14,7 +14,7 @@ const VIEW_ARGS: ReadonlyArray<{ view: InstructionsView; desc: string; aliases: 
 
 const ARGS: CompletionItem[] = [
   ...VIEW_ARGS.map(arg => ({ name: arg.view, desc: arg.desc, aliases: arg.aliases })),
-  { name: "clear", desc: "Clear this conversation's instructions" },
+  { name: "clear", desc: "Clear this conversation's instructions", exact: true },
 ];
 
 /**

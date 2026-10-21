@@ -23,7 +23,7 @@ export const CHRONO_COMMAND: SlashCommand = {
   getArgs: (state) => ({
     "/chrono": [
       { name: "list", desc: "show this conversation's schedules" },
-      { name: "cancel", desc: "cancel a schedule" },
+      { name: "cancel", desc: "cancel a schedule", exact: true },
       { name: "in", desc: "once after a delay: in 2h 30m <message>" },
       { name: "at", desc: "once at a time: at tomorrow 9am <message>" },
       { name: "every", desc: "repeat: every day at 9am <message>" },

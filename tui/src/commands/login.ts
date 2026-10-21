@@ -39,7 +39,7 @@ function openAILoginInstruction(): string {
 
 const OPENAI_ACCOUNT_ACTIONS = [
   { name: "add", desc: "Connect another OpenAI account" },
-  { name: "remove", desc: "Remove a connected OpenAI account" },
+  { name: "remove", desc: "Remove a connected OpenAI account", exact: true },
 ] as const;
 
 const OPENAI_LOGIN_METHODS = [

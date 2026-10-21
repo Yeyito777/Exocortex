@@ -16,6 +16,12 @@ export interface CompletionItem {
   insertText?: string;
   /** Extra strings that should match this item during prefix filtering. */
   aliases?: string[];
+  /**
+   * Destructive: submission never expands a shorthand into this item or
+   * anything below it. It (and each argument after it) must be typed out in
+   * full; the popup and Tab still offer it.
+   */
+  exact?: boolean;
 }
 
 type CommandAction =
