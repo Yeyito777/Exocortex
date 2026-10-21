@@ -6,7 +6,7 @@
  * in blockrenderer.ts.
  */
 
-import { CONTEXT_COMPACTION_FINISHED_KIND, combineMessageMetadata, type Block, type ImageAttachment, type Message, type MessageMetadata, type UserMessageAutomation } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, combineMessageMetadata, ownerRelayedText, type Block, type ImageAttachment, type Message, type MessageMetadata, type UserMessageAutomation } from "./messages";
 import {
   fitImageBox,
   historyImageLimits,
@@ -34,7 +34,7 @@ import {
   type UserMessageFlowCursor,
 } from "./blockrenderer";
 import { isVisuallyBlankLine, sanitizeUntrustedText } from "./terminaltext";
-import { automationLabel, notificationPreview, planHistory, type HistoryPlan, type NotificationPlan, type PendingPlan } from "./turncollapse";
+import { automationLabel, notificationPreview, ownerRelay, planHistory, type HistoryPlan, type NotificationPlan, type PendingPlan } from "./turncollapse";
 
 const COMPACTION_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
 const COMPACTION_SPINNER_INTERVAL_MS = 80;
@@ -948,11 +948,14 @@ export function buildMessageLines(
     } else if (msg.role === "user") {
       if (userMessageNeedsTopMargin(state.messages, messageIndex)) pushLine("", msg, "user_margin_top");
       const contentStart = lines.length;
-      const background = msg.metadata?.automation ? theme.automatedUserBg : theme.userBg;
-      const rendered = renderUserMessageCached(msg, msg.text, availableWidth, msg.images, background);
+      // The owner's own Discord/WhatsApp message reads as theirs: their words in their bubble.
+      const relay = ownerRelay(msg);
+      const text = relay?.text ?? msg.text;
+      const background = msg.metadata?.automation && !relay ? theme.automatedUserBg : theme.userBg;
+      const rendered = renderUserMessageCached(msg, text, availableWidth, msg.images, background);
       pushBlock(msg, "user_content", rendered);
       const contentEnd = lines.length;
-      const flow = userMessageFlowMetadataCached(msg, msg.text, availableWidth, msg.images, background);
+      const flow = userMessageFlowMetadataCached(msg, text, availableWidth, msg.images, background);
       if (flow && flow.starts.length === contentEnd - contentStart) {
         for (let row = 0; row < flow.starts.length; row++) {
           lineAnchors[contentStart + row].userFlowDocument = flow.document;
@@ -960,7 +963,7 @@ export function buildMessageLines(
           lineAnchors[contentStart + row].userFlowEnd = flow.starts[row + 1] ?? flow.end;
         }
       }
-      const provenance = automationProvenance(msg.metadata?.automation);
+      const provenance = relay ? `via ${relay.source}` : automationProvenance(msg.metadata?.automation);
       if (provenance) pushLine(rightAlignedProvenanceLabel(provenance, availableWidth), msg, "automation_label");
       pushImages(pastedImages(msg, msg.images, state.convId), "user_image");
       pushLine("", msg, "user_margin_bottom");
@@ -1173,13 +1176,15 @@ export function buildMessageLines(
     const timingLabel = [provenance, queueTimingLabel(qm, Date.now(), state.provider)].filter((label): label is string => Boolean(label)).join(" · ");
     pushLine("", qm, "queued_margin_top");
     // Render a dimmed user bubble
-    const background = qm.automation ? theme.automatedUserBg : theme.userBg;
-    const qr = renderUserMessageCached(qm, qm.text, availableWidth, qm.images, background);
+    const relayed = ownerRelayedText(qm.text, qm.automation ? { automation: qm.automation } : null);
+    const queuedText = relayed ?? qm.text;
+    const background = qm.automation && !relayed ? theme.automatedUserBg : theme.userBg;
+    const qr = renderUserMessageCached(qm, queuedText, availableWidth, qm.images, background);
     const queuedContentStart = lines.length;
     for (let i = 0; i < qr.lines.length; i++) {
       pushLine(`${theme.muted}${qr.lines[i]}${theme.reset}`, qm, "queued_content", i);
     }
-    const flow = userMessageFlowMetadataCached(qm, qm.text, availableWidth, qm.images, background);
+    const flow = userMessageFlowMetadataCached(qm, queuedText, availableWidth, qm.images, background);
     if (flow && flow.starts.length === qr.lines.length) {
       for (let row = 0; row < flow.starts.length; row++) {
         lineAnchors[queuedContentStart + row].userFlowDocument = flow.document;

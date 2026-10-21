@@ -12,7 +12,7 @@ import type { ProviderId, ProviderInfo, ModelId, EffortLevel, UsageData, ToolDis
 import { supportsImageInputsForModel } from "./messages";
 import type { Message, AIMessage, SystemMessage, Block } from "./messages";
 import { loadHideSensitiveInfoPreference } from "./privacy";
-import { loadDiagnosticsPreference } from "./diagnostics";
+import { loadDiagnosticsPreference, loadTurnWorkPreference } from "./diagnostics";
 import { theme } from "./theme";
 import type { MessageBound, RenderLineAnchor } from "./conversation";
 import type { WrapCopyLine } from "./textwrap";
@@ -315,7 +315,7 @@ export interface RenderState {
   externalToolStyles: ExternalToolStyle[];
   /** Detailed view: tool result output and every turn's work are visible. Toggled with Ctrl+I. */
   showToolOutput: boolean;
-  /** Every turn's work and every notification are visible (otherwise they fold). Toggled with Ctrl+O. */
+  /** Every turn's work and every notification are visible (otherwise they fold). Ctrl+O; saved in config.tui.showTurnWork. */
   showTurnWork: boolean;
   /** Turns and notifications opened one at a time by a click while folded, by their opening message. */
   expandedHistoryItems: WeakSet<object>;
@@ -468,8 +468,8 @@ export function resetHistoryPagination(state: RenderState): void {
 
 /** Fully reset historical tool-output state (used when clearing/switching chats). */
 export function resetToolOutputState(state: RenderState): void {
+  // Ctrl+I is per view; Ctrl+O (showTurnWork) is a saved preference and stays.
   state.showToolOutput = false;
-  state.showTurnWork = false;
   clearToolOutputRequests(state);
 }
 
@@ -726,7 +726,7 @@ export function createInitialState(): RenderState {
     providerRegistry: [],
 	    externalToolStyles: [],
 	    showToolOutput: false,
-	    showTurnWork: false,
+	    showTurnWork: loadTurnWorkPreference(),
 	    expandedHistoryItems: new WeakSet(),
 	    historyExpansionRevision: 0,
 	    hideSensitiveInfo,

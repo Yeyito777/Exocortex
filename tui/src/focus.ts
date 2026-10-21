@@ -61,6 +61,7 @@ import { handleBtwKey } from "./btw/keys";
 import { omittedToolOutputIdsNearViewport } from "./events/tool-outputs";
 import { activeHistorySurface, isAnyHistoryFocused } from "./historysurface";
 import type { InlineImageTarget } from "./inlineimages";
+import { saveTurnWorkPreference } from "./diagnostics";
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -380,6 +381,7 @@ export function handleFocusedKey(
         state.showTurnWork = !state.showTurnWork && !state.showToolOutput;
         state.showToolOutput = false;
       });
+      saveTurnWorkPreference(state.showTurnWork);
       return { type: "handled" };
     case "toggle_tool_output": {
       if (state.showToolOutput || state.showToolOutputAfterLoad) {

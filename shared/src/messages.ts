@@ -307,6 +307,34 @@ export function isAutomatedUserPrompt(text: string, metadata: Pick<MessageMetada
   return metadata?.automation !== undefined || LEGACY_AUTOMATED_PROMPT.test(text);
 }
 
+/**
+ * The owner's own words when a notification relays a message they sent (their
+ * Discord DM or mention, a WhatsApp /ai command). Publishers mark the
+ * triggering line `→ Name <id> [trust] …:` (external-tools/TOOL_STANDARD.md)
+ * and follow it with the message and a final `[msg:…]` line; only the first
+ * `→` line is the trigger, since message content may contain one. There is no
+ * structured owner flag in message metadata, so this reads that standard
+ * line. Returns null for anything else, including an owner message with no
+ * text (an attachment or a call).
+ */
+export function ownerRelayedText(text: string, metadata: Pick<MessageMetadata, "automation"> | null | undefined): string | null {
+  const automation = metadata?.automation;
+  if (automation ? automation.kind !== "external_notification" : !LEGACY_AUTOMATED_PROMPT.test(text)) return null;
+  const trigger = /^→ [^\n]*$/m.exec(text);
+  if (!trigger) return null;
+  // Bracketed tags (`[owner]`, `↳ [reply-to:…]`) are skipped whole, so the
+  // colon that ends the line's header is the first one outside them.
+  const head = /^→ (?:[^[\n:]|\[[^\]\n]*\])*?\[owner\](?:[^[\n:]|\[[^\]\n]*\])*:(?:[ \t]+(.*))?$/.exec(trigger[0]);
+  if (!head) return null;
+  const lines = [head[1] ?? ""];
+  for (const line of text.slice(trigger.index + trigger[0].length + 1).split("\n")) {
+    if (/^\[msg:[^\]]*\]$/.test(line.trim())) break;
+    lines.push(line);
+  }
+  const body = lines.join("\n").trim();
+  return body ? body : null;
+}
+
 /** Persistent request throughput samples belonging to one assistant message. */
 export interface GenerationThroughput {
   provider: ProviderId;

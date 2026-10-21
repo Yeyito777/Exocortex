@@ -43,7 +43,7 @@ The implementation in [keybinds.ts](../tui/src/keybinds.ts) and
 | `Ctrl+J` / `K` | Cycle focus between sidebar and chat |
 | `Ctrl+N` | Toggle history cursor |
 | `Ctrl+P` / `Ctrl+Shift+O` | New conversation (in the open folder; with `/folders tree`, `Ctrl+P` uses the sidebar cursor's folder and `Ctrl+Shift+O` the top level) |
-| `Ctrl+O` | Show or fold every turn's work and every notification (folded by default; click a folded row, or press `Enter` on it in the history, to open just that one) |
+| `Ctrl+O` | Show or fold every turn's work and every notification (folded by default; saved across conversations and restarts in `tui.showTurnWork`; click a folded row, or press `Enter` on it in the history, to open just that one). Your own Discord/WhatsApp messages relayed as notifications show as your bubble; `/` search also finds folded work and opens the turn it matches |
 | `Ctrl+I` | Detailed view: every turn's work with full tool output. Terminals without the kitty keyboard protocol send `Tab` for it, so there `Tab` in the history does the same |
 | `Shift+H` / `M` / `L` | In sidebar, jump to top / middle / bottom visible conversation |
 | `Escape` | Normal mode (vim) |

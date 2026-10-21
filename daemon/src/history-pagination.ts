@@ -1,7 +1,7 @@
 import type { DisplayEntry } from "./display";
 import type { ConversationRenderSnapshot, StoredDisplayHistoryPage } from "./conversations";
 import type { HistoryUpdatedEvent } from "./protocol";
-import { isAutomatedUserPrompt, type Block, type ImageAttachment } from "./messages";
+import { isAutomatedUserPrompt, ownerRelayedText, type Block, type ImageAttachment } from "./messages";
 
 export const INITIAL_HISTORY_TURNS = 5;
 export const BUFFERED_HISTORY_TURNS = 15;
@@ -181,8 +181,12 @@ export function estimateEntryRows(entry: DisplayEntry, cols: number): number {
  */
 export function estimateFoldedEntryRows(entry: DisplayEntry, cols: number, newerInTurn: boolean): number {
   switch (entry.type) {
-    case "user":
-      return isAutomatedUserPrompt(entry.text, entry.metadata) ? 1 + USER_ENTRY_CHROME_ROWS : estimateEntryRows(entry, cols);
+    case "user": {
+      if (!isAutomatedUserPrompt(entry.text, entry.metadata)) return estimateEntryRows(entry, cols);
+      // The owner's relayed message shows as their bubble; other notifications as one row.
+      const relayed = ownerRelayedText(entry.text, entry.metadata);
+      return relayed === null ? 1 + USER_ENTRY_CHROME_ROWS : estimateEntryRows({ ...entry, text: relayed }, cols);
+    }
     case "ai": {
       if (newerInTurn) return 0;
       let rows = aiEntryChromeRows(entry);

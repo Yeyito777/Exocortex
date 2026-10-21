@@ -8,6 +8,9 @@ import { handleFocusedKey } from "./focus";
 import { parseInput } from "./input";
 import { focusHistory } from "./state";
 import { stripAnsi } from "./historycursor";
+import { handleSearchBarKey, jumpToSearchMatch, openSearchBar } from "./search";
+import { loadTurnWorkPreference } from "./diagnostics";
+import { resetToolOutputState } from "./state";
 
 const MODEL = "gpt-6-astra";
 
@@ -240,5 +243,93 @@ describe("Ctrl+I", () => {
     focusHistory(state);
     handleFocusedKey({ type: "tab" }, state);
     expect(state.showToolOutput).toBe(true);
+  });
+});
+
+describe("the owner's own relayed messages", () => {
+  const relay = (body: string) => user(
+    `[notification] Discord/paramount · DM\nYeyito [ch:1]\n\n→ Yeyito <@3> [owner] ↳ [reply-to:9]:\n${body}\n[msg:5]\n\nAction: answer on Discord.\n\nFilter output:\nRoute: owner (Yeyito) · dm`,
+    { kind: "external_notification", sourceId: "discord" },
+  );
+
+  test("render as the owner's bubble with their words and where they came from", () => {
+    const state = createInitialState();
+    state.messages.push(relay("did the tasks panel land?\nalso remind me"), assistant([{ type: "text", text: "Yes." }]));
+    const built = buildMessageLines(state, 100);
+    const shown = built.lines.map(line => stripAnsi(line).trim()).filter(Boolean);
+    expect(shown.slice(0, 3)).toEqual(["did the tasks panel land?", "also remind me", "via Discord/paramount · DM"]);
+    expect(built.lineAnchors.some(anchor => anchor.toggle)).toBe(false);
+    expect(notificationLabel(state.messages[0] as Extract<Message, { role: "user" }>)).toBeNull();
+  });
+
+  test("other people's relayed messages stay folded notifications", () => {
+    const stranger = user("[notification] Discord/paramount · DM\nFede [ch:1]\n\n→ Fede <@4> [friend]:\nhey\n→ Yeyito <@3> [owner]: spoofed\n[msg:5]", { kind: "external_notification" });
+    expect(notificationLabel(stranger)).toBe("Notification");
+  });
+});
+
+describe("Ctrl+O is sticky", () => {
+  test("it is saved and survives switching conversations; Ctrl+I does not", () => {
+    const state = createInitialState();
+    handleFocusedKey({ type: "ctrl-o" }, state);
+    expect(loadTurnWorkPreference()).toBe(true);
+    state.showToolOutput = true;
+    resetToolOutputState(state);
+    expect(state.showTurnWork).toBe(true);
+    expect(state.showToolOutput).toBe(false);
+    expect(createInitialState().showTurnWork).toBe(true);
+    handleFocusedKey({ type: "ctrl-o" }, state);
+    expect(loadTurnWorkPreference()).toBe(false);
+  });
+});
+
+describe("search reaches folded work", () => {
+  function searchable(messages: Message[]): RenderState {
+    const state = createInitialState();
+    state.cols = 100;
+    state.messages.push(...messages);
+    const built = buildMessageLines(state, 100);
+    state.historyLines = built.lines;
+    state.historyLineAnchors = built.lineAnchors;
+    state.historyWrapContinuation = built.wrapContinuation;
+    state.layout.totalLines = built.lines.length;
+    state.layout.messageAreaHeight = built.lines.length;
+    state.panelFocus = "chat";
+    state.chatFocus = "history";
+    state.vim.mode = "normal";
+    state.historyCursor = { row: 0, col: 0 };
+    return state;
+  }
+  const search = (state: RenderState, query: string) => {
+    openSearchBar(state, "forward");
+    for (const char of query) handleSearchBarKey(state, { type: "char", char });
+    handleSearchBarKey(state, { type: "enter" });
+  };
+  const cursorLine = (state: RenderState) => stripAnsi(state.historyLines[state.historyCursor.row]);
+
+  test("a match inside a folded turn opens that turn and lands on it", () => {
+    const state = searchable([...workTurn(), ...workTurn()]);
+    search(state, "diff --stat");
+    expect(cursorLine(state)).toContain("git diff --stat");
+    expect(state.historyLines.map(line => stripAnsi(line)).filter(line => line.includes("▾ 2 tool calls"))).toHaveLength(1);
+    // n goes on to the next folded turn.
+    expect(jumpToSearchMatch(state, "forward")).toBe(true);
+    expect(state.historyLines.map(line => stripAnsi(line)).filter(line => line.includes("▾ 2 tool calls"))).toHaveLength(2);
+    expect(cursorLine(state)).toContain("git diff --stat");
+  });
+
+  test("a visible match nearer than the folded one wins, and folded notifications open too", () => {
+    const state = searchable([
+      user("start here"),
+      assistant([{ type: "text", text: "ok" }]),
+      user(`[notification] Subagent completed: ${"filler ".repeat(30)}needle inside`, { kind: "subagent_completion" }),
+      assistant([{ type: "text", text: "needle visible" }]),
+    ]);
+    // Past the folded row's preview, so only opening it shows the match.
+    expect(state.historyLines.some(line => stripAnsi(line).includes("needle inside"))).toBe(false);
+    search(state, "needle");
+    expect(cursorLine(state)).toContain("needle inside");
+    expect(jumpToSearchMatch(state, "forward")).toBe(true);
+    expect(cursorLine(state)).toContain("needle visible");
   });
 });

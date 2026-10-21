@@ -14,7 +14,7 @@
  * whose plan changed (a turn finishing, a click), not the whole history.
  */
 
-import { isAutomatedUserPrompt, type AIMessage, type Block, type Message, type UserMessage, type UserMessageAutomation } from "./messages";
+import { isAutomatedUserPrompt, ownerRelayedText, type AIMessage, type Block, type Message, type UserMessage, type UserMessageAutomation } from "./messages";
 import { sanitizeUntrustedText } from "./terminaltext";
 
 const AUTOMATION_LABELS: Record<UserMessageAutomation["kind"], string> = {
@@ -32,9 +32,31 @@ export function automationLabel(automation: UserMessageAutomation): string {
   return AUTOMATION_LABELS[automation.kind];
 }
 
+export interface OwnerRelay {
+  /** The owner's own words, shown in their bubble. */
+  text: string;
+  /** Where it came from, e.g. `Discord/paramount · DM`. */
+  source: string;
+}
+
+const ownerRelays = new WeakMap<object, { text: string; metadata: UserMessage["metadata"]; relay: OwnerRelay | null }>();
+
+/**
+ * A notification relaying the owner's own message (their Discord DM, a
+ * WhatsApp /ai command): it reads as their message, not as a notification.
+ */
+export function ownerRelay(msg: Pick<UserMessage, "text" | "metadata">): OwnerRelay | null {
+  const cached = ownerRelays.get(msg);
+  if (cached && cached.text === msg.text && cached.metadata === msg.metadata) return cached.relay;
+  const text = ownerRelayedText(msg.text, msg.metadata);
+  const relay = text === null ? null : { text, source: notificationPreview(msg.text.split("\n", 1)[0] ?? "") };
+  ownerRelays.set(msg, { text: msg.text, metadata: msg.metadata, relay });
+  return relay;
+}
+
 /** Label for a user-role message that was not typed by the user, or null for a real one. */
 export function notificationLabel(msg: Pick<UserMessage, "text" | "metadata">): string | null {
-  if (!isAutomatedUserPrompt(msg.text, msg.metadata)) return null;
+  if (!isAutomatedUserPrompt(msg.text, msg.metadata) || ownerRelay(msg)) return null;
   return msg.metadata?.automation ? automationLabel(msg.metadata.automation) : "Notification";
 }
 
@@ -389,4 +411,37 @@ function planPending(
     return isHidden;
   });
   return { hidden: open ? null : hidden, summary: workSummaryText(stats), expanded: open, toggle: key };
+}
+
+// ── Search ──────────────────────────────────────────────────────────
+
+export interface FoldedSearchInput extends PlanHistoryInput {}
+
+/**
+ * The text each folded row hides, by the row's toggle (a turn's token, or the
+ * notification itself), so `/` can find matches inside folded work.
+ */
+export function foldedSearchTexts(input: FoldedSearchInput): Map<object, string> {
+  const out = new Map<object, string>();
+  if (!input.collapse) return out;
+  const plan = planHistory(input);
+  const add = (key: object, text: string) => out.set(key, out.has(key) ? `${out.get(key)}\n${text}` : text);
+  const addBlocks = (key: object, blocks: readonly Block[], hidden: readonly boolean[]) => {
+    blocks.forEach((block, index) => {
+      if (!hidden[index]) return;
+      if (block.type === "text" || block.type === "thinking") add(key, block.text);
+      else if (block.type === "tool_call") add(key, `${block.toolName} ${block.summary}`);
+    });
+  };
+  plan.messages.forEach((messagePlan, offset) => {
+    const msg = input.messages[input.start + offset];
+    if (!messagePlan || !msg) return;
+    if (messagePlan.kind === "notification") {
+      if (!messagePlan.open && msg.role === "user") add(msg, msg.text);
+    } else if (messagePlan.hidden && msg.role === "assistant") {
+      addBlocks(messagePlan.toggle, msg.blocks, messagePlan.hidden);
+    }
+  });
+  if (plan.pending?.hidden && input.pendingAI) addBlocks(plan.pending.toggle, input.pendingAI.blocks, plan.pending.hidden);
+  return out;
 }
