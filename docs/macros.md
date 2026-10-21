@@ -60,3 +60,10 @@ is undone with a notice and the command goes back into the prompt. A change
 made while the link is down is checked against the daemon's list after
 reconnecting: sent if it still applies, dropped if it already landed, and
 reported if the macro changed elsewhere meanwhile.
+
+## Visual style (development)
+
+`EXOCORTEX_MACRO_STYLE=v3|A|B|C|D` in the TUI's environment picks how a
+`/macro` line looks while it is typed; every choice is in
+[usermacros/styles.ts](../tui/src/usermacros/styles.ts). It exists to
+compare alternatives and will go once one is chosen.

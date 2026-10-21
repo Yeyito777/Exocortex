@@ -16,9 +16,13 @@ import { runUserMacroCommand, saveMacroFromEditor, userMacrosConnectionLost, typ
 import { expansionPreview, macroCompletions, macroGhostText, macroGuide, macroHighlightRanges } from "./guide";
 import { parseMacroCommand, type MacroPartRole } from "./parse";
 import { renderMacroGuideRows } from "./render";
+import { MACRO_STYLE_IDS, macroStyleId, setMacroStyle } from "./styles";
 import { createUserMacroStore, receiveUserMacros, shownUserMacros, submitUserMacroChange, userMacrosConnectionLost as storeConnectionLost } from "./store";
 
-afterEach(() => setUserMacros([]));
+afterEach(() => {
+  setUserMacros([]);
+  setMacroStyle(null);
+});
 
 const BRIEF: UserMacro = { name: "/brief", expansion: "Answer in one short sentence.", description: "Answer briefly" };
 
@@ -398,4 +402,86 @@ describe("user macro store over a dropping link", () => {
 test("expansion previews are one line", () => {
   expect(expansionPreview("a\nb\nc")).toBe("a (+2 lines)");
   expect(expansionPreview("x".repeat(100), 10)).toBe(`${"x".repeat(9)}…`);
+});
+
+describe("visual styles (EXOCORTEX_MACRO_STYLE)", () => {
+  /** The rows of a full render: everything above the prompt's separator, and the prompt row. */
+  function renderRows(buffer: string, macros: readonly UserMacro[] = [BRIEF]) {
+    const { state } = connectedState(macros);
+    state.cols = 100;
+    state.rows = 30;
+    state.sidebar.open = false;
+    state.inputBuffer = buffer;
+    state.cursorPos = buffer.length;
+    updateAutocomplete(state);
+    let out = "";
+    const write = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((chunk: string | Uint8Array) => { out += String(chunk); return true; }) as typeof process.stdout.write;
+    try {
+      invalidateFrame(state);
+      render(state);
+    } finally {
+      process.stdout.write = write as typeof process.stdout.write;
+    }
+    const screen = new TerminalScreen(state.rows, state.cols);
+    screen.feed(out);
+    const rows = screen.plainRows();
+    const prompt = rows.findIndex(row => row.startsWith("I > "));
+    return { prompt: rows[prompt]!, above: rows.slice(2, prompt - 1).map(row => row.trimEnd()).filter(Boolean), out };
+  }
+
+  test("the flag picks a style; unknown values keep the default", () => {
+    const saved = process.env.EXOCORTEX_MACRO_STYLE;
+    try {
+      process.env.EXOCORTEX_MACRO_STYLE = "C";
+      expect(macroStyleId()).toBe("C");
+      process.env.EXOCORTEX_MACRO_STYLE = "Z";
+      expect(macroStyleId()).toBe("v3");
+    } finally {
+      if (saved === undefined) delete process.env.EXOCORTEX_MACRO_STYLE;
+      else process.env.EXOCORTEX_MACRO_STYLE = saved;
+    }
+    expect(MACRO_STYLE_IDS).toEqual(["v3", "A", "B", "C", "D"]);
+  });
+
+  test("A is monochrome and B has one accent; both keep red for errors", () => {
+    const buffer = "/macro add /brief Answer briefly = Answer in one short sentence.";
+    const colours = (id: "A" | "B") => {
+      setMacroStyle(id);
+      return Object.fromEntries(macroHighlightRanges(parse(buffer)).map(range => [buffer.slice(range.start, range.end), range.color]));
+    };
+    expect(colours("A")).toEqual({ "/brief": theme.bold, "Answer briefly": theme.dim, "=": theme.dim });
+    expect(colours("B")).toEqual({ "/brief": theme.accent, "Answer briefly": theme.dim });
+    setMacroStyle("A");
+    expect(macroHighlightRanges(parse("/macro add /go = x"))).toContainEqual({ start: 11, end: 14, color: theme.error });
+  });
+
+  test("A and B keep the two-row panel", () => {
+    for (const id of ["A", "B"] as const) {
+      setMacroStyle(id);
+      expect(renderRows("/macro add /go = x").above).toEqual([
+        " /macro add /name [description] = text",
+        " ✗ /go is a built-in macro; pick another name.",
+      ]);
+    }
+  });
+
+  test("C has no rows above the prompt: errors and previews follow the cursor", () => {
+    setMacroStyle("C");
+    const error = renderRows("/macro add /go = x");
+    expect(error.above).toEqual([]);
+    expect(error.prompt).toContain("/macro add /go = x  ✗ /go is a built-in macro; pick another name.");
+    expect(renderRows("/macro add /x").prompt).toContain("/macro add /x [description] = text");
+    expect(renderRows("/macro rm /brief ").prompt).toContain("/macro rm /brief   → Answer in one short sentence.");
+    // Tab completions use the normal popup.
+    expect(renderRows("/macro rm ").above).toEqual([expect.stringContaining("/brief Answer briefly · Answer in one short sentence.")]);
+  });
+
+  test("D uses the normal popup: completions, else one row for the error, preview or next part", () => {
+    setMacroStyle("D");
+    expect(renderRows("/macro add /go = x").above).toEqual([expect.stringMatching(/✗ +\/go is a built-in macro; pick another name\./)]);
+    expect(renderRows("/macro add /x = Hi").above).toEqual([expect.stringMatching(/\/x +→ Hi/)]);
+    expect(renderRows("/macro add ").above).toEqual([expect.stringMatching(/\/name +the macro's name, e\.g\. \/brief/)]);
+    expect(renderRows("/macro rm ").above).toEqual([expect.stringContaining("/brief Answer briefly")]);
+  });
 });

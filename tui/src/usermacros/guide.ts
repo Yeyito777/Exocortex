@@ -7,7 +7,7 @@
  */
 import type { UserMacro } from "@exocortex/shared/user-macros";
 import type { SlashCompletion } from "../slashsearch";
-import { theme } from "../theme";
+import { macroStyle, type MacroStyle } from "./styles";
 import { MACRO_SUBCOMMANDS, parseMacroCommand, type MacroCommandParse, type MacroParseContext, type MacroPartRole } from "./parse";
 
 export interface MacroGuideContext extends MacroParseContext {
@@ -42,33 +42,14 @@ export interface MacroGuide {
   detail: MacroGuideDetail | null;
 }
 
-const UNDERLINE = "\x1b[4m";
-
-export function roleColor(role: MacroPartRole): string {
-  switch (role) {
-    case "command":
-    case "action":
-    case "equals":
-      return theme.command;
-    case "name":
-      return theme.accent + theme.bold;
-    case "description":
-      // Not grey: ghost text is the grey after the cursor.
-      return theme.goal + theme.italic;
-    case "expansion":
-      return theme.success;
-    case "extra":
-      return theme.error;
-  }
-}
-
-/** One colour per part; the part with the error is red and underlined. */
-export function macroHighlightRanges(parse: MacroCommandParse): ColoredRange[] {
+/** A colour per part as the current style has it (see ./styles); the part with the error is red. */
+export function macroHighlightRanges(parse: MacroCommandParse, style: MacroStyle = macroStyle()): ColoredRange[] {
   const ranges: ColoredRange[] = [];
   const add = (role: MacroPartRole, p: { start: number; end: number } | null) => {
     if (!p || p.end <= p.start) return;
     const failed = parse.error && parse.error.role === role && parse.error.start === p.start;
-    ranges.push({ start: p.start, end: p.end, color: failed ? theme.error + UNDERLINE : roleColor(role) });
+    const color = failed ? style.errorColor : style.partColor(role);
+    if (color) ranges.push({ start: p.start, end: p.end, color });
   };
   add("command", parse.command);
   add("action", parse.actionPart);

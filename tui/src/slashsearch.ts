@@ -29,6 +29,8 @@ export interface SlashCompletion extends CompletionItem {
    * expands to this completion only when every one was typed as a whole word.
    */
   exactForms?: readonly (readonly string[])[];
+  /** Description colour; dim by default (/macro uses red for its error row). */
+  descColor?: string;
 }
 
 /** A typed shorthand that submission expands, e.g. "/model opus". */

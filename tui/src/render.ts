@@ -38,6 +38,8 @@ import { macroGhostText, macroGuide } from "./usermacros/guide";
 import { macroGuideContext } from "./usermacros/controller";
 import { isMacroCommandText } from "./usermacros/parse";
 import { fitGhostText, renderMacroGuideRows } from "./usermacros/render";
+import { inlineMacroHint, macroStyle, popupMacroRow } from "./usermacros/styles";
+import type { SlashCompletion } from "./slashsearch";
 import { formatSize, imageLabel } from "./clipboard";
 import { renderQueuePromptOverlay } from "./overlays";
 import { renderEditMessageOverlay } from "./overlays";
@@ -1152,7 +1154,7 @@ function renderAutocompleteDescription(
   width: number,
 ): string {
   if (!match.colorSwatches || match.colorSwatches.length === 0) {
-    return theme.dim + padRightToWidth(text, width);
+    return (match.descColor ?? theme.dim) + padRightToWidth(text, width);
   }
   const colors = match.colorSwatches.slice(0, Math.max(0, width));
   const swatches = colors.map((color) => `${hexToAnsi(color)}█`).join("");
@@ -1168,11 +1170,12 @@ function renderAutocompletePopup(
   state: RenderState,
   chatW: number,
   sepAbove: number,
+  shown: { matches: SlashCompletion[]; selection: number } | null = state.autocomplete,
 ): ScreenRect | null {
-  if (!state.autocomplete || state.autocomplete.matches.length === 0) return null;
+  if (!shown || shown.matches.length === 0) return null;
 
   const { chatCol } = ctx;
-  const { matches, selection: sel } = state.autocomplete;
+  const { matches, selection: sel } = shown;
   const maxVisible = Math.max(1, Math.min(AUTOCOMPLETE_MAX_VISIBLE_ROWS, sepAbove - 3));
   const total = matches.length;
   const winSize = Math.min(total, maxVisible);
@@ -1221,6 +1224,20 @@ function renderAutocompletePopup(
   return { top: topRow, bottom: sepAbove - 1, left: chatCol, right: chatCol + desiredPopupWidth - 1 };
 }
 
+/**
+ * What the normal popup shows. A /macro line in the "popup" style puts its
+ * error, preview or next part there as a row of its own when there is
+ * nothing to complete; every other prompt shows its completions as usual.
+ */
+function macroPopupRows(state: RenderState): { matches: SlashCompletion[]; selection: number } | null {
+  if (!editingMacroCommand(state) || macroStyle().surface !== "popup") return state.autocomplete;
+  const guide = macroGuide(state.inputBuffer, state.cursorPos, macroGuideContext(state, macroDisplayContext(state)));
+  const completing = state.autocomplete && state.autocomplete.matches.length > 0;
+  if (guide?.detail?.kind !== "error" && completing) return state.autocomplete;
+  const row = guide ? popupMacroRow(guide) : null;
+  return row ? { matches: [row], selection: -1 } : null;
+}
+
 /** Whether the prompt holds a /macro command the user is editing. */
 function editingMacroCommand(state: RenderState): boolean {
   return state.panelFocus === "chat" && state.chatFocus === "prompt" && !state.instructionsModal
@@ -1234,7 +1251,7 @@ function renderMacroGuidePanel(
   chatW: number,
   sepAbove: number,
 ): ScreenRect | null {
-  if (!editingMacroCommand(state)) return null;
+  if (!editingMacroCommand(state) || macroStyle().surface !== "panel") return null;
   const guide = macroGuide(state.inputBuffer, state.cursorPos, macroGuideContext(state, macroDisplayContext(state)));
   if (!guide) return null;
   const ac = state.autocomplete;
@@ -1512,10 +1529,16 @@ export function render(state: RenderState): boolean {
 
   // Dim ghost text after the cursor names the /macro parts still to type.
   if (editingMacroCommand(state) && state.vim.mode === "insert" && voicePrompts.length === 0) {
-    const ghost = macroGhostText(state.inputBuffer, state.cursorPos, macroDisplayContext(state));
+    const context = macroDisplayContext(state);
+    let ghost: { text: string; color?: string } | null = { text: macroGhostText(state.inputBuffer, state.cursorPos, context) };
+    // The inline style carries errors and previews there too, having no panel.
+    if (macroStyle().surface === "inline") {
+      const guide = macroGuide(state.inputBuffer, state.cursorPos, macroGuideContext(state, context));
+      ghost = guide && state.cursorPos === state.inputBuffer.length ? inlineMacroHint(guide, ghost.text) : null;
+    }
     const line = coloredInputLines[cursorLine];
-    if (ghost && line !== undefined) {
-      coloredInputLines[cursorLine] = line + fitGhostText(ghost, visibleLength(line), chatW - PROMPT_PREFIX_WIDTH);
+    if (ghost?.text && line !== undefined) {
+      coloredInputLines[cursorLine] = line + fitGhostText(ghost.text, visibleLength(line), chatW - PROMPT_PREFIX_WIDTH, ghost.color);
     }
   }
 
@@ -1717,7 +1740,7 @@ export function render(state: RenderState): boolean {
   // ── Autocomplete popup (overlays message area above input) ────
   // A /macro prompt gets its own help panel, which includes the completions.
   const autocompleteRect = renderMacroGuidePanel(ctx, state, chatW, bottomStartRow)
-    ?? renderAutocompletePopup(ctx, state, chatW, bottomStartRow);
+    ?? renderAutocompletePopup(ctx, state, chatW, bottomStartRow, macroPopupRows(state));
 
   // ── Search bar ────────────────────────────────────────────────
   if (searchBarRow > 0) {
