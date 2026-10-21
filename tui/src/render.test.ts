@@ -648,7 +648,7 @@ describe("render caching and frame diffing", () => {
           text: Array.from({ length: 40 }, (_, index) => `older ${index + 1}`).join("\n"),
         }],
         metadata: null,
-      }];
+      }, { role: "user", text: "wait for the task", metadata: null }];
       state.pendingAI = createPendingAI(123, state.model);
       state.pendingAI.blocks.push({ type: "thinking", text: "Waiting for a task" });
       renderSilently(state);

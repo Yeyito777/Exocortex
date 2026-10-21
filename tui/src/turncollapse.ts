@@ -214,6 +214,12 @@ export interface PendingPlan {
   summary: string | null;
   expanded: boolean;
   toggle: object;
+  /**
+   * The newest step when it is already committed (a new round has not streamed
+   * one yet): it renders under the working row, not in the committed rows above
+   * it, so the row never sits below the latest command.
+   */
+  revealed: Block | null;
 }
 
 export interface HistoryPlan {
@@ -897,9 +903,15 @@ function planTurn(
       continue;
     }
     const hidden = msg.blocks.map((block, blockIndex) => {
-      const work = inProgress
-        ? reveal?.message !== index || reveal.block !== blockIndex
-        : index < lastToolMessage
+      // A live turn's committed steps all fold; the newest renders under its working row.
+      if (inProgress) {
+        if (reveal?.message !== index || reveal.block !== blockIndex) {
+          if (block.type === "tool_call") stats.toolCalls++;
+          else if (hasText(block)) stats.texts++;
+        }
+        return true;
+      }
+      const work = index < lastToolMessage
         || (index === lastToolMessage && blockIndex <= lastToolBlock)
         || block.type === "thinking";
       if (work) {
@@ -1071,7 +1083,8 @@ function planPending(
     return isHidden;
   });
   const summary = [label, workSummaryText(stats)].filter(Boolean).join(" · ");
-  return { hidden: open ? null : hidden, summary: summary || null, expanded: open, toggle: key };
+  const revealed = !open && reveal ? (messages[reveal.message] as Extract<Message, { role: "assistant" }>).blocks[reveal.block] ?? null : null;
+  return { hidden: open ? null : hidden, summary: summary || null, expanded: open, toggle: key, revealed };
 }
 
 // ── Search ──────────────────────────────────────────────────────────

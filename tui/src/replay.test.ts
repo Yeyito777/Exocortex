@@ -64,6 +64,8 @@ describe("startReplayConversation", () => {
     const minute = 60_000;
     const replayStartedAt = 21 * minute;
     const state = createInitialState();
+    // Every footer in view (folded, the interrupted part and its notice fold into the live turn).
+    state.showTurnWork = true;
     state.convId = "conv-replay";
     state.model = "gpt-5.4";
     state.messages.push(

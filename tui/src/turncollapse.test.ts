@@ -9,6 +9,8 @@ function createInitialState(): RenderState {
   return state;
 }
 import { createPendingAI, type Message } from "./messages";
+import { handleStreamingStarted, handleToolCall, handleToolResult } from "./events/streaming";
+import type { Event } from "./protocol";
 import { notificationLabel, notificationPreview } from "./turncollapse";
 import { getViewStartFor, toggleHistoryItemPreservingViewport } from "./chatscroll";
 import { handleFocusedKey } from "./focus";
@@ -204,7 +206,34 @@ describe("the live turn, between rounds", () => {
     state.messages.push(user("run things"), assistant([...call("c1", "ls"), ...call("c2", "pwd"), { type: "text", text: "Round done." }]));
     state.pendingAI = createPendingAI(Date.now(), MODEL);
     const shown = rows(state).filter(Boolean);
-    expect(shown.slice(1, 3)).toEqual(["  Round done.", expect.stringMatching(/Working · ▸ 2 tool calls$/)]);
+    // The working row stays above it: it never drops below the newest step.
+    expect(shown.slice(1, 3)).toEqual([expect.stringMatching(/Working · ▸ 2 tool calls$/), "  Round done."]);
+  });
+
+  test("the working row is directly above the newest command on every frame, joining mid-turn and as tool calls stream", () => {
+    const state = createInitialState();
+    state.convId = "c";
+    // A client opening a conversation mid-turn: the finished rounds are history, the live round streams.
+    state.messages.push(user("run the checks"), assistant([...call("c1", "uptime"), ...call("c2", "df -h")]));
+    handleStreamingStarted({ type: "streaming_started", convId: "c", startedAt: 2_000, model: MODEL } as Extract<Event, { type: "streaming_started" }>, state);
+    const commands = ["df -h"];
+    const check = () => {
+      const shown = rows(state).filter(Boolean);
+      const working = shown.findIndex(row => /Working/.test(row));
+      expect(working).toBeGreaterThan(0);
+      // Directly under it: the newest command, and nothing of the turn's work below that.
+      expect(shown[working + 1]).toContain(commands.at(-1)!);
+      for (const older of commands.slice(0, -1)) expect(shown.some(row => row.includes(older))).toBe(false);
+      expect(shown.some(row => row.includes("uptime"))).toBe(false);
+    };
+    check();
+    for (const [id, command] of [["c3", "ls /tmp"], ["c4", "git status"], ["c5", "bun test"]] as const) {
+      handleToolCall({ type: "tool_call", convId: "c", toolCallId: id, toolName: "bash", input: { command }, summary: command } as Extract<Event, { type: "tool_call" }>, state);
+      commands.push(command);
+      check();
+      handleToolResult({ type: "tool_result", convId: "c", toolCallId: id, toolName: "bash", output: "ok", isError: false } as Extract<Event, { type: "tool_result" }>, state);
+      check();
+    }
   });
 });
 
