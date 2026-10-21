@@ -74,6 +74,7 @@ export function macroCompletions(buffer: string, cursor: number, context: MacroP
       name: sub.name,
       desc: sub.desc,
       insertText: `${lead}${sub.name} `,
+      ...(sub.action === "rm" ? { exact: true } : {}),
     }));
   }
   if ((parse.action === "edit" || parse.action === "rm") && parse.focus === "name") {

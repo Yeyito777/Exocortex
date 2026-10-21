@@ -72,7 +72,8 @@ export function createMacroCommand(context: () => MacroParseContext): SlashComma
     name: "/macro",
     description: "Add, edit, delete or list your own macros",
     // Ordinary arguments, so /macro highlights like any other command.
-    args: MACRO_SUBCOMMANDS.map(sub => ({ name: sub.name, desc: sub.desc })),
+    // rm is destructive: never reached by a fuzzy shorthand (undo only re-creates).
+    args: MACRO_SUBCOMMANDS.map(sub => ({ name: sub.name, desc: sub.desc, ...(sub.action === "rm" ? { exact: true } : {}) })),
     getArgs: () => {
       const names = getUserMacros().map(macro => ({ name: macro.name, desc: expansionPreview(macro.expansion, 48) }));
       return { "/macro edit": names, "/macro rm": names, "/macro delete": names };

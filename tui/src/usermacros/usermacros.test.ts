@@ -6,7 +6,7 @@ import { handleInstructionsModalKey } from "../instructions/controller";
 import { expandMacros, getUserMacros, isMacroName, setUserMacros } from "../macros";
 import { getPromptHighlightRanges } from "../prompthighlight";
 import { render } from "../render";
-import { commandCompletions, inlineSlashCompletions } from "../slashsearch";
+import { commandCompletions, inlineSlashCompletions, resolveSlashShorthands } from "../slashsearch";
 import { createInitialState, type RenderState } from "../state";
 import { TerminalScreen } from "../testhelpers/terminalscreen";
 import { theme } from "../theme";
@@ -179,6 +179,10 @@ describe("/macro help while typing", () => {
       ["add", "/macro add "], ["edit", "/macro edit "], ["rm", "/macro rm "], ["list", "/macro list "], ["undo", "/macro undo "],
     ]);
     expect(macroCompletions("/macro e", 8, ctx).map(item => item.name)).toEqual(["edit"]);
+    // Deleting is destructive: rm is never reached by a fuzzy shorthand.
+    expect(macroCompletions("/macro ", 7, ctx).filter(item => item.exact).map(item => item.name)).toEqual(["rm"]);
+    expect(MACRO_COMMAND.args?.filter(item => item.exact).map(item => item.name)).toEqual(["rm"]);
+    expect(resolveSlashShorthands(createInitialState(), "/macro r")).toBe("/macro r");
     expect(macroCompletions("/macro rm ", 10, ctx)).toEqual([
       { name: "/brief", desc: "Answer briefly · Answer in one short sentence.", insertText: "/macro rm /brief " },
       { name: "/review", desc: "Review this: (+2 lines)", insertText: "/macro rm /review " },
