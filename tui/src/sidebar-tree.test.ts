@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readExocortexConfig, updateExocortexConfig } from "@exocortex/shared/config";
 import {
   buildDisplayRows,
   createSidebarState,
@@ -12,10 +13,11 @@ import {
 import type { KeyEvent } from "./input";
 import type { ConversationSummary, FolderSummary } from "./messages";
 import { stripAnsi } from "./historycursor";
-import { setSidebarFolderView } from "./sidebar/folderview";
+import { loadSidebarFolderViewPreference, setSidebarFolderView } from "./sidebar/folderview";
 import type { SidebarState } from "./sidebar/state";
 import { newConversationFolderId } from "./sidebar/tree";
 import { handleSidebarSearchBarKey, openSidebarCommandBar, openSidebarSearchBar } from "./sidebarsearch";
+import { createInitialState } from "./state";
 
 function conversation(id: string, sortOrder: number, overrides: Partial<ConversationSummary> = {}): ConversationSummary {
   return {
@@ -381,6 +383,56 @@ describe("sidebar tree folder view", () => {
       const sidebar = badgeSidebar("navigate");
       const row = folderRow(sidebar, "📁");
       expect(row).toMatch(/◉ ◆2 ◷ \$ 📁 work\/ 1/);
+    });
+  });
+});
+
+describe("sidebar folder view default", () => {
+  function withSidebarFolders(value: "navigate" | "tree" | undefined, run: () => void): void {
+    const saved = readExocortexConfig().tui?.sidebarFolders;
+    const set = (view: "navigate" | "tree" | undefined) => updateExocortexConfig((config) => {
+      const tui = { ...(config.tui ?? {}) };
+      if (view) tui.sidebarFolders = view;
+      else delete tui.sidebarFolders;
+      config.tui = tui;
+    });
+    set(value);
+    try {
+      run();
+    } finally {
+      set(saved);
+    }
+  }
+
+  test("a TUI without a saved preference opens folders as a tree", () => {
+    withSidebarFolders(undefined, () => {
+      expect(loadSidebarFolderViewPreference()).toBe("tree");
+      expect(createInitialState().sidebar.folderView).toBe("tree");
+    });
+    expect(createSidebarState().folderView).toBe("tree");
+  });
+
+  test("only an explicit navigate preference keeps the old view", () => {
+    withSidebarFolders("navigate", () => {
+      expect(createInitialState().sidebar.folderView).toBe("navigate");
+    });
+    withSidebarFolders("tree", () => {
+      expect(createInitialState().sidebar.folderView).toBe("tree");
+    });
+  });
+
+  test("the default view expands a folder in place instead of entering it", () => {
+    withSidebarFolders(undefined, () => {
+      const sidebar = createInitialState().sidebar;
+      updateConversationList(sidebar, [
+        conversation("root-a", 2),
+        conversation("inside-a", 1, { folderId: "work" }),
+      ], [folder("work", 1)]);
+      focus(sidebar, { type: "folder", id: "work" });
+
+      handleSidebarKey(key("l"), sidebar);
+      expect(sidebar.currentFolderId).toBeNull();
+      expect(rowKeys(sidebar)).toEqual(["work", "  inside-a", "root-a"]);
     });
   });
 });

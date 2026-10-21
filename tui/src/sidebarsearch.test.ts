@@ -179,6 +179,7 @@ describe("sidebar conversation search", () => {
 
   test("sidebar search directly matches folders and opens matched folders unfiltered", () => {
     const state = createInitialState();
+    state.sidebar.folderView = "navigate";
     state.sidebar.open = true;
     state.panelFocus = "sidebar";
     state.vim.mode = "normal";

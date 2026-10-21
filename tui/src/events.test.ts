@@ -1249,6 +1249,7 @@ describe("optimistic conversation creation", () => {
 describe("optimistic reordering on send", () => {
   test("moves an unpinned conversation to the top of its folder and keeps it selected", () => {
     const sidebar = createInitialState().sidebar;
+    sidebar.folderView = "navigate";
     sidebar.conversations = [
       summary({ id: "top", folderId: "work", sortOrder: -5 }),
       summary({ id: "sent", folderId: "work", sortOrder: -1 }),

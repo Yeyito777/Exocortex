@@ -37,7 +37,7 @@ function folder(id: string, overrides: Partial<FolderSummary> = {}): FolderSumma
 
 describe("sidebar muting", () => {
   test("Shift+M optimistically toggles an individual conversation", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.conversations = [conversation("selected", { unread: true })];
     sidebar.selectedItem = { type: "conversation", id: "selected" };
     sidebar.selectedId = "selected";
@@ -58,7 +58,7 @@ describe("sidebar muting", () => {
   });
 
   test("Shift+M on a folder recomputes inherited mute state for all descendants", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.folders = [folder("parent"), folder("child", { parentId: "parent" })];
     sidebar.conversations = [
       conversation("direct", { folderId: "parent", unread: true }),
@@ -80,7 +80,7 @@ describe("sidebar muting", () => {
   });
 
   test("conversation mute preferences remain independent inside a muted folder", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.currentFolderId = "parent";
     sidebar.folders = [folder("parent", { muted: true })];
     sidebar.conversations = [conversation("selected", {

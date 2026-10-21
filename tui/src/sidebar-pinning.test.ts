@@ -47,7 +47,7 @@ function entryIds(sidebar: SidebarState): string[] {
 
 describe("sidebar optimistic pinning", () => {
   test("omits the Pinned section title inside folders", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.currentFolderId = "project";
     sidebar.folders = [folder("project", 0)];
     sidebar.conversations = [
@@ -67,7 +67,7 @@ describe("sidebar optimistic pinning", () => {
   });
 
   test("pinning a conversation places it at the bottom of the pinned section", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.conversations = [
       conversation("pinned-a", 0, { pinned: true }),
       conversation("pinned-b", 1, { pinned: true }),
@@ -88,7 +88,7 @@ describe("sidebar optimistic pinning", () => {
   });
 
   test("pinning uses the combined folder/conversation sibling order", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.folders = [folder("folder-pinned", 10, { pinned: true })];
     sidebar.conversations = [
       conversation("conv-pinned", 5, { pinned: true }),
@@ -107,7 +107,7 @@ describe("sidebar optimistic pinning", () => {
   });
 
   test("pinning a visual selection pins all selected conversations", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.conversations = [
       conversation("pinned", 0, { pinned: true }),
       conversation("conv-a", 1),
@@ -137,7 +137,7 @@ describe("sidebar optimistic pinning", () => {
   });
 
   test("unpinning a visual selection preserves the selected conversation order at the top of unpinned", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.conversations = [
       conversation("pinned", 0, { pinned: true }),
       conversation("conv-a", 1, { pinned: true }),
