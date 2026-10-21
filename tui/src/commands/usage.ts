@@ -7,7 +7,7 @@ const USAGE = "Usage: /usage reset";
 export const USAGE_COMMAND: SlashCommand = {
   name: "/usage",
   description: "Use an earned OpenAI usage-limit reset",
-  args: [{ name: "reset", desc: "Reset the current 5-hour and weekly usage limits" }],
+  args: [{ name: "reset", desc: "Reset the current 5-hour and weekly usage limits", exact: true }],
   handler: (text, state) => {
     const parts = text.trim().split(/\s+/).filter(Boolean);
     if (parts.length !== 2 || parts[1]?.toLowerCase() !== "reset") {

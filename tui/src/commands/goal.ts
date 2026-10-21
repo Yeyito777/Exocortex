@@ -9,7 +9,7 @@ export const GOAL_COMMAND: SlashCommand = {
     { name: "pause", desc: "stop goal work until explicitly resumed" },
     { name: "resume", desc: "resume a paused or blocked goal" },
     { name: "complete", desc: "mark complete and retain the result" },
-    { name: "clear", desc: "remove the goal" },
+    { name: "clear", desc: "remove the goal", exact: true },
     { name: "max-time", desc: "optional active-time limit, e.g. 9h2m1s, 8h3m, 5m, 2d" },
   ],
   handler(text, state) {

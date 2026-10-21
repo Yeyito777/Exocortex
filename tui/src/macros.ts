@@ -228,7 +228,7 @@ function macroDefinitions(environment: MacroEnvironment | null = localMacroEnvir
     args: [
       { name: "setup", desc: "Set up worktree flow for a project", expansion: `Set up git worktree management flow for the project. If the project is not already a git repo, initialize git first. Use the existing Exocortex flow as the reference implementation: ${WORKTREE_REFERENCE_FILES}. Verify these files exist before reading them; if this installation lacks the source scripts, locate an Exocortex source checkout or ask for its location rather than guessing a path. If a local Record checkout is available, also check its scripts/dev/create-worktree, clean-worktree, worktree-common.sh, and recordtest for a smaller app-specific version; skip this optional reference if unavailable. Adapt the flow to this project's deps/config/runtime/test needs and host OS (do not blindly copy platform-specific shell or process checks), make scripts executable, update .gitignore, then smoke-test create + clean with a temporary worktree and leave no temp branch/worktree behind. Project:` },
       { name: "merge", desc: "Merge worktree back into main", expansion: "First merge local main into the worktree branch (use local main, not origin — it's always up to date) and resolve any merge conflicts. The work in the worktree is good. Merge it back into main. After confirming the merge succeeded, run `./scripts/dev/clean-worktree <name-or-path>` from the repo root to remove the worktree, delete its branch, and clean up any worktree config leftovers." },
-      { name: "clean", desc: "Reject/discard worktree", expansion: "The work in this worktree is rejected. Do not merge it, do not preserve the changes, and do not try to salvage the branch. Find the repo root first, identify the target worktree from the current directory or from the name/path I provide, verify it is a linked worktree and not main, then remove it and delete its branch. Prefer the project cleanup script, e.g. `./scripts/dev/clean-worktree <name-or-path>`. If cleanup refuses because the worktree is dirty or the branch is unmerged, explicitly discard the worktree changes and force-remove the worktree/branch. Clean up any worktree runtime/config leftovers if the project has them. Report what was removed." },
+      { name: "clean", desc: "Reject/discard worktree", exact: true, expansion: "The work in this worktree is rejected. Do not merge it, do not preserve the changes, and do not try to salvage the branch. Find the repo root first, identify the target worktree from the current directory or from the name/path I provide, verify it is a linked worktree and not main, then remove it and delete its branch. Prefer the project cleanup script, e.g. `./scripts/dev/clean-worktree <name-or-path>`. If cleanup refuses because the worktree is dirty or the branch is unmerged, explicitly discard the worktree changes and force-remove the worktree/branch. Clean up any worktree runtime/config leftovers if the project has them. Report what was removed." },
     ],
   },
   {
@@ -245,6 +245,7 @@ function macroDefinitions(environment: MacroEnvironment | null = localMacroEnvir
       {
         name: "uninstall",
         desc: "Uninstall an external tool",
+        exact: true,
         expansion: "Explain to me how the uninstallation process for a tool looks in Exocortex.",
         args: dynamicToolUninstallArgs(paths),
       },
@@ -259,6 +260,8 @@ interface MacroArg {
   desc: string;
   expansion: string;
   args?: MacroArg[];
+  /** Destructive: never expanded from a shorthand (see CompletionItem.exact). */
+  exact?: boolean;
 }
 
 type MacroDef = MacroArg;
@@ -278,7 +281,7 @@ function flattenExpansions(prefix: string, node: { expansion: string; args?: Mac
 function flattenArgLists(prefix: string, node: { args?: MacroArg[] }): [string, CompletionItem[]][] {
   if (!node.args || node.args.length === 0) return [];
   const entries: [string, CompletionItem[]][] = [
-    [prefix, node.args.map(a => ({ name: a.name, desc: a.desc }))],
+    [prefix, node.args.map(a => ({ name: a.name, desc: a.desc, ...(a.exact ? { exact: true } : {}) }))],
   ];
   for (const arg of node.args) {
     entries.push(...flattenArgLists(`${prefix} ${arg.name}`, arg));
