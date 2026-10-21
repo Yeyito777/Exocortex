@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DaemonClient } from "../../tui/src/client";
@@ -20,6 +20,10 @@ test("real isolated daemon: the /instructions modal edits all three scopes and t
     EXOCORTEX_SUPERVISE_EXTERNAL_DAEMONS: "0",
   };
   writeFileSync(join(config, "config.json"), JSON.stringify({ agent: { workingDirectory: config } }));
+  // The tracked base, and a personal file from before the split that still holds it.
+  const base = "# Upstream\nBase rule.";
+  writeFileSync(join(config, "system.base.md"), `${base}\n`);
+  writeFileSync(join(config, "system.md"), `${base}\n`);
   const pathResult = Bun.spawnSync([process.execPath, "-e",
     'import { socketPath } from "./shared/src/paths"; process.stdout.write(socketPath());'],
   { cwd: root, env });
@@ -79,6 +83,16 @@ test("real isolated daemon: the /instructions modal edits all three scopes and t
     await waitFor(() => picker()?.loadReqId === null, "picker load");
     expect(picker()!.target).toMatchObject({ convId, folderId, folderName: "Project" });
     expect(picker()!.texts).toEqual({ conversation: "", folder: "", global: "" });
+    // Starting the daemon moved the duplicated base out of the personal file, after a backup.
+    expect(readFileSync(join(config, "system.md"), "utf8")).toBe("");
+    const backups = readdirSync(config).filter(name => name.startsWith("system.md.pre-split-"));
+    expect(backups).toHaveLength(1);
+    expect(readFileSync(join(config, backups[0]), "utf8")).toBe(`${base}\n`);
+    const loaded = events.find(event => event.type === "instructions_loaded");
+    if (loaded?.type !== "instructions_loaded") throw new Error("No instructions_loaded");
+    expect(loaded.global).toBe("");
+    expect(loaded.globalBase).toBe(base);
+    expect(state.instructionsStore.globalBase).toBe(base);
 
     // Conversation: empty, so the editor starts in insert mode.
     press(ENTER);
@@ -98,8 +112,12 @@ test("real isolated daemon: the /instructions modal edits all three scopes and t
     expect(editor()).toBeNull();
     expect(picker()!.texts.folder).toBe("Project rules.");
 
-    // Global.
-    press("j", ENTER, "Global rule.", ESC, ":wq", ENTER);
+    // Global: the base shows above the editable text and is never saved.
+    press("j", ENTER);
+    expect(editor()?.scope).toBe("global");
+    expect(editor()!.base).toBe(base);
+    expect(editor()!.buffer).toBe("");
+    press("Global rule.", ESC, ":wq", ENTER);
     expect(editor()).toBeNull();
     await waitFor(settled, "global save");
     expect(picker()!.texts).toEqual({ conversation: "Answer in haiku.", folder: "Project rules.", global: "Global rule." });
@@ -119,7 +137,9 @@ test("real isolated daemon: the /instructions modal edits all three scopes and t
     if (prompt?.type !== "system_prompt") throw new Error("No system prompt");
     expect(prompt.systemPrompt).toContain("Answer in haiku.");
     expect(prompt.systemPrompt).toContain("Project rules.");
-    expect(prompt.systemPrompt).toContain("Global rule.");
+    expect(prompt.systemPrompt).toContain(`${base}\n\nGlobal rule.`);
+    expect(prompt.systemPrompt.split("Base rule.").length).toBe(2);
+    expect(readFileSync(join(config, "system.base.md"), "utf8")).toBe(`${base}\n`);
 
     // The history still receives both as pinned entries, and renders neither.
     await waitFor(() => state.messages.filter(message => message.role === "system_instructions").length === 2, "pinned instructions");

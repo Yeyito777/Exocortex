@@ -10,7 +10,8 @@ conversations:
   conversation's workspace directory. Exocortex's own system prompt (identity,
   environment, internal tool guidance) is not used.
 - Exocortex appends its additions to Claude Code's system prompt: external
-  tool hints, the app-wide `config/system.md` addendum, folder and
+  tool hints, the app-wide instructions (`config/system.base.md`, then
+  `config/system.md`), folder and
   conversation instructions, and a scoped subagent's role note. The prompt is
   rendered for each new Claude Code process instead of reusing the session's
   recorded one, so edits apply once the running process (see background tasks

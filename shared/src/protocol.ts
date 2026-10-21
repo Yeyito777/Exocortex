@@ -921,7 +921,7 @@ export interface LoadToolInstructionsCommand {
   model?: ModelId;
 }
 
-/** Set the app-wide instructions every conversation gets (config/system.md). */
+/** Set this install's app-wide instructions (config/system.md), layered after the read-only base. */
 export interface SetGlobalInstructionsCommand {
   type: "set_global_instructions";
   reqId?: string;
@@ -2133,8 +2133,13 @@ export interface InstructionsLoadedEvent {
   conversation: string | null;
   /** The folder's own instructions (not its parents'); null without a folder. */
   folder: string | null;
-  /** The app-wide instructions. */
+  /** This install's own app-wide instructions (config/system.md); what set_global_instructions writes. */
   global: string;
+  /**
+   * The tracked upstream base every conversation gets before `global`
+   * (config/system.base.md); read-only over IPC. Absent from older daemons.
+   */
+  globalBase?: string;
 }
 
 /** One tool's text as the model receives it. */

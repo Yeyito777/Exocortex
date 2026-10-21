@@ -55,6 +55,11 @@ export interface InstructionsEditorState {
   readOnly?: boolean;
   /** Why it is read-only, shown when an edit is refused. */
   readOnlyNotice?: string;
+  /**
+   * Global only: the read-only base (config/system.base.md) drawn above the
+   * buffer under its own rule. Never part of the buffer, so never saved.
+   */
+  base?: string | null;
   /** Set when the editor writes a user macro's text (/macro add or edit) instead of instructions. */
   macro?: MacroDraft;
   target: InstructionsTarget;

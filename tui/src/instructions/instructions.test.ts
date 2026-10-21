@@ -11,12 +11,14 @@ import {
   instructionsRouteSwitched,
   openFolderInstructionsEditor,
   openInstructionsPicker,
+  openMacroEditor,
   prefetchCurrentInstructions,
   type InstructionsDaemon,
   type InstructionsKeyOutcome,
 } from "./controller";
 import { renderInstructionsEditor, renderInstructionsPicker } from "./render";
 import { createInstructionsEditor, summarizeInstructions } from "./state";
+import type { MacroDraft } from "../commands/macro";
 
 class FakeDaemon implements InstructionsDaemon {
   connected = true;
@@ -67,17 +69,18 @@ function press(state: RenderState, daemon: FakeDaemon, ...input: Array<string | 
 }
 
 /** Open the picker and answer its load. */
-function openLoaded(state: RenderState, daemon: FakeDaemon, texts = { conversation: "", folder: "", global: "" }): void {
+function openLoaded(state: RenderState, daemon: FakeDaemon, texts: { conversation: string; folder: string; global: string; globalBase?: string } = { conversation: "", folder: "", global: "" }): void {
   openInstructionsPicker(state, daemon);
   answerLoad(state, daemon, texts);
 }
 
-function answerLoad(state: RenderState, daemon: FakeDaemon, texts: { conversation: string; folder: string | null; global: string }): void {
+function answerLoad(state: RenderState, daemon: FakeDaemon, texts: { conversation: string; folder: string | null; global: string; globalBase?: string }): void {
   const call = daemon.last("loadInstructions");
   handleInstructionsEvent(state, {
     type: "instructions_loaded", reqId: call.reqId,
     convId: call.args[0] as string | null, folderId: call.args[1] as string | null,
     conversation: texts.conversation, folder: texts.folder, global: texts.global,
+    ...(texts.globalBase !== undefined ? { globalBase: texts.globalBase } : {}),
   }, daemon);
 }
 
@@ -626,6 +629,96 @@ describe("instructions editor rendering", () => {
     expect(plain(rendered.payload)).toContain(":wq");
     expect(plain(rendered.payload)).toContain("Enter run · Esc cancel");
     expect(rendered.cursor?.shape).toBe("bar");
+  });
+});
+
+describe("global instructions over the read-only base", () => {
+  const BASE = "# Helper Tools\nUse helper-tools/.\n\n# PSA\nRestart with the exo tool.";
+
+  test("the Global editor shows the base above the editable text; edits and saves never include it", () => {
+    const state = conversationState();
+    const daemon = new FakeDaemon();
+    openLoaded(state, daemon, { conversation: "", folder: "", global: "# Latex\nUse latex.", globalBase: BASE });
+    expect(state.instructionsStore.globalBase).toBe(BASE);
+    // The picker previews this install's own text.
+    expect(plain(renderInstructionsPicker(state.instructionsModal!.picker!, 40, 120).payload)).toContain("“# Latex”");
+
+    press(state, daemon, "j", "j", ENTER);
+    const editor = state.instructionsModal!.editor!;
+    expect(editor.scope).toBe("global");
+    expect(editor.base).toBe(BASE);
+    expect(editor.buffer).toBe("# Latex\nUse latex.");
+
+    const shown = plain(renderInstructionsEditor(editor, 40, 120).payload);
+    const order = ["Base · read-only", "config/system.base.md", "# Helper Tools", "Restart with the exo tool.", "Yours", "config/system.md", "# Latex"]
+      .map(text => shown.indexOf(text));
+    expect(order.every(index => index !== -1)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+
+    // Vim motions and edits stay in the buffer: gg, dd and typing cannot reach the base.
+    press(state, daemon, "gg", "dd", "dd", "i", "Own rule.", ESC, "gg", "x", "u");
+    expect(editor.buffer).toBe("Own rule.");
+    expect(editor.base).toBe(BASE);
+    press(state, daemon, ":w", ENTER);
+    expect(daemon.last()).toMatchObject({ method: "setGlobalInstructions", args: ["Own rule.", "# Latex\nUse latex."] });
+  });
+
+  test("the cursor starts on the editable text below the base, and returns the base into view at the top", () => {
+    const target = { convId: "conv-1", convTitle: "Trip planning", folderId: null, folderName: null };
+    const editor = createInstructionsEditor("global", target, "Own rule.");
+    editor.base = BASE;
+    const rendered = renderInstructionsEditor(editor, 40, 120);
+    // Rule, five base lines, a blank line and the second rule come first.
+    expect(rendered.cursor).toEqual({ row: rendered.rect.top + 2 + 8, col: rendered.rect.left + 3, shape: "block" });
+    expect(plain(rendered.payload)).toContain("Ln 1, Col 1 · 1 line");
+    for (const row of rendered.payload.split(/\x1b\[\d+;\d+H/).slice(1)) {
+      expect(termWidth(stripAnsi(row))).toBe(rendered.rect.right - rendered.rect.left + 1);
+    }
+
+    // A long text scrolls the base away at the end and back at its first line.
+    const long = Array.from({ length: 60 }, (_, i) => `line ${i}`).join("\n");
+    const scrolled = createInstructionsEditor("global", target, long);
+    scrolled.base = BASE;
+    scrolled.cursor = long.length - 2;
+    expect(plain(renderInstructionsEditor(scrolled, 40, 120).payload)).not.toContain("Base · read-only");
+    scrolled.cursor = 0;
+    expect(plain(renderInstructionsEditor(scrolled, 40, 120).payload)).toContain("Base · read-only");
+  });
+
+  test("an empty personal file shows the placeholder under the base's rules", () => {
+    const editor = createInstructionsEditor("global", { convId: null, convTitle: null, folderId: null, folderName: null }, "");
+    editor.base = BASE;
+    const shown = plain(renderInstructionsEditor(editor, 40, 120).payload);
+    expect(shown.indexOf("Yours")).toBeLessThan(shown.indexOf("Instructions for every conversation…"));
+    expect(shown).toContain("# Helper Tools");
+  });
+
+  test("an older daemon without a base shows only the editable text, as before", () => {
+    const state = conversationState();
+    const daemon = new FakeDaemon();
+    openLoaded(state, daemon, { conversation: "", folder: "", global: "Be kind." });
+    press(state, daemon, "j", "j", ENTER);
+    const editor = state.instructionsModal!.editor!;
+    expect(editor.base).toBeNull();
+    const shown = plain(renderInstructionsEditor(editor, 40, 120).payload);
+    expect(shown).not.toContain("read-only");
+    expect(shown).not.toContain("Yours");
+    expect(shown).toContain("Be kind.");
+  });
+
+  test("only the Global editor gets the base", () => {
+    const state = conversationState();
+    const daemon = new FakeDaemon();
+    openLoaded(state, daemon, { conversation: "", folder: "", global: "", globalBase: BASE });
+    press(state, daemon, ENTER);
+    expect(state.instructionsModal!.editor!.scope).toBe("conversation");
+    expect(state.instructionsModal!.editor!.base).toBeUndefined();
+
+    // A macro editor uses the global scope internally but is not Global.
+    openMacroEditor(state, { name: "sig", description: null, create: true } as unknown as MacroDraft, "");
+    answerLoad(state, daemon, { conversation: "", folder: "", global: "", globalBase: BASE });
+    expect(state.instructionsModal!.editor!.base).toBeUndefined();
+    expect(plain(renderInstructionsEditor(state.instructionsModal!.editor!, 40, 120).payload)).not.toContain("read-only");
   });
 });
 

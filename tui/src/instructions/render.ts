@@ -11,6 +11,7 @@ import { theme } from "../theme";
 import { termWidth, truncateToWidth } from "../textwidth";
 import { nextGraphemeEnd } from "../graphemes";
 import { getInputLines } from "../promptline";
+import { sanitizePromptTextForInsertion } from "../prompttext";
 import {
   INSTRUCTION_SCOPES,
   isInstructionsEditorDirty,
@@ -23,7 +24,7 @@ import {
   type InstructionsNoticeTone,
   type InstructionsPickerState,
 } from "./state";
-import { shortSource, type ToolInstructionsDoc, type ToolSection } from "./tools";
+import { shortSource, type ToolLineStyle, type ToolSection } from "./tools";
 
 export interface RenderedInstructionsModal {
   payload: string;
@@ -270,9 +271,9 @@ function lineOf(newlines: number[], offset: number): number {
   return low;
 }
 
-/** A view row of the tools view, decorated by its logical line's style. */
-function toolsRow(
-  doc: ToolInstructionsDoc,
+/** A view row of the tools view (or the Global base), decorated by its logical line's style. */
+function decoratedRow(
+  lineStyles: Array<ToolLineStyle | undefined>,
   text: string,
   lineStart: number,
   line: number,
@@ -281,12 +282,38 @@ function toolsRow(
   selection: { start: number; end: number } | null,
   bg: string,
 ): string {
-  const style = doc.lineStyles[line];
+  const style = lineStyles[line];
   if (style?.kind === "rule") return firstRow ? ruleLine(style.section, width, bg) : pad(width);
   const plain = editorLine(text, lineStart, width, selection, bg);
   if (style?.kind === "field") return theme.accent + theme.italic + plain.replace(theme.text, "") + theme.italicOff;
   if (style?.kind === "note") return theme.muted + theme.italic + plain.replace(theme.text, "") + theme.italicOff;
   return plain;
+}
+
+/** The base's rule and the one over the editable text, drawn like the tools view's tool rules. */
+const BASE_RULE = { name: "Base · read-only", source: "config/system.base.md" };
+const OWN_RULE = { name: "Yours", source: "config/system.md" };
+
+/**
+ * Global's read-only base, shown above the buffer: its rule, the text, a blank
+ * line and the rule over the editable text. Display only: the buffer, the
+ * cursor and every edit stay in the buffer after it.
+ */
+function basePrefix(editor: InstructionsEditorState): { text: string; lineStyles: Array<ToolLineStyle | undefined> } | null {
+  if (!editor.base?.trim() || editor.tools || editor.macro || editor.loadReqId) return null;
+  const lines: string[] = [];
+  const lineStyles: Array<ToolLineStyle | undefined> = [];
+  let offset = 0;
+  const push = (text: string, rule?: { name: string; source: string }) => {
+    if (rule) lineStyles[lines.length] = { kind: "rule", section: { kind: "tool", ...rule, offset, line: lines.length } };
+    lines.push(text);
+    offset += text.length + 1;
+  };
+  push(BASE_RULE.name, BASE_RULE);
+  for (const line of sanitizePromptTextForInsertion(editor.base).trim().split("\n")) push(line);
+  push("");
+  push(OWN_RULE.name, OWN_RULE);
+  return { text: lines.join("\n") + "\n", lineStyles };
 }
 
 function editorTitle(editor: InstructionsEditorState): string {
@@ -326,29 +353,40 @@ export function renderInstructionsEditor(editor: InstructionsEditorState, totalR
 
   editor.viewRows = bodyRows;
   editor.viewWidth = inner;
-  const view = getInputLines(editor.buffer, editor.cursor, inner, bodyRows, editor.scroll);
+  // Global's base is drawn above the buffer; offsets below are into both, in that order.
+  const prefix = basePrefix(editor);
+  const shift = prefix?.text.length ?? 0;
+  const display = prefix ? prefix.text + editor.buffer : editor.buffer;
+  let view = getInputLines(display, shift + editor.cursor, inner, bodyRows, editor.scroll);
+  // On the first line of the editable text, show the base above it when both fit.
+  if (prefix && view.scrollOffset > 0 && view.scrollOffset + view.cursorLine < bodyRows
+    && (editor.cursor === 0 || editor.buffer.lastIndexOf("\n", editor.cursor - 1) === -1)) {
+    view = getInputLines(display, shift + editor.cursor, inner, bodyRows, 0);
+  }
   editor.scroll = view.scrollOffset;
-  const selection = selectionRange(editor);
+  const visual = selectionRange(editor);
+  const selection = visual && { start: visual.start + shift, end: visual.end + shift };
 
   const dirty = isInstructionsEditorDirty(editor);
   const state = editor.readOnly ? "read-only" : dirty ? "● modified" : "";
   let payload = moveTo(top, left) + edge(["╭", "╮"], width, editorTitle(editor), state, theme.bold + theme.text, dirty ? theme.warning : theme.muted);
   const tools = editor.tools && !editor.loadReqId ? editor.tools : null;
-  const newlines = tools ? newlineOffsets(editor.buffer) : [];
+  const lineStyles = tools?.lineStyles ?? prefix?.lineStyles ?? null;
+  const newlines = lineStyles ? newlineOffsets(display) : [];
   let cursorOnRule = false;
   payload += moveTo(top + 1, left) + bodyRow(pad(inner));
   for (let i = 0; i < bodyRows; i++) {
     let content: string;
     if (editor.loadReqId) {
       content = i === 0 ? spread("Loading…", theme.muted, "", "", inner, bg) : pad(inner);
-    } else if (!editor.buffer && i === 0) {
+    } else if (!editor.buffer && i < view.lines.length && view.lineStarts[i] === shift) {
       content = spread(placeholder(editor), theme.dim + theme.italic, "", "", inner, bg) + theme.italicOff;
-    } else if (i < view.lines.length && tools) {
+    } else if (i < view.lines.length && lineStyles) {
       const start = view.lineStarts[i];
       const line = lineOf(newlines, start);
-      const firstRow = start === 0 || editor.buffer[start - 1] === "\n";
-      content = toolsRow(tools, view.lines[i], start, line, firstRow, inner, selection, bg);
-      if (i === view.cursorLine && tools.lineStyles[line]?.kind === "rule") cursorOnRule = true;
+      const firstRow = start === 0 || display[start - 1] === "\n";
+      content = decoratedRow(lineStyles, view.lines[i], start, line, firstRow, inner, selection, bg);
+      if (i === view.cursorLine && tools && lineStyles[line]?.kind === "rule") cursorOnRule = true;
     } else if (i < view.lines.length) {
       content = editorLine(view.lines[i], view.lineStarts[i], inner, selection, bg);
     } else {

@@ -27,7 +27,7 @@ import { consumeUsageReset, refreshUsage, handleUsageHeaders, getLastUsage, clea
 import { connectivity } from "./connectivity";
 import { orchestrateCompactConversation, orchestrateGoalCycle, orchestrateReplayConversation, orchestrateSendMessage, type AssistantTurnOutcome } from "./orchestrator";
 import { complete } from "./llm";
-import { buildClaudeCodeSystemAppend, buildSystemPrompt, getUserAddendum, reloadUserAddendum, setUserAddendum } from "./system";
+import { buildClaudeCodeSystemAppend, buildSystemPrompt, getBaseInstructions, getUserAddendum, reloadUserAddendum, setUserAddendum } from "./system";
 import { createConversationWorkspace, ensureConversationWorkspace } from "./workspace-service";
 import { scopedSubagentPromptOptions } from "./subagent-policy";
 import { describeToolInstructions } from "./tool-instructions";
@@ -3136,7 +3136,10 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         } catch {
           global = getUserAddendum();
         }
-        server.sendTo(client, { type: "instructions_loaded", reqId: cmd.reqId, convId, folderId: folder === null ? null : folderId, conversation, folder, global });
+        server.sendTo(client, {
+          type: "instructions_loaded", reqId: cmd.reqId, convId, folderId: folder === null ? null : folderId,
+          conversation, folder, global, globalBase: getBaseInstructions(),
+        });
         break;
       }
 

@@ -64,6 +64,8 @@ interface Entry {
 
 export interface InstructionsStore {
   entries: Map<string, Entry>;
+  /** The read-only base layered before Global (config/system.base.md); null until a daemon that sends it answers. */
+  globalBase: string | null;
   /** Loads in flight: the keys each will answer for. */
   loads: Map<string, string[]>;
 }
@@ -88,7 +90,7 @@ function parseKey(key: string): { scope: InstructionScope; id: string | null } {
 }
 
 export function createInstructionsStore(): InstructionsStore {
-  return { entries: new Map(), loads: new Map() };
+  return { entries: new Map(), loads: new Map(), globalBase: null };
 }
 
 function entryFor(store: InstructionsStore, key: string): Entry {
@@ -165,7 +167,7 @@ function send(daemon: InstructionsStoreDaemon, save: InstructionsSave): string |
       reqId = daemon.setFolderInstructions?.(save.id!, save.text);
       break;
     case "global":
-      // Refused if config/system.md changed since the edit began, unless forced (:w!).
+      // Refused if config/system.md (the base is never written) changed since the edit began, unless forced (:w!).
       reqId = daemon.setGlobalInstructions?.(save.text, save.force ? undefined : save.base);
       break;
   }
@@ -315,6 +317,7 @@ export function applyInstructionsStoreEvent(
       if (reqId) store.loads.delete(reqId);
       if (event.convId && event.conversation !== null) observe(store, daemon, instructionsKey("conversation", event.convId)!, event.conversation, changes);
       if (event.folderId && event.folder !== null) observe(store, daemon, instructionsKey("folder", event.folderId)!, event.folder, changes);
+      if (typeof event.globalBase === "string") store.globalBase = event.globalBase;
       observe(store, daemon, GLOBAL_INSTRUCTIONS_KEY, event.global, changes);
       consumed = true;
       break;
@@ -390,6 +393,7 @@ export function instructionsReconnected(store: InstructionsStore, daemon: Instru
 export function resetInstructionsStore(store: InstructionsStore): InstructionsStoreChange[] {
   const changes: InstructionsStoreChange[] = [];
   store.loads.clear();
+  store.globalBase = null;
   for (const [key, entry] of store.entries) {
     entry.confirmed = null;
     entry.fresh = false;
