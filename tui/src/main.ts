@@ -16,7 +16,7 @@ import { TerminalClipboardClient, TerminalControlBuffer } from "./terminalclipbo
 import { CELL_SIZE_QUERY, TerminalGraphicsDetector, parseCellSizeResponse } from "./terminalgraphics";
 import { configureInlineImages, setInlineImageCellSize, setInlineImageMode } from "./inlineimages";
 import { disposeHistoryImages, handleHistoryImageResponse, invalidateHistoryImagePlacements } from "./historyimages";
-import { configureMathImages, disposeMathImages, mathImagesActive, mathImagesNeedDetection } from "./mathimages";
+import { configureMathImages, disposeMathImages, mathImagesActive } from "./mathimages";
 import { handleImageModalKey } from "./imagemodal";
 import { closeAccountsScreen, handleAccountsScreenKey, requestAccountsScreen } from "./accountsscreen";
 import {
@@ -2171,7 +2171,6 @@ async function main(): Promise<void> {
   );
 
   // Inline history images: previews come from the daemon, sized for this terminal.
-  // Images are experimental: terminal detection waits until a daemon enables them.
   terminalGraphicsDetector = new TerminalGraphicsDetector({
     write: sequence => process.stdout.write(sequence),
     onModeChanged: mode => {
@@ -2182,11 +2181,9 @@ async function main(): Promise<void> {
   configureInlineImages({
     fetch: request => daemon.getImage(request),
     onChange: () => scheduleRender(),
-    onFirstEnabled: () => terminalGraphicsDetector?.start(),
   });
-  // Display math images need to know the terminal regardless of the images experiment.
   configureMathImages({ onChange: () => scheduleRender() });
-  if (mathImagesNeedDetection()) terminalGraphicsDetector.start();
+  terminalGraphicsDetector.start();
 
   function processInput(str: string): void {
     if (!running) return;

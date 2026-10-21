@@ -12,7 +12,6 @@
 import * as convStore from "./conversations";
 import { findStoredImage, imageIdForBytes, putImageBytes, sniffImage } from "./attachments";
 import type { ImageAttachment, ImageMediaType, StoredMessage } from "./messages";
-import { experimentalFeatures } from "./experimental";
 import { log } from "./log";
 import { readFileSync } from "node:fs";
 
@@ -56,7 +55,7 @@ export async function resolveImageForPreview(imageId: string, convId?: string): 
 
 /** Store the images of a message a client just sent, so previews never wait on the turn. */
 export function rememberSentImages(images: readonly ImageAttachment[] | undefined): void {
-  if (!images?.length || !experimentalFeatures().images) return;
+  if (!images?.length) return;
   for (const image of images) {
     if (!image.base64) continue;
     try {

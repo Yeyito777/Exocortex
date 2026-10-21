@@ -2015,8 +2015,11 @@ export interface ToolsAvailableEvent {
 }
 
 export interface ExperimentalFeatures {
-  /** Inline images: attach tool, history thumbnails, get_image, viewer. */
-  images: boolean;
+  /**
+   * @deprecated Inline images are always on; daemons still send `true` for
+   * TUIs that predate that. Current TUIs ignore it.
+   */
+  images?: boolean;
 }
 
 export interface ConversationDefaultsSnapshot {

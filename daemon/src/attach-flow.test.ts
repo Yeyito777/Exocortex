@@ -5,8 +5,6 @@
  * get_image serves previews of stored and pasted images.
  */
 
-import { writeExocortexConfig } from "@exocortex/shared/config";
-import { resetExperimentalFeaturesForTest } from "./experimental";
 import { afterAll, beforeAll, describe, expect, mock, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -22,15 +20,6 @@ import { ECHO_INLINE_IMAGE_CHARS, imagesForEcho } from "./image-requests";
 
 let dir: string;
 
-// Inline images are experimental: these tests run with the flag on.
-beforeAll(() => {
-  writeExocortexConfig({ experimental: { images: true } });
-  resetExperimentalFeaturesForTest();
-});
-afterAll(() => {
-  writeExocortexConfig({});
-  resetExperimentalFeaturesForTest();
-});
 let ref: ImageRef;
 
 beforeAll(async () => {

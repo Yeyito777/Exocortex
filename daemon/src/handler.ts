@@ -3247,10 +3247,6 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       }
 
       case "get_image": {
-        if (!experimentalFeatures().images) {
-          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: "get_image: inline images are disabled on this daemon (set experimental.images to true in config.json and restart the daemon)" });
-          break;
-        }
         const request = { format: cmd.format, width: cmd.width, height: cmd.height, ...(cmd.purpose ? { purpose: cmd.purpose } : {}) };
         const invalid = !isImageId(cmd.imageId) ? "Invalid image id" : validatePreviewRequest(request);
         if (invalid) {

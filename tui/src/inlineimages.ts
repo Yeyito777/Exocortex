@@ -155,10 +155,6 @@ const environment: InlineImageEnvironment = {
 };
 let generation = 0;
 let onChange: () => void = () => {};
-let onFirstEnabled: () => void = () => {};
-/** The connected daemon's `experimental.images` flag, from its bootstrap. */
-let daemonEnabled = false;
-let everEnabled = false;
 
 export function inlineImageMode(): TerminalImageMode {
   return environment.mode;
@@ -178,24 +174,13 @@ function changed(): void {
   onChange();
 }
 
-/** Follow the connected daemon's `experimental.images` flag. */
-export function setInlineImagesEnabled(enabled: boolean): void {
-  if (daemonEnabled === enabled) return;
-  daemonEnabled = enabled;
-  if (enabled && !everEnabled) {
-    everEnabled = true;
-    onFirstEnabled();
-  }
-  changed();
-}
-
 /**
- * Whether history shows images at all. Off unless the daemon enables the
- * experiment; EXOCORTEX_TUI_IMAGES=off turns it off locally. When off, history
- * renders as it did before inline images (pasted images keep their badge).
+ * Whether history shows images at all. EXOCORTEX_TUI_IMAGES=off turns them off
+ * locally; history then renders as it did before inline images (pasted images
+ * keep their badge).
  */
 export function inlineImagesActive(): boolean {
-  return daemonEnabled && environment.mode !== "off";
+  return environment.mode !== "off";
 }
 
 export function setInlineImageMode(mode: TerminalImageMode): void {
@@ -274,13 +259,9 @@ const retryTimers = new Set<ReturnType<typeof setTimeout>>();
 export function configureInlineImages(options: {
   fetch: ImagePreviewFetcher;
   onChange: () => void;
-  /** Called once, when a daemon first enables images (start terminal detection then). */
-  onFirstEnabled?: () => void;
 }): void {
   fetcher = options.fetch;
   onChange = options.onChange;
-  onFirstEnabled = options.onFirstEnabled ?? (() => {});
-  if (everEnabled) onFirstEnabled();
 }
 
 function previewKey(request: ImagePreviewRequest): string {
@@ -792,12 +773,6 @@ export function renderInlineImageStrip(
 }
 
 export const inlineImagesInternalsForTest = {
-  /** Back to process start: no daemon has enabled images yet. */
-  resetToStartup(): void {
-    this.reset();
-    daemonEnabled = false;
-    everEnabled = false;
-  },
   reset(): void {
     for (const timer of retryTimers) clearTimeout(timer);
     retryTimers.clear();
@@ -810,8 +785,5 @@ export const inlineImagesInternalsForTest = {
     environment.mode = "pending";
     environment.cell = { width: 8, height: 16 };
     generation = 0;
-    onFirstEnabled = () => {};
-    daemonEnabled = true;
-    everEnabled = true;
   },
 };

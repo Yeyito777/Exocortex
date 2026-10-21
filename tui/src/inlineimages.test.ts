@@ -10,7 +10,6 @@ import {
   renderInlineImage,
   setInlineImageCellSize,
   setInlineImageMode,
-  setInlineImagesEnabled,
   inlineImagesActive,
   sourceFromAttachment,
   sourceFromRef,
@@ -200,48 +199,17 @@ describe("renderInlineImage", () => {
   });
 });
 
-describe("experimental flag", () => {
-  test("a fresh TUI shows no images and does not probe the terminal until a daemon enables them", () => {
-    inlineImagesInternalsForTest.resetToStartup();
-    let starts = 0;
-    configureInlineImages({ fetch: async () => { throw new Error("unused"); }, onChange: () => {}, onFirstEnabled: () => { starts++; } });
-    expect(inlineImagesActive()).toBe(false);
-    expect(starts).toBe(0);
-
-    const before = inlineImageGeneration();
-    setInlineImagesEnabled(true);
-    expect(starts).toBe(1);
-    expect(inlineImagesActive()).toBe(true);
-    expect(inlineImageGeneration()).toBe(before + 1);
-
-    // A switch to a daemon without the flag turns them off again; detection never repeats.
-    setInlineImagesEnabled(false);
-    expect(inlineImagesActive()).toBe(false);
-    setInlineImagesEnabled(true);
-    expect(starts).toBe(1);
-
-    // EXOCORTEX_TUI_IMAGES=off wins locally.
-    setInlineImageMode("off");
-    expect(inlineImagesActive()).toBe(false);
-  });
-});
-
-test("the daemon's tools_available bootstrap carries the flag; an SSH switch clears it", async () => {
+test("images follow no daemon flag: a bootstrap without one and an SSH switch keep them on", async () => {
   const { handleToolsAvailable } = await import("./events/provider");
   const { handleEvent } = await import("./events");
   const { createInitialState } = await import("./state");
-  inlineImagesInternalsForTest.resetToStartup();
+  inlineImagesInternalsForTest.reset();
   const state = createInitialState();
-  const bootstrap = (experimental?: { images: boolean }) => handleToolsAvailable({
-    type: "tools_available", providers: [], tools: [], authByProvider: {} as never, authInfoByProvider: {} as never,
-    ...(experimental ? { experimental } : {}),
-  }, state);
-  bootstrap();
-  expect(inlineImagesActive()).toBe(false);
-  bootstrap({ images: true });
+  handleToolsAvailable({ type: "tools_available", providers: [], tools: [], authByProvider: {} as never, authInfoByProvider: {} as never }, state);
   expect(inlineImagesActive()).toBe(true);
   handleEvent({ type: "ssh_status", state: "connected", switched: true, mode: "remote", alias: "kitsune", message: "" } as never, state, {} as never);
-  expect(inlineImagesActive()).toBe(false);
-  bootstrap({ images: false });
+  expect(inlineImagesActive()).toBe(true);
+  // EXOCORTEX_TUI_IMAGES=off still wins locally.
+  setInlineImageMode("off");
   expect(inlineImagesActive()).toBe(false);
 });

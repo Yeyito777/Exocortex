@@ -3,7 +3,7 @@ import { syncChosenProvider } from "../providerselection";
 import type { Event } from "../protocol";
 import type { RenderState } from "../state";
 import { receiveConversationDefaults } from "./conversation-defaults";
-import { retryFailedImagePreviews, setInlineImagesEnabled } from "../inlineimages";
+import { retryFailedImagePreviews } from "../inlineimages";
 
 export function fallbackProvider(state: RenderState): RenderState["provider"] {
   return state.providerRegistry[0]?.id ?? state.provider ?? DEFAULT_PROVIDER_ID;
@@ -32,8 +32,6 @@ export function handleToolsAvailable(event: Extract<Event, { type: "tools_availa
   state.externalToolStyles = event.externalToolStyles ?? [];
   state.providerProxies = Array.isArray(event.providerProxies) ? event.providerProxies : null;
   if (event.conversationDefaults) receiveConversationDefaults(state, event.conversationDefaults);
-  // Experimental features follow the connected daemon, never a local config file.
-  setInlineImagesEnabled(event.experimental?.images === true);
   retryFailedImagePreviews();
   const registry = state.providerRegistry ?? [];
 
