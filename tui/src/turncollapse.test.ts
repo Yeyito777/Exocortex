@@ -397,6 +397,14 @@ describe("runs of background turns", () => {
     expect(shownRows(state)).toEqual(["  ▸ 2 background turns · 4 tool calls"]);
   });
 
+  test("a notification nothing answered stays a row and ends the run", () => {
+    const state = createInitialState();
+    state.messages.push(wake(1), silent("s1"), wake(2), silent("s2"), user("[notification] Inbox: new mail", { kind: "external_notification" }));
+    const shown = shownRows(state);
+    expect(shown[0]).toBe("  ▸ 2 background turns · 4 tool calls");
+    expect(shown[1]).toBe("  ▸ Notification · Inbox: new mail");
+  });
+
   test("Ctrl+O shows every turn", () => {
     const state = createInitialState();
     state.messages.push(wake(1), silent("s1"), wake(2), silent("s2"));

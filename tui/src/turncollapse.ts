@@ -332,16 +332,15 @@ function planRuns(
 ): void {
   let run: RunMember[] = [];
   const flush = (closer: RunMember | null) => {
-    // A lone notification nothing answered yet has nothing to fold: it stays a notification row.
-    const lone = run.length === 1 && !closer && run[0].to - run[0].from === 1;
-    if (run.length > 0 && !lone) applyRun(messages, start, run, closer, expanded, plans, signatures);
+    if (run.length > 0) applyRun(messages, start, run, closer, expanded, plans, signatures);
     run = [];
   };
   for (let at = 0; at < turns.length; at += 2) {
     const from = turns[at];
     const to = turns[at + 1];
-    // Prompts the user typed (most turns) cannot be in a run: skip the shape walk.
-    if (plans[from - start]?.kind !== "notification") {
+    // Prompts the user typed (most turns) cannot be in a run: skip the shape walk. A
+    // notification nothing answered (yet) is news, not background work: it stays a row.
+    if (plans[from - start]?.kind !== "notification" || to - from === 1) {
       if (run.length > 0) flush(null);
       continue;
     }
