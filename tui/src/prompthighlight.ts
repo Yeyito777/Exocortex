@@ -10,7 +10,7 @@
 
 import type { RenderState } from "./state";
 import { COMMAND_LIST, getCommandArgs, macroDisplayContext } from "./commands";
-import { macroHighlightRanges } from "./usermacros/guide";
+import { macroErrorRange } from "./usermacros/guide";
 import { isMacroCommandText, parseMacroCommand } from "./usermacros/parse";
 import { isMacroName, getMacroArgs, macroEnvironmentForState } from "./macros";
 import { INLINE_COMMANDS, getInlineCommandArgs } from "./inlineeffort";
@@ -54,7 +54,7 @@ function customModelProviders(state: RenderState): Set<string> {
 
 // ── Span detection ───────────────────────────────────────────────
 
-/** A highlighted range; `color` defaults to the command colour. */
+/** A highlighted range; `color` defaults to the command colour (a /macro error is red). */
 interface Span { start: number; end: number; color?: string }
 
 interface WordPosition { word: string; start: number; end: number }
@@ -119,16 +119,10 @@ function findCommandSpans(
   return spans;
 }
 
-export function getPromptHighlightRanges(state: RenderState, buffer: string): Span[] {
-  if (!buffer.includes("/")) return [];
-  // /macro colours each of its parts and marks the wrong one.
-  if (isMacroCommandText(buffer)) {
-    const parse = parseMacroCommand(buffer, state.cursorPos, macroDisplayContext(state));
-    return parse ? macroHighlightRanges(parse) : [];
-  }
+function commandSpans(state: RenderState, buffer: string): Span[] {
   const validArgsByBase = new Map<string, Record<string, Set<string>>>();
   let providersWithCustomModels: Set<string> | null = null;
-  const spans = findCommandSpans(
+  return findCommandSpans(
     buffer,
     (baseName) => {
       let validArgs = validArgsByBase.get(baseName);
@@ -141,6 +135,37 @@ export function getPromptHighlightRanges(state: RenderState, buffer: string): Sp
     () => providersWithCustomModels ??= customModelProviders(state),
     (commandEnd) => matchQueueTargetAfterCommand(state, buffer, commandEnd)?.end ?? null,
   );
+}
+
+/**
+ * A /macro line highlights like any command (its subcommand, and the name for
+ * edit/rm, are ordinary arguments), with the wrong part, if any, in red over
+ * it. Enter never resolves shorthands for /macro, so none are highlighted.
+ */
+function macroCommandSpans(state: RenderState, buffer: string): Span[] {
+  const parse = parseMacroCommand(buffer, state.cursorPos, macroDisplayContext(state));
+  const error = parse ? macroErrorRange(parse) : null;
+  const spans: Span[] = [];
+  let end = 0;
+  for (const span of commandSpans(state, buffer).sort((a, b) => a.start - b.start)) {
+    // A macro name inside a command span ("/macro rm /brief") is already covered.
+    if (span.start < end) continue;
+    end = span.end;
+    if (!error || span.end <= error.start || span.start >= error.end) {
+      spans.push(span);
+      continue;
+    }
+    if (span.start < error.start) spans.push({ start: span.start, end: error.start });
+    if (span.end > error.end) spans.push({ start: error.end, end: span.end });
+  }
+  if (error) spans.push(error);
+  return spans.sort((a, b) => a.start - b.start);
+}
+
+export function getPromptHighlightRanges(state: RenderState, buffer: string): Span[] {
+  if (!buffer.includes("/")) return [];
+  if (isMacroCommandText(buffer)) return macroCommandSpans(state, buffer);
+  const spans = commandSpans(state, buffer);
 
   // Shorthand args Enter would resolve ("/model opus") are sendable, so they highlight too.
   for (const shorthand of findSlashShorthands(state, buffer)) {

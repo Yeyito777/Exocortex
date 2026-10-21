@@ -1,14 +1,15 @@
 /**
- * What the prompt shows while a `/macro …` command is typed: a colour per
- * part (red where it is wrong), dim ghost text for the parts still to come,
- * and a small panel above the prompt: the syntax with the current part lit,
- * then one detail row (the error, Tab completions, or what the macro expands
- * to). Pure functions of the parse; rendering lives in ./render.
+ * What the prompt shows while a `/macro …` command is typed. The line keeps
+ * the TUI's normal slash-command highlighting, plus red on a wrong part; dim
+ * ghost text after the cursor names the parts still to come; and the normal
+ * autocomplete popup shows the Tab completions or, with nothing to complete,
+ * one row: the error, what the macro expands to, or the part to type next.
+ * Pure functions of the parse.
  */
 import type { UserMacro } from "@exocortex/shared/user-macros";
 import type { SlashCompletion } from "../slashsearch";
-import { macroStyle, type MacroStyle } from "./styles";
-import { MACRO_SUBCOMMANDS, parseMacroCommand, type MacroCommandParse, type MacroParseContext, type MacroPartRole } from "./parse";
+import { theme } from "../theme";
+import { MACRO_SUBCOMMANDS, parseMacroCommand, type MacroCommandParse, type MacroParseContext } from "./parse";
 
 export interface MacroGuideContext extends MacroParseContext {
   /** The macro /macro undo would restore. */
@@ -21,44 +22,28 @@ export interface ColoredRange {
   color: string;
 }
 
-export interface MacroSyntaxPart {
+/** The next part to type, as the popup row names and explains it. */
+export interface MacroNextPart {
   text: string;
-  /** The part being typed now. */
-  active: boolean;
-  optional?: boolean;
-  /** The part holds the mistake the error row explains. */
-  wrong?: boolean;
+  help: string;
 }
 
-/** The row under the syntax: why the line is wrong, or what the macro expands to. */
+/** Why the line is wrong, or what the macro expands to. */
 export type MacroGuideDetail =
   | { kind: "error"; text: string }
   | { kind: "note"; text: string }
   | { kind: "preview"; label: string; text: string; tone: "new" | "removed" };
 
 export interface MacroGuide {
-  syntax: MacroSyntaxPart[];
-  /** Shown unless Tab completions take the row (an error always wins). */
+  next: MacroNextPart | null;
+  /** Shown instead of `next`; an error wins over Tab completions too. */
   detail: MacroGuideDetail | null;
 }
 
-/** A colour per part as the current style has it (see ./styles); the part with the error is red. */
-export function macroHighlightRanges(parse: MacroCommandParse, style: MacroStyle = macroStyle()): ColoredRange[] {
-  const ranges: ColoredRange[] = [];
-  const add = (role: MacroPartRole, p: { start: number; end: number } | null) => {
-    if (!p || p.end <= p.start) return;
-    const failed = parse.error && parse.error.role === role && parse.error.start === p.start;
-    const color = failed ? style.errorColor : style.partColor(role);
-    if (color) ranges.push({ start: p.start, end: p.end, color });
-  };
-  add("command", parse.command);
-  add("action", parse.actionPart);
-  add("name", parse.name);
-  add("description", parse.description);
-  add("equals", parse.equals);
-  add("expansion", parse.expansion);
-  add("extra", parse.extra);
-  return ranges;
+/** The wrong part, in red; the rest of the line keeps the normal command highlighting. */
+export function macroErrorRange(parse: MacroCommandParse): ColoredRange | null {
+  const error = parse.error;
+  return error && error.end > error.start ? { start: error.start, end: error.end, color: theme.error } : null;
 }
 
 /** A macro's text on one line, for previews and completion rows. */
@@ -136,36 +121,28 @@ export function macroGhostText(buffer: string, cursor: number, context: MacroPar
   return "";
 }
 
-function syntaxFor(parse: MacroCommandParse): MacroSyntaxPart[] {
-  const parts = syntaxParts(parse);
-  const wrong = parse.error?.role;
-  const index = wrong === "action" ? (parts.length > 1 ? 1 : 0)
-    : wrong === "name" ? 1
-      : wrong === "description" ? 2
-        : wrong === "equals" || wrong === "expansion" ? parts.length - 1
-          : wrong === "extra" ? parts.length - 1 : -1;
-  if (index >= 0 && parts[index]) parts[index] = { ...parts[index]!, wrong: true };
-  return parts;
-}
-
-function syntaxParts(parse: MacroCommandParse): MacroSyntaxPart[] {
-  const at = (focus: MacroCommandParse["focus"]) => parse.focus === focus;
+function nextFor(parse: MacroCommandParse): MacroNextPart | null {
+  const name = parse.name?.text;
+  const textHelp = name ? `what ${name} expands to` : "what it expands to";
   switch (parse.action) {
+    case null:
+      return { text: "add | edit | rm | list | undo", help: "what to do" };
     case "add":
-    case "edit":
-      return [
-        { text: `/macro ${parse.action}`, active: false },
-        { text: "/name", active: at("name") },
-        { text: "[description]", active: at("description"), optional: true },
-        { text: parse.action === "edit" ? "= new text" : "= text", active: at("expansion") || (at("description") && !parse.description) },
-      ];
+    case "edit": {
+      const edit = parse.action === "edit";
+      if (!name || parse.focus === "name" || parse.focus === "action") {
+        return { text: "/name", help: edit ? "one of your macros" : "the macro's name, e.g. /brief" };
+      }
+      if (parse.equals) return { text: edit ? "new text" : "text", help: textHelp };
+      if (parse.description) return { text: edit ? "= new text" : "= text", help: textHelp };
+      return edit
+        ? { text: "= new text", help: "or Enter to open it in the editor" }
+        : { text: "[description] = text", help: `optional description, then ${textHelp}` };
+    }
     case "rm":
-      return [{ text: "/macro rm", active: false }, { text: "/name", active: at("name") }];
-    case "list":
-    case "undo":
-      return [{ text: `/macro ${parse.action}`, active: false }];
+      return name ? null : { text: "/name", help: "one of your macros" };
     default:
-      return [{ text: "/macro", active: false }, { text: "add | edit | rm | list | undo", active: true }];
+      return null;
   }
 }
 
@@ -192,5 +169,20 @@ function detailFor(parse: MacroCommandParse, context: MacroGuideContext): MacroG
 export function macroGuide(buffer: string, cursor: number, context: MacroGuideContext): MacroGuide | null {
   const parse = parseMacroCommand(buffer, cursor, context);
   if (!parse) return null;
-  return { syntax: syntaxFor(parse), detail: detailFor(parse, context) };
+  return { next: nextFor(parse), detail: detailFor(parse, context) };
+}
+
+export interface MacroPopupRow {
+  name: string;
+  desc: string;
+  descColor?: string;
+}
+
+/** The popup's one row when there is nothing to complete: the error, the preview, or the next part. */
+export function macroPopupRow(guide: MacroGuide): MacroPopupRow | null {
+  const detail = guide.detail;
+  if (detail?.kind === "error") return { name: "✗", desc: detail.text, descColor: theme.error };
+  if (detail?.kind === "preview") return { name: detail.label, desc: `→ ${detail.text}` };
+  if (detail?.kind === "note") return { name: "", desc: detail.text };
+  return guide.next ? { name: guide.next.text, desc: guide.next.help } : null;
 }

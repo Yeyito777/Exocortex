@@ -17,7 +17,7 @@ import { clearPrompt } from "../promptstate";
 import { pushSystemMessage, type RenderState } from "../state";
 import { theme } from "../theme";
 import { expansionPreview } from "../usermacros/guide";
-import { parseMacroCommand, type MacroParseContext } from "../usermacros/parse";
+import { MACRO_SUBCOMMANDS, parseMacroCommand, type MacroParseContext } from "../usermacros/parse";
 import type { CommandResult, SlashCommand } from "./types";
 
 /** A macro whose text is being written in the editor. */
@@ -71,6 +71,12 @@ export function createMacroCommand(context: () => MacroParseContext): SlashComma
   return {
     name: "/macro",
     description: "Add, edit, delete or list your own macros",
+    // Ordinary arguments, so /macro highlights like any other command.
+    args: MACRO_SUBCOMMANDS.map(sub => ({ name: sub.name, desc: sub.desc })),
+    getArgs: () => {
+      const names = getUserMacros().map(macro => ({ name: macro.name, desc: expansionPreview(macro.expansion, 48) }));
+      return { "/macro edit": names, "/macro rm": names, "/macro delete": names };
+    },
     handler: (text, state) => {
       const ctx = context();
       const parse = parseMacroCommand(text, text.length, ctx);

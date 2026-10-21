@@ -13,16 +13,11 @@ import { theme } from "../theme";
 import { updateAutocomplete } from "../autocomplete";
 import { invalidateFrame } from "../frame";
 import { runUserMacroCommand, saveMacroFromEditor, userMacrosConnectionLost, type UserMacroDaemon } from "./controller";
-import { expansionPreview, macroCompletions, macroGhostText, macroGuide, macroHighlightRanges } from "./guide";
+import { expansionPreview, macroCompletions, macroGhostText, macroGuide, macroPopupRow } from "./guide";
 import { parseMacroCommand, type MacroPartRole } from "./parse";
-import { renderMacroGuideRows } from "./render";
-import { MACRO_STYLE_IDS, macroStyleId, setMacroStyle } from "./styles";
 import { createUserMacroStore, receiveUserMacros, shownUserMacros, submitUserMacroChange, userMacrosConnectionLost as storeConnectionLost } from "./store";
 
-afterEach(() => {
-  setUserMacros([]);
-  setMacroStyle(null);
-});
+afterEach(() => setUserMacros([]));
 
 const BRIEF: UserMacro = { name: "/brief", expansion: "Answer in one short sentence.", description: "Answer briefly" };
 
@@ -68,8 +63,30 @@ function lastNotice(state: RenderState): string {
   return (state.messages.at(-1) as { text?: string } | undefined)?.text ?? "";
 }
 
-function stripAnsi(text: string): string {
-  return text.replace(/\x1b\[[0-9;]*m/g, "");
+
+/** The rows of a full render: everything above the prompt's separator, and the prompt row. */
+function renderRows(buffer: string, macros: readonly UserMacro[] = [BRIEF]) {
+  const { state } = connectedState(macros);
+  state.cols = 100;
+  state.rows = 30;
+  state.sidebar.open = false;
+  state.inputBuffer = buffer;
+  state.cursorPos = buffer.length;
+  updateAutocomplete(state);
+  let out = "";
+  const write = process.stdout.write.bind(process.stdout);
+  process.stdout.write = ((chunk: string | Uint8Array) => { out += String(chunk); return true; }) as typeof process.stdout.write;
+  try {
+    invalidateFrame(state);
+    render(state);
+  } finally {
+    process.stdout.write = write as typeof process.stdout.write;
+  }
+  const screen = new TerminalScreen(state.rows, state.cols);
+  screen.feed(out);
+  const rows = screen.plainRows();
+  const prompt = rows.findIndex(row => row.startsWith("I > "));
+  return { prompt: rows[prompt]!, above: rows.slice(2, prompt - 1).map(row => row.trimEnd()).filter(Boolean), out };
 }
 
 describe("/macro syntax", () => {
@@ -121,27 +138,20 @@ describe("/macro syntax", () => {
     }
   });
 
-  test("each part has its colour and the wrong part is red", () => {
-    const buffer = "/macro add /brief Answer briefly = Answer in one short sentence.";
-    const ranges = macroHighlightRanges(parse(buffer));
-    const colourOf = (text: string) => ranges.find(range => buffer.slice(range.start, range.end) === text)?.color;
-    // The description is not the grey of the ghost text.
-    expect(colourOf("/macro")).toBe(theme.command);
-    expect(colourOf("add")).toBe(theme.command);
-    expect(colourOf("/brief")).toBe(theme.accent + theme.bold);
-    expect(colourOf("Answer briefly")).toBe(theme.goal + theme.italic);
-    expect(colourOf("=")).toBe(theme.command);
-    expect(colourOf("Answer in one short sentence.")).toBe(theme.success);
-
-    const clash = macroHighlightRanges(parse("/macro add /go = x"));
-    expect(clash.find(range => range.start === 11)!.color).toBe(theme.error + "\x1b[4m");
-  });
-
-  test("the prompt highlighting uses the per-part colours", () => {
-    const state = createInitialState();
-    state.inputBuffer = "/macro add /go = x";
-    state.cursorPos = state.inputBuffer.length;
-    expect(getPromptHighlightRanges(state, state.inputBuffer)).toContainEqual({ start: 11, end: 14, color: theme.error + "\x1b[4m" });
+  test("the line keeps the normal command highlighting; only a wrong part is red", () => {
+    const { state } = connectedState([BRIEF]);
+    const ranges = (buffer: string) => {
+      state.inputBuffer = buffer;
+      state.cursorPos = buffer.length;
+      return getPromptHighlightRanges(state, buffer).map(range => [buffer.slice(range.start, range.end), range.color ?? "command"]);
+    };
+    // Like any command: the command and its known arguments, nothing more.
+    expect(ranges("/macro add /tldr Answer briefly = Answer in one short sentence.")).toEqual([["/macro add", "command"]]);
+    expect(ranges("/macro rm /brief")).toEqual([["/macro rm /brief", "command"]]);
+    // A wrong part is red, whether or not it would otherwise highlight.
+    expect(ranges("/macro add /go = x")).toEqual([["/macro add", "command"], ["/go", theme.error]]);
+    expect(ranges("/macro rm /nope")).toEqual([["/macro rm", "command"], ["/nope", theme.error]]);
+    expect(ranges("/macro frob")).toEqual([["/macro", "command"], ["frob", theme.error]]);
   });
 });
 
@@ -185,27 +195,18 @@ describe("/macro help while typing", () => {
     expect(state.autocomplete?.matches.map(item => item.name)).toEqual(["/brief"]);
   });
 
-  test("the panel is the syntax plus one detail: the error, or what the macro expands to", () => {
+  test("with nothing to complete, the popup row is the error, the preview, or the next part", () => {
     const ctx = { ...contextWith([BRIEF]), lastDeleted: null };
-    const guide = (buffer: string) => macroGuide(buffer, buffer.length, ctx)!;
-
-    // Nothing to add yet: the syntax row and the ghost text say what comes next.
-    expect(guide("/macro add ")).toMatchObject({ detail: null });
-    expect(guide("/macro add ").syntax.find(part => part.active)?.text).toBe("/name");
-    expect(guide("/macro add /tldr Short")).toMatchObject({ detail: null });
-    expect(guide("/macro add /tldr Short").syntax.find(part => part.active)?.text).toBe("[description]");
-
-    // The preview appears once there is text after "=".
-    expect(guide("/macro add /tldr = Keep it short.\nNo lists.").detail)
-      .toEqual({ kind: "preview", label: "/tldr", text: "Keep it short. (+1 line)", tone: "new" });
-    expect(guide("/macro edit /brief = Two sentences.").detail)
-      .toEqual({ kind: "preview", label: "/brief", text: "Two sentences.", tone: "new" });
-    expect(guide("/macro rm /brief").detail)
-      .toEqual({ kind: "preview", label: "/brief", text: "Answer in one short sentence.", tone: "removed" });
-    expect(guide("/macro undo").detail).toEqual({ kind: "note", text: "Nothing deleted to restore." });
-
-    expect(guide("/macro add /go = x").detail).toEqual({ kind: "error", text: "/go is a built-in macro; pick another name." });
-    expect(guide("/macro add /go = x").syntax.find(part => part.wrong)?.text).toBe("/name");
+    const row = (buffer: string) => macroPopupRow(macroGuide(buffer, buffer.length, ctx)!);
+    expect(row("/macro add ")).toEqual({ name: "/name", desc: "the macro's name, e.g. /brief" });
+    expect(row("/macro add /tldr ")).toEqual({ name: "[description] = text", desc: "optional description, then what /tldr expands to" });
+    expect(row("/macro add /tldr Answer briefly")).toEqual({ name: "= text", desc: "what /tldr expands to" });
+    expect(row("/macro add /tldr =")).toEqual({ name: "text", desc: "what /tldr expands to" });
+    expect(row("/macro add /tldr = Keep it short.\nNo lists.")).toEqual({ name: "/tldr", desc: "→ Keep it short. (+1 line)" });
+    expect(row("/macro edit /brief ")).toEqual({ name: "= new text", desc: "or Enter to open it in the editor" });
+    expect(row("/macro rm /brief")).toEqual({ name: "/brief", desc: "→ Answer in one short sentence." });
+    expect(row("/macro undo")).toEqual({ name: "", desc: "Nothing deleted to restore." });
+    expect(row("/macro add /go = x")).toEqual({ name: "✗", desc: "/go is a built-in macro; pick another name.", descColor: theme.error });
   });
 
   test("an error in the part being typed waits for a pause", () => {
@@ -217,51 +218,18 @@ describe("/macro help while typing", () => {
     expect(parse("/macro add /go").error?.role).toBe("name");
   });
 
-  test("the panel is two rows normally; completions take the second row and can grow", () => {
-    const ctx = { ...contextWith([BRIEF, { name: "/review", expansion: "Review this" }]), lastDeleted: null };
-    const rowsFor = (buffer: string, maxRows = 11) => {
-      const completions = macroCompletions(buffer, buffer.length, ctx);
-      return renderMacroGuideRows(macroGuide(buffer, buffer.length, ctx)!, completions, completions.length ? 0 : -1, 60, maxRows)
-        .map(row => stripAnsi(row));
-    };
-    expect(rowsFor("/macro add /x")).toHaveLength(1);
-    expect(rowsFor("/macro add /x = Hi there")).toEqual([
-      expect.stringContaining("/macro add /name [description] = text"),
-      expect.stringMatching(/^ {3}\/x → Hi there +$/),
-    ]);
-    expect(rowsFor("/macro add /go = x")[1]).toStartWith(" ✗ /go is a built-in macro");
-    const rm = rowsFor("/macro rm ");
-    expect(rm).toHaveLength(3);
-    expect(rm[1]).toStartWith(" ▸ /brief   Answer briefly · Answer in one short sentence.");
-    expect(rowsFor("/macro ")).toHaveLength(6);
-    expect(rowsFor("/macro ", 3)).toHaveLength(3);
-    for (const row of rm) expect(row.length).toBe(60);
-  });
-
-  test("the full render shows the panel above the prompt and the ghost text after the cursor", () => {
-    const { state } = connectedState([BRIEF]);
-    state.cols = 100;
-    state.rows = 30;
-    state.sidebar.open = false;
-    state.inputBuffer = "/macro add /tldr ";
-    state.cursorPos = state.inputBuffer.length;
-    let out = "";
-    const write = process.stdout.write.bind(process.stdout);
-    process.stdout.write = ((chunk: string | Uint8Array) => { out += String(chunk); return true; }) as typeof process.stdout.write;
-    try {
-      invalidateFrame(state);
-      render(state);
-    } finally {
-      process.stdout.write = write as typeof process.stdout.write;
-    }
-    const screen = new TerminalScreen(state.rows, state.cols);
-    screen.feed(out);
-    const rows = screen.plainRows();
-    const prompt = rows.findIndex(row => row.includes("I > /macro add /tldr"));
-    expect(rows[prompt]).toContain("/macro add /tldr [description] = text");
-    // Just the syntax row, with nothing else to say yet.
-    expect(rows[prompt - 2]).toContain("/macro add /name [description] = text");
-    expect(rows[prompt - 3]!.trim()).toBe("");
+  test("the render uses the normal popup: completions, else the one row, and ghost text after the cursor", () => {
+    expect(renderRows("/macro ").above.map(row => row.trim().split(/\s+/)[0])).toEqual(["add", "edit", "rm", "list", "undo"]);
+    expect(renderRows("/macro add ").above).toEqual([expect.stringMatching(/\/name +the macro's name, e\.g\. \/brief/)]);
+    const described = renderRows("/macro add /tldr Answer briefly");
+    expect(described.above).toEqual([expect.stringMatching(/= text +what \/tldr expands to/)]);
+    expect(described.prompt).toContain("/macro add /tldr Answer briefly = text");
+    expect(renderRows("/macro add /tldr Answer briefly = Hi").above).toEqual([expect.stringMatching(/\/tldr +→ Hi/)]);
+    // An error wins over completions.
+    expect(renderRows("/macro add /go = x").above).toEqual([expect.stringMatching(/✗ +\/go is a built-in macro; pick another name\./)]);
+    expect(renderRows("/macro rm ").above).toEqual([expect.stringContaining("/brief Answer briefly · Answer in one short sentence.")]);
+    // The popup row of a normal message is untouched.
+    expect(renderRows("hi /bri").above).toEqual([expect.stringContaining("/brief")]);
   });
 });
 
@@ -402,86 +370,4 @@ describe("user macro store over a dropping link", () => {
 test("expansion previews are one line", () => {
   expect(expansionPreview("a\nb\nc")).toBe("a (+2 lines)");
   expect(expansionPreview("x".repeat(100), 10)).toBe(`${"x".repeat(9)}…`);
-});
-
-describe("visual styles (EXOCORTEX_MACRO_STYLE)", () => {
-  /** The rows of a full render: everything above the prompt's separator, and the prompt row. */
-  function renderRows(buffer: string, macros: readonly UserMacro[] = [BRIEF]) {
-    const { state } = connectedState(macros);
-    state.cols = 100;
-    state.rows = 30;
-    state.sidebar.open = false;
-    state.inputBuffer = buffer;
-    state.cursorPos = buffer.length;
-    updateAutocomplete(state);
-    let out = "";
-    const write = process.stdout.write.bind(process.stdout);
-    process.stdout.write = ((chunk: string | Uint8Array) => { out += String(chunk); return true; }) as typeof process.stdout.write;
-    try {
-      invalidateFrame(state);
-      render(state);
-    } finally {
-      process.stdout.write = write as typeof process.stdout.write;
-    }
-    const screen = new TerminalScreen(state.rows, state.cols);
-    screen.feed(out);
-    const rows = screen.plainRows();
-    const prompt = rows.findIndex(row => row.startsWith("I > "));
-    return { prompt: rows[prompt]!, above: rows.slice(2, prompt - 1).map(row => row.trimEnd()).filter(Boolean), out };
-  }
-
-  test("the flag picks a style; unknown values keep the default", () => {
-    const saved = process.env.EXOCORTEX_MACRO_STYLE;
-    try {
-      process.env.EXOCORTEX_MACRO_STYLE = "C";
-      expect(macroStyleId()).toBe("C");
-      process.env.EXOCORTEX_MACRO_STYLE = "Z";
-      expect(macroStyleId()).toBe("v3");
-    } finally {
-      if (saved === undefined) delete process.env.EXOCORTEX_MACRO_STYLE;
-      else process.env.EXOCORTEX_MACRO_STYLE = saved;
-    }
-    expect(MACRO_STYLE_IDS).toEqual(["v3", "A", "B", "C", "D"]);
-  });
-
-  test("A is monochrome and B has one accent; both keep red for errors", () => {
-    const buffer = "/macro add /brief Answer briefly = Answer in one short sentence.";
-    const colours = (id: "A" | "B") => {
-      setMacroStyle(id);
-      return Object.fromEntries(macroHighlightRanges(parse(buffer)).map(range => [buffer.slice(range.start, range.end), range.color]));
-    };
-    expect(colours("A")).toEqual({ "/brief": theme.bold, "Answer briefly": theme.dim, "=": theme.dim });
-    expect(colours("B")).toEqual({ "/brief": theme.accent, "Answer briefly": theme.dim });
-    setMacroStyle("A");
-    expect(macroHighlightRanges(parse("/macro add /go = x"))).toContainEqual({ start: 11, end: 14, color: theme.error });
-  });
-
-  test("A and B keep the two-row panel", () => {
-    for (const id of ["A", "B"] as const) {
-      setMacroStyle(id);
-      expect(renderRows("/macro add /go = x").above).toEqual([
-        " /macro add /name [description] = text",
-        " ✗ /go is a built-in macro; pick another name.",
-      ]);
-    }
-  });
-
-  test("C has no rows above the prompt: errors and previews follow the cursor", () => {
-    setMacroStyle("C");
-    const error = renderRows("/macro add /go = x");
-    expect(error.above).toEqual([]);
-    expect(error.prompt).toContain("/macro add /go = x  ✗ /go is a built-in macro; pick another name.");
-    expect(renderRows("/macro add /x").prompt).toContain("/macro add /x [description] = text");
-    expect(renderRows("/macro rm /brief ").prompt).toContain("/macro rm /brief   → Answer in one short sentence.");
-    // Tab completions use the normal popup.
-    expect(renderRows("/macro rm ").above).toEqual([expect.stringContaining("/brief Answer briefly · Answer in one short sentence.")]);
-  });
-
-  test("D uses the normal popup: completions, else one row for the error, preview or next part", () => {
-    setMacroStyle("D");
-    expect(renderRows("/macro add /go = x").above).toEqual([expect.stringMatching(/✗ +\/go is a built-in macro; pick another name\./)]);
-    expect(renderRows("/macro add /x = Hi").above).toEqual([expect.stringMatching(/\/x +→ Hi/)]);
-    expect(renderRows("/macro add ").above).toEqual([expect.stringMatching(/\/name +the macro's name, e\.g\. \/brief/)]);
-    expect(renderRows("/macro rm ").above).toEqual([expect.stringContaining("/brief Answer briefly")]);
-  });
 });

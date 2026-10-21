@@ -34,11 +34,10 @@ import { clampCursor, stripAnsi, contentBounds, logicalLineRange } from "./histo
 import { renderLineWithCursor, renderLineWithSearch, renderLineWithSelection } from "./cursorrender";
 import { getPromptHighlightRanges, highlightPromptInput } from "./prompthighlight";
 import { macroDisplayContext } from "./commands";
-import { macroGhostText, macroGuide } from "./usermacros/guide";
+import { macroGhostText, macroGuide, macroPopupRow } from "./usermacros/guide";
 import { macroGuideContext } from "./usermacros/controller";
 import { isMacroCommandText } from "./usermacros/parse";
-import { fitGhostText, renderMacroGuideRows } from "./usermacros/render";
-import { inlineMacroHint, macroStyle, popupMacroRow } from "./usermacros/styles";
+import { fitGhostText } from "./usermacros/render";
 import type { SlashCompletion } from "./slashsearch";
 import { formatSize, imageLabel } from "./clipboard";
 import { renderQueuePromptOverlay } from "./overlays";
@@ -1225,16 +1224,16 @@ function renderAutocompletePopup(
 }
 
 /**
- * What the normal popup shows. A /macro line in the "popup" style puts its
- * error, preview or next part there as a row of its own when there is
- * nothing to complete; every other prompt shows its completions as usual.
+ * What the normal popup shows. A /macro line puts its error, preview or next
+ * part there as a row of its own when there is nothing to complete (an error
+ * always wins); every other prompt shows its completions as usual.
  */
 function macroPopupRows(state: RenderState): { matches: SlashCompletion[]; selection: number } | null {
-  if (!editingMacroCommand(state) || macroStyle().surface !== "popup") return state.autocomplete;
+  if (!editingMacroCommand(state)) return state.autocomplete;
   const guide = macroGuide(state.inputBuffer, state.cursorPos, macroGuideContext(state, macroDisplayContext(state)));
   const completing = state.autocomplete && state.autocomplete.matches.length > 0;
   if (guide?.detail?.kind !== "error" && completing) return state.autocomplete;
-  const row = guide ? popupMacroRow(guide) : null;
+  const row = guide ? macroPopupRow(guide) : null;
   return row ? { matches: [row], selection: -1 } : null;
 }
 
@@ -1242,25 +1241,6 @@ function macroPopupRows(state: RenderState): { matches: SlashCompletion[]; selec
 function editingMacroCommand(state: RenderState): boolean {
   return state.panelFocus === "chat" && state.chatFocus === "prompt" && !state.instructionsModal
     && isMacroCommandText(state.inputBuffer);
-}
-
-/** The /macro help panel above the prompt, docked across the chat width. */
-function renderMacroGuidePanel(
-  ctx: RenderCtx,
-  state: RenderState,
-  chatW: number,
-  sepAbove: number,
-): ScreenRect | null {
-  if (!editingMacroCommand(state) || macroStyle().surface !== "panel") return null;
-  const guide = macroGuide(state.inputBuffer, state.cursorPos, macroGuideContext(state, macroDisplayContext(state)));
-  if (!guide) return null;
-  const ac = state.autocomplete;
-  const maxRows = Math.min(AUTOCOMPLETE_MAX_VISIBLE_ROWS + 1, Math.max(1, sepAbove - 3));
-  const rows = renderMacroGuideRows(guide, ac?.matches ?? [], ac?.selection ?? -1, chatW, maxRows);
-  if (rows.length === 0) return null;
-  const topRow = sepAbove - rows.length;
-  rows.forEach((row, index) => appendRowWrite(ctx, topRow + index, ctx.chatCol, row));
-  return { top: topRow, bottom: sepAbove - 1, left: ctx.chatCol, right: ctx.chatCol + chatW - 1 };
 }
 
 /** Render the vim-style chat-history search bar. */
@@ -1529,16 +1509,10 @@ export function render(state: RenderState): boolean {
 
   // Dim ghost text after the cursor names the /macro parts still to type.
   if (editingMacroCommand(state) && state.vim.mode === "insert" && voicePrompts.length === 0) {
-    const context = macroDisplayContext(state);
-    let ghost: { text: string; color?: string } | null = { text: macroGhostText(state.inputBuffer, state.cursorPos, context) };
-    // The inline style carries errors and previews there too, having no panel.
-    if (macroStyle().surface === "inline") {
-      const guide = macroGuide(state.inputBuffer, state.cursorPos, macroGuideContext(state, context));
-      ghost = guide && state.cursorPos === state.inputBuffer.length ? inlineMacroHint(guide, ghost.text) : null;
-    }
+    const ghost = macroGhostText(state.inputBuffer, state.cursorPos, macroDisplayContext(state));
     const line = coloredInputLines[cursorLine];
-    if (ghost?.text && line !== undefined) {
-      coloredInputLines[cursorLine] = line + fitGhostText(ghost.text, visibleLength(line), chatW - PROMPT_PREFIX_WIDTH, ghost.color);
+    if (ghost && line !== undefined) {
+      coloredInputLines[cursorLine] = line + fitGhostText(ghost, visibleLength(line), chatW - PROMPT_PREFIX_WIDTH);
     }
   }
 
@@ -1738,9 +1712,7 @@ export function render(state: RenderState): boolean {
   }
 
   // ── Autocomplete popup (overlays message area above input) ────
-  // A /macro prompt gets its own help panel, which includes the completions.
-  const autocompleteRect = renderMacroGuidePanel(ctx, state, chatW, bottomStartRow)
-    ?? renderAutocompletePopup(ctx, state, chatW, bottomStartRow, macroPopupRows(state));
+  const autocompleteRect = renderAutocompletePopup(ctx, state, chatW, bottomStartRow, macroPopupRows(state));
 
   // ── Search bar ────────────────────────────────────────────────
   if (searchBarRow > 0) {

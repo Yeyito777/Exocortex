@@ -29,14 +29,15 @@ Leave out `=` to write the text in the centred editor that `/instructions`
 uses: `/macro add /name [description]` opens it empty and `/macro edit /name`
 opens it with the current text (`:w` saves, `:wq` saves and closes).
 
-While you type, each part of the line has its own colour (name, description,
-text) and a wrong part turns red once typing pauses: a name a built-in
-command or macro already uses, an invalid name, an existing name for `add`,
-an unknown one for `edit` or `rm`, or nothing after `=`. Dim text after the
-cursor names what comes next. Above the prompt, one row shows the syntax with
-the current part lit; a second shows the reason for a red part, the Tab
-completions (subcommands, or your macros with their text for `edit` and
-`rm`), or, once there is text after `=`, what the macro expands to.
+While you type, the line is highlighted like any other slash command, and a
+wrong part turns red once typing pauses: a name a built-in command or macro
+already uses, an invalid name, an existing name for `add`, an unknown one for
+`edit` or `rm`, or nothing after `=`. Dim text after the cursor names what
+comes next. The normal autocomplete popup lists the Tab completions
+(subcommands, or your macros with their text for `edit` and `rm`); with
+nothing to complete it shows one row instead: the reason for a red part,
+what the macro expands to once there is text after `=`, or the part to type
+next.
 
 Names start with `/` and use only letters, digits, `_` and `-` (at most 48
 characters). They cannot reuse a built-in command, inline command or
@@ -61,9 +62,3 @@ made while the link is down is checked against the daemon's list after
 reconnecting: sent if it still applies, dropped if it already landed, and
 reported if the macro changed elsewhere meanwhile.
 
-## Visual style (development)
-
-`EXOCORTEX_MACRO_STYLE=v3|A|B|C|D` in the TUI's environment picks how a
-`/macro` line looks while it is typed; every choice is in
-[usermacros/styles.ts](../tui/src/usermacros/styles.ts). It exists to
-compare alternatives and will go once one is chosen.
