@@ -959,7 +959,8 @@ export function buildMessageLines(
     if (messagePlan?.kind === "merged") {
       // A notification folded into its turn's work row: no row of its own, only the
       // blank line that separates the turn from the one above (and an opened run's row).
-      if (userMessageNeedsTopMargin(state.messages, messageIndex)) pushLine("", msg, "user_margin_top");
+      // A prompt right after it (one it joined the turn of) brings that margin itself.
+      if (state.messages[messageIndex + 1]?.role !== "user" && userMessageNeedsTopMargin(state.messages, messageIndex)) pushLine("", msg, "user_margin_top");
       if (messagePlan.runHeader && messagePlan.runToggle) pushRunHeader(msg, messagePlan.runHeader, null, messagePlan.runToggle);
       pushMessageBound(msg.role, start, lines.length, lines.length);
     } else if (messagePlan?.kind === "run") {
