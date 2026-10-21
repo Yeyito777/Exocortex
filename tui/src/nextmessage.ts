@@ -3,9 +3,9 @@
  *
  * The daemon predicts the user's next message after a turn ends. It shows as
  * dim ghost text in the focused, empty prompt and disappears as soon as
- * anything is typed. Right Shift (as in the owner's zsh autosuggestions),
- * Right arrow, or Tab in normal mode puts it in the prompt for editing; it is
- * never sent by itself.
+ * anything is typed. Right Shift (as in the owner's zsh autosuggestions) or
+ * Right arrow in insert or normal mode, or Tab in normal mode, puts it in the
+ * prompt for editing; it is never sent by itself.
  */
 
 import type { KeyEvent } from "./input";
@@ -42,13 +42,13 @@ export function visibleNextMessageSuggestion(state: RenderState): string | null 
 function isAcceptKey(state: RenderState, key: KeyEvent): boolean {
   if (key.event === "release") return false;
   switch (key.type) {
+    // Right Shift: st's OSC, Mac Terminal's CSI 29~, and the Mac's F20 over
+    // /ssh. st also sends F20 for Ctrl+7 (sidebar item 7 outside insert mode);
+    // that shortcut still works whenever no suggestion is visible.
     case "right-shift":
     case "right":
-      return true;
-    // The Mac sends Right Shift as F20, which st also sends for Ctrl+7
-    // (sidebar shortcut outside insert mode), so only insert mode takes it.
     case "f20":
-      return state.vim.mode === "insert";
+      return true;
     // Insert-mode Tab completes or indents; in normal mode it is otherwise unbound.
     case "tab":
       return state.vim.mode === "normal";

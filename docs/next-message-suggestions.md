@@ -48,11 +48,11 @@ value (possibly `null`) to the requesting client after the load.
 empty (no pending images or voice input) and the conversation is not
 streaming. Accept keys:
 
-- Right Shift: st sends `ESC ] 777 ; right-shift BEL`; Mac Terminal's fallback
-  `ESC [ 29 ~` also works.
-- F20 (`ESC [ 19 ; 2 ~`), the Mac's Right Shift over `/ssh`, in insert mode
-  only: st also sends it for Ctrl+7, which outside insert mode jumps to the
-  seventh sidebar conversation.
+- Right Shift, in insert and normal mode: st sends `ESC ] 777 ; right-shift
+  BEL`, Mac Terminal's fallback is `ESC [ 29 ~`, and the Mac over `/ssh` sends
+  F20 (`ESC [ 19 ; 2 ~`). st also sends F20 for Ctrl+7, which outside insert
+  mode jumps to the seventh sidebar conversation; while a suggestion is
+  visible, it accepts instead.
 - `→`, which does nothing else in an empty prompt.
 - Tab in normal mode, where it is otherwise unbound (insert-mode Tab still
   completes or inserts a soft tab).
