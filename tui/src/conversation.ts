@@ -970,6 +970,8 @@ export function buildMessageLines(
   }
 
   let segmentImages: HistoryImage[] = carriedImages;
+  /** Whether the assistant segment being built has shown any row (a rebuild starts at a segment's start). */
+  let segmentShown = false;
   for (let messageIndex = rebuildFrom; messageIndex < rebuildTo; messageIndex++) {
     // The loading row counts as the first row of the message below it, so a
     // rebuild from that message drops the old frame instead of keeping it.
@@ -1065,19 +1067,23 @@ export function buildMessageLines(
       // AI messages: content blocks, then metadata
       const contentStart = lines.length;
       const assistantPlan = messagePlan?.kind === "assistant" ? messagePlan : null;
+      if (state.messages[messageIndex - 1]?.role !== "assistant") segmentShown = false;
       if (assistantPlan?.summary) pushToggleLine(`  ${theme.muted}${assistantPlan.summary}${theme.reset}`, msg, "turn_work_summary", assistantPlan.toggle);
       msg.blocks.forEach((block, blockIndex) => {
         if (assistantPlan?.hidden?.[blockIndex]) return;
         pushBlock(block, "assistant_block", renderAssistantBlock(block));
       });
       segmentImages.push(...attachedImages(msg.blocks));
+      if (lines.length > contentStart) segmentShown = true;
       const nextMessage = state.messages[messageIndex + 1];
       const nextContinuesAssistantSegment = nextMessage?.role === "assistant"
         || (messageIndex === state.messages.length - 1 && state.pendingAI?.role === "assistant");
       const metadata = nextContinuesAssistantSegment
         ? null
         : assistantSegmentMetadata(state.messages, messageIndex) ?? assistantRunMetadata(state.messages, messageIndex);
-      const metadataLines = nextContinuesAssistantSegment || (assistantPlan?.metaHidden && msg !== durableSleepAssistant) ? [] : renderMetadata(metadata, { ...metadataOptions, active: msg === durableSleepAssistant });
+      // Folded work that shows nothing (a turn a notice split, its first part all folded) leaves no lone metadata line.
+      const foldedAway = assistantPlan?.hidden != null && !segmentShown && segmentImages.length === 0;
+      const metadataLines = nextContinuesAssistantSegment || ((assistantPlan?.metaHidden || foldedAway) && msg !== durableSleepAssistant) ? [] : renderMetadata(metadata, { ...metadataOptions, active: msg === durableSleepAssistant });
       if (metadataLines.length > 0) trimTrailingBlankAssistantContent(contentStart);
       // Attached images close the visible message (the run of fragments), right before its metadata.
       if (!nextContinuesAssistantSegment) {

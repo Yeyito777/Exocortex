@@ -275,3 +275,21 @@ describe("Ctrl+O", () => {
     });
   }
 });
+
+test("a turn a notice split leaves no lone metadata line where its first part folded away", () => {
+  const state = createInitialState();
+  state.messages.push(
+    user("start"), assistant([{ type: "text", text: "ok" }]),
+    note(1), assistant([...call("a", "ssh zurich uptime")]),
+    { role: "system", text: "✗ Daemon restarted", metadata: null } as Message,
+    assistant([...call("b", "ssh zurich df"), { type: "text", text: "All healthy." }]),
+  );
+  const shown = rows(state).filter(Boolean);
+  // The first reply's and the last one's; none for the folded part before the notice.
+  expect(shown.filter(row => row.includes("GPT-6-Astra"))).toHaveLength(2);
+  freshMatchesIncremental(state);
+  // Opened, that part shows its work and its metadata again.
+  const built = buildMessageLines(state, 100);
+  toggleHistoryItemPreservingViewport(state, built.lineAnchors[built.lines.findIndex(line => stripAnsi(line).startsWith("▸"))].toggle!);
+  expect(rows(state).filter(row => row.includes("GPT-6-Astra"))).toHaveLength(3);
+});
