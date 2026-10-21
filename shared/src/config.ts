@@ -133,12 +133,6 @@ export interface FeatureFlagsConfig {
 }
 
 export interface ExperimentalConfig {
-  /**
-   * After a turn ends, a cheap model predicts the user's next message and the
-   * TUI shows it as ghost text in the empty prompt. Defaults to false. Read
-   * once at daemon start; clients learn it from the daemon's bootstrap.
-   */
-  nextMessageSuggestions?: boolean;
   /** Preserve unknown future experiments. */
   [experiment: string]: unknown;
 }
@@ -255,11 +249,6 @@ export function defaultExocortexConfig(): ExocortexConfig {
     ping: { mode: null, sound: null },
     openers: defaultOpenersConfig(),
   };
-}
-
-/** Whether experimental next-message suggestions are enabled. */
-export function experimentalNextMessageSuggestionsEnabled(config: ExocortexConfig = readExocortexConfig()): boolean {
-  return config.experimental?.nextMessageSuggestions === true;
 }
 
 /** Whether the temporary correlated daemon/TUI performance profiler is enabled. */
