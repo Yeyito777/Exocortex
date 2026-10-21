@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
+  EXPANDED_PANEL_WIDTH_FACTOR,
   isTaskPanelExpanded,
   layoutTaskPanel,
   MAX_TASK_PANEL_HEIGHT,
@@ -98,24 +99,72 @@ describe("collapsed task panel", () => {
 });
 
 describe("expanded task panel", () => {
-  test("lists every entry in the collapsed panel's rows, without the overflow row", () => {
+  /** Rows of the card between its top and bottom borders. */
+  const bodyOf = (lines: string[]) => plain(lines).slice(1, -1);
+
+  test("lists every entry, wider and wrapped, without the overflow row", () => {
     const state = stateWithTasks(manyTasks(3));
-    const collapsed = renderTaskPanel(state, 100, 60, NOW)!;
     toggleTaskPanelExpansion(state);
-    const panel = renderTaskPanel(state, 100, 60, NOW)!;
-    expect(panel.width).toBe(50);
-    expect(panel.lines).toHaveLength(21 + 2);
+    const panel = renderTaskPanel(state, 100, 200, NOW)!;
+    expect(EXPANDED_PANEL_WIDTH_FACTOR).toBe(1.5);
+    expect(panel.width).toBe(75);
     expect(panel.maxScroll).toBe(0);
-    expect(panel.lines.every(line => visibleLength(line) === 50)).toBe(true);
-    // The same rows, styling included, for everything the collapsed card had room for.
-    expect(panel.lines.slice(0, MAX_TASK_PANEL_HEIGHT - 2)).toEqual(collapsed.lines.slice(0, -2));
+    expect(panel.lines.every(line => visibleLength(line) === 75)).toBe(true);
     const text = plain(panel.lines);
-    expect(text.join("\n")).not.toContain("more");
-    expect(text.join("\n")).not.toContain("yesterday");
-    expect(text.at(-2)).toContain("◷ Chrono Evening digest");
+    const joined = text.join("\n");
+    expect(joined).not.toContain("more");
+    expect(joined).not.toContain("…");
+    // Every copy of every title is there in full, the long one over two rows.
+    expect(joined.match(/◷ Chrono Hourly review/g)).toHaveLength(3);
+    expect(joined.match(/against yesterday/g)).toHaveLength(3);
+    expect(text.filter(line => line.includes("Evening digest"))).toHaveLength(3);
     expect(text.at(-1)).toContain("click to collapse");
-    // The header keeps the total.
+    // The header keeps the entry count, not the row count.
     expect(text[0].trimEnd()).toEndWith("21 ─╮");
+    expect(text.length - 2).toBeGreaterThan(21);
+  });
+
+  test("wraps a long title under its title column, keeping the status on the first row", () => {
+    const state = stateWithTasks();
+    toggleTaskPanelExpansion(state);
+    const body = bodyOf(renderTaskPanel(state, 100, 60, NOW)!.lines);
+    const first = body.findIndex(line => line.includes("Hourly review"));
+    const titleCol = body[first].indexOf("Hourly");
+    expect(body[first].trimEnd()).toEndWith("in 42m │");
+    // Continuations start in the title column, leave the label and status columns blank.
+    const continuations: string[] = [];
+    for (let i = first + 1; !body[i].startsWith("│ ◷") && !body[i].startsWith("│ ◆") && !body[i].startsWith("│ $"); i++) continuations.push(body[i]);
+    expect(continuations.length).toBeGreaterThan(0);
+    for (const line of continuations) {
+      expect(line.slice(0, titleCol).trim()).toBe("│");
+      expect(line[titleCol]).not.toBe(" ");
+      expect(line.slice(-9)).toBe("        │");
+    }
+    expect([body[first], ...continuations].map(line => line.slice(titleCol, -9).trim()).join(" ")).toBe(HOURLY);
+    // Every entry's status ends in the same column as the next entry's.
+    const statusEnds = body.filter(line => /^│ [◷◆$]/.test(line)).map(line => line.trimEnd().length);
+    expect(new Set(statusEnds).size).toBe(1);
+  });
+
+  test("wraps subscription titles under their own title column", () => {
+    const state = stateWithTasks([]);
+    state.externalToolStyles = [{ cmd: "discord", label: "Discord", color: "#5865f2" }];
+    state.sidebar.conversations[0].integrations = [{
+      id: "integration:dms",
+      toolName: "discord",
+      sourceId: "dm:1",
+      label: "Paramount DMs and mentions from every server the bot account belongs to, plus replies",
+      delivery: "wake",
+      status: "active",
+      createdAt: NOW,
+    }];
+    toggleTaskPanelExpansion(state);
+    const body = bodyOf(renderTaskPanel(state, 100, 60, NOW)!.lines);
+    expect(body.length).toBeGreaterThan(1);
+    expect(body[0]).toStartWith("│ Discord Paramount DMs");
+    expect(body[0].trimEnd()).toEndWith("wake active │");
+    expect(body[1]).toStartWith(`│ ${" ".repeat("Discord ".length)}`);
+    expect(body.join(" ")).toContain("plus replies");
   });
 
   test("keeps the subscriptions divider and lists every subscription", () => {
@@ -131,45 +180,73 @@ describe("expanded task panel", () => {
     }));
     toggleTaskPanelExpansion(state);
     const text = plain(renderTaskPanel(state, 100, 60, NOW)!.lines);
-    expect(text).toHaveLength(14 + 1 + 3 + 2);
-    expect(text[15]).toContain("Subscriptions");
-    expect(text.slice(16, 19).map(line => line.match(/Subscription \w+/)?.[0])).toEqual(["Subscription one", "Subscription two", "Subscription three"]);
+    const divider = text.findIndex(line => line.includes("Subscriptions"));
+    expect(divider).toBeGreaterThan(14);
+    expect(text).toHaveLength(divider + 3 + 2);
+    expect(text.slice(divider + 1, divider + 4).map(line => line.match(/Subscription \w+/)?.[0])).toEqual(["Subscription one", "Subscription two", "Subscription three"]);
   });
 
   test("caps its height to the pane, scrolling by rows", () => {
     const state = stateWithTasks(manyTasks(3));
     toggleTaskPanelExpansion(state);
+    const all = plain(renderTaskPanel(state, 34, 1_000, NOW)!.lines);
+    const rows = all.length - 2;
     const first = renderTaskPanel(state, 34, 12, NOW)!;
     expect(first.width).toBe(34);
     expect(first.lines).toHaveLength(12);
-    expect(first.maxScroll).toBe(21 - 10);
+    expect(first.maxScroll).toBe(rows - 10);
     expect(first.lines.every(line => termWidth(stripAnsi(line)) === 34)).toBe(true);
-    expect(plain(first.lines).at(-1)).toContain("↓ 11 below");
+    expect(plain(first.lines).at(-1)).toContain(`↓ ${rows - 10} below`);
     expect(plain(first.lines).at(-1)).not.toContain("↑");
 
     state.taskPanelExpansion!.scroll = 4;
     const middle = renderTaskPanel(state, 34, 12, NOW)!;
     expect(middle.scroll).toBe(4);
-    expect(plain(middle.lines)[1]).toBe(plain(renderTaskPanel({ ...state, taskPanelExpansion: { convId: "conv", scroll: 0 } }, 34, 200, NOW)!.lines)[5]);
-    expect(plain(middle.lines).at(-1)).toContain("↑ 4 above · ↓ 7 below");
+    expect(plain(middle.lines).slice(1, -1)).toEqual(all.slice(5, 15));
+    expect(plain(middle.lines).at(-1)).toContain(`↑ 4 above · ↓ ${rows - 14} below`);
 
     state.taskPanelExpansion!.scroll = 1_000;
     const last = renderTaskPanel(state, 34, 12, NOW)!;
     expect(last.scroll).toBe(last.maxScroll);
-    expect(plain(last.lines).at(-2)).toContain("Evening");
+    expect(plain(last.lines).slice(1, -1)).toEqual(all.slice(-11, -1));
     expect(plain(last.lines).at(-1)).not.toContain("↓");
   });
 
-  test("keeps the collapsed width and never exceeds the chat pane", () => {
+  test("grows to 1.5x the collapsed width, clamped to keep the history column readable", () => {
     const state = stateWithTasks();
+    const widths = (chatWidth: number) => {
+      state.taskPanelExpansion = null;
+      const collapsed = layoutTaskPanel(state, chatWidth, 30, NOW).panel?.width;
+      toggleTaskPanelExpansion(state);
+      const expanded = layoutTaskPanel(state, chatWidth, 30, NOW);
+      return { collapsed, expanded: expanded.panel?.width, historyWidth: expanded.historyWidth, lines: expanded.panel?.lines ?? [] };
+    };
+    // Room to spare: the full 1.5x.
+    expect(widths(160)).toMatchObject({ collapsed: 50, expanded: 75, historyWidth: 160 - 75 - 1 });
+    // Between the two: as wide as leaves the 30-column history beside it.
+    expect(widths(100)).toMatchObject({ collapsed: 50, expanded: 69, historyWidth: 30 });
+    // Already at the limit collapsed: it only grows taller.
+    expect(widths(80)).toMatchObject({ collapsed: 49, expanded: 49, historyWidth: 30 });
+    // The narrowest chat with a card at all keeps the minimum card.
+    expect(widths(61)).toMatchObject({ collapsed: 30, expanded: 30, historyWidth: 30 });
+    for (const chatWidth of [160, 100, 80, 61]) {
+      const { expanded, lines } = widths(chatWidth);
+      expect(lines.every(line => visibleLength(line) === expanded)).toBe(true);
+    }
+    // Too narrow for any card: still none when expanded.
+    expect(widths(60)).toMatchObject({ collapsed: undefined, expanded: undefined, historyWidth: 60 });
+  });
+
+  test("collapsing restores the exact collapsed card, still one truncated row per entry", () => {
+    const state = stateWithTasks(manyTasks(3));
+    const before = renderTaskPanel(state, 100, 60, NOW)!;
     toggleTaskPanelExpansion(state);
-    const wide = layoutTaskPanel(state, 160, 30, NOW);
-    expect(wide.panel?.width).toBe(50);
-    expect(wide.historyWidth).toBe(160 - 50 - 1);
-    const tight = layoutTaskPanel(state, 80, 30, NOW);
-    expect(tight.panel?.width).toBe(49);
-    expect(tight.historyWidth).toBe(30);
-    expect(tight.panel!.lines.every(line => visibleLength(line) === 49)).toBe(true);
+    expect(renderTaskPanel(state, 100, 60, NOW)!.lines).not.toEqual(before.lines);
+    toggleTaskPanelExpansion(state);
+    const after = renderTaskPanel(state, 100, 60, NOW)!;
+    expect(after).toEqual(before);
+    expect(after.width).toBe(50);
+    expect(plain(after.lines)[1]).toContain("…");
   });
 
   test("belongs to the conversation it was opened in", () => {
@@ -252,14 +329,21 @@ describe("task panel clicks", () => {
     expect(isTaskPanelExpanded(state)).toBe(true);
     capture(() => render(state));
     const expanded = state.layout.taskPanelRect!;
+    // Right edge anchored, grown leftward to 1.5x and down to fit every (wrapped) row.
     expect(expanded.right).toBe(120);
-    expect(expanded.right - expanded.left + 1).toBe(50);
-    expect(expanded.bottom - expanded.top + 1).toBe(14 + 2);
+    expect(expanded.left).toBe(collapsed.left - 25);
+    expect(expanded.right - expanded.left + 1).toBe(75);
+    expect(expanded.bottom - expanded.top + 1).toBe(renderTaskPanel(state, 75, 1_000)!.lines.length);
+    expect(expanded.bottom - expanded.top + 1).toBeGreaterThan(14 + 2);
     expect(expanded.bottom).toBeLessThan(state.layout.sepAbove);
-    expect(state.layout.historyWidth).toBe(120 - 50 - 1);
+    expect(state.layout.historyWidth).toBe(120 - 75 - 1);
+    // The whole wider card is the click target, and history beside it is still text.
+    expect(cursorZone(expanded.left, expanded.top + 2, state)).toBe("hand");
+    expect(cursorZone(expanded.left - 2, expanded.top + 2, state)).toBe("text");
     expect(cursorZone(expanded.left, expanded.bottom, state)).toBe("hand");
     expect(screenText(state)).not.toContain("more");
-    expect(screenText(state).split("\n").at(-2)).toContain("Evening digest");
+    expect(screenText(state).split("\n").at(-3)).toContain("Evening digest of every open PMV5 question for the");
+    expect(screenText(state).split("\n").at(-2)).toContain("owner");
 
     click(state, expanded.left + 3, expanded.bottom);
     expect(isTaskPanelExpanded(state)).toBe(false);
