@@ -407,6 +407,8 @@ export interface RenderState {
   accountsOpenRequest: AccountsOpenRequest | null;
   /** Last `accounts` snapshot seen, shown at once when the screen reopens. */
   accountsSnapshotCache: AccountsSnapshot | null;
+  /** Claude account each conversation last ran on, as the snapshots said (null: none yet); highlights it before the daemon answers. */
+  claudeConversationAccounts: Map<string, string | null>;
   /**
    * The Tasks panel expanded by a click to list every entry, with its
    * scroll offset in panel rows. Session-only and tied to one conversation:
@@ -759,6 +761,7 @@ export function createInitialState(): RenderState {
     accountsScreen: null,
     accountsOpenRequest: null,
     accountsSnapshotCache: null,
+    claudeConversationAccounts: new Map(),
     taskPanelExpansion: null,
     undo: createUndoState(),
     autocomplete: null,

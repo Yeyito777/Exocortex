@@ -273,6 +273,8 @@ function handleVimAction(action: string, state: RenderState): KeyResult {
       return { type: "handled" };
     case "open_accounts":
       return { type: "open_accounts" };
+    case "open_instructions":
+      return { type: "open_instructions" };
     default:
       return { type: "handled" };
   }

@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { KeyEvent } from "../input";
 import { createInitialState, type RenderState } from "../state";
+import { tryCommand } from "../commands";
+import { handleFocusedKey } from "../focus";
 import { stripAnsi } from "../historycursor";
 import { termWidth } from "../textwidth";
 import {
@@ -173,6 +175,47 @@ describe("/instructions picker", () => {
     openLoaded(state, daemon);
     expect(daemon.calls[0].args).toEqual([null, null]);
     expect(plain(renderInstructionsPicker(state.instructionsModal!.picker!, 40, 120).payload)).toContain("the new conversation");
+  });
+});
+
+describe("g i", () => {
+  const key = (char: string): KeyEvent => ({ type: "char", char } as KeyEvent);
+
+  test("opens the picker like bare /instructions from prompt, history and sidebar normal mode", () => {
+    expect(tryCommand("/instructions", createInitialState())).toEqual({ type: "open_instructions" });
+
+    const prompt = createInitialState();
+    expect(handleFocusedKey({ type: "escape" }, prompt)).toEqual({ type: "handled" });
+    expect(handleFocusedKey(key("g"), prompt)).toEqual({ type: "handled" });
+    expect(handleFocusedKey(key("i"), prompt)).toEqual({ type: "open_instructions" });
+    expect(prompt.vim.mode).toBe("normal");
+    // gg still goes to the top, and a lone i still enters insert mode.
+    expect(handleFocusedKey(key("g"), prompt)).toEqual({ type: "handled" });
+    expect(handleFocusedKey(key("g"), prompt)).toEqual({ type: "handled" });
+    expect(prompt.vim.pendingKeys).toBe("");
+    expect(handleFocusedKey(key("i"), prompt)).toEqual({ type: "handled" });
+    expect(prompt.vim.mode).toBe("insert");
+
+    const history = createInitialState();
+    history.chatFocus = "history";
+    history.vim.mode = "normal";
+    expect(handleFocusedKey(key("g"), history)).toEqual({ type: "handled" });
+    expect(handleFocusedKey(key("i"), history)).toEqual({ type: "open_instructions" });
+    expect(history.chatFocus).toBe("history");
+
+    const sidebar = createInitialState();
+    sidebar.sidebar.open = true;
+    sidebar.panelFocus = "sidebar";
+    sidebar.vim.mode = "normal";
+    expect(handleFocusedKey(key("g"), sidebar)).toEqual({ type: "handled" });
+    expect(handleFocusedKey(key("i"), sidebar)).toEqual({ type: "open_instructions" });
+    expect(sidebar.panelFocus).toBe("sidebar");
+
+    // Insert mode types the letters.
+    const typing = createInitialState();
+    handleFocusedKey(key("g"), typing);
+    expect(handleFocusedKey(key("i"), typing)).toEqual({ type: "handled" });
+    expect(typing.inputBuffer).toBe("gi");
   });
 });
 

@@ -69,6 +69,7 @@ export type Action =
   | "toggle_tool_output"
   // Screens
   | "open_accounts"
+  | "open_instructions"
   // Sidebar navigation (from any panel)
   | "sidebar_next"
   | "sidebar_prev"

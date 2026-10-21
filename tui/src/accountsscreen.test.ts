@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   ACCOUNTS_UNAVAILABLE_HINT,
+  accountsScreenLines,
   closeAccountsScreen,
   handleAccountsScreenKey,
   renderAccountsScreen,
@@ -10,6 +11,7 @@ import { tryCommand } from "./commands";
 import { handleEvent } from "./events";
 import { handleFocusedKey } from "./focus";
 import { createInitialState } from "./state";
+import { theme } from "./theme";
 import { TerminalScreen } from "./testhelpers/terminalscreen";
 import type { AccountsSnapshot, ClaudeAccountInfo } from "./protocol";
 import type { ConversationSummary } from "./messages";
@@ -160,6 +162,72 @@ test("reopening shows the last snapshot right away while a fresh one is fetched"
   const text = screenText(state).join("\n");
   expect(text).not.toContain("Loading accounts…");
   expect(text).toContain("max2");
+});
+
+/** Claude rows drawn as this conversation's account (bold accent name). */
+function highlighted(state: ReturnType<typeof createInitialState>): string[] {
+  return accountsScreenLines(state, state.accountsScreen!, NOW).flatMap(line =>
+    line.kind === "row" && line.row.name[0] === theme.bold + theme.accent ? [line.row.name[1]] : []);
+}
+
+function withoutCurrent(snap: AccountsSnapshot): AccountsSnapshot {
+  const { currentConversation: _current, ...claude } = snap.claude;
+  return { ...snap, claude };
+}
+
+test("reopening highlights this conversation's account at once, though closing's answer named no conversation", () => {
+  const { state } = openScreen();
+  expect(highlighted(state)).toEqual(["main"]);
+  const closing = fakeDaemon();
+  closeAccountsScreen(state, closing);
+  expect(closing.calls).toEqual([{ watch: false }]);
+  handleEvent({ type: "accounts", reqId: "accounts_1", snapshot: withoutCurrent(snapshot()) }, state, noDaemon);
+
+  requestAccountsScreen(state, fakeDaemon());
+  expect(highlighted(state)).toEqual(["main"]);
+  handleEvent({ type: "accounts", reqId: "accounts_1", snapshot: snapshot() }, state, noDaemon);
+  expect(highlighted(state)).toEqual(["main"]);
+});
+
+test("a late answer to closing keeps the reopened screen's highlight", () => {
+  const { state } = openScreen();
+  closeAccountsScreen(state, fakeDaemon());
+  requestAccountsScreen(state, fakeDaemon());
+  // The close's answer (another reqId, no conversation) lands after the reopen.
+  handleEvent({ type: "accounts", reqId: "accounts_close", snapshot: withoutCurrent(snapshot()) }, state, noDaemon);
+  expect(state.accountsOpenRequest).not.toBeNull();
+  expect(highlighted(state)).toEqual(["main"]);
+});
+
+test("in another conversation the highlight follows what earlier snapshots said about it, or waits", () => {
+  const { state } = openScreen();
+  closeAccountsScreen(state, null);
+
+  // Running on main, by main's list in the cached snapshot.
+  state.convId = "conv-run";
+  requestAccountsScreen(state, fakeDaemon());
+  expect(highlighted(state)).toEqual(["main"]);
+  closeAccountsScreen(state, null);
+
+  // An earlier snapshot asked for conv-cold said max2.
+  const cold = snapshot();
+  cold.claude.currentConversation = { convId: "conv-cold", account: "max2", lastUsedAt: NOW - 50 * H, warm: false };
+  handleEvent({ type: "accounts", snapshot: cold } as never, state, noDaemon);
+  handleEvent({ type: "accounts", snapshot: withoutCurrent(snapshot()) } as never, state, noDaemon);
+  state.convId = "conv-cold";
+  requestAccountsScreen(state, fakeDaemon());
+  expect(highlighted(state)).toEqual(["max2"]);
+  closeAccountsScreen(state, null);
+
+  // Nothing known: no highlight rather than another conversation's.
+  state.convId = "conv-new";
+  requestAccountsScreen(state, fakeDaemon());
+  expect(highlighted(state)).toEqual([]);
+  handleEvent({
+    type: "accounts", reqId: "accounts_1",
+    snapshot: { ...snapshot(), claude: { ...snapshot().claude, currentConversation: { convId: "conv-new", account: "max2", lastUsedAt: NOW, warm: true } } },
+  }, state, noDaemon);
+  expect(highlighted(state)).toEqual(["max2"]);
 });
 
 test("without known multiple accounts it waits for the answer, then opens", () => {

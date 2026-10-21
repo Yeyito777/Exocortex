@@ -461,6 +461,7 @@ function resetForDaemonRouteSwitch(): void {
   state.accountsScreen = null;
   state.accountsOpenRequest = null;
   state.accountsSnapshotCache = null;
+  state.claudeConversationAccounts.clear();
   // Its scopes belonged to the old endpoint too.
   state.instructionsModal = null;
   instructionsRouteSwitched(state);
@@ -1781,6 +1782,9 @@ function handleKey(key: KeyEvent): void {
       break;
     case "open_accounts":
       requestAccountsScreen(state, daemon);
+      break;
+    case "open_instructions":
+      openInstructionsPicker(state, daemon);
       break;
     case "quit":
       running = false;
