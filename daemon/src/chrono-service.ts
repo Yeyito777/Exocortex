@@ -634,9 +634,26 @@ function recurrenceFromInput(repeat: RepeatInput | undefined, firstAt: number, t
   };
 }
 
-function defaultTitle(input: CreateScheduleInput): string {
-  const content = (input.message ?? input.command ?? "Scheduled wake").replace(/\s+/g, " ").trim();
-  return content.length > 80 ? `${content.slice(0, 79)}…` : content;
+/** Upper bound on a title derived from a schedule's message or command. */
+const MAX_DEFAULT_TITLE_LENGTH = 200;
+
+/**
+ * A schedule's title when none is given: the first non-empty line of its
+ * message or command. A line longer than MAX_DEFAULT_TITLE_LENGTH keeps the
+ * whole sentences that fit when they fill at least half the bound, otherwise
+ * it is cut on a word boundary and ends with "…".
+ */
+export function defaultChronoTitle(input: Pick<CreateScheduleInput, "message" | "command">): string {
+  const line = (input.message ?? input.command ?? "").split("\n")
+    .map(candidate => candidate.replace(/\s+/g, " ").trim())
+    .find(Boolean) ?? "Scheduled wake";
+  if (line.length <= MAX_DEFAULT_TITLE_LENGTH) return line;
+  const head = line.slice(0, MAX_DEFAULT_TITLE_LENGTH);
+  const sentenceEnd = Math.max(...[...`${head} `.matchAll(/[.!?](?=\s)/g)].map(match => match.index! + 1), 0);
+  if (sentenceEnd >= MAX_DEFAULT_TITLE_LENGTH / 2) return head.slice(0, sentenceEnd);
+  const space = head.lastIndexOf(" ", MAX_DEFAULT_TITLE_LENGTH - 1);
+  const cut = space >= MAX_DEFAULT_TITLE_LENGTH / 2 ? head.slice(0, space) : head.slice(0, MAX_DEFAULT_TITLE_LENGTH - 1);
+  return `${cut.replace(/[\s,;:]+$/, "")}…`;
 }
 
 function conversationHasSleepToolCall(sleep: DeferredChronoSleep): boolean {
@@ -898,7 +915,7 @@ function buildChronoSchedule(input: CreateScheduleInput, now: number): { schedul
   const schedule: ChronoSchedule = {
     id: `chrono:${randomUUID()}`,
     ownerConversationId: input.ownerConversationId,
-    title: input.title?.trim() || defaultTitle(input),
+    title: input.title?.trim() || defaultChronoTitle(input),
     createdAt: now,
     nextAt: when.value,
     ...(recurrence.value ? { recurrence: recurrence.value } : {}),
