@@ -33,26 +33,6 @@ function renderedText(state: RenderState): string {
   return out.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
 }
 
-describe("Right Shift input", () => {
-  test("st's OSC, Mac Terminal's fallback and xterm F20 parse as keys", () => {
-    expect(parseInput("\x1b]777;right-shift\x07")).toEqual([{ type: "right-shift" }]);
-    expect(parseInput("\x1b]777;right-shift\x1b\\a")).toEqual([{ type: "right-shift" }, { type: "char", char: "a" }]);
-    expect(parseInput("\x1b[29~")).toEqual([{ type: "right-shift" }]);
-    expect(parseInput("\x1b[19;2~")).toEqual([{ type: "f20" }]);
-  });
-
-  test("the terminal-reply buffer passes st's Right Shift through as input", () => {
-    const input: string[] = [];
-    const controls: string[] = [];
-    const buffer = new TerminalControlBuffer(data => input.push(data), sequence => controls.push(sequence));
-    buffer.feed("a\x1b]777;rig");
-    buffer.feed("ht-shift\x07b");
-    expect(input.join("")).toBe("a\x1b]777;right-shift\x07b");
-    expect(controls).toEqual([]);
-    buffer.dispose();
-  });
-});
-
 describe("next-message suggestion", () => {
   test("shows as ghost text in the empty prompt and vanishes once anything is typed", () => {
     const state = stateWithSuggestion();
@@ -62,49 +42,54 @@ describe("next-message suggestion", () => {
     expect(renderedText(state)).not.toContain("commit and push it");
   });
 
-  for (const key of [{ type: "right-shift" }, { type: "right" }, { type: "f20" }] as const) {
-    test(`${key.type} puts it in the prompt for editing without sending it`, () => {
-      const state = stateWithSuggestion();
-      expect(handleFocusedKey(key, state)).toEqual({ type: "handled" });
-      expect(state.inputBuffer).toBe("commit and push it");
-      expect(state.cursorPos).toBe("commit and push it".length);
-    });
-  }
-
-  for (const sequence of ["\x1b]777;right-shift\x07", "\x1b[19;2~", "\x1b[29~"]) {
-    test(`normal mode: Right Shift ${JSON.stringify(sequence)} accepts, cursor on the last character`, () => {
-      const state = stateWithSuggestion();
-      state.vim.mode = "normal";
-      const [key] = parseInput(sequence) as KeyEvent[];
-      expect(handleFocusedKey(key!, state)).toEqual({ type: "handled" });
-      expect(state.inputBuffer).toBe("commit and push it");
-      expect(state.cursorPos).toBe("commit and push it".length - 1);
-      expect(state.vim.mode).toBe("normal");
-    });
-  }
-
-  test("normal mode without a visible suggestion: F20 is still st's Ctrl+7 sidebar shortcut", () => {
-    for (const hide of [(s: RenderState) => { s.nextMessageSuggestion = null; }, (s: RenderState) => { s.inputBuffer = "draft"; s.cursorPos = 0; }]) {
-      const state = stateWithSuggestion();
-      state.vim.mode = "normal";
-      state.sidebar.open = false;
-      hide(state);
-      const before = state.inputBuffer;
-      handleFocusedKey({ type: "f20" }, state);
-      expect(state.sidebar.open).toBe(true);
-      expect(state.inputBuffer).toBe(before);
+  for (const mode of ["insert", "normal"] as const) {
+    for (const key of [{ type: "tab" }, { type: "right" }] as const) {
+      test(`${mode}-mode ${key.type} puts it in the prompt for editing without sending it`, () => {
+        const state = stateWithSuggestion();
+        state.vim.mode = mode;
+        expect(handleFocusedKey(key, state)).toEqual({ type: "handled" });
+        expect(state.inputBuffer).toBe("commit and push it");
+        expect(state.cursorPos).toBe("commit and push it".length - (mode === "normal" ? 1 : 0));
+        expect(state.vim.mode).toBe(mode);
+      });
     }
+  }
+
+  test("insert-mode Tab keeps its soft tab when no suggestion shows or the prompt is not empty", () => {
+    const none = stateWithSuggestion();
+    none.nextMessageSuggestion = null;
+    handleFocusedKey({ type: "tab" }, none);
+    expect(none.inputBuffer).toBe("    ");
+
+    const typed = stateWithSuggestion();
+    handleFocusedKey({ type: "char", char: "x" }, typed);
+    handleFocusedKey({ type: "tab" }, typed);
+    expect(typed.inputBuffer).toBe("x    ");
   });
 
-  test("Tab accepts in normal mode; insert-mode Tab keeps its soft tab", () => {
+  test("Right Shift no longer accepts: st's OSC is dropped, F20 is Ctrl+7 and CSI 29~ does nothing", () => {
+    // The terminal-reply buffer in front of the parser drops st's OSC, as before suggestions.
+    const input: string[] = [];
+    const buffer = new TerminalControlBuffer(data => input.push(data), () => {});
+    buffer.feed("a\x1b]777;right-shift\x07b");
+    expect(input.join("")).toBe("ab");
+    buffer.dispose();
+
+    for (const mode of ["insert", "normal"] as const) {
+      for (const sequence of ["\x1b[19;2~", "\x1b[29~"]) {
+        const state = stateWithSuggestion();
+        state.vim.mode = mode;
+        state.sidebar.open = false;
+        for (const key of parseInput(sequence) as KeyEvent[]) handleFocusedKey(key, state);
+        expect(state.inputBuffer).toBe("");
+      }
+    }
+    // F20 (st's Ctrl+7) jumps to the sidebar in normal mode even with a suggestion showing.
     const state = stateWithSuggestion();
     state.vim.mode = "normal";
-    expect(handleFocusedKey({ type: "tab" }, state)).toEqual({ type: "handled" });
-    expect(state.inputBuffer).toBe("commit and push it");
-
-    const typing = stateWithSuggestion();
-    handleFocusedKey({ type: "tab" }, typing);
-    expect(typing.inputBuffer).toBe("    ");
+    state.sidebar.open = false;
+    handleFocusedKey({ type: "f20" }, state);
+    expect(state.sidebar.open).toBe(true);
   });
 
   test("hidden while streaming, for another conversation, and after a new turn starts", () => {

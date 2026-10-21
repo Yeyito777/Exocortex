@@ -2,8 +2,8 @@
 
 After a turn ends, a cheap model predicts what you will type next and the TUI
 shows it as dim ghost text in the empty prompt. Typing anything hides it;
-Right Shift, `→`, or Tab in normal mode puts it in the prompt to edit or send with `Enter`. It is
-never sent on its own.
+Tab (insert or normal mode) or `→` puts it in the prompt to edit or send with
+`Enter`. It is never sent on its own.
 
 ## Enabling
 
@@ -48,13 +48,8 @@ value (possibly `null`) to the requesting client after the load.
 empty (no pending images or voice input) and the conversation is not
 streaming. Accept keys:
 
-- Right Shift, in insert and normal mode: st sends `ESC ] 777 ; right-shift
-  BEL`, Mac Terminal's fallback is `ESC [ 29 ~`, and the Mac over `/ssh` sends
-  F20 (`ESC [ 19 ; 2 ~`). st also sends F20 for Ctrl+7, which outside insert
-  mode jumps to the seventh sidebar conversation; while a suggestion is
-  visible, it accepts instead.
+- Tab, in insert and normal mode. Insert-mode Tab keeps its completion / soft
+  tab whenever no suggestion is showing or the prompt is not empty.
 - `→`, which does nothing else in an empty prompt.
-- Tab in normal mode, where it is otherwise unbound (insert-mode Tab still
-  completes or inserts a soft tab).
 
 Accepting is one undo step.
