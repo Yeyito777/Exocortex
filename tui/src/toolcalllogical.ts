@@ -837,6 +837,24 @@ function renderHeredocPieces(
   return logical;
 }
 
+/**
+ * An `exo` call whose text does not fit its header line (see exoCallDetail):
+ * the header, then the text as the call's body block, drawn in its colour.
+ */
+function renderExoCall(
+  summary: string,
+  toolRegistry: ToolDisplayInfo[],
+  externalToolStyles: ExternalToolStyle[],
+): ToolCallLogicalLine[] {
+  const newline = summary.indexOf("\n");
+  const display = resolveToolDisplay("exo", summary.slice(0, newline), toolRegistry, externalToolStyles);
+  const logical: ToolCallLogicalLine[] = [];
+  pushLogicalLine(logical, display, display.detail, true);
+  const block: ToolCallPayload = { kind: "tool" };
+  for (const line of summary.slice(newline + 1).split("\n")) logical.push({ display, text: line, hasLabel: false, payload: { block, role: "body" } });
+  return logical;
+}
+
 export function renderToolCallLogicalLines(
   toolName: string,
   summary: string,
@@ -852,6 +870,7 @@ export function renderToolCallLogicalLines(
   if (toolName === "Bash") {
     return renderToolCallLogicalLines("bash", summary, toolRegistry, externalToolStyles, toolInput);
   }
+  if (toolName === "exo" && summary.includes("\n")) return renderExoCall(summary, toolRegistry, externalToolStyles);
   if (toolName !== "bash") {
     const logical: ToolCallLogicalLine[] = [];
     pushCommandDetail(logical, resolveToolDisplay(toolName, summary, toolRegistry, externalToolStyles));

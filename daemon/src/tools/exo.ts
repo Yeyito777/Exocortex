@@ -1,4 +1,4 @@
-import { EFFORT_LEVELS } from "@exocortex/shared/messages";
+import { EFFORT_LEVELS, exoCallDetail } from "@exocortex/shared/messages";
 import { repoRoot } from "@exocortex/shared/paths";
 import type { Tool } from "./types";
 
@@ -47,15 +47,7 @@ export const exo: Tool = {
   watchdogExempt: true,
   display: { label: "Exocortex", color: "#1d9bf0" },
   summarize(input) {
-    const action = (["subagent", "message", "status", "restart"] as const).find(key => input[key] !== undefined) ?? "abort";
-    const message = input.message as { conversation?: unknown; text?: unknown } | undefined;
-    const value = action === "message" ? `${String(message?.conversation ?? "")}: ${String(message?.text ?? "")}` : input[action];
-    // A subagent's instructions are shown in full, line breaks kept; the TUI
-    // collapses long ones behind its tool-output toggle.
-    const text = typeof value !== "string" ? ""
-      : action === "subagent" ? value.trim()
-      : value.replace(/\s+/g, " ").trim().slice(0, 100);
-    return { label: "Exocortex", detail: `${action}: ${text}` };
+    return { label: "Exocortex", detail: exoCallDetail(input) };
   },
   async execute(input, context, signal) {
     if (!context?.exocortex) {

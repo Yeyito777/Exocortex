@@ -198,42 +198,94 @@ So the composition has **no limit** at \(0\).`,
 });
 
 describe("tool-call presentation", () => {
-  test("a long subagent prompt collapses behind the tool-output toggle, never truncated", () => {
+  const exoRegistry: ToolDisplayInfo[] = [{ name: "exo", label: "Exocortex", color: "#1d9bf0" }];
+
+  test("a long subagent prompt is the call's body, capped behind the tool-output toggle", () => {
     const steps = Array.from({ length: 10 }, (_, i) => `Step ${i + 1}.`);
     const prompt = ["Small TUI fix in Exocortex: inline images disappear while the queue prompt is open.", "", "Repo: /tmp/x", ...steps, "Report back."].join("\n");
     const block: Block = {
       type: "tool_call",
       toolCallId: "exo-1",
       toolName: "exo",
-      input: { subagent: prompt },
+      input: { subagent: prompt, args: { model: "opus" } },
       // History persisted older summaries cut at 100 characters; the input is complete.
       summary: `subagent: ${prompt.replace(/\s+/g, " ").slice(0, 100)}`,
     };
-    const registry: ToolDisplayInfo[] = [{ name: "exo", label: "Exocortex", color: "#1d9bf0" }];
 
-    const collapsed = renderBlockCached(block, 60, registry, [], false).lines.map(stripAnsi);
+    const collapsed = renderBlockCached(block, 60, exoRegistry, [], false).lines.map(stripAnsi);
     expect(collapsed).toEqual([
-      "  Exocortex subagent: Small TUI fix in Exocortex: inline",
-      "  images disappear while the queue prompt is open.",
-      "  ",
-      "  Repo: /tmp/x",
-      "  Step 1.",
-      "  Step 2.",
-      "  Step 3.",
-      "  Step 4.",
-      "  … +7 more lines (ctrl+i to expand)",
+      "  Exocortex subagent (opus)",
+      "    ▎ Small TUI fix in Exocortex: inline images disappear",
+      "    ▎ while the queue prompt is open.",
+      "    ▎ ",
+      "    ▎ Repo: /tmp/x",
+      "    ▎ Step 1.",
+      "    ▎ Step 2.",
+      "    ▎ Step 3.",
+      "    ▎ Step 4.",
+      "    ▎ … +7 more lines (ctrl+i to expand)",
     ]);
 
-    const expanded = renderBlockCached(block, 60, registry, [], true).lines.map(stripAnsi);
-    expect(expanded).toHaveLength(15);
-    expect(expanded.slice(-2)).toEqual(["  Step 10.", "  Report back."]);
+    const expanded = renderBlockCached(block, 60, exoRegistry, [], true).lines.map(stripAnsi);
+    expect(expanded).toHaveLength(16);
+    expect(expanded.slice(-2)).toEqual(["    ▎ Step 10.", "    ▎ Report back."]);
   });
 
-  test("a subagent prompt of moderate length wraps in full", () => {
+  test("a subagent prompt of moderate length shows in full under its header", () => {
     const prompt = "Fix the overlay crop.\n\nRepo: /tmp/x\nReport back.";
     const block: Block = { type: "tool_call", toolCallId: "exo-2", toolName: "exo", input: { subagent: prompt }, summary: `subagent: ${prompt}` };
-    const lines = renderBlockCached(block, 60, [{ name: "exo", label: "Exocortex", color: "#1d9bf0" }], [], false).lines.map(stripAnsi);
-    expect(lines).toEqual(["  Exocortex subagent: Fix the overlay crop.", "  ", "  Repo: /tmp/x", "  Report back."]);
+    const lines = renderBlockCached(block, 60, exoRegistry, [], false).lines.map(stripAnsi);
+    expect(lines).toEqual(["  Exocortex subagent", "    ▎ Fix the overlay crop.", "    ▎ ", "    ▎ Repo: /tmp/x", "    ▎ Report back."]);
+  });
+
+  test("a long exo message wraps in full as the call's body, capped like a heredoc's", () => {
+    const text = [
+      "Two more from the owner for the same build (Oct 21 ~13:50Z):",
+      "",
+      ...Array.from({ length: 12 }, (_, i) => `${i + 1}. "We probably don't need item ${i + 1}."`),
+    ].join("\n");
+    const block: Block = {
+      type: "tool_call",
+      toolCallId: "exo-3",
+      toolName: "exo",
+      input: { message: { conversation: "1792550206710-ixtxlt", text } },
+      // What an older daemon recorded: flattened and cut at 100 characters.
+      summary: `message: 1792550206710-ixtxlt: ${text.replace(/\s+/g, " ").slice(0, 100)}`,
+    };
+
+    const collapsed = renderBlockCached(block, 60, exoRegistry, [], false).lines.map(stripAnsi);
+    expect(collapsed).toEqual([
+      "  Exocortex message: 1792550206710-ixtxlt",
+      "    ▎ Two more from the owner for the same build (Oct 21",
+      "    ▎ ~13:50Z):",
+      "    ▎ ",
+      "    ▎ 1. \"We probably don't need item 1.\"",
+      "    ▎ 2. \"We probably don't need item 2.\"",
+      "    ▎ 3. \"We probably don't need item 3.\"",
+      "    ▎ 4. \"We probably don't need item 4.\"",
+      "    ▎ 5. \"We probably don't need item 5.\"",
+      "    ▎ … +7 more lines (ctrl+i to expand)",
+    ]);
+    const expanded = renderBlockCached(block, 60, exoRegistry, [], true).lines.map(stripAnsi);
+    expect(expanded).toHaveLength(16);
+    expect(expanded.at(-1)).toBe("    ▎ 12. \"We probably don't need item 12.\"");
+
+    // One long line wraps under the header instead of stopping mid-word.
+    const long = { ...block, toolCallId: "exo-4", input: { message: { conversation: "c1", text: "word ".repeat(40).trim() } } };
+    const wrapped = renderBlockCached(long, 60, exoRegistry, [], false).lines.map(stripAnsi);
+    expect(wrapped[0]).toBe("  Exocortex message: c1");
+    expect(wrapped.slice(1).join(" ").replace(/ {4}▎ /g, "").split(/\s+/).filter(Boolean)).toHaveLength(40);
+  });
+
+  test("short exo calls stay on one line", () => {
+    const render = (input: Record<string, unknown>) => renderBlockCached(
+      { type: "tool_call", toolCallId: `exo-${JSON.stringify(input)}`, toolName: "exo", input, summary: "" },
+      60, exoRegistry, [], false,
+    ).lines.map(stripAnsi);
+    expect(render({ message: { conversation: "c1", text: "Thanks, merged." } })).toEqual(["  Exocortex message: c1: Thanks, merged."]);
+    expect(render({ subagent: "Fix the typo." })).toEqual(["  Exocortex subagent: Fix the typo."]);
+    expect(render({ status: "c1" })).toEqual(["  Exocortex status: c1"]);
+    expect(render({ restart: "deploy fix" })).toEqual(["  Exocortex restart: deploy fix"]);
   });
 
   test("shell commands always render in full", () => {
