@@ -257,6 +257,8 @@ describe("context compaction status", () => {
 
   test("renders a persisted completion marker as a half-width markdown divider", () => {
     const state = createInitialState();
+    // Folded, the divider goes with the turn's work (turncollapse-gutter.test.ts); Ctrl+O shows it.
+    state.showTurnWork = true;
     state.messages.push(
       {
         role: "assistant",

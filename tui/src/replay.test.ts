@@ -48,6 +48,8 @@ describe("startReplayConversation", () => {
 
   test("shows replay metadata immediately even after a historical terminal notice", () => {
     const state = createInitialState();
+    // The notice shows with Ctrl+O; folded, it goes with the turn's work (turncollapse-gutter.test.ts).
+    state.showTurnWork = true;
     state.convId = "conv-replay";
     state.model = "gpt-5.4";
     state.messages.push({ role: "system", text: "✗ Interrupted", color: "error", metadata: null });
@@ -64,6 +66,8 @@ describe("startReplayConversation", () => {
     const minute = 60_000;
     const replayStartedAt = 21 * minute;
     const state = createInitialState();
+    // Every footer in view (folded, the interrupted part and its notice fold into the live turn).
+    state.showTurnWork = true;
     state.convId = "conv-replay";
     state.model = "gpt-5.4";
     state.messages.push(
@@ -86,6 +90,8 @@ describe("startReplayConversation", () => {
 
   test("shows daemon-started replay metadata immediately after a historical terminal notice", () => {
     const state = createInitialState();
+    // The notice shows with Ctrl+O; folded, it goes with the turn's work (turncollapse-gutter.test.ts).
+    state.showTurnWork = true;
     state.convId = "conv-replay";
     state.model = "gpt-5.4";
     state.messages.push({ role: "system", text: "✗ Daemon restarted", color: "error", metadata: null });

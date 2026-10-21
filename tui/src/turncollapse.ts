@@ -14,7 +14,7 @@
  * whose plan changed (a turn finishing, a click), not the whole history.
  */
 
-import { isAutomatedUserPrompt, ownerRelayedText, type AIMessage, type Block, type Message, type UserMessage, type UserMessageAutomation } from "./messages";
+import { isAutomatedUserPrompt, isInformationalNotice, ownerRelayedText, type AIMessage, type Block, type Message, type UserMessage, type UserMessageAutomation } from "./messages";
 import { sanitizeUntrustedText } from "./terminaltext";
 
 const AUTOMATION_LABELS: Record<UserMessageAutomation["kind"], string> = {
@@ -214,6 +214,12 @@ export interface PendingPlan {
   summary: string | null;
   expanded: boolean;
   toggle: object;
+  /**
+   * The newest step when it is already committed (a new round has not streamed
+   * one yet): it renders under the working row, not in the committed rows above
+   * it, so the row never sits below the latest command.
+   */
+  revealed: Block | null;
 }
 
 export interface HistoryPlan {
@@ -265,6 +271,11 @@ export interface PlanHistoryInput {
 export type FoldStyle = "gutter" | "rows";
 
 const NO_SIGNATURE = "";
+
+/** An informational transcript notice: it folds with its turn's work. */
+function isFoldedNotice(msg: Message | undefined): boolean {
+  return msg?.role === "system" && isInformationalNotice(msg);
+}
 
 export function planHistory(input: PlanHistoryInput): HistoryPlan {
   const { messages, start, pendingAI, collapse, expanded } = input;
@@ -385,6 +396,7 @@ function gutterSegment(messages: readonly Message[], start: number, from: number
   let host = -1;
   for (let index = from; index < to; index++) {
     const msg = messages[index];
+    if (isFoldedNotice(msg)) folded = true;
     if (msg.role !== "assistant") continue;
     const plan = plans[index - start];
     const hidden = plan?.kind === "assistant" ? plan.hidden : null;
@@ -516,6 +528,8 @@ function planGutterFresh(
       } else if (msg.role === "user" && (plan?.kind === "notification" || plan?.kind === "merged")) {
         // A notification delivered mid-turn folds with its turn.
         set(index, open ? { kind: "notification", label: plan.label, open: true, toggleable: false } : { kind: "gap", toggle, line: null, spacer: false, inner: null });
+      } else if (isFoldedNotice(msg)) {
+        set(index, open ? null : { kind: "gap", toggle, line: null, spacer: false, inner: null });
       } else if (msg.role === "assistant" && plan?.kind === "assistant") {
         if (open) set(index, { kind: "assistant", hidden: null, summary: null, toggle: plan.toggle });
         else if (keep) set(index, { ...plan, summary: null, groupToggle: toggle });
@@ -864,7 +878,8 @@ function planTurn(
   const orphans = orphanLabels.join("\n");
   if (memo && memo.label === label && memo.orphans === orphans && turnMemoValid(memo, messages, from, to, inProgress, reveal, open)) {
     for (let index = from; index < to; index++) {
-      if (messages[index].role !== "assistant" && !(index === from && memo.merged)) continue;
+      if (messages[index].role === "user" && !(index === from && memo.merged)) continue;
+      if (messages[index].role !== "assistant" && messages[index].role !== "user" && !isFoldedNotice(messages[index])) continue;
       plans[index - start] = memo.plans[index - from];
       signatures[index - start] = memo.signatures[index - from];
     }
@@ -897,9 +912,15 @@ function planTurn(
       continue;
     }
     const hidden = msg.blocks.map((block, blockIndex) => {
-      const work = inProgress
-        ? reveal?.message !== index || reveal.block !== blockIndex
-        : index < lastToolMessage
+      // A live turn's committed steps all fold; the newest renders under its working row.
+      if (inProgress) {
+        if (reveal?.message !== index || reveal.block !== blockIndex) {
+          if (block.type === "tool_call") stats.toolCalls++;
+          else if (hasText(block)) stats.texts++;
+        }
+        return true;
+      }
+      const work = index < lastToolMessage
         || (index === lastToolMessage && blockIndex <= lastToolBlock)
         || block.type === "thinking";
       if (work) {
@@ -948,6 +969,12 @@ function planTurn(
     const summary = !inProgress && !lead && index === host && summaryText ? `${open ? "▾" : "▸"} ${summaryText}` : null;
     plans[index - start] = { kind: "assistant", hidden, summary, toggle: key, ...(metaHidden ? { metaHidden } : {}) };
     signatures[index - start] = `a${summary ?? ""}|${hidden ? hidden.map(value => value ? 1 : 0).join("") : "*"}|${metaHidden ? 1 : 0}`;
+  }
+  // Informational notices (a daemon restart, a retry…) fold with the turn's work.
+  for (let index = from; index < to; index++) {
+    if (!isFoldedNotice(messages[index])) continue;
+    plans[index - start] = open ? null : { kind: "gap", toggle: key, line: null, spacer: false, inner: null };
+    signatures[index - start] = open ? NO_SIGNATURE : "g||";
   }
   turnMemos.set(key, {
     label,
@@ -1071,7 +1098,8 @@ function planPending(
     return isHidden;
   });
   const summary = [label, workSummaryText(stats)].filter(Boolean).join(" · ");
-  return { hidden: open ? null : hidden, summary: summary || null, expanded: open, toggle: key };
+  const revealed = !open && reveal ? (messages[reveal.message] as Extract<Message, { role: "assistant" }>).blocks[reveal.block] ?? null : null;
+  return { hidden: open ? null : hidden, summary: summary || null, expanded: open, toggle: key, revealed };
 }
 
 // ── Search ──────────────────────────────────────────────────────────
@@ -1099,7 +1127,7 @@ export function foldedSearchTexts(input: FoldedSearchInput): Map<object, string>
     if (!messagePlan || !msg) return;
     if (messagePlan.kind === "gap") {
       if (!messagePlan.inner) {
-        if (msg.role === "user") add(messagePlan.toggle, msg.text);
+        if (msg.role === "user" || msg.role === "system") add(messagePlan.toggle, msg.text);
         else if (msg.role === "assistant") addBlocks(messagePlan.toggle, msg.blocks, msg.blocks.map(() => true));
       }
     } else if (messagePlan.kind === "assistant" && messagePlan.groupToggle && messagePlan.hidden && msg.role === "assistant") {

@@ -1213,6 +1213,8 @@ export function buildMessageLines(
     if (pendingPlan && isStreaming(state) && state.pendingAI.metadata?.startedAt !== state.suppressPendingAIMetadataStartedAt) {
       pushToggleLine(workingRow(state.pendingAI.metadata, pendingPlan), state.pendingAI, "turn_working", pendingPlan.toggle);
     }
+    // The newest step, when already committed, sits under the working row.
+    if (pendingPlan?.revealed) pushBlock(pendingPlan.revealed, "assistant_block", renderAssistantBlock(pendingPlan.revealed));
     state.pendingAI.blocks.forEach((block, blockIndex) => {
       if (pendingPlan?.hidden?.[blockIndex]) return;
       pushBlock(block, "assistant_block", renderAssistantBlock(block));
