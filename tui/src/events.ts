@@ -69,7 +69,6 @@ import { handleAccountsEvent } from "./accountsscreen";
 import { failBtwRequest, handleBtwEvent } from "./btw/events";
 import { settleRejectedQueueRequest } from "./queue";
 import { formatChronoResult } from "./chronoschedule";
-import { setInlineImagesEnabled } from "./inlineimages";
 import { turnRequestStartedAt } from "./request-ids";
 
 export type { DaemonActions } from "./events/types";
@@ -579,7 +578,6 @@ export function handleEvent(
         state.macroEnvironment = null;
         userMacrosRouteSwitched(state);
         state.conversationDefaults = null;
-        setInlineImagesEnabled(false);
         state.sshConnecting = {
           phase: "loading",
           message: event.mode === "remote"

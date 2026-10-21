@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { collectHistoryImagePlacements, disposeHistoryImages, handleHistoryImageResponse, historyImagesPlaced, placementIdFor, syncHistoryImages } from "./historyimages";
-import { configureInlineImages, inlineImagesInternalsForTest, kittyThumbnail, setInlineImageMode, setInlineImagesEnabled, type InlineImageLayout } from "./inlineimages";
+import { configureInlineImages, inlineImagesInternalsForTest, kittyThumbnail, setInlineImageMode, type InlineImageLayout } from "./inlineimages";
 import type { RenderLineAnchor } from "./conversation";
 import { buildMessageLines } from "./conversation";
 import { createInitialState } from "./state";
@@ -217,15 +217,13 @@ describe("history layout", () => {
     const withImages = buildMessageLines(state, 80);
     expect(withImages.lineAnchors.some(anchor => anchor.images)).toBe(true);
 
-    for (const disable of [() => setInlineImagesEnabled(false), () => setInlineImageMode("off")]) {
-      inlineImagesInternalsForTest.reset();
-      disable();
-      const { lines, lineAnchors } = buildMessageLines(state, 80);
-      expect(lineAnchors.some(anchor => anchor.images || anchor.openImages)).toBe(false);
-      expect(lines.some(line => stripAnsi(line).includes("200×100"))).toBe(false);
-      // The pasted image keeps its old badge.
-      expect(lines.some(line => stripAnsi(line).includes("📎 PNG"))).toBe(true);
-    }
+    inlineImagesInternalsForTest.reset();
+    setInlineImageMode("off");
+    const { lines, lineAnchors } = buildMessageLines(state, 80);
+    expect(lineAnchors.some(anchor => anchor.images || anchor.openImages)).toBe(false);
+    expect(lines.some(line => stripAnsi(line).includes("200×100"))).toBe(false);
+    // The pasted image keeps its old badge.
+    expect(lines.some(line => stripAnsi(line).includes("📎 PNG"))).toBe(true);
   });
 
   test("pasted images render under the user bubble, right-aligned", async () => {

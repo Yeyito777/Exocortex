@@ -65,11 +65,6 @@ function currentSetting(): MathRenderSetting {
   return setting ??= resolveMathRenderSetting();
 }
 
-/** Auto mode needs the terminal graphics query even when history images are off. */
-export function mathImagesNeedDetection(): boolean {
-  return currentSetting() === "auto";
-}
-
 /** Whether display math in history renders as images right now. */
 export function mathImagesActive(): boolean {
   const current = currentSetting();

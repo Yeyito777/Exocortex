@@ -5,18 +5,14 @@
  * clients learn the values from the `tools_available` bootstrap.
  */
 
-import { experimentalImagesEnabled } from "@exocortex/shared/config";
 import type { ExperimentalFeatures } from "@exocortex/shared/protocol";
 
 let snapshot: ExperimentalFeatures | null = null;
 
 export function experimentalFeatures(): ExperimentalFeatures {
-  snapshot ??= { images: experimentalImagesEnabled() };
+  // Inline images graduated; `images: true` keeps TUIs that still gate on it showing them.
+  snapshot ??= { images: true };
   return snapshot;
-}
-
-export function imagesEnabled(): boolean {
-  return experimentalFeatures().images;
 }
 
 /** Tests: re-read the config on next use. */

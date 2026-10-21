@@ -3,21 +3,13 @@
 Conversation history shows two kinds of images inline: images a model attaches
 to its message with the `attach` tool, and images the user pasted.
 
-## Enabling (experimental)
+## Availability
 
-Off by default. Enable it in the daemon host's `config/config.json`:
-
-```json
-{ "experimental": { "images": true } }
-```
-
-The daemon reads the flag once at start, so restart it after changing the flag.
-Clients learn it from the daemon's `tools_available` bootstrap
-(`experimental: { images }`), never from their own config, so it works over
-`/ssh`; a running TUI picks it up when it reconnects. When off, the `attach`
-tool is offered to no provider (native or Claude Code), `get_image` answers
-with an error, and the TUI renders history as before (pasted images keep their
-📎 badge). `EXOCORTEX_TUI_IMAGES=off` turns images off in one TUI regardless.
+Always on. `EXOCORTEX_TUI_IMAGES=off` turns images off in one TUI (history then
+renders as before inline images; pasted images keep their 📎 badge). The former
+`experimental.images` config flag is ignored; daemons still send
+`experimental: { images: true }` in the `tools_available` bootstrap so older
+TUIs that gate on it keep showing images.
 
 ## attach tool
 
