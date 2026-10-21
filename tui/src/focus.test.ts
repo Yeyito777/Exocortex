@@ -1354,6 +1354,7 @@ describe("sidebar folders", () => {
 
   test("move prompt prioritizes the current folder's subfolders", () => {
     const state = createInitialState();
+    state.sidebar.folderView = "navigate";
     state.sidebar.open = true;
     state.panelFocus = "sidebar";
     state.vim.mode = "normal";
@@ -1502,6 +1503,7 @@ describe("sidebar folders", () => {
 
   test("moving a conversation out requests insertion immediately before the source folder", () => {
     const state = createInitialState();
+    state.sidebar.folderView = "navigate";
     state.sidebar.open = true;
     state.panelFocus = "sidebar";
     state.vim.mode = "normal";
@@ -1523,6 +1525,7 @@ describe("sidebar folders", () => {
 
   test("move prompt .. inserts immediately before the folder being moved out of", () => {
     const state = createInitialState();
+    state.sidebar.folderView = "navigate";
     state.sidebar.open = true;
     state.panelFocus = "sidebar";
     state.vim.mode = "normal";
@@ -1550,6 +1553,7 @@ describe("sidebar folders", () => {
 
   test("move prompt / inserts immediately before the top-level source folder", () => {
     const state = createInitialState();
+    state.sidebar.folderView = "navigate";
     state.sidebar.open = true;
     state.panelFocus = "sidebar";
     state.vim.mode = "normal";
@@ -1830,6 +1834,7 @@ describe("sidebar folders", () => {
 
   test("l enters a folder and h leaves back to the parent", () => {
     const state = createInitialState();
+    state.sidebar.folderView = "navigate";
     state.sidebar.open = true;
     state.panelFocus = "sidebar";
     state.vim.mode = "normal";

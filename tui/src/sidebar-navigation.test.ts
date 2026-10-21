@@ -37,7 +37,7 @@ function folder(id: string, sortOrder: number, overrides: Partial<FolderSummary>
 
 describe("sidebar streaming navigation", () => {
   test("jumps to a folder with a descendant streaming conversation", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.folders = [folder("project", 2)];
     sidebar.conversations = [
       conversation("root", 1),
@@ -54,7 +54,7 @@ describe("sidebar streaming navigation", () => {
   });
 
   test("jumps to a folder with a descendant durable Chrono sleep indicator", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.folders = [folder("project", 2)];
     sidebar.conversations = [
       conversation("root", 1),
@@ -74,7 +74,7 @@ describe("sidebar streaming navigation", () => {
   });
 
   test("uses visible sidebar order and wraps across folder streaming indicators", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.folders = [folder("project", 1)];
     sidebar.conversations = [
       conversation("root-stream", 2, { unread: true }),
@@ -92,7 +92,7 @@ describe("sidebar streaming navigation", () => {
   });
 
   test("jumps to a nested folder with descendant unread conversation", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.currentFolderId = "work";
     sidebar.folders = [
       folder("work", 1),
@@ -113,7 +113,7 @@ describe("sidebar streaming navigation", () => {
   });
 
   test("trusts canonical unread state without interpreting reserved folder names", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.folders = [
       folder("subagents", 1, { name: " SubAgents " }),
       folder("batch", 1, { parentId: "subagents" }),
@@ -133,7 +133,7 @@ describe("sidebar streaming navigation", () => {
   });
 
   test("still jumps to subagents while they are actively streaming", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.folders = [folder("subagents", 1, { name: "subagents" })];
     sidebar.conversations = [
       conversation("start", 0),

@@ -116,6 +116,7 @@ describe("TUI starting state", () => {
       conversationScrollPositions: { "focused-conversation": 0.4 },
     };
     const state = createInitialState();
+    state.sidebar.folderView = "navigate";
 
     applyTuiStartingState(state, startingState);
     updateConversationList(state.sidebar, [

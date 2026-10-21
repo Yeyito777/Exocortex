@@ -30,7 +30,7 @@ function conversation(id: string, sortOrder: number, overrides: Partial<Conversa
 
 describe("sidebar rendering", () => {
   test("restart needed replaces the local update notice", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.updateStatus = { local: "restart_needed", remote: null };
     const rows = renderSidebar(sidebar, 12, true, null);
     expect(rows).toHaveLength(12);
@@ -39,7 +39,7 @@ describe("sidebar rendering", () => {
   });
 
   test("SSH shows Remote then Local, reserving both status lines from hit testing", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.conversations = Array.from({ length: 30 }, (_, i) => conversation(String(i), i));
     sidebar.updateStatus = { local: "none", remote: "restart_needed" };
     const rows = renderSidebar(sidebar, 12, true, null);
@@ -58,7 +58,7 @@ describe("sidebar rendering", () => {
   });
 
   test("footer separator stays muted while the straight right edge follows focus in every theme", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     const original = { ...theme };
     try {
       for (const palette of Object.values(themes)) {
@@ -84,7 +84,7 @@ describe("sidebar rendering", () => {
   });
 
   test("None is known-current, Unknown is not current, and disabled worktrees stay hidden", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     for (const local of ["none", "unknown", "disabled", "checking"] as const) {
       sidebar.updateStatus = { local, remote: null };
       expect(sidebarListRows(12, sidebar)).toBe(10);
@@ -104,7 +104,7 @@ describe("sidebar rendering", () => {
   });
 
   test("pending checks are muted Checking, not Unknown or known-current", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.updateStatus = { local: "checking", remote: "none" };
     expect(sidebarListRows(12, sidebar)).toBe(7);
     const rows = renderSidebar(sidebar, 12, true, null);
@@ -116,7 +116,7 @@ describe("sidebar rendering", () => {
   });
 
   test("remote and local labels mirror muted statusline labels in every theme", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.updateStatus = { remote: "restart_needed", local: "update_available" };
     const original = { ...theme };
     try {
@@ -132,7 +132,7 @@ describe("sidebar rendering", () => {
   });
 
   test("update notice follows the active theme accent on every render", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.updateStatus = { local: "update_available", remote: null };
     const original = { ...theme };
     try {
@@ -147,7 +147,7 @@ describe("sidebar rendering", () => {
   });
 
   test("update notice is anchored to the bottom and never hits overflowing entries", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.updateStatus = { local: "update_available", remote: null };
     sidebar.conversations = Array.from({ length: 30 }, (_, i) => conversation(String(i), i));
     const rows = renderSidebar(sidebar, 12, true, null);
@@ -165,7 +165,7 @@ describe("sidebar rendering", () => {
   });
 
   test("small terminals and editing bars retain their space", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.updateStatus = { local: "update_available", remote: null };
     expect(renderSidebar(sidebar, 4, true, null)).toHaveLength(4);
     expect(renderSidebar(sidebar, 4, true, null).join("")).not.toContain("Update available");
@@ -181,7 +181,7 @@ describe("sidebar rendering", () => {
   });
 
   test("appends the purple remote alias to the contextual sidebar title", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
 
     const localHeader = renderSidebar(sidebar, 8, true, null)[0];
     const rootRemoteHeader = renderSidebar(
@@ -215,7 +215,7 @@ describe("sidebar rendering", () => {
   });
 
   test("keeps visual selection marker muted on the current conversation", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.conversations = [
       conversation("current", 0, { title: "Current conversation" }),
       conversation("selected", 1, { title: "Selected conversation" }),
@@ -233,7 +233,7 @@ describe("sidebar rendering", () => {
   });
 
   test("renders conversations with global-idle queued messages using a yellow streaming indicator", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.conversations = [
       conversation("queued", 0, { title: "Queued conversation" }),
       conversation("plain", 1, { title: "Plain conversation" }),
@@ -248,7 +248,7 @@ describe("sidebar rendering", () => {
   });
 
   test("renders a locally pending direct send as streaming before the daemon summary arrives", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.folders = [{ id: "folder", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 }];
     sidebar.conversations = [
       conversation("pending", 0, { title: "Pending send", folderId: "folder", streaming: false }),
@@ -263,7 +263,7 @@ describe("sidebar rendering", () => {
   });
 
   test("renders goal continuations with the ordinary streaming indicator", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.folders = [
       { id: "work", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 },
       { id: "nested", name: "Nested", parentId: "work", createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 },
@@ -289,7 +289,7 @@ describe("sidebar rendering", () => {
   });
 
   test("propagates global-idle indicators to containing folders", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.folders = [{ id: "folder", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 }];
     sidebar.conversations = [
       conversation("queued", 0, { title: "Queued conversation", folderId: "folder" }),
@@ -302,7 +302,7 @@ describe("sidebar rendering", () => {
   });
 
   test("counts streaming conversations recursively on folder indicators", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.folders = [
       { id: "work", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 },
       { id: "nested", name: "Nested", parentId: "work", createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 },
@@ -326,7 +326,7 @@ describe("sidebar rendering", () => {
   });
 
   test("renders managed background task counts on conversations and containing folders", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.folders = [{ id: "folder", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 }];
     sidebar.conversations = [
       conversation("worker", 0, { title: "Worker", folderId: "folder", backgroundTaskCount: 2 }),
@@ -344,7 +344,7 @@ describe("sidebar rendering", () => {
   });
 
   test("counts Claude Code background agents as subagents rather than shell tasks", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.folders = [{ id: "folder", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 }];
     sidebar.conversations = [conversation("lead", 0, {
       title: "Lead",
@@ -369,7 +369,7 @@ describe("sidebar rendering", () => {
   });
 
   test("marks overflowing background task counts explicitly", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.conversations = [conversation("worker", 0, { title: "Worker", backgroundTaskCount: 100 })];
 
     const rows = renderSidebar(sidebar, 8, true, null);
@@ -377,7 +377,7 @@ describe("sidebar rendering", () => {
   });
 
   test("renders Chrono, subagent, and shell indicators after the streaming indicator without a goal badge", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.conversations = [conversation("worker", 0, {
       title: "Worker",
       streaming: true,
@@ -407,7 +407,7 @@ describe("sidebar rendering", () => {
   });
 
   test("renders durable Chrono sleeps and waits with the yellow streaming indicator", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.folders = [{ id: "folder", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 }];
     sidebar.conversations = [
       conversation("deferred-sleep", 0, {
@@ -454,7 +454,7 @@ describe("sidebar rendering", () => {
   });
 
   test("renders a streaming turn sleeping inside a long Chrono call like a durable sleep", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.folders = [{ id: "folder", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 }];
     const sleep = { kind: "chrono" as const, title: "Sleeping", startedAt: 0, dueAt: 20 * 60_000 };
     sidebar.conversations = [
@@ -490,7 +490,7 @@ describe("sidebar rendering", () => {
   });
 
   test("omits goal badges while aggregating other activity through folder trees", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.folders = [
       { id: "work", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 },
       { id: "nested", name: "Nested", parentId: "work", createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 },
@@ -534,7 +534,7 @@ describe("sidebar rendering", () => {
   });
 
   test("renders a right-aligned badge counting unread conversations in a folder tree", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.folders = [
       { id: "work", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 },
       { id: "nested", name: "Nested", parentId: "work", createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 },
@@ -555,7 +555,7 @@ describe("sidebar rendering", () => {
   });
 
   test("folder badges follow summaries updated in place between frames", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.folders = [
       { id: "work", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 },
     ];
@@ -577,7 +577,7 @@ describe("sidebar rendering", () => {
   });
 
   test("does not count streaming unread conversations in folder notification badges", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.folders = [
       { id: "work", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 },
     ];
@@ -594,7 +594,7 @@ describe("sidebar rendering", () => {
   });
 
   test("keeps queued turn chains blue and shows their final unread state immediately", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.folders = [
       { id: "work", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 },
     ];
@@ -613,7 +613,7 @@ describe("sidebar rendering", () => {
   });
 
   test("renders canonical unread state without interpreting reserved folder names", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.folders = [
       { id: "subagents", name: " SubAgents ", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 },
       { id: "batch", name: "Batch", parentId: "subagents", createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 },
@@ -643,7 +643,7 @@ describe("sidebar rendering", () => {
   });
 
   test("renders a right-aligned mute bell instead of completion notifications", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.conversations = [conversation("muted", 0, {
       title: "Muted conversation",
       muted: true,
@@ -660,7 +660,7 @@ describe("sidebar rendering", () => {
   });
 
   test("shows mute bells only for explicit conversation preferences inside muted folders", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.currentFolderId = "muted-folder";
     sidebar.folders = [{
       id: "muted-folder",
@@ -703,7 +703,7 @@ describe("sidebar rendering", () => {
   });
 
   test("shows nested folder mute bells only for each folder's explicit preference", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.currentFolderId = "parent";
     sidebar.folders = [
       { id: "parent", name: "Parent", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, muted: true, sortOrder: 0 },
@@ -721,7 +721,7 @@ describe("sidebar rendering", () => {
   });
 
   test("muted folders keep live streaming indicators while replacing unread badges", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.folders = [{
       id: "muted-folder",
       name: "Muted folder",

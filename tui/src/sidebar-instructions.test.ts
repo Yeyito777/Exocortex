@@ -20,7 +20,7 @@ function folder(id: string, name: string, parentId: string | null = null, effect
 
 describe("folder instructions in the sidebar", () => {
   test("an open folder lists no AGENTS.md row in the navigate view", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.currentFolderId = "folder-a";
     sidebar.folders = [folder("folder-a", "Project", null, "# Context from AGENTS.md:\nRules.")];
 
@@ -40,7 +40,7 @@ describe("folder instructions in the sidebar", () => {
   });
 
   test("Enter inside an empty folder opens nothing", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState("navigate");
     sidebar.currentFolderId = "folder-a";
     sidebar.folders = [folder("folder-a", "Project")];
     sidebar.selectedItem = { type: "up" };

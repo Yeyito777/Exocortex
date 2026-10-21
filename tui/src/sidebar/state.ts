@@ -36,7 +36,7 @@ export interface SidebarState {
   actionMenu: SidebarActionMenuState | null;
 }
 
-export function createSidebarState(folderView: SidebarFolderView = "navigate"): SidebarState {
+export function createSidebarState(folderView: SidebarFolderView = "tree"): SidebarState {
   return {
     open: false,
     conversations: [],

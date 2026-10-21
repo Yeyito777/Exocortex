@@ -5,7 +5,7 @@ import { revealFolderInTree, type SidebarFolderView } from "./tree";
 import { syncSelectedIndex } from "./updates";
 
 export function loadSidebarFolderViewPreference(): SidebarFolderView {
-  return readExocortexConfig().tui?.sidebarFolders === "tree" ? "tree" : "navigate";
+  return readExocortexConfig().tui?.sidebarFolders === "navigate" ? "navigate" : "tree";
 }
 
 export function saveSidebarFolderViewPreference(view: SidebarFolderView): void {

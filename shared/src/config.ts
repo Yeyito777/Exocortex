@@ -174,7 +174,7 @@ export interface TuiConfig {
   foldStyle?: string;
   /** Gutter style: draw the faint fold marks (default true). */
   foldMarks?: boolean;
-  /** How sidebar folders open: replace the list ("navigate", default) or expand in place ("tree"). */
+  /** How sidebar folders open: expand in place ("tree", default) or replace the list ("navigate"). */
   sidebarFolders?: "navigate" | "tree";
   /** Display math: typeset images on Kitty-graphics terminals ("auto", default), always "text", or force "image". */
   math?: "auto" | "text" | "image";

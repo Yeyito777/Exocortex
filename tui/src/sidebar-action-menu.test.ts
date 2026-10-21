@@ -293,6 +293,7 @@ describe("sidebar folder actions", () => {
 
   test("left click on a folder still enters it and opens no menu", () => {
     const state = folderSidebarState();
+    state.sidebar.folderView = "navigate";
     state.sidebar.selectedItem = { type: "conversation", id: "conv-a" };
 
     expect(handleMouseEvent(mouseEvent(5, 3, 0, "press"), state)).toEqual({ type: "handled" });
@@ -345,6 +346,7 @@ describe("sidebar folder actions", () => {
 
   test("semicolon and right click on the .. row open nothing", () => {
     const state = folderSidebarState();
+    state.sidebar.folderView = "navigate";
     state.sidebar.currentFolderId = "work";
     state.sidebar.conversations = [conversation("inside", 0, { folderId: "work" })];
     state.sidebar.selectedItem = { type: "up" };
