@@ -59,6 +59,8 @@ test("real isolated daemon: the /instructions modal edits all three scopes and t
   const ENTER: KeyEvent = { type: "enter" };
   const picker = () => state.instructionsModal?.picker ?? null;
   const editor = () => state.instructionsModal?.editor ?? null;
+  // Leaving an editor closes /instructions; this opens it again on a scope.
+  const reopen = (scope: "conversation" | "folder" | "global" = "conversation") => openInstructionsPicker(state, client, scope);
   // Saves show at once; this is when the daemon has confirmed them all.
   const settled = () => [...state.instructionsStore.entries.values()].every(entry => entry.saves.length === 0);
   try {
@@ -99,7 +101,9 @@ test("real isolated daemon: the /instructions modal edits all three scopes and t
     expect(editor()?.scope).toBe("conversation");
     expect(editor()!.vim.mode).toBe("insert");
     press("Answer in haiku.", ESC, ":wq", ENTER);
-    expect(editor()).toBeNull();
+    // :wq leaves /instructions; reopening shows the save at once.
+    expect(state.instructionsModal).toBeNull();
+    reopen();
     expect(picker()!.texts.conversation).toBe("Answer in haiku.");
     await waitFor(settled, "conversation save");
     expect(picker()!.texts.conversation).toBe("Answer in haiku.");
@@ -109,7 +113,8 @@ test("real isolated daemon: the /instructions modal edits all three scopes and t
     expect(editor()?.notice?.text).toBe("Saved");
     await waitFor(settled, "folder save");
     press(ESC, ":q", ENTER);
-    expect(editor()).toBeNull();
+    expect(state.instructionsModal).toBeNull();
+    reopen("folder");
     expect(picker()!.texts.folder).toBe("Project rules.");
 
     // Global: the base shows above the editable text and is never saved.
@@ -118,8 +123,9 @@ test("real isolated daemon: the /instructions modal edits all three scopes and t
     expect(editor()!.base).toBe(base);
     expect(editor()!.buffer).toBe("");
     press("Global rule.", ESC, ":wq", ENTER);
-    expect(editor()).toBeNull();
+    expect(state.instructionsModal).toBeNull();
     await waitFor(settled, "global save");
+    reopen("global");
     expect(picker()!.texts).toEqual({ conversation: "Answer in haiku.", folder: "Project rules.", global: "Global rule." });
     expect(readFileSync(join(config, "system.md"), "utf8")).toBe("Global rule.\n");
 
@@ -128,7 +134,7 @@ test("real isolated daemon: the /instructions modal edits all three scopes and t
     expect(editor()?.buffer).toBe("Answer in haiku.");
     expect(editor()!.vim.mode).toBe("normal");
     press(ESC);
-    expect(editor()).toBeNull();
+    expect(state.instructionsModal).toBeNull();
 
     // The model's context still carries all three.
     client.send({ type: "get_system_prompt", reqId: "instructions-prompt", convId });
@@ -150,6 +156,8 @@ test("real isolated daemon: the /instructions modal edits all three scopes and t
     expect(rendered).not.toContain("Project rules.");
 
     // Global: an edit made elsewhere meanwhile is not overwritten without :w!.
+    reopen();
+    await waitFor(() => picker()?.loadReqId === null, "reopened picker load");
     writeFileSync(join(config, "system.md"), "Edited elsewhere.\n");
     press("G", ENTER);
     expect(editor()?.scope).toBe("global");
@@ -163,9 +171,14 @@ test("real isolated daemon: the /instructions modal edits all three scopes and t
     expect(readFileSync(join(config, "system.md"), "utf8")).toBe("Global rule. More.\n");
 
     // Clearing a scope (saving it empty) removes it.
-    press(ESC, "k", ENTER, "dd", ":wq", ENTER);
-    expect(picker()!.texts.folder).toBe("");
+    press(ESC);
+    expect(state.instructionsModal).toBeNull();
+    reopen("folder");
+    press(ENTER, "dd", ":wq", ENTER);
+    expect(state.instructionsModal).toBeNull();
     await waitFor(settled, "folder clear");
+    reopen("folder");
+    expect(picker()!.texts.folder).toBe("");
     events.length = 0;
     client.send({ type: "get_system_prompt", reqId: "instructions-prompt-2", convId });
     await waitFor(() => events.some(event => event.type === "system_prompt"), "second system prompt");
