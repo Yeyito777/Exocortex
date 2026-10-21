@@ -5,6 +5,7 @@ import type { GoalAction, OpenAILoginMethod, QueuedCommandInvocation, QueueWaitT
 import type { ProviderId, ModelId, EffortLevel } from "../messages";
 import type { ChronoRequest } from "../chronoschedule";
 import type { TokenStatsView } from "./tokens";
+import type { InstructionsView } from "./instructions";
 
 export interface CompletionItem {
   name: string;
@@ -22,7 +23,8 @@ type CommandAction =
   | { type: "quit" }
   | { type: "new_conversation" }
   | { type: "create_conversation_for_instructions"; text: string }
-  | { type: "open_instructions" }
+  /** With a view, straight into that scope's editor or the tools view. */
+  | { type: "open_instructions"; view?: InstructionsView }
   | { type: "replay_requested" }
   | { type: "compact_requested" }
   | { type: "btw_requested"; query: string }

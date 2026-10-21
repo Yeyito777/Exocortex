@@ -888,6 +888,22 @@ export interface LoadInstructionsCommand {
   folderId?: string | null;
 }
 
+/**
+ * Read what the model is told about each tool on a conversation's provider and
+ * route: internal tools (schema description and prompt hint) and external tools
+ * (manifest systemHint), exactly as injected. Read-only; answered with
+ * tool_instructions_loaded.
+ */
+export interface LoadToolInstructionsCommand {
+  type: "load_tool_instructions";
+  reqId?: string;
+  /** The conversation whose provider and model decide the route; omit for a draft. */
+  convId?: string;
+  /** A draft's provider and model; ignored with convId. Defaults to the daemon's. */
+  provider?: ProviderId;
+  model?: ModelId;
+}
+
 /** Set the app-wide instructions every conversation gets (config/system.md). */
 export interface SetGlobalInstructionsCommand {
   type: "set_global_instructions";
@@ -1235,6 +1251,7 @@ export type Command =
   | UnwindConversationCommand
   | SetSystemInstructionsCommand
   | LoadInstructionsCommand
+  | LoadToolInstructionsCommand
   | SetGlobalInstructionsCommand
   | LlmCompleteCommand
   | GetSystemPromptCommand
@@ -2074,6 +2091,31 @@ export interface InstructionsLoadedEvent {
   global: string;
 }
 
+/** One tool's text as the model receives it. */
+export interface ToolInstructionsEntry {
+  name: string;
+  /** The file the text comes from: a daemon source file or the tool's manifest.json. */
+  source: string;
+  /** The description sent in the tool's schema (internal tools only). */
+  description?: string;
+  /** The text the system prompt (or, under Claude Code, the MCP server instructions) carries for it. */
+  hint?: string;
+  /** Where `hint` comes from when it is not `source`. */
+  hintSource?: string;
+}
+
+export interface ToolInstructionsLoadedEvent {
+  type: "tool_instructions_loaded";
+  reqId?: string;
+  convId: string | null;
+  provider: ProviderId;
+  model: ModelId | null;
+  /** How the text reaches the model on this provider, in a sentence. */
+  route: string;
+  internal: ToolInstructionsEntry[];
+  external: ToolInstructionsEntry[];
+}
+
 export interface GlobalInstructionsUpdatedEvent {
   type: "global_instructions_updated";
   reqId?: string;
@@ -2258,6 +2300,7 @@ export type Event =
   | FolderInstructionsLoadedEvent
   | FolderInstructionsUpdatedEvent
   | InstructionsLoadedEvent
+  | ToolInstructionsLoadedEvent
   | GlobalInstructionsUpdatedEvent
   | LlmCompleteResultEvent
   | SystemPromptEvent

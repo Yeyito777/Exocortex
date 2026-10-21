@@ -7,6 +7,7 @@
  */
 
 import { mkdirSync } from "fs";
+import { join } from "path";
 import { externalToolsDir as getExternalToolsDir, repoRoot, worktreeName } from "@exocortex/shared/paths";
 import { localMacroEnvironment } from "@exocortex/shared/macro-environment";
 import type { ExternalToolStyle } from "@exocortex/shared/messages";
@@ -159,12 +160,16 @@ export async function manageExternalToolDaemon(toolName: string, action: Externa
   return await daemonSupervisor.manage(toolName, action);
 }
 
+/** Each loaded external tool's system hint as injected, with the manifest it comes from. */
+export function getExternalToolHintEntries(loadedTools: readonly LoadedTool[] = tools): { name: string; hint: string; manifestPath: string }[] {
+  return loadedTools.flatMap((tool) => tool.manifest.systemHint
+    ? [{ name: tool.manifest.name, hint: resolveSystemHintPaths(tool.manifest.systemHint), manifestPath: join(tool.toolDir, "manifest.json") }]
+    : []);
+}
+
 /** Aggregated system hints from all loaded external tools. */
 export function getExternalToolHints(loadedTools: readonly LoadedTool[] = tools): string {
-  const hints = loadedTools.flatMap((tool) => tool.manifest.systemHint
-    ? [`## ${tool.manifest.name}\n${resolveSystemHintPaths(tool.manifest.systemHint)}`]
-    : []);
-  return hints.length > 0 ? hints.join("\n") : "";
+  return getExternalToolHintEntries(loadedTools).map((entry) => `## ${entry.name}\n${entry.hint}`).join("\n");
 }
 
 /**

@@ -23,6 +23,7 @@ import {
   type InstructionsNoticeTone,
   type InstructionsPickerState,
 } from "./state";
+import { shortSource, type ToolInstructionsDoc, type ToolSection } from "./tools";
 
 export interface RenderedInstructionsModal {
   payload: string;
@@ -173,6 +174,7 @@ function editorKeys(editor: InstructionsEditorState): string {
   if (editor.command !== null) return "Enter run · Esc cancel";
   if (editor.vim.mode === "insert") return "Esc normal mode · Ctrl-S save";
   if (editor.vim.mode !== "normal") return "Esc normal mode";
+  if (editor.tools) return "]] [[ tool · } { group · Enter source · :q close";
   return ":w save · :wq save & close · :q close · :q! discard";
 }
 
@@ -219,7 +221,79 @@ function editorLine(text: string, lineStart: number, width: number, selection: {
   return out + theme.reset + bg + pad(width - used);
 }
 
+// ── Tools view decorations ───────────────────────────────────────────
+
+/** `…` and the end of `text`, in at most `width` columns. */
+function truncateStart(text: string, width: number): string {
+  const chars = [...text];
+  let used = 1;
+  let start = chars.length;
+  while (start > 0 && used + termWidth(chars[start - 1]) <= width) used += termWidth(chars[--start]);
+  return "…" + chars.slice(start).join("");
+}
+
+/** Columns before a rule's label: the label text sits where the cursor expects it. */
+const RULE_LEAD = 3;
+
+/** A section header drawn as a rule: `━━ Internal tools · 6 ━━━━` or `── exo ───── daemon/src/tools/exo.ts ──`. */
+function ruleLine(section: ToolSection, width: number, bg: string): string {
+  const group = section.kind === "group";
+  const char = group ? "━" : "─";
+  const ruleColor = group ? theme.accent : theme.muted;
+  const label = truncateToWidth(clean(group ? `${section.name} · ${section.count ?? 0}` : section.name), Math.max(1, width - RULE_LEAD - 1));
+  const labelColor = group ? theme.accent + theme.bold : theme.text + theme.bold;
+  let used = RULE_LEAD + termWidth(label) + 1;
+  let source = section.source ? clean(shortSource(section.source)) : "";
+  if (source && used + termWidth(source) + 5 > width) source = "";
+  const fill = Math.max(0, width - used - (source ? termWidth(source) + 4 : 0));
+  return ruleColor + char.repeat(2) + " " + labelColor + label + theme.boldOff + theme.reset + bg + " "
+    + ruleColor + char.repeat(fill)
+    + (source ? ` ${theme.muted}${source}${theme.reset}${bg} ${ruleColor}${char.repeat(2)}` : "")
+    + theme.reset + bg;
+}
+
+/** Newline offsets, to find each view row's logical line. */
+function newlineOffsets(buffer: string): number[] {
+  const offsets: number[] = [];
+  for (let i = buffer.indexOf("\n"); i !== -1; i = buffer.indexOf("\n", i + 1)) offsets.push(i);
+  return offsets;
+}
+
+function lineOf(newlines: number[], offset: number): number {
+  let low = 0;
+  let high = newlines.length;
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if (newlines[mid] < offset) low = mid + 1;
+    else high = mid;
+  }
+  return low;
+}
+
+/** A view row of the tools view, decorated by its logical line's style. */
+function toolsRow(
+  doc: ToolInstructionsDoc,
+  text: string,
+  lineStart: number,
+  line: number,
+  firstRow: boolean,
+  width: number,
+  selection: { start: number; end: number } | null,
+  bg: string,
+): string {
+  const style = doc.lineStyles[line];
+  if (style?.kind === "rule") return firstRow ? ruleLine(style.section, width, bg) : pad(width);
+  const plain = editorLine(text, lineStart, width, selection, bg);
+  if (style?.kind === "field") return theme.accent + theme.italic + plain.replace(theme.text, "") + theme.italicOff;
+  if (style?.kind === "note") return theme.muted + theme.italic + plain.replace(theme.text, "") + theme.italicOff;
+  return plain;
+}
+
 function editorTitle(editor: InstructionsEditorState): string {
+  if (editor.tools) {
+    const route = [editor.tools.provider, editor.tools.model].filter(Boolean).join(" · ");
+    return `Tool instructions · ${route}`;
+  }
   const reach = editor.scope === "conversation" && editor.target.convId
     ? editor.target.convTitle?.trim() || "this conversation"
     : scopeReach(editor.scope, editor.target);
@@ -227,6 +301,7 @@ function editorTitle(editor: InstructionsEditorState): string {
 }
 
 function placeholder(editor: InstructionsEditorState): string {
+  if (editor.tools) return "No tools on this route";
   switch (editor.scope) {
     case "conversation": return "Instructions for this conversation only…";
     case "folder": return `Instructions for every conversation in ${editor.target.folderName ?? "this folder"}/…`;
@@ -251,8 +326,11 @@ export function renderInstructionsEditor(editor: InstructionsEditorState, totalR
   const selection = selectionRange(editor);
 
   const dirty = isInstructionsEditorDirty(editor);
-  const state = dirty ? "● modified" : "";
+  const state = editor.readOnly ? "read-only" : dirty ? "● modified" : "";
   let payload = moveTo(top, left) + edge(["╭", "╮"], width, editorTitle(editor), state, theme.bold + theme.text, dirty ? theme.warning : theme.muted);
+  const tools = editor.tools && !editor.loadReqId ? editor.tools : null;
+  const newlines = tools ? newlineOffsets(editor.buffer) : [];
+  let cursorOnRule = false;
   payload += moveTo(top + 1, left) + bodyRow(pad(inner));
   for (let i = 0; i < bodyRows; i++) {
     let content: string;
@@ -260,6 +338,12 @@ export function renderInstructionsEditor(editor: InstructionsEditorState, totalR
       content = i === 0 ? spread("Loading…", theme.muted, "", "", inner, bg) : pad(inner);
     } else if (!editor.buffer && i === 0) {
       content = spread(placeholder(editor), theme.dim + theme.italic, "", "", inner, bg) + theme.italicOff;
+    } else if (i < view.lines.length && tools) {
+      const start = view.lineStarts[i];
+      const line = lineOf(newlines, start);
+      const firstRow = start === 0 || editor.buffer[start - 1] === "\n";
+      content = toolsRow(tools, view.lines[i], start, line, firstRow, inner, selection, bg);
+      if (i === view.cursorLine && tools.lineStyles[line]?.kind === "rule") cursorOnRule = true;
     } else if (i < view.lines.length) {
       content = editorLine(view.lines[i], view.lineStarts[i], inner, selection, bg);
     } else {
@@ -285,7 +369,10 @@ export function renderInstructionsEditor(editor: InstructionsEditorState, totalR
     middle = spread(`:${shown}`, theme.text, "", "", inner - badgeWidth, bg);
     commandCursorCol = badgeWidth + 1 + termWidth(shown);
   } else if (editor.notice) {
-    middle = spread(editor.notice.text, noticeColor(editor.notice.tone), position, theme.muted, inner - badgeWidth, bg);
+    // A source path keeps its end (the file) when it does not fit.
+    const room = inner - badgeWidth;
+    const text = editor.tools && termWidth(editor.notice.text) > room ? truncateStart(editor.notice.text, room) : editor.notice.text;
+    middle = spread(text, noticeColor(editor.notice.tone), position, theme.muted, room, bg);
   } else {
     middle = spread("", "", position, theme.muted, inner - badgeWidth, bg);
   }
@@ -302,7 +389,8 @@ export function renderInstructionsEditor(editor: InstructionsEditorState, totalR
       || editor.vim.pendingKeys === "<" || editor.vim.pendingKeys === ">";
     cursor = {
       row: top + 2 + view.cursorLine,
-      col: textCol + view.cursorCol,
+      // On a rule the label is drawn after its lead-in.
+      col: textCol + Math.min(inner - 1, view.cursorCol + (cursorOnRule ? RULE_LEAD : 0)),
       shape: editor.vim.mode === "insert" ? "bar" : pendingOperator ? "underline" : "block",
     };
   }

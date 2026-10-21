@@ -136,10 +136,16 @@ export function getToolDisplayInfo(): ToolDisplayInfo[] {
 
 // ── System prompt hints ────────────────────────────────────────────
 
-export function buildToolSystemHints(allowedNames?: readonly string[], conversationId?: string, _maxDepth?: number | null): string {
+/** Each selected tool's system hint, in prompt order. */
+export function getToolSystemHintEntries(allowedNames?: readonly string[], conversationId?: string): { name: string; hint: string }[] {
   return getSelectedAvailableTools(allowedNames, conversationId)
     .filter(t => t.systemHint)
-    .map(t => `## ${t.name}\n${t.systemHint!}`)
+    .map(t => ({ name: t.name, hint: t.systemHint! }));
+}
+
+export function buildToolSystemHints(allowedNames?: readonly string[], conversationId?: string, _maxDepth?: number | null): string {
+  return getToolSystemHintEntries(allowedNames, conversationId)
+    .map(entry => `## ${entry.name}\n${entry.hint}`)
     .join("\n");
 }
 

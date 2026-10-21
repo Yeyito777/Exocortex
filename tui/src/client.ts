@@ -926,6 +926,12 @@ export class DaemonClient {
     return reqId;
   }
 
+  loadToolInstructions(convId: string | null, provider: ProviderId, model: ModelId): string {
+    const reqId = `tool_instructions_${++this.nextReqId}_${Date.now()}`;
+    this.send({ type: "load_tool_instructions", reqId, ...(convId ? { convId } : {}), provider, model });
+    return reqId;
+  }
+
   setGlobalInstructions(text: string, expectedText?: string): string {
     const reqId = `global_instructions_${++this.nextReqId}_${Date.now()}`;
     this.send({ type: "set_global_instructions", reqId, text, ...(expectedText !== undefined ? { expectedText } : {}) });
