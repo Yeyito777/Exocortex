@@ -4,6 +4,8 @@ import { DEFAULT_MODEL_BY_PROVIDER } from "./messages";
 import { load } from "./persistence";
 import { orchestrateSendMessage, type OrchestrationCallbacks } from "./orchestrator";
 
+const OWNER_RELAY = "[notification] Discord/paramount · DM\nYeyito [ch:1]\n\n→ Yeyito <@3> [owner]:\nare you there?\n[msg:5]\n\nAction: answer on Discord.";
+
 test("work timer survives canonical persistence, late join, automatic continuation and user reset", async () => {
   const id = `work-timer-${Date.now()}`;
   const events: any[] = [];
@@ -54,21 +56,26 @@ test("work timer survives canonical persistence, late join, automatic continuati
     expect(next.ok).toBe(true);
     expect(load(id)!.messages.at(-1)?.metadata?.workTimerStartedAt).toBe(expectedOrigin);
     expect(load(id)!.messages.at(-1)?.metadata?.generationThroughput?.rates).toHaveLength(1);
-    for (const automated of [true, false]) {
-      conversations.pushQueuedMessage(id, "queued interjection", "next-turn",
-        undefined, undefined, undefined, `queue-${automated}`, undefined,
-        automated ? { kind: "chrono_wake" } : undefined);
+    // Whoever sent it, a prompt injected mid-turn continues the stretch.
+    for (const [sender, text, automation] of [
+      ["notification", "queued interjection", { kind: "chrono_wake" }],
+      ["typed", "queued interjection", undefined],
+      ["relayed", OWNER_RELAY, { kind: "external_notification" }],
+    ] as const) {
+      conversations.pushQueuedMessage(id, text, "next-turn",
+        undefined, undefined, undefined, `queue-${sender}`, undefined, automation);
       const turnStart = Date.now() - 20_000;
       let calls = 0;
       callbacks.streamMessageFn = async () => {
         if (++calls === 1) return {
           text: "", thinking: "", stopReason: "tool_use", blocks: [],
-          toolCalls: [{ id: `probe-${automated}`, name: "goal", input: { action: "show" } }],
+          toolCalls: [{ id: `probe-${sender}`, name: "goal", input: { action: "show" } }],
           inputTokens: 10, outputTokens: 2,
         };
         const accepted = load(id)!.messages.at(-1)!;
-        expect(accepted.content).toBe("queued interjection");
-        expectedOrigin = automated ? turnStart : accepted.metadata!.startedAt;
+        expect(accepted.content).toBe(text);
+        expect(accepted.metadata?.arrivedWhileWorking).toBe(true);
+        expectedOrigin = turnStart;
         expect(conversations.getPendingStreamSnapshot(id)?.metadata?.workTimerStartedAt).toBe(expectedOrigin);
         return {
           text: "after injection", thinking: "", stopReason: "stop",
@@ -85,6 +92,83 @@ test("work timer survives canonical persistence, late join, automatic continuati
       expect(prefix.metadata?.workTimerStartedAt).toBe(turnStart);
     }
   } finally {
+    conversations.remove(id);
+  }
+});
+
+test("a prompt queued during a turn continues the stretch when that turn ends; the owner's words while idle restart it", async () => {
+  const id = `work-timer-queued-${Date.now()}`;
+  const events: any[] = [];
+  const server = {
+    sendTo() {}, broadcast() {}, sendToSubscribers(_id: string, event: any) { events.push(event); },
+    sendToSubscribersExcept(_id: string, event: any) { events.push(event); },
+    hasSubscribers() { return true; }, hasLegacyHistorySubscribers() { return false; },
+    sendHistoryUpdatedToSubscribers() {},
+  } as any;
+  conversations.create(id, "openai", "gpt-6-sol");
+  const reply = (text: string) => ({
+    text, thinking: "", stopReason: "stop" as const, blocks: [{ type: "text" as const, text }], toolCalls: [],
+    inputTokens: 10, outputTokens: 2,
+  });
+  try {
+    for (const [sender, text, automation] of [
+      ["typed", "queued while working", undefined],
+      ["relayed", OWNER_RELAY, { kind: "external_notification" }],
+    ] as const) {
+      const turnStart = Date.now() - 20_000;
+      const origins: number[] = [];
+      const callbacks: OrchestrationCallbacks = {
+        onHeaders() {}, onComplete() {},
+        streamMessageFn: async () => {
+          origins.push(events.findLast(event => event.type === "streaming_started").workTimerStartedAt);
+          if (origins.length === 1) {
+            conversations.pushQueuedMessage(id, text, "message-end",
+              undefined, undefined, undefined, `queued-${sender}`, undefined, automation);
+          }
+          return reply(`answer ${origins.length}`);
+        },
+      };
+      const result = await orchestrateSendMessage(server, null, undefined, id, `work ${sender}`, turnStart, callbacks);
+      expect(result.ok, result.error).toBe(true);
+      expect(origins).toHaveLength(2);
+      expect(origins[0]).toBe(turnStart);
+      const accepted = load(id)!.messages.findLast(message => message.role === "user")!;
+      expect(accepted.content).toBe(text);
+      expect(accepted.metadata?.arrivedWhileWorking).toBe(true);
+      // Only the moment between the turns is uncharged.
+      expect(origins[1]).toBeGreaterThanOrEqual(turnStart);
+      expect(origins[1]).toBeLessThan(turnStart + 1_000);
+      expect(load(id)!.messages.at(-1)?.metadata?.workTimerStartedAt).toBe(origins[1]);
+    }
+
+    // The owner relayed a message to an idle conversation, a minute after it went idle.
+    const advance = (ms: number) => setSystemTime(new Date(Date.now() + ms));
+    let origin = 0;
+    const idleCallbacks: OrchestrationCallbacks = {
+      onHeaders() {}, onComplete() {},
+      streamMessageFn: async () => {
+        origin = events.findLast(event => event.type === "streaming_started").workTimerStartedAt;
+        advance(30_000);
+        return reply("relay answer");
+      },
+    };
+    advance(60_000);
+    const relayedAt = Date.now();
+    const relayed = await orchestrateSendMessage(server, null, undefined, id, OWNER_RELAY, relayedAt, idleCallbacks,
+      undefined, { automation: { kind: "external_notification" } });
+    expect(relayed.ok, relayed.error).toBe(true);
+    expect(origin).toBe(relayedAt);
+    // Someone else's message is a notification: it continues the stretch.
+    advance(60_000);
+    const otherAt = Date.now();
+    const other = await orchestrateSendMessage(server, null, undefined, id,
+      OWNER_RELAY.replace(" [owner]", ""), otherAt, idleCallbacks,
+      undefined, { automation: { kind: "external_notification" } });
+    expect(other.ok, other.error).toBe(true);
+    expect(origin).toBeLessThanOrEqual(otherAt - 30_000);
+    expect(origin).toBeGreaterThan(otherAt - 31_000);
+  } finally {
+    setSystemTime();
     conversations.remove(id);
   }
 });

@@ -229,6 +229,8 @@ interface AssistantTurnOptions {
   queueEntryId?: string;
   /** Provenance for a daemon/model-authored prompt represented as a user turn. */
   automation?: UserMessageAutomation;
+  /** A queued prompt drained when the running turn ended: it continues the work timer. */
+  arrivedWhileWorking?: boolean;
   /** Force one context compaction without requesting an assistant response. */
   manualCompaction?: boolean;
   /** This turn is the daemon-owned successor in an already-active stream chain. */
@@ -389,6 +391,7 @@ async function orchestrateGoalContinuation(
       subagentNotificationId: first.subagentNotificationId,
       queueEntryId: first.id,
       automation: first.automation,
+      arrivedWhileWorking: true,
     } : { goalContinuationPrompt: formatGoalContinuation(initial!.goal!), goalAtAdmission: initial!.goal! }),
     streamChainHandoff: true,
   });
@@ -686,6 +689,7 @@ async function orchestrateAdmittedAssistantTurn(
         subagentNotificationId: options.subagentNotificationId,
         queueEntryId: options.queueEntryId,
         automation,
+        arrivedWhileWorking: options.arrivedWhileWorking,
         contextCheckpoint,
       });
     } catch (error) {
@@ -1695,6 +1699,7 @@ async function orchestrateAdmittedAssistantTurn(
           subagentNotificationId: qm.subagentNotificationId,
           queueEntryId: qm.id,
           automation: qm.automation,
+          arrivedWhileWorking: true,
           contextCheckpoint,
         });
         apiMsgs.push({
@@ -1715,11 +1720,9 @@ async function orchestrateAdmittedAssistantTurn(
       const latestHuman = injectedStored.findLast(message => !message.metadata?.automation);
       const sidebarBumped = !!latestHuman && convStore.bumpToTop(convId);
       persistCompletedTurnPrefix(injectedStored);
-      if (latestHuman?.metadata) {
-        workTimerStartedAt = latestHuman.metadata.startedAt;
-        convStore.setStreamingWorkTimerStartedAt(convId, workTimerStartedAt);
-        lastCanonicalTurnAssistant = null;
-      }
+      // The footer above a human prompt is final: abort metadata stamps only
+      // what follows it. The work timer runs on; the prompt arrived mid-turn.
+      if (latestHuman) lastCanonicalTurnAssistant = null;
       convStore.removeQueuedMessagesById(drained.map(message => message.id));
       for (const qm of drained) {
         if (qm.subagentNotificationId) acknowledgeSubagentNotification(qm.subagentNotificationId);
@@ -2288,6 +2291,7 @@ async function orchestrateAdmittedAssistantTurn(
           subagentNotificationId: first.subagentNotificationId,
           queueEntryId: first.id,
           automation: first.automation,
+          arrivedWhileWorking: true,
           streamChainHandoff: true,
         })).ok;
       } catch (err) {
