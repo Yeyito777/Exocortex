@@ -79,6 +79,7 @@ import { isProviderProxied, providerProxyConnect, providerProxyRoute } from "./p
 import { classifyNetworkFailureMessage } from "./providers/errors";
 import { getModelInfo, cyberAccessProgramForSelection, refreshProviders } from "./providers/registry";
 import { isDaybreakModelId } from "@exocortex/shared/daybreak";
+import { clearNextMessageSuggestion, startNextMessageSuggestion } from "./next-message-suggestions";
 
 // ── Transcript marker helpers ──────────────────────────────────────
 
@@ -971,6 +972,7 @@ async function orchestrateAdmittedAssistantTurn(
     return runWithProviderWaits(provider, attempt);
   };
 
+  clearNextMessageSuggestion(server, convId);
   // Broadcast sidebar update (streaming indicator)
   broadcastConversationUpdated(server, convId);
   server.sendToSubscribers(convId, {
@@ -2243,6 +2245,10 @@ async function orchestrateAdmittedAssistantTurn(
             server.sendHistoryUpdatedToSubscribers(convId, events.legacy, events.paginated);
           }
         }
+      }
+      // Only after a clean end that hands the prompt back to the user.
+      if (outcome?.ok && !outcome.aborted && !outcome.suspended && !manualCompaction && !streamChainContinues && !shutdownMode) {
+        startNextMessageSuggestion(server, convId);
       }
     } else {
       // Preserve the stream lifecycle for diagnostics and clients that clear

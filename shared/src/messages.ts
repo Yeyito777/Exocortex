@@ -737,6 +737,7 @@ export const TOKEN_USAGE_SOURCES = [
   "browse_summary",
   "context_summary",
   "context_compaction",
+  "next_message_suggestion",
 ] as const;
 
 export type TokenUsageSource = typeof TOKEN_USAGE_SOURCES[number];

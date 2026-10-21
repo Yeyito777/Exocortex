@@ -238,6 +238,8 @@ export interface RenderState {
   draftFolderId: string | null;
   inputBuffer: string;
   cursorPos: number;
+  /** Experimental: the daemon's predicted next message, shown as ghost text in the empty prompt. */
+  nextMessageSuggestion: { convId: string; text: string } | null;
   /** Preferred prompt column for repeated vertical movement (Vim curswant). */
   promptCurswant: number | null;
   cols: number;
@@ -661,6 +663,7 @@ export function createInitialState(): RenderState {
     sshConnecting: null,
     draftFolderId: null,
     inputBuffer: "",
+    nextMessageSuggestion: null,
     cursorPos: 0,
     promptCurswant: null,
     cols: process.stdout.columns || 80,

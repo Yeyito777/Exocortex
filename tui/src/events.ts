@@ -41,6 +41,7 @@ import { preserveViewportAcrossHistoryMutation } from "./chatscroll";
 import { joinSplitAssistantEntry } from "./historypagination";
 import { completeInitialConversationBackfill } from "./conversationscroll";
 import { CONV_SCOPED, observeStreamSeq } from "./events/stream-sequence";
+import { dropNextMessageSuggestion, receiveNextMessageSuggestion } from "./nextmessage";
 import {
   handleBlockStart,
   handleContextUpdate,
@@ -116,6 +117,7 @@ export function handleEvent(
 
     case "streaming_started":
       handleStreamingStarted(event, state);
+      dropNextMessageSuggestion(state, event.convId);
       break;
 
     case "block_start":
@@ -275,6 +277,10 @@ export function handleEvent(
     case "conversation_unwound":
       handleConversationUpdated({ type: "conversation_updated", summary: event.summary }, state);
       applyConversationUnwound(state, event);
+      break;
+
+    case "next_message_suggestion":
+      receiveNextMessageSuggestion(state, event);
       break;
 
     case "goal_updated":

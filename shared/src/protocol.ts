@@ -1611,6 +1611,17 @@ export interface ContextUpdateEvent {
   contextTokens: number;
 }
 
+/**
+ * Experimental (`experimental.nextMessageSuggestions`): the predicted next
+ * user message for a conversation, or null when there is none (sent on load
+ * and when a new turn starts). Sent only to the conversation's subscribers.
+ */
+export interface NextMessageSuggestionEvent {
+  type: "next_message_suggestion";
+  convId: string;
+  text: string | null;
+}
+
 export interface MessageCompleteEvent {
   type: "message_complete";
   convId: string;
@@ -2020,6 +2031,8 @@ export interface ExperimentalFeatures {
    * TUIs that predate that. Current TUIs ignore it.
    */
   images?: boolean;
+  /** Next-message suggestions: `next_message_suggestion` events after a turn ends. */
+  nextMessageSuggestions?: boolean;
 }
 
 export interface ConversationDefaultsSnapshot {
@@ -2300,6 +2313,7 @@ export type Event =
   | TokensUpdateEvent
   | ContextUpdateEvent
   | MessageCompleteEvent
+  | NextMessageSuggestionEvent
   | UsageUpdateEvent
   | AccountsEvent
   | UsageResetResultEvent

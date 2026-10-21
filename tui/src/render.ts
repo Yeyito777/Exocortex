@@ -38,6 +38,7 @@ import { macroGhostText, macroGuide, macroPopupRow } from "./usermacros/guide";
 import { macroGuideContext } from "./usermacros/controller";
 import { isMacroCommandText } from "./usermacros/parse";
 import { fitGhostText } from "./usermacros/render";
+import { visibleNextMessageSuggestion } from "./nextmessage";
 import type { SlashCompletion } from "./slashsearch";
 import { formatSize, imageLabel } from "./clipboard";
 import { renderQueuePromptOverlay } from "./overlays";
@@ -1514,6 +1515,11 @@ export function render(state: RenderState): boolean {
     if (ghost && line !== undefined) {
       coloredInputLines[cursorLine] = line + fitGhostText(ghost, visibleLength(line), chatW - PROMPT_PREFIX_WIDTH);
     }
+  }
+  // Experimental: the predicted next message as ghost text in the empty prompt.
+  const suggestion = visibleNextMessageSuggestion(state);
+  if (suggestion && coloredInputLines.length > 0) {
+    coloredInputLines[0] = fitGhostText(suggestion, 0, chatW - PROMPT_PREFIX_WIDTH);
   }
 
   const slHeight = status.height;

@@ -399,6 +399,8 @@ function formatTokenSourceLabel(source: TokenUsageSource): string {
       return "context summary";
     case "context_compaction":
       return "context compaction";
+    case "next_message_suggestion":
+      return "next-message suggestions";
   }
 }
 
