@@ -6,6 +6,8 @@ export interface DaemonActions {
   subscribe(convId: string): void;
   unsubscribe(convId: string): void;
   sendMessage(convId: string, text: string, startedAt: number, images?: ImageAttachment[]): void;
+  /** Re-queues a direct send that lost the race to a daemon-started turn. */
+  queueMessage?(convId: string, text: string, timing: "message-end", images: ImageAttachment[] | undefined, options: { queueId: string }): void;
   setSystemInstructions(convId: string, text: string): string | void;
   /** /instructions: loads and saves that wait for a check after reconnecting (see instructions/store). */
   readonly connected?: boolean;

@@ -69,6 +69,7 @@ import type { DaemonActions } from "./events/types";
 import { handleAccountsEvent } from "./accountsscreen";
 import { failBtwRequest, handleBtwEvent } from "./btw/events";
 import { settleRejectedQueueRequest } from "./queue";
+import { restoreUnconfirmedSends, settleRejectedDirectSend } from "./sendecho";
 import { formatChronoResult } from "./chronoschedule";
 import { turnRequestStartedAt } from "./request-ids";
 
@@ -176,6 +177,13 @@ export function handleEvent(
       // Rejected queue/BTW mutations settle the optimistic UI they created.
       const rejectedQueueEntry = settleRejectedQueueRequest(state, event.reqId);
       failBtwRequest(state, event.reqId, event.message);
+      // A rejected send never stays on screen looking sent.
+      const rejectedSend = settleRejectedDirectSend(state, daemon, event.reqId, event.message);
+      if (rejectedSend === "queued") break;
+      if (rejectedSend === "restored") {
+        pushSystemMessage(state, `✗ Message not sent: ${event.message}. It is back in the prompt.`, theme.error);
+        break;
+      }
       // Only show errors for the current conversation (or unscoped errors).
       if (event.convId && event.convId !== state.convId) {
         // The user left a rejected creation; its message is gone, so say so here.
@@ -491,6 +499,8 @@ export function handleEvent(
           state.historyHasOlder = event.hasOlderHistory ?? false;
           if (event.resetHistoryWindow) state.scrollOffset = 0;
         }
+        // A send the daemon has not seen yet is not in this snapshot.
+        restoreUnconfirmedSends(state, event.convId);
         // A call-status/history refresh can race a locally echoed direct send.
         // If pagination preserves that optimistic row while the incoming window
         // already contains its canonical replacement, keep the rightmost
