@@ -16,7 +16,10 @@ import { sanitizeUntrustedText, sanitizeUntrustedTextKeepingSgr } from "./termin
 import { sliceByWidthFrom, termWidth } from "./textwidth";
 import { wordWrap, type WrapImage, type WrapResult } from "./textwrap";
 import { createDisplayMathImageRenderer, mathImageCacheKey, mathImageGeneration, type DisplayMathImageRenderer } from "./mathimages";
-import { renderToolCallLogicalLines } from "./toolcalllogical";
+import { renderToolCallLogicalLines, type ToolCallLogicalLine } from "./toolcalllogical";
+import { CODE_GUTTER } from "./markdown/codeblocks";
+import { formatMarkdownChunks } from "./markdown/formatting";
+import { highlightLine } from "./markdown/highlight";
 import { RehydratedRenderCache } from "./rehydrated-render-cache";
 
 interface BlockCacheEntry {
@@ -187,6 +190,59 @@ function collapseLongToolCallDetail(
   copy.push(null);
 }
 
+/** Payload rows sit under the command, behind a gutter in the receiving tool's colour. */
+const PAYLOAD_INDENT = "    ";
+const PAYLOAD_GUTTER = `${CODE_GUTTER} `;
+
+/**
+ * Render one heredoc/stdin payload block. Long bodies collapse behind the
+ * tool-output toggle like long tool-call details; the closing delimiter stays.
+ */
+function renderToolCallPayload(
+  entries: ToolCallLogicalLine[],
+  contentWidth: number,
+  showToolOutput: boolean,
+  lines: string[],
+  cont: boolean[],
+  join: string[],
+  copy: NonNullable<WrapResult["copy"]>,
+): void {
+  const { block } = entries[0].payload!;
+  const fg = entries[0].display.fg;
+  const isTool = block.kind === "tool";
+  const gutter = `${PAYLOAD_INDENT}${isTool ? fg : theme.muted}${PAYLOAD_GUTTER}${theme.reset}`;
+  const width = Math.max(1, contentWidth - PAYLOAD_INDENT.length - PAYLOAD_GUTTER.length);
+  const push = (text: string, isCont: boolean, joiner: string) => {
+    lines.push(`${gutter}${text}${theme.reset}`);
+    cont.push(isCont);
+    join.push(joiner);
+    copy.push(null);
+  };
+
+  const body: Array<{ text: string; cont: boolean; join: string }> = [];
+  for (const entry of entries) {
+    if (entry.payload!.role !== "body") continue;
+    const w = wordWrap(entry.text, width);
+    const styled = isTool && block.markdown
+      ? formatMarkdownChunks(w.lines, w.join, `${theme.reset}${fg}`).map(line => `${fg}${line}`)
+      : w.lines.map(line => isTool
+        ? `${fg}${line}`
+        : block.language ? highlightLine(line, block.language) : `${theme.muted}${line}`);
+    for (let j = 0; j < styled.length; j++) body.push({ text: styled[j], cont: w.cont[j], join: w.join[j] });
+  }
+
+  const title = entries.find(entry => entry.payload!.role === "title");
+  if (title) {
+    const label = title.display.label;
+    push(`${fg}${theme.bold}${label}${theme.boldOff}${theme.dim}${title.text.slice(label.length)}`, false, "");
+  }
+  const collapse = !showToolOutput && body.length > COLLAPSE_TOOL_CALL_AFTER_ROWS;
+  for (const row of collapse ? body.slice(0, COLLAPSED_TOOL_CALL_ROWS) : body) push(row.text, row.cont, row.join);
+  if (collapse) push(`${theme.dim}… +${body.length - COLLAPSED_TOOL_CALL_ROWS} more lines (ctrl+o to expand)`, false, "");
+  const end = entries.find(entry => entry.payload!.role === "end");
+  if (end) push(`${theme.dim}${end.text}`, false, "");
+}
+
 export function renderBlockCached(
   block: Block,
   contentWidth: number,
@@ -332,7 +388,15 @@ function renderBlock(
       );
 
       const firstRow = lines.length;
-      for (const entry of logical) {
+      for (let k = 0; k < logical.length; k++) {
+        const entry = logical[k];
+        if (entry.payload) {
+          let end = k + 1;
+          while (end < logical.length && logical[end].payload?.block === entry.payload.block) end++;
+          renderToolCallPayload(logical.slice(k, end), contentWidth, showToolOutput, lines, cont, join, copy);
+          k = end - 1;
+          continue;
+        }
         const w = wordWrap(entry.text, contentWidth - 2);
         for (let j = 0; j < w.lines.length; j++) {
           if (entry.hasLabel && j === 0) {
@@ -344,6 +408,20 @@ function renderBlock(
           cont.push(w.cont[j]);
           join.push(w.join[j]);
           copy.push(null);
+        }
+        if (entry.meta) {
+          // After the entry's first source line: a multi-line command is one entry.
+          let j = 1;
+          while (j < w.lines.length && w.cont[j]) j++;
+          const row = lines.length - w.lines.length + j - 1;
+          if (termWidth(w.lines[j - 1] ?? "") + 4 + termWidth(entry.meta) <= contentWidth) {
+            lines[row] += `  ${theme.dim}${entry.meta}${theme.reset}`;
+          } else {
+            lines.splice(row + 1, 0, `  ${theme.dim}${entry.meta}${theme.reset}`);
+            cont.splice(row + 1, 0, false);
+            join.splice(row + 1, 0, "");
+            copy.splice(row + 1, 0, null);
+          }
         }
       }
       collapseLongToolCallDetail(block.toolName, showToolOutput, firstRow, lines, cont, join, copy);

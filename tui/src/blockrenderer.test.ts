@@ -278,7 +278,7 @@ describe("tool-call presentation", () => {
     expect(stripAnsi(rendered.lines[0] ?? "")).toBe("  Deploy >result.txt");
   });
 
-  test("keeps multiline stdin attached to its parent external tool call", () => {
+  test("shows multiline stdin as its external tool's input block, parameters apart", () => {
     const stdin = "first line\n\nprintf 'data, not bash'\nlast line";
     const block: Block = {
       type: "tool_call",
@@ -297,10 +297,12 @@ describe("tool-call presentation", () => {
     );
 
     expect(rendered.lines.map(stripAnsi)).toEqual([
-      "  Image generate --stdin first line",
-      "  ",
-      "  printf 'data, not bash'",
-      "  last line --timeout 30000",
+      "  Image generate  --timeout 30000",
+      "    ▎ Image input",
+      "    ▎ first line",
+      "    ▎ ",
+      "    ▎ printf 'data, not bash'",
+      "    ▎ last line",
     ]);
   });
 

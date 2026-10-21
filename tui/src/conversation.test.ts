@@ -737,7 +737,8 @@ describe("tool call rendering", () => {
     const rendered = buildMessageLines(state, 120).lines.map(stripAnsi);
 
     expect(rendered).toContain("  $ cat > /tmp/kittenml-reply.txt <<'EOF'");
-    expect(rendered).toContain("  $ Hi!");
+    expect(rendered).toContain("    ▎ Hi!");
+    expect(rendered).not.toContain("  $ Hi!");
     expect(rendered).toContain("  Gmail reply -f /tmp/kittenml-reply.txt 19d68e0c3d19ece3 --timeout 120000");
   });
 
@@ -1049,7 +1050,7 @@ describe("tool call rendering", () => {
 
     expect(rendered).not.toContain("  VM screenshot windows --out /tmp/not-a-real-call.png");
     expect(rendered).toContain("  $ cat > /tmp/vm-script.sh <<'EOF'");
-    expect(rendered).toContain("  $ vm screenshot windows --out /tmp/not-a-real-call.png");
+    expect(rendered).toContain("    ▎ vm screenshot windows --out /tmp/not-a-real-call.png");
     expect(rendered).toContain("  $ echo before");
     expect(rendered).toContain("  VM screenshot windows --out /tmp/real-call.png");
     expect(rendered).toContain("  $ echo done");
