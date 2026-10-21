@@ -11,6 +11,7 @@ import {
   completeDeferredChronoSleepResume,
   configureChronoService,
   createChronoSchedule,
+  defaultChronoTitle,
   deferChronoSleep,
   installMigratedSchedule,
   interruptDeferredChronoSleep,
@@ -60,6 +61,32 @@ afterEach(() => {
 });
 
 describe("Chrono scheduler", () => {
+  test("a schedule without a title is named by its message's first line, up to 200 characters", () => {
+    const owner = makeConversation("title");
+    const at = "2026-11-01T09:00:00-04:00";
+    const now = Date.parse("2026-10-20T00:00:00Z");
+    const line = "Daily inbox sweep: triage Gmail and UofT email, file receipts, flag anything from the registrar or the CS department";
+    expect(line.length).toBeGreaterThan(80);
+    // A long first line is kept whole; later lines and runs of whitespace are not part of the title.
+    expect(createChronoSchedule({ ownerConversationId: owner, at, message: `\n  ${line.replace(" ", "   ")}\n\nThen report back.` }, now).schedule?.title).toBe(line);
+    // An explicit title is untouched.
+    expect(createChronoSchedule({ ownerConversationId: owner, at, message: line, title: "  Inbox sweep " }, now).schedule?.title).toBe("Inbox sweep");
+    expect(createChronoSchedule({ ownerConversationId: owner, at, command: "bun run backup.ts --verify\necho done" }, now).schedule?.title).toBe("bun run backup.ts --verify");
+
+    // Over the bound: the whole sentences that fit when they are long enough, else a word-boundary cut.
+    const sentence = `${"Reconcile every card statement against the budget sheet ".repeat(2).trim()}.`;
+    const then = "Then flag anything unusual for review.";
+    expect(defaultChronoTitle({ message: `${sentence} ${`${then} `.repeat(4)}` })).toBe(`${sentence} ${then} ${then}`);
+    expect(defaultChronoTitle({ message: `Short one. ${"word ".repeat(60)}` })).toEndWith("word…");
+    const words = "word ".repeat(60).trim();
+    const cut = defaultChronoTitle({ message: words });
+    expect(cut).toBe(`${"word ".repeat(40).trim()}…`);
+    expect(cut.length).toBeLessThanOrEqual(200);
+    const unbroken = defaultChronoTitle({ message: "x".repeat(500) });
+    expect(unbroken).toBe(`${"x".repeat(199)}…`);
+    expect(defaultChronoTitle({ message: " \n " })).toBe("Scheduled wake");
+  });
+
   test("rejects ambiguous absolute wake times without an explicit offset", () => {
     const owner = makeConversation("offset");
     expect(createChronoSchedule({

@@ -7,9 +7,11 @@
  * this module adds the durable goal and owns all visual formatting and
  * horizontal space reservation for the panel.
  *
- * Every entry is one compact row. A click toggles the card between its capped
- * height, whose last row counts the entries left out, and an expanded form
- * that lists every row, scrolling when it outgrows the message area.
+ * Collapsed, every entry is one compact row and the card is capped in height,
+ * its last row counting the entries left out. A click toggles an expanded form
+ * that lists every entry, grows leftward to EXPANDED_PANEL_WIDTH_FACTOR × the
+ * collapsed width (keeping its right edge), wraps long titles onto indented
+ * continuation rows, and scrolls when it outgrows the message area.
  */
 
 import type { ConversationGoalStatus, ConversationTaskSummary, ExternalIntegrationSummary } from "./messages";
@@ -19,10 +21,13 @@ import { isGlobalIdleQueuedMessage } from "./queue";
 import type { RenderState } from "./state";
 import { isAgentBackgroundTask, shouldDisplayConversationTask } from "./taskvisibility";
 import { padRightToWidth, termWidth } from "./textwidth";
+import { wordWrap } from "./textwrap";
 import { hexToAnsi, hexToAnsiBg, theme } from "./theme";
 
 const MAX_PANEL_WIDTH = 50;
 const MIN_PANEL_WIDTH = 30;
+/** The expanded card grows leftward to this multiple of its collapsed width, room permitting. */
+export const EXPANDED_PANEL_WIDTH_FACTOR = 1.5;
 /** Keep the floating card compact even when a conversation owns many schedules. */
 export const MAX_TASK_PANEL_HEIGHT = 12;
 /** Keep enough chat beside the panel for useful word wrapping. */
@@ -318,15 +323,49 @@ function subagentIndicator(state: RenderState, task: TaskPanelEntry): Conversati
   return indicator.icon ? indicator : null;
 }
 
-/** One compact row: label, the title truncated to fit, and the countdown, elapsed time, or a paused goal's status. */
-function taskRow(
+/**
+ * The title column of one entry: truncated to a single row, or word-wrapped
+ * onto as many rows as it needs. Every row is padded to `width`.
+ */
+function titleRows(title: string, width: number, wrap: boolean): string[] {
+  if (!wrap) return [padRightToWidth(title, width)];
+  const rows = wordWrap(title, Math.max(1, width)).lines.map(row => row.trim()).filter(Boolean);
+  return (rows.length > 0 ? rows : [""]).map(row => padRightToWidth(row, width));
+}
+
+/**
+ * An entry's rows: label, the first title row and the status column, then any
+ * continuation rows indented under the title with the status column left blank.
+ */
+function entryRows(
+  palette: PanelPalette,
+  lead: string,
+  leadWidth: number,
+  titles: string[],
+  status: string,
+  statusWidth: number,
+): string[] {
+  const row = (start: string, title: string, end: string) => palette.withPanelBg(
+    `${palette.outline}│${theme.reset} ${start}${theme.text} ${title}`
+    + `${theme.muted}${end}${theme.reset} ${palette.outline}│`,
+  );
+  const blankLead = " ".repeat(leadWidth);
+  const blankStatus = " ".repeat(statusWidth);
+  return titles.map((title, index) => index === 0
+    ? row(lead, title, padLeftToWidth(status, statusWidth))
+    : row(blankLead, title, blankStatus));
+}
+
+/** One entry: label, the title truncated (or wrapped) to fit, and the countdown, elapsed time, or a paused goal's status. */
+function taskRows(
   task: TaskPanelEntry,
   palette: PanelPalette,
   innerWidth: number,
   compactExocortex: boolean,
   now: number,
-  indicator: ConversationActivityIndicator | null = null,
-): string {
+  indicator: ConversationActivityIndicator | null,
+  wrap: boolean,
+): string[] {
   const isSubagent = task.kind === "subagent";
   // Claude Code's background agents and workflows run inside Claude Code, not as Exocortex conversations.
   const isAgent = isAgentBackgroundTask(task);
@@ -346,11 +385,8 @@ function taskRow(
       ? formatTaskCountdown(task.dueAt, now)
     : formatTaskElapsed(task.startedAt, now);
   const titleWidth = innerWidth - termWidth(label) - ELAPSED_WIDTH - 3;
-  return palette.withPanelBg(
-    `${palette.outline}│${theme.reset} ${color}${indicator ? `${indicator.color}${label[0]}${color}${label.slice(1)}` : label}`
-    + `${theme.text} ${padRightToWidth(title, titleWidth)}`
-    + `${theme.muted}${padLeftToWidth(time, ELAPSED_WIDTH)}${theme.reset} ${palette.outline}│`,
-  );
+  const lead = `${color}${indicator ? `${indicator.color}${label[0]}${color}${label.slice(1)}` : label}`;
+  return entryRows(palette, lead, termWidth(label), titleRows(title, titleWidth, wrap), time, ELAPSED_WIDTH);
 }
 
 function sectionDivider(palette: PanelPalette, innerWidth: number, title: string, count: number): string {
@@ -378,7 +414,13 @@ function integrationTitle(integration: ExternalIntegrationSummary): string {
   return cleanPanelText(integration.label) || fallbackTitle;
 }
 
-function integrationRow(state: RenderState, palette: PanelPalette, innerWidth: number, integration: ExternalIntegrationSummary): string {
+function integrationRows(
+  state: RenderState,
+  palette: PanelPalette,
+  innerWidth: number,
+  integration: ExternalIntegrationSummary,
+  wrap: boolean,
+): string[] {
   const { label: rawToolLabel, color } = integrationStyle(state, integration);
   const title = integrationTitle(integration);
   const deliveryStatus = formatIntegrationDeliveryStatus(integration);
@@ -386,10 +428,13 @@ function integrationRow(state: RenderState, palette: PanelPalette, innerWidth: n
   const labelWidth = Math.min(termWidth(rawToolLabel), Math.max(1, labelAndTitleWidth - 1));
   const toolLabel = padRightToWidth(rawToolLabel, labelWidth).trimEnd();
   const titleWidth = Math.max(1, labelAndTitleWidth - termWidth(toolLabel));
-  return palette.withPanelBg(
-    `${palette.outline}│${theme.reset} ${color}${toolLabel}`
-    + `${theme.text} ${padRightToWidth(title, titleWidth)}`
-    + `${theme.muted}${padLeftToWidth(deliveryStatus, INTEGRATION_STATE_WIDTH)}${theme.reset} ${palette.outline}│`,
+  return entryRows(
+    palette,
+    `${color}${toolLabel}`,
+    termWidth(toolLabel),
+    titleRows(title, titleWidth, wrap),
+    deliveryStatus,
+    INTEGRATION_STATE_WIDTH,
   );
 }
 
@@ -414,7 +459,9 @@ function expandedPanelFooter(palette: PanelPalette, innerWidth: number, above: n
  * capped at MAX_TASK_PANEL_HEIGHT; when every entry cannot fit, the final
  * content row reports how many entries are hidden and invites a click, while
  * the header keeps the total count visible. Expanded, the same rows list every
- * entry up to `maxHeight`, scrolling by `state.taskPanelExpansion.scroll` rows.
+ * entry up to `maxHeight`, scrolling by `state.taskPanelExpansion.scroll` rows;
+ * the card widens leftward to EXPANDED_PANEL_WIDTH_FACTOR × its collapsed
+ * width, never past `chatWidth`, and wraps titles instead of truncating them.
  */
 export function renderTaskPanel(
   state: RenderState,
@@ -429,7 +476,10 @@ export function renderTaskPanel(
   const panelHeight = expanded ? maxHeight : Math.min(maxHeight, MAX_TASK_PANEL_HEIGHT);
   if (totalEntries === 0 || chatWidth < MIN_PANEL_WIDTH || panelHeight < 3) return null;
 
-  const panelWidth = Math.min(MAX_PANEL_WIDTH, chatWidth);
+  const collapsedWidth = Math.min(MAX_PANEL_WIDTH, chatWidth);
+  const panelWidth = expanded
+    ? Math.min(chatWidth, Math.floor(collapsedWidth * EXPANDED_PANEL_WIDTH_FACTOR))
+    : collapsedWidth;
   const innerWidth = panelWidth - 2;
   const maxContentRows = panelHeight - 2;
   const visible = fitTasksAndSubscriptions(tasks, integrations, expanded ? Infinity : maxContentRows);
@@ -448,11 +498,12 @@ export function renderTaskPanel(
     ),
   ];
 
-  const body = visible.tasks.map(task => taskRow(task, palette, innerWidth, panelWidth < 38, now, subagentIndicator(state, task)));
+  const body = visible.tasks.flatMap(task =>
+    taskRows(task, palette, innerWidth, panelWidth < 38, now, subagentIndicator(state, task), expanded));
   if (visible.showSubscriptionsDivider) {
     body.push(sectionDivider(palette, innerWidth, "Subscriptions", integrations.length));
   }
-  body.push(...visible.integrations.map(integration => integrationRow(state, palette, innerWidth, integration)));
+  body.push(...visible.integrations.flatMap(integration => integrationRows(state, palette, innerWidth, integration, expanded)));
 
   if (expanded) {
     const maxScroll = Math.max(0, body.length - maxContentRows);
