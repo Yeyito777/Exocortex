@@ -48,7 +48,7 @@ The implementation in [keybinds.ts](../tui/src/keybinds.ts) and
 | `Escape` | Normal mode (vim) |
 | `i` / `a` | Insert mode (vim) |
 | `v` / `V` | Visual / visual-line mode |
-| `Right Shift` / `→` | Put the next-message suggestion (experimental ghost text in the empty prompt) into the prompt |
+| `Right Shift` / `→` / normal-mode `Tab` | Put the next-message suggestion (experimental ghost text in the empty prompt) into the prompt |
 | `Tab` | In prompt insert mode, complete a popup/path or insert a four-space soft tab |
 | `Backspace` / `Delete` | Remove an adjacent four-space soft tab in one press |
 | `>>` / `<<` | Shift prompt lines right / left by four spaces |

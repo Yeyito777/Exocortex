@@ -83,6 +83,17 @@ describe("next-message suggestion", () => {
     expect(state.cursorPos).toBe("commit and push it".length - 1);
   });
 
+  test("Tab accepts in normal mode; insert-mode Tab keeps its soft tab", () => {
+    const state = stateWithSuggestion();
+    state.vim.mode = "normal";
+    expect(handleFocusedKey({ type: "tab" }, state)).toEqual({ type: "handled" });
+    expect(state.inputBuffer).toBe("commit and push it");
+
+    const typing = stateWithSuggestion();
+    handleFocusedKey({ type: "tab" }, typing);
+    expect(typing.inputBuffer).toBe("    ");
+  });
+
   test("hidden while streaming, for another conversation, and after a new turn starts", () => {
     const state = stateWithSuggestion();
     state.pendingAI = createPendingAI(Date.now(), "claude-opus-5-5");
