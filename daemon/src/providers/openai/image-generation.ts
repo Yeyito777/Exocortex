@@ -7,8 +7,15 @@ import { getVerifiedSession } from "./auth";
 import { CHATGPT_BASE_URL, OPENAI_CODEX_RESPONSES_URL } from "./constants";
 import { buildOpenAIHeaders } from "./http";
 import { proxiedProviderUrl } from "../../provider-proxy/route";
+import { latestSizeModel } from "../../delegation-models";
+import { getProvider } from "../registry";
+import { log } from "../../log";
 
-const IMAGE_GENERATION_MODEL = "gpt-5.4-mini";
+// The image_generation tool runs on any Codex chat model; the chat model only
+// relays the prompt, so prefer the newest of the cheapest sizes. Resolved
+// from the live catalog because Codex retires old slugs (gpt-5.4-mini did).
+const IMAGE_GENERATION_SIZES = ["luna", "terra", "sol"] as const;
+const IMAGE_GENERATION_FALLBACK_MODEL = "gpt-6-luna";
 const IMAGE_GENERATION_INSTRUCTIONS = "Call the image generation tool EXACTLY according to the user's request. No interpretation no adding things copy the user request word for word.";
 const IMAGE_GENERATION_STALL_TIMEOUT_MS = 180_000;
 
@@ -95,23 +102,55 @@ async function readStream(res: Response, stallTimeoutMs: number, signal?: AbortS
   return generated;
 }
 
+/** Candidate models in preference order: newest luna, then terra, then sol. */
+export function imageGenerationModels(catalog: readonly string[]): string[] {
+  const models = IMAGE_GENERATION_SIZES.map(size => latestSizeModel(size, catalog))
+    .filter((model): model is string => model !== undefined);
+  return models.length > 0 ? models : [IMAGE_GENERATION_FALLBACK_MODEL];
+}
+
+/** A 400 that names the model means this slug is not accepted; try the next. */
+function isModelRejection(status: number, body: string): boolean {
+  return status === 400 && /model/i.test(body);
+}
+
 export async function generateImageWithSession(
   session: ImageGenerationSession,
   prompt: string,
-  options: { signal?: AbortSignal; fetchImpl?: typeof fetch; stallTimeoutMs?: number } = {},
+  options: { signal?: AbortSignal; fetchImpl?: typeof fetch; stallTimeoutMs?: number; models?: readonly string[] } = {},
 ): Promise<GeneratedImage> {
   if (!prompt.trim()) throw new Error("Image prompt is empty");
+  const models = options.models?.length ? options.models : [IMAGE_GENERATION_FALLBACK_MODEL];
+  for (const [index, model] of models.entries()) {
+    const res = await requestImage(session, model, prompt, options);
+    if (res.ok) return readStream(res, options.stallTimeoutMs ?? IMAGE_GENERATION_STALL_TIMEOUT_MS, options.signal);
+    const text = await res.text();
+    if (index < models.length - 1 && isModelRejection(res.status, text)) {
+      log("warn", `image generation: ${model} rejected (${res.status}), trying ${models[index + 1]}`);
+      continue;
+    }
+    throw new Error(`OpenAI image generation with ${model} failed (${res.status}): ${text.slice(0, 500)}`);
+  }
+  throw new Error("OpenAI image generation has no model to use");
+}
+
+async function requestImage(
+  session: ImageGenerationSession,
+  model: string,
+  prompt: string,
+  options: { signal?: AbortSignal; fetchImpl?: typeof fetch },
+): Promise<Response> {
   const headers = buildOpenAIHeaders({
     Authorization: `Bearer ${session.accessToken}`,
     Accept: "text/event-stream",
     "Content-Type": "application/json",
   });
   if (session.accountId) headers["ChatGPT-Account-ID"] = session.accountId;
-  const res = await (options.fetchImpl ?? fetch)(proxiedProviderUrl("openai", OPENAI_CODEX_RESPONSES_URL, CHATGPT_BASE_URL), {
+  return (options.fetchImpl ?? fetch)(proxiedProviderUrl("openai", OPENAI_CODEX_RESPONSES_URL, CHATGPT_BASE_URL), {
     method: "POST",
     headers,
     body: JSON.stringify({
-      model: IMAGE_GENERATION_MODEL,
+      model,
       instructions: IMAGE_GENERATION_INSTRUCTIONS,
       input: [{ role: "user", content: [{ type: "input_text", text: prompt }] }],
       tool_choice: "auto",
@@ -122,13 +161,9 @@ export async function generateImageWithSession(
     }),
     signal: options.signal,
   });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`OpenAI image generation failed (${res.status}): ${text.slice(0, 500)}`);
-  }
-  return readStream(res, options.stallTimeoutMs ?? IMAGE_GENERATION_STALL_TIMEOUT_MS, options.signal);
 }
 
 export async function generateImage(prompt: string, options: { signal?: AbortSignal } = {}): Promise<GeneratedImage> {
-  return generateImageWithSession(await getVerifiedSession(), prompt, options);
+  const catalog = getProvider("openai")?.models.map(model => model.id) ?? [];
+  return generateImageWithSession(await getVerifiedSession(), prompt, { ...options, models: imageGenerationModels(catalog) });
 }
