@@ -9,6 +9,15 @@ const ai = (startedAt: number, endedAt: number, workTimerStartedAt = startedAt):
 const user = (): StoredMessage => ({
   role: "user", content: "request", metadata: createMessageMetadata(0, "gpt-5.5"),
 });
+const OWNER_RELAY = "[notification] Discord/paramount · DM\nYeyito [ch:1]\n\n→ Yeyito <@3> [owner]:\nare you there?\n[msg:5]\n\nAction: answer on Discord.";
+const relayed = (text = OWNER_RELAY): StoredMessage => ({
+  role: "user", content: [{ type: "text" as const, text }],
+  metadata: { ...createMessageMetadata(0, "gpt-5.5"), automation: { kind: "external_notification" } },
+});
+const arrivedWhileWorking = (message: StoredMessage): StoredMessage => {
+  message.metadata!.arrivedWhileWorking = true;
+  return message;
+};
 
 describe("work stretch timer", () => {
   test("passes isolated daemon lifecycle checks", () => {
@@ -20,6 +29,19 @@ describe("work stretch timer", () => {
   test("starts with the request and resets on a new human message, even within the buffer", () => {
     expect(workTimerForTurn([], 0)).toBe(0);
     expect(workTimerForTurn([ai(0, 134_000), user()], 137_000)).toBe(137_000);
+  });
+
+  test("the owner's relayed message resets while idle, like a typed one", () => {
+    expect(workTimerForTurn([ai(0, 134_000), relayed()], 137_000)).toBe(137_000);
+    // Someone else's message is only a notification.
+    expect(workTimerForTurn([ai(0, 134_000), relayed(OWNER_RELAY.replace(" [owner]", ""))], 137_000)).toBe(3_000);
+  });
+
+  test("the owner's message that arrived during work continues the stretch", () => {
+    expect(workTimerForTurn([ai(0, 134_000), arrivedWhileWorking(user())], 137_000)).toBe(3_000);
+    expect(workTimerForTurn([ai(0, 134_000), arrivedWhileWorking(relayed())], 137_000)).toBe(3_000);
+    // Still never across five idle minutes.
+    expect(workTimerForTurn([ai(0, 134_000), arrivedWhileWorking(user())], 434_000)).toBe(434_000);
   });
 
   test.each([...USER_MESSAGE_AUTOMATION_KINDS])("does not reset for %s", (kind) => {

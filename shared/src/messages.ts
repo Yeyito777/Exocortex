@@ -401,6 +401,12 @@ export interface MessageMetadata {
   queueEntryId?: string;
   /** Provenance for a non-human prompt intentionally represented as a user turn. */
   automation?: UserMessageAutomation;
+  /**
+   * A queued prompt delivered while work was underway: injected at a tool
+   * boundary, or started as the next turn when the running one ended. It
+   * continues the work timer instead of restarting it.
+   */
+  arrivedWhileWorking?: true;
 }
 
 /** Build standard message metadata with sensible defaults. */

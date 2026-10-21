@@ -1783,7 +1783,7 @@ describe("instant steering display", () => {
 });
 
 describe("streaming assistant metadata", () => {
-  test("carries the work timer on start and heartbeat and resets only on injected human input", () => {
+  test("carries the work timer on start and heartbeat; injected prompts continue it", () => {
     const state = createInitialState();
     state.convId = "conv-1";
     handleEvent({
@@ -1799,12 +1799,12 @@ describe("streaming assistant metadata", () => {
     handleEvent({
       type: "user_message", convId: "conv-1", text: "human", startedAt: 145_000,
     }, state, daemon);
-    expect(state.pendingAI?.metadata?.workTimerStartedAt).toBe(145_000);
+    expect(state.pendingAI?.metadata?.workTimerStartedAt).toBe(3_000);
     handleEvent({
       type: "streaming_started", convId: "conv-1", provider: "openai", model: "gpt-5.5",
-      startedAt: 137_000, workTimerStartedAt: 145_000, snapshotKind: "heartbeat",
+      startedAt: 137_000, workTimerStartedAt: 3_000, snapshotKind: "heartbeat",
     }, state, daemon);
-    expect(state.pendingAI?.metadata?.workTimerStartedAt).toBe(145_000);
+    expect(state.pendingAI?.metadata?.workTimerStartedAt).toBe(3_000);
   });
   for (const scrollOffset of [0, 20]) {
     for (const automated of [false, true]) {
@@ -2145,7 +2145,7 @@ describe("streaming assistant metadata", () => {
       {
         role: "assistant",
         blocks: [{ type: "text", text: "done" }],
-        metadata: { startedAt: 1, endedAt: 3, model: "gpt-5.5", tokens: 10, workTimerStartedAt: 2 },
+        metadata: { startedAt: 1, endedAt: 3, model: "gpt-5.5", tokens: 10 },
       },
     ]);
     expect(state.pendingAI).toBeNull();
