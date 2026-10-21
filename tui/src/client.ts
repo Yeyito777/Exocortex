@@ -10,7 +10,7 @@ import { existsSync } from "fs";
 import { randomUUID } from "crypto";
 import { StringDecoder } from "node:string_decoder";
 import { homedir, hostname, userInfo } from "os";
-import type { ClientCapability, ClientHostInfo, Command, DaemonShutdownMode, Event, GoalAction, MoveSidebarItemsOptions, OpenAILoginMethod, QueuedCommandInvocation, QueueTiming, QueueWaitTarget, TrimMode, SidebarItemRef, GetImageCommand, ImageDataEvent } from "./protocol";
+import type { ClientCapability, ClientHostInfo, Command, DaemonShutdownMode, Event, GoalAction, MoveSidebarItemsOptions, OpenAILoginMethod, QueuedCommandInvocation, QueueTiming, QueueWaitTarget, TrimMode, SidebarItemRef, GetImageCommand, ImageDataEvent, UserMacro } from "./protocol";
 import type { ProviderId, ModelId, EffortLevel, ImageAttachment, TokenUsageSource } from "./messages";
 import { socketPath, isWindows } from "@exocortex/shared/paths";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
@@ -493,6 +493,26 @@ export class DaemonClient {
       return;
     }
     this.send({ ...command, reqId: `defaults_${randomUUID()}` });
+  }
+
+  /** Returns the request id the confirmation or error will carry, or null when offline. */
+  saveUserMacro(macro: UserMacro, create: boolean): string | null {
+    return this.sendUserMacroMutation({ type: "save_user_macro", macro, create });
+  }
+
+  deleteUserMacro(name: string): string | null {
+    return this.sendUserMacroMutation({ type: "delete_user_macro", name });
+  }
+
+  /** Like defaults, macros belong to one host: never queue them for a later endpoint. */
+  private sendUserMacroMutation(
+    command: Extract<Command, { type: "save_user_macro" | "delete_user_macro" }>,
+  ): string | null {
+    // Offline, the TUI's macro store keeps the change until it can check it.
+    if (!this.socket || !this._connected) return null;
+    const reqId = `macro_${randomUUID()}`;
+    this.send({ ...command, reqId });
+    return reqId;
   }
 
   createConversation(

@@ -5,6 +5,12 @@
  * They expand inline in user messages before sending to the daemon.
  * e.g. "/go" becomes "Go ahead and implement that".
  *
+ * Users can also save their own macros at runtime with /macro (see
+ * commands/macro.ts). Those live in the connected daemon's config and arrive
+ * as `user_macros` events; setUserMacros() installs them here so autocomplete,
+ * highlighting and expansion pick them up immediately. Built-in macros always
+ * win a name clash.
+ *
  * Macros can appear anywhere in a message — start, middle, after a
  * newline — and are expanded at word boundaries. They are never sent
  * to the daemon as slash commands; the daemon only sees the expanded text.
@@ -48,7 +54,7 @@
 
 import { posix, win32 } from "path";
 import { localMacroEnvironment } from "@exocortex/shared/macro-environment";
-import type { MacroEnvironment } from "@exocortex/shared/protocol";
+import type { MacroEnvironment, UserMacro } from "@exocortex/shared/protocol";
 import type { CompletionItem } from "./commands";
 import type { RenderState } from "./state";
 
@@ -289,21 +295,68 @@ function flattenArgLists(prefix: string, node: { args?: MacroArg[] }): [string, 
   return entries;
 }
 
+// ── User macros ──────────────────────────────────────────────────
+
+/** Autocomplete entries for built-in macros (base names only — args appear after selecting the base command). */
+export const BUILT_IN_MACRO_LIST: readonly CompletionItem[] = macroDefinitions(null).map(m => ({ name: m.name, desc: m.desc }));
+const BUILT_IN_MACRO_NAMES = new Set(BUILT_IN_MACRO_LIST.map(m => m.name));
+
+let userMacros: readonly UserMacro[] = [];
+let activeUserMacros: readonly UserMacro[] = [];
+let macroCompletions: readonly CompletionItem[] = BUILT_IN_MACRO_LIST;
+let macroNames: ReadonlySet<string> = BUILT_IN_MACRO_NAMES;
+
+/** Replace the connected daemon's user macros; an empty list clears them (e.g. on /ssh). */
+export function setUserMacros(macros: readonly UserMacro[]): void {
+  userMacros = [...macros];
+  activeUserMacros = userMacros.filter(macro => !BUILT_IN_MACRO_NAMES.has(macro.name));
+  macroCompletions = [
+    ...BUILT_IN_MACRO_LIST,
+    ...activeUserMacros.map(macro => ({ name: macro.name, desc: userMacroSummary(macro) })),
+  ];
+  macroNames = new Set(macroCompletions.map(m => m.name));
+}
+
+/** Every user macro the daemon sent, including any a built-in shadows. */
+export function getUserMacros(): readonly UserMacro[] {
+  return userMacros;
+}
+
+export function isBuiltInMacroName(name: string): boolean {
+  return BUILT_IN_MACRO_NAMES.has(name);
+}
+
+/** The description, or the first line of the expansion when there is none. */
+export function userMacroSummary(macro: UserMacro, maxLength = 48): string {
+  if (macro.description) return macro.description;
+  const firstLine = macro.expansion.split("\n", 1)[0]!.trim();
+  const more = firstLine.length > maxLength || macro.expansion.includes("\n");
+  return more ? `${firstLine.slice(0, maxLength - 1).trimEnd()}…` : firstLine;
+}
+
 // ── Derived exports ──────────────────────────────────────────────
 
-/** Autocomplete entries for macros (base names only — args appear after selecting the base command). */
-export const MACRO_LIST: CompletionItem[] = macroDefinitions(null).map(m => ({ name: m.name, desc: m.desc }));
+/** Autocomplete entries for every macro, built-in then user (base names only). */
+export function macroList(): readonly CompletionItem[] {
+  return macroCompletions;
+}
+
+/** Whether `name` (e.g. "/go") is a macro that expands right now. */
+export function isMacroName(name: string): boolean {
+  return macroNames.has(name);
+}
 
 /** Expansion text for each macro, keyed by "/name" or "/name arg1 arg2 ...". */
 export function getMacroMap(environment?: MacroEnvironment | null): Record<string, string> {
-  return Object.fromEntries(
-    macroDefinitions(environment).flatMap(m => flattenExpansions(m.name, m)).map(([key, expansion]) => [
+  return Object.fromEntries([
+    ...activeUserMacros.map(macro => [macro.name, macro.expansion] as const),
+    ...macroDefinitions(environment).flatMap(m => flattenExpansions(m.name, m)).map(([key, expansion]) => [
       key,
       environment === null && expansion.includes("<daemon-")
         ? "Resolve the <daemon-...> path placeholders on the connected daemon host before acting; they are not literal paths. Locate its Exocortex checkout, configured storage, external tools and tool trash directories there, asking if necessary. Never substitute paths from the local TUI host. " + expansion
         : expansion,
-    ]),
-  );
+    ] as const),
+  ]);
 }
 
 /** Sub-argument lists, keyed by "/name" or "/name arg1 ...". Used by autocomplete and prompt highlighting. */

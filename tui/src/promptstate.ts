@@ -20,6 +20,14 @@ export function clearPrompt(state: RenderState): void {
   markInsertEntry(state.undo, "", 0);
 }
 
+/** Replace the prompt with `text`, cursor at its end, as a fresh undoable insert session. */
+export function replacePrompt(state: RenderState, text: string): void {
+  clearPrompt(state);
+  state.inputBuffer = text;
+  state.cursorPos = text.length;
+  markInsertEntry(state.undo, text, text.length);
+}
+
 /** Append text to the draft as a triple-quote block on its own prompt line. */
 export function appendPromptQuoteBlock(state: RenderState, text: string): boolean {
   const safeText = sanitizePromptTextForInsertion(text);

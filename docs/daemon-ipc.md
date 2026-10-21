@@ -99,6 +99,16 @@ It is built from the same pieces as the request surface, so it never drifts
 from a real turn. `/instructions tools` shows it; `/instructions
 conversation|folder|global` (or `c`/`f`/`g`) open a scope's editor directly.
 
+## User macros
+
+The connected daemon owns `config/macros.json` on its host. After `ping` it
+sends `user_macros` with the whole list. `save_user_macro` (`macro`, optional
+`create` to refuse replacing one) and `delete_user_macro` (`name`) validate,
+write the file atomically, broadcast the new `user_macros` to every client and
+send the requester a copy carrying `reqId` and `change`. Clients check names
+against their built-in commands and macros before saving; see
+[Macros](macros.md).
+
 ## New-conversation defaults
 
 The connected daemon owns `defaults.conversation` in its host's config.

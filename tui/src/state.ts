@@ -29,7 +29,7 @@ import type { SearchDirection } from "./search";
 import type { UndoState } from "./undo";
 import { commitInsertSession, createUndoState, markInsertEntry } from "./undo";
 import type { AutocompleteState } from "./autocomplete";
-import type { AccountsSnapshot, ConversationDefaultsSnapshot, ConversationGoal, MacroEnvironment, ProviderAuthInfo, ProviderProxyInfo, QueuedCommandInvocation, QueueTiming, QueueWaitTarget as ProtocolQueueWaitTarget, UserMessageAutomation } from "./protocol";
+import type { AccountsSnapshot, ConversationDefaultsSnapshot, ConversationGoal, MacroEnvironment, ProviderAuthInfo, UserMacro, ProviderProxyInfo, QueuedCommandInvocation, QueueTiming, QueueWaitTarget as ProtocolQueueWaitTarget, UserMessageAutomation } from "./protocol";
 import type { VoiceChatMessageState, VoicePromptState } from "./voice";
 import type { TokenStatsView } from "./commands/tokens";
 import type { BtwPanelState } from "./btw/state";
@@ -39,6 +39,7 @@ import type { ImageModalState } from "./imagemodal";
 import type { AccountsOpenRequest, AccountsScreenState } from "./accountsscreen";
 import type { InstructionsModalState } from "./instructions/state";
 import { createInstructionsStore, type InstructionsStore } from "./instructions/store";
+import { createUserMacroStore, type UserMacroStore } from "./usermacros/store";
 
 // ── Queue types ────────────────────────────────────────────────────
 
@@ -225,6 +226,12 @@ export interface RenderState {
   /** Selected remote daemon route. Null means the local daemon. */
   sshRemote: { alias: string; connected: boolean } | null;
   macroEnvironment: MacroEnvironment | null;
+  /** The daemon's user macros with this TUI's unconfirmed changes (see usermacros/store). */
+  macroStore: UserMacroStore;
+  /** The macro this TUI last deleted, for /macro undo. */
+  lastDeletedMacro: UserMacro | null;
+  /** When the prompt text last changed by typing (ms epoch), so /macro can hold errors briefly. */
+  promptEditedAt: number;
   /** Route transition UI is independent of chat messages and startup loads. */
   sshConnecting: { phase: "probing" | "loading"; message: string } | null;
   /** Folder captured when the current blank draft was started. Sidebar browsing must not retarget it. */
@@ -648,6 +655,9 @@ export function createInitialState(): RenderState {
     conversationOpenRequest: null,
     sshRemote: null,
     macroEnvironment: null,
+    macroStore: createUserMacroStore(),
+    lastDeletedMacro: null,
+    promptEditedAt: 0,
     sshConnecting: null,
     draftFolderId: null,
     inputBuffer: "",

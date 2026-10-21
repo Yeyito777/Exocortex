@@ -19,6 +19,9 @@
 import type { RenderState } from "./state";
 import type { CompletionItem } from "./commands";
 import { commandCompletions, completionInsertText, inlineSlashCompletions, type SlashCompletion } from "./slashsearch";
+import { macroParseContext } from "./commands";
+import { macroCompletions } from "./usermacros/guide";
+import { isMacroCommandText } from "./usermacros/parse";
 import { readdirSync } from "fs";
 import { resolve } from "path";
 import { homedir } from "os";
@@ -134,6 +137,14 @@ export function updateAutocomplete(state: RenderState): void {
 
   // Command + macro autocomplete: single-line input starts with /
   const firstNonWs = firstNonWhitespaceIndex(state.inputBuffer);
+  // /macro completes its own parts (see usermacros/guide); its text may span lines.
+  if (isMacroCommandText(state.inputBuffer)) {
+    const matches = macroCompletions(state.inputBuffer, state.cursorPos, macroParseContext());
+    state.autocomplete = matches.length > 0
+      ? { type: "command", selection: -1, prefix: state.inputBuffer, tokenStart: firstNonWs, matches }
+      : null;
+    return;
+  }
   if (state.inputBuffer[firstNonWs] === "/" && state.inputBuffer.indexOf("\n", firstNonWs) === -1) {
     const matches = commandCompletions(state, state.inputBuffer);
     if (matches.length > 0) {

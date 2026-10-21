@@ -9,8 +9,10 @@
  */
 
 import type { RenderState } from "./state";
-import { COMMAND_LIST, getCommandArgs } from "./commands";
-import { MACRO_LIST, getMacroArgs, macroEnvironmentForState } from "./macros";
+import { COMMAND_LIST, getCommandArgs, macroDisplayContext } from "./commands";
+import { macroErrorRange } from "./usermacros/guide";
+import { isMacroCommandText, parseMacroCommand } from "./usermacros/parse";
+import { isMacroName, getMacroArgs, macroEnvironmentForState } from "./macros";
 import { INLINE_COMMANDS, getInlineCommandArgs } from "./inlineeffort";
 import { matchQueueTargetAfterCommand } from "./queuetargets";
 import { findSlashShorthands } from "./slashsearch";
@@ -23,7 +25,6 @@ const VALID_COMMAND_NAMES = new Set([
   "/exit",  // alias not in COMMAND_LIST (filtered out for display)
 ]);
 
-const VALID_MACRO_NAMES = new Set(MACRO_LIST.map(c => c.name));
 
 const VALID_INLINE_COMMAND_NAMES = new Set(INLINE_COMMANDS.map(c => c.name));
 
@@ -53,7 +54,8 @@ function customModelProviders(state: RenderState): Set<string> {
 
 // ── Span detection ───────────────────────────────────────────────
 
-interface Span { start: number; end: number }
+/** A highlighted range; `color` defaults to the command colour (a /macro error is red). */
+interface Span { start: number; end: number; color?: string }
 
 interface WordPosition { word: string; start: number; end: number }
 
@@ -84,7 +86,7 @@ function findCommandSpans(
     // explicitly registered inline commands can appear anywhere.
     const baseCmd = firstWord.word;
     const isPromptCommand = wordIndex === 0 && VALID_COMMAND_NAMES.has(baseCmd);
-    const isInlineSlash = VALID_MACRO_NAMES.has(baseCmd) || VALID_INLINE_COMMAND_NAMES.has(baseCmd);
+    const isInlineSlash = isMacroName(baseCmd) || VALID_INLINE_COMMAND_NAMES.has(baseCmd);
     if (!isPromptCommand && !isInlineSlash) continue;
     let spanEnd = firstWord.end;
 
@@ -117,11 +119,10 @@ function findCommandSpans(
   return spans;
 }
 
-export function getPromptHighlightRanges(state: RenderState, buffer: string): Span[] {
-  if (!buffer.includes("/")) return [];
+function commandSpans(state: RenderState, buffer: string): Span[] {
   const validArgsByBase = new Map<string, Record<string, Set<string>>>();
   let providersWithCustomModels: Set<string> | null = null;
-  const spans = findCommandSpans(
+  return findCommandSpans(
     buffer,
     (baseName) => {
       let validArgs = validArgsByBase.get(baseName);
@@ -134,6 +135,37 @@ export function getPromptHighlightRanges(state: RenderState, buffer: string): Sp
     () => providersWithCustomModels ??= customModelProviders(state),
     (commandEnd) => matchQueueTargetAfterCommand(state, buffer, commandEnd)?.end ?? null,
   );
+}
+
+/**
+ * A /macro line highlights like any command (its subcommand, and the name for
+ * edit/rm, are ordinary arguments), with the wrong part, if any, in red over
+ * it. Enter never resolves shorthands for /macro, so none are highlighted.
+ */
+function macroCommandSpans(state: RenderState, buffer: string): Span[] {
+  const parse = parseMacroCommand(buffer, state.cursorPos, macroDisplayContext(state));
+  const error = parse ? macroErrorRange(parse) : null;
+  const spans: Span[] = [];
+  let end = 0;
+  for (const span of commandSpans(state, buffer).sort((a, b) => a.start - b.start)) {
+    // A macro name inside a command span ("/macro rm /brief") is already covered.
+    if (span.start < end) continue;
+    end = span.end;
+    if (!error || span.end <= error.start || span.start >= error.end) {
+      spans.push(span);
+      continue;
+    }
+    if (span.start < error.start) spans.push({ start: span.start, end: error.start });
+    if (span.end > error.end) spans.push({ start: error.end, end: span.end });
+  }
+  if (error) spans.push(error);
+  return spans.sort((a, b) => a.start - b.start);
+}
+
+export function getPromptHighlightRanges(state: RenderState, buffer: string): Span[] {
+  if (!buffer.includes("/")) return [];
+  if (isMacroCommandText(buffer)) return macroCommandSpans(state, buffer);
+  const spans = commandSpans(state, buffer);
 
   // Shorthand args Enter would resolve ("/model opus") are sendable, so they highlight too.
   for (const shorthand of findSlashShorthands(state, buffer)) {
@@ -169,12 +201,12 @@ export function highlightPromptInput(
     const lineEnd = lineStart + line.length;
 
     // Collect overlapping highlight regions (in visible column space)
-    const regions: { col: number; len: number }[] = [];
+    const regions: { col: number; len: number; color: string }[] = [];
     for (const span of spans) {
       if (span.end <= lineStart || span.start >= lineEnd) continue;
       const colStart = Math.max(0, span.start - lineStart);
       const colEnd = Math.min(line.length, span.end - lineStart);
-      regions.push({ col: colStart, len: colEnd - colStart });
+      regions.push({ col: colStart, len: colEnd - colStart, color: span.color ?? theme.command });
     }
 
     if (regions.length === 0) return line;
@@ -182,9 +214,9 @@ export function highlightPromptInput(
     // Build the line with ANSI color applied to highlighted regions
     let result = "";
     let pos = 0;
-    for (const { col, len } of regions) {
+    for (const { col, len, color } of regions) {
       if (col > pos) result += line.slice(pos, col);
-      result += theme.command + line.slice(col, col + len) + theme.reset;
+      result += color + line.slice(col, col + len) + theme.reset;
       pos = col + len;
     }
     if (pos < line.length) result += line.slice(pos);

@@ -14,6 +14,8 @@ import { isSqliteConversationStore } from "./persistence";
 import { scheduleConversationPrewarm,loadToolOutputsOffThread } from "./conversation-loader";
 import { ConversationIntegrityError } from "./checkpoint-tail-integrity";
 import { localMacroEnvironment } from "@exocortex/shared/macro-environment";
+import type { UserMacro } from "@exocortex/shared/user-macros";
+import { deleteUserMacro, listUserMacros, saveUserMacro } from "./user-macros";
 import { getDaemonUpdateStatus } from "./update-status";
 import { encodeHistoryDelta } from "@exocortex/shared/history-delta";
 import { effectiveConversationDefaults } from "@exocortex/shared/config";
@@ -1517,6 +1519,29 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         break;
       }
 
+      case "save_user_macro":
+      case "delete_user_macro": {
+        const reqId = typeof cmd.reqId === "string" ? cmd.reqId : undefined;
+        let result: { macro: UserMacro; macros: UserMacro[]; action: "created" | "updated" | "deleted" };
+        try {
+          if (cmd.type === "save_user_macro") {
+            const saved = saveUserMacro(cmd.macro, { create: cmd.create === true });
+            result = { ...saved, action: saved.replaced ? "updated" : "created" };
+          } else {
+            result = { ...deleteUserMacro(cmd.name), action: "deleted" };
+          }
+        } catch (error) {
+          server.sendTo(client, { type: "error", reqId, message: error instanceof Error ? error.message : String(error) });
+          break;
+        }
+        server.broadcast({ type: "user_macros", macros: result.macros });
+        server.sendTo(client, {
+          type: "user_macros", reqId, macros: result.macros,
+          change: { action: result.action, macro: result.macro },
+        });
+        break;
+      }
+
       case "ping": {
         if (cmd.updateStatusOnly) {
           server.sendTo(client, { type: "pong", reqId: cmd.reqId, updateStatus: await getDaemonUpdateStatus() });
@@ -1536,6 +1561,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           ...(externalStyles.length > 0 ? { externalToolStyles: externalStyles } : {}),
           providerProxies: providerProxies.list(),
         });
+        server.sendTo(client, { type: "user_macros", macros: listUserMacros() });
         for (const provider of getProviders()) {
           const lastUsage = getLastUsage(provider.id);
           server.sendTo(client, { type: "usage_update", provider: provider.id, usage: lastUsage });

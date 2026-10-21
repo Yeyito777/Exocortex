@@ -9,6 +9,7 @@ import type { KeyEvent } from "../input";
 import type { Event, ModelId, ProviderId } from "../protocol";
 import { pushSystemMessage, type RenderState } from "../state";
 import { theme } from "../theme";
+import type { MacroDraft } from "../commands/macro";
 import { sanitizePromptTextForInsertion } from "../prompttext";
 import { handleInstructionsEditorKey } from "./editor";
 import { buildToolInstructionsDoc, handleToolsViewKey, TOOLS_READ_ONLY_NOTICE } from "./tools";
@@ -62,6 +63,8 @@ export interface ToolInstructionsLoader {
 
 export type InstructionsKeyOutcome =
   | { type: "handled" }
+  /** :w in a macro editor: save the user macro (see usermacros/controller). */
+  | { type: "save_macro"; draft: MacroDraft; text: string }
   /** Conversation instructions saved from a draft: create the conversation with them. */
   | { type: "create_conversation"; text: string };
 
@@ -180,6 +183,14 @@ export function openToolInstructions(state: RenderState, daemon: ToolInstruction
   state.instructionsModal = { picker: null, editor };
 }
 
+/** /macro add or edit without "= text": write the macro's text in the editor. */
+export function openMacroEditor(state: RenderState, draft: MacroDraft, text: string): void {
+  const target: InstructionsTarget = { convId: null, convTitle: null, folderId: null, folderName: null };
+  const editor = createInstructionsEditor("global", target, text);
+  editor.macro = draft;
+  state.instructionsModal = { picker: null, editor };
+}
+
 export function closeInstructionsModal(state: RenderState): void {
   state.instructionsModal = null;
 }
@@ -246,6 +257,22 @@ function saveEditor(
 ): InstructionsKeyOutcome {
   // The tools view shows code and manifests; nothing in it is saved.
   if (editor.readOnly) return HANDLED;
+  if (editor.macro) {
+    const text = editor.buffer.trim();
+    if (!text) {
+      editor.notice = { text: `Type what ${editor.macro.name} expands to first; :q closes`, tone: "warning" };
+      return HANDLED;
+    }
+    const draft = editor.macro;
+    if (close) state.instructionsModal = null;
+    else {
+      // Later :w replace what this one saved.
+      editor.savedText = editor.buffer;
+      editor.macro = { ...draft, create: false };
+      editor.notice = { text: "Saved", tone: "success" };
+    }
+    return { type: "save_macro", draft, text };
+  }
   if (!isInstructionsEditorDirty(editor) && !force) {
     if (close) closeEditor(state, modal);
     else editor.notice = { text: "No changes to save", tone: "info" };
@@ -301,6 +328,8 @@ export function handleInstructionsModalKey(
 function editorKey(editor: InstructionsEditorState): string | null {
   // The tools view is not one of the instruction scopes.
   if (editor.tools) return null;
+  // A macro editor is not one of the instruction scopes.
+  if (editor.macro) return null;
   return scopeKey(editor.scope, editor.target);
 }
 

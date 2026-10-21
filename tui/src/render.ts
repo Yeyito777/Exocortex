@@ -33,6 +33,12 @@ import { hexToAnsi, theme } from "./theme";
 import { clampCursor, stripAnsi, contentBounds, logicalLineRange } from "./historycursor";
 import { renderLineWithCursor, renderLineWithSearch, renderLineWithSelection } from "./cursorrender";
 import { getPromptHighlightRanges, highlightPromptInput } from "./prompthighlight";
+import { macroDisplayContext } from "./commands";
+import { macroGhostText, macroGuide, macroPopupRow } from "./usermacros/guide";
+import { macroGuideContext } from "./usermacros/controller";
+import { isMacroCommandText } from "./usermacros/parse";
+import { fitGhostText } from "./usermacros/render";
+import type { SlashCompletion } from "./slashsearch";
 import { formatSize, imageLabel } from "./clipboard";
 import { renderQueuePromptOverlay } from "./overlays";
 import { renderEditMessageOverlay } from "./overlays";
@@ -1147,7 +1153,7 @@ function renderAutocompleteDescription(
   width: number,
 ): string {
   if (!match.colorSwatches || match.colorSwatches.length === 0) {
-    return theme.dim + padRightToWidth(text, width);
+    return (match.descColor ?? theme.dim) + padRightToWidth(text, width);
   }
   const colors = match.colorSwatches.slice(0, Math.max(0, width));
   const swatches = colors.map((color) => `${hexToAnsi(color)}█`).join("");
@@ -1163,11 +1169,12 @@ function renderAutocompletePopup(
   state: RenderState,
   chatW: number,
   sepAbove: number,
+  shown: { matches: SlashCompletion[]; selection: number } | null = state.autocomplete,
 ): ScreenRect | null {
-  if (!state.autocomplete || state.autocomplete.matches.length === 0) return null;
+  if (!shown || shown.matches.length === 0) return null;
 
   const { chatCol } = ctx;
-  const { matches, selection: sel } = state.autocomplete;
+  const { matches, selection: sel } = shown;
   const maxVisible = Math.max(1, Math.min(AUTOCOMPLETE_MAX_VISIBLE_ROWS, sepAbove - 3));
   const total = matches.length;
   const winSize = Math.min(total, maxVisible);
@@ -1214,6 +1221,26 @@ function renderAutocompletePopup(
     );
   }
   return { top: topRow, bottom: sepAbove - 1, left: chatCol, right: chatCol + desiredPopupWidth - 1 };
+}
+
+/**
+ * What the normal popup shows. A /macro line puts its error, preview or next
+ * part there as a row of its own when there is nothing to complete (an error
+ * always wins); every other prompt shows its completions as usual.
+ */
+function macroPopupRows(state: RenderState): { matches: SlashCompletion[]; selection: number } | null {
+  if (!editingMacroCommand(state)) return state.autocomplete;
+  const guide = macroGuide(state.inputBuffer, state.cursorPos, macroGuideContext(state, macroDisplayContext(state)));
+  const completing = state.autocomplete && state.autocomplete.matches.length > 0;
+  if (guide?.detail?.kind !== "error" && completing) return state.autocomplete;
+  const row = guide ? macroPopupRow(guide) : null;
+  return row ? { matches: [row], selection: -1 } : null;
+}
+
+/** Whether the prompt holds a /macro command the user is editing. */
+function editingMacroCommand(state: RenderState): boolean {
+  return state.panelFocus === "chat" && state.chatFocus === "prompt" && !state.instructionsModal
+    && isMacroCommandText(state.inputBuffer);
 }
 
 /** Render the vim-style chat-history search bar. */
@@ -1469,7 +1496,7 @@ export function render(state: RenderState): boolean {
   const coloredInputLines = voicePrompts.length > 0
     ? (() => {
       const commandRanges = getPromptHighlightRanges(state, renderedPrompt.buffer)
-        .map(range => ({ ...range, color: theme.command }));
+        .map(range => ({ ...range, color: range.color ?? theme.command }));
       const voiceRanges = getVoicePromptRanges(state.inputBuffer, voicePrompts)
         .map(range => ({ ...range, color: theme.accent }));
       return inputLines.map((line, idx) => colorPlainPromptDecorations(
@@ -1479,6 +1506,15 @@ export function render(state: RenderState): boolean {
       ));
     })()
     : highlightPromptInput(state, inputLines, state.inputBuffer, lineStarts);
+
+  // Dim ghost text after the cursor names the /macro parts still to type.
+  if (editingMacroCommand(state) && state.vim.mode === "insert" && voicePrompts.length === 0) {
+    const ghost = macroGhostText(state.inputBuffer, state.cursorPos, macroDisplayContext(state));
+    const line = coloredInputLines[cursorLine];
+    if (ghost && line !== undefined) {
+      coloredInputLines[cursorLine] = line + fitGhostText(ghost, visibleLength(line), chatW - PROMPT_PREFIX_WIDTH);
+    }
+  }
 
   const slHeight = status.height;
   const statusLines = status.lines;
@@ -1676,7 +1712,7 @@ export function render(state: RenderState): boolean {
   }
 
   // ── Autocomplete popup (overlays message area above input) ────
-  const autocompleteRect = renderAutocompletePopup(ctx, state, chatW, bottomStartRow);
+  const autocompleteRect = renderAutocompletePopup(ctx, state, chatW, bottomStartRow, macroPopupRows(state));
 
   // ── Search bar ────────────────────────────────────────────────
   if (searchBarRow > 0) {

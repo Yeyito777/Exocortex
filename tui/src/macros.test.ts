@@ -3,7 +3,7 @@ import { mkdirSync, rmSync } from "fs";
 import { join, posix, win32 } from "path";
 import type { MacroEnvironment } from "@exocortex/shared/protocol";
 import { repoRoot, storageDir, externalToolsDir, externalToolsTrashDir } from "@exocortex/shared/paths";
-import { getMacroArgs, getMacroMap, expandMacros, MACRO_LIST } from "./macros";
+import { getMacroArgs, getMacroMap, expandMacros, BUILT_IN_MACRO_LIST } from "./macros";
 import { createInitialState } from "./state";
 import { updateAutocomplete } from "./autocomplete";
 import { highlightPromptInput } from "./prompthighlight";
@@ -17,7 +17,7 @@ afterEach(() => {
 
 describe("macro expansion", () => {
   test("/xenv is not registered or expanded", () => {
-    expect(MACRO_LIST.map(macro => macro.name)).not.toContain("/xenv");
+    expect(BUILT_IN_MACRO_LIST.map(macro => macro.name)).not.toContain("/xenv");
     expect(expandMacros("/xenv")).toBe("/xenv");
   });
 

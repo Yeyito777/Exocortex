@@ -294,6 +294,10 @@ function editorTitle(editor: InstructionsEditorState): string {
     const route = [editor.tools.provider, editor.tools.model].filter(Boolean).join(" · ");
     return `Tool instructions · ${route}`;
   }
+  if (editor.macro) {
+    const desc = editor.macro.description ? ` · ${editor.macro.description}` : "";
+    return `${editor.macro.create ? "New macro" : "Edit macro"} ${editor.macro.name}${desc}`;
+  }
   const reach = editor.scope === "conversation" && editor.target.convId
     ? editor.target.convTitle?.trim() || "this conversation"
     : scopeReach(editor.scope, editor.target);
@@ -302,6 +306,7 @@ function editorTitle(editor: InstructionsEditorState): string {
 
 function placeholder(editor: InstructionsEditorState): string {
   if (editor.tools) return "No tools on this route";
+  if (editor.macro) return `What ${editor.macro.name} expands to, anywhere in a message…`;
   switch (editor.scope) {
     case "conversation": return "Instructions for this conversation only…";
     case "folder": return `Instructions for every conversation in ${editor.target.folderName ?? "this folder"}/…`;

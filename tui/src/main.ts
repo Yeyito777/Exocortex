@@ -33,7 +33,9 @@ import {
 import { handleFocusedKey } from "./focus";
 import { handleMouseEvent, refreshMouseCursor, trackMouseCursor } from "./mouse";
 import { clearPrompt } from "./promptstate";
-import { tryCommand } from "./commands";
+import { MACRO_COMMAND, MACRO_ERROR_DELAY_MS, tryCommand } from "./commands";
+import { isMacroCommandText } from "./usermacros/parse";
+import { runUserMacroCommand, saveMacroFromEditor, userMacrosConnectionLost } from "./usermacros/controller";
 import { expandMacros, macroEnvironmentForState } from "./macros";
 import { applyInlineCommands, type InlineCommandApplication } from "./inlineeffort";
 import { resolveSlashShorthands } from "./slashsearch";
@@ -922,11 +924,32 @@ function createConversationWithInstructions(text: string): void {
   );
 }
 
+let macroErrorTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** /macro holds an error in the part being typed until typing pauses; repaint when it does. */
+function notePromptEdit(): void {
+  state.promptEditedAt = Date.now();
+  if (!isMacroCommandText(state.inputBuffer)) return;
+  if (macroErrorTimer) clearTimeout(macroErrorTimer);
+  macroErrorTimer = setTimeout(() => {
+    macroErrorTimer = null;
+    scheduleRender();
+  }, MACRO_ERROR_DELAY_MS + 10);
+}
+
 function handleSubmit(): void {
   let text = state.inputBuffer.trim();
   const hasImages = state.pendingImages.length > 0;
 
   if (!text && !hasImages) return;
+
+  // /macro's text (its "= text" part may hold slash words and several lines)
+  // must reach it verbatim, before shorthand or inline-command parsing.
+  if (!hasImages && isMacroCommandText(text)) {
+    runUserMacroCommand(state, daemon, MACRO_COMMAND.handler(text, state));
+    scheduleRender();
+    return;
+  }
 
   // Expand slash shorthands such as "/model opus" before command and inline parsing.
   text = resolveSlashShorthands(state, text);
@@ -1088,6 +1111,12 @@ function handleSubmit(): void {
             pushSystemMessage(state, `Connecting to ${cmdResult.alias} for ${cmdResult.provider}…`, theme.muted);
           }
           daemon.providerProxy(cmdResult.action, cmdResult.provider, cmdResult.alias);
+          break;
+        case "save_user_macro":
+        case "delete_user_macro":
+        case "restore_user_macro":
+        case "open_macro_editor":
+          runUserMacroCommand(state, daemon, cmdResult);
           break;
         case "handled":
           break;
@@ -1637,6 +1666,7 @@ function handleKey(key: KeyEvent): void {
     if (key.event === "release") return;
     const outcome = handleInstructionsModalKey(key, state, daemon, renderAfterLocalUiMutation);
     if (outcome.type === "create_conversation") createConversationWithInstructions(outcome.text);
+    else if (outcome.type === "save_macro") saveMacroFromEditor(state, daemon, outcome.draft, outcome.text);
     renderAfterLocalUiMutation();
     return;
   }
@@ -1650,12 +1680,14 @@ function handleKey(key: KeyEvent): void {
   if (voiceInput?.handleKey(key)) return;
   if (key.event === "release") return;
 
+  const promptBefore = state.inputBuffer;
   const result = handleFocusedKey(
     key,
     state,
     renderAfterLocalUiMutation,
     state.sshRemote ? remotePathCompletion ?? undefined : undefined,
   );
+  if (state.inputBuffer !== promptBefore) notePromptEdit();
   if (voicePromptBufferBefore !== null) {
     voiceInput?.syncPromptEdit(voicePromptBufferBefore);
   }
@@ -1979,6 +2011,7 @@ function handleDaemonConnectionLost(shutdownMode: DaemonShutdownMode | null): vo
   clearStreamTick();
   resetPrewarmer();
   instructionsConnectionLost(state);
+  userMacrosConnectionLost(state);
   state.historyLoadingOlder = false;
   state.historyLoadingStartedAt = null;
   state.historyLoadingRequestId = null;

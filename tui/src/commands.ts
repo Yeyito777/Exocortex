@@ -16,6 +16,9 @@ import { createHelpCommand } from "./commands/help";
 import { HIDE_COMMAND } from "./commands/hide";
 import { INSTRUCTIONS_COMMAND } from "./commands/instructions";
 import { LOGIN_COMMAND } from "./commands/login";
+import { createMacroCommand } from "./commands/macro";
+import { defaultMacroParseContext } from "./usermacros/controller";
+import type { MacroParseContext } from "./usermacros/parse";
 import { LOGOUT_COMMAND } from "./commands/logout";
 import { MODEL_COMMAND } from "./commands/model";
 import { NEW_COMMAND } from "./commands/new";
@@ -33,9 +36,28 @@ import { TOKENS_COMMAND } from "./commands/tokens";
 import { TRIM_COMMAND } from "./commands/trim";
 import { USAGE_COMMAND } from "./commands/usage";
 import type { CommandResult, CompletionItem, SlashCommand } from "./commands/types";
-import { applyInlineCommands, previewInlineCommands } from "./inlineeffort";
+import { INLINE_COMMANDS, applyInlineCommands, previewInlineCommands } from "./inlineeffort";
 
 const HELP_COMMAND = createHelpCommand(() => commands);
+// User macros may not take a command's name, or one used inline in messages.
+let reservedMacroNames: Set<string> | null = null;
+
+/** What /macro checks names against: the user macros, built-in macros, commands and inline commands. */
+export function macroParseContext(): MacroParseContext {
+  reservedMacroNames ??= new Set([...commands.map(command => command.name), ...INLINE_COMMANDS.map(command => command.name)]);
+  const reserved = reservedMacroNames;
+  return defaultMacroParseContext(name => reserved.has(name));
+}
+
+/** How long after a keystroke a /macro error in the part being typed waits to show. */
+export const MACRO_ERROR_DELAY_MS = 300;
+
+/** macroParseContext for showing the prompt: errors in the part being typed wait for a pause. */
+export function macroDisplayContext(state: Pick<RenderState, "promptEditedAt">, now = Date.now()): MacroParseContext {
+  return { ...macroParseContext(), holdTypingErrors: now - state.promptEditedAt < MACRO_ERROR_DELAY_MS };
+}
+
+export const MACRO_COMMAND = createMacroCommand(macroParseContext);
 
 const commands: SlashCommand[] = [
   HELP_COMMAND,
@@ -69,6 +91,7 @@ const commands: SlashCommand[] = [
   SSH_COMMAND,
   PROXY_COMMAND,
   INSTRUCTIONS_COMMAND,
+  MACRO_COMMAND,
   SYSTEM_COMMAND,
   LOGIN_COMMAND,
   LOGOUT_COMMAND,

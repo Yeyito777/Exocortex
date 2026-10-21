@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:
 import { clearConversationDefaults, configuredConversationDefaults, productConversationDefaults, saveConversationDefaults } from "@exocortex/shared/config";
 import { conversationWorkspaceDir } from "@exocortex/shared/paths";
 import { localMacroEnvironment } from "@exocortex/shared/macro-environment";
-import { readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { listUserMacros, userMacrosPath } from "./user-macros";
 import { join } from "node:path";
 import { resumeQueuedMessageDelivery, suspendQueuedMessageDelivery } from "./message-queue";
 import { chronoInternalsForTest, deferChronoSleep, listDeferredChronoSleeps } from "./chrono-service";
@@ -291,6 +292,56 @@ describe("conversation default IPC", () => {
     }
     expect(broadcasts).toEqual([]);
     expect(configuredConversationDefaults()).toBeNull();
+  });
+});
+
+describe("user macro IPC", () => {
+  afterEach(() => rmSync(userMacrosPath(), { force: true }));
+
+  function fixture() {
+    const sent: Array<Record<string, unknown>> = [];
+    const broadcasts: Array<Record<string, unknown>> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+      broadcast: mock((event: Record<string, unknown>) => { broadcasts.push(event); }),
+      sendToSubscribers: mock(() => {}), sendToSubscribersExcept: mock(() => {}),
+      subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    return { sent, broadcasts, handle: createHandler(server as never) };
+  }
+
+  test("saves and deletes persist, broadcast the list to every client and confirm to the requester", async () => {
+    const { sent, broadcasts, handle } = fixture();
+    const macro = { name: "/standup", expansion: "Summarize today's work.", description: "Daily standup" };
+    await handle({} as never, { type: "save_user_macro", reqId: "add", macro, create: true });
+    expect(broadcasts).toEqual([{ type: "user_macros", macros: [macro] }]);
+    expect(sent.at(-1)).toEqual({ type: "user_macros", reqId: "add", macros: [macro], change: { action: "created", macro } });
+
+    const edited = { ...macro, expansion: "Summarize this week's work." };
+    await handle({} as never, { type: "save_user_macro", reqId: "edit", macro: edited });
+    expect(sent.at(-1)).toMatchObject({ reqId: "edit", change: { action: "updated", macro: edited } });
+
+    sent.length = 0;
+    await handle({} as never, { type: "ping" });
+    expect(sent.find(event => event.type === "user_macros")).toEqual({ type: "user_macros", macros: [edited] });
+
+    await handle({} as never, { type: "delete_user_macro", reqId: "rm", name: "/standup" });
+    expect(broadcasts.at(-1)).toEqual({ type: "user_macros", macros: [] });
+    expect(sent.at(-1)).toEqual({ type: "user_macros", reqId: "rm", macros: [], change: { action: "deleted", macro: edited } });
+    expect(listUserMacros()).toEqual([]);
+  });
+
+  test("rejected changes answer the requester only", async () => {
+    const { sent, broadcasts, handle } = fixture();
+    await handle({} as never, { type: "save_user_macro", reqId: "bad", macro: { name: "no-slash", expansion: "x" } });
+    expect(sent.at(-1)).toMatchObject({ type: "error", reqId: "bad", message: expect.stringContaining("start with") });
+    await handle({} as never, { type: "save_user_macro", reqId: "a", macro: { name: "/a", expansion: "x" }, create: true });
+    await handle({} as never, { type: "save_user_macro", reqId: "dup", macro: { name: "/a", expansion: "y" }, create: true });
+    expect(sent.at(-1)).toMatchObject({ type: "error", reqId: "dup", message: expect.stringContaining("already exists") });
+    await handle({} as never, { type: "delete_user_macro", reqId: "missing", name: "/nope" });
+    expect(sent.at(-1)).toMatchObject({ type: "error", reqId: "missing", message: "No macro named /nope." });
+    expect(broadcasts).toHaveLength(1);
+    expect(listUserMacros()).toEqual([{ name: "/a", expansion: "x" }]);
   });
 });
 

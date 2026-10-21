@@ -63,6 +63,7 @@ import { handleToolOutputsError, handleToolOutputsLoaded } from "./events/tool-o
 import { handleToolsAvailable } from "./events/provider";
 import { formatConversationDefaults, receiveConversationDefaults } from "./events/conversation-defaults";
 import { hydratePendingAIFromSnapshot } from "./events/pending-ai";
+import { handleUserMacroError, handleUserMacrosEvent, userMacrosRouteSwitched } from "./usermacros/controller";
 import type { DaemonActions } from "./events/types";
 import { handleAccountsEvent } from "./accountsscreen";
 import { failBtwRequest, handleBtwEvent } from "./btw/events";
@@ -101,6 +102,10 @@ export function handleEvent(
   if (handleInstructionsEvent(state, event, daemon)) return;
 
   switch (event.type) {
+    case "user_macros":
+      handleUserMacrosEvent(state, daemon, event);
+      break;
+
     case "conversation_defaults":
       receiveConversationDefaults(state, event, Boolean(event.message));
       if (event.message) pushSystemMessage(state, `${event.message}:\n${formatConversationDefaults(event.defaults)}`);
@@ -155,6 +160,7 @@ export function handleEvent(
       break;
 
     case "error": {
+      if (handleUserMacroError(state, event)) break;
       if (event.reqId && state.pendingTokenStatsView?.reqId === event.reqId) {
         // Daemons predating get_token_stats still push snapshots unprompted.
         const view = state.pendingTokenStatsView;
@@ -571,6 +577,7 @@ export function handleEvent(
         state.sshConnecting = { phase: "probing", message: event.message };
       } else if (event.state === "connected" && event.switched) {
         state.macroEnvironment = null;
+        userMacrosRouteSwitched(state);
         state.conversationDefaults = null;
         setInlineImagesEnabled(false);
         state.sshConnecting = {
