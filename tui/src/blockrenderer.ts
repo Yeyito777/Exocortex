@@ -184,7 +184,7 @@ function collapseLongToolCallDetail(
   const hidden = rows - COLLAPSED_TOOL_CALL_ROWS;
   const keep = firstRow + COLLAPSED_TOOL_CALL_ROWS;
   for (const rows of [lines, cont, join, copy]) rows.length = keep;
-  lines.push(`  ${theme.dim}… +${hidden} more lines (ctrl+o to expand)${theme.reset}`);
+  lines.push(`  ${theme.dim}… +${hidden} more lines (ctrl+i to expand)${theme.reset}`);
   cont.push(false);
   join.push("");
   copy.push(null);
@@ -238,7 +238,7 @@ function renderToolCallPayload(
   }
   const collapse = !showToolOutput && body.length > COLLAPSE_TOOL_CALL_AFTER_ROWS;
   for (const row of collapse ? body.slice(0, COLLAPSED_TOOL_CALL_ROWS) : body) push(row.text, row.cont, row.join);
-  if (collapse) push(`${theme.dim}… +${body.length - COLLAPSED_TOOL_CALL_ROWS} more lines (ctrl+o to expand)`, false, "");
+  if (collapse) push(`${theme.dim}… +${body.length - COLLAPSED_TOOL_CALL_ROWS} more lines (ctrl+i to expand)`, false, "");
   const end = entries.find(entry => entry.payload!.role === "end");
   if (end) push(`${theme.dim}${end.text}`, false, "");
 }

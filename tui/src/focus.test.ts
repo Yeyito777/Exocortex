@@ -669,6 +669,7 @@ describe("slash autocomplete search", () => {
 
 function buildToolToggleState(showToolOutput: boolean) {
   const state = createInitialState();
+  state.showTurnWork = true;
   state.cols = 80;
   state.layout.messageAreaHeight = 8;
   state.showToolOutput = showToolOutput;
@@ -755,7 +756,7 @@ describe("sidebar toggle scroll preservation", () => {
 });
 
 describe("tool output toggle scroll preservation", () => {
-  test("Ctrl+O preserves the top visible line when expanding hidden tool output", () => {
+  test("Ctrl+I preserves the top visible line when expanding hidden tool output", () => {
     const state = buildToolToggleState(false);
     state.scrollOffset = 5;
     state.historyCursor = { row: 29, col: 0 };
@@ -763,7 +764,7 @@ describe("tool output toggle scroll preservation", () => {
 
     expect(topVisibleLine(state)).toBe("  after 28");
 
-    const result = handleFocusedKey({ type: "ctrl-o" }, state);
+    const result = handleFocusedKey({ type: "ctrl-i" }, state);
 
     expect(result).toEqual({ type: "handled" });
     expect(state.showToolOutput).toBe(true);
@@ -775,7 +776,7 @@ describe("tool output toggle scroll preservation", () => {
     expect(state.layout.totalLines).toBe(rendered.length);
   });
 
-  test("Ctrl+O preserves the top visible line when collapsing visible tool output", () => {
+  test("Ctrl+I preserves the top visible line when collapsing visible tool output", () => {
     const state = buildToolToggleState(true);
     state.scrollOffset = 5;
     state.historyCursor = { row: 49, col: 0 };
@@ -783,7 +784,7 @@ describe("tool output toggle scroll preservation", () => {
 
     expect(topVisibleLine(state)).toBe("  after 28");
 
-    const result = handleFocusedKey({ type: "ctrl-o" }, state);
+    const result = handleFocusedKey({ type: "ctrl-i" }, state);
 
     expect(result).toEqual({ type: "handled" });
     expect(state.showToolOutput).toBe(false);
@@ -795,8 +796,9 @@ describe("tool output toggle scroll preservation", () => {
     expect(state.layout.totalLines).toBe(rendered.length);
   });
 
-  test("Ctrl+O requests only omitted bodies around the viewport before expanding", () => {
+  test("Ctrl+I requests only omitted bodies around the viewport before expanding", () => {
     const state = createInitialState();
+    state.showTurnWork = true;
     state.convId = "conv-1";
     state.cols = 80;
     state.messages.push({
@@ -814,7 +816,7 @@ describe("tool output toggle scroll preservation", () => {
     state.layout.messageAreaHeight = 10;
     expect(rendered.lines).toHaveLength(60);
 
-    const result = handleFocusedKey({ type: "ctrl-o" }, state);
+    const result = handleFocusedKey({ type: "ctrl-i" }, state);
 
     // Bottom-pinned rows 50-59 plus one viewport of margin; call-58 is loaded.
     const expected = Array.from({ length: 20 }, (_, i) => `call-${40 + i}`).filter(id => id !== "call-58");
@@ -823,12 +825,12 @@ describe("tool output toggle scroll preservation", () => {
     expect(state.showToolOutputAfterLoad).toBe(true);
 
     // A second press cancels the pending expansion instead of queueing another.
-    expect(handleFocusedKey({ type: "ctrl-o" }, state)).toEqual({ type: "handled" });
+    expect(handleFocusedKey({ type: "ctrl-i" }, state)).toEqual({ type: "handled" });
     expect(state.showToolOutputAfterLoad).toBe(false);
     expect(state.showToolOutput).toBe(false);
   });
 
-  test("Ctrl+O expands immediately when the bodies in view are already loaded", () => {
+  test("Ctrl+I expands immediately when the bodies in view are already loaded", () => {
     const state = buildToolToggleState(false);
     state.convId = "conv-1";
     const rendered = buildMessageLines(state, state.cols);
@@ -836,7 +838,7 @@ describe("tool output toggle scroll preservation", () => {
     state.historyLineAnchors = rendered.lineAnchors;
     state.layout.totalLines = rendered.lines.length;
 
-    expect(handleFocusedKey({ type: "ctrl-o" }, state)).toEqual({ type: "handled" });
+    expect(handleFocusedKey({ type: "ctrl-i" }, state)).toEqual({ type: "handled" });
     expect(state.showToolOutput).toBe(true);
   });
 
@@ -884,7 +886,7 @@ describe("tool output toggle scroll preservation", () => {
     expect(state.showToolOutput).toBe(false);
   });
 
-  test("a rejected fetch releases Ctrl+O instead of leaving it waiting forever", () => {
+  test("a rejected fetch releases Ctrl+I instead of leaving it waiting forever", () => {
     const state = createInitialState();
     state.convId = "conv-1";
     state.toolOutputsLoading = true;

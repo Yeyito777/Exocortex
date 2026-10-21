@@ -12,6 +12,7 @@ import type { RenderState } from "./state";
 import { focusHistory, focusPrompt, focusSidebar } from "./state";
 import { handleSidebarActionMenuResult, type KeyResult } from "./focus";
 import { scrollBy } from "./chat";
+import { toggleHistoryItemPreservingViewport } from "./chatscroll";
 import { isTaskPanelExpanded, scrollTaskPanel, toggleTaskPanelExpansion } from "./activitypanel";
 import {
   activateSidebarItem,
@@ -156,7 +157,14 @@ function linkAtScreen(col: number, row: number, state: RenderState): string | nu
  */
 function historyClickableAtScreen(col: number, row: number, state: RenderState): boolean {
   if (!screenToHistoryPos(col, row, state)) return false;
-  return linkAtScreen(col, row, state) !== null || imageAtScreen(col, row, state) !== null;
+  return linkAtScreen(col, row, state) !== null || imageAtScreen(col, row, state) !== null || toggleAtScreen(row, state) !== null;
+}
+
+/** The folded turn or notification a click on this row opens or closes. */
+function toggleAtScreen(row: number, state: RenderState): object | null {
+  const viewport = state.layout.historyViewportRows[row - 3];
+  if (!viewport) return null;
+  return state.historyLineAnchors[viewport.lineIndex]?.toggle ?? null;
 }
 
 // ── Cursor shape ──────────────────────────────────────────────────
@@ -256,6 +264,8 @@ export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult 
       && (ev.col !== state.mouseLinkPress.col || ev.row !== state.mouseLinkPress.row))) state.mouseLinkPress = null;
   if (ev.action === "press" || (ev.action === "motion" && state.mouseImagePress
       && (ev.col !== state.mouseImagePress.col || ev.row !== state.mouseImagePress.row))) state.mouseImagePress = null;
+  if (ev.action === "press" || (ev.action === "motion" && state.mouseTogglePress
+      && (ev.col !== state.mouseTogglePress.col || ev.row !== state.mouseTogglePress.row))) state.mouseTogglePress = null;
   // Always update cursor shape on any mouse event (motion, press, scroll)
   trackMouseCursor(ev, state);
 
@@ -383,6 +393,8 @@ export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult 
       state.mouseLinkPress = target ? { col, row, target } : null;
       const image = imageAtScreen(col, row, state);
       state.mouseImagePress = image ? { col, row, image } : null;
+      const toggle = target || image ? null : toggleAtScreen(row, state);
+      state.mouseTogglePress = toggle ? { col, row, toggle } : null;
       focusHistory(state);
       state.vim.mode = "visual";
       state.historyCursor = pos;
@@ -414,6 +426,13 @@ export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult 
     if (pressedImage && pressedImage.col === col && pressedImage.row === row) {
       state.vim.mode = "normal";
       return { type: "open_image", target: pressedImage.image };
+    }
+    const pressedToggle = state.mouseTogglePress;
+    state.mouseTogglePress = null;
+    if (pressedToggle && pressedToggle.col === col && pressedToggle.row === row) {
+      state.vim.mode = "normal";
+      toggleHistoryItemPreservingViewport(state, pressedToggle.toggle);
+      return { type: "handled" };
     }
     if (state.vim.mode === "visual" && state.chatFocus === "history") {
       // Update cursor to release position

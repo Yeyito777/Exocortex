@@ -8,6 +8,7 @@ import { handleMessageTextObject } from "./message";
 
 function setupAssistantHistory(): RenderState {
   const state = createInitialState();
+  state.showTurnWork = true;
   state.chatFocus = "history";
   state.messages = [{
     role: "assistant",

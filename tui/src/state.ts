@@ -313,8 +313,14 @@ export interface RenderState {
   providerRegistry: ProviderInfo[];
   /** External tool styles for bash sub-command matching (from daemon). */
   externalToolStyles: ExternalToolStyle[];
-  /** Whether tool result output is visible. Toggled with Ctrl+O. */
+  /** Detailed view: tool result output and every turn's work are visible. Toggled with Ctrl+I. */
   showToolOutput: boolean;
+  /** Every turn's work and every notification are visible (otherwise they fold). Toggled with Ctrl+O. */
+  showTurnWork: boolean;
+  /** Turns and notifications opened one at a time by a click while folded, by their opening message. */
+  expandedHistoryItems: WeakSet<object>;
+  /** Bumped whenever expandedHistoryItems changes, so cached renders notice. */
+  historyExpansionRevision: number;
   /** Whether user-identifying auth/account labels should be censored in the UI. */
   hideSensitiveInfo: boolean;
   /** Whether output-token counts are shown in AI metadata. TUI-only /diagnostics. */
@@ -383,6 +389,8 @@ export interface RenderState {
   mouseLinkPress?: { row: number; col: number; target: string } | null;
   /** Left press on an inline image; a release on the same cell opens the viewer. */
   mouseImagePress?: { row: number; col: number; image: InlineImageTarget } | null;
+  /** Folded turn/notification row pressed; a release on the same cell opens or closes it. */
+  mouseTogglePress?: { row: number; col: number; toggle: object } | null;
   /** Full-size image viewer opened from history (Enter or click on a thumbnail). */
   imageModal: ImageModalState | null;
   /** Accounts screen (/accounts, `g a`), live while open. */
@@ -461,6 +469,7 @@ export function resetHistoryPagination(state: RenderState): void {
 /** Fully reset historical tool-output state (used when clearing/switching chats). */
 export function resetToolOutputState(state: RenderState): void {
   state.showToolOutput = false;
+  state.showTurnWork = false;
   clearToolOutputRequests(state);
 }
 
@@ -717,6 +726,9 @@ export function createInitialState(): RenderState {
     providerRegistry: [],
 	    externalToolStyles: [],
 	    showToolOutput: false,
+	    showTurnWork: false,
+	    expandedHistoryItems: new WeakSet(),
+	    historyExpansionRevision: 0,
 	    hideSensitiveInfo,
 	    showDiagnostics: loadDiagnosticsPreference(),
     toolOutputsLoading: false,

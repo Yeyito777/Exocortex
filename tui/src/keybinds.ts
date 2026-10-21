@@ -65,6 +65,7 @@ export type Action =
   | "new_top_level_conversation"
   | "edit_message"
   // Display toggles
+  | "toggle_turn_work"
   | "toggle_tool_output"
   // Screens
   | "open_accounts"
@@ -131,8 +132,10 @@ const BINDS: Record<string, Action> = {
   // Clipboard image paste
   "ctrl-v":       "paste_image",
 
-  // Display toggles
-  "ctrl-o":       "toggle_tool_output",
+  // Display toggles. Ctrl+I needs the kitty keyboard protocol to differ from
+  // Tab; without it, Tab in the history (which has no Tab of its own) stands in.
+  "ctrl-o":       "toggle_turn_work",
+  "ctrl-i":       "toggle_tool_output",
 
   // Sidebar quick nav (normal mode for character bindings)
   "char:J":     "sidebar_next",

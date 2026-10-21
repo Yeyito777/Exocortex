@@ -1029,7 +1029,7 @@ export class DaemonClient {
    * it; `turns` is the fallback for those that don't. Callers pass enough to
    * fill their screen.
    */
-  loadConversation(convId: string, turns = 5, viewport?: { rows: number; cols: number }): string {
+  loadConversation(convId: string, turns = 5, viewport?: { rows: number; cols: number; folded?: boolean }): string {
     const requestedAt = Date.now();
     const reqId = `conversation_${++this.nextReqId}_${requestedAt}`;
     if (this.performanceProfilingEnabled) {

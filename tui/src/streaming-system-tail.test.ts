@@ -27,6 +27,7 @@ const providers: ProviderInfo[] = [
 
 function plainLines(width = 80) {
   const state = createInitialState();
+  state.showTurnWork = true;
   state.convId = "conv-1";
   state.pendingAI = createPendingAI(Date.now(), "gpt-5.4");
   return {

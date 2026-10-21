@@ -358,6 +358,8 @@ function preserveViewportAcrossHistoryMutationFromRow(
   mutate: () => void,
   selectViewportAnchorRow: HistoryMutationViewportAnchor,
   useRenderedHistory = false,
+  /** Hold the anchor row's screen position even when the view follows the bottom. */
+  anchorWhenPinned = false,
 ): void {
   const { messageAreaHeight } = state.layout;
   if (messageAreaHeight <= 0) {
@@ -389,7 +391,7 @@ function preserveViewportAcrossHistoryMutationFromRow(
   const newAnchorIndex = buildAnchorIndex(newRender.lineAnchors);
   const newLineIndex = buildRenderedLineIndex(newRender.lines);
 
-  if (state.scrollOffset > 0) {
+  if (state.scrollOffset > 0 || anchorWhenPinned) {
     const newViewportAnchorRow = remapRenderedRow(
       oldViewportAnchorRow,
       oldRender.lines,
@@ -454,4 +456,22 @@ export function toggleToolOutputPreservingViewport(state: RenderState): void {
   preserveViewportAcrossHistoryMutation(state, () => {
     state.showToolOutput = !state.showToolOutput;
   });
+}
+
+/**
+ * Open or close one folded turn or notification (a click or Enter on its row).
+ * Its row stays where it is on screen, so what opens grows below it.
+ */
+export function toggleHistoryItemPreservingViewport(state: RenderState, item: object): void {
+  preserveViewportAcrossHistoryMutationFromRow(state, () => {
+    if (state.expandedHistoryItems.has(item)) state.expandedHistoryItems.delete(item);
+    else state.expandedHistoryItems.add(item);
+    state.historyExpansionRevision++;
+  }, (oldViewStart, oldRender, messageAreaHeight) => {
+    const viewEnd = Math.min(oldRender.lines.length, oldViewStart + messageAreaHeight);
+    for (let row = oldViewStart; row < viewEnd; row++) {
+      if (oldRender.lineAnchors[row]?.toggle === item) return row;
+    }
+    return oldViewStart;
+  }, false, true);
 }

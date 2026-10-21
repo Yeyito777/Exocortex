@@ -146,29 +146,31 @@ describe("automated user-message provenance", () => {
     expect(label("openai")).toContain("queued: steer");
   });
 
-  test("bounds delivered provenance and aligns Unicode labels by terminal cells", () => {
+  test("bounds a delivered notification's marker and header by the terminal width", () => {
     const state = createInitialState();
     state.messages.push({
-      role: "user", text: "Delivered message",
+      role: "user", text: "Delivered message with a long tail that would otherwise wrap onto several rows",
       metadata: {
         startedAt: 1, endedAt: 1, model: state.model, tokens: 0,
         automation: { kind: "background_task_completion" },
       },
     });
-    for (const width of [120, 24, 12, 1]) {
-      const rendered = buildMessageLines(state, width);
-      const label = rendered.lines[rendered.lineAnchors.findIndex(a => a.segment === "automation_label")];
-      expect(visibleLength(label)).toBeLessThanOrEqual(width);
-      if (width === 120) expect(visibleLength(label)).toBe(width - 3);
+    for (const showTurnWork of [false, true]) {
+      state.showTurnWork = showTurnWork;
+      for (const width of [120, 24, 12, 1]) {
+        const rendered = buildMessageLines(state, width);
+        const label = rendered.lines[rendered.lineAnchors.findIndex(a => a.segment === "notification_header")];
+        expect(visibleLength(label)).toBeLessThanOrEqual(Math.max(width, 3));
+      }
     }
   });
 
-  test("uses a softened bubble and a readable source label", () => {
+  test("renders notifications on the assistant's side, never in the user's bubble", () => {
     const state = createInitialState();
     const human = { role: "user" as const, text: "I wrote this", metadata: null };
     const automated = {
       role: "user" as const,
-      text: "Check the deployment and report back.",
+      text: "[chrono wake: chrono:demo] Check the deployment and report back.",
       metadata: {
         startedAt: 2_000,
         endedAt: 2_000,
@@ -179,14 +181,24 @@ describe("automated user-message provenance", () => {
     };
     state.messages.push(human, automated);
 
-    const rendered = buildMessageLines(state, 100);
-    const humanLine = rendered.lines[rendered.lineAnchors.findIndex(anchor => anchor.owner === human && anchor.segment === "user_content")];
-    const automatedLine = rendered.lines[rendered.lineAnchors.findIndex(anchor => anchor.owner === automated && anchor.segment === "user_content")];
-    const labelIndex = rendered.lineAnchors.findIndex(anchor => anchor.owner === automated && anchor.segment === "automation_label");
-
+    const folded = buildMessageLines(state, 100);
+    const humanLine = folded.lines[folded.lineAnchors.findIndex(anchor => anchor.owner === human && anchor.segment === "user_content")];
     expect(humanLine).toContain(theme.userBg);
-    expect(automatedLine).toContain(theme.automatedUserBg);
-    expect(stripAnsi(rendered.lines[labelIndex])).toContain("⚙ Chrono");
+    const ownRows = folded.lineAnchors.flatMap((anchor, row) => anchor.owner === automated && !anchor.segment.includes("margin") ? [row] : []);
+    expect(ownRows.map(row => stripAnsi(folded.lines[row]))).toEqual(["  ▸ Chrono · Check the deployment and report back."]);
+    expect(folded.lineAnchors[ownRows[0]].toggle).toBe(automated);
+    expect(folded.lines[ownRows[0]]).not.toContain("\x1b[48;");
+
+    state.showTurnWork = true;
+    const open = buildMessageLines(state, 100);
+    const openRows = open.lineAnchors.flatMap((anchor, row) => anchor.owner === automated && !anchor.segment.includes("margin") ? [row] : []);
+    expect(openRows.map(row => stripAnsi(open.lines[row]))).toEqual([
+      "  Chrono",
+      "  ▎ [chrono wake: chrono:demo] Check the deployment and report back.",
+    ]);
+    expect(open.lineAnchors[openRows[0]].toggle).toBeUndefined();
+    expect(openRows.some(row => open.lines[row].includes("\x1b[48;"))).toBe(false);
+    expect(open.copyLines[openRows[1]]).toEqual({ text: "[chrono wake: chrono:demo] Check the deployment and report back.", displayStart: 4 });
   });
 
   test("combines queued automation provenance with its timing", () => {
@@ -363,6 +375,7 @@ describe("queued message rendering", () => {
       toolRegistry: [],
       externalToolStyles: [],
       showToolOutput: false,
+      showTurnWork: true,
       convId: "conv-1",
       queuedMessages: [
         { convId: "conv-1", text: "global idle first", timing: "message-end", source: "global-idle" },
@@ -412,6 +425,7 @@ describe("queued message rendering", () => {
       toolRegistry: [],
       externalToolStyles: [],
       showToolOutput: false,
+      showTurnWork: true,
       convId: "conv-1",
       queuedMessages: [
         { convId: "conv-1", text: "wait for everyone", timing: "message-end", source: "global-idle" },
@@ -431,6 +445,7 @@ describe("queued message rendering", () => {
       toolRegistry: [],
       externalToolStyles: [],
       showToolOutput: false,
+      showTurnWork: true,
       convId: null,
       folderInstructionsDoc: null,
       pendingQueuedDraftConvId: "reserved-conv",
@@ -452,6 +467,7 @@ describe("queued message rendering", () => {
       toolRegistry: [],
       externalToolStyles: [],
       showToolOutput: false,
+      showTurnWork: true,
       convId: null,
       folderInstructionsDoc: null,
       pendingQueuedDraftConvId: null,
@@ -481,6 +497,7 @@ describe("queued message rendering", () => {
       toolRegistry: [],
       externalToolStyles: [],
       showToolOutput: false,
+      showTurnWork: true,
       convId: "conv-1",
       queuedMessages: [
         { convId: "conv-1", text: "queued voice transcript", timing: "message-end" },
@@ -507,6 +524,7 @@ describe("tool call rendering", () => {
     };
     const state = createInitialState();
     state.showToolOutput = false;
+    state.showTurnWork = true;
     state.toolRegistry = [{ name: "bash", label: "$", color: "#d19a66" }];
     state.messages.push({
       role: "assistant",
@@ -582,6 +600,7 @@ describe("tool call rendering", () => {
       toolRegistry: [{ name: "bash", label: "$", color: "#d19a66" }],
       externalToolStyles: [],
       showToolOutput: false,
+      showTurnWork: true,
       convId: null,
       queuedMessages: [],
     } as any;
@@ -611,6 +630,7 @@ describe("tool call rendering", () => {
       toolRegistry: [{ name: "exo", label: "Exocortex", color: "#1d9bf0" }],
       externalToolStyles: [],
       showToolOutput: false,
+      showTurnWork: true,
       convId: null,
       queuedMessages: [],
     } as any;
@@ -642,6 +662,7 @@ describe("tool call rendering", () => {
       toolRegistry: [{ name: "bash", label: "$", color: "#d19a66" }],
       externalToolStyles: [{ cmd: "exo", label: "Exocortex", color: "#1d9bf0" }],
       showToolOutput: false,
+      showTurnWork: true,
       convId: null,
       queuedMessages: [],
     } as any;
@@ -670,6 +691,7 @@ describe("tool call rendering", () => {
       toolRegistry: [{ name: "bash", label: "$", color: "#d19a66" }],
       externalToolStyles: [{ cmd: "exo", label: "Exocortex", color: "#1d9bf0" }],
       showToolOutput: false,
+      showTurnWork: true,
       convId: null,
       queuedMessages: [],
     } as any;
@@ -697,6 +719,7 @@ describe("tool call rendering", () => {
       toolRegistry: [{ name: "bash", label: "$", color: "#d19a66" }],
       externalToolStyles: [{ cmd: "exo", label: "Exocortex", color: "#1d9bf0" }],
       showToolOutput: false,
+      showTurnWork: true,
       convId: null,
       queuedMessages: [],
     } as any;
@@ -730,6 +753,7 @@ describe("tool call rendering", () => {
       toolRegistry: [{ name: "bash", label: "$", color: "#d19a66" }],
       externalToolStyles: [{ cmd: "gmail", label: "Gmail", color: "#4ddbb7" }],
       showToolOutput: false,
+      showTurnWork: true,
       convId: null,
       queuedMessages: [],
     } as any;
@@ -765,6 +789,7 @@ describe("tool call rendering", () => {
       toolRegistry: [{ name: "bash", label: "$", color: "#d19a66" }],
       externalToolStyles: [{ cmd: "whatsapp", label: "WhatsApp", color: "#25d366" }],
       showToolOutput: false,
+      showTurnWork: true,
       convId: null,
       queuedMessages: [],
     } as any;
@@ -801,6 +826,7 @@ describe("tool call rendering", () => {
         { cmd: "whatsapp", label: "WhatsApp", color: "#25d366" },
       ],
       showToolOutput: false,
+      showTurnWork: true,
       convId: null,
       queuedMessages: [],
     } as any;
@@ -840,6 +866,7 @@ describe("tool call rendering", () => {
         { cmd: "whatsapp", label: "WhatsApp", color: "#25d366" },
       ],
       showToolOutput: false,
+      showTurnWork: true,
       convId: null,
       queuedMessages: [],
     } as any;
@@ -877,6 +904,7 @@ describe("tool call rendering", () => {
       toolRegistry: [{ name: "bash", label: "$", color: "#d19a66" }],
       externalToolStyles: [{ cmd: "whatsapp", label: "WhatsApp", color: "#25d366" }],
       showToolOutput: false,
+      showTurnWork: true,
       convId: null,
       queuedMessages: [],
     } as any;
@@ -916,6 +944,7 @@ describe("tool call rendering", () => {
       toolRegistry: [{ name: "bash", label: "$", color: "#d19a66" }],
       externalToolStyles: [{ cmd: "gcloud", label: "GCloud", color: "#4285f4" }],
       showToolOutput: false,
+      showTurnWork: true,
       convId: null,
       queuedMessages: [],
     } as any;
@@ -959,6 +988,7 @@ describe("tool call rendering", () => {
       toolRegistry: [{ name: "bash", label: "$", color: "#d19a66" }],
       externalToolStyles: [{ cmd: "vm", label: "VM", color: "#7c3aed" }],
       showToolOutput: false,
+      showTurnWork: true,
       convId: null,
       queuedMessages: [],
     } as any;
@@ -1005,6 +1035,7 @@ describe("tool call rendering", () => {
       toolRegistry: [{ name: "bash", label: "$", color: "#d19a66" }],
       externalToolStyles: [{ cmd: "vm", label: "VM", color: "#7c3aed" }],
       showToolOutput: false,
+      showTurnWork: true,
       convId: null,
       queuedMessages: [],
     } as any;
@@ -1042,6 +1073,7 @@ describe("tool call rendering", () => {
       toolRegistry: [{ name: "bash", label: "$", color: "#d19a66" }],
       externalToolStyles: [{ cmd: "vm", label: "VM", color: "#7c3aed" }],
       showToolOutput: false,
+      showTurnWork: true,
       convId: null,
       queuedMessages: [],
     } as any;
@@ -1079,6 +1111,7 @@ describe("tool call rendering", () => {
       toolRegistry: [{ name: "bash", label: "$", color: "#d19a66" }],
       externalToolStyles: [{ cmd: "vm", label: "VM", color: "#7c3aed" }],
       showToolOutput: false,
+      showTurnWork: true,
       convId: null,
       queuedMessages: [],
     } as any;
@@ -1113,6 +1146,7 @@ describe("tool call rendering", () => {
       toolRegistry: [{ name: "bash", label: "$", color: "#d19a66" }],
       externalToolStyles: [{ cmd: "vm", label: "VM", color: "#7c3aed" }],
       showToolOutput: false,
+      showTurnWork: true,
       convId: null,
       queuedMessages: [],
     } as any;
@@ -1147,6 +1181,7 @@ describe("tool call rendering", () => {
       toolRegistry: [{ name: "bash", label: "$", color: "#d19a66" }],
       externalToolStyles: [{ cmd: "exo", label: "Exocortex", color: "#1d9bf0" }],
       showToolOutput: false,
+      showTurnWork: true,
       convId: null,
       queuedMessages: [],
     } as any;
@@ -1214,6 +1249,7 @@ describe("assistant metadata spacing", () => {
       toolRegistry: [],
       externalToolStyles: [],
       showToolOutput: false,
+      showTurnWork: true,
       convId: null,
       queuedMessages: [],
     } as any;
@@ -1241,6 +1277,7 @@ describe("assistant metadata spacing", () => {
       toolRegistry: [],
       externalToolStyles: [],
       showToolOutput: false,
+      showTurnWork: true,
       convId: null,
       queuedMessages: [],
     } as any;
@@ -1269,6 +1306,7 @@ describe("assistant metadata spacing", () => {
       toolRegistry: [],
       externalToolStyles: [],
       showToolOutput: false,
+      showTurnWork: true,
       convId: null,
       queuedMessages: [],
     } as any;
@@ -1298,6 +1336,7 @@ describe("assistant metadata spacing", () => {
       toolRegistry: [],
       externalToolStyles: [],
       showToolOutput: false,
+      showTurnWork: true,
       convId: null,
       queuedMessages: [],
     } as any;
@@ -1356,6 +1395,7 @@ describe("assistant metadata spacing", () => {
       toolRegistry: [],
       externalToolStyles: [],
       showToolOutput: false,
+      showTurnWork: true,
       convId: null,
       queuedMessages: [],
     } as any;
@@ -1402,6 +1442,7 @@ describe("assistant metadata spacing", () => {
       toolRegistry: [],
       externalToolStyles: [],
       showToolOutput: false,
+      showTurnWork: true,
       convId: null,
       queuedMessages: [],
     } as any;
@@ -1456,6 +1497,7 @@ describe("assistant metadata spacing", () => {
       toolRegistry: [],
       externalToolStyles: [],
       showToolOutput: false,
+      showTurnWork: true,
       convId: null,
       queuedMessages: [],
     } as any;
@@ -1489,6 +1531,7 @@ describe("assistant metadata spacing", () => {
       toolRegistry: [],
       externalToolStyles: [],
       showToolOutput: false,
+      showTurnWork: true,
       convId: null,
       queuedMessages: [],
     } as any;
@@ -1522,6 +1565,7 @@ describe("assistant metadata spacing", () => {
       toolRegistry: [],
       externalToolStyles: [],
       showToolOutput: false,
+      showTurnWork: true,
       convId: null,
       queuedMessages: [],
     } as any;
@@ -1549,6 +1593,7 @@ describe("system message rendering", () => {
       toolRegistry: [],
       externalToolStyles: [],
       showToolOutput: false,
+      showTurnWork: true,
       convId: null,
       queuedMessages: [],
     } as any;
@@ -1599,6 +1644,7 @@ describe("block render cache invalidation", () => {
       toolRegistry: [],
       externalToolStyles: [],
       showToolOutput: false,
+      showTurnWork: true,
       convId: null,
       queuedMessages: [],
     } as any;

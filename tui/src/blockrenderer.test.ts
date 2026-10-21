@@ -194,7 +194,7 @@ describe("tool-call presentation", () => {
       "  Step 2.",
       "  Step 3.",
       "  Step 4.",
-      "  … +7 more lines (ctrl+o to expand)",
+      "  … +7 more lines (ctrl+i to expand)",
     ]);
 
     const expanded = renderBlockCached(block, 60, registry, [], true).lines.map(stripAnsi);
