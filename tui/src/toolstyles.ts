@@ -11,6 +11,7 @@
 
 import { parseMcpToolName, type ToolDisplayInfo, type ExternalToolStyle } from "./messages";
 import { splitTopLevelShellSegments } from "./bashsegments";
+import { isHeredocDelimiterLine, scanHeredocOperators } from "./bashheredocs";
 import { theme, hexToAnsi } from "./theme";
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -130,6 +131,17 @@ function tokenizeShellWords(line: string): ShellToken[] | null {
   }
 
   return tokens;
+}
+
+/**
+ * The words of one shell command from its effective executable on, past
+ * leading assignments and transparent wrappers (`env`, `timeout`, `time` …).
+ */
+export function shellCommandWords(text: string): string[] | null {
+  const tokens = tokenizeShellWords(text.trimStart());
+  if (!tokens || tokens.length === 0) return null;
+  const index = unwrapCommandWrappers(tokens, 0);
+  return index == null ? null : tokens.slice(index).map(token => token.text);
 }
 
 function stripLeadingAssignments(tokens: ShellToken[], start = 0): number {
@@ -255,20 +267,11 @@ function unwrapCommandWrappers(tokens: ShellToken[], start: number): number | nu
 }
 
 function parseHeredocSpecs(line: string): HeredocSpec[] {
-  const specs: HeredocSpec[] = [];
-  const regex = /<<(-)?\s*(?:'([^']*)'|"([^"]*)"|\\?([^\s'"`]+))/g;
-
-  for (const match of line.matchAll(regex)) {
-    const terminator = match[2] ?? match[3] ?? match[4];
-    if (!terminator) continue;
-    specs.push({
-      terminator: terminator.startsWith("\\") ? terminator.slice(1) : terminator,
-      allowTabs: match[1] === "-",
-      start: match.index ?? 0,
-    });
-  }
-
-  return specs;
+  return scanHeredocOperators(line).operators.map(operator => ({
+    terminator: operator.delimiter,
+    allowTabs: operator.stripTabs,
+    start: operator.start,
+  }));
 }
 
 function hasOutputRedirectionBefore(line: string, beforeIndex: number): boolean {
@@ -285,7 +288,7 @@ function isSkippableHeredocPrelude(rawLine: string, command: string, heredocs: H
 }
 
 function isHeredocTerminatorLine(line: string, spec: HeredocSpec): boolean {
-  return spec.allowTabs ? line.replace(/^\t+/, "") === spec.terminator : line === spec.terminator;
+  return isHeredocDelimiterLine(line, { delimiter: spec.terminator, stripTabs: spec.allowTabs });
 }
 
 function skipHeredocBodies(lines: string[], lineIndex: number, specs: HeredocSpec[]): number | null {
