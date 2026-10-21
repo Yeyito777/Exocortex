@@ -1020,8 +1020,17 @@ export function buildMessageLines(
       if (!rowAbove && userMessageNeedsTopMargin(state.messages, messageIndex)) pushLine("", msg, "user_margin_top");
       const contentStart = lines.length;
       if (messagePlan.runHeader && messagePlan.runToggle) pushRunHeader(msg, messagePlan.runHeader, null, messagePlan.runToggle);
+      // An opened turn's row leads it: the notification and the work read below it.
+      if (messagePlan.turnRow && messagePlan.turnToggle) pushToggleLine(`  ${theme.muted}${messagePlan.turnRow}${theme.reset}`, msg, "turn_work_summary", messagePlan.turnToggle);
       pushNotification(msg, messagePlan);
       const contentEnd = lines.length;
+      // Gutter style: an opened group's mark on its first row, the top of what opened.
+      if (messagePlan.gutter && contentEnd > contentStart) {
+        const { mark, toggle } = messagePlan.gutter;
+        if (mark) lines[contentStart] = withGutterMark(lines[contentStart], mark);
+        lineAnchors[contentStart].toggle = toggle;
+        lineAnchors[contentStart].toggleCols = mark ? 1 : 0;
+      }
       if (messagePlan.open) pushImages(pastedImages(msg, msg.images, state.convId), "user_image");
       pushLine("", msg, "user_margin_bottom");
       pushMessageBound(msg.role, start, contentStart, contentEnd);

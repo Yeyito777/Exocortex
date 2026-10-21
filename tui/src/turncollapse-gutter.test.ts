@@ -76,10 +76,13 @@ describe("gutter folding (default)", () => {
     expect(anchor.toggleCols).toBe(1);
     toggleHistoryItemPreservingViewport(state, anchor.toggle!);
     const open = rows(state);
-    expect(open.some(row => row.startsWith("▾ "))).toBe(true);
-    expect(open.filter(row => row.trim() === "Subagent completion")).toHaveLength(1);
+    // The mark leads what opened: everything reads below it, in order.
+    expect(open.filter(row => row.startsWith("▾"))).toEqual(["▾ Subagent completion"]);
     expect(open.filter(row => row.trim() === "Chrono hard wake")).toHaveLength(2);
-    expect(open.some(row => row.includes("checking s1"))).toBe(true);
+    const at = (text: string) => open.findIndex(row => row.includes(text));
+    const order = ["▾ Subagent completion", "exo:1", "checking s1", "look s1", "chrono:2", "checking s2", "chrono:3", "restart", "Restarted live."].map(at);
+    expect(order.every(row => row >= 0)).toBe(true);
+    expect(order).toEqual([...order].sort((a, b) => a - b));
     freshMatchesIncremental(state);
   });
 
@@ -173,4 +176,102 @@ test("a notification delivered mid-turn adds no blank row between the prompt and
   const shown = rows(state);
   const prompt = shown.findIndex(row => row.includes("run it"));
   expect(shown.slice(prompt + 1, prompt + 3)).toEqual(["", "▸ done"]);
+});
+
+describe("opening a fold reads top to bottom under its toggle row", () => {
+  function layout(state: RenderState, width = 100): BuildMessageLinesResult {
+    const built = buildMessageLines(state, width);
+    Object.assign(state, { historyLines: built.lines, historyLineAnchors: built.lineAnchors, historyWrapContinuation: built.wrapContinuation });
+    state.layout.totalLines = built.lines.length;
+    state.layout.messageAreaHeight = 12;
+    return built;
+  }
+
+  /** Long enough to scroll: the opened item's toggle row has to keep its screen row. */
+  function history(state: RenderState): void {
+    state.cols = 100;
+    for (let n = 0; n < 6; n++) state.messages.push(user(`question ${n}`), assistant([{ type: "text", text: `answer ${n}` }]));
+    state.messages.push(wake(7), assistant([...call("w1", "ops/remote status"), ...call("w2", "df -h"), { type: "text", text: "Live is healthy." }]));
+    for (let n = 8; n < 12; n++) state.messages.push(user(`question ${n}`), assistant([{ type: "text", text: `answer ${n}` }]));
+  }
+
+  function screenRow(state: RenderState, row: number): number {
+    const viewStart = Math.max(0, state.historyLines.length - state.layout.messageAreaHeight - state.scrollOffset);
+    return row - viewStart;
+  }
+
+  for (const style of ["rows", "gutter"] as const) {
+    test(`${style}: the toggle row stays put, then the notification, then the work, then the reply`, () => {
+      const state = createInitialState();
+      state.foldStyle = style;
+      history(state);
+      let built = layout(state);
+      const closed = built.lines.findIndex((line, row) => built.lineAnchors[row]?.toggle && /▸/.test(stripAnsi(line)) && /Chrono|Live is healthy/.test(stripAnsi(line)));
+      expect(closed).toBeGreaterThan(0);
+      state.scrollOffset = Math.max(0, built.lines.length - state.layout.messageAreaHeight - (closed - 4));
+      const before = screenRow(state, closed);
+      focusHistory(state);
+      state.historyCursor = { row: closed, col: 0 };
+      const item = built.lineAnchors[closed].toggle!;
+      handleFocusedKey({ type: "enter" }, state);
+
+      built = layout(state);
+      const shown = built.lines.map(line => stripAnsi(line));
+      const head = built.lineAnchors.findIndex(anchor => anchor?.toggle === item);
+      expect(shown[head]).toMatch(/^ *▾/);
+      expect(screenRow(state, head)).toBe(before);
+      expect(state.historyCursor.row).toBe(head);
+      const at = (text: string) => shown.findIndex(row => row.includes(text));
+      const order = [head, at("chrono:7"), at("ops/remote status"), at("df -h"), at("Live is healthy.")];
+      expect(order.every(row => row >= head)).toBe(true);
+      expect(order).toEqual([...order].sort((a, b) => a - b));
+
+      // Enter on the same row closes just that item.
+      handleFocusedKey({ type: "enter" }, state);
+      built = layout(state);
+      expect(built.lines.some(line => stripAnsi(line).includes("ops/remote status"))).toBe(false);
+      expect(built.lines.some(line => /▾/.test(stripAnsi(line)))).toBe(false);
+    });
+  }
+
+  test("rows: a notification delivered while another turn ran leads with the row too", () => {
+    const state = createInitialState();
+    state.foldStyle = "rows";
+    state.messages.push(user("start"), assistant([{ type: "text", text: "ok" }]), note(1), wake(2), assistant([...call("x", "git log"), { type: "text", text: "Merged." }]));
+    let built = buildMessageLines(state, 100);
+    const row = built.lines.findIndex(line => stripAnsi(line).includes("▸ "));
+    toggleHistoryItemPreservingViewport(state, built.lineAnchors[row].toggle!);
+    const shown = rows(state);
+    const at = (text: string) => shown.findIndex(line => line.includes(text));
+    const order = [at("▾ "), at("exo:1"), at("chrono:2"), at("git log"), at("Merged.")];
+    expect(order.every(index => index >= 0)).toBe(true);
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+    expect(shown.filter(line => line.includes("▾ "))).toHaveLength(1);
+    freshMatchesIncremental(state);
+  });
+});
+
+describe("Ctrl+O", () => {
+  for (const style of ["rows", "gutter"] as const) {
+    test(`${style}: it flips between all shown and all folded, closing what was opened one by one`, () => {
+      const state = createInitialState();
+      state.foldStyle = style;
+      state.cols = 100;
+      state.messages.push(user("q"), assistant([...call("c", "ls"), { type: "text", text: "Done." }]), wake(1), assistant([...call("d", "uptime"), { type: "text", text: "Fine." }]));
+      const folded = rows(state);
+      const built = buildMessageLines(state, 100);
+      const row = built.lines.findIndex(line => /▸/.test(stripAnsi(line)));
+      toggleHistoryItemPreservingViewport(state, built.lineAnchors[row].toggle!);
+      expect(rows(state).some(line => line.includes("bash ls") || line.includes("bash uptime"))).toBe(true);
+      focusHistory(state);
+      handleFocusedKey({ type: "ctrl-o" }, state);
+      expect(state.showTurnWork).toBe(true);
+      const all = rows(state);
+      expect(all.some(line => line.includes("bash ls"))).toBe(true);
+      expect(all.some(line => line.includes("bash uptime"))).toBe(true);
+      handleFocusedKey({ type: "ctrl-o" }, state);
+      expect(state.showTurnWork).toBe(false);
+      expect(rows(state)).toEqual(folded);
+    });
+  }
 });
