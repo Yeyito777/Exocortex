@@ -68,7 +68,7 @@ Instructions are not shown in the chat. `/instructions` opens a picker of the
 three scopes: **Conversation** (this chat only), **Folder** (every chat in the
 conversation's folder; `;` or a right click on a sidebar folder, then Edit
 instructions, opens it directly) and
-**Global** (every conversation, `config/system.md`). Each row shows the first
+**Global** (every conversation). Each row shows the first
 line and size, or `empty`. `j`/`k` (or `1`–`3`) choose, `Enter` edits, `Esc`
 closes.
 
@@ -78,6 +78,17 @@ closes, `:q` closes (refused with unsaved changes), `:q!` discards; `Esc` in
 normal mode closes, asking once more when there are unsaved changes. Saving an
 empty document clears that scope. Global saves are refused if `config/system.md`
 changed since it was opened; `:w!` overwrites it.
+
+Global instructions are two files, sent in this order: `config/system.base.md`,
+the tracked upstream base every install gets, and `config/system.md`, this
+install's own additions, which git ignores. The Global editor edits only
+`config/system.md` and shows the base above it, read-only, under its own rule.
+Agents edit the base only when the user explicitly asks; edits made through
+`/instructions` (or by agents to `config/system.md`) stay on this machine. Edits
+to either file apply to the next request without a restart. On start the daemon
+removes sections of `config/system.md` that are identical to a base section (left
+over from when it held the base too), after copying it to
+`config/system.md.pre-split-<time>.bak`; sections you changed are kept.
 
 Everything acts locally first, so it feels the same over `/ssh`: the TUI keeps
 each scope's text (fetched in the background once a conversation has been open

@@ -28,6 +28,7 @@ import {
 } from "./state";
 import {
   applyInstructionsStoreEvent,
+  GLOBAL_INSTRUCTIONS_KEY,
   hasPendingInstructionsSave,
   instructionsConnectionLost as markConnectionLost,
   instructionsFailure,
@@ -128,6 +129,7 @@ function failureNotice(scope: InstructionScope, failure: InstructionsFailure): s
 /** An editor for `scope` with the text the TUI has, or a failed save's text to try again. */
 function editorFor(state: RenderState, scope: InstructionScope, target: InstructionsTarget, text: string | null): InstructionsEditorState {
   const editor = createInstructionsEditor(scope, target, text);
+  if (scope === "global") editor.base = state.instructionsStore.globalBase;
   if (text !== null) restoreFailedSave(state, editor);
   return editor;
 }
@@ -413,6 +415,10 @@ export function handleInstructionsEvent(state: RenderState, event: Event, daemon
       restoreFailedSave(state, editor);
     }
   }
+
+  // The base arrives with every load; an open Global editor shows the newest.
+  const open = state.instructionsModal?.editor;
+  if (open && editorKey(open) === GLOBAL_INSTRUCTIONS_KEY) open.base = state.instructionsStore.globalBase;
 
   for (const change of changes) {
     if (change.type === "failed") showFailure(state, change);

@@ -1,8 +1,19 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { configDir } from "@exocortex/shared/paths";
-import { buildClaudeCodeSystemAppend, buildSystemPrompt, getUserAddendum, reloadUserAddendum, setUserAddendum } from "./system";
+import {
+  buildClaudeCodeSystemAppend,
+  buildSystemPrompt,
+  dedupeAgainstBase,
+  getBaseInstructions,
+  getGlobalInstructions,
+  getUserAddendum,
+  migrateGlobalInstructions,
+  reloadUserAddendum,
+  setUserAddendum,
+  splitInstructionSections,
+} from "./system";
 import { buildConversationRequestSurface } from "./conversation-request-surface";
 import { setLoadedExternalToolsForTest } from "./external-tools";
 import type { Conversation } from "./messages";
@@ -206,6 +217,130 @@ describe("system prompt", () => {
       expect(openai.system).not.toContain("Conversation goal");
     } finally {
       setUserAddendum(original);
+    }
+  });
+});
+
+describe("global instructions: tracked base + personal file", () => {
+  const BASE = [
+    "# Helper Tools",
+    "Use helper-tools/.",
+    "",
+    "# System Prompts",
+    "Keep prompts minimal.",
+    "",
+    "# PSA",
+    "Restart with the exo tool.",
+  ].join("\n");
+  const basePath = () => join(configDir(), "system.base.md");
+  const personalPath = () => join(configDir(), "system.md");
+  const backups = () => readdirSync(configDir()).filter(name => name.startsWith("system.md.pre-split-"));
+  const clean = () => {
+    rmSync(basePath(), { force: true });
+    for (const name of backups()) rmSync(join(configDir(), name), { force: true });
+    setUserAddendum("");
+  };
+
+  test("layers the base before this install's own instructions, each optional", () => {
+    try {
+      writeFileSync(basePath(), `${BASE}\n`);
+      setUserAddendum("# Latex\nUse latex.");
+      expect(getBaseInstructions()).toBe(BASE);
+      expect(getUserAddendum()).toBe("# Latex\nUse latex.");
+      expect(getGlobalInstructions()).toBe(`${BASE}\n\n# Latex\nUse latex.`);
+      expect(buildClaudeCodeSystemAppend({ includeExternalToolHints: false, conversationInstructions: "Conversation rule" }))
+        .toBe(`${BASE}\n\n# Latex\nUse latex.\n\n# Conversation instructions\nConversation rule`);
+      const prompt = buildSystemPrompt({ includeExternalToolHints: false });
+      expect(prompt.indexOf("# Helper Tools")).toBeLessThan(prompt.indexOf("# Latex"));
+
+      // A missing personal file is the base alone, without an error.
+      rmSync(personalPath(), { force: true });
+      expect(getUserAddendum()).toBe("");
+      expect(getGlobalInstructions()).toBe(BASE);
+
+      // Saving writes only the personal file; the base is untouched.
+      setUserAddendum("Own rule.");
+      expect(readFileSync(personalPath(), "utf8")).toBe("Own rule.\n");
+      expect(readFileSync(basePath(), "utf8")).toBe(`${BASE}\n`);
+
+      // Hand edits to the base apply without a restart; without a base only the personal text remains.
+      writeFileSync(basePath(), "# Base\nChanged upstream.\n");
+      expect(getGlobalInstructions()).toBe("# Base\nChanged upstream.\n\nOwn rule.");
+      rmSync(basePath());
+      expect(getGlobalInstructions()).toBe("Own rule.");
+    } finally {
+      clean();
+    }
+  });
+
+  test("splits sections at top-level headings, ignoring fenced code", () => {
+    expect(splitInstructionSections("Preamble.\n\n# A\nOne.\n\n\n# B\n```sh\n# not a heading\n```\nTwo.\n")).toEqual([
+      "Preamble.",
+      "# A\nOne.",
+      "# B\n```sh\n# not a heading\n```\nTwo.",
+    ]);
+    expect(splitInstructionSections("")).toEqual([]);
+  });
+
+  test("dedupe drops identical base sections and keeps edited and new ones", () => {
+    const personal = [
+      "# Helper Tools",
+      "Use helper-tools/.",
+      "",
+      "# System Prompts",
+      "Keep prompts minimal. And short.",
+      "",
+      "# Latex",
+      "Use latex.",
+      "",
+      "# PSA",
+      "Restart with the exo tool.",
+      "",
+      "",
+      "# CAPTCHAs",
+      "Delegate them.",
+    ].join("\n");
+    expect(dedupeAgainstBase(personal, BASE)).toEqual({
+      text: "# System Prompts\nKeep prompts minimal. And short.\n\n# Latex\nUse latex.\n\n# CAPTCHAs\nDelegate them.",
+      removed: ["# Helper Tools", "# PSA"],
+      edited: ["# System Prompts"],
+    });
+    // Base sections missing from the personal file are simply not there to remove.
+    expect(dedupeAgainstBase("# Latex\nUse latex.", BASE)).toEqual({ text: "# Latex\nUse latex.", removed: [], edited: [] });
+    // Only base sections: nothing of the install's own remains.
+    expect(dedupeAgainstBase(`${BASE}\n`, BASE).text).toBe("");
+  });
+
+  test("migration rewrites the old combined file once, after a backup", () => {
+    const combined = `${BASE.replace("# PSA", "# Latex\nUse latex.\n\n# PSA")}\n\n# CAPTCHAs\nDelegate them.\n`;
+    try {
+      writeFileSync(basePath(), `${BASE}\n`);
+      writeFileSync(personalPath(), combined);
+      const migration = migrateGlobalInstructions(new Date("2026-10-21T03:30:00.123Z"));
+      expect(migration.removed).toEqual(["# Helper Tools", "# System Prompts", "# PSA"]);
+      expect(migration.edited).toEqual([]);
+      expect(migration.backup).toBe(join(configDir(), "system.md.pre-split-20261021T033000Z.bak"));
+      expect(readFileSync(migration.backup!, "utf8")).toBe(combined);
+      expect(readFileSync(personalPath(), "utf8")).toBe("# Latex\nUse latex.\n\n# CAPTCHAs\nDelegate them.\n");
+      expect(getUserAddendum()).toBe("# Latex\nUse latex.\n\n# CAPTCHAs\nDelegate them.");
+      // Each base section reaches the prompt once.
+      expect(getGlobalInstructions().split("# Helper Tools").length).toBe(2);
+
+      // Already deduplicated: left alone, no second backup.
+      expect(migrateGlobalInstructions()).toEqual({ backup: null, removed: [], edited: [] });
+      expect(backups()).toHaveLength(1);
+
+      // An edited copy of a base section is kept, and reported.
+      writeFileSync(personalPath(), "# PSA\nRestart differently.\n");
+      expect(migrateGlobalInstructions()).toEqual({ backup: null, removed: [], edited: ["# PSA"] });
+      expect(readFileSync(personalPath(), "utf8")).toBe("# PSA\nRestart differently.\n");
+
+      // No personal file (a fresh clone): nothing to do, nothing created.
+      rmSync(personalPath());
+      expect(migrateGlobalInstructions()).toEqual({ backup: null, removed: [], edited: [] });
+      expect(existsSync(personalPath())).toBe(false);
+    } finally {
+      clean();
     }
   });
 });

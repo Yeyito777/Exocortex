@@ -56,6 +56,7 @@ import { adoptClaudeCodeProcesses } from "./providers/anthropic/api";
 import { detachAllClaudeCodeSessions, stopAllClaudeCodeSessions } from "./providers/anthropic/session";
 import { flushAssignments } from "./providers/anthropic/account-pool";
 import { runIpcProxy } from "./ipc-proxy";
+import { migrateGlobalInstructions } from "./system";
 
 // ── Startup profiling ────────────────────────────────────────────────
 
@@ -130,6 +131,18 @@ async function startDaemon(): Promise<void> {
   // Write PID file
   writeFileSync(PID_PATH, String(process.pid));
   profileMark("pid_written");
+
+  try {
+    const migration = migrateGlobalInstructions();
+    if (migration.backup) {
+      log("info", `exocortexd: removed ${migration.removed.length} section(s) now in config/system.base.md from config/system.md (${migration.removed.join(", ")}); original kept at ${migration.backup}`);
+    }
+    if (migration.edited.length) {
+      log("info", `exocortexd: config/system.md keeps its own edited copy of base section(s): ${migration.edited.join(", ")}`);
+    }
+  } catch (error) {
+    log("warn", `exocortexd: could not deduplicate config/system.md against config/system.base.md: ${error instanceof Error ? error.message : String(error)}`);
+  }
 
   // Create server — handler is set up with a forward reference
   // since the handler needs the server instance for sending events.
