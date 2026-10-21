@@ -6,6 +6,7 @@ import {
   buildHistoryUpdatedEvents,
   buildStoredHistoryUpdatedEvent,
   estimateEntryRows,
+  estimateFoldedEntryRows,
   isValidHistoryViewport,
   OPENING_WINDOW_VIEWPORTS,
   pageDisplayHistory,
@@ -313,7 +314,39 @@ describe("viewport-sized opening windows", () => {
     expect(budgetHistoryUpdatedEvent(event, 128 * 1024).entries).toEqual([ai("a2")]);
   });
 
+  test("estimates a folding client's turns by their final replies and notification markers", () => {
+    const toolTurn: DisplayEntry = {
+      type: "ai",
+      blocks: [
+        { type: "thinking", text: "plan" },
+        ...Array.from({ length: 10 }, (_, round) => [
+          { type: "tool_call" as const, toolCallId: `c${round}`, toolName: "Bash", input: {}, summary: `ls ${round}` },
+          { type: "tool_result" as const, toolCallId: `c${round}`, toolName: "Bash", output: "", isError: false },
+        ]).flat(),
+        { type: "text", text: "Done." },
+      ],
+      metadata: { startedAt: 1, endedAt: 2, model: "m", tokens: 1 },
+    };
+    // Metadata and its gap plus the one-row reply; the folded calls count nothing.
+    expect(estimateFoldedEntryRows(toolTurn, viewport.cols, false)).toBe(3);
+    // An older fragment of the same turn shows nothing once a newer one holds the reply.
+    expect(estimateFoldedEntryRows(toolTurn, viewport.cols, true)).toBe(0);
+    const notification: DisplayEntry = { type: "user", text: "[notification] Subagent completed\n\nlong\nreport", metadata: { startedAt: 1, endedAt: 1, model: "m", tokens: 0, automation: { kind: "subagent_completion" } } };
+    expect(estimateFoldedEntryRows(notification, viewport.cols, false)).toBe(2);
+    expect(estimateFoldedEntryRows(user("a real\nmultiline\nprompt"), viewport.cols, false)).toBe(estimateEntryRows(user("a real\nmultiline\nprompt"), viewport.cols));
+
+    // A folding client gets proportionally more of these turns in its opening window.
+    const entries = Array.from({ length: 60 }, (_, turn) => [user(`u${turn}`), toolTurn]).flat();
+    const unfolded = open(entries);
+    const folded = pageDisplayHistory(entries, 100, undefined, { byteBudget: 128 * 1024, viewport: { ...viewport, folded: true } });
+    const turns = (page: DisplayHistoryPage) => page.entries.filter((entry) => entry.type === "user").length;
+    expect(turns(folded)).toBeGreaterThan(2 * turns(unfolded));
+    expect(turns(folded)).toBe(Math.ceil(target / 5));
+  });
+
   test("validates the viewport a client sends", () => {
+    expect(isValidHistoryViewport({ rows: 50, cols: 200, folded: true })).toBe(true);
+    expect(isValidHistoryViewport({ rows: 50, cols: 200, folded: "yes" })).toBe(false);
     expect(isValidHistoryViewport({ rows: 50, cols: 200 })).toBe(true);
     expect(isValidHistoryViewport({ rows: 0, cols: 200 })).toBe(false);
     expect(isValidHistoryViewport({ rows: 50.5, cols: 200 })).toBe(false);

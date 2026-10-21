@@ -160,7 +160,7 @@ describe("heredoc bodies in shell tool calls", () => {
       "  Discord send 1",
       "    ▎ Discord message",
       ...body.slice(0, 8).map(line => `    ▎ ${line}`),
-      "    ▎ … +12 more lines (ctrl+o to expand)",
+      "    ▎ … +12 more lines (ctrl+i to expand)",
       "    ▎ EOF",
       "  $ echo sent",
     ]);

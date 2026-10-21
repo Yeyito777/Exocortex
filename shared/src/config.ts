@@ -168,6 +168,8 @@ export interface TuiConfig {
   hideSensitiveInfo?: boolean;
   /** If true, the TUI shows output-token counts alongside response throughput. */
   diagnostics?: boolean;
+  /** Ctrl+O: show every turn's work and every notification instead of folding them. */
+  showTurnWork?: boolean;
   /** How sidebar folders open: replace the list ("navigate", default) or expand in place ("tree"). */
   sidebarFolders?: "navigate" | "tree";
   /** Display math: typeset images on Kitty-graphics terminals ("auto", default), always "text", or force "image". */

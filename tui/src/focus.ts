@@ -18,7 +18,7 @@ import type { NewConversationPlacement } from "./sidebar/tree";
 import { focusBtw, focusPrompt, focusHistory, focusSidebar, modelSupportsImages, pushSystemMessage } from "./state";
 import { resolveAction, sidebarTopShortcutIndex } from "./keybinds";
 import { handleChatKey } from "./chat";
-import { toggleSidebarPreservingViewport, toggleToolOutputPreservingViewport } from "./chatscroll";
+import { preserveViewportAcrossHistoryMutation, toggleHistoryItemPreservingViewport, toggleSidebarPreservingViewport, toggleToolOutputPreservingViewport } from "./chatscroll";
 import {
   focusConversationAt,
   focusConversationById,
@@ -61,6 +61,7 @@ import { handleBtwKey } from "./btw/keys";
 import { omittedToolOutputIdsNearViewport } from "./events/tool-outputs";
 import { activeHistorySurface, isAnyHistoryFocused } from "./historysurface";
 import type { InlineImageTarget } from "./inlineimages";
+import { saveTurnWorkPreference } from "./diagnostics";
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -275,7 +276,9 @@ export function handleFocusedKey(
 
   if (acceptNextMessageSuggestion(state, key)) return { type: "handled" };
 
-  const action = resolveAction(key);
+  // Without the kitty keyboard protocol Ctrl+I arrives as Tab, which the
+  // history has no use for, so Tab there opens the detailed view.
+  const action = resolveAction(key) ?? (key.type === "tab" && isAnyHistoryFocused(state) ? "toggle_tool_output" : null);
   const topIndex = sidebarTopShortcutIndex(action);
 
   if (!isPromptTyping(state)) {
@@ -371,6 +374,15 @@ export function handleFocusedKey(
     case "scroll_bottom":
       handleScrollAction(action, state);
       return { type: "handled" };
+    case "toggle_turn_work":
+      // From the detailed view, Ctrl+O folds everything back in one press.
+      state.showToolOutputAfterLoad = false;
+      preserveViewportAcrossHistoryMutation(state, () => {
+        state.showTurnWork = !state.showTurnWork && !state.showToolOutput;
+        state.showToolOutput = false;
+      });
+      saveTurnWorkPreference(state.showTurnWork);
+      return { type: "handled" };
     case "toggle_tool_output": {
       if (state.showToolOutput || state.showToolOutputAfterLoad) {
         // Collapse, or cancel an expansion still waiting for its bodies.
@@ -408,6 +420,11 @@ export function handleFocusedKey(
   }
 
   if (action === "submit" && isAnyHistoryFocused(state)) {
+    const toggle = state.chatFocus === "history" ? state.historyLineAnchors[state.historyCursor.row]?.toggle : undefined;
+    if (toggle) {
+      toggleHistoryItemPreservingViewport(state, toggle);
+      return { type: "handled" };
+    }
     const image = imageAtHistoryCursor(state);
     if (image) return { type: "open_image", target: image };
     const target = openableTargetAtHistoryCursor(state);

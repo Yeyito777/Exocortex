@@ -1,7 +1,7 @@
 import type { DisplayEntry } from "./display";
 import type { ConversationRenderSnapshot, StoredDisplayHistoryPage } from "./conversations";
 import type { HistoryUpdatedEvent } from "./protocol";
-import type { Block, ImageAttachment } from "./messages";
+import { isAutomatedUserPrompt, ownerRelayedText, type Block, type ImageAttachment } from "./messages";
 
 export const INITIAL_HISTORY_TURNS = 5;
 export const BUFFERED_HISTORY_TURNS = 15;
@@ -25,12 +25,15 @@ export const OPENING_WINDOW_VIEWPORTS = 2;
 export interface HistoryViewport {
   rows: number;
   cols: number;
+  /** The client folds each turn's work and every notification to one row. */
+  folded?: boolean;
 }
 
 export function isValidHistoryViewport(value: unknown): value is HistoryViewport {
-  const { rows, cols } = (value ?? {}) as Partial<HistoryViewport>;
+  const { rows, cols, folded } = (value ?? {}) as Partial<HistoryViewport>;
   return Number.isSafeInteger(rows) && rows! >= 1 && rows! <= 1000
-    && Number.isSafeInteger(cols) && cols! >= 1 && cols! <= 4000;
+    && Number.isSafeInteger(cols) && cols! >= 1 && cols! <= 4000
+    && (folded === undefined || typeof folded === "boolean");
 }
 
 export interface HistoryWindowOptions {
@@ -48,7 +51,7 @@ export interface HistoryWindowOptions {
 export interface HistoryWindowLimits {
   byteBudget?: number;
   /** Estimated rendered rows after which the window is full. */
-  rowTarget?: { rows: number; cols: number };
+  rowTarget?: { rows: number; cols: number; folded?: boolean };
   /**
    * Pasted image payloads ride along only in budget the history itself left
    * over; otherwise they are dropped (as for old history) so a large screenshot
@@ -63,7 +66,7 @@ export function pageWindowLimits(options: HistoryWindowOptions): HistoryWindowLi
   const viewport = options.viewport;
   return {
     byteBudget: options.byteBudget,
-    ...(viewport ? { rowTarget: { rows: viewport.rows * OPENING_WINDOW_VIEWPORTS, cols: viewport.cols } } : {}),
+    ...(viewport ? { rowTarget: { rows: viewport.rows * OPENING_WINDOW_VIEWPORTS, cols: viewport.cols, ...(viewport.folded ? { folded: true } : {}) } } : {}),
     optionalImagePayloads: options.byteBudget !== undefined,
   };
 }
@@ -167,6 +170,38 @@ export function estimateEntryRows(entry: DisplayEntry, cols: number): number {
   }
 }
 
+/**
+ * Rows of an entry in a client that folds turns (tui/src/turncollapse.ts): a
+ * notification is one marker row; an assistant entry shows only the text after
+ * its last tool round. Entries arrive newest first, so `newerInTurn` says
+ * whether a newer assistant entry of the same turn holds its final reply, in
+ * which case this one may show nothing. Like the unfolded estimate it errs
+ * low: the folded-work summary row is not counted, which also covers the top
+ * margin the window's first prompt may lack.
+ */
+export function estimateFoldedEntryRows(entry: DisplayEntry, cols: number, newerInTurn: boolean): number {
+  switch (entry.type) {
+    case "user": {
+      if (!isAutomatedUserPrompt(entry.text, entry.metadata)) return estimateEntryRows(entry, cols);
+      // The owner's relayed message shows as their bubble; other notifications as one row.
+      const relayed = ownerRelayedText(entry.text, entry.metadata);
+      return relayed === null ? 1 + USER_ENTRY_CHROME_ROWS : estimateEntryRows({ ...entry, text: relayed }, cols);
+    }
+    case "ai": {
+      if (newerInTurn) return 0;
+      let rows = aiEntryChromeRows(entry);
+      for (let index = entry.blocks.length - 1; index >= 0; index--) {
+        const block = entry.blocks[index]!;
+        if (block.type === "tool_call" || block.type === "tool_result") break;
+        if (block.type === "text") rows += estimateBlockRows(block, cols);
+      }
+      return rows;
+    }
+    default:
+      return estimateEntryRows(entry, cols);
+  }
+}
+
 function hasImagePayload(entry: DisplayEntry): boolean {
   return entry.type === "user" && !!entry.images?.some((image) => image.base64.length > 0);
 }
@@ -240,6 +275,8 @@ export function selectHistoryWindow(
   let usedBytes = 0;
   let usedRows = 0;
   let userEntries = 0;
+  /** A newer assistant entry of the turn being walked was already counted. */
+  let aiNewerInTurn = false;
   for (const candidate of candidates) {
     let entry = endBlockIndex > 0 && candidate.index === endIndex && candidate.entry.type === "ai"
       ? sliceAIEntry(candidate.entry, 0, endBlockIndex)
@@ -254,7 +291,11 @@ export function selectHistoryWindow(
     }
     const rowsNeeded = rowTarget ? rowTarget.rows - usedRows : undefined;
     const overBytes = byteBudget !== undefined && usedBytes + bytes > byteBudget;
-    const entryRows = rowTarget ? estimateEntryRows(entry, rowTarget.cols) : 0;
+    const entryRows = !rowTarget ? 0
+      : rowTarget.folded ? estimateFoldedEntryRows(entry, rowTarget.cols, aiNewerInTurn)
+      : estimateEntryRows(entry, rowTarget.cols);
+    if (entry.type === "ai") aiNewerInTurn = true;
+    else if (entry.type === "user") aiNewerInTurn = false;
     if (overBytes || (entry.type === "ai" && rowsNeeded !== undefined && entryRows > rowsNeeded)) {
       if (entry.type !== "ai") {
         if (selected.length > 0) break;

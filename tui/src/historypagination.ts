@@ -52,11 +52,13 @@ const MAX_VIEWPORT_COLS = 4000;
  * estimating at that width overstated each turn's rows, so the window came
  * back too short to fill the screen.
  */
-export function openingViewport(state: RenderState): { rows: number; cols: number } {
+export function openingViewport(state: RenderState): { rows: number; cols: number; folded?: boolean } {
   const rows = state.layout.messageAreaHeight > 0 ? state.layout.messageAreaHeight : state.rows - NON_HISTORY_ROWS;
   const cols = state.layout.chatWidth > 0 ? state.layout.chatWidth : state.cols;
   const clamp = (value: number, max: number) => Math.min(max, Math.max(1, Math.floor(Number.isFinite(value) ? value : 1)));
-  return { rows: clamp(rows, MAX_VIEWPORT_ROWS), cols: clamp(cols, MAX_VIEWPORT_COLS) };
+  // Folded turns are a few rows each, so the window needs more of them.
+  const folded = !state.showTurnWork && !state.showToolOutput;
+  return { rows: clamp(rows, MAX_VIEWPORT_ROWS), cols: clamp(cols, MAX_VIEWPORT_COLS), ...(folded ? { folded } : {}) };
 }
 
 /** Start holding presentation of a just-opened window until it fills the screen. */

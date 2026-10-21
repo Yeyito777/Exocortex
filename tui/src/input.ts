@@ -13,7 +13,7 @@ export interface KeyEvent {
       | "left" | "right" | "home" | "end"
       | "up" | "down"
       | "ctrl-a" | "ctrl-b" | "ctrl-c" | "ctrl-d" | "ctrl-e" | "ctrl-f"
-      | "ctrl-j" | "ctrl-k" | "ctrl-l" | "ctrl-m" | "ctrl-n"
+      | "ctrl-i" | "ctrl-j" | "ctrl-k" | "ctrl-l" | "ctrl-m" | "ctrl-n"
       | "ctrl-o" | "ctrl-p" | "ctrl-q" | "ctrl-r" | "ctrl-s" | "ctrl-u" | "ctrl-v" | "ctrl-w" | "ctrl-y"
       | "ctrl-shift-o" | "ctrl-shift-r"
       | "shift-enter"
@@ -69,6 +69,7 @@ const CSI_U_MAP: Record<string, KeyEvent["type"]> = {
   "100;5": "ctrl-d",         // Ctrl+D (d=100)
   "101;5": "ctrl-e",         // Ctrl+E (e=101)
   "102;5": "ctrl-f",         // Ctrl+F (f=102)
+  "105;5": "ctrl-i",         // Ctrl+I (i=105); raw 0x09 stays Tab
   "106;5": "ctrl-j",         // Ctrl+J (j=106)
   "107;5": "ctrl-k",         // Ctrl+K (k=107)
   "108;5": "ctrl-l",         // Ctrl+L (l=108)
@@ -126,6 +127,7 @@ function csiUKeyType(keyCode: number, modifiers: number): KeyEvent["type"] | nul
       case 100: return "ctrl-d";
       case 101: return "ctrl-e";
       case 102: return "ctrl-f";
+      case 105: return "ctrl-i";
       case 106: return "ctrl-j";
       case 107: return "ctrl-k";
       case 108: return "ctrl-l";

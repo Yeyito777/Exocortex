@@ -360,9 +360,11 @@ export interface LoadConversationCommand extends CachedHistoryRequest {
    * 1..4000). With `history-block-pagination`, the opening window holds as
    * many turns as it takes (up to 100) for its estimated rendered rows to
    * fill two of these screens, still within the byte budget; `turns` is then
-   * ignored. Older daemons ignore it and honor `turns`.
+   * ignored. Older daemons ignore it and honor `turns`. `folded` says the
+   * client folds each turn's work and each notification to one row, so turns
+   * are estimated that way.
    */
-  viewport?: { rows: number; cols: number };
+  viewport?: { rows: number; cols: number; folded?: boolean };
 }
 
 export interface LoadConversationHistoryCommand extends CachedHistoryRequest {

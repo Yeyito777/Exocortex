@@ -93,6 +93,8 @@ interface HistoryRenderCacheEntry {
   conversationLoadingFrame: number | null;
   durableSleepMetadataFrame: number | null;
   showToolOutput: boolean;
+  showTurnWork: boolean;
+  historyExpansionRevision: number;
   showDiagnostics: boolean;
   toolRegistryRef: RenderState["toolRegistry"];
   externalToolStylesRef: RenderState["externalToolStyles"];
@@ -141,6 +143,8 @@ function canReuseHistoryRender(
     && cached.conversationLoadingFrame === conversationLoadingFrame(state)
     && cached.durableSleepMetadataFrame === currentDurableSleepMetadataFrame
     && cached.showToolOutput === state.showToolOutput
+    && cached.showTurnWork === state.showTurnWork
+    && cached.historyExpansionRevision === state.historyExpansionRevision
     && cached.showDiagnostics === state.showDiagnostics
     && cached.toolRegistryRef === state.toolRegistry
     && cached.externalToolStylesRef === state.externalToolStyles
@@ -285,6 +289,8 @@ function getHistoryRender(
     conversationLoadingFrame: conversationLoadingFrame(state),
     durableSleepMetadataFrame: currentDurableSleepMetadataFrame,
     showToolOutput: state.showToolOutput,
+    showTurnWork: state.showTurnWork,
+    historyExpansionRevision: state.historyExpansionRevision,
     showDiagnostics: state.showDiagnostics,
     toolRegistryRef: state.toolRegistry,
     externalToolStylesRef: state.externalToolStyles,

@@ -167,37 +167,44 @@ describe("conversation history pagination", () => {
     state.rows = 62;
     state.cols = 200;
     // Before the first layout: the terminal less the rows around history.
-    expect(openingViewport(state)).toEqual({ rows: 56, cols: 200 });
+    expect(openingViewport(state)).toEqual({ rows: 56, cols: 200, folded: true });
     renderQuietly(state);
-    expect(openingViewport(state)).toEqual({ rows: state.layout.messageAreaHeight, cols: state.layout.chatWidth });
+    expect(openingViewport(state)).toEqual({ rows: state.layout.messageAreaHeight, cols: state.layout.chatWidth, folded: true });
     state.layout.messageAreaHeight = 0;
     state.layout.chatWidth = 0;
     state.rows = 3;
     state.cols = 9_000;
     // Clamped to what the daemon accepts.
+    state.showTurnWork = true;
     expect(openingViewport(state)).toEqual({ rows: 1, cols: 4000 });
   });
 
   for (const rows of [40, 86]) {
-    test(`a viewport-sized window of tool-heavy turns fills a ${rows}-row screen on its first paint`, () => {
-      const probe = createInitialState();
-      probe.rows = rows;
-      probe.cols = 200;
-      renderQuietly(probe);
-      const viewport = openingViewport(probe);
-      // The daemon estimates each of these turns at 12 rows (prompt and the gap
-      // below it 2; thinking 1, six collapsed calls, answer 1, metadata and gap
-      // 2) and sends turns until they cover two viewports.
-      const turns = Math.ceil((2 * viewport.rows) / 12);
-      const state = openedWindow(rows, toolHeavyTurns(turns));
-      beginOpeningFillHold(state);
+    for (const folded of [false, true]) {
+      test(`a viewport-sized window of tool-heavy turns fills a ${rows}-row screen on its first paint${folded ? " (folded)" : ""}`, () => {
+        const probe = createInitialState();
+        probe.rows = rows;
+        probe.cols = 200;
+        probe.showTurnWork = !folded;
+        renderQuietly(probe);
+        const viewport = openingViewport(probe);
+        expect(viewport.folded === true).toBe(folded);
+        // The daemon estimates each of these turns at 12 rows (prompt and the gap
+        // below it 2; thinking 1, six collapsed calls, answer 1, metadata and gap
+        // 2), or 5 folded (the calls and thinking fold into one summary row it
+        // does not count), and sends turns until they cover two viewports.
+        const turns = Math.ceil((2 * viewport.rows) / (folded ? 5 : 12));
+        const state = openedWindow(rows, toolHeavyTurns(turns));
+        state.showTurnWork = !folded;
+        beginOpeningFillHold(state);
 
-      expect(renderQuietly(state)).toBe(true);
-      expect(state.historyOpeningFillUntil).toBeNull();
-      expect(state.layout.totalLines).toBeGreaterThanOrEqual(state.layout.messageAreaHeight);
-      // The estimate never exceeds what the TUI renders, so the screen above is buffered too.
-      expect(buildMessageLines(state, viewport.cols).lines.length).toBeGreaterThanOrEqual(2 * viewport.rows);
-    });
+        expect(renderQuietly(state)).toBe(true);
+        expect(state.historyOpeningFillUntil).toBeNull();
+        expect(state.layout.totalLines).toBeGreaterThanOrEqual(state.layout.messageAreaHeight);
+        // The estimate never exceeds what the TUI renders, so the screen above is buffered too.
+        expect(buildMessageLines(state, viewport.cols).lines.length).toBeGreaterThanOrEqual(2 * viewport.rows);
+      });
+    }
   }
 
   test("holds the first paint of a short opening window until older history fills it", () => {

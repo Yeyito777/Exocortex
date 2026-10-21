@@ -56,6 +56,8 @@ const LINK_TEXT = "See [Paper](https://example.com) and /tmp/exo-notes.md for de
 /** A link, a bare file path, and an assistant message attaching `images`, scrolled into view. */
 function conversation(images: ImageRef[], cols = 70): RenderState {
   const state = createInitialState();
+  // The link sits in text before a tool call, which a folded turn hides.
+  state.showTurnWork = true;
   state.cols = cols;
   state.rows = 40;
   state.convId = "conv";
@@ -190,6 +192,56 @@ describe("hand cursor over clickable history", () => {
     }
     expect(hands).toBeGreaterThan(0);
     disposeHistoryImages(state);
+  });
+
+  test("a folded turn's summary and a notification's marker show a hand and open on click", () => {
+    const state = createInitialState();
+    state.cols = 80;
+    state.rows = 30;
+    state.convId = "conv";
+    state.sidebar.open = false;
+    const notification = {
+      role: "user" as const,
+      text: "[notification] Subagent completed: exo:1 Task: build it",
+      metadata: { startedAt: 1, endedAt: 1, model: "gpt-5.5", tokens: 0, automation: { kind: "subagent_completion" as const } },
+    };
+    state.messages = [
+      notification,
+      {
+        role: "assistant",
+        blocks: [
+          { type: "tool_call", toolCallId: "c1", toolName: "bash", input: {}, summary: "git log -1" },
+          { type: "tool_result", toolCallId: "c1", toolName: "bash", output: "abc", isError: false },
+          { type: "text", text: "It merged." },
+        ],
+        metadata: { startedAt: 1, endedAt: 2, model: "gpt-5.5", tokens: 10 },
+      },
+    ];
+    capture(state);
+    const summary = screenCellOf(state, "▸ 1 tool call");
+    const marker = screenCellOf(state, "▸ Subagent completion");
+    hover(state, summary.col + 4, summary.row);
+    expect(state.mouseCursor).toBe("hand");
+    hover(state, marker.col + 4, marker.row);
+    expect(state.mouseCursor).toBe("hand");
+    expect(() => screenCellOf(state, "git log -1")).toThrow();
+
+    captureOutput(() => {
+      handleMouseEvent(mouse(summary.col, summary.row, "press"), state);
+      handleMouseEvent(mouse(summary.col, summary.row, "release"), state);
+    });
+    capture(state);
+    expect(screenCellOf(state, "git log -1")).toBeDefined();
+    expect(screenCellOf(state, "▾ 1 tool call")).toBeDefined();
+
+    const markerNow = screenCellOf(state, "▸ Subagent completion");
+    captureOutput(() => {
+      handleMouseEvent(mouse(markerNow.col, markerNow.row, "press"), state);
+      handleMouseEvent(mouse(markerNow.col, markerNow.row, "release"), state);
+    });
+    capture(state);
+    expect(screenCellOf(state, "▾ Subagent completion")).toBeDefined();
+    expect(screenCellOf(state, "Task: build it")).toBeDefined();
   });
 
   test("content scrolled under a still pointer updates the shape after the render", async () => {

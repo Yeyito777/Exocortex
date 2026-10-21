@@ -6,7 +6,7 @@
  * in blockrenderer.ts.
  */
 
-import { CONTEXT_COMPACTION_FINISHED_KIND, combineMessageMetadata, type Block, type ImageAttachment, type Message, type MessageMetadata, type UserMessageAutomation } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, combineMessageMetadata, ownerRelayedText, type Block, type ImageAttachment, type Message, type MessageMetadata, type UserMessageAutomation } from "./messages";
 import {
   fitImageBox,
   historyImageLimits,
@@ -21,7 +21,7 @@ import {
   type InlineImageHit,
   type InlineImageSource,
 } from "./inlineimages";
-import { isActiveConversationLoading, type RenderState } from "./state";
+import { isActiveConversationLoading, isStreaming, type RenderState } from "./state";
 import { formatDuration, renderMetadata } from "./metadata";
 import { activeDurableSleepAssistant, inlineSleepMetadataEndedAt } from "./durable-sleep-metadata";
 import { theme } from "./theme";
@@ -34,6 +34,7 @@ import {
   type UserMessageFlowCursor,
 } from "./blockrenderer";
 import { isVisuallyBlankLine, sanitizeUntrustedText } from "./terminaltext";
+import { automationLabel, notificationPreview, ownerRelay, planHistory, type HistoryPlan, type NotificationPlan, type PendingPlan } from "./turncollapse";
 
 const COMPACTION_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
 const COMPACTION_SPINNER_INTERVAL_MS = 80;
@@ -69,19 +70,8 @@ function rightAlignedProvenanceLabel(label: string, availableWidth: number): str
   return `${padding}${theme.muted}${theme.italic}${text}${theme.reset}`;
 }
 
-const AUTOMATION_LABELS: Record<UserMessageAutomation["kind"], string> = {
-  external_notification: "Notification",
-  background_task_completion: "Background completion",
-  chrono_wake: "Chrono",
-  chrono_hard_wake: "Chrono hard wake",
-  exo_send: "Exo delegation",
-  subagent_completion: "Subagent completion",
-  goal_continuation: "Goal continuation",
-  daemon_restart: "Daemon restart",
-};
-
 function automationProvenance(automation: UserMessageAutomation | undefined): string | null {
-  return automation ? `⚙ ${AUTOMATION_LABELS[automation.kind]}` : null;
+  return automation ? `⚙ ${automationLabel(automation)}` : null;
 }
 
 
@@ -103,6 +93,7 @@ import { mathImageGeneration } from "./mathimages";
 import type { LinkSpan } from "./links";
 import { isNewConversationQueuedMessage, queuedMessagesInDisplayOrder, queueTimingLabel } from "./queue";
 
+import { wordWrap } from "./textwrap";
 export { wordWrap, type WrapResult } from "./textwrap";
 
 /**
@@ -226,6 +217,55 @@ function pendingAssistantSegmentMetadata(state: RenderState): MessageMetadata | 
   return combineSegmentMetadata(metadata, state.pendingAI.metadata);
 }
 
+/**
+ * `⠹ Working · ▸ 7 tool calls` above the in-progress turn's latest step. The
+ * spinner advances with the elapsed-second tick that already redraws the
+ * turn's timer, so it costs no extra frames (or bytes over /ssh).
+ */
+function workingRow(metadata: MessageMetadata | null, pending: PendingPlan, now = Date.now()): string {
+  const startedAt = metadata?.workTimerStartedAt ?? metadata?.startedAt ?? now;
+  const frame = COMPACTION_SPINNER_FRAMES[Math.max(0, Math.floor((now - startedAt) / 1000)) % COMPACTION_SPINNER_FRAMES.length];
+  const work = pending.summary ? ` · ${pending.expanded ? "▾" : "▸"} ${pending.summary}` : "";
+  return `  ${theme.accent}${frame}${theme.reset} ${theme.muted}Working${work}${theme.reset}`;
+}
+
+// ── Notifications ───────────────────────────────────────────────────
+
+const NO_EXPANDED_ITEMS = new WeakSet<object>();
+/** Folded-work and notification label rows are chrome: yanks and copies skip them. */
+const DISPLAY_ONLY_ROW: WrapCopyLine = { text: "", displayStart: 0, skip: true };
+const NOTIFICATION_GUTTER = "▎ ";
+const NOTIFICATION_INDENT = 2;
+const notificationBodyCache = new WeakMap<object, { text: string; width: number; themeName: string; result: WrapResult }>();
+
+/**
+ * One muted row naming a notification's source in italics, cut to the width
+ * (a single row, so it never autowraps beside the sidebar or task panel).
+ */
+function notificationLabelRow(row: string, labelEnd: number, availableWidth: number): string {
+  const text = truncateToWidth(row, Math.max(1, availableWidth - 4));
+  const arrow = text.startsWith("▸ ") || text.startsWith("▾ ") ? 2 : 0;
+  const end = Math.min(labelEnd, text.length);
+  return `  ${theme.muted}${text.slice(0, arrow)}${theme.italic}${text.slice(arrow, end)}${theme.italicOff}${text.slice(end)}${theme.reset}`;
+}
+
+/** Notification text behind a muted gutter; copies take the text without it. */
+function renderNotificationBodyCached(msg: Extract<Message, { role: "user" }>, availableWidth: number): WrapResult {
+  const cached = notificationBodyCache.get(msg);
+  if (cached && cached.text === msg.text && cached.width === availableWidth && cached.themeName === theme.name) return cached.result;
+  const textStart = NOTIFICATION_INDENT + NOTIFICATION_GUTTER.length;
+  const wrapped = wordWrap(sanitizeUntrustedText(msg.text), Math.max(1, availableWidth - textStart - 2));
+  const prefix = `${" ".repeat(NOTIFICATION_INDENT)}${theme.muted}${NOTIFICATION_GUTTER}${theme.reset}`;
+  const result: WrapResult = {
+    lines: wrapped.lines.map(line => `${prefix}${line}`),
+    cont: wrapped.cont,
+    join: wrapped.join,
+    copy: wrapped.lines.map(line => ({ text: line, displayStart: textStart })),
+  };
+  notificationBodyCache.set(msg, { text: msg.text, width: availableWidth, themeName: theme.name, result });
+  return result;
+}
+
 // ── Message boundary tracking ───────────────────────────────────────
 
 /** Row range for a single message in the rendered history lines. */
@@ -260,6 +300,10 @@ export type RenderLineSegment =
   | "streaming_tail"
   | "system_message"
   | "automation_label"
+  | "notification_body"
+  | "notification_header"
+  | "turn_work_summary"
+  | "turn_working"
   | "user_content"
   | "user_image"
   | "user_margin_bottom"
@@ -284,6 +328,8 @@ export interface RenderLineAnchor {
   images?: Array<{ layout: HistoryImageLayout; row: number }>;
   /** Columns where Enter or a click on this row (a thumbnail, a strip's `› +N`) opens an image. */
   openImages?: InlineImageHit[];
+  /** Folded turn or notification that Enter or a click on this row opens or closes. */
+  toggle?: object;
 }
 
 /** An image to draw in history, with the object that owns its placement. */
@@ -379,6 +425,8 @@ interface CommittedHistoryCache {
   /** Rows after the last committed message. */
   committedLines: number;
   erroredToolCallIds: Set<string>;
+  /** turncollapse plan signature of each message [startMessageIndex, messageCount). */
+  planSignatures: string[];
   /** The committed messages' share of erroredToolCallIds, reused while they are unchanged. */
   committedErroredToolCallIds: Set<string>;
   lastContinuesIntoPending: boolean;
@@ -624,6 +672,28 @@ export function buildMessageLines(
     pushAnchoredLine(line, false, "", owner, segment, index, 0);
   };
 
+  /** A row whose click or Enter opens or closes a folded turn or notification. */
+  const pushToggleLine = (line: string, owner: object, segment: RenderLineSegment, toggle: object | null) => {
+    pushAnchoredLine(line, false, "", owner, segment, 0, 0, DISPLAY_ONLY_ROW);
+    if (toggle) lineAnchors[lineAnchors.length - 1].toggle = toggle;
+  };
+
+  /**
+   * Notifications sit on the assistant's side, never in the user's bubble: a
+   * one-row marker while folded, or a labelled, guttered block when open.
+   */
+  const pushNotification = (msg: Extract<Message, { role: "user" }>, notification: NotificationPlan) => {
+    if (!notification.open) {
+      const marker = `▸ ${notification.label} · ${notificationPreview(msg.text)}`;
+      // The same anchor as the open header, so opening it keeps the row in place.
+      pushToggleLine(notificationLabelRow(marker, notification.label.length + 2, availableWidth), msg, "notification_header", msg);
+      return;
+    }
+    const header = `${notification.toggleable ? "▾ " : ""}${notification.label}`;
+    pushToggleLine(notificationLabelRow(header, header.length, availableWidth), msg, "notification_header", notification.toggleable ? msg : null);
+    pushBlock(msg, "notification_body", renderNotificationBodyCached(msg, availableWidth));
+  };
+
   const imageLimits = historyImageLimits(availableWidth, state.rows);
   /**
    * Append a message's inline images after a blank row: one thumbnail, or a
@@ -703,8 +773,16 @@ export function buildMessageLines(
   const cacheable = !isActiveConversationLoading(state);
   const lastContinuesIntoPending = state.pendingAI?.role === "assistant";
   const imageCell = inlineImageCellSize();
+  const collapse = !state.showTurnWork && !state.showToolOutput;
+  const plan: HistoryPlan = planHistory({
+    messages,
+    start: startMessageIndex,
+    pendingAI: state.pendingAI,
+    collapse,
+    expanded: state.expandedHistoryItems ?? NO_EXPANDED_ITEMS,
+  });
   const cacheKey: unknown[] = [
-    state.convId, contentWidth, state.showToolOutput, state.showDiagnostics, state.toolRegistry,
+    state.convId, contentWidth, state.showToolOutput, state.showTurnWork, state.showDiagnostics, state.toolRegistry,
     state.externalToolStyles, theme.name, state.rows, inlineImageGeneration(), mathImageGeneration(),
     inlineImagesActive(), imageCell.width, imageCell.height, userMessageNeedsTopMargin(messages, startMessageIndex),
   ];
@@ -740,7 +818,7 @@ export function buildMessageLines(
     const refStart = (entry: CommittedHistoryCache, index: number) => index === entry.startMessageIndex ? 0 : entry.sourceRefEnds[index - entry.startMessageIndex - 1];
     const sameAsCached = (index: number, cachedIndex: number) => messageSourceRefsMatch(
       messages[index], cached.sourceRefs, refStart(cached, cachedIndex), cached.sourceRefEnds[cachedIndex - s],
-    );
+    ) && plan.signatures[index - s] === cached.planSignatures[cachedIndex - s];
     let firstChanged = Math.min(messageCount, cached.messageCount);
     for (let index = s; index < firstChanged; index++) {
       if (!sameAsCached(index, index)) {
@@ -858,14 +936,26 @@ export function buildMessageLines(
     const start = lines.length;
     appendMessageSourceRefs(msg, sourceRefs);
     sourceRefEnds.push(sourceRefs.length);
-    if (msg.role === "user") {
+    const messagePlan = plan.messages[messageIndex - startMessageIndex];
+    if (msg.role === "user" && messagePlan?.kind === "notification") {
       if (userMessageNeedsTopMargin(state.messages, messageIndex)) pushLine("", msg, "user_margin_top");
       const contentStart = lines.length;
-      const background = msg.metadata?.automation ? theme.automatedUserBg : theme.userBg;
-      const rendered = renderUserMessageCached(msg, msg.text, availableWidth, msg.images, background);
+      pushNotification(msg, messagePlan);
+      const contentEnd = lines.length;
+      if (messagePlan.open) pushImages(pastedImages(msg, msg.images, state.convId), "user_image");
+      pushLine("", msg, "user_margin_bottom");
+      pushMessageBound(msg.role, start, contentStart, contentEnd);
+    } else if (msg.role === "user") {
+      if (userMessageNeedsTopMargin(state.messages, messageIndex)) pushLine("", msg, "user_margin_top");
+      const contentStart = lines.length;
+      // The owner's own Discord/WhatsApp message reads as theirs: their words in their bubble.
+      const relay = ownerRelay(msg);
+      const text = relay?.text ?? msg.text;
+      const background = msg.metadata?.automation && !relay ? theme.automatedUserBg : theme.userBg;
+      const rendered = renderUserMessageCached(msg, text, availableWidth, msg.images, background);
       pushBlock(msg, "user_content", rendered);
       const contentEnd = lines.length;
-      const flow = userMessageFlowMetadataCached(msg, msg.text, availableWidth, msg.images, background);
+      const flow = userMessageFlowMetadataCached(msg, text, availableWidth, msg.images, background);
       if (flow && flow.starts.length === contentEnd - contentStart) {
         for (let row = 0; row < flow.starts.length; row++) {
           lineAnchors[contentStart + row].userFlowDocument = flow.document;
@@ -873,7 +963,7 @@ export function buildMessageLines(
           lineAnchors[contentStart + row].userFlowEnd = flow.starts[row + 1] ?? flow.end;
         }
       }
-      const provenance = automationProvenance(msg.metadata?.automation);
+      const provenance = relay ? `via ${relay.source}` : automationProvenance(msg.metadata?.automation);
       if (provenance) pushLine(rightAlignedProvenanceLabel(provenance, availableWidth), msg, "automation_label");
       pushImages(pastedImages(msg, msg.images, state.convId), "user_image");
       pushLine("", msg, "user_margin_bottom");
@@ -881,9 +971,12 @@ export function buildMessageLines(
     } else if (msg.role === "assistant") {
       // AI messages: content blocks, then metadata
       const contentStart = lines.length;
-      for (const block of msg.blocks) {
+      const assistantPlan = messagePlan?.kind === "assistant" ? messagePlan : null;
+      if (assistantPlan?.summary) pushToggleLine(`  ${theme.muted}${assistantPlan.summary}${theme.reset}`, msg, "turn_work_summary", assistantPlan.toggle);
+      msg.blocks.forEach((block, blockIndex) => {
+        if (assistantPlan?.hidden?.[blockIndex]) return;
         pushBlock(block, "assistant_block", renderAssistantBlock(block));
-      }
+      });
       segmentImages.push(...attachedImages(msg.blocks));
       const nextMessage = state.messages[messageIndex + 1];
       const nextContinuesAssistantSegment = nextMessage?.role === "assistant"
@@ -982,6 +1075,7 @@ export function buildMessageLines(
       lineStarts,
       committedLines: lines.length,
       erroredToolCallIds,
+      planSignatures: plan.signatures,
       committedErroredToolCallIds: committedErroredToolCallIds!,
       lastContinuesIntoPending,
       durableSleepIndex,
@@ -1009,9 +1103,14 @@ export function buildMessageLines(
   // Currently streaming AI message — no margins
   if (state.pendingAI) {
     const start = lines.length;
-    for (const block of state.pendingAI.blocks) {
-      pushBlock(block, "assistant_block", renderAssistantBlock(block));
+    const pendingPlan = plan.pending;
+    if (pendingPlan && isStreaming(state) && state.pendingAI.metadata?.startedAt !== state.suppressPendingAIMetadataStartedAt) {
+      pushToggleLine(workingRow(state.pendingAI.metadata, pendingPlan), state.pendingAI, "turn_working", pendingPlan.toggle);
     }
+    state.pendingAI.blocks.forEach((block, blockIndex) => {
+      if (pendingPlan?.hidden?.[blockIndex]) return;
+      pushBlock(block, "assistant_block", renderAssistantBlock(block));
+    });
     const pendingImages = [...segmentImages, ...attachedImages(state.pendingAI.blocks)];
     segmentImages = [];
     // Terminal stream notices (abort/error/watchdog) arrive just before
@@ -1077,13 +1176,15 @@ export function buildMessageLines(
     const timingLabel = [provenance, queueTimingLabel(qm, Date.now(), state.provider)].filter((label): label is string => Boolean(label)).join(" · ");
     pushLine("", qm, "queued_margin_top");
     // Render a dimmed user bubble
-    const background = qm.automation ? theme.automatedUserBg : theme.userBg;
-    const qr = renderUserMessageCached(qm, qm.text, availableWidth, qm.images, background);
+    const relayed = ownerRelayedText(qm.text, qm.automation ? { automation: qm.automation } : null);
+    const queuedText = relayed ?? qm.text;
+    const background = qm.automation && !relayed ? theme.automatedUserBg : theme.userBg;
+    const qr = renderUserMessageCached(qm, queuedText, availableWidth, qm.images, background);
     const queuedContentStart = lines.length;
     for (let i = 0; i < qr.lines.length; i++) {
       pushLine(`${theme.muted}${qr.lines[i]}${theme.reset}`, qm, "queued_content", i);
     }
-    const flow = userMessageFlowMetadataCached(qm, qm.text, availableWidth, qm.images, background);
+    const flow = userMessageFlowMetadataCached(qm, queuedText, availableWidth, qm.images, background);
     if (flow && flow.starts.length === qr.lines.length) {
       for (let row = 0; row < flow.starts.length; row++) {
         lineAnchors[queuedContentStart + row].userFlowDocument = flow.document;

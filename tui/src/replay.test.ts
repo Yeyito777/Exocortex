@@ -32,7 +32,7 @@ describe("startReplayConversation", () => {
     });
     expect(state.pendingAIHydratedFromSnapshot).toBe(false);
     expect(state.pendingAICommittedIndex).toBeNull();
-    expect(stripAnsi(buildMessageLines(state, 120).lines[0])).toContain("Gpt-5.4 | 0.0 tokens/s |");
+    expect(buildMessageLines(state, 120).lines.map(stripAnsi)).toEqual([expect.stringContaining("Working"), expect.stringContaining("Gpt-5.4 | 0.0 tokens/s |")]);
   });
 
   test("pins the replay placeholder to the bottom like a normal send", () => {
