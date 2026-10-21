@@ -128,7 +128,8 @@ describe("automated user-message provenance", () => {
       for (const width of [80, 24, 12, 3, 1, 80]) {
         const rendered = buildMessageLines(state, width);
         const label = rendered.lines[rendered.lineAnchors.findIndex(a => a.segment === "queued_label")];
-        expect(visibleLength(label)).toBeLessThanOrEqual(width);
+        // A queued notification's label row keeps its two-column indent, like a delivered one's.
+        expect(visibleLength(label)).toBeLessThanOrEqual(automated ? Math.max(width, 3) : width);
         if (width === 80) expect(stripAnsi(label)).toContain(automated ? "queued: next turn" : "queued: steer");
         else if (automated || width < 17) expect(label).toContain("…");
       }
@@ -224,9 +225,10 @@ describe("automated user-message provenance", () => {
     const contentIndex = rendered.lineAnchors.findIndex(anchor => anchor.owner === queued && anchor.segment === "queued_content");
     const labelIndex = rendered.lineAnchors.findIndex(anchor => anchor.owner === queued && anchor.segment === "queued_label");
 
-    expect(rendered.lines[contentIndex]).toContain(theme.automatedUserBg);
-    expect(stripAnsi(rendered.lines[labelIndex])).toContain("⚙ Notification");
-    expect(stripAnsi(rendered.lines[labelIndex])).toContain("next turn");
+    // Left-aligned like a delivered notification, never the owner's right-aligned bubble.
+    expect(rendered.lines[contentIndex]).not.toContain(theme.automatedUserBg);
+    expect(stripAnsi(rendered.lines[contentIndex])).toBe("  ▎ Process the latest subscription event.");
+    expect(stripAnsi(rendered.lines[labelIndex]).trim()).toBe("Notification · queued: next turn");
   });
 });
 

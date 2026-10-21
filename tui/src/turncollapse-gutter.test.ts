@@ -166,3 +166,11 @@ describe("gutter folding (default)", () => {
     expect(rows(state)).toContain("  ▸ 1 tool call");
   });
 });
+
+test("a notification delivered mid-turn adds no blank row between the prompt and its reply", () => {
+  const state = createInitialState();
+  state.messages.push(user("run it"), assistant([...call("c", "sleep 75")]), note(1), assistant([{ type: "text", text: "done" }]));
+  const shown = rows(state);
+  const prompt = shown.findIndex(row => row.includes("run it"));
+  expect(shown.slice(prompt + 1, prompt + 3)).toEqual(["", "▸ done"]);
+});

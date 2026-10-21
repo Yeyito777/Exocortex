@@ -496,7 +496,7 @@ function planGutterFresh(
     return { kind: "prompt", from: plan?.kind === "from" ? plan.label : null, above: null, below: null };
   };
   /** A member as the opened group shows it (like Ctrl+O), or folded away. */
-  const member = (segment: GutterSegment, toggle: object, open: boolean, keep: boolean) => {
+  const member = (segment: GutterSegment, toggle: object, open: boolean, keep: boolean, spacer = keep) => {
     for (let index = segment.from; index < segment.to; index++) {
       const msg = messages[index];
       const plan = plans[index - start];
@@ -504,7 +504,7 @@ function planGutterFresh(
         const label = plan?.kind === "notification" || plan?.kind === "merged" ? plan.label : "Notification";
         set(index, open
           ? { kind: "notification", label, open: true, toggleable: false }
-          : { kind: "gap", toggle, line: null, spacer: keep, inner: null });
+          : { kind: "gap", toggle, line: null, spacer: keep && spacer, inner: null });
       } else if (msg.role === "user" && (plan?.kind === "notification" || plan?.kind === "merged")) {
         // A notification delivered mid-turn folds with its turn.
         set(index, open ? { kind: "notification", label: plan.label, open: true, toggleable: false } : { kind: "gap", toggle, line: null, spacer: false, inner: null });
@@ -523,7 +523,9 @@ function planGutterFresh(
     const toggle = groupKey(messages[members[0].from]);
     const open = expanded.has(toggle);
     groups.push({ toggle, open });
-    for (const segment of members) member(segment, toggle, open, segment === reply);
+    // A prompt's bubble already leaves a blank row above the reply its turn led to.
+    const afterPrompt = members[0].head === "owner";
+    for (const segment of members) member(segment, toggle, open, segment === reply, !afterPrompt);
     const host = plans[reply.host - start];
     if (host?.kind === "assistant") set(reply.host, { ...host, gutter: { mark: !marks ? "" : open ? "▾" : "▸", toggle }, groupToggle: toggle });
   };

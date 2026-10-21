@@ -235,6 +235,11 @@ function workingRow(metadata: MessageMetadata | null, pending: PendingPlan, now 
   return `  ${theme.accent}${frame}${theme.reset} ${theme.muted}Working${work}${theme.reset}`;
 }
 
+/** A rendered row without its colours (to restyle it wholesale). */
+function stripSgr(line: string): string {
+  return line.replace(/\x1b\[[0-9;:]*m/g, "");
+}
+
 /** Put a faint fold mark in column 0 (the gutter) of a row, keeping the rest. */
 export function withGutterMark(line: string, mark: string): string {
   const faint = `${theme.dim}${theme.muted}${mark}${theme.reset}`;
@@ -265,8 +270,8 @@ function notificationLabelRow(row: string, labelEnd: number, availableWidth: num
 }
 
 /** Notification text behind a muted gutter; copies take the text without it. */
-function renderNotificationBodyCached(msg: Extract<Message, { role: "user" }>, availableWidth: number): WrapResult {
-  const cached = notificationBodyCache.get(msg);
+function renderNotificationBodyCached(msg: Extract<Message, { role: "user" }>, availableWidth: number, owner: object = msg): WrapResult {
+  const cached = notificationBodyCache.get(owner);
   if (cached && cached.text === msg.text && cached.width === availableWidth && cached.themeName === theme.name) return cached.result;
   const textStart = NOTIFICATION_INDENT + NOTIFICATION_GUTTER.length;
   const wrapped = wordWrap(sanitizeUntrustedText(msg.text), Math.max(1, availableWidth - textStart - 2));
@@ -277,7 +282,7 @@ function renderNotificationBodyCached(msg: Extract<Message, { role: "user" }>, a
     join: wrapped.join,
     copy: wrapped.lines.map(line => ({ text: line, displayStart: textStart })),
   };
-  notificationBodyCache.set(msg, { text: msg.text, width: availableWidth, themeName: theme.name, result });
+  notificationBodyCache.set(owner, { text: msg.text, width: availableWidth, themeName: theme.name, result });
   return result;
 }
 
@@ -1263,11 +1268,21 @@ export function buildMessageLines(
       .filter(ownQueued),
   );
   for (const qm of queued) {
+    const relayed = ownerRelayedText(qm.text, qm.automation ? { automation: qm.automation } : null);
+    if (qm.automation && relayed === null && qm.automation.kind !== "exo_send") {
+      // A queued notification (shown with Ctrl+O) reads like the delivered ones: on the
+      // assistant's side under its label, dimmed, with when it will be delivered.
+      pushLine("", qm, "queued_margin_top");
+      const label = `${automationLabel(qm.automation)} · ${queueTimingLabel(qm, Date.now(), state.provider)}`;
+      pushLine(notificationLabelRow(label, label.length, availableWidth), qm, "queued_label");
+      const body = renderNotificationBodyCached({ role: "user", text: qm.text, metadata: null }, availableWidth, qm);
+      for (let i = 0; i < body.lines.length; i++) pushLine(`${theme.muted}${stripSgr(body.lines[i])}${theme.reset}`, qm, "queued_content", i);
+      continue;
+    }
     const provenance = automationProvenance(qm.automation);
     const timingLabel = [provenance, queueTimingLabel(qm, Date.now(), state.provider)].filter((label): label is string => Boolean(label)).join(" · ");
     pushLine("", qm, "queued_margin_top");
     // Render a dimmed user bubble
-    const relayed = ownerRelayedText(qm.text, qm.automation ? { automation: qm.automation } : null);
     const queuedText = relayed ?? qm.text;
     const background = qm.automation && !relayed ? theme.automatedUserBg : theme.userBg;
     const qr = renderUserMessageCached(qm, queuedText, availableWidth, qm.images, background);
