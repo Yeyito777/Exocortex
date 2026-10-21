@@ -12,7 +12,8 @@ import type { ProviderId, ProviderInfo, ModelId, EffortLevel, UsageData, ToolDis
 import { supportsImageInputsForModel } from "./messages";
 import type { Message, AIMessage, SystemMessage, Block } from "./messages";
 import { loadHideSensitiveInfoPreference } from "./privacy";
-import { loadDiagnosticsPreference, loadTurnWorkPreference } from "./diagnostics";
+import { loadDiagnosticsPreference, loadFoldMarksPreference, loadFoldStylePreference, loadTurnWorkPreference } from "./diagnostics";
+import type { FoldStyle } from "./turncollapse";
 import { theme } from "./theme";
 import type { MessageBound, RenderLineAnchor } from "./conversation";
 import type { WrapCopyLine } from "./textwrap";
@@ -320,6 +321,10 @@ export interface RenderState {
   showToolOutput: boolean;
   /** Every turn's work and every notification are visible (otherwise they fold). Ctrl+O; saved in config.tui.showTurnWork. */
   showTurnWork: boolean;
+  /** How folded history looks (config tui.foldStyle): gutter marks, or rows. */
+  foldStyle: FoldStyle;
+  /** Whether folded history leaves a faint gutter mark (config tui.foldMarks). */
+  foldMarks: boolean;
   /** Turns and notifications opened one at a time by a click while folded, by their opening message. */
   expandedHistoryItems: WeakSet<object>;
   /** Bumped whenever expandedHistoryItems changes, so cached renders notice. */
@@ -731,6 +736,8 @@ export function createInitialState(): RenderState {
 	    externalToolStyles: [],
 	    showToolOutput: false,
 	    showTurnWork: loadTurnWorkPreference(),
+	    foldStyle: loadFoldStylePreference(),
+	    foldMarks: loadFoldMarksPreference(),
 	    expandedHistoryItems: new WeakSet(),
 	    historyExpansionRevision: 0,
 	    hideSensitiveInfo,

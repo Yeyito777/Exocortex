@@ -118,6 +118,8 @@ describe("automated user-message provenance", () => {
   for (const automated of [false, true]) {
     test(`bounds ${automated ? "automated" : "regular"} queued labels at narrow widths`, () => {
       const state = createInitialState();
+      // Automated queued messages only show with every turn's work (Ctrl+O).
+      state.showTurnWork = true;
       state.convId = "conv-1";
       state.queuedMessages.push({
         convId: state.convId, text: "Queued message", timing: "next-turn",
@@ -148,6 +150,7 @@ describe("automated user-message provenance", () => {
 
   test("bounds a delivered notification's marker and header by the terminal width", () => {
     const state = createInitialState();
+    state.foldStyle = "rows";
     state.messages.push({
       role: "user", text: "Delivered message with a long tail that would otherwise wrap onto several rows",
       metadata: {
@@ -167,6 +170,7 @@ describe("automated user-message provenance", () => {
 
   test("renders notifications on the assistant's side, never in the user's bubble", () => {
     const state = createInitialState();
+    state.foldStyle = "rows";
     const human = { role: "user" as const, text: "I wrote this", metadata: null };
     const automated = {
       role: "user" as const,
@@ -203,6 +207,7 @@ describe("automated user-message provenance", () => {
 
   test("combines queued automation provenance with its timing", () => {
     const state = createInitialState();
+    state.showTurnWork = true;
     state.convId = "conv-1";
     const queued = {
       id: "queue-1",

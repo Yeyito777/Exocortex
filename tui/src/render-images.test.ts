@@ -34,6 +34,8 @@ const placements = (out: string) => [...out.matchAll(/\x1b\[(\d+);(\d+)H\x1b_G(a
 
 function imageState(): RenderState {
   const state = createInitialState();
+  // Row positions below assume the rows fold style's work row above the attached image.
+  state.foldStyle = "rows";
   state.cols = 100;
   state.rows = 40;
   state.convId = "conv";

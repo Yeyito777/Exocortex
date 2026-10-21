@@ -101,6 +101,8 @@ function revealFoldedMatch(state: RenderState, index: SearchIndex, query: string
     pendingAI: state.pendingAI,
     collapse: !state.showTurnWork && !state.showToolOutput,
     expanded: state.expandedHistoryItems,
+    style: state.foldStyle,
+    marks: state.foldMarks,
   });
   if (texts.size === 0) return false;
   const lower = query.toLowerCase();

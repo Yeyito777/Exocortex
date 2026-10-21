@@ -1,6 +1,13 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import { buildMessageLines, invalidateCommittedHistoryCache, type BuildMessageLinesResult } from "./conversation";
-import { createInitialState, type RenderState } from "./state";
+import { createInitialState as createState, type RenderState } from "./state";
+
+/** These cases cover the rows style (tui.foldStyle "rows"); turncollapse-gutter.test.ts covers the default. */
+function createInitialState(): RenderState {
+  const state = createState();
+  state.foldStyle = "rows";
+  return state;
+}
 import { createPendingAI, type Message } from "./messages";
 import { notificationLabel, notificationPreview } from "./turncollapse";
 import { getViewStartFor, toggleHistoryItemPreservingViewport } from "./chatscroll";

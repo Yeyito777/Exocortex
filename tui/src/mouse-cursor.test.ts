@@ -196,6 +196,7 @@ describe("hand cursor over clickable history", () => {
 
   test("a notification and its turn's work fold into one row that shows a hand and opens both on click", () => {
     const state = createInitialState();
+    state.foldStyle = "rows";
     state.cols = 80;
     state.rows = 30;
     state.convId = "conv";

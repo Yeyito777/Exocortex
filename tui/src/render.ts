@@ -94,6 +94,8 @@ interface HistoryRenderCacheEntry {
   durableSleepMetadataFrame: number | null;
   showToolOutput: boolean;
   showTurnWork: boolean;
+  foldStyle: string;
+  foldMarks: boolean;
   historyExpansionRevision: number;
   showDiagnostics: boolean;
   toolRegistryRef: RenderState["toolRegistry"];
@@ -144,6 +146,8 @@ function canReuseHistoryRender(
     && cached.durableSleepMetadataFrame === currentDurableSleepMetadataFrame
     && cached.showToolOutput === state.showToolOutput
     && cached.showTurnWork === state.showTurnWork
+    && cached.foldStyle === state.foldStyle
+    && cached.foldMarks === state.foldMarks
     && cached.historyExpansionRevision === state.historyExpansionRevision
     && cached.showDiagnostics === state.showDiagnostics
     && cached.toolRegistryRef === state.toolRegistry
@@ -290,6 +294,8 @@ function getHistoryRender(
     durableSleepMetadataFrame: currentDurableSleepMetadataFrame,
     showToolOutput: state.showToolOutput,
     showTurnWork: state.showTurnWork,
+    foldStyle: state.foldStyle,
+    foldMarks: state.foldMarks,
     historyExpansionRevision: state.historyExpansionRevision,
     showDiagnostics: state.showDiagnostics,
     toolRegistryRef: state.toolRegistry,

@@ -115,6 +115,40 @@ export interface AssistantPlan {
   runToggle?: object;
   /** A folded turn with no reply drops its model/tokens/time line. */
   metaHidden?: boolean;
+  /** Gutter style: a dim mark in the left gutter of this message's first row; it opens what folded before it. */
+  gutter?: GutterMark;
+  /** Gutter style: the fold group whose hidden blocks this message holds (search opens it). */
+  groupToggle?: object;
+}
+
+/** `▸` (folded) or `▾` (open), and the fold group it toggles. */
+export interface GutterMark {
+  mark: string;
+  toggle: object;
+}
+
+/**
+ * Gutter style: a message folded into a group (a notification, a turn with no
+ * reply), or the message hosting the group's mark on a row of its own.
+ */
+export interface GapPlan {
+  kind: "gap";
+  toggle: object;
+  /** A row of its own carrying the mark, before the message (when it renders). */
+  line: GutterMark | null;
+  /** A blank row before the reply the group's hidden notification preceded. */
+  spacer: boolean;
+  /** How the message renders while the group is open; null renders nothing. */
+  inner: MessagePlan;
+}
+
+/** Gutter style: a prompt bubble whose top or bottom margin row carries a group's mark. */
+export interface PromptPlan {
+  kind: "prompt";
+  /** `from <title>` for a prompt another conversation sent. */
+  from: string | null;
+  above: GutterMark | null;
+  below: GutterMark | null;
 }
 
 /**
@@ -166,7 +200,7 @@ export interface FromPlan {
   label: string;
 }
 
-export type MessagePlan = AssistantPlan | NotificationPlan | RunPlan | MergedPlan | FromPlan | null;
+export type MessagePlan = AssistantPlan | NotificationPlan | RunPlan | MergedPlan | FromPlan | GapPlan | PromptPlan | null;
 
 export interface PendingPlan {
   /** Per pending block: true when hidden behind the working row. */
@@ -215,7 +249,15 @@ export interface PlanHistoryInput {
   expanded: WeakSet<object>;
   /** Title of a conversation by id, for prompts other conversations sent. */
   conversationTitle?: (id: string) => string | null;
+  /** How folded history looks: gutter marks (default) or rows (tui.foldStyle "rows"). */
+  style?: FoldStyle;
+  /** A message whose turn stays in view (an active durable sleep's clock keeps running). */
+  active?: object | null;
+  /** Gutter style: draw the faint marks (tui.foldMarks); off, folded history leaves no trace but search still opens it. */
+  marks?: boolean;
 }
+
+export type FoldStyle = "gutter" | "rows";
 
 const NO_SIGNATURE = "";
 
@@ -289,8 +331,265 @@ export function planHistory(input: PlanHistoryInput): HistoryPlan {
     orphanLabels.length = 0;
     turnStart = index;
   }
-  planRuns(messages, start, turns, expanded, plans, signatures);
+  if (input.style === "rows") planRuns(messages, start, turns, expanded, plans, signatures);
+  else planGutter(messages, start, pendingContinues ? liveTurnStart(messages, start) : count, expanded, plans, signatures, input.active ?? null, input.marks !== false);
   return { collapse, messages: plans, signatures, pending };
+}
+
+/** Where the live turn starts: its prompt (the last user message), or the window's start. */
+function liveTurnStart(messages: readonly Message[], start: number): number {
+  for (let index = messages.length - 1; index > start; index--) {
+    if (messages[index].role === "user") return index;
+  }
+  return start;
+}
+
+// ── Gutter style ────────────────────────────────────────────────────
+
+interface GutterSegment {
+  from: number;
+  to: number;
+  /** owner: a prompt (typed, relayed or from another conversation); note: a notification; none: the window opens mid-turn. */
+  head: "owner" | "note" | "none";
+  /** Shows text (or attached images) after its folded work. */
+  reply: boolean;
+  /** Folds something worth a mark: a notification, tool calls or interim text. */
+  folded: boolean;
+  /** First assistant message showing reply content (the mark's row). */
+  host: number;
+}
+
+const groupTokens = new WeakMap<object, object>();
+
+function groupKey(head: object): object {
+  let token = groupTokens.get(head);
+  if (!token) groupTokens.set(head, token = {});
+  return token;
+}
+
+function gutterSegment(messages: readonly Message[], start: number, from: number, to: number, plans: readonly MessagePlan[], active: object | null): GutterSegment {
+  const first = messages[from];
+  const headPlan = plans[from - start];
+  const head = first.role !== "user" ? "none"
+    : headPlan?.kind === "notification" || headPlan?.kind === "merged" ? "note" : "owner";
+  let reply = false;
+  let folded = head === "note";
+  let host = -1;
+  for (let index = from; index < to; index++) {
+    const msg = messages[index];
+    if (msg.role !== "assistant") continue;
+    const plan = plans[index - start];
+    const hidden = plan?.kind === "assistant" ? plan.hidden : null;
+    let shows = false;
+    msg.blocks.forEach((block, blockIndex) => {
+      if (hidden?.[blockIndex]) {
+        if (block.type === "tool_call" || hasText(block)) folded = true;
+      } else if (hasText(block) || (block.type === "tool_result" && block.images?.length)) {
+        shows = true;
+      }
+    });
+    if (shows || msg === active) {
+      reply = true;
+      if (host < 0) host = index;
+    }
+  }
+  return { from, to, head, reply, folded, host };
+}
+
+/**
+ * Gutter style: a stretch of folded history (notifications, turns with no
+ * reply, a reply's tool calls) leaves no row; a dim mark in the left gutter of
+ * the next reply's first row (or, with no reply to carry it, of a blank row
+ * where the stretch was) opens it. The transcript reads like a plain chat.
+ */
+function planGutter(
+  messages: readonly Message[],
+  start: number,
+  liveFrom: number,
+  expanded: WeakSet<object>,
+  plans: MessagePlan[],
+  signatures: string[],
+  active: object | null,
+  marks: boolean,
+): void {
+  const memo = gutterMemos.get(messages);
+  if (memo && gutterMemoValid(memo, messages, start, liveFrom, active, marks, expanded, plans, signatures)) {
+    for (let index = start; index < liveFrom; index++) {
+      plans[index - start] = memo.outPlans[index - start];
+      signatures[index - start] = memo.outSignatures[index - start];
+    }
+    return;
+  }
+  const inPlans = plans.slice(0, liveFrom - start);
+  const inSignatures = signatures.slice(0, liveFrom - start);
+  const groups: Array<{ toggle: object; open: boolean }> = [];
+  planGutterFresh(messages, start, liveFrom, expanded, plans, signatures, active, marks, groups);
+  gutterMemos.set(messages, {
+    start, liveFrom, active, marks, groups,
+    messages: messages.slice(start, liveFrom),
+    inPlans, inSignatures,
+    outPlans: plans.slice(0, liveFrom - start),
+    outSignatures: signatures.slice(0, liveFrom - start),
+  });
+}
+
+/**
+ * The last gutter plan of a message list, reused while its inputs hold: every
+ * streaming frame plans the whole loaded history, so without it long
+ * conversations re-derived and re-allocated every group per frame.
+ */
+interface GutterMemo {
+  start: number;
+  liveFrom: number;
+  active: object | null;
+  marks: boolean;
+  groups: Array<{ toggle: object; open: boolean }>;
+  messages: Message[];
+  inPlans: MessagePlan[];
+  inSignatures: string[];
+  outPlans: MessagePlan[];
+  outSignatures: string[];
+}
+
+const gutterMemos = new WeakMap<object, GutterMemo>();
+
+function gutterMemoValid(
+  memo: GutterMemo,
+  messages: readonly Message[],
+  start: number,
+  liveFrom: number,
+  active: object | null,
+  marks: boolean,
+  expanded: WeakSet<object>,
+  plans: readonly MessagePlan[],
+  signatures: readonly string[],
+): boolean {
+  if (memo.start !== start || memo.liveFrom !== liveFrom || memo.active !== active || memo.marks !== marks) return false;
+  for (const group of memo.groups) if (expanded.has(group.toggle) !== group.open) return false;
+  for (let index = start; index < liveFrom; index++) {
+    const at = index - start;
+    if (memo.messages[at] !== messages[index]) return false;
+    // planTurn reuses its plan objects while a turn is unchanged; other plans compare by signature.
+    if (memo.inPlans[at] !== plans[at] && (messages[index].role === "assistant" || memo.inSignatures[at] !== signatures[at])) return false;
+  }
+  return true;
+}
+
+function planGutterFresh(
+  messages: readonly Message[],
+  start: number,
+  liveFrom: number,
+  expanded: WeakSet<object>,
+  plans: MessagePlan[],
+  signatures: string[],
+  active: object | null,
+  marks: boolean,
+  groups: Array<{ toggle: object; open: boolean }>,
+): void {
+  const set = (index: number, plan: MessagePlan) => {
+    plans[index - start] = plan;
+    signatures[index - start] = gutterSignature(plan);
+  };
+  const prompt = (index: number): PromptPlan => {
+    const plan = plans[index - start];
+    if (plan?.kind === "prompt") return plan;
+    return { kind: "prompt", from: plan?.kind === "from" ? plan.label : null, above: null, below: null };
+  };
+  /** A member as the opened group shows it (like Ctrl+O), or folded away. */
+  const member = (segment: GutterSegment, toggle: object, open: boolean, keep: boolean) => {
+    for (let index = segment.from; index < segment.to; index++) {
+      const msg = messages[index];
+      const plan = plans[index - start];
+      if (msg.role === "user" && segment.head === "note" && index === segment.from) {
+        const label = plan?.kind === "notification" || plan?.kind === "merged" ? plan.label : "Notification";
+        set(index, open
+          ? { kind: "notification", label, open: true, toggleable: false }
+          : { kind: "gap", toggle, line: null, spacer: keep, inner: null });
+      } else if (msg.role === "user" && (plan?.kind === "notification" || plan?.kind === "merged")) {
+        // A notification delivered mid-turn folds with its turn.
+        set(index, open ? { kind: "notification", label: plan.label, open: true, toggleable: false } : { kind: "gap", toggle, line: null, spacer: false, inner: null });
+      } else if (msg.role === "assistant" && plan?.kind === "assistant") {
+        if (open) set(index, { kind: "assistant", hidden: null, summary: null, toggle: plan.toggle });
+        else if (keep) set(index, { ...plan, summary: null, groupToggle: toggle });
+        else set(index, { kind: "gap", toggle, line: null, spacer: false, inner: null });
+      }
+    }
+  };
+
+  /** A reply carries the mark: everything folded before it, and its own work. */
+  const anchored = (members: readonly GutterSegment[]) => {
+    if (!members.some(segment => segment.folded)) return;
+    const reply = members[members.length - 1];
+    const toggle = groupKey(messages[members[0].from]);
+    const open = expanded.has(toggle);
+    groups.push({ toggle, open });
+    for (const segment of members) member(segment, toggle, open, segment === reply);
+    const host = plans[reply.host - start];
+    if (host?.kind === "assistant") set(reply.host, { ...host, gutter: { mark: !marks ? "" : open ? "▾" : "▸", toggle }, groupToggle: toggle });
+  };
+
+  /** Nothing answered after them: the mark gets a row of its own where they were. */
+  const unanchored = (members: readonly GutterSegment[], nextPrompt: number | null) => {
+    if (!members.some(segment => segment.folded)) return;
+    const toggle = groupKey(messages[members[0].from]);
+    const open = expanded.has(toggle);
+    groups.push({ toggle, open });
+    for (const segment of members) member(segment, toggle, open, false);
+    const mark: GutterMark = { mark: !marks ? "" : open ? "▾" : "▸", toggle };
+    const first = members[0];
+    if (first.head === "owner") {
+      // A prompt that only got tool calls: the row below its bubble.
+      set(first.from, { ...prompt(first.from), below: mark });
+    } else if (first.head === "note" && nextPrompt !== null && !open) {
+      // Right before the next prompt: the row above its bubble.
+      set(nextPrompt, { ...prompt(nextPrompt), above: mark });
+    } else if (marks || open) {
+      const plan = plans[first.from - start];
+      set(first.from, { kind: "gap", toggle, line: mark, spacer: false, inner: plan?.kind === "gap" ? null : plan });
+    }
+  };
+
+  let stretch: GutterSegment[] = [];
+  let from = start;
+  for (let index = start + 1; index <= liveFrom; index++) {
+    if (index < liveFrom && messages[index].role !== "user") continue;
+    if (from >= index) continue;
+    const segment = gutterSegment(messages, start, from, index, plans, active);
+    from = index;
+    if (segment.head === "owner") {
+      unanchored(stretch, segment.from);
+      stretch = [];
+      if (segment.reply) anchored([segment]);
+      else if (segment.folded) stretch.push(segment);
+      continue;
+    }
+    stretch.push(segment);
+    if (segment.reply) {
+      anchored(stretch);
+      stretch = [];
+    }
+  }
+  unanchored(stretch, null);
+}
+
+function gutterSignature(plan: MessagePlan): string {
+  if (!plan) return "";
+  switch (plan.kind) {
+    case "gap":
+      return `g${plan.line?.mark ?? ""}|${plan.spacer ? 1 : 0}|${gutterSignature(plan.inner)}`;
+    case "prompt":
+      return `p${plan.from ?? ""}|${plan.above?.mark ?? ""}|${plan.below?.mark ?? ""}`;
+    case "assistant":
+      return `a${plan.summary ?? ""}|${plan.hidden ? plan.hidden.map(value => value ? 1 : 0).join("") : "*"}|${plan.metaHidden ? 1 : 0}|${plan.gutter?.mark ?? ""}`;
+    case "notification":
+      return `n${plan.open ? 1 : 0}${plan.toggleable ? 1 : 0}`;
+    case "from":
+      return `f${plan.label}`;
+    case "merged":
+      return `m${plan.label}`;
+    case "run":
+      return `r${plan.header ?? ""}`;
+  }
 }
 
 // ── Background runs ─────────────────────────────────────────────────
@@ -761,7 +1060,14 @@ export function foldedSearchTexts(input: FoldedSearchInput): Map<object, string>
   plan.messages.forEach((messagePlan, offset) => {
     const msg = input.messages[input.start + offset];
     if (!messagePlan || !msg) return;
-    if (messagePlan.kind === "merged") {
+    if (messagePlan.kind === "gap") {
+      if (!messagePlan.inner) {
+        if (msg.role === "user") add(messagePlan.toggle, msg.text);
+        else if (msg.role === "assistant") addBlocks(messagePlan.toggle, msg.blocks, msg.blocks.map(() => true));
+      }
+    } else if (messagePlan.kind === "assistant" && messagePlan.groupToggle && messagePlan.hidden && msg.role === "assistant") {
+      addBlocks(messagePlan.groupToggle, msg.blocks, messagePlan.hidden);
+    } else if (messagePlan.kind === "merged") {
       if (msg.role === "user") add(messagePlan.runToggle ?? messagePlan.toggle, msg.text);
     } else if (messagePlan.kind === "run") {
       if (msg.role === "user") add(messagePlan.toggle, msg.text);
