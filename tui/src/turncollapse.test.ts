@@ -238,6 +238,26 @@ describe("notifications", () => {
     freshMatchesIncremental(state);
   });
 
+  test("notifications delivered while another turn ran join the next turn's work row", () => {
+    const state = createInitialState();
+    state.messages.push(
+      user("go"), assistant([{ type: "text", text: "ok" }]),
+      user("[notification] Subagent completed: exo:1", { kind: "subagent_completion" }),
+      user("[notification] Subagent completed: exo:2", { kind: "subagent_completion" }),
+      assistant([...call("c1", "git log -1"), { type: "text", text: "Both merged." }]),
+      user("[notification] Subagent completed: exo:3", { kind: "subagent_completion" }),
+      user("typed while it ran"), assistant([{ type: "text", text: "Seen." }]),
+      user("[notification] Inbox: new mail", { kind: "external_notification" }),
+    );
+    const shown = rows(state).filter(Boolean).map(row => row.trim());
+    expect(shown).toContain("▸ Subagent completion ×2 · 1 tool call");
+    // Before a prompt it joins that turn's (here empty) work row; the last, unanswered one keeps its row.
+    expect(shown).toContain("▸ Subagent completion");
+    expect(shown.at(-1)).toBe("▸ Notification · Inbox: new mail");
+    expect(shown.some(row => row.includes("exo:1") || row.includes("exo:3"))).toBe(false);
+    freshMatchesIncremental(state);
+  });
+
   test("prompts another conversation sent read as prompts, labelled with the sender", () => {
     const state = createInitialState();
     state.sidebar.conversations = [{ id: "parent-1", title: "📡 paramount" } as never];

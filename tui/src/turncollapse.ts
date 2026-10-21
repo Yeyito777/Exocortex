@@ -250,9 +250,20 @@ export function planHistory(input: PlanHistoryInput): HistoryPlan {
   /** Finished turns as [from, to) pairs, flattened. */
   const turns: number[] = [];
   let turnStart = start;
+  // Notifications delivered while another turn ran have no answer of their own
+  // (the next message is another prompt): they join the next turn's work row.
+  let orphanStart = -1;
+  const orphanLabels: string[] = [];
   for (let index = start; index <= count; index++) {
     if (index < count && (index === start || messages[index].role !== "user")) continue;
     const inProgress = index === count && pendingContinues;
+    const head = plans[turnStart - start];
+    if (!inProgress && index < count && index - turnStart === 1 && head?.kind === "notification") {
+      if (orphanStart < 0) orphanStart = turnStart;
+      orphanLabels.push(head.label);
+      turnStart = index;
+      continue;
+    }
     // The live turn keeps its newest step in view: the pending one, or until a
     // new round starts streaming (or a client joins mid-turn), the last committed.
     const pendingLatest = inProgress ? latestStep(pendingAI!.blocks) : -1;
@@ -262,13 +273,20 @@ export function planHistory(input: PlanHistoryInput): HistoryPlan {
       const block = msg.role === "assistant" ? latestStep(msg.blocks) : -1;
       if (block >= 0) reveal = { message: at, block };
     }
-    planTurn(messages, start, turnStart, index, inProgress, reveal, expanded, plans, signatures);
-    if (inProgress) {
-      const head = plans[turnStart - start];
-      const label = head?.kind === "merged" || head?.kind === "notification" ? head.label : null;
-      pending = planPending(messages, turnStart, index, pendingAI!, pendingLatest, reveal, expanded, label);
+    const turn = planTurn(messages, start, turnStart, index, inProgress, reveal, expanded, plans, signatures, orphanLabels);
+    if (turn.absorbed) {
+      for (let at = orphanStart; at < turnStart; at++) {
+        const orphan = plans[at - start] as NotificationPlan;
+        const plan: MessagePlan = turn.open ? { kind: "notification", label: orphan.label, open: true, toggleable: false } : { kind: "merged", label: orphan.label, toggle: turn.key };
+        plans[at - start] = plan;
+        signatures[at - start] = turn.open ? "n10" : `m${orphan.label}`;
+      }
     }
-    else if (turnStart < index) turns.push(turnStart, index);
+    const from = turn.absorbed && orphanStart >= 0 ? orphanStart : turnStart;
+    if (inProgress) pending = planPending(messages, turnStart, index, pendingAI!, pendingLatest, reveal, expanded, turn.label);
+    else if (from < index) turns.push(from, index);
+    orphanStart = -1;
+    orphanLabels.length = 0;
     turnStart = index;
   }
   planRuns(messages, start, turns, expanded, plans, signatures);
@@ -328,7 +346,8 @@ function computeTurnShape(messages: readonly Message[], from: number, to: number
   for (let index = from + 1; index < to; index++) {
     const msg = messages[index];
     if (msg.role !== "assistant") {
-      blocking = true;
+      // Notifications delivered while it ran join it; a prompt or a notice does not.
+      if (!(msg.role === "user" && notificationLabel(msg) !== null)) blocking = true;
       continue;
     }
     for (const block of msg.blocks) {
@@ -437,9 +456,13 @@ function applyRun(
     }
   }
   if (!closer) return;
-  plans[closer.from - start] = memo.rest;
-  signatures[closer.from - start] = "r";
-  for (let index = closer.from + 1; index < closer.to; index++) {
+  for (let index = closer.from; index < closer.to; index++) {
+    // Its notifications (and any delivered before it) fold into the run's row.
+    if (messages[index].role === "user") {
+      plans[index - start] = memo.rest;
+      signatures[index - start] = "r";
+      continue;
+    }
     const plan = plans[index - start];
     // A turn the reader opened on its own stays open.
     if (plan?.kind !== "assistant" || plan.hidden === null) continue;
@@ -500,20 +523,23 @@ function planTurn(
   expanded: WeakSet<object>,
   plans: MessagePlan[],
   signatures: string[],
-): void {
-  if (from >= to) return;
+  /** Labels of notifications before the turn that nothing answered on its own. */
+  orphanLabels: readonly string[],
+): { key: object; open: boolean; absorbed: boolean; label: string | null } {
+  if (from >= to) return { key: {}, open: false, absorbed: false, label: null };
   const key = turnKey(messages, from, messages[from]);
   const open = expanded.has(key);
   const memo = turnMemos.get(key);
   const headPlan = plans[from - start];
   const label = headPlan?.kind === "notification" ? headPlan.label : null;
-  if (memo && memo.label === label && turnMemoValid(memo, messages, from, to, inProgress, reveal, open)) {
+  const orphans = orphanLabels.join("\n");
+  if (memo && memo.label === label && memo.orphans === orphans && turnMemoValid(memo, messages, from, to, inProgress, reveal, open)) {
     for (let index = from; index < to; index++) {
       if (messages[index].role !== "assistant" && !(index === from && memo.merged)) continue;
       plans[index - start] = memo.plans[index - from];
       signatures[index - start] = memo.signatures[index - from];
     }
-    return;
+    return { key, open, absorbed: memo.absorbed, label: memo.rowLabel };
   }
 
   // The final reply is the text after the last tool block; everything before
@@ -568,14 +594,17 @@ function planTurn(
     const hidden = hiddenByMessage[index - from]!;
     if (msg.blocks.some((block, blockIndex) => hasText(block) && !hidden[blockIndex])) reply = true;
   }
-  const merged = label !== null && (firstAssistant >= 0 || inProgress);
+  const answered = firstAssistant >= 0 || inProgress;
+  const merged = label !== null && answered;
   if (merged) {
     const plan: MessagePlan = open ? { kind: "notification", label, open: true, toggleable: false } : { kind: "merged", label, toggle: key };
     plans[from - start] = plan;
     signatures[from - start] = open ? "n10" : `m${label}`;
-    if (host < 0) host = firstAssistant;
   }
-  const summaryText = [merged ? label : null, workSummaryText(stats)].filter(Boolean).join(" · ");
+  const absorbed = orphanLabels.length > 0 && answered;
+  const rowLabel = combineLabels([...(absorbed ? orphanLabels : []), ...(merged ? [label!] : [])]);
+  if (rowLabel && host < 0) host = firstAssistant;
+  const summaryText = [rowLabel, workSummaryText(stats)].filter(Boolean).join(" · ");
   // A folded turn with nothing to read drops its metadata line.
   const metaHidden = !open && !inProgress && !reply;
   for (let index = from; index < to; index++) {
@@ -590,6 +619,9 @@ function planTurn(
   turnMemos.set(key, {
     label,
     merged,
+    orphans,
+    absorbed,
+    rowLabel,
     messages: messages.slice(from, to),
     blockCodes: messages.slice(from, to).map(msg => msg.role === "assistant" ? msg.blocks.map(blockCode) : null),
     inProgress,
@@ -598,6 +630,14 @@ function planTurn(
     plans: plans.slice(from - start, to - start),
     signatures: signatures.slice(from - start, to - start),
   });
+  return { key, open, absorbed, label: rowLabel };
+}
+
+/** `Subagent completion`, `Chrono ×2`, or `3 notifications`. */
+function combineLabels(labels: readonly string[]): string | null {
+  if (labels.length === 0) return null;
+  if (labels.every(label => label === labels[0])) return labels.length === 1 ? labels[0] : `${labels[0]} ×${labels.length}`;
+  return `${labels.length} notifications`;
 }
 
 /**
@@ -609,6 +649,10 @@ interface TurnMemo {
   /** The label of the notification that started the turn, and whether it joined the work row. */
   label: string | null;
   merged: boolean;
+  /** Labels of unanswered notifications before the turn, whether they joined it, and the row's label. */
+  orphans: string;
+  absorbed: boolean;
+  rowLabel: string | null;
   messages: Message[];
   /** blockCode of every block of each assistant message. */
   blockCodes: Array<number[] | null>;
