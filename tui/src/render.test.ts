@@ -1356,6 +1356,128 @@ describe("render caching and frame diffing", () => {
     expect(userRows.some(row => row.screenRow > bufferBottom && termWidth(row.line) > state.layout.historyWidth)).toBe(true);
   });
 
+  describe("user bubbles beside the task panel", () => {
+    const ownerText = 'I think the problem is mainly like: "message" for discord notifs is fucked up and I think it should show the actual message? and subagent completion should just get folded into tool calls aswell as the daemon restart I think. that makes the TUI good no need to over do it idk you can be the arbiter and tell the subagent if not sure you can always send me multiple designs';
+    const attachments = [
+      { mediaType: "image/png" as const, base64: "", sizeBytes: 19_150 },
+      { mediaType: "image/png" as const, base64: "", sizeBytes: 37_068 },
+    ];
+
+    function bubbleState(cols: number, taskCount: number, images: boolean, expanded: boolean): RenderState {
+      const state = createInitialState();
+      state.cols = cols;
+      state.rows = 30;
+      state.convId = "parent";
+      state.messages = [{ role: "user", text: ownerText, metadata: null, ...(images ? { images: attachments } : {}) }];
+      state.sidebar.conversations = [{
+        id: "parent",
+        provider: state.provider,
+        model: state.model,
+        effort: state.effort,
+        fastMode: state.fastMode,
+        createdAt: 1,
+        updatedAt: 2,
+        messageCount: 1,
+        title: "Parent",
+        marked: false,
+        pinned: false,
+        streaming: false,
+        unread: false,
+        sortOrder: 0,
+        tasks: Array.from({ length: taskCount }, (_, index) => ({
+          id: `child-${index}`,
+          kind: "subagent" as const,
+          title: `Task ${index} with a fairly long title`,
+          startedAt: Date.now() - 2_000,
+        })),
+      }];
+      if (expanded) state.taskPanelExpansion = { convId: "parent", scroll: 0 };
+      return state;
+    }
+
+    /** Visible text and the screen columns painted with the user-bubble background. */
+    function paintedRow(text: string): { plain: string; bgCols: number[] } {
+      let plain = "";
+      const bgCols: number[] = [];
+      let bg = false;
+      for (let index = 0; index < text.length;) {
+        const escape = /^\x1b\[[0-9;?]*[A-Za-z]/.exec(text.slice(index))?.[0];
+        if (escape) {
+          if (escape === theme.userBg) bg = true;
+          else if (escape === theme.reset) bg = false;
+          index += escape.length;
+          continue;
+        }
+        const char = String.fromCodePoint(text.codePointAt(index)!);
+        if (bg) for (let cell = 0; cell < termWidth(char); cell++) bgCols.push(termWidth(plain) + cell);
+        plain += char;
+        index += char.length;
+      }
+      return { plain, bgCols };
+    }
+
+    function bubbleRows(state: RenderState) {
+      const writes = positionedWrites(captureRenderOutput(state));
+      const bufferBottom = (state.layout.taskPanelRect?.bottom ?? 0) + 1;
+      return state.layout.historyViewportRows.flatMap((viewportRow, index) => {
+        if (!viewportRow || state.historyLineAnchors[viewportRow.lineIndex]?.segment !== "user_content") return [];
+        const screenRow = 3 + index;
+        const write = writes.filter(candidate => candidate.row === screenRow && candidate.col === 1).at(-1);
+        return [{ narrow: screenRow <= bufferBottom, ...paintedRow(write?.text ?? "") }];
+      });
+    }
+
+    function expectConsistentBubble(rows: ReturnType<typeof bubbleRows>, width: number, label: string): void {
+      if (rows.length === 0) return;
+      const left = rows[0].bgCols[0];
+      for (const row of rows) {
+        const lastText = row.plain.trimEnd().length - 1;
+        const detail = `${label}: ${JSON.stringify(row.plain)}`;
+        // One contiguous background span, ending at the history's right margin,
+        expect(row.bgCols.length, detail).toBeGreaterThan(0);
+        expect(row.bgCols.at(-1)! - row.bgCols[0] + 1, detail).toBe(row.bgCols.length);
+        expect(row.bgCols.at(-1), detail).toBe(width - 3);
+        // shared by every row of the run, with the text right-aligned inside it.
+        expect(row.bgCols[0], detail).toBe(left);
+        expect(lastText, detail).toBe(width - 4);
+      }
+    }
+
+    test("keeps one bubble edge, alignment and background for long messages with attachments", () => {
+      for (const images of [true, false]) {
+        for (const expanded of [false, true]) {
+          for (let cols = 110; cols <= 190; cols += 7) {
+            const state = bubbleState(cols, 12, images, expanded);
+            const rows = bubbleRows(state);
+            const label = `cols=${cols} images=${images} expanded=${expanded}`;
+            expect(rows.length, label).toBeGreaterThan(0);
+            expect(rows[0].narrow, label).toBe(true);
+            expectConsistentBubble(rows.filter(row => row.narrow), state.layout.historyWidth, label);
+            expectConsistentBubble(rows.filter(row => !row.narrow), cols, label);
+            expect(rows.slice(0, images ? -2 : undefined).map(row => row.plain.trim()).join(" "), label).toBe(ownerText);
+            if (images) expect(rows.slice(-2).map(row => row.plain.trim()), label).toEqual(["📎 PNG (18.7 KB)", "📎 PNG (36.2 KB)"]);
+          }
+        }
+      }
+    });
+
+    test("realigns each side of a bubble that straddles the panel's bottom edge", () => {
+      for (let cols = 120; cols <= 180; cols += 10) {
+        const state = bubbleState(cols, 1, true, false);
+        const rows = bubbleRows(state);
+        const label = `cols=${cols}`;
+        const narrow = rows.filter(row => row.narrow);
+        const full = rows.filter(row => !row.narrow);
+        expect(narrow.length, label).toBeGreaterThan(0);
+        expect(full.length, label).toBeGreaterThan(0);
+        expectConsistentBubble(narrow, state.layout.historyWidth, label);
+        expectConsistentBubble(full, cols, label);
+        expect(rows.slice(0, -2).map(row => row.plain.trim()).join(" "), label).toBe(ownerText);
+        expect(rows.slice(-2).map(row => row.plain.trim()), label).toEqual(["📎 PNG (18.7 KB)", "📎 PNG (36.2 KB)"]);
+      }
+    });
+  });
+
   test("keeps the newest full-width tail fixed when task-panel reflow overflows", () => {
     const state = createInitialState();
     state.cols = 120;

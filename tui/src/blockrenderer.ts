@@ -69,8 +69,8 @@ interface UserMessageCacheEntry {
   themeName: string;
   background: string;
   result: WrapResult;
-  flowDocument?: UserMessageFlowDocument;
-  flow?: { starts: UserMessageFlowCursor[]; end: UserMessageFlowCursor } | null;
+  flowDocument: UserMessageFlowDocument;
+  flow: { starts: UserMessageFlowCursor[]; end: UserMessageFlowCursor } | null;
 }
 
 const userMessageRenderCache = new WeakMap<object, UserMessageCacheEntry>();
@@ -473,15 +473,21 @@ interface UserTextRowTake {
 }
 
 export interface UserMessageFlowCursor {
-  /** Hard-line index in sanitizedText.split("\n"). */
+  /**
+   * Source-row index: the hard lines of sanitizedText.split("\n") first, then
+   * one display-only row per attachment badge.
+   */
   lineIndex: number;
-  /** UTF-16 offset within that hard line. */
+  /** UTF-16 offset within that hard line (always 0 for badges). */
   offset: number;
 }
 
 export interface UserMessageFlowDocument {
   text: string;
+  /** Hard lines of the sanitized text; empty when the message has no text. */
   hardLines: string[];
+  /** Attachment badges (e.g. "📎 PNG (93.1 KB)"), rendered dim below the text. */
+  badges: string[];
 }
 
 export interface AdaptiveUserMessageRow {
@@ -492,9 +498,33 @@ export interface AdaptiveUserMessageRow {
   nextCursor: UserMessageFlowCursor;
 }
 
-function createUserMessageFlowDocument(text: string): UserMessageFlowDocument {
+/** One laid-out bubble row before alignment and background are applied. */
+interface UserBubbleRow {
+  text: string;
+  sourceStart: UserMessageFlowCursor;
+  nextCursor: UserMessageFlowCursor;
+  cols: number;
+  /** Continues a hard line that wrapped (copy/yank joins it to the previous row). */
+  cont: boolean;
+  join: string;
+  badge: boolean;
+}
+
+function createUserMessageFlowDocument(text: string, images?: ImageAttachment[]): UserMessageFlowDocument {
   const sanitized = sanitizeUntrustedText(text);
-  return { text: sanitized, hardLines: sanitized.split("\n") };
+  return {
+    text: sanitized,
+    hardLines: sanitized ? sanitized.split("\n") : [],
+    badges: (images ?? []).map(img => `📎 ${imageLabel(img.mediaType)} (${formatSize(img.sizeBytes)})`),
+  };
+}
+
+function userMessageFlowEnd(document: UserMessageFlowDocument): UserMessageFlowCursor {
+  return { lineIndex: document.hardLines.length + document.badges.length, offset: 0 };
+}
+
+function userBubbleInnerWidth(cols: number): number {
+  return Math.max(1, cols - USER_BUBBLE_MARGIN - 1 - USER_BUBBLE_PADDING * 2);
 }
 
 /**
@@ -503,7 +533,7 @@ function createUserMessageFlowDocument(text: string): UserMessageFlowDocument {
  * Adaptive viewport rendering may receive only the visible source range of a
  * message. Deriving its bubble width from those rows makes the background
  * shrink as wider, off-screen rows are scrolled away, so always measure a
- * constant-width wrap of the complete source document instead.
+ * constant-width layout of the complete source document instead.
  */
 function fullUserMessageBubbleWidth(document: UserMessageFlowDocument, cols: number): number {
   let widthsByCols = adaptiveUserBubbleWidthCache.get(document);
@@ -514,12 +544,10 @@ function fullUserMessageBubbleWidth(document: UserMessageFlowDocument, cols: num
   const cached = widthsByCols.get(cols);
   if (cached !== undefined) return cached;
 
-  const maxBubbleWidth = Math.max(1, cols - USER_BUBBLE_MARGIN - 1);
-  const innerWidth = Math.max(1, maxBubbleWidth - USER_BUBBLE_PADDING * 2);
-  const wrapped = wordWrap(document.text, innerWidth).lines;
-  const longestLine = wrapped.reduce((max, line) => Math.max(max, termWidth(line)), 0);
+  const rows = layoutUserMessageRows(document, { lineIndex: 0, offset: 0 }, userMessageFlowEnd(document), () => cols);
+  const longestLine = rows.reduce((max, row) => Math.max(max, termWidth(row.text)), 0);
   const bubbleWidth = Math.min(
-    maxBubbleWidth,
+    Math.max(1, cols - USER_BUBBLE_MARGIN - 1),
     longestLine + USER_BUBBLE_PADDING * 2,
   );
   widthsByCols.set(cols, bubbleWidth);
@@ -539,7 +567,8 @@ function trimUserTextStart(text: string, start: number, end: number): number {
 
 /**
  * Consume one word-wrapped row while retaining the source offset of the next
- * row. This deliberately mirrors textwrap.wordWrap's ASCII-space preference.
+ * row. Break choice matches textwrap.wordWrap, including its preference for a
+ * space just past the width (a row that ends exactly at the width).
  */
 function takeUserTextRow(text: string, sourceStart: number, sourceEnd: number, width: number): UserTextRowTake {
   const [fitEnd] = sliceByWidthFrom(text, sourceStart, Math.max(1, width));
@@ -551,7 +580,7 @@ function takeUserTextRow(text: string, sourceStart: number, sourceEnd: number, w
   const breakRel = fit.lastIndexOf(" ");
   let breakAt = breakRel > 0 ? sourceStart + breakRel : -1;
 
-  if (breakRel <= 0 && fitEnd > sourceStart && text[fitEnd] === " ") {
+  if (fitEnd > sourceStart && text[fitEnd] === " " && text[fitEnd - 1] !== " ") {
     breakAt = fitEnd;
   }
   if (breakAt <= sourceStart) {
@@ -571,94 +600,44 @@ function takeUserTextRow(text: string, sourceStart: number, sourceEnd: number, w
 }
 
 /**
- * Source starts for the rows produced by the ordinary, constant-width user
- * bubble. Mixed-width viewport composition uses these to map its rows back to
- * canonical history rows without treating a prior visual wrap as a hard break.
- *
- * Attachment messages intentionally return null because their semantic rows
- * include display-only badges. Hard line breaks (including empty lines) are
- * represented explicitly by the flow cursor.
+ * Lay out one source range of a user message across row-dependent widths.
+ * Both the canonical constant-width bubble and the task-panel reflow use this,
+ * so their rows (text and badges alike) always correspond one to one.
  */
-export function userMessageTextRowOffsets(
-  text: string,
-  cols: number,
-  images?: ImageAttachment[],
-): { starts: UserMessageFlowCursor[]; end: UserMessageFlowCursor } | null {
-  return userMessageTextRowOffsetsFromDocument(createUserMessageFlowDocument(text), cols, images);
-}
-
-function userMessageTextRowOffsetsFromDocument(
+function layoutUserMessageRows(
   document: UserMessageFlowDocument,
-  cols: number,
-  images?: ImageAttachment[],
-): { starts: UserMessageFlowCursor[]; end: UserMessageFlowCursor } | null {
-  if (!document.text || images?.length) return null;
-
-  const starts: UserMessageFlowCursor[] = [];
-  const innerWidth = Math.max(1, cols - USER_BUBBLE_MARGIN - 1 - USER_BUBBLE_PADDING * 2);
-  const hardLines = document.hardLines;
-  for (let lineIndex = 0; lineIndex < hardLines.length; lineIndex++) {
-    const hardLine = hardLines[lineIndex];
-    if (hardLine.length === 0) {
-      starts.push({ lineIndex, offset: 0 });
-      continue;
-    }
-
-    let offset = 0;
-    while (offset < hardLine.length) {
-      const row = takeUserTextRow(hardLine, offset, hardLine.length, innerWidth);
-      starts.push({ lineIndex, offset: row.sourceStart });
-      if (row.nextOffset <= offset) return null;
-      offset = row.nextOffset;
-    }
-  }
-  return { starts, end: { lineIndex: hardLines.length, offset: 0 } };
-}
-
-export function compareUserMessageFlowCursors(
-  left: UserMessageFlowCursor,
-  right: UserMessageFlowCursor,
-): number {
-  return left.lineIndex - right.lineIndex || left.offset - right.offset;
-}
-
-/**
- * Render one user-message text flow across row-dependent widths. Wrapping is
- * continuous when the task-panel float ends: the first full-width row resumes
- * exactly where the final narrow row stopped instead of restarting at a
- * full-width bubble boundary.
- */
-export function renderAdaptiveUserMessageRows(
-  text: string | UserMessageFlowDocument,
   sourceStart: UserMessageFlowCursor,
   sourceEnd: UserMessageFlowCursor,
   colsForRow: (rowIndex: number) => number,
-  background = theme.userBg,
-): AdaptiveUserMessageRow[] {
-  const document = typeof text === "string" ? createUserMessageFlowDocument(text) : text;
-  const hardLines = document.hardLines;
+): UserBubbleRow[] {
+  const { hardLines, badges } = document;
+  const sourceCount = hardLines.length + badges.length;
   const clampCursor = (cursor: UserMessageFlowCursor): UserMessageFlowCursor => {
-    const lineIndex = Math.max(0, Math.min(cursor.lineIndex, hardLines.length));
-    if (lineIndex === hardLines.length) return { lineIndex, offset: 0 };
+    const lineIndex = Math.max(0, Math.min(cursor.lineIndex, sourceCount));
+    if (lineIndex >= hardLines.length) return { lineIndex, offset: 0 };
     return { lineIndex, offset: Math.max(0, Math.min(cursor.offset, hardLines[lineIndex].length)) };
   };
   const end = clampCursor(sourceEnd);
   let cursor = clampCursor(sourceStart);
-  const rawRows: Array<{
-    text: string;
-    sourceStart: UserMessageFlowCursor;
-    nextCursor: UserMessageFlowCursor;
-    cols: number;
-  }> = [];
+  const rows: UserBubbleRow[] = [];
 
   while (compareUserMessageFlowCursors(cursor, end) < 0) {
-    const cols = Math.max(1, colsForRow(rawRows.length));
-    const innerWidth = Math.max(1, cols - USER_BUBBLE_MARGIN - 1 - USER_BUBBLE_PADDING * 2);
-    const hardLine = hardLines[cursor.lineIndex] ?? "";
+    const cols = Math.max(1, colsForRow(rows.length));
 
+    if (cursor.lineIndex >= hardLines.length) {
+      const nextCursor = { lineIndex: cursor.lineIndex + 1, offset: 0 };
+      rows.push({
+        text: badges[cursor.lineIndex - hardLines.length] ?? "",
+        sourceStart: cursor, nextCursor, cols, cont: false, join: "", badge: true,
+      });
+      cursor = nextCursor;
+      continue;
+    }
+
+    const hardLine = hardLines[cursor.lineIndex];
     if (hardLine.length === 0) {
       const nextCursor = { lineIndex: cursor.lineIndex + 1, offset: 0 };
-      rawRows.push({ text: "", sourceStart: cursor, nextCursor, cols });
+      rows.push({ text: "", sourceStart: cursor, nextCursor, cols, cont: false, join: "", badge: false });
       cursor = nextCursor;
       continue;
     }
@@ -668,24 +647,45 @@ export function renderAdaptiveUserMessageRows(
       cursor = { lineIndex: cursor.lineIndex + 1, offset: 0 };
       continue;
     }
-    const row = takeUserTextRow(hardLine, cursor.offset, rowEnd, innerWidth);
+    const row = takeUserTextRow(hardLine, cursor.offset, rowEnd, userBubbleInnerWidth(cols));
     const nextCursor = row.nextOffset >= hardLine.length && cursor.lineIndex < end.lineIndex
       ? { lineIndex: cursor.lineIndex + 1, offset: 0 }
       : { lineIndex: cursor.lineIndex, offset: row.nextOffset };
-    rawRows.push({ text: row.text, sourceStart: cursor, nextCursor, cols });
+    const cont = cursor.offset > 0;
+    rows.push({
+      text: row.text,
+      sourceStart: cursor,
+      nextCursor,
+      cols,
+      cont,
+      join: cont && hardLine[cursor.offset - 1]?.trimStart() === "" ? " " : "",
+      badge: false,
+    });
     if (compareUserMessageFlowCursors(nextCursor, cursor) <= 0) break;
     cursor = nextCursor;
   }
+  return rows;
+}
 
-  const rendered: AdaptiveUserMessageRow[] = [];
-  for (let runStart = 0; runStart < rawRows.length;) {
-    const cols = rawRows[runStart].cols;
+/**
+ * Right-align laid-out rows inside their bubble. Each run of rows that shares
+ * a width shares one bubble edge, sized from the complete message at that
+ * width, so every row of the run gets the same alignment and background.
+ */
+function paintUserBubbleRows(
+  document: UserMessageFlowDocument,
+  rows: readonly UserBubbleRow[],
+  background: string,
+): string[] {
+  const lines: string[] = [];
+  for (let runStart = 0; runStart < rows.length;) {
+    const cols = rows[runStart].cols;
     let runEnd = runStart + 1;
-    while (runEnd < rawRows.length && rawRows[runEnd].cols === cols) runEnd++;
+    while (runEnd < rows.length && rows[runEnd].cols === cols) runEnd++;
 
     const maxBubbleWidth = Math.max(1, cols - USER_BUBBLE_MARGIN - 1);
     const visibleContentWidth = Math.max(
-      ...rawRows.slice(runStart, runEnd).map(row => termWidth(row.text)),
+      ...rows.slice(runStart, runEnd).map(row => termWidth(row.text)),
     );
     const bubbleWidth = Math.min(
       maxBubbleWidth,
@@ -699,17 +699,78 @@ export function renderAdaptiveUserMessageRows(
     const padRight = " ".repeat(USER_BUBBLE_PADDING);
 
     for (let index = runStart; index < runEnd; index++) {
-      const row = rawRows[index];
+      const row = rows[index];
       const padLeft = " ".repeat(Math.max(0, inner - termWidth(row.text)) + USER_BUBBLE_PADDING);
-      rendered.push({
-        line: `${screenOffset}${background}${padLeft}${row.text}${padRight}${theme.reset}`,
-        sourceStart: row.sourceStart,
-        nextCursor: row.nextCursor,
-      });
+      const styledText = row.badge ? `${theme.dim}${row.text}${theme.reset}${background}` : row.text;
+      lines.push(`${screenOffset}${background}${padLeft}${styledText}${padRight}${theme.reset}`);
     }
     runStart = runEnd;
   }
-  return rendered;
+  return lines;
+}
+
+/**
+ * Source starts for the rows produced by the ordinary, constant-width user
+ * bubble. Mixed-width viewport composition uses these to map its rows back to
+ * canonical history rows without treating a prior visual wrap as a hard break.
+ * Hard line breaks (including empty lines) and attachment badges are
+ * represented explicitly by the flow cursor.
+ */
+export function userMessageTextRowOffsets(
+  text: string,
+  cols: number,
+  images?: ImageAttachment[],
+): { starts: UserMessageFlowCursor[]; end: UserMessageFlowCursor } | null {
+  const document = createUserMessageFlowDocument(text, images);
+  const end = userMessageFlowEnd(document);
+  const rows = layoutUserMessageRows(document, { lineIndex: 0, offset: 0 }, end, () => cols);
+  return rows.length > 0 ? { starts: rows.map(row => row.sourceStart), end } : null;
+}
+
+export function compareUserMessageFlowCursors(
+  left: UserMessageFlowCursor,
+  right: UserMessageFlowCursor,
+): number {
+  return left.lineIndex - right.lineIndex || left.offset - right.offset;
+}
+
+/**
+ * Render one user-message flow across row-dependent widths. Wrapping is
+ * continuous when the task-panel float ends: the first full-width row resumes
+ * exactly where the final narrow row stopped instead of restarting at a
+ * full-width bubble boundary.
+ */
+export function renderAdaptiveUserMessageRows(
+  text: string | UserMessageFlowDocument,
+  sourceStart: UserMessageFlowCursor,
+  sourceEnd: UserMessageFlowCursor,
+  colsForRow: (rowIndex: number) => number,
+  background = theme.userBg,
+): AdaptiveUserMessageRow[] {
+  const document = typeof text === "string" ? createUserMessageFlowDocument(text) : text;
+  const rows = layoutUserMessageRows(document, sourceStart, sourceEnd, colsForRow);
+  const lines = paintUserBubbleRows(document, rows, background);
+  return rows.map((row, index) => ({
+    line: lines[index],
+    sourceStart: row.sourceStart,
+    nextCursor: row.nextCursor,
+  }));
+}
+
+function renderUserMessageDocument(
+  document: UserMessageFlowDocument,
+  cols: number,
+  background: string,
+): { result: WrapResult; starts: UserMessageFlowCursor[] } {
+  const rows = layoutUserMessageRows(document, { lineIndex: 0, offset: 0 }, userMessageFlowEnd(document), () => cols);
+  return {
+    result: {
+      lines: paintUserBubbleRows(document, rows, background),
+      cont: rows.map(row => row.cont),
+      join: rows.map(row => row.join),
+    },
+    starts: rows.map(row => row.sourceStart),
+  };
 }
 
 export function renderUserMessage(
@@ -718,58 +779,7 @@ export function renderUserMessage(
   images?: ImageAttachment[],
   background = theme.userBg,
 ): WrapResult {
-  text = sanitizeUntrustedText(text);
-  const padding = USER_BUBBLE_PADDING; // horizontal padding inside bubble
-  const margin = USER_BUBBLE_MARGIN;   // gap from right edge of screen
-  const maxBubbleWidth = cols - margin - 1;
-  const innerWidth = maxBubbleWidth - padding * 2;
-
-  // Build image badge lines (e.g. "📎 PNG (93.1 KB)")
-  const badgeLines: string[] = [];
-  if (images?.length) {
-    for (const img of images) {
-      badgeLines.push(`📎 ${imageLabel(img.mediaType)} (${formatSize(img.sizeBytes)})`);
-    }
-  }
-
-  const w = text ? wordWrap(text, innerWidth) : { lines: [] as string[], cont: [] as boolean[], join: [] as string[] };
-
-  // Combine badges + text for width calculation
-  const allContentLines = [...badgeLines, ...w.lines];
-  if (allContentLines.length === 0) allContentLines.push("");
-
-  // Size bubble to the longest line
-  const bubbleWidth = Math.min(
-    maxBubbleWidth,
-    Math.max(...allContentLines.map(l => termWidth(l))) + padding * 2,
-  );
-  const inner = bubbleWidth - padding * 2;
-
-  const lines: string[] = [];
-  const cont: boolean[] = [];
-  const join: string[] = [];
-  const screenOffset = " ".repeat(Math.max(0, cols - bubbleWidth - margin));
-  const padRight = " ".repeat(padding);
-
-  /** Append a right-aligned bubble line with optional style prefix. */
-  const pushBubbleLine = (lineText: string, isCont: boolean, joiner = "", style?: string) => {
-    const padLeft = " ".repeat(Math.max(0, inner - termWidth(lineText)) + padding);
-    const styledText = style ? `${style}${lineText}${theme.reset}${background}` : lineText;
-    lines.push(`${screenOffset}${background}${padLeft}${styledText}${padRight}${theme.reset}`);
-    cont.push(isCont);
-    join.push(isCont ? joiner : "");
-  };
-
-  // Render text lines
-  for (let i = 0; i < w.lines.length; i++) {
-    pushBubbleLine(w.lines[i], w.cont[i], w.join[i]);
-  }
-
-  // Render image badges below text (dimmed)
-  for (const badge of badgeLines) {
-    pushBubbleLine(badge, false, "", theme.dim);
-  }
-  return { lines, cont, join };
+  return renderUserMessageDocument(createUserMessageFlowDocument(text, images), cols, background).result;
 }
 
 export function renderUserMessageCached(
@@ -779,16 +789,31 @@ export function renderUserMessageCached(
   images?: ImageAttachment[],
   background = theme.userBg,
 ): WrapResult {
+  return userMessageCacheEntry(owner, text, cols, images, background).result;
+}
+
+function userMessageCacheEntry(
+  owner: object,
+  text: string,
+  cols: number,
+  images: ImageAttachment[] | undefined,
+  background: string,
+): UserMessageCacheEntry {
   const imagesKey = imageAttachmentsKey(images);
   const cached = userMessageRenderCache.get(owner);
   if (cached && cached.text === text && cached.cols === cols && cached.imagesKey === imagesKey
       && cached.themeName === theme.name && cached.background === background) {
-    return cached.result;
+    return cached;
   }
 
-  const result = renderUserMessage(text, cols, images, background);
-  userMessageRenderCache.set(owner, { text, cols, imagesKey, themeName: theme.name, background, result });
-  return result;
+  const flowDocument = createUserMessageFlowDocument(text, images);
+  const { result, starts } = renderUserMessageDocument(flowDocument, cols, background);
+  const entry: UserMessageCacheEntry = {
+    text, cols, imagesKey, themeName: theme.name, background, result, flowDocument,
+    flow: starts.length > 0 ? { starts, end: userMessageFlowEnd(flowDocument) } : null,
+  };
+  userMessageRenderCache.set(owner, entry);
+  return entry;
 }
 
 /** Canonical source document/cursors shared by history and viewport reflow. */
@@ -802,21 +827,7 @@ export function userMessageFlowMetadataCached(
   starts: UserMessageFlowCursor[];
   end: UserMessageFlowCursor;
 }) | null {
-  const imagesKey = imageAttachmentsKey(images);
-  let cached = userMessageRenderCache.get(owner);
-  if (!cached
-    || cached.text !== text
-    || cached.cols !== cols
-    || cached.imagesKey !== imagesKey
-    || cached.themeName !== theme.name
-    || cached.background !== background) {
-    renderUserMessageCached(owner, text, cols, images, background);
-    cached = userMessageRenderCache.get(owner)!;
-  }
-  cached.flowDocument ??= createUserMessageFlowDocument(text);
-  if (cached.flow === undefined) {
-    cached.flow = userMessageTextRowOffsetsFromDocument(cached.flowDocument, cols, images);
-  }
+  const cached = userMessageCacheEntry(owner, text, cols, images, background);
   return cached.flow ? { document: cached.flowDocument, ...cached.flow } : null;
 }
 

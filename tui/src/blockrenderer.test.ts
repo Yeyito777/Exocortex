@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { renderAdaptiveUserMessageRows, renderBlockCached, renderUserMessage } from "./blockrenderer";
+import {
+  renderAdaptiveUserMessageRows,
+  renderBlockCached,
+  renderUserMessage,
+  userMessageFlowMetadataCached,
+  userMessageTextRowOffsets,
+} from "./blockrenderer";
 import type { Block, ToolDisplayInfo, ExternalToolStyle } from "./messages";
 import { theme } from "./theme";
 import { termWidth } from "./textwidth";
@@ -80,6 +86,27 @@ describe("adaptive user message rendering", () => {
 
     expect(visibleRows).toHaveLength(1);
     expect(userBubbleWidth(visibleRows[0].line)).toBe(userBubbleWidth(fullMessage.lines[0]));
+  });
+
+  test("lays out the same rows as the canonical bubble, including exact-width rows and attachment badges", () => {
+    // "abcd efgh ijkl mnopq" fills a 20-column interior exactly; the break must
+    // land after "mnopq" in both layouts, not at the previous space.
+    const text = "abcd efgh ijkl mnopq rest of the words keep going here\n\nsecond paragraph with several more words to wrap";
+    const images = [{ mediaType: "image/png" as const, base64: "", sizeBytes: 19_150 }];
+    for (let cols = 12; cols <= 90; cols++) {
+      for (const attachments of [undefined, images]) {
+        const canonical = renderUserMessage(text, cols, attachments).lines;
+        const flow = userMessageTextRowOffsets(text, cols, attachments)!;
+        const adaptive = renderAdaptiveUserMessageRows(
+          userMessageFlowMetadataCached({}, text, cols, attachments)!.document,
+          flow.starts[0],
+          flow.end,
+          () => cols,
+        );
+        expect(flow.starts, `cols=${cols}`).toHaveLength(canonical.length);
+        expect(adaptive.map(row => row.line), `cols=${cols}`).toEqual(canonical);
+      }
+    }
   });
 });
 
