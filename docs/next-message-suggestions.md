@@ -2,7 +2,7 @@
 
 After a turn ends, a cheap model predicts what you will type next and the TUI
 shows it as dim ghost text in the empty prompt. Typing anything hides it;
-Right Shift or `→` puts it in the prompt to edit or send with `Enter`. It is
+Right Shift, `→`, or Tab in normal mode puts it in the prompt to edit or send with `Enter`. It is
 never sent on its own.
 
 ## Enabling
@@ -54,5 +54,7 @@ streaming. Accept keys:
   only: st also sends it for Ctrl+7, which outside insert mode jumps to the
   seventh sidebar conversation.
 - `→`, which does nothing else in an empty prompt.
+- Tab in normal mode, where it is otherwise unbound (insert-mode Tab still
+  completes or inserts a soft tab).
 
 Accepting is one undo step.

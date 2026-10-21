@@ -3,8 +3,9 @@
  *
  * The daemon predicts the user's next message after a turn ends. It shows as
  * dim ghost text in the focused, empty prompt and disappears as soon as
- * anything is typed. Right Shift (as in the owner's zsh autosuggestions) or
- * Right arrow puts it in the prompt for editing; it is never sent by itself.
+ * anything is typed. Right Shift (as in the owner's zsh autosuggestions),
+ * Right arrow, or Tab in normal mode puts it in the prompt for editing; it is
+ * never sent by itself.
  */
 
 import type { KeyEvent } from "./input";
@@ -48,6 +49,9 @@ function isAcceptKey(state: RenderState, key: KeyEvent): boolean {
     // (sidebar shortcut outside insert mode), so only insert mode takes it.
     case "f20":
       return state.vim.mode === "insert";
+    // Insert-mode Tab completes or indents; in normal mode it is otherwise unbound.
+    case "tab":
+      return state.vim.mode === "normal";
     default:
       return false;
   }
