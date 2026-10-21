@@ -360,6 +360,8 @@ function preserveViewportAcrossHistoryMutationFromRow(
   useRenderedHistory = false,
   /** Hold the anchor row's screen position even when the view follows the bottom. */
   anchorWhenPinned = false,
+  /** The row that takes the anchor row's screen position (and the cursor, if it was there), or -1 to remap. */
+  relocate?: (newRender: Pick<ReturnType<typeof buildMessageLines>, "lines" | "lineAnchors">) => number,
 ): void {
   const { messageAreaHeight } = state.layout;
   if (messageAreaHeight <= 0) {
@@ -391,8 +393,9 @@ function preserveViewportAcrossHistoryMutationFromRow(
   const newAnchorIndex = buildAnchorIndex(newRender.lineAnchors);
   const newLineIndex = buildRenderedLineIndex(newRender.lines);
 
+  const relocated = relocate ? relocate(newRender) : -1;
   if (state.scrollOffset > 0 || anchorWhenPinned) {
-    const newViewportAnchorRow = remapRenderedRow(
+    const newViewportAnchorRow = relocated >= 0 ? relocated : remapRenderedRow(
       oldViewportAnchorRow,
       oldRender.lines,
       oldRender.lineAnchors,
@@ -406,7 +409,9 @@ function preserveViewportAcrossHistoryMutationFromRow(
 
   state.historyCursor = {
     ...state.historyCursor,
-    row: remapRenderedRow(oldCursorRow, oldRender.lines, oldRender.lineAnchors, newRender.lines, newAnchorIndex, newLineIndex),
+    row: relocated >= 0 && oldCursorRow === oldViewportAnchorRow
+      ? relocated
+      : remapRenderedRow(oldCursorRow, oldRender.lines, oldRender.lineAnchors, newRender.lines, newAnchorIndex, newLineIndex),
   };
   state.historyVisualAnchor = {
     ...state.historyVisualAnchor,
@@ -462,7 +467,13 @@ export function toggleToolOutputPreservingViewport(state: RenderState): void {
  * Open or close one folded turn or notification (a click or Enter on its row).
  * Its row stays where it is on screen, so what opens grows below it.
  */
+/**
+ * Open or close one folded item. Its toggle row keeps its place on screen:
+ * opened, what it opened reads top to bottom below that row (whichever row now
+ * carries the toggle, e.g. a gutter mark that moved to the top of the stretch).
+ */
 export function toggleHistoryItemPreservingViewport(state: RenderState, item: object): void {
+  let fromToggleRow = false;
   preserveViewportAcrossHistoryMutationFromRow(state, () => {
     if (state.expandedHistoryItems.has(item)) state.expandedHistoryItems.delete(item);
     else state.expandedHistoryItems.add(item);
@@ -470,8 +481,17 @@ export function toggleHistoryItemPreservingViewport(state: RenderState, item: ob
   }, (oldViewStart, oldRender, messageAreaHeight) => {
     const viewEnd = Math.min(oldRender.lines.length, oldViewStart + messageAreaHeight);
     for (let row = oldViewStart; row < viewEnd; row++) {
-      if (oldRender.lineAnchors[row]?.toggle === item) return row;
+      if (oldRender.lineAnchors[row]?.toggle === item) {
+        fromToggleRow = true;
+        return row;
+      }
     }
     return oldViewStart;
-  }, false, true);
+  }, false, true, newRender => fromToggleRow ? newRender.lineAnchors.findIndex(anchor => anchor?.toggle === item) : -1);
+}
+
+/** Ctrl+O and the detail view's way back: every item opened on its own folds again. */
+export function closeOpenedHistoryItems(state: RenderState): void {
+  state.expandedHistoryItems = new WeakSet();
+  state.historyExpansionRevision++;
 }

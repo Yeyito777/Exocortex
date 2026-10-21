@@ -176,6 +176,11 @@ export interface NotificationPlan {
   /** An opened background run starts here: its `▾ …` row, above this notification. */
   runHeader?: string;
   runToggle?: object;
+  /** An opened turn's `▾ …` row: it leads the turn, so it sits above the turn's first notification. */
+  turnRow?: string;
+  turnToggle?: object;
+  /** Gutter style: an opened group's mark, on this notification's first row (the top of what opened). */
+  gutter?: GutterMark;
 }
 
 /**
@@ -319,9 +324,12 @@ export function planHistory(input: PlanHistoryInput): HistoryPlan {
     if (turn.absorbed) {
       for (let at = orphanStart; at < turnStart; at++) {
         const orphan = plans[at - start] as NotificationPlan;
-        const plan: MessagePlan = turn.open ? { kind: "notification", label: orphan.label, open: true, toggleable: false } : { kind: "merged", label: orphan.label, toggle: turn.key };
+        const lead = at === orphanStart ? turn.leadRow : null;
+        const plan: MessagePlan = turn.open
+          ? { kind: "notification", label: orphan.label, open: true, toggleable: false, ...(lead ? { turnRow: lead, turnToggle: turn.key } : {}) }
+          : { kind: "merged", label: orphan.label, toggle: turn.key };
         plans[at - start] = plan;
-        signatures[at - start] = turn.open ? "n10" : `m${orphan.label}`;
+        signatures[at - start] = turn.open ? `n10${lead ? `|T${lead}` : ""}` : `m${orphan.label}`;
       }
     }
     const from = turn.absorbed && orphanStart >= 0 ? orphanStart : turnStart;
@@ -526,8 +534,28 @@ function planGutterFresh(
     // A prompt's bubble already leaves a blank row above the reply its turn led to.
     const afterPrompt = members[0].head === "owner";
     for (const segment of members) member(segment, toggle, open, segment === reply, !afterPrompt);
+    const mark: GutterMark = { mark: !marks ? "" : open ? "▾" : "▸", toggle };
+    // Opened, the mark leads what opened: the first row of the stretch's first
+    // folded message, so everything it opened reads below it in order.
+    const top = open ? openedTop(members) : -1;
+    const plan = plans[top - start];
+    if (plan?.kind === "notification") set(top, { ...plan, gutter: mark });
+    else if (plan?.kind === "assistant" && top !== reply.host) set(top, { ...plan, gutter: mark });
     const host = plans[reply.host - start];
-    if (host?.kind === "assistant") set(reply.host, { ...host, gutter: { mark: !marks ? "" : open ? "▾" : "▸", toggle }, groupToggle: toggle });
+    if (host?.kind === "assistant") set(reply.host, { ...host, ...(top < 0 || top === reply.host ? { gutter: mark } : {}), groupToggle: toggle });
+  };
+
+  /** An opened group's first shown message: a notification, or a turn's first visible step (a prompt stays where it was). */
+  const openedTop = (members: readonly GutterSegment[]): number => {
+    for (const segment of members) {
+      for (let index = segment.from; index < segment.to; index++) {
+        const msg = messages[index];
+        const plan = plans[index - start];
+        if (msg.role === "user" && plan?.kind === "notification") return index;
+        if (msg.role === "assistant" && msg.blocks.some(block => block.type !== "thinking")) return index;
+      }
+    }
+    return -1;
   };
 
   /** Nothing answered after them: the mark gets a row of its own where they were. */
@@ -584,7 +612,7 @@ function gutterSignature(plan: MessagePlan): string {
     case "assistant":
       return `a${plan.summary ?? ""}|${plan.hidden ? plan.hidden.map(value => value ? 1 : 0).join("") : "*"}|${plan.metaHidden ? 1 : 0}|${plan.gutter?.mark ?? ""}`;
     case "notification":
-      return `n${plan.open ? 1 : 0}${plan.toggleable ? 1 : 0}`;
+      return `n${plan.open ? 1 : 0}${plan.toggleable ? 1 : 0}|${plan.gutter?.mark ?? ""}`;
     case "from":
       return `f${plan.label}`;
     case "merged":
@@ -826,8 +854,8 @@ function planTurn(
   signatures: string[],
   /** Labels of notifications before the turn that nothing answered on its own. */
   orphanLabels: readonly string[],
-): { key: object; open: boolean; absorbed: boolean; label: string | null } {
-  if (from >= to) return { key: {}, open: false, absorbed: false, label: null };
+): { key: object; open: boolean; absorbed: boolean; label: string | null; leadRow: string | null } {
+  if (from >= to) return { key: {}, open: false, absorbed: false, label: null, leadRow: null };
   const key = turnKey(messages, from, messages[from]);
   const open = expanded.has(key);
   const memo = turnMemos.get(key);
@@ -840,7 +868,7 @@ function planTurn(
       plans[index - start] = memo.plans[index - from];
       signatures[index - start] = memo.signatures[index - from];
     }
-    return { key, open, absorbed: memo.absorbed, label: memo.rowLabel };
+    return { key, open, absorbed: memo.absorbed, label: memo.rowLabel, leadRow: memo.leadRow };
   }
 
   // The final reply is the text after the last tool block; everything before
@@ -897,15 +925,19 @@ function planTurn(
   }
   const answered = firstAssistant >= 0 || inProgress;
   const merged = label !== null && answered;
-  if (merged) {
-    const plan: MessagePlan = open ? { kind: "notification", label, open: true, toggleable: false } : { kind: "merged", label, toggle: key };
-    plans[from - start] = plan;
-    signatures[from - start] = open ? "n10" : `m${label}`;
-  }
   const absorbed = orphanLabels.length > 0 && answered;
   const rowLabel = combineLabels([...(absorbed ? orphanLabels : []), ...(merged ? [label!] : [])]);
   if (rowLabel && host < 0) host = firstAssistant;
   const summaryText = [rowLabel, workSummaryText(stats)].filter(Boolean).join(" · ");
+  // Opened, the row leads what it opened: above the turn's first notification
+  // (one delivered before the turn, else its own), never below them.
+  const lead = open && !inProgress && rowLabel !== null && summaryText ? `▾ ${summaryText}` : null;
+  if (merged) {
+    const turnRow = lead && !absorbed ? { turnRow: lead, turnToggle: key } : {};
+    const plan: MessagePlan = open ? { kind: "notification", label, open: true, toggleable: false, ...turnRow } : { kind: "merged", label, toggle: key };
+    plans[from - start] = plan;
+    signatures[from - start] = open ? `n10${lead && !absorbed ? `|T${lead}` : ""}` : `m${label}`;
+  }
   // A folded turn with nothing to read drops its metadata line.
   const metaHidden = !open && !inProgress && !reply;
   for (let index = from; index < to; index++) {
@@ -913,7 +945,7 @@ function planTurn(
     if (msg.role !== "assistant") continue;
     const hidden = open ? null : hiddenByMessage[index - from];
     // An in-progress turn's summary is its working row under the pending blocks.
-    const summary = !inProgress && index === host && summaryText ? `${open ? "▾" : "▸"} ${summaryText}` : null;
+    const summary = !inProgress && !lead && index === host && summaryText ? `${open ? "▾" : "▸"} ${summaryText}` : null;
     plans[index - start] = { kind: "assistant", hidden, summary, toggle: key, ...(metaHidden ? { metaHidden } : {}) };
     signatures[index - start] = `a${summary ?? ""}|${hidden ? hidden.map(value => value ? 1 : 0).join("") : "*"}|${metaHidden ? 1 : 0}`;
   }
@@ -923,6 +955,7 @@ function planTurn(
     orphans,
     absorbed,
     rowLabel,
+    leadRow: lead && absorbed ? lead : null,
     messages: messages.slice(from, to),
     blockCodes: messages.slice(from, to).map(msg => msg.role === "assistant" ? msg.blocks.map(blockCode) : null),
     inProgress,
@@ -931,7 +964,7 @@ function planTurn(
     plans: plans.slice(from - start, to - start),
     signatures: signatures.slice(from - start, to - start),
   });
-  return { key, open, absorbed, label: rowLabel };
+  return { key, open, absorbed, label: rowLabel, leadRow: lead && absorbed ? lead : null };
 }
 
 /** `Subagent completion`, `Chrono ×2`, or `3 notifications`. */
@@ -954,6 +987,8 @@ interface TurnMemo {
   orphans: string;
   absorbed: boolean;
   rowLabel: string | null;
+  /** The opened turn's row, for the first absorbed notification to carry. */
+  leadRow: string | null;
   messages: Message[];
   /** blockCode of every block of each assistant message. */
   blockCodes: Array<number[] | null>;
