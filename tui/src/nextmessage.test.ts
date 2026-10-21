@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { handleFocusedKey } from "./focus";
 import { handleEvent } from "./events";
-import { parseInput } from "./input";
+import { parseInput, type KeyEvent } from "./input";
 import { invalidateFrame } from "./frame";
 import { createPendingAI } from "./messages";
 import { render } from "./render";
@@ -71,16 +71,29 @@ describe("next-message suggestion", () => {
     });
   }
 
-  test("normal mode: F20 stays st's Ctrl+7 sidebar shortcut; Right Shift still accepts", () => {
-    const state = stateWithSuggestion();
-    state.vim.mode = "normal";
-    handleFocusedKey({ type: "f20" }, state);
-    expect(state.inputBuffer).toBe("");
-    state.panelFocus = "chat";
-    state.chatFocus = "prompt";
-    handleFocusedKey({ type: "right-shift" }, state);
-    expect(state.inputBuffer).toBe("commit and push it");
-    expect(state.cursorPos).toBe("commit and push it".length - 1);
+  for (const sequence of ["\x1b]777;right-shift\x07", "\x1b[19;2~", "\x1b[29~"]) {
+    test(`normal mode: Right Shift ${JSON.stringify(sequence)} accepts, cursor on the last character`, () => {
+      const state = stateWithSuggestion();
+      state.vim.mode = "normal";
+      const [key] = parseInput(sequence) as KeyEvent[];
+      expect(handleFocusedKey(key!, state)).toEqual({ type: "handled" });
+      expect(state.inputBuffer).toBe("commit and push it");
+      expect(state.cursorPos).toBe("commit and push it".length - 1);
+      expect(state.vim.mode).toBe("normal");
+    });
+  }
+
+  test("normal mode without a visible suggestion: F20 is still st's Ctrl+7 sidebar shortcut", () => {
+    for (const hide of [(s: RenderState) => { s.nextMessageSuggestion = null; }, (s: RenderState) => { s.inputBuffer = "draft"; s.cursorPos = 0; }]) {
+      const state = stateWithSuggestion();
+      state.vim.mode = "normal";
+      state.sidebar.open = false;
+      hide(state);
+      const before = state.inputBuffer;
+      handleFocusedKey({ type: "f20" }, state);
+      expect(state.sidebar.open).toBe(true);
+      expect(state.inputBuffer).toBe(before);
+    }
   });
 
   test("Tab accepts in normal mode; insert-mode Tab keeps its soft tab", () => {
