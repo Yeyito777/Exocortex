@@ -461,6 +461,7 @@ function resetForDaemonRouteSwitch(): void {
   state.accountsScreen = null;
   state.accountsOpenRequest = null;
   state.accountsSnapshotCache = null;
+  state.claudeConversationAccounts.clear();
   // Its scopes belonged to the old endpoint too.
   state.instructionsModal = null;
   instructionsRouteSwitched(state);

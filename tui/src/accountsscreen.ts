@@ -11,7 +11,9 @@
  * screen is open. It only opens when several accounts are set up; otherwise it
  * explains how to add one. When the TUI already knows there are several
  * accounts it opens at once, with the last snapshot it saw or a loading line,
- * and fills in when the daemon answers. Esc or q closes; j/k scroll a card cut short by a
+ * and fills in when the daemon answers. The highlight for this conversation's
+ * account comes from what earlier snapshots said about it, so it shows at
+ * once too, also over /ssh. Esc or q closes; j/k scroll a card cut short by a
  * small terminal. While Claude goes through /proxy, the Claude rows are the
  * remote's accounts (its pool routes this machine's turns too) and the note
  * says so, or that the link is down.
@@ -75,7 +77,7 @@ export function accountsScreenAvailable(state: Pick<RenderState, "usageByProvide
  */
 export function requestAccountsScreen(state: RenderState, daemon: AccountsRequester): void {
   if (state.accountsScreen) return;
-  const cached = state.accountsSnapshotCache?.enabled ? state.accountsSnapshotCache : null;
+  const cached = state.accountsSnapshotCache?.enabled ? forCurrentConversation(state, state.accountsSnapshotCache) : null;
   // With a single account the answer only explains; don't flash a loading card first.
   if (cached || accountsScreenAvailable(state)) state.accountsScreen = { snapshot: cached, scroll: 0 };
   state.accountsOpenRequest = { reqId: daemon.accounts({ watch: true, convId: state.convId }) };
@@ -88,9 +90,40 @@ export function closeAccountsScreen(state: RenderState, daemon: AccountsRequeste
   daemon?.accounts({ watch: false });
 }
 
+/** Remember which Claude account each conversation in the snapshot runs on. */
+function rememberConversationAccounts(state: RenderState, snapshot: AccountsSnapshot): void {
+  const known = state.claudeConversationAccounts;
+  for (const account of snapshot.claude.accounts) {
+    for (const conv of account.conversations) if (!conv.remote) known.set(conv.convId, account.id);
+  }
+  const current = snapshot.claude.currentConversation;
+  if (current) known.set(current.convId, current.account);
+}
+
+/**
+ * The snapshot as this conversation sees it: a snapshot asked for another
+ * conversation (or none, like the answer to closing the screen) gets this
+ * one's account from what earlier snapshots said, and no highlight when
+ * none said.
+ */
+function forCurrentConversation(state: RenderState, snapshot: AccountsSnapshot): AccountsSnapshot {
+  const convId = state.convId;
+  const current = snapshot.claude.currentConversation;
+  if (current?.convId === convId) return snapshot;
+  const { currentConversation: _other, ...claude } = snapshot.claude;
+  if (!convId || !state.claudeConversationAccounts.has(convId)) return { ...snapshot, claude };
+  const account = state.claudeConversationAccounts.get(convId) ?? null;
+  const entry = claude.accounts.find(info => info.id === account)?.conversations.find(conv => conv.convId === convId);
+  return {
+    ...snapshot,
+    claude: { ...claude, currentConversation: { convId, account, lastUsedAt: entry?.lastUsedAt ?? null, warm: entry?.warm ?? false } },
+  };
+}
+
 /** Apply an `accounts` event: fill in (or close and explain) for the pending request, refresh an open screen. */
 export function handleAccountsEvent(state: RenderState, event: AccountsEvent): void {
   state.accountsSnapshotCache = event.snapshot;
+  rememberConversationAccounts(state, event.snapshot);
   const request = state.accountsOpenRequest;
   if (request && event.reqId === request.reqId) {
     state.accountsOpenRequest = null;
@@ -101,7 +134,8 @@ export function handleAccountsEvent(state: RenderState, event: AccountsEvent): v
     }
     state.accountsScreen ??= { snapshot: event.snapshot, scroll: 0 };
   }
-  if (state.accountsScreen) state.accountsScreen.snapshot = event.snapshot;
+  // A late answer to closing the screen names no conversation: keep this one's highlight.
+  if (state.accountsScreen) state.accountsScreen.snapshot = forCurrentConversation(state, event.snapshot);
 }
 
 // ── Keys ─────────────────────────────────────────────────────────────
