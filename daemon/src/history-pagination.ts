@@ -171,35 +171,44 @@ export function estimateEntryRows(entry: DisplayEntry, cols: number): number {
 }
 
 /**
- * Rows of an entry in a client that folds turns (tui/src/turncollapse.ts): a
- * notification is one marker row; an assistant entry shows only the text after
- * its last tool round. Entries arrive newest first, so `newerInTurn` says
- * whether a newer assistant entry of the same turn holds its final reply, in
- * which case this one may show nothing. Like the unfolded estimate it errs
- * low: the folded-work summary row is not counted, which also covers the top
- * margin the window's first prompt may lack.
+ * Rows of an entry in a client that folds turns (tui/src/turncollapse.ts).
+ * Entries arrive newest first, so `newerInTurn` says whether a newer assistant
+ * entry of the same turn was already counted (this one then shows nothing),
+ * and `turnReplied` whether that turn ends with reply text. An assistant entry
+ * shows only the text after its last tool round; one with none is a silent
+ * turn, which folds under one row or into a run of background turns with
+ * others, so it and its notification count nothing. A notification heading a
+ * turn with a reply is one row. Like the unfolded estimate it errs low: the
+ * folded-work, run and notification rows' margins are not counted.
  */
-export function estimateFoldedEntryRows(entry: DisplayEntry, cols: number, newerInTurn: boolean): number {
+export function estimateFoldedEntryRows(entry: DisplayEntry, cols: number, newerInTurn: boolean, turnReplied = true): number {
   switch (entry.type) {
     case "user": {
       if (!isAutomatedUserPrompt(entry.text, entry.metadata)) return estimateEntryRows(entry, cols);
       // The owner's relayed message shows as their bubble; other notifications as one row.
       const relayed = ownerRelayedText(entry.text, entry.metadata);
-      return relayed === null ? 1 + USER_ENTRY_CHROME_ROWS : estimateEntryRows({ ...entry, text: relayed }, cols);
+      if (relayed !== null) return estimateEntryRows({ ...entry, text: relayed }, cols);
+      return turnReplied ? 1 : 0;
     }
     case "ai": {
       if (newerInTurn) return 0;
-      let rows = aiEntryChromeRows(entry);
-      for (let index = entry.blocks.length - 1; index >= 0; index--) {
-        const block = entry.blocks[index]!;
-        if (block.type === "tool_call" || block.type === "tool_result") break;
-        if (block.type === "text") rows += estimateBlockRows(block, cols);
-      }
-      return rows;
+      const reply = foldedReplyRows(entry, cols);
+      return reply > 0 ? aiEntryChromeRows(entry) + reply : 0;
     }
     default:
       return estimateEntryRows(entry, cols);
   }
+}
+
+/** Rows of the text after an assistant entry's last tool round (its reply when folded). */
+function foldedReplyRows(entry: Extract<DisplayEntry, { type: "ai" }>, cols: number): number {
+  let rows = 0;
+  for (let index = entry.blocks.length - 1; index >= 0; index--) {
+    const block = entry.blocks[index]!;
+    if (block.type === "tool_call" || block.type === "tool_result") break;
+    if (block.type === "text" && block.text.trim()) rows += estimateBlockRows(block, cols);
+  }
+  return rows;
 }
 
 function hasImagePayload(entry: DisplayEntry): boolean {
@@ -277,6 +286,8 @@ export function selectHistoryWindow(
   let userEntries = 0;
   /** A newer assistant entry of the turn being walked was already counted. */
   let aiNewerInTurn = false;
+  /** The turn being walked ends with reply text (set by its newest assistant entry). */
+  let turnReplied = false;
   for (const candidate of candidates) {
     let entry = endBlockIndex > 0 && candidate.index === endIndex && candidate.entry.type === "ai"
       ? sliceAIEntry(candidate.entry, 0, endBlockIndex)
@@ -292,10 +303,15 @@ export function selectHistoryWindow(
     const rowsNeeded = rowTarget ? rowTarget.rows - usedRows : undefined;
     const overBytes = byteBudget !== undefined && usedBytes + bytes > byteBudget;
     const entryRows = !rowTarget ? 0
-      : rowTarget.folded ? estimateFoldedEntryRows(entry, rowTarget.cols, aiNewerInTurn)
+      : rowTarget.folded ? estimateFoldedEntryRows(entry, rowTarget.cols, aiNewerInTurn, turnReplied)
       : estimateEntryRows(entry, rowTarget.cols);
-    if (entry.type === "ai") aiNewerInTurn = true;
-    else if (entry.type === "user") aiNewerInTurn = false;
+    if (entry.type === "ai") {
+      if (!aiNewerInTurn) turnReplied = foldedReplyRows(entry, rowTarget?.cols ?? 80) > 0;
+      aiNewerInTurn = true;
+    } else if (entry.type === "user") {
+      aiNewerInTurn = false;
+      turnReplied = false;
+    }
     if (overBytes || (entry.type === "ai" && rowsNeeded !== undefined && entryRows > rowsNeeded)) {
       if (entry.type !== "ai") {
         if (selected.length > 0) break;

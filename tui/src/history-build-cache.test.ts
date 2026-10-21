@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { buildMessageLines, invalidateCommittedHistoryCache, type BuildMessageLinesResult } from "./conversation";
 import { createInitialState, type RenderState } from "./state";
 import { createPendingAI, type Message } from "./messages";
@@ -19,9 +19,16 @@ function freshBuild(state: RenderState, width: number) {
 }
 
 function expectIncrementalMatchesFresh(state: RenderState, width = 80, reuseArrays = true): BuildMessageLinesResult {
-  const incremental = buildMessageLines(state, width, { reuseArrays });
-  expect(comparable(incremental)).toEqual(freshBuild(state, width));
-  return incremental;
+  // The live turn's spinner reads the clock: both builds must see the same second.
+  const now = Date.now();
+  const clock = spyOn(Date, "now").mockReturnValue(now);
+  try {
+    const incremental = buildMessageLines(state, width, { reuseArrays });
+    expect(comparable(incremental)).toEqual(freshBuild(state, width));
+    return incremental;
+  } finally {
+    clock.mockRestore();
+  }
 }
 
 function assistant(blocks: Extract<Message, { role: "assistant" }>["blocks"], startedAt = 1_000): Message {

@@ -302,6 +302,7 @@ export type RenderLineSegment =
   | "automation_label"
   | "notification_body"
   | "notification_header"
+  | "run_header"
   | "turn_work_summary"
   | "turn_working"
   | "user_content"
@@ -682,6 +683,14 @@ export function buildMessageLines(
    * Notifications sit on the assistant's side, never in the user's bubble: a
    * one-row marker while folded, or a labelled, guttered block when open.
    */
+  /** A run of background turns: `▸ 3 background turns · 9 tool calls`, or one turn's label styled as a notification. */
+  const pushRunHeader = (msg: Message, header: string, label: string | null, toggle: object) => {
+    const row = label
+      ? notificationLabelRow(header, label.length + 2, availableWidth)
+      : `  ${theme.muted}${truncateToWidth(header, Math.max(1, availableWidth - 4))}${theme.reset}`;
+    pushToggleLine(row, msg, "run_header", toggle);
+  };
+
   const pushNotification = (msg: Extract<Message, { role: "user" }>, notification: NotificationPlan) => {
     if (!notification.open) {
       const marker = `▸ ${notification.label} · ${notificationPreview(msg.text)}`;
@@ -937,9 +946,23 @@ export function buildMessageLines(
     appendMessageSourceRefs(msg, sourceRefs);
     sourceRefEnds.push(sourceRefs.length);
     const messagePlan = plan.messages[messageIndex - startMessageIndex];
-    if (msg.role === "user" && messagePlan?.kind === "notification") {
+    if (messagePlan?.kind === "run") {
+      // A closed run of background turns: one row on its first message, nothing else.
+      if (messagePlan.header !== null) {
+        if (userMessageNeedsTopMargin(state.messages, messageIndex)) pushLine("", msg, "user_margin_top");
+        const contentStart = lines.length;
+        pushRunHeader(msg, messagePlan.header, messagePlan.label, messagePlan.toggle);
+        const contentEnd = lines.length;
+        // A silent run's next row (a prompt or notification) brings its own top margin.
+        if (messagePlan.gap) pushLine("", msg, "user_margin_bottom");
+        pushMessageBound(msg.role, start, contentStart, contentEnd);
+      } else {
+        pushMessageBound(msg.role, start, start, start);
+      }
+    } else if (msg.role === "user" && messagePlan?.kind === "notification") {
       if (userMessageNeedsTopMargin(state.messages, messageIndex)) pushLine("", msg, "user_margin_top");
       const contentStart = lines.length;
+      if (messagePlan.runHeader && messagePlan.runToggle) pushRunHeader(msg, messagePlan.runHeader, null, messagePlan.runToggle);
       pushNotification(msg, messagePlan);
       const contentEnd = lines.length;
       if (messagePlan.open) pushImages(pastedImages(msg, msg.images, state.convId), "user_image");

@@ -332,7 +332,11 @@ describe("viewport-sized opening windows", () => {
     // An older fragment of the same turn shows nothing once a newer one holds the reply.
     expect(estimateFoldedEntryRows(toolTurn, viewport.cols, true)).toBe(0);
     const notification: DisplayEntry = { type: "user", text: "[notification] Subagent completed\n\nlong\nreport", metadata: { startedAt: 1, endedAt: 1, model: "m", tokens: 0, automation: { kind: "subagent_completion" } } };
-    expect(estimateFoldedEntryRows(notification, viewport.cols, false)).toBe(2);
+    // One row heading a turn with a reply; nothing when its turn is silent (it folds into a run).
+    expect(estimateFoldedEntryRows(notification, viewport.cols, false, true)).toBe(1);
+    expect(estimateFoldedEntryRows(notification, viewport.cols, false, false)).toBe(0);
+    const silent: DisplayEntry = { ...toolTurn, blocks: toolTurn.blocks.slice(0, -1) };
+    expect(estimateFoldedEntryRows(silent, viewport.cols, false)).toBe(0);
     expect(estimateFoldedEntryRows(user("a real\nmultiline\nprompt"), viewport.cols, false)).toBe(estimateEntryRows(user("a real\nmultiline\nprompt"), viewport.cols));
 
     // A folding client gets proportionally more of these turns in its opening window.
