@@ -10,7 +10,6 @@ import { StringDecoder } from "node:string_decoder";
 import type { ImageAttachment, ImageMediaType } from "./messages";
 import { convertHeic, HEIC_MIME_TYPES } from "./heic";
 import { readHeicClipboardFiles } from "./clipboard";
-import { RIGHT_SHIFT_OSCS } from "./input";
 export {
   disable_clipboard_paste_events,
   enable_clipboard_paste_events,
@@ -435,8 +434,6 @@ export class TerminalControlBuffer {
         const sequence = this.buffer.slice(0, end);
         this.buffer = this.buffer.slice(end);
         if (sequence.startsWith(OSC_5522_PREFIX)) this.onControlSequence(sequence);
-        // st's Right Shift key arrives as an OSC; it is key input, not a reply.
-        else if ((RIGHT_SHIFT_OSCS as readonly string[]).includes(sequence)) this.emitInput(sequence);
         continue;
       }
 
