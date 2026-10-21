@@ -92,8 +92,10 @@ describe("collapsed task panel", () => {
 
   test("truncates titles to one row each", () => {
     const panel = plain(renderTaskPanel(stateWithTasks(), 100, 60, NOW)!.lines);
-    expect(panel[1]).toContain("◷ Chrono Hourly review:");
-    expect(panel[1]).toContain("…");
+    // The subagent leads; the Chrono rows follow in the daemon's order.
+    expect(panel[1]).toContain("◆ Exocortex Map daemon events");
+    expect(panel[2]).toContain("◷ Chrono Hourly review:");
+    expect(panel[2]).toContain("…");
     expect(panel.join("\n")).not.toContain("yesterday");
   });
 });

@@ -12,6 +12,7 @@ import {
   MAX_TASK_PANEL_HEIGHT,
   msUntilTaskPanelEntryUpdate,
   renderTaskPanel,
+  toggleTaskPanelExpansion,
 } from "./activitypanel";
 import { stripAnsi } from "./historycursor";
 import type { ExternalIntegrationSummary } from "./messages";
@@ -369,7 +370,7 @@ describe("focused conversation subscriptions", () => {
   test("keeps combined sections and overflow correct at the 30-column minimum", () => {
     const state = stateWithTasks();
     state.sidebar.conversations[0].tasks!.push(
-      { id: "child-2", kind: "subagent", title: "Second child", startedAt: 2_000 },
+      { id: "bash:98", kind: "background", title: "lint", startedAt: 2_000 },
       { id: "bash:99", kind: "background", title: "typecheck", startedAt: 3_000 },
     );
     state.externalToolStyles = [{ cmd: "discord", label: "An impossibly long tool label", color: "#5865f2" }];
@@ -390,7 +391,7 @@ describe("focused conversation subscriptions", () => {
     expect(panel.lines.every(line => termWidth(stripAnsi(line)) === 30)).toBe(true);
   });
 
-  test("prioritizes every subscription before assigning overflow slots to tasks", () => {
+  test("gives subagents every slot they need, subscriptions the rest, and other tasks what remains", () => {
     const state = stateWithTasks();
     state.sidebar.conversations[0].tasks!.push(
       { id: "child-2", kind: "subagent", title: "Second child", startedAt: 2_000 },
@@ -404,17 +405,53 @@ describe("focused conversation subscriptions", () => {
     ];
 
     // Eight panel rows leave four entry slots after the borders, divider, and
-    // overflow row. All three subscriptions should be visible, leaving one
-    // slot for a task even though task rows render first in the card.
+    // overflow row: both subagents, then two subscriptions, and no shell rows.
     const panel = renderTaskPanel(state, 100, 8, 50_000)!;
     const plain = panel.lines.map(stripAnsi).join("\n");
     expect(panel.lines).toHaveLength(8);
     expect(plain).toContain("Map daemon events");
+    expect(plain).toContain("Second child");
     expect(plain).not.toContain("bun test tui");
+    expect(plain).not.toContain("typecheck");
     expect(plain).toContain("Subscription one");
     expect(plain).toContain("Subscription two");
-    expect(plain).toContain("Subscription three");
+    expect(plain).not.toContain("Subscription three");
     expect(plain).toContain("▸ 3 more");
+  });
+
+  test("keeps the subscription count when subagents fill the card", () => {
+    const state = stateWithTasks();
+    state.sidebar.conversations[0].tasks = [
+      { id: "bash:1", kind: "background", title: "bun test tui", startedAt: 1_000 },
+      ...[1, 2, 3, 4, 5].map(n => ({ id: `child-${n}`, kind: "subagent" as const, title: `Child ${n}`, startedAt: 1_000 + n })),
+    ];
+    state.sidebar.conversations[0].integrations = [
+      integration({ id: "integration:one", label: "Subscription one" }),
+      integration({ id: "integration:two", label: "Subscription two" }),
+      integration({ id: "integration:three", label: "Subscription three" }),
+    ];
+
+    const plain = renderTaskPanel(state, 100, 8, 50_000)!.lines.map(stripAnsi);
+    expect(plain.slice(1, 5).map(line => line.match(/Child \d/)?.[0])).toEqual(["Child 1", "Child 2", "Child 3", "Child 4"]);
+    expect(plain[5]).toMatch(/^├─ Subscriptions ─+ 3 ─┤$/);
+    expect(plain[6]).toContain("▸ 5 more");
+    expect(plain.join("\n")).not.toContain("Subscription one");
+  });
+
+  test("lists subagents first, ahead of the daemon's shell and Chrono order, collapsed and expanded", () => {
+    const state = stateWithTasks();
+    state.sidebar.conversations[0].tasks = [
+      { id: "bash:1", kind: "background", title: "bun test tui", startedAt: 1_000 },
+      { id: "child", kind: "subagent", title: "Map daemon events", startedAt: 2_000 },
+      { id: "chrono:1", kind: "chrono", title: "Hourly review", startedAt: 1_000, dueAt: 90_000, chronoMode: "wake" },
+    ];
+    state.sidebar.conversations[0].integrations = [integration()];
+    const order = (lines: string[]) => lines.map(stripAnsi)
+      .map(line => line.match(/Map daemon events|bun test tui|Hourly review|Design alerts/)?.[0])
+      .filter(Boolean);
+    expect(order(renderTaskPanel(state, 100, 20, 50_000)!.lines)).toEqual(["Map daemon events", "bun test tui", "Hourly review", "Design alerts"]);
+    toggleTaskPanelExpansion(state);
+    expect(order(renderTaskPanel(state, 100, 20, 50_000)!.lines)).toEqual(["Map daemon events", "bun test tui", "Hourly review", "Design alerts"]);
   });
 
   test("falls back to the manifest name and generic tool color when no external style is available", () => {

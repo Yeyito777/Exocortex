@@ -225,7 +225,17 @@ interface VisiblePanelContent {
   showSubscriptionsDivider: boolean;
 }
 
-/** Prioritize durable subscriptions when the card cannot fit all entries. */
+/** The goal and Exocortex subagents outrank subscriptions, which outrank other tasks. */
+function isPriorityTask(task: TaskPanelEntry): boolean {
+  return task.kind === "goal" || task.kind === "subagent";
+}
+
+/**
+ * Fit entries when the card cannot show them all. `tasks` lists priority
+ * tasks (isPriorityTask) first; they get every slot they need, subscriptions
+ * the slots left after them, and other tasks whatever remains. The
+ * Subscriptions divider keeps their count even when none of their rows fit.
+ */
 function fitTasksAndSubscriptions(
   tasks: TaskPanelEntry[],
   integrations: ExternalIntegrationSummary[],
@@ -266,10 +276,9 @@ function fitTasksAndSubscriptions(
     };
   }
 
-  // Subscriptions are durable inbound connections, so allocate every available
-  // entry slot to them before using any remaining slots for tasks.
   const entrySlots = Math.max(0, maxContentRows - 2);
-  const visibleIntegrationCount = Math.min(integrations.length, entrySlots);
+  const priorityCount = Math.min(entrySlots, tasks.filter(isPriorityTask).length);
+  const visibleIntegrationCount = Math.min(integrations.length, entrySlots - priorityCount);
   const visibleTaskCount = Math.min(tasks.length, entrySlots - visibleIntegrationCount);
 
   return {
@@ -469,7 +478,9 @@ export function renderTaskPanel(
   maxHeight: number,
   now = Date.now(),
 ): TaskPanelRender | null {
-  const tasks = focusedConversationTasks(state);
+  // Priority tasks lead the Tasks section, collapsed or expanded; the rest keep the daemon's order.
+  const allTasks = focusedConversationTasks(state);
+  const tasks = [...allTasks.filter(isPriorityTask), ...allTasks.filter(task => !isPriorityTask(task))];
   const integrations = focusedConversationIntegrations(state);
   const totalEntries = tasks.length + integrations.length;
   const expanded = isTaskPanelExpanded(state);
