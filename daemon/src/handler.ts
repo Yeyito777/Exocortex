@@ -21,6 +21,7 @@ import { encodeHistoryDelta } from "@exocortex/shared/history-delta";
 import { effectiveConversationDefaults } from "@exocortex/shared/config";
 import { isDurationMs } from "@exocortex/shared/duration";
 import { experimentalFeatures } from "./experimental";
+import { sendNextMessageSuggestion } from "./next-message-suggestions";
 import { conversationDefaultsSnapshot, resetDaemonConversationDefaults, setDaemonConversationDefaults } from "./conversation-defaults";
 import { consumeUsageReset, refreshUsage, handleUsageHeaders, getLastUsage, clearUsage } from "./usage";
 import { connectivity } from "./connectivity";
@@ -1919,6 +1920,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       case "subscribe": {
         server.subscribe(client, cmd.convId);
         btwManager.sendSnapshot(client, cmd.convId);
+        sendNextMessageSuggestion(server, client, cmd.convId);
         // Clear unread when a client views the conversation
         if (convStore.clearUnread(cmd.convId)) {
           broadcastConversationUpdated(server, cmd.convId);
@@ -3377,6 +3379,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         if (loaded.btwSessionId || btwManager.getSnapshot(loadedConvId)) {
           btwManager.sendSnapshot(client, loadedConvId);
         }
+        sendNextMessageSuggestion(server, client, loadedConvId);
         // After subscribing, send a fresh streaming snapshot for late-join catch-up.
         // This covers any chunks emitted between the initial load snapshot and the
         // moment the new subscriber was attached.

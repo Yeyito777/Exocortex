@@ -19,6 +19,7 @@ export interface KeyEvent {
       | "shift-enter"
       | "f14" | "f15" | "f16" | "f17" | "f18" | "f19"
       | "f20" | "f21" | "f22" | "f23" | "f24"
+      | "right-shift"
       | "escape"
       | "paste"
       | "unknown";
@@ -217,6 +218,8 @@ function csiKeyType(number: number, modifiers: number, final: string): KeyEvent[
         case 1: return "home";
         case 3: return "delete";
         case 4: return "end";
+        // Mac Terminal's Right Shift fallback (Shift-F8), as in ~/.zshrc.
+        case 29: return "right-shift";
       }
     }
     // Function keys F17-F24: CSI NN;2~ (st maps Ctrl+4 through Ctrl+-)
@@ -256,6 +259,9 @@ function csiKeyType(number: number, modifiers: number, final: string): KeyEvent[
   }
   return null;
 }
+
+/** st reports a Right Shift tap as OSC 777 (see ~/.zshrc); either terminator. */
+export const RIGHT_SHIFT_OSCS = ["\x1b]777;right-shift\x07", "\x1b]777;right-shift\x1b\\"] as const;
 
 const PASTE_START = "\x1b[200~";
 const PASTE_END = "\x1b[201~";
@@ -388,6 +394,8 @@ export function parseInput(data: Buffer | string): InputEvent[] {
     if (code === 27) {
       // Bare escape
       if (i + 1 >= str.length) { events.push({ type: "escape" }); i++; continue; }
+      const rightShift = RIGHT_SHIFT_OSCS.find(sequence => str.startsWith(sequence, i));
+      if (rightShift) { events.push({ type: "right-shift" }); i += rightShift.length; continue; }
       if (str[i + 1] === "[") {
         // SGR mouse: ESC [ < Pb ; Px ; Py M  (press) or  ESC [ < Pb ; Px ; Py m  (release)
         if (str[i + 2] === "<") {

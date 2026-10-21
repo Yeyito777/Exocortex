@@ -46,6 +46,7 @@ import { commitInsertSession, markInsertEntry, pushUndo } from "./undo";
 import { placeAtVisibleBottom } from "./historycursor";
 import { imageAtHistoryCursor, openableTargetAtHistoryCursor } from "./historyopenable";
 import { acceptAutocomplete, type PathCompletionProvider } from "./autocomplete";
+import { acceptNextMessageSuggestion } from "./nextmessage";
 import { handleQueuePromptKey } from "./queue";
 import { handleEditMessageKey, openEditMessageModal } from "./editmessage";
 import { readClipboardImage } from "./clipboard";
@@ -271,6 +272,8 @@ export function handleFocusedKey(
     markInsertEntry(state.undo, state.inputBuffer, state.cursorPos);
     return { type: "handled" };
   }
+
+  if (acceptNextMessageSuggestion(state, key)) return { type: "handled" };
 
   const action = resolveAction(key);
   const topIndex = sidebarTopShortcutIndex(action);
