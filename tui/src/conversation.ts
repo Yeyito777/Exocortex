@@ -34,7 +34,7 @@ import {
   type UserMessageFlowCursor,
 } from "./blockrenderer";
 import { isVisuallyBlankLine, sanitizeUntrustedText } from "./terminaltext";
-import { automationLabel, notificationPreview, ownerRelay, planHistory, type GutterMark, type HistoryPlan, type NotificationPlan, type PendingPlan } from "./turncollapse";
+import { automationLabel, ownerRelay, planHistory, type HistoryPlan, type NotificationPlan, type PendingPlan } from "./turncollapse";
 
 const COMPACTION_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
 const COMPACTION_SPINNER_INTERVAL_MS = 80;
@@ -224,14 +224,14 @@ function pendingAssistantSegmentMetadata(state: RenderState): MessageMetadata | 
 }
 
 /**
- * `⠹ Working · ▸ 7 tool calls` above the in-progress turn's latest step. The
+ * `⠹ Working · 7 tool calls` above the in-progress turn's latest step. The
  * spinner turns at the loading spinners' rate (main.ts ticks the frame while
  * it shows); the frame diff rewrites only the rows that changed.
  */
 function workingRow(metadata: MessageMetadata | null, pending: PendingPlan, now = Date.now()): string {
   const startedAt = metadata?.workTimerStartedAt ?? metadata?.startedAt ?? now;
   const frame = COMPACTION_SPINNER_FRAMES[Math.max(0, Math.floor((now - startedAt) / COMPACTION_SPINNER_INTERVAL_MS)) % COMPACTION_SPINNER_FRAMES.length];
-  const work = pending.summary ? ` · ${pending.expanded ? "▾" : "▸"} ${pending.summary}` : "";
+  const work = pending.summary ? ` · ${pending.summary}` : "";
   return `  ${theme.accent}${frame}${theme.reset} ${theme.muted}Working${work}${theme.reset}`;
 }
 
@@ -240,19 +240,9 @@ function stripSgr(line: string): string {
   return line.replace(/\x1b\[[0-9;:]*m/g, "");
 }
 
-/** Put a faint fold mark in column 0 (the gutter) of a row, keeping the rest. */
-export function withGutterMark(line: string, mark: string): string {
-  const faint = `${theme.dim}${theme.muted}${mark}${theme.reset}`;
-  if (line === "") return faint;
-  const lead = /^((?:\x1b\[[0-9;:]*m)*) /.exec(line);
-  if (!lead) return line;
-  return `${faint}${lead[1]}${line.slice(lead[0].length)}`;
-}
-
 // ── Notifications ───────────────────────────────────────────────────
 
-const NO_EXPANDED_ITEMS = new WeakSet<object>();
-/** Folded-work and notification label rows are chrome: yanks and copies skip them. */
+/** Notification label rows are chrome: yanks and copies skip them. */
 const DISPLAY_ONLY_ROW: WrapCopyLine = { text: "", displayStart: 0, skip: true };
 const NOTIFICATION_GUTTER = "▎ ";
 const NOTIFICATION_INDENT = 2;
@@ -264,9 +254,8 @@ const notificationBodyCache = new WeakMap<object, { text: string; width: number;
  */
 function notificationLabelRow(row: string, labelEnd: number, availableWidth: number): string {
   const text = truncateToWidth(row, Math.max(1, availableWidth - 4));
-  const arrow = text.startsWith("▸ ") || text.startsWith("▾ ") ? 2 : 0;
   const end = Math.min(labelEnd, text.length);
-  return `  ${theme.muted}${text.slice(0, arrow)}${theme.italic}${text.slice(arrow, end)}${theme.italicOff}${text.slice(end)}${theme.reset}`;
+  return `  ${theme.muted}${theme.italic}${text.slice(0, end)}${theme.italicOff}${text.slice(end)}${theme.reset}`;
 }
 
 /** Notification text behind a muted gutter; copies take the text without it. */
@@ -322,8 +311,6 @@ export type RenderLineSegment =
   | "automation_label"
   | "notification_body"
   | "notification_header"
-  | "run_header"
-  | "turn_work_summary"
   | "turn_working"
   | "user_content"
   | "user_image"
@@ -349,10 +336,6 @@ export interface RenderLineAnchor {
   images?: Array<{ layout: HistoryImageLayout; row: number }>;
   /** Columns where Enter or a click on this row (a thumbnail, a strip's `› +N`) opens an image. */
   openImages?: InlineImageHit[];
-  /** Folded turn or notification that Enter or a click on this row opens or closes. */
-  toggle?: object;
-  /** Only its first this-many columns toggle (a gutter mark beside text). */
-  toggleCols?: number;
 }
 
 /** An image to draw in history, with the object that owns its placement. */
@@ -695,40 +678,14 @@ export function buildMessageLines(
     pushAnchoredLine(line, false, "", owner, segment, index, 0);
   };
 
-  /** A row whose click or Enter opens or closes a folded turn or notification. */
-  const pushToggleLine = (line: string, owner: object, segment: RenderLineSegment, toggle: object | null) => {
+  /** A chrome row (a notification's label, the Working row): yanks and copies skip it. */
+  const pushChromeLine = (line: string, owner: object, segment: RenderLineSegment) => {
     pushAnchoredLine(line, false, "", owner, segment, 0, 0, DISPLAY_ONLY_ROW);
-    if (toggle) lineAnchors[lineAnchors.length - 1].toggle = toggle;
   };
 
-  /**
-   * Notifications sit on the assistant's side, never in the user's bubble: a
-   * one-row marker while folded, or a labelled, guttered block when open.
-   */
-  /** A run of background turns: `▸ 3 background turns · 9 tool calls`, or one turn's label styled as a notification. */
-  const pushRunHeader = (msg: Message, header: string, label: string | null, toggle: object) => {
-    const row = label
-      ? notificationLabelRow(header, label.length + 2, availableWidth)
-      : `  ${theme.muted}${truncateToWidth(header, Math.max(1, availableWidth - 4))}${theme.reset}`;
-    pushToggleLine(row, msg, "run_header", toggle);
-  };
-
-  /** Gutter style: a blank row carrying a fold group's mark; the whole row toggles it. */
-  const pushGutterRow = (msg: Message, mark: GutterMark, segment: RenderLineSegment) => {
-    pushToggleLine(mark.mark ? withGutterMark("", mark.mark) : "", msg, segment, mark.toggle);
-    // Without a drawn mark the row only lets search open the group: clicks and Enter pass through.
-    if (!mark.mark) lineAnchors[lineAnchors.length - 1].toggleCols = 0;
-  };
-
+  /** A notification sits on the assistant's side, never in the user's bubble: its label, then its text behind a muted gutter. */
   const pushNotification = (msg: Extract<Message, { role: "user" }>, notification: NotificationPlan) => {
-    if (!notification.open) {
-      const marker = `▸ ${notification.label} · ${notificationPreview(msg.text)}`;
-      // The same anchor as the open header, so opening it keeps the row in place.
-      pushToggleLine(notificationLabelRow(marker, notification.label.length + 2, availableWidth), msg, "notification_header", msg);
-      return;
-    }
-    const header = `${notification.toggleable ? "▾ " : ""}${notification.label}`;
-    pushToggleLine(notificationLabelRow(header, header.length, availableWidth), msg, "notification_header", notification.toggleable ? msg : null);
+    pushChromeLine(notificationLabelRow(notification.label, notification.label.length, availableWidth), msg, "notification_header");
     pushBlock(msg, "notification_body", renderNotificationBodyCached(msg, availableWidth));
   };
 
@@ -817,17 +774,14 @@ export function buildMessageLines(
     start: startMessageIndex,
     pendingAI: state.pendingAI,
     collapse,
-    expanded: state.expandedHistoryItems ?? NO_EXPANDED_ITEMS,
-    style: state.foldStyle ?? "gutter",
     active: durableSleepAssistant,
-    marks: state.foldMarks !== false,
     conversationTitle: (id) => {
       const conv = state.sidebar?.conversations.find(candidate => candidate.id === id);
       return conv ? convDisplayName(conv) : null;
     },
   });
   const cacheKey: unknown[] = [
-    state.convId, contentWidth, state.showToolOutput, state.showTurnWork, state.foldStyle, state.foldMarks, state.showDiagnostics, state.toolRegistry,
+    state.convId, contentWidth, state.showToolOutput, state.showTurnWork, state.showDiagnostics, state.toolRegistry,
     state.externalToolStyles, theme.name, state.rows, inlineImageGeneration(), mathImageGeneration(),
     inlineImagesActive(), imageCell.width, imageCell.height, userMessageNeedsTopMargin(messages, startMessageIndex),
   ];
@@ -983,68 +937,34 @@ export function buildMessageLines(
     const start = lines.length;
     appendMessageSourceRefs(msg, sourceRefs);
     sourceRefEnds.push(sourceRefs.length);
-    let messagePlan = plan.messages[messageIndex - startMessageIndex];
-    // Gutter style: folded away (no rows), a blank row before a reply, or a row
-    // of its own carrying the mark; then the message itself while its group is open.
-    let rowAbove = false;
-    if (messagePlan?.kind === "gap") {
-      const gap = messagePlan;
-      if (gap.line) pushGutterRow(msg, gap.line, "user_margin_top");
-      else if (gap.spacer && userMessageNeedsTopMargin(state.messages, messageIndex)) pushLine("", msg, "user_margin_top");
-      rowAbove = gap.line !== null || gap.spacer;
-      if (!gap.inner) {
-        pushMessageBound(msg.role, start, lines.length, lines.length);
-        continue;
-      }
-      messagePlan = gap.inner;
+    const messagePlan = plan.messages[messageIndex - startMessageIndex];
+    if (messagePlan?.kind === "hidden") {
+      // Folded away: no rows, or only the blank row before the reply it led to.
+      if (messagePlan.spacer && userMessageNeedsTopMargin(state.messages, messageIndex)) pushLine("", msg, "user_margin_top");
+      pushMessageBound(msg.role, start, lines.length, lines.length);
+      continue;
     }
     if (messagePlan?.kind === "merged") {
-      // A notification folded into its turn's work row: no row of its own, only the
-      // blank line that separates the turn from the one above (and an opened run's row).
+      // The notification that started the live turn: no row of its own (its label leads
+      // the Working row), only the blank line that separates the turn from the one above.
       // A prompt right after it (one it joined the turn of) brings that margin itself.
       if (state.messages[messageIndex + 1]?.role !== "user" && userMessageNeedsTopMargin(state.messages, messageIndex)) pushLine("", msg, "user_margin_top");
-      if (messagePlan.runHeader && messagePlan.runToggle) pushRunHeader(msg, messagePlan.runHeader, null, messagePlan.runToggle);
       pushMessageBound(msg.role, start, lines.length, lines.length);
-    } else if (messagePlan?.kind === "run") {
-      // A closed run of background turns: one row on its first message, nothing else.
-      if (messagePlan.header !== null) {
-        if (userMessageNeedsTopMargin(state.messages, messageIndex)) pushLine("", msg, "user_margin_top");
-        const contentStart = lines.length;
-        pushRunHeader(msg, messagePlan.header, messagePlan.label, messagePlan.toggle);
-        const contentEnd = lines.length;
-        // A silent run's next row (a prompt or notification) brings its own top margin.
-        if (messagePlan.gap) pushLine("", msg, "user_margin_bottom");
-        pushMessageBound(msg.role, start, contentStart, contentEnd);
-      } else {
-        pushMessageBound(msg.role, start, start, start);
-      }
     } else if (msg.role === "user" && messagePlan?.kind === "notification") {
-      if (!rowAbove && userMessageNeedsTopMargin(state.messages, messageIndex)) pushLine("", msg, "user_margin_top");
+      if (userMessageNeedsTopMargin(state.messages, messageIndex)) pushLine("", msg, "user_margin_top");
       const contentStart = lines.length;
-      if (messagePlan.runHeader && messagePlan.runToggle) pushRunHeader(msg, messagePlan.runHeader, null, messagePlan.runToggle);
-      // An opened turn's row leads it: the notification and the work read below it.
-      if (messagePlan.turnRow && messagePlan.turnToggle) pushToggleLine(`  ${theme.muted}${messagePlan.turnRow}${theme.reset}`, msg, "turn_work_summary", messagePlan.turnToggle);
       pushNotification(msg, messagePlan);
       const contentEnd = lines.length;
-      // Gutter style: an opened group's mark on its first row, the top of what opened.
-      if (messagePlan.gutter && contentEnd > contentStart) {
-        const { mark, toggle } = messagePlan.gutter;
-        if (mark) lines[contentStart] = withGutterMark(lines[contentStart], mark);
-        lineAnchors[contentStart].toggle = toggle;
-        lineAnchors[contentStart].toggleCols = mark ? 1 : 0;
-      }
-      if (messagePlan.open) pushImages(pastedImages(msg, msg.images, state.convId), "user_image");
+      pushImages(pastedImages(msg, msg.images, state.convId), "user_image");
       pushLine("", msg, "user_margin_bottom");
       pushMessageBound(msg.role, start, contentStart, contentEnd);
     } else if (msg.role === "user") {
-      const promptPlan = messagePlan?.kind === "prompt" ? messagePlan : null;
-      if (promptPlan?.above) pushGutterRow(msg, promptPlan.above, "user_margin_top");
-      else if (userMessageNeedsTopMargin(state.messages, messageIndex)) pushLine("", msg, "user_margin_top");
+      if (userMessageNeedsTopMargin(state.messages, messageIndex)) pushLine("", msg, "user_margin_top");
       const contentStart = lines.length;
       // The owner's own Discord/WhatsApp message reads as theirs: their words in their bubble.
       const relay = ownerRelay(msg);
       const text = relay?.text ?? msg.text;
-      const from = messagePlan?.kind === "from" ? messagePlan.label : promptPlan?.from ?? null;
+      const from = messagePlan?.kind === "from" ? messagePlan.label : null;
       const background = msg.metadata?.automation && !relay && !from ? theme.automatedUserBg : theme.userBg;
       const rendered = renderUserMessageCached(msg, text, availableWidth, msg.images, background);
       pushBlock(msg, "user_content", rendered);
@@ -1060,15 +980,13 @@ export function buildMessageLines(
       const provenance = relay ? `via ${relay.source}` : from ?? automationProvenance(msg.metadata?.automation);
       if (provenance) pushLine(rightAlignedProvenanceLabel(provenance, availableWidth), msg, "automation_label");
       pushImages(pastedImages(msg, msg.images, state.convId), "user_image");
-      if (promptPlan?.below) pushGutterRow(msg, promptPlan.below, "user_margin_bottom");
-      else pushLine("", msg, "user_margin_bottom");
+      pushLine("", msg, "user_margin_bottom");
       pushMessageBound(msg.role, start, contentStart, contentEnd);
     } else if (msg.role === "assistant") {
       // AI messages: content blocks, then metadata
       const contentStart = lines.length;
       const assistantPlan = messagePlan?.kind === "assistant" ? messagePlan : null;
       if (state.messages[messageIndex - 1]?.role !== "assistant") segmentShown = false;
-      if (assistantPlan?.summary) pushToggleLine(`  ${theme.muted}${assistantPlan.summary}${theme.reset}`, msg, "turn_work_summary", assistantPlan.toggle);
       msg.blocks.forEach((block, blockIndex) => {
         if (assistantPlan?.hidden?.[blockIndex]) return;
         pushBlock(block, "assistant_block", renderAssistantBlock(block));
@@ -1093,13 +1011,6 @@ export function buildMessageLines(
       const contentEnd = lines.length;
       for (let i = 0; i < metadataLines.length; i++) {
         pushLine(metadataLines[i], msg, "assistant_metadata", i);
-      }
-      // Gutter style: the mark sits in the left gutter of the reply's first row.
-      if (assistantPlan?.gutter && lines.length > contentStart) {
-        const { mark, toggle } = assistantPlan.gutter;
-        if (mark) lines[contentStart] = withGutterMark(lines[contentStart], mark);
-        lineAnchors[contentStart].toggle = toggle;
-        lineAnchors[contentStart].toggleCols = mark ? 1 : 0;
       }
       pushMessageBound(msg.role, start, contentStart, contentEnd);
     } else if (msg.role === "system" && msg.metadata?.kind === CONTEXT_COMPACTION_FINISHED_KIND) {
@@ -1211,7 +1122,7 @@ export function buildMessageLines(
     const start = lines.length;
     const pendingPlan = plan.pending;
     if (pendingPlan && isStreaming(state) && state.pendingAI.metadata?.startedAt !== state.suppressPendingAIMetadataStartedAt) {
-      pushToggleLine(workingRow(state.pendingAI.metadata, pendingPlan), state.pendingAI, "turn_working", pendingPlan.toggle);
+      pushChromeLine(workingRow(state.pendingAI.metadata, pendingPlan), state.pendingAI, "turn_working");
     }
     // The newest step, when already committed, sits under the working row.
     if (pendingPlan?.revealed) pushBlock(pendingPlan.revealed, "assistant_block", renderAssistantBlock(pendingPlan.revealed));

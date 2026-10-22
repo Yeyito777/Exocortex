@@ -194,9 +194,8 @@ describe("hand cursor over clickable history", () => {
     disposeHistoryImages(state);
   });
 
-  test("a notification and its turn's work fold into one row that shows a hand and opens both on click", () => {
+  test("folded history has nothing to click open: no hand over a reply, and a click opens nothing", () => {
     const state = createInitialState();
-    state.foldStyle = "rows";
     state.cols = 80;
     state.rows = 30;
     state.convId = "conv";
@@ -219,21 +218,19 @@ describe("hand cursor over clickable history", () => {
       },
     ];
     capture(state);
-    // The notification leads its turn's work row: one row, one click opens both.
-    const row = screenCellOf(state, "▸ Subagent completion · 1 tool call");
-    hover(state, row.col + 4, row.row);
-    expect(state.mouseCursor).toBe("hand");
-    expect(() => screenCellOf(state, "git log -1")).toThrow();
-    expect(() => screenCellOf(state, "Task: build it")).toThrow();
-
-    captureOutput(() => {
-      handleMouseEvent(mouse(row.col, row.row, "press"), state);
-      handleMouseEvent(mouse(row.col, row.row, "release"), state);
-    });
-    capture(state);
-    expect(screenCellOf(state, "git log -1")).toBeDefined();
-    expect(screenCellOf(state, "▾ Subagent completion · 1 tool call")).toBeDefined();
-    expect(screenCellOf(state, "Task: build it")).toBeDefined();
+    const reply = screenCellOf(state, "It merged.");
+    expect(() => screenCellOf(state, "Subagent completion")).toThrow();
+    for (const col of [reply.col - 2, reply.col, reply.col + 4]) {
+      hover(state, col, reply.row);
+      expect(state.mouseCursor).not.toBe("hand");
+      captureOutput(() => {
+        handleMouseEvent(mouse(col, reply.row, "press"), state);
+        handleMouseEvent(mouse(col, reply.row, "release"), state);
+      });
+      capture(state);
+      expect(() => screenCellOf(state, "git log -1")).toThrow();
+      expect(() => screenCellOf(state, "Task: build it")).toThrow();
+    }
   });
 
   test("content scrolled under a still pointer updates the shape after the render", async () => {

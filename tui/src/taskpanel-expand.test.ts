@@ -450,22 +450,20 @@ describe("images under the expanded card", () => {
 
   function imageState(): RenderState {
     // Below the compact card, wider than the history column beside a card.
-    const state = chatState(100, 40, [
+    return chatState(100, 40, [
       ...filler(6, "before"),
       {
         role: "assistant",
         blocks: [
-          { type: "text", text: "Here it is." },
           { type: "tool_call", toolCallId: "c1", toolName: "attach", input: { paths: ["shot.png"] }, summary: "" },
           { type: "tool_result", toolCallId: "c1", toolName: "attach", output: "Attached 1 image", isError: false, images: [ref] },
+          // The reply after the call stays in view, as the folded call's row used to.
+          { type: "text", text: "Here it is." },
         ],
         metadata: { startedAt: 1, endedAt: 2, model: "gpt-5.5", tokens: 10 },
       },
       ...filler(3, "after"),
     ]);
-    // Row positions assume the rows fold style's work row above the image.
-    state.foldStyle = "rows";
-    return state;
   }
 
   async function frame(state: RenderState): Promise<string> {
