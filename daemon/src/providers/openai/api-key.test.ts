@@ -15,6 +15,7 @@ import { loadOpenAIApiKey, openAIApiKeyAccountKey, redactOpenAIApiKey } from "./
 import { streamMessage, streamMessageWithSession } from "./api";
 import { OPENAI_API_MODELS_URL, OPENAI_API_RESPONSES_URL, OPENAI_TOKEN_URL } from "./constants";
 import { selectOpenAIApiKeyModels } from "./models";
+import { apiKeyUsage, resetApiKeyUsageForTest } from "./api-key-usage";
 import type { StoredOpenAIAuth } from "./session";
 
 const originalFetch = globalThis.fetch;
@@ -80,6 +81,7 @@ afterEach(() => {
   setOpenAIBrowserOAuthForTest(null);
   clearProviderAuth("openai");
   clearProviderAuth("openai-api-key");
+  resetApiKeyUsageForTest();
 });
 
 describe("expired ChatGPT refresh tokens", () => {
@@ -225,6 +227,8 @@ describe("OpenAI API-key requests", () => {
     expect(seen!.body.client_metadata).toBeUndefined();
     expect(seen!.body.access_programs).toBeUndefined();
     expect(seen!.body.service_tier).toBeUndefined();
+    // Counted for the API-key usage readout.
+    expect(apiKeyUsage(session.accountKey, "x").today).toMatchObject({ requests: 1, inputTokens: 5, outputTokens: 1 });
   });
 
   test("an exhausted quota fails without retries", async () => {

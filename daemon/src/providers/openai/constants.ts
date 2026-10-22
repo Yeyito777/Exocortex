@@ -3,6 +3,8 @@ export const CHATGPT_BASE_URL = (process.env.OPENAI_CHATGPT_BASE_URL?.trim() || 
 export const OPENAI_API_BASE_URL = (process.env.OPENAI_API_BASE_URL?.trim() || "https://api.openai.com/v1").replace(/\/+$/, "");
 export const OPENAI_API_RESPONSES_URL = `${OPENAI_API_BASE_URL}/responses`;
 export const OPENAI_API_MODELS_URL = `${OPENAI_API_BASE_URL}/models`;
+export const OPENAI_API_TRANSCRIPTIONS_URL = `${OPENAI_API_BASE_URL}/audio/transcriptions`;
+export const OPENAI_API_IMAGE_GENERATIONS_URL = `${OPENAI_API_BASE_URL}/images/generations`;
 export const OPENAI_AUTH_ISSUER = "https://auth.openai.com";
 
 export const OPENAI_AUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";

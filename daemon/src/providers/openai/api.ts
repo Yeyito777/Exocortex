@@ -19,6 +19,7 @@ import { OpenAIWebSocketClosedBeforeResponseStartedError, readOpenAIResponsesWeb
 import { createOpenAIEventAccumulator, readOpenAIEventsForTest } from "./stream";
 import { connectOpenAIWebSocket, OpenAIWebSocketHttpError, type OpenAIWebSocketConnection } from "./websocket";
 import { OPENAI_USAGE_ACCOUNT_KEY_HEADER } from "./usage";
+import { recordApiKeyUsage } from "./api-key-usage";
 import type { ProviderTurnSession, StreamCallbacks, StreamOptions, StreamResult } from "../types";
 
 /** The Responses endpoints, through the /proxy forwarder when OpenAI is proxied. */
@@ -549,6 +550,16 @@ async function streamMessageHttpWithSession(
   if (nextTurnState) turnSession?.recordTurnState(nextTurnState);
   const result = await readOpenAIResponsesHttpSse(res, requestCallbacks, options.signal);
   stampReplayScope(result, model, session);
+  if (publicApi) {
+    recordApiKeyUsage(session.accountKey, {
+      model,
+      inputTokens: result.inputTokens,
+      cachedInputTokens: result.cachedInputTokens,
+      cacheMissInputTokens: result.cacheMissInputTokens,
+      outputTokens: result.outputTokens,
+      serviceTier: result.billingServiceTier ?? "standard",
+    });
+  }
   const input = Array.isArray(requestBody.input) ? requestBody.input : [];
   result.requestDiagnostics = {
     usedIncremental: false,

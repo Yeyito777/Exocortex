@@ -15,7 +15,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ProviderProxyRemoteStatus, ProxyableProviderId } from "@exocortex/shared/provider-proxy";
 import { PROVIDER_PROXY_ORIGINS } from "@exocortex/shared/provider-proxy";
-import { getAccountAuthInfo } from "../auth";
+import { getAccountAuthInfo, hasConfiguredCredentials } from "../auth";
 import { getLastUsage } from "../usage";
 import { getProviderAdapter } from "../providers/catalog";
 import { getChatGPTAccountScope, getVerifiedSession, hasChatGPTCredentials } from "../providers/openai/auth";
@@ -264,9 +264,11 @@ export function createLocalUpstreamAuth(overrides: Partial<UpstreamCredentialSou
         error = loggedIn ? undefined : login.error;
         accountScope = scopeOf(login.orgId ?? login.email);
       } else {
-        // /proxy serves only the ChatGPT login; an API key here cannot be lent out.
+        // /proxy lends only the ChatGPT login (docs/provider-proxy.md, "API keys").
         loggedIn = hasChatGPTCredentials();
-        error = loggedIn ? undefined : "OpenAI is not logged in with a ChatGPT account on this machine. Run /login openai there.";
+        error = loggedIn ? undefined : hasConfiguredCredentials("openai")
+          ? "OpenAI on this machine uses an API key, which /proxy does not lend; log in with the key on the other machine instead (/login openai key <api-key>)."
+          : "OpenAI is not logged in with a ChatGPT account on this machine. Run /login openai there.";
         accountScope = loggedIn ? getChatGPTAccountScope() : null;
       }
       if (loggedIn && options.refreshUsage && adapter.usage.refreshRemoteUsage) {
