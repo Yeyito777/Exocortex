@@ -34,14 +34,13 @@ const placements = (out: string) => [...out.matchAll(/\x1b\[(\d+);(\d+)H\x1b_G(a
 
 function imageState(): RenderState {
   const state = createInitialState();
-  // Row positions below assume the rows fold style's work row above the attached image.
-  state.foldStyle = "rows";
   state.cols = 100;
   state.rows = 40;
   state.convId = "conv";
   const ref = { id: "e".repeat(64), mediaType: "image/png" as const, width: 400, height: 200, sizeBytes: 5000, name: "chart.png" };
   state.messages = [
-    { role: "user", text: "plot it", metadata: null },
+    // Two prompt rows: the folded attach call leaves none, and the positions below count from here.
+    { role: "user", text: "plot it\nas a bar chart", metadata: null },
     {
       role: "assistant",
       blocks: [

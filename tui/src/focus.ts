@@ -18,7 +18,7 @@ import type { NewConversationPlacement } from "./sidebar/tree";
 import { focusBtw, focusPrompt, focusHistory, focusSidebar, modelSupportsImages, pushSystemMessage } from "./state";
 import { resolveAction, sidebarTopShortcutIndex } from "./keybinds";
 import { handleChatKey } from "./chat";
-import { closeOpenedHistoryItems, preserveViewportAcrossHistoryMutation, toggleHistoryItemPreservingViewport, toggleSidebarPreservingViewport, toggleToolOutputPreservingViewport } from "./chatscroll";
+import { preserveViewportAcrossHistoryMutation, toggleSidebarPreservingViewport, toggleToolOutputPreservingViewport } from "./chatscroll";
 import {
   focusConversationAt,
   focusConversationById,
@@ -373,14 +373,12 @@ export function handleFocusedKey(
       handleScrollAction(action, state);
       return { type: "handled" };
     case "toggle_turn_work":
-      // Ctrl+O flips between everything shown and everything folded: either way the
-      // items opened one by one close, so turning it off leaves nothing open. From
-      // the detailed view it folds everything back in one press.
+      // Ctrl+O flips between everything shown and everything folded. From the
+      // detailed view it folds everything back in one press.
       state.showToolOutputAfterLoad = false;
       preserveViewportAcrossHistoryMutation(state, () => {
         state.showTurnWork = !state.showTurnWork && !state.showToolOutput;
         state.showToolOutput = false;
-        closeOpenedHistoryItems(state);
       });
       saveTurnWorkPreference(state.showTurnWork);
       return { type: "handled" };
@@ -421,13 +419,6 @@ export function handleFocusedKey(
   }
 
   if (action === "submit" && isAnyHistoryFocused(state)) {
-    const anchor = state.chatFocus === "history" ? state.historyLineAnchors[state.historyCursor.row] : undefined;
-    // On a gutter mark's row, Enter toggles from the mark's columns; elsewhere it opens links as usual.
-    const toggle = anchor && (anchor.toggleCols === undefined || state.historyCursor.col < anchor.toggleCols) ? anchor.toggle : undefined;
-    if (toggle) {
-      toggleHistoryItemPreservingViewport(state, toggle);
-      return { type: "handled" };
-    }
     const image = imageAtHistoryCursor(state);
     if (image) return { type: "open_image", target: image };
     const target = openableTargetAtHistoryCursor(state);

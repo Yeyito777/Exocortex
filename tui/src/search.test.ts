@@ -27,6 +27,7 @@ function setupSearchState(): RenderState {
   state.historyMessageBounds = messageBounds;
   state.layout.totalLines = lines.length;
   state.layout.messageAreaHeight = lines.length;
+  state.layout.chatWidth = 80;
   state.panelFocus = "chat";
   state.chatFocus = "history";
   state.vim.mode = "normal";

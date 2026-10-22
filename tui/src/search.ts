@@ -17,8 +17,8 @@ import { findAllCaseInsensitiveMatchStarts, findCaseInsensitiveMatches, findNext
 import { getViewportByWidth, padRightToWidth } from "./textwidth";
 import { resetPending } from "./vim/types";
 import { activeHistorySurface } from "./historysurface";
-import { foldedSearchTexts } from "./turncollapse";
-import { toggleHistoryItemPreservingViewport } from "./chatscroll";
+import { historyWithTurnWork, mapHistoryRow, preserveViewportAcrossHistoryMutation } from "./chatscroll";
+import { saveTurnWorkPreference } from "./diagnostics";
 
 export type SearchDirection = "forward" | "backward";
 export type SearchBarMode = "search" | "command";
@@ -34,14 +34,17 @@ interface SearchIndex {
 }
 
 function buildSearchIndex(state: RenderState): SearchIndex {
-  const lines = activeHistorySurface(state).lines.map((line) => stripAnsi(line));
+  return indexOf(activeHistorySurface(state).lines);
+}
+
+function indexOf(rendered: readonly string[]): SearchIndex {
+  const lines = rendered.map((line) => stripAnsi(line));
   const lineStarts: number[] = [];
   let offset = 0;
 
   for (let i = 0; i < lines.length; i++) {
     lineStarts.push(offset);
-    offset += lines[i].length;
-    if (i < lines.length - 1) offset += 1; // joined newline
+    offset += lines[i].length + 1; // joined newline
   }
 
   return { lines, buffer: lines.join("\n"), lineStarts };
@@ -77,71 +80,29 @@ function findNextMatch(
   return findNextSortedMatch(findAllCaseInsensitiveMatchStarts(buffer, query), fromPos, direction);
 }
 
-function rowAt(index: SearchIndex, pos: number): number {
-  let lo = 0;
-  let hi = index.lineStarts.length - 1;
-  while (lo < hi) {
-    const mid = (lo + hi + 1) >> 1;
-    if (index.lineStarts[mid] <= pos) lo = mid;
-    else hi = mid - 1;
-  }
-  return lo;
-}
-
 /**
- * When the nearest match in `direction` is inside folded work (a turn's
- * thinking and tool calls, or a folded notification), open that one item so
- * the next search lands on it. Returns whether it opened something.
+ * Folded, the nearest match in `direction` may be in work the view hides (a
+ * turn's tool calls, a notification): then switch to the Ctrl+O view, as if
+ * Ctrl+O were pressed (it stays on), so the search lands on it. Returns
+ * whether it switched.
  */
-function revealFoldedMatch(state: RenderState, index: SearchIndex, query: string, fromPos: number, direction: SearchDirection): boolean {
-  if (state.chatFocus === "btw") return false;
-  const texts = foldedSearchTexts({
-    messages: state.messages,
-    start: 0,
-    pendingAI: state.pendingAI,
-    collapse: !state.showTurnWork && !state.showToolOutput,
-    expanded: state.expandedHistoryItems,
-    style: state.foldStyle,
-    marks: state.foldMarks,
+function showFoldedMatch(state: RenderState, query: string, cursor: { row: number; col: number }, direction: SearchDirection): boolean {
+  if (state.chatFocus === "btw" || state.showTurnWork || state.showToolOutput) return false;
+  const folded = { lines: state.historyLines, lineAnchors: state.historyLineAnchors };
+  if (folded.lines.length === 0) return false;
+  const full = historyWithTurnWork(state);
+  const fullIndex = indexOf(full.lines);
+  // Every match already in view: nothing is folded away.
+  const shownMatches = findAllCaseInsensitiveMatchStarts(indexOf(folded.lines).buffer, query).length;
+  if (findAllCaseInsensitiveMatchStarts(fullIndex.buffer, query).length <= shownMatches) return false;
+  const from = mapHistoryRow(folded, full, Math.max(0, Math.min(cursor.row, folded.lines.length - 1))).row;
+  const match = findNextMatch(fullIndex.buffer, query, rowColToPos(fullIndex, from, cursor.col), direction);
+  if (match == null) return false;
+  if (mapHistoryRow(full, folded, posToRowCol(fullIndex, match).row).exact) return false;
+  preserveViewportAcrossHistoryMutation(state, () => {
+    state.showTurnWork = true;
   });
-  if (texts.size === 0) return false;
-  const lower = query.toLowerCase();
-  const folded: Array<{ row: number; toggle: object }> = [];
-  const seen = new Set<object>();
-  state.historyLineAnchors.forEach((anchor, row) => {
-    const toggle = anchor?.toggle;
-    if (!toggle || seen.has(toggle)) return;
-    seen.add(toggle);
-    if (texts.get(toggle)?.toLowerCase().includes(lower)) folded.push({ row, toggle });
-  });
-  if (folded.length === 0) return false;
-
-  const rendered = findAllCaseInsensitiveMatchStarts(index.buffer, query);
-  const fromRow = rowAt(index, fromPos);
-  let target: { row: number; toggle: object } | undefined;
-  if (direction === "forward") {
-    const nextPos = rendered.find(pos => pos > fromPos);
-    const nextRow = nextPos === undefined ? Infinity : rowAt(index, nextPos);
-    target = folded.find(item => item.row > fromRow);
-    if (target && target.row >= nextRow) target = undefined;
-    // Past the last match either way: wrap to whichever comes first.
-    if (!target && nextPos === undefined) {
-      const firstRow = rendered.length ? rowAt(index, rendered[0]) : Infinity;
-      if (folded[0].row < firstRow) target = folded[0];
-    }
-  } else {
-    const prevPos = rendered.findLast(pos => pos < fromPos);
-    const prevRow = prevPos === undefined ? -Infinity : rowAt(index, prevPos);
-    target = folded.findLast(item => item.row < fromRow);
-    if (target && target.row <= prevRow) target = undefined;
-    if (!target && prevPos === undefined) {
-      const lastRow = rendered.length ? rowAt(index, rendered[rendered.length - 1]) : -Infinity;
-      const last = folded[folded.length - 1];
-      if (last.row > lastRow) target = last;
-    }
-  }
-  if (!target) return false;
-  toggleHistoryItemPreservingViewport(state, target.toggle);
+  saveTurnWorkPreference(true);
   return true;
 }
 
@@ -281,10 +242,8 @@ export function jumpToSearchMatch(state: RenderState, direction: SearchDirection
   const startPos = () => state.chatFocus === "history" || state.chatFocus === "btw"
     ? rowColToPos(index, surface.cursor.row, surface.cursor.col)
     : Math.max(0, index.buffer.length - 1);
-  // A run of background turns opens into folded turns, which may hold the match in turn.
-  for (let depth = 0; depth < 3 && revealFoldedMatch(state, index, search.query, startPos(), direction); depth++) {
-    index = buildSearchIndex(state);
-  }
+  const cursor = posToRowCol(index, startPos());
+  if (showFoldedMatch(state, search.query, cursor, direction)) index = buildSearchIndex(state);
   const fromPos = startPos();
   const matchPos = findNextMatch(index.buffer, search.query, fromPos, direction);
   if (matchPos == null) return false;
@@ -315,7 +274,7 @@ export function handleSearchBarKey(state: RenderState, key: KeyEvent): SearchKey
 
     if (search.barInput) {
       search.query = search.barInput;
-      // From where the search started, so a nearer match in folded work opens.
+      // From where the search started, so a nearer match in folded work counts.
       restoreSearchOrigin(state, search);
       if (!jumpToSearchMatch(state, search.direction)) search.highlightsVisible = true;
       focusSearchSurface(state);

@@ -149,9 +149,8 @@ describe("automated user-message provenance", () => {
     expect(label("openai")).toContain("queued: steer");
   });
 
-  test("bounds a delivered notification's marker and header by the terminal width", () => {
+  test("bounds a delivered notification's header by the terminal width", () => {
     const state = createInitialState();
-    state.foldStyle = "rows";
     state.messages.push({
       role: "user", text: "Delivered message with a long tail that would otherwise wrap onto several rows",
       metadata: {
@@ -159,19 +158,17 @@ describe("automated user-message provenance", () => {
         automation: { kind: "background_task_completion" },
       },
     });
-    for (const showTurnWork of [false, true]) {
-      state.showTurnWork = showTurnWork;
-      for (const width of [120, 24, 12, 1]) {
-        const rendered = buildMessageLines(state, width);
-        const label = rendered.lines[rendered.lineAnchors.findIndex(a => a.segment === "notification_header")];
-        expect(visibleLength(label)).toBeLessThanOrEqual(Math.max(width, 3));
-      }
+    // Folded it has no row; Ctrl+O shows its header.
+    state.showTurnWork = true;
+    for (const width of [120, 24, 12, 1]) {
+      const rendered = buildMessageLines(state, width);
+      const label = rendered.lines[rendered.lineAnchors.findIndex(a => a.segment === "notification_header")];
+      expect(visibleLength(label)).toBeLessThanOrEqual(Math.max(width, 3));
     }
   });
 
   test("renders notifications on the assistant's side, never in the user's bubble", () => {
     const state = createInitialState();
-    state.foldStyle = "rows";
     const human = { role: "user" as const, text: "I wrote this", metadata: null };
     const automated = {
       role: "user" as const,
@@ -189,10 +186,8 @@ describe("automated user-message provenance", () => {
     const folded = buildMessageLines(state, 100);
     const humanLine = folded.lines[folded.lineAnchors.findIndex(anchor => anchor.owner === human && anchor.segment === "user_content")];
     expect(humanLine).toContain(theme.userBg);
-    const ownRows = folded.lineAnchors.flatMap((anchor, row) => anchor.owner === automated && !anchor.segment.includes("margin") ? [row] : []);
-    expect(ownRows.map(row => stripAnsi(folded.lines[row]))).toEqual(["  ▸ Chrono · Check the deployment and report back."]);
-    expect(folded.lineAnchors[ownRows[0]].toggle).toBe(automated);
-    expect(folded.lines[ownRows[0]]).not.toContain("\x1b[48;");
+    // Folded, it leaves no row at all.
+    expect(folded.lineAnchors.some(anchor => anchor.owner === automated)).toBe(false);
 
     state.showTurnWork = true;
     const open = buildMessageLines(state, 100);
@@ -201,7 +196,6 @@ describe("automated user-message provenance", () => {
       "  Chrono",
       "  ▎ [chrono wake: chrono:demo] Check the deployment and report back.",
     ]);
-    expect(open.lineAnchors[openRows[0]].toggle).toBeUndefined();
     expect(openRows.some(row => open.lines[row].includes("\x1b[48;"))).toBe(false);
     expect(open.copyLines[openRows[1]]).toEqual({ text: "[chrono wake: chrono:demo] Check the deployment and report back.", displayStart: 4 });
   });
