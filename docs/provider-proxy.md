@@ -61,6 +61,22 @@ need to be signed in.
 Not carried: external tools that borrow the OpenAI login (`image`,
 `transcribe`); they say so. Hold-to-talk transcription is carried.
 
+### API keys
+
+`/proxy openai` lends a ChatGPT login only; a remote logged in with just an
+OpenAI API key refuses it and says to log in with the key here instead
+(`/login openai key <api-key>`). This is by design, not a gap:
+
+- /proxy exists because a ChatGPT session cannot be shared: it is a
+  per-device OAuth login whose refresh token rotates, so two machines holding
+  it would invalidate each other. An API key is a static secret any machine
+  can use directly, with the same billing and models.
+- The link is built for the ChatGPT backend: one upstream origin
+  (chatgpt.com), an allowlist of its Codex paths, and the Codex wire format
+  (websocket, Codex headers). An API key needs a different origin, paths and
+  request shape, so forwarding it would mean a second dialect through the
+  link and both daemons agreeing which one is in use, to save one login.
+
 ## remote_bash
 
 While a conversation's provider is proxied, its model also gets `remote_bash`

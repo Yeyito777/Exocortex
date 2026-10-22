@@ -4,7 +4,8 @@ import { join } from "path";
 import { runtimeDir } from "@exocortex/shared/paths";
 import type { UsageData, UsageResetCredits, UsageWindow } from "../../messages";
 import type { UsageResetOutcome } from "../../protocol";
-import { currentOpenAILoginKind, getCurrentAccountKey, getVerifiedSession, type VerifiedOpenAISession } from "./auth";
+import { currentOpenAILoginKind, getActiveOpenAIApiKeyInfo, getCurrentAccountKey, getVerifiedSession, type VerifiedOpenAISession } from "./auth";
+import { apiKeyUsage } from "./api-key-usage";
 import {
   OPENAI_USAGE_RESET_CONSUME_URL,
   OPENAI_USAGE_RESET_CREDITS_URL,
@@ -95,8 +96,16 @@ function saveToDisk(store: UsageStore): void {
 
 let usageStore: UsageStore = loadFromDisk();
 
+/** With an API key in use, the usage slot shows what the key spent instead of plan windows. */
+function apiKeyUsageData(): UsageData | null {
+  const info = getActiveOpenAIApiKeyInfo();
+  const accountKey = info ? getCurrentAccountKey() : null;
+  if (!info || !accountKey) return null;
+  return { fiveHour: null, sevenDay: null, apiKey: apiKeyUsage(accountKey, info.label) };
+}
+
 export function getLastUsage(): UsageData | null {
-  return usageForCurrentAccount();
+  return apiKeyUsageData() ?? usageForCurrentAccount();
 }
 
 export function clearUsage(): void {
@@ -147,12 +156,12 @@ function commitUsageForAccount(accountKey: string, usage: UsageData, onUpdate: (
 
 /** Emit the per-account cache synchronously. Remote refreshes are orchestrated by daemon/src/usage.ts. */
 export function refreshUsage(onUpdate: (usage: UsageData | null) => void): void {
-  onUpdate(usageForCurrentAccount());
+  onUpdate(apiKeyUsageData() ?? usageForCurrentAccount());
 }
 
 export async function refreshRemoteUsage(): Promise<UsageData | null> {
   // Usage windows belong to ChatGPT plans; an API key is billed per token instead.
-  if (currentOpenAILoginKind() === "api_key") return null;
+  if (currentOpenAILoginKind() === "api_key") return apiKeyUsageData();
   const session = await getVerifiedSession({ chatgptOnly: true });
   const accountKey = accountKeyForSession(session);
   await refreshRemoteUsageForSession(session);
@@ -385,6 +394,8 @@ function parsePositiveNumber(value: unknown): number | null {
 }
 
 export function handleUsageHeaders(headers: Headers, onUpdate: (usage: UsageData) => void): void {
+  // API responses carry no plan windows; the key's spend is counted from response bodies.
+  if (headers.get(OPENAI_USAGE_ACCOUNT_KEY_HEADER)?.startsWith("api-key:")) return;
   const accountKey = accountKeyFromHeaders(headers);
   const usage = parseHeaders(headers, accountKey);
   if (!usage) return;

@@ -849,6 +849,32 @@ export interface UsageData {
   capacity?: number;
   /** OpenAI reset-credit metadata. Omitted for older caches and unsupported providers. */
   resetCredits?: UsageResetCredits | null;
+  /**
+   * OpenAI logged in with an API key: no plan windows (both null), but what
+   * the key spent through this daemon, counted from response usage.
+   */
+  apiKey?: ApiKeyUsage | null;
+}
+
+/** Spend counted from the usage OpenAI reported for API-key requests. */
+export interface ApiKeySpend {
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  requests: number;
+  /** Published-rate estimate of the priced requests. */
+  estimatedCostUsd: number;
+  /** Requests whose model has no published per-token rate here (images, audio): counted, not priced. */
+  unpricedRequests: number;
+}
+
+export interface ApiKeyUsage {
+  /** Redacted key, e.g. `sk-proj-…abcd`. */
+  label: string;
+  /** Local calendar day. */
+  today: ApiKeySpend;
+  /** Local calendar month so far. */
+  month: ApiKeySpend;
 }
 
 // ── Token stats ─────────────────────────────────────────────────────

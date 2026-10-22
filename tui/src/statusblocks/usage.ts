@@ -12,7 +12,7 @@
 
 import type { RenderState } from "../state";
 import type { StatusBlock } from "../statusline";
-import type { UsageWindow } from "../messages";
+import type { ApiKeySpend, ApiKeyUsage, UsageWindow } from "../messages";
 import { theme } from "../theme";
 import { activeProviderProxy } from "../provider-proxies";
 
@@ -111,10 +111,56 @@ function summarizeWindow(label: string, window: UsageWindow | null, now: number,
   return `${label} ${capacity !== 100 ? `${pct}/${capacity}` : pct}% (resets in ${formatResetLabel(window, now)})`;
 }
 
+function formatTokenCount(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
+  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}K`;
+  return `${tokens}`;
+}
+
+function formatUsd(usd: number): string {
+  if (usd > 0 && usd < 0.001) return "<$0.001";
+  return `$${usd < 1 ? usd.toFixed(3) : usd.toFixed(2)}`;
+}
+
+/** "≈$0.042 · 12.3K tok" plus how many requests had no published rate (images, audio). */
+function formatApiKeySpend(spend: ApiKeySpend): string {
+  const tokens = `${formatTokenCount(spend.inputTokens + spend.outputTokens)} tok`;
+  const unpriced = spend.unpricedRequests > 0 ? ` +${spend.unpricedRequests} unpriced` : "";
+  return `≈${formatUsd(spend.estimatedCostUsd)} · ${tokens}${unpriced}`;
+}
+
+function apiKeySummary(apiKey: ApiKeyUsage): string {
+  return `API key ${apiKey.label}: today ${formatApiKeySpend(apiKey.today)} · this month ${formatApiKeySpend(apiKey.month)}`;
+}
+
+/**
+ * OpenAI on an API key has no plan windows: the slot shows what the key spent
+ * through this daemon, estimated from published per-token rates.
+ */
+function apiKeyRows(apiKey: ApiKeyUsage): StatusBlock {
+  const today = formatApiKeySpend(apiKey.today);
+  const month = formatApiKeySpend(apiKey.month);
+  const head = `  API key ${apiKey.label} · billed per token`;
+  const spend = `  Today: ${today}  Month: ${month}`;
+  const width = Math.max(head.length, spend.length);
+  const pad = (text: string) => " ".repeat(width - text.length);
+  return {
+    id: "usage",
+    priority: 3,
+    width,
+    height: 2,
+    rows: [
+      `${theme.muted}${head}${theme.reset}${pad(head)}`,
+      `${theme.muted}  Today: ${theme.accent}${today}${theme.muted}  Month: ${theme.accent}${month}${theme.reset}${pad(spend)}`,
+    ],
+  };
+}
+
 /** The status bar's usage windows for the current provider as one plain line; null when it shows none. */
 export function usageSummary(state: RenderState, now = Date.now()): string | null {
   if (!state.authByProvider[state.provider]) return null;
   const usage = state.usageByProvider[state.provider];
+  if (usage?.apiKey) return apiKeySummary(usage.apiKey);
   if (!usage?.fiveHour && !usage?.sevenDay) return null;
   const capacity = usage.capacity && usage.capacity > 0 ? usage.capacity : 100;
   return `${summarizeWindow("5-hour", usage.fiveHour, now, capacity)} · ${summarizeWindow("weekly", usage.sevenDay, now, capacity)}`;
@@ -165,6 +211,7 @@ export function usageBlock(state: RenderState): StatusBlock | null {
 
 function usageBars(state: RenderState): StatusBlock | null {
   const usage = state.usageByProvider[state.provider];
+  if (usage?.apiKey) return apiKeyRows(usage.apiKey);
   if (!usage?.fiveHour && !usage?.sevenDay) return null;
 
   const now = Date.now();

@@ -88,7 +88,11 @@ exocortexd login openai key < openai-key.txt
 
 In the TUI, `/login openai key <api-key>` does the same. The most recent login
 wins; `/login openai` switches back to the ChatGPT account, and `/login` shows
-which one is in use.
+which one is in use. On the key, the `transcribe` and `image` tools and voice
+input use the public API too (the best transcription and GPT Image models the
+key lists), and the usage bars become the key's spend: tokens and a
+published-rate estimate per day and month, counted from the responses this
+daemon received.
 
 Check or restart the daemon with:
 

@@ -3,8 +3,11 @@
  * OpenAI login (GenerateImageCommand). The tool asks over the daemon socket,
  * so the access token never reaches a shell, argv or a tool process.
  */
-import { getVerifiedSession } from "./auth";
-import { CHATGPT_BASE_URL, OPENAI_CODEX_RESPONSES_URL } from "./constants";
+import { getVerifiedSession, type VerifiedOpenAISession } from "./auth";
+import { CHATGPT_BASE_URL, OPENAI_API_IMAGE_GENERATIONS_URL, OPENAI_CODEX_RESPONSES_URL } from "./constants";
+import { AuthError } from "../errors";
+import { loadOpenAIApiKey } from "./api-key";
+import { recordApiKeyUsage } from "./api-key-usage";
 import { buildOpenAIHeaders } from "./http";
 import { proxiedProviderUrl } from "../../provider-proxy/route";
 import { latestSizeModel } from "../../delegation-models";
@@ -163,7 +166,93 @@ async function requestImage(
   });
 }
 
+// ── API key: /v1/images/generations ────────────────────────────────
+
+/** Best first: GPT Image 2.5 Sunburst is the quality variant, Flare the faster one. */
+const API_IMAGE_MODELS = [
+  "gpt-image-2.5-sunburst",
+  "gpt-image-2.5-flare",
+  "gpt-image-2",
+  "gpt-image-1.5",
+  "gpt-image-1",
+  "gpt-image-1-mini",
+] as const;
+const API_IMAGE_TIMEOUT_MS = 300_000;
+
+/** Image models the key lists, best first; the best known one when the list is unknown. */
+export function apiImageModels(available: readonly string[]): string[] {
+  const listed = API_IMAGE_MODELS.filter((model) => available.includes(model));
+  return listed.length > 0 ? listed : [API_IMAGE_MODELS[0]];
+}
+
+interface ApiImageResponse {
+  data?: Array<{ b64_json?: unknown; revised_prompt?: unknown }>;
+  usage?: { input_tokens?: unknown; output_tokens?: unknown };
+}
+
+/** A model the key cannot use (unknown, or the organization is not verified for it): try the next. */
+function isApiImageModelRejection(status: number, body: string): boolean {
+  return (status === 400 || status === 403 || status === 404) && /model|verif/i.test(body);
+}
+
+export async function generateImageWithApiKey(
+  session: Pick<VerifiedOpenAISession, "accessToken" | "accountKey">,
+  prompt: string,
+  options: { signal?: AbortSignal; fetchImpl?: typeof fetch; models?: readonly string[] } = {},
+): Promise<GeneratedImage> {
+  if (!prompt.trim()) throw new Error("Image prompt is empty");
+  const models = options.models?.length ? options.models : [API_IMAGE_MODELS[0]];
+  const timeout = AbortSignal.timeout(API_IMAGE_TIMEOUT_MS);
+  const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
+  for (const [index, model] of models.entries()) {
+    const res = await (options.fetchImpl ?? fetch)(OPENAI_API_IMAGE_GENERATIONS_URL, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${session.accessToken}`, "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ model, prompt, n: 1 }),
+      signal,
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      if (res.status === 401) throw new AuthError("The OpenAI API key was rejected (HTTP 401). Log in again with `/login openai key <api-key>`.");
+      if (index < models.length - 1 && isApiImageModelRejection(res.status, text)) {
+        log("warn", `image generation: ${model} rejected (${res.status}), trying ${models[index + 1]}`);
+        continue;
+      }
+      throw new Error(`OpenAI image generation with ${model} failed (${res.status}): ${text.slice(0, 500)}`);
+    }
+    let data: ApiImageResponse;
+    try {
+      data = JSON.parse(text) as ApiImageResponse;
+    } catch {
+      throw new Error(`OpenAI image generation with ${model} returned non-JSON: ${text.slice(0, 200)}`);
+    }
+    recordApiKeyUsage(session.accountKey, {
+      model,
+      inputTokens: typeof data.usage?.input_tokens === "number" ? data.usage.input_tokens : 0,
+      outputTokens: typeof data.usage?.output_tokens === "number" ? data.usage.output_tokens : 0,
+    });
+    const image = data.data?.[0];
+    if (typeof image?.b64_json !== "string" || image.b64_json.trim() === "") {
+      throw new Error("OpenAI image generation returned empty image data");
+    }
+    return {
+      imageBase64: image.b64_json,
+      revisedPrompt: typeof image.revised_prompt === "string" ? image.revised_prompt : null,
+    };
+  }
+  throw new Error("OpenAI image generation has no model to use");
+}
+
+/**
+ * Generate with the login requests use: the ChatGPT account's image tool, or
+ * the public Images API when OpenAI runs on an API key (logged in with one,
+ * or the ChatGPT session expired).
+ */
 export async function generateImage(prompt: string, options: { signal?: AbortSignal } = {}): Promise<GeneratedImage> {
+  const session = await getVerifiedSession();
+  if (session.kind === "api_key") {
+    return generateImageWithApiKey(session, prompt, { ...options, models: apiImageModels(loadOpenAIApiKey()?.models ?? []) });
+  }
   const catalog = getProvider("openai")?.models.map(model => model.id) ?? [];
-  return generateImageWithSession(await getVerifiedSession({ chatgptOnly: true }), prompt, { ...options, models: imageGenerationModels(catalog) });
+  return generateImageWithSession(session, prompt, { ...options, models: imageGenerationModels(catalog) });
 }
