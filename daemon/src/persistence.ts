@@ -197,6 +197,15 @@ export function saveFolderInstructions(instructions: Map<string, string>): void 
   else jsonPersistence.saveFolderInstructions(instructions);
 }
 
+export function loadPendingConversationInstructions(): Map<string, string> {
+  return backend === "sqlite" ? store().loadPendingConversationInstructions() : jsonPersistence.loadPendingConversationInstructions();
+}
+
+export function savePendingConversationInstructions(instructions: Map<string, string>): void {
+  if (backend === "sqlite") store().savePendingConversationInstructions(instructions);
+  else jsonPersistence.savePendingConversationInstructions(instructions);
+}
+
 export function loadUnreadConversationIds(): string[] {
   return backend === "sqlite" ? store().loadUnreadConversationIds() : jsonPersistence.loadUnreadConversationIds();
 }

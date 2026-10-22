@@ -63,6 +63,7 @@ import { copyStoredImages } from "./attachments";
 import { checkpointTailHasher, updateCheckpointTailHash, integritySha, ConversationIntegrityError, type CheckpointHashAnchor, type ReplayHash } from "./checkpoint-tail-integrity";
 
 const SCHEMA_VERSION = 15;
+const PENDING_CONVERSATION_INSTRUCTIONS_KEY = "pending_conversation_instructions";
 const INTEGRITY_TABLES = ["message_integrity", "checkpoint_integrity", "display_integrity"];
 const RUNTIME_REVISION_TRIGGERS: Record<string, string> = {};
 for (const [table, id] of [
@@ -2936,6 +2937,23 @@ export class SqliteConversationStore implements ConversationRepository {
         }
       }
     })();
+  }
+
+  /** Conversation instructions saved mid-turn, waiting for the conversation to go idle. */
+  loadPendingConversationInstructions(): Map<string, string> {
+    const value = this.metadata(PENDING_CONVERSATION_INSTRUCTIONS_KEY);
+    if (!value) return new Map();
+    try {
+      const parsed = JSON.parse(value) as Record<string, unknown>;
+      return new Map(Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+    } catch {
+      return new Map();
+    }
+  }
+
+  savePendingConversationInstructions(instructions: Map<string, string>): void {
+    if (instructions.size === 0) this.db.query("DELETE FROM store_metadata WHERE key=?").run(PENDING_CONVERSATION_INSTRUCTIONS_KEY);
+    else this.setMetadata(PENDING_CONVERSATION_INSTRUCTIONS_KEY, JSON.stringify(Object.fromEntries(instructions)));
   }
 
   loadUnreadConversationIds(): string[] {

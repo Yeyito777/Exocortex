@@ -408,6 +408,8 @@ async function startDaemon(): Promise<void> {
   backgroundTaskRecovery.enableCompletionDelivery();
   // Replays and adopted Claude Code turns now own their conversations.
   commandHandler.startQueueDelivery();
+  // Instructions saved mid-turn before the restart; streaming ones land when their turns end.
+  convStore.applyAllPendingSystemInstructions();
   // recoverInterruptedStreams reconstructs notification-linked subagent tasks.
   // Do not mistake those targets for lost tasks while boot is still rebuilding
   // the catalog that suspended Chrono waits subscribe to.
