@@ -1469,10 +1469,19 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       }
       if (cmd.type === "trim_conversation" || cmd.type === "set_system_instructions") {
         if (convStore.isStreaming(cmd.convId)) {
-          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Cannot rewrite conversation history while it is streaming." });
-          return;
+          if (cmd.type === "trim_conversation") {
+            server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Cannot rewrite conversation history while it is streaming." });
+            return;
+          }
+          // Instructions saved mid-turn wait for the turn to end (setSystemInstructions).
+        } else {
+          try {
+            await convStore.getFullAsync(cmd.convId);
+          } catch (error) {
+            // A turn started meanwhile: the instructions wait for it instead.
+            if (cmd.type === "trim_conversation" || !convStore.isStreaming(cmd.convId)) throw error;
+          }
         }
-        await convStore.getFullAsync(cmd.convId);
       }
     } catch (error) {
       server.sendTo(client, {

@@ -86,7 +86,11 @@ that does not apply; `global` is `config/system.md` alone and `globalBase` the
 base (absent from older daemons). `set_system_instructions`, `set_folder_instructions` and
 `set_global_instructions` write one scope; empty text clears it. The last takes
 an optional `expectedText` and is refused if `config/system.md` changed since it
-was read; it never touches the base, and broadcasts `global_instructions_updated`. The TUI's `/instructions`
+was read; it never touches the base, and broadcasts `global_instructions_updated`.
+`set_system_instructions` on a streaming conversation is accepted too: the text
+is persisted as pending, every read (`load_instructions`, the pinned history
+entry, the next turn's system prompt) sees it at once, and it is written into
+history when the conversation goes idle; the last save wins. The TUI's `/instructions`
 picker and editor use these commands. Conversation and folder instructions are
 still sent to clients as pinned `system_instructions` history entries; the TUI
 does not draw them.

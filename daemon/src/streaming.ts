@@ -62,6 +62,17 @@ const pendingHistoryUnwinds = new Map<string, PendingHistoryUnwind>();
 
 const CHUNK_ACTIVITY_INTERVAL = 5;
 
+let idleListener: ((convId: string) => void) | null = null;
+
+/** Called when a conversation stops streaming: its turn chain ended, or an unwind released it. */
+export function setStreamingIdleListener(listener: ((convId: string) => void) | null): void {
+  idleListener = listener;
+}
+
+function notifyIfIdle(convId: string, wasBusy: boolean): void {
+  if (wasBusy && !isStreaming(convId) && !pendingHistoryUnwinds.has(convId)) idleListener?.(convId);
+}
+
 /**
  * How long a stream can be inactive before the watchdog considers it stale.
  *
@@ -112,7 +123,7 @@ export function tryBeginStreamHandoff(convId: string): symbol | undefined {
 }
 
 export function clearStreamHandoff(convId: string): void {
-  streamHandoffs.delete(convId);
+  notifyIfIdle(convId, streamHandoffs.delete(convId));
 }
 
 export function setActiveJob(
@@ -167,6 +178,7 @@ export function clearHistoryUnwindPending(convId: string, operationId?: string):
   const pending = pendingHistoryUnwinds.get(convId);
   if (!pending || (operationId !== undefined && pending.operationId !== operationId)) return;
   pendingHistoryUnwinds.delete(convId);
+  notifyIfIdle(convId, true);
 }
 
 export function isRestartRecoverableJob(convId: string): boolean {
@@ -176,7 +188,7 @@ export function isRestartRecoverableJob(convId: string): boolean {
 /** Clear a conversation's job; with `owner`, only while that job is still the active one. */
 export function clearActiveJob(convId: string, owner?: AbortController): void {
   if (owner && activeJobs.get(convId) !== owner) return;
-  activeJobs.delete(convId);
+  const wasBusy = activeJobs.delete(convId);
   activeJobKinds.delete(convId);
   restartRecoverableJobs.delete(convId);
   streamingBlocks.delete(convId);
@@ -194,6 +206,7 @@ export function clearActiveJob(convId: string, owner?: AbortController): void {
   lastActivityAt.delete(convId);
   pausedStreams.delete(convId);
   activeToolBackgrounders.delete(convId);
+  notifyIfIdle(convId, wasBusy);
 }
 
 export function setStreamingWorkTimerStartedAt(convId: string, startedAt: number): void {

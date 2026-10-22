@@ -515,6 +515,7 @@ const RESTORE_JOURNAL = join(TRASH_DIR, ".conversation-restore-journal");
 const INDEX_FILE = join(DATA_DIR, "conversations-index.json");
 const FOLDERS_FILE = join(DATA_DIR, "folders.json");
 const FOLDER_INSTRUCTIONS_FILE = join(DATA_DIR, "folder-instructions.json");
+const PENDING_CONVERSATION_INSTRUCTIONS_FILE = join(DATA_DIR, "pending-conversation-instructions.json");
 const UNREAD_FILE = join(DATA_DIR, "unread.json");
 const BTW_FILE = join(DATA_DIR, "btw.json");
 const MESSAGE_QUEUE_FILE = join(DATA_DIR, "message-queue.json");
@@ -1154,6 +1155,38 @@ export function saveFolderInstructions(instructions: Map<string, string>): void 
   const tmp = `${FOLDER_INSTRUCTIONS_FILE}.tmp`;
   writeFileSync(tmp, JSON.stringify(file, null, 2), { mode: 0o600 });
   renameSync(tmp, FOLDER_INSTRUCTIONS_FILE);
+}
+
+interface PendingConversationInstructionsFile {
+  version: 1;
+  updatedAt: number;
+  instructions: Record<string, string>;
+}
+
+/** Conversation instructions saved mid-turn, waiting for the conversation to go idle. */
+export function loadPendingConversationInstructions(): Map<string, string> {
+  ensureDataDir();
+  try {
+    if (!existsSync(PENDING_CONVERSATION_INSTRUCTIONS_FILE)) return new Map();
+    const parsed = JSON.parse(readFileSync(PENDING_CONVERSATION_INSTRUCTIONS_FILE, "utf-8")) as PendingConversationInstructionsFile;
+    if (parsed.version !== 1 || !parsed.instructions || typeof parsed.instructions !== "object") return new Map();
+    return new Map(Object.entries(parsed.instructions).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+  } catch (err) {
+    log("warn", `persistence: failed to read pending conversation instructions: ${err instanceof Error ? err.message : err}`);
+    return new Map();
+  }
+}
+
+export function savePendingConversationInstructions(instructions: Map<string, string>): void {
+  ensureDataDir();
+  if (instructions.size === 0) {
+    if (existsSync(PENDING_CONVERSATION_INSTRUCTIONS_FILE)) unlinkSync(PENDING_CONVERSATION_INSTRUCTIONS_FILE);
+    return;
+  }
+  const file: PendingConversationInstructionsFile = { version: 1, updatedAt: Date.now(), instructions: Object.fromEntries(instructions) };
+  const tmp = `${PENDING_CONVERSATION_INSTRUCTIONS_FILE}.tmp`;
+  writeFileSync(tmp, JSON.stringify(file, null, 2), { mode: 0o600 });
+  renameSync(tmp, PENDING_CONVERSATION_INSTRUCTIONS_FILE);
 }
 
 interface UnreadFile {

@@ -88,6 +88,13 @@ export function getCached(id: string): Conversation | undefined { return convers
 const summaries = new Map<string, PersistedConversationSummary>();
 const folders = new Map<string, PersistedFolderSummary>();
 const folderInstructions = new Map<string, string>();
+/**
+ * Conversation instructions saved while the conversation streams. Its history
+ * entry cannot be rewritten mid-turn, so the newest text waits here, persisted,
+ * and every read sees it at once: the next turn's system prompt, /instructions,
+ * the pinned history entry. It lands in history once the conversation is idle.
+ */
+const pendingSystemInstructions = new Map<string, string>();
 const dirty = new Set<string>();
 /** Transcript content was mutated in place and requires field-level comparison. */
 const messageContentDirty = new Set<string>();
@@ -1388,11 +1395,32 @@ export function rename(id: string, title: string, recordUndo = true): boolean {
   return true;
 }
 
-/** Set or update per-conversation system instructions. Empty text clears them. */
+function systemInstructionsLocked(id: string): boolean {
+  return streaming.isStreaming(id) || streaming.isHistoryUnwindPending(id) || isHistoryPreparationPending(id);
+}
+
+function savePendingSystemInstructions(): void {
+  persistence.savePendingConversationInstructions(pendingSystemInstructions);
+}
+
+/**
+ * Set or update per-conversation system instructions. Empty text clears them.
+ * While the conversation streams they wait (see pendingSystemInstructions) and
+ * land when it goes idle; reads see them at once either way.
+ */
 export function setSystemInstructions(id: string, text: string): boolean {
   const conv = get(id);
   if (!conv) return false;
-  if (archiveWindow(conv.messages)?.sparse) throw new Error("System instruction changes require full archive materialization");
+  const locked = systemInstructionsLocked(id);
+  if (locked || archiveWindow(conv.messages)?.sparse) {
+    if (text === (storedSystemInstructions(conv) ?? "")) pendingSystemInstructions.delete(id);
+    else pendingSystemInstructions.set(id, text);
+    savePendingSystemInstructions();
+    renderSnapshotCache.delete(id);
+    // Idle but not materialized (a turn ended just now): load it and apply.
+    if (!locked) void applyPendingSystemInstructions(id);
+    return true;
+  }
 
   const hasExisting = conv.messages.length > 0 && conv.messages[0].role === "system_instructions";
   let changed = false;
@@ -1418,16 +1446,56 @@ export function setSystemInstructions(id: string, text: string): boolean {
   if (changed) conv.updatedAt = Date.now();
   markDirty(id, "messages");
   flush(id);
+  renderSnapshotCache.delete(id);
+  if (pendingSystemInstructions.delete(id)) savePendingSystemInstructions();
   return true;
+}
+
+/** Write instructions saved mid-turn into history, once the conversation is idle. */
+export async function applyPendingSystemInstructions(id: string): Promise<boolean> {
+  if (!pendingSystemInstructions.has(id) || systemInstructionsLocked(id)) return false;
+  let conv: Conversation | undefined;
+  try {
+    conv = await getFullAsync(id);
+  } catch (error) {
+    // A turn started meanwhile; its end tries again.
+    log("warn", `conversations: pending instructions for ${id} not applied yet: ${error instanceof Error ? error.message : String(error)}`);
+    return false;
+  }
+  if (!conv) {
+    if (pendingSystemInstructions.delete(id)) savePendingSystemInstructions();
+    return false;
+  }
+  const text = pendingSystemInstructions.get(id);
+  if (text === undefined || systemInstructionsLocked(id)) return false;
+  setSystemInstructions(id, text);
+  log("info", `conversations: applied instructions saved mid-turn for ${id}`);
+  return true;
+}
+
+/** Apply every pending instruction save whose conversation is idle (startup, after a restart). */
+export function applyAllPendingSystemInstructions(): void {
+  for (const id of [...pendingSystemInstructions.keys()]) void applyPendingSystemInstructions(id);
+}
+
+streaming.setStreamingIdleListener((id) => {
+  // After the finalizer that cleared the job has published its stop.
+  if (pendingSystemInstructions.has(id)) queueMicrotask(() => void applyPendingSystemInstructions(id));
+});
+
+function storedSystemInstructions(conv: Conversation): string | null {
+  const instruction = systemInstructionMessages(conv.messages)[0];
+  if (instruction) return typeof instruction.content === "string" ? instruction.content : null;
+  return null;
 }
 
 /** Get the per-conversation system instructions text, or null if none. */
 export function getSystemInstructions(id: string): string | null {
   const conv = get(id);
   if (!conv) return null;
-  const instruction = systemInstructionMessages(conv.messages)[0];
-  if (instruction) return typeof instruction.content === "string" ? instruction.content : null;
-  return null;
+  const pending = pendingSystemInstructions.get(id);
+  if (pending !== undefined) return pending || null;
+  return storedSystemInstructions(conv);
 }
 
 export function getFolderInstructions(folderId: string): string | null {
@@ -1939,6 +2007,8 @@ export function loadFromDisk(): LoadFromDiskStats {
   for (const [folderId, text] of persistence.loadFolderInstructions()) {
     if (folders.has(folderId)) folderInstructions.set(folderId, text);
   }
+  pendingSystemInstructions.clear();
+  for (const [convId, text] of persistence.loadPendingConversationInstructions()) pendingSystemInstructions.set(convId, text);
 
   let normalizedEffortCount = 0;
   for (const summary of index.summaries) {
@@ -2704,10 +2774,7 @@ export function getStoredDisplayPage(
     // have not yet been marked dirty/flushed (notably test and maintenance code).
     if (!page || (loadedConversation && page.storedMessageCount !== storedMessageCount(loadedConversation.messages))) return null;
     const summary = summaries.get(id) ?? summarizeConversation(conversations.get(id)!);
-    const folderInstructionsText = formatFolderInstructionsForDisplay(summary.folderId ?? null);
-    const pinnedEntries = folderInstructionsText
-      ? [{ type: "system_instructions" as const, text: folderInstructionsText }, ...page.pinnedEntries]
-      : page.pinnedEntries;
+    const pinnedEntries = displayPinnedEntries(id, summary.folderId ?? null, page.pinnedEntries);
     if (diagnostics) {
       diagnostics.conversationCacheHit = conversationCacheHit;
       diagnostics.snapshotCacheHit = false;
@@ -2783,10 +2850,7 @@ export function getStoredDisplayPage(
   if (!page) return null;
 
   const summary = summaries.get(id) ?? summarizeConversation(conversations.get(id)!);
-  const folderInstructionsText = formatFolderInstructionsForDisplay(summary.folderId ?? null);
-  const pinnedEntries = folderInstructionsText
-    ? [{ type: "system_instructions" as const, text: folderInstructionsText }, ...page.pinnedEntries]
-    : page.pinnedEntries;
+  const pinnedEntries = displayPinnedEntries(id, summary.folderId ?? null, page.pinnedEntries);
   const result = { ...page, pinnedEntries };
   if (diagnostics) {
     diagnostics.conversationCacheHit = conversationCacheHit;
@@ -2805,6 +2869,31 @@ export function getStoredDisplayPage(
   return result;
 }
 
+/** A stored page's pinned entries as shown: folder instructions first, and any instructions saved mid-turn. */
+function displayPinnedEntries(
+  id: string,
+  folderId: string | null,
+  pinned: StoredDisplayHistoryPage["pinnedEntries"],
+): StoredDisplayHistoryPage["pinnedEntries"] {
+  const pending = pendingSystemInstructions.get(id);
+  if (pending !== undefined) {
+    const own = pinned.findIndex(entry => entry.type === "system_instructions");
+    const replacement = pending ? [{ type: "system_instructions" as const, text: pending }] : [];
+    pinned = own === -1 ? [...replacement, ...pinned] : [...pinned.slice(0, own), ...replacement, ...pinned.slice(own + 1)];
+  }
+  const folderInstructionsText = formatFolderInstructionsForDisplay(folderId);
+  return folderInstructionsText ? [{ type: "system_instructions" as const, text: folderInstructionsText }, ...pinned] : pinned;
+}
+
+/** Messages as shown: instructions saved mid-turn replace the conversation's first instructions entry. */
+function withPendingSystemInstructions(id: string, messages: StoredMessage[]): StoredMessage[] {
+  const pending = pendingSystemInstructions.get(id);
+  if (pending === undefined) return messages;
+  const own = messages.findIndex(message => message.role === "system_instructions");
+  const replacement = pending ? [{ role: "system_instructions" as const, content: pending, metadata: null }] : [];
+  return own === -1 ? [...replacement, ...messages] : [...messages.slice(0, own), ...replacement, ...messages.slice(own + 1)];
+}
+
 function buildSnapshotDisplayData(
   conv: Conversation,
   messages: StoredMessage[],
@@ -2814,9 +2903,10 @@ function buildSnapshotDisplayData(
   includeUnwindFingerprints = true,
 ): ConversationDisplayData {
   const folderInstructionsText = includeFolderInstructions ? formatFolderInstructionsForDisplay(conv.folderId ?? null) : null;
+  const shownMessages = withPendingSystemInstructions(conv.id, messages);
   const displayMessages = folderInstructionsText
-    ? [{ role: "system_instructions" as const, content: folderInstructionsText, metadata: null }, ...messages]
-    : messages;
+    ? [{ role: "system_instructions" as const, content: folderInstructionsText, metadata: null }, ...shownMessages]
+    : shownMessages;
   const validActiveContext = conv.activeContext != null
     && isValidActiveContextCached(conv.activeContext, conv.messages);
   const editableUserHistoryStart = validActiveContext

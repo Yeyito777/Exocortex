@@ -893,7 +893,10 @@ export interface SetSystemInstructionsCommand {
   type: "set_system_instructions";
   reqId?: string;
   convId: string;
-  /** The instructions text. Empty string clears them. */
+  /**
+   * The instructions text. Empty string clears them. Accepted while the
+   * conversation streams: reads see it at once, history gets it once idle.
+   */
   text: string;
 }
 
