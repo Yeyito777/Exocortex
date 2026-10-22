@@ -160,7 +160,7 @@ describe("provider wiring under /proxy", () => {
     expect(proxiedProviderUrl("openai", OPENAI_CODEX_RESPONSES_WS_URL, CHATGPT_BASE_URL)).toBe(`${route.baseUrl.replace(/^http/, "ws")}/backend-api/codex/responses`);
     expect(proxiedProviderUrl("openai", "https://auth.openai.com/oauth/token", CHATGPT_BASE_URL)).toBe("https://auth.openai.com/oauth/token");
     const session = await getVerifiedSession();
-    expect(session).toEqual({ accessToken: route.token, accountId: null, accountKey: "proxy:sha256:remote" });
+    expect(session).toEqual({ kind: "chatgpt", accessToken: route.token, accountId: null, accountKey: "proxy:sha256:remote" });
     expect(getCurrentAccountKey()).toBe("proxy:sha256:remote");
     expect(hasConfiguredCredentials("openai")).toBe(true);
     expect(getAuthInfo("openai")).toMatchObject({ configured: true, authenticated: true, source: "proxy:whale" });

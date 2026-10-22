@@ -38,9 +38,15 @@ export interface StoredAuth {
   updatedAt: string;
 }
 
+/**
+ * A provider's credentials, or a secondary credential a provider keeps beside
+ * them (`openai-api-key`: the OpenAI API key next to the ChatGPT account pool).
+ */
+export type CredentialSlot = ProviderId | "openai-api-key";
+
 interface CredentialsFileV2 {
   version: 2;
-  providers: Partial<Record<ProviderId, unknown>>;
+  providers: Partial<Record<CredentialSlot, unknown>>;
 }
 
 // ── Paths ───────────────────────────────────────────────────────────
@@ -86,18 +92,18 @@ function readStore(): CredentialsFileV2 {
   return { version: 2, providers: {} };
 }
 
-export function saveProviderAuth<T>(provider: ProviderId, auth: T): void {
+export function saveProviderAuth<T>(provider: CredentialSlot, auth: T): void {
   const file = readStore();
   file.providers[provider] = auth;
   writeStore(file);
 }
 
-export function loadProviderAuth<T>(provider: ProviderId): T | null {
+export function loadProviderAuth<T>(provider: CredentialSlot): T | null {
   const file = readStore();
   return (file.providers[provider] as T | undefined) ?? null;
 }
 
-export function clearProviderAuth(provider: ProviderId): boolean {
+export function clearProviderAuth(provider: CredentialSlot): boolean {
   const file = readStore();
   if (!(provider in file.providers)) return false;
   delete file.providers[provider];
@@ -112,7 +118,7 @@ export function clearProviderAuth(provider: ProviderId): boolean {
   return true;
 }
 
-export function hasProviderAuth(provider: ProviderId): boolean {
+export function hasProviderAuth(provider: CredentialSlot): boolean {
   return loadProviderAuth(provider) !== null;
 }
 

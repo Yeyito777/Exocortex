@@ -165,5 +165,5 @@ async function requestImage(
 
 export async function generateImage(prompt: string, options: { signal?: AbortSignal } = {}): Promise<GeneratedImage> {
   const catalog = getProvider("openai")?.models.map(model => model.id) ?? [];
-  return generateImageWithSession(await getVerifiedSession(), prompt, { ...options, models: imageGenerationModels(catalog) });
+  return generateImageWithSession(await getVerifiedSession({ chatgptOnly: true }), prompt, { ...options, models: imageGenerationModels(catalog) });
 }

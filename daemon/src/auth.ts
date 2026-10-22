@@ -6,6 +6,7 @@ import type { EnsureAuthResult, LoginCallbacks, LoginOptions, LoginResult } from
 import { AuthError } from "./providers/errors";
 import { isTokenExpired, loadProviderAuth, type StoredAuth } from "./store";
 import { providerProxyRemoteStatus, providerProxyRoute } from "./provider-proxy/route";
+import { getActiveOpenAIApiKeyInfo } from "./providers/openai/auth";
 
 export { AuthError };
 export type { LoginResult, LoginCallbacks, EnsureAuthResult };
@@ -128,9 +129,48 @@ function proxiedAuthInfo(provider: ProviderId): ProviderAuthInfo | null {
   };
 }
 
+/** An OpenAI API-key login in use, shown like any other API-key provider (`source: "api_key"`). */
+function openAIApiKeyAuthInfo(): ProviderAuthInfo | null {
+  const apiKey = getActiveOpenAIApiKeyInfo();
+  if (!apiKey) return null;
+  const chatgpt = storedAuthInfo("openai");
+  return {
+    configured: true,
+    authenticated: true,
+    status: "logged_in",
+    email: null,
+    displayName: apiKey.displayName,
+    organizationName: "OpenAI API",
+    organizationType: "api_key",
+    organizationRole: null,
+    workspaceRole: null,
+    subscriptionType: "api_key",
+    rateLimitTier: null,
+    scopes: ["api"],
+    expiresAt: null,
+    updatedAt: apiKey.updatedAt,
+    source: "api_key",
+    // The ChatGPT accounts stay listed: `/login openai` switches back to them.
+    ...(chatgpt.accounts ? { accounts: chatgpt.accounts.map((account) => ({ ...account, current: false })), currentAccount: null } : {}),
+  };
+}
+
 export function getAuthInfo(provider: ProviderId): ProviderAuthInfo {
   const proxied = proxiedAuthInfo(provider);
   if (proxied) return proxied;
+  if (provider === "openai") {
+    const apiKey = openAIApiKeyAuthInfo();
+    if (apiKey) return apiKey;
+  }
+  return storedAuthInfo(provider);
+}
+
+/** Like getAuthInfo, but the account login only: an OpenAI API key is not an account /proxy can lend. */
+export function getAccountAuthInfo(provider: ProviderId): ProviderAuthInfo {
+  return proxiedAuthInfo(provider) ?? storedAuthInfo(provider);
+}
+
+function storedAuthInfo(provider: ProviderId): ProviderAuthInfo {
   const { accounts, currentIndex } = normalizeAuthRecords(loadProviderAuth<unknown>(provider));
   const stored = currentIndex >= 0 ? accounts[currentIndex] : null;
   if (!stored?.tokens) {

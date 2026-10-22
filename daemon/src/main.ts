@@ -6,7 +6,7 @@
  *
  * Usage:
  *   bun run src/main.ts          Start the daemon
- *   bun run src/main.ts login [provider] [browser|code]    Authenticate a provider
+ *   bun run src/main.ts login [provider] [browser|code|key]    Authenticate a provider (openai key: API key on stdin)
  *   bun run src/main.ts prepare-restart     Save/interrupt streams before service restart
  *   bun run src/main.ts run-requested-restart <token>   Executor for an exo-requested restart
  */

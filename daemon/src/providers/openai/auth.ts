@@ -12,8 +12,20 @@ import {
 } from "./session";
 import { AuthError } from "../errors";
 import type { EnsureAuthResult, LoginCallbacks, LoginOptions, LoginResult } from "../types";
+import type { OAuthProfile } from "../../store";
 import { createHash } from "node:crypto";
+import { log } from "../../log";
 import { providerProxyReady, providerProxyRemoteStatus, providerProxyRoute } from "../../provider-proxy/route";
+import {
+  clearOpenAIApiKey,
+  deactivateOpenAIApiKey,
+  loadOpenAIApiKey,
+  normalizeOpenAIApiKey,
+  openAIApiKeyAccountKey,
+  saveOpenAIApiKey,
+  verifyOpenAIApiKey,
+  type StoredOpenAIApiKey,
+} from "./api-key";
 
 export interface StoredOpenAIAuthPool extends StoredOpenAIAuth {
   /**
@@ -192,12 +204,48 @@ function rejectedRefreshMessage(refreshToken: string): string | null {
   return rejectedRefreshTokens.get(refreshTokenFingerprint(refreshToken)) ?? null;
 }
 
+/** Why this account's refresh token was definitively rejected, this run or an earlier one. */
+function storedRefreshRejection(stored: StoredOpenAIAuth | null | undefined): string | null {
+  if (!stored) return null;
+  const token = stored.tokens?.refreshToken;
+  return (token ? rejectedRefreshMessage(token) : null) ?? (stored.refreshRejected?.trim() || null);
+}
+
+// OpenAI answers a dead refresh token with 400 invalid_grant or, for an expired
+// ChatGPT session, 401 refresh_token_expired. Neither recovers on retry.
+const DEFINITIVE_REFRESH_REJECTION = /invalid_grant|refresh_token_(?:expired|reused|invalidated|revoked)/i;
+
+function definitiveRefreshRejection(status: number, text: string): string | null {
+  if (status !== 400 && status !== 401) return null;
+  const code = DEFINITIVE_REFRESH_REJECTION.exec(text)?.[0];
+  if (!code) return null;
+  return `OpenAI ChatGPT session expired (${status} ${code}). Log in again with \`/login openai\`, or use an API key with \`/login openai key <api-key>\`.`;
+}
+
+/** Remember a dead refresh token in memory and on the account record, so nothing hammers the token endpoint with it. */
+function rememberRejectedRefreshToken(refreshToken: string, message: string): void {
+  rejectedRefreshTokens.set(refreshTokenFingerprint(refreshToken), message);
+  const pool = loadStoredAuthPool();
+  let changed = false;
+  for (const account of pool.accounts) {
+    if (account.tokens?.refreshToken === refreshToken && account.refreshRejected !== message) {
+      account.refreshRejected = message;
+      changed = true;
+    }
+  }
+  if (changed) saveStoredAuthPool(pool);
+}
+
 /**
  * Non-secret fingerprint used to discard sockets carrying superseded auth.
  * Deriving it from persisted credentials also notices a login performed by a
  * separate Exocortex CLI process, without exposing token material to callers.
  */
 export function getOpenAIAuthSessionRevision(): string | null {
+  if (currentOpenAILoginKind() === "api_key") {
+    const apiKey = loadOpenAIApiKey();
+    if (apiKey) return `sha256:${createHash("sha256").update(JSON.stringify(["api_key", apiKey.apiKey])).digest("hex").slice(0, 32)}`;
+  }
   return authSessionFingerprint(loadStoredAuth());
 }
 
@@ -226,7 +274,7 @@ async function refreshStoredAuth(
   opts?: { source?: StoredOpenAIAuth["source"]; accountId?: string | null; authMode?: string | null; fallbackIdToken?: string | null },
 ): Promise<StoredOpenAIAuth> {
   const previousRejection = rejectedRefreshMessage(refreshToken);
-  if (previousRejection) throw new Error(previousRejection);
+  if (previousRejection) throw new AuthError(previousRejection);
   const existing = inflightRefreshes.get(refreshToken);
   if (existing) return existing;
 
@@ -247,16 +295,13 @@ async function refreshStoredAuth(
 
     const text = await res.text();
     if (!res.ok) {
-      if (/invalid_grant|refresh_token_(?:reused|invalidated)/i.test(text)) {
-        rejectedRefreshTokens.set(
-          refreshTokenFingerprint(refreshToken),
-          `Token refresh failed (${res.status}): ${text}`,
-        );
+      const rejection = definitiveRefreshRejection(res.status, text);
+      if (rejection) {
+        rememberRejectedRefreshToken(refreshToken, rejection);
+        log("warn", `openai auth: refresh token rejected (${res.status}); the ChatGPT account needs a new login`);
+        throw new AuthError(rejection);
       }
-      if (res.status === 400 && text.includes("invalid_grant")) {
-        throw new AuthError(`Session expired — use login to re-authenticate. (${text})`);
-      }
-      throw new Error(`Token refresh failed (${res.status}): ${text}`);
+      throw new Error(`Token refresh failed (${res.status}): ${text.slice(0, 500)}`);
     }
 
     const token = parseOpenAIJson<OpenAITokenResponse>(text, "Token refresh");
@@ -274,16 +319,29 @@ async function refreshStoredAuth(
 }
 
 export async function ensureAuthenticated(callbacks?: LoginCallbacks, options?: LoginOptions): Promise<EnsureAuthResult> {
+  const apiKey = normalizeOpenAIApiKey(options?.apiKey);
+  if (apiKey) {
+    const result = await loginWithApiKey(apiKey, callbacks, options);
+    return { status: "logged_in", email: result.profile?.displayName ?? null };
+  }
+  rejectMethodSwitchDuringTurns("chatgpt", options);
+  const result = await ensureChatGPTAuthenticated(callbacks, options);
+  // Logging in with the ChatGPT account makes it the selected method again.
+  deactivateOpenAIApiKey();
+  verifiedSessionCache = null;
+  return result;
+}
+
+async function ensureChatGPTAuthenticated(callbacks?: LoginCallbacks, options?: LoginOptions): Promise<EnsureAuthResult> {
   const say = callbacks?.onProgress ?? (() => {});
   const stored = loadStoredAuth();
-  const storedRefreshRejected = !!stored?.tokens?.refreshToken
-    && rejectedRefreshMessage(stored.tokens.refreshToken) !== null;
+  const storedRefreshRejected = storedRefreshRejection(stored) !== null;
 
   if (stored?.tokens?.accessToken && !storedRefreshRejected && !isTokenExpired(stored.tokens)) {
     say("Checking stored OpenAI session...");
     if (await verifyStoredSession(stored.tokens.accessToken, stored.accountId)) {
       const enriched = await enrichAndPersistAuth(stored);
-      if (!enriched) return ensureAuthenticated(callbacks, options);
+      if (!enriched) return ensureChatGPTAuthenticated(callbacks, options);
       return { status: "already_authenticated", email: enriched.profile?.email ?? null };
     }
   }
@@ -297,7 +355,7 @@ export async function ensureAuthenticated(callbacks?: LoginCallbacks, options?: 
         authMode: stored.authMode,
         fallbackIdToken: stored.idToken,
       });
-      if (!isCurrentStoredSession(stored)) return ensureAuthenticated(callbacks, options);
+      if (!isCurrentStoredSession(stored)) return ensureChatGPTAuthenticated(callbacks, options);
       saveStoredAuth(refreshed);
       return { status: "refreshed", email: refreshed.profile?.email ?? null };
     } catch {
@@ -317,7 +375,11 @@ export async function ensureAuthenticated(callbacks?: LoginCallbacks, options?: 
 }
 
 export async function login(callbacks?: LoginCallbacks | ((msg: string) => void), options?: LoginOptions): Promise<LoginResult> {
-  if (hasConfiguredCredentials()) {
+  const apiKey = normalizeOpenAIApiKey(options?.apiKey);
+  if (apiKey) {
+    return loginWithApiKey(apiKey, typeof callbacks === "function" ? { onProgress: callbacks } : callbacks, options);
+  }
+  if (hasChatGPTCredentials()) {
     throw new AuthError("OpenAI is already authenticated. Use `/login openai add` to connect another account.");
   }
   return addAccount(callbacks, options);
@@ -340,6 +402,8 @@ export async function addAccount(callbacks?: LoginCallbacks | ((msg: string) => 
     pool.currentIndex = pool.accounts.length - 1;
   }
   saveStoredAuthPool(pool);
+  deactivateOpenAIApiKey();
+  verifiedSessionCache = null;
   return {
     tokens: auth.tokens,
     profile: auth.profile,
@@ -518,6 +582,7 @@ export function switchAccount(identifier?: string): OpenAIAccountSummary {
 
   pool.currentIndex = switchIndex;
   saveStoredAuthPool(pool);
+  deactivateOpenAIApiKey();
 
   const switched = pool.accounts[switchIndex];
   return {
@@ -531,8 +596,86 @@ export function switchAccount(identifier?: string): OpenAIAccountSummary {
   };
 }
 
-export function hasConfiguredCredentials(): boolean {
+export function hasChatGPTCredentials(): boolean {
   return loadStoredAuthPool().accounts.some((stored) => !!stored.tokens?.accessToken || !!stored.tokens?.refreshToken);
+}
+
+export function hasConfiguredCredentials(): boolean {
+  return hasChatGPTCredentials() || loadOpenAIApiKey() !== null;
+}
+
+// ── API-key login ─────────────────────────────────────────────────
+
+export type OpenAILoginKind = "chatgpt" | "api_key";
+
+/** Whether the current ChatGPT account can still produce a token without a new login. */
+function chatGPTSessionUsable(stored: StoredOpenAIAuth | null): boolean {
+  if (!stored?.tokens) return false;
+  if (stored.tokens.accessToken && !isTokenExpired(stored.tokens)) return true;
+  return !!stored.tokens.refreshToken && storedRefreshRejection(stored) === null;
+}
+
+/**
+ * Which login the openai provider uses right now. The most recent login wins;
+ * a ChatGPT session that expired falls back to a stored API key rather than
+ * blocking it.
+ */
+export function currentOpenAILoginKind(): OpenAILoginKind | null {
+  const apiKey = loadOpenAIApiKey();
+  const stored = loadStoredAuth();
+  if (!apiKey) return stored ? "chatgpt" : null;
+  if (apiKey.active || !stored) return "api_key";
+  return chatGPTSessionUsable(stored) ? "chatgpt" : "api_key";
+}
+
+function apiKeyProfile(stored: StoredOpenAIApiKey): OAuthProfile {
+  return {
+    accountUuid: stored.label,
+    email: "",
+    displayName: `API key ${stored.label}`,
+    organizationUuid: null,
+    organizationName: "OpenAI API",
+    organizationType: "api_key",
+    organizationRole: null,
+    workspaceRole: null,
+  };
+}
+
+/** The selected API key's display identity, when the API key is the login in use. */
+export function getActiveOpenAIApiKeyInfo(): { label: string; displayName: string; updatedAt: string } | null {
+  if (providerProxyRoute("openai")) return null;
+  if (currentOpenAILoginKind() !== "api_key") return null;
+  const stored = loadOpenAIApiKey();
+  return stored ? { label: stored.label, displayName: apiKeyProfile(stored).displayName ?? stored.label, updatedAt: stored.updatedAt } : null;
+}
+
+/**
+ * Switching between the ChatGPT account and an API key changes the account
+ * that scopes encrypted replay; running turns could not continue across it.
+ */
+function rejectMethodSwitchDuringTurns(target: OpenAILoginKind, options?: LoginOptions, apiKey?: string): void {
+  if (!options?.requireSameAccount) return;
+  const current = currentOpenAILoginKind();
+  if (current === null) return;
+  const sameKey = target !== "api_key" || loadOpenAIApiKey()?.apiKey === apiKey;
+  if (current === target && sameKey) return;
+  throw new AuthError(target === "api_key"
+    ? "OpenAI turns are running on another login; switch to an API key after they finish."
+    : "OpenAI turns are running on the API key; switch back to the ChatGPT account after they finish.");
+}
+
+async function loginWithApiKey(apiKey: string, callbacks?: LoginCallbacks, options?: LoginOptions): Promise<LoginResult> {
+  rejectMethodSwitchDuringTurns("api_key", options, apiKey);
+  callbacks?.onProgress?.("Verifying OpenAI API key...");
+  const verified = await verifyOpenAIApiKey(apiKey);
+  const stored = saveOpenAIApiKey(apiKey, verified.modelIds);
+  verifiedSessionCache = null;
+  log("info", `openai auth: API key ${stored.label} saved (${verified.modelIds.length} models)`);
+  return { profile: apiKeyProfile(stored) };
+}
+
+function apiKeySession(stored: StoredOpenAIApiKey): VerifiedOpenAISession {
+  return { kind: "api_key", accessToken: stored.apiKey, accountId: null, accountKey: openAIApiKeyAccountKey(stored.apiKey) };
 }
 
 export function verifyAuth(accessToken: string, accountId?: string | null): Promise<boolean> {
@@ -544,6 +687,8 @@ export async function getVerifiedAccessToken(): Promise<string> {
 }
 
 export interface VerifiedOpenAISession {
+  /** ChatGPT account (chatgpt.com backend) or API key (public API). Absent means ChatGPT. */
+  kind?: OpenAILoginKind;
   accessToken: string;
   accountId: string | null;
   accountKey: string | null;
@@ -567,6 +712,7 @@ function cachedVerifiedSessionFor(stored: StoredOpenAIAuth): VerifiedOpenAISessi
   if (cached.accessToken !== stored.tokens.accessToken) return null;
   if (cached.accountId !== stored.accountId) return null;
   return {
+    kind: "chatgpt",
     accessToken: cached.accessToken,
     accountId: cached.accountId,
     accountKey: cached.accountKey,
@@ -582,16 +728,35 @@ async function proxiedSession(): Promise<VerifiedOpenAISession | null> {
   const route = providerProxyRoute("openai");
   if (!route) return null;
   const remote = await providerProxyReady("openai");
-  return { accessToken: route.token, accountId: null, accountKey: proxiedAccountKey(remote.accountScope, route.alias) };
+  return { kind: "chatgpt", accessToken: route.token, accountId: null, accountKey: proxiedAccountKey(remote.accountScope, route.alias) };
 }
 
 function proxiedAccountKey(remoteScope: string | null | undefined, alias: string): string {
   return `proxy:${remoteScope ?? alias}`;
 }
 
-export async function getVerifiedSession(opts: { forceRefresh?: boolean } = {}): Promise<VerifiedOpenAISession> {
+/**
+ * The session requests use: the API key or the ChatGPT account, whichever
+ * login is current. `chatgptOnly` is for ChatGPT-backend features (usage
+ * windows, transcription, image generation, /proxy) that an API key cannot use.
+ */
+export async function getVerifiedSession(opts: { forceRefresh?: boolean; chatgptOnly?: boolean } = {}): Promise<VerifiedOpenAISession> {
   const proxied = await proxiedSession();
   if (proxied) return proxied;
+  if (opts.chatgptOnly) return getVerifiedChatGPTSession(opts);
+  const apiKey = loadOpenAIApiKey();
+  if (!apiKey) return getVerifiedChatGPTSession(opts);
+  if (currentOpenAILoginKind() === "api_key") return apiKeySession(apiKey);
+  try {
+    return await getVerifiedChatGPTSession(opts);
+  } catch (err) {
+    if (!(err instanceof AuthError)) throw err;
+    log("warn", `openai auth: ChatGPT session unusable (${err.message}); using the API key ${apiKey.label}`);
+    return apiKeySession(apiKey);
+  }
+}
+
+async function getVerifiedChatGPTSession(opts: { forceRefresh?: boolean } = {}): Promise<VerifiedOpenAISession> {
   const pool = loadStoredAuthPool();
   if (pool.accounts.length === 0) {
     throw new AuthError("OpenAI is not authenticated. Run `/login openai`.");
@@ -612,10 +777,13 @@ export async function getVerifiedSession(opts: { forceRefresh?: boolean } = {}):
     && await verifyStoredSession(stored.tokens.accessToken, stored.accountId)
   ) {
     const enriched = await enrichStoredAuth(stored);
-    if (!isCurrentStoredSession(stored)) return getVerifiedSession();
+    if (!isCurrentStoredSession(stored)) return getVerifiedChatGPTSession();
     saveAccountAt(index, enriched);
-    return cacheVerifiedSession({ accessToken: enriched.tokens.accessToken, accountId: enriched.accountId, accountKey: getAccountKey(enriched) });
+    return cacheVerifiedSession({ kind: "chatgpt", accessToken: enriched.tokens.accessToken, accountId: enriched.accountId, accountKey: getAccountKey(enriched) });
   }
+
+  const rejection = storedRefreshRejection(stored);
+  if (rejection) throw new AuthError(rejection);
 
   if (stored?.tokens?.refreshToken) {
     const refreshed = await refreshStoredAuth(stored.tokens.refreshToken, {
@@ -624,16 +792,16 @@ export async function getVerifiedSession(opts: { forceRefresh?: boolean } = {}):
       authMode: stored.authMode,
       fallbackIdToken: stored.idToken,
     });
-    if (!isCurrentStoredSession(stored)) return getVerifiedSession();
+    if (!isCurrentStoredSession(stored)) return getVerifiedChatGPTSession();
     saveAccountAt(index, refreshed);
-    return cacheVerifiedSession({ accessToken: refreshed.tokens.accessToken, accountId: refreshed.accountId, accountKey: getAccountKey(refreshed) });
+    return cacheVerifiedSession({ kind: "chatgpt", accessToken: refreshed.tokens.accessToken, accountId: refreshed.accountId, accountKey: getAccountKey(refreshed) });
   }
 
   if (stored?.tokens?.accessToken && await verifyStoredSession(stored.tokens.accessToken, stored.accountId)) {
     const enriched = await enrichStoredAuth(stored);
-    if (!isCurrentStoredSession(stored)) return getVerifiedSession();
+    if (!isCurrentStoredSession(stored)) return getVerifiedChatGPTSession();
     saveAccountAt(index, enriched);
-    return cacheVerifiedSession({ accessToken: enriched.tokens.accessToken, accountId: enriched.accountId, accountKey: getAccountKey(enriched) });
+    return cacheVerifiedSession({ kind: "chatgpt", accessToken: enriched.tokens.accessToken, accountId: enriched.accountId, accountKey: getAccountKey(enriched) });
   }
 
   throw new AuthError("Current OpenAI account could not be verified. Use `/login openai` to re-authenticate it, or `/account <email>` to switch accounts.");
@@ -642,6 +810,10 @@ export async function getVerifiedSession(opts: { forceRefresh?: boolean } = {}):
 export function getCurrentAccountKey(): string | null {
   const route = providerProxyRoute("openai");
   if (route) return proxiedAccountKey(providerProxyRemoteStatus("openai")?.accountScope, route.alias);
+  if (currentOpenAILoginKind() === "api_key") {
+    const apiKey = loadOpenAIApiKey();
+    if (apiKey) return openAIApiKeyAccountKey(apiKey.apiKey);
+  }
   const stored = loadStoredAuth();
   return stored ? getAccountKey(stored) : null;
 }
@@ -653,11 +825,19 @@ export function accountScopeForKey(key: string | null | undefined): string | nul
     : null;
 }
 
+/** Replay scope of the ChatGPT account, whichever login is current (for /proxy, which serves only ChatGPT). */
+export function getChatGPTAccountScope(): string | null {
+  const stored = loadStoredAuth();
+  return accountScopeForKey(stored ? getAccountKey(stored) : null);
+}
+
 /** Non-secret stable account identity suitable for persisted replay scoping. */
 export function getCurrentAccountScope(): string | null {
   return accountScopeForKey(getCurrentAccountKey());
 }
 
 export function logout(): boolean {
-  return clearProviderAuth("openai");
+  verifiedSessionCache = null;
+  const clearedApiKey = clearOpenAIApiKey();
+  return clearProviderAuth("openai") || clearedApiKey;
 }

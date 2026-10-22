@@ -115,6 +115,6 @@ export async function transcribeAudio(
   mimeType = "audio/wav",
   options: OpenAITranscriptionOptions = {},
 ): Promise<string> {
-  const session = await getVerifiedSession();
+  const session = await getVerifiedSession({ chatgptOnly: true });
   return transcribeAudioWithSession(session, audioBytes, mimeType, options);
 }

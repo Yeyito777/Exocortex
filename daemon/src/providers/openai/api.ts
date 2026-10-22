@@ -5,9 +5,9 @@ import { readExocortexConfig } from "@exocortex/shared/config";
 import { createHash } from "crypto";
 import { isDeepStrictEqual } from "node:util";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
-import { accountScopeForKey, getCurrentAccountKey, getOpenAIAuthSessionRevision, getVerifiedSession } from "./auth";
+import { accountScopeForKey, currentOpenAILoginKind, getCurrentAccountKey, getOpenAIAuthSessionRevision, getVerifiedSession } from "./auth";
 import { AuthError, isContextWindowProviderError, isNonRetryableProviderError, NonRetryableProviderError } from "../errors";
-import { CHATGPT_BASE_URL, OPENAI_CODEX_RESPONSES_URL, OPENAI_CODEX_RESPONSES_WS_URL, OPENAI_RESPONSES_LITE_HEADER } from "./constants";
+import { CHATGPT_BASE_URL, OPENAI_API_RESPONSES_URL, OPENAI_CODEX_RESPONSES_URL, OPENAI_CODEX_RESPONSES_WS_URL, OPENAI_RESPONSES_LITE_HEADER } from "./constants";
 import { isProviderProxyLinkDownMessage, proxiedProviderUrl } from "../../provider-proxy/route";
 import { usesOpenAIResponsesLite } from "./capabilities";
 import { buildOpenAIRequestHeaders, type OpenAIRequestSession } from "./cache";
@@ -22,8 +22,28 @@ import { OPENAI_USAGE_ACCOUNT_KEY_HEADER } from "./usage";
 import type { ProviderTurnSession, StreamCallbacks, StreamOptions, StreamResult } from "../types";
 
 /** The Responses endpoints, through the /proxy forwarder when OpenAI is proxied. */
-function responsesUrl(): string {
+function responsesUrl(session?: OpenAIRequestSession): string {
+  // Proxied sessions are always ChatGPT sessions: the remote owns the login.
+  if (session?.kind === "api_key") return OPENAI_API_RESPONSES_URL;
   return proxiedProviderUrl("openai", OPENAI_CODEX_RESPONSES_URL, CHATGPT_BASE_URL);
+}
+
+/**
+ * The public Responses API takes the Codex body, minus Codex-only fields:
+ * client metadata, cyber access programs and the ultrafast tier.
+ */
+function publicApiRequestBody(body: Record<string, unknown>): Record<string, unknown> {
+  const { client_metadata: _metadata, access_programs: _programs, ...rest } = body;
+  if (rest.service_tier === "ultrafast") delete rest.service_tier;
+  return rest;
+}
+
+const OPENAI_API_KEY_REJECTED = "The OpenAI API key was rejected (HTTP 401). Log in again with `/login openai key <api-key>`.";
+
+/** The API key's organization is out of credits or over its spend limit: retrying cannot help. */
+function openAIApiQuotaError(err: OpenAIWebSocketHttpError): NonRetryableProviderError | null {
+  if (err.status !== 429 || !/insufficient_quota|billing_hard_limit_reached/.test(err.body)) return null;
+  return new NonRetryableProviderError(`OpenAI API quota exhausted for this API key's organization: ${formatOpenAIErrorBody(err.body).slice(0, 300)}`);
 }
 
 function responsesWebSocketUrl(): string {
@@ -54,6 +74,8 @@ export function createOpenAITurnSession(): OpenAITurnSession {
 
 export async function prewarmOpenAIConversation(promptCacheKey: string): Promise<void> {
   if (Date.now() < httpFallbackUntilMs) return;
+  // API-key requests go over HTTPS; there is no websocket to warm.
+  if (currentOpenAILoginKind() === "api_key") return;
   const existing = pendingPrewarms.get(promptCacheKey);
   if (existing) return existing;
   // Never steal an active turn's transport; speculative opens are bounded.
@@ -479,43 +501,51 @@ async function streamMessageHttpWithSession(
   assertReplayScopeForSession(messages, model, session, options.accountScope);
   const turnSession = isOpenAITurnSession(options.turnSession) ? options.turnSession : null;
   const requestCallbacks = callbacksForSession(callbacks, session);
-  const requestBody = buildRequestBody(messages, model, options);
+  const publicApi = session.kind === "api_key";
+  const requestBody = publicApi
+    ? publicApiRequestBody(buildRequestBody(messages, model, options))
+    : buildRequestBody(messages, model, options);
   const headers: Record<string, string> = {
     ...buildOpenAIRequestHeaders(session, options),
     "Content-Type": "application/json",
     Accept: "text/event-stream",
   };
-  // The Codex HTTP endpoint streams Server-Sent Events. The websocket beta
-  // header switches the backend into websocket mode and can make HTTP fail.
-  delete headers["OpenAI-Beta"];
-  const turnState = turnSession?.getTurnState();
-  if (turnState) headers["x-codex-turn-state"] = turnState;
-  if (usesOpenAIResponsesLite(model)) {
-    headers[OPENAI_RESPONSES_LITE_HEADER] = "true";
+  const url = responsesUrl(session);
+  if (!publicApi) {
+    // The Codex HTTP endpoint streams Server-Sent Events. The websocket beta
+    // header switches the backend into websocket mode and can make HTTP fail.
+    delete headers["OpenAI-Beta"];
+    const turnState = turnSession?.getTurnState();
+    if (turnState) headers["x-codex-turn-state"] = turnState;
+    if (usesOpenAIResponsesLite(model)) {
+      headers[OPENAI_RESPONSES_LITE_HEADER] = "true";
+    }
+    const cookieHeader = buildCloudflareCookieHeader(url);
+    if (cookieHeader) headers.Cookie = cookieHeader;
   }
-  const cookieHeader = buildCloudflareCookieHeader(responsesUrl());
-  if (cookieHeader) headers.Cookie = cookieHeader;
 
   consumeCompactionRequestAttempt(options);
   const requestText = JSON.stringify(requestBody);
   requestCallbacks.onRequestSent?.("http", Buffer.byteLength(requestText));
-  const res = await fetch(responsesUrl(), {
+  const res = await fetch(url, {
     method: "POST",
     headers,
     body: requestText,
     signal: options.signal,
   });
 
-  storeCloudflareCookiesFromHeaders(responsesUrl(), res.headers);
+  if (!publicApi) storeCloudflareCookiesFromHeaders(url, res.headers);
   requestCallbacks.onHeaders?.(res.headers);
 
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    if (res.status === 401) throw new AuthError("OpenAI authentication failed. Re-run `bun run src/main.ts login openai`.");
+    if (res.status === 401) {
+      throw new AuthError(publicApi ? OPENAI_API_KEY_REJECTED : "OpenAI authentication failed. Re-run `bun run src/main.ts login openai`.");
+    }
     throw new OpenAIWebSocketHttpError(res.status, res.headers, body);
   }
 
-  const nextTurnState = res.headers.get("x-codex-turn-state");
+  const nextTurnState = publicApi ? null : res.headers.get("x-codex-turn-state");
   if (nextTurnState) turnSession?.recordTurnState(nextTurnState);
   const result = await readOpenAIResponsesHttpSse(res, requestCallbacks, options.signal);
   stampReplayScope(result, model, session);
@@ -1120,10 +1150,13 @@ export async function streamMessageWithSession(
   const turnSession = isOpenAITurnSession(options.turnSession) ? options.turnSession : null;
   const requestCallbacks = callbacksForSession(callbacks, session);
   let retryAttempt = 0;
-  let useHttp = Date.now() < httpFallbackUntilMs
+  // API-key sessions use the public API over HTTPS (full replay each round).
+  const publicApi = session.kind === "api_key";
+  let useHttp = publicApi
+    || Date.now() < httpFallbackUntilMs
     || (turnSession != null && httpFallbackTurnSessions.has(turnSession));
   if (useHttp && turnSession) {
-    httpFallbackTurnSessions.add(turnSession);
+    if (!publicApi) httpFallbackTurnSessions.add(turnSession);
     turnSession.resetConnection();
   }
   let silentStaleReconnects = 0;
@@ -1293,8 +1326,11 @@ export async function streamMessageWithSession(
         }
 
         if (err.status === 401) {
-          throw new AuthError("OpenAI authentication failed. Re-run `bun run src/main.ts login openai`.");
+          throw new AuthError(publicApi ? OPENAI_API_KEY_REJECTED : "OpenAI authentication failed. Re-run `bun run src/main.ts login openai`.");
         }
+
+        const quotaError = publicApi ? openAIApiQuotaError(err) : null;
+        if (quotaError) throw quotaError;
 
         if (err.status === 429) {
           const usageLimit = parseOpenAIUsageLimitError(err.body, Date.now());

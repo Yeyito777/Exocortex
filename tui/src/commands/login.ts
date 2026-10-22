@@ -9,7 +9,7 @@ import type { SlashCommand } from "./types";
 
 function loginDescription(provider: ProviderId): string {
   switch (provider) {
-    case "openai": return "Sign in with OpenAI";
+    case "openai": return "Sign in with a ChatGPT account or an OpenAI API key";
     case "deepseek": return "Save a DeepSeek API key";
     case "opencode": return "Check public OpenCode Zen access";
     case "openrouter": return "Save an OpenRouter API key";
@@ -28,16 +28,19 @@ function deepSeekLoginInstruction(): string {
 function openAILoginInstruction(): string {
   return [
     "OpenAI login commands:",
-    "  /login openai [browser|code]",
+    "  /login openai [browser|code]      ChatGPT account (plan usage)",
+    "  /login openai key <api-key>       OpenAI API key (billed to the API)",
     "  /login openai add [browser|code]",
     "  /login openai remove <email>",
     "",
     "Use code login on remote or headless machines. Browser login remains the default.",
+    "The most recent login is the one in use; /login shows which.",
     "Use /account to list or switch OpenAI accounts.",
   ].join("\n");
 }
 
 const OPENAI_ACCOUNT_ACTIONS = [
+  { name: "key", desc: "Log in with an OpenAI API key (billed to the API)" },
   { name: "add", desc: "Connect another OpenAI account" },
   { name: "remove", desc: "Remove a connected OpenAI account", exact: true },
 ] as const;
@@ -108,7 +111,14 @@ export const LOGIN_COMMAND: SlashCommand = {
         return { type: "handled" };
       }
     } else if (provider === "openai") {
-      if (arg) {
+      if (arg === "key") {
+        apiKey = extra;
+        if (!apiKey) {
+          pushSystemMessage(state, "Create a key at https://platform.openai.com/api-keys, then run /login openai key <api-key>.");
+          clearPrompt(state);
+          return { type: "handled" };
+        }
+      } else if (arg) {
         const directMethod = parseOpenAILoginMethod(arg);
         if (directMethod) {
           if (extra) {

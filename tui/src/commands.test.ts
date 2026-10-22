@@ -1284,12 +1284,21 @@ describe("/login", () => {
     expect(tryCommand("/login openai device", state)).toEqual({ type: "handled" });
   });
 
+  test("returns OpenAI API-key login, and explains it when the key is missing", () => {
+    const state = createInitialState();
+    state.providerRegistry = structuredClone(providers);
+
+    expect(tryCommand("/login openai key sk-proj-abc", state)).toEqual({ type: "login", provider: "openai", apiKey: "sk-proj-abc" });
+    expect(tryCommand("/login openai key", state)).toEqual({ type: "handled" });
+    expect((state.messages.at(-1) as { text?: string } | undefined)?.text).toContain("/login openai key <api-key>");
+  });
+
   test("autocompletes OpenAI login lifecycle subcommands", () => {
     const state = createInitialState();
     state.providerRegistry = structuredClone(providers);
 
     const args = getCommandArgs(state);
-    expect(args["/login openai"].map((item) => item.name)).toEqual(["browser", "code", "add", "remove"]);
+    expect(args["/login openai"].map((item) => item.name)).toEqual(["browser", "code", "key", "add", "remove"]);
     expect(args["/login openai add"].map((item) => item.name)).toEqual(["browser", "code"]);
   });
 
