@@ -16,15 +16,31 @@ function parseOpenAILoginMethod(value?: string): OpenAILoginMethod | undefined {
   if (!value) return undefined;
   if (value === "browser") return "browser";
   if (value === "code") return "code";
-  throw new Error("Unknown OpenAI login method. Use `exocortexd login openai browser` or `exocortexd login openai code`.");
+  throw new Error("Unknown OpenAI login method. Use `exocortexd login openai browser`, `exocortexd login openai code`, or `exocortexd login openai key` (API key on stdin).");
+}
+
+/**
+ * An OpenAI API key for `login openai key`: piped on stdin, or OPENAI_API_KEY.
+ * Never an argument, so it stays out of shell history and process listings.
+ */
+async function readOpenAIApiKey(): Promise<string> {
+  const fromStdin = process.stdin.isTTY ? "" : (await Bun.stdin.text()).trim();
+  const apiKey = fromStdin || process.env.OPENAI_API_KEY?.trim() || "";
+  if (!apiKey) {
+    throw new Error("Pipe the OpenAI API key on stdin (`exocortexd login openai key < keyfile`) or set OPENAI_API_KEY.");
+  }
+  return apiKey;
 }
 
 export async function handleLogin(providerArg?: string, loginArg?: string): Promise<void> {
   const provider = (providerArg as ProviderId | undefined) ?? getDefaultProvider().id;
   console.log(`\n  Exocortex — Authentication (${provider})\n`);
 
-  const method = provider === "openai" ? parseOpenAILoginMethod(loginArg) : undefined;
-  const apiKey = provider === "deepseek" || provider === "openrouter" ? loginArg : undefined;
+  const openAIApiKeyLogin = provider === "openai" && loginArg === "key";
+  const method = provider === "openai" && !openAIApiKeyLogin ? parseOpenAILoginMethod(loginArg) : undefined;
+  const apiKey = provider === "deepseek" || provider === "openrouter"
+    ? loginArg
+    : openAIApiKeyLogin ? await readOpenAIApiKey() : undefined;
 
   const { status, email } = await ensureAuthenticated(provider, {
     onProgress: (msg) => console.log(`  ${msg}`),

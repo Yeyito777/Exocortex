@@ -15,10 +15,10 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ProviderProxyRemoteStatus, ProxyableProviderId } from "@exocortex/shared/provider-proxy";
 import { PROVIDER_PROXY_ORIGINS } from "@exocortex/shared/provider-proxy";
-import { getAuthInfo, hasConfiguredCredentials } from "../auth";
+import { getAccountAuthInfo } from "../auth";
 import { getLastUsage } from "../usage";
 import { getProviderAdapter } from "../providers/catalog";
-import { getCurrentAccountScope, getVerifiedSession } from "../providers/openai/auth";
+import { getChatGPTAccountScope, getVerifiedSession, hasChatGPTCredentials } from "../providers/openai/auth";
 import { buildCloudflareCookieHeader, storeCloudflareCookiesFromHeaders } from "../providers/openai/cookies";
 import { requireSubscriptionAuth } from "../providers/anthropic/auth";
 import { refreshAccountUsage } from "../providers/anthropic/usage";
@@ -148,7 +148,8 @@ const defaultSources: UpstreamCredentialSources = {
   refreshClaudeLogin: async (account = MAIN_ACCOUNT_ID) => { await refreshAccountUsage(account); },
   readClaudeOAuth: readClaudeCodeOAuth,
   claudePoolAvailable: () => claudeAccountStates().some(state => state.id !== MAIN_ACCOUNT_ID && state.available),
-  openaiSession: (options) => getVerifiedSession(options),
+  // /proxy forwards to the ChatGPT backend, so only the ChatGPT login can serve it.
+  openaiSession: (options) => getVerifiedSession({ ...options, chatgptOnly: true }),
 };
 
 export class UpstreamAuthError extends Error {
@@ -263,9 +264,10 @@ export function createLocalUpstreamAuth(overrides: Partial<UpstreamCredentialSou
         error = loggedIn ? undefined : login.error;
         accountScope = scopeOf(login.orgId ?? login.email);
       } else {
-        loggedIn = hasConfiguredCredentials(provider);
-        error = loggedIn ? undefined : "OpenAI is not logged in on this machine. Run /login openai there.";
-        accountScope = loggedIn ? getCurrentAccountScope() : null;
+        // /proxy serves only the ChatGPT login; an API key here cannot be lent out.
+        loggedIn = hasChatGPTCredentials();
+        error = loggedIn ? undefined : "OpenAI is not logged in with a ChatGPT account on this machine. Run /login openai there.";
+        accountScope = loggedIn ? getChatGPTAccountScope() : null;
       }
       if (loggedIn && options.refreshUsage && adapter.usage.refreshRemoteUsage) {
         try {
@@ -274,7 +276,7 @@ export function createLocalUpstreamAuth(overrides: Partial<UpstreamCredentialSou
           log("debug", `provider-proxy: ${provider} usage refresh failed: ${refreshError instanceof Error ? refreshError.message : refreshError}`);
         }
       }
-      const authInfo = loggedIn ? getAuthInfo(provider) : null;
+      const authInfo = loggedIn ? getAccountAuthInfo(provider) : null;
       return {
         loggedIn,
         ...(error ? { error } : {}),

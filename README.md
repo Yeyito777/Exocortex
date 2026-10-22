@@ -78,6 +78,18 @@ code flow:
 exocortexd login openai code
 ```
 
+To bill the OpenAI API instead of a ChatGPT plan, log in with an API key
+(piped on stdin, never as an argument). Requests then go to api.openai.com and
+only the models the key can use are offered:
+
+```bash
+exocortexd login openai key < openai-key.txt
+```
+
+In the TUI, `/login openai key <api-key>` does the same. The most recent login
+wins; `/login openai` switches back to the ChatGPT account, and `/login` shows
+which one is in use.
+
 Check or restart the daemon with:
 
 ```bash

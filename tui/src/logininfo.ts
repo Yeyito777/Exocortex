@@ -13,7 +13,11 @@ function providerLabel(state: RenderState, provider: ProviderId): string {
 
 function providerSummary(state: RenderState, provider: ProviderId): string | null {
   const info = state.authInfoByProvider[provider];
-  return maybeCensorEmail(info.email, state.hideSensitiveInfo) || info.displayName?.trim() || null;
+  const summary = maybeCensorEmail(info.email, state.hideSensitiveInfo) || info.displayName?.trim() || null;
+  // OpenAI has two login methods; say which one is in use.
+  if (provider !== "openai" || !info.authenticated || info.source?.startsWith("proxy:")) return summary;
+  if (info.source === "api_key") return summary ?? "API key";
+  return summary ? `${summary} (ChatGPT account)` : "ChatGPT account";
 }
 
 export function buildLoginInfoMessage(state: RenderState): string {

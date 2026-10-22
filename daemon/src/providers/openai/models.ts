@@ -3,6 +3,8 @@ import { formatModelDisplayName } from "@exocortex/shared/model-display";
 import { DAYBREAK_BASE_MODEL_ID, DAYBREAK_MODEL_ID, isDaybreakModelId } from "@exocortex/shared/daybreak";
 import { log } from "../../log";
 import { getVerifiedSession } from "./auth";
+import { loadOpenAIApiKey, updateOpenAIApiKeyModels, verifyOpenAIApiKey } from "./api-key";
+import { AuthError } from "../errors";
 import { supportsOpenAIFastServiceTier, supportsOpenAIImageInputs, supportsOpenAIUltraReasoningEffort } from "./capabilities";
 import { CHATGPT_BASE_URL, OPENAI_CODEX_CLIENT_VERSION, OPENAI_MODELS_URL } from "./constants";
 import { proxiedProviderUrl } from "../../provider-proxy/route";
@@ -280,8 +282,61 @@ export function selectOpenAIModelsForTest(models: OpenAICodexModel[]): ModelInfo
   return mergeMissingFallbackModels(selectPreferredOpenAIModels(models), models);
 }
 
+/**
+ * Models for an API-key login: the ones Exocortex knows how to drive that the
+ * key's `/v1/models` lists. The public API reports no context windows or
+ * effort menus, so those come from the Codex metadata; Codex-only features
+ * (ultrafast, Daybreak, cyber programs, Spark) are never advertised.
+ */
+export function selectOpenAIApiKeyModels(availableIds: Iterable<string>): ModelInfo[] {
+  const available = new Set(availableIds);
+  const fallbackById = new Map(FALLBACK_OPENAI_MODELS.map((model) => [model.id, model]));
+  const candidates = new Set<string>([
+    ...PREFERRED_OPENAI_MODEL_ORDER,
+    ...FALLBACK_OPENAI_MODELS.map((model) => model.id),
+    ...[...available].filter((id) => /^gpt-\d+(?:\.\d+)*-(astra|sol|terra|luna)$/.test(id)),
+  ]);
+  const models: ModelInfo[] = [];
+  for (const id of candidates) {
+    if (!available.has(id) || isDaybreakModelId(id) || MANUAL_OPENAI_MODEL_IDS.has(id)) continue;
+    const known = fallbackById.get(id);
+    const model = known ?? {
+      id,
+      label: formatModelDisplayName(id),
+      maxContext: fallbackContextWindow(id),
+      supportedEfforts: fallbackEffortsForModel(id),
+      defaultEffort: preferredDefaultEffort(id, undefined),
+      supportsImages: supportsOpenAIImageInputs(id),
+      supportsFastMode: supportsOpenAIFastServiceTier(id),
+    };
+    models.push({ ...model, supportsUltrafastMode: false, supportsDaybreak: false, supportsStandardCyber: false });
+  }
+  return sortOpenAIModels(models);
+}
+
+async function fetchOpenAIApiKeyModels(apiKey: string): Promise<ModelInfo[]> {
+  let modelIds: string[];
+  try {
+    modelIds = (await verifyOpenAIApiKey(apiKey, { signal: AbortSignal.timeout(8000) })).modelIds;
+    updateOpenAIApiKeyModels(apiKey, modelIds);
+  } catch (err) {
+    // Offline or a blip: the list from the last verification beats the
+    // ChatGPT fallback list, which names models a key may not have.
+    const stored = loadOpenAIApiKey();
+    if (err instanceof AuthError || stored?.apiKey !== apiKey || stored.models.length === 0) throw err;
+    log("warn", `openai models: API key model list unavailable (${err instanceof Error ? err.message : err}); using the stored list`);
+    modelIds = stored.models;
+  }
+  const models = selectOpenAIApiKeyModels(modelIds);
+  if (models.length === 0) {
+    throw new Error("the OpenAI API key cannot use any GPT model Exocortex supports");
+  }
+  return models;
+}
+
 export async function fetchOpenAIModels(): Promise<ModelInfo[]> {
   const session = await getVerifiedSession();
+  if (session.kind === "api_key") return fetchOpenAIApiKeyModels(session.accessToken);
   const url = `${proxiedProviderUrl("openai", OPENAI_MODELS_URL, CHATGPT_BASE_URL)}?client_version=${encodeURIComponent(OPENAI_CODEX_CLIENT_VERSION)}`;
   const res = await fetch(url, {
     headers: {

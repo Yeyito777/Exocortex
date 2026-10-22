@@ -6,6 +6,8 @@ import type { StreamOptions } from "../types";
 const REMOTE_COMPACTION_BETA_FEATURE = "remote_compaction_v2";
 
 export interface OpenAIRequestSession {
+  /** API-key sessions talk to the public OpenAI API; absent means the ChatGPT backend. */
+  kind?: "chatgpt" | "api_key";
   accessToken: string;
   accountId: string | null;
   /** Stable key for the OpenAI account whose token/account-id this request uses. */
@@ -16,6 +18,14 @@ export function buildOpenAIRequestHeaders(
   session: OpenAIRequestSession,
   options: StreamOptions,
 ): Record<string, string> {
+  if (session.kind === "api_key") {
+    // The public API needs none of the Codex session, window or account headers.
+    return {
+      Authorization: `Bearer ${session.accessToken}`,
+      Accept: "application/json",
+      "User-Agent": "exocortexd/openai",
+    };
+  }
   const headers: Record<string, string> = buildOpenAIHeaders({
     Authorization: `Bearer ${session.accessToken}`,
     Accept: "application/json",

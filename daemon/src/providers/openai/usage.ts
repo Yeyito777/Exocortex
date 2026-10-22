@@ -4,7 +4,7 @@ import { join } from "path";
 import { runtimeDir } from "@exocortex/shared/paths";
 import type { UsageData, UsageResetCredits, UsageWindow } from "../../messages";
 import type { UsageResetOutcome } from "../../protocol";
-import { getCurrentAccountKey, getVerifiedSession, type VerifiedOpenAISession } from "./auth";
+import { currentOpenAILoginKind, getCurrentAccountKey, getVerifiedSession, type VerifiedOpenAISession } from "./auth";
 import {
   OPENAI_USAGE_RESET_CONSUME_URL,
   OPENAI_USAGE_RESET_CREDITS_URL,
@@ -151,7 +151,9 @@ export function refreshUsage(onUpdate: (usage: UsageData | null) => void): void 
 }
 
 export async function refreshRemoteUsage(): Promise<UsageData | null> {
-  const session = await getVerifiedSession();
+  // Usage windows belong to ChatGPT plans; an API key is billed per token instead.
+  if (currentOpenAILoginKind() === "api_key") return null;
+  const session = await getVerifiedSession({ chatgptOnly: true });
   const accountKey = accountKeyForSession(session);
   await refreshRemoteUsageForSession(session);
   return isCurrentAccount(accountKey) ? usageForAccount(accountKey) : usageForCurrentAccount();
@@ -516,7 +518,7 @@ function parseDurationMinutes(value: string | null): number | null {
 }
 
 export async function consumeUsageReset(): Promise<{ outcome: UsageResetOutcome; windowsReset: number; remainingResets?: number }> {
-  const session = await getVerifiedSession();
+  const session = await getVerifiedSession({ chatgptOnly: true });
   return consumeUsageResetForSession(session, randomUUID());
 }
 

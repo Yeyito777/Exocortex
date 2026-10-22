@@ -12,6 +12,12 @@ export interface StoredOpenAIAuth {
   authMode: string | null;
   accountId: string | null;
   idToken: string | null;
+  /**
+   * Why OpenAI definitively rejected this account's refresh token (expired,
+   * revoked, reused). Persisted so a restart does not retry it; a new login
+   * replaces the record and clears it.
+   */
+  refreshRejected?: string | null;
 }
 
 export interface OpenAITokenResponse {
