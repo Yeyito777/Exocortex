@@ -311,6 +311,7 @@ export type RenderLineSegment =
   | "automation_label"
   | "notification_body"
   | "notification_header"
+  | "notification_margin_bottom"
   | "turn_working"
   | "user_content"
   | "user_image"
@@ -678,6 +679,14 @@ export function buildMessageLines(
     pushAnchoredLine(line, false, "", owner, segment, index, 0);
   };
 
+  /**
+   * Whether the last row is a user bubble's bottom margin. The next bubble then
+   * shares that blank row instead of adding its own top margin: consecutive
+   * user messages sit one blank row apart, not two. The first message of a
+   * partial window has no rows above it and keeps its margin.
+   */
+  const followsUserBubble = () => lines.length > 0 && lineAnchors[lines.length - 1].segment === "user_margin_bottom";
+
   /** A chrome row (a notification's label, the Working row): yanks and copies skip it. */
   const pushChromeLine = (line: string, owner: object, segment: RenderLineSegment) => {
     pushAnchoredLine(line, false, "", owner, segment, 0, 0, DISPLAY_ONLY_ROW);
@@ -869,7 +878,9 @@ export function buildMessageLines(
       let boundary = Math.max(suffixStart, s) + 1;
       while (boundary <= messageCount && !isSegmentBoundary(messages[boundary - 1])) boundary++;
       const lastDirty = Math.max(-1, ...dirty.filter(index => index < messageCount));
-      if (boundary < messageCount && lastDirty < boundary && boundary - s < messageCount - rebuildFrom) {
+      // A user message right after the boundary shares the boundary's bottom margin, so it
+      // reads the rows before it; those can still change, so it is rebuilt.
+      if (boundary < messageCount && messages[boundary].role !== "user" && lastDirty < boundary && boundary - s < messageCount - rebuildFrom) {
         rebuildFrom = s;
         rebuildTo = boundary;
         reusedSuffix = { cached, oldStart: boundary - shift };
@@ -957,10 +968,10 @@ export function buildMessageLines(
       pushNotification(msg, messagePlan);
       const contentEnd = lines.length;
       pushImages(pastedImages(msg, msg.images, state.convId), "user_image");
-      pushLine("", msg, "user_margin_bottom");
+      pushLine("", msg, "notification_margin_bottom");
       pushMessageBound(msg.role, start, contentStart, contentEnd);
     } else if (msg.role === "user") {
-      if (userMessageNeedsTopMargin(state.messages, messageIndex)) pushLine("", msg, "user_margin_top");
+      if (userMessageNeedsTopMargin(state.messages, messageIndex) && !followsUserBubble()) pushLine("", msg, "user_margin_top");
       const contentStart = lines.length;
       // The owner's own Discord/WhatsApp message reads as theirs: their words in their bubble.
       // Only the owner's words get that background; a parent conversation's prompt is automated.
@@ -1211,7 +1222,7 @@ export function buildMessageLines(
     }
     const provenance = qm.automation?.kind === "exo_send" ? parentPromptLabel(qm.automation, conversationTitle) : automationProvenance(qm.automation);
     const timingLabel = [provenance, queueTimingLabel(qm, Date.now(), state.provider)].filter((label): label is string => Boolean(label)).join(" · ");
-    pushLine("", qm, "queued_margin_top");
+    if (!followsUserBubble()) pushLine("", qm, "queued_margin_top");
     // Render a dimmed user bubble
     const queuedText = relayed ?? qm.text;
     const background = ownerWords(qm.text, qm.automation) ? theme.userBg : theme.automatedUserBg;
