@@ -669,6 +669,7 @@ function onDaemonEvent(event: Event): void {
   // A streaming true→false summary is the daemon's authoritative signal that
   // the entire turn chain settled. Queued and goal-continuation handoffs remain
   // streaming=true, so the notification can run immediately without a debounce.
+  // The daemon also marks whether the owner is waiting on that chain.
   if (event.type === "conversation_updated" && shouldPingForStreamCompletion({
     updatedConvId: event.summary.id,
     wasStreaming: wasUpdatedConversationStreaming,
@@ -676,6 +677,7 @@ function onDaemonEvent(event: Event): void {
     hasPendingWork: hasInProgressModelWork(event.summary)
       || state.queuedMessages.some(message => message.convId === event.summary.id),
     streamStopReason: event.streamStopReason,
+    ownerTurnFinished: event.ownerTurnFinished === true,
   })) {
     // Paint green before focus detection or sound setup can do synchronous I/O.
     renderImmediately();

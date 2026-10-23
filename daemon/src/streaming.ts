@@ -19,6 +19,8 @@ export type ConversationJobKind = "assistant" | "maintenance";
 const activeJobKinds = new Map<string, ConversationJobKind>();
 /** Conversations reserved for preflight or handing a completed turn to a daemon-owned continuation. */
 const streamHandoffs = new Map<string, symbol>();
+/** Conversations whose current turn chain took in a message the owner wrote themselves. */
+const ownerTurnChains = new Set<string>();
 /** Whether an active job represents a model turn that should replay after restart. */
 const restartRecoverableJobs = new Set<string>();
 const chunkCounters = new Map<string, number>();
@@ -106,6 +108,7 @@ export function getStreamHandoffToken(convId: string): symbol | undefined {
 }
 
 export function beginStreamHandoff(convId: string): void {
+  if (!isStreaming(convId)) ownerTurnChains.delete(convId);
   streamHandoffs.set(convId, Symbol("stream-handoff"));
 }
 
@@ -117,13 +120,30 @@ export function beginStreamHandoff(convId: string): void {
  */
 export function tryBeginStreamHandoff(convId: string): symbol | undefined {
   if (isStreaming(convId)) return undefined;
+  ownerTurnChains.delete(convId);
   const token = Symbol("stream-handoff");
   streamHandoffs.set(convId, token);
   return token;
 }
 
 export function clearStreamHandoff(convId: string): void {
-  notifyIfIdle(convId, streamHandoffs.delete(convId));
+  const wasBusy = streamHandoffs.delete(convId);
+  if (!isStreaming(convId)) ownerTurnChains.delete(convId);
+  notifyIfIdle(convId, wasBusy);
+}
+
+/**
+ * Record that the running turn chain (a turn plus the queued turns and goal
+ * continuations handed off from it) took in the owner's own message. The flag
+ * lives until the chain ends; a chain made only of automated prompts never
+ * sets it.
+ */
+export function noteOwnerTurnInChain(convId: string): void {
+  if (isStreaming(convId)) ownerTurnChains.add(convId);
+}
+
+export function hasOwnerTurnInChain(convId: string): boolean {
+  return ownerTurnChains.has(convId);
 }
 
 export function setActiveJob(
@@ -206,6 +226,7 @@ export function clearActiveJob(convId: string, owner?: AbortController): void {
   lastActivityAt.delete(convId);
   pausedStreams.delete(convId);
   activeToolBackgrounders.delete(convId);
+  if (!isStreaming(convId)) ownerTurnChains.delete(convId);
   notifyIfIdle(convId, wasBusy);
 }
 

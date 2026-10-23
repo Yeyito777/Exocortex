@@ -21,7 +21,7 @@ import { getMaxContext, supportsImageInputs } from "./providers/registry";
 import { buildExecutor, summarizeTool, toolCallsRequireWatchdogPause } from "./tools/registry";
 import * as convStore from "./conversations";
 import type { DaemonServer, ConnectedClient } from "./server";
-import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, MAX_EXO_SUBAGENT_DEPTH, PROVIDER_NOTICE_KIND, createMessageMetadata, createModelVisibleSystemNotice, createStoredUserContextCheckpoint, createStoredUserMessage, currentReplayHistoryPrefix, isHistoryMessage, isReplayHistoryMessage, isValidActiveContextCached, type ActiveContext, type StoredMessage, type ApiContentBlock, type ApiMessage, type Block, type UserMessageAutomation } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, MAX_EXO_SUBAGENT_DEPTH, PROVIDER_NOTICE_KIND, createMessageMetadata, createModelVisibleSystemNotice, createStoredUserContextCheckpoint, createStoredUserMessage, currentReplayHistoryPrefix, isHistoryMessage, isRealUserMessage, isReplayHistoryMessage, isValidActiveContextCached, type ActiveContext, type StoredMessage, type ApiContentBlock, type ApiMessage, type Block, type UserMessageAutomation } from "./messages";
 import type { ContentBlock as ProviderContentBlock, QueuedInput, QueuedInputSource, StreamRetryMetadata } from "./providers/types";
 import type { QueuedMessage } from "./message-queue";
 import type { ImageAttachment } from "@exocortex/shared/messages";
@@ -707,11 +707,16 @@ async function orchestrateAdmittedAssistantTurn(
     }
     // A subagent woken by automated input after its task reported: its reply goes up too.
     if (automation) getSubagentNotificationRuntime(server)?.relayFollowUp?.(convId, automation, admittedText, startedAt);
+    else convStore.noteOwnerTurnInChain(convId);
   } else {
     // Replay/manual compaction has no new user message, but its metadata
     // mutation still needs an explicit commit before provider work starts.
     convStore.markDirty(convId);
     convStore.flush(convId);
+    // A replay (after a restart, a Chrono sleep, or /replay) continues the turn
+    // its latest prompt started: the owner waits on it if they wrote that prompt.
+    const resumedPrompt = manualCompaction ? undefined : conv.messages.findLast(isRealUserMessage);
+    if (resumedPrompt && !resumedPrompt.metadata?.automation) convStore.noteOwnerTurnInChain(convId);
   }
 
   if (interruptedSleep) {
@@ -1722,7 +1727,10 @@ async function orchestrateAdmittedAssistantTurn(
       persistCompletedTurnPrefix(injectedStored);
       // The footer above a human prompt is final: abort metadata stamps only
       // what follows it. The work timer runs on; the prompt arrived mid-turn.
-      if (latestHuman) lastCanonicalTurnAssistant = null;
+      if (latestHuman) {
+        lastCanonicalTurnAssistant = null;
+        convStore.noteOwnerTurnInChain(convId);
+      }
       convStore.removeQueuedMessagesById(drained.map(message => message.id));
       for (const qm of drained) {
         if (qm.subagentNotificationId) acknowledgeSubagentNotification(qm.subagentNotificationId);
@@ -2186,6 +2194,13 @@ async function orchestrateAdmittedAssistantTurn(
     const publishedStopReason: StreamingStopReason | undefined = streamChainContinues
       ? "handoff"
       : streamStopReason;
+    // The chain is over and the owner is waiting on it: it took in their own
+    // message, and it ended rather than being stopped (a watchdog timeout still
+    // leaves the conversation waiting for them). Read before clearActiveJob
+    // ends the chain's record.
+    const ownerTurnFinished = publishedStopReason === undefined
+      && convStore.hasOwnerTurnInChain(convId)
+      && (!outcome?.aborted || outcome.watchdog === true);
     convStore.clearActiveSteerHandler(convId, steerTurn);
     for (const unsubscribe of queuedInputSubscriptions) unsubscribe();
     queuedInputSubscriptions.clear();
@@ -2219,7 +2234,7 @@ async function orchestrateAdmittedAssistantTurn(
       });
       // During a handoff getSummary remains streaming=true. The final turn in
       // the chain is the only one that publishes streaming=false/unread=true.
-      broadcastConversationUpdated(server, convId, publishedStopReason);
+      broadcastConversationUpdated(server, convId, publishedStopReason, ownerTurnFinished);
 
       // Reconcile clients after multi-round/marker/queued-turn event streams from
       // the canonical committed ordering. Paginated clients receive the bounded

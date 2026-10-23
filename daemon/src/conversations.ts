@@ -36,6 +36,7 @@ import { archiveWindow, forgetFullArchiveWindow, inheritArchiveHashProof, isArch
 // Re-export streaming functions so existing `convStore.*` call sites keep working
 export {
   isStreaming, isStreamHandoffActive, getStreamHandoffToken, beginStreamHandoff, tryBeginStreamHandoff, clearStreamHandoff,
+  noteOwnerTurnInChain, hasOwnerTurnInChain,
   setActiveJob, getActiveJob, getActiveJobKind, isRestartRecoverableJob, clearActiveJob, getStreamingStartedAt,
   setStreamingTokens, getStreamingTokens, nextStreamSeq, getStreamSeq,
   setStreamingGenerationThroughput, getStreamingGenerationThroughput,

@@ -138,7 +138,7 @@ table in step with it.
 | `/theme [name]` | Show or set the theme |
 | `/folders [tree\|navigate]` | Expand sidebar folders in place (`l` expands, `h` collapses, `Enter` toggles; the default) or open them as their own list |
 | `/hide [on\|off]` | Censor emails in the UI |
-| `/ping [sound\|notif\|both [file] \| off]` | Signal when a response finishes |
+| `/ping [sound\|notif\|both [file] \| off]` | Signal when a conversation is done and waiting for you: a turn with your own message finished and nothing queued follows (automated turns such as notifications, wakes and subagent reports, and interrupted turns, never ping) |
 | `/ssh [<alias>\|cancel]` | Route through another machine's daemon over SSH |
 | `/proxy [<openai\|anthropic> <alias\|off>]` | Send one provider's model requests through another machine's login ([/proxy](provider-proxy.md)) |
 | `/instructions [text\|clear]` | Open the instructions picker and editor for this conversation, its folder or every conversation ([Instructions](#instructions)); with text, set or clear this conversation's |
