@@ -395,8 +395,10 @@ export interface RenderState {
   accountsScreen: AccountsScreenState | null;
   /** An `accounts` request whose answer opens the screen (or explains why it cannot). */
   accountsOpenRequest: AccountsOpenRequest | null;
-  /** Last `accounts` snapshot seen, shown at once when the screen reopens. */
+  /** Last `accounts` snapshot seen, shown at once when the screen opens. */
   accountsSnapshotCache: AccountsSnapshot | null;
+  /** An unanswered `accounts` ask sent ahead of opening the screen. */
+  accountsPrefetchReqId: string | null;
   /** Claude account each conversation last ran on, as the snapshots said (null: none yet); highlights it before the daemon answers. */
   claudeConversationAccounts: Map<string, string | null>;
   /**
@@ -747,6 +749,7 @@ export function createInitialState(): RenderState {
     accountsScreen: null,
     accountsOpenRequest: null,
     accountsSnapshotCache: null,
+    accountsPrefetchReqId: null,
     claudeConversationAccounts: new Map(),
     taskPanelExpansion: null,
     undo: createUndoState(),

@@ -18,7 +18,7 @@ import { configureInlineImages, setInlineImageCellSize, setInlineImageMode } fro
 import { disposeHistoryImages, handleHistoryImageResponse, invalidateHistoryImagePlacements } from "./historyimages";
 import { configureMathImages, disposeMathImages, mathImagesActive } from "./mathimages";
 import { handleImageModalKey } from "./imagemodal";
-import { closeAccountsScreen, handleAccountsScreenKey, requestAccountsScreen } from "./accountsscreen";
+import { closeAccountsScreen, handleAccountsScreenKey, prefetchAccounts, requestAccountsScreen } from "./accountsscreen";
 import {
   handleInstructionsModalKey,
   instructionsConnectionLost,
@@ -470,6 +470,7 @@ function resetForDaemonRouteSwitch(): void {
   state.accountsScreen = null;
   state.accountsOpenRequest = null;
   state.accountsSnapshotCache = null;
+  state.accountsPrefetchReqId = null;
   state.claudeConversationAccounts.clear();
   // Its scopes belonged to the old endpoint too.
   state.instructionsModal = null;
@@ -2021,8 +2022,10 @@ function restoreDaemonSessionAfterReconnect(
   // state a second time.
   if (!bootstrapAlreadyRequested) daemon.ping();
   instructionsReconnected(state, daemon);
-  // A restarted daemon forgot this client's Accounts watch.
+  // A restarted daemon forgot this client's Accounts watch; otherwise refresh
+  // the snapshot the screen opens with (a route switch dropped it).
   if (state.accountsScreen) daemon.accounts({ watch: true, convId: state.convId });
+  else prefetchAccounts(state, daemon, { force: true });
   updateMonitor?.setRoute(daemon.remoteAlias);
   if (!conversationWillReload && state.convId) loadConversationWindow(state.convId);
 }
@@ -2195,6 +2198,8 @@ async function main(): Promise<void> {
   // Request initial usage and sidebar data from daemon.
   daemon.ping();
   startupProfileMark("ping_sent");
+  // So the Accounts screen opens filled in, also the first time.
+  prefetchAccounts(state, daemon, { force: true });
 
   setupTerminal();
 

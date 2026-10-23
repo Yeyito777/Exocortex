@@ -65,7 +65,7 @@ import { formatConversationDefaults, receiveConversationDefaults } from "./event
 import { hydratePendingAIFromSnapshot } from "./events/pending-ai";
 import { handleUserMacroError, handleUserMacrosEvent, userMacrosRouteSwitched } from "./usermacros/controller";
 import type { DaemonActions } from "./events/types";
-import { handleAccountsEvent } from "./accountsscreen";
+import { accountsMayHaveChanged, handleAccountsEvent, isAccountsPrefetchError, prefetchAccounts, type AccountsRequester } from "./accountsscreen";
 import { failBtwRequest, handleBtwEvent } from "./btw/events";
 import { settleRejectedQueueRequest } from "./queue";
 import { restoreUnconfirmedSends, settleRejectedDirectSend } from "./sendecho";
@@ -100,6 +100,8 @@ export function handleEvent(
 
   if (handleBtwEvent(event, state)) return;
   if (handleInstructionsEvent(state, event, daemon)) return;
+  // Keep a fresh snapshot for the Accounts screen to open with.
+  if (daemon?.accounts && accountsMayHaveChanged(event)) prefetchAccounts(state, daemon as AccountsRequester);
 
   switch (event.type) {
     case "user_macros":
@@ -161,6 +163,7 @@ export function handleEvent(
 
     case "error": {
       if (handleUserMacroError(state, event)) break;
+      if (isAccountsPrefetchError(state, event)) break;
       if (event.reqId && state.pendingTokenStatsView?.reqId === event.reqId) {
         // Daemons predating get_token_stats still push snapshots unprompted.
         const view = state.pendingTokenStatsView;

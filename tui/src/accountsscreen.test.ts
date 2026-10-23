@@ -4,6 +4,7 @@ import {
   accountsScreenLines,
   closeAccountsScreen,
   handleAccountsScreenKey,
+  prefetchAccounts,
   renderAccountsScreen,
   requestAccountsScreen,
 } from "./accountsscreen";
@@ -162,6 +163,84 @@ test("reopening shows the last snapshot right away while a fresh one is fetched"
   const text = screenText(state).join("\n");
   expect(text).not.toContain("Loading accounts…");
   expect(text).toContain("max2");
+});
+
+test("a snapshot fetched at connect makes the first open instant, with no loading line", () => {
+  const state = createInitialState();
+  state.convId = "conv-warm";
+  const daemon = fakeDaemon();
+  prefetchAccounts(state, daemon, { force: true });
+  expect(daemon.calls).toEqual([{ convId: "conv-warm" }]);
+  handleEvent({ type: "accounts", reqId: "accounts_1", snapshot: snapshot() }, state, noDaemon);
+  expect(state.accountsPrefetchReqId).toBeNull();
+  expect(state.accountsScreen).toBeNull();
+
+  requestAccountsScreen(state, daemon);
+  expect(daemon.calls[1]).toEqual({ watch: true, convId: "conv-warm" });
+  const text = screenText(state).join("\n");
+  expect(text).not.toContain("Loading accounts…");
+  expect(text).toContain("max2");
+  expect(highlighted(state)).toEqual(["main"]);
+  // The watch's answer refreshes it in place.
+  const later = snapshot({}, [claude("main"), claude("max2", { state: "limited", limitedUntil: NOW + H })]);
+  handleEvent({ type: "accounts", reqId: "accounts_2", snapshot: later }, state, noDaemon);
+  expect(state.accountsScreen?.snapshot?.claude.accounts[1]?.state).toBe("limited");
+});
+
+function prefetchingDaemon() {
+  const daemon = fakeDaemon();
+  return Object.assign(daemon, noDaemon, { accounts: daemon.accounts });
+}
+
+test("sign-in, usage, account and /proxy events refresh the cached snapshot, one ask at a time", () => {
+  const state = createInitialState();
+  state.convId = "conv-warm";
+  const daemon = prefetchingDaemon();
+  handleEvent({ type: "usage_update", provider: "anthropic", usage: null }, state, daemon);
+  expect(daemon.calls).toEqual([{ convId: "conv-warm" }]);
+  // Already in the unanswered ask's snapshot.
+  handleEvent({ type: "auth_status", message: "Switched" }, state, daemon);
+  handleEvent({ type: "provider_proxies", proxies: [] }, state, daemon);
+  expect(daemon.calls).toHaveLength(1);
+  // Unrelated events never ask.
+  handleEvent({ type: "pong" } as never, state, daemon);
+  expect(daemon.calls).toHaveLength(1);
+
+  handleEvent({ type: "accounts", reqId: "accounts_1", snapshot: snapshot() }, state, daemon);
+  handleEvent({ type: "auth_status", message: "Logged out from openai" }, state, daemon);
+  expect(daemon.calls).toHaveLength(2);
+  const loggedOut = snapshot({}, [claude("main"), claude("max2", { state: "signed_out" })]);
+  handleEvent({ type: "accounts", reqId: "accounts_2", snapshot: loggedOut }, state, daemon);
+  expect(state.accountsSnapshotCache).toBe(loggedOut);
+
+  // While the screen is open its watch pushes changes; no extra asks.
+  requestAccountsScreen(state, daemon);
+  handleEvent({ type: "usage_update", provider: "anthropic", usage: null }, state, daemon);
+  expect(daemon.calls.slice(2)).toEqual([{ watch: true, convId: "conv-warm" }]);
+});
+
+test("a reconnect asks again even if the last ask was lost", () => {
+  const state = createInitialState();
+  const daemon = fakeDaemon();
+  prefetchAccounts(state, daemon, { force: true });
+  prefetchAccounts(state, daemon);
+  expect(daemon.calls).toHaveLength(1);
+  // The connection dropped before the answer; the next one starts over.
+  prefetchAccounts(state, daemon, { force: true });
+  expect(daemon.calls).toHaveLength(2);
+  expect(state.accountsPrefetchReqId).toBe("accounts_2");
+  handleEvent({ type: "accounts", reqId: "accounts_2", snapshot: snapshot() }, state, noDaemon);
+  expect(state.accountsSnapshotCache?.claude.accounts).toHaveLength(2);
+});
+
+test("a daemon without the accounts command rejects the ask silently, and is not asked again", () => {
+  const state = createInitialState();
+  const daemon = prefetchingDaemon();
+  prefetchAccounts(state, daemon, { force: true });
+  handleEvent({ type: "error", reqId: "accounts_1", message: "Unknown command: accounts" }, state, daemon);
+  expect(state.messages).toHaveLength(0);
+  handleEvent({ type: "usage_update", provider: "anthropic", usage: null }, state, daemon);
+  expect(daemon.calls).toHaveLength(1);
 });
 
 /** Claude rows drawn as this conversation's account (bold accent name). */
