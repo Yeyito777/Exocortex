@@ -680,12 +680,15 @@ export function buildMessageLines(
   };
 
   /**
-   * Whether the last row is a user bubble's bottom margin. The next bubble then
-   * shares that blank row instead of adding its own top margin: consecutive
-   * user messages sit one blank row apart, not two. The first message of a
-   * partial window has no rows above it and keeps its margin.
+   * Whether the last row is a user bubble's or a notification's bottom margin. The
+   * next one then shares that blank row instead of adding its own top margin:
+   * consecutive user messages and notifications sit one blank row apart, not two.
+   * The first message of a partial window has no rows above it and keeps its margin.
    */
-  const followsUserBubble = () => lines.length > 0 && lineAnchors[lines.length - 1].segment === "user_margin_bottom";
+  const followsBubble = () => {
+    const segment = lines.length > 0 ? lineAnchors[lines.length - 1].segment : null;
+    return segment === "user_margin_bottom" || segment === "notification_margin_bottom";
+  };
 
   /** A chrome row (a notification's label, the Working row): yanks and copies skip it. */
   const pushChromeLine = (line: string, owner: object, segment: RenderLineSegment) => {
@@ -878,7 +881,7 @@ export function buildMessageLines(
       let boundary = Math.max(suffixStart, s) + 1;
       while (boundary <= messageCount && !isSegmentBoundary(messages[boundary - 1])) boundary++;
       const lastDirty = Math.max(-1, ...dirty.filter(index => index < messageCount));
-      // A user message right after the boundary shares the boundary's bottom margin, so it
+      // A user message (or notification) right after the boundary shares the boundary's bottom margin, so it
       // reads the rows before it; those can still change, so it is rebuilt.
       if (boundary < messageCount && messages[boundary].role !== "user" && lastDirty < boundary && boundary - s < messageCount - rebuildFrom) {
         rebuildFrom = s;
@@ -963,7 +966,7 @@ export function buildMessageLines(
       if (state.messages[messageIndex + 1]?.role !== "user" && userMessageNeedsTopMargin(state.messages, messageIndex)) pushLine("", msg, "user_margin_top");
       pushMessageBound(msg.role, start, lines.length, lines.length);
     } else if (msg.role === "user" && messagePlan?.kind === "notification") {
-      if (userMessageNeedsTopMargin(state.messages, messageIndex)) pushLine("", msg, "user_margin_top");
+      if (userMessageNeedsTopMargin(state.messages, messageIndex) && !followsBubble()) pushLine("", msg, "user_margin_top");
       const contentStart = lines.length;
       pushNotification(msg, messagePlan);
       const contentEnd = lines.length;
@@ -971,7 +974,7 @@ export function buildMessageLines(
       pushLine("", msg, "notification_margin_bottom");
       pushMessageBound(msg.role, start, contentStart, contentEnd);
     } else if (msg.role === "user") {
-      if (userMessageNeedsTopMargin(state.messages, messageIndex) && !followsUserBubble()) pushLine("", msg, "user_margin_top");
+      if (userMessageNeedsTopMargin(state.messages, messageIndex) && !followsBubble()) pushLine("", msg, "user_margin_top");
       const contentStart = lines.length;
       // The owner's own Discord/WhatsApp message reads as theirs: their words in their bubble.
       // Only the owner's words get that background; a parent conversation's prompt is automated.
@@ -1213,7 +1216,7 @@ export function buildMessageLines(
     if (qm.automation && relayed === null && qm.automation.kind !== "exo_send") {
       // A queued notification (shown with Ctrl+O) reads like the delivered ones: on the
       // assistant's side under its label, dimmed, with when it will be delivered.
-      pushLine("", qm, "queued_margin_top");
+      if (!followsBubble()) pushLine("", qm, "queued_margin_top");
       const label = `${automationLabel(qm.automation)} · ${queueTimingLabel(qm, Date.now(), state.provider)}`;
       pushLine(notificationLabelRow(label, label.length, availableWidth), qm, "queued_label");
       const body = renderNotificationBodyCached({ role: "user", text: qm.text, metadata: null }, availableWidth, qm);
@@ -1222,7 +1225,7 @@ export function buildMessageLines(
     }
     const provenance = qm.automation?.kind === "exo_send" ? parentPromptLabel(qm.automation, conversationTitle) : automationProvenance(qm.automation);
     const timingLabel = [provenance, queueTimingLabel(qm, Date.now(), state.provider)].filter((label): label is string => Boolean(label)).join(" · ");
-    if (!followsUserBubble()) pushLine("", qm, "queued_margin_top");
+    if (!followsBubble()) pushLine("", qm, "queued_margin_top");
     // Render a dimmed user bubble
     const queuedText = relayed ?? qm.text;
     const background = ownerWords(qm.text, qm.automation) ? theme.userBg : theme.automatedUserBg;
