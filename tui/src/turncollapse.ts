@@ -265,14 +265,11 @@ export function planHistory(input: PlanHistoryInput): HistoryPlan {
       continue;
     }
     // The live turn keeps its newest step in view: the pending one, or until a
-    // new round starts streaming (or a client joins mid-turn), the last committed.
+    // new round starts streaming (or a client joins mid-turn), the last committed,
+    // from before any message delivered into the run.
     const pendingLatest = inProgress ? latestStep(pendingAI!.blocks) : -1;
-    let reveal: StepRef | null = null;
-    for (let at = index - 1; inProgress && pendingLatest < 0 && at >= turnStart && !reveal; at--) {
-      const msg = messages[at];
-      const block = msg.role === "assistant" ? latestStep(msg.blocks) : -1;
-      if (block >= 0) reveal = { message: at, block };
-    }
+    const runStart = inProgress ? liveRunStart(messages, start, turnStart, pendingAI!.metadata?.startedAt) : turnStart;
+    const reveal = inProgress && pendingLatest < 0 ? latestCommittedStep(messages, runStart, turnStart, index) : null;
     const turn = planTurn(messages, start, turnStart, index, inProgress, reveal, plans, signatures, orphanLabels);
     if (turn.absorbed) {
       for (let at = orphanStart; at < turnStart; at++) {
@@ -280,7 +277,7 @@ export function planHistory(input: PlanHistoryInput): HistoryPlan {
         signatures[at - start] = "m";
       }
     }
-    if (inProgress) pending = planPending(messages, turnStart, index, pendingAI!, pendingLatest, reveal, turn.label);
+    if (inProgress) pending = planPending(messages, start, runStart, index, plans, pendingAI!, pendingLatest, reveal, turn.label);
     orphanStart = -1;
     orphanLabels.length = 0;
     turnStart = index;
@@ -295,6 +292,41 @@ function liveTurnStart(messages: readonly Message[], start: number): number {
     if (messages[index].role === "user") return index;
   }
   return start;
+}
+
+/**
+ * A message delivered into the running turn (a next-turn or steering prompt, a
+ * notification): queued, and stamped after the run started. A prompt that
+ * started its own run (a message-end handoff) carries the run's start.
+ */
+function deliveredMidRun(msg: Message, runStartedAt: number | undefined): boolean {
+  return msg.role === "user" && runStartedAt !== undefined && !!msg.metadata?.queueEntryId
+    && (msg.metadata.startedAt ?? 0) > runStartedAt;
+}
+
+/** Where the running turn's work starts: its live turn, reaching back past messages delivered into it. */
+function liveRunStart(messages: readonly Message[], start: number, turnStart: number, runStartedAt: number | undefined): number {
+  let at = turnStart;
+  while (at > start && deliveredMidRun(messages[at], runStartedAt)) {
+    at--;
+    while (at > start && messages[at].role !== "user") at--;
+  }
+  return at;
+}
+
+/**
+ * The newest committed step of the running turn. One from before a delivered
+ * message stays only while it is a command: text there is a reply, already in view.
+ */
+function latestCommittedStep(messages: readonly Message[], runStart: number, turnStart: number, to: number): StepRef | null {
+  for (let at = to - 1; at >= runStart; at--) {
+    const msg = messages[at];
+    if (msg.role !== "assistant") continue;
+    const block = latestStep(msg.blocks);
+    if (block < 0) continue;
+    return at >= turnStart || msg.blocks[block].type === "tool_call" ? { message: at, block } : null;
+  }
+  return null;
 }
 
 // ── Folded stretches ────────────────────────────────────────────────
@@ -680,8 +712,10 @@ function turnMemoValid(
 
 function planPending(
   messages: readonly Message[],
+  start: number,
   from: number,
   to: number,
+  plans: readonly MessagePlan[],
   pendingAI: AIMessage,
   latest: number,
   reveal: StepRef | null,
@@ -689,11 +723,13 @@ function planPending(
   label: string | null,
 ): PendingPlan {
   const stats: WorkStats = { toolCalls: 0, texts: 0 };
+  // The whole run's folded work: a message delivered into it does not reset the count.
   for (let index = from; index < to; index++) {
     const msg = messages[index];
-    if (msg.role !== "assistant") continue;
+    const plan = plans[index - start];
+    if (msg.role !== "assistant" || plan?.kind !== "assistant") continue;
     msg.blocks.forEach((block, blockIndex) => {
-      if (reveal?.message === index && reveal.block === blockIndex) return;
+      if (!plan.hidden?.[blockIndex] || (reveal?.message === index && reveal.block === blockIndex)) return;
       if (block.type === "tool_call") stats.toolCalls++;
       else if (hasText(block)) stats.texts++;
     });
