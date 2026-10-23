@@ -34,7 +34,7 @@ import {
   type UserMessageFlowCursor,
 } from "./blockrenderer";
 import { isVisuallyBlankLine, sanitizeUntrustedText } from "./terminaltext";
-import { automationLabel, ownerRelay, planHistory, type HistoryPlan, type NotificationPlan, type PendingPlan } from "./turncollapse";
+import { automationLabel, ownerRelay, ownerWords, parentPromptLabel, planHistory, type HistoryPlan, type NotificationPlan, type PendingPlan } from "./turncollapse";
 
 const COMPACTION_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
 const COMPACTION_SPINNER_INTERVAL_MS = 80;
@@ -769,16 +769,17 @@ export function buildMessageLines(
   const lastContinuesIntoPending = state.pendingAI?.role === "assistant";
   const imageCell = inlineImageCellSize();
   const collapse = !state.showTurnWork && !state.showToolOutput;
+  const conversationTitle = (id: string) => {
+    const conv = state.sidebar?.conversations.find(candidate => candidate.id === id);
+    return conv ? convDisplayName(conv) : null;
+  };
   const plan: HistoryPlan = planHistory({
     messages,
     start: startMessageIndex,
     pendingAI: state.pendingAI,
     collapse,
     active: durableSleepAssistant,
-    conversationTitle: (id) => {
-      const conv = state.sidebar?.conversations.find(candidate => candidate.id === id);
-      return conv ? convDisplayName(conv) : null;
-    },
+    conversationTitle,
   });
   const cacheKey: unknown[] = [
     state.convId, contentWidth, state.showToolOutput, state.showTurnWork, state.showDiagnostics, state.toolRegistry,
@@ -962,10 +963,11 @@ export function buildMessageLines(
       if (userMessageNeedsTopMargin(state.messages, messageIndex)) pushLine("", msg, "user_margin_top");
       const contentStart = lines.length;
       // The owner's own Discord/WhatsApp message reads as theirs: their words in their bubble.
+      // Only the owner's words get that background; a parent conversation's prompt is automated.
       const relay = ownerRelay(msg);
       const text = relay?.text ?? msg.text;
       const from = messagePlan?.kind === "from" ? messagePlan.label : null;
-      const background = msg.metadata?.automation && !relay && !from ? theme.automatedUserBg : theme.userBg;
+      const background = ownerWords(msg.text, msg.metadata?.automation) ? theme.userBg : theme.automatedUserBg;
       const rendered = renderUserMessageCached(msg, text, availableWidth, msg.images, background);
       pushBlock(msg, "user_content", rendered);
       const contentEnd = lines.length;
@@ -1185,10 +1187,10 @@ export function buildMessageLines(
   }
 
   // Queued messages — dimmed user bubbles with timing label (after pendingAI)
-  // Folded history hides queued notifications too: only the owner's own (typed or
-  // relayed) messages wait at the bottom; Ctrl+O shows the rest.
-  const ownQueued = (qm: (typeof state.queuedMessages)[number]) => !collapse || !qm.automation
-    || ownerRelayedText(qm.text, { automation: qm.automation }) !== null;
+  // Folded history hides queued notifications too: only prompts (the owner's own,
+  // typed or relayed, and a parent conversation's) wait at the bottom; Ctrl+O shows the rest.
+  const ownQueued = (qm: (typeof state.queuedMessages)[number]) => !collapse || qm.automation?.kind === "exo_send"
+    || ownerWords(qm.text, qm.automation);
   const queued = queuedMessagesInDisplayOrder(
     (state.convId
       ? state.queuedMessages.filter(qm => qm.convId === state.convId)
@@ -1207,12 +1209,12 @@ export function buildMessageLines(
       for (let i = 0; i < body.lines.length; i++) pushLine(`${theme.muted}${stripSgr(body.lines[i])}${theme.reset}`, qm, "queued_content", i);
       continue;
     }
-    const provenance = automationProvenance(qm.automation);
+    const provenance = qm.automation?.kind === "exo_send" ? parentPromptLabel(qm.automation, conversationTitle) : automationProvenance(qm.automation);
     const timingLabel = [provenance, queueTimingLabel(qm, Date.now(), state.provider)].filter((label): label is string => Boolean(label)).join(" · ");
     pushLine("", qm, "queued_margin_top");
     // Render a dimmed user bubble
     const queuedText = relayed ?? qm.text;
-    const background = qm.automation && !relayed ? theme.automatedUserBg : theme.userBg;
+    const background = ownerWords(qm.text, qm.automation) ? theme.userBg : theme.automatedUserBg;
     const qr = renderUserMessageCached(qm, queuedText, availableWidth, qm.images, background);
     const queuedContentStart = lines.length;
     for (let i = 0; i < qr.lines.length; i++) {

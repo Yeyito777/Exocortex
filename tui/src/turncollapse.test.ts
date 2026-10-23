@@ -1,10 +1,11 @@
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { buildMessageLines, invalidateCommittedHistoryCache, type BuildMessageLinesResult } from "./conversation";
 import { createInitialState, focusHistory, resetToolOutputState, type RenderState } from "./state";
 import { createPendingAI, type Message } from "./messages";
 import { handleStreamingStarted, handleToolCall, handleToolResult } from "./events/streaming";
 import type { Event } from "./protocol";
-import { notificationLabel, notificationPreview } from "./turncollapse";
+import { notificationLabel, notificationPreview, ownerWords } from "./turncollapse";
+import { theme } from "./theme";
 import { handleFocusedKey } from "./focus";
 import { parseInput } from "./input";
 import { stripAnsi } from "./historycursor";
@@ -373,22 +374,138 @@ describe("notifications", () => {
     expect(notificationPreview("[chrono wake: chrono:abc] Pushy check")).toBe("Pushy check");
   });
 
-  test("prompts another conversation sent read as prompts, labelled with the sender", () => {
+  test("prompts another conversation sent are not notifications", () => {
+    expect(notificationLabel(user("Fix vimbrowser input handling.", { kind: "exo_send", sourceId: "parent-1" }))).toBeNull();
+  });
+});
+
+const RELAY_TEXT = (body: string) => `[notification] Discord/paramount · DM\nYeyito [ch:1]\n\n→ Yeyito <@3> [owner] ↳ [reply-to:9]:\n${body}\n[msg:5]\n\nAction: answer on Discord.\n\nFilter output:\nRoute: owner (Yeyito) · dm`;
+
+// A terminal without truecolor maps both bubble backgrounds to one colour: pin them apart.
+const savedBackgrounds = { userBg: theme.userBg, automatedUserBg: theme.automatedUserBg };
+beforeAll(() => Object.assign(theme, { userBg: "\x1b[48;2;9;13;53m", automatedUserBg: "\x1b[48;2;14;31;44m" }));
+afterAll(() => Object.assign(theme, savedBackgrounds));
+
+/** The background a message's bubble rows were painted with, per row of its content. */
+function bubbleBackgrounds(built: BuildMessageLinesResult, owner: object): string[] {
+  return built.lineAnchors.flatMap((anchor, row) => {
+    if (anchor.owner !== owner || (anchor.segment !== "user_content" && anchor.segment !== "queued_content")) return [];
+    const line = built.lines[row];
+    return [line.includes(theme.userBg) ? "owner" : line.includes(theme.automatedUserBg) ? "automated" : "none"];
+  });
+}
+
+const VIEWS = [
+  ["folded", (_state: RenderState) => {}],
+  ["Ctrl+O", (state: RenderState) => { state.showTurnWork = true; }],
+  ["Ctrl+I", (state: RenderState) => { state.showToolOutput = true; }],
+] as const;
+
+describe("a parent conversation's prompts", () => {
+  const delegation = () => user("Fix vimbrowser input handling.", { kind: "exo_send", sourceId: "parent-1" });
+
+  test("the first one: the automated bubble with the parent below it, in every view", () => {
+    for (const [view, open] of VIEWS) {
+      const state = createInitialState();
+      state.sidebar.conversations = [{ id: "parent-1", title: "📡 paramount" } as never];
+      const first = delegation();
+      state.messages.push(first, assistant([{ type: "text", text: "On it." }]));
+      open(state);
+      const built = buildMessageLines(state, 100);
+      const shown = built.lines.map(line => stripAnsi(line).trim()).filter(Boolean);
+      expect(shown.slice(0, 2), view).toEqual(["Fix vimbrowser input handling.", "⚙ Exo delegation · from 📡 paramount"]);
+      expect(bubbleBackgrounds(built, first), view).toEqual(["automated"]);
+      freshMatchesIncremental(state);
+    }
+  });
+
+  test("the first one while its turn still runs: the same bubble and label above the Working row", () => {
     const state = createInitialState();
     state.sidebar.conversations = [{ id: "parent-1", title: "📡 paramount" } as never];
-    state.messages.push(user("Fix vimbrowser input handling.", { kind: "exo_send", sourceId: "parent-1" }), assistant([{ type: "text", text: "On it." }]));
-    const shown = rows(state).filter(Boolean);
-    expect(shown[0]).toContain("Fix vimbrowser input handling.");
-    expect(shown[1].trim()).toBe("from 📡 paramount");
-    expect(notificationLabel(state.messages[0] as Extract<Message, { role: "user" }>)).toBeNull();
+    const first = delegation();
+    state.messages.push(first);
+    state.pendingAI = createPendingAI(Date.now(), MODEL);
+    state.pendingAI.blocks.push(...call("c1", "ls"));
+    const built = buildMessageLines(state, 100);
+    const shown = built.lines.map(line => stripAnsi(line).trim()).filter(Boolean);
+    expect(shown.slice(0, 2)).toEqual(["Fix vimbrowser input handling.", "⚙ Exo delegation · from 📡 paramount"]);
+    expect(shown[2]).toMatch(/^\S Working$/);
+    expect(bubbleBackgrounds(built, first)).toEqual(["automated"]);
+  });
+
+  test("follow-ups read the same, between the owner's own messages", () => {
+    for (const [view, open] of VIEWS) {
+      const state = createInitialState();
+      state.sidebar.conversations = [{ id: "parent-1", title: "📡 paramount" } as never];
+      const own = user("my own words");
+      const followUp = user("Also check the queue.", { kind: "exo_send", sourceId: "parent-1" });
+      state.messages.push(delegation(), assistant([{ type: "text", text: "On it." }]), followUp, assistant([{ type: "text", text: "Checked." }]), own, assistant([{ type: "text", text: "ok" }]));
+      open(state);
+      const built = buildMessageLines(state, 100);
+      const shown = built.lines.map(line => stripAnsi(line).trim()).filter(Boolean);
+      const at = shown.indexOf("Also check the queue.");
+      expect(shown[at + 1], view).toBe("⚙ Exo delegation · from 📡 paramount");
+      expect(bubbleBackgrounds(built, followUp), view).toEqual(["automated"]);
+      expect(bubbleBackgrounds(built, own), view).toEqual(["owner"]);
+    }
+  });
+
+  test("a parent missing from the sidebar is named by its id; one with no id as another conversation", () => {
+    const state = createInitialState();
+    state.messages.push(
+      user("by id", { kind: "exo_send", sourceId: "1791667824123-k14mhj" }), assistant([{ type: "text", text: "a" }]),
+      user("no id", { kind: "exo_send" }), assistant([{ type: "text", text: "b" }]),
+    );
+    const shown = rows(state).map(row => row.trim()).filter(Boolean);
+    expect(shown[shown.indexOf("by id") + 1]).toBe("⚙ Exo delegation · from 1791667824123-k14mhj");
+    expect(shown[shown.indexOf("no id") + 1]).toBe("⚙ Exo delegation · from another conversation");
+  });
+
+  test("quoting the owner's relay line does not make a parent's prompt the owner's bubble", () => {
+    const state = createInitialState();
+    const forwarded = user(RELAY_TEXT("please fix the queue"), { kind: "exo_send", sourceId: "parent-1" });
+    state.messages.push(forwarded, assistant([{ type: "text", text: "ok" }]));
+    expect(ownerWords(forwarded.text, forwarded.metadata?.automation)).toBe(false);
+    expect(new Set(bubbleBackgrounds(buildMessageLines(state, 100), forwarded))).toEqual(new Set(["automated"]));
+  });
+
+  test("queued, they wait at the bottom in every view: automated, from the parent, with their timing", () => {
+    for (const [view, open] of VIEWS) {
+      const state = createInitialState();
+      state.convId = "child-1";
+      state.sidebar.conversations = [{ id: "parent-1", title: "📡 paramount" } as never];
+      state.messages.push(delegation(), assistant([{ type: "text", text: "On it." }]));
+      const queued = { convId: "child-1", text: "Then rebase.", timing: "next-turn" as const, automation: { kind: "exo_send" as const, sourceId: "parent-1" } };
+      const mine = { convId: "child-1", text: "my queued words", timing: "next-turn" as const };
+      state.queuedMessages.push(queued, mine);
+      open(state);
+      const built = buildMessageLines(state, 100);
+      const label = built.lineAnchors.findIndex(anchor => anchor.owner === queued && anchor.segment === "queued_label");
+      expect(stripAnsi(built.lines[label]).trim(), view).toBe("⚙ Exo delegation · from 📡 paramount · queued: next turn");
+      expect(bubbleBackgrounds(built, queued), view).toEqual(["automated"]);
+      expect(bubbleBackgrounds(built, mine), view).toEqual(["owner"]);
+    }
   });
 });
 
 describe("the owner's own relayed messages", () => {
-  const relay = (body: string) => user(
-    `[notification] Discord/paramount · DM\nYeyito [ch:1]\n\n→ Yeyito <@3> [owner] ↳ [reply-to:9]:\n${body}\n[msg:5]\n\nAction: answer on Discord.\n\nFilter output:\nRoute: owner (Yeyito) · dm`,
-    { kind: "external_notification", sourceId: "discord" },
-  );
+  const relay = (body: string) => user(RELAY_TEXT(body), { kind: "external_notification", sourceId: "discord" });
+
+  test("keep the owner's bubble background in every view, queued too", () => {
+    for (const [view, open] of VIEWS) {
+      const state = createInitialState();
+      state.convId = "conv-1";
+      const delivered = relay("did the tasks panel land?");
+      state.messages.push(delivered, assistant([{ type: "text", text: "Yes." }]));
+      const queued = { convId: "conv-1", text: RELAY_TEXT("and the queue?"), timing: "next-turn" as const, automation: { kind: "external_notification" as const } };
+      state.queuedMessages.push(queued);
+      open(state);
+      const built = buildMessageLines(state, 100);
+      expect(bubbleBackgrounds(built, delivered), view).toEqual(["owner"]);
+      expect(bubbleBackgrounds(built, queued), view).toEqual(["owner"]);
+      expect(built.lines.some(line => stripAnsi(line).trim() === "via Discord/paramount · DM"), view).toBe(true);
+    }
+  });
 
   test("render as the owner's bubble with their words and where they came from", () => {
     const state = createInitialState();

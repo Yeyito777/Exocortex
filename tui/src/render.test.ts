@@ -1463,6 +1463,37 @@ describe("render caching and frame diffing", () => {
       }
     });
 
+    test("keeps the owner's background for their words only: relayed yes, a parent conversation's prompt no", () => {
+      const saved = { userBg: theme.userBg, automatedUserBg: theme.automatedUserBg };
+      // A terminal without truecolor maps both backgrounds to one colour: pin them apart.
+      Object.assign(theme, { userBg: "\x1b[48;2;9;13;53m", automatedUserBg: "\x1b[48;2;14;31;44m" });
+      try {
+        const relay = `[notification] Discord/paramount · DM\nYeyito [ch:1]\n\n→ Yeyito <@3> [owner]:\n${ownerText}\n[msg:5]`;
+        const cases = [
+          { automation: { kind: "external_notification" as const }, text: relay, background: theme.userBg },
+          { automation: { kind: "exo_send" as const, sourceId: "parent" }, text: ownerText, background: theme.automatedUserBg },
+        ];
+        for (const { automation, text, background } of cases) {
+          const state = bubbleState(150, 12, false, false);
+          state.messages = [{ role: "user", text, metadata: { startedAt: 1, endedAt: 1, model: state.model, tokens: 0, automation } }];
+          const writes = positionedWrites(captureRenderOutput(state));
+          const bufferBottom = (state.layout.taskPanelRect?.bottom ?? 0) + 1;
+          const narrow = state.layout.historyViewportRows.flatMap((viewportRow, index) => {
+            if (!viewportRow || state.historyLineAnchors[viewportRow.lineIndex]?.segment !== "user_content" || 3 + index > bufferBottom) return [];
+            return [writes.filter(candidate => candidate.row === 3 + index && candidate.col === 1).at(-1)?.text ?? ""];
+          });
+          expect(narrow.length, automation.kind).toBeGreaterThan(0);
+          const other = background === theme.userBg ? theme.automatedUserBg : theme.userBg;
+          for (const row of narrow) {
+            expect(row.includes(background), automation.kind).toBe(true);
+            expect(row.includes(other), automation.kind).toBe(false);
+          }
+        }
+      } finally {
+        Object.assign(theme, saved);
+      }
+    });
+
     test("realigns each side of a bubble that straddles the panel's bottom edge", () => {
       for (let cols = 120; cols <= 180; cols += 10) {
         const state = bubbleState(cols, 1, true, false);
