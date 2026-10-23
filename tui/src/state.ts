@@ -12,6 +12,7 @@ import type { ProviderId, ProviderInfo, ModelId, EffortLevel, UsageData, ToolDis
 import { supportsImageInputsForModel } from "./messages";
 import type { Message, AIMessage, SystemMessage, Block } from "./messages";
 import { loadHideSensitiveInfoPreference } from "./privacy";
+import { loadClockPreference, type ClockFormat } from "./clock";
 import { loadDiagnosticsPreference, loadTurnWorkPreference } from "./diagnostics";
 import { theme } from "./theme";
 import type { MessageBound, RenderLineAnchor } from "./conversation";
@@ -322,6 +323,8 @@ export interface RenderState {
   hideSensitiveInfo: boolean;
   /** Whether output-token counts are shown in AI metadata. TUI-only /diagnostics. */
   showDiagnostics: boolean;
+  /** Clock style of the finish time in AI metadata. TUI-only /clock. */
+  clock: ClockFormat;
   /** Whether a tool-output fetch is currently in flight for the active conversation. */
   toolOutputsLoading: boolean;
   /** Daemon reqId of the newest in-flight tool-output fetch (null when unknown or idle). */
@@ -726,6 +729,7 @@ export function createInitialState(): RenderState {
 	    showTurnWork: loadTurnWorkPreference(),
 	    hideSensitiveInfo,
 	    showDiagnostics: loadDiagnosticsPreference(),
+	    clock: loadClockPreference(),
     toolOutputsLoading: false,
     toolOutputsRequestId: null,
     requestedToolOutputIds: new Set(),

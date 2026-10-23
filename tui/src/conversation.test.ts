@@ -1199,7 +1199,7 @@ describe("tool call rendering", () => {
 
 /** Rendered row without ANSI and without the finish-time segment (fixtures use epoch-era timestamps). */
 function plainMetadata(text: string): string {
-  return stripAnsi(text).replace(/ \| (?:yesterday )?(?:[A-Z][a-z]{2} \d{1,2}(?: \d{4})? )?\d\d:\d\d$/, "");
+  return stripAnsi(text).replace(/ \| (?:yesterday )?(?:[A-Z][a-z]{2} \d{1,2}(?: \d{4})? )?\d{1,2}:\d\d(?:am|pm)?$/, "");
 }
 
 describe("assistant metadata spacing", () => {
@@ -1609,21 +1609,33 @@ describe("assistant finish time", () => {
     const endedAt = new Date(2026, 9, 23, 14, 3).getTime();
     setSystemTime(new Date(2026, 9, 23, 15, 0));
     const state = finished(endedAt);
+    expect(metadataRows(state)).toEqual(["  Opus-5.5 | — tokens/s | 1m 49s | 2:03pm"]);
+    state.clock = "24h";
     expect(metadataRows(state)).toEqual(["  Opus-5.5 | — tokens/s | 1m 49s | 14:03"]);
     state.pendingAI = createPendingAI(endedAt + 1_000, "claude-opus-5-5");
     state.pendingAI.blocks = [{ type: "text", text: "Next" }];
-    expect(metadataRows(state).at(-1)).not.toMatch(/\d\d:\d\d$/);
+    expect(metadataRows(state).at(-1)).not.toMatch(/\d:\d\d(am|pm)?$/);
   });
 
   test("a long-open view relabels when the local day rolls over", () => {
     const endedAt = new Date(2026, 9, 23, 22, 41).getTime();
     setSystemTime(new Date(2026, 9, 23, 23, 59));
     const state = finished(endedAt);
-    expect(metadataRows(state)[0]).toEndWith("| 22:41");
+    expect(metadataRows(state)[0]).toEndWith("| 10:41pm");
     setSystemTime(new Date(2026, 9, 24, 0, 1));
-    expect(metadataRows(state)[0]).toEndWith("| yesterday 22:41");
+    expect(metadataRows(state)[0]).toEndWith("| yesterday 10:41pm");
     setSystemTime(new Date(2026, 9, 25, 0, 1));
-    expect(metadataRows(state)[0]).toEndWith("| Oct 23 22:41");
+    expect(metadataRows(state)[0]).toEndWith("| Oct 23 10:41pm");
+  });
+
+  test("changing the clock repaints immediately instead of reusing cached rows", () => {
+    setSystemTime(new Date(2026, 9, 23, 15, 0));
+    const state = finished(new Date(2026, 9, 23, 14, 3).getTime());
+    expect(metadataRows(state)[0]).toEndWith("| 2:03pm");
+    state.clock = "24h";
+    expect(metadataRows(state)[0]).toEndWith("| 14:03");
+    state.clock = "12h";
+    expect(metadataRows(state)[0]).toEndWith("| 2:03pm");
   });
 
   test("a message without endedAt renders no time segment", () => {

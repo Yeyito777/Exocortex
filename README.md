@@ -376,13 +376,17 @@ Both native and cross-build methods produce standalone Windows executables in
 
 AI metadata shows the model, average output `tokens/s`, elapsed work time, and
 when the message finished (`endedAt`, the instant the elapsed time stops):
-`Opus-5.5 | 87.9 tokens/s | 1m 49s | 14:03`, `... | yesterday 22:41`,
-`... | Oct 19 09:12` (year added for another year, `Oct 19 2025 09:12`). It is
-shown per rendered AI message (a run of assistant fragments or goal turns
-shows the last one's end), on a 24-hour clock, in the TUI machine's own zone
-(so over `/ssh` it is the Mac's time, not the daemon's), relative to the TUI's
-local day, and repainted after local midnight. Live messages and legacy ones
-without `endedAt` show no time.
+`Opus-5.5 | 87.9 tokens/s | 1m 49s | 2:03pm`, `... | yesterday 10:41pm`,
+`... | Oct 19 9:12am` (year added for another year, `Oct 19 2025 9:12am`). The
+clock is 12-hour by default; `/clock 24h` switches to `14:03`, `yesterday 22:41`,
+`Oct 19 09:12`, and `/clock 12h` switches back (bare `/clock` shows the current
+value). The choice is a TUI-only preference saved as `tui.clock` in
+`config/config.json` and repaints immediately. The time is shown per rendered AI
+message (a run of assistant fragments or goal turns shows the last one's end), in
+the TUI machine's own zone (so over `/ssh` it is the Mac's time, not the
+daemon's), relative to the TUI's local day, and repainted after local midnight.
+Live messages and legacy ones without `endedAt` show no time.
+
 Each API round is sampled separately: provider-reported output tokens divided
 by that request's time (time-to-first-token + generation). Tool execution,
 compaction, retry backoff, and gaps between rounds are excluded. Retried rounds

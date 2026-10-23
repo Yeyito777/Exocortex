@@ -6,6 +6,7 @@ import { CHRONO_COMMAND } from "./commands/chrono";
 import { COMPACT_COMMAND } from "./commands/compact";
 import { CONVO_COMMAND } from "./commands/convo";
 import { DEFAULT_MODEL_COMMAND } from "./commands/default-model";
+import { CLOCK_COMMAND } from "./commands/clock";
 import { DIAGNOSTICS_COMMAND } from "./commands/diagnostics";
 import { EFFORT_COMMAND } from "./commands/effort";
 import { FAST_COMMAND } from "./commands/fast";
@@ -84,6 +85,7 @@ const commands: SlashCommand[] = [
   USAGE_COMMAND,
   TIME_COMMAND,
   DIAGNOSTICS_COMMAND,
+  CLOCK_COMMAND,
   THEME_COMMAND,
   FOLDERS_COMMAND,
   HIDE_COMMAND,
