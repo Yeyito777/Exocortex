@@ -261,7 +261,8 @@ test("the screen is one table: a row per account with its bars and times to rese
   const rows = screenText(state);
   const text = rows.join("\n");
   expect(text).toContain("╭─ Accounts ─");
-  expect(text).toContain("╰─ Esc close ─");
+  expect(text).not.toContain("Esc close");
+  expect(text).toMatch(/╰─+╯/);
   expect(text).toMatch(/│ {2}Claude +5-Hour +Weekly +│/);
   expect(text).toMatch(/│ {2}● main +━{14} {2}40% {2}2h {3,}━{14} {2}20% {2}3d +│/);
   expect(text).toMatch(/│ {2}● max2 {2}new work +━{14} {3}7% {2}4h +━{14} {3}3% {2}1d6h {2}│/);

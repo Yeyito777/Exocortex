@@ -178,7 +178,7 @@ describe("/instructions tools", () => {
     expect(shown).toMatch(/── cal ─+ external-tools\/cal-cli\/manifest\.json ──/);
     expect(shown).toContain("Tool instructions · openai · gpt-6.1-sol");
     expect(shown).toContain("read-only");
-    expect(shown).toContain("]] [[ tool");
+    expect(shown).not.toContain("]] [[ tool");
     // A long source keeps its file name in the status line.
     editor.notice = { text: `cal: /very/long/${"deep/".repeat(30)}external-tools/cal-cli/manifest.json`, tone: "info" };
     expect(plain(renderInstructionsEditor(editor, 60, 110).payload)).toMatch(/…[\w/-]*external-tools\/cal-cli\/manifest\.json/);

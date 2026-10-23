@@ -440,7 +440,6 @@ const SIDE_COLUMNS = 6;
 /** Top border, a blank row above and below the content, bottom border. */
 const CHROME_ROWS = 4;
 const TITLE = "Accounts";
-const KEYS = "Esc close";
 
 function cleanText(text: string): string {
   return text.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ");
@@ -463,7 +462,7 @@ function fitSegments(segments: Segment[], width: number, bg: string): string {
   return text + theme.reset + bg + theme.boldOff + " ".repeat(Math.max(0, width - used));
 }
 
-/** `╭─ title ─────╮` and `╰─ keys ───── note ─╯` borders. */
+/** `╭─ title ─────╮` and `╰──────── note ─╯` borders. */
 function borderLine(corners: [string, string], width: number, leftText: string, rightText: string, leftColor = theme.muted): string {
   const inner = width - 2;
   const framed = (text: string) => text ? termWidth(text) + 3 : 0;
@@ -492,7 +491,7 @@ export function renderAccountsScreen(state: RenderState, screen: AccountsScreenS
   const maxInner = Math.max(16, totalCols - MARGIN_COLUMNS * 2 - SIDE_COLUMNS);
   const columns = layoutColumns(lines, maxInner);
   const content = lines.map(line => lineSegments(line, columns));
-  const chromeWidth = termWidth(TITLE) + termWidth(KEYS) + 8;
+  const chromeWidth = termWidth(TITLE) + 8;
   const inner = Math.min(maxInner, Math.max(chromeWidth, ...content.map(segmentsWidth)));
   const width = inner + SIDE_COLUMNS;
   const bodyRows = Math.max(1, Math.min(content.length, totalRows - 2 - CHROME_ROWS));
@@ -511,6 +510,6 @@ export function renderAccountsScreen(state: RenderState, screen: AccountsScreenS
   payload += row(bodyRows + 2, []);
   const below = content.length - scroll - bodyRows;
   const more = below > 0 ? `↓ ${below} more` : scroll > 0 ? "↑ more above" : "";
-  payload += moveTo(top + height - 1, left) + bg + borderLine(["╰", "╯"], width, KEYS, more) + theme.reset;
+  payload += moveTo(top + height - 1, left) + bg + borderLine(["╰", "╯"], width, "", more) + theme.reset;
   return { payload, rect: { top, bottom: top + height - 1, left, right: left + width - 1 } };
 }
