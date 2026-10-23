@@ -29,8 +29,7 @@ const INSTRUCTIONS: Record<string, string | undefined> = {
     "Sleeps and waits of any practical length run inside the call and end early when the user sends a message.",
   ].join(" "),
   exo: [
-    "exo starts Exocortex subagents, separate from your own Agent tool.",
-    "Use the Agent tool only for quick read-only fan-out within this turn (search or exploration where only the conclusion matters); delegate anything else with exo.",
+    "exo starts Exocortex subagents. Never use Claude Code's Agent tool: delegate all subagent work, including search and exploration fan-out, with exo.",
     exo.systemHint,
   ].join("\n"),
 };

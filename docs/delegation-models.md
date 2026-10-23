@@ -8,10 +8,9 @@ back via parent notification, or that commits to a repo. Trivial or quick work
 stays with the caller; a user's prohibition always wins. There is no
 user-permission gate in code.
 
-Claude Code conversations also have Claude Code's own Agent tool. Their MCP
-server instructions limit it to quick read-only fan-out within one turn
-(search or exploration where only the conclusion matters); any other
-delegation goes through `exo`.
+Claude Code conversations also have Claude Code's own Agent tool, but their MCP
+server instructions forbid it: all subagent work, including search and
+exploration fan-out, goes through `exo`.
 
 The native `exo` accepts only `{subagent: prompt, args?: {detach?: boolean,
 model?: string, effort?: EffortLevel}}`, `{abort: conversation_id}` or
