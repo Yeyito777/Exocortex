@@ -27,7 +27,8 @@ conversations:
   sleeps and waits run inside the call for at most five minutes, since a Claude Code
   turn cannot be suspended; longer delays use a wake with a message. Claude
   Code's own schedulers (`ScheduleWakeup`, `CronCreate`, `CronDelete`,
-  `CronList`) are disabled in favor of chrono.
+  `CronList`) are disabled in favor of chrono, and the `Agent` (legacy `Task`)
+  tool is disabled in favor of `exo`.
 - Tools run unattended (`bypassPermissions`); `AskUserQuestion` is disabled
   because Exocortex has no way to answer it mid-turn.
 - Each Claude Code tool round is committed to Exocortex's store as soon as its

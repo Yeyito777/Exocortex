@@ -44,6 +44,8 @@ import { createClaudeStreamState, finalizeClaudeStream, pushClaudeMessage, type 
 const INTERACTIVE_ONLY_TOOLS = ["AskUserQuestion"];
 /** Claude Code's own schedulers; Exocortex's chrono (a host tool) replaces them. */
 const SCHEDULER_TOOLS = ["ScheduleWakeup", "CronCreate", "CronDelete", "CronList"];
+/** Claude Code's own subagent tool (`Task` is its legacy name); Exocortex delegates through exo. */
+const SUBAGENT_TOOLS = ["Agent", "Task"];
 const STDERR_TAIL_CHARS = 4000;
 
 type ClaudeEffort = NonNullable<ClaudeQueryOptions["effort"]>;
@@ -94,7 +96,7 @@ function baseOptions(model: ModelId, options: StreamOptions, cwd: string, stderr
   };
 }
 
-function agentTurnOptions(
+export function agentTurnOptions(
   model: ModelId,
   options: StreamOptions,
   cwd: string,
@@ -112,7 +114,7 @@ function agentTurnOptions(
     // Exocortex has no permission prompt UI; Claude Code runs unattended.
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
-    disallowedTools: [...INTERACTIVE_ONLY_TOOLS, ...SCHEDULER_TOOLS],
+    disallowedTools: [...INTERACTIVE_ONLY_TOOLS, ...SCHEDULER_TOOLS, ...SUBAGENT_TOOLS],
     // Permissions are bypassed, so the user's safety denylist is a hook.
     hooks: claudeCodeSafetyHooks(cwd),
     // Exocortex can stop each background task (its Tasks UI), so an interrupt
