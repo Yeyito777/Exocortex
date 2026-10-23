@@ -374,7 +374,15 @@ Both native and cross-build methods produce standalone Windows executables in
 
 ## TUI AI metadata
 
-AI metadata shows the model, average output `tokens/s`, and elapsed work time.
+AI metadata shows the model, average output `tokens/s`, elapsed work time, and
+when the message finished (`endedAt`, the instant the elapsed time stops):
+`Opus-5.5 | 87.9 tokens/s | 1m 49s | 14:03`, `... | yesterday 22:41`,
+`... | Oct 19 09:12` (year added for another year, `Oct 19 2025 09:12`). It is
+shown per rendered AI message (a run of assistant fragments or goal turns
+shows the last one's end), on a 24-hour clock, in the TUI machine's own zone
+(so over `/ssh` it is the Mac's time, not the daemon's), relative to the TUI's
+local day, and repainted after local midnight. Live messages and legacy ones
+without `endedAt` show no time.
 Each API round is sampled separately: provider-reported output tokens divided
 by that request's time (time-to-first-token + generation). Tool execution,
 compaction, retry backoff, and gaps between rounds are excluded. Retried rounds

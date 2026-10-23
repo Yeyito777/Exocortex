@@ -83,7 +83,7 @@ describe("startReplayConversation", () => {
     startReplayConversation(state, fakeDaemon(calls), replayStartedAt);
     state.pendingAI!.metadata!.endedAt = replayStartedAt + 1_000;
 
-    const lines = buildMessageLines(state, 120).lines.map(stripAnsi);
+    const lines = buildMessageLines(state, 120).lines.map(line => stripAnsi(line).replace(/ \| Jan 1 1970 \d\d:\d\d$/, ""));
     expect(lines).toContain("  Gpt-5.4 | — tokens/s | 11m 0s");
     expect(lines.at(-1)).toBe("  Gpt-5.4 | — tokens/s | 1s");
   });
@@ -105,7 +105,7 @@ describe("startReplayConversation", () => {
       startedAt: 1234,
     }, state, null as never);
 
-    const lines = buildMessageLines(state, 120).lines.map(stripAnsi);
+    const lines = buildMessageLines(state, 120).lines.map(line => stripAnsi(line).replace(/ \| Jan 1 1970 \d\d:\d\d$/, ""));
     expect(lines.some(line => line.includes("✗ Daemon restarted"))).toBe(true);
     expect(lines.some(line => line.includes("Gpt-5.4 | 0.0 tokens/s |"))).toBe(true);
   });
