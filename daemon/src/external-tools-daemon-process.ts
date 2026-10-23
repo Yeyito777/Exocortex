@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, readlinkSync, realpathSync, unlinkSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "fs";
 import { join, resolve } from "path";
 import { log } from "./log";
 
@@ -20,6 +20,24 @@ export function getDaemonStatePaths(toolDir: string): { configDir: string; logPa
     logPath: join(configDir, "service.log"),
     pidPath: join(configDir, "service.pid"),
   };
+}
+
+export const DAEMON_LOG_LIMIT_BYTES = 20 * 1024 * 1024;
+
+/**
+ * Keep a supervised daemon's service.log bounded: once it has grown past the
+ * limit, move it to service.log.1 (replacing the previous one) before the next
+ * spawn opens a fresh file. A daemon that crash-loops or logs every reconnect
+ * would otherwise grow it forever.
+ */
+export function rotateDaemonLog(logPath: string, limit = DAEMON_LOG_LIMIT_BYTES): boolean {
+  try {
+    if (statSync(logPath).size <= limit) return false;
+    renameSync(logPath, `${logPath}.1`);
+    return true;
+  } catch {
+    return false; // missing log, or best-effort
+  }
 }
 
 export function clearDaemonPidFile(toolDir: string): void {
