@@ -600,3 +600,87 @@ describe("search reaches folded work by switching to Ctrl+O", () => {
     expect(state.showTurnWork).toBe(false);
   });
 });
+
+describe("the gap between consecutive user messages", () => {
+  /** Row texts with the right-aligned bubble text trimmed, so a gap reads as "" rows between two texts. */
+  const gapRows = (state: RenderState, width = 100) => rows(state, width).map(row => row.trim());
+  const reply = () => assistant([{ type: "text", text: "Reply." }]);
+
+  test("are one blank row apart when nothing is shown between them", () => {
+    const state = createInitialState();
+    state.messages.push(user("first"), user("second"));
+    expect(gapRows(state)).toEqual(["first", "", "second", ""]);
+    freshMatchesIncremental(state);
+  });
+
+  test("stay one blank row apart when the work and notifications between them fold away", () => {
+    const state = createInitialState();
+    state.messages.push(user("first"), note(1), silent("s1"), wake(2), silent("s2"), user("second"));
+    expect(gapRows(state)).toEqual(["first", "", "second", ""]);
+    freshMatchesIncremental(state);
+  });
+
+  test("hold at a narrow width, where the Tasks panel leaves the chat", () => {
+    const state = createInitialState();
+    state.messages.push(user("first"), silent("s1"), user("second"));
+    expect(gapRows(state, 30)).toEqual(["first", "", "second", ""]);
+  });
+
+  test("hold for every consecutive pair in a run of three", () => {
+    const state = createInitialState();
+    state.messages.push(user("first"), user("second"), silent("s1"), user("third"));
+    expect(gapRows(state)).toEqual(["first", "", "second", "", "third", ""]);
+  });
+
+  test("hold under Ctrl+O and Ctrl+I as well", () => {
+    for (const [view, open] of VIEWS) {
+      const state = createInitialState();
+      state.messages.push(user("first"), user("second"));
+      open(state);
+      expect(gapRows(state), view).toEqual(["first", "", "second", ""]);
+    }
+  });
+
+  test("queued messages follow the last message and each other one blank row apart", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.messages.push(user("first"));
+    state.queuedMessages.push(
+      { convId: "conv-1", text: "queued one", timing: "next-turn" },
+      { convId: "conv-1", text: "queued two", timing: "next-turn" },
+    );
+    expect(gapRows(state)).toEqual(["first", "", "queued one", "queued: steer", "", "queued two", "queued: steer"]);
+  });
+
+  test("a queued message below a reply keeps its single blank row", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.messages.push(user("first"), reply());
+    state.queuedMessages.push({ convId: "conv-1", text: "queued one", timing: "next-turn" });
+    const shown = gapRows(state);
+    expect(shown.slice(0, 4)).toEqual(["first", "", "Reply.", expect.stringContaining("GPT-6-Astra")]);
+    expect(shown.slice(4)).toEqual(["", "queued one", "queued: steer"]);
+  });
+
+  test("the other gaps are unchanged: user to reply, reply to user, a reply after folded work", () => {
+    const state = createInitialState();
+    state.messages.push(user("first"), reply(), user("second"), silent("s1"), reply(), user("third"));
+    expect(gapRows(state)).toEqual([
+      "first", "", "Reply.", expect.stringContaining("GPT-6-Astra"),
+      "", "second", "", "Reply.", expect.stringContaining("GPT-6-Astra"),
+      "", "third", "",
+    ]);
+  });
+
+  test("an incremental rebuild gives the same rows when a reply arrives between two messages", () => {
+    const state = createInitialState();
+    const folded = silent("s1");
+    state.messages.push(user("first"), folded, user("second"), user("third"));
+    expect(gapRows(state)).toEqual(["first", "", "second", "", "third", ""]);
+    freshMatchesIncremental(state);
+    // The silent turn gains a reply: the rows after it need their top margin back.
+    folded.blocks.push({ type: "text", text: "Reply." });
+    expect(gapRows(state)).toEqual(["first", "", "Reply.", expect.stringContaining("GPT-6-Astra"), "", "second", "", "third", ""]);
+    freshMatchesIncremental(state);
+  });
+});
