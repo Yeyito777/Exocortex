@@ -684,3 +684,92 @@ describe("the gap between consecutive user messages", () => {
     freshMatchesIncremental(state);
   });
 });
+
+describe("the gap around a notification shown in full", () => {
+  const gapRows = (state: RenderState, width = 100) => rows(state, width).map(row => row.trim());
+  const reply = () => assistant([{ type: "text", text: "Reply." }]);
+  const NOTE = "▎ [notification] Subagent completed: exo:1";
+  const header = "Subagent completion";
+
+  test("a notification and the user message beside it are one blank row apart, both ways", () => {
+    const state = createInitialState();
+    state.showTurnWork = true;
+    state.messages.push(user("first"), note(1), user("second"));
+    expect(gapRows(state)).toEqual(["first", "", header, NOTE, "", "second", ""]);
+    freshMatchesIncremental(state);
+  });
+
+  test("consecutive notifications are one blank row apart", () => {
+    const state = createInitialState();
+    state.showTurnWork = true;
+    state.messages.push(user("first"), note(1), note(2), user("second"));
+    expect(gapRows(state)).toEqual([
+      "first", "", header, NOTE, "", header, "▎ [notification] Subagent completed: exo:2", "", "second", "",
+    ]);
+    freshMatchesIncremental(state);
+  });
+
+  test("a notification at the top, and under Ctrl+I, read the same", () => {
+    for (const open of [(state: RenderState) => { state.showTurnWork = true; }, (state: RenderState) => { state.showToolOutput = true; }]) {
+      const state = createInitialState();
+      open(state);
+      state.messages.push(note(1), note(2), user("first"));
+      expect(gapRows(state), "top").toEqual([header, NOTE, "", header, "▎ [notification] Subagent completed: exo:2", "", "first", ""]);
+    }
+  });
+
+  test("hold at a narrow width", () => {
+    const state = createInitialState();
+    state.showTurnWork = true;
+    state.messages.push(user("first"), note(1), user("second"));
+    const shown = gapRows(state, 30);
+    expect(shown[0]).toBe("first");
+    expect(shown[1]).toBe("");
+    expect(shown[2]).toBe(header);
+    expect(shown.slice(-3)).toEqual(["", "second", ""]);
+    expect(shown.filter((row, i) => row === "" && shown[i + 1] === "")).toEqual([]);
+  });
+
+  test("the gaps to and from the assistant are unchanged", () => {
+    const state = createInitialState();
+    state.showTurnWork = true;
+    state.messages.push(user("first"), reply(), note(1), reply(), user("second"));
+    expect(gapRows(state)).toEqual([
+      "first", "", "Reply.", expect.stringContaining("GPT-6-Astra"),
+      "", header, NOTE, "",
+      "Reply.", expect.stringContaining("GPT-6-Astra"),
+      "", "second", "",
+    ]);
+  });
+
+  test("the folded view still shows no notification, and one blank row between messages", () => {
+    const state = createInitialState();
+    state.messages.push(user("first"), note(1), user("second"));
+    expect(gapRows(state)).toEqual(["first", "", "second", ""]);
+  });
+
+  test("a queued notification below a message is one blank row away", () => {
+    const state = createInitialState();
+    state.showTurnWork = true;
+    state.convId = "conv-1";
+    state.messages.push(user("first"), note(1));
+    state.queuedMessages.push({ convId: "conv-1", text: "[notification] Gmail", timing: "next-turn", automation: { kind: "external_notification" } });
+    const shown = gapRows(state);
+    expect(shown.slice(0, 5)).toEqual(["first", "", header, NOTE, ""]);
+    expect(shown[5]).toContain("Notification · queued");
+    expect(shown[6]).toBe("▎ [notification] Gmail");
+  });
+
+  test("an incremental rebuild keeps the gap when a message arrives after a notification", () => {
+    const state = createInitialState();
+    state.showTurnWork = true;
+    state.messages.push(user("first"), note(1));
+    expect(gapRows(state)).toEqual(["first", "", header, NOTE, ""]);
+    freshMatchesIncremental(state);
+    state.messages.push(user("second"), note(2), user("third"));
+    expect(gapRows(state)).toEqual([
+      "first", "", header, NOTE, "", "second", "", header, "▎ [notification] Subagent completed: exo:2", "", "third", "",
+    ]);
+    freshMatchesIncremental(state);
+  });
+});
