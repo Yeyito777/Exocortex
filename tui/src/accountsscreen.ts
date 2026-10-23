@@ -9,9 +9,11 @@
  * how to sign one in, only when there is something to say. Data comes from
  * the daemon's `accounts` command, which keeps pushing snapshots while the
  * screen is open. It only opens when several accounts are set up; otherwise it
- * explains how to add one. When the TUI already knows there are several
- * accounts it opens at once, with the last snapshot it saw or a loading line,
- * and fills in when the daemon answers. The highlight for this conversation's
+ * explains how to add one. The TUI asks for a snapshot as soon as it
+ * connects (and reconnects), and again after anything the rows show may have
+ * changed, so the screen opens at once with it, the first time too and over
+ * /ssh, and refreshes in place when the daemon answers; a loading line shows
+ * only if it opens before that first answer. The highlight for this conversation's
  * account comes from what earlier snapshots said about it, so it shows at
  * once too, also over /ssh. Esc or q closes; j/k scroll a card cut short by a
  * small terminal. While Claude goes through /proxy, the Claude rows are the
@@ -19,7 +21,7 @@
  * says so, or that the link is down.
  */
 
-import type { AccountsEvent, AccountsSnapshot, ClaudeAccountInfo, ClaudeAccountsInfo } from "./protocol";
+import type { AccountsEvent, AccountsSnapshot, Event, ClaudeAccountInfo, ClaudeAccountsInfo } from "./protocol";
 import type { UsageData, UsageWindow } from "./messages";
 import type { KeyEvent } from "./input";
 import type { RenderState } from "./state";
@@ -83,6 +85,34 @@ export function requestAccountsScreen(state: RenderState, daemon: AccountsReques
   state.accountsOpenRequest = { reqId: daemon.accounts({ watch: true, convId: state.convId }) };
 }
 
+/** Events after which the rows may differ: sign-ins, usage, account commands' answers, /proxy links. */
+const ACCOUNTS_CHANGE_EVENTS: ReadonlySet<Event["type"]> = new Set(["tools_available", "usage_update", "auth_status", "provider_proxies"]);
+
+export function accountsMayHaveChanged(event: Event): boolean {
+  return ACCOUNTS_CHANGE_EVENTS.has(event.type);
+}
+
+/**
+ * Ask for a snapshot ahead of opening, so the screen never waits a round trip.
+ * Not while it is open (its watch pushes changes), and not while an earlier ask
+ * is unanswered: the daemon builds the snapshot when it reaches the ask, so it
+ * already reflects every event that arrives before the answer. `force` starts
+ * over on a new connection, where an earlier ask may have been lost.
+ */
+export function prefetchAccounts(state: RenderState, daemon: AccountsRequester, options: { force?: boolean } = {}): void {
+  if (state.accountsScreen || state.accountsOpenRequest) return;
+  if (state.accountsPrefetchReqId && !options.force) return;
+  state.accountsPrefetchReqId = daemon.accounts({ convId: state.convId });
+}
+
+/**
+ * A daemon without the `accounts` command rejects the ask: say nothing. The
+ * ask stays pending, so no more go out until the next connection.
+ */
+export function isAccountsPrefetchError(state: Pick<RenderState, "accountsPrefetchReqId">, event: Event): boolean {
+  return event.type === "error" && event.reqId !== undefined && event.reqId === state.accountsPrefetchReqId;
+}
+
 export function closeAccountsScreen(state: RenderState, daemon: AccountsRequester | null): void {
   if (!state.accountsScreen && !state.accountsOpenRequest) return;
   state.accountsScreen = null;
@@ -123,6 +153,7 @@ function forCurrentConversation(state: RenderState, snapshot: AccountsSnapshot):
 /** Apply an `accounts` event: fill in (or close and explain) for the pending request, refresh an open screen. */
 export function handleAccountsEvent(state: RenderState, event: AccountsEvent): void {
   state.accountsSnapshotCache = event.snapshot;
+  if (event.reqId && event.reqId === state.accountsPrefetchReqId) state.accountsPrefetchReqId = null;
   rememberConversationAccounts(state, event.snapshot);
   const request = state.accountsOpenRequest;
   if (request && event.reqId === request.reqId) {

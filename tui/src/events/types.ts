@@ -17,6 +17,8 @@ export interface DaemonActions {
   /** /macro: changes the store confirms in the background (see usermacros/store). */
   saveUserMacro?(macro: UserMacro, create: boolean): string | null;
   deleteUserMacro?(name: string): string | null;
+  /** Accounts screen snapshots; returns the request id (see accountsscreen). */
+  accounts?(options: { watch?: boolean; convId?: string | null }): string;
   /** Returns the request id when the transport assigns one. */
   loadToolOutputs(convId: string, toolCallIds?: string[]): string | void;
 }
