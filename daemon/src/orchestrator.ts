@@ -13,7 +13,7 @@ import { planClaudePrompt } from "./providers/anthropic/prompt";
 import { isDeepStrictEqual } from "node:util";
 import { prepareArchiveHashes } from "./conversation-loader";
 import { archiveWindow, inheritArchiveHashProof, storedMessageCount } from "./conversation-window";
-import { resumeWorkTimer, workTimerForTurn } from "./work-timer";
+import { interruptedRunWorkTimer } from "./work-timer";
 import { appendGenerationRate, createGenerationThroughput } from "@exocortex/shared/generation-throughput";
 import { hasConfiguredCredentials } from "./auth";
 import { runAgentLoop, type AgentCallbacks, type AgentState } from "./agent";
@@ -229,15 +229,15 @@ interface AssistantTurnOptions {
   queueEntryId?: string;
   /** Provenance for a daemon/model-authored prompt represented as a user turn. */
   automation?: UserMessageAutomation;
-  /** A queued prompt drained when the running turn ended: it continues the work timer. */
-  arrivedWhileWorking?: boolean;
+  /** Replays a turn a daemon restart interrupted: its run's work timer continues. */
+  resumesInterruptedRun?: boolean;
   /** Force one context compaction without requesting an assistant response. */
   manualCompaction?: boolean;
   /** This turn is the daemon-owned successor in an already-active stream chain. */
   streamChainHandoff?: boolean;
 }
 
-export type SubagentTurnPolicy = Pick<AssistantTurnOptions, "subagentMaxDepth" | "subagentNotificationId" | "queueEntryId" | "automation">;
+export type SubagentTurnPolicy = Pick<AssistantTurnOptions, "subagentMaxDepth" | "subagentNotificationId" | "queueEntryId" | "automation" | "resumesInterruptedRun">;
 
 export async function orchestrateSendMessage(
   server: DaemonServer,
@@ -391,7 +391,6 @@ async function orchestrateGoalContinuation(
       subagentNotificationId: first.subagentNotificationId,
       queueEntryId: first.id,
       automation: first.automation,
-      arrivedWhileWorking: true,
     } : { goalContinuationPrompt: formatGoalContinuation(initial!.goal!), goalAtAdmission: initial!.goal! }),
     streamChainHandoff: true,
   });
@@ -689,7 +688,6 @@ async function orchestrateAdmittedAssistantTurn(
         subagentNotificationId: options.subagentNotificationId,
         queueEntryId: options.queueEntryId,
         automation,
-        arrivedWhileWorking: options.arrivedWhileWorking,
         contextCheckpoint,
       });
     } catch (error) {
@@ -759,7 +757,11 @@ async function orchestrateAdmittedAssistantTurn(
   // daemon restart. It is still an active job so abort, queueing, and shutdown
   // can coordinate with it normally.
   convStore.setActiveJob(convId, ac, startedAt, !manualCompaction);
-  let workTimerStartedAt = workTimerForTurn(conv.messages, startedAt);
+  // The work timer counts the run: it starts at 0 when the conversation goes
+  // from idle to working, and turns the chain hands off to (queued messages,
+  // goal continuations) keep it.
+  let workTimerStartedAt = convStore.getStreamingWorkTimerStartedAt(convId)
+    ?? (options.resumesInterruptedRun ? interruptedRunWorkTimer(conv.messages, startedAt) : startedAt);
   // One invocation produces one assistant message. Never seed its rate from
   // earlier messages, even when the independent work timer continues.
   let generationThroughput = createGenerationThroughput(conv.provider, conv.model);
@@ -812,10 +814,8 @@ async function orchestrateAdmittedAssistantTurn(
   let steerRequested = false;
   let preemptionsWithoutDelivery = 0;
   // A Claude Code turn runs long chrono sleeps and waits inside the call rather
-  // than suspending: the chrono task ids of those in progress, and when the
-  // turn started sleeping in them.
+  // than suspending: the chrono task ids of those in progress.
   const inlineLongSleeps = new Set<string>();
-  let inlineSleepSince: number | null = null;
   // Any queued message, automated or message-end ones too, ends a suspended
   // sleep by starting a turn. One queued during an inline long sleep steers
   // like a person's until it is delivered.
@@ -1048,15 +1048,13 @@ async function orchestrateAdmittedAssistantTurn(
       if (active && details?.dueAt !== undefined && (details.chronoMode === "sleep" || details.chronoMode === "wait")
           && details.dueAt - details.startedAt > LONG_CHRONO_SLEEP_THRESHOLD_MS) {
         inlineLongSleeps.add(taskId);
-        inlineSleepSince = Math.min(inlineSleepSince ?? details.startedAt, details.startedAt);
         // A message queued earlier would end a suspended sleep at once.
         queueMicrotask(steerTurn);
       }
-      if (!active && inlineLongSleeps.delete(taskId) && inlineLongSleeps.size === 0 && inlineSleepSince !== null) {
-        // Charge the sleep to the work timer as a suspended turn would: not at
-        // all. Overlapping sleeps are one idle stretch.
-        workTimerStartedAt = resumeWorkTimer(workTimerStartedAt, inlineSleepSince, Date.now());
-        inlineSleepSince = null;
+      if (!active && inlineLongSleeps.delete(taskId) && inlineLongSleeps.size === 0) {
+        // As after a suspended turn's wake, work after a long sleep starts a
+        // new timer: the sleep is never charged. Overlapping sleeps are one.
+        workTimerStartedAt = Date.now();
         convStore.setStreamingWorkTimerStartedAt(convId, workTimerStartedAt);
         // Before the task leaves the sidebar, which unfreezes the TUI clock.
         sendStreamingSnapshot();
@@ -1704,7 +1702,6 @@ async function orchestrateAdmittedAssistantTurn(
           subagentNotificationId: qm.subagentNotificationId,
           queueEntryId: qm.id,
           automation: qm.automation,
-          arrivedWhileWorking: true,
           contextCheckpoint,
         });
         apiMsgs.push({
@@ -2306,7 +2303,6 @@ async function orchestrateAdmittedAssistantTurn(
           subagentNotificationId: first.subagentNotificationId,
           queueEntryId: first.id,
           automation: first.automation,
-          arrivedWhileWorking: true,
           streamChainHandoff: true,
         })).ok;
       } catch (err) {

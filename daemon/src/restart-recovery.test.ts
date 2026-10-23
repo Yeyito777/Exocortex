@@ -116,6 +116,11 @@ describe("restart recovery file", () => {
       goalConvId,
       normalConvId,
     ]);
+    // The interrupted runs continue: their work timers are not restarted.
+    expect(orchestrateReplayConversation.mock.calls.map(call => (call as unknown[])[6])).toEqual([
+      { resumesInterruptedRun: true },
+      { resumesInterruptedRun: true },
+    ]);
     expect(orchestrateGoalCycle).not.toHaveBeenCalled();
   });
 
@@ -343,7 +348,7 @@ describe("restart recovery file", () => {
       childConvId,
       expect.any(Number),
       expect.any(Object),
-      { subagentMaxDepth: 1 },
+      { subagentMaxDepth: 1, resumesInterruptedRun: true },
     );
     expect(orchestrateSendMessage).not.toHaveBeenCalledWith(
       expect.anything(),

@@ -34,6 +34,11 @@ const streamingCommittedMessageCounts = new Map<string, number>();
 const streamingPendingAssistantOpen = new Set<string>();
 /** Original startedAt timestamp per streaming job (for late-joining clients). */
 const streamingStartedAt = new Map<string, number>();
+/**
+ * Work timer origin of the running turn chain. It survives handoffs to queued
+ * turns and goal continuations, and ends with the chain: the next turn that
+ * starts from idle starts its own timer.
+ */
 const streamingWorkTimerStartedAt = new Map<string, number>();
 /** Accumulated output token count per streaming job (for late-joining clients). */
 const streamingTokens = new Map<string, number>();
@@ -107,8 +112,14 @@ export function getStreamHandoffToken(convId: string): symbol | undefined {
   return streamHandoffs.get(convId);
 }
 
+/** Forget the per-chain records once the chain is over (or before a new one starts). */
+function endTurnChain(convId: string): void {
+  ownerTurnChains.delete(convId);
+  streamingWorkTimerStartedAt.delete(convId);
+}
+
 export function beginStreamHandoff(convId: string): void {
-  if (!isStreaming(convId)) ownerTurnChains.delete(convId);
+  if (!isStreaming(convId)) endTurnChain(convId);
   streamHandoffs.set(convId, Symbol("stream-handoff"));
 }
 
@@ -120,7 +131,7 @@ export function beginStreamHandoff(convId: string): void {
  */
 export function tryBeginStreamHandoff(convId: string): symbol | undefined {
   if (isStreaming(convId)) return undefined;
-  ownerTurnChains.delete(convId);
+  endTurnChain(convId);
   const token = Symbol("stream-handoff");
   streamHandoffs.set(convId, token);
   return token;
@@ -128,7 +139,7 @@ export function tryBeginStreamHandoff(convId: string): symbol | undefined {
 
 export function clearStreamHandoff(convId: string): void {
   const wasBusy = streamHandoffs.delete(convId);
-  if (!isStreaming(convId)) ownerTurnChains.delete(convId);
+  if (!isStreaming(convId)) endTurnChain(convId);
   notifyIfIdle(convId, wasBusy);
 }
 
@@ -213,7 +224,6 @@ export function clearActiveJob(convId: string, owner?: AbortController): void {
   restartRecoverableJobs.delete(convId);
   streamingBlocks.delete(convId);
   streamingStartedAt.delete(convId);
-  streamingWorkTimerStartedAt.delete(convId);
   streamingTokens.delete(convId);
   streamingGenerationThroughput.delete(convId);
   contextCompactionStartedAt.delete(convId);
@@ -226,7 +236,7 @@ export function clearActiveJob(convId: string, owner?: AbortController): void {
   lastActivityAt.delete(convId);
   pausedStreams.delete(convId);
   activeToolBackgrounders.delete(convId);
-  if (!isStreaming(convId)) ownerTurnChains.delete(convId);
+  if (!isStreaming(convId)) endTurnChain(convId);
   notifyIfIdle(convId, wasBusy);
 }
 

@@ -1,37 +1,21 @@
-import { continueWorkTimer } from "../../shared/src/work-timer";
-export { resumeWorkTimer } from "../../shared/src/work-timer";
-import { CONTEXT_COMPACTION_FINISHED_KIND, isRealUserMessage, ownerRelayedText, type StoredMessage } from "./messages";
-import { archiveWindow } from "./conversation-window";
+import { CONTEXT_COMPACTION_FINISHED_KIND, isRealUserMessage, type StoredMessage } from "./messages";
 
 /**
- * Whether a user message starts a new work stretch: the owner's own words
- * (typed, or relayed from Discord/WhatsApp) that arrived while the
- * conversation was idle. One that arrived during work, and any other
- * automated prompt, continues the stretch.
+ * Work timer origin for a turn replayed after a daemon restart interrupted it.
+ * The conversation never went idle, so the interrupted run's timer continues,
+ * without charging the downtime. When the interrupted turn left no work after
+ * its prompt, the replay starts a fresh timer.
  */
-function restartsWorkTimer(message: StoredMessage): boolean {
-  const metadata = message.metadata;
-  if (metadata?.arrivedWhileWorking) return false;
-  if (!metadata?.automation) return true;
-  const text = typeof message.content === "string"
-    ? message.content
-    : message.content.flatMap(block => block.type === "text" ? [block.text] : []).join("\n");
-  return ownerRelayedText(text, metadata) !== null;
-}
-
-/** Use canonical history, not the visible/paginated tail or the provider context. */
-export function workTimerForTurn(messages: StoredMessage[], startedAt: number): number {
+export function interruptedRunWorkTimer(messages: StoredMessage[], resumedAt: number): number {
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i];
-    if (isRealUserMessage(message) && restartsWorkTimer(message)) return startedAt;
-    // A standalone/manual compaction may be the latest completed work even
-    // though it has no assistant response. Its status marker preserves the clock.
-    if (message.metadata?.kind === CONTEXT_COMPACTION_FINISHED_KIND
-        && message.metadata.workTimerStartedAt !== undefined) {
-      return continueWorkTimer(message.metadata, startedAt);
-    }
-    if (message.role !== "assistant" || !message.metadata) continue;
-    return continueWorkTimer(message.metadata, startedAt);
+    if (isRealUserMessage(message)) return resumedAt;
+    const metadata = message.metadata;
+    // A standalone compaction may be the latest work. Its marker carries the timer.
+    const compaction = metadata?.kind === CONTEXT_COMPACTION_FINISHED_KIND && metadata.workTimerStartedAt !== undefined;
+    if (message.role !== "assistant" && !compaction) continue;
+    if (metadata?.workTimerStartedAt === undefined || metadata.endedAt == null) return resumedAt;
+    return resumedAt - Math.max(0, metadata.endedAt - metadata.workTimerStartedAt);
   }
-  return continueWorkTimer(archiveWindow(messages)?.sparse?.workTimer ?? null, startedAt);
+  return resumedAt;
 }

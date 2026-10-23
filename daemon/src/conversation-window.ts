@@ -33,7 +33,6 @@ export interface ArchiveWindow {
     userCount: number;
     messageCount: number;
     instructions: StoredMessage[];
-    workTimer?: StoredMessage["metadata"];
   };
   headers: StoredMessage[];
 }

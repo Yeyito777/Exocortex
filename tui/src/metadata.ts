@@ -155,7 +155,7 @@ export function renderMetadata(
   if (finished) {
     parts.push(finished);
   } else {
-    // Duration retains the independent work-stretch timer.
+    // Duration counts from the start of the run (its work timer).
     const elapsed = end - (metadata.workTimerStartedAt ?? metadata.startedAt);
     parts.push(formatDuration(elapsed));
   }

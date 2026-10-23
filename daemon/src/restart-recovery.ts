@@ -270,7 +270,7 @@ export function recoverInterruptedStreams(server: DaemonServer, alsoReplay: read
             convId,
             Date.now(),
             callbacks,
-            { subagentMaxDepth: pendingNotification.subagentMaxDepth },
+            { subagentMaxDepth: pendingNotification.subagentMaxDepth, resumesInterruptedRun: true },
           )
         : orchestrateSendMessage(
             server,
@@ -320,6 +320,7 @@ export function recoverInterruptedStreams(server: DaemonServer, alsoReplay: read
       convId,
       Date.now(),
       callbacks,
+      { resumesInterruptedRun: true },
     ).then((outcome) => {
       if (outcome.ok) {
         log("info", `restart-recovery: replay completed for ${convId}`);

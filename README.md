@@ -376,7 +376,11 @@ Both native and cross-build methods produce standalone Windows executables in
 
 AI metadata shows the model, average output `tokens/s`, and a time segment.
 While the AI is working the segment is the live work timer counting up:
-`Opus-5.5 | 87.9 tokens/s | 1m 12s`. When the message finishes, the finish
+`Opus-5.5 | 87.9 tokens/s | 1m 12s`. It starts at 0 when the conversation goes
+from idle to working, whatever starts it (your message, a wake, a notification),
+and runs on through messages that join the running work (steered or queued ones,
+goal continuations) and daemon restarts. Time asleep in a long Chrono sleep is
+not counted: work after the sleep starts again at 0. When the message finishes, the finish
 clock replaces the duration on that same render (`endedAt`, the instant the timer
 stopped): `Opus-5.5 | 87.9 tokens/s | 2:03pm`, `... | yesterday 10:41pm`,
 `... | Oct 19 9:12am` (year added for another year, `Oct 19 2025 9:12am`). The

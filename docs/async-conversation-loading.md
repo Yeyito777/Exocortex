@@ -82,8 +82,8 @@ for append/display invariants.
   receipts, and compact display projections. Writes update them transactionally.
   Missing receipts fail closed and are never repaired by a reader.
 - Schema 13 extends each checkpoint receipt to bind a small prefix summary:
-  real-user count, summary message count, instruction sequences and a bounded
-  work-timer continuation record. Its one-time
+  real-user count, summary message count and instruction sequences (descriptors
+  sealed before Oct 2026 also carry an unused work-timer record). Its one-time
   startup-worker upgrade verifies the existing v12 receipt before extending it;
   invalid/missing receipts stay invalid/missing. Summary enrollment reads small
   index/metadata fields, never old tool/image bodies. New checkpoint writes
