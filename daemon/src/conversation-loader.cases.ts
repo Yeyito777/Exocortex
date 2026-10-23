@@ -7,7 +7,6 @@ import { loadConversationOffThread, loadToolOutputsOffThread, prefetchConversati
 import { checkpointTailHasher, updateCheckpointTailHash, integritySha } from "./checkpoint-tail-integrity";
 import { archiveWindow, inheritArchiveHashProof, isArchivedMessage, storedMessageCount, systemInstructionMessages } from "./conversation-window";
 import { titleContext } from "./conversation-title-context";
-import { workTimerForTurn } from "./work-timer";
 import {
   CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT,
   createConversation, createStoredUserContextCheckpoint, currentReplayHistoryPrefix, countConversationMessages,
@@ -681,23 +680,6 @@ test("sealed sparse descriptors reject changed counts and omitted required instr
     .run(JSON.stringify({ userCount: 0, messageCount: 0, instructions: [] }), conv.id);
   await rejects(loadConversationOffThread(conv.id, false, store.path), /Checkpoint integrity/);
   expect(store.db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM messages WHERE conversation_id=?").get(conv.id)!.n).toBe(conv.messages.length);
-});
-
-test("sparse automation continues the archived work clock but a new human turn resets it", async () => {
-  const { store, conv } = fixture();
-  conv.messages[conv.messages.length - 5].metadata = {
-    startedAt: 0, endedAt: 134_000, model: conv.model, tokens: 0, workTimerStartedAt: 6_000,
-  };
-  conv.messages.at(-2)!.metadata = {
-    startedAt: 140_000, endedAt: 140_000, model: conv.model, tokens: 0, automation: { kind: "chrono_wake" },
-  };
-  store.save(conv, { forceMessages: true });
-  const loaded = await load(store, conv);
-  expect(workTimerForTurn(loaded.messages, 150_000)).toBe(workTimerForTurn(conv.messages, 150_000));
-  expect(workTimerForTurn(loaded.messages, 150_000)).toBe(22_000);
-  expect(() => { archiveWindow(loaded.messages)!.sparse!.workTimer!.startedAt = 1; }).toThrow();
-  loaded.messages.push({ role: "user", content: "new human", metadata: null });
-  expect(workTimerForTurn(loaded.messages, 150_000)).toBe(150_000);
 });
 
 test("a checkpoint with no materialized tail still has replay, counts, instructions and a safe append edge", async () => {

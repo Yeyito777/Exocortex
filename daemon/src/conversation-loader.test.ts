@@ -11,5 +11,5 @@ test("readonly workers, sparse windows, integrity, freshness and bounded reuse",
   const output = child.stdout.toString() + child.stderr.toString();
   expect(child.exitCode, output).toBe(0);
   expect(output).toContain("0 fail");
-  expect(output).toContain("39 pass");
+  expect(output).toContain("38 pass");
 }, 60_000);

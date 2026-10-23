@@ -396,8 +396,10 @@ export interface MessageMetadata {
   /** When the daemon finished. Null while streaming. */
   endedAt: number | null;
   /**
-   * Virtual start of the work-stretch timer (idle gaps already subtracted).
-   * Separate from startedAt, which remains the identity of this provider turn.
+   * Start of the run's work timer: when the conversation last went from idle
+   * to working (or woke from a long sleep). Turns handed off within the run
+   * share it. Separate from startedAt, which remains the identity of this
+   * provider turn.
    */
   workTimerStartedAt?: number;
   /** Model used. Client-originated (set on creation). */
@@ -419,12 +421,6 @@ export interface MessageMetadata {
   queueEntryId?: string;
   /** Provenance for a non-human prompt intentionally represented as a user turn. */
   automation?: UserMessageAutomation;
-  /**
-   * A queued prompt delivered while work was underway: injected at a tool
-   * boundary, or started as the next turn when the running one ended. It
-   * continues the work timer instead of restarting it.
-   */
-  arrivedWhileWorking?: true;
 }
 
 /** Build standard message metadata with sensible defaults. */

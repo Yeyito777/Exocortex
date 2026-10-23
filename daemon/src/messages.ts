@@ -971,7 +971,6 @@ export function createStoredUserMessage(
     subagentNotificationId?: string;
     queueEntryId?: string;
     automation?: UserMessageAutomation;
-    arrivedWhileWorking?: boolean;
     contextCheckpoint?: StoredUserContextCheckpoint;
   } = {},
 ): StoredMessage {
@@ -979,7 +978,6 @@ export function createStoredUserMessage(
   if (options.subagentNotificationId) metadata.subagentNotificationId = options.subagentNotificationId;
   if (options.queueEntryId) metadata.queueEntryId = options.queueEntryId;
   if (options.automation) metadata.automation = { ...options.automation };
-  if (options.arrivedWhileWorking) metadata.arrivedWhileWorking = true;
   return {
     role: "user",
     content: buildUserContent(text, images),

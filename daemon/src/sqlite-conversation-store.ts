@@ -24,7 +24,6 @@ import type {
 } from "./messages";
 import {
   activeContextCompactionHistoryCount,
-  CONTEXT_COMPACTION_FINISHED_KIND,
   countConversationMessages,
   isRealUserMessage,
   isReplayHistoryMessage,
@@ -1104,7 +1103,6 @@ export class SqliteConversationStore implements ConversationRepository {
 
   private prefixSummary(id: string, floor: number): string {
     let userCount = 0, messageCount = 0;
-    let workTimer: StoredMessage["metadata"] = null;
     const instructions: number[] = [];
     // Only at checkpoint creation / one-time upgrade, never at runtime load.
     for (const row of this.iterateRows<{ sequence: number; role: StoredMessage["role"]; metadata_json: string | null; is_real_user: number }, [string, number]>(`
@@ -1116,13 +1114,8 @@ export class SqliteConversationStore implements ConversationRepository {
       let metadata: StoredMessage["metadata"] = null;
       try { metadata = parseOptional(row.metadata_json); } catch { /* archived bytes are checked on request */ }
       messageCount += countConversationMessages([{ role: row.role, content: "", metadata }]);
-      // Fold the bounded continuation clock while enrolling the descriptor.
-      // Runtime work-timer lookup must not resurrect the entire header array.
-      if (row.is_real_user && !metadata?.automation) workTimer = null;
-      if (metadata?.kind === CONTEXT_COMPACTION_FINISHED_KIND && metadata.workTimerStartedAt !== undefined) workTimer = metadata;
-      else if (row.role === "assistant" && metadata) workTimer = metadata;
     }
-    return JSON.stringify({ userCount, messageCount, instructions, workTimer });
+    return JSON.stringify({ userCount, messageCount, instructions });
   }
 
   private writeCheckpointReceipt(id: string, payload: string, floor: number, historyFloor: number, titleJson: string, bytes: number, summary?: string): void {
@@ -1635,7 +1628,7 @@ export class SqliteConversationStore implements ConversationRepository {
       const messages: StoredMessage[] = [];
       let count = full ? 0 : checkpoint.history_floor;
       const summary = JSON.parse(checkpoint.prefix_summary_json ?? "null") as {
-        userCount: number; messageCount: number; instructions: number[]; workTimer?: StoredMessage["metadata"];
+        userCount: number; messageCount: number; instructions: number[];
       } | null;
       if (!summary || !Number.isSafeInteger(summary.userCount) || summary.userCount < 0 || summary.userCount > floor
           || !Number.isSafeInteger(summary.messageCount) || summary.messageCount < 0 || summary.messageCount > floor
@@ -1690,7 +1683,7 @@ export class SqliteConversationStore implements ConversationRepository {
         handle, conversationId: id, path: this.path, prefixSequence: full ? 0 : floor,
         prefixHistoryCount: full ? 0 : checkpoint.history_floor,
         prefixHash: anchor.hash, archivedBytes: full ? 0 : checkpoint.archived_bytes, hashAnchor: anchor,
-        ...(full ? {} : { sparse: { userCount: summary.userCount, messageCount: summary.messageCount, instructions, workTimer: summary.workTimer } }),
+        ...(full ? {} : { sparse: { userCount: summary.userCount, messageCount: summary.messageCount, instructions } }),
       };
       // The result crosses a structured-clone boundary. Bind/freeze identities
       // once, at foreground adoption, rather than doing the same O(header count)

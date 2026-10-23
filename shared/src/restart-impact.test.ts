@@ -57,8 +57,8 @@ describe("daemon import closure", () => {
     expect(closure.has("daemon/src/main.ts")).toBe(true);
     expect(closure.has("shared/src/config.ts")).toBe(true);
     expect(closure.has("shared/src/updatecheck.ts")).toBe(true);
-    // Reached only through a relative import from shared/src/work-timer.
-    expect(closure.has("shared/src/work-timer.ts")).toBe(true);
+    // Reached only through a relative import, from shared/src/updatecheck.
+    expect(closure.has("shared/src/restart-impact.ts")).toBe(true);
     expect([...closure].some(file => file.startsWith("tui/") || file.endsWith(".test.ts"))).toBe(false);
   });
 });
