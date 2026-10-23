@@ -239,6 +239,14 @@ scripts/macos/build-launcher.sh            # build, sign, install the app; write
 scripts/macos/build-launcher.sh --reload   # same, then (re)load the LaunchAgent now
 ```
 
+`--reload` also fast-forwards each `external-tools/*` repo (they are separate
+git repos, so `git pull` never updates them) via
+`scripts/macos/update-external-tools.sh`. It only pulls a repo that is on its
+default branch, clean and strictly behind; dirty, ahead, diverged, off-branch or
+upstream-less repos are skipped with a warning, nothing is stashed or reset, and
+a changed `requirements.txt`/`requirements.lock`/`bun.lock` re-runs that tool's
+install. Pass `--no-tools-update` to skip it.
+
 Then manage it with `exocortexd start|stop|restart|status` (link it with
 `ln -s "$PWD/bin/exocortexd" ~/.local/bin/exocortexd`).
 
