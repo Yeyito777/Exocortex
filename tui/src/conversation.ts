@@ -966,8 +966,9 @@ export function buildMessageLines(
     if (messagePlan?.kind === "merged") {
       // The notification that started the live turn: no row of its own (its label leads
       // the Working row), only the blank line that separates the turn from the one above.
-      // A prompt right after it (one it joined the turn of) brings that margin itself.
-      if (state.messages[messageIndex + 1]?.role !== "user" && userMessageNeedsTopMargin(state.messages, messageIndex)) pushLine("", msg, "user_margin_top");
+      // A prompt right after it (one it joined the turn of) brings that margin itself,
+      // as does a bubble right above it (it was delivered into a turn whose work folded).
+      if (state.messages[messageIndex + 1]?.role !== "user" && userMessageNeedsTopMargin(state.messages, messageIndex) && !followsBubble()) pushLine("", msg, "user_margin_top");
       pushMessageBound(msg.role, start, lines.length, lines.length);
     } else if (msg.role === "user" && messagePlan?.kind === "notification") {
       if (userMessageNeedsTopMargin(state.messages, messageIndex) && !followsBubble()) pushLine("", msg, "user_margin_top");

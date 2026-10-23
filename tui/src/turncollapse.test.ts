@@ -3,6 +3,7 @@ import { buildMessageLines, invalidateCommittedHistoryCache, type BuildMessageLi
 import { createInitialState, focusHistory, resetToolOutputState, type RenderState } from "./state";
 import { createPendingAI, type Message } from "./messages";
 import { handleStreamingStarted, handleToolCall, handleToolResult } from "./events/streaming";
+import { handleEvent, type DaemonActions } from "./events";
 import type { Event } from "./protocol";
 import { notificationLabel, notificationPreview, ownerWords } from "./turncollapse";
 import { theme } from "./theme";
@@ -308,6 +309,131 @@ describe("the live turn", () => {
       handleToolResult({ type: "tool_result", convId: "c", toolCallId: id, toolName: "bash", output: "ok", isError: false } as Extract<Event, { type: "tool_result" }>, state);
       check();
     }
+  });
+});
+
+describe("a message delivered into the running turn", () => {
+  const daemon: DaemonActions = { subscribe() {}, unsubscribe() {}, sendMessage() {}, setSystemInstructions() {}, loadToolOutputs() {} };
+  const NOW = 10_000;
+  const RUN = 1_000;
+  const bash = (id: string, command: string) => ({ type: "tool_call", toolCallId: id, toolName: "bash", input: { command }, summary: command });
+  const ok = (id: string) => ({ type: "tool_result", toolCallId: id, toolName: "bash", output: "ok", isError: false });
+
+  /** A conversation streaming a run its prompt started at RUN, on a stopped clock. */
+  function live(provider: "anthropic" | "openai" = "anthropic") {
+    const state = createInitialState();
+    state.convId = "c";
+    const send = (event: object) => handleEvent({ convId: "c", ...event } as Event, state, daemon);
+    state.messages.push({ role: "user", text: "run the checks", metadata: { startedAt: RUN, endedAt: RUN, model: MODEL, tokens: 0 } });
+    send({ type: "streaming_started", provider, model: MODEL, startedAt: RUN, snapshotKind: "start" });
+    return { state, send };
+  }
+
+  /** Every row, trimmed, with the spinner frame pinned; the incremental build must match a fresh one. */
+  function frame(state: RenderState): string[] {
+    const comparable = ({ revision: _revision, ...rest }: BuildMessageLinesResult) => rest;
+    const incremental = buildMessageLines(state, 100, { reuseArrays: true });
+    const shown = incremental.lines.map(line => stripAnsi(line).trim().replace(/^\S (?=Working)/, "* "));
+    const kept = comparable(incremental);
+    invalidateCommittedHistoryCache(state);
+    expect(kept).toEqual(comparable(buildMessageLines(state, 100)));
+    return shown;
+  }
+
+  let clock: ReturnType<typeof spyOn> | null = null;
+  beforeAll(() => { clock = spyOn(Date, "now").mockReturnValue(NOW); });
+  afterAll(() => clock?.mockRestore());
+
+  const meta = "GPT-6-Astra | 0.0 tokens/s | 9s";
+
+  test("an owner's next-turn message (Claude): the last command stays under Working until the next one starts, on every frame", () => {
+    const { state, send } = live();
+    send(bash("t1", "uptime"));
+    send(ok("t1"));
+    send(bash("t2", "df -h"));
+    send(ok("t2"));
+    const working = ["* Working · 1 tool call", "bash df -h", meta];
+    expect(frame(state)).toEqual(["run the checks", "", ...working]);
+    const injected = ["run the checks", "", "also check memory", ""];
+    send({ type: "user_message", text: "also check memory", startedAt: 5_000, queueId: "q1" });
+    expect(frame(state)).toEqual([...injected, ...working]);
+    send({ type: "block_start", blockType: "thinking" });
+    send({ type: "thinking_chunk", text: "Memory next." });
+    expect(frame(state)).toEqual([...injected, ...working]);
+    send({ type: "tokens_update", tokens: 40 });
+    expect(frame(state)).toEqual([...injected, ...working]);
+    send(bash("t3", "free -m"));
+    expect(frame(state)).toEqual([...injected, "* Working · 2 tool calls", "bash free -m", meta]);
+    send(ok("t3"));
+    expect(frame(state)).toEqual([...injected, "* Working · 2 tool calls", "bash free -m", meta]);
+    send({ type: "text_chunk", text: "Memory is fine." });
+    expect(frame(state)).toEqual([...injected, "* Working · 3 tool calls", "Memory is fine.", meta]);
+    send({
+      type: "message_complete", endedAt: 9_000, tokens: 40,
+      blocks: [bash("t1", "uptime"), ok("t1"), bash("t2", "df -h"), ok("t2"), { type: "thinking", text: "Memory next." }, bash("t3", "free -m"), ok("t3"), { type: "text", text: "Memory is fine." }],
+    });
+    send({ type: "streaming_stopped" });
+    // The turn ended: its work folds as usual.
+    const ended = frame(state);
+    expect(ended.slice(0, -1)).toEqual([...injected, "Memory is fine."]);
+    expect(ended.at(-1)).toContain("GPT-6-Astra");
+  });
+
+  test("steering now (other providers): mid-thought, the command stays; mid-text, the text stays in view above the message", () => {
+    const thinking = live("openai");
+    thinking.send(bash("t1", "uptime"));
+    thinking.send(ok("t1"));
+    thinking.send({ type: "thinking_chunk", text: "Disk next." });
+    expect(frame(thinking.state)).toEqual(["run the checks", "", "* Working", "bash uptime", meta]);
+    thinking.send({ type: "user_message", text: "check memory instead", startedAt: 5_000, queueId: "s1" });
+    expect(frame(thinking.state)).toEqual(["run the checks", "", "check memory instead", "", "* Working", "bash uptime", meta]);
+    thinking.send(bash("t2", "free -m"));
+    expect(frame(thinking.state)).toEqual(["run the checks", "", "check memory instead", "", "* Working · 1 tool call", "bash free -m", meta]);
+
+    const text = live("openai");
+    text.send(bash("t1", "uptime"));
+    text.send(ok("t1"));
+    text.send({ type: "text_chunk", text: "Now checking disk" });
+    expect(frame(text.state)).toEqual(["run the checks", "", "* Working · 1 tool call", "Now checking disk", meta]);
+    text.send({ type: "user_message", text: "check memory instead", startedAt: 5_000, queueId: "s2" });
+    expect(frame(text.state)).toEqual(["run the checks", "", "Now checking disk", "", "check memory instead", "", "* Working · 1 tool call", meta]);
+  });
+
+  test("a notification delivered mid-turn: no row of its own, its label leads the Working row, the command stays", () => {
+    const { state, send } = live();
+    send(bash("t1", "git push"));
+    send(ok("t1"));
+    send({ type: "user_message", text: "[notification] Subagent completed: exo:1", startedAt: 5_000, queueId: "n1", automation: { kind: "subagent_completion" } });
+    expect(frame(state)).toEqual(["run the checks", "", "* Working · Subagent completion", "bash git push", meta]);
+    send({ type: "user_message", text: "and the tags", startedAt: 6_000, queueId: "q1" });
+    expect(frame(state)).toEqual(["run the checks", "", "and the tags", "", "* Working · Subagent completion", "bash git push", meta]);
+    send(bash("t2", "git push --tags"));
+    expect(frame(state)).toEqual(["run the checks", "", "and the tags", "", "* Working · Subagent completion · 1 tool call", "bash git push --tags", meta]);
+  });
+
+  test("a client joining after the message went in shows the same rows", () => {
+    const state = createInitialState();
+    state.convId = "c";
+    state.messages.push(
+      { role: "user", text: "run the checks", metadata: { startedAt: RUN, endedAt: RUN, model: MODEL, tokens: 0 } },
+      assistant([...call("t1", "uptime"), ...call("t2", "df -h")], RUN),
+      { role: "user", text: "also check memory", metadata: { startedAt: 5_000, endedAt: 5_000, model: MODEL, tokens: 0, queueEntryId: "q1" } },
+    );
+    handleEvent({ type: "streaming_started", convId: "c", provider: "anthropic", model: MODEL, startedAt: RUN, snapshotKind: "catchup", blocks: [] } as Event, state, daemon);
+    expect(frame(state)).toEqual(["run the checks", "", "also check memory", "", "* Working · 1 tool call", "bash df -h", meta]);
+  });
+
+  test("a message-end handoff starts a new run: the last turn's command does not carry over", () => {
+    const state = createInitialState();
+    state.convId = "c";
+    state.messages.push(
+      { role: "user", text: "run the checks", metadata: { startedAt: RUN, endedAt: RUN, model: MODEL, tokens: 0 } },
+      assistant([...call("t1", "uptime")], RUN),
+      notice("✗ Interrupted"),
+    );
+    handleEvent({ type: "user_message", convId: "c", text: "next one", startedAt: 5_000, queueId: "m1" } as Event, state, daemon);
+    handleEvent({ type: "streaming_started", convId: "c", provider: "anthropic", model: MODEL, startedAt: 5_000, snapshotKind: "start" } as Event, state, daemon);
+    expect(frame(state)).toEqual(["run the checks", "", "next one", "", "* Working", "GPT-6-Astra | 0.0 tokens/s | 5s"]);
   });
 });
 
