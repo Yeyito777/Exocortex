@@ -5,6 +5,7 @@ import {
   confirmQueueMessage,
   enqueueGlobalIdleMessage,
   enqueueQueuedCommand,
+  handleQueuePromptKey,
   isGlobalIdleQueuedMessage,
   openQueuePrompt,
   queueTimingLabel,
@@ -12,6 +13,7 @@ import {
   cancelQueuePrompt,
   type QueuedCommandActions,
 } from "./queue";
+import type { KeyEvent } from "./input";
 import { createInitialState } from "./state";
 import { renderQueuePromptOverlay } from "./overlays";
 
@@ -37,7 +39,7 @@ describe("queue prompt image handling", () => {
     expect(state.pendingImages).toEqual([img]);
     expect(state.queuePrompt).toEqual({
       text: "caption",
-      selection: "message-end",
+      selection: "next-turn",
       images: [img],
     });
     expect(state.queuePrompt?.images).not.toBe(state.pendingImages);
@@ -59,13 +61,13 @@ describe("queue prompt image handling", () => {
       queueId: expect.any(String),
       convId: "conv-1",
       text: "caption",
-      timing: "message-end",
+      timing: "next-turn",
       images: [img],
     });
     expect(state.pendingImages).toEqual([]);
     expect(state.queuePrompt).toBeNull();
     expect(state.queuedMessages).toEqual([
-      expect.objectContaining({ id: expect.any(String), convId: "conv-1", text: "caption", timing: "message-end", images: [img], source: "daemon" }),
+      expect.objectContaining({ id: expect.any(String), convId: "conv-1", text: "caption", timing: "next-turn", images: [img], source: "daemon" }),
     ]);
   });
 
@@ -109,7 +111,7 @@ describe("queue prompt image handling", () => {
       queueId: expect.any(String),
       convId: "conv-1",
       text: "Go ahead and implement that please",
-      timing: "message-end",
+      timing: "next-turn",
       images: undefined,
     });
     expect(state.queuedMessages).toEqual([
@@ -117,7 +119,7 @@ describe("queue prompt image handling", () => {
         id: expect.any(String),
         convId: "conv-1",
         text: "Go ahead and implement that please",
-        timing: "message-end",
+        timing: "next-turn",
         images: undefined,
         source: "daemon",
       }),
@@ -151,6 +153,55 @@ describe("queue prompt timing options", () => {
     const claude = renderQueuePromptOverlay(prompt, 80, 1, 20, false).payload;
     expect(claude).toContain("next turn");
     expect(claude).not.toContain("steer now");
+  });
+});
+
+describe("queue prompt option order", () => {
+  const press = (state: ReturnType<typeof createInitialState>, key: KeyEvent) => handleQueuePromptKey(key, state);
+  const ch = (char: string) => ({ type: "char", char }) as KeyEvent;
+
+  test("next turn / steer now is listed first and selected when the prompt opens", () => {
+    const state = createInitialState();
+    openQueuePrompt(state, "hi");
+    expect(state.queuePrompt?.selection).toBe("next-turn");
+    for (const steers of [true, false]) {
+      const payload = renderQueuePromptOverlay(state.queuePrompt!, 80, 1, 20, steers).payload;
+      const first = payload.indexOf(steers ? "steer now" : "next turn");
+      const second = payload.indexOf("message end");
+      expect(first).toBeGreaterThan(-1);
+      expect(first).toBeLessThan(second);
+      expect(payload.indexOf("▸")).toBeLessThan(first);
+      expect(payload.indexOf("▸")).toBeGreaterThan(payload.indexOf("hi"));
+    }
+  });
+
+  test("Enter on the freshly opened prompt queues for next turn", () => {
+    const state = createInitialState();
+    state.convId = "conv-1";
+    state.pendingAI = createPendingAI(Date.now(), state.model);
+    openQueuePrompt(state, "hi");
+    expect(press(state, { type: "enter" } as KeyEvent)).toEqual({ type: "confirm" });
+    expect(confirmQueueMessage(state)).toMatchObject({ action: "queue", timing: "next-turn" });
+  });
+
+  test("up/k/h/left pick the top option, down/j/l/right the bottom, tab toggles", () => {
+    const state = createInitialState();
+    openQueuePrompt(state, "hi");
+    const sel = () => state.queuePrompt!.selection;
+    for (const key of [{ type: "down" }, ch("j"), ch("l"), { type: "right" }] as KeyEvent[]) {
+      state.queuePrompt!.selection = "next-turn";
+      press(state, key);
+      expect(sel()).toBe("message-end");
+    }
+    for (const key of [{ type: "up" }, ch("k"), ch("h"), { type: "left" }] as KeyEvent[]) {
+      state.queuePrompt!.selection = "message-end";
+      press(state, key);
+      expect(sel()).toBe("next-turn");
+    }
+    press(state, { type: "tab" } as KeyEvent);
+    expect(sel()).toBe("message-end");
+    press(state, { type: "tab" } as KeyEvent);
+    expect(sel()).toBe("next-turn");
   });
 });
 
