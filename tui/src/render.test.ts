@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setSystemTime, test } from "bun:test";
 import { createPendingAI } from "./messages";
 import { advanceDeferredHistoryRender, hasDeferredHistoryRenderWork, render, invalidateHistoryRenderCache } from "./render";
 import { createInitialState, type RenderState } from "./state";
@@ -321,6 +321,30 @@ describe("render caching and frame diffing", () => {
     expect(state.historyLines.some((line) => stripAnsi(line).includes("Loading..."))).toBe(true);
   });
 
+  test("invalidates cached history when the clock or the local day changes", () => {
+    try {
+      setSystemTime(new Date(2026, 9, 23, 23, 50));
+      const state = makeState();
+      state.messages[1].metadata = {
+        startedAt: new Date(2026, 9, 23, 22, 39).getTime(), endedAt: new Date(2026, 9, 23, 22, 41).getTime(),
+        model: state.model, tokens: 1,
+      };
+      renderSilently(state);
+      const text = () => stripAnsi(state.historyLines.join("\n"));
+      expect(text()).toContain("→ 10:41pm");
+
+      state.clock = "24h";
+      renderSilently(state);
+      expect(text()).toContain("→ 22:41");
+
+      setSystemTime(new Date(2026, 9, 24, 0, 5));
+      renderSilently(state);
+      expect(text()).toContain("→ yesterday 22:41");
+    } finally {
+      setSystemTime();
+    }
+  });
+
   test("invalidates cached history when diagnostics changes without replacing messages", () => {
     const state = makeState();
     state.showDiagnostics = false;
@@ -337,7 +361,7 @@ describe("render caching and frame diffing", () => {
     renderSilently(state);
     const diagnosticLines = state.historyLines;
     expect(diagnosticLines).not.toBe(firstLines);
-    expect(stripAnsi(diagnosticLines.join("\n"))).toContain("617.0 tokens/s | 2s | 1,234 tokens");
+    expect(stripAnsi(diagnosticLines.join("\n"))).toMatch(/617\.0 tokens\/s \| 2s → .* \| 1,234 tokens/);
 
     state.showDiagnostics = false;
     renderSilently(state);

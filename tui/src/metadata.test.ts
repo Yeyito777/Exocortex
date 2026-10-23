@@ -3,6 +3,8 @@ import { formatFinishTime, localDayKey, msUntilLocalMidnight, renderMetadata } f
 import { visibleLength } from "./textwidth";
 import { theme } from "./theme";
 
+const stripAnsi = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, "");
+
 describe("renderMetadata", () => {
   test("starts fresh and optimistic messages at zero instead of an earlier rate", () => {
     const metadata = { startedAt: 1_000, endedAt: null, model: "gpt-5.4", tokens: 0 };
@@ -34,7 +36,9 @@ describe("renderMetadata", () => {
           expect(lines).toHaveLength(1);
           expect(visibleLength(lines[0])).toBeLessThanOrEqual(width);
           expect(lines[0].endsWith(theme.reset)).toBe(true);
-          if (width > 0 && width < visibleLength(full)) expect(lines[0]).toContain("…");
+          // The finish time is cut whole and first: no half time, no dangling arrow.
+          expect(lines[0]).not.toMatch(/→\s*(?:\d{1,2}:?\d?)?(?:…|\u001b)/);
+          if (width > 0 && width < visibleLength(full) && lines[0].includes("→")) expect(lines[0]).toContain("…");
           if (width >= visibleLength(full)) expect(lines[0]).toBe(full);
         }
       }
@@ -139,7 +143,7 @@ describe("renderMetadata", () => {
     expect(renderMetadata(metadata)[0]).toContain("Gpt-5.4 | 617.0 tokens/s | 2s");
     expect(renderMetadata(metadata)[0]).not.toContain("1,234 tokens");
     expect(renderMetadata(metadata, { diagnostics: true })[0])
-      .toContain("Gpt-5.4 | 617.0 tokens/s | 2s | 1,234 tokens");
+      .toMatch(/Gpt-5\.4 \| 617\.0 tokens\/s \| 2s → .* \| 1,234 tokens/);
     expect(metadata).toEqual(original);
   });
 
@@ -212,8 +216,8 @@ describe("finish time", () => {
     expect(formatFinishTime(endedAt, now, "America/Toronto", "24h")).toBe("yesterday 23:30");
     expect(formatFinishTime(endedAt, now, "Asia/Tokyo", "24h")).toBe("yesterday 12:30");
     expect(formatFinishTime(endedAt, now, "America/Panama", "24h")).toBe("yesterday 22:30");
-    expect(renderMetadata(meta(endedAt), { now, timeZone: "America/Toronto", clock: "24h" })[0]).toContain("| yesterday 23:30");
-    expect(renderMetadata(meta(endedAt), { now, timeZone: "Asia/Tokyo", clock: "24h" })[0]).toContain("| yesterday 12:30");
+    expect(renderMetadata(meta(endedAt), { now, timeZone: "America/Toronto", clock: "24h" })[0]).toContain("→ yesterday 23:30");
+    expect(renderMetadata(meta(endedAt), { now, timeZone: "Asia/Tokyo", clock: "24h" })[0]).toContain("→ yesterday 12:30");
   });
 
   test("day count survives a DST change", () => {
@@ -225,8 +229,8 @@ describe("finish time", () => {
   test("appended last, after duration and diagnostics tokens", () => {
     const now = at("2026-10-23T15:30:00Z");
     const endedAt = at("2026-10-23T14:03:00Z");
-    expect(renderMetadata(meta(endedAt), { now, timeZone: "UTC", clock: "24h" })[0]).toContain("Opus-5.5 | — tokens/s | 1m 49s | 14:03");
-    expect(renderMetadata(meta(endedAt), { now, timeZone: "UTC", clock: "24h", diagnostics: true })[0]).toContain("| 1 tokens | 14:03");
+    expect(renderMetadata(meta(endedAt), { now, timeZone: "UTC", clock: "24h" })[0]).toContain("Opus-5.5 | — tokens/s | 1m 49s → 14:03");
+    expect(renderMetadata(meta(endedAt), { now, timeZone: "UTC", clock: "24h", diagnostics: true })[0]).toContain("→ 14:03 | 1 tokens");
   });
 
   test("no segment without a timestamp, while live, or when active", () => {
@@ -244,7 +248,7 @@ describe("finish time", () => {
     const now = at("2026-10-23T15:30:00Z");
     const metadata = meta(at("2026-10-19T09:12:00Z"));
     const [full] = renderMetadata(metadata, { now, timeZone: "UTC", clock: "24h" });
-    expect(full).toContain("| Oct 19 09:12");
+    expect(full).toContain("→ Oct 19 09:12");
     for (let width = 1; width <= visibleLength(full); width++) {
       const [line] = renderMetadata(metadata, { now, timeZone: "UTC", clock: "24h", width });
       expect(visibleLength(line)).toBeLessThanOrEqual(width);
@@ -266,8 +270,8 @@ describe("finish time", () => {
     expect(f("2026-10-19T09:12:00Z")).toBe("Oct 19 9:12am");
     expect(f("2025-10-19T09:12:00Z")).toBe("Oct 19 2025 9:12am");
     expect(renderMetadata(meta(at("2026-10-23T14:03:00Z")), { now, timeZone: "UTC" })[0])
-      .toContain("Opus-5.5 | — tokens/s | 1m 49s | 2:03pm");
-    expect(renderMetadata(meta(at("2026-10-23T14:03:00Z")), { now, timeZone: "UTC", clock: "12h" })[0]).toContain("| 2:03pm");
+      .toContain("Opus-5.5 | — tokens/s | 1m 49s → 2:03pm");
+    expect(renderMetadata(meta(at("2026-10-23T14:03:00Z")), { now, timeZone: "UTC", clock: "12h" })[0]).toContain("→ 2:03pm");
   });
 
   test("12-hour edges: noon, midnight, 12:59am, 1pm, 11:59pm", () => {
@@ -290,5 +294,35 @@ describe("finish time", () => {
     const now = at("2026-10-23T15:30:00Z");
     expect(formatFinishTime(endedAt, now, "America/Toronto")).toBe("yesterday 11:30pm");
     expect(formatFinishTime(endedAt, now, "Asia/Tokyo")).toBe("yesterday 12:30pm");
+  });
+
+  test("arrow joins the duration to the finish time; diagnostics tokens follow the time", () => {
+    const now = at("2026-10-23T15:30:00Z");
+    const line = (endedAt: string, opts = {}) =>
+      stripAnsi(renderMetadata({ ...meta(at(endedAt)), tokens: 1234 }, { now, timeZone: "UTC", ...opts })[0]);
+    expect(line("2026-10-23T14:03:00Z")).toBe("  Opus-5.5 | — tokens/s | 1m 49s → 2:03pm");
+    expect(line("2026-10-22T22:41:00Z")).toBe("  Opus-5.5 | — tokens/s | 1m 49s → yesterday 10:41pm");
+    expect(line("2026-10-19T09:12:00Z")).toBe("  Opus-5.5 | — tokens/s | 1m 49s → Oct 19 9:12am");
+    expect(line("2026-10-23T14:03:00Z", { clock: "24h" })).toBe("  Opus-5.5 | — tokens/s | 1m 49s → 14:03");
+    expect(line("2026-10-23T14:03:00Z", { diagnostics: true })).toBe("  Opus-5.5 | — tokens/s | 1m 49s → 2:03pm | 1,234 tokens");
+    // No finish time (live message): exactly the pre-existing line.
+    expect(stripAnsi(renderMetadata({ ...meta(null), tokens: 1234 }, { now, diagnostics: true })[0]))
+      .toMatch(/^  Opus-5\.5 \| 0\.0 tokens\/s \| [^|→]+ \| 1,234 tokens$/);
+  });
+
+  test("a narrow pane drops the whole time (and arrow) before cutting anything else", () => {
+    const now = at("2026-10-23T15:30:00Z");
+    const metadata = meta(at("2026-10-23T14:03:00Z"));
+    const prefix = "  Opus-5.5 | — tokens/s | 1m 49s";
+    const at_ = (width: number) => stripAnsi(renderMetadata(metadata, { now, timeZone: "UTC", width })[0]);
+    expect(at_(prefix.length + " → 2:03pm".length)).toBe(prefix + " → 2:03pm");
+    expect(at_(prefix.length + " → 2:03pm".length - 1)).toBe(prefix);
+    expect(at_(prefix.length + 2)).toBe(prefix);
+    expect(at_(prefix.length)).toBe(prefix);
+    expect(at_(prefix.length - 1)).toContain("…");
+    // With tokens after the time, the time survives while only tokens are cut.
+    const withTokens = (width: number) => stripAnsi(renderMetadata({ ...metadata, tokens: 1234 }, { now, timeZone: "UTC", width, diagnostics: true })[0]);
+    expect(withTokens(prefix.length + " → 2:03pm".length + 5)).toBe(prefix + " → 2:03pm | 1…");
+    expect(withTokens(prefix.length + " → 2:03pm".length - 1)).not.toContain("→");
   });
 });
