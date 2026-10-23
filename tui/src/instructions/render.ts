@@ -85,7 +85,6 @@ function cardGeometry(totalRows: number, totalCols: number, width: number, heigh
 // ── Picker ───────────────────────────────────────────────────────────
 
 const PICKER_TITLE = "Instructions";
-const PICKER_KEYS = "j/k move · Enter edit · Esc close";
 
 function pickerEntries(picker: InstructionsPickerState, inner: number): Array<{ text: string; bg: string }> {
   const rows: Array<{ text: string; bg: string }> = [];
@@ -108,10 +107,7 @@ function pickerEntries(picker: InstructionsPickerState, inner: number): Array<{ 
       const summary = summarizeInstructions(picker.texts[scope]);
       const failure = picker.failures[scope];
       if (failure) {
-        // The reason shortens; the way back stays.
-        const hint = "Enter recovers";
-        const room = inner - 2 - termWidth(hint) - 2;
-        detail = spread(truncateToWidth(`   ✗ Not saved: ${clean(failure).replace(/\.$/, "")}`, Math.max(8, room)), theme.error, hint, theme.muted, inner - 2, bg);
+        detail = spread(`   ✗ Not saved: ${clean(failure).replace(/\.$/, "")}`, theme.error, "", "", inner - 2, bg);
       }
       else if (!summary) detail = spread("   loading…", theme.muted, "", "", inner - 2, bg);
       else if (!summary.preview) detail = spread("   empty", theme.dim + theme.italic, "", "", inner - 2, bg) + theme.italicOff;
@@ -145,7 +141,7 @@ export function renderInstructionsPicker(picker: InstructionsPickerState, totalR
     const entry = entries[i];
     payload += moveTo(top + 1 + i, left) + bodyRow(entry.text, entry.bg);
   }
-  payload += moveTo(top + height - 1, left) + edge(["╰", "╯"], width, PICKER_KEYS, "", theme.muted);
+  payload += moveTo(top + height - 1, left) + edge(["╰", "╯"], width, "", "", theme.muted);
   return { payload, rect: { top, bottom: top + height - 1, left, right: left + width - 1 }, cursor: null };
 }
 
@@ -168,15 +164,6 @@ function modeBadge(editor: InstructionsEditorState): { text: string; color: stri
     case "visual-line": return { text: "V-LINE", color: theme.vimVisual };
     default: return { text: "NORMAL", color: theme.vimNormal };
   }
-}
-
-function editorKeys(editor: InstructionsEditorState): string {
-  if (editor.loadReqId) return "Esc close";
-  if (editor.command !== null) return "Enter run · Esc cancel";
-  if (editor.vim.mode === "insert") return "Esc normal mode · Ctrl-S save";
-  if (editor.vim.mode !== "normal") return "Esc normal mode";
-  if (editor.tools) return "]] [[ tool · } { group · Enter source · :q close";
-  return ":w save · :wq save & close · :q close · :q! discard";
 }
 
 /** The visual selection as inclusive buffer offsets, linewise expanded. */
@@ -420,7 +407,7 @@ export function renderInstructionsEditor(editor: InstructionsEditorState, totalR
     middle = spread("", "", position, theme.muted, inner - badgeWidth, bg);
   }
   payload += moveTo(top + 4 + bodyRows, left) + bodyRow(badgeText + "  " + middle);
-  payload += moveTo(top + height - 1, left) + edge(["╰", "╯"], width, editorKeys(editor), "", theme.muted);
+  payload += moveTo(top + height - 1, left) + edge(["╰", "╯"], width, "", "", theme.muted);
 
   // Body text starts after the border and two columns of padding.
   const textCol = left + 3;

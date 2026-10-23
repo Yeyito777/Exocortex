@@ -114,7 +114,7 @@ describe("/instructions picker", () => {
     expect(shown).toContain("empty");
     expect(shown).toContain("Global");
     expect(shown).toContain("“You are Exo.”");
-    expect(shown).toContain("j/k move · Enter edit · Esc close");
+    expect(shown).not.toMatch(/j\/k|Esc close|Enter edit/);
   });
 
   test("shortens a long first line instead of dropping its size", () => {
@@ -319,7 +319,7 @@ describe("instructions editor", () => {
     expect(picker.texts.conversation).toBe("Before.");
     const shown = plain(renderInstructionsPicker(picker, 40, 120).payload);
     expect(shown).toContain("✗ Not saved: Cannot rewrite");
-    expect(shown).toContain("Enter recovers");
+    expect(shown).not.toContain("Enter recovers");
     expect(state.messages).toEqual([]);
 
     press(state, daemon, ENTER);
@@ -673,7 +673,7 @@ describe("instructions editor rendering", () => {
     expect(shown).toContain("Conversation instructions · Trip planning");
     expect(shown).toContain("NORMAL");
     expect(shown).toContain("Ln 1, Col 1 · 1 line");
-    expect(shown).toContain(":w save · :wq save & close · :q close · :q! discard");
+    expect(shown).not.toContain(":wq save & close");
     expect(shown).toContain("Be brief.");
     expect(rendered.rect.left - 1).toBe(120 - rendered.rect.right);
     expect(rendered.cursor).toEqual({ row: rendered.rect.top + 2, col: rendered.rect.left + 3, shape: "block" });
@@ -710,7 +710,7 @@ describe("instructions editor rendering", () => {
     editor.command = "wq";
     const rendered = renderInstructionsEditor(editor, 40, 120);
     expect(plain(rendered.payload)).toContain(":wq");
-    expect(plain(rendered.payload)).toContain("Enter run · Esc cancel");
+    expect(plain(rendered.payload)).not.toContain("Enter run");
     expect(rendered.cursor?.shape).toBe("bar");
   });
 });

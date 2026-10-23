@@ -48,7 +48,7 @@ export interface ToolInstructionsDoc {
   pendingBracket?: "]" | "[" | null;
 }
 
-export const TOOLS_READ_ONLY_NOTICE = "Read-only: tool text lives in code and manifests · Enter shows the source";
+export const TOOLS_READ_ONLY_NOTICE = "Read-only: tool text lives in code and manifests";
 
 /** The buffer text and its decorations for a daemon answer. */
 export function buildToolInstructionsDoc(event: Pick<ToolInstructionsLoadedEvent, "provider" | "model" | "route" | "internal" | "external">): { text: string; doc: ToolInstructionsDoc } {
