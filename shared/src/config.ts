@@ -170,6 +170,8 @@ export interface TuiConfig {
   sidebarFolders?: "navigate" | "tree";
   /** Display math: typeset images on Kitty-graphics terminals ("auto", default), always "text", or force "image". */
   math?: "auto" | "text" | "image";
+  /** Scroll the message area with terminal scroll regions (DECSTBM + SU/SD) and draw only exposed rows; default true. */
+  scrollRegions?: boolean;
 }
 
 export interface ExocortexConfig {

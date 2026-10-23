@@ -6,9 +6,9 @@
  * the minimal protocol traffic: transmit image data once (direct `t=d`
  * transport, chunked, so it works over SSH), move or crop a placement only
  * when its geometry changed, and delete placements that are no longer wanted.
- * Placements are positioned explicitly every time they change, so terminal
- * scrolling never has to carry them; the frame renderer disables its scroll
- * region optimization while images are placed.
+ * Placements are positioned explicitly every time they change. Terminals move
+ * (st, kitty) or drop placements with a scroll region's rows, so after the
+ * frame renderer scrolls the message region it re-places every visible one.
  */
 
 const APC = "\x1b_G";
