@@ -33,7 +33,7 @@ describe("assistant metadata pane boundaries", () => {
       for (const diagnostics of [false, true]) {
         state.showDiagnostics = diagnostics;
         for (const width of [80, 24, 12, 80]) {
-          const rendered = buildMessageLines(state, width);
+          const rendered = buildMessageLines(state, width, { showDuration: true });
           const lines = rendered.lines.filter((_, i) => rendered.lineAnchors[i].segment === "assistant_metadata");
           expect(lines).toHaveLength(1);
           expect(visibleLength(lines[0])).toBeLessThanOrEqual(width);
@@ -1197,9 +1197,9 @@ describe("tool call rendering", () => {
   });
 });
 
-/** Rendered row without ANSI and without the finish-time segment (fixtures use epoch-era timestamps). */
+/** Rendered row without ANSI. These tests read durations, so they build with showDuration. */
 function plainMetadata(text: string): string {
-  return stripAnsi(text).replace(/ → (?:yesterday )?(?:[A-Z][a-z]{2} \d{1,2}(?: \d{4})? )?\d{1,2}:\d\d(?:am|pm)?(?= \||$)/, "");
+  return stripAnsi(text);
 }
 
 describe("assistant metadata spacing", () => {
@@ -1212,7 +1212,7 @@ describe("assistant metadata spacing", () => {
     previous.blocks = [{ type: "text", text: "Previous answer" }];
     state.messages = [previous];
     state.pendingAI = createPendingAI(3_000, "gpt-5.4");
-    const rendered = buildMessageLines(state, 120);
+    const rendered = buildMessageLines(state, 120, { showDuration: true });
     const metadataLines = rendered.lines
       .filter((_, index) => rendered.lineAnchors[index].segment === "assistant_metadata").map(plainMetadata);
     expect(metadataLines.at(-1)).toContain("0.0 tokens/s");
@@ -1236,7 +1236,7 @@ describe("assistant metadata spacing", () => {
       if (pending) state.pendingAI = second;
       else state.messages.push(second);
 
-      expect(buildMessageLines(state, 120).lines.map(plainMetadata))
+      expect(buildMessageLines(state, 120, { showDuration: true }).lines.map(plainMetadata))
         .toContain("  Gpt-5.4 | 155.0 tokens/s | 3s | 30 tokens");
       expect(first.metadata!.tokens).toBe(10);
       expect(second.metadata!.tokens).toBe(20);
@@ -1262,7 +1262,7 @@ describe("assistant metadata spacing", () => {
       queuedMessages: [],
     } as any;
 
-    expect(buildMessageLines(state, 120).lines.map(plainMetadata)).toEqual([
+    expect(buildMessageLines(state, 120, { showDuration: true }).lines.map(plainMetadata)).toEqual([
       "  Done.",
       "  ",
       "  - Commit: 3fb9aa0",
@@ -1290,7 +1290,7 @@ describe("assistant metadata spacing", () => {
       queuedMessages: [],
     } as any;
 
-    expect(buildMessageLines(state, 120).lines.map(plainMetadata)).toEqual([
+    expect(buildMessageLines(state, 120, { showDuration: true }).lines.map(plainMetadata)).toEqual([
       "  Streaming reply",
       "  Gpt-5.4 | — tokens/s | 5s",
     ]);
@@ -1319,13 +1319,13 @@ describe("assistant metadata spacing", () => {
       queuedMessages: [],
     } as any;
 
-    expect(buildMessageLines(state, 120).lines.map(plainMetadata)).toEqual([
+    expect(buildMessageLines(state, 120, { showDuration: true }).lines.map(plainMetadata)).toEqual([
       "  Initial progress",
       "  Final result",
       "  Gpt-5.4 | — tokens/s | 2h 0m 0s",
     ]);
     state.showDiagnostics = true;
-    expect(buildMessageLines(state, 120).lines.map(plainMetadata).at(-1))
+    expect(buildMessageLines(state, 120, { showDuration: true }).lines.map(plainMetadata).at(-1))
       .toBe("  Gpt-5.4 | — tokens/s | 2h 0m 0s | 35 tokens");
   });
 
@@ -1349,13 +1349,13 @@ describe("assistant metadata spacing", () => {
       queuedMessages: [],
     } as any;
 
-    expect(buildMessageLines(state, 120).lines.map(plainMetadata)).toEqual([
+    expect(buildMessageLines(state, 120, { showDuration: true }).lines.map(plainMetadata)).toEqual([
       "  Initial progress",
       "  Still working",
       "  Gpt-5.4 | — tokens/s | 2h 0m 0s",
     ]);
     state.showDiagnostics = true;
-    expect(buildMessageLines(state, 120).lines.map(plainMetadata).at(-1))
+    expect(buildMessageLines(state, 120, { showDuration: true }).lines.map(plainMetadata).at(-1))
       .toBe("  Gpt-5.4 | — tokens/s | 2h 0m 0s | 35 tokens");
   });
 
@@ -1372,9 +1372,9 @@ describe("assistant metadata spacing", () => {
       { role: "assistant", blocks: [{ type: "text", text: "Continued" }],
         metadata: { startedAt: 137_000, endedAt: 177_000, model: "gpt-5.5", tokens: 10, workTimerStartedAt: 3_000 } },
     );
-    expect(buildMessageLines(state, 120).lines.map(plainMetadata)).toContain("  Gpt-5.5 | — tokens/s | 2m 54s");
+    expect(buildMessageLines(state, 120, { showDuration: true }).lines.map(plainMetadata)).toContain("  Gpt-5.5 | — tokens/s | 2m 54s");
     state.messages = state.messages.slice(-1);
-    expect(buildMessageLines(state, 120).lines.map(plainMetadata)).toContain("  Gpt-5.5 | — tokens/s | 2m 54s");
+    expect(buildMessageLines(state, 120, { showDuration: true }).lines.map(plainMetadata)).toContain("  Gpt-5.5 | — tokens/s | 2m 54s");
   });
 
   test("aggregates goal metadata across non-contiguous assistant entries through system notices", () => {
@@ -1408,7 +1408,7 @@ describe("assistant metadata spacing", () => {
       queuedMessages: [],
     } as any;
 
-    expect(buildMessageLines(state, 120).lines.map(plainMetadata)).toEqual([
+    expect(buildMessageLines(state, 120, { showDuration: true }).lines.map(plainMetadata)).toEqual([
       "  Early compacted goal work",
       "  Gpt-5.5 | — tokens/s | 1h 0m 0s",
       "  [Context warning]",
@@ -1416,7 +1416,7 @@ describe("assistant metadata spacing", () => {
       "  Gpt-5.5 | — tokens/s | 1h 30m 0s",
     ]);
     state.showDiagnostics = true;
-    expect(buildMessageLines(state, 120).lines.map(plainMetadata))
+    expect(buildMessageLines(state, 120, { showDuration: true }).lines.map(plainMetadata))
       .toContain("  Gpt-5.5 | — tokens/s | 1h 30m 0s | 1,250 tokens");
   });
 
@@ -1455,7 +1455,7 @@ describe("assistant metadata spacing", () => {
       queuedMessages: [],
     } as any;
 
-    const rendered = buildMessageLines(state, 120).lines.map(plainMetadata);
+    const rendered = buildMessageLines(state, 120, { showDuration: true }).lines.map(plainMetadata);
     expect(rendered[0]).toBe("  Final goal result");
     expect(rendered[1]).toBe("  Gpt-5.5 | — tokens/s | 1h 0m 0s");
     expect(rendered.some((line) => line.includes("new unrelated question"))).toBe(true);
@@ -1464,7 +1464,7 @@ describe("assistant metadata spacing", () => {
       "  Gpt-5.5 | — tokens/s | 5s",
     ]);
     state.showDiagnostics = true;
-    const diagnosticLines = buildMessageLines(state, 120).lines.map(plainMetadata);
+    const diagnosticLines = buildMessageLines(state, 120, { showDuration: true }).lines.map(plainMetadata);
     expect(diagnosticLines[1]).toBe("  Gpt-5.5 | — tokens/s | 1h 0m 0s | 1,000 tokens");
     expect(diagnosticLines.at(-1)).toBe("  Gpt-5.5 | — tokens/s | 5s | 50 tokens");
   });
@@ -1510,14 +1510,14 @@ describe("assistant metadata spacing", () => {
       queuedMessages: [],
     } as any;
 
-    const rendered = buildMessageLines(state, 120).lines.map(plainMetadata);
+    const rendered = buildMessageLines(state, 120, { showDuration: true }).lines.map(plainMetadata);
     expect(rendered).toContain("  Gpt-5.5 | — tokens/s | 2h 0m 0s");
     expect(rendered.slice(-2)).toEqual([
       "  New goal restarted",
       "  Gpt-5.5 | — tokens/s | 5s",
     ]);
     state.showDiagnostics = true;
-    expect(buildMessageLines(state, 120).lines.map(plainMetadata))
+    expect(buildMessageLines(state, 120, { showDuration: true }).lines.map(plainMetadata))
       .toContain("  Gpt-5.5 | — tokens/s | 2h 0m 0s | 1,250 tokens");
   });
 
@@ -1544,14 +1544,14 @@ describe("assistant metadata spacing", () => {
       queuedMessages: [],
     } as any;
 
-    expect(buildMessageLines(state, 120).lines.map(plainMetadata)).toEqual([
+    expect(buildMessageLines(state, 120, { showDuration: true }).lines.map(plainMetadata)).toEqual([
       "  [Summary of turns 10–100]",
       "  Legacy summary",
       "  Current work",
       "  Gpt-5.5 | — tokens/s | 8m 0s",
     ]);
     state.showDiagnostics = true;
-    expect(buildMessageLines(state, 120).lines.map(plainMetadata).at(-1))
+    expect(buildMessageLines(state, 120, { showDuration: true }).lines.map(plainMetadata).at(-1))
       .toBe("  Gpt-5.5 | — tokens/s | 8m 0s | 12,788 tokens");
   });
 
@@ -1578,13 +1578,13 @@ describe("assistant metadata spacing", () => {
       queuedMessages: [],
     } as any;
 
-    expect(buildMessageLines(state, 120).lines.map(plainMetadata)).toEqual([
+    expect(buildMessageLines(state, 120, { showDuration: true }).lines.map(plainMetadata)).toEqual([
       "  Old short reply",
       "  Current work",
       "  Gpt-5.5 | — tokens/s | 8m 0s",
     ]);
     state.showDiagnostics = true;
-    expect(buildMessageLines(state, 120).lines.map(plainMetadata).at(-1))
+    expect(buildMessageLines(state, 120, { showDuration: true }).lines.map(plainMetadata).at(-1))
       .toBe("  Gpt-5.5 | — tokens/s | 8m 0s | 12,788 tokens");
   });
 });
@@ -1609,9 +1609,9 @@ describe("assistant finish time", () => {
     const endedAt = new Date(2026, 9, 23, 14, 3).getTime();
     setSystemTime(new Date(2026, 9, 23, 15, 0));
     const state = finished(endedAt);
-    expect(metadataRows(state)).toEqual(["  Opus-5.5 | — tokens/s | 1m 49s → 2:03pm"]);
+    expect(metadataRows(state)).toEqual(["  Opus-5.5 | — tokens/s | 2:03pm"]);
     state.clock = "24h";
-    expect(metadataRows(state)).toEqual(["  Opus-5.5 | — tokens/s | 1m 49s → 14:03"]);
+    expect(metadataRows(state)).toEqual(["  Opus-5.5 | — tokens/s | 14:03"]);
     state.pendingAI = createPendingAI(endedAt + 1_000, "claude-opus-5-5");
     state.pendingAI.blocks = [{ type: "text", text: "Next" }];
     expect(metadataRows(state).at(-1)).not.toMatch(/\d:\d\d(am|pm)?$/);
@@ -1621,21 +1621,35 @@ describe("assistant finish time", () => {
     const endedAt = new Date(2026, 9, 23, 22, 41).getTime();
     setSystemTime(new Date(2026, 9, 23, 23, 59));
     const state = finished(endedAt);
-    expect(metadataRows(state)[0]).toEndWith("→ 10:41pm");
+    expect(metadataRows(state)[0]).toEndWith("| 10:41pm");
     setSystemTime(new Date(2026, 9, 24, 0, 1));
-    expect(metadataRows(state)[0]).toEndWith("→ yesterday 10:41pm");
+    expect(metadataRows(state)[0]).toEndWith("| yesterday 10:41pm");
     setSystemTime(new Date(2026, 9, 25, 0, 1));
-    expect(metadataRows(state)[0]).toEndWith("→ Oct 23 10:41pm");
+    expect(metadataRows(state)[0]).toEndWith("| Oct 23 10:41pm");
   });
 
   test("changing the clock repaints immediately instead of reusing cached rows", () => {
     setSystemTime(new Date(2026, 9, 23, 15, 0));
     const state = finished(new Date(2026, 9, 23, 14, 3).getTime());
-    expect(metadataRows(state)[0]).toEndWith("→ 2:03pm");
+    expect(metadataRows(state)[0]).toEndWith("| 2:03pm");
     state.clock = "24h";
-    expect(metadataRows(state)[0]).toEndWith("→ 14:03");
+    expect(metadataRows(state)[0]).toEndWith("| 14:03");
     state.clock = "12h";
-    expect(metadataRows(state)[0]).toEndWith("→ 2:03pm");
+    expect(metadataRows(state)[0]).toEndWith("| 2:03pm");
+  });
+
+  test("a working message shows the live timer and swaps to the clock on the render where it becomes final", () => {
+    setSystemTime(new Date(2026, 9, 23, 14, 3, 30));
+    const state = finished(new Date(2026, 9, 23, 14, 3).getTime());
+    const message = state.messages[0];
+    if (message.role !== "assistant") throw new Error("expected assistant");
+    message.metadata!.startedAt = new Date(2026, 9, 23, 14, 1, 48).getTime();
+    message.metadata!.endedAt = null;
+    expect(metadataRows(state)).toEqual(["  Opus-5.5 | 0.0 tokens/s | 1m 42s"]);
+    // The stream handlers finalize with a fresh metadata object (or push the pending message),
+    // so cached rows can never keep the timer.
+    message.metadata = { ...message.metadata!, endedAt: new Date(2026, 9, 23, 14, 3, 30).getTime() };
+    expect(metadataRows(state)).toEqual(["  Opus-5.5 | — tokens/s | 2:03pm"]);
   });
 
   test("a message without endedAt renders no time segment", () => {

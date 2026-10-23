@@ -331,15 +331,15 @@ describe("render caching and frame diffing", () => {
       };
       renderSilently(state);
       const text = () => stripAnsi(state.historyLines.join("\n"));
-      expect(text()).toContain("→ 10:41pm");
+      expect(text()).toContain("| 10:41pm");
 
       state.clock = "24h";
       renderSilently(state);
-      expect(text()).toContain("→ 22:41");
+      expect(text()).toContain("| 22:41");
 
       setSystemTime(new Date(2026, 9, 24, 0, 5));
       renderSilently(state);
-      expect(text()).toContain("→ yesterday 22:41");
+      expect(text()).toContain("| yesterday 22:41");
     } finally {
       setSystemTime();
     }
@@ -354,14 +354,14 @@ describe("render caching and frame diffing", () => {
     };
     renderSilently(state);
     const firstLines = state.historyLines;
-    expect(stripAnsi(firstLines.join("\n"))).toContain("617.0 tokens/s | 2s");
+    expect(stripAnsi(firstLines.join("\n"))).toContain("617.0 tokens/s | ");
     expect(stripAnsi(firstLines.join("\n"))).not.toContain("1,234 tokens");
 
     state.showDiagnostics = true;
     renderSilently(state);
     const diagnosticLines = state.historyLines;
     expect(diagnosticLines).not.toBe(firstLines);
-    expect(stripAnsi(diagnosticLines.join("\n"))).toMatch(/617\.0 tokens\/s \| 2s → .* \| 1,234 tokens/);
+    expect(stripAnsi(diagnosticLines.join("\n"))).toMatch(/617\.0 tokens\/s \| .* \| 1,234 tokens/);
 
     state.showDiagnostics = false;
     renderSilently(state);

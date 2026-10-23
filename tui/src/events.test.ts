@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setSystemTime, test } from "bun:test";
 import { browserOpenCommand, handleEvent, type DaemonActions } from "./events";
 import { buildDiskSyncAssistantDiffPayload } from "./events/disk-sync-diagnostics";
 import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, createPendingAI, type ConversationSummary, type FolderSummary } from "./messages";
@@ -65,6 +65,43 @@ describe("generation throughput events", () => {
     }, state, daemon);
     expect(generationTokensPerSecond(state.pendingAI?.metadata?.generationThroughput)).toBe(500);
     expect(state.messages.at(-1)?.metadata?.generationThroughput).toEqual(latest);
+  });
+});
+
+describe("metadata timer to finish clock", () => {
+  test("the live timer becomes the clock on the render where the message turns final, with no leftover timer", () => {
+    try {
+      const state = createInitialState();
+      state.convId = "finish-clock";
+      const startedAt = new Date(2026, 9, 23, 14, 1, 48).getTime();
+      const endedAt = new Date(2026, 9, 23, 14, 3, 30).getTime();
+      const metadataRow = () => {
+        const built = buildMessageLines(state, 120);
+        return built.lines.filter((_, i) => built.lineAnchors[i].segment === "assistant_metadata")
+          .map(line => line.replace(/\x1b\[[0-9;]*m/g, ""));
+      };
+
+      handleEvent({
+        type: "streaming_started", convId: state.convId, provider: "openai", model: "gpt-5.4",
+        startedAt, snapshotKind: "start", generationThroughput: createGenerationThroughput("openai", "gpt-5.4"),
+      }, state, daemon);
+      handleEvent({ type: "text_chunk", convId: state.convId, text: "Working on it" } as Event, state, daemon);
+      setSystemTime(new Date(2026, 9, 23, 14, 3, 0));
+      expect(metadataRow()).toEqual(["  Gpt-5.4 | 0.0 tokens/s | 1m 12s"]);
+
+      handleEvent({
+        type: "message_complete", convId: state.convId, endedAt, blocks: [{ type: "text", text: "Working on it" }],
+        tokens: 10, generationThroughput: { provider: "openai", model: "gpt-5.4", rates: [50] },
+      }, state, daemon);
+      setSystemTime(new Date(2026, 9, 23, 14, 3, 31));
+      // One render after the event: only the finished row, showing the clock and no duration.
+      expect(state.pendingAI).toBeNull();
+      expect(metadataRow()).toEqual(["  Gpt-5.4 | 50.0 tokens/s | 2:03pm"]);
+      setSystemTime(new Date(2026, 9, 23, 14, 9, 0));
+      expect(metadataRow()).toEqual(["  Gpt-5.4 | 50.0 tokens/s | 2:03pm"]);
+    } finally {
+      setSystemTime();
+    }
   });
 });
 
