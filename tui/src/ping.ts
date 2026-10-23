@@ -222,11 +222,20 @@ export interface StreamCompletionUpdate {
   /** Durable work still represented by a queued/suspended/controller state. */
   hasPendingWork?: boolean;
   streamStopReason?: StreamingStopReason;
+  /** The daemon's mark that the settled chain is one the owner is waiting on. */
+  ownerTurnFinished?: boolean;
 }
 
-/** A canonical summary transition means the whole daemon-owned turn chain settled. */
+/**
+ * Ping only when a conversation is done and waiting for its owner: the
+ * daemon-owned turn chain settled (queued turns and goal continuations keep it
+ * streaming), the daemon marks the chain as one the owner started or joined
+ * (never one made only of notifications, wakes or subagent reports, nor an
+ * interrupted one), and nothing queued is about to start it again.
+ */
 export function shouldPingForStreamCompletion(update: StreamCompletionUpdate): boolean {
-  return update.streamStopReason === undefined
+  return update.ownerTurnFinished === true
+    && update.streamStopReason === undefined
     && update.wasStreaming
     && !update.isStreaming
     && !update.hasPendingWork;

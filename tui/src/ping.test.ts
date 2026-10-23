@@ -205,30 +205,43 @@ describe("ping config helpers", () => {
   });
 
   test("completion ping predicate fires only for authoritative streaming true-to-false updates", () => {
-    expect(shouldPingForStreamCompletion({
-      updatedConvId: "conv-a",
-      wasStreaming: true,
-      isStreaming: false,
-    })).toBe(true);
-
     // Focus suppression is evaluated by runStreamFinishedPing, not by whether
     // the terminal update came from the active or a background conversation.
     expect(shouldPingForStreamCompletion({
       updatedConvId: "conv-a",
       wasStreaming: true,
       isStreaming: false,
+      ownerTurnFinished: true,
     })).toBe(true);
 
     expect(shouldPingForStreamCompletion({
       updatedConvId: "conv-a",
       wasStreaming: false,
       isStreaming: false,
+      ownerTurnFinished: true,
     })).toBe(false);
 
     expect(shouldPingForStreamCompletion({
       updatedConvId: "conv-a",
       wasStreaming: true,
       isStreaming: true,
+      ownerTurnFinished: true,
+    })).toBe(false);
+  });
+
+  test("a settled chain the owner is not waiting on does not trigger /ping", () => {
+    // Subagent reports, Chrono wakes, Discord/WhatsApp/Gmail notifications,
+    // restart notices and interrupted turns all settle without the daemon's mark.
+    expect(shouldPingForStreamCompletion({
+      updatedConvId: "automated",
+      wasStreaming: true,
+      isStreaming: false,
+    })).toBe(false);
+    expect(shouldPingForStreamCompletion({
+      updatedConvId: "automated",
+      wasStreaming: true,
+      isStreaming: false,
+      ownerTurnFinished: false,
     })).toBe(false);
   });
 
@@ -236,39 +249,45 @@ describe("ping config helpers", () => {
     expect(shouldPingForStreamCompletion({
       updatedConvId: "conv-a",
       wasStreaming: true,
+      ownerTurnFinished: true,
       isStreaming: false,
       streamStopReason: "daemon-restart",
     })).toBe(false);
     expect(shouldPingForStreamCompletion({
       updatedConvId: "conv-a",
       wasStreaming: true,
+      ownerTurnFinished: true,
       isStreaming: false,
       streamStopReason: "handoff",
     })).toBe(false);
     expect(shouldPingForStreamCompletion({
       updatedConvId: "conv-a",
       wasStreaming: true,
+      ownerTurnFinished: true,
       isStreaming: false,
       streamStopReason: "unwind",
     })).toBe(false);
     expect(shouldPingForStreamCompletion({
       updatedConvId: "conv-a",
       wasStreaming: true,
+      ownerTurnFinished: true,
       isStreaming: false,
       streamStopReason: "suspended",
     })).toBe(false);
   });
 
-  test("queued, sleeping, and goal-continuation handoffs do not trigger /ping", () => {
+  test("queued, sleeping, and goal-continuation handoffs do not trigger /ping, even for the owner's chain", () => {
     expect(shouldPingForStreamCompletion({
       updatedConvId: "queued",
       wasStreaming: true,
+      ownerTurnFinished: true,
       isStreaming: false,
       hasPendingWork: true,
     })).toBe(false);
     expect(shouldPingForStreamCompletion({
       updatedConvId: "sleeping",
       wasStreaming: true,
+      ownerTurnFinished: true,
       isStreaming: false,
       hasPendingWork: true,
       streamStopReason: "suspended",
@@ -276,6 +295,7 @@ describe("ping config helpers", () => {
     expect(shouldPingForStreamCompletion({
       updatedConvId: "goal-continuation",
       wasStreaming: true,
+      ownerTurnFinished: true,
       isStreaming: true,
       hasPendingWork: true,
       streamStopReason: "handoff",

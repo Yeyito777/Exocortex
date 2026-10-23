@@ -1793,6 +1793,14 @@ export interface ConversationUpdatedEvent {
   summary: ConversationSummary;
   /** Set when this update represents a stream transitioning to stopped for a special reason. */
   streamStopReason?: StreamingStopReason;
+  /**
+   * Set on the streaming=false update that ends a turn chain the owner is
+   * waiting on: the chain (its queued turns and goal continuations included)
+   * took in a message they wrote themselves, nothing queued follows, and it
+   * ended rather than being interrupted. Chains of only automated prompts
+   * (notifications, wakes, subagent reports, restart notices) never set it.
+   */
+  ownerTurnFinished?: true;
 }
 
 /** Targeted history truncation; clients discard only the indicated suffix. */

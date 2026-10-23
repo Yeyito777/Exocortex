@@ -2254,3 +2254,200 @@ describe("a deferred sleep ended by a user turn that never starts", () => {
     expect(calls).toBe(1);
   });
 });
+
+describe("/ping: the daemon marks only chains the owner is waiting on", () => {
+  const reply = (text = "ok") => ({
+    text, thinking: "", stopReason: "stop" as const,
+    blocks: [{ type: "text" as const, text }], toolCalls: [], inputTokens: 1, outputTokens: 1,
+  });
+  const settled = (events: Array<Record<string, unknown>>, convId: string) => events.filter(event =>
+    event.type === "conversation_updated"
+    && (event.summary as { id: string; streaming: boolean }).id === convId
+    && !(event.summary as { streaming: boolean }).streaming);
+  const marked = (events: Array<Record<string, unknown>>, convId: string) => events.filter(event =>
+    event.type === "conversation_updated"
+    && (event.summary as { id: string }).id === convId
+    && event.ownerTurnFinished === true);
+
+  test("an owner's turn marks its final streaming=false update", async () => {
+    const convId = id("ping-owner");
+    create(convId, "openai", "gpt-5.6-sol");
+    const events: Array<Record<string, unknown>> = [];
+    const outcome = await orchestrateSendMessage(
+      server(events) as never, null, undefined, convId, "hello", Date.now(),
+      callbacks((async () => reply()) as typeof streamMessage),
+    );
+    expect(outcome.ok).toBe(true);
+    expect(marked(events, convId)).toHaveLength(1);
+    expect(settled(events, convId).at(-1)?.ownerTurnFinished).toBe(true);
+  });
+
+  for (const kind of USER_MESSAGE_AUTOMATION_KINDS) {
+    test(`a ${kind} turn is not marked`, async () => {
+      const convId = id(`ping-${kind}`);
+      create(convId, "openai", "gpt-5.6-sol");
+      const events: Array<Record<string, unknown>> = [];
+      const outcome = await orchestrateSendMessage(
+        server(events) as never, null, undefined, convId, "automatic prompt", Date.now(),
+        callbacks((async () => reply()) as typeof streamMessage), undefined, { automation: { kind, sourceId: "ping-test" } },
+      );
+      expect(outcome.ok).toBe(true);
+      expect(settled(events, convId).length).toBeGreaterThan(0);
+      expect(marked(events, convId)).toEqual([]);
+    });
+  }
+
+  test("queued turns mark only the update after the last of them, never the handoffs", async () => {
+    const convId = id("ping-queued");
+    create(convId, "openai", "gpt-5.6-sol");
+    const events: Array<Record<string, unknown>> = [];
+    let calls = 0;
+    const fakeStream = (async () => {
+      calls += 1;
+      if (calls === 1) {
+        pushQueuedMessage(convId, "and then this", "message-end", undefined, undefined, undefined, "ping-owner-follow-up");
+        pushQueuedMessage(convId, "[notification] subagent done", "message-end", undefined, undefined, undefined, "ping-subagent",
+          undefined, { kind: "subagent_completion", sourceId: "child" });
+      }
+      return reply(`answer ${calls}`);
+    }) as typeof streamMessage;
+    await orchestrateSendMessage(server(events) as never, null, undefined, convId, "first", Date.now(), callbacks(fakeStream));
+    expect(calls).toBe(3);
+    const updates = events.filter(event => event.type === "conversation_updated");
+    expect(updates.filter(event => event.streamStopReason === "handoff")).toHaveLength(2);
+    expect(updates.filter(event => event.streamStopReason === "handoff").some(event => event.ownerTurnFinished)).toBe(false);
+    expect(marked(events, convId)).toHaveLength(1);
+    expect(updates.at(-1)).toMatchObject({ ownerTurnFinished: true, summary: expect.objectContaining({ streaming: false }) });
+  });
+
+  test("an automated turn the owner joins by queueing a message is marked when it ends", async () => {
+    const convId = id("ping-owner-joins");
+    create(convId, "openai", "gpt-5.6-sol");
+    const events: Array<Record<string, unknown>> = [];
+    let calls = 0;
+    const fakeStream = (async () => {
+      calls += 1;
+      if (calls === 1) pushQueuedMessage(convId, "what did it say?", "message-end", undefined, undefined, undefined, "ping-join");
+      return reply();
+    }) as typeof streamMessage;
+    await orchestrateSendMessage(
+      server(events) as never, null, undefined, convId, "[notification] discord", Date.now(), callbacks(fakeStream),
+      undefined, { automation: { kind: "external_notification", sourceId: "discord" } },
+    );
+    expect(calls).toBe(2);
+    expect(marked(events, convId)).toHaveLength(1);
+  });
+
+  test("an owner steer into an automated turn marks it", async () => {
+    const convId = id("ping-owner-steers");
+    create(convId, "openai", "gpt-5.6-sol");
+    const events: Array<Record<string, unknown>> = [];
+    let calls = 0;
+    const fakeStream = (async () => {
+      calls += 1;
+      if (calls > 1) return reply("steered");
+      pushQueuedMessage(convId, "stop and do this", "next-turn", undefined, undefined, undefined, "ping-steer");
+      return {
+        text: "", thinking: "", stopReason: "tool_use" as const, blocks: [],
+        toolCalls: [{ id: "ping-steer-read", name: "read", input: { file_path: "/etc/hosts" } }],
+      };
+    }) as typeof streamMessage;
+    await orchestrateSendMessage(
+      server(events) as never, null, undefined, convId, "[chrono wake] check", Date.now(), callbacks(fakeStream),
+      undefined, { automation: { kind: "chrono_wake", sourceId: "chrono:ping" } },
+    );
+    expect(calls).toBe(2);
+    expect(loadPersisted(convId)!.messages.some(message => message.metadata?.queueEntryId === "ping-steer")).toBe(true);
+    expect(marked(events, convId)).toHaveLength(1);
+  });
+
+  test("an automated chain right after an owner's chain is not marked", async () => {
+    const convId = id("ping-after-owner");
+    create(convId, "openai", "gpt-5.6-sol");
+    const events: Array<Record<string, unknown>> = [];
+    const stream = callbacks((async () => reply()) as typeof streamMessage);
+    await orchestrateSendMessage(server(events) as never, null, undefined, convId, "hello", Date.now(), stream);
+    expect(marked(events, convId)).toHaveLength(1);
+    events.length = 0;
+    await orchestrateSendMessage(
+      server(events) as never, null, undefined, convId, "[notification] child finished", Date.now(), stream,
+      undefined, { automation: { kind: "subagent_completion", sourceId: "child" } },
+    );
+    expect(settled(events, convId).length).toBeGreaterThan(0);
+    expect(marked(events, convId)).toEqual([]);
+  });
+
+  test("an interrupted owner turn is not marked", async () => {
+    const convId = id("ping-interrupted");
+    create(convId, "openai", "gpt-5.6-sol");
+    const events: Array<Record<string, unknown>> = [];
+    const outcome = await orchestrateSendMessage(
+      server(events) as never, null, undefined, convId, "long task", Date.now(),
+      callbacks((async () => {
+        getActiveJob(convId)!.abort("user");
+        throw new Error("interrupted");
+      }) as typeof streamMessage),
+    );
+    expect(outcome).toMatchObject({ ok: false, aborted: true });
+    expect(settled(events, convId).length).toBeGreaterThan(0);
+    expect(marked(events, convId)).toEqual([]);
+  });
+
+  test("a daemon-restart abort of an owner turn is not marked", async () => {
+    const convId = id("ping-restart");
+    create(convId, "openai", "gpt-5.6-sol");
+    const events: Array<Record<string, unknown>> = [];
+    await orchestrateSendMessage(
+      server(events) as never, null, undefined, convId, "long task", Date.now(),
+      callbacks((async () => {
+        getActiveJob(convId)!.abort("daemon-restart");
+        throw new Error("transport closed for restart");
+      }) as typeof streamMessage),
+    );
+    expect(marked(events, convId)).toEqual([]);
+  });
+
+  test("a turn that retries a failed provider request is marked once, when it ends", async () => {
+    const convId = id("ping-retry");
+    create(convId, "openai", "gpt-5.6-sol");
+    const events: Array<Record<string, unknown>> = [];
+    let calls = 0;
+    const outcome = await orchestrateSendMessage(
+      server(events) as never, null, undefined, convId, "hello", Date.now(),
+      callbacks((async (_provider, _messages, _model, streamCallbacks) => {
+        calls += 1;
+        streamCallbacks.onRetry?.(1, 3, "overloaded", 0);
+        return reply();
+      }) as typeof streamMessage),
+    );
+    expect(outcome.ok).toBe(true);
+    expect(settled(events, convId)).toHaveLength(1);
+    expect(marked(events, convId)).toHaveLength(1);
+  });
+
+  test("a replay is marked only when the owner wrote the prompt it resumes", async () => {
+    for (const automated of [false, true]) {
+      const convId = id(`ping-replay-${automated ? "automated" : "owner"}`);
+      create(convId, "openai", "gpt-5.6-sol");
+      appendMessages(convId, [createStoredUserMessage("resume me", "gpt-5.6-sol", 1_000,
+        undefined, automated ? { automation: { kind: "chrono_wake", sourceId: "chrono:replay" } } : undefined)]);
+      const events: Array<Record<string, unknown>> = [];
+      const outcome = await orchestrateReplayConversation(
+        server(events) as never, null, undefined, convId, Date.now(), callbacks((async () => reply()) as typeof streamMessage),
+      );
+      expect(outcome.ok).toBe(true);
+      expect(marked(events, convId)).toHaveLength(automated ? 0 : 1);
+    }
+  });
+
+  test("a manual compaction is not marked", async () => {
+    const convId = id("ping-compaction");
+    create(convId, "openai", "gpt-5.6-sol");
+    appendMessages(convId, [createStoredUserMessage("earlier owner input", "gpt-5.6-sol", 1_000)]);
+    const events: Array<Record<string, unknown>> = [];
+    await orchestrateCompactConversation(
+      server(events) as never, null, undefined, convId, Date.now(), callbacks((async () => reply("summary")) as typeof streamMessage),
+    );
+    expect(marked(events, convId)).toEqual([]);
+  });
+});

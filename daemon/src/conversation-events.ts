@@ -12,8 +12,16 @@ import { log } from "./log";
 import type { DaemonServer } from "./server";
 import type { StreamingStopReason } from "./protocol";
 
-/** Broadcast a sidebar summary update if the conversation still exists. */
-export function broadcastConversationUpdated(server: DaemonServer, convId: string, streamStopReason?: StreamingStopReason): boolean {
+/**
+ * Broadcast a sidebar summary update if the conversation still exists.
+ * `ownerTurnFinished` marks the update that ends a turn chain the owner is waiting on.
+ */
+export function broadcastConversationUpdated(
+  server: DaemonServer,
+  convId: string,
+  streamStopReason?: StreamingStopReason,
+  ownerTurnFinished = false,
+): boolean {
   const summary = convStore.getSummary(convId);
   if (!summary) {
     log("warn", `conversation-events: skipped conversation_updated for missing conversation ${convId}`);
@@ -24,6 +32,7 @@ export function broadcastConversationUpdated(server: DaemonServer, convId: strin
     type: "conversation_updated",
     summary,
     ...(streamStopReason ? { streamStopReason } : {}),
+    ...(ownerTurnFinished ? { ownerTurnFinished: true as const } : {}),
   });
   return true;
 }
