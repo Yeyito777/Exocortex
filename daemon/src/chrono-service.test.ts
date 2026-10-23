@@ -23,6 +23,8 @@ import {
 } from "./chrono-service";
 import { clearAllQueuedMessages } from "./message-queue";
 import { getConversationTasks, recordBackgroundTaskCompletion, resetConversationActivityForTest, setBackgroundTaskActive, setSubagentActive } from "./conversation-activity";
+import { systemdUnitWaitInternalsForTest } from "./systemd-unit-wait";
+import { COLLECTED_UNIT, RUNNING_UNIT, fakeSystemd } from "./systemd-unit-wait-test-helpers";
 
 const ids: string[] = [];
 
@@ -53,7 +55,22 @@ async function waitUntil(predicate: () => boolean, timeoutMs = process.platform 
   }
 }
 
+function sleepCall(owner: string, toolCallId = "sleep-call") {
+  appendMessages(owner, [{
+    role: "assistant",
+    content: [{ type: "tool_use", id: toolCallId, name: "chrono", input: { action: "sleep", duration: "10m" } }],
+    metadata: null,
+  }]);
+}
+
+function useFakeSystemd(props: Record<string, string>) {
+  const fake = fakeSystemd(props);
+  systemdUnitWaitInternalsForTest.configure({ runner: fake.run, platform: "linux", pollIntervalMs: 5 });
+  return fake;
+}
+
 afterEach(() => {
+  systemdUnitWaitInternalsForTest.reset();
   chronoInternalsForTest.reset();
   clearAllQueuedMessages();
   resetConversationActivityForTest();
@@ -430,6 +447,103 @@ describe("Chrono scheduler", () => {
     await waitUntil(() => replays === 1);
     expect(waitResult(owner).is_error).toBe(true);
     expect(waitResult(owner).content).toContain("Task not found");
+  });
+
+  test("a suspended sleep ends when its own background task finishes, never another conversation's", async () => {
+    const owner = makeConversation("sleep-task-wake");
+    const other = makeConversation("sleep-task-other");
+    sleepCall(owner);
+    setBackgroundTaskActive(owner, "exec:7", true, { title: "pmtool replay batch", startedAt: 1 });
+    setBackgroundTaskActive(other, "bash:other", true, { title: "other", startedAt: 1 });
+    let replays = 0;
+    configureChronoService(null, () => { replays++; });
+    await startChronoService();
+    deferChronoSleep({ conversationId: owner, toolCallId: "sleep-call", startedAt: Date.now() - 61_000, durationMs: 600_000 });
+    setBackgroundTaskActive(other, "bash:other", false);
+    await Bun.sleep(30);
+    expect(replays).toBe(0);
+    expect(listDeferredChronoSleeps(owner)[0].taskWake).toBeUndefined();
+
+    recordBackgroundTaskCompletion(owner, {
+      taskId: "exec:7", toolName: "exec_command", title: "pmtool replay batch", startedAt: 1, endedAt: Date.now(), exitCode: 0, signal: null,
+    });
+    setBackgroundTaskActive(owner, "exec:7", false);
+    await waitUntil(() => replays === 1);
+    expect(waitResult(owner)).toEqual({
+      type: "tool_result", tool_use_id: "sleep-call", is_error: false,
+      content: expect.stringMatching(/^Sleep ended after 1m [0-9]+s because background task exec:7 finished \(exit code 0\): pmtool replay batch \(requested 10m\)\.$/),
+    } as never);
+    expect(listDeferredChronoSleeps(owner)).toHaveLength(0);
+  });
+
+  test("a background-task wake survives a restart before the suspended turn can replay", async () => {
+    const owner = makeConversation("sleep-task-wake-restart");
+    sleepCall(owner);
+    setBackgroundTaskActive(owner, "bash:build", true, { title: "build", startedAt: 1 });
+    setActiveJob(owner, new AbortController(), Date.now());
+    let replays = 0;
+    configureChronoService(null, () => { replays++; });
+    await startChronoService();
+    deferChronoSleep({ conversationId: owner, toolCallId: "sleep-call", startedAt: Date.now(), durationMs: 600_000 });
+    setBackgroundTaskActive(owner, "bash:build", false);
+    await waitUntil(() => listDeferredChronoSleeps(owner)[0]?.retryAt !== undefined);
+    expect(replays).toBe(0);
+    stopChronoService();
+    clearActiveJob(owner);
+    resetConversationActivityForTest();
+    await startChronoService();
+    await waitUntil(() => replays === 1);
+    expect(waitResult(owner).content).toContain("because background task bash:build finished: build");
+  });
+
+  test("a suspended wait on a systemd unit resumes when the unit stops", async () => {
+    const owner = makeConversation("unit-wait");
+    waitCall(owner);
+    const fake = useFakeSystemd(RUNNING_UNIT);
+    let replays = 0;
+    configureChronoService(null, () => { replays++; });
+    await startChronoService();
+    deferChronoSleep({
+      conversationId: owner, toolCallId: "wait-call", startedAt: Date.now(), durationMs: 600_000,
+      wait: { taskId: "unit:job", maxWait: "10m" },
+    });
+    expect(getConversationTasks(owner)).toContainEqual(expect.objectContaining({ title: "Waiting up to 10m for unit:job" }));
+    await Bun.sleep(20);
+    expect(replays).toBe(0);
+    Object.assign(fake.props, { ActiveState: "failed", Result: "exit-code", ExecMainCode: "1", ExecMainStatus: "1" });
+    await waitUntil(() => replays === 1);
+    expect(JSON.parse(waitResult(owner).content)).toMatchObject({
+      task_id: "unit:job", status: "completed", active_state: "failed", result: "exit-code", exit_code: 1,
+    });
+    expect(waitResult(owner).is_error).toBe(false);
+  });
+
+  test("a suspended unit wait survives a restart, even when the unit was collected meanwhile", async () => {
+    const owner = makeConversation("unit-wait-restart");
+    waitCall(owner);
+    const fake = useFakeSystemd(RUNNING_UNIT);
+    let replays = 0;
+    configureChronoService(null, () => { replays++; });
+    await startChronoService();
+    deferChronoSleep({
+      conversationId: owner, toolCallId: "wait-call", startedAt: Date.now(), durationMs: 600_000,
+      wait: { taskId: "unit:job", maxWait: "10m" },
+    });
+    await Bun.sleep(20);
+    stopChronoService();
+    // While the daemon was down the unit finished and `--collect` unloaded it.
+    fake.props = { ...COLLECTED_UNIT };
+    fake.journal = [
+      { USER_UNIT: "job.service", USER_INVOCATION_ID: "inv1", MESSAGE_ID: "39f53479d3a045ac8e11786248231fbf", __REALTIME_TIMESTAMP: String(Date.now() * 1000) },
+    ];
+    await Bun.sleep(20);
+    expect(replays).toBe(0);
+    await startChronoService();
+    expect(listDeferredChronoSleeps(owner)[0].wait?.taskId).toBe("unit:job");
+    await waitUntil(() => replays === 1);
+    expect(JSON.parse(waitResult(owner).content)).toMatchObject({
+      task_id: "unit:job", status: "completed", active_state: "unloaded", result: "success", exit_code: 0,
+    });
   });
 
   test("boot defers wait subscriptions until recovered subagents are in the catalog", async () => {

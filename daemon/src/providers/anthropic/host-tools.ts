@@ -26,7 +26,8 @@ const INSTRUCTIONS: Record<string, string | undefined> = {
   chrono: [
     "chrono is this conversation's scheduler. Use it instead of Bash sleep, cron, or polling loops to wait, sleep, or schedule future work.",
     "A wake with a message starts a new turn in this conversation at the scheduled time, after this turn has ended and across restarts.",
-    "Sleeps and waits of any practical length run inside the call and end early when the user sends a message.",
+    "Sleeps and waits of any practical length run inside the call and end early when the user sends a message or one of your background tasks finishes.",
+    "Prefer wait on the exact task, unit:NAME (systemd user unit) or subagent over a fixed sleep; when sleeping on running work, sleep no longer than it likely needs, at most ~5–10 min per check.",
   ].join(" "),
   exo: [
     "exo starts Exocortex subagents. Never use Claude Code's Agent tool: delegate all subagent work, including search and exploration fan-out, with exo.",

@@ -19,6 +19,28 @@ that cannot be recovered closes the wait with a tool error.
 Implementation: `daemon/src/tools/chrono.ts`, `daemon/src/chrono-service.ts`,
 and `tui/src/taskvisibility.ts`.
 
+## Unit waits
+
+`task_id: "unit:NAME"` waits on a systemd user unit, e.g. a `systemd-run --user`
+job or a `pmtool ... --background` batch (`pm5-batch-LABEL`). The daemon polls
+`systemctl --user show` every 2 s (argv only; the name is validated) until the
+unit leaves its running states, then reports `unit`, `active_state`, `result`
+and `exit_code`/`signal`. A `--collect` unit is unloaded when it stops, so its
+result comes from the user journal (`active_state: "unloaded"`; no logged
+failure means success). Suspended unit waits share the wait record and
+re-attach on boot like task waits; a unit collected while the daemon was down
+resolves from the journal. A unit with neither a loaded state nor a journal
+record is `Unit not found`. Off Linux the target fails with a clear error.
+Implementation: `daemon/src/systemd-unit-wait.ts`, `daemon/src/chrono-wait-targets.ts`.
+
+## Background tasks end sleeps
+
+A plain `sleep`, connected or suspended, ends early when one of its own
+conversation's background tasks (daemon Bash/exec sessions or Claude Code
+tasks) leaves the task catalog: `Sleep ended after X because background task
+ID finished ...`. Other conversations' tasks never wake it; a `wait` stays
+bound to its exact target. A suspended sleep persists the wake before replay.
+
 ## Batch wakes
 
 `wake` takes either one wake as top-level fields or a `wakes` array of up to

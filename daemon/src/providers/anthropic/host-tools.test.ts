@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { ApiToolCall } from "../types";
-import { createHostToolServer, type HostToolBinding } from "./host-tools";
+import { createHostToolServer, hostToolInstructions, type HostToolBinding } from "./host-tools";
 import { loadClaudeSdks } from "./sdk";
 
 beforeAll(async () => { await loadClaudeSdks(); });
@@ -40,6 +40,13 @@ describe("Claude Code host tools", () => {
     expect(client.getInstructions()).toContain("Never use Claude Code's Agent tool: delegate all subagent work, including search and exploration fan-out, with exo.");
     expect(client.getInstructions()).toContain("Subagents are the default for real work");
     expect(client.getInstructions()).toContain("default is opus at high effort");
+  });
+
+  test("chrono instructions steer toward exact waits and short checks", () => {
+    const instructions = hostToolInstructions("chrono")!;
+    expect(instructions).toContain("end early when the user sends a message or one of your background tasks finishes");
+    expect(instructions).toContain("Prefer wait on the exact task, unit:NAME (systemd user unit) or subagent over a fixed sleep");
+    expect(instructions).toContain("at most ~5–10 min per check");
   });
 
   test("instructs only on the tools it offers", async () => {

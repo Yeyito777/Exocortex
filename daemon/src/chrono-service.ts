@@ -19,12 +19,13 @@ import {
   type IntervalRecurrence,
 } from "@exocortex/shared/chrono";
 import * as convStore from "./conversations";
-import { setChronoTaskActive, waitForConversationTask } from "./conversation-activity";
+import { onBackgroundTaskEnded, setChronoTaskActive, type CompletedConversationTask } from "./conversation-activity";
+import { waitForChronoWaitTarget } from "./chrono-wait-targets";
 import { onConversationRemoved, onConversationRemoving } from "./conversation-lifecycle";
 import { log } from "./log";
 import { evaluateToolCallSafety, formatSafetyBlock } from "./safety";
 import { executeBashBackgroundable } from "./tools/bash";
-import { completedChronoWaitOutput } from "./tools/chrono-output";
+import { backgroundTaskWakeText } from "./tools/chrono-output";
 import { ensureConversationWorkspace } from "./workspace-service";
 
 const STATE_VERSION = 1;
@@ -108,7 +109,11 @@ export interface DeferredChronoSleep {
   retryAt?: number;
   /** A long wait shares the sleep suspension/replay lifecycle, but wakes on task completion too. */
   wait?: DeferredChronoWaitTarget & { output?: string; isError?: boolean; endedAt?: number };
+  /** A plain sleep ended early because one of its conversation's own background tasks finished. */
+  taskWake?: DeferredSleepTaskWake;
 }
+
+export type DeferredSleepTaskWake = Pick<CompletedConversationTask, "id" | "title" | "endedAt" | "exitCode" | "signal">;
 
 export interface DeferredChronoWaitTarget {
   taskId: string;
@@ -178,6 +183,7 @@ let waitSubscriptionsEnabled = false;
 let processingDue = false;
 let unregisterConversationRemoval: (() => void) | null = null;
 let unregisterConversationRemoving: (() => void) | null = null;
+let unregisterBackgroundTaskEnded: (() => void) | null = null;
 
 function statePath(): string {
   return join(dataDir(), "chrono.json");
@@ -274,7 +280,10 @@ function validDeferredSleep(value: unknown): value is DeferredChronoSleep {
       && (value.wait.ownerConversationId === undefined || typeof value.wait.ownerConversationId === "string")
       && (value.wait.output === undefined || typeof value.wait.output === "string")
       && (value.wait.isError === undefined || typeof value.wait.isError === "boolean")
-      && (value.wait.endedAt === undefined || Number.isFinite(value.wait.endedAt))));
+      && (value.wait.endedAt === undefined || Number.isFinite(value.wait.endedAt))))
+    && (value.taskWake === undefined || (isRecord(value.taskWake)
+      && typeof value.taskWake.id === "string" && typeof value.taskWake.title === "string"
+      && Number.isFinite(value.taskWake.endedAt)));
 }
 
 function load(): void {
@@ -372,7 +381,7 @@ function clearTimer(): void {
 }
 
 function deferredSleepReadyAt(sleep: DeferredChronoSleep): number {
-  if (sleep.state === "resuming" || sleep.wait?.output !== undefined) return sleep.retryAt ?? 0;
+  if (sleep.state === "resuming" || sleep.wait?.output !== undefined || sleep.taskWake) return sleep.retryAt ?? 0;
   return Math.max(sleep.dueAt, sleep.retryAt ?? 0);
 }
 
@@ -700,6 +709,7 @@ function deferredSleepOutput(sleep: DeferredChronoSleep): string {
       task_id: sleep.wait.taskId, status: "wait_limit_reached", max_wait: sleep.wait.maxWait,
     });
   }
+  if (sleep.resumeReason === "elapsed" && sleep.taskWake) return backgroundTaskWakeText(elapsed, requested, sleep.taskWake);
   if (sleep.resumeReason === "user_stop") return `Sleep cancelled after ${elapsed} because the user stopped the goal (requested ${requested}). Do not resume autonomous goal work.`;
   return sleep.resumeReason === "user_message"
     ? `Sleep interrupted after ${elapsed} because the user sent a message (requested ${requested}).`
@@ -719,7 +729,7 @@ function stopDeferredWait(id: string): void {
   deferredWaitControllers.delete(id);
 }
 
-/** Event-driven and daemon-owned: no provider socket or polling loop is held open. */
+/** Daemon-owned: no provider socket is held open. Task targets are event-driven; unit targets poll systemctl. */
 function watchDeferredWait(sleep: DeferredChronoSleep): void {
   if (!started || !waitSubscriptionsEnabled || !sleep.wait || sleep.state !== "sleeping" || sleep.wait.output !== undefined
       || deferredWaitControllers.has(sleep.id)) return;
@@ -738,9 +748,9 @@ function watchDeferredWait(sleep: DeferredChronoSleep): void {
     armTimer();
   };
   // A failed state write must not be recorded as the waited task's failure.
-  runDetached(`deferred wait ${sleep.id}`, waitForConversationTask(sleep.wait.taskId, controller.signal, sleep.wait.ownerConversationId)
+  runDetached(`deferred wait ${sleep.id}`, waitForChronoWaitTarget(sleep.wait.taskId, controller.signal, sleep.wait.ownerConversationId)
     .then(
-      completed => save(completedChronoWaitOutput(completed), false, completed.endedAt),
+      completed => save(completed.output, false, completed.endedAt),
       err => {
         if (!controller.signal.aborted) save(err instanceof Error ? err.message : String(err), true, Date.now());
       },
@@ -748,6 +758,26 @@ function watchDeferredWait(sleep: DeferredChronoSleep): void {
     .finally(() => {
       if (deferredWaitControllers.get(sleep.id) === controller) deferredWaitControllers.delete(sleep.id);
     }));
+}
+
+/** One of a conversation's own background tasks finishing ends its suspended sleep, as a subagent's completion does. */
+function wakeDeferredSleepsOnTaskEnd(conversationId: string, task: CompletedConversationTask): void {
+  if (!started) return;
+  let woken = false;
+  for (const sleep of deferredSleeps.values()) {
+    if (sleep.conversationId !== conversationId || sleep.state !== "sleeping" || sleep.wait || sleep.taskWake) continue;
+    const endedAt = Math.max(sleep.startedAt, Math.min(task.endedAt, Date.now()));
+    if (endedAt > sleep.dueAt) continue;
+    sleep.taskWake = {
+      id: task.id, title: task.title, endedAt,
+      ...(task.exitCode !== undefined ? { exitCode: task.exitCode } : {}),
+      ...(task.signal !== undefined ? { signal: task.signal } : {}),
+    };
+    woken = true;
+  }
+  if (!woken) return;
+  persist();
+  armTimer();
 }
 
 /**
@@ -1266,7 +1296,7 @@ async function executeDeferredSleep(sleep: DeferredChronoSleep): Promise<void> {
       return;
     }
     const prepared = current.state === "sleeping"
-      ? prepareDeferredSleepResume(current, "elapsed", current.wait?.endedAt ?? Math.max(Date.now(), current.dueAt))
+      ? prepareDeferredSleepResume(current, "elapsed", current.wait?.endedAt ?? current.taskWake?.endedAt ?? Math.max(Date.now(), current.dueAt))
       : prepareDeferredSleepResume(
           current,
           current.resumeReason ?? "elapsed",
@@ -1389,6 +1419,7 @@ export async function startChronoService(options: { deferWaitSubscriptions?: boo
   waitSubscriptionsEnabled = !options.deferWaitSubscriptions;
   unregisterConversationRemoving ??= onConversationRemoving(quiesceChronoCommandsForConversation);
   unregisterConversationRemoval ??= onConversationRemoved(cancelChronoSchedulesForConversation);
+  unregisterBackgroundTaskEnded ??= onBackgroundTaskEnded(wakeDeferredSleepsOnTaskEnd);
   let pruned = false;
   for (const schedule of [...schedules.values()]) {
     const conversationId = schedule.target.kind === "conversation"
@@ -1437,6 +1468,8 @@ export function stopChronoService(): void {
   unregisterConversationRemoval = null;
   unregisterConversationRemoving?.();
   unregisterConversationRemoving = null;
+  unregisterBackgroundTaskEnded?.();
+  unregisterBackgroundTaskEnded = null;
   persist();
   log("info", "chrono: stopped");
 }
