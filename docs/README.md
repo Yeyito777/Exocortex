@@ -135,7 +135,7 @@ table in step with it.
 | `/usage reset` | Spend an earned OpenAI usage-limit reset |
 | `/time [n]` | Timestamp of the latest (or nth-latest) chat message |
 | `/diagnostics [on\|off]` | Show output-token counts in response metadata |
-| `/clock [12h\|24h]` | Show or set the clock for the finish time in response metadata (`2:03pm` by default, `14:03` for 24h; saved as `tui.clock`) |
+| `/clock [12h\|24h]` | Show or set the clock that replaces a finished response's duration in its metadata (`2:03pm` by default, `14:03` for 24h; saved as `tui.clock`) |
 | `/theme [name]` | Show or set the theme |
 | `/folders [tree\|navigate]` | Expand sidebar folders in place (`l` expands, `h` collapses, `Enter` toggles; the default) or open them as their own list |
 | `/hide [on\|off]` | Censor emails in the UI |

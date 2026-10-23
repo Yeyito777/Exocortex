@@ -7,7 +7,7 @@
 
 import { formatModelDisplayName, type MessageMetadata } from "./messages";
 import { theme } from "./theme";
-import { truncateToWidth, visibleLength } from "./textwidth";
+import { truncateToWidth } from "./textwidth";
 import type { ClockFormat } from "./clock";
 import { generationTokensPerSecond } from "@exocortex/shared/generation-throughput";
 
@@ -103,13 +103,13 @@ function formatTokenCount(tokens: number): string {
 /**
  * Render message metadata into display lines.
  *
- * Format: model | N tokens/s | Xs [→ finish time] [| N tokens with diagnostics enabled]
+ * Format: model | N tokens/s | Xs-or-finish-time [| N tokens with diagnostics enabled]
  *
- * The finish time is metadata.endedAt (the instant the duration stops) in the
- * TUI machine's local zone, so it is right over /ssh. It is omitted while the
- * message is live and for old messages that carry no endedAt. It reads as
- * "took Xs, ending at 14:03" (`1m 49s → 2:03pm`). On a narrow pane it is
- * dropped whole before anything else is cut.
+ * Working: the live duration (`1m 12s`). Final: the finish time replaces it
+ * (`2:03pm`), taken from metadata.endedAt (the instant the duration stopped)
+ * in the TUI machine's local zone, so it is right over /ssh. Messages with no
+ * endedAt keep the duration. Both are one segment, so truncation is the same
+ * for either.
  *
  * Throughput is an exponentially weighted average of this message's last ten
  * API rounds, supplied by the daemon. Each sample is output tokens / request
@@ -120,13 +120,14 @@ function formatTokenCount(tokens: number): string {
  * @param options.active  Keep elapsed time live even if endedAt is persisted.
  * @param options.width  Available pane columns, including the assistant indent.
  * @param options.diagnostics  Also display the accumulated output-token count.
+ * @param options.showDuration  Show the duration even once finished (tests and tooling; not user-facing).
  * @param options.clock  12h (default) or 24h finish time.
  * @param options.timeZone  IANA zone for the finish time (default: this machine's).
  * @returns Lines to append below the message content.
  */
 export function renderMetadata(
   metadata: MessageMetadata | null,
-  options: { active?: boolean; now?: number; width?: number; diagnostics?: boolean; timeZone?: string; clock?: ClockFormat } = {},
+  options: { active?: boolean; now?: number; width?: number; diagnostics?: boolean; timeZone?: string; clock?: ClockFormat; showDuration?: boolean } = {},
 ): string[] {
   if (!metadata) return [];
 
@@ -146,30 +147,23 @@ export function renderMetadata(
   const rate = measuredRate ?? (metadata.endedAt === null ? 0 : null);
   parts.push(`${rate === null ? "—" : rate.toFixed(1)} tokens/s`);
 
-  // Duration retains the independent work-stretch timer.
-  const elapsed = end - (metadata.workTimerStartedAt ?? metadata.startedAt);
-  parts.push(formatDuration(elapsed));
+  // While working (no endedAt, or kept live via options.active) the segment is
+  // the live work timer. Once final, the finish clock takes its place and the
+  // duration is no longer shown (it stays in the metadata). Messages without
+  // endedAt (legacy history, live turns) keep the duration.
+  const finished = options.active || options.showDuration ? null : formatFinishTime(metadata.endedAt, now, options.timeZone, options.clock);
+  if (finished) {
+    parts.push(finished);
+  } else {
+    // Duration retains the independent work-stretch timer.
+    const elapsed = end - (metadata.workTimerStartedAt ?? metadata.startedAt);
+    parts.push(formatDuration(elapsed));
+  }
 
-  // The finish time hangs off the duration ("took 1m 49s, ending at 2:03pm"),
-  // ahead of the diagnostics token count.
-  const finished = options.active ? null : formatFinishTime(metadata.endedAt, now, options.timeZone, options.clock);
-  const tokens = options.diagnostics ? `${formatTokenCount(metadata.tokens)} tokens` : null;
-  const render = (withTime: boolean) => {
-    const segments = [...parts.slice(0, -1), withTime && finished ? `${parts.at(-1)} → ${finished}` : parts.at(-1)!];
-    if (tokens) segments.push(tokens);
-    return `  ${segments.join(" | ")}`;
-  };
+  if (options.diagnostics) parts.push(`${formatTokenCount(metadata.tokens)} tokens`);
 
   // Metadata is single-line chrome, not a wrapped content block. Include the
   // indent in its column budget so it cannot paint into a neighboring pane.
-  // When narrow the finish time goes first, whole: never half a time or a
-  // dangling arrow.
-  const width = options.width ?? Infinity;
-  let text = render(true);
-  if (finished && visibleLength(text) > width) {
-    const throughTime = `  ${[...parts.slice(0, -1), `${parts.at(-1)} → ${finished}`].join(" | ")}`;
-    if (visibleLength(throughTime) > width) text = render(false);
-  }
-  const line = truncateToWidth(text, width);
+  const line = truncateToWidth(`  ${parts.join(" | ")}`, options.width ?? Infinity);
   return [`${theme.dim}${line}${theme.reset}`];
 }

@@ -400,6 +400,8 @@ export interface BuildMessageLinesOptions {
    * that compare an old and a new build must not set it.
    */
   reuseArrays?: boolean;
+  /** Show each message's duration instead of its finish clock. For tests and tooling; not cached-state aware. */
+  showDuration?: boolean;
 }
 
 let buildRevision = 0;
@@ -611,7 +613,7 @@ export function buildMessageLines(
   options: BuildMessageLinesOptions = {},
 ): BuildMessageLinesResult {
   const contentWidth = availableWidth - 4;
-  const metadataOptions = { width: availableWidth, diagnostics: state.showDiagnostics, clock: state.clock };
+  const metadataOptions = { width: availableWidth, diagnostics: state.showDiagnostics, clock: state.clock, showDuration: options.showDuration };
   let lines: string[] = [];
   let wrapContinuation: boolean[] = [];
   let wrapJoiners: string[] = [];

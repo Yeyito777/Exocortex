@@ -374,22 +374,24 @@ Both native and cross-build methods produce standalone Windows executables in
 
 ## TUI AI metadata
 
-AI metadata shows the model, average output `tokens/s`, elapsed work time, and
-when the message finished (`endedAt`, the instant the elapsed time stops),
-joined to the duration with an arrow so it reads "took 1m 49s, ending at 2:03pm":
-`Opus-5.5 | 87.9 tokens/s | 1m 49s → 2:03pm`, `... | 1m 49s → yesterday 10:41pm`,
-`... | 1m 49s → Oct 19 9:12am` (year added for another year, `Oct 19 2025 9:12am`).
-With `/diagnostics` on the token count follows the time:
-`... | 1m 49s → 2:03pm | 1,234 tokens`. The clock is 12-hour by default;
-`/clock 24h` switches to `→ 14:03`, `→ yesterday 22:41`, `→ Oct 19 09:12`, and
-`/clock 12h` switches back (bare `/clock` shows the current value). The choice is
-a TUI-only preference saved as `tui.clock` in `config/config.json` and repaints
-immediately. The time is shown per rendered AI message (a run of assistant
-fragments or goal turns shows the last one's end), in the TUI machine's own zone
-(so over `/ssh` it is the Mac's time, not the daemon's), relative to the TUI's
-local day, and repainted after local midnight. On a narrow pane the time (with
-its arrow) is dropped whole before anything else is cut. Live messages and
-legacy ones without `endedAt` show no time.
+AI metadata shows the model, average output `tokens/s`, and a time segment.
+While the AI is working the segment is the live work timer counting up:
+`Opus-5.5 | 87.9 tokens/s | 1m 12s`. When the message finishes, the finish
+clock replaces the duration on that same render (`endedAt`, the instant the timer
+stopped): `Opus-5.5 | 87.9 tokens/s | 2:03pm`, `... | yesterday 10:41pm`,
+`... | Oct 19 9:12am` (year added for another year, `Oct 19 2025 9:12am`). The
+duration stays in the stored metadata but is no longer rendered on finished
+messages; messages with no `endedAt` (older conversations) keep showing it. With
+`/diagnostics` on the token count follows: `... | 2:03pm | 1,234 tokens`. The clock
+is 12-hour by default; `/clock 24h` switches to `14:03`, `yesterday 22:41`,
+`Oct 19 09:12`, and `/clock 12h` switches back (bare `/clock` shows the current
+value). The choice is a TUI-only preference saved as `tui.clock` in
+`config/config.json` and repaints immediately. The clock is shown per rendered AI
+message (a run of assistant fragments or goal turns shows the last one's end), in
+the TUI machine's own zone (so over `/ssh` it is the Mac's time, not the
+daemon's), relative to the TUI's local day, and repainted after local midnight.
+The segment is one column of the line, so a narrow pane truncates the clock with
+`…` exactly as it truncated the duration.
 
 Each API round is sampled separately: provider-reported output tokens divided
 by that request's time (time-to-first-token + generation). Tool execution,
