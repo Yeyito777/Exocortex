@@ -21,6 +21,7 @@ IDENTITY="${EXOCORTEX_CODESIGN_IDENTITY:-}"
 ADHOC=0
 UPDATE_PLIST=1
 RELOAD=0
+UPDATE_TOOLS=1
 
 usage() {
   cat <<EOF
@@ -32,7 +33,10 @@ Usage: scripts/macos/build-launcher.sh [options]
                     also EXOCORTEX_CODESIGN_IDENTITY)
   --adhoc           Sign ad-hoc (privacy prompts will keep coming back)
   --no-plist        Do not touch the LaunchAgent plist
-  --reload          Reload the LaunchAgent now (graceful restart with replay)
+  --reload          Reload the LaunchAgent now (graceful restart with replay);
+                    first fast-forwards the external-tools/* repos
+                    (see update-external-tools.sh)
+  --no-tools-update Skip updating external-tools/* on --reload
   -h, --help        Show this help
 EOF
 }
@@ -44,6 +48,7 @@ while (($# > 0)); do
     --adhoc) ADHOC=1 ;;
     --no-plist) UPDATE_PLIST=0 ;;
     --reload) RELOAD=1 ;;
+    --no-tools-update) UPDATE_TOOLS=0 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "  ✗ Unknown option: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -177,6 +182,16 @@ if ((RELOAD == 0)); then
 
 EOF
   exit 0
+fi
+
+# ── External tools ───────────────────────────────────────────────────
+
+# external-tools/* are separate repos that `git pull` here never updates; bring
+# them current before the daemon restarts so it starts on the new code. Never
+# fatal: the helper skips anything unsafe and tolerates network failures.
+if ((UPDATE_TOOLS == 1)); then
+  "$SCRIPT_DIR/update-external-tools.sh" "$REPO_DIR/external-tools" \
+    || echo "  ⚠ External tool update failed; continuing with the reload" >&2
 fi
 
 # ── Reload ───────────────────────────────────────────────────────────
