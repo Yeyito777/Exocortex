@@ -11,8 +11,9 @@ import {
   type CreateScheduleInput,
   type RepeatInput,
 } from "../chrono-service";
-import { getWaitableConversationTask, waitForConversationTask } from "../conversation-activity";
-import { completedChronoWaitOutput } from "./chrono-output";
+import { onBackgroundTaskEnded, type CompletedConversationTask } from "../conversation-activity";
+import { checkChronoWaitTarget, waitForChronoWaitTarget } from "../chrono-wait-targets";
+import { backgroundTaskWakeText } from "./chrono-output";
 import { CLAUDE_CODE_INLINE_CHRONO_MAX_MS } from "./chrono-limits";
 import { parseDurationMs } from "@exocortex/shared/duration";
 import { LONG_CHRONO_SLEEP_THRESHOLD_MS } from "@exocortex/shared/chrono";
@@ -189,11 +190,12 @@ async function execute(input: Record<string, unknown>, context: Parameters<Tool[
     if (maxWaitMs > LONG_CHRONO_SLEEP_THRESHOLD_MS) {
       if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
       try {
-        const target = getWaitableConversationTask(taskId, ownerConversationId);
-        if (target.status === "completed") return { output: completedChronoWaitOutput(target), isError: false };
+        const finished = await checkChronoWaitTarget(taskId, ownerConversationId);
+        if (finished) return { output: finished.output, isError: false };
       } catch (err) {
         return { output: err instanceof Error ? err.message : String(err), isError: true };
       }
+      if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
       if (context.toolCallId && context.canDeferToolResult) {
         const deferred = deferChronoSleep({
           conversationId: convId,
@@ -246,8 +248,8 @@ async function execute(input: Record<string, unknown>, context: Parameters<Tool[
       chronoMode: "wait",
     });
     try {
-      const completed = await waitForConversationTask(taskId, waitController.signal, ownerConversationId);
-      return { output: completedChronoWaitOutput(completed), isError: false };
+      const completed = await waitForChronoWaitTarget(taskId, waitController.signal, ownerConversationId);
+      return { output: completed.output, isError: false };
     } catch (err) {
       if (limitReached && err instanceof DOMException && err.name === "AbortError") {
         return { output: JSON.stringify({ task_id: taskId, status: "wait_limit_reached", max_wait: maxWait }), isError: false };
@@ -311,16 +313,32 @@ async function execute(input: Record<string, unknown>, context: Parameters<Tool[
       chronoMode: "sleep",
     });
     const userInterrupt = interruptibleByUser(context);
+    // One of this conversation's own background tasks finishing ends the sleep too.
+    const taskWake = new AbortController();
+    let finishedTask: CompletedConversationTask | undefined;
+    const stopWatchingTasks = onBackgroundTaskEnded((ownerConversationId, task) => {
+      if (ownerConversationId !== convId || finishedTask) return;
+      finishedTask = task;
+      taskWake.abort();
+    });
     try {
-      await abortableSleep(durationMs, signal ? AbortSignal.any([signal, userInterrupt.signal]) : userInterrupt.signal);
+      await abortableSleep(durationMs, AbortSignal.any([userInterrupt.signal, taskWake.signal, ...(signal ? [signal] : [])]));
       return { output: `Sleep finished at ${new Date().toISOString()}.`, isError: false };
     } catch (err) {
-      if (!userInterrupt.signal.aborted || signal?.aborted) throw err;
+      if (signal?.aborted) throw err;
+      if (userInterrupt.signal.aborted) {
+        return {
+          output: `Sleep interrupted after ${formatElapsedDuration(Date.now() - startedAt)} because ${userInterrupt.manual() ? "the user stopped waiting" : "the user sent a message"} (requested ${formatElapsedDuration(durationMs)}).`,
+          isError: false,
+        };
+      }
+      if (!finishedTask) throw err;
       return {
-        output: `Sleep interrupted after ${formatElapsedDuration(Date.now() - startedAt)} because ${userInterrupt.manual() ? "the user stopped waiting" : "the user sent a message"} (requested ${formatElapsedDuration(durationMs)}).`,
+        output: backgroundTaskWakeText(formatElapsedDuration(Date.now() - startedAt), formatElapsedDuration(durationMs), finishedTask),
         isError: false,
       };
     } finally {
+      stopWatchingTasks();
       userInterrupt.release();
       context.setChronoTaskActive?.(taskId, false);
     }
@@ -448,12 +466,12 @@ const WAKE_PROPERTIES = {
 export const chrono: Tool = {
   name: "chrono",
   description: "Wait for an active task up to a required limit, sleep the current model turn, or manage durable one-shot/recurring wakes (several per call with wakes). Sleeps and waits with limits longer than five minutes suspend the provider turn and resume it by replay on completion, timeout, or a user message. A message is a hard wake that starts the model. A command is a soft wake that runs without a model and can escalate to a hard wake on failure or a script-defined non-zero exit.",
-  systemHint: "Prefer chrono over shell sleep or cron. Use native session polling for shell tools that provide it; use chrono wait for other active tasks. `wait` requires a `max_wait` safety limit and wakes immediately when the task finishes. `sleep` pauses this turn until the duration elapses; `wake` persists across daemon restarts; message wakes start a model turn, while command soft-wakes can use hard_wake to escalate failures or command-defined non-zero conditions.",
+  systemHint: "Prefer chrono over shell sleep or cron. Use native session polling for shell tools that provide it; use chrono wait for other active tasks. `wait` requires a `max_wait` safety limit and wakes immediately when the task finishes. `sleep` pauses this turn until the duration elapses or one of your background tasks finishes; prefer `wait` on the exact task, unit:NAME or subagent, and when sleeping on running work, sleep no longer than it likely needs (at most ~5–10 min per check); `wake` persists across daemon restarts; message wakes start a model turn, while command soft-wakes can use hard_wake to escalate failures or command-defined non-zero conditions.",
   inputSchema: {
     type: "object",
     properties: {
       action: { type: "string", enum: ["wait", "sleep", "wake", "list", "adopt", "cancel"], description: "Chrono operation." },
-      task_id: { type: "string", description: "For wait: exact active task id from the Tasks UI, exec_command, or daemon IPC list_tasks." },
+      task_id: { type: "string", description: "For wait: exact active task id from the Tasks UI, exec_command, or daemon IPC list_tasks, or unit:NAME for a systemd user unit (Linux), which ends when the unit stops." },
       max_wait: { type: "string", description: "Required for wait: maximum duration to wait, such as 30s, 1m20s, 2h 30m, or 1d." },
       duration: { type: "string", description: "For sleep: positive duration such as 30s, 1m20s, 2h 30m, or 1d." },
       ...WAKE_PROPERTIES,

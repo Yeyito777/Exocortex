@@ -7,6 +7,8 @@ import { resetConversationActivityForTest, setBackgroundTaskActive, recordBackgr
 import { create, remove } from "../conversations";
 import { buildExecutor } from "./registry";
 import type { ActiveToolBackgrounder } from "./types";
+import { systemdUnitWaitInternalsForTest } from "../systemd-unit-wait";
+import { COLLECTED_UNIT, RUNNING_UNIT, fakeSystemd } from "../systemd-unit-wait-test-helpers";
 
 const conversationIds: string[] = [];
 
@@ -17,7 +19,14 @@ function makeConversation(label: string): string {
   return id;
 }
 
+function useFakeSystemd(props: Record<string, string>, platform: NodeJS.Platform = "linux") {
+  const fake = fakeSystemd(props);
+  systemdUnitWaitInternalsForTest.configure({ runner: fake.run, platform, pollIntervalMs: 5 });
+  return fake;
+}
+
 afterEach(() => {
+  systemdUnitWaitInternalsForTest.reset();
   chronoInternalsForTest.reset();
   resetConversationActivityForTest();
   for (const id of conversationIds.splice(0)) remove(id);
@@ -463,5 +472,103 @@ describe("Chrono tool", () => {
     expect(chrono.summarize({ action: "wake", wakes: [{ title: "16:00", message: "x" }, { command: "notify" }, { title: "16:53", message: "y" }] }).detail)
       .toBe("wake: 3 schedules: 16:00, notify, 16:53");
     expect(chrono.summarize({ action: "wake", wakes: [] }).detail).toBe("wake");
+  });
+
+  test("guidance prefers exact waits and short checks over long fixed sleeps", () => {
+    expect(chrono.systemHint).toContain("prefer `wait` on the exact task, unit:NAME or subagent");
+    expect(chrono.systemHint).toContain("at most ~5–10 min per check");
+  });
+
+  test("waits on a systemd user unit until it stops and reports its final state", async () => {
+    const fake = useFakeSystemd(RUNNING_UNIT);
+    const activity = mock(() => {});
+    const pending = chrono.execute({ action: "wait", task_id: "unit:job", max_wait: "1m" },
+      { conversationId: "parent", toolCallId: "unit-call", setChronoTaskActive: activity });
+    await Bun.sleep(20);
+    expect(activity).toHaveBeenCalledWith("chrono:wait:unit-call", true, expect.objectContaining({ title: "Waiting up to 1m for unit:job" }));
+    Object.assign(fake.props, { ActiveState: "failed", Result: "exit-code", ExecMainCode: "1", ExecMainStatus: "4" });
+    const result = await pending;
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.output)).toMatchObject({
+      task_id: "unit:job", status: "completed", unit: "job.service", active_state: "failed", result: "exit-code", exit_code: 4,
+    });
+    expect(activity).toHaveBeenLastCalledWith("chrono:wait:unit-call", false);
+  });
+
+  test("a unit wait stops at max_wait without touching the unit", async () => {
+    const fake = useFakeSystemd(RUNNING_UNIT);
+    const result = await chrono.execute({ action: "wait", task_id: "unit:job", max_wait: "40ms" }, { conversationId: "parent" });
+    expect(JSON.parse(result.output)).toEqual({ task_id: "unit:job", status: "wait_limit_reached", max_wait: "40ms" });
+    expect(fake.calls.every(call => call.args.includes("show") || call.command === "journalctl")).toBe(true);
+  });
+
+  test("unknown, invalid and non-Linux unit targets fail cleanly", async () => {
+    useFakeSystemd(COLLECTED_UNIT);
+    const unknown = await chrono.execute({ action: "wait", task_id: "unit:gone", max_wait: "1m" }, { conversationId: "parent" });
+    expect(unknown).toMatchObject({ isError: true, output: expect.stringContaining("Unit not found: gone") });
+    const invalid = await chrono.execute({ action: "wait", task_id: "unit:x;reboot", max_wait: "1m" }, { conversationId: "parent" });
+    expect(invalid).toMatchObject({ isError: true, output: expect.stringContaining("Invalid systemd unit name") });
+    useFakeSystemd(RUNNING_UNIT, "darwin");
+    const mac = await chrono.execute({ action: "wait", task_id: "unit:job", max_wait: "1m" }, { conversationId: "parent" });
+    expect(mac).toMatchObject({ isError: true, output: expect.stringContaining("only exist on Linux") });
+  });
+
+  test("a bare unit name that is not a task points at the unit: target", async () => {
+    const result = await chrono.execute({ action: "wait", task_id: "pm5-batch-foo", max_wait: "1m" }, { conversationId: "parent" });
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain('use task_id "unit:pm5-batch-foo"');
+  });
+
+  test("a long unit wait validates the unit, then suspends; a stopped unit returns at once", async () => {
+    const conversationId = makeConversation("long-unit-wait");
+    const fake = useFakeSystemd(RUNNING_UNIT);
+    const context = { conversationId, toolCallId: "unit-long", canDeferToolResult: true };
+    const result = await chrono.execute({ action: "wait", task_id: "unit:job", max_wait: "1h" }, context);
+    expect(result).toMatchObject({ output: "", deferred: { kind: "chrono_wait", waitId: "chrono:wait:unit-long" } });
+    chronoInternalsForTest.reset();
+    Object.assign(fake.props, { ActiveState: "inactive" });
+    const done = await chrono.execute({ action: "wait", task_id: "unit:job", max_wait: "1h" }, { ...context, toolCallId: "unit-done" });
+    expect(done.deferred).toBeUndefined();
+    expect(JSON.parse(done.output)).toMatchObject({ status: "completed", active_state: "inactive" });
+  });
+
+  test("a sleep ends early when one of its conversation's own background tasks finishes", async () => {
+    const conversationId = makeConversation("sleep-own-task");
+    setBackgroundTaskActive(conversationId, "bash:build", true, { title: "make build", startedAt: 1 });
+    const pending = chrono.execute({ action: "sleep", duration: "4m" }, { conversationId, toolCallId: "sleep-own" });
+    await Bun.sleep(10);
+    recordBackgroundTaskCompletion(conversationId, {
+      taskId: "bash:build", toolName: "bash", title: "make build", startedAt: 1, endedAt: Date.now(), exitCode: 2, signal: null,
+    });
+    setBackgroundTaskActive(conversationId, "bash:build", false);
+    const result = await pending;
+    expect(result.isError).toBe(false);
+    expect(result.output).toMatch(/^Sleep ended after .* because background task bash:build finished \(exit code 2\): make build \(requested 4m\)\.$/);
+  });
+
+  test("another conversation's background task never ends a sleep", async () => {
+    const conversationId = makeConversation("sleep-foreign-task");
+    setBackgroundTaskActive("someone-else", "bash:other", true, { title: "other", startedAt: 1 });
+    const pending = chrono.execute({ action: "sleep", duration: "60ms" }, { conversationId, toolCallId: "sleep-foreign" });
+    await Bun.sleep(10);
+    setBackgroundTaskActive("someone-else", "bash:other", false);
+    expect((await pending).output).toMatch(/^Sleep finished at /);
+  });
+
+  test("a long Claude Code sleep inside the call ends when its own background task finishes", async () => {
+    const conversationId = makeConversation("long-sleep-claude-code-task");
+    setBackgroundTaskActive(conversationId, "b8x2", true, { title: "pmtool replay batch", startedAt: 1 });
+    let backgrounder: ActiveToolBackgrounder | null = null;
+    const pending = buildExecutor({
+      conversationId,
+      provider: "anthropic",
+      registerBackgrounder: (next) => { backgrounder = next; },
+    })([{ id: "toolu_task_sleep", name: "chrono", input: { action: "sleep", duration: "2h" } }]);
+    while (!backgrounder) await Bun.sleep(1);
+    setBackgroundTaskActive(conversationId, "b8x2", false);
+    const [result] = await pending;
+    expect(result.deferred).toBeUndefined();
+    expect(result.output).toMatch(/^Sleep ended after .* because background task b8x2 finished: pmtool replay batch \(requested 2h\)\.$/);
+    expect(backgrounder).toBeNull();
   });
 });

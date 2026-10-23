@@ -13,6 +13,7 @@
 
 import type { ActiveTaskInfo, ConversationTaskSummary } from "@exocortex/shared/messages";
 import type { BackgroundTaskCompletion } from "./tools/types";
+import { log } from "./log";
 
 export interface CompletedConversationTask extends ConversationTaskSummary {
   ownerConversationId: string;
@@ -98,6 +99,15 @@ const backgroundTasksByConversation = new Map<string, TaskMap>();
 const chronoTasksByConversation = new Map<string, TaskMap>();
 const taskCompletionWaiters = new Map<string, Set<() => void>>();
 
+export type BackgroundTaskEndedListener = (ownerConversationId: string, task: CompletedConversationTask) => void;
+const backgroundTaskEndedListeners = new Set<BackgroundTaskEndedListener>();
+
+/** Hear every background task leave the catalog, e.g. to end its owner's sleep. Returns an unsubscribe. */
+export function onBackgroundTaskEnded(listener: BackgroundTaskEndedListener): () => void {
+  backgroundTaskEndedListeners.add(listener);
+  return () => backgroundTaskEndedListeners.delete(listener);
+}
+
 function recordsEqual(a: InternalTaskRecord, b: InternalTaskRecord): boolean {
   return a.id === b.id
     && a.kind === b.kind
@@ -170,6 +180,18 @@ function setEntry(
   if (waiters) {
     taskCompletionWaiters.delete(taskId);
     for (const resolve of waiters) resolve();
+  }
+  if (kind === "background" && backgroundTaskEndedListeners.size > 0) {
+    const completed = getCompletedConversationTask(taskId);
+    if (completed) {
+      for (const listener of [...backgroundTaskEndedListeners]) {
+        try {
+          listener(ownerId, { ...completed });
+        } catch (err) {
+          log("warn", `background task ${taskId} end listener failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    }
   }
   return true;
 }
