@@ -118,8 +118,9 @@ used without a query. `EXOCORTEX_TUI_IMAGES=kitty|halfblock|off` overrides.
 - Kitty mode reserves blank rows; every frame `historyimages.ts` finds the
   image rows on screen, crops each image to its visible run of rows, and
   `kittyimages.ts` reconciles placements (direct `t=d` transmission in 4096-byte
-  chunks, `a=p` with source crop, `a=d` for placements that left). The frame
-  renderer's scroll-region optimization is disabled while images are placed.
+  chunks, `a=p` with source crop, `a=d` for placements that left). After a
+  [region scroll](scroll-regions.md) every visible placement is placed again,
+  since terminals move or drop placements with the scrolled rows.
   The task panel, autocomplete, image viewer (`z=2`), queue prompt,
   edit-message menu (Ctrl-W), sidebar conversation menu and accounts screen
   crop them to what lies outside their box, so closing one only restores what

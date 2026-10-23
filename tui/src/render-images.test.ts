@@ -273,10 +273,10 @@ describe("render with Kitty images", () => {
     const [whole] = placements(first);
     expect(whole).toMatchObject({ row: 8 });
     expect(whole.controls).not.toContain("y=");
-    // No DECSTBM scroll-region shortcut while images are placed.
+    // The region scrolls, and the image is placed again where it now belongs.
     state.scrollOffset = offsetFor(3);
     const scrolled = capture(state);
-    expect(scrolled).not.toMatch(/\x1b\[\d+;\d+r/);
+    expect(scrolled).toMatch(/\x1b\[3;\d+r\x1b\[2S\x1b\[r/);
     const [moved] = placements(scrolled);
     expect(moved.row).toBe(6);
     expect(scrolled).not.toContain("a=t,t=d");

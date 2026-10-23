@@ -1,5 +1,15 @@
 import { nextGrapheme } from "../textwidth";
 
+/** A Kitty graphics placement as the terminal holds it (zero-based top-left cell). */
+export interface TerminalPlacement {
+  imageId: number;
+  placementId: number;
+  row: number;
+  col: number;
+  /** The placement's controls other than its ids, e.g. `c=48,r=12,C=1,z=1`. */
+  controls: string;
+}
+
 export interface TerminalScreenOptions {
   /**
    * Model DECAWM like st: glyphs take their terminal width, and printing past
@@ -13,7 +23,9 @@ export interface TerminalScreenOptions {
  * Minimal terminal-screen model for TUI process tests.
  *
  * This intentionally implements only the ANSI sequences emitted by the retained
- * renderer (absolute cursor moves, clear-line/screen, and color/mode no-ops).
+ * renderer (absolute cursor moves, clear-line/screen, scroll regions, and
+ * color/mode no-ops). Kitty placements are tracked like st does: anchored to
+ * their top row, they move with region scrolls and vanish with scrolled-out rows.
  * It gives e2e tests a stable way to assert what is visible after a stream of
  * stdout bytes without depending on screenshots or a real PTY.
  */
@@ -29,6 +41,8 @@ export class TerminalScreen {
   private wrapNext = false;
   /** Autowrap mode: how many times output ran past the last column. */
   autoWrapCount = 0;
+  /** Kitty placements by `imageId:placementId`. */
+  private readonly placementsByKey = new Map<string, TerminalPlacement>();
 
   constructor(private readonly rowCount = 24, private readonly colCount = 80, options: TerminalScreenOptions = {}) {
     this.rows = Array.from({ length: rowCount }, () => Array(colCount).fill(" "));
@@ -97,6 +111,11 @@ export class TerminalScreen {
 
   /** Move the rows between the margins up (positive) or down (negative), exposing blank rows. */
   private scrollRegion(amount: number): void {
+    for (const [key, placement] of this.placementsByKey) {
+      if (placement.row < this.top || placement.row > this.bottom) continue;
+      placement.row -= amount;
+      if (placement.row < this.top || placement.row > this.bottom) this.placementsByKey.delete(key);
+    }
     const blank = () => Array(this.colCount).fill(" ");
     for (let n = 0; n < Math.abs(amount); n++) {
       if (amount > 0) {
@@ -105,6 +124,31 @@ export class TerminalScreen {
       } else {
         this.rows.splice(this.bottom, 1);
         this.rows.splice(this.top, 0, blank());
+      }
+    }
+  }
+
+  /** Current placements, sorted by key. */
+  placements(): TerminalPlacement[] {
+    return [...this.placementsByKey.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([, placement]) => ({ ...placement }));
+  }
+
+  private graphicsCommand(controlText: string): void {
+    const controls = new Map(controlText.split(",").map(pair => pair.split("=") as [string, string]));
+    const imageId = Number(controls.get("i"));
+    const placementId = Number(controls.get("p") ?? 0);
+    const action = controls.get("a") ?? "t";
+    if (action === "p") {
+      const rest = controlText.split(",").filter(pair => !/^(a|i|p|q)=/.test(pair)).join(",");
+      this.placementsByKey.set(`${imageId}:${placementId}`, { imageId, placementId, row: this.row, col: this.col, controls: rest });
+    } else if (action === "d") {
+      const what = controls.get("d") ?? "a";
+      for (const [key, placement] of this.placementsByKey) {
+        if (placement.imageId !== imageId && what !== "a" && what !== "A") continue;
+        if ((what === "i") && controls.has("p") && placement.placementId !== placementId) continue;
+        this.placementsByKey.delete(key);
       }
     }
   }
@@ -145,6 +189,11 @@ export class TerminalScreen {
     // APC (Kitty graphics): ESC _ ... ST.  Image payloads draw no text.
     if (text[start + 1] === "_") {
       const st = text.indexOf("\x1b\\", start + 2);
+      if (text[start + 2] === "G" && st !== -1) {
+        const body = text.slice(start + 3, st);
+        const semicolon = body.indexOf(";");
+        this.graphicsCommand(semicolon === -1 ? body : body.slice(0, semicolon));
+      }
       return st === -1 ? text.length : st + 2;
     }
 
@@ -161,6 +210,10 @@ export class TerminalScreen {
       this.col = Math.max(0, Math.min((Number.isFinite(numbers[1]) ? numbers[1] : 1) - 1, this.colCount - 1));
     } else if (final === "G") {
       this.col = Math.max(0, Math.min((Number.isFinite(numbers[0]) ? numbers[0] : 1) - 1, this.colCount - 1));
+    } else if ((final === "S" || final === "T") && !params.startsWith("?")) {
+      // SU/SD scroll the region regardless of the cursor, which stays put.
+      const amount = Number.isFinite(numbers[0]) ? numbers[0] : 1;
+      this.scrollRegion(final === "S" ? amount : -amount);
     } else if (final === "r") {
       this.top = Number.isFinite(numbers[0]) ? Math.max(0, numbers[0] - 1) : 0;
       this.bottom = Number.isFinite(numbers[1]) ? Math.min(this.rowCount - 1, numbers[1] - 1) : this.rowCount - 1;

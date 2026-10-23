@@ -4,7 +4,14 @@
  * The high-level renderer builds a desired row payload for every terminal row.
  * This module compares that desired frame with the previously flushed frame and
  * emits only the terminal operations needed to reach it.
+ *
+ * When the message area's content moved by a few rows, the flush asks the
+ * terminal to scroll just that band (DECSTBM + SU/SD) and then draws only the
+ * rows the scroll could not supply. `tui.scrollRegions: false` in config.json
+ * restores the older, narrower optimization (no sidebar, no images, LF/RI).
  */
+
+import { readExocortexConfig } from "@exocortex/shared/config";
 
 export const ESC = "\x1b[";
 export const clearLine = `${ESC}2K`;
@@ -22,17 +29,58 @@ export interface ScrollRegion {
 export interface RenderFrame {
   /** Full-row redraw payloads, indexed by zero-based screen row. */
   rows: string[];
+  /**
+   * Per-row segment, already part of `rows[i]`, that paints columns beside the
+   * scrolled content (the sidebar). A region scroll moves whole rows (st has
+   * no left/right margins), so rows whose other content moved intact get only
+   * this segment repainted. Nothing else in the row may draw over its columns.
+   */
+  pinned?: (string | undefined)[];
   /** Cursor position/shape/visibility payload emitted after row updates. */
   cursor: string;
   /** Optional message-area region eligible for terminal scroll optimization. */
   scrollRegion: ScrollRegion | null;
   /** First history line visible in the message area. Used to detect scrolls. */
   viewStart: number;
-  /** Terminal graphics commands (image placements) applied with this frame. */
-  graphics?: string;
+  /**
+   * Terminal graphics commands (image placements) applied with this frame. A
+   * function learns whether the message region scrolled first: terminals move
+   * or drop placements with the rows they sit on.
+   */
+  graphics?: string | ((regionScrolled: boolean) => string);
 }
 
-const lastRenderedFrames = new WeakMap<object, RenderFrame>();
+interface RetainedFrame extends RenderFrame {
+  /** Lazily computed content keys (see `contentKey`), by row. */
+  keys?: (string | undefined)[];
+}
+
+const lastRenderedFrames = new WeakMap<object, RetainedFrame>();
+
+// ── tui.scrollRegions ───────────────────────────────────────────────
+
+let scrollRegionsSetting: boolean | null = null;
+
+/** config.json `tui.scrollRegions`; anything but `false` means on. */
+export function resolveScrollRegionsSetting(
+  readConfig: () => { tui?: { scrollRegions?: unknown } } = readExocortexConfig,
+): boolean {
+  try {
+    return readConfig().tui?.scrollRegions !== false;
+  } catch {
+    return true;
+  }
+}
+
+/** Whether message-area scrolls use full region scrolls (read once per process). */
+export function scrollRegionsEnabled(): boolean {
+  return scrollRegionsSetting ??= resolveScrollRegionsSetting();
+}
+
+/** Override the setting (tests); null re-reads config.json on next use. */
+export function setScrollRegionsEnabled(enabled: boolean | null): void {
+  scrollRegionsSetting = enabled;
+}
 
 /**
  * Forget the retained frame for an owner so the next flush repaints every row.
@@ -92,22 +140,69 @@ function sameScrollRegion(a: ScrollRegion | null, b: ScrollRegion | null): a is 
   return !!a && !!b && a.start === b.start && a.end === b.end;
 }
 
-function scrollRegionBy(region: ScrollRegion, amount: number): string {
-  // DECSTBM + LF at the bottom margin scrolls only the message region up;
-  // reverse index (RI) at the top margin scrolls it down. Both are supported by
-  // the Linux console and common terminal emulators.
-  const scroll = amount > 0
-    ? moveTo(region.end, 1) + "\n".repeat(amount)
-    : moveTo(region.start, 1) + "\x1bM".repeat(-amount);
+function scrollRegionBy(region: ScrollRegion, amount: number, singleSequence: boolean): string {
+  // DECSTBM confines the scroll to the message region. SU/SD move it by
+  // `amount` rows in one operation, which a smooth-scrolling terminal can
+  // animate as one glide. The Linux console lacks SU/SD, so it (and the legacy
+  // mode) use LF at the bottom margin / reverse index (RI) at the top margin.
+  const scroll = singleSequence
+    ? `${ESC}${Math.abs(amount)}${amount > 0 ? "S" : "T"}`
+    : amount > 0
+      ? moveTo(region.end, 1) + "\n".repeat(amount)
+      : moveTo(region.start, 1) + "\x1bM".repeat(-amount);
   return `${ESC}${region.start};${region.end}r${scroll}${ESC}r`;
+}
+
+function terminalHasScrollSequences(): boolean {
+  return !(process.env.TERM ?? "").startsWith("linux");
+}
+
+/** A row's payload without its pinned segment, with absolute row numbers removed. */
+function contentKey(frame: RetainedFrame, index: number): string | undefined {
+  const keys = frame.keys ??= [];
+  if (index in keys) return keys[index];
+  const row = frame.rows[index];
+  const pinned = frame.pinned?.[index];
+  const at = row !== undefined && pinned ? row.indexOf(pinned) : -1;
+  const key = normalizeRowMoves(at < 0 ? row : row!.slice(0, at) + row!.slice(at + pinned!.length));
+  keys[index] = key;
+  return key;
+}
+
+/**
+ * What row `i` of a scrolled region needs: nothing, only its pinned segment
+ * (the content beside it moved intact), or the whole row.
+ */
+function scrolledRowUpdate(
+  prevFrame: RetainedFrame,
+  nextFrame: RetainedFrame,
+  region: ScrollRegion,
+  index: number,
+  shift: number,
+): string | null {
+  const nextRow = nextFrame.rows[index];
+  const source = index + shift;
+  if (source < region.start - 1 || source > region.end - 1) return nextRow;
+  const key = contentKey(nextFrame, index);
+  if (key === undefined || key !== contentKey(prevFrame, source)) return nextRow;
+  const nextPinned = nextFrame.pinned?.[index];
+  const prevPinned = prevFrame.pinned?.[source];
+  if (!nextPinned && !prevPinned) return null;
+  if (!nextPinned || !prevPinned) return nextRow;
+  return sameRowContent(prevPinned, nextPinned) ? null : nextPinned;
 }
 
 /**
  * Rows the message region's content moved since the previous frame: positive
  * when it moved up (viewport toward newer history), negative when it moved down
  * (scrolling back), 0 when terminal scrolling would not save enough redraws.
+ * `same(prevIndex, nextIndex)` says whether two rows count as the same content.
  */
-function detectRegionScroll(prevFrame: RenderFrame, nextFrame: RenderFrame): number {
+function detectRegionScroll(
+  prevFrame: RenderFrame,
+  nextFrame: RenderFrame,
+  same: (prevIndex: number, nextIndex: number) => boolean,
+): number {
   if (!sameScrollRegion(prevFrame.scrollRegion, nextFrame.scrollRegion)) return 0;
   const region = nextFrame.scrollRegion;
   if (!region) return 0;
@@ -127,10 +222,7 @@ function detectRegionScroll(prevFrame: RenderFrame, nextFrame: RenderFrame): num
   for (let shift = Math.abs(viewportShift); shift <= maxShift; shift++) {
     let matches = 0;
     for (let row = region.start - 1; row <= region.end - 1 - shift; row++) {
-      const same = direction > 0
-        ? sameRowContent(prevFrame.rows[row + shift], nextFrame.rows[row])
-        : sameRowContent(prevFrame.rows[row], nextFrame.rows[row + shift]);
-      if (same) matches++;
+      if (direction > 0 ? same(row + shift, row) : same(row, row + shift)) matches++;
     }
 
     const comparableRows = height - shift;
@@ -147,20 +239,37 @@ function detectRegionScroll(prevFrame: RenderFrame, nextFrame: RenderFrame): num
 /** Flush only the rows/cursor state that changed since the previous frame. */
 export function flushFrame(owner: object, nextFrame: RenderFrame): void {
   const prevFrame = lastRenderedFrames.get(owner);
+  const next: RetainedFrame = { ...nextFrame };
   const out: string[] = [];
   const rowCount = Math.max(prevFrame?.rows.length ?? 0, nextFrame.rows.length);
-  const scrollShift = prevFrame ? detectRegionScroll(prevFrame, nextFrame) : 0;
+  const regions = scrollRegionsEnabled();
+  const scrollShift = !prevFrame ? 0 : detectRegionScroll(prevFrame, next, regions
+    // Compare without the sidebar, which stays put while the content moves.
+    ? (prevIndex, nextIndex) => {
+      const key = contentKey(next, nextIndex);
+      return key !== undefined && key === contentKey(prevFrame, prevIndex);
+    }
+    : (prevIndex, nextIndex) => sameRowContent(prevFrame.rows[prevIndex], next.rows[nextIndex]));
   const scrollRegion = scrollShift !== 0 ? nextFrame.scrollRegion : null;
   let hasDrawingUpdates = false;
 
   if (scrollRegion) {
-    out.push(scrollRegionBy(scrollRegion, scrollShift));
+    out.push(scrollRegionBy(scrollRegion, scrollShift, regions && terminalHasScrollSequences()));
     hasDrawingUpdates = true;
   }
 
   for (let i = 0; i < rowCount; i++) {
     const nextRow = nextFrame.rows[i];
     if (nextRow === undefined) continue;
+
+    if (scrollRegion && regions && prevFrame && i >= scrollRegion.start - 1 && i <= scrollRegion.end - 1) {
+      const update = scrolledRowUpdate(prevFrame, next, scrollRegion, i, scrollShift);
+      if (update !== null) {
+        out.push(update);
+        hasDrawingUpdates = true;
+      }
+      continue;
+    }
 
     let unchanged = prevFrame?.rows[i] === nextRow;
     if (scrollRegion && i >= scrollRegion.start - 1 && i <= scrollRegion.end - 1) {
@@ -181,8 +290,11 @@ export function flushFrame(owner: object, nextFrame: RenderFrame): void {
 
   // Images draw above text, so placing them after the rows is equivalent and
   // keeps both inside the same synchronized update.
-  if (nextFrame.graphics) {
-    out.push(nextFrame.graphics);
+  const graphics = typeof nextFrame.graphics === "function"
+    ? nextFrame.graphics(scrollRegion !== null)
+    : nextFrame.graphics;
+  if (graphics) {
+    out.push(graphics);
     hasDrawingUpdates = true;
   }
 
@@ -199,5 +311,6 @@ export function flushFrame(owner: object, nextFrame: RenderFrame): void {
     else process.stdout.write(payload);
   }
 
-  lastRenderedFrames.set(owner, { ...nextFrame, graphics: undefined });
+  next.graphics = undefined;
+  lastRenderedFrames.set(owner, next);
 }

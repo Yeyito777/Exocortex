@@ -68,6 +68,7 @@ import {
   createFrameRows,
   flushFrame,
   moveTo,
+  scrollRegionsEnabled,
 } from "./frame";
 import { pinBottomRelativeScrollOffset } from "./viewportscroll";
 import { localDayKey } from "./metadata";
@@ -75,7 +76,13 @@ import { durableSleepMetadataFrame } from "./durable-sleep-metadata";
 import { inlineImageCellSize, inlineImageGeneration, inlineImageMode, inlineImagesActive } from "./inlineimages";
 import { renderAccountsScreen } from "./accountsscreen";
 import { renderImageModal } from "./imagemodal";
-import { collectHistoryImages, historyImagesPlaced, syncHistoryImages, type ScreenRect } from "./historyimages";
+import {
+  collectHistoryImages,
+  historyImagesPlaced,
+  invalidateHistoryImagePlacements,
+  syncHistoryImages,
+  type ScreenRect,
+} from "./historyimages";
 import { mathImageGeneration, mathImagesActive } from "./mathimages";
 
 interface HistoryRenderCacheEntry {
@@ -446,6 +453,8 @@ function renderImageIndicator(images: ImageAttachment[], width: number): string 
 interface RenderCtx {
   /** Per-screen-row ANSI payloads. Each payload fully redraws that row. */
   frameRows: string[];
+  /** Per-screen-row sidebar segment within `frameRows` (see RenderFrame.pinned). */
+  pinnedRows: (string | undefined)[];
   /** Whether the sidebar is currently open. */
   sidebarOpen: boolean;
   /** Pre-rendered sidebar rows (one per screen row). */
@@ -468,6 +477,7 @@ function appendPositionedPayload(ctx: RenderCtx, payload: string): void {
 function emitSidebarCol(ctx: RenderCtx, screenRow: number): void {
   if (ctx.sidebarOpen && ctx.sbRows[screenRow - 1]) {
     appendRowWrite(ctx, screenRow, 1, ctx.sbRows[screenRow - 1]);
+    ctx.pinnedRows[screenRow - 1] = moveTo(screenRow, 1) + ctx.sbRows[screenRow - 1];
   }
 }
 
@@ -1467,6 +1477,7 @@ export function render(state: RenderState): boolean {
   // ── Shared render context ─────────────────────────────────────
   const ctx: RenderCtx = {
     frameRows: createFrameRows(rows, cl),
+    pinnedRows: [],
     sidebarOpen,
     sbRows,
     chatCol,
@@ -1847,25 +1858,33 @@ export function render(state: RenderState): boolean {
   }
   const historyImagePlacements = collectedImages.placements;
   if (modal?.placement) historyImagePlacements.push(modal.placement);
-  const graphics = syncHistoryImages(state, historyImagePlacements);
+  const graphics = (regionScrolled: boolean): string => {
+    // The terminal moved (or dropped) placements with the scrolled rows, so
+    // place every visible one again where this frame wants it.
+    if (regionScrolled) invalidateHistoryImagePlacements(state);
+    return syncHistoryImages(state, historyImagePlacements);
+  };
 
-  const canScrollMessageRegion = !sidebarOpen
-    && !state.autocomplete
-    && !taskPanel
-    && !state.search?.barOpen
-    && !state.queuePrompt
-    && !state.editMessagePrompt
-    && !state.btw
-    && !state.imageModal
-    && !state.accountsScreen
-    && !state.instructionsModal
-    // Placements are positioned explicitly; terminal scrolling would move them first.
-    && !hadHistoryImages
-    && historyImagePlacements.length === 0
-    && messageAreaHeight > 0;
+  // Floating overlays sit still while the history under them moves; leave
+  // those frames to the plain row diff.
+  const overlaysOpen = !!state.autocomplete
+    || !!state.search?.barOpen
+    || !!state.queuePrompt
+    || !!state.editMessagePrompt
+    || !!state.btw
+    || !!state.imageModal
+    || !!state.accountsScreen
+    || !!state.instructionsModal;
+  const canScrollMessageRegion = messageAreaHeight > 0 && !overlaysOpen && (scrollRegionsEnabled()
+    // The sidebar and task panel are repainted beside the scrolled rows, and
+    // images are placed again after the scroll.
+    ? !sidebarMenuOverlay
+    // Legacy: full-width history only, and no images.
+    : !sidebarOpen && !taskPanel && !hadHistoryImages && historyImagePlacements.length === 0);
 
   flushFrame(state, {
     rows: ctx.frameRows,
+    pinned: ctx.pinnedRows,
     cursor: instructionsOverlay ? instructionsCursorPayload(instructionsOverlay) : buildCursorPayload(
       state,
       promptFocused,

@@ -27,6 +27,9 @@ selects another daemon without moving client-side UI operations to that host.
 - [Macros](macros.md)
 - [Update status](update-status.md)
 - [Network outages](network-outages.md)
+- [Scroll regions](scroll-regions.md): how the TUI scrolls the conversation
+  pane. On by default; set `"tui": { "scrollRegions": false }` in
+  `config/config.json` and restart the TUI to turn it off.
 
 ## Keyboard reference
 
