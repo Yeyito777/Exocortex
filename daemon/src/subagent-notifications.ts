@@ -242,6 +242,7 @@ export function buildSubagentNotificationText(
     "",
     "Full details:",
     `Inspect conversation ${record.childConvId} through daemon IPC (load_conversation/load_conversation_history); read shared/src/protocol.ts for fields.`,
+    `Follow up: exo message {conversation: "${record.childConvId}", text}`,
   ].join("\n");
 }
 
