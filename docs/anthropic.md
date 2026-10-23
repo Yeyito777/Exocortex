@@ -21,9 +21,8 @@ conversations:
   Code calls them over an in-process MCP server as `mcp__exocortex__chrono` and
   `mcp__exocortex__exo`; Exocortex runs them like any other call, and history
   records them as `chrono` and `exo`. The server's instructions make `exo`
-  subagents the default for real work and keep Claude Code's Agent tool to
-  quick read-only fan-out within a turn (see
-  [delegation defaults](delegation-models.md)); `exo` from a Claude
+  subagents the default for real work and forbid Claude Code's Agent tool
+  (see [delegation defaults](delegation-models.md)); `exo` from a Claude
   conversation starts Claude Opus at high effort unless told otherwise. Chrono
   sleeps and waits run inside the call for at most five minutes, since a Claude Code
   turn cannot be suspended; longer delays use a wake with a message. Claude
