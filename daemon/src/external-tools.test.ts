@@ -17,6 +17,7 @@ import {
   shouldSuperviseExternalToolDaemons,
 } from "./external-tools";
 import { ExternalToolDaemonSupervisor } from "./external-tools-daemon";
+import { rotateDaemonLog } from "./external-tools-daemon-process";
 
 function makeTool(overrides: {
   manifest?: Partial<Manifest>;
@@ -58,6 +59,25 @@ function spawnDetachedSleep(cwd: string): number {
   if (!child.pid) throw new Error("failed to spawn detached sleep");
   return child.pid;
 }
+
+describe("rotateDaemonLog", () => {
+  test("moves an oversized service.log aside and leaves a small one alone", () => {
+    const dir = mkdtempSync(join(tmpdir(), "exo-daemon-log-"));
+    try {
+      const logPath = join(dir, "service.log");
+      expect(rotateDaemonLog(logPath, 10)).toBe(false); // missing
+      writeFileSync(logPath, "short");
+      expect(rotateDaemonLog(logPath, 10)).toBe(false);
+      writeFileSync(`${logPath}.1`, "older");
+      writeFileSync(logPath, "x".repeat(11));
+      expect(rotateDaemonLog(logPath, 10)).toBe(true);
+      expect(existsSync(logPath)).toBe(false);
+      expect(readFileSync(`${logPath}.1`, "utf8")).toBe("x".repeat(11));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("buildDaemonSpawnSpec", () => {
   test("returns null for blank commands", () => {

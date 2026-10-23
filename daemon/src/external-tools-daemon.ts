@@ -7,6 +7,7 @@ import {
   getDaemonStatePaths,
   killProcessGroup,
   reapStaleManagedDaemonPid,
+  rotateDaemonLog,
   writeDaemonPidFile,
 } from "./external-tools-daemon-process";
 import type { ExternalToolDaemonAction, ExternalToolDaemonStatus, LoadedTool, ManifestDaemon } from "./external-tools-types";
@@ -169,6 +170,7 @@ export class ExternalToolDaemonSupervisor {
     // Ensure config/ dir exists for the log/state files
     const { configDir, logPath } = getDaemonStatePaths(managed.toolDir);
     mkdirSync(configDir, { recursive: true });
+    rotateDaemonLog(logPath);
     const logFd = openSync(logPath, "a");
 
     try {
