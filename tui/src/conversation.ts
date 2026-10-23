@@ -611,7 +611,7 @@ export function buildMessageLines(
   options: BuildMessageLinesOptions = {},
 ): BuildMessageLinesResult {
   const contentWidth = availableWidth - 4;
-  const metadataOptions = { width: availableWidth, diagnostics: state.showDiagnostics };
+  const metadataOptions = { width: availableWidth, diagnostics: state.showDiagnostics, clock: state.clock };
   let lines: string[] = [];
   let wrapContinuation: boolean[] = [];
   let wrapJoiners: string[] = [];
@@ -797,8 +797,8 @@ export function buildMessageLines(
     state.convId, contentWidth, state.showToolOutput, state.showTurnWork, state.showDiagnostics, state.toolRegistry,
     state.externalToolStyles, theme.name, state.rows, inlineImageGeneration(), mathImageGeneration(),
     inlineImagesActive(), imageCell.width, imageCell.height, userMessageNeedsTopMargin(messages, startMessageIndex),
-    // Metadata finish times read "yesterday"/dates relative to the local day.
-    localDayKey(Date.now()),
+    // Metadata finish times follow /clock and read "yesterday"/dates relative to the local day.
+    localDayKey(Date.now()), state.clock,
   ];
   const widthCaches = committedHistoryCaches.get(state) ?? [];
   const cached = cacheable

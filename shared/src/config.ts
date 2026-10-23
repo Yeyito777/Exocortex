@@ -164,6 +164,8 @@ export interface TuiConfig {
   diagnostics?: boolean;
   /** Ctrl+O: show every turn's work and every notification instead of folding them. */
   showTurnWork?: boolean;
+  /** Clock for the message finish time in AI metadata: "12h" (default, `2:03pm`) or "24h" (`14:03`). */
+  clock?: "12h" | "24h";
   /** How sidebar folders open: expand in place ("tree", default) or replace the list ("navigate"). */
   sidebarFolders?: "navigate" | "tree";
   /** Display math: typeset images on Kitty-graphics terminals ("auto", default), always "text", or force "image". */

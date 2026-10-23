@@ -264,6 +264,60 @@ describe("/diagnostics", () => {
   });
 });
 
+describe("/clock", () => {
+  test("defaults to 12h, switches explicitly, persists, and keeps other config", () => {
+    const original = { ...defaultExocortexConfig(), tui: { hideSensitiveInfo: true } };
+    writeExocortexConfig(original);
+    const state = createInitialState();
+    expect(state.clock).toBe("12h");
+
+    state.inputBuffer = "/clock 24h";
+    state.cursorPos = state.inputBuffer.length;
+    expect(tryCommand("/clock 24h", state)).toEqual({ type: "handled" });
+    expect(state.clock).toBe("24h");
+    expect(state.inputBuffer).toBe("");
+    expect(state.messages.at(-1)).toMatchObject({ text: "Clock set to 24h." });
+    expect(readExocortexConfig()).toEqual({ ...original, tui: { ...original.tui, clock: "24h" } });
+    expect(createInitialState().clock).toBe("24h");
+
+    expect(tryCommand("/clock 12H", state)).toEqual({ type: "handled" });
+    expect(state.clock).toBe("12h");
+    expect(readExocortexConfig().tui?.clock).toBe("12h");
+    expect(createInitialState().clock).toBe("12h");
+  });
+
+  test("bare /clock shows the value without changing it", () => {
+    const state = createInitialState();
+    const before = readExocortexConfig();
+    expect(tryCommand("/clock", state)).toEqual({ type: "handled" });
+    expect(state.messages.at(-1)).toMatchObject({ text: "Clock: 12h." });
+    expect(state.clock).toBe("12h");
+    expect(readExocortexConfig()).toEqual(before);
+    tryCommand("/clock 24h", state);
+    tryCommand("/clock", state);
+    expect(state.messages.at(-1)).toMatchObject({ text: "Clock: 24h." });
+  });
+
+  test("rejects invalid arguments without changing the preference", () => {
+    const state = createInitialState();
+    const before = readExocortexConfig();
+    for (const text of ["/clock 13h", "/clock 24h extra"]) {
+      expect(tryCommand(text, state)).toEqual({ type: "handled" });
+      expect(state.clock).toBe("12h");
+      expect(readExocortexConfig()).toEqual(before);
+      expect(state.messages.at(-1)).toMatchObject({ text: "Usage: /clock [12h|24h]" });
+    }
+  });
+
+  test("appears in help and command/argument completions", () => {
+    const state = createInitialState();
+    expect(COMMAND_LIST.some(item => item.name === "/clock")).toBe(true);
+    expect(getCommandArgs(state, "/clock")["/clock"].map(item => item.name)).toEqual(["12h", "24h"]);
+    tryCommand("/help", state);
+    expect(state.messages.at(-1)).toMatchObject({ text: expect.stringContaining("/clock") });
+  });
+});
+
 describe("/new", () => {
   test("resets pending conversation settings to product defaults", () => {
     const state = createInitialState();

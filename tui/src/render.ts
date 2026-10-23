@@ -70,6 +70,7 @@ import {
   moveTo,
 } from "./frame";
 import { pinBottomRelativeScrollOffset } from "./viewportscroll";
+import { localDayKey } from "./metadata";
 import { durableSleepMetadataFrame } from "./durable-sleep-metadata";
 import { inlineImageCellSize, inlineImageGeneration, inlineImageMode, inlineImagesActive } from "./inlineimages";
 import { renderAccountsScreen } from "./accountsscreen";
@@ -95,6 +96,9 @@ interface HistoryRenderCacheEntry {
   showToolOutput: boolean;
   showTurnWork: boolean;
   showDiagnostics: boolean;
+  clock: RenderState["clock"];
+  /** Finish times say "yesterday"/dates relative to the local day. */
+  metadataDay: string;
   toolRegistryRef: RenderState["toolRegistry"];
   externalToolStylesRef: RenderState["externalToolStyles"];
   themeName: string;
@@ -144,6 +148,8 @@ function canReuseHistoryRender(
     && cached.showToolOutput === state.showToolOutput
     && cached.showTurnWork === state.showTurnWork
     && cached.showDiagnostics === state.showDiagnostics
+    && cached.clock === state.clock
+    && cached.metadataDay === localDayKey(Date.now())
     && cached.toolRegistryRef === state.toolRegistry
     && cached.externalToolStylesRef === state.externalToolStyles
     && cached.themeName === theme.name
@@ -289,6 +295,8 @@ function getHistoryRender(
     showToolOutput: state.showToolOutput,
     showTurnWork: state.showTurnWork,
     showDiagnostics: state.showDiagnostics,
+    clock: state.clock,
+    metadataDay: localDayKey(Date.now()),
     toolRegistryRef: state.toolRegistry,
     externalToolStylesRef: state.externalToolStyles,
     themeName: theme.name,

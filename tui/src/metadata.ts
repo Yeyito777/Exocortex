@@ -8,6 +8,7 @@
 import { formatModelDisplayName, type MessageMetadata } from "./messages";
 import { theme } from "./theme";
 import { truncateToWidth } from "./textwidth";
+import type { ClockFormat } from "./clock";
 import { generationTokensPerSecond } from "@exocortex/shared/generation-throughput";
 
 // ── Formatting ──────────────────────────────────────────────────────
@@ -66,15 +67,24 @@ export function msUntilLocalMidnight(now: number, timeZone?: string): number {
 }
 
 /**
- * When the AI finished, in the viewer's zone and a 24-hour clock:
- * `14:03` today, `yesterday 22:41`, `Oct 19 09:12`, `Oct 19 2025 09:12` in another year.
+ * When the AI finished, in the viewer's zone. 12h (default): `2:03pm` today,
+ * `yesterday 10:41pm`, `Oct 19 9:12am`, `Oct 19 2025 9:12am` in another year.
+ * 24h: `14:03`, `yesterday 22:41`, `Oct 19 09:12`, `Oct 19 2025 09:12`.
  * Returns null for a missing/invalid timestamp.
  */
-export function formatFinishTime(endedAt: number | null | undefined, now: number, timeZone?: string): string | null {
+export function formatFinishTime(
+  endedAt: number | null | undefined,
+  now: number,
+  timeZone?: string,
+  clock: ClockFormat = "12h",
+): string | null {
   if (typeof endedAt !== "number" || !Number.isFinite(endedAt)) return null;
   const then = clockParts(endedAt, timeZone);
   const current = clockParts(now, timeZone);
-  const time = `${String(then.hour).padStart(2, "0")}:${String(then.minute).padStart(2, "0")}`;
+  const minute = String(then.minute).padStart(2, "0");
+  const time = clock === "24h"
+    ? `${String(then.hour).padStart(2, "0")}:${minute}`
+    : `${then.hour % 12 || 12}:${minute}${then.hour < 12 ? "am" : "pm"}`;
   const dayDiff = Math.round((Date.UTC(current.year, current.month - 1, current.day)
     - Date.UTC(then.year, then.month - 1, then.day)) / 86_400_000);
   if (dayDiff === 0) return time;
@@ -108,12 +118,13 @@ function formatTokenCount(tokens: number): string {
  * @param options.active  Keep elapsed time live even if endedAt is persisted.
  * @param options.width  Available pane columns, including the assistant indent.
  * @param options.diagnostics  Also display the accumulated output-token count.
+ * @param options.clock  12h (default) or 24h finish time.
  * @param options.timeZone  IANA zone for the finish time (default: this machine's).
  * @returns Lines to append below the message content.
  */
 export function renderMetadata(
   metadata: MessageMetadata | null,
-  options: { active?: boolean; now?: number; width?: number; diagnostics?: boolean; timeZone?: string } = {},
+  options: { active?: boolean; now?: number; width?: number; diagnostics?: boolean; timeZone?: string; clock?: ClockFormat } = {},
 ): string[] {
   if (!metadata) return [];
 
@@ -140,7 +151,7 @@ export function renderMetadata(
   if (options.diagnostics) parts.push(`${formatTokenCount(metadata.tokens)} tokens`);
 
   if (!options.active) {
-    const finished = formatFinishTime(metadata.endedAt, now, options.timeZone);
+    const finished = formatFinishTime(metadata.endedAt, now, options.timeZone, options.clock);
     if (finished) parts.push(finished);
   }
 
