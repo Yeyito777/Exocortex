@@ -53,6 +53,26 @@ export function ownerRelay(msg: Pick<UserMessage, "text" | "metadata">): OwnerRe
   return relay;
 }
 
+/**
+ * Whether a user-role message carries the owner's own words: typed, or relayed
+ * from their Discord/WhatsApp. Only these get the user bubble's background;
+ * everything automated (a parent conversation's prompts included) gets the
+ * automated one. Takes a queued message's `automation` as well as a message's.
+ */
+export function ownerWords(text: string, automation: UserMessageAutomation | undefined): boolean {
+  return !automation || ownerRelayedText(text, { automation }) !== null;
+}
+
+/**
+ * The line under a prompt a parent conversation sent (an exo delegation or
+ * follow-up): `⚙ Exo delegation · from 📡 paramount`, by the parent's title,
+ * else its id.
+ */
+export function parentPromptLabel(automation: UserMessageAutomation, conversationTitle?: (id: string) => string | null): string {
+  const title = automation.sourceId ? conversationTitle?.(automation.sourceId) || automation.sourceId : null;
+  return `⚙ ${automationLabel(automation)} · from ${title ?? "another conversation"}`;
+}
+
 /** Label for a user-role message that was not typed by the user, or null for a real one. */
 export function notificationLabel(msg: Pick<UserMessage, "text" | "metadata">): string | null {
   if (!isAutomatedUserPrompt(msg.text, msg.metadata) || ownerRelay(msg)) return null;
@@ -128,7 +148,10 @@ export interface NotificationPlan {
   label: string;
 }
 
-/** A prompt another conversation sent (an exo delegation or follow-up): a normal bubble, labelled with its sender. */
+/**
+ * A prompt another conversation sent (an exo delegation or follow-up): it reads
+ * as this conversation's prompt, in the automated bubble, labelled with its sender.
+ */
 export interface FromPlan {
   kind: "from";
   label: string;
@@ -213,8 +236,7 @@ export function planHistory(input: PlanHistoryInput): HistoryPlan {
     if (msg.role !== "user") continue;
     const automation = msg.metadata?.automation;
     if (automation?.kind === "exo_send") {
-      const title = automation.sourceId ? input.conversationTitle?.(automation.sourceId) : null;
-      const label = `from ${title || "another conversation"}`;
+      const label = parentPromptLabel(automation, input.conversationTitle);
       plans[index - start] = { kind: "from", label };
       signatures[index - start] = `f${label}`;
       continue;

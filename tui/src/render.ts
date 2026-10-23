@@ -12,7 +12,8 @@
  */
 
 import { isActiveConversationLoading, type RenderState } from "./state";
-import type { ImageAttachment } from "./messages";
+import type { ImageAttachment, UserMessageAutomation } from "./messages";
+import { ownerWords } from "./turncollapse";
 import { getViewStart } from "./chatscroll";
 import { shouldHoldOpeningFrame } from "./historypagination";
 import {
@@ -562,13 +563,14 @@ function composeSemanticUserRows(
     ? start.userFlow.sourceCursor
     : anchor.userFlowStart;
   const sourceEnd = lineAnchors[requestedEnd - 1].userFlowEnd!;
-  const automated = Boolean(owner.automation || owner.metadata?.automation);
+  // The same background the bubble was built with: the owner's words (typed or relayed) only.
+  const automation = (owner.automation ?? owner.metadata?.automation) as UserMessageAutomation | undefined;
   const adaptive = renderAdaptiveUserMessageRows(
     anchor.userFlowDocument,
     sourceStart,
     sourceEnd,
     colsForRow,
-    automated ? theme.automatedUserBg : theme.userBg,
+    ownerWords(owner.text, automation) ? theme.userBg : theme.automatedUserBg,
   );
   const rows: ViewportHistoryRow[] = [];
   let canonicalLineIndex = lineIndex;
