@@ -22,7 +22,7 @@ import {
   type InlineImageSource,
 } from "./inlineimages";
 import { isActiveConversationLoading, isStreaming, type RenderState } from "./state";
-import { formatDuration, renderMetadata } from "./metadata";
+import { formatDuration, localDayKey, renderMetadata } from "./metadata";
 import { activeDurableSleepAssistant, inlineSleepMetadataEndedAt } from "./durable-sleep-metadata";
 import { theme } from "./theme";
 import {
@@ -797,6 +797,8 @@ export function buildMessageLines(
     state.convId, contentWidth, state.showToolOutput, state.showTurnWork, state.showDiagnostics, state.toolRegistry,
     state.externalToolStyles, theme.name, state.rows, inlineImageGeneration(), mathImageGeneration(),
     inlineImagesActive(), imageCell.width, imageCell.height, userMessageNeedsTopMargin(messages, startMessageIndex),
+    // Metadata finish times read "yesterday"/dates relative to the local day.
+    localDayKey(Date.now()),
   ];
   const widthCaches = committedHistoryCaches.get(state) ?? [];
   const cached = cacheable

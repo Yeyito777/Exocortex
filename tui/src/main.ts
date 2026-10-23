@@ -114,6 +114,7 @@ import {
 } from "./conversationscroll";
 import { applyTuiLaunchOptions, parseTuiLaunchArgs, TUI_USAGE, type TuiLaunchOptions } from "./launchargs";
 import { reconnectDelayMs } from "./reconnect-delay";
+import { msUntilLocalMidnight } from "./metadata";
 
 // ── State ───────────────────────────────────────────────────────────
 
@@ -427,6 +428,15 @@ function resetStreamTick(): void {
   if (tickDelays.length > 0) {
     streamTickTimer = setTimeout(scheduleRender, Math.min(...tickDelays));
   }
+}
+
+/** Metadata finish times say "yesterday"/dates; repaint just after local midnight so an idle TUI stays right. */
+function scheduleDayRolloverRender(): void {
+  const timer = setTimeout(() => {
+    scheduleRender();
+    scheduleDayRolloverRender();
+  }, msUntilLocalMidnight(Date.now()) + 1_000);
+  timer.unref?.();
 }
 
 function requestOlderHistory(turns: number, requestSource: "initial-backfill" | "viewport" = "viewport"): boolean {
@@ -2267,6 +2277,7 @@ async function main(): Promise<void> {
   // daemon's five-minute parked-socket expiry. This never submits model work.
   standbyRefreshTimer = setInterval(maybePrewarmOpenAI, 4 * 60_000);
   standbyRefreshTimer.unref?.();
+  scheduleDayRolloverRender();
   startupProfileMark("terminal_setup_done");
 
   process.stdout.on("resize", () => {

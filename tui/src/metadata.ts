@@ -31,6 +31,58 @@ export function formatDuration(ms: number): string {
   return `${weeks}w ${days}d ${hours}h ${minutes}m ${seconds}s`;
 }
 
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+interface ClockParts { year: number; month: number; day: number; hour: number; minute: number }
+
+const clockFormatters = new Map<string, Intl.DateTimeFormat>();
+
+/** Wall-clock fields of an instant in `timeZone` (default: this machine's zone). */
+function clockParts(ms: number, timeZone?: string): ClockParts {
+  const key = timeZone ?? "";
+  let formatter = clockFormatters.get(key);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat("en-US", {
+      timeZone, hourCycle: "h23", year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric",
+    });
+    clockFormatters.set(key, formatter);
+  }
+  const parts: Record<string, number> = {};
+  for (const part of formatter.formatToParts(ms)) if (part.type !== "literal") parts[part.type] = Number(part.value);
+  return { year: parts.year, month: parts.month, day: parts.day, hour: parts.hour % 24, minute: parts.minute };
+}
+
+/** Local calendar day of `ms`; changes exactly when "today"/"yesterday" labels change. */
+export function localDayKey(ms: number, timeZone?: string): string {
+  const { year, month, day } = clockParts(ms, timeZone);
+  return `${year}-${month}-${day}`;
+}
+
+/** Milliseconds from `now` until the next local midnight (DST-safe: re-derived from wall-clock fields). */
+export function msUntilLocalMidnight(now: number, timeZone?: string): number {
+  const { hour, minute } = clockParts(now, timeZone);
+  const sinceMidnight = (hour * 60 + minute) * 60_000 + (now % 60_000 + 60_000) % 60_000;
+  return Math.max(1_000, Math.min(26 * 3_600_000, 24 * 3_600_000 - sinceMidnight));
+}
+
+/**
+ * When the AI finished, in the viewer's zone and a 24-hour clock:
+ * `14:03` today, `yesterday 22:41`, `Oct 19 09:12`, `Oct 19 2025 09:12` in another year.
+ * Returns null for a missing/invalid timestamp.
+ */
+export function formatFinishTime(endedAt: number | null | undefined, now: number, timeZone?: string): string | null {
+  if (typeof endedAt !== "number" || !Number.isFinite(endedAt)) return null;
+  const then = clockParts(endedAt, timeZone);
+  const current = clockParts(now, timeZone);
+  const time = `${String(then.hour).padStart(2, "0")}:${String(then.minute).padStart(2, "0")}`;
+  const dayDiff = Math.round((Date.UTC(current.year, current.month - 1, current.day)
+    - Date.UTC(then.year, then.month - 1, then.day)) / 86_400_000);
+  if (dayDiff === 0) return time;
+  if (dayDiff === 1) return `yesterday ${time}`;
+  const year = then.year === current.year ? "" : ` ${then.year}`;
+  return `${MONTHS[then.month - 1]} ${then.day}${year} ${time}`;
+}
+
 function formatTokenCount(tokens: number): string {
   if (Number.isInteger(tokens) && tokens > -1000 && tokens < 1000) return `${tokens}`;
   return tokens.toLocaleString("en-US");
@@ -41,7 +93,11 @@ function formatTokenCount(tokens: number): string {
 /**
  * Render message metadata into display lines.
  *
- * Format: model | N tokens/s | Xs [| N tokens with diagnostics enabled]
+ * Format: model | N tokens/s | Xs [| N tokens with diagnostics enabled] [| finish time]
+ *
+ * The finish time is metadata.endedAt (the instant the duration stops) in the
+ * TUI machine's local zone, so it is right over /ssh. It is omitted while the
+ * message is live and for old messages that carry no endedAt.
  *
  * Throughput is an exponentially weighted average of this message's last ten
  * API rounds, supplied by the daemon. Each sample is output tokens / request
@@ -52,11 +108,12 @@ function formatTokenCount(tokens: number): string {
  * @param options.active  Keep elapsed time live even if endedAt is persisted.
  * @param options.width  Available pane columns, including the assistant indent.
  * @param options.diagnostics  Also display the accumulated output-token count.
+ * @param options.timeZone  IANA zone for the finish time (default: this machine's).
  * @returns Lines to append below the message content.
  */
 export function renderMetadata(
   metadata: MessageMetadata | null,
-  options: { active?: boolean; now?: number; width?: number; diagnostics?: boolean } = {},
+  options: { active?: boolean; now?: number; width?: number; diagnostics?: boolean; timeZone?: string } = {},
 ): string[] {
   if (!metadata) return [];
 
@@ -81,6 +138,11 @@ export function renderMetadata(
   parts.push(formatDuration(elapsed));
 
   if (options.diagnostics) parts.push(`${formatTokenCount(metadata.tokens)} tokens`);
+
+  if (!options.active) {
+    const finished = formatFinishTime(metadata.endedAt, now, options.timeZone);
+    if (finished) parts.push(finished);
+  }
 
   // Metadata is single-line chrome, not a wrapped content block. Include the
   // indent in its column budget so it cannot paint into a neighboring pane.
