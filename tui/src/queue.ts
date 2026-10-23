@@ -3,15 +3,17 @@ import { isFastMode } from "@exocortex/shared/messages";
  * Message queue prompt — modal overlay for queuing messages during streaming.
  *
  * When the user submits a message while the AI is still streaming,
- * a modal appears letting them choose when to deliver it:
- * - "message end": sent after the current stream ends
- * - "steer now": the daemon interrupts the response being generated (keeping
+ * a modal appears letting them choose when to deliver it. The first option is
+ * selected when it opens, so Enter alone takes it:
+ * - "steer now" (first): the daemon interrupts the response being generated (keeping
  *   what was already streamed), backgrounds a running shell command, and
  *   injects the message into the same turn (QueueTiming "next-turn")
- * - "next turn", instead of "steer now" for Claude Code, which takes the
- *   message into the same turn at its next tool boundary
+ * - "next turn" (first), instead of "steer now" for Claude Code, which takes
+ *   the message into the same turn at its next tool boundary
+ * - "message end" (second): sent after the current stream ends
  *
- * j/k and arrow keys toggle the selection. Enter confirms, Escape cancels.
+ * k/h/up/left pick the top option, j/l/down/right the bottom one, Tab toggles.
+ * Enter confirms, Escape cancels.
  *
  * The actual persistent queue and scheduler live in the daemon. The TUI sends
  * queue commands and keeps only optimistic shadows for immediate display.
@@ -211,7 +213,7 @@ export function removeNewConversationQueuedMessage(state: RenderState, convId: s
 export function openQueuePrompt(state: RenderState, text: string): void {
   state.queuePrompt = {
     text,
-    selection: "message-end",
+    selection: "next-turn",
     images: state.pendingImages.length > 0 ? [...state.pendingImages] : undefined,
   };
 }
@@ -232,18 +234,18 @@ export function handleQueuePromptKey(key: KeyEvent, state: RenderState): QueueKe
   switch (key.type) {
     case "char":
       if (key.char === "h" || key.char === "k") {
-        qp.selection = "message-end";
-      } else if (key.char === "l" || key.char === "j") {
         qp.selection = "next-turn";
+      } else if (key.char === "l" || key.char === "j") {
+        qp.selection = "message-end";
       }
       return { type: "handled" };
     case "left":
     case "up":
-      qp.selection = "message-end";
+      qp.selection = "next-turn";
       return { type: "handled" };
     case "right":
     case "down":
-      qp.selection = "next-turn";
+      qp.selection = "message-end";
       return { type: "handled" };
     case "tab":
       qp.selection = qp.selection === "message-end" ? "next-turn" : "message-end";

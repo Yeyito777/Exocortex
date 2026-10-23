@@ -154,8 +154,8 @@ export function renderQueuePromptOverlay(
 
   // Box content lines (plain text; the box cuts any still too wide with "…")
   const titleLine = termWidth(QUEUE_PROMPT_TITLE) <= maxInnerWidth ? QUEUE_PROMPT_TITLE : QUEUE_PROMPT_SHORT_TITLE;
-  const optLine1 = `${qp.selection === "message-end" ? "▸ " : "  "}message end`;
-  const optLine2 = `${qp.selection === "next-turn" ? "▸ " : "  "}${steersInstantly ? "steer now" : "next turn"}`;
+  const optLine1 = `${qp.selection === "next-turn" ? "▸ " : "  "}${steersInstantly ? "steer now" : "next turn"}`;
+  const optLine2 = `${qp.selection === "message-end" ? "▸ " : "  "}message end`;
   const rawLines = [titleLine, ...msgLines, ...imageBadges, "", optLine1, optLine2];
   const innerWidth = Math.min(
     Math.max(...rawLines.map((line) => termWidth(line))) + 4,
@@ -163,8 +163,8 @@ export function renderQueuePromptOverlay(
   );
 
   // Indices of the two option lines (always the last two)
-  const opt1Idx = rawLines.length - 2; // "message end"
-  const opt2Idx = rawLines.length - 1; // "steer now" / "next turn"
+  const opt1Idx = rawLines.length - 2; // "steer now" / "next turn"
+  const opt2Idx = rawLines.length - 1; // "message end"
 
   // Build styled lines
   const styledLines: BoxOverlayLine[] = rawLines.map((line, i) => {
@@ -174,8 +174,8 @@ export function renderQueuePromptOverlay(
 
     if (i === opt1Idx || i === opt2Idx) {
       // Options
-      const isSelected = (i === opt1Idx && qp.selection === "message-end") ||
-                         (i === opt2Idx && qp.selection === "next-turn");
+      const isSelected = (i === opt1Idx && qp.selection === "next-turn") ||
+                         (i === opt2Idx && qp.selection === "message-end");
       if (isSelected) {
         bg = theme.sidebarSelBg;
         fg = theme.accent;
