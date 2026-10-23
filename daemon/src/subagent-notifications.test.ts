@@ -41,6 +41,16 @@ describe("durable subagent notifications", () => {
     expect(text).toContain("shared/src/protocol.ts");
     expect(text).not.toContain("action=read");
   });
+  test("completed and failed notices end with the exo message follow-up line", () => {
+    const parentId = conversation("followup-parent");
+    const childId = conversation("followup-child");
+    const record = beginPendingSubagentNotification({ convId: parentId }, childId, "task", 42, 0);
+    const line = `Follow up: exo message {conversation: "${childId}", text}`;
+    const ok = buildSubagentNotificationText(record, { ok: true, blocks: [{ type: "text", text: "done" }] });
+    const failed = buildSubagentNotificationText(record, { ok: false, error: "boom", blocks: [] });
+    expect(ok.split("\n").at(-1)).toBe(line);
+    expect(failed.split("\n").at(-1)).toBe(line);
+  });
   test("persists the parent target before the child runs and reloads it", () => {
     const parentConvId = conversation("parent");
     const childConvId = conversation("child");
