@@ -1896,8 +1896,11 @@ export function render(state: RenderState): boolean {
       chatCol,
       chatW,
     ),
+    // Rows beside the Tasks panel are not scrolled: the panel stays put and
+    // the history next to it reflows. Keeping them out of the band lets a
+    // terminal that animates region scrolls (st) glide only rows that moved.
     scrollRegion: canScrollMessageRegion
-      ? { start: messageAreaStart, end: messageAreaStart + messageAreaHeight - 1 }
+      ? { start: messageAreaStart + panelFlowHeight, end: messageAreaStart + messageAreaHeight - 1 }
       : null,
     viewStart,
     graphics,

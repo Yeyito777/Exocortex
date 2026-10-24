@@ -46,8 +46,11 @@ without it. After the scroll, rows whose history moved intact get only their
 sidebar segment drawn again (about 120 bytes a row in a truecolor theme, skipped where the
 sidebar row is the same), all in the same synchronized frame, so the terminal
 never shows a displaced sidebar. This works on every terminal, unlike margins.
-The Tasks panel is part of the pane: rows beside it reflow, so they simply do
-not match and are drawn in full.
+The Tasks panel stays out of the scrolled band: the band starts below the
+panel and the row under it (the rows beside it reflow and are drawn in full).
+A terminal that animates region scrolls therefore glides only rows that really
+moved; with the panel inside the band, st glided the panel along with the
+history and it tore.
 
 Floating overlays (autocomplete, search bar, queue and edit prompts, BTW,
 image viewer, accounts screen, `/instructions`, the sidebar's conversation
