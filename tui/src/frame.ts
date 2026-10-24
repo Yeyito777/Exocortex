@@ -197,6 +197,7 @@ function scrolledRowUpdate(
  * when it moved up (viewport toward newer history), negative when it moved down
  * (scrolling back), 0 when terminal scrolling would not save enough redraws.
  * `same(prevIndex, nextIndex)` says whether two rows count as the same content.
+ * The move must equal the change of the first visible history line.
  */
 function detectRegionScroll(
   prevFrame: RenderFrame,
@@ -236,6 +237,57 @@ function detectRegionScroll(
   return bestShift * direction;
 }
 
+/**
+ * How far the message region's content moved, found from the rows themselves:
+ * the shift that explains the most rows that changed. Used when the
+ * viewport's own move does not explain the frame: the first visible line's
+ * index also jumps when older history is prepended (pages loaded over /ssh)
+ * or more of it is laid out, while the content on screen moved by just the
+ * scroll step. Sign as above.
+ */
+function detectContentScroll(
+  prevFrame: RenderFrame,
+  nextFrame: RenderFrame,
+  same: (prevIndex: number, nextIndex: number) => boolean,
+): number {
+  if (!sameScrollRegion(prevFrame.scrollRegion, nextFrame.scrollRegion)) return 0;
+  const region = nextFrame.scrollRegion;
+  if (!region) return 0;
+  const height = region.end - region.start + 1;
+  if (height < 4) return 0;
+
+  // Unchanged rows (blank lines, a still sidebar-only row) say nothing.
+  const first = region.start - 1;
+  const last = region.end - 1;
+  const changed: number[] = [];
+  for (let row = first; row <= last; row++) if (!same(row, row)) changed.push(row);
+  if (changed.length < 3) return 0;
+
+  const hint = nextFrame.viewStart - prevFrame.viewStart;
+  let best = 0;
+  let bestMatches = 0;
+  for (let distance = 1; distance <= height - 3; distance++) {
+    for (const direction of [1, -1]) {
+      const shift = distance * direction;
+      let comparable = 0;
+      let matches = 0;
+      for (const row of changed) {
+        const source = row + shift;
+        if (source < first || source > last) continue;
+        comparable++;
+        if (same(source, row)) matches++;
+      }
+      if (matches < Math.max(3, Math.floor(comparable * 0.6))) continue;
+      // Most rows explained wins; on a tie the viewport's own move, else the shorter one.
+      if (matches > bestMatches || (matches === bestMatches && shift === hint)) {
+        best = shift;
+        bestMatches = matches;
+      }
+    }
+  }
+  return best;
+}
+
 /** Flush only the rows/cursor state that changed since the previous frame. */
 export function flushFrame(owner: object, nextFrame: RenderFrame): void {
   const prevFrame = lastRenderedFrames.get(owner);
@@ -243,13 +295,14 @@ export function flushFrame(owner: object, nextFrame: RenderFrame): void {
   const out: string[] = [];
   const rowCount = Math.max(prevFrame?.rows.length ?? 0, nextFrame.rows.length);
   const regions = scrollRegionsEnabled();
-  const scrollShift = !prevFrame ? 0 : detectRegionScroll(prevFrame, next, regions
-    // Compare without the sidebar, which stays put while the content moves.
-    ? (prevIndex, nextIndex) => {
-      const key = contentKey(next, nextIndex);
-      return key !== undefined && key === contentKey(prevFrame, prevIndex);
-    }
-    : (prevIndex, nextIndex) => sameRowContent(prevFrame.rows[prevIndex], next.rows[nextIndex]));
+  // Compare without the sidebar, which stays put while the content moves.
+  const sameContent = (prevIndex: number, nextIndex: number) => {
+    const key = contentKey(next, nextIndex);
+    return key !== undefined && key === contentKey(prevFrame!, prevIndex);
+  };
+  const scrollShift = !prevFrame ? 0 : regions
+    ? detectRegionScroll(prevFrame, next, sameContent) || detectContentScroll(prevFrame, next, sameContent)
+    : detectRegionScroll(prevFrame, next, (prevIndex, nextIndex) => sameRowContent(prevFrame.rows[prevIndex], next.rows[nextIndex]));
   const scrollRegion = scrollShift !== 0 ? nextFrame.scrollRegion : null;
   let hasDrawingUpdates = false;
 

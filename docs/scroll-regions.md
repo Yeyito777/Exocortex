@@ -16,15 +16,20 @@ TUI:
 ```
 
 Off restores the earlier behaviour byte for byte: region scrolls only while the
-history spans the full width with no images on screen, done with LF/RI.
+history spans the full width with no images or overlays on screen, done with
+LF/RI.
 
 ## How a frame is flushed
 
-`tui/src/frame.ts` keeps the previous frame's row payloads. When the message
-area's region is unchanged and its first visible history line moved by at most
-the pane height minus 3 rows, it compares the new rows with the old rows
-shifted by that amount. If at least 60% match, the frame is, inside one
-synchronized update (mode 2026):
+`tui/src/frame.ts` keeps the previous frame's row payloads. When the scrolled
+band is unchanged, it looks for how far the content moved (at most the band
+height minus 3 rows): first by how far the first visible history line moved,
+then, if that explains nothing, by the rows themselves (the shift that explains
+at least 60% of the rows that changed). The second check matters when the
+line's index jumps while the content moves by one step: older history pages
+arriving over `/ssh`, or more history laid out above the view. Before it,
+every page arrival was a full repaint, including the last one at the top. When
+a shift is found, the frame is, inside one synchronized update (mode 2026):
 
 1. `CSI top;bottom r` (DECSTBM for the message rows), `CSI n S` or `CSI n T`
    (SU/SD), `CSI r`. The Linux console has no SU/SD, so with `TERM=linux` the
@@ -46,15 +51,16 @@ without it. After the scroll, rows whose history moved intact get only their
 sidebar segment drawn again (about 120 bytes a row in a truecolor theme, skipped where the
 sidebar row is the same), all in the same synchronized frame, so the terminal
 never shows a displaced sidebar. This works on every terminal, unlike margins.
-The Tasks panel stays out of the scrolled band: the band starts below the
-panel and the row under it (the rows beside it reflow and are drawn in full).
-A terminal that animates region scrolls therefore glides only rows that really
-moved; with the panel inside the band, st glided the panel along with the
-history and it tore.
+### Floating elements
 
-Floating overlays (autocomplete, search bar, queue and edit prompts, BTW,
-image viewer, accounts screen, `/instructions`, the sidebar's conversation
-menu) keep the plain row diff while open.
+The scrolled band is the longest run of message rows that no floating element
+touches: the Tasks panel and the row under it (the rows beside it reflow),
+autocomplete, the queue and edit prompts, the sidebar's conversation menu, the
+image viewer, the accounts screen and `/instructions`. Rows beside one are drawn
+in place. A terminal that animates region scrolls therefore glides only rows
+that really moved; with the Tasks panel inside the band, st glided the panel
+along with the history and it tore. The search bar and BTW panel sit below the
+message area and do not limit the band.
 
 ### Images
 

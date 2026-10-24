@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { render } from "./render";
+import { freeMessageBand, render } from "./render";
 import { createInitialState, type RenderState } from "./state";
 import { flushFrame, invalidateFrame, resolveScrollRegionsSetting, setScrollRegionsEnabled } from "./frame";
 import { configureInlineImages, inlineImagesInternalsForTest, setInlineImageMode } from "./inlineimages";
@@ -194,6 +194,49 @@ describe("message-area region scrolls", () => {
       expect(screen.plainRows()).toEqual(fullRepaint(state).plainRows());
     }
     expect(scrolled).toBeGreaterThan(0);
+  });
+
+  test("content that moved is region-scrolled even when the first visible line's index jumped", () => {
+    // Over /ssh older pages arrive while scrolling up: the first visible
+    // line's index jumps by the prepended lines (and by rows laid out above),
+    // while the content on screen moved by the scroll step.
+    const owner = {};
+    const rows = 20;
+    const frame = (offset: number, viewStart: number) => ({
+      rows: Array.from({ length: rows }, (_, i) => `\x1b[${i + 1};1H\x1b[2Kline ${i + offset}`),
+      cursor: "",
+      scrollRegion: { start: 3, end: 18 },
+      viewStart,
+    });
+    const flushed = (next: ReturnType<typeof frame>) => {
+      let out = "";
+      const write = process.stdout.write.bind(process.stdout);
+      process.stdout.write = ((chunk: string) => { out += chunk; return true; }) as typeof process.stdout.write;
+      try { flushFrame(owner, next); } finally { process.stdout.write = write as typeof process.stdout.write; }
+      return out;
+    };
+    flushed(frame(100, 500));
+    // Scrolled back 4 rows; the index moved by 700 (a page was prepended).
+    expect(flushed(frame(96, 1196))).toContain("\x1b[3;18r\x1b[4T\x1b[r");
+    // Forward 3 rows while the index moved the other way.
+    expect(flushed(frame(99, 1100))).toContain("\x1b[3;18r\x1b[3S\x1b[r");
+    // Nothing on screen moved: no scroll, nothing redrawn.
+    expect(flushed(frame(99, 400))).toBe("");
+    // Different content altogether (another conversation): repainted, not scrolled.
+    const other = frame(0, 1100);
+    other.rows = other.rows.map((row, i) => `${row} other ${i * 7}`);
+    expect(flushed(other)).not.toMatch(/\x1b\[\d+;\d+r/);
+    invalidateFrame(owner);
+  });
+
+  test("the band is the longest run of rows no floating element touches", () => {
+    const rect = (top: number, bottom: number) => ({ top, bottom, left: 30, right: 60 });
+    expect(freeMessageBand(3, 40, [])).toEqual({ start: 3, end: 40 });
+    expect(freeMessageBand(3, 40, [rect(3, 8)])).toEqual({ start: 9, end: 40 });
+    expect(freeMessageBand(3, 40, [rect(35, 40)])).toEqual({ start: 3, end: 34 });
+    expect(freeMessageBand(3, 40, [rect(3, 8), rect(20, 22)])).toEqual({ start: 23, end: 40 });
+    expect(freeMessageBand(3, 9, [rect(5, 7)])).toBeNull();
+    expect(freeMessageBand(3, 40, [rect(1, 50)])).toBeNull();
   });
 
   test("jumps of a page or more repaint the region without scrolling it", () => {
