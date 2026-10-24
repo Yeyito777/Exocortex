@@ -67,6 +67,7 @@ import {
   clearLine,
   createFrameRows,
   flushFrame,
+  type ScrollRegion,
   moveTo,
   scrollRegionsEnabled,
 } from "./frame";
@@ -870,6 +871,21 @@ function canonicalViewportRows(
  * from the top to the card's height. Unlike the old fixed-point loop, wrapping
  * beside the card can never move the full-width tail or trigger another pass.
  */
+/** The longest run of rows in [start, end] that no rectangle touches (null below 4 rows). */
+export function freeMessageBand(start: number, end: number, floats: readonly ScreenRect[]): ScrollRegion | null {
+  let best: ScrollRegion | null = null;
+  let runStart = start;
+  for (let row = start; row <= end + 1; row++) {
+    const covered = row > end || floats.some(rect => rect.top <= row && row <= rect.bottom);
+    if (!covered) continue;
+    if (row - runStart >= 4 && (!best || row - runStart > best.end - best.start + 1)) {
+      best = { start: runStart, end: row - 1 };
+    }
+    runStart = row + 1;
+  }
+  return best;
+}
+
 function composeFloatingHistoryViewport(
   allLines: string[],
   lineAnchors: BuildMessageLinesResult["lineAnchors"],
@@ -1865,8 +1881,8 @@ export function render(state: RenderState): boolean {
     return syncHistoryImages(state, historyImagePlacements);
   };
 
-  // Floating overlays sit still while the history under them moves; leave
-  // those frames to the plain row diff.
+  // Floating elements sit still while the history under them moves.
+  // Legacy: any overlay leaves the frame to the plain row diff.
   const overlaysOpen = !!state.autocomplete
     || !!state.search?.barOpen
     || !!state.queuePrompt
@@ -1875,12 +1891,25 @@ export function render(state: RenderState): boolean {
     || !!state.imageModal
     || !!state.accountsScreen
     || !!state.instructionsModal;
-  const canScrollMessageRegion = messageAreaHeight > 0 && !overlaysOpen && (scrollRegionsEnabled()
-    // The sidebar and task panel are repainted beside the scrolled rows, and
-    // images are placed again after the scroll.
-    ? !sidebarMenuOverlay
-    // Legacy: full-width history only, and no images.
-    : !sidebarOpen && !taskPanel && !hadHistoryImages && historyImagePlacements.length === 0);
+  const legacyScrollRegion = messageAreaHeight > 0 && !overlaysOpen
+    && !sidebarOpen && !taskPanel && !hadHistoryImages && historyImagePlacements.length === 0
+    ? { start: messageAreaStart, end: messageAreaStart + messageAreaHeight - 1 }
+    : null;
+  // Region scrolls: the band is the longest run of message rows no floating
+  // element touches. Rows beside one (the Tasks panel and the row it reflows,
+  // autocomplete, menus, modals) are drawn in place, so a terminal that
+  // animates region scrolls glides only rows that really moved. The sidebar
+  // is repainted beside the scrolled rows and images are placed again.
+  const floatRows: ScreenRect[] = [
+    panelFlowHeight > 0
+      ? { top: messageAreaStart, bottom: messageAreaStart + panelFlowHeight - 1, left: chatCol, right: chatCol + chatW - 1 }
+      : null,
+    autocompleteRect, queuePromptOverlay?.rect, editMessageOverlay?.rect, sidebarMenuOverlay?.rect,
+    modal?.rect, accountsOverlay?.rect, instructionsOverlay?.rect,
+  ].filter((rect): rect is ScreenRect => !!rect);
+  const scrollRegion = scrollRegionsEnabled()
+    ? freeMessageBand(messageAreaStart, messageAreaStart + messageAreaHeight - 1, floatRows)
+    : legacyScrollRegion;
 
   flushFrame(state, {
     rows: ctx.frameRows,
@@ -1896,12 +1925,7 @@ export function render(state: RenderState): boolean {
       chatCol,
       chatW,
     ),
-    // Rows beside the Tasks panel are not scrolled: the panel stays put and
-    // the history next to it reflows. Keeping them out of the band lets a
-    // terminal that animates region scrolls (st) glide only rows that moved.
-    scrollRegion: canScrollMessageRegion
-      ? { start: messageAreaStart + panelFlowHeight, end: messageAreaStart + messageAreaHeight - 1 }
-      : null,
+    scrollRegion,
     viewStart,
     graphics,
   });
