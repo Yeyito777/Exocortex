@@ -177,11 +177,19 @@ describe("message-area region scrolls", () => {
     state.scrollOffset = 20;
     screen.feed(capture(state));
 
+    // The band starts below the panel and the row it reflows: a terminal
+    // that animates region scrolls must not move the panel with the history.
+    const panel = state.layout.taskPanelRect!;
     let scrolled = 0;
     for (const delta of [1, 2, -1, 3, -3, 1]) {
       state.scrollOffset += delta;
       const out = capture(state);
-      if (/\x1b\[3;\d+r/.test(out)) scrolled++;
+      const band = /\x1b\[(\d+);(\d+)r\x1b\[\d+[ST]/.exec(out);
+      if (band) {
+        scrolled++;
+        expect(Number(band[1])).toBe(panel.bottom + 2);
+        expect(Number(band[2])).toBe(region(state).end);
+      }
       screen.feed(out);
       expect(screen.plainRows()).toEqual(fullRepaint(state).plainRows());
     }
