@@ -152,6 +152,7 @@ function keepOptimisticConversations(sidebar: SidebarState, conversations: Conve
 
 export function updateConversationList(sidebar: SidebarState, conversations: ConversationSummary[], folders: FolderSummary[] = sidebar.folders): void {
   conversations = keepOptimisticConversations(sidebar, conversations);
+  sidebar.listLoaded = true;
   const previousSelectedItem = sidebar.selectedItem;
   const previousSelectedRow = selectedSidebarDisplayRow(sidebar);
   const focusTarget = isMovableSidebarItem(previousSelectedItem)
@@ -245,5 +246,8 @@ function resolveSelectedItem(sidebar: SidebarState): void {
     sidebar.selectedId = null;
     return;
   }
+  // A restored conversation can load before the list (no /ssh round trip
+  // between them); keep the saved cursor for the list to resolve.
+  if (!sidebar.listLoaded) return;
   focusSidebarItem(sidebar, firstVisibleSidebarItem(sidebar));
 }
