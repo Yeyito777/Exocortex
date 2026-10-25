@@ -53,10 +53,13 @@ snaps without any motion: re-layouts that keep the user's place (Ctrl+I /
 Ctrl+O, the sidebar or Tasks panel changing the pane's width, a resize, a turn
 finishing, rows re-wrapping), pinning while scrolled up, a jump to the bottom
 after sending, a different conversation, and frames that had to be repainted.
-Content that moves by itself glides only when it is output arriving at the
-bottom while following it: every row the region scroll moved arrived intact
-(the two rows above the newly exposed ones aside, for the previous message's
-footer). `tui/src/smoothscroll-relayout.test.ts` checks each case.
+Content that moves by itself glides only when the bottom grows or shrinks
+while following it (output arriving, the live Working block or its latest
+step changing height), both ways: every row the region scroll moved arrived
+intact (the two rows above the newly exposed ones aside, for the previous
+message's footer). Explicit re-layouts mark themselves (`markRelayout`:
+Ctrl+I / Ctrl+O, the sidebar, a resize, a history reload, frames anchored to
+a row) and snap even when what they change sits at the bottom. `tui/src/smoothscroll-relayout.test.ts` checks each case.
 
 Other terminals, and `tui.scrollRegions: false`, keep the behaviour described
 below. The rows beside the Tasks panel then stay out of the band.

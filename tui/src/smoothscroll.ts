@@ -105,6 +105,8 @@ export class SmoothScroller {
   private context: string | null = null;
   /** The user scrolled since the last layout (markScrollIntent). */
   private intent = false;
+  /** An explicit re-layout (markRelayout) is being laid out: nothing it moves glides. */
+  private relayout = false;
   /** Not yet sent: start over from `base` (`o`), then move by these. */
   private pendingReset = false;
   private pendingDelta = 0;
@@ -184,6 +186,7 @@ export class SmoothScroller {
     this.expectedShift = 0;
     this.pendingReset = this.terminalNonzero;
     this.pendingDelta = this.pendingEase = 0;
+    this.relayout = true;
   }
 
   /**
@@ -255,13 +258,15 @@ export class SmoothScroller {
       // Repainted, not scrolled: nothing on screen to glide from; ease on from here.
       this.restart(this.grid, time);
     } else if (regionShift !== this.expectedShift) {
-      // Content moved by itself. Only output appended at the bottom while
-      // following it (every row moved up intact) eases from where it was;
+      // Content moved by itself. Only what grows or shrinks at the bottom
+      // while following it (everything above moved intact: output arriving,
+      // the live Working block changing height) eases from where it was;
       // anything else (details toggled, a finished turn's footer, rows
       // re-wrapped) is a re-layout and snaps.
       const moved = regionShift - this.expectedShift;
-      if (intact && moved > 0 && this.target === 0) this.addTerm(moved, time);
+      if (intact && moved !== 0 && this.target === 0 && !this.relayout) this.addTerm(moved, time);
     }
+    this.relayout = false;
     this.expectedShift = 0;
     if (rects.length === 0 || Math.abs(this.offsetAt(time)) >= Math.max(1, this.height - 1)) {
       // Nothing to move, or further than the lines the terminal keeps.
@@ -319,6 +324,11 @@ export class SmoothScroller {
     this.intent = true;
   }
 
+  /** An explicit re-layout (details toggled, pane resized): the next frame snaps. */
+  relayoutNext(): void {
+    this.relayout = true;
+  }
+
   /** The terminal dropped its state (resize, screen switch): send it again. */
   terminalReset(): void {
     this.sentRects = "";
@@ -336,6 +346,15 @@ const scrollers = new WeakMap<object, SmoothScroller>();
  */
 export function markScrollIntent(owner: object): void {
   scrollers.get(owner)?.intend();
+}
+
+/**
+ * An explicit re-layout (Ctrl+I / Ctrl+O, the sidebar, a resize): whatever it
+ * moves snaps, even content at the bottom that would otherwise glide as
+ * output arriving or going while following it.
+ */
+export function markRelayout(owner: object): void {
+  scrollers.get(owner)?.relayoutNext();
 }
 
 /** Attach (or with null, detach) app-driven smooth scrolling to a render state. */
