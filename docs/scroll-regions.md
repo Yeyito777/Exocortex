@@ -42,7 +42,15 @@ on exit). `tui/src/smoothscroll.ts` then:
   clips images to the moving rectangles while they move), and crops them
   again with one more frame when the glide ends; st keeps the rows of images
   leaving through the top. At rest images are placed exactly as without
-  smooth scrolling;
+  smooth scrolling. On an st with image clip regions (it answers DECRQM
+  `CSI ? 2033 $ p` with 3) the conversation pane is declared as them
+  (`OSC 2032 ; k`, the same rectangles as the moving ones but over the whole
+  pane, sent again when the pane changes; cleared while the image viewer is
+  open): st then never draws a history image outside the pane, so an image
+  cut off by the pane's bottom stays placed whole, at rest too, and nothing
+  is cropped again when a glide ends (without clip regions that crop comes
+  after st's own glide has ended, so an image could show over the prompt
+  for a frame);
 - glides content that moved by itself only when it is output arriving at
   the bottom while following it (see below).
 

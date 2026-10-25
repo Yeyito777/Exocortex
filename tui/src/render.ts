@@ -1889,6 +1889,17 @@ export function render(state: RenderState): boolean {
     : null;
   if (instructionsOverlay) appendPositionedPayload(ctx, instructionsOverlay.payload);
   const hadHistoryImages = historyImagesPlaced(state);
+  // With st's image clip regions (mode 2033) the conversation pane is
+  // declared as them, like the moving rectangles: the history's columns left
+  // of the Tasks panel for the full height, and the panel's columns below
+  // it. History images never draw outside it. Not while the image viewer is
+  // open (its placement is anchored in the pane).
+  const imageClips = smooth?.imageClipSupported && messageAreaHeight > 0 && !modal
+    ? smoothScrollRects(
+      { start: messageAreaStart, end: messageAreaStart + messageAreaHeight - 1 },
+      chatCol, chatW, taskPanel ? chatCol + chatW - taskPanel.width : null, messageAreaStart + panelFlowHeight,
+    )
+    : [];
   // Display math may be forced to images on a terminal that failed detection.
   const kittyHistory = inlineImageMode() === "kitty";
   const collectedImages = kittyHistory || mathImagesActive()
@@ -1903,8 +1914,10 @@ export function render(state: RenderState): boolean {
       cursorLineIndex: historyFocused ? state.historyCursor.row : null,
       cursorCol: state.historyCursor.col,
       mathOnly: !kittyHistory,
-      // Only while gliding: at rest images are cropped exactly as without it.
-      extendBelow: smooth?.busy() ? messageAreaStart + messageAreaHeight - 1 : undefined,
+      // Only while gliding: at rest images are cropped exactly as without it,
+      // unless st clips them to the conversation pane (image clip regions):
+      // then they stay placed whole past it and slide in and out uncropped.
+      extendBelow: smooth?.busy() || imageClips.length > 0 ? messageAreaStart + messageAreaHeight - 1 : undefined,
     })
     : { placements: [], notices: [] };
   // Thumbnails without pixels yet say so on their first visible row.
@@ -1956,7 +1969,7 @@ export function render(state: RenderState): boolean {
     ? smoothScrollRects(scrollRegion, chatCol, chatW, taskPanel ? chatCol + chatW - taskPanel.width : null, messageAreaStart + panelFlowHeight)
     : [];
   flushFrame(state, {
-    afterScroll: smooth ? (regionShift, intact) => smooth.afterFlush(regionShift, smoothRects, intact) : undefined,
+    afterScroll: smooth ? (regionShift, intact) => smooth.afterFlush(regionShift, smoothRects, intact, imageClips) : undefined,
     rows: ctx.frameRows,
     pinned: ctx.pinnedRows,
     cursor: instructionsOverlay ? instructionsCursorPayload(instructionsOverlay) : buildCursorPayload(

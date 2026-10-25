@@ -46,6 +46,7 @@ import { invalidateFrame, scrollRegionsEnabled } from "./frame";
 import {
   SMOOTH_SCROLL_FRAME_MS, SMOOTH_SCROLL_OFF, SMOOTH_SCROLL_ON, SMOOTH_SCROLL_QUERY,
   SmoothScroller, parseSmoothScrollReport, setSmoothScroller, smoothScrollerFor,
+  IMAGE_CLIP_QUERY, parseImageClipReport,
 } from "./smoothscroll";
 import { enter_alt, leave_alt, hide_cursor, show_cursor, enable_bracketed_paste, disable_bracketed_paste, query_clipboard_paste_events, enable_clipboard_paste_events, disable_clipboard_paste_events, enable_kitty_kbd, disable_kitty_kbd, enable_mouse, disable_mouse, set_cursor_color, reset_cursor_color } from "./terminal";
 import { createInitialState, isStreaming, canInterrupt, clearPendingAI, clearStreamingTailMessages, focusPrompt, isActiveConversationLoading, modelSupportsImages, newConversationSelection, noConversationOpen, noteConversationOpenRequest, pushSystemMessage, resetDraftConversationState, resetHistoryPagination, resetNewConversationDefaults, resetToolOutputState } from "./state";
@@ -168,6 +169,8 @@ function startupProfileMark(event: string, details: Record<string, unknown> = {}
 startupProfileMark("module_ready");
 
 let running = true;
+/** st reported image clip regions (DECRQM ? 2033); applies to the smooth scroller once it exists. */
+let imageClipSupported = false;
 let daemon: DaemonClient;
 let renderTimer: ReturnType<typeof setTimeout> | null = null;
 let renderDueAt = 0;
@@ -2247,7 +2250,7 @@ function setupTerminal(): void {
   // scrolls on; after a suspend the known terminal is told again.
   const smoothScroller = smoothScrollerFor(state);
   smoothScroller?.terminalReset();
-  const smoothQuery = smoothScroller ? SMOOTH_SCROLL_ON : scrollRegionsEnabled() ? SMOOTH_SCROLL_QUERY : "";
+  const smoothQuery = smoothScroller ? SMOOTH_SCROLL_ON : scrollRegionsEnabled() ? SMOOTH_SCROLL_QUERY + IMAGE_CLIP_QUERY : "";
   process.stdout.write(enter_alt + hide_cursor + CELL_SIZE_QUERY + smoothQuery + enable_bracketed_paste + query_clipboard_paste_events + enable_clipboard_paste_events + enable_kitty_kbd + enable_mouse + cursorColorSeq);
   if (process.stdin.isTTY) process.stdin.setRawMode(true);
   process.stdin.resume();
@@ -2389,11 +2392,20 @@ async function main(): Promise<void> {
       if (ready !== null) processInput(ready);
     },
     sequence => {
+      const imageClip = parseImageClipReport(sequence);
+      if (imageClip !== null) {
+        imageClipSupported = imageClip;
+        smoothScrollerFor(state)?.useImageClip(imageClip);
+        scheduleRender();
+        return;
+      }
       const smoothSupported = parseSmoothScrollReport(sequence);
       if (smoothSupported !== null) {
         if (smoothSupported && !smoothScrollerFor(state)) {
           process.stdout.write(SMOOTH_SCROLL_ON);
-          setSmoothScroller(state, new SmoothScroller());
+          const smooth = new SmoothScroller();
+          smooth.useImageClip(imageClipSupported);
+          setSmoothScroller(state, smooth);
           invalidateFrame(state);
           renderImmediately();
         }

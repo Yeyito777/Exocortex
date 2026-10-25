@@ -41,6 +41,26 @@ export function rectsPayload(rects: readonly ScrollRect[]): string {
   return `${ESC}]2032;r${list}${ST}`;
 }
 
+/**
+ * st's image clip regions (DECRQM ? 2033, OSC 2032 ; k; ~/Config/st
+ * docs/app-smooth-scroll.md): an image anchored in a clip region never draws
+ * outside it, at rest or while gliding, so an image cut off by the pane's
+ * edge can stay placed whole past it.
+ */
+export const IMAGE_CLIP_QUERY = `${ESC}[?2033$p`;
+
+/** DECRQM reply for mode 2033: true when st clips images to clip regions, null if not a reply. */
+export function parseImageClipReport(sequence: string): boolean | null {
+  const match = /^\x1b\[\?2033;([0-4])\$y$/.exec(sequence);
+  if (!match) return null;
+  return match[1] === "1" || match[1] === "3";
+}
+
+export function imageClipPayload(rects: readonly ScrollRect[]): string {
+  const list = rects.map(rect => `;${rect.top},${rect.left},${rect.bottom},${rect.right}`).join("");
+  return `${ESC}]2032;k${list}${ST}`;
+}
+
 export function offsetPayload(thousandths: number): string {
   return `${ESC}]2032;o;${thousandths}${ST}`;
 }
@@ -102,6 +122,9 @@ export class SmoothScroller {
   private expectedShift = 0;
   private height = 0;
   private sentRects = "";
+  private sentClip = "";
+  /** st clips images to clip regions (mode 2033): images may stay placed past the pane. */
+  private imageClip = false;
   private context: string | null = null;
   /** The user scrolled since the last layout (markScrollIntent). */
   private intent = false;
@@ -252,7 +275,7 @@ export class SmoothScroller {
    * moved the content (up positive, 0 when it was repainted). Returns what to
    * send inside the same synchronized update (rectangles, motion).
    */
-  afterFlush(regionShift: number, rects: readonly ScrollRect[], intact = false): string {
+  afterFlush(regionShift: number, rects: readonly ScrollRect[], intact = false, imageClips: readonly ScrollRect[] = []): string {
     const time = this.now();
     if (this.expectedShift !== 0 && regionShift === 0) {
       // Repainted, not scrolled: nothing on screen to glide from; ease on from here.
@@ -280,6 +303,13 @@ export class SmoothScroller {
     if (rectKey !== this.sentRects) {
       out += rectKey;
       this.sentRects = rectKey;
+    }
+    if (this.imageClip) {
+      const clipKey = imageClipPayload(imageClips);
+      if (clipKey !== this.sentClip) {
+        out += clipKey;
+        this.sentClip = clipKey;
+      }
     }
     return out + this.takeMotion();
   }
@@ -329,9 +359,21 @@ export class SmoothScroller {
     this.relayout = true;
   }
 
+  /** st reported (true) image clip regions (mode 2033). */
+  useImageClip(supported: boolean): void {
+    this.imageClip = supported;
+    this.sentClip = "";
+  }
+
+  /** Images may be clipped to clip regions passed to afterFlush. */
+  get imageClipSupported(): boolean {
+    return this.imageClip;
+  }
+
   /** The terminal dropped its state (resize, screen switch): send it again. */
   terminalReset(): void {
     this.sentRects = "";
+    this.sentClip = "";
     this.terminalNonzero = false;
   }
 }
