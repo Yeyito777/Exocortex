@@ -10,7 +10,7 @@
 
 import { randomUUID } from "node:crypto";
 import { queryLocalUpdateStatus, UpdateStatusMonitor } from "./update-status";
-import { DaemonClient } from "./client";
+import { setWireTrace, DaemonClient } from "./client";
 import { parseInput, PasteBuffer, type KeyEvent, type MouseEvent } from "./input";
 import { TerminalClipboardClient, TerminalControlBuffer } from "./terminalclipboard";
 import { CELL_SIZE_QUERY, TerminalGraphicsDetector, parseCellSizeResponse } from "./terminalgraphics";
@@ -117,6 +117,9 @@ import {
   leaveConversationView,
   prepareConversationOpen,
 } from "./conversationscroll";
+import { writeFileSync } from "node:fs";
+import { spawnSshProxy } from "@exocortex/shared/ssh-transport";
+import { takeEarlySshProcess } from "./early-ssh";
 import { applyTuiLaunchOptions, parseTuiLaunchArgs, TUI_USAGE, type TuiLaunchOptions } from "./launchargs";
 import { reconnectDelayMs } from "./reconnect-delay";
 import { msUntilLocalMidnight } from "./metadata";
@@ -147,12 +150,13 @@ let pendingStartingState: { focusedConversationId: string | null } | null = save
   ? { focusedConversationId: state.convId }
   : null;
 let startingConversationLoad: { convId: string; reqId: string } | null = null;
+/** A route switch's saved conversation, requested in the SSH probe's first flight. */
+let sshProbeConversationLoad: { alias: string; convId: string; reqId: string } | null = null;
 const STARTUP_PROFILE = process.env.EXOCORTEX_PROFILE_STARTUP === "1" || launchOptions.profileStartup;
 const STARTUP_INPUT_SANITIZE_MS = 1000;
 
 type StartupProfileMark = { event: string; elapsedMs: number } & Record<string, unknown>;
 const startupProfileMarks: StartupProfileMark[] = [];
-let startupProfileConversationsLoaded = false;
 let startupProfileReported = false;
 let startupProfileConversationCount = 0;
 
@@ -249,20 +253,74 @@ function shouldIgnoreEventAfterLocalPreContentInterrupt(event: Event): boolean {
 
 // ── Render scheduling ───────────────────────────────────────────────
 
+/**
+ * Startup profiling: the first presented frame showing each part of the first
+ * screen, on the route the TUI was launched for (--ssh: the remote). Reports
+ * and exits once all of them are on screen, or after the profile timeout.
+ */
+const STARTUP_PROFILE_TIMEOUT_MS = Number(process.env.EXOCORTEX_PROFILE_STARTUP_TIMEOUT_MS ?? 20_000);
+const startupProfileConvId = routeViews.forRoute(daemonRouteKey(launchOptions.sshAlias)).focusedConversationId;
+const startupProfileShown = new Map<string, number>();
+const startupProfileWire: Record<string, unknown>[] = [];
+let startupProfileRouteData = { tools: false, sidebar: false, conversation: false };
+let startupProfileUsageProviders = new Set<string>();
+
+function startupProfileComponents(): Record<string, boolean> {
+  const onTargetRoute = (daemon?.remoteAlias ?? null) === launchOptions.sshAlias
+    && (!launchOptions.sshAlias || state.sshRemote?.connected === true);
+  const update = state.sidebar.updateStatus;
+  return {
+    tools: onTargetRoute && startupProfileRouteData.tools,
+    sidebar: onTargetRoute && startupProfileRouteData.sidebar,
+    conversation: !startupProfileConvId || (onTargetRoute && startupProfileRouteData.conversation
+      && state.convId === startupProfileConvId && !isActiveConversationLoading(state) && state.messages.length > 0),
+    usage: onTargetRoute && startupProfileUsageProviders.size > 0,
+    accounts: onTargetRoute && state.accountsSnapshotCache !== null,
+    updateLocal: update !== undefined && update.local !== "checking",
+    updateRemote: !launchOptions.sshAlias || (update?.remote != null && update.remote !== "checking"),
+  };
+}
+
+function startupProfileEvent(event: Event): void {
+  if (!STARTUP_PROFILE) return;
+  if (event.type === "ssh_status" && event.state === "connected" && event.switched) {
+    startupProfileRouteData = { tools: false, sidebar: false, conversation: false };
+    startupProfileUsageProviders = new Set();
+  }
+  if (event.type === "tools_available") startupProfileRouteData.tools = true;
+  if (event.type === "conversations_list") startupProfileRouteData.sidebar = true;
+  if (event.type === "conversation_loaded" && event.convId === state.convId) startupProfileRouteData.conversation = true;
+  if (event.type === "usage_update" && event.usage) startupProfileUsageProviders.add(event.provider);
+}
+
 function maybeReportStartupProfile(finalRenderMs: number): void {
-  if (!STARTUP_PROFILE || !startupProfileConversationsLoaded || startupProfileReported) return;
+  if (!STARTUP_PROFILE || startupProfileReported) return;
+  const now = Math.round(performance.now() * 10) / 10;
+  const components = startupProfileComponents();
+  for (const [name, shown] of Object.entries(components)) {
+    if (shown && !startupProfileShown.has(name)) startupProfileShown.set(name, now);
+  }
+  if (Object.values(components).every(Boolean)) reportStartupProfile("complete", finalRenderMs);
+}
+
+function reportStartupProfile(outcome: "complete" | "timeout", finalRenderMs = 0): void {
+  if (startupProfileReported) return;
   startupProfileReported = true;
-  startupProfileMarks.push({
-    event: "ready_render_completed",
-    elapsedMs: Math.round(performance.now() * 1000) / 1000,
-    renderMs: Math.round(finalRenderMs * 1000) / 1000,
-  });
-  console.error(`[startup-profile] ${JSON.stringify({
+  const report = JSON.stringify({
     process: "tui",
-    readyMs: Math.round(performance.now() * 1000) / 1000,
+    outcome,
+    route: launchOptions.sshAlias ? `ssh:${launchOptions.sshAlias}` : "local",
+    readyMs: Math.round(performance.now() * 10) / 10,
+    lastRenderMs: Math.round(finalRenderMs * 10) / 10,
     conversationCount: startupProfileConversationCount,
+    firstFrameWith: Object.fromEntries(startupProfileShown),
+    missing: Object.entries(startupProfileComponents()).filter(([, shown]) => !shown).map(([name]) => name),
     marks: startupProfileMarks,
-  })}`);
+    wire: startupProfileWire,
+  });
+  const out = process.env.EXOCORTEX_PROFILE_STARTUP_OUT;
+  if (out) writeFileSync(out, report + "\n");
+  else console.error(`[startup-profile] ${report}`);
   cleanup();
 }
 
@@ -365,6 +423,7 @@ function performRender(): number {
   requestVisibleToolOutputs(state, daemon);
   scheduleSmoothScrollFrame();
   resetStreamTick();
+  if (STARTUP_PROFILE && !startupProfileReported) startupProfileMark("frame", { renderMs: Math.round(renderMs * 10) / 10 });
   maybeReportStartupProfile(renderMs);
   scheduleDeferredHistoryRenderWork();
   return renderMs;
@@ -568,6 +627,19 @@ function onDaemonEvent(event: Event): void {
   // already-in-flight old-route events until a fresh local socket reconnects.
   if (daemonRouteSwitchPending && event.type !== "ssh_status") return;
   if (remoteFileLinks?.handleEvent(event)) return;
+  if (event.type === "ssh_status") {
+    // A failed or cancelled switch: the probe's first-flight load was never
+    // adopted, and the TUI stays where it was.
+    const switchAbandoned = event.state === "failed" || (event.state === "connected" && !event.switched && !event.silent);
+    if (switchAbandoned) sshProbeConversationLoad = null;
+    if (localBootstrapDeferred && event.state === "connected" && event.switched) localBootstrapDeferred = false;
+    // The --ssh launch didn't reach its host: the local daemon needs its own bootstrap.
+    if (localBootstrapDeferred && switchAbandoned && !daemon.remoteAlias) requestLocalBootstrap();
+  }
+  if (event.type === "update_status") {
+    updateMonitor?.pushed(event.status);
+    return;
+  }
   if (event.type === "path_directory_entries" || event.type === "error") {
     const pathResult = remotePathCompletion?.handleEvent(event, state);
     if (pathResult?.consumed) {
@@ -654,6 +726,7 @@ function onDaemonEvent(event: Event): void {
 
   invalidateHistoryRenderCache(state);
   handleEvent(event, state, daemon);
+  startupProfileEvent(event);
   if (flushEditResendAfterEvent) flushDeferredEditResend();
   maybePrewarmOpenAI();
   let paintFirstText = false;
@@ -695,7 +768,6 @@ function onDaemonEvent(event: Event): void {
 
   if (event.type === "conversations_list") {
     startupProfileConversationCount = event.conversations.length;
-    startupProfileConversationsLoaded = true;
     startupProfileMark("conversations_list_handled", { conversationCount: state.sidebar.conversations.length });
     if (pendingStartingState) {
       const startingState = pendingStartingState;
@@ -2077,18 +2149,26 @@ function restoreDaemonSessionAfterReconnect(
   if (state.accountsScreen) daemon.accounts({ watch: true, convId: state.convId });
   else prefetchAccounts(state, daemon, { force: true });
   updateMonitor?.setRoute(daemon.remoteAlias);
-  if (!conversationWillReload && state.convId && !loadStartingConversation()) loadConversationWindow(state.convId);
+  if (!conversationWillReload && state.convId && !loadStartingConversation(bootstrapAlreadyRequested)) loadConversationWindow(state.convId);
 }
 
 /**
  * Open the restored conversation before the list confirms it still exists.
  * One deleted meanwhile fails quietly; the list then clears it.
  */
-function loadStartingConversation(): boolean {
+function loadStartingConversation(probeAdopted = false): boolean {
   const convId = pendingStartingState?.focusedConversationId ?? null;
+  const probeLoad = sshProbeConversationLoad;
+  sshProbeConversationLoad = null;
   if (!convId || state.convId !== convId) return false;
   prepareConversationOpen(state, convId);
-  startingConversationLoad = { convId, reqId: loadConversationWindow(convId) };
+  if (probeAdopted && probeLoad?.convId === convId && probeLoad.alias === daemon.remoteAlias) {
+    // The SSH probe already asked; its answer is released right after this.
+    noteConversationOpenRequest(state, convId, probeLoad.reqId);
+    startingConversationLoad = { convId, reqId: probeLoad.reqId };
+  } else {
+    startingConversationLoad = { convId, reqId: loadConversationWindow(convId) };
+  }
   return true;
 }
 
@@ -2210,10 +2290,31 @@ function restoreTerminal(): void {
 // ── Main ────────────────────────────────────────────────────────────
 
 let updateMonitor: UpdateStatusMonitor | null = null;
+/** --ssh launch: the local route's bootstrap waits for the SSH switch's outcome. */
+let localBootstrapDeferred = false;
+
+function requestLocalBootstrap(): void {
+  localBootstrapDeferred = false;
+  // Speculatively request the saved conversation before the much larger
+  // sidebar bootstrap. The list remains authoritative, but the common case no
+  // longer waits an extra network round trip (or for the full list payload).
+  loadStartingConversation();
+  // Request initial usage and sidebar data from daemon.
+  daemon.ping();
+  startupProfileMark("ping_sent");
+  // So the Accounts screen opens filled in, also the first time.
+  prefetchAccounts(state, daemon, { force: true });
+}
 
 async function main(): Promise<void> {
   startupProfileMark("main_begin");
-  daemon = new DaemonClient(onDaemonEvent);
+  if (STARTUP_PROFILE) {
+    setWireTrace(entry => startupProfileWire.push({ t: Math.round(performance.now() * 10) / 10, ...entry }));
+    setTimeout(() => reportStartupProfile("timeout"), STARTUP_PROFILE_TIMEOUT_MS).unref?.();
+  }
+  daemon = new DaemonClient(onDaemonEvent, undefined, undefined, {
+    spawnSshProcess: alias => takeEarlySshProcess(alias) ?? spawnSshProxy(alias),
+  });
   remotePathCompletion = new RemotePathCompletionController(
     (directory, prefix) => daemon.requestPathDirectory(directory, prefix),
   );
@@ -2251,16 +2352,11 @@ async function main(): Promise<void> {
     scheduleRender();
   }, { initialLocalProbe: Boolean(launchOptions.sshAlias) });
 
-  // Speculatively request the saved conversation before the much larger
-  // sidebar bootstrap. The list remains authoritative, but the common case no
-  // longer waits an extra network round trip (or for the full list payload).
-  loadStartingConversation();
-
-  // Request initial usage and sidebar data from daemon.
-  daemon.ping();
-  startupProfileMark("ping_sent");
-  // So the Accounts screen opens filled in, also the first time.
-  prefetchAccounts(state, daemon, { force: true });
+  // With --ssh, the local daemon's view would only sit under the SSH progress
+  // view until the remote replaces it: it is requested only if the switch
+  // fails or is cancelled.
+  if (launchOptions.sshAlias) localBootstrapDeferred = true;
+  else requestLocalBootstrap();
 
   setupTerminal();
 
@@ -2371,6 +2467,19 @@ async function main(): Promise<void> {
     // the terminal may have just revealed stale cells from the previous window
     // geometry, so repaint the invalidated full frame immediately.
     renderImmediately();
+  });
+
+  // A route switch's saved conversation rides the SSH probe's first flight,
+  // ahead of its bootstrap, instead of a round trip after it behind the sidebar.
+  daemon.setSshProbeRequests(alias => {
+    sshProbeConversationLoad = null;
+    // A reconnect to the same host reloads what is open the usual way.
+    if (alias === daemon.remoteAlias) return [];
+    const convId = routeViews.forRoute(daemonRouteKey(alias)).focusedConversationId;
+    if (!convId) return [];
+    const command = daemon.conversationLoadCommand(convId, openingHistoryTurns(state.rows), openingViewport(state));
+    sshProbeConversationLoad = { alias, convId, reqId: command.reqId! };
+    return [command];
   });
 
   // Match entering `/ssh <alias>` once startup is complete. Going through the

@@ -37,6 +37,7 @@ import { scheduleActiveGoalTimeLimits } from "./goal-time-limit";
 import { finishRequestedRestartBoot, prepareRequestedRestartBoot, runRequestedRestart } from "./requested-restart";
 import { startChronoService, stopChronoService, listChronoSchedules, resumeDeferredChronoWaits } from "./chrono-service";
 import { startWatchdog, stopWatchdog } from "./watchdog";
+import { onDaemonUpdateStatusChange, startDaemonUpdateStatus, stopDaemonUpdateStatus } from "./update-status";
 import { connectivity } from "./connectivity";
 import { initExternalTools, stopExternalToolsAsync, getExternalToolCount, getSupervisedDaemonCount, getExternalToolStyles } from "./external-tools";
 import { recoverPendingTitles } from "./titlegen";
@@ -191,6 +192,7 @@ async function startDaemon(): Promise<void> {
       // looking like an unrelated transport failure in the TUI.
       server.broadcast({ type: "daemon_shutdown", mode: shutdownMode });
       stopWatchdog();
+      stopDaemonUpdateStatus();
       connectivity.stop();
       stopExternalNotificationSoftWakeService();
       stopChronoService();
@@ -382,6 +384,9 @@ async function startDaemon(): Promise<void> {
 
   // Start stale stream watchdog. Durable scheduling is owned by Chrono.
   startWatchdog();
+  // Keep the update status ready for connecting clients and push its changes.
+  onDaemonUpdateStatusChange(status => server.broadcastUpdateStatus(status));
+  startDaemonUpdateStatus();
 
   // Check auth status
   const authSummary = getProviders()

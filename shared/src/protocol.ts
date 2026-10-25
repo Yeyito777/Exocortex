@@ -24,6 +24,12 @@ export type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMeta
 
 // ── Commands (client → daemon) ──────────────────────────────────────
 
+/**
+ * The connection bootstrap: answered with `pong`, then tools_available,
+ * user_macros, usage_update per provider, update_status (with the
+ * update-status-push capability, once known) and the large conversations_list,
+ * queue_updated and connectivity_status. See docs/daemon-ipc.md.
+ */
 export interface PingCommand {
   type: "ping";
   reqId?: string;
@@ -279,7 +285,7 @@ export interface PrewarmConversationCommand {
  * sidebar-digest-sync: the client can rebuild a conversations_list that
  * carries `sidebarBuckets` (see ClientCapabilitiesCommand.sidebarDigest).
  */
-export type ClientCapability = "targeted-unwind" | "sidebar-reorder-delta" | "sidebar-state-patch" | "history-block-pagination" | "token-stats-on-demand" | "sidebar-digest-sync";
+export type ClientCapability = "targeted-unwind" | "sidebar-reorder-delta" | "sidebar-state-patch" | "history-block-pagination" | "token-stats-on-demand" | "sidebar-digest-sync" | "update-status-push";
 
 /** Answered with token_stats carrying the same reqId. Older daemons answer with an Unknown command error. */
 export interface GetTokenStatsCommand {
@@ -1313,6 +1319,17 @@ export interface PongEvent {
 }
 
 /**
+ * The daemon's update status (see docs/update-status.md), sent to connections
+ * that declared the update-status-push capability: in the ping bootstrap
+ * before the conversation list (once known), then on every change. The
+ * daemon keeps it warm, so clients need not poll. Older daemons never send it.
+ */
+export interface UpdateStatusEvent {
+  type: "update_status";
+  status: UpdateStatus;
+}
+
+/**
  * A requested directory plus bounded one-level lookahead for likely matching
  * child directories. Each listing is independently cacheable by the TUI.
  */
@@ -2294,6 +2311,7 @@ export interface ErrorEvent {
 
 export type Event =
   | PongEvent
+  | UpdateStatusEvent
   | ProviderProxiesEvent
   | ProviderProxyLinkEvent
   | ConversationDefaultsEvent

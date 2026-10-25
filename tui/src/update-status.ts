@@ -1,4 +1,4 @@
-import { DAEMON_STATUS_INTERVAL_MS, type UpdateStatus } from "@exocortex/shared/updatecheck";
+import { DAEMON_STATUS_INTERVAL_MS, UNKNOWN_CHECKS_BEFORE_SHOWN, type UpdateStatus } from "@exocortex/shared/updatecheck";
 import { DaemonClient } from "./client";
 
 /** TUI-only pending state; Unknown is reserved for a completed, failed check. */
@@ -8,8 +8,9 @@ export type DisplayUpdateStatus = UpdateStatus | "checking";
  * A loaded machine can time a check out now and then. Keep showing the last
  * real answer until this many checks in a row (~30 s) come back Unknown, so
  * the footer doesn't flicker; a route change or disconnect still shows at once.
+ * A daemon that pushes its status applies the same rule before pushing.
  */
-export const UNKNOWN_CHECKS_BEFORE_SHOWN = 3;
+export { UNKNOWN_CHECKS_BEFORE_SHOWN };
 
 export interface UpdateSnapshot {
   local: DisplayUpdateStatus;
@@ -52,6 +53,8 @@ export async function queryLocalUpdateStatus(overrideSocketPath?: string): Promi
 /** Owns the timer and rejects stale active-endpoint replies after route changes. */
 export class UpdateStatusMonitor {
   private generation = 0;
+  /** The route generation whose daemon pushes its status: no polling it. */
+  private pushGeneration = -1;
   private inFlight = new Set<number>();
   private localGeneration = 0;
   private localInFlight: Promise<void> | null = null;
@@ -103,6 +106,24 @@ export class UpdateStatusMonitor {
       : { local: "unknown", remote: null });
   }
 
+  /**
+   * The active daemon's own update_status push (bootstrap or change). It is
+   * authoritative for this route until it changes, so periodic polls stop.
+   */
+  pushed(status: UpdateStatus): void {
+    if (this.stopped) return;
+    this.pushGeneration = this.generation;
+    if (this.alias) {
+      this.unknownChecks.remote = 0;
+      this.publish({ ...this.snapshot, remote: status });
+    } else {
+      this.unknownChecks.local = 0;
+      // Supersedes a local probe still in flight.
+      this.localGeneration++;
+      this.publish({ local: status, remote: null });
+    }
+  }
+
   /** A check's result for one endpoint, held back while Unknown is still a blip. */
   private settled(endpoint: "local" | "remote", status: UpdateStatus): DisplayUpdateStatus {
     const shown = this.snapshot[endpoint];
@@ -145,6 +166,11 @@ export class UpdateStatusMonitor {
   async refresh(): Promise<void> {
     const generation = this.generation;
     if (this.stopped || this.inFlight.has(generation)) return;
+    if (this.pushGeneration === generation) {
+      // The active daemon pushes; only Local (while on SSH) is still polled.
+      if (this.alias) await this.refreshLocal();
+      return;
+    }
     // A startup probe is independent of the main socket. Do not race it with
     // another active-local request that SSH can cancel.
     if (!this.alias && this.localInFlight) return this.localInFlight;

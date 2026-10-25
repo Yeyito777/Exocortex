@@ -73,4 +73,4 @@ ensure_daemon() {
 ensure_daemon
 
 cd "$PROJECT_DIR/tui"
-exec bun run src/main.ts "$@"
+exec bun run src/launch.ts "$@"

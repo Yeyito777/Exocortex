@@ -83,6 +83,28 @@ describe("TUI SSH transport", () => {
     child.kill();
   });
 
+  test("keeps answers that arrive ahead of the pong, in order, for the adopted connection", async () => {
+    const child = new FakeProcess();
+    let input = "";
+    child.stdin.on("data", chunk => {
+      input += chunk.toString("utf8");
+      const lines = input.split("\n").slice(0, -1).map(line => JSON.parse(line));
+      const ping = lines.find(line => line.type === "ping");
+      if (!ping) return;
+      input = "";
+      // The first-flight load is answered before the bootstrap ping.
+      child.stdout.write(`${JSON.stringify({ type: "conversation_loaded", reqId: "load-1", entries: [] })}\n`);
+      child.stdout.write(`${JSON.stringify({ type: "pong", reqId: ping.reqId })}\n{"type":"tools_available"}\n`);
+    });
+    const connection = await probeSshProxy("whale", {
+      spawnProcess: () => child,
+      preamble: [{ type: "client_capabilities", capabilities: [] }, { type: "load_conversation", reqId: "load-1", convId: "c" }],
+    }).promise;
+    expect(connection.bufferedStdout.toString("utf8").split("\n").filter(Boolean).map(line => JSON.parse(line).type))
+      .toEqual(["conversation_loaded", "tools_available"]);
+    child.kill();
+  });
+
   test("reports proxy stderr when the remote daemon cannot be reached", async () => {
     const child = new FakeProcess();
     const probe = probeSshProxy("missing", { spawnProcess: () => child });
