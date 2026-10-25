@@ -48,6 +48,12 @@ export interface RenderFrame {
    * or drop placements with the rows they sit on.
    */
   graphics?: string | ((regionScrolled: boolean) => string);
+  /**
+   * Sent last inside the same synchronized update, given how far the region
+   * scroll moved the content (up positive, 0 without one): app-driven smooth
+   * scrolling's rectangles and offset (smoothscroll.ts).
+   */
+  afterScroll?: (regionShift: number) => string;
 }
 
 interface RetainedFrame extends RenderFrame {
@@ -351,6 +357,9 @@ export function flushFrame(owner: object, nextFrame: RenderFrame): void {
     hasDrawingUpdates = true;
   }
 
+  const smooth = nextFrame.afterScroll?.(scrollShift);
+  if (smooth) out.push(smooth);
+
   if (out.length > 0 || !prevFrame || prevFrame.cursor !== nextFrame.cursor) {
     out.push(nextFrame.cursor);
   }
@@ -365,5 +374,6 @@ export function flushFrame(owner: object, nextFrame: RenderFrame): void {
   }
 
   next.graphics = undefined;
+  next.afterScroll = undefined;
   lastRenderedFrames.set(owner, next);
 }
