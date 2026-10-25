@@ -60,6 +60,42 @@ describe("sources", () => {
 });
 
 describe("previews", () => {
+  test("a local echo renders from its own bytes without asking the daemon", async () => {
+    const daemonRequests: ImagePreviewRequest[] = [];
+    const local: Array<{ mediaType: string; request: ImagePreviewRequest }> = [];
+    configureInlineImages({
+      fetch: async request => { daemonRequests.push(request); throw new Error("must not reach the daemon"); },
+      renderLocal: async (_base64, mediaType, request) => {
+        local.push({ mediaType, request });
+        return { format: "png", width: 200, height: 432, base64: "UE5H" };
+      },
+      onChange: () => {},
+    });
+    setInlineImageCellSize({ width: 10, height: 20 });
+    const echo: InlineImageSource = { ...source, mediaType: "image/jpeg", width: 1179, height: 2556, localBase64: "/9j/" };
+    expect(kittyPreview(echo, { cols: 20, rows: 22 }).phase).toBe("loading");
+    await Bun.sleep(0);
+    expect(local).toEqual([{ mediaType: "image/jpeg", request: { imageId: source.imageId, format: "png", width: 200, height: 440 } }]);
+    expect(daemonRequests).toEqual([]);
+    expect(kittyPreview(echo, { cols: 20, rows: 22 }).phase).toBe("ready");
+  });
+
+  test("the daemon renders what the TUI cannot", async () => {
+    const daemonRequests: ImagePreviewRequest[] = [];
+    configureInlineImages({
+      fetch: async request => { daemonRequests.push(request); return { format: "png", width: 200, height: 432, base64: "UE5H" }; },
+      renderLocal: async () => { throw new Error("no local image renderer"); },
+      onChange: () => {},
+    });
+    setInlineImageCellSize({ width: 10, height: 20 });
+    const echo: InlineImageSource = { ...source, mediaType: "image/jpeg", width: 1179, height: 2556, localBase64: "/9j/" };
+    kittyPreview(echo, { cols: 20, rows: 22 });
+    await Bun.sleep(0);
+    await Bun.sleep(0);
+    expect(daemonRequests).toHaveLength(1);
+    expect(kittyPreview(echo, { cols: 20, rows: 22 }).phase).toBe("ready");
+  });
+
   test("fetch once at the drawn pixel size and notify when ready", async () => {
     const requests: ImagePreviewRequest[] = [];
     let changes = 0;

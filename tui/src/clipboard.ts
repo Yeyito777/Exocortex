@@ -16,7 +16,10 @@ import { join } from "path";
 import { randomUUID } from "crypto";
 import type { ImageAttachment, ImageMediaType } from "./messages";
 import { log } from "./log";
-import { convertHeic, HEIC_MIME_TYPES, isHeicPath, MAX_HEIC_BYTES } from "./heic";
+import {
+  convertHeic, convertImage, HEIC_MIME_TYPES, isHeicPath, isImagePath, jpegOrientation,
+  MAX_HEIC_BYTES, MAX_PASSTHROUGH_IMAGE_BYTES,
+} from "./heic";
 
 // ── Backend detection ────────────────────────────────────────────
 
@@ -29,7 +32,7 @@ interface ClipboardSystem {
   statSync: typeof statSync;
   platform: NodeJS.Platform;
   env: NodeJS.ProcessEnv;
-  tmpPath: () => string;
+  tmpPath: (extension?: string) => string;
 }
 
 const defaultClipboardSystem: ClipboardSystem = {
@@ -39,7 +42,7 @@ const defaultClipboardSystem: ClipboardSystem = {
   statSync,
   platform: process.platform,
   env: process.env,
-  tmpPath: () => join(tmpdir(), `exocortex-clipboard-${process.pid}-${Date.now()}-${randomUUID()}.png`),
+  tmpPath: (extension = "png") => join(tmpdir(), `exocortex-clipboard-${process.pid}-${Date.now()}-${randomUUID()}.${extension}`),
 };
 
 let clipboardSystem: ClipboardSystem = defaultClipboardSystem;
@@ -175,40 +178,82 @@ function invalidImageReason(expected: ImageMediaType, buf: Buffer): string | nul
 
 // ── Backend implementations ──────────────────────────────────────
 
-function readHeicFile(path: string): ImageAttachment {
+/**
+ * A copied image file is attached as its own pixels, never the file icon a
+ * file manager offers beside it. PNG/JPEG/GIF/WebP within 3 MB go as they are
+ * (an EXIF-rotated JPEG is turned upright); anything else (HEIC, TIFF, …) is
+ * decoded into a JPEG. A file that does not decode throws.
+ */
+function readImageFile(path: string): ImageAttachment {
   const stat = clipboardSystem.statSync(path);
   if (!stat.isFile() || stat.size > MAX_HEIC_BYTES) {
-    throw new Error("HEIC clipboard file is not a regular file or exceeds the 50 MB limit");
+    throw new Error("Copied image is not a regular file or exceeds the 50 MB limit");
   }
-  return convertHeic(clipboardSystem.readFileSync(path), clipboardSystem.spawnSync);
+  const bytes = clipboardSystem.readFileSync(path);
+  const mediaType = detectImageMediaType(bytes);
+  if (mediaType && bytes.length <= MAX_PASSTHROUGH_IMAGE_BYTES
+    && (mediaType !== "image/jpeg" || jpegOrientation(bytes) === 1)) {
+    return buildImageAttachment(mediaType, bytes)!;
+  }
+  const heic = isHeicPath(path) || isHeicBytes(bytes);
+  try {
+    return convertImage(bytes, clipboardSystem.spawnSync, heic ? "heic" : undefined);
+  } catch (err) {
+    // macOS has no ImageMagick by default; sips decodes everything ImageIO does.
+    const converted = clipboardSystem.platform === "darwin" ? convertWithSips(path) : null;
+    if (converted) return converted;
+    throw err;
+  }
+}
+
+function isHeicBytes(bytes: Buffer): boolean {
+  const brand = bytes.length >= 12 && bytes.toString("latin1", 4, 8) === "ftyp" ? bytes.toString("latin1", 8, 12) : "";
+  return /^(?:hei[cxms]|hev[cxms]|mif1|msf1)$/.test(brand);
+}
+
+function convertWithSips(path: string): ImageAttachment | null {
+  const out = clipboardSystem.tmpPath("jpg");
+  try {
+    const result = clipboardSystem.spawnSync("sips", [
+      "-s", "format", "jpeg", "-s", "formatOptions", "85", "-Z", "2000", path, "--out", out,
+    ], { timeout: 10_000 });
+    if (result.error || result.status !== 0) return null;
+    const jpeg = clipboardSystem.readFileSync(out);
+    if (jpeg.length > MAX_PASSTHROUGH_IMAGE_BYTES) return null;
+    return buildImageAttachment("image/jpeg", jpeg);
+  } catch {
+    return null;
+  } finally {
+    try { clipboardSystem.unlinkSync(out); } catch { /* never written */ }
+  }
 }
 
 /** Local clipboard file references only. Never fetch remote URLs. */
-function heicFileFromUris(text: string): string | null {
+function imageFileFromUris(text: string): string | null {
   const paths = text.split(/\r?\n/).map(line => line.trim())
     .filter(line => line && !line.startsWith("#") && line !== "copy" && line !== "cut");
   // Do not silently choose one file from a multiple-file paste.
-  const hasHeic = paths.some(path => {
-    try { return isHeicPath(decodeURIComponent(new URL(path).pathname)); } catch { return false; }
+  const hasImage = paths.some(path => {
+    try { return isImagePath(decodeURIComponent(new URL(path).pathname)); } catch { return false; }
   });
-  if (!hasHeic) return null;
-  if (paths.length !== 1) throw new Error("Paste one HEIC/HEIF file at a time");
+  if (!hasImage) return null;
+  if (paths.length !== 1) throw new Error("Paste one image file at a time");
   try {
     const path = fileURLToPath(paths[0]);
-    return isHeicPath(path) ? path : null;
+    return isImagePath(path) ? path : null;
   } catch {
-    throw new Error("HEIC clipboard file must be a local file URL");
+    throw new Error("Copied image must be a local file URL");
   }
 }
 
 /** File URLs from an SSH terminal refer to the client, not this machine. */
-export function readHeicClipboardFiles(text: string, allowLocalFiles = true): ImageAttachment | null {
-  const path = heicFileFromUris(text);
+export function readImageClipboardFiles(text: string, allowLocalFiles = true): ImageAttachment | null {
+  const path = imageFileFromUris(text);
   if (!path) return null;
   if (!allowLocalFiles) {
-    throw new Error("Cannot read a client-side HEIC file over SSH. Copy the photo's image data or upload the file first.");
+    throw new Error("Cannot read a client-side image file over SSH. Copy the image's data or upload the file first.");
   }
-  return readHeicFile(path);
+  return readImageFile(path);
 }
 
 function readOriginalHeic(
@@ -227,7 +272,7 @@ function readOriginalHeic(
     const result = readTarget(target);
     if (result.status !== 0) continue;
     // A failed decode must not fall through to the file icon.
-    const image = readHeicClipboardFiles(result.stdout.toString());
+    const image = readImageClipboardFiles(result.stdout.toString());
     if (image) return image;
   }
   return null;
@@ -382,12 +427,12 @@ function readImagePowerShell(): ImageAttachment | null {
 }
 
 function readImageAppleScript(): ImageAttachment | null {
-  // Finder may offer a generic PNG icon for a copied HEIC file.
+  // Finder offers a generic PNG icon beside a copied file.
   const file = clipboardSystem.spawnSync("osascript", [
     "-e", "POSIX path of (the clipboard as alias)",
   ], { timeout: 1000, maxBuffer: 64 * 1024 });
   const path = file.status === 0 ? file.stdout.toString().trim() : "";
-  if (isHeicPath(path)) return readHeicFile(path);
+  if (isImagePath(path)) return readImageFile(path);
   const tmpPath = clipboardSystem.tmpPath();
   const script = [
     "set outFile to missing value",

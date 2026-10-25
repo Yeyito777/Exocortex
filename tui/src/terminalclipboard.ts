@@ -9,7 +9,7 @@
 import { StringDecoder } from "node:string_decoder";
 import type { ImageAttachment, ImageMediaType } from "./messages";
 import { convertHeic, HEIC_MIME_TYPES } from "./heic";
-import { readHeicClipboardFiles } from "./clipboard";
+import { readImageClipboardFiles } from "./clipboard";
 export {
   disable_clipboard_paste_events,
   enable_clipboard_paste_events,
@@ -260,7 +260,7 @@ export class TerminalClipboardClient {
       const bytes = Buffer.concat(transfer.chunks);
       if (FILE_MIME_TYPES.includes(transfer.requestedMime)) {
         try {
-          const image = readHeicClipboardFiles(
+          const image = readImageClipboardFiles(
             bytes.toString("utf8"), !process.env.SSH_CONNECTION && !process.env.SSH_TTY,
           );
           if (image) this.options.onImage(image);
@@ -291,7 +291,11 @@ export class TerminalClipboardClient {
       return;
     }
 
-    this.fail(`Terminal clipboard read failed: ${status}`);
+    // st fails the read of an image file it cannot decode rather than
+    // offering the file's icon; say so instead of a bare status.
+    this.fail(transfer.requestedMime.startsWith("image/")
+      ? `Could not read the copied image (terminal: ${status}). Paste one image file at a time.`
+      : `Terminal clipboard read failed: ${status}`);
   }
 
   private decodeChunk(payload: string): Buffer | null {

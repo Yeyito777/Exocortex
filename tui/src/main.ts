@@ -15,6 +15,7 @@ import { parseInput, PasteBuffer, type KeyEvent, type MouseEvent } from "./input
 import { TerminalClipboardClient, TerminalControlBuffer } from "./terminalclipboard";
 import { CELL_SIZE_QUERY, TerminalGraphicsDetector, parseCellSizeResponse } from "./terminalgraphics";
 import { configureInlineImages, setInlineImageCellSize, setInlineImageMode } from "./inlineimages";
+import { renderLocalPreview } from "./localpreview";
 import { disposeHistoryImages, handleHistoryImageResponse, invalidateHistoryImagePlacements } from "./historyimages";
 import { configureMathImages, disposeMathImages, mathImagesActive } from "./mathimages";
 import { handleImageModalKey } from "./imagemodal";
@@ -2306,6 +2307,7 @@ async function main(): Promise<void> {
   });
   configureInlineImages({
     fetch: request => daemon.getImage(request),
+    renderLocal: (base64, mediaType, request) => renderLocalPreview(base64, mediaType, request),
     onChange: () => scheduleRender(),
   });
   configureMathImages({ onChange: () => scheduleRender() });

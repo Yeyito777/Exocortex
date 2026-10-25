@@ -9,9 +9,10 @@
  *   every render mode, so switching modes or loading pixels never shifts text.
  * - store: previews are fetched lazily from the daemon (`get_image`) at the
  *   size they will be drawn, which bounds traffic over SSH, and kept in a
- *   small LRU. A pasted PNG whose bytes the TUI already holds (its own local
- *   echo, or history that still carries the payload) goes to Kitty terminals
- *   as is, with no round trip.
+ *   small LRU. A pasted image whose bytes the TUI already holds (its own local
+ *   echo, or history that still carries the payload) is rendered here instead
+ *   (a PNG that needs no shrinking goes to Kitty terminals as is), so a
+ *   just-sent image never waits for its upload to reach the daemon.
  * - rows: Kitty mode reserves blank rows that the renderer covers with a
  *   terminal placement; the half-block fallback draws the pixels as text.
  * - strips: a message with several images lays them out side by side; those
@@ -216,6 +217,13 @@ export interface ImagePreviewResponse {
 
 export type ImagePreviewFetcher = (request: ImagePreviewRequest) => Promise<ImagePreviewResponse>;
 
+/** Renders a preview from bytes in hand; rejects when it can't (no renderer). */
+export type LocalImageRenderer = (
+  base64: string,
+  mediaType: ImageMediaType,
+  request: ImagePreviewRequest,
+) => Promise<ImagePreviewResponse>;
+
 type PreviewEntry =
   | { phase: "loading"; retries?: number }
   /** `retryAt` is Infinity for failures only a new connection can change (missing image, bad data). */
@@ -253,15 +261,29 @@ let cachedChars = 0;
 let inFlight = 0;
 const queued: Array<{ key: string; run: () => void }> = [];
 let fetcher: ImagePreviewFetcher | null = null;
+let localRenderer: LocalImageRenderer | null = null;
 let nextKittyId = 0x40000000;
 const retryTimers = new Set<ReturnType<typeof setTimeout>>();
 
 export function configureInlineImages(options: {
   fetch: ImagePreviewFetcher;
+  renderLocal?: LocalImageRenderer;
   onChange: () => void;
 }): void {
   fetcher = options.fetch;
+  localRenderer = options.renderLocal ?? null;
   onChange = options.onChange;
+}
+
+/** Bytes in hand render locally; the daemon is asked only if that fails. */
+function fetcherFor(source: InlineImageSource, daemonFetch: ImagePreviewFetcher): ImagePreviewFetcher {
+  const render = localRenderer;
+  const base64 = source.localBase64;
+  if (!render || !base64) return daemonFetch;
+  return request => render(base64, source.mediaType, request).catch((error: unknown) => {
+    log("warn", `tui: local image preview ${request.imageId.slice(0, 12)} failed, asking the daemon: ${error instanceof Error ? error.message : String(error)}`);
+    return daemonFetch(request);
+  });
 }
 
 function previewKey(request: ImagePreviewRequest): string {
@@ -353,7 +375,7 @@ function prioritize(key: string): void {
   if (index > 0) queued.unshift(...queued.splice(index, 1));
 }
 
-function request(request: ImagePreviewRequest, urgent = false, peek = false): PreviewEntry | null {
+function request(request: ImagePreviewRequest, urgent = false, peek = false, source?: InlineImageSource): PreviewEntry | null {
   const key = previewKey(request);
   const existing = previews.get(key);
   if (existing && (existing.phase !== "error" || Date.now() < existing.retryAt)) {
@@ -363,7 +385,7 @@ function request(request: ImagePreviewRequest, urgent = false, peek = false): Pr
   }
   if (!fetcher || peek) return null;
   store(key, { phase: "loading", retries: 0 });
-  enqueueFetch(key, request, fetcher, 0, urgent);
+  enqueueFetch(key, request, source ? fetcherFor(source, fetcher) : fetcher, 0, urgent);
   runQueued();
   return previews.get(key) ?? null;
 }
@@ -420,7 +442,7 @@ export function kittyPreview(source: InlineImageSource, box: InlineImageBox, opt
     width,
     height,
     ...(options.purpose ? { purpose: options.purpose } : {}),
-  }, options.urgent, options.peek);
+  }, options.urgent, options.peek, source);
   if (!entry || entry.phase === "loading") return { phase: "loading" };
   if (entry.phase === "error") return { phase: "error", error: entry.error };
   if (entry.preview.format !== "png") return { phase: "error", error: "unexpected preview format" };
@@ -457,7 +479,7 @@ export function rgbaPreview(source: InlineImageSource, box: InlineImageBox): Pre
     format: "rgba",
     width,
     height,
-  });
+  }, false, false, source);
   if (!entry || entry.phase === "loading") return { phase: "loading" };
   if (entry.phase === "error") return { phase: "error", error: entry.error };
   entry.rgba ??= Buffer.from(entry.preview.base64, "base64");
@@ -781,6 +803,7 @@ export const inlineImagesInternalsForTest = {
     inFlight = 0;
     queued.length = 0;
     fetcher = null;
+    localRenderer = null;
     onChange = () => {};
     environment.mode = "pending";
     environment.cell = { width: 8, height: 16 };

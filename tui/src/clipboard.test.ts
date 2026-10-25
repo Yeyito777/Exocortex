@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { SpawnSyncReturns } from "child_process";
-import { readClipboardImage, readHeicClipboardFiles, setClipboardSystemForTest } from "./clipboard";
+import { readClipboardImage, readImageClipboardFiles, setClipboardSystemForTest } from "./clipboard";
+import { jpegOrientation } from "./heic";
 import { spawnSync } from "node:child_process";
 import { HEIC_BYTES } from "../../test/heic-fixture";
 
@@ -24,8 +25,9 @@ describe("clipboard image reading", () => {
   afterEach(() => setClipboardSystemForTest(null));
 
   test("SSH file offers never read a coincidentally matching server-side path", () => {
-    expect(() => readHeicClipboardFiles("file:///tmp/photo.heic", false)).toThrow("over SSH");
-    expect(readHeicClipboardFiles("file:///tmp/photo.png", false)).toBeNull();
+    expect(() => readImageClipboardFiles("file:///tmp/photo.heic", false)).toThrow("over SSH");
+    expect(() => readImageClipboardFiles("file:///tmp/photo.png", false)).toThrow("over SSH");
+    expect(readImageClipboardFiles("file:///tmp/notes.txt", false)).toBeNull();
   });
 
   for (const wayland of [false, true]) {
@@ -94,7 +96,7 @@ describe("clipboard image reading", () => {
       });
       expect(readClipboardImage(message => errors.push(message))).toBeNull();
       expect(errors).toHaveLength(1);
-      expect(errors[0]).toMatch(/local file URL|one HEIC/);
+      expect(errors[0]).toMatch(/local file URL|one image/);
     });
   }
 
@@ -111,6 +113,85 @@ describe("clipboard image reading", () => {
       readFileSync: (() => HEIC_BYTES) as unknown as typeof import("fs").readFileSync,
     });
     expect(readClipboardImage()?.mediaType).toBe("image/jpeg");
+  });
+
+  function finderCopy(path: string, bytes: Buffer, extra: Partial<Parameters<typeof setClipboardSystemForTest>[0] & object> = {}) {
+    const commands: string[] = [];
+    setClipboardSystemForTest({
+      platform: "darwin", env: {},
+      spawnSync: ((command: string, args: string[], options: object) => {
+        commands.push(command);
+        if (command === "which") return spawnResult(0);
+        if (command === "magick") return spawnSync(command, args, options);
+        if (command === "osascript" && args.join(" ").includes("PNGf")) throw new Error("must not read the file icon");
+        return spawnResult(0, Buffer.from(`${path}\n`));
+      }) as typeof spawnSync,
+      statSync: (() => ({ isFile: () => true, size: bytes.length })) as unknown as typeof import("fs").statSync,
+      readFileSync: ((p: string) => {
+        expect(p).toBe(path);
+        return bytes;
+      }) as unknown as typeof import("fs").readFileSync,
+      ...extra,
+    });
+    return commands;
+  }
+
+  test("macOS attaches a copied PNG file's own bytes, not Finder's icon", () => {
+    finderCopy("/Users/me/Downloads/IMG_1198.PNG", PNG_BYTES);
+    expect(readClipboardImage()).toEqual({
+      mediaType: "image/png", base64: PNG_BYTES.toString("base64"), sizeBytes: PNG_BYTES.length,
+    });
+  });
+
+  test("macOS decodes HEIC data saved under a .PNG name", () => {
+    finderCopy("/Users/me/Downloads/IMG_1199.PNG", HEIC_BYTES);
+    const image = readClipboardImage();
+    expect(image?.mediaType).toBe("image/jpeg");
+    const size = spawnSync("magick", ["identify", "-format", "%wx%h", "jpeg:-"], { input: Buffer.from(image!.base64, "base64") });
+    expect(size.stdout.toString()).toBe("64x32");
+  });
+
+  test("an EXIF-rotated JPEG file is attached upright", () => {
+    const plain = spawnSync("magick", ["-size", "40x20", "xc:red", "jpeg:-"]).stdout as Buffer;
+    // APP1 Exif, big-endian TIFF, one IFD0 entry: Orientation (0x0112) = 6.
+    const tiff = Buffer.from("4d4d002a00000008000101120003000000010006000000000000", "hex");
+    const app1 = Buffer.concat([Buffer.from([0xff, 0xe1, 0, tiff.length + 8]), Buffer.from("Exif\0\0", "latin1"), tiff]);
+    const rotated = Buffer.concat([plain.subarray(0, 2), app1, plain.subarray(2)]);
+    expect(jpegOrientation(rotated)).toBe(6);
+    finderCopy("/tmp/photo.jpg", rotated);
+    const image = readClipboardImage();
+    expect(image?.mediaType).toBe("image/jpeg");
+    const upright = Buffer.from(image!.base64, "base64");
+    expect(jpegOrientation(upright)).toBe(1);
+    const size = spawnSync("magick", ["identify", "-format", "%wx%h", "jpeg:-"], { input: upright });
+    expect(size.stdout.toString()).toBe("20x40");
+  });
+
+  test("macOS without ImageMagick converts a copied HEIC with sips", () => {
+    const jpeg = spawnSync("magick", ["-size", "4x4", "xc:blue", "jpeg:-"]).stdout as Buffer;
+    let sipsArgs: string[] = [];
+    setClipboardSystemForTest({
+      platform: "darwin", env: {},
+      tmpPath: () => "/tmp/exocortex-sips.jpg",
+      spawnSync: ((command: string, args: string[]) => {
+        if (command === "which") return spawnResult(0);
+        if (command === "magick") return { status: null, error: new Error("ENOENT") } as unknown as SpawnSyncReturns<Buffer>;
+        if (command === "sips") { sipsArgs = args; return spawnResult(0); }
+        return spawnResult(0, Buffer.from("/tmp/photo.HEIC\n"));
+      }) as typeof spawnSync,
+      statSync: (() => ({ isFile: () => true, size: HEIC_BYTES.length })) as unknown as typeof import("fs").statSync,
+      readFileSync: ((p: string) => p === "/tmp/exocortex-sips.jpg" ? jpeg : HEIC_BYTES) as unknown as typeof import("fs").readFileSync,
+      unlinkSync: (() => {}) as typeof import("fs").unlinkSync,
+    });
+    expect(readClipboardImage()?.base64).toBe(jpeg.toString("base64"));
+    expect(sipsArgs).toEqual(["-s", "format", "jpeg", "-s", "formatOptions", "85", "-Z", "2000", "/tmp/photo.HEIC", "--out", "/tmp/exocortex-sips.jpg"]);
+  });
+
+  test("a copied image file that does not decode fails loudly instead of sending the icon", () => {
+    finderCopy("/tmp/broken.heic", Buffer.from("not a photo"));
+    const errors: string[] = [];
+    expect(readClipboardImage(message => errors.push(message))).toBeNull();
+    expect(errors[0]).toContain("libheif");
   });
 
   test("uses AppleScript on macOS to read clipboard images as PNG", () => {

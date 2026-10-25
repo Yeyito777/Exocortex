@@ -60,15 +60,57 @@ describe("OSC 5522 clipboard client", () => {
     }
   });
 
-  test("falls back to the offered PNG for non-HEIC file URIs", () => {
+  test("falls back to the offered PNG for non-image file URIs", () => {
     const writes: string[] = [];
     const client = new TerminalClipboardClient({ write: sequence => writes.push(sequence), onImage() {}, onText() {} });
     for (const sequence of pasteOffer("image/png text/uri-list")) client.handleControlSequence(sequence);
     client.handleControlSequence(packet("type=read:status=OK"));
-    client.handleControlSequence(packet(`type=read:status=DATA:mime=${b64("text/uri-list")}`, b64("file:///tmp/photo.png")));
+    client.handleControlSequence(packet(`type=read:status=DATA:mime=${b64("text/uri-list")}`, b64("file:///tmp/notes.txt")));
     client.handleControlSequence(packet("type=read:status=DONE"));
     expect(writes).toHaveLength(2);
     expect(writes[1]).toContain(`;${b64("image/png")}${ST}`);
+    client.dispose();
+  });
+
+  test("a PNG file URI attaches the file, not the offered icon", () => {
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=", "base64");
+    const images: Array<{ base64: string }> = [];
+    const errors: string[] = [];
+    const writes: string[] = [];
+    const client = new TerminalClipboardClient({
+      write: sequence => writes.push(sequence), onImage: image => images.push(image),
+      onText() {}, onError: message => errors.push(message),
+    });
+    setClipboardSystemForTest({
+      statSync: (() => ({ isFile: () => true, size: png.length })) as unknown as typeof import("fs").statSync,
+      readFileSync: (() => png) as unknown as typeof import("fs").readFileSync,
+    });
+    try {
+      for (const sequence of pasteOffer("image/png text/uri-list")) client.handleControlSequence(sequence);
+      client.handleControlSequence(packet("type=read:status=OK"));
+      client.handleControlSequence(packet(`type=read:status=DATA:mime=${b64("text/uri-list")}`, b64("file:///tmp/IMG_1198.PNG")));
+      client.handleControlSequence(packet("type=read:status=DONE"));
+      expect(writes).toHaveLength(1);
+      if (process.env.SSH_CONNECTION || process.env.SSH_TTY) {
+        expect(errors[0]).toContain("over SSH");
+      } else {
+        expect(errors).toEqual([]);
+        expect(images[0]?.base64).toBe(png.toString("base64"));
+      }
+    } finally {
+      client.dispose();
+      setClipboardSystemForTest(null);
+    }
+  });
+
+  test("an image the terminal cannot read is reported plainly", () => {
+    const errors: string[] = [];
+    const client = new TerminalClipboardClient({
+      write() {}, onImage() { throw new Error("no image expected"); }, onText() {}, onError: message => errors.push(message),
+    });
+    for (const sequence of pasteOffer("image/jpeg text/plain")) client.handleControlSequence(sequence);
+    client.handleControlSequence(packet("type=read:status=ENOSYS"));
+    expect(errors).toEqual(["Could not read the copied image (terminal: ENOSYS). Paste one image file at a time."]);
     client.dispose();
   });
 
