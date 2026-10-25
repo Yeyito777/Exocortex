@@ -67,6 +67,12 @@ export interface OpenAIProviderConfig {
    * stream open and retries when the usage window resets. Defaults to false.
    */
   retryOnUsageLimitReset?: boolean;
+  /**
+   * Monthly spending budget in USD for an API-key login. The status bar then
+   * draws the key's spend as bars: the month against it, today against what
+   * was left of it this morning spread over the days left. Unset: plain amounts.
+   */
+  monthlyBudgetUsd?: number;
 }
 
 export interface DeepSeekProviderConfig {

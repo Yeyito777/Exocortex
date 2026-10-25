@@ -133,26 +133,72 @@ function apiKeySummary(apiKey: ApiKeyUsage): string {
   return `API key ${apiKey.label}: today ${formatApiKeySpend(apiKey.today)} · this month ${formatApiKeySpend(apiKey.month)}`;
 }
 
+/** "5-Hour" is the widest window label; API-key rows pad theirs to it so switching providers keeps the column. */
+const LABEL_WIDTH = "5-Hour".length;
+
+/** "  Today:  " — the label cell before a bar or value. */
+function labelCell(label: string): string {
+  return `  ${label}:${" ".repeat(Math.max(0, LABEL_WIDTH - label.length))} `;
+}
+
+/**
+ * What today may spend to stay on the monthly budget: what was left of it this
+ * morning spread over the days left in the month, today included.
+ */
+export function dailyAllowance(apiKey: ApiKeyUsage, monthlyBudgetUsd: number, now = Date.now()): number {
+  const date = new Date(now);
+  const daysInMonth = new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
+  const daysLeft = daysInMonth - date.getDate() + 1;
+  const spentBeforeToday = apiKey.month.estimatedCostUsd - apiKey.today.estimatedCostUsd;
+  return Math.max(0, monthlyBudgetUsd - spentBeforeToday) / daysLeft;
+}
+
+/** " +3 unpriced": requests counted but not in the estimate (images, audio); empty when none. */
+function unpricedSuffix(spend: ApiKeySpend): string {
+  return spend.unpricedRequests > 0 ? ` +${spend.unpricedRequests} unpriced` : "";
+}
+
+/** "  Today:  [bar] $0.412 / $0.79"; the spend turns red once it passes the limit. */
+function budgetLine(label: string, spentUsd: number, limitUsd: number, suffix = ""): { line: string; width: number } {
+  const spent = formatUsd(spentUsd);
+  const limit = formatUsd(limitUsd);
+  const over = spentUsd > limitUsd;
+  const bar = limitUsd > 0 ? renderBar(spentUsd, limitUsd) : renderBar(spentUsd > 0 ? 100 : 0);
+  const head = labelCell(label);
+  const line = `${theme.muted}${head}${theme.text}[${bar}${theme.text}] ${over ? theme.error : theme.accent}${spent}${theme.muted} / ${theme.accent}${limit}${theme.muted}${suffix}${theme.reset}`;
+  return { line, width: head.length + 1 + BAR_WIDTH + 1 + 1 + spent.length + 3 + limit.length + suffix.length };
+}
+
+/** "  Month:  $14.87 +3 unpriced". */
+function spendLine(label: string, spentUsd: number, suffix = ""): { line: string; width: number } {
+  const head = labelCell(label);
+  const spent = formatUsd(spentUsd);
+  return { line: `${theme.muted}${head}${theme.accent}${spent}${theme.muted}${suffix}${theme.reset}`, width: head.length + spent.length + suffix.length };
+}
+
 /**
  * OpenAI on an API key has no plan windows: the slot shows what the key spent
- * through this daemon, estimated from published per-token rates.
+ * through this daemon today and this month, estimated from published per-token
+ * rates. With a monthly budget, each line gets a bar: the month against the
+ * budget, today against its share of what is left. Requests the estimate
+ * could not price are noted on the month line.
  */
-function apiKeyRows(apiKey: ApiKeyUsage): StatusBlock {
-  const today = formatApiKeySpend(apiKey.today);
-  const month = formatApiKeySpend(apiKey.month);
-  const head = `  API key ${apiKey.label} · billed per token`;
-  const spend = `  Today: ${today}  Month: ${month}`;
-  const width = Math.max(head.length, spend.length);
-  const pad = (text: string) => " ".repeat(width - text.length);
+export function apiKeyRows(apiKey: ApiKeyUsage, now = Date.now()): StatusBlock {
+  const budget = apiKey.monthlyBudgetUsd && apiKey.monthlyBudgetUsd > 0 ? apiKey.monthlyBudgetUsd : null;
+  const unpriced = unpricedSuffix(apiKey.month);
+  const lines = budget === null
+    ? [spendLine("Today", apiKey.today.estimatedCostUsd), spendLine("Month", apiKey.month.estimatedCostUsd, unpriced)]
+    : [
+        budgetLine("Today", apiKey.today.estimatedCostUsd, dailyAllowance(apiKey, budget, now)),
+        budgetLine("Month", apiKey.month.estimatedCostUsd, budget, unpriced),
+      ];
+  const width = Math.max(...lines.map(line => line.width));
   return {
     id: "usage",
     priority: 3,
     width,
     height: 2,
-    rows: [
-      `${theme.muted}${head}${theme.reset}${pad(head)}`,
-      `${theme.muted}  Today: ${theme.accent}${today}${theme.muted}  Month: ${theme.accent}${month}${theme.reset}${pad(spend)}`,
-    ],
+    rows: lines.map(({ line, width: used }) => line + " ".repeat(width - used)),
   };
 }
 

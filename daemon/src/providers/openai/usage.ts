@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { join } from "path";
+import { readExocortexConfig } from "@exocortex/shared/config";
 import { runtimeDir } from "@exocortex/shared/paths";
 import type { UsageData, UsageResetCredits, UsageWindow } from "../../messages";
 import type { UsageResetOutcome } from "../../protocol";
@@ -101,7 +102,17 @@ function apiKeyUsageData(): UsageData | null {
   const info = getActiveOpenAIApiKeyInfo();
   const accountKey = info ? getCurrentAccountKey() : null;
   if (!info || !accountKey) return null;
-  return { fiveHour: null, sevenDay: null, apiKey: apiKeyUsage(accountKey, info.label) };
+  return {
+    fiveHour: null,
+    sevenDay: null,
+    apiKey: { ...apiKeyUsage(accountKey, info.label), monthlyBudgetUsd: configuredMonthlyBudgetUsd() },
+  };
+}
+
+/** `providers.openai.monthlyBudgetUsd`, read on every update so an edit shows on the next one; null unless a positive number. */
+function configuredMonthlyBudgetUsd(): number | null {
+  const budget = readExocortexConfig().providers?.openai?.monthlyBudgetUsd;
+  return typeof budget === "number" && Number.isFinite(budget) && budget > 0 ? budget : null;
 }
 
 export function getLastUsage(): UsageData | null {
