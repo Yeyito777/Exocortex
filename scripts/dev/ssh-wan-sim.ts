@@ -55,6 +55,15 @@ function link(dir: "down" | "up", deliver: (data: Buffer) => void): (data: Buffe
   let linkFreeAt = dir === "up" ? startedAt + handshakeMs : 0;
   let lastDelivery = 0;
   let queue = Promise.resolve();
+  // One timer drains deliveries in order: timers of different lengths due at
+  // the same moment may fire in either order, which reordered the stream.
+  const due: { at: number; data: Buffer }[] = [];
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const drain = () => {
+    timer = null;
+    while (due.length && due[0]!.at <= Date.now()) deliver(due.shift()!.data);
+    if (due.length) timer = setTimeout(drain, due[0]!.at - Date.now());
+  };
   return data => {
     queue = queue.then(() => new Promise<void>(done => {
       const before = compressed;
@@ -70,7 +79,8 @@ function link(dir: "down" | "up", deliver: (data: Buffer) => void): (data: Buffe
         const at = Math.max(lastDelivery, linkFreeAt + oneWayMs + stall);
         lastDelivery = at;
         if (ledger) appendFileSync(ledger, `${JSON.stringify({ t: now - startedAt, pid: process.pid, dir, type: eventType(data), raw: data.length, wire, delay: Math.round(at - now), stall })}\n`);
-        setTimeout(() => deliver(data), at - now);
+        due.push({ at, data });
+        timer ??= setTimeout(drain, at - now);
         done();
       });
     }));

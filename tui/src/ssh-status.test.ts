@@ -102,6 +102,9 @@ describe("SSH status events", () => {
     }, state, daemon);
     expect(state.sshConnecting?.phase).toBe("loading");
     handleEvent({ type: "conversations_list", conversations: [] }, state, daemon);
+    // Drawn once the tool styles are here too (an incremental first page leads them).
+    expect(state.sshConnecting?.phase).toBe("loading");
+    handleEvent({ type: "tools_available", providers: [], tools: [] } as never, state, daemon);
     expect(state.sshConnecting).toBeNull();
   });
 

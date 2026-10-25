@@ -71,17 +71,38 @@ kept ready in memory: `tools_available` (providers, auth, tool styles,
 conversation defaults), `user_macros`, the last `usage_update` per provider,
 `update_status` (capable clients, once known), then the large
 `conversations_list`, `queue_updated` and `connectivity_status`. Small events go
-first so they never wait behind the list over a slow link. Requests a client
-needs on the first screen ride the same write instead of waiting for the pong:
-the TUI sends its saved conversation's `load_conversation` (and `accounts`,
-which the Accounts screen opens with) together with the `ping`. Over `/ssh`
-the reachability probe is that first write: `client_capabilities` (with a
-sidebar digest when the TUI already holds this host's list), the conversation
-to reopen, then the `ping`. Answers that arrive before the probe's `pong` are
-kept and delivered once the connection is adopted. With `--ssh` the TUI asks
-the local daemon for no bootstrap of its own unless the switch fails. The
-`exocortexd proxy` at the far end loads only the stdio bridge
-(`daemon/src/proxy-main.ts`), not the daemon.
+first so they never wait behind the list over a slow link.
+
+The conversation list is incremental for clients that declare
+`sidebar-incremental` and send a `sidebarView` with their capabilities (what
+their sidebar draws first: folder view, expanded folders, scroll offset,
+terminal rows, the open and cursor conversations). Right after the `pong`
+comes a first page: every folder; the conversations on the first
+`scrollOffset + rows + max(rows, 40)` rows of that view (the walk mirrors the
+TUI's layout, `shared/src/sidebar-first-page.ts`); every conversation showing
+activity (streaming, unread, tasks, subagents, background work, queued
+messages) and the view's named conversations; plus `folderConversationCounts`.
+So the rows on screen, folder counts and badges are exactly what the full list
+gives. The bootstrap ends with the rest (`sidebarRest`, folders omitted), from
+the same snapshot with nothing that changes the sidebar in between; the
+client rebuilds the whole list before anything else uses it. A client
+reconnecting with a sidebar digest gets the digest's delta instead. Search and
+scrolling far down use the whole list, which lands ~0.1 s after the first frame
+over a 20 Mbit link.
+
+Requests a client needs on the first screen ride the same write instead of
+waiting for the pong: the TUI sends its saved conversation's
+`load_conversation` (and `accounts`, which the Accounts screen opens with)
+together with the `ping`. Over `/ssh` the reachability probe is that first
+write: `client_capabilities` (with a sidebar digest when the TUI already holds
+this host's list, else its `sidebarView`), the conversation to reopen, then
+the `ping`. Answers that arrive before the probe's `pong` are kept and
+delivered once the connection is adopted. With `--ssh` the TUI asks the local
+daemon for no bootstrap of its own unless the switch fails. The TUI draws a
+remote route once its conversation (or list) and tool styles are in, without
+waiting for the whole list. The `exocortexd proxy` at the far end loads only
+the stdio bridge (`daemon/src/proxy-main.ts`), and the TUI reuses one SSH
+connection per alias ([SSH connection reuse](ssh-connection-reuse.md)).
 
 ## Connectivity
 

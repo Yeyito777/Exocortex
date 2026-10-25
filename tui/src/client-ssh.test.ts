@@ -353,6 +353,70 @@ describe("DaemonClient SSH routing", () => {
     }
   });
 
+  test("an incremental bootstrap shows its first page, then the whole list rebuilt with the rest", async () => {
+    const summary = (id: string) => ({ id, title: id, pinned: false, sortOrder: Number(id.slice(1)), folderId: null });
+    const child = respondingProbe();
+    const events: any[] = [];
+    const client = new DaemonClient(event => events.push(event), "/tmp/local.sock", false, { spawnSshProcess: () => child });
+    client.setSidebarViewHint(alias => ({
+      folderView: "tree", currentFolderId: null, expandedFolderIds: [], scrollOffset: 0, rows: 40, conversationIds: [alias ?? "local"],
+    }));
+    try {
+      client.ssh("connect", "whale");
+      await waitFor(() => client.remoteAlias === "whale");
+      const caps = JSON.parse(child.input.split("\n")[0]!);
+      expect(caps.capabilities).toContain("sidebar-incremental");
+      expect(caps.sidebarView.conversationIds).toEqual(["whale"]);
+      (await client.connect()).releaseBootstrapEvents?.();
+      child.stdout.write(`${JSON.stringify({
+        type: "conversations_list", conversations: [summary("c1")], folders: [],
+        sidebarPartial: { remaining: 2, folderConversationCounts: {} },
+      })}\n${JSON.stringify({ type: "queue_updated", messages: [] })}\n`);
+      await waitFor(() => events.some(event => event.type === "queue_updated"));
+      const lists = () => events.filter(event => event.type === "conversations_list");
+      expect(lists()).toHaveLength(1);
+      expect(lists()[0].sidebarPartial.remaining).toBe(2);
+      child.stdout.write(`${JSON.stringify({ type: "conversations_list", conversations: [summary("c2"), summary("c3")], sidebarRest: true })}\n`);
+      await waitFor(() => lists().length === 2);
+      expect(lists()[1].sidebarPartial).toBeUndefined();
+      expect(lists()[1].sidebarRest).toBeUndefined();
+      expect(lists()[1].conversations.map((conversation: { id: string }) => conversation.id)).toEqual(["c1", "c2", "c3"]);
+      expect(lists()[1].folders).toEqual([]);
+
+      // A rest whose first page never came (another connection's) asks for the whole list.
+      child.stdout.write(`${JSON.stringify({ type: "conversations_list", conversations: [summary("c4")], sidebarRest: true })}\n`);
+      await waitFor(() => child.input.includes('"type":"list_conversations"'));
+      expect(lists()).toHaveLength(2);
+    } finally {
+      client.disconnect();
+    }
+  });
+
+  test("the SSH sidebar cache keeps the rebuilt whole list, never a first page", async () => {
+    const summary = (id: string) => ({ id, title: id, pinned: false, sortOrder: 1, folderId: null });
+    const first = respondingProbe();
+    const second = respondingProbe();
+    let spawned = 0;
+    const client = new DaemonClient(() => {}, "/tmp/local.sock", false, { spawnSshProcess: () => ++spawned === 1 ? first : second });
+    client.setSidebarViewHint(() => ({ folderView: "tree", currentFolderId: null, expandedFolderIds: [], scrollOffset: 0, rows: 40, conversationIds: [] }));
+    try {
+      client.ssh("connect", "whale");
+      await waitFor(() => client.remoteAlias === "whale");
+      (await client.connect()).releaseBootstrapEvents?.();
+      first.stdout.write(`${JSON.stringify({ type: "conversations_list", conversations: [summary("c1")], folders: [], sidebarPartial: { remaining: 1, folderConversationCounts: {} } })}\n`);
+      first.stdout.write(`${JSON.stringify({ type: "conversations_list", conversations: [summary("c2")], sidebarRest: true })}\n`);
+      await Bun.sleep(5);
+      first.emit("close", 255, null);
+      await client.connect();
+      // The reconnect offers a digest of the whole list, so it needs no view.
+      const caps = JSON.parse(second.input.split("\n")[0]!);
+      expect(caps.sidebarDigest).toBeDefined();
+      expect(caps.sidebarView).toBeUndefined();
+    } finally {
+      client.disconnect();
+    }
+  });
+
   test("a blackholed reconnect times out without consuming queued commands and can retry", async () => {
     const first = respondingProbe();
     const stalled = new FakeProcess();

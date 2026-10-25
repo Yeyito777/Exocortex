@@ -104,6 +104,7 @@ import { log, TUI_LOG_PATH } from "./log";
 import { installFatalErrorHandlers } from "./fatal";
 import { ConversationPrewarmer } from "./prewarm";
 import { FirstTextUX } from "./first-text";
+import type { SidebarViewHint } from "@exocortex/shared/sidebar-first-page";
 import { applyTuiStartingState, availableStartingConversationId, applyRouteViewState, captureRouteViewState, captureTuiStartingState, daemonRouteKey, loadTuiStartingState, RouteViewStates, saveTuiStartingState } from "./startingstate";
 import { closeBtwSession, startBtwSession } from "./btw/controller";
 import { createSidebarState } from "./sidebar/state";
@@ -119,8 +120,8 @@ import {
   prepareConversationOpen,
 } from "./conversationscroll";
 import { writeFileSync } from "node:fs";
-import { spawnSshProxy } from "@exocortex/shared/ssh-transport";
 import { takeEarlySshProcess } from "./early-ssh";
+import { spawnReusingSshProxy, sshProbeFallback } from "./ssh-mux";
 import { applyTuiLaunchOptions, parseTuiLaunchArgs, TUI_USAGE, type TuiLaunchOptions } from "./launchargs";
 import { reconnectDelayMs } from "./reconnect-delay";
 import { msUntilLocalMidnight } from "./metadata";
@@ -273,6 +274,9 @@ function startupProfileComponents(): Record<string, boolean> {
     && (!launchOptions.sshAlias || state.sshRemote?.connected === true);
   const update = state.sidebar.updateStatus;
   return {
+    // The real UI replaced the SSH progress view.
+    ui: onTargetRoute && !state.sshConnecting,
+    sidebarComplete: onTargetRoute && startupProfileRouteData.sidebar && state.sidebar.partial === null,
     tools: onTargetRoute && startupProfileRouteData.tools,
     sidebar: onTargetRoute && startupProfileRouteData.sidebar,
     conversation: !startupProfileConvId || (onTargetRoute && startupProfileRouteData.conversation
@@ -286,6 +290,7 @@ function startupProfileComponents(): Record<string, boolean> {
 
 function startupProfileEvent(event: Event): void {
   if (!STARTUP_PROFILE) return;
+  if (event.type === "ssh_status") startupProfileMark("ssh_status", { state: event.state, switched: event.switched, message: event.message });
   if (event.type === "ssh_status" && event.state === "connected" && event.switched) {
     startupProfileRouteData = { tools: false, sidebar: false, conversation: false };
     startupProfileUsageProviders = new Set();
@@ -607,6 +612,7 @@ function resetForDaemonRouteSwitch(newRouteKey: string): void {
   state.pendingSend = { active: false, text: "" };
   state.pendingImages = [];
   state.toolRegistry = [];
+  state.toolsAvailableReceived = false;
   state.externalToolStyles = [];
   state.tokenStats = null;
   state.pendingTokenStatsView = null;
@@ -730,6 +736,12 @@ function onDaemonEvent(event: Event): void {
   invalidateHistoryRenderCache(state);
   handleEvent(event, state, daemon);
   startupProfileEvent(event);
+  if (state.sshConnecting?.phase === "loading" && (event.type === "conversation_loaded" || event.type === "tools_available")
+      && state.toolsAvailableReceived && state.convId && !isActiveConversationLoading(state) && state.messages.length > 0) {
+    // The conversation and its tool styles are here: draw it without waiting
+    // for the sidebar list (an older daemon sends it whole, and last).
+    state.sshConnecting = null;
+  }
   if (flushEditResendAfterEvent) flushDeferredEditResend();
   maybePrewarmOpenAI();
   let paintFirstText = false;
@@ -2293,6 +2305,27 @@ function restoreTerminal(): void {
 // ── Main ────────────────────────────────────────────────────────────
 
 let updateMonitor: UpdateStatusMonitor | null = null;
+
+/**
+ * What the sidebar will draw first on a route: the current view for the route
+ * shown now, else the one saved for it. The daemon's bootstrap opens with just
+ * those conversations; the rest follows.
+ */
+function sidebarViewHint(alias: string | null): SidebarViewHint {
+  const routeKey = daemonRouteKey(alias);
+  const view = routeKey === activeRouteKey ? captureRouteViewState(state) : routeViews.forRoute(routeKey);
+  const cursor = view.sidebarCursor?.selectedItem;
+  return {
+    folderView: state.sidebar.folderView,
+    currentFolderId: view.sidebarCursor?.currentFolderId ?? null,
+    expandedFolderIds: view.expandedFolderIds,
+    scrollOffset: view.sidebarCursor?.scrollOffset ?? 0,
+    // Also when the sidebar is closed now: it can be opened before the rest lands.
+    rows: state.rows,
+    conversationIds: [view.focusedConversationId, cursor?.type === "conversation" ? cursor.id : null]
+      .filter((id): id is string => Boolean(id)),
+  };
+}
 /** --ssh launch: the local route's bootstrap waits for the SSH switch's outcome. */
 let localBootstrapDeferred = false;
 
@@ -2316,8 +2349,10 @@ async function main(): Promise<void> {
     setTimeout(() => reportStartupProfile("timeout"), STARTUP_PROFILE_TIMEOUT_MS).unref?.();
   }
   daemon = new DaemonClient(onDaemonEvent, undefined, undefined, {
-    spawnSshProcess: alias => takeEarlySshProcess(alias) ?? spawnSshProxy(alias),
+    spawnSshProcess: alias => takeEarlySshProcess(alias) ?? spawnReusingSshProxy(alias),
+    sshProbeFallback,
   });
+  daemon.setSidebarViewHint(sidebarViewHint);
   remotePathCompletion = new RemotePathCompletionController(
     (directory, prefix) => daemon.requestPathDirectory(directory, prefix),
   );

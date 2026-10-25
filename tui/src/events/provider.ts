@@ -23,6 +23,7 @@ export function handleToolsAvailable(event: Extract<Event, { type: "tools_availa
     state.providerRegistry = event.providers;
   }
   state.toolRegistry = Array.isArray(event.tools) ? event.tools : [];
+  state.toolsAvailableReceived = true;
   if (event.authByProvider) {
     state.authByProvider = event.authByProvider;
   }

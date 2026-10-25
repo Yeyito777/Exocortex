@@ -311,6 +311,8 @@ export interface RenderState {
   lastStreamSeqByConv: Record<string, number | undefined>;
   /** Available tools reported by the daemon on connect. */
   toolRegistry: ToolDisplayInfo[];
+  /** This route's daemon sent tools_available: its tool styles are known. */
+  toolsAvailableReceived: boolean;
   /** Available providers and models reported by the daemon on connect. */
   providerRegistry: ProviderInfo[];
   /** External tool styles for bash sub-command matching (from daemon). */
@@ -725,6 +727,7 @@ export function createInitialState(): RenderState {
     pendingAICommittedLocalBlockIndex: null,
     lastStreamSeqByConv: {},
     toolRegistry: [],
+    toolsAvailableReceived: false,
     providerRegistry: [],
 	    externalToolStyles: [],
 	    showToolOutput: false,

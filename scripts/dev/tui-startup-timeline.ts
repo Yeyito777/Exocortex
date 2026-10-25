@@ -5,13 +5,15 @@
  * conversation, tools, usage, accounts, Local/Remote update status) and every
  * protocol line the TUI wrote or read on the way.
  *
- *   bun scripts/dev/tui-startup-timeline.ts [--ssh] [--rtt-ms 100] [--handshake-rtts 6] [--focus CONV_ID] [--runs 3] [--entry src/main.ts] [--wire]
+ *   bun scripts/dev/tui-startup-timeline.ts [--ssh] [--rtt-ms 100] [--handshake-rtts 6] [--focus CONV_ID] [--runs 3] [--entry src/main.ts] [--ssh-bin DIR] [--wire]
  *
  * --ssh starts the TUI as `--ssh fakehost` through scripts/dev/ssh-wan-sim.ts
  * (half the RTT each way, SSH -C compression, 20 Mbit/s); --handshake-rtts adds
  * OpenSSH's own handshake (about 6 round trips), which a real connection pays first. --focus is the
  * conversation the TUI reopens on every route (written to this worktree's tui-state.json).
- * Linux only (util-linux `script` provides the terminal). Refuses the primary
+ * --ssh-bin DIR uses DIR/ssh instead of the sim, for a real OpenSSH that reaches
+ * `fakehost` (a private sshd behind a delaying TCP forwarder measures the real
+ * handshake and connection reuse). Linux only (util-linux `script` provides the terminal). Refuses the primary
  * checkout: it rewrites tui-state.json and must never touch the real one.
  * Start the daemon first (scripts/dev/testd start <worktree>).
  */
@@ -38,6 +40,8 @@ const work = join(tmpdir(), `tui-startup-timeline-${process.pid}`);
 mkdirSync(join(work, "bin"), { recursive: true });
 writeFileSync(join(work, "bin", "ssh"), `#!/bin/sh\nexec bun ${JSON.stringify(join(repo, "scripts/dev/ssh-wan-sim.ts"))} "$@"\n`);
 chmodSync(join(work, "bin", "ssh"), 0o755);
+/** A directory whose `ssh` reaches `fakehost` for real (e.g. a private sshd behind a delaying forwarder). */
+const sshBin = option("--ssh-bin") ?? join(work, "bin");
 mkdirSync(join(repo, "config", "storage"), { recursive: true });
 
 try {
@@ -57,7 +61,7 @@ try {
       stderr: "ignore",
       env: {
         ...process.env,
-        PATH: `${join(work, "bin")}:${process.env.PATH}`,
+        PATH: `${sshBin}:${process.env.PATH}`,
         WAN_ONE_WAY_MS: String(rttMs / 2),
         WAN_HANDSHAKE_RTTS: option("--handshake-rtts") ?? "0",
         EXOCORTEX_PROFILE_STARTUP: "1",
@@ -76,6 +80,7 @@ try {
     console.log(`run ${run}: ${result.outcome} at ${result.readyMs} ms${result.missing.length ? `, missing ${result.missing.join(", ")}` : ""}`);
     console.log(`  first frame with: ${shown.map(([name, ms]) => `${name} ${ms}`).join(", ")}`);
     if (args.includes("--wire") && run === runs) {
+      for (const mark of result.marks) if (mark.event === "ssh_status") console.log(`  ${String(mark.elapsedMs).padStart(8)} ssh_status ${mark.state}${mark.switched ? " (switched)" : ""}: ${mark.message}`);
       for (const entry of result.wire) {
         console.log(`  ${String(entry.t).padStart(8)} c${entry.client} ${entry.route.padEnd(14)} ${entry.dir.padEnd(4)} ${entry.type.padEnd(32)} ${String(entry.bytes).padStart(8)}`);
       }

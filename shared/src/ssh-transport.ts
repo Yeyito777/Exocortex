@@ -25,7 +25,19 @@ export interface SshProcess {
 
 export type SpawnSshProcess = (alias: string) => SshProcess;
 
-export function sshProxyArgs(alias: string): string[] {
+export interface SshConnectionReuse {
+  /** Private control socket for this alias (see tui/src/ssh-mux.ts). */
+  controlPath: string;
+  /** How long the shared connection outlives its last session, e.g. "10m". */
+  persist: string;
+}
+
+/**
+ * `ssh … ALIAS exocortexd proxy`. With `reuse`, sessions share one connection
+ * through a private ControlMaster socket, so a later connect skips OpenSSH's
+ * handshake; otherwise every connection is fresh and never joins a master.
+ */
+export function sshProxyArgs(alias: string, reuse?: SshConnectionReuse): string[] {
   return [
     "-T",
     // The protocol is large, repetitive JSON (a real sidebar can exceed 1 MB).
@@ -39,15 +51,19 @@ export function sshProxyArgs(alias: string): string[] {
     // reconnect loop runs instead of waiting for the OS TCP timeout.
     "-o", "ServerAliveInterval=15",
     "-o", "ServerAliveCountMax=3",
-    // Do not inherit a shared master whose keepalive policy we cannot control.
-    "-o", "ControlPath=none",
+    // Never inherit a shared master whose keepalive policy we cannot control:
+    // either none, or our own, created with the options above. A stale socket
+    // (its master gone) is unlinked by ssh, which then becomes the new master.
+    ...(reuse
+      ? ["-o", "ControlMaster=auto", "-o", `ControlPath=${reuse.controlPath.replaceAll("%", "%%")}`, "-o", `ControlPersist=${reuse.persist}`]
+      : ["-o", "ControlPath=none"]),
     alias,
     "exocortexd", "proxy",
   ];
 }
 
-export function spawnSshProxy(alias: string): SshProcess {
-  return spawn("ssh", sshProxyArgs(alias), {
+export function spawnSshProxy(alias: string, reuse?: SshConnectionReuse): SshProcess {
+  return spawn("ssh", sshProxyArgs(alias, reuse), {
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
     shell: false,
@@ -221,5 +237,82 @@ export function probeSshProxy(alias: string, options: SshProbeOptions = {}): Ssh
   return {
     promise,
     cancel: reason => cancelProbe(reason),
+  };
+}
+
+export interface SshProbeFallback {
+  /** Without a pong by then, a second probe starts on this process (or at once if the first fails). */
+  afterMs: number;
+  spawnProcess: SpawnSshProcess;
+  /** The fallback's connection won. */
+  onUsed?: () => void;
+}
+
+/**
+ * A probe that hedges with a second, fresh connection: through a shared
+ * ControlMaster whose own connection died (a laptop that slept), a session
+ * gets no answer until ssh's keepalive gives up. The first probe to answer
+ * wins; the other is cancelled.
+ */
+export function probeSshProxyWithFallback(
+  alias: string,
+  options: SshProbeOptions & { fallback?: (primary: SshProcess) => SshProbeFallback | null },
+): SshProbe {
+  const { fallback: fallbackFor, ...probeOptions } = options;
+  const spawnProcess = probeOptions.spawnProcess ?? spawnSshProxy;
+  let primaryProcess: SshProcess | null = null;
+  const primary = probeSshProxy(alias, {
+    ...probeOptions,
+    spawnProcess: target => (primaryProcess = spawnProcess(target)),
+  });
+  const fallback = primaryProcess && fallbackFor ? fallbackFor(primaryProcess) : null;
+  if (!fallback) return primary;
+  let secondary: SshProbe | null = null;
+  let settled = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const promise = new Promise<ProbedSshConnection>((resolve, reject) => {
+    let primaryFailed = false;
+    let secondaryFailed = false;
+    const win = (connection: ProbedSshConnection, usedFallback: boolean) => {
+      if (settled) {
+        try { connection.process.kill(); } catch { /* already gone */ }
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      (usedFallback ? primary : secondary)?.cancel("another SSH connection answered first");
+      if (usedFallback) fallback.onUsed?.();
+      resolve(connection);
+    };
+    // The fresh connection's failure explains itself best (DNS, auth, network).
+    const failIfBothFailed = (error: unknown) => {
+      if (settled || !primaryFailed || !secondaryFailed) return;
+      settled = true;
+      reject(error);
+    };
+    const startSecondary = () => {
+      if (secondary || settled) return;
+      clearTimeout(timer);
+      secondary = probeSshProxy(alias, { ...probeOptions, spawnProcess: fallback.spawnProcess });
+      secondary.promise.then(connection => win(connection, true), error => {
+        secondaryFailed = true;
+        failIfBothFailed(error);
+      });
+    };
+    primary.promise.then(connection => win(connection, false), error => {
+      primaryFailed = true;
+      if (!secondary) startSecondary();
+      else failIfBothFailed(error);
+    });
+    timer = setTimeout(startSecondary, fallback.afterMs);
+    timer.unref?.();
+  });
+  return {
+    promise,
+    cancel: reason => {
+      clearTimeout(timer);
+      primary.cancel(reason);
+      (secondary as SshProbe | null)?.cancel(reason);
+    },
   };
 }

@@ -45,6 +45,7 @@ import { rememberSentImages, resolveImageForPreview } from "./image-requests";
 import { cachedImagePreview, renderImagePreview, validatePreviewRequest, isImageId } from "./attachments";
 import { DaemonServer, broadcastUsageUpdate, type ConnectedClient } from "./server";
 import { isSidebarDigest, sidebarListDelta } from "@exocortex/shared/sidebar-digest";
+import { isSidebarViewHint, sidebarFirstPageConversationIds, sidebarFolderConversationCounts } from "@exocortex/shared/sidebar-first-page";
 import type { Command, Event, SidebarItemOrderUpdate } from "./protocol";
 import { clearAuth, ensureAuthenticated, getAuthByProvider, getAuthInfoByProvider, hasConfiguredCredentials, invalidateCredentialsCache } from "./auth";
 import { addAccount as addOpenAIAccount, listAccounts as listOpenAIAccounts, removeAccount as removeOpenAIAccount, switchAccount as switchOpenAIAccount } from "./providers/openai/auth";
@@ -390,6 +391,40 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     client.sidebarDigest = undefined;
     const delta = sidebarListDelta(state.conversations, state.folders, digest);
     return { type: "conversations_list", reqId, ...(delta ?? state) };
+  };
+  /**
+   * The bootstrap's conversation list: with sidebar-incremental and a view
+   * (and no digest, whose delta is smaller still), a first page for that view
+   * and then the rest; both come from one snapshot, sent with nothing that
+   * changes the sidebar in between.
+   */
+  const bootstrapConversationsLists = (client: ConnectedClient): Array<Extract<Event, { type: "conversations_list" }>> => {
+    const view = client.sidebarView;
+    client.sidebarView = undefined;
+    if (!view || client.sidebarDigest || !client.capabilities?.has("sidebar-incremental")) return [conversationsListFor(client)];
+    const { conversations, folders } = convStore.listSidebarState();
+    const first = new Set([
+      ...sidebarFirstPageConversationIds(conversations, folders, view),
+      ...view.conversationIds,
+      ...convStore.listQueuedMessages().map(message => message.convId),
+    ]);
+    for (const conversation of conversations) {
+      // Rows whose state shows in folder badges, the activity panel or attention navigation.
+      if (conversation.streaming || conversation.unread || conversation.providerWaiting
+          || (conversation.tasks?.length ?? 0) > 0 || (conversation.subagentCount ?? 0) > 0
+          || (conversation.backgroundTaskCount ?? 0) > 0) first.add(conversation.id);
+    }
+    const page = conversations.filter(conversation => first.has(conversation.id));
+    const rest = conversations.filter(conversation => !first.has(conversation.id));
+    return [
+      {
+        type: "conversations_list",
+        conversations: page,
+        folders,
+        sidebarPartial: { remaining: rest.length, folderConversationCounts: sidebarFolderConversationCounts(conversations, folders) },
+      },
+      { type: "conversations_list", conversations: rest, sidebarRest: true },
+    ];
   };
   const broadcastTokenStats = () => {
     server.broadcastLegacyTokenStats(getTokenStatsSnapshot);
@@ -1618,6 +1653,10 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           break;
         }
         server.sendTo(client, { type: "pong", reqId: cmd.reqId });
+        // An incremental first page is small and drawn together with the
+        // conversation, so it leads; a whole list stays behind the small events.
+        const [conversationsList, restOfList] = bootstrapConversationsLists(client);
+        if (restOfList) server.sendTo(client, conversationsList!);
         const externalStyles = getExternalToolStyles();
         server.sendTo(client, {
           type: "tools_available",
@@ -1642,12 +1681,13 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         if (updateStatus) server.sendTo(client, { type: "update_status", status: updateStatus });
         // The sidebar is the startup-critical payload. Token statistics can be
         // large and are independent, so never put them ahead of first paint.
-        server.sendTo(client, conversationsListFor(client));
+        if (!restOfList) server.sendTo(client, conversationsList!);
         if (!client.capabilities?.has("token-stats-on-demand")) {
           server.sendTo(client, { type: "token_stats", stats: getTokenStatsSnapshot() });
         }
         server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages() });
         server.sendTo(client, { type: "connectivity_status", ...connectivity.snapshot() });
+        if (restOfList) server.sendTo(client, restOfList);
         for (const provider of getProviders()) {
           if (!hasConfiguredCredentials(provider.id)) continue;
           refreshUsage(provider.id, (usage) => broadcastUsage(provider.id, usage));
@@ -2009,10 +2049,14 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
               || capability === "history-block-pagination"
               || capability === "token-stats-on-demand"
               || capability === "sidebar-digest-sync"
-              || capability === "update-status-push") client.capabilities.add(capability);
+              || capability === "update-status-push"
+              || capability === "sidebar-incremental") client.capabilities.add(capability);
         }
         if (client.capabilities.has("sidebar-digest-sync") && isSidebarDigest(cmd.sidebarDigest)) {
           client.sidebarDigest = cmd.sidebarDigest;
+        }
+        if (client.capabilities.has("sidebar-incremental") && isSidebarViewHint(cmd.sidebarView)) {
+          client.sidebarView = cmd.sidebarView;
         }
         if (cmd.clientHost) attachClientHost(client, cmd.clientHost, event => server.sendTo(client, event));
         break;
