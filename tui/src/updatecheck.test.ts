@@ -180,6 +180,24 @@ describe("GitHub comparison", () => {
     expect(await disabled()).toBe("disabled");
   });
 
+  test("git timing out (a loaded machine) is Unknown, never Disabled, and the startup capture is retried", async () => {
+    const root = repo();
+    const bin = mkdtempSync(join(tmpdir(), "exo-killed-git-"));
+    roots.push(bin);
+    // Stands in for git killed by execFile's timeout: it dies by a signal.
+    writeFileSync(join(bin, "git"), "#!/bin/sh\nkill -TERM $$\n", { mode: 0o755 });
+    const path = process.env.PATH;
+    process.env.PATH = `${bin}:${path}`;
+    let checker: () => Promise<string>;
+    try {
+      checker = createUpdateStatusChecker(root, response("identical"));
+      expect(await checker()).toBe("unknown");
+    } finally {
+      process.env.PATH = path;
+    }
+    expect(await checker!()).toBe("none");
+  });
+
   test("a pull during the upstream request yields Restart needed, not None", async () => {
     const root = repo();
     git(root, "checkout", "-b", "side");

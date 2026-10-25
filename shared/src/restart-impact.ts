@@ -6,6 +6,21 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 
 /**
+ * git timed out or couldn't start (a heavily loaded machine): no answer about
+ * the checkout either way, so callers retry rather than settle on a status.
+ */
+export class GitUnavailableError extends Error {}
+
+/** Wraps execFile's timeout/spawn failures; a git exit status stays an ordinary error. */
+export function asGitUnavailable(err: unknown): unknown {
+  const e = err as { killed?: boolean; signal?: string | null; code?: unknown; message?: string } | null;
+  if (e && (e.killed || e.signal || typeof e.code === "string")) {
+    return new GitUnavailableError(`git unavailable: ${e.message ?? String(err)}`);
+  }
+  return err;
+}
+
+/**
  * Decides whether the files changed between the running daemon's commit and
  * disk HEAD can alter the running daemon. Anything unclear answers "restart".
  */
@@ -94,15 +109,24 @@ export async function daemonImportClosure(root: string): Promise<Set<string>> {
 }
 
 async function git(root: string, args: string[], maxBuffer = 16 * 1024 * 1024): Promise<string> {
-  const { stdout } = await execFileAsync("git", args, {
-    cwd: root, timeout: 10_000, maxBuffer,
-    env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_NO_LAZY_FETCH: "1" },
-  });
-  return stdout;
+  try {
+    const { stdout } = await execFileAsync("git", args, {
+      cwd: root, timeout: 10_000, maxBuffer,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_NO_LAZY_FETCH: "1" },
+    });
+    return stdout;
+  } catch (err) {
+    throw asGitUnavailable(err);
+  }
 }
 
 async function show(root: string, commit: string, path: string): Promise<string | null> {
-  try { return await git(root, ["show", `${commit}:${path}`]); } catch { return null; }
+  try {
+    return await git(root, ["show", `${commit}:${path}`]);
+  } catch (err) {
+    if (err instanceof GitUnavailableError) throw err;
+    return null;
+  }
 }
 
 /** Does a source file's runtime output differ between two commits? A missing side counts as different. */
@@ -118,7 +142,8 @@ async function sourceChanged(root: string, from: string, to: string, path: strin
 
 /**
  * True when anything between two commits can change the running daemon.
- * `closure` is the import closure of `to`. Any failure answers true.
+ * `closure` is the import closure of `to`. Any failure answers true, except
+ * GitUnavailableError, which is thrown so the answer isn't kept.
  */
 export async function changesAffectDaemon(root: string, from: string, to: string, closure: Set<string>): Promise<boolean> {
   try {
@@ -136,7 +161,8 @@ export async function changesAffectDaemon(root: string, from: string, to: string
       if (changed.includes(true)) return true;
     }
     return false;
-  } catch {
+  } catch (err) {
+    if (err instanceof GitUnavailableError) throw err;
     return true;
   }
 }
