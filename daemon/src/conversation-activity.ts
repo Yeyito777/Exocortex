@@ -234,6 +234,11 @@ export function activeSubagentDescendants(convId: string): string[] {
   return found;
 }
 
+/** Whether a child currently has an active entry in its parent's Tasks. */
+export function isSubagentActive(parentConvId: string, childConvId: string): boolean {
+  return subagentsByParent.get(parentConvId)?.has(childConvId) === true;
+}
+
 /** Last known parent for a child, including after the active count was cleared. */
 export function getSubagentParentConversationId(childConvId: string): string | undefined {
   return subagentParentByChild.get(childConvId);

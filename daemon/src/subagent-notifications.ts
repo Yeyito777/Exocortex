@@ -76,6 +76,8 @@ export interface SubagentNotificationRuntime {
    * this turn yet, report it to the subagent's parent like a task.
    */
   relayFollowUp?(convId: string, automation: UserMessageAutomation, text: string, startedAt: number): void;
+  /** The owner's own prompt started or joined a subagent's turn: show it under its parent, unreported. */
+  trackOwnerTurn?(convId: string, startedAt: number): void;
 }
 
 const notifications = new Map<string, PendingSubagentNotification>();
@@ -233,17 +235,30 @@ export function followUpTrigger(automation: UserMessageAutomation, parentConvId:
     case "chrono_wake":
     case "chrono_hard_wake": return "a wake it scheduled";
     case "external_notification": return "an external notification";
+    case "goal_continuation": return "goal continuation";
     default: return automation.kind;
   }
 }
 
-function textFromBlocks(blocks: Block[]): string {
+function joinText(blocks: Block[]): string {
   return blocks
     .filter((block): block is Extract<Block, { type: "text" }> => block.type === "text")
     .map((block) => block.text.trim())
     .filter(Boolean)
     .join("\n\n")
     .trim();
+}
+
+/**
+ * The child's final message of the turn: its text after the last tool call,
+ * without the progress lines it wrote along the way (the full turn stays in
+ * its conversation). An empty final message falls back to the last non-empty
+ * text block.
+ */
+export function finalTextFromBlocks(blocks: Block[]): string {
+  const lastTool = blocks.findLastIndex((block) => block.type === "tool_call" || block.type === "tool_result");
+  return joinText(blocks.slice(lastTool + 1))
+    || joinText(blocks.filter((block) => block.type === "text" && block.text.trim()).slice(-1));
 }
 
 function capText(text: string, maxChars: number): string {
@@ -258,7 +273,7 @@ export function buildSubagentNotificationText(
   const title = (convStore.getIndexedSummary(record.childConvId)?.title || record.task.split("\n")[0] || "subagent task").trim();
   const stopped = outcome.aborted === true && !outcome.watchdog;
   const pending = stopped ? [] : outcome.pendingWork ?? [];
-  const text = textFromBlocks(outcome.blocks);
+  const text = finalTextFromBlocks(outcome.blocks);
   const body = stopped
     ? text
     : outcome.ok
@@ -365,7 +380,9 @@ export function completedSubagentOutcomeFromHistory(
   if (!hasSubagentTaskStarted(record)) return null;
   const text = convStore.completedTaskText(record.childConvId, record.childStartedAt);
   if (!text) return null;
-  const blocks: Block[] = text.map(text => ({ type: "text", text }));
+  // History keeps only the turn's text, not where its tool calls fell: report the last of it.
+  const last = text.findLast(part => part.trim());
+  const blocks: Block[] = last ? [{ type: "text", text: last }] : [];
   return { ok: true, blocks };
 }
 

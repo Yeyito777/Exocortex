@@ -2133,6 +2133,7 @@ describe("subagent completion is owned by the turn, not its starter", () => {
     create(childId, "openai", "gpt-5.6-sol");
     const fake = server();
     const relayed: Array<{ kind: string; sourceId?: string; text: string; persisted: boolean }> = [];
+    const ownerTurns: string[] = [];
     registerSubagentNotificationRuntime(fake, {
       begin: beginPendingSubagentNotification,
       complete: (childConvId, outcome) => { settlePendingSubagentNotifications(childConvId, outcome); },
@@ -2141,6 +2142,7 @@ describe("subagent completion is owned by the turn, not its starter", () => {
         const persisted = get(convId)!.messages.some(message => message.role === "user" && message.metadata?.startedAt === startedAt);
         relayed.push({ kind: automation.kind, sourceId: automation.sourceId, text, persisted });
       },
+      trackOwnerTurn: (convId) => { ownerTurns.push(convId); },
     });
     let calls = 0;
     const fakeStream = (async () => {
@@ -2170,6 +2172,34 @@ describe("subagent completion is owned by the turn, not its starter", () => {
       { kind: "exo_send", sourceId: "a-sibling", text: "from a sibling", persisted: true },
       { kind: "exo_send", sourceId: "the-parent", text: "Mac steps are done", persisted: true },
     ]);
+    // The owner's prompt joining it shows the child as working, unreported.
+    expect(ownerTurns).toEqual([childId]);
+  });
+
+  // An owner-typed turn in a subagent is theirs: nothing reports it, but its
+  // parent's Tasks show the child working while it runs.
+  test("an owner-typed turn is offered for tracking, not relay", async () => {
+    const childId = id("owner-turn-child");
+    create(childId, "openai", "gpt-5.6-sol");
+    const fake = server();
+    const relayed: string[] = [];
+    const ownerTurns: Array<{ convId: string; startedAt: number }> = [];
+    registerSubagentNotificationRuntime(fake, {
+      begin: beginPendingSubagentNotification,
+      complete: (childConvId, outcome) => { settlePendingSubagentNotifications(childConvId, outcome); },
+      deliverReady: () => {},
+      relayFollowUp: (convId) => { relayed.push(convId); },
+      trackOwnerTurn: (convId, startedAt) => { ownerTurns.push({ convId, startedAt }); },
+    });
+    const fakeStream = (async () => ({
+      text: "reply", thinking: "", stopReason: "stop" as const,
+      blocks: [{ type: "text" as const, text: "reply" }], toolCalls: [], inputTokens: 1, outputTokens: 1,
+    })) as typeof streamMessage;
+    const startedAt = Date.now();
+    const outcome = await orchestrateSendMessage(fake as never, null, undefined, childId, "owner asks", startedAt, callbacks(fakeStream));
+    expect(outcome.ok).toBe(true);
+    expect(relayed).toEqual([]);
+    expect(ownerTurns).toEqual([{ convId: childId, startedAt }]);
   });
 
   // A foreground `exo send` waits for the reply itself: the parent must not
