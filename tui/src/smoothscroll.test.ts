@@ -4,6 +4,7 @@ import { createInitialState, type RenderState } from "./state";
 import { invalidateFrame, setScrollRegionsEnabled } from "./frame";
 import {
   SMOOTH_SCROLL_MARGIN_ROWS, SmoothScroller, markScrollIntent, easeRemaining, offsetPayload, parseSmoothScrollReport, rectsPayload, setSmoothScroller,
+  imageClipPayload, parseImageClipReport,
 } from "./smoothscroll";
 import { TerminalScreen } from "./testhelpers/terminalscreen";
 import { TerminalControlBuffer } from "./terminalclipboard";
@@ -84,6 +85,23 @@ describe("protocol", () => {
     expect(control).toEqual(["\x1b[?2032;2$y"]);
     expect(input).toEqual(["j"]);
     buffer.dispose();
+  });
+
+  test("image clip regions: DECRQM 2033 replies, routing and the k payload", () => {
+    expect(parseImageClipReport("\x1b[?2033;3$y")).toBe(true);
+    expect(parseImageClipReport("\x1b[?2033;1$y")).toBe(true);
+    expect(parseImageClipReport("\x1b[?2033;4$y")).toBe(false);
+    expect(parseImageClipReport("\x1b[?2033;0$y")).toBe(false);
+    expect(parseImageClipReport("\x1b[?2032;3$y")).toBeNull();
+    const input: string[] = [];
+    const control: string[] = [];
+    const buffer = new TerminalControlBuffer(data => input.push(data), sequence => control.push(sequence));
+    buffer.feed("\x1b[?2033;3$yj");
+    expect(control).toEqual(["\x1b[?2033;3$y"]);
+    expect(input).toEqual(["j"]);
+    buffer.dispose();
+    expect(imageClipPayload([{ top: 3, left: 29, bottom: 40, right: 140 }])).toBe("\x1b]2032;k;3,29,40,140\x1b\\");
+    expect(imageClipPayload([])).toBe("\x1b]2032;k\x1b\\");
   });
 
   test("payloads", () => {
@@ -365,6 +383,31 @@ describe("rendering with app-driven smooth scrolling", () => {
     // Rows are laid out ahead of the glide: the input's own frame scrolls.
     const step = capture(state);
     expect(step).toMatch(/\x1b\[3;\d+r\x1b\[\d+T/);
+    setSmoothScroller(state, null);
+  });
+
+  test("with image clip regions the pane beside the Tasks panel is declared like the moving rectangles, over the whole pane", () => {
+    const state = historyState(true);
+    const smooth = new SmoothScroller(100, () => now, 30);
+    smooth.useImageClip(true);
+    setSmoothScroller(state, smooth);
+    const out = capture(state);
+    const panel = state.layout.taskPanelRect!;
+    const clips = /\x1b\]2032;k((?:;\d+,\d+,\d+,\d+)*)\x1b\\/.exec(out)![1].slice(1).split(";").map(rect => rect.split(",").map(Number));
+    expect(clips).toHaveLength(2);
+    expect(clips[0]).toEqual([3, clips[0][1], 2 + state.layout.messageAreaHeight, panel.left - 1]);
+    expect(clips[1][0]).toBe(panel.bottom + 2);
+    expect(clips[1][1]).toBe(panel.left);
+    // Sent once; again only when the pane changes.
+    expect(capture(state)).not.toContain("\x1b]2032;k");
+    setSmoothScroller(state, null);
+  });
+
+  test("without st's image clip regions none are declared", () => {
+    const state = historyState(false);
+    const smooth = new SmoothScroller(100, () => now, 30);
+    setSmoothScroller(state, smooth);
+    expect(capture(state)).not.toContain("\x1b]2032;k");
     setSmoothScroller(state, null);
   });
 

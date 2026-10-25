@@ -478,7 +478,7 @@ export class TerminalControlBuffer {
         const sequence = this.buffer.slice(0, final + 1);
         this.buffer = this.buffer.slice(final + 1);
         // Clipboard mode reports, DA1 (ESC [ ? … c), and cell size (ESC [ 6 ; h ; w t).
-        if (/^\x1b\[\?(?:5522|2032);[0-4]\$y$/.test(sequence) || /^\x1b\[\?[\d;]*c$/.test(sequence) || /^\x1b\[6;\d+;\d+t$/.test(sequence)) {
+        if (/^\x1b\[\?(?:5522|2032|2033);[0-4]\$y$/.test(sequence) || /^\x1b\[\?[\d;]*c$/.test(sequence) || /^\x1b\[6;\d+;\d+t$/.test(sequence)) {
           this.onControlSequence(sequence);
         } else {
           this.emitInput(sequence);

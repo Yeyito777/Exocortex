@@ -209,6 +209,44 @@ describe("image viewer", () => {
     disposeHistoryImages(state);
   });
 
+  test("with st's image clip regions (mode 2033) the pane is declared and an image cut off at the bottom stays whole, at rest too", async () => {
+    configureInlineImages({ fetch: async request => pngFetch(request), onChange: () => {} });
+    setInlineImageMode("kitty");
+    setInlineImageCellSize({ width: 8, height: 16 });
+    const state = imageState();
+    state.rows = 14;
+    capture(state);
+    const imageLine = state.historyLineAnchors.findIndex(anchor => anchor.images);
+    state.scrollOffset = Math.min(state.layout.totalLines - imageLine - 1, state.layout.totalLines - state.layout.messageAreaHeight);
+    const [plain] = placements(await readyFrame(state));
+    expect(plain.controls).toContain(",h=");
+    const now = 1000;
+    const smooth = new SmoothScroller(100, () => now);
+    smooth.useImageClip(true);
+    setSmoothScroller(state, smooth);
+    invalidateFrame(state);
+    invalidateHistoryImagePlacements(state);
+    const out = capture(state);
+    // The conversation pane is the clip region.
+    const clip = /\x1b\]2032;k;(\d+),(\d+),(\d+),(\d+)\x1b\\/.exec(out)!.slice(1).map(Number);
+    expect(clip[1]).toBe(state.layout.chatCol);
+    expect(clip[3]).toBe(state.layout.chatCol + state.layout.chatWidth - 1);
+    expect(clip[2] - clip[0] + 1).toBe(state.layout.messageAreaHeight);
+    // At rest the image is placed whole past the pane: st clips it there.
+    const rowsOf = (controls: string) => Number(/,r=(\d+),/.exec(controls)![1]);
+    const [rest] = placements(out);
+    expect(rest.controls).not.toContain(",h=");
+    expect(rowsOf(rest.controls)).toBeGreaterThan(rowsOf(plain.controls));
+    expect(rest.row + rowsOf(rest.controls) - 1).toBeGreaterThan(clip[2]);
+    // The image viewer opening clears the clip regions (its image sits in the pane).
+    state.imageModal = { images: [{ id: "e".repeat(64), mediaType: "image/png", width: 400, height: 200, sizeBytes: 5000, name: "chart.png" }], index: 0 } as unknown as RenderState["imageModal"];
+    const viewer = capture(state);
+    expect(viewer).toContain("\x1b]2032;k\x1b\\");
+    state.imageModal = null;
+    setSmoothScroller(state, null);
+    disposeHistoryImages(state);
+  });
+
   test("the task panel crops a thumbnail around itself instead of dropping the rows it overlaps", async () => {
     configureInlineImages({ fetch: async request => pngFetch(request), onChange: () => {} });
     setInlineImageMode("kitty");
