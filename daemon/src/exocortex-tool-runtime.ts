@@ -21,7 +21,7 @@ import {
   getSupportedEfforts, getProvider, normalizeEffort, supportsEffort, supportsFastMode,
 } from "./providers/registry";
 import type { DaemonServer } from "./server";
-import { maxSubagentDepth, subagentDepth } from "./subagent-policy";
+import { maxSubagentDepth, subagentDepth, subagentTaskLabel } from "./subagent-policy";
 import { validateCommandArgs } from "./tools/command-schema";
 import { exo } from "./tools/exo";
 import type { ExocortexToolRuntime, ToolResult } from "./tools/types";
@@ -206,7 +206,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
             && listPendingSubagentNotifications({ childConvId: convId, state: "running" })
               .some(record => record.parentConvId === parentId);
           if (!continuesSleepingTask) deps.beginParentNotification?.({ convId: parentId }, convId, text, startedAt, maxDepth, ownChild);
-          const title = convStore.getIndexedSummary(convId)?.title || "Subagent task";
+          const title = convStore.subagentTaskTitle(convId) || "Subagent task";
           if (ownChild) track(parentId, convId, true, { title, startedAt });
           let finished = false;
           const finish = (outcome: AssistantTurnOutcome) => {
@@ -278,6 +278,8 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
         if (!folder) throw new Error(`Failed to create ${SUBAGENTS_FOLDER_NAME} folder`);
         const convId = convStore.generateId();
         const title = prompt.replace(/\s+/g, " ").split(" ").slice(0, 6).join(" ").slice(0, 60);
+        // The six-word title names the conversation; the parent's Tasks entry shows more of the prompt.
+        const taskLabel = subagentTaskLabel(prompt);
         const child = convStore.create(convId, provider, model, title, effort, fastMode, folder.id);
         child.subagentMaxDepth = childBudget;
         convStore.setSubagentPolicy(convId, {
@@ -287,6 +289,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
           parentSystemInstructions: convStore.getEffectiveSystemInstructions(parentId) ?? "",
           depth: childDepth,
           ...(args.detach === true ? { detached: true } : {}),
+          taskLabel,
         });
         broadcastConversationUpdated(server, convId);
         // The row itself arrived with conversation_updated; the folder may be new.
@@ -294,7 +297,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
         const startedAt = Date.now();
         const notify = args.detach !== true;
         if (notify) deps.beginParentNotification?.({ convId: parentId }, convId, prompt, startedAt, childBudget, true);
-        track(parentId, convId, true, { title, startedAt });
+        track(parentId, convId, true, { title: taskLabel, startedAt });
         let finished = false;
         const finish = (outcome: AssistantTurnOutcome) => {
           if (outcome.suspended || finished) return;

@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   EXPANDED_PANEL_WIDTH_FACTOR,
+  EXPANDED_SUBAGENT_TITLE_CHARS,
+  EXPANDED_SUBAGENT_TITLE_ROWS,
   isTaskPanelExpanded,
   layoutTaskPanel,
   MAX_TASK_PANEL_HEIGHT,
@@ -146,6 +148,35 @@ describe("expanded task panel", () => {
     // Every entry's status ends in the same column as the next entry's.
     const statusEnds = body.filter(line => /^│ [◷◆$]/.test(line)).map(line => line.trimEnd().length);
     expect(new Set(statusEnds).size).toBe(1);
+  });
+
+  test("shows a few rows of a subagent's prompt, ellipsized after that, while collapsed keeps one row", () => {
+    const prompt = "You are the DEVICE LEAD for the phone rebuild.\n\n  Read docs/plan.md, then split the kernel, UI/UX and stage 2 work "
+      + "between the three agents already running, review each of their merges, keep the device build green on every push and report "
+      + "progress, blockers and anything the owner must decide in plain words.";
+    const state = stateWithTasks([{ id: "lead", kind: "subagent", title: prompt, startedAt: NOW - 60_000 }]);
+    const collapsed = bodyOf(renderTaskPanel(state, 100, 60, NOW)!.lines);
+    expect(collapsed).toHaveLength(1);
+    expect(collapsed[0]).toContain("◆ Exocortex You are the DEVICE LEAD fo…");
+    toggleTaskPanelExpansion(state);
+    const body = bodyOf(renderTaskPanel(state, 100, 60, NOW)!.lines);
+    expect(body).toHaveLength(EXPANDED_SUBAGENT_TITLE_ROWS);
+    const titleCol = body[0].indexOf("You are");
+    const shown = body.map(line => line.slice(titleCol, -9).trim()).join(" ");
+    // Whitespace collapsed, well past the old six-word stub, and cut with an ellipsis.
+    expect(shown).toStartWith("You are the DEVICE LEAD for the phone rebuild. Read docs/plan.md, then split");
+    expect(shown).toEndWith("…");
+    expect(shown.length).toBeLessThanOrEqual(EXPANDED_SUBAGENT_TITLE_CHARS + EXPANDED_SUBAGENT_TITLE_ROWS);
+    expect(shown.length).toBeGreaterThan(100);
+    expect(shown).not.toContain("plain words");
+  });
+
+  test("a short subagent prompt wraps in full with no ellipsis", () => {
+    const state = stateWithTasks([{ id: "s", kind: "subagent", title: "Map daemon events and write the protocol notes for the TUI client", startedAt: NOW }]);
+    toggleTaskPanelExpansion(state);
+    const joined = bodyOf(renderTaskPanel(state, 100, 60, NOW)!.lines).join("\n");
+    expect(joined).toContain("protocol notes");
+    expect(joined).not.toContain("…");
   });
 
   test("wraps subscription titles under their own title column", () => {

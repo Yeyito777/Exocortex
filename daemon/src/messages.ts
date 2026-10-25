@@ -156,6 +156,8 @@ export interface SubagentPolicy {
   depth?: number;
   /** Spawned with detach:true, so its follow-up turns are not relayed to the parent. */
   detached?: boolean;
+  /** Its initial prompt, whitespace collapsed and clipped: what its entry in the parent's Tasks panel shows. */
+  taskLabel?: string;
 }
 
 export interface Conversation {

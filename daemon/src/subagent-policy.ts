@@ -15,6 +15,16 @@ export const SCOPED_SUBAGENT_WRAPPER_NOTE = [
   "Return only: conclusion, path:line evidence, and unresolved uncertainty.",
 ].join("\n");
 
+/** Longest Tasks-panel label kept from a subagent's prompt; clients clip it further to fit. */
+export const SUBAGENT_TASK_LABEL_MAX_CHARS = 200;
+
+/** A subagent's Tasks-panel label: its prompt on one line, ellipsized past the cap. */
+export function subagentTaskLabel(prompt: string): string {
+  const chars = Array.from(prompt.replace(/\s+/g, " ").trim());
+  if (chars.length <= SUBAGENT_TASK_LABEL_MAX_CHARS) return chars.join("");
+  return `${chars.slice(0, SUBAGENT_TASK_LABEL_MAX_CHARS - 1).join("").trimEnd()}…`;
+}
+
 export function isScopedSubagent(conversation: Pick<Conversation, "subagentPolicy">): boolean {
   return conversation.subagentPolicy != null;
 }

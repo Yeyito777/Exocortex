@@ -82,7 +82,7 @@ for (const backend of ["json", "sqlite"] as const) {
       const h = harness(backend, id);
       const conv = fixture(id);
       conv.subagentMaxDepth = 0;
-      conv.subagentPolicy = { parentConversationId: "parent", allowEdits: false, parentSystemInstructions: "Parent" };
+      conv.subagentPolicy = { parentConversationId: "parent", allowEdits: false, parentSystemInstructions: "Parent", taskLabel: "Inspect the renderer and report" };
       conv.toolPolicy = { internal: ["read"], external: [] };
       h.repository.save(conv);
 
