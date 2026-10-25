@@ -913,3 +913,77 @@ describe("the gap around a notification shown in full", () => {
     freshMatchesIncremental(state);
   });
 });
+
+describe("images the attach tool added", () => {
+  const ref = (n: number) => ({ id: String(n).repeat(64), mediaType: "image/png" as const, width: 400, height: 200, sizeBytes: 5000, name: `shot${n}.png` });
+  const attach = (id: string, count: number): Extract<Message, { role: "assistant" }>["blocks"] => [
+    { type: "tool_call", toolCallId: id, toolName: "attach", input: { paths: ["a.png"] }, summary: "a.png" },
+    { type: "tool_result", toolCallId: id, toolName: "attach", output: `Attached ${count} images`, isError: false, images: Array.from({ length: count }, (_, i) => ref(i + 1)) },
+  ];
+  const midRun = (text: string, startedAt = 5_000): Message => ({ role: "user", text, metadata: { startedAt, endedAt: startedAt, model: MODEL, tokens: 0, queueEntryId: `q${startedAt}` } });
+  /** Each drawn row's segment, in order, collapsing runs: where the images sit among the bubbles and replies. */
+  function layout(state: RenderState): string[] {
+    const out: string[] = [];
+    for (const anchor of buildMessageLines(state, 100).lineAnchors) {
+      const segment = anchor.segment === "user_margin_top" || anchor.segment === "user_margin_bottom" ? null : anchor.segment;
+      if (segment && out.at(-1) !== segment) out.push(segment);
+    }
+    return out;
+  }
+  const images = (state: RenderState) => buildMessageLines(state, 100).lineAnchors.filter(anchor => anchor.segment === "assistant_image");
+
+  test("stay in view when the owner's message went into the turn after them, where Ctrl+O shows them", () => {
+    const state = createInitialState();
+    state.messages.push(
+      user("compare the two"),
+      assistant([...call("c1", "make shots"), ...attach("c2", 3)]),
+      midRun("also the old one"),
+      assistant([...call("c3", "git log"), { type: "text", text: "Done: B is better." }]),
+    );
+    expect(layout(state)).toEqual(["user_content", "assistant_image", "user_content", "assistant_block", "assistant_metadata"]);
+    expect(images(state).length).toBeGreaterThan(0);
+    handleFocusedKey({ type: "ctrl-o" }, state);
+    const expanded = layout(state);
+    expect(expanded.indexOf("assistant_image")).toBeLessThan(expanded.lastIndexOf("user_content"));
+    freshMatchesIncremental(state);
+  });
+
+  test("stay in view when a notification went into the turn after them", () => {
+    const state = createInitialState();
+    state.messages.push(
+      user("compare the two"),
+      assistant(attach("c1", 2)),
+      note(1),
+      assistant([{ type: "text", text: "Done." }]),
+    );
+    expect(layout(state)).toEqual(["user_content", "assistant_image", "assistant_block", "assistant_metadata"]);
+  });
+
+  test("a turn that only attached them keeps them, also before the next prompt", () => {
+    const state = createInitialState();
+    state.messages.push(user("send me the chart"), assistant(attach("c1", 1)), user("thanks"), assistant([{ type: "text", text: "Sure." }]));
+    expect(layout(state)).toEqual(["user_content", "assistant_image", "user_content", "assistant_block", "assistant_metadata"]);
+  });
+
+  test("in the live turn: still in view after a message went in, and after it ends", () => {
+    const daemon: DaemonActions = { subscribe() {}, unsubscribe() {}, sendMessage() {}, setSystemInstructions() {}, loadToolOutputs() {} };
+    const state = createInitialState();
+    state.convId = "c";
+    const send = (event: object) => handleEvent({ convId: "c", ...event } as Event, state, daemon);
+    state.messages.push({ role: "user", text: "compare the two", metadata: { startedAt: 1_000, endedAt: 1_000, model: MODEL, tokens: 0 } });
+    send({ type: "streaming_started", provider: "anthropic", model: MODEL, startedAt: 1_000, snapshotKind: "start" });
+    const [attachCall, attachResult] = attach("c1", 3);
+    send(attachCall);
+    send(attachResult);
+    expect(images(state).length).toBeGreaterThan(0);
+    freshMatchesIncremental(state);
+    send({ type: "user_message", text: "also the old one", startedAt: 5_000, queueId: "q1" });
+    expect(layout(state).slice(0, 3)).toEqual(["user_content", "assistant_image", "user_content"]);
+    freshMatchesIncremental(state);
+    send({ type: "text_chunk", text: "B is better." });
+    send({ type: "message_complete", endedAt: 9_000, tokens: 40, blocks: [{ type: "text", text: "B is better." }] });
+    send({ type: "streaming_stopped" });
+    expect(layout(state)).toEqual(["user_content", "assistant_image", "user_content", "assistant_block", "assistant_metadata"]);
+    freshMatchesIncremental(state);
+  });
+});

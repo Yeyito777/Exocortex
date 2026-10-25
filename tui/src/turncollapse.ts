@@ -356,9 +356,13 @@ function gutterSegment(messages: readonly Message[], start: number, from: number
     const plan = plans[index - start];
     const hidden = plan?.kind === "assistant" ? plan.hidden : null;
     msg.blocks.forEach((block, blockIndex) => {
+      // Attached images show under their message even when its tool calls fold:
+      // they keep the segment, so a message delivered into the turn after them
+      // cannot fold them away with the work before it.
+      if (block.type === "tool_result" && block.images?.length) reply = true;
       if (hidden?.[blockIndex]) {
         if (block.type === "tool_call" || hasText(block)) folded = true;
-      } else if (hasText(block) || (block.type === "tool_result" && block.images?.length)) {
+      } else if (hasText(block)) {
         reply = true;
       }
     });

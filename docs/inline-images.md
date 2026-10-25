@@ -25,7 +25,12 @@ refs travel beside its text result in-process
 (`providers/anthropic/host-tool-attachments.ts`).
 
 The TUI draws attached images after the whole visible assistant message, just
-above its metadata line. Pasted images are drawn under the user's bubble.
+above its metadata line. They stay in view when the turn's work folds (the
+default view): a message delivered into the turn after them (the owner's
+next-turn message, a notification) splits the reply, and the images close the
+part before it, where Ctrl+O shows them too. They never move to the end of the
+final reply: that would make them jump down the screen during the turn and
+differ between the two views. The phone app follows the same rule. Pasted images are drawn under the user's bubble.
 Inline images are thumbnails (at most 56 columns × 12 rows, aspect preserved,
 never enlarged) with no caption: the viewer shows the name or type,
 resolution, and size, and a pasted image's bubble already has its 📎 badge.

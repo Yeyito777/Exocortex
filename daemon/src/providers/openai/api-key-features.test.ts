@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
+import { writeExocortexConfig } from "@exocortex/shared/config";
 import { resolveModelTokenPricing } from "@exocortex/shared/token-pricing";
 import { clearProviderAuth, saveProviderAuth } from "../../store";
 import { ensureAuthenticated, setOpenAIBrowserOAuthForTest } from "./auth";
@@ -172,5 +173,20 @@ describe("API-key usage", () => {
     const onUpdate = mock(() => {});
     handleUsageHeaders(new Headers({ [OPENAI_USAGE_ACCOUNT_KEY_HEADER]: accountKey, "x-codex-primary-used-percent": "50" }), onUpdate);
     expect(onUpdate).not.toHaveBeenCalled();
+  });
+
+  test("carries providers.openai.monthlyBudgetUsd, re-read on every update", async () => {
+    mockFetch(() => new Response("unexpected", { status: 500 }));
+    await loginWithKey();
+    try {
+      writeExocortexConfig({});
+      expect(getLastUsage()?.apiKey?.monthlyBudgetUsd).toBeNull();
+      writeExocortexConfig({ providers: { openai: { monthlyBudgetUsd: 20 } } });
+      expect(getLastUsage()?.apiKey?.monthlyBudgetUsd).toBe(20);
+      writeExocortexConfig({ providers: { openai: { monthlyBudgetUsd: -5 } } });
+      expect(getLastUsage()?.apiKey?.monthlyBudgetUsd).toBeNull();
+    } finally {
+      writeExocortexConfig({});
+    }
   });
 });
