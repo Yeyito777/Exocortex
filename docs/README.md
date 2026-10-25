@@ -26,6 +26,8 @@ selects another daemon without moving client-side UI operations to that host.
 - [Inline images](inline-images.md)
 - [Macros](macros.md)
 - [Update status](update-status.md)
+- [Test daemons and the main daemon](dev-daemons.md): start/stop worktree
+  daemons by PID (`scripts/dev/testd`), never by `pkill` pattern
 - [Network outages](network-outages.md)
 - [Scroll regions](scroll-regions.md): how the TUI scrolls the conversation
   pane. On by default; set `"tui": { "scrollRegions": false }` in

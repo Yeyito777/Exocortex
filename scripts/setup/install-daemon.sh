@@ -32,6 +32,10 @@ wait_for_socket() {
 
 mkdir -p "$UNIT_DIR"
 
+# Restart=always: any exit that isn't a requested stop comes back in 2s, also a
+# clean exit 0 after a stray SIGTERM (e.g. a pattern kill meant for a test
+# daemon). `exocortexd stop` is `systemctl stop`, which systemd never restarts;
+# exit 78 (configuration error) stays down too.
 cat > "$UNIT_FILE" << EOF
 [Unit]
 Description=Exocortex daemon (exocortexd)
@@ -41,7 +45,7 @@ Type=simple
 WorkingDirectory=$REPO_DIR/daemon
 Environment=PATH=$HOME/.local/bin:$BUN_DIR:$HOME/.bun/bin:$HOME/.local/bun/bin:$HOME/.local/rust/cargo/bin:/usr/local/bin:/usr/bin
 ExecStart=$REPO_DIR/bin/exocortexd
-Restart=on-failure
+Restart=always
 RestartPreventExitStatus=78
 RestartSec=2
 TimeoutStopSec=10

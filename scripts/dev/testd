@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# testd — start, stop or inspect a worktree's test daemon, by PID only.
+#
+# Usage:
+#   testd start  <worktree>   start it in the background (no TUI), print pid + socket
+#   testd stop   <worktree>   stop the daemon recorded in that worktree's pid file
+#   testd status <worktree>
+#
+# The daemon runs as `exocortexd-test:<worktree> run …/daemon/src/main.ts
+# --instance <worktree>`, so it is told apart from the main daemon
+# (`exocortexd-main …`). `stop` only signals the PID the worktree daemon wrote
+# itself, and refuses the main daemon's PID or a process that isn't this
+# worktree's daemon. Never stop daemons with pkill/killall patterns: the main
+# daemon is also a `bun … src/main.ts` process (docs/dev-daemons.md).
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=./worktree-common.sh
+source "$SCRIPT_DIR/worktree-common.sh"
+# Like exotest: runnable from the main checkout or a worktree's copy.
+COMMON_GIT_DIR="$(git -C "$SCRIPT_DIR" rev-parse --path-format=absolute --git-common-dir)"
+EXOCORTEX_ROOT="$(dirname "$COMMON_GIT_DIR")"
+
+ACTION="${1:-}"
+[[ "$ACTION" == start || "$ACTION" == stop || "$ACTION" == status ]] \
+  || worktree_die "Usage: testd start|stop|status <worktree>"
+WORKTREE_DIR="$(resolve_worktree_dir "${2:-}")"
+[[ -d "$WORKTREE_DIR/daemon" ]] || worktree_die "No daemon/ in $WORKTREE_DIR"
+[[ -f "$WORKTREE_DIR/.git" ]] || worktree_die "Not a linked worktree: $WORKTREE_DIR (the main checkout's daemon is not a test daemon)"
+WT_NAME="$(basename "$WORKTREE_DIR")"
+LABEL="exocortexd-test:$WT_NAME"
+RUNTIME_DIR="$WORKTREE_DIR/config/runtime/$WT_NAME"
+PID_FILE="$RUNTIME_DIR/exocortexd.pid"
+LOG="$RUNTIME_DIR/exocortexd.log"
+
+main_daemon_pids() {
+  # The daemon writes its pid file without a trailing newline.
+  printf '%s\n' "$(cat "$EXOCORTEX_ROOT/config/runtime/exocortexd.pid" 2>/dev/null || true)"
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl --user show -p MainPID --value exocortex-daemon.service 2>/dev/null || true
+  fi
+}
+
+process_cwd() {
+  if [[ -e "/proc/$1/cwd" ]]; then readlink "/proc/$1/cwd" 2>/dev/null || true
+  else lsof -a -p "$1" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' || true
+  fi
+}
+
+# Prints the recorded PID if it is alive and verifiably this worktree's daemon.
+# Returns 1 when nothing is running, 2 (with a message) for a PID it won't touch.
+owned_pid() {
+  local pid main
+  pid="$(cat "$PID_FILE" 2>/dev/null || true)"
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" 2>/dev/null || return 1
+  for main in $(main_daemon_pids); do
+    if [[ "$pid" == "$main" ]]; then
+      printf "\n  ✗ Refusing: pid %s is the main daemon\n\n" "$pid" >&2; return 2
+    fi
+  done
+  # Labelled by testd/exotest/run-daemon.sh, or an unlabelled daemon started
+  # from this worktree's daemon/ directory.
+  if ps -o command= -p "$pid" 2>/dev/null | grep -qF -- "$LABEL " \
+    || [[ "$(process_cwd "$pid")" == "$WORKTREE_DIR/daemon" ]]; then
+    printf '%s\n' "$pid"; return 0
+  fi
+  printf "\n  ✗ Refusing: pid %s (%s) is not %s's daemon\n\n" "$pid" "$(ps -o command= -p "$pid" 2>/dev/null)" "$WT_NAME" >&2
+  return 2
+}
+
+socket_path() {
+  (cd "$WORKTREE_DIR" && bun -e 'import { socketPath } from "./shared/src/paths"; process.stdout.write(socketPath())')
+}
+
+case "$ACTION" in
+  status)
+    rc=0; pid="$(owned_pid)" || rc=$?
+    case "$rc" in
+      0) echo "  $WT_NAME: running (pid $pid, socket $(socket_path))" ;;
+      1) echo "  $WT_NAME: not running" ;;
+      *) exit 1 ;;
+    esac
+    ;;
+  start)
+    rc=0; pid="$(owned_pid)" || rc=$?
+    case "$rc" in
+      0) echo "  $WT_NAME: already running (pid $pid, socket $(socket_path))"; exit 0 ;;
+      1) ;;
+      *) exit 1 ;;
+    esac
+    sync_dependency_artifacts "$WORKTREE_DIR"
+    (cd "$WORKTREE_DIR" && bun install --silent)
+    sync_shared_secrets "$WORKTREE_DIR"
+    sync_external_tools "$WORKTREE_DIR"
+    SOCKET="$(socket_path)"
+    mkdir -p "$RUNTIME_DIR"
+    rm -f "$SOCKET" "$PID_FILE"
+    (cd "$WORKTREE_DIR/daemon" && exec -a "$LABEL" bun run "$WORKTREE_DIR/daemon/src/main.ts" --instance "$WT_NAME" >>"$LOG" 2>&1 </dev/null) &
+    child=$!
+    for _ in $(seq 1 100); do
+      [[ -S "$SOCKET" && -f "$PID_FILE" ]] && break
+      kill -0 "$child" 2>/dev/null || worktree_die "Daemon exited early (check $LOG)"
+      sleep 0.1
+    done
+    [[ -S "$SOCKET" ]] || worktree_die "Daemon socket didn't appear after 10s (check $LOG)"
+    echo "  $WT_NAME: started (pid $(cat "$PID_FILE"), socket $SOCKET, log $LOG)"
+    echo "  Stop it with: scripts/dev/testd stop $WT_NAME"
+    ;;
+  stop)
+    rc=0; pid="$(owned_pid)" || rc=$?
+    case "$rc" in
+      0) ;;
+      1) echo "  $WT_NAME: not running"; exit 0 ;;
+      *) exit 1 ;;
+    esac
+    kill -TERM "$pid"
+    for _ in $(seq 1 100); do
+      kill -0 "$pid" 2>/dev/null || { echo "  $WT_NAME: stopped (pid $pid)"; exit 0; }
+      sleep 0.1
+    done
+    worktree_die "pid $pid did not exit within 10s"
+    ;;
+esac
