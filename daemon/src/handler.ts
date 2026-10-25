@@ -16,7 +16,7 @@ import { ConversationIntegrityError } from "./checkpoint-tail-integrity";
 import { localMacroEnvironment } from "@exocortex/shared/macro-environment";
 import type { UserMacro } from "@exocortex/shared/user-macros";
 import { deleteUserMacro, listUserMacros, saveUserMacro } from "./user-macros";
-import { getDaemonUpdateStatus } from "./update-status";
+import { getDaemonUpdateStatus, peekDaemonUpdateStatus } from "./update-status";
 import { setApiKeyUsageRecordedListener } from "./providers/openai/api-key-usage";
 import { encodeHistoryDelta } from "@exocortex/shared/history-delta";
 import { effectiveConversationDefaults } from "@exocortex/shared/config";
@@ -1636,6 +1636,10 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           const lastUsage = getLastUsage(provider.id);
           server.sendTo(client, { type: "usage_update", provider: provider.id, usage: lastUsage });
         }
+        // Small first-screen state goes ahead of the large sidebar list. A
+        // status still being worked out right after startup is pushed when known.
+        const updateStatus = client.capabilities?.has("update-status-push") ? peekDaemonUpdateStatus() : null;
+        if (updateStatus) server.sendTo(client, { type: "update_status", status: updateStatus });
         // The sidebar is the startup-critical payload. Token statistics can be
         // large and are independent, so never put them ahead of first paint.
         server.sendTo(client, conversationsListFor(client));
@@ -2004,7 +2008,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
               || capability === "sidebar-state-patch"
               || capability === "history-block-pagination"
               || capability === "token-stats-on-demand"
-              || capability === "sidebar-digest-sync") client.capabilities.add(capability);
+              || capability === "sidebar-digest-sync"
+              || capability === "update-status-push") client.capabilities.add(capability);
         }
         if (client.capabilities.has("sidebar-digest-sync") && isSidebarDigest(cmd.sidebarDigest)) {
           client.sidebarDigest = cmd.sidebarDigest;

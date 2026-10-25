@@ -68,10 +68,25 @@ The daemon captures its eligible revision once during startup, not when a TUI
 first asks. Restarting it captures the new revision. A daemon predating this
 feature must itself be upgraded and restarted before it can report status.
 
-The TUI checks daemon/restart status asynchronously at startup, every 10 seconds, and after route
-changes/reconnects. Requests don't overlap on a route; late replies from an old
-route are discarded. SSH's local status uses a separate, short-lived local
-socket connection, without changing the active route. On `--ssh` startup, a single
+Each daemon keeps its own status ready instead of working it out per request.
+From startup it stats `.git/HEAD`, `.git/refs/heads/main`, `.git/packed-refs`
+and `.git/config` every 2 seconds (no git process) and classifies the checkout
+again only when one of them changed; GitHub is asked again every 120 seconds.
+A change is pushed at once as an `update_status` event to every connection that
+declared the `update-status-push` capability, and a capable client's `ping`
+bootstrap carries the current status ahead of the conversation list. A pull
+therefore shows **Restart needed** within about 2 seconds, and a TUI that
+connects shows the footer with its first bootstrap instead of after a git run
+and a GitHub request. Unknown replaces a known status only after three Unknown
+checks in a row, which the daemon retries every 10 seconds, so a pushed status
+is shown as is.
+
+The TUI takes the active daemon's pushes and stops polling that route; it
+still asks once per route (re)connect, and polls every 10 seconds a daemon that
+never pushed (older daemons). Requests don't overlap on a route; late replies
+from an old route are discarded. SSH's local status uses a separate, short-lived
+local socket connection every 10 seconds, without changing the active route; the
+local daemon answers it from its warm status. On `--ssh` startup, a single
 local probe starts immediately after connecting, before conversation/bootstrap
 work or the SSH handoff; there is no redundant active-local status request.
 First paint and SSH readiness never wait for it. A fast SSH host can therefore
@@ -88,12 +103,12 @@ shared campus/office NAT can exhaust on its own, turning **None** into
 an upstream commit this checkout has never seen falls back to the REST compare
 API.
 
-Each daemon caches GitHub comparison results for 120 seconds across all clients,
-including failed requests. Disk revision checks bypass that cache, so downloaded
-updates show **Restart needed** on the next fast status check without another
-GitHub request.
+GitHub comparison results, including failed requests, are reused for 120
+seconds. A changed checkout is classified again without another GitHub request,
+so downloaded updates show **Restart needed** offline too.
 
-The wire request is `ping` with `updateStatusOnly: true`. Updated daemons respond
-with a correlated `pong` carrying `updateStatus`, without conversation or usage
-bootstrap. Normal `ping`/SSH readiness behavior is unchanged. The UI never pulls
-code or restarts a daemon automatically.
+The polling request is `ping` with `updateStatusOnly: true`. Updated daemons
+respond with a correlated `pong` carrying `updateStatus`, without conversation
+or usage bootstrap, from the warm status (a checkout that changed since is
+classified first). Normal `ping`/SSH readiness behavior is unchanged. The UI
+never pulls code or restarts a daemon automatically.

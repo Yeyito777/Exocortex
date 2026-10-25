@@ -133,6 +133,24 @@ describe("token statistics fan-out", () => {
   });
 });
 
+describe("update status fan-out", () => {
+  test("pushes only to connections that declared update-status-push", () => {
+    const server = new DaemonServer("unused", () => {});
+    const record = (capabilities: string[]) => {
+      const written: string[] = [];
+      return { written, client: {
+        id: "c", lines: new LineSplitter(), capabilities: new Set(capabilities as never[]), subscriptions: new Set(),
+        socket: { destroyed: false, write: (data: string) => { written.push(data); return true; } } as unknown as Socket,
+      } };
+    };
+    const legacy = record([]), capable = record(["update-status-push"]);
+    (server as any).clients = new Map([["a", legacy.client], ["b", capable.client]]);
+    server.broadcastUpdateStatus("restart_needed");
+    expect(legacy.written).toHaveLength(0);
+    expect(capable.written.map(line => JSON.parse(line))).toEqual([{ type: "update_status", status: "restart_needed" }]);
+  });
+});
+
 describe("usage fan-out", () => {
   test("skips a broadcast identical to the provider's previous one", () => {
     const server = new DaemonServer("unused", () => {});

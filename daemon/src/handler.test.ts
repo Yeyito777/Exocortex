@@ -49,7 +49,8 @@ const orchestrateReplayConversation = mock(async () => makeAssistantOutcome());
 const orchestrateCompactConversation = mock(async () => makeAssistantOutcome());
 const orchestrateGoalCycle = mock(async () => {});
 const getDaemonUpdateStatus = mock(async () => "restart_needed" as const);
-mock.module("./update-status", () => ({ getDaemonUpdateStatus }));
+const peekDaemonUpdateStatus = mock((): "none" | null => null);
+mock.module("./update-status", () => ({ getDaemonUpdateStatus, peekDaemonUpdateStatus }));
 
 mock.module("./orchestrator", () => ({
   orchestrateSendMessage,
@@ -108,6 +109,38 @@ test("token statistics are pushed only to clients that predate get_token_stats",
   expect(sent.some(event => event.type === "token_stats")).toBe(false);
   await handle(capable as never, { type: "get_token_stats", reqId: "tokens-1" });
   expect(sent.at(-1)).toMatchObject({ type: "token_stats", reqId: "tokens-1", stats: { days: expect.any(Array) } });
+});
+
+test("the bootstrap carries the warm update status ahead of the sidebar, only to clients that take pushes", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const server = {
+    sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+    broadcast: mock(() => {}), sendToSubscribers: mock(() => {}), sendToSubscribersExcept: mock(() => {}),
+    subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+  };
+  const handle = createHandler(server as never);
+  peekDaemonUpdateStatus.mockImplementation(() => "none");
+  try {
+    const legacy = { capabilities: new Set() };
+    await handle(legacy as never, { type: "ping" });
+    expect(sent.some(event => event.type === "update_status")).toBe(false);
+
+    sent.length = 0;
+    const capable = { capabilities: new Set() };
+    await handle(capable as never, { type: "client_capabilities", capabilities: ["update-status-push"] });
+    await handle(capable as never, { type: "ping" });
+    const types = sent.map(event => event.type);
+    expect(sent.find(event => event.type === "update_status")).toEqual({ type: "update_status", status: "none" });
+    expect(types.indexOf("update_status")).toBeLessThan(types.indexOf("conversations_list"));
+
+    // Not known yet (a daemon that just started): pushed later instead.
+    sent.length = 0;
+    peekDaemonUpdateStatus.mockImplementation(() => null);
+    await handle(capable as never, { type: "ping" });
+    expect(sent.some(event => event.type === "update_status")).toBe(false);
+  } finally {
+    peekDaemonUpdateStatus.mockImplementation(() => null);
+  }
 });
 
 test("a sidebar digest answers one bootstrap with only the changed buckets", async () => {

@@ -15,6 +15,7 @@ import { budgetHistoryUpdatedEvent } from "./history-pagination";
 import type { ClientCapability, Command, Event, ProviderId, TokenStatsSnapshot, UsageData } from "./protocol";
 import { PROVIDER_PROXY_LINK_EVENT_TYPES } from "@exocortex/shared/provider-proxy";
 import type { SidebarDigest } from "@exocortex/shared/sidebar-digest";
+import type { UpdateStatus } from "@exocortex/shared/updatecheck";
 
 // ── Client tracking ─────────────────────────────────────────────────
 
@@ -185,6 +186,13 @@ export class DaemonServer {
 
   broadcast(event: Event): void {
     for (const client of this.clients.values()) this.sendTo(client, event);
+  }
+
+  /** Only connections that asked for pushes; older clients poll with ping updateStatusOnly. */
+  broadcastUpdateStatus(status: UpdateStatus): void {
+    for (const client of this.clients.values()) {
+      if (client.capabilities.has("update-status-push")) this.sendTo(client, { type: "update_status", status });
+    }
   }
 
   /**

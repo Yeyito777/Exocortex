@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkForUpdate, createUpdateStatusChecker, eligibleUpdateHead, startUpdateChecks, UPDATE_CHECK_INTERVAL_MS, type UpdateRequest } from "@exocortex/shared/updatecheck";
+import { checkForUpdate, checkoutFingerprint, createUpdateStatusChecker, eligibleUpdateHead, startUpdateChecks, UPDATE_CHECK_INTERVAL_MS, type UpdateRequest } from "@exocortex/shared/updatecheck";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -89,6 +89,22 @@ describe("mainline update eligibility", () => {
     const worktree = join(root, "linked");
     git(root, "worktree", "add", worktree, "main");
     expect(await eligibleUpdateHead(worktree)).toBeNull();
+  });
+});
+
+describe("checkout fingerprint", () => {
+  test("is stable until a commit, branch switch or remote change, without running git", async () => {
+    const root = repo();
+    const before = await checkoutFingerprint(root);
+    expect(await checkoutFingerprint(root)).toBe(before);
+    commitFile(root, "tui/src/main.ts", "export const tui = 2;\n");
+    const committed = await checkoutFingerprint(root);
+    expect(committed).not.toBe(before);
+    git(root, "checkout", "-q", "-b", "feature");
+    const switched = await checkoutFingerprint(root);
+    expect(switched).not.toBe(committed);
+    git(root, "remote", "set-url", "origin", "https://github.com/someone/Exocortex.git");
+    expect(await checkoutFingerprint(root)).not.toBe(switched);
   });
 });
 

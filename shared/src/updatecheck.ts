@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { lstat } from "node:fs/promises";
+import { lstat, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { asGitUnavailable, changesAffectDaemon, daemonImportClosure, GitUnavailableError } from "./restart-impact";
@@ -7,6 +7,10 @@ import { asGitUnavailable, changesAffectDaemon, daemonImportClosure, GitUnavaila
 const execFileAsync = promisify(execFile);
 export const UPDATE_CHECK_INTERVAL_MS = 120_000;
 export const DAEMON_STATUS_INTERVAL_MS = 10_000;
+/** How often a daemon's status service looks at the checkout (a few stat calls). */
+export const CHECKOUT_POLL_INTERVAL_MS = 2_000;
+/** Unknown checks in a row before a known status gives way (git timing out on a loaded machine). */
+export const UNKNOWN_CHECKS_BEFORE_SHOWN = 3;
 /** How long after startup a running revision git couldn't read is retried. */
 const STARTUP_CAPTURE_RETRY_MS = 120_000;
 const UPSTREAM = "Yeyito777/Exocortex";
@@ -254,4 +258,129 @@ export function startUpdateChecks(
   timer.unref();
   void tick();
   return () => { stopped = true; clearInterval(timer); };
+}
+
+/**
+ * Everything a pull, commit, branch switch or remote change rewrites under
+ * .git: when this is unchanged, so is the answer that needs no network.
+ */
+export async function checkoutFingerprint(root: string): Promise<string> {
+  const parts = await Promise.all(["HEAD", "refs/heads/main", "packed-refs", "config"].map(async (file) => {
+    try {
+      const info = await stat(join(root, ".git", file));
+      return `${info.ino}:${info.size}:${info.mtimeMs}`;
+    } catch {
+      return "-";
+    }
+  }));
+  return parts.join("|");
+}
+
+export interface UpdateStatusService {
+  /** The status as of now: waits for the first check, rechecks if the checkout changed. */
+  current(): Promise<UpdateStatus>;
+  /** The last published status without waiting; null before the first check. */
+  peek(): UpdateStatus | null;
+  /** Called with each published change. */
+  subscribe(listener: (status: UpdateStatus) => void): () => void;
+  /** Keep the status warm in the background: stat the checkout, ask GitHub every refresh. */
+  start(): void;
+  stop(): void;
+}
+
+/**
+ * The daemon's update status, kept ready instead of computed per request. The
+ * checkout is stat'ed every couple of seconds (no git process) and classified
+ * again only when it changed; GitHub is asked again when its cached answer
+ * expires. Unknown (git timing out) replaces a known status only after
+ * UNKNOWN_CHECKS_BEFORE_SHOWN checks in a row, so clients can show pushes as is.
+ */
+export function createUpdateStatusService(
+  root: string,
+  check: () => Promise<UpdateStatus> = createUpdateStatusChecker(root),
+  options: {
+    pollMs?: number;
+    refreshMs?: number;
+    retryMs?: number;
+    fingerprint?: (root: string) => Promise<string>;
+    now?: () => number;
+  } = {},
+): UpdateStatusService {
+  const pollMs = options.pollMs ?? CHECKOUT_POLL_INTERVAL_MS;
+  const refreshMs = options.refreshMs ?? UPDATE_CHECK_INTERVAL_MS;
+  const retryMs = options.retryMs ?? DAEMON_STATUS_INTERVAL_MS;
+  const fingerprint = options.fingerprint ?? checkoutFingerprint;
+  const now = options.now ?? (() => performance.now());
+  const listeners = new Set<(status: UpdateStatus) => void>();
+  let status: UpdateStatus | null = null;
+  let checkedFingerprint: string | null = null;
+  let checkedAt = -Infinity;
+  let unknownChecks = 0;
+  let inFlight: Promise<void> | null = null;
+  let timer: ReturnType<typeof setInterval> | null = null;
+
+  const publish = (next: UpdateStatus) => {
+    if (next === "unknown" && status !== null && status !== "unknown"
+        && ++unknownChecks < UNKNOWN_CHECKS_BEFORE_SHOWN) return;
+    unknownChecks = 0;
+    if (next === status) return;
+    status = next;
+    for (const listener of listeners) {
+      try { listener(next); } catch { /* a listener must not stop the others */ }
+    }
+  };
+  const refresh = (): Promise<void> => {
+    inFlight ??= (async () => {
+      try {
+        const before = await fingerprint(root);
+        let next: UpdateStatus;
+        try { next = await check(); } catch { next = "unknown"; }
+        checkedFingerprint = before;
+        checkedAt = now();
+        publish(next);
+      } finally {
+        inFlight = null;
+      }
+    })();
+    return inFlight;
+  };
+  /**
+   * Recheck when the checkout changed or GitHub's answer is due; after an
+   * Unknown, at the cadence clients used to poll (offline stays cheap).
+   */
+  const stale = async (): Promise<boolean> => {
+    const age = now() - checkedAt;
+    if (status === null || age >= refreshMs) return true;
+    if ((status === "unknown" || unknownChecks > 0) && age >= retryMs) return true;
+    return await fingerprint(root) !== checkedFingerprint;
+  };
+  const tick = async () => {
+    try {
+      if (await stale()) await refresh();
+    } catch { /* never an unhandled rejection from a timer */ }
+  };
+
+  return {
+    async current() {
+      if (inFlight) await inFlight;
+      if (await stale()) await refresh();
+      return status ?? "unknown";
+    },
+    peek: () => status,
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
+    },
+    start() {
+      if (timer) return;
+      timer = setInterval(() => { void tick(); }, pollMs);
+      timer.unref?.();
+      void tick();
+    },
+    stop() {
+      if (timer) clearInterval(timer);
+      timer = null;
+      listeners.clear();
+    },
+  };
 }
