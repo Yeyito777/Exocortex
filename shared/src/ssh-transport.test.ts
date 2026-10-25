@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import {
   probeSshProxy,
+  probeSshProxyWithFallback,
   sshProxyArgs,
   validateSshAlias,
   type SshProcess,
@@ -47,6 +48,12 @@ describe("TUI SSH transport", () => {
       "-o", "ControlPath=none",
       "whale", "exocortexd", "proxy",
     ]);
+    const reuse = sshProxyArgs("whale", { controlPath: "/run/x/ssh/whale%.sock", persist: "10m" });
+    expect(reuse).not.toContain("ControlPath=none");
+    expect(reuse).toContain("ControlMaster=auto");
+    expect(reuse).toContain("ControlPath=/run/x/ssh/whale%%.sock");
+    expect(reuse).toContain("ControlPersist=10m");
+    expect(reuse.slice(-3)).toEqual(["whale", "exocortexd", "proxy"]);
   });
 
   test("transfers the successful probe process instead of killing it", async () => {
@@ -121,5 +128,68 @@ describe("TUI SSH transport", () => {
 
     await expect(probe.promise).rejects.toThrow("switch cancelled");
     expect(child.killed).toBe(true);
+  });
+
+  describe("fallback to a fresh connection", () => {
+    test("without a pong in time, a fresh probe races the first and the winner is kept", async () => {
+      const stuck = new FakeProcess();
+      const fresh = respondingProbe();
+      let used = 0;
+      const connection = await probeSshProxyWithFallback("whale", {
+        spawnProcess: () => stuck,
+        fallback: primary => primary === stuck ? { afterMs: 5, spawnProcess: () => fresh, onUsed: () => { used++; } } : null,
+      }).promise;
+      expect(connection.process).toBe(fresh);
+      expect(stuck.killed).toBe(true);
+      expect(used).toBe(1);
+      fresh.kill();
+    });
+
+    test("an answer in time never starts the fallback", async () => {
+      const healthy = respondingProbe();
+      let spawned = 0;
+      const connection = await probeSshProxyWithFallback("whale", {
+        spawnProcess: () => healthy,
+        fallback: () => ({ afterMs: 1_000, spawnProcess: () => { spawned++; return new FakeProcess(); } }),
+      }).promise;
+      expect(connection.process).toBe(healthy);
+      expect(spawned).toBe(0);
+      healthy.kill();
+    });
+
+    test("a first probe that fails starts the fallback at once; both failing reports the fresh one's error", async () => {
+      const broken = new FakeProcess();
+      const alsoBroken = new FakeProcess();
+      const probe = probeSshProxyWithFallback("whale", {
+        spawnProcess: () => broken,
+        fallback: () => ({ afterMs: 60_000, spawnProcess: () => alsoBroken }),
+      });
+      broken.emit("close", 255, null);
+      await Bun.sleep(1);
+      alsoBroken.stderr.write("Could not resolve hostname whale");
+      alsoBroken.emit("close", 255, null);
+      await expect(probe.promise).rejects.toThrow("Could not resolve hostname whale");
+    });
+
+    test("no fallback for a connection that didn't ride an existing master", async () => {
+      const healthy = respondingProbe();
+      const connection = await probeSshProxyWithFallback("whale", { spawnProcess: () => healthy, fallback: () => null }).promise;
+      expect(connection.process).toBe(healthy);
+      healthy.kill();
+    });
+
+    test("cancelling stops both probes", async () => {
+      const first = new FakeProcess();
+      const second = new FakeProcess();
+      const probe = probeSshProxyWithFallback("whale", {
+        spawnProcess: () => first,
+        fallback: () => ({ afterMs: 1, spawnProcess: () => second }),
+      });
+      await Bun.sleep(5);
+      probe.cancel("switch cancelled");
+      await expect(probe.promise).rejects.toThrow();
+      expect(first.killed).toBe(true);
+      expect(second.killed).toBe(true);
+    });
   });
 });

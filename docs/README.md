@@ -18,6 +18,8 @@ selects another daemon without moving client-side UI operations to that host.
 - [Conversation display pages](conversation-display-pages.md)
 - [Conversation workspaces](conversation-workspaces.md)
 - [SSH history cache](ssh-history-cache.md)
+- [SSH connection reuse](ssh-connection-reuse.md): one shared OpenSSH
+  connection per `/ssh` alias, and its security tradeoff
 - [/proxy: another machine's provider login](provider-proxy.md)
 - [Several Claude accounts](claude-accounts.md)
 - [Goals](goals.md)
