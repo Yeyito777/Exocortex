@@ -127,3 +127,85 @@ export function consumeActiveGoalRestartMarker(): boolean {
     clearActiveGoalRestartMarker();
   }
 }
+
+// ── Stop requests ────────────────────────────────────────────────────
+
+/** How long a stop request answers the signal that follows it. */
+export const STOP_REQUEST_TTL_MS = 2 * 60_000;
+
+export function stopRequestPath(): string {
+  return join(runtimeDir(), "stop-requested.json");
+}
+
+/**
+ * `exocortexd stop` writes this before signalling the daemon: the one shutdown
+ * that resumes nothing. Any other exit (a direct `systemctl stop`, a reboot, a
+ * stray kill) replays its interrupted conversations on the next start. A file,
+ * not only the `prepare_shutdown` IPC, so a daemon too busy to answer the
+ * socket still stops for real.
+ */
+export function writeStopRequest(now = Date.now()): void {
+  const path = stopRequestPath();
+  mkdirSync(dirname(path), { recursive: true });
+  const tmpPath = `${path}.${process.pid}.tmp`;
+  writeFileSync(tmpPath, JSON.stringify({ version: 1, createdAt: now }) + "\n");
+  renameSync(tmpPath, path);
+}
+
+/** A stop request young enough to belong to the signal being handled. */
+export function hasFreshStopRequest(now = Date.now()): boolean {
+  try {
+    const parsed = JSON.parse(readFileSync(stopRequestPath(), "utf-8")) as { createdAt?: unknown };
+    return typeof parsed.createdAt === "number" && now - parsed.createdAt >= -5_000 && now - parsed.createdAt <= STOP_REQUEST_TTL_MS;
+  } catch {
+    return false;
+  }
+}
+
+export function clearStopRequest(): void {
+  try { unlinkSync(stopRequestPath()); } catch { /* absent */ }
+}
+
+// ── Live turns (uncatchable exits) ───────────────────────────────────
+
+export function liveTurnsPath(): string {
+  return join(runtimeDir(), "live-turns.json");
+}
+
+/**
+ * The replayable turns running right now, rewritten whenever that set changes.
+ * Every clean shutdown removes it (a restart has written interrupted-streams
+ * by then; a stop wants nothing replayed), so finding it at startup means the
+ * previous daemon died without running its shutdown: SIGKILL, OOM, power loss.
+ */
+export function writeLiveTurns(convIds: Iterable<string>): void {
+  const ids = normalizeConvIds(convIds);
+  const path = liveTurnsPath();
+  if (ids.length === 0) {
+    clearLiveTurns();
+    return;
+  }
+  mkdirSync(dirname(path), { recursive: true });
+  const tmpPath = `${path}.${process.pid}.tmp`;
+  writeFileSync(tmpPath, JSON.stringify({ version: 1, pid: process.pid, convIds: ids }) + "\n");
+  renameSync(tmpPath, path);
+}
+
+/** Turns a previous daemon left running when it died uncleanly; removes the file. */
+export function takeLiveTurnsLeftByUncleanExit(): string[] {
+  const path = liveTurnsPath();
+  if (!existsSync(path)) return [];
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf-8")) as { convIds?: unknown };
+    return Array.isArray(parsed.convIds) ? normalizeConvIds(parsed.convIds as string[]) : [];
+  } catch (err) {
+    log("warn", `restart-recovery: cannot read live turns left by the previous daemon: ${err instanceof Error ? err.message : String(err)}`);
+    return [];
+  } finally {
+    clearLiveTurns();
+  }
+}
+
+export function clearLiveTurns(): void {
+  try { unlinkSync(liveTurnsPath()); } catch { /* absent */ }
+}

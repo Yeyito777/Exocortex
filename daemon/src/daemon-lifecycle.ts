@@ -18,8 +18,14 @@ export function getDaemonShutdownMode(): DaemonShutdownMode | null {
   return shutdownMode;
 }
 
-export function resolveDaemonShutdownMode(exitCode: number, hasRestartMarker: boolean): DaemonShutdownMode {
-  return shutdownMode ?? (exitCode !== 0 || hasRestartMarker ? "restart" : "stop");
+/**
+ * Only `exocortexd stop` stops for real: it selects "stop" over IPC and leaves
+ * a fresh stop request for the signal that follows. Every other exit (a direct
+ * `systemctl stop`, a reboot, a stray kill, a crash) is a restart, so the next
+ * start replays the turns it interrupted.
+ */
+export function resolveDaemonShutdownMode(stopRequested: boolean): DaemonShutdownMode {
+  return shutdownMode ?? (stopRequested ? "stop" : "restart");
 }
 
 /** Test-only reset for modules exercised in the same Bun process. */

@@ -2,7 +2,7 @@ import { existsSync } from "fs";
 import { connect as netConnect } from "net";
 import type { Event } from "./protocol";
 import { isWindows, socketPath } from "@exocortex/shared/paths";
-import { PREPARE_RESTART_MAX_SETTLE_MS, readInterruptedStreamIds, writeActiveGoalRestartMarker, writeInterruptedStreamIds } from "./restart-markers";
+import { PREPARE_RESTART_MAX_SETTLE_MS, readInterruptedStreamIds, writeActiveGoalRestartMarker, writeInterruptedStreamIds, writeStopRequest } from "./restart-markers";
 
 function makeReqId(prefix: string): string {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -231,6 +231,8 @@ export function requestInstanceRestart(timeoutMs = 2_000): Promise<void> {
 }
 
 export async function prepareStopWithoutReplay(): Promise<void> {
+  // First, so the signal that follows still means stop if the socket can't answer.
+  writeStopRequest();
   await requestDaemonShutdownMode("stop");
   // Loaded on demand: restart-recovery pulls in the daemon's module graph,
   // which the restart path of this control process must not pay for.

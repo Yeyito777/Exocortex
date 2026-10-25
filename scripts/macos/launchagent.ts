@@ -75,8 +75,8 @@ export function renderDaemonLaunchAgent(options: FreshPlistOptions): string {
     `\t</dict>`,
     `\t<key>RunAtLoad</key>`,
     `\t<true/>`,
-    // Exit 0 (stop/SIGTERM) stays down; 75 (restart) relaunches. `exocortexd stop` on macOS
-    // is a SIGTERM, so unlike the systemd unit (Restart=always) a clean exit can't relaunch.
+    // Exit 0 (`exocortexd stop`) stays down; 75 relaunches: a restart request, and any
+    // other signal (a stray kill), which the daemon answers with 75 on macOS.
     `\t<key>KeepAlive</key>`,
     `\t<dict>`,
     `\t\t<key>SuccessfulExit</key>`,

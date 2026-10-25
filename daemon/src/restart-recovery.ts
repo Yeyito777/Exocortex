@@ -3,6 +3,7 @@ import { listDeferredChronoSleeps } from "./chrono-service";
 import {
   clearActiveGoalRestartMarker,
   clearInterruptedStreamIds,
+  clearLiveTurns,
   consumeActiveGoalRestartMarker,
   normalizeConvIds,
   PREPARE_RESTART_MAX_SETTLE_MS,
@@ -59,6 +60,7 @@ function sleep(ms: number): Promise<void> {
 /** Cancel every daemon-owned source of autonomous work on a later startup. */
 export function clearRestartRecoveryForStop(): number {
   clearInterruptedStreamIds();
+  clearLiveTurns();
   clearActiveGoalRestartMarker();
   return clearPendingSubagentNotifications();
 }

@@ -316,8 +316,9 @@ handle_stop() {
     fi
   fi
   stop_service
-  # Run after the process exits too: this makes the first stop after upgrading
-  # safe even when the old daemon treated SIGTERM as restart-worthy.
+  # prepare-stop leaves a stop request first, so the signal below is a real stop
+  # (any other SIGTERM replays). Run after the process exits too, to drop
+  # whatever recovery state a daemon that never saw the request wrote.
   cancel_stop_recovery
 }
 

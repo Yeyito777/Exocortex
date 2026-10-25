@@ -157,6 +157,17 @@ export function hasOwnerTurnInChain(convId: string): boolean {
   return ownerTurnChains.has(convId);
 }
 
+let restartRecoverableJobsListener: ((convIds: string[]) => void) | null = null;
+
+/** Told whenever the set of replayable running turns changes (the live-turns journal). */
+export function setRestartRecoverableJobsListener(listener: ((convIds: string[]) => void) | null): void {
+  restartRecoverableJobsListener = listener;
+}
+
+function noteRestartRecoverableJobs(changed: boolean): void {
+  if (changed) restartRecoverableJobsListener?.([...restartRecoverableJobs]);
+}
+
 export function setActiveJob(
   convId: string,
   ac: AbortController,
@@ -169,8 +180,10 @@ export function setActiveJob(
   streamHandoffs.delete(convId);
   activeJobs.set(convId, ac);
   activeJobKinds.set(convId, kind);
+  const wasRecoverable = restartRecoverableJobs.has(convId);
   if (restartRecoverable) restartRecoverableJobs.add(convId);
   else restartRecoverableJobs.delete(convId);
+  noteRestartRecoverableJobs(wasRecoverable !== restartRecoverable);
   streamingStartedAt.set(convId, startedAt);
   if (kind === "assistant") {
     streamingPendingAssistantOpen.add(convId);
@@ -221,7 +234,7 @@ export function clearActiveJob(convId: string, owner?: AbortController): void {
   if (owner && activeJobs.get(convId) !== owner) return;
   const wasBusy = activeJobs.delete(convId);
   activeJobKinds.delete(convId);
-  restartRecoverableJobs.delete(convId);
+  noteRestartRecoverableJobs(restartRecoverableJobs.delete(convId));
   streamingBlocks.delete(convId);
   streamingStartedAt.delete(convId);
   streamingTokens.delete(convId);
