@@ -18,8 +18,8 @@ export const SMOOTH_SCROLL_ON = `${ESC}[?2032h`;
 export const SMOOTH_SCROLL_OFF = `${ESC}[?2032l`;
 /** Same feel as st's own glides (smoothscroll_ms). */
 export const SMOOTH_SCROLL_DURATION_MS = 100;
-/** Animation frames while something moves (~120 Hz). */
-export const SMOOTH_SCROLL_FRAME_MS = 8;
+/** How often a moving glide checks whether it is about to cross a row. */
+export const SMOOTH_SCROLL_FRAME_MS = 4;
 
 /** DECRQM reply for mode 2032: true when the terminal can do it, null if not a reply. */
 export function parseSmoothScrollReport(sequence: string): boolean | null {
@@ -148,11 +148,22 @@ export class SmoothScroller {
   private gridFor(time: number, maxOffset: number): number {
     const position = this.grid + this.offsetAt(time);
     if (position === this.target && this.terms.length === 0) return this.target;
+    // Lay out where the glide will be a little later, but never more than
+    // the row just past it: st draws the laid-out rows `offset` away from
+    // where they were laid out, and only rigid content survives that. Beside
+    // the Tasks panel rows re-wrap, so a fast glide laid out several rows
+    // ahead showed narrow rows (with nothing on their right) below the panel.
     const ahead = this.grid + this.offsetAt(time + this.leadMs);
-    let grid = this.target > position ? Math.min(this.target, Math.ceil(ahead))
-      : this.target < position ? Math.max(this.target, Math.floor(ahead))
-      : Math.round(ahead);
-    if (this.terms.every(term => easeRemaining((time + this.leadMs - term.start) / this.durationMs) === 0)) grid = this.target;
+    let grid: number;
+    if (this.target > position) {
+      grid = Math.max(Math.ceil(position), Math.min(Math.ceil(ahead), Math.floor(position) + 1));
+      grid = Math.min(this.target, grid);
+    } else if (this.target < position) {
+      grid = Math.min(Math.floor(position), Math.max(Math.floor(ahead), Math.ceil(position) - 1));
+      grid = Math.max(this.target, grid);
+    } else {
+      grid = Math.round(position);
+    }
     return Math.max(0, Math.min(maxOffset, grid));
   }
 
