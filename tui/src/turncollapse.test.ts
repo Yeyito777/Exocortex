@@ -675,6 +675,34 @@ describe("a top-level conversation's subagents", () => {
     }
   });
 
+  test("its still-working, stopped and woken-by notices and its `exo message` up follow the same rule", () => {
+    const notice = (header: string) => user(`[notification] Subagent ${header}: exo:timeline\nTask: timeline\nWoken by: a message from exo:stranger\n\nResult:\n${header} body`, { kind: "subagent_completion", sourceId: "timeline" });
+    // A child's native `exo message` to its parent: an exo_send from the child.
+    const up = user("FYI: the feed API changed shape.", { kind: "exo_send", sourceId: "timeline" });
+    for (const [view, open] of VIEWS) {
+      const state = createInitialState();
+      sidebar(state);
+      const sent = [notice("replied (still working)"), up, notice("stopped"), notice("completed")];
+      state.messages.push(user("build the app"), assistant([{ type: "text", text: "Delegated." }]));
+      for (const message of sent) state.messages.push(message, assistant([{ type: "text", text: `Read ${state.messages.length}.` }]));
+      open(state);
+      const built = buildMessageLines(state, 100);
+      const labels = built.lineAnchors.flatMap((anchor, row) => sent.includes(anchor.owner as never) && anchor.segment === "automation_label" ? [stripAnsi(built.lines[row]).trim()] : []);
+      if (view === "folded") {
+        expect(built.lineAnchors.some(anchor => sent.includes(anchor.owner as never) && !anchor.segment.includes("margin")), view).toBe(false);
+      } else {
+        expect(labels, view).toEqual([
+          "⚙ Subagent completion · from You are the timeline feature agent",
+          "⚙ Exo delegation · from You are the timeline feature agent",
+          "⚙ Subagent completion · from You are the timeline feature agent",
+          "⚙ Subagent completion · from You are the timeline feature agent",
+        ]);
+      }
+      // The replies to them stay in every view.
+      expect(shownRows(built).filter(row => row.startsWith("Read ")).length, view).toBe(4);
+    }
+  });
+
   test("a message that starts the live turn leads its Working row", () => {
     const state = createInitialState();
     sidebar(state);

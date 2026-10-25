@@ -98,6 +98,13 @@ refused with the caller's depth.
   of dropping the child from its Tasks panel silently. A child that finishes
   normally, or a stop from the TUI, leaves its running children alone; they
   report to it as above.
+- **Display.** In a top-level conversation the TUI and phone fold everything
+  its own subagents send it (their notices and `exo message`/`exo queue`
+  reports) out of the default view, as they fold other notifications; the
+  parent's reply stays. `Ctrl+O`/`Ctrl+I` show them as automated bubbles
+  labelled `⚙ <reason> · from <child title>`. A subagent's conversation keeps
+  its parent's prompts in view. Clients tell a child by the
+  `parentConversationId` of its conversation summary.
 
 Administration goes directly through [daemon IPC](daemon-ipc.md).
 
