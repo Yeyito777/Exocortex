@@ -294,6 +294,14 @@ describe("minimal native exo", () => {
       expect(system(grandchild)).toContain("at depth 2 of 2");
       expect(system(grandchild)).toContain("You cannot start subagents of your own");
       expect(system(grandchild)).not.toContain("You may start subagents");
+      // Every subagent learns its replies reach its parent and how to message it mid-task.
+      for (const [conv, parentId] of [[child, p.id], [grandchild, child.id]] as const) {
+        expect(system(conv)).toContain("Whenever your turn ends, whatever woke you, your final reply reaches your parent as a notice.");
+        expect(system(conv)).toContain(`use exo message with conversation ${parentId}; that requests no reply`);
+      }
+      expect(system(p)).not.toContain("your final reply reaches your parent");
+      expect(exo.systemHint).toContain("every turn a child ends notifies you with its reply, whatever woke it");
+      expect(exo.systemHint).toContain("A subagent may also message its parent");
       setMaxDepth(3);
       expect(system(child)).toContain("up to 2 more levels deep");
       expect(exo.systemHint).toContain("Nesting is bounded");
@@ -334,9 +342,10 @@ describe("minimal native exo", () => {
       const sibling = await spawn(h.runtime, p.id);
       const grandchild = await spawn(h.runtime, child.id);
       const message = (target: string, caller: string) => h.runtime.execute({ message: { conversation: target, text: "hi" } }, caller);
-      expect(await error(message(child.id, grandchild.id))).toBe("Subagents can only message their own direct children.");
-      expect(await error(message(p.id, grandchild.id))).toBe("Subagents can only message their own direct children.");
-      expect(await error(message(grandchild.id, sibling.id))).toBe("Subagents can only message their own direct children.");
+      // Up to its own parent is allowed (see "a subagent can message its parent"); past it, or sideways, is not.
+      expect(await error(message(p.id, grandchild.id))).toBe("Subagents can only message their parent or their own direct children.");
+      expect(await error(message(grandchild.id, sibling.id))).toBe("Subagents can only message their parent or their own direct children.");
+      expect(await error(message(sibling.id, child.id))).toBe("Subagents can only message their parent or their own direct children.");
       expect(await error(h.runtime.execute({ abort: child.id }, grandchild.id))).toBe("Subagents can only abort their own direct children.");
       expect(await error(h.runtime.execute({ abort: grandchild.id }, sibling.id))).toBe("Subagents can only abort their own direct children.");
       expect((await message(grandchild.id, child.id)).isError).toBe(false);
@@ -354,6 +363,24 @@ describe("minimal native exo", () => {
       expect(response).toEqual({ conversation_id: child.id, status: "aborted", aborted_subagents: [grandchild.id] });
       expect(controllers.get(child.id)!.signal.aborted).toBe(true);
       expect(controllers.get(grandchild.id)!.signal.aborted).toBe(true);
+    });
+
+    test("a parent's own abort sends it no \"stopped\" notice for the child or its subagents", async () => {
+      const { beginPendingSubagentNotification, listPendingSubagentNotifications, removePendingSubagentNotificationsForConversation } = await import("../subagent-notifications");
+      const h = harness({ runTurn: () => new Promise(() => {}) });
+      const p = parent();
+      const child = await spawn(h.runtime, p.id);
+      const grandchild = await spawn(h.runtime, child.id);
+      beginPendingSubagentNotification({ convId: p.id }, child.id, "task", 1, 1);
+      beginPendingSubagentNotification({ convId: child.id }, grandchild.id, "task", 2, 0);
+      for (const id of [child.id, grandchild.id]) conversations.setActiveJob(id, new AbortController(), Date.now());
+      try {
+        expect((await h.runtime.execute({ abort: child.id }, p.id)).isError).toBe(false);
+        expect(listPendingSubagentNotifications({ childConvId: child.id })).toEqual([]);
+        expect(listPendingSubagentNotifications({ childConvId: grandchild.id })).toEqual([]);
+      } finally {
+        for (const id of [child.id, grandchild.id]) removePendingSubagentNotificationsForConversation(id);
+      }
     });
 
     test("an aborted subagent does not start again from automated input already queued for it", async () => {
@@ -425,10 +452,45 @@ describe("minimal native exo", () => {
       expect((await h.runtime.execute({ message: { conversation: other.id, text: "hi" } }, undefined)).isError).toBe(true);
       const child = await spawn(h.runtime, p.id);
       expect((await send({ conversation: other.id, text: "hi" }, child.id)).isError).toBe(true);
-      expect((await send({ conversation: p.id, text: "hi" }, child.id)).isError).toBe(true);
       await settle();
       expect(h.runTurn).toHaveBeenCalledTimes(1);
       expect(queued(other.id)).toEqual([]);
+    });
+
+    test("a subagent can message its parent: queued, labelled from the child, no reply requested", async () => {
+      const h = harness({ runTurn: () => new Promise(() => {}) });
+      const p = parent();
+      const child = await spawn(h.runtime, p.id);
+      h.beginParentNotification.mockClear();
+      // Idle parent: queued, so the queue pump starts its turn; nothing reports that turn back down.
+      const idle = await h.runtime.execute({ message: { conversation: p.id, text: " need the Mac set up " } }, child.id);
+      expect(idle.isError).toBe(false);
+      const idleBody = JSON.parse(idle.output);
+      expect(idleBody).toMatchObject({ conversation_id: p.id, status: "queued", target_status: "idle" });
+      expect(idleBody.note).toContain("No reply is requested");
+      expect(queued(p.id)).toMatchObject([{
+        id: idleBody.queue_id, text: "need the Mac set up", timing: "next-turn", automation: { kind: "exo_send", sourceId: child.id },
+      }]);
+      expect(h.beginParentNotification).not.toHaveBeenCalled();
+      // Busy parent: joins its turn at the next tool boundary, or waits for its end with after_turn.
+      conversations.setActiveJob(p.id, new AbortController(), Date.now());
+      const steer = mock(() => {});
+      conversations.setActiveSteerHandler(p.id, steer);
+      try {
+        const now = JSON.parse((await h.runtime.execute({ message: { conversation: p.id, text: "fyi" } }, child.id)).output);
+        expect(now).toMatchObject({ status: "queued", target_status: "streaming" });
+        expect(now.delivers).toContain("next tool boundary");
+        expect(steer).toHaveBeenCalledTimes(1);
+        const later = JSON.parse((await h.runtime.execute({ message: { conversation: p.id, text: "later", delivery: "after_turn" } }, child.id)).output);
+        expect(later.delivers).toContain("after your parent's active one ends");
+        expect(queued(p.id).map(entry => entry.timing)).toEqual(["next-turn", "next-turn", "message-end"]);
+        expect(steer).toHaveBeenCalledTimes(1);
+      } finally {
+        conversations.clearActiveSteerHandler(p.id, steer);
+        conversations.clearActiveJob(p.id);
+        conversations.removeQueuedMessagesById(queued(p.id).map(entry => entry.id));
+      }
+      expect(h.beginParentNotification).not.toHaveBeenCalled();
     });
 
     test("a streaming target gets a durable automated queue entry and is steered", async () => {

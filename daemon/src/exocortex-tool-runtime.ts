@@ -3,7 +3,7 @@ import { latestClaudeModel, latestSizeModel } from "./delegation-models";
 import { hasConfiguredCredentials } from "./auth";
 import { listDeferredChronoSleeps } from "./chrono-service";
 import { cancelSuspendedTurn } from "./suspended-turns";
-import { acknowledgeSubagentNotification, listPendingSubagentNotifications } from "./subagent-notifications";
+import { acknowledgeSubagentNotification, cancelRunningSubagentNotifications, listPendingSubagentNotifications } from "./subagent-notifications";
 import * as convStore from "./conversations";
 import {
   activeSubagentDescendants, getActiveSubagentCount, getConversationActivityCounts, setSubagentActive,
@@ -92,9 +92,11 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
    * Automated input already queued for it (a parent's after_turn message, a
    * finished subagent's or task's result, a wake) is dropped too: the turn's
    * end would otherwise start it again at once, unreported. The user's own
-   * queued messages stay.
+   * queued messages stay. Its running notice is cancelled: the caller stopped
+   * it and gets this result, so no "stopped" notice follows.
    */
   const abortConversation = (convId: string): "aborted" | "paused" | "idle" => {
+    cancelRunningSubagentNotifications(convId);
     const automated = convStore.getQueuedMessages(convId).filter(entry => entry.automation).map(entry => entry.id);
     if (automated.length > 0) convStore.removeQueuedMessagesById(automated);
     // Results of its own subagents that were ready but not yet delivered.
@@ -173,11 +175,30 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
           if (convId === parentId) throw new Error("Cannot message the conversation currently executing this tool.");
           const target = convStore.getPolicyMetadata(convId);
           if (!target) throw new Error(`Conversation ${convId} not found`);
-          if (parent.subagentPolicy && target.subagentPolicy?.parentConversationId !== parentId) {
-            throw new Error("Subagents can only message their own direct children.");
+          const toOwnParent = parent.subagentPolicy?.parentConversationId === convId;
+          if (parent.subagentPolicy && !toOwnParent && target.subagentPolicy?.parentConversationId !== parentId) {
+            throw new Error("Subagents can only message their parent or their own direct children.");
           }
           const delivery = message.delivery ?? "now";
           const automation: UserMessageAutomation = { kind: "exo_send", sourceId: parentId };
+          if (toOwnParent) {
+            // A report up, labelled with its sender. It asks for no reply: nothing
+            // reports the parent's turn back down, so the two cannot ping-pong.
+            // An idle parent starts a turn from the queue; a busy one takes it at
+            // its next tool boundary (or after its turn, for after_turn).
+            const streaming = convStore.isStreaming(convId);
+            const timing = streaming && delivery === "after_turn" && convStore.getActiveBackgroundableToolName(convId) !== "chrono"
+              ? "message-end" : "next-turn";
+            const entry = convStore.pushQueuedMessage(convId, text, timing, undefined, target.subagentMaxDepth ?? null,
+              undefined, undefined, undefined, automation);
+            if (streaming && timing === "next-turn") convStore.steerActiveTurn(convId);
+            return result({
+              conversation_id: convId, status: "queued", queue_id: entry.id, target_status: streaming ? "streaming" : "idle",
+              delivers: !streaming ? "starts a turn in your parent now"
+                : timing === "next-turn" ? "at your parent's next tool boundary" : "as a new turn after your parent's active one ends",
+              note: "No reply is requested. Your final reply still reports to your parent when your turn ends; don't repeat it here.",
+            });
+          }
           if (convStore.isStreaming(convId)) {
             // The same durable queue as a prompt queued in the TUI or by `exo queue`.
             // A turn only sleeping or waiting in chrono takes it now either way.

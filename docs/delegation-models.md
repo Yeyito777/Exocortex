@@ -29,7 +29,7 @@ omitted, it is `high` for Claude and the model's default for OpenAI. The
 selected provider must be signed in (or proxied) and startable, so either
 family works from any parent. Parents cannot choose tools or delegation
 depth. Children get the standard provider tools and all external hints.
-`detach: true` suppresses completion notifications. The tool result reports
+`detach: true` suppresses completion notifications (see Notifications below). The tool result reports
 the child's `provider`, `model` and `effort`, plus `fast_mode: true` for Sol
 fast.
 
@@ -60,22 +60,44 @@ refused with the caller's depth.
   before reporting. The shared `exo` hint says only that nesting is bounded.
 - **Caps.** The per-parent cap (8) counts a conversation's own running
   children; the daemon cap (32) counts every running subagent at any depth.
-- **Ownership.** A subagent may message or abort only its direct children, at
-  every depth. `chrono wait` from any subagent is limited to its own tasks.
-  No subagent can restart the daemon.
+- **Ownership.** A subagent may abort only its direct children, and message
+  only its direct children and its own parent, at every depth (never a
+  sibling or anyone further up). `chrono wait` from any subagent is limited to
+  its own tasks. No subagent can restart the daemon.
+- **Messaging the parent.** `exo message` with the caller's parent id (which
+  its prompt states) queues an automated `exo_send` prompt tagged with the
+  child as sender, the same as a child's `exo queue` report: a busy parent
+  takes it at its next tool boundary (or after its turn, with `after_turn`),
+  an idle one starts a turn from the queue. It requests no reply: no record
+  reports the parent's turn back down, so parent and child cannot ping-pong.
+  The child's prompt says its final reply already reaches the parent, so the
+  message is for mid-task questions and handoffs.
 - **Notifications.** A grandchild reports to its own parent, never past it.
-  If that parent already reported its task, the notification starts a new
-  turn in it (at once, or after its current turn when it is busy), and that
-  turn's reply is relayed to its parent as a subagent completion (unless the
-  child was started with `detach: true`). The same holds for a message the
-  parent queued with `delivery: after_turn`: its reply is reported too.
+  Every turn a non-detached subagent ends is reported to its parent, whatever
+  woke it: its task, a parent message to an idle child, and any automated
+  input reaching a child whose task already reported (a parent's or
+  sibling's message, its own subagent's result, a finished background task, a
+  wake, an external notification), whether that input starts the turn or
+  joins a running one at a tool boundary. One record reports each turn: input
+  joining a turn that already has one adds none, and a turn whose sender
+  awaits the reply itself (a foreground `exo send`) is not reported. Goal
+  continuations and restart notices carry on a turn already accounted for;
+  turns the owner starts by typing into the child are theirs. A notice whose
+  child still has running background tasks or subagents, one-shot wakes
+  (repeating wakes never end, so they don't count) or queued input reads
+  `Subagent replied (still working)` and lists them; another notice follows
+  when it next stops. A follow-up notice names what woke the child. A child
+  started with `detach: true` never reports.
 - **Abort.** `exo abort` cascades: the target's running subagents at every
   depth are aborted first and listed as `aborted_subagents`. Automated input
   already queued for an aborted conversation (its parent's messages, its own
   subagents' results, wakes) is dropped, so it does not start again; the
-  user's own queued messages stay. A child that finishes normally, or a stop
-  from the TUI, leaves its running children alone; they report to it as
-  above.
+  user's own queued messages stay. The caller gets the result and no notice.
+  Any other stop of a reported turn (Stop in the TUI, a cancelled sleep, an
+  edit) sends the parent `Subagent stopped` with any partial output instead
+  of dropping the child from its Tasks panel silently. A child that finishes
+  normally, or a stop from the TUI, leaves its running children alone; they
+  report to it as above.
 
 Administration goes directly through [daemon IPC](daemon-ipc.md).
 

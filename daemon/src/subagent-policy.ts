@@ -67,8 +67,12 @@ export function subagentDelegationNote(
   const max = maxSubagentDepth(config);
   const parentId = conversation.subagentPolicy?.parentConversationId;
   const position = `You are already a subagent, at depth ${depth} of ${max}${parentId ? ` (parent conversation ${parentId})` : ""}.`;
+  const reporting = parentId
+    ? `Whenever your turn ends, whatever woke you, your final reply reaches your parent as a notice. To tell it something mid-task (a question, or something it must do now), use exo message with conversation ${parentId}; that requests no reply, so don't repeat your final report there.`
+    : "";
   if (depth >= max) {
-    return `## Delegation\n${position} You cannot start subagents of your own: exo refuses them at this depth. Do the work yourself.`;
+    return [`## Delegation\n${position} You cannot start subagents of your own: exo refuses them at this depth. Do the work yourself.`, reporting]
+      .filter(Boolean).join("\n");
   }
   const remaining = max - depth;
   return [
@@ -76,7 +80,8 @@ export function subagentDelegationNote(
     `${position} You may start subagents with exo, ${remaining === 1 ? "and they cannot delegate further" : `up to ${remaining} more levels deep`}.`,
     "Delegate only clearly separable work that would take hours; do everything else yourself. Never hand off your whole task, never delegate a task back to your parent or anyone above it, and never start a subagent only to have it start another.",
     "Your subagents report to you, not to the top-level conversation. Before ending your turn, wait for each one (chrono wait with task_id set to its conversation id) and include its results in your own report.",
-  ].join("\n");
+    reporting,
+  ].filter(Boolean).join("\n");
 }
 
 type ScopedPromptOptions = Pick<BuildSystemPromptOptions,

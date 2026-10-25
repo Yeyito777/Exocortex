@@ -34,7 +34,8 @@ import { describeToolInstructions } from "./tool-instructions";
 import { assertDelegationModel, parseRequestedModel, resolveDelegationModel } from "./delegation-models";
 import { getConversationToolNames, getToolDisplayInfo } from "./tools/registry";
 import { getExternalToolStyles, manageExternalToolDaemon } from "./external-tools";
-import { EFFORT_LEVELS, SUBAGENTS_FOLDER_NAME, createModelVisibleSystemNotice, type UserMessageAutomation } from "./messages";
+import { EFFORT_LEVELS, SUBAGENTS_FOLDER_NAME, createModelVisibleSystemNotice, isQueuedObligation, type UserMessageAutomation } from "./messages";
+import { describeSubagentPendingWork } from "./subagent-pending-work";
 import { getDefaultProvider, getDefaultModel, getProvider, getProviders, isKnownModel, allowsCustomModels, refreshProviders, normalizeEffort, supportsEffort, getSupportedEfforts, supportsFastMode, supportsImageInputs } from "./providers/registry";
 import { transcribeAudioBytes } from "./transcription";
 import { generateImage } from "./providers/openai/image-generation";
@@ -70,6 +71,8 @@ import { getSubagentParentConversationId, listActiveConversationTasks, setSubage
 import {
   acknowledgeSubagentNotification,
   beginPendingSubagentNotification,
+  cancelRunningSubagentNotifications,
+  followUpTrigger,
   hasSubagentNotificationBeenDelivered,
   hasSubagentTaskStarted,
   listPendingSubagentNotifications,
@@ -671,11 +674,13 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
 
   /**
    * A subagent woken after its task already reported has nobody waiting on
-   * this turn: its own subagent's late result, or a message its parent queued
-   * for after its turn. Report the turn to its parent like a task (the turn's
-   * end completes the record), unless it was started detached. Runs at turn
-   * admission, so every path that starts the turn (idle delivery, a queued
-   * successor, the queue pump) is covered.
+   * this turn: a message from its parent or a sibling, its own subagent's late
+   * result, a finished background task, a wake. Report the turn to its parent
+   * like a task (the turn's end completes the record), unless it was started
+   * detached. Runs at turn admission, so every path that starts the turn (idle
+   * delivery, a queued successor, the queue pump) is covered, and when such
+   * input joins a running turn that nothing reports (drainNextTurnMessages).
+   * Goal continuations and restart notices carry on a turn already accounted for.
    */
   const relaySubagentFollowUp = (
     convId: string,
@@ -686,14 +691,13 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     const policy = convStore.getPolicyMetadata(convId);
     const upstreamId = policy?.subagentPolicy?.parentConversationId;
     if (!policy || !upstreamId || upstreamId === convId || policy.subagentPolicy?.detached) return;
-    const relayed = automation.kind === "subagent_completion"
-      || (automation.kind === "exo_send" && automation.sourceId === upstreamId);
-    if (!relayed) return;
+    if (!isQueuedObligation(automation)) return;
     if (!convStore.getPolicyMetadata(upstreamId)) return;
     // A running record (its task, or an exo message's own record) already reports this turn.
     if (listPendingSubagentNotifications({ childConvId: convId, state: "running" }).length > 0) return;
     try {
-      beginPendingSubagentNotification({ convId: upstreamId }, convId, text, startedAt, policy.subagentMaxDepth ?? null, true);
+      beginPendingSubagentNotification({ convId: upstreamId }, convId, text, startedAt, policy.subagentMaxDepth ?? null, true,
+        followUpTrigger(automation, upstreamId));
     } catch (err) {
       log("warn", `handler: could not relay follow-up of subagent ${convId} to ${upstreamId}: ${err instanceof Error ? err.message : String(err)}`);
       return;
@@ -774,7 +778,15 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
 
   const completeParentNotification = (childConvId: string, outcome: AssistantTurnOutcome): void => {
     const related = listPendingSubagentNotifications({ childConvId });
-    settlePendingSubagentNotifications(childConvId, outcome);
+    // A daemon stop ends every turn on purpose and schedules nothing for later:
+    // no "stopped" notices (a restart's aborts stay running for replay instead).
+    if (outcome.aborted && !outcome.watchdog && !outcome.daemonRestart && getDaemonShutdownMode() === "stop") {
+      cancelRunningSubagentNotifications(childConvId);
+    }
+    const reporting = related.some((record) => record.state === "running");
+    settlePendingSubagentNotifications(childConvId, reporting && !outcome.aborted
+      ? { ...outcome, pendingWork: describeSubagentPendingWork(childConvId) }
+      : outcome);
     if (!(outcome.aborted && outcome.daemonRestart)) {
       const parentIds = new Set(
         related.filter((record) => record.trackAsSubagent).map((record) => record.parentConvId),

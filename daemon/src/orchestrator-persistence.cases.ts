@@ -2124,6 +2124,54 @@ describe("subagent completion is owned by the turn, not its starter", () => {
     expect(relayed).toEqual([{ convId: childId, kind: "subagent_completion", text: "[notification] Subagent completed: exo:grandchild" }]);
   });
 
+  // Oct 25 Wren gap: a sibling's message woke a child that had already
+  // reported, and the parent's own messages then joined that turn at tool
+  // boundaries. Input joining a turn is offered for relay like input starting
+  // one, after it is durably in the transcript (restart recovery reads it).
+  test("automated input joining a running turn at a tool boundary is offered for relay", async () => {
+    const childId = id("relay-joined-child");
+    create(childId, "openai", "gpt-5.6-sol");
+    const fake = server();
+    const relayed: Array<{ kind: string; sourceId?: string; text: string; persisted: boolean }> = [];
+    registerSubagentNotificationRuntime(fake, {
+      begin: beginPendingSubagentNotification,
+      complete: (childConvId, outcome) => { settlePendingSubagentNotifications(childConvId, outcome); },
+      deliverReady: () => {},
+      relayFollowUp: (convId, automation, text, startedAt) => {
+        const persisted = get(convId)!.messages.some(message => message.role === "user" && message.metadata?.startedAt === startedAt);
+        relayed.push({ kind: automation.kind, sourceId: automation.sourceId, text, persisted });
+      },
+    });
+    let calls = 0;
+    const fakeStream = (async () => {
+      calls += 1;
+      if (calls > 1) {
+        return {
+          text: "did all three", thinking: "", stopReason: "stop" as const,
+          blocks: [{ type: "text" as const, text: "did all three" }], toolCalls: [], inputTokens: 1, outputTokens: 1,
+        };
+      }
+      pushQueuedMessage(childId, "Mac steps are done", "next-turn", undefined, null, undefined, undefined, undefined,
+        { kind: "exo_send", sourceId: "the-parent" });
+      pushQueuedMessage(childId, "typed by the owner", "next-turn");
+      steerActiveTurn(childId);
+      return {
+        text: "", thinking: "", stopReason: "tool_use" as const, blocks: [],
+        toolCalls: [{ id: "relay-joined-read", name: "read", input: { file_path: "/etc/hosts" } }],
+      };
+    }) as typeof streamMessage;
+
+    const outcome = await orchestrateSendMessage(fake as never, null, undefined, childId, "from a sibling", Date.now(),
+      callbacks(fakeStream), undefined, { automation: { kind: "exo_send", sourceId: "a-sibling" } });
+
+    expect(outcome.error).toBeUndefined();
+    expect(outcome.ok).toBe(true);
+    expect(relayed).toEqual([
+      { kind: "exo_send", sourceId: "a-sibling", text: "from a sibling", persisted: true },
+      { kind: "exo_send", sourceId: "the-parent", text: "Mac steps are done", persisted: true },
+    ]);
+  });
+
   // A foreground `exo send` waits for the reply itself: the parent must not
   // also be sent it, though the prompt is still stored as automated.
   test("a turn whose sender awaits the reply is not offered for relay", async () => {
