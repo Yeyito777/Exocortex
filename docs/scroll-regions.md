@@ -35,9 +35,12 @@ on exit). `tui/src/smoothscroll.ts` then:
   band, and with the Tasks panel open, the columns left of it for the full
   height plus the panel's columns from the row below it. The sidebar and the
   panel never move;
-- places images that reach the band's last row uncropped below it, so the
-  part leaving at the bottom keeps showing (st clips it to the rectangle);
-  st keeps the rows of images leaving through the top;
+- while a glide runs, places images that reach the band's last row
+  uncropped below it, so the part leaving at the bottom keeps showing (st
+  clips images to the moving rectangles while they move), and crops them
+  again with one more frame when the glide ends; st keeps the rows of images
+  leaving through the top. At rest images are placed exactly as without
+  smooth scrolling;
 - glides content that moved by itself (output streamed while following)
   from where it was drawn.
 

@@ -1901,7 +1901,8 @@ export function render(state: RenderState): boolean {
       cursorLineIndex: historyFocused ? state.historyCursor.row : null,
       cursorCol: state.historyCursor.col,
       mathOnly: !kittyHistory,
-      extendBelow: smooth ? messageAreaStart + messageAreaHeight - 1 : undefined,
+      // Only while gliding: at rest images are cropped exactly as without it.
+      extendBelow: smooth?.busy() ? messageAreaStart + messageAreaHeight - 1 : undefined,
     })
     : { placements: [], notices: [] };
   // Thumbnails without pixels yet say so on their first visible row.

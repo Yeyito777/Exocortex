@@ -81,10 +81,10 @@ export interface CollectHistoryImagesOptions {
   /** Place display-math images only (history images render as half-blocks or not at all). */
   mathOnly?: boolean;
   /**
-   * Smooth scrolling (st mode 2032): the last row of the moving band. An
-   * image whose visible rows reach it keeps its rows below as well, so the
-   * part leaving at the bottom still shows while it glides out; the terminal
-   * clips it to the moving rectangle.
+   * Smooth scrolling (st mode 2032), while a glide runs: the last row of the
+   * moving band. An image whose visible rows reach it keeps its rows below as
+   * well, so the part leaving at the bottom still shows while it glides out;
+   * the terminal clips it to the moving rectangles while they move.
    */
   extendBelow?: number;
   /** History lines above and below the screen whose thumbnails are fetched ahead of scrolling (default: one screen). */
