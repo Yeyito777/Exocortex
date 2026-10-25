@@ -133,7 +133,16 @@ The native `exo` tool starts a subagent, messages or reports the status of an
 existing conversation, aborts one, or restarts the daemon. A message to a
 streaming conversation is an automated entry on the durable queue (as
 `queue_message` makes); one to an idle conversation starts its turn at once and
-notifies the caller when it ends, like a subagent turn. Tool
+notifies the caller when it ends, like a subagent turn.
+
+Every prompt that is not the owner's keyboard is stored with
+`metadata.automation` (kind and `sourceId`), which clients render as automated
+with a reason line; untagged user messages are the owner's. The external `exo`
+CLI marks its `send_message`/`queue_message` with `delegation: true` and
+`sender` (its shell's `EXOCORTEX_PARENT_CONV_ID`): the daemon stores them as
+`exo_send` from that conversation (from the notified parent, or no source, when
+there is none). A foreground CLI send's reply goes to the CLI only, never also
+reported to a parent. Tool
 selection and conversation-scoped custom modules are retired; old persisted
 policies are retained as opaque historical data for lossless import/export.
 Old selection requests receive an explicit error; they have no mutation API,

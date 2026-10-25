@@ -2124,6 +2124,36 @@ describe("subagent completion is owned by the turn, not its starter", () => {
     expect(relayed).toEqual([{ convId: childId, kind: "subagent_completion", text: "[notification] Subagent completed: exo:grandchild" }]);
   });
 
+  // A foreground `exo send` waits for the reply itself: the parent must not
+  // also be sent it, though the prompt is still stored as automated.
+  test("a turn whose sender awaits the reply is not offered for relay", async () => {
+    const childId = id("awaited-child");
+    create(childId, "openai", "gpt-5.6-sol");
+    const fake = server();
+    const relayed: string[] = [];
+    registerSubagentNotificationRuntime(fake, {
+      begin: beginPendingSubagentNotification,
+      complete: (childConvId, outcome) => { settlePendingSubagentNotifications(childConvId, outcome); },
+      deliverReady: () => {},
+      relayFollowUp: (convId) => { relayed.push(convId); },
+    });
+    const fakeStream = (async () => ({
+      text: "reply", thinking: "", stopReason: "stop" as const,
+      blocks: [{ type: "text" as const, text: "reply" }], toolCalls: [], inputTokens: 1, outputTokens: 1,
+    })) as typeof streamMessage;
+    const automation = { kind: "exo_send" as const, sourceId: "the-parent" };
+
+    const awaited = await orchestrateSendMessage(fake as never, null, undefined, childId, "foreground ask", Date.now(),
+      callbacks(fakeStream), undefined, { automation, replyAwaited: true });
+    expect(awaited.ok).toBe(true);
+    expect(relayed).toEqual([]);
+    expect(get(childId)!.messages.find(message => message.role === "user")?.metadata?.automation).toEqual(automation);
+
+    await orchestrateSendMessage(fake as never, null, undefined, childId, "queued ask", Date.now(),
+      callbacks(fakeStream), undefined, { automation });
+    expect(relayed).toEqual([childId]);
+  });
+
   test("a daemon-restart abort leaves the notification running for the next daemon", async () => {
     const parentId = id("restart-parent");
     const childId = id("restart-child");

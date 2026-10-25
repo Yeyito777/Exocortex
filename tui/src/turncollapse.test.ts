@@ -587,6 +587,20 @@ describe("a parent conversation's prompts", () => {
     expect(shown[shown.indexOf("no id") + 1]).toBe("⚙ Exo delegation · from another conversation");
   });
 
+  test("a child's report through `exo queue` reads the same, from the child", () => {
+    for (const [view, open] of VIEWS) {
+      const state = createInitialState();
+      state.sidebar.conversations = [{ id: "gap354", title: "You are GAP354, a research agent" } as never];
+      const report = user("[GAP354 → manager] Oct 24 rerun done.", { kind: "exo_send", sourceId: "gap354" });
+      state.messages.push(report, assistant([{ type: "text", text: "Thanks." }]));
+      open(state);
+      const built = buildMessageLines(state, 100);
+      const shown = built.lines.map(line => stripAnsi(line).trim()).filter(Boolean);
+      expect(shown.slice(0, 2), view).toEqual(["[GAP354 → manager] Oct 24 rerun done.", "⚙ Exo delegation · from You are GAP354, a research agent"]);
+      expect(bubbleBackgrounds(built, report), view).toEqual(["automated"]);
+    }
+  });
+
   test("quoting the owner's relay line does not make a parent's prompt the owner's bubble", () => {
     const state = createInitialState();
     const forwarded = user(RELAY_TEXT("please fix the queue"), { kind: "exo_send", sourceId: "parent-1" });

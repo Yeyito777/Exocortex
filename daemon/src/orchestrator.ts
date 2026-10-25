@@ -229,6 +229,8 @@ interface AssistantTurnOptions {
   queueEntryId?: string;
   /** Provenance for a daemon/model-authored prompt represented as a user turn. */
   automation?: UserMessageAutomation;
+  /** Its sender waits on this turn's reply itself (a foreground `exo send`): no report to a parent. */
+  replyAwaited?: boolean;
   /** Replays a turn a daemon restart interrupted: its run's work timer continues. */
   resumesInterruptedRun?: boolean;
   /** Force one context compaction without requesting an assistant response. */
@@ -237,7 +239,7 @@ interface AssistantTurnOptions {
   streamChainHandoff?: boolean;
 }
 
-export type SubagentTurnPolicy = Pick<AssistantTurnOptions, "subagentMaxDepth" | "subagentNotificationId" | "queueEntryId" | "automation" | "resumesInterruptedRun">;
+export type SubagentTurnPolicy = Pick<AssistantTurnOptions, "subagentMaxDepth" | "subagentNotificationId" | "queueEntryId" | "automation" | "replyAwaited" | "resumesInterruptedRun">;
 
 export async function orchestrateSendMessage(
   server: DaemonServer,
@@ -704,8 +706,9 @@ async function orchestrateAdmittedAssistantTurn(
       throw new Error(`Conversation ${convId} disappeared before its user turn could be committed`);
     }
     // A subagent woken by automated input after its task reported: its reply goes up too.
-    if (automation) getSubagentNotificationRuntime(server)?.relayFollowUp?.(convId, automation, admittedText, startedAt);
-    else convStore.noteOwnerTurnInChain(convId);
+    if (automation) {
+      if (!options.replyAwaited) getSubagentNotificationRuntime(server)?.relayFollowUp?.(convId, automation, admittedText, startedAt);
+    } else convStore.noteOwnerTurnInChain(convId);
   } else {
     // Replay/manual compaction has no new user message, but its metadata
     // mutation still needs an explicit commit before provider work starts.

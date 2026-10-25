@@ -64,9 +64,9 @@ export function ownerWords(text: string, automation: UserMessageAutomation | und
 }
 
 /**
- * The line under a prompt a parent conversation sent (an exo delegation or
- * follow-up): `⚙ Exo delegation · from 📡 paramount`, by the parent's title,
- * else its id.
+ * The line under a prompt another conversation sent (a parent's delegation or
+ * follow-up, a child's `exo queue` report): `⚙ Exo delegation · from 📡
+ * paramount`, by the sender's title, else its id.
  */
 export function parentPromptLabel(automation: UserMessageAutomation, conversationTitle?: (id: string) => string | null): string {
   const title = automation.sourceId ? conversationTitle?.(automation.sourceId) || automation.sourceId : null;
