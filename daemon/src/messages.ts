@@ -1054,6 +1054,7 @@ export function summarizeConversation(
     muted: conv.muted === true,
     sortOrder: conv.sortOrder,
     folderId: conv.folderId ?? null,
+    ...(conv.subagentPolicy?.parentConversationId ? { parentConversationId: conv.subagentPolicy.parentConversationId } : {}),
   };
 }
 

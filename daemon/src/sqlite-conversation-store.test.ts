@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LEGACY_CALL_STATUS_KIND, createConversation, historyPrefixHash, type MessageMetadata, type StoredMessage } from "./messages";
+import { LEGACY_CALL_STATUS_KIND, createConversation, historyPrefixHash, summarizeConversation, type MessageMetadata, type StoredMessage } from "./messages";
 import { SqliteConversationStore, sqliteConversationStoreIsCurrent } from "./sqlite-conversation-store";
 import { clonedConversationValue } from "./conversation-clone";
 import { buildConversationApiContext } from "./context-compaction";
@@ -59,6 +59,30 @@ test("Ultrafast survives reopen, summaries, display pages, and direct clone", ()
   store.save(conv);
   expect(store.load(conv.id)?.fastMode).toBe(false);
   expect(store.integrityCheck().ok).toBe(true);
+  store.close();
+});
+
+test("a subagent's summary names its parent; a top-level conversation's leaves it out", () => {
+  const { path } = pathFor("parent-summary");
+  let store = new SqliteConversationStore({ path });
+  const top = savedFixture(store, "top");
+  const child = createConversation("child", "openai", "gpt-5.6-sol", 1, "child");
+  child.subagentPolicy = { parentConversationId: "top", allowEdits: false, parentSystemInstructions: "", depth: 1 };
+  store.save(child);
+  const external = createConversation("external", "openai", "gpt-5.6-sol", 2, "external");
+  external.subagentPolicy = { parentConversationId: null, allowEdits: false, parentSystemInstructions: "" };
+  store.save(external);
+  store.close();
+  store = new SqliteConversationStore({ path });
+  const listed = new Map(store.listSummaries().map(summary => [summary.id, summary]));
+  expect(listed.get("child")?.parentConversationId).toBe("top");
+  expect(store.getSummary("child")?.parentConversationId).toBe("top");
+  expect(summarizeConversation(child).parentConversationId).toBe("top");
+  for (const id of [top.id, "external"]) {
+    expect("parentConversationId" in listed.get(id)!).toBe(false);
+    expect("parentConversationId" in store.getSummary(id)!).toBe(false);
+  }
+  expect("parentConversationId" in summarizeConversation(external)).toBe(false);
   store.close();
 });
 

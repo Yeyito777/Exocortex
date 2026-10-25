@@ -3,10 +3,11 @@
  *
  * Folded (the default), the history reads like a plain chat: the user's
  * messages and the agent's final replies with their metadata. Everything else
- * leaves no row: a turn's thinking, tool calls and interim text, notifications,
- * background turns with no reply, and informational notices. Ctrl+O shows all of
- * it and Ctrl+I the detail view; nothing opens on its own. The in-progress turn
- * shows only its latest step under a Working row.
+ * leaves no row: a turn's thinking, tool calls and interim text, notifications
+ * (in a top-level conversation, its own subagents' messages too), background
+ * turns with no reply, and informational notices. Ctrl+O shows all of it and
+ * Ctrl+I the detail view, notifications as automated bubbles; nothing opens on
+ * its own. The in-progress turn shows only its latest step under a Working row.
  *
  * planHistory is a cheap pass over block types only. Its per-message signatures
  * let the committed-row cache in conversation.ts rebuild exactly the messages
@@ -73,6 +74,33 @@ export function parentPromptLabel(automation: UserMessageAutomation, conversatio
   return `⚙ ${automationLabel(automation)} · from ${title ?? "another conversation"}`;
 }
 
+/** The header Exocortex puts on an external notification: `[notification] Tool/account · kind` (TOOL_STANDARD.md). */
+const EXTERNAL_NOTIFICATION_HEADER = /^\[notification\][ \t]+\S[^\n]*/;
+
+/**
+ * Who sent a notification, for the line under its bubble: the subagent a
+ * completion reports (by title, else id), or the channel an external
+ * notification came through (`Discord/paramount · DM`). Wakes, task completions
+ * and the like name no sender.
+ */
+export function notificationSource(text: string, automation: UserMessageAutomation | undefined, conversationTitle?: (id: string) => string | null): string | null {
+  switch (automation?.kind) {
+    case "subagent_completion":
+      return automation.sourceId ? conversationTitle?.(automation.sourceId) || automation.sourceId : null;
+    case "external_notification": {
+      const header = EXTERNAL_NOTIFICATION_HEADER.exec(text);
+      return header ? notificationPreview(header[0]) || null : null;
+    }
+    default:
+      return null;
+  }
+}
+
+/** The line under a notification's bubble: `⚙ Subagent completion · from <title>`, or `⚙ Chrono`. */
+export function notificationProvenance(label: string, source: string | null): string {
+  return `⚙ ${label}${source ? ` · from ${source}` : ""}`;
+}
+
 /** Label for a user-role message that was not typed by the user, or null for a real one. */
 export function notificationLabel(msg: Pick<UserMessage, "text" | "metadata">): string | null {
   if (!isAutomatedUserPrompt(msg.text, msg.metadata) || ownerRelay(msg)) return null;
@@ -106,6 +134,10 @@ interface NotificationMemo {
   metadata: UserMessage["metadata"];
   label: string | null;
   plan: NotificationPlan | null;
+  /** Its plan shown in full (Ctrl+O), kept while its sender's title is. */
+  shown?: NotificationPlan;
+  /** The sender its text names (an external notification's channel), once read. */
+  textSource?: string | null;
 }
 
 const notificationMemos = new WeakMap<object, NotificationMemo>();
@@ -142,10 +174,15 @@ export interface MergedPlan {
   kind: "merged";
 }
 
-/** A notification shown in full (Ctrl+O), on the assistant's side behind a muted gutter. */
+/**
+ * A notification. Folded it leaves no row (planGutter); shown in full (Ctrl+O,
+ * Ctrl+I) it is an automated bubble with `provenance` below it.
+ */
 export interface NotificationPlan {
   kind: "notification";
   label: string;
+  /** The line under its bubble, e.g. `⚙ Subagent completion · from <title>`; set when shown in full. */
+  provenance?: string;
 }
 
 /**
@@ -210,6 +247,13 @@ export interface PlanHistoryInput {
   collapse: boolean;
   /** Title of a conversation by id, for prompts other conversations sent. */
   conversationTitle?: (id: string) => string | null;
+  /**
+   * Whether a conversation is one of this conversation's subagents. Given only
+   * for a top-level conversation: folded, its subagents' messages (an `exo
+   * queue` report, a message sent upward) leave no row, like their completion
+   * notices. A subagent's own parent's prompts always read as its prompts.
+   */
+  isOwnSubagent?: (id: string) => boolean;
   /** A message whose turn stays in view (an active durable sleep's clock keeps running). */
   active?: object | null;
 }
@@ -218,6 +262,8 @@ const NO_SIGNATURE = "";
 const HIDDEN: HiddenPlan = { kind: "hidden", spacer: false };
 const HIDDEN_SPACER: HiddenPlan = { kind: "hidden", spacer: true };
 const MERGED: MergedPlan = { kind: "merged" };
+/** A subagent's message in its top-level parent, folded: it leads its turn like a notification. */
+const SUBAGENT_MESSAGE: NotificationPlan = { kind: "notification", label: AUTOMATION_LABELS.exo_send };
 
 /** An informational transcript notice: it folds with its turn's work. */
 function isFoldedNotice(msg: Message | undefined): boolean {
@@ -236,6 +282,11 @@ export function planHistory(input: PlanHistoryInput): HistoryPlan {
     if (msg.role !== "user") continue;
     const automation = msg.metadata?.automation;
     if (automation?.kind === "exo_send") {
+      if (collapse && automation.sourceId && input.isOwnSubagent?.(automation.sourceId)) {
+        plans[index - start] = SUBAGENT_MESSAGE;
+        signatures[index - start] = "n";
+        continue;
+      }
       const label = parentPromptLabel(automation, input.conversationTitle);
       plans[index - start] = { kind: "from", label };
       signatures[index - start] = `f${label}`;
@@ -243,8 +294,19 @@ export function planHistory(input: PlanHistoryInput): HistoryPlan {
     }
     const memo = notificationMemo(msg);
     if (!memo.plan) continue;
-    plans[index - start] = memo.plan;
-    signatures[index - start] = "n";
+    if (collapse) {
+      plans[index - start] = memo.plan;
+      signatures[index - start] = "n";
+      continue;
+    }
+    // A sender named by the text is read once; a subagent's title can change.
+    const source = automation?.kind === "subagent_completion"
+      ? notificationSource(msg.text, automation, input.conversationTitle)
+      : memo.textSource !== undefined ? memo.textSource : (memo.textSource = notificationSource(msg.text, automation));
+    const provenance = notificationProvenance(memo.plan.label, source);
+    if (memo.shown?.provenance !== provenance) memo.shown = { ...memo.plan, provenance };
+    plans[index - start] = memo.shown;
+    signatures[index - start] = `n${provenance}`;
   }
   if (!collapse) return { collapse, messages: plans, signatures, pending };
 

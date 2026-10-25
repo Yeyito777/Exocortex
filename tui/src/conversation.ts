@@ -6,7 +6,7 @@
  * in blockrenderer.ts.
  */
 
-import { CONTEXT_COMPACTION_FINISHED_KIND, combineMessageMetadata, convDisplayName, ownerRelayedText, type Block, type ImageAttachment, type Message, type MessageMetadata, type UserMessageAutomation } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, combineMessageMetadata, convDisplayName, ownerRelayedText, type Block, type ConversationSummary, type ImageAttachment, type Message, type MessageMetadata, type UserMessageAutomation } from "./messages";
 import {
   fitImageBox,
   historyImageLimits,
@@ -34,7 +34,7 @@ import {
   type UserMessageFlowCursor,
 } from "./blockrenderer";
 import { isVisuallyBlankLine, sanitizeUntrustedText } from "./terminaltext";
-import { automationLabel, ownerRelay, ownerWords, parentPromptLabel, planHistory, type HistoryPlan, type NotificationPlan, type PendingPlan } from "./turncollapse";
+import { automationLabel, notificationProvenance, notificationSource, ownerRelay, ownerWords, parentPromptLabel, planHistory, type HistoryPlan, type PendingPlan } from "./turncollapse";
 
 const COMPACTION_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
 const COMPACTION_SPINNER_INTERVAL_MS = 80;
@@ -99,7 +99,6 @@ import { mathImageGeneration } from "./mathimages";
 import type { LinkSpan } from "./links";
 import { isNewConversationQueuedMessage, queuedMessagesInDisplayOrder, queueTimingLabel } from "./queue";
 
-import { wordWrap } from "./textwrap";
 export { wordWrap, type WrapResult } from "./textwrap";
 
 /**
@@ -235,45 +234,8 @@ function workingRow(metadata: MessageMetadata | null, pending: PendingPlan, now 
   return `  ${theme.accent}${frame}${theme.reset} ${theme.muted}Working${work}${theme.reset}`;
 }
 
-/** A rendered row without its colours (to restyle it wholesale). */
-function stripSgr(line: string): string {
-  return line.replace(/\x1b\[[0-9;:]*m/g, "");
-}
-
-// ── Notifications ───────────────────────────────────────────────────
-
-/** Notification label rows are chrome: yanks and copies skip them. */
+/** Chrome rows (the Working row): yanks and copies skip them. */
 const DISPLAY_ONLY_ROW: WrapCopyLine = { text: "", displayStart: 0, skip: true };
-const NOTIFICATION_GUTTER = "▎ ";
-const NOTIFICATION_INDENT = 2;
-const notificationBodyCache = new WeakMap<object, { text: string; width: number; themeName: string; result: WrapResult }>();
-
-/**
- * One muted row naming a notification's source in italics, cut to the width
- * (a single row, so it never autowraps beside the sidebar or task panel).
- */
-function notificationLabelRow(row: string, labelEnd: number, availableWidth: number): string {
-  const text = truncateToWidth(row, Math.max(1, availableWidth - 4));
-  const end = Math.min(labelEnd, text.length);
-  return `  ${theme.muted}${theme.italic}${text.slice(0, end)}${theme.italicOff}${text.slice(end)}${theme.reset}`;
-}
-
-/** Notification text behind a muted gutter; copies take the text without it. */
-function renderNotificationBodyCached(msg: Extract<Message, { role: "user" }>, availableWidth: number, owner: object = msg): WrapResult {
-  const cached = notificationBodyCache.get(owner);
-  if (cached && cached.text === msg.text && cached.width === availableWidth && cached.themeName === theme.name) return cached.result;
-  const textStart = NOTIFICATION_INDENT + NOTIFICATION_GUTTER.length;
-  const wrapped = wordWrap(sanitizeUntrustedText(msg.text), Math.max(1, availableWidth - textStart - 2));
-  const prefix = `${" ".repeat(NOTIFICATION_INDENT)}${theme.muted}${NOTIFICATION_GUTTER}${theme.reset}`;
-  const result: WrapResult = {
-    lines: wrapped.lines.map(line => `${prefix}${line}`),
-    cont: wrapped.cont,
-    join: wrapped.join,
-    copy: wrapped.lines.map(line => ({ text: line, displayStart: textStart })),
-  };
-  notificationBodyCache.set(owner, { text: msg.text, width: availableWidth, themeName: theme.name, result });
-  return result;
-}
 
 // ── Message boundary tracking ───────────────────────────────────────
 
@@ -309,9 +271,6 @@ export type RenderLineSegment =
   | "streaming_tail"
   | "system_message"
   | "automation_label"
-  | "notification_body"
-  | "notification_header"
-  | "notification_margin_bottom"
   | "turn_working"
   | "user_content"
   | "user_image"
@@ -682,25 +641,16 @@ export function buildMessageLines(
   };
 
   /**
-   * Whether the last row is a user bubble's or a notification's bottom margin. The
-   * next one then shares that blank row instead of adding its own top margin:
-   * consecutive user messages and notifications sit one blank row apart, not two.
-   * The first message of a partial window has no rows above it and keeps its margin.
+   * Whether the last row is a user bubble's bottom margin (a notification shown
+   * in full is one too). The next one then shares that blank row instead of
+   * adding its own top margin: consecutive bubbles sit one blank row apart, not
+   * two. The first message of a partial window has no rows above it and keeps its margin.
    */
-  const followsBubble = () => {
-    const segment = lines.length > 0 ? lineAnchors[lines.length - 1].segment : null;
-    return segment === "user_margin_bottom" || segment === "notification_margin_bottom";
-  };
+  const followsBubble = () => lines.length > 0 && lineAnchors[lines.length - 1].segment === "user_margin_bottom";
 
-  /** A chrome row (a notification's label, the Working row): yanks and copies skip it. */
+  /** A chrome row (the Working row): yanks and copies skip it. */
   const pushChromeLine = (line: string, owner: object, segment: RenderLineSegment) => {
     pushAnchoredLine(line, false, "", owner, segment, 0, 0, DISPLAY_ONLY_ROW);
-  };
-
-  /** A notification sits on the assistant's side, never in the user's bubble: its label, then its text behind a muted gutter. */
-  const pushNotification = (msg: Extract<Message, { role: "user" }>, notification: NotificationPlan) => {
-    pushChromeLine(notificationLabelRow(notification.label, notification.label.length, availableWidth), msg, "notification_header");
-    pushBlock(msg, "notification_body", renderNotificationBodyCached(msg, availableWidth));
   };
 
   const imageLimits = historyImageLimits(availableWidth, state.rows);
@@ -783,10 +733,19 @@ export function buildMessageLines(
   const lastContinuesIntoPending = state.pendingAI?.role === "assistant";
   const imageCell = inlineImageCellSize();
   const collapse = !state.showTurnWork && !state.showToolOutput;
+  // Senders by id, indexed on the first lookup: the sidebar list is sorted and patched in place.
+  let sidebarById: Map<string, ConversationSummary> | null = null;
+  const sidebarConversation = (id: string) =>
+    (sidebarById ??= new Map((state.sidebar?.conversations ?? []).map(conv => [conv.id, conv]))).get(id);
   const conversationTitle = (id: string) => {
-    const conv = state.sidebar?.conversations.find(candidate => candidate.id === id);
+    const conv = sidebarConversation(id);
     return conv ? convDisplayName(conv) : null;
   };
+  // A top-level conversation's subagents: folded, their messages leave no row.
+  const ownConversation = state.convId ? state.sidebar?.conversations.find(conv => conv.id === state.convId) : undefined;
+  const isOwnSubagent = ownConversation && !ownConversation.parentConversationId
+    ? (id: string) => sidebarConversation(id)?.parentConversationId === ownConversation.id
+    : undefined;
   const plan: HistoryPlan = planHistory({
     messages,
     start: startMessageIndex,
@@ -794,6 +753,7 @@ export function buildMessageLines(
     collapse,
     active: durableSleepAssistant,
     conversationTitle,
+    isOwnSubagent,
   });
   const cacheKey: unknown[] = [
     state.convId, contentWidth, state.showToolOutput, state.showTurnWork, state.showDiagnostics, state.toolRegistry,
@@ -970,23 +930,18 @@ export function buildMessageLines(
       // as does a bubble right above it (it was delivered into a turn whose work folded).
       if (state.messages[messageIndex + 1]?.role !== "user" && userMessageNeedsTopMargin(state.messages, messageIndex) && !followsBubble()) pushLine("", msg, "user_margin_top");
       pushMessageBound(msg.role, start, lines.length, lines.length);
-    } else if (msg.role === "user" && messagePlan?.kind === "notification") {
-      if (userMessageNeedsTopMargin(state.messages, messageIndex) && !followsBubble()) pushLine("", msg, "user_margin_top");
-      const contentStart = lines.length;
-      pushNotification(msg, messagePlan);
-      const contentEnd = lines.length;
-      pushImages(pastedImages(msg, msg.images, state.convId), "user_image");
-      pushLine("", msg, "notification_margin_bottom");
-      pushMessageBound(msg.role, start, contentStart, contentEnd);
     } else if (msg.role === "user") {
       if (userMessageNeedsTopMargin(state.messages, messageIndex) && !followsBubble()) pushLine("", msg, "user_margin_top");
       const contentStart = lines.length;
       // The owner's own Discord/WhatsApp message reads as theirs: their words in their bubble.
-      // Only the owner's words get that background; a parent conversation's prompt is automated.
+      // Only the owner's words get that background; a parent conversation's prompt and a
+      // notification shown in full (Ctrl+O) are automated, with why they are there below.
       const relay = ownerRelay(msg);
       const text = relay?.text ?? msg.text;
-      const from = messagePlan?.kind === "from" ? messagePlan.label : null;
-      const background = ownerWords(msg.text, msg.metadata?.automation) ? theme.userBg : theme.automatedUserBg;
+      const from = messagePlan?.kind === "from" ? messagePlan.label
+        : messagePlan?.kind === "notification" ? messagePlan.provenance ?? notificationProvenance(messagePlan.label, null) : null;
+      // Untagged history's notifications have no automation metadata, but are not the owner's words either.
+      const background = messagePlan?.kind !== "notification" && ownerWords(msg.text, msg.metadata?.automation) ? theme.userBg : theme.automatedUserBg;
       const rendered = renderUserMessageCached(msg, text, availableWidth, msg.images, background);
       pushBlock(msg, "user_content", rendered);
       const contentEnd = lines.length;
@@ -1208,7 +1163,8 @@ export function buildMessageLines(
   // Queued messages — dimmed user bubbles with timing label (after pendingAI)
   // Folded history hides queued notifications too: only prompts (the owner's own,
   // typed or relayed, and a parent conversation's) wait at the bottom; Ctrl+O shows the rest.
-  const ownQueued = (qm: (typeof state.queuedMessages)[number]) => !collapse || qm.automation?.kind === "exo_send"
+  const ownQueued = (qm: (typeof state.queuedMessages)[number]) => !collapse
+    || (qm.automation?.kind === "exo_send" && !(qm.automation.sourceId && isOwnSubagent?.(qm.automation.sourceId)))
     || ownerWords(qm.text, qm.automation);
   const queued = queuedMessagesInDisplayOrder(
     (state.convId
@@ -1218,17 +1174,12 @@ export function buildMessageLines(
   );
   for (const qm of queued) {
     const relayed = ownerRelayedText(qm.text, qm.automation ? { automation: qm.automation } : null);
-    if (qm.automation && relayed === null && qm.automation.kind !== "exo_send") {
-      // A queued notification (shown with Ctrl+O) reads like the delivered ones: on the
-      // assistant's side under its label, dimmed, with when it will be delivered.
-      if (!followsBubble()) pushLine("", qm, "queued_margin_top");
-      const label = `${automationLabel(qm.automation)} · ${queueTimingLabel(qm, Date.now(), state.provider)}`;
-      pushLine(notificationLabelRow(label, label.length, availableWidth), qm, "queued_label");
-      const body = renderNotificationBodyCached({ role: "user", text: qm.text, metadata: null }, availableWidth, qm);
-      for (let i = 0; i < body.lines.length; i++) pushLine(`${theme.muted}${stripSgr(body.lines[i])}${theme.reset}`, qm, "queued_content", i);
-      continue;
-    }
-    const provenance = qm.automation?.kind === "exo_send" ? parentPromptLabel(qm.automation, conversationTitle) : automationProvenance(qm.automation);
+    // A queued notification (shown with Ctrl+O) reads like the delivered ones: an
+    // automated bubble, dimmed, naming why it is there and when it will be delivered.
+    const provenance = qm.automation?.kind === "exo_send" ? parentPromptLabel(qm.automation, conversationTitle)
+      : qm.automation && relayed === null
+        ? notificationProvenance(automationLabel(qm.automation), notificationSource(qm.text, qm.automation, conversationTitle))
+        : automationProvenance(qm.automation);
     const timingLabel = [provenance, queueTimingLabel(qm, Date.now(), state.provider)].filter((label): label is string => Boolean(label)).join(" · ");
     if (!followsBubble()) pushLine("", qm, "queued_margin_top");
     // Render a dimmed user bubble
