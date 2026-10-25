@@ -142,7 +142,7 @@ table in step with it.
 | `/diagnostics [on\|off]` | Show output-token counts in response metadata |
 | `/clock [12h\|24h]` | Show or set the clock that replaces a finished response's duration in its metadata (`2:03pm` by default, `14:03` for 24h; saved as `tui.clock`) |
 | `/theme [name]` | Show or set the theme |
-| `/folders [tree\|navigate]` | Expand sidebar folders in place (`l` expands, `h` collapses, `Enter` toggles; the default) or open them as their own list |
+| `/folders [tree\|navigate]` | Expand sidebar folders in place (`l` expands, `h` collapses, `Enter` toggles; the default) or open them as their own list. The folders left open come back on the next start, kept per daemon (local, or each `/ssh` alias) in `config/storage/tui-state.json`; deleted folders drop out |
 | `/hide [on\|off]` | Censor emails in the UI |
 | `/ping [sound\|notif\|both [file] \| off]` | Signal when a conversation is done and waiting for you: a turn with your own message finished and nothing queued follows (automated turns such as notifications, wakes and subagent reports, and interrupted turns, never ping) |
 | `/ssh [<alias>\|cancel]` | Route through another machine's daemon over SSH |
