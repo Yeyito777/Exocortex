@@ -34,6 +34,12 @@ export interface ApiKeyRequestUsage {
 }
 
 let ledger: LedgerFile | null = null;
+let recordedListener: ((accountKey: string) => void) | null = null;
+
+/** Told after each counted request, so the daemon pushes the new totals to clients right away. */
+export function setApiKeyUsageRecordedListener(listener: ((accountKey: string) => void) | null): void {
+  recordedListener = listener;
+}
 
 function ledgerPath(): string {
   return join(dataDir(), "openai-api-key-usage.json");
@@ -122,6 +128,7 @@ export function recordApiKeyUsage(accountKey: string | null | undefined, usage: 
   } catch (err) {
     log("warn", `openai api-key usage: could not save the ledger (${err instanceof Error ? err.message : err})`);
   }
+  recordedListener?.(accountKey);
 }
 
 function addSpend(into: ApiKeySpend, from: ApiKeySpend): void {

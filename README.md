@@ -91,7 +91,8 @@ wins; `/login openai` switches back to the ChatGPT account, and `/login` shows
 which one is in use. On the key, the `transcribe` and `image` tools and voice
 input use the public API too (the best transcription and GPT Image models the
 key lists), and the usage bars become the key's spend today and this month: a
-published-rate estimate counted from the responses this daemon received. Set
+published-rate estimate counted from the responses this daemon received,
+sent to every TUI as each one is counted. Set
 `providers.openai.monthlyBudgetUsd` in `config/config.json` (e.g. `20`) to draw
 them as bars: the month against the budget, today against what was left of it
 that morning spread over the days left in the month.
