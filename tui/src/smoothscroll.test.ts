@@ -134,17 +134,18 @@ describe("SmoothScroller", () => {
     const smooth = scroller();
     expect(smooth.layout(10, 100, 0, 20, "a")).toBe(10);
     expect(smooth.afterFlush(0, rects)).toBe(rectsPayload(rects));
-    // Three rows towards older history: laid out 30 ms ahead (ceil), so the
-    // offset (position - grid) is drawn higher, over lines st kept below.
+    // Three rows towards older history: laid out ahead (the row just past
+    // the position), so the offset (position - grid) is drawn higher, over
+    // lines st kept below.
     const grid = smooth.layout(13, 100, 0, 20, "a");
-    expect(grid).toBe(12);
+    expect(grid).toBe(11);
     const out = smooth.afterFlush(10 - grid, rects);
-    // base += 3 (target) - 2 (rows laid out); -3 rows easing from now: no jump.
-    expect(moves(out)).toEqual([[1000, -3000]]);
+    // base += 3 (target) - 1 (row laid out); -3 rows easing from now: no jump.
+    expect(moves(out)).toEqual([[2000, -3000]]);
     expect(out).toContain(";100\x1b\\");
     // Each further row is a region scroll plus base -1; nothing in between.
     const rest = settle(smooth, 13);
-    expect(moves(rest)).toEqual([[-1000, 0]]);
+    expect(moves(rest)).toEqual([[-1000, 0], [-1000, 0]]);
     expect(smooth.busy()).toBe(false);
     expect(smooth.needsLayout()).toBe(false);
   });
@@ -154,8 +155,8 @@ describe("SmoothScroller", () => {
     smooth.layout(10, 100, 0, 20, "a");
     smooth.afterFlush(0, rects);
     const grid = smooth.layout(7, 100, 0, 20, "a");
-    expect(grid).toBe(8);
-    expect(moves(smooth.afterFlush(10 - grid, rects))).toEqual([[-1000, 3000]]);
+    expect(grid).toBe(9);
+    expect(moves(smooth.afterFlush(10 - grid, rects))).toEqual([[-2000, 3000]]);
     settle(smooth, 7);
     expect(smooth.busy()).toBe(false);
   });
@@ -174,6 +175,35 @@ describe("SmoothScroller", () => {
     expect(delta).toBe(3000 - (second - first) * 1000);
     settle(smooth, 16);
     expect(smooth.busy()).toBe(false);
+  });
+
+  test("however fast inputs stack up, rows are laid out at most one past the glide", () => {
+    // Trackpad momentum / key repeat: 3 rows every 8 ms, laid out as often as
+    // the TUI checks (every 4 ms). The offset st draws stays within a row, so
+    // text that re-wraps (beside the Tasks panel) is never shown far from
+    // where it was laid out.
+    const smooth = scroller();
+    const offsetNow = () => (smooth as unknown as { offsetAt(time: number): number }).offsetAt(now);
+    smooth.layout(100, 1000, 0, 40, "a");
+    smooth.afterFlush(0, rects);
+    let logical = 100;
+    let worst = 0;
+    for (let i = 0; i < 60; i++) {
+      now += 4;
+      if (i % 2 === 0 && i < 40) logical -= 3;
+      const before = (smooth as unknown as { grid: number }).grid;
+      const grid = smooth.layout(logical, 1000, 0, 40, "a");
+      smooth.afterFlush(before - grid, rects);
+      worst = Math.max(worst, Math.abs(offsetNow()));
+    }
+    expect(worst).toBeLessThanOrEqual(1);
+    for (let i = 0; i < 40 && smooth.busy(); i++) {
+      now += 4;
+      const before = (smooth as unknown as { grid: number }).grid;
+      smooth.afterFlush(before - smooth.layout(logical, 1000, 0, 40, "a"), rects);
+    }
+    expect(smooth.busy()).toBe(false);
+    expect((smooth as unknown as { grid: number }).grid).toBe(logical);
   });
 
   test("pinning and a new context never animate", () => {
