@@ -33,6 +33,14 @@ depth. Children get the standard provider tools and all external hints.
 the child's `provider`, `model` and `effort`, plus `fast_mode: true` for Sol
 fast.
 
+A child's conversation is titled with its prompt's first six words. Its entry
+in the parent's Tasks panel (and the phone's Activity list) instead shows the
+prompt itself: whitespace collapsed and clipped to 200 characters, stored as
+the subagent policy's `taskLabel` so follow-up turns and restart recovery keep
+it (older children fall back to their title). The TUI truncates the entry to
+one row; expanded, it wraps up to three rows (~160 characters) and ellipsizes
+the rest.
+
 ## Nested subagents
 
 Subagents may start their own, down to `agent.maxSubagentDepth` in

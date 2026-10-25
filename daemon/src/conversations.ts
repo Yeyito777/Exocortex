@@ -643,6 +643,7 @@ export function setSubagentPolicy(id: string, policy: SubagentPolicy): boolean {
     parentSystemInstructions: policy.parentSystemInstructions.trim(),
     ...(policy.depth !== undefined ? { depth: policy.depth } : {}),
     ...(policy.detached ? { detached: true } : {}),
+    ...(policy.taskLabel?.trim() ? { taskLabel: policy.taskLabel.trim() } : {}),
   };
   markDirty(id);
   flush(id);
@@ -777,6 +778,10 @@ export function hasMessageMetadata(id: string, fields: Record<string, string | n
 }
 export function getPolicyMetadata(id: string) {
   return conversations.get(id) ?? persistence.policyMetadata(id);
+}
+/** What a subagent's entry in its parent's Tasks panel shows: its prompt excerpt, else (older records) its title. */
+export function subagentTaskTitle(id: string): string | undefined {
+  return getPolicyMetadata(id)?.subagentPolicy?.taskLabel?.trim() || getIndexedSummary(id)?.title.trim() || undefined;
 }
 export function hasToolBlock(id: string, type: "tool_use" | "tool_result", toolId: string, name?: string): boolean {
   const cached = conversations.get(id);

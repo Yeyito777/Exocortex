@@ -2,13 +2,13 @@ import { afterEach, describe, expect, mock, test } from "bun:test";
 import { clearConversationDefaults, saveConversationDefaults, updateExocortexConfig } from "@exocortex/shared/config";
 import { createExocortexToolRuntime, type ExocortexToolRuntimeDependencies } from "../exocortex-tool-runtime";
 import * as conversations from "../conversations";
-import { getActiveSubagentCount, getConversationActivityCounts, resetConversationActivityForTest, setSubagentActive } from "../conversation-activity";
+import { getActiveSubagentCount, getConversationActivityCounts, listActiveConversationTasks, resetConversationActivityForTest, setSubagentActive } from "../conversation-activity";
 import { buildConversationRequestSurface } from "../conversation-request-surface";
 import { setLoadedExternalToolsForTest } from "../external-tools";
 import { latestClaudeModel, latestSizeModel } from "../delegation-models";
 import { getProvider } from "../providers/registry";
 import { MAX_ACTIVE_EXO_SUBAGENTS_GLOBAL, MAX_ACTIVE_EXO_SUBAGENTS_PER_PARENT, MAX_EXO_SUBAGENT_DEPTH } from "../messages";
-import { maxSubagentDepth, subagentDepth } from "../subagent-policy";
+import { maxSubagentDepth, SUBAGENT_TASK_LABEL_MAX_CHARS, subagentDepth, subagentTaskLabel } from "../subagent-policy";
 import { readRequestedRestart, resetRequestedRestartForTest, RESTART_MIN_UPTIME_MS } from "../requested-restart";
 import { exo } from "./exo";
 import { summarizeClaudeCodeTool } from "./claude-code";
@@ -194,6 +194,34 @@ describe("minimal native exo", () => {
     ]) expect((await h.runtime.execute(input, p.id)).isError).toBe(true);
     expect(h.runTurn).not.toHaveBeenCalled();
     expect(getConversationActivityCounts(p.id).subagentCount).toBe(0);
+  });
+  test("a subagent's Tasks entry shows its prompt, not the six-word conversation title", async () => {
+    let release!: () => void;
+    const h = harness({ runTurn: mock(() => new Promise<typeof outcome>(resolve => { release = () => resolve(outcome); })) });
+    const p = parent();
+    const prompt = "You are the KERNEL agent for\nthe phone rebuild.\n\n  Target /tmp/x and keep the build green. " + "Report blockers. ".repeat(20);
+    const result = await h.runtime.execute({ subagent: prompt }, p.id);
+    const childId = JSON.parse(result.output).conversation_id as string;
+    ids.add(childId);
+    const child = conversations.get(childId)!;
+    expect(child.title).toBe("You are the KERNEL agent for");
+    const label = child.subagentPolicy!.taskLabel!;
+    expect(label).toStartWith("You are the KERNEL agent for the phone rebuild. Target /tmp/x and keep the build green. Report");
+    expect(Array.from(label)).toHaveLength(SUBAGENT_TASK_LABEL_MAX_CHARS);
+    expect(label).toEndWith("…");
+    expect(listActiveConversationTasks(p.id)).toMatchObject([{ id: childId, kind: "subagent", title: label }]);
+    expect(conversations.subagentTaskTitle(childId)).toBe(label);
+    release();
+    await settle();
+    expect(listActiveConversationTasks(p.id)).toEqual([]);
+    // A follow-up turn keeps the same label.
+    await h.runtime.execute({ message: { conversation: childId, text: "Also check the tests." } }, p.id);
+    expect(listActiveConversationTasks(p.id)).toMatchObject([{ id: childId, title: label }]);
+    release();
+    // A short prompt is kept whole; a record from before labels falls back to its title.
+    expect(subagentTaskLabel("  Fix\n the   typo. ")).toBe("Fix the typo.");
+    delete child.subagentPolicy!.taskLabel;
+    expect(conversations.subagentTaskTitle(childId)).toBe("You are the KERNEL agent for");
   });
   describe("nested delegation", () => {
     afterEach(() => updateExocortexConfig(config => { if (config.agent) delete config.agent.maxSubagentDepth; }));

@@ -683,7 +683,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       return;
     }
     if (setSubagentActive(upstreamId, convId, true, {
-      title: convStore.getIndexedSummary(convId)?.title || "Subagent task",
+      title: convStore.subagentTaskTitle(convId) || "Subagent task",
       startedAt,
     })) broadcastConversationUpdated(server, upstreamId);
   };
@@ -2436,7 +2436,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             }
           }
           if (trackAsSubagent && trackedParentId && setSubagentActive(trackedParentId, cmd.convId, true, {
-            title: convStore.getIndexedSummary(cmd.convId)?.title || "Subagent task",
+            title: convStore.subagentTaskTitle(cmd.convId) || "Subagent task",
             startedAt: cmd.startedAt,
           })) {
             broadcastConversationUpdated(server, trackedParentId);

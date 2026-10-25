@@ -747,6 +747,7 @@ describe("save / load round-trip", () => {
         parentConversationId: "parent-conversation",
         allowEdits: true,
         parentSystemInstructions: "Inherited constraint",
+        taskLabel: "Nested child task: inspect the renderer and report",
       },
       toolPolicy: {
         internal: ["read", "glob", "grep", "browse", "write", "edit", "patch"],

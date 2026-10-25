@@ -11,7 +11,8 @@
  * its last row counting the entries left out. A click toggles an expanded form
  * that lists every entry, grows leftward to EXPANDED_PANEL_WIDTH_FACTOR × the
  * collapsed width (keeping its right edge), wraps long titles onto indented
- * continuation rows, and scrolls when it outgrows the message area.
+ * continuation rows (a subagent's prompt up to EXPANDED_SUBAGENT_TITLE_ROWS
+ * rows), and scrolls when it outgrows the message area.
  */
 
 import type { ConversationGoalStatus, ConversationTaskSummary, ExternalIntegrationSummary } from "./messages";
@@ -20,7 +21,7 @@ import { areConversationNotificationsMuted } from "./sidebar/folders";
 import { isGlobalIdleQueuedMessage } from "./queue";
 import type { RenderState } from "./state";
 import { isAgentBackgroundTask, shouldDisplayConversationTask } from "./taskvisibility";
-import { padRightToWidth, termWidth } from "./textwidth";
+import { padRightToWidth, termWidth, truncateToWidth } from "./textwidth";
 import { wordWrap } from "./textwrap";
 import { hexToAnsi, hexToAnsiBg, theme } from "./theme";
 
@@ -35,6 +36,9 @@ export const MIN_TASK_PANEL_HISTORY_WIDTH = 30;
 /** Blank column separating wrapped history from the task-panel border. */
 export const TASK_PANEL_HISTORY_GAP = 1;
 const ELAPSED_WIDTH = 7;
+/** An expanded subagent entry shows this much of its prompt, on at most this many rows. */
+export const EXPANDED_SUBAGENT_TITLE_CHARS = 160;
+export const EXPANDED_SUBAGENT_TITLE_ROWS = 3;
 const INTEGRATION_STATE_WIDTH = 14;
 const PANEL_BG_HEX = "#00050f";
 const EXOCORTEX_FALLBACK_HEX = "#1d9bf0";
@@ -334,11 +338,20 @@ function subagentIndicator(state: RenderState, task: TaskPanelEntry): Conversati
 
 /**
  * The title column of one entry: truncated to a single row, or word-wrapped
- * onto as many rows as it needs. Every row is padded to `width`.
+ * onto as many rows as it needs, or as `limit` allows with an ellipsis after
+ * what it cuts. Every row is padded to `width`.
  */
-function titleRows(title: string, width: number, wrap: boolean): string[] {
+function titleRows(title: string, width: number, wrap: boolean, limit?: { chars: number; rows: number }): string[] {
   if (!wrap) return [padRightToWidth(title, width)];
-  const rows = wordWrap(title, Math.max(1, width)).lines.map(row => row.trim()).filter(Boolean);
+  const chars = Array.from(title);
+  const clipped = limit && chars.length > limit.chars ? `${chars.slice(0, limit.chars - 1).join("").trimEnd()}…` : title;
+  let rows = wordWrap(clipped, Math.max(1, width)).lines.map(row => row.trim()).filter(Boolean);
+  if (limit && rows.length > limit.rows) {
+    rows = rows.slice(0, limit.rows);
+    // Room for the ellipsis on the last row kept.
+    const last = rows.length - 1;
+    rows[last] = `${truncateToWidth(rows[last], Math.max(1, width - 1)).replace(/…$/, "").trimEnd()}…`;
+  }
   return (rows.length > 0 ? rows : [""]).map(row => padRightToWidth(row, width));
 }
 
@@ -395,7 +408,9 @@ function taskRows(
     : formatTaskElapsed(task.startedAt, now);
   const titleWidth = innerWidth - termWidth(label) - ELAPSED_WIDTH - 3;
   const lead = `${color}${indicator ? `${indicator.color}${label[0]}${color}${label.slice(1)}` : label}`;
-  return entryRows(palette, lead, termWidth(label), titleRows(title, titleWidth, wrap), time, ELAPSED_WIDTH);
+  // A subagent's title is its prompt, which can run long: expanded, it gets a few rows, not the whole prompt.
+  const limit = isSubagent ? { chars: EXPANDED_SUBAGENT_TITLE_CHARS, rows: EXPANDED_SUBAGENT_TITLE_ROWS } : undefined;
+  return entryRows(palette, lead, termWidth(label), titleRows(title, titleWidth, wrap, limit), time, ELAPSED_WIDTH);
 }
 
 function sectionDivider(palette: PanelPalette, innerWidth: number, title: string, count: number): string {

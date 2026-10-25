@@ -969,6 +969,7 @@ function fromFile(file: ConversationFile, validateActiveContext = true): Convers
       parentSystemInstructions: typeof policy.parentSystemInstructions === "string" ? policy.parentSystemInstructions : "",
       ...(typeof policy.depth === "number" && Number.isInteger(policy.depth) && policy.depth >= 1 ? { depth: policy.depth } : {}),
       ...(policy.detached === true ? { detached: true } : {}),
+      ...(typeof policy.taskLabel === "string" && policy.taskLabel.trim() ? { taskLabel: policy.taskLabel.trim() } : {}),
     };
   }
   // Retain old selection/module payloads verbatim for rollback/export, not execution.

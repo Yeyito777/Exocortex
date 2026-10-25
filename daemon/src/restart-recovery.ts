@@ -18,6 +18,7 @@ import { getTokenStatsSnapshot } from "./token-stats";
 import { getExocortexToolRuntime } from "./exocortex-tool-runtime";
 import { broadcastConversationUpdated } from "./conversation-events";
 import { setSubagentActive } from "./conversation-activity";
+import { subagentTaskLabel } from "./subagent-policy";
 import {
   clearPendingSubagentNotifications,
   completedSubagentOutcomeFromHistory,
@@ -211,8 +212,8 @@ export function recoverInterruptedStreams(server: DaemonServer, alsoReplay: read
     .filter((convId) => !sleepingChildren.has(convId));
   for (const record of runningNotifications) {
     if (!record.trackAsSubagent) continue;
-    const childTitle = convStore.getIndexedSummary(record.childConvId)?.title.trim()
-      || record.task.split("\n")[0].replace(/\s+/g, " ").trim()
+    const childTitle = convStore.subagentTaskTitle(record.childConvId)
+      || subagentTaskLabel(record.task)
       || "Subagent task";
     if (setSubagentActive(record.parentConvId, record.childConvId, true, {
       title: childTitle,
