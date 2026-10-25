@@ -4,6 +4,13 @@ import { DaemonClient } from "./client";
 /** TUI-only pending state; Unknown is reserved for a completed, failed check. */
 export type DisplayUpdateStatus = UpdateStatus | "checking";
 
+/**
+ * A loaded machine can time a check out now and then. Keep showing the last
+ * real answer until this many checks in a row (~30 s) come back Unknown, so
+ * the footer doesn't flicker; a route change or disconnect still shows at once.
+ */
+export const UNKNOWN_CHECKS_BEFORE_SHOWN = 3;
+
 export interface UpdateSnapshot {
   local: DisplayUpdateStatus;
   /** null means this TUI is on its local route. */
@@ -51,6 +58,8 @@ export class UpdateStatusMonitor {
   private stopped = false;
   private alias: string | null;
   private snapshot: UpdateSnapshot = { local: "checking", remote: null };
+  /** Consecutive Unknown check results not shown yet, per endpoint. */
+  private unknownChecks = { local: 0, remote: 0 };
   private timer: ReturnType<typeof setInterval>;
 
   constructor(
@@ -75,6 +84,8 @@ export class UpdateStatusMonitor {
   setRoute(alias: string | null): void {
     this.generation++;
     this.alias = alias;
+    this.unknownChecks.remote = 0;
+    if (!alias) this.unknownChecks.local = 0;
     this.publish({ local: this.snapshot.local, remote: alias ? "checking" : null });
     void this.refresh();
   }
@@ -85,9 +96,23 @@ export class UpdateStatusMonitor {
     // socket. Keep a known Local status during the startup local -> SSH handoff.
     const switched = alias !== this.alias;
     this.alias = alias;
+    this.unknownChecks.remote = 0;
+    if (!alias) this.unknownChecks.local = 0;
     this.publish(this.alias
       ? { local: this.snapshot.local, remote: switched ? "checking" : "unknown" }
       : { local: "unknown", remote: null });
+  }
+
+  /** A check's result for one endpoint, held back while Unknown is still a blip. */
+  private settled(endpoint: "local" | "remote", status: UpdateStatus): DisplayUpdateStatus {
+    const shown = this.snapshot[endpoint];
+    if (status !== "unknown" || shown === null || shown === "checking" || shown === "unknown") {
+      this.unknownChecks[endpoint] = 0;
+      return status;
+    }
+    if (++this.unknownChecks[endpoint] < UNKNOWN_CHECKS_BEFORE_SHOWN) return shown;
+    this.unknownChecks[endpoint] = 0;
+    return status;
   }
 
   private publish(snapshot: UpdateSnapshot): void {
@@ -108,7 +133,7 @@ export class UpdateStatusMonitor {
       let status: UpdateStatus;
       try { status = await this.local(); } catch { status = "unknown"; }
       if (!this.stopped && generation === this.localGeneration) {
-        this.publish({ ...this.snapshot, local: status });
+        this.publish({ ...this.snapshot, local: this.settled("local", status) });
       }
     })().finally(() => {
       if (this.localInFlight === pending) this.localInFlight = null;
@@ -135,7 +160,9 @@ export class UpdateStatusMonitor {
         safe(this.active).then(status => {
           if (this.stopped || generation !== this.generation) return;
           if (!remote && localGeneration !== this.localGeneration) return;
-          this.publish(remote ? { ...this.snapshot, remote: status } : { local: status, remote: null });
+          this.publish(remote
+            ? { ...this.snapshot, remote: this.settled("remote", status) }
+            : { local: this.settled("local", status), remote: null });
         }),
         ...(remote ? [this.refreshLocal()] : []),
       ]);

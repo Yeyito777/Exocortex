@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { UpdateStatusMonitor, type UpdateSnapshot } from "./update-status";
+import { UNKNOWN_CHECKS_BEFORE_SHOWN, UpdateStatusMonitor, type UpdateSnapshot } from "./update-status";
 import { DAEMON_STATUS_INTERVAL_MS, UPDATE_CHECK_INTERVAL_MS, type UpdateStatus } from "@exocortex/shared/updatecheck";
 
 const pause = (ms = 0) => new Promise(resolve => setTimeout(resolve, ms));
@@ -26,6 +26,34 @@ describe("update status routing", () => {
       finish("none");
       await next;
       expect(values.at(-1)).toEqual({ local: "none", remote: null });
+    } finally { monitor.stop(); }
+  });
+
+  test("a few Unknown checks in a row keep the last answer; a run of them shows Unknown", async () => {
+    let next: UpdateStatus = "restart_needed";
+    const values: UpdateSnapshot[] = [];
+    const monitor = new UpdateStatusMonitor(null, async () => next, async () => "none", value => values.push(value),
+      { intervalMs: 60_000 });
+    try {
+      await pause();
+      expect(values.at(-1)).toEqual({ local: "restart_needed", remote: null });
+      next = "unknown";
+      for (let i = 1; i < UNKNOWN_CHECKS_BEFORE_SHOWN; i++) {
+        await monitor.refresh();
+        expect(values.at(-1)).toEqual({ local: "restart_needed", remote: null });
+      }
+      next = "restart_needed";
+      await monitor.refresh();
+      next = "unknown";
+      for (let i = 1; i < UNKNOWN_CHECKS_BEFORE_SHOWN; i++) await monitor.refresh();
+      expect(values.at(-1)).toEqual({ local: "restart_needed", remote: null });
+      await monitor.refresh();
+      expect(values.at(-1)).toEqual({ local: "unknown", remote: null });
+      // A disconnect isn't a check blip: it shows at once.
+      next = "none";
+      await monitor.refresh();
+      monitor.disconnected(null);
+      expect(values.at(-1)).toEqual({ local: "unknown", remote: null });
     } finally { monitor.stop(); }
   });
 

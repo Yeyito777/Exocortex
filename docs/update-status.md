@@ -24,7 +24,10 @@ Local: None
 - **Checking…**: the TUI is still waiting for the endpoint's first status reply.
   This is a display-only pending state, not a daemon status or a failure.
 - **Unknown**: status could not be determined (including an older daemon that
-  lacks this protocol field). Unknown never implies the daemon is current.
+  lacks this protocol field, or git timing out on a loaded machine). Unknown
+  never implies the daemon is current. A periodic check that comes back
+  Unknown keeps the last answer on screen until three in a row (~30 s) do, so
+  a busy machine doesn't make the footer flicker; a disconnect shows at once.
 - **Disabled**: the checkout is not the primary upstream checkout on `main`.
   Linked worktrees, detached HEADs, forks and development branches don't
   participate. When both endpoints are disabled, the footer stays hidden.
@@ -51,7 +54,11 @@ decision lives in `shared/src/restart-impact.ts` and runs over
   recognized also flags. Ignored: `docs/`, `tui/` non-source files,
   `scripts/dev|windows|migrate/`, root markdown/`LICENSE`/`Makefile`.
 - Any failure (unknown or garbage-collected revision, git or transpile error,
-  unreadable tree) means **Restart needed**, as before.
+  unreadable tree) means **Restart needed**, as before, except git timing out
+  or failing to start: that check is **Unknown** and the next one tries again.
+  Likewise **Disabled** is only an answer about the checkout, never a git
+  timeout; if git can't read the running revision at startup, it is retried
+  for two minutes.
 
 The baseline stays the daemon's startup revision, so inert commits accumulate
 without hiding a later real change. Each revision pair is classified once.

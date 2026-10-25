@@ -2,26 +2,36 @@ import { execFile } from "node:child_process";
 import { lstat } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { changesAffectDaemon, daemonImportClosure } from "./restart-impact";
+import { asGitUnavailable, changesAffectDaemon, daemonImportClosure, GitUnavailableError } from "./restart-impact";
 
 const execFileAsync = promisify(execFile);
 export const UPDATE_CHECK_INTERVAL_MS = 120_000;
 export const DAEMON_STATUS_INTERVAL_MS = 10_000;
+/** How long after startup a running revision git couldn't read is retried. */
+const STARTUP_CAPTURE_RETRY_MS = 120_000;
 const UPSTREAM = "Yeyito777/Exocortex";
 export type UpdateRequest = (url: string, init: RequestInit) => Promise<Response>;
 export type UpdateStatus = "none" | "update_available" | "restart_needed" | "disabled" | "unknown";
 
 async function git(root: string, ...args: string[]): Promise<string> {
-  const { stdout } = await execFileAsync("git", args, {
-    cwd: root, timeout: 5_000, maxBuffer: 64 * 1024,
-    // Partial clones must not lazily fetch a missing upstream commit.
-    env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_NO_LAZY_FETCH: "1" },
-  });
-  return stdout.trim();
+  try {
+    const { stdout } = await execFileAsync("git", args, {
+      cwd: root, timeout: 5_000, maxBuffer: 64 * 1024,
+      // Partial clones must not lazily fetch a missing upstream commit.
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_NO_LAZY_FETCH: "1" },
+    });
+    return stdout.trim();
+  } catch (err) {
+    throw asGitUnavailable(err);
+  }
 }
 
-/** Only the primary upstream checkout on main participates; never linked worktrees. */
-export async function eligibleUpdateHead(root: string): Promise<string | null> {
+/**
+ * HEAD when this is the primary upstream checkout on main, else null. Throws
+ * GitUnavailableError when git timed out or couldn't start: that says nothing
+ * about eligibility, and must not read as Disabled.
+ */
+async function readUpdateHead(root: string): Promise<string | null> {
   try {
     if (!(await lstat(join(root, ".git"))).isDirectory()) return null;
     const [branch, origin, head] = await Promise.all([
@@ -32,9 +42,15 @@ export async function eligibleUpdateHead(root: string): Promise<string | null> {
     if (branch !== "main") return null;
     if (!/^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)Yeyito777\/Exocortex(?:\.git)?\/?$/i.test(origin)) return null;
     return /^[a-f0-9]{40,64}$/.test(head) ? head : null;
-  } catch {
+  } catch (err) {
+    if (err instanceof GitUnavailableError) throw err;
     return null;
   }
+}
+
+/** Only the primary upstream checkout on main participates; never linked worktrees. */
+export async function eligibleUpdateHead(root: string): Promise<string | null> {
+  try { return await readUpdateHead(root); } catch { return null; }
 }
 
 /** Read-only: no fetch, checkout, pull, or changes to the user's repository. */
@@ -126,28 +142,52 @@ export function createUpdateStatusChecker(
   request: UpdateRequest = fetch,
   now: () => number = () => performance.now(),
 ): () => Promise<UpdateStatus> {
-  const startedHead = eligibleUpdateHead(root);
+  // If git can't answer at startup (a loaded machine), retry the capture on
+  // later checks, but only briefly: a HEAD read much later may already be a
+  // pulled revision this daemon isn't running. After that, Unknown.
+  const createdAt = now();
+  const capture = () => {
+    const head = readUpdateHead(root);
+    head.catch(() => {}); // awaited by the next check; never an unhandled rejection
+    return head;
+  };
+  let startedHead = capture();
+  const runningHead = async (): Promise<string | null> => {
+    try {
+      return await startedHead;
+    } catch (err) {
+      if (!(err instanceof GitUnavailableError) || now() - createdAt > STARTUP_CAPTURE_RETRY_MS) throw err;
+      startedHead = capture();
+      return await startedHead;
+    }
+  };
   let inFlight: Promise<UpdateStatus> | null = null;
   // Shared by every client of this daemon. Cache failures too, so offline or
   // rate-limited hosts aren't retried at the faster local-status cadence.
   let upstream: { head: string; available: boolean | null; expiresAt: number } | null = null;
   // The status check runs every few seconds; classify each revision pair once.
+  // A git timeout isn't an answer, so it isn't kept.
   let impact: { key: string; restart: Promise<boolean> } | null = null;
   const restartNeeded = (running: string, disk: string): Promise<boolean> => {
     if (running === disk) return Promise.resolve(false);
     const key = `${running}..${disk}`;
     if (impact?.key !== key) {
-      impact = {
+      const entry: { key: string; restart: Promise<boolean> } = {
         key,
         restart: daemonImportClosure(root)
           .then(closure => changesAffectDaemon(root, running, disk, closure))
-          .catch(() => true),
+          .catch((err) => {
+            if (!(err instanceof GitUnavailableError)) return true;
+            if (impact === entry) impact = null;
+            throw err;
+          }),
       };
+      impact = entry;
     }
     return impact.restart;
   };
-  const check = async (retry = true): Promise<UpdateStatus> => {
-    const [running, disk] = await Promise.all([startedHead, eligibleUpdateHead(root)]);
+  const classify = async (retry: boolean): Promise<UpdateStatus> => {
+    const [running, disk] = await Promise.all([runningHead(), readUpdateHead(root)]);
     if (!running || !disk) {
       upstream = null;
       return "disabled";
@@ -159,7 +199,7 @@ export function createUpdateStatusChecker(
     }
     const cached = upstream?.head === disk && now() < upstream.expiresAt ? upstream : null;
     const available = cached ? cached.available : await compareUpstream(root, disk, request);
-    const current = await eligibleUpdateHead(root);
+    const current = await readUpdateHead(root);
     if (!current) {
       upstream = null;
       return "disabled";
@@ -168,10 +208,18 @@ export function createUpdateStatusChecker(
       // Checked out or pulled during the request: classify the new revision.
       upstream = null;
       if (await restartNeeded(running, current)) return "restart_needed";
-      return retry ? check(false) : "unknown";
+      return retry ? classify(false) : "unknown";
     }
     if (!cached) upstream = { head: disk, available, expiresAt: now() + UPDATE_CHECK_INTERVAL_MS };
     return available === null ? "unknown" : available ? "update_available" : "none";
+  };
+  const check = async (): Promise<UpdateStatus> => {
+    try {
+      return await classify(true);
+    } catch (err) {
+      if (err instanceof GitUnavailableError) return "unknown";
+      throw err;
+    }
   };
   return () => {
     if (!inFlight) inFlight = check().finally(() => { inFlight = null; });
