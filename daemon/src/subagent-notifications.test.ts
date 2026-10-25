@@ -6,6 +6,8 @@ import {
   acknowledgeSubagentNotification,
   beginPendingSubagentNotification,
   buildSubagentNotificationText,
+  cancelRunningSubagentNotifications,
+  followUpTrigger,
   hasSubagentNotificationBeenDelivered,
   listPendingSubagentNotifications,
   pendingSubagentNotificationsPath,
@@ -131,20 +133,66 @@ describe("durable subagent notifications", () => {
     ]);
   });
 
-  test("cancels deliberate aborts instead of notifying the parent", () => {
+  test("a stopped child tells its parent it was stopped, with any partial output", () => {
     const parentConvId = conversation("abort-parent");
     const childConvId = conversation("abort-child");
-    beginPendingSubagentNotification({ convId: parentConvId }, childConvId, "cancel me", 200, 0);
+    beginPendingSubagentNotification({ convId: parentConvId }, childConvId, "stop me", 200, 0);
 
-    settlePendingSubagentNotifications(childConvId, {
+    const { ready } = settlePendingSubagentNotifications(childConvId, {
       ok: false,
-      blocks: [],
+      blocks: [{ type: "text", text: "Halfway through the migration." }],
       error: "✗ Interrupted",
       aborted: true,
+      pendingWork: ["1 background task"],
     });
+
+    expect(ready).toHaveLength(1);
+    expect(ready[0].text).toStartWith(`[notification] Subagent stopped: exo:${childConvId}`);
+    expect(ready[0].text).toContain("stopped before it finished");
+    expect(ready[0].text).toContain("Partial output:\nHalfway through the migration.");
+    expect(ready[0].text).not.toContain("Still waiting on");
+    expect(ready[0].text).not.toContain("Interrupted");
+  });
+
+  test("a parent's own abort cancels the notice instead", () => {
+    const parentConvId = conversation("cancel-parent");
+    const childConvId = conversation("cancel-child");
+    beginPendingSubagentNotification({ convId: parentConvId }, childConvId, "cancel me", 200, 0);
+
+    expect(cancelRunningSubagentNotifications(childConvId)).toHaveLength(1);
+    settlePendingSubagentNotifications(childConvId, { ok: false, blocks: [], aborted: true });
 
     expect(listPendingSubagentNotifications()).toEqual([]);
     expect(existsSync(pendingSubagentNotificationsPath())).toBe(false);
+  });
+
+  test("a turn that leaves work pending says so; a follow-up names what woke it", () => {
+    const parentConvId = conversation("pending-parent");
+    const childConvId = conversation("pending-child");
+    beginPendingSubagentNotification({ convId: parentConvId }, childConvId, "[background done]", 200, 0, true,
+      followUpTrigger({ kind: "background_task_completion", sourceId: "t1" }, parentConvId));
+
+    const { ready } = settlePendingSubagentNotifications(childConvId, {
+      ok: true,
+      blocks: [{ type: "text", text: "Tests started; waiting on the build." }],
+      pendingWork: ["1 background task (bun test)", "1 subagent (fix lint)"],
+    });
+
+    expect(ready[0].text).toStartWith(`[notification] Subagent replied (still working): exo:${childConvId}`);
+    expect(ready[0].text).toContain("Woken by: one of its background tasks finishing");
+    expect(ready[0].text).toContain("Still waiting on: 1 background task (bun test), 1 subagent (fix lint). You get another notice when it next stops.");
+    expect(ready[0].text).toContain("Result:\nTests started; waiting on the build.");
+  });
+
+  test("follow-up triggers read from the parent's point of view", () => {
+    const parentConvId = conversation("trigger-parent");
+    const siblingId = conversation("trigger-sibling");
+    expect(followUpTrigger({ kind: "exo_send", sourceId: parentConvId }, parentConvId)).toBe("your message");
+    expect(followUpTrigger({ kind: "exo_send", sourceId: siblingId }, parentConvId)).toStartWith(`a message from exo:${siblingId}`);
+    expect(followUpTrigger({ kind: "subagent_completion", sourceId: "gc" }, parentConvId)).toBe("a report from its subagent exo:gc");
+    expect(followUpTrigger({ kind: "chrono_hard_wake", sourceId: "w" }, parentConvId)).toBe("a wake it scheduled");
+    expect(followUpTrigger({ kind: "chrono_wake", sourceId: "w" }, parentConvId)).toBe("a wake it scheduled");
+    expect(followUpTrigger({ kind: "external_notification" }, parentConvId)).toBe("an external notification");
   });
 
   test("deduplicates the crash window after the parent accepted the notification", () => {

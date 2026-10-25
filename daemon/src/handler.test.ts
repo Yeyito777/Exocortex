@@ -8,10 +8,10 @@ import { join } from "node:path";
 import { resumeQueuedMessageDelivery, suspendQueuedMessageDelivery } from "./message-queue";
 import { chronoInternalsForTest, deferChronoSleep, listDeferredChronoSleeps } from "./chrono-service";
 import { appendMessages, consumeGoalContinuationAfterStream, create, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, get, getQueuedMessageById, getQueuedMessages, getSummary, listQueuedMessages, pushGlobalIdleQueuedMessage, pushQueuedMessage, remove, removeQueuedMessageById, setGoal, setSubagentPolicy, updateGoalStatus } from "./conversations";
-import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, defaultEffortForModelId } from "./messages";
+import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, defaultEffortForModelId, type UserMessageAutomation } from "./messages";
 import { appendToStreamingBlock, clearActiveJob, clearActiveSteerHandler, clearActiveToolBackgrounder, clearCurrentStreamingBlocks, initStreamingState, replaceCurrentStreamingBlocks, setActiveJob, setActiveSteerHandler, setActiveToolBackgrounder, setStreamingCommittedMessageCount } from "./streaming";
 import { beginPendingSubagentNotification, getSubagentNotificationRuntime, listPendingSubagentNotifications, removePendingSubagentNotificationsForConversation } from "./subagent-notifications";
-import { getDaemonShutdownMode, resetDaemonShutdownModeForTest } from "./daemon-lifecycle";
+import { beginDaemonShutdown, getDaemonShutdownMode, resetDaemonShutdownModeForTest } from "./daemon-lifecycle";
 import { clearActiveGoalRestartMarker, clearInterruptedStreamIds, hasActiveGoalRestartMarker, readInterruptedStreamIds } from "./restart-markers";
 import { invalidateCredentialsCache } from "./auth";
 import { clearProviderAuth, saveProviderAuth } from "./store";
@@ -2626,9 +2626,58 @@ describe("handler subagent completion delivery", () => {
     }
   });
 
-  test("a parent's queued message to a child that already reported is relayed up; anyone else's is not", async () => {
+  test("whatever wakes a child that already reported, its turn is relayed up once", async () => {
     const topId = mkId("relay-msg-top");
     const childId = mkId("relay-msg-child");
+    const detachedId = mkId("relay-msg-detached");
+    for (const id of [topId, childId, detachedId]) create(id, "openai", "gpt-5.4", id);
+    setSubagentPolicy(childId, { parentConversationId: topId, allowEdits: true, parentSystemInstructions: "", depth: 1 });
+    setSubagentPolicy(detachedId, { parentConversationId: topId, allowEdits: true, parentSystemInstructions: "", depth: 1, detached: true });
+    const server = {
+      sendTo: mock(() => {}), broadcast: mock(() => {}), sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}), subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    createHandler(server as never);
+    const runtime = getSubagentNotificationRuntime(server)!;
+    const running = (id: string) => listPendingSubagentNotifications({ childConvId: id, state: "running" });
+    try {
+      const wakes: [UserMessageAutomation, string][] = [
+        [{ kind: "exo_send", sourceId: topId }, "your message"],
+        [{ kind: "exo_send", sourceId: "sibling" }, "a message from exo:sibling"],
+        [{ kind: "subagent_completion", sourceId: "gc" }, "a report from its subagent exo:gc"],
+        [{ kind: "background_task_completion", sourceId: "t" }, "one of its background tasks finishing"],
+        [{ kind: "chrono_wake", sourceId: "s" }, "a wake it scheduled"],
+        [{ kind: "chrono_hard_wake", sourceId: "s" }, "a wake it scheduled"],
+        [{ kind: "external_notification", sourceId: "x" }, "an external notification"],
+      ];
+      for (const [index, [automation, trigger]] of wakes.entries()) {
+        runtime.relayFollowUp!(childId, automation, `wake ${index}`, 10 + index);
+        expect(running(childId)).toEqual([expect.objectContaining({
+          parentConvId: topId, childStartedAt: 10 + index, task: `wake ${index}`, trackAsSubagent: true, trigger,
+        })]);
+        // Already reported by that record: more input joining the same turn adds none.
+        runtime.relayFollowUp!(childId, { kind: "exo_send", sourceId: "sibling" }, "more", 100 + index);
+        expect(listPendingSubagentNotifications({ childConvId: childId })).toHaveLength(1);
+        removePendingSubagentNotificationsForConversation(childId);
+      }
+      // Continuations of a turn already accounted for, and detached children, stay quiet.
+      runtime.relayFollowUp!(childId, { kind: "goal_continuation" }, "continue", 200);
+      runtime.relayFollowUp!(childId, { kind: "daemon_restart" }, "restarted", 201);
+      runtime.relayFollowUp!(detachedId, { kind: "exo_send", sourceId: "sibling" }, "hi", 202);
+      expect(listPendingSubagentNotifications({ childConvId: childId })).toEqual([]);
+      expect(listPendingSubagentNotifications({ childConvId: detachedId })).toEqual([]);
+      // The parent's Tasks panel shows the woken child again.
+      runtime.relayFollowUp!(childId, { kind: "background_task_completion", sourceId: "t" }, "[done]", 300);
+      expect(getConversationActivityCounts(topId).subagentCount).toBe(1);
+    } finally {
+      for (const id of [childId, detachedId]) removePendingSubagentNotificationsForConversation(id);
+      resetConversationActivityForTest();
+    }
+  });
+
+  test("a child's notice says what it is still waiting on; a stopped child says it was stopped", async () => {
+    const topId = mkId("pending-top");
+    const childId = mkId("pending-child");
     for (const id of [topId, childId]) create(id, "openai", "gpt-5.4", id);
     setSubagentPolicy(childId, { parentConversationId: topId, allowEdits: true, parentSystemInstructions: "", depth: 1 });
     const server = {
@@ -2637,18 +2686,46 @@ describe("handler subagent completion delivery", () => {
     };
     createHandler(server as never);
     const runtime = getSubagentNotificationRuntime(server)!;
+    const done = { ok: true, blocks: [{ type: "text" as const, text: "Build started." }], tokens: 1, durationMs: 1, endedAt: Date.now() };
+    // The parent is busy, so each notice waits in its queue where the test can read it.
+    setActiveJob(topId, new AbortController(), Date.now());
     try {
-      runtime.relayFollowUp!(childId, { kind: "exo_send", sourceId: "someone-else" }, "hi", 1);
-      runtime.relayFollowUp!(childId, { kind: "chrono_wake", sourceId: "s" }, "wake", 2);
-      expect(listPendingSubagentNotifications({ childConvId: childId })).toEqual([]);
-      runtime.relayFollowUp!(childId, { kind: "exo_send", sourceId: topId }, "also do X", 3);
-      expect(listPendingSubagentNotifications({ childConvId: childId, state: "running" }))
-        .toEqual([expect.objectContaining({ parentConvId: topId, childStartedAt: 3, task: "also do X" })]);
-      // Already reported by that record: a second admission does not add another.
-      runtime.relayFollowUp!(childId, { kind: "subagent_completion", sourceId: "gc" }, "late", 4);
-      expect(listPendingSubagentNotifications({ childConvId: childId })).toHaveLength(1);
+      runtime.begin({ convId: topId }, childId, "task", 1, 0, true);
+      setBackgroundTaskActive(childId, "build", true, { title: "make build", startedAt: Date.now() });
+      runtime.complete(childId, done);
+      const [working] = getQueuedMessages(topId);
+      expect(working.text).toStartWith(`[notification] Subagent replied (still working): exo:${childId}`);
+      expect(working.text).toContain("Still waiting on: 1 background task (make build).");
+      expect(working.automation).toEqual({ kind: "subagent_completion", sourceId: childId });
+
+      setBackgroundTaskActive(childId, "build", false);
+      runtime.relayFollowUp!(childId, { kind: "background_task_completion", sourceId: "build" }, "[build done]", 2);
+      runtime.complete(childId, done);
+      const final = getQueuedMessages(topId)[1];
+      expect(final.text).toStartWith(`[notification] Subagent completed: exo:${childId}`);
+      expect(final.text).toContain("Woken by: one of its background tasks finishing");
+      expect(final.text).not.toContain("Still waiting on");
+
+      runtime.relayFollowUp!(childId, { kind: "exo_send", sourceId: "sibling" }, "please redo it", 3);
+      expect(getConversationActivityCounts(topId).subagentCount).toBe(1);
+      runtime.complete(childId, { ok: false, aborted: true, blocks: [] });
+      const stopped = getQueuedMessages(topId)[2];
+      expect(stopped.text).toStartWith(`[notification] Subagent stopped: exo:${childId}`);
+      // Stopped, not vanished: the notice replaces its Tasks entry.
+      expect(getConversationActivityCounts(topId).subagentCount).toBe(0);
+
+      // A daemon stop ends turns on purpose: nothing is reported.
+      runtime.relayFollowUp!(childId, { kind: "exo_send", sourceId: "sibling" }, "one more", 4);
+      beginDaemonShutdown("stop");
+      runtime.complete(childId, { ok: false, aborted: true, blocks: [] });
+      expect(getQueuedMessages(topId)).toHaveLength(3);
+      expect(listPendingSubagentNotifications({ childConvId: childId })).toHaveLength(3);
+      expect(listPendingSubagentNotifications({ childConvId: childId, state: "running" })).toEqual([]);
     } finally {
-      removePendingSubagentNotificationsForConversation(childId);
+      resetDaemonShutdownModeForTest();
+      clearActiveJob(topId);
+      for (const entry of getQueuedMessages(topId)) removeQueuedMessageById(entry.id);
+      for (const id of [topId, childId]) removePendingSubagentNotificationsForConversation(id);
       resetConversationActivityForTest();
     }
   });

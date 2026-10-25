@@ -30,6 +30,8 @@ export interface PendingSubagentNotification {
   subagentMaxDepth: number | null;
   /** Whether this detached turn is a child subagent task owned by the parent. */
   trackAsSubagent: boolean;
+  /** What woke a subagent whose task already reported (a follow-up turn), for the notice. */
+  trigger?: string;
   state: "running" | "ready";
   /** Complete model-visible parent prompt. Present only when state=ready. */
   text?: string;
@@ -51,6 +53,8 @@ export interface SubagentNotificationOutcome {
   watchdog?: boolean;
   /** True only for the intentional abort used to hand a stream to a new daemon. */
   daemonRestart?: boolean;
+  /** What the child still waits on when the turn ends (see subagent-pending-work). */
+  pendingWork?: string[];
 }
 
 export interface SubagentNotificationRuntime {
@@ -61,13 +65,15 @@ export interface SubagentNotificationRuntime {
     childStartedAt: number,
     subagentMaxDepth: number | null,
     trackAsSubagent?: boolean,
+    trigger?: string,
   ): PendingSubagentNotification;
   complete(childConvId: string, outcome: SubagentNotificationOutcome): void;
   deliverReady(childConvId?: string): void;
   /**
-   * A subagent's turn was admitted with automated input (its own subagent's
-   * result, its parent's message). When no task record is reporting this
-   * turn, report it to the subagent's parent like a task.
+   * Automated input reached a subagent's turn (admitted it, or joined it at a
+   * tool boundary): its parent's or a sibling's message, its own subagent's
+   * result, a finished background task, a wake. When no record is reporting
+   * this turn yet, report it to the subagent's parent like a task.
    */
   relayFollowUp?(convId: string, automation: UserMessageAutomation, text: string, startedAt: number): void;
 }
@@ -111,6 +117,7 @@ function normalizeRecord(raw: unknown): PendingSubagentNotification | null {
     // Version-1 records predate cross-conversation classification and were all
     // projected as subagent activity, so retain that behavior when reloading.
     trackAsSubagent: record.trackAsSubagent !== false,
+    ...(typeof record.trigger === "string" && record.trigger ? { trigger: record.trigger } : {}),
     state: record.state,
     ...(record.state === "ready" ? { text: record.text! } : {}),
     createdAt: Number(record.createdAt),
@@ -178,6 +185,7 @@ export function beginPendingSubagentNotification(
   childStartedAt: number,
   subagentMaxDepth: number | null,
   trackAsSubagent = true,
+  trigger?: string,
 ): PendingSubagentNotification {
   ensureLoaded();
   const alreadyRunning = [...notifications.values()].find((record) =>
@@ -200,6 +208,7 @@ export function beginPendingSubagentNotification(
     childStartedAt,
     subagentMaxDepth,
     trackAsSubagent,
+    ...(trigger ? { trigger } : {}),
     state: "running",
     createdAt: now,
     updatedAt: now,
@@ -207,6 +216,25 @@ export function beginPendingSubagentNotification(
   notifications.set(record.id, record);
   save();
   return { ...record };
+}
+
+/** "Woken by" line of a follow-up turn's notice, from the parent's point of view. */
+export function followUpTrigger(automation: UserMessageAutomation, parentConvId: string): string {
+  const from = (id: string | undefined) => {
+    if (!id) return "another conversation";
+    const title = convStore.getIndexedSummary(id)?.title?.trim();
+    return title ? `exo:${id} (${capText(title, 60)})` : `exo:${id}`;
+  };
+  switch (automation.kind) {
+    case "exo_send":
+      return automation.sourceId === parentConvId ? "your message" : `a message from ${from(automation.sourceId)}`;
+    case "subagent_completion": return `a report from its subagent ${from(automation.sourceId)}`;
+    case "background_task_completion": return "one of its background tasks finishing";
+    case "chrono_wake":
+    case "chrono_hard_wake": return "a wake it scheduled";
+    case "external_notification": return "an external notification";
+    default: return automation.kind;
+  }
 }
 
 function textFromBlocks(blocks: Block[]): string {
@@ -228,17 +256,23 @@ export function buildSubagentNotificationText(
   outcome: SubagentNotificationOutcome,
 ): string {
   const title = (convStore.getIndexedSummary(record.childConvId)?.title || record.task.split("\n")[0] || "subagent task").trim();
-  const body = outcome.ok
-    ? (textFromBlocks(outcome.blocks) || "(subagent completed without text output)")
-    : (outcome.error || "Subagent did not complete successfully.");
-  const status = outcome.ok ? "completed" : "failed";
-  const section = outcome.ok ? "Result" : "Error";
+  const stopped = outcome.aborted === true && !outcome.watchdog;
+  const pending = stopped ? [] : outcome.pendingWork ?? [];
+  const text = textFromBlocks(outcome.blocks);
+  const body = stopped
+    ? text
+    : outcome.ok
+      ? (text || "(subagent completed without text output)")
+      : (outcome.error || "Subagent did not complete successfully.");
+  const status = stopped ? "stopped" : !outcome.ok ? "failed" : pending.length > 0 ? "replied (still working)" : "completed";
+  const section = stopped ? "Partial output" : outcome.ok ? "Result" : "Error";
   return [
     `[notification] Subagent ${status}: exo:${record.childConvId}`,
     `Task: ${capText(title, 160)}`,
-    "",
-    `${section}:`,
-    capText(body, record.maxChars ?? 6000),
+    ...(record.trigger ? [`Woken by: ${record.trigger}`] : []),
+    ...(stopped ? ["", "Its turn was stopped before it finished (from the TUI, or cancelled). It reports again only if something wakes it."] : []),
+    ...(pending.length > 0 ? ["", `Still waiting on: ${pending.join(", ")}. You get another notice when it next stops.`] : []),
+    ...(body ? ["", `${section}:`, capText(body, record.maxChars ?? 6000)] : []),
     "",
     "Full details:",
     `Inspect conversation ${record.childConvId} through daemon IPC (load_conversation/load_conversation_history); read shared/src/protocol.ts for fields.`,
@@ -249,7 +283,9 @@ export function buildSubagentNotificationText(
 /**
  * Atomically settle every running notification associated with one child.
  * Daemon-restart aborts deliberately remain running for replay by the next
- * process; user aborts cancel the notification; all other outcomes become ready.
+ * process; every other outcome becomes ready, a stop as a "stopped" notice so
+ * the child does not silently vanish from its parent. A parent's own
+ * `exo abort` cancels the records first (cancelRunningSubagentNotifications).
  */
 export function settlePendingSubagentNotifications(
   childConvId: string,
@@ -263,12 +299,6 @@ export function settlePendingSubagentNotifications(
     return { ready: [], removed: [] };
   }
 
-  if (outcome.aborted && !outcome.watchdog) {
-    for (const record of running) notifications.delete(record.id);
-    save();
-    return { ready: [], removed: running.map((record) => ({ ...record })) };
-  }
-
   const now = Date.now();
   const ready = running.map((record): PendingSubagentNotification => ({
     ...record,
@@ -279,6 +309,17 @@ export function settlePendingSubagentNotifications(
   for (const record of ready) notifications.set(record.id, record);
   save();
   return { ready: ready.map((record) => ({ ...record })), removed: [] };
+}
+
+/** Drop a child's running records: its parent stopped it and needs no notice. */
+export function cancelRunningSubagentNotifications(childConvId: string): PendingSubagentNotification[] {
+  ensureLoaded();
+  const running = [...notifications.values()].filter((record) =>
+    record.childConvId === childConvId && record.state === "running"
+  );
+  for (const record of running) notifications.delete(record.id);
+  if (running.length > 0) save();
+  return running.map((record) => ({ ...record }));
 }
 
 export function acknowledgeSubagentNotification(notificationId: string): boolean {

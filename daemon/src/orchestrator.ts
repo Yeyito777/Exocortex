@@ -1735,6 +1735,16 @@ async function orchestrateAdmittedAssistantTurn(
       for (const qm of drained) {
         if (qm.subagentNotificationId) acknowledgeSubagentNotification(qm.subagentNotificationId);
       }
+      // Automated input joining a subagent's turn that nothing reports (a
+      // parent's or sibling's message, a task's result): its end goes up too.
+      if (!options.replyAwaited) {
+        for (let index = 0; index < drained.length; index++) {
+          const automation = drained[index].automation;
+          if (!automation) continue;
+          getSubagentNotificationRuntime(server)?.relayFollowUp?.(convId, automation, drained[index].text,
+            injectedStored[index].metadata?.startedAt ?? Date.now());
+        }
+      }
       for (let index = 0; index < drained.length; index++) {
         const qm = drained[index];
         const storedUser = injectedStored[index];

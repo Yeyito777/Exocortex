@@ -888,6 +888,15 @@ describe("the gap around a notification shown in full", () => {
     expect(gapRows(state)).toEqual(["first", "", "second", ""]);
   });
 
+  test("follow-up, still-working and stopped subagent notices fold like any other report", () => {
+    const state = createInitialState();
+    const report = (header: string) => user(`[notification] Subagent ${header}: exo:7\nTask: build\nWoken by: a message from exo:9`, { kind: "subagent_completion" });
+    state.messages.push(user("first"), report("replied (still working)"), report("completed"), report("stopped"), user("second"));
+    expect(gapRows(state)).toEqual(["first", "", "second", ""]);
+    expect(notificationLabel(report("stopped"))).toBe("Subagent completion");
+    expect(notificationPreview(report("replied (still working)").text)).toStartWith("Subagent replied (still working): exo:7");
+  });
+
   test("a queued notification below a message is one blank row away", () => {
     const state = createInitialState();
     state.showTurnWork = true;
