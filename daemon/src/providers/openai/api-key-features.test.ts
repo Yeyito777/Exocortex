@@ -4,7 +4,7 @@ import { resolveModelTokenPricing } from "@exocortex/shared/token-pricing";
 import { clearProviderAuth, saveProviderAuth } from "../../store";
 import { ensureAuthenticated, setOpenAIBrowserOAuthForTest } from "./auth";
 import { openAIApiKeyAccountKey } from "./api-key";
-import { estimateApiKeyRequestCostUsd, recordApiKeyUsage, resetApiKeyUsageForTest } from "./api-key-usage";
+import { estimateApiKeyRequestCostUsd, recordApiKeyUsage, resetApiKeyUsageForTest, setApiKeyUsageRecordedListener } from "./api-key-usage";
 import {
   OPENAI_API_IMAGE_GENERATIONS_URL,
   OPENAI_API_MODELS_URL,
@@ -173,6 +173,22 @@ describe("API-key usage", () => {
     const onUpdate = mock(() => {});
     handleUsageHeaders(new Headers({ [OPENAI_USAGE_ACCOUNT_KEY_HEADER]: accountKey, "x-codex-primary-used-percent": "50" }), onUpdate);
     expect(onUpdate).not.toHaveBeenCalled();
+  });
+
+  test("tells the daemon after every counted request, with the new totals already readable", async () => {
+    mockFetch(() => new Response("unexpected", { status: 500 }));
+    await loginWithKey();
+    const accountKey = openAIApiKeyAccountKey(API_KEY);
+    const seen: Array<[string, number | undefined]> = [];
+    setApiKeyUsageRecordedListener((key) => seen.push([key, getLastUsage()?.apiKey?.today.requests]));
+    try {
+      recordApiKeyUsage(accountKey, { model: "gpt-5.4-mini", inputTokens: 100, outputTokens: 10 });
+      recordApiKeyUsage(accountKey, { model: "gpt-image-1", outputTokens: 272 });
+      recordApiKeyUsage(null, { model: "gpt-5.4-mini", inputTokens: 100 });
+      expect(seen).toEqual([[accountKey, 1], [accountKey, 2]]);
+    } finally {
+      setApiKeyUsageRecordedListener(null);
+    }
   });
 
   test("carries providers.openai.monthlyBudgetUsd, re-read on every update", async () => {

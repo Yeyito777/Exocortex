@@ -17,6 +17,7 @@ import { localMacroEnvironment } from "@exocortex/shared/macro-environment";
 import type { UserMacro } from "@exocortex/shared/user-macros";
 import { deleteUserMacro, listUserMacros, saveUserMacro } from "./user-macros";
 import { getDaemonUpdateStatus } from "./update-status";
+import { setApiKeyUsageRecordedListener } from "./providers/openai/api-key-usage";
 import { encodeHistoryDelta } from "@exocortex/shared/history-delta";
 import { effectiveConversationDefaults } from "@exocortex/shared/config";
 import { isDurationMs } from "@exocortex/shared/duration";
@@ -286,6 +287,21 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   const broadcastUsage = (provider: import("./messages").ProviderId, usage: import("./messages").UsageData | null) => {
     broadcastUsageUpdate(server, provider, usage);
   };
+  // An API key's spend changes with every response, image and transcription:
+  // push it as each one is counted, and again when the local day rolls over
+  // (Today restarts at 0). Clients never ask; unchanged payloads aren't resent.
+  setApiKeyUsageRecordedListener(() => broadcastUsage("openai", getLastUsage("openai")));
+  let apiKeyDayTimer: ReturnType<typeof setTimeout> | null = null;
+  const scheduleApiKeyDayRollover = () => {
+    const midnight = new Date();
+    midnight.setHours(24, 0, 1, 0);
+    apiKeyDayTimer = setTimeout(() => {
+      broadcastUsage("openai", getLastUsage("openai"));
+      scheduleApiKeyDayRollover();
+    }, midnight.getTime() - Date.now());
+    apiKeyDayTimer.unref?.();
+  };
+  scheduleApiKeyDayRollover();
   /** The Accounts screen's structured data and its live watchers (`accounts`). */
   const accountsWatch = createAccountsWatch({
     send: (client, event) => { server.sendTo(client, event); },
@@ -3893,6 +3909,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   return Object.assign(handleCommand, {
     stop: async () => {
       unsubscribeConnectivity();
+      setApiKeyUsageRecordedListener(null);
+      if (apiKeyDayTimer) clearTimeout(apiKeyDayTimer);
       if (preparedRestartTimer) clearTimeout(preparedRestartTimer);
     },
     backgroundTaskComplete: enqueueBackgroundTaskCompletion,
