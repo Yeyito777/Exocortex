@@ -4,11 +4,14 @@ import { basename, dirname } from "node:path";
 import { createInitialState } from "./state";
 import { updateConversationList } from "./sidebar";
 import type { ConversationSummary, FolderSummary } from "./messages";
+import { handleConversationsList } from "./events/conversations";
 import {
   applyTuiStartingState,
   availableStartingConversationId,
   captureTuiStartingState,
+  daemonRouteKey,
   loadTuiStartingState,
+  RouteExpandedFolders,
   saveTuiStartingState,
   tuiStartingStatePath,
   type TuiStartingState,
@@ -84,6 +87,7 @@ describe("TUI starting state", () => {
         expandedFolderIds: [],
       },
       conversationScrollPositions: {},
+      expandedFolderIdsByRoute: { local: [] },
     });
   });
 
@@ -100,6 +104,7 @@ describe("TUI starting state", () => {
       focusedConversationId: null,
       sidebar: { open: false, expandedFolderIds: [] },
       conversationScrollPositions: {},
+      expandedFolderIdsByRoute: { local: [] },
     });
   });
 
@@ -254,5 +259,54 @@ describe("TUI starting state", () => {
     applyTuiStartingState(restored, captured);
 
     expect(restored.sidebar.expandedFolderIds).toEqual(new Set(["work", "work-nested"]));
+  });
+
+  test("keeps each daemon route's expansion, so an /ssh tree reopens as it was left", () => {
+    const remoteKey = daemonRouteKey("whale");
+    const local = createInitialState();
+    local.sidebar.expandedFolderIds = new Set(["local-folder"]);
+    const routes = new RouteExpandedFolders(null);
+    // Switching to /ssh stashes the local route's tree; the remote one is then edited.
+    routes.remember(daemonRouteKey(null), local.sidebar.expandedFolderIds);
+    local.sidebar.expandedFolderIds = routes.forRoute(remoteKey);
+    local.sidebar.expandedFolderIds.add("remote-a");
+    local.sidebar.expandedFolderIds.add("remote-b");
+
+    saveTuiStartingState(captureTuiStartingState(local, routes, remoteKey));
+    const loaded = loadTuiStartingState();
+    expect(loaded?.expandedFolderIdsByRoute).toEqual({
+      local: ["local-folder"],
+      "ssh:whale": ["remote-a", "remote-b"],
+    });
+
+    const reopened = createInitialState();
+    applyTuiStartingState(reopened, loaded!);
+    expect(reopened.sidebar.expandedFolderIds).toEqual(new Set(["local-folder"]));
+    const reopenedRoutes = new RouteExpandedFolders(loaded);
+    expect(reopenedRoutes.forRoute(remoteKey)).toEqual(new Set(["remote-a", "remote-b"]));
+    expect(reopenedRoutes.forRoute(daemonRouteKey("other-host"))).toEqual(new Set());
+  });
+
+  test("older files without per-route expansion seed every route with their single list", () => {
+    writeFileSync(statePath, JSON.stringify({
+      version: 2,
+      focusedConversationId: null,
+      sidebar: { open: false, expandedFolderIds: ["work"] },
+      conversationScrollPositions: {},
+    }));
+    const routes = new RouteExpandedFolders(loadTuiStartingState());
+    expect(routes.forRoute(daemonRouteKey(null))).toEqual(new Set(["work"]));
+    expect(routes.forRoute(daemonRouteKey("whale"))).toEqual(new Set(["work"]));
+  });
+
+  test("an authoritative list forgets expanded folders that were deleted; renames keep their id", () => {
+    const state = createInitialState();
+    state.sidebar.expandedFolderIds = new Set(["kept", "deleted"]);
+    handleConversationsList({ type: "conversations_list", conversations: [], folders: [{ ...folder("kept"), name: "Renamed" }] }, state);
+    expect(state.sidebar.expandedFolderIds).toEqual(new Set(["kept"]));
+
+    // A list without folders says nothing about them.
+    handleConversationsList({ type: "conversations_list", conversations: [] }, state);
+    expect(state.sidebar.expandedFolderIds).toEqual(new Set(["kept"]));
   });
 });

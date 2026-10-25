@@ -42,6 +42,46 @@ export interface TuiStartingState {
   focusedConversationId: string | null;
   sidebar: ClosedSidebarStartingState | OpenSidebarStartingState;
   conversationScrollPositions: SerializedConversationScrollPositions;
+  /**
+   * Tree-view expansion for each daemon route (see daemonRouteKey). Folder ids
+   * belong to one daemon, and a route switch clears the sidebar, so one shared
+   * list could never restore an /ssh session's tree. Absent in older files.
+   */
+  expandedFolderIdsByRoute?: Record<string, string[]>;
+}
+
+/** The daemon a TUI is talking to: its local socket, or a remote one through an SSH alias. */
+export function daemonRouteKey(sshAlias: string | null): string {
+  return sshAlias ? `ssh:${sshAlias}` : "local";
+}
+
+/** Each route's expanded folders across a session, including routes not currently selected. */
+export class RouteExpandedFolders {
+  private readonly byRoute = new Map<string, string[]>();
+  /** Files from before per-route expansion kept one list for whichever route was used last. */
+  private readonly legacy: string[];
+
+  constructor(startingState: TuiStartingState | null) {
+    for (const [routeKey, ids] of Object.entries(startingState?.expandedFolderIdsByRoute ?? {})) {
+      this.byRoute.set(routeKey, [...ids]);
+    }
+    this.legacy = startingState && !startingState.expandedFolderIdsByRoute
+      ? [...startingState.sidebar.expandedFolderIds ?? []]
+      : [];
+  }
+
+  /** The folders to expand on reaching a route. Unknown ids are harmless until its list prunes them. */
+  forRoute(routeKey: string): Set<string> {
+    return new Set(this.byRoute.get(routeKey) ?? this.legacy);
+  }
+
+  remember(routeKey: string, expandedFolderIds: Iterable<string>): void {
+    this.byRoute.set(routeKey, [...expandedFolderIds]);
+  }
+
+  snapshot(): Record<string, string[]> {
+    return Object.fromEntries([...this.byRoute].map(([routeKey, ids]) => [routeKey, [...ids]]));
+  }
 }
 
 export function tuiStartingStatePath(): string {
@@ -86,6 +126,15 @@ function parseExpandedFolderIds(value: unknown): string[] {
   return value.filter((id): id is string => typeof id === "string" && id.length > 0);
 }
 
+function parseExpandedFolderIdsByRoute(value: unknown): Record<string, string[]> | undefined {
+  if (!isRecord(value)) return undefined;
+  const byRoute: Record<string, string[]> = {};
+  for (const [routeKey, ids] of Object.entries(value)) {
+    if (routeKey.length > 0) byRoute[routeKey] = parseExpandedFolderIds(ids);
+  }
+  return byRoute;
+}
+
 function parseStartingState(value: unknown): TuiStartingState | null {
   if (!isRecord(value) || (value.version !== 1 && value.version !== TUI_STARTING_STATE_VERSION) || !isRecord(value.sidebar)) return null;
 
@@ -97,12 +146,15 @@ function parseStartingState(value: unknown): TuiStartingState | null {
   if (conversationScrollPositions === null) return null;
 
   const expandedFolderIds = parseExpandedFolderIds(value.sidebar.expandedFolderIds);
+  const expandedFolderIdsByRoute = parseExpandedFolderIdsByRoute(value.expandedFolderIdsByRoute);
+  const routes = expandedFolderIdsByRoute ? { expandedFolderIdsByRoute } : {};
   if (!value.sidebar.open) {
     return {
       version: TUI_STARTING_STATE_VERSION,
       focusedConversationId,
       sidebar: { open: false, expandedFolderIds },
       conversationScrollPositions,
+      ...routes,
     };
   }
 
@@ -128,11 +180,22 @@ function parseStartingState(value: unknown): TuiStartingState | null {
       expandedFolderIds,
     },
     conversationScrollPositions,
+    ...routes,
   };
 }
 
-export function captureTuiStartingState(state: RenderState): TuiStartingState {
+/**
+ * `routes` holds every route's expansion; the current route's live set
+ * replaces its entry. `sidebar.expandedFolderIds` repeats the current route's
+ * set for older TUIs reading this file.
+ */
+export function captureTuiStartingState(
+  state: RenderState,
+  routes: RouteExpandedFolders = new RouteExpandedFolders(null),
+  routeKey = daemonRouteKey(null),
+): TuiStartingState {
   const expandedFolderIds = [...state.sidebar.expandedFolderIds];
+  routes.remember(routeKey, expandedFolderIds);
   const sidebar = state.sidebar.open
     ? {
         open: true as const,
@@ -148,15 +211,20 @@ export function captureTuiStartingState(state: RenderState): TuiStartingState {
     focusedConversationId: state.convId,
     sidebar,
     conversationScrollPositions: captureConversationScrollPositions(state),
+    expandedFolderIdsByRoute: routes.snapshot(),
   };
 }
 
-/** Seed local state before the daemon's first authoritative conversations list arrives. */
+/**
+ * Seed local state before the daemon's first authoritative conversations list
+ * arrives. A TUI always starts on its local socket; an /ssh route's expansion
+ * is applied when that route is selected.
+ */
 export function applyTuiStartingState(state: RenderState, startingState: TuiStartingState): void {
   state.convId = startingState.focusedConversationId;
   applyConversationScrollPositions(state, startingState.conversationScrollPositions);
   state.sidebar.open = startingState.sidebar.open;
-  state.sidebar.expandedFolderIds = new Set(startingState.sidebar.expandedFolderIds ?? []);
+  state.sidebar.expandedFolderIds = new RouteExpandedFolders(startingState).forRoute(daemonRouteKey(null));
   if (!startingState.sidebar.open) return;
 
   state.sidebar.currentFolderId = startingState.sidebar.currentFolderId;

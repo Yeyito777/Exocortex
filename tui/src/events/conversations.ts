@@ -140,6 +140,8 @@ export function handleConversationsList(event: Extract<Event, { type: "conversat
   updateConversationList(state.sidebar, event.conversations, event.folders ?? []);
   if (rejectedMove) pushSystemMessage(state, `✗ Could not move ${rejectedMove.label}; the sidebar was restored`, theme.error);
   pruneConversationScrollPositions(state, event.conversations.map(conversation => conversation.id));
+  // Forget expansion of folders deleted here or while this TUI was closed.
+  if (event.folders) pruneExpandedFolders(state.sidebar.expandedFolderIds, event.folders);
   const activeConvId = state.convId;
   if (activeConvId && !event.conversations.some(conversation => conversation.id === activeConvId)
       && !isOptimisticConversation(state.sidebar, activeConvId)) {
@@ -147,6 +149,13 @@ export function handleConversationsList(event: Extract<Event, { type: "conversat
     // deletion while offline, do not leave its conversation-owned BTW orphaned.
     clearRemovedActiveConversation(state, activeConvId);
     clearAllQueuedMessagesForConversation(state, activeConvId);
+  }
+}
+
+function pruneExpandedFolders(expandedFolderIds: Set<string>, folders: { id: string }[]): void {
+  const folderIds = new Set(folders.map(folder => folder.id));
+  for (const id of expandedFolderIds) {
+    if (!folderIds.has(id)) expandedFolderIds.delete(id);
   }
 }
 

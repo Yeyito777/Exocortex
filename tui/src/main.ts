@@ -103,7 +103,7 @@ import { log, TUI_LOG_PATH } from "./log";
 import { installFatalErrorHandlers } from "./fatal";
 import { ConversationPrewarmer } from "./prewarm";
 import { FirstTextUX } from "./first-text";
-import { applyTuiStartingState, availableStartingConversationId, captureTuiStartingState, loadTuiStartingState, saveTuiStartingState } from "./startingstate";
+import { applyTuiStartingState, availableStartingConversationId, captureTuiStartingState, daemonRouteKey, loadTuiStartingState, RouteExpandedFolders, saveTuiStartingState } from "./startingstate";
 import { closeBtwSession, startBtwSession } from "./btw/controller";
 import { createSidebarState } from "./sidebar/state";
 import { addOptimisticConversation, bumpConversationToTop, rememberEnteredConversation } from "./sidebar";
@@ -139,6 +139,9 @@ const savedStartingState = loadTuiStartingState();
 const state = createInitialState();
 if (savedStartingState) applyTuiStartingState(state, savedStartingState);
 let pendingStartingState = savedStartingState;
+// Tree expansion is kept per daemon route so `--ssh`/`/ssh` reopens its own tree.
+const routeExpandedFolders = new RouteExpandedFolders(savedStartingState);
+let activeRouteKey = daemonRouteKey(null);
 let startingConversationLoad: { convId: string; reqId: string } | null = null;
 const STARTUP_PROFILE = process.env.EXOCORTEX_PROFILE_STARTUP === "1" || launchOptions.profileStartup;
 const STARTUP_INPUT_SANITIZE_MS = 1000;
@@ -500,7 +503,7 @@ function maybeRequestOlderHistory(): void {
 
 // ── Event handler (daemon → TUI) ───────────────────────────────────
 
-function resetForDaemonRouteSwitch(): void {
+function resetForDaemonRouteSwitch(newRouteKey: string): void {
   // The Accounts screen showed the old endpoint's accounts.
   state.accountsScreen = null;
   state.accountsOpenRequest = null;
@@ -527,7 +530,10 @@ function resetForDaemonRouteSwitch(): void {
   const sidebarOpen = state.sidebar.open;
   const updateStatus = state.sidebar.updateStatus;
   // Folder ids belong to the old daemon; the folder view preference does not.
+  routeExpandedFolders.remember(activeRouteKey, state.sidebar.expandedFolderIds);
   state.sidebar = createSidebarState(state.sidebar.folderView);
+  activeRouteKey = newRouteKey;
+  state.sidebar.expandedFolderIds = routeExpandedFolders.forRoute(activeRouteKey);
   state.sidebar.open = sidebarOpen;
   state.sidebar.updateStatus = updateStatus;
   state.queuedMessages = [];
@@ -549,7 +555,7 @@ function onDaemonEvent(event: Event): void {
   if (event.type === "ssh_status" && event.state === "connected" && event.switched) {
     remoteFileLinks?.cancel();
     daemonRouteSwitchPending = true;
-    resetForDaemonRouteSwitch();
+    resetForDaemonRouteSwitch(daemonRouteKey(event.mode === "remote" ? event.alias ?? null : null));
   }
   // The switched status is the final frame from the old endpoint. Ignore any
   // already-in-flight old-route events until a fresh local socket reconnects.
@@ -2394,7 +2400,7 @@ let startingStatePersisted = false;
 function persistStartingStateOnce(): void {
   if (startingStatePersisted) return;
   try {
-    saveTuiStartingState(captureTuiStartingState(state));
+    saveTuiStartingState(captureTuiStartingState(state, routeExpandedFolders, activeRouteKey));
     startingStatePersisted = true;
   } catch (error) {
     try {
