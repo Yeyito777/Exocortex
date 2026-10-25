@@ -142,6 +142,21 @@ export interface HandlerOptions extends HandlerLifecycle {
   holdQueueDeliveryUntilReady?: boolean;
 }
 
+/**
+ * A prompt the `exo` CLI sends or queues (`delegation`) is never the owner's
+ * keyboard: it is stored as an automated exo_send from the conversation that
+ * ran the CLI, when that conversation exists, else from `fallbackSourceId`.
+ */
+export function cliDelegationAutomation(
+  cmd: { delegation?: boolean; sender?: unknown },
+  fallbackSourceId?: string,
+): UserMessageAutomation | undefined {
+  if (!cmd.delegation) return undefined;
+  const sender = typeof cmd.sender === "string" ? cmd.sender.trim() : "";
+  const sourceId = sender && convStore.hasConversation(sender) ? sender : fallbackSourceId;
+  return { kind: "exo_send", ...(sourceId ? { sourceId } : {}) };
+}
+
 export function createHandler(server: DaemonServer, options: HandlerOptions = {}): DaemonCommandHandler {
   const lifecycle = options;
   /**
@@ -2436,10 +2451,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             server, null, undefined, cmd.convId, cmd.text, cmd.startedAt, callbacks, cmd.images,
             {
               subagentMaxDepth: null,
-              automation: {
-                kind: "exo_send",
-                ...(trackedParentId ? { sourceId: trackedParentId } : {}),
-              },
+              automation: cliDelegationAutomation({ ...cmd, delegation: true }, trackedParentId),
             },
           );
           maybeStartAutoTitleGeneration(cmd.convId);
@@ -2464,11 +2476,13 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           });
           break;
         }
+        const automation = cliDelegationAutomation(cmd);
         const outcome = orchestrateSendMessage(
           server, client, cmd.reqId, cmd.convId, cmd.text, cmd.startedAt,
           callbacks,
           cmd.images,
-          { subagentMaxDepth: null },
+          // The CLI waits for this reply itself; the parent gets no report too.
+          automation ? { subagentMaxDepth: null, automation, replyAwaited: true } : { subagentMaxDepth: null },
         );
         maybeStartAutoTitleGeneration(cmd.convId);
         await outcome;
@@ -3021,7 +3035,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           const timing = cmd.timing === "message-end" && convStore.getActiveBackgroundableToolName(cmd.convId) === "chrono"
             ? "next-turn"
             : cmd.timing;
-          convStore.pushQueuedMessage(cmd.convId, cmd.text, timing, cmd.images, undefined, undefined, queueId);
+          convStore.pushQueuedMessage(cmd.convId, cmd.text, timing, cmd.images, undefined, undefined, queueId,
+            undefined, cliDelegationAutomation(cmd));
           // Instant steering: a next-turn prompt preempts the active turn now.
           if (timing === "next-turn") convStore.steerActiveTurn(cmd.convId);
         }

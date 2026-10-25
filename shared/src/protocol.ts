@@ -165,7 +165,17 @@ export interface ParentNotificationTarget {
 }
 
 export interface SendMessageCommand {
+  /**
+   * Sent by the `exo` CLI, not typed by the owner: the prompt is stored as an
+   * automated `exo_send`, never in the owner's bubble.
+   */
   delegation?: boolean;
+  /**
+   * The conversation sending a delegation (the CLI reads its shell's
+   * EXOCORTEX_PARENT_CONV_ID); recorded as the prompt's automation source.
+   * Ignored without `delegation` or when no such conversation exists.
+   */
+  sender?: string;
   legacy?: boolean;
   type: "send_message";
   reqId?: string;
@@ -826,7 +836,10 @@ export interface QueuedMessageInfo {
 }
 
 export interface QueueMessageCommand {
+  /** As SendMessageCommand.delegation: queued by the `exo` CLI, stored as automated. */
   delegation?: boolean;
+  /** As SendMessageCommand.sender. */
+  sender?: string;
   legacy?: boolean;
   type: "queue_message";
   reqId?: string;

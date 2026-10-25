@@ -2317,6 +2317,79 @@ describe("handler subagent folder placement", () => {
   });
 });
 
+describe("exo CLI deliveries are automated, from the conversation that ran the CLI", () => {
+  const model = DEFAULT_MODEL_BY_PROVIDER.anthropic;
+  const server = () => ({
+    sendTo: mock(() => {}),
+    broadcast: mock(() => {}),
+    sendToSubscribers: mock(() => {}),
+    sendToSubscribersExcept: mock(() => {}),
+    subscribe: mock(() => {}),
+    unsubscribe: mock(() => {}),
+    hasSubscribers: mock(() => false),
+  });
+  const policyOf = (convId: string) => (orchestrateSendMessage.mock.calls as unknown as unknown[][])
+    .filter(call => call[3] === convId).map(call => call[8]);
+
+  beforeEach(() => { orchestrateSendMessage.mockClear(); });
+  afterEach(cleanupIds);
+
+  test("a foreground `exo send` is an exo_send from its sender, and its reply is not relayed", async () => {
+    const senderId = mkId("cli-sender");
+    const targetId = mkId("cli-target");
+    create(senderId, "anthropic", model, "sender");
+    create(targetId, "anthropic", model, "target");
+    const handle = createHandler(server() as never);
+
+    await handle({} as never, { type: "send_message", convId: targetId, text: "from a child", startedAt: 1, delegation: true, sender: senderId });
+    await handle({} as never, { type: "send_message", convId: targetId, text: "no such sender", startedAt: 2, delegation: true, sender: "missing-conv" });
+    await handle({} as never, { type: "send_message", convId: targetId, text: "typed in the TUI", startedAt: 3 });
+
+    expect(policyOf(targetId)).toEqual([
+      { subagentMaxDepth: null, automation: { kind: "exo_send", sourceId: senderId }, replyAwaited: true },
+      { subagentMaxDepth: null, automation: { kind: "exo_send" }, replyAwaited: true },
+      { subagentMaxDepth: null },
+    ]);
+  });
+
+  test("a detached `exo send` names its sender, else the parent it notifies", async () => {
+    const senderId = mkId("cli-detached-sender");
+    const parentId = mkId("cli-detached-parent");
+    const targetId = mkId("cli-detached-target");
+    for (const id of [senderId, parentId, targetId]) create(id, "anthropic", model, id);
+    const handle = createHandler(server() as never);
+
+    await handle({} as never, { type: "send_message", convId: targetId, text: "go", startedAt: 1, delegation: true, detached: true, sender: senderId, notifyParent: { convId: parentId } });
+    await handle({} as never, { type: "send_message", convId: targetId, text: "go again", startedAt: 2, delegation: true, detached: true, notifyParent: { convId: parentId } });
+
+    expect(policyOf(targetId)).toEqual([
+      { subagentMaxDepth: null, automation: { kind: "exo_send", sourceId: senderId } },
+      { subagentMaxDepth: null, automation: { kind: "exo_send", sourceId: parentId } },
+    ]);
+  });
+
+  test("`exo queue` stores an automated entry; a TUI queue entry stays the owner's", async () => {
+    const senderId = mkId("cli-queue-sender");
+    const targetId = mkId("cli-queue-target");
+    create(senderId, "anthropic", model, "sender");
+    create(targetId, "anthropic", model, "target");
+    setActiveJob(targetId, new AbortController(), Date.now());
+    const handle = createHandler(server() as never);
+    try {
+      await handle({} as never, { type: "queue_message", convId: targetId, text: "[GAP354 → manager] done", timing: "message-end", delegation: true, sender: senderId });
+      await handle({} as never, { type: "queue_message", convId: targetId, text: "from a shell", timing: "message-end", delegation: true });
+      await handle({} as never, { type: "queue_message", convId: targetId, text: "owner follow-up", timing: "message-end" });
+      expect(getQueuedMessages(targetId).map(entry => [entry.text, entry.automation])).toEqual([
+        ["[GAP354 → manager] done", { kind: "exo_send", sourceId: senderId }],
+        ["from a shell", { kind: "exo_send" }],
+        ["owner follow-up", undefined],
+      ]);
+    } finally {
+      clearActiveJob(targetId);
+    }
+  });
+});
+
 describe("handler subagent completion delivery", () => {
   beforeEach(() => {
     orchestrateSendMessage.mockClear();
