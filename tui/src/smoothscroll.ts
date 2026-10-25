@@ -18,8 +18,8 @@ export const SMOOTH_SCROLL_ON = `${ESC}[?2032h`;
 export const SMOOTH_SCROLL_OFF = `${ESC}[?2032l`;
 /** Same feel as st's own glides (smoothscroll_ms). */
 export const SMOOTH_SCROLL_DURATION_MS = 100;
-/** How often a moving glide checks whether it is about to cross a row. */
-export const SMOOTH_SCROLL_FRAME_MS = 4;
+/** Longest wait between checks while a glide moves (the next row is scheduled for when it is due). */
+export const SMOOTH_SCROLL_FRAME_MS = 16;
 
 /** DECRQM reply for mode 2032: true when the terminal can do it, null if not a reply. */
 export function parseSmoothScrollReport(sequence: string): boolean | null {
@@ -67,6 +67,8 @@ export function movePayload(deltaRows: number, easeRows = 0, ms = SMOOTH_SCROLL_
  * past the lines its scrolls kept.
  */
 export const SMOOTH_SCROLL_LEAD_MS = 30;
+/** How early (in rows) the next row may be laid out: the offset st draws stays within 1 + this. */
+export const SMOOTH_SCROLL_MARGIN_ROWS = 0.25;
 
 interface EaseTerm {
   rows: number;
@@ -155,11 +157,14 @@ export class SmoothScroller {
     // ahead showed narrow rows (with nothing on their right) below the panel.
     const ahead = this.grid + this.offsetAt(time + this.leadMs);
     let grid: number;
+    // The next row may be laid out a quarter row early, so st (whose clock
+    // runs a little behind this one) never reaches the laid-out rows and has
+    // to hold the glide still while the next frame is on its way.
     if (this.target > position) {
-      grid = Math.max(Math.ceil(position), Math.min(Math.ceil(ahead), Math.floor(position) + 1));
+      grid = Math.max(Math.ceil(position), Math.min(Math.ceil(ahead), Math.floor(position + SMOOTH_SCROLL_MARGIN_ROWS) + 1));
       grid = Math.min(this.target, grid);
     } else if (this.target < position) {
-      grid = Math.min(Math.floor(position), Math.max(Math.floor(ahead), Math.ceil(position) - 1));
+      grid = Math.min(Math.floor(position), Math.max(Math.floor(ahead), Math.ceil(position - SMOOTH_SCROLL_MARGIN_ROWS) - 1));
       grid = Math.max(this.target, grid);
     } else {
       grid = Math.round(position);
@@ -276,6 +281,16 @@ export class SmoothScroller {
   /** The animation crosses a row: lay the next frame out. */
   needsLayout(): boolean {
     return this.gridValid && this.gridFor(this.now(), this.maxOffset) !== this.grid;
+  }
+
+  /** Milliseconds (at most `limit`) until the glide needs its next row laid out. */
+  msUntilLayout(limit = 16): number {
+    if (!this.gridValid) return limit;
+    const time = this.now();
+    for (let ms = 0; ms < limit; ms++) {
+      if (this.gridFor(time + ms, this.maxOffset) !== this.grid) return ms;
+    }
+    return limit;
   }
 
   /** Frames (row crossings) may still be needed. */
