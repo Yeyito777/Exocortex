@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { appendToStreamingBlock, beginStreamHandoff, clearActiveJob, clearCurrentStreamingBlocks, clearHistoryUnwindPending, clearStreamHandoff, getContextCompactionStartedAt, getCurrentStreamingBlocks, getStreamSeq, getStreamingCommittedMessageCount, hasPendingStreamingAssistant, initStreamingState, isHistoryUnwindPending, isRestartRecoverableJob, isStreaming, isStreamHandoffActive, nextStreamSeq, requestHistoryUnwind, setActiveJob, setContextCompactionStartedAt, setStreamingCommittedMessageCount, tryBeginStreamHandoff } from "./streaming";
+import { appendToStreamingBlock, beginStreamHandoff, clearActiveJob, clearCurrentStreamingBlocks, clearHistoryUnwindPending, clearStreamHandoff, getContextCompactionStartedAt, getCurrentStreamingBlocks, getStreamSeq, getStreamingCommittedMessageCount, hasPendingStreamingAssistant, initStreamingState, isHistoryUnwindPending, isRestartRecoverableJob, isStreaming, isStreamHandoffActive, nextStreamSeq, requestHistoryUnwind, setActiveJob, setRestartRecoverableJobsListener, setContextCompactionStartedAt, setStreamingCommittedMessageCount, tryBeginStreamHandoff } from "./streaming";
 import { clearQueuedMessages, drainQueuedMessages, pushQueuedMessage } from "./message-queue";
 
 const IDS: string[] = [];
@@ -195,5 +195,23 @@ describe("appendToStreamingBlock", () => {
     clearActiveJob(id);
     clearCurrentStreamingBlocks(id);
     expect(getCurrentStreamingBlocks(id)).toBeUndefined();
+  });
+});
+
+describe("live-turns journal hook", () => {
+  test("reports the replayable running turns whenever that set changes", () => {
+    const a = mkId("journal-a");
+    const b = mkId("journal-b");
+    const seen: string[][] = [];
+    setRestartRecoverableJobsListener((ids) => seen.push(ids.filter(id => id === a || id === b).sort()));
+    try {
+      setActiveJob(a, new AbortController(), Date.now());
+      setActiveJob(b, new AbortController(), Date.now(), false);
+      clearActiveJob(b);
+      clearActiveJob(a);
+      expect(seen).toEqual([[a], []]);
+    } finally {
+      setRestartRecoverableJobsListener(null);
+    }
   });
 });

@@ -28,6 +28,9 @@ DAEMON_RESTART_EXIT_CODE=75
 
 cleanup() {
   if [[ -n "$DAEMON_PID" ]] && kill -0 "$DAEMON_PID" 2>/dev/null; then
+    # Quitting exotest is a real stop: without the request the daemon would
+    # replay its interrupted turns the next time this instance starts.
+    (cd "$WORKTREE_DIR/daemon" && bun run src/control-cli.ts prepare-stop >/dev/null 2>&1) || true
     kill "$DAEMON_PID" 2>/dev/null
     wait "$DAEMON_PID" 2>/dev/null || true
   fi

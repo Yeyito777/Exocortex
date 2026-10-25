@@ -32,7 +32,7 @@ import { handleLogin } from "./cli";
 import * as convStore from "./conversations";
 import { closeConversationPersistence, prepareConversationStoreSchema } from "./persistence";
 import { getRunningConversationIds, prepareRestartForReplay, prepareStopWithoutReplay } from "./control";
-import { clearRestartRecoveryForStop, deliverPendingSubagentNotifications, hasActiveGoalRestartMarker, prepareCatchableShutdownForReplay, prepareCatchableShutdownWithoutReplay, recoverActiveGoals, recoverInterruptedStreams } from "./restart-recovery";
+import { clearRestartRecoveryForStop, deliverPendingSubagentNotifications, prepareCatchableShutdownForReplay, prepareCatchableShutdownWithoutReplay, recoverActiveGoals, recoverInterruptedStreams } from "./restart-recovery";
 import { scheduleActiveGoalTimeLimits } from "./goal-time-limit";
 import { finishRequestedRestartBoot, prepareRequestedRestartBoot, runRequestedRestart } from "./requested-restart";
 import { startChronoService, stopChronoService, listChronoSchedules, resumeDeferredChronoWaits } from "./chrono-service";
@@ -40,7 +40,9 @@ import { startWatchdog, stopWatchdog } from "./watchdog";
 import { connectivity } from "./connectivity";
 import { initExternalTools, stopExternalToolsAsync, getExternalToolCount, getSupervisedDaemonCount, getExternalToolStyles } from "./external-tools";
 import { recoverPendingTitles } from "./titlegen";
-import { beginDaemonShutdown, DAEMON_RESTART_EXIT_CODE, resolveDaemonShutdownMode } from "./daemon-lifecycle";
+import { beginDaemonShutdown, DAEMON_RESTART_EXIT_CODE, getDaemonShutdownMode, resolveDaemonShutdownMode } from "./daemon-lifecycle";
+import { clearLiveTurns, clearStopRequest, hasFreshStopRequest, takeLiveTurnsLeftByUncleanExit, writeLiveTurns } from "./restart-markers";
+import { setRestartRecoverableJobsListener } from "./streaming";
 import { getToolDisplayInfo } from "./tools/registry";
 import { getProviders, refreshProviders } from "./providers/registry";
 import { socketPath, pidPath, runtimeDir, worktreeName, isWindows, externalToolsDir, repoRoot } from "@exocortex/shared/paths";
@@ -131,6 +133,15 @@ async function startDaemon(): Promise<void> {
   // Write PID file
   writeFileSync(PID_PATH, String(process.pid));
   profileMark("pid_written");
+  // A stop request is only for the daemon it stopped. Turns still journaled
+  // were cut off by an exit that never reached shutdown (SIGKILL, OOM, power
+  // loss); they replay with the rest below. Journal this daemon's from here on.
+  clearStopRequest();
+  const turnsLeftByUncleanExit = takeLiveTurnsLeftByUncleanExit();
+  if (turnsLeftByUncleanExit.length > 0) {
+    log("warn", `exocortexd: the previous daemon exited without shutting down; replaying ${turnsLeftByUncleanExit.length} turn(s) it left running: ${turnsLeftByUncleanExit.join(", ")}`);
+  }
+  setRestartRecoverableJobsListener(writeLiveTurns);
 
   try {
     const migration = migrateGlobalInstructions();
@@ -162,8 +173,17 @@ async function startDaemon(): Promise<void> {
     if (shutdownPromise) return shutdownPromise;
 
     shutdownPromise = (async () => {
-      const requestedMode = resolveDaemonShutdownMode(exitCode, hasActiveGoalRestartMarker());
+      // Nobody chose a mode (no `exocortexd stop`, restart or prepare): a signal
+      // from systemd stopping the unit, a reboot, a stray kill, or a crash.
+      const inferred = getDaemonShutdownMode() === null;
+      const requestedMode = resolveDaemonShutdownMode(hasFreshStopRequest());
       const shutdownMode = beginDaemonShutdown(requestedMode);
+      // launchd only relaunches a failed exit (KeepAlive SuccessfulExit=false),
+      // and `exocortexd stop` there is a plain SIGTERM; a stray kill must come
+      // back like it does under systemd's Restart=always.
+      const finalExitCode = exitCode === 0 && inferred && shutdownMode === "restart" && process.platform === "darwin"
+        ? DAEMON_RESTART_EXIT_CODE
+        : exitCode;
       log("info", `exocortexd: shutting down (${reason}, mode=${shutdownMode})`);
       profileMark("shutdown_begin", { reason, mode: shutdownMode });
       // Give connected clients the graceful shutdown reason while the socket is
@@ -198,6 +218,9 @@ async function startDaemon(): Promise<void> {
       }
 
       profileMark("shutdown_streams_settled");
+      // A clean exit: nothing for the next start to find in the live-turns journal.
+      setRestartRecoverableJobsListener(null);
+      clearLiveTurns();
 
       // Claude Code processes (and their background tasks) run under relays
       // that outlive a restart: the next daemon adopts them. A stop ends them.
@@ -230,9 +253,10 @@ async function startDaemon(): Promise<void> {
       closeConversationPersistence();
       profileMark("shutdown_persistence_closed");
       await server.stop();
+      clearStopRequest();
       try { unlinkSync(PID_PATH); } catch { /* best-effort cleanup */ }
-      profileMark("shutdown_exit", { exitCode });
-      process.exit(exitCode);
+      profileMark("shutdown_exit", { exitCode: finalExitCode });
+      process.exit(finalExitCode);
     })().catch((err) => {
       log("error", `exocortexd: shutdown failed: ${formatFatal(err)}`);
       try { unlinkSync(PID_PATH); } catch { /* best-effort cleanup */ }
@@ -389,7 +413,7 @@ async function startDaemon(): Promise<void> {
   });
   profileMark("claude_code_processes_adopted", { runningTurns: adoptedClaudeCodeTurns.length });
   const requestedRestart = prepareRequestedRestartBoot();
-  const recoveredStreams = recoverInterruptedStreams(server, adoptedClaudeCodeTurns);
+  const recoveredStreams = recoverInterruptedStreams(server, [...adoptedClaudeCodeTurns, ...turnsLeftByUncleanExit]);
   if (recoveredStreams.length > 0) {
     console.log(`  replay: scheduled ${recoveredStreams.length} interrupted conversation(s): ${recoveredStreams.join(", ")}`);
     profileMark("interrupted_streams_recovered", { count: recoveredStreams.length });
@@ -501,6 +525,7 @@ async function main(): Promise<void> {
 
   if (command === "cancel-recovery") {
     clearRestartRecoveryForStop();
+    clearStopRequest();
     return;
   }
 

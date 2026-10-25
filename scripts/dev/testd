@@ -114,6 +114,9 @@ case "$ACTION" in
       1) echo "  $WT_NAME: not running"; exit 0 ;;
       *) exit 1 ;;
     esac
+    # Like `exocortexd stop`: a stop request first, so the signal resumes nothing
+    # next start (any other exit replays the turns it interrupted).
+    (cd "$WORKTREE_DIR/daemon" && bun run src/control-cli.ts prepare-stop >/dev/null 2>&1) || true
     kill -TERM "$pid"
     for _ in $(seq 1 100); do
       kill -0 "$pid" 2>/dev/null || { echo "  $WT_NAME: stopped (pid $pid)"; exit 0; }

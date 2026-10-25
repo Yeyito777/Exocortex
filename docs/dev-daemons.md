@@ -26,7 +26,7 @@ its PID.
 ```bash
 scripts/dev/testd start <worktree>    # background daemon, prints pid + socket
 scripts/dev/testd status <worktree>
-scripts/dev/testd stop <worktree>     # SIGTERM to the PID it recorded
+scripts/dev/testd stop <worktree>     # a real stop of the PID it recorded
 scripts/dev/exotest <worktree>        # daemon + TUI; stops its daemon on exit
 ```
 
@@ -39,8 +39,12 @@ spawned (`$!`, `child.pid`) and kill that.
 ## If the main daemon is stopped by mistake
 
 On Linux the unit is `Restart=always`: any exit other than `exocortexd stop`
-(which is `systemctl stop`) or exit 78 brings it back within 2 s. A stray
-SIGTERM is still a clean stop, so its running conversations are not replayed.
+(which is `systemctl stop`) or exit 78 brings it back within 2 s; on macOS a
+stray kill exits 75, which launchd relaunches. Only `exocortexd stop` (and
+`testd stop`) stops without replay: it leaves a stop request in the runtime
+directory for the signal that follows. Every other exit replays the turns it
+interrupted on the next start, including SIGKILL, through the live-turns
+journal (`config/runtime/live-turns.json`).
 After pulling this change, rewrite the unit with `make service`; it reloads
 systemd without restarting a running daemon. The new label shows from the
 daemon's next restart.

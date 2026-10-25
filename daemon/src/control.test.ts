@@ -3,7 +3,8 @@ import { mkdirSync } from "fs";
 import { dirname } from "path";
 import { socketPath } from "@exocortex/shared/paths";
 import { prepareRestartForReplay, prepareStopWithoutReplay } from "./control";
-import { clearActiveGoalRestartMarker, clearInterruptedStreamIds, hasActiveGoalRestartMarker } from "./restart-markers";
+import { clearActiveGoalRestartMarker, clearInterruptedStreamIds, clearLiveTurns, clearStopRequest, hasActiveGoalRestartMarker, hasFreshStopRequest, liveTurnsPath, STOP_REQUEST_TTL_MS, takeLiveTurnsLeftByUncleanExit, writeLiveTurns, writeStopRequest } from "./restart-markers";
+import { existsSync } from "fs";
 import { beginDaemonShutdown, getDaemonShutdownMode, resetDaemonShutdownModeForTest } from "./daemon-lifecycle";
 import { DaemonServer } from "./server";
 
@@ -15,6 +16,8 @@ afterEach(async () => {
   resetDaemonShutdownModeForTest();
   clearInterruptedStreamIds();
   clearActiveGoalRestartMarker();
+  clearStopRequest();
+  clearLiveTurns();
 });
 
 async function startFakeDaemon(onCommand: (command: Record<string, any>, reply: (event: Record<string, unknown>) => void) => void): Promise<string[]> {
@@ -43,6 +46,33 @@ describe("daemon service control", () => {
     await prepareStopWithoutReplay();
 
     expect(getDaemonShutdownMode()).toBe("stop");
+    expect(hasFreshStopRequest()).toBe(true);
+  });
+
+  test("prepare-stop leaves a stop request even when the daemon can't answer its socket", async () => {
+    await expect(prepareStopWithoutReplay()).rejects.toThrow();
+    // The SIGTERM that `exocortexd stop` sends next still means a real stop.
+    expect(hasFreshStopRequest()).toBe(true);
+  });
+
+  test("a stop request only answers the signal that follows it", () => {
+    const now = Date.now();
+    expect(hasFreshStopRequest(now)).toBe(false);
+    writeStopRequest(now);
+    expect(hasFreshStopRequest(now + 1_000)).toBe(true);
+    expect(hasFreshStopRequest(now + STOP_REQUEST_TTL_MS + 1)).toBe(false);
+    clearStopRequest();
+    expect(hasFreshStopRequest(now)).toBe(false);
+  });
+
+  test("turns journaled by a daemon that died without shutting down are taken once", () => {
+    writeLiveTurns(["conv-a", "conv-b", "conv-a"]);
+    expect(takeLiveTurnsLeftByUncleanExit()).toEqual(["conv-a", "conv-b"]);
+    expect(existsSync(liveTurnsPath())).toBe(false);
+    expect(takeLiveTurnsLeftByUncleanExit()).toEqual([]);
+    writeLiveTurns(["conv-a"]);
+    writeLiveTurns([]);
+    expect(existsSync(liveTurnsPath())).toBe(false);
   });
 
   test("prepare-restart takes the live daemon's in-process result in one round trip", async () => {

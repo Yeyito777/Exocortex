@@ -32,10 +32,10 @@ wait_for_socket() {
 
 mkdir -p "$UNIT_DIR"
 
-# Restart=always: any exit that isn't a requested stop comes back in 2s, also a
-# clean exit 0 after a stray SIGTERM (e.g. a pattern kill meant for a test
-# daemon). `exocortexd stop` is `systemctl stop`, which systemd never restarts;
-# exit 78 (configuration error) stays down too.
+# Restart=always: any exit that isn't a requested stop comes back in 2s, also
+# the clean exit 0 after a stray SIGTERM (which replays its interrupted turns).
+# `exocortexd stop` is `systemctl stop`, which systemd never restarts; exit 78
+# (configuration error) stays down too.
 cat > "$UNIT_FILE" << EOF
 [Unit]
 Description=Exocortex daemon (exocortexd)

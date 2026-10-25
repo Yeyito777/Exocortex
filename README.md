@@ -104,6 +104,13 @@ exocortexd status
 exocortexd restart
 ```
 
+`exocortexd stop` is the only way to stop it without resuming anything. Every
+other exit (`exocortexd restart`, a direct `systemctl --user stop` or
+`launchctl kill`, a reboot, a stray `kill`, a crash, even SIGKILL or power
+loss) replays the turns it interrupted when the daemon next starts; under
+systemd and launchd it comes back on its own unless it was stopped through the
+service manager or the machine is shutting down.
+
 Inside the TUI, `/ssh <alias>` connects directly to that host's Exocortex
 daemon through `exocortexd proxy`; `/ssh cancel` returns to the local daemon.
 The selected route belongs to that TUI process, so other TUIs can remain local
