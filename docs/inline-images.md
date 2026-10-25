@@ -57,6 +57,21 @@ what it covered. In st the thumbnail under the history cursor is tinted
 (sha256), `width`, and `height` to pasted `ImageAttachment`s so they stay
 fetchable after the payload is compacted.
 
+## Pasting images
+
+Ctrl+V reads the clipboard through the terminal (OSC 5522, which also works
+over SSH) or, without it, the platform clipboard (AppleScript, xclip,
+wl-paste, PowerShell). A copied image *file* attaches the file, never the
+generic icon a file manager offers beside it: PNG/JPEG/GIF/WebP within 3 MB as
+they are, anything else (HEIC/HEIF, TIFF, an EXIF-rotated or larger photo)
+decoded upright into a JPEG within 2000 px (`tui/src/clipboard.ts`, with
+ImageMagick, or `sips` on a Mac without it). The content decides, not the
+name: HEIC data saved as `.PNG` is still decoded. A file that does not decode,
+or several files at once, is an error, not the icon. The st fork does the same
+on macOS before the bytes reach the TUI (`macos/pasteboard5522.m`, ImageIO), so
+a TUI on another host gets the photo too. File URLs offered over SSH refer to
+the client, so they are an error there.
+
 ## Previews
 
 History never carries image bytes for attachments. Clients request
