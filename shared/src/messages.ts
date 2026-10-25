@@ -871,6 +871,8 @@ export interface ApiKeyUsage {
   today: ApiKeySpend;
   /** Local calendar month so far. */
   month: ApiKeySpend;
+  /** `providers.openai.monthlyBudgetUsd`: draws the spend as bars against it; unset shows plain amounts. */
+  monthlyBudgetUsd?: number | null;
 }
 
 // ── Token stats ─────────────────────────────────────────────────────

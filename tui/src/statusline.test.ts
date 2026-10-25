@@ -2,7 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { stripAnsi } from "./historycursor";
 import { createInitialState } from "./state";
 import { contextBlock } from "./statusblocks/context";
-import { usageBlock } from "./statusblocks/usage";
+import { apiKeyRows, dailyAllowance, usageBlock } from "./statusblocks/usage";
+import type { ApiKeyUsage } from "./messages";
 import { renderStatusLine } from "./statusline";
 
 function stateWithUsage() {
@@ -52,22 +53,47 @@ describe("status line priority", () => {
 });
 
 describe("API-key usage", () => {
-  test("shows the key's counted spend instead of plan bars, at its measured width", () => {
+  const spend = (estimatedCostUsd: number, unpricedRequests = 0) => ({ inputTokens: 12_000, cachedInputTokens: 0, outputTokens: 300, requests: 3, estimatedCostUsd, unpricedRequests });
+
+  function stateWithApiKey(apiKey: ApiKeyUsage) {
     const state = createInitialState();
     state.provider = "openai";
     state.authByProvider.openai = true;
-    const spend = { inputTokens: 12_000, cachedInputTokens: 0, outputTokens: 300, requests: 3, estimatedCostUsd: 0.0421, unpricedRequests: 1 };
-    state.usageByProvider.openai = {
-      fiveHour: null,
-      sevenDay: null,
-      apiKey: { label: "sk-proj-…abcd", today: spend, month: { ...spend, estimatedCostUsd: 1.5, inputTokens: 2_000_000 } },
-    };
+    state.usageByProvider.openai = { fiveHour: null, sevenDay: null, apiKey };
+    return state;
+  }
+
+  test("without a budget shows plain amounts, aligned with the plan bars, at its measured width", () => {
+    const state = stateWithApiKey({ label: "sk-proj-…abcd", today: spend(0.0421, 1), month: spend(14.87, 3) });
     const block = usageBlock(state)!;
     const rows = block.rows.map(stripAnsi);
-    expect(rows[0]).toContain("API key sk-proj-…abcd · billed per token");
-    expect(rows[1]).toContain("Today: ≈$0.042 · 12.3K tok +1 unpriced");
-    expect(rows[1]).toContain("Month: ≈$1.50 · 2.0M tok +1 unpriced");
+    expect(rows[0].trimEnd()).toBe("  Today:  $0.042");
+    expect(rows[1].trimEnd()).toBe("  Month:  $14.87 +3 unpriced");
     expect(rows.every((row) => row.length === block.width)).toBe(true);
-    expect(stripAnsi(renderStatusLine(state, 200).lines.join("\n"))).not.toContain("5-Hour");
+    const rendered = stripAnsi(renderStatusLine(state, 200).lines.join("\n"));
+    expect(rendered).not.toContain("5-Hour");
+    expect(rendered).not.toContain("sk-proj");
+    expect(rows[0].indexOf("$")).toBe(stripAnsi(usageBlock(stateWithUsage())!.rows[0]).indexOf("["));
+  });
+
+  test("with a budget draws the month against it and today against its share of what is left", () => {
+    const now = new Date(2026, 9, 25, 12).getTime(); // Oct 25: 7 days left, today included
+    const apiKey = { label: "sk-proj-…abcd", today: spend(0.412), month: spend(14.87), monthlyBudgetUsd: 20 };
+    expect(dailyAllowance(apiKey, 20, now)).toBeCloseTo((20 - (14.87 - 0.412)) / 7, 10);
+    const block = apiKeyRows(apiKey, now);
+    const rows = block.rows.map(stripAnsi);
+    expect(rows[0].trimEnd()).toBe(`  Today:  [${"\u2588".repeat(10)}${"\u2591".repeat(10)}] $0.412 / $0.792`);
+    expect(rows[1].trimEnd()).toBe(`  Month:  [${"\u2588".repeat(15)}${"\u2591".repeat(5)}] $14.87 / $20.00`);
+    expect(rows.every((row) => row.length === block.width)).toBe(true);
+    expect(rows[0].indexOf("[")).toBe(stripAnsi(usageBlock(stateWithUsage())!.rows[0]).indexOf("["));
+  });
+
+  test("past the budget, today's allowance is zero and the bars stay full", () => {
+    const now = new Date(2026, 9, 31, 12).getTime();
+    const apiKey = { label: "k", today: spend(1), month: spend(25, 2), monthlyBudgetUsd: 20 };
+    expect(dailyAllowance(apiKey, 20, now)).toBe(0);
+    const rows = apiKeyRows(apiKey, now).rows.map(stripAnsi);
+    expect(rows[0]).toContain(`[${"\u2588".repeat(20)}] $1.00 / $0.000`);
+    expect(rows[1]).toContain(`[${"\u2588".repeat(20)}] $25.00 / $20.00 +2 unpriced`);
   });
 });
