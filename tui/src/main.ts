@@ -363,11 +363,21 @@ function performRender(): number {
 }
 
 let smoothScrollTimer: ReturnType<typeof setTimeout> | null = null;
+let smoothScrollWasBusy = false;
 
 /** While a smooth scroll moves, lay out each row it is about to cross. */
 function scheduleSmoothScrollFrame(): void {
   const smooth = smoothScrollerFor(state);
-  if (smoothScrollTimer || !smooth?.busy()) return;
+  if (smoothScrollTimer || !smooth) return;
+  if (!smooth.busy()) {
+    // At rest again: one more frame crops images back to the pane.
+    if (smoothScrollWasBusy) {
+      smoothScrollWasBusy = false;
+      renderImmediately();
+    }
+    return;
+  }
+  smoothScrollWasBusy = true;
   smoothScrollTimer = setTimeout(() => {
     smoothScrollTimer = null;
     if (!running || smoothScrollerFor(state) !== smooth) return;

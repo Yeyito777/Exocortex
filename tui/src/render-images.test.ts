@@ -5,7 +5,7 @@ import { configureInlineImages, inlineImagesInternalsForTest, setInlineImageCell
 import { handleImageModalKey, renderImageModal } from "./imagemodal";
 import { handleFocusedKey } from "./focus";
 import { handleMouseEvent } from "./mouse";
-import { disposeHistoryImages } from "./historyimages";
+import { disposeHistoryImages, invalidateHistoryImagePlacements } from "./historyimages";
 import { buildMessageLines } from "./conversation";
 import { stripAnsi } from "./historycursor";
 import { cancelEditMessage, confirmEditMessage, handleEditMessageKey, openEditMessageModal } from "./editmessage";
@@ -167,7 +167,7 @@ describe("image viewer", () => {
     disposeHistoryImages(state);
   });
 
-  test("while smooth scrolling (st mode 2032) an image cut off at the bottom keeps its rows below for the glide", async () => {
+  test("while smooth scrolling (st mode 2032) an image cut off at the bottom keeps its rows below only during a glide", async () => {
     configureInlineImages({ fetch: async request => pngFetch(request), onChange: () => {} });
     setInlineImageMode("kitty");
     setInlineImageCellSize({ width: 8, height: 16 });
@@ -176,17 +176,35 @@ describe("image viewer", () => {
     capture(state);
     const imageLine = state.historyLineAnchors.findIndex(anchor => anchor.images);
     // Only the image's top rows are on the pane's last rows.
-    state.scrollOffset = state.layout.totalLines - imageLine - 1;
-    const [cropped] = placements(await readyFrame(state));
-    expect(cropped.controls).toContain(",h=");
-    setSmoothScroller(state, new SmoothScroller());
+    state.scrollOffset = Math.min(state.layout.totalLines - imageLine - 1, state.layout.totalLines - state.layout.messageAreaHeight);
+    const [plain] = placements(await readyFrame(state));
+    expect(plain.controls).toContain(",h=");
+    let now = 1000;
+    const smooth = new SmoothScroller(100, () => now);
+    setSmoothScroller(state, smooth);
     invalidateFrame(state);
-    const [whole] = placements(capture(state));
+    invalidateHistoryImagePlacements(state);
+    // At rest: cropped exactly as without smooth scrolling.
+    const [rest] = placements(capture(state));
+    expect(rest.controls).toBe(plain.controls);
+    // Gliding: the rows below the pane come along (st clips them).
+    state.scrollOffset -= 1;
+    const step = capture(state);
+    now += 8;
     const rowsOf = (controls: string) => Number(/,r=(\d+),/.exec(controls)![1]);
-    expect(whole.row).toBe(cropped.row);
-    expect(rowsOf(whole.controls)).toBeGreaterThan(rowsOf(cropped.controls));
-    expect(whole.controls).not.toContain(",h=");
+    const gliding = placements(step + capture(state));
+    expect(gliding.length).toBeGreaterThan(0);
+    expect(gliding[0].controls).not.toContain(",h=");
+    expect(rowsOf(gliding[0].controls)).toBeGreaterThan(rowsOf(plain.controls));
+    // At rest again: placed exactly as without smooth scrolling.
+    now += 200;
+    const after = placements(capture(state));
+    const settled = (after.length > 0 ? after : gliding).at(-1)!;
     setSmoothScroller(state, null);
+    invalidateFrame(state);
+    invalidateHistoryImagePlacements(state);
+    const [expected] = placements(capture(state));
+    expect(settled.controls).toBe(expected.controls);
     disposeHistoryImages(state);
   });
 
