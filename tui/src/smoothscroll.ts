@@ -52,64 +52,120 @@ export function easeRemaining(progress: number): number {
   return rest * rest * rest;
 }
 
+/** OSC 2032 move: offset += dA rows; plus `ease` rows easing to 0 over `ms` (st times it). */
+export function movePayload(deltaRows: number, easeRows = 0, ms = SMOOTH_SCROLL_DURATION_MS): string {
+  const delta = Math.round(deltaRows * 1000);
+  const ease = Math.round(easeRows * 1000);
+  return ease === 0
+    ? `${ESC}]2032;m;${delta}${ST}`
+    : `${ESC}]2032;m;${delta};${ease};${ms}${ST}`;
+}
+
+/**
+ * How far ahead of st's clock the TUI lays out rows: covers the frame poll,
+ * a render and the trip through the pty, so the glide st draws never runs
+ * past the lines its scrolls kept.
+ */
+export const SMOOTH_SCROLL_LEAD_MS = 30;
+
+interface EaseTerm {
+  rows: number;
+  start: number;
+}
+
 /**
  * Scroll animation in scrollOffset units (rows from the bottom; larger is
  * older history, so content moves down on screen as it grows).
  *
- * `position` eases from where the view is towards the logical offset. The
- * history is laid out at a whole offset next to it, on the far side in the
- * direction of travel, so the terminal only ever needs the lines its own
- * region scrolls pushed out to fill the gap. Content that moved for other
- * reasons (streamed output while following, rows laid out above) glides from
- * where it was drawn.
+ * The terminal draws the moving rectangles `offset` rows lower than laid out
+ * (st's mode 2032), where offset = base + easing terms that st times itself
+ * at the display's refresh. This class keeps the same curve so it knows
+ * where st is: the eased position is `grid + offset`. Inputs move the
+ * target (one move message: base += step, plus an easing term of -step, so
+ * nothing jumps). The history is laid out at the whole row a little ahead of
+ * the position in the direction of travel, so the strip a shifted rectangle
+ * uncovers always shows lines st's own region scrolls kept; each row laid
+ * out is a region scroll plus `base -= rows` in the same synchronized update.
+ * Content that moved by itself (output streamed while following) gets an
+ * easing term from where it was drawn.
  */
 export class SmoothScroller {
   private target = 0;
-  private from = 0;
-  private start = 0;
-  private moving = false;
   /** Whole offset of the last laid-out frame. */
   private grid = 0;
   private gridValid = false;
-  /** Rows (down positive) the content still lags behind a shift it made by itself. */
-  private glideFrom = 0;
-  private glideStart = 0;
+  private base = 0;
+  private terms: EaseTerm[] = [];
   /** Region shift (up positive) the last layout step makes. */
   private expectedShift = 0;
   private height = 0;
-  private sentOffset = 0;
   private sentRects = "";
   private context: string | null = null;
+  /** Not yet sent: start over from `base` (`o`), then move by these. */
+  private pendingReset = false;
+  private pendingDelta = 0;
+  private pendingEase = 0;
+  private terminalNonzero = false;
 
   constructor(
     private readonly durationMs = SMOOTH_SCROLL_DURATION_MS,
     private readonly now: () => number = () => performance.now(),
+    private readonly leadMs = SMOOTH_SCROLL_LEAD_MS,
   ) {}
 
-  private position(time: number): number {
-    if (!this.moving) return this.target;
-    const remaining = easeRemaining((time - this.start) / this.durationMs);
-    if (remaining === 0) return this.target;
-    return this.target + (this.from - this.target) * remaining;
+  private offsetAt(time: number): number {
+    let offset = this.base;
+    for (const term of this.terms) offset += term.rows * easeRemaining((time - term.start) / this.durationMs);
+    return offset;
   }
 
-  private glide(time: number): number {
-    if (this.glideFrom === 0) return 0;
-    return this.glideFrom * easeRemaining((time - this.glideStart) / this.durationMs);
+  private prune(time: number): void {
+    this.terms = this.terms.filter(term => easeRemaining((time - term.start) / this.durationMs) > 0);
   }
 
-  private gridFor(position: number): number {
-    if (position === this.target) return this.target;
-    return this.target > position ? Math.ceil(position) : Math.floor(position);
+  private addTerm(rows: number, time: number): void {
+    if (rows === 0) return;
+    const term = { rows, start: time };
+    this.terms.push(term);
+    this.unsent.push(term);
+    this.pendingEase += rows;
+  }
+
+  /** Terms not sent yet: they start when st receives them. */
+  private unsent: EaseTerm[] = [];
+
+  /** Lay out at grid + offset from here on: base = target - grid, eased from `from`. */
+  private restart(from: number, time: number): void {
+    this.terms = [];
+    this.unsent = [];
+    this.base = this.target - this.grid;
+    this.pendingReset = true;
+    this.pendingDelta = 0;
+    this.pendingEase = 0;
+    this.addTerm(from - this.target, time);
+  }
+
+  private gridFor(time: number, maxOffset: number): number {
+    const position = this.grid + this.offsetAt(time);
+    if (position === this.target && this.terms.length === 0) return this.target;
+    const ahead = this.grid + this.offsetAt(time + this.leadMs);
+    let grid = this.target > position ? Math.min(this.target, Math.ceil(ahead))
+      : this.target < position ? Math.max(this.target, Math.floor(ahead))
+      : Math.round(ahead);
+    if (this.terms.every(term => easeRemaining((time + this.leadMs - term.start) / this.durationMs) === 0)) grid = this.target;
+    return Math.max(0, Math.min(maxOffset, grid));
   }
 
   /** Jump without animating: a different conversation, a resize, an anchored repaint. */
   snap(logical: number): void {
-    this.target = this.from = this.grid = logical;
-    this.moving = false;
-    this.glideFrom = 0;
+    this.target = this.grid = logical;
+    this.terms = [];
+    this.unsent = [];
+    this.base = 0;
     this.gridValid = false;
     this.expectedShift = 0;
+    this.pendingReset = this.terminalNonzero;
+    this.pendingDelta = this.pendingEase = 0;
   }
 
   /**
@@ -122,107 +178,105 @@ export class SmoothScroller {
   layout(logical: number, maxOffset: number, pinDelta: number, height: number, context: string): number {
     const time = this.now();
     this.height = height;
+    this.maxOffset = maxOffset;
     if (context !== this.context) {
       this.context = context;
       this.gridValid = false;
     }
     if (pinDelta !== 0) {
       this.target += pinDelta;
-      this.from += pinDelta;
       this.grid += pinDelta;
     }
     if (!this.gridValid) {
       this.snap(logical);
       this.gridValid = true;
-      this.expectedShift = 0;
       return logical;
     }
+    this.prune(time);
     if (logical !== this.target) {
-      let position = this.position(time);
-      // Jumps further than a screen glide in from one screen away.
-      if (Math.abs(logical - position) > height) position = logical - Math.sign(logical - position) * height;
-      this.from = position;
-      this.start = time;
+      const position = this.grid + this.offsetAt(time);
+      const step = logical - this.target;
       this.target = logical;
-      this.moving = true;
+      if (Math.abs(logical - position) > height) {
+        // Jumps further than a screen glide in from one screen away.
+        this.restart(logical - Math.sign(logical - position) * height, time);
+      } else {
+        this.base += step;
+        this.pendingDelta += step;
+        this.addTerm(-step, time);
+      }
     }
-    const position = this.position(time);
-    if (position === this.target) this.moving = false;
-    const grid = Math.max(0, Math.min(maxOffset, this.gridFor(position)));
+    const grid = this.gridFor(time, maxOffset);
     this.expectedShift = this.grid - grid;
+    this.base -= grid - this.grid;
+    this.pendingDelta -= grid - this.grid;
     this.grid = grid;
     return grid;
   }
 
+  private maxOffset = 0;
+
   /**
    * After the frame was flushed: `regionShift` is how far its region scroll
    * moved the content (up positive, 0 when it was repainted). Returns what to
-   * send inside the same synchronized update (rectangles, offset).
+   * send inside the same synchronized update (rectangles, motion).
    */
   afterFlush(regionShift: number, rects: readonly ScrollRect[]): string {
     const time = this.now();
     if (this.expectedShift !== 0 && regionShift === 0) {
-      // Repainted, not scrolled: there is nothing on screen to glide.
-      this.from = this.grid;
-      this.start = time;
-      this.glideFrom = 0;
+      // Repainted, not scrolled: nothing on screen to glide from; ease on from here.
+      this.restart(this.grid, time);
     } else if (regionShift !== this.expectedShift) {
-      // Content moved by itself (output while following): draw it where it was.
-      this.glideFrom = this.glide(time) + (regionShift - this.expectedShift);
-      this.glideStart = time;
+      // Content moved by itself (output while following): ease it from where it was.
+      const moved = regionShift - this.expectedShift;
+      this.addTerm(moved, time);
     }
     this.expectedShift = 0;
+    if (rects.length === 0 || Math.abs(this.offsetAt(time)) >= Math.max(1, this.height - 1)) {
+      // Nothing to move, or further than the lines the terminal keeps.
+      this.restart(this.grid, time);
+      this.terms = [];
+      this.unsent = [];
+      this.pendingEase = 0;
+    }
     let out = "";
     const rectKey = rectsPayload(rects);
     if (rectKey !== this.sentRects) {
       out += rectKey;
       this.sentRects = rectKey;
     }
-    let offset = this.offsetAt(time);
-    if (rects.length === 0 || Math.abs(offset) >= Math.max(1, this.height - 1)) {
-      // Nothing to move, or further than the lines the terminal kept.
-      this.from = this.grid;
-      this.start = time;
-      this.glideFrom = 0;
-      offset = this.offsetAt(time);
-    }
-    return out + this.offsetUpdate(offset);
+    return out + this.takeMotion();
   }
 
-  private offsetAt(time: number): number {
-    return this.position(time) - this.grid + this.glide(time);
+  private takeMotion(): string {
+    let out = "";
+    // `o` starts over from the base before this frame's moves.
+    if (this.pendingReset) out += offsetPayload(Math.round((this.base - this.pendingDelta) * 1000));
+    if (this.pendingDelta !== 0 || this.pendingEase !== 0) out += movePayload(this.pendingDelta, this.pendingEase, this.durationMs);
+    const sentAt = this.now();
+    for (const term of this.unsent) term.start = sentAt;
+    this.unsent = [];
+    this.pendingReset = false;
+    this.pendingDelta = this.pendingEase = 0;
+    this.terminalNonzero = this.base !== 0 || this.terms.length > 0;
+    return out;
   }
 
-  private offsetUpdate(offset: number): string {
-    const thousandths = Math.round(offset * 1000);
-    if (thousandths === this.sentOffset) return "";
-    this.sentOffset = thousandths;
-    return offsetPayload(thousandths);
-  }
-
-  /** The next animation frame needs a new layout (it crosses a row). */
+  /** The animation crosses a row: lay the next frame out. */
   needsLayout(): boolean {
-    const time = this.now();
-    return this.gridFor(this.position(time)) !== this.grid;
+    return this.gridValid && this.gridFor(this.now(), this.maxOffset) !== this.grid;
   }
 
-  /** Offset-only frame: what to send, possibly nothing. */
-  tick(): string {
-    return this.offsetUpdate(this.offsetAt(this.now()));
-  }
-
-  /** Frames are still needed. */
+  /** Frames (row crossings) may still be needed. */
   busy(): boolean {
-    const time = this.now();
-    if (this.moving && this.position(time) === this.target) this.moving = false;
-    if (this.glideFrom !== 0 && this.glide(time) === 0) this.glideFrom = 0;
-    return this.moving || this.glideFrom !== 0 || this.sentOffset !== 0;
+    this.prune(this.now());
+    return this.gridValid && (this.terms.length > 0 || this.grid !== this.target);
   }
 
   /** The terminal dropped its state (resize, screen switch): send it again. */
   terminalReset(): void {
-    this.sentOffset = 0;
     this.sentRects = "";
+    this.terminalNonzero = false;
   }
 }
 
