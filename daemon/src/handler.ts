@@ -67,7 +67,7 @@ import { remoteAccountsSource } from "./provider-proxy/remote-accounts";
 import { createProxiedClaudeRouter } from "./provider-proxy/claude-routing";
 import type { ProviderProxyLinkCommand } from "@exocortex/shared/provider-proxy";
 import type { BackgroundTaskCompletion, ExocortexToolRuntime } from "./tools/types";
-import { getSubagentParentConversationId, listActiveConversationTasks, setSubagentActive, stopBackgroundTask } from "./conversation-activity";
+import { getSubagentParentConversationId, isSubagentActive, listActiveConversationTasks, setSubagentActive, stopBackgroundTask } from "./conversation-activity";
 import {
   acknowledgeSubagentNotification,
   beginPendingSubagentNotification,
@@ -680,7 +680,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
    * detached. Runs at turn admission, so every path that starts the turn (idle
    * delivery, a queued successor, the queue pump) is covered, and when such
    * input joins a running turn that nothing reports (drainNextTurnMessages).
-   * Goal continuations and restart notices carry on a turn already accounted for.
+   * A goal continuation starts a turn after the last one reported, so it
+   * reports too; a restart notice carries on a turn already accounted for.
    */
   const relaySubagentFollowUp = (
     convId: string,
@@ -691,7 +692,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     const policy = convStore.getPolicyMetadata(convId);
     const upstreamId = policy?.subagentPolicy?.parentConversationId;
     if (!policy || !upstreamId || upstreamId === convId || policy.subagentPolicy?.detached) return;
-    if (!isQueuedObligation(automation)) return;
+    if (!isQueuedObligation(automation) && automation.kind !== "goal_continuation") return;
     if (!convStore.getPolicyMetadata(upstreamId)) return;
     // A running record (its task, or an exo message's own record) already reports this turn.
     if (listPendingSubagentNotifications({ childConvId: convId, state: "running" }).length > 0) return;
@@ -702,6 +703,22 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       log("warn", `handler: could not relay follow-up of subagent ${convId} to ${upstreamId}: ${err instanceof Error ? err.message : String(err)}`);
       return;
     }
+    if (setSubagentActive(upstreamId, convId, true, {
+      title: convStore.subagentTaskTitle(convId) || "Subagent task",
+      startedAt,
+    })) broadcastConversationUpdated(server, upstreamId);
+  };
+
+  /**
+   * The owner typed into a subagent (or its turn resumes their prompt): the
+   * child shows as working under its parent while the turn runs. The turn is
+   * theirs, so nothing reports it; its end clears the entry like any turn's.
+   */
+  const trackOwnerSubagentTurn = (convId: string, startedAt: number): void => {
+    const policy = convStore.getPolicyMetadata(convId);
+    const upstreamId = policy?.subagentPolicy?.parentConversationId;
+    if (!policy || !upstreamId || upstreamId === convId || policy.subagentPolicy?.detached) return;
+    if (!convStore.getPolicyMetadata(upstreamId) || isSubagentActive(upstreamId, convId)) return;
     if (setSubagentActive(upstreamId, convId, true, {
       title: convStore.subagentTaskTitle(convId) || "Subagent task",
       startedAt,
@@ -807,6 +824,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     complete: completeParentNotification,
     deliverReady: deliverReadyParentNotifications,
     relayFollowUp: relaySubagentFollowUp,
+    trackOwnerTurn: trackOwnerSubagentTurn,
   };
   registerSubagentNotificationRuntime(server, notificationRuntime);
 

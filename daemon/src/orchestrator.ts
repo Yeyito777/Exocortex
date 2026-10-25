@@ -708,7 +708,10 @@ async function orchestrateAdmittedAssistantTurn(
     // A subagent woken by automated input after its task reported: its reply goes up too.
     if (automation) {
       if (!options.replyAwaited) getSubagentNotificationRuntime(server)?.relayFollowUp?.(convId, automation, admittedText, startedAt);
-    } else convStore.noteOwnerTurnInChain(convId);
+    } else {
+      convStore.noteOwnerTurnInChain(convId);
+      getSubagentNotificationRuntime(server)?.trackOwnerTurn?.(convId, startedAt);
+    }
   } else {
     // Replay/manual compaction has no new user message, but its metadata
     // mutation still needs an explicit commit before provider work starts.
@@ -717,7 +720,10 @@ async function orchestrateAdmittedAssistantTurn(
     // A replay (after a restart, a Chrono sleep, or /replay) continues the turn
     // its latest prompt started: the owner waits on it if they wrote that prompt.
     const resumedPrompt = manualCompaction ? undefined : conv.messages.findLast(isRealUserMessage);
-    if (resumedPrompt && !resumedPrompt.metadata?.automation) convStore.noteOwnerTurnInChain(convId);
+    if (resumedPrompt && !resumedPrompt.metadata?.automation) {
+      convStore.noteOwnerTurnInChain(convId);
+      getSubagentNotificationRuntime(server)?.trackOwnerTurn?.(convId, resumedPrompt.metadata?.startedAt ?? startedAt);
+    }
   }
 
   if (interruptedSleep) {
@@ -1730,6 +1736,7 @@ async function orchestrateAdmittedAssistantTurn(
       if (latestHuman) {
         lastCanonicalTurnAssistant = null;
         convStore.noteOwnerTurnInChain(convId);
+        getSubagentNotificationRuntime(server)?.trackOwnerTurn?.(convId, latestHuman.metadata?.startedAt ?? Date.now());
       }
       convStore.removeQueuedMessagesById(drained.map(message => message.id));
       for (const qm of drained) {

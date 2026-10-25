@@ -18,7 +18,7 @@ import { clearProviderAuth, saveProviderAuth } from "./store";
 import { resetExternalNotificationsForTest } from "./external-notifications";
 import { listPendingExternalNotificationSoftWakes, resetExternalNotificationSoftWakesForTest } from "./external-notification-soft-wakes";
 import { getExocortexToolRuntime } from "./exocortex-tool-runtime";
-import { getConversationActivityCounts, resetConversationActivityForTest, setBackgroundTaskActive, setChronoTaskActive } from "./conversation-activity";
+import { getConversationActivityCounts, getConversationTasks, resetConversationActivityForTest, setBackgroundTaskActive, setChronoTaskActive } from "./conversation-activity";
 import { getProviderAdapter } from "./providers/catalog";
 import { HISTORY_PAGE_BYTE_BUDGET, estimateEntryRows } from "./history-pagination";
 import { computeSidebarDigest } from "@exocortex/shared/sidebar-digest";
@@ -2649,6 +2649,7 @@ describe("handler subagent completion delivery", () => {
         [{ kind: "chrono_wake", sourceId: "s" }, "a wake it scheduled"],
         [{ kind: "chrono_hard_wake", sourceId: "s" }, "a wake it scheduled"],
         [{ kind: "external_notification", sourceId: "x" }, "an external notification"],
+        [{ kind: "goal_continuation" }, "goal continuation"],
       ];
       for (const [index, [automation, trigger]] of wakes.entries()) {
         runtime.relayFollowUp!(childId, automation, `wake ${index}`, 10 + index);
@@ -2660,15 +2661,33 @@ describe("handler subagent completion delivery", () => {
         expect(listPendingSubagentNotifications({ childConvId: childId })).toHaveLength(1);
         removePendingSubagentNotificationsForConversation(childId);
       }
-      // Continuations of a turn already accounted for, and detached children, stay quiet.
-      runtime.relayFollowUp!(childId, { kind: "goal_continuation" }, "continue", 200);
+      // A restart notice carries on a turn already accounted for; detached children stay quiet.
       runtime.relayFollowUp!(childId, { kind: "daemon_restart" }, "restarted", 201);
+      runtime.relayFollowUp!(detachedId, { kind: "goal_continuation" }, "continue", 203);
       runtime.relayFollowUp!(detachedId, { kind: "exo_send", sourceId: "sibling" }, "hi", 202);
       expect(listPendingSubagentNotifications({ childConvId: childId })).toEqual([]);
       expect(listPendingSubagentNotifications({ childConvId: detachedId })).toEqual([]);
       // The parent's Tasks panel shows the woken child again.
       runtime.relayFollowUp!(childId, { kind: "background_task_completion", sourceId: "t" }, "[done]", 300);
       expect(getConversationActivityCounts(topId).subagentCount).toBe(1);
+      // (Its record is dropped first so this test delivers nothing.)
+      removePendingSubagentNotificationsForConversation(childId);
+      runtime.complete(childId, { ok: true, blocks: [] });
+      expect(getConversationActivityCounts(topId).subagentCount).toBe(0);
+
+      // The owner typing into it shows it working under its parent, timed from their
+      // prompt and unreported; its end clears the entry.
+      runtime.trackOwnerTurn!(childId, 400);
+      expect(getConversationTasks(topId)).toEqual([expect.objectContaining({ id: childId, kind: "subagent", startedAt: 400 })]);
+      expect(listPendingSubagentNotifications({ childConvId: childId })).toEqual([]);
+      // Joining a turn already shown keeps its start time.
+      runtime.trackOwnerTurn!(childId, 500);
+      expect(getConversationTasks(topId)).toEqual([expect.objectContaining({ startedAt: 400 })]);
+      runtime.complete(childId, { ok: true, blocks: [{ type: "text", text: "done" }] });
+      expect(getConversationActivityCounts(topId).subagentCount).toBe(0);
+      expect(listPendingSubagentNotifications({ childConvId: childId })).toEqual([]);
+      runtime.trackOwnerTurn!(detachedId, 600);
+      expect(getConversationActivityCounts(topId).subagentCount).toBe(0);
     } finally {
       for (const id of [childId, detachedId]) removePendingSubagentNotificationsForConversation(id);
       resetConversationActivityForTest();

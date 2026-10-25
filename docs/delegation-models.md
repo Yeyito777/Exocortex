@@ -77,12 +77,16 @@ refused with the caller's depth.
   woke it: its task, a parent message to an idle child, and any automated
   input reaching a child whose task already reported (a parent's or
   sibling's message, its own subagent's result, a finished background task, a
-  wake, an external notification), whether that input starts the turn or
-  joins a running one at a tool boundary. One record reports each turn: input
-  joining a turn that already has one adds none, and a turn whose sender
-  awaits the reply itself (a foreground `exo send`) is not reported. Goal
-  continuations and restart notices carry on a turn already accounted for;
-  turns the owner starts by typing into the child are theirs. A notice whose
+  wake, an external notification, a goal continuation), whether that input
+  starts the turn or joins a running one at a tool boundary. One record
+  reports each turn: input joining a turn that already has one adds none, and
+  a turn whose sender awaits the reply itself (a foreground `exo send`) is not
+  reported. Restart notices carry on a turn already accounted for. Turns the
+  owner starts by typing into the child are theirs: no notice, but the child
+  shows as running in its parent's Tasks while they run. A notice's `Result`
+  (or a stopped turn's `Partial output`) is the turn's final message, its text
+  after the last tool call, falling back to its last non-empty text block; the
+  progress lines before it stay in the child's conversation. A notice whose
   child still has running background tasks or subagents, one-shot wakes
   (repeating wakes never end, so they don't count) or queued input reads
   `Subagent replied (still working)` and lists them; another notice follows

@@ -6,6 +6,7 @@ import {
   acknowledgeSubagentNotification,
   beginPendingSubagentNotification,
   buildSubagentNotificationText,
+  finalTextFromBlocks,
   cancelRunningSubagentNotifications,
   followUpTrigger,
   hasSubagentNotificationBeenDelivered,
@@ -52,6 +53,27 @@ describe("durable subagent notifications", () => {
     const failed = buildSubagentNotificationText(record, { ok: false, error: "boom", blocks: [] });
     expect(ok.split("\n").at(-1)).toBe(line);
     expect(failed.split("\n").at(-1)).toBe(line);
+  });
+  test("the Result is the turn's final message, without the progress lines before it", () => {
+    const parentId = conversation("final-parent");
+    const childId = conversation("final-child");
+    const record = beginPendingSubagentNotification({ convId: parentId }, childId, "task", 42, 0);
+    const call = { type: "tool_call" as const, toolCallId: "c1", toolName: "bash", input: {}, summary: "bash" };
+    const result = { type: "tool_result" as const, toolCallId: "c1", toolName: "bash", output: "ok", isError: false };
+    const final = buildSubagentNotificationText(record, { ok: true, blocks: [
+      { type: "text", text: "Worktree set up; checking the code." }, call, result,
+      { type: "text", text: "Fixed it." }, { type: "text", text: "Merged as abc123." },
+    ] });
+    expect(final).toContain("Result:\nFixed it.\n\nMerged as abc123.");
+    expect(final).not.toContain("Worktree set up");
+    expect(finalTextFromBlocks([{ type: "text", text: "Now running tests." }, call, { type: "text", text: "  " }]))
+      .toBe("Now running tests.");
+    // A stopped turn reports its latest text the same way.
+    const stopped = buildSubagentNotificationText(record, { ok: false, aborted: true, blocks: [
+      { type: "text", text: "Reading files." }, call, { type: "text", text: "Halfway: found the cause." }, call,
+    ] });
+    expect(stopped).toContain("Partial output:\nHalfway: found the cause.");
+    expect(stopped).not.toContain("Reading files.");
   });
   test("persists the parent target before the child runs and reloads it", () => {
     const parentConvId = conversation("parent");
