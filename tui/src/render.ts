@@ -14,7 +14,8 @@
 import { isActiveConversationLoading, type RenderState } from "./state";
 import type { ImageAttachment, UserMessageAutomation } from "./messages";
 import { ownerWords } from "./turncollapse";
-import { getViewStart } from "./chatscroll";
+import { getViewStart, getViewStartFor } from "./chatscroll";
+import { smoothScrollerFor, type ScrollRect } from "./smoothscroll";
 import { shouldHoldOpeningFrame } from "./historypagination";
 import {
   applyChatConversationScroll,
@@ -871,6 +872,27 @@ function canonicalViewportRows(
  * from the top to the card's height. Unlike the old fixed-point loop, wrapping
  * beside the card can never move the full-width tail or trigger another pass.
  */
+/**
+ * What moves when the history scrolls smoothly: the history columns of the
+ * band, except the Tasks panel's columns above the first row below it.
+ */
+export function smoothScrollRects(
+  band: ScrollRegion,
+  chatCol: number,
+  chatW: number,
+  panelCol: number | null,
+  belowPanel: number,
+): ScrollRect[] {
+  const right = chatCol + chatW - 1;
+  if (panelCol === null || panelCol <= chatCol || panelCol > right) {
+    return [{ top: band.start, left: chatCol, bottom: band.end, right }];
+  }
+  const rects: ScrollRect[] = [{ top: band.start, left: chatCol, bottom: band.end, right: panelCol - 1 }];
+  const top = Math.max(band.start, belowPanel);
+  if (top <= band.end) rects.push({ top, left: panelCol, bottom: band.end, right });
+  return rects;
+}
+
 /** The longest run of rows in [start, end] that no rectangle touches (null below 4 rows). */
 export function freeMessageBand(start: number, end: number, floats: readonly ScreenRect[]): ScrollRegion | null {
   let best: ScrollRegion | null = null;
@@ -1615,7 +1637,9 @@ export function render(state: RenderState): boolean {
   // adjust offset so the viewport stays on the same content.
   const prevTotal = state.layout.totalLines;
   const previousScrollOffset = state.scrollOffset;
+  const unpinnedScrollOffset = state.scrollOffset;
   state.scrollOffset = pinBottomRelativeScrollOffset(state.scrollOffset, prevTotal, totalLines);
+  const scrollPinDelta = state.scrollOffset - unpinnedScrollOffset;
 
   // Cache layout for scroll and mouse functions
   state.layout.totalLines = totalLines;
@@ -1668,7 +1692,18 @@ export function render(state: RenderState): boolean {
     },
   );
 
-  const viewStart = scrollUpdate.topAnchorRow ?? getViewStart(state);
+  // App-driven smooth scrolling lays the history out at a whole offset next
+  // to the animated position (smoothscroll.ts); everything else (input,
+  // cursor, pinning) keeps working on the logical scrollOffset.
+  const smooth = smoothScrollerFor(state);
+  let viewStart = scrollUpdate.topAnchorRow ?? getViewStart(state);
+  if (smooth) {
+    const maxOffset = Math.max(0, totalLines - messageAreaHeight);
+    const logical = Math.min(state.scrollOffset, maxOffset);
+    const context = `${state.convId ?? ""}|${state.cols}x${state.rows}|${messageAreaHeight}`;
+    if (scrollUpdate.topAnchorRow !== null) smooth.snap(logical);
+    else viewStart = getViewStartFor(totalLines, messageAreaHeight, smooth.layout(logical, maxOffset, scrollPinDelta, messageAreaHeight, context));
+  }
   const preserveViewportTop = scrollUpdate.topAnchorRow !== null;
 
   // Float the task panel over only the history rows it actually occupies,
@@ -1900,8 +1935,10 @@ export function render(state: RenderState): boolean {
   // autocomplete, menus, modals) are drawn in place, so a terminal that
   // animates region scrolls glides only rows that really moved. The sidebar
   // is repainted beside the scrolled rows and images are placed again.
+  // With app-driven smooth scrolling the rows beside the Tasks panel scroll
+  // too: the panel's columns are simply not part of a moving rectangle.
   const floatRows: ScreenRect[] = [
-    panelFlowHeight > 0
+    panelFlowHeight > 0 && !smooth
       ? { top: messageAreaStart, bottom: messageAreaStart + panelFlowHeight - 1, left: chatCol, right: chatCol + chatW - 1 }
       : null,
     autocompleteRect, queuePromptOverlay?.rect, editMessageOverlay?.rect, sidebarMenuOverlay?.rect,
@@ -1911,7 +1948,11 @@ export function render(state: RenderState): boolean {
     ? freeMessageBand(messageAreaStart, messageAreaStart + messageAreaHeight - 1, floatRows)
     : legacyScrollRegion;
 
+  const smoothRects = smooth && scrollRegion
+    ? smoothScrollRects(scrollRegion, chatCol, chatW, taskPanel ? chatCol + chatW - taskPanel.width : null, messageAreaStart + panelFlowHeight)
+    : [];
   flushFrame(state, {
+    afterScroll: smooth ? regionShift => smooth.afterFlush(regionShift, smoothRects) : undefined,
     rows: ctx.frameRows,
     pinned: ctx.pinnedRows,
     cursor: instructionsOverlay ? instructionsCursorPayload(instructionsOverlay) : buildCursorPayload(

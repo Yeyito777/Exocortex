@@ -3,8 +3,41 @@
 When the conversation pane scrolls by a few rows (wheel, `j`/`k`, `Ctrl+u`/`Ctrl+d`,
 following streamed output), the TUI tells the terminal to move that band of
 rows and draws only the rows the move exposed, instead of repainting the pane.
-That sends far fewer bytes (cheaper scrolling over `/ssh`), and a terminal that
-animates region scrolls, such as st's smooth-scroll branch, can glide.
+That sends far fewer bytes (cheaper scrolling over `/ssh`). On st the TUI also
+animates the scroll itself (below).
+
+## App-driven smooth scrolling
+
+On a terminal that supports st's mode 2032 (`~/Config/st`
+`docs/app-smooth-scroll.md`), the TUI animates scrolls itself instead of
+leaving the glide to the terminal. At startup it asks with DECRQM
+(`CSI ? 2032 $ p`) and, if supported, turns the mode on (`CSI ? 2032 h`; off
+on exit). `tui/src/smoothscroll.ts` then:
+
+- eases a continuous scroll position towards the logical `scrollOffset` over
+  100 ms (cubic ease-out, st's `smoothscroll_ms` feel). Every way of scrolling
+  goes through it because it sits at layout time, not in the input handlers:
+  wheel, `Ctrl+u`/`Ctrl+d`/`Ctrl+e`/`Ctrl+y`/`Ctrl+b`/`Ctrl+f`, `j`/`k` at the
+  edge, `gg`/`G` and search jumps (those glide in from one screen away);
+- lays the history out at the whole row next to that position, one step ahead
+  in the direction of travel. Each row crossed is a normal frame: a region
+  scroll plus the rows it exposed or re-wrapped, so the text beside the Tasks
+  panel re-wraps a row at a time as it glides;
+- sends the remaining fraction of a row as the rectangles' offset
+  (`OSC 2032 ; o ; N`) inside the same synchronized update, and between rows
+  only that offset (about 15 bytes, every 8 ms while something moves);
+- declares the moving rectangles (`OSC 2032 ; r`): the history columns of the
+  band, and with the Tasks panel open, the columns left of it for the full
+  height plus the panel's columns from the row below it. The sidebar and the
+  panel never move;
+- glides content that moved by itself (output streamed while following)
+  from where it was drawn.
+
+Pinning (content added while scrolled up), a different conversation, a resize
+and frames that had to be repainted instead of scrolled never animate.
+
+Other terminals, and `tui.scrollRegions: false`, keep the behaviour described
+below. The rows beside the Tasks panel then stay out of the band.
 
 ## Switch
 

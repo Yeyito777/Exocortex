@@ -41,7 +41,11 @@ import { applyInlineCommands, type InlineCommandApplication } from "./inlineeffo
 import { resolveSlashShorthands } from "./slashsearch";
 import { advanceDeferredHistoryRender, hasDeferredHistoryRenderWork, render, invalidateHistoryRenderCache } from "./render";
 import { preserveViewportAcrossResize } from "./chatscroll";
-import { invalidateFrame } from "./frame";
+import { invalidateFrame, scrollRegionsEnabled } from "./frame";
+import {
+  SMOOTH_SCROLL_FRAME_MS, SMOOTH_SCROLL_OFF, SMOOTH_SCROLL_ON, SMOOTH_SCROLL_QUERY,
+  SmoothScroller, parseSmoothScrollReport, setSmoothScroller, smoothScrollerFor,
+} from "./smoothscroll";
 import { enter_alt, leave_alt, hide_cursor, show_cursor, enable_bracketed_paste, disable_bracketed_paste, query_clipboard_paste_events, enable_clipboard_paste_events, disable_clipboard_paste_events, enable_kitty_kbd, disable_kitty_kbd, enable_mouse, disable_mouse, set_cursor_color, reset_cursor_color } from "./terminal";
 import { createInitialState, isStreaming, canInterrupt, clearPendingAI, clearStreamingTailMessages, focusPrompt, isActiveConversationLoading, modelSupportsImages, newConversationSelection, noConversationOpen, noteConversationOpenRequest, pushSystemMessage, resetDraftConversationState, resetHistoryPagination, resetNewConversationDefaults, resetToolOutputState } from "./state";
 import { workingRowVisible } from "./conversation";
@@ -351,10 +355,30 @@ function performRender(): number {
     })}`);
   }
   requestVisibleToolOutputs(state, daemon);
+  scheduleSmoothScrollFrame();
   resetStreamTick();
   maybeReportStartupProfile(renderMs);
   scheduleDeferredHistoryRenderWork();
   return renderMs;
+}
+
+let smoothScrollTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** While a smooth scroll moves, lay out each row it crosses and send offsets in between. */
+function scheduleSmoothScrollFrame(): void {
+  const smooth = smoothScrollerFor(state);
+  if (smoothScrollTimer || !smooth?.busy()) return;
+  smoothScrollTimer = setTimeout(() => {
+    smoothScrollTimer = null;
+    if (!running || smoothScrollerFor(state) !== smooth) return;
+    if (smooth.needsLayout()) {
+      renderImmediately();
+      return;
+    }
+    const offset = smooth.tick();
+    if (offset) process.stdout.write(offset);
+    scheduleSmoothScrollFrame();
+  }, SMOOTH_SCROLL_FRAME_MS);
 }
 
 function renderImmediately(): number {
@@ -2101,7 +2125,12 @@ function handleDaemonConnectionLost(shutdownMode: DaemonShutdownMode | null): vo
 
 function setupTerminal(): void {
   const cursorColorSeq = theme.cursorColor ? set_cursor_color(theme.cursorColor) : '';
-  process.stdout.write(enter_alt + hide_cursor + CELL_SIZE_QUERY + enable_bracketed_paste + query_clipboard_paste_events + enable_clipboard_paste_events + enable_kitty_kbd + enable_mouse + cursorColorSeq);
+  // App-driven smooth scrolling (st mode 2032) is only queried with region
+  // scrolls on; after a suspend the known terminal is told again.
+  const smoothScroller = smoothScrollerFor(state);
+  smoothScroller?.terminalReset();
+  const smoothQuery = smoothScroller ? SMOOTH_SCROLL_ON : scrollRegionsEnabled() ? SMOOTH_SCROLL_QUERY : "";
+  process.stdout.write(enter_alt + hide_cursor + CELL_SIZE_QUERY + smoothQuery + enable_bracketed_paste + query_clipboard_paste_events + enable_clipboard_paste_events + enable_kitty_kbd + enable_mouse + cursorColorSeq);
   if (process.stdin.isTTY) process.stdin.setRawMode(true);
   process.stdin.resume();
   terminalSetUp = true;
@@ -2135,7 +2164,8 @@ function restoreTerminal(): void {
   terminalGraphicsDetector?.dispose();
   disposeMathImages();
   process.stdout.write(disposeHistoryImages(state));
-  process.stdout.write(disable_mouse + disable_kitty_kbd + disable_clipboard_paste_events + disable_bracketed_paste + show_cursor + cursorResetSeq + leave_alt);
+  const smoothOff = smoothScrollerFor(state) ? SMOOTH_SCROLL_OFF : "";
+  process.stdout.write(smoothOff + disable_mouse + disable_kitty_kbd + disable_clipboard_paste_events + disable_bracketed_paste + show_cursor + cursorResetSeq + leave_alt);
   terminalSetUp = false;
 }
 
@@ -2232,6 +2262,16 @@ async function main(): Promise<void> {
       if (ready !== null) processInput(ready);
     },
     sequence => {
+      const smoothSupported = parseSmoothScrollReport(sequence);
+      if (smoothSupported !== null) {
+        if (smoothSupported && !smoothScrollerFor(state)) {
+          process.stdout.write(SMOOTH_SCROLL_ON);
+          setSmoothScroller(state, new SmoothScroller());
+          invalidateFrame(state);
+          renderImmediately();
+        }
+        return;
+      }
       const cell = parseCellSizeResponse(sequence);
       if (cell) {
         setInlineImageCellSize(cell);
@@ -2293,6 +2333,7 @@ async function main(): Promise<void> {
     );
     invalidateFrame(state);
     invalidateHistoryImagePlacements(state);
+    smoothScrollerFor(state)?.terminalReset();
     process.stdout.write(CELL_SIZE_QUERY);
     // Resize/expose repaints should not wait for the normal frame throttle:
     // the terminal may have just revealed stale cells from the previous window
