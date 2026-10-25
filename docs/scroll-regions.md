@@ -43,11 +43,20 @@ on exit). `tui/src/smoothscroll.ts` then:
   again with one more frame when the glide ends; st keeps the rows of images
   leaving through the top. At rest images are placed exactly as without
   smooth scrolling;
-- glides content that moved by itself (output streamed while following)
-  from where it was drawn.
+- glides content that moved by itself only when it is output arriving at
+  the bottom while following it (see below).
 
-Pinning (content added while scrolled up), a different conversation, a resize
-and frames that had to be repainted instead of scrolled never animate.
+Only scrolling glides: the wheel or trackpad, scroll keys, history-cursor
+motions, `gg`/`G` and search jumps mark the change as the user's
+(`markScrollIntent`). Everything else that moves the offset or the content
+snaps without any motion: re-layouts that keep the user's place (Ctrl+I /
+Ctrl+O, the sidebar or Tasks panel changing the pane's width, a resize, a turn
+finishing, rows re-wrapping), pinning while scrolled up, a jump to the bottom
+after sending, a different conversation, and frames that had to be repainted.
+Content that moves by itself glides only when it is output arriving at the
+bottom while following it: every row the region scroll moved arrived intact
+(the two rows above the newly exposed ones aside, for the previous message's
+footer). `tui/src/smoothscroll-relayout.test.ts` checks each case.
 
 Other terminals, and `tui.scrollRegions: false`, keep the behaviour described
 below. The rows beside the Tasks panel then stay out of the band.

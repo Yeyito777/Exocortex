@@ -6,6 +6,7 @@
  * and handles history scrolling directly.
  */
 
+import { markScrollIntent } from "./smoothscroll";
 import type { KeyEvent } from "./input";
 import type { RenderState } from "./state";
 import { focusPrompt } from "./state";
@@ -95,6 +96,7 @@ function maxScroll(state: RenderState): number {
 export { getViewStart } from "./chatscroll";
 
 export function scrollBy(state: RenderState, lines: number): void {
+  markScrollIntent(state);
   state.scrollOffset = Math.max(0, Math.min(state.scrollOffset + lines, maxScroll(state)));
 }
 
@@ -119,8 +121,10 @@ export function scrollPageDown(state: RenderState): void {
 }
 
 export function scrollToTop(state: RenderState): void {
+  markScrollIntent(state);
   state.scrollOffset = maxScroll(state);
 }
 export function scrollToBottom(state: RenderState): void {
+  markScrollIntent(state);
   state.scrollOffset = 0;
 }

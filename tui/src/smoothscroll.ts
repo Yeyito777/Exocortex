@@ -103,6 +103,8 @@ export class SmoothScroller {
   private height = 0;
   private sentRects = "";
   private context: string | null = null;
+  /** The user scrolled since the last layout (markScrollIntent). */
+  private intent = false;
   /** Not yet sent: start over from `base` (`o`), then move by these. */
   private pendingReset = false;
   private pendingDelta = 0;
@@ -209,6 +211,16 @@ export class SmoothScroller {
       return logical;
     }
     this.prune(time);
+    if (logical !== this.target && !this.intent) {
+      // Not a scroll: a re-layout moved the logical offset to keep the same
+      // content in view (or the TUI jumped to the bottom after a send). It
+      // never glides: the laid-out rows move with it and whatever glide is
+      // in flight carries on from there.
+      const step = logical - this.target;
+      this.target = logical;
+      this.grid = Math.max(0, Math.min(maxOffset, this.grid + step));
+    }
+    this.intent = false;
     if (logical !== this.target) {
       const position = this.grid + this.offsetAt(time);
       const step = logical - this.target;
@@ -237,15 +249,18 @@ export class SmoothScroller {
    * moved the content (up positive, 0 when it was repainted). Returns what to
    * send inside the same synchronized update (rectangles, motion).
    */
-  afterFlush(regionShift: number, rects: readonly ScrollRect[]): string {
+  afterFlush(regionShift: number, rects: readonly ScrollRect[], intact = false): string {
     const time = this.now();
     if (this.expectedShift !== 0 && regionShift === 0) {
       // Repainted, not scrolled: nothing on screen to glide from; ease on from here.
       this.restart(this.grid, time);
     } else if (regionShift !== this.expectedShift) {
-      // Content moved by itself (output while following): ease it from where it was.
+      // Content moved by itself. Only output appended at the bottom while
+      // following it (every row moved up intact) eases from where it was;
+      // anything else (details toggled, a finished turn's footer, rows
+      // re-wrapped) is a re-layout and snaps.
       const moved = regionShift - this.expectedShift;
-      this.addTerm(moved, time);
+      if (intact && moved > 0 && this.target === 0) this.addTerm(moved, time);
     }
     this.expectedShift = 0;
     if (rects.length === 0 || Math.abs(this.offsetAt(time)) >= Math.max(1, this.height - 1)) {
@@ -299,6 +314,11 @@ export class SmoothScroller {
     return this.gridValid && (this.terms.length > 0 || this.grid !== this.target);
   }
 
+  /** The user scrolled: the next change of the logical offset glides. */
+  intend(): void {
+    this.intent = true;
+  }
+
   /** The terminal dropped its state (resize, screen switch): send it again. */
   terminalReset(): void {
     this.sentRects = "";
@@ -307,6 +327,16 @@ export class SmoothScroller {
 }
 
 const scrollers = new WeakMap<object, SmoothScroller>();
+
+/**
+ * The user is scrolling (wheel, scroll keys, cursor motions, jumps): the
+ * offset change the next frame lays out glides. Every other change of the
+ * offset (re-layouts keeping their anchor, jumps to the bottom after a send)
+ * snaps.
+ */
+export function markScrollIntent(owner: object): void {
+  scrollers.get(owner)?.intend();
+}
 
 /** Attach (or with null, detach) app-driven smooth scrolling to a render state. */
 export function setSmoothScroller(owner: object, scroller: SmoothScroller | null): void {
