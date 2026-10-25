@@ -275,8 +275,9 @@ export function handleEvent(
     case "conversations_list":
       handleConversationsList(event, state);
       // Old-route lists may still arrive during the probe. Only the selected
-      // route's bootstrap (after the switched status) completes the transition.
-      if (state.sshConnecting?.phase === "loading") state.sshConnecting = null;
+      // route's bootstrap (after the switched status) completes the transition,
+      // once tool styles are here too (an incremental first page comes first).
+      if (state.sshConnecting?.phase === "loading" && state.toolsAvailableReceived) state.sshConnecting = null;
       break;
 
     case "conversation_updated":
@@ -387,6 +388,7 @@ export function handleEvent(
 
     case "tools_available":
       handleToolsAvailable(event, state);
+      if (state.sshConnecting?.phase === "loading" && state.sidebar.listLoaded) state.sshConnecting = null;
       break;
 
     case "history_updated": {

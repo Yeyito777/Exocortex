@@ -15,6 +15,7 @@ import { budgetHistoryUpdatedEvent } from "./history-pagination";
 import type { ClientCapability, Command, Event, ProviderId, TokenStatsSnapshot, UsageData } from "./protocol";
 import { PROVIDER_PROXY_LINK_EVENT_TYPES } from "@exocortex/shared/provider-proxy";
 import type { SidebarDigest } from "@exocortex/shared/sidebar-digest";
+import type { SidebarViewHint } from "@exocortex/shared/sidebar-first-page";
 import type { UpdateStatus } from "@exocortex/shared/updatecheck";
 
 // ── Client tracking ─────────────────────────────────────────────────
@@ -36,6 +37,8 @@ export interface ConnectedClient {
   providerProxyLink?: boolean;
   /** Single-use: the list this client already holds (sidebar-digest-sync). */
   sidebarDigest?: SidebarDigest;
+  /** sidebar-incremental: the view the next bootstrap's first page is for (used once). */
+  sidebarView?: SidebarViewHint;
 }
 
 export type CommandHandler = (client: ConnectedClient, command: Command) => void | Promise<void>;

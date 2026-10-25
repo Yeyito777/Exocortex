@@ -16,6 +16,8 @@ import type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMeta
 import type { UpdateStatus } from "./updatecheck";
 import type { ChronoRecurrence } from "./chrono";
 import type { SidebarDigest } from "./sidebar-digest";
+import type { SidebarViewHint } from "./sidebar-first-page";
+export type { SidebarViewHint };
 import type { ProviderProxiesEvent, ProviderProxyCommand, ProviderProxyInfo, ProviderProxyLinkCommand, ProviderProxyLinkEvent } from "./provider-proxy";
 import type { UserMacro } from "./user-macros";
 export type { UserMacro };
@@ -285,7 +287,7 @@ export interface PrewarmConversationCommand {
  * sidebar-digest-sync: the client can rebuild a conversations_list that
  * carries `sidebarBuckets` (see ClientCapabilitiesCommand.sidebarDigest).
  */
-export type ClientCapability = "targeted-unwind" | "sidebar-reorder-delta" | "sidebar-state-patch" | "history-block-pagination" | "token-stats-on-demand" | "sidebar-digest-sync" | "update-status-push";
+export type ClientCapability = "targeted-unwind" | "sidebar-reorder-delta" | "sidebar-state-patch" | "history-block-pagination" | "token-stats-on-demand" | "sidebar-digest-sync" | "update-status-push" | "sidebar-incremental";
 
 /** Answered with token_stats carrying the same reqId. Older daemons answer with an Unknown command error. */
 export interface GetTokenStatsCommand {
@@ -309,6 +311,12 @@ export interface ClientCapabilitiesCommand {
    * Used once; older daemons ignore it.
    */
   sidebarDigest?: SidebarDigest;
+  /**
+   * With sidebar-incremental: what the sidebar will draw first. The next
+   * ping bootstrap (without a digest) sends the conversation list in two
+   * parts, a first page for this view, then the rest. Used once.
+   */
+  sidebarView?: SidebarViewHint;
 }
 
 /** The user's own machine, as announced by an SSH-connected TUI. */
@@ -1701,6 +1709,18 @@ export interface ConversationsListEvent {
    * list before handling it.
    */
   sidebarBuckets?: number[];
+  /**
+   * sidebar-incremental first page: every folder, the conversations on the
+   * first rows of the client's sidebarView, every conversation that shows
+   * activity (streaming, unread, tasks, subagents, background work, queued
+   * messages) and the ones the view named. `folderConversationCounts` are
+   * the full list's per-folder counts (subfolders included). The rest
+   * follows later in the same bootstrap as a list with `sidebarRest`; nothing
+   * that changes the sidebar comes between them.
+   */
+  sidebarPartial?: { remaining: number; folderConversationCounts: Record<string, number> };
+  /** The conversations the first page left out; folders omitted. Clients rebuild the full list. */
+  sidebarRest?: true;
 }
 
 export interface AIMessagePayload {

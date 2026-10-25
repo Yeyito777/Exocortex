@@ -138,12 +138,16 @@ export function handleConversationsList(event: Extract<Event, { type: "conversat
   // The list that answers a refused move is the authoritative rollback.
   const rejectedMove = rejectPendingSidebarMove(state.sidebar, event.reqId);
   updateConversationList(state.sidebar, event.conversations, event.folders ?? []);
+  // A first page carries every folder but not every conversation: what it
+  // leaves out isn't gone, and arrives with the rest of the same bootstrap.
+  const partial = event.sidebarPartial;
+  state.sidebar.partial = partial ? { folderConversationCounts: partial.folderConversationCounts } : null;
   if (rejectedMove) pushSystemMessage(state, `✗ Could not move ${rejectedMove.label}; the sidebar was restored`, theme.error);
-  pruneConversationScrollPositions(state, event.conversations.map(conversation => conversation.id));
+  if (!partial) pruneConversationScrollPositions(state, event.conversations.map(conversation => conversation.id));
   // Forget expansion of folders deleted here or while this TUI was closed.
   if (event.folders) pruneExpandedFolders(state.sidebar.expandedFolderIds, event.folders);
   const activeConvId = state.convId;
-  if (activeConvId && !event.conversations.some(conversation => conversation.id === activeConvId)
+  if (!partial && activeConvId && !event.conversations.some(conversation => conversation.id === activeConvId)
       && !isOptimisticConversation(state.sidebar, activeConvId)) {
     // The list is authoritative reconnect catch-up. If this client missed a
     // deletion while offline, do not leave its conversation-owned BTW orphaned.

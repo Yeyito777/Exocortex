@@ -13,6 +13,11 @@ export interface SidebarState {
   folders: FolderSummary[];
   /** Whether this daemon's conversations list has arrived; until then a saved cursor may not be listed yet. */
   listLoaded: boolean;
+  /**
+   * While only the bootstrap's first page is here (sidebar-incremental): the
+   * full list's per-folder counts, shown until the rest arrives.
+   */
+  partial: { folderConversationCounts: Record<string, number> } | null;
   currentFolderId: string | null;
   /** How folders open: replace the list ("navigate") or expand in place ("tree"). */
   folderView: SidebarFolderView;
@@ -44,6 +49,7 @@ export function createSidebarState(folderView: SidebarFolderView = "tree"): Side
     conversations: [],
     folders: [],
     listLoaded: false,
+    partial: null,
     currentFolderId: null,
     folderView,
     expandedFolderIds: new Set(),

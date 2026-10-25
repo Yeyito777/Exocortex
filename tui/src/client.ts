@@ -10,6 +10,7 @@ import { existsSync } from "fs";
 import { randomUUID } from "crypto";
 import { StringDecoder } from "node:string_decoder";
 import { homedir, hostname, userInfo } from "os";
+import type { SidebarViewHint } from "@exocortex/shared/sidebar-first-page";
 import type { ClientCapability, ClientHostInfo, Command, DaemonShutdownMode, Event, GoalAction, MoveSidebarItemsOptions, OpenAILoginMethod, QueuedCommandInvocation, QueueTiming, QueueWaitTarget, TrimMode, SidebarItemRef, GetImageCommand, ImageDataEvent, UserMacro } from "./protocol";
 import type { ProviderId, ModelId, EffortLevel, ImageAttachment, TokenUsageSource } from "./messages";
 import { socketPath, isWindows } from "@exocortex/shared/paths";
@@ -26,11 +27,13 @@ import { ClientExecutor } from "@exocortex/shared/command-exec";
 import {
   DEFAULT_SSH_PROBE_TIMEOUT_MS,
   appendSshStderr,
-  probeSshProxy,
+  probeSshProxyWithFallback,
   spawnSshProxy,
   sshStderrSuffix,
   validateSshAlias,
   type ProbedSshConnection,
+  type SshProbeFallback,
+  type SshProcess,
   type SpawnSshProcess,
 } from "@exocortex/shared/ssh-transport";
 
@@ -42,6 +45,7 @@ const CLIENT_CAPABILITIES: ClientCapability[] = [
   "token-stats-on-demand",
   "sidebar-digest-sync",
   "update-status-push",
+  "sidebar-incremental",
 ];
 
 export type EventHandler = (event: Event) => void;
@@ -85,6 +89,8 @@ interface ActiveSshConnection {
 
 export interface DaemonClientTransportOptions {
   spawnSshProcess?: SpawnSshProcess;
+  /** A second, fresh connection to race a probe with (one riding a shared ControlMaster). */
+  sshProbeFallback?: (alias: string, primary: SshProcess) => SshProbeFallback | null;
   sshProbeTimeoutMs?: number;
   localHostname?: string;
   localTranscriptionConnectTimeoutMs?: number;
@@ -158,6 +164,7 @@ export class DaemonClient {
   private nextReqId = 0;
   private updateRequests = new Map<string, (status: UpdateStatus) => void>();
   private readonly spawnSshProcess: SpawnSshProcess;
+  private readonly sshProbeFallback: DaemonClientTransportOptions["sshProbeFallback"];
   private readonly sshProbeTimeoutMs: number;
   private readonly localHostname: string;
   private readonly localTranscriptionConnectTimeoutMs: number | undefined;
@@ -172,6 +179,10 @@ export class DaemonClient {
   private sshSwitchGeneration = 0;
   private cancelSshProbe: ((reason: string) => void) | null = null;
   private pendingSshConnection: (ProbedSshConnection & { alias: string }) | null = null;
+  /** What the sidebar will draw first on a route (null: local), for the bootstrap's first page. */
+  private sidebarViewHint: ((alias: string | null) => SidebarViewHint | null) | null = null;
+  /** sidebar-incremental: the bootstrap's first page until the rest completes it. */
+  private sidebarFirstPage: Extract<Event, { type: "conversations_list" }> | null = null;
   /** Requests to send in an SSH probe's first flight, ahead of its bootstrap ping. */
   private sshProbeRequests: ((alias: string) => Command[]) | null = null;
 
@@ -184,6 +195,7 @@ export class DaemonClient {
     this.handler = handler;
     this.socketPath = overrideSocketPath ?? socketPath();
     this.spawnSshProcess = transportOptions.spawnSshProcess ?? spawnSshProxy;
+    this.sshProbeFallback = transportOptions.sshProbeFallback;
     this.sshProbeTimeoutMs = transportOptions.sshProbeTimeoutMs ?? DEFAULT_SSH_PROBE_TIMEOUT_MS;
     this.localHostname = transportOptions.localHostname ?? hostname();
     this.localTranscriptionConnectTimeoutMs = transportOptions.localTranscriptionConnectTimeoutMs;
@@ -197,6 +209,7 @@ export class DaemonClient {
 
   async connect(): Promise<ConnectResult> {
     this.historyCache.resetPending();
+    this.sidebarFirstPage = null;
     this.intentionalDisconnect = false;
     this.announcedShutdownMode = null;
     this.buffer = "";
@@ -232,7 +245,8 @@ export class DaemonClient {
         }
         this._connected = true;
         resolved = true;
-        this.writeCommand({ type: "client_capabilities", capabilities: CLIENT_CAPABILITIES });
+        const sidebarView = this.sidebarViewHint?.(null);
+        this.writeCommand({ type: "client_capabilities", capabilities: CLIENT_CAPABILITIES, ...(sidebarView ? { sidebarView } : {}) });
         // Report the queue state atomically with the flush. Input can enqueue a
         // command while the socket attempt is still in flight, so a pre-connect
         // queue snapshot would already be stale here.
@@ -267,7 +281,45 @@ export class DaemonClient {
    */
   private probeCapabilities(alias: string): Command {
     const sidebarDigest = this.sidebarCache.beginSync(alias);
-    return { type: "client_capabilities", capabilities: CLIENT_CAPABILITIES, ...(sidebarDigest ? { sidebarDigest } : {}) };
+    const sidebarView = sidebarDigest ? null : this.sidebarViewHint?.(alias);
+    return {
+      type: "client_capabilities",
+      capabilities: CLIENT_CAPABILITIES,
+      ...(sidebarDigest ? { sidebarDigest } : {}),
+      ...(sidebarView ? { sidebarView } : {}),
+    };
+  }
+
+  /**
+   * What the sidebar draws first on a route, sent with the capabilities so the
+   * daemon's bootstrap opens with just that part of the conversation list.
+   */
+  setSidebarViewHint(hint: ((alias: string | null) => SidebarViewHint | null) | null): void {
+    this.sidebarViewHint = hint;
+  }
+
+  /**
+   * A first page is delivered as is (marked partial) and kept; the rest is
+   * delivered as the whole list rebuilt from both. Null: a rest without its
+   * page, which the caller answers by asking for the full list.
+   */
+  private assembleConversationsList(event: Extract<Event, { type: "conversations_list" }>): Extract<Event, { type: "conversations_list" }> | null {
+    if (event.sidebarPartial) {
+      this.sidebarFirstPage = event;
+      return event;
+    }
+    if (!event.sidebarRest) {
+      this.sidebarFirstPage = null;
+      return event;
+    }
+    const first = this.sidebarFirstPage;
+    this.sidebarFirstPage = null;
+    if (!first) return null;
+    return {
+      type: "conversations_list",
+      conversations: [...first.conversations, ...event.conversations],
+      folders: first.folders ?? [],
+    };
   }
 
   /** Capabilities plus any first-flight requests, ahead of the probe's bootstrap ping. */
@@ -287,10 +339,11 @@ export class DaemonClient {
   }
 
   private async probeSshReconnect(alias: string): Promise<ProbedSshConnection> {
-    const probe = probeSshProxy(alias, {
+    const probe = probeSshProxyWithFallback(alias, {
       spawnProcess: this.spawnSshProcess,
       timeoutMs: this.sshProbeTimeoutMs,
       preamble: this.probePreamble(alias),
+      fallback: primary => this.sshProbeFallback?.(alias, primary) ?? null,
     });
     // Keep even an unauthenticated attempt cancellable by disconnect/route
     // switches. Spawning ssh is not readiness: never flush the offline queue
@@ -724,10 +777,11 @@ export class DaemonClient {
     ));
 
     wireTrace?.({ client: this.traceClientId, route: `ssh:${alias}`, dir: "up", type: "ssh_probe_spawn", bytes: 0 });
-    const probe = probeSshProxy(alias, {
+    const probe = probeSshProxyWithFallback(alias, {
       spawnProcess: this.spawnSshProcess,
       timeoutMs: this.sshProbeTimeoutMs,
       preamble: this.probePreamble(alias),
+      fallback: primary => this.sshProbeFallback?.(alias, primary) ?? null,
     });
     this.cancelSshProbe = probe.cancel;
     try {
@@ -1443,7 +1497,11 @@ export class DaemonClient {
           continue;
         }
         const received = this.historyCache.receive(parsed, command => this.writeCommand(command));
-        const event = received && this.sshAlias ? this.sidebarCache.receive(received, this.sshAlias) : received;
+        const assembled = received?.type === "conversations_list" ? this.assembleConversationsList(received) : received;
+        // A first page never replaces the SSH sidebar cache; the rebuilt whole list does.
+        const event = assembled && this.sshAlias && !(assembled.type === "conversations_list" && assembled.sidebarPartial)
+          ? this.sidebarCache.receive(assembled, this.sshAlias)
+          : assembled;
         if (!event) {
           // A sidebar digest answer whose base is gone: ask for the full list.
           if (received?.type === "conversations_list") this.writeCommand({ type: "list_conversations" });

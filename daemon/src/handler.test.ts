@@ -143,6 +143,55 @@ test("the bootstrap carries the warm update status ahead of the sidebar, only to
   }
 });
 
+test("an incremental bootstrap leads with the view's first page and ends with the rest", async () => {
+  const sent: Array<Record<string, any>> = [];
+  const server = {
+    sendTo: mock((_client: unknown, event: Record<string, unknown>) => { sent.push(event); }),
+    broadcast: mock(() => {}), sendToSubscribers: mock(() => {}), sendToSubscribersExcept: mock(() => {}),
+    subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+  };
+  const handle = createHandler(server as never);
+  const created = Array.from({ length: 120 }, (_, i) => create(`incremental-${i}`, "openai", "gpt-5.4", `incremental ${i}`, "high"));
+  try {
+    sent.length = 0;
+    await handle({ capabilities: new Set() } as never, { type: "list_conversations", reqId: "all" });
+    const all = sent.find(event => event.type === "conversations_list")!.conversations.map((c: { id: string }) => c.id);
+    const focused = all.at(-1);
+
+    const view = { folderView: "tree", currentFolderId: null, expandedFolderIds: [], scrollOffset: 0, rows: 20, conversationIds: [focused] };
+    const capable = { capabilities: new Set() };
+    await handle(capable as never, { type: "client_capabilities", capabilities: ["sidebar-incremental"], sidebarView: view as never });
+    sent.length = 0;
+    await handle(capable as never, { type: "ping" });
+    const types = sent.map(event => event.type);
+    expect(types[0]).toBe("pong");
+    expect(types[1]).toBe("conversations_list");
+    expect(types.at(-1)).toBe("conversations_list");
+    const page = sent[1]!;
+    const rest = sent.at(-1)!;
+    expect(page.sidebarPartial.remaining).toBe(rest.conversations.length);
+    expect(rest.sidebarRest).toBe(true);
+    expect(rest.folders).toBeUndefined();
+    expect(page.conversations.length).toBeLessThan(all.length);
+    expect(page.conversations.some((c: { id: string }) => c.id === focused)).toBe(true);
+    expect([...page.conversations, ...rest.conversations].map((c: { id: string }) => c.id).sort()).toEqual([...all].sort());
+
+    // The view is used once; a client without the capability gets one whole list.
+    sent.length = 0;
+    await handle(capable as never, { type: "ping" });
+    expect(sent.filter(event => event.type === "conversations_list")).toHaveLength(1);
+    const legacy = { capabilities: new Set() };
+    await handle(legacy as never, { type: "client_capabilities", capabilities: [], sidebarView: view as never });
+    sent.length = 0;
+    await handle(legacy as never, { type: "ping" });
+    const lists = sent.filter(event => event.type === "conversations_list");
+    expect(lists).toHaveLength(1);
+    expect(lists[0]!.sidebarPartial).toBeUndefined();
+  } finally {
+    for (const conversation of created) remove(conversation.id);
+  }
+});
+
 test("a sidebar digest answers one bootstrap with only the changed buckets", async () => {
   const sent: Array<Record<string, any>> = [];
   const server = {

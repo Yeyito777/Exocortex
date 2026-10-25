@@ -62,7 +62,7 @@ function collectFolderAggregateInputs(
   optimisticStreamingConvId: string | null,
   out: unknown[],
 ): void {
-  out.push(optimisticStreamingConvId, sidebar.folders.length);
+  out.push(optimisticStreamingConvId, sidebar.partial, sidebar.folders.length);
   for (const folder of sidebar.folders) out.push(folder.id, folder.parentId);
   out.push(sidebar.conversations.length);
   for (const conv of sidebar.conversations) {
@@ -156,6 +156,9 @@ function buildFolderAggregates(
     }
   }
 
+  // Until the rest of a first page arrives, its counts come from the daemon.
+  const counts = sidebar.partial?.folderConversationCounts;
+  if (counts) for (const [folderId, aggregate] of aggregates) aggregate.count = counts[folderId] ?? aggregate.count;
   return aggregates;
 }
 
