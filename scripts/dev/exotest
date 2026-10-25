@@ -110,7 +110,8 @@ else
 
     while true; do
       set +e
-      (cd "$WORKTREE_DIR/daemon" && exec bun run src/main.ts >>"$LOG" 2>&1) &
+      # Labelled like run-daemon.sh does, so it can't be mistaken for the main daemon.
+      (cd "$WORKTREE_DIR/daemon" && exec -a "exocortexd-test:$WT_NAME" bun run "$WORKTREE_DIR/daemon/src/main.ts" --instance "$WT_NAME" >>"$LOG" 2>&1) &
       child_pid=$!
       wait "$child_pid"
       status=$?
