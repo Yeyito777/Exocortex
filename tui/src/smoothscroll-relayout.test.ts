@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { render } from "./render";
 import { createInitialState, type RenderState } from "./state";
-import { setScrollRegionsEnabled } from "./frame";
+import { invalidateFrame, setScrollRegionsEnabled } from "./frame";
 import { SmoothScroller, markScrollIntent, setSmoothScroller } from "./smoothscroll";
 import { createPendingAI } from "./messages";
 import {
@@ -78,7 +78,7 @@ const glides = (out: string) => [...out.matchAll(/\x1b\]2032;m;-?\d+;(-?\d+);\d+
 const topRow = (_state: RenderState) => screen.plainRows()[2]?.trim() ?? "";
 
 function settle(state: RenderState, scrollOffset: number): void {
-  capture(state);
+  screen.feed(capture(state));
   state.scrollOffset = scrollOffset;
   frames(state, 400);
 }
@@ -196,3 +196,71 @@ describe("what still glides", () => {
   });
 
 });
+
+describe("the bottom growing and shrinking while following it", () => {
+  /** A live turn whose latest step (under its Working row) is a tool call of `rows` wrapped rows. */
+  function liveTurn(state: RenderState, rows: number, step = 0): void {
+    const command = `run-step-${step} ${"--with-a-long-argument ".repeat(Math.max(0, rows * 5 - 1))}`.trim();
+    state.pendingAI = createPendingAI(1, state.model);
+    state.pendingAI.blocks.push(
+      { type: "tool_call", toolCallId: "p0", toolName: "bash", input: { command: "echo first" }, summary: "echo first" },
+      { type: "tool_result", toolCallId: "p0", toolName: "bash", output: "first", isError: false },
+      { type: "tool_call", toolCallId: `p${step + 1}`, toolName: "bash", input: { command }, summary: command },
+    );
+  }
+  /** Eased moves' easing rows (positive: drawn lower, the content moved up). */
+  const eases = (out: string) => glides(out).map(match => Number(match[1]));
+
+  test("a taller latest step slides the history up, a shorter one slides it back down", () => {
+    const state = conversationState();
+    liveTurn(state, 1);
+    settle(state, 0);
+    liveTurn(state, 3, 1);
+    const grew = eases(frames(state));
+    expect(grew.length).toBe(1);
+    expect(grew[0]).toBeGreaterThan(0);
+    liveTurn(state, 1, 2);
+    const shrank = eases(frames(state));
+    expect(shrank.length).toBe(1);
+    expect(shrank[0]).toBeLessThan(0);
+    expect(shrank[0]).toBe(-grew[0]);
+  });
+
+  test("growing and shrinking in quick succession ends where a full repaint does", () => {
+    const state = conversationState();
+    liveTurn(state, 1);
+    settle(state, 0);
+    for (let i = 0; i < 8; i++) {
+      liveTurn(state, i % 2 === 0 ? 3 : 1, i + 1);
+      frames(state, 24);
+    }
+    frames(state, 400);
+    const settled = screen.plainRows();
+    setSmoothScroller(state, null);
+    const fresh = new TerminalScreen(state.rows, state.cols);
+    invalidateFrame(state);
+    fresh.feed(capture(state));
+    expect(settled).toEqual(fresh.plainRows());
+  });
+
+  test("in a conversation shorter than the pane nothing slides", () => {
+    const state = conversationState();
+    state.messages = state.messages.slice(0, 2);
+    liveTurn(state, 3);
+    settle(state, 0);
+    liveTurn(state, 1, 1);
+    expect(glides(frames(state))).toEqual([]);
+    liveTurn(state, 3, 2);
+    expect(glides(frames(state))).toEqual([]);
+  });
+
+  test("Ctrl+I at the bottom still snaps even when only the last turn changes", () => {
+    const state = conversationState();
+    settle(state, 0);
+    toggleToolOutputPreservingViewport(state);
+    expect(glides(frames(state))).toEqual([]);
+    toggleToolOutputPreservingViewport(state);
+    expect(glides(frames(state))).toEqual([]);
+  });
+});
+

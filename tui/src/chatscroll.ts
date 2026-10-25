@@ -2,6 +2,7 @@
  * Shared chat viewport helpers.
  */
 
+import { markRelayout } from "./smoothscroll";
 import { buildMessageLines, type RenderLineAnchor, type RenderLineSegment } from "./conversation";
 import { computeBottomLayout } from "./chatlayout";
 import { SIDEBAR_WIDTH } from "./sidebar";
@@ -248,6 +249,7 @@ export function historyWithTurnWork(state: RenderState): RenderedHistory {
 }
 
 export function preserveViewportAcrossResize(state: RenderState, nextCols: number, nextRows: number): void {
+  markRelayout(state);
   const oldCols = state.cols;
   state.cols = nextCols;
   state.rows = nextRows;
@@ -307,6 +309,7 @@ export function preserveViewportAcrossResize(state: RenderState, nextCols: numbe
  * A bottom-pinned viewport deliberately remains bottom-pinned.
  */
 export function toggleSidebarPreservingViewport(state: RenderState): void {
+  markRelayout(state);
   const oldMessageAreaHeight = state.layout.messageAreaHeight;
   const oldSidebarW = state.sidebar.open ? SIDEBAR_WIDTH : 0;
   const oldChatW = Math.max(1, state.cols - oldSidebarW);
@@ -371,6 +374,7 @@ export function toggleSidebarPreservingViewport(state: RenderState): void {
  * viewport/cursor to rendered line identities and remap them afterward.
  */
 export function preserveViewportAcrossHistoryMutation(state: RenderState, mutate: () => void): void {
+  markRelayout(state);
   preserveViewportAcrossHistoryMutationFromRow(state, mutate, (oldViewStart) => oldViewStart);
 }
 
