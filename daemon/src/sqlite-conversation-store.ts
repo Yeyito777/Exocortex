@@ -246,6 +246,11 @@ function optionalJson(value: unknown): string | null {
   return value === undefined || value === null ? null : JSON.stringify(value);
 }
 
+/** A subagent's summary names its parent; a top-level conversation's leaves the field out. */
+function parentConversationField(id: unknown): { parentConversationId?: string } {
+  return typeof id === "string" && id ? { parentConversationId: id } : {};
+}
+
 function parseOptional<T>(value: string | null): T | null {
   return value == null ? null : JSON.parse(value) as T;
 }
@@ -1425,6 +1430,7 @@ export class SqliteConversationStore implements ConversationRepository {
       muted: row.muted === 1,
       sortOrder: row.sort_order,
       folderId: row.folder_id,
+      ...parentConversationField(parseOptional<{ parentConversationId?: unknown }>(row.subagent_policy_json)?.parentConversationId),
     };
   }
 
@@ -1434,14 +1440,15 @@ export class SqliteConversationStore implements ConversationRepository {
     // metadata rather than the complete canonical row shape.
     const rows = this.db.query(`
       SELECT id, provider, model, effort, CASE WHEN ultrafast_mode=1 THEN 2 ELSE fast_mode END, created_at, updated_at,
-             message_count, title, goal_json, marked, pinned, muted, sort_order, folder_id
+             message_count, title, goal_json, marked, pinned, muted, sort_order, folder_id,
+             json_extract(subagent_policy_json, '$.parentConversationId')
       FROM conversations
       WHERE deleted_at IS NULL
       ORDER BY pinned DESC, sort_order, id
-    `).values() as Array<[string, Conversation["provider"], string, Conversation["effort"], number, number, number, number, string, string | null, number, number, number, number, string | null]>;
+    `).values() as Array<[string, Conversation["provider"], string, Conversation["effort"], number, number, number, number, string, string | null, number, number, number, number, string | null, unknown]>;
     return rows.map(([
       id, provider, model, effort, fastMode, createdAt, updatedAt,
-      messageCount, title, goalJson, marked, pinned, muted, sortOrder, folderId,
+      messageCount, title, goalJson, marked, pinned, muted, sortOrder, folderId, parentConversationId,
     ]) => ({
       id,
       provider,
@@ -1458,6 +1465,7 @@ export class SqliteConversationStore implements ConversationRepository {
       muted: muted === 1,
       sortOrder,
       folderId,
+      ...parentConversationField(parentConversationId),
     }));
   }
 

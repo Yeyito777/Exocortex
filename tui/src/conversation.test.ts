@@ -149,7 +149,7 @@ describe("automated user-message provenance", () => {
     expect(label("openai")).toContain("queued: steer");
   });
 
-  test("bounds a delivered notification's header by the terminal width", () => {
+  test("bounds a delivered notification's label by the terminal width", () => {
     const state = createInitialState();
     state.messages.push({
       role: "user", text: "Delivered message with a long tail that would otherwise wrap onto several rows",
@@ -158,16 +158,16 @@ describe("automated user-message provenance", () => {
         automation: { kind: "background_task_completion" },
       },
     });
-    // Folded it has no row; Ctrl+O shows its header.
+    // Folded it has no row; Ctrl+O shows it with its label.
     state.showTurnWork = true;
     for (const width of [120, 24, 12, 1]) {
       const rendered = buildMessageLines(state, width);
-      const label = rendered.lines[rendered.lineAnchors.findIndex(a => a.segment === "notification_header")];
+      const label = rendered.lines[rendered.lineAnchors.findIndex(a => a.segment === "automation_label")];
       expect(visibleLength(label)).toBeLessThanOrEqual(Math.max(width, 3));
     }
   });
 
-  test("renders notifications on the assistant's side, never in the user's bubble", () => {
+  test("renders notifications in the automated bubble, never the owner's, with why they are there below", () => {
     const state = createInitialState();
     const human = { role: "user" as const, text: "I wrote this", metadata: null };
     const automated = {
@@ -189,15 +189,18 @@ describe("automated user-message provenance", () => {
     // Folded, it leaves no row at all.
     expect(folded.lineAnchors.some(anchor => anchor.owner === automated)).toBe(false);
 
-    state.showTurnWork = true;
-    const open = buildMessageLines(state, 100);
-    const openRows = open.lineAnchors.flatMap((anchor, row) => anchor.owner === automated && !anchor.segment.includes("margin") ? [row] : []);
-    expect(openRows.map(row => stripAnsi(open.lines[row]))).toEqual([
-      "  Chrono",
-      "  ▎ [chrono wake: chrono:demo] Check the deployment and report back.",
-    ]);
-    expect(openRows.some(row => open.lines[row].includes("\x1b[48;"))).toBe(false);
-    expect(open.copyLines[openRows[1]]).toEqual({ text: "[chrono wake: chrono:demo] Check the deployment and report back.", displayStart: 4 });
+    for (const detail of ["showTurnWork", "showToolOutput"] as const) {
+      state.showTurnWork = detail === "showTurnWork";
+      state.showToolOutput = detail === "showToolOutput";
+      const open = buildMessageLines(state, 100);
+      const openRows = open.lineAnchors.flatMap((anchor, row) => anchor.owner === automated && !anchor.segment.includes("margin") ? [row] : []);
+      expect(openRows.map(row => stripAnsi(open.lines[row]).trim())).toEqual([
+        "[chrono wake: chrono:demo] Check the deployment and report back.",
+        "⚙ Chrono",
+      ]);
+      expect(openRows.map(row => open.lineAnchors[row].segment)).toEqual(["user_content", "automation_label"]);
+      expect(open.lines[openRows[0]]).toContain(theme.automatedUserBg);
+    }
   });
 
   test("combines queued automation provenance with its timing", () => {
@@ -219,10 +222,10 @@ describe("automated user-message provenance", () => {
     const contentIndex = rendered.lineAnchors.findIndex(anchor => anchor.owner === queued && anchor.segment === "queued_content");
     const labelIndex = rendered.lineAnchors.findIndex(anchor => anchor.owner === queued && anchor.segment === "queued_label");
 
-    // Left-aligned like a delivered notification, never the owner's right-aligned bubble.
-    expect(rendered.lines[contentIndex]).not.toContain(theme.automatedUserBg);
-    expect(stripAnsi(rendered.lines[contentIndex])).toBe("  ▎ Process the latest subscription event.");
-    expect(stripAnsi(rendered.lines[labelIndex]).trim()).toBe("Notification · queued: next turn");
+    // In the automated bubble like a delivered notification, never the owner's.
+    expect(rendered.lines[contentIndex]).toContain(theme.automatedUserBg);
+    expect(stripAnsi(rendered.lines[contentIndex]).trim()).toBe("Process the latest subscription event.");
+    expect(stripAnsi(rendered.lines[labelIndex]).trim()).toBe("⚙ Notification · queued: next turn");
   });
 });
 

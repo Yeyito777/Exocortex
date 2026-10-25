@@ -685,6 +685,12 @@ export interface ConversationSummary {
   sortOrder: number;
   /** Folder containing this conversation. Null means the sidebar root. */
   folderId?: string | null;
+  /**
+   * The conversation that spawned this one as an exo subagent; absent for a
+   * top-level conversation. Clients fold a top-level conversation's messages
+   * from its subagents like notifications.
+   */
+  parentConversationId?: string;
   /** Ephemeral number of child subagent turns currently running for this conversation. */
   subagentCount?: number;
   /** Ephemeral number of detached background tool processes currently running for this conversation. */

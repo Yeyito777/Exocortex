@@ -179,8 +179,8 @@ describe("Ctrl+O and Ctrl+I", () => {
     const open = rows(state);
     expect(open).toContain("  Checking the log first.");
     expect(open.some(row => row.includes("git diff --stat"))).toBe(true);
-    expect(open).toContain("  Subagent completion");
-    expect(open).toContain("  ▎ [notification] Subagent completed: exo:1");
+    expect(open.some(row => row.trim() === "[notification] Subagent completed: exo:1")).toBe(true);
+    expect(open.some(row => row.trim() === "⚙ Subagent completion")).toBe(true);
     expect(open.some(row => row.includes("git log -1 output"))).toBe(false);
 
     handleFocusedKey({ type: "ctrl-i" }, state);
@@ -628,6 +628,191 @@ describe("a parent conversation's prompts", () => {
   });
 });
 
+describe("a top-level conversation's subagents", () => {
+  const TOP = "wren";
+  const sidebar = (state: RenderState, parentOfTop?: string) => {
+    state.convId = TOP;
+    state.sidebar.conversations = [
+      { id: TOP, title: "rebuild twitter iphone app", ...(parentOfTop ? { parentConversationId: parentOfTop } : {}) },
+      { id: "timeline", title: "You are the timeline feature agent", parentConversationId: TOP },
+      { id: "stranger", title: "another manager" },
+      ...(parentOfTop ? [{ id: parentOfTop, title: "📡 paramount" }] : []),
+    ] as never;
+  };
+  const report = () => user("Timeline feed done; merged as 3f2a1c.", { kind: "exo_send", sourceId: "timeline" });
+  const completion = () => user("[notification] Subagent completed: exo:timeline\nTask: timeline\n\nResult:\nall done", { kind: "subagent_completion", sourceId: "timeline" });
+  const shownRows = (built: BuildMessageLinesResult) => built.lines.map(line => stripAnsi(line).trim()).filter(Boolean);
+
+  test("folded, a subagent's message and its completion leave no row; the reply to them stays", () => {
+    for (const message of [report, completion]) {
+      const state = createInitialState();
+      sidebar(state);
+      const sent = message();
+      state.messages.push(user("build the app"), assistant([{ type: "text", text: "Delegated." }]), sent, assistant([...call("c1", "git log"), { type: "text", text: "Timeline is in." }]));
+      const built = buildMessageLines(state, 100);
+      expect(built.lineAnchors.some(anchor => anchor.owner === sent && !anchor.segment.includes("margin"))).toBe(false);
+      const shown = shownRows(built);
+      expect(shown.filter(row => !row.includes("GPT-6-Astra"))).toEqual(["build the app", "Delegated.", "Timeline is in."]);
+      freshMatchesIncremental(state);
+    }
+  });
+
+  test("Ctrl+O and Ctrl+I show them in the automated bubble, from the subagent", () => {
+    for (const [view, open] of VIEWS.slice(1)) {
+      const state = createInitialState();
+      sidebar(state);
+      const sent = report();
+      const done = completion();
+      state.messages.push(user("build the app"), assistant([{ type: "text", text: "Delegated." }]), sent, assistant([{ type: "text", text: "Noted." }]), done, assistant([{ type: "text", text: "Timeline is in." }]));
+      open(state);
+      const built = buildMessageLines(state, 100);
+      const shown = shownRows(built);
+      expect(shown[shown.indexOf("Timeline feed done; merged as 3f2a1c.") + 1], view).toBe("⚙ Exo delegation · from You are the timeline feature agent");
+      expect(shown[shown.indexOf("all done") + 1], view).toBe("⚙ Subagent completion · from You are the timeline feature agent");
+      expect(bubbleBackgrounds(built, sent), view).toEqual(["automated"]);
+      expect(new Set(bubbleBackgrounds(built, done)), view).toEqual(new Set(["automated"]));
+      freshMatchesIncremental(state);
+    }
+  });
+
+  test("its still-working, stopped and woken-by notices and its `exo message` up follow the same rule", () => {
+    const notice = (header: string) => user(`[notification] Subagent ${header}: exo:timeline\nTask: timeline\nWoken by: a message from exo:stranger\n\nResult:\n${header} body`, { kind: "subagent_completion", sourceId: "timeline" });
+    // A child's native `exo message` to its parent: an exo_send from the child.
+    const up = user("FYI: the feed API changed shape.", { kind: "exo_send", sourceId: "timeline" });
+    for (const [view, open] of VIEWS) {
+      const state = createInitialState();
+      sidebar(state);
+      const sent = [notice("replied (still working)"), up, notice("stopped"), notice("completed")];
+      state.messages.push(user("build the app"), assistant([{ type: "text", text: "Delegated." }]));
+      for (const message of sent) state.messages.push(message, assistant([{ type: "text", text: `Read ${state.messages.length}.` }]));
+      open(state);
+      const built = buildMessageLines(state, 100);
+      const labels = built.lineAnchors.flatMap((anchor, row) => sent.includes(anchor.owner as never) && anchor.segment === "automation_label" ? [stripAnsi(built.lines[row]).trim()] : []);
+      if (view === "folded") {
+        expect(built.lineAnchors.some(anchor => sent.includes(anchor.owner as never) && !anchor.segment.includes("margin")), view).toBe(false);
+      } else {
+        expect(labels, view).toEqual([
+          "⚙ Subagent completion · from You are the timeline feature agent",
+          "⚙ Exo delegation · from You are the timeline feature agent",
+          "⚙ Subagent completion · from You are the timeline feature agent",
+          "⚙ Subagent completion · from You are the timeline feature agent",
+        ]);
+      }
+      // The replies to them stay in every view.
+      expect(shownRows(built).filter(row => row.startsWith("Read ")).length, view).toBe(4);
+    }
+  });
+
+  test("a message that starts the live turn leads its Working row", () => {
+    const state = createInitialState();
+    sidebar(state);
+    state.messages.push(user("build the app"), assistant([{ type: "text", text: "Delegated." }]), report());
+    state.pendingAI = createPendingAI(Date.now(), MODEL);
+    state.pendingAI.blocks.push(...call("c1", "git log"), ...call("c2", "git diff"));
+    const shown = shownRows(buildMessageLines(state, 100));
+    expect(shown.some(row => row.includes("Timeline feed done"))).toBe(false);
+    expect(shown.some(row => /^\S Working · Exo delegation · 1 tool call$/.test(row))).toBe(true);
+  });
+
+  test("queued, they wait out of sight until Ctrl+O", () => {
+    for (const [view, open] of VIEWS) {
+      const state = createInitialState();
+      sidebar(state);
+      state.messages.push(user("build the app"), assistant([{ type: "text", text: "Delegated." }]));
+      const queued = { convId: TOP, text: "Timeline: one more fix.", timing: "next-turn" as const, automation: { kind: "exo_send" as const, sourceId: "timeline" } };
+      state.queuedMessages.push(queued);
+      open(state);
+      const built = buildMessageLines(state, 100);
+      const label = built.lineAnchors.findIndex(anchor => anchor.owner === queued && anchor.segment === "queued_label");
+      if (view === "folded") {
+        expect(label, view).toBe(-1);
+        continue;
+      }
+      expect(stripAnsi(built.lines[label]).trim(), view).toBe("⚙ Exo delegation · from You are the timeline feature agent · queued: next turn");
+      expect(bubbleBackgrounds(built, queued), view).toEqual(["automated"]);
+    }
+  });
+
+  test("another conversation that is not its subagent still reads as a prompt", () => {
+    const state = createInitialState();
+    sidebar(state);
+    const sent = user("Heads up from the other manager.", { kind: "exo_send", sourceId: "stranger" });
+    state.messages.push(sent, assistant([{ type: "text", text: "ok" }]));
+    expect(shownRows(buildMessageLines(state, 100)).slice(0, 2)).toEqual(["Heads up from the other manager.", "⚙ Exo delegation · from another manager"]);
+  });
+
+  test("the sidebar learning a sender is a subagent folds its message on the next build", () => {
+    const state = createInitialState();
+    sidebar(state);
+    state.sidebar.conversations = state.sidebar.conversations.map(conv => conv.id === "timeline" ? { ...conv, parentConversationId: undefined } : conv);
+    const sent = report();
+    state.messages.push(user("build the app"), assistant([{ type: "text", text: "Delegated." }]), sent, assistant([{ type: "text", text: "Noted." }]));
+    expect(buildMessageLines(state, 100, { reuseArrays: true }).lineAnchors.some(anchor => anchor.owner === sent && !anchor.segment.includes("margin"))).toBe(true);
+    sidebar(state);
+    expect(buildMessageLines(state, 100, { reuseArrays: true }).lineAnchors.some(anchor => anchor.owner === sent && !anchor.segment.includes("margin"))).toBe(false);
+    freshMatchesIncremental(state);
+  });
+
+  test("in a subagent's conversation its parent's prompts and its own subagents' reports stay in view", () => {
+    for (const [view, open] of VIEWS) {
+      const state = createInitialState();
+      sidebar(state, "paramount");
+      const delegated = user("Rebuild the X client.", { kind: "exo_send", sourceId: "paramount" });
+      const sent = report();
+      state.messages.push(delegated, assistant([{ type: "text", text: "On it." }]), sent, assistant([{ type: "text", text: "Noted." }]));
+      open(state);
+      const shown = shownRows(buildMessageLines(state, 100));
+      expect(shown.slice(0, 2), view).toEqual(["Rebuild the X client.", "⚙ Exo delegation · from 📡 paramount"]);
+      expect(shown[shown.indexOf("Timeline feed done; merged as 3f2a1c.") + 1], view).toBe("⚙ Exo delegation · from You are the timeline feature agent");
+    }
+  });
+});
+
+describe("other notifications", () => {
+  const SOURCES = [
+    ["chrono wake", user("[chrono wake: chrono:abc]\nCheck the deploy.", { kind: "chrono_wake", sourceId: "chrono:abc" }), "⚙ Chrono"],
+    ["chrono hard wake", user("[chrono hard wake: chrono:def]\nScheduled command failed.", { kind: "chrono_hard_wake", sourceId: "chrono:def" }), "⚙ Chrono hard wake"],
+    ["Discord", user("[notification] Discord/paramount · DM\nFede [ch:1]\n\n→ Fede <@4> [friend]:\nhey\n[msg:5]", { kind: "external_notification", sourceId: "d1" }), "⚙ Notification · from Discord/paramount · DM"],
+    ["WhatsApp", user("[notification] WhatsApp · message\nMom: dinner?", { kind: "external_notification", sourceId: "w1" }), "⚙ Notification · from WhatsApp · message"],
+    ["Gmail", user("[notification] Gmail · message\nInbox · updates [thread:1a]\n→ Billing <noreply@google.com>: budget", { kind: "external_notification", sourceId: "g1" }), "⚙ Notification · from Gmail · message"],
+    ["background task", user("[notification] Background task completed: b1\nCommand: build", { kind: "background_task_completion", sourceId: "b1" }), "⚙ Background completion"],
+    ["goal", user("Continue working toward the goal.", { kind: "goal_continuation" }), "⚙ Goal continuation"],
+    ["daemon restart", user("The daemon restarted; continue.", { kind: "daemon_restart", sourceId: "r1" }), "⚙ Daemon restart"],
+    ["untagged", user("[notification] Subagent completed: exo:old"), "⚙ Notification"],
+  ] as const;
+
+  test("folded they leave no row, in a top-level conversation and a subagent's alike", () => {
+    for (const parent of [undefined, "paramount"]) {
+      for (const [name, note] of SOURCES) {
+        const state = createInitialState();
+        state.convId = "conv-1";
+        state.sidebar.conversations = [{ id: "conv-1", title: "conv", ...(parent ? { parentConversationId: parent } : {}) }] as never;
+        state.messages.push(user("start"), assistant([{ type: "text", text: "ok" }]), note, assistant([{ type: "text", text: "Handled." }]));
+        const built = buildMessageLines(state, 100);
+        expect(built.lineAnchors.some(anchor => anchor.owner === note && !anchor.segment.includes("margin")), `${name} ${parent ?? "top"}`).toBe(false);
+        expect(built.lines.some(line => stripAnsi(line).trim() === "Handled."), name).toBe(true);
+      }
+    }
+  });
+
+  test("Ctrl+O and Ctrl+I show each in the automated bubble with why it is there below", () => {
+    for (const [view, open] of VIEWS.slice(1)) {
+      for (const [name, note, label] of SOURCES) {
+        const state = createInitialState();
+        state.messages.push(user("start"), assistant([{ type: "text", text: "ok" }]), note, assistant([{ type: "text", text: "Handled." }]));
+        open(state);
+        const built = buildMessageLines(state, 100);
+        const own = built.lineAnchors.flatMap((anchor, row) => anchor.owner === note && !anchor.segment.includes("margin") ? [row] : []);
+        expect(own.map(row => built.lineAnchors[row].segment).at(-1), `${view} ${name}`).toBe("automation_label");
+        expect(stripAnsi(built.lines[own.at(-1)!]).trim(), `${view} ${name}`).toBe(label);
+        expect(new Set(bubbleBackgrounds(built, note)), `${view} ${name}`).toEqual(new Set(["automated"]));
+        // Right-aligned like the bubble above the reply, never on the assistant's side.
+        expect(stripAnsi(built.lines[own[0]!]).startsWith("  ▎"), `${view} ${name}`).toBe(false);
+      }
+    }
+  });
+});
+
 describe("the owner's own relayed messages", () => {
   const relay = (body: string) => user(RELAY_TEXT(body), { kind: "external_notification", sourceId: "discord" });
 
@@ -828,14 +1013,16 @@ describe("the gap between consecutive user messages", () => {
 describe("the gap around a notification shown in full", () => {
   const gapRows = (state: RenderState, width = 100) => rows(state, width).map(row => row.trim());
   const reply = () => assistant([{ type: "text", text: "Reply." }]);
-  const NOTE = "▎ [notification] Subagent completed: exo:1";
-  const header = "Subagent completion";
+  // Shown in full, a notification is an automated bubble with why it is there below it.
+  const NOTE = "[notification] Subagent completed: exo:1";
+  const NOTE2 = "[notification] Subagent completed: exo:2";
+  const label = "⚙ Subagent completion";
 
   test("a notification and the user message beside it are one blank row apart, both ways", () => {
     const state = createInitialState();
     state.showTurnWork = true;
     state.messages.push(user("first"), note(1), user("second"));
-    expect(gapRows(state)).toEqual(["first", "", header, NOTE, "", "second", ""]);
+    expect(gapRows(state)).toEqual(["first", "", NOTE, label, "", "second", ""]);
     freshMatchesIncremental(state);
   });
 
@@ -844,7 +1031,7 @@ describe("the gap around a notification shown in full", () => {
     state.showTurnWork = true;
     state.messages.push(user("first"), note(1), note(2), user("second"));
     expect(gapRows(state)).toEqual([
-      "first", "", header, NOTE, "", header, "▎ [notification] Subagent completed: exo:2", "", "second", "",
+      "first", "", NOTE, label, "", NOTE2, label, "", "second", "",
     ]);
     freshMatchesIncremental(state);
   });
@@ -854,7 +1041,7 @@ describe("the gap around a notification shown in full", () => {
       const state = createInitialState();
       open(state);
       state.messages.push(note(1), note(2), user("first"));
-      expect(gapRows(state), "top").toEqual([header, NOTE, "", header, "▎ [notification] Subagent completed: exo:2", "", "first", ""]);
+      expect(gapRows(state), "top").toEqual([NOTE, label, "", NOTE2, label, "", "first", ""]);
     }
   });
 
@@ -865,7 +1052,8 @@ describe("the gap around a notification shown in full", () => {
     const shown = gapRows(state, 30);
     expect(shown[0]).toBe("first");
     expect(shown[1]).toBe("");
-    expect(shown[2]).toBe(header);
+    expect(shown[2]).toBe("[notification] Subagent");
+    expect(shown).toContain(label);
     expect(shown.slice(-3)).toEqual(["", "second", ""]);
     expect(shown.filter((row, i) => row === "" && shown[i + 1] === "")).toEqual([]);
   });
@@ -876,7 +1064,7 @@ describe("the gap around a notification shown in full", () => {
     state.messages.push(user("first"), reply(), note(1), reply(), user("second"));
     expect(gapRows(state)).toEqual([
       "first", "", "Reply.", expect.stringContaining("GPT-6-Astra"),
-      "", header, NOTE, "",
+      "", NOTE, label, "",
       "Reply.", expect.stringContaining("GPT-6-Astra"),
       "", "second", "",
     ]);
@@ -904,20 +1092,20 @@ describe("the gap around a notification shown in full", () => {
     state.messages.push(user("first"), note(1));
     state.queuedMessages.push({ convId: "conv-1", text: "[notification] Gmail", timing: "next-turn", automation: { kind: "external_notification" } });
     const shown = gapRows(state);
-    expect(shown.slice(0, 5)).toEqual(["first", "", header, NOTE, ""]);
-    expect(shown[5]).toContain("Notification · queued");
-    expect(shown[6]).toBe("▎ [notification] Gmail");
+    expect(shown.slice(0, 5)).toEqual(["first", "", NOTE, label, ""]);
+    expect(shown[5]).toBe("[notification] Gmail");
+    expect(shown[6]).toContain("⚙ Notification · from Gmail · queued");
   });
 
   test("an incremental rebuild keeps the gap when a message arrives after a notification", () => {
     const state = createInitialState();
     state.showTurnWork = true;
     state.messages.push(user("first"), note(1));
-    expect(gapRows(state)).toEqual(["first", "", header, NOTE, ""]);
+    expect(gapRows(state)).toEqual(["first", "", NOTE, label, ""]);
     freshMatchesIncremental(state);
     state.messages.push(user("second"), note(2), user("third"));
     expect(gapRows(state)).toEqual([
-      "first", "", header, NOTE, "", "second", "", header, "▎ [notification] Subagent completed: exo:2", "", "third", "",
+      "first", "", NOTE, label, "", "second", "", NOTE2, label, "", "third", "",
     ]);
     freshMatchesIncremental(state);
   });

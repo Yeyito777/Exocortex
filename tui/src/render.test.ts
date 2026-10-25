@@ -1650,7 +1650,7 @@ describe("render caching and frame diffing", () => {
       && termWidth(row.line) > state.layout.historyWidth)).toBe(true);
   });
 
-  test("keeps an open notification visible while its header passes the task panel", () => {
+  test("keeps an open notification visible while its label passes the task panel", () => {
     const state = createInitialState();
     state.showTurnWork = true;
     state.cols = 120;
@@ -1706,7 +1706,7 @@ describe("render caching and frame diffing", () => {
 
     captureRenderOutput(state);
     const labelLineIndex = state.historyLineAnchors.findIndex(
-      anchor => anchor.owner === automated && anchor.segment === "notification_header",
+      anchor => anchor.owner === automated && anchor.segment === "automation_label",
     );
     const panelRect = state.layout.taskPanelRect!;
     const panelHeight = panelRect.bottom - panelRect.top + 1;
@@ -1719,8 +1719,8 @@ describe("render caching and frame diffing", () => {
       if (!viewportRow || state.historyLineAnchors[viewportRow.lineIndex]?.owner !== automated) return [];
       return [{ index, segment: state.historyLineAnchors[viewportRow.lineIndex].segment }];
     });
-    const contentRows = automatedRows.filter(row => row.segment === "notification_body");
-    const labelRows = automatedRows.filter(row => row.segment === "notification_header");
+    const contentRows = automatedRows.filter(row => row.segment === "user_content");
+    const labelRows = automatedRows.filter(row => row.segment === "automation_label");
 
     expect(contentRows.length).toBeGreaterThan(0);
     expect(labelRows).toHaveLength(1);
@@ -1729,7 +1729,7 @@ describe("render caching and frame diffing", () => {
       .filter(write => write.row === 3 + labelRows[0]!.index && write.col === 1)
       .at(-1);
     const labelLine = stripCsi(stripAnsi(labelWrite?.text ?? ""));
-    expect(labelLine.trim()).toBe("Background completion");
+    expect(labelLine.trim()).toBe("⚙ Background completion");
     expect(termWidth(labelLine)).toBeLessThanOrEqual(state.layout.historyWidth);
   });
 
