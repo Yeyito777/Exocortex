@@ -364,19 +364,19 @@ function performRender(): number {
 
 let smoothScrollTimer: ReturnType<typeof setTimeout> | null = null;
 
-/** While a smooth scroll moves, lay out each row it crosses and send offsets in between. */
+/** While a smooth scroll moves, lay out each row it is about to cross. */
 function scheduleSmoothScrollFrame(): void {
   const smooth = smoothScrollerFor(state);
   if (smoothScrollTimer || !smooth?.busy()) return;
   smoothScrollTimer = setTimeout(() => {
     smoothScrollTimer = null;
     if (!running || smoothScrollerFor(state) !== smooth) return;
+    // st draws every frame of the glide itself; the TUI only lays out each
+    // row the glide is about to cross.
     if (smooth.needsLayout()) {
       renderImmediately();
       return;
     }
-    const offset = smooth.tick();
-    if (offset) process.stdout.write(offset);
     scheduleSmoothScrollFrame();
   }, SMOOTH_SCROLL_FRAME_MS);
 }

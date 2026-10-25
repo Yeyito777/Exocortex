@@ -14,6 +14,8 @@ import { renderQueuePromptOverlay } from "./overlays";
 import { steersInstantly } from "./queue";
 import { renderSidebarActionMenu, sidebarActionMenuAnchorRow, SIDEBAR_WIDTH } from "./sidebar";
 import { openSelectedSidebarActionMenu } from "./sidebar/actionmenu";
+import { SmoothScroller, setSmoothScroller } from "./smoothscroll";
+import { invalidateFrame } from "./frame";
 
 function capture(state: RenderState): string {
   let out = "";
@@ -162,6 +164,29 @@ describe("image viewer", () => {
     const closed = capture(state);
     expect(placements(closed)).toHaveLength(0);
     expect(closed.match(/a=d,/g)).toHaveLength(1);
+    disposeHistoryImages(state);
+  });
+
+  test("while smooth scrolling (st mode 2032) an image cut off at the bottom keeps its rows below for the glide", async () => {
+    configureInlineImages({ fetch: async request => pngFetch(request), onChange: () => {} });
+    setInlineImageMode("kitty");
+    setInlineImageCellSize({ width: 8, height: 16 });
+    const state = imageState();
+    state.rows = 14;	// a short pane, so the image can sit at its bottom
+    capture(state);
+    const imageLine = state.historyLineAnchors.findIndex(anchor => anchor.images);
+    // Only the image's top rows are on the pane's last rows.
+    state.scrollOffset = state.layout.totalLines - imageLine - 1;
+    const [cropped] = placements(await readyFrame(state));
+    expect(cropped.controls).toContain(",h=");
+    setSmoothScroller(state, new SmoothScroller());
+    invalidateFrame(state);
+    const [whole] = placements(capture(state));
+    const rowsOf = (controls: string) => Number(/,r=(\d+),/.exec(controls)![1]);
+    expect(whole.row).toBe(cropped.row);
+    expect(rowsOf(whole.controls)).toBeGreaterThan(rowsOf(cropped.controls));
+    expect(whole.controls).not.toContain(",h=");
+    setSmoothScroller(state, null);
     disposeHistoryImages(state);
   });
 

@@ -14,22 +14,26 @@ leaving the glide to the terminal. At startup it asks with DECRQM
 (`CSI ? 2032 $ p`) and, if supported, turns the mode on (`CSI ? 2032 h`; off
 on exit). `tui/src/smoothscroll.ts` then:
 
-- eases a continuous scroll position towards the logical `scrollOffset` over
-  100 ms (cubic ease-out, st's `smoothscroll_ms` feel). Every way of scrolling
-  goes through it because it sits at layout time, not in the input handlers:
-  wheel, `Ctrl+u`/`Ctrl+d`/`Ctrl+e`/`Ctrl+y`/`Ctrl+b`/`Ctrl+f`, `j`/`k` at the
+- turns each scroll into one eased move that st times itself at the
+  display's refresh rate (`OSC 2032 ; m`: the step, plus an easing term that
+  cancels it at first and eases out over 100 ms, st's `smoothscroll_ms`
+  feel). Inputs mid-glide add up. Nothing is sent between rows, so pty or ssh
+  jitter never shows as judder. The animation sits at layout time, not in
+  the input handlers, so every way of scrolling glides: wheel,
+  `Ctrl+u`/`Ctrl+d`/`Ctrl+e`/`Ctrl+y`/`Ctrl+b`/`Ctrl+f`, `j`/`k` at the
   edge, `gg`/`G` and search jumps (those glide in from one screen away);
-- lays the history out at the whole row next to that position, one step ahead
-  in the direction of travel. Each row crossed is a normal frame: a region
-  scroll plus the rows it exposed or re-wrapped, so the text beside the Tasks
-  panel re-wraps a row at a time as it glides;
-- sends the remaining fraction of a row as the rectangles' offset
-  (`OSC 2032 ; o ; N`) inside the same synchronized update, and between rows
-  only that offset (about 15 bytes, every 8 ms while something moves);
+- keeps the same curve, and lays the history out at the whole row 30 ms
+  ahead of it in the direction of travel. Each row is a normal frame: a
+  region scroll plus the rows it exposed or re-wrapped (the text beside the
+  Tasks panel re-wraps a row at a time), with the matching base change in
+  the same synchronized update;
 - declares the moving rectangles (`OSC 2032 ; r`): the history columns of the
   band, and with the Tasks panel open, the columns left of it for the full
   height plus the panel's columns from the row below it. The sidebar and the
   panel never move;
+- places images that reach the band's last row uncropped below it, so the
+  part leaving at the bottom keeps showing (st clips it to the rectangle);
+  st keeps the rows of images leaving through the top;
 - glides content that moved by itself (output streamed while following)
   from where it was drawn.
 

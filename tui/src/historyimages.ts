@@ -80,6 +80,13 @@ export interface CollectHistoryImagesOptions {
   cursorCol?: number;
   /** Place display-math images only (history images render as half-blocks or not at all). */
   mathOnly?: boolean;
+  /**
+   * Smooth scrolling (st mode 2032): the last row of the moving band. An
+   * image whose visible rows reach it keeps its rows below as well, so the
+   * part leaving at the bottom still shows while it glides out; the terminal
+   * clips it to the moving rectangle.
+   */
+  extendBelow?: number;
   /** History lines above and below the screen whose thumbnails are fetched ahead of scrolling (default: one screen). */
   prefetchLines?: number;
 }
@@ -257,9 +264,13 @@ export function collectHistoryImages(options: CollectHistoryImagesOptions): Coll
     }
     const run = longestRun(rows);
     if (run.length === 0) continue;
+    const last = run[run.length - 1];
+    const below = options.extendBelow !== undefined && last.screenRow === options.extendBelow
+      ? layout.rows - 1 - last.imageRow
+      : 0;
     const visibleRect = {
       top: run[0].screenRow,
-      bottom: run[run.length - 1].screenRow,
+      bottom: last.screenRow + below,
       left: run[0].screenCol,
       right: run[0].screenCol + layout.cols - 1,
     };
