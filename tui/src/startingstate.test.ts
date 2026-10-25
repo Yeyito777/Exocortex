@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import { createInitialState } from "./state";
-import { updateConversationList } from "./sidebar";
+import { syncSelectedIndex, updateConversationList } from "./sidebar";
 import type { ConversationSummary, FolderSummary } from "./messages";
 import { handleConversationsList } from "./events/conversations";
 import {
@@ -10,8 +10,10 @@ import {
   availableStartingConversationId,
   captureTuiStartingState,
   daemonRouteKey,
+  applyRouteViewState,
+  captureRouteViewState,
   loadTuiStartingState,
-  RouteExpandedFolders,
+  RouteViewStates,
   saveTuiStartingState,
   tuiStartingStatePath,
   type TuiStartingState,
@@ -87,7 +89,18 @@ describe("TUI starting state", () => {
         expandedFolderIds: [],
       },
       conversationScrollPositions: {},
-      expandedFolderIdsByRoute: { local: [] },
+      routes: {
+        local: {
+          focusedConversationId: "focused-conversation",
+          sidebarCursor: {
+            currentFolderId: "work",
+            selectedItem: { type: "conversation", id: "cursor-conversation" },
+            scrollOffset: 7,
+          },
+          expandedFolderIds: [],
+          conversationScrollPositions: {},
+        },
+      },
     });
   });
 
@@ -104,7 +117,9 @@ describe("TUI starting state", () => {
       focusedConversationId: null,
       sidebar: { open: false, expandedFolderIds: [] },
       conversationScrollPositions: {},
-      expandedFolderIdsByRoute: { local: [] },
+      routes: {
+        local: { focusedConversationId: null, sidebarCursor: null, expandedFolderIds: [], conversationScrollPositions: {} },
+      },
     });
   });
 
@@ -137,6 +152,22 @@ describe("TUI starting state", () => {
     expect(state.sidebar.scrollOffset).toBe(4);
     expect(state.conversationScroll.positions.get("focused-conversation")).toBe(0.4);
     expect(availableStartingConversationId(startingState, state.sidebar.conversations)).toBe("focused-conversation");
+  });
+
+  test("keeps the saved cursor when the restored conversation loads before the list", () => {
+    const state = createInitialState();
+    applyTuiStartingState(state, {
+      version: 2,
+      focusedConversationId: "second",
+      sidebar: { open: true, currentFolderId: null, selectedItem: { type: "conversation", id: "second" }, scrollOffset: 0 },
+      conversationScrollPositions: {},
+    });
+    // What a same-conversation conversation_loaded does before any list arrived.
+    syncSelectedIndex(state.sidebar);
+    expect(state.sidebar.selectedItem).toEqual({ type: "conversation", id: "second" });
+
+    updateConversationList(state.sidebar, [conversation("first"), conversation("second")], []);
+    expect(state.sidebar.selectedItem).toEqual({ type: "conversation", id: "second" });
   });
 
   test("does not try to load a saved conversation that no longer exists", () => {
@@ -261,42 +292,100 @@ describe("TUI starting state", () => {
     expect(restored.sidebar.expandedFolderIds).toEqual(new Set(["work", "work-nested"]));
   });
 
-  test("keeps each daemon route's expansion, so an /ssh tree reopens as it was left", () => {
+  test("keeps each daemon route's view, so an /ssh session reopens as it was left", () => {
     const remoteKey = daemonRouteKey("whale");
-    const local = createInitialState();
-    local.sidebar.expandedFolderIds = new Set(["local-folder"]);
-    const routes = new RouteExpandedFolders(null);
-    // Switching to /ssh stashes the local route's tree; the remote one is then edited.
-    routes.remember(daemonRouteKey(null), local.sidebar.expandedFolderIds);
-    local.sidebar.expandedFolderIds = routes.forRoute(remoteKey);
-    local.sidebar.expandedFolderIds.add("remote-a");
-    local.sidebar.expandedFolderIds.add("remote-b");
+    const routes = new RouteViewStates(null);
+    const state = createInitialState();
+    state.sidebar.open = true;
+    state.convId = "local-conversation";
+    state.sidebar.expandedFolderIds = new Set(["local-folder"]);
+    state.conversationScroll.positions.set("local-conversation", 0.25);
+    // Switching to /ssh keeps the local view aside; the remote one is then used.
+    routes.remember(daemonRouteKey(null), captureRouteViewState(state));
+    applyRouteViewState(state, routes.forRoute(remoteKey));
+    expect(state.convId).toBeNull();
+    expect(state.sidebar.expandedFolderIds).toEqual(new Set());
+    state.convId = "remote-conversation";
+    state.sidebar.selectedItem = { type: "conversation", id: "remote-conversation" };
+    state.sidebar.scrollOffset = 3;
+    state.sidebar.expandedFolderIds = new Set(["remote-a", "remote-b"]);
+    state.conversationScroll.positions = new Map([["remote-conversation", 0.75]]);
 
-    saveTuiStartingState(captureTuiStartingState(local, routes, remoteKey));
-    const loaded = loadTuiStartingState();
-    expect(loaded?.expandedFolderIdsByRoute).toEqual({
-      local: ["local-folder"],
-      "ssh:whale": ["remote-a", "remote-b"],
+    saveTuiStartingState(captureTuiStartingState(state, routes, remoteKey));
+    const loaded = loadTuiStartingState()!;
+    expect(loaded.focusedConversationId).toBe("remote-conversation");
+    expect(loaded.routes?.local).toEqual({
+      focusedConversationId: "local-conversation",
+      sidebarCursor: { currentFolderId: null, selectedItem: null, scrollOffset: 0 },
+      expandedFolderIds: ["local-folder"],
+      conversationScrollPositions: { "local-conversation": 0.25 },
     });
 
+    // A TUI starts on its local socket, then reaches the /ssh route.
+    const reopenedRoutes = new RouteViewStates(loaded);
     const reopened = createInitialState();
-    applyTuiStartingState(reopened, loaded!);
+    applyTuiStartingState(reopened, loaded, reopenedRoutes);
+    expect(reopened.convId).toBe("local-conversation");
     expect(reopened.sidebar.expandedFolderIds).toEqual(new Set(["local-folder"]));
-    const reopenedRoutes = new RouteExpandedFolders(loaded);
-    expect(reopenedRoutes.forRoute(remoteKey)).toEqual(new Set(["remote-a", "remote-b"]));
-    expect(reopenedRoutes.forRoute(daemonRouteKey("other-host"))).toEqual(new Set());
+    applyRouteViewState(reopened, reopenedRoutes.forRoute(remoteKey));
+    expect(reopened.convId).toBe("remote-conversation");
+    expect(reopened.sidebar.selectedItem).toEqual({ type: "conversation", id: "remote-conversation" });
+    expect(reopened.sidebar.scrollOffset).toBe(3);
+    expect(reopened.sidebar.expandedFolderIds).toEqual(new Set(["remote-a", "remote-b"]));
+    expect(reopened.conversationScroll.positions).toEqual(new Map([["remote-conversation", 0.75]]));
+    expect(reopenedRoutes.forRoute(daemonRouteKey("other-host")).focusedConversationId).toBeNull();
   });
 
-  test("older files without per-route expansion seed every route with their single list", () => {
+  test("older files without per-route views seed every route with their single view", () => {
+    writeFileSync(statePath, JSON.stringify({
+      version: 2,
+      focusedConversationId: "conversation",
+      sidebar: { open: true, currentFolderId: "work", selectedItem: { type: "folder", id: "work" }, scrollOffset: 2, expandedFolderIds: ["work"] },
+      conversationScrollPositions: { conversation: 0.5 },
+    }));
+    const routes = new RouteViewStates(loadTuiStartingState());
+    for (const routeKey of [daemonRouteKey(null), daemonRouteKey("whale")]) {
+      expect(routes.forRoute(routeKey)).toEqual({
+        focusedConversationId: "conversation",
+        sidebarCursor: { currentFolderId: "work", selectedItem: { type: "folder", id: "work" }, scrollOffset: 2 },
+        expandedFolderIds: ["work"],
+        conversationScrollPositions: { conversation: 0.5 },
+      });
+    }
+  });
+
+  test("files with only per-route expansion keep it under the seeded view", () => {
+    writeFileSync(statePath, JSON.stringify({
+      version: 2,
+      focusedConversationId: "remote-conversation",
+      sidebar: { open: false, expandedFolderIds: ["remote"] },
+      conversationScrollPositions: {},
+      expandedFolderIdsByRoute: { local: ["local"], "ssh:whale": ["remote"] },
+    }));
+    const routes = new RouteViewStates(loadTuiStartingState());
+    expect(routes.forRoute(daemonRouteKey(null)).expandedFolderIds).toEqual(["local"]);
+    expect(routes.forRoute(daemonRouteKey("whale"))).toEqual({
+      focusedConversationId: "remote-conversation",
+      sidebarCursor: null,
+      expandedFolderIds: ["remote"],
+      conversationScrollPositions: {},
+    });
+  });
+
+  test("a malformed route loses only that route's view", () => {
     writeFileSync(statePath, JSON.stringify({
       version: 2,
       focusedConversationId: null,
-      sidebar: { open: false, expandedFolderIds: ["work"] },
+      sidebar: { open: false },
       conversationScrollPositions: {},
+      routes: {
+        local: { focusedConversationId: "kept", sidebarCursor: null, expandedFolderIds: [], conversationScrollPositions: {} },
+        "ssh:whale": { focusedConversationId: 7 },
+      },
     }));
-    const routes = new RouteExpandedFolders(loadTuiStartingState());
-    expect(routes.forRoute(daemonRouteKey(null))).toEqual(new Set(["work"]));
-    expect(routes.forRoute(daemonRouteKey("whale"))).toEqual(new Set(["work"]));
+    const routes = new RouteViewStates(loadTuiStartingState());
+    expect(routes.forRoute(daemonRouteKey(null)).focusedConversationId).toBe("kept");
+    expect(routes.forRoute(daemonRouteKey("whale")).focusedConversationId).toBeNull();
   });
 
   test("an authoritative list forgets expanded folders that were deleted; renames keep their id", () => {

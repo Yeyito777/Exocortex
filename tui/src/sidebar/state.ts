@@ -11,6 +11,8 @@ export interface SidebarState {
   open: boolean;
   conversations: ConversationSummary[];
   folders: FolderSummary[];
+  /** Whether this daemon's conversations list has arrived; until then a saved cursor may not be listed yet. */
+  listLoaded: boolean;
   currentFolderId: string | null;
   /** How folders open: replace the list ("navigate") or expand in place ("tree"). */
   folderView: SidebarFolderView;
@@ -41,6 +43,7 @@ export function createSidebarState(folderView: SidebarFolderView = "tree"): Side
     open: false,
     conversations: [],
     folders: [],
+    listLoaded: false,
     currentFolderId: null,
     folderView,
     expandedFolderIds: new Set(),

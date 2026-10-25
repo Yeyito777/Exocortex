@@ -103,7 +103,7 @@ import { log, TUI_LOG_PATH } from "./log";
 import { installFatalErrorHandlers } from "./fatal";
 import { ConversationPrewarmer } from "./prewarm";
 import { FirstTextUX } from "./first-text";
-import { applyTuiStartingState, availableStartingConversationId, captureTuiStartingState, daemonRouteKey, loadTuiStartingState, RouteExpandedFolders, saveTuiStartingState } from "./startingstate";
+import { applyTuiStartingState, availableStartingConversationId, applyRouteViewState, captureRouteViewState, captureTuiStartingState, daemonRouteKey, loadTuiStartingState, RouteViewStates, saveTuiStartingState } from "./startingstate";
 import { closeBtwSession, startBtwSession } from "./btw/controller";
 import { createSidebarState } from "./sidebar/state";
 import { addOptimisticConversation, bumpConversationToTop, rememberEnteredConversation } from "./sidebar";
@@ -137,11 +137,15 @@ if (launchOptions.showHelp) {
 
 const savedStartingState = loadTuiStartingState();
 const state = createInitialState();
-if (savedStartingState) applyTuiStartingState(state, savedStartingState);
-let pendingStartingState = savedStartingState;
-// Tree expansion is kept per daemon route so `--ssh`/`/ssh` reopens its own tree.
-const routeExpandedFolders = new RouteExpandedFolders(savedStartingState);
+// The view is kept per daemon route so `--ssh`/`/ssh` reopens its own
+// conversation, sidebar cursor and tree.
+const routeViews = new RouteViewStates(savedStartingState);
 let activeRouteKey = daemonRouteKey(null);
+if (savedStartingState) applyTuiStartingState(state, savedStartingState, routeViews);
+/** The restored conversation until the route's first conversations list confirms it. */
+let pendingStartingState: { focusedConversationId: string | null } | null = savedStartingState
+  ? { focusedConversationId: state.convId }
+  : null;
 let startingConversationLoad: { convId: string; reqId: string } | null = null;
 const STARTUP_PROFILE = process.env.EXOCORTEX_PROFILE_STARTUP === "1" || launchOptions.profileStartup;
 const STARTUP_INPUT_SANITIZE_MS = 1000;
@@ -530,10 +534,9 @@ function resetForDaemonRouteSwitch(newRouteKey: string): void {
   const sidebarOpen = state.sidebar.open;
   const updateStatus = state.sidebar.updateStatus;
   // Folder ids belong to the old daemon; the folder view preference does not.
-  routeExpandedFolders.remember(activeRouteKey, state.sidebar.expandedFolderIds);
+  routeViews.remember(activeRouteKey, captureRouteViewState(state));
+  leaveConversationView(state);
   state.sidebar = createSidebarState(state.sidebar.folderView);
-  activeRouteKey = newRouteKey;
-  state.sidebar.expandedFolderIds = routeExpandedFolders.forRoute(activeRouteKey);
   state.sidebar.open = sidebarOpen;
   state.sidebar.updateStatus = updateStatus;
   state.queuedMessages = [];
@@ -548,6 +551,10 @@ function resetForDaemonRouteSwitch(newRouteKey: string): void {
   state.lastStreamSeqByConv = {};
   state.conversationDefaults = null;
   resetDraftConversationState(state);
+  // Reopen what this route showed last; its reconnect loads the conversation.
+  activeRouteKey = newRouteKey;
+  applyRouteViewState(state, routeViews.forRoute(activeRouteKey));
+  pendingStartingState = { focusedConversationId: state.convId };
 }
 
 function onDaemonEvent(event: Event): void {
@@ -571,7 +578,10 @@ function onDaemonEvent(event: Event): void {
   if (event.type === "error" && event.reqId === startingConversationLoad?.reqId) {
     // A saved conversation can be deleted while the TUI is closed. Its
     // speculative startup load is intentionally silent; the authoritative
-    // conversations_list immediately reconciles the saved state.
+    // conversations_list reconciles the saved state. The load stays recorded
+    // past that list: after an /ssh switch the list (requested by the probe)
+    // arrives before this error.
+    startingConversationLoad = null;
     return;
   }
   let flushEditResendAfterEvent = false;
@@ -697,7 +707,6 @@ function onDaemonEvent(event: Event): void {
           loadConversationWindow(convId);
         }
       }
-      startingConversationLoad = null;
     }
   }
 
@@ -2068,7 +2077,19 @@ function restoreDaemonSessionAfterReconnect(
   if (state.accountsScreen) daemon.accounts({ watch: true, convId: state.convId });
   else prefetchAccounts(state, daemon, { force: true });
   updateMonitor?.setRoute(daemon.remoteAlias);
-  if (!conversationWillReload && state.convId) loadConversationWindow(state.convId);
+  if (!conversationWillReload && state.convId && !loadStartingConversation()) loadConversationWindow(state.convId);
+}
+
+/**
+ * Open the restored conversation before the list confirms it still exists.
+ * One deleted meanwhile fails quietly; the list then clears it.
+ */
+function loadStartingConversation(): boolean {
+  const convId = pendingStartingState?.focusedConversationId ?? null;
+  if (!convId || state.convId !== convId) return false;
+  prepareConversationOpen(state, convId);
+  startingConversationLoad = { convId, reqId: loadConversationWindow(convId) };
+  return true;
 }
 
 async function reconnectToDaemon(): Promise<void> {
@@ -2233,14 +2254,7 @@ async function main(): Promise<void> {
   // Speculatively request the saved conversation before the much larger
   // sidebar bootstrap. The list remains authoritative, but the common case no
   // longer waits an extra network round trip (or for the full list payload).
-  const startingConvId = pendingStartingState?.focusedConversationId ?? null;
-  if (startingConvId && state.convId === startingConvId) {
-    prepareConversationOpen(state, startingConvId);
-    startingConversationLoad = {
-      convId: startingConvId,
-      reqId: loadConversationWindow(startingConvId),
-    };
-  }
+  loadStartingConversation();
 
   // Request initial usage and sidebar data from daemon.
   daemon.ping();
@@ -2400,7 +2414,7 @@ let startingStatePersisted = false;
 function persistStartingStateOnce(): void {
   if (startingStatePersisted) return;
   try {
-    saveTuiStartingState(captureTuiStartingState(state, routeExpandedFolders, activeRouteKey));
+    saveTuiStartingState(captureTuiStartingState(state, routeViews, activeRouteKey));
     startingStatePersisted = true;
   } catch (error) {
     try {
