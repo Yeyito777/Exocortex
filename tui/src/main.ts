@@ -388,7 +388,7 @@ function scheduleSmoothScrollFrame(): void {
       return;
     }
     scheduleSmoothScrollFrame();
-  }, SMOOTH_SCROLL_FRAME_MS);
+  }, Math.max(1, smooth.msUntilLayout(SMOOTH_SCROLL_FRAME_MS)));
 }
 
 function renderImmediately(): number {

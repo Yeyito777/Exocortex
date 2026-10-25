@@ -24,7 +24,9 @@ on exit). `tui/src/smoothscroll.ts` then:
   edge, `gg`/`G` and search jumps (those glide in from one screen away);
 - keeps the same curve, and lays the history out at the whole row 30 ms
   ahead of it in the direction of travel, but never more than the row just
-  past it, so the offset st draws stays within about a row however fast
+  past it (laid out a quarter row early, so st's clock, a little behind,
+  never reaches the laid-out rows; the TUI wakes when the next row is due
+  rather than polling), so the offset st draws stays within about a row however fast
   inputs stack up (laid out further ahead, rows that re-wrap beside the Tasks
   panel were drawn several rows from where they belong, leaving a dark band
   below the panel during fast scrolls). Each row is a normal frame: a

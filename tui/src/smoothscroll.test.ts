@@ -3,7 +3,7 @@ import { render, smoothScrollRects } from "./render";
 import { createInitialState, type RenderState } from "./state";
 import { invalidateFrame, setScrollRegionsEnabled } from "./frame";
 import {
-  SmoothScroller, easeRemaining, offsetPayload, parseSmoothScrollReport, rectsPayload, setSmoothScroller,
+  SMOOTH_SCROLL_MARGIN_ROWS, SmoothScroller, easeRemaining, offsetPayload, parseSmoothScrollReport, rectsPayload, setSmoothScroller,
 } from "./smoothscroll";
 import { TerminalScreen } from "./testhelpers/terminalscreen";
 import { TerminalControlBuffer } from "./terminalclipboard";
@@ -196,7 +196,7 @@ describe("SmoothScroller", () => {
       smooth.afterFlush(before - grid, rects);
       worst = Math.max(worst, Math.abs(offsetNow()));
     }
-    expect(worst).toBeLessThanOrEqual(1);
+    expect(worst).toBeLessThanOrEqual(1 + SMOOTH_SCROLL_MARGIN_ROWS);
     for (let i = 0; i < 40 && smooth.busy(); i++) {
       now += 4;
       const before = (smooth as unknown as { grid: number }).grid;
@@ -204,6 +204,30 @@ describe("SmoothScroller", () => {
     }
     expect(smooth.busy()).toBe(false);
     expect((smooth as unknown as { grid: number }).grid).toBe(logical);
+  });
+
+  test("the next row is due before the glide reaches the laid-out one, and the wait says when", () => {
+    // st's clock runs a little behind this one; if the glide reached the
+    // laid-out rows before the next frame arrived, st would hold it still.
+    const smooth = scroller();
+    smooth.layout(10, 100, 0, 20, "a");
+    smooth.afterFlush(0, rects);
+    let grid = smooth.layout(13, 100, 0, 20, "a");
+    smooth.afterFlush(10 - grid, rects);
+    const position = () => grid + (smooth as unknown as { offsetAt(time: number): number }).offsetAt(now);
+    for (let i = 0; i < 200 && smooth.busy(); i++) {
+      const wait = smooth.msUntilLayout(16);
+      expect(wait).toBeGreaterThanOrEqual(0);
+      now += Math.max(1, wait);
+      if (!smooth.needsLayout()) continue;
+      // Laid out with about a quarter row to spare (a 1 ms step moves < 0.1 row).
+      if (grid < 13) expect(grid - position()).toBeGreaterThanOrEqual(SMOOTH_SCROLL_MARGIN_ROWS - 0.1);
+      const next = smooth.layout(13, 100, 0, 20, "a");
+      smooth.afterFlush(grid - next, rects);
+      grid = next;
+    }
+    expect(grid).toBe(13);
+    expect(smooth.busy()).toBe(false);
   });
 
   test("pinning and a new context never animate", () => {
