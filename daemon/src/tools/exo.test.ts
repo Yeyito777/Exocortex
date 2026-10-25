@@ -533,7 +533,7 @@ describe("minimal native exo", () => {
       expect(h.runTurn).toHaveBeenCalledTimes(2);
       expect((h.runTurn.mock.calls[1] as unknown[]).slice(0, 3)).toEqual([child.id, "follow up", 1]);
       expect((h.runTurn.mock.calls[1] as unknown[])[4]).toEqual({ kind: "exo_send", sourceId: p.id });
-      expect(h.beginParentNotification.mock.calls[1] as unknown[]).toEqual([{ convId: p.id }, child.id, "follow up", expect.any(Number), 1, true]);
+      expect(h.beginParentNotification.mock.calls[1] as unknown[]).toEqual([{ convId: p.id }, child.id, "follow up", expect.any(Number), 1, true, "your message"]);
       expect(getConversationActivityCounts(p.id).subagentCount).toBe(1);
       expect(queued(child.id)).toEqual([]);
       resolve(outcome);
@@ -549,6 +549,7 @@ describe("minimal native exo", () => {
       const h = harness();
       expect((await h.runtime.execute({ message: { conversation: other.id, text: "question" } }, p.id)).isError).toBe(false);
       expect((h.beginParentNotification.mock.calls[0] as unknown[])[5]).toBe(false);
+      expect((h.beginParentNotification.mock.calls[0] as unknown[])[6]).toBeUndefined();
       expect(getConversationActivityCounts(p.id).subagentCount).toBe(0);
       await settle();
       expect(h.completeParentNotification).toHaveBeenCalledTimes(1);

@@ -36,7 +36,7 @@ export interface ExocortexToolRuntimeDependencies {
   runTurn(convId: string, text: string, maxDepth: number | null, startedAt: number,
     automation: UserMessageAutomation): Promise<AssistantTurnOutcome>;
   beginParentNotification?(parent: { convId: string; maxChars?: number }, childConvId: string,
-    task: string, childStartedAt: number, subagentMaxDepth: number | null, trackAsSubagent: boolean): unknown;
+    task: string, childStartedAt: number, subagentMaxDepth: number | null, trackAsSubagent: boolean, trigger?: string): unknown;
   completeParentNotification?(childConvId: string, outcome: AssistantTurnOutcome): void;
   notifyParent?(parentConvId: string, childConvId: string, task: string, outcome: AssistantTurnOutcome): void;
   cannotStart?(provider: ProviderId): string | null;
@@ -226,7 +226,9 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
           const continuesSleepingTask = listDeferredChronoSleeps(convId).length > 0
             && listPendingSubagentNotifications({ childConvId: convId, state: "running" })
               .some(record => record.parentConvId === parentId);
-          if (!continuesSleepingTask) deps.beginParentNotification?.({ convId: parentId }, convId, text, startedAt, maxDepth, ownChild);
+          // A follow-up notice names what woke the child, as a queued message's does.
+          if (!continuesSleepingTask) deps.beginParentNotification?.({ convId: parentId }, convId, text, startedAt, maxDepth, ownChild,
+            ownChild ? "your message" : undefined);
           const title = convStore.subagentTaskTitle(convId) || "Subagent task";
           if (ownChild) track(parentId, convId, true, { title, startedAt });
           let finished = false;
