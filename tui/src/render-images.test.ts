@@ -14,7 +14,7 @@ import { renderQueuePromptOverlay } from "./overlays";
 import { steersInstantly } from "./queue";
 import { renderSidebarActionMenu, sidebarActionMenuAnchorRow, SIDEBAR_WIDTH } from "./sidebar";
 import { openSelectedSidebarActionMenu } from "./sidebar/actionmenu";
-import { SmoothScroller, setSmoothScroller } from "./smoothscroll";
+import { SmoothScroller, markScrollIntent, setSmoothScroller } from "./smoothscroll";
 import { invalidateFrame } from "./frame";
 
 function capture(state: RenderState): string {
@@ -188,6 +188,7 @@ describe("image viewer", () => {
     const [rest] = placements(capture(state));
     expect(rest.controls).toBe(plain.controls);
     // Gliding: the rows below the pane come along (st clips them).
+    markScrollIntent(state);
     state.scrollOffset -= 1;
     const step = capture(state);
     now += 8;

@@ -1700,7 +1700,9 @@ export function render(state: RenderState): boolean {
   if (smooth) {
     const maxOffset = Math.max(0, totalLines - messageAreaHeight);
     const logical = Math.min(state.scrollOffset, maxOffset);
-    const context = `${state.convId ?? ""}|${state.cols}x${state.rows}|${messageAreaHeight}`;
+    // A different conversation, terminal size, pane height or history width
+    // (the sidebar, the Tasks panel) re-lays everything out: no glide.
+    const context = `${state.convId ?? ""}|${state.cols}x${state.rows}|${messageAreaHeight}|${chatW}|${historyWidth}`;
     if (scrollUpdate.topAnchorRow !== null) smooth.snap(logical);
     else viewStart = getViewStartFor(totalLines, messageAreaHeight, smooth.layout(logical, maxOffset, scrollPinDelta, messageAreaHeight, context));
   }
@@ -1954,7 +1956,7 @@ export function render(state: RenderState): boolean {
     ? smoothScrollRects(scrollRegion, chatCol, chatW, taskPanel ? chatCol + chatW - taskPanel.width : null, messageAreaStart + panelFlowHeight)
     : [];
   flushFrame(state, {
-    afterScroll: smooth ? regionShift => smooth.afterFlush(regionShift, smoothRects) : undefined,
+    afterScroll: smooth ? (regionShift, intact) => smooth.afterFlush(regionShift, smoothRects, intact) : undefined,
     rows: ctx.frameRows,
     pinned: ctx.pinnedRows,
     cursor: instructionsOverlay ? instructionsCursorPayload(instructionsOverlay) : buildCursorPayload(

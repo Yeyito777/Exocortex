@@ -3,7 +3,7 @@ import { render, smoothScrollRects } from "./render";
 import { createInitialState, type RenderState } from "./state";
 import { invalidateFrame, setScrollRegionsEnabled } from "./frame";
 import {
-  SMOOTH_SCROLL_MARGIN_ROWS, SmoothScroller, easeRemaining, offsetPayload, parseSmoothScrollReport, rectsPayload, setSmoothScroller,
+  SMOOTH_SCROLL_MARGIN_ROWS, SmoothScroller, markScrollIntent, easeRemaining, offsetPayload, parseSmoothScrollReport, rectsPayload, setSmoothScroller,
 } from "./smoothscroll";
 import { TerminalScreen } from "./testhelpers/terminalscreen";
 import { TerminalControlBuffer } from "./terminalclipboard";
@@ -137,6 +137,7 @@ describe("SmoothScroller", () => {
     // Three rows towards older history: laid out ahead (the row just past
     // the position), so the offset (position - grid) is drawn higher, over
     // lines st kept below.
+    smooth.intend();
     const grid = smooth.layout(13, 100, 0, 20, "a");
     expect(grid).toBe(11);
     const out = smooth.afterFlush(10 - grid, rects);
@@ -154,6 +155,7 @@ describe("SmoothScroller", () => {
     const smooth = scroller();
     smooth.layout(10, 100, 0, 20, "a");
     smooth.afterFlush(0, rects);
+    smooth.intend();
     const grid = smooth.layout(7, 100, 0, 20, "a");
     expect(grid).toBe(9);
     expect(moves(smooth.afterFlush(10 - grid, rects))).toEqual([[-2000, 3000]]);
@@ -165,9 +167,11 @@ describe("SmoothScroller", () => {
     const smooth = scroller();
     smooth.layout(10, 100, 0, 20, "a");
     smooth.afterFlush(0, rects);
+    smooth.intend();
     const first = smooth.layout(13, 100, 0, 20, "a");
     smooth.afterFlush(10 - first, rects);
     now += 40;
+    smooth.intend();
     const second = smooth.layout(16, 100, 0, 20, "a");
     const out = smooth.afterFlush(first - second, rects);
     const [[delta, ease]] = moves(out);
@@ -190,7 +194,10 @@ describe("SmoothScroller", () => {
     let worst = 0;
     for (let i = 0; i < 60; i++) {
       now += 4;
-      if (i % 2 === 0 && i < 40) logical -= 3;
+      if (i % 2 === 0 && i < 40) {
+        logical -= 3;
+        smooth.intend();
+      }
       const before = (smooth as unknown as { grid: number }).grid;
       const grid = smooth.layout(logical, 1000, 0, 40, "a");
       smooth.afterFlush(before - grid, rects);
@@ -212,6 +219,7 @@ describe("SmoothScroller", () => {
     const smooth = scroller();
     smooth.layout(10, 100, 0, 20, "a");
     smooth.afterFlush(0, rects);
+    smooth.intend();
     let grid = smooth.layout(13, 100, 0, 20, "a");
     smooth.afterFlush(10 - grid, rects);
     const position = () => grid + (smooth as unknown as { offsetAt(time: number): number }).offsetAt(now);
@@ -246,6 +254,7 @@ describe("SmoothScroller", () => {
     smooth.layout(0, 1000, 0, 20, "a");
     smooth.afterFlush(0, rects);
     now += 1;
+    smooth.intend();
     const grid = smooth.layout(500, 1000, 0, 20, "a");
     expect(grid).toBeGreaterThanOrEqual(480);
     expect(grid).toBeLessThan(500);
@@ -262,7 +271,7 @@ describe("SmoothScroller", () => {
     smooth.afterFlush(0, rects);
     smooth.layout(0, 100, 0, 20, "a");
     // A streamed line pushed everything up one row: draw it a row lower.
-    expect(moves(smooth.afterFlush(1, rects))).toEqual([[0, 1000]]);
+    expect(moves(smooth.afterFlush(1, rects, true))).toEqual([[0, 1000]]);
     expect(smooth.busy()).toBe(true);
     now += 120;
     expect(smooth.busy()).toBe(false);
@@ -312,6 +321,7 @@ describe("rendering with app-driven smooth scrolling", () => {
       now += 200;
       screen.feed(capture(state));
 
+      markScrollIntent(state);
       state.scrollOffset += 3;
       const first = capture(state);
       screen.feed(first);
@@ -350,6 +360,7 @@ describe("rendering with app-driven smooth scrolling", () => {
     capture(state);
     now += 200;
     capture(state);
+    markScrollIntent(state);
     state.scrollOffset += 2;
     // Rows are laid out ahead of the glide: the input's own frame scrolls.
     const step = capture(state);

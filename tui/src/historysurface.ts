@@ -1,5 +1,6 @@
 /** Shared adapter for Vim navigation over chat history and the BTW history card. */
 
+import { markScrollIntent } from "./smoothscroll";
 import type { MessageBound, RenderLineAnchor } from "./conversation";
 import type { HistoryCursor } from "./historycursor";
 import type { RenderState } from "./state";
@@ -74,7 +75,8 @@ export function activeHistorySurface(state: RenderState): HistorySurface {
     setVisualAnchor: cursor => { state.historyVisualAnchor = cursor; },
     viewportHeight: state.layout.messageAreaHeight,
     scrollOffset: state.scrollOffset,
-    setScrollOffset: value => { state.scrollOffset = value; },
+    // Cursor motions, gg/G and search: the user scrolled, so it may glide.
+    setScrollOffset: value => { state.scrollOffset = value; markScrollIntent(state); },
   };
 }
 

@@ -50,10 +50,11 @@ export interface RenderFrame {
   graphics?: string | ((regionScrolled: boolean) => string);
   /**
    * Sent last inside the same synchronized update, given how far the region
-   * scroll moved the content (up positive, 0 without one): app-driven smooth
+   * scroll moved the content (up positive, 0 without one) and whether every
+   * row it moved arrived intact (nothing else changed): app-driven smooth
    * scrolling's rectangles and offset (smoothscroll.ts).
    */
-  afterScroll?: (regionShift: number) => string;
+  afterScroll?: (regionShift: number, intact: boolean) => string;
 }
 
 interface RetainedFrame extends RenderFrame {
@@ -311,6 +312,8 @@ export function flushFrame(owner: object, nextFrame: RenderFrame): void {
     : detectRegionScroll(prevFrame, next, (prevIndex, nextIndex) => sameRowContent(prevFrame.rows[prevIndex], next.rows[nextIndex]));
   const scrollRegion = scrollShift !== 0 ? nextFrame.scrollRegion : null;
   let hasDrawingUpdates = false;
+  /** Every row the region scroll supplied matches this frame (near the bottom edge aside). */
+  let scrolledIntact = scrollRegion !== null;
 
   if (scrollRegion) {
     out.push(scrollRegionBy(scrollRegion, scrollShift, regions && terminalHasScrollSequences()));
@@ -323,6 +326,11 @@ export function flushFrame(owner: object, nextFrame: RenderFrame): void {
 
     if (scrollRegion && regions && prevFrame && i >= scrollRegion.start - 1 && i <= scrollRegion.end - 1) {
       const update = scrolledRowUpdate(prevFrame, next, scrollRegion, i, scrollShift);
+      const source = i + scrollShift;
+      // The two rows above the ones it exposed may change with it (the
+      // footer of what was the last message, a streamed reply's live rows).
+      if (update === nextRow && source >= scrollRegion.start - 1 && source <= scrollRegion.end - 1
+        && i < scrollRegion.end - 1 - Math.abs(scrollShift) - 2) scrolledIntact = false;
       if (update !== null) {
         out.push(update);
         hasDrawingUpdates = true;
@@ -357,7 +365,7 @@ export function flushFrame(owner: object, nextFrame: RenderFrame): void {
     hasDrawingUpdates = true;
   }
 
-  const smooth = nextFrame.afterScroll?.(scrollShift);
+  const smooth = nextFrame.afterScroll?.(scrollShift, scrolledIntact);
   if (smooth) out.push(smooth);
 
   if (out.length > 0 || !prevFrame || prevFrame.cursor !== nextFrame.cursor) {
