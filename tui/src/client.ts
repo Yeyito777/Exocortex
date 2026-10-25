@@ -41,9 +41,16 @@ const CLIENT_CAPABILITIES: ClientCapability[] = [
   "history-block-pagination",
   "token-stats-on-demand",
   "sidebar-digest-sync",
+  "update-status-push",
 ];
 
 export type EventHandler = (event: Event) => void;
+
+/** Startup profiling only: every protocol line this process writes or reads. */
+export type WireTrace = (entry: { client: number; route: string; dir: "up" | "down"; type: string; reqId?: string; bytes: number }) => void;
+let wireTrace: WireTrace | null = null;
+let nextTraceClientId = 0;
+export function setWireTrace(trace: WireTrace | null): void { wireTrace = trace; }
 export type LlmCompleteCallback = (text: string) => void;
 export type LlmErrorCallback = (message: string) => void;
 export type TranscriptionCallback = (text: string) => void;
@@ -158,12 +165,15 @@ export class DaemonClient {
   private readonly transcriptionTimeoutMs: number;
   private readonly transcriptionMaxAttempts: number;
   private sshAlias: string | null = null;
+  private readonly traceClientId = ++nextTraceClientId;
   /** Runs client_bash commands from the SSH daemon on this machine. */
   private readonly clientExecutor = new ClientExecutor();
   private sshSwitchingTo: string | null = null;
   private sshSwitchGeneration = 0;
   private cancelSshProbe: ((reason: string) => void) | null = null;
   private pendingSshConnection: (ProbedSshConnection & { alias: string }) | null = null;
+  /** Requests to send in an SSH probe's first flight, ahead of its bootstrap ping. */
+  private sshProbeRequests: ((alias: string) => Command[]) | null = null;
 
   constructor(
     handler: EventHandler,
@@ -260,11 +270,27 @@ export class DaemonClient {
     return { type: "client_capabilities", capabilities: CLIENT_CAPABILITIES, ...(sidebarDigest ? { sidebarDigest } : {}) };
   }
 
+  /** Capabilities plus any first-flight requests, ahead of the probe's bootstrap ping. */
+  private probePreamble(alias: string): Command[] {
+    const requests = this.sshProbeRequests?.(alias) ?? [];
+    if (wireTrace) for (const request of requests) this.traceWire("up", request, JSON.stringify(request).length + 1, alias);
+    return [this.probeCapabilities(alias), ...requests];
+  }
+
+  /**
+   * Requests that ride an SSH probe's first flight, before its bootstrap ping,
+   * so their answers don't wait a round trip after it or behind the sidebar.
+   * They are answered on the probed connection and delivered once it is adopted.
+   */
+  setSshProbeRequests(requests: ((alias: string) => Command[]) | null): void {
+    this.sshProbeRequests = requests;
+  }
+
   private async probeSshReconnect(alias: string): Promise<ProbedSshConnection> {
     const probe = probeSshProxy(alias, {
       spawnProcess: this.spawnSshProcess,
       timeoutMs: this.sshProbeTimeoutMs,
-      preamble: [this.probeCapabilities(alias)],
+      preamble: this.probePreamble(alias),
     });
     // Keep even an unauthenticated attempt cancellable by disconnect/route
     // switches. Spawning ssh is not readiness: never flush the offline queue
@@ -589,7 +615,9 @@ export class DaemonClient {
       };
       this.updateRequests.set(reqId, finish);
       try {
-        this.socket!.write(JSON.stringify({ type: "ping", reqId, updateStatusOnly: true }) + "\n");
+        const line = JSON.stringify({ type: "ping", reqId, updateStatusOnly: true }) + "\n";
+        this.socket!.write(line);
+        this.traceWire("up", { type: "ping:updateStatusOnly", reqId }, line.length);
       } catch { finish("unknown"); }
     });
   }
@@ -695,14 +723,16 @@ export class DaemonClient {
       `Connecting to remote Exocortex daemon through SSH alias ${alias}…`,
     ));
 
+    wireTrace?.({ client: this.traceClientId, route: `ssh:${alias}`, dir: "up", type: "ssh_probe_spawn", bytes: 0 });
     const probe = probeSshProxy(alias, {
       spawnProcess: this.spawnSshProcess,
       timeoutMs: this.sshProbeTimeoutMs,
-      preamble: [this.probeCapabilities(alias)],
+      preamble: this.probePreamble(alias),
     });
     this.cancelSshProbe = probe.cancel;
     try {
       const connection = await probe.promise;
+      wireTrace?.({ client: this.traceClientId, route: `ssh:${alias}`, dir: "down", type: "ssh_probe_pong", bytes: connection.bufferedStdout.length });
       if (generation !== this.sshSwitchGeneration || this.sshSwitchingTo !== alias) {
         try { connection.process.kill(); } catch { /* already gone */ }
         return;
@@ -1030,21 +1060,22 @@ export class DaemonClient {
    * fill their screen.
    */
   loadConversation(convId: string, turns = 5, viewport?: { rows: number; cols: number; folded?: boolean }): string {
+    const command = this.conversationLoadCommand(convId, turns, viewport);
+    this.send(command);
+    return command.reqId!;
+  }
+
+  /** A load_conversation to send elsewhere (an SSH probe's first flight); see loadConversation. */
+  conversationLoadCommand(
+    convId: string,
+    turns = 5,
+    viewport?: { rows: number; cols: number; folded?: boolean },
+  ): Extract<Command, { type: "load_conversation" }> {
     const requestedAt = Date.now();
     const reqId = `conversation_${++this.nextReqId}_${requestedAt}`;
     if (this.performanceProfilingEnabled) {
       this.pendingConversationLoads.set(reqId, { convId, startedAt: performance.now() });
       log("info", `perf: conversation_open tui_request ${JSON.stringify({ reqId, convId, turns, viewport: viewport ?? null, requestedAt, connected: this._connected })}`);
-    }
-    this.send({
-      type: "load_conversation",
-      reqId,
-      convId,
-      turns,
-      ...(viewport ? { viewport } : {}),
-      ...(this.performanceProfilingEnabled ? { requestedAt } : {}),
-    });
-    if (this.performanceProfilingEnabled) {
       const waitTimer = setTimeout(() => {
         const pendingLoad = this.pendingConversationLoads.get(reqId);
         if (!pendingLoad) return;
@@ -1057,7 +1088,14 @@ export class DaemonClient {
       }, 1_000);
       waitTimer.unref?.();
     }
-    return reqId;
+    return {
+      type: "load_conversation",
+      reqId,
+      convId,
+      turns,
+      ...(viewport ? { viewport } : {}),
+      ...(this.performanceProfilingEnabled ? { requestedAt } : {}),
+    };
   }
 
   loadConversationHistory(
@@ -1285,7 +1323,21 @@ export class DaemonClient {
     const outgoing = this.sshAlias && (command.type === "load_conversation" || command.type === "load_conversation_history")
       ? this.historyCache.prepare(command)
       : command;
-    this.socket?.write(JSON.stringify(outgoing) + "\n");
+    const line = JSON.stringify(outgoing) + "\n";
+    this.socket?.write(line);
+    this.traceWire("up", outgoing, line.length);
+  }
+
+  private traceWire(dir: "up" | "down", message: { type: string; reqId?: unknown }, bytes: number, alias = this.sshAlias): void {
+    if (!wireTrace) return;
+    wireTrace({
+      client: this.traceClientId,
+      route: alias ? `ssh:${alias}` : "local",
+      dir,
+      type: message.type,
+      ...(typeof message.reqId === "string" ? { reqId: message.reqId } : {}),
+      bytes,
+    });
   }
 
   private flushPendingCommands(): Command[] {
@@ -1377,6 +1429,7 @@ export class DaemonClient {
       try {
         const parseStartedAt = this.performanceProfilingEnabled ? performance.now() : 0;
         const parsed = JSON.parse(line) as Event;
+        if (wireTrace) this.traceWire("down", parsed, line.length);
         if (parsed.type === "client_exec_request" || parsed.type === "client_exec_cancel") {
           this.handleClientExec(parsed);
           continue;

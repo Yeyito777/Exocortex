@@ -234,4 +234,58 @@ describe("update status routing", () => {
     await pause();
     expect(values).toHaveLength(count);
   });
+
+  test("a pushing daemon's status is shown as pushed and its route is no longer polled", async () => {
+    let activeChecks = 0;
+    let localChecks = 0;
+    const values: UpdateSnapshot[] = [];
+    const monitor = new UpdateStatusMonitor("whale", async () => { activeChecks++; return "none"; },
+      async () => { localChecks++; return "none"; }, value => values.push(value), { intervalMs: 60_000 });
+    try {
+      await pause();
+      expect(activeChecks).toBe(1);
+      monitor.pushed("restart_needed");
+      expect(values.at(-1)).toEqual({ local: "none", remote: "restart_needed" });
+      await monitor.refresh();
+      // Only Local, a different daemon, is still asked.
+      expect(activeChecks).toBe(1);
+      expect(localChecks).toBe(2);
+      // A pushed Unknown was already held back by the daemon: shown at once.
+      monitor.pushed("unknown");
+      expect(values.at(-1)).toEqual({ local: "none", remote: "unknown" });
+    } finally { monitor.stop(); }
+  });
+
+  test("push mode ends with the route: an older daemon after a reconnect is polled again", async () => {
+    let activeChecks = 0;
+    const values: UpdateSnapshot[] = [];
+    const monitor = new UpdateStatusMonitor(null, async () => { activeChecks++; return "none"; },
+      async () => "none", value => values.push(value), { intervalMs: 60_000 });
+    try {
+      await pause();
+      monitor.pushed("update_available");
+      expect(values.at(-1)).toEqual({ local: "update_available", remote: null });
+      await monitor.refresh();
+      expect(activeChecks).toBe(1);
+      monitor.disconnected(null);
+      monitor.setRoute(null);
+      await pause();
+      expect(activeChecks).toBe(2);
+      await monitor.refresh();
+      expect(activeChecks).toBe(3);
+    } finally { monitor.stop(); }
+  });
+
+  test("a local push supersedes a local check still in flight", async () => {
+    let finish!: (status: UpdateStatus) => void;
+    const values: UpdateSnapshot[] = [];
+    const monitor = new UpdateStatusMonitor(null, async () => "none",
+      () => new Promise(resolve => { finish = resolve; }), value => values.push(value), { initialLocalProbe: true });
+    try {
+      monitor.pushed("restart_needed");
+      finish("none");
+      await pause();
+      expect(values.at(-1)).toEqual({ local: "restart_needed", remote: null });
+    } finally { monitor.stop(); }
+  });
 });

@@ -63,6 +63,26 @@ command text.
 daemons also speak the `provider_proxy_*` link messages to each other over
 `exocortexd proxy`.
 
+## Connecting and the bootstrap
+
+A client declares what it understands with `client_capabilities`, then sends
+`ping`. The daemon answers with `pong` and the first screen's state, all of it
+kept ready in memory: `tools_available` (providers, auth, tool styles,
+conversation defaults), `user_macros`, the last `usage_update` per provider,
+`update_status` (capable clients, once known), then the large
+`conversations_list`, `queue_updated` and `connectivity_status`. Small events go
+first so they never wait behind the list over a slow link. Requests a client
+needs on the first screen ride the same write instead of waiting for the pong:
+the TUI sends its saved conversation's `load_conversation` (and `accounts`,
+which the Accounts screen opens with) together with the `ping`. Over `/ssh`
+the reachability probe is that first write: `client_capabilities` (with a
+sidebar digest when the TUI already holds this host's list), the conversation
+to reopen, then the `ping`. Answers that arrive before the probe's `pong` are
+kept and delivered once the connection is adopted. With `--ssh` the TUI asks
+the local daemon for no bootstrap of its own unless the switch fails. The
+`exocortexd proxy` at the far end loads only the stdio bridge
+(`daemon/src/proxy-main.ts`), not the daemon.
+
 ## Connectivity
 
 One connectivity monitor per daemon decides whether the network is reachable

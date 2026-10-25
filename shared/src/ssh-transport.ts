@@ -9,6 +9,8 @@ import type { Readable, Writable } from "node:stream";
 
 const STDERR_LIMIT = 8 * 1024;
 const PROBE_OUTPUT_LIMIT = 1024 * 1024;
+/** Complete protocol lines kept from before the pong: a conversation's opening page fits easily. */
+const PROBE_RETAINED_LIMIT = 32 * 1024 * 1024;
 export const DEFAULT_SSH_PROBE_TIMEOUT_MS = 15_000;
 
 export interface SshProcess {
@@ -95,6 +97,8 @@ export interface SshProbeOptions {
    * Commands written before the probe ping. The ping doubles as the adopted
    * connection's bootstrap request, so connection-scoped settings such as
    * client_capabilities must reach the daemon first to shape that bootstrap.
+   * Requests here (e.g. the conversation to open) ride the same first flight;
+   * their answers precede the pong and are kept in bufferedStdout.
    */
   preamble?: object[];
 }
@@ -121,6 +125,9 @@ export function probeSshProxy(alias: string, options: SshProbeOptions = {}): Ssh
 
     const reqId = `ssh_probe_${randomUUID()}`;
     let stdout = Buffer.alloc(0);
+    /** Protocol lines answered ahead of the pong (preamble requests, broadcasts). */
+    const retained: Buffer[] = [];
+    let retainedBytes = 0;
     let stderr = "";
     let settled = false;
     let timer: ReturnType<typeof setTimeout>;
@@ -136,7 +143,8 @@ export function probeSshProxy(alias: string, options: SshProbeOptions = {}): Ssh
       let newline: number;
       // A newline byte never occurs inside a multibyte UTF-8 sequence.
       while ((newline = stdout.indexOf(0x0a)) !== -1) {
-        const line = stdout.subarray(0, newline).toString("utf8").trim();
+        const raw = stdout.subarray(0, newline + 1);
+        const line = raw.toString("utf8").trim();
         stdout = stdout.subarray(newline + 1);
         if (!line) continue;
         try {
@@ -147,6 +155,12 @@ export function probeSshProxy(alias: string, options: SshProbeOptions = {}): Ssh
           }
         } catch {
           finish(new Error("remote proxy wrote non-protocol data to stdout"));
+          return;
+        }
+        retained.push(raw);
+        retainedBytes += raw.length;
+        if (retainedBytes > PROBE_RETAINED_LIMIT) {
+          finish(new Error("remote daemon returned too much data before the probe response"));
           return;
         }
       }
@@ -181,7 +195,7 @@ export function probeSshProxy(alias: string, options: SshProbeOptions = {}): Ssh
       }
       process.stdout.pause();
       process.stderr.pause();
-      resolve({ process, bufferedStdout: stdout, stderr });
+      resolve({ process, bufferedStdout: retained.length > 0 ? Buffer.concat([...retained, stdout]) : stdout, stderr });
     };
 
     cancelProbe = reason => finish(new Error(reason));

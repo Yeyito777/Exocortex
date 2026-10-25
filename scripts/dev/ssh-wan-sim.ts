@@ -15,6 +15,10 @@
  *   WAN_RTO_MS       stall per lost segment; later data waits behind it (default 300)
  *   WAN_LEDGER       JSONL file: one row per forwarded write (dir, event type, raw, wire bytes, delay)
  *   WAN_STRIP_CAPS   comma-separated client capabilities to remove, emulating an older TUI
+ *   WAN_PROXY_ENTRY  the daemon's proxy entry (default src/proxy-main.ts; "src/main.ts proxy" before Oct 2026)
+ *   WAN_HANDSHAKE_RTTS round trips OpenSSH spends before the remote command runs
+ *                    (TCP, key exchange, auth, channel; about 6 without ControlMaster).
+ *                    Default 0: the proxy starts at once
  *
  * Bytes are compressed like SSH -C (one zlib stream per direction, flushed per
  * write); the link time uses those compressed sizes plus framing.
@@ -32,9 +36,15 @@ const rtoMs = Number(env.WAN_RTO_MS ?? 300);
 const ledger = env.WAN_LEDGER;
 const stripCaps = (env.WAN_STRIP_CAPS ?? "").split(",").filter(Boolean);
 const repo = resolve(import.meta.dir, "../..");
+const handshakeMs = Number(env.WAN_HANDSHAKE_RTTS ?? 0) * 2 * oneWayMs;
 const startedAt = Date.now();
 
-const proxy = spawn("bun", ["run", "src/main.ts", "proxy"], { cwd: `${repo}/daemon`, stdio: ["pipe", "pipe", "inherit"] });
+// The remote command starts once the handshake is done; input written before
+// then waits in the up link (see its linkFreeAt).
+const proxyCommand = ["bun", "run", ...(env.WAN_PROXY_ENTRY ?? "src/proxy-main.ts").split(" ")];
+const proxy = handshakeMs > 0
+  ? spawn("bash", ["-c", `sleep ${handshakeMs / 1000}; exec "$@"`, "proxy", ...proxyCommand], { cwd: `${repo}/daemon`, stdio: ["pipe", "pipe", "inherit"] })
+  : spawn(proxyCommand[0]!, proxyCommand.slice(1), { cwd: `${repo}/daemon`, stdio: ["pipe", "pipe", "inherit"] });
 
 const eventType = (data: Buffer) => /"type":"([a-z_]+)"/.exec(data.subarray(0, 200).toString("utf8"))?.[1] ?? "?";
 
@@ -42,7 +52,7 @@ function link(dir: "down" | "up", deliver: (data: Buffer) => void): (data: Buffe
   const deflate = createDeflate({ level: 6 });
   let compressed = 0;
   deflate.on("data", (chunk: Buffer) => { compressed += chunk.length; });
-  let linkFreeAt = 0;
+  let linkFreeAt = dir === "up" ? startedAt + handshakeMs : 0;
   let lastDelivery = 0;
   let queue = Promise.resolve();
   return data => {

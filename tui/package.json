@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "start": "bun run src/main.ts",
+    "start": "bun run src/launch.ts",
     "dev": "bun run --watch src/main.ts",
     "test": "bun test",
     "typecheck": "bunx tsc -p tsconfig.json --noEmit",

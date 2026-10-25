@@ -313,6 +313,46 @@ describe("DaemonClient SSH routing", () => {
     }
   });
 
+  test("first-flight requests ride the probe ahead of its ping and are answered on adoption", async () => {
+    const child = new FakeProcess();
+    child.stdin.on("data", () => {
+      const ping = probePing(child);
+      if (!ping || child.stdout.readableLength > 0) return;
+      const load = child.input.split("\n").filter(Boolean).map(line => JSON.parse(line)).find(command => command.type === "load_conversation");
+      child.stdout.write(`${JSON.stringify({ type: "conversation_loaded", reqId: load.reqId, convId: "c1", entries: [] })}\n`
+        + `${JSON.stringify({ type: "pong", reqId: ping.reqId })}\n{"type":"conversations_list","conversations":[]}\n`);
+    });
+    const events: any[] = [];
+    const client = new DaemonClient(event => events.push(event), "/tmp/local.sock", false, { spawnSshProcess: () => child });
+    let loadReqId = "";
+    const asked: string[] = [];
+    client.setSshProbeRequests(alias => {
+      asked.push(alias);
+      client.setSshProbeRequests(null);
+      const command = client.conversationLoadCommand("c1", 7, { rows: 40, cols: 120 });
+      loadReqId = command.reqId!;
+      return [command];
+    });
+    try {
+      client.ssh("connect", "whale");
+      await waitFor(() => client.remoteAlias === "whale");
+      const sent = child.input.split("\n").filter(Boolean).map(line => JSON.parse(line));
+      expect(sent.map(command => command.type)).toEqual(["client_capabilities", "load_conversation", "ping"]);
+      expect(sent[1]).toMatchObject({ reqId: loadReqId, convId: "c1", turns: 7, viewport: { rows: 40, cols: 120 } });
+      expect(asked).toEqual(["whale"]);
+      const result = await client.connect();
+      expect(events.some(event => event.type === "conversation_loaded")).toBe(false);
+      result.releaseBootstrapEvents?.();
+      await waitFor(() => events.some(event => event.type === "conversations_list"));
+      // The answer precedes the bootstrap, as it was asked first.
+      expect(events.filter(event => event.type === "conversation_loaded" || event.type === "conversations_list").map(event => event.type))
+        .toEqual(["conversation_loaded", "conversations_list"]);
+      expect(events.find(event => event.type === "conversation_loaded").reqId).toBe(loadReqId);
+    } finally {
+      client.disconnect();
+    }
+  });
+
   test("a blackholed reconnect times out without consuming queued commands and can retry", async () => {
     const first = respondingProbe();
     const stalled = new FakeProcess();
