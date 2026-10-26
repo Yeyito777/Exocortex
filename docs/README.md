@@ -31,6 +31,9 @@ selects another daemon without moving client-side UI operations to that host.
 - [Test daemons and the main daemon](dev-daemons.md): start/stop worktree
   daemons by PID (`scripts/dev/testd`), never by `pkill` pattern
 - [Network outages](network-outages.md)
+- [TUI stall profiling](tui-stall-profiling.md): measure main-thread freezes
+  with a real TUI, over a simulated or real `/ssh` link, against a read-only
+  tap of a live daemon
 - [Scroll regions](scroll-regions.md): how the TUI scrolls the conversation
   pane. On by default; set `"tui": { "scrollRegions": false }` in
   `config/config.json` and restart the TUI to turn it off.

@@ -120,6 +120,7 @@ import {
   prepareConversationOpen,
 } from "./conversationscroll";
 import { writeFileSync } from "node:fs";
+import { STALL_PROFILE, stallMark, stallSpan } from "./stallprofile";
 import { takeEarlySshProcess } from "./early-ssh";
 import { spawnReusingSshProxy, sshProbeFallback } from "./ssh-mux";
 import { applyTuiLaunchOptions, parseTuiLaunchArgs, TUI_USAGE, type TuiLaunchOptions } from "./launchargs";
@@ -408,8 +409,9 @@ function scheduleInstructionsPrefetch(): void {
 function performRender(): number {
   scheduleInstructionsPrefetch();
   const renderStartedAt = performance.now();
-  const framePresented = render(state);
+  const framePresented = stallSpan("render", () => render(state));
   const renderMs = performance.now() - renderStartedAt;
+  if (STALL_PROFILE) stallMark(`${framePresented ? "frame" : "held"} ${state.convId} msgs=${state.messages.length}${isActiveConversationLoading(state) ? " loading" : ""} off=${state.scrollOffset}`);
   if (!framePresented) return renderMs;
   // Scrolling, streaming and overlays move what is under a still pointer.
   refreshMouseCursor(state);
@@ -2348,7 +2350,7 @@ async function main(): Promise<void> {
     setWireTrace(entry => startupProfileWire.push({ t: Math.round(performance.now() * 10) / 10, ...entry }));
     setTimeout(() => reportStartupProfile("timeout"), STARTUP_PROFILE_TIMEOUT_MS).unref?.();
   }
-  daemon = new DaemonClient(onDaemonEvent, undefined, undefined, {
+  daemon = new DaemonClient(event => stallSpan(`event:${event.type}`, () => onDaemonEvent(event)), undefined, undefined, {
     spawnSshProcess: alias => takeEarlySshProcess(alias) ?? spawnReusingSshProxy(alias),
     sshProbeFallback,
   });
@@ -2477,6 +2479,11 @@ async function main(): Promise<void> {
   terminalGraphicsDetector.start();
 
   function processInput(str: string): void {
+    stallSpan("input", () => processInputNow(str));
+  }
+
+  function processInputNow(str: string): void {
+    if (STALL_PROFILE) stallMark(`input ${JSON.stringify(str).slice(0, 40)}`);
     if (!running) return;
     const events = parseInput(str);
     for (const ev of events) {
