@@ -324,13 +324,17 @@ export function captureTuiStartingState(
   };
 }
 
-/** A TUI always starts on its local socket; an /ssh route's view is applied when that route is selected. */
+/**
+ * A TUI always starts on its local socket; an /ssh route's view is applied when
+ * that route is selected. The saved open/closed sidebar never overrides one the
+ * user already chose.
+ */
 export function applyTuiStartingState(
   state: RenderState,
   startingState: TuiStartingState,
   routes = new RouteViewStates(startingState),
 ): void {
-  state.sidebar.open = startingState.sidebar.open;
+  if (!state.sidebarOpenChosen) state.sidebar.open = startingState.sidebar.open;
   applyRouteViewState(state, routes.forRoute(daemonRouteKey(null)));
 }
 

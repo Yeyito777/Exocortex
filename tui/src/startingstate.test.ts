@@ -170,6 +170,25 @@ describe("TUI starting state", () => {
     expect(state.sidebar.selectedItem).toEqual({ type: "conversation", id: "second" });
   });
 
+  test("a sidebar the user already opened or closed keeps that; the rest of the view still restores", () => {
+    const saved = (open: boolean): TuiStartingState => ({
+      version: 2,
+      focusedConversationId: "focused",
+      sidebar: open
+        ? { open: true, currentFolderId: null, selectedItem: { type: "conversation", id: "cursor" }, scrollOffset: 0 }
+        : { open: false },
+      conversationScrollPositions: {},
+    });
+    for (const savedOpen of [true, false]) {
+      const state = createInitialState();
+      state.sidebar.open = !savedOpen;
+      state.sidebarOpenChosen = true;
+      applyTuiStartingState(state, saved(savedOpen));
+      expect(state.sidebar.open).toBe(!savedOpen);
+      expect(state.convId).toBe("focused");
+    }
+  });
+
   test("does not try to load a saved conversation that no longer exists", () => {
     const startingState: TuiStartingState = {
       version: 2,

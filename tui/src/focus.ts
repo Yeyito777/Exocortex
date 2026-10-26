@@ -116,12 +116,24 @@ function isPromptTyping(state: RenderState): boolean {
 }
 
 function ensureSidebarReady(state: RenderState): void {
+  state.sidebarOpenChosen = true;
   if (!state.sidebar.open) {
     state.sidebar.open = true;
     if (state.convId) focusConversationById(state.sidebar, state.convId);
     else syncSelectedIndex(state.sidebar);
   }
   focusSidebar(state);
+}
+
+/** Ctrl+S: open the sidebar focused, or close it back to the chat. */
+export function toggleSidebar(state: RenderState): void {
+  state.sidebarOpenChosen = true;
+  toggleSidebarPreservingViewport(state);
+  if (state.sidebar.open) {
+    ensureSidebarReady(state);
+  } else {
+    state.panelFocus = "chat";
+  }
 }
 
 function vimHasPendingInput(state: RenderState): boolean {
@@ -311,12 +323,7 @@ export function handleFocusedKey(
     case "restart_daemon":
       return { type: "restart_daemon" };
     case "sidebar_toggle":
-      toggleSidebarPreservingViewport(state);
-      if (state.sidebar.open) {
-        ensureSidebarReady(state);
-      } else {
-        state.panelFocus = "chat";
-      }
+      toggleSidebar(state);
       return { type: "handled" };
     case "focus_cycle":
       if (state.sidebar.open) {

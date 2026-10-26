@@ -267,6 +267,8 @@ export interface RenderState {
   chatFocus: ChatFocus;
   /** Conversations sidebar state. */
   sidebar: SidebarState;
+  /** The user opened or closed the sidebar this session: saved and restored views no longer do. */
+  sidebarOpenChosen: boolean;
   /** Vim keybind engine state. */
   vim: VimState;
   /** Cached layout values — updated each render, read by scroll functions. */
@@ -710,6 +712,7 @@ export function createInitialState(): RenderState {
     panelFocus: "chat",
     chatFocus: "prompt",
     sidebar: createSidebarState(loadSidebarFolderViewPreference()),
+    sidebarOpenChosen: false,
     vim: createVimState(),
     layout: { totalLines: 0, messageAreaHeight: 0, historyWidth: 0, chatWidth: 0, taskPanelRect: null, taskPanelMaxScroll: 0, usageBlockRect: null, historyViewportRows: [], chatCol: 1, sepAbove: 0, firstInputRow: 0, sepBelow: 0 },
     deferredHistoryRender: null,
