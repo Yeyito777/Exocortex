@@ -5,6 +5,7 @@ import type { FastMode } from "@exocortex/shared/messages";
  * Both transports carry the same JSON-lines protocol.
  */
 
+import { stallSpan } from "./stallprofile";
 import { connect } from "net";
 import { existsSync } from "fs";
 import { randomUUID } from "crypto";
@@ -1468,6 +1469,10 @@ export class DaemonClient {
   }
 
   private onData(data: Buffer | string): void {
+    stallSpan("wire", () => this.onDataNow(data));
+  }
+
+  private onDataNow(data: Buffer | string): void {
     // The existing prefix was completely scanned on the preceding callback.
     // Resume at its old end instead of rescanning a growing multi-megabyte JSON
     // event on every socket chunk (quadratic work for large payloads).
