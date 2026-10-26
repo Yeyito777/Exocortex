@@ -31,7 +31,8 @@ import {
   openToolInstructions,
   prefetchCurrentInstructions,
 } from "./instructions/controller";
-import { handleFocusedKey } from "./focus";
+import { handleFocusedKey, toggleSidebar } from "./focus";
+import { resolveAction } from "./keybinds";
 import { handleMouseEvent, refreshMouseCursor, trackMouseCursor } from "./mouse";
 import { clearPrompt } from "./promptstate";
 import { MACRO_COMMAND, MACRO_ERROR_DELAY_MS, tryCommand } from "./commands";
@@ -108,7 +109,7 @@ import type { SidebarViewHint } from "@exocortex/shared/sidebar-first-page";
 import { applyTuiStartingState, availableStartingConversationId, applyRouteViewState, captureRouteViewState, captureTuiStartingState, daemonRouteKey, loadTuiStartingState, RouteViewStates, saveTuiStartingState } from "./startingstate";
 import { closeBtwSession, startBtwSession } from "./btw/controller";
 import { createSidebarState } from "./sidebar/state";
-import { addOptimisticConversation, bumpConversationToTop, rememberEnteredConversation } from "./sidebar";
+import { addOptimisticConversation, bumpConversationToTop, focusConversationById, rememberEnteredConversation } from "./sidebar";
 import { newConversationFolderId, type NewConversationPlacement } from "./sidebar/tree";
 import { formatConnectionLostNotice } from "./events/notices";
 import { RemotePathCompletionController } from "./remote-path-completion";
@@ -148,9 +149,12 @@ const state = createInitialState();
 const routeViews = new RouteViewStates(savedStartingState);
 let activeRouteKey = daemonRouteKey(null);
 if (savedStartingState) applyTuiStartingState(state, savedStartingState, routeViews);
-/** The restored conversation until the route's first conversations list confirms it. */
-let pendingStartingState: { focusedConversationId: string | null } | null = savedStartingState
-  ? { focusedConversationId: state.convId }
+/**
+ * The restored conversation until the route's first conversations list
+ * confirms it, and whether that restore placed the sidebar cursor.
+ */
+let pendingStartingState: { focusedConversationId: string | null; sidebarCursorRestored: boolean } | null = savedStartingState
+  ? { focusedConversationId: state.convId, sidebarCursorRestored: state.sidebar.open && routeViews.forRoute(activeRouteKey).sidebarCursor !== null }
   : null;
 let startingConversationLoad: { convId: string; reqId: string } | null = null;
 /** A route switch's saved conversation, requested in the SSH probe's first flight. */
@@ -627,8 +631,9 @@ function resetForDaemonRouteSwitch(newRouteKey: string): void {
   resetDraftConversationState(state);
   // Reopen what this route showed last; its reconnect loads the conversation.
   activeRouteKey = newRouteKey;
-  applyRouteViewState(state, routeViews.forRoute(activeRouteKey));
-  pendingStartingState = { focusedConversationId: state.convId };
+  const view = routeViews.forRoute(activeRouteKey);
+  applyRouteViewState(state, view);
+  pendingStartingState = { focusedConversationId: state.convId, sidebarCursorRestored: state.sidebar.open && view.sidebarCursor !== null };
 }
 
 function onDaemonEvent(event: Event): void {
@@ -794,6 +799,9 @@ function onDaemonEvent(event: Event): void {
       const startingState = pendingStartingState;
       pendingStartingState = null;
       const convId = availableStartingConversationId(startingState, event.conversations);
+      // Opened before this list (Ctrl+S while starting), the sidebar has no
+      // cursor yet: start it on the open conversation, as opening it does.
+      if (state.sidebar.open && !startingState.sidebarCursorRestored && state.convId) focusConversationById(state.sidebar, state.convId);
       if (convId && state.convId === convId) {
         if (startingConversationLoad?.convId !== convId) {
           prepareConversationOpen(state, convId);
@@ -1857,6 +1865,12 @@ function handleKey(key: KeyEvent): void {
     if (key.event === "release") return;
     if (key.type === "ctrl-c") cleanup();
     if (key.type === "escape") daemon.ssh("cancel");
+    // The sidebar is drawn beside the progress, and the route switch keeps it
+    // as it is: a Ctrl+S pressed during a --ssh startup must not be lost.
+    if (resolveAction(key) === "sidebar_toggle") {
+      toggleSidebar(state);
+      renderAfterLocalUiMutation();
+    }
     return;
   }
   const voicePromptBufferBefore = state.voicePromptJobs.length > 0 || state.voicePrompt?.phase === "transcribing"
