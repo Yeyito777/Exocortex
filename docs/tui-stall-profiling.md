@@ -40,6 +40,9 @@ bun scripts/dev/tui-stall-profile.ts --ssh --st --focus CONV \
   swapped-out TUI costs (the Mac's situation below).
 - `--cpu-prof DIR`, `--heap-prof DIR`: Bun's markdown profiles of the TUI.
 
+`vmmap` on macOS suspends the process it inspects for 0.5-1 s: snapshotting a
+measured TUI's memory shows up as an unlabelled stall of that size.
+
 ## Watching a real daemon read-only
 
 [`scripts/dev/readonly-daemon-tap.ts`](../scripts/dev/readonly-daemon-tap.ts)
