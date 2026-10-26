@@ -36,6 +36,15 @@ export function isValidHistoryViewport(value: unknown): value is HistoryViewport
     && (folded === undefined || typeof folded === "boolean");
 }
 
+/** A load_conversation's initialBackfill, held to load_conversation_history's limits. */
+export function isValidInitialBackfill(value: unknown): value is { reqId: string; turns: number; cachedEntryHashes?: string[] } {
+  if (typeof value !== "object" || value === null) return false;
+  const { reqId, turns, cachedEntryHashes } = value as { reqId?: unknown; turns?: unknown; cachedEntryHashes?: unknown };
+  return typeof reqId === "string" && reqId.length > 0 && reqId.length <= 200
+    && Number.isSafeInteger(turns) && (turns as number) >= 1 && (turns as number) <= 100
+    && (cachedEntryHashes === undefined || Array.isArray(cachedEntryHashes));
+}
+
 export interface HistoryWindowOptions {
   /** With beforeEntryIndex, also include blocks before this index of that AI entry. */
   beforeBlockIndex?: number;

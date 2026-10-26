@@ -11,6 +11,10 @@ interface Pending {
   command: HistoryRequest;
   key: string;
   base?: Page;
+  /** A load's initialBackfill page, pending under its own reqId until the load answers. */
+  backfillReqId?: string;
+  /** This entry is that pushed page: its retry asks for it from the cursor it reports. */
+  pushed?: boolean;
 }
 
 /** Transport-only cache. Never displays stale state or retains mutable UI objects.
@@ -39,15 +43,41 @@ export class HistoryCache {
     const key = JSON.stringify([command.type, command.convId, command.turns,
       command.type === "load_conversation_history" ? command.beforeEntryIndex : null,
       command.type === "load_conversation_history" ? command.beforeBlockIndex ?? 0 : null]);
-    let base = this.pages.get(key);
-    if (base && this.pinnedBytes + base.bytes > this.budget) base = undefined;
-    if (base) {
-      this.pages.delete(key);
-      this.pages.set(key, base);
-      this.pinnedBytes += base.bytes;
+    const base = this.pin(key);
+    const backfill = command.type === "load_conversation" ? command.initialBackfill : undefined;
+    let prepared: T = base ? { ...command, cachedEntryHashes: base.hashes } : command;
+    if (backfill && !this.pending.has(backfill.reqId) && this.pending.size < 63) {
+      // Its cursor is unknown until the load answers, so the cached base is
+      // this conversation's last opening backfill; hashes match by content.
+      const backfillKey = JSON.stringify(["initial_backfill", command.convId, backfill.turns]);
+      const backfillBase = this.pin(backfillKey);
+      this.pending.set(backfill.reqId, {
+        command: { type: "load_conversation_history", reqId: backfill.reqId, convId: command.convId, beforeEntryIndex: 0, turns: backfill.turns, requestSource: "initial-backfill" },
+        key: backfillKey,
+        base: backfillBase,
+        pushed: true,
+      });
+      prepared = { ...prepared, initialBackfill: backfillBase ? { ...backfill, cachedEntryHashes: backfillBase.hashes } : backfill };
     }
-    this.pending.set(command.reqId, { command, key, base });
-    return base ? { ...command, cachedEntryHashes: base.hashes } : command;
+    this.pending.set(command.reqId, { command, key, base, ...(backfill ? { backfillReqId: backfill.reqId } : {}) });
+    return prepared;
+  }
+
+  /** The cached page under `key`, pinned for an outstanding request, if the pin budget allows. */
+  private pin(key: string): Page | undefined {
+    const base = this.pages.get(key);
+    if (!base || this.pinnedBytes + base.bytes > this.budget) return undefined;
+    this.pages.delete(key);
+    this.pages.set(key, base);
+    this.pinnedBytes += base.bytes;
+    return base;
+  }
+
+  private release(reqId: string): void {
+    const pending = this.pending.get(reqId);
+    if (!pending) return;
+    this.pending.delete(reqId);
+    this.pinnedBytes -= pending.base?.bytes ?? 0;
   }
 
   /** Returns a full event, or retries a rejected delta with the original request.
@@ -63,6 +93,11 @@ export class HistoryCache {
         || (event.type === "conversation_loaded") !== (pending.command.type === "load_conversation"))) return null;
     this.pending.delete(event.reqId!);
     this.pinnedBytes -= pending.base?.bytes ?? 0;
+    // A daemon that does not follow this load with its backfill (no older
+    // history, or it predates initialBackfill) never answers that reqId.
+    if (pending.backfillReqId && (event.type !== "conversation_loaded" || event.initialBackfillReqId !== pending.backfillReqId)) {
+      this.release(pending.backfillReqId);
+    }
     if (event.type === "error") return event;
 
     let full: HistoryResponse = event;
@@ -84,7 +119,14 @@ export class HistoryCache {
       } catch {
         if (pending.base) {
           this.pending.set(event.reqId!, { ...pending, base: undefined });
-          retry(pending.command);
+          // A pushed backfill is asked for again as an ordinary page from its own cursor.
+          retry(pending.pushed && event.type === "conversation_history_loaded" && pending.command.type === "load_conversation_history"
+            ? {
+              ...pending.command,
+              beforeEntryIndex: event.historyEndIndex,
+              ...(event.historyEndBlockIndex ? { beforeBlockIndex: event.historyEndBlockIndex } : {}),
+            }
+            : pending.command);
         } else {
           return { type: "error", reqId: event.reqId, convId: event.convId, message: "Invalid conversation history delta" };
         }

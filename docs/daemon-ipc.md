@@ -104,6 +104,19 @@ waiting for the whole list. The `exocortexd proxy` at the far end loads only
 the stdio bridge (`daemon/src/proxy-main.ts`), and the TUI reuses one SSH
 connection per alias ([SSH connection reuse](ssh-connection-reuse.md)).
 
+## Opening a conversation
+
+`load_conversation` answers with `conversation_loaded`: the newest window,
+sized to the client's `viewport` (or `turns`). A client that wants the next
+older page as well names it in `initialBackfill: { reqId, turns }` (with
+`cachedEntryHashes` for a delta, like any history request). The daemon then
+follows the loaded event, from the same snapshot, with exactly the
+`conversation_history_loaded` that `load_conversation_history` from the
+returned cursor would give, as the answer to that `reqId`, and says so with
+`initialBackfillReqId` on the loaded event. Without that field (nothing older,
+an older daemon) the client asks as before. Over `/ssh` this makes an open one
+round trip instead of two.
+
 ## Connectivity
 
 One connectivity monitor per daemon decides whether the network is reachable

@@ -12,6 +12,11 @@ The TUI now keeps a transport-only, in-memory LRU cache for remote history loads
 - Cache entries are immutable serialized JSON, not mutable rendered blocks.
   Entries smaller than 257 characters are not cached: advertising a hash would
   consume too much of the potential bandwidth saving.
+- The opening backfill rides the open itself (`initialBackfill`, see
+  [direct daemon commands](daemon-ipc.md#opening-a-conversation)); its cursor
+  is unknown when the open is sent, so its cached base is that conversation's
+  previous opening backfill, which content hashes match however far the
+  conversation has grown.
 - Opening and backfill/viewport requests advertise SHA-256 hashes of entries
   from the corresponding cached page. The daemon compares them against the
   canonical page and sends fresh entries plus an ordered index map. This handles

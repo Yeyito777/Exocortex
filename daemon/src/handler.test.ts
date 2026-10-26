@@ -3588,6 +3588,55 @@ describe("handler load_conversation late-join streaming snapshots", () => {
     expect(sent[0]).not.toHaveProperty("historyStartIndex");
   });
 
+  test("sends a requested initial backfill right behind the opening page, identical to asking for it", async () => {
+    const { historyEntryHash } = await import("@exocortex/shared/history-delta");
+    const convId = mkId("pushed-backfill");
+    create(convId, "openai", "gpt-5.4");
+    for (let turn = 0; turn < 7; turn++) {
+      appendMessages(convId, [
+        { role: "user", content: `user ${turn} `.repeat(200), metadata: null },
+        { role: "assistant", content: `assistant ${turn} `.repeat(200), metadata: null },
+      ]);
+    }
+    const sent: Array<any> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: unknown) => { sent.push(event); }),
+      broadcast: mock(() => {}), sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}), subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+    const client = { capabilities: new Set<string>() };
+    const run = async (command: Parameters<typeof handle>[1]) => {
+      sent.length = 0;
+      await handle(client as never, command);
+      return [...sent];
+    };
+    const open = { type: "load_conversation" as const, convId, reqId: "open", turns: 2 };
+
+    const [loaded, pushed, ...rest] = await run({ ...open, initialBackfill: { reqId: "backfill", turns: 2 } });
+    expect(loaded).toMatchObject({ type: "conversation_loaded", reqId: "open", initialBackfillReqId: "backfill", hasOlderHistory: true });
+    expect(rest.filter(event => event.type === "conversation_history_loaded")).toEqual([]);
+    const [asked] = await run({ type: "load_conversation_history", convId, reqId: "backfill", turns: 2,
+      beforeEntryIndex: loaded.historyStartIndex, requestSource: "initial-backfill" });
+    expect(pushed).toEqual(asked);
+    expect(pushed.historyEndIndex).toBe(loaded.historyStartIndex);
+
+    // Cached hashes delta-encode it like a requested page.
+    const hashes = pushed.entries.map((entry: unknown) => historyEntryHash(JSON.stringify(entry)));
+    const [, warm] = await run({ ...open, initialBackfill: { reqId: "backfill", turns: 2, cachedEntryHashes: hashes } });
+    expect(warm.entries).toEqual([]);
+    expect(warm.entryOrder).toHaveLength(pushed.entries.length);
+
+    // Older clients, invalid requests and windows with nothing older get no page and no promise.
+    for (const command of [open, { ...open, initialBackfill: { reqId: "backfill", turns: 0 } }, { ...open, turns: 100, initialBackfill: { reqId: "backfill", turns: 2 } }]) {
+      const events = await run(command as Parameters<typeof handle>[1]);
+      expect(events[0].type).toBe("conversation_loaded");
+      expect(events[0]).not.toHaveProperty("initialBackfillReqId");
+      expect(events.some(event => event.type === "conversation_history_loaded")).toBe(false);
+    }
+  });
+
   test("honors a screen-sized opening window and still byte-bounds it", async () => {
     const shortId = mkId("screen-sized-short");
     create(shortId, "openai", "gpt-5.4");
