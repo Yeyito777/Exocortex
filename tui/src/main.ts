@@ -550,10 +550,14 @@ function scheduleDayRolloverRender(): void {
   timer.unref?.();
 }
 
-function requestOlderHistory(turns: number, requestSource: "initial-backfill" | "viewport" = "viewport"): boolean {
+/**
+ * Load the page before the oldest loaded entry. `pushedReqId` is a page the
+ * daemon already sends unasked (a load's initialBackfill): wait for it instead.
+ */
+function requestOlderHistory(turns: number, requestSource: "initial-backfill" | "viewport" = "viewport", pushedReqId?: string): boolean {
   const request = beginOlderHistoryLoad(state, turns);
   if (!request) return false;
-  state.historyLoadingRequestId = daemon.loadConversationHistory(
+  state.historyLoadingRequestId = pushedReqId ?? daemon.loadConversationHistory(
     request.convId,
     request.beforeEntryIndex,
     request.turns,
@@ -565,7 +569,7 @@ function requestOlderHistory(turns: number, requestSource: "initial-backfill" | 
 
 /** Open (or reload) a conversation with a window sized to fill this screen. */
 function loadConversationWindow(convId: string): string {
-  const reqId = daemon.loadConversation(convId, openingHistoryTurns(state.rows), openingViewport(state));
+  const reqId = daemon.loadConversation(convId, openingHistoryTurns(state.rows), openingViewport(state), INITIAL_BUFFER_ADDITIONAL_TURNS);
   noteConversationOpenRequest(state, convId, reqId);
   return reqId;
 }
@@ -869,7 +873,9 @@ function onDaemonEvent(event: Event): void {
       }, holdMs);
     }
     let renderMs = renderImmediately();
-    const initialBackfillRequested = requestOlderHistory(INITIAL_BUFFER_ADDITIONAL_TURNS, "initial-backfill");
+    // A daemon that follows the page with its backfill names it; older ones are asked.
+    const pushedBackfill = event.convId === state.convId ? event.initialBackfillReqId : undefined;
+    const initialBackfillRequested = requestOlderHistory(INITIAL_BUFFER_ADDITIONAL_TURNS, "initial-backfill", pushedBackfill);
     if (initialBackfillRequested) {
       if (!restoreWaitingForBackfill) scheduleRender(0);
     } else if (restoreWaitingForBackfill) {
@@ -2531,7 +2537,7 @@ async function main(): Promise<void> {
     if (alias === daemon.remoteAlias) return [];
     const convId = routeViews.forRoute(daemonRouteKey(alias)).focusedConversationId;
     if (!convId) return [];
-    const command = daemon.conversationLoadCommand(convId, openingHistoryTurns(state.rows), openingViewport(state));
+    const command = daemon.conversationLoadCommand(convId, openingHistoryTurns(state.rows), openingViewport(state), INITIAL_BUFFER_ADDITIONAL_TURNS);
     sshProbeConversationLoad = { alias, convId, reqId: command.reqId! };
     return [command];
   });

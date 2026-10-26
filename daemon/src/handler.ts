@@ -94,7 +94,7 @@ import { addClaudeAccount, claudeLoginCommand, removeClaudeAccount } from "./pro
 import { claudeAccountReports } from "./providers/anthropic/account-pool";
 import { formatClaudeAccountReports } from "./providers/anthropic/account-report";
 import { createAccountsWatch } from "./accounts-watch";
-import { HISTORY_PAGE_BYTE_BUDGET, INITIAL_HISTORY_TURNS, MAX_HISTORY_REQUEST_TURNS, buildHistoryUpdatedEvents, isValidHistoryViewport, compactHistoryImages, pageDisplayHistory, type HistoryViewport, type HistoryWindowOptions } from "./history-pagination";
+import { HISTORY_PAGE_BYTE_BUDGET, INITIAL_HISTORY_TURNS, MAX_HISTORY_REQUEST_TURNS, buildHistoryUpdatedEvents, isValidHistoryViewport, isValidInitialBackfill, compactHistoryImages, pageDisplayHistory, type HistoryViewport, type HistoryWindowOptions } from "./history-pagination";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
 import { randomUUID } from "crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -937,6 +937,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     metrics?: ConversationLoadMetrics,
     cachedEntryHashes?: string[],
     viewport?: HistoryViewport,
+    initialBackfillReqId?: string,
   ) => {
     const paginated = target.capabilities?.has("history-pagination") || turns !== undefined;
     const windowOptions = historyWindowOptions(target);
@@ -969,6 +970,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           historyStartUserIndex: page.startUserIndex,
           historyTotalEntries: page.totalEntries,
           hasOlderHistory: page.hasOlder,
+          ...(initialBackfillReqId && page.hasOlder ? { initialBackfillReqId } : {}),
           ...(pending ? {
             pendingAI: {
               blocks: pending.blocks,
@@ -991,7 +993,11 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           metrics.responseEntries = responseEntries.length;
           metrics.historyTotalEntries = page.totalEntries;
         }
-        return { convId: page.convId, btwSessionId: btw?.sessionId ?? null };
+        return {
+          convId: page.convId,
+          btwSessionId: btw?.sessionId ?? null,
+          olderCursor: page.hasOlder ? { beforeEntryIndex: page.startIndex, beforeBlockIndex: page.startBlockIndex } : null,
+        };
       }
     }
 
@@ -1025,6 +1031,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         historyStartUserIndex: page.startUserIndex,
         historyTotalEntries: page.totalEntries,
         hasOlderHistory: page.hasOlder,
+        ...(initialBackfillReqId && page.hasOlder ? { initialBackfillReqId } : {}),
       } : {}),
       ...(compactData.pendingAI ? { pendingAI: compactData.pendingAI } : {}),
       contextTokens: compactData.contextTokens,
@@ -1042,7 +1049,11 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       metrics.responseEntries = responseEntries.length;
       metrics.historyTotalEntries = page?.totalEntries ?? compactData.entries.length;
     }
-    return { convId: data.convId, btwSessionId: btw?.sessionId ?? null };
+    return {
+      convId: data.convId,
+      btwSessionId: btw?.sessionId ?? null,
+      olderCursor: page?.hasOlder ? { beforeEntryIndex: page.startIndex, beforeBlockIndex: page.startBlockIndex } : null,
+    };
   };
 
   const sendCompactConversationHistory = (
@@ -3473,7 +3484,9 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         }
         if (cmd.turns !== undefined) client.capabilities?.add("history-pagination");
         const metrics = PERFORMANCE_PROFILING_ENABLED ? createConversationLoadMetrics() : undefined;
-        const loaded = sendCompactConversationLoaded(client, cmd.convId, cmd.reqId, cmd.turns, metrics, cmd.cachedEntryHashes, cmd.viewport);
+        // The page the client would ask for next rides right behind this one.
+        const backfill = isValidInitialBackfill(cmd.initialBackfill) ? cmd.initialBackfill : undefined;
+        const loaded = sendCompactConversationLoaded(client, cmd.convId, cmd.reqId, cmd.turns, metrics, cmd.cachedEntryHashes, cmd.viewport, backfill?.reqId);
         if (!loaded) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
           if (PERFORMANCE_PROFILING_ENABLED) {
@@ -3524,6 +3537,22 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
               connectionWaitLabel: convStore.getConnectionWaitLabel(loadedConvId) ?? null,
             });
           }
+        }
+        // Last, so nothing the first paint needs waits behind it on the wire.
+        // Same synchronous snapshot as the loaded page, so it ends where that begins.
+        if (backfill && loaded.olderCursor) {
+          const sent = sendCompactConversationHistory(
+            client,
+            loadedConvId,
+            loaded.olderCursor.beforeEntryIndex,
+            loaded.olderCursor.beforeBlockIndex,
+            backfill.turns,
+            backfill.reqId,
+            "initial-backfill",
+            undefined,
+            backfill.cachedEntryHashes,
+          );
+          if (!sent) server.sendTo(client, { type: "error", reqId: backfill.reqId, convId: loadedConvId, message: `Conversation ${loadedConvId} not found` });
         }
         // Clear unread when a client views the conversation
         if (convStore.clearUnread(loadedConvId)) {

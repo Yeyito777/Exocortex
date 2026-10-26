@@ -56,6 +56,57 @@ describe("content-checked remote history cache", () => {
     expect(cache.prepare({ ...cmd, reqId: "4", beforeEntryIndex: 9 }).cachedEntryHashes).toBeUndefined();
   });
 
+  test("a pushed initial backfill is delta-encoded against the conversation's last one, whatever its cursor", () => {
+    const cache = new HistoryCache();
+    const open = (reqId: string): LoadConversationCommand => ({ ...request(reqId), initialBackfill: { reqId: `${reqId}-backfill`, turns: 10 } });
+    const backfill = (reqId: string, end: number, entries = [entry("older")]): HistoryResponse => ({
+      type: "conversation_history_loaded", reqId, convId: "a", entries, historyStartIndex: 0, historyStartUserIndex: 0,
+      historyEndIndex: end, historyTotalEntries: 12, hasOlderHistory: false, requestSource: "initial-backfill" });
+    const first = cache.prepare(open("1"));
+    expect(first.initialBackfill).toEqual({ reqId: "1-backfill", turns: 10 });
+    cache.receive({ ...response("1"), initialBackfillReqId: "1-backfill" } as HistoryResponse, noRetry);
+    cache.receive(backfill("1-backfill", 10), noRetry);
+    // The conversation grew: the next open's backfill starts later, and still matches by content.
+    const second = cache.prepare(open("2"));
+    expect(second.initialBackfill?.cachedEntryHashes).toHaveLength(1);
+    cache.receive({ ...response("2"), initialBackfillReqId: "2-backfill" } as HistoryResponse, noRetry);
+    const grown = backfill("2-backfill", 11, [entry("older"), entry("newer")]);
+    const delta = encodeHistoryDelta(grown, second.initialBackfill?.cachedEntryHashes);
+    expect(delta.entryOrder).toEqual([-1, 0]);
+    expect(cache.receive(delta, noRetry)).toEqual(grown);
+  });
+
+  test("an invalid pushed delta is asked for again as a plain page from its own cursor", () => {
+    const cache = new HistoryCache();
+    const open = (reqId: string): LoadConversationCommand => ({ ...request(reqId), initialBackfill: { reqId: `${reqId}-b`, turns: 10 } });
+    cache.prepare(open("1"));
+    cache.receive({ ...response("1"), initialBackfillReqId: "1-b" } as HistoryResponse, noRetry);
+    cache.receive({ type: "conversation_history_loaded", reqId: "1-b", convId: "a", entries: [entry("older")], historyStartIndex: 0,
+      historyStartUserIndex: 0, historyEndIndex: 10, historyTotalEntries: 12, hasOlderHistory: false }, noRetry);
+    cache.prepare(open("2"));
+    cache.receive({ ...response("2"), initialBackfillReqId: "2-b" } as HistoryResponse, noRetry);
+    const retried: LoadConversationHistoryCommand[] = [];
+    const bad: HistoryResponse = { type: "conversation_history_loaded", reqId: "2-b", convId: "a", entries: [], entryOrder: [-999],
+      historyStartIndex: 0, historyStartUserIndex: 0, historyEndIndex: 11, historyEndBlockIndex: 2, historyTotalEntries: 13, hasOlderHistory: false };
+    expect(cache.receive(bad, cmd => retried.push(cache.prepare(cmd) as LoadConversationHistoryCommand))).toBeNull();
+    expect(retried).toEqual([{ type: "load_conversation_history", reqId: "2-b", convId: "a", beforeEntryIndex: 11, beforeBlockIndex: 2,
+      turns: 10, requestSource: "initial-backfill" }]);
+  });
+
+  test("a load answered without the pushed page (older daemon, no older history) releases its pin", () => {
+    // Room to pin one opening page (~4.5 KB) and one backfill page (~10 KB) at a time.
+    const cache = new HistoryCache(20_000);
+    const open = (reqId: string): LoadConversationCommand => ({ ...request(reqId), initialBackfill: { reqId: `${reqId}-b`, turns: 10 } });
+    cache.prepare(open("1"));
+    cache.receive({ ...response("1"), initialBackfillReqId: "1-b" } as HistoryResponse, noRetry);
+    cache.receive({ type: "conversation_history_loaded", reqId: "1-b", convId: "a", entries: [entry("older")], historyStartIndex: 0,
+      historyStartUserIndex: 0, historyEndIndex: 10, historyTotalEntries: 12, hasOlderHistory: false }, noRetry);
+    expect(cache.prepare(open("2")).initialBackfill?.cachedEntryHashes).toBeDefined();
+    cache.receive(response("2"), noRetry);
+    // Pinned again only because the unanswered page's pin was released.
+    expect(cache.prepare(open("3")).initialBackfill?.cachedEntryHashes).toBeDefined();
+  });
+
   test("pins exact bases across concurrent responses, LRU eviction and UI mutation", () => {
     const cache = new HistoryCache(100_000, 1);
     const first = response("1");

@@ -389,6 +389,15 @@ export interface LoadConversationCommand extends CachedHistoryRequest {
    * are estimated that way.
    */
   viewport?: { rows: number; cols: number; folded?: boolean };
+  /**
+   * The history page the client would request next (older than the opening
+   * window): the daemon sends it right after this conversation_loaded, as the
+   * conversation_history_loaded answer to `reqId`, from the same snapshot, so
+   * opening takes one round trip instead of two. The loaded event names
+   * `reqId` in `initialBackfillReqId` when the page follows; otherwise (no
+   * older history, an older daemon) the client requests it as before.
+   */
+  initialBackfill?: { reqId: string; turns: number } & CachedHistoryRequest;
 }
 
 export interface LoadConversationHistoryCommand extends CachedHistoryRequest {
@@ -1768,6 +1777,8 @@ export interface ConversationLoadedEvent extends CachedHistoryResponse {
   historyTotalEntries?: number;
   /** Whether older history can be requested before historyStartIndex. */
   hasOlderHistory?: boolean;
+  /** The request's initialBackfill.reqId when that page follows this event. */
+  initialBackfillReqId?: string;
   /** Live assistant snapshot for actively streaming conversations. */
   pendingAI?: AIMessagePayload;
   /** Last known input token count for this conversation. */

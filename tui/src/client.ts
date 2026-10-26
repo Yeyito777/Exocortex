@@ -1114,20 +1114,31 @@ export class DaemonClient {
    * it; `turns` is the fallback for those that don't. Callers pass enough to
    * fill their screen.
    */
-  loadConversation(convId: string, turns = 5, viewport?: { rows: number; cols: number; folded?: boolean }): string {
-    const command = this.conversationLoadCommand(convId, turns, viewport);
+  loadConversation(
+    convId: string,
+    turns = 5,
+    viewport?: { rows: number; cols: number; folded?: boolean },
+    initialBackfillTurns?: number,
+  ): string {
+    const command = this.conversationLoadCommand(convId, turns, viewport, initialBackfillTurns);
     this.send(command);
     return command.reqId!;
   }
 
-  /** A load_conversation to send elsewhere (an SSH probe's first flight); see loadConversation. */
+  /**
+   * A load_conversation to send elsewhere (an SSH probe's first flight); see
+   * loadConversation. `initialBackfillTurns` asks the daemon to send the next
+   * older page right behind it (protocol `initialBackfill`).
+   */
   conversationLoadCommand(
     convId: string,
     turns = 5,
     viewport?: { rows: number; cols: number; folded?: boolean },
+    initialBackfillTurns?: number,
   ): Extract<Command, { type: "load_conversation" }> {
     const requestedAt = Date.now();
     const reqId = `conversation_${++this.nextReqId}_${requestedAt}`;
+    const backfillReqId = initialBackfillTurns ? `history_${++this.nextReqId}_${requestedAt}` : null;
     if (this.performanceProfilingEnabled) {
       this.pendingConversationLoads.set(reqId, { convId, startedAt: performance.now() });
       log("info", `perf: conversation_open tui_request ${JSON.stringify({ reqId, convId, turns, viewport: viewport ?? null, requestedAt, connected: this._connected })}`);
@@ -1149,6 +1160,7 @@ export class DaemonClient {
       convId,
       turns,
       ...(viewport ? { viewport } : {}),
+      ...(backfillReqId ? { initialBackfill: { reqId: backfillReqId, turns: initialBackfillTurns! } } : {}),
       ...(this.performanceProfilingEnabled ? { requestedAt } : {}),
     };
   }
