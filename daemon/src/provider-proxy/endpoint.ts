@@ -144,6 +144,9 @@ export class ProviderProxyEndpoint {
       case "provider_proxy_exec_cancel":
         this.executor.cancel(command.execId);
         return;
+      case "provider_proxy_ping":
+        this.transport.send({ type: "provider_proxy_pong", reqId: command.reqId });
+        return;
     }
   }
 

@@ -117,6 +117,18 @@ before. End-to-end test: `bun scripts/dev/client-exec-e2e.ts`.
   dropped network connection. Claude Code and the OpenAI client then retry as
   they would for a network error, and the link reconnects with backoff (1s up
   to 60s). Nothing hangs: SSH keepalives detect a dead peer in ~45s.
+- **Link stuck without dropping:** a TCP connection can collapse (heavy
+  retransmits on a lossy network) and carry a few KB/s while a fresh one runs
+  at full speed. SSH keepalives still pass, because whatever the remote sends
+  resets them, so requests just queue behind it (Oct 27 2026: the Mac's link
+  to whale crawled at ~4 KB/s with 7 MB retransmitted, and every proxied turn
+  sat pending). The link pings a `link-ping` remote every 15s and writes to
+  ssh in 256 KB slices to see how fast ssh takes them; a ping unanswered (or a
+  backlog not taken) for 45s while under 1 MB moved either way drops the
+  connection (`The SSH connection to whale stalled (…); reconnecting.`) and
+  handles it like a dropped one. A busy link (a large request going out, a long
+  answer coming in) keeps moving and is not a stuck one. A remote without
+  `link-ping` is not pinged; only its backlog is watched.
 - **Link down for a while (Wi-Fi drop, DNS failure, ssh exit 255, the remote
   daemon restarting):** the forwarder holds a request and retries the link
   (2s, 5s, then every 10s) for up to 45s, so a short blip is only latency; a
@@ -187,7 +199,8 @@ connection its broadcasts; then `provider_proxy_open` / `_ws_send` / `_cancel`
 streams (`provider_proxy_response`, `_data`, `_end`), `provider_proxy_status`
 (login + usage), `provider_proxy_consume_reset`, `provider_proxy_exec`
 (remote_bash; `exec-alive` remotes answer `provider_proxy_exec_alive` too),
-`provider_proxy_client_exec` from the remote (client_bash, answered with
+`provider_proxy_ping` (`link-ping` remotes answer `provider_proxy_pong` at
+once), `provider_proxy_client_exec` from the remote (client_bash, answered with
 `provider_proxy_client_exec_result` and `_alive`) and `provider_proxy_accounts`: the remote's Claude pool
 (`provider_proxy_accounts_result`, then `provider_proxy_accounts_update` on
 every change while watched). The local daemon watches it while Anthropic goes
