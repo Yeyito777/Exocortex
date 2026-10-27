@@ -98,6 +98,8 @@ export type Action =
   | "history_E"
   | "history_0"
   | "history_dollar"
+  | "history_half_up"
+  | "history_half_down"
   | "history_gg"
   | "history_G"
   | "history_yy"
@@ -138,7 +140,8 @@ const BINDS: Record<string, Action> = {
   "ctrl-o":       "toggle_turn_work",
   "ctrl-i":       "toggle_tool_output",
 
-  // Sidebar quick nav (normal mode for character bindings)
+  // Sidebar quick nav (normal mode for character bindings). In the history
+  // the vim keymap takes J/K instead: the cursor moves half a page in view.
   "char:J":     "sidebar_next",
   "char:K":     "sidebar_prev",
   "char:t":     "sidebar_focus_next_completed",
