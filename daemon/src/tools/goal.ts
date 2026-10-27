@@ -1,11 +1,14 @@
 import type { Tool } from "./types";
 import * as convStore from "../conversations";
-import { formatGoalSummary, GOAL_TOOL_SYSTEM_HINT, reportGoalStatus } from "../goals";
+import { formatGoalSummary, reportGoalStatus } from "../goals";
+import { toolTextSource } from "./tool-text";
+
+const TEXT = toolTextSource("goal");
 
 export const goal: Tool = {
   name: "goal",
-  description: "Inspect the user-set persistent goal, or report it complete/blocked. Completion requires current evidence for the full objective. Block only when no useful safe action remains without user input or an external change. Cannot create, edit, pause, or resume goals.",
-  systemHint: GOAL_TOOL_SYSTEM_HINT,
+  get description() { return TEXT.description(); },
+  get systemHint() { return TEXT.hint(); },
   inputSchema: {
     type: "object",
     properties: {

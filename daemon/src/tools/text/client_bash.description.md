@@ -1,0 +1,1 @@
+Run a shell command on the machine the user is connected from over /ssh (such as their laptop), not on this host. Uses bash (PowerShell on Windows) and returns stdout and stderr. Works only while the user's TUI is connected over /ssh. Starts in the user's home directory unless cwd is set; a ~ prefix is expanded.

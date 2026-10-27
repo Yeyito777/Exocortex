@@ -1,0 +1,1 @@
+Prefer the edit tool over sed/awk for modifying existing files. Use one edit call with multiple edits[] entries for separate changes in the same file; each oldText must be unique and matched against the original file.

@@ -271,6 +271,7 @@ function decoratedRow(
 ): string {
   const style = lineStyles[line];
   if (style?.kind === "rule") return firstRow ? ruleLine(style.section, width, bg) : pad(width);
+  if (style?.kind === "empty" && !text) return spread(style.placeholder, theme.dim + theme.italic, "", "", width, bg) + theme.italicOff;
   const plain = editorLine(text, lineStart, width, selection, bg);
   if (style?.kind === "field") return theme.accent + theme.italic + plain.replace(theme.text, "") + theme.italicOff;
   if (style?.kind === "note") return theme.muted + theme.italic + plain.replace(theme.text, "") + theme.italicOff;
@@ -355,7 +356,7 @@ export function renderInstructionsEditor(editor: InstructionsEditorState, totalR
   const selection = visual && { start: visual.start + shift, end: visual.end + shift };
 
   const dirty = isInstructionsEditorDirty(editor);
-  const state = editor.readOnly ? "read-only" : dirty ? "● modified" : "";
+  const state = editor.readOnly ? "read-only" : editor.tools?.saving ? "saving…" : dirty ? "● modified" : "";
   let payload = moveTo(top, left) + edge(["╭", "╮"], width, editorTitle(editor), state, theme.bold + theme.text, dirty ? theme.warning : theme.muted);
   const tools = editor.tools && !editor.loadReqId ? editor.tools : null;
   const lineStyles = tools?.lineStyles ?? prefix?.lineStyles ?? null;

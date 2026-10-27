@@ -1,0 +1,1 @@
+Show local image files (PNG, JPEG, GIF, WebP; e.g. a chart you rendered, a screenshot, generated art) to the user, inline at the end of your current message. Up to {{maxImages}} per call. The images are copied when attached, so later edits to the files do not change what the user sees.

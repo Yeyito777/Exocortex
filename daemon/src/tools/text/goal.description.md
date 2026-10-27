@@ -1,0 +1,1 @@
+Inspect the user-set persistent goal, or report it complete/blocked. Completion requires current evidence for the full objective. Block only when no useful safe action remains without user input or an external change. Cannot create, edit, pause, or resume goals.

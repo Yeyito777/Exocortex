@@ -6,13 +6,21 @@
  */
 
 import type { KeyEvent } from "../input";
-import type { Event, ModelId, ProviderId } from "../protocol";
+import type { Event, ModelId, ProviderId, ToolInstructionsEdit } from "../protocol";
 import { pushSystemMessage, type RenderState } from "../state";
 import { theme } from "../theme";
 import type { MacroDraft } from "../commands/macro";
 import { sanitizePromptTextForInsertion } from "../prompttext";
 import { handleInstructionsEditorKey } from "./editor";
-import { buildToolInstructionsDoc, handleToolsViewKey, TOOLS_READ_ONLY_NOTICE } from "./tools";
+import {
+  applyToolsSaved,
+  buildToolInstructionsDoc,
+  changedToolBlocks,
+  handleToolsViewKey,
+  TOOLS_READ_ONLY_NOTICE,
+  toolsSaveStatus,
+  type ToolInstructionsDoc,
+} from "./tools";
 import {
   createInstructionsEditor,
   INSTRUCTION_SCOPES,
@@ -49,7 +57,7 @@ export interface InstructionsLoader {
   loadInstructions(convId: string | null, folderId: string | null): string;
 }
 
-export interface InstructionsDaemon extends InstructionsLoader {
+export interface InstructionsDaemon extends InstructionsLoader, Partial<ToolInstructionsLoader> {
   /** False while the link is down; saves then wait for a check after reconnecting. */
   readonly connected?: boolean;
   setSystemInstructions(convId: string, text: string): string;
@@ -57,9 +65,11 @@ export interface InstructionsDaemon extends InstructionsLoader {
   setGlobalInstructions(text: string, expectedText?: string): string;
 }
 
-/** The daemon request behind /instructions tools. */
+/** The daemon requests behind /instructions tools. */
 export interface ToolInstructionsLoader {
   loadToolInstructions(convId: string | null, provider: ProviderId, model: ModelId): string;
+  /** Write edited blocks back (answered with tool_instructions_saved, or an error). */
+  saveToolInstructions?(convId: string | null, provider: ProviderId, model: ModelId | null, edits: ToolInstructionsEdit[], force: boolean): string;
 }
 
 export type InstructionsKeyOutcome =
@@ -173,13 +183,13 @@ export function openInstructionsScope(state: RenderState, daemon: InstructionsDa
   openScopeEditor(state, daemon, scope, target);
 }
 
-/** `/instructions tools`: what the model is told about each tool on this conversation's route, read-only. */
+/** `/instructions tools`: what the model is told about each tool on this conversation's route; descriptions and hints edit in place. */
 export function openToolInstructions(state: RenderState, daemon: ToolInstructionsLoader): void {
   const target = currentInstructionsTarget(state);
   const editor = createInstructionsEditor("global", target, "");
   editor.readOnly = true;
   editor.readOnlyNotice = TOOLS_READ_ONLY_NOTICE;
-  editor.tools = { provider: state.provider, model: state.model, route: "", sections: [], lineStyles: [], pendingBracket: null };
+  editor.tools = buildToolInstructionsDoc({ provider: state.provider, model: state.model, route: "", internal: [], external: [] }).doc;
   editor.vim.mode = "normal";
   editor.loadReqId = daemon.loadToolInstructions(state.convId, state.provider, state.model);
   state.instructionsModal = { picker: null, editor };
@@ -252,8 +262,9 @@ function saveEditor(
   close: boolean,
   force: boolean,
 ): InstructionsKeyOutcome {
-  // The tools view shows code and manifests; nothing in it is saved.
+  // An older daemon's tools view can't be saved.
   if (editor.readOnly) return HANDLED;
+  if (editor.tools) return saveToolsEditor(state, editor, editor.tools, daemon, close, force);
   if (editor.macro) {
     const text = editor.buffer.trim();
     if (!text) {
@@ -291,6 +302,68 @@ function saveEditor(
   if (close) closeEditor(state, modal);
   else if (modal.picker) syncPicker(state, modal.picker);
   return HANDLED;
+}
+
+/** :w in /instructions tools: send the changed blocks; the answer says what was committed and pushed. */
+function saveToolsEditor(
+  state: RenderState,
+  editor: InstructionsEditorState,
+  doc: ToolInstructionsDoc,
+  daemon: InstructionsDaemon,
+  close: boolean,
+  force: boolean,
+): InstructionsKeyOutcome {
+  if (doc.saving) {
+    editor.notice = { text: "Still saving the last :w…", tone: "info" };
+    return HANDLED;
+  }
+  const edits = changedToolBlocks(doc);
+  if (edits.length === 0) {
+    editor.savedText = editor.buffer;
+    if (close) state.instructionsModal = null;
+    else editor.notice = { text: "No changes to save", tone: "info" };
+    return HANDLED;
+  }
+  if (!daemon.saveToolInstructions || daemon.connected === false) {
+    editor.notice = { text: "Not saved: not connected to the daemon; :w tries again", tone: "error" };
+    return HANDLED;
+  }
+  const reqId = daemon.saveToolInstructions(editor.target.convId, doc.provider as ProviderId, doc.model as ModelId | null, edits, force);
+  doc.saving = { reqId, close, buffer: editor.buffer };
+  editor.notice = { text: `Saving ${edits.length === 1 ? "1 block" : `${edits.length} blocks`}: write, commit, push…`, tone: "info" };
+  return HANDLED;
+}
+
+/** The answer to a tools save: back into the editor that sent it, or into the chat once it closed. */
+function handleToolsSaveAnswer(state: RenderState, event: Event): boolean {
+  if (event.type !== "tool_instructions_saved" && event.type !== "error") return false;
+  const editor = state.instructionsModal?.editor;
+  const doc = editor?.tools;
+  const mine = Boolean(doc?.saving && event.reqId && event.reqId === doc.saving.reqId);
+  if (event.type === "error") {
+    if (!mine) return false;
+    editor!.notice = { text: `Not saved: ${event.message.replace(/\.$/, "")}`, tone: "error" };
+    doc!.saving = null;
+    return true;
+  }
+  const status = toolsSaveStatus(event);
+  if (!mine) {
+    // The editor was closed (or reopened) meanwhile.
+    pushSystemMessage(state, `${status.ok ? "✓" : "✗"} Tool instructions ${status.text.replace(/^Saved/, "saved")}`, status.ok ? undefined : theme.error);
+    return true;
+  }
+  const saving = doc!.saving!;
+  doc!.saving = null;
+  applyToolsSaved(doc!, event);
+  // Clean again unless it was edited while saving.
+  if (editor!.buffer === saving.buffer) editor!.savedText = editor!.buffer;
+  if (saving.close && editor!.buffer === saving.buffer) {
+    state.instructionsModal = null;
+    pushSystemMessage(state, `${status.ok ? "✓" : "✗"} Tool instructions ${status.text.replace(/^Saved/, "saved")}`, status.ok ? undefined : theme.error);
+    return true;
+  }
+  editor!.notice = { text: status.text, tone: status.ok ? "success" : "warning" };
+  return true;
 }
 
 /** Keys while the modal is open: it owns the keyboard. */
@@ -381,6 +454,7 @@ function showFailure(state: RenderState, change: Extract<InstructionsStoreChange
  * event was an answer to /instructions and needs no other handling.
  */
 export function handleInstructionsEvent(state: RenderState, event: Event, daemon?: InstructionsStoreDaemon | null): boolean {
+  if (handleToolsSaveAnswer(state, event)) return true;
   const { changes, consumed } = applyInstructionsStoreEvent(state.instructionsStore, daemon ?? {}, event);
   const modal = state.instructionsModal;
   const reqId = "reqId" in event ? event.reqId : undefined;
@@ -402,6 +476,7 @@ export function handleInstructionsEvent(state: RenderState, event: Event, daemon
       setInstructionsEditorText(editor, text);
       editor.vim.mode = "normal";
       editor.tools = doc;
+      editor.readOnly = !doc.editable;
       return true;
     }
     if (event.type === "instructions_loaded") {
@@ -430,6 +505,12 @@ export function handleInstructionsEvent(state: RenderState, event: Event, daemon
 /** The link dropped: saves in flight wait for a check after reconnecting. */
 export function instructionsConnectionLost(state: RenderState): void {
   markConnectionLost(state.instructionsStore);
+  const editor = state.instructionsModal?.editor;
+  if (editor?.tools?.saving) {
+    // Its answer is lost with the link; what was written shows when the view is opened again.
+    editor.tools.saving = null;
+    editor.notice = { text: "Connection lost while saving: reopen /instructions tools to see what was saved", tone: "warning" };
+  }
 }
 
 /** Connected again: check and send the saves that waited. */

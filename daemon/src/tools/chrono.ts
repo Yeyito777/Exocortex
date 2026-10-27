@@ -17,6 +17,7 @@ import { backgroundTaskWakeText } from "./chrono-output";
 import { CLAUDE_CODE_INLINE_CHRONO_MAX_MS } from "./chrono-limits";
 import { parseDurationMs } from "@exocortex/shared/duration";
 import { LONG_CHRONO_SLEEP_THRESHOLD_MS } from "@exocortex/shared/chrono";
+import { toolTextSource } from "./tool-text";
 
 function action(input: Record<string, unknown>): string {
   return typeof input.action === "string" ? input.action : "";
@@ -463,10 +464,12 @@ const WAKE_PROPERTIES = {
   },
 };
 
+const TEXT = toolTextSource("chrono");
+
 export const chrono: Tool = {
   name: "chrono",
-  description: "Wait for an active task up to a required limit, sleep the current model turn, or manage durable one-shot/recurring wakes (several per call with wakes). Sleeps and waits with limits longer than five minutes suspend the provider turn and resume it by replay on completion, timeout, or a user message. A message is a hard wake that starts the model. A command is a soft wake that runs without a model and can escalate to a hard wake on failure or a script-defined non-zero exit.",
-  systemHint: "Prefer chrono over shell sleep or cron. Use native session polling for shell tools that provide it; use chrono wait for other active tasks. `wait` requires a `max_wait` safety limit and wakes immediately when the task finishes. `sleep` pauses this turn until the duration elapses or one of your background tasks finishes; prefer `wait` on the exact task, unit:NAME or subagent, and when sleeping on running work, sleep no longer than it likely needs (at most ~5–10 min per check); `wake` persists across daemon restarts; message wakes start a model turn, while command soft-wakes can use hard_wake to escalate failures or command-defined non-zero conditions.",
+  get description() { return TEXT.description(); },
+  get systemHint() { return TEXT.hint(); },
   inputSchema: {
     type: "object",
     properties: {

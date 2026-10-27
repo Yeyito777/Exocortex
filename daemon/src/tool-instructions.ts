@@ -4,45 +4,20 @@
  * Built from the same pieces the request surface uses (tool selection, tool
  * schemas, system hints, Claude Code's MCP server instructions, external
  * manifests), so the view shows exactly what a turn on that provider gets.
+ * Each piece is a block naming the file it is stored in, which
+ * save_tool_instructions (./tool-instructions-save) writes back.
  */
 
 import { join } from "path";
+import type { ToolInstructionsBlock, ToolInstructionsEntry } from "@exocortex/shared/protocol";
 import { repoRoot } from "@exocortex/shared/paths";
-import type { ToolInstructionsEntry } from "@exocortex/shared/protocol";
 import type { ModelId, ProviderId } from "./messages";
-import { getConversationToolNames, getToolDefs, getToolSystemHintEntries } from "./tools/registry";
-import { getExternalToolHintEntries } from "./external-tools";
-import { hostToolDefs, hostToolInstructions } from "./providers/anthropic/host-tools";
+import { getConversationToolNames, getToolDefs } from "./tools/registry";
+import { EXOCORTEX_SOURCE_DIR_PLACEHOLDER, getLoadedExternalTools } from "./external-tools";
+import { hostToolDefs, hostToolInstructionsIncludeHint } from "./providers/anthropic/host-tools";
 import { getModelInfo } from "./providers/registry";
-
-/** The source file of each built-in tool, under daemon/src/tools/. */
-const INTERNAL_TOOL_SOURCES: Record<string, string> = {
-  bash: "bash.ts",
-  read: "read.ts",
-  write: "write.ts",
-  glob: "glob.ts",
-  grep: "grep.ts",
-  edit: "edit.ts",
-  patch: "patch.ts",
-  browse: "browse.ts",
-  exec_command: "unified-exec.ts",
-  write_stdin: "unified-exec.ts",
-  apply_patch: "codex-files.ts",
-  view_image: "codex-files.ts",
-  exo: "exo.ts",
-  chrono: "chrono.ts",
-  goal: "goal.ts",
-  client_bash: "client-bash.ts",
-  remote_bash: "remote-bash.ts",
-  attach: "attach.ts",
-};
-
-export function internalToolSource(name: string): string {
-  const file = INTERNAL_TOOL_SOURCES[name];
-  return file ? join(repoRoot(), "daemon", "src", "tools", file) : join(repoRoot(), "daemon", "src", "tools", "registry.ts");
-}
-
-const HOST_TOOLS_SOURCE = () => join(repoRoot(), "daemon", "src", "providers", "anthropic", "host-tools.ts");
+import { readToolTextFile, toolTextPath, toolTextToken, toolTextValues, type ToolTextKind } from "./tools/tool-text";
+import { expandTemplate, type TemplateToken } from "./tools/tool-text-template";
 
 export interface ToolInstructions {
   route: string;
@@ -50,42 +25,139 @@ export interface ToolInstructions {
   external: ToolInstructionsEntry[];
 }
 
-/** Tool text for a turn on `provider`/`model` (see buildConversationRequestSurface). */
-export function describeToolInstructions(provider: ProviderId, model: ModelId | null, conversationId?: string): ToolInstructions {
+/** Where a block is stored and how its text expands: what a save needs. */
+export interface ToolTextTarget {
+  id: string;
+  tool: string;
+  /** A built-in tool's text file, or an external tool's manifest (its systemHint). */
+  store: { kind: "file"; textKind: ToolTextKind } | { kind: "manifest" };
+  path: string;
+  /** The text as stored, placeholders unexpanded. */
+  template: string;
+  /** Placeholders as written and what they expand to on this route. */
+  tokens: TemplateToken[];
+  /** The text as the model gets it. */
+  text: string;
+  /** False when an empty text is not allowed (a schema description). */
+  allowEmpty: boolean;
+}
+
+const LABELS = {
+  description: "Description · tool schema",
+  hint: "System prompt · # Internal tools",
+  mcp: "MCP server instructions",
+  sharedHint: "MCP server instructions · system hint (all routes)",
+  external: "System prompt · manifest systemHint",
+} as const;
+
+function internalTarget(tool: string, textKind: ToolTextKind, provider?: ProviderId): ToolTextTarget {
+  const path = toolTextPath(tool, textKind);
+  const template = readToolTextFile(path);
+  // A description may depend on the provider (remote_bash's /proxy machine); hints do not.
+  const values = toolTextValues(tool, textKind === "description" ? provider : undefined);
+  const tokens = Object.entries(values).map(([name, value]): TemplateToken => [toolTextToken(name), value]);
+  return {
+    id: `internal:${tool}:${textKind}`,
+    tool,
+    store: { kind: "file", textKind },
+    path,
+    template,
+    tokens,
+    text: expandTemplate(template, tokens),
+    allowEmpty: textKind !== "description",
+  };
+}
+
+function externalTargets(): ToolTextTarget[] {
+  const tokens: TemplateToken[] = [[EXOCORTEX_SOURCE_DIR_PLACEHOLDER, repoRoot()]];
+  return getLoadedExternalTools().map(tool => ({
+    id: `external:${tool.manifest.name}`,
+    tool: tool.manifest.name,
+    store: { kind: "manifest" },
+    path: join(tool.toolDir, "manifest.json"),
+    template: tool.manifest.systemHint,
+    tokens,
+    text: expandTemplate(tool.manifest.systemHint, tokens),
+    allowEmpty: true,
+  }));
+}
+
+function block(target: ToolTextTarget, label: string): ToolInstructionsBlock {
+  return { id: target.id, label, text: target.text, source: target.path, editable: true };
+}
+
+/** Every block on the route, by id, with where it is stored. */
+export function describeToolTextTargets(provider: ProviderId, model: ModelId | null, conversationId?: string): { view: ToolInstructions; targets: Map<string, ToolTextTarget> } {
+  const targets = new Map<string, ToolTextTarget>();
+  const add = (target: ToolTextTarget, label: string): ToolInstructionsBlock => {
+    targets.set(target.id, target);
+    return block(target, label);
+  };
+
   const chatOnly = model ? getModelInfo(provider, model)?.supportsTools === false : false;
   if (chatOnly) {
-    return { route: "This model takes no tools: none are offered or described.", internal: [], external: [] };
+    return { view: { route: "This model takes no tools: none are offered or described.", internal: [], external: [] }, targets };
   }
-  const toolNames = getConversationToolNames(provider);
-  const defs = getToolDefs(toolNames, conversationId, provider);
-  const external = getExternalToolHintEntries().map(entry => ({ name: entry.name, source: entry.manifestPath, hint: entry.hint }));
 
+  const external = externalTargets().map((target): ToolInstructionsEntry => {
+    const blocks = [add(target, LABELS.external)];
+    return { name: target.tool, source: target.path, ...(target.text ? { hint: target.text } : {}), blocks };
+  });
+
+  const defs = getToolDefs(getConversationToolNames(provider), conversationId, provider);
   if (provider === "anthropic") {
     // Claude Code brings its own tools; Exocortex's reach it as an MCP server.
     const internal = hostToolDefs(defs).map((def): ToolInstructionsEntry => {
-      const hint = hostToolInstructions(def.name);
+      const description = internalTarget(def.name, "description", provider);
+      const mcp = internalTarget(def.name, "mcp");
+      const blocks = [add(description, LABELS.description), add(mcp, LABELS.mcp)];
+      const instructions = [mcp.text];
+      if (hostToolInstructionsIncludeHint(def.name)) {
+        const hint = internalTarget(def.name, "hint");
+        blocks.push(add(hint, LABELS.sharedHint));
+        instructions.push(hint.text);
+      }
+      const hint = instructions.filter(Boolean).join("\n");
       return {
         name: def.name,
-        source: internalToolSource(def.name),
-        description: def.description,
-        ...(hint ? { hint, hintSource: HOST_TOOLS_SOURCE() } : {}),
+        source: description.path,
+        description: description.text,
+        ...(hint ? { hint, hintSource: mcp.path } : {}),
+        blocks,
       };
     });
     return {
-      route: "Claude Code: its own tools and prompt; Exocortex tools as the exocortex MCP server (descriptions and server instructions); external tools appended to the system prompt.",
-      internal,
-      external,
+      view: {
+        route: "Claude Code: its own tools and prompt; Exocortex tools as the exocortex MCP server (descriptions and server instructions); external tools appended to the system prompt.",
+        internal,
+        external,
+      },
+      targets,
     };
   }
 
-  const hints = new Map(getToolSystemHintEntries(toolNames, conversationId).map(entry => [entry.name, entry.hint]));
   const internal = defs.map((def): ToolInstructionsEntry => {
-    const hint = hints.get(def.name);
-    return { name: def.name, source: internalToolSource(def.name), description: def.description, ...(hint ? { hint } : {}) };
+    const description = internalTarget(def.name, "description", provider);
+    const hint = internalTarget(def.name, "hint");
+    return {
+      name: def.name,
+      source: description.path,
+      description: description.text,
+      ...(hint.text ? { hint: hint.text, hintSource: hint.path } : {}),
+      blocks: [add(description, LABELS.description), add(hint, LABELS.hint)],
+    };
   });
   return {
-    route: "Exocortex system prompt: tool schemas carry the descriptions; hints go under # Internal tools and # External tools.",
-    internal,
-    external,
+    view: {
+      route: "Exocortex system prompt: tool schemas carry the descriptions; hints go under # Internal tools and # External tools.",
+      internal,
+      external,
+    },
+    targets,
   };
+}
+
+/** Tool text for a turn on `provider`/`model` (see buildConversationRequestSurface). */
+export function describeToolInstructions(provider: ProviderId, model: ModelId | null, conversationId?: string): ToolInstructions {
+  return describeToolTextTargets(provider, model, conversationId).view;
 }

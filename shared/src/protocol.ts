@@ -949,8 +949,8 @@ export interface LoadInstructionsCommand {
 /**
  * Read what the model is told about each tool on a conversation's provider and
  * route: internal tools (schema description and prompt hint) and external tools
- * (manifest systemHint), exactly as injected. Read-only; answered with
- * tool_instructions_loaded.
+ * (manifest systemHint), exactly as injected. Answered with
+ * tool_instructions_loaded; save_tool_instructions writes edited blocks back.
  */
 export interface LoadToolInstructionsCommand {
   type: "load_tool_instructions";
@@ -960,6 +960,35 @@ export interface LoadToolInstructionsCommand {
   /** A draft's provider and model; ignored with convId. Defaults to the daemon's. */
   provider?: ProviderId;
   model?: ModelId;
+}
+
+/** One edited block of /instructions tools. */
+export interface ToolInstructionsEdit {
+  /** The block's id from tool_instructions_loaded. */
+  id: string;
+  /** The new text as the model should get it; empty clears a hint. */
+  text: string;
+  /** The block's text as loaded; when the daemon's differs the save is refused unless `force`. */
+  expected: string;
+}
+
+/**
+ * Write edited /instructions tools blocks to the files they come from (a
+ * built-in tool's text file, an external tool's manifest systemHint), commit
+ * each repository with exactly those paths, pull --rebase and push. Answered
+ * with tool_instructions_saved, or an error when nothing was written. The
+ * next turn of every conversation gets the new text.
+ */
+export interface SaveToolInstructionsCommand {
+  type: "save_tool_instructions";
+  reqId?: string;
+  /** As in load_tool_instructions: the route the blocks were loaded for, so placeholders expand alike. */
+  convId?: string;
+  provider?: ProviderId;
+  model?: ModelId;
+  edits: ToolInstructionsEdit[];
+  /** Overwrite blocks that changed since they were loaded. */
+  force?: boolean;
 }
 
 /** Set this install's app-wide instructions (config/system.md), layered after the read-only base. */
@@ -1312,6 +1341,7 @@ export type Command =
   | SetSystemInstructionsCommand
   | LoadInstructionsCommand
   | LoadToolInstructionsCommand
+  | SaveToolInstructionsCommand
   | SetGlobalInstructionsCommand
   | LlmCompleteCommand
   | GetSystemPromptCommand
@@ -2214,6 +2244,25 @@ export interface ToolInstructionsEntry {
   hint?: string;
   /** Where `hint` comes from when it is not `source`. */
   hintSource?: string;
+  /**
+   * The tool's text as separately stored pieces, in the order the view shows
+   * them; save_tool_instructions writes them by id. Absent from older daemons.
+   */
+  blocks?: ToolInstructionsBlock[];
+}
+
+/** One stored piece of a tool's text: a text file or a manifest's systemHint. */
+export interface ToolInstructionsBlock {
+  /** Names it for save_tool_instructions, e.g. "internal:exo:hint" or "external:cal". */
+  id: string;
+  /** What it is and where the model gets it, e.g. "System prompt · # Internal tools". */
+  label: string;
+  /** The text as the model gets it; "" when there is none yet. */
+  text: string;
+  /** The file it is stored in. */
+  source: string;
+  /** False when it cannot be saved from /instructions tools. */
+  editable: boolean;
 }
 
 export interface ToolInstructionsLoadedEvent {
@@ -2226,6 +2275,25 @@ export interface ToolInstructionsLoadedEvent {
   route: string;
   internal: ToolInstructionsEntry[];
   external: ToolInstructionsEntry[];
+}
+
+/** One repository save_tool_instructions wrote to. */
+export interface ToolInstructionsCommit {
+  /** The repository's top-level directory. */
+  repo: string;
+  /** Short hash of the commit made; null when none was made. */
+  commit: string | null;
+  pushed: boolean;
+  /** Why committing, pulling or pushing failed; the files are written either way. */
+  error?: string;
+}
+
+export interface ToolInstructionsSavedEvent {
+  type: "tool_instructions_saved";
+  reqId?: string;
+  /** Each saved block's text as the model now gets it. */
+  saved: Array<{ id: string; text: string }>;
+  commits: ToolInstructionsCommit[];
 }
 
 export interface GlobalInstructionsUpdatedEvent {
@@ -2415,6 +2483,7 @@ export type Event =
   | FolderInstructionsUpdatedEvent
   | InstructionsLoadedEvent
   | ToolInstructionsLoadedEvent
+  | ToolInstructionsSavedEvent
   | GlobalInstructionsUpdatedEvent
   | LlmCompleteResultEvent
   | SystemPromptEvent

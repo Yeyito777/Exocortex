@@ -13,6 +13,7 @@ import { isAbsolute, resolve } from "path";
 import type { Tool, ToolResult, ToolSummary, ToolExecutionContext } from "./types";
 import { cap, getString, summarizeParams } from "./util";
 import { log } from "../log";
+import { toolTextSource } from "./tool-text";
 
 const CONTEXT_LINES = 4;
 const MAX_SNIPPET_LINES = 120;
@@ -356,10 +357,11 @@ function summarize(input: Record<string, unknown>): ToolSummary {
   return { label: "Edit", detail: summarizeParams(path, input, ["path", "edits", "oldText", "newText"]) };
 }
 
+const TEXT = toolTextSource("edit");
+
 export const edit: Tool = {
   name: "edit",
-  description:
-    "Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
+  get description() { return TEXT.description(); },
   parallelSafety: "exclusive",
   defaultTimeoutMs: 30_000,
   settleOnAbort: true,
@@ -389,8 +391,7 @@ export const edit: Tool = {
     required: ["path", "edits"],
     additionalProperties: false,
   },
-  systemHint:
-    "Prefer the edit tool over sed/awk for modifying existing files. Use one edit call with multiple edits[] entries for separate changes in the same file; each oldText must be unique and matched against the original file.",
+  get systemHint() { return TEXT.hint(); },
   display: {
     label: "Edit",
     color: "#f0ab78",

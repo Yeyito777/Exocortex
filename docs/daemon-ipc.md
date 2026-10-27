@@ -149,16 +149,42 @@ picker and editor use these commands. Conversation and folder instructions are
 still sent to clients as pinned `system_instructions` history entries; the TUI
 does not draw them.
 
-`load_tool_instructions` (`convId`, or a draft's `provider` and `model`) is
-read-only and answers `tool_instructions_loaded` with what that route tells the
-model about each tool: `internal` entries carry the schema `description` and
-the `hint` from the system prompt's `# Internal tools` section (under Claude
-Code, the exocortex MCP server's instructions, with `hintSource`); `external`
-entries carry each manifest's `systemHint` as injected. Every entry names its
-`source` file, and `route` says in a sentence how the text reaches the model.
-It is built from the same pieces as the request surface, so it never drifts
-from a real turn. `/instructions tools` shows it; `/instructions
-conversation|folder|global` (or `c`/`f`/`g`) open a scope's editor directly.
+`load_tool_instructions` (`convId`, or a draft's `provider` and `model`)
+answers `tool_instructions_loaded` with what that route tells the model about
+each tool: `internal` entries carry the schema `description` and the `hint`
+from the system prompt's `# Internal tools` section (under Claude Code, the
+exocortex MCP server's instructions, with `hintSource`); `external` entries
+carry each manifest's `systemHint` as injected. Every entry names its `source`
+file, and `route` says in a sentence how the text reaches the model. It is
+built from the same pieces as the request surface, so it never drifts from a
+real turn. Each entry also lists `blocks`: the separately stored pieces of its
+text, each with an `id`, a `label`, the `text` as the model gets it and the
+`source` file it lives in. A built-in tool's pieces are
+`daemon/src/tools/text/<tool>.description.md`, `.hint.md` and (Claude Code's
+MCP server instructions) `.mcp.md` in the daemon's checkout; an external
+tool's is its manifest's `systemHint`. Values computed at runtime appear in
+those files as `{{repoRoot}}`-style placeholders (manifests keep
+`<exocortex-source-dir>`).
+
+`save_tool_instructions` (the same route fields, `edits: [{ id, text,
+expected }]`, optional `force`) writes edited blocks back. `expected` is the
+block's text as loaded; any block that changed since is refused unless
+`force`. Every edit is checked first (known id, no control characters, a
+non-empty description, a manifest that stays valid JSON with only `systemHint`
+changed), so a refused save writes nothing and answers `error`. Placeholders
+whose expansion the edit left untouched are written back as placeholders. The
+daemon then commits each repository (the Exocortex checkout for built-in
+tools, `external-tools/<tool>` for manifests) with `git commit -- <exact
+paths>`, pulls with `--rebase --autostash` when the upstream moved, and pushes
+(never forced); it answers `tool_instructions_saved` with each saved block's
+new `text` and, per repository, the `commit`, whether it was `pushed`, and an
+`error` when committing, pulling or pushing failed (the files and any local
+commit are kept). Text files are re-read when they change and manifests are
+reloaded at once, so the next turn of every conversation uses the new text;
+a running Claude Code process restarts on its next turn when its tools' text
+changed, as it does for a changed system prompt. `/instructions tools` shows
+and edits it; `/instructions conversation|folder|global` (or `c`/`f`/`g`)
+open a scope's editor directly.
 
 ## User macros
 
