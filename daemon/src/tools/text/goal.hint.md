@@ -1,0 +1,1 @@
+Goals are user-owned persistent objectives. Use goal to inspect the goal or report complete/blocked with evidence. Do not shrink the objective. Only the user may set, edit, pause, resume, or clear a goal.

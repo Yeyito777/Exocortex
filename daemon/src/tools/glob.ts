@@ -23,6 +23,7 @@ import { lstat, opendir, realpath, stat as fsStat } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { createAbortError, isAbortLikeError } from "../abort";
 import { HARD_EXCLUDED_DIRS } from "./filesystem-safety";
+import { toolTextSource } from "./tool-text";
 
 // ── Constants ─────────────────────────────────────────────────────
 
@@ -743,9 +744,11 @@ function summarize(input: Record<string, unknown>): ToolSummary {
 
 // ── Tool definition ───────────────────────────────────────────────
 
+const TEXT = toolTextSource("glob");
+
 export const glob: Tool = {
   name: "glob",
-  description: "Fast file pattern matching. Supports glob patterns like \"**/*.ts\" or \"src/**/*.tsx\", multiple include patterns, excludes, fuzzy path queries, limits, sorting, and optional metadata output.",
+  get description() { return TEXT.description(); },
   parallelSafety: "safe",
   defaultTimeoutMs: 30_000,
   resourceClass: "filesystem_scan",
@@ -769,7 +772,7 @@ export const glob: Tool = {
       metadata: { type: "boolean", description: "Return JSON lines with path, size, modified time, type, and fuzzy score when available instead of plain paths." },
     },
   },
-  systemHint: "Prefer the glob tool over find/ls for finding files by name pattern. Keep the path as narrow as practical; avoid broad no_ignore scans when a specific directory will do.",
+  get systemHint() { return TEXT.hint(); },
   display: {
     label: "Glob",
     color: "#ffcb6b",  // warm yellow

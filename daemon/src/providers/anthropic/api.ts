@@ -33,7 +33,7 @@ import { noteAccountUsageRefusal } from "./usage";
 import { noteClaudeAccountWorking } from "./auth-cache";
 import { accountSwitchNotice } from "./routing";
 import { isProviderProxied, onProxiedClaudeMove, providerProxyRoute } from "../../provider-proxy/route";
-import { createHostToolServer, hostToolDefs, type HostToolBinding } from "./host-tools";
+import { claudeProcessPrompt, createHostToolServer, hostToolDefs, type HostToolBinding } from "./host-tools";
 import { buildClaudeHelperPrompt, buildClaudeUserContent, planClaudePrompt, trailingUserMessages, type ClaudePromptPlan } from "./prompt";
 import { ClaudeRelay, reconnectRelays, relaysEnabled } from "./relay-client";
 import type { RelayMeta } from "./relay-protocol";
@@ -280,7 +280,8 @@ async function runStreamMessage(
 
   // The conversation's Claude Code process is still running (background tasks,
   // or a quick follow-up): continue in it.
-  const system = options.system ?? "";
+  // A process takes its system prompt and the MCP tools' text when it starts: either changing starts a new one.
+  const system = claudeProcessPrompt(options.system ?? "", hostToolDefs(options.tools));
   if (live?.canContinue(key, plan.resume, plan.pending, system)) {
     const input = live.planInput(plan.pending);
     log("info", `anthropic: Claude Code turn in its running process (model=${model}, effort=${options.effort ?? "default"}, cwd=${cwd}, account=${account}, session=${live.sessionId}, input=${input.kind})`);
@@ -301,7 +302,7 @@ async function runStreamMessage(
   }
   // Other settings, a changed system prompt, another account, or a rewound history: the old process cannot continue.
   live?.close(live.key === key && !live.systemMatches(system)
-    ? "its system prompt changed"
+    ? "its system prompt or tool text changed"
     : live.account !== account ? "the conversation moved to another Claude account" : "the conversation moved on from it");
 
   const start = (resumePlan: ClaudePromptPlan) => {
@@ -389,7 +390,7 @@ export async function adoptClaudeCodeProcesses(hasConversation: (convId: string)
           spawnClaudeCodeProcess: () => relay,
         },
       });
-    }, { relay, system: meta.systemAppend ?? "", ...(meta.account ? { account: meta.account } : {}) });
+    }, { relay, system: claudeProcessPrompt(meta.systemAppend ?? "", meta.hostTools), ...(meta.account ? { account: meta.account } : {}) });
     if (hello.pending) pending.push(meta.convId);
     log("info", `anthropic: adopted the Claude Code process for ${meta.convId} (relay pid ${hello.pid}${meta.account ? `, account ${meta.account}` : ""}${hello.pending ? ", turn running" : ""})`);
   }

@@ -10,6 +10,7 @@ import { dirname, isAbsolute, resolve } from "path";
 import type { Tool, ToolExecutionContext, ToolResult, ToolSummary } from "./types";
 import { getString, summarizeParams } from "./util";
 import { log } from "../log";
+import { toolTextSource } from "./tool-text";
 
 // ── Execution ──────────────────────────────────────────────────────
 
@@ -56,9 +57,12 @@ function summarize(input: Record<string, unknown>): ToolSummary {
 
 // ── Tool definition ────────────────────────────────────────────────
 
+const TEXT = toolTextSource("write");
+
 export const write: Tool = {
   name: "write",
-  description: "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Parent directories are created automatically.",
+  get description() { return TEXT.description(); },
+  get systemHint() { return TEXT.hint(); },
   parallelSafety: "exclusive",
   defaultTimeoutMs: 30_000,
   inputSchema: {

@@ -2,7 +2,11 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { ApiToolCall } from "../types";
-import { createHostToolServer, hostToolInstructions, type HostToolBinding } from "./host-tools";
+import { cpSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import { setToolTextDirForTest, toolTextDir } from "../../tools/tool-text";
+import { claudeProcessPrompt, createHostToolServer, hostToolInstructions, type HostToolBinding } from "./host-tools";
 import { loadClaudeSdks } from "./sdk";
 
 beforeAll(async () => { await loadClaudeSdks(); });
@@ -47,6 +51,28 @@ describe("Claude Code host tools", () => {
     expect(instructions).toContain("end early when the user sends a message or one of your background tasks finishes");
     expect(instructions).toContain("Prefer wait on the exact task, unit:NAME (systemd user unit) or subagent over a fixed sleep");
     expect(instructions).toContain("at most ~5–10 min per check");
+  });
+
+  test("a running process's fingerprint changes when its tools' text does, so the next turn picks it up", () => {
+    const dir = mkdtempSync(join(tmpdir(), "host-tool-text-"));
+    cpSync(toolTextDir(), dir, { recursive: true });
+    const restore = setToolTextDirForTest(dir);
+    try {
+      const before = claudeProcessPrompt("append", [chronoDef, exoDef]);
+      expect(claudeProcessPrompt("append", [chronoDef, exoDef])).toBe(before);
+      expect(claudeProcessPrompt("append", [])).toBe("append");
+      writeFileSync(join(dir, "chrono.mcp.md"), "chrono schedules.\n");
+      expect(hostToolInstructions("chrono")).toBe("chrono schedules.");
+      expect(claudeProcessPrompt("append", [chronoDef, exoDef])).not.toBe(before);
+      // exo's server instructions end with its system hint, so a hint edit counts too.
+      const withHint = claudeProcessPrompt("append", [chronoDef, exoDef]);
+      writeFileSync(join(dir, "exo.hint.md"), "Delegate less.\n");
+      expect(hostToolInstructions("exo")).toEndWith("\nDelegate less.");
+      expect(claudeProcessPrompt("append", [chronoDef, exoDef])).not.toBe(withHint);
+    } finally {
+      restore();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("instructs only on the tools it offers", async () => {

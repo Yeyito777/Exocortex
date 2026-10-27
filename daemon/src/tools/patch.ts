@@ -20,6 +20,7 @@ import type { Tool, ToolExecutionContext, ToolResult, ToolSummary } from "./type
 import { getString, summarizeParams } from "./util";
 import { isWindows } from "@exocortex/shared/paths";
 import { log } from "../log";
+import { toolTextSource } from "./tool-text";
 
 const BEGIN_PATCH_MARKER = "*** Begin Patch";
 const END_PATCH_MARKER = "*** End Patch";
@@ -549,23 +550,11 @@ function summarize(input: Record<string, unknown>): ToolSummary {
   return { label: "Patch", detail: summarizeParams(cwd, input, ["cwd", "input"]) };
 }
 
-const PATCH_DESCRIPTION = `Use the patch tool to edit files with a Codex-style apply_patch format. The input is the entire patch text.
-
-Patch envelope:
-*** Begin Patch
-[one or more file sections]
-*** End Patch
-
-File sections:
-*** Add File: <relative path>      create/write a file; following lines must start with +
-*** Delete File: <relative path>   delete a file
-*** Update File: <relative path>   update a file in place; may be followed by *** Move to: <relative path>
-
-Update hunks start with @@ optionally followed by a context line, then lines prefixed with space (context), - (old), or + (new). Use about 3 lines of context around each change. File references must be relative, never absolute.`;
+const TEXT = toolTextSource("patch");
 
 export const patch: Tool = {
   name: "patch",
-  description: PATCH_DESCRIPTION,
+  get description() { return TEXT.description(); },
   parallelSafety: "exclusive",
   defaultTimeoutMs: 30_000,
   settleOnAbort: true,
@@ -577,7 +566,7 @@ export const patch: Tool = {
     },
     required: ["input"],
   },
-  systemHint: "Prefer the patch tool for multi-file edits, file creates/deletes/renames, or structured changes. Use relative paths inside the patch; do not use absolute paths in patch file headers.",
+  get systemHint() { return TEXT.hint(); },
   display: {
     label: "Patch",
     color: "#c3e88d",  // soft lime green

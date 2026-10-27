@@ -25,9 +25,9 @@ export { buildDaemonSpawnSpec, getDaemonStatePaths, isLikelyManagedDaemonPid, ki
 
 const BASE_PATH = process.env.PATH ?? "";
 const DEBOUNCE_MS = 1_000;
-const EXOCORTEX_SOURCE_DIR_PLACEHOLDER = "<exocortex-source-dir>";
+export const EXOCORTEX_SOURCE_DIR_PLACEHOLDER = "<exocortex-source-dir>";
 
-function resolveSystemHintPaths(systemHint: string): string {
+export function resolveSystemHintPaths(systemHint: string): string {
   // Resolve lazily while building model context so manifests stay portable when
   // the Exocortex checkout moves or is installed under a different home directory.
   return systemHint.replaceAll(EXOCORTEX_SOURCE_DIR_PLACEHOLDER, repoRoot());
@@ -38,6 +38,7 @@ let watcher: ExternalToolWatcher | null = null;
 let externalToolsDir: string | null = null;
 let installedToolDirsKey = "";
 let daemonSupervisionEnabled = false;
+let onToolsUpdate: (() => void) | undefined;
 const daemonSupervisor = new ExternalToolDaemonSupervisor(setExternalNotificationToolOnline);
 
 /**
@@ -106,6 +107,7 @@ export function getExternalToolNames(): string[] {
  */
 export function initExternalTools(onUpdate?: () => void): void {
   externalToolsDir = getExternalToolsDir();
+  onToolsUpdate = onUpdate;
 
   // Ensure directory exists (gitignored, may not exist yet)
   mkdirSync(externalToolsDir, { recursive: true });
@@ -135,6 +137,16 @@ export function initExternalTools(onUpdate?: () => void): void {
   watcher?.stop();
   watcher = new ExternalToolWatcher(externalToolsDir, DEBOUNCE_MS, () => reloadTools(onUpdate));
   watcher.start();
+}
+
+/** Re-read the manifests now (after writing one) instead of waiting for the watcher. */
+export function reloadExternalToolsNow(): void {
+  reloadTools(onToolsUpdate);
+}
+
+/** The loaded tools with their manifests as written (placeholders unresolved). */
+export function getLoadedExternalTools(): readonly LoadedTool[] {
+  return tools;
 }
 
 /** Stop the filesystem watcher and all supervised daemons (fire-and-forget). */

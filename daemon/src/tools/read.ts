@@ -11,6 +11,7 @@ import type { Tool, ToolExecutionContext, ToolResult, ToolSummary } from "./type
 import { cap, getString, getNumber, safeSlice, summarizeParams } from "./util";
 import { log } from "../log";
 import { isValidImagePayload } from "../image-validation";
+import { toolTextSource } from "./tool-text";
 
 // ── Constants ──────────────────────────────────────────────────────
 
@@ -288,9 +289,11 @@ function summarize(input: Record<string, unknown>): ToolSummary {
 
 // ── Tool definition ────────────────────────────────────────────────
 
+const TEXT = toolTextSource("read");
+
 export const read: Tool = {
   name: "read",
-  description: "Read a file from the local filesystem. Returns file content with line numbers (cat -n format). By default reads up to 2000 lines. Lines longer than 2000 characters are truncated. For image files (PNG, JPEG, GIF, WebP, BMP, TIFF, SVG, AVIF, ICO, HEIC, HEIF), returns the image for visual inspection; large images are automatically compressed to fit API limits. HEIC/HEIF requires ImageMagick with libheif support.",
+  get description() { return TEXT.description(); },
   parallelSafety: "safe",
   defaultTimeoutMs: 15_000,
   inputSchema: {
@@ -302,7 +305,7 @@ export const read: Tool = {
     },
     required: ["file_path"],
   },
-  systemHint: "Prefer the read tool over cat/head/tail for reading files.",
+  get systemHint() { return TEXT.hint(); },
   display: {
     label: "Read",
     color: "#82aaff",  // soft blue

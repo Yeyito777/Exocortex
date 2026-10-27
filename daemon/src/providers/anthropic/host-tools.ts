@@ -15,29 +15,41 @@ import type { ToolExecutor } from "../../agent";
 import { CLAUDE_CODE_HOST_TOOL_SERVER, isClaudeCodeHostTool } from "../../tools/claude-code";
 import { exo } from "../../tools/exo";
 import { CLAUDE_CODE_INLINE_CHRONO_MAX_MS } from "../../tools/chrono-limits";
+import { toolText } from "../../tools/tool-text";
 import { claudeSdks } from "./sdk";
 import { rememberHostToolAttachments } from "./host-tool-attachments";
 
 /** Chrono runs sleeps and waits inside the call; leave room past the longest. */
 const HOST_TOOL_TIMEOUT_MS = CLAUDE_CODE_INLINE_CHRONO_MAX_MS + 10 * 60_000;
 
-/** Server instructions for each offered host tool. */
-const INSTRUCTIONS: Record<string, string | undefined> = {
-  chrono: [
-    "chrono is this conversation's scheduler. Use it instead of Bash sleep, cron, or polling loops to wait, sleep, or schedule future work.",
-    "A wake with a message starts a new turn in this conversation at the scheduled time, after this turn has ended and across restarts.",
-    "Sleeps and waits of any practical length run inside the call and end early when the user sends a message or one of your background tasks finishes.",
-    "Prefer wait on the exact task, unit:NAME (systemd user unit) or subagent over a fixed sleep; when sleeping on running work, sleep no longer than it likely needs, at most ~5–10 min per check.",
-  ].join(" "),
-  exo: [
-    "exo starts Exocortex subagents. Never use Claude Code's Agent tool: delegate all subagent work, including search and exploration fan-out, with exo.",
-    exo.systemHint,
-  ].join("\n"),
+/**
+ * Host tools whose MCP server instructions end with their system hint, the
+ * text other providers get under # Internal tools.
+ */
+const INSTRUCTIONS_WITH_HINT: Record<string, () => string | undefined> = {
+  exo: () => exo.systemHint,
 };
 
-/** The MCP server instructions a host tool contributes, if any. */
+/** The MCP server instructions a host tool contributes (its <tool>.mcp.md, then any shared hint), if any. */
 export function hostToolInstructions(name: string): string | undefined {
-  return INSTRUCTIONS[name];
+  return [toolText(name, "mcp"), INSTRUCTIONS_WITH_HINT[name]?.()].filter(Boolean).join("\n") || undefined;
+}
+
+/** Whether a host tool's MCP server instructions end with its system hint. */
+export function hostToolInstructionsIncludeHint(name: string): boolean {
+  return Object.hasOwn(INSTRUCTIONS_WITH_HINT, name);
+}
+
+/**
+ * What a Claude Code process is started with that a later turn may need
+ * changed: the system prompt addition, and the host tools' descriptions and
+ * server instructions (/instructions tools edits them). Compared by
+ * fingerprint, never sent.
+ */
+export function claudeProcessPrompt(systemAppend: string, tools: readonly { name: string; description: string }[]): string {
+  if (tools.length === 0) return systemAppend;
+  const text = tools.map(tool => [tool.name, tool.description, hostToolInstructions(tool.name) ?? ""]);
+  return `${systemAppend}\u0000${JSON.stringify(text)}`;
 }
 
 /** The Exocortex turn a host tool call runs under. */

@@ -31,6 +31,7 @@ import { buildClaudeCodeSystemAppend, buildSystemPrompt, getBaseInstructions, ge
 import { createConversationWorkspace, ensureConversationWorkspace } from "./workspace-service";
 import { scopedSubagentPromptOptions } from "./subagent-policy";
 import { describeToolInstructions } from "./tool-instructions";
+import { saveToolInstructions, ToolInstructionsSaveError } from "./tool-instructions-save";
 import { assertDelegationModel, parseRequestedModel, resolveDelegationModel } from "./delegation-models";
 import { getConversationToolNames, getToolDisplayInfo } from "./tools/registry";
 import { getExternalToolStyles, manageExternalToolDaemon } from "./external-tools";
@@ -3641,6 +3642,25 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           model,
           ...describeToolInstructions(provider, model, cmd.convId),
         });
+        break;
+      }
+
+      case "save_tool_instructions": {
+        const conversation = cmd.convId ? convStore.get(cmd.convId) : undefined;
+        if (cmd.convId && !conversation) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Conversation ${cmd.convId} not found` });
+          break;
+        }
+        const provider = conversation?.provider ?? (cmd.provider && getProvider(cmd.provider) ? cmd.provider : getDefaultProvider().id);
+        const model = conversation?.model ?? cmd.model ?? getDefaultModel(provider);
+        // Committing and pushing take a while: answer when they finish.
+        void saveToolInstructions({ provider, model, ...(cmd.convId ? { convId: cmd.convId } : {}) }, cmd.edits, cmd.force === true)
+          .then((result) => server.sendTo(client, { type: "tool_instructions_saved", reqId: cmd.reqId, ...result }))
+          .catch((error) => {
+            const message = error instanceof ToolInstructionsSaveError ? error.message : `Could not save tool instructions: ${error instanceof Error ? error.message : String(error)}`;
+            if (!(error instanceof ToolInstructionsSaveError)) log("error", `handler: save_tool_instructions: ${error instanceof Error ? error.stack ?? error.message : String(error)}`);
+            server.sendTo(client, { type: "error", reqId: cmd.reqId, message });
+          });
         break;
       }
 

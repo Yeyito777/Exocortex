@@ -13,6 +13,7 @@ import { basename, isAbsolute, resolve } from "node:path";
 import type { Tool } from "./types";
 import type { ImageRef } from "../messages";
 import { storeImageFile } from "../attachments";
+import { toolTextSource } from "./tool-text";
 
 export const MAX_ATTACH_IMAGES = 8;
 
@@ -37,9 +38,12 @@ function pathsFromInput(input: Record<string, unknown>): string[] | string {
   return raw.map(path => (path as string).trim());
 }
 
+const TEXT = toolTextSource("attach", () => ({ maxImages: String(MAX_ATTACH_IMAGES) }));
+
 export const attach: Tool = {
   name: "attach",
-  description: `Show local image files (PNG, JPEG, GIF, WebP; e.g. a chart you rendered, a screenshot, generated art) to the user, inline at the end of your current message. Up to ${MAX_ATTACH_IMAGES} per call. The images are copied when attached, so later edits to the files do not change what the user sees.`,
+  get description() { return TEXT.description(); },
+  get systemHint() { return TEXT.hint(); },
   inputSchema: {
     type: "object",
     properties: {

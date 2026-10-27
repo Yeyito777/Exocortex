@@ -15,6 +15,7 @@ import { spawnShellRunner, toolOutputPath } from "./shell-runner";
 import { bash, killProcessGroup } from "./bash";
 import { getDaemonShutdownMode } from "../daemon-lifecycle";
 import { recordBackgroundTaskCompletion } from "../conversation-activity";
+import { toolTextSource } from "./tool-text";
 
 interface Session {
   id: number;
@@ -310,8 +311,11 @@ async function executeStdin(input: Record<string, unknown>, context?: ToolExecut
   } finally { if (session) session.busy = false; }
 }
 
+const EXEC_COMMAND_TEXT = toolTextSource("exec_command");
+
 export const execCommand: Tool = {
-  name: "exec_command", description: "Runs a shell command, returning output or a session ID for ongoing interaction. Set tty:true for a PTY; otherwise uses plain pipes.",
+  name: "exec_command",
+  get description() { return EXEC_COMMAND_TEXT.description(); },
   parallelSafety: "exclusive", defaultTimeoutMs: null, watchdogExempt: true,
   inputSchema: { type: "object", additionalProperties: false, required: ["cmd"], properties: {
     cmd: { type: "string", description: "Shell command to execute." },
@@ -322,13 +326,17 @@ export const execCommand: Tool = {
     yield_time_ms: { type: "integer", minimum: 0, maximum: 30000, description: "Time to wait before yielding a running session, not a kill timeout. Defaults to 10000 ms." },
     max_output_tokens: { type: "integer", minimum: 1, maximum: 30000, description: "Approximate output token budget. Defaults to 10000." },
   } },
-  systemHint: "Use exec_command for shell commands, reading files, and searching (prefer rg for search). Use workdir to select a directory. Commands run locally with the daemon's permissions, not inside a Codex sandbox. External CLIs remain ordinary shell commands. A session_id means the process is still running: use write_stdin to send input or poll for output and completion. Sessions do not send completion notifications. Inspect/stop managed tasks through daemon IPC (list_tasks/stop_task; read shared/src/protocol.ts). Commands have a one-hour hard limit; output files are capped at 16 MiB. Stdin sessions belong to this conversation and do not survive daemon restarts, though detached tasks and their output can be recovered.",
+  get systemHint() { return EXEC_COMMAND_TEXT.hint(); },
   display: bash.display,
   summarize: input => ({ label: "$", detail: String(input.cmd ?? "") }), execute: executeCommand,
 };
 
+const WRITE_STDIN_TEXT = toolTextSource("write_stdin");
+
 export const writeStdin: Tool = {
-  name: "write_stdin", description: "Writes characters to an existing shell session and returns recent output. Omit chars or use an empty string to poll without writing.",
+  name: "write_stdin",
+  get description() { return WRITE_STDIN_TEXT.description(); },
+  get systemHint() { return WRITE_STDIN_TEXT.hint(); },
   parallelSafety: "exclusive", defaultTimeoutMs: null, watchdogExempt: true,
   inputSchema: { type: "object", additionalProperties: false, required: ["session_id"], properties: {
     session_id: { type: "integer", description: "Session identifier returned by exec_command." },
