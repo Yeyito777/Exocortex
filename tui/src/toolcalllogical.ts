@@ -210,6 +210,8 @@ function appendParentBashOptionContinuation(logical: ToolCallLogicalLine[], text
 }
 
 function parseLineHeredocSpecs(line: string): PendingHeredoc[] {
+  // Every heredoc operator has `<<`; most lines have none.
+  if (!line.includes("<<")) return [];
   return scanHeredocOperators(line).operators.map(operator => ({
     terminator: operator.delimiter,
     allowTabs: operator.stripTabs,

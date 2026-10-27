@@ -3444,7 +3444,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         if (!Array.isArray(ranges) || ranges.length === 0 || ranges.length > MAX_DISPLAY_BLOCK_RANGES
             || ranges.some((range) => !range || !Number.isSafeInteger(range.entry) || range.entry < 0
               || !Number.isSafeInteger(range.start) || range.start < 0
-              || !Number.isSafeInteger(range.end) || range.end <= range.start)) {
+              || !Number.isSafeInteger(range.end) || range.end <= range.start)
+            || (cmd.maxBytes !== undefined && (!Number.isSafeInteger(cmd.maxBytes) || cmd.maxBytes < 1))) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Invalid display block selection" });
           break;
         }
@@ -3460,6 +3461,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           break;
         }
         // Ranges are answered in order until the response is this large; the client asks again for the rest.
+        const responseBytes = Math.min(cmd.maxBytes ?? DISPLAY_BLOCKS_RESPONSE_BYTES, DISPLAY_BLOCKS_RESPONSE_BYTES);
         let bytes = 0;
         let truncated = false;
         const loaded: Array<{ entry: number; start: number; blocks: Block[] }> = [];
@@ -3470,7 +3472,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           for (let index = range.start; index < Math.min(range.end, entry.blocks.length); index++) {
             const block = entry.blocks[index]!;
             const blockBytes = JSON.stringify(block).length;
-            if (bytes > 0 && bytes + blockBytes > DISPLAY_BLOCKS_RESPONSE_BYTES) { truncated = true; break; }
+            if (bytes > 0 && bytes + blockBytes > responseBytes) { truncated = true; break; }
             bytes += blockBytes;
             blocks.push(block);
           }

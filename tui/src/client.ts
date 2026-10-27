@@ -1200,9 +1200,9 @@ export class DaemonClient {
   }
 
   /** Content of elided history blocks (protocol load_display_blocks). Returns the request id. */
-  loadDisplayBlocks(convId: string, ranges: Array<{ entry: number; start: number; end: number }>): string {
+  loadDisplayBlocks(convId: string, ranges: Array<{ entry: number; start: number; end: number }>, maxBytes?: number): string {
     const reqId = `display_blocks_${++this.nextReqId}_${Date.now()}`;
-    this.send({ type: "load_display_blocks", reqId, convId, ranges });
+    this.send({ type: "load_display_blocks", reqId, convId, ranges, ...(maxBytes ? { maxBytes } : {}) });
     return reqId;
   }
 

@@ -445,6 +445,8 @@ export interface LoadDisplayBlocksCommand {
   reqId?: string;
   convId: string;
   ranges: Array<{ entry: number; start: number; end: number }>;
+  /** Stop the reply at about this many serialized bytes (still at least one block); default and cap 2 MB. */
+  maxBytes?: number;
 }
 
 /**

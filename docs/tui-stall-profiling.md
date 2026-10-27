@@ -101,3 +101,19 @@ runs after: opens 30-55% fewer bytes; those scrolls need no further page (0.8 s
 / 1.4 s to 0) or 4 instead of 22 (3.2 s to 1.0 s, 5.4 s to 1.3 s); Ctrl+O at the
 bottom waits one round trip (~115 ms, ~190 ms on the slow link) and blocks
 25 ms instead of 40-65 ms.
+
+Follow-ups the same day:
+
+- Showing all of an already-loaded huge message's work (Ctrl+O scrolled up,
+  Ctrl+I) took 50-240 ms of render, about half of it syntax highlighting
+  (every rule tried at every character) and a fifth heredoc scanning of
+  commands with no `<<`. The highlighter now finds each token with one search
+  of the rule set joined as an ordered alternation (output byte-identical,
+  tested against the old one) and those scans are skipped: 50 -> 27, 238 -> 94,
+  64 -> 27, 79 -> 47 ms ([bench](../scripts/dev/bench-tui-unfold.ts)). Making
+  highlighting lazy (only rows in view) would save at most ~20 ms more on the
+  worst of them, so it was not worth the plumbing.
+- An open prefetches the newest screen's folded work right after its first
+  paint (at most 32 KB; 0.9-4 KB on the wire): Ctrl+O and Ctrl+I at the bottom
+  over 100 ms RTT went from 140-165 ms to 9-19 ms. First content is unchanged.
+  The frame marks now say `view=folded|work|detail`.

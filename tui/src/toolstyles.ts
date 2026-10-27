@@ -267,6 +267,8 @@ function unwrapCommandWrappers(tokens: ShellToken[], start: number): number | nu
 }
 
 function parseHeredocSpecs(line: string): HeredocSpec[] {
+  // Every heredoc operator has `<<`; most lines have none.
+  if (!line.includes("<<")) return [];
   return scanHeredocOperators(line).operators.map(operator => ({
     terminator: operator.delimiter,
     allowTabs: operator.stripTabs,

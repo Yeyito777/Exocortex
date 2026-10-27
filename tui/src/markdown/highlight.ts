@@ -463,7 +463,88 @@ export function highlightLine(line: string, language: string): string {
   const rules = LANGUAGE_MAP[language.toLowerCase()];
   if (!rules) return FG_WHITE + line;
 
-  return tokenize(line, rules);
+  const scanner = scannerFor(rules);
+  return scanner && !LINE_TERMINATOR.test(line) ? tokenizeWithScanner(line, rules, scanner) : tokenize(line, rules);
+}
+
+// --- One-pass scanning ---
+// tokenize() tries every rule at every character: ~15 regex calls per
+// character of a long tool call. A rule set's patterns joined as one ordered
+// alternation and searched globally find the same tokens in one call each: at
+// the earliest position where any rule matches, the first alternative that
+// matches wins, exactly as tokenize's left-to-right, rule-by-rule scan.
+
+interface Scanner {
+  regex: RegExp;
+  /** Capture group of each rule's alternative. */
+  groups: number[];
+}
+
+/** `m` only moves `^`/`$` at line terminators, so it is dropped for lines without them. */
+const LINE_TERMINATOR = /[\n\r\u2028\u2029]/;
+const scanners = new WeakMap<TokenRule[], Scanner | null>();
+
+/**
+ * The joined scanner of a rule set, or null when joining could change what
+ * matches: a rule with flags other than sticky/multiline, or a backreference
+ * (its group numbers would shift).
+ */
+function scannerFor(rules: TokenRule[]): Scanner | null {
+  let scanner = scanners.get(rules);
+  if (scanner !== undefined) return scanner;
+  scanner = null;
+  if (rules.every(rule => /^[my]*$/.test(rule.pattern.flags) && !/\\[1-9k]/.test(rule.pattern.source))) {
+    const groups: number[] = [];
+    let group = 1;
+    for (const rule of rules) {
+      groups.push(group);
+      // Capture groups of the rule's own pattern, after its wrapping group.
+      group += 1 + (new RegExp(`${rule.pattern.source}|`).exec("")!.length - 1);
+    }
+    try {
+      scanner = { regex: new RegExp(rules.map(rule => `(${rule.pattern.source})`).join("|"), "g"), groups };
+    } catch {
+      scanner = null; // e.g. two rules naming the same group
+    }
+  }
+  scanners.set(rules, scanner);
+  return scanner;
+}
+
+function tokenizeWithScanner(line: string, rules: TokenRule[], { regex, groups }: Scanner): string {
+  let result = "";
+  let pos = 0;
+  while (pos < line.length) {
+    regex.lastIndex = pos;
+    const m = regex.exec(line);
+    // An empty match would never advance tokenize either; treat it as text.
+    if (!m || m[0].length === 0) {
+      if (m) {
+        result += FG_WHITE + line.slice(pos, m.index + 1);
+        pos = m.index + 1;
+        continue;
+      }
+      break;
+    }
+    if (m.index > pos) result += FG_WHITE + line.slice(pos, m.index);
+    let rule = 0;
+    while (rule < groups.length - 1 && m[groups[rule]!] === undefined) rule++;
+    result += TOKEN_COLORS[rules[rule]!.type] + m[0];
+    pos = m.index + m[0].length;
+  }
+  if (pos < line.length) result += FG_WHITE + line.slice(pos);
+  return result;
+}
+
+/** highlightLine by trying every rule at every character: the reference the one-pass scanner must equal. */
+export function highlightLineByRules(line: string, language: string): string {
+  const rules = LANGUAGE_MAP[language.toLowerCase()];
+  return rules ? tokenize(line, rules) : FG_WHITE + line;
+}
+
+/** Languages highlightLine knows (aliases included). */
+export function supportedLanguages(): string[] {
+  return Object.keys(LANGUAGE_MAP);
 }
 
 /**

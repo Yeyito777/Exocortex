@@ -3898,6 +3898,19 @@ describe("handler load_conversation late-join streaming snapshots", () => {
 
     const [invalid] = await run(capable, { type: "load_display_blocks", convId, reqId: "bad", ranges: [{ entry, start: 2, end: 2 }] });
     expect(invalid).toMatchObject({ type: "error", reqId: "bad" });
+
+    // A byte limit answers ranges in order up to about that size, at least one block, and says it was cut.
+    const singles = Array.from({ length: 10 }, (_, round) => ({ entry, start: firstCall + 2 * round, end: firstCall + 2 * round + 1 }));
+    const [limited] = await run(capable, { type: "load_display_blocks", convId, reqId: "limited", ranges: singles, maxBytes: 5_000 });
+    expect(limited.truncated).toBe(true);
+    expect(limited.ranges.length).toBeGreaterThan(0);
+    expect(limited.ranges.length).toBeLessThan(10);
+    expect(JSON.stringify(limited.ranges).length).toBeLessThan(5_000 + 2_500);
+    expect(limited.ranges[0]).toMatchObject({ start: firstCall, blocks: [{ toolCallId: "call-0" }] });
+    const [tiny] = await run(capable, { type: "load_display_blocks", convId, reqId: "tiny", ranges: singles, maxBytes: 1 });
+    expect(tiny.ranges).toHaveLength(1);
+    const [badLimit] = await run(capable, { type: "load_display_blocks", convId, reqId: "bad-limit", ranges: singles, maxBytes: 0 });
+    expect(badLimit).toMatchObject({ type: "error", reqId: "bad-limit" });
   });
 
   test("defers tool-result bodies until the client explicitly loads them", async () => {
