@@ -32,6 +32,7 @@ export const remoteBash: Tool = {
   describe(provider) {
     return TEXT.description(provider);
   },
+  hintFor: provider => TEXT.hint(provider),
   parallelSafety: "exclusive",
   defaultTimeoutMs: null,
   watchdogExempt: true,

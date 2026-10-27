@@ -475,8 +475,17 @@ describe("Chrono tool", () => {
   });
 
   test("guidance prefers exact waits and short checks over long fixed sleeps", () => {
-    expect(chrono.systemHint).toContain("prefer `wait` on the exact task, unit:NAME or subagent");
+    expect(chrono.systemHint).toContain("prefer it on the exact task, unit:NAME (systemd user unit) or subagent over a fixed sleep");
     expect(chrono.systemHint).toContain("at most ~5–10 min per check");
+  });
+
+  test("its description says how long sleeps and waits run on each provider", () => {
+    expect(chrono.describe!("anthropic")).toContain("Sleeps and waits of any practical length run inside the call");
+    expect(chrono.describe!("anthropic")).not.toContain("five minutes");
+    for (const provider of ["openai", "deepseek", undefined] as const) {
+      expect(chrono.describe!(provider)).toContain("longer than five minutes suspend the provider turn and resume it by replay");
+    }
+    expect(chrono.description).toBe(chrono.describe!(undefined));
   });
 
   test("waits on a systemd user unit until it stops and reports its final state", async () => {

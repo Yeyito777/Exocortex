@@ -12,7 +12,7 @@ import {
   type ToolInstructionsLoader,
 } from "./controller";
 import { renderInstructionsEditor } from "./render";
-import { buildToolInstructionsDoc, sectionAt, sectionSourceNotice, shortSource, TOOLS_FIXED_NOTICE } from "./tools";
+import { buildToolInstructionsDoc, sectionAt, sectionRuleSource, sectionSourceNotice, shortSource, TOOLS_FIXED_NOTICE } from "./tools";
 
 class FakeDaemon implements InstructionsDaemon, ToolInstructionsLoader {
   connected = true;
@@ -64,7 +64,7 @@ const ANSWER: Omit<ToolInstructionsLoadedEvent, "type" | "reqId"> = {
   convId: "conv-1",
   provider: "openai",
   model: "gpt-6.1-sol",
-  route: "Exocortex system prompt: tool schemas carry the descriptions.",
+  route: "Hints go in the system prompt.",
   internal: [
     { name: "exo", source: "/repo/daemon/src/tools/exo.ts", description: "Start a subagent.", hint: "Subagents are the default for real work." },
     { name: "chrono", source: "/repo/daemon/src/tools/chrono.ts", description: "Schedule wakes." },
@@ -166,8 +166,8 @@ describe("/instructions tools", () => {
     ]);
     expect(doc.sections.find(section => section.name === "Internal tools")?.count).toBe(2);
     for (const section of doc.sections) expect(lineAtCursor(editor.buffer, section.offset)).toBe(section.name);
-    expect(editor.buffer).toContain("Description · tool schema\nStart a subagent.\nSystem prompt · # Internal tools\nSubagents are the default for real work.");
-    expect(editor.buffer).toContain("cal\nSystem prompt · manifest systemHint\nUse `cal -h`.\nNever edit storage.");
+    expect(editor.buffer).toContain("Description\nStart a subagent.\nHint\nSubagents are the default for real work.");
+    expect(editor.buffer).toContain("cal\nHint\nUse `cal -h`.\nNever edit storage.");
     expect(editor.buffer.startsWith(ANSWER.route)).toBe(true);
   });
 
@@ -238,7 +238,7 @@ describe("/instructions tools", () => {
     expect(editor.notice?.text).toBe("exo: /repo/daemon/src/tools/exo.ts");
     // On a block (its label or text): that block's file.
     press(state, daemon, "j", { type: "enter" });
-    expect(editor.notice?.text).toBe("exo · Description · tool schema: /repo/daemon/src/tools/exo.ts");
+    expect(editor.notice?.text).toBe("exo · Description: /repo/daemon/src/tools/exo.ts");
     press(state, daemon, "}", "]]", "gf");
     expect(editor.notice?.text).toBe("cal: /repo/external-tools/cal-cli/manifest.json");
     press(state, daemon, "gg", "gf");
@@ -298,6 +298,17 @@ describe("/instructions tools", () => {
     expect(text).toContain("None on this route.");
   });
 
+  test("an empty route note takes no line", () => {
+    const { text } = buildToolInstructionsDoc({ provider: "openai", model: null, route: "", internal: [], external: [] });
+    expect(text).toStartWith("Internal tools\n");
+  });
+
+  test("a tool's rule names its two files as one pattern", () => {
+    expect(sectionRuleSource({ source: "/r/daemon/src/tools/text/exo.description.md", hintSource: "/r/daemon/src/tools/text/exo.hint.md" })).toBe("daemon/src/tools/text/exo.*.md");
+    expect(sectionRuleSource({ source: "/r/external-tools/cal-cli/manifest.json" })).toBe("external-tools/cal-cli/manifest.json");
+    expect(sectionRuleSource({})).toBe("");
+  });
+
   test("source paths shorten to their place in the checkout", () => {
     expect(shortSource("/home/u/Exocortex/daemon/src/tools/exo.ts")).toBe("daemon/src/tools/exo.ts");
     expect(shortSource("/home/u/Exocortex/external-tools/cal-cli/manifest.json")).toBe("external-tools/cal-cli/manifest.json");
@@ -312,22 +323,22 @@ const EDITABLE: Omit<ToolInstructionsLoadedEvent, "type" | "reqId"> = {
     {
       name: "exo", source: `${TEXT_DIR}/exo.description.md`, description: "Start a subagent.", hint: "Subagents are the default for real work.", hintSource: `${TEXT_DIR}/exo.hint.md`,
       blocks: [
-        { id: "internal:exo:description", label: "Description · tool schema", text: "Start a subagent.", source: `${TEXT_DIR}/exo.description.md`, editable: true },
-        { id: "internal:exo:hint", label: "System prompt · # Internal tools", text: "Subagents are the default for real work.", source: `${TEXT_DIR}/exo.hint.md`, editable: true },
+        { id: "internal:exo:description", label: "Description", text: "Start a subagent.", source: `${TEXT_DIR}/exo.description.md`, editable: true },
+        { id: "internal:exo:hint", label: "Hint", text: "Subagents are the default for real work.", source: `${TEXT_DIR}/exo.hint.md`, editable: true },
       ],
     },
     {
       name: "chrono", source: `${TEXT_DIR}/chrono.description.md`, description: "Schedule wakes.",
       blocks: [
-        { id: "internal:chrono:description", label: "Description · tool schema", text: "Schedule wakes.", source: `${TEXT_DIR}/chrono.description.md`, editable: true },
-        { id: "internal:chrono:hint", label: "System prompt · # Internal tools", text: "", source: `${TEXT_DIR}/chrono.hint.md`, editable: true },
+        { id: "internal:chrono:description", label: "Description", text: "Schedule wakes.", source: `${TEXT_DIR}/chrono.description.md`, editable: true },
+        { id: "internal:chrono:hint", label: "Hint", text: "", source: `${TEXT_DIR}/chrono.hint.md`, editable: true },
       ],
     },
   ],
   external: [
     {
       name: "cal", source: "/repo/external-tools/cal-cli/manifest.json", hint: "Use `cal -h`.\nNever edit storage.",
-      blocks: [{ id: "external:cal", label: "System prompt · manifest systemHint", text: "Use `cal -h`.\nNever edit storage.", source: "/repo/external-tools/cal-cli/manifest.json", editable: true }],
+      blocks: [{ id: "external:cal", label: "Hint", text: "Use `cal -h`.\nNever edit storage.", source: "/repo/external-tools/cal-cli/manifest.json", editable: true }],
     },
   ],
 };
@@ -389,7 +400,7 @@ describe("/instructions tools: editing", () => {
   test("headers, labels and route lines don't change; the editor says why", () => {
     const attempts: Array<[string, Array<string | KeyEvent>]> = [
       ["exo", ["x"]], ["exo", ["dd"]], ["exo", ["i", "typed"]], ["exo", ["o", "new"]], ["exo", ["A", "z"]],
-      ["Description · tool schema", ["x"]], ["Description · tool schema", ["cc", "label"]], ["Description · tool schema", ["~"]],
+      ["Description", ["x"]], ["Description", ["cc", "label"]], ["Description", ["~"]],
       ["Start a subagent.", ["dj"]], ["Start a subagent.", ["dk"]], ["Start a subagent.", ["VGd"]], ["Start a subagent.", ["Vjd"]],
       [EDITABLE.route, ["x"]], ["Internal tools", ["dd"]], ["Internal tools", [{ type: "paste", text: "pasted" }]],
     ];
@@ -407,7 +418,7 @@ describe("/instructions tools: editing", () => {
     const { state, daemon, editor } = openEditable();
     goToLine(state, daemon, "Use `cal -h`.");
     press(state, daemon, "o", "First line", ENTER, "second line", ESC, "O", "above", ESC);
-    expect(editor.buffer).toEndWith("cal\nSystem prompt · manifest systemHint\nUse `cal -h`.\nFirst line\nabove\nsecond line\nNever edit storage.");
+    expect(editor.buffer).toEndWith("cal\nHint\nUse `cal -h`.\nFirst line\nabove\nsecond line\nNever edit storage.");
     for (const section of editor.tools!.sections) expect(lineAtCursor(editor.buffer, section.offset)).toBe(section.name);
     press(state, daemon, "gg", "}}", "]]");
     expect(sectionAt(editor.tools!, editor.cursor)?.name).toBe("cal");
@@ -421,7 +432,7 @@ describe("/instructions tools: editing", () => {
     const { state, daemon, editor } = openEditable();
     goToLine(state, daemon, "Start a subagent.");
     press(state, daemon, "dd");
-    expect(editor.buffer).toContain("exo\nDescription · tool schema\n\nSystem prompt · # Internal tools\n");
+    expect(editor.buffer).toContain("exo\nDescription\n\nHint\n");
     expect(editor.notice).toBeNull();
     expect(plain(renderInstructionsEditor(editor, 60, 110).payload)).toContain("Empty: type a description");
     // dd on the empty line leaves it; the next label stays.
@@ -432,10 +443,10 @@ describe("/instructions tools: editing", () => {
     expect(editor.buffer).toBe(emptied);
     expect(editor.notice?.text).toBe(TOOLS_FIXED_NOTICE);
     press(state, daemon, "i", "Spawn a helper.", ESC);
-    expect(editor.buffer).toContain("Description · tool schema\nSpawn a helper.\nSystem prompt");
+    expect(editor.buffer).toContain("Description\nSpawn a helper.\nHint\n");
 
     // chrono has no hint: its empty block takes one.
-    expect(plain(renderInstructionsEditor(editor, 80, 110).payload)).toContain("Empty: nothing injected; type to add a hint");
+    expect(plain(renderInstructionsEditor(editor, 80, 110).payload)).toContain("Empty: type to add a hint");
     goToLine(state, daemon, "Schedule wakes.");
     press(state, daemon, "jj", "i", "Prefer chrono to sleep.", ESC, ":w", ENTER);
     expect(daemon.last("saveToolInstructions").args[3]).toEqual([
