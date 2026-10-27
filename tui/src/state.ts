@@ -339,6 +339,15 @@ export interface RenderState {
   requestedToolOutputIds: Set<string>;
   /** Whether Ctrl+O should auto-expand once the in-flight tool-output fetch completes. */
   showToolOutputAfterLoad: boolean;
+  /** Daemon reqId of the in-flight elided-block fetch (events/elided-blocks.ts), and what it asked for. */
+  elidedBlocksRequestId: string | null;
+  elidedBlocksRequestRanges: Array<{ entry: number; start: number; end: number }>;
+  /** Elided blocks (`entry:block`) the daemon could not supply; they are not asked for again. */
+  elidedBlocksUnavailable: Set<string>;
+  /** Ctrl+O or Ctrl+I pressed while folded work was still elided: applied once it arrives. */
+  unfoldAfterElidedLoad: "turn_work" | "tool_output" | null;
+  /** A search that may land in folded work, run once its elided blocks arrive. */
+  searchAfterElidedLoad: SearchDirection | null;
   /** Cursor position in chat history (active when chatFocus === "history"). */
   historyCursor: HistoryCursor;
   /** Preferred history column for repeated j/k movement (Vim curswant). */
@@ -479,6 +488,8 @@ export function resetToolOutputState(state: RenderState): void {
   // Ctrl+I is per view; Ctrl+O (showTurnWork) is a saved preference and stays.
   state.showToolOutput = false;
   clearToolOutputRequests(state);
+  state.unfoldAfterElidedLoad = null;
+  state.searchAfterElidedLoad = null;
 }
 
 /**
@@ -490,6 +501,10 @@ export function clearToolOutputRequests(state: RenderState): void {
   state.toolOutputsRequestId = null;
   state.requestedToolOutputIds.clear();
   state.showToolOutputAfterLoad = false;
+  // Elided blocks are fetched for the transcript in view, like tool outputs.
+  state.elidedBlocksRequestId = null;
+  state.elidedBlocksRequestRanges = [];
+  state.elidedBlocksUnavailable.clear();
 }
 
 /** Semantic system-notice colors accepted by TUI call sites and daemon events. */
@@ -744,6 +759,11 @@ export function createInitialState(): RenderState {
     toolOutputsRequestId: null,
     requestedToolOutputIds: new Set(),
     showToolOutputAfterLoad: false,
+    elidedBlocksRequestId: null,
+    elidedBlocksRequestRanges: [],
+    elidedBlocksUnavailable: new Set(),
+    unfoldAfterElidedLoad: null,
+    searchAfterElidedLoad: null,
     historyCursor: createHistoryCursor(),
     historyCurswant: null,
     historyVisualAnchor: createHistoryCursor(),

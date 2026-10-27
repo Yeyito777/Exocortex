@@ -117,6 +117,22 @@ returned cursor would give, as the answer to that `reqId`, and says so with
 an older daemon) the client asks as before. Over `/ssh` this makes an open one
 round trip instead of two.
 
+A client that folds turns (the TUI's default view) and declares the
+`history-folded-elision` capability gets its folded pages (`viewport.folded`
+on the open and its `initialBackfill`, `folded: true` on
+`load_conversation_history`) without the work it hides: in each assistant
+entry, every tool call and thinking block before the entry's last tool call
+arrives empty (`input: {}`, `summary: ""`, `text: ""`) with
+`elided: { entry, block }`, its absolute place in the history. Text, tool
+results and the last tool call stay. Byte budgets count the elided entry, so
+one page covers the history the client shows instead of a long turn's tool
+inputs (a 1,000-call message: one page instead of six). Before showing that
+work (Ctrl+O, Ctrl+I, a search that may land in it) the client fetches it with
+`load_display_blocks { ranges: [{ entry, start, end }] }`, answered by
+`display_blocks_loaded { ranges: [{ entry, start, blocks }] }` (`truncated`
+when the 2 MB response limit cut it; ask again for the rest). Other clients
+(the phone app, older TUIs) are unaffected.
+
 ## Connectivity
 
 One connectivity monitor per daemon decides whether the network is reachable

@@ -36,6 +36,7 @@ import {
 } from "./messages";
 import type { ToolOutputInfo } from "./protocol";
 import { buildDisplayData } from "./display";
+import type { DisplayEntry } from "./display";
 import { summarizeTool } from "./tools/registry";
 import type {
   ConversationBtwPersistenceState,
@@ -3282,6 +3283,25 @@ export class SqliteConversationStore implements ConversationRepository {
       },
       storedMessageCount: row.stored_message_count,
     };
+  }
+
+  /** Stored display entries at these absolute history indices (load_display_blocks); missing ones are left out. */
+  loadDisplayEntries(id: string, indices: readonly number[]): { entries: Map<number, DisplayEntry>; storedMessageCount: number } | null {
+    return this.db.transaction(() => {
+      const row = this.row(id);
+      if (!row) return null;
+      const query = this.db.query<{ pinned: number; entry_index: number; user_index: number | null; type: string; payload_json: string; payload_hash: string | null }, [string, number]>(`
+        SELECT d.*,i.payload_hash FROM display_entries d LEFT JOIN display_integrity i
+        ON i.conversation_id=d.conversation_id AND i.pinned=d.pinned AND i.entry_index=d.entry_index
+        WHERE d.conversation_id=? AND d.pinned=0 AND d.entry_index=?
+      `);
+      const entries = new Map<number, DisplayEntry>();
+      for (const index of new Set(indices)) {
+        const entry = query.get(id, index);
+        if (entry) entries.set(index, this.verifiedDisplay(entry));
+      }
+      return { entries, storedMessageCount: row.stored_message_count };
+    })();
   }
 
   searchTitles(query: string, limit = 50): PersistedConversationSummary[] {

@@ -21,4 +21,6 @@ export interface DaemonActions {
   accounts?(options: { watch?: boolean; convId?: string | null }): string;
   /** Returns the request id when the transport assigns one. */
   loadToolOutputs(convId: string, toolCallIds?: string[]): string | void;
+  /** Content of elided history blocks; returns the request id. Optional for test doubles. */
+  loadDisplayBlocks?(convId: string, ranges: Array<{ entry: number; start: number; end: number }>): string | void;
 }

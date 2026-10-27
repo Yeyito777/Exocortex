@@ -5,6 +5,7 @@ import {
   budgetHistoryUpdatedEvent,
   buildHistoryUpdatedEvents,
   buildStoredHistoryUpdatedEvent,
+  elideFoldedWork,
   estimateEntryRows,
   estimateFoldedEntryRows,
   isValidHistoryViewport,
@@ -357,6 +358,101 @@ describe("viewport-sized opening windows", () => {
     expect(isValidHistoryViewport({ rows: 50.5, cols: 200 })).toBe(false);
     expect(isValidHistoryViewport({ rows: 50 })).toBe(false);
     expect(isValidHistoryViewport(null)).toBe(false);
+  });
+});
+
+/**
+ * One message holding `rounds` tool rounds with real-sized inputs (a long
+ * subagent turn: ~1000 blocks, ~800 KB), then a short reply.
+ */
+function hugeAgentTurn(rounds: number): Extract<DisplayEntry, { type: "ai" }> {
+  const blocks: Extract<DisplayEntry, { type: "ai" }>["blocks"] = [];
+  for (let round = 0; round < rounds; round++) {
+    const command = `cd /work && sed -n ${round},+80p src/file-${round}.ts && git status`.padEnd(800, " #");
+    blocks.push(
+      { type: "thinking", text: `Looking at round ${round}. `.repeat(10) },
+      { type: "tool_call", toolCallId: `toolu_${round}`, toolName: "Bash", input: { command }, summary: command },
+      { type: "tool_result", toolCallId: `toolu_${round}`, toolName: "", output: "", isError: false },
+    );
+    if (round % 4 === 3) blocks.push({ type: "text", text: `Progress note ${round}.` });
+  }
+  blocks.push({ type: "text", text: "All done: the summary." });
+  return { type: "ai", blocks, metadata: { startedAt: 1, endedAt: 2, model: "claude-opus-5-5", tokens: 99 } };
+}
+
+describe("folded-work elision", () => {
+  test("empties the tool calls and thinking before the last tool call, with where they live", () => {
+    const entry = agentTurn(3);
+    const elided = elideFoldedWork(entry, 7);
+    if (elided.type !== "ai" || entry.type !== "ai") throw new Error("not ai");
+    expect(elided.blocks.map(block => ("elided" in block ? block.elided : null))).toEqual([
+      { entry: 7, block: 0 }, { entry: 7, block: 1 }, null,
+      { entry: 7, block: 3 }, { entry: 7, block: 4 }, null,
+      // The last round's thinking goes too; its call (the live turn's newest step), result and the reply stay.
+      { entry: 7, block: 6 }, null, null, null,
+    ]);
+    expect(elided.blocks[1]).toEqual({ type: "tool_call", toolCallId: "call-0", toolName: "Bash", input: {}, summary: "", elided: { entry: 7, block: 1 } });
+    expect(elided.blocks[0]).toEqual({ type: "thinking", text: "", elided: { entry: 7, block: 0 } });
+    expect(elided.blocks.slice(7)).toEqual(entry.blocks.slice(7));
+    expect(entry.blocks[1]).toMatchObject({ summary: "ls" });
+  });
+
+  test("leaves entries with nothing to elide as they are", () => {
+    const prompt = user("u");
+    const reply = ai("reply");
+    const oneCall: DisplayEntry = { type: "ai", metadata: null, blocks: [
+      { type: "text", text: "Checking." },
+      { type: "tool_call", toolCallId: "call-0", toolName: "Bash", input: { command: "ls" }, summary: "ls" },
+      { type: "tool_result", toolCallId: "call-0", toolName: "Bash", output: "", isError: false },
+      { type: "text", text: "Done." },
+    ] };
+    for (const entry of [prompt, reply, oneCall]) expect(elideFoldedWork(entry, 3)).toBe(entry);
+  });
+
+  test("a huge single message opens folded in one page instead of many", () => {
+    const entries: DisplayEntry[] = [user("Do the big job."), hugeAgentTurn(320)];
+    const byteBudget = 128 * 1024;
+    const viewport: HistoryViewport = { rows: 40, cols: 160, folded: true };
+    expect(JSON.stringify(entries[1]).length).toBeGreaterThan(600 * 1024);
+
+    // Without elision a folded client pages through every round it never shows.
+    const full = walkPages(entries, 100, byteBudget);
+    expect(full.length).toBeGreaterThan(4);
+
+    const open = pageDisplayHistory(entries, 100, undefined, { byteBudget, viewport, elideFoldedWork: true });
+    expect(open).toMatchObject({ startIndex: 0, startBlockIndex: 0, hasOlder: false });
+    expect(JSON.stringify(open.entries).length).toBeLessThan(byteBudget);
+    const turn = open.entries[1];
+    if (turn?.type !== "ai" || entries[1]!.type !== "ai") throw new Error("not ai");
+    const source = entries[1]!.blocks;
+    expect(turn.blocks).toHaveLength(source.length);
+    turn.blocks.forEach((block, index) => {
+      expect(block.type).toBe(source[index]!.type);
+      if ("elided" in block && block.elided) expect(block.elided).toEqual({ entry: 1, block: index });
+      else expect(block).toEqual(source[index]!);
+    });
+    // What folded history shows survives: the reply and interim text, and the newest call.
+    expect(turn.blocks.at(-1)).toEqual({ type: "text", text: "All done: the summary." });
+    expect(turn.blocks.filter(block => block.type === "text")).toHaveLength(source.filter(block => block.type === "text").length);
+    const lastCall = source.findLastIndex(block => block.type === "tool_call");
+    expect(turn.blocks[lastCall]).toEqual(source[lastCall]!);
+  });
+
+  test("elided pages still cut a message too big for the budget at round starts, with absolute references", () => {
+    const entries: DisplayEntry[] = [user("Do the big job."), hugeAgentTurn(4000)];
+    const pages: DisplayHistoryPage[] = [pageDisplayHistory(entries, 15, undefined, { byteBudget: 128 * 1024, elideFoldedWork: true })];
+    while (pages.at(-1)!.hasOlder) {
+      const newest = pages.at(-1)!;
+      pages.push(pageDisplayHistory(entries, 15, newest.startIndex, { byteBudget: 128 * 1024, beforeBlockIndex: newest.startBlockIndex, elideFoldedWork: true }));
+    }
+    expect(pages.length).toBeGreaterThan(1);
+    expect(pages.length).toBeLessThan(walkPages(entries, 15, 128 * 1024).length / 4);
+    const joined = reassemble(pages)[1];
+    if (joined?.type !== "ai") throw new Error("not ai");
+    joined.blocks.forEach((block, index) => {
+      if ("elided" in block && block.elided) expect(block.elided).toEqual({ entry: 1, block: index });
+    });
+    expect(joined.blocks).toHaveLength(entries[1]!.type === "ai" ? entries[1]!.blocks.length : 0);
   });
 });
 

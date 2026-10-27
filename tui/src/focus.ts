@@ -58,6 +58,7 @@ import { log } from "./log";
 import { copyToClipboard } from "./vim/clipboard";
 import { handleBtwKey } from "./btw/keys";
 import { omittedToolOutputIdsNearViewport } from "./events/tool-outputs";
+import { hasElidedBlocks } from "./events/elided-blocks";
 import { activeHistorySurface, isAnyHistoryFocused } from "./historysurface";
 import type { InlineImageTarget } from "./inlineimages";
 import { saveTurnWorkPreference } from "./diagnostics";
@@ -383,6 +384,16 @@ export function handleFocusedKey(
       // Ctrl+O flips between everything shown and everything folded. From the
       // detailed view it folds everything back in one press.
       state.showToolOutputAfterLoad = false;
+      // Folded pages leave out the work's content: show it once that is in.
+      // A second press while it loads stays folded.
+      if (state.unfoldAfterElidedLoad !== null) {
+        state.unfoldAfterElidedLoad = null;
+        return { type: "handled" };
+      }
+      if (!state.showTurnWork && !state.showToolOutput && hasElidedBlocks(state)) {
+        state.unfoldAfterElidedLoad = "turn_work";
+        return { type: "handled" };
+      }
       preserveViewportAcrossHistoryMutation(state, () => {
         state.showTurnWork = !state.showTurnWork && !state.showToolOutput;
         state.showToolOutput = false;
@@ -390,6 +401,15 @@ export function handleFocusedKey(
       saveTurnWorkPreference(state.showTurnWork);
       return { type: "handled" };
     case "toggle_tool_output": {
+      if (state.unfoldAfterElidedLoad !== null) {
+        // Cancel an expansion still waiting for folded work's content.
+        state.unfoldAfterElidedLoad = null;
+        return { type: "handled" };
+      }
+      if (!state.showToolOutput && !state.showToolOutputAfterLoad && hasElidedBlocks(state)) {
+        state.unfoldAfterElidedLoad = "tool_output";
+        return { type: "handled" };
+      }
       if (state.showToolOutput || state.showToolOutputAfterLoad) {
         // Collapse, or cancel an expansion still waiting for its bodies.
         state.showToolOutputAfterLoad = false;

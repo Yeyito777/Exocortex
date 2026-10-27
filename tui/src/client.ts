@@ -48,6 +48,7 @@ const CLIENT_CAPABILITIES: ClientCapability[] = [
   "update-status-push",
   "sidebar-incremental",
   "client-exec-alive",
+  "history-folded-elision",
 ];
 
 export type EventHandler = (event: Event) => void;
@@ -1178,6 +1179,7 @@ export class DaemonClient {
     turns: number,
     requestSource: "initial-backfill" | "viewport" = "viewport",
     beforeBlockIndex = 0,
+    folded = false,
   ): string {
     const reqId = `history_${++this.nextReqId}_${Date.now()}`;
     if (this.performanceProfilingEnabled) {
@@ -1192,7 +1194,15 @@ export class DaemonClient {
       ...(beforeBlockIndex > 0 ? { beforeBlockIndex } : {}),
       turns,
       requestSource,
+      ...(folded ? { folded } : {}),
     });
+    return reqId;
+  }
+
+  /** Content of elided history blocks (protocol load_display_blocks). Returns the request id. */
+  loadDisplayBlocks(convId: string, ranges: Array<{ entry: number; start: number; end: number }>): string {
+    const reqId = `display_blocks_${++this.nextReqId}_${Date.now()}`;
+    this.send({ type: "load_display_blocks", reqId, convId, ranges });
     return reqId;
   }
 

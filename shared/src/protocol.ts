@@ -286,8 +286,13 @@ export interface PrewarmConversationCommand {
  *
  * sidebar-digest-sync: the client can rebuild a conversations_list that
  * carries `sidebarBuckets` (see ClientCapabilitiesCommand.sidebarDigest).
+ *
+ * history-folded-elision: history pages requested folded (viewport.folded,
+ * load_conversation_history `folded`) leave out the content of the work a
+ * folded client hides (see ElidedBlockRef); the client fetches it with
+ * load_display_blocks before showing it.
  */
-export type ClientCapability = "targeted-unwind" | "sidebar-reorder-delta" | "sidebar-state-patch" | "history-block-pagination" | "token-stats-on-demand" | "sidebar-digest-sync" | "update-status-push" | "sidebar-incremental" | "client-exec-alive";
+export type ClientCapability = "targeted-unwind" | "sidebar-reorder-delta" | "sidebar-state-patch" | "history-block-pagination" | "token-stats-on-demand" | "sidebar-digest-sync" | "update-status-push" | "sidebar-incremental" | "client-exec-alive" | "history-folded-elision";
 
 /** Answered with token_stats carrying the same reqId. Older daemons answer with an Unknown command error. */
 export interface GetTokenStatsCommand {
@@ -396,7 +401,8 @@ export interface LoadConversationCommand extends CachedHistoryRequest {
    * fill two of these screens, still within the byte budget; `turns` is then
    * ignored. Older daemons ignore it and honor `turns`. `folded` says the
    * client folds each turn's work and each notification to one row, so turns
-   * are estimated that way.
+   * are estimated that way; with `history-folded-elision` the opening window
+   * and its initialBackfill also leave out the content of that work.
    */
   viewport?: { rows: number; cols: number; folded?: boolean };
   /**
@@ -422,6 +428,23 @@ export interface LoadConversationHistoryCommand extends CachedHistoryRequest {
   beforeBlockIndex?: number;
   /** Maximum number of user turns to load before the cursor. */
   turns: number;
+  /**
+   * The client folds each turn's work (as viewport.folded on an open). With
+   * `history-folded-elision`, the page leaves out the content of that work.
+   */
+  folded?: boolean;
+}
+
+/**
+ * Fetch the content of elided blocks (ElidedBlockRef): for each range, blocks
+ * [start, end) of the display entry at `entry`. Answered with
+ * display_blocks_loaded; older daemons answer with an Unknown command error.
+ */
+export interface LoadDisplayBlocksCommand {
+  type: "load_display_blocks";
+  reqId?: string;
+  convId: string;
+  ranges: Array<{ entry: number; start: number; end: number }>;
 }
 
 /**
@@ -1322,6 +1345,7 @@ export type Command =
   | LoadConversationCommand
   | LoadConversationHistoryCommand
   | LoadToolOutputsCommand
+  | LoadDisplayBlocksCommand
   | GetImageCommand
   | DeleteConversationCommand
   | DeleteConversationsCommand
@@ -2198,6 +2222,20 @@ export interface ImageDataEvent {
   base64: string;
 }
 
+/**
+ * Blocks for a load_display_blocks request, in its order. Blocks that no
+ * longer exist (the history changed) are left out. `truncated`: the response
+ * reached its size limit, so later ranges (or the end of the last one) are
+ * missing and should be asked for again.
+ */
+export interface DisplayBlocksLoadedEvent {
+  type: "display_blocks_loaded";
+  reqId?: string;
+  convId: string;
+  ranges: Array<{ entry: number; start: number; blocks: Block[] }>;
+  truncated?: boolean;
+}
+
 export interface ToolOutputsLoadedEvent {
   type: "tool_outputs_loaded";
   reqId?: string;
@@ -2488,6 +2526,7 @@ export type Event =
   | ToolsAvailableEvent
   | HistoryUpdatedEvent
   | ToolOutputsLoadedEvent
+  | DisplayBlocksLoadedEvent
   | ImageDataEvent
   | SystemInstructionsUpdatedEvent
   | FolderInstructionsLoadedEvent

@@ -14,7 +14,7 @@ import type { ImageAttachment } from "@exocortex/shared/messages";
 import { applyGoalStatus } from "@exocortex/shared/goals";
 import type { MoveSidebarItemsOptions, SidebarItemOrderUpdate, TrimMode, ToolOutputInfo } from "./protocol";
 import { trimConversationInPlace, type TrimConversationResult } from "./conversation-trim";
-import { buildDisplayData, collectToolOutputs, type ConversationDisplayData } from "./display";
+import { buildDisplayData, collectToolOutputs, type ConversationDisplayData, type DisplayEntry } from "./display";
 import { summarizeTool } from "./tools/registry";
 import * as persistence from "./persistence";
 import { getConversationActivityCounts, getConversationTasks, stopBackgroundTasksForConversation } from "./conversation-activity";
@@ -3070,6 +3070,27 @@ export function getDisplayData(id: string, includeToolOutputs = true): Conversat
   if (!conv) return null;
   if (archiveWindow(conv.messages)) throw new Error("Archived conversations require indexed history paging");
   return buildSnapshotDisplayData(conv, conv.messages, includeToolOutputs);
+}
+
+/**
+ * Display entries at absolute history indices (as history cursors count), for
+ * load_display_blocks. Indices past the history are left out.
+ */
+export function getDisplayEntries(id: string, indices: readonly number[]): Map<number, DisplayEntry> | null {
+  const runtime = conversations.get(id);
+  if (runtime && archiveWindow(runtime.messages) && dirty.has(id)) flush(id);
+  if (!summaries.has(id) && !conversations.has(id)) return null;
+  if (persistence.isSqliteConversationStore() && !dirty.has(id)) {
+    const read = persistence.loadDisplayEntries(id, indices);
+    const loaded = conversations.get(id);
+    if (read && !(loaded && read.storedMessageCount !== storedMessageCount(loaded.messages))) return read.entries;
+  }
+  const snapshot = getRenderSnapshot(id, false);
+  if (!snapshot) return null;
+  const history = snapshot.entries.filter((entry) => entry.type !== "system_instructions");
+  const entries = new Map<number, DisplayEntry>();
+  for (const index of indices) if (index >= 0 && index < history.length) entries.set(index, history[index]!);
+  return entries;
 }
 
 export function getToolOutputs(id: string, toolCallIds?: readonly string[]): ToolOutputInfo[] | null {

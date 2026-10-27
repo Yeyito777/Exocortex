@@ -30,7 +30,7 @@ const log = (line: string) => { if (logFile) appendFileSync(logFile, line + "\n"
 
 const READ_ONLY_COMMANDS = new Set([
   "client_capabilities", "ping", "list_conversations", "load_conversation", "load_conversation_history",
-  "load_tool_outputs", "get_image", "accounts", "list_tasks", "subscribe", "unsubscribe", "load_instructions",
+  "load_tool_outputs", "load_display_blocks", "get_image", "accounts", "list_tasks", "subscribe", "unsubscribe", "load_instructions",
   "load_folder_instructions", "load_tool_instructions", "get_tool_policy", "get_token_stats",
 ]);
 

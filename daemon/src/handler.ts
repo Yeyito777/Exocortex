@@ -35,7 +35,7 @@ import { saveToolInstructions, ToolInstructionsSaveError } from "./tool-instruct
 import { assertDelegationModel, parseRequestedModel, resolveDelegationModel } from "./delegation-models";
 import { getConversationToolNames, getToolDisplayInfo } from "./tools/registry";
 import { getExternalToolStyles, manageExternalToolDaemon } from "./external-tools";
-import { EFFORT_LEVELS, SUBAGENTS_FOLDER_NAME, createModelVisibleSystemNotice, isQueuedObligation, type UserMessageAutomation } from "./messages";
+import { EFFORT_LEVELS, SUBAGENTS_FOLDER_NAME, createModelVisibleSystemNotice, isQueuedObligation, type Block, type UserMessageAutomation } from "./messages";
 import { describeSubagentPendingWork } from "./subagent-pending-work";
 import { getDefaultProvider, getDefaultModel, getProvider, getProviders, isKnownModel, allowsCustomModels, refreshProviders, normalizeEffort, supportsEffort, getSupportedEfforts, supportsFastMode, supportsImageInputs } from "./providers/registry";
 import { transcribeAudioBytes } from "./transcription";
@@ -95,7 +95,7 @@ import { addClaudeAccount, claudeLoginCommand, removeClaudeAccount } from "./pro
 import { claudeAccountReports } from "./providers/anthropic/account-pool";
 import { formatClaudeAccountReports } from "./providers/anthropic/account-report";
 import { createAccountsWatch } from "./accounts-watch";
-import { HISTORY_PAGE_BYTE_BUDGET, INITIAL_HISTORY_TURNS, MAX_HISTORY_REQUEST_TURNS, buildHistoryUpdatedEvents, isValidHistoryViewport, isValidInitialBackfill, compactHistoryImages, pageDisplayHistory, type HistoryViewport, type HistoryWindowOptions } from "./history-pagination";
+import { DISPLAY_BLOCKS_RESPONSE_BYTES, HISTORY_PAGE_BYTE_BUDGET, INITIAL_HISTORY_TURNS, MAX_DISPLAY_BLOCK_RANGES, MAX_HISTORY_REQUEST_TURNS, buildHistoryUpdatedEvents, isValidHistoryViewport, isValidInitialBackfill, compactHistoryImages, pageDisplayHistory, type HistoryViewport, type HistoryWindowOptions } from "./history-pagination";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
 import { randomUUID } from "crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -929,9 +929,14 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     return true;
   };
 
-  /** Clients that understand partial AI entries receive byte-bounded windows. */
-  const historyWindowOptions = (target: ConnectedClient): HistoryWindowOptions =>
-    target.capabilities?.has("history-block-pagination") ? { byteBudget: HISTORY_PAGE_BYTE_BUDGET } : {};
+  /**
+   * Clients that understand partial AI entries receive byte-bounded windows;
+   * ones that fold turns and can fetch elided blocks, without the folded work.
+   */
+  const historyWindowOptions = (target: ConnectedClient, folded = false): HistoryWindowOptions => ({
+    ...(target.capabilities?.has("history-block-pagination") ? { byteBudget: HISTORY_PAGE_BYTE_BUDGET } : {}),
+    ...(folded && target.capabilities?.has("history-folded-elision") ? { elideFoldedWork: true } : {}),
+  });
 
   const sendCompactConversationLoaded = (
     target: ConnectedClient,
@@ -944,7 +949,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     initialBackfillReqId?: string,
   ) => {
     const paginated = target.capabilities?.has("history-pagination") || turns !== undefined;
-    const windowOptions = historyWindowOptions(target);
+    const windowOptions = historyWindowOptions(target, viewport?.folded === true);
     // A byte-budgeted client's viewport sizes the window in rendered rows.
     if (viewport && windowOptions.byteBudget !== undefined) {
       windowOptions.viewport = viewport;
@@ -1070,8 +1075,9 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     requestSource?: "initial-backfill" | "viewport",
     metrics?: ConversationLoadMetrics,
     cachedEntryHashes?: string[],
+    folded = false,
   ): boolean => {
-    const windowOptions: HistoryWindowOptions = { ...historyWindowOptions(target), beforeBlockIndex };
+    const windowOptions: HistoryWindowOptions = { ...historyWindowOptions(target, folded), beforeBlockIndex };
     {
       const snapshotDiagnostics: Partial<convStore.RenderSnapshotDiagnostics> | undefined = metrics ? {} : undefined;
       const page = convStore.getStoredDisplayPage(convId, turns, beforeEntryIndex, snapshotDiagnostics, windowOptions);
@@ -2066,7 +2072,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
               || capability === "sidebar-digest-sync"
               || capability === "update-status-push"
               || capability === "sidebar-incremental"
-              || capability === "client-exec-alive") client.capabilities.add(capability);
+              || capability === "client-exec-alive"
+              || capability === "history-folded-elision") client.capabilities.add(capability);
         }
         if (client.capabilities.has("sidebar-digest-sync") && isSidebarDigest(cmd.sidebarDigest)) {
           client.sidebarDigest = cmd.sidebarDigest;
@@ -3432,6 +3439,48 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         break;
       }
 
+      case "load_display_blocks": {
+        const ranges = cmd.ranges;
+        if (!Array.isArray(ranges) || ranges.length === 0 || ranges.length > MAX_DISPLAY_BLOCK_RANGES
+            || ranges.some((range) => !range || !Number.isSafeInteger(range.entry) || range.entry < 0
+              || !Number.isSafeInteger(range.start) || range.start < 0
+              || !Number.isSafeInteger(range.end) || range.end <= range.start)) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Invalid display block selection" });
+          break;
+        }
+        let entries;
+        try {
+          entries = convStore.getDisplayEntries(cmd.convId, ranges.map((range) => range.entry));
+        } catch (error) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Could not load display blocks: ${error instanceof Error ? error.message : String(error)}` });
+          break;
+        }
+        if (!entries) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
+          break;
+        }
+        // Ranges are answered in order until the response is this large; the client asks again for the rest.
+        let bytes = 0;
+        let truncated = false;
+        const loaded: Array<{ entry: number; start: number; blocks: Block[] }> = [];
+        for (const range of ranges) {
+          const entry = entries.get(range.entry);
+          if (entry?.type !== "ai" || range.start >= entry.blocks.length) continue;
+          const blocks: Block[] = [];
+          for (let index = range.start; index < Math.min(range.end, entry.blocks.length); index++) {
+            const block = entry.blocks[index]!;
+            const blockBytes = JSON.stringify(block).length;
+            if (bytes > 0 && bytes + blockBytes > DISPLAY_BLOCKS_RESPONSE_BYTES) { truncated = true; break; }
+            bytes += blockBytes;
+            blocks.push(block);
+          }
+          if (blocks.length > 0) loaded.push({ entry: range.entry, start: range.start, blocks });
+          if (truncated) break;
+        }
+        server.sendTo(client, { type: "display_blocks_loaded", reqId: cmd.reqId, convId: cmd.convId, ranges: loaded, ...(truncated ? { truncated } : {}) });
+        break;
+      }
+
       case "load_tool_outputs": {
         if (cmd.toolCallIds !== undefined && (
           !Array.isArray(cmd.toolCallIds)
@@ -3570,6 +3619,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             "initial-backfill",
             undefined,
             backfill.cachedEntryHashes,
+            cmd.viewport?.folded === true,
           );
           if (!sent) server.sendTo(client, { type: "error", reqId: backfill.reqId, convId: loadedConvId, message: `Conversation ${loadedConvId} not found` });
         }
@@ -3623,6 +3673,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           cmd.requestSource,
           metrics,
           cmd.cachedEntryHashes,
+          cmd.folded === true,
         );
         if (!sent) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });

@@ -52,7 +52,10 @@ export class HistoryCache {
       const backfillKey = JSON.stringify(["initial_backfill", command.convId, backfill.turns]);
       const backfillBase = this.pin(backfillKey);
       this.pending.set(backfill.reqId, {
-        command: { type: "load_conversation_history", reqId: backfill.reqId, convId: command.convId, beforeEntryIndex: 0, turns: backfill.turns, requestSource: "initial-backfill" },
+        command: {
+          type: "load_conversation_history", reqId: backfill.reqId, convId: command.convId, beforeEntryIndex: 0, turns: backfill.turns, requestSource: "initial-backfill",
+          ...(command.type === "load_conversation" && command.viewport?.folded ? { folded: true } : {}),
+        },
         key: backfillKey,
         base: backfillBase,
         pushed: true,

@@ -10,6 +10,7 @@ import { summarizeConversation, type Conversation, type ConversationSummary, typ
 import type { ToolOutputInfo } from "./protocol";
 import type { StoredDisplayHistoryPage } from "./display-page-store";
 import type { HistoryWindowOptions } from "./history-pagination";
+import type { DisplayEntry } from "./display";
 import { clonedConversationValue, type ConversationCloneTarget } from "./conversation-clone";
 import type { ConversationLoadResult } from "./conversation-load-protocol";
 import * as jsonPersistence from "./json-persistence";
@@ -391,6 +392,10 @@ export function loadDisplayPage(
   windowOptions?: HistoryWindowOptions,
 ): StoredDisplayHistoryPage | null {
   return backend === "sqlite" ? store().loadDisplayPage(id, turns, beforeEntryIndex, windowOptions) : null;
+}
+
+export function loadDisplayEntries(id: string, indices: readonly number[]): { entries: Map<number, DisplayEntry>; storedMessageCount: number } | null {
+  return backend === "sqlite" ? store().loadDisplayEntries(id, indices) : null;
 }
 
 export function loadToolOutputs(id: string, toolCallIds?: readonly string[]): ToolOutputInfo[] | null {
