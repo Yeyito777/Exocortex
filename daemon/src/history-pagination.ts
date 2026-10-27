@@ -14,6 +14,10 @@ export const MAX_HISTORY_REQUEST_TURNS = 100;
  */
 export const HISTORY_PAGE_BYTE_BUDGET = 128 * 1024;
 const RECENT_HISTORY_IMAGE_PAYLOAD_ENTRIES = 8;
+/** Most ranges one load_display_blocks may name. */
+export const MAX_DISPLAY_BLOCK_RANGES = 1_000;
+/** Approximate serialized size at which a display_blocks_loaded response stops. */
+export const DISPLAY_BLOCKS_RESPONSE_BYTES = 2 * 1024 * 1024;
 
 /**
  * Rendered rows an opening window should cover: the client's visible history
@@ -55,6 +59,8 @@ export interface HistoryWindowOptions {
    * screens of this viewport, rather than after a fixed number of turns.
    */
   viewport?: HistoryViewport;
+  /** Leave out the content of the work a folded client hides (elideFoldedWork). */
+  elideFoldedWork?: boolean;
 }
 
 export interface HistoryWindowLimits {
@@ -68,6 +74,11 @@ export interface HistoryWindowLimits {
    * previews by image id.
    */
   optionalImagePayloads?: boolean;
+  /**
+   * Entries are elided (elideFoldedWork) before they count against the budget,
+   * so a window covers the history a folded client shows, not the work it hides.
+   */
+  elideFoldedWork?: boolean;
 }
 
 /** Limits for a paged history window (opening or backfill) with these options. */
@@ -77,7 +88,43 @@ export function pageWindowLimits(options: HistoryWindowOptions): HistoryWindowLi
     byteBudget: options.byteBudget,
     ...(viewport ? { rowTarget: { rows: viewport.rows * OPENING_WINDOW_VIEWPORTS, cols: viewport.cols, ...(viewport.folded ? { folded: true } : {}) } } : {}),
     optionalImagePayloads: options.byteBudget !== undefined,
+    ...(options.elideFoldedWork ? { elideFoldedWork: true } : {}),
   };
+}
+
+// ── Folded-work elision ──────────────────────────────────────────────
+// A client that folds turns (tui/src/turncollapse.ts) shows of an assistant
+// entry only the reply after its last tool round, plus, for a turn still
+// running, its newest step. Every tool call and thinking block before the
+// entry's last tool call is hidden, and those inputs and summaries are most of
+// a tool-heavy turn's bytes. They go out empty, with where to fetch them from.
+// Text, tool results (already without output) and the last tool call stay.
+
+/**
+ * The entry at absolute history index `index` with its folded-away tool calls
+ * and thinking emptied and marked elided. Returns the entry itself when there
+ * is nothing to leave out.
+ */
+export function elideFoldedWork(entry: DisplayEntry, index: number): DisplayEntry {
+  if (entry.type !== "ai") return entry;
+  let lastToolCall = -1;
+  for (let block = entry.blocks.length - 1; block >= 0; block--) {
+    if (entry.blocks[block]!.type === "tool_call") { lastToolCall = block; break; }
+  }
+  let blocks: Block[] | null = null;
+  for (let block = 0; block < lastToolCall; block++) {
+    const source = entry.blocks[block]!;
+    let elided: Block | null = null;
+    if (source.type === "tool_call") {
+      elided = { type: "tool_call", toolCallId: source.toolCallId, toolName: source.toolName, input: {}, summary: "", elided: { entry: index, block } };
+    } else if (source.type === "thinking" && source.text) {
+      elided = { type: "thinking", text: "", elided: { entry: index, block } };
+    }
+    if (!elided) continue;
+    blocks ??= entry.blocks.slice();
+    blocks[block] = elided;
+  }
+  return blocks ? { ...entry, blocks } : entry;
 }
 
 export interface DisplayHistoryPage {
@@ -283,7 +330,7 @@ export function selectHistoryWindow(
   endBlockIndex = 0,
   limits: HistoryWindowLimits = {},
 ): HistoryWindow {
-  const { byteBudget, rowTarget, optionalImagePayloads } = limits;
+  const { byteBudget, rowTarget, optionalImagePayloads, elideFoldedWork: elide } = limits;
   const safeTurns = Math.max(1, Math.floor(Number.isFinite(turns) ? turns : 1));
   const selected: DisplayEntry[] = [];
   /** Entries whose image payloads were set aside, by position in `selected`. */
@@ -296,9 +343,11 @@ export function selectHistoryWindow(
   /** A newer assistant entry of the turn being walked was already counted. */
   let aiNewerInTurn = false;
   for (const candidate of candidates) {
-    let entry = endBlockIndex > 0 && candidate.index === endIndex && candidate.entry.type === "ai"
-      ? sliceAIEntry(candidate.entry, 0, endBlockIndex)
-      : candidate.entry;
+    // Elided whole, so block references stay absolute and the cut below sees elided sizes.
+    const source = elide ? elideFoldedWork(candidate.entry, candidate.index) : candidate.entry;
+    let entry = endBlockIndex > 0 && candidate.index === endIndex && source.type === "ai"
+      ? sliceAIEntry(source, 0, endBlockIndex)
+      : source;
     let bytes = entry !== candidate.entry || candidate.bytes === undefined ? serializedBytes(entry) : candidate.bytes;
     if (optionalImagePayloads && entry.type === "user" && hasImagePayload(entry)) {
       const full = entry;

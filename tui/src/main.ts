@@ -100,6 +100,7 @@ import {
   shouldLoadOlderHistory,
 } from "./historypagination";
 import { requestToolOutputs, requestVisibleToolOutputs } from "./events/tool-outputs";
+import { requestElidedBlocksIfNeeded } from "./events/elided-blocks";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
 import { log, TUI_LOG_PATH } from "./log";
 import { installFatalErrorHandlers } from "./fatal";
@@ -122,6 +123,8 @@ import {
 } from "./conversationscroll";
 import { writeFileSync } from "node:fs";
 import { STALL_PROFILE, stallMark, stallSpan } from "./stallprofile";
+/** History payloads the stall profiler marks on arrival (first content, whole window). */
+const HISTORY_PROFILE_EVENTS = new Set(["conversation_loaded", "conversation_history_loaded", "history_updated", "display_blocks_loaded", "tool_outputs_loaded"]);
 import { takeEarlySshProcess } from "./early-ssh";
 import { spawnReusingSshProxy, sshProbeFallback } from "./ssh-mux";
 import { applyTuiLaunchOptions, parseTuiLaunchArgs, TUI_USAGE, type TuiLaunchOptions } from "./launchargs";
@@ -435,6 +438,7 @@ function performRender(): number {
     })}`);
   }
   requestVisibleToolOutputs(state, daemon);
+  if (requestElidedBlocksIfNeeded(state, daemon)) scheduleRender(0);
   scheduleSmoothScrollFrame();
   resetStreamTick();
   if (STARTUP_PROFILE && !startupProfileReported) startupProfileMark("frame", { renderMs: Math.round(renderMs * 10) / 10 });
@@ -567,6 +571,7 @@ function requestOlderHistory(turns: number, requestSource: "initial-backfill" | 
     request.turns,
     requestSource,
     request.beforeBlockIndex,
+    openingViewport(state).folded === true,
   );
   return true;
 }
@@ -2370,7 +2375,10 @@ async function main(): Promise<void> {
     setWireTrace(entry => startupProfileWire.push({ t: Math.round(performance.now() * 10) / 10, ...entry }));
     setTimeout(() => reportStartupProfile("timeout"), STARTUP_PROFILE_TIMEOUT_MS).unref?.();
   }
-  daemon = new DaemonClient(event => stallSpan(`event:${event.type}`, () => onDaemonEvent(event)), undefined, undefined, {
+  daemon = new DaemonClient(event => {
+    if (STALL_PROFILE && HISTORY_PROFILE_EVENTS.has(event.type)) stallMark(`event ${event.type}`);
+    stallSpan(`event:${event.type}`, () => onDaemonEvent(event));
+  }, undefined, undefined, {
     spawnSshProcess: alias => takeEarlySshProcess(alias) ?? spawnReusingSshProxy(alias),
     sshProbeFallback,
   });

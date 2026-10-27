@@ -175,9 +175,23 @@ export interface ImageRef {
 
 // ── Blocks ──────────────────────────────────────────────────────────
 
+/**
+ * Where an elided block's content lives: the display entry (absolute history
+ * index, as history cursors count) and its block index. A history page for a
+ * client that folds turns (`history-folded-elision`) sends the work it hides
+ * with its content left out and this reference set; load_display_blocks
+ * fetches it. Never persisted.
+ */
+export interface ElidedBlockRef {
+  entry: number;
+  block: number;
+}
+
 export interface ThinkingBlock {
   type: "thinking";
+  /** Empty while `elided` is set. */
   text: string;
+  elided?: ElidedBlockRef;
 }
 
 export interface TextBlock {
@@ -202,10 +216,13 @@ export interface ToolCallBlock {
   type: "tool_call";
   toolCallId: string;
   toolName: string;
+  /** Empty (`{}`) while `elided` is set. */
   input: Record<string, unknown>;
+  /** Empty while `elided` is set. */
   summary: string;
   /** Snapshotted at invocation time so history never depends on the live filesystem. */
   presentation?: ToolCallPresentation;
+  elided?: ElidedBlockRef;
 }
 
 export interface ToolResultBlock {

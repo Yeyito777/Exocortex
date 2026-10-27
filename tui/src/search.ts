@@ -19,6 +19,7 @@ import { resetPending } from "./vim/types";
 import { activeHistorySurface } from "./historysurface";
 import { historyWithTurnWork, mapHistoryRow, preserveViewportAcrossHistoryMutation } from "./chatscroll";
 import { saveTurnWorkPreference } from "./diagnostics";
+import { hasElidedBlocks } from "./events/elided-blocks";
 
 export type SearchDirection = "forward" | "backward";
 export type SearchBarMode = "search" | "command";
@@ -243,6 +244,11 @@ export function jumpToSearchMatch(state: RenderState, direction: SearchDirection
     ? rowColToPos(index, surface.cursor.row, surface.cursor.col)
     : Math.max(0, index.buffer.length - 1);
   const cursor = posToRowCol(index, startPos());
+  // Folded pages leave out the work's content: search it once that is in.
+  if (state.chatFocus !== "btw" && !state.showTurnWork && !state.showToolOutput && hasElidedBlocks(state)) {
+    state.searchAfterElidedLoad = direction;
+    return true;
+  }
   if (showFoldedMatch(state, search.query, cursor, direction)) index = buildSearchIndex(state);
   const fromPos = startPos();
   const matchPos = findNextMatch(index.buffer, search.query, fromPos, direction);

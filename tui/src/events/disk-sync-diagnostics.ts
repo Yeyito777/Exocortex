@@ -13,8 +13,8 @@ interface DiskSyncSnapshot {
 type DiskSyncSource = "conversation_loaded" | "history_updated";
 
 type VisibleComparableBlock =
-  | { type: "text" | "thinking"; text: string }
-  | { type: "tool_call"; toolCallId: string; toolName: string; summary: string }
+  | { type: "text" | "thinking"; text: string; elided?: true }
+  | { type: "tool_call"; toolCallId: string; toolName: string; summary: string; elided?: true }
   | { type: "tool_result"; toolCallId: string; toolName: string; output: string; isError: boolean };
 
 export interface AssistantDisplaySnapshot {
@@ -76,8 +76,10 @@ function visibleComparableBlocks(blocks: Block[], showToolOutput: boolean): Visi
   for (const block of blocks) {
     switch (block.type) {
       case "text":
-      case "thinking":
         visible.push({ type: block.type, text: block.text });
+        break;
+      case "thinking":
+        visible.push({ type: block.type, text: block.text, ...(block.elided ? { elided: true as const } : {}) });
         break;
       case "tool_call":
         visible.push({
@@ -85,6 +87,7 @@ function visibleComparableBlocks(blocks: Block[], showToolOutput: boolean): Visi
           toolCallId: block.toolCallId,
           toolName: block.toolName,
           summary: block.summary,
+          ...(block.elided ? { elided: true as const } : {}),
         });
         break;
       case "tool_result":
@@ -161,12 +164,13 @@ function visibleBlocksEqual(a: VisibleComparableBlock, b: VisibleComparableBlock
   switch (a.type) {
     case "text":
     case "thinking":
-      return b.type === a.type && a.text === b.text;
+      // An elided block (folded work left out of the page) stands for the same content.
+      return b.type === a.type && (a.text === b.text || !!a.elided || !!b.elided);
     case "tool_call":
       return b.type === "tool_call"
         && a.toolCallId === b.toolCallId
         && a.toolName === b.toolName
-        && a.summary === b.summary;
+        && (a.summary === b.summary || !!a.elided || !!b.elided);
     case "tool_result":
       return b.type === "tool_result"
         && a.toolCallId === b.toolCallId

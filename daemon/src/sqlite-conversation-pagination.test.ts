@@ -186,3 +186,33 @@ test("a viewport-sized stored opening fills two screens past a large recent scre
   expect(shot.type === "user" ? shot.images?.map(image => [image.base64, image.sizeBytes]) : null).toEqual([["", 450_000]]);
   expect(page.hasOlder).toBe(true);
 });
+
+test("folded pages elide the stored projection, and its entries are read back by absolute index", () => {
+  root = mkdtempSync(join(tmpdir(), "exocortex-page-elide-"));
+  store = new SqliteConversationStore({ path: join(root, "store.sqlite3") });
+  const conv = createConversation("page-elide", "openai", "gpt-5.6-sol");
+  conv.messages.push({ role: "system_instructions", content: "Pinned instructions", metadata: null });
+  conv.messages.push({ role: "user", content: "Do the big job.", metadata: null });
+  for (let round = 0; round < 200; round++) {
+    conv.messages.push(
+      { role: "assistant", content: [{ type: "tool_use", id: `call-${round}`, name: "bash", input: { command: `make step-${round} `.padEnd(1_500, "x") } }], metadata: null },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: `call-${round}`, content: "ok", is_error: false }], metadata: null },
+    );
+  }
+  conv.messages.push({ role: "assistant", content: "Done.", metadata: null });
+  store.save(conv);
+
+  const full = store.loadDisplayPage(conv.id, 100, undefined, { byteBudget: 128 * 1024 })!;
+  const folded = store.loadDisplayPage(conv.id, 100, undefined, { byteBudget: 128 * 1024, elideFoldedWork: true })!;
+  expect(full.hasOlder).toBe(true);
+  expect(folded).toMatchObject({ startIndex: 0, startBlockIndex: 0, hasOlder: false });
+  const turn = folded.entries[1]!;
+  if (turn.type !== "ai") throw new Error("not ai");
+  expect(turn.blocks[0]).toMatchObject({ type: "tool_call", toolCallId: "call-0", summary: "", elided: { entry: 1, block: 0 } });
+
+  const read = store.loadDisplayEntries(conv.id, [1, 99])!;
+  expect([...read.entries.keys()]).toEqual([1]);
+  const stored = read.entries.get(1)!;
+  expect(stored.type === "ai" ? stored.blocks[0] : null).toMatchObject({ type: "tool_call", toolCallId: "call-0", summary: expect.stringContaining("make step-0") });
+  expect(read.storedMessageCount).toBe(full.storedMessageCount);
+});

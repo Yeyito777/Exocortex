@@ -60,6 +60,7 @@ import {
   handleUserMessage,
 } from "./events/streaming";
 import { handleToolOutputsError, handleToolOutputsLoaded } from "./events/tool-outputs";
+import { handleDisplayBlocksError, handleDisplayBlocksLoaded } from "./events/elided-blocks";
 import { handleToolsAvailable } from "./events/provider";
 import { formatConversationDefaults, receiveConversationDefaults } from "./events/conversation-defaults";
 import { hydratePendingAIFromSnapshot } from "./events/pending-ai";
@@ -208,6 +209,7 @@ export function handleEvent(
       // A failed tool-output fetch (the viewport loader runs mid-stream) says
       // nothing about the turn being streamed; keep its pending response.
       if (event.convId === state.convId) handleToolOutputsError(state, event.reqId);
+      handleDisplayBlocksError(state, event.reqId, daemon);
       // Only a failure of the send that created the optimistic response clears
       // it. Unrelated errors on this conversation (a rejected /instructions
       // while streaming, an older-history page) must not hide the live turn.
@@ -558,6 +560,11 @@ export function handleEvent(
     case "tool_outputs_loaded":
       if (event.convId !== state.convId) break;
       handleToolOutputsLoaded(state, event);
+      break;
+
+    case "display_blocks_loaded":
+      if (event.convId !== state.convId) break;
+      handleDisplayBlocksLoaded(state, event, daemon);
       break;
 
     case "auth_status":

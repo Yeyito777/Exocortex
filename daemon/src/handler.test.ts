@@ -3828,6 +3828,78 @@ describe("handler load_conversation late-join streaming snapshots", () => {
     expect(userEntry?.images?.[0]).toEqual({ mediaType: "image/png", base64: recentImageBase64, sizeBytes: 768, imageId: "6b81cfb62dddd69347058867602926cc8751b3d28e83e778a3951522674bcb0c" });
   });
 
+  test("leaves folded work out of folded pages for clients that can fetch it, and fetches it by reference", async () => {
+    const convId = mkId("folded-elision");
+    create(convId, "openai", "gpt-5.4");
+    const rounds = 40;
+    const command = (round: number) => `cat src/file-${round}.ts`.padEnd(2_000, " #");
+    appendMessages(convId, [
+      { role: "user", content: "Do the big job.", metadata: null },
+      ...Array.from({ length: rounds }, (_, round) => [
+        { role: "assistant" as const, content: [
+          { type: "thinking" as const, thinking: `Round ${round} plan. `.repeat(20), signature: "sig" },
+          { type: "tool_use" as const, id: `call-${round}`, name: "bash", input: { command: command(round) } },
+        ], metadata: null },
+        { role: "user" as const, content: [{ type: "tool_result" as const, tool_use_id: `call-${round}`, content: "body", is_error: false }], metadata: null },
+      ]).flat(),
+      { role: "assistant", content: "All done.", metadata: null },
+    ]);
+    const sent: Array<any> = [];
+    const server = {
+      sendTo: mock((_client: unknown, event: unknown) => { sent.push(event); }),
+      broadcast: mock(() => {}), sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}), subscribe: mock(() => {}),
+      unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+    const run = async (client: object, command: Parameters<typeof handle>[1]) => {
+      sent.length = 0;
+      await handle(client as never, command);
+      return [...sent];
+    };
+    const viewport = { rows: 40, cols: 160, folded: true };
+    const open = { type: "load_conversation" as const, convId, reqId: "open", turns: 5, viewport };
+    const capable = { capabilities: new Set<string>(["history-block-pagination", "history-folded-elision"]) };
+    const older = { capabilities: new Set<string>(["history-block-pagination"]) };
+    const blocksOf = (event: any) => event.entries.find((entry: any) => entry.type === "ai").blocks as any[];
+
+    const [legacy] = await run(older, open);
+    expect(blocksOf(legacy).some(block => block.elided)).toBe(false);
+    const [unfolded] = await run(capable, { ...open, viewport: { rows: 40, cols: 160 } });
+    expect(blocksOf(unfolded).some(block => block.elided)).toBe(false);
+
+    const [folded] = await run(capable, open);
+    // One folded page holds the whole turn the unelided one had to cut.
+    expect(legacy.hasOlderHistory).toBe(true);
+    expect(folded).toMatchObject({ historyStartIndex: 0, hasOlderHistory: false });
+    const blocks = blocksOf(folded);
+    const entry = folded.entries.findIndex((candidate: any) => candidate.type === "ai");
+    const firstCall = blocks.findIndex(block => block.type === "tool_call");
+    expect(blocks[firstCall]).toEqual({ type: "tool_call", toolCallId: "call-0", toolName: "bash", input: {}, summary: "", elided: { entry, block: firstCall } });
+    expect(blocks.findLast(block => block.type === "tool_call")).toMatchObject({ toolCallId: `call-${rounds - 1}`, input: { command: command(rounds - 1) } });
+    expect(blocks.at(-1)).toEqual({ type: "text", text: "All done." });
+
+    // A folded history page elides the same way; an unfolded one does not.
+    const page = { type: "load_conversation_history" as const, convId, reqId: "page", turns: 15, beforeEntryIndex: entry + 1 };
+    const [foldedPage] = await run(capable, { ...page, folded: true });
+    expect(blocksOf(foldedPage)).toEqual(blocks);
+    const [fullPage] = await run(capable, page);
+    expect(blocksOf(fullPage).some(block => block.elided)).toBe(false);
+    expect(fullPage.historyStartBlockIndex).toBeGreaterThan(0);
+
+    // The references fetch exactly the blocks they stand for.
+    const [loaded] = await run(capable, { type: "load_display_blocks", convId, reqId: "blocks", ranges: [{ entry, start: firstCall - 1, end: firstCall + 1 }, { entry: 999, start: 0, end: 1 }] });
+    expect(loaded).toMatchObject({ type: "display_blocks_loaded", reqId: "blocks", convId });
+    expect(loaded.truncated).toBeUndefined();
+    expect(loaded.ranges).toHaveLength(1);
+    expect(loaded.ranges[0].start).toBe(firstCall - 1);
+    expect(loaded.ranges[0].blocks[0]).toMatchObject({ type: "thinking", text: expect.stringContaining("Round 0 plan.") });
+    expect(loaded.ranges[0].blocks[1]).toMatchObject({ type: "tool_call", toolCallId: "call-0", input: { command: command(0) }, summary: expect.stringContaining("cat src/file-0.ts") });
+
+    const [invalid] = await run(capable, { type: "load_display_blocks", convId, reqId: "bad", ranges: [{ entry, start: 2, end: 2 }] });
+    expect(invalid).toMatchObject({ type: "error", reqId: "bad" });
+  });
+
   test("defers tool-result bodies until the client explicitly loads them", async () => {
     const convId = mkId("compact-tool-results");
     create(convId, "openai", "gpt-5.4");
