@@ -108,6 +108,13 @@ export function requestElidedBlocksIfNeeded(
   let through: number | undefined;
   if (state.unfoldAfterElidedLoad !== null && state.searchAfterElidedLoad === null) {
     trimHistoryAboveView(state);
+    // At the bottom, a screen already filled in (the open's prefetch) shows at
+    // once; the work above it is fetched right after, out of view.
+    if (state.scrollOffset === 0 && bottomScreenFilledIn(state)) {
+      const settled = settleElidedBlocks(state, daemon);
+      if (settled) requestElidedBlocksIfNeeded(state, daemon);
+      return settled;
+    }
     through = lastMessageInView(state);
   }
   const ranges = daemon.loadDisplayBlocks ? elidedBlockRanges(state, MAX_RANGES_PER_REQUEST, through) : [];
@@ -120,6 +127,81 @@ export function requestElidedBlocksIfNeeded(
   state.elidedBlocksRequestRanges = ranges;
   state.elidedBlocksRequestId = daemon.loadDisplayBlocks!(state.convId, ranges) ?? null;
   return false;
+}
+
+// --- The newest screen ---
+// After an open, the folded work of the newest screen is fetched in the
+// background (prefetchBottomScreen), so Ctrl+O and Ctrl+I at the bottom show
+// it without a round trip.
+
+/** About one screen of tool calls and thinking: the prefetch's reply limit. */
+export const PREFETCH_SCREEN_BYTES = 32 * 1024;
+
+/** Rows a block shows at least once folded work is shown (Ctrl+O), at `cols` wide. */
+function shownRows(block: Block, cols: number): number {
+  const wrapped = (text: string) => text.split("\n").reduce((rows, line) => rows + Math.max(1, Math.ceil(line.length / cols)), 0);
+  switch (block.type) {
+    case "text": return block.text.trim() ? wrapped(block.text) : 0;
+    case "thinking": return block.text.trim() ? wrapped(block.text) : 0;
+    // Long non-shell calls collapse to a few rows; counting one row errs low.
+    case "tool_call": return block.toolName === "bash" || block.toolName === "Bash" || block.toolName === "exec_command" ? wrapped(block.summary) : 1;
+    case "tool_result": return 0;
+  }
+}
+
+/**
+ * Elided blocks from the bottom of the history up, until the blocks below them
+ * fill a screen once folded work is shown. `visit` returns true to stop; the
+ * result says whether the screen was filled without an elided block.
+ */
+function walkBottomScreen(state: RenderState, visit: (ref: ElidedBlockRef) => boolean | void): boolean {
+  const height = state.layout.messageAreaHeight > 0 ? state.layout.messageAreaHeight : state.rows;
+  const cols = Math.max(20, (state.layout.chatWidth > 0 ? state.layout.chatWidth : state.cols) - 6);
+  let rows = 0;
+  let clean = true;
+  for (let index = state.messages.length - 1; index >= 0 && rows < height; index--) {
+    const message = state.messages[index]!;
+    if (message.role !== "assistant") {
+      rows += message.role === "system_instructions" ? 0 : 2;
+      continue;
+    }
+    for (let block = message.blocks.length - 1; block >= 0 && rows < height; block--) {
+      const candidate = message.blocks[block]!;
+      const ref = elidedRef(candidate);
+      if (ref && !state.elidedBlocksUnavailable.has(refKey(ref))) {
+        clean = false;
+        if (visit(ref) === true) return false;
+        rows += 1;
+      } else {
+        rows += shownRows(candidate, cols);
+      }
+    }
+  }
+  return clean;
+}
+
+/** Whether the bottom screen, folded work shown, has nothing left to fetch. */
+export function bottomScreenFilledIn(state: RenderState): boolean {
+  return walkBottomScreen(state, () => true);
+}
+
+/**
+ * After an open, while folded: fetch the newest screen's folded work, newest
+ * first and at most PREFETCH_SCREEN_BYTES, without waiting on it. Called after
+ * the first paint, so it never delays first content.
+ */
+export function prefetchBottomScreen(state: RenderState, daemon: Pick<DaemonActions, "loadDisplayBlocks">): void {
+  if (!state.convId || !daemon.loadDisplayBlocks || state.elidedBlocksRequestId !== null) return;
+  if (state.showTurnWork || state.showToolOutput) return;
+  // Newest first, one range per block: a reply cut at its limit keeps the newest.
+  const ranges: Array<{ entry: number; start: number; end: number }> = [];
+  walkBottomScreen(state, (ref) => {
+    ranges.push({ entry: ref.entry, start: ref.block, end: ref.block + 1 });
+    return ranges.length >= MAX_RANGES_PER_REQUEST;
+  });
+  if (ranges.length === 0) return;
+  state.elidedBlocksRequestRanges = ranges;
+  state.elidedBlocksRequestId = daemon.loadDisplayBlocks(state.convId, ranges, PREFETCH_SCREEN_BYTES) ?? null;
 }
 
 /** Blocks (a message counts as a few) kept above the first one in view: a couple of screens of tool calls. */

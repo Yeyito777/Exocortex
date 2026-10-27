@@ -100,7 +100,7 @@ import {
   shouldLoadOlderHistory,
 } from "./historypagination";
 import { requestToolOutputs, requestVisibleToolOutputs } from "./events/tool-outputs";
-import { requestElidedBlocksIfNeeded } from "./events/elided-blocks";
+import { prefetchBottomScreen, requestElidedBlocksIfNeeded } from "./events/elided-blocks";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
 import { log, TUI_LOG_PATH } from "./log";
 import { installFatalErrorHandlers } from "./fatal";
@@ -418,7 +418,7 @@ function performRender(): number {
   const renderStartedAt = performance.now();
   const framePresented = stallSpan("render", () => render(state));
   const renderMs = performance.now() - renderStartedAt;
-  if (STALL_PROFILE) stallMark(`${framePresented ? "frame" : "held"} ${state.convId} msgs=${state.messages.length}${isActiveConversationLoading(state) ? " loading" : ""} off=${state.scrollOffset}`);
+  if (STALL_PROFILE) stallMark(`${framePresented ? "frame" : "held"} ${state.convId} msgs=${state.messages.length}${isActiveConversationLoading(state) ? " loading" : ""} off=${state.scrollOffset} view=${state.showToolOutput ? "detail" : state.showTurnWork ? "work" : "folded"}`);
   if (!framePresented) return renderMs;
   // Scrolling, streaming and overlays move what is under a still pointer.
   refreshMouseCursor(state);
@@ -889,6 +889,8 @@ function onDaemonEvent(event: Event): void {
     // A daemon that follows the page with its backfill names it; older ones are asked.
     const pushedBackfill = event.convId === state.convId ? event.initialBackfillReqId : undefined;
     const initialBackfillRequested = requestOlderHistory(INITIAL_BUFFER_ADDITIONAL_TURNS, "initial-backfill", pushedBackfill);
+    // After the first paint and the backfill: Ctrl+O at the bottom then needs no round trip.
+    if (event.convId === state.convId) prefetchBottomScreen(state, daemon);
     if (initialBackfillRequested) {
       if (!restoreWaitingForBackfill) scheduleRender(0);
     } else if (restoreWaitingForBackfill) {

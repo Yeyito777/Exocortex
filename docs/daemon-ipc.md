@@ -130,7 +130,10 @@ inputs (a 1,000-call message: one page instead of six). Before showing that
 work (Ctrl+O, Ctrl+I, a search that may land in it) the client fetches it with
 `load_display_blocks { ranges: [{ entry, start, end }] }`, answered by
 `display_blocks_loaded { ranges: [{ entry, start, blocks }] }` (`truncated`
-when the 2 MB response limit cut it; ask again for the rest). Other clients
+when the response limit cut it: 2 MB, or a lower `maxBytes`; ask again for
+the rest). Right after an open's first paint the TUI prefetches the newest
+screen's folded work this way (newest block first, `maxBytes` 32 KB), so
+Ctrl+O and Ctrl+I at the bottom need no round trip. Other clients
 (the phone app, older TUIs) are unaffected.
 
 ## Connectivity

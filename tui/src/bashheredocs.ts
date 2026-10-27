@@ -220,6 +220,8 @@ export type CommandPiece = ShellPiece | HeredocPiece;
  */
 export function splitHeredocPieces(command: string): CommandPiece[] {
   const lines = command.split("\n");
+  // Every heredoc operator has `<<`: without one the scan below finds none.
+  if (!command.includes("<<")) return [{ type: "shell", lines, continuationLines: 0 }];
   const pieces: CommandPiece[] = [];
   let shell: ShellPiece | null = null;
   let state = createHeredocScanState();

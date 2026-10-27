@@ -6,7 +6,7 @@ import { buildMessageLines } from "../conversation";
 import { createInitialState, type RenderState } from "../state";
 import type { Block } from "../messages";
 import type { DaemonActions } from "./types";
-import { elidedBlockRanges, hasElidedBlocks, requestElidedBlocksIfNeeded } from "./elided-blocks";
+import { bottomScreenFilledIn, elidedBlockRanges, hasElidedBlocks, prefetchBottomScreen, PREFETCH_SCREEN_BYTES, requestElidedBlocksIfNeeded } from "./elided-blocks";
 
 const ENTRY = 4;
 
@@ -56,14 +56,16 @@ function foldedState(rounds = 3): RenderState {
 
 function fakeDaemon() {
   const requests: Array<Array<{ entry: number; start: number; end: number }>> = [];
+  const limits: Array<number | undefined> = [];
   const daemon = {
-    loadDisplayBlocks: (_convId: string, ranges: Array<{ entry: number; start: number; end: number }>) => {
+    loadDisplayBlocks: (_convId: string, ranges: Array<{ entry: number; start: number; end: number }>, maxBytes?: number) => {
       requests.push(ranges);
+      limits.push(maxBytes);
       return `blocks-${requests.length}`;
     },
     loadToolOutputs: () => "outputs",
   };
-  return { daemon: daemon as unknown as DaemonActions, requests };
+  return { daemon: daemon as unknown as DaemonActions, requests, limits };
 }
 
 function answer(state: RenderState, daemon: DaemonActions, reqId: string, ranges: Array<{ entry: number; start: number; end: number }>, options: { truncated?: boolean; limit?: number; rounds?: number } = {}) {
@@ -219,5 +221,59 @@ describe("elided history blocks", () => {
     // The match is in folded work: the search switches to the Ctrl+O view to land on it.
     expect(state.showTurnWork).toBe(true);
     expect(state.searchAfterElidedLoad).toBeNull();
+  });
+
+  test("an open prefetches the newest screen's folded work, newest first, so Ctrl+O at the bottom shows at once", () => {
+    const state = foldedState(200);
+    state.historyStartIndex = ENTRY - 1;
+    const { daemon, requests, limits } = fakeDaemon();
+    prefetchBottomScreen(state, daemon);
+    expect(requests).toHaveLength(1);
+    expect(limits[0]).toBe(PREFETCH_SCREEN_BYTES);
+    const asked = requests[0]!;
+    // Newest first, about a screen (one row each at most), not the whole turn.
+    // The last call (598) was never elided; its thinking is the newest.
+    expect(asked[0]).toEqual({ entry: ENTRY, start: 597, end: 598 });
+    expect(asked.length).toBeLessThanOrEqual(state.layout.messageAreaHeight);
+    expect(asked.every((range, index) => index === 0 || range.start < asked[index - 1]!.start)).toBe(true);
+    // Folded, nothing shows or waits on it; a second prefetch does not stack.
+    prefetchBottomScreen(state, daemon);
+    expect(requests).toHaveLength(1);
+    answer(state, daemon, "blocks-1", asked, { rounds: 200 });
+    expect(state.showTurnWork).toBe(false);
+    expect(bottomScreenFilledIn(state)).toBe(true);
+
+    handleFocusedKey({ type: "ctrl-o" }, state);
+    expect(requestElidedBlocksIfNeeded(state, daemon)).toBe(true);
+    expect(state.showTurnWork).toBe(true);
+    // The work above the screen follows, out of view.
+    expect(requests).toHaveLength(2);
+    expect(requests[1]!.every(range => range.end <= asked.at(-1)!.start)).toBe(true);
+  });
+
+  test("a prefetch cut short by its byte limit leaves Ctrl+O to fetch the rest, and nothing is given up", () => {
+    const state = foldedState(200);
+    state.historyStartIndex = ENTRY - 1;
+    const { daemon, requests } = fakeDaemon();
+    prefetchBottomScreen(state, daemon);
+    answer(state, daemon, "blocks-1", requests[0]!.slice(0, 1), { rounds: 200, truncated: true });
+    expect(state.elidedBlocksUnavailable.size).toBe(0);
+    expect(bottomScreenFilledIn(state)).toBe(false);
+    handleFocusedKey({ type: "ctrl-o" }, state);
+    expect(requestElidedBlocksIfNeeded(state, daemon)).toBe(false);
+    expect(state.showTurnWork).toBe(false);
+    expect(requests).toHaveLength(2);
+  });
+
+  test("nothing is prefetched unfolded or without elided work", () => {
+    const shown = foldedState(200);
+    shown.showTurnWork = true;
+    const { daemon, requests } = fakeDaemon();
+    prefetchBottomScreen(shown, daemon);
+    const plain = createInitialState();
+    plain.convId = "conv-1";
+    plain.messages.push({ role: "assistant", blocks: fullBlocks(3), metadata: null });
+    prefetchBottomScreen(plain, daemon);
+    expect(requests).toEqual([]);
   });
 });
