@@ -2304,7 +2304,7 @@ export interface ToolInstructionsEntry {
 export interface ToolInstructionsBlock {
   /** Names it for save_tool_instructions, e.g. "internal:exo:hint" or "external:cal". */
   id: string;
-  /** What it is and where the model gets it, e.g. "System prompt · # Internal tools". */
+  /** What it is: "Description" or "Hint". */
   label: string;
   /** The text as the model gets it; "" when there is none yet. */
   text: string;

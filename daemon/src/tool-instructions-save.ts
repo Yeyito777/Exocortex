@@ -60,8 +60,7 @@ function validateEdits(edits: unknown): ToolInstructionsEdit[] {
 /** What a block is, for messages and the commit: "exo hint", "cal hint", "bash description". */
 function blockName(target: ToolTextTarget): string {
   if (target.store.kind === "manifest") return `${target.tool} hint`;
-  const kind = target.store.textKind === "mcp" ? "MCP instructions" : target.store.textKind;
-  return `${target.tool} ${kind}`;
+  return `${target.tool} ${target.store.textKind}`;
 }
 
 // ── Manifests ────────────────────────────────────────────────────────

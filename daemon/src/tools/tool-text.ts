@@ -1,15 +1,16 @@
 /**
  * Model-facing tool prose, kept as plain text files beside the code.
  *
- * Each built-in tool's schema description, system-prompt hint and (under
- * Claude Code) MCP server instructions live in daemon/src/tools/text/ as
- * <tool>.description.md, <tool>.hint.md and <tool>.mcp.md, so the owner can
- * edit them from /instructions tools. Files are re-read when they change: the
- * next turn of any conversation gets the new text without a restart. A
- * missing or empty file means no text (no hint).
+ * Each built-in tool has two texts in daemon/src/tools/text/, editable from
+ * /instructions tools: <tool>.description.md, its schema description, and
+ * <tool>.hint.md, its hint: under # Internal tools in the system prompt, or
+ * the exocortex MCP server's instructions under Claude Code. Files are re-read
+ * when they change: the next turn of any conversation gets the new text
+ * without a restart. A missing or empty file means no text (no hint).
  *
  * Values computed at runtime appear as explicit {{name}} placeholders. Each
- * tool declares its own (toolTextSource); every tool also gets {{repoRoot}}.
+ * tool declares its own (toolTextSource), which may differ by provider where
+ * the wording must; every tool also gets {{repoRoot}}.
  */
 
 import { readFileSync, statSync } from "fs";
@@ -17,9 +18,9 @@ import { join } from "path";
 import { repoRoot } from "@exocortex/shared/paths";
 import type { ProviderId } from "../messages";
 
-export type ToolTextKind = "description" | "hint" | "mcp";
+export type ToolTextKind = "description" | "hint";
 
-export const TOOL_TEXT_KINDS: readonly ToolTextKind[] = ["description", "hint", "mcp"];
+export const TOOL_TEXT_KINDS: readonly ToolTextKind[] = ["description", "hint"];
 
 /** Placeholder values for a tool's text, by name ({{name}} in the files). */
 export type ToolTextValues = Record<string, string>;
@@ -108,8 +109,8 @@ export interface ToolTextSource {
   text(kind: ToolTextKind, provider?: ProviderId): string;
   /** The schema description. */
   description(provider?: ProviderId): string;
-  /** The system hint, or undefined when the tool has none. */
-  hint(): string | undefined;
+  /** The hint, or undefined when the tool has none. */
+  hint(provider?: ProviderId): string | undefined;
 }
 
 /** A tool's text files, expanded with its own placeholder values (besides {{repoRoot}}). */
@@ -120,7 +121,7 @@ export function toolTextSource(tool: string, values?: ValuesFor): ToolTextSource
   return {
     text,
     description: provider => text("description", provider),
-    hint: () => text("hint") || undefined,
+    hint: provider => text("hint", provider) || undefined,
   };
 }
 

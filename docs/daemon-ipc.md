@@ -168,19 +168,21 @@ does not draw them.
 `load_tool_instructions` (`convId`, or a draft's `provider` and `model`)
 answers `tool_instructions_loaded` with what that route tells the model about
 each tool: `internal` entries carry the schema `description` and the `hint`
-from the system prompt's `# Internal tools` section (under Claude Code, the
-exocortex MCP server's instructions, with `hintSource`); `external` entries
+(`hintSource`), which goes in the system prompt's `# Internal tools` section,
+or under Claude Code into the exocortex MCP server's instructions, one
+`### <tool>` section per host tool; `external` entries
 carry each manifest's `systemHint` as injected. Every entry names its `source`
 file, and `route` says in a sentence how the text reaches the model. It is
 built from the same pieces as the request surface, so it never drifts from a
 real turn. Each entry also lists `blocks`: the separately stored pieces of its
 text, each with an `id`, a `label`, the `text` as the model gets it and the
-`source` file it lives in. A built-in tool's pieces are
-`daemon/src/tools/text/<tool>.description.md`, `.hint.md` and (Claude Code's
-MCP server instructions) `.mcp.md` in the daemon's checkout; an external
-tool's is its manifest's `systemHint`. Values computed at runtime appear in
+`source` file it lives in. A built-in tool always has two, labelled
+Description and Hint on every route: `daemon/src/tools/text/<tool>.description.md`
+and `.hint.md` in the daemon's checkout; an external tool has one, its
+manifest's `systemHint`, labelled Hint. Values computed at runtime appear in
 those files as `{{repoRoot}}`-style placeholders (manifests keep
-`<exocortex-source-dir>`).
+`<exocortex-source-dir>`); a tool's own placeholders may expand differently
+per provider (chrono's `{{longWaits}}`, remote_bash's `{{proxyAlias}}`).
 
 `save_tool_instructions` (the same route fields, `edits: [{ id, text,
 expected }]`, optional `force`) writes edited blocks back. `expected` is the

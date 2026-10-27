@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 import { configDir } from "@exocortex/shared/paths";
 import {
@@ -18,6 +19,7 @@ import { buildConversationRequestSurface } from "./conversation-request-surface"
 import { setLoadedExternalToolsForTest } from "./external-tools";
 import type { Conversation } from "./messages";
 import { getConversationToolNames, getToolDefs } from "./tools/registry";
+import { setToolTextDirForTest, toolTextDir } from "./tools/tool-text";
 import { SCOPED_SUBAGENT_IDENTITY, SCOPED_SUBAGENT_WRAPPER_NOTE } from "./subagent-policy";
 
 describe("system prompt", () => {
@@ -64,7 +66,7 @@ describe("system prompt", () => {
     expect(prompt).not.toContain("commands/models");
     expect(prompt).not.toContain("legacy:true");
     expect(prompt).not.toContain("needed for testing");
-    expect(prompt).toContain("## chrono\nPrefer chrono over shell sleep");
+    expect(prompt).toContain("## chrono\nchrono is this conversation's scheduler: use it instead of shell sleep");
   });
 
   test("tells child turns their remaining native delegation budget", () => {
@@ -109,18 +111,38 @@ describe("system prompt", () => {
     expect(prompt).not.toContain("remaining native exo subagent depth");
   });
 
-  test("effective guidance never recommends absent coding primitives", () => {
-    const prompt = buildSystemPrompt({ toolNames: ["exec_command", "exo"], includeExternalToolHints: false });
-    expect(prompt).toContain("Read/search text with exec_command");
-    expect(prompt).not.toContain("edit files with raw apply_patch");
-    expect(prompt).not.toContain("Edit files using raw apply_patch");
-    expect(prompt).not.toContain("Inspect local images with view_image");
-    expect(prompt).not.toContain("Use write_stdin only");
-    const restricted = buildSystemPrompt({ toolNames: ["read", "grep", "exo"], subagentMaxDepth: 0, includeExternalToolHints: false });
-    expect(restricted).toContain("Read local text with read");
-    expect(restricted).toContain("Search local text with grep");
-    expect(restricted).toContain("No shell executor is available");
-    expect(restricted).not.toContain("Read/search text with exec_command");
+  test("tool guidance comes only from the tools' own hints", () => {
+    const prompt = buildSystemPrompt({ toolNames: ["exec_command", "write_stdin", "exo"], includeExternalToolHints: false });
+    expect(prompt).not.toContain("# Effective tool guidance");
+    expect(prompt).not.toContain("Available internal tools:");
+    // exec_command's hint carries what the hard-coded block used to say.
+    expect(prompt).toContain("## exec_command\n");
+    expect(prompt).toContain("References to a bash tool in instructions or tool docs mean exec_command");
+    expect(prompt).toContain("quoted heredoc");
+    expect(prompt).not.toContain("apply_patch for file edits");
+    expect(prompt).not.toContain("Use view_image for local images");
+    const restricted = buildSystemPrompt({ toolNames: ["read", "grep", "exo"], includeExternalToolHints: false });
+    expect(restricted).toContain("## read\nPrefer the read tool");
+    expect(restricted).toContain("## grep\nPrefer the grep tool");
+    expect(restricted).not.toContain("exec_command");
+    // A conversation without tools is told so.
+    expect(buildSystemPrompt({ toolNames: [], includeExternalToolHints: false })).toContain("# Internal tools\nNone: this conversation offers no tools.");
+  });
+
+  test("a tool's hint expands its placeholders for the conversation's provider", () => {
+    const dir = mkdtempSync(join(tmpdir(), "provider-hint-"));
+    cpSync(toolTextDir(), dir, { recursive: true });
+    const restore = setToolTextDirForTest(dir);
+    try {
+      writeFileSync(join(dir, "chrono.hint.md"), "Long waits: {{longWaits}}\n");
+      const hint = (provider: "anthropic" | "openai") =>
+        buildSystemPrompt({ toolNames: ["chrono"], provider, includeExternalToolHints: false });
+      expect(hint("anthropic")).toContain("## chrono\nLong waits: Sleeps and waits of any practical length run inside the call");
+      expect(hint("openai")).toContain("## chrono\nLong waits: Sleeps and waits with limits longer than five minutes suspend the provider turn");
+    } finally {
+      restore();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("preserves live app instructions on read errors and rejects stale writes", () => {

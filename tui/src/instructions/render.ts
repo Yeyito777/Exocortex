@@ -24,7 +24,7 @@ import {
   type InstructionsNoticeTone,
   type InstructionsPickerState,
 } from "./state";
-import { shortSource, type ToolLineStyle, type ToolSection } from "./tools";
+import { sectionRuleSource, type ToolLineStyle, type ToolSection } from "./tools";
 
 export interface RenderedInstructionsModal {
   payload: string;
@@ -231,7 +231,7 @@ function ruleLine(section: ToolSection, width: number, bg: string): string {
   const label = truncateToWidth(clean(group ? `${section.name} · ${section.count ?? 0}` : section.name), Math.max(1, width - RULE_LEAD - 1));
   const labelColor = group ? theme.accent + theme.bold : theme.text + theme.bold;
   let used = RULE_LEAD + termWidth(label) + 1;
-  let source = section.source ? clean(shortSource(section.source)) : "";
+  let source = clean(sectionRuleSource(section));
   if (source && used + termWidth(source) + 5 > width) source = "";
   const fill = Math.max(0, width - used - (source ? termWidth(source) + 4 : 0));
   return ruleColor + char.repeat(2) + " " + labelColor + label + theme.boldOff + theme.reset + bg + " "

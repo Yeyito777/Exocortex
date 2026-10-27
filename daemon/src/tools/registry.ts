@@ -136,15 +136,21 @@ export function getToolDisplayInfo(): ToolDisplayInfo[] {
 
 // ── System prompt hints ────────────────────────────────────────────
 
-/** Each selected tool's system hint, in prompt order. */
-export function getToolSystemHintEntries(allowedNames?: readonly string[], conversationId?: string): { name: string; hint: string }[] {
-  return getSelectedAvailableTools(allowedNames, conversationId)
-    .filter(t => t.systemHint)
-    .map(t => ({ name: t.name, hint: t.systemHint! }));
+/** A tool's hint for a conversation on `provider`, if it has one. */
+export function toolHint(tool: Tool, provider?: ProviderId): string | undefined {
+  return (tool.hintFor ? tool.hintFor(provider) : tool.systemHint) || undefined;
 }
 
-export function buildToolSystemHints(allowedNames?: readonly string[], conversationId?: string, _maxDepth?: number | null): string {
-  return getToolSystemHintEntries(allowedNames, conversationId)
+/** Each selected tool's system hint, in prompt order. */
+export function getToolSystemHintEntries(allowedNames?: readonly string[], conversationId?: string, provider?: ProviderId): { name: string; hint: string }[] {
+  return getSelectedAvailableTools(allowedNames, conversationId).flatMap(t => {
+    const hint = toolHint(t, provider);
+    return hint ? [{ name: t.name, hint }] : [];
+  });
+}
+
+export function buildToolSystemHints(allowedNames?: readonly string[], conversationId?: string, provider?: ProviderId): string {
+  return getToolSystemHintEntries(allowedNames, conversationId, provider)
     .map(entry => `## ${entry.name}\n${entry.hint}`)
     .join("\n");
 }

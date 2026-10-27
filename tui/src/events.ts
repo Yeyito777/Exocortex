@@ -37,7 +37,7 @@ import {
 } from "./events/disk-sync-diagnostics";
 import { applyConversationUnwound } from "./editmessage";
 import { pushDisplayEntries } from "./events/display";
-import { preserveViewportAcrossHistoryMutation } from "./chatscroll";
+import { preserveViewportAcrossHistoryMutation, preserveViewportAcrossTurnEnd } from "./chatscroll";
 import { joinSplitAssistantEntry } from "./historypagination";
 import { completeInitialConversationBackfill } from "./conversationscroll";
 import { CONV_SCOPED, observeStreamSeq } from "./events/stream-sequence";
@@ -155,11 +155,11 @@ export function handleEvent(
       break;
 
     case "message_complete":
-      handleMessageComplete(event, state);
+      preserveViewportAcrossTurnEnd(state, () => handleMessageComplete(event, state));
       break;
 
     case "streaming_stopped":
-      handleStreamingStopped(event, state);
+      preserveViewportAcrossTurnEnd(state, () => handleStreamingStopped(event, state));
       break;
 
     case "error": {

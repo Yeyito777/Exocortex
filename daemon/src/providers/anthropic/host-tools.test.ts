@@ -6,7 +6,9 @@ import { cpSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { setToolTextDirForTest, toolTextDir } from "../../tools/tool-text";
-import { claudeProcessPrompt, createHostToolServer, hostToolInstructions, type HostToolBinding } from "./host-tools";
+import { claudeProcessPrompt, createHostToolServer, hostToolInstructions, hostToolServerInstructions, type HostToolBinding } from "./host-tools";
+import { getRegisteredTools, toolHint } from "../../tools/registry";
+import { isClaudeCodeHostTool } from "../../tools/claude-code";
 import { loadClaudeSdks } from "./sdk";
 
 beforeAll(async () => { await loadClaudeSdks(); });
@@ -40,16 +42,45 @@ describe("Claude Code host tools", () => {
       { name: "goal", description: "Report on the goal.", inputSchema: goalDef.input_schema, _meta: { "anthropic/alwaysLoad": true } },
       { name: "exo", description: "Start a subagent.", inputSchema: exoDef.input_schema, _meta: { "anthropic/alwaysLoad": true } },
     ]);
-    expect(client.getInstructions()).toContain("chrono");
-    expect(client.getInstructions()).toContain("Never use Claude Code's Agent tool: delegate all subagent work, including search and exploration fan-out, with exo.");
-    expect(client.getInstructions()).toContain("Do the user's task yourself by default");
+    // Each offered host tool's hint, under its name; bash is not a host tool.
+    expect(client.getInstructions()).toBe(hostToolServerInstructions([chronoDef, goalDef, exoDef]));
+    expect(client.getInstructions()).toContain(`### chrono\n${hostToolInstructions("chrono")}`);
+    expect(client.getInstructions()).toContain(`### goal\n${hostToolInstructions("goal")}`);
+    expect(client.getInstructions()).toContain("### exo\nDo the user's task yourself by default");
+    expect(client.getInstructions()).toContain("Never use Claude Code's Agent tool or another built-in subagent tool: delegate all subagent work, including search and exploration fan-out, with exo.");
     expect(client.getInstructions()).toContain("default is opus at high effort");
+    expect(client.getInstructions()).not.toContain("### bash");
+  });
+
+  test("every host tool's hint reaches the MCP server instructions", async () => {
+    const hostTools = getRegisteredTools().filter(tool => isClaudeCodeHostTool(tool.name));
+    expect(hostTools.map(tool => tool.name)).toEqual(expect.arrayContaining(["chrono", "goal", "exo", "client_bash", "remote_bash", "attach"]));
+    const defs = hostTools.map(tool => ({ name: tool.name, description: tool.description, input_schema: tool.inputSchema }));
+    const dir = mkdtempSync(join(tmpdir(), "host-tool-hints-"));
+    cpSync(toolTextDir(), dir, { recursive: true });
+    const restore = setToolTextDirForTest(dir);
+    try {
+      // Tools without a hint get one too: whatever the owner writes must reach Claude.
+      for (const tool of hostTools) writeFileSync(join(dir, `${tool.name}.hint.md`), `Hint for ${tool.name}.\n`);
+      const client = await connect(createHostToolServer(defs, bind(async () => []))!);
+      for (const tool of hostTools) expect(client.getInstructions()).toContain(`### ${tool.name}\nHint for ${tool.name}.`);
+    } finally {
+      restore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+    // With the real files, each host tool that has a hint is in there word for word.
+    const instructions = hostToolServerInstructions(defs);
+    for (const tool of hostTools) {
+      const hint = toolHint(tool, "anthropic");
+      if (hint) expect(instructions).toContain(`### ${tool.name}\n${hint}`);
+    }
+    expect(instructions).toContain("### goal\nGoals are user-owned persistent objectives.");
   });
 
   test("chrono instructions steer toward exact waits and short checks", () => {
     const instructions = hostToolInstructions("chrono")!;
-    expect(instructions).toContain("end early when the user sends a message or one of your background tasks finishes");
-    expect(instructions).toContain("Prefer wait on the exact task, unit:NAME (systemd user unit) or subagent over a fixed sleep");
+    expect(instructions).toContain("use it instead of shell sleep, cron, or polling loops");
+    expect(instructions).toContain("prefer it on the exact task, unit:NAME (systemd user unit) or subagent over a fixed sleep");
     expect(instructions).toContain("at most ~5–10 min per check");
   });
 
@@ -61,13 +92,12 @@ describe("Claude Code host tools", () => {
       const before = claudeProcessPrompt("append", [chronoDef, exoDef]);
       expect(claudeProcessPrompt("append", [chronoDef, exoDef])).toBe(before);
       expect(claudeProcessPrompt("append", [])).toBe("append");
-      writeFileSync(join(dir, "chrono.mcp.md"), "chrono schedules.\n");
+      writeFileSync(join(dir, "chrono.hint.md"), "chrono schedules.\n");
       expect(hostToolInstructions("chrono")).toBe("chrono schedules.");
       expect(claudeProcessPrompt("append", [chronoDef, exoDef])).not.toBe(before);
-      // exo's server instructions end with its system hint, so a hint edit counts too.
       const withHint = claudeProcessPrompt("append", [chronoDef, exoDef]);
       writeFileSync(join(dir, "exo.hint.md"), "Delegate less.\n");
-      expect(hostToolInstructions("exo")).toEndWith("\nDelegate less.");
+      expect(hostToolInstructions("exo")).toBe("Delegate less.");
       expect(claudeProcessPrompt("append", [chronoDef, exoDef])).not.toBe(withHint);
     } finally {
       restore();
@@ -76,8 +106,17 @@ describe("Claude Code host tools", () => {
   });
 
   test("instructs only on the tools it offers", async () => {
-    const client = await connect(createHostToolServer([goalDef], bind(async () => []))!);
-    expect(client.getInstructions()).toBeUndefined();
+    const dir = mkdtempSync(join(tmpdir(), "host-tool-text-"));
+    cpSync(toolTextDir(), dir, { recursive: true });
+    const restore = setToolTextDirForTest(dir);
+    try {
+      writeFileSync(join(dir, "attach.hint.md"), "");
+      const client = await connect(createHostToolServer([{ ...goalDef, name: "attach" }], bind(async () => []))!);
+      expect(client.getInstructions()).toBeUndefined();
+    } finally {
+      restore();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("runs calls through the Exocortex executor under Claude Code's tool_use id", async () => {

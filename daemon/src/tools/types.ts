@@ -172,8 +172,11 @@ export interface Tool {
   /** Provider-native custom-tool format; execution still receives {input: text}. */
   freeform?: { type: "grammar"; syntax: "lark"; definition: string };
 
-  /** Optional system prompt fragment — appended to base system prompt. */
+  /** Optional hint: under # Internal tools, or the MCP server instructions under Claude Code. */
   systemHint?: string;
+
+  /** The hint for a conversation on `provider`, when it depends on the provider. */
+  hintFor?: (provider?: ProviderId) => string | undefined;
 
   /** Optional runtime availability gate (auth, platform, env, etc.). */
   isAvailable?: () => boolean;

@@ -480,6 +480,30 @@ export function preserveViewportAcrossHistoryPrepend(state: RenderState, mutate:
   preserveViewportAcrossHistoryMutationFromRow(state, mutate, firstMovableHistoryRowInViewport, true);
 }
 
+/**
+ * Finish the live turn (message_complete, streaming_stopped) without moving
+ * the rows a scrolled-up reader is looking at.
+ *
+ * Finishing drops the Working row and the newest step under it and swaps the
+ * streamed blocks for canonical ones, above or below the viewport. Left to
+ * the next frame, the render-time pin keeps only the top row's index (rows
+ * removed above shifted everything up); when the history_updated that follows
+ * arrives in the same read, as over /ssh, it anchored on a projection the
+ * screen never showed (rows removed below shifted it down). Anchor on the
+ * frame on screen instead. Following the bottom, or a response the stream
+ * policy holds in place, stays with render.
+ */
+export function preserveViewportAcrossTurnEnd(state: RenderState, mutate: () => void): void {
+  const stream = state.conversationScroll.streamingResponse;
+  const placedByResponse = stream !== null && stream.mode !== "dismissed" && stream.lastScrollOffset === state.scrollOffset;
+  if (state.scrollOffset <= 0 || placedByResponse || state.historyLines.length === 0) {
+    mutate();
+    return;
+  }
+  markRelayout(state);
+  preserveViewportAcrossHistoryMutationFromRow(state, mutate, (oldViewStart) => oldViewStart, true);
+}
+
 /** Toggle tool output while preserving the user's semantic position in history. */
 export function toggleToolOutputPreservingViewport(state: RenderState): void {
   preserveViewportAcrossHistoryMutation(state, () => {
