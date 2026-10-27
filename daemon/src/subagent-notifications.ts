@@ -55,6 +55,8 @@ export interface SubagentNotificationOutcome {
   daemonRestart?: boolean;
   /** What the child still waits on when the turn ends (see subagent-pending-work). */
   pendingWork?: string[];
+  /** The turn's finalizer already settled its records (see AssistantTurnOutcome). */
+  notificationsSettled?: boolean;
 }
 
 export interface SubagentNotificationRuntime {
@@ -298,8 +300,10 @@ export function buildSubagentNotificationText(
 /**
  * Atomically settle every running notification associated with one child.
  * Daemon-restart aborts deliberately remain running for replay by the next
- * process; every other outcome becomes ready, a stop as a "stopped" notice so
- * the child does not silently vanish from its parent. A parent's own
+ * process, and an outcome its turn already settled is not applied again (it
+ * would land on a queued successor's record); every other outcome becomes
+ * ready, a stop as a "stopped" notice so the child does not silently vanish
+ * from its parent. A parent's own
  * `exo abort` cancels the records first (cancelRunningSubagentNotifications).
  */
 export function settlePendingSubagentNotifications(
@@ -310,7 +314,7 @@ export function settlePendingSubagentNotifications(
   const running = [...notifications.values()].filter((record) =>
     record.childConvId === childConvId && record.state === "running"
   );
-  if (running.length === 0 || (outcome.aborted && outcome.daemonRestart)) {
+  if (running.length === 0 || outcome.notificationsSettled || (outcome.aborted && outcome.daemonRestart)) {
     return { ready: [], removed: [] };
   }
 

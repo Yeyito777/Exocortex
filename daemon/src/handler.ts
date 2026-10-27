@@ -830,6 +830,9 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   };
 
   const completeParentNotification = (childConvId: string, outcome: AssistantTurnOutcome): void => {
+    // The turn's finalizer already did all of this; its starter resolves later,
+    // after queued successors that may still be running or awaiting replay.
+    if (outcome.notificationsSettled) return;
     const related = listPendingSubagentNotifications({ childConvId });
     // A daemon stop ends every turn on purpose and schedules nothing for later:
     // no "stopped" notices (a restart's aborts stay running for replay instead).
@@ -2578,7 +2581,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           );
           maybeStartAutoTitleGeneration(cmd.convId);
           void turn.then((outcome) => {
-            if (outcome.suspended) return;
+            if (outcome.suspended || outcome.notificationsSettled) return;
             finishTrackedSubagent();
             if (cmd.notifyParent) notificationRuntime.complete(cmd.convId, outcome);
           }).catch((err) => {
