@@ -1,24 +1,97 @@
 /**
  * Runs a model's shell command on this machine for another Exocortex daemon:
- * client_bash for a daemon reached over /ssh (run by the TUI), and remote_bash
- * for a daemon that borrows this one's provider through /proxy (run by this
- * daemon).
+ * client_bash for a daemon this machine's TUI (over /ssh) or daemon (over its
+ * /proxy link) is connected to, and remote_bash for a daemon that borrows this
+ * one's provider through /proxy (run by this daemon).
  *
  * Each command runs in its own process group, so a timeout, a cancel from the
  * daemon, a lost connection, or the TUI exiting stops everything it started.
+ *
+ * While commands run, the executor says so (`onAlive`) at once and then every
+ * EXEC_ALIVE_INTERVAL_MS, so the asking daemon can tell a frozen or vanished
+ * machine from a slow command (ExecLiveness) instead of waiting out the timeout.
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { statSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, hostname, userInfo } from "node:os";
 import { isAbsolute, join } from "node:path";
-import type { ClientExecRequestEvent, ClientExecResultCommand } from "./protocol";
+import type { ClientExecRequestEvent, ClientExecResultCommand, ClientHostInfo } from "./protocol";
 
 const MAX_CAPTURE_BYTES = 1_000_000;
 const KILL_GRACE_MS = 200;
 const windows = process.platform === "win32";
 
+/** How often a machine running commands says it is still alive. */
+export const EXEC_ALIVE_INTERVAL_MS = 10_000;
+/** A machine that has not acknowledged a command this long after it was sent is taken as unresponsive. */
+export const EXEC_ACK_TIMEOUT_MS = 15_000;
+/** A machine silent this long while a command runs is taken as gone. */
+export const EXEC_SILENCE_TIMEOUT_MS = 45_000;
+
 export type ClientExecOutcome = Omit<ClientExecResultCommand, "type" | "execId">;
+
+/** This machine, as client_bash and remote_bash describe it. */
+export function localHostInfo(): ClientHostInfo {
+  let user = process.env.USER ?? process.env.USERNAME ?? "";
+  try { user = userInfo().username; } catch { /* no passwd entry */ }
+  return { hostname: hostname(), user, platform: process.platform, home: homedir() };
+}
+
+export interface ClientExecutorOptions {
+  /** Called with a command's id as soon as it is received, then with every running id each interval. */
+  onAlive?: (execIds: string[]) => void;
+  aliveIntervalMs?: number;
+}
+
+/**
+ * The asking side's watch on one command: fails it (`onStall`) when the
+ * machine does not acknowledge it in time, or goes silent while it runs.
+ * Only for machines that send alive messages.
+ */
+export class ExecLiveness {
+  private timer: ReturnType<typeof setTimeout> | null = null;
+  private acknowledged = false;
+
+  constructor(
+    private readonly onStall: (phase: "ack" | "silence", afterMs: number) => void,
+    ackTimeoutMs = EXEC_ACK_TIMEOUT_MS,
+    private readonly silenceTimeoutMs = EXEC_SILENCE_TIMEOUT_MS,
+  ) {
+    this.arm(ackTimeoutMs, "ack");
+  }
+
+  get wasAcknowledged(): boolean { return this.acknowledged; }
+
+  /** The machine said the command is running. */
+  heard(): void {
+    if (!this.timer) return;
+    this.acknowledged = true;
+    this.arm(this.silenceTimeoutMs, "silence");
+  }
+
+  stop(): void {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+  }
+
+  private arm(ms: number, phase: "ack" | "silence"): void {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      this.onStall(phase, ms);
+    }, ms);
+    this.timer.unref?.();
+  }
+}
+
+/** Why a stalled command failed, for the model. */
+export function execStallMessage(where: string, phase: "ack" | "silence", afterMs: number): string {
+  const seconds = Math.round(afterMs / 1000);
+  return phase === "ack"
+    ? `${where} did not respond within ${seconds}s (frozen, asleep or offline); the command was not confirmed to start there.`
+    : `${where} stopped responding while the command ran (silent for ${seconds}s); it may still be running there.`;
+}
 
 /** A cwd relative to home, with ~ expanded; null if it is not a directory. */
 export function resolveClientCwd(cwd: string | undefined, home = homedir()): string | null {
@@ -48,8 +121,9 @@ function killTree(child: ChildProcess): void {
 export class ClientExecutor {
   private readonly running = new Map<string, ChildProcess>();
   private readonly exitHandler = () => this.cancelAll();
+  private aliveTimer: ReturnType<typeof setInterval> | null = null;
 
-  constructor(private readonly home = homedir()) {}
+  constructor(private readonly home = homedir(), private readonly options: ClientExecutorOptions = {}) {}
 
   get size(): number { return this.running.size; }
 
@@ -74,6 +148,7 @@ export class ClientExecutor {
 
     if (this.running.size === 0) process.once("exit", this.exitHandler);
     this.running.set(request.execId, child);
+    this.reportAlive(request.execId);
     const chunks: Buffer[] = [];
     let captured = 0;
     let byteTruncated = false;
@@ -102,7 +177,11 @@ export class ClientExecutor {
       settled = true;
       if (timer) clearTimeout(timer);
       this.running.delete(request.execId);
-      if (this.running.size === 0) process.off("exit", this.exitHandler);
+      if (this.running.size === 0) {
+        process.off("exit", this.exitHandler);
+        if (this.aliveTimer) clearInterval(this.aliveTimer);
+        this.aliveTimer = null;
+      }
       done({
         output: Buffer.concat(chunks).toString("utf8"),
         byteTruncated,
@@ -127,5 +206,17 @@ export class ClientExecutor {
 
   cancelAll(): void {
     for (const child of this.running.values()) killTree(child);
+  }
+
+  /** Acknowledge a command just started, and keep reporting the running ones. */
+  private reportAlive(execId: string): void {
+    const onAlive = this.options.onAlive;
+    if (!onAlive) return;
+    onAlive([execId]);
+    if (this.aliveTimer) return;
+    this.aliveTimer = setInterval(() => {
+      if (this.running.size > 0) onAlive([...this.running.keys()]);
+    }, this.options.aliveIntervalMs ?? EXEC_ALIVE_INTERVAL_MS);
+    this.aliveTimer.unref?.();
   }
 }

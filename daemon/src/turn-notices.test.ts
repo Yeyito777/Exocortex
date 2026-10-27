@@ -57,10 +57,10 @@ describe("client host notices", () => {
     expect(pendingTurnNotices(conversation(told(first)))[0].text).toContain("yeyito@office (macOS");
   });
 
-  test("are never given to subagents", () => {
+  test("are given to subagents like their parents", () => {
     attach();
     const subagentPolicy = { parentConversationId: "parent", allowEdits: false, parentSystemInstructions: "" };
-    expect(pendingTurnNotices(conversation([], { subagentPolicy }))).toEqual([]);
+    expect(pendingTurnNotices(conversation([], { subagentPolicy })).map(notice => notice.kind)).toEqual([CLIENT_HOST_NOTICE_KIND]);
   });
 
   test("are repeated after a compaction only while a client is attached", () => {
@@ -100,6 +100,6 @@ describe("goal notices", () => {
     attach();
     expect(pendingTurnNotices(conversation([], { goal })).map(notice => notice.kind)).toEqual([CLIENT_HOST_NOTICE_KIND, GOAL_NOTICE_KIND]);
     const subagentPolicy = { parentConversationId: "parent", allowEdits: false, parentSystemInstructions: "" };
-    expect(pendingTurnNotices(conversation([], { goal, subagentPolicy })).map(notice => notice.kind)).toEqual([GOAL_NOTICE_KIND]);
+    expect(pendingTurnNotices(conversation([], { goal, subagentPolicy })).map(notice => notice.kind)).toEqual([CLIENT_HOST_NOTICE_KIND, GOAL_NOTICE_KIND]);
   });
 });

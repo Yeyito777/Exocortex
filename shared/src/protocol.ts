@@ -287,7 +287,7 @@ export interface PrewarmConversationCommand {
  * sidebar-digest-sync: the client can rebuild a conversations_list that
  * carries `sidebarBuckets` (see ClientCapabilitiesCommand.sidebarDigest).
  */
-export type ClientCapability = "targeted-unwind" | "sidebar-reorder-delta" | "sidebar-state-patch" | "history-block-pagination" | "token-stats-on-demand" | "sidebar-digest-sync" | "update-status-push" | "sidebar-incremental";
+export type ClientCapability = "targeted-unwind" | "sidebar-reorder-delta" | "sidebar-state-patch" | "history-block-pagination" | "token-stats-on-demand" | "sidebar-digest-sync" | "update-status-push" | "sidebar-incremental" | "client-exec-alive";
 
 /** Answered with token_stats carrying the same reqId. Older daemons answer with an Unknown command error. */
 export interface GetTokenStatsCommand {
@@ -326,6 +326,16 @@ export interface ClientHostInfo {
   /** Node's process.platform, e.g. "linux", "darwin", "win32". */
   platform: string;
   home: string;
+}
+
+/**
+ * With client-exec-alive: the TUI has client_exec_requests running (sent at
+ * once for a new one, then every EXEC_ALIVE_INTERVAL_MS), so the daemon fails
+ * a call fast when the TUI is frozen or gone instead of waiting out its timeout.
+ */
+export interface ClientExecAliveCommand {
+  type: "client_exec_alive";
+  execIds: string[];
 }
 
 /** The outcome of one client_exec_request, run on the TUI's machine. */
@@ -1279,6 +1289,7 @@ export type Command =
   | ResolveFileLinkCommand
   | ClientCapabilitiesCommand
   | ClientExecResultCommand
+  | ClientExecAliveCommand
   | PrepareShutdownCommand
   | RestartDaemonCommand
   | NewConversationCommand

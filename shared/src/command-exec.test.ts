@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ClientExecutor, resolveClientCwd, type ClientExecOutcome } from "./command-exec";
+import { ClientExecutor, ExecLiveness, resolveClientCwd, type ClientExecOutcome } from "./command-exec";
 
 const dirs: string[] = [];
 function tempHome(): string {
@@ -69,5 +69,42 @@ describe.skipIf(process.platform === "win32")("ClientExecutor", () => {
     expect(outcome.byteTruncated).toBe(true);
     expect(outcome.output.length).toBe(1_000_000);
     expect(outcome.exitCode).toBe(0);
+  });
+
+  test("acknowledges a command at once and reports the running ones until they finish", async () => {
+    const alive: string[][] = [];
+    const executor = new ClientExecutor(tempHome(), { onAlive: execIds => alive.push(execIds), aliveIntervalMs: 40 });
+    const outcome = run(executor, "sleep 0.3", { execId: "long" });
+    expect(alive).toEqual([["long"]]);
+    expect((await outcome).exitCode).toBe(0);
+    expect(alive.length).toBeGreaterThanOrEqual(4);
+    expect(alive.every(ids => ids.length === 1 && ids[0] === "long")).toBe(true);
+    const reported = alive.length;
+    await Bun.sleep(120);
+    expect(alive.length).toBe(reported);
+  });
+});
+
+describe("ExecLiveness", () => {
+  test("stalls without an acknowledgement, or when heartbeats stop", async () => {
+    const stalls: string[] = [];
+    const unacknowledged = new ExecLiveness(phase => stalls.push(phase), 30, 60);
+    await Bun.sleep(60);
+    expect(stalls).toEqual(["ack"]);
+    expect(unacknowledged.wasAcknowledged).toBe(false);
+
+    const beating = new ExecLiveness(phase => stalls.push(phase), 30, 60);
+    for (let i = 0; i < 5; i++) {
+      beating.heard();
+      await Bun.sleep(25);
+    }
+    expect(stalls).toEqual(["ack"]);
+    await Bun.sleep(90);
+    expect(stalls).toEqual(["ack", "silence"]);
+
+    const stopped = new ExecLiveness(phase => stalls.push(phase), 10, 10);
+    stopped.stop();
+    await Bun.sleep(30);
+    expect(stalls).toEqual(["ack", "silence"]);
   });
 });

@@ -7,6 +7,11 @@
  * /proxy, then any number of multiplexed upstream streams, status queries and
  * remote_bash commands. A lost link fails everything in flight at once, like a
  * dropped network connection, and reconnects with backoff.
+ *
+ * The other way round, the hello names this machine (clientHost), and the
+ * remote runs its conversations' client_bash here over the same link
+ * (provider_proxy_client_exec): the user's machine stays reachable while its
+ * daemon is linked, with or without a TUI. A lost link stops those commands.
  */
 
 import { randomUUID } from "node:crypto";
@@ -26,6 +31,7 @@ import {
   type ProxyableProviderId,
 } from "@exocortex/shared/provider-proxy";
 import type { ClientHostInfo } from "@exocortex/shared/protocol";
+import { ClientExecutor, ExecLiveness, execStallMessage, localHostInfo } from "@exocortex/shared/command-exec";
 import { createAbortError } from "../abort";
 import { log } from "../log";
 
@@ -109,6 +115,10 @@ export interface ProviderProxyLinkOptions {
   spawnProcess?: SpawnSshProcess;
   helloTimeoutMs?: number;
   reconnectDelaysMs?: readonly number[];
+  /** This machine as offered to the remote for client_bash; null offers none. Default: localHostInfo(). */
+  clientHost?: ClientHostInfo | null;
+  /** remote_bash acknowledgement and silence limits (tests). */
+  execLiveness?: { ackMs: number; silenceMs: number };
 }
 
 function isRemoteAccounts(value: unknown): value is ProviderProxyRemoteAccounts {
@@ -151,6 +161,12 @@ export class ProviderProxyLink {
   private helloTimer: ReturnType<typeof setTimeout> | null = null;
   private attemptWaiters = new Set<{ resolve(): void; reject(error: Error): void }>();
   private readonly requests = new Map<string, RequestHandler>();
+  /** remote_bash commands in flight that the remote reports alive (`exec-alive`). */
+  private readonly execAlive = new Map<string, () => void>();
+  /** The remote's client_bash commands running on this machine. */
+  private readonly clientExecutor = new ClientExecutor(undefined, {
+    onAlive: execIds => this.trySend({ type: "provider_proxy_client_exec_alive", execIds }),
+  });
   private readonly streams = new Map<string, StreamHandler>();
   private readonly blockedStreams = new Set<string>();
   private readonly spawnProcess: SpawnSshProcess;
@@ -465,16 +481,25 @@ export class ProviderProxyLink {
     if (signal?.aborted) return Promise.resolve({ failure: "Interrupted before the command was sent." });
     const host = this.host;
     const execId = randomUUID();
+    const reportsAlive = this.features.includes("exec-alive");
     return new Promise(resolve => {
       let finished = false;
       const finish = (outcome: ProviderProxyExecOutcome | { failure: string }) => {
         if (finished) return;
         finished = true;
         clearTimeout(deadline);
+        liveness?.stop();
         signal?.removeEventListener("abort", onAbort);
         this.requests.delete(execId);
+        this.execAlive.delete(execId);
         resolve(outcome);
       };
+      // A remote that acknowledges commands fails a frozen or vanished link fast.
+      const liveness = reportsAlive ? new ExecLiveness((phase, afterMs) => {
+        this.trySend({ type: "provider_proxy_exec_cancel", execId });
+        finish({ failure: execStallMessage(`${describeRemoteHost(host, this.alias)} (/proxy link to ${this.alias})`, phase, afterMs) });
+      }, this.options.execLiveness?.ackMs, this.options.execLiveness?.silenceMs) : null;
+      if (liveness) this.execAlive.set(execId, () => liveness.heard());
       const deadline = setTimeout(() => {
         this.trySend({ type: "provider_proxy_exec_cancel", execId });
         finish({ failure: `${describeRemoteHost(host, this.alias)} did not answer within ${Math.round((request.timeoutMs + EXEC_RESPONSE_GRACE_MS) / 1000)}s.` });
@@ -590,7 +615,14 @@ export class ProviderProxyLink {
       this.options.onChange?.();
       if (this.options.providers().includes("anthropic")) this.watchAccounts();
     });
-    this.send({ type: "provider_proxy_hello", reqId, version: PROVIDER_PROXY_PROTOCOL_VERSION, providers: this.options.providers() });
+    const clientHost = this.options.clientHost === undefined ? localHostInfo() : this.options.clientHost;
+    this.send({
+      type: "provider_proxy_hello",
+      reqId,
+      version: PROVIDER_PROXY_PROTOCOL_VERSION,
+      providers: this.options.providers(),
+      ...(clientHost ? { clientHost } : {}),
+    });
   }
 
   private teardown(generation: number, message: string, options: { reconnect?: boolean; transient?: boolean } = {}): void {
@@ -614,6 +646,9 @@ export class ProviderProxyLink {
     this.streams.clear();
     for (const handler of [...this.requests.values()]) handler({ type: "error", message });
     this.requests.clear();
+    this.execAlive.clear();
+    // Like a TUI that disconnects: the remote has already failed these calls.
+    this.clientExecutor.cancelAll();
     for (const waiter of [...this.attemptWaiters]) waiter.reject(new ProviderProxyUnavailableError(message, this.failureTransient));
     log(wasConnected ? "warn" : "info", `provider-proxy: ${message}`);
     if (!this.closed && options.reconnect !== false) this.scheduleReconnect();
@@ -666,6 +701,23 @@ export class ProviderProxyLink {
         return;
       case "provider_proxy_exec_result":
         this.requests.get(String(event.execId))?.(event as never);
+        return;
+      case "provider_proxy_exec_alive":
+        if (Array.isArray(event.execIds)) for (const execId of event.execIds) this.execAlive.get(String(execId))?.();
+        return;
+      case "provider_proxy_client_exec": {
+        const execId = typeof event.execId === "string" ? event.execId : "";
+        if (!execId) return;
+        this.clientExecutor.run({
+          execId,
+          command: String(event.command ?? ""),
+          cwd: typeof event.cwd === "string" ? event.cwd : undefined,
+          timeoutMs: Math.max(1, Number(event.timeoutMs) || 0),
+        }, outcome => this.trySend({ type: "provider_proxy_client_exec_result", execId, ...outcome }));
+        return;
+      }
+      case "provider_proxy_client_exec_cancel":
+        this.clientExecutor.cancel(String(event.execId));
         return;
       case "provider_proxy_accounts_update":
         if (this.accountsWatchGeneration === this.generation) this.setRemoteAccounts(event.accounts);

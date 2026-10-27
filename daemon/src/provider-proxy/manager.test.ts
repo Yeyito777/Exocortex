@@ -235,7 +235,8 @@ describe("remote_bash", () => {
     expect(announced.text).toContain("runs through /proxy on whale");
     expect(announced.text).toContain("remote_bash runs commands on whale via /proxy");
     expect(pendingTurnNotices(conv(told(announced)))).toEqual([]);
-    expect(pendingTurnNotices({ ...conv(), subagentPolicy: { parentConversationId: "p", allowEdits: false, parentSystemInstructions: "" } })).toEqual([]);
+    // Subagents are told like their parents.
+    expect(pendingTurnNotices({ ...conv(), subagentPolicy: { parentConversationId: "p", allowEdits: false, parentSystemInstructions: "" } })).toEqual([announced]);
     // Switching the conversation to a provider that is not proxied withdraws it.
     expect(pendingTurnNotices(conv(told(announced), "openai"))[0].text).toContain("remote_bash is no longer available");
     manager.off("anthropic");

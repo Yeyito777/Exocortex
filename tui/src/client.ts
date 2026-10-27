@@ -47,6 +47,7 @@ const CLIENT_CAPABILITIES: ClientCapability[] = [
   "sidebar-digest-sync",
   "update-status-push",
   "sidebar-incremental",
+  "client-exec-alive",
 ];
 
 export type EventHandler = (event: Event) => void;
@@ -174,8 +175,8 @@ export class DaemonClient {
   private readonly transcriptionMaxAttempts: number;
   private sshAlias: string | null = null;
   private readonly traceClientId = ++nextTraceClientId;
-  /** Runs client_bash commands from the SSH daemon on this machine. */
-  private readonly clientExecutor = new ClientExecutor();
+  /** Runs client_bash commands from the SSH daemon on this machine, and reports them alive (client-exec-alive). */
+  private readonly clientExecutor = new ClientExecutor(undefined, { onAlive: execIds => this.reportClientExecAlive(execIds) });
   private sshSwitchingTo: string | null = null;
   private sshSwitchGeneration = 0;
   private cancelSshProbe: ((reason: string) => void) | null = null;
@@ -1379,6 +1380,15 @@ export class DaemonClient {
         transport.write(JSON.stringify({ type: "client_exec_result", execId: event.execId, ...outcome } satisfies Command) + "\n");
       } catch { /* the daemon fails the call when the connection drops */ }
     });
+  }
+
+  /** Tell the SSH daemon these client_bash commands are still running here. */
+  private reportClientExecAlive(execIds: string[]): void {
+    const transport = this.socket;
+    if (!this.sshAlias || !transport || !this._connected || this.activeSshConnection?.transport !== transport) return;
+    try {
+      transport.write(JSON.stringify({ type: "client_exec_alive", execIds } satisfies Command) + "\n");
+    } catch { /* the daemon fails the call when the connection drops */ }
   }
 
   private socketMissingError(): Error {
