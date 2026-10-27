@@ -2,6 +2,7 @@
 
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
+import { StringDecoder } from "node:string_decoder";
 import type { SshProcess } from "@exocortex/shared/ssh-transport";
 import type { ProviderProxyRemoteStatus } from "@exocortex/shared/provider-proxy";
 import { ProviderProxyEndpoint, type ProviderProxyEndpointDeps } from "./endpoint";
@@ -32,11 +33,21 @@ export function fakeSsh(options: {
   outdated?: boolean;
   /** Command types the far end answers like a daemon that predates them. */
   unknownCommands?: string[];
+  /** Command types the far end takes but never answers. */
+  ignoredCommands?: string[];
   /** Leave `features` out of the hello, like a daemon that predates them. */
   noFeatures?: boolean;
   drain?: { needs: boolean; waiters: Array<() => void> };
 } = {}) {
-  const spawned: Array<{ process: SshProcess; endpoint: ProviderProxyEndpoint; kill(): void; commands: Array<Record<string, unknown>> }> = [];
+  const spawned: Array<{
+    process: SshProcess;
+    endpoint: ProviderProxyEndpoint;
+    kill(): void;
+    /** Stop taking input, like a connection that stopped moving without dropping. */
+    freeze(): void;
+    commands: Array<Record<string, unknown>>;
+    signals: Array<string | number | undefined>;
+  }> = [];
   const spawn = (): SshProcess => {
     const emitter = new EventEmitter();
     const stdin = new PassThrough();
@@ -54,13 +65,15 @@ export function fakeSsh(options: {
       waitDrain: () => new Promise(resolve => { options.drain?.waiters.push(resolve); }),
     }, options.deps);
     let buffer = "";
+    const decoder = new StringDecoder("utf8");
     stdin.on("data", chunk => {
-      buffer += String(chunk);
+      buffer += decoder.write(chunk);
       let newline: number;
       while ((newline = buffer.indexOf("\n")) >= 0) {
         const command = JSON.parse(buffer.slice(0, newline));
         buffer = buffer.slice(newline + 1);
         commands.push(command);
+        if (options.ignoredCommands?.includes(command.type)) continue;
         if (options.outdated || options.unknownCommands?.includes(command.type)) stdout.write(`${JSON.stringify({ type: "error", reqId: command.reqId, message: `Unknown command: ${command.type}` })}\n`);
         else endpoint.handle(command);
       }
@@ -71,8 +84,9 @@ export function fakeSsh(options: {
       endpoint.close();
       emitter.emit("close", null, "SIGTERM");
     };
-    const process = Object.assign(emitter, { stdin, stdout, stderr, kill: () => { kill(); return true; } }) as unknown as SshProcess;
-    spawned.push({ process, endpoint, kill, commands });
+    const signals: Array<string | number | undefined> = [];
+    const process = Object.assign(emitter, { stdin, stdout, stderr, kill: (signal?: string | number) => { signals.push(signal); kill(); return true; } }) as unknown as SshProcess;
+    spawned.push({ process, endpoint, kill, freeze: () => { stdin.pause(); }, commands, signals });
     return process;
   };
   return { spawn, spawned };

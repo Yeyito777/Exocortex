@@ -337,6 +337,98 @@ describe("provider proxy link + remote endpoint", () => {
   });
 });
 
+describe("a connection that stops moving without dropping", () => {
+  const stall = { checkMs: 30, afterMs: 150, minBytes: 4096 };
+
+  test("is dropped and reconnected; requests in flight fail like a dropped connection", async () => {
+    const ssh = fakeSsh({ deps: { auth: stubAuth(), fetch: (async () => new Response(sseBody(["ok"]).body)) as unknown as typeof fetch } });
+    const link = makeLink(ssh.spawn, ["anthropic"], [20], { stall });
+    await link.waitReady(2_000);
+    expect(link.features).toContain("link-ping");
+    ssh.spawned[0].freeze();
+    const started = Date.now();
+    const error = await link.openHttp({ provider: "anthropic", method: "POST", target: "/v1/messages", headers: {}, body: new Uint8Array(64 * 1024) }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ProviderProxyUnavailableError);
+    expect((error as ProviderProxyUnavailableError).transient).toBe(true);
+    expect((error as Error).message).toMatch(/^The SSH connection to whale stalled \(.+; \d+ (B|KB) moved\); reconnecting\.$/);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(ssh.spawned[0].signals).toEqual(["SIGKILL"]);
+    await link.waitReady(2_000);
+    expect(ssh.spawned).toHaveLength(2);
+    const response = await link.openHttp({ provider: "anthropic", method: "POST", target: "/v1/messages", headers: {} });
+    expect(await new Response(response.body).text()).toBe("ok");
+  });
+
+  test("an idle link whose remote stops answering pings is reconnected", async () => {
+    const ssh = fakeSsh({ deps: { auth: stubAuth() } });
+    const link = makeLink(ssh.spawn, ["anthropic"], [20], { stall });
+    await link.waitReady(2_000);
+    await Bun.sleep(100);
+    expect(ssh.spawned[0].commands.some(command => command.type === "provider_proxy_ping")).toBe(true);
+    expect(ssh.spawned).toHaveLength(1);
+    ssh.spawned[0].freeze();
+    for (let i = 0; i < 100 && ssh.spawned.length < 2; i++) await Bun.sleep(10);
+    expect(ssh.spawned).toHaveLength(2);
+    await link.waitReady(2_000);
+  });
+
+  test("a busy link is not a stuck one, even while its pings go unanswered", async () => {
+    let stop = false;
+    const body = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        if (stop) { controller.close(); return; }
+        await Bun.sleep(10);
+        controller.enqueue(new Uint8Array(2048).fill(120));
+      },
+    });
+    const ssh = fakeSsh({ ignoredCommands: ["provider_proxy_ping"], deps: { auth: stubAuth(), fetch: (async () => new Response(body)) as unknown as typeof fetch } });
+    const link = makeLink(ssh.spawn, ["anthropic"], [20], { stall });
+    await link.waitReady(2_000);
+    const response = await link.openHttp({ provider: "anthropic", method: "POST", target: "/v1/messages", headers: {} });
+    const reader = response.body.getReader();
+    let received = 0;
+    const until = Date.now() + 600;
+    while (Date.now() < until) received += (await reader.read()).value?.length ?? 0;
+    // Four times the stall limit, pings unanswered, but data kept coming.
+    expect(received).toBeGreaterThan(20_000);
+    expect(ssh.spawned).toHaveLength(1);
+    expect(link.state).toBe("connected");
+    stop = true;
+    for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) { /* drain */ }
+    // Idle now, and the pings still go unanswered: that is a stall.
+    for (let i = 0; i < 100 && ssh.spawned.length < 2; i++) await Bun.sleep(10);
+    expect(ssh.spawned).toHaveLength(2);
+  });
+
+  test("an older remote without link-ping is not pinged", async () => {
+    const ssh = fakeSsh({ deps: { auth: stubAuth() }, noFeatures: true });
+    const link = makeLink(ssh.spawn, ["anthropic"], [20], { stall });
+    await link.waitReady(2_000);
+    await Bun.sleep(300);
+    expect(ssh.spawned[0].commands.map(command => command.type)).not.toContain("provider_proxy_ping");
+    expect(ssh.spawned).toHaveLength(1);
+    expect(link.state).toBe("connected");
+  });
+
+  test("large messages go out in slices and arrive whole, multi-byte characters included", async () => {
+    const calls: UpstreamCall[] = [];
+    const ssh = fakeSsh({ deps: { auth: stubAuth(), fetch: (async (url: string, init: UpstreamCall["init"]) => {
+      calls.push({ url, init });
+      return new Response("done");
+    }) as unknown as typeof fetch } });
+    const link = makeLink(ssh.spawn, ["anthropic"], [20], { stall });
+    await link.waitReady(2_000);
+    const body = new Uint8Array(1_500_000);
+    for (let i = 0; i < body.length; i++) body[i] = (i * 7919) & 0xff;
+    const wide = "é€😀".repeat(60_000);
+    const response = await link.openHttp({ provider: "anthropic", method: "POST", target: "/v1/messages", headers: { "anthropic-version": "2023-06-01", "x-wide": wide }, body });
+    expect(await new Response(response.body).text()).toBe("done");
+    const open = ssh.spawned[0].commands.find(command => command.type === "provider_proxy_open") as { headers: Record<string, string> };
+    expect(open.headers["x-wide"]).toBe(wide);
+    expect(Buffer.from(calls[0].init.body as Uint8Array).equals(Buffer.from(body))).toBe(true);
+  });
+});
+
 describe("client_bash over the link (the remote runs commands on this machine)", () => {
   function remoteSends(ssh: ReturnType<typeof fakeSsh>, event: Record<string, unknown>): void {
     (ssh.spawned.at(-1)!.process.stdout as PassThrough).write(`${JSON.stringify(event)}\n`);

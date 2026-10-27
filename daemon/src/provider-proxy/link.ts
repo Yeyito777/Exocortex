@@ -12,6 +12,13 @@
  * remote runs its conversations' client_bash here over the same link
  * (provider_proxy_client_exec): the user's machine stays reachable while its
  * daemon is linked, with or without a TUI. A lost link stops those commands.
+ *
+ * A connection can also get stuck without dropping: a TCP connection whose
+ * congestion window collapsed still passes SSH keepalives (whatever the
+ * remote sends resets them) but carries a few KB/s, and requests queue behind
+ * it for good. The link pings the remote (`link-ping`) and watches how fast
+ * SSH takes what it writes; no answer and next to nothing moved either way
+ * for STALL_MS reconnects, as for a dropped connection.
  */
 
 import { randomUUID } from "node:crypto";
@@ -46,6 +53,17 @@ const REQUEST_TIMEOUT_MS = 60_000;
 const EXEC_RESPONSE_GRACE_MS = 30_000;
 /** Body bytes buffered per HTTP stream before the link stops reading from SSH. */
 const STREAM_HIGH_WATER_BYTES = 4 * 1024 * 1024;
+/**
+ * Lines go to ssh in slices this size, one at a time: each slice's write
+ * callback then says how fast SSH takes them (Bun calls back only once its
+ * whole queue is written).
+ */
+const WRITE_SLICE_BYTES = 256 * 1024;
+/** How often the link pings a `link-ping` remote and checks for a stall. */
+const STALL_CHECK_MS = 15_000;
+/** No pong (or a backlog SSH has not taken) for this long, with under STALL_MIN_BYTES moved either way, is a stall. */
+const STALL_MS = 45_000;
+const STALL_MIN_BYTES = 1024 * 1024;
 
 /**
  * The link cannot carry a request right now (down, connecting, or closed).
@@ -106,6 +124,9 @@ interface StreamHandler {
 
 type RequestHandler = (event: { type: string; message?: string } & Record<string, unknown>) => void;
 
+/** A point in time and the bytes the connection had moved by then. */
+interface ProgressMark { at: number; sent: number; received: number }
+
 export interface ProviderProxyLinkOptions {
   /** Providers to ask the remote about in the hello. */
   providers: () => ProxyableProviderId[];
@@ -119,11 +140,17 @@ export interface ProviderProxyLinkOptions {
   clientHost?: ClientHostInfo | null;
   /** remote_bash acknowledgement and silence limits (tests). */
   execLiveness?: { ackMs: number; silenceMs: number };
+  /** Stall detection timings (tests): STALL_CHECK_MS, STALL_MS, STALL_MIN_BYTES. */
+  stall?: { checkMs: number; afterMs: number; minBytes: number };
 }
 
 function isRemoteAccounts(value: unknown): value is ProviderProxyRemoteAccounts {
   return typeof value === "object" && value !== null && Array.isArray((value as ProviderProxyRemoteAccounts).accounts)
     && typeof (value as ProviderProxyRemoteAccounts).routing === "object" && (value as ProviderProxyRemoteAccounts).routing !== null;
+}
+
+function formatBytes(bytes: number): string {
+  return bytes < 1024 ? `${bytes} B` : `${Math.round(bytes / 1024)} KB`;
 }
 
 export function describeRemoteHost(host: ClientHostInfo | null, alias: string): string {
@@ -172,11 +199,24 @@ export class ProviderProxyLink {
   private readonly spawnProcess: SpawnSshProcess;
   private readonly helloTimeoutMs: number;
   private readonly reconnectDelaysMs: readonly number[];
+  private readonly stall: NonNullable<ProviderProxyLinkOptions["stall"]>;
+
+  // Per connection: what is still to be written, and how much has moved.
+  private outbox: Buffer[] = [];
+  private writing = false;
+  private bytesSent = 0;
+  private bytesReceived = 0;
+  /** Since when the outbox has held data ssh has not taken yet. */
+  private backlog: ProgressMark | null = null;
+  /** The ping waiting for its pong (`link-ping` remotes). */
+  private ping: { reqId: string; mark: ProgressMark } | null = null;
+  private stallTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(readonly alias: string, private readonly options: ProviderProxyLinkOptions) {
     this.spawnProcess = options.spawnProcess ?? spawnSshProxy;
     this.helloTimeoutMs = options.helloTimeoutMs ?? HELLO_TIMEOUT_MS;
     this.reconnectDelaysMs = options.reconnectDelaysMs ?? RECONNECT_DELAYS_MS;
+    this.stall = options.stall ?? { checkMs: STALL_CHECK_MS, afterMs: STALL_MS, minBytes: STALL_MIN_BYTES };
   }
 
   get isClosed(): boolean { return this.closed; }
@@ -550,6 +590,12 @@ export class ProviderProxyLink {
     this.stdoutBuffer = "";
     this.decoder = new StringDecoder("utf8");
     this.stderr = "";
+    this.outbox = [];
+    this.writing = false;
+    this.bytesSent = 0;
+    this.bytesReceived = 0;
+    this.backlog = null;
+    this.ping = null;
     this.options.onChange?.();
 
     let process: SshProcess;
@@ -611,6 +657,8 @@ export class ProviderProxyLink {
       this.state = "connected";
       this.message = undefined;
       log("info", `provider-proxy: connected to ${this.alias} (${describeRemoteHost(this.host, this.alias)})`);
+      this.stallTimer = setInterval(() => this.checkStall(generation), this.stall.checkMs);
+      this.stallTimer.unref?.();
       for (const waiter of [...this.attemptWaiters]) waiter.resolve();
       this.options.onChange?.();
       if (this.options.providers().includes("anthropic")) this.watchAccounts();
@@ -625,17 +673,20 @@ export class ProviderProxyLink {
     });
   }
 
-  private teardown(generation: number, message: string, options: { reconnect?: boolean; transient?: boolean } = {}): void {
+  private teardown(generation: number, message: string, options: { reconnect?: boolean; transient?: boolean; signal?: NodeJS.Signals } = {}): void {
     if (generation !== this.generation) return;
     // Later events from the dead process are ignored.
     this.generation++;
     if (this.helloTimer) clearTimeout(this.helloTimer);
     this.helloTimer = null;
+    if (this.stallTimer) clearInterval(this.stallTimer);
+    this.stallTimer = null;
+    this.outbox = [];
     const process = this.process;
     this.process = null;
     if (process) {
       try { process.stdin.end(); } catch { /* already closed */ }
-      try { process.kill(); } catch { /* already gone */ }
+      try { process.kill(options.signal); } catch { /* already gone */ }
     }
     const wasConnected = this.state === "connected";
     this.state = "disconnected";
@@ -670,6 +721,7 @@ export class ProviderProxyLink {
 
   private onStdout(generation: number, chunk: Buffer | string): void {
     if (generation !== this.generation) return;
+    this.bytesReceived += typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.length;
     this.stdoutBuffer += typeof chunk === "string" ? chunk : this.decoder.write(chunk);
     let newline: number;
     while ((newline = this.stdoutBuffer.indexOf("\n")) !== -1) {
@@ -704,6 +756,9 @@ export class ProviderProxyLink {
         return;
       case "provider_proxy_exec_alive":
         if (Array.isArray(event.execIds)) for (const execId of event.execIds) this.execAlive.get(String(execId))?.();
+        return;
+      case "provider_proxy_pong":
+        if (this.ping?.reqId === event.reqId) this.ping = null;
         return;
       case "provider_proxy_client_exec": {
         const execId = typeof event.execId === "string" ? event.execId : "";
@@ -760,9 +815,75 @@ export class ProviderProxyLink {
   }
 
   private send(command: ProviderProxyLinkCommand): void {
+    if (!this.process) throw this.unavailable();
+    if (!this.writing && this.outbox.length === 0) this.backlog = this.mark();
+    this.outbox.push(Buffer.from(`${JSON.stringify(command)}\n`));
+    this.pump(this.generation);
+  }
+
+  /** Write the next slice of the outbox once ssh has taken the last one. */
+  private pump(generation: number): void {
     const process = this.process;
-    if (!process) throw this.unavailable();
-    process.stdin.write(`${JSON.stringify(command)}\n`);
+    if (this.writing || !process || generation !== this.generation) return;
+    const head = this.outbox[0];
+    if (!head) {
+      this.backlog = null;
+      return;
+    }
+    const slice = head.length > WRITE_SLICE_BYTES ? head.subarray(0, WRITE_SLICE_BYTES) : head;
+    if (slice === head) this.outbox.shift();
+    else this.outbox[0] = head.subarray(WRITE_SLICE_BYTES);
+    this.writing = true;
+    process.stdin.write(slice, (error) => {
+      if (generation !== this.generation) return;
+      this.writing = false;
+      // A broken pipe: the close handler reports it.
+      if (error) return;
+      this.bytesSent += slice.length;
+      this.pump(generation);
+    });
+  }
+
+  private mark(): ProgressMark {
+    return { at: Date.now(), sent: this.bytesSent, received: this.bytesReceived };
+  }
+
+  /**
+   * Ping a `link-ping` remote, and reconnect if a ping has gone unanswered,
+   * or ssh has not taken the backlog, for `afterMs` while next to nothing
+   * moved either way. A busy link (a large request going out, a long answer
+   * coming in) keeps moving and is measured again from now.
+   */
+  private checkStall(generation: number): void {
+    if (generation !== this.generation || !this.isConnected()) return;
+    if (!this.ping && this.features.includes("link-ping")) {
+      const reqId = randomUUID();
+      this.ping = { reqId, mark: this.mark() };
+      this.trySend({ type: "provider_proxy_ping", reqId });
+    }
+    const now = Date.now();
+    // While a stream is paused here, its data (and a pong behind it) waits on us, not on the link.
+    if (this.blockedStreams.size > 0) {
+      if (this.ping) this.ping.mark = this.mark();
+      if (this.backlog) this.backlog = this.mark();
+      return;
+    }
+    for (const which of ["ping", "backlog"] as const) {
+      const mark = which === "ping" ? this.ping?.mark : this.backlog;
+      if (!mark || now - mark.at < this.stall.afterMs) continue;
+      const sent = this.bytesSent - mark.sent;
+      const received = this.bytesReceived - mark.received;
+      if (sent >= this.stall.minBytes || received >= this.stall.minBytes) {
+        if (which === "ping" && this.ping) this.ping.mark = this.mark();
+        else this.backlog = this.mark();
+        continue;
+      }
+      const seconds = Math.round((now - mark.at) / 1000);
+      const what = which === "ping" ? `${this.alias} did not answer for ${seconds}s` : `${seconds}s with data queued`;
+      // The connection is known to be bad: no point in a graceful SSH disconnect stuck behind it.
+      this.teardown(generation, `The SSH connection to ${this.alias} stalled (${what}; ${formatBytes(sent + received)} moved); reconnecting.`, { signal: "SIGKILL" });
+      return;
+    }
   }
 
   private trySend(command: ProviderProxyLinkCommand): void {

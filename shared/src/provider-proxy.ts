@@ -30,9 +30,10 @@ export function isProxyableProvider(value: unknown): value is ProxyableProviderI
  * it shares its Claude account pool (provider_proxy_accounts) and routes
  * proxied Claude requests across it by PROVIDER_PROXY_CONVERSATION_HEADER.
  * `exec-alive`: it acknowledges remote_bash commands and reports them alive
- * while they run (provider_proxy_exec_alive).
+ * while they run (provider_proxy_exec_alive). `link-ping`: it answers
+ * provider_proxy_ping, so the linking daemon can tell a stuck connection.
  */
-export const PROVIDER_PROXY_FEATURES = ["claude-pool", "exec-alive"] as const;
+export const PROVIDER_PROXY_FEATURES = ["claude-pool", "exec-alive", "link-ping"] as const;
 export type ProviderProxyFeature = typeof PROVIDER_PROXY_FEATURES[number];
 
 /**
@@ -237,6 +238,12 @@ export interface ProviderProxyExecCancelCommand {
   execId: string;
 }
 
+/** With `link-ping`: answered at once with provider_proxy_pong; the link sends one every few seconds. */
+export interface ProviderProxyPingCommand {
+  type: "provider_proxy_ping";
+  reqId: string;
+}
+
 /** The outcome of a provider_proxy_client_exec, run on the linking daemon's machine. */
 export interface ProviderProxyClientExecResultCommand {
   type: "provider_proxy_client_exec_result";
@@ -265,6 +272,7 @@ export type ProviderProxyLinkCommand =
   | ProviderProxyAccountsCommand
   | ProviderProxyExecCommand
   | ProviderProxyExecCancelCommand
+  | ProviderProxyPingCommand
   | ProviderProxyClientExecResultCommand
   | ProviderProxyClientExecAliveCommand;
 
@@ -367,6 +375,11 @@ export interface ProviderProxyExecAliveEvent {
   execIds: string[];
 }
 
+export interface ProviderProxyPongEvent {
+  type: "provider_proxy_pong";
+  reqId: string;
+}
+
 /**
  * client_bash: run a command on the linking daemon's machine (it sent
  * clientHost in its hello). Answered with provider_proxy_client_exec_result.
@@ -395,6 +408,7 @@ export type ProviderProxyLinkEvent =
   | ProviderProxyEndEvent
   | ProviderProxyExecResultEvent
   | ProviderProxyExecAliveEvent
+  | ProviderProxyPongEvent
   | ProviderProxyClientExecEvent
   | ProviderProxyClientExecCancelEvent;
 
@@ -409,6 +423,7 @@ export const PROVIDER_PROXY_LINK_EVENT_TYPES: ReadonlySet<string> = new Set<Prov
   "provider_proxy_end",
   "provider_proxy_exec_result",
   "provider_proxy_exec_alive",
+  "provider_proxy_pong",
   "provider_proxy_client_exec",
   "provider_proxy_client_exec_cancel",
 ]);

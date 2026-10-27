@@ -2133,7 +2133,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       case "provider_proxy_consume_reset":
       case "provider_proxy_accounts":
       case "provider_proxy_exec":
-      case "provider_proxy_exec_cancel": {
+      case "provider_proxy_exec_cancel":
+      case "provider_proxy_ping": {
         const endpoint = providerProxyEndpointFor(client, false);
         if (endpoint) {
           endpoint.handle(cmd as ProviderProxyLinkCommand);
