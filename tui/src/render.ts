@@ -1773,6 +1773,7 @@ export function render(state: RenderState): boolean {
   // ── Active task panel (top-right float) ────────────────────────
   state.layout.taskPanelRect = null;
   state.layout.taskPanelMaxScroll = taskPanel?.maxScroll ?? 0;
+  state.layout.taskPanelToggleable = taskPanel?.toggleable ?? false;
   if (state.taskPanelExpansion && taskPanel) state.taskPanelExpansion.scroll = taskPanel.scroll;
   if (taskPanel) {
     const panelCol = chatCol + chatW - taskPanel.width;

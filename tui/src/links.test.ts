@@ -201,9 +201,16 @@ describe("link activation", () => {
     handleMouseEvent({ ...event, col: 90, button: 3, action: "motion" }, state);
     expect(state.mouseCursor).toBe("text");
     state.layout.taskPanelRect = { left: col, right: col + 15, top: event.row, bottom: event.row + 2 };
+    state.layout.taskPanelToggleable = true;
     handleMouseEvent({ ...event, button: 3, action: "motion" }, state);
     // The panel over the link is its own click target: it toggles, and the link underneath never opens.
     expect(state.mouseCursor).toBe("hand");
+    expect(handleMouseEvent({ ...event, action: "press" }, state)).toEqual({ type: "handled" });
+    expect(handleMouseEvent({ ...event, action: "release" }, state)).toEqual({ type: "handled" });
+    // A panel with nothing to expand is no click target, yet still keeps the link underneath shut.
+    state.layout.taskPanelToggleable = false;
+    handleMouseEvent({ ...event, button: 3, action: "motion" }, state);
+    expect(state.mouseCursor).toBe("pointer");
     expect(handleMouseEvent({ ...event, action: "press" }, state)).toEqual({ type: "handled" });
     expect(handleMouseEvent({ ...event, action: "release" }, state)).toEqual({ type: "handled" });
   });

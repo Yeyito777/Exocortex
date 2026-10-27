@@ -208,7 +208,7 @@ export function cursorZone(col: number, row: number, state: RenderState): Cursor
   // Message area (chat history) → text, except for the task panel, which a click expands or collapses.
   // The queue prompt swallows clicks, so nothing under it is clickable.
   if (row >= 3 && layout.sepAbove > 0 && row < layout.sepAbove) {
-    if (isInsideTaskPanel(col, row, state)) return state.queuePrompt ? "pointer" : "hand";
+    if (isInsideTaskPanel(col, row, state)) return state.queuePrompt || !layout.taskPanelToggleable ? "pointer" : "hand";
     return !state.queuePrompt && historyClickableAtScreen(col, row, state) ? "hand" : "text";
   }
 
@@ -369,8 +369,9 @@ export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult 
     }
 
     // The task panel is one toggle: expand to list every entry, or back to the capped card.
+    // A collapsed card that already shows everything has nothing to expand to.
     if (isInsideTaskPanel(col, row, state)) {
-      toggleTaskPanelExpansion(state);
+      if (layout.taskPanelToggleable) toggleTaskPanelExpansion(state);
       return { type: "handled" };
     }
 

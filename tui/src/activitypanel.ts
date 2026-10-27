@@ -8,11 +8,13 @@
  * horizontal space reservation for the panel.
  *
  * Collapsed, every entry is one compact row and the card is capped in height,
- * its last row counting the entries left out. A click toggles an expanded form
- * that lists every entry, grows leftward to EXPANDED_PANEL_WIDTH_FACTOR × the
- * collapsed width (keeping its right edge), wraps long titles onto indented
- * continuation rows (a subagent's prompt up to EXPANDED_SUBAGENT_TITLE_ROWS
- * rows), and scrolls when it outgrows the message area.
+ * its last row counting the entries left out. When it leaves out an entry or
+ * part of a title, a click toggles an expanded form that lists every entry,
+ * grows leftward (keeping its right edge) as far as its longest title needs, up
+ * to EXPANDED_PANEL_WIDTH_FACTOR × the collapsed width, wraps titles longer
+ * than that onto indented continuation rows (a subagent's prompt up to
+ * EXPANDED_SUBAGENT_TITLE_ROWS rows), and scrolls when it outgrows the message
+ * area. A collapsed card that already shows everything ignores clicks.
  */
 
 import type { ConversationGoalStatus, ConversationTaskSummary, ExternalIntegrationSummary } from "./messages";
@@ -27,7 +29,7 @@ import { hexToAnsi, hexToAnsiBg, theme } from "./theme";
 
 const MAX_PANEL_WIDTH = 50;
 const MIN_PANEL_WIDTH = 30;
-/** The expanded card grows leftward to this multiple of its collapsed width, room permitting. */
+/** The expanded card grows leftward up to this multiple of its collapsed width, room and titles permitting. */
 export const EXPANDED_PANEL_WIDTH_FACTOR = 1.5;
 /** Keep the floating card compact even when a conversation owns many schedules. */
 export const MAX_TASK_PANEL_HEIGHT = 12;
@@ -58,6 +60,8 @@ export interface TaskPanelRender {
   scroll: number;
   /** Largest useful `scroll`; 0 when the whole card fits or it is collapsed. */
   maxScroll: number;
+  /** A click changes the card: it is expanded, or collapsed with an entry or part of a title left out. */
+  toggleable: boolean;
 }
 
 export interface TaskPanelLayout {
@@ -378,6 +382,32 @@ function entryRows(
     : row(blankLead, title, blankStatus));
 }
 
+/**
+ * Card width at which an entry fits on one row: its label, title and status
+ * columns, the gaps between them and the borders, as entryRows lays them out.
+ */
+function entryFitWidth(label: string, title: string, statusWidth: number): number {
+  return termWidth(label) + termWidth(title) + statusWidth + 5;
+}
+
+/** A task's label column; `active` marks a subagent with the sidebar's activity glyph. */
+function taskLabel(task: TaskPanelEntry, compactExocortex: boolean, active = false): string {
+  if (task.kind === "goal") return `${task.goalStatus !== "active" ? "◇" : "◆"} Goal`;
+  if (task.kind === "subagent") return `${active ? ACTIVITY_GLYPH : "◆"} ${compactExocortex ? "Exo" : "Exocortex"}`;
+  // Claude Code's background agents and workflows run inside Claude Code, not as Exocortex conversations.
+  if (isAgentBackgroundTask(task)) return `◆ ${task.toolName}`;
+  if (task.kind === "chrono") return "◷ Chrono";
+  return `$ ${backgroundTaskName(task.toolName)}`;
+}
+
+function taskTitle(task: TaskPanelEntry): string {
+  const fallbackTitle = task.kind === "goal" ? "Conversation goal"
+    : task.kind === "subagent" || isAgentBackgroundTask(task) ? "Subagent task"
+    : task.kind === "chrono" ? "Chrono task"
+    : "Background task";
+  return cleanPanelText(task.title) || fallbackTitle;
+}
+
 /** One entry: label, the title truncated (or wrapped) to fit, and the countdown, elapsed time, or a paused goal's status. */
 function taskRows(
   task: TaskPanelEntry,
@@ -389,18 +419,13 @@ function taskRows(
   wrap: boolean,
 ): string[] {
   const isSubagent = task.kind === "subagent";
-  // Claude Code's background agents and workflows run inside Claude Code, not as Exocortex conversations.
-  const isAgent = isAgentBackgroundTask(task);
   const isGoal = task.kind === "goal";
-  const isChrono = task.kind === "chrono";
-  const color = isGoal ? palette.goal : isSubagent || isAgent ? palette.exocortex : isChrono ? palette.chrono : palette.bash;
-  const label = isGoal ? `${task.goalStatus !== "active" ? "◇" : "◆"} Goal`
-    : isSubagent ? `${indicator ? ACTIVITY_GLYPH : "◆"} ${compactExocortex ? "Exo" : "Exocortex"}`
-    : isAgent ? `◆ ${task.toolName}`
-    : isChrono ? "◷ Chrono"
-    : `$ ${backgroundTaskName(task.toolName)}`;
-  const fallbackTitle = isGoal ? "Conversation goal" : isSubagent || isAgent ? "Subagent task" : isChrono ? "Chrono task" : "Background task";
-  const title = cleanPanelText(task.title) || fallbackTitle;
+  const color = isGoal ? palette.goal
+    : isSubagent || isAgentBackgroundTask(task) ? palette.exocortex
+    : task.kind === "chrono" ? palette.chrono
+    : palette.bash;
+  const label = taskLabel(task, compactExocortex, indicator !== null);
+  const title = taskTitle(task);
   const time = isGoal && task.goalStatus !== "active"
     ? task.goalStatus ?? "paused"
     : isChronoCountdown(task)
@@ -484,8 +509,9 @@ function expandedPanelFooter(palette: PanelPalette, innerWidth: number, above: n
  * content row reports how many entries are hidden and invites a click, while
  * the header keeps the total count visible. Expanded, the same rows list every
  * entry up to `maxHeight`, scrolling by `state.taskPanelExpansion.scroll` rows;
- * the card widens leftward to EXPANDED_PANEL_WIDTH_FACTOR × its collapsed
- * width, never past `chatWidth`, and wraps titles instead of truncating them.
+ * the card widens leftward until its longest title fits on one row, but never
+ * past EXPANDED_PANEL_WIDTH_FACTOR × its collapsed width or `chatWidth`, and
+ * wraps titles instead of truncating them.
  */
 export function renderTaskPanel(
   state: RenderState,
@@ -503,8 +529,15 @@ export function renderTaskPanel(
   if (totalEntries === 0 || chatWidth < MIN_PANEL_WIDTH || panelHeight < 3) return null;
 
   const collapsedWidth = Math.min(MAX_PANEL_WIDTH, chatWidth);
+  // Only a card at MAX_PANEL_WIDTH widens, so a subagent's label keeps its form when the card expands.
+  const compactExocortex = collapsedWidth < 38;
+  const widestEntry = Math.max(
+    ...tasks.map(task => entryFitWidth(taskLabel(task, compactExocortex), taskTitle(task), ELAPSED_WIDTH)),
+    ...integrations.map(integration =>
+      entryFitWidth(integrationStyle(state, integration).label, integrationTitle(integration), INTEGRATION_STATE_WIDTH)),
+  );
   const panelWidth = expanded
-    ? Math.min(chatWidth, Math.floor(collapsedWidth * EXPANDED_PANEL_WIDTH_FACTOR))
+    ? Math.max(collapsedWidth, Math.min(widestEntry, chatWidth, Math.floor(collapsedWidth * EXPANDED_PANEL_WIDTH_FACTOR)))
     : collapsedWidth;
   const innerWidth = panelWidth - 2;
   const maxContentRows = panelHeight - 2;
@@ -525,7 +558,7 @@ export function renderTaskPanel(
   ];
 
   const body = visible.tasks.flatMap(task =>
-    taskRows(task, palette, innerWidth, panelWidth < 38, now, subagentIndicator(state, task), expanded));
+    taskRows(task, palette, innerWidth, compactExocortex, now, subagentIndicator(state, task), expanded));
   if (visible.showSubscriptionsDivider) {
     body.push(sectionDivider(palette, innerWidth, "Subscriptions", integrations.length));
   }
@@ -537,7 +570,7 @@ export function renderTaskPanel(
     const shown = body.slice(scroll, scroll + maxContentRows);
     lines.push(...shown);
     lines.push(expandedPanelFooter(palette, innerWidth, scroll, body.length - scroll - shown.length));
-    return { width: panelWidth, lines, scroll, maxScroll };
+    return { width: panelWidth, lines, scroll, maxScroll, toggleable: true };
   }
 
   lines.push(...body);
@@ -553,7 +586,9 @@ export function renderTaskPanel(
   }
 
   lines.push(withPanelBg(`${outline}╰${"─".repeat(innerWidth)}╯`));
-  return { width: panelWidth, lines, scroll: 0, maxScroll: 0 };
+  // Expanding shows the entries the card leaves out and the rest of any title it cuts short; with neither, a click has nothing to show.
+  const toggleable = visible.tasks.length + visible.integrations.length < totalEntries || widestEntry > panelWidth;
+  return { width: panelWidth, lines, scroll: 0, maxScroll: 0, toggleable };
 }
 
 /**

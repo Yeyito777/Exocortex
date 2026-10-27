@@ -33,6 +33,15 @@ function chronoTasks(now = NOW): ConversationTaskSummary[] {
   ];
 }
 
+/** A card whose every title already fits the collapsed width, as the owner saw it. */
+function fittingTasks(now = NOW): ConversationTaskSummary[] {
+  return [
+    { id: "bash:watcher", kind: "background", title: "Arm the canary escape watcher", startedAt: now - 504_000, toolName: "Bash" },
+    { id: "child", kind: "subagent", title: "You are the STAGE 2 agent", startedAt: now - 377_000 },
+    { id: "chrono:check-in", kind: "chrono", title: "OSS-Phone agents check-in", startedAt: now - 8 * 3_600_000, dueAt: now + 120_000, chronoMode: "wake" },
+  ];
+}
+
 /** `copies` × the seven tasks above: two copies already overflow the collapsed card. */
 function manyTasks(copies: number, now = NOW): ConversationTaskSummary[] {
   return Array.from({ length: copies }, (_, copy) => chronoTasks(now).map(task => ({ ...task, id: `${task.id}:${copy}` }))).flat();
@@ -270,6 +279,59 @@ describe("expanded task panel", () => {
     expect(widths(60)).toMatchObject({ collapsed: undefined, expanded: undefined, historyWidth: 60 });
   });
 
+  test("widens only as far as its longest title needs to fit on one row", () => {
+    // "◷ Chrono" + 36 columns of title + status and borders: six columns past the collapsed card.
+    const title = "Resume the build after deploy closes";
+    expect(termWidth(title)).toBe(36);
+    const state = stateWithTasks([...fittingTasks(), { id: "chrono:resume", kind: "chrono", title, startedAt: NOW, dueAt: NOW + 3_600_000, chronoMode: "sleep" }]);
+    const collapsed = renderTaskPanel(state, 100, 60, NOW)!;
+    expect(collapsed.width).toBe(50);
+    expect(collapsed.toggleable).toBe(true);
+    expect(plain(collapsed.lines).find(line => line.includes("Resume"))).toContain("…");
+    toggleTaskPanelExpansion(state);
+    const expanded = renderTaskPanel(state, 100, 60, NOW)!;
+    expect(expanded.width).toBe(56);
+    expect(expanded.lines.every(line => visibleLength(line) === 56)).toBe(true);
+    // One row per entry, nothing cut short.
+    expect(bodyOf(expanded.lines)).toHaveLength(4);
+    expect(bodyOf(expanded.lines).join("\n")).toContain(title);
+    expect(bodyOf(expanded.lines).join("\n")).not.toContain("…");
+  });
+
+  test("a subscription a little too long widens it just enough too", () => {
+    const state = stateWithTasks([]);
+    state.externalToolStyles = [{ cmd: "discord", label: "Discord", color: "#5865f2" }];
+    // "Discord" + 34 columns of title + the 14-column delivery status and borders.
+    const label = "Paramount DMs and mentions, nightly";
+    state.sidebar.conversations[0].integrations = [{
+      id: "integration:dms", toolName: "discord", sourceId: "dm:1", label, delivery: "wake", status: "active", createdAt: NOW,
+    }];
+    expect(renderTaskPanel(state, 100, 60, NOW)!.toggleable).toBe(true);
+    toggleTaskPanelExpansion(state);
+    const expanded = renderTaskPanel(state, 100, 60, NOW)!;
+    expect(expanded.width).toBe(7 + termWidth(label) + 14 + 5);
+    expect(bodyOf(expanded.lines)).toEqual([expect.stringContaining(label)]);
+  });
+
+  test("keeps the collapsed width when only the count of entries was cut", () => {
+    const state = stateWithTasks(Array.from({ length: 3 }, (_, copy) => fittingTasks().map(task => ({ ...task, id: `${task.id}:${copy}` }))).flat()
+      .concat(Array.from({ length: 6 }, (_, i) => ({ id: `bash:${i}`, kind: "background" as const, title: `Short command ${i}`, startedAt: NOW, toolName: "bash" }))));
+    const collapsed = renderTaskPanel(state, 100, 60, NOW)!;
+    expect(plain(collapsed.lines).at(-2)).toContain("more");
+    expect(collapsed.toggleable).toBe(true);
+    toggleTaskPanelExpansion(state);
+    const expanded = renderTaskPanel(state, 100, 60, NOW)!;
+    expect(expanded.width).toBe(50);
+    expect(bodyOf(expanded.lines)).toHaveLength(15);
+  });
+
+  test("a collapsed card that already shows everything has nothing to toggle", () => {
+    const panel = renderTaskPanel(stateWithTasks(fittingTasks()), 100, 60, NOW)!;
+    expect(panel.toggleable).toBe(false);
+    expect(plain(panel.lines).join("\n")).not.toContain("…");
+    expect(plain(panel.lines).join("\n")).not.toContain("more");
+  });
+
   test("collapsing restores the exact collapsed card, still one truncated row per entry", () => {
     const state = stateWithTasks(manyTasks(3));
     const before = renderTaskPanel(state, 100, 60, NOW)!;
@@ -331,8 +393,8 @@ const filler = (count: number, label = "history row") => Array.from({ length: co
   metadata: null,
 }));
 
-function chatState(cols = 120, rows = 30, messages: RenderState["messages"] = filler(80)): RenderState {
-  const state = stateWithTasks(manyTasks(2, Date.now()));
+function chatState(cols = 120, rows = 30, messages: RenderState["messages"] = filler(80), tasks = manyTasks(2, Date.now())): RenderState {
+  const state = stateWithTasks(tasks);
   state.cols = cols;
   state.rows = rows;
   state.sidebar.open = false;
@@ -382,6 +444,29 @@ describe("task panel clicks", () => {
     expect(isTaskPanelExpanded(state)).toBe(false);
     capture(() => render(state));
     expect(state.layout.taskPanelRect).toEqual(collapsed);
+  });
+
+  test("a card that already shows everything neither widens nor offers a hand", () => {
+    const state = chatState(120, 30, filler(80), fittingTasks(Date.now()));
+    const rect = state.layout.taskPanelRect!;
+    expect(rect.right - rect.left + 1).toBe(50);
+    expect(state.layout.taskPanelToggleable).toBe(false);
+    expect(cursorZone(rect.left + 10, rect.top + 1, state)).toBe("pointer");
+    const before = { cursor: { ...state.historyCursor }, mode: state.vim.mode, focus: state.chatFocus };
+    expect(click(state, rect.left + 10, rect.top + 1)).toEqual(["handled", "handled"]);
+    expect(isTaskPanelExpanded(state)).toBe(false);
+    expect({ cursor: state.historyCursor, mode: state.vim.mode, focus: state.chatFocus }).toEqual(before);
+    capture(() => render(state));
+    expect(state.layout.taskPanelRect).toEqual(rect);
+
+    // A task too long for the card makes it clickable again.
+    const conversation = state.sidebar.conversations[0];
+    conversation.tasks = [...conversation.tasks!, { id: "bash:long", kind: "background", title: HOURLY, startedAt: Date.now(), toolName: "bash" }];
+    capture(() => render(state));
+    expect(state.layout.taskPanelToggleable).toBe(true);
+    expect(cursorZone(rect.left + 10, rect.top + 1, state)).toBe("hand");
+    click(state, rect.left + 10, rect.top + 1);
+    expect(isTaskPanelExpanded(state)).toBe(true);
   });
 
   test("clicks on the card never reach the history under it", () => {
