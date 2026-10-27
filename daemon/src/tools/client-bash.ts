@@ -13,14 +13,16 @@ import type { Tool, ToolResult } from "./types";
 import { getNumber, getString, summarizeParams } from "./util";
 import { formatCommandOutput } from "./bash";
 import { describeClientHost, runOnClientHost } from "../client-hosts";
+import { toolTextSource } from "./tool-text";
 
 const DEFAULT_TIMEOUT_SECONDS = 600;
 
+const TEXT = toolTextSource("client_bash");
+
 export const clientBash: Tool = {
   name: "client_bash",
-  description: "Run a shell command on the user's own machine (such as their laptop), not on this host. "
-    + "Uses bash (PowerShell on Windows) and returns stdout and stderr. Works while that machine is connected: its Exocortex daemon linked to this one, or its TUI over /ssh. "
-    + "Starts in the user's home directory unless cwd is set; a ~ prefix is expanded.",
+  get description() { return TEXT.description(); },
+  get systemHint() { return TEXT.hint(); },
   parallelSafety: "exclusive",
   defaultTimeoutMs: null,
   watchdogExempt: true,

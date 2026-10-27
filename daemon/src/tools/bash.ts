@@ -32,6 +32,7 @@ import {
   restoreBackgroundTaskNotification,
   suppressBackgroundTaskNotification,
 } from "../background-task-state";
+import { toolTextSource } from "./tool-text";
 
 // ── Constants ──────────────────────────────────────────────────────
 
@@ -852,9 +853,11 @@ function summarize(input: Record<string, unknown>): ToolSummary {
 
 const shellName = isWindows ? "PowerShell" : "bash";
 
+const TEXT = toolTextSource("bash", () => ({ shell: shellName, backgroundSeconds: String(TOOL_BACKGROUND_SECONDS) }));
+
 export const bash: Tool = {
   name: "bash",
-  description: `Execute a ${shellName} command. Returns stdout and stderr.`,
+  get description() { return TEXT.description(); },
   parallelSafety: "exclusive",
   defaultTimeoutMs: null,
   watchdogExempt: true,
@@ -870,7 +873,7 @@ export const bash: Tool = {
     },
     required: ["command"],
   },
-  systemHint: `${shellName} commands that run longer than ${TOOL_BACKGROUND_SECONDS}s are automatically backgrounded: the process keeps running but control returns to you with the PID and a temp file where output accumulates. Pass stdin to provide literal standard input. Pass background=true to background immediately after spawning. Pass the "await" parameter (seconds greater than 0) to change how long to wait before backgrounding; do not combine background and await. Pass "max_output_chars" to limit inline output; larger output is saved to a temp file with a compact preview.`,
+  get systemHint() { return TEXT.hint(); },
   display: {
     label: "$",
     color: "#d19a66",  // muted amber

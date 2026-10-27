@@ -30,6 +30,7 @@ import {
   isAccessChallengePage,
   type VimbrowserPageFetcher,
 } from "./browse-vimbrowser";
+import { toolTextSource } from "./tool-text";
 
 // ── Constants ──────────────────────────────────────────────────────
 
@@ -691,9 +692,11 @@ function summarize(input: Record<string, unknown>): ToolSummary {
 
 // ── Tool definition ────────────────────────────────────────────────
 
+const TEXT = toolTextSource("browse");
+
 export const browse: Tool = {
   name: "browse",
-  description: "Read content from a URL or save its exact response payload. Supports web pages, feeds, APIs, community sites, and CDN files.",
+  get description() { return TEXT.description(); },
   parallelSafety: "safe",
   defaultTimeoutMs: 120_000,
   settleOnAbort: true,
@@ -710,7 +713,7 @@ export const browse: Tool = {
     },
     required: ["url"],
   },
-  systemHint: "Browse uses an inner AI call to parse web-readable responses in auto mode. Use mode=download whenever the complete response must be preserved, including text, JavaScript, JSON, or source code; it saves the payload to the conversation workspace without AI interpretation and reports its path and SHA-256. Attachments and binary responses are also saved automatically. Adjust the prompt to your needs.",
+  get systemHint() { return TEXT.hint(); },
   display: {
     label: "Browse",
     color: "#50c8c8",  // teal

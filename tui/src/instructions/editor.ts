@@ -17,6 +17,7 @@ import { sanitizePromptTextForInsertion } from "../prompttext";
 import { PROMPT_TAB, promptDeleteEnd, promptDeleteStart } from "../prompttabs";
 import { getSymbol } from "../symbols";
 import { isInstructionsEditorDirty, type InstructionsEditorState } from "./state";
+import { acceptToolsEdit, snapshotToolsEdit } from "./tools";
 
 export type InstructionsEditorKeyResult =
   | { type: "handled" }
@@ -43,6 +44,18 @@ function refuseEdit(editor: InstructionsEditorState): InstructionsEditorKeyResul
 }
 
 export function handleInstructionsEditorKey(
+  key: KeyEvent,
+  editor: InstructionsEditorState,
+  onAsyncEdit?: () => void,
+): InstructionsEditorKeyResult {
+  // In /instructions tools only the blocks' text may change.
+  const before = editor.tools?.editable && !editor.loadReqId ? snapshotToolsEdit(editor) : null;
+  const result = handleEditorKey(key, editor, onAsyncEdit);
+  if (before) acceptToolsEdit(editor, before);
+  return result;
+}
+
+function handleEditorKey(
   key: KeyEvent,
   editor: InstructionsEditorState,
   onAsyncEdit?: () => void,
@@ -372,6 +385,7 @@ function pasteIntoEditor(
   void pasteFromClipboard().then((raw) => {
     const text = sanitizePromptTextForInsertion(raw);
     if (!text) return;
+    const before = editor.tools?.editable ? snapshotToolsEdit(editor) : null;
     pushUndo(editor.undo, editor.buffer, editor.cursor);
     const buf = editor.buffer;
     const cursor = editor.cursor;
@@ -388,6 +402,7 @@ function pasteIntoEditor(
       editor.cursor = clampNormal(editor.buffer, previousGraphemeStart(editor.buffer, pos + pasted.length));
     }
     editor.curswant = null;
+    if (before) acceptToolsEdit(editor, before);
     onAsyncEdit?.();
   });
 }

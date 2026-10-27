@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { KeyEvent } from "../input";
-import type { ToolInstructionsLoadedEvent } from "../protocol";
+import type { ToolInstructionsEdit, ToolInstructionsLoadedEvent } from "../protocol";
 import { createInitialState, type RenderState } from "../state";
 import { stripAnsi } from "../historycursor";
 import {
@@ -12,7 +12,7 @@ import {
   type ToolInstructionsLoader,
 } from "./controller";
 import { renderInstructionsEditor } from "./render";
-import { buildToolInstructionsDoc, sectionAt, sectionSourceNotice, shortSource } from "./tools";
+import { buildToolInstructionsDoc, sectionAt, sectionSourceNotice, shortSource, TOOLS_FIXED_NOTICE } from "./tools";
 
 class FakeDaemon implements InstructionsDaemon, ToolInstructionsLoader {
   connected = true;
@@ -28,6 +28,9 @@ class FakeDaemon implements InstructionsDaemon, ToolInstructionsLoader {
   setSystemInstructions(convId: string, text: string) { return this.record("setSystemInstructions", [convId, text]); }
   setFolderInstructions(folderId: string, text: string) { return this.record("setFolderInstructions", [folderId, text]); }
   setGlobalInstructions(text: string, expectedText?: string) { return this.record("setGlobalInstructions", [text, expectedText]); }
+  saveToolInstructions(convId: string | null, provider: string, model: string | null, edits: ToolInstructionsEdit[], force: boolean) {
+    return this.record("saveToolInstructions", [convId, provider, model, edits, force]);
+  }
   last(method: string) { return this.calls.filter(call => call.method === method).at(-1)!; }
   writes() { return this.calls.filter(call => call.method.startsWith("set")); }
 }
@@ -163,7 +166,7 @@ describe("/instructions tools", () => {
     ]);
     expect(doc.sections.find(section => section.name === "Internal tools")?.count).toBe(2);
     for (const section of doc.sections) expect(lineAtCursor(editor.buffer, section.offset)).toBe(section.name);
-    expect(editor.buffer).toContain("Description · tool schema\nStart a subagent.\n\nSystem prompt · # Internal tools\nSubagents are the default for real work.");
+    expect(editor.buffer).toContain("Description · tool schema\nStart a subagent.\nSystem prompt · # Internal tools\nSubagents are the default for real work.");
     expect(editor.buffer).toContain("cal\nSystem prompt · manifest systemHint\nUse `cal -h`.\nNever edit storage.");
     expect(editor.buffer.startsWith(ANSWER.route)).toBe(true);
   });
@@ -231,8 +234,11 @@ describe("/instructions tools", () => {
 
   test("Enter and gf show where the section under the cursor comes from", () => {
     const { state, daemon, editor } = openTools();
-    press(state, daemon, "]]", "j", { type: "enter" });
+    press(state, daemon, "]]", { type: "enter" });
     expect(editor.notice?.text).toBe("exo: /repo/daemon/src/tools/exo.ts");
+    // On a block (its label or text): that block's file.
+    press(state, daemon, "j", { type: "enter" });
+    expect(editor.notice?.text).toBe("exo · Description · tool schema: /repo/daemon/src/tools/exo.ts");
     press(state, daemon, "}", "]]", "gf");
     expect(editor.notice?.text).toBe("cal: /repo/external-tools/cal-cli/manifest.json");
     press(state, daemon, "gg", "gf");
@@ -296,5 +302,211 @@ describe("/instructions tools", () => {
     expect(shortSource("/home/u/Exocortex/daemon/src/tools/exo.ts")).toBe("daemon/src/tools/exo.ts");
     expect(shortSource("/home/u/Exocortex/external-tools/cal-cli/manifest.json")).toBe("external-tools/cal-cli/manifest.json");
     expect(shortSource("/opt/tools/cal/manifest.json")).toBe("cal/manifest.json");
+  });
+});
+
+const TEXT_DIR = "/repo/daemon/src/tools/text";
+const EDITABLE: Omit<ToolInstructionsLoadedEvent, "type" | "reqId"> = {
+  ...ANSWER,
+  internal: [
+    {
+      name: "exo", source: `${TEXT_DIR}/exo.description.md`, description: "Start a subagent.", hint: "Subagents are the default for real work.", hintSource: `${TEXT_DIR}/exo.hint.md`,
+      blocks: [
+        { id: "internal:exo:description", label: "Description · tool schema", text: "Start a subagent.", source: `${TEXT_DIR}/exo.description.md`, editable: true },
+        { id: "internal:exo:hint", label: "System prompt · # Internal tools", text: "Subagents are the default for real work.", source: `${TEXT_DIR}/exo.hint.md`, editable: true },
+      ],
+    },
+    {
+      name: "chrono", source: `${TEXT_DIR}/chrono.description.md`, description: "Schedule wakes.",
+      blocks: [
+        { id: "internal:chrono:description", label: "Description · tool schema", text: "Schedule wakes.", source: `${TEXT_DIR}/chrono.description.md`, editable: true },
+        { id: "internal:chrono:hint", label: "System prompt · # Internal tools", text: "", source: `${TEXT_DIR}/chrono.hint.md`, editable: true },
+      ],
+    },
+  ],
+  external: [
+    {
+      name: "cal", source: "/repo/external-tools/cal-cli/manifest.json", hint: "Use `cal -h`.\nNever edit storage.",
+      blocks: [{ id: "external:cal", label: "System prompt · manifest systemHint", text: "Use `cal -h`.\nNever edit storage.", source: "/repo/external-tools/cal-cli/manifest.json", editable: true }],
+    },
+  ],
+};
+
+function openEditable() {
+  const state = conversationState();
+  const daemon = new FakeDaemon();
+  openToolInstructions(state, daemon);
+  handleInstructionsEvent(state, { type: "tool_instructions_loaded", reqId: daemon.last("loadToolInstructions").reqId, ...EDITABLE }, daemon);
+  return { state, daemon, editor: state.instructionsModal!.editor! };
+}
+
+const ESC: KeyEvent = { type: "escape" };
+const ENTER: KeyEvent = { type: "enter" };
+
+/** Put the cursor on the first line that reads `line`. */
+function goToLine(state: RenderState, _daemon: FakeDaemon, line: string): void {
+  const editor = state.instructionsModal!.editor!;
+  const lines = editor.buffer.split("\n");
+  const index = lines.indexOf(line);
+  if (index === -1) throw new Error(`no line ${line}`);
+  editor.cursor = lines.slice(0, index).reduce((offset, text) => offset + text.length + 1, 0);
+  editor.curswant = null;
+  expect(lineAtCursor(editor.buffer, editor.cursor)).toBe(line);
+}
+
+describe("/instructions tools: editing", () => {
+  test("a block edits in place; :w sends only the changed blocks and shows what was committed", () => {
+    const { state, daemon, editor } = openEditable();
+    expect(editor.readOnly).toBe(false);
+    expect(plain(renderInstructionsEditor(editor, 60, 110).payload)).not.toContain("read-only");
+
+    goToLine(state, daemon, "Subagents are the default for real work.");
+    press(state, daemon, "A", " Always.", ESC);
+    expect(plain(renderInstructionsEditor(editor, 60, 110).payload)).toContain("● modified");
+    press(state, daemon, ":w", ENTER);
+
+    const call = daemon.last("saveToolInstructions");
+    expect(call.args).toEqual(["conv-1", "openai", "gpt-6.1-sol", [
+      { id: "internal:exo:hint", text: "Subagents are the default for real work. Always.", expected: "Subagents are the default for real work." },
+    ], false]);
+    expect(editor.notice?.text).toBe("Saving 1 block: write, commit, push…");
+    expect(plain(renderInstructionsEditor(editor, 60, 110).payload)).toContain("saving…");
+    press(state, daemon, ":w", ENTER);
+    expect(editor.notice?.text).toBe("Still saving the last :w…");
+    expect(daemon.calls.filter(c => c.method === "saveToolInstructions")).toHaveLength(1);
+
+    handleInstructionsEvent(state, {
+      type: "tool_instructions_saved", reqId: call.reqId,
+      saved: [{ id: "internal:exo:hint", text: "Subagents are the default for real work. Always." }],
+      commits: [{ repo: "/repo", commit: "abc1234", pushed: true }],
+    }, daemon);
+    expect(editor.notice).toEqual({ text: "Saved · committed abc1234 + pushed", tone: "success" });
+    expect(plain(renderInstructionsEditor(editor, 60, 110).payload)).not.toContain("● modified");
+    press(state, daemon, ":w", ENTER);
+    expect(editor.notice?.text).toBe("No changes to save");
+  });
+
+  test("headers, labels and route lines don't change; the editor says why", () => {
+    const attempts: Array<[string, Array<string | KeyEvent>]> = [
+      ["exo", ["x"]], ["exo", ["dd"]], ["exo", ["i", "typed"]], ["exo", ["o", "new"]], ["exo", ["A", "z"]],
+      ["Description · tool schema", ["x"]], ["Description · tool schema", ["cc", "label"]], ["Description · tool schema", ["~"]],
+      ["Start a subagent.", ["dj"]], ["Start a subagent.", ["dk"]], ["Start a subagent.", ["VGd"]], ["Start a subagent.", ["Vjd"]],
+      [EDITABLE.route, ["x"]], ["Internal tools", ["dd"]], ["Internal tools", [{ type: "paste", text: "pasted" }]],
+    ];
+    for (const [line, attempt] of attempts) {
+      const { state, daemon, editor } = openEditable();
+      const text = editor.buffer;
+      goToLine(state, daemon, line);
+      press(state, daemon, ...attempt);
+      expect(editor.buffer).toBe(text);
+      expect(editor.notice?.text).toBe(TOOLS_FIXED_NOTICE);
+    }
+  });
+
+  test("typing across lines inside a block keeps the sections in place", () => {
+    const { state, daemon, editor } = openEditable();
+    goToLine(state, daemon, "Use `cal -h`.");
+    press(state, daemon, "o", "First line", ENTER, "second line", ESC, "O", "above", ESC);
+    expect(editor.buffer).toEndWith("cal\nSystem prompt · manifest systemHint\nUse `cal -h`.\nFirst line\nabove\nsecond line\nNever edit storage.");
+    for (const section of editor.tools!.sections) expect(lineAtCursor(editor.buffer, section.offset)).toBe(section.name);
+    press(state, daemon, "gg", "}}", "]]");
+    expect(sectionAt(editor.tools!, editor.cursor)?.name).toBe("cal");
+    press(state, daemon, ":w", ENTER);
+    expect(daemon.last("saveToolInstructions").args[3]).toEqual([
+      { id: "external:cal", text: "Use `cal -h`.\nFirst line\nabove\nsecond line\nNever edit storage.", expected: "Use `cal -h`.\nNever edit storage." },
+    ]);
+  });
+
+  test("dd on a block's last line empties it; an empty block shows a placeholder and takes typing", () => {
+    const { state, daemon, editor } = openEditable();
+    goToLine(state, daemon, "Start a subagent.");
+    press(state, daemon, "dd");
+    expect(editor.buffer).toContain("exo\nDescription · tool schema\n\nSystem prompt · # Internal tools\n");
+    expect(editor.notice).toBeNull();
+    expect(plain(renderInstructionsEditor(editor, 60, 110).payload)).toContain("Empty: type a description");
+    // dd on the empty line leaves it; the next label stays.
+    const emptied = editor.buffer;
+    press(state, daemon, "dd");
+    expect(editor.buffer).toBe(emptied);
+    press(state, daemon, "dj");
+    expect(editor.buffer).toBe(emptied);
+    expect(editor.notice?.text).toBe(TOOLS_FIXED_NOTICE);
+    press(state, daemon, "i", "Spawn a helper.", ESC);
+    expect(editor.buffer).toContain("Description · tool schema\nSpawn a helper.\nSystem prompt");
+
+    // chrono has no hint: its empty block takes one.
+    expect(plain(renderInstructionsEditor(editor, 80, 110).payload)).toContain("Empty: nothing injected; type to add a hint");
+    goToLine(state, daemon, "Schedule wakes.");
+    press(state, daemon, "jj", "i", "Prefer chrono to sleep.", ESC, ":w", ENTER);
+    expect(daemon.last("saveToolInstructions").args[3]).toEqual([
+      { id: "internal:exo:description", text: "Spawn a helper.", expected: "Start a subagent." },
+      { id: "internal:chrono:hint", text: "Prefer chrono to sleep.", expected: "" },
+    ]);
+  });
+
+  test("undo and redo step back through edits in different blocks", () => {
+    const { state, daemon, editor } = openEditable();
+    const original = editor.buffer;
+    goToLine(state, daemon, "Start a subagent.");
+    press(state, daemon, "A", " Now.", ESC);
+    goToLine(state, daemon, "Use `cal -h`.");
+    press(state, daemon, "x");
+    const edited = editor.buffer;
+    press(state, daemon, "u", "u");
+    expect(editor.buffer).toBe(original);
+    expect(editor.notice).toBeNull();
+    press(state, daemon, { type: "ctrl-r" } as KeyEvent, { type: "ctrl-r" } as KeyEvent);
+    expect(editor.buffer).toBe(edited);
+    for (const section of editor.tools!.sections) expect(lineAtCursor(editor.buffer, section.offset)).toBe(section.name);
+  });
+
+  test(":wq closes once saved and reports in the chat; a failed push says so", () => {
+    for (const [commit, expected] of [
+      [{ repo: "/repo", commit: "abc1234", pushed: true }, "✓ Tool instructions saved · committed abc1234 + pushed"],
+      [{ repo: "/repo", commit: "abc1234", pushed: false, error: "git push failed: rejected; the commit is kept locally" }, "✗ Tool instructions saved · committed abc1234, not pushed: git push failed: rejected; the commit is kept locally"],
+    ] as const) {
+      const { state, daemon } = openEditable();
+      goToLine(state, daemon, "Schedule wakes.");
+      press(state, daemon, "A", "!", ESC, ":wq", ENTER);
+      expect(state.instructionsModal).not.toBeNull();
+      handleInstructionsEvent(state, { type: "tool_instructions_saved", reqId: daemon.last("saveToolInstructions").reqId, saved: [{ id: "internal:chrono:description", text: "Schedule wakes.!" }], commits: [commit] }, daemon);
+      expect(state.instructionsModal).toBeNull();
+      expect(state.messages.at(-1)).toMatchObject({ role: "system", text: expected });
+    }
+  });
+
+  test("a refused save keeps the editor open, unsaved, with the reason; :w! forces", () => {
+    const { state, daemon, editor } = openEditable();
+    goToLine(state, daemon, "Schedule wakes.");
+    press(state, daemon, "A", "!", ESC, ":wq", ENTER);
+    const consumed = handleInstructionsEvent(state, { type: "error", reqId: daemon.last("saveToolInstructions").reqId, message: "The chrono description changed since you opened it; :w! overwrites" }, daemon);
+    expect(consumed).toBe(true);
+    expect(state.instructionsModal?.editor).toBe(editor);
+    expect(editor.notice).toEqual({ text: "Not saved: The chrono description changed since you opened it; :w! overwrites", tone: "error" });
+    press(state, daemon, ":w!", ENTER);
+    expect(daemon.last("saveToolInstructions").args[4]).toBe(true);
+  });
+
+  test(":q with unsaved edits warns, :q! discards, and nothing is sent", () => {
+    const { state, daemon, editor } = openEditable();
+    goToLine(state, daemon, "Schedule wakes.");
+    press(state, daemon, "x", ":q", ENTER);
+    expect(state.instructionsModal?.editor).toBe(editor);
+    expect(editor.notice?.text).toContain("Unsaved changes");
+    press(state, daemon, ":q!", ENTER);
+    expect(state.instructionsModal).toBeNull();
+    expect(daemon.calls.filter(c => c.method === "saveToolInstructions")).toEqual([]);
+  });
+
+  test("an answer after the editor closed goes to the chat", () => {
+    const { state, daemon } = openEditable();
+    goToLine(state, daemon, "Schedule wakes.");
+    press(state, daemon, "x", ":w", ENTER, ":q", ENTER);
+    // Unsaved until the daemon says so.
+    expect(state.instructionsModal?.editor?.notice?.text).toContain("Unsaved changes");
+    press(state, daemon, ":q!", ENTER);
+    expect(state.instructionsModal).toBeNull();
+    handleInstructionsEvent(state, { type: "tool_instructions_saved", reqId: daemon.last("saveToolInstructions").reqId, saved: [], commits: [{ repo: "/repo", commit: "abc1234", pushed: true }] }, daemon);
+    expect(state.messages.at(-1)).toMatchObject({ role: "system", text: "✓ Tool instructions saved · committed abc1234 + pushed" });
   });
 });

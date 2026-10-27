@@ -12,7 +12,7 @@ import { randomUUID } from "crypto";
 import { StringDecoder } from "node:string_decoder";
 import { homedir, hostname, userInfo } from "os";
 import type { SidebarViewHint } from "@exocortex/shared/sidebar-first-page";
-import type { ClientCapability, ClientHostInfo, Command, DaemonShutdownMode, Event, GoalAction, MoveSidebarItemsOptions, OpenAILoginMethod, QueuedCommandInvocation, QueueTiming, QueueWaitTarget, TrimMode, SidebarItemRef, GetImageCommand, ImageDataEvent, UserMacro } from "./protocol";
+import type { ClientCapability, ClientHostInfo, Command, DaemonShutdownMode, Event, GoalAction, MoveSidebarItemsOptions, OpenAILoginMethod, QueuedCommandInvocation, QueueTiming, QueueWaitTarget, TrimMode, SidebarItemRef, GetImageCommand, ImageDataEvent, ToolInstructionsEdit, UserMacro } from "./protocol";
 import type { ProviderId, ModelId, EffortLevel, ImageAttachment, TokenUsageSource } from "./messages";
 import { socketPath, isWindows } from "@exocortex/shared/paths";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
@@ -1035,6 +1035,12 @@ export class DaemonClient {
   loadToolInstructions(convId: string | null, provider: ProviderId, model: ModelId): string {
     const reqId = `tool_instructions_${++this.nextReqId}_${Date.now()}`;
     this.send({ type: "load_tool_instructions", reqId, ...(convId ? { convId } : {}), provider, model });
+    return reqId;
+  }
+
+  saveToolInstructions(convId: string | null, provider: ProviderId, model: ModelId | null, edits: ToolInstructionsEdit[], force: boolean): string {
+    const reqId = `tool_instructions_save_${++this.nextReqId}_${Date.now()}`;
+    this.send({ type: "save_tool_instructions", reqId, ...(convId ? { convId } : {}), provider, ...(model ? { model } : {}), edits, ...(force ? { force } : {}) });
     return reqId;
   }
 

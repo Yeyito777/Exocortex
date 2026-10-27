@@ -12,6 +12,7 @@ import type { Tool, ToolResult, ToolSummary, ToolExecutionContext } from "./type
 import { getString, getNumber, getBoolean, summarizeParams, MAX_OUTPUT_CHARS, safeSlice } from "./util";
 import { log } from "../log";
 import { HARD_EXCLUDED_DIRS } from "./filesystem-safety";
+import { toolTextSource } from "./tool-text";
 
 // ── Constants ──────────────────────────────────────────────────────
 
@@ -429,9 +430,11 @@ function summarize(input: Record<string, unknown>): ToolSummary {
 
 // ── Tool definition ────────────────────────────────────────────────
 
+const TEXT = toolTextSource("grep");
+
 export const grep: Tool = {
   name: "grep",
-  description: "Search file contents using ripgrep. Supports regex patterns, glob filters, file type filters, context lines, and three output modes.",
+  get description() { return TEXT.description(); },
   parallelSafety: "safe",
   defaultTimeoutMs: 45_000,
   resourceClass: "filesystem_scan",
@@ -460,7 +463,7 @@ export const grep: Tool = {
     },
     required: ["pattern"],
   },
-  systemHint: "Prefer the grep tool over grep/rg for searching file contents.",
+  get systemHint() { return TEXT.hint(); },
   display: {
     label: "Grep",
     color: "#89ddff",  // cyan

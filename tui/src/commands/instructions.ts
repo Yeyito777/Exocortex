@@ -9,7 +9,7 @@ const VIEW_ARGS: ReadonlyArray<{ view: InstructionsView; desc: string; aliases: 
   { view: "conversation", desc: "Edit this conversation's instructions", aliases: ["convo", "c"] },
   { view: "folder", desc: "Edit this folder's instructions", aliases: ["f"] },
   { view: "global", desc: "Edit the instructions every conversation gets", aliases: ["g"] },
-  { view: "tools", desc: "Read what the model is told about each tool", aliases: ["t"] },
+  { view: "tools", desc: "Read and edit what the model is told about each tool", aliases: ["t"] },
 ];
 
 const ARGS: CompletionItem[] = [

@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { browseInternalsForTest } from "./browse";
+import { browse, browseInternalsForTest } from "./browse";
 
 const roots: string[] = [];
 
@@ -28,9 +28,10 @@ describe("browse source", () => {
   });
 
   test("tells the model how to preserve readable responses without AI interpretation", () => {
-    const source = readFileSync(join(import.meta.dir, "browse.ts"), "utf8");
-    expect(source).toContain("Use mode=download whenever the complete response must be preserved");
-    expect(source).toContain("including text, JavaScript, JSON, or source code");
+    const hint = readFileSync(join(import.meta.dir, "text", "browse.hint.md"), "utf8");
+    expect(hint).toContain("Use mode=download whenever the complete response must be preserved");
+    expect(hint).toContain("including text, JavaScript, JSON, or source code");
+    expect(browse.systemHint).toBe(hint.trimEnd());
   });
 
   test("does not import deterministic browse helpers", () => {

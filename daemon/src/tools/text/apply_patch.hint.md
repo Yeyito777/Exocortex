@@ -1,0 +1,1 @@
+Use apply_patch for file edits, creates, deletes, and renames. Supply raw patch text, not JSON or a shell command. Relative paths resolve from the conversation workspace; absolute file paths are also supported. Read and search files with exec_command (e.g. rg, cat, sed).

@@ -125,10 +125,12 @@ export interface LayoutCache {
   historyWidth: number;
   /** Width history is laid out at (totalLines counts rows of this width). */
   chatWidth: number;
-  /** Screen rectangle occupied by the task panel; a click there toggles its expansion. */
+  /** Screen rectangle occupied by the task panel; clicks there never reach the history under it. */
   taskPanelRect: { top: number; bottom: number; left: number; right: number } | null;
   /** Rows the expanded task panel can scroll; 0 when everything fits or it is collapsed. */
   taskPanelMaxScroll: number;
+  /** A click on the task panel toggles its expansion: false while the collapsed card already shows everything. */
+  taskPanelToggleable: boolean;
   /** Screen rectangle of the status line's usage block; a click there opens the Accounts screen. */
   usageBlockRect: { top: number; bottom: number; left: number; right: number } | null;
   /** Canonical history row and source/display offsets rendered on each message-area row. */
@@ -714,7 +716,7 @@ export function createInitialState(): RenderState {
     sidebar: createSidebarState(loadSidebarFolderViewPreference()),
     sidebarOpenChosen: false,
     vim: createVimState(),
-    layout: { totalLines: 0, messageAreaHeight: 0, historyWidth: 0, chatWidth: 0, taskPanelRect: null, taskPanelMaxScroll: 0, usageBlockRect: null, historyViewportRows: [], chatCol: 1, sepAbove: 0, firstInputRow: 0, sepBelow: 0 },
+    layout: { totalLines: 0, messageAreaHeight: 0, historyWidth: 0, chatWidth: 0, taskPanelRect: null, taskPanelMaxScroll: 0, taskPanelToggleable: false, usageBlockRect: null, historyViewportRows: [], chatCol: 1, sepAbove: 0, firstInputRow: 0, sepBelow: 0 },
     deferredHistoryRender: null,
     pendingSend: { active: false, text: "" },
     unconfirmedSends: [],

@@ -16,19 +16,21 @@ import { formatCommandOutput } from "./bash";
 import * as convStore from "../conversations";
 import { activeProviderProxyManager } from "../provider-proxy/manager";
 import { describeRemoteHost } from "../provider-proxy/link";
+import { toolTextSource } from "./tool-text";
 
 const DEFAULT_TIMEOUT_SECONDS = 600;
-const BASE_DESCRIPTION = "Uses bash and returns stdout and stderr, as the SSH user there. "
-  + "Works only while the /proxy link is up. Starts in that user's home directory unless cwd is set; a ~ prefix is expanded.";
+// {{proxyAlias}} names the /proxy machine ("alias, ") when the conversation's provider has one.
+const TEXT = toolTextSource("remote_bash", provider => {
+  const alias = provider ? activeProviderProxyManager()?.aliasFor(provider) : null;
+  return { proxyAlias: alias ? `${alias}, ` : "" };
+});
 
 export const remoteBash: Tool = {
   name: "remote_bash",
-  description: "Run a shell command on the machine this conversation's model is proxied through with /proxy, not on this host. " + BASE_DESCRIPTION,
+  get description() { return TEXT.description(); },
+  get systemHint() { return TEXT.hint(); },
   describe(provider) {
-    const alias = activeProviderProxyManager()?.aliasFor(provider);
-    return alias
-      ? `Run a shell command on ${alias}, the machine this conversation's model is proxied through with /proxy, not on this host. ${BASE_DESCRIPTION}`
-      : remoteBash.description;
+    return TEXT.description(provider);
   },
   parallelSafety: "exclusive",
   defaultTimeoutMs: null,

@@ -115,6 +115,23 @@ Opening that scope again brings the unsaved text back. If the link drops before 
 after reconnecting: the save is kept if it landed, sent again if the old text is
 still there, and failed (text kept) if it changed elsewhere meanwhile.
 
+`/instructions tools` (or `t`) shows what the model is told about each tool on
+this conversation's route: every tool's schema description and system-prompt
+hint (under Claude Code, its MCP server instructions), and each external
+tool's manifest `systemHint`. `]]`/`[[` move by tool, `}`/`{` by group, and
+`Enter` or `gf` says which file the text under the cursor lives in. The text
+under each label is editable in the same editor; tool headers, labels and the
+route line are fixed, and an edit that would change them is refused. An empty
+hint means no hint. `:w` sends only the changed blocks to the daemon, which
+writes them (a built-in tool's `daemon/src/tools/text/<tool>.<kind>.md`, or
+the external tool's `manifest.json`), commits exactly those files in their own
+repository, pulls and pushes; the status line then says `committed <hash> +
+pushed`, or why not (a failed push keeps the local commit). `:wq` closes once
+saved and reports in the chat; `:w!` overwrites a block that changed since the
+view was opened. The next turn of every conversation uses the new text without
+a restart. Over `/ssh` the remote daemon writes and commits in its own
+checkout.
+
 ## Slash commands
 
 `/help` lists the same commands; the registry in

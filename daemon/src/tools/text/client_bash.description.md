@@ -1,0 +1,1 @@
+Run a shell command on the user's own machine (such as their laptop), not on this host. Uses bash (PowerShell on Windows) and returns stdout and stderr. Works while that machine is connected: its Exocortex daemon linked to this one, or its TUI over /ssh. Starts in the user's home directory unless cwd is set; a ~ prefix is expanded.
