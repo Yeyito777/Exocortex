@@ -233,7 +233,8 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
           if (ownChild) track(parentId, convId, true, { title, startedAt });
           let finished = false;
           const finish = (outcome: AssistantTurnOutcome) => {
-            if (outcome.suspended || finished) return;
+            // Settled by the turn itself; a queued successor may still be running or awaiting replay.
+            if (outcome.suspended || outcome.notificationsSettled || finished) return;
             finished = true;
             if (ownChild) track(parentId, convId, false);
             if (deps.completeParentNotification) deps.completeParentNotification(convId, outcome);
@@ -323,7 +324,8 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
         track(parentId, convId, true, { title: taskLabel, startedAt });
         let finished = false;
         const finish = (outcome: AssistantTurnOutcome) => {
-          if (outcome.suspended || finished) return;
+          // Settled by the turn itself; a queued successor may still be running or awaiting replay.
+          if (outcome.suspended || outcome.notificationsSettled || finished) return;
           finished = true;
           track(parentId, convId, false);
           if (notify) {

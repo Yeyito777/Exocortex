@@ -207,6 +207,13 @@ export interface AssistantTurnOutcome {
   daemonRestart?: boolean;
   /** The turn ended at a deferred Chrono sleep and will continue by replay later. */
   suspended?: boolean;
+  /**
+   * The turn's own finalizer already settled subagent notifications for it (or
+   * left them for a replay or a sleep). Its starter's promise resolves only
+   * after the queued turns it drained, so completing with this outcome again
+   * would settle a successor's record with this turn's reply.
+   */
+  notificationsSettled?: boolean;
 }
 
 interface AssistantTurnOptions {
@@ -2233,6 +2240,10 @@ async function orchestrateAdmittedAssistantTurn(
       if (notifications) notifications.complete(convId, outcome);
       else settlePendingSubagentNotifications(convId, outcome);
     }
+    // Starters completing again are no-ops. Set after the call above, before
+    // the queued successors below: a restart can interrupt one of those, and
+    // its record must stay running for the replay to report.
+    if (outcome) outcome.notificationsSettled = true;
     if (interruptedSleep) completeDeferredChronoSleepResume(interruptedSleep.id);
     // unwindTo persists a small truncation overlay after this finalizer stops.
     // Saving the interrupted suffix here would be both obsolete and a full-file

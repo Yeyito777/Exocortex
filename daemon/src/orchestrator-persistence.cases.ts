@@ -13,6 +13,7 @@ import { getStaleStreams } from "./streaming";
 import { setMessageQueuePersistenceFailureForTest } from "./message-queue";
 import {
   beginPendingSubagentNotification,
+  getSubagentNotificationRuntime,
   listPendingSubagentNotifications,
   registerSubagentNotificationRuntime,
   removePendingSubagentNotificationsForConversation,
@@ -2257,6 +2258,58 @@ describe("subagent completion is owned by the turn, not its starter", () => {
     } finally {
       removePendingSubagentNotificationsForConversation(childId);
     }
+  });
+
+  // Oct 27 Record GIF agent: a replayed turn reported, then drained the
+  // parent's queued messages into a successor turn, which a daemon restart
+  // interrupted. The replay's starter resolved only then, with the first turn's
+  // outcome, and completed the successor's record with that old reply: the
+  // parent got a false "completed" and no notice when the replay really ended.
+  test("a starter resolving after a restart-interrupted queued successor leaves its record running", async () => {
+    const parentId = id("successor-restart-parent");
+    const childId = id("successor-restart-child");
+    create(parentId, "openai", "gpt-5.6-sol");
+    create(childId, "openai", "gpt-5.6-sol");
+    const task = beginPendingSubagentNotification({ convId: parentId }, childId, "child task", 40_000, 0);
+    const { fake, completed } = notificationServer();
+    getSubagentNotificationRuntime(fake)!.relayFollowUp = (convId, _automation, text, startedAt) => {
+      if (listPendingSubagentNotifications({ childConvId: convId, state: "running" }).length > 0) return;
+      beginPendingSubagentNotification({ convId: parentId }, convId, text, startedAt, 0, true, "your message");
+    };
+    let calls = 0;
+    const fakeStream = (async () => {
+      calls += 1;
+      if (calls === 1) {
+        pushQueuedMessage(childId, "parent follow-up", "message-end", undefined, null, undefined, undefined, undefined,
+          { kind: "exo_send", sourceId: parentId });
+        return {
+          text: "reply A", thinking: "", stopReason: "stop" as const,
+          blocks: [{ type: "text" as const, text: "reply A" }], toolCalls: [], inputTokens: 1, outputTokens: 1,
+        };
+      }
+      getActiveJob(childId)!.abort("daemon-restart");
+      throw new Error("transport closed for restart");
+    }) as typeof streamMessage;
+
+    try {
+      const outcome = await orchestrateSendMessage(
+        fake as never, null, undefined, childId, "child task", 40_000, callbacks(fakeStream),
+      );
+      expect(calls).toBe(2);
+      expect(outcome).toMatchObject({ ok: true, notificationsSettled: true });
+      // The starter (restart recovery, a detached send) completes with what it got.
+      getSubagentNotificationRuntime(fake)!.complete(childId, outcome);
+
+      const records = listPendingSubagentNotifications({ childConvId: childId });
+      expect(records).toHaveLength(2);
+      expect(records.find(record => record.id === task.id)).toMatchObject({ state: "ready", text: expect.stringContaining("reply A") });
+      const successor = records.find(record => record.id !== task.id)!;
+      expect(successor).toMatchObject({ state: "running", task: "parent follow-up", trigger: "your message" });
+      expect(successor.text).toBeUndefined();
+    } finally {
+      removePendingSubagentNotificationsForConversation(childId);
+    }
+    expect(completed.map(entry => entry.outcome.ok)).toEqual([true, true]);
   });
 });
 
