@@ -908,6 +908,44 @@ export function freeMessageBand(start: number, end: number, floats: readonly Scr
   return best;
 }
 
+/**
+ * An image is one picture over several rows: when the rows beside the task
+ * panel shift it left, its rows below the panel follow, or the picture would
+ * split in two (Kitty would place only one part of it).
+ */
+function alignShiftedImageRows(
+  rows: ViewportHistoryRow[],
+  lineAnchors: BuildMessageLinesResult["lineAnchors"],
+): ViewportHistoryRow[] {
+  for (let start = 0; start < rows.length;) {
+    const anchor = lineAnchors[rows[start].lineIndex];
+    let end = start + 1;
+    if (anchor?.segment === "user_image") {
+      while (end < rows.length) {
+        const next = lineAnchors[rows[end].lineIndex];
+        if (next?.segment !== "user_image" || next.owner !== anchor.owner) break;
+        end++;
+      }
+      let shift = 0;
+      for (let index = start; index < end; index++) shift = Math.max(shift, rows[index].startCol);
+      for (let index = start; index < end; index++) {
+        const row = rows[index];
+        if (row.startCol >= shift) continue;
+        const extra = shift - row.startCol;
+        const line = trimAnsiLeadingSpaces(row.line, extra);
+        rows[index] = {
+          ...row,
+          line: line.line,
+          startCol: row.startCol + line.removed,
+          sourceRemainder: trimAnsiLeadingSpaces(row.sourceRemainder, line.removed).line,
+        };
+      }
+    }
+    start = end;
+  }
+  return rows;
+}
+
 function composeFloatingHistoryViewport(
   allLines: string[],
   lineAnchors: BuildMessageLinesResult["lineAnchors"],
@@ -956,7 +994,7 @@ function composeFloatingHistoryViewport(
   // first one or two visual chunks while preserving the viewport's bottom tail.
   // Compose forward from the exact source start for this one placement mode.
   if (preserveTop) {
-    const rows = composeViewportFrom(
+    const rows = alignShiftedImageRows(composeViewportFrom(
       allLines,
       lineAnchors,
       canonicalSourceState(allLines, viewStart),
@@ -965,7 +1003,7 @@ function composeFloatingHistoryViewport(
       panelHeight,
       narrowWidth,
       fullWidth,
-    ).slice(0, messageAreaHeight);
+    ).slice(0, messageAreaHeight), lineAnchors);
     floatingHistoryViewportCache.set(allLines, {
       revision,
       lineAnchors,
@@ -997,7 +1035,7 @@ function composeFloatingHistoryViewport(
       fullWidth,
     );
     if (atCanonicalTop || directRows.length <= messageAreaHeight) {
-      const rows = directRows.slice(0, messageAreaHeight);
+      const rows = alignShiftedImageRows(directRows.slice(0, messageAreaHeight), lineAnchors);
       floatingHistoryViewportCache.set(allLines, {
         revision,
         lineAnchors,
@@ -1050,7 +1088,7 @@ function composeFloatingHistoryViewport(
     fullWidth,
     fullWidth,
   );
-  const visibleRows = [...narrowRows, ...fullRows].slice(-messageAreaHeight);
+  const visibleRows = alignShiftedImageRows([...narrowRows, ...fullRows].slice(-messageAreaHeight), lineAnchors);
   floatingHistoryViewportCache.set(allLines, {
     revision,
     lineAnchors,

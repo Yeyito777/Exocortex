@@ -281,6 +281,62 @@ describe("image viewer", () => {
     disposeHistoryImages(state);
   });
 
+  /** A user message with one pasted image, the Tasks panel open, and the image's top on the panel's rows. */
+  function userImageBesidePanel(mode: "kitty" | "halfblock"): RenderState {
+    configureInlineImages({ fetch: async request => pngFetch(request), onChange: () => {} });
+    setInlineImageMode(mode);
+    setInlineImageCellSize({ width: 8, height: 16 });
+    const state = imageState();
+    state.cols = 120;
+    state.messages = [
+      { role: "user", text: "two screenshots", images: [{ mediaType: "image/png", base64: "", sizeBytes: 5000, imageId: "e".repeat(64), width: 400, height: 200 }], metadata: null },
+      ...state.messages.slice(2),
+    ];
+    state.sidebar.conversations = [{
+      id: "conv", provider: state.provider, model: state.model, effort: state.effort, fastMode: state.fastMode,
+      createdAt: 1, updatedAt: 2, messageCount: 1, title: "Conv", marked: false, pinned: false, streaming: false, unread: false, sortOrder: 0,
+      tasks: [{ id: "child", kind: "subagent", title: "A subagent with a fairly long title", startedAt: Date.now() - 2_000 }],
+    }];
+    capture(state);
+    const firstImageRow = state.historyLineAnchors.findIndex(anchor => anchor.images);
+    state.scrollOffset = state.layout.totalLines - state.layout.messageAreaHeight - firstImageRow + 1;
+    return state;
+  }
+
+  test("a user image shifted left beside the task panel is drawn whole, its rows below the panel too", async () => {
+    const state = userImageBesidePanel("kitty");
+    const shown = placements(await readyFrame(state)).map(placement => ({
+      ...placement,
+      columns: Number(/c=(\d+)/.exec(placement.controls)![1]),
+      rows: Number(/r=(\d+)/.exec(placement.controls)![1]),
+    }));
+    const panel = state.layout.taskPanelRect!;
+    const layout = state.historyLineAnchors.find(anchor => anchor.images)!.images![0].layout;
+    expect(shown.length).toBe(1);
+    const [image] = shown;
+    // It starts on the panel's rows, reaches below them, and clears the panel.
+    expect(image.row).toBeLessThanOrEqual(panel.bottom);
+    expect(image.row + image.rows - 1).toBeGreaterThan(panel.bottom + 1);
+    expect(image.col + image.columns - 1).toBeLessThan(panel.left);
+    // Every row of it, not only the ones beside the panel.
+    expect(image.rows).toBe(layout.rows);
+    expect(image.controls).not.toContain(",h=");
+    disposeHistoryImages(state);
+  });
+
+  test("the half-block fallback keeps a user image's rows aligned beside and below the task panel", async () => {
+    const state = userImageBesidePanel("halfblock");
+    await readyFrame(state);
+    const rows = state.historyLineAnchors.flatMap((anchor, index) => anchor.images ? [index] : []);
+    const viewport = state.layout.historyViewportRows.filter(row => row && rows.includes(row.lineIndex));
+    const panel = state.layout.taskPanelRect!;
+    expect(viewport.length).toBe(rows.length);
+    // History starts on screen row 3.
+    expect(3 + state.layout.historyViewportRows.indexOf(viewport.at(-1)!)).toBeGreaterThan(panel.bottom + 1);
+    expect(viewport[0]!.startCol).toBeGreaterThan(0);
+    expect(new Set(viewport.map(row => row!.startCol)).size).toBe(1);
+  });
+
   test("the fallback viewer draws half-block pixels inside the box", async () => {
     configureInlineImages({ fetch: pngFetch, onChange: () => {} });
     setInlineImageMode("halfblock");
