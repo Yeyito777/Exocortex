@@ -364,8 +364,9 @@ export function handleFocusedKey(
       return { type: "handled" };
     case "sidebar_next":
     case "sidebar_prev": {
-      // Don't intercept when typing in the prompt — these are regular chars
-      if (isPromptTyping(state)) break;
+      // Don't intercept when typing in the prompt — these are regular chars.
+      // In the history they move the cursor (vim keymap).
+      if (isPromptTyping(state) || isAnyHistoryFocused(state)) break;
       ensureSidebarReady(state);
       moveSelection(state.sidebar, action === "sidebar_next" ? 1 : -1);
       return { type: "handled" };

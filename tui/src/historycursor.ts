@@ -18,6 +18,7 @@ import { getScrollOffsetForViewStart } from "./chatscroll";
 import { hasOlderHistoryCursor } from "./historypagination";
 import {
   ensureCursorRowVisibleInViewport,
+  moveCursorInViewport,
   scrollLineWithStickyCursorInViewport,
   scrollPageWithCursorInViewport,
   scrollWithCursorInViewport,
@@ -134,6 +135,23 @@ function moveHistoryLine(surface: HistorySurface, direction: -1 | 1): void {
   surface.setCurswant(desiredCol);
 }
 
+/**
+ * Shift+K / Shift+J — the cursor moves Ctrl+U/Ctrl+D's half page, keeping
+ * its column like j/k, but the view stays put: it stops at the visible edge.
+ * `dir`: positive = up, negative = down.
+ */
+function moveHistoryHalfPageInView(surface: HistorySurface, dir: number): void {
+  const desiredCol = surface.curswant ?? surface.cursor.col;
+  const { cursorRow } = moveCursorInViewport({
+    totalLines: surface.lines.length,
+    viewportHeight: surface.viewportHeight,
+    viewStart: historySurfaceViewStart(surface),
+    cursorRow: surface.cursor.row,
+  }, dir, Math.floor(surface.viewportHeight / 2));
+  surface.setCursor({ row: cursorRow, col: clampCol(desiredCol, surface.lines, cursorRow) });
+  surface.setCurswant(desiredCol);
+}
+
 // ── Dispatch ───────────────────────────────────────────────────────
 
 /**
@@ -184,6 +202,8 @@ export function applyHistoryAction(action: Action, state: RenderState): boolean 
     case "history_right":   surface.setCursor(charRight(cur, lines)); resetHistoryCurswant(surface); break;
     case "history_up":      moveHistoryLine(surface, -1); break;
     case "history_down":    moveHistoryLine(surface, 1); break;
+    case "history_half_up":   moveHistoryHalfPageInView(surface, 1); return true;
+    case "history_half_down": moveHistoryHalfPageInView(surface, -1); return true;
     case "history_w":       surface.setCursor(wordForward(cur, lines)); resetHistoryCurswant(surface); break;
     case "history_b":       surface.setCursor(wordBackward(cur, lines)); resetHistoryCurswant(surface); break;
     case "history_e":       surface.setCursor(wordEnd(cur, lines)); resetHistoryCurswant(surface); break;
