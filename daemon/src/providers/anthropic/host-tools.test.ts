@@ -38,7 +38,7 @@ describe("Claude Code host tools", () => {
     ]);
     expect(client.getInstructions()).toContain("chrono");
     expect(client.getInstructions()).toContain("Never use Claude Code's Agent tool: delegate all subagent work, including search and exploration fan-out, with exo.");
-    expect(client.getInstructions()).toContain("Subagents are the default for real work");
+    expect(client.getInstructions()).toContain("Do the user's task yourself by default");
     expect(client.getInstructions()).toContain("default is opus at high effort");
   });
 

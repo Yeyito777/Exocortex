@@ -62,8 +62,8 @@ describe("minimal native exo", () => {
     expect(Object.keys(properties.args.properties)).toEqual(["detach", "model", "effort"]);
     expect(properties.args.properties.model.description).toContain("claude-opus-5-5");
     expect(properties.args.properties.effort.enum).toContain("xhigh");
-    expect(exo.systemHint).toContain("Subagents are the default for real work");
-    expect(exo.systemHint).toContain("Do trivial or quick work yourself");
+    expect(exo.systemHint).toContain("Do the user's task yourself by default");
+    expect(exo.systemHint).toContain("when you are a manager conversation coordinating several streams of work");
     expect(exo.systemHint).not.toContain("Almost never");
     expect(exo.systemHint).toContain("shared/src/protocol.ts");
     expect(exo.systemHint).toContain("restart gracefully restarts this daemon");

@@ -57,7 +57,7 @@ describe("system prompt", () => {
   test("includes compact native-subagent guidance", () => {
     const prompt = buildSystemPrompt({ conversationId: "nested" });
 
-    expect(prompt).toContain("## exo\nSubagents are the default for real work:");
+    expect(prompt).toContain("## exo\nDo the user's task yourself by default");
     expect(prompt).toContain("otherwise sol fast");
     expect(prompt).toContain("same tools");
     expect(prompt).toContain("docs/daemon-ipc.md");

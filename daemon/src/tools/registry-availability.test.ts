@@ -28,7 +28,7 @@ describe("tool availability", () => {
     expect(Object.keys(definition!.input_schema.properties as object)).toEqual(["subagent", "args", "message", "status", "abort", "restart"]);
     expect(JSON.stringify(definition?.input_schema)).not.toContain("system_prompt");
     expect(getToolDisplayInfo().find((tool) => tool.name === "exo")?.label).toBe("Exocortex");
-    expect(buildToolSystemHints()).toContain("## exo\nSubagents are the default for real work:");
+    expect(buildToolSystemHints()).toContain("## exo\nDo the user's task yourself by default");
     expect(buildToolSystemHints()).not.toContain("needed for testing");
   });
 
