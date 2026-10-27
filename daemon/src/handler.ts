@@ -60,7 +60,7 @@ import {
 import { applyUserGoalAction, setGoal as setConversationGoal } from "./goals";
 import { scheduleGoalTimeLimit } from "./goal-time-limit";
 import { createExocortexToolRuntime } from "./exocortex-tool-runtime";
-import { attachClientHost, settleClientExec } from "./client-hosts";
+import { attachClientHost, clientExecAlive, settleClientExec } from "./client-hosts";
 import { pendingTurnNotices } from "./turn-notices";
 import { ProviderProxyManager, setActiveProviderProxyManager } from "./provider-proxy/manager";
 import { ProviderProxyEndpoint } from "./provider-proxy/endpoint";
@@ -2061,7 +2061,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
               || capability === "token-stats-on-demand"
               || capability === "sidebar-digest-sync"
               || capability === "update-status-push"
-              || capability === "sidebar-incremental") client.capabilities.add(capability);
+              || capability === "sidebar-incremental"
+              || capability === "client-exec-alive") client.capabilities.add(capability);
         }
         if (client.capabilities.has("sidebar-digest-sync") && isSidebarDigest(cmd.sidebarDigest)) {
           client.sidebarDigest = cmd.sidebarDigest;
@@ -2069,12 +2070,24 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         if (client.capabilities.has("sidebar-incremental") && isSidebarViewHint(cmd.sidebarView)) {
           client.sidebarView = cmd.sidebarView;
         }
-        if (cmd.clientHost) attachClientHost(client, cmd.clientHost, event => server.sendTo(client, event));
+        if (cmd.clientHost) {
+          attachClientHost(client, cmd.clientHost, event => server.sendTo(client, event), {
+            via: "tui",
+            reportsAlive: client.capabilities.has("client-exec-alive"),
+          });
+        }
         break;
       }
 
-      case "client_exec_result": {
+      case "client_exec_result":
+      case "provider_proxy_client_exec_result": {
         settleClientExec(client, cmd);
+        break;
+      }
+
+      case "client_exec_alive":
+      case "provider_proxy_client_exec_alive": {
+        clientExecAlive(client, cmd.execIds);
         break;
       }
 
@@ -2098,6 +2111,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
 
       case "provider_proxy_hello":
         providerProxyEndpointFor(client, true)!.handle(cmd);
+        // The linking daemon's machine: client_bash runs there over this link.
+        if (cmd.clientHost) attachClientHost(client, cmd.clientHost, event => server.sendTo(client, event), { via: "daemon", reportsAlive: true });
         break;
 
       case "provider_proxy_open":

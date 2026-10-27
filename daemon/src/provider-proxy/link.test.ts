@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
+import { existsSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import type { SshProcess } from "@exocortex/shared/ssh-transport";
 import type { ProxyableProviderId } from "@exocortex/shared/provider-proxy";
@@ -8,8 +11,13 @@ import { UpstreamAuthError } from "./upstream-auth";
 import { fakeSsh, loggedIn, stubAuth, type UpstreamCall } from "./testing";
 
 const links: ProviderProxyLink[] = [];
-function makeLink(spawn: () => SshProcess, providers: ProxyableProviderId[] = ["anthropic", "openai"], reconnectDelaysMs = [20]): ProviderProxyLink {
-  const link = new ProviderProxyLink("whale", { providers: () => providers, spawnProcess: spawn, reconnectDelaysMs, helloTimeoutMs: 2_000 });
+function makeLink(
+  spawn: () => SshProcess,
+  providers: ProxyableProviderId[] = ["anthropic", "openai"],
+  reconnectDelaysMs = [20],
+  extra: Partial<ConstructorParameters<typeof ProviderProxyLink>[1]> = {},
+): ProviderProxyLink {
+  const link = new ProviderProxyLink("whale", { providers: () => providers, spawnProcess: spawn, reconnectDelaysMs, helloTimeoutMs: 2_000, ...extra });
   links.push(link);
   return link;
 }
@@ -298,5 +306,82 @@ describe("provider proxy link + remote endpoint", () => {
     await Bun.sleep(50);
     ssh.spawned[0].kill();
     expect(await pending).toEqual({ failure: expect.stringContaining("The SSH connection to whale was lost") });
+  });
+
+  test("remote_bash on a remote that stops answering fails fast instead of waiting out its timeout", async () => {
+    // The far end swallows remote_bash commands, like a frozen or half-dead link.
+    const ssh = fakeSsh({ deps: { auth: stubAuth() }, unknownCommands: ["provider_proxy_exec"] });
+    const link = makeLink(ssh.spawn, undefined, undefined, { execLiveness: { ackMs: 100, silenceMs: 200 } });
+    await link.waitReady(2_000);
+    expect(link.features).toContain("exec-alive");
+    const started = Date.now();
+    const outcome = await link.exec({ command: "echo hi", timeoutMs: 600_000 });
+    expect(outcome).toEqual({ failure: expect.stringContaining("did not respond within 0s") });
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  test("a long remote_bash command stays alive on the remote's heartbeats", async () => {
+    const ssh = fakeSsh({ deps: { auth: stubAuth() } });
+    const link = makeLink(ssh.spawn, undefined, undefined, { execLiveness: { ackMs: 1_000, silenceMs: 11_000 } });
+    await link.waitReady(2_000);
+    // Longer than the acknowledgement limit; heartbeats come every 10 s.
+    const ran = await link.exec({ command: "sleep 1.5; echo done", timeoutMs: 10_000 });
+    expect(ran).toMatchObject({ output: "done\n", exitCode: 0 });
+  });
+
+  test("an older remote without exec-alive is waited on as before", async () => {
+    const ssh = fakeSsh({ deps: { auth: stubAuth() }, noFeatures: true });
+    const link = makeLink(ssh.spawn, undefined, undefined, { execLiveness: { ackMs: 10, silenceMs: 10 } });
+    await link.waitReady(2_000);
+    expect(await link.exec({ command: "sleep 0.2; echo ok", timeoutMs: 5_000 })).toMatchObject({ output: "ok\n" });
+  });
+});
+
+describe("client_bash over the link (the remote runs commands on this machine)", () => {
+  function remoteSends(ssh: ReturnType<typeof fakeSsh>, event: Record<string, unknown>): void {
+    (ssh.spawned.at(-1)!.process.stdout as PassThrough).write(`${JSON.stringify(event)}\n`);
+  }
+  async function commandOfType(ssh: ReturnType<typeof fakeSsh>, type: string, execId: string): Promise<Record<string, unknown>> {
+    for (let i = 0; i < 200; i++) {
+      const found = ssh.spawned.at(-1)!.commands.find(command => command.type === type && (command.execId === execId || (Array.isArray(command.execIds) && command.execIds.includes(execId))));
+      if (found) return found;
+      await Bun.sleep(10);
+    }
+    throw new Error(`no ${type} for ${execId}`);
+  }
+
+  test("the hello offers this machine, and the remote's commands run here and answer over the link", async () => {
+    const ssh = fakeSsh({ deps: { auth: stubAuth() } });
+    const link = makeLink(ssh.spawn);
+    await link.waitReady(2_000);
+    expect(ssh.spawned[0].commands[0]).toMatchObject({ type: "provider_proxy_hello", clientHost: { hostname: expect.any(String), platform: process.platform } });
+    remoteSends(ssh, { type: "provider_proxy_client_exec", execId: "x1", command: "echo mac-$((40+2))", timeoutMs: 5_000 });
+    await commandOfType(ssh, "provider_proxy_client_exec_alive", "x1");
+    expect(await commandOfType(ssh, "provider_proxy_client_exec_result", "x1")).toMatchObject({ output: "mac-42\n", exitCode: 0, timedOut: false });
+  });
+
+  test("clientHost: null offers nothing", async () => {
+    const ssh = fakeSsh({ deps: { auth: stubAuth() } });
+    const link = makeLink(ssh.spawn, undefined, undefined, { clientHost: null });
+    await link.waitReady(2_000);
+    expect(ssh.spawned[0].commands[0]).not.toHaveProperty("clientHost");
+  });
+
+  test("the remote can cancel a command, and a lost link stops the rest", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "client-exec-link-"));
+    const ssh = fakeSsh({ deps: { auth: stubAuth() } });
+    const link = makeLink(ssh.spawn);
+    await link.waitReady(2_000);
+    remoteSends(ssh, { type: "provider_proxy_client_exec", execId: "c1", command: "sleep 30", timeoutMs: 60_000 });
+    await commandOfType(ssh, "provider_proxy_client_exec_alive", "c1");
+    remoteSends(ssh, { type: "provider_proxy_client_exec_cancel", execId: "c1" });
+    expect(await commandOfType(ssh, "provider_proxy_client_exec_result", "c1")).toMatchObject({ signal: "SIGTERM" });
+
+    const marker = join(dir, "ran");
+    remoteSends(ssh, { type: "provider_proxy_client_exec", execId: "c2", command: `sleep 0.5; touch ${marker}`, timeoutMs: 60_000 });
+    await commandOfType(ssh, "provider_proxy_client_exec_alive", "c2");
+    ssh.spawned[0].kill();
+    await Bun.sleep(900);
+    expect(existsSync(marker)).toBe(false);
   });
 });

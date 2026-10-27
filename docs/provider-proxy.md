@@ -77,21 +77,39 @@ OpenAI API key refuses it and says to log in with the key here instead
   request shape, so forwarding it would mean a second dialect through the
   link and both daemons agreeing which one is in use, to save one login.
 
-## remote_bash
+## remote_bash and client_bash over the link
+
+The link carries shell commands both ways, always on while it is up; no TUI
+is involved.
 
 While a conversation's provider is proxied, its model also gets `remote_bash`
-(Claude Code: `mcp__exocortex__remote_bash`): `client_bash`'s counterpart for the
-proxy's machine. `client_bash` reaches the machine the user's TUI runs on;
-`remote_bash` reaches the machine whose login the conversation borrows. It runs
-over the same SSH link, as the remote daemon's user (the SSH user), with the
-same timeout, working-directory and 1 MB output rules as `client_bash`.
+(Claude Code: `mcp__exocortex__remote_bash`), which runs on the machine whose
+login the conversation borrows, over the same SSH link, as the remote daemon's
+user (the SSH user), with the same timeout, working-directory and 1 MB output
+rules as `client_bash`.
 
 - Offered only while the conversation's provider is proxied; switching the
   conversation to another provider or turning the proxy off removes it.
-- Refused while the link is down, with the reason.
+- Refused at once while the link is down, with the reason.
 - The tool description and a model-only turn notice name the alias; a notice
   withdraws it when the proxy goes away.
-- Scoped subagents never get it, like `client_bash`.
+- Subagents get it like their parents.
+
+The other way round, the linking daemon's hello names its own machine
+(`clientHost`), and the remote's conversations run `client_bash` there over the
+link (`provider_proxy_client_exec`), as the linking daemon's user with its
+environment. So with the laptop proxied to whale, whale's conversations reach
+the laptop whenever its daemon is linked, with or without a TUI. A TUI from the
+same machine connected over `/ssh` is the fallback while the link is down.
+A lost link stops the commands it started.
+
+Both directions acknowledge each command at once and report it alive every
+10 s while it runs (`provider_proxy_exec_alive`, `provider_proxy_client_exec_alive`;
+TUIs `client_exec_alive`). A call that is not acknowledged within 15 s, or goes
+45 s without word, fails with "did not respond" / "stopped responding" instead
+of waiting out its timeout: a frozen daemon or TUI, a sleeping machine, or a
+half-dead connection. Older peers without these messages are waited on as
+before. End-to-end test: `bun scripts/dev/client-exec-e2e.ts`.
 
 ## Behavior when things go wrong
 
@@ -168,7 +186,9 @@ Messages and the allowlist: `shared/src/provider-proxy.ts`. A link starts with
 connection its broadcasts; then `provider_proxy_open` / `_ws_send` / `_cancel`
 streams (`provider_proxy_response`, `_data`, `_end`), `provider_proxy_status`
 (login + usage), `provider_proxy_consume_reset`, `provider_proxy_exec`
-(remote_bash) and `provider_proxy_accounts`: the remote's Claude pool
+(remote_bash; `exec-alive` remotes answer `provider_proxy_exec_alive` too),
+`provider_proxy_client_exec` from the remote (client_bash, answered with
+`provider_proxy_client_exec_result` and `_alive`) and `provider_proxy_accounts`: the remote's Claude pool
 (`provider_proxy_accounts_result`, then `provider_proxy_accounts_update` on
 every change while watched). The local daemon watches it while Anthropic goes
 through the link and keeps the last pool while the link is down. A remote

@@ -8,8 +8,8 @@
  * everything it started.
  */
 
-import { hostname, homedir, userInfo } from "node:os";
-import { ClientExecutor } from "@exocortex/shared/command-exec";
+import { hostname } from "node:os";
+import { ClientExecutor, localHostInfo } from "@exocortex/shared/command-exec";
 import {
   PROVIDER_PROXY_ACCOUNT_MOVE_HEADER,
   PROVIDER_PROXY_CONVERSATION_HEADER,
@@ -77,7 +77,10 @@ function errorBody(provider: ProxyableProviderId, status: number, message: strin
 
 export class ProviderProxyEndpoint {
   private readonly streams = new Map<string, OpenStream>();
-  private readonly executor = new ClientExecutor();
+  /** remote_bash commands; acknowledged and reported alive while they run (`exec-alive`). */
+  private readonly executor = new ClientExecutor(undefined, {
+    onAlive: execIds => { if (!this.closed) this.transport.send({ type: "provider_proxy_exec_alive", execIds }); },
+  });
   private closed = false;
   private readonly auth: UpstreamAuth;
   private readonly fetchImpl: typeof fetch;
@@ -158,13 +161,11 @@ export class ProviderProxyEndpoint {
       return [provider, status] as const;
     }));
     if (this.closed) return;
-    let user = "";
-    try { user = userInfo().username; } catch { /* unknown */ }
     this.transport.send({
       type: "provider_proxy_hello_result",
       reqId: command.reqId,
       version: PROVIDER_PROXY_PROTOCOL_VERSION,
-      host: { hostname: hostname(), user, platform: process.platform, home: homedir() },
+      host: localHostInfo(),
       providers: Object.fromEntries(entries),
       features: [...PROVIDER_PROXY_FEATURES],
     });

@@ -6,14 +6,14 @@
  * TUI runs on, remote_bash the machine whose provider login this conversation
  * borrows. It is offered only while the conversation's provider is proxied
  * (registry.ts), runs over the same SSH link as the model requests, as the
- * remote daemon's user, and fails clearly while that link is down.
+ * remote daemon's user, and fails clearly while that link is down. Subagents
+ * get it like their parents.
  */
 
 import type { Tool, ToolResult } from "./types";
 import { getNumber, getString, summarizeParams } from "./util";
 import { formatCommandOutput } from "./bash";
 import * as convStore from "../conversations";
-import { isScopedSubagent } from "../subagent-policy";
 import { activeProviderProxyManager } from "../provider-proxy/manager";
 import { describeRemoteHost } from "../provider-proxy/link";
 
@@ -53,8 +53,6 @@ export const remoteBash: Tool = {
     const timeoutSeconds = getNumber(input, "timeout_seconds") ?? DEFAULT_TIMEOUT_SECONDS;
     if (!(timeoutSeconds > 0)) return { output: "Error: 'timeout_seconds' must be greater than 0 seconds", isError: true };
     const conv = context?.conversationId ? convStore.get(context.conversationId) : undefined;
-    if (conv && isScopedSubagent(conv)) return { output: "remote_bash is not available to subagents.", isError: true };
-
     const provider = context?.provider ?? conv?.provider;
     const manager = activeProviderProxyManager();
     const alias = manager?.aliasFor(provider);

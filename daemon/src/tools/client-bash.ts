@@ -1,26 +1,25 @@
 /**
  * client_bash tool — run a command on the user's own machine.
  *
- * When the user's TUI is connected to this daemon over /ssh, the command runs
- * on the machine that TUI runs on (see client-hosts.ts), not on this host.
- * The tool is always offered so connecting and disconnecting never change the
- * provider tool list (and its prompt cache); availability is checked per call
- * and announced to the model with a notice in the conversation.
+ * The machine is reached through its Exocortex daemon's /proxy link to this
+ * daemon, or a TUI it connected over /ssh (see client-hosts.ts); the command
+ * runs there, not on this host. Subagents get it like their parents. The tool
+ * is always offered so connecting and disconnecting never change the provider
+ * tool list (and its prompt cache); availability is checked per call and
+ * announced to the model with a notice in the conversation.
  */
 
 import type { Tool, ToolResult } from "./types";
 import { getNumber, getString, summarizeParams } from "./util";
 import { formatCommandOutput } from "./bash";
 import { describeClientHost, runOnClientHost } from "../client-hosts";
-import * as convStore from "../conversations";
-import { isScopedSubagent } from "../subagent-policy";
 
 const DEFAULT_TIMEOUT_SECONDS = 600;
 
 export const clientBash: Tool = {
   name: "client_bash",
-  description: "Run a shell command on the machine the user is connected from over /ssh (such as their laptop), not on this host. "
-    + "Uses bash (PowerShell on Windows) and returns stdout and stderr. Works only while the user's TUI is connected over /ssh. "
+  description: "Run a shell command on the user's own machine (such as their laptop), not on this host. "
+    + "Uses bash (PowerShell on Windows) and returns stdout and stderr. Works while that machine is connected: its Exocortex daemon linked to this one, or its TUI over /ssh. "
     + "Starts in the user's home directory unless cwd is set; a ~ prefix is expanded.",
   parallelSafety: "exclusive",
   defaultTimeoutMs: null,
@@ -44,8 +43,6 @@ export const clientBash: Tool = {
     if (!command) return { output: "Error: missing 'command' parameter", isError: true };
     const timeoutSeconds = getNumber(input, "timeout_seconds") ?? DEFAULT_TIMEOUT_SECONDS;
     if (!(timeoutSeconds > 0)) return { output: "Error: 'timeout_seconds' must be greater than 0 seconds", isError: true };
-    const conv = context?.conversationId ? convStore.get(context.conversationId) : undefined;
-    if (conv && isScopedSubagent(conv)) return { output: "client_bash is not available to subagents.", isError: true };
 
     const cwd = getString(input, "cwd");
     const outcome = await runOnClientHost(context?.conversationId, {

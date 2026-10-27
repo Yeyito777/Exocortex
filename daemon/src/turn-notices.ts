@@ -15,7 +15,6 @@ import {
 } from "./messages";
 import { CLIENT_HOST_DETACHED_NOTICE, clientHostNoticeText } from "./client-hosts";
 import { activeProviderProxyManager } from "./provider-proxy/manager";
-import { isScopedSubagent } from "./subagent-policy";
 
 /** Told to a conversation whose provider stopped going through /proxy. */
 const REMOTE_HOST_DETACHED_NOTICE = "This conversation's model no longer goes through /proxy; remote_bash is no longer available.";
@@ -74,11 +73,9 @@ function changedNotice(messages: readonly StoredMessage[], kind: string, current
 /** Notices to add before a conversation's next message, in order. */
 export function pendingTurnNotices(conv: TurnNoticeState): TurnNotice[] {
   const notices = [
-    // Subagents never get client_bash or remote_bash.
-    isScopedSubagent(conv) ? null
-      : changedNotice(conv.messages, CLIENT_HOST_NOTICE_KIND, clientHostNoticeText(conv.id), CLIENT_HOST_DETACHED_NOTICE),
-    isScopedSubagent(conv) ? null
-      : changedNotice(conv.messages, REMOTE_HOST_NOTICE_KIND, activeProviderProxyManager()?.remoteHostNotice(conv.provider) ?? null, REMOTE_HOST_DETACHED_NOTICE),
+    // Subagents get client_bash and remote_bash like their parents.
+    changedNotice(conv.messages, CLIENT_HOST_NOTICE_KIND, clientHostNoticeText(conv.id), CLIENT_HOST_DETACHED_NOTICE),
+    changedNotice(conv.messages, REMOTE_HOST_NOTICE_KIND, activeProviderProxyManager()?.remoteHostNotice(conv.provider) ?? null, REMOTE_HOST_DETACHED_NOTICE),
     changedNotice(conv.messages, GOAL_NOTICE_KIND, conv.goal ? goalNoticeText(conv.goal) : null, GOAL_CLEARED_NOTICE),
   ];
   return notices.filter((notice): notice is TurnNotice => notice !== null);

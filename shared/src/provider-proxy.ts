@@ -29,8 +29,10 @@ export function isProxyableProvider(value: unknown): value is ProxyableProviderI
  * What a remote can do beyond protocol v1, listed in its hello. `claude-pool`:
  * it shares its Claude account pool (provider_proxy_accounts) and routes
  * proxied Claude requests across it by PROVIDER_PROXY_CONVERSATION_HEADER.
+ * `exec-alive`: it acknowledges remote_bash commands and reports them alive
+ * while they run (provider_proxy_exec_alive).
  */
-export const PROVIDER_PROXY_FEATURES = ["claude-pool"] as const;
+export const PROVIDER_PROXY_FEATURES = ["claude-pool", "exec-alive"] as const;
 export type ProviderProxyFeature = typeof PROVIDER_PROXY_FEATURES[number];
 
 /**
@@ -158,6 +160,12 @@ export interface ProviderProxyHelloCommand {
   reqId: string;
   version: number;
   providers: ProxyableProviderId[];
+  /**
+   * The linking daemon's own machine. The remote then runs its conversations'
+   * client_bash there, over this link (provider_proxy_client_exec), even
+   * while no TUI from that machine is connected. Absent from older daemons.
+   */
+  clientHost?: ClientHostInfo;
 }
 
 /** Open one upstream request. HTTP bodies arrive whole (base64), capped at PROVIDER_PROXY_MAX_REQUEST_BYTES. */
@@ -229,6 +237,24 @@ export interface ProviderProxyExecCancelCommand {
   execId: string;
 }
 
+/** The outcome of a provider_proxy_client_exec, run on the linking daemon's machine. */
+export interface ProviderProxyClientExecResultCommand {
+  type: "provider_proxy_client_exec_result";
+  execId: string;
+  output: string;
+  byteTruncated: boolean;
+  exitCode: number | null;
+  signal: string | null;
+  timedOut: boolean;
+  error?: string;
+}
+
+/** provider_proxy_client_exec commands running here: at once for a new one, then every EXEC_ALIVE_INTERVAL_MS. */
+export interface ProviderProxyClientExecAliveCommand {
+  type: "provider_proxy_client_exec_alive";
+  execIds: string[];
+}
+
 export type ProviderProxyLinkCommand =
   | ProviderProxyHelloCommand
   | ProviderProxyOpenCommand
@@ -238,7 +264,9 @@ export type ProviderProxyLinkCommand =
   | ProviderProxyConsumeResetCommand
   | ProviderProxyAccountsCommand
   | ProviderProxyExecCommand
-  | ProviderProxyExecCancelCommand;
+  | ProviderProxyExecCancelCommand
+  | ProviderProxyClientExecResultCommand
+  | ProviderProxyClientExecAliveCommand;
 
 /** What a remote daemon can serve for one provider. Never contains credentials. */
 export interface ProviderProxyRemoteStatus {
@@ -333,6 +361,29 @@ export interface ProviderProxyExecResultEvent {
   error?: string;
 }
 
+/** With `exec-alive`: remote_bash commands running on the remote (acknowledgement, then every EXEC_ALIVE_INTERVAL_MS). */
+export interface ProviderProxyExecAliveEvent {
+  type: "provider_proxy_exec_alive";
+  execIds: string[];
+}
+
+/**
+ * client_bash: run a command on the linking daemon's machine (it sent
+ * clientHost in its hello). Answered with provider_proxy_client_exec_result.
+ */
+export interface ProviderProxyClientExecEvent {
+  type: "provider_proxy_client_exec";
+  execId: string;
+  command: string;
+  cwd?: string;
+  timeoutMs: number;
+}
+
+export interface ProviderProxyClientExecCancelEvent {
+  type: "provider_proxy_client_exec_cancel";
+  execId: string;
+}
+
 export type ProviderProxyLinkEvent =
   | ProviderProxyHelloResultEvent
   | ProviderProxyStatusResultEvent
@@ -342,7 +393,10 @@ export type ProviderProxyLinkEvent =
   | ProviderProxyResponseEvent
   | ProviderProxyDataEvent
   | ProviderProxyEndEvent
-  | ProviderProxyExecResultEvent;
+  | ProviderProxyExecResultEvent
+  | ProviderProxyExecAliveEvent
+  | ProviderProxyClientExecEvent
+  | ProviderProxyClientExecCancelEvent;
 
 export const PROVIDER_PROXY_LINK_EVENT_TYPES: ReadonlySet<string> = new Set<ProviderProxyLinkEvent["type"]>([
   "provider_proxy_hello_result",
@@ -354,6 +408,9 @@ export const PROVIDER_PROXY_LINK_EVENT_TYPES: ReadonlySet<string> = new Set<Prov
   "provider_proxy_data",
   "provider_proxy_end",
   "provider_proxy_exec_result",
+  "provider_proxy_exec_alive",
+  "provider_proxy_client_exec",
+  "provider_proxy_client_exec_cancel",
 ]);
 
 // ── Client-facing (TUI ↔ its daemon) ──────────────────────────────────

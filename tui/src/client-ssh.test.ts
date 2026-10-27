@@ -741,6 +741,7 @@ describe("DaemonClient SSH routing", () => {
       const capabilities = ssh.input.split("\n").filter(Boolean).map(line => JSON.parse(line))
         .findLast(command => command.type === "client_capabilities");
       expect(capabilities.clientHost).toMatchObject({ hostname: "laptop", platform: process.platform });
+      expect(capabilities.capabilities).toContain("client-exec-alive");
 
       ssh.stdout.write(JSON.stringify({ type: "client_exec_request", execId: "e1", command: "echo from-laptop; exit 2", timeoutMs: 5_000 }) + "\n");
       await waitFor(() => results(ssh).length === 1);
@@ -750,6 +751,9 @@ describe("DaemonClient SSH routing", () => {
 
       ssh.stdout.write(JSON.stringify({ type: "client_exec_request", execId: "e2", command: "sleep 30", timeoutMs: 60_000 }) + "\n");
       await waitFor(() => (client as any).clientExecutor.size === 1);
+      // Acknowledged at once, so the daemon can tell a frozen TUI from a slow command.
+      const alive = ssh.input.split("\n").filter(Boolean).map(line => JSON.parse(line)).filter(command => command.type === "client_exec_alive");
+      expect(alive).toContainEqual({ type: "client_exec_alive", execIds: ["e2"] });
       ssh.stdout.write(JSON.stringify({ type: "client_exec_cancel", execId: "e2" }) + "\n");
       await waitFor(() => results(ssh).length === 2);
       expect(results(ssh)[1]).toMatchObject({ execId: "e2", signal: "SIGTERM" });
