@@ -46,8 +46,8 @@ describe("tool instructions", () => {
       // Placeholders resolve as they do in the prompt; tools without a hint inject nothing but can be given one.
       const demoHint = `Run \`demo -h\`.\nSource at ${repoRoot()}/external-tools/demo.`;
       expect(view.external).toEqual([
-        { name: "demo", source: "/tmp/demo/manifest.json", hint: demoHint, blocks: [{ id: "external:demo", label: "System prompt · manifest systemHint", text: demoHint, source: "/tmp/demo/manifest.json", editable: true }] },
-        { name: "quiet", source: "/tmp/quiet/manifest.json", blocks: [{ id: "external:quiet", label: "System prompt · manifest systemHint", text: "", source: "/tmp/quiet/manifest.json", editable: true }] },
+        { name: "demo", source: "/tmp/demo/manifest.json", hint: demoHint, blocks: [{ id: "external:demo", label: "Hint", text: demoHint, source: "/tmp/demo/manifest.json", editable: true }] },
+        { name: "quiet", source: "/tmp/quiet/manifest.json", blocks: [{ id: "external:quiet", label: "Hint", text: "", source: "/tmp/quiet/manifest.json", editable: true }] },
       ]);
       // Each tool's blocks are its description and hint files, as the model gets them.
       for (const entry of view.internal) {
@@ -60,7 +60,7 @@ describe("tool instructions", () => {
     }
   });
 
-  test("Claude Code: only the exocortex MCP server's tools, with its server instructions", () => {
+  test("Claude Code: only the exocortex MCP server's tools, each with its description and hint", () => {
     const restore = setLoadedExternalToolsForTest(DEMO_TOOLS);
     try {
       const surface = surfaceFor("anthropic", "claude-opus-5-5");
@@ -70,12 +70,17 @@ describe("tool instructions", () => {
       expect(view.internal.map(entry => entry.name)).toEqual(served.map(def => def.name));
       expect(view.internal.map(entry => entry.description)).toEqual(served.map(def => def.description));
       expect(view.internal.map(entry => entry.name)).not.toContain("bash");
-      for (const entry of view.internal) expect(entry.hint).toBe(hostToolInstructions(entry.name));
-      const exo = view.internal.find(entry => entry.name === "exo")!;
-      expect(exo.hintSource).toEndWith("daemon/src/tools/text/exo.mcp.md");
-      // exo's server instructions end with its system hint: two files, shown as two blocks.
-      expect(exo.blocks?.map(block => block.id)).toEqual(["internal:exo:description", "internal:exo:mcp", "internal:exo:hint"]);
-      expect(exo.blocks!.slice(1).map(block => block.text).join("\n")).toBe(exo.hint!);
+      // The same two blocks as on every route; the hint is what the MCP server instructions carry.
+      for (const entry of view.internal) {
+        expect(entry.hint).toBe(hostToolInstructions(entry.name));
+        expect(entry.blocks?.map(block => [block.id, block.label])).toEqual([
+          [`internal:${entry.name}:description`, "Description"],
+          [`internal:${entry.name}:hint`, "Hint"],
+        ]);
+      }
+      expect(view.internal.find(entry => entry.name === "exo")!.hintSource).toEndWith("daemon/src/tools/text/exo.hint.md");
+      // chrono's description says how long waits run here.
+      expect(view.internal.find(entry => entry.name === "chrono")!.description).toContain("run inside the call");
       expect(view.external.filter(entry => entry.hint).length).toBe(1);
       // The # Internal tools hints are not part of Claude Code's prompt.
       expect(surface.system).not.toContain("# Internal tools");
@@ -115,11 +120,10 @@ describe("tool instructions", () => {
       if (existsSync(toolTextPath(tool.name, "hint"))) files.add(toolTextPath(tool.name, "hint"));
       expect(tool.description.trim()).not.toBe("");
       expect(tool.description).not.toContain("{{");
-      expect(tool.systemHint ?? "").not.toContain("{{");
-    }
-    for (const name of ["chrono", "exo"]) {
-      files.add(toolTextPath(name, "mcp"));
-      expect(hostToolInstructions(name)).not.toContain("{{");
+      for (const provider of ["openai", "anthropic", "deepseek"] as const) {
+        expect(tool.describe?.(provider) ?? "").not.toContain("{{");
+        expect(tool.hintFor?.(provider) ?? tool.systemHint ?? "").not.toContain("{{");
+      }
     }
     for (const file of files) {
       expect(existsSync(file)).toBe(true);
@@ -128,7 +132,7 @@ describe("tool instructions", () => {
     // Nothing in the folder belongs to no tool.
     const names = new Set(getRegisteredTools().map(tool => tool.name));
     for (const file of readdirSync(toolTextDir())) {
-      const match = /^(.+)\.(description|hint|mcp)\.md$/.exec(file);
+      const match = /^(.+)\.(description|hint)\.md$/.exec(file);
       expect(match && names.has(match[1])).toBeTruthy();
     }
   });

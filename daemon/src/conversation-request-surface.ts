@@ -38,6 +38,7 @@ export function buildConversationRequestSurface(
       subagentMaxDepth,
       ...(scopedPromptOptions ?? {}),
       toolNames,
+      provider: conversation.provider,
       includeExternalToolHints: !chatOnly,
     }),
     tools: getToolDefs(toolNames, options.conversationId, conversation.provider),

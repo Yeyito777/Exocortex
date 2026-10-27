@@ -5,6 +5,7 @@
 import { copyFileSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "fs";
 import { join } from "path";
 import { buildToolSystemHints } from "./tools/registry";
+import type { ProviderId } from "./messages";
 import { getExternalToolHints } from "./external-tools";
 import { configDir } from "@exocortex/shared/paths";
 
@@ -220,6 +221,8 @@ export interface BuildSystemPromptOptions {
   subagentMaxDepth?: number | null;
   /** Restrict tool-specific prompt hints to this explicit session allowlist. */
   toolNames?: readonly string[];
+  /** The conversation's provider, for hints whose wording depends on it. */
+  provider?: ProviderId;
   /** Managed external tool hints can be disabled for utility/restricted sessions. */
   includeExternalToolHints?: boolean;
   /** Session-specific behavior placed near the top of the system prompt. */
@@ -249,7 +252,9 @@ function buildPromptParts(options: BuildSystemPromptOptions & {
   const parts = [buildEnvironmentHeader(options.conversationId, options.identity, options.workingDirectory)];
 
   if (options.includeToolHints) {
-    const toolHints = buildToolSystemHints(options.toolNames, options.conversationId, options.subagentMaxDepth);
+    const toolHints = options.toolNames?.length === 0
+      ? "None: this conversation offers no tools."
+      : buildToolSystemHints(options.toolNames, options.conversationId, options.provider);
     parts.push(toolHints ? `# Internal tools\n${toolHints}` : "# Internal tools");
   }
 
@@ -262,27 +267,6 @@ function buildPromptParts(options: BuildSystemPromptOptions & {
   }
 
   parts.push(...buildAdditionParts(options));
-
-  // User addenda and external manifests may still use the older tool names.
-  const names = new Set(options.toolNames);
-  if (options.toolNames) parts.push([
-    "# Effective tool guidance",
-    `Available internal tools: ${options.toolNames.join(", ") || "(none)"}.`,
-    ...(names.has("exec_command") ? [
-      "Legacy references to the bash tool mean exec_command (cmd/workdir, yield_time_ms). External CLIs remain ordinary shell commands.",
-      "Read/search text with exec_command and standard commands. Literal stdin can be passed with a quoted heredoc.",
-    ] : []),
-    ...(names.has("write_stdin") ? ["Use write_stdin only with an existing session_id to supply input or collect output."] : []),
-    ...(names.has("read") ? ["Read local text with read."] : []),
-    ...(names.has("glob") ? ["Find local paths with glob."] : []),
-    ...(names.has("grep") ? ["Search local text with grep."] : []),
-    ...(names.has("view_image") ? ["Inspect local images with view_image."] : []),
-    ...(names.has("apply_patch") ? ["Edit files using raw apply_patch."] : []),
-    ...(!names.has("exec_command") && !names.has("bash") ? [
-      "No shell executor is available. Do not substitute unrestricted shell execution for restricted research tools.",
-    ] : []),
-    "Only use tools present in this effective selection; older documentation may mention unavailable tools.",
-  ].join("\n"));
 
   return parts;
 }

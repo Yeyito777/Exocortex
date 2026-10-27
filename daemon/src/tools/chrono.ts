@@ -464,12 +464,19 @@ const WAKE_PROPERTIES = {
   },
 };
 
-const TEXT = toolTextSource("chrono");
+// {{longWaits}}: Claude Code runs long sleeps and waits inside the call; other providers suspend the turn.
+const TEXT = toolTextSource("chrono", provider => ({
+  longWaits: provider === "anthropic"
+    ? "Sleeps and waits of any practical length run inside the call."
+    : "Sleeps and waits with limits longer than five minutes suspend the provider turn and resume it by replay on completion, timeout, or a user message.",
+}));
 
 export const chrono: Tool = {
   name: "chrono",
   get description() { return TEXT.description(); },
   get systemHint() { return TEXT.hint(); },
+  describe: provider => TEXT.description(provider),
+  hintFor: provider => TEXT.hint(provider),
   inputSchema: {
     type: "object",
     properties: {
