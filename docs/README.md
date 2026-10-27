@@ -116,9 +116,10 @@ after reconnecting: the save is kept if it landed, sent again if the old text is
 still there, and failed (text kept) if it changed elsewhere meanwhile.
 
 `/instructions tools` (or `t`) shows what the model is told about each tool on
-this conversation's route: every tool's schema description and system-prompt
-hint (under Claude Code, its MCP server instructions), and each external
-tool's manifest `systemHint`. `]]`/`[[` move by tool, `}`/`{` by group, and
+this conversation's route, the same way on every route: each built-in tool's
+Description (its schema description) and Hint (system prompt; under Claude
+Code, the exocortex MCP server's instructions), and each external tool's Hint
+(its manifest `systemHint`). `]]`/`[[` move by tool, `}`/`{` by group, and
 `Enter` or `gf` says which file the text under the cursor lives in. The text
 under each label is editable in the same editor; tool headers, labels and the
 route line are fixed, and an edit that would change them is refused. An empty

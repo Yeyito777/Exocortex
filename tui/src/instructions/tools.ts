@@ -106,11 +106,8 @@ function shownText(text: string): string {
 /** Blocks for an entry from a daemon that sends none: its description and hint, read-only. */
 function legacyBlocks(entry: ToolInstructionsEntry, external: boolean): ToolInstructionsBlock[] {
   const fields: Array<[string, string, string | undefined]> = external
-    ? [["hint", "System prompt · manifest systemHint", entry.hint]]
-    : [
-      ["description", "Description · tool schema", entry.description],
-      ["hint", entry.hintSource ? "MCP server instructions" : "System prompt · # Internal tools", entry.hint],
-    ];
+    ? [["hint", "Hint", entry.hint]]
+    : [["description", "Description", entry.description], ["hint", "Hint", entry.hint]];
   return fields.flatMap(([kind, label, text]) => text?.trim()
     ? [{ id: `legacy:${entry.name}:${kind}`, label, text, source: kind === "hint" ? entry.hintSource ?? entry.source : entry.source, editable: false }]
     : []);
@@ -154,7 +151,7 @@ function layout(items: LayoutItem[], blocks: ToolBlock[], texts: string[]): Pick
 }
 
 function emptyPlaceholder(block: ToolBlock): string {
-  return block.id.endsWith(":description") ? "Empty: type a description" : "Empty: nothing injected; type to add a hint";
+  return block.id.endsWith(":description") ? "Empty: type a description" : "Empty: type to add a hint";
 }
 
 /** Recompute the decorations for new block texts; the buffer must already read this way. */
@@ -178,7 +175,8 @@ function remember(doc: ToolInstructionsDoc, buffer: string): void {
 export function buildToolInstructionsDoc(event: Pick<ToolInstructionsLoadedEvent, "provider" | "model" | "route" | "internal" | "external">): { text: string; doc: ToolInstructionsDoc } {
   const items: LayoutItem[] = [];
   const blocks: ToolBlock[] = [];
-  for (const line of shownText(event.route).split("\n")) items.push({ kind: "line", text: line, style: { kind: "note" } });
+  const route = shownText(event.route);
+  if (route) for (const line of route.split("\n")) items.push({ kind: "line", text: line, style: { kind: "note" } });
 
   const group = (name: string, entries: ToolInstructionsEntry[], external: boolean) => {
     items.push({ kind: "line", text: name, section: { kind: "group", name, count: entries.length } });
@@ -375,6 +373,19 @@ export function shortSource(path: string): string {
   return path.split("/").slice(-2).join("/");
 }
 
+/** What a tool's rule names: its file, or its files as one pattern (`daemon/src/tools/text/exo.*.md`). */
+export function sectionRuleSource(section: Pick<ToolSection, "source" | "hintSource">): string {
+  if (!section.source) return "";
+  const source = shortSource(section.source);
+  if (!section.hintSource || section.hintSource === section.source) return source;
+  const hint = shortSource(section.hintSource);
+  let prefix = 0;
+  while (prefix < source.length && prefix < hint.length && source[prefix] === hint[prefix]) prefix++;
+  let suffix = 0;
+  while (suffix < source.length - prefix && suffix < hint.length - prefix && source[source.length - 1 - suffix] === hint[hint.length - 1 - suffix]) suffix++;
+  return `${source.slice(0, prefix)}*${source.slice(source.length - suffix)}`;
+}
+
 /** A path with this machine's home as ~; another daemon's paths stay absolute. */
 function tildePath(path: string, home = homedir()): string {
   return home && path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
@@ -387,7 +398,7 @@ export function sectionSourceNotice(doc: ToolInstructionsDoc, cursor: number, ho
   if (block) return `${block.tool} · ${block.label}: ${tildePath(block.source, home)}`;
   const section = sectionAt(doc, cursor);
   if (!section || section.kind === "group" || !section.source) return doc.route;
-  const hint = section.hintSource && section.hintSource !== section.source ? ` · instructions: ${tildePath(section.hintSource, home)}` : "";
+  const hint = section.hintSource && section.hintSource !== section.source ? ` · hint: ${tildePath(section.hintSource, home)}` : "";
   return `${section.name}: ${tildePath(section.source, home)}${hint}`;
 }
 

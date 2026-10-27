@@ -2,9 +2,9 @@
  * What the model is told about each tool, for /instructions tools.
  *
  * Built from the same pieces the request surface uses (tool selection, tool
- * schemas, system hints, Claude Code's MCP server instructions, external
- * manifests), so the view shows exactly what a turn on that provider gets.
- * Each piece is a block naming the file it is stored in, which
+ * schemas, hints, external manifests), so the view shows exactly what a turn
+ * on that provider gets: each tool's description and hint, the same way on
+ * every route. Each piece is a block naming the file it is stored in, which
  * save_tool_instructions (./tool-instructions-save) writes back.
  */
 
@@ -14,7 +14,7 @@ import { repoRoot } from "@exocortex/shared/paths";
 import type { ModelId, ProviderId } from "./messages";
 import { getConversationToolNames, getToolDefs } from "./tools/registry";
 import { EXOCORTEX_SOURCE_DIR_PLACEHOLDER, getLoadedExternalTools } from "./external-tools";
-import { hostToolDefs, hostToolInstructionsIncludeHint } from "./providers/anthropic/host-tools";
+import { hostToolDefs } from "./providers/anthropic/host-tools";
 import { getModelInfo } from "./providers/registry";
 import { readToolTextFile, toolTextPath, toolTextToken, toolTextValues, type ToolTextKind } from "./tools/tool-text";
 import { expandTemplate, type TemplateToken } from "./tools/tool-text-template";
@@ -43,19 +43,20 @@ export interface ToolTextTarget {
 }
 
 const LABELS = {
-  description: "Description · tool schema",
-  hint: "System prompt · # Internal tools",
-  mcp: "MCP server instructions",
-  sharedHint: "MCP server instructions · system hint (all routes)",
-  external: "System prompt · manifest systemHint",
+  description: "Description",
+  hint: "Hint",
+} as const;
+
+/** Where hints go on the route; descriptions are always the tool schemas'. */
+const ROUTES = {
+  claudeCode: "Claude Code runs its own tools; these reach it over MCP, with the hints as the server's instructions.",
+  exocortex: "Hints go in the system prompt.",
 } as const;
 
 function internalTarget(tool: string, textKind: ToolTextKind, provider?: ProviderId): ToolTextTarget {
   const path = toolTextPath(tool, textKind);
   const template = readToolTextFile(path);
-  // A description may depend on the provider (remote_bash's /proxy machine); hints do not.
-  const values = toolTextValues(tool, textKind === "description" ? provider : undefined);
-  const tokens = Object.entries(values).map(([name, value]): TemplateToken => [toolTextToken(name), value]);
+  const tokens = Object.entries(toolTextValues(tool, provider)).map(([name, value]): TemplateToken => [toolTextToken(name), value]);
   return {
     id: `internal:${tool}:${textKind}`,
     tool,
@@ -100,61 +101,26 @@ export function describeToolTextTargets(provider: ProviderId, model: ModelId | n
   }
 
   const external = externalTargets().map((target): ToolInstructionsEntry => {
-    const blocks = [add(target, LABELS.external)];
+    const blocks = [add(target, LABELS.hint)];
     return { name: target.tool, source: target.path, ...(target.text ? { hint: target.text } : {}), blocks };
   });
 
+  // Claude Code brings its own tools; only the host tools are Exocortex's.
+  const claudeCode = provider === "anthropic";
   const defs = getToolDefs(getConversationToolNames(provider), conversationId, provider);
-  if (provider === "anthropic") {
-    // Claude Code brings its own tools; Exocortex's reach it as an MCP server.
-    const internal = hostToolDefs(defs).map((def): ToolInstructionsEntry => {
-      const description = internalTarget(def.name, "description", provider);
-      const mcp = internalTarget(def.name, "mcp");
-      const blocks = [add(description, LABELS.description), add(mcp, LABELS.mcp)];
-      const instructions = [mcp.text];
-      if (hostToolInstructionsIncludeHint(def.name)) {
-        const hint = internalTarget(def.name, "hint");
-        blocks.push(add(hint, LABELS.sharedHint));
-        instructions.push(hint.text);
-      }
-      const hint = instructions.filter(Boolean).join("\n");
-      return {
-        name: def.name,
-        source: description.path,
-        description: description.text,
-        ...(hint ? { hint, hintSource: mcp.path } : {}),
-        blocks,
-      };
-    });
-    return {
-      view: {
-        route: "Claude Code: its own tools and prompt; Exocortex tools as the exocortex MCP server (descriptions and server instructions); external tools appended to the system prompt.",
-        internal,
-        external,
-      },
-      targets,
-    };
-  }
-
-  const internal = defs.map((def): ToolInstructionsEntry => {
+  const internal = (claudeCode ? hostToolDefs(defs) : defs).map((def): ToolInstructionsEntry => {
     const description = internalTarget(def.name, "description", provider);
-    const hint = internalTarget(def.name, "hint");
+    const hint = internalTarget(def.name, "hint", provider);
     return {
       name: def.name,
       source: description.path,
       description: description.text,
-      ...(hint.text ? { hint: hint.text, hintSource: hint.path } : {}),
+      ...(hint.text ? { hint: hint.text } : {}),
+      hintSource: hint.path,
       blocks: [add(description, LABELS.description), add(hint, LABELS.hint)],
     };
   });
-  return {
-    view: {
-      route: "Exocortex system prompt: tool schemas carry the descriptions; hints go under # Internal tools and # External tools.",
-      internal,
-      external,
-    },
-    targets,
-  };
+  return { view: { route: claudeCode ? ROUTES.claudeCode : ROUTES.exocortex, internal, external }, targets };
 }
 
 /** Tool text for a turn on `provider`/`model` (see buildConversationRequestSurface). */

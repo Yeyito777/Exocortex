@@ -3714,6 +3714,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             subagentMaxDepth,
             ...(scopedPromptOptions ?? {}),
             toolNames: getConversationToolNames(conversation?.provider),
+            provider: conversation?.provider,
           }),
         });
         break;

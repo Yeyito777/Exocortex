@@ -13,7 +13,6 @@ import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { ToolExecutor } from "../../agent";
 import { CLAUDE_CODE_HOST_TOOL_SERVER, isClaudeCodeHostTool } from "../../tools/claude-code";
-import { exo } from "../../tools/exo";
 import { CLAUDE_CODE_INLINE_CHRONO_MAX_MS } from "../../tools/chrono-limits";
 import { toolText } from "../../tools/tool-text";
 import { claudeSdks } from "./sdk";
@@ -22,22 +21,17 @@ import { rememberHostToolAttachments } from "./host-tool-attachments";
 /** Chrono runs sleeps and waits inside the call; leave room past the longest. */
 const HOST_TOOL_TIMEOUT_MS = CLAUDE_CODE_INLINE_CHRONO_MAX_MS + 10 * 60_000;
 
-/**
- * Host tools whose MCP server instructions end with their system hint, the
- * text other providers get under # Internal tools.
- */
-const INSTRUCTIONS_WITH_HINT: Record<string, () => string | undefined> = {
-  exo: () => exo.systemHint,
-};
-
-/** The MCP server instructions a host tool contributes (its <tool>.mcp.md, then any shared hint), if any. */
+/** A host tool's hint, which Claude Code gets as part of the MCP server instructions, if it has one. */
 export function hostToolInstructions(name: string): string | undefined {
-  return [toolText(name, "mcp"), INSTRUCTIONS_WITH_HINT[name]?.()].filter(Boolean).join("\n") || undefined;
+  return toolText(name, "hint", "anthropic") || undefined;
 }
 
-/** Whether a host tool's MCP server instructions end with its system hint. */
-export function hostToolInstructionsIncludeHint(name: string): boolean {
-  return Object.hasOwn(INSTRUCTIONS_WITH_HINT, name);
+/** The MCP server instructions: each offered host tool's hint under its name, as # Internal tools does elsewhere. */
+export function hostToolServerInstructions(tools: readonly { name: string }[]): string {
+  return tools.flatMap(tool => {
+    const hint = hostToolInstructions(tool.name);
+    return hint ? [`### ${tool.name}\n${hint}`] : [];
+  }).join("\n\n");
 }
 
 /**
@@ -48,8 +42,8 @@ export function hostToolInstructionsIncludeHint(name: string): boolean {
  */
 export function claudeProcessPrompt(systemAppend: string, tools: readonly { name: string; description: string }[]): string {
   if (tools.length === 0) return systemAppend;
-  const text = tools.map(tool => [tool.name, tool.description, hostToolInstructions(tool.name) ?? ""]);
-  return `${systemAppend}\u0000${JSON.stringify(text)}`;
+  const text = tools.map(tool => [tool.name, tool.description]);
+  return `${systemAppend}\u0000${JSON.stringify([text, hostToolServerInstructions(tools)])}`;
 }
 
 /** The Exocortex turn a host tool call runs under. */
@@ -87,7 +81,7 @@ export function createHostToolServer(
   const defs = hostToolDefs(tools);
   if (!binding || defs.length === 0) return null;
 
-  const instructions = defs.flatMap(def => hostToolInstructions(def.name) ?? []).join("\n\n");
+  const instructions = hostToolServerInstructions(defs);
   const { mcpServer: { McpServer }, mcpTypes: { CallToolRequestSchema, ListToolsRequestSchema } } = claudeSdks();
   const server = new McpServer(
     { name: CLAUDE_CODE_HOST_TOOL_SERVER, version: "1.0.0" },
