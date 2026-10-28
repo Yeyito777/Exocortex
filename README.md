@@ -24,6 +24,67 @@ Exocortex is installed from its canonical source repository on every platform.
 Keep the clone after installation: the Linux commands are symlinked into it, and
 macOS runs directly from it.
 
+### Quick install (Linux and macOS)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Yeyito777/Exocortex/main/install.sh | bash -s -- --tui
+```
+
+`install.sh` installs what is missing and sets everything up; rerun it to
+update. It:
+
+1. Checks for Git and curl (and unzip on Linux) and prints the package-manager
+   command if one is missing; it never runs `sudo`.
+2. Installs Bun and Claude Code with their official installers if they are not
+   found (Claude Code runs the Claude models, on your Claude subscription).
+3. Clones the source into `~/.local/share/exocortex`, or fast-forwards an
+   existing install (a clean checkout on its branch; local changes are left
+   alone), and runs `bun install --frozen-lockfile`.
+4. Links `exocortexd` (and the `exocortex` TUI with `--tui`) into
+   `~/.local/bin` and adds it and Bun to your shell's PATH.
+5. Installs and starts the daemon service: `exocortex-daemon.service` (systemd
+   user service) on Linux, the `com.exocortex.daemon` LaunchAgent through the
+   signed launcher app on macOS (see [below](#run-the-daemon-in-the-background-launchagent);
+   without Xcode's command-line tools, a plain LaunchAgent). A rerun that
+   pulled new code restarts the daemon gracefully.
+6. Offers to sign in to Claude and OpenAI, then prints `exocortexd doctor`.
+
+| Option | |
+| --- | --- |
+| `--tui` | Also install the terminal UI (`exocortex`) |
+| `--dir PATH` | Where the source and its data live (default: the existing install, else `~/.local/share/exocortex`) |
+| `--branch NAME` | Branch to install or switch to |
+| `--no-service` | No background service; run `exocortexd` yourself |
+| `--no-login` | Skip the sign-ins |
+| `--no-claude-code` | Do not install Claude Code |
+| `--yes` | Do not ask; take the defaults |
+| `--uninstall` | Remove the service and commands (keeps the source and data) |
+
+From a clone, `./install.sh` installs that clone. To add the TUI later, rerun
+with `--tui` or run `exocortexd install-tui`. `exocortexd doctor` shows what is
+installed, running and signed in.
+
+### Use Exocortex from your own program
+
+Programs drive the daemon over its local socket; the protocol is in
+[docs/app-api.md](docs/app-api.md). An app needs the daemon installed and
+signed in once:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Yeyito777/Exocortex/main/install.sh | bash
+exocortexd doctor
+```
+
+- `exocortexd doctor --json` reports Bun, Claude Code and its sign-in, whether
+  the daemon is running, provider logins and whether the TUI is installed.
+  `ok` is true when the daemon answers and a provider is signed in; `problems`
+  lists each missing piece with the command that fixes it. It exits 0 whenever
+  it printed a report (the text form exits 1 when something is wrong).
+- `exocortexd socket` prints the socket to connect to: `$EXOCORTEX_SOCKET` if
+  set (Exocortex sets it in every shell it starts), else the install's own.
+- An app that finds no `exocortexd` or a failing doctor should show the user
+  the one-line install above; it should never run the installer itself.
+
 ### Arch Linux
 
 #### Prerequisites
@@ -156,19 +217,21 @@ exocortexd restart
 
 ```bash
 cd Exocortex
-make uninstall
+make uninstall          # same as: ./install.sh --uninstall
 ```
 
-This stops and removes the systemd user service and removes the two command
-symlinks. It does not delete the source clone or user data.
+This stops and removes the service (the systemd user service, or on macOS the
+LaunchAgent and launcher app) and removes the two command symlinks. It does not
+delete the source clone or user data.
 
 ---
 
 ### macOS
 
-The current macOS path runs the daemon and TUI directly from the source clone.
-The Linux `make install` target is intentionally not used because it installs a
-systemd service.
+The [quick install](#quick-install-linux-and-macos) sets up everything below,
+LaunchAgent included. The manual path runs the daemon and TUI directly from the
+source clone. The Linux `make install` target is intentionally not used because
+it installs a systemd service.
 
 #### Prerequisites
 
@@ -287,7 +350,9 @@ certificate, by re-running `scripts/macos/build-launcher.sh --reload`. It is
 idempotent and keeps your LaunchAgent's other settings (a backup of the previous
 plist goes to `config/runtime/launchd/backups/`). Homebrew or Bun upgrades need
 no rebuild. Without an Apple Development or Developer ID certificate it signs
-ad-hoc and warns: prompts will then return after each rebuild.
+ad-hoc and warns: prompts will then return after each rebuild. `install.sh`
+runs it with `--if-changed`, which keeps the installed app unless the launcher
+sources or signing identity changed.
 
 #### Update
 

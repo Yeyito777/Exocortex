@@ -322,7 +322,37 @@ handle_stop() {
   cancel_stop_recovery
 }
 
+doctor_without_bun() {
+  if [[ " $* " == *" --json "* ]]; then
+    printf '{"schema":1,"ok":false,"platform":"%s","bun":null,"problems":[{"id":"bun-missing","severity":"error","message":"Bun is not installed or not on PATH.","fix":"curl -fsSL https://bun.sh/install | bash"}]}\n' \
+      "$(uname -s | tr '[:upper:]' '[:lower:]')"
+    exit 0
+  fi
+  print_error "Bun is not installed or not on PATH (install: curl -fsSL https://bun.sh/install | bash)"
+  exit 1
+}
+
+# The TUI is optional: `exocortexd install-tui` links the `exocortex` command
+# next to `exocortexd` (the installer's --tui does the same).
+install_tui() {
+  local bin_dir="${EXOCORTEX_BIN_DIR:-$HOME/.local/bin}"
+  mkdir -p "$bin_dir"
+  ln -sfn "$PROJECT_DIR/bin/exocortex" "$bin_dir/exocortex"
+  echo "  ✓ Linked exocortex → $bin_dir/exocortex"
+  command -v exocortex >/dev/null 2>&1 || echo "    Open a new shell (or add $bin_dir to PATH), then run: exocortex"
+}
+
 case "${1:-}" in
+  doctor|socket)
+    # Bypass run-daemon.sh: callers parse stdout, and doctor must work even
+    # when dependencies are missing.
+    command -v bun >/dev/null 2>&1 || { [[ "$1" == doctor ]] && doctor_without_bun "$@"; print_error "bun not found"; exit 1; }
+    cd "$PROJECT_DIR/daemon"
+    exec bun run src/setup-cli.ts "$@"
+    ;;
+  install-tui)
+    install_tui
+    ;;
   proxy)
     # Generic stdio transport helper: stdout contains daemon protocol bytes only.
     # Bypass run-daemon.sh because dependency-install progress would corrupt the

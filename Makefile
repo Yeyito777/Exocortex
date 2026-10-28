@@ -2,8 +2,11 @@
 #
 # Usage:
 #   make install     Install daemon/TUI (deps, commands, systemd service)
-#   make uninstall   Remove commands and systemd service
+#   make uninstall   Remove commands and the service (systemd or LaunchAgent)
 #   make windows     Cross-compile Windows executables to dist/
+#
+# For a fresh machine (installs Bun and Claude Code too, Linux or macOS), use
+# ./install.sh instead; see README.md.
 
 PREFIX    := $(HOME)/.local
 BIN_DIR   := $(PREFIX)/bin
@@ -14,7 +17,7 @@ REPO_DIR  := $(CURDIR)
 # ── Targets ──────────────────────────────────────────────────────────
 
 .PHONY: install uninstall check-bun deps links shell-path service login \
-        remove-links remove-service status windows clean-windows
+        status windows clean-windows
 
 install: check-bun deps links shell-path service
 	@printf '\n  ✓ Exocortex installed.\n'
@@ -25,8 +28,8 @@ install: check-bun deps links shell-path service
 	@printf '    2. Run: exocortexd login\n'
 	@printf '    3. Run: exocortex\n\n'
 
-uninstall: remove-links remove-service
-	@printf '\n  ✓ Exocortex uninstalled.\n\n'
+uninstall:
+	@bash $(REPO_DIR)/install.sh --uninstall --dir $(REPO_DIR) --yes
 
 # ── Prerequisites ────────────────────────────────────────────────────
 
@@ -57,26 +60,10 @@ shell-path:
 	@BIN_DIR="$(BIN_DIR)" BUN_BIN="$$(command -v bun)" \
 		bash "$(REPO_DIR)/scripts/setup/install-shell-path.sh"
 
-remove-links:
-	@rm -f $(BIN_DIR)/exocortexd $(BIN_DIR)/exocortex
-	@printf '  ✓ Removed symlinks from $(BIN_DIR)/\n'
-
 # ── Systemd service ─────────────────────────────────────────────────
 
 service:
 	@UNIT_NAME=$(UNIT_NAME) bash $(REPO_DIR)/scripts/setup/install-daemon.sh
-
-remove-service:
-	@if systemctl --user is-active --quiet $(UNIT_NAME) 2>/dev/null; then \
-		systemctl --user stop $(UNIT_NAME); \
-		printf '  ✓ Stopped $(UNIT_NAME)\n'; \
-	fi
-	@if [ -f $(UNIT_DIR)/$(UNIT_NAME) ]; then \
-		systemctl --user disable $(UNIT_NAME) 2>/dev/null || true; \
-		rm -f $(UNIT_DIR)/$(UNIT_NAME); \
-		systemctl --user daemon-reload; \
-		printf '  ✓ Removed $(UNIT_NAME)\n'; \
-	fi
 
 # ── Utilities ────────────────────────────────────────────────────────
 

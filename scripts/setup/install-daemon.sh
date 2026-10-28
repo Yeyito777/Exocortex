@@ -15,7 +15,9 @@ UNIT_STEM="${UNIT_NAME%.service}"
 
 UNIT_DIR="$HOME/.config/systemd/user"
 UNIT_FILE="$UNIT_DIR/$UNIT_NAME"
-SOCKET_FILE="$REPO_DIR/config/runtime/exocortexd.sock"
+# The instance's own socket (long paths fall back to a short one), not one
+# inherited from a calling Exocortex shell.
+SOCKET_FILE="$(env -u EXOCORTEX_SOCKET "$REPO_DIR/bin/exocortexd" socket)"
 
 wait_for_socket() {
   for _ in $(seq 1 100); do

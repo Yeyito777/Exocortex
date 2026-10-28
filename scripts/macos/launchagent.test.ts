@@ -6,6 +6,7 @@ import {
   installDaemonLaunchAgent,
   LAUNCHER_BUNDLE_ID,
   renderDaemonLaunchAgent,
+  renderPlainDaemonLaunchAgent,
   rewriteDaemonLaunchAgent,
 } from "./launchagent";
 
@@ -110,7 +111,39 @@ describe("renderDaemonLaunchAgent", () => {
   });
 });
 
+describe("renderPlainDaemonLaunchAgent", () => {
+  test("runs run-daemon.sh with Apple's bash and no launcher bundle", () => {
+    const xml = renderPlainDaemonLaunchAgent({ repoDir: REPO, home: "/Users/me", bunDir: "/Users/me/.bun/bin" });
+    expect(programArguments(xml)).toEqual(["/bin/bash", `${REPO}/scripts/setup/run-daemon.sh`]);
+    expect(xml).not.toContain("AssociatedBundleIdentifiers");
+    expect(xml).toContain(`<key>WorkingDirectory</key>\n\t<string>${REPO}/daemon</string>`);
+    expect(xml).toContain("<key>KeepAlive</key>\n\t<dict>\n\t\t<key>SuccessfulExit</key>\n\t\t<false/>");
+    // The launcher can take it over later.
+    const upgraded = rewriteDaemonLaunchAgent(xml, TARGET);
+    expect(programArguments(upgraded)).toEqual([EXE, "--repo", REPO]);
+    expect(upgraded).toContain(`<string>${LAUNCHER_BUNDLE_ID}</string>`);
+  });
+});
+
 describe("installDaemonLaunchAgent", () => {
+  test("plain mode creates a missing agent and never rewrites one", () => {
+    const dir = mkdtempSync(join(tmpdir(), "exo-launchagent-"));
+    try {
+      const plistPath = join(dir, "LaunchAgents", "com.exocortex.daemon.plist");
+      const options = { mode: "plain" as const, repoDir: REPO, home: "/Users/me", plistPath };
+      expect(installDaemonLaunchAgent(options)).toBe("created");
+      expect(programArguments(readFileSync(plistPath, "utf-8"))[0]).toBe("/bin/bash");
+      writeFileSync(plistPath, EXISTING);
+      expect(installDaemonLaunchAgent(options)).toBe("unchanged");
+      expect(readFileSync(plistPath, "utf-8")).toBe(EXISTING);
+      // With the command-line tools installed later, the launcher takes it over.
+      expect(installDaemonLaunchAgent({ ...TARGET, home: "/Users/me", plistPath, backupDir: join(dir, "b") })).toBe("updated");
+      expect(programArguments(readFileSync(plistPath, "utf-8"))[0]).toBe(EXE);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("creates, updates with a backup, then reports unchanged", () => {
     const dir = mkdtempSync(join(tmpdir(), "exo-launchagent-"));
     try {
