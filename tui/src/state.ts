@@ -188,6 +188,8 @@ export interface RenderState {
   historyLoadingRequestId: string | null;
   /** Deadline for holding the first paint of a short opening window, or null. */
   historyOpeningFillUntil: number | null;
+  /** Whether older history is needed was asked before the history had a layout (olderHistoryDue). */
+  historyFillAwaitsLayout: boolean;
   /** Navigation to resume after older history is prepended. */
   pendingHistoryNavigation: import("./keybinds").Action | null;
   /** The AI message currently being streamed (not yet finalized). */
@@ -480,6 +482,7 @@ export function resetHistoryPagination(state: RenderState): void {
   state.historyLoadingStartedAt = null;
   state.historyLoadingRequestId = null;
   state.historyOpeningFillUntil = null;
+  state.historyFillAwaitsLayout = false;
   state.deferredHistoryRender = null;
 }
 
@@ -667,6 +670,7 @@ export function createInitialState(): RenderState {
     historyHasOlder: false,
     historyLoadingOlder: false,
     historyOpeningFillUntil: null,
+    historyFillAwaitsLayout: false,
     pendingHistoryNavigation: null,
     historyLoadingStartedAt: null,
     historyLoadingRequestId: null,

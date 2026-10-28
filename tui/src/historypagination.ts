@@ -120,6 +120,27 @@ export function beginOlderHistoryLoad(state: RenderState, turns: number): OlderH
   };
 }
 
+function hasHistoryLayout(state: RenderState): boolean {
+  return state.layout.messageAreaHeight > 0 && state.layout.totalLines > 0;
+}
+
+/**
+ * Whether to load older history now (shouldLoadOlderHistory). Asked before the
+ * history has a layout (an /ssh startup paints only its connection progress
+ * until the sidebar and tools arrive, while the open and its backfill may
+ * already be in), the answer waits for the first frame that lays it out:
+ * olderHistoryDueAfterLayout.
+ */
+export function olderHistoryDue(state: RenderState): boolean {
+  state.historyFillAwaitsLayout = !hasHistoryLayout(state);
+  return shouldLoadOlderHistory(state);
+}
+
+/** After a frame: an olderHistoryDue that waited for a layout, now that there is one. */
+export function olderHistoryDueAfterLayout(state: RenderState): boolean {
+  return state.historyFillAwaitsLayout && hasHistoryLayout(state) && olderHistoryDue(state);
+}
+
 /** Load before the viewport reaches the oldest rendered row. */
 export function shouldLoadOlderHistory(state: RenderState): boolean {
   if (!state.convId || state.historyLoadingOlder || !hasOlderHistoryCursor(state)) return false;

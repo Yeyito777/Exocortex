@@ -124,12 +124,19 @@ A client that folds turns (the TUI's default view) and declares the
 `history-folded-elision` capability gets its folded pages (`viewport.folded`
 on the open and its `initialBackfill`, `folded: true` on
 `load_conversation_history`) without the work it hides: in each assistant
-entry, every tool call and thinking block before the entry's last tool call
+entry, every tool call and thinking block up to the entry's last tool call
 arrives empty (`input: {}`, `summary: ""`, `text: ""`) with
-`elided: { entry, block }`, its absolute place in the history. Text, tool
-results and the last tool call stay. Byte budgets count the elided entry, so
-one page covers the history the client shows instead of a long turn's tool
-inputs (a 1,000-call message: one page instead of six). Before showing that
+`elided: { entry, block }`, its absolute place in the history. Text and tool
+results stay, and so does the last tool call where a running turn may show it
+as its newest step: every entry's while the conversation has a turn running,
+otherwise only the page's newest assistant entry's (a turn resumed after a
+restart continues it). Byte budgets count the elided entry, so one page covers
+the history the client shows instead of a long turn's tool inputs (a
+1,000-call message: one page instead of six). A folded open's row estimate
+also leaves out what the TUI folds to nothing: notifications, and in a
+top-level conversation the messages its own subagents send it, so a
+conversation that delegates (its turns split by many subagent reports) still
+opens in one page instead of paging up to the screen's fill. Before showing that
 work (Ctrl+O, Ctrl+I, a search that may land in it) the client fetches it with
 `load_display_blocks { ranges: [{ entry, start, end }] }`, answered by
 `display_blocks_loaded { ranges: [{ entry, start, blocks }] }` (`truncated`

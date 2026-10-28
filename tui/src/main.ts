@@ -97,7 +97,8 @@ import {
   openingFillHoldMs,
   openingHistoryTurns,
   openingViewport,
-  shouldLoadOlderHistory,
+  olderHistoryDue,
+  olderHistoryDueAfterLayout,
 } from "./historypagination";
 import { requestToolOutputs, requestVisibleToolOutputs } from "./events/tool-outputs";
 import { prefetchBottomScreen, requestElidedBlocksIfNeeded } from "./events/elided-blocks";
@@ -418,7 +419,9 @@ function performRender(): number {
   const renderStartedAt = performance.now();
   const framePresented = stallSpan("render", () => render(state));
   const renderMs = performance.now() - renderStartedAt;
-  if (STALL_PROFILE) stallMark(`${framePresented ? "frame" : "held"} ${state.convId} msgs=${state.messages.length}${isActiveConversationLoading(state) ? " loading" : ""} off=${state.scrollOffset} view=${state.showToolOutput ? "detail" : state.showTurnWork ? "work" : "folded"}`);
+  // A page that landed before the history had a layout keeps paging from its first frame.
+  if (olderHistoryDueAfterLayout(state)) requestOlderHistory(OLDER_HISTORY_PAGE_TURNS);
+  if (STALL_PROFILE) stallMark(`${framePresented ? "frame" : "held"} ${state.convId} msgs=${state.messages.length}${isActiveConversationLoading(state) ? " loading" : ""} off=${state.scrollOffset} lines=${state.layout.totalLines}/${state.layout.messageAreaHeight} w=${state.layout.chatWidth} view=${state.showToolOutput ? "detail" : state.showTurnWork ? "work" : "folded"}`);
   if (!framePresented) return renderMs;
   // Scrolling, streaming and overlays move what is under a still pointer.
   refreshMouseCursor(state);
@@ -584,7 +587,7 @@ function loadConversationWindow(convId: string): string {
 }
 
 function maybeRequestOlderHistory(): void {
-  if (shouldLoadOlderHistory(state)) requestOlderHistory(OLDER_HISTORY_PAGE_TURNS);
+  if (olderHistoryDue(state)) requestOlderHistory(OLDER_HISTORY_PAGE_TURNS);
 }
 
 // ── Event handler (daemon → TUI) ───────────────────────────────────

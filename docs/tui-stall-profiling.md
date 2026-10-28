@@ -9,7 +9,8 @@ guessing from symptoms.
 event loop was blocked for 16 ms or more (a 2 ms interval that fired late),
 every labelled span of 8 ms or more (`wire`: a socket read and the events it
 carried, `event:<type>`, `render`, `input`), and a mark per presented frame
-(`frame <conv> msgs=N off=M`, or `held` when render presented nothing), per
+(`frame <conv> msgs=N off=M lines=L/H w=W`: L laid-out history rows in an
+H-row area W wide, or `held` when render presented nothing), per
 input and per arriving history payload (`event conversation_loaded`,
 `conversation_history_loaded`, `display_blocks_loaded`, …), so first content
 and a settled window can be read off the timeline. Off, it costs one function call per event, frame and input
@@ -117,3 +118,25 @@ Follow-ups the same day:
   paint (at most 32 KB; 0.9-4 KB on the wire): Ctrl+O and Ctrl+I at the bottom
   over 100 ms RTT went from 140-165 ms to 9-19 ms. First content is unchanged.
   The frame marks now say `view=folded|work|detail`.
+
+## A conversation that delegates (Oct 28 2026)
+
+The owner found opening 1793172749114-og7m06 (a top-level OpenAI chat whose
+turns its subagents' reports split into ~90 short entries) still slow over
+`/ssh`. Measured on a copy with its subagents, 60x79 history, 100 ms RTT:
+
+- The TUI folds those reports to nothing, but the daemon's folded row
+  estimate counted them as prompts, and each split-off fragment kept its last
+  tool call (often a 20 KB `apply_patch`) although no finished turn shows it.
+  The open and its backfill drew 10 rows, so the TUI held "Loading
+  conversation…" and paged the whole conversation in serially: first content
+  at 363 ms (656 ms at 160 ms RTT and 0.5 MB/s) against ~118 ms for an
+  ordinary chat, 3 extra pages, 295 KB.
+- At an `/ssh` startup the open and backfill land while only the connection
+  progress paints, with no history layout, so the fill check gave up: the
+  view held 1.5 s, then painted part of the conversation and waited for input.
+
+Now the estimate leaves own subagents' messages out, finished entries' last
+tool calls are elided too, and a fill check that came before the first
+layout runs on that frame: 136 ms (244 ms on the slow link), one page,
+152 KB; the startup open is complete in its first frame.

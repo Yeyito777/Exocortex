@@ -2734,6 +2734,27 @@ export function deleteFolder(folderId: string, mode: "recursive" | "unwrap" = "r
 
 // ── Conversation summaries ─────────────────────────────────────────
 
+/** Whether a turn is running in this conversation (streaming, or a pending assistant to show). */
+export function hasRunningTurn(id: string): boolean {
+  return streaming.isStreaming(id) || streaming.hasPendingStreamingAssistant(id);
+}
+
+/**
+ * For a top-level conversation, whether a conversation is one of its
+ * subagents (folded clients show no row for their messages); undefined for a
+ * subagent, whose parent's messages are its prompts.
+ */
+export function ownSubagentTest(id: string): ((senderId: string) => boolean) | undefined {
+  if (parentConversationIdOf(id) !== null) return undefined;
+  return (senderId) => parentConversationIdOf(senderId) === id;
+}
+
+function parentConversationIdOf(id: string): string | null {
+  const loaded = conversations.get(id);
+  if (loaded) return loaded.subagentPolicy?.parentConversationId ?? null;
+  return summaries.get(id)?.parentConversationId ?? null;
+}
+
 /** Get a single conversation's summary. */
 export function getSummary(id: string): ConversationSummary | null {
   const loaded = conversations.get(id);
