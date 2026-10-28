@@ -12,7 +12,7 @@ import { randomUUID } from "node:crypto";
 import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { ToolExecutor } from "../../agent";
-import { CLAUDE_CODE_HOST_TOOL_SERVER, isClaudeCodeHostTool } from "../../tools/claude-code";
+import { CLAUDE_CODE_APP_TOOL_SERVER, CLAUDE_CODE_HOST_TOOL_SERVER, isClaudeCodeHostTool } from "../../tools/claude-code";
 import { CLAUDE_CODE_INLINE_CHRONO_MAX_MS } from "../../tools/chrono-limits";
 import { toolText } from "../../tools/tool-text";
 import { claudeSdks } from "./sdk";
@@ -52,7 +52,7 @@ export interface HostToolBinding {
   signal?: AbortSignal;
 }
 
-interface ToolDef {
+export interface ToolDef {
   name: string;
   description: string;
   input_schema: Record<string, unknown>;
@@ -80,11 +80,31 @@ export function createHostToolServer(
 ): McpSdkServerConfigWithInstance | null {
   const defs = hostToolDefs(tools);
   if (!binding || defs.length === 0) return null;
+  return createToolServer(CLAUDE_CODE_HOST_TOOL_SERVER, defs, hostToolServerInstructions(defs), binding);
+}
 
-  const instructions = hostToolServerInstructions(defs);
+/**
+ * MCP server for an app conversation's own tools (docs/app-api.md), or null
+ * if it has none. Calls run through the turn's executor like host tools,
+ * which forwards them to the app.
+ */
+export function createAppToolServer(
+  defs: readonly ToolDef[],
+  binding: (() => Promise<HostToolBinding>) | null,
+): McpSdkServerConfigWithInstance | null {
+  if (!binding || defs.length === 0) return null;
+  return createToolServer(CLAUDE_CODE_APP_TOOL_SERVER, defs, "", binding);
+}
+
+function createToolServer(
+  name: string,
+  defs: readonly ToolDef[],
+  instructions: string,
+  binding: () => Promise<HostToolBinding>,
+): McpSdkServerConfigWithInstance {
   const { mcpServer: { McpServer }, mcpTypes: { CallToolRequestSchema, ListToolsRequestSchema } } = claudeSdks();
   const server = new McpServer(
-    { name: CLAUDE_CODE_HOST_TOOL_SERVER, version: "1.0.0" },
+    { name, version: "1.0.0" },
     { capabilities: { tools: {} }, ...(instructions ? { instructions } : {}) },
   );
   server.server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -116,5 +136,5 @@ export function createHostToolServer(
     return result ? textResult(result.output, result.isError) : textResult(`${name} returned no result.`, true);
   });
 
-  return { type: "sdk", name: CLAUDE_CODE_HOST_TOOL_SERVER, timeout: HOST_TOOL_TIMEOUT_MS, instance: server };
+  return { type: "sdk", name, timeout: HOST_TOOL_TIMEOUT_MS, instance: server };
 }

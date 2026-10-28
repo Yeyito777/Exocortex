@@ -32,6 +32,7 @@ import type { HistoryWindowOptions } from "./history-pagination";
 import { scheduleDisplayIndex } from "./display-index-backfill";
 import { loadConversationOffThread, prepareArchiveHashes, releaseArchiveWindow } from "./conversation-loader";
 import { archiveWindow, forgetFullArchiveWindow, inheritArchiveHashProof, isArchivedMessage, storedMessageCount, archivedUserCount, systemInstructionMessages } from "./conversation-window";
+import { appWorkingDirectory, isAppConversation, isEphemeralConversation, isHiddenConversation } from "./app-registry";
 
 // Re-export streaming functions so existing `convStore.*` call sites keep working
 export {
@@ -117,6 +118,7 @@ const conversationCacheFileBytes = new Map<string, number>();
 let conversationCacheTotalFileBytes = 0;
 
 function cachedFileSize(id: string): number {
+  if (isEphemeralConversation(id)) return 0;
   try {
     const bytes = persistence.getConversationFileStat(id).fileSize;
     const conv = conversations.get(id);
@@ -146,6 +148,8 @@ function cacheIsOverLimit(): boolean {
 }
 
 function canEvictCachedConversation(id: string): boolean {
+  // An ephemeral app conversation exists only here.
+  if (isEphemeralConversation(id)) return false;
   if (cachePins.has(id)) return false;
   if (dirty.has(id)) return false;
   if (streaming.isStreaming(id) || streaming.isHistoryUnwindPending(id)) return false;
@@ -208,6 +212,7 @@ function saveSummaryIndexNow(): void {
   if (persistence.isSqliteConversationStore()) return;
   const entries: persistence.ConversationIndexEntry[] = [];
   for (const summary of summaries.values()) {
+    if (isEphemeralConversation(summary.id)) continue;
     const loaded = conversations.get(summary.id);
     if (loaded) {
       entries.push(persistence.indexEntryFromConversation(loaded));
@@ -283,7 +288,7 @@ function sortSidebarEntries<T extends Pick<SidebarOrderEntry, "pinned" | "sortOr
 function sidebarEntries(parentId: string | null): SidebarOrderEntry[] {
   const entries: SidebarOrderEntry[] = [];
   for (const summary of summaries.values()) {
-    if ((summary.folderId ?? null) === parentId) {
+    if ((summary.folderId ?? null) === parentId && !isHiddenConversation(summary.id)) {
       entries.push({ type: "conversation", id: summary.id, pinned: summary.pinned, sortOrder: summary.sortOrder });
     }
   }
@@ -412,6 +417,8 @@ function areFolderNotificationsMuted(folderId: string | null | undefined): boole
 }
 
 function areConversationNotificationsMuted(id: string): boolean {
+  // App conversations are never unread and never notify.
+  if (isAppConversation(id)) return true;
   const loaded = conversations.get(id);
   const summary = summaries.get(id);
   const directlyMuted = loaded ? loaded.muted === true : summary?.muted === true;
@@ -539,6 +546,11 @@ function formatFolderInstructionsForDisplay(folderId: string | null): string | n
 
 // ── Conversation loading/mutation helpers ─────────────────────────
 
+/** Whether this conversation's durable reads come from the SQLite store (never an ephemeral one's). */
+function storedInSqlite(id: string): boolean {
+  return persistence.isSqliteConversationStore() && !isEphemeralConversation(id);
+}
+
 function loadConversation(id: string): Conversation | undefined {
   const cached = conversations.get(id);
   if (cached) {
@@ -595,7 +607,8 @@ export function create(id: string, provider: ProviderId, model: ModelId, title?:
   if (hasConversation(id) || persistence.hasDeletedConversation(id)) {
     throw new Error(`Conversation ${id} already exists or is recoverable from trash`);
   }
-  createConversationWorkspace(id, { adoptExisting: adoptExistingWorkspace });
+  // An app's own cwd or an ephemeral temporary directory replaces the workspace.
+  if (!appWorkingDirectory(id)) createConversationWorkspace(id, { adoptExisting: adoptExistingWorkspace });
   const parentId = folderId && folders.has(folderId) ? folderId : null;
   const conv = createConversation(id, provider, model, nextUnpinnedOrderInFolder(parentId), title, effort, fastMode, parentId);
   retainConversation(conv);
@@ -620,7 +633,7 @@ export function createWithInitialUserMessage(
   if (hasConversation(id) || persistence.hasDeletedConversation(id)) {
     throw new Error(`Conversation ${id} already exists or is recoverable from trash`);
   }
-  createConversationWorkspace(id, { adoptExisting: adoptExistingWorkspace });
+  if (!appWorkingDirectory(id)) createConversationWorkspace(id, { adoptExisting: adoptExistingWorkspace });
   const parentId = folderId && folders.has(folderId) ? folderId : null;
   const conv = createConversation(id, provider, model, nextUnpinnedOrderInFolder(parentId), title, effort, fastMode, parentId);
   conv.messages.push(...leadingNotices);
@@ -986,6 +999,27 @@ function deleteConversationWithoutUndo(id: string): boolean {
   if (!moved) return false;
   stopConversationWorkspaceUsers(id);
   trashWorkspaceAfterConversation(id);
+  displayPageStore.removeDisplayProjection(id);
+  const unreadChanged = removeConversationState(id);
+  if (unreadChanged) saveUnreadState();
+  saveSummaryIndex();
+  return true;
+}
+
+/**
+ * Delete an app conversation for good: no trash, no undo entry. Its
+ * workspace is the caller's (app-api.ts), which removes only one the daemon
+ * created and never an app-supplied cwd.
+ */
+export function purge(id: string): boolean {
+  if (!summaries.has(id) && !conversations.has(id)) return false;
+  if (streaming.isHistoryUnwindPending(id) || inFlightUnwinds.has(id)) {
+    log("warn", `conversations: refusing to delete ${id} while a history unwind is pending`);
+    return false;
+  }
+  stopConversationWorkspaceUsers(id);
+  if (!isEphemeralConversation(id)) persistence.purgeConversations([id]);
+  if (pendingSystemInstructions.delete(id)) savePendingSystemInstructions();
   displayPageStore.removeDisplayProjection(id);
   const unreadChanged = removeConversationState(id);
   if (unreadChanged) saveUnreadState();
@@ -1406,7 +1440,9 @@ function systemInstructionsLocked(id: string): boolean {
 }
 
 function savePendingSystemInstructions(): void {
-  persistence.savePendingConversationInstructions(pendingSystemInstructions);
+  const ephemeral = [...pendingSystemInstructions.keys()].filter(isEphemeralConversation);
+  persistence.savePendingConversationInstructions(ephemeral.length === 0 ? pendingSystemInstructions
+    : new Map([...pendingSystemInstructions].filter(([id]) => !isEphemeralConversation(id))));
 }
 
 /**
@@ -2061,6 +2097,7 @@ export function loadFromDisk(): LoadFromDiskStats {
   const seen = new Set<string>();    // "folder:pinned:sortOrder"
   let fixed = 0;
   for (const summary of sorted) {
+    if (isHiddenConversation(summary.id)) continue;
     const key = `${summary.folderId ?? "root"}:${summary.pinned}:${summary.sortOrder}`;
     if (seen.has(key)) {
       summary.sortOrder += 0.001 * ++fixed;
@@ -2115,12 +2152,15 @@ export function flush(id: string, options: { summaryIndex?: SummaryIndexFlushMod
   if (!dirty.has(id)) return;
   const conv = conversations.get(id);
   if (!conv) return;
-  persistence.save(conv, {
-    forceMessages: messageContentDirty.has(id),
-    contextAttributionOnly: contextAttributionDirty.has(id),
-  });
+  const ephemeral = isEphemeralConversation(id);
+  if (!ephemeral) {
+    persistence.save(conv, {
+      forceMessages: messageContentDirty.has(id),
+      contextAttributionOnly: contextAttributionDirty.has(id),
+    });
+  }
   streaming.setStreamingCommittedMessageCount(id, storedMessageCount(conv.messages));
-  if (!persistence.isSqliteConversationStore()) scheduleDisplayIndex(id);
+  if (!persistence.isSqliteConversationStore() && !ephemeral) scheduleDisplayIndex(id);
   dirty.delete(id);
   messageContentDirty.delete(id);
   contextAttributionDirty.delete(id);
@@ -2154,8 +2194,9 @@ export function appendMessages(
   conv.messages.push(...messages);
   conv.updatedAt = Math.max(previousUpdatedAt, options.updatedAt ?? Date.now());
   renderSnapshotCache.delete(id);
+  const ephemeral = isEphemeralConversation(id);
   try {
-    persistence.appendMessages(conv, expectedStoredMessageCount);
+    if (!ephemeral) persistence.appendMessages(conv, expectedStoredMessageCount);
   } catch (error) {
     conv.messages.length = previousLocalCount;
     conv.updatedAt = previousUpdatedAt;
@@ -2166,7 +2207,7 @@ export function appendMessages(
   // Centralizing the advance here also covers append callers outside the main
   // orchestrator (queued turns, retry markers, tests, and future producers).
   streaming.setStreamingCommittedMessageCount(id, storedMessageCount(conv.messages));
-  if (!persistence.isSqliteConversationStore()) scheduleDisplayIndex(id);
+  if (!persistence.isSqliteConversationStore() && !ephemeral) scheduleDisplayIndex(id);
   const streamStartedAt = streaming.getStreamingStartedAt(id);
   if (!options.preservePendingAssistant && streamStartedAt !== undefined && messages.some(
     message => message.role === "assistant" && message.metadata?.startedAt === streamStartedAt,
@@ -2195,8 +2236,9 @@ export function flushAll(): void {
   for (const id of dirty) {
     const conv = conversations.get(id);
     if (!conv) continue;
+    const ephemeral = isEphemeralConversation(id);
     try {
-      persistence.save(conv, {
+      if (!ephemeral) persistence.save(conv, {
         forceMessages: messageContentDirty.has(id),
         contextAttributionOnly: contextAttributionDirty.has(id),
       });
@@ -2206,7 +2248,7 @@ export function flushAll(): void {
       continue;
     }
     streaming.setStreamingCommittedMessageCount(id, storedMessageCount(conv.messages));
-    if (!persistence.isSqliteConversationStore()) scheduleDisplayIndex(id);
+    if (!persistence.isSqliteConversationStore() && !ephemeral) scheduleDisplayIndex(id);
     setCachedFileSize(id, cachedFileSize(id));
     updateSummaryFromConversation(conv);
   }
@@ -2255,6 +2297,8 @@ export function onChunk(id: string): boolean {
 export function listSummaries(): ConversationSummary[] {
   const result: ConversationSummary[] = [];
   for (const summary of summaries.values()) {
+    // Temporary and ephemeral app conversations are never listed.
+    if (isHiddenConversation(summary.id)) continue;
     const notificationsMuted = areConversationNotificationsMuted(summary.id);
     result.push({
       ...summary,
@@ -2270,6 +2314,14 @@ export function listSummaries(): ConversationSummary[] {
   }
   sortSidebarEntries(result);
   return result;
+}
+
+/**
+ * Every conversation's summary, hidden app conversations included, for
+ * daemon maintenance (goal recovery, pruning) rather than the sidebar.
+ */
+export function listAllSummaries(): PersistedConversationSummary[] {
+  return [...summaries.values()].map(summary => ({ ...summary }));
 }
 
 export function listFolders(): FolderSummary[] {
@@ -2292,7 +2344,8 @@ export function listRunningConversationIds(): string[] {
 
 /** Active model turns that should be replayed after a daemon restart. */
 export function listRestartRecoverableConversationIds(): string[] {
-  return [...summaries.keys()].filter((id) => streaming.isStreaming(id) && streaming.isRestartRecoverableJob(id));
+  // Ephemeral app conversations end with the daemon: never replayed.
+  return [...summaries.keys()].filter((id) => streaming.isStreaming(id) && streaming.isRestartRecoverableJob(id) && !isEphemeralConversation(id));
 }
 
 // ── Conversation sidebar actions ───────────────────────────────────
@@ -2374,6 +2427,14 @@ export function findTopLevelFolderByName(name: string): FolderSummary | null {
 
 export function ensureTopLevelFolder(name: string, options: { mutedOnCreate?: boolean } = {}): FolderSummary | null {
   return findTopLevelFolderByName(name) ?? createFolder(name, null, [], false, options.mutedOnCreate === true);
+}
+
+/** The folder `name` directly inside `parentId`, created when missing (an app's folder under `apps`). */
+export function ensureChildFolder(parentId: string, name: string): FolderSummary | null {
+  const target = name.trim().toLocaleLowerCase();
+  const folder = sortSidebarEntries([...folders.values()])
+    .find(candidate => candidate.parentId === parentId && candidate.name.trim().toLocaleLowerCase() === target);
+  return folder ? { ...folder } : createFolder(name, parentId, [], false);
 }
 
 export function moveConversationToFolder(id: string, folderId: string | null): boolean {
@@ -2766,6 +2827,8 @@ export function getStoredDisplayPage(
   diagnostics?: Partial<RenderSnapshotDiagnostics>,
   windowOptions?: HistoryWindowOptions,
 ): StoredDisplayHistoryPage | null {
+  // Ephemeral conversations have no stored projection: callers build it from memory.
+  if (isEphemeralConversation(id)) return null;
   const runtime = conversations.get(id);
   if (runtime && archiveWindow(runtime.messages) && dirty.has(id)) flush(id);
   if (!summaries.has(id) && !conversations.has(id)) return null;
@@ -2979,7 +3042,7 @@ export function getRenderSnapshot(
 ): ConversationRenderSnapshot | null {
   const cachedConversation = conversations.get(id);
   if (cachedConversation && archiveWindow(cachedConversation.messages) && dirty.has(id)) flush(id);
-  if (persistence.isSqliteConversationStore() && !dirty.has(id)
+  if (storedInSqlite(id) && !dirty.has(id)
       && (!cachedConversation || archiveWindow(cachedConversation.messages))) {
     const page = getStoredDisplayPage(id, Number.MAX_SAFE_INTEGER, undefined, diagnostics);
     if (!page) return null;
@@ -3062,7 +3125,7 @@ export function getRenderSnapshot(
 }
 
 export function getDisplayData(id: string, includeToolOutputs = true): ConversationDisplayData | null {
-  if (persistence.isSqliteConversationStore() && !dirty.has(id)
+  if (storedInSqlite(id) && !dirty.has(id)
       && (!conversations.has(id) || archiveWindow(conversations.get(id)!.messages))) {
     return getRenderSnapshot(id, includeToolOutputs);
   }
@@ -3080,7 +3143,7 @@ export function getDisplayEntries(id: string, indices: readonly number[]): Map<n
   const runtime = conversations.get(id);
   if (runtime && archiveWindow(runtime.messages) && dirty.has(id)) flush(id);
   if (!summaries.has(id) && !conversations.has(id)) return null;
-  if (persistence.isSqliteConversationStore() && !dirty.has(id)) {
+  if (storedInSqlite(id) && !dirty.has(id)) {
     const read = persistence.loadDisplayEntries(id, indices);
     const loaded = conversations.get(id);
     if (read && !(loaded && read.storedMessageCount !== storedMessageCount(loaded.messages))) return read.entries;
@@ -3094,7 +3157,7 @@ export function getDisplayEntries(id: string, indices: readonly number[]): Map<n
 }
 
 export function getToolOutputs(id: string, toolCallIds?: readonly string[]): ToolOutputInfo[] | null {
-  if (persistence.isSqliteConversationStore()) {
+  if (storedInSqlite(id)) {
     const loaded = conversations.get(id);
     const summary = summaries.get(id);
     if (!loaded || !summary || countConversationMessages(loaded.messages) === summary.messageCount) {

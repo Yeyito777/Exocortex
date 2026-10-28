@@ -44,6 +44,8 @@ export interface RelayMeta {
   history?: RelayHistoryMark | null;
   /** Claude account (accounts.ts) the process is signed in as; absent means `main`. */
   account?: string;
+  /** An app conversation's Claude Code surface (docs/app-api.md), re-sent when a daemon reconnects. */
+  app?: { base: "none" | "agent" | "full"; tools?: string[]; appTools: RelayToolDef[] };
 }
 
 /** The first `count` messages of a conversation, by their combined key (see historyKey). */

@@ -43,15 +43,22 @@ export type ClaudeCodeTaskTitles = ReadonlyMap<string, string>;
 let claudeCodeTools: Map<string, ClaudeCodeTool> | undefined;
 
 export const CLAUDE_CODE_HOST_TOOL_SERVER = "exocortex";
+/** The MCP server for an app conversation's own tools (docs/app-api.md). */
+export const CLAUDE_CODE_APP_TOOL_SERVER = "app";
 const HOST_TOOL_PREFIX = `mcp__${CLAUDE_CODE_HOST_TOOL_SERVER}__`;
+const APP_TOOL_PREFIX = `mcp__${CLAUDE_CODE_APP_TOOL_SERVER}__`;
 const HOST_TOOLS: readonly string[] = ["chrono", "goal", "exo", "client_bash", "remote_bash", "attach"];
 
 export function isClaudeCodeHostTool(name: string): boolean {
   return HOST_TOOLS.includes(name);
 }
 
-/** Name to record a Claude Code tool call under: host tools take their Exocortex name. */
-export function exocortexToolName(claudeCodeName: string): string {
+/**
+ * Name to record a Claude Code tool call under: host tools take their
+ * Exocortex name, and in an app conversation the app's tools their bare name.
+ */
+export function exocortexToolName(claudeCodeName: string, appTools = false): string {
+  if (appTools && claudeCodeName.startsWith(APP_TOOL_PREFIX)) return claudeCodeName.slice(APP_TOOL_PREFIX.length);
   const name = claudeCodeName.startsWith(HOST_TOOL_PREFIX) ? claudeCodeName.slice(HOST_TOOL_PREFIX.length) : "";
   return isClaudeCodeHostTool(name) ? name : claudeCodeName;
 }

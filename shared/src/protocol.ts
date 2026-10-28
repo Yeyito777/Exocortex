@@ -1377,6 +1377,8 @@ export interface AppRunCommand {
   cwd?: string;
   prompt: string;
   images?: ImageAttachment[];
+  /** The prompt's time in ms (the daemon's clock when absent); the turn_result's turnId is it as a string. */
+  startedAt?: number;
   /** Keep an ephemeral conversation after the turn (it still ends with the connection). */
   keep?: boolean;
 }
@@ -2586,8 +2588,15 @@ export interface AppToolCancelEvent {
 /** Answer to send_message with awaitResult, and to app_run: the turn ended. */
 export interface TurnResultEvent {
   type: "turn_result";
+  /** Only on the connection whose send_message/app_run awaited this turn. */
   reqId?: string;
   convId: string;
+  /**
+   * The turn's identity: the startedAt (ms, as a decimal string) of the prompt
+   * that started it. Unchanged when a turn interrupted by a daemon restart is
+   * replayed. Send a unique startedAt to match it after a reconnect.
+   */
+  turnId: string;
   /** The final assistant message's text. */
   text: string;
   stopReason: TurnStopReason;
@@ -2604,6 +2613,8 @@ export interface AppConversationAttachedEvent {
   reqId?: string;
   convId: string;
   conversation: AppConversationInfo;
+  /** The conversation's most recent turn_result (without reqId), so a turn that ended while no owner was connected still resolves. */
+  lastTurnResult?: TurnResultEvent;
 }
 
 export interface AppConversationsListEvent {

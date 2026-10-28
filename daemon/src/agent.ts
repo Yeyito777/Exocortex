@@ -196,6 +196,8 @@ export async function runAgentLoop(
   callbacks: AgentCallbacks,
   options: {
     system?: string;
+    /** App conversations under Claude Code (docs/app-api.md). */
+    claudeCodeApp?: StreamOptions["claudeCodeApp"];
     signal?: AbortSignal;
     executor?: ToolExecutor;
     summarizer?: ToolSummarizer;
@@ -364,6 +366,7 @@ export async function runAgentLoop(
           },
         }, {
           system: options.system,
+          ...(options.claudeCodeApp ? { claudeCodeApp: options.claudeCodeApp } : {}),
           signal: options.signal,
           maxTokens: options.maxTokens,
           tools: options.tools,

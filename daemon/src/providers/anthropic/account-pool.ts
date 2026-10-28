@@ -7,6 +7,7 @@
  * (usage.ts), and each conversation's last account and when it last used it.
  */
 
+import { isEphemeralConversation, isHiddenConversation } from "../../app-registry";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "fs";
 import { join } from "path";
 import { runtimeDir } from "@exocortex/shared/paths";
@@ -104,7 +105,8 @@ export function flushAssignments(): void {
   const out: Record<string, Assignment> = {};
   for (const [convId, entry] of map) {
     if (entry.lastUsedAt < cutoff) map.delete(convId);
-    else out[convId] = entry;
+    // An ephemeral app conversation's account stays in memory only.
+    else if (!isEphemeralConversation(convId)) out[convId] = entry;
   }
   try {
     const path = assignmentsFile();
@@ -120,6 +122,12 @@ function scheduleSave(): void {
   if (saveTimer) return;
   saveTimer = setTimeout(flushAssignments, SAVE_DELAY_MS);
   (saveTimer as { unref?: () => void }).unref?.();
+}
+
+/** A deleted app conversation's account record (app-api.ts). */
+export function forgetConversationAccount(convId: string): void {
+  if (loadAssignments().delete(convId)) scheduleSave();
+  runningConversations.delete(convId);
 }
 
 export function getConversationAccount(convId: string): Assignment | null {
@@ -345,6 +353,8 @@ export function claudeAccountsInfo(currentConvId: string | null = null, now = Da
   const warmSince = now - routed.policy.cacheTtlMs;
   const byAccount = new Map<string, AccountConversationInfo[]>();
   for (const [convId, entry] of loadAssignments()) {
+    // Hidden app conversations are never shown (docs/app-api.md).
+    if (isHiddenConversation(convId)) continue;
     const running = runningConversations.get(convId) === entry.account;
     const warm = entry.lastUsedAt >= warmSince;
     if (!running && !warm) continue;

@@ -53,6 +53,9 @@ import { isScopedSubagent, remainingSubagentDepth } from "./subagent-policy";
 import { acknowledgeSubagentNotification, getSubagentNotificationRuntime, settlePendingSubagentNotifications } from "./subagent-notifications";
 import { noteRequestedRestartTurnEnded } from "./requested-restart";
 import { getDaemonShutdownMode } from "./daemon-lifecycle";
+import { notifyAssistantTurnEnded } from "./conversation-lifecycle";
+import { appTurnWorkingDirectory } from "./app-workspaces";
+import { appToolCallView } from "./app-tools";
 import { ensureConversationWorkspace } from "./workspace-service";
 import { BUFFERED_HISTORY_TURNS, buildHistoryUpdatedEvents, buildStoredHistoryUpdatedEvent } from "./history-pagination";
 import {
@@ -580,7 +583,7 @@ async function orchestrateAdmittedAssistantTurn(
   try {
     // Existing conversations are migrated lazily; startup remains summary-only
     // and does not create one directory per archived conversation.
-    workingDirectory = ensureConversationWorkspace(convId);
+    workingDirectory = appTurnWorkingDirectory(convId) ?? ensureConversationWorkspace(convId);
   } catch (err) {
     const message = `Could not prepare conversation workspace: ${err instanceof Error ? err.message : String(err)}`;
     if (client) server.sendTo(client, { type: "error", reqId, convId, message });
@@ -650,6 +653,15 @@ async function orchestrateAdmittedAssistantTurn(
   }
   const goalAtTurnStart = conv.goal ?? null;
   const hadGoalAtStart = !!goalAtTurnStart;
+  // The turn's identity for awaiting clients (turn_result.turnId): its prompt,
+  // or for a replay the latest prompt it replays.
+  let turnPromptStartedAt: number | undefined = userMessage ? startedAt : undefined;
+  for (let index = conv.messages.length - 1; !userMessage && index >= 0; index--) {
+    const message = conv.messages[index];
+    if (!message || !isRealUserMessage(message)) continue;
+    turnPromptStartedAt = message.metadata?.startedAt ?? undefined;
+    break;
+  }
   if (goalContinuation && conv.goal?.status === "active") conv.goal.turns += 1;
 
   // ── Start stream and broadcast initial state ──────────────────────
@@ -1882,6 +1894,7 @@ async function orchestrateAdmittedAssistantTurn(
     } else {
       const result = await runAgentLoop(apiMessages, conv.provider, conv.model, callbacks, {
         system: systemPrompt,
+        ...(requestSurface.claudeCodeApp ? { claudeCodeApp: requestSurface.claudeCodeApp } : {}),
         signal: ac.signal,
         tools: toolDefs,
         executor,
@@ -1890,7 +1903,7 @@ async function orchestrateAdmittedAssistantTurn(
           return s.detail || s.label;
         },
         presentationResolver: async (name, input) => {
-          const presentation = await resolveToolCallPresentation(name, input, workingDirectory);
+          const presentation = appToolCallView(convId)(name, input)?.presentation ?? await resolveToolCallPresentation(name, input, workingDirectory);
           return presentation ?? undefined;
         },
         effort: conv.effort,
@@ -2307,6 +2320,21 @@ async function orchestrateAdmittedAssistantTurn(
     }
 
     ext.onComplete();
+    if (outcome) {
+      notifyAssistantTurnEnded({
+        convId,
+        promptStartedAt: turnPromptStartedAt,
+        ok: outcome.ok,
+        blocks: outcome.blocks,
+        tokens: outcome.tokens,
+        durationMs: outcome.durationMs,
+        error: outcome.error,
+        aborted: outcome.aborted,
+        daemonRestart: outcome.daemonRestart,
+        suspended: outcome.suspended,
+        manualCompaction,
+      });
+    }
     // Releases (or, when aborted, cancels) a daemon restart this turn requested.
     if (!shutdownMode) noteRequestedRestartTurnEnded(convId, outcome?.aborted === true);
 

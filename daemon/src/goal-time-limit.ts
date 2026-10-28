@@ -46,7 +46,7 @@ export function scheduleGoalTimeLimit(server: DaemonServer, convId: string): voi
 
 /** Startup: schedule every active goal's time limit, stopping goals that ran out while the daemon was down. */
 export function scheduleActiveGoalTimeLimits(server: DaemonServer): void {
-  for (const summary of convStore.listSummaries()) {
+  for (const summary of convStore.listAllSummaries()) {
     if (summary.goal?.status === "active" && summary.goal.maxTimeMs != null) scheduleGoalTimeLimit(server, summary.id);
   }
 }
