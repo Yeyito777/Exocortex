@@ -164,7 +164,7 @@ export async function findSocket(): Promise<string> {
   });
   if (printed === null) throw new ExocortexError("not_installed", `Exocortex is not installed (no \`exocortexd\` on PATH). Install it with:\n  ${INSTALL_COMMAND}`);
   if (!printed) throw new ExocortexError("not_running", "`exocortexd socket` printed nothing; is Exocortex installed correctly?");
-  if (!existsSync(printed)) throw new ExocortexError("not_running", `The Exocortex daemon is not running (no socket at ${printed}). Start it with: exocortexd start`);
+  if (!existsSync(printed)) throw new ExocortexError("not_running", `The Exocortex daemon is not running (no socket at ${printed}). Start it with: exocortexd start (\`exocortexd doctor\` shows what is wrong)`);
   return printed;
 }
 
@@ -177,7 +177,7 @@ function openSocket(path: string): Promise<Socket> {
       socket.destroy();
       const code = (error as NodeJS.ErrnoException).code;
       reject(code === "ENOENT" || code === "ECONNREFUSED"
-        ? new ExocortexError("not_running", `The Exocortex daemon is not running (cannot connect to ${path}). Start it with: exocortexd start`)
+        ? new ExocortexError("not_running", `The Exocortex daemon is not running (cannot connect to ${path}). Start it with: exocortexd start (\`exocortexd doctor\` shows what is wrong)`)
         : error);
     };
     socket.once("error", fail);

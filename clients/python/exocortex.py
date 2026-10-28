@@ -261,7 +261,7 @@ def find_socket() -> str:
     if not path:
         raise ExocortexError("not_running", "`exocortexd socket` printed nothing; is Exocortex installed correctly?")
     if not os.path.exists(path):
-        raise ExocortexError("not_running", f"The Exocortex daemon is not running (no socket at {path}). Start it with: exocortexd start")
+        raise ExocortexError("not_running", f"The Exocortex daemon is not running (no socket at {path}). Start it with: exocortexd start (`exocortexd doctor` shows what is wrong)")
     return path
 
 
@@ -334,7 +334,7 @@ class Client:
         except (FileNotFoundError, ConnectionRefusedError):
             sock.close()
             raise ExocortexError("not_running", f"The Exocortex daemon is not running (cannot connect to {self._socket_path}). "
-                                 "Start it with: exocortexd start") from None
+                                 "Start it with: exocortexd start (`exocortexd doctor` shows what is wrong)") from None
         with self._lock:
             self._generation += 1
             generation = self._generation

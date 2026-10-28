@@ -272,7 +272,7 @@ function M.find_socket(cb)
     end
     if path == "" then return cb(err("not_running", "`exocortexd socket` printed nothing; is Exocortex installed correctly?")) end
     if not uv.fs_stat(path) then
-      return cb(err("not_running", "The Exocortex daemon is not running (no socket at " .. path .. "). Start it with: exocortexd start"))
+      return cb(err("not_running", "The Exocortex daemon is not running (no socket at " .. path .. "). Start it with: exocortexd start (`exocortexd doctor` shows what is wrong)"))
     end
     cb(nil, path)
   end))
@@ -326,7 +326,7 @@ function Client:_handshake(cb)
     if connect_err then
       if not pipe:is_closing() then pipe:close() end
       return cb(err("not_running", "The Exocortex daemon is not running (cannot connect to " .. self.socket_path
-        .. ": " .. connect_err .. "). Start it with: exocortexd start"))
+        .. ": " .. connect_err .. "). Start it with: exocortexd start (`exocortexd doctor` shows what is wrong)"))
     end
     self.generation = self.generation + 1
     local generation = self.generation
@@ -554,7 +554,22 @@ function Client:_settle(turn, e, result)
   if self.turns[turn.req_id] ~= turn then return end
   self.turns[turn.req_id] = nil
   cancel(turn.fallback_timer)
-  turn.cb(e, result)
+  -- Deferred: the callback may start another turn, and callers iterate self.turns.
+  vim.schedule(function() turn.cb(e, result) end)
+end
+
+--- A copy of the pending turns (safe to settle while iterating): those on `conv_id`,
+--- every one for nil, or the runs not yet announced for false.
+function Client:_turns_on(conv_id)
+  local list = {}
+  for _, tr in pairs(self.turns) do
+    local wanted
+    if conv_id == nil then wanted = true
+    elseif conv_id == false then wanted = tr.conv_id == nil
+    else wanted = tr.conv_id == conv_id end
+    if wanted then table.insert(list, tr) end
+  end
+  return list
 end
 
 -- ── incoming ──
@@ -603,8 +618,8 @@ function Client:_dispatch(ev)
     return
   end
   if t == "conversation_deleted" then return self:_end_conversation(conv_id, ev.reason or "deleted") end
-  for _, tr in pairs(self.turns) do
-    if tr.conv_id == conv_id then
+  for _, tr in ipairs(self:_turns_on(conv_id)) do
+    do
       if t == "turn_result" then
         if not ev.turnId or tr.turn_id == ev.turnId then self:_settle(tr, nil, to_result(ev)) end
       else
@@ -689,8 +704,8 @@ function Client:_end_conversation(conv_id, reason)
       entry.call:_cancel("ended")
     end
   end
-  for _, tr in pairs(self.turns) do
-    if tr.conv_id == conv_id then self:_settle(tr, err("ended", "Conversation " .. conv_id .. " has ended (" .. reason .. ")")) end
+  for _, tr in ipairs(self:_turns_on(conv_id)) do
+    self:_settle(tr, err("ended", "Conversation " .. conv_id .. " has ended (" .. reason .. ")"))
   end
 end
 
@@ -709,10 +724,10 @@ function Client:_on_close(generation)
   for call_id, entry in pairs(self.calls) do
     if not entry.result then self.calls[call_id] = nil; entry.call:_cancel("disconnected") end
   end
-  for id, conv in pairs(self.conversations) do
-    if conv.info.lifetime == "ephemeral" then self:_end_conversation(id, "owner_disconnected") end
+  for _, conv in ipairs(vim.tbl_values(self.conversations)) do
+    if conv.info.lifetime == "ephemeral" then self:_end_conversation(conv.id, "owner_disconnected") end
   end
-  for _, tr in pairs(self.turns) do if not tr.conv_id then self:_settle(tr, lost) end end
+  for _, tr in ipairs(self:_turns_on(false)) do self:_settle(tr, lost) end
   if not self.reconnect then
     self.closed = true
     return self:_fail_all(lost)
@@ -743,7 +758,8 @@ function Client:_on_close(generation)
 end
 
 function Client:_reattach()
-  for id, conv in pairs(self.conversations) do
+  for _, conv in ipairs(vim.tbl_values(self.conversations)) do
+    local id = conv.id
     self:_attach_existing(conv, function(e, ev)
       if e then
         if e.code ~= "disconnected" then self:_end_conversation(id, tostring(e)) end
@@ -752,13 +768,11 @@ function Client:_reattach()
       if ev.conversation and ev.conversation.streaming then return end
       -- The turn ended while we were away.
       local last = ev.lastTurnResult
-      for _, tr in pairs(self.turns) do
-        if tr.conv_id == id then
-          if last and last.turnId == tr.turn_id then
-            self:_settle(tr, nil, to_result(last))
-          else
-            self:_settle(tr, err("result_lost", "The turn on " .. id .. " ended while the client was disconnected, and the daemon did not report its result"))
-          end
+      for _, tr in ipairs(self:_turns_on(id)) do
+        if last and last.turnId == tr.turn_id then
+          self:_settle(tr, nil, to_result(last))
+        else
+          self:_settle(tr, err("result_lost", "The turn on " .. id .. " ended while the client was disconnected, and the daemon did not report its result"))
         end
       end
     end)
@@ -767,7 +781,7 @@ end
 
 function Client:_fail_all(e)
   self:_fail_requests(e)
-  for _, tr in pairs(self.turns) do self:_settle(tr, e) end
+  for _, tr in ipairs(self:_turns_on(nil)) do self:_settle(tr, e) end
   for call_id, entry in pairs(self.calls) do
     self.calls[call_id] = nil
     entry.call:_cancel("closed")

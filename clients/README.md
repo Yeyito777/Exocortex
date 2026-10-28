@@ -15,7 +15,7 @@ daemon restart.
 | [`lua/`](lua/README.md) (`require("exocortex")`) | Neovim plugins (`vim.uv`) | Neovim 0.10+ |
 
 From the shell, `exo run` (external exo CLI) is the same one-shot:
-`printf 'Name three primes.' | exo run --app myapp --model claude-haiku-4-5`.
+`printf 'Name three primes.' | exo run --app myapp --model claude-haiku-5-5`.
 
 [`testing/fake-daemon.ts`](testing/fake-daemon.ts) speaks the documented JSON
 lines with a scripted model; every client's tests run against it
