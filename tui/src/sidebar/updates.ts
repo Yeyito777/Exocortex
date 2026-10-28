@@ -197,7 +197,8 @@ export function updateConversationList(sidebar: SidebarState, conversations: Con
       focusSidebarItem(sidebar, focusTarget);
       return;
     }
-    if (focusNearestSidebarDisplayEntry(sidebar, previousSelectedRow - 1, -1)) return;
+    // The row that was below the vanished one now fills its slot.
+    if (focusNearestSidebarDisplayEntry(sidebar, previousSelectedRow, 1)) return;
   }
   syncSelectedIndex(sidebar);
 }

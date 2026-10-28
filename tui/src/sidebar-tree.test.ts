@@ -223,6 +223,11 @@ describe("sidebar tree folder view", () => {
 
     handleSidebarAction("delete", sidebar);
     expect(handleSidebarAction("delete", sidebar)).toEqual({ type: "delete_conversation", convId: "inside-a" });
+    expect(sidebar.selectedItem).toEqual({ type: "conversation", id: "inside-b" });
+
+    // The last row of a level falls to the row above it, not out of the folder.
+    handleSidebarAction("delete", sidebar);
+    expect(handleSidebarAction("delete", sidebar)).toEqual({ type: "delete_conversation", convId: "inside-b" });
     expect(sidebar.selectedItem).toEqual({ type: "folder", id: "nested" });
 
     // The first row of a level falls to its next sibling, not into another folder.
