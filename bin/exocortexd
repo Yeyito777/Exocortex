@@ -37,6 +37,14 @@ is_macos() {
   [[ "$(uname -s)" == "Darwin" ]]
 }
 
+# A machine without systemd or launchd (the OSS Phone's keeper) names its own
+# supervisor: an executable taking start|stop|restart|status|main-pid. `stop`
+# must keep the daemon stopped until `start`; `restart` and a plain SIGTERM to
+# the daemon bring it back.
+supervised() {
+  [[ -n "${EXOCORTEX_SUPERVISOR:-}" ]]
+}
+
 launchd_domain() {
   printf 'gui/%s' "$(id -u)"
 }
@@ -135,7 +143,9 @@ ensure_launchd_service_loaded() {
 }
 
 restart_service() {
-  if is_macos; then
+  if supervised; then
+    "$EXOCORTEX_SUPERVISOR" restart
+  elif is_macos; then
     ensure_launchd_service_loaded
     launchctl kickstart -k "$(launchd_target)"
     if ! wait_for_launchd_running; then
@@ -154,7 +164,9 @@ restart_service() {
 }
 
 start_service() {
-  if is_macos; then
+  if supervised; then
+    "$EXOCORTEX_SUPERVISOR" start
+  elif is_macos; then
     ensure_launchd_service_loaded
     if launchd_service_is_running; then
       echo "  • Already running"
@@ -178,7 +190,9 @@ start_service() {
 }
 
 stop_service() {
-  if is_macos; then
+  if supervised; then
+    "$EXOCORTEX_SUPERVISOR" stop
+  elif is_macos; then
     if ! launchd_service_is_loaded; then
       echo "  • Not loaded"
       return
@@ -207,7 +221,9 @@ stop_service() {
 }
 
 status_service() {
-  if is_macos; then
+  if supervised; then
+    "$EXOCORTEX_SUPERVISOR" status
+  elif is_macos; then
     local verbose=0
     while (($# > 0)); do
       case "$1" in
@@ -241,7 +257,9 @@ status_service() {
 }
 
 service_is_active() {
-  if is_macos; then
+  if supervised; then
+    "$EXOCORTEX_SUPERVISOR" status >/dev/null 2>&1
+  elif is_macos; then
     launchd_service_is_running
   else
     systemctl --user is-active --quiet "$SERVICE"

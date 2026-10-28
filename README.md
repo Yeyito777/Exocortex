@@ -172,6 +172,17 @@ loss) replays the turns it interrupted when the daemon next starts; under
 systemd and launchd it comes back on its own unless it was stopped through the
 service manager or the machine is shutting down.
 
+On a machine with neither systemd nor launchd, a supervisor of your own can
+take their place: set `EXOCORTEX_SUPERVISOR` (in the daemon's environment and
+in shells that run `exocortexd`) to an executable that takes
+`start|stop|restart|status|main-pid`. `exocortexd start|stop|restart|status`
+then call it, and the `exo` tool's restart runs its executor in a detached
+session and restarts through it when the supervisor's `main-pid` is this
+daemon. `stop` must keep the daemon stopped until `start`; any other exit,
+including a plain SIGTERM, is a restart (the interrupted turns replay).
+The OSS Phone's keeper is one
+([OSS-Phone-V1 docs/EXOCORTEX.md](https://github.com/Yeyito777/OSS-Phone-V1/blob/main/docs/EXOCORTEX.md)).
+
 Inside the TUI, `/ssh <alias>` connects directly to that host's Exocortex
 daemon through `exocortexd proxy`; `/ssh cancel` returns to the local daemon.
 The selected route belongs to that TUI process, so other TUIs can remain local

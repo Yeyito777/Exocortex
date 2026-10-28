@@ -109,6 +109,15 @@ describe("restart target detection", () => {
     // Without the launcher's marker, being launchd's job's child is not enough.
     expect(darwin({ pid: LAUNCHER })).not.toBe("service");
   });
+
+  test("an EXOCORTEX_SUPERVISOR restarts the daemon it names as its main pid", () => {
+    const run = mock((_argv: string[]) => ({ ok: true, output: `${PID}\n` }));
+    expect(detectRestartTarget("linux", run, PID, { pid: 1 }, "/opt/keeper-ctl")).toBe("service");
+    expect(run.mock.calls[0][0]).toEqual(["/opt/keeper-ctl", "main-pid"]);
+    // A daemon started from the kept daemon's shell inherits the variable but is not its main pid.
+    expect(detectRestartTarget("linux", () => ({ ok: true, output: String(PID + 1) }), PID, { pid: 1 }, "/opt/keeper-ctl")).not.toBe("service");
+    expect(detectRestartTarget("linux", () => ({ ok: false, output: "" }), PID, { pid: 1 }, "/opt/keeper-ctl")).not.toBe("service");
+  });
 });
 
 describe("after-turn executor scheduling", () => {
@@ -122,6 +131,16 @@ describe("after-turn executor scheduling", () => {
     expect(argv.some(arg => arg.startsWith("--working-directory=") && arg.endsWith("/daemon"))).toBe(true);
     expect(argv).toContain(`--setenv=EXOCORTEX_CONFIG_DIR=${process.env.EXOCORTEX_CONFIG_DIR}`);
     expect(argv.slice(argv.indexOf("--") + 1)).toEqual([process.execPath, "run", "src/main.ts", "run-requested-restart", "tok1"]);
+  });
+
+  test("under an EXOCORTEX_SUPERVISOR the executor runs in its own session", () => {
+    const spawnDetached = mock((_program: string[], _cwd: string, _env: Record<string, string>, _log: string) => {});
+    const job = scheduleRestartExecutor("tok4", { platform: "linux", supervisor: "/opt/keeper-ctl", spawnDetached, run: () => { throw new Error("no systemd-run"); } });
+    expect(job).toBe("session:tok4");
+    const [program, cwd, , logPath] = spawnDetached.mock.calls[0];
+    expect(program).toEqual([process.execPath, "run", "src/main.ts", "run-requested-restart", "tok4"]);
+    expect(cwd.endsWith("/daemon")).toBe(true);
+    expect(logPath.endsWith("requested-restart.log")).toBe(true);
   });
 
   test("Linux reports systemd-run failures", () => {
