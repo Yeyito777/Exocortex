@@ -232,6 +232,12 @@ fetch_source() {
           || run_logged switch git -C "$DIR" switch --quiet -c "$BRANCH" FETCH_HEAD \
           || die "Could not switch $DIR to $BRANCH."
       fi
+      # Installs from before bun.lock was tracked have their own untracked copy,
+      # which would block the merge; the tracked one replaces it.
+      if ! git -C "$DIR" ls-files --error-unmatch bun.lock >/dev/null 2>&1 \
+        && git -C "$DIR" cat-file -e FETCH_HEAD:bun.lock 2>/dev/null; then
+        rm -f "$DIR/bun.lock"
+      fi
       if ! run_logged merge git -C "$DIR" merge --ff-only --quiet FETCH_HEAD; then
         warn "$BRANCH has diverged from origin; keeping the local commits"
       fi

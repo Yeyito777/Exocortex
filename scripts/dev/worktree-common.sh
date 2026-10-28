@@ -59,9 +59,9 @@ sync_external_tools() {
 sync_dependency_artifacts() {
   local worktree_dir="$1"
 
-  # bun.lock is intentionally ignored by git, so `git worktree add` does not
-  # populate it. Keep a local copy in each worktree before any `bun install` so
-  # Bun uses the resolved lockfile instead of doing a fresh network resolution.
+  # bun.lock is tracked, so `git worktree add` checks it out; a branch from
+  # before it was tracked lacks it. Copy main's then, before any `bun install`,
+  # so Bun uses the resolved lockfile instead of a fresh network resolution.
   local lock
   for lock in bun.lock bun.lockb; do
     if [[ -f "$EXOCORTEX_ROOT/$lock" && ! -e "$worktree_dir/$lock" ]]; then

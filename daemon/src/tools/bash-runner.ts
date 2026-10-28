@@ -383,7 +383,11 @@ function start(request: StartRequest): void {
       send({ type: "started", pid: terminalProcess.pid });
       if (request.timeoutMs) commandTimeout = setTimeout(terminateCommandTree, request.timeoutMs);
       if (request.stdin) terminal.write(request.stdin);
-      void terminalProcess.exited.then(code => finish(code, terminalProcess?.signalCode ?? null));
+      void terminalProcess.exited.then(code => {
+        // Newer Bun types also allow a signal number here.
+        const signal = terminalProcess?.signalCode ?? null;
+        finish(code, signal === null ? null : String(signal));
+      });
       return;
     }
     commandProcess = spawn(

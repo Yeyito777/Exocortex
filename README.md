@@ -213,6 +213,9 @@ bun install --frozen-lockfile
 exocortexd restart
 ```
 
+If `git pull` says the untracked `bun.lock` would be overwritten (a clone from
+before the lockfile was tracked), delete it (`rm bun.lock`) and pull again.
+
 #### Uninstall
 
 ```bash
@@ -363,6 +366,9 @@ cd Exocortex
 git pull --ff-only
 bun install --frozen-lockfile
 ```
+
+If `git pull` says the untracked `bun.lock` would be overwritten (a clone from
+before the lockfile was tracked), delete it (`rm bun.lock`) and pull again.
 
 Start the daemon and TUI again using the commands above.
 

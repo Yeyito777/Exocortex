@@ -50,6 +50,8 @@ helper-tools/*
 # Logs and locks
 *.log
 *.lock*
+# Bun's lockfile is tracked so every install gets the same dependency versions.
+!/bun.lock
 
 # OS/editor noise
 .DS_Store
