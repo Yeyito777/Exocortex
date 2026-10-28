@@ -92,7 +92,7 @@ import { runChronoCommand } from "./chrono-commands";
 import { inlineLongSleepStartedAt } from "@exocortex/shared/chrono";
 import { configureClaudeCodeSessions } from "./providers/anthropic/session";
 import { abandonAppCreate, appConversationInfo, appTitleFromPrompt, attachAppConversation, checkAppToolsForModel, configureAppApi, dropTurnAwait, endAppConversation, ensureAppFolder, listAppConversations, parseAppCreate, registerAppCreate, registerTurnAwait, setAppConversationOwner, shutdownAppConversations, welcomeAppClient, type AppCreateSpec } from "./app-api";
-import { getAppRecord, isAppConversation, isHiddenConversation, touchAppConversation } from "./app-registry";
+import { getAppRecord, isAppConversation, isEphemeralConversation, isHiddenConversation, touchAppConversation } from "./app-registry";
 import { appToolBroker } from "./app-tools";
 import { addClaudeAccount, claudeLoginCommand, removeClaudeAccount } from "./providers/anthropic/accounts";
 import { claudeAccountReports } from "./providers/anthropic/account-pool";
@@ -2594,7 +2594,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       case "send_message": {
         // App clients may leave the prompt's time to the daemon's clock.
         if (typeof cmd.startedAt !== "number" || !Number.isFinite(cmd.startedAt)) cmd.startedAt = Date.now();
-        rememberSentImages(cmd.images);
+        // Ephemeral app conversations keep their images in memory only.
+        if (!isEphemeralConversation(cmd.convId)) rememberSentImages(cmd.images);
         if (isAppConversation(cmd.convId)) {
           // App conversations get no generated title: the first line of their first prompt.
           const summary = convStore.getIndexedSummary(cmd.convId);
@@ -3417,6 +3418,11 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         // subscription. Subscribe even if validation later rejects the unwind so
         // an error cannot leave the active TUI detached from future events.
         server.subscribe(client, cmd.convId);
+        // An unwind is a durable rewrite; an ephemeral conversation has nothing durable.
+        if (isEphemeralConversation(cmd.convId)) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Ephemeral app conversations cannot be unwound." });
+          break;
+        }
         // operationId was introduced together with the targeted response. It is
         // also a reconnect-safe capability signal if the hello has not arrived.
         if (typeof cmd.operationId === "string" && cmd.operationId.length > 0) {

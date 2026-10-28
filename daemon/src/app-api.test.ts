@@ -208,6 +208,8 @@ describe("creating app conversations", () => {
     convStore.markDirty(convId);
     convStore.flush(convId);
     convStore.flushAll();
+    expect(await run(client, { type: "unwind_conversation", reqId: "u", convId, userMessageIndex: 0, operationId: "op" }))
+      .toContainEqual(expect.objectContaining({ type: "error", reqId: "u", message: expect.stringMatching(/Ephemeral/) }));
     convStore.pushQueuedMessage(convId, "later", "next-turn");
     convStore.setSystemInstructions(convId, "changed");
     setActiveJob(convId, new AbortController(), Date.now());

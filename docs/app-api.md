@@ -66,8 +66,9 @@ bars or other conversations' events. `ping` answers only `pong`.
   A running turn, or one waiting on an app tool call, never expires. Expiry is
   checked every minute and at startup.
 - Ephemeral conversations are never written: not to the conversation store,
-  the queue file, pending instructions, the live-turns journal or the Claude
-  account file. Their default working directory is a temporary directory
+  the queue file, pending instructions, the image store, the live-turns
+  journal or the Claude account file (and they cannot be unwound, a durable
+  rewrite). Their default working directory is a temporary directory
   (`<tmp>/exocortex-apps-<uid>-<instance>/<convId>`) removed when they end;
   their Claude Code process keeps no session files (`persistSession: false`)
   and stays running between turns instead. What a crashed daemon left behind
@@ -355,6 +356,13 @@ object per line; long values cut with `…`, some progress events left out).
 ← {"type":"turn_result","convId":"1793159778876-1t8352","turnId":"1793159778878","text":"Per the lookup tool, \"zorp\" means a small blue frog that hums.","stopReason":"end_turn","usage":{"outputTokens":82,"durationMs":4012},"reqId":"r4"}
 (the client closes the connection: the ephemeral conversation ends, and nothing of it is left on disk)
 ```
+
+## Checking it end to end
+
+`scripts/dev/app-api-e2e/run.sh <worktree>` runs the whole protocol against a
+worktree's test daemon with small real model calls on both providers, and
+reads the requests on the wire through local logging proxies. It restarts and
+finally stops that test daemon.
 
 ## Writing a client
 
