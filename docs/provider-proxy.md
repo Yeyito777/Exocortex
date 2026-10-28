@@ -191,6 +191,36 @@ before. End-to-end test: `bun scripts/dev/client-exec-e2e.ts`.
   processes that outlive a daemon restart keep working.
 - Request bodies and websocket messages are capped at 32 MiB.
 
+## A key that can only borrow the login
+
+`exocortexd proxy` bridges the whole daemon protocol, so an SSH key that may
+run it can drive every conversation on the remote (and with it a shell),
+run `remote_bash`, or register its machine as the one the remote's
+`client_bash` goes to. For a machine that should only borrow the login (a
+phone, a shared box), force the restricted bridge in the remote's
+`~/.ssh/authorized_keys`:
+
+```
+restrict,command="/home/me/.local/bin/exocortexd proxy --link-only=anthropic" ssh-ed25519 AAAA… phone
+```
+
+`restrict` turns off the pty, port/agent/X11 forwarding and `~/.ssh/rc`;
+`command=` runs only the bridge whatever the client asks for. `--link-only`
+(`daemon/src/ipc-link-filter.ts`) parses every line and re-serializes what it
+passes, so the daemon reads exactly what was checked:
+
+- From the client only the model link passes: `provider_proxy_hello` (without
+  its `clientHost`, so the remote's `client_bash` never goes to that machine),
+  `_open`, `_ws_send`, `_cancel`, `_status`, `_consume_reset`, `_accounts` and
+  `_ping`, for the listed providers (`=anthropic`, `=openai`, or both by
+  default). `provider_proxy_exec` is answered with an error result, anything
+  else with `error`; neither reaches the daemon.
+- From the daemon only link events and the `error` answers to passed requests
+  go back; broadcasts (sent before the hello) are dropped.
+- The hello result gains the `link-only` feature (and loses `exec-alive`):
+  the linking daemon then does not offer `remote_bash`, and its turn notice
+  says every tool runs locally.
+
 ## Wire protocol
 
 Messages and the allowlist: `shared/src/provider-proxy.ts`. A link starts with
