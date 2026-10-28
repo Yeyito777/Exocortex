@@ -1981,6 +1981,24 @@ export function trashConversations(ids: string[], recordUndo = true): string[] {
   return moved;
 }
 
+/** Delete conversation files for good (app conversations): no trash, no undo entry. */
+export function purgeConversations(ids: string[]): string[] {
+  const purged: string[] = [];
+  for (const id of new Set(ids)) {
+    let existed = false;
+    for (const path of [convPath(id), sidebarPath(id), unwindPath(id)]) {
+      try {
+        unlinkSync(path);
+        if (path === convPath(id)) existed = true;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      }
+    }
+    if (existed) purged.push(id);
+  }
+  return purged;
+}
+
 /** Move a conversation file to trash instead of deleting it. */
 export function trashFile(id: string): void {
   trashConversations([id]);

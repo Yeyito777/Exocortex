@@ -356,7 +356,7 @@ export function recoverActiveGoals(server: DaemonServer, excludeConvIds: Iterabl
   const excluded = new Set(excludeConvIds);
   const scheduled: string[] = [];
 
-  for (const summary of convStore.listSummaries()) {
+  for (const summary of convStore.listAllSummaries()) {
     const convId = summary.id;
     if (excluded.has(convId)) continue;
     // The summary index already carries goal state. Do not parse every canonical

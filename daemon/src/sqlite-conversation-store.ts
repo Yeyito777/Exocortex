@@ -3088,6 +3088,27 @@ export class SqliteConversationStore implements ConversationRepository {
     return unique;
   }
 
+  /**
+   * Delete conversations for good (app conversations, docs/app-api.md): no
+   * trash, no undo entry. Rows referencing them cascade; payloads cloned from
+   * them are rehomed by the blob-owner trigger.
+   */
+  purgeConversations(ids: string[]): string[] {
+    const purged: string[] = [];
+    this.db.transaction(() => {
+      for (const id of new Set(ids)) {
+        const deleted = this.db.query("DELETE FROM conversations WHERE id=?").run(id).changes > 0;
+        for (const table of ["queued_messages", "btw_sessions", "btw_receipts", "import_sources"]) {
+          this.db.query(`DELETE FROM ${table} WHERE conversation_id=?`).run(id);
+        }
+        this.db.query("DELETE FROM conversation_runtime_revisions WHERE id=?").run(id);
+        this.loadedById.delete(id);
+        if (deleted) purged.push(id);
+      }
+    })();
+    return purged;
+  }
+
   trashFolderRecursive(entry: Extract<TrashStackEntry, { type: "folder_recursive" }>, recordUndo = true): boolean {
     const existing = entry.conversationIds.filter((id) => this.has(id));
     if (existing.length !== entry.conversationIds.length) return false;

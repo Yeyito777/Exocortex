@@ -12,7 +12,7 @@ import { isWindows } from "@exocortex/shared/paths";
 import { LineSplitter } from "./line-splitter";
 import { log } from "./log";
 import { budgetHistoryUpdatedEvent } from "./history-pagination";
-import type { ClientCapability, Command, Event, ProviderId, TokenStatsSnapshot, UsageData } from "./protocol";
+import type { AppClientInfo, ClientCapability, Command, Event, ProviderId, TokenStatsSnapshot, UsageData } from "./protocol";
 import { PROVIDER_PROXY_LINK_EVENT_TYPES } from "@exocortex/shared/provider-proxy";
 import type { SidebarDigest } from "@exocortex/shared/sidebar-digest";
 import type { SidebarViewHint } from "@exocortex/shared/sidebar-first-page";
@@ -39,6 +39,19 @@ export interface ConnectedClient {
   sidebarDigest?: SidebarDigest;
   /** sidebar-incremental: the view the next bootstrap's first page is for (used once). */
   sidebarView?: SidebarViewHint;
+  /**
+   * An app client (docs/app-api.md): it gets only answers to its requests and
+   * the events of conversations it subscribes to, never broadcasts.
+   */
+  app?: AppClientInfo;
+}
+
+/** The conversation an event is about, when it names one. */
+function eventConversationId(event: Event): string | undefined {
+  const named = event as { convId?: unknown; summary?: { id?: unknown } };
+  if (typeof named.convId === "string") return named.convId;
+  if (named.summary && typeof named.summary.id === "string") return named.summary.id;
+  return undefined;
 }
 
 export type CommandHandler = (client: ConnectedClient, command: Command) => void | Promise<void>;
@@ -68,6 +81,9 @@ export class DaemonServer {
   private clients = new Map<string, ConnectedClient>();
   private handler: CommandHandler;
   private socketPath: string;
+  private closeListeners = new Set<(client: ConnectedClient) => void>();
+  /** Hidden conversations' events reach only their subscribers (app-registry.ts). */
+  private isHiddenConversation: (convId: string) => boolean = () => false;
 
   constructor(socketPath: string, handler: CommandHandler) {
     this.socketPath = socketPath;
@@ -129,11 +145,46 @@ export class DaemonServer {
     socket.on("close", () => {
       this.clients.delete(id);
       log("info", `server: ${id} disconnected (${this.clients.size} remaining)`);
+      this.notifyClosed(client);
     });
     socket.on("error", (err) => {
       log("warn", `server: ${id} error: ${err.message}`);
       this.clients.delete(id);
+      this.notifyClosed(client);
     });
+  }
+
+  private readonly closed = new WeakSet<ConnectedClient>();
+
+  private notifyClosed(client: ConnectedClient): void {
+    if (this.closed.has(client)) return;
+    this.closed.add(client);
+    for (const listener of this.closeListeners) {
+      try { listener(client); } catch (err) {
+        log("error", `server: close listener failed for ${client.id}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+
+  /** Told once when a connection closes. */
+  onClientClosed(listener: (client: ConnectedClient) => void): () => void {
+    this.closeListeners.add(listener);
+    return () => this.closeListeners.delete(listener);
+  }
+
+  setHiddenConversationFilter(isHidden: (convId: string) => boolean): void {
+    this.isHiddenConversation = isHidden;
+  }
+
+  /**
+   * Whether a broadcast goes to this client. App clients and hidden
+   * conversations' events go only to subscribers; app clients also learn of a
+   * daemon shutdown.
+   */
+  private receivesBroadcast(client: ConnectedClient, event: Event, convId: string | undefined, hidden: boolean): boolean {
+    if (!client.app && !hidden) return true;
+    if (convId !== undefined && client.subscriptions.has(convId)) return true;
+    return client.app !== undefined && event.type === "daemon_shutdown";
   }
 
   private onData(client: ConnectedClient, data: Buffer | string): void {
@@ -188,7 +239,20 @@ export class DaemonServer {
   }
 
   broadcast(event: Event): void {
-    for (const client of this.clients.values()) this.sendTo(client, event);
+    const convId = eventConversationId(event);
+    const hidden = convId !== undefined && this.isHiddenConversation(convId);
+    for (const client of this.clients.values()) {
+      if (this.receivesBroadcast(client, event, convId, hidden)) this.sendTo(client, event);
+    }
+  }
+
+  /** broadcast() to everyone but `except`. */
+  broadcastExcept(event: Event, except: ConnectedClient): void {
+    const convId = eventConversationId(event);
+    const hidden = convId !== undefined && this.isHiddenConversation(convId);
+    for (const client of this.clients.values()) {
+      if (client !== except && this.receivesBroadcast(client, event, convId, hidden)) this.sendTo(client, event);
+    }
   }
 
   /** Only connections that asked for pushes; older clients poll with ping updateStatusOnly. */
@@ -208,6 +272,7 @@ export class DaemonServer {
   ): void {
     let legacy: Extract<Event, { type: "conversation_moved" }> | undefined;
     for (const client of this.clients.values()) {
+      if (client.app) continue;
       if (client.capabilities.has("sidebar-reorder-delta")) {
         this.sendTo(client, event);
       } else {
@@ -227,6 +292,7 @@ export class DaemonServer {
   ): void {
     let legacy: Extract<Event, { type: "conversation_moved" }> | undefined;
     for (const client of this.clients.values()) {
+      if (client.app) continue;
       if (client.capabilities.has("sidebar-state-patch")) {
         this.sendTo(client, event);
       } else {
@@ -244,7 +310,7 @@ export class DaemonServer {
   broadcastLegacyTokenStats(snapshot: () => TokenStatsSnapshot): void {
     let event: Extract<Event, { type: "token_stats" }> | undefined;
     for (const client of this.clients.values()) {
-      if (client.capabilities.has("token-stats-on-demand") || client.providerProxyLink) continue;
+      if (client.capabilities.has("token-stats-on-demand") || client.providerProxyLink || client.app) continue;
       this.sendTo(client, event ??= { type: "token_stats", stats: snapshot() });
     }
   }
@@ -310,8 +376,10 @@ export class DaemonServer {
       paginated: Extract<Event, { type: "history_updated" }>;
     },
   ): void {
+    const hidden = this.isHiddenConversation(event.convId);
     for (const client of this.clients.values()) {
       if (client !== requester && !broadcast) continue;
+      if (client !== requester && (client.app || hidden) && !client.subscriptions.has(event.convId)) continue;
       if (client.capabilities.has("targeted-unwind")) {
         this.sendTo(client, client === requester ? requesterEvent : event);
         continue;

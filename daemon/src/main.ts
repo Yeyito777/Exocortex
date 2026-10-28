@@ -41,6 +41,8 @@ import { onDaemonUpdateStatusChange, startDaemonUpdateStatus, stopDaemonUpdateSt
 import { connectivity } from "./connectivity";
 import { initExternalTools, stopExternalToolsAsync, getExternalToolCount, getSupervisedDaemonCount, getExternalToolStyles } from "./external-tools";
 import { recoverPendingTitles } from "./titlegen";
+import { isEphemeralConversation, loadAppRegistry } from "./app-registry";
+import { recoverAppConversations } from "./app-api";
 import { beginDaemonShutdown, DAEMON_RESTART_EXIT_CODE, getDaemonShutdownMode, resolveDaemonShutdownMode } from "./daemon-lifecycle";
 import { clearLiveTurns, clearStopRequest, hasFreshStopRequest, takeLiveTurnsLeftByUncleanExit, writeLiveTurns } from "./restart-markers";
 import { setRestartRecoverableJobsListener } from "./streaming";
@@ -142,7 +144,8 @@ async function startDaemon(): Promise<void> {
   if (turnsLeftByUncleanExit.length > 0) {
     log("warn", `exocortexd: the previous daemon exited without shutting down; replaying ${turnsLeftByUncleanExit.length} turn(s) it left running: ${turnsLeftByUncleanExit.join(", ")}`);
   }
-  setRestartRecoverableJobsListener(writeLiveTurns);
+  // Ephemeral app conversations end with the daemon: never journaled for replay.
+  setRestartRecoverableJobsListener(convIds => writeLiveTurns(convIds.filter(convId => !isEphemeralConversation(convId))));
 
   try {
     const migration = migrateGlobalInstructions();
@@ -308,10 +311,14 @@ async function startDaemon(): Promise<void> {
     log("error", `exocortexd: starting /proxy failed: ${formatFatal(err)}`);
   }
 
-  // Load persisted conversations
+  // Load persisted conversations; app conversations' records first, so hidden ones stay hidden.
+  loadAppRegistry();
   const conversationLoadStats = convStore.loadFromDisk();
   convStore.requireAsyncConversationLoading();
   profileMark("conversations_loaded", conversationLoadStats);
+  await recoverAppConversations().catch((err) => {
+    log("error", `exocortexd: recovering app conversations failed: ${formatFatal(err)}`);
+  });
   backgroundTaskRecovery = new BackgroundTaskRecovery({
     onConversationChanged: (convId) => { broadcastConversationUpdated(server, convId); },
     onComplete: (convId, completion) => { commandHandler?.backgroundTaskComplete(convId, completion); },
@@ -323,7 +330,7 @@ async function startDaemon(): Promise<void> {
   // their projections are created lazily on first open/save instead.
   if (!isWindows) startDisplayIndexBackfill();
   const prunedExternalNotificationSubscriptions = pruneExternalNotificationSubscriptions(
-    new Set(convStore.listSummaries().map(conversation => conversation.id)),
+    new Set(convStore.listAllSummaries().map(conversation => conversation.id)),
   );
   if (prunedExternalNotificationSubscriptions > 0) {
     log("info", `external notifications: pruned ${prunedExternalNotificationSubscriptions} stale subscription(s)`);

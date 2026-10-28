@@ -93,8 +93,16 @@ function getSelectedAvailableTools(allowedNames?: readonly string[], conversatio
   return available.filter(tool => allowed.has(tool.name));
 }
 
+/** Tools that exist only in one conversation: an app conversation's own tools (app-tools.ts). */
+type ConversationToolResolver = (conversationId: string, name: string) => Tool | undefined;
+let conversationToolResolver: ConversationToolResolver | null = null;
+
+export function setConversationToolResolver(resolver: ConversationToolResolver | null): void {
+  conversationToolResolver = resolver;
+}
+
 function getTool(name: string, conversationId?: string): Tool | undefined {
-  return builtinToolMap.get(name);
+  return (conversationId && conversationToolResolver?.(conversationId, name)) || builtinToolMap.get(name);
 }
 
 export function getRegisteredTools(conversationId?: string): Tool[] {

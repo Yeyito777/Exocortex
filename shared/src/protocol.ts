@@ -21,6 +21,8 @@ export type { SidebarViewHint };
 import type { ProviderProxiesEvent, ProviderProxyCommand, ProviderProxyInfo, ProviderProxyLinkCommand, ProviderProxyLinkEvent } from "./provider-proxy";
 import type { UserMacro } from "./user-macros";
 export type { UserMacro };
+import type { AppClientInfo, AppConversationInfo, AppLifetime, AppSystemSpec, AppToolsSpec, TurnStopReason } from "./app-api";
+export type { AppBuiltinTool, AppClientInfo, AppConversationInfo, AppLifetime, AppSystemBase, AppSystemSpec, AppToolDef, AppToolsSpec, TurnStopReason } from "./app-api";
 export type * from "./provider-proxy";
 export type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ToolCallPresentation, ImageAttachment, ImageRef, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus, ConversationBtw, UserMessageContextCheckpoint, ExternalNotificationDelivery, UserMessageAutomation };
 
@@ -163,6 +165,21 @@ export interface NewConversationCommand {
   goalMaxTimeMs?: number;
   /** @deprecated Retired; daemon rejects requests containing this field. */
   draftToolPolicyId?: string;
+  /**
+   * App conversation (docs/app-api.md): the app's name. Defaults to the name
+   * the connection declared in client_capabilities; the fields below need it.
+   */
+  app?: string;
+  /** App conversations only; default "saved". */
+  lifetime?: AppLifetime;
+  /** Temporary app conversations only: deleted this long after their last activity (default 1 h). */
+  idleTtlMs?: number;
+  /** App conversations only: the app's system prompt and what it is added to (default base "none"). */
+  system?: AppSystemSpec;
+  /** App conversations only: an existing absolute directory tools run in. Never created, moved or deleted. */
+  cwd?: string;
+  /** App conversations only: built-in tools by neutral name and the app's own tools (default none). */
+  tools?: AppToolsSpec;
 }
 
 export interface ParentNotificationTarget {
@@ -197,6 +214,8 @@ export interface SendMessageCommand {
   detached?: boolean;
   /** Optional parent conversation to notify when the detached turn completes. */
   notifyParent?: ParentNotificationTarget;
+  /** Answer this request with turn_result when the turn ends (docs/app-api.md). */
+  awaitResult?: boolean;
 }
 
 export interface ReplayConversationCommand {
@@ -303,7 +322,15 @@ export interface GetTokenStatsCommand {
 /** Connection-scoped feature negotiation for backwards-compatible events. */
 export interface ClientCapabilitiesCommand {
   type: "client_capabilities";
+  /** Answered with app_welcome when `app` is set; otherwise unanswered. */
+  reqId?: string;
   capabilities: ClientCapability[];
+  /**
+   * This connection is an app client (docs/app-api.md): it gets answers to its
+   * own requests and events for the conversations it owns or subscribes to,
+   * never the TUI's broadcasts. Answered with app_welcome.
+   */
+  app?: AppClientInfo;
   /**
    * The machine a TUI connected over /ssh runs on. The daemon sends that
    * connection client_exec_request for the model's client_bash calls.
@@ -1301,6 +1328,71 @@ export interface LogoutCommand {
   provider?: ProviderId;
 }
 
+// ── App API (docs/app-api.md) ───────────────────────────────────────
+
+/**
+ * Become the owner of an app conversation: its app tool calls come here (any
+ * still unanswered are sent again), and its events (it subscribes). Counts as
+ * activity. `tools.app` replaces the conversation's app tool definitions.
+ * Answered with app_conversation_attached.
+ */
+export interface AttachAppConversationCommand {
+  type: "attach_app_conversation";
+  reqId?: string;
+  convId: string;
+  tools?: Pick<AppToolsSpec, "app">;
+}
+
+/** The owner's answer to an app_tool_call. Unanswered; a late or duplicate result is ignored. */
+export interface AppToolResultCommand {
+  type: "app_tool_result";
+  convId: string;
+  callId: string;
+  output: string;
+  isError?: boolean;
+}
+
+/**
+ * Create an app conversation, send `prompt` and answer turn_result when the
+ * turn ends; conversation_created (same reqId) announces it first. App tools
+ * work during the call. An ephemeral one (the default) is deleted after the
+ * turn unless `keep`.
+ */
+export interface AppRunCommand {
+  type: "app_run";
+  reqId?: string;
+  /** Default: the name the connection declared. */
+  app?: string;
+  /** Optional client-generated conversation id (like new_conversation's). */
+  convId?: string;
+  /** Default "ephemeral". */
+  lifetime?: AppLifetime;
+  idleTtlMs?: number;
+  title?: string;
+  system?: AppSystemSpec;
+  tools?: AppToolsSpec;
+  provider?: ProviderId;
+  model?: ModelId;
+  effort?: EffortLevel;
+  cwd?: string;
+  prompt: string;
+  images?: ImageAttachment[];
+  /** The prompt's time in ms (the daemon's clock when absent); the turn_result's turnId is it as a string. */
+  startedAt?: number;
+  /** Keep an ephemeral conversation after the turn (it still ends with the connection). */
+  keep?: boolean;
+}
+
+/** List live app conversations (debugging, `exo list --apps`). Answered with app_conversations_list. */
+export interface ListAppConversationsCommand {
+  type: "list_app_conversations";
+  reqId?: string;
+  /** Only this app's. */
+  app?: string;
+  /** Also list saved ones (by default only hidden ones: temporary and ephemeral). */
+  includeSaved?: boolean;
+}
+
 export type Command =
   | PingCommand
   | GetTokenStatsCommand
@@ -1391,7 +1483,11 @@ export type Command =
   | AccountCommand
   | AccountsCommand
   | ConsumeUsageResetCommand
-  | LogoutCommand;
+  | LogoutCommand
+  | AttachAppConversationCommand
+  | AppToolResultCommand
+  | AppRunCommand
+  | ListAppConversationsCommand;
 
 // ── Events (daemon → client) ────────────────────────────────────────
 
@@ -1481,6 +1577,8 @@ export interface ConversationCreatedEvent {
   effort: EffortLevel;
   fastMode: FastMode;
   goal?: ConversationGoal | null;
+  /** App conversations: how the daemon recorded it. */
+  app?: AppConversationInfo;
 }
 
 export interface BtwStartedEvent {
@@ -1949,7 +2047,11 @@ export interface ConversationUnwoundEvent {
 
 export interface ConversationDeletedEvent {
   type: "conversation_deleted";
+  /** Set on the answer to the delete request of an app conversation. */
+  reqId?: string;
   convId: string;
+  /** App conversations: why it ended. */
+  reason?: "deleted" | "expired" | "owner_disconnected" | "run_finished";
 }
 
 export interface ConversationRestoredEvent {
@@ -2452,6 +2554,75 @@ export interface AuthStatusEvent {
   deviceCode?: DeviceCodeAuthPrompt;
 }
 
+// ── App API events (docs/app-api.md) ────────────────────────────────
+
+/** Answer to client_capabilities with `app`. */
+export interface AppWelcomeEvent {
+  type: "app_welcome";
+  reqId?: string;
+  /** APP_API_VERSION of this daemon; refuse one you do not support. */
+  appApiVersion: number;
+  app: string;
+  /** The daemon instance (`main`, or a worktree's name). */
+  instance: string;
+  pid: number;
+}
+
+/** The model called one of the app's tools: answer with app_tool_result. Sent to the conversation's owner. */
+export interface AppToolCallEvent {
+  type: "app_tool_call";
+  convId: string;
+  callId: string;
+  name: string;
+  input: Record<string, unknown>;
+}
+
+/** Stop working on an app tool call: its answer is no longer wanted. */
+export interface AppToolCancelEvent {
+  type: "app_tool_cancel";
+  convId: string;
+  callId: string;
+  reason: "aborted" | "timeout" | "ended";
+}
+
+/** Answer to send_message with awaitResult, and to app_run: the turn ended. */
+export interface TurnResultEvent {
+  type: "turn_result";
+  /** Only on the connection whose send_message/app_run awaited this turn. */
+  reqId?: string;
+  convId: string;
+  /**
+   * The turn's identity: the startedAt (ms, as a decimal string) of the prompt
+   * that started it. Unchanged when a turn interrupted by a daemon restart is
+   * replayed. Send a unique startedAt to match it after a reconnect.
+   */
+  turnId: string;
+  /** The final assistant message's text. */
+  text: string;
+  stopReason: TurnStopReason;
+  error?: string;
+  usage?: {
+    /** Output tokens over the whole turn (every model round). */
+    outputTokens: number;
+    durationMs: number;
+  };
+}
+
+export interface AppConversationAttachedEvent {
+  type: "app_conversation_attached";
+  reqId?: string;
+  convId: string;
+  conversation: AppConversationInfo;
+  /** The conversation's most recent turn_result (without reqId), so a turn that ended while no owner was connected still resolves. */
+  lastTurnResult?: TurnResultEvent;
+}
+
+export interface AppConversationsListEvent {
+  type: "app_conversations_list";
+  reqId?: string;
+  conversations: AppConversationInfo[];
+}
+
 export interface ErrorEvent {
   type: "error";
   reqId?: string;
@@ -2550,4 +2721,10 @@ export type Event =
   | ExternalNotificationSubscriptionsEvent
   | ExternalNotificationPublishResultEvent
   | AuthStatusEvent
+  | AppWelcomeEvent
+  | AppToolCallEvent
+  | AppToolCancelEvent
+  | TurnResultEvent
+  | AppConversationAttachedEvent
+  | AppConversationsListEvent
   | ErrorEvent;

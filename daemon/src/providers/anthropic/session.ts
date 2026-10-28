@@ -74,6 +74,12 @@ export interface ClaudeCodeSessionOptions {
   system?: string;
   /** Claude account (accounts.ts) the process is signed in as; default `main`. */
   account?: string;
+  /**
+   * Stay running between turns instead of closing when idle (ephemeral app
+   * conversations, which keep no session files to resume from). Closed when
+   * the conversation ends, or by a turn needing other settings.
+   */
+  keepAlive?: boolean;
 }
 
 /** What a turn sends into a running process. */
@@ -432,9 +438,11 @@ export class ClaudeCodeSession {
   /** Claude Code reports what becomes of each message it is sent; without that, queued input waits for the turn to end. */
   private reportsLifecycle = false;
   private closed = false;
+  private readonly keepAlive: boolean;
 
   constructor(private readonly convId: string | undefined, key: string, start: StartClaudeRuntime, options: ClaudeCodeSessionOptions = {}) {
     this.key = key;
+    this.keepAlive = options.keepAlive === true;
     this.account = options.account ?? MAIN_ACCOUNT_ID;
     this.system = systemFingerprint(options.system ?? "");
     this.relay = options.relay ?? null;
@@ -971,6 +979,7 @@ export class ClaudeCodeSession {
   /** Close once nothing needs the process: no turn, task, pending wake or interrupted turn. */
   private settle(): void {
     if (this.closed || this.turn || this.tasks.size > 0 || this.wakeId !== null || this.held || this.discard) return;
+    if (this.keepAlive) return;
     this.clearIdleTimer();
     this.idleTimer = setTimeout(() => this.close("idle with no background tasks"), IDLE_CLOSE_MS);
     this.idleTimer.unref?.();

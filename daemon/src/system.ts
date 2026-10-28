@@ -280,6 +280,24 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 }
 
 /**
+ * An app conversation's `agent` base on providers other than anthropic
+ * (docs/app-api.md): the environment header and the selected tools' hints,
+ * then the app's text. Never the global instructions, external tool hints or
+ * memories.
+ */
+export function buildAppAgentSystemPrompt(options: Pick<BuildSystemPromptOptions, "conversationId" | "workingDirectory" | "provider"> & {
+  /** The selected built-in tools (an app's own tools have no hints). */
+  toolNames: readonly string[];
+  text: string;
+}): string {
+  const parts = [buildEnvironmentHeader(options.conversationId, undefined, options.workingDirectory)];
+  const hints = options.toolNames.length > 0 ? buildToolSystemHints(options.toolNames, options.conversationId, options.provider) : "";
+  if (hints) parts.push(`# Internal tools\n${hints}`);
+  if (options.text) parts.push(options.text);
+  return parts.join("\n\n");
+}
+
+/**
  * Text appended to Claude Code's own system prompt on anthropic turns. Claude
  * Code supplies identity, environment and tool guidance, so Exocortex adds only
  * what it cannot know: a scoped subagent's role, external tools, and the app

@@ -336,6 +336,11 @@ export function trashConversations(ids: string[], recordUndo = true): string[] {
   return backend === "sqlite" ? store().trashConversations(ids, recordUndo) : jsonPersistence.trashConversations(ids, recordUndo);
 }
 
+/** Delete conversations for good (app conversations): no trash, no undo entry. */
+export function purgeConversations(ids: string[]): string[] {
+  return backend === "sqlite" ? store().purgeConversations(ids) : jsonPersistence.purgeConversations(ids);
+}
+
 export function trashFile(id: string): void {
   if (backend === "sqlite") store().trashConversations([id]);
   else jsonPersistence.trashFile(id);

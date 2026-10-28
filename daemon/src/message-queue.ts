@@ -1,3 +1,4 @@
+import { isEphemeralConversation } from "./app-registry";
 import { isFastMode, type FastMode } from "@exocortex/shared/messages";
 /**
  * Durable daemon-owned message queue.
@@ -60,6 +61,11 @@ function cloneEntry(entry: QueuedMessage): QueuedMessage {
   };
 }
 
+/** Ephemeral app conversations' queued messages live only in memory. */
+function durableMessages(entries: QueuedMessage[]): QueuedMessage[] {
+  return entries.some(entry => isEphemeralConversation(entry.convId)) ? entries.filter(entry => !isEphemeralConversation(entry.convId)) : entries;
+}
+
 function cloneMessages(): QueuedMessage[] {
   return messages.map(cloneEntry);
 }
@@ -70,7 +76,7 @@ function mutateAndCommit<T>(mutation: () => T): T {
   try {
     result = mutation();
     if (persistenceFailureForTest) throw persistenceFailureForTest;
-    persistence.saveQueuedMessages(messages);
+    persistence.saveQueuedMessages(durableMessages(messages));
   } catch (error) {
     messages = previous;
     throw error;
@@ -107,7 +113,7 @@ export function loadQueuedMessagesFromDisk(deliveredQueueIds: ReadonlySet<string
     return true;
   });
   if (messages.length !== loaded.length || unwindTombstones.size > 0) {
-    persistence.saveQueuedMessages(messages);
+    persistence.saveQueuedMessages(durableMessages(messages));
     persistence.acknowledgeRecoveredUnwindQueueCleanup();
   }
   changedListener?.(listQueuedMessages());
@@ -260,7 +266,7 @@ export function removeQueuedMessagesById(ids: Iterable<string>): number {
 
 /** Force the current in-memory queue snapshot to the durable queue file. */
 export function persistQueuedMessagesSnapshot(): void {
-  persistence.saveQueuedMessages(messages);
+  persistence.saveQueuedMessages(durableMessages(messages));
 }
 
 /** Remove the first ordinary queue entry with matching text. */

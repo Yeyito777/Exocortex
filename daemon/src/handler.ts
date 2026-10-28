@@ -91,6 +91,9 @@ import { cancelSuspendedTurn } from "./suspended-turns";
 import { runChronoCommand } from "./chrono-commands";
 import { inlineLongSleepStartedAt } from "@exocortex/shared/chrono";
 import { configureClaudeCodeSessions } from "./providers/anthropic/session";
+import { abandonAppCreate, appConversationInfo, appTitleFromPrompt, attachAppConversation, checkAppToolsForModel, configureAppApi, dropTurnAwait, endAppConversation, ensureAppFolder, listAppConversations, parseAppCreate, registerAppCreate, registerTurnAwait, setAppConversationOwner, shutdownAppConversations, welcomeAppClient, type AppCreateSpec } from "./app-api";
+import { getAppRecord, isAppConversation, isEphemeralConversation, isHiddenConversation, touchAppConversation } from "./app-registry";
+import { appToolBroker } from "./app-tools";
 import { addClaudeAccount, claudeLoginCommand, removeClaudeAccount } from "./providers/anthropic/accounts";
 import { claudeAccountReports } from "./providers/anthropic/account-pool";
 import { formatClaudeAccountReports } from "./providers/anthropic/account-report";
@@ -165,6 +168,9 @@ export function cliDelegationAutomation(
 
 export function createHandler(server: DaemonServer, options: HandlerOptions = {}): DaemonCommandHandler {
   const lifecycle = options;
+  const stopAppApi = configureAppApi(server);
+  /** The queue as the TUI sees it: hidden app conversations' entries are not shown. */
+  const visibleQueuedMessages = () => convStore.listQueuedMessages().filter(message => !isHiddenConversation(message.convId));
   /**
    * Every durable entry for a conversation, delivery-suspended or not.
    * Deduplication must see entries an in-progress unwind is gating.
@@ -625,6 +631,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   ) => convStore.getRenderSnapshot(convId, false, diagnostics);
 
   const shouldAutoGenerateTitle = (convId: string): boolean => {
+    // App conversations never cost a title model call (docs/app-api.md).
+    if (isAppConversation(convId)) return false;
     const title = convStore.getIndexedSummary(convId)?.title.trim() ?? "";
     return title === "" || isPendingTitle(title);
   };
@@ -1544,7 +1552,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   });
 
   convStore.setQueuedMessagesChangedListener((messages) => {
-    server.broadcast({ type: "queue_updated", messages });
+    server.broadcast({ type: "queue_updated", messages: messages.filter(message => !isHiddenConversation(message.convId)) });
     // Automated and message-end input waits for a boundary, but would end a
     // suspended chrono sleep; let a turn sleeping inside a chrono call decide.
     const queuedConvIds = new Set(messages
@@ -1569,6 +1577,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   const startingConversationCommands = new Map<string, Promise<void>>();
   const handleCommand = async function handleCommand(client: ConnectedClient, cmd: Command): Promise<void> {
     const convId = "convId" in cmd && typeof cmd.convId === "string" ? cmd.convId : null;
+    // Any command on a temporary app conversation keeps it from expiring.
+    if (convId !== null && isAppConversation(convId)) touchAppConversation(convId);
     const earlier = convId === null ? undefined : startingConversationCommands.get(convId);
     const warms = warmCommands.has(cmd.type) || cmd.type === "trim_conversation" || cmd.type === "set_system_instructions";
     let markStarted: (() => void) | undefined;
@@ -1669,6 +1679,11 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       }
 
       case "ping": {
+        // App clients get no bootstrap (docs/app-api.md).
+        if (client.app) {
+          server.sendTo(client, { type: "pong", reqId: cmd.reqId });
+          break;
+        }
         if (cmd.updateStatusOnly) {
           server.sendTo(client, { type: "pong", reqId: cmd.reqId, updateStatus: await getDaemonUpdateStatus() });
           break;
@@ -1706,7 +1721,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         if (!client.capabilities?.has("token-stats-on-demand")) {
           server.sendTo(client, { type: "token_stats", stats: getTokenStatsSnapshot() });
         }
-        server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages() });
+        server.sendTo(client, { type: "queue_updated", messages: visibleQueuedMessages() });
         server.sendTo(client, { type: "connectivity_status", ...connectivity.snapshot() });
         if (restOfList) server.sendTo(client, restOfList);
         for (const provider of getProviders()) {
@@ -1890,6 +1905,19 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Invalid or duplicate client-supplied conversation id" });
           break;
         }
+        // An app conversation (docs/app-api.md): validate its own fields first.
+        let appSpec: AppCreateSpec | null;
+        try {
+          appSpec = parseAppCreate(cmd, client);
+          if (appSpec) {
+            const refused = (["subagent", "delegation", "goalObjective", "initialMessage", "folderId", "titleContext"] as const)
+              .find(field => cmd[field] !== undefined && cmd[field] !== null && cmd[field] !== false);
+            if (refused) throw new Error(`${refused} is not available for app conversations`);
+          }
+        } catch (error) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: id, message: error instanceof Error ? error.message : String(error) });
+          break;
+        }
         const conversationDefaults = effectiveConversationDefaults();
         let delegationSelection: ReturnType<typeof resolveDelegationModel> | undefined;
         if (cmd.subagent || cmd.delegation) {
@@ -1934,6 +1962,12 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           break;
         }
         const fastMode = supportsFastMode(provider, model, requestedFastMode) ? requestedFastMode : false;
+        if (appSpec) {
+          try { checkAppToolsForModel(appSpec, provider, model); } catch (error) {
+            server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: id, message: error instanceof Error ? error.message : String(error) });
+            break;
+          }
+        }
         const initialMessage = cmd.initialMessage;
         const goalObjective = cmd.goalObjective?.trim();
         if (goalObjective && cmd.goalMaxTimeMs !== undefined && (!Number.isSafeInteger(cmd.goalMaxTimeMs) || cmd.goalMaxTimeMs <= 0)) {
@@ -1959,7 +1993,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         }
 
         const title = cmd.title ?? (initialMessage || goalObjective || titleContext ? PENDING_TITLE : undefined);
-        const previousSubagentSidebarState = cmd.subagent ? convStore.listSidebarState() : null;
+        const previousSubagentSidebarState = cmd.subagent || appSpec?.lifetime === "saved" ? convStore.listSidebarState() : null;
         const subagentFolder = cmd.subagent
           ? convStore.ensureTopLevelFolder(SUBAGENTS_FOLDER_NAME, { mutedOnCreate: true })
           : null;
@@ -1967,7 +2001,17 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           server.sendTo(client, { type: "error", reqId: cmd.reqId, message: `Failed to create ${SUBAGENTS_FOLDER_NAME} folder` });
           break;
         }
-        const folderId = subagentFolder?.id ?? cmd.folderId ?? null;
+        let appFolderId: string | null = null;
+        if (appSpec) {
+          try {
+            if (appSpec.lifetime === "saved") appFolderId = ensureAppFolder(appSpec.app);
+            registerAppCreate(id, appSpec);
+          } catch (error) {
+            server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: id, message: error instanceof Error ? error.message : String(error) });
+            break;
+          }
+        }
+        const folderId = subagentFolder?.id ?? appFolderId ?? cmd.folderId ?? null;
         // Its first message is told about the client machine and the goal (set
         // just below) like any other.
         const notices = initialMessage ? pendingTurnNotices({
@@ -1992,6 +2036,14 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             false,
             notices.map(notice => createModelVisibleSystemNotice(notice.text, model, notice.kind, initialMessage.startedAt)),
           );
+        } else if (appSpec) {
+          try {
+            convStore.create(id, provider, model, title?.trim().slice(0, 200), effort, fastMode, folderId);
+          } catch (error) {
+            abandonAppCreate(id);
+            throw error;
+          }
+          setAppConversationOwner(id, client);
         } else {
           convStore.create(id, provider, model, title, effort, fastMode, folderId);
         }
@@ -2005,8 +2057,9 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         const goalResult = goalObjective ? setConversationGoal(id, goalObjective, { maxTimeMs: cmd.goalMaxTimeMs }) : null;
         const goal = goalResult?.goal ?? null;
         if (goal) scheduleGoalTimeLimit(server, id);
-        log("info", `handler: created conversation ${id} (provider=${provider}, model=${model}, fastMode=${fastMode}, title="${title ?? ""}", initialMessage=${Boolean(initialMessage)}, folderId=${folderId ?? "root"})`);
+        log("info", `handler: created conversation ${id} (provider=${provider}, model=${model}, fastMode=${fastMode}, ${appSpec ? `app=${appSpec.app}, lifetime=${appSpec.lifetime}` : `title="${title ?? ""}"`}, initialMessage=${Boolean(initialMessage)}, folderId=${folderId ?? "root"})`);
 
+        const appRecord = appSpec ? getAppRecord(id) : undefined;
         server.sendTo(client, {
           type: "conversation_created",
           reqId: cmd.reqId,
@@ -2016,6 +2069,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           effort,
           fastMode,
           goal,
+          ...(appRecord ? { app: appConversationInfo(appRecord) } : {}),
         });
         broadcastConversationUpdated(server, id);
         if (previousSubagentSidebarState) broadcastSidebarStatePatch(previousSubagentSidebarState);
@@ -2087,6 +2141,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             reportsAlive: client.capabilities.has("client-exec-alive"),
           });
         }
+        if (cmd.app !== undefined) welcomeAppClient(client, cmd);
         break;
       }
 
@@ -2219,11 +2274,19 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       }
 
       case "btw_query": {
+        if (isAppConversation(cmd.convId)) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "BTW is not available in app conversations." });
+          break;
+        }
         btwManager.start(client, cmd);
         break;
       }
 
       case "btw_followup": {
+        if (isAppConversation(cmd.convId)) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "BTW is not available in app conversations." });
+          break;
+        }
         btwManager.followup(client, cmd);
         break;
       }
@@ -2529,24 +2592,44 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       // ── Assistant turn commands ───────────────────────────────────
 
       case "send_message": {
-        rememberSentImages(cmd.images);
+        // App clients may leave the prompt's time to the daemon's clock.
+        if (typeof cmd.startedAt !== "number" || !Number.isFinite(cmd.startedAt)) cmd.startedAt = Date.now();
+        // Ephemeral app conversations keep their images in memory only.
+        if (!isEphemeralConversation(cmd.convId)) rememberSentImages(cmd.images);
+        if (isAppConversation(cmd.convId)) {
+          // App conversations get no generated title: the first line of their first prompt.
+          const summary = convStore.getIndexedSummary(cmd.convId);
+          if (summary && !summary.title.trim() && cmd.text.trim()) convStore.rename(cmd.convId, appTitleFromPrompt(cmd.text), false);
+        }
+        const awaited = cmd.awaitResult === true ? { client, reqId: cmd.reqId, convId: cmd.convId, turnId: String(cmd.startedAt) } : null;
+        // Answered with turn_result when its turn ends (app-api.ts), unless refused before it starts.
+        if (awaited) registerTurnAwait(client, awaited.reqId, awaited.convId, awaited.turnId);
+        const dropAwait = (outcome?: AssistantTurnOutcome) => {
+          if (awaited && !outcome?.suspended) dropTurnAwait(client, awaited.reqId, awaited.convId, awaited.turnId);
+        };
         const target = convStore.getPolicyMetadata(cmd.convId);
         if (target && (cmd.delegation || target.subagentPolicy)) {
           try { assertDelegationModel(target.provider, target.model, cmd.legacy); }
           catch (error) {
+            dropAwait();
             server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: error instanceof Error ? error.message : String(error) });
             break;
           }
         }
         if (target?.provider === "openai"
-            && rejectDuringOpenAIAccountMutation(client, cmd.reqId, cmd.convId)) break;
+            && rejectDuringOpenAIAccountMutation(client, cmd.reqId, cmd.convId)) {
+          dropAwait();
+          break;
+        }
         const callbacks = buildOrchestrationCallbacks(cmd.convId);
         if (cmd.detached) {
           if (cmd.notifyParent?.convId === cmd.convId) {
+            dropAwait();
             server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Cannot notify the same conversation that is running the detached task." });
             break;
           }
           if (convStore.isStreaming(cmd.convId)) {
+            dropAwait();
             server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Already streaming" });
             break;
           }
@@ -2559,6 +2642,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             try {
               notificationRuntime.begin(cmd.notifyParent, cmd.convId, cmd.text, cmd.startedAt, null, trackAsSubagent);
             } catch (err) {
+              dropAwait();
               server.sendTo(client, {
                 type: "error",
                 reqId: cmd.reqId,
@@ -2589,10 +2673,12 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           );
           maybeStartAutoTitleGeneration(cmd.convId);
           void turn.then((outcome) => {
+            dropAwait(outcome);
             if (outcome.suspended || outcome.notificationsSettled) return;
             finishTrackedSubagent();
             if (cmd.notifyParent) notificationRuntime.complete(cmd.convId, outcome);
           }).catch((err) => {
+            dropAwait();
             finishTrackedSubagent();
             const message = err instanceof Error ? err.message : String(err);
             log("error", `handler: detached send failed for ${cmd.convId}: ${message}`);
@@ -2618,7 +2704,12 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           automation ? { subagentMaxDepth: null, automation, replyAwaited: true } : { subagentMaxDepth: null },
         );
         maybeStartAutoTitleGeneration(cmd.convId);
-        await outcome;
+        try {
+          dropAwait(await outcome);
+        } catch (error) {
+          dropAwait();
+          throw error;
+        }
         break;
       }
 
@@ -2815,11 +2906,18 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
 
       case "list_conversations": {
         server.sendTo(client, conversationsListFor(client, cmd.reqId));
-        server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages() });
+        server.sendTo(client, { type: "queue_updated", messages: visibleQueuedMessages() });
         break;
       }
 
       case "delete_conversation": {
+        // App conversations are deleted for good, with what the daemon created for them.
+        if (isAppConversation(cmd.convId)) {
+          if (!await endAppConversation(cmd.convId, "deleted", { client, reqId: cmd.reqId })) {
+            server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
+          }
+          break;
+        }
         const ok = convStore.remove(cmd.convId);
         if (ok) {
           log("info", `handler: deleted conversation ${cmd.convId}`);
@@ -2831,7 +2929,11 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       }
 
       case "delete_conversations": {
-        const deleted = convStore.removeMany(cmd.convIds);
+        const appIds = cmd.convIds.filter(isAppConversation);
+        for (const convId of appIds) await endAppConversation(convId, "deleted");
+        const ordinaryIds = cmd.convIds.filter(convId => !appIds.includes(convId));
+        const deleted = ordinaryIds.length > 0 ? convStore.removeMany(ordinaryIds) : [];
+        if (appIds.length > 0 && deleted.length === 0) break;
         if (deleted.length > 0) {
           log("info", `handler: deleted ${deleted.length} conversations`);
           for (const convId of deleted) server.broadcast({ type: "conversation_deleted", convId });
@@ -3316,6 +3418,11 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         // subscription. Subscribe even if validation later rejects the unwind so
         // an error cannot leave the active TUI detached from future events.
         server.subscribe(client, cmd.convId);
+        // An unwind is a durable rewrite; an ephemeral conversation has nothing durable.
+        if (isEphemeralConversation(cmd.convId)) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Ephemeral app conversations cannot be unwound." });
+          break;
+        }
         // operationId was introduced together with the targeted response. It is
         // also a reconnect-safe capability signal if the hello has not arrived.
         if (typeof cmd.operationId === "string" && cmd.operationId.length > 0) {
@@ -4089,8 +4196,73 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         break;
       }
 
+      // ── App API (docs/app-api.md) ─────────────────────────────────
+
+      case "attach_app_conversation": {
+        attachAppConversation(client, cmd);
+        break;
+      }
+
+      case "app_tool_result": {
+        // Late, duplicate and unknown results are ignored.
+        appToolBroker.resolve(cmd.convId, cmd.callId, cmd.output, cmd.isError);
+        break;
+      }
+
+      case "list_app_conversations": {
+        listAppConversations(client, cmd);
+        break;
+      }
+
+      case "app_run": {
+        const fail = (message: string) => server.sendTo(client, { type: "error", reqId: cmd.reqId, message });
+        if (typeof cmd.prompt !== "string" || (!cmd.prompt.trim() && !cmd.images?.length)) {
+          fail("app_run needs a prompt");
+          break;
+        }
+        if (cmd.app === undefined && !client.app) {
+          fail("app_run needs an app: name it (app) or declare one in client_capabilities");
+          break;
+        }
+        let id = cmd.convId ?? convStore.generateId();
+        while (!cmd.convId && (convStore.hasConversation(id) || convStore.hasDeletedConversation(id))) id = convStore.generateId();
+        const lifetime = cmd.lifetime ?? "ephemeral";
+        const startedAt = typeof cmd.startedAt === "number" && Number.isFinite(cmd.startedAt) ? cmd.startedAt : Date.now();
+        // Validation answers `error` with this reqId before anything is created.
+        await handleCommand(client, {
+          type: "new_conversation",
+          reqId: cmd.reqId,
+          convId: id,
+          ...(cmd.app !== undefined ? { app: cmd.app } : {}),
+          lifetime,
+          ...(cmd.idleTtlMs !== undefined ? { idleTtlMs: cmd.idleTtlMs } : {}),
+          title: cmd.title ?? appTitleFromPrompt(cmd.prompt),
+          ...(cmd.system !== undefined ? { system: cmd.system } : {}),
+          ...(cmd.tools !== undefined ? { tools: cmd.tools } : {}),
+          ...(cmd.provider !== undefined ? { provider: cmd.provider } : {}),
+          ...(cmd.model !== undefined ? { model: cmd.model } : {}),
+          ...(cmd.effort !== undefined ? { effort: cmd.effort } : {}),
+          ...(cmd.cwd !== undefined ? { cwd: cmd.cwd } : {}),
+        });
+        if (!isAppConversation(id) || !convStore.hasConversation(id)) break;
+        try {
+          await handleCommand(client, {
+            type: "send_message",
+            reqId: cmd.reqId,
+            convId: id,
+            text: cmd.prompt,
+            startedAt,
+            ...(cmd.images?.length ? { images: cmd.images } : {}),
+            awaitResult: true,
+          });
+        } finally {
+          if (lifetime === "ephemeral" && cmd.keep !== true) await endAppConversation(id, "run_finished");
+        }
+        break;
+      }
+
       default: {
-        const unknown = cmd as Record<string, unknown>;
+        const unknown = cmd as unknown as Record<string, unknown>;
         server.sendTo(client, {
           type: "error",
           reqId: unknown.reqId as string | undefined,
@@ -4109,6 +4281,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
 
   return Object.assign(handleCommand, {
     stop: async () => {
+      await shutdownAppConversations();
+      stopAppApi();
       unsubscribeConnectivity();
       setApiKeyUsageRecordedListener(null);
       if (apiKeyDayTimer) clearTimeout(apiKeyDayTimer);

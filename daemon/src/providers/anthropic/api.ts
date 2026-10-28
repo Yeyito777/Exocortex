@@ -33,7 +33,9 @@ import { noteAccountUsageRefusal } from "./usage";
 import { noteClaudeAccountWorking } from "./auth-cache";
 import { accountSwitchNotice } from "./routing";
 import { isProviderProxied, onProxiedClaudeMove, providerProxyRoute } from "../../provider-proxy/route";
-import { claudeProcessPrompt, createHostToolServer, hostToolDefs, type HostToolBinding } from "./host-tools";
+import { claudeProcessPrompt, createAppToolServer, createHostToolServer, hostToolDefs, type HostToolBinding } from "./host-tools";
+import type { ClaudeCodeAppSurface } from "../types";
+import { appToolCallView } from "../../app-tools";
 import { buildClaudeHelperPrompt, buildClaudeUserContent, planClaudePrompt, trailingUserMessages, type ClaudePromptPlan } from "./prompt";
 import { ClaudeRelay, reconnectRelays, relaysEnabled } from "./relay-client";
 import type { RelayMeta } from "./relay-protocol";
@@ -47,6 +49,7 @@ const SCHEDULER_TOOLS = ["ScheduleWakeup", "CronCreate", "CronDelete", "CronList
 /** Claude Code's own subagent tool (`Task` is its legacy name); Exocortex delegates through exo. */
 const SUBAGENT_TOOLS = ["Agent", "Task"];
 const STDERR_TAIL_CHARS = 4000;
+const APP_SESSION_TITLE = "Exocortex app conversation";
 
 type ClaudeEffort = NonNullable<ClaudeQueryOptions["effort"]>;
 
@@ -72,9 +75,57 @@ function thinkingFor(effort: EffortLevel | undefined): ClaudeQueryOptions["think
     : { type: "adaptive", display: "summarized" };
 }
 
-/** Conversation turns carry Exocortex's tool surface; helper calls do not. */
+/** Conversation turns carry Exocortex's tool surface (an app conversation's may be empty); helper calls do not. */
 function isAgentTurn(options: StreamOptions): boolean {
-  return Array.isArray(options.tools) && options.tools.length > 0;
+  return (Array.isArray(options.tools) && options.tools.length > 0) || options.claudeCodeApp !== undefined;
+}
+
+/**
+ * What an app conversation (docs/app-api.md) changes about a Claude Code
+ * process: on bases `none` and `agent` no filesystem settings (so no
+ * CLAUDE.md, hooks or user settings), no auto-memory, skills, or MCP servers
+ * but Exocortex's own, and only the selected built-in tools. Ordinary
+ * conversations get exactly what they always did.
+ */
+function claudeCodeSurfaceOptions(system: string | undefined, app: ClaudeCodeAppSurface | undefined, env: ClaudeQueryOptions["env"]): Partial<ClaudeQueryOptions> {
+  if (!app) return { systemPrompt: systemPromptOption(system), settingSources: ["user", "project", "local"] };
+  // A session title of its own spares Claude Code a title-generating model call.
+  const common = { title: APP_SESSION_TITLE, ...(app.tools ? { tools: app.tools } : {}) };
+  if (app.base === "full") {
+    return { systemPrompt: systemPromptOption(system), settingSources: ["user", "project", "local"], ...common };
+  }
+  return {
+    ...common,
+    systemPrompt: app.base === "none" ? system ?? "" : systemPromptOption(system),
+    settingSources: [],
+    strictMcpConfig: true,
+    skills: [],
+    env: {
+      ...env,
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+      CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1",
+      ENABLE_CLAUDEAI_MCP_SERVERS: "false",
+    },
+  };
+}
+
+/** The in-process MCP servers of a turn: Exocortex's host tools and, in an app conversation, the app's own tools. */
+function mcpServerOptions(
+  hostToolsList: unknown[] | undefined,
+  app: Pick<ClaudeCodeAppSurface, "appTools"> | undefined,
+  binding: (() => Promise<HostToolBinding>) | null,
+): Pick<ClaudeQueryOptions, "mcpServers"> {
+  const hostTools = createHostToolServer(hostToolsList, binding);
+  const appTools = app ? createAppToolServer(app.appTools, binding) : null;
+  if (!hostTools && !appTools) return {};
+  return { mcpServers: { ...(hostTools ? { [hostTools.name]: hostTools } : {}), ...(appTools ? { [appTools.name]: appTools } : {}) } };
+}
+
+/** What a process is started with that a later turn may need changed; compared by fingerprint, never sent. */
+function processPrompt(options: StreamOptions): string {
+  const prompt = claudeProcessPrompt(options.system ?? "", hostToolDefs(options.tools));
+  const app = options.claudeCodeApp;
+  return app ? `${prompt}\u0000${JSON.stringify([app.base, app.tools ?? null, app.appTools])}` : prompt;
 }
 
 /** Behave like the `claude` CLI started in the workspace, plus Exocortex's additions (see buildClaudeCodeSystemAppend). */
@@ -106,11 +157,11 @@ export function agentTurnOptions(
   account: string,
   convId?: string,
 ): ClaudeQueryOptions {
-  const hostTools = createHostToolServer(options.tools, options.toolExecutor ? binding : null);
+  const app = options.claudeCodeApp;
+  const base = baseOptions(model, options, cwd, stderr, account, convId);
   return {
-    ...baseOptions(model, options, cwd, stderr, account, convId),
-    systemPrompt: systemPromptOption(options.system),
-    settingSources: ["user", "project", "local"],
+    ...base,
+    ...claudeCodeSurfaceOptions(options.system, app, base.env),
     // Exocortex has no permission prompt UI; Claude Code runs unattended.
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
@@ -120,7 +171,9 @@ export function agentTurnOptions(
     // Exocortex can stop each background task (its Tasks UI), so an interrupt
     // stops only the turn and spares them, as in Claude Code itself.
     perTaskStopAffordance: true,
-    ...(hostTools ? { mcpServers: { [hostTools.name]: hostTools } } : {}),
+    ...mcpServerOptions(options.tools, app, options.toolExecutor ? binding : null),
+    // An ephemeral app conversation leaves no session files: its process stays instead.
+    ...(app?.ephemeral ? { persistSession: false } : {}),
     ...(plan.resume ? { resume: plan.resume.sessionId, resumeSessionAt: plan.resume.resumeAt, forkSession: true } : {}),
   };
 }
@@ -199,9 +252,10 @@ function accountCallbacks(callbacks: StreamCallbacks, account: string): StreamCa
   };
 }
 
-function accountStreamState(callbacks: StreamCallbacks, cwd: string, account: string, promptUuid: string | null = null): ClaudeStreamState {
+function accountStreamState(callbacks: StreamCallbacks, cwd: string, account: string, promptUuid: string | null = null, appConvId?: string): ClaudeStreamState {
   const state = createClaudeStreamState(callbacks, cwd, promptUuid);
   state.account = account === MAIN_ACCOUNT_ID ? null : account;
+  if (appConvId) state.appToolCall = appToolCallView(appConvId);
   return state;
 }
 
@@ -281,11 +335,13 @@ async function runStreamMessage(
   // The conversation's Claude Code process is still running (background tasks,
   // or a quick follow-up): continue in it.
   // A process takes its system prompt and the MCP tools' text when it starts: either changing starts a new one.
-  const system = claudeProcessPrompt(options.system ?? "", hostToolDefs(options.tools));
+  const system = processPrompt(options);
+  const app = options.claudeCodeApp;
+  const appConvId = app ? convId : undefined;
   if (live?.canContinue(key, plan.resume, plan.pending, system)) {
     const input = live.planInput(plan.pending);
     log("info", `anthropic: Claude Code turn in its running process (model=${model}, effort=${options.effort ?? "default"}, cwd=${cwd}, account=${account}, session=${live.sessionId}, input=${input.kind})`);
-    const state = accountStreamState(callbacks, cwd, account, input.kind === "prompt" ? randomUUID() : null);
+    const state = accountStreamState(callbacks, cwd, account, input.kind === "prompt" ? randomUUID() : null, appConvId);
     live.rememberAgentTitles(messages);
     if (input.kind === "none") {
       state.done = true;
@@ -307,13 +363,15 @@ async function runStreamMessage(
 
   const start = (resumePlan: ClaudePromptPlan) => {
     const history = resumePlan.resume ? null : historyMark(resumePlan.pending);
-    // A conversation's process runs under a relay, so it can outlive this daemon.
-    const meta: RelayMeta | null = convId && relaysEnabled() ? {
+    // A conversation's process runs under a relay, so it can outlive this daemon
+    // (not an ephemeral app conversation's, which ends with it).
+    const meta: RelayMeta | null = convId && relaysEnabled() && !app?.ephemeral ? {
       convId,
       key,
       cwd,
       hostTools: hostToolDefs(options.tools),
       ...(options.system ? { systemAppend: options.system } : {}),
+      ...(app ? { app: { base: app.base, ...(app.tools ? { tools: app.tools } : {}), appTools: app.appTools } } : {}),
       resume: resumePlan.resume ? { sessionId: resumePlan.resume.sessionId, resumeAt: resumePlan.resume.resumeAt } : null,
       history,
       ...(account !== MAIN_ACCOUNT_ID ? { account } : {}),
@@ -325,12 +383,12 @@ async function runStreamMessage(
         ...agentTurnOptions(model, options, cwd, resumePlan, onStderr, binding, account, convId),
         ...(relay && meta ? { spawnClaudeCodeProcess: spawnOptions => relay.launch(spawnOptions, meta) } : {}),
       },
-    }), { relay, resume: resumePlan.resume, history, system, account });
+    }), { relay, resume: resumePlan.resume, history, system, account, ...(app?.ephemeral ? { keepAlive: true } : {}) });
     session.rememberAgentTitles(messages);
     return session;
   };
   log("info", `anthropic: Claude Code turn (model=${model}, effort=${options.effort ?? "default"}, cwd=${cwd}, account=${account}, resume=${plan.resume?.sessionId ?? "none"}, pending=${plan.pending.length})`);
-  const state = accountStreamState(callbacks, cwd, account, randomUUID());
+  const state = accountStreamState(callbacks, cwd, account, randomUUID(), appConvId);
   const session = start(plan);
   try {
     return await session.run(state, buildClaudeUserContent(plan.pending), options.toolExecutor, signal, trailingUserMessages(plan.pending), options.queuedInput);
@@ -345,7 +403,7 @@ async function runStreamMessage(
     const fresh: ClaudePromptPlan = { resume: null, pending: messages };
     stderr = "";
     try {
-      return await start(fresh).run(accountStreamState(callbacks, cwd, account, randomUUID()), buildClaudeUserContent(fresh.pending), options.toolExecutor, signal, trailingUserMessages(fresh.pending), options.queuedInput);
+      return await start(fresh).run(accountStreamState(callbacks, cwd, account, randomUUID(), appConvId), buildClaudeUserContent(fresh.pending), options.toolExecutor, signal, trailingUserMessages(fresh.pending), options.queuedInput);
     } catch (freshError) {
       if (!signal?.aborted) logStderr(freshError, stderr);
       throw freshError;
@@ -375,22 +433,29 @@ export async function adoptClaudeCodeProcesses(hasConversation: (convId: string)
       continue;
     }
     openClaudeCodeSession(meta.convId, meta.key, (input, binding) => {
-      const hostTools = createHostToolServer(meta.hostTools, binding);
+      const app = meta.app ? { ...meta.app, ephemeral: false } : undefined;
+      const processOptions = claudeProcessOptions(meta.cwd, meta.account, meta.convId);
       return claudeSdks().claude.query({
         prompt: input,
         // Claude Code is already running: only what the SDK re-sends when it
         // connects matters, and it matches what started the process.
         options: {
-          ...claudeProcessOptions(meta.cwd, meta.account, meta.convId),
-          systemPrompt: systemPromptOption(meta.systemAppend),
+          ...processOptions,
+          ...(app ? claudeCodeSurfaceOptions(meta.systemAppend, app, processOptions.env) : { systemPrompt: systemPromptOption(meta.systemAppend) }),
           perTaskStopAffordance: true,
           // Same hooks as at start, so the process's registered callback ids still resolve.
           hooks: claudeCodeSafetyHooks(meta.cwd),
-          ...(hostTools ? { mcpServers: { [hostTools.name]: hostTools } } : {}),
+          ...mcpServerOptions(meta.hostTools, app, binding),
           spawnClaudeCodeProcess: () => relay,
         },
       });
-    }, { relay, system: claudeProcessPrompt(meta.systemAppend ?? "", meta.hostTools), ...(meta.account ? { account: meta.account } : {}) });
+    }, {
+      relay,
+      system: meta.app
+        ? `${claudeProcessPrompt(meta.systemAppend ?? "", meta.hostTools)}\u0000${JSON.stringify([meta.app.base, meta.app.tools ?? null, meta.app.appTools])}`
+        : claudeProcessPrompt(meta.systemAppend ?? "", meta.hostTools),
+      ...(meta.account ? { account: meta.account } : {}),
+    });
     if (hello.pending) pending.push(meta.convId);
     log("info", `anthropic: adopted the Claude Code process for ${meta.convId} (relay pid ${hello.pid}${meta.account ? `, account ${meta.account}` : ""}${hello.pending ? ", turn running" : ""})`);
   }

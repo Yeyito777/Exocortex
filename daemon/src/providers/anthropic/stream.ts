@@ -31,9 +31,14 @@ type SdkRecord = Record<string, unknown>;
 
 export class ClaudeOverageError extends Error {}
 
+/** How an app conversation's own tool call is recorded (docs/app-api.md). */
+export type ClaudeAppToolCallView = (name: string, input: Record<string, unknown>) => { summary: string; presentation: import("../../messages").ToolCallPresentation } | undefined;
+
 export interface ClaudeStreamState {
   callbacks: StreamCallbacks;
   cwd: string;
+  /** App conversations: their own tools (the `app` MCP server) are recorded under their bare name, shown this way. */
+  appToolCall?: ClaudeAppToolCallView;
   /** Claude account (accounts.ts) the process runs on; null for `main`. */
   account: string | null;
   /** uuid of the prompt Exocortex sent; only the result answering it ends the turn. Null ends on any result. */
@@ -259,8 +264,19 @@ function handleAssistantMessage(state: ClaudeStreamState, message: SdkRecord): v
       pushMessageContent(state, "assistant", { type: "thinking", thinking, signature });
     } else if (block.type === "tool_use") {
       const id = str(block.id) ?? "";
-      const name = exocortexToolName(str(block.name) ?? "tool");
+      const rawName = str(block.name) ?? "tool";
+      const name = exocortexToolName(rawName, state.appToolCall !== undefined);
       const input = asRecord(block.input) ?? {};
+      const appCall = name !== rawName ? state.appToolCall?.(name, input) : undefined;
+      if (appCall) {
+        const { summary, presentation } = appCall;
+        state.toolNames.set(id, name);
+        state.openToolUses.add(id);
+        state.blocks.push({ type: "tool_call", id, name, input, summary, presentation });
+        pushMessageContent(state, "assistant", { type: "tool_use", id, name, input, presentation });
+        state.callbacks.onToolCall?.({ type: "tool_call", toolCallId: id, toolName: name, input, summary, presentation });
+        continue;
+      }
       const { label, detail } = summarizeClaudeCodeTool(name, input, state.taskTitles);
       const summary = detail || label;
       // A task named only while its process remembers it keeps that name in history.

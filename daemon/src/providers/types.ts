@@ -210,8 +210,29 @@ export interface StreamRequestBudget {
   attempts: number;
 }
 
+/**
+ * An app conversation's Claude Code surface (docs/app-api.md). Ordinary
+ * conversations have none and run Claude Code as the `claude` CLI would.
+ */
+export interface ClaudeCodeAppSurface {
+  /**
+   * none: `system` is the whole system prompt; agent: it is appended to Claude
+   * Code's own. Both without settings, CLAUDE.md, memory, skills or user MCP
+   * servers. full: as an ordinary conversation.
+   */
+  base: "none" | "agent" | "full";
+  /** Claude Code built-ins to enable; undefined keeps its full set. */
+  tools?: string[];
+  /** The app's own tools, served by the `app` MCP server. */
+  appTools: { name: string; description: string; input_schema: Record<string, unknown> }[];
+  /** Ephemeral: no session files and no relay; the process stays until the conversation ends. */
+  ephemeral: boolean;
+}
+
 export interface StreamOptions {
   system?: string;
+  /** App conversations under Claude Code: exactly this surface. */
+  claudeCodeApp?: ClaudeCodeAppSurface;
   signal?: AbortSignal;
   maxTokens?: number;
   tools?: unknown[];
