@@ -22,5 +22,11 @@ From the shell, `exo run` (external exo CLI) is the same one-shot:
 lines with a scripted model; every client's tests run against it
 (`bun clients/testing/fake-daemon.ts --socket PATH`).
 
+Full clients of the ordinary daemon protocol ([daemon IPC](../docs/daemon-ipc.md)),
+besides the TUI: the OSS Phone's native Exocortex app, in Rust
+([a26-system `src/exocortex/`](https://github.com/Yeyito777/a26-system),
+`a26-system --app exocortex`), and its notification bridge
+`exocortex-notify`.
+
 Writing a client in another language: read [docs/app-api.md](../docs/app-api.md)
 ("Writing a client"); the Python module is the shortest one to port.
