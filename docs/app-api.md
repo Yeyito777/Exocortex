@@ -376,4 +376,4 @@ handler table for its app tools (answer every `app_tool_call` exactly once,
 stop work on `app_tool_cancel`), and, for saved or temporary conversations, a
 reconnect that sends `attach_app_conversation` for each conversation it owned
 and settles pending sends from live `turn_result`s and `lastTurnResult` by
-`convId` + `turnId`. Reference clients live under `clients/`.
+`convId` + `turnId`. Reference clients (TypeScript, Python, Lua for Neovim) live under [`clients/`](../clients/README.md).
