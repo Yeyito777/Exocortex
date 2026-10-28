@@ -4090,7 +4090,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       }
 
       default: {
-        const unknown = cmd as Record<string, unknown>;
+        const unknown = cmd as unknown as Record<string, unknown>;
         server.sendTo(client, {
           type: "error",
           reqId: unknown.reqId as string | undefined,

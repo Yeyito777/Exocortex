@@ -26,7 +26,8 @@
     "./image-sniff": "./src/image-sniff.ts",
     "./ssh-transport": "./src/ssh-transport.ts",
     "./command-exec": "./src/command-exec.ts",
-    "./provider-proxy": "./src/provider-proxy.ts"
+    "./provider-proxy": "./src/provider-proxy.ts",
+    "./app-api": "./src/app-api.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",
