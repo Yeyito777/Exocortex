@@ -11,6 +11,9 @@ Use a unique `reqId`, consume the corresponding response/error, and close the
 connection. Broadcasts can arrive between responses. A timeout is not rollback:
 inspect state before retrying a mutation.
 
+Programs that use the daemon as a dependency (their own conversations, prompts
+and tools) speak the [app API](app-api.md) over this same socket.
+
 Common commands include `list_conversations`, `load_conversation`,
 `load_conversation_history`, `new_conversation`, `send_message`, `create_folder`, and
 `move_sidebar_items`. Read their exact fields in the spec before sending.
