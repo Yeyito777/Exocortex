@@ -22,6 +22,8 @@ ADHOC=0
 UPDATE_PLIST=1
 RELOAD=0
 UPDATE_TOOLS=1
+IF_CHANGED=0
+QUIET=0
 
 usage() {
   cat <<EOF
@@ -37,6 +39,9 @@ Usage: scripts/macos/build-launcher.sh [options]
                     first fast-forwards the external-tools/* repos
                     (see update-external-tools.sh)
   --no-tools-update Skip updating external-tools/* on --reload
+  --if-changed      Keep the installed app when its sources and signing
+                    identity are unchanged (an ad-hoc rebuild resets consents)
+  --quiet           Short output: no next steps, one-line ad-hoc warning
   -h, --help        Show this help
 EOF
 }
@@ -49,6 +54,8 @@ while (($# > 0)); do
     --no-plist) UPDATE_PLIST=0 ;;
     --reload) RELOAD=1 ;;
     --no-tools-update) UPDATE_TOOLS=0 ;;
+    --if-changed) IF_CHANGED=1 ;;
+    --quiet) QUIET=1 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "  ✗ Unknown option: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -95,7 +102,10 @@ elif [[ -z "$IDENTITY" ]]; then
 fi
 if [[ -z "$IDENTITY" || "$IDENTITY" == "-" ]]; then
   IDENTITY="-"
-  cat >&2 <<'EOF'
+  if ((QUIET == 1)); then
+    echo "  ⚠ No Apple Development signing identity: signing the launcher ad-hoc (privacy prompts may return after launcher rebuilds)" >&2
+  else
+    cat >&2 <<'EOF'
 
   ⚠ ─────────────────────────────────────────────────────────────────────
   ⚠ No "Apple Development" or "Developer ID Application" signing identity.
@@ -106,9 +116,19 @@ if [[ -z "$IDENTITY" || "$IDENTITY" == "-" ]]; then
   ⚠ ─────────────────────────────────────────────────────────────────────
 
 EOF
+  fi
 fi
 
 # ── Build ────────────────────────────────────────────────────────────
+
+# What the installed app was built from; --if-changed skips an identical build.
+BUILD_DIGEST="$( { cat "$SRC_DIR/launcher.c" "$SRC_DIR/Info.plist"; echo "$IDENTITY"; } | shasum -a 256 | cut -d' ' -f1)"
+DIGEST_FILE="Contents/Resources/exocortex-build.sha256"
+
+if ((IF_CHANGED == 1)) && [[ "$(cat "$APP/$DIGEST_FILE" 2>/dev/null)" == "$BUILD_DIGEST" ]] \
+  && codesign --verify --strict "$APP" 2>/dev/null; then
+  ((QUIET == 1)) || echo "  • $(basename "$APP") is up to date"
+else
 
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
@@ -119,13 +139,21 @@ clang -std=c11 -O2 -Wall -Wextra -Werror -mmacosx-version-min=13.0 \
   "$SRC_DIR/launcher.c" -o "$STAGE_APP/Contents/MacOS/$EXECUTABLE_NAME"
 cp "$SRC_DIR/Info.plist" "$STAGE_APP/Contents/Info.plist"
 printf 'APPL????' > "$STAGE_APP/Contents/PkgInfo"
+mkdir -p "$STAGE_APP/Contents/Resources"
+echo "$BUILD_DIGEST" > "$STAGE_APP/$DIGEST_FILE"
 plutil -lint -s "$STAGE_APP/Contents/Info.plist"
 echo "  ✓ Built $(basename "$APP")"
 
 # Hardened runtime is off: the launcher only spawns bash/bun and needs no
 # entitlements. The identifier pins the designated requirement TCC stores.
-codesign --force --sign "$IDENTITY" --identifier "$BUNDLE_ID" --timestamp=none "$STAGE_APP"
-codesign --verify --strict --verbose=1 "$STAGE_APP"
+# --quiet shows codesign's chatter only when it fails.
+quietly() {
+  ((QUIET == 1)) || { "$@"; return; }
+  local out
+  out="$("$@" 2>&1)" || { printf '%s\n' "$out" >&2; return 1; }
+}
+quietly codesign --force --sign "$IDENTITY" --identifier "$BUNDLE_ID" --timestamp=none "$STAGE_APP"
+quietly codesign --verify --strict --verbose=1 "$STAGE_APP"
 if [[ "$IDENTITY" == "-" ]]; then
   echo "  ⚠ Signed ad-hoc"
 else
@@ -140,6 +168,8 @@ rm -rf "$APP.previous"
 mv "$STAGE_APP" "$APP"
 rm -rf "$APP.previous"
 echo "  ✓ Installed $APP"
+
+fi
 
 # ── LaunchAgent ──────────────────────────────────────────────────────
 
@@ -166,6 +196,7 @@ if ((UPDATE_PLIST == 1)); then
 fi
 
 if ((RELOAD == 0)); then
+  ((QUIET == 1)) && exit 0
   cat <<EOF
 
   Next steps (from a terminal, not from an Exocortex turn):
