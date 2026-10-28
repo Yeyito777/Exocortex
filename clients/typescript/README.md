@@ -1,0 +1,47 @@
+# @exocortex/client (TypeScript)
+
+Use the user's Exocortex daemon from a Bun or Node (22.18+) program: one-shot
+runs, conversations, streaming, and tools your program answers. No runtime
+dependencies; the protocol is [docs/app-api.md](../../docs/app-api.md).
+
+```ts
+import { connect, run } from "@exocortex/client";
+
+console.log((await run("Name three primes.", { app: "myapp", system: "Answer tersely." })).text);
+
+const exo = await connect({ app: "myapp" });
+const lookup = { name: "lookup", description: "Look a word up.", inputSchema: { type: "object", properties: { word: { type: "string" } } },
+  handler: ({ word }: { word: string }) => `${word}: a small blue frog` };
+const conv = await exo.conversation({ lifetime: "temporary", system: "Use lookup to answer.", tools: { app: [lookup] } });
+for await (const piece of conv.stream("What does 'zorp' mean?").text()) process.stdout.write(piece);
+exo.close();
+```
+
+- `connect({ app, version?, socket?, reconnect? })` finds the socket
+  (`$EXOCORTEX_SOCKET`, then `exocortexd socket`), checks `app_welcome`'s
+  version, and fails with an `ExocortexError` whose `code` says what is wrong
+  (`not_installed` carries the install one-liner, `not_running`, `too_old`,
+  `incompatible`, …).
+- `client.run(prompt, opts)` / `client.runStream(…)`: `app_run`, ephemeral by
+  default (`lifetime`, `keep`). `run(prompt, { app, … })` connects and closes
+  around it.
+- `client.conversation(opts)` → `Conversation`: `send(prompt)` resolves the
+  `TurnResult` (`text`, `stopReason`, `error`, `usage`); `stream(prompt)` is
+  an async iterator of `text` / `thinking` / `tool_call` / `tool_result`
+  events with `.text()` and `.result`; `abort()`, `setTools()`, `delete()`.
+  Options: `lifetime`, `idleTtlMs`, `title`, `system` (text, or
+  `{ text, base }`), `tools: { builtin, app }`, `provider`, `model`, `effort`,
+  `cwd`.
+- App tools: `{ name, description, inputSchema, timeoutMs?, handler }`. The
+  handler (sync or async) gets `(input, { convId, callId, signal })` and
+  returns text, `{ output, isError }` or any JSON value; a throw is an error
+  result; `signal` aborts on `app_tool_cancel`.
+- `client.attach(convId, { tools })` owns a saved/temporary conversation again
+  (e.g. after your program restarts); `client.list({ includeSaved, allApps })`;
+  `client.delete(convId)`; `client.onEvent(fn)` sees every raw event.
+- A dropped connection or daemon restart reconnects and re-attaches saved and
+  temporary conversations; their pending `send()`s still resolve. Ephemeral
+  conversations end with the connection (`code: "ended"`).
+
+Tests: `bun install && bun test` (Bun) and `node --test test/node-smoke.test.mjs`
+(Node), against [the fake daemon](../testing/fake-daemon.ts).
