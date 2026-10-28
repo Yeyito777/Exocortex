@@ -183,7 +183,6 @@ class _Turn:
         self.stream: Optional[TurnStream] = None
         self.run_tools = run_tools
         self.run_lifetime: Optional[str] = None
-        self.fallback_timer: Optional[threading.Timer] = None
 
 
 # ── Conversation ────────────────────────────────────────────────────────
@@ -245,6 +244,16 @@ class Conversation:
 # ── Discovery ───────────────────────────────────────────────────────────
 
 
+def _doctor_problems() -> str:
+    """``exocortexd doctor --json``'s problems as lines for an error message; "" when none or it cannot run."""
+    try:
+        out = subprocess.run(["exocortexd", "doctor", "--json"], capture_output=True, text=True, timeout=20)
+        problems = json.loads(out.stdout).get("problems") or []
+    except (OSError, ValueError, subprocess.SubprocessError, AttributeError):
+        return ""
+    return "".join(f"\n  - {p.get('message')}" + (f" Fix: {p['fix']}" if p.get("fix") else "") for p in problems)
+
+
 def find_socket() -> str:
     """$EXOCORTEX_SOCKET, else ``exocortexd socket``; raises a clear ExocortexError otherwise."""
     env = os.environ.get("EXOCORTEX_SOCKET", "").strip()
@@ -261,7 +270,7 @@ def find_socket() -> str:
     if not path:
         raise ExocortexError("not_running", "`exocortexd socket` printed nothing; is Exocortex installed correctly?")
     if not os.path.exists(path):
-        raise ExocortexError("not_running", f"The Exocortex daemon is not running (no socket at {path}). Start it with: exocortexd start (`exocortexd doctor` shows what is wrong)")
+        raise ExocortexError("not_running", f"The Exocortex daemon is not running (no socket at {path}). Start it with: exocortexd start" + _doctor_problems())
     return path
 
 
@@ -322,9 +331,16 @@ class Client:
     # ── connection ──
 
     def _open(self) -> None:
+        discovered = not self._socket_path and not os.environ.get("EXOCORTEX_SOCKET", "").strip()
         if not self._socket_path:
             self._socket_path = find_socket()
-        self._handshake()
+        try:
+            self._handshake()
+        except ExocortexError as error:
+            # A discovered socket nobody answers on: say what `exocortexd doctor` finds wrong.
+            if error.code == "not_running" and discovered:
+                raise ExocortexError("not_running", str(error) + _doctor_problems()) from None
+            raise
 
     def _handshake(self) -> None:
         path = self._socket_path or ""
@@ -334,7 +350,7 @@ class Client:
         except (FileNotFoundError, ConnectionRefusedError):
             sock.close()
             raise ExocortexError("not_running", f"The Exocortex daemon is not running (cannot connect to {self._socket_path}). "
-                                 "Start it with: exocortexd start (`exocortexd doctor` shows what is wrong)") from None
+                                 "Start it with: exocortexd start") from None
         with self._lock:
             self._generation += 1
             generation = self._generation
@@ -591,8 +607,6 @@ class Client:
         with self._lock:
             if self._turns.pop(turn.req_id, None) is None:
                 return
-        if turn.fallback_timer:
-            turn.fallback_timer.cancel()
         if isinstance(outcome, Exception):
             turn.future.set_exception(outcome)
         else:
@@ -647,7 +661,8 @@ class Client:
             turns = [t for t in self._turns.values() if t.conv_id == conv_id]
         for t in turns:
             if etype == "turn_result":
-                if not event.get("turnId") or t.turn_id == event.get("turnId"):
+                # The owner's copy (after a reconnect our reqId is gone): ours when it names our turn.
+                if t.turn_id == event.get("turnId"):
                     self._settle(t, TurnResult.from_event(event))
                 continue
             if t.on_event:
@@ -662,25 +677,7 @@ class Client:
                 elif etype == "tool_result":
                     t.stream._push(StreamEvent("tool_result", id=event.get("toolCallId"), name=event.get("toolName"),
                                                output=event.get("output"), is_error=bool(event.get("isError"))))
-            if t.generation != self._generation:
-                self._fallback(t, event)
 
-    def _fallback(self, turn: _Turn, event: Dict[str, Any]) -> None:
-        """After a reconnect, a daemon that sends no owner turn_result still ends the turn with these."""
-        result = None
-        if event["type"] == "message_complete":
-            texts = [b for b in event.get("blocks") or [] if b.get("type") == "text"]
-            result = TurnResult(turn.conv_id or "", texts[-1]["text"] if texts else "", "end_turn", raw={**event, "reconstructed": True})
-        elif event["type"] == "streaming_stopped" and not event.get("reason"):
-            result = TurnResult(turn.conv_id or "", "", "aborted", raw={**event, "reconstructed": True})
-        if result is None:
-            return
-        if turn.fallback_timer:
-            turn.fallback_timer.cancel()
-        # A daemon that does send the owner turn_result sends it right after; prefer it.
-        turn.fallback_timer = threading.Timer(0.5, self._settle, (turn, result))
-        turn.fallback_timer.daemon = True
-        turn.fallback_timer.start()
 
     def _on_tool_call(self, event: Dict[str, Any]) -> None:
         conv_id, call_id, name = event["convId"], event["callId"], event.get("name", "")

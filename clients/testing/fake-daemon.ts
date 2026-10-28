@@ -11,7 +11,8 @@
  *   --no-welcome          never answer client_capabilities (a daemon too old for the app API)
  *   --owner-wait-ms N     how long an app tool call waits for an owner (default 3000)
  *   --no-owner-results    send turn_result only to the connection that awaited it
- *                         (no owner copies, no lastTurnResult on attach)
+ *                         (no owner copies, no lastTurnResult on attach: a send
+                         interrupted by a restart then fails with result_lost)
  *   --chunk-delay-ms N    pause between streamed pieces (default 5)
  *   --refuse-after-restart-ms N
  *                         after a restart, drop new connections this long (default 0), so a

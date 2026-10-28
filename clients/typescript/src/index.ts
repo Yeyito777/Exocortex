@@ -151,6 +151,18 @@ export class ExocortexError extends Error {
 
 // ── Discovery ──────────────────────────────────────────────────────────
 
+/** `exocortexd doctor --json`'s problems as lines for an error message; "" when none or it cannot run. */
+async function doctorProblems(): Promise<string> {
+  return new Promise(resolve => {
+    execFile("exocortexd", ["doctor", "--json"], { timeout: 20_000, maxBuffer: 4 << 20 }, (_error, stdout) => {
+      try {
+        const problems: any[] = JSON.parse(String(stdout)).problems ?? [];
+        resolve(problems.map(p => `\n  - ${p.message}${p.fix ? ` Fix: ${p.fix}` : ""}`).join(""));
+      } catch { resolve(""); }
+    });
+  });
+}
+
 /** The daemon's socket path: $EXOCORTEX_SOCKET, else `exocortexd socket`. Throws a clear error otherwise. */
 export async function findSocket(): Promise<string> {
   const fromEnv = process.env.EXOCORTEX_SOCKET?.trim();
@@ -164,7 +176,7 @@ export async function findSocket(): Promise<string> {
   });
   if (printed === null) throw new ExocortexError("not_installed", `Exocortex is not installed (no \`exocortexd\` on PATH). Install it with:\n  ${INSTALL_COMMAND}`);
   if (!printed) throw new ExocortexError("not_running", "`exocortexd socket` printed nothing; is Exocortex installed correctly?");
-  if (!existsSync(printed)) throw new ExocortexError("not_running", `The Exocortex daemon is not running (no socket at ${printed}). Start it with: exocortexd start (\`exocortexd doctor\` shows what is wrong)`);
+  if (!existsSync(printed)) throw new ExocortexError("not_running", `The Exocortex daemon is not running (no socket at ${printed}). Start it with: exocortexd start${await doctorProblems()}`);
   return printed;
 }
 
@@ -177,7 +189,7 @@ function openSocket(path: string): Promise<Socket> {
       socket.destroy();
       const code = (error as NodeJS.ErrnoException).code;
       reject(code === "ENOENT" || code === "ECONNREFUSED"
-        ? new ExocortexError("not_running", `The Exocortex daemon is not running (cannot connect to ${path}). Start it with: exocortexd start (\`exocortexd doctor\` shows what is wrong)`)
+        ? new ExocortexError("not_running", `The Exocortex daemon is not running (cannot connect to ${path}). Start it with: exocortexd start`)
         : error);
     };
     socket.once("error", fail);
@@ -205,7 +217,6 @@ interface PendingTurn {
   stream?: TurnStream;
   /** app_run: becomes the conversation once conversation_created arrives. */
   run?: { options: RunOptions };
-  fallbackTimer?: ReturnType<typeof setTimeout>;
 }
 
 function toResult(event: Record<string, any>): TurnResult {
@@ -386,7 +397,14 @@ export class Client {
   /** @internal */
   async open(): Promise<void> {
     this.socketPath = this.options.socket ?? await findSocket();
-    await this.handshake();
+    try { await this.handshake(); }
+    catch (error) {
+      // A discovered socket nobody answers on: say what `exocortexd doctor` finds wrong.
+      if (error instanceof ExocortexError && error.code === "not_running" && !this.options.socket && !process.env.EXOCORTEX_SOCKET?.trim()) {
+        throw new ExocortexError("not_running", error.message + await doctorProblems());
+      }
+      throw error;
+    }
   }
 
   private async handshake(): Promise<void> {
@@ -554,7 +572,6 @@ export class Client {
 
   private settle(turn: PendingTurn, result: TurnResult | Error): void {
     if (!this.turns.delete(turn.reqId)) return;
-    clearTimeout(turn.fallbackTimer);
     if (result instanceof Error) turn.reject(result); else turn.resolve(result);
   }
 
@@ -608,8 +625,8 @@ export class Client {
     for (const turn of this.turns.values()) {
       if (turn.convId !== convId) continue;
       if (event.type === "turn_result") {
-        // An owner copy (no reqId, or a reqId from an earlier connection): our turn, unless it names another one.
-        if (!event.turnId || turn.turnId === event.turnId) this.settle(turn, toResult(event));
+        // The owner's copy (after a reconnect our reqId is gone): ours when it names our turn.
+        if (turn.turnId === event.turnId) this.settle(turn, toResult(event));
         continue;
       }
       turn.onEvent?.(event);
@@ -620,25 +637,9 @@ export class Client {
         else if (event.type === "tool_call") stream.push({ type: "tool_call", id: event.toolCallId, name: event.toolName, input: event.input });
         else if (event.type === "tool_result") stream.push({ type: "tool_result", id: event.toolCallId, name: event.toolName, output: event.output, isError: event.isError });
       }
-      if (turn.generation !== this.generation) this.fallback(turn, event);
     }
   }
 
-  /** After a reconnect, a daemon that sends no owner turn_result still ends the turn with these events. */
-  private fallback(turn: PendingTurn, event: Record<string, any>): void {
-    let result: TurnResult | null = null;
-    if (event.type === "message_complete") {
-      const texts = (event.blocks ?? []).filter((block: any) => block.type === "text");
-      const text = texts.length ? texts[texts.length - 1].text : "";
-      result = { convId: turn.convId!, text, stopReason: "end_turn", raw: { ...event, reconstructed: true } };
-    } else if (event.type === "streaming_stopped" && !event.reason) {
-      result = { convId: turn.convId!, text: "", stopReason: "aborted", raw: { ...event, reconstructed: true } };
-    }
-    if (!result) return;
-    clearTimeout(turn.fallbackTimer);
-    // A daemon that does send the owner turn_result sends it right after; prefer it.
-    turn.fallbackTimer = setTimeout(() => this.settle(turn, result!), 500);
-  }
 
   private onToolCall(event: Record<string, any>): void {
     const { convId, callId, name } = event;

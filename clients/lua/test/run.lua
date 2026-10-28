@@ -154,19 +154,15 @@ test("ephemeral ends with its connection", function(f, owner)
   watcher:close()
 end)
 
-local function restart_mid_turn(owner_results)
-  return function(f, c)
-    local calls = 0
-    local conv = await(c.conversation, c, { lifetime = "temporary", tools = { lookup(function(input) calls = calls + 1; return "got " .. input.word end) } })
+test("restart mid-turn: re-attach, the tool runs, the owner turn_result resolves the send", function(f, c)
+  local calls = 0
+  local conv = await(c.conversation, c, { lifetime = "temporary", tools = { lookup(function(input) calls = calls + 1; return "got " .. input.word end) } })
     local r = await(conv.send, conv, 'restart tool lookup {"word":"w"}')
     eq(r.text, "lookup -> got w")
     eq(calls, 1)
-    if owner_results then assert(r.turn_id, "turn_id") else eq(r.raw.reconstructed, true) end
+    assert(r.turn_id, "turn_id")
     eq(await(conv.send, conv, "count").text, "turns: 2")
-  end
-end
-test("restart mid-turn: re-attach, tool, result (owner turn_result)", restart_mid_turn(true))
-test("restart mid-turn: re-attach, tool, result (fallback)", restart_mid_turn(false), { "--no-owner-results" })
+end)
 
 test("a turn that ended while away resolves from the attach answer", function(f, c)
   local conv = await(c.conversation, c, { lifetime = "saved" })
@@ -216,6 +212,9 @@ test("discovery: EXOCORTEX_SOCKET, `exocortexd socket`, install line", function(
     local c = await(exo.connect, { app = "test-app" })
     eq(c.welcome.instance, "fake")
     c:close()
+    vim.fn.writefile({ "#!/bin/sh", '[ "$1" = socket ] && echo ' .. f.dir .. "/gone.sock", [=[[ "$1" = doctor ] && echo '{"ok":false,"problems":[{"id":"daemon","severity":"error","message":"The daemon is not running.","fix":"exocortexd start"}]}']=], "exit 0" }, bin)
+    local down = fails(await, "not_running", exo.connect, { app = "test-app" })
+    assert(down.message:find("The daemon is not running. Fix: exocortexd start", 1, true), down.message)
   end)
   vim.env.EXOCORTEX_SOCKET, vim.env.PATH = saved_socket, saved_path
   if not ok then error(e, 0) end

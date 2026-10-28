@@ -140,17 +140,16 @@ describe("conversations", () => {
 });
 
 describe("reconnect", () => {
-  for (const ownerResults of [true, false]) {
-    test(`a daemon restart mid-turn: re-attach, the tool runs, send resolves (${ownerResults ? "owner turn_result" : "fallback"})`, async () => {
-      const { socket } = await fake(ownerResults ? [] : ["--no-owner-results"]);
+  {
+    test("a daemon restart mid-turn: re-attach, the tool runs, send resolves from the owner turn_result", async () => {
+      const { socket } = await fake();
       const c = await client(socket);
       let calls = 0;
       const conv = await c.conversation({ lifetime: "temporary", tools: { app: [lookup(input => { calls++; return `got ${input.word}`; })] } });
       const result = await conv.send('restart tool lookup {"word":"w"}');
       expect(result.text).toBe("lookup -> got w");
       expect(calls).toBe(1);
-      if (ownerResults) expect(result.turnId).toBeDefined();
-      else expect(result.raw.reconstructed).toBe(true);
+      expect(result.turnId).toBeDefined();
       expect((await conv.send("count")).text).toBe("turns: 2");
     });
   }
@@ -217,6 +216,10 @@ describe("connecting", () => {
       const c = await connect({ app: "test-app" });
       clients.push(c);
       expect(c.welcome.instance).toBe("fake");
+      writeFileSync(bin, `#!/bin/sh\n[ "$1" = socket ] && echo ${f.dir}/gone.sock\n[ "$1" = doctor ] && echo '{"ok":false,"problems":[{"id":"daemon","severity":"error","message":"The daemon is not running.","fix":"exocortexd start"}]}'\nexit 0\n`);
+      const down = await connect({ app: "test-app" }).catch(e => e);
+      expect(down.code).toBe("not_running");
+      expect(down.message).toContain("The daemon is not running. Fix: exocortexd start");
     } finally {
       if (saved.socket === undefined) delete process.env.EXOCORTEX_SOCKET; else process.env.EXOCORTEX_SOCKET = saved.socket;
       process.env.PATH = saved.path;

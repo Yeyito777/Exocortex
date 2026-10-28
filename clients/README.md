@@ -2,8 +2,9 @@
 
 Reference clients for the [app API](../docs/app-api.md): programs that use the
 user's Exocortex daemon as a dependency. Each offers the same surface: socket
-discovery (`$EXOCORTEX_SOCKET`, then `exocortexd socket`, else the install
-one-liner), the `app_welcome` version check, a one-shot `run`, conversation
+discovery (`$EXOCORTEX_SOCKET`, then `exocortexd socket`; the install
+one-liner when `exocortexd` is missing, `exocortexd doctor --json`'s problems
+when the daemon does not answer), the `app_welcome` version check, a one-shot `run`, conversation
 objects that send and await or stream, app tools as handler callbacks, attach,
 list, delete, and reconnect with re-attach after a dropped connection or a
 daemon restart.

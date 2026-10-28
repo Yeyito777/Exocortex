@@ -258,6 +258,21 @@ end
 local Client = {}
 Client.__index = Client
 
+--- `exocortexd doctor --json`'s problems as lines for an error message; cb("") when none or it cannot run.
+local function doctor_problems(cb)
+  if vim.fn.executable("exocortexd") ~= 1 then return cb("") end
+  vim.system({ "exocortexd", "doctor", "--json" }, { text = true, timeout = 20000 }, vim.schedule_wrap(function(out)
+    local ok, report = pcall(vim.json.decode, out.stdout or "", json_opts)
+    local lines = {}
+    if ok and type(report) == "table" then
+      for _, p in ipairs(report.problems or {}) do
+        table.insert(lines, "\n  - " .. tostring(p.message) .. (p.fix and (" Fix: " .. p.fix) or ""))
+      end
+    end
+    cb(table.concat(lines))
+  end))
+end
+
 --- The daemon's socket: $EXOCORTEX_SOCKET, else `exocortexd socket`. cb(err, path).
 function M.find_socket(cb)
   local env = vim.env.EXOCORTEX_SOCKET
@@ -272,7 +287,9 @@ function M.find_socket(cb)
     end
     if path == "" then return cb(err("not_running", "`exocortexd socket` printed nothing; is Exocortex installed correctly?")) end
     if not uv.fs_stat(path) then
-      return cb(err("not_running", "The Exocortex daemon is not running (no socket at " .. path .. "). Start it with: exocortexd start (`exocortexd doctor` shows what is wrong)"))
+      return doctor_problems(function(problems)
+        cb(err("not_running", "The Exocortex daemon is not running (no socket at " .. path .. "). Start it with: exocortexd start" .. problems))
+      end)
     end
     cb(nil, path)
   end))
@@ -295,11 +312,15 @@ function M.connect(opts, cb)
     pipe = nil, generation = 0, next_id = 0, last_started_at = 0, closed = false, reconnecting = false,
     requests = {}, turns = {}, conversations = {}, calls = {}, listeners = {},
   }, Client)
+  local discovered = not opts.socket and vim.trim(vim.env.EXOCORTEX_SOCKET or "") == ""
   local function open(path)
     client.socket_path = path
     client:_handshake(function(e)
-      if e then client:close(); return cb(e) end
-      cb(nil, client)
+      if not e then return cb(nil, client) end
+      client:close()
+      -- A discovered socket nobody answers on: say what `exocortexd doctor` finds wrong.
+      if e.code ~= "not_running" or not discovered then return cb(e) end
+      doctor_problems(function(problems) cb(err("not_running", e.message .. problems)) end)
     end)
   end
   if client.socket_path then return open(client.socket_path) end
@@ -326,7 +347,7 @@ function Client:_handshake(cb)
     if connect_err then
       if not pipe:is_closing() then pipe:close() end
       return cb(err("not_running", "The Exocortex daemon is not running (cannot connect to " .. self.socket_path
-        .. ": " .. connect_err .. "). Start it with: exocortexd start (`exocortexd doctor` shows what is wrong)"))
+        .. ": " .. connect_err .. "). Start it with: exocortexd start"))
     end
     self.generation = self.generation + 1
     local generation = self.generation
@@ -553,7 +574,6 @@ end
 function Client:_settle(turn, e, result)
   if self.turns[turn.req_id] ~= turn then return end
   self.turns[turn.req_id] = nil
-  cancel(turn.fallback_timer)
   -- Deferred: the callback may start another turn, and callers iterate self.turns.
   vim.schedule(function() turn.cb(e, result) end)
 end
@@ -621,7 +641,8 @@ function Client:_dispatch(ev)
   for _, tr in ipairs(self:_turns_on(conv_id)) do
     do
       if t == "turn_result" then
-        if not ev.turnId or tr.turn_id == ev.turnId then self:_settle(tr, nil, to_result(ev)) end
+        -- The owner's copy (after a reconnect our reqId is gone): ours when it names our turn.
+        if tr.turn_id == ev.turnId then self:_settle(tr, nil, to_result(ev)) end
       else
         if tr.on_raw then tr.on_raw(ev) end
         local se = stream_event(ev)
@@ -630,27 +651,11 @@ function Client:_dispatch(ev)
           if se.type == "text" and tr.on_text then tr.on_text(se.text) end
           if tr.stream then tr.stream:_push(se) end
         end
-        if tr.generation ~= self.generation then self:_fallback(tr, ev) end
       end
     end
   end
 end
 
---- After a reconnect, a daemon that sends no owner turn_result still ends the turn with these.
-function Client:_fallback(turn, ev)
-  local result
-  if ev.type == "message_complete" then
-    local text = ""
-    for _, block in ipairs(ev.blocks or {}) do if block.type == "text" then text = block.text end end
-    result = { conv_id = turn.conv_id, text = text, stop_reason = "end_turn", raw = vim.tbl_extend("force", ev, { reconstructed = true }) }
-  elseif ev.type == "streaming_stopped" and not ev.reason then
-    result = { conv_id = turn.conv_id, text = "", stop_reason = "aborted", raw = vim.tbl_extend("force", ev, { reconstructed = true }) }
-  end
-  if not result then return end
-  cancel(turn.fallback_timer)
-  -- A daemon that does send the owner turn_result sends it right after; prefer it.
-  turn.fallback_timer = timer(500, function() self:_settle(turn, nil, result) end)
-end
 
 local Call = {}
 Call.__index = Call

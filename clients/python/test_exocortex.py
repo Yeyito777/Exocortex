@@ -15,6 +15,7 @@ import exocortex  # noqa: E402
 from exocortex import ExocortexError, Tool  # noqa: E402
 
 FAKE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "testing", "fake-daemon.ts")
+DOCTOR = '{"ok":false,"problems":[{"id":"daemon","severity":"error","message":"The daemon is not running.","fix":"exocortexd start"}]}'
 SCHEMA = {"type": "object", "properties": {"word": {"type": "string"}}, "required": ["word"]}
 
 
@@ -188,21 +189,15 @@ class Conversations(Base):
 
 
 class Reconnect(Base):
-    def restart_mid_turn(self, owner_results: bool):
+    def test_restart_mid_turn(self):
         c = self.client()
         calls = []
         conv = c.conversation("temporary", tools=[lookup(lambda a: calls.append(a) or "got " + a["word"])])
         result = conv.send('restart tool lookup {"word":"w"}', timeout=15)
         self.assertEqual(result.text, "lookup -> got w")
         self.assertEqual(len(calls), 1)
-        if owner_results:
-            self.assertIsNotNone(result.turn_id)
-        else:
-            self.assertTrue(result.raw.get("reconstructed"))
+        self.assertIsNotNone(result.turn_id)
         self.assertEqual(conv.send("count").text, "turns: 2")
-
-    def test_restart_mid_turn(self):
-        self.restart_mid_turn(True)
 
     def test_ephemeral_ends_on_drop(self):
         c = self.client()
@@ -216,13 +211,6 @@ class Reconnect(Base):
             except ExocortexError:
                 time.sleep(0.05)
         self.assertEqual(c.run("after").text, "echo: after")
-
-
-class ReconnectFallback(Reconnect):
-    fake_args = ("--no-owner-results",)
-
-    def test_restart_mid_turn(self):
-        self.restart_mid_turn(False)
 
 
 class EndedWhileAway(Base):
@@ -285,6 +273,12 @@ class Connecting(unittest.TestCase):
             self.assertEqual(exocortex.find_socket(), fake.socket)
             with exocortex.connect("test-app") as c:
                 self.assertEqual(c.welcome["instance"], "fake")
+            with open(script, "w") as f:
+                f.write(f'#!/bin/sh\n[ "$1" = socket ] && echo {fake.dir}/gone.sock\n[ "$1" = doctor ] && echo \'' + DOCTOR + "'\nexit 0\n")
+            with self.assertRaises(ExocortexError) as caught:
+                exocortex.connect("test-app")
+            self.assertEqual(caught.exception.code, "not_running")
+            self.assertIn("The daemon is not running. Fix: exocortexd start", str(caught.exception))
         finally:
             os.environ.clear()
             os.environ.update(saved)
