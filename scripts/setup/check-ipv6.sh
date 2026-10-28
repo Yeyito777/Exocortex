@@ -72,7 +72,7 @@ printf "\n"
 printf "  This is safe — it makes all programs prefer IPv4 when available,\n"
 printf "  which is the correct behavior when IPv6 is non-functional.\n"
 printf "\n"
-printf "  After applying the fix, re-run ${BOLD}make install${NC}.\n"
+printf "  After applying the fix, re-run the installer (or ${BOLD}make install${NC}).\n"
 printf "  See: https://github.com/yeyito/Exocortex/issues/3\n"
 printf "\n"
 exit 1

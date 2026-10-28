@@ -7,8 +7,13 @@
  * KeepAlive and anything else hand-tuned are preserved. Without one, a fresh
  * plist mirroring the Linux systemd unit is written.
  *
- * Usage (bun, from build-launcher.sh):
+ * `--mode plain` is the installer's fallback without Xcode's command-line
+ * tools (no clang to build the launcher): /bin/bash runs run-daemon.sh, as
+ * the launcher would. It only creates a missing plist, never rewrites one.
+ *
+ * Usage (bun, from build-launcher.sh and install.sh):
  *   bun scripts/macos/launchagent.ts --plist PATH --executable EXE --repo DIR [--bun-dir DIR] [--backup-dir DIR]
+ *   bun scripts/macos/launchagent.ts --mode plain --plist PATH --repo DIR [--bun-dir DIR]
  * Prints "created", "updated" or "unchanged".
  */
 
@@ -25,15 +30,24 @@ export interface LauncherTarget {
   repoDir: string;
 }
 
-export interface FreshPlistOptions extends LauncherTarget {
+interface AgentEnvironment {
+  /** Exocortex checkout the daemon runs from. */
+  repoDir: string;
   label?: string;
   home: string;
   /** Directory of the bun found at install time; PATH fallback only. */
   bunDir?: string;
 }
 
+export interface FreshPlistOptions extends LauncherTarget, AgentEnvironment {}
+
 export function launcherProgramArguments({ executable, repoDir }: LauncherTarget): string[] {
   return [executable, "--repo", repoDir];
+}
+
+/** Without the launcher: Apple's /bin/bash runs the same script the launcher runs. */
+export function plainProgramArguments(repoDir: string): string[] {
+  return ["/bin/bash", join(repoDir, "scripts", "setup", "run-daemon.sh")];
 }
 
 function escapeXml(value: string): string {
@@ -45,6 +59,14 @@ function stringArray(values: string[], indent: string, step: string): string {
 }
 
 export function renderDaemonLaunchAgent(options: FreshPlistOptions): string {
+  return renderAgent(options, launcherProgramArguments(options), LAUNCHER_BUNDLE_ID);
+}
+
+export function renderPlainDaemonLaunchAgent(options: AgentEnvironment): string {
+  return renderAgent(options, plainProgramArguments(options.repoDir), null);
+}
+
+function renderAgent(options: AgentEnvironment, programArguments: string[], bundleId: string | null): string {
   const label = options.label ?? DAEMON_LABEL;
   const runtime = join(options.repoDir, "config", "runtime");
   const pathDirs = [
@@ -63,9 +85,8 @@ export function renderDaemonLaunchAgent(options: FreshPlistOptions): string {
     `\t<key>Label</key>`,
     `\t${s(label)}`,
     `\t<key>ProgramArguments</key>`,
-    `\t${stringArray(launcherProgramArguments(options), "\t", "\t")}`,
-    `\t<key>AssociatedBundleIdentifiers</key>`,
-    `\t${s(LAUNCHER_BUNDLE_ID)}`,
+    `\t${stringArray(programArguments, "\t", "\t")}`,
+    ...(bundleId ? [`\t<key>AssociatedBundleIdentifiers</key>`, `\t${s(bundleId)}`] : []),
     `\t<key>WorkingDirectory</key>`,
     `\t${s(join(options.repoDir, "daemon"))}`,
     `\t<key>EnvironmentVariables</key>`,
@@ -202,17 +223,27 @@ export function rewriteDaemonLaunchAgent(xml: string, target: LauncherTarget): s
 
 export type InstallResult = "created" | "updated" | "unchanged";
 
-export interface InstallOptions extends FreshPlistOptions {
+export type InstallOptions = (
+  | ({ mode?: "launcher" } & FreshPlistOptions)
+  | ({ mode: "plain" } & AgentEnvironment)
+) & {
   plistPath: string;
   /** Where the previous plist is copied before an update. */
   backupDir?: string;
   now?: Date;
-}
+};
 
 export function installDaemonLaunchAgent(options: InstallOptions): InstallResult {
   const { plistPath } = options;
   const exists = existsSync(plistPath);
   const current = exists ? readFileSync(plistPath, "utf-8") : null;
+  if (options.mode === "plain") {
+    // Never downgrade an agent that already runs (likely the launcher).
+    if (current !== null) return "unchanged";
+    mkdirSync(dirname(plistPath), { recursive: true });
+    writeFileSync(plistPath, renderPlainDaemonLaunchAgent(options));
+    return "created";
+  }
   const next = current === null ? renderDaemonLaunchAgent(options) : rewriteDaemonLaunchAgent(current, options);
   if (next === current) return "unchanged";
 
@@ -245,18 +276,22 @@ function parseArgs(argv: string[]): Record<string, string> {
 if (import.meta.main) {
   try {
     const args = parseArgs(process.argv.slice(2));
-    for (const required of ["plist", "executable", "repo"]) {
+    const mode = args.mode ?? "launcher";
+    if (mode !== "launcher" && mode !== "plain") throw new Error(`unknown --mode ${mode}`);
+    for (const required of mode === "plain" ? ["plist", "repo"] : ["plist", "executable", "repo"]) {
       if (!args[required]) throw new Error(`missing --${required}`);
     }
-    const result = installDaemonLaunchAgent({
+    const common = {
       plistPath: args.plist,
-      executable: args.executable,
       repoDir: args.repo,
       home: args.home ?? process.env.HOME ?? "",
       bunDir: args["bun-dir"],
       label: args.label,
       backupDir: args["backup-dir"],
-    });
+    };
+    const result = installDaemonLaunchAgent(mode === "plain"
+      ? { mode: "plain", ...common }
+      : { ...common, executable: args.executable });
     console.log(result);
   } catch (err) {
     console.error(`launchagent: ${err instanceof Error ? err.message : String(err)}`);

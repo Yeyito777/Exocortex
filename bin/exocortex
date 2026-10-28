@@ -5,6 +5,18 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+
+# Bun's installer adds ~/.bun/bin only to bash, zsh and fish profiles; find Bun
+# there when this shell's PATH lacks it (e.g. a /bin/sh login shell).
+if ! command -v bun >/dev/null 2>&1; then
+  for bun_dir in "${BUN_INSTALL:-$HOME/.bun}/bin" "$HOME/.local/bun/bin" "$HOME/.local/bin"; do
+    if [[ -x "$bun_dir/bun" ]]; then
+      PATH="$bun_dir:$PATH"
+      export PATH
+      break
+    fi
+  done
+fi
 SERVICE="exocortex-daemon.service"
 
 resolve_git_path() {
