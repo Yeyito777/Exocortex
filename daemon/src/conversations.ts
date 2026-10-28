@@ -663,21 +663,6 @@ export function setSubagentPolicy(id: string, policy: SubagentPolicy): boolean {
   return true;
 }
 
-/** Bump an unpinned conversation to the top of the unpinned section. No-op for pinned conversations. */
-export function bumpToTop(id: string): boolean {
-  const conv = get(id);
-  if (!conv || conv.pinned) return false;
-  conv.sortOrder = nextUnpinnedOrderInFolder(conv.folderId ?? null, id);
-  markDirty(id);
-  // Keep the in-memory sidebar index in sync immediately. The conversation is
-  // deliberately not flushed here (stream setup persists shortly after), but
-  // later sidebar operations such as manual move up/down read from summaries.
-  // Without this, the TUI can display the bumped summary while the daemon still
-  // computes moves from the old order.
-  updateSummaryFromConversation(conv);
-  return true;
-}
-
 /** Copy the latest checkpoint/tail with a new ID, placed right after the original. */
 export function clone(id: string): ConversationSummary | null {
   if (dirty.has(id)) flush(id);

@@ -25,6 +25,7 @@ import {
   focusNextCompletedConversation,
   focusNextStreamingConversation,
   focusPreviousEnteredConversation,
+  handleSidebarAction,
   handleSidebarActionMenuKey,
   handleSidebarKey,
   handleSidebarMark,
@@ -315,6 +316,12 @@ export function handleFocusedKey(
     if (action === "sidebar_focus_next_streaming") {
       return loadActivityConversation(state, "streaming");
     }
+  }
+
+  // On the sidebar Ctrl+E moves the selection to the top of its folder
+  // instead of scrolling the sidebar a line.
+  if (key.type === "ctrl-e" && state.panelFocus === "sidebar" && state.sidebar.open) {
+    return mapSidebarResult(handleSidebarAction("move_to_top", state.sidebar));
   }
 
   // Global actions — work regardless of focus and vim mode

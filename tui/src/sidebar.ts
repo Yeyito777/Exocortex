@@ -12,6 +12,7 @@ import {
   enterSelectedFolder,
   leaveFolder,
   moveSelectionOut,
+  moveSelectionToTop,
   moveVisualSelectionWithinFolder,
   openCreateFolderPrompt,
   openMoveItemsPrompt,
@@ -86,7 +87,6 @@ export { applySidebarItemOrderUpdates, applySidebarStatePatch, syncSelectedIndex
 export {
   acknowledgeOptimisticConversation,
   addOptimisticConversation,
-  bumpConversationToTop,
   isOptimisticConversation,
   removeOptimisticConversation,
 } from "./sidebar/optimisticconversations";
@@ -372,6 +372,9 @@ export function handleSidebarAction(action: string, sidebar: SidebarState): Side
       const reqId = applyPendingSidebarItemReorder(sidebar, item, direction);
       return reqId ? { type: "move_sidebar_item", item, direction, reqId } : { type: "handled" };
     }
+
+    case "move_to_top":
+      return moveSelectionToTop(sidebar);
 
     case "nav_next_streaming":
       moveToStreaming(sidebar, 1);

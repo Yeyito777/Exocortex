@@ -110,7 +110,7 @@ import type { SidebarViewHint } from "@exocortex/shared/sidebar-first-page";
 import { applyTuiStartingState, availableStartingConversationId, applyRouteViewState, captureRouteViewState, captureTuiStartingState, daemonRouteKey, loadTuiStartingState, RouteViewStates, saveTuiStartingState } from "./startingstate";
 import { closeBtwSession, startBtwSession } from "./btw/controller";
 import { createSidebarState } from "./sidebar/state";
-import { addOptimisticConversation, bumpConversationToTop, focusConversationById, rememberEnteredConversation } from "./sidebar";
+import { addOptimisticConversation, focusConversationById, rememberEnteredConversation } from "./sidebar";
 import { newConversationFolderId, type NewConversationPlacement } from "./sidebar/tree";
 import { formatConnectionLostNotice } from "./events/notices";
 import { RemotePathCompletionController } from "./remote-path-completion";
@@ -1560,7 +1560,6 @@ function sendDirectly(messageText: string, images?: ImageAttachment[], options: 
       undefined, convId,
     );
   } else {
-    bumpConversationToTop(state.sidebar, state.convId);
     if (pendingEditMessageUnwind?.convId === state.convId) {
       // Shown now; sent once the daemon has cut the edited suffix.
       deferredEditResend = { convId: state.convId, message: echo, startedAt };
@@ -1696,7 +1695,6 @@ function completePendingVoiceTranscription(submission: SubmittedVoiceTranscripti
         removePendingVoiceEcho(submission);
         state.messages.push(submission.message);
         state.pendingAI = createPendingAI(submission.startedAt, submission.model);
-        bumpConversationToTop(state.sidebar, submission.convId);
         daemon.sendMessage(submission.convId, messageText, submission.startedAt, submission.images);
         trackDirectSend(state, submission.convId, submission.message);
       } else {
@@ -1729,7 +1727,6 @@ function completePendingVoiceTranscription(submission: SubmittedVoiceTranscripti
     if (visible) {
       state.pendingAI = createPendingAI(submission.startedAt, submission.model);
     }
-    bumpConversationToTop(state.sidebar, submission.convId);
     daemon.sendMessage(submission.convId, messageText, submission.startedAt, submission.images);
     if (visible) trackDirectSend(state, submission.convId, submission.message);
     scheduleRender();

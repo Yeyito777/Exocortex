@@ -115,6 +115,38 @@ export function moveVisualSelectionWithinFolder(sidebar: SidebarState, direction
   return reqId ? { type: "move_sidebar_items", items, parentId, before, ...options, reqId } : { type: "handled" };
 }
 
+/**
+ * Move the selected item, or a visual block, to the top of its folder: pinned
+ * items to the top of the pinned ones, the rest just below them.
+ */
+export function moveSelectionToTop(sidebar: SidebarState): SidebarKeyResult {
+  const items = outermostSelectedItems(sidebar, selectedVisualItems(sidebar));
+  if (items.length === 0) return { type: "handled" };
+  const parentId = sidebarItemParent(sidebar, items[0]!);
+  const pinned = sidebarItemPinned(sidebar, items[0]!);
+  if (parentId === undefined || pinned === undefined) return { type: "handled" };
+  if (!items.every(item => sidebarItemParent(sidebar, item) === parentId && sidebarItemPinned(sidebar, item) === pinned)) {
+    return { type: "handled" };
+  }
+
+  const section = [
+    ...sidebar.folders
+      .filter(folder => (folder.parentId ?? null) === parentId && folder.pinned === pinned)
+      .map(folder => ({ pinned, sortOrder: folder.sortOrder, item: { type: "folder" as const, id: folder.id } })),
+    ...sidebar.conversations
+      .filter(conv => (conv.folderId ?? null) === parentId && conv.pinned === pinned)
+      .map(conv => ({ pinned, sortOrder: conv.sortOrder, item: { type: "conversation" as const, id: conv.id } })),
+  ].sort(compareSidebarOrder).map(entry => entry.item);
+  const selectedKeys = new Set(items.map(itemKey));
+  const before = section.find(item => !selectedKeys.has(itemKey(item)));
+  // Already at the top: nothing unselected sits above the block.
+  if (!before || section.indexOf(before) >= items.length) return { type: "handled" };
+
+  const options = { preservePinned: true };
+  const reqId = applyPendingSidebarItemsMove(sidebar, items, parentId, before, options);
+  return reqId ? { type: "move_sidebar_items", items, parentId, before, ...options, reqId } : { type: "handled" };
+}
+
 export function toggleVisualSelection(sidebar: SidebarState): void {
   const item = getSelectedSidebarItem(sidebar);
   if (!item || !isMovableSidebarItem(item)) return;

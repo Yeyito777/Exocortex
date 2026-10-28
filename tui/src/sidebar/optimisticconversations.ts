@@ -14,12 +14,12 @@ export interface OptimisticConversation {
   title: string;
 }
 
-/** Mirror the daemon, which places new and newly-messaged conversations here. */
-function topUnpinnedOrderInFolder(sidebar: SidebarState, folderId: string | null, excludeId?: string): number {
+/** Mirror the daemon, which places new conversations here. */
+function topUnpinnedOrderInFolder(sidebar: SidebarState, folderId: string | null): number {
   return topUnpinnedOrder([
     ...sidebar.conversations.filter(conv => (conv.folderId ?? null) === folderId),
     ...sidebar.folders.filter(folder => (folder.parentId ?? null) === folderId),
-  ], excludeId);
+  ]);
 }
 
 /**
@@ -78,19 +78,5 @@ export function removeOptimisticConversation(sidebar: SidebarState, convId: stri
   sidebar.conversations.splice(idx, 1);
   if (selected) focusSidebarItem(sidebar, focusTarget);
   else syncSelectedIndex(sidebar);
-  return true;
-}
-
-/**
- * Move a conversation to the top of its folder now, as the daemon will when it
- * accepts the user's message. Like the daemon, leave pinned ones in place.
- */
-export function bumpConversationToTop(sidebar: SidebarState, convId: string): boolean {
-  const conv = sidebar.conversations.find(candidate => candidate.id === convId);
-  if (!conv || conv.pinned) return false;
-  const sortOrder = topUnpinnedOrderInFolder(sidebar, conv.folderId ?? null, conv.id);
-  if (conv.sortOrder === sortOrder) return false;
-  conv.sortOrder = sortOrder;
-  syncSelectedIndex(sidebar);
   return true;
 }

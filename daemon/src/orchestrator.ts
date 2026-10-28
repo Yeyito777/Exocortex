@@ -717,9 +717,6 @@ async function orchestrateAdmittedAssistantTurn(
   }
 
   conv.updatedAt = Date.now();
-  // Automated prompts use the user-message path too, but only new human input
-  // should reorder the sidebar. Replays, compaction and delegation stay put.
-  if (userMessage && !automation) convStore.bumpToTop(convId);
   if (acceptedUserMessage) {
     if (!convStore.appendMessages(convId, [acceptedUserMessage], { updatedAt: conv.updatedAt })) {
       throw new Error(`Conversation ${convId} disappeared before its user turn could be committed`);
@@ -1748,7 +1745,6 @@ async function orchestrateAdmittedAssistantTurn(
       // copies or broadcasting them.
       if (ac.signal.aborted || (!taken && drained.some(qm => !isDeepStrictEqual(convStore.getQueuedMessageById(qm.id), qm)))) return [];
       const latestHuman = injectedStored.findLast(message => !message.metadata?.automation);
-      const sidebarBumped = !!latestHuman && convStore.bumpToTop(convId);
       persistCompletedTurnPrefix(injectedStored);
       // The footer above a human prompt is final: abort metadata stamps only
       // what follows it. The work timer runs on; the prompt arrived mid-turn.
@@ -1785,7 +1781,6 @@ async function orchestrateAdmittedAssistantTurn(
           ...(qm.automation ? { automation: qm.automation } : {}),
         });
       }
-      if (sidebarBumped) broadcastConversationUpdated(server, convId);
       inlineSleepWoken = false;
       steerRequested = hasQueuedSteer();
       preemptionsWithoutDelivery = 0;

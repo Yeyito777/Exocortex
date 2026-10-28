@@ -134,7 +134,7 @@ describe("provider context reports", () => {
   });
 });
 
-describe("human-only sidebar bumps", () => {
+describe("sending never reorders the sidebar", () => {
   function targetBelowNewerConversation(suffix: string): { convId: string; newerId: string; originalOrder: number } {
     const convId = id(`sidebar-${suffix}`);
     const newerId = id(`sidebar-${suffix}-newer`);
@@ -182,14 +182,14 @@ describe("human-only sidebar bumps", () => {
   }
 
   for (const delivery of ["direct", "queued"] as const) {
-    test(`${delivery} human input still bumps before provider work`, async () => {
-      const { convId, newerId, originalOrder } = targetBelowNewerConversation(delivery);
+    test(`${delivery} human input keeps sidebar order`, async () => {
+      const { convId, originalOrder } = targetBelowNewerConversation(delivery);
       const queueEntryId = delivery === "queued"
         ? pushQueuedMessage(convId, "human prompt", "next-turn").id
         : undefined;
       const fakeStream = (async () => {
-        expect(loadPersisted(convId)!.sortOrder).toBeLessThan(get(newerId)!.sortOrder);
-        expect(getSummary(convId)!.sortOrder).toBe(loadPersisted(convId)!.sortOrder);
+        expect(loadPersisted(convId)!.sortOrder).toBe(originalOrder);
+        expect(getSummary(convId)!.sortOrder).toBe(originalOrder);
         expect(getQueuedMessages(convId)).toEqual([]);
         return answer;
       }) as typeof streamMessage;
@@ -200,7 +200,7 @@ describe("human-only sidebar bumps", () => {
       );
 
       expect(outcome.ok).toBe(true);
-      expect(loadPersisted(convId)!.sortOrder).toBeLessThan(originalOrder);
+      expect(loadPersisted(convId)!.sortOrder).toBe(originalOrder);
       expect(getQueuedMessages(convId)).toEqual([]);
     });
   }
@@ -252,7 +252,7 @@ describe("human-only sidebar bumps", () => {
 
   for (const timing of ["next-turn", "message-end"] as const) {
     for (const automated of [true, false]) {
-      test(`${timing} ${automated ? "automatic" : "human"} input ${automated ? "preserves" : "bumps"} sidebar order`, async () => {
+      test(`${timing} ${automated ? "automatic" : "human"} input preserves sidebar order`, async () => {
         const { convId } = targetBelowNewerConversation(`queue-${timing}-${automated}`);
         const newerId = id("sidebar-newer-during-stream");
         let orderBeforeQueuedInput = 0;
@@ -276,8 +276,7 @@ describe("human-only sidebar bumps", () => {
           } else {
             const persisted = loadPersisted(convId)!;
             expect(persisted.messages.some(message => message.content === "queued prompt")).toBe(true);
-            if (automated) expect(persisted.sortOrder).toBe(orderBeforeQueuedInput);
-            else expect(persisted.sortOrder).toBeLessThan(get(newerId)!.sortOrder);
+            expect(persisted.sortOrder).toBe(orderBeforeQueuedInput);
           }
           return answer;
         }) as typeof streamMessage;
@@ -287,8 +286,7 @@ describe("human-only sidebar bumps", () => {
         );
         expect(outcome.ok).toBe(true);
         expect(streamCalls).toBe(2);
-        if (automated) expect(loadPersisted(convId)!.sortOrder).toBe(orderBeforeQueuedInput);
-        else expect(loadPersisted(convId)!.sortOrder).toBeLessThan(get(newerId)!.sortOrder);
+        expect(loadPersisted(convId)!.sortOrder).toBe(orderBeforeQueuedInput);
       });
     }
   }

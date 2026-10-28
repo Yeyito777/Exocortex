@@ -9,7 +9,7 @@ import { requestVisibleToolOutputs } from "./events/tool-outputs";
 import { subtractLoadedAssistantPrefix } from "./events/streaming-snapshot";
 import { prepareConversationOpen } from "./conversationscroll";
 import { beginConversationLoad, beginOptimisticConversation } from "./events/conversations";
-import { bumpConversationToTop, focusConversationById, isOptimisticConversation } from "./sidebar";
+import { focusConversationById, isOptimisticConversation } from "./sidebar";
 import type { Event } from "./protocol";
 import { createStartingBtw } from "./btw/state";
 import { createGenerationThroughput, generationTokensPerSecond } from "@exocortex/shared/generation-throughput";
@@ -1280,33 +1280,6 @@ describe("optimistic conversation creation", () => {
     expect(state.convId).toBe("other-chat");
     expect(state.sidebar.conversations.map(conv => conv.id)).not.toContain("new-conv");
     expect(state.messages.at(-1)).toMatchObject({ role: "system", text: "✗ Could not create conversation: Unknown provider: nope" });
-  });
-});
-
-describe("optimistic reordering on send", () => {
-  test("moves an unpinned conversation to the top of its folder and keeps it selected", () => {
-    const sidebar = createInitialState().sidebar;
-    sidebar.folderView = "navigate";
-    sidebar.conversations = [
-      summary({ id: "top", folderId: "work", sortOrder: -5 }),
-      summary({ id: "sent", folderId: "work", sortOrder: -1 }),
-      summary({ id: "root", folderId: null, sortOrder: -9 }),
-    ];
-    focusConversationById(sidebar, "sent");
-
-    expect(bumpConversationToTop(sidebar, "sent")).toBe(true);
-
-    expect(sidebar.conversations.find(conv => conv.id === "sent")?.sortOrder).toBe(-6);
-    expect(sidebar.selectedItem).toEqual({ type: "conversation", id: "sent" });
-    expect(bumpConversationToTop(sidebar, "sent")).toBe(false);
-  });
-
-  test("leaves pinned conversations in place, as the daemon does", () => {
-    const sidebar = createInitialState().sidebar;
-    sidebar.conversations = [summary({ id: "pinned", pinned: true, sortOrder: 3 }), summary({ id: "other", sortOrder: -1 })];
-
-    expect(bumpConversationToTop(sidebar, "pinned")).toBe(false);
-    expect(sidebar.conversations.find(conv => conv.id === "pinned")?.sortOrder).toBe(3);
   });
 });
 

@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { join } from "node:path";
 import { conversationWorkspaceDir, conversationsDir, dataDir, trashedConversationWorkspaceDir, trashDir } from "@exocortex/shared/paths";
 import { CLAUDE_CODE_TRIM_NOTE } from "./conversation-trim";
-import { HistoryUnwindRefreshRequiredError, appendMessages, bumpToTop, clearUnread, clone, conversationCacheInternalsForTest, create, createFolder, createWithInitialUserMessage, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, flush, flushAll, get, getDisplayData, getEffectiveFolderInstructions, getEffectiveSystemInstructions, getFolderInstructions, getPendingStreamSnapshot, getQueuedMessageById, getRenderSnapshot, getStoredDisplayPage, getSummary, getToolOutputs, hasConversation, isUnread, listSidebarState, listRunningConversationIds, loadFromDisk, loadQueuedMessagesFromDisk, mark, markDirty, markUnread, moveConversationToFolder, moveSidebarItem, moveSidebarItemWithUpdates, moveSidebarItems, mute, muteFolder, onChunk, pin, pinFolder, pinSidebarItems, pushQueuedMessage, redoDelete, releaseHistoryUnwindLease, remove, removeMany, rename, renameFolder, setFolderInstructions, setModel, setSystemInstructions, trimConversation, undoDelete, unwindTo } from "./conversations";
+import { HistoryUnwindRefreshRequiredError, appendMessages, clearUnread, clone, conversationCacheInternalsForTest, create, createFolder, createWithInitialUserMessage, deleteFolder, ensureTopLevelFolder, findTopLevelFolderByName, flush, flushAll, get, getDisplayData, getEffectiveFolderInstructions, getEffectiveSystemInstructions, getFolderInstructions, getPendingStreamSnapshot, getQueuedMessageById, getRenderSnapshot, getStoredDisplayPage, getSummary, getToolOutputs, hasConversation, isUnread, listSidebarState, listRunningConversationIds, loadFromDisk, loadQueuedMessagesFromDisk, mark, markDirty, markUnread, moveConversationToFolder, moveSidebarItem, moveSidebarItemWithUpdates, moveSidebarItems, mute, muteFolder, onChunk, pin, pinFolder, pinSidebarItems, pushQueuedMessage, redoDelete, releaseHistoryUnwindLease, remove, removeMany, rename, renameFolder, setFolderInstructions, setModel, setSystemInstructions, trimConversation, undoDelete, unwindTo } from "./conversations";
 import { setActiveJob, replaceCurrentStreamingBlocks, setStreamingCommittedBlockCount, setStreamingCommittedMessageCount, clearActiveJob, initStreamingState, isHistoryUnwindPending } from "./streaming";
 import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, LEGACY_CALL_STATUS_KIND, historyPrefixHash } from "./messages";
 import { isSqliteConversationStore, load as loadPersisted } from "./persistence";
@@ -649,23 +649,6 @@ describe("sidebar ordering", () => {
       { item: { type: "conversation", id: ids[2] }, sortOrder: before.get(ids[1])! },
     ]);
     expect(rootConversationOrder(ids)).toEqual([ids[0], ids[2], ids[1]]);
-  });
-
-  test("manual moves use the latest unflushed bump-to-top order", () => {
-    const ids = ["bump-one", "bump-two", "bump-three", "bump-four"].map(mkId);
-    for (const id of ids.slice().reverse()) create(id, "openai", "gpt-5.4", id);
-    expect(rootConversationOrder(ids)).toEqual(ids);
-
-    // Sending a message bumps the active conversation immediately for the TUI,
-    // but the stream setup intentionally does not flush the conversation yet.
-    expect(bumpToTop(ids[2])).toBe(true);
-    expect(getSummary(ids[2])!.sortOrder).toBeLessThan(getSummary(ids[0])!.sortOrder);
-
-    // If the daemon's sidebar index still has the old order, moving the bumped
-    // row down swaps it with ids[3] and produces [1, 2, 4, 3]. It should instead
-    // move one row down from the visible [3, 1, 2, 4] order.
-    expect(moveSidebarItem({ type: "conversation", id: ids[2] }, "down")).toBe(true);
-    expect(rootConversationOrder(ids)).toEqual([ids[0], ids[2], ids[1], ids[3]]);
   });
 
   test("manual moves survive reload before the debounced index save", () => {

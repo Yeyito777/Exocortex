@@ -47,6 +47,7 @@ export type Action =
   | "pin"
   | "move_up"
   | "move_down"
+  | "move_to_top"
   | "clone"
   | "unwrap_folder"
   | "undo_delete"

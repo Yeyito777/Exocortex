@@ -3,7 +3,7 @@ import { handleFocusedKey } from "./focus";
 import { buildMessageLines } from "./conversation";
 import { getViewStartFor } from "./chatscroll";
 import { handleEvent } from "./events";
-import { buildDisplayRows, renderSidebar, sidebarHitTest, SIDEBAR_WIDTH } from "./sidebar";
+import { buildDisplayRows, focusConversationById, renderSidebar, sidebarHitTest, SIDEBAR_WIDTH } from "./sidebar";
 import { theme } from "./theme";
 import { createInitialState } from "./state";
 import { clearPrompt } from "./promptstate";
@@ -1935,23 +1935,15 @@ describe("sidebar Ctrl scrolling", () => {
     return state;
   }
 
-  test("Ctrl+E/Y use chat-history sticky-cursor scrolling on the sidebar", () => {
+  test("Ctrl+Y uses chat-history sticky-cursor scrolling on the sidebar", () => {
     const state = setupSidebarScrollState();
-    state.sidebar.scrollOffset = 0;
-    state.sidebar.selectedIndex = 0;
-    state.sidebar.selectedId = "conv-1";
-
-    expect(handleFocusedKey({ type: "ctrl-e" }, state)).toEqual({ type: "handled" });
-
-    // Ctrl+E scrolls the sidebar down one row; because the selected row would
-    // leave the viewport, the selection is clamped to the new top edge.
-    expect(state.sidebar.scrollOffset).toBe(1);
-    expect(state.sidebar.selectedId).toBe("conv-2");
-    expect(state.scrollOffset).toBe(7);
+    state.sidebar.scrollOffset = 1;
+    state.sidebar.selectedIndex = 1;
+    state.sidebar.selectedId = "conv-2";
 
     expect(handleFocusedKey({ type: "ctrl-y" }, state)).toEqual({ type: "handled" });
 
-    // Ctrl+Y scrolls back up one row while the selected row sticks to the same
+    // Ctrl+Y scrolls up one row while the selected row sticks to the same
     // buffer row because it remains visible.
     expect(state.sidebar.scrollOffset).toBe(0);
     expect(state.sidebar.selectedId).toBe("conv-2");
@@ -2056,6 +2048,112 @@ describe("sidebar Ctrl scrolling", () => {
     expect(state.sidebar.scrollOffset).toBe(0);
     expect(buildDisplayRows(state.sidebar)[state.sidebar.scrollOffset]?.text).toBe(" Pinned");
     expect(selectedSidebarScreenPosition(state)).toBe(1);
+  });
+});
+
+describe("sidebar Ctrl+E move to top", () => {
+  function setupSidebar(conversations: ConversationSummary[], selectedId: string) {
+    const state = createInitialState();
+    state.sidebar.open = true;
+    state.panelFocus = "sidebar";
+    state.vim.mode = "normal";
+    state.sidebar.conversations = conversations;
+    focusConversationById(state.sidebar, selectedId);
+    return state;
+  }
+
+  function order(state: ReturnType<typeof createInitialState>): string[] {
+    return buildDisplayRows(state.sidebar).flatMap(row => row.type === "entry" && row.item && row.item.type !== "up" ? [row.item.id] : []);
+  }
+
+  test("moves an unpinned conversation just below the pinned ones and keeps it selected", () => {
+    const state = setupSidebar([
+      conversation("pinned", 0, { pinned: true }),
+      conversation("conv-a", 1),
+      conversation("conv-b", 2),
+      conversation("conv-c", 3),
+    ], "conv-c");
+
+    expect(handleFocusedKey({ type: "ctrl-e" }, state)).toEqual({
+      type: "move_sidebar_items",
+      reqId: expect.any(String),
+      items: [{ type: "conversation", id: "conv-c" }],
+      parentId: null,
+      before: { type: "conversation", id: "conv-a" },
+      preservePinned: true,
+    });
+    expect(order(state)).toEqual(["pinned", "conv-c", "conv-a", "conv-b"]);
+    expect(state.sidebar.selectedItem).toEqual({ type: "conversation", id: "conv-c" });
+    expect(state.sidebar.conversations.find(conv => conv.id === "conv-c")?.pinned).toBe(false);
+  });
+
+  test("moves a pinned conversation to the top of the pinned ones", () => {
+    const state = setupSidebar([
+      conversation("pinned-a", 0, { pinned: true }),
+      conversation("pinned-b", 1, { pinned: true }),
+      conversation("conv-a", 2),
+    ], "pinned-b");
+
+    expect(handleFocusedKey({ type: "ctrl-e" }, state)).toMatchObject({
+      type: "move_sidebar_items",
+      items: [{ type: "conversation", id: "pinned-b" }],
+      before: { type: "conversation", id: "pinned-a" },
+    });
+    expect(order(state)).toEqual(["pinned-b", "pinned-a", "conv-a"]);
+    expect(state.sidebar.conversations.find(conv => conv.id === "pinned-b")?.pinned).toBe(true);
+  });
+
+  test("does nothing for an item already at the top", () => {
+    const state = setupSidebar([conversation("conv-a", 1), conversation("conv-b", 2)], "conv-a");
+
+    expect(handleFocusedKey({ type: "ctrl-e" }, state)).toEqual({ type: "handled" });
+    expect(order(state)).toEqual(["conv-a", "conv-b"]);
+  });
+
+  test("moves a visual block to the top in its order", () => {
+    const state = setupSidebar([
+      conversation("conv-a", 1),
+      conversation("conv-b", 2),
+      conversation("conv-c", 3),
+      conversation("conv-d", 4),
+    ], "conv-b");
+
+    handleFocusedKey({ type: "char", char: "v" }, state);
+    handleFocusedKey({ type: "char", char: "j" }, state);
+    expect(handleFocusedKey({ type: "ctrl-e" }, state)).toMatchObject({
+      type: "move_sidebar_items",
+      items: [{ type: "conversation", id: "conv-b" }, { type: "conversation", id: "conv-c" }],
+      before: { type: "conversation", id: "conv-a" },
+    });
+    expect(order(state)).toEqual(["conv-b", "conv-c", "conv-a", "conv-d"]);
+  });
+
+  test("moves a conversation to the top of its own folder", () => {
+    const state = setupSidebar([
+      conversation("root", 0),
+      conversation("work-a", 1, { folderId: "work" }),
+      conversation("work-b", 2, { folderId: "work" }),
+    ], "work-b");
+    state.sidebar.folders = [folder("work", -1)];
+
+    expect(handleFocusedKey({ type: "ctrl-e" }, state)).toMatchObject({
+      type: "move_sidebar_items",
+      items: [{ type: "conversation", id: "work-b" }],
+      parentId: "work",
+      before: { type: "conversation", id: "work-a" },
+    });
+    const sortOrder = (id: string) => state.sidebar.conversations.find(conv => conv.id === id)!.sortOrder;
+    expect(sortOrder("work-b")).toBeLessThan(sortOrder("work-a"));
+    expect(sortOrder("root")).toBe(0);
+    expect(state.sidebar.conversations.find(conv => conv.id === "work-b")?.folderId).toBe("work");
+  });
+
+  test("still scrolls the chat a line when the sidebar is not focused", () => {
+    const state = setupSidebar([conversation("conv-a", 1), conversation("conv-b", 2)], "conv-b");
+    state.panelFocus = "chat";
+
+    expect(handleFocusedKey({ type: "ctrl-e" }, state)).toEqual({ type: "handled" });
+    expect(order(state)).toEqual(["conv-a", "conv-b"]);
   });
 });
 
