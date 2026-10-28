@@ -34,7 +34,12 @@ export function isProxyableProvider(value: unknown): value is ProxyableProviderI
  * provider_proxy_ping, so the linking daemon can tell a stuck connection.
  */
 export const PROVIDER_PROXY_FEATURES = ["claude-pool", "exec-alive", "link-ping"] as const;
-export type ProviderProxyFeature = typeof PROVIDER_PROXY_FEATURES[number];
+/**
+ * Added to the hello by `exocortexd proxy --link-only` (a key limited to the
+ * model link): remote_bash and client_bash are not available over this link.
+ */
+export const PROVIDER_PROXY_LINK_ONLY_FEATURE = "link-only";
+export type ProviderProxyFeature = typeof PROVIDER_PROXY_FEATURES[number] | typeof PROVIDER_PROXY_LINK_ONLY_FEATURE;
 
 /**
  * Request header naming the proxied conversation (`<client host>/<conversation

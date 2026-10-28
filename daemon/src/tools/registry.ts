@@ -31,7 +31,7 @@ import { evaluateToolCallSafety, formatSafetyBlock, evaluatePathSafety } from ".
 import { AbortableSemaphore } from "./semaphore";
 import { log } from "../log";
 import { providerToolNames } from "./provider-primitives";
-import { isProviderProxied } from "../provider-proxy/route";
+import { providerProxyAllowsRemoteExec } from "../provider-proxy/route";
 import type { ProviderId } from "../messages";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
 
@@ -111,11 +111,12 @@ export function getRegisteredTools(conversationId?: string): Tool[] {
 
 /**
  * Provider adaptation only; old persisted selections have no effect.
- * remote_bash is offered only while the provider goes through /proxy.
+ * remote_bash is offered only while the provider goes through /proxy, and
+ * not over a link that carries only model requests (`link-only`).
  */
 export function getConversationToolNames(provider?: ProviderId): string[] {
   const names = providerToolNames(getAvailableTools().map(tool => tool.name), provider);
-  return isProviderProxied(provider) ? names : names.filter(name => name !== remoteBash.name);
+  return providerProxyAllowsRemoteExec(provider) ? names : names.filter(name => name !== remoteBash.name);
 }
 
 // ── API tool definitions (sent to model providers) ─────────────────

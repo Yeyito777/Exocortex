@@ -92,6 +92,11 @@ export function providerProxySupports(provider: ProxyableProviderId, feature: Pr
   return routes.has(provider) && (hooks?.remoteSupports(provider, feature) ?? false);
 }
 
+/** remote_bash can run over `provider`'s link: it is proxied, and not by a key limited to the model link. */
+export function providerProxyAllowsRemoteExec(provider: ProviderId | string | undefined): boolean {
+  return isProxyableProvider(provider) && routes.has(provider) && !providerProxySupports(provider, "link-only");
+}
+
 /**
  * The name a conversation of this machine goes by on the /proxy remote
  * (PROVIDER_PROXY_CONVERSATION_HEADER): this host, then the conversation id.

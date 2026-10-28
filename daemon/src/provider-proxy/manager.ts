@@ -14,6 +14,7 @@ import { readExocortexConfig, updateExocortexConfig, type ExocortexConfig } from
 import { runtimeDir } from "@exocortex/shared/paths";
 import { validateSshAlias, type SpawnSshProcess } from "@exocortex/shared/ssh-transport";
 import {
+  PROVIDER_PROXY_LINK_ONLY_FEATURE,
   PROXYABLE_PROVIDERS,
   isProxyableProvider,
   type ProviderProxyInfo,
@@ -170,8 +171,11 @@ export class ProviderProxyManager {
   remoteHostNotice(provider: string | undefined): string | null {
     const alias = this.aliasFor(provider);
     if (!alias || !isProxyableProvider(provider)) return null;
-    return `This conversation's ${PROVIDER_LABELS[provider]} model runs through /proxy on ${alias}, using that machine's login. `
-      + `remote_bash runs commands on ${alias} via /proxy; every other tool still runs on ${hostname()}.`;
+    const runsOn = `This conversation's ${PROVIDER_LABELS[provider]} model runs through /proxy on ${alias}, using that machine's login. `;
+    if (this.linkFor(provider)?.features.includes(PROVIDER_PROXY_LINK_ONLY_FEATURE)) {
+      return `${runsOn}The link carries only model requests (remote_bash is not available); every tool runs on ${hostname()}.`;
+    }
+    return `${runsOn}remote_bash runs commands on ${alias} via /proxy; every other tool still runs on ${hostname()}.`;
   }
 
   aliasFor(provider: string | undefined): string | null {

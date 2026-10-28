@@ -5,7 +5,8 @@
  * restart interrupts and replays active streams, so the calling turn would
  * replay, request another restart, and loop. Instead the request is recorded
  * durably and handed to a transient service-manager job outside the daemon's
- * process tree (systemd-run on Linux, a launchd job on macOS), which survives
+ * process tree (systemd-run on Linux, a launchd job on macOS, a detached
+ * session under an EXOCORTEX_SUPERVISOR such as the OSS Phone's keeper), which survives
  * the daemon's own shutdown. That executor waits for the calling turn to end,
  * then performs the ordinary graceful restart (`exocortexd restart` for the
  * service, or prepare-restart + restart_daemon for an exotest instance).
@@ -16,9 +17,9 @@
  * so a crash-restart can never be followed by a second, stale restart.
  */
 
-import { spawnSync } from "child_process";
+import { spawn, spawnSync } from "child_process";
 import { randomUUID } from "crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { pidPath, repoRoot, runtimeDir, worktreeName } from "@exocortex/shared/paths";
 import * as convStore from "./conversations";
@@ -124,8 +125,13 @@ export function detectRestartTarget(
   run: CommandRunner = runCommand,
   pid = process.pid,
   parent: { pid: number; launcherPid?: string } = { pid: process.ppid, launcherPid: process.env.EXOCORTEX_LAUNCHER_PID },
+  supervisor: string | undefined = process.env.EXOCORTEX_SUPERVISOR,
 ): RestartTarget | null {
-  if (platform === "linux") {
+  if (supervisor) {
+    // Its record of the daemon it keeps, like systemd's MainPID.
+    const result = run([supervisor, "main-pid"]);
+    if (result.ok && Number.parseInt(result.output, 10) === pid) return "service";
+  } else if (platform === "linux") {
     const result = run(["systemctl", "--user", "show", SERVICE_UNIT, "--property=MainPID", "--value"]);
     if (result.ok && Number.parseInt(result.output, 10) === pid) return "service";
   } else if (platform === "darwin") {
@@ -146,6 +152,10 @@ export function detectRestartTarget(
 export interface ExecutorScheduleOptions {
   platform?: NodeJS.Platform;
   run?: CommandRunner;
+  /** EXOCORTEX_SUPERVISOR (tests). */
+  supervisor?: string;
+  /** Starts the detached executor under a supervisor (tests). */
+  spawnDetached?: (program: string[], cwd: string, env: Record<string, string>, logPath: string) => void;
   /** macOS LaunchAgent plist destination directory (tests). */
   launchdDir?: string;
 }
@@ -172,6 +182,14 @@ export function scheduleRestartExecutor(token: string, options: ExecutorSchedule
   const cwd = join(repoRoot(), "daemon");
   const program = [process.execPath, "run", "src/main.ts", "run-requested-restart", token];
   const env = executorEnvironment();
+
+  const supervisor = options.supervisor ?? process.env.EXOCORTEX_SUPERVISOR;
+  if (supervisor) {
+    // Its own session, so the supervisor's restart of the daemon (a signal to
+    // the daemon's PID only) leaves it running.
+    (options.spawnDetached ?? spawnDetachedExecutor)(program, cwd, env, join(runtimeDir(), "requested-restart.log"));
+    return `session:${token}`;
+  }
 
   if (platform === "linux") {
     const unit = `exocortex-requested-restart-${token}`;
@@ -222,6 +240,17 @@ export function scheduleRestartExecutor(token: string, options: ExecutorSchedule
   }
 
   throw new Error(`Model-requested restarts are not supported on ${platform}.`);
+}
+
+function spawnDetachedExecutor(program: string[], cwd: string, env: Record<string, string>, logPath: string): void {
+  mkdirSync(dirname(logPath), { recursive: true });
+  const fd = openSync(logPath, "a");
+  try {
+    const child = spawn(program[0], program.slice(1), { cwd, env, detached: true, stdio: ["ignore", fd, fd] });
+    child.unref();
+  } finally {
+    closeSync(fd);
+  }
 }
 
 // ── Request (inside the daemon, from the exo tool) ──────────────────
