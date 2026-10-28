@@ -6,6 +6,8 @@ import {
   beginOlderHistoryLoad,
   beginOpeningFillHold,
   INITIAL_BUFFER_ADDITIONAL_TURNS,
+  olderHistoryDue,
+  olderHistoryDueAfterLayout,
   openingFillHoldMs,
   openingViewport,
   REMOTE_OPENING_FILL_HOLD_MS,
@@ -257,5 +259,51 @@ describe("remote conversation open frames", () => {
     // The panel narrows only the rows beside it; history is laid out at the chat width.
     expect(open.state.layout.historyWidth).toBeLessThan(open.state.layout.chatWidth);
     expect(openingViewport(open.state).cols).toBe(open.state.layout.chatWidth);
+  });
+
+  test("an /ssh startup open that cannot fill the screen keeps paging once the history is laid out", () => {
+    // Startup over /ssh: only the connection progress paints until the sidebar
+    // and tools arrive, and the open and its backfill can land before that.
+    const state = createInitialState();
+    setSystemTime(new Date(START));
+    state.rows = 50;
+    state.cols = 140;
+    state.sidebar.open = false;
+    state.sidebar.conversations = [summary(CONV, false, state)];
+    state.sshConnecting = { phase: "loading", message: "Loading…" };
+    const paint = () => {
+      const write = process.stdout.write;
+      process.stdout.write = (() => true) as typeof process.stdout.write;
+      try { render(state); } finally { process.stdout.write = write; }
+    };
+    beginConversationLoad(state, CONV, daemon);
+    handleEvent({
+      type: "conversation_loaded", convId: CONV, provider: "anthropic", model: "claude-opus-5-5", effort: "high", fastMode: false,
+      entries: shortTurns(3, "newest"), historyStartIndex: 800, historyStartUserIndex: 400, historyTotalEntries: 806,
+      hasOlderHistory: true, contextTokens: 100, toolOutputsIncluded: false,
+    }, state, daemon);
+    beginOpeningFillHold(state, Date.now(), openingFillHoldMs(true));
+    paint();
+    beginOlderHistoryLoad(state, INITIAL_BUFFER_ADDITIONAL_TURNS);
+    state.historyLoadingRequestId = "history-backfill";
+    handleEvent({
+      type: "conversation_history_loaded", reqId: "history-backfill", convId: CONV, requestSource: "initial-backfill",
+      entries: shortTurns(2, "older"), historyStartIndex: 796, historyStartUserIndex: 398, historyEndIndex: 800,
+      historyTotalEntries: 806, hasOlderHistory: true,
+    }, state, daemon);
+    paint();
+    // Not laid out yet: whether the screen needs more cannot be told.
+    expect(state.layout.totalLines).toBe(0);
+    expect(olderHistoryDue(state)).toBe(false);
+    expect(olderHistoryDueAfterLayout(state)).toBe(false);
+
+    // Connected: the first frame lays the short window out and paging resumes.
+    state.sshConnecting = null;
+    paint();
+    expect(state.layout.totalLines).toBeGreaterThan(0);
+    expect(state.layout.totalLines).toBeLessThan(state.layout.messageAreaHeight);
+    expect(olderHistoryDueAfterLayout(state)).toBe(true);
+    // Asked once: a later frame does not ask again on its own.
+    expect(olderHistoryDueAfterLayout(state)).toBe(false);
   });
 });

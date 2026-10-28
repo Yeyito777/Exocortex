@@ -337,6 +337,13 @@ describe("viewport-sized opening windows", () => {
     expect(estimateFoldedEntryRows(notification, viewport.cols, false)).toBe(0);
     const delegation: DisplayEntry = { ...notification, metadata: { startedAt: 1, endedAt: 1, model: "m", tokens: 0, automation: { kind: "exo_send" } } };
     expect(estimateFoldedEntryRows(delegation, viewport.cols, false)).toBe(estimateEntryRows(delegation, viewport.cols));
+    // A top-level conversation folds its own subagents' messages away; another sender's still reads as a prompt.
+    const fromChild: DisplayEntry = { ...notification, metadata: { startedAt: 1, endedAt: 1, model: "m", tokens: 0, automation: { kind: "exo_send", sourceId: "child" } } };
+    const fromOther: DisplayEntry = { ...notification, metadata: { startedAt: 1, endedAt: 1, model: "m", tokens: 0, automation: { kind: "exo_send", sourceId: "other" } } };
+    const isOwnSubagent = (id: string) => id === "child";
+    expect(estimateFoldedEntryRows(fromChild, viewport.cols, false, isOwnSubagent)).toBe(0);
+    expect(estimateFoldedEntryRows(fromOther, viewport.cols, false, isOwnSubagent)).toBe(estimateEntryRows(fromOther, viewport.cols));
+    expect(estimateFoldedEntryRows(fromChild, viewport.cols, false)).toBe(estimateEntryRows(fromChild, viewport.cols));
     const silent: DisplayEntry = { ...toolTurn, blocks: toolTurn.blocks.slice(0, -1) };
     expect(estimateFoldedEntryRows(silent, viewport.cols, false)).toBe(0);
     expect(estimateFoldedEntryRows(user("a real\nmultiline\nprompt"), viewport.cols, false)).toBe(estimateEntryRows(user("a real\nmultiline\nprompt"), viewport.cols));
@@ -383,7 +390,7 @@ function hugeAgentTurn(rounds: number): Extract<DisplayEntry, { type: "ai" }> {
 describe("folded-work elision", () => {
   test("empties the tool calls and thinking before the last tool call, with where they live", () => {
     const entry = agentTurn(3);
-    const elided = elideFoldedWork(entry, 7);
+    const elided = elideFoldedWork(entry, 7, true);
     if (elided.type !== "ai" || entry.type !== "ai") throw new Error("not ai");
     expect(elided.blocks.map(block => ("elided" in block ? block.elided : null))).toEqual([
       { entry: 7, block: 0 }, { entry: 7, block: 1 }, null,
@@ -395,6 +402,12 @@ describe("folded-work elision", () => {
     expect(elided.blocks[0]).toEqual({ type: "thinking", text: "", elided: { entry: 7, block: 0 } });
     expect(elided.blocks.slice(7)).toEqual(entry.blocks.slice(7));
     expect(entry.blocks[1]).toMatchObject({ summary: "ls" });
+
+    // No turn shows it as its newest step: the last call goes as well.
+    const finished = elideFoldedWork(entry, 7, false);
+    if (finished.type !== "ai") throw new Error("not ai");
+    expect(finished.blocks[7]).toEqual({ type: "tool_call", toolCallId: "call-2", toolName: "Bash", input: {}, summary: "", elided: { entry: 7, block: 7 } });
+    expect(finished.blocks.slice(8)).toEqual(entry.blocks.slice(8));
   });
 
   test("leaves entries with nothing to elide as they are", () => {
@@ -406,7 +419,51 @@ describe("folded-work elision", () => {
       { type: "tool_result", toolCallId: "call-0", toolName: "Bash", output: "", isError: false },
       { type: "text", text: "Done." },
     ] };
-    for (const entry of [prompt, reply, oneCall]) expect(elideFoldedWork(entry, 3)).toBe(entry);
+    for (const entry of [prompt, reply, oneCall]) expect(elideFoldedWork(entry, 3, true)).toBe(entry);
+    for (const entry of [prompt, reply]) expect(elideFoldedWork(entry, 3, false)).toBe(entry);
+  });
+
+  test("keeps last tool calls only where a running turn may show one", () => {
+    const entries: DisplayEntry[] = [user("u0"), agentTurn(3), user("u1"), agentTurn(3), user("u2"), agentTurn(3)];
+    const lastCall = (entry: DisplayEntry | undefined) => entry?.type === "ai" ? entry.blocks[7] : null;
+    const kept = (page: DisplayHistoryPage) => page.entries.filter(entry => entry.type === "ai").map(entry => {
+      const call = lastCall(entry);
+      return call?.type === "tool_call" && !call.elided;
+    });
+    // Idle: only the window's newest entry keeps it (a turn resumed after a restart continues it).
+    const idle = pageDisplayHistory(entries, 100, undefined, { byteBudget: 128 * 1024, elideFoldedWork: true });
+    expect(kept(idle)).toEqual([false, false, true]);
+    const older = pageDisplayHistory(entries, 100, 4, { byteBudget: 128 * 1024, elideFoldedWork: true });
+    expect(kept(older)).toEqual([false, true]);
+    // A turn running: every entry keeps it, as before.
+    const running = pageDisplayHistory(entries, 100, undefined, { byteBudget: 128 * 1024, elideFoldedWork: true, turnRunning: true });
+    expect(kept(running)).toEqual([true, true, true]);
+    expect(lastCall(running.entries[1])).toEqual(lastCall(entries[1]));
+  });
+
+  test("a conversation that delegates opens folded in one window: its subagents' messages and finished calls cost nothing", () => {
+    // A top-level conversation whose turns are split by its subagents' messages
+    // (1793172749114-og7m06): each fragment ends on a big apply_patch and shows
+    // nothing folded; only the owner's prompt and the final reply have rows.
+    const patch = "*** Begin Patch\n".padEnd(20_000, "+ line\n");
+    const fragment = (n: number): DisplayEntry => ({ type: "ai", metadata: null, blocks: [
+      { type: "tool_call", toolCallId: `read-${n}`, toolName: "exec_command", input: { cmd: "cat x" }, summary: "cat x" },
+      { type: "tool_result", toolCallId: `read-${n}`, toolName: "", output: "", isError: false },
+      { type: "tool_call", toolCallId: `patch-${n}`, toolName: "apply_patch", input: { input: patch }, summary: "x.swift" },
+      { type: "tool_result", toolCallId: `patch-${n}`, toolName: "", output: "", isError: false },
+    ] });
+    const report = (n: number): DisplayEntry => ({ type: "user", text: `Report ${n}: `.padEnd(800, "found things. "), metadata: { startedAt: n, endedAt: n, model: "m", tokens: 0, automation: { kind: "exo_send", sourceId: `child-${n % 3}` } } });
+    const entries: DisplayEntry[] = [user("Build the feature.\n".repeat(20))];
+    for (let n = 0; n < 40; n++) entries.push(fragment(n), report(n));
+    entries.push({ type: "ai", metadata: { startedAt: 1, endedAt: 2, model: "m", tokens: 1 }, blocks: [{ type: "text", text: "Committed it." }] });
+    const viewport: HistoryViewport = { rows: 60, cols: 79, folded: true };
+    const isOwnSubagent = (id: string) => id.startsWith("child-");
+
+    const before = pageDisplayHistory(entries, 100, undefined, { byteBudget: 128 * 1024, viewport, elideFoldedWork: true, turnRunning: true });
+    expect(before.hasOlder).toBe(true);
+    const after = pageDisplayHistory(entries, 100, undefined, { byteBudget: 128 * 1024, viewport, elideFoldedWork: true, isOwnSubagent });
+    expect(after).toMatchObject({ startIndex: 0, hasOlder: false });
+    expect(JSON.stringify(after.entries).length).toBeLessThan(128 * 1024);
   });
 
   test("a huge single message opens folded in one page instead of many", () => {

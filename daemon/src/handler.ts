@@ -941,9 +941,11 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
    * Clients that understand partial AI entries receive byte-bounded windows;
    * ones that fold turns and can fetch elided blocks, without the folded work.
    */
-  const historyWindowOptions = (target: ConnectedClient, folded = false): HistoryWindowOptions => ({
+  const historyWindowOptions = (target: ConnectedClient, convId: string, folded = false): HistoryWindowOptions => ({
     ...(target.capabilities?.has("history-block-pagination") ? { byteBudget: HISTORY_PAGE_BYTE_BUDGET } : {}),
-    ...(folded && target.capabilities?.has("history-folded-elision") ? { elideFoldedWork: true } : {}),
+    ...(folded && target.capabilities?.has("history-folded-elision")
+      ? { elideFoldedWork: true, ...(convStore.hasRunningTurn(convId) ? { turnRunning: true } : {}) }
+      : {}),
   });
 
   const sendCompactConversationLoaded = (
@@ -957,10 +959,11 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     initialBackfillReqId?: string,
   ) => {
     const paginated = target.capabilities?.has("history-pagination") || turns !== undefined;
-    const windowOptions = historyWindowOptions(target, viewport?.folded === true);
+    const windowOptions = historyWindowOptions(target, convId, viewport?.folded === true);
     // A byte-budgeted client's viewport sizes the window in rendered rows.
     if (viewport && windowOptions.byteBudget !== undefined) {
       windowOptions.viewport = viewport;
+      if (viewport.folded) windowOptions.isOwnSubagent = convStore.ownSubagentTest(convId);
       turns = MAX_HISTORY_REQUEST_TURNS;
     }
     if (paginated) {
@@ -1085,7 +1088,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     cachedEntryHashes?: string[],
     folded = false,
   ): boolean => {
-    const windowOptions: HistoryWindowOptions = { ...historyWindowOptions(target, folded), beforeBlockIndex };
+    const windowOptions: HistoryWindowOptions = { ...historyWindowOptions(target, convId, folded), beforeBlockIndex };
     {
       const snapshotDiagnostics: Partial<convStore.RenderSnapshotDiagnostics> | undefined = metrics ? {} : undefined;
       const page = convStore.getStoredDisplayPage(convId, turns, beforeEntryIndex, snapshotDiagnostics, windowOptions);

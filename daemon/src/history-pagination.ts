@@ -61,12 +61,22 @@ export interface HistoryWindowOptions {
   viewport?: HistoryViewport;
   /** Leave out the content of the work a folded client hides (elideFoldedWork). */
   elideFoldedWork?: boolean;
+  /**
+   * The conversation has a turn running: a folded client may show its newest
+   * committed step, so each entry's last tool call is not elided.
+   */
+  turnRunning?: boolean;
+  /**
+   * Given for a top-level conversation: whether a sender is one of its
+   * subagents, whose messages a folded client shows no row for.
+   */
+  isOwnSubagent?: (id: string) => boolean;
 }
 
 export interface HistoryWindowLimits {
   byteBudget?: number;
   /** Estimated rendered rows after which the window is full. */
-  rowTarget?: { rows: number; cols: number; folded?: boolean };
+  rowTarget?: { rows: number; cols: number; folded?: boolean; isOwnSubagent?: (id: string) => boolean };
   /**
    * Pasted image payloads ride along only in budget the history itself left
    * over; otherwise they are dropped (as for old history) so a large screenshot
@@ -79,6 +89,8 @@ export interface HistoryWindowLimits {
    * so a window covers the history a folded client shows, not the work it hides.
    */
   elideFoldedWork?: boolean;
+  /** Keep every entry's last tool call when eliding (a turn is running), not only the newest entry's. */
+  keepLastToolCall?: boolean;
 }
 
 /** Limits for a paged history window (opening or backfill) with these options. */
@@ -86,33 +98,41 @@ export function pageWindowLimits(options: HistoryWindowOptions): HistoryWindowLi
   const viewport = options.viewport;
   return {
     byteBudget: options.byteBudget,
-    ...(viewport ? { rowTarget: { rows: viewport.rows * OPENING_WINDOW_VIEWPORTS, cols: viewport.cols, ...(viewport.folded ? { folded: true } : {}) } } : {}),
+    ...(viewport ? { rowTarget: {
+      rows: viewport.rows * OPENING_WINDOW_VIEWPORTS,
+      cols: viewport.cols,
+      ...(viewport.folded ? { folded: true, ...(options.isOwnSubagent ? { isOwnSubagent: options.isOwnSubagent } : {}) } : {}),
+    } } : {}),
     optionalImagePayloads: options.byteBudget !== undefined,
-    ...(options.elideFoldedWork ? { elideFoldedWork: true } : {}),
+    ...(options.elideFoldedWork ? { elideFoldedWork: true, ...(options.turnRunning ? { keepLastToolCall: true } : {}) } : {}),
   };
 }
 
 // ── Folded-work elision ──────────────────────────────────────────────
 // A client that folds turns (tui/src/turncollapse.ts) shows of an assistant
 // entry only the reply after its last tool round, plus, for a turn still
-// running, its newest step. Every tool call and thinking block before the
+// running, its newest step. Every tool call and thinking block up to the
 // entry's last tool call is hidden, and those inputs and summaries are most of
 // a tool-heavy turn's bytes. They go out empty, with where to fetch them from.
-// Text, tool results (already without output) and the last tool call stay.
+// Text and tool results (already without output) stay, and so does the last
+// tool call of an entry a running turn may show as its newest step: every
+// entry's while a turn runs, otherwise a window's newest assistant entry's
+// (a turn resumed after a daemon restart continues it without a new prompt).
 
 /**
  * The entry at absolute history index `index` with its folded-away tool calls
  * and thinking emptied and marked elided. Returns the entry itself when there
  * is nothing to leave out.
  */
-export function elideFoldedWork(entry: DisplayEntry, index: number): DisplayEntry {
+export function elideFoldedWork(entry: DisplayEntry, index: number, keepLastToolCall: boolean): DisplayEntry {
   if (entry.type !== "ai") return entry;
   let lastToolCall = -1;
   for (let block = entry.blocks.length - 1; block >= 0; block--) {
     if (entry.blocks[block]!.type === "tool_call") { lastToolCall = block; break; }
   }
+  const end = keepLastToolCall ? lastToolCall : lastToolCall + 1;
   let blocks: Block[] | null = null;
-  for (let block = 0; block < lastToolCall; block++) {
+  for (let block = 0; block < end; block++) {
     const source = entry.blocks[block]!;
     let elided: Block | null = null;
     if (source.type === "tool_call") {
@@ -232,14 +252,25 @@ export function estimateEntryRows(entry: DisplayEntry, cols: number): number {
  * entry of the same turn was already counted (this one then shows nothing).
  * An assistant entry shows only the text after its last tool round; one with none is a silent
  * turn, which folds under one row or into a run of background turns with
- * others, so it counts nothing; a notification never has a row of its own. Like
- * the unfolded estimate it errs low: work and run rows and margins are not counted.
+ * others, so it counts nothing; a notification never has a row of its own, nor
+ * does a message from one of a top-level conversation's own subagents
+ * (`isOwnSubagent`). Like the unfolded estimate it errs low: work and run rows
+ * and margins are not counted.
  */
-export function estimateFoldedEntryRows(entry: DisplayEntry, cols: number, newerInTurn: boolean): number {
+export function estimateFoldedEntryRows(
+  entry: DisplayEntry,
+  cols: number,
+  newerInTurn: boolean,
+  isOwnSubagent?: (id: string) => boolean,
+): number {
   switch (entry.type) {
     case "user": {
-      // Prompts another conversation sent read as prompts.
-      if (!isAutomatedUserPrompt(entry.text, entry.metadata) || entry.metadata?.automation?.kind === "exo_send") return estimateEntryRows(entry, cols);
+      const automation = entry.metadata?.automation;
+      if (automation?.kind === "exo_send") {
+        return automation.sourceId && isOwnSubagent?.(automation.sourceId) ? 0 : estimateEntryRows(entry, cols);
+      }
+      // Prompts another conversation sent (above) read as prompts.
+      if (!isAutomatedUserPrompt(entry.text, entry.metadata)) return estimateEntryRows(entry, cols);
       // The owner's relayed message shows as their bubble; other notifications have
       // no row of their own (they lead their turn's work row, which is not counted).
       const relayed = ownerRelayedText(entry.text, entry.metadata);
@@ -330,7 +361,7 @@ export function selectHistoryWindow(
   endBlockIndex = 0,
   limits: HistoryWindowLimits = {},
 ): HistoryWindow {
-  const { byteBudget, rowTarget, optionalImagePayloads, elideFoldedWork: elide } = limits;
+  const { byteBudget, rowTarget, optionalImagePayloads, elideFoldedWork: elide, keepLastToolCall = false } = limits;
   const safeTurns = Math.max(1, Math.floor(Number.isFinite(turns) ? turns : 1));
   const selected: DisplayEntry[] = [];
   /** Entries whose image payloads were set aside, by position in `selected`. */
@@ -342,9 +373,14 @@ export function selectHistoryWindow(
   let userEntries = 0;
   /** A newer assistant entry of the turn being walked was already counted. */
   let aiNewerInTurn = false;
+  /** A newer assistant entry of the window was already walked. */
+  let aiNewerInWindow = false;
   for (const candidate of candidates) {
     // Elided whole, so block references stay absolute and the cut below sees elided sizes.
-    const source = elide ? elideFoldedWork(candidate.entry, candidate.index) : candidate.entry;
+    const source = elide
+      ? elideFoldedWork(candidate.entry, candidate.index, keepLastToolCall || (candidate.entry.type === "ai" && !aiNewerInWindow))
+      : candidate.entry;
+    if (candidate.entry.type === "ai") aiNewerInWindow = true;
     let entry = endBlockIndex > 0 && candidate.index === endIndex && source.type === "ai"
       ? sliceAIEntry(source, 0, endBlockIndex)
       : source;
@@ -359,7 +395,7 @@ export function selectHistoryWindow(
     const rowsNeeded = rowTarget ? rowTarget.rows - usedRows : undefined;
     const overBytes = byteBudget !== undefined && usedBytes + bytes > byteBudget;
     const entryRows = !rowTarget ? 0
-      : rowTarget.folded ? estimateFoldedEntryRows(entry, rowTarget.cols, aiNewerInTurn)
+      : rowTarget.folded ? estimateFoldedEntryRows(entry, rowTarget.cols, aiNewerInTurn, rowTarget.isOwnSubagent)
       : estimateEntryRows(entry, rowTarget.cols);
     if (entry.type === "ai") aiNewerInTurn = true;
     else if (entry.type === "user") aiNewerInTurn = false;
