@@ -307,6 +307,7 @@ class Client:
         self._sock: Optional[_socket.socket] = None
         self._generation = 0
         self._ids = itertools.count(1)
+        self._last_started_at = 0
         self._lock = threading.RLock()
         self._write_lock = threading.Lock()
         self._closed = False
@@ -434,6 +435,12 @@ class Client:
     def _next_id(self) -> str:
         return f"p{next(self._ids)}"
 
+    def _next_started_at(self) -> int:
+        """The prompt's time, unique per client: it is the turn's identity (turn_result.turnId)."""
+        with self._lock:
+            self._last_started_at = max(int(time.time() * 1000), self._last_started_at + 1)
+            return self._last_started_at
+
     def _write(self, command: Dict[str, Any]) -> None:
         if self._closed:
             raise ExocortexError("closed", "The client was closed")
@@ -539,12 +546,14 @@ class Client:
         if conv.ended:
             raise ExocortexError("ended", f"Conversation {conv.id} has ended ({conv.ended})")
         turn = _Turn(self._next_id(), conv.id, self._generation, on_event)
+        started_at = self._next_started_at()
+        turn.turn_id = str(started_at)
         if stream:
             turn.stream = TurnStream(turn.future)
         with self._lock:
             self._turns[turn.req_id] = turn
         command = {"type": "send_message", "reqId": turn.req_id, "convId": conv.id, "text": prompt,
-                   "startedAt": int(time.time() * 1000), "awaitResult": True}
+                   "startedAt": started_at, "awaitResult": True}
         if images:
             command["images"] = images
         try:
@@ -558,10 +567,12 @@ class Client:
     def _start_run(self, prompt, lifetime, keep, images, on_event, stream, options) -> _Turn:
         tools = options.get("tools")
         turn = _Turn(self._next_id(), None, self._generation, on_event, run_tools=tools)
+        started_at = self._next_started_at()
+        turn.turn_id = str(started_at)
         if stream:
             turn.stream = TurnStream(turn.future)
         fields = _create_fields(lifetime=lifetime, **options)
-        command = {"type": "app_run", "reqId": turn.req_id, **fields, "prompt": prompt}
+        command = {"type": "app_run", "reqId": turn.req_id, **fields, "prompt": prompt, "startedAt": started_at}
         if images:
             command["images"] = images
         if keep:
@@ -636,11 +647,9 @@ class Client:
             turns = [t for t in self._turns.values() if t.conv_id == conv_id]
         for t in turns:
             if etype == "turn_result":
-                if not t.turn_id or not event.get("turnId") or t.turn_id == event.get("turnId"):
+                if not event.get("turnId") or t.turn_id == event.get("turnId"):
                     self._settle(t, TurnResult.from_event(event))
                 continue
-            if etype == "streaming_started" and event.get("turnId") and not t.turn_id:
-                t.turn_id = event["turnId"]
             if t.on_event:
                 t.on_event(event)
             if t.stream is not None:
@@ -803,7 +812,7 @@ class Client:
                 with self._lock:
                     turns = [t for t in self._turns.values() if t.conv_id == conv.id]
                 for t in turns:
-                    if last and (not t.turn_id or not last.get("turnId") or last.get("turnId") == t.turn_id):
+                    if last and last.get("turnId") == t.turn_id:
                         self._settle(t, TurnResult.from_event(last))
                     else:
                         self._settle(t, ExocortexError("result_lost", f"The turn on {conv.id} ended while the client was "

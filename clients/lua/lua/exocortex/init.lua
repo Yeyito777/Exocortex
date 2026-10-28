@@ -292,7 +292,7 @@ function M.connect(opts, cb)
     reconnect_timeout_ms = opts.reconnect_timeout_ms or 60000,
     welcome_timeout_ms = opts.welcome_timeout_ms or 5000,
     request_timeout_ms = opts.request_timeout_ms or 30000,
-    pipe = nil, generation = 0, next_id = 0, closed = false, reconnecting = false,
+    pipe = nil, generation = 0, next_id = 0, last_started_at = 0, closed = false, reconnecting = false,
     requests = {}, turns = {}, conversations = {}, calls = {}, listeners = {},
   }, Client)
   local function open(path)
@@ -312,6 +312,12 @@ end
 function Client:_id()
   self.next_id = self.next_id + 1
   return "n" .. self.next_id
+end
+
+--- The prompt's time, unique per client: it is the turn's identity (turn_result.turnId).
+function Client:_started_at()
+  self.last_started_at = math.max(now_ms(), self.last_started_at + 1)
+  return self.last_started_at
 end
 
 function Client:_handshake(cb)
@@ -462,7 +468,7 @@ function Client:run(prompt, opts, cb)
   opts = opts or {}
   local turn = self:_new_turn(nil, opts, cb)
   turn.run_tools = opts.tools
-  local cmd = vim.tbl_extend("force", { type = "app_run", reqId = turn.req_id, prompt = prompt, images = opts.images, keep = opts.keep or nil }, create_fields(opts))
+  local cmd = vim.tbl_extend("force", { type = "app_run", reqId = turn.req_id, prompt = prompt, startedAt = turn.started_at, images = opts.images, keep = opts.keep or nil }, create_fields(opts))
   self:_start(turn, cmd)
 end
 
@@ -472,7 +478,7 @@ function Client:run_stream(prompt, opts)
   local stream = new_stream()
   local turn = self:_new_turn(nil, opts, function(e, r) stream:_finish(e, r) end, stream)
   turn.run_tools = opts.tools
-  local cmd = vim.tbl_extend("force", { type = "app_run", reqId = turn.req_id, prompt = prompt, images = opts.images, keep = opts.keep or nil }, create_fields(opts))
+  local cmd = vim.tbl_extend("force", { type = "app_run", reqId = turn.req_id, prompt = prompt, startedAt = turn.started_at, images = opts.images, keep = opts.keep or nil }, create_fields(opts))
   self:_start(turn, cmd)
   return stream
 end
@@ -513,8 +519,10 @@ end
 -- ── turns ──
 
 function Client:_new_turn(conv_id, opts, cb, stream)
+  local started_at = self:_started_at()
   local turn = {
-    req_id = self:_id(), conv_id = conv_id, generation = self.generation, cb = cb, stream = stream,
+    req_id = self:_id(), conv_id = conv_id, started_at = started_at, turn_id = string.format("%d", started_at),
+    generation = self.generation, cb = cb, stream = stream,
     on_text = opts.on_text, on_event = opts.on_event, on_raw = opts.on_raw,
   }
   self.turns[turn.req_id] = turn
@@ -538,7 +546,7 @@ function Client:_send_turn(conv, prompt, opts, cb, stream)
   local turn = self:_new_turn(conv.id, opts, cb, stream)
   self:_start(turn, {
     type = "send_message", reqId = turn.req_id, convId = conv.id, text = prompt,
-    startedAt = now_ms(), awaitResult = true, images = opts.images,
+    startedAt = turn.started_at, awaitResult = true, images = opts.images,
   })
 end
 
@@ -598,9 +606,8 @@ function Client:_dispatch(ev)
   for _, tr in pairs(self.turns) do
     if tr.conv_id == conv_id then
       if t == "turn_result" then
-        if not tr.turn_id or not ev.turnId or tr.turn_id == ev.turnId then self:_settle(tr, nil, to_result(ev)) end
+        if not ev.turnId or tr.turn_id == ev.turnId then self:_settle(tr, nil, to_result(ev)) end
       else
-        if t == "streaming_started" and ev.turnId and not tr.turn_id then tr.turn_id = ev.turnId end
         if tr.on_raw then tr.on_raw(ev) end
         local se = stream_event(ev)
         if se then
@@ -747,7 +754,7 @@ function Client:_reattach()
       local last = ev.lastTurnResult
       for _, tr in pairs(self.turns) do
         if tr.conv_id == id then
-          if last and (not tr.turn_id or not last.turnId or last.turnId == tr.turn_id) then
+          if last and last.turnId == tr.turn_id then
             self:_settle(tr, nil, to_result(last))
           else
             self:_settle(tr, err("result_lost", "The turn on " .. id .. " ended while the client was disconnected, and the daemon did not report its result"))

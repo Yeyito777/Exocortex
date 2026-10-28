@@ -195,8 +195,8 @@ interface PendingRequest {
 interface PendingTurn {
   reqId: string;
   convId: string | null;
-  /** Set once known: from the daemon's turn events, or its turn_result. */
-  turnId?: string;
+  /** The daemon's turn identity: the prompt's startedAt, as a string. */
+  turnId: string;
   /** The connection this turn's request went out on. */
   generation: number;
   resolve: (result: TurnResult) => void;
@@ -363,6 +363,7 @@ export class Client {
   private socket: Socket | null = null;
   private generation = 0;
   private reqCounter = 0;
+  private lastStartedAt = 0;
   private buffer = "";
   private closed = false;
   private reconnecting: Promise<void> | null = null;
@@ -527,24 +528,26 @@ export class Client {
   sendTurn(conversation: Conversation, prompt: string, options: SendOptions, stream: (() => TurnStream) | null): Promise<TurnResult> {
     if (conversation.ended) return Promise.reject(new ExocortexError("ended", `Conversation ${conversation.id} has ended (${conversation.ended})`));
     const reqId = this.nextReqId();
+    const startedAt = this.nextStartedAt();
     return new Promise((resolve, reject) => {
-      const turn: PendingTurn = { reqId, convId: conversation.id, generation: this.generation, resolve, reject, onEvent: options.onEvent };
+      const turn: PendingTurn = { reqId, convId: conversation.id, turnId: String(startedAt), generation: this.generation, resolve, reject, onEvent: options.onEvent };
       if (stream) Object.defineProperty(turn, "stream", { get: stream });
       this.turns.set(reqId, turn);
       try {
-        this.write({ type: "send_message", reqId, convId: conversation.id, text: prompt, startedAt: Date.now(), awaitResult: true, ...(options.images ? { images: options.images } : {}) });
+        this.write({ type: "send_message", reqId, convId: conversation.id, text: prompt, startedAt, awaitResult: true, ...(options.images ? { images: options.images } : {}) });
       } catch (error) { this.turns.delete(reqId); reject(error); }
     });
   }
 
   private startRun(prompt: string, options: RunOptions, stream: (() => TurnStream) | null): Promise<TurnResult> {
     const reqId = this.nextReqId();
+    const startedAt = this.nextStartedAt();
     return new Promise((resolve, reject) => {
-      const turn: PendingTurn = { reqId, convId: null, generation: this.generation, resolve, reject, onEvent: options.onEvent, run: { options } };
+      const turn: PendingTurn = { reqId, convId: null, turnId: String(startedAt), generation: this.generation, resolve, reject, onEvent: options.onEvent, run: { options } };
       if (stream) Object.defineProperty(turn, "stream", { get: stream });
       this.turns.set(reqId, turn);
       try {
-        this.write({ type: "app_run", reqId, ...createFields(options), prompt, ...(options.images ? { images: options.images } : {}), ...(options.keep ? { keep: true } : {}) });
+        this.write({ type: "app_run", reqId, ...createFields(options), prompt, startedAt, ...(options.images ? { images: options.images } : {}), ...(options.keep ? { keep: true } : {}) });
       } catch (error) { this.turns.delete(reqId); reject(error); }
     });
   }
@@ -606,10 +609,9 @@ export class Client {
       if (turn.convId !== convId) continue;
       if (event.type === "turn_result") {
         // An owner copy (no reqId, or a reqId from an earlier connection): our turn, unless it names another one.
-        if (!turn.turnId || !event.turnId || turn.turnId === event.turnId) this.settle(turn, toResult(event));
+        if (!event.turnId || turn.turnId === event.turnId) this.settle(turn, toResult(event));
         continue;
       }
-      if (event.type === "streaming_started" && event.turnId && !turn.turnId) turn.turnId = event.turnId;
       turn.onEvent?.(event);
       const stream = turn.stream;
       if (stream) {
@@ -723,7 +725,7 @@ export class Client {
       for (const turn of [...this.turns.values()]) {
         if (turn.convId !== conversation.id) continue;
         const last = event.lastTurnResult;
-        if (last && (!turn.turnId || !last.turnId || last.turnId === turn.turnId)) this.settle(turn, toResult(last));
+        if (last && last.turnId === turn.turnId) this.settle(turn, toResult(last));
         else this.settle(turn, new ExocortexError("result_lost", `The turn on ${conversation.id} ended while the client was disconnected, and the daemon did not report its result`));
       }
     }
@@ -739,6 +741,12 @@ export class Client {
   // ── Plumbing ──
 
   private nextReqId(): string { return `c${++this.reqCounter}`; }
+
+  /** The prompt's time, unique per client: it is the turn's identity (turn_result.turnId). */
+  private nextStartedAt(): number {
+    this.lastStartedAt = Math.max(Date.now(), this.lastStartedAt + 1);
+    return this.lastStartedAt;
+  }
 
   private write(command: Record<string, any>): void {
     if (this.closed) throw new ExocortexError("closed", "The client was closed");

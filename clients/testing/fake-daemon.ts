@@ -264,7 +264,7 @@ async function runTurn(conv: Conv, prompt: string, awaiter: Conn | null, reqId: 
     conv.userMessages++;
     toSubscribers(conv, { type: "user_message", convId: conv.convId, text: prompt, startedAt });
   }
-  toSubscribers(conv, { type: "streaming_started", convId: conv.convId, turnId, provider: conv.provider, model: conv.model, startedAt });
+  toSubscribers(conv, { type: "streaming_started", convId: conv.convId, provider: conv.provider, model: conv.model, startedAt });
   let outcome: { text: string; stopReason: string; error?: string };
   try { outcome = await model(conv, turn, prompt); }
   catch (error) {
@@ -323,7 +323,8 @@ function deleteConv(conv: Conv, reason: string, reqId?: string, answer?: Conn): 
 }
 
 function sendMessage(conn: Conn, conv: Conv, text: string, reqId: string | null, startedAt: number, awaited: boolean): void {
-  const turnId = `turn_${++idCounter}`;
+  // Like the daemon: a turn's identity is its prompt's startedAt.
+  const turnId = String(startedAt);
   void runTurn(conv, text, awaited ? conn : null, reqId, startedAt, turnId, false).then(() => {
     if (conv.lifetime === "ephemeral" && conv.runFinished && !conv.keep && conversations.has(conv.convId) && !conv.turn && !conv.replay) {
       deleteConv(conv, "run_finished");
@@ -366,7 +367,7 @@ function handle(conn: Conn, cmd: Json): void {
       if (typeof result === "string") return error(result);
       result.runFinished = true;
       write(conn, created(result, reqId));
-      sendMessage(conn, result, cmd.prompt, reqId, Date.now(), true);
+      sendMessage(conn, result, cmd.prompt, reqId, cmd.startedAt ?? Date.now(), true);
       return;
     }
     case "send_message": {
