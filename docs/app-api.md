@@ -103,6 +103,10 @@ bars or other conversations' events. `ping` answers only `pong`.
 | `agent` | Claude Code's `claude_code` preset with `text` appended; otherwise as `none`. | Exocortex's environment header (identity, working directory, date, platform, conversation id), the selected built-in tools' hints, then `text`. |
 | `full` | Exactly an ordinary conversation's prompt, with `text` as the conversation's instructions. | Same. |
 
+With `full`, Claude Code's auto-memory works as in any conversation, so it
+may keep memories of an ephemeral one; use `none` or `agent` when nothing may
+stay on disk.
+
 `none` and `agent` never carry the global instructions (`config/system*.md`),
 external tool hints, CLAUDE.md or memories; this was checked on the real
 requests to both providers. Claude Code itself always puts one line before

@@ -463,9 +463,9 @@ export async function sweepExpiredAppConversations(now = Date.now()): Promise<st
 }
 
 /**
- * Startup, after conversations load: read the records, forget those whose
- * conversation is gone, clear what crashed ephemeral conversations left, and
- * delete expired temporary ones.
+ * Startup, after the records (loadAppRegistry) and conversations load: forget
+ * records whose conversation is gone, clear what crashed ephemeral
+ * conversations left, and delete expired temporary ones.
  */
 export async function recoverAppConversations(): Promise<void> {
   const loaded = listAppRecords().length;

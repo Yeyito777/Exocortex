@@ -37,6 +37,8 @@ cleanup() {
   for pid in "${PROXY_PIDS[@]}"; do kill "$pid" 2>/dev/null || true; done
   "$TESTD" stop "$NAME" >/dev/null 2>&1 || true
   if [[ -n "$SYSTEM_BACKUP" ]]; then mv "$SYSTEM_BACKUP" "$SYSTEM_MD"; else rm -f "$SYSTEM_MD"; fi
+  # Claude Code's project for the scratch app cwd (base full keeps its auto-memory on).
+  rm -rf "$HOME/.claude/projects/$(printf '%s' "$SCRATCH/appcwd" | sed 's/[^a-zA-Z0-9]/-/g')"
   rm -rf "$SCRATCH"
 }
 trap cleanup EXIT
