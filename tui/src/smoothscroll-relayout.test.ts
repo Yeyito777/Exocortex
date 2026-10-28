@@ -161,6 +161,30 @@ describe("re-layouts never glide", () => {
     expect(glides(frames(state))).toEqual([]);
   });
 
+  test("a remote open's load replacing its placeholder lands at the bottom without a glide", () => {
+    // Over /ssh the open paints a spinner first, with the conversation's queued
+    // message under it. The load puts that message ~a screen lower, intact.
+    const state = conversationState();
+    const history = state.messages;
+    state.messages = [];
+    state.conversationLoading = { convId: "c0", startedAt: 1 };
+    state.queuedMessages = [{
+      id: "q1", convId: "c0", timing: "message-end", source: "daemon",
+      text: `Queued: ${"a long queued paragraph that wraps across the box ".repeat(4)}`,
+    }];
+    settle(state, 0);
+    expect(screen.plainRows().some(row => row.includes("Loading conversation"))).toBe(true);
+    state.conversationLoading = null;
+    state.messages = history;
+    state.pendingAI = createPendingAI(1, state.model);
+    state.pendingAI.blocks.push({ type: "tool_call", toolCallId: "live", toolName: "bash", input: { command: "make test" }, summary: "make test" });
+    const out = frames(state);
+    expect(out).toMatch(/\x1b\[\d+T/);
+    expect(glides(out)).toEqual([]);
+    const rows = screen.plainRows();
+    expect(rows.findLastIndex(row => row.includes("queued: message end"))).toBe(state.layout.sepAbove - 2);
+  });
+
   test("streamed output while scrolled up keeps the view still", () => {
     const state = conversationState();
     state.pendingAI = createPendingAI(1, state.model);
