@@ -1,0 +1,20 @@
+{
+  "name": "@exocortex/client",
+  "version": "0.1.0",
+  "description": "Use the user's Exocortex daemon from a program: one-shot runs, conversations, streaming, app tools",
+  "type": "module",
+  "license": "MIT",
+  "exports": { ".": "./src/index.ts" },
+  "files": ["src/index.ts", "README.md"],
+  "engines": { "node": ">=22.18", "bun": ">=1.1" },
+  "scripts": {
+    "test": "bun test --timeout 20000",
+    "test:node": "node --test test/node-smoke.test.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/node": "latest",
+    "typescript": "^5.7"
+  }
+}
