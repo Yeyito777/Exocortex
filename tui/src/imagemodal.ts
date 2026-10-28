@@ -33,8 +33,8 @@ const MARGIN_COLUMNS = 2;
 const MARGIN_ROWS = 1;
 /** Border plus one cell of padding on each side. */
 const EXTRA_COLUMNS = 4;
-/** Border, title, footer, border. */
-const EXTRA_ROWS = 4;
+/** Border, title, border. */
+const EXTRA_ROWS = 3;
 /** The half-block fallback asks for at most 512×512 RGBA pixels. */
 const MAX_HALFBLOCK_CELLS = 512 * 256;
 const MODAL_PLACEMENT_OWNER = {};
@@ -166,9 +166,12 @@ export function renderImageModal(
   if (nextLayout && mode === "kitty") kittyPreview(next, nextLayout.box);
   else if (nextLayout && mode === "halfblock") rgbaPreview(next, nextLayout.box);
 
+  const title = state.images.length > 1
+    ? `${imageCaption(source)} · ${state.index + 1}/${state.images.length}`
+    : imageCaption(source);
   const out = [
     moveTo(top, left) + border + `╭${"─".repeat(inner)}╮` + theme.reset,
-    row(top + 1, theme.text + centered(imageCaption(source), inner)),
+    row(top + 1, theme.text + centered(title, inner)),
   ];
   for (let index = 0; index < box.rows; index++) {
     const content = status && index === Math.floor(box.rows / 2)
@@ -176,10 +179,6 @@ export function renderImageModal(
       : ` ${body[index] ? body[index] + theme.sidebarBg : " ".repeat(box.cols)} `;
     out.push(row(top + 2 + index, content));
   }
-  const footer = state.images.length > 1
-    ? `${state.index + 1}/${state.images.length} · j/k for more · Enter or Esc to close`
-    : "Enter or Esc to close";
-  out.push(row(top + 2 + box.rows, theme.muted + centered(footer, inner)));
   out.push(moveTo(top + layout.height - 1, left) + border + `╰${"─".repeat(inner)}╯` + theme.reset);
   const rect = { top, bottom: top + layout.height - 1, left, right: left + layout.width - 1 };
   return { payload: out.join(""), placement, rect };

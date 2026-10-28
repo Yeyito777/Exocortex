@@ -105,11 +105,11 @@ describe("image viewer", () => {
     await Bun.sleep(0);
     const open = capture(state);
     expect(opening + open).toContain("chart.png · 400×200 · 5 KB");
-    expect(opening + open).toContain("Enter or Esc to close");
+    expect(opening + open).not.toContain("Esc to close");
     // The viewer asked for a bigger preview than the thumbnail, bounded by the screen.
     expect(Math.max(...requests.map(request => request.width))).toBeGreaterThan(requests[0].width);
     // The thumbnail is not deleted: it keeps what lies outside the box (rows
-    // 12–28, columns 24–77) as a band above it and a strip to its left, still
+    // 13–28, columns 24–77) as a band above it and a strip to its left, still
     // tinted, so the cursor-line highlight behind it stays hidden as before.
     expect(opening).not.toContain("a=d,");
     const kept = placements(opening).filter(placement => !placement.controls.includes(",z=2,"));
@@ -121,12 +121,12 @@ describe("image viewer", () => {
     expect(opening).not.toContain("a=t,");
     expect(kept.every(placement => placement.controls.includes(",V=1,"))).toBe(true);
     expect(kept[0]).toMatchObject({ row: 8, col: 3 });
-    expect(kept[0].controls).toContain(`p=${/p=(\d+)/.exec(thumbnail.controls)![1]},c=48,r=4,x=0,y=0,w=384,h=64,`);
-    expect(kept[1]).toMatchObject({ row: 12, col: 3 });
-    expect(kept[1].controls).toContain("c=21,r=8,x=0,y=64,w=168,h=128,");
+    expect(kept[0].controls).toContain(`p=${/p=(\d+)/.exec(thumbnail.controls)![1]},c=48,r=5,x=0,y=0,w=384,h=80,`);
+    expect(kept[1]).toMatchObject({ row: 13, col: 3 });
+    expect(kept[1].controls).toContain("c=21,r=7,x=0,y=80,w=168,h=112,");
     const [viewer] = placements(open);
     expect(placements(open)).toHaveLength(1);
-    expect(viewer).toMatchObject({ row: 14, col: 26 });
+    expect(viewer).toMatchObject({ row: 15, col: 26 });
     expect(viewer.controls).toContain("c=50,");
     expect(viewer.controls).toContain(",z=2,");
 
@@ -139,7 +139,7 @@ describe("image viewer", () => {
     expect(restored[0]).toMatchObject({ row: 8, col: 3 });
     expect(restored[0].controls).toContain("c=48,r=12,C=1,z=1,V=1,");
     expect(placements(capture(state))).toHaveLength(0);
-    expect(closed).not.toContain("Enter or Esc to close");
+    expect(closed).not.toContain("chart.png · 400×200 · 5 KB");
     disposeHistoryImages(state);
   });
 
@@ -346,7 +346,8 @@ describe("image viewer", () => {
     await Bun.sleep(0);
     const out = loading + capture(state);
     expect(out).toContain("▀".repeat(40));
-    expect(out).toContain("Enter or Esc to close");
+    expect(out).toContain("PNG · 400×200 · 5 KB");
+    expect(out).not.toContain("Esc to close");
     expect(out).not.toContain("\x1b_G");
   });
 

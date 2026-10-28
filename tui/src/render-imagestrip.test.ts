@@ -415,8 +415,8 @@ describe("viewer paging", () => {
     configureInlineImages({ fetch: async request => { requested.push(request.imageId); return fetchPreview(request); }, onChange: () => {} });
     const modal: ImageModalState = { images: sources, index: 1 };
     const first = renderImageModal(modal, 40, 120, cell, "kitty");
-    expect(stripAnsi(first.payload)).toContain("shot-2.png · 945×1253");
-    expect(stripAnsi(first.payload)).toContain("2/5 · j/k for more · Enter or Esc to close");
+    expect(stripAnsi(first.payload)).toContain("shot-2.png · 945×1253 · 521 KB · 2/5");
+    expect(stripAnsi(first.payload)).not.toContain("Esc");
     await Bun.sleep(0);
     const loaded = renderImageModal(modal, 40, 120, cell, "kitty");
     expect(loaded.placement).not.toBeNull();
@@ -425,7 +425,7 @@ describe("viewer paging", () => {
     expect(stripAnsi(renderImageModal(modal, 40, 120, cell, "kitty").payload)).toContain("3/5");
   });
 
-  test("opening from a thumbnail starts at it; one image keeps the plain footer", async () => {
+  test("opening from a thumbnail starts at it; one image shows no position", async () => {
     kitty();
     const state = stripState(refs(3));
     showStrip(state);
@@ -433,7 +433,7 @@ describe("viewer paging", () => {
     const result = click(state, shown[2].col + 1, shown[2].row + 1) as { type: string; target: InlineImageTarget };
     expect(result.target.index).toBe(2);
     state.imageModal = { images: result.target.images, index: result.target.index };
-    expect(stripAnsi(capture(state))).toContain("3/3 ·");
+    expect(stripAnsi(capture(state))).toContain("· 3/3");
     state.imageModal = null;
     capture(state);
     expect(stripAnsi(renderImageModal({ images: sources.slice(0, 1), index: 0 }, 40, 120, cell, "kitty").payload)).not.toContain("1/1");
