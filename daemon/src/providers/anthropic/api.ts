@@ -49,6 +49,7 @@ const SCHEDULER_TOOLS = ["ScheduleWakeup", "CronCreate", "CronDelete", "CronList
 /** Claude Code's own subagent tool (`Task` is its legacy name); Exocortex delegates through exo. */
 const SUBAGENT_TOOLS = ["Agent", "Task"];
 const STDERR_TAIL_CHARS = 4000;
+const APP_SESSION_TITLE = "Exocortex app conversation";
 
 type ClaudeEffort = NonNullable<ClaudeQueryOptions["effort"]>;
 
@@ -87,16 +88,18 @@ function isAgentTurn(options: StreamOptions): boolean {
  * conversations get exactly what they always did.
  */
 function claudeCodeSurfaceOptions(system: string | undefined, app: ClaudeCodeAppSurface | undefined, env: ClaudeQueryOptions["env"]): Partial<ClaudeQueryOptions> {
-  const tools = app?.tools ? { tools: app.tools } : {};
-  if (!app || app.base === "full") {
-    return { systemPrompt: systemPromptOption(system), settingSources: ["user", "project", "local"], ...tools };
+  if (!app) return { systemPrompt: systemPromptOption(system), settingSources: ["user", "project", "local"] };
+  // A session title of its own spares Claude Code a title-generating model call.
+  const common = { title: APP_SESSION_TITLE, ...(app.tools ? { tools: app.tools } : {}) };
+  if (app.base === "full") {
+    return { systemPrompt: systemPromptOption(system), settingSources: ["user", "project", "local"], ...common };
   }
   return {
+    ...common,
     systemPrompt: app.base === "none" ? system ?? "" : systemPromptOption(system),
     settingSources: [],
     strictMcpConfig: true,
     skills: [],
-    ...tools,
     env: {
       ...env,
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",

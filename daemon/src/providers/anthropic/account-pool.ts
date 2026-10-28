@@ -126,8 +126,8 @@ function scheduleSave(): void {
 
 /** A deleted app conversation's account record (app-api.ts). */
 export function forgetConversationAccount(convId: string): void {
-  if (loadAssignments().delete(convId)) scheduleSave();
   runningConversations.delete(convId);
+  if (loadAssignments().delete(convId)) flushAssignments();
 }
 
 export function getConversationAccount(convId: string): Assignment | null {
