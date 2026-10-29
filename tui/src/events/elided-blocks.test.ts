@@ -125,9 +125,15 @@ describe("elided history blocks", () => {
     const { daemon, requests } = fakeDaemon();
     handleFocusedKey({ type: "ctrl-o" }, state);
     requestElidedBlocksIfNeeded(state, daemon);
+    // Still folded while the work loads: the folded history stays as it was.
+    expect(state.messages).toHaveLength(2);
+    expect(state.historyStartIndex).toBe(ENTRY - 1);
+    const asked = Math.min(...requests[0]!.map(range => range.start));
 
+    answer(state, daemon, "blocks-1", requests[0]!, { rounds: 200 });
+    expect(state.showTurnWork).toBe(true);
     // At the bottom: the prompt goes, and the turn is kept from a round start
-    // about UNFOLD_KEEP_BLOCKS above its end.
+    // about UNFOLD_KEEP_BLOCKS above its end; only that much was fetched.
     expect(state.messages).toHaveLength(1);
     expect(state.historyStartIndex).toBe(ENTRY);
     expect(state.historyStartUserIndex).toBe(3);
@@ -136,11 +142,8 @@ describe("elided history blocks", () => {
     expect(start % 3).toBe(0);
     expect(start).toBeGreaterThan(400);
     expect(start).toBeLessThanOrEqual(601 - 90);
-    expect((state.messages[0] as { blocks: Block[] }).blocks).toHaveLength(601 - start);
-    expect(requests[0]!.every(range => range.entry === ENTRY && range.start >= start)).toBe(true);
-
-    answer(state, daemon, "blocks-1", requests[0]!, { rounds: 200 });
-    expect(state.showTurnWork).toBe(true);
+    expect(asked).toBe(start);
+    expect(requests[0]!.every(range => range.entry === ENTRY)).toBe(true);
     expect((state.messages[0] as { blocks: Block[] }).blocks).toEqual(fullBlocks(200).slice(start));
   });
 

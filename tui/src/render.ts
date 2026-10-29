@@ -1738,13 +1738,15 @@ export function render(state: RenderState): boolean {
   if (smooth) {
     const maxOffset = Math.max(0, totalLines - messageAreaHeight);
     const logical = Math.min(state.scrollOffset, maxOffset);
-    // A different conversation, terminal size, pane height or history width
-    // (the sidebar, the Tasks panel) re-lays everything out: no glide. So
-    // does the load replacing a remote open's placeholder: rows it shares
-    // with the loaded history (queued messages under the spinner) would
-    // otherwise glide down to where the history puts them.
+    // A different conversation, terminal size, pane height, history width
+    // (the sidebar, the Tasks panel) or view (Ctrl+O, Ctrl+I) re-lays
+    // everything out: no glide, and none still in flight carries on over the
+    // new rows. So does the load replacing a remote open's placeholder: rows
+    // it shares with the loaded history (queued messages under the spinner)
+    // would otherwise glide down to where the history puts them.
     const opening = isActiveConversationLoading(state) ? "|opening" : "";
-    const context = `${state.convId ?? ""}${opening}|${state.cols}x${state.rows}|${messageAreaHeight}|${chatW}|${historyWidth}`;
+    const view = state.showToolOutput ? "detail" : state.showTurnWork ? "work" : "folded";
+    const context = `${state.convId ?? ""}${opening}|${view}|${state.cols}x${state.rows}|${messageAreaHeight}|${chatW}|${historyWidth}`;
     if (scrollUpdate.topAnchorRow !== null) smooth.snap(logical);
     else viewStart = getViewStartFor(totalLines, messageAreaHeight, smooth.layout(logical, maxOffset, scrollPinDelta, messageAreaHeight, context));
   }

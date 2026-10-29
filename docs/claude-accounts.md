@@ -164,6 +164,11 @@ still keeps them in place.
 - A turn that fails authentication on an account keeps that account out of
   routing for 15 minutes when there are other accounts, then its sign-in is
   checked again. Signed-out accounts take no turns.
+- An account's usage comes from its turns' `rate_limit_event`s and from the
+  `/usage` poll, which reads about a point higher for the same moment. Within
+  one window (same reset time) a report up to 5 points lower keeps the higher
+  figure, so the bars never step back; a new window, a bigger drop or a drop
+  from 100% to under it takes the report as it is.
 
 ## API credits when every account is at a limit
 

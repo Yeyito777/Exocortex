@@ -44,7 +44,7 @@ import {
   openSidebarSearchBar,
 } from "./sidebarsearch";
 import { commitInsertSession, markInsertEntry, pushUndo } from "./undo";
-import { placeAtVisibleBottom } from "./historycursor";
+import { applyHistoryAction, placeAtVisibleBottom } from "./historycursor";
 import { imageAtHistoryCursor, openableTargetAtHistoryCursor } from "./historyopenable";
 import { acceptAutocomplete, type PathCompletionProvider } from "./autocomplete";
 import { handleQueuePromptKey } from "./queue";
@@ -60,6 +60,7 @@ import { copyToClipboard } from "./vim/clipboard";
 import { handleBtwKey } from "./btw/keys";
 import { omittedToolOutputIdsNearViewport } from "./events/tool-outputs";
 import { hasElidedBlocks } from "./events/elided-blocks";
+import { restoreHistoryAboveView } from "./events/history-trim";
 import { activeHistorySurface, isAnyHistoryFocused } from "./historysurface";
 import type { InlineImageTarget } from "./inlineimages";
 import { saveTurnWorkPreference } from "./diagnostics";
@@ -374,6 +375,18 @@ export function handleFocusedKey(
       // Don't intercept when typing in the prompt — these are regular chars.
       // In the history they move the cursor (vim keymap).
       if (isPromptTyping(state) || isAnyHistoryFocused(state)) break;
+      // From the prompt in normal mode, Shift+K goes straight into the chat
+      // history with the cursor already one Shift+K up from the bottom row;
+      // Shift+J does nothing there. Only the sidebar's own J/K move its selection.
+      if (isPromptFocused(state)) {
+        if (action === "sidebar_prev") {
+          focusHistory(state);
+          state.historyCursor = placeAtVisibleBottom(state);
+          state.historyCurswant = null;
+          applyHistoryAction("history_half_up", state);
+        }
+        return { type: "handled" };
+      }
       ensureSidebarReady(state);
       moveSelection(state.sidebar, action === "sidebar_next" ? 1 : -1);
       return { type: "handled" };
@@ -405,6 +418,8 @@ export function handleFocusedKey(
       preserveViewportAcrossHistoryMutation(state, () => {
         state.showTurnWork = !state.showTurnWork && !state.showToolOutput;
         state.showToolOutput = false;
+        // Folded again: the history the unfold dropped above the view comes back.
+        restoreHistoryAboveView(state);
       });
       saveTurnWorkPreference(state.showTurnWork);
       return { type: "handled" };
@@ -421,7 +436,12 @@ export function handleFocusedKey(
       if (state.showToolOutput || state.showToolOutputAfterLoad) {
         // Collapse, or cancel an expansion still waiting for its bodies.
         state.showToolOutputAfterLoad = false;
-        if (state.showToolOutput) toggleToolOutputPreservingViewport(state);
+        if (state.showToolOutput) {
+          preserveViewportAcrossHistoryMutation(state, () => {
+            state.showToolOutput = false;
+            restoreHistoryAboveView(state);
+          });
+        }
         return { type: "handled" };
       }
       // Expand once the bodies around the viewport arrive so rows do not flash

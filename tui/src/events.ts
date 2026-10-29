@@ -404,7 +404,10 @@ export function handleEvent(
       const preservedToolOutputs = event.toolOutputsIncluded || event.resetHistoryWindow
         ? new Map()
         : collectDisplayedToolResultOutputs(state);
-      if (event.resetHistoryWindow) state.requestedToolOutputIds.clear();
+      if (event.resetHistoryWindow) {
+        state.requestedToolOutputIds.clear();
+        state.historyTrimmedAboveView = null;
+      }
       let preservedToolOutputResult = { patchedOutputs: 0, patchedToolNames: 0 };
       logDiskSyncAssistantDiff("history_updated", event.convId, state, {
         entries: event.entries,
