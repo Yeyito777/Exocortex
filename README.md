@@ -367,6 +367,13 @@ check` prints `granted`, `missing` or `unknown`) and, when it is missing, open
 the clone lives in Desktop or Documents. The grant belongs to the app's signing
 identity, so it survives restarts, pulls, rebuilds and Homebrew/Bun upgrades.
 
+**Other background jobs.** A LaunchAgent whose program is bash, bun or another
+tool is that tool's own responsible process: macOS asks for it separately, and
+again whenever Homebrew updates it. To share the app's grant, make the job's
+program `~/Applications/Exocortex Daemon.app/Contents/MacOS/exocortex-daemon
+--exec PROGRAM ARGS…` (it forwards signals and exits with the job's status).
+The daemon's model-requested restarts run this way.
+
 **Rebuild** after pulling launcher changes, or to re-sign with a new
 certificate, by re-running `scripts/macos/build-launcher.sh --reload`. It is
 idempotent and keeps your LaunchAgent's other settings (a backup of the previous
