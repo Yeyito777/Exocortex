@@ -180,6 +180,11 @@ export interface RenderState {
   historyTotalEntries: number;
   /** Whether another page exists before historyStartIndex. */
   historyHasOlder: boolean;
+  /**
+   * The folded history Ctrl+O or Ctrl+I's unfold dropped above the view
+   * (events/history-trim.ts), put back when the view folds again.
+   */
+  historyTrimmedAboveView: import("./events/history-trim").TrimmedHistory | null;
   /** True while an older-history page request is in flight. */
   historyLoadingOlder: boolean;
   /** Start time used to animate the older-history loading row. */
@@ -477,6 +482,7 @@ export function resetHistoryPagination(state: RenderState): void {
   state.historyStartUserIndex = 0;
   state.historyTotalEntries = 0;
   state.historyHasOlder = false;
+  state.historyTrimmedAboveView = null;
   state.historyLoadingOlder = false;
   state.pendingHistoryNavigation = null;
   state.historyLoadingStartedAt = null;
@@ -668,6 +674,7 @@ export function createInitialState(): RenderState {
     historyStartUserIndex: 0,
     historyTotalEntries: 0,
     historyHasOlder: false,
+    historyTrimmedAboveView: null,
     historyLoadingOlder: false,
     historyOpeningFillUntil: null,
     historyFillAwaitsLayout: false,

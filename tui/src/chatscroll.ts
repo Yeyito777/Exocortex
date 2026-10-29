@@ -510,8 +510,3 @@ export function toggleToolOutputPreservingViewport(state: RenderState): void {
     state.showToolOutput = !state.showToolOutput;
   });
 }
-
-/**
- * Open or close one folded turn or notification (a click or Enter on its row).
- * Its row stays where it is on screen, so what opens grows below it.
- */

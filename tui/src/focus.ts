@@ -60,6 +60,7 @@ import { copyToClipboard } from "./vim/clipboard";
 import { handleBtwKey } from "./btw/keys";
 import { omittedToolOutputIdsNearViewport } from "./events/tool-outputs";
 import { hasElidedBlocks } from "./events/elided-blocks";
+import { restoreHistoryAboveView } from "./events/history-trim";
 import { activeHistorySurface, isAnyHistoryFocused } from "./historysurface";
 import type { InlineImageTarget } from "./inlineimages";
 import { saveTurnWorkPreference } from "./diagnostics";
@@ -417,6 +418,8 @@ export function handleFocusedKey(
       preserveViewportAcrossHistoryMutation(state, () => {
         state.showTurnWork = !state.showTurnWork && !state.showToolOutput;
         state.showToolOutput = false;
+        // Folded again: the history the unfold dropped above the view comes back.
+        restoreHistoryAboveView(state);
       });
       saveTurnWorkPreference(state.showTurnWork);
       return { type: "handled" };
@@ -433,7 +436,12 @@ export function handleFocusedKey(
       if (state.showToolOutput || state.showToolOutputAfterLoad) {
         // Collapse, or cancel an expansion still waiting for its bodies.
         state.showToolOutputAfterLoad = false;
-        if (state.showToolOutput) toggleToolOutputPreservingViewport(state);
+        if (state.showToolOutput) {
+          preserveViewportAcrossHistoryMutation(state, () => {
+            state.showToolOutput = false;
+            restoreHistoryAboveView(state);
+          });
+        }
         return { type: "handled" };
       }
       // Expand once the bodies around the viewport arrive so rows do not flash

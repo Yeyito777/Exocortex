@@ -59,15 +59,22 @@ motions, `gg`/`G` and search jumps mark the change as the user's
 (`markScrollIntent`). Everything else that moves the offset or the content
 snaps without any motion: re-layouts that keep the user's place (Ctrl+I /
 Ctrl+O, the sidebar or Tasks panel changing the pane's width, a resize, a turn
-finishing, rows re-wrapping), pinning while scrolled up, a jump to the bottom
-after sending, a different conversation, and frames that had to be repainted.
+finishing, rows re-wrapping, older history paged in above), pinning while
+scrolled up, a jump to the bottom after sending, a different conversation, and
+frames that had to be repainted. A different view (Ctrl+O, Ctrl+I), like a
+different conversation or size, also ends any glide still in flight: the new
+rows never slide on with it.
 Content that moves by itself glides only when the bottom grows or shrinks
 while following it (output arriving, the live Working block or its latest
 step changing height), both ways: every row the region scroll moved arrived
 intact (the two rows above the newly exposed ones aside, for the previous
 message's footer). Explicit re-layouts mark themselves (`markRelayout`:
-Ctrl+I / Ctrl+O, the sidebar, a resize, a history reload, frames anchored to
-a row) and snap even when what they change sits at the bottom. `tui/src/smoothscroll-relayout.test.ts` checks each case.
+Ctrl+I / Ctrl+O, the sidebar, a resize, a history reload, an older page,
+frames anchored to a row) and snap even when what they change sits at the
+bottom. `tui/src/smoothscroll-relayout.test.ts` checks each case, and
+`tui/src/smoothscroll-unfold.test.ts` folding shown work back (Ctrl+O's trim of
+the history above the view is put back when it folds, so the live turn never
+sits alone at the top of the pane while older pages come back).
 
 Other terminals, and `tui.scrollRegions: false`, keep the behaviour described
 below. The rows beside the Tasks panel then stay out of the band.
