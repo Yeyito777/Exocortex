@@ -108,8 +108,8 @@ export function scrollWithCursorInViewport(view: CursorViewport, dir: number, am
 }
 
 /**
- * Shift+K / Shift+J behavior: move the cursor by `amount` rows (Ctrl+U/D's
- * half page) without scrolling, stopping at the visible top/bottom row.
+ * Shift+K / Shift+J behavior: move the cursor by `amount` rows (half of
+ * Ctrl+U/D's half page) without scrolling, stopping at the visible top/bottom row.
  * `dir`: positive = up/older, negative = down/newer.
  */
 export function moveCursorInViewport(view: CursorViewport, dir: number, amount: number): CursorViewport {

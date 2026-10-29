@@ -68,15 +68,33 @@ export function logicalLineRange(
 
 // ── Basic motions ─────────────────────────────────────────────────
 
-export function charLeft(cursor: HistoryCursor, lines: string[]): HistoryCursor {
+/**
+ * h: one character left. At the start of a screen row that continues a
+ * wrapped line (wrapCont), it goes on to the end of the row above, like Vim
+ * moving through one long line; at a real line start it stays.
+ */
+export function charLeft(cursor: HistoryCursor, lines: string[], wrapCont?: boolean[]): HistoryCursor {
   const plain = stripAnsi(lines[cursor.row] ?? "");
   const { start } = contentBounds(plain);
+  if (cursor.col <= start && wrapCont?.[cursor.row] && cursor.row > 0) {
+    const { end } = contentBounds(stripAnsi(lines[cursor.row - 1] ?? ""));
+    return { row: cursor.row - 1, col: end };
+  }
   return { row: cursor.row, col: Math.max(start, previousGraphemeStart(plain, cursor.col)) };
 }
 
-export function charRight(cursor: HistoryCursor, lines: string[]): HistoryCursor {
+/**
+ * l: one character right. At the end of a screen row whose line wraps onto
+ * the next row (wrapCont), it goes on to the start of that row; at a real line
+ * end it stays.
+ */
+export function charRight(cursor: HistoryCursor, lines: string[], wrapCont?: boolean[]): HistoryCursor {
   const plain = stripAnsi(lines[cursor.row] ?? "");
   const { end } = contentBounds(plain);
+  if (cursor.col >= end && wrapCont?.[cursor.row + 1] && cursor.row + 1 < lines.length) {
+    const { start } = contentBounds(stripAnsi(lines[cursor.row + 1] ?? ""));
+    return { row: cursor.row + 1, col: start };
+  }
   return { row: cursor.row, col: Math.min(end, nextGraphemeEnd(plain, cursor.col)) };
 }
 
