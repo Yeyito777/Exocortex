@@ -47,6 +47,11 @@ function waitResult(owner: string): { content: string; is_error: boolean } {
   return (get(owner)!.messages.at(-1)!.content as Array<{ content: string; is_error: boolean }>)[0];
 }
 
+/** The shell creates a redirect's file before writing it: wait for what it wrote. */
+function hasContent(path: string): boolean {
+  return existsSync(path) && readFileSync(path, "utf8").length > 0;
+}
+
 async function waitUntil(predicate: () => boolean, timeoutMs = process.platform === "win32" ? 5_000 : 2_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!predicate()) {
@@ -719,7 +724,7 @@ describe("Chrono scheduler", () => {
       command: "pwd > chrono-cwd.txt",
     });
 
-    await waitUntil(() => existsSync(artifact));
+    await waitUntil(() => hasContent(artifact));
     expect(readFileSync(artifact, "utf8").trim()).toBe(conversationWorkspaceDir(owner));
   });
 
@@ -842,7 +847,7 @@ describe("Chrono scheduler", () => {
       title: "Running during delete",
       command: "printf running > chrono-running.txt; sleep 30",
     });
-    await waitUntil(() => existsSync(liveMarker));
+    await waitUntil(() => hasContent(liveMarker));
 
     expect(remove(owner)).toBe(true);
     expect(existsSync(conversationWorkspaceDir(owner))).toBe(false);
