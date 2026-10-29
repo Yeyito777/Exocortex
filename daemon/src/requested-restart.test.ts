@@ -19,6 +19,7 @@ import {
   runRequestedRestart,
   scheduleRestartExecutor,
   detectRestartTarget,
+  isServiceDaemon,
   type RestartRequestOptions,
 } from "./requested-restart";
 
@@ -108,6 +109,17 @@ describe("restart target detection", () => {
     expect(darwin({ pid: PID + 5, launcherPid: String(LAUNCHER) })).not.toBe("service");
     // Without the launcher's marker, being launchd's job's child is not enough.
     expect(darwin({ pid: LAUNCHER })).not.toBe("service");
+  });
+
+  test("the executor re-checks the daemon's own parent against the macOS launcher, not its own", () => {
+    const LAUNCHER = PID - 1;
+    const run = (daemonParent: number) => (argv: string[]) => argv[0] === "ps"
+      ? { ok: true, output: `  ${daemonParent}\n` }
+      : { ok: true, output: `gui/501/com.exocortex.daemon = {\n\tstate = running\n\tpid = ${LAUNCHER}\n}` };
+    expect(isServiceDaemon(PID, "darwin", run(LAUNCHER), String(LAUNCHER))).toBe(true);
+    // Reparented: the launcher no longer runs it.
+    expect(isServiceDaemon(PID, "darwin", run(1), String(LAUNCHER))).toBe(false);
+    expect(isServiceDaemon(PID, "darwin", () => ({ ok: false, output: "" }), String(LAUNCHER))).toBe(false);
   });
 
   test("an EXOCORTEX_SUPERVISOR restarts the daemon it names as its main pid", () => {
