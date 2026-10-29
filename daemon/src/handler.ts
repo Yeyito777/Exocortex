@@ -18,6 +18,7 @@ import type { UserMacro } from "@exocortex/shared/user-macros";
 import { deleteUserMacro, listUserMacros, saveUserMacro } from "./user-macros";
 import { getDaemonUpdateStatus, peekDaemonUpdateStatus } from "./update-status";
 import { setApiKeyUsageRecordedListener } from "./providers/openai/api-key-usage";
+import { API_CREDIT_ACCOUNT_KEY_PREFIX } from "./providers/anthropic/api-credits";
 import { encodeHistoryDelta } from "@exocortex/shared/history-delta";
 import { effectiveConversationDefaults } from "@exocortex/shared/config";
 import { isDurationMs } from "@exocortex/shared/duration";
@@ -301,7 +302,10 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   // An API key's spend changes with every response, image and transcription:
   // push it as each one is counted, and again when the local day rolls over
   // (Today restarts at 0). Clients never ask; unchanged payloads aren't resent.
-  setApiKeyUsageRecordedListener(() => broadcastUsage("openai", getLastUsage("openai")));
+  setApiKeyUsageRecordedListener((accountKey) => {
+    const provider = accountKey.startsWith(API_CREDIT_ACCOUNT_KEY_PREFIX) ? "anthropic" : "openai";
+    broadcastUsage(provider, getLastUsage(provider));
+  });
   let apiKeyDayTimer: ReturnType<typeof setTimeout> | null = null;
   const scheduleApiKeyDayRollover = () => {
     const midnight = new Date();

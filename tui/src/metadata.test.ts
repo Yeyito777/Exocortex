@@ -11,6 +11,12 @@ function renderWorking(metadata: Parameters<typeof renderMetadata>[0] & object, 
 }
 
 describe("renderMetadata", () => {
+  test("names API credits after the model when they paid for the turn", () => {
+    const metadata = { startedAt: 1_000, endedAt: 2_000, model: "claude-opus-5-5", tokens: 3, billing: "api-credits" as const };
+    expect(stripAnsi(renderWorking(metadata)[0])).toMatch(/^  Opus-5\.5 \| API credits \| /);
+    expect(stripAnsi(renderWorking({ ...metadata, billing: undefined })[0])).not.toContain("API credits");
+  });
+
   test("starts fresh and optimistic messages at zero instead of an earlier rate", () => {
     const metadata = { startedAt: 1_000, endedAt: null, model: "gpt-5.4", tokens: 0 };
     expect(renderMetadata(metadata, { now: 1_000 })[0]).toContain("0.0 tokens/s");

@@ -44,6 +44,8 @@ export interface RelayMeta {
   history?: RelayHistoryMark | null;
   /** Claude account (accounts.ts) the process is signed in as; absent means `main`. */
   account?: string;
+  /** API-credit key (api-credits.ts; its secret's name, never its value) the process bills instead of the subscription. */
+  apiCredit?: { id: string; label: string; renewsOnDay: number | null };
   /** An app conversation's Claude Code surface (docs/app-api.md), re-sent when a daemon reconnects. */
   app?: { base: "none" | "agent" | "full"; tools?: string[]; appTools: RelayToolDef[] };
 }

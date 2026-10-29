@@ -303,3 +303,66 @@ export function resolveModelTokenPricing(
     ...selected,
   };
 }
+
+// ── Claude API (Anthropic) ──────────────────────────────────────────
+
+/** Published Claude API rates for one request, USD per million tokens. */
+export interface AnthropicApiPricing {
+  basisModel: ModelId;
+  inputUsdPerMillion: number;
+  outputUsdPerMillion: number;
+  cacheReadUsdPerMillion: number;
+  /** 5-minute cache writes: 1.25× input. */
+  cacheWrite5mUsdPerMillion: number;
+  /** 1-hour cache writes: 2× input. */
+  cacheWrite1hUsdPerMillion: number;
+}
+
+interface AnthropicRates { input: number; output: number; cacheRead: number }
+
+/**
+ * Claude API list prices (first-party), checked 2026-10-29 against the
+ * claude-api model table: input / output / cache read per million tokens;
+ * cache writes are 1.25× input (5 minutes) and 2× input (1 hour).
+ *
+ * Kept apart from STATIC_PRICING on purpose: Claude subscription turns are
+ * not billed per token, so /tokens leaves them unpriced. Only turns run on
+ * API credits (providers/anthropic/api-credits.ts) are priced with these.
+ */
+const ANTHROPIC_API_PRICING = new Map<ModelId, { basisModel: ModelId; standard: AnthropicRates; long?: AnthropicRates; longContextThresholdTokens?: number }>();
+
+function registerClaude(ids: readonly ModelId[], standard: AnthropicRates, long?: { thresholdTokens: number; rates: AnthropicRates }): void {
+  for (const id of ids) {
+    ANTHROPIC_API_PRICING.set(id, { basisModel: ids[0], standard, ...(long ? { long: long.rates, longContextThresholdTokens: long.thresholdTokens } : {}) });
+  }
+}
+
+registerClaude(["claude-fable-5-1", "claude-mythos-5-1"], { input: 10, output: 50, cacheRead: 0.25 });
+registerClaude(["claude-fable-5", "claude-mythos-5"], { input: 10, output: 50, cacheRead: 1 });
+registerClaude(["claude-opus-5-5"], { input: 4, output: 20, cacheRead: 0.2 });
+registerClaude(["claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6"], { input: 5, output: 25, cacheRead: 0.5 });
+registerClaude(["claude-sonnet-5-5", "claude-sonnet-5"], { input: 2, output: 10, cacheRead: 0.2 });
+registerClaude(["claude-sonnet-4-6"], { input: 3, output: 15, cacheRead: 0.3 });
+// Haiku 5.5's rates are for prompts up to 100K tokens; longer ones cost 5×.
+registerClaude(["claude-haiku-5-5"], { input: 0.1, output: 0.5, cacheRead: 0.01 }, { thresholdTokens: 100_000, rates: { input: 0.5, output: 2.5, cacheRead: 0.05 } });
+registerClaude(["claude-haiku-4-5"], { input: 1, output: 5, cacheRead: 0.1 });
+
+/** `claude-opus-5-5[1m]`, `claude-haiku-4-5-20251001` → the catalog id. */
+function claudeCatalogId(model: string): string {
+  return model.trim().toLowerCase().replace(/\[[^\]]*\]$/, "").replace(/-\d{8}$/, "");
+}
+
+/** Claude API rates for one request (`promptTokens`: its whole prompt, cached parts included); null for an unknown model. */
+export function resolveAnthropicApiPricing(model: string, promptTokens = 0): AnthropicApiPricing | null {
+  const entry = ANTHROPIC_API_PRICING.get(claudeCatalogId(model));
+  if (!entry) return null;
+  const rates = entry.long && entry.longContextThresholdTokens !== undefined && promptTokens > entry.longContextThresholdTokens ? entry.long : entry.standard;
+  return {
+    basisModel: entry.basisModel,
+    inputUsdPerMillion: rates.input,
+    outputUsdPerMillion: rates.output,
+    cacheReadUsdPerMillion: rates.cacheRead,
+    cacheWrite5mUsdPerMillion: rates.input * 1.25,
+    cacheWrite1hUsdPerMillion: rates.input * 2,
+  };
+}

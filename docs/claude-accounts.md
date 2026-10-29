@@ -165,6 +165,79 @@ still keeps them in place.
   routing for 15 minutes when there are other accounts, then its sign-in is
   checked again. Signed-out accounts take no turns.
 
+## API credits when every account is at a limit
+
+Each Claude Max plan comes with Claude API credits ($200 a month) that pay for
+the Claude API and the Agent SDK, not interactive Claude Code. While every
+subscription account is at a usage limit (5-hour or weekly, as routing sees
+it; not when they are only signed out), turns run on those credits instead:
+the same Claude Code path, model and settings, only authenticated with an API
+key. They go back to the subscriptions as soon as one can take work. Helper
+requests (titles, summaries, compaction) fall back too. Code:
+`daemon/src/providers/anthropic/api-credits.ts`.
+
+```json
+"providers": {
+  "anthropic": {
+    "apiCreditFallback": {
+      "enabled": true,
+      "keys": [
+        { "secret": "ANTHROPIC_API_KEY_MAIN_CREDITS", "label": "main", "account": "main",
+          "grants": [
+            { "label": "Max", "amountUsd": 200, "expires": "2026-11-11", "monthly": true },
+            { "label": "YC", "amountUsd": 500, "expires": "2027-04-18" }
+          ] },
+        { "secret": "ANTHROPIC_API_KEY_MAX2_CREDITS", "label": "max2", "account": "max2",
+          "grants": [{ "label": "Max", "amountUsd": 200, "expires": "2026-11-18", "since": "2026-10-29", "monthly": true }] }
+      ]
+    }
+  }
+}
+```
+
+- **Keys** are names in the `secrets` store, never values. Keys are used in
+  config order (put the credits that expire soonest first); a key whose
+  secret does not exist is skipped (the store is checked every few minutes).
+- **The key never reaches an agent.** A local turn gives Claude Code an
+  `apiKeyHelper` (`--settings`) that runs `secrets run --allow NAME -- printenv
+  NAME`, which Claude Code prefers to the account's subscription login. The
+  key is in no environment a Bash tool inherits, and in no log, transcript,
+  config or message. The account still picks the configuration directory, so
+  sessions resume as usual. Nothing about the SDK's entrypoint or user agent
+  changes: these are Agent SDK requests, which the credits cover (checked
+  live on 2026-10-29: the Console lists them under Logs as API requests).
+- **/proxy**: a remote serving another machine's turns signs their Messages
+  API requests with the key (`x-api-key`, without the OAuth beta), counts
+  their spend from the response stream, and tells the other machine
+  (`x-exocortex-claude-api-credits`), so its turns are marked the same way.
+  Claude Code's account endpoints keep the subscription login. The other
+  machine's daemon must be updated too: an older one keeps waiting for a
+  subscription to reset.
+- **Out of credits** (the API answers that the credit balance is too low, or
+  billing refuses): the key sits out until its next renewal (`renewsOnDay`,
+  else its monthly grant's expiry day, else a day; on the renewal day itself it
+  is tried every 3 hours until the grant lands), and the turn moves to the next
+  key. With none left, the turn waits for a subscription to reset, like any
+  usage limit. No key is retried in a loop. A key the API rejects sits out an
+  hour; one it rate-limits (429, after Claude Code's own backoff) a minute.
+- **The spend cap** is the credits themselves: an organization without a card
+  or auto-reload refuses requests once they run out.
+- **Visibility**: the transcript notes when a conversation moves onto API
+  credits and back; each turn's metadata line says "API credits"; the status
+  bar shows two short rows beside the usage bars while turns run on them
+  ("API credits max2" / "≈$1.23 this cycle", estimated at list prices from
+  the responses' usage, kept in the API-key ledger as
+  `anthropic-credits:<secret>`).
+- **Accounts screen**: a Credits column per account: the balance, then the
+  time until each grant expires, soonest first (`$688 13d · 171d`), bold blue
+  with `◀` while a turn spends it, red under a tenth of what was granted. The
+  balance is each unexpired grant's amount less the spend Exocortex counted,
+  drawn from the soonest-expiring grant first. The API does not report the
+  real balance to an ordinary key, so spend made elsewhere with the key is not
+  seen. A `monthly` grant is assumed to renew with the same amount on its
+  expiry day each month; `since` (optional) is the day it was first credited.
+  OpenAI's row shows `providers.openai.credit` the same way.
+
 ## Testing routing live
 
 Real usage cannot be moved, so a test daemon can steer routing with a JSON
@@ -190,7 +263,8 @@ and `/account claude` keep showing real usage
 `coldMoveRatio`. Per account, `usage`
 replaces its usage snapshot (windows take `resetsAt` or `resetsInMs`),
 `limitedForMs` / `limitedUntil` mark it rejected at a limit, and
-`available: false` treats it as signed out or blocked. Start a worktree's
+`available: false` treats it as signed out or blocked. To try the API-credit
+fallback, mark every account limited; turns then run on the first key. Start a worktree's
 daemon with it, for example
 `EXOCORTEX_DEV_CLAUDE_ROUTING=/tmp/routing.json bun run src/main.ts` in
 `daemon/`, after copying the main instance's `anthropic-accounts.json` into the

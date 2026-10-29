@@ -121,3 +121,32 @@ describe("usage status block", () => {
     expect(stripAnsi(block.rows[0])).not.toContain("/100");
   });
 });
+
+describe("API-credit marker", () => {
+  function claudeState(active: boolean) {
+    const state = createInitialState();
+    state.provider = "anthropic";
+    state.authByProvider.anthropic = true;
+    state.usageByProvider.anthropic = {
+      fiveHour: { utilization: 200, resetsAt: null },
+      sevenDay: { utilization: 150, resetsAt: null },
+      capacity: 200,
+      apiCredits: { active, ready: true, label: "main", spentUsd: 1.234, resetAt: null },
+    };
+    return state;
+  }
+
+  test("two short rows beside the bars while turns run on API credits", () => {
+    const block = usageBlock(claudeState(true))!;
+    const rows = block.rows.map(stripAnsi);
+    expect(rows[0]).toMatch(/\] 200\/200% resets in .*  API credits main\s*$/);
+    expect(rows[1]).toMatch(/  ≈\$1\.23 this cycle\s*$/);
+    expect(block.height).toBe(2);
+    expect(rows.every(row => row.length === block.width)).toBe(true);
+  });
+
+  test("nothing extra while the subscriptions serve", () => {
+    const rows = usageBlock(claudeState(false))!.rows.map(stripAnsi);
+    expect(rows.join("\n")).not.toContain("API credits");
+  });
+});

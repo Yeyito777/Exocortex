@@ -17,6 +17,7 @@ import type { ClaudeAuthStatus } from "./types";
 import { providerProxyRoute, providerProxySupports, proxiedConversationName } from "../../provider-proxy/route";
 import { PROVIDER_PROXY_CONVERSATION_HEADER } from "@exocortex/shared/provider-proxy";
 import { claudeAccountEnv } from "./accounts";
+import { apiCreditClaudeSettings, type ApiCreditKey } from "./api-credits";
 
 /**
  * The daemon usually runs as a systemd user service whose PATH lacks
@@ -86,13 +87,23 @@ function claudeProxyEnv(base: Record<string, string | undefined>, convId?: strin
  * Agent SDK options that run this Claude Code binary on the subscription in
  * `cwd`, signed in as `account` (accounts.ts; default `main`). Under /proxy
  * the remote machine's login is used instead, whatever the account.
+ *
+ * With `apiCredit`, the process bills that API-credit key instead
+ * (api-credits.ts): Claude Code reads it through an `apiKeyHelper` command,
+ * which it prefers to the account's subscription login. The account still
+ * picks the configuration directory, so sessions resume as usual. The SDK's
+ * own entrypoint and user agent are left as they are: the requests are Agent
+ * SDK requests, which the credits pay for.
  */
-export function claudeProcessOptions(cwd: string, account?: string, convId?: string): ClaudeQueryOptions {
+export function claudeProcessOptions(cwd: string, account?: string, convId?: string, apiCredit?: ApiCreditKey | null): ClaudeQueryOptions {
   const base = claudeSubscriptionEnv();
   const proxy = claudeProxyEnv(base, convId);
   const accountEnv = Object.keys(proxy).length > 0 ? {} : claudeAccountEnv(account);
+  const creditSettings = apiCredit && Object.keys(proxy).length === 0 ? apiCreditClaudeSettings(apiCredit) : null;
+  if (apiCredit && Object.keys(proxy).length === 0 && !creditSettings) throw new Error("No `secrets` CLI to read the API-credit key with.");
   return {
     cwd,
+    ...(creditSettings ? { settings: creditSettings } : {}),
     pathToClaudeCodeExecutable: getClaudeBinary(),
     env: {
       ...base, ...accountEnv, ...proxy, CLAUDE_AGENT_SDK_CLIENT_APP: "exocortex-daemon",

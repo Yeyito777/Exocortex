@@ -12,6 +12,7 @@ import { hostname } from "node:os";
 import { ClientExecutor, localHostInfo } from "@exocortex/shared/command-exec";
 import {
   PROVIDER_PROXY_ACCOUNT_MOVE_HEADER,
+  PROVIDER_PROXY_API_CREDITS_HEADER,
   PROVIDER_PROXY_CONVERSATION_HEADER,
   PROVIDER_PROXY_FEATURES,
   PROVIDER_PROXY_MAX_REQUEST_BYTES,
@@ -33,6 +34,7 @@ import { log } from "../log";
 import { localUpstreamAuth, UpstreamAuthError, type UpstreamAuth } from "./upstream-auth";
 import type { RemoteAccountsSource } from "./remote-accounts";
 import { proxiedConversationKey, type ProxiedClaudeLease, type ProxiedClaudeRouter } from "./claude-routing";
+import { ApiCreditStreamTap } from "../providers/anthropic/api-credits";
 
 /** A proxied websocket may sit idle this long between messages. */
 const WEBSOCKET_IDLE_MS = 2 * 60 * 60_000;
@@ -62,6 +64,20 @@ export interface ProviderProxyEndpointDeps {
 interface OpenStream {
   abort: AbortController;
   sendText?: (text: string) => void;
+}
+
+/** A Claude Messages API request (`/v1/messages`, `/v1/messages/count_tokens`), which API credits may pay for. */
+function isMessagesRequest(url: string): boolean {
+  try {
+    return /^\/v1\/messages(?:\/count_tokens)?\/?$/.test(new URL(url).pathname);
+  } catch {
+    return false;
+  }
+}
+
+/** What a lease bills: the account, or the API-credit key in its place. */
+function leaseIdentity(lease: ProxiedClaudeLease): string {
+  return lease.apiCredit ? `api-credit:${lease.apiCredit.id}` : `account:${lease.account}`;
 }
 
 function errorMessage(error: unknown): string {
@@ -281,53 +297,67 @@ export class ProviderProxyEndpoint {
     delete clientHeaders[PROVIDER_PROXY_CONVERSATION_HEADER];
     const body = command.body ? Buffer.from(command.body, "base64") : undefined;
     const router = provider === "anthropic" ? this.claudeRouter : null;
+    // Only Messages API requests may run on API credits; Claude Code's account endpoints need its login.
+    const leaseOptions = { apiCredits: isMessagesRequest(url) };
     let lease: ProxiedClaudeLease | null = null;
     try {
       let response: Response;
       let authRetried = false;
       let limitRetried = false;
       for (;;) {
-        lease ??= router ? await router.lease(conversation, abort.signal) : null;
+        lease ??= router ? await router.lease(conversation, abort.signal, leaseOptions) : null;
         let authHeaders: Record<string, string>;
         try {
-          authHeaders = await this.auth.headers(provider, url, { afterRejection: authRetried, clientHeaders, ...(lease ? { account: lease.account } : {}) });
+          authHeaders = await this.auth.headers(provider, url, {
+            afterRejection: authRetried,
+            clientHeaders,
+            ...(lease ? { account: lease.account, apiCredit: lease.apiCredit } : {}),
+          });
         } catch (error) {
           if (!(error instanceof UpstreamAuthError)) throw error;
           if (lease && !limitRetried) {
-            // This account cannot sign the request: keep it out of routing and try the pool again once.
+            // This account (or key) cannot sign the request: keep it out of routing and try the pool again once.
             lease.authFailed(error.message);
-            const failed = lease.account;
+            const failed = leaseIdentity(lease);
             lease.release();
-            lease = await router!.lease(conversation, abort.signal);
+            lease = await router!.lease(conversation, abort.signal, leaseOptions);
             limitRetried = true;
             authRetried = false;
-            if (lease.account !== failed) continue;
+            if (leaseIdentity(lease) !== failed) continue;
           }
           if (!this.closed) this.respondError(streamId, provider, 401, `${hostname()}: ${error.message}`);
           return;
         }
+        const headers: Record<string, string> = { ...clientHeaders, ...authHeaders };
+        for (const [name, value] of Object.entries(headers)) if (value === "") delete headers[name];
         response = await this.fetchImpl(url, {
           method: command.method.toUpperCase(),
-          headers: { ...clientHeaders, ...authHeaders },
+          headers,
           ...(body ? { body } : {}),
           signal: abort.signal,
           // Never follow a redirect to a host outside the allowlist.
           redirect: "manual",
         });
         this.auth.observeResponse?.(provider, url, response.headers);
-        const refused = lease?.observe(response.status, response.headers) ?? false;
+        // An API-credit refusal is told apart by its body (credit balance too low): read the (short) error body.
+        let errorText: string | undefined;
+        if (lease?.apiCredit && response.status >= 400) {
+          errorText = await response.text().catch(() => "");
+          response = new Response(errorText, { status: response.status, statusText: response.statusText, headers: response.headers });
+        }
+        const refused = lease?.observe(response.status, response.headers, errorText) ?? false;
         if (response.status === 401 && !authRetried) {
           authRetried = true;
           await response.body?.cancel().catch(() => {});
           continue;
         }
         if (refused && router && lease && !limitRetried) {
-          // At a usage limit: the account is now marked limited, so routing again moves the conversation if another account can take it.
+          // At a usage limit (or out of API credits): it is now marked so, and routing again moves the conversation if another account or key can take it.
           limitRetried = true;
-          const limited = lease.account;
+          const limited = leaseIdentity(lease);
           lease.release();
-          lease = await router.lease(conversation, abort.signal);
-          if (lease.account !== limited) {
+          lease = await router.lease(conversation, abort.signal, leaseOptions);
+          if (leaseIdentity(lease) !== limited) {
             authRetried = false;
             await response.body?.cancel().catch(() => {});
             continue;
@@ -341,19 +371,24 @@ export class ProviderProxyEndpoint {
         // The client announces the move in its conversation, as this daemon does for its own.
         responseHeaders[PROVIDER_PROXY_ACCOUNT_MOVE_HEADER] = encodeURIComponent(JSON.stringify({ from: lease.moved.from, to: lease.account, detail: lease.moved.detail }));
       }
+      if (lease?.apiCredit) responseHeaders[PROVIDER_PROXY_API_CREDITS_HEADER] = encodeURIComponent(lease.apiCredit.label);
       this.transport.send({ type: "provider_proxy_response", streamId, status: response.status, headers: responseHeaders });
       if (response.body) {
         const reader = response.body.getReader();
+        // What an API-credit key spends, from the response's usage.
+        const tap = lease?.meter && response.status < 400 ? new ApiCreditStreamTap(lease.meter, response.headers.get("content-type")) : null;
         try {
           while (true) {
             const { done, value } = await reader.read();
             if (done || this.closed) break;
             if (value && value.byteLength > 0) {
+              tap?.push(value);
               this.transport.send({ type: "provider_proxy_data", streamId, data: Buffer.from(value).toString("base64") });
               if (this.transport.needsDrain()) await this.transport.waitDrain();
             }
           }
         } finally {
+          tap?.end();
           reader.releaseLock();
         }
       }

@@ -234,6 +234,7 @@ export function handleMessageComplete(event: Extract<Event, { type: "message_com
     state.pendingAI.metadata!.endedAt = event.endedAt;
     state.pendingAI.metadata!.tokens = event.tokens;
     if (event.generationThroughput !== undefined) state.pendingAI.metadata!.generationThroughput = event.generationThroughput;
+    if (event.billing) state.pendingAI.metadata!.billing = event.billing;
     state.messages.push(state.pendingAI);
     clearPendingAI(state);
   }

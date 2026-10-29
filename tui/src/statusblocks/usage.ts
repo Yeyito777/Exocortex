@@ -8,11 +8,15 @@
  * While the provider goes through /proxy, the bars are the remote's; a link
  * that is down or connecting, or a remote that is not logged in, shows beside
  * them so it never fails silently.
+ *
+ * While Claude turns run on API credits (every subscription account at a
+ * limit), two short rows beside the bars say so, with the estimated spend
+ * this billing cycle.
  */
 
 import type { RenderState } from "../state";
 import type { StatusBlock } from "../statusline";
-import type { ApiKeyCredit, ApiKeySpend, ApiKeyUsage, UsageWindow } from "../messages";
+import type { ApiCreditsUsage, ApiKeyCredit, ApiKeySpend, ApiKeyUsage, UsageWindow } from "../messages";
 import { theme } from "../theme";
 import { activeProviderProxy } from "../provider-proxies";
 
@@ -336,7 +340,25 @@ export function usageSummary(state: RenderState, now = Date.now()): string | nul
   if (usage?.apiKey) return apiKeySummary(usage.apiKey);
   if (!usage?.fiveHour && !usage?.sevenDay) return null;
   const capacity = usage.capacity && usage.capacity > 0 ? usage.capacity : 100;
-  return `${summarizeWindow("5-hour", usage.fiveHour, now, capacity)} · ${summarizeWindow("weekly", usage.sevenDay, now, capacity)}`;
+  const credits = usage.apiCredits?.active
+    ? ` · on API credits${usage.apiCredits.label ? ` (${usage.apiCredits.label})` : ""}, ≈${formatCents(usage.apiCredits.spentUsd)} this cycle`
+    : "";
+  return `${summarizeWindow("5-hour", usage.fiveHour, now, capacity)} · ${summarizeWindow("weekly", usage.sevenDay, now, capacity)}${credits}`;
+}
+
+/** "API credits max2" over "≈$1.23 this cycle", while Claude turns run on them; null otherwise. */
+export function apiCreditRows(credits: ApiCreditsUsage | null | undefined): { rows: string[]; width: number } | null {
+  if (!credits?.active) return null;
+  const head = `API credits${credits.label ? ` ${credits.label}` : ""}`;
+  const spend = `≈${formatCents(credits.spentUsd)} this cycle`;
+  const width = Math.max(head.length, spend.length);
+  return {
+    width,
+    rows: [
+      `${theme.warning}API credits${theme.muted}${credits.label ? ` ${credits.label}` : ""}${theme.reset}${" ".repeat(width - head.length)}`,
+      `${theme.accent}${spend}${theme.reset}${" ".repeat(width - spend.length)}`,
+    ],
+  };
 }
 
 /** Longest /proxy problem detail shown beside the bars. */
@@ -365,21 +387,19 @@ function proxyProblemRows(state: RenderState): { rows: string[]; width: number }
 export function usageBlock(state: RenderState): StatusBlock | null {
   if (!state.authByProvider[state.provider]) return null;
 
-  const problem = proxyProblemRows(state);
+  const sides = [apiCreditRows(state.usageByProvider[state.provider]?.apiCredits), proxyProblemRows(state)]
+    .filter((side): side is { rows: string[]; width: number } => side !== null);
   const bars = usageBars(state);
-  if (!bars || !problem) return bars ?? (problem && {
-    id: "usage",
-    priority: 3,
-    width: problem.width,
-    height: problem.rows.length,
-    rows: problem.rows,
-  });
+  if (!bars) {
+    const problem = sides.at(-1);
+    return problem ? { id: "usage", priority: 3, width: problem.width, height: problem.rows.length, rows: problem.rows } : null;
+  }
   const gap = "  ";
-  return {
-    ...bars,
-    width: bars.width + gap.length + problem.width,
-    rows: bars.rows.map((row, index) => `${row}${gap}${problem.rows[index] ?? " ".repeat(problem.width)}`),
-  };
+  return sides.reduce<StatusBlock>((block, side) => ({
+    ...block,
+    width: block.width + gap.length + side.width,
+    rows: block.rows.map((row, index) => `${row}${gap}${side.rows[index] ?? " ".repeat(side.width)}`),
+  }), bars);
 }
 
 function usageBars(state: RenderState): StatusBlock | null {

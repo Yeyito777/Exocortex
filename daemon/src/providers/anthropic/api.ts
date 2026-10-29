@@ -12,6 +12,9 @@
  *
  * Every request goes through the Claude Code CLI's claude.ai login, so usage
  * bills the Claude subscription; API-key environment overrides are stripped.
+ * The one exception: while every subscription account is at a usage limit,
+ * turns run on Claude API credits when the owner has configured them
+ * (api-credits.ts), through the same Claude Code path.
  */
 
 import { randomUUID } from "node:crypto";
@@ -27,12 +30,13 @@ import { requireSubscriptionAuth } from "./auth";
 import { claudeProcessOptions } from "./cli";
 import { AuthError } from "../errors";
 import { MAIN_ACCOUNT_ID } from "./accounts";
-import { beginAccountTurn, multipleClaudeAccounts, noteAccountAuthFailure, routeClaudeTurn, touchConversationAccount } from "./account-pool";
+import { apiCreditSwitchNotice, beginAccountTurn, beginApiCreditTurn, multipleClaudeAccounts, noteAccountAuthFailure, routeClaudeTurn, touchConversationAccount } from "./account-pool";
+import { ApiCreditExhaustedError, ApiCreditUsageMeter, classifyApiCreditError, noteApiCreditFailure, type ApiCreditKey } from "./api-credits";
 import { isUsageLimitError } from "../../usage-limit-wait";
 import { noteAccountUsageRefusal } from "./usage";
 import { noteClaudeAccountWorking } from "./auth-cache";
 import { accountSwitchNotice } from "./routing";
-import { isProviderProxied, onProxiedClaudeMove, providerProxyRoute } from "../../provider-proxy/route";
+import { isProviderProxied, onProxiedClaudeApiCredits, onProxiedClaudeMove, providerProxyRoute } from "../../provider-proxy/route";
 import { claudeProcessPrompt, createAppToolServer, createHostToolServer, hostToolDefs, type HostToolBinding } from "./host-tools";
 import type { ClaudeCodeAppSurface } from "../types";
 import { appToolCallView } from "../../app-tools";
@@ -135,10 +139,10 @@ function systemPromptOption(append: string | undefined): ClaudeQueryOptions["sys
   return { type: "preset", preset: "claude_code", ...(append ? { append } : {}), snapshot: false };
 }
 
-function baseOptions(model: ModelId, options: StreamOptions, cwd: string, stderr: (data: string) => void, account: string, convId?: string): ClaudeQueryOptions {
+function baseOptions(model: ModelId, options: StreamOptions, cwd: string, stderr: (data: string) => void, account: string, convId?: string, apiCredit: ApiCreditKey | null = null): ClaudeQueryOptions {
   const effort = toClaudeEffort(options.effort);
   return {
-    ...claudeProcessOptions(cwd, account, convId),
+    ...claudeProcessOptions(cwd, account, convId, apiCredit),
     model,
     includePartialMessages: true,
     thinking: thinkingFor(options.effort),
@@ -156,9 +160,10 @@ export function agentTurnOptions(
   binding: () => Promise<HostToolBinding>,
   account: string,
   convId?: string,
+  apiCredit: ApiCreditKey | null = null,
 ): ClaudeQueryOptions {
   const app = options.claudeCodeApp;
-  const base = baseOptions(model, options, cwd, stderr, account, convId);
+  const base = baseOptions(model, options, cwd, stderr, account, convId, apiCredit);
   return {
     ...base,
     ...claudeCodeSurfaceOptions(options.system, app, base.env),
@@ -178,9 +183,9 @@ export function agentTurnOptions(
   };
 }
 
-function helperOptions(model: ModelId, options: StreamOptions, cwd: string, stderr: (data: string) => void, account: string): ClaudeQueryOptions {
+function helperOptions(model: ModelId, options: StreamOptions, cwd: string, stderr: (data: string) => void, account: string, apiCredit: ApiCreditKey | null): ClaudeQueryOptions {
   return {
-    ...baseOptions(model, options, cwd, stderr, account),
+    ...baseOptions(model, options, cwd, stderr, account, undefined, apiCredit),
     ...(options.system ? { systemPrompt: options.system } : {}),
     tools: [],
     settingSources: [],
@@ -208,8 +213,10 @@ async function runClaudeQuery(
   state: ClaudeStreamState,
   signal: AbortSignal | undefined,
   stderrTail: () => string,
+  apiCredit: ApiCreditKey | null,
 ): Promise<StreamResult> {
   const runtime = claudeSdks().claude.query({ prompt, options: queryOptions });
+  const meter = apiCredit ? new ApiCreditUsageMeter(apiCredit) : null;
   const heartbeat = setInterval(() => state.callbacks.onActivity?.(), HEARTBEAT_INTERVAL_MS);
   const onAbort = () => {
     clearInterval(heartbeat);
@@ -226,7 +233,9 @@ async function runClaudeQuery(
   try {
     for await (const message of runtime) {
       if (signal?.aborted) throw createAbortError();
-      pushClaudeMessage(state, message as unknown as Record<string, unknown>);
+      const record = message as unknown as Record<string, unknown>;
+      if (meter && record.type === "stream_event") meter.observe(record.event, typeof record.parent_tool_use_id === "string" ? record.parent_tool_use_id : "main");
+      pushClaudeMessage(state, record);
       if (state.done) break;
     }
     if (signal?.aborted) throw createAbortError();
@@ -236,6 +245,7 @@ async function runClaudeQuery(
     logStderr(error, stderrTail());
     throw error;
   } finally {
+    meter?.flushAll();
     signal?.removeEventListener("abort", onAbort);
     onAbort();
   }
@@ -252,9 +262,10 @@ function accountCallbacks(callbacks: StreamCallbacks, account: string): StreamCa
   };
 }
 
-function accountStreamState(callbacks: StreamCallbacks, cwd: string, account: string, promptUuid: string | null = null, appConvId?: string): ClaudeStreamState {
+function accountStreamState(callbacks: StreamCallbacks, cwd: string, account: string, apiCredit: ApiCreditKey | null, promptUuid: string | null = null, appConvId?: string): ClaudeStreamState {
   const state = createClaudeStreamState(callbacks, cwd, promptUuid);
   state.account = account === MAIN_ACCOUNT_ID ? null : account;
+  state.apiCredit = apiCredit !== null;
   if (appConvId) state.appToolCall = appToolCallView(appConvId);
   return state;
 }
@@ -277,34 +288,68 @@ export async function streamMessage(
     account: live.account,
     open: true,
     backgroundWork: live.hasBackgroundWork,
+    apiCredit: live.apiCredit,
   } : null, signal, plan?.resume ? plan.resume.account ?? MAIN_ACCOUNT_ID : null);
   const account = route.account;
-  await requireSubscriptionAuth(signal, account);
+  const apiCredit = route.apiCredit;
+  // A turn on API credits does not use the account's login, only its configuration directory.
+  if (!apiCredit) await requireSubscriptionAuth(signal, account);
   await loadClaudeSdks();
-  if (route.movedFrom) {
+  if (apiCredit) {
+    log("info", `anthropic: ${convId ?? "a helper request"} runs on API credits "${apiCredit.label}" (every Claude subscription account is at a usage limit; configuration from account ${account})`);
+  } else if (route.movedFrom) {
     log("info", `anthropic: conversation ${convId ?? "?"} moves from Claude account ${route.movedFrom} to ${account} (${route.reason}: ${route.detail})`);
     callbacks.onProviderNotice?.(accountSwitchNotice(route));
   } else if (multipleClaudeAccounts()) {
     log("info", `anthropic: Claude account ${account} for ${convId ?? "a helper request"} (${route.reason}: ${route.detail})`);
   }
-  const endTurn = beginAccountTurn(account, convId);
-  if (convId) touchConversationAccount(convId, account);
-  callbacks = accountCallbacks(callbacks, account);
+  const creditNotice = apiCreditSwitchNotice(convId, route);
+  if (creditNotice) callbacks.onProviderNotice?.(creditNotice);
+  if (apiCredit) callbacks.onBilling?.("api-credits");
+  const endTurn = apiCredit ? beginApiCreditTurn(apiCredit) : beginAccountTurn(account, convId);
+  if (convId && !apiCredit) touchConversationAccount(convId, account);
+  if (!apiCredit) callbacks = accountCallbacks(callbacks, account);
   // Under /proxy the remote picks the account per request; announce its moves as for local ones.
   const stopMoveNotices = convId && isProviderProxied("anthropic") ? onProxiedClaudeMove(convId, (move) => {
     log("info", `anthropic: proxied conversation ${convId} moved from Claude account ${move.from} to ${move.to} on the /proxy remote (${move.detail})`);
     callbacks.onProviderNotice?.(accountSwitchNotice({ account: move.to, movedFrom: move.from, reason: "new", detail: move.detail }));
   }) : null;
+  // Under /proxy the remote may bill the turn to its API credits: shown as for local ones.
+  let remoteCredits: string | null = null;
+  const stopCreditNotes = convId && isProviderProxied("anthropic") ? onProxiedClaudeApiCredits(convId, (label) => {
+    if (remoteCredits === label) return;
+    remoteCredits = label;
+    log("info", `anthropic: proxied conversation ${convId} runs on the /proxy remote's API credits "${label}"`);
+    callbacks.onBilling?.("api-credits");
+    const notice = apiCreditSwitchNotice(convId, { account, reason: "new", detail: "", apiCredit: { id: label, label, renewsOnDay: null } });
+    if (notice) callbacks.onProviderNotice?.(notice);
+  }) : null;
   try {
-    return await runStreamMessage(messages, model, callbacks, options, cwd, plan, convId, live, account);
+    const result = await runStreamMessage(messages, model, callbacks, options, cwd, plan, convId, live, account, apiCredit);
+    // A proxied turn the remote served on a subscription again.
+    if (convId && isProviderProxied("anthropic") && remoteCredits === null) {
+      const notice = apiCreditSwitchNotice(convId, { ...route, apiCredit: null });
+      if (notice) callbacks.onProviderNotice?.(notice);
+    }
+    return result;
   } catch (error) {
+    if (apiCredit) {
+      // The key's refusal, never the subscription account's: out of credits, rejected, or rate-limited.
+      const refusal = signal?.aborted ? null : noteApiCreditFailure(apiCredit, error);
+      // Out of credits or rejected: the turn waits for the next key or a subscription, as at a usage limit.
+      if ((refusal === "spent" || refusal === "rejected") && !(error instanceof ApiCreditExhaustedError)) {
+        throw new ApiCreditExhaustedError(error instanceof Error ? error.message : String(error));
+      }
+      throw error;
+    }
     if (error instanceof AuthError && !signal?.aborted) noteAccountAuthFailure(account, error.message);
     if (!signal?.aborted && isUsageLimitError(error) && !isProviderProxied("anthropic")) noteAccountUsageRefusal(account, (error as Error).message);
     throw error;
   } finally {
     stopMoveNotices?.();
+    stopCreditNotes?.();
     endTurn();
-    if (convId) touchConversationAccount(convId, account);
+    if (convId && !apiCredit) touchConversationAccount(convId, account);
   }
 }
 
@@ -318,19 +363,20 @@ async function runStreamMessage(
   convId: string | undefined,
   live: ReturnType<typeof getClaudeCodeSession>,
   account: string,
+  apiCredit: ApiCreditKey | null,
 ): Promise<StreamResult> {
   const { signal } = options;
   let stderr = "";
   const onStderr = (data: string) => { stderr = (stderr + data).slice(-STDERR_TAIL_CHARS); };
 
   if (!agentPlan) {
-    log("info", `anthropic: Claude Code helper request (model=${model}, effort=${options.effort ?? "default"}, account=${account})`);
-    const state = accountStreamState(callbacks, cwd, account);
-    return runClaudeQuery(buildClaudeHelperPrompt(messages), helperOptions(model, options, cwd, onStderr, account), state, signal, () => stderr);
+    log("info", `anthropic: Claude Code helper request (model=${model}, effort=${options.effort ?? "default"}, account=${account}${apiCredit ? `, api-credits=${apiCredit.label}` : ""})`);
+    const state = accountStreamState(callbacks, cwd, account, apiCredit);
+    return runClaudeQuery(buildClaudeHelperPrompt(messages), helperOptions(model, options, cwd, onStderr, account, apiCredit), state, signal, () => stderr, apiCredit);
   }
 
   const plan = agentPlan;
-  const key = claudeSessionKey(model, options.effort, cwd, providerProxyRoute("anthropic")?.alias, account);
+  const key = claudeSessionKey(model, options.effort, cwd, providerProxyRoute("anthropic")?.alias, account, apiCredit?.id);
 
   // The conversation's Claude Code process is still running (background tasks,
   // or a quick follow-up): continue in it.
@@ -340,8 +386,8 @@ async function runStreamMessage(
   const appConvId = app ? convId : undefined;
   if (live?.canContinue(key, plan.resume, plan.pending, system)) {
     const input = live.planInput(plan.pending);
-    log("info", `anthropic: Claude Code turn in its running process (model=${model}, effort=${options.effort ?? "default"}, cwd=${cwd}, account=${account}, session=${live.sessionId}, input=${input.kind})`);
-    const state = accountStreamState(callbacks, cwd, account, input.kind === "prompt" ? randomUUID() : null, appConvId);
+    log("info", `anthropic: Claude Code turn in its running process (model=${model}, effort=${options.effort ?? "default"}, cwd=${cwd}, account=${account}${apiCredit ? `, api-credits=${apiCredit.label}` : ""}, session=${live.sessionId}, input=${input.kind})`);
+    const state = accountStreamState(callbacks, cwd, account, apiCredit, input.kind === "prompt" ? randomUUID() : null, appConvId);
     live.rememberAgentTitles(messages);
     if (input.kind === "none") {
       state.done = true;
@@ -359,7 +405,9 @@ async function runStreamMessage(
   // Other settings, a changed system prompt, another account, or a rewound history: the old process cannot continue.
   live?.close(live.key === key && !live.systemMatches(system)
     ? "its system prompt or tool text changed"
-    : live.account !== account ? "the conversation moved to another Claude account" : "the conversation moved on from it");
+    : live.account !== account ? "the conversation moved to another Claude account"
+    : (live.apiCredit?.id ?? null) !== (apiCredit?.id ?? null) ? "the conversation moved between the subscription and API credits"
+    : "the conversation moved on from it");
 
   const start = (resumePlan: ClaudePromptPlan) => {
     const history = resumePlan.resume ? null : historyMark(resumePlan.pending);
@@ -375,20 +423,21 @@ async function runStreamMessage(
       resume: resumePlan.resume ? { sessionId: resumePlan.resume.sessionId, resumeAt: resumePlan.resume.resumeAt } : null,
       history,
       ...(account !== MAIN_ACCOUNT_ID ? { account } : {}),
+      ...(apiCredit ? { apiCredit: { id: apiCredit.id, label: apiCredit.label, renewsOnDay: apiCredit.renewsOnDay } } : {}),
     } : null;
     const relay = meta ? new ClaudeRelay(onStderr) : null;
     const session = openClaudeCodeSession(convId, key, (input, binding) => claudeSdks().claude.query({
       prompt: input,
       options: {
-        ...agentTurnOptions(model, options, cwd, resumePlan, onStderr, binding, account, convId),
+        ...agentTurnOptions(model, options, cwd, resumePlan, onStderr, binding, account, convId, apiCredit),
         ...(relay && meta ? { spawnClaudeCodeProcess: spawnOptions => relay.launch(spawnOptions, meta) } : {}),
       },
-    }), { relay, resume: resumePlan.resume, history, system, account, ...(app?.ephemeral ? { keepAlive: true } : {}) });
+    }), { relay, resume: resumePlan.resume, history, system, account, apiCredit, ...(app?.ephemeral ? { keepAlive: true } : {}) });
     session.rememberAgentTitles(messages);
     return session;
   };
-  log("info", `anthropic: Claude Code turn (model=${model}, effort=${options.effort ?? "default"}, cwd=${cwd}, account=${account}, resume=${plan.resume?.sessionId ?? "none"}, pending=${plan.pending.length})`);
-  const state = accountStreamState(callbacks, cwd, account, randomUUID(), appConvId);
+  log("info", `anthropic: Claude Code turn (model=${model}, effort=${options.effort ?? "default"}, cwd=${cwd}, account=${account}${apiCredit ? `, api-credits=${apiCredit.label}` : ""}, resume=${plan.resume?.sessionId ?? "none"}, pending=${plan.pending.length})`);
+  const state = accountStreamState(callbacks, cwd, account, apiCredit, randomUUID(), appConvId);
   const session = start(plan);
   try {
     return await session.run(state, buildClaudeUserContent(plan.pending), options.toolExecutor, signal, trailingUserMessages(plan.pending), options.queuedInput);
@@ -398,12 +447,13 @@ async function runStreamMessage(
     // strand the conversation: replay the whole history into a new session.
     // A network failure is not that: the same session resumes once the network is back.
     if (!plan.resume || signal?.aborted || hasOutput(state) || classifyNetworkFailure(error) || isUsageLimitError(error)) throw error;
+    if (apiCredit && classifyApiCreditError(error)) throw error;
     log("warn", `anthropic: resuming Claude Code session ${plan.resume.sessionId} failed (${error instanceof Error ? error.message : error}); starting a new session`);
     session.close("resuming its session failed");
     const fresh: ClaudePromptPlan = { resume: null, pending: messages };
     stderr = "";
     try {
-      return await start(fresh).run(accountStreamState(callbacks, cwd, account, randomUUID(), appConvId), buildClaudeUserContent(fresh.pending), options.toolExecutor, signal, trailingUserMessages(fresh.pending), options.queuedInput);
+      return await start(fresh).run(accountStreamState(callbacks, cwd, account, apiCredit, randomUUID(), appConvId), buildClaudeUserContent(fresh.pending), options.toolExecutor, signal, trailingUserMessages(fresh.pending), options.queuedInput);
     } catch (freshError) {
       if (!signal?.aborted) logStderr(freshError, stderr);
       throw freshError;
@@ -434,7 +484,7 @@ export async function adoptClaudeCodeProcesses(hasConversation: (convId: string)
     }
     openClaudeCodeSession(meta.convId, meta.key, (input, binding) => {
       const app = meta.app ? { ...meta.app, ephemeral: false } : undefined;
-      const processOptions = claudeProcessOptions(meta.cwd, meta.account, meta.convId);
+      const processOptions = claudeProcessOptions(meta.cwd, meta.account, meta.convId, meta.apiCredit ?? null);
       return claudeSdks().claude.query({
         prompt: input,
         // Claude Code is already running: only what the SDK re-sends when it
@@ -455,6 +505,7 @@ export async function adoptClaudeCodeProcesses(hasConversation: (convId: string)
         ? `${claudeProcessPrompt(meta.systemAppend ?? "", meta.hostTools)}\u0000${JSON.stringify([meta.app.base, meta.app.tools ?? null, meta.app.appTools])}`
         : claudeProcessPrompt(meta.systemAppend ?? "", meta.hostTools),
       ...(meta.account ? { account: meta.account } : {}),
+      ...(meta.apiCredit ? { apiCredit: meta.apiCredit } : {}),
     });
     if (hello.pending) pending.push(meta.convId);
     log("info", `anthropic: adopted the Claude Code process for ${meta.convId} (relay pid ${hello.pid}${meta.account ? `, account ${meta.account}` : ""}${hello.pending ? ", turn running" : ""})`);

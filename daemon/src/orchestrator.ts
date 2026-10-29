@@ -21,7 +21,7 @@ import { getMaxContext, supportsImageInputs } from "./providers/registry";
 import { buildExecutor, summarizeTool, toolCallsRequireWatchdogPause } from "./tools/registry";
 import * as convStore from "./conversations";
 import type { DaemonServer, ConnectedClient } from "./server";
-import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, MAX_EXO_SUBAGENT_DEPTH, PROVIDER_NOTICE_KIND, createMessageMetadata, createStoredUserContextCheckpoint, createStoredUserMessage, currentReplayHistoryPrefix, isHistoryMessage, isRealUserMessage, isReplayHistoryMessage, isValidActiveContextCached, type ActiveContext, type StoredMessage, type ApiContentBlock, type ApiMessage, type Block, type UserMessageAutomation } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, MAX_EXO_SUBAGENT_DEPTH, PROVIDER_NOTICE_KIND, createMessageMetadata, createStoredUserContextCheckpoint, createStoredUserMessage, currentReplayHistoryPrefix, isHistoryMessage, isRealUserMessage, isReplayHistoryMessage, isValidActiveContextCached, type ActiveContext, type StoredMessage, type ApiContentBlock, type ApiMessage, type Block, type UserMessageAutomation, type MessageBilling } from "./messages";
 import type { ContentBlock as ProviderContentBlock, QueuedInput, QueuedInputSource, StreamRetryMetadata } from "./providers/types";
 import type { QueuedMessage } from "./message-queue";
 import type { ImageAttachment } from "@exocortex/shared/messages";
@@ -791,6 +791,8 @@ async function orchestrateAdmittedAssistantTurn(
   // earlier messages, even when the independent work timer continues.
   let generationThroughput = createGenerationThroughput(conv.provider, conv.model);
   convStore.setStreamingGenerationThroughput(convId, generationThroughput);
+  // Set when a turn of the run went to API credits instead of the subscription; shown in its metadata.
+  let billing: MessageBilling | undefined;
   convStore.setStreamingWorkTimerStartedAt(convId, workTimerStartedAt);
   convStore.initStreamingState(convId);
   convStore.setStreamingCommittedMessageCount(convId, storedMessageCount(conv.messages));
@@ -1382,6 +1384,7 @@ async function orchestrateAdmittedAssistantTurn(
         message.metadata = {
           startedAt, endedAt: updatedAt, workTimerStartedAt,
           generationThroughput,
+          ...(billing ? { billing } : {}),
           model: liveConv.model, tokens: agentState.tokens,
         };
       }
@@ -1655,6 +1658,9 @@ async function orchestrateAdmittedAssistantTurn(
     onProviderNotice(text) {
       log("info", `orchestrator: provider notice for ${convId}: ${text}`);
       pushProviderNotice(text);
+    },
+    onBilling(next) {
+      billing = next;
     },
     onHeaders(headers) {
       convStore.touchActivity(convId);
@@ -1956,6 +1962,7 @@ async function orchestrateAdmittedAssistantTurn(
           model: conv.model,
           tokens: result.tokens,
           generationThroughput,
+          ...(billing ? { billing } : {}),
         };
       }
 
@@ -1978,6 +1985,7 @@ async function orchestrateAdmittedAssistantTurn(
         endedAt,
         tokens: result.tokens,
         generationThroughput,
+        ...(billing ? { billing } : {}),
       });
 
       log("info", `orchestrator: message complete for ${convId} (${result.tokens} tokens, ${result.blocks.length} blocks, ${endedAt - startedAt}ms)`);
@@ -2068,6 +2076,7 @@ async function orchestrateAdmittedAssistantTurn(
           model: conv.model,
           tokens: agentState.tokens,
           generationThroughput,
+          ...(billing ? { billing } : {}),
         };
         completedAssistantMetadataChanged = true;
       }
@@ -2129,6 +2138,7 @@ async function orchestrateAdmittedAssistantTurn(
             model: conv.model,
             tokens: agentState.tokens,
             generationThroughput,
+            ...(billing ? { billing } : {}),
           },
           providerData: undefined,
         });

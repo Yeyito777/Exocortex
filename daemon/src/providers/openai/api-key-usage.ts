@@ -1,6 +1,7 @@
 /**
- * What an OpenAI API key has spent, counted from the `usage` of the responses
- * Exocortex received with it. API keys have no ChatGPT plan windows, and the
+ * What an API key has spent, counted from the `usage` of the responses
+ * Exocortex received with it: OpenAI's, and the Claude API-credit keys
+ * (providers/anthropic/api-credits.ts, as `anthropic-credits:<secret>`). API keys have no ChatGPT plan windows, and the
  * billing/credit endpoints refuse project keys (credit_grants needs a browser
  * session key, organization/costs an admin `api.usage.read` key), so this
  * local count is the honest equivalent: tokens per day and month, priced from
@@ -33,6 +34,12 @@ export interface ApiKeyRequestUsage {
   outputTokens?: number;
   serviceTier?: TokenPricingServiceTier;
   timestamp?: number;
+  /**
+   * The request's cost, already estimated by the caller (Claude API keys:
+   * providers/anthropic/api-credits.ts); null when it has no published rate.
+   * Unset: priced here from OpenAI's table.
+   */
+  estimatedCostUsd?: number | null;
 }
 
 let ledger: LedgerFile | null = null;
@@ -41,6 +48,11 @@ let recordedListener: ((accountKey: string) => void) | null = null;
 /** Told after each counted request, so the daemon pushes the new totals to clients right away. */
 export function setApiKeyUsageRecordedListener(listener: ((accountKey: string) => void) | null): void {
   recordedListener = listener;
+}
+
+/** Tell the listener a key's figures changed without a request (a Claude credit turn starting or ending). */
+export function notifyApiKeyUsageChanged(accountKey: string): void {
+  recordedListener?.(accountKey);
 }
 
 function ledgerPath(): string {
@@ -115,7 +127,7 @@ export function recordApiKeyUsage(accountKey: string | null | undefined, usage: 
   const file = loadLedger();
   const days = file.byAccount[accountKey] ??= {};
   const day = days[localDay(timestamp)] ??= emptySpend();
-  const cost = estimateApiKeyRequestCostUsd({ ...usage, timestamp });
+  const cost = usage.estimatedCostUsd !== undefined ? usage.estimatedCostUsd : estimateApiKeyRequestCostUsd({ ...usage, timestamp });
   day.inputTokens += count(usage.inputTokens);
   day.cachedInputTokens += Math.min(count(usage.inputTokens), count(usage.cachedInputTokens));
   day.outputTokens += count(usage.outputTokens);
@@ -154,6 +166,12 @@ export function apiKeyUsage(accountKey: string, label: string, now = Date.now())
     if (day.startsWith(month)) addSpend(monthSpend, spend);
   }
   return { label, today: todaySpend, month: monthSpend };
+}
+
+/** The key's estimated spend per local day (YYYY-MM-DD), as the ledger counted it. */
+export function apiKeyDailySpendUsd(accountKey: string): Record<string, number> {
+  const days = loadLedger().byAccount[accountKey] ?? {};
+  return Object.fromEntries(Object.entries(days).map(([day, spend]) => [day, spend.estimatedCostUsd]));
 }
 
 /** Days a pace is averaged over, today included. */

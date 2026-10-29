@@ -3,6 +3,9 @@ import {
   ACCOUNTS_UNAVAILABLE_HINT,
   accountsScreenLines,
   closeAccountsScreen,
+  creditCell,
+  formatCreditCountdown,
+  openAICredits,
   handleAccountsScreenKey,
   prefetchAccounts,
   renderAccountsScreen,
@@ -393,28 +396,70 @@ test("the overlay rect is the card, so images outside it stay placed", () => {
   expect(rect.right).toBe(rows[top]!.indexOf("╮") + 1);
 });
 
-test("a short note says why new work skips an account near its limit, and only then", () => {
+test("no note explains routing: the new-work tag says where new work goes", () => {
   const near = claude("main", { usage: { fiveHour: { utilization: 40, resetsAt: NOW + 2 * H }, sevenDay: { utilization: 95, resetsAt: NOW + 72 * H } } });
-  const snap = snapshot({}, [near, claude("max2")]);
-  snap.claude.nextNewWork = { account: "max2", detail: "\"main\" is below the weekly floor" };
-  expect(screenText(openScreen(snap).state).join("\n")).toContain("main is near its weekly limit → new work goes to max2");
-
-  const fiveHour = snapshot({}, [claude("main", { usage: { fiveHour: { utilization: 93, resetsAt: NOW + H }, sevenDay: null } }), claude("max2")]);
-  fiveHour.claude.nextNewWork = { account: "max2", detail: "x" };
-  expect(screenText(openScreen(fiveHour).state).join("\n")).toContain("main is near its 5-hour limit → new work goes to max2");
-
   const both = snapshot({}, [near, claude("max2", { usage: near.usage })]);
   both.claude.nextNewWork = { account: "max2", detail: "x" };
-  expect(screenText(openScreen(both).state).join("\n")).toContain("every account is near a limit → new work goes to max2");
+  const text = screenText(openScreen(both).state).join("\n");
+  expect(text).not.toContain("→");
+  expect(text).not.toContain("near a limit");
+  expect(text).toMatch(/● max2 {2}new work /);
+});
 
-  const none = snapshot({}, [claude("main"), claude("max2")]);
-  none.claude.nextNewWork = null;
-  expect(screenText(openScreen(none).state).join("\n")).toContain("no account can take new work");
+test("a Credits column: the balance, each grant's countdown, the account spending them now", () => {
+  const credits = (balanceUsd: number, grantedUsd: number, expiresIn: number[], active = false) =>
+    ({ balanceUsd, grantedUsd, expiresAt: expiresIn.map(ms => NOW + ms), active });
+  const snap = snapshot({}, [
+    claude("main", { state: "limited", credits: credits(688.4, 700, [171 * 24 * H + H, 13 * 24 * H + 5 * H], true) }),
+    claude("max2", { credits: credits(200, 200, [20 * 24 * H + 3 * H]) }),
+    claude("max3"),
+  ]);
+  snap.openai.accounts = [{ index: 1, email: "owner@example.com", displayName: null, plan: null, current: true }];
+  const { state } = openScreen(snap);
+  state.usageByProvider.openai = {
+    fiveHour: null, sevenDay: null,
+    apiKey: {
+      label: "sk-…abcd",
+      today: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, requests: 0, estimatedCostUsd: 0, unpricedRequests: 0 },
+      month: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, requests: 0, estimatedCostUsd: 0, unpricedRequests: 0 },
+      credit: { amountUsd: 1000, since: "2026-10-20", expires: "2099-10-20", asOf: "2026-10-29", usedUsd: 64.6, firstTrackedDay: "2026-10-20", paceUsd: 0, paceDays: 0 },
+    },
+  };
+  const rows = screenText(state);
+  const header = rows.find(row => row.includes("5-Hour"))!;
+  const main = rows.find(row => row.includes("● main"))!;
+  expect(main).toMatch(/\$688 13d · 171d ◀/);
+  expect(rows.find(row => row.includes("● max2"))).toMatch(/\$200 20d +│/);
+  // Without credits the column is empty.
+  expect(rows.find(row => row.includes("● max3"))).not.toContain("$");
+  // OpenAI's row and heading line up with Claude's Credits column.
+  const openaiHeader = rows.find(row => row.includes("OpenAI"))!;
+  const openaiRow = rows.find(row => row.includes("owner@example.com"))!;
+  expect(openaiRow).toMatch(/\$935 \d+d/);
+  expect(header.indexOf("Credits")).toBe(main.indexOf("$688"));
+  expect(openaiHeader.indexOf("Credits")).toBe(main.indexOf("$688"));
+  expect(openaiRow.indexOf("$935")).toBe(main.indexOf("$688"));
+  // A section without credits has no Credits label.
+  state.usageByProvider.openai = { fiveHour: null, sevenDay: null };
+  expect(screenText(state).find(row => row.includes("OpenAI"))).not.toContain("Credits");
+  // Spending now: bold blue. Otherwise green.
+  const lines = accountsScreenLines(state, state.accountsScreen!, NOW);
+  const cell = (id: string) => lines.flatMap(line => line.kind === "row" && line.row.name[1] === id ? [line.row.credits] : [])[0];
+  expect(cell("main")?.amount[0]).toBe(theme.bold + theme.accent);
+  expect(cell("max2")?.amount[0]).toBe(theme.success);
+});
 
-  // Plenty of headroom everywhere: the "new work" tag says it all.
-  const quiet = screenText(openScreen(snapshot({}, [claude("main"), claude("max2")])).state).join("\n");
-  expect(quiet).not.toContain("→");
-  expect(quiet).toMatch(/● main {2}new work /);
+test("Credits cells: coarse countdowns, expired grants dropped, red when low", () => {
+  expect(formatCreditCountdown(13 * 24 * H + 23 * H)).toBe("13d");
+  expect(formatCreditCountdown(5 * H + 59 * 60_000)).toBe("5h");
+  expect(formatCreditCountdown(59 * 60_000)).toBe("<1h");
+  const cell = creditCell({ balanceUsd: 15, grantedUsd: 700, expiresAt: [NOW - H, NOW + 30 * 60_000, NOW + 2 * 24 * H], active: false }, NOW)!;
+  expect(cell.expiries).toBe("<1h · 2d");
+  expect(cell.amount).toEqual([theme.error, "$15"]);
+  expect(creditCell({ balanceUsd: 100, grantedUsd: 200, expiresAt: [NOW - H], active: false }, NOW)).toBeNull();
+  expect(creditCell(null, NOW)).toBeNull();
+  expect(openAICredits({ amountUsd: 1000, since: "2026-10-20", expires: "2027-10-20", asOf: "2026-10-29", usedUsd: 65, firstTrackedDay: null, paceUsd: 0, paceDays: 0 }))
+    .toEqual({ balanceUsd: 935, grantedUsd: 1000, expiresAt: [new Date(2027, 9, 21).getTime()], active: false });
 });
 
 test("limited, blocked, signed-out and other states replace the bars with a short word", () => {
@@ -522,11 +567,12 @@ test("under /proxy the remote's accounts fill the table; the note says whose, or
   expect(text).toMatch(/max2  new work/);
   expect(text).toContain("accounts on whale (/proxy)");
 
-  // The pool's routing note, marked with where the accounts are.
+  // No routing explanation, only whose accounts these are.
   snap.claude.accounts[0] = claude("main", { usage: { fiveHour: { utilization: 40, resetsAt: NOW + 2 * H }, sevenDay: { utilization: 97, resetsAt: NOW + 30 * H } } });
   state.accountsScreen!.snapshot = snap;
   text = screenText(state).join("\n");
-  expect(text).toContain("on whale: main is near its weekly limit → new work goes to max2");
+  expect(text).toContain("accounts on whale (/proxy)");
+  expect(text).not.toContain("→");
   expect(text).not.toContain("the remote daemon's login");
 
   state.accountsScreen!.snapshot = { ...snap, claude: { ...snap.claude, remote: { alias: "whale", host: null, state: "disconnected", message: "The SSH connection to whale was lost." } } };
