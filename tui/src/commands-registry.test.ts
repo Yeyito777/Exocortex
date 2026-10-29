@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "fs";
 import { join } from "path";
-import { COMMAND_LIST, tryCommand } from "./commands";
+import { commandList, tryCommand } from "./commands";
 import { createInitialState } from "./state";
 
-const names = COMMAND_LIST.map((command) => command.name);
+const names = commandList().map((command) => command.name);
 
 /** Command names in the docs' slash-command table (first column, every `/name` it shows). */
 function documentedCommandNames(): Set<string> {
@@ -22,7 +22,7 @@ function documentedCommandNames(): Set<string> {
 describe("slash command registry", () => {
   test("every listed command has a unique name and help text", () => {
     expect(new Set(names).size).toBe(names.length);
-    for (const command of COMMAND_LIST) {
+    for (const command of commandList()) {
       expect(command.name).toMatch(/^\/[a-z][a-z-]*$/);
       expect(command.desc.trim().length).toBeGreaterThan(0);
     }
@@ -38,7 +38,7 @@ describe("slash command registry", () => {
     const state = createInitialState();
     tryCommand("/help", state);
     const help = (state.messages.at(-1) as { text?: string } | undefined)?.text ?? "";
-    expect(help.split("\n")).toEqual(COMMAND_LIST.map((command) => `${command.name}  ${command.desc}`));
+    expect(help.split("\n")).toEqual(commandList().map((command) => `${command.name}  ${command.desc}`));
   });
 
   test("the docs' slash-command table matches the registry exactly", () => {

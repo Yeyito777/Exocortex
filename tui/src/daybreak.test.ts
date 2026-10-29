@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { DAYBREAK_MODEL_ID, DAYBREAK_RETIRED_MODEL, DAYBREAK_UNAVAILABLE } from "@exocortex/shared/daybreak";
-import { tryCommand, getCommandArgs, COMMAND_LIST } from "./commands";
+import { tryCommand, getCommandArgs, commandList } from "./commands";
 import { createInitialState, newConversationSelection } from "./state";
 import { previewInlineCommands } from "./inlineeffort";
 
@@ -37,7 +37,7 @@ test("Daybreak is a normal model selection with independent effort and speed", (
 test("alias appears in model completion only when discovered, with no toggle command", () => {
   expect(getCommandArgs(fixture())["/model openai"]?.some(item => item.name === DAYBREAK_MODEL_ID)).toBe(true);
   expect(getCommandArgs(fixture(false))["/model openai"]?.some(item => item.name === DAYBREAK_MODEL_ID)).toBe(false);
-  expect(COMMAND_LIST.some(item => item.name === "/daybreak")).toBe(false);
+  expect(commandList().some(item => item.name === "/daybreak")).toBe(false);
 });
 
 test("missing entitlement cannot silently become a custom-model selection", () => {

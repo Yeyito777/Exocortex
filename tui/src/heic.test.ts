@@ -8,7 +8,8 @@ test("decodes the HEIC photo, not its auxiliary image, into a bounded JPEG", () 
   expect(image.mediaType).toBe("image/jpeg");
   const result = spawnSync("magick", [
     "jpeg:-", "-depth", "8", "rgb:-",
-  ], { input: Buffer.from(image.base64, "base64") });
+  ], { input: Buffer.from(image.base64, "base64"), timeout: 4_000 });
+  expect(result.error).toBeUndefined();
   expect(result.status).toBe(0);
   expect(result.stdout.length).toBe(64 * 32 * 3);
   const left = (16 * 64 + 8) * 3;

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { configuredConversationDefaults, defaultExocortexConfig, readExocortexConfig, saveConversationDefaults, writeExocortexConfig } from "@exocortex/shared/config";
 import { cycleAutocomplete, updateAutocomplete } from "./autocomplete";
-import { COMMAND_LIST, getCommandArgs, tryCommand, type CommandResult } from "./commands";
+import { commandList, getCommandArgs, tryCommand, type CommandResult } from "./commands";
 import { clearPreferredProvider } from "./preferences";
 import { createInitialState } from "./state";
 import { DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, defaultEffortForModelId, type ProviderInfo, type TokenStatsSnapshot, type TokenUsageTotals } from "./messages";
@@ -256,7 +256,7 @@ describe("/diagnostics", () => {
 
   test("appears in help and command/argument completions", () => {
     const state = createInitialState();
-    expect(COMMAND_LIST.some(item => item.name === "/diagnostics")).toBe(true);
+    expect(commandList().some(item => item.name === "/diagnostics")).toBe(true);
     expect(getCommandArgs(state, "/diagnostics")["/diagnostics"].map(item => item.name))
       .toEqual(["on", "off"]);
     tryCommand("/help", state);
@@ -311,7 +311,7 @@ describe("/clock", () => {
 
   test("appears in help and command/argument completions", () => {
     const state = createInitialState();
-    expect(COMMAND_LIST.some(item => item.name === "/clock")).toBe(true);
+    expect(commandList().some(item => item.name === "/clock")).toBe(true);
     expect(getCommandArgs(state, "/clock")["/clock"].map(item => item.name)).toEqual(["12h", "24h"]);
     tryCommand("/help", state);
     expect(state.messages.at(-1)).toMatchObject({ text: expect.stringContaining("/clock") });

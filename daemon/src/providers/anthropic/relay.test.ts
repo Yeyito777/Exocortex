@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { DAEMON_RESTART_TOOL_INTERRUPTED_MESSAGE } from "../../abort";
-import { ClaudeRelay, reconnectRelays, relaysDir } from "./relay-client";
+import { ClaudeRelay, reconnectRelays, relaysDir, setRelayHelloTimeoutsForTest } from "./relay-client";
 import { RELAY_PROTOCOL_VERSION, relayLine } from "./relay-protocol";
 import { createServer, type Socket } from "node:net";
 import { existsSync, mkdirSync } from "node:fs";
@@ -213,6 +213,9 @@ describe("relay adoption at boot", () => {
   // declared gone after 3 s: its record and socket were deleted and it ran on
   // unreachable while a replay started a second Claude Code process.
   test("a relay slow to say hello is adopted, not deleted", async () => {
+    // Scaled down from the real 3 s / 20 s: the hello still comes after the
+    // first wait has given up, well inside the slow one.
+    setRelayHelloTimeoutsForTest({ helloMs: 300, slowHelloMs: 3_000 });
     mkdirSync(relaysDir(), { recursive: true });
     const socketPath = join(dir, "slow.sock");
     const recordPath = join(relaysDir(), "slow-relay.json");
@@ -220,7 +223,7 @@ describe("relay adoption at boot", () => {
     const server = createServer((socket) => {
       sockets.push(socket);
       const hello = relayLine({ event: "hello", version: RELAY_PROTOCOL_VERSION, pid: process.pid, meta: { ...meta, convId: "slow" }, resume: null, delivered: [], pending: false, taskStarts: {} } as never);
-      setTimeout(() => { if (!socket.destroyed) socket.write(hello); }, 3_300);
+      setTimeout(() => { if (!socket.destroyed) socket.write(hello); }, 330);
     });
     await new Promise<void>(resolve => server.listen(socketPath, resolve));
     writeFileSync(recordPath, JSON.stringify({ version: RELAY_PROTOCOL_VERSION, convId: "slow", socketPath, pid: process.pid, createdAt: Date.now() }));
@@ -232,6 +235,7 @@ describe("relay adoption at boot", () => {
       expect(existsSync(socketPath)).toBe(true);
       relays[0].detach();
     } finally {
+      setRelayHelloTimeoutsForTest(null);
       for (const socket of sockets) socket.destroy();
       server.close();
       rmSync(recordPath, { force: true });

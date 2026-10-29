@@ -9,7 +9,7 @@
  */
 
 import type { RenderState } from "./state";
-import { COMMAND_LIST, getCommandArgs, type CompletionItem } from "./commands";
+import { commandList, getCommandArgs, type CompletionItem } from "./commands";
 import { macroList, getMacroArgs, macroEnvironmentForState } from "./macros";
 import { INLINE_COMMANDS, getInlineCommandArgs } from "./inlineeffort";
 
@@ -345,7 +345,7 @@ function slashArgRegistry(
  * Commands and macros are shown in a unified list.
  */
 export function commandCompletions(state: RenderState, input: string): SlashCompletion[] {
-  return searchSlashCompletions(input.trimStart(), [...COMMAND_LIST, ...macroList()], slashArgRegistry(state, getCommandArgs));
+  return searchSlashCompletions(input.trimStart(), [...commandList(), ...macroList()], slashArgRegistry(state, getCommandArgs));
 }
 
 /**

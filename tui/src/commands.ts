@@ -39,13 +39,13 @@ import { USAGE_COMMAND } from "./commands/usage";
 import type { CommandResult, CompletionItem, SlashCommand } from "./commands/types";
 import { INLINE_COMMANDS, applyInlineCommands, previewInlineCommands } from "./inlineeffort";
 
-const HELP_COMMAND = createHelpCommand(() => commands);
+const HELP_COMMAND = createHelpCommand(() => allCommands());
 // User macros may not take a command's name, or one used inline in messages.
 let reservedMacroNames: Set<string> | null = null;
 
 /** What /macro checks names against: the user macros, built-in macros, commands and inline commands. */
 export function macroParseContext(): MacroParseContext {
-  reservedMacroNames ??= new Set([...commands.map(command => command.name), ...INLINE_COMMANDS.map(command => command.name)]);
+  reservedMacroNames ??= new Set([...allCommands().map(command => command.name), ...INLINE_COMMANDS.map(command => command.name)]);
   const reserved = reservedMacroNames;
   return defaultMacroParseContext(name => reserved.has(name));
 }
@@ -60,44 +60,52 @@ export function macroDisplayContext(state: Pick<RenderState, "promptEditedAt">, 
 
 export const MACRO_COMMAND = createMacroCommand(macroParseContext);
 
-const commands: SlashCommand[] = [
-  HELP_COMMAND,
-  QUIT_COMMAND,
-  EXIT_COMMAND,
-  NEW_COMMAND,
-  ACCOUNT_COMMAND,
-  ACCOUNTS_COMMAND,
-  REPLAY_COMMAND,
-  BTW_COMMAND,
-  COMPACT_COMMAND,
-  RENAME_COMMAND,
-  MODEL_COMMAND,
-  DEFAULT_MODEL_COMMAND,
-  TRIM_COMMAND,
-  EFFORT_COMMAND,
-  FAST_COMMAND,
-  ULTRAFAST_COMMAND,
-  QUEUE_COMMAND,
-  GOAL_COMMAND,
-  CHRONO_COMMAND,
-  CONVO_COMMAND,
-  TOKENS_COMMAND,
-  USAGE_COMMAND,
-  TIME_COMMAND,
-  DIAGNOSTICS_COMMAND,
-  CLOCK_COMMAND,
-  THEME_COMMAND,
-  FOLDERS_COMMAND,
-  HIDE_COMMAND,
-  PING_COMMAND,
-  SSH_COMMAND,
-  PROXY_COMMAND,
-  INSTRUCTIONS_COMMAND,
-  MACRO_COMMAND,
-  SYSTEM_COMMAND,
-  LOGIN_COMMAND,
-  LOGOUT_COMMAND,
-];
+// Built on first use, not at import: command modules import this one back
+// through long chains (chrono → queue → state → … → slashsearch → commands),
+// so whichever is imported first would otherwise find the list read before
+// its command exists.
+let commands: SlashCommand[] | null = null;
+
+function allCommands(): SlashCommand[] {
+  return commands ??= [
+    HELP_COMMAND,
+    QUIT_COMMAND,
+    EXIT_COMMAND,
+    NEW_COMMAND,
+    ACCOUNT_COMMAND,
+    ACCOUNTS_COMMAND,
+    REPLAY_COMMAND,
+    BTW_COMMAND,
+    COMPACT_COMMAND,
+    RENAME_COMMAND,
+    MODEL_COMMAND,
+    DEFAULT_MODEL_COMMAND,
+    TRIM_COMMAND,
+    EFFORT_COMMAND,
+    FAST_COMMAND,
+    ULTRAFAST_COMMAND,
+    QUEUE_COMMAND,
+    GOAL_COMMAND,
+    CHRONO_COMMAND,
+    CONVO_COMMAND,
+    TOKENS_COMMAND,
+    USAGE_COMMAND,
+    TIME_COMMAND,
+    DIAGNOSTICS_COMMAND,
+    CLOCK_COMMAND,
+    THEME_COMMAND,
+    FOLDERS_COMMAND,
+    HIDE_COMMAND,
+    PING_COMMAND,
+    SSH_COMMAND,
+    PROXY_COMMAND,
+    INSTRUCTIONS_COMMAND,
+    MACRO_COMMAND,
+    SYSTEM_COMMAND,
+    LOGIN_COMMAND,
+    LOGOUT_COMMAND,
+  ];
+}
 
 function isStandaloneOptionalArgCommand(text: string, commandName: string): boolean {
   const parts = text.trim().split(/\s+/).filter(Boolean);
@@ -112,7 +120,7 @@ function isStandaloneNoArgCommand(text: string, commandName: string): boolean {
 /** The command `text` invokes on its own, or null when it is a prompt modifier inside a message. */
 function standaloneCommand(text: string): SlashCommand | null {
   const name = text.split(/\s+/)[0];
-  const cmd = commands.find((command) => command.name === name);
+  const cmd = allCommands().find((command) => command.name === name);
   if (!cmd) return null;
   // A speed command followed by prose is a prompt modifier, even for a
   // one-word prompt such as "/ultrafast hello".
@@ -144,7 +152,7 @@ export function tryCommand(text: string, state: RenderState): CommandResult | nu
   if (preview.queue) {
     const primaryText = preview.text.trim();
     const primaryName = primaryText.split(/\s+/, 1)[0];
-    const primary = commands.find(command => command.queueable && command.name === primaryName);
+    const primary = allCommands().find(command => command.queueable && command.name === primaryName);
     const queueable = primary?.queueable;
     if (primary && queueable) {
       const result = primary.handler(primaryText, state, { queue: preview.queue });
@@ -165,13 +173,18 @@ export function tryCommand(text: string, state: RenderState): CommandResult | nu
   return standaloneCommand(text)?.handler(text, state) ?? null;
 }
 
-export const COMMAND_LIST: CompletionItem[] = commands
-  .filter((command) => command.name !== "/exit")
-  .map((command) => ({ name: command.name, desc: command.description }));
+let completionList: CompletionItem[] | null = null;
+
+/** Every command for completion and /help, without the /exit alias. */
+export function commandList(): CompletionItem[] {
+  return completionList ??= allCommands()
+    .filter((command) => command.name !== "/exit")
+    .map((command) => ({ name: command.name, desc: command.description }));
+}
 
 export function getCommandArgs(state: RenderState, commandName?: string): Record<string, CompletionItem[]> {
   const registry: Record<string, CompletionItem[]> = {};
-  const candidates = commandName ? commands.filter((command) => command.name === commandName) : commands;
+  const candidates = commandName ? allCommands().filter((command) => command.name === commandName) : allCommands();
   for (const command of candidates) {
     if (command.args && command.args.length > 0) {
       registry[command.name] = command.args;

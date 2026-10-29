@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, mock, spyOn, test } from "bun:test";
 import { defaultExocortexConfig, writeExocortexConfig } from "@exocortex/shared/config";
 import type { ApiMessage } from "../../messages";
 import {
@@ -11,6 +11,7 @@ import {
   parseOpenAIUsageLimitErrorForTest,
   prewarmOpenAIConversation,
   readOpenAIEventsForTest,
+  setOpenAIWaitsForTest,
   setOpenAIWebSocketIdleTimeoutMsForTest,
   shouldRetryOpenAIUsageLimitResetForTest,
   streamMessageHttpWithSessionForTest,
@@ -25,6 +26,10 @@ import type { StoredOpenAIAuth } from "./session";
 import { OpenAIWebSocketHttpError, setOpenAIWebSocketConnectorForTest, type OpenAIWebSocketConnection } from "./websocket";
 
 const originalFetch = globalThis.fetch;
+// Real backoff and prewarm waits, shrunk: retries still wait on a timer, just a short one.
+const PREWARM_WAIT_MS = 250;
+beforeAll(() => setOpenAIWaitsForTest({ backoffScale: 0.01, prewarmWaitMs: PREWARM_WAIT_MS }));
+afterAll(() => setOpenAIWaitsForTest(null));
 
 function corruptFirstPngIdatByte(base64: string): string {
   const bytes = Buffer.from(base64, "base64");
@@ -376,10 +381,10 @@ describe("OpenAI standby connection handoff", () => {
     const turn = createOpenAITurnSession();
     const before = performance.now();
     await turn.joinPrewarm({ promptCacheKey: "stalled-standby" });
-    expect(performance.now() - before).toBeGreaterThanOrEqual(900);
+    expect(performance.now() - before).toBeGreaterThanOrEqual(PREWARM_WAIT_MS * 0.9);
     const session = await turn.getVerifiedRequestSession(callbacks);
     const lease = await turn.getSocketLease(session, callbacks, { promptCacheKey: "stalled-standby" });
-    expect(performance.now() - before).toBeLessThan(1_800); // no second one-second wait
+    expect(performance.now() - before).toBeLessThan(PREWARM_WAIT_MS * 1.8); // no second prewarm wait
     expect(lease.socket).toBe(sockets[1]);
     expect(lease.reused).toBe(false);
     release();

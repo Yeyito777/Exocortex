@@ -152,6 +152,9 @@ createInterface({ input: process.stdin }).on("line", line => {
     expect(rows).toMatch(/Remote:\s+None/);
     if (pending) {
       // SSH must become usable without waiting for a slow local status check.
+      // That check may reach the local daemon just after the remote's status shows.
+      while (typeof releaseStartupLocal !== "function" && Date.now() < deadline) await Bun.sleep(10);
+      rows = screen.plainRows().join("\n");
       expect(startupLocalReplied).toBe(false);
       expect(rows).toMatch(/Local:\s+Checking/);
       expect(typeof releaseStartupLocal).toBe("function");

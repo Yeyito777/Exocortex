@@ -9,6 +9,8 @@
     "noUnusedParameters": true,
     "skipLibCheck": true,
     "noEmit": true,
+    "incremental": true,
+    "tsBuildInfoFile": "../node_modules/.cache/tsc/tui.tsbuildinfo",
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true
   },
