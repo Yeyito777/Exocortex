@@ -17,6 +17,16 @@ interface Pending {
   pushed?: boolean;
 }
 
+function requestKey(command: HistoryRequest): string {
+  return JSON.stringify([command.type, command.convId, command.turns,
+    command.type === "load_conversation_history" ? command.beforeEntryIndex : null,
+    command.type === "load_conversation_history" ? command.beforeBlockIndex ?? 0 : null]);
+}
+
+function initialBackfillKey(convId: string, turns: number): string {
+  return JSON.stringify(["initial_backfill", convId, turns]);
+}
+
 /** Transport-only cache. Never displays stale state or retains mutable UI objects.
  * LRU storage and request-pinned bases each have a separate memory budget. */
 export class HistoryCache {
@@ -38,18 +48,30 @@ export class HistoryCache {
     this.pinnedBytes = 0;
   }
 
+  /**
+   * Bases for an open from pages kept elsewhere (the on-disk view cache, see
+   * viewcache.ts), where this cache holds none: a TUI that just started
+   * still gets deltas. Hashes match by content, so a stale page costs bytes only.
+   */
+  seed(command: Extract<HistoryRequest, { type: "load_conversation" }>, loaded: HistoryResponse, backfill: HistoryResponse | null): void {
+    const key = requestKey(command);
+    if (!this.pages.has(key)) this.remember(key, loaded);
+    if (backfill && command.initialBackfill) {
+      const backfillKey = initialBackfillKey(command.convId, command.initialBackfill.turns);
+      if (!this.pages.has(backfillKey)) this.remember(backfillKey, backfill);
+    }
+  }
+
   prepare<T extends HistoryRequest>(command: T): T {
     if (!command.reqId || this.pending.has(command.reqId) || this.pending.size >= 64) return command;
-    const key = JSON.stringify([command.type, command.convId, command.turns,
-      command.type === "load_conversation_history" ? command.beforeEntryIndex : null,
-      command.type === "load_conversation_history" ? command.beforeBlockIndex ?? 0 : null]);
+    const key = requestKey(command);
     const base = this.pin(key);
     const backfill = command.type === "load_conversation" ? command.initialBackfill : undefined;
     let prepared: T = base ? { ...command, cachedEntryHashes: base.hashes } : command;
     if (backfill && !this.pending.has(backfill.reqId) && this.pending.size < 63) {
       // Its cursor is unknown until the load answers, so the cached base is
       // this conversation's last opening backfill; hashes match by content.
-      const backfillKey = JSON.stringify(["initial_backfill", command.convId, backfill.turns]);
+      const backfillKey = initialBackfillKey(command.convId, backfill.turns);
       const backfillBase = this.pin(backfillKey);
       this.pending.set(backfill.reqId, {
         command: {

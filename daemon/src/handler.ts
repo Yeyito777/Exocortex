@@ -159,6 +159,12 @@ export interface HandlerOptions extends HandlerLifecycle {
  * keyboard: it is stored as an automated exo_send from the conversation that
  * ran the CLI, when that conversation exists, else from `fallbackSourceId`.
  */
+/** get_history_revisions answers at most this many conversations. */
+const MAX_HISTORY_REVISION_IDS = 512;
+/** Revision changes within this window go out as one history_revisions push. */
+let historyRevPushDelayMs = 250;
+export function setHistoryRevPushDelayForTest(ms: number): void { historyRevPushDelayMs = ms; }
+
 export function cliDelegationAutomation(
   cmd: { delegation?: boolean; sender?: unknown },
   fallbackSourceId?: string,
@@ -174,6 +180,29 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   const stopAppApi = configureAppApi(server);
   /** The queue as the TUI sees it: hidden app conversations' entries are not shown. */
   const visibleQueuedMessages = () => convStore.listQueuedMessages().filter(message => !isHiddenConversation(message.convId));
+
+  // History revisions of conversations that clients see (not app ones).
+  const visibleHistoryRevs = (ids: Iterable<string>): Record<string, string> => {
+    const revs: Record<string, string> = {};
+    for (const id of ids) {
+      if (!isHiddenConversation(id) && convStore.getSummary(id)) revs[id] = convStore.getHistoryRev(id);
+    }
+    return revs;
+  };
+  // Pushed revisions: coalesced, so a running turn sends a few small events a second at most.
+  const changedHistoryRevs = new Set<string>();
+  let historyRevTimer: ReturnType<typeof setTimeout> | null = null;
+  convStore.setHistoryRevListener((id) => {
+    changedHistoryRevs.add(id);
+    if (historyRevTimer) return;
+    historyRevTimer = setTimeout(() => {
+      historyRevTimer = null;
+      const revs = visibleHistoryRevs(changedHistoryRevs);
+      changedHistoryRevs.clear();
+      if (Object.keys(revs).length > 0) server.broadcastHistoryRevisions?.(revs);
+    }, historyRevPushDelayMs);
+    historyRevTimer.unref?.();
+  });
   /**
    * Every durable entry for a conversation, delivery-suspended or not.
    * Deduplication must see entries an in-progress unwind is gating.
@@ -1002,6 +1031,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           historyTotalEntries: page.totalEntries,
           hasOlderHistory: page.hasOlder,
           ...(initialBackfillReqId && page.hasOlder ? { initialBackfillReqId } : {}),
+          historyRev: convStore.getHistoryRev(page.convId),
           ...(pending ? {
             pendingAI: {
               blocks: pending.blocks,
@@ -1064,6 +1094,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         hasOlderHistory: page.hasOlder,
         ...(initialBackfillReqId && page.hasOlder ? { initialBackfillReqId } : {}),
       } : {}),
+      historyRev: convStore.getHistoryRev(compactData.convId),
       ...(compactData.pendingAI ? { pendingAI: compactData.pendingAI } : {}),
       contextTokens: compactData.contextTokens,
       toolOutputsIncluded: compactData.toolOutputsIncluded,
@@ -1118,6 +1149,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           ...(page.endBlockIndex > 0 ? { historyEndBlockIndex: page.endBlockIndex } : {}),
           historyTotalEntries: page.totalEntries,
           hasOlderHistory: page.hasOlder,
+          historyRev: convStore.getHistoryRev(convId),
         }, cachedEntryHashes), metrics !== undefined);
         if (metrics) {
           metrics.snapshot = snapshotDiagnostics ?? {};
@@ -1155,6 +1187,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       ...(page.endBlockIndex > 0 ? { historyEndBlockIndex: page.endBlockIndex } : {}),
       historyTotalEntries: page.totalEntries,
       hasOlderHistory: page.hasOlder,
+      historyRev: convStore.getHistoryRev(convId),
     }, cachedEntryHashes), metrics !== undefined);
     if (metrics) {
       metrics.snapshot = snapshotDiagnostics ?? {};
@@ -1751,6 +1784,16 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         break;
       }
 
+      case "get_history_revisions": {
+        if (!Array.isArray(cmd.convIds) || cmd.convIds.length > MAX_HISTORY_REVISION_IDS
+            || cmd.convIds.some(id => typeof id !== "string")) {
+          server.sendTo(client, { type: "error", reqId: cmd.reqId, message: "Invalid history revisions request" });
+          break;
+        }
+        server.sendTo(client, { type: "history_revisions", reqId: cmd.reqId, revs: visibleHistoryRevs(cmd.convIds) });
+        break;
+      }
+
       case "get_token_stats": {
         server.sendTo(client, { type: "token_stats", reqId: cmd.reqId, stats: getTokenStatsSnapshot() });
         break;
@@ -2143,7 +2186,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
               || capability === "update-status-push"
               || capability === "sidebar-incremental"
               || capability === "client-exec-alive"
-              || capability === "history-folded-elision") client.capabilities.add(capability);
+              || capability === "history-folded-elision"
+              || capability === "history-revisions") client.capabilities.add(capability);
         }
         if (client.capabilities.has("sidebar-digest-sync") && isSidebarDigest(cmd.sidebarDigest)) {
           client.sidebarDigest = cmd.sidebarDigest;
@@ -3697,22 +3741,24 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           break;
         }
         const loadedConvId = loaded.convId;
-        if (cmd.turns !== undefined && isSqliteConversationStore()
+        // A peek only refreshes a client's copy: it opens nothing.
+        const peek = cmd.peek === true;
+        if (!peek && cmd.turns !== undefined && isSqliteConversationStore()
             && !convStore.getCached(loadedConvId) && !convStore.isStreaming(loadedConvId)) {
           scheduleConversationPrewarm(loadedConvId);
         }
-        server.subscribe(client, loadedConvId);
+        if (!peek) server.subscribe(client, loadedConvId);
         // Reconcile any BTW updates emitted between the load snapshot and this
         // subscription, just like the active-turn catch-up below. An all-null
         // pair needs no redundant event; a loaded panel followed by a close must
         // still send the authoritative null snapshot.
-        if (loaded.btwSessionId || btwManager.getSnapshot(loadedConvId)) {
+        if (!peek && (loaded.btwSessionId || btwManager.getSnapshot(loadedConvId))) {
           btwManager.sendSnapshot(client, loadedConvId);
         }
         // After subscribing, send a fresh streaming snapshot for late-join catch-up.
         // This covers any chunks emitted between the initial load snapshot and the
         // moment the new subscriber was attached.
-        if (convStore.isStreaming(loadedConvId)) {
+        if (!peek && convStore.isStreaming(loadedConvId)) {
           const pendingAI = convStore.getPendingStreamSnapshot(loadedConvId);
           const loadedSummary = convStore.getSummary(loadedConvId);
           if (pendingAI && loadedSummary) {
@@ -3753,7 +3799,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           if (!sent) server.sendTo(client, { type: "error", reqId: backfill.reqId, convId: loadedConvId, message: `Conversation ${loadedConvId} not found` });
         }
         // Clear unread when a client views the conversation
-        if (convStore.clearUnread(loadedConvId)) {
+        if (!peek && convStore.clearUnread(loadedConvId)) {
           broadcastConversationUpdated(server, loadedConvId);
         }
         if (PERFORMANCE_PROFILING_ENABLED && metrics) {
