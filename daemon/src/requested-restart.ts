@@ -158,6 +158,8 @@ export interface ExecutorScheduleOptions {
   spawnDetached?: (program: string[], cwd: string, env: Record<string, string>, logPath: string) => void;
   /** macOS LaunchAgent plist destination directory (tests). */
   launchdDir?: string;
+  /** macOS: the signed launcher executable (EXOCORTEX_LAUNCHER, set by macos/launcher). */
+  launcher?: string;
 }
 
 function executorEnvironment(): Record<string, string> {
@@ -208,6 +210,11 @@ export function scheduleRestartExecutor(token: string, options: ExecutorSchedule
     // One fixed label: at most one request is pending, and booting out the
     // previous (finished or stale) job keeps launchd from accumulating them.
     const label = "com.exocortex.requested-restart";
+    // Through the signed launcher app, so macOS attributes the job's file
+    // access (the checkout may be in Desktop or Documents) to the app the user
+    // granted, not to bun (README › macOS › Daemon launcher).
+    const launcher = options.launcher ?? process.env.EXOCORTEX_LAUNCHER;
+    const jobProgram = launcher && existsSync(launcher) ? [launcher, "--exec", ...program] : program;
     const dir = options.launchdDir ?? join(runtimeDir(), "launchd");
     const plistPath = join(dir, `${label}.plist`);
     const logPath = join(runtimeDir(), "requested-restart.log");
@@ -218,7 +225,7 @@ export function scheduleRestartExecutor(token: string, options: ExecutorSchedule
       `<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">`,
       `<plist version="1.0"><dict>`,
       `<key>Label</key><string>${escapeXml(label)}</string>`,
-      `<key>ProgramArguments</key><array>${strings(program)}</array>`,
+      `<key>ProgramArguments</key><array>${strings(jobProgram)}</array>`,
       `<key>WorkingDirectory</key><string>${escapeXml(cwd)}</string>`,
       `<key>EnvironmentVariables</key><dict>${Object.entries(env).map(([key, value]) => `<key>${escapeXml(key)}</key><string>${escapeXml(value)}</string>`).join("")}</dict>`,
       `<key>RunAtLoad</key><true/>`,
