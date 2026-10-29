@@ -142,8 +142,8 @@ export interface ActiveContext {
 
 /** Hard safety ceilings for recursively spawned native exo subagents. */
 export const MAX_EXO_SUBAGENT_DEPTH = 8;
-export const MAX_ACTIVE_EXO_SUBAGENTS_PER_PARENT = 8;
-export const MAX_ACTIVE_EXO_SUBAGENTS_GLOBAL = 32;
+export const MAX_ACTIVE_EXO_SUBAGENTS_PER_PARENT = 32;
+export const MAX_ACTIVE_EXO_SUBAGENTS_GLOBAL = 64;
 
 export interface SubagentPolicy {
   /** Conversation that created this worker. Null is reserved for external/debug clients. */
