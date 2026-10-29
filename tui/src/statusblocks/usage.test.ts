@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { usageBlock } from "./usage";
+import { usageBlock, usageSummary } from "./usage";
 import { createInitialState } from "../state";
 import { stripAnsi } from "../historycursor";
 import { theme } from "../theme";
@@ -143,6 +143,21 @@ describe("API-credit marker", () => {
     expect(rows[1]).toMatch(/  ≈\$1\.23 this cycle\s*$/);
     expect(block.height).toBe(2);
     expect(rows.every(row => row.length === block.width)).toBe(true);
+  });
+
+  test("the balance of the key in use: ≈ while an estimate, red under a tenth", () => {
+    const state = claudeState(true);
+    const credits = state.usageByProvider.anthropic!.apiCredits!;
+    Object.assign(credits, { balanceUsd: 688.4, grantedUsd: 700, approximate: false });
+    let block = usageBlock(state)!;
+    expect(stripAnsi(block.rows[1])).toMatch(/  \$688 left\s*$/);
+    expect(block.rows[1]).toContain(theme.accent);
+    expect(block.rows.map(stripAnsi).every(row => row.length === block.width)).toBe(true);
+    expect(usageSummary(state)).toContain("on API credits (main), $688 left, ≈$1.23 this cycle");
+    Object.assign(credits, { balanceUsd: 15, approximate: true });
+    block = usageBlock(state)!;
+    expect(stripAnsi(block.rows[1])).toMatch(/  ≈\$15 left\s*$/);
+    expect(block.rows[1]).toContain(theme.error);
   });
 
   test("nothing extra while the subscriptions serve", () => {

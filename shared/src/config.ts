@@ -130,12 +130,26 @@ export interface AnthropicApiCreditKeyConfig {
    */
   renewsOnDay?: number;
   /**
-   * The credit grants on the key's organization, for the balance on the
-   * Accounts screen: each grant's amount less what Exocortex counted the key
-   * spending, the soonest-expiring grant first (the API does not report the
-   * balance to an ordinary key). Spend made elsewhere with the key is not seen.
+   * The key's Claude Console organization, for its real balance: the daemon
+   * reads it about hourly through a vimbrowser tab signed into that account
+   * (providers/anthropic/credit-sync.ts). Without it, or until a sync
+   * succeeds, the balance is estimated from `grants`.
+   */
+  console?: AnthropicApiCreditConsoleConfig;
+  /**
+   * The credit grants on the key's organization, for an estimated balance
+   * while the Console's is unknown (no `console`, or no sync yet): each
+   * grant's amount less what Exocortex counted the key spending, the
+   * soonest-expiring grant first. Spend made elsewhere with the key is not seen.
    */
   grants?: AnthropicApiCreditGrantConfig[];
+}
+
+export interface AnthropicApiCreditConsoleConfig {
+  /** Organization UUID, as in the Console's `/api/organizations` (not a secret). */
+  org: string;
+  /** The vimbrowser context signed into its account; unset: the default context. */
+  browserContext?: string;
 }
 
 export interface AnthropicApiCreditGrantConfig {

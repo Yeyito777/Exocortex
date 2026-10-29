@@ -1266,7 +1266,10 @@ export interface ClaudeAccountInfo {
 
 /** Prepaid API credits: what is left of the grants that have not expired. */
 export interface AccountCredits {
-  /** Estimated balance: the grants less the spend Exocortex counted. */
+  /**
+   * The balance: the Claude Console's at its last sync less what Exocortex
+   * counted since, else the configured grants less what it counted.
+   */
   balanceUsd: number;
   /** What those grants granted. */
   grantedUsd: number;
@@ -1274,6 +1277,10 @@ export interface AccountCredits {
   expiresAt: number[];
   /** A turn is spending these credits now. */
   active: boolean;
+  /** Only an estimate: never synced from the provider's console, or synced hours ago. */
+  approximate?: boolean;
+  /** The console session the balance is read through is signed out. */
+  signInNeeded?: boolean;
 }
 
 export interface ClaudeRoutingInfo {

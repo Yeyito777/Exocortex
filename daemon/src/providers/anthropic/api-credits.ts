@@ -20,6 +20,11 @@
  * before. A key the API rate-limits waits a minute. What each key spends is
  * estimated from the usage of its responses at list prices and counted in
  * the API-key ledger (providers/openai/api-key-usage.ts).
+ *
+ * The balances on the Accounts screen are the Claude Console's, synced about
+ * hourly through the browser (credit-sync.ts), less what the ledger counted
+ * since; until a key's organization has synced, its configured grants less
+ * what the ledger counted, marked as an estimate.
  */
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
@@ -31,6 +36,7 @@ import type { ApiCreditsUsage } from "../../messages";
 import type { AccountCredits } from "@exocortex/shared/protocol";
 import { log } from "../../log";
 import { apiKeyCredit, apiKeyDailySpendUsd, recordApiKeyUsage } from "../openai/api-key-usage";
+import { consoleOrgs, consoleSignInNeeded, startCreditSync, syncConsoleCredits, syncedBalance } from "./credit-sync";
 
 /** Ledger account of a key: `anthropic-credits:<secret name>`. */
 export const API_CREDIT_ACCOUNT_KEY_PREFIX = "anthropic-credits:";
@@ -42,6 +48,8 @@ export interface ApiCreditKey {
   renewsOnDay: number | null;
   /** The Claude account whose plan grants its credits (the Accounts screen shows them there). */
   account?: string | null;
+  /** Its Claude Console organization, whose real balance credit-sync.ts reads. */
+  console?: { org: string; browserContext: string | null } | null;
   grants?: ApiCreditGrant[];
 }
 
@@ -56,6 +64,8 @@ export interface ApiCreditGrant {
 
 const SECRET_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+const ORG_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CONTEXT_RE = /^[a-z0-9][a-z0-9_-]{0,47}$/;
 const DAY = 24 * 60 * 60_000;
 /** How long a key the API rate-limited sits out. */
 const THROTTLE_MS = 60_000;
@@ -96,12 +106,17 @@ export function apiCreditConfig(): ApiCreditConfig {
     }
     const day = entry.renewsOnDay;
     const monthly = grants.find(grant => grant.monthly);
+    const console = entry.console && typeof entry.console.org === "string" && ORG_RE.test(entry.console.org.trim()) ? {
+      org: entry.console.org.trim().toLowerCase(),
+      browserContext: typeof entry.console.browserContext === "string" && CONTEXT_RE.test(entry.console.browserContext) ? entry.console.browserContext : null,
+    } : null;
     keys.push({
       id: entry.secret,
       label: typeof entry.label === "string" && entry.label.trim() ? entry.label.trim() : entry.secret,
       renewsOnDay: typeof day === "number" && Number.isInteger(day) && day >= 1 && day <= 31 ? day
         : monthly ? Number(monthly.expires.slice(8, 10)) : null,
       account: typeof entry.account === "string" && entry.account.trim() ? entry.account.trim() : null,
+      console,
       grants,
     });
   }
@@ -318,6 +333,7 @@ export function markApiCreditSpent(key: ApiCreditKey, reason: string, now = Date
     : nextRenewal(key.renewsOnDay, now);
   setAside(key, until, reason);
   log("warn", `anthropic: API-credit key "${key.label}" is out of credits (${reason}); not used again until ${new Date(until).toISOString()}`);
+  requestApiCreditSync(key);
 }
 
 /** The API rejected the key itself (invalid or revoked). */
@@ -655,33 +671,80 @@ export function apiCreditBalance(key: ApiCreditKey, now = Date.now()): { balance
   };
 }
 
-/** The credits of the keys configured for a Claude account (`account`), for its Accounts row; null without any. */
-export function apiCreditAccountCredits(account: string, activeKeys: ReadonlySet<string>, now = Date.now()): AccountCredits | null {
-  const balances = apiCreditConfig().keys
-    .filter(key => key.account === account)
-    .map(key => ({ key, balance: apiCreditBalance(key, now) }))
-    .filter((entry): entry is { key: ApiCreditKey; balance: NonNullable<ReturnType<typeof apiCreditBalance>> } => entry.balance !== null);
-  if (balances.length === 0) return null;
+/**
+ * What is left on these keys: each Console organization's synced balance
+ * once, else a key's configured grants (an estimate). Null when neither is known.
+ */
+export function apiCreditKeysCredits(keys: readonly ApiCreditKey[], now = Date.now()): Omit<AccountCredits, "active"> | null {
+  type Part = { balanceUsd: number; grantedUsd: number; expiresAt: number[]; approximate: boolean; signInNeeded: boolean };
+  const parts: Part[] = [];
+  const synced = new Set<string>();
+  for (const org of consoleOrgs(keys)) {
+    const balance = syncedBalance(org, now);
+    if (!balance) continue;
+    parts.push(balance);
+    for (const id of org.keyIds) synced.add(id);
+  }
+  for (const key of keys) {
+    if (synced.has(key.id)) continue;
+    const estimate = apiCreditBalance(key, now);
+    if (estimate) parts.push({ ...estimate, approximate: true, signInNeeded: key.console ? consoleSignInNeeded(key.console.org) : false });
+  }
+  if (parts.length === 0) return null;
   return {
-    balanceUsd: balances.reduce((sum, entry) => sum + entry.balance.balanceUsd, 0),
-    grantedUsd: balances.reduce((sum, entry) => sum + entry.balance.grantedUsd, 0),
-    expiresAt: balances.flatMap(entry => entry.balance.expiresAt).sort((a, b) => a - b),
-    active: balances.some(entry => activeKeys.has(entry.key.id)),
+    balanceUsd: parts.reduce((sum, part) => sum + part.balanceUsd, 0),
+    grantedUsd: parts.reduce((sum, part) => sum + part.grantedUsd, 0),
+    expiresAt: parts.flatMap(part => part.expiresAt).sort((a, b) => a - b),
+    approximate: parts.some(part => part.approximate),
+    signInNeeded: parts.some(part => part.signInNeeded),
   };
 }
 
-/** The status-bar view of the fallback; null when it is off. `active`: credit turns run or would run now. */
-export function apiCreditsUsage(active: boolean, now = Date.now()): ApiCreditsUsage | null {
+/** The credits of the keys configured for a Claude account (`account`), for its Accounts row; null without any. */
+export function apiCreditAccountCredits(account: string, activeKeys: ReadonlySet<string>, now = Date.now()): AccountCredits | null {
+  const keys = apiCreditConfig().keys.filter(key => key.account === account);
+  const credits = apiCreditKeysCredits(keys, now);
+  return credits ? { ...credits, active: keys.some(key => activeKeys.has(key.id)) } : null;
+}
+
+/** The keys whose balance a key's figures show: its account's, else its own. */
+function balanceKeys(key: ApiCreditKey): ApiCreditKey[] {
+  return key.account ? apiCreditConfig().keys.filter(entry => entry.account === key.account) : [key];
+}
+
+/**
+ * The status-bar view of the fallback; null when it is off. `active`: credit
+ * turns run or would run now; `activeKeys`: the keys they run on.
+ */
+export function apiCreditsUsage(active: boolean, now = Date.now(), activeKeys: ReadonlySet<string> = new Set()): ApiCreditsUsage | null {
   const config = apiCreditConfig();
   if (!config.enabled) return null;
   const key = usableApiCreditKey(now);
+  const shown = key ?? config.keys.find(entry => activeKeys.has(entry.id)) ?? null;
+  const credits = shown ? apiCreditKeysCredits(balanceKeys(shown), now) : null;
   return {
     active,
     ready: key !== null,
     label: key?.label ?? null,
     spentUsd: config.keys.reduce((sum, entry) => sum + apiCreditCycleSpendUsd(entry, now), 0),
     resetAt: key ? null : apiCreditResetAt(now),
+    balanceUsd: credits?.balanceUsd ?? null,
+    grantedUsd: credits?.grantedUsd ?? null,
+    approximate: credits?.approximate ?? false,
   };
+}
+
+// ── Console sync ────────────────────────────────────────────────────
+
+/** Read the real balances about hourly while the daemon runs (credit-sync.ts). */
+export function startApiCreditSync(): void {
+  startCreditSync(() => apiCreditConfig().keys);
+}
+
+/** Something about a key's credits changed (the fallback started on it, it ran out): resync its organization if it is due. */
+export function requestApiCreditSync(key: ApiCreditKey): void {
+  if (!key.console) return;
+  void syncConsoleCredits(balanceKeys(key).filter(entry => entry.console?.org === key.console!.org), { event: true }).catch(() => undefined);
 }
 
 // ── Tests ───────────────────────────────────────────────────────────

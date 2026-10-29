@@ -10,8 +10,8 @@
  * them so it never fails silently.
  *
  * While Claude turns run on API credits (every subscription account at a
- * limit), two short rows beside the bars say so, with the estimated spend
- * this billing cycle.
+ * limit), two short rows beside the bars say so, with the balance left on
+ * the key in use (≈ while only an estimate, red under a tenth of its grants).
  */
 
 import type { RenderState } from "../state";
@@ -340,23 +340,32 @@ export function usageSummary(state: RenderState, now = Date.now()): string | nul
   if (usage?.apiKey) return apiKeySummary(usage.apiKey);
   if (!usage?.fiveHour && !usage?.sevenDay) return null;
   const capacity = usage.capacity && usage.capacity > 0 ? usage.capacity : 100;
+  const left = usage.apiCredits ? creditBalance(usage.apiCredits) : null;
   const credits = usage.apiCredits?.active
-    ? ` · on API credits${usage.apiCredits.label ? ` (${usage.apiCredits.label})` : ""}, ≈${formatCents(usage.apiCredits.spentUsd)} this cycle`
+    ? ` · on API credits${usage.apiCredits.label ? ` (${usage.apiCredits.label})` : ""}${left ? `, ${left.text} left` : ""}, ≈${formatCents(usage.apiCredits.spentUsd)} this cycle`
     : "";
   return `${summarizeWindow("5-hour", usage.fiveHour, now, capacity)} · ${summarizeWindow("weekly", usage.sevenDay, now, capacity)}${credits}`;
 }
 
-/** "API credits max2" over "≈$1.23 this cycle", while Claude turns run on them; null otherwise. */
+/** "$199" (≈ while only an estimate) for the key in use, red under 10% of its grants; null from a daemon that does not send it. */
+function creditBalance(credits: ApiCreditsUsage): { text: string; color: string } | null {
+  if (typeof credits.balanceUsd !== "number") return null;
+  const low = typeof credits.grantedUsd === "number" && credits.balanceUsd < credits.grantedUsd * LOW_CREDIT_FRACTION;
+  return { text: `${credits.approximate ? "≈" : ""}${formatDollars(Math.max(0, credits.balanceUsd))}`, color: low ? theme.error : theme.accent };
+}
+
+/** "API credits max2" over "$199 left" (older daemons: "≈$1.23 this cycle"), while Claude turns run on them; null otherwise. */
 export function apiCreditRows(credits: ApiCreditsUsage | null | undefined): { rows: string[]; width: number } | null {
   if (!credits?.active) return null;
   const head = `API credits${credits.label ? ` ${credits.label}` : ""}`;
-  const spend = `≈${formatCents(credits.spentUsd)} this cycle`;
-  const width = Math.max(head.length, spend.length);
+  const balance = creditBalance(credits);
+  const second = balance ? `${balance.text} left` : `≈${formatCents(credits.spentUsd)} this cycle`;
+  const width = Math.max(head.length, second.length);
   return {
     width,
     rows: [
       `${theme.warning}API credits${theme.muted}${credits.label ? ` ${credits.label}` : ""}${theme.reset}${" ".repeat(width - head.length)}`,
-      `${theme.accent}${spend}${theme.reset}${" ".repeat(width - spend.length)}`,
+      `${balance?.color ?? theme.accent}${second}${theme.reset}${" ".repeat(width - second.length)}`,
     ],
   };
 }

@@ -183,11 +183,13 @@ requests (titles, summaries, compaction) fall back too. Code:
       "enabled": true,
       "keys": [
         { "secret": "ANTHROPIC_API_KEY_MAIN_CREDITS", "label": "main", "account": "main",
+          "console": { "org": "<organization uuid>" },
           "grants": [
             { "label": "Max", "amountUsd": 200, "expires": "2026-11-11", "monthly": true },
             { "label": "YC", "amountUsd": 500, "expires": "2027-04-18" }
           ] },
         { "secret": "ANTHROPIC_API_KEY_MAX2_CREDITS", "label": "max2", "account": "max2",
+          "console": { "org": "<organization uuid>", "browserContext": "claude-max2" },
           "grants": [{ "label": "Max", "amountUsd": 200, "expires": "2026-11-18", "since": "2026-10-29", "monthly": true }] }
       ]
     }
@@ -225,18 +227,39 @@ requests (titles, summaries, compaction) fall back too. Code:
 - **Visibility**: the transcript notes when a conversation moves onto API
   credits and back; each turn's metadata line says "API credits"; the status
   bar shows two short rows beside the usage bars while turns run on them
-  ("API credits max2" / "≈$1.23 this cycle", estimated at list prices from
-  the responses' usage, kept in the API-key ledger as
-  `anthropic-credits:<secret>`).
+  ("API credits max2" / "$199 left", the balance below). What turns spend is
+  estimated at list prices from the responses' usage and kept in the API-key
+  ledger as `anthropic-credits:<secret>`; /tokens shows this cycle's.
 - **Accounts screen**: a Credits column per account: the balance, then the
   time until each grant expires, soonest first (`$688 13d · 171d`), bold blue
-  with `◀` while a turn spends it, red under a tenth of what was granted. The
-  balance is each unexpired grant's amount less the spend Exocortex counted,
-  drawn from the soonest-expiring grant first. The API does not report the
-  real balance to an ordinary key, so spend made elsewhere with the key is not
-  seen. A `monthly` grant is assumed to renew with the same amount on its
-  expiry day each month; `since` (optional) is the day it was first credited.
-  OpenAI's row shows `providers.openai.credit` the same way.
+  with `◀` while a turn spends it, red under a tenth of what was granted,
+  with a leading `≈` while it is only an estimate.
+- **Real balances** come from the Claude Console (`credit-sync.ts`). The Admin
+  API is not offered to individual organizations and an ordinary key cannot
+  read the balance, so the daemon asks the way the Console's billing page
+  does: a GET of `/api/organizations/<console.org>/prepaid/credits`, made by
+  the page itself in a background vimbrowser tab of `console.browserContext`
+  (unset: the default context), which must be signed into that account. The
+  cookies stay in the browser; Exocortex keeps each grant's remaining amount,
+  amount, name and expiry (`runtime/anthropic-credit-sync.json`). Grants are
+  discovered there, so renewals and new grants show up by themselves. It syncs
+  about hourly, when the fallback starts on a key, and when a key runs out
+  (no sooner than 5 minutes apart). Between syncs the balance is the last
+  sync's less the spend Exocortex counted since, from the grant expiring
+  soonest; a grant past its expiry drops out at once. Only GETs; the org UUID
+  is in config, not secrets.
+- **When a sync fails** (vimbrowser not running, a timeout, a 401/403, a
+  session sent to a sign-in page), the last figures stay, marked `≈` once they
+  are over 3 hours old. Before any sync succeeds, the balance is the configured
+  `grants` less the counted spend, also `≈` (a `monthly` grant is assumed to
+  renew with the same amount on its expiry day; `since` is the day it was first
+  credited). One log line per streak of failures, one when it works again; a
+  failing organization is tried again hourly, whatever asks sooner. A signed-out
+  session shows a muted "sign-in needed" next to the credits; sign that
+  vimbrowser context in again by hand (nothing signs in automatically).
+- OpenAI's row shows `providers.openai.credit` the same way, always `≈`: it is
+  the grant less what Exocortex counted (platform.openai.com was not signed in
+  in vimbrowser to read a real one).
 
 ## Testing routing live
 
