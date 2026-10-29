@@ -51,6 +51,10 @@ however a turn is started, including a user typing into the subagent; a
 record from before nesting counts as depth 1. At the limit `exo subagent` is
 refused with the caller's depth.
 
+At most 32 subagents run at once directly under any one conversation (its own
+children; each child counts its own separately), and at most 64 across the
+whole daemon at any depth. Finished subagents stop counting.
+
 - **Prompt.** Every subagent's system prompt (both providers) gets a
   Delegation section: it is already a subagent, at depth N of M, under parent
   conversation X; either it may delegate (and how many more levels) or it
