@@ -49,7 +49,7 @@ describe("attach tool", () => {
     expect(result.attachments).toBeUndefined();
     expect(result.output).toContain("Nothing was attached.");
     expect(result.output).toContain("missing.png: file not found");
-    expect(result.output).toContain("readme.txt: not a PNG, JPEG, GIF, or WebP image");
+    expect(result.output).toContain("readme.txt: not an image (PNG, JPEG, GIF, WebP) or a video (MP4, MOV, WebM, MKV)");
     expect(result.output).toContain(".: not a regular file");
   });
 

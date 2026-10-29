@@ -39,6 +39,12 @@ export interface KittyImageData {
   base64: string;
   pixelWidth: number;
   pixelHeight: number;
+  /**
+   * Pixels someone else sends: a playing video (videoplayer.ts). It is placed
+   * like any image but never transmitted, kept resident or deleted here, and
+   * its placements report nothing (its replies belong to its sender).
+   */
+  external?: boolean;
 }
 
 export interface KittyPlacement {
@@ -91,7 +97,7 @@ export function placeImage(placement: KittyPlacement): string {
     : "";
   // C=1 keeps the cursor still; q=1 reports only failures (an evicted image).
   return moveTo(placement.row, placement.col)
-    + command(`a=p,i=${image.kittyId},p=${placement.placementId},c=${placement.columns},r=${placement.rows}${crop},C=1,z=${placement.z ?? 1}${placement.selected ? ",V=1" : ""},q=1`);
+    + command(`a=p,i=${image.kittyId},p=${placement.placementId},c=${placement.columns},r=${placement.rows}${crop},C=1,z=${placement.z ?? 1}${placement.selected ? ",V=1" : ""},q=${image.external ? 2 : 1}`);
 }
 
 export function deletePlacement(kittyId: number, placementId: number): string {
@@ -158,7 +164,9 @@ export class KittyImageSync {
       const { image } = placement;
       if ((this.rejected.get(image.kittyId) ?? 0) >= MAX_REJECTIONS) continue;
       const resident = this.resident.get(image.kittyId);
-      if (!resident || resident.base64 !== image.base64) {
+      if (image.external) {
+        // Placed only; its owner sends and deletes it.
+      } else if (!resident || resident.base64 !== image.base64) {
         out.push(transmitPng(image));
         this.resident.set(image.kittyId, { base64: image.base64, pixelBytes: pixelBytes(image), lastUsed: tick, sentAt: Date.now() });
         for (const placedKey of this.placed.keys()) {

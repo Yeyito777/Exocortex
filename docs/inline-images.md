@@ -13,6 +13,9 @@ TUIs that gate on it keep showing images.
 
 ## attach tool
 
+Videos (MP4/MOV/WebM/MKV, animated GIFs) are attached as their poster image
+with `video` set and play in st: see [video attachments](video-attachments.md).
+
 `attach { paths: string[] }` (1–8 local PNG/JPEG/GIF/WebP files on the daemon
 host) copies each file into `<dataDir>/attachments/<sha256>.<ext>`
 (`daemon/src/attachments.ts`), downscaling anything over 4096 px or 8 MB.

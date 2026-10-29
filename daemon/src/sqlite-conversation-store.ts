@@ -3382,7 +3382,11 @@ export class SqliteConversationStore implements ConversationRepository {
       for (const message of value.messages as StoredMessage[]) {
         if (!Array.isArray(message.content)) continue;
         for (const block of message.content) {
-          if (block.type === "tool_result") for (const image of block.attachments ?? []) imageIds.add(image.id);
+          if (block.type !== "tool_result") continue;
+          for (const image of block.attachments ?? []) {
+            imageIds.add(image.id);
+            if (image.video) imageIds.add(image.video.id);
+          }
         }
       }
     };

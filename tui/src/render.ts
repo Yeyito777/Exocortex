@@ -78,6 +78,7 @@ import { durableSleepMetadataFrame } from "./durable-sleep-metadata";
 import { inlineImageCellSize, inlineImageGeneration, inlineImageMode, inlineImagesActive } from "./inlineimages";
 import { renderAccountsScreen } from "./accountsscreen";
 import { renderImageModal } from "./imagemodal";
+import { inlineVideoImage, reconcileVideoPlayback, videoCaptionWrites } from "./videoview";
 import {
   collectHistoryImages,
   historyImagesPlaced,
@@ -1947,6 +1948,7 @@ export function render(state: RenderState): boolean {
     : [];
   // Display math may be forced to images on a terminal that failed detection.
   const kittyHistory = inlineImageMode() === "kitty";
+  const covers = [...imageCovers, modal?.rect, queuePromptOverlay?.rect, editMessageOverlay?.rect, sidebarMenuOverlay?.rect, accountsOverlay?.rect, instructionsOverlay?.rect].filter((rect): rect is ScreenRect => !!rect);
   const collectedImages = kittyHistory || mathImagesActive()
     ? collectHistoryImages({
       viewportRows: state.layout.historyViewportRows,
@@ -1955,7 +1957,7 @@ export function render(state: RenderState): boolean {
       chatCol,
       maxCol: chatCol + chatW - 1,
       obstructions: [],
-      covers: [...imageCovers, modal?.rect, queuePromptOverlay?.rect, editMessageOverlay?.rect, sidebarMenuOverlay?.rect, accountsOverlay?.rect, instructionsOverlay?.rect].filter((rect): rect is ScreenRect => !!rect),
+      covers,
       cursorLineIndex: historyFocused ? state.historyCursor.row : null,
       cursorCol: state.historyCursor.col,
       mathOnly: !kittyHistory,
@@ -1963,14 +1965,23 @@ export function render(state: RenderState): boolean {
       // unless st clips them to the conversation pane (image clip regions):
       // then they stay placed whole past it and slide in and out uncropped.
       extendBelow: smooth?.busy() || imageClips.length > 0 ? messageAreaStart + messageAreaHeight - 1 : undefined,
+      videoImage: inlineVideoImage,
     })
-    : { placements: [], notices: [] };
+    : { placements: [], notices: [], visible: [], videoCaptions: [] };
   // Thumbnails without pixels yet say so on their first visible row.
   for (const notice of collectedImages.notices) {
     appendRowWrite(ctx, notice.row, notice.col, bgLine(`${theme.dim}${notice.text}${theme.reset}`));
   }
+  // Attached videos: play where the screen says (the viewer, or inline while
+  // the thumbnail is on screen), and show live status in the caption row.
+  reconcileVideoPlayback(state, { modalPixels: modal?.pixels ?? null, visible: collectedImages.visible, cell: inlineImageCellSize() });
+  for (const write of videoCaptionWrites(collectedImages.videoCaptions, theme)) {
+    const right = write.col + Math.max(0, chatCol + chatW - write.col) - 1;
+    if (covers.some(rect => write.row >= rect.top && write.row <= rect.bottom && write.col <= rect.right && right >= rect.left)) continue;
+    appendRowWrite(ctx, write.row, write.col, bgLine(write.text));
+  }
   const historyImagePlacements = collectedImages.placements;
-  if (modal?.placement) historyImagePlacements.push(modal.placement);
+  if (modal) historyImagePlacements.push(...modal.placements);
   const graphics = (regionScrolled: boolean): string => {
     // The terminal moved (or dropped) placements with the scrolled rows, so
     // place every visible one again where this frame wants it.

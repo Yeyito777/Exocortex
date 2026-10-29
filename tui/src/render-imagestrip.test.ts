@@ -419,7 +419,7 @@ describe("viewer paging", () => {
     expect(stripAnsi(first.payload)).not.toContain("Esc");
     await Bun.sleep(0);
     const loaded = renderImageModal(modal, 40, 120, cell, "kitty");
-    expect(loaded.placement).not.toBeNull();
+    expect(loaded.placements).toHaveLength(1);
     expect(requested).toEqual([sources[1].imageId, sources[2].imageId]);
     handleImageModalKey({ type: "char", char: "j" }, modal);
     expect(stripAnsi(renderImageModal(modal, 40, 120, cell, "kitty").payload)).toContain("3/5");

@@ -387,7 +387,7 @@ describe("image viewer", () => {
 
   test("a tiny terminal gets a notice instead of a broken box", () => {
     const rendered = renderImageModal({ images: [{ imageId: "e".repeat(64), width: 400, height: 200, mediaType: "image/png", sizeBytes: 5000 }], index: 0 }, 5, 8, { width: 8, height: 16 }, "kitty");
-    expect(rendered.placement).toBeNull();
+    expect(rendered.placements).toEqual([]);
     expect(rendered.payload).toContain("Image");
   });
 });

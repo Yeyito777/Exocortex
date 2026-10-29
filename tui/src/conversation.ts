@@ -20,6 +20,7 @@ import {
   sourceFromRef,
   type InlineImageHit,
   type InlineImageSource,
+  type VideoCaptionSlot,
 } from "./inlineimages";
 import { isActiveConversationLoading, isStreaming, type RenderState } from "./state";
 import { formatDuration, localDayKey, renderMetadata } from "./metadata";
@@ -296,6 +297,8 @@ export interface RenderLineAnchor {
   images?: Array<{ layout: HistoryImageLayout; row: number }>;
   /** Columns where Enter or a click on this row (a thumbnail, a strip's `› +N`) opens an image. */
   openImages?: InlineImageHit[];
+  /** A videos' caption row: where each caption sits. */
+  videoCaptions?: VideoCaptionSlot[];
 }
 
 /** An image to draw in history, with the object that owns its placement. */
@@ -667,7 +670,7 @@ export function buildMessageLines(
       : ASSISTANT_IMAGE_INDENT;
     pushLine("", owner, segment, images[0].index);
     const pushRows = (
-      rendered: { lines: string[]; copy: string[] },
+      rendered: { lines: string[]; copy: string[]; videoCaptions?: VideoCaptionSlot[] },
       col: number,
       covering: (row: number) => NonNullable<RenderLineAnchor["images"]>,
       hits: InlineImageHit[],
@@ -682,6 +685,8 @@ export function buildMessageLines(
         const anchor = lineAnchors[lineAnchors.length - 1];
         anchor.images = covering(row);
         anchor.openImages = hits;
+        // Videos' caption row: the frame draws live playback status over it.
+        if (rendered.videoCaptions && row === rendered.lines.length - 1) anchor.videoCaptions = rendered.videoCaptions;
       });
     };
 
@@ -693,7 +698,7 @@ export function buildMessageLines(
       const statusWidth = Math.max(box.cols, availableWidth - USER_IMAGE_RIGHT_MARGIN - col);
       const rendered = renderInlineImage(image.source, box, col, image.owner, image.index, statusWidth);
       const hits = [{ start: 0, end: Infinity, target: { images: [image.source], index: 0 }, layout: rendered.layout }];
-      pushRows(rendered, col, row => [{ layout: rendered.layout, row }], hits);
+      pushRows(rendered, col, row => row < rendered.layout.rows ? [{ layout: rendered.layout, row }] : [], hits);
       return;
     }
     const strip = layoutInlineImageStrip(images.map(image => image.source), imageLimits, Math.max(4, availableWidth - 4), imageCell);

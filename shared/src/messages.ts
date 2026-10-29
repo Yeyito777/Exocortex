@@ -171,6 +171,33 @@ export interface ImageRef {
   sizeBytes: number;
   /** Original file name, for captions. */
   name?: string;
+  /**
+   * Set when this image is the poster frame of an attached video. Clients
+   * that know nothing of video show the poster (which carries a play badge).
+   */
+  video?: VideoRef;
+}
+
+/** Containers the attach tool keeps as videos; an animated GIF plays as one. */
+export type VideoMediaType = "video/mp4" | "video/quicktime" | "video/webm" | "video/x-matroska" | "image/gif";
+
+/** A stored video: its file and what ffprobe found in it. */
+export interface VideoRef {
+  /** sha256 (hex) of the stored file. */
+  id: string;
+  mediaType: VideoMediaType;
+  sizeBytes: number;
+  /** Absent when the container does not say. */
+  durationMs?: number;
+  /** Display size (rotation applied). */
+  width: number;
+  height: number;
+  fps?: number;
+  hasAudio: boolean;
+  /** Video codec as ffprobe names it: h264, hevc, vp9, gif, ... */
+  codec?: string;
+  /** The stored copy on the daemon's host, for opening it in a player. */
+  path: string;
 }
 
 // ── Blocks ──────────────────────────────────────────────────────────
