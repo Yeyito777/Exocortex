@@ -275,8 +275,8 @@ interface TableRow {
 }
 
 type ScreenLine =
-  /** `columns`: the usage columns' labels; the Credits label shows whenever some row has credits. */
-  | { kind: "heading"; label: string; columns: boolean }
+  /** `columns`: the usage columns' labels; `credits`: the Credits label (some row of the section has credits). */
+  | { kind: "heading"; label: string; columns: boolean; credits?: boolean }
   | { kind: "row"; row: TableRow }
   | { kind: "text"; segments: Segment[] }
   | { kind: "blank" };
@@ -363,9 +363,12 @@ export function accountsScreenLines(state: RenderState, screen: AccountsScreenSt
     lines.push({ kind: "heading", label: "Claude", columns: false });
     lines.push({ kind: "text", segments: [[theme.muted, "  the remote daemon's login (/proxy)"]] });
   } else if (claudeTable) {
-    lines.push({ kind: "heading", label: "Claude", columns: true });
+    const heading = { kind: "heading" as const, label: "Claude", columns: true, credits: false };
+    lines.push(heading);
     for (const account of claude.accounts) {
-      lines.push({ kind: "row", row: claudeRow(account, claude, now) });
+      const row = claudeRow(account, claude, now);
+      if (row.credits) heading.credits = true;
+      lines.push({ kind: "row", row });
       if (account.loginCommand) notes.push([[theme.muted, `sign in ${account.id}${claude.remote ? ` on ${claude.remote.alias}` : ""}: `], [theme.command, account.loginCommand]]);
     }
     if (claude.remote) notes.unshift(proxyNote(claude.remote));
@@ -373,7 +376,8 @@ export function accountsScreenLines(state: RenderState, screen: AccountsScreenSt
 
   if (openai.accounts.length > 0) {
     if (lines.length > 0) lines.push({ kind: "blank" });
-    lines.push({ kind: "heading", label: "OpenAI", columns: !claudeTable });
+    const heading = { kind: "heading" as const, label: "OpenAI", columns: !claudeTable, credits: false };
+    lines.push(heading);
     if (openai.proxied) lines.push({ kind: "text", segments: [[theme.muted, "  the remote daemon's login (/proxy)"]] });
     const usage = state.usageByProvider.openai ?? null;
     for (const account of openai.accounts) {
@@ -387,6 +391,7 @@ export function accountsScreenLines(state: RenderState, screen: AccountsScreenSt
           credits: account.current ? creditCell(openAICredits(usage?.apiKey?.credit), now) : null,
         },
       });
+      if (account.current && creditCell(openAICredits(usage?.apiKey?.credit), now)) heading.credits = true;
     }
   }
 
@@ -481,7 +486,7 @@ function lineSegments(line: ScreenLine, columns: Columns): Segment[] {
     case "text": return line.segments;
     case "heading": {
       const label: Segment = [theme.bold + theme.text, line.label.padEnd(DOT_WIDTH + columns.name)];
-      const credits: Segment[] = columns.credits > 0 ? [gap, [theme.muted, CREDITS_LABEL]] : [];
+      const credits: Segment[] = columns.credits > 0 && line.credits ? [gap, [theme.muted, CREDITS_LABEL]] : [];
       if (!line.columns) return credits.length > 0 ? [label, [theme.boldOff, ""], gap, blankCells, ...credits] : [label, [theme.boldOff, ""]];
       return [
         label, [theme.boldOff, ""], gap,

@@ -439,6 +439,9 @@ test("a Credits column: the balance, each grant's countdown, the account spendin
   expect(header.indexOf("Credits")).toBe(main.indexOf("$688"));
   expect(openaiHeader.indexOf("Credits")).toBe(main.indexOf("$688"));
   expect(openaiRow.indexOf("$935")).toBe(main.indexOf("$688"));
+  // A section without credits has no Credits label.
+  state.usageByProvider.openai = { fiveHour: null, sevenDay: null };
+  expect(screenText(state).find(row => row.includes("OpenAI"))).not.toContain("Credits");
   // Spending now: bold blue. Otherwise green.
   const lines = accountsScreenLines(state, state.accountsScreen!, NOW);
   const cell = (id: string) => lines.flatMap(line => line.kind === "row" && line.row.name[1] === id ? [line.row.credits] : [])[0];
