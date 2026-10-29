@@ -7,6 +7,8 @@ import {
   clearUsage,
   getAccountLimitedUntil,
   getAccountUsage,
+  applyPlanRateLimits,
+  mergeUsage,
   usageFromPlanRateLimits,
   usageFromRateLimitInfo,
 } from "./usage";
@@ -18,9 +20,13 @@ describe("usageFromPlanRateLimits", () => {
       seven_day: { utilization: 48, resets_at: "2026-10-10T08:00:00.001754+00:00" },
       seven_day_opus: null,
     })).toEqual({
-      fiveHour: { utilization: 1, resetsAt: Date.parse("2026-10-10T06:30:00.001703+00:00") },
-      sevenDay: { utilization: 48, resetsAt: Date.parse("2026-10-10T08:00:00.001754+00:00") },
+      // On the whole second, as rate_limit_events give it.
+      fiveHour: { utilization: 1, resetsAt: Date.parse("2026-10-10T06:30:00Z") },
+      sevenDay: { utilization: 48, resetsAt: Date.parse("2026-10-10T08:00:00Z") },
     });
+    expect(usageFromPlanRateLimits({
+      seven_day: { utilization: 95, resets_at: new Date(1_793_433_599_554).toISOString() },
+    })?.sevenDay?.resetsAt).toBe(1_793_433_600_000);
   });
 
   test("keeps a window it was not told about and ignores answers without windows", () => {
@@ -110,6 +116,70 @@ describe("applyUsageHeaders", () => {
       expect(getAccountLimitedUntil("test-acct-b", 1_000)).toBe(1_900_000_500_000);
     } finally {
       clearUsage("test-acct-b");
+    }
+  });
+});
+
+describe("one account's usage never goes back within a window", () => {
+  const T = 1_793_301_676_441;
+  const FIVE_HOUR_RESET = 1_793_305_200_000;
+  const WEEKLY_RESET = 1_793_433_600_000;
+  const window = (utilization: number, resetsAt: number | null) => ({ utilization, resetsAt });
+
+  test("a report a point lower in the same window keeps the higher figure", () => {
+    const previous = { fiveHour: window(41, FIVE_HOUR_RESET), sevenDay: window(95, WEEKLY_RESET) };
+    expect(mergeUsage(previous, { fiveHour: window(40, FIVE_HOUR_RESET), sevenDay: window(94, WEEKLY_RESET) }, T)).toEqual(previous);
+    // Growth always shows.
+    expect(mergeUsage(previous, { fiveHour: window(42, FIVE_HOUR_RESET), sevenDay: window(95, WEEKLY_RESET) }, T).fiveHour?.utilization).toBe(42);
+  });
+
+  test("a new window, a past reset, a big drop or a drop off a limit takes the report", () => {
+    const previous = { fiveHour: window(41, FIVE_HOUR_RESET), sevenDay: window(100, WEEKLY_RESET) };
+    // The 5-hour window started over: a later reset time.
+    expect(mergeUsage(previous, { fiveHour: window(2, FIVE_HOUR_RESET + 5 * 3_600_000), sevenDay: null }, T).fiveHour?.utilization).toBe(2);
+    // The old window is past its reset.
+    expect(mergeUsage(previous, { fiveHour: window(40, FIVE_HOUR_RESET), sevenDay: null }, FIVE_HOUR_RESET + 1).fiveHour?.utilization).toBe(40);
+    // Anthropic reset the usage within the window.
+    expect(mergeUsage(previous, { fiveHour: window(3, FIVE_HOUR_RESET), sevenDay: null }, T).fiveHour?.utilization).toBe(3);
+    // The account has room again: routing must see it.
+    expect(mergeUsage(previous, { fiveHour: null, sevenDay: window(99, WEEKLY_RESET) }, T).sevenDay?.utilization).toBe(99);
+    // A window without a reset time has not started.
+    expect(mergeUsage({ fiveHour: window(5, null), sevenDay: null }, { fiveHour: window(0, null), sevenDay: null }, T).fiveHour?.utilization).toBe(0);
+  });
+
+  test("the /usage poll and the rate_limit_events of Oct 29 alternate without the bar moving", () => {
+    // Recorded on whale: the poll read main at 41% / 95%, the turns' events a
+    // moment later at 40% / 94%, then 41% / 94%. The pooled bars went
+    // 41 → 40 → 41 and 195 → 194 → 194 of 200 with no change in real usage.
+    const max2 = { fiveHour: window(0, null), sevenDay: window(100, 1_793_415_600_000) };
+    const event = (fiveHour: number, sevenDay: number) => new Headers({
+      [CLAUDE_RATE_LIMIT_HEADER]: JSON.stringify({
+        status: "allowed",
+        unifiedWindows: {
+          five_hour: { utilization: fiveHour, resetsAt: FIVE_HOUR_RESET / 1000 },
+          seven_day: { utilization: sevenDay, resetsAt: WEEKLY_RESET / 1000 },
+        },
+      }),
+      [CLAUDE_ACCOUNT_HEADER]: "test-flicker-main",
+    });
+    const shown = () => {
+      const pooled = aggregateUsage([getAccountUsage("test-flicker-main"), max2], T)!;
+      return [Math.round(pooled.fiveHour!.utilization), Math.round(pooled.sevenDay!.utilization)];
+    };
+    try {
+      applyPlanRateLimits("test-flicker-main", {
+        five_hour: { utilization: 41, resets_at: new Date(1_793_305_199_991).toISOString() },
+        seven_day: { utilization: 95, resets_at: new Date(1_793_433_599_991).toISOString() },
+      }, T);
+      expect(shown()).toEqual([41, 195]);
+      applyUsageHeaders(event(0.40, 0.94), T + 44_881);
+      expect(shown()).toEqual([41, 195]);
+      applyUsageHeaders(event(0.41, 0.94), T + 66_916);
+      expect(shown()).toEqual([41, 195]);
+      applyUsageHeaders(event(0.42, 0.95), T + 219_765);
+      expect(shown()).toEqual([42, 195]);
+    } finally {
+      clearUsage("test-flicker-main");
     }
   });
 });
