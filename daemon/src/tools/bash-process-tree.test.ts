@@ -134,7 +134,8 @@ describe("bash process-tree timeout", () => {
     if (process.platform === "win32") return;
     const result = await executeBashBackgroundable({
       command: "(trap '' TERM; sleep 30) & child=$!; echo $child; wait",
-      timeout_seconds: 0.1,
+      // Long enough for the shell to start and print the child's pid under load.
+      timeout_seconds: 0.5,
       await: 10,
     });
 
