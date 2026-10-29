@@ -165,12 +165,14 @@ When the key is funded by a prepaid credit grant, set
 { "providers": { "openai": { "credit": { "amountUsd": 1000, "since": "2026-10-20", "expires": "2027-10-20" } } } }
 ```
 
-The usage slot then shows `Credits: [bar] $64.04 used · $935.96 left` (red
-under 10% left) over `Today: $39.30 · ~102 days left at this week's pace`:
-the balance divided by the average daily spend of the last 7 days, yellow
-when it runs out before `expires`. Days before the daemon started counting
-are missing: the used figure then says `since <first counted day>` and the
-balance is marked `≈`. Without a credit grant,
+The usage slot then shows `Credits: [bar] $936 / $1000` (the bar is the
+share used; the balance turns red under 10% left) over
+`Today: [bar] $39.70 / $2.73`: today's spend against the pace that makes the
+credit last until `expires` (this morning's balance over the days left, today
+included), red once over it. Without `expires`, or once it has passed, today
+is its plain spend. `/tokens` adds what the bar leaves out: the runway at the
+last 7 days' pace and, when the daemon started counting after `since`, the
+first counted day (the balance is then an upper bound). Without a credit grant,
 `providers.openai.monthlyBudgetUsd` (e.g. `20`) draws bars instead: the month
 against the budget, today against what was left of it that morning spread
 over the days left in the month (just today's spend once the month is over).

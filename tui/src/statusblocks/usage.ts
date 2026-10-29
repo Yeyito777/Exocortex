@@ -131,14 +131,32 @@ function formatApiKeySpend(spend: ApiKeySpend): string {
   return `≈${formatUsd(spend.estimatedCostUsd)} · ${tokens}${unpriced}`;
 }
 
+/** "$936": the credit's balance and grant, where cents don't matter. */
+function formatDollars(usd: number): string {
+  return `$${Math.round(usd)}`;
+}
+
+/** "$39.70": today's spend and the pace, to the cent. */
+function formatCents(usd: number): string {
+  if (usd > 0 && usd < 0.005) return "<$0.01";
+  return `$${usd.toFixed(2)}`;
+}
+
+/**
+ * The /tokens line: the status bar's figures plus what it leaves out (the
+ * estimate caveat, the first counted day, the runway, tokens and unpriced
+ * requests).
+ */
 function apiKeySummary(apiKey: ApiKeyUsage): string {
   const credit = apiKey.credit;
-  if (!credit) return `API key ${apiKey.label}: today ${formatApiKeySpend(apiKey.today)} · this month ${formatApiKeySpend(apiKey.month)}`;
-  const view = creditView(credit);
-  const left = view.expired ? `expired ${formatDay(credit.expires!)}` : `${view.approximate ? "≈" : ""}${formatUsd(view.leftUsd)} left`;
+  const today = `today ${formatApiKeySpend(apiKey.today)}`;
+  if (!credit) return `API key ${apiKey.label}: ${today} · this month ${formatApiKeySpend(apiKey.month)}`;
+  const view = creditView(credit, apiKey.today.estimatedCostUsd);
+  if (view.expired) return `API key ${apiKey.label}: ${formatDollars(credit.amountUsd)} credit expired ${formatDay(credit.expires!, true)} · ${today}`;
+  const counted = view.approximate ? ` (counted from ${formatDay(credit.firstTrackedDay!)}; earlier days not seen)` : "";
+  const pace = view.paceUsd !== null ? ` · ${formatCents(view.paceUsd)}/day to last until ${formatDay(credit.expires!, true)}` : "";
   const runway = view.runway ? ` · ${view.runway}` : "";
-  return `API key ${apiKey.label}: ${formatUsd(credit.amountUsd)} credit, ≈${formatUsd(credit.usedUsd)} used${view.sinceNote} · ${left}${runway}`
-    + ` · today ${formatApiKeySpend(apiKey.today)}`;
+  return `API key ${apiKey.label}: ≈${formatDollars(view.leftUsd)} / ${formatDollars(credit.amountUsd)} credit left${counted}${pace}${runway} · ${today}`;
 }
 
 /** "5-Hour" is the widest window label; API-key rows pad theirs to it so switching providers keeps the column. */
@@ -162,25 +180,35 @@ export function dailyAllowance(apiKey: ApiKeyUsage, monthlyBudgetUsd: number, no
   return Math.max(0, monthlyBudgetUsd - spentBeforeToday) / daysLeft;
 }
 
-/** "  Today:  [bar] $0.412 / $0.79"; the spend turns red once it passes the limit. */
-function budgetLine(label: string, spentUsd: number, limitUsd: number): { line: string; width: number } {
-  const spent = formatUsd(spentUsd);
-  const limit = formatUsd(limitUsd);
-  const over = spentUsd > limitUsd;
-  const bar = renderBar(spentUsd, limitUsd);
-  const head = labelCell(label);
-  const line = `${theme.muted}${head}${theme.text}[${bar}${theme.text}] ${over ? theme.error : theme.accent}${spent}${theme.muted} / ${theme.accent}${limit}${theme.reset}`;
-  return { line, width: head.length + 1 + BAR_WIDTH + 1 + 1 + spent.length + 3 + limit.length };
+/** "  Label:  [bar] figure / limit": a bar filled to `filled` of `capacity`, the figure in its own colour. */
+function barLine(
+  label: string,
+  filled: number,
+  capacity: number,
+  figure: string,
+  figureColor: string,
+  limit: string,
+  labelWidth = LABEL_WIDTH,
+): { line: string; width: number } {
+  const head = labelCell(label, labelWidth);
+  const line = `${theme.muted}${head}${theme.text}[${renderBar(filled, capacity)}${theme.text}] ${figureColor}${figure}${theme.muted} / ${theme.accent}${limit}${theme.reset}`;
+  return { line, width: head.length + 1 + BAR_WIDTH + 1 + 1 + figure.length + 3 + limit.length };
 }
 
-/** "  Month:  $14.87", optionally red and followed by muted text. */
-function spendLine(label: string, spentUsd: number, options: { labelWidth?: number; color?: string; tail?: string; tailColor?: string } = {}): { line: string; width: number } {
+/** "  Today:  [bar] $0.412 / $0.79"; the spend turns red once it passes the limit. */
+function budgetLine(label: string, spentUsd: number, limitUsd: number, options: { labelWidth?: number; format?: (usd: number) => string } = {}): { line: string; width: number } {
+  const format = options.format ?? formatUsd;
+  const color = spentUsd > limitUsd ? theme.error : theme.accent;
+  return barLine(label, spentUsd, limitUsd, format(spentUsd), color, format(limitUsd), options.labelWidth);
+}
+
+/** "  Month:  $14.87". */
+function spendLine(label: string, spentUsd: number, options: { labelWidth?: number; format?: (usd: number) => string } = {}): { line: string; width: number } {
   const head = labelCell(label, options.labelWidth);
-  const spent = formatUsd(spentUsd);
-  const tail = options.tail ?? "";
+  const spent = (options.format ?? formatUsd)(spentUsd);
   return {
-    line: `${theme.muted}${head}${options.color ?? theme.accent}${spent}${options.tailColor ?? theme.muted}${tail}${theme.reset}`,
-    width: head.length + spent.length + tail.length,
+    line: `${theme.muted}${head}${theme.accent}${spent}${theme.reset}`,
+    width: head.length + spent.length,
   };
 }
 
@@ -189,10 +217,10 @@ export const LOW_CREDIT_FRACTION = 0.1;
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
-/** "2026-10-22" → "Oct 22". */
-function formatDay(day: string): string {
-  const [, month, date] = day.split("-").map(Number);
-  return `${MONTHS[month - 1] ?? "?"} ${date}`;
+/** "2026-10-22" → "Oct 22" ("Oct 22 2026" with the year). */
+function formatDay(day: string, withYear = false): string {
+  const [year, month, date] = day.split("-").map(Number);
+  return `${MONTHS[month - 1] ?? "?"} ${date}${withYear ? ` ${year}` : ""}`;
 }
 
 function dayNumber(day: string): number {
@@ -207,14 +235,14 @@ export interface CreditView {
   expired: boolean;
   /** The ledger starts after `since`: earlier spend is missing, so "left" is an upper bound. */
   approximate: boolean;
-  /** " since Oct 22" when the ledger starts after `since`, else "". */
-  sinceNote: string;
-  /** Whole days the balance lasts at the recent pace; null without recent spend. */
-  runwayDays: number | null;
-  /** "~23 days left at this week's pace"; null without recent spend. */
+  /**
+   * What today may spend for the credit to last until it expires: the balance
+   * this morning over the days left, today included. Null without an expiry,
+   * once expired, or with nothing left.
+   */
+  paceUsd: number | null;
+  /** "~23 days left at this week's pace" (for /tokens); null without recent spend. */
   runway: string | null;
-  /** The balance runs out before the grant expires. */
-  runsOutBeforeExpiry: boolean;
 }
 
 function paceLabel(days: number): string {
@@ -223,58 +251,61 @@ function paceLabel(days: number): string {
   return `the last ${days} days' pace`;
 }
 
-/** What the credit rows say, from the daemon's figures. */
-export function creditView(credit: ApiKeyCredit): CreditView {
+/** What the credit rows say, from the daemon's figures and today's spend. */
+export function creditView(credit: ApiKeyCredit, todayUsd: number): CreditView {
   const leftUsd = Math.max(0, credit.amountUsd - credit.usedUsd);
   const expired = credit.expires !== null && credit.asOf >= credit.expires;
   const approximate = credit.firstTrackedDay !== null && credit.firstTrackedDay > credit.since;
+  const leftThisMorning = Math.max(0, credit.amountUsd - Math.max(0, credit.usedUsd - todayUsd));
+  const daysLeft = credit.expires === null ? 0 : dayNumber(credit.expires) - dayNumber(credit.asOf);
+  const paceUsd = !expired && daysLeft > 0 && leftThisMorning > 0 ? leftThisMorning / daysLeft : null;
   const perDay = credit.paceDays > 0 ? credit.paceUsd / credit.paceDays : 0;
   const runwayDays = perDay > 0 && !expired ? Math.floor(leftUsd / perDay) : null;
-  const runway = runwayDays === null ? null
-    : `${runwayDays < 1 ? "<1 day" : `~${runwayDays} day${runwayDays === 1 ? "" : "s"}`} left at ${paceLabel(credit.paceDays)}`;
-  const daysToExpiry = credit.expires === null ? null : dayNumber(credit.expires) - dayNumber(credit.asOf);
   return {
     leftUsd,
     low: leftUsd < credit.amountUsd * LOW_CREDIT_FRACTION,
     expired,
     approximate,
-    sinceNote: approximate ? ` since ${formatDay(credit.firstTrackedDay!)}` : "",
-    runwayDays,
-    runway,
-    runsOutBeforeExpiry: runwayDays !== null && daysToExpiry !== null && runwayDays < daysToExpiry,
+    paceUsd,
+    runway: runwayDays === null ? null
+      : `${runwayDays < 1 ? "<1 day" : `~${runwayDays} day${runwayDays === 1 ? "" : "s"}`} left at ${paceLabel(credit.paceDays)}`,
   };
 }
 
 const CREDIT_LABEL_WIDTH = "Credits".length;
 
+/** "  Credits: [bar] expired Oct 20", in red. */
+function expiredCreditLine(credit: ApiKeyCredit): { line: string; width: number } {
+  const head = labelCell("Credits", CREDIT_LABEL_WIDTH);
+  const text = `expired ${formatDay(credit.expires!)}`;
+  return {
+    line: `${theme.muted}${head}${theme.text}[${renderBar(credit.usedUsd, credit.amountUsd)}${theme.text}] ${theme.error}${text}${theme.reset}`,
+    width: head.length + 1 + BAR_WIDTH + 1 + 1 + text.length,
+  };
+}
+
 /**
- * "  Credits: [bar] $64.04 used · $935.96 left" over
- * "  Today:   $39.30 · ~23 days left at this week's pace".
- * The bar is the share used; the balance turns red under 10%, the runway
- * yellow when it ends before the grant expires.
+ * "  Credits: [bar] $936 / $1000" over "  Today:   [bar] $39.70 / $2.73".
+ * The credit bar is the share used; the balance turns red under 10%. Today's
+ * bar is its spend against the pace that lasts until the grant expires, red
+ * once over it; without an expiry (or once expired) today is a plain amount.
  */
 function creditLines(apiKey: ApiKeyUsage, credit: ApiKeyCredit): Array<{ line: string; width: number }> {
-  const view = creditView(credit);
-  const head = labelCell("Credits", CREDIT_LABEL_WIDTH);
-  const used = `${formatUsd(credit.usedUsd)} used${view.sinceNote}`;
-  const left = view.expired ? `expired ${formatDay(credit.expires!)}` : `${view.approximate ? "≈" : ""}${formatUsd(view.leftUsd)} left`;
-  const leftColor = view.expired || view.low ? theme.error : theme.accent;
-  const credits = {
-    line: `${theme.muted}${head}${theme.text}[${renderBar(credit.usedUsd, credit.amountUsd)}${theme.text}] ${theme.accent}${used}${theme.muted} · ${leftColor}${left}${theme.reset}`,
-    width: head.length + 1 + BAR_WIDTH + 1 + 1 + used.length + 3 + left.length,
-  };
-  const today = spendLine("Today", apiKey.today.estimatedCostUsd, {
-    labelWidth: CREDIT_LABEL_WIDTH,
-    ...(view.runway ? { tail: ` · ${view.runway}`, tailColor: view.runsOutBeforeExpiry ? theme.warning : theme.muted } : {}),
-  });
+  const todayUsd = apiKey.today.estimatedCostUsd;
+  const view = creditView(credit, todayUsd);
+  const credits = view.expired
+    ? expiredCreditLine(credit)
+    : barLine("Credits", credit.usedUsd, credit.amountUsd, formatDollars(view.leftUsd), view.low ? theme.error : theme.accent, formatDollars(credit.amountUsd), CREDIT_LABEL_WIDTH);
+  const options = { labelWidth: CREDIT_LABEL_WIDTH, format: formatCents };
+  const today = view.paceUsd !== null ? budgetLine("Today", todayUsd, view.paceUsd, options) : spendLine("Today", todayUsd, options);
   return [credits, today];
 }
 
 /**
  * OpenAI on an API key has no plan windows: the slot shows what the key spent
  * through this daemon, estimated from published per-token rates. With a
- * credit grant: the spend since it against it, and today's spend with how
- * long the rest lasts. With only a monthly budget: today and the month as
+ * credit grant: its balance, and today's spend against the pace that makes it
+ * last until it expires. With only a monthly budget: today and the month as
  * bars against it (today as a plain amount once the month is over budget).
  * Requests the estimate could not price (audio, images) are left to /tokens.
  */

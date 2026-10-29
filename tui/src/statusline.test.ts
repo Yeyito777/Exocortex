@@ -122,69 +122,93 @@ describe("API-key usage", () => {
     const keyWith = (c: ApiKeyCredit, today = 39.3, budget: number | null = 20): ApiKeyUsage =>
       ({ label: "k", today: spend(today, 1), month: spend(64.04, 11), monthlyBudgetUsd: budget, credit: c });
 
-    test("shows the share used, what is left and the runway at this week's pace; the budget is ignored", () => {
-      const block = apiKeyRows(keyWith(credit()));
+    // Oct 28 to the expiry on Oct 20 2027: 357 days, today included.
+    const DAYS_TO_EXPIRY = 357;
+
+    test("under the pace: the balance over the grant, and today against what lasts until expiry; the budget is ignored", () => {
+      const c = credit({ usedUsd: 64.44 });
+      const block = apiKeyRows(keyWith(c, 1.5));
       const rows = block.rows.map(stripAnsi);
-      // 64.04 of 1000 is 6.4%: one cell of twenty.
-      expect(rows[0].trimEnd()).toBe(`  Credits: [${"\u2588".repeat(1)}${"\u2591".repeat(19)}] $64.04 used · $935.96 left`);
-      // 935.96 / (64.04 / 7) = 102.3 days, which ends before Oct 20 2027: yellow.
-      expect(rows[1].trimEnd()).toBe("  Today:   $39.30 · ~102 days left at this week's pace");
-      expect(block.rows[1]).toContain(`${theme.warning} · ~102 days left`);
-      expect(block.rows[0]).toContain(`${theme.accent}$935.96 left`);
+      // 64.44 of 1000 is 6.4%: one cell of twenty; 935.56 left shows as $936.
+      expect(rows[0].trimEnd()).toBe(`  Credits: [${"\u2588".repeat(1)}${"\u2591".repeat(19)}] $936 / $1000`);
+      // This morning's balance: 1000 - (64.44 - 1.50) = 937.06, over 357 days = $2.62/day; 1.50 of it is 11 cells.
+      expect(creditView(c, 1.5).paceUsd).toBeCloseTo(937.06 / DAYS_TO_EXPIRY, 10);
+      expect(rows[1].trimEnd()).toBe(`  Today:   [${"\u2588".repeat(11)}${"\u2591".repeat(9)}] $1.50 / $2.62`);
+      expect(block.rows[0]).toContain(`${theme.accent}$936`);
+      expect(block.rows[1]).toContain(`${theme.accent}$1.50`);
       expect(rows.every((row) => row.length === block.width)).toBe(true);
-      expect(rows.join("\n")).not.toContain("unpriced");
-      expect(rows.join("\n")).not.toContain("Month");
+      const text = rows.join("\n");
+      for (const gone of ["used", "since", "≈", "days left", "unpriced", "Month"]) expect(text).not.toContain(gone);
     });
 
-    test("no history yet: nothing used, no runway", () => {
-      const view = creditView(credit({ usedUsd: 0, firstTrackedDay: null, paceUsd: 0, paceDays: 0 }));
-      expect(view).toMatchObject({ leftUsd: 1000, approximate: false, runway: null, runsOutBeforeExpiry: false, low: false });
-      const rows = apiKeyRows(keyWith(credit({ usedUsd: 0, firstTrackedDay: null, paceUsd: 0, paceDays: 0 }), 0)).rows.map(stripAnsi);
-      expect(rows[0].trimEnd()).toBe(`  Credits: [${"\u2591".repeat(20)}] $0.000 used · $1000.00 left`);
-      expect(rows[1].trimEnd()).toBe("  Today:   $0.000");
+    test("over the pace: today's spend is red and its bar full", () => {
+      const block = apiKeyRows(keyWith(credit({ usedUsd: 64.44 }), 39.7));
+      const rows = block.rows.map(stripAnsi);
+      // 1000 - (64.44 - 39.70) = 975.26 this morning, over 357 days.
+      expect(rows[1].trimEnd()).toBe(`  Today:   [${"\u2588".repeat(20)}] $39.70 / $2.73`);
+      expect(block.rows[1]).toContain(`${theme.error}$39.70`);
+      expect(rows.every((row) => row.length === block.width)).toBe(true);
     });
 
-    test("history starting after the grant says since when and marks the balance approximate", () => {
-      const c = credit({ firstTrackedDay: "2026-10-26", usedUsd: 30, paceUsd: 30, paceDays: 3 });
-      const rows = apiKeyRows(keyWith(c, 10)).rows.map(stripAnsi);
-      expect(rows[0].trimEnd()).toBe(`  Credits: [${"\u2588".repeat(1)}${"\u2591".repeat(19)}] $30.00 used since Oct 26 · ≈$970.00 left`);
-      // 970 / (30 / 3) = 97 days.
-      expect(rows[1].trimEnd()).toBe("  Today:   $10.00 · ~97 days left at the last 3 days' pace");
-      expect(creditView(credit({ firstTrackedDay: "2026-10-28", paceDays: 1, paceUsd: 5 })).runway).toBe("~187 days left at today's pace");
+    test("no history yet: nothing used, the whole grant spread to expiry", () => {
+      const c = credit({ usedUsd: 0, firstTrackedDay: null, paceUsd: 0, paceDays: 0 });
+      expect(creditView(c, 0)).toMatchObject({ leftUsd: 1000, approximate: false, runway: null, low: false });
+      const rows = apiKeyRows(keyWith(c, 0)).rows.map(stripAnsi);
+      expect(rows[0].trimEnd()).toBe(`  Credits: [${"\u2591".repeat(20)}] $1000 / $1000`);
+      expect(rows[1].trimEnd()).toBe(`  Today:   [${"\u2591".repeat(20)}] $0.00 / $2.80`);
     });
 
-    test("a low balance is red", () => {
+    test("a low balance is red, and the pace shrinks with it", () => {
       const c = credit({ usedUsd: 950, paceUsd: 70, paceDays: 7 });
       const block = apiKeyRows(keyWith(c, 10));
       const rows = block.rows.map(stripAnsi);
-      expect(rows[0].trimEnd()).toBe(`  Credits: [${"\u2588".repeat(19)}${"\u2591".repeat(1)}] $950.00 used · $50.00 left`);
-      expect(block.rows[0]).toContain(`${theme.error}$50.00 left`);
-      expect(rows[1].trimEnd()).toBe("  Today:   $10.00 · ~5 days left at this week's pace");
-      expect(creditView(credit({ usedUsd: 1200 }))).toMatchObject({ leftUsd: 0, low: true, runwayDays: 0, runway: "<1 day left at this week's pace" });
+      expect(rows[0].trimEnd()).toBe(`  Credits: [${"\u2588".repeat(19)}${"\u2591".repeat(1)}] $50 / $1000`);
+      expect(block.rows[0]).toContain(`${theme.error}$50`);
+      // (1000 - 940) / 357 = $0.17/day.
+      expect(rows[1].trimEnd()).toBe(`  Today:   [${"\u2588".repeat(20)}] $10.00 / $0.17`);
+      expect(block.rows[1]).toContain(`${theme.error}$10.00`);
+      // Nothing left at all: no pace, today is its plain spend.
+      const spent = apiKeyRows(keyWith(credit({ usedUsd: 1200 }), 5)).rows.map(stripAnsi);
+      expect(spent[0].trimEnd()).toBe(`  Credits: [${"\u2588".repeat(20)}] $0 / $1000`);
+      expect(spent[1].trimEnd()).toBe("  Today:   $5.00");
     });
 
-    test("a runway outlasting the expiry is not a warning", () => {
-      const c = credit({ usedUsd: 7, paceUsd: 7, paceDays: 7 }); // $1/day: 993 days, past the expiry in 357
-      const view = creditView(c);
-      expect(view).toMatchObject({ runwayDays: 993, runsOutBeforeExpiry: false });
-      expect(apiKeyRows(keyWith(c, 1)).rows[1]).toContain(`${theme.muted} · ~993 days left`);
-      // Without an expiry nothing can run out before it.
-      expect(creditView(credit({ expires: null })).runsOutBeforeExpiry).toBe(false);
-      // Runway shorter than expiry, as in the first case.
-      expect(creditView(credit()).runsOutBeforeExpiry).toBe(true);
+    test("an expired grant says so; today is its plain spend", () => {
+      const block = apiKeyRows(keyWith(credit({ asOf: "2027-10-20" })));
+      const rows = block.rows.map(stripAnsi);
+      expect(rows[0].trimEnd()).toBe(`  Credits: [${"\u2588".repeat(1)}${"\u2591".repeat(19)}] expired Oct 20`);
+      expect(block.rows[0]).toContain(`${theme.error}expired Oct 20`);
+      expect(rows[1].trimEnd()).toBe("  Today:   $39.30");
+      // The day before it expires, that one day gets the whole balance.
+      expect(creditView(credit({ asOf: "2027-10-19", usedUsd: 100 }), 0).paceUsd).toBe(900);
     });
 
-    test("an expired grant says so instead of a balance", () => {
-      const rows = apiKeyRows(keyWith(credit({ asOf: "2027-10-21" }))).rows.map(stripAnsi);
-      expect(rows[0].trimEnd()).toBe(`  Credits: [${"\u2588".repeat(1)}${"\u2591".repeat(19)}] $64.04 used · expired Oct 20`);
+    test("without an expiry, today is its plain spend", () => {
+      const c = credit({ expires: null });
+      expect(creditView(c, 39.3).paceUsd).toBeNull();
+      const rows = apiKeyRows(keyWith(c)).rows.map(stripAnsi);
+      expect(rows[0].trimEnd()).toBe(`  Credits: [${"\u2588".repeat(1)}${"\u2591".repeat(19)}] $936 / $1000`);
       expect(rows[1].trimEnd()).toBe("  Today:   $39.30");
     });
 
-    test("the /tokens line names the grant, the balance, the runway and the unpriced count", () => {
-      const state = stateWithApiKey(keyWith(credit({ firstTrackedDay: "2026-10-22" })));
+    test("the runway stays out of the bar but is in /tokens", () => {
+      expect(creditView(credit(), 39.3).runway).toBe("~102 days left at this week's pace");
+      expect(creditView(credit({ firstTrackedDay: "2026-10-28", paceDays: 1, paceUsd: 5 }), 5).runway).toBe("~187 days left at today's pace");
+      expect(creditView(credit({ firstTrackedDay: "2026-10-26", usedUsd: 30, paceUsd: 30, paceDays: 3 }), 10).runway).toBe("~97 days left at the last 3 days' pace");
+      expect(creditView(credit({ usedUsd: 1200 }), 0).runway).toBe("<1 day left at this week's pace");
+    });
+
+    test("the /tokens line has the balance, the pace, the first counted day, the runway and the unpriced count", () => {
+      const state = stateWithApiKey(keyWith(credit({ firstTrackedDay: "2026-10-22", usedUsd: 64.44 }), 39.7));
       expect(usageSummary(state)).toBe(
-        "API key k: $1000.00 credit, ≈$64.04 used since Oct 22 · ≈$935.96 left · ~102 days left at this week's pace"
-        + " · today ≈$39.30 · 12.3K tok · 1 request not priced (no per-token rate, e.g. audio, images)",
+        "API key k: ≈$936 / $1000 credit left (counted from Oct 22; earlier days not seen) · $2.73/day to last until Oct 20 2027"
+        + " · ~102 days left at this week's pace · today ≈$39.70 · 12.3K tok · 1 request not priced (no per-token rate, e.g. audio, images)",
+      );
+      expect(usageSummary(stateWithApiKey(keyWith(credit({ asOf: "2027-10-21" }))))).toBe(
+        "API key k: $1000 credit expired Oct 20 2027 · today ≈$39.30 · 12.3K tok · 1 request not priced (no per-token rate, e.g. audio, images)",
+      );
+      expect(usageSummary(stateWithApiKey(keyWith(credit({ expires: null }))))).toBe(
+        "API key k: ≈$936 / $1000 credit left · ~102 days left at this week's pace · today ≈$39.30 · 12.3K tok · 1 request not priced (no per-token rate, e.g. audio, images)",
       );
     });
   });
