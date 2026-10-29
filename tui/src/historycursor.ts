@@ -18,7 +18,6 @@ import { getScrollOffsetForViewStart } from "./chatscroll";
 import { hasOlderHistoryCursor } from "./historypagination";
 import {
   ensureCursorRowVisibleInViewport,
-  moveCursorInViewport,
   scrollLineWithStickyCursorInViewport,
   scrollPageWithCursorInViewport,
   scrollWithCursorInViewport,
@@ -135,26 +134,22 @@ function moveHistoryLine(surface: HistorySurface, direction: -1 | 1): void {
   surface.setCurswant(desiredCol);
 }
 
-/**
- * Shift+K / Shift+J — the cursor moves half of Ctrl+U/Ctrl+D's half page (a
- * quarter page), keeping its column like j/k, but the view stays put: it
- * stops at the visible edge.
- * `dir`: positive = up, negative = down.
- */
 /** Shift+J/K's rows: half of Ctrl+U/Ctrl+D's floor(height / 2), at least 1. */
 export function shiftJkRows(viewportHeight: number): number {
   return Math.max(1, Math.floor(Math.floor(viewportHeight / 2) / 2));
 }
 
-function moveHistoryHalfPageInView(surface: HistorySurface, dir: number): void {
+/**
+ * Shift+K / Shift+J — the cursor moves half of Ctrl+U/Ctrl+D's half page (a
+ * quarter page), keeping its column like j/k. Like that many j/k presses, the
+ * view stays put while the cursor is inside it and scrolls just enough to
+ * follow it past the top or bottom edge. `dir`: positive = up, negative = down.
+ */
+function moveHistoryShiftJk(surface: HistorySurface, dir: number): void {
   const desiredCol = surface.curswant ?? surface.cursor.col;
-  const { cursorRow } = moveCursorInViewport({
-    totalLines: surface.lines.length,
-    viewportHeight: surface.viewportHeight,
-    viewStart: historySurfaceViewStart(surface),
-    cursorRow: surface.cursor.row,
-  }, dir, shiftJkRows(surface.viewportHeight));
-  surface.setCursor({ row: cursorRow, col: clampCol(desiredCol, surface.lines, cursorRow) });
+  const last = Math.max(0, surface.lines.length - 1);
+  const row = Math.max(0, Math.min(last, surface.cursor.row - dir * shiftJkRows(surface.viewportHeight)));
+  surface.setCursor({ row, col: clampCol(desiredCol, surface.lines, row) });
   surface.setCurswant(desiredCol);
 }
 
@@ -208,8 +203,8 @@ export function applyHistoryAction(action: Action, state: RenderState): boolean 
     case "history_right":   surface.setCursor(charRight(cur, lines, wrapCont)); resetHistoryCurswant(surface); break;
     case "history_up":      moveHistoryLine(surface, -1); break;
     case "history_down":    moveHistoryLine(surface, 1); break;
-    case "history_half_up":   moveHistoryHalfPageInView(surface, 1); return true;
-    case "history_half_down": moveHistoryHalfPageInView(surface, -1); return true;
+    case "history_half_up":   moveHistoryShiftJk(surface, 1); break;
+    case "history_half_down": moveHistoryShiftJk(surface, -1); break;
     case "history_w":       surface.setCursor(wordForward(cur, lines)); resetHistoryCurswant(surface); break;
     case "history_b":       surface.setCursor(wordBackward(cur, lines)); resetHistoryCurswant(surface); break;
     case "history_e":       surface.setCursor(wordEnd(cur, lines)); resetHistoryCurswant(surface); break;

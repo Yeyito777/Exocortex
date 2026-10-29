@@ -141,8 +141,10 @@ const BINDS: Record<string, Action> = {
   "ctrl-o":       "toggle_turn_work",
   "ctrl-i":       "toggle_tool_output",
 
-  // Sidebar quick nav (normal mode for character bindings). In the history
-  // the vim keymap takes J/K instead: the cursor moves half a page in view.
+  // Sidebar quick nav (normal mode for character bindings). In the sidebar J/K
+  // move the selection; in the history the vim keymap takes them (the cursor
+  // moves a quarter page in view); from the prompt Shift+K enters the history
+  // one Shift+K up and Shift+J does nothing.
   "char:J":     "sidebar_next",
   "char:K":     "sidebar_prev",
   "char:t":     "sidebar_focus_next_completed",

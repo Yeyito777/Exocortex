@@ -44,7 +44,7 @@ import {
   openSidebarSearchBar,
 } from "./sidebarsearch";
 import { commitInsertSession, markInsertEntry, pushUndo } from "./undo";
-import { placeAtVisibleBottom } from "./historycursor";
+import { applyHistoryAction, placeAtVisibleBottom } from "./historycursor";
 import { imageAtHistoryCursor, openableTargetAtHistoryCursor } from "./historyopenable";
 import { acceptAutocomplete, type PathCompletionProvider } from "./autocomplete";
 import { handleQueuePromptKey } from "./queue";
@@ -374,6 +374,18 @@ export function handleFocusedKey(
       // Don't intercept when typing in the prompt — these are regular chars.
       // In the history they move the cursor (vim keymap).
       if (isPromptTyping(state) || isAnyHistoryFocused(state)) break;
+      // From the prompt in normal mode, Shift+K goes straight into the chat
+      // history with the cursor already one Shift+K up from the bottom row;
+      // Shift+J does nothing there. Only the sidebar's own J/K move its selection.
+      if (isPromptFocused(state)) {
+        if (action === "sidebar_prev") {
+          focusHistory(state);
+          state.historyCursor = placeAtVisibleBottom(state);
+          state.historyCurswant = null;
+          applyHistoryAction("history_half_up", state);
+        }
+        return { type: "handled" };
+      }
       ensureSidebarReady(state);
       moveSelection(state.sidebar, action === "sidebar_next" ? 1 : -1);
       return { type: "handled" };
