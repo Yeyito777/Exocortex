@@ -3,7 +3,8 @@
  * Prune this instance's Claude Code session files (session-prune.ts).
  *
  *   bun daemon/src/providers/anthropic/session-prune-cli.ts            # dry run: what would go
- *   bun daemon/src/providers/anthropic/session-prune-cli.ts --apply    # delete it
+ *   bun daemon/src/providers/anthropic/session-prune-cli.ts --apply    # move it to the quarantine
+ *   bun daemon/src/providers/anthropic/session-prune-cli.ts --restore 2026-10-30   # undo that day's
  *       [--protect <session id>,…] [--json] [--top N]
  *       [--data-dir DIR]   another instance's data directory (default: this checkout's)
  *
@@ -12,12 +13,15 @@
  */
 
 import { Database } from "bun:sqlite";
-import { existsSync } from "fs";
+import { existsSync, realpathSync } from "fs";
 import { join } from "path";
 import { conversationWorkspacesDir, dataDir } from "@exocortex/shared/paths";
 import { listClaudeAccounts, setClaudeAccountsFileForTests } from "./accounts";
 import {
   applyClaudeSessionPrune,
+  quarantineRoot,
+  readAliases,
+  restoreQuarantine,
   CLAUDE_SESSION_ALIASES_FILE,
   planClaudeSessionPrune,
   type ConversationResumePoints,
@@ -71,7 +75,7 @@ export function summarizePrunePlan(plan: SessionPrunePlan, top = 0): string {
     `scanned: ${plan.scanned.dirs} project dirs, ${plan.scanned.files} session files, ${gib(plan.scanned.bytes)}`,
     `keep:    ${plan.keep.files} files, ${gib(plan.keep.bytes)}`,
     `held:    ${plan.held.files} files, ${gib(plan.held.bytes)} (written in the last day, or held by a running process)`,
-    `delete:  ${plan.remove.length} entries, ${gib(removed)}`,
+    `prune:   ${plan.remove.length} entries, ${gib(removed)} (moved to the quarantine, purged after 7 days)`,
     ...[...byReason].map(([reason, entry]) => `  ${reason}: ${entry.files} ${reason === "conversation-gone" ? "dirs" : "files"}, ${gib(entry.bytes)}`),
     `aliases: ${Object.keys(plan.aliases).length} pruned sessions resume from a kept file`,
     `not touched: ${plan.outOfScope.points} resume points of ${plan.outOfScope.conversations} conversations outside this instance's workspaces`,
@@ -100,6 +104,16 @@ if (import.meta.main) {
   const data = dataIndex >= 0 ? args[dataIndex + 1] : dataDir();
   // That instance's Claude accounts name its configuration directories.
   if (dataIndex >= 0) setClaudeAccountsFileForTests(join(data, "anthropic-accounts.json"));
+  const restoreIndex = args.indexOf("--restore");
+  if (restoreIndex >= 0) {
+    const date = args[restoreIndex + 1] ?? "";
+    for (const root of [...new Set(claudeProjectsRoots().filter(root => existsSync(root)).map(root => realpathSync(root)))]) {
+      if (!existsSync(join(quarantineRoot(root), date))) continue;
+      const restored = restoreQuarantine(root, date);
+      console.log(`restored ${restored.restored} files from ${join(quarantineRoot(root), date)}${restored.conflicts.length ? `; ${restored.conflicts.length} left there (a file of that name exists again): ${restored.conflicts.slice(0, 5).join(", ")}` : ""}`);
+    }
+    process.exit(0);
+  }
   const dbPath = join(data, "exocortex.sqlite3");
   if (!existsSync(dbPath)) {
     console.error(`No conversation store at ${dbPath}; nothing to prune.`);
@@ -111,6 +125,7 @@ if (import.meta.main) {
     projectsRoots: claudeProjectsRoots(),
     workspacesRoot: dataIndex >= 0 ? join(data, "workspaces") : conversationWorkspacesDir(),
     protectedSessions,
+    previousAliases: readAliases(join(data, CLAUDE_SESSION_ALIASES_FILE)),
   });
   const planned = performance.now();
   const result = apply ? applyClaudeSessionPrune(plan, join(data, CLAUDE_SESSION_ALIASES_FILE), protectedSessions) : null;
@@ -122,8 +137,8 @@ if (import.meta.main) {
       result, planMs: Math.round(planned - started),
     }));
   } else {
-    console.log(`${apply ? "Pruned" : "Dry run (nothing deleted; --apply deletes)"} for ${data}\n${summarizePrunePlan(plan, top)}`);
+    console.log(`${apply ? "Pruned" : "Dry run (nothing moved; --apply moves it to the quarantine)"} for ${data}\n${summarizePrunePlan(plan, top)}`);
     console.log(`planned in ${((planned - started) / 1000).toFixed(1)} s`);
-    if (result) console.log(`removed ${result.removedFiles} files (${gib(result.removedBytes)}), skipped ${result.skipped}, ${result.errors.length} errors${result.errors.length ? `:\n  ${result.errors.slice(0, 10).join("\n  ")}` : ""}`);
+    if (result) console.log(`quarantined ${result.removedFiles} files (${gib(result.removedBytes)}) in ${result.quarantined.join(", ") || "-"}, skipped ${result.skipped}, purged ${result.purged.length} old quarantine days, ${result.errors.length} errors${result.errors.length ? `:\n  ${result.errors.slice(0, 10).join("\n  ")}` : ""}`);
   }
 }

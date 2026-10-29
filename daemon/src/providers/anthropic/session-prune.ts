@@ -13,7 +13,9 @@
  *
  * The prune keeps, per conversation, the fewest files that hold every resume
  * point its history records, newest first, and deletes the rest of the
- * conversation's files once they are a day old. A pruned session whose points
+ * conversation's files once they are a day old, into a quarantine beside
+ * `projects/` that is purged after QUARANTINE_DAYS (restoreQuarantine undoes
+ * a day). A pruned session whose points
  * a kept file holds gets an alias (`claude-session-aliases.json`): resuming
  * it resumes the kept file at the same entry, which has the same transcript up
  * to there (api.ts). Only this instance's own conversation workspaces' project
@@ -25,8 +27,8 @@
  * a long period where none is set (ensureClaudeTranscriptRetention).
  */
 
-import { closeSync, existsSync, lstatSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "fs";
-import { dirname, join } from "path";
+import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync, writeSync } from "fs";
+import { basename, dirname, join, relative } from "path";
 
 /** A resume point Exocortex recorded on a message (AnthropicAssistantProviderData). */
 export interface RecordedResumePoint {
@@ -49,6 +51,8 @@ export interface SessionPruneInput {
   workspacesRoot: string;
   /** Sessions a running process holds. */
   protectedSessions?: ReadonlySet<string>;
+  /** The aliases earlier prunes recorded (claude-session-aliases.json). */
+  previousAliases?: Readonly<Record<string, string>>;
   now?: number;
   /** Files written more recently than this are never deleted. */
   graceMs?: number;
@@ -60,6 +64,8 @@ export type PruneReason = "superseded" | "unreferenced" | "conversation-gone";
 
 export interface PruneCandidate {
   path: string;
+  /** The `projects/` directory it is in (its quarantine sits beside it). */
+  root: string;
   bytes: number;
   mtimeMs: number;
   reason: PruneReason;
@@ -68,6 +74,8 @@ export interface PruneCandidate {
 }
 
 export interface SessionPrunePlan {
+  /** The `projects/` directories scanned (real paths). */
+  roots: string[];
   scanned: { dirs: number; files: number; bytes: number };
   keep: { files: number; bytes: number };
   remove: PruneCandidate[];
@@ -75,6 +83,8 @@ export interface SessionPrunePlan {
   held: { files: number; bytes: number };
   /** Pruned (or already missing) session -> kept session holding all of its points. */
   aliases: Record<string, string>;
+  /** Sessions whose files stay (kept, held, or not Exocortex's). */
+  remaining: Set<string>;
   /** Conversations with points outside this instance's workspaces: not touched. */
   outOfScope: { conversations: number; points: number };
 }
@@ -98,23 +108,54 @@ export function claudeProjectDirName(cwd: string): string {
 }
 
 /**
- * The entries Claude Code loads when it resumes this file: the chain from its
- * last main-thread entry back to the start or a compaction boundary.
+ * The entries Claude Code loads when it resumes this file, each with a hash
+ * of its whole ancestry. That chain runs from the file's newest leaf back to
+ * its start, or, once the file holds a compaction, from the newest entry
+ * descending from its last compaction boundary back to that boundary (the
+ * compacting process's own file ends with the command's entries on the old
+ * chain, which Claude Code does not resume). Two files give the model the
+ * same history up to an entry only when its hashes match: a compaction
+ * re-parents the entries it preserves, so a later file can hold an earlier
+ * file's entry under a different history. With `wanted`, only those entries
+ * are returned.
  */
-export function loadableChain(path: string): Set<string> {
+export function chainAncestry(path: string, wanted?: ReadonlySet<string>): Map<string, string> {
   const parent = new Map<string, string | null>();
-  let last: string | null = null;
+  const order: string[] = [];
+  let boundary: string | null = null;
   for (const line of readFileSync(path, "utf8").split("\n")) {
     if (!line) continue;
-    let entry: { uuid?: unknown; parentUuid?: unknown; isSidechain?: unknown };
+    let entry: { uuid?: unknown; parentUuid?: unknown; isSidechain?: unknown; type?: unknown; subtype?: unknown };
     try { entry = JSON.parse(line); } catch { continue; }
     if (typeof entry.uuid !== "string" || entry.isSidechain === true) continue;
     parent.set(entry.uuid, typeof entry.parentUuid === "string" ? entry.parentUuid : null);
-    last = entry.uuid;
+    order.push(entry.uuid);
+    if (entry.type === "system" && entry.subtype === "compact_boundary") boundary = entry.uuid;
   }
-  const chain = new Set<string>();
-  for (let uuid = last; uuid && !chain.has(uuid); uuid = parent.get(uuid) ?? null) chain.add(uuid);
-  return chain;
+  const walk = (leaf: string | undefined) => {
+    const chain: string[] = [];
+    const seen = new Set<string>();
+    for (let uuid: string | null = leaf ?? null; uuid && !seen.has(uuid); uuid = parent.get(uuid) ?? null) {
+      seen.add(uuid);
+      chain.push(uuid);
+    }
+    return chain;
+  };
+  let chain = walk(order.at(-1));
+  if (boundary && !chain.includes(boundary)) {
+    chain = [];
+    for (let i = order.length - 1; i >= 0; i--) {
+      const candidate = walk(order[i]);
+      if (candidate.at(-1) === boundary) { chain = candidate; break; }
+    }
+  }
+  const ancestry = new Map<string, string>();
+  let hash = "";
+  for (let i = chain.length - 1; i >= 0; i--) {
+    hash = Bun.hash(`${hash}:${chain[i]}`).toString(36);
+    if (!wanted || wanted.has(chain[i])) ancestry.set(chain[i], hash);
+  }
+  return ancestry;
 }
 
 interface SessionFile {
@@ -157,24 +198,31 @@ function newestMtime(path: string): number {
 
 /**
  * The fewest files that hold one history's points, newest first: the file of
- * its latest point (the next turn's), then the file of each older point no
- * kept file holds on its loaded chain. Every other session the history names
- * gets an alias when one kept file holds all of its points.
+ * its latest point (the next turn's), then for each older point, its own file
+ * unless a kept file gives the same history up to it. A session the history
+ * names that is not kept gets an alias when one kept file holds all of its
+ * points. A session whose file an earlier prune moved is judged through the
+ * file its alias named, while that file is still here.
  */
 function coverHistory(
   points: RecordedResumePoint[],
   files: Map<string, SessionFile[]>,
-  chainOf: (sessionId: string) => Set<string>,
+  ancestryOf: (sessionId: string) => Map<string, string>,
+  previousAliases: Readonly<Record<string, string>>,
 ): { kept: Set<string>; aliases: Map<string, string> } {
   const kept: string[] = [];
   const covers = new Map<string, Set<string | null>>();
   for (let i = points.length - 1; i >= 0; i--) {
     const point = points[i];
-    let cover = kept.find(sessionId => chainOf(sessionId).has(point.resumeAt)) ?? null;
-    if (!cover && files.has(point.sessionId)) {
-      // A point before a compaction in its own file resumes from nowhere; the file stays anyway.
-      if (!kept.includes(point.sessionId)) kept.push(point.sessionId);
-      cover = point.sessionId;
+    const previous = previousAliases[point.sessionId];
+    const reference = files.has(point.sessionId) ? point.sessionId : previous && files.has(previous) ? previous : null;
+    const history = reference ? ancestryOf(reference).get(point.resumeAt) ?? null : null;
+    let cover = history ? kept.find(sessionId => ancestryOf(sessionId).get(point.resumeAt) === history) ?? null : null;
+    if (!cover && reference) {
+      // Nothing kept gives this history: keep the file that does. A point before a
+      // compaction in its own file resumes from nowhere; that file stays anyway.
+      if (!kept.includes(reference)) kept.push(reference);
+      cover = reference;
     }
     covers.set(point.sessionId, new Set([...(covers.get(point.sessionId) ?? []), cover]));
   }
@@ -182,7 +230,7 @@ function coverHistory(
   for (const [sessionId, targets] of covers) {
     if (kept.includes(sessionId) || targets.size !== 1) continue;
     const target = [...targets][0];
-    if (target) aliases.set(sessionId, target);
+    if (target && target !== sessionId) aliases.set(sessionId, target);
   }
   return { kept: new Set(kept), aliases };
 }
@@ -211,14 +259,17 @@ export function planClaudeSessionPrune(input: SessionPruneInput): SessionPrunePl
   const goneGrace = input.goneGraceMs ?? DEFAULT_GONE_GRACE_MS;
   const protectedSessions = input.protectedSessions ?? new Set<string>();
   const plan: SessionPrunePlan = {
+    roots: [],
     scanned: { dirs: 0, files: 0, bytes: 0 },
     keep: { files: 0, bytes: 0 },
     remove: [],
     held: { files: 0, bytes: 0 },
     aliases: {},
+    remaining: new Set(),
     outOfScope: { conversations: 0, points: 0 },
   };
   const roots = [...new Set(input.projectsRoots.filter(root => existsSync(root)).map(root => realpathSync(root)))];
+  plan.roots = roots;
   const workspacePrefix = claudeProjectDirName(`${input.workspacesRoot.replace(/\/+$/, "")}/`);
 
   // Every conversation's points, by the project directory they resume in (one
@@ -265,24 +316,26 @@ export function planClaudeSessionPrune(input: SessionPruneInput): SessionPrunePl
       if (!known.has(convId) && histories.length === 0) {
         // Deleted for good (not even in the trash): the whole directory goes once it is quiet.
         const newest = newestMtime(dir);
-        if (now - newest >= goneGrace) plan.remove.push({ path: dir, bytes: allBytes, mtimeMs: newest, reason: "conversation-gone", directory: true });
+        if (now - newest >= goneGrace) plan.remove.push({ path: dir, root, bytes: allBytes, mtimeMs: newest, reason: "conversation-gone", directory: true });
         else {
           plan.held.files += all.length;
           plan.held.bytes += allBytes;
+          for (const sessionId of files.keys()) plan.remaining.add(sessionId);
         }
         continue;
       }
 
-      const chains = new Map<string, Set<string>>();
-      const chainOf = (sessionId: string) => {
-        let chain = chains.get(sessionId);
-        if (!chain) chains.set(sessionId, chain = loadableChain(files.get(sessionId)![0].path));
-        return chain;
+      const wanted = new Set(histories.flat().map(point => point.resumeAt));
+      const ancestries = new Map<string, Map<string, string>>();
+      const ancestryOf = (sessionId: string) => {
+        let ancestry = ancestries.get(sessionId);
+        if (!ancestry) ancestries.set(sessionId, ancestry = chainAncestry(files.get(sessionId)![0].path, wanted));
+        return ancestry;
       };
       const keep = new Set<string>();
       const aliasTargets = new Map<string, Set<string>>();
       for (const points of histories) {
-        const { kept, aliases } = coverHistory(points, files, chainOf);
+        const { kept, aliases } = coverHistory(points, files, ancestryOf, input.previousAliases ?? {});
         for (const sessionId of kept) keep.add(sessionId);
         for (const [sessionId, target] of aliases) aliasTargets.set(sessionId, new Set([...(aliasTargets.get(sessionId) ?? []), target]));
       }
@@ -300,11 +353,13 @@ export function planClaudeSessionPrune(input: SessionPruneInput): SessionPrunePl
           if (keep.has(sessionId) || (!isReferenced && !writtenByAgentSdk(file.path))) {
             plan.keep.files++;
             plan.keep.bytes += file.bytes;
+            plan.remaining.add(sessionId);
           } else if (protectedSessions.has(sessionId) || now - file.mtimeMs < grace) {
             plan.held.files++;
             plan.held.bytes += file.bytes;
+            plan.remaining.add(sessionId);
           } else {
-            plan.remove.push({ ...file, reason: isReferenced ? "superseded" : "unreferenced" });
+            plan.remove.push({ ...file, root, reason: isReferenced ? "superseded" : "unreferenced" });
           }
         }
       }
@@ -318,37 +373,110 @@ export interface SessionPruneResult {
   removedBytes: number;
   skipped: number;
   errors: string[];
+  /** Where this run's files went, per projects root. */
+  quarantined: string[];
+  /** Quarantine days purged for good (older than the retention). */
+  purged: string[];
+}
+
+/** Pruned files wait here a while (beside `projects/`, outside it), so a prune can be undone. */
+export const QUARANTINE_DIR = "exocortex-prune-quarantine";
+export const QUARANTINE_DAYS = 7;
+
+export function quarantineRoot(projectsRoot: string): string {
+  return join(dirname(projectsRoot), QUARANTINE_DIR);
+}
+
+function day(now: number): string {
+  return new Date(now).toISOString().slice(0, 10);
+}
+
+/** A free path: `path`, else `path.1`, `path.2`, … */
+function freePath(path: string): string {
+  if (!existsSync(path)) return path;
+  for (let n = 1; ; n++) if (!existsSync(`${path}.${n}`)) return `${path}.${n}`;
 }
 
 /**
- * Delete what the plan found, after writing its aliases: a resume never finds
- * its file gone without one. A file written or a directory touched since the
- * plan was made stays.
+ * Move what the plan found into the quarantine (a rename: same filesystem,
+ * mtimes kept), after writing its aliases, so a resume never finds its file
+ * gone without one. A file written or a directory touched since the plan
+ * stays. Quarantine days older than QUARANTINE_DAYS are then purged.
  */
-export function applyClaudeSessionPrune(plan: SessionPrunePlan, aliasesPath: string, protectedSessions: ReadonlySet<string> = new Set()): SessionPruneResult {
-  writeClaudeSessionAliases(aliasesPath, plan.aliases);
-  const result: SessionPruneResult = { removedFiles: 0, removedBytes: 0, skipped: 0, errors: [] };
+export function applyClaudeSessionPrune(
+  plan: SessionPrunePlan,
+  aliasesPath: string,
+  protectedSessions: ReadonlySet<string> = new Set(),
+  now = Date.now(),
+): SessionPruneResult {
+  writeClaudeSessionAliases(aliasesPath, mergedAliases(aliasesPath, plan));
+  const result: SessionPruneResult = { removedFiles: 0, removedBytes: 0, skipped: 0, errors: [], quarantined: [], purged: [] };
+  const today = day(now);
   for (const candidate of plan.remove) {
     try {
+      const target = freePath(join(quarantineRoot(candidate.root), today, relative(candidate.root, candidate.path)));
       if (candidate.directory) {
         if (!existsSync(candidate.path) || newestMtime(candidate.path) > candidate.mtimeMs) { result.skipped++; continue; }
         const files = readdirSync(candidate.path).filter(name => name.endsWith(".jsonl")).length;
-        rmSync(candidate.path, { recursive: true, force: true });
+        mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
+        renameSync(candidate.path, target);
         result.removedFiles += files;
-        result.removedBytes += candidate.bytes;
-        continue;
+      } else {
+        const sessionId = basename(candidate.path).slice(0, -".jsonl".length);
+        let stat;
+        try { stat = lstatSync(candidate.path); } catch { result.skipped++; continue; }
+        if (!stat.isFile() || stat.mtimeMs !== candidate.mtimeMs || protectedSessions.has(sessionId)) { result.skipped++; continue; }
+        mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
+        renameSync(candidate.path, target);
+        result.removedFiles++;
       }
-      const sessionId = candidate.path.split("/").pop()!.slice(0, -".jsonl".length);
-      let stat;
-      try { stat = lstatSync(candidate.path); } catch { result.skipped++; continue; }
-      if (!stat.isFile() || stat.mtimeMs !== candidate.mtimeMs || protectedSessions.has(sessionId)) { result.skipped++; continue; }
-      unlinkSync(candidate.path);
-      result.removedFiles++;
       result.removedBytes += candidate.bytes;
+      const dayDir = join(quarantineRoot(candidate.root), today);
+      if (!result.quarantined.includes(dayDir)) result.quarantined.push(dayDir);
     } catch (error) {
       result.errors.push(`${candidate.path}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
+  for (const root of plan.roots) result.purged.push(...purgeQuarantine(quarantineRoot(root), now));
+  return result;
+}
+
+/** Delete quarantine days older than `days`. */
+export function purgeQuarantine(root: string, now = Date.now(), days = QUARANTINE_DAYS): string[] {
+  const purged: string[] = [];
+  let names: string[] = [];
+  try { names = readdirSync(root); } catch { return purged; }
+  const cutoff = day(now - days * 24 * 60 * 60_000);
+  for (const name of names) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(name) || name >= cutoff) continue;
+    rmSync(join(root, name), { recursive: true, force: true });
+    purged.push(join(root, name));
+  }
+  return purged;
+}
+
+/** Move one quarantine day's files back where they were; a file that exists there again stays in the quarantine. */
+export function restoreQuarantine(projectsRoot: string, date: string): { restored: number; conflicts: string[] } {
+  const source = join(quarantineRoot(projectsRoot), date);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !existsSync(source)) throw new Error(`No quarantine for ${date} in ${quarantineRoot(projectsRoot)}`);
+  const result = { restored: 0, conflicts: [] as string[] };
+  const visit = (dir: string) => {
+    for (const name of readdirSync(dir)) {
+      const path = join(dir, name);
+      if (lstatSync(path).isDirectory()) {
+        visit(path);
+        try { rmdirSync(path); } catch { /* conflicts left in it */ }
+        continue;
+      }
+      const target = join(projectsRoot, relative(source, path));
+      if (existsSync(target)) { result.conflicts.push(target); continue; }
+      mkdirSync(dirname(target), { recursive: true });
+      renameSync(path, target);
+      result.restored++;
+    }
+  };
+  visit(source);
+  try { rmdirSync(source); } catch { /* conflicts left in it */ }
   return result;
 }
 
@@ -357,26 +485,56 @@ interface AliasesFile {
   aliases: Record<string, string>;
 }
 
+export function readAliases(path: string): Record<string, string> {
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<AliasesFile>;
+    return parsed.version === 1 && parsed.aliases && typeof parsed.aliases === "object" ? parsed.aliases : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * This run's aliases plus every earlier one still useful: its session's file
+ * is gone and its target's stays. So an alias outlives the history that named
+ * it, and goes only with its target.
+ */
+function mergedAliases(path: string, plan: SessionPrunePlan): Record<string, string> {
+  const removed = new Set(plan.remove.filter(candidate => !candidate.directory).map(candidate => basename(candidate.path).slice(0, -".jsonl".length)));
+  const merged: Record<string, string> = {};
+  for (const [sessionId, target] of Object.entries(readAliases(path))) {
+    if (typeof target !== "string" || plan.remaining.has(sessionId) && !removed.has(sessionId)) continue;
+    if (plan.remaining.has(target) && !removed.has(target)) merged[sessionId] = target;
+  }
+  return { ...merged, ...plan.aliases };
+}
+
+/** Written whole and synced before it replaces the old file, so a crash leaves one or the other. */
 export function writeClaudeSessionAliases(path: string, aliases: Record<string, string>): void {
   const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, JSON.stringify({ version: 1, aliases } satisfies AliasesFile) + "\n", { mode: 0o600 });
+  const fd = openSync(tmp, "w", 0o600);
+  try {
+    writeSync(fd, JSON.stringify({ version: 1, aliases } satisfies AliasesFile) + "\n");
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
   renameSync(tmp, path);
 }
 
-let aliasCache: { path: string; mtimeMs: number; aliases: Record<string, string> } | null = null;
+let aliasCache: { path: string; version: string; aliases: Record<string, string> } | null = null;
 
 /** The kept session a pruned one's points live in, if the prune recorded one. */
 export function claudeSessionAlias(path: string, sessionId: string): string | null {
-  let mtimeMs: number;
-  try { mtimeMs = statSync(path).mtimeMs; } catch { return null; }
-  if (aliasCache?.path !== path || aliasCache.mtimeMs !== mtimeMs) {
-    let aliases: Record<string, string> = {};
-    try {
-      const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<AliasesFile>;
-      if (parsed.version === 1 && parsed.aliases && typeof parsed.aliases === "object") aliases = parsed.aliases;
-    } catch { /* unreadable: no aliases */ }
-    aliasCache = { path, mtimeMs, aliases };
+  let version: string;
+  try {
+    const stat = statSync(path);
+    // Each write is a new file renamed into place: a new inode.
+    version = `${stat.ino}:${stat.mtimeMs}:${stat.size}`;
+  } catch {
+    return null;
   }
+  if (aliasCache?.path !== path || aliasCache.version !== version) aliasCache = { path, version, aliases: readAliases(path) };
   const alias = aliasCache.aliases[sessionId];
   return typeof alias === "string" ? alias : null;
 }

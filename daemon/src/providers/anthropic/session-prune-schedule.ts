@@ -47,7 +47,7 @@ function runPrune(): void {
     try {
       const report = JSON.parse(stdout.trim().split("\n").at(-1) ?? "{}");
       const gib = (bytes: number) => `${(bytes / 1024 ** 3).toFixed(2)} GiB`;
-      log("info", `anthropic: Claude Code session prune removed ${report.result?.removedFiles ?? 0} files (${gib(report.result?.removedBytes ?? 0)}), kept ${report.keep?.files} (${gib(report.keep?.bytes ?? 0)}), held ${report.held?.files} recent or running, ${report.aliases} aliases, ${report.result?.errors?.length ?? 0} errors, planned in ${report.planMs} ms`);
+      log("info", `anthropic: Claude Code session prune moved ${report.result?.removedFiles ?? 0} files (${gib(report.result?.removedBytes ?? 0)}) to ${report.result?.quarantined?.join(", ") || "the quarantine"} (purged ${report.result?.purged?.length ?? 0} old days), kept ${report.keep?.files} (${gib(report.keep?.bytes ?? 0)}), held ${report.held?.files} recent or running, ${report.aliases} aliases, ${report.result?.errors?.length ?? 0} errors, planned in ${report.planMs} ms`);
     } catch {
       log("warn", `anthropic: Claude Code session prune printed no report`);
     }

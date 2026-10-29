@@ -55,11 +55,15 @@ conversations:
   (`daemon/src/providers/anthropic/session-prune.ts`): per conversation it
   keeps the fewest files that hold every resume point its history records
   (the next turn's, plus one per Claude Code compaction for unwinds past it)
-  and deletes the rest of the conversation's files once they are a day old.
+  and moves the rest of the conversation's files, once they are a day old, to
+  `exocortex-prune-quarantine/<date>/` beside `projects/` (same relative
+  paths, a rename); quarantine days older than 7 are purged by a later run.
   A pruned session id gets an alias in `claude-session-aliases.json` (data
   directory) to the kept file that holds its points; an unwind to one of them
   resumes that file at the same entry, which sends the model the same
-  messages. It touches only this instance's conversation workspaces' project
+  messages (a point counts as held by a file only when the file has the same
+  entries from the start up to it: a compaction re-parents the entries it
+  keeps). It touches only this instance's conversation workspaces' project
   directories, never a file a running process holds, never an interactive
   `claude` session, and never the `tool-results/` and `subagents/`
   directories later transcripts point into. Claude Code's own sweep would
@@ -69,8 +73,9 @@ conversations:
   `settings.json` where it is unset (an explicit value stays). By hand:
 
   ```
-  bun daemon/src/providers/anthropic/session-prune-cli.ts           # dry run
-  bun daemon/src/providers/anthropic/session-prune-cli.ts --apply   # delete
+  bun daemon/src/providers/anthropic/session-prune-cli.ts                      # dry run
+  bun daemon/src/providers/anthropic/session-prune-cli.ts --apply              # quarantine
+  bun daemon/src/providers/anthropic/session-prune-cli.ts --restore 2026-10-30 # undo a day
   ```
 - **Context compaction.** Claude Code compacts its own session, from the API's
   real usage: automatically near the window (967k of a 1M window) and when a

@@ -7,8 +7,12 @@ import {
   claudeProjectDirName,
   claudeSessionAlias,
   ensureClaudeTranscriptRetention,
-  loadableChain,
+  chainAncestry,
   planClaudeSessionPrune,
+  purgeQuarantine,
+  quarantineRoot,
+  readAliases,
+  restoreQuarantine,
   type ConversationResumePoints,
 } from "./session-prune";
 
@@ -59,11 +63,30 @@ describe("claudeProjectDirName", () => {
   });
 });
 
-describe("loadableChain", () => {
-  test("follows the last entry's parents and stops at a compaction boundary", () => {
+describe("chainAncestry", () => {
+  test("follows the last entry's parents, stops at a compaction boundary, and tells histories apart", () => {
     const { projects } = scratch();
     const path = writeSession(projects, sid(1), ["a<-", "b<-a", "dead<-b", "boundary<-", "c<-boundary", "d<-c"]);
-    expect([...loadableChain(path)].sort()).toEqual(["boundary", "c", "d"]);
+    expect([...chainAncestry(path).keys()].sort()).toEqual(["boundary", "c", "d"]);
+    // The same entry under another history (a compaction's preserved tail) hashes differently.
+    const original = writeSession(projects, sid(2), ["a<-", "x<-a", "y<-x"]);
+    const compacted = writeSession(projects, sid(3), ["summary<-", "x<-summary", "y<-x"]);
+    const copy = writeSession(projects, sid(4), ["a<-", "x<-a", "y<-x", "z<-y"]);
+    expect(chainAncestry(compacted).get("y")).not.toBe(chainAncestry(original).get("y"));
+    expect(chainAncestry(copy).get("y")).toBe(chainAncestry(original).get("y"));
+    expect([...chainAncestry(copy, new Set(["x"])).keys()]).toEqual(["x"]);
+  });
+
+  test("in the file of the process that compacted, follows the boundary's branch, not the command left on the old chain", () => {
+    const { projects } = scratch();
+    const path = join(projects, `${sid(5)}.jsonl`);
+    const entry = (uuid: string, parentUuid: string | null, extra: Record<string, unknown> = {}) => JSON.stringify({ uuid, parentUuid, isSidechain: false, type: "user", ...extra });
+    writeFileSync(path, [
+      entry("a", null), entry("b", "a"),
+      entry("boundary", null, { type: "system", subtype: "compact_boundary" }), entry("summary", "boundary"),
+      entry("command", "b"), entry("stdout", "command"), entry("attachment", "stdout", { type: "attachment" }),
+    ].join("\n") + "\n");
+    expect([...chainAncestry(path).keys()].sort()).toEqual(["boundary", "summary"]);
   });
 });
 
@@ -101,6 +124,34 @@ describe("planClaudeSessionPrune", () => {
     });
     expect(plan.remove.map(file => file.path.split("/").pop()).sort()).toEqual([`${sid(1)}.jsonl`, `${sid(3)}.jsonl`]);
     expect(plan.aliases).toEqual({ [sid(1)]: sid(2), [sid(3)]: sid(4) });
+  });
+
+  test("does not alias a point to a file that holds it under a compacted history", () => {
+    const { projects, workspaces } = scratch();
+    const dir = join(projects, claudeProjectDirName(join(workspaces, convId)));
+    writeSession(dir, sid(1), ["a<-", "b<-a"]);
+    // Compacted after b, keeping b after the summary.
+    writeSession(dir, sid(2), ["summary<-", "b<-summary", "c<-b"]);
+    const plan = planClaudeSessionPrune({
+      conversations: [conversation(workspaces, convId, [[1, "b"], [2, "c"]])],
+      projectsRoots: [projects], workspacesRoot: workspaces, now: NOW,
+    });
+    expect(plan.remove).toEqual([]);
+    expect(plan.aliases).toEqual({});
+  });
+
+  test("judges a session an earlier prune moved through the file its alias named", () => {
+    const { projects, workspaces } = scratch();
+    const dir = join(projects, claudeProjectDirName(join(workspaces, convId)));
+    // Session 1 was moved earlier, aliased to 2; 3 now holds everything.
+    writeSession(dir, sid(2), ["a<-", "b<-a"]);
+    writeSession(dir, sid(3), ["a<-", "b<-a", "c<-b"]);
+    const plan = planClaudeSessionPrune({
+      conversations: [conversation(workspaces, convId, [[1, "a"], [2, "b"], [3, "c"]])],
+      projectsRoots: [projects], workspacesRoot: workspaces, now: NOW, previousAliases: { [sid(1)]: sid(2) },
+    });
+    expect(plan.aliases).toEqual({ [sid(1)]: sid(3), [sid(2)]: sid(3) });
+    expect(plan.remove.map(file => file.path.split("/").pop())).toEqual([`${sid(2)}.jsonl`]);
   });
 
   test("never deletes a session a process holds or one written within the grace period", () => {
@@ -174,13 +225,21 @@ describe("planClaudeSessionPrune", () => {
 });
 
 describe("applyClaudeSessionPrune", () => {
-  test("writes the aliases first, deletes, and skips a file written since the plan", () => {
-    const { root, projects, workspaces } = scratch();
-    const convId = "1791667824123-k14mhj";
+  const convId = "1791667824123-k14mhj";
+
+  function forks(projects: string, workspaces: string) {
     const dir = join(projects, claudeProjectDirName(join(workspaces, convId)));
-    const first = writeSession(dir, sid(1), ["a<-"]);
-    const second = writeSession(dir, sid(2), ["a<-", "b<-a"]);
-    writeSession(dir, sid(3), ["a<-", "b<-a", "c<-b"]);
+    return {
+      dir,
+      first: writeSession(dir, sid(1), ["a<-"]),
+      second: writeSession(dir, sid(2), ["a<-", "b<-a"]),
+      third: writeSession(dir, sid(3), ["a<-", "b<-a", "c<-b"]),
+    };
+  }
+
+  test("writes the aliases first, moves files to the quarantine, and skips a file written since the plan", () => {
+    const { root, projects, workspaces } = scratch();
+    const { dir, first, second } = forks(projects, workspaces);
     const plan = planClaudeSessionPrune({
       conversations: [conversation(workspaces, convId, [[1, "a"], [2, "b"], [3, "c"]])],
       projectsRoots: [projects], workspacesRoot: workspaces, now: NOW,
@@ -188,12 +247,75 @@ describe("applyClaudeSessionPrune", () => {
     // Resumed (and so written) between plan and apply.
     utimesSync(second, NOW / 1000, NOW / 1000);
     const aliasesPath = join(root, "claude-session-aliases.json");
-    const result = applyClaudeSessionPrune(plan, aliasesPath);
+    const result = applyClaudeSessionPrune(plan, aliasesPath, new Set(), NOW);
     expect(result).toMatchObject({ removedFiles: 1, skipped: 1, errors: [] });
     expect(existsSync(first)).toBe(false);
+    const quarantined = join(quarantineRoot(projects), "2026-10-29", claudeProjectDirName(join(workspaces, convId)), `${sid(1)}.jsonl`);
+    expect(existsSync(quarantined)).toBe(true);
     expect(existsSync(second)).toBe(true);
+    expect(quarantineRoot(projects)).toBe(join(root, "claude", "exocortex-prune-quarantine"));
     expect(claudeSessionAlias(aliasesPath, sid(1))).toBe(sid(3));
     expect(claudeSessionAlias(aliasesPath, sid(3))).toBeNull();
+    expect(dir.startsWith(projects)).toBe(true);
+  });
+
+  test("a restore brings a day back, leaving what exists again; days past the retention are purged", () => {
+    const { root, projects, workspaces } = scratch();
+    const { first, second } = forks(projects, workspaces);
+    const plan = planClaudeSessionPrune({
+      conversations: [conversation(workspaces, convId, [[1, "a"], [2, "b"], [3, "c"]])],
+      projectsRoots: [projects], workspacesRoot: workspaces, now: NOW,
+    });
+    applyClaudeSessionPrune(plan, join(root, "aliases.json"), new Set(), NOW);
+    expect([existsSync(first), existsSync(second)]).toEqual([false, false]);
+    writeFileSync(second, "written again\n");
+    const restored = restoreQuarantine(projects, "2026-10-29");
+    expect(restored.restored).toBe(1);
+    expect(restored.conflicts).toEqual([second]);
+    expect(existsSync(first)).toBe(true);
+    expect(readFileSync(second, "utf8")).toBe("written again\n");
+
+    const old = join(quarantineRoot(projects), "2026-10-21");
+    const recent = join(quarantineRoot(projects), "2026-10-23");
+    mkdirSync(old, { recursive: true });
+    mkdirSync(recent, { recursive: true });
+    expect(purgeQuarantine(quarantineRoot(projects), NOW)).toEqual([old]);
+    expect(existsSync(recent)).toBe(true);
+  });
+
+  test("an alias outlives the history that named it, and goes with its target", () => {
+    const { root, projects, workspaces } = scratch();
+    forks(projects, workspaces);
+    const aliasesPath = join(root, "aliases.json");
+    applyClaudeSessionPrune(planClaudeSessionPrune({
+      conversations: [conversation(workspaces, convId, [[1, "a"], [2, "b"], [3, "c"]])],
+      projectsRoots: [projects], workspacesRoot: workspaces, now: NOW, previousAliases: readAliases(aliasesPath),
+    }), aliasesPath, new Set(), NOW);
+    expect(claudeSessionAlias(aliasesPath, sid(1))).toBe(sid(3));
+    // An unwind dropped the points of sessions 1 and 2: their aliases stay while session 3 does.
+    applyClaudeSessionPrune(planClaudeSessionPrune({
+      conversations: [conversation(workspaces, convId, [[3, "c"]])],
+      projectsRoots: [projects], workspacesRoot: workspaces, now: NOW, previousAliases: readAliases(aliasesPath),
+    }), aliasesPath, new Set(), NOW);
+    expect(claudeSessionAlias(aliasesPath, sid(1))).toBe(sid(3));
+    // Session 3 superseded by 4, which holds every point: the aliases follow.
+    writeSession(join(projects, claudeProjectDirName(join(workspaces, convId))), sid(4), ["a<-", "b<-a", "c<-b", "d<-c"]);
+    applyClaudeSessionPrune(planClaudeSessionPrune({
+      conversations: [conversation(workspaces, convId, [[1, "a"], [2, "b"], [3, "c"], [4, "d"]])],
+      projectsRoots: [projects], workspacesRoot: workspaces, now: NOW, previousAliases: readAliases(aliasesPath),
+    }), aliasesPath, new Set(), NOW);
+    expect([1, 2, 3].map(n => claudeSessionAlias(aliasesPath, sid(n)))).toEqual([sid(4), sid(4), sid(4)]);
+  });
+
+  test("moves a deleted conversation's whole directory", () => {
+    const { root, projects, workspaces } = scratch();
+    const name = claudeProjectDirName(join(workspaces, "1790000000000-gone01"));
+    writeSession(join(projects, name), sid(1), ["a<-"], { ageDays: 10 });
+    const plan = planClaudeSessionPrune({ conversations: [], projectsRoots: [projects], workspacesRoot: workspaces, now: NOW });
+    const result = applyClaudeSessionPrune(plan, join(root, "aliases.json"), new Set(), NOW);
+    expect(result.removedFiles).toBe(1);
+    expect(existsSync(join(projects, name))).toBe(false);
+    expect(existsSync(join(quarantineRoot(projects), "2026-10-29", name, `${sid(1)}.jsonl`))).toBe(true);
   });
 });
 
