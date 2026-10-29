@@ -30,7 +30,7 @@ import { experimentalFeatures } from "./experimental";
 import { conversationDefaultsSnapshot } from "./conversation-defaults";
 import { handleLogin } from "./cli";
 import * as convStore from "./conversations";
-import { closeConversationPersistence, prepareConversationStoreSchema } from "./persistence";
+import { closeConversationPersistence, isSqliteConversationStore, prepareConversationStoreSchema } from "./persistence";
 import { getRunningConversationIds, prepareRestartForReplay, prepareStopWithoutReplay } from "./control";
 import { clearRestartRecoveryForStop, deliverPendingSubagentNotifications, prepareCatchableShutdownForReplay, prepareCatchableShutdownWithoutReplay, recoverActiveGoals, recoverInterruptedStreams } from "./restart-recovery";
 import { scheduleActiveGoalTimeLimits } from "./goal-time-limit";
@@ -59,6 +59,7 @@ import { startDisplayIndexBackfill } from "./display-index-backfill";
 import { broadcastConversationUpdated } from "./conversation-events";
 import { BackgroundTaskRecovery } from "./background-task-recovery";
 import { adoptClaudeCodeProcesses } from "./providers/anthropic/api";
+import { ensureClaudeRetentionSettings, scheduleClaudeSessionPrune } from "./providers/anthropic/session-prune-schedule";
 import { detachAllClaudeCodeSessions, stopAllClaudeCodeSessions } from "./providers/anthropic/session";
 import { flushAssignments } from "./providers/anthropic/account-pool";
 import { runIpcProxy } from "./ipc-proxy";
@@ -453,6 +454,10 @@ async function startDaemon(): Promise<void> {
   // Do not mistake those targets for lost tasks while boot is still rebuilding
   // the catalog that suspended Chrono waits subscribe to.
   resumeDeferredChronoWaits();
+  // Claude Code keeps the sessions conversations resume; Exocortex prunes the
+  // forks they no longer need (session-prune.ts).
+  ensureClaudeRetentionSettings();
+  if (isSqliteConversationStore()) scheduleClaudeSessionPrune();
 }
 
 // ── Main ────────────────────────────────────────────────────────────

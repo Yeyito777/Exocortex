@@ -74,7 +74,8 @@ Decisions happen at turn boundaries, never mid-turn
 
 1. **A conversation stays on its account** while any of these hold:
    - its Claude Code process has background tasks (moving would stop them);
-   - its process is still open (it closes 15 seconds after an idle turn);
+   - its process is still open (it closes 30 minutes after an idle turn,
+     inside the cache's hour below, so it pins nothing the cache does not);
    - its prompt cache is warm: less than an hour since its last request.
      The cache belongs to the account's organization and does not carry
      over. Claude Code 2.1.x writes the main conversation's cache with a
