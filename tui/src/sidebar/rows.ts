@@ -79,13 +79,54 @@ function buildTreeDisplayRows(sidebar: SidebarRowsState): DisplayRow[] {
   return rows;
 }
 
+/** Every input the layout without a search reads, in order. */
+function collectDisplayRowInputs(sidebar: SidebarRowsState, out: unknown[]): void {
+  out.push(sidebar.folderView, sidebar.currentFolderId, sidebar.folders.length);
+  for (const folder of sidebar.folders) out.push(folder.id, folder.parentId ?? null, folder.pinned, folder.sortOrder);
+  out.push(sidebar.conversations.length);
+  for (const conv of sidebar.conversations) out.push(conv.id, conv.folderId ?? null, conv.pinned, conv.sortOrder);
+  if (isTreeFolderView(sidebar)) {
+    out.push(sidebar.expandedFolderIds?.size ?? 0);
+    for (const id of sidebar.expandedFolderIds ?? []) out.push(id);
+  }
+}
+
+function sameInputs(a: readonly unknown[], b: readonly unknown[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+/**
+ * The layout is rebuilt only when its inputs change. Every frame and most
+ * sidebar keys ask for it; with thousands of conversations each rebuild made
+ * two objects per row, so a smooth scroll (a frame per row) produced megabytes
+ * of garbage a second. Summaries are updated in place in places, so inputs are
+ * compared by value, which allocates nothing.
+ */
+const displayRowsCaches = new WeakMap<SidebarRowsState, { inputs: unknown[]; rows: readonly DisplayRow[] }>();
+let displayRowsScratch: unknown[] = [];
+
 /**
  * Build the flat list of display rows from the conversation/folder lists.
  * Used by rendering, navigation, and mouse hit-testing so the layout is
- * defined in one place.
+ * defined in one place. The result is shared between calls: never mutate it.
  */
-export function buildDisplayRows(sidebar: SidebarRowsState): DisplayRow[] {
+export function buildDisplayRows(sidebar: SidebarRowsState): readonly DisplayRow[] {
   const activeQuery = getActiveSidebarSearchQuery(sidebar);
+  if (activeQuery) return buildUncachedDisplayRows(sidebar, activeQuery);
+  const inputs = displayRowsScratch;
+  inputs.length = 0;
+  collectDisplayRowInputs(sidebar, inputs);
+  const cached = displayRowsCaches.get(sidebar);
+  if (cached && sameInputs(cached.inputs, inputs)) return cached.rows;
+  const rows = buildUncachedDisplayRows(sidebar, null);
+  displayRowsScratch = cached?.inputs ?? [];
+  displayRowsCaches.set(sidebar, { inputs, rows });
+  return rows;
+}
+
+function buildUncachedDisplayRows(sidebar: SidebarRowsState, activeQuery: string | null): DisplayRow[] {
   // Search results stay a flat list in either folder view.
   if (!activeQuery && isTreeFolderView(sidebar)) return buildTreeDisplayRows(sidebar);
 
@@ -131,7 +172,7 @@ export function sidebarUpdateRows(totalRows: number, sidebar: SidebarRowsState):
 }
 
 export function findDisplayEntry(
-  displayRows: DisplayRow[],
+  displayRows: readonly DisplayRow[],
   start: number,
   end: number,
   step: 1 | -1,
@@ -143,7 +184,7 @@ export function findDisplayEntry(
 }
 
 export function nearestDisplayEntry(
-  displayRows: DisplayRow[],
+  displayRows: readonly DisplayRow[],
   targetRow: number,
   preferredStep: -1 | 0 | 1,
 ): SidebarSelectableItem | null {
@@ -162,7 +203,7 @@ export function nearestDisplayEntry(
   return scan(1) ?? scan(-1);
 }
 
-export function revealPrecedingSectionLabel(displayRows: DisplayRow[], viewStart: number): number {
+export function revealPrecedingSectionLabel(displayRows: readonly DisplayRow[], viewStart: number): number {
   if (viewStart > 0
       && displayRows[viewStart]?.type === "entry"
       && displayRows[viewStart - 1]?.type === "label") {
@@ -172,7 +213,7 @@ export function revealPrecedingSectionLabel(displayRows: DisplayRow[], viewStart
 }
 
 export function snapSidebarViewStartToEntry(
-  displayRows: DisplayRow[],
+  displayRows: readonly DisplayRow[],
   listRows: number,
   viewStart: number,
   direction: -1 | 0 | 1,
