@@ -309,6 +309,12 @@ export class ProviderProxyLink {
         onResponse: (event) => {
           if (controller || finished) return;
           clearTimeout(headTimer);
+          // Once the head is in, the body's reader decides when it ends
+          // (cancelling the body cancels the remote stream), not the open
+          // call's signal. The forwarder hands the body to Bun's server, which
+          // cancels it when its client goes away; erroring it at the client's
+          // abort instead is an unhandled rejection, which stops the daemon.
+          signal?.removeEventListener("abort", onAbort);
           const body = new ReadableStream<Uint8Array>({
             start: (c) => { controller = c; },
             pull: () => { this.unblock(streamId); },
