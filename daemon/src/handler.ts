@@ -1572,6 +1572,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   const warmCommands = new Set([
     "btw_query", "btw_followup", "set_goal", "set_model", "set_effort",
     "set_fast_mode", "get_system_prompt", "load_instructions", "load_tool_instructions",
+    "save_tool_instructions",
   ]);
   // Commands for one conversation take effect in arrival order. An inline
   // `/model` arrives as set_model … send_message in one burst; without this the

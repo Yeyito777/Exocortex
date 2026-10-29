@@ -931,6 +931,14 @@ function trashWorkspaceAfterConversation(id: string): void {
 
 /** Fold targeted overlays through the canonical live object before trashing. */
 function materializeConversationOverlaysForTrash(id: string): void {
+  // SQLite writes sidebar changes and unwinds to the canonical rows (an
+  // unwind's receipt only guards its queue cleanup): there is nothing to fold,
+  // so a cold conversation is not loaded, which would throw. Only a loaded
+  // one's unsaved changes are saved.
+  if (storedInSqlite(id)) {
+    flush(id);
+    return;
+  }
   if (!dirty.has(id)
       && !persistence.hasConversationSidebarState(id)
       && !persistence.hasConversationUnwindReceipt(id)) return;

@@ -249,6 +249,31 @@ test("cold sidebar mutations, clones and undo do not hydrate canonical archives"
   convStore.flush(id);
 });
 
+test("an unwound conversation gone cold is deleted, alone or with its folder, without loading", async () => {
+  const alone = seed();
+  const inFolder = seed();
+  for (const id of [alone, inFolder]) expect((await convStore.unwindTo(id, 1, `cold-delete-${id}`))?.status).toBe("applied");
+  const kept = persistence.load(alone)!.messages;
+  const folder = convStore.createFolder(`cold unwound ${Date.now()}`, null, [{ type: "conversation", id: inFolder }])!;
+  convStore.conversationCacheInternalsForTest.evictClean();
+  for (const id of [alone, inFolder]) {
+    expect(convStore.getCached(id)).toBeUndefined();
+    expect(persistence.hasConversationUnwindReceipt(id)).toBe(true);
+  }
+
+  expect(convStore.remove(alone)).toBe(true);
+  expect(convStore.hasConversation(alone)).toBe(false);
+  expect(persistence.hasConversationUnwindReceipt(alone)).toBe(false);
+  expect(convStore.deleteFolder(folder.id)).toBe(true);
+  expect(convStore.hasConversation(inFolder)).toBe(false);
+  expect(convStore.getCached(alone) ?? convStore.getCached(inFolder)).toBeUndefined();
+
+  expect((await convStore.undoDeleteAsync())?.type).toBe("sidebar_state");
+  expect(convStore.getSummary(inFolder)?.folderId).toBe(folder.id);
+  expect((await convStore.undoDeleteAsync())?.type).toBe("conversation");
+  expect(persistence.load(alone)!.messages).toEqual(kept);
+});
+
 test("undo and redo of a cold rename or mark apply without loading, and older entries stay reachable", async () => {
   const a = seed();
   const b = seed();
@@ -347,4 +372,32 @@ test("a context-attribution mark does not downgrade a pending full save", async 
   convStore.markContextAttributionDirty(id);
   convStore.flush(id);
   expect(persistence.load(id)!.messages[1].metadata?.endedAt).toBe(99);
+});
+
+test("commands on cold unwound conversations: delete_conversation and save_tool_instructions", async () => {
+  const { createHandler } = await import("./handler");
+  const sent: Array<{ type: string; reqId?: string; message?: string }> = [];
+  const handle = createHandler({
+    ...server(),
+    sendTo: (_client: unknown, event: { type: string; reqId?: string; message?: string }) => { sent.push(event); return 0; },
+    broadcastExcept() {}, subscribe() {}, unsubscribe() {}, setHiddenConversationFilter() {},
+    onClientClosed: () => () => {}, broadcastSidebarStatePatched() {}, broadcastSidebarItemsReordered() {},
+  } as never);
+  const client = { id: "cold-commands", socket: { destroyed: false }, subscriptions: new Set(), capabilities: new Set() };
+  const run = (command: Record<string, unknown>) => handle(client as never, command as never);
+  try {
+    const deleted = seed();
+    const routed = seed();
+    for (const id of [deleted, routed]) expect((await convStore.unwindTo(id, 1, `cold-command-${id}`))?.status).toBe("applied");
+    convStore.conversationCacheInternalsForTest.evictClean();
+
+    await run({ type: "delete_conversation", reqId: "delete", convId: deleted });
+    expect(convStore.hasConversation(deleted)).toBe(false);
+    // Empty edits stop at validation, after the route is known: nothing is written.
+    await run({ type: "save_tool_instructions", reqId: "save", convId: routed, edits: [] });
+    for (let i = 0; i < 100 && !sent.some(event => event.reqId === "save"); i++) await Bun.sleep(5);
+    expect(sent.filter(event => event.type === "error")).toEqual([{ type: "error", reqId: "save", message: "Nothing to save" }]);
+  } finally {
+    await handle.stop();
+  }
 });
