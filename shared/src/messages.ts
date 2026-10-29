@@ -896,6 +896,29 @@ export interface ApiKeyUsage {
   month: ApiKeySpend;
   /** `providers.openai.monthlyBudgetUsd`: draws the spend as bars against it; unset shows plain amounts. */
   monthlyBudgetUsd?: number | null;
+  /** `providers.openai.credit`: the spend against a prepaid credit grant. Takes precedence over the budget. */
+  credit?: ApiKeyCredit | null;
+}
+
+/** A prepaid credit grant and what the local ledger has counted against it (an estimate, not OpenAI's balance). */
+export interface ApiKeyCredit {
+  amountUsd: number;
+  /** Local day (YYYY-MM-DD) the grant was credited. */
+  since: string;
+  /** Local day it expires, if it does. */
+  expires: string | null;
+  /** The daemon's local day these figures are for. */
+  asOf: string;
+  /** Estimated spend from `since` through today. */
+  usedUsd: number;
+  /**
+   * First day on or after `since` the ledger has requests for; null when none.
+   * Later than `since` means the days between were not tracked.
+   */
+  firstTrackedDay: string | null;
+  /** Estimated spend over the last `paceDays` days (at most 7, today included, not before `firstTrackedDay`). */
+  paceUsd: number;
+  paceDays: number;
 }
 
 // ── Token stats ─────────────────────────────────────────────────────

@@ -4,7 +4,7 @@ import { resolveModelTokenPricing } from "@exocortex/shared/token-pricing";
 import { clearProviderAuth, saveProviderAuth } from "../../store";
 import { ensureAuthenticated, setOpenAIBrowserOAuthForTest } from "./auth";
 import { openAIApiKeyAccountKey } from "./api-key";
-import { estimateApiKeyRequestCostUsd, recordApiKeyUsage, resetApiKeyUsageForTest, setApiKeyUsageRecordedListener } from "./api-key-usage";
+import { apiKeyCredit, estimateApiKeyRequestCostUsd, recordApiKeyUsage, resetApiKeyUsageForTest, setApiKeyUsageRecordedListener } from "./api-key-usage";
 import {
   OPENAI_API_IMAGE_GENERATIONS_URL,
   OPENAI_API_MODELS_URL,
@@ -188,6 +188,64 @@ describe("API-key usage", () => {
       expect(seen).toEqual([[accountKey, 1], [accountKey, 2]]);
     } finally {
       setApiKeyUsageRecordedListener(null);
+    }
+  });
+
+  test("a credit grant counts the spend since it and the pace over the last week", () => {
+    resetApiKeyUsageForTest();
+    const accountKey = "api-key:credit-test";
+    const at = (day: number, hour = 12) => new Date(2026, 9, day, hour).getTime();
+    const grant = { amountUsd: 1000, since: "2026-10-20", expires: "2027-10-20" };
+    const price = (tokens: number) => estimateApiKeyRequestCostUsd({ model: "gpt-5.4-mini", inputTokens: tokens })!;
+
+    // No history yet.
+    expect(apiKeyCredit(accountKey, grant, at(28))).toEqual({
+      amountUsd: 1000, since: "2026-10-20", expires: "2027-10-20", asOf: "2026-10-28",
+      usedUsd: 0, firstTrackedDay: null, paceUsd: 0, paceDays: 0,
+    });
+
+    // Before the grant: not counted. Oct 22 and 28: counted; Oct 22 is outside the last 7 days of Oct 29.
+    recordApiKeyUsage(accountKey, { model: "gpt-5.4-mini", inputTokens: 5_000_000, timestamp: at(18) });
+    recordApiKeyUsage(accountKey, { model: "gpt-5.4-mini", inputTokens: 1_000_000, timestamp: at(22) });
+    recordApiKeyUsage(accountKey, { model: "gpt-transcribe", timestamp: at(23) }); // unpriced, still a tracked day
+    recordApiKeyUsage(accountKey, { model: "gpt-5.4-mini", inputTokens: 2_000_000, timestamp: at(28, 23) });
+
+    // Partial history: the ledger starts Oct 22, so the pace is over Oct 22–28 (7 days).
+    const oct28 = apiKeyCredit(accountKey, grant, at(28));
+    expect(oct28).toMatchObject({ firstTrackedDay: "2026-10-22", paceDays: 7, asOf: "2026-10-28" });
+    expect(oct28.usedUsd).toBeCloseTo(price(3_000_000), 10);
+    expect(oct28.paceUsd).toBeCloseTo(price(3_000_000), 10);
+
+    // Oct 29: the last 7 days are Oct 23–29.
+    const oct29 = apiKeyCredit(accountKey, grant, at(29));
+    expect(oct29.paceDays).toBe(7);
+    expect(oct29.paceUsd).toBeCloseTo(price(2_000_000), 10);
+    expect(oct29.usedUsd).toBeCloseTo(price(3_000_000), 10);
+
+    // Two days in: the pace is over those two.
+    const oct23 = apiKeyCredit(accountKey, grant, at(23));
+    expect(oct23).toMatchObject({ paceDays: 2, firstTrackedDay: "2026-10-22" });
+    expect(oct23.usedUsd).toBeCloseTo(price(1_000_000), 10);
+    resetApiKeyUsageForTest();
+  });
+
+  test("carries providers.openai.credit when valid, re-read on every update", async () => {
+    mockFetch(() => new Response("unexpected", { status: 500 }));
+    await loginWithKey();
+    try {
+      writeExocortexConfig({});
+      expect(getLastUsage()?.apiKey?.credit).toBeNull();
+      writeExocortexConfig({ providers: { openai: { monthlyBudgetUsd: 20, credit: { amountUsd: 1000, since: "2026-10-20", expires: "2027-10-20" } } } });
+      expect(getLastUsage()?.apiKey?.credit).toMatchObject({ amountUsd: 1000, since: "2026-10-20", expires: "2027-10-20", usedUsd: 0 });
+      expect(getLastUsage()?.apiKey?.monthlyBudgetUsd).toBe(20);
+      writeExocortexConfig({ providers: { openai: { credit: { amountUsd: 1000, since: "2026-10-20" } } } });
+      expect(getLastUsage()?.apiKey?.credit?.expires).toBeNull();
+      writeExocortexConfig({ providers: { openai: { credit: { amountUsd: 0, since: "2026-10-20" } } } });
+      expect(getLastUsage()?.apiKey?.credit).toBeNull();
+      writeExocortexConfig({ providers: { openai: { credit: { amountUsd: 1000, since: "Oct 20" } } } });
+      expect(getLastUsage()?.apiKey?.credit).toBeNull();
+    } finally {
+      writeExocortexConfig({});
     }
   });
 

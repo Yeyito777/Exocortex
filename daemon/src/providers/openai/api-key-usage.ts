@@ -5,13 +5,15 @@
  * session key, organization/costs an admin `api.usage.read` key), so this
  * local count is the honest equivalent: tokens per day and month, priced from
  * the published table where a rate exists. Requests made elsewhere with the
- * same key are not seen.
+ * same key are not seen. Days are kept for 400 days, enough to count a
+ * year-long credit grant (`providers.openai.credit`) from the day it began.
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { dataDir } from "@exocortex/shared/paths";
 import { resolveModelTokenPricing, type TokenPricingServiceTier } from "@exocortex/shared/token-pricing";
-import type { ApiKeySpend, ApiKeyUsage } from "../../messages";
+import type { ApiKeyCredit, ApiKeySpend, ApiKeyUsage } from "../../messages";
+import type { OpenAICreditConfig } from "@exocortex/shared/config";
 import { log } from "../../log";
 
 const KEEP_DAYS = 400;
@@ -152,6 +154,48 @@ export function apiKeyUsage(accountKey: string, label: string, now = Date.now())
     if (day.startsWith(month)) addSpend(monthSpend, spend);
   }
   return { label, today: todaySpend, month: monthSpend };
+}
+
+/** Days a pace is averaged over, today included. */
+const PACE_DAYS = 7;
+
+/** Day number of a YYYY-MM-DD string, for differences between days. */
+function dayNumber(day: string): number {
+  const [year, month, date] = day.split("-").map(Number);
+  return Math.round(Date.UTC(year, month - 1, date) / 86_400_000);
+}
+
+/**
+ * The key's spend against a credit grant: what the ledger counted from
+ * `since` through today, and the last week's spend for a pace (fewer days
+ * when the ledger starts later).
+ */
+export function apiKeyCredit(accountKey: string, credit: OpenAICreditConfig, now = Date.now()): ApiKeyCredit {
+  const days = loadLedger().byAccount[accountKey] ?? {};
+  const today = localDay(now);
+  let usedUsd = 0;
+  let firstTrackedDay: string | null = null;
+  for (const [day, spend] of Object.entries(days)) {
+    if (day < credit.since || day > today) continue;
+    usedUsd += spend.estimatedCostUsd;
+    if (spend.requests > 0 && (firstTrackedDay === null || day < firstTrackedDay)) firstTrackedDay = day;
+  }
+  const paceDays = firstTrackedDay === null ? 0 : Math.min(PACE_DAYS, dayNumber(today) - dayNumber(firstTrackedDay) + 1);
+  const paceStart = dayNumber(today) - paceDays + 1;
+  let paceUsd = 0;
+  for (const [day, spend] of Object.entries(days)) {
+    if (day >= credit.since && day <= today && dayNumber(day) >= paceStart) paceUsd += spend.estimatedCostUsd;
+  }
+  return {
+    amountUsd: credit.amountUsd,
+    since: credit.since,
+    expires: credit.expires ?? null,
+    asOf: today,
+    usedUsd,
+    firstTrackedDay,
+    paceUsd,
+    paceDays,
+  };
 }
 
 export function resetApiKeyUsageForTest(): void {
