@@ -134,14 +134,14 @@ function moveHistoryLine(surface: HistorySurface, direction: -1 | 1): void {
   surface.setCurswant(desiredCol);
 }
 
-/** Shift+J/K's rows: half of Ctrl+U/Ctrl+D's floor(height / 2), at least 1. */
+/** Shift+J/K's rows: a quarter of Ctrl+U/Ctrl+D's floor(height / 2) (an eighth of a page), at least 1. */
 export function shiftJkRows(viewportHeight: number): number {
-  return Math.max(1, Math.floor(Math.floor(viewportHeight / 2) / 2));
+  return Math.max(1, Math.floor(Math.floor(viewportHeight / 2) / 4));
 }
 
 /**
- * Shift+K / Shift+J — the cursor moves half of Ctrl+U/Ctrl+D's half page (a
- * quarter page), keeping its column like j/k. Like that many j/k presses, the
+ * Shift+K / Shift+J — the cursor moves a quarter of Ctrl+U/Ctrl+D's half page
+ * (an eighth of a page), keeping its column like j/k. Like that many j/k presses, the
  * view stays put while the cursor is inside it and scrolls just enough to
  * follow it past the top or bottom edge. `dir`: positive = up, negative = down.
  */
