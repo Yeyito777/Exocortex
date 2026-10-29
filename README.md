@@ -224,10 +224,15 @@ than after its timeout. Subagents get it like their parents.
 Several machines can be connected at once (a laptop and a phone, say), so each
 has a short client ID: `mac` for a Mac, `windows` for Windows, otherwise its
 hostname (`toronto`), numbered when taken (`mac-2`) and kept across restarts.
-Name a machine yourself in `config/config.json` by its `user@hostname`:
+Each install (TUI and daemon of one checkout) announces a random install ID,
+kept in its `config/data/client-install-id`, so two devices that are both
+`root@localhost` are two machines; clients from before install IDs are told
+apart by `user@hostname` only. Name a machine yourself in `config/config.json`
+by its `user@hostname` (every machine announcing it: the second gets `-2`) or
+by its install ID (that one alone):
 
 ```json
-"clientHosts": { "names": { "root@localhost": "phone" } }
+"clientHosts": { "names": { "root@localhost": "phone", "8f3a2c1b9d4e7a60": "tablet" } }
 ```
 
 A `client_bash` call names its machine with `host`. It may leave `host` out only

@@ -120,11 +120,13 @@ export interface AgentConfig {
 
 export interface ClientHostsConfig {
   /**
-   * Client IDs for the user's machines, keyed by user@hostname as each
-   * announces itself (e.g. "root@localhost": "phone"): the name client_bash's
-   * host takes and the model sees. Lowercase letters, digits and dashes, up to
-   * 32. An unnamed machine gets one from its platform or hostname (mac,
-   * windows, toronto), kept across restarts.
+   * Client IDs for the user's machines: the name client_bash's host takes and
+   * the model sees. Lowercase letters, digits and dashes, up to 32. Keyed by
+   * user@hostname as a machine announces itself ("root@localhost": "phone"),
+   * which names every machine announcing it (the second gets phone-2), or by
+   * one install's ID (its data/client-install-id), which names that machine
+   * alone. An unnamed machine gets one from its platform or hostname (mac,
+   * windows, toronto). IDs are kept across reconnects and restarts.
    */
   names?: Record<string, string>;
 }

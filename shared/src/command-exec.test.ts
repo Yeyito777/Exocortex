@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ClientExecutor, ExecLiveness, resolveClientCwd, type ClientExecOutcome } from "./command-exec";
+import { ClientExecutor, ExecLiveness, INSTALL_ID_PATTERN, clientInstallId, localHostInfo, resolveClientCwd, type ClientExecOutcome } from "./command-exec";
+import { dataDir } from "./paths";
 
 const dirs: string[] = [];
 function tempHome(): string {
@@ -106,5 +107,15 @@ describe("ExecLiveness", () => {
     stopped.stop();
     await Bun.sleep(30);
     expect(stalls).toEqual(["ack", "silence"]);
+  });
+});
+
+describe("clientInstallId", () => {
+  test("is made once, kept in the data directory, and announced with this machine", () => {
+    const id = clientInstallId();
+    expect(id).toMatch(INSTALL_ID_PATTERN);
+    expect(readFileSync(join(dataDir(), "client-install-id"), "utf8").trim()).toBe(id!);
+    expect(clientInstallId()).toBe(id);
+    expect(localHostInfo().installId).toBe(id!);
   });
 });

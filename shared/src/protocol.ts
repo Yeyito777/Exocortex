@@ -351,13 +351,18 @@ export interface ClientCapabilitiesCommand {
   sidebarView?: SidebarViewHint;
 }
 
-/** The user's own machine, as announced by an SSH-connected TUI. */
+/** The user's own machine, as announced by an SSH-connected TUI or a linking daemon. */
 export interface ClientHostInfo {
   hostname: string;
   user: string;
   /** Node's process.platform, e.g. "linux", "darwin", "win32". */
   platform: string;
   home: string;
+  /**
+   * The announcing install's random ID (clientInstallId), so two machines
+   * with the same user@hostname are told apart. Older clients send none.
+   */
+  installId?: string;
 }
 
 /**

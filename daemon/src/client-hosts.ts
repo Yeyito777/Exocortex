@@ -14,10 +14,12 @@
  * answering, instead of after the command's whole timeout.
  *
  * Several machines can be attached at once (a laptop and a phone), and a
- * command meant for one must never run on another. Each machine has a short
- * client ID (mac, phone): its name in config clientHosts.names, else one made
- * from its platform or hostname and kept in client-hosts.json across
- * restarts. A client_bash call names its machine with host. It may leave host
+ * command meant for one must never run on another. A machine is its install
+ * ID when it announces one (two phones that are both root@localhost are two
+ * machines), else its user@hostname (older clients). Each has a short client
+ * ID (mac, phone): its name in config clientHosts.names, else one made from
+ * its platform or hostname, numbered when taken and kept in client-hosts.json
+ * across restarts. A client_bash call names its machine with host. It may leave host
  * out only while a single machine is connected and the conversation was told
  * that one is the only one (clientHostNotice); nothing is ever picked for it
  * by who attached last or who is viewing the conversation.
@@ -27,7 +29,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
-import { EXEC_ACK_TIMEOUT_MS, EXEC_SILENCE_TIMEOUT_MS, ExecLiveness, execStallMessage } from "@exocortex/shared/command-exec";
+import { EXEC_ACK_TIMEOUT_MS, EXEC_SILENCE_TIMEOUT_MS, ExecLiveness, INSTALL_ID_PATTERN, execStallMessage } from "@exocortex/shared/command-exec";
 import { readExocortexConfig } from "@exocortex/shared/config";
 import { dataDir } from "@exocortex/shared/paths";
 import type { ClientExecRequestEvent, ClientExecResultCommand, ClientHostInfo, Event } from "@exocortex/shared/protocol";
@@ -93,7 +95,11 @@ export function attachClientHost(client: ConnectedClient, info: unknown, send: (
   const known = hosts.has(client);
   hosts.set(client, {
     client,
-    info: { hostname: info.hostname, user: info.user, platform: info.platform, home: info.home },
+    info: {
+      hostname: info.hostname, user: info.user, platform: info.platform, home: info.home,
+      // A malformed install ID is ignored: the machine is then known by user@hostname, as an older client is.
+      ...(typeof info.installId === "string" && INSTALL_ID_PATTERN.test(info.installId) ? { installId: info.installId } : {}),
+    },
     via: options.via ?? "tui",
     reportsAlive: options.reportsAlive ?? false,
     send,
@@ -102,7 +108,8 @@ export function attachClientHost(client: ConnectedClient, info: unknown, send: (
   });
   if (!known) client.socket.once("close", () => detachClientHost(client));
   // Give a new machine its ID now, so it keeps the one it was first seen with.
-  clientIdFor(machineKey(info), info, true);
+  const attached = hosts.get(client)!.info;
+  clientIdFor(machineKey(attached), attached, true);
 }
 
 export function detachClientHost(client: ConnectedClient): void {
@@ -117,8 +124,18 @@ export function detachClientHost(client: ConnectedClient): void {
   }
 }
 
-function machineKey(info: ClientHostInfo): string {
+/** user@hostname, as a machine announces itself. */
+function hostKey(info: ClientHostInfo): string {
   return `${info.user}@${info.hostname}`;
+}
+
+/** What tells a machine apart: its install ID, or user@hostname for a client that sends none. */
+function machineKey(info: ClientHostInfo): string {
+  return info.installId ? `install:${info.installId}` : hostKey(info);
+}
+
+function installIdOf(key: string): string | null {
+  return key.startsWith("install:") ? key.slice("install:".length) : null;
 }
 
 // ── Client IDs ─────────────────────────────────────────────────────
@@ -132,9 +149,11 @@ const MAX_REMEMBERED_MACHINES = 200;
 interface MachineRecord {
   id: string;
   lastSeen: number;
+  /** The user@hostname it last announced; a machine known by user@hostname is keyed by it instead. */
+  host?: string;
 }
 
-// Machine key (user@hostname) → its ID, from client-hosts.json.
+// Machine key → its ID, from client-hosts.json.
 let registry: Map<string, MachineRecord> | null = null;
 
 function registryPath(): string {
@@ -148,7 +167,11 @@ function loadedRegistry(): Map<string, MachineRecord> {
     const file = JSON.parse(readFileSync(registryPath(), "utf8")) as { machines?: Record<string, Partial<MachineRecord>> } | null;
     for (const [key, record] of Object.entries(file?.machines ?? {})) {
       if (typeof record?.id === "string" && CLIENT_ID_PATTERN.test(record.id)) {
-        registry.set(key, { id: record.id, lastSeen: typeof record.lastSeen === "number" ? record.lastSeen : 0 });
+        registry.set(key, {
+          id: record.id,
+          lastSeen: typeof record.lastSeen === "number" ? record.lastSeen : 0,
+          ...(typeof record.host === "string" ? { host: record.host } : {}),
+        });
       }
     }
   } catch (error) {
@@ -168,7 +191,7 @@ function saveRegistry(map: Map<string, MachineRecord>): void {
   const tmp = `${path}.${process.pid}.tmp`;
   try {
     mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(tmp, JSON.stringify({ version: 1, machines: Object.fromEntries(map) }, null, 2) + "\n");
+    writeFileSync(tmp, JSON.stringify({ version: 2, machines: Object.fromEntries(map) }, null, 2) + "\n");
     renameSync(tmp, path);
   } catch (error) {
     log("warn", `client-hosts: could not save ${path}: ${error instanceof Error ? error.message : String(error)}`);
@@ -181,17 +204,37 @@ function normalizedKey(key: string): string {
   return at < 0 ? key.toLowerCase() : `${key.slice(0, at)}@${key.slice(at + 1).toLowerCase()}`;
 }
 
-/** clientHosts.names from config, by normalized machine key; of two machines given one name, the first keeps it. */
-function configuredNames(): Map<string, string> {
-  const names = new Map<string, string>();
-  const taken = new Set<string>();
+interface ConfiguredNames {
+  /** By install ID: that machine's name, and no other's. */
+  byInstall: Map<string, string>;
+  /** By normalized user@hostname: the name of every machine announcing it, numbered past the first. */
+  byHost: Map<string, string>;
+  all: Set<string>;
+}
+
+/**
+ * clientHosts.names from config: keyed by install ID, or by user@hostname
+ * (one with an @). Of two entries giving one name, the first keeps it.
+ */
+function configuredNames(): ConfiguredNames {
+  const names: ConfiguredNames = { byInstall: new Map(), byHost: new Map(), all: new Set() };
   for (const [key, value] of Object.entries(readExocortexConfig().clientHosts?.names ?? {})) {
     const id = typeof value === "string" ? value.trim().toLowerCase() : "";
-    if (!CLIENT_ID_PATTERN.test(id) || taken.has(id)) continue;
-    names.set(normalizedKey(key), id);
-    taken.add(id);
+    if (!CLIENT_ID_PATTERN.test(id) || names.all.has(id)) continue;
+    if (key.includes("@")) names.byHost.set(normalizedKey(key.trim()), id);
+    else names.byInstall.set(key.trim().toLowerCase(), id);
+    names.all.add(id);
   }
   return names;
+}
+
+/** A machine's configured name: by its install ID (its alone), else by its user@hostname. */
+function configuredNameFor(names: ConfiguredNames, key: string, host: string | undefined): { name: string; exclusive: boolean } | null {
+  const installId = installIdOf(key);
+  const byInstall = installId ? names.byInstall.get(installId.toLowerCase()) : undefined;
+  if (byInstall) return { name: byInstall, exclusive: true };
+  const byHost = host ? names.byHost.get(normalizedKey(host)) : undefined;
+  return byHost ? { name: byHost, exclusive: false } : null;
 }
 
 function slug(text: string, max = 24): string {
@@ -208,38 +251,69 @@ function baseClientId(info: ClientHostInfo): string {
   return slug(info.platform) || "machine";
 }
 
+function numbered(base: string, n: number): string {
+  return n < 2 ? base : `${base.slice(0, 28)}-${n}`;
+}
+
+/** `id` is `base` or a numbered `base` (mac, mac-2). */
+function fitsBase(id: string, base: string): boolean {
+  const stem = `${base.slice(0, 28)}-`;
+  return id === base || (id.startsWith(stem) && /^[1-9]\d*$/.test(id.slice(stem.length)) && Number(id.slice(stem.length)) >= 2);
+}
+
+/** Whether any connection is attached as `key`. */
+function keyConnected(key: string): boolean {
+  return [...hosts.values()].some(host => !host.client.socket.destroyed && machineKey(host.info) === key);
+}
+
 /**
- * A machine's client ID: its name in config clientHosts.names, else the one
- * it was given when first seen (client-hosts.json), else a new one from its
- * platform or hostname, numbered when taken (mac, mac-2).
+ * A machine's client ID. A name configured for its install ID is its alone.
+ * Otherwise it keeps the ID it was given (client-hosts.json) while that still
+ * fits its name (configured for its user@hostname, else from its platform or
+ * hostname) and no other machine holds it; else it gets the first free of
+ * name, name-2, … . A configured name is held only by the machines it names,
+ * so an unnamed one holding it moves on.
+ *
+ * The first install-ID machine of a user@hostname takes over the ID that
+ * user@hostname was given before clients sent install IDs, unless a client
+ * without one is attached as it right now.
  */
-function clientIdFor(key: string, info: ClientHostInfo, seen = false): string {
-  const names = configuredNames();
-  const configured = names.get(normalizedKey(key));
-  if (configured) return configured;
+function clientIdFor(key: string, info: ClientHostInfo, seen = false, names = configuredNames()): string {
   const machines = loadedRegistry();
-  const taken = new Set(names.values());
-  for (const [other, record] of machines) if (other !== key) taken.add(record.id);
-  const stored = machines.get(key);
-  if (stored && !taken.has(stored.id)) {
-    if (seen) {
-      stored.lastSeen = Date.now();
-      saveRegistry(machines);
-    }
-    return stored.id;
+  const host = hostKey(info);
+  if (installIdOf(key) && !machines.has(key) && machines.has(host) && !keyConnected(host)) {
+    machines.set(key, { ...machines.get(host)!, host });
+    machines.delete(host);
+    log("info", `client-hosts: ${key} (${host}) keeps ${host}'s client ID ${machines.get(key)!.id}`);
   }
-  const base = baseClientId(info);
-  let id = base;
-  for (let n = 2; taken.has(id); n++) id = `${base.slice(0, 28)}-${n}`;
-  machines.set(key, { id, lastSeen: Date.now() });
+  const named = configuredNameFor(names, key, host);
+  const base = named?.name ?? baseClientId(info);
+  const taken = new Set([...names.all].filter(name => name !== named?.name));
+  for (const [other, record] of machines) {
+    if (other === key) continue;
+    const otherNamed = configuredNameFor(names, other, record.host ?? (installIdOf(other) ? undefined : other));
+    const holds = otherNamed ? fitsBase(record.id, otherNamed.name) : !names.all.has(record.id);
+    if (holds) taken.add(record.id);
+  }
+  const stored = machines.get(key);
+  let id: string;
+  if (named?.exclusive) id = named.name;
+  else if (stored && fitsBase(stored.id, base) && !taken.has(stored.id)) id = stored.id;
+  else {
+    let n = 1;
+    while (taken.has(numbered(base, n))) n++;
+    id = numbered(base, n);
+  }
+  if (stored?.id === id && stored.host === host && !seen) return id;
+  machines.set(key, { id, lastSeen: seen || !stored ? Date.now() : stored.lastSeen, host });
   saveRegistry(machines);
-  log("info", `client-hosts: ${key} is client ${id}${stored ? ` (was ${stored.id})` : ""}`);
+  if (stored?.id !== id) log("info", `client-hosts: ${key}${installIdOf(key) ? ` (${host})` : ""} is client ${id}${stored ? ` (was ${stored.id})` : ""}`);
   return id;
 }
 
 /** Every ID a machine has or had: configured names and remembered IDs. */
 function knownClientIds(): Set<string> {
-  return new Set([...configuredNames().values(), ...[...loadedRegistry().values()].map(record => record.id)]);
+  return new Set([...configuredNames().all, ...[...loadedRegistry().values()].map(record => record.id)]);
 }
 
 // ── Connected machines ─────────────────────────────────────────────
@@ -252,7 +326,11 @@ interface Machine {
   connections: AttachedHost[];
 }
 
-/** The machines attached now, by ID. */
+/**
+ * The machines attached now, by ID. Those named in config get theirs first,
+ * then install-ID machines before older clients, so a machine that must move
+ * off an ID does so after the one that takes it.
+ */
 function connectedMachines(): Machine[] {
   const byKey = new Map<string, AttachedHost[]>();
   for (const host of hosts.values()) {
@@ -260,9 +338,17 @@ function connectedMachines(): Machine[] {
     const key = machineKey(host.info);
     byKey.set(key, [...byKey.get(key) ?? [], host]);
   }
-  return [...byKey].map(([key, connections]) => {
+  const names = configuredNames();
+  const rank = ([key, connections]: [string, AttachedHost[]]) => {
+    const named = configuredNameFor(names, key, hostKey(connections[0].info));
+    return [named?.exclusive ? 0 : named ? 1 : 2, installIdOf(key) ? 0 : 1, connections[0].attachedAt];
+  };
+  return [...byKey].sort((a, b) => {
+    const ra = rank(a), rb = rank(b);
+    return ra[0] - rb[0] || ra[1] - rb[1] || ra[2] - rb[2];
+  }).map(([key, connections]) => {
     const info = connections.at(-1)!.info;
-    return { id: clientIdFor(key, info), key, info, connections };
+    return { id: clientIdFor(key, info, false, names), key, info, connections };
   }).sort((a, b) => a.id.localeCompare(b.id));
 }
 
@@ -330,9 +416,12 @@ function chooseHost(target: ClientHostTarget): HostChoice {
   const requested = target.host?.trim();
   if (requested) {
     const wanted = requested.toLowerCase();
-    const match = machines.find(machine => machine.id === wanted)
-      ?? machines.find(machine => normalizedKey(machine.key) === normalizedKey(requested));
-    if (match) return { host: bestConnection(match.connections), id: match.id };
+    const byId = machines.filter(machine => machine.id === wanted);
+    const matches = byId.length ? byId : machines.filter(machine => normalizedKey(hostKey(machine.info)) === normalizedKey(requested));
+    if (matches.length === 1) return { host: bestConnection(matches[0].connections), id: matches[0].id };
+    if (matches.length > 1) {
+      return { failure: `"${requested}" names several connected machines: ${listMachines(matches)}. Nothing was run; pass host with the ID of the one the command is for.` };
+    }
     const away = knownClientIds().has(wanted) ? `The user's machine ${wanted} is not connected right now.` : `No machine of the user's is called "${requested}".`;
     if (machines.length === 0) return { failure: `${away} None is connected. ${HOW_TO_CONNECT}` };
     return { failure: `${away} Connected: ${listMachines(machines)}. Nothing was run; pass one of those IDs as host only if the command is meant for that machine.` };
@@ -482,6 +571,14 @@ export interface ClientHostNotice {
   origin?: string;
 }
 
+/** The connected machine a remembered origin key names; one stored as user@hostname (before install IDs) names the only machine announcing it. */
+function originMachine(machines: readonly Machine[], key: string): Machine | undefined {
+  const exact = machines.find(machine => machine.key === key);
+  if (exact || installIdOf(key)) return exact;
+  const byHost = machines.filter(machine => hostKey(machine.info) === key);
+  return byHost.length === 1 ? byHost[0] : undefined;
+}
+
 /** Told to a conversation when none of the user's machines is connected any more. */
 export const CLIENT_HOST_DETACHED_NOTICE = "None of the user's machines is connected any more; client_bash is unavailable until one's Exocortex daemon relinks (/proxy) or its TUI reconnects with /ssh.";
 
@@ -497,7 +594,7 @@ export function clientHostNotice(origin: ClientOrigin | null = null): ClientHost
   const lines = machines.length === 1
     ? [`The user's machine ${describeMachine(machines[0])} is connected. client_bash runs commands there; host may be left out while it is the only one. ${elsewhere[0].toUpperCase()}${elsewhere.slice(1)}`]
     : [`The user's machines connected now: ${listMachines(machines)}. client_bash needs host set to the ID of the machine a command is for; ${elsewhere}`];
-  const from = origin ? machines.find(machine => machine.key === origin.key) : undefined;
+  const from = origin ? originMachine(machines, origin.key) : undefined;
   if (from) lines.push(`The user last wrote ${origin!.viaParent ? "to the conversation that started this task " : "here "}from ${from.id}.`);
   return {
     text: lines.join(" "),
