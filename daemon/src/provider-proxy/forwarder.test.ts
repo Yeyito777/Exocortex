@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PROVIDER_PROXY_ACCOUNT_MOVE_HEADER, PROVIDER_PROXY_CONVERSATION_HEADER, type ProviderProxyAccountMove } from "@exocortex/shared/provider-proxy";
 import { ProviderProxyForwarder } from "./forwarder";
-import { ProviderProxyUnavailableError, type ProviderProxyHttpRequest, type ProviderProxyLink, type ProviderProxyWebSocketHandlers } from "./link";
+import { ProviderProxyLink, ProviderProxyUnavailableError, type ProviderProxyHttpRequest, type ProviderProxyWebSocketHandlers } from "./link";
+import { fakeSsh, stubAuth } from "./testing";
 
 interface FakeLink {
   ready: () => Promise<void>;
@@ -243,5 +244,50 @@ describe("Claude account moves on the remote", () => {
     // The conversation's name goes to the remote, which takes it off before the upstream.
     expect(link.requests[0].headers[PROVIDER_PROXY_CONVERSATION_HEADER]).toBe("macbook/conv-1");
     expect(moves).toEqual([["macbook/conv-1", { from: "main", to: "max2", detail: "\"main\" is at a usage limit" }]]);
+  });
+});
+
+describe("a client that goes away mid-answer", () => {
+  test("cancels the remote stream, and the daemon carries on", async () => {
+    // Bun's server errors out of the process (an unhandled rejection) if the
+    // body it is sending is errored after its client went away.
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+    process.on("unhandledRejection", onUnhandled);
+    let upstreamSignal: AbortSignal | undefined;
+    const ssh = fakeSsh({ deps: { auth: stubAuth(), fetch: (async (_url: string, init: RequestInit) => {
+      upstreamSignal = init.signal ?? undefined;
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) { controller.enqueue(new TextEncoder().encode("data: one\n\n")); },
+      }), { status: 200, headers: { "content-type": "text/event-stream" } });
+    }) as unknown as typeof fetch } });
+    const link = new ProviderProxyLink("whale", { providers: () => ["anthropic"], spawnProcess: ssh.spawn, reconnectDelaysMs: [20], helloTimeoutMs: 2_000 });
+    try {
+      await link.waitReady(2_000);
+      const forwarder = new ProviderProxyForwarder({ linkFor: () => link });
+      forwarder.start();
+      forwarders.push(forwarder);
+      const client = new AbortController();
+      const response = await fetch(`${forwarder.baseUrl("anthropic")}/v1/messages`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${forwarder.secret}` },
+        body: "{}",
+        signal: client.signal,
+      });
+      const reader = response.body!.getReader();
+      expect(new TextDecoder().decode((await reader.read()).value)).toBe("data: one\n\n");
+      // Claude Code drops its request when its turn is stopped.
+      client.abort();
+      await reader.read().catch(() => {});
+      for (let i = 0; i < 100 && !(upstreamSignal?.aborted && link.activeStreams === 0); i++) await Bun.sleep(5);
+      await Bun.sleep(20);
+      expect(unhandled.map(String)).toEqual([]);
+      expect(upstreamSignal?.aborted).toBe(true);
+      expect(link.activeStreams).toBe(0);
+      expect(ssh.spawned[0].commands.some(command => command.type === "provider_proxy_cancel")).toBe(true);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      link.close();
+    }
   });
 });

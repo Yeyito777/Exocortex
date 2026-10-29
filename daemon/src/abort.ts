@@ -12,6 +12,27 @@ export function createAbortError(message = "Aborted"): Error {
   return err;
 }
 
+/**
+ * Race a promise against an AbortSignal. If the signal fires first (or
+ * already has), the returned promise rejects with an AbortError and the
+ * original continues in the background, its result discarded. The original
+ * is always handled: one that rejects after nobody waits for it any more (a
+ * tool that throws at a stopped turn's signal) would otherwise be an
+ * unhandled rejection, which stops the daemon.
+ */
+export function raceAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(createAbortError());
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => { signal.removeEventListener("abort", onAbort); resolve(value); },
+      (error) => { signal.removeEventListener("abort", onAbort); reject(error); },
+    );
+  });
+}
+
 const detachedTurnErrors = new WeakSet<object>();
 
 /**

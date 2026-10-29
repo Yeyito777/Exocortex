@@ -106,6 +106,25 @@ describe("tool execution scheduling", () => {
     expect(result.output).toContain("No files were changed before the patch stopped.");
   });
 
+  test("a tool started after Stop is reported interrupted, and its own rejection is handled", async () => {
+    // A later exclusive batch runs with the signal a Stop during an earlier one aborted.
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const controller = new AbortController();
+      controller.abort();
+      // Like a tool that throws at its aborted signal.
+      const toolPromise = Bun.sleep(1).then((): { output: string; isError: boolean } => { throw new DOMException("Aborted", "AbortError"); });
+      const result = await registryInternalsForTest.execTool(call("edit", "after-stop"), toolPromise, controller.signal);
+      expect(result.output).toStartWith("User interrupted after");
+      await Bun.sleep(20);
+      expect(unhandled.map(String)).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
   test("deduplicates a settle-on-abort tool's own copy of the timeout message", async () => {
     const controller = new AbortController();
     controller.abort(toolTimeoutReason("browse", 120_000));

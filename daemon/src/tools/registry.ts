@@ -26,7 +26,7 @@ import { goal } from "./goal";
 import { attach } from "./attach";
 import { getClaudeCodeToolDisplayInfo, summarizeClaudeCodeTool } from "./claude-code";
 import { TOOL_BACKGROUND_SECONDS } from "../constants";
-import { formatToolAbortMessage, isToolTimeoutReason, toolTimeoutReason } from "../abort";
+import { formatToolAbortMessage, isToolTimeoutReason, raceAbort, toolTimeoutReason } from "../abort";
 import { evaluateToolCallSafety, formatSafetyBlock, evaluatePathSafety } from "../safety";
 import { AbortableSemaphore } from "./semaphore";
 import { log } from "../log";
@@ -171,33 +171,6 @@ export function summarizeTool(name: string, input: Record<string, unknown>, conv
   // Anything else came from Claude Code's own tools (anthropic provider).
   if (!tool) return summarizeClaudeCodeTool(name, input);
   return tool.summarize(input);
-}
-
-// ── Abort race helper ─────────────────────────────────────────────
-
-/**
- * Race a promise against an AbortSignal. If the signal fires first,
- * the returned promise rejects immediately — the original promise
- * continues in the background (its result is discarded) while the
- * tool's cooperative cleanup (process kills, etc.) runs as a side effect.
- */
-function raceAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
-  if (!signal) return promise;
-  if (signal.aborted) return Promise.reject(new DOMException("Aborted", "AbortError"));
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(new DOMException("Aborted", "AbortError"));
-    signal.addEventListener("abort", onAbort, { once: true });
-    promise.then(
-      value => {
-        signal.removeEventListener("abort", onAbort);
-        resolve(value);
-      },
-      err => {
-        signal.removeEventListener("abort", onAbort);
-        reject(err);
-      },
-    );
-  });
 }
 
 // ── Execute + abort-race wrapper ──────────────────────────────────

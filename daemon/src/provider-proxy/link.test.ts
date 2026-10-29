@@ -165,7 +165,7 @@ describe("provider proxy link + remote endpoint", () => {
     expect(fetched).toBe(false);
   });
 
-  test("cancelling the local request aborts the upstream request", async () => {
+  test("cancelling the response body aborts the upstream request", async () => {
     let upstreamSignal: AbortSignal | undefined;
     const held = sseBody(["event: a\ndata: 1\n\n"], true);
     const ssh = fakeSsh({ deps: { auth: stubAuth(), fetch: (async (_url: string, init: RequestInit) => {
@@ -178,8 +178,35 @@ describe("provider proxy link + remote endpoint", () => {
     const response = await link.openHttp({ provider: "anthropic", method: "POST", target: "/v1/messages", headers: {} }, abort.signal);
     const reader = response.body.getReader();
     expect(new TextDecoder().decode((await reader.read()).value)).toBe("event: a\ndata: 1\n\n");
+    // The open call's signal only covers the wait for the head: the body's reader owns the rest.
     abort.abort();
-    await expect(reader.read()).rejects.toThrow();
+    await Bun.sleep(20);
+    expect(upstreamSignal?.aborted).toBe(false);
+    expect(link.activeStreams).toBe(1);
+    await reader.cancel();
+    for (let i = 0; i < 50 && !upstreamSignal?.aborted; i++) await Bun.sleep(5);
+    expect(upstreamSignal?.aborted).toBe(true);
+    expect(link.activeStreams).toBe(0);
+  });
+
+  test("aborting before the response head fails the open and aborts the upstream request", async () => {
+    let upstreamSignal: AbortSignal | undefined;
+    let fetched!: () => void;
+    const fetching = new Promise<void>(resolve => { fetched = resolve; });
+    const ssh = fakeSsh({ deps: { auth: stubAuth(), fetch: ((_url: string, init: RequestInit) => {
+      upstreamSignal = init.signal ?? undefined;
+      fetched();
+      return new Promise<Response>((_resolve, reject) => {
+        init.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+      });
+    }) as unknown as typeof fetch } });
+    const link = makeLink(ssh.spawn);
+    await link.waitReady(2_000);
+    const abort = new AbortController();
+    const opening = link.openHttp({ provider: "anthropic", method: "POST", target: "/v1/messages", headers: {} }, abort.signal);
+    await fetching;
+    abort.abort();
+    await expect(opening).rejects.toMatchObject({ name: "AbortError" });
     for (let i = 0; i < 50 && !upstreamSignal?.aborted; i++) await Bun.sleep(5);
     expect(upstreamSignal?.aborted).toBe(true);
     expect(link.activeStreams).toBe(0);
