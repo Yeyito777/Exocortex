@@ -23,7 +23,7 @@ local Error = {}
 Error.__index = Error
 Error.__tostring = function(e) return e.message end
 
---- code: not_installed, not_running, too_old, incompatible, daemon, disconnected, closed, ended, timeout, result_lost
+--- code: not_installed, not_running, too_old, incompatible, daemon, disconnected, closed, ended, lost, timeout, result_lost
 local function err(code, message)
   return setmetatable({ code = code, message = message }, Error)
 end
@@ -123,13 +123,26 @@ local function tool_defs(tools)
   return defs
 end
 
+--- A conversation id of our own, so a create sent again after a reconnect is recognized.
+local function new_conv_id()
+  local alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+  local ok, bytes = pcall(uv.random, 6)
+  local suffix = {}
+  for i = 1, 6 do
+    local n = (ok and type(bytes) == "string") and bytes:byte(i) or math.random(0, 255)
+    local k = n % 36 + 1
+    suffix[i] = alphabet:sub(k, k)
+  end
+  return string.format("%d", now_ms()) .. "-" .. table.concat(suffix)
+end
+
 --- opts: lifetime, idle_ttl_ms, title, system (string or {text, base}), base, builtin, tools,
---- provider, model, effort, cwd, conv_id
+--- provider, model, effort, cwd, conv_id, route ({ credits = "allow"|"never", whenLimited = "wait"|"error" })
 local function create_fields(opts)
   local fields = {
     lifetime = opts.lifetime, idleTtlMs = opts.idle_ttl_ms, title = opts.title,
     system = system_spec(opts.system, opts.base), provider = opts.provider, model = opts.model,
-    effort = opts.effort, cwd = opts.cwd, convId = opts.conv_id,
+    effort = opts.effort, cwd = opts.cwd, convId = opts.conv_id or new_conv_id(), route = opts.route,
   }
   if opts.builtin ~= nil or opts.tools then
     fields.tools = { builtin = opts.builtin, app = tool_defs(opts.tools) }
@@ -141,6 +154,9 @@ local function to_result(ev)
   return {
     conv_id = ev.convId, text = ev.text or "", stop_reason = ev.stopReason, error = ev.error,
     usage = ev.usage, turn_id = ev.turnId, raw = ev,
+    -- "api-credits" when (some of) the turn ran on Claude API credits; { resetAt } when it
+    -- stopped at a usage limit (route.whenLimited = "error").
+    billing = ev.billing, limited = ev.limited,
   }
 end
 
@@ -296,8 +312,13 @@ function M.find_socket(cb)
 end
 
 --- Connect as `opts.app`. opts: app, version, socket, reconnect (default true),
---- reconnect_timeout_ms (60000), welcome_timeout_ms (5000), request_timeout_ms (30000).
---- cb(err, client)
+--- reconnect_timeout_ms (300000), reconnect_grace_ms, session, rerun_lost (default true),
+--- welcome_timeout_ms (5000), request_timeout_ms (30000). cb(err, client)
+---
+--- The client survives a dropped connection and a daemon restart: it reconnects with backoff
+--- under its session token (client.session), takes its conversations back, and sends whatever
+--- was in flight again (the daemon never runs a prompt twice), so a send or a run sees a delay
+--- instead of an error. Requests made while it is reconnecting wait for it.
 function M.connect(opts, cb)
   assert(type(opts) == "table" and opts.app, "exocortex.connect: opts.app is required")
   if not opts.app:match("^[a-z0-9][a-z0-9%-]*$") or #opts.app > 40 then
@@ -306,10 +327,15 @@ function M.connect(opts, cb)
   local client = setmetatable({
     app = opts.app, version = opts.version, socket_path = opts.socket,
     reconnect = opts.reconnect ~= false,
-    reconnect_timeout_ms = opts.reconnect_timeout_ms or 60000,
+    reconnect_timeout_ms = opts.reconnect_timeout_ms or 300000,
+    reconnect_grace_ms = opts.reconnect_grace_ms,
+    rerun_lost = opts.rerun_lost ~= false,
     welcome_timeout_ms = opts.welcome_timeout_ms or 5000,
     request_timeout_ms = opts.request_timeout_ms or 30000,
-    pipe = nil, generation = 0, next_id = 0, last_started_at = 0, closed = false, reconnecting = false,
+    --- The session token (app_welcome.session): conversations belong to it, not to the socket.
+    session = opts.session,
+    pipe = nil, connected = false, connected_waiters = {}, generation = 0, next_id = 0, last_started_at = 0,
+    closed = false, closing = false, reconnecting = false,
     requests = {}, turns = {}, conversations = {}, calls = {}, listeners = {},
   }, Client)
   local discovered = not opts.socket and vim.trim(vim.env.EXOCORTEX_SOCKET or "") == ""
@@ -349,9 +375,14 @@ function Client:_handshake(cb)
       return cb(err("not_running", "The Exocortex daemon is not running (cannot connect to " .. self.socket_path
         .. ": " .. connect_err .. "). Start it with: exocortexd start"))
     end
+    if self.closed then
+      if not pipe:is_closing() then pipe:close() end
+      return cb(err("closed", "The client was closed"))
+    end
     self.generation = self.generation + 1
     local generation = self.generation
     self.pipe = pipe
+    self.connected = false
     local ready = false
     local buffer = ""
     pipe:read_start(function(read_err, chunk)
@@ -380,8 +411,9 @@ function Client:_handshake(cb)
         local _ = read_err
       end)
     end)
-    local caps = { type = "client_capabilities", capabilities = {}, app = { name = self.app, version = self.version } }
-    self:request(caps, function(ev) return ev.type == "app_welcome" end, function(e, welcome)
+    local app = { name = self.app, version = self.version, session = self.session, reconnectGraceMs = self.reconnect_grace_ms }
+    local caps = { type = "client_capabilities", capabilities = {}, app = app }
+    self:_exchange(caps, function(ev) return ev.type == "app_welcome" end, function(e, welcome)
       if e then
         if self.pipe == pipe then self.pipe = nil end
         if not pipe:is_closing() then pipe:close() end
@@ -400,9 +432,13 @@ function Client:_handshake(cb)
         return cb(err("incompatible", msg))
       end
       self.welcome = welcome
+      if welcome.session then self.session = welcome.session end
       ready = true
+      if self.pipe ~= pipe then return cb(err("disconnected", "The daemon closed the connection")) end
+      self.connected = true
+      self:_wake_waiters(true)
       cb(nil)
-    end, self.welcome_timeout_ms)
+    end, self.welcome_timeout_ms, false)
   end))
 end
 
@@ -418,10 +454,59 @@ function Client:_write(cmd)
   self.pipe:write(encode(cmd) .. "\n")
 end
 
+--- While reconnecting: cb(true) once connected again, cb(false) when given up.
+function Client:_wait_connected(cb)
+  if self.closed or not self.reconnect then return cb(false) end
+  if self.connected then return cb(true) end
+  local waiter
+  local t = timer(self.reconnect_timeout_ms, function()
+    for i, w in ipairs(self.connected_waiters) do
+      if w == waiter then table.remove(self.connected_waiters, i); break end
+    end
+    cb(false)
+  end)
+  waiter = function(ok) cancel(t); cb(ok and not self.closed) end
+  table.insert(self.connected_waiters, waiter)
+end
+
+function Client:_wake_waiters(ok)
+  local waiters = self.connected_waiters
+  self.connected_waiters = {}
+  for _, w in ipairs(waiters) do w(ok) end
+end
+
 --- Send a raw command; cb(err, event) with the answer `match(event)` accepts (or an `error` with its reqId).
-function Client:request(cmd, match, cb, timeout_ms)
-  local req_id = cmd.reqId or self:_id()
-  cmd = vim.tbl_extend("force", cmd, { reqId = req_id })
+--- While reconnecting it waits for the connection; a request the connection dropped under is sent
+--- again once reconnected, unless `retry` is false.
+function Client:request(cmd, match, cb, timeout_ms, retry)
+  if self.closed or self.closing then
+    return vim.schedule(function() cb(err("closed", "The client was closed")) end)
+  end
+  self:_exchange(cmd, match, cb, timeout_ms, retry ~= false)
+end
+
+function Client:_exchange(cmd, match, cb, timeout_ms, retry)
+  local req_id = cmd.reqId
+  local function attempt()
+    self:_exchange_once(vim.tbl_extend("force", cmd, { reqId = req_id or self:_id() }), match, function(e, ev)
+      if e and e.code == "disconnected" and retry then
+        return self:_wait_connected(function(ok)
+          if not ok then return cb(e) end
+          req_id = nil
+          attempt()
+        end)
+      end
+      cb(e, ev)
+    end, timeout_ms)
+  end
+  if not self.connected and retry then
+    return self:_wait_connected(function() attempt() end)
+  end
+  attempt()
+end
+
+function Client:_exchange_once(cmd, match, cb, timeout_ms)
+  local req_id = cmd.reqId
   local pending = { match = match, cb = cb }
   local ms = timeout_ms or self.request_timeout_ms
   if ms > 0 then
@@ -444,9 +529,16 @@ end
 function Client:conversation(opts, cb)
   if type(opts) == "function" then opts, cb = {}, opts end
   opts = opts or {}
-  local cmd = vim.tbl_extend("force", { type = "new_conversation" }, create_fields(opts))
+  local fields = create_fields(opts)
+  local cmd = vim.tbl_extend("force", { type = "new_conversation" }, fields)
   self:request(cmd, function(ev) return ev.type == "conversation_created" end, function(e, ev)
-    if e then return cb(e) end
+    if e then
+      -- Made by an earlier attempt whose answer a dropped connection lost: it is ours.
+      if e.code == "daemon" and e.message:find("already exists", 1, true) and not opts.conv_id then
+        return self:attach(fields.convId, { tools = opts.tools }, cb)
+      end
+      return cb(e)
+    end
     local conv = new_conversation(self, ev.app, opts.tools)
     self.conversations[conv.id] = conv
     cb(nil, conv)
@@ -473,13 +565,17 @@ function Client:attach(conv_id, opts, cb)
   end)
 end
 
-function Client:_attach_existing(conv, cb)
+function Client:_attach_existing(conv, cb, retry)
   local cmd = { type = "attach_app_conversation", convId = conv.id }
   if conv.tools then cmd.tools = { app = tool_defs(conv.tools) } end
-  self:request(cmd, function(ev) return ev.type == "app_conversation_attached" end, function(e, ev)
+  self:_exchange(cmd, function(ev) return ev.type == "app_conversation_attached" end, function(e, ev)
     if not e then conv.info = ev.conversation end
     cb(e, ev)
-  end)
+  end, nil, retry ~= false)
+end
+
+local function run_command(turn, prompt, opts)
+  return vim.tbl_extend("force", { type = "app_run", reqId = turn.req_id, prompt = prompt, startedAt = turn.started_at, images = opts.images, keep = opts.keep or nil }, create_fields(opts))
 end
 
 --- One-shot: create (ephemeral by default), send, await. opts: create options plus keep, images,
@@ -489,8 +585,7 @@ function Client:run(prompt, opts, cb)
   opts = opts or {}
   local turn = self:_new_turn(nil, opts, cb)
   turn.run_tools = opts.tools
-  local cmd = vim.tbl_extend("force", { type = "app_run", reqId = turn.req_id, prompt = prompt, startedAt = turn.started_at, images = opts.images, keep = opts.keep or nil }, create_fields(opts))
-  self:_start(turn, cmd)
+  self:_start(turn, run_command(turn, prompt, opts))
 end
 
 --- One-shot, as a Stream.
@@ -499,8 +594,7 @@ function Client:run_stream(prompt, opts)
   local stream = new_stream()
   local turn = self:_new_turn(nil, opts, function(e, r) stream:_finish(e, r) end, stream)
   turn.run_tools = opts.tools
-  local cmd = vim.tbl_extend("force", { type = "app_run", reqId = turn.req_id, prompt = prompt, startedAt = turn.started_at, images = opts.images, keep = opts.keep or nil }, create_fields(opts))
-  self:_start(turn, cmd)
+  self:_start(turn, run_command(turn, prompt, opts))
   return stream
 end
 
@@ -520,42 +614,68 @@ function Client:delete(conv_id, cb)
   self:request({ type = "delete_conversation", convId = conv_id },
     function(ev) return ev.type == "conversation_deleted" and ev.convId == conv_id end,
     function(e)
+      -- Gone already: an earlier attempt went through before the connection dropped, or it ended.
+      if e and e.code == "daemon" and e.message:find("not found", 1, true) then e = nil end
       if not e then self:_end_conversation(conv_id, "deleted") end
       if cb then cb(e) end
     end)
 end
 
---- Close the connection. Ephemeral conversations end with it; saved and temporary ones stay.
-function Client:close()
-  if self.closed then return end
-  self.closed = true
-  self:_fail_all(err("closed", "The client was closed"))
-  local pipe = self.pipe
-  self.pipe = nil
-  if pipe and not pipe:is_closing() then
-    pipe:shutdown(function() if not pipe:is_closing() then pipe:close() end end)
+--- Close the connection; cb() once closed. Ephemeral conversations end now; saved and temporary ones stay.
+function Client:close(cb)
+  if self.closed or self.closing then
+    if cb then vim.schedule(cb) end
+    return
   end
+  self.closing = true
+  local function finish()
+    self.closed = true
+    self:_fail_all(err("closed", "The client was closed"))
+    local pipe = self.pipe
+    self.pipe = nil
+    self.connected = false
+    if pipe and not pipe:is_closing() then
+      pipe:shutdown(function() if not pipe:is_closing() then pipe:close() end end)
+    end
+    if cb then cb() end
+  end
+  if not (self.connected and self.welcome and self.welcome.session) then return finish() end
+  -- Without it they would wait out the session's reconnect grace.
+  self:_exchange({ type = "end_app_session" }, function(ev) return ev.type == "app_session_ended" end, function() finish() end, 2000, false)
 end
 
 -- ── turns ──
 
 function Client:_new_turn(conv_id, opts, cb, stream)
   local started_at = self:_started_at()
-  local turn = {
+  return {
     req_id = self:_id(), conv_id = conv_id, started_at = started_at, turn_id = string.format("%d", started_at),
-    generation = self.generation, cb = cb, stream = stream,
+    generation = -1, cb = cb or function() end, stream = stream,
     on_text = opts.on_text, on_event = opts.on_event, on_raw = opts.on_raw,
   }
-  self.turns[turn.req_id] = turn
-  return turn
 end
 
+--- Register a turn and send its command (the send_message or app_run, sent again with the same
+--- startedAt after a reconnect). Not connected now: the reconnect sends it.
 function Client:_start(turn, cmd)
-  local e = self:_write(cmd)
-  if e then
-    self.turns[turn.req_id] = nil
-    turn.cb(e)
+  turn.command = cmd
+  turn.conv_id = turn.conv_id or cmd.convId
+  self.turns[turn.req_id] = turn
+  if self.closed or self.closing then return self:_settle(turn, err("closed", "The client was closed")) end
+  if not self.reconnect and not self.connected then
+    return self:_settle(turn, err("disconnected", "Not connected to the Exocortex daemon"))
   end
+  self:_send_turn_now(turn)
+end
+
+--- Send a turn's command on the current connection, once per connection: a turn sent on a
+--- connection that dropped is sent again on the next one (the daemon never runs it twice).
+function Client:_send_turn_now(turn)
+  if not self.pipe or not self.connected or turn.generation >= self.generation or self.turns[turn.req_id] ~= turn then
+    return false
+  end
+  turn.generation = self.generation
+  return self:_write(turn.command) == nil
 end
 
 function Client:_send_turn(conv, prompt, opts, cb, stream)
@@ -578,16 +698,11 @@ function Client:_settle(turn, e, result)
   vim.schedule(function() turn.cb(e, result) end)
 end
 
---- A copy of the pending turns (safe to settle while iterating): those on `conv_id`,
---- every one for nil, or the runs not yet announced for false.
+--- A copy of the pending turns (safe to settle while iterating): those on `conv_id`, or every one for nil.
 function Client:_turns_on(conv_id)
   local list = {}
   for _, tr in pairs(self.turns) do
-    local wanted
-    if conv_id == nil then wanted = true
-    elseif conv_id == false then wanted = tr.conv_id == nil
-    else wanted = tr.conv_id == conv_id end
-    if wanted then table.insert(list, tr) end
+    if conv_id == nil or tr.conv_id == conv_id then table.insert(list, tr) end
   end
   return list
 end
@@ -608,15 +723,20 @@ function Client:_dispatch(ev)
   for listener in pairs(self.listeners) do listener(ev) end
   local t, req_id = ev.type, ev.reqId
   local turn = req_id and self.turns[req_id]
-  if turn and turn.generation == self.generation then
-    if t == "error" then return self:_settle(turn, err("daemon", ev.message or "error")) end
-    if t == "conversation_created" and not turn.conv_id then
-      local conv = new_conversation(self, ev.app, turn.run_tools)
-      self.conversations[conv.id] = conv
-      turn.conv_id = conv.id
+  if turn then
+    if t == "error" then
+      local message = ev.message or "error"
+      return self:_settle(turn, err(message:find("sent before", 1, true) and "result_lost" or "daemon", message))
+    end
+    if t == "conversation_created" then
+      if not self.conversations[ev.convId] then
+        self.conversations[ev.convId] = new_conversation(self, ev.app, turn.run_tools)
+      end
+      turn.conv_id = ev.convId
       return
     end
     if t == "turn_result" then return self:_settle(turn, nil, to_result(ev)) end
+    if t == "app_conversation_attached" then return end -- a run sent again after a reconnect took its conversation back
   end
   local request = req_id and self.requests[req_id]
   if request then
@@ -639,18 +759,16 @@ function Client:_dispatch(ev)
   end
   if t == "conversation_deleted" then return self:_end_conversation(conv_id, ev.reason or "deleted") end
   for _, tr in ipairs(self:_turns_on(conv_id)) do
-    do
-      if t == "turn_result" then
-        -- The owner's copy (after a reconnect our reqId is gone): ours when it names our turn.
-        if tr.turn_id == ev.turnId then self:_settle(tr, nil, to_result(ev)) end
-      else
-        if tr.on_raw then tr.on_raw(ev) end
-        local se = stream_event(ev)
-        if se then
-          if tr.on_event then tr.on_event(se) end
-          if se.type == "text" and tr.on_text then tr.on_text(se.text) end
-          if tr.stream then tr.stream:_push(se) end
-        end
+    if t == "turn_result" then
+      -- The owner's copy (after a reconnect our reqId is gone): ours when it names our turn.
+      if tr.turn_id == ev.turnId then self:_settle(tr, nil, to_result(ev)) end
+    else
+      if tr.on_raw then tr.on_raw(ev) end
+      local se = stream_event(ev)
+      if se then
+        if tr.on_event then tr.on_event(se) end
+        if se.type == "text" and tr.on_text then tr.on_text(se.text) end
+        if tr.stream then tr.stream:_push(se) end
       end
     end
   end
@@ -676,7 +794,7 @@ function Client:_on_tool_call(ev)
   local conv_id, call_id, name = ev.convId, ev.callId, ev.name
   local known = self.calls[call_id]
   if known then
-    -- Re-sent after a re-attach: answer again if it already finished, else keep running it.
+    -- Re-sent after a reconnect: answer again if it already finished, else keep running it.
     if known.result then self:_write(vim.tbl_extend("force", { type = "app_tool_result", convId = conv_id, callId = call_id }, known.result)) end
     return
   end
@@ -686,9 +804,10 @@ function Client:_on_tool_call(ev)
   local function finish(result)
     if call.cancelled or self.calls[call_id] ~= entry or entry.result then return end
     entry.result = result
+    -- Not connected: the daemon re-sends the call after the reconnect, and gets this answer.
     self:_write(vim.tbl_extend("force", { type = "app_tool_result", convId = conv_id, callId = call_id }, result))
     -- Keep the answer a while in case the daemon re-sends the call after a reconnect.
-    timer(120000, function() if self.calls[call_id] == entry then self.calls[call_id] = nil end end)
+    timer(600000, function() if self.calls[call_id] == entry then self.calls[call_id] = nil end end)
   end
   call._respond = finish
   local conv = self.conversations[conv_id]
@@ -699,7 +818,7 @@ function Client:_on_tool_call(ev)
   if not tool.async then finish(normalize_output(value)) end
 end
 
-function Client:_end_conversation(conv_id, reason)
+function Client:_end_conversation(conv_id, reason, code, message)
   local conv = self.conversations[conv_id]
   self.conversations[conv_id] = nil
   if conv then conv.ended = reason end
@@ -710,7 +829,7 @@ function Client:_end_conversation(conv_id, reason)
     end
   end
   for _, tr in ipairs(self:_turns_on(conv_id)) do
-    self:_settle(tr, err("ended", "Conversation " .. conv_id .. " has ended (" .. reason .. ")"))
+    self:_settle(tr, err(code or "ended", message or ("Conversation " .. conv_id .. " has ended (" .. reason .. ")")))
   end
 end
 
@@ -724,64 +843,115 @@ end
 
 function Client:_on_close(generation)
   if self.closed or generation ~= self.generation then return end
+  self.connected = false
+  -- Requests waiting on an answer are sent again once reconnected (request()); turns and
+  -- running tool calls carry on: the reconnect sends the turns again, and the daemon re-sends
+  -- the calls it still waits on, which get the answers kept for them.
   local lost = err("disconnected", "Lost the connection to the Exocortex daemon")
   self:_fail_requests(lost)
-  for call_id, entry in pairs(self.calls) do
-    if not entry.result then self.calls[call_id] = nil; entry.call:_cancel("disconnected") end
-  end
-  for _, conv in ipairs(vim.tbl_values(self.conversations)) do
-    if conv.info.lifetime == "ephemeral" then self:_end_conversation(conv.id, "owner_disconnected") end
-  end
-  for _, tr in ipairs(self:_turns_on(false)) do self:_settle(tr, lost) end
+  if self.closing then return end
   if not self.reconnect then
     self.closed = true
     return self:_fail_all(lost)
   end
-  if self.reconnecting then return end
+  if self.reconnecting then return end -- the running loop sees it dropped again
   self.reconnecting = true
-  local deadline = uv.now() + self.reconnect_timeout_ms
-  local delay = 100
-  local function attempt()
-    if self.closed then self.reconnecting = false; return end
-    self:_handshake(function(e)
-      if e then
+  local function finish() self.reconnecting = false end
+  local function dial()
+    local deadline = uv.now() + self.reconnect_timeout_ms
+    local delay = 100
+    local function attempt()
+      if self.closed or self.closing then return finish() end
+      self:_handshake(function(e)
+        if not e then
+          local current = self.generation
+          return self:_reclaim(current, function()
+            if self.closed or self.closing or (self.connected and self.generation == current) then return finish() end
+            dial() -- dropped again meanwhile
+          end)
+        end
         if e.code == "incompatible" or uv.now() + delay > deadline then
-          self.reconnecting = false
+          finish()
           self.closed = true
           return self:_fail_all(e.code == "incompatible" and e
             or err("disconnected", "Could not reconnect to the Exocortex daemon within " .. self.reconnect_timeout_ms .. " ms"))
         end
-        timer(delay, attempt)
+        timer(math.floor(delay * (0.75 + math.random() / 2)), attempt)
         delay = math.min(delay * 2, 2000)
-        return
-      end
-      self.reconnecting = false
-      self:_reattach()
-    end)
+      end)
+    end
+    attempt()
   end
-  attempt()
+  dial()
 end
 
-function Client:_reattach()
-  for _, conv in ipairs(vim.tbl_values(self.conversations)) do
-    local id = conv.id
+--- After a reconnect: take the conversations back (one by one), then send again what was in flight.
+function Client:_reclaim(generation, done)
+  -- A daemon with sessions never runs a prompt twice: what was in flight is sent again.
+  local resend = self.welcome.session ~= nil
+  local convs = vim.tbl_values(self.conversations)
+  local attached = {}
+  local i = 0
+  local function step()
+    i = i + 1
+    local conv = convs[i]
+    if not conv then return self:_resend(generation, resend, attached, done) end
+    if self.conversations[conv.id] ~= conv then return step() end
     self:_attach_existing(conv, function(e, ev)
       if e then
-        if e.code ~= "disconnected" then self:_end_conversation(id, tostring(e)) end
-        return
+        if e.code == "disconnected" or e.code == "closed" then return done() end
+        if e.message:find("not found", 1, true) then self:_lost(conv.id, resend)
+        else self:_end_conversation(conv.id, e.message) end
+      else
+        attached[conv.id] = ev
       end
-      if ev.conversation and ev.conversation.streaming then return end
-      -- The turn ended while we were away.
-      local last = ev.lastTurnResult
-      for _, tr in ipairs(self:_turns_on(id)) do
+      step()
+    end, false)
+  end
+  step()
+end
+
+function Client:_resend(generation, resend, attached, done)
+  local turns = {}
+  for _, tr in pairs(self.turns) do if tr.generation < generation then table.insert(turns, tr) end end
+  table.sort(turns, function(a, b) return a.started_at < b.started_at end)
+  for _, tr in ipairs(turns) do
+    if resend or tr.generation == -1 then
+      -- The daemon answers a prompt it already has from its turn, and carries on with a run whose
+      -- conversation it already has; an older daemon gets only what never went out.
+      self:_send_turn_now(tr)
+    else
+      -- An older daemon: what went out is settled from the attach answers.
+      local ev = attached[tr.conv_id]
+      if not ev then
+        self:_settle(tr, err("lost", "The connection dropped before the daemon took this run"))
+      elseif not (ev.conversation and ev.conversation.streaming) then -- else its result comes as the owner's copy
+        local last = ev.lastTurnResult
         if last and last.turnId == tr.turn_id then
           self:_settle(tr, nil, to_result(last))
         else
-          self:_settle(tr, err("result_lost", "The turn on " .. id .. " ended while the client was disconnected, and the daemon did not report its result"))
+          self:_settle(tr, err("result_lost", "The turn on " .. tr.conv_id .. " ended while the client was disconnected, and the daemon did not report its result"))
         end
       end
-    end)
+    end
   end
+  done()
+end
+
+--- The daemon no longer has a conversation of ours: a crash, or we were away longer than the
+--- session's reconnect grace. A one-shot run starts over on a new conversation (rerun_lost).
+function Client:_lost(conv_id, rerun)
+  if self.rerun_lost and rerun then
+    for _, tr in pairs(self.turns) do
+      if tr.conv_id == conv_id and tr.command.type == "app_run" then
+        tr.conv_id = new_conv_id()
+        tr.command = vim.tbl_extend("force", tr.command, { convId = tr.conv_id })
+        tr.generation = -1 -- not sent on any connection: sent again
+      end
+    end
+  end
+  self:_end_conversation(conv_id, "lost", "lost", "Conversation " .. conv_id
+    .. " is gone from the Exocortex daemon (it crashed, or the client was away longer than its reconnect grace)")
 end
 
 function Client:_fail_all(e)
@@ -791,15 +961,22 @@ function Client:_fail_all(e)
     self.calls[call_id] = nil
     entry.call:_cancel("closed")
   end
+  -- Wakes requests waiting for a reconnect: they see the client closed.
+  self:_wake_waiters(false)
 end
 
---- One-shot from anywhere: connect (opts.app, opts.socket, opts.version), run, close. cb(err, result)
+--- One-shot from anywhere: connect (opts.app, opts.socket, opts.version and the reconnect options),
+--- run (ephemeral by default), close. Rides out a daemon restart. cb(err, result)
 function M.run(prompt, opts, cb)
-  M.connect({ app = opts.app, socket = opts.socket, version = opts.version, reconnect = false }, function(e, client)
+  local connect_opts = {
+    app = opts.app, socket = opts.socket, version = opts.version, reconnect = opts.reconnect,
+    reconnect_timeout_ms = opts.reconnect_timeout_ms, reconnect_grace_ms = opts.reconnect_grace_ms,
+    rerun_lost = opts.rerun_lost, welcome_timeout_ms = opts.welcome_timeout_ms, request_timeout_ms = opts.request_timeout_ms,
+  }
+  M.connect(connect_opts, function(e, client)
     if e then return cb(e) end
     client:run(prompt, opts, function(run_err, result)
-      client:close()
-      cb(run_err, result)
+      client:close(function() cb(run_err, result) end)
     end)
   end)
 end

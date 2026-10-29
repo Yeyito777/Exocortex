@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, writeFileSync } from "node:fs";
+import { connect as netConnect } from "node:net";
 import { join } from "node:path";
 import { connect, run, findSocket, ExocortexError, INSTALL_COMMAND, type AppTool, type Client, type StreamEvent } from "../src/index.ts";
 import { startFake, type Fake } from "./fake.ts";
@@ -13,7 +14,7 @@ async function client(socket: string, extra: Record<string, unknown> = {}) {
   return c;
 }
 afterEach(async () => {
-  for (const c of clients) c.close();
+  await Promise.all(clients.map(c => c.close()));
   clients = [];
   await Promise.all(fakes.map(f => f.stop()));
   fakes = [];
@@ -21,6 +22,25 @@ afterEach(async () => {
 
 const schema = { type: "object", properties: { word: { type: "string" } }, required: ["word"] };
 const lookup = (handler: AppTool["handler"]): AppTool => ({ name: "lookup", description: "Look a word up.", inputSchema: schema, handler });
+
+/** Send a test-only command (fake_restart, fake_drop) on a connection of its own. */
+function admin(socket: string, command: Record<string, unknown>): Promise<void> {
+  return new Promise((done, fail) => {
+    const conn = netConnect(socket, () => conn.write(JSON.stringify(command) + "\n"));
+    conn.once("data", () => conn.destroy());
+    conn.once("close", () => done());
+    conn.once("error", fail);
+  });
+}
+
+/** Resolves once `check` holds; fails fast after `ms`. */
+async function until(check: () => boolean, ms = 5000): Promise<void> {
+  const deadline = Date.now() + ms;
+  while (!check()) {
+    if (Date.now() > deadline) throw new Error("timed out waiting");
+    await Bun.sleep(10);
+  }
+}
 
 describe("one-shot", () => {
   test("run() connects, runs an ephemeral conversation and closes", async () => {
@@ -112,7 +132,7 @@ describe("conversations", () => {
     const first = await client(socket);
     const conv = await first.conversation({ lifetime: "saved", tools: { builtin: ["read"], app: [lookup(() => "one")] } });
     expect((await conv.send('tool lookup {"word":"x"}')).text).toBe("lookup -> one");
-    first.close();
+    await first.close();
 
     const second = await client(socket);
     expect((await second.list()).map(i => i.convId)).toEqual([]);
@@ -133,7 +153,7 @@ describe("conversations", () => {
     const conv = await owner.conversation({ lifetime: "ephemeral" });
     expect((await watcher.list()).map(i => i.convId)).toEqual([conv.id]);
     await expect(watcher.attach(conv.id)).rejects.toThrow(/ephemeral/);
-    owner.close();
+    await owner.close();
     for (let i = 0; i < 50 && (await watcher.list()).length; i++) await Bun.sleep(20);
     expect(await watcher.list()).toEqual([]);
   });
@@ -163,22 +183,121 @@ describe("reconnect", () => {
     expect(result.turnId).toBeDefined();
   });
 
-  test("without lastTurnResult such a turn is reported lost, not hung", async () => {
-    const { socket } = await fake(["--refuse-after-restart-ms", "400", "--no-owner-results"]);
+  test("an ephemeral conversation and a one-shot run survive a graceful restart", async () => {
+    const { socket } = await fake();
     const c = await client(socket);
+    const session = c.session;
+    expect(session).toBeTruthy();
+    const conv = await c.conversation({ lifetime: "ephemeral" });
+    expect((await conv.send("restart echo")).text).toBe("echo: echo");
+    expect(c.session).toBe(session!);
+    expect((await conv.send("count")).text).toBe("turns: 2");
+    expect((await c.run("restart again")).text).toBe("echo: again");
+  });
+
+  test("requests and sends made while reconnecting wait for the connection", async () => {
+    const { socket } = await fake();
+    const c = await client(socket);
+    const conv = await c.conversation({ lifetime: "ephemeral" });
+    await admin(socket, { type: "fake_restart", downMs: 600 });
+    await until(() => (c as any).connected === false);
+    expect((await conv.send("count")).text).toBe("turns: 1");
+    expect((await c.list()).map(i => i.convId)).toEqual([conv.id]);
+    const fresh = await c.conversation({ lifetime: "temporary" });
+    await admin(socket, { type: "fake_drop" });
+    expect((await fresh.send("count")).text).toBe("turns: 1");
+    expect((await c.list()).map(i => i.convId).sort()).toEqual([conv.id, fresh.id].sort());
+  });
+
+  test("a dropped connection keeps the ephemeral conversation and its running tool call", async () => {
+    const { socket } = await fake();
+    const c = await client(socket);
+    const answered: string[] = [];
+    let started = false;
+    const slow = lookup(async input => { started = true; await Bun.sleep(300); answered.push(input.word); return `kept ${input.word}`; });
+    const conv = await c.conversation({ lifetime: "ephemeral", tools: { app: [slow] } });
+    const turn = conv.stream('tool lookup {"word":"q"}');
+    await until(() => started);
+    await admin(socket, { type: "fake_drop" });
+    expect((await turn.result).text).toBe("lookup -> kept q");
+    expect(answered).toEqual(["q"]);
+  });
+
+  test("a crash loses the conversations; a one-shot run runs again on a new one", async () => {
+    const { socket } = await fake();
+    const c = await client(socket);
+    const conv = await c.conversation({ lifetime: "ephemeral" });
+    const hanging = conv.stream("hang");
+    for await (const event of hanging) if (event.type === "text") break;
+    const calls: unknown[] = [];
+    const crashOnce = lookup(async input => {
+      calls.push(input);
+      if (calls.length > 1) return "second try";
+      await admin(socket, { type: "fake_restart", crash: true, downMs: 200 });
+      await Bun.sleep(200);
+      return "too late";
+    });
+    const result = await c.run('tool lookup {"word":"x"}', { tools: { app: [crashOnce] } });
+    expect(result.text).toBe("lookup -> second try");
+    expect(calls.length).toBe(2);
+    const error = await hanging.result.catch(e => e);
+    expect(error.code).toBe("lost");
+    expect(conv.ended).toBe("lost");
+  });
+
+  test("a connection that drops again while conversations are re-attached still reconnects", async () => {
+    const { socket } = await fake();
+    const c = await client(socket);
+    const convs = await Promise.all([1, 2, 3, 4].map(() => c.conversation({ lifetime: "temporary" })));
+    let armed = 0;
+    c.onEvent(event => {
+      // The first re-attach answer after the first drop: drop again while the others are in flight.
+      if (event.type === "app_conversation_attached" && armed === 1) { armed = 2; void admin(socket, { type: "fake_drop" }); }
+    });
+    armed = 1;
+    await admin(socket, { type: "fake_drop" });
+    const timeout = new Promise<never>((_, fail) => setTimeout(() => fail(new Error("send hung")), 6000));
+    expect((await Promise.race([convs[0].send("count"), timeout])).text).toBe("turns: 1");
+    expect(armed).toBe(2);
+  });
+
+  test("route passes through to the conversation", async () => {
+    const { socket } = await fake();
+    const c = await client(socket);
+    const conv = await c.conversation({ lifetime: "temporary", route: { credits: "never", whenLimited: "error" } });
+    expect(conv.info.route).toEqual({ credits: "never", whenLimited: "error" });
+    expect((await c.run("hi", { route: { credits: "allow" } })).text).toBe("echo: hi");
+    const state = await c.request({ type: "fake_state" }, e => e.type === "fake_state");
+    expect(state.received.find((cmd: any) => cmd.type === "app_run").route).toEqual({ credits: "allow" });
+  });
+
+  test("close() ends the session's ephemeral conversations at once", async () => {
+    const { socket } = await fake();
+    const owner = await client(socket);
+    const watcher = await client(socket);
+    await owner.conversation({ lifetime: "ephemeral" });
+    await owner.close();
+    expect(await watcher.list()).toEqual([]);
+  });
+});
+
+describe("reconnect to a daemon without sessions", () => {
+  test("a turn whose result it did not keep is reported lost, not hung", async () => {
+    const { socket } = await fake(["--refuse-after-restart-ms", "400", "--no-owner-results", "--no-sessions"]);
+    const c = await client(socket);
+    expect(c.session).toBeNull();
     const conv = await c.conversation({ lifetime: "saved" });
     const error = await conv.send("restart echo quick").catch(e => e);
     expect(error.code).toBe("result_lost");
     expect((await conv.send("count")).text).toBe("turns: 2");
   });
 
-  test("ephemeral conversations end on a dropped connection; the client keeps working", async () => {
-    const { socket } = await fake();
+  test("an ephemeral conversation is lost on a restart; the client keeps working", async () => {
+    const { socket } = await fake(["--no-sessions"]);
     const c = await client(socket);
     const conv = await c.conversation({ lifetime: "ephemeral" });
-    const pending = conv.send("restart echo");
-    await expect(pending).rejects.toThrow(/ended/);
-    for (let i = 0; i < 100; i++) { try { await c.list(); break; } catch { await Bun.sleep(50); } }
+    const error = await conv.send("restart echo").catch(e => e);
+    expect(error.code).toBe("lost");
     expect((await c.run("after")).text).toBe("echo: after");
   });
 });
