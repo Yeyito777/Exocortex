@@ -251,6 +251,16 @@ describe("turn end and executor", () => {
     expect(restart).not.toHaveBeenCalled();
   });
 
+  test("a failed restart of a still-running daemon clears the request for a retry", async () => {
+    const { token } = requestDaemonRestart("conv-a", "", options().opts);
+    noteRequestedRestartTurnEnded("conv-a", false);
+    const { restart, deps } = executorDeps();
+    restart.mockImplementation(async () => { throw new Error("not the service's main process"); });
+    await expect(runRequestedRestart(token, deps)).rejects.toThrow("not the service's main process");
+    expect(readRequestedRestart()).toBeNull();
+    expect(() => requestDaemonRestart("conv-a", "retry", options().opts)).not.toThrow();
+  });
+
   test("proceeds after the wait limit if the caller never finishes its turn", async () => {
     const { token } = requestDaemonRestart("conv-a", "", options().opts);
     const { restart, deps } = executorDeps();
