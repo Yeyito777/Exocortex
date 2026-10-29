@@ -18,8 +18,10 @@
  * once; the relinked daemon is preferred over the TUI again. With a second
  * machine attached (a "phone" TUI, named in whale's config), a call without
  * host runs nowhere and lists both, host runs it on exactly that machine, a
- * conversation the phone writes in is told so, and a machine that left fails
- * by name; remote_bash takes host too.
+ * conversation the phone writes in is told so, a second phone with the same
+ * user@hostname but its own install ID is phone-2 and reached alone, and a
+ * machine that left fails by name; remote_bash takes host too. The fake mac
+ * TUI announces the mac daemon's install ID, so the two are one machine.
  *
  * Usage: bun scripts/dev/client-exec-e2e.ts [--keep]
  */
@@ -231,6 +233,14 @@ writeFileSync(join(dirs.whale, "secrets", "credentials.json"), JSON.stringify({
   },
 }), { mode: 0o600 });
 
+/** The install ID a daemon with this config dir announces (clientInstallId). */
+function installIdFor(configDir: string): string {
+  const result = Bun.spawnSync(["bun", "-e", `import { clientInstallId } from "./shared/src/command-exec"; process.stdout.write(clientInstallId() ?? "")`], {
+    cwd: ROOT, env: { ...process.env, EXOCORTEX_CONFIG_DIR: configDir, EXOCORTEX_TEST: "1" },
+  });
+  return result.stdout.toString();
+}
+
 function socketFor(configDir: string): string {
   const result = Bun.spawnSync(["bun", "-e", `import { socketPath } from "./shared/src/paths"; process.stdout.write(socketPath())`], {
     cwd: ROOT, env: { ...process.env, EXOCORTEX_CONFIG_DIR: configDir, EXOCORTEX_TEST: "1" },
@@ -328,7 +338,7 @@ async function turn(ipc: Ipc, provider: string, model: string, text: string, opt
 }
 
 /** A TUI connected to whale over /ssh, as far as whale can tell: it announces the machine (this one, or `machine`) and runs commands. */
-async function fakeTui(socket: string, behaviour: { frozen: boolean }, machine?: { hostname: string; user: string; side: string }): Promise<{ ipc: Ipc; ran: string[] }> {
+async function fakeTui(socket: string, behaviour: { frozen: boolean }, machine?: { hostname: string; user: string; side: string; installId?: string }): Promise<{ ipc: Ipc; ran: string[] }> {
   const ipc = await Ipc.connect(socket);
   const ran: string[] = [];
   ipc.onEvent = event => {
@@ -341,8 +351,8 @@ async function fakeTui(socket: string, behaviour: { frozen: boolean }, machine?:
   let user = "";
   try { user = userInfo().username; } catch { /* none */ }
   const clientHost = machine
-    ? { hostname: machine.hostname, user: machine.user, platform: "linux", home: "/root" }
-    : { hostname: hostname(), user, platform: process.platform, home: homedir() };
+    ? { hostname: machine.hostname, user: machine.user, platform: "linux", home: "/root", ...(machine.installId ? { installId: machine.installId } : {}) }
+    : { hostname: hostname(), user, platform: process.platform, home: homedir(), installId: installIdFor(dirs.mac) };
   ipc.send({ type: "client_capabilities", capabilities: ["client-exec-alive"], clientHost });
   assert.equal((await ipc.request({ type: "ping" })).type, "pong");
   return { ipc, ran };
@@ -491,6 +501,20 @@ try {
   const gone = await turn(whaleIpc, "openai", "gpt-6-astra", "HOST:: phone RUN_CLIENT:: echo side=$EXO_E2E_SIDE", { convId: back.convId });
   assert.match(gone.text, new RegExp(`The user's machine phone is not connected right now\\. Connected: ${macId} \\(`));
   log("✓ phone gone: host=phone fails naming the machines still connected");
+
+  // Two phones that are both root@e2e-phone, each with its own install ID: two machines.
+  const phoneA = await fakeTui(whale.socket, { frozen: false }, { hostname: "e2e-phone", user: "root", side: "phone-a", installId: "aaaa1111aaaa1111" });
+  const phoneB = await fakeTui(whale.socket, { frozen: false }, { hostname: "e2e-phone", user: "root", side: "phone-b", installId: "bbbb2222bbbb2222" });
+  const second = await turn(whaleIpc, "openai", "gpt-6-astra", "HOST:: phone-2 RUN_CLIENT:: echo side=$EXO_E2E_SIDE", { convId: back.convId });
+  assert.match(second.text, /tool said: side=phone-b/);
+  assert.equal(phoneA.ran.length, 0);
+  const byHost = await turn(whaleIpc, "openai", "gpt-6-astra", "HOST:: root@e2e-phone RUN_CLIENT:: echo side=$EXO_E2E_SIDE", { convId: back.convId });
+  assert.match(byHost.text, /"root@e2e-phone" names several connected machines/);
+  assert.equal(phoneA.ran.length + phoneB.ran.length, 1);
+  log("✓ two root@e2e-phone installs: host=phone-2 runs on the second alone, their user@hostname runs nowhere");
+  phoneA.ipc.close();
+  phoneB.ipc.close();
+  await Bun.sleep(300);
   // Back to one machine, but this conversation was last told about two: still no guessing.
   const afterTwo = await turn(whaleIpc, "openai", "gpt-6-astra", "RUN_CLIENT:: echo side=$EXO_E2E_SIDE", { convId: back.convId });
   assert.match(afterTwo.text, /tool said: side=mac\b/);
