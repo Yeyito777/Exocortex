@@ -147,6 +147,23 @@ export function detectRestartTarget(
   return worktreeName() ? "instance" : null;
 }
 
+/**
+ * The executor's re-check that the service manager still runs `daemonPid`.
+ * The daemon's parent is looked up, not taken from the executor's own ppid;
+ * EXOCORTEX_LAUNCHER_PID is the daemon's, passed down by executorEnvironment
+ * (the launcher's --exec mode leaves it unchanged).
+ */
+export function isServiceDaemon(
+  daemonPid: number,
+  platform: NodeJS.Platform = process.platform,
+  run: CommandRunner = runCommand,
+  launcherPid: string | undefined = process.env.EXOCORTEX_LAUNCHER_PID,
+): boolean {
+  const ppid = run(["ps", "-o", "ppid=", "-p", String(daemonPid)]);
+  const parent = { pid: ppid.ok ? Number.parseInt(ppid.output, 10) : NaN, launcherPid };
+  return detectRestartTarget(platform, run, daemonPid, parent) === "service";
+}
+
 // ── Scheduling the out-of-process executor ──────────────────────────
 
 export interface ExecutorScheduleOptions {
@@ -374,7 +391,7 @@ function readLivePid(): number | null {
 
 async function restartTarget(record: RequestedRestartRecord): Promise<void> {
   if (record.target === "service") {
-    if (detectRestartTarget(process.platform, runCommand, record.daemonPid) !== "service") {
+    if (!isServiceDaemon(record.daemonPid)) {
       throw new Error(`daemon pid ${record.daemonPid} is no longer the service's main process`);
     }
     // Exactly the human path: graceful prepare-restart, then the service manager restart.
