@@ -37,6 +37,7 @@ import { scheduleActiveGoalTimeLimits } from "./goal-time-limit";
 import { finishRequestedRestartBoot, prepareRequestedRestartBoot, runRequestedRestart } from "./requested-restart";
 import { startChronoService, stopChronoService, listChronoSchedules, resumeDeferredChronoWaits } from "./chrono-service";
 import { startWatchdog, stopWatchdog } from "./watchdog";
+import { startApiCreditSync } from "./providers/anthropic/api-credits";
 import { onDaemonUpdateStatusChange, startDaemonUpdateStatus, stopDaemonUpdateStatus } from "./update-status";
 import { connectivity } from "./connectivity";
 import { initExternalTools, stopExternalToolsAsync, getExternalToolCount, getSupervisedDaemonCount, getExternalToolStyles } from "./external-tools";
@@ -394,6 +395,8 @@ async function startDaemon(): Promise<void> {
   // Keep the update status ready for connecting clients and push its changes.
   onDaemonUpdateStatusChange(status => server.broadcastUpdateStatus(status));
   startDaemonUpdateStatus();
+  // Read the real API-credit balances from the Claude Console about hourly.
+  startApiCreditSync();
 
   // Check auth status
   const authSummary = getProviders()

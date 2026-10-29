@@ -900,6 +900,11 @@ export interface ApiCreditsUsage {
   spentUsd: number;
   /** With no key ready: when one can take turns again (a rate limit ends), if known. */
   resetAt: number | null;
+  /** The balance of the key in use (`label`): its organization's, as on the Accounts screen. */
+  balanceUsd?: number | null;
+  grantedUsd?: number | null;
+  /** That balance is only an estimate. */
+  approximate?: boolean;
 }
 
 /** Spend counted from the usage OpenAI reported for API-key requests. */

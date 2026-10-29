@@ -435,10 +435,11 @@ test("a Credits column: the balance, each grant's countdown, the account spendin
   // OpenAI's row and heading line up with Claude's Credits column.
   const openaiHeader = rows.find(row => row.includes("OpenAI"))!;
   const openaiRow = rows.find(row => row.includes("owner@example.com"))!;
-  expect(openaiRow).toMatch(/\$935 \d+d/);
+  // Counted by Exocortex, not OpenAI's balance: an estimate.
+  expect(openaiRow).toMatch(/≈\$935 \d+d/);
   expect(header.indexOf("Credits")).toBe(main.indexOf("$688"));
   expect(openaiHeader.indexOf("Credits")).toBe(main.indexOf("$688"));
-  expect(openaiRow.indexOf("$935")).toBe(main.indexOf("$688"));
+  expect(openaiRow.indexOf("≈$935")).toBe(main.indexOf("$688"));
   // A section without credits has no Credits label.
   state.usageByProvider.openai = { fiveHour: null, sevenDay: null };
   expect(screenText(state).find(row => row.includes("OpenAI"))).not.toContain("Credits");
@@ -459,7 +460,33 @@ test("Credits cells: coarse countdowns, expired grants dropped, red when low", (
   expect(creditCell({ balanceUsd: 100, grantedUsd: 200, expiresAt: [NOW - H], active: false }, NOW)).toBeNull();
   expect(creditCell(null, NOW)).toBeNull();
   expect(openAICredits({ amountUsd: 1000, since: "2026-10-20", expires: "2027-10-20", asOf: "2026-10-29", usedUsd: 65, firstTrackedDay: null, paceUsd: 0, paceDays: 0 }))
-    .toEqual({ balanceUsd: 935, grantedUsd: 1000, expiresAt: [new Date(2027, 9, 21).getTime()], active: false });
+    .toEqual({ balanceUsd: 935, grantedUsd: 1000, expiresAt: [new Date(2027, 9, 21).getTime()], active: false, approximate: true });
+});
+
+test("Credits cells: ≈ for an estimate, a muted sign-in note, credits that never expire", () => {
+  const synced = { balanceUsd: 199.99, grantedUsd: 200, expiresAt: [NOW + 19 * 24 * H + 5 * H], active: false };
+  expect(creditCell(synced, NOW)).toEqual({ amount: [theme.success, "$200"], expiries: "19d", active: false });
+  expect(creditCell({ ...synced, approximate: true }, NOW)?.amount[1]).toBe("≈$200");
+  expect(creditCell({ ...synced, approximate: true, signInNeeded: true }, NOW)).toMatchObject({ amount: [theme.success, "≈$200"], signInNeeded: true });
+  // Bought credits without an expiry still show; a section whose grants all expired does not.
+  expect(creditCell({ balanceUsd: 12, grantedUsd: 12, expiresAt: [], active: false }, NOW)).toEqual({ amount: [theme.success, "$12"], expiries: "", active: false });
+  expect(creditCell({ balanceUsd: 0, grantedUsd: 0, expiresAt: [], active: false }, NOW)).toBeNull();
+
+  const snap = snapshot({}, [
+    claude("main", { credits: { ...synced, balanceUsd: 688.4, grantedUsd: 700, active: true } }),
+    claude("max2", { credits: { ...synced, approximate: true, signInNeeded: true } }),
+  ]);
+  const { state } = openScreen(snap);
+  state.usageByProvider.openai = null;
+  const rows = screenText(state);
+  const main = rows.find(row => row.includes("● main"))!;
+  const max2 = rows.find(row => row.includes("● max2"))!;
+  expect(main).toMatch(/\$688 19d ◀/);
+  expect(max2).toMatch(/≈\$200 19d sign-in needed +│/);
+  expect(max2.indexOf("≈$200")).toBe(main.indexOf("$688"));
+  const lines = accountsScreenLines(state, state.accountsScreen!, NOW);
+  const row = lines.find(line => line.kind === "row" && line.row.name[1] === "max2");
+  expect(row?.kind === "row" && row.row.credits?.signInNeeded).toBe(true);
 });
 
 test("limited, blocked, signed-out and other states replace the bars with a short word", () => {

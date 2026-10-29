@@ -42,6 +42,7 @@ import {
   apiCreditFallbackEnabled,
   apiCreditsUsage,
   refreshApiCreditSecrets,
+  requestApiCreditSync,
   usableApiCreditKey,
   type ApiCreditKey,
 } from "./api-credits";
@@ -159,7 +160,10 @@ export function touchConversationAccount(convId: string, account: string, now = 
 
 /** A turn starts on API credits; returns its end. It counts toward no subscription account. */
 export function beginApiCreditTurn(key: ApiCreditKey): () => void {
+  const first = !activeCreditTurns.has(key.id);
   activeCreditTurns.set(key.id, (activeCreditTurns.get(key.id) ?? 0) + 1);
+  // The fallback starts spending this key: read its real balance.
+  if (first) requestApiCreditSync(key);
   emitClaudeAccountsChanged();
   notifyApiKeyUsageChanged(API_CREDIT_ACCOUNT_KEY_PREFIX + key.id);
   let ended = false;
@@ -347,7 +351,7 @@ export function getCombinedUsage(now = Date.now()): UsageData | null {
   const usage = included.length > 0 ? aggregateUsage(included.map(state => state.usage), now)
     : multipleClaudeAccounts() ? null : getAccountUsage(MAIN_ACCOUNT_ID);
   if (!usage || isProviderProxied("anthropic")) return usage;
-  const credits = apiCreditsUsage(activeCreditTurns.size > 0 || apiCreditFallbackActive(now), now);
+  const credits = apiCreditsUsage(activeCreditTurns.size > 0 || apiCreditFallbackActive(now), now, new Set(activeCreditTurns.keys()));
   return credits ? { ...usage, apiCredits: credits } : usage;
 }
 

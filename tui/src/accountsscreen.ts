@@ -7,7 +7,10 @@
  * API credits (a Claude plan's, through the API-credit fallback; OpenAI's
  * `providers.openai.credit`): the balance, then the time until each grant
  * expires, the balance in bold blue with a ◀ while turns spend it, red under
- * a tenth of what was granted. The account this conversation runs on (OpenAI:
+ * a tenth of what was granted, with a leading ≈ while it is only an estimate
+ * (never synced from the console, or synced hours ago), and a muted
+ * "sign-in needed" when the console session it is read through is signed
+ * out. The account this conversation runs on (OpenAI:
  * the current login) is highlighted and the one new work goes to is tagged. A
  * dim note under the table says how to sign an account in, only when there
  * is something to say. Data comes from
@@ -230,6 +233,8 @@ export interface CreditCell {
   amount: Segment;
   expiries: string;
   active: boolean;
+  /** The console session the balance is read through is signed out. */
+  signInNeeded?: boolean;
 }
 
 /** Share of the granted credits under which the balance shows red. */
@@ -239,18 +244,20 @@ const LOW_CREDIT_SHARE = 0.1;
 export function creditCell(credits: AccountCredits | null | undefined, now: number): CreditCell | null {
   if (!credits) return null;
   const expiries = credits.expiresAt.filter(at => at > now).sort((a, b) => a - b);
-  if (expiries.length === 0) return null;
+  // Nothing that expires later, and no grant that never does.
+  if (expiries.length === 0 && !(credits.grantedUsd > 0 && credits.expiresAt.length === 0)) return null;
   const color = credits.active ? theme.bold + theme.accent
     : credits.balanceUsd < credits.grantedUsd * LOW_CREDIT_SHARE ? theme.error
     : theme.success;
   return {
-    amount: [color, `$${Math.max(0, Math.round(credits.balanceUsd))}`],
+    amount: [color, `${credits.approximate ? "≈" : ""}$${Math.max(0, Math.round(credits.balanceUsd))}`],
     expiries: expiries.map(at => formatCreditCountdown(at - now)).join(" · "),
     active: credits.active,
+    ...(credits.signInNeeded ? { signInNeeded: true } : {}),
   };
 }
 
-/** OpenAI's API-key credit grant (`providers.openai.credit`) as account credits: it expires at the end of its last day. */
+/** OpenAI's API-key credit grant (`providers.openai.credit`) as account credits: it expires at the end of its last day; an estimate. */
 export function openAICredits(credit: ApiKeyCredit | null | undefined): AccountCredits | null {
   if (!credit?.expires) return null;
   const [year, month, day] = credit.expires.split("-").map(Number);
@@ -259,6 +266,7 @@ export function openAICredits(credit: ApiKeyCredit | null | undefined): AccountC
     grantedUsd: credit.amountUsd,
     expiresAt: [new Date(year, month - 1, day + 1).getTime()],
     active: false,
+    approximate: true,
   };
 }
 
@@ -435,9 +443,11 @@ function tableWidth(columns: Columns): number {
 
 const CREDITS_LABEL = "Credits";
 const ACTIVE_MARK = " ◀";
+const SIGN_IN_NOTE = " sign-in needed";
 
 function creditWidth(cell: CreditCell): number {
-  return termWidth(cell.amount[1]) + (cell.expiries ? 1 + termWidth(cell.expiries) : 0) + (cell.active ? termWidth(ACTIVE_MARK) : 0);
+  return termWidth(cell.amount[1]) + (cell.expiries ? 1 + termWidth(cell.expiries) : 0) + (cell.active ? termWidth(ACTIVE_MARK) : 0)
+    + (cell.signInNeeded ? termWidth(SIGN_IN_NOTE) : 0);
 }
 
 /** Column widths for these lines, with bars as wide as `maxWidth` allows (up to MAX_BAR_WIDTH). */
@@ -475,6 +485,7 @@ function creditSegments(cell: CreditCell): Segment[] {
     cell.amount, [theme.boldOff, ""],
     ...(cell.expiries ? [[theme.muted, ` ${cell.expiries}`]] as Segment[] : []),
     ...(cell.active ? [[theme.accent, ACTIVE_MARK]] as Segment[] : []),
+    ...(cell.signInNeeded ? [[theme.muted, SIGN_IN_NOTE]] as Segment[] : []),
   ];
 }
 

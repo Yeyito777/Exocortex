@@ -19,6 +19,8 @@ import { deleteUserMacro, listUserMacros, saveUserMacro } from "./user-macros";
 import { getDaemonUpdateStatus, peekDaemonUpdateStatus } from "./update-status";
 import { setApiKeyUsageRecordedListener } from "./providers/openai/api-key-usage";
 import { API_CREDIT_ACCOUNT_KEY_PREFIX } from "./providers/anthropic/api-credits";
+import { setCreditSyncListener } from "./providers/anthropic/credit-sync";
+import { emitClaudeAccountsChanged } from "./providers/anthropic/account-events";
 import { encodeHistoryDelta } from "@exocortex/shared/history-delta";
 import { effectiveConversationDefaults } from "@exocortex/shared/config";
 import { isDurationMs } from "@exocortex/shared/duration";
@@ -305,6 +307,11 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   setApiKeyUsageRecordedListener((accountKey) => {
     const provider = accountKey.startsWith(API_CREDIT_ACCOUNT_KEY_PREFIX) ? "anthropic" : "openai";
     broadcastUsage(provider, getLastUsage(provider));
+  });
+  // A Console sync changed a credit balance: the Accounts screen and the usage block show it.
+  setCreditSyncListener(() => {
+    emitClaudeAccountsChanged();
+    broadcastUsage("anthropic", getLastUsage("anthropic"));
   });
   let apiKeyDayTimer: ReturnType<typeof setTimeout> | null = null;
   const scheduleApiKeyDayRollover = () => {
@@ -4297,6 +4304,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       stopAppApi();
       unsubscribeConnectivity();
       setApiKeyUsageRecordedListener(null);
+      setCreditSyncListener(null);
       if (apiKeyDayTimer) clearTimeout(apiKeyDayTimer);
       if (preparedRestartTimer) clearTimeout(preparedRestartTimer);
     },
