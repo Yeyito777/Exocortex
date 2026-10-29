@@ -24,7 +24,7 @@ import { HistoryCache } from "./history-cache";
 import { btwRequestId, queueRequestId, turnRequestId, unqueueRequestId } from "./request-ids";
 import { SidebarCache } from "./sidebar-cache";
 import { transcribeLocally } from "./local-transcription";
-import { ClientExecutor } from "@exocortex/shared/command-exec";
+import { ClientExecutor, clientInstallId } from "@exocortex/shared/command-exec";
 import {
   DEFAULT_SSH_PROBE_TIMEOUT_MS,
   appendSshStderr,
@@ -1370,7 +1370,8 @@ export class DaemonClient {
   private clientHostInfo(): ClientHostInfo {
     let user = process.env.USER ?? process.env.USERNAME ?? "";
     try { user = userInfo().username; } catch { /* no passwd entry */ }
-    return { hostname: this.localHostname, user, platform: process.platform, home: homedir() };
+    const installId = clientInstallId();
+    return { hostname: this.localHostname, user, platform: process.platform, home: homedir(), ...(installId ? { installId } : {}) };
   }
 
   /**

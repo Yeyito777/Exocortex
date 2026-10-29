@@ -13,9 +13,11 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { statSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir, hostname, userInfo } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
+import { dataDir } from "./paths";
 import type { ClientExecRequestEvent, ClientExecResultCommand, ClientHostInfo } from "./protocol";
 
 const MAX_CAPTURE_BYTES = 1_000_000;
@@ -31,11 +33,48 @@ export const EXEC_SILENCE_TIMEOUT_MS = 45_000;
 
 export type ClientExecOutcome = Omit<ClientExecResultCommand, "type" | "execId">;
 
+/** What an install ID looks like (ClientHostInfo.installId). */
+export const INSTALL_ID_PATTERN = /^[A-Za-z0-9_-]{8,64}$/;
+
+let cachedInstallId: string | null | undefined;
+
+function readInstallId(path: string): string | null {
+  try {
+    const id = readFileSync(path, "utf8").trim();
+    return INSTALL_ID_PATTERN.test(id) ? id : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * This install's ID: random, made once and kept in its data directory
+ * (client-install-id), and sent with the machine it announces so a daemon can
+ * tell apart two machines with the same user@hostname. Null when it can be
+ * neither read nor saved.
+ */
+export function clientInstallId(): string | null {
+  if (cachedInstallId !== undefined) return cachedInstallId;
+  const path = join(dataDir(), "client-install-id");
+  let id = readInstallId(path);
+  if (!id) {
+    try {
+      mkdirSync(dirname(path), { recursive: true });
+      // Exclusive create, so a TUI and daemon starting together keep one ID.
+      writeFileSync(path, `${randomBytes(8).toString("hex")}\n`, { flag: existsSync(path) ? "w" : "wx", mode: 0o600 });
+    } catch { /* made by another process just now, or not writable */ }
+    id = readInstallId(path);
+  }
+  cachedInstallId = id;
+  return id;
+}
+
 /** This machine, as client_bash and remote_bash describe it. */
 export function localHostInfo(): ClientHostInfo {
   let user = process.env.USER ?? process.env.USERNAME ?? "";
   try { user = userInfo().username; } catch { /* no passwd entry */ }
-  return { hostname: hostname(), user, platform: process.platform, home: homedir() };
+  const installId = clientInstallId();
+  return { hostname: hostname(), user, platform: process.platform, home: homedir(), ...(installId ? { installId } : {}) };
 }
 
 export interface ClientExecutorOptions {

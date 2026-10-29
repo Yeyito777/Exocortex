@@ -289,6 +289,89 @@ describe("client IDs", () => {
   });
 });
 
+describe("install IDs", () => {
+  const phoneA = { ...phone, installId: "aaaa1111aaaa1111" };
+  const phoneB = { ...phone, installId: "bbbb2222bbbb2222" };
+  const ids = () => connectedClientHosts().map(host => [host.id, host.info.installId ?? "-"]);
+
+  test("two machines with the same user@hostname are two machines, each reached by its own ID only", async () => {
+    setNames({ "root@localhost": "phone" });
+    const a = attach(phoneA, [], { via: "daemon", reportsAlive: true });
+    const b = attach(phoneB, [], { via: "daemon", reportsAlive: true });
+    expect(ids()).toEqual([["phone", "aaaa1111aaaa1111"], ["phone-2", "bbbb2222bbbb2222"]]);
+    expect(await runsOn({ host: "phone-2" }, { a, b })).toBe("b");
+    expect(await runsOn({ host: "phone" }, { a, b })).toBe("a");
+    // Their user@hostname names both: nothing runs.
+    expect(await runsOn({ host: "root@localhost" }, { a, b })).toStartWith('"root@localhost" names several connected machines: phone (root@localhost, Linux, home /root); phone-2 (root@localhost, Linux, home /root). Nothing was run');
+    setNames(undefined);
+    expect(ids()).toEqual([["linux", "aaaa1111aaaa1111"], ["linux-2", "bbbb2222bbbb2222"]]);
+  });
+
+  test("one install's daemon link and TUI are one machine; an older client without an ID is another", async () => {
+    setNames({ "root@localhost": "phone" });
+    const link = attach(phoneA, [], { via: "daemon", reportsAlive: true });
+    const tui = attach(phoneA, [], { via: "tui", reportsAlive: true });
+    const old = attach(phone, [], { via: "tui", reportsAlive: true });
+    expect(ids()).toEqual([["phone", "aaaa1111aaaa1111"], ["phone-2", "-"]]);
+    expect(await runsOn({ host: "phone-2" }, { link, tui, old })).toBe("old");
+    expect(await runsOn({ host: "phone" }, { link, tui, old })).toBe("link");
+    // A malformed ID is ignored: that client is known by user@hostname, like the older one.
+    const malformed = attach({ ...phone, installId: "not valid!" }, [], { via: "tui", reportsAlive: true });
+    expect(ids()).toEqual([["phone", "aaaa1111aaaa1111"], ["phone-2", "-"]]);
+    expect(await runsOn({ host: "phone-2" }, { link, tui, old, malformed })).toBe("malformed");
+  });
+
+  test("IDs stay with their install across reconnects and restarts, whatever order they come back in", () => {
+    const first = attach(phoneA);
+    attach(phoneB);
+    attach(phone);
+    first.close();
+    attach(phoneA);
+    expect(ids()).toEqual([["linux", "aaaa1111aaaa1111"], ["linux-2", "bbbb2222bbbb2222"], ["linux-3", "-"]]);
+    restartClientHostsForTest();
+    attach(phone);
+    attach(phoneB);
+    attach(phoneA);
+    expect(ids()).toEqual([["linux", "aaaa1111aaaa1111"], ["linux-2", "bbbb2222bbbb2222"], ["linux-3", "-"]]);
+  });
+
+  test("a name configured for an install ID is that machine's alone, ahead of user@hostname names and automatic IDs", () => {
+    attach({ ...laptop, hostname: "tablet" });
+    attach(phoneA);
+    attach(phoneB);
+    expect(ids()).toEqual([["linux", "aaaa1111aaaa1111"], ["linux-2", "bbbb2222bbbb2222"], ["tablet", "-"]]);
+    setNames({ "root@localhost": "phone", BBBB2222BBBB2222: "tablet" });
+    expect(ids()).toEqual([["phone", "aaaa1111aaaa1111"], ["tablet", "bbbb2222bbbb2222"], ["tablet-2", "-"]]);
+  });
+
+  test("the first install-ID machine of a user@hostname keeps the ID it had before IDs were sent, unless an older client is on as it", () => {
+    const oldMac = attach(mac);
+    expect(connectedClientHosts().map(host => host.id)).toEqual(["mac"]);
+    oldMac.close();
+    restartClientHostsForTest();
+    const macInstall = { ...mac, installId: "cccc3333cccc3333" };
+    attach(macInstall, [], { via: "daemon" });
+    attach(mac); // an older client of the same name, later: a machine of its own
+    expect(ids()).toEqual([["mac", "cccc3333cccc3333"], ["mac-2", "-"]]);
+
+    // While an older client is attached as that user@hostname, its ID stays with it.
+    resetClientHostsForTest();
+    attach(mac);
+    attach({ ...mac, installId: "dddd4444dddd4444" });
+    expect(ids()).toEqual([["mac", "-"], ["mac-2", "dddd4444dddd4444"]]);
+  });
+
+  test("a conversation told where the user writes from before install IDs still hears it", () => {
+    const macInstall = { ...mac, installId: "cccc3333cccc3333" };
+    attach(macInstall, [], { via: "daemon" });
+    attach(phoneA, [], { via: "daemon" });
+    expect(clientHostNotice({ key: "yeyito@Aurelios-MacBook-Pro.local", viaParent: false })!.text).toEndWith("The user last wrote here from mac.");
+    // A user@hostname two machines announce names neither.
+    attach(phoneB, [], { via: "daemon" });
+    expect(clientHostNotice({ key: "root@localhost", viaParent: false })!.text).not.toContain("last wrote");
+  });
+});
+
 describe("choosing the machine", () => {
   test("with one machine connected, host may be left out only when it is the one the conversation was told about", async () => {
     const macLink = attach(mac, [], { via: "daemon", reportsAlive: true });
