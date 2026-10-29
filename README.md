@@ -219,8 +219,23 @@ works while no TUI is open), else through a TUI connected over `/ssh`. Either
 runs each command in its own process group and stops it on timeout, interrupt,
 or when the connection ends. Both acknowledge commands and report them alive,
 so a frozen TUI or a sleeping machine fails a call in about 15 seconds rather
-than after its timeout. Subagents get it like their parents. Conversations get
-a short notice when that machine connects or disconnects.
+than after its timeout. Subagents get it like their parents.
+
+Several machines can be connected at once (a laptop and a phone, say), so each
+has a short client ID: `mac` for a Mac, `windows` for Windows, otherwise its
+hostname (`toronto`), numbered when taken (`mac-2`) and kept across restarts.
+Name a machine yourself in `config/config.json` by its `user@hostname`:
+
+```json
+"clientHosts": { "names": { "root@localhost": "phone" } }
+```
+
+A `client_bash` call names its machine with `host`. It may leave `host` out only
+while a single machine is connected and the conversation was told that one is
+the only one; otherwise it fails, listing the connected machines, and never
+runs anywhere it did not name. Conversations get a short notice listing the
+connected machines by ID whenever that changes, and saying which one the user
+last wrote from (subagents: the one the user last wrote to their parent from).
 
 To select the SSH route as soon as the TUI launches, pass the same alias on the
 command line:

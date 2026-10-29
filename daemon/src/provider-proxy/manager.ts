@@ -167,15 +167,40 @@ export class ProviderProxyManager {
     this.started = false;
   }
 
-  /** What to tell a conversation on `provider` about remote_bash, or null when the provider is not proxied. */
-  remoteHostNotice(provider: string | undefined): string | null {
+  /**
+   * What to tell a conversation on `provider` about remote_bash, or null when
+   * the provider is not proxied. While its /proxy machine is the only one
+   * remote_bash reaches, a call may leave host out (defaultHost).
+   */
+  remoteHostNotice(provider: string | undefined): { text: string; defaultHost?: string } | null {
     const alias = this.aliasFor(provider);
     if (!alias || !isProxyableProvider(provider)) return null;
     const runsOn = `This conversation's ${PROVIDER_LABELS[provider]} model runs through /proxy on ${alias}, using that machine's login. `;
     if (this.linkFor(provider)?.features.includes(PROVIDER_PROXY_LINK_ONLY_FEATURE)) {
-      return `${runsOn}The link carries only model requests (remote_bash is not available); every tool runs on ${hostname()}.`;
+      return { text: `${runsOn}The link carries only model requests (remote_bash is not available); every tool runs on ${hostname()}.` };
     }
-    return `${runsOn}remote_bash runs commands on ${alias} via /proxy; every other tool still runs on ${hostname()}.`;
+    const machines = this.remoteExecAliases();
+    if (machines.length > 1) {
+      return { text: `${runsOn}remote_bash runs commands on the /proxy machine its host names: ${machines.join(", ")}; every other tool still runs on ${hostname()}.` };
+    }
+    return {
+      text: `${runsOn}remote_bash runs commands on ${alias} via /proxy; host may be left out while it is the only /proxy machine. Every other tool still runs on ${hostname()}.`,
+      defaultHost: alias,
+    };
+  }
+
+  /** The /proxy machines remote_bash reaches, by alias: those whose link carries more than model requests. */
+  remoteExecAliases(): string[] {
+    const aliases = new Set<string>();
+    for (const alias of this.proxies.values()) {
+      if (!this.links.get(alias)?.features.includes(PROVIDER_PROXY_LINK_ONLY_FEATURE)) aliases.add(alias);
+    }
+    return [...aliases].sort();
+  }
+
+  /** The link to a /proxy machine, whatever its state. */
+  linkForAlias(alias: string): ProviderProxyLink | null {
+    return this.links.get(alias) ?? null;
   }
 
   aliasFor(provider: string | undefined): string | null {

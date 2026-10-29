@@ -118,6 +118,17 @@ export interface AgentConfig {
   maxSubagentDepth?: number;
 }
 
+export interface ClientHostsConfig {
+  /**
+   * Client IDs for the user's machines, keyed by user@hostname as each
+   * announces itself (e.g. "root@localhost": "phone"): the name client_bash's
+   * host takes and the model sees. Lowercase letters, digits and dashes, up to
+   * 32. An unnamed machine gets one from its platform or hostname (mac,
+   * windows, toronto), kept across restarts.
+   */
+  names?: Record<string, string>;
+}
+
 export type PingMode = "sound" | "notif" | "both";
 
 export interface PingConfig {
@@ -207,6 +218,8 @@ export interface ExocortexConfig {
   defaults?: DefaultsConfig;
   /** Agent/runtime behavior. */
   agent?: AgentConfig;
+  /** The user's machines client_bash reaches. */
+  clientHosts?: ClientHostsConfig;
   /** TUI ping behavior when an assistant stream finishes. */
   ping?: PingConfig;
   /** TUI display/privacy preferences. */

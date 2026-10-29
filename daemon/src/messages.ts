@@ -245,6 +245,19 @@ export function createModelVisibleSystemNotice(
   };
 }
 
+/**
+ * The machine the latest notice of `kind` (client_host, remote_host) said a
+ * call may leave unnamed, or null. A compaction since then does not matter:
+ * the model was told, and the machine is checked to still be the only one.
+ */
+export function announcedHost(messages: readonly StoredMessage[], kind: string): string | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (isModelVisibleSystemNotice(message) && message.metadata?.kind === kind) return message.metadata.defaultHost ?? null;
+  }
+  return null;
+}
+
 /** True for actual user/assistant API history turns, excluding UI-only daemon entries. */
 export function isHistoryMessage(msg: StoredMessage): msg is StoredMessage & { role: "user" | "assistant" } {
   return msg.role !== "system" && msg.role !== "system_instructions";

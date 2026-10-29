@@ -21,7 +21,7 @@ import { getMaxContext, supportsImageInputs } from "./providers/registry";
 import { buildExecutor, summarizeTool, toolCallsRequireWatchdogPause } from "./tools/registry";
 import * as convStore from "./conversations";
 import type { DaemonServer, ConnectedClient } from "./server";
-import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, MAX_EXO_SUBAGENT_DEPTH, PROVIDER_NOTICE_KIND, createMessageMetadata, createModelVisibleSystemNotice, createStoredUserContextCheckpoint, createStoredUserMessage, currentReplayHistoryPrefix, isHistoryMessage, isRealUserMessage, isReplayHistoryMessage, isValidActiveContextCached, type ActiveContext, type StoredMessage, type ApiContentBlock, type ApiMessage, type Block, type UserMessageAutomation } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, MAX_EXO_SUBAGENT_DEPTH, PROVIDER_NOTICE_KIND, createMessageMetadata, createStoredUserContextCheckpoint, createStoredUserMessage, currentReplayHistoryPrefix, isHistoryMessage, isRealUserMessage, isReplayHistoryMessage, isValidActiveContextCached, type ActiveContext, type StoredMessage, type ApiContentBlock, type ApiMessage, type Block, type UserMessageAutomation } from "./messages";
 import type { ContentBlock as ProviderContentBlock, QueuedInput, QueuedInputSource, StreamRetryMetadata } from "./providers/types";
 import type { QueuedMessage } from "./message-queue";
 import type { ImageAttachment } from "@exocortex/shared/messages";
@@ -47,7 +47,7 @@ import {
 import { getCurrentAccountScope as getCurrentOpenAIAccountScope } from "./providers/openai/auth";
 import { buildCodexWindowId } from "./providers/openai/identity";
 import { resolveToolCallPresentation } from "./helper-tool-manifest";
-import { pendingTurnNotices } from "./turn-notices";
+import { pendingTurnNotices, turnNoticeMessages } from "./turn-notices";
 import { setBackgroundTaskActive as setConversationBackgroundTaskActive, setChronoTaskActive as setConversationChronoTaskActive } from "./conversation-activity";
 import { isScopedSubagent, remainingSubagentDepth } from "./subagent-policy";
 import { acknowledgeSubagentNotification, getSubagentNotificationRuntime, settlePendingSubagentNotifications } from "./subagent-notifications";
@@ -687,9 +687,9 @@ async function orchestrateAdmittedAssistantTurn(
       // client machine, the goal). Clients do not show these notices. They
       // precede the message's checkpoint, so unwinding the message keeps what
       // was true when it was sent.
-      const notices = pendingTurnNotices(conv);
+      const notices = pendingTurnNotices({ ...conv, conversationById: id => convStore.get(id) });
       if (notices.length > 0) {
-        convStore.appendMessages(convId, notices.map(notice => createModelVisibleSystemNotice(notice.text, conv.model, notice.kind, startedAt)));
+        convStore.appendMessages(convId, turnNoticeMessages(notices, conv.model, startedAt));
         await prepareArchiveHashes(conv.messages);
         const cancelledAfterNotice = handoffCancelled();
         if (cancelledAfterNotice) return cancelledAfterNotice;

@@ -35,7 +35,7 @@ import { saveToolInstructions, ToolInstructionsSaveError } from "./tool-instruct
 import { assertDelegationModel, parseRequestedModel, resolveDelegationModel } from "./delegation-models";
 import { getConversationToolNames, getToolDisplayInfo } from "./tools/registry";
 import { getExternalToolStyles, manageExternalToolDaemon } from "./external-tools";
-import { EFFORT_LEVELS, SUBAGENTS_FOLDER_NAME, createModelVisibleSystemNotice, isQueuedObligation, type Block, type UserMessageAutomation } from "./messages";
+import { EFFORT_LEVELS, SUBAGENTS_FOLDER_NAME, isQueuedObligation, type Block, type UserMessageAutomation } from "./messages";
 import { describeSubagentPendingWork } from "./subagent-pending-work";
 import { getDefaultProvider, getDefaultModel, getProvider, getProviders, isKnownModel, allowsCustomModels, refreshProviders, normalizeEffort, supportsEffort, getSupportedEfforts, supportsFastMode, supportsImageInputs } from "./providers/registry";
 import { transcribeAudioBytes } from "./transcription";
@@ -61,8 +61,8 @@ import {
 import { applyUserGoalAction, setGoal as setConversationGoal } from "./goals";
 import { scheduleGoalTimeLimit } from "./goal-time-limit";
 import { createExocortexToolRuntime } from "./exocortex-tool-runtime";
-import { attachClientHost, clientExecAlive, settleClientExec } from "./client-hosts";
-import { pendingTurnNotices } from "./turn-notices";
+import { attachClientHost, clientExecAlive, noteUserWroteFrom, settleClientExec } from "./client-hosts";
+import { pendingTurnNotices, turnNoticeMessages } from "./turn-notices";
 import { ProviderProxyManager, setActiveProviderProxyManager } from "./provider-proxy/manager";
 import { ProviderProxyEndpoint } from "./provider-proxy/endpoint";
 import { remoteAccountsSource } from "./provider-proxy/remote-accounts";
@@ -2015,8 +2015,9 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           }
         }
         const folderId = subagentFolder?.id ?? appFolderId ?? cmd.folderId ?? null;
-        // Its first message is told about the client machine and the goal (set
-        // just below) like any other.
+        // Its first message is told about the client machines (and which one
+        // it was written on) and the goal (set just below) like any other.
+        if (initialMessage) noteUserWroteFrom(client, id);
         const notices = initialMessage ? pendingTurnNotices({
           id,
           provider,
@@ -2037,7 +2038,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
               : initialMessage,
             folderId,
             false,
-            notices.map(notice => createModelVisibleSystemNotice(notice.text, model, notice.kind, initialMessage.startedAt)),
+            turnNoticeMessages(notices, model, initialMessage.startedAt),
           );
         } else if (appSpec) {
           try {
@@ -2595,6 +2596,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       // ── Assistant turn commands ───────────────────────────────────
 
       case "send_message": {
+        // Written on one of the user's machines: the model is told which.
+        noteUserWroteFrom(client, cmd.convId);
         // App clients may leave the prompt's time to the daemon's clock.
         if (typeof cmd.startedAt !== "number" || !Number.isFinite(cmd.startedAt)) cmd.startedAt = Date.now();
         // Ephemeral app conversations keep their images in memory only.
@@ -3120,6 +3123,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       // ── Queue/system/history commands ─────────────────────────────
 
       case "queue_message": {
+        noteUserWroteFrom(client, cmd.convId);
         rememberSentImages(cmd.images);
         const delegationTarget = convStore.getPolicyMetadata(cmd.convId);
         if (delegationTarget && (cmd.delegation || delegationTarget.subagentPolicy)) {

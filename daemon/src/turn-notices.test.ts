@@ -2,9 +2,9 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import type { ClientHostInfo } from "@exocortex/shared/protocol";
 import { attachClientHost, resetClientHostsForTest } from "./client-hosts";
-import { CLIENT_HOST_NOTICE_KIND, CONTEXT_COMPACTION_FINISHED_KIND, GOAL_NOTICE_KIND, createModelVisibleSystemNotice, type StoredMessage } from "./messages";
+import { CLIENT_HOST_NOTICE_KIND, CONTEXT_COMPACTION_FINISHED_KIND, GOAL_NOTICE_KIND, type StoredMessage } from "./messages";
 import type { ConnectedClient } from "./server";
-import { pendingTurnNotices, type TurnNotice, type TurnNoticeState } from "./turn-notices";
+import { pendingTurnNotices, turnNoticeMessages, type TurnNotice, type TurnNoticeState } from "./turn-notices";
 import { LineSplitter } from "./line-splitter";
 
 const laptop: ClientHostInfo = { hostname: "toronto", user: "yeyito", platform: "linux", home: "/home/yeyito" };
@@ -20,7 +20,7 @@ function conversation(messages: StoredMessage[] = [], extra: Partial<TurnNoticeS
 }
 
 /** The transcript after the given notices were added. */
-const told = (...notices: TurnNotice[]) => notices.map(notice => createModelVisibleSystemNotice(notice.text, "model", notice.kind, 1));
+const told = (...notices: TurnNotice[]) => turnNoticeMessages(notices, "model", 1);
 
 const compaction: StoredMessage = {
   role: "system",
@@ -39,13 +39,13 @@ describe("client host notices", () => {
     attach();
     const [attached] = pendingTurnNotices(conversation());
     expect(attached.kind).toBe(CLIENT_HOST_NOTICE_KIND);
-    expect(attached.text).toContain("yeyito@toronto (Linux, home /home/yeyito)");
-    expect(attached.text).toContain("client_bash runs commands on that machine");
+    expect(attached.text).toContain("toronto (yeyito@toronto, Linux, home /home/yeyito)");
+    expect(attached.text).toContain("client_bash runs commands there; host may be left out while it is the only one.");
     expect(pendingTurnNotices(conversation(told(attached)))).toEqual([]);
 
     resetClientHostsForTest();
     const [detached] = pendingTurnNotices(conversation(told(attached)));
-    expect(detached.text).toContain("no longer connected");
+    expect(detached.text).toContain("None of the user's machines is connected any more");
     expect(pendingTurnNotices(conversation(told(attached, detached)))).toEqual([]);
   });
 
@@ -54,7 +54,7 @@ describe("client host notices", () => {
     const [first] = pendingTurnNotices(conversation());
     resetClientHostsForTest();
     attach({ ...laptop, hostname: "office", platform: "darwin" });
-    expect(pendingTurnNotices(conversation(told(first)))[0].text).toContain("yeyito@office (macOS");
+    expect(pendingTurnNotices(conversation(told(first)))[0].text).toContain("mac (yeyito@office, macOS");
   });
 
   test("are given to subagents like their parents", () => {

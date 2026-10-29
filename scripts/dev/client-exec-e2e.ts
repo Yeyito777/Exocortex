@@ -15,7 +15,11 @@
  * conversation and a subagent; a long command stays alive on heartbeats; a
  * frozen mac daemon fails fast; with the link down a TUI connected over /ssh
  * takes over, and a frozen TUI fails fast; with neither, the call fails at
- * once; the relinked daemon is preferred over the TUI again.
+ * once; the relinked daemon is preferred over the TUI again. With a second
+ * machine attached (a "phone" TUI, named in whale's config), a call without
+ * host runs nowhere and lists both, host runs it on exactly that machine, a
+ * conversation the phone writes in is told so, and a machine that left fails
+ * by name; remote_bash takes host too.
  *
  * Usage: bun scripts/dev/client-exec-e2e.ts [--keep]
  */
@@ -37,8 +41,9 @@ const log = (message: string) => console.log(`  ${message}`);
 
 // ── Mock upstream ────────────────────────────────────────────────────
 // "RUN_CLIENT:: <command>" (OpenAI) calls client_bash and "RUN_REMOTE:: <command>"
-// (Anthropic) calls remote_bash, with "TIMEOUT:: <s>" as timeout_seconds; the
-// next turn echoes the tool result as "tool said: …".
+// (Anthropic) calls remote_bash, with "TIMEOUT:: <s>" as timeout_seconds and
+// "HOST:: <id>" before the marker as host; the next turn echoes the tool result
+// as "tool said: …". Each OpenAI request's input is kept in openaiSeen.
 
 function commandIn(text: string, marker: string): { command: string; timeout?: number } | null {
   const match = text.match(new RegExp(`${marker}:: ([^\\n"]*?)(?: TIMEOUT:: (\\d+))?(?:"|\\n|$)`));
@@ -91,6 +96,10 @@ function lastUserText(messages: Array<{ role: string; content: unknown }>): stri
 }
 
 let toolSerial = 0;
+/** Every OpenAI request's input, latest last. */
+const openaiSeen: string[] = [];
+/** Whether an OpenAI request since `since` carried `pattern`. */
+const openaiSaw = (pattern: RegExp, since = 0) => openaiSeen.slice(since).some(input => pattern.test(input));
 async function anthropicMessages(body: { stream?: boolean; messages: Array<{ role: string; content: unknown }> }): Promise<Response> {
   const headers = { "content-type": "text/event-stream" };
   if (body.stream === false) {
@@ -98,9 +107,11 @@ async function anthropicMessages(body: { stream?: boolean; messages: Array<{ rol
   }
   const toolResult = lastToolResultText(body.messages);
   if (toolResult !== null) return new Response(anthropicStream([{ type: "text", text: `tool said: ${toolResult.trim()}` }], "end_turn"), { headers });
-  const run = commandIn(lastUserText(body.messages), "RUN_REMOTE");
+  const userText = lastUserText(body.messages);
+  const run = commandIn(userText, "RUN_REMOTE");
   if (run) {
-    const input = { command: run.command, ...(run.timeout ? { timeout_seconds: run.timeout } : {}) };
+    const host = userText.match(/HOST:: ([\w.@-]+) RUN_REMOTE::/)?.[1];
+    const input = { command: run.command, ...(run.timeout ? { timeout_seconds: run.timeout } : {}), ...(host ? { host } : {}) };
     return new Response(anthropicStream([{ type: "tool_use", id: `toolu_e2e_${++toolSerial}`, name: "mcp__exocortex__remote_bash", input }], "tool_use"), { headers });
   }
   return new Response(anthropicStream([{ type: "text", text: "pong from the mock" }], "end_turn"), { headers });
@@ -112,12 +123,14 @@ function openaiEvents(input: Array<Record<string, unknown>>): Array<Record<strin
   const sinceUser = lastUser < 0 ? input : input.slice(input.length - 1 - lastUser);
   const output = sinceUser.find(item => item.type === "function_call_output");
   const userText = sinceUser.filter(item => item.role === "user").map(item => JSON.stringify(item.content)).join("\n");
+  openaiSeen.push(JSON.stringify(input));
   let item: Record<string, unknown>;
   const run = commandIn(userText, "RUN_CLIENT");
   if (output) {
     item = { type: "message", id: "msg_1", role: "assistant", content: [{ type: "output_text", text: `tool said: ${String(output.output).trim()}` }] };
   } else if (run) {
-    const args = { command: run.command.replace(/\\"/g, "\""), ...(run.timeout ? { timeout_seconds: run.timeout } : {}) };
+    const host = userText.match(/HOST:: ([\w.@-]+) RUN_CLIENT::/)?.[1];
+    const args = { command: run.command.replace(/\\"/g, "\""), ...(run.timeout ? { timeout_seconds: run.timeout } : {}), ...(host ? { host } : {}) };
     item = { type: "function_call", id: `fc_${++toolSerial}`, call_id: `call_e2e_${toolSerial}`, name: "client_bash", arguments: JSON.stringify(args) };
   } else {
     item = { type: "message", id: "msg_1", role: "assistant", content: [{ type: "output_text", text: "pong from the mock" }] };
@@ -292,36 +305,45 @@ class Ipc {
 
 interface TurnResult { convId: string; text: string; seconds: number }
 
-/** One turn in a new conversation (a subagent's with `subagent`); the final text holds "tool said: …". */
-async function turn(ipc: Ipc, provider: string, model: string, text: string, options: { subagent?: boolean; timeoutMs?: number } = {}): Promise<TurnResult> {
-  const created = await ipc.request({ type: "new_conversation", provider, model, title: `e2e ${provider}`, ...(options.subagent ? { subagent: true } : {}) });
-  assert.equal(created.type, "conversation_created", JSON.stringify(created));
-  const convId = created.convId as string;
-  ipc.send({ type: "subscribe", convId });
+/** One turn in a new conversation (a subagent's with `subagent`), or in `convId`; the final text holds "tool said: …". */
+async function turn(ipc: Ipc, provider: string, model: string, text: string, options: { subagent?: boolean; timeoutMs?: number; convId?: string } = {}): Promise<TurnResult> {
+  let convId = options.convId;
+  if (!convId) {
+    const created = await ipc.request({ type: "new_conversation", provider, model, title: `e2e ${provider}`, ...(options.subagent ? { subagent: true } : {}) });
+    assert.equal(created.type, "conversation_created", JSON.stringify(created));
+    convId = created.convId as string;
+    ipc.send({ type: "subscribe", convId });
+  }
   const since = ipc.events.length;
   const started = Date.now();
   ipc.send({ type: "send_message", convId, text, startedAt: Date.now() });
   const outcome = await ipc.wait(event => ipc.events.indexOf(event) >= since && event.convId === convId
     && (event.type === "message_complete" || event.type === "streaming_stopped" || (event.type === "error" && !event.reqId)), options.timeoutMs ?? 120_000, `${provider} turn`);
   assert.equal(outcome.type, "message_complete", JSON.stringify(outcome));
+  // Its streaming_stopped follows; take it now, or the next turn here would end on it.
+  const done = ipc.events.indexOf(outcome);
+  await ipc.wait(event => ipc.events.indexOf(event) > done && event.convId === convId && event.type === "streaming_stopped", 10_000, "streaming_stopped").catch(() => {});
   const final = (outcome.blocks as Array<Record<string, any>>).map(block => block.text ?? "").join("\n");
   return { convId, text: final, seconds: (Date.now() - started) / 1000 };
 }
 
-/** A TUI connected to whale over /ssh, as far as whale can tell: it announces the machine and runs commands. */
-async function fakeTui(socket: string, behaviour: { frozen: boolean }): Promise<{ ipc: Ipc; ran: string[] }> {
+/** A TUI connected to whale over /ssh, as far as whale can tell: it announces the machine (this one, or `machine`) and runs commands. */
+async function fakeTui(socket: string, behaviour: { frozen: boolean }, machine?: { hostname: string; user: string; side: string }): Promise<{ ipc: Ipc; ran: string[] }> {
   const ipc = await Ipc.connect(socket);
   const ran: string[] = [];
   ipc.onEvent = event => {
     if (event.type !== "client_exec_request" || behaviour.frozen) return;
     ran.push(event.command);
     ipc.send({ type: "client_exec_alive", execIds: [event.execId] });
-    const result = Bun.spawnSync(["bash", "-c", event.command], { env: { ...process.env, EXO_E2E_SIDE: "mac-tui" } });
+    const result = Bun.spawnSync(["bash", "-c", event.command], { env: { ...process.env, EXO_E2E_SIDE: machine?.side ?? "mac-tui" } });
     ipc.send({ type: "client_exec_result", execId: event.execId, output: result.stdout.toString() + result.stderr.toString(), byteTruncated: false, exitCode: result.exitCode, signal: null, timedOut: false });
   };
   let user = "";
   try { user = userInfo().username; } catch { /* none */ }
-  ipc.send({ type: "client_capabilities", capabilities: ["client-exec-alive"], clientHost: { hostname: hostname(), user, platform: process.platform, home: homedir() } });
+  const clientHost = machine
+    ? { hostname: machine.hostname, user: machine.user, platform: "linux", home: "/root" }
+    : { hostname: hostname(), user, platform: process.platform, home: homedir() };
+  ipc.send({ type: "client_capabilities", capabilities: ["client-exec-alive"], clientHost });
   assert.equal((await ipc.request({ type: "ping" })).type, "pong");
   return { ipc, ran };
 }
@@ -433,6 +455,53 @@ try {
   const back = await turn(whaleIpc, "openai", "gpt-6-astra", "RUN_CLIENT:: echo side=$EXO_E2E_SIDE");
   assert.match(back.text, /tool said: side=mac\b/);
   log("✓ relinked: client_bash runs over the link again");
+
+  // ── Two machines ──
+  const macId = openaiSeen.map(input => input.match(/The user's machine ([a-z0-9-]+) \(/)?.[1]).findLast(Boolean) ?? "";
+  assert.ok(macId, "the mac's client ID was announced");
+  const configPath = join(dirs.whale, "config.json");
+  const config = existsSync(configPath) ? JSON.parse(await Bun.file(configPath).text()) : {};
+  writeFileSync(configPath, JSON.stringify({ ...config, clientHosts: { names: { "root@e2e-phone": "phone" } } }, null, 2));
+  const phone = await fakeTui(whale.socket, { frozen: false }, { hostname: "e2e-phone", user: "root", side: "phone" });
+
+  // The conversation the mac ran in, now that two are connected: no host, nothing runs.
+  const beforeAmbiguous = openaiSeen.length;
+  const ambiguous = await turn(whaleIpc, "openai", "gpt-6-astra", "RUN_CLIENT:: echo side=$EXO_E2E_SIDE", { convId: back.convId });
+  assert.match(ambiguous.text, /Several of the user's machines are connected: .*phone \(root@e2e-phone, Linux, home \/root\)/);
+  assert.ok(openaiSaw(/client_bash needs host set to the ID of the machine a command is for/, beforeAmbiguous), "the model was told host is needed");
+  assert.equal(phone.ran.length, 0);
+  log(`✓ phone attached: a call without host runs nowhere and lists both (${ambiguous.text.replace(/^.*tool said: Error: /s, "").slice(0, 80)}…)`);
+  const onPhone = await turn(whaleIpc, "openai", "gpt-6-astra", "HOST:: phone RUN_CLIENT:: echo side=$EXO_E2E_SIDE", { convId: back.convId });
+  assert.match(onPhone.text, /tool said: side=phone/);
+  const onMac = await turn(whaleIpc, "openai", "gpt-6-astra", `HOST:: ${macId} RUN_CLIENT:: echo side=$EXO_E2E_SIDE`, { convId: back.convId });
+  assert.match(onMac.text, /tool said: side=mac\b/);
+  assert.equal(phone.ran.length, 1);
+  log(`✓ host=phone ran on the phone, host=${macId} on the mac`);
+
+  // The phone's TUI writes in a new conversation: the model is told so.
+  const beforePhone = openaiSeen.length;
+  const fromPhone = await turn(phone.ipc, "openai", "gpt-6-astra", "HOST:: phone RUN_CLIENT:: echo side=$EXO_E2E_SIDE");
+  assert.match(fromPhone.text, /tool said: side=phone/);
+  assert.ok(openaiSaw(/The user last wrote here from phone\./, beforePhone), "the model was told the user writes from the phone");
+  log("✓ a conversation the phone wrote in is told \"The user last wrote here from phone.\"");
+
+  // The phone leaves: naming it fails by name and nothing runs on the mac.
+  phone.ipc.close();
+  await Bun.sleep(300);
+  const gone = await turn(whaleIpc, "openai", "gpt-6-astra", "HOST:: phone RUN_CLIENT:: echo side=$EXO_E2E_SIDE", { convId: back.convId });
+  assert.match(gone.text, new RegExp(`The user's machine phone is not connected right now\\. Connected: ${macId} \\(`));
+  log("✓ phone gone: host=phone fails naming the machines still connected");
+  // Back to one machine, but this conversation was last told about two: still no guessing.
+  const afterTwo = await turn(whaleIpc, "openai", "gpt-6-astra", "RUN_CLIENT:: echo side=$EXO_E2E_SIDE", { convId: back.convId });
+  assert.match(afterTwo.text, /tool said: side=mac\b/);
+  log("✓ one machine again: the next turn is told so, and a call without host runs on it");
+
+  // remote_bash names its /proxy machine too.
+  const remoteNamed = await turn(macIpc, "anthropic", "claude-haiku-5-5", "HOST:: fakewhale RUN_REMOTE:: echo side=$EXO_E2E_SIDE");
+  assert.match(remoteNamed.text, /tool said: side=whale/);
+  const remoteWrong = await turn(macIpc, "anthropic", "claude-haiku-5-5", "HOST:: box RUN_REMOTE:: echo side=$EXO_E2E_SIDE");
+  assert.match(remoteWrong.text, /No \/proxy machine is called "box"; remote_bash reaches fakewhale/);
+  log("✓ remote_bash: host=fakewhale runs on whale, host=box fails");
 
   whaleIpc.close();
   macIpc.close();

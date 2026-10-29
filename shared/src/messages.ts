@@ -438,6 +438,13 @@ export interface MessageMetadata {
   queueEntryId?: string;
   /** Provenance for a non-human prompt intentionally represented as a user turn. */
   automation?: UserMessageAutomation;
+  /**
+   * On a client_host or remote_host notice: the one machine client_bash or
+   * remote_bash may run on without naming it, as the notice told the model.
+   */
+  defaultHost?: string;
+  /** On a client_host notice: the machine (user@hostname) the user last wrote from. */
+  clientOrigin?: string;
 }
 
 /** Build standard message metadata with sensible defaults. */

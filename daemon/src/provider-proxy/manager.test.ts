@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
+// First: reached later through another import, the registry is read before its tools are defined.
+import { getConversationToolNames, getToolDefs } from "../tools/registry";
 import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -6,7 +8,8 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import type { ExocortexConfig } from "@exocortex/shared/config";
 import type { SshProcess } from "@exocortex/shared/ssh-transport";
-import { createModelVisibleSystemNotice, REMOTE_HOST_NOTICE_KIND, type StoredMessage } from "../messages";
+import { REMOTE_HOST_NOTICE_KIND, type StoredMessage } from "../messages";
+import { appendMessages, create } from "../conversations";
 import { claudeProcessOptions } from "../providers/anthropic/cli";
 import { requireSubscriptionAuth } from "../providers/anthropic/auth";
 import { claudeSessionKey } from "../providers/anthropic/session";
@@ -14,9 +17,8 @@ import { getCurrentAccountKey, getVerifiedSession } from "../providers/openai/au
 import { CHATGPT_BASE_URL, OPENAI_CODEX_RESPONSES_URL, OPENAI_CODEX_RESPONSES_WS_URL } from "../providers/openai/constants";
 import { hostToolDefs } from "../providers/anthropic/host-tools";
 import { exocortexToolName, isClaudeCodeHostTool } from "../tools/claude-code";
-import { getConversationToolNames, getToolDefs } from "../tools/registry";
 import { remoteBash } from "../tools/remote-bash";
-import { pendingTurnNotices, type TurnNotice } from "../turn-notices";
+import { pendingTurnNotices, turnNoticeMessages, type TurnNotice } from "../turn-notices";
 import { getAuthInfo, hasConfiguredCredentials } from "../auth";
 import { getLastUsage, handleUsageHeaders } from "../usage";
 import { configuredProviderProxies, ProviderProxyManager, setActiveProviderProxyManager } from "./manager";
@@ -57,7 +59,7 @@ function unreachable(): SshProcess {
   return process;
 }
 
-const told = (...notices: TurnNotice[]): StoredMessage[] => notices.map(notice => createModelVisibleSystemNotice(notice.text, "model", notice.kind, 1));
+const told = (...notices: TurnNotice[]): StoredMessage[] => turnNoticeMessages(notices, "model", 1);
 
 afterEach(() => {
   for (const manager of managers.splice(0)) manager.stop();
@@ -213,14 +215,14 @@ describe("remote_bash", () => {
     const notProxied = await remoteBash.execute({ command: "echo hi" }, { provider: "openai" });
     expect(notProxied).toMatchObject({ isError: true, output: "Error: remote_bash works only while this conversation's provider goes through /proxy." });
     await manager.set("openai", "whale");
-    const ran = await remoteBash.execute({ command: "echo remote; exit 3" }, { provider: "openai" });
+    const ran = await remoteBash.execute({ command: "echo remote; exit 3", host: "whale" }, { provider: "openai" });
     expect(ran.output).toContain("remote");
     expect(ran.output).toContain("(exit code 3)");
     expect(ran.isError).toBe(true);
-    const timedOut = await remoteBash.execute({ command: "sleep 5", timeout_seconds: 0.2 }, { provider: "openai" });
+    const timedOut = await remoteBash.execute({ command: "sleep 5", timeout_seconds: 0.2, host: "whale" }, { provider: "openai" });
     expect(timedOut.output).toMatch(/^Error: command timed out after 0.2s on whale \(/);
     ssh.spawned[0].kill();
-    const down = await remoteBash.execute({ command: "echo hi" }, { provider: "openai" });
+    const down = await remoteBash.execute({ command: "echo hi", host: "whale" }, { provider: "openai" });
     expect(down.isError).toBe(true);
     expect(down.output).toMatch(/^Error: (The SSH connection to whale was lost|Still connecting to whale)/);
   });
@@ -233,7 +235,8 @@ describe("remote_bash", () => {
     const [announced] = pendingTurnNotices(conv());
     expect(announced.kind).toBe(REMOTE_HOST_NOTICE_KIND);
     expect(announced.text).toContain("runs through /proxy on whale");
-    expect(announced.text).toContain("remote_bash runs commands on whale via /proxy");
+    expect(announced.text).toContain("remote_bash runs commands on whale via /proxy; host may be left out while it is the only /proxy machine.");
+    expect(announced.metadata).toEqual({ defaultHost: "whale" });
     expect(pendingTurnNotices(conv(told(announced)))).toEqual([]);
     // Subagents are told like their parents.
     expect(pendingTurnNotices({ ...conv(), subagentPolicy: { parentConversationId: "p", allowEdits: false, parentSystemInstructions: "" } })).toEqual([announced]);
@@ -243,5 +246,32 @@ describe("remote_bash", () => {
     const [withdrawn] = pendingTurnNotices(conv(told(announced)));
     expect(withdrawn.text).toContain("remote_bash is no longer available");
     expect(pendingTurnNotices(conv(told(announced, withdrawn)))).toEqual([]);
+  });
+
+  test("host names the /proxy machine; it is required while several are set up, and left out only for the one announced", async () => {
+    const ssh = fakeSsh({ deps: { auth: stubAuth() } });
+    const { manager } = makeManager(ssh.spawn);
+    await manager.set("anthropic", "whale");
+    const convId = `remote-${process.pid}-${Date.now()}`;
+    create(convId, "anthropic", "claude-opus-5-5", convId);
+    const execsOn = (index: number) => ssh.spawned[index]?.commands.filter(command => command.type === "provider_proxy_exec").length ?? 0;
+    const run = (input: Record<string, unknown>) => remoteBash.execute({ command: "true", ...input }, { provider: "anthropic", conversationId: convId });
+
+    // Not told yet: nothing runs without host.
+    expect((await run({})).output).toBe('Error: Nothing was run: host is needed, as this conversation was not told remote_bash runs on whale. Pass host="whale" only if the command is meant for that machine.');
+    appendMessages(convId, turnNoticeMessages(pendingTurnNotices({ id: convId, provider: "anthropic", messages: [] }), "claude-opus-5-5", Date.now()));
+    expect((await run({})).isError).toBe(false);
+    expect(execsOn(0)).toBe(1);
+
+    await manager.set("openai", "box");
+    const [notice] = pendingTurnNotices({ id: convId, provider: "anthropic", messages: [] });
+    expect(notice.text).toContain("remote_bash runs commands on the /proxy machine its host names: box, whale;");
+    expect(notice.metadata).toBeUndefined();
+    expect((await run({})).output).toBe("Error: remote_bash reaches several /proxy machines: box, whale. Nothing was run; pass host with the alias of the one the command is for.");
+    expect((await run({ host: "nowhere" })).output).toBe('Error: No /proxy machine is called "nowhere"; remote_bash reaches box, whale. Nothing was run.');
+    expect((await run({ host: "box" })).isError).toBe(false);
+    expect((await run({ host: "WHALE" })).isError).toBe(false);
+    expect([execsOn(0), execsOn(1)]).toEqual([2, 1]);
+    expect(remoteBash.summarize!({ command: "uptime", host: "box" })).toEqual({ label: "Remote box $", detail: "uptime" });
   });
 });

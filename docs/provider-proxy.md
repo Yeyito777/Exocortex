@@ -93,6 +93,9 @@ rules as `client_bash`.
 - Refused at once while the link is down, with the reason.
 - The tool description and a model-only turn notice name the alias; a notice
   withdraws it when the proxy goes away.
+- A call may name the machine by its alias (`host`). While providers go
+  through two different machines, every call must; a call without `host` runs
+  only on the machine the conversation's notice named.
 - Subagents get it like their parents.
 
 The other way round, the linking daemon's hello names its own machine
@@ -101,7 +104,8 @@ link (`provider_proxy_client_exec`), as the linking daemon's user with its
 environment. So with the laptop proxied to whale, whale's conversations reach
 the laptop whenever its daemon is linked, with or without a TUI. A TUI from the
 same machine connected over `/ssh` is the fallback while the link is down.
-A lost link stops the commands it started.
+A lost link stops the commands it started. With several machines linked, each
+`client_bash` call names its machine by client ID (README, "client_bash").
 
 Both directions acknowledge each command at once and report it alive every
 10 s while it runs (`provider_proxy_exec_alive`, `provider_proxy_client_exec_alive`;

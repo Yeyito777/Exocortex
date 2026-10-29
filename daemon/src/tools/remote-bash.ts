@@ -7,13 +7,16 @@
  * borrows. It is offered only while the conversation's provider is proxied
  * (registry.ts), runs over the same SSH link as the model requests, as the
  * remote daemon's user, and fails clearly while that link is down. Subagents
- * get it like their parents.
+ * get it like their parents. A call may name a /proxy machine by alias (host);
+ * it must while remote_bash reaches several, and may leave it out only for the
+ * one machine the conversation was told about.
  */
 
 import type { Tool, ToolResult } from "./types";
 import { getNumber, getString, summarizeParams } from "./util";
 import { formatCommandOutput } from "./bash";
 import * as convStore from "../conversations";
+import { announcedHost, REMOTE_HOST_NOTICE_KIND } from "../messages";
 import { activeProviderProxyManager } from "../provider-proxy/manager";
 import { describeRemoteHost } from "../provider-proxy/link";
 import { toolTextSource } from "./tool-text";
@@ -42,13 +45,15 @@ export const remoteBash: Tool = {
       command: { type: "string", description: "The command to execute on the proxy's machine" },
       cwd: { type: "string", description: "Working directory there (default: the SSH user's home directory)" },
       timeout_seconds: { type: "number", description: `Timeout in seconds (default ${DEFAULT_TIMEOUT_SECONDS})` },
+      host: { type: "string", description: "Alias of the /proxy machine to run on. Required while several are set up." },
     },
     required: ["command"],
     additionalProperties: false,
   },
   display: { label: "Remote $", color: "#c678dd" },
   summarize(input) {
-    return { label: "Remote $", detail: summarizeParams(getString(input, "command") ?? "", input, ["command"]) };
+    const host = getString(input, "host")?.trim();
+    return { label: host ? `Remote ${host} $` : "Remote $", detail: summarizeParams(getString(input, "command") ?? "", input, ["command", "host"]) };
   },
   async execute(input, context, signal): Promise<ToolResult> {
     const command = getString(input, "command");
@@ -58,11 +63,28 @@ export const remoteBash: Tool = {
     const conv = context?.conversationId ? convStore.get(context.conversationId) : undefined;
     const provider = context?.provider ?? conv?.provider;
     const manager = activeProviderProxyManager();
-    const alias = manager?.aliasFor(provider);
-    const link = manager?.linkFor(provider);
-    if (!alias || !link) {
+    const own = manager?.aliasFor(provider);
+    if (!manager || !own || !manager.linkFor(provider)) {
       return { output: "Error: remote_bash works only while this conversation's provider goes through /proxy.", isError: true };
     }
+    const machines = manager.remoteExecAliases();
+    const requested = getString(input, "host")?.trim();
+    let alias: string;
+    if (requested) {
+      const match = machines.find(machine => machine === requested) ?? machines.find(machine => machine.toLowerCase() === requested.toLowerCase());
+      if (!match) {
+        return { output: `Error: No /proxy machine is called "${requested}"; remote_bash reaches ${machines.join(", ") || "none"}. Nothing was run.`, isError: true };
+      }
+      alias = match;
+    } else if (machines.length > 1) {
+      return { output: `Error: remote_bash reaches several /proxy machines: ${machines.join(", ")}. Nothing was run; pass host with the alias of the one the command is for.`, isError: true };
+    } else if (announcedHost(conv?.messages ?? [], REMOTE_HOST_NOTICE_KIND) !== own) {
+      return { output: `Error: Nothing was run: host is needed, as this conversation was not told remote_bash runs on ${own}. Pass host="${own}" only if the command is meant for that machine.`, isError: true };
+    } else {
+      alias = own;
+    }
+    const link = manager.linkForAlias(alias);
+    if (!link) return { output: `Error: remote_bash cannot reach ${alias} right now.`, isError: true };
 
     const cwd = getString(input, "cwd");
     const outcome = await link.exec({ command, ...(cwd ? { cwd } : {}), timeoutMs: Math.round(timeoutSeconds * 1000) }, signal);
