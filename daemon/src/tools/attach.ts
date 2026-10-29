@@ -15,6 +15,7 @@ import { basename, isAbsolute, resolve } from "node:path";
 import type { Tool } from "./types";
 import type { ImageRef } from "../messages";
 import { storeAttachmentFile } from "../video-attachments";
+import { findStoredImage } from "../attachments";
 import { describeVideo } from "@exocortex/shared/video";
 import { toolTextSource } from "./tool-text";
 
@@ -30,7 +31,11 @@ function formatSize(bytes: number): string {
 }
 
 function describe(ref: ImageRef): string {
-  if (ref.video) return `${ref.name ?? ref.video.id.slice(0, 12)} (video: ${describeVideo(ref.video)})`;
+  if (ref.video) {
+    // The model can't watch it, but it can Read the poster frame.
+    const poster = findStoredImage(ref.id)?.path;
+    return `${ref.name ?? ref.video.id.slice(0, 12)} (video: ${describeVideo(ref.video)})${poster ? `; poster frame: ${poster}` : ""}`;
+  }
   return `${ref.name ?? ref.id.slice(0, 12)} (${ref.width}×${ref.height} ${ref.mediaType.slice(6).toUpperCase()}, ${formatSize(ref.sizeBytes)})`;
 }
 

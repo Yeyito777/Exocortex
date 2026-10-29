@@ -5,7 +5,9 @@
  * keeps `st-256color`), so the TUI asks: a graphics query (`a=q`) followed by
  * a DA1 request. Terminals answer DA1 in order, so a DA1 reply that arrives
  * before any graphics reply means "no Kitty graphics". `CSI 16 t` reports the
- * cell size in pixels, which image layout and preview sizing use.
+ * cell size in pixels, which image layout and preview sizing use. st's video
+ * query (`a=v,k=c`, st docs/video.md) rides along before the DA1 the same way:
+ * an `OK video=h264` answer means attached videos can play inline.
  */
 
 const ESC = "\x1b";
@@ -13,14 +15,26 @@ const APC = `${ESC}_G`;
 const ST = `${ESC}\\`;
 /** Arbitrary id in our namespace; answered replies carry it back. */
 export const GRAPHICS_QUERY_IMAGE_ID = 0x7ffffff0;
+export const VIDEO_QUERY_IMAGE_ID = 0x7ffffff1;
 /** 1×1 RGBA pixel: a query must carry decodable data. */
 const QUERY_PAYLOAD = "AAAAAA==";
 const DEFAULT_QUERY_TIMEOUT_MS = 3000;
 
 export type TerminalImageMode = "pending" | "kitty" | "halfblock" | "off";
+/** Whether the terminal plays st's H.264 + AAC video (`a=v`). */
+export type TerminalVideoSupport = "pending" | "yes" | "no";
 
 export function kittyGraphicsQuery(): string {
   return `${APC}a=q,t=d,f=32,s=1,v=1,i=${GRAPHICS_QUERY_IMAGE_ID};${QUERY_PAYLOAD}${ST}`;
+}
+
+export function videoCapabilityQuery(): string {
+  return `${APC}a=v,i=${VIDEO_QUERY_IMAGE_ID},k=c${ST}`;
+}
+
+/** st answers `OK video=h264 audio=aac max=4096x4096`; anything else is no. */
+export function videoCapabilityPlays(message: string): boolean {
+  return /^OK\b/.test(message) && /(?:^|\s)video=(?:[\w,]*,)?h264\b/.test(message);
 }
 
 export const DA1_QUERY = `${ESC}[c`;
@@ -69,14 +83,21 @@ export function forcedImageMode(env: NodeJS.ProcessEnv = process.env): TerminalI
   return value === "kitty" || value === "halfblock" || value === "off" ? value : null;
 }
 
+/** EXOCORTEX_TUI_VIDEO=off keeps attached videos as posters (the query is not sent). */
+export function videoDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.EXOCORTEX_TUI_VIDEO?.trim().toLowerCase() === "off";
+}
+
 export interface TerminalGraphicsDetectorOptions {
   write: (sequence: string) => void;
   onModeChanged: (mode: TerminalImageMode) => void;
+  onVideoChanged?: (support: TerminalVideoSupport) => void;
   queryTimeoutMs?: number;
 }
 
 export class TerminalGraphicsDetector {
   private mode: TerminalImageMode = "pending";
+  private video: TerminalVideoSupport = "pending";
   private started = false;
   private timeout: ReturnType<typeof setTimeout> | null = null;
 
@@ -86,25 +107,31 @@ export class TerminalGraphicsDetector {
     return this.mode;
   }
 
+  getVideoSupport(): TerminalVideoSupport {
+    return this.video;
+  }
+
   /** Detect once; later calls do nothing. */
   start(env: NodeJS.ProcessEnv = process.env): void {
     if (this.started) return;
     this.started = true;
     const forced = forcedImageMode(env);
-    if (forced) {
-      this.setMode(forced);
-      return;
-    }
     // tmux neither forwards Kitty graphics nor keeps placements in its own
     // grid, and it shows an unknown APC string as the pane title.
-    if (env.TMUX) {
-      this.setMode("halfblock");
+    if (env.TMUX || (forced && forced !== "kitty")) {
+      this.setMode(forced ?? "halfblock");
+      this.setVideo("no");
       return;
     }
-    this.options.write(kittyGraphicsQuery() + DA1_QUERY);
+    if (forced) this.setMode(forced);
+    const askVideo = !videoDisabled(env);
+    if (!askVideo) this.setVideo("no");
+    if (forced && !askVideo) return;
+    this.options.write((forced ? "" : kittyGraphicsQuery()) + (askVideo ? videoCapabilityQuery() : "") + DA1_QUERY);
     this.timeout = setTimeout(() => {
       this.timeout = null;
       if (this.mode === "pending") this.setMode("halfblock");
+      if (this.video === "pending") this.setVideo("no");
     }, this.options.queryTimeoutMs ?? DEFAULT_QUERY_TIMEOUT_MS);
     this.timeout.unref?.();
   }
@@ -113,12 +140,17 @@ export class TerminalGraphicsDetector {
   handleControlSequence(sequence: string): boolean {
     if (isDa1Response(sequence)) {
       if (this.mode === "pending") this.setMode("halfblock");
+      if (this.video === "pending") this.setVideo("no");
       this.clearTimeout();
       return true;
     }
     const reply = parseKittyGraphicsResponse(sequence);
     if (reply?.imageId === GRAPHICS_QUERY_IMAGE_ID) {
       if (this.mode === "pending") this.setMode(reply.message === "OK" ? "kitty" : "halfblock");
+      return true;
+    }
+    if (reply?.imageId === VIDEO_QUERY_IMAGE_ID) {
+      if (this.video === "pending") this.setVideo(videoCapabilityPlays(reply.message) ? "yes" : "no");
       return true;
     }
     return false;
@@ -132,6 +164,12 @@ export class TerminalGraphicsDetector {
     if (this.mode === mode) return;
     this.mode = mode;
     this.options.onModeChanged(mode);
+  }
+
+  private setVideo(support: TerminalVideoSupport): void {
+    if (this.video === support) return;
+    this.video = support;
+    this.options.onVideoChanged?.(support);
   }
 
   private clearTimeout(): void {

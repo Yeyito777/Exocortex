@@ -159,6 +159,7 @@ describe.skipIf(!haveFfmpeg)("storing videos", () => {
     expect(result.output).toStartWith("Attached 2 videos; the user sees them after your message:");
     expect(result.output).toMatch(/- clip\.mp4 \(video: 0:01, 160×120, 25 fps, H\.264 with sound, \d+ KB\)/);
     expect(result.output).toContain("- anim.gif (video: ");
+    expect(result.output).toContain(`; poster frame: ${findStoredImage(result.attachments![0].id)!.path}`);
     expect(result.output).toContain("you can't watch it");
   }, 20_000);
 });
