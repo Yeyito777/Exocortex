@@ -54,7 +54,10 @@ with exocortex.connect("myapp") as exo:
   After a daemon *crash* ephemeral conversations are gone: a one-shot `run`
   starts over on a new conversation (`rerun_lost`), anything else raises
   `code == "lost"`. `close()` ends the session's ephemeral conversations at
-  once.
+  once. A new process can take a session over with `connect(app,
+  session=token)`; it then owns the conversations in
+  `client.welcome["conversations"]` and gets objects for them with
+  `client.attach(conv_id)`.
 
 Tests (need `bun` for [the fake daemon](../testing/fake-daemon.ts)):
 `python3 -m unittest -v test_exocortex`.
