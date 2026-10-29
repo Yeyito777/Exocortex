@@ -153,10 +153,27 @@ which one is in use. On the key, the `transcribe` and `image` tools and voice
 input use the public API too (the best transcription and GPT Image models the
 key lists), and the usage bars become the key's spend today and this month: a
 published-rate estimate counted from the responses this daemon received,
-sent to every TUI as each one is counted. Set
-`providers.openai.monthlyBudgetUsd` in `config/config.json` (e.g. `20`) to draw
-them as bars: the month against the budget, today against what was left of it
-that morning spread over the days left in the month.
+sent to every TUI as each one is counted. Requests without a per-token rate
+(audio priced per minute, images) are counted but not priced; `/tokens` says
+how many. OpenAI's own balance can't be read with a project key, so these are
+always estimates.
+
+When the key is funded by a prepaid credit grant, set
+`providers.openai.credit` in `config/config.json`:
+
+```json
+{ "providers": { "openai": { "credit": { "amountUsd": 1000, "since": "2026-10-20", "expires": "2027-10-20" } } } }
+```
+
+The usage slot then shows `Credits: [bar] $64.04 used · $935.96 left` (red
+under 10% left) over `Today: $39.30 · ~102 days left at this week's pace`:
+the balance divided by the average daily spend of the last 7 days, yellow
+when it runs out before `expires`. Days before the daemon started counting
+are missing: the used figure then says `since <first counted day>` and the
+balance is marked `≈`. Without a credit grant,
+`providers.openai.monthlyBudgetUsd` (e.g. `20`) draws bars instead: the month
+against the budget, today against what was left of it that morning spread
+over the days left in the month (just today's spend once the month is over).
 
 Check or restart the daemon with:
 

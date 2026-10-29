@@ -73,6 +73,20 @@ export interface OpenAIProviderConfig {
    * was left of it this morning spread over the days left. Unset: plain amounts.
    */
   monthlyBudgetUsd?: number;
+  /**
+   * A prepaid credit grant funding the API key. The status bar then shows the
+   * spend counted since `since` against `amountUsd`, what is left, and how long
+   * it lasts at the last week's pace. Takes precedence over `monthlyBudgetUsd`.
+   */
+  credit?: OpenAICreditConfig;
+}
+
+export interface OpenAICreditConfig {
+  amountUsd: number;
+  /** Day the grant was credited, YYYY-MM-DD (local time). */
+  since: string;
+  /** Day it expires, YYYY-MM-DD. */
+  expires?: string;
 }
 
 export interface DeepSeekProviderConfig {

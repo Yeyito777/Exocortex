@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { join } from "path";
-import { readExocortexConfig } from "@exocortex/shared/config";
+import { readExocortexConfig, type OpenAICreditConfig } from "@exocortex/shared/config";
 import { runtimeDir } from "@exocortex/shared/paths";
 import type { UsageData, UsageResetCredits, UsageWindow } from "../../messages";
 import type { UsageResetOutcome } from "../../protocol";
 import { currentOpenAILoginKind, getActiveOpenAIApiKeyInfo, getCurrentAccountKey, getVerifiedSession, type VerifiedOpenAISession } from "./auth";
-import { apiKeyUsage } from "./api-key-usage";
+import { apiKeyCredit, apiKeyUsage } from "./api-key-usage";
 import {
   OPENAI_USAGE_RESET_CONSUME_URL,
   OPENAI_USAGE_RESET_CREDITS_URL,
@@ -102,11 +102,25 @@ function apiKeyUsageData(): UsageData | null {
   const info = getActiveOpenAIApiKeyInfo();
   const accountKey = info ? getCurrentAccountKey() : null;
   if (!info || !accountKey) return null;
+  const now = Date.now();
+  const credit = configuredCredit();
   return {
     fiveHour: null,
     sevenDay: null,
-    apiKey: { ...apiKeyUsage(accountKey, info.label), monthlyBudgetUsd: configuredMonthlyBudgetUsd() },
+    apiKey: { ...apiKeyUsage(accountKey, info.label, now), monthlyBudgetUsd: configuredMonthlyBudgetUsd(), credit: credit && apiKeyCredit(accountKey, credit, now) },
   };
+}
+
+const DAY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+/** `providers.openai.credit`, read on every update; null unless it has a positive amount and a YYYY-MM-DD `since`. */
+function configuredCredit(): OpenAICreditConfig | null {
+  const credit = readExocortexConfig().providers?.openai?.credit;
+  if (!credit || typeof credit !== "object") return null;
+  const { amountUsd, since, expires } = credit;
+  if (typeof amountUsd !== "number" || !Number.isFinite(amountUsd) || amountUsd <= 0) return null;
+  if (typeof since !== "string" || !DAY_PATTERN.test(since)) return null;
+  return { amountUsd, since, ...(typeof expires === "string" && DAY_PATTERN.test(expires) ? { expires } : {}) };
 }
 
 /** `providers.openai.monthlyBudgetUsd`, read on every update so an edit shows on the next one; null unless a positive number. */
