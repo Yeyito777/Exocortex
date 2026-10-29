@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { externalToolsDir } from "@exocortex/shared/paths";
 import { localMacroEnvironment } from "@exocortex/shared/macro-environment";
@@ -7,7 +8,11 @@ import { initExternalTools, setLoadedExternalToolsForTest, stopExternalToolsAsyn
 
 test("manifestless checkout additions and removals refresh the macro catalog", async () => {
   const name = `macro-catalog-test-${process.pid}`;
+  const previousToolsDir = process.env.EXOCORTEX_TEST_EXTERNAL_TOOLS_DIR;
+  const toolsRoot = mkdtempSync(join(tmpdir(), "exo-macro-catalog-"));
+  process.env.EXOCORTEX_TEST_EXTERNAL_TOOLS_DIR = toolsRoot;
   const directory = join(externalToolsDir(), name);
+  expect(directory).toBe(join(toolsRoot, name));
   const previousOverride = process.env.EXOCORTEX_SUPERVISE_EXTERNAL_DAEMONS;
   const previousPath = process.env.PATH;
   const restoreTools = setLoadedExternalToolsForTest([]);
@@ -26,7 +31,9 @@ test("manifestless checkout additions and removals refresh the macro catalog", a
     await waitFor(false);
   } finally {
     await stopExternalToolsAsync();
-    rmSync(directory, { recursive: true, force: true });
+    rmSync(toolsRoot, { recursive: true, force: true });
+    if (previousToolsDir === undefined) delete process.env.EXOCORTEX_TEST_EXTERNAL_TOOLS_DIR;
+    else process.env.EXOCORTEX_TEST_EXTERNAL_TOOLS_DIR = previousToolsDir;
     restoreTools();
     if (previousOverride === undefined) delete process.env.EXOCORTEX_SUPERVISE_EXTERNAL_DAEMONS;
     else process.env.EXOCORTEX_SUPERVISE_EXTERNAL_DAEMONS = previousOverride;

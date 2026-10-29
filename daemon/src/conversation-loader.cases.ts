@@ -458,7 +458,10 @@ test("urgent native tail hashing is serviced during a cooperative archive scan",
   const owner = await load(store, small);
   owner.messages.push({ role: "user", content: "urgent", metadata: null });
   let completed = false;
-  const slow = loadConversationOffThread(conv.id, false, store.path).then(result => { completed = true; return result; });
+  // A full load scans the whole archive in batches (~200 ms here); a sparse one
+  // reads only the tail and finished within a millisecond or two of the hash,
+  // so the test raced under load.
+  const slow = loadConversationOffThread(conv.id, true, store.path).then(result => { completed = true; return result; });
   await prepareArchiveHashes(owner.messages);
   expect(completed).toBe(false);
   expect(currentReplayHistoryPrefix(owner.messages)).toEqual(currentReplayHistoryPrefix([...small.messages, owner.messages.at(-1)!]));

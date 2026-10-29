@@ -9,7 +9,7 @@
  */
 
 import type { RenderState } from "./state";
-import { COMMAND_LIST, getCommandArgs, macroDisplayContext } from "./commands";
+import { commandList, getCommandArgs, macroDisplayContext } from "./commands";
 import { macroErrorRange } from "./usermacros/guide";
 import { isMacroCommandText, parseMacroCommand } from "./usermacros/parse";
 import { isMacroName, getMacroArgs, macroEnvironmentForState } from "./macros";
@@ -20,10 +20,15 @@ import { theme } from "./theme";
 
 // ── Valid names & args ────────────────────────────────────────────
 
-const VALID_COMMAND_NAMES = new Set([
-  ...COMMAND_LIST.map(c => c.name),
-  "/exit",  // alias not in COMMAND_LIST (filtered out for display)
-]);
+let validCommandNames: Set<string> | null = null;
+
+function isValidCommandName(name: string): boolean {
+  validCommandNames ??= new Set([
+    ...commandList().map(c => c.name),
+    "/exit",  // alias not in commandList() (filtered out for display)
+  ]);
+  return validCommandNames.has(name);
+}
 
 
 const VALID_INLINE_COMMAND_NAMES = new Set(INLINE_COMMANDS.map(c => c.name));
@@ -85,7 +90,7 @@ function findCommandSpans(
     // Commands are only commands at the start of a prompt.  Macros and
     // explicitly registered inline commands can appear anywhere.
     const baseCmd = firstWord.word;
-    const isPromptCommand = wordIndex === 0 && VALID_COMMAND_NAMES.has(baseCmd);
+    const isPromptCommand = wordIndex === 0 && isValidCommandName(baseCmd);
     const isInlineSlash = isMacroName(baseCmd) || VALID_INLINE_COMMAND_NAMES.has(baseCmd);
     if (!isPromptCommand && !isInlineSlash) continue;
     let spanEnd = firstWord.end;

@@ -45,7 +45,12 @@ describe.skipIf(process.platform === "win32")("Codex unified exec", () => {
     const forbidden = await writeStdin.execute({ session_id: body.session_id, chars: "wrong\n" }, { conversationId: "other" });
     expect(forbidden.isError).toBe(true);
     const first = await writeStdin.execute({ session_id: body.session_id, chars: "one\n", yield_time_ms: 100 }, ctx);
-    expect(JSON.parse(first.output).output).toContain("first:one");
+    // Under load the echo can miss the 100 ms yield; poll for it like a model would.
+    let firstOutput: string = JSON.parse(first.output).output;
+    for (let i = 0; i < 50 && !firstOutput.includes("first:one"); i++) {
+      firstOutput += JSON.parse((await writeStdin.execute({ session_id: body.session_id, yield_time_ms: 100 }, ctx)).output).output;
+    }
+    expect(firstOutput).toContain("first:one");
     const second = await writeStdin.execute({ session_id: body.session_id, chars: "two\n", yield_time_ms: 1000 }, ctx);
     const final = JSON.parse(second.output);
     expect(final.exit_code).toBe(0);
@@ -65,7 +70,12 @@ describe.skipIf(process.platform === "win32")("Codex unified exec", () => {
     const initial = await run("test -t 0 && printf 'PTY-ready\\n'; read -r value; printf 'got:%s\\n' \"$value\"", { tty: true, yield_time_ms: 100 });
     expect(initial.isError).toBe(false);
     const body = JSON.parse(initial.output);
-    expect(body.output).toContain("PTY-ready");
+    // The shell may take longer than the first 100 ms yield to start under load; keep polling it.
+    let output: string = body.output;
+    for (let i = 0; i < 50 && !output.includes("PTY-ready"); i++) {
+      output += JSON.parse((await writeStdin.execute({ session_id: body.session_id, yield_time_ms: 100 }, context)).output).output;
+    }
+    expect(output).toContain("PTY-ready");
     const response = await writeStdin.execute({ session_id: body.session_id, chars: "hello\n", yield_time_ms: 1000 }, context);
     expect(response.isError).toBe(false);
     expect(JSON.parse(response.output).exit_code).toBe(0);

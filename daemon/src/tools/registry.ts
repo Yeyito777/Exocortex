@@ -1,7 +1,7 @@
 /**
  * Tool registry — collects all tools and provides accessors.
  *
- * Adding a new tool: import it, add to TOOLS array. Done.
+ * Adding a new tool: import it, add it to the list in tools(). Done.
  */
 
 import type { Tool, ToolResult, ToolSummary, ToolExecutionContext, ToolParallelSafety, ToolResourceClass } from "./types";
@@ -37,33 +37,44 @@ import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-pro
 
 // ── Registry ───────────────────────────────────────────────────────
 
-const TOOLS: Tool[] = [
-  bash,
-  read,
-  write,
-  glob,
-  grep,
-  edit,
-  patch,
-  browse,
-  execCommand,
-  writeStdin,
-  applyPatch,
-  viewImage,
-  exo,
-  chrono,
-  goal,
-  clientBash,
-  remoteBash,
-  attach,
-];
+// Built on first use, not at import: the tool modules import this one back
+// through long chains (chrono → conversations → registry), so whichever of them
+// is imported first would otherwise find the list read before its tools exist.
+let toolList: Tool[] | null = null;
+let builtinToolMap: Map<string, Tool> | null = null;
 
-// External manifests intentionally do not become native entries in TOOLS.
+function tools(): Tool[] {
+  return toolList ??= [
+    bash,
+    read,
+    write,
+    glob,
+    grep,
+    edit,
+    patch,
+    browse,
+    execCommand,
+    writeStdin,
+    applyPatch,
+    viewImage,
+    exo,
+    chrono,
+    goal,
+    clientBash,
+    remoteBash,
+    attach,
+  ];
+}
+
+function builtinTool(name: string): Tool | undefined {
+  builtinToolMap ??= new Map(tools().map(t => [t.name, t]));
+  return builtinToolMap.get(name);
+}
+
+// External manifests intentionally do not become native entries in tools().
 // Models invoke those CLIs through Bash, and the TUI styles the Bash summary
 // with each manifest's label/color. A generic external wrapper would erase
 // that per-tool presentation and add an unnecessary execution layer.
-
-const builtinToolMap = new Map<string, Tool>(TOOLS.map(t => [t.name, t]));
 
 const DEFAULT_TOOL_TIMEOUT_MS = 120_000;
 const configuredFilesystemScanConcurrency = Number(process.env.TOOL_FILESYSTEM_SCAN_CONCURRENCY);
@@ -79,7 +90,7 @@ function isToolAvailable(tool: Tool): boolean {
 }
 
 function getAvailableTools(conversationId?: string): Tool[] {
-  return TOOLS.filter(isToolAvailable);
+  return tools().filter(isToolAvailable);
 }
 
 function getSelectedAvailableTools(allowedNames?: readonly string[], conversationId?: string): Tool[] {
@@ -102,7 +113,7 @@ export function setConversationToolResolver(resolver: ConversationToolResolver |
 }
 
 function getTool(name: string, conversationId?: string): Tool | undefined {
-  return (conversationId && conversationToolResolver?.(conversationId, name)) || builtinToolMap.get(name);
+  return (conversationId && conversationToolResolver?.(conversationId, name)) || builtinTool(name);
 }
 
 export function getRegisteredTools(conversationId?: string): Tool[] {

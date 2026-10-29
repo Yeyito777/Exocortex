@@ -44,6 +44,13 @@ const TERMINATE_TIMEOUT_MS = 3_000;
 /** Linux sockaddr_un.sun_path holds 108 bytes. */
 const MAX_SOCKET_PATH_BYTES = 104;
 
+let helloTimeouts = { helloMs: RECONNECT_TIMEOUT_MS, slowHelloMs: SLOW_RECONNECT_TIMEOUT_MS };
+
+/** How long reconnectRelays waits for a hello, then for a slow one; null restores the defaults. */
+export function setRelayHelloTimeoutsForTest(timeouts: { helloMs: number; slowHelloMs: number } | null): void {
+  helloTimeouts = timeouts ?? { helloMs: RECONNECT_TIMEOUT_MS, slowHelloMs: SLOW_RECONNECT_TIMEOUT_MS };
+}
+
 export function relaysDir(): string {
   return join(runtimeDir(), "claude-code");
 }
@@ -345,7 +352,7 @@ export async function reconnectRelays(): Promise<ClaudeRelay[]> {
       return null;
     }
     try {
-      return { record, relay: await ClaudeRelay.reconnect(record.socketPath) };
+      return { record, relay: await ClaudeRelay.reconnect(record.socketPath, helloTimeouts.helloMs) };
     } catch (first) {
       if (!(first instanceof Error) || first.message !== HELLO_TIMEOUT_MESSAGE) return gone(record, path, first);
     }
@@ -353,7 +360,7 @@ export async function reconnectRelays(): Promise<ClaudeRelay[]> {
     // would leave it running its turn unreachable while a replay starts a
     // second Claude Code process on the same session.
     try {
-      return { record, relay: await ClaudeRelay.reconnect(record.socketPath, SLOW_RECONNECT_TIMEOUT_MS) };
+      return { record, relay: await ClaudeRelay.reconnect(record.socketPath, helloTimeouts.slowHelloMs) };
     } catch (error) {
       if (error instanceof Error && error.message === HELLO_TIMEOUT_MESSAGE) {
         log("warn", `anthropic: the Claude Code relay for ${record.convId} accepts connections but did not say hello; leaving it for the next start`);

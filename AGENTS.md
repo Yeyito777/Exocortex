@@ -6,3 +6,7 @@
   only a PID you recorded yourself. See [docs/dev-daemons.md](docs/dev-daemons.md).
 - Never stop the main daemon (`exocortexd-main …`); restart it only through the
   exo tool's restart action.
+- Before a merge, run `bun run check` at the repo root (all typechecks and
+  test suites in parallel, ~12 s). Not three separate `bun test` and typecheck
+  runs. Tests must poll, not sleep, and fail fast; they must pass in parallel
+  with every other file. See [docs/testing.md](docs/testing.md).

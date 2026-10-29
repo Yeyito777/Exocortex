@@ -573,3 +573,17 @@ subagent orchestration. The separate `exo` executable is an external debugging
 and automation client, especially useful for targeting other daemon instances.
 The Windows installer includes `exo.exe`; the Arch `make install` target and the
 manual macOS steps do not install the separate CLI.
+
+## Development
+
+Run the whole pre-merge check from the repository root:
+
+```bash
+bun run check            # typecheck shared, daemon and tui; run all test suites
+bun run check daemon     # or only some steps: typecheck, shared, daemon, tui
+```
+
+It runs everything at once and the test files in parallel, in about 12 seconds.
+`cd daemon && bun test` (or `tui`, `shared`) still runs one suite on its own.
+How tests are isolated, and the rules that keep them fast:
+[docs/testing.md](docs/testing.md).

@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync } from "fs";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync } from "fs";
+import { tmpdir } from "os";
 import { join, posix, win32 } from "path";
 import type { MacroEnvironment } from "@exocortex/shared/protocol";
 import { repoRoot, storageDir, externalToolsDir, externalToolsTrashDir } from "@exocortex/shared/paths";
@@ -9,10 +10,20 @@ import { updateAutocomplete } from "./autocomplete";
 import { highlightPromptInput } from "./prompthighlight";
 import { theme } from "./theme";
 
+// Test tools go in a temp external-tools dir, not the checkout's.
+const previousToolsDir = process.env.EXOCORTEX_TEST_EXTERNAL_TOOLS_DIR;
+const TOOLS_ROOT = mkdtempSync(join(tmpdir(), "exo-tool-macros-"));
+process.env.EXOCORTEX_TEST_EXTERNAL_TOOLS_DIR = TOOLS_ROOT;
 const TEST_TOOL_DIR = `${externalToolsDir()}/tool-macros-test-cli`;
 
 afterEach(() => {
   rmSync(TEST_TOOL_DIR, { recursive: true, force: true });
+});
+
+afterAll(() => {
+  rmSync(TOOLS_ROOT, { recursive: true, force: true });
+  if (previousToolsDir === undefined) delete process.env.EXOCORTEX_TEST_EXTERNAL_TOOLS_DIR;
+  else process.env.EXOCORTEX_TEST_EXTERNAL_TOOLS_DIR = previousToolsDir;
 });
 
 describe("macro expansion", () => {

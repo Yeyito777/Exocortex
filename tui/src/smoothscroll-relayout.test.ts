@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
 import { render } from "./render";
 import { createInitialState, type RenderState } from "./state";
 import { invalidateFrame, setScrollRegionsEnabled } from "./frame";
@@ -251,20 +251,26 @@ describe("the bottom growing and shrinking while following it", () => {
   });
 
   test("growing and shrinking in quick succession ends where a full repaint does", () => {
-    const state = conversationState();
-    liveTurn(state, 1);
-    settle(state, 0);
-    for (let i = 0; i < 8; i++) {
-      liveTurn(state, i % 2 === 0 ? 3 : 1, i + 1);
-      frames(state, 24);
+    // The working spinner follows the wall clock; both paints must see one frame.
+    setSystemTime(new Date("2026-10-29T00:00:00Z"));
+    try {
+      const state = conversationState();
+      liveTurn(state, 1);
+      settle(state, 0);
+      for (let i = 0; i < 8; i++) {
+        liveTurn(state, i % 2 === 0 ? 3 : 1, i + 1);
+        frames(state, 24);
+      }
+      frames(state, 400);
+      const settled = screen.plainRows();
+      setSmoothScroller(state, null);
+      const fresh = new TerminalScreen(state.rows, state.cols);
+      invalidateFrame(state);
+      fresh.feed(capture(state));
+      expect(settled).toEqual(fresh.plainRows());
+    } finally {
+      setSystemTime();
     }
-    frames(state, 400);
-    const settled = screen.plainRows();
-    setSmoothScroller(state, null);
-    const fresh = new TerminalScreen(state.rows, state.cols);
-    invalidateFrame(state);
-    fresh.feed(capture(state));
-    expect(settled).toEqual(fresh.plainRows());
   });
 
   test("in a conversation shorter than the pane nothing slides", () => {

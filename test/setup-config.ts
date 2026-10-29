@@ -30,6 +30,14 @@ function sweepStaleConfigDirs(dir: string): void {
     if (!name.startsWith(PREFIX)) continue;
     const path = join(dir, name);
     const pid = Number(/^exocortex-test-config-(\d+)-/.exec(name)?.[1]);
+    // `bun test --parallel` runs each file in a fresh global with the
+    // environment reset, so this preload runs again for every file a worker
+    // takes, one file after another. This process's older dirs belong to
+    // files it has finished.
+    if (pid === process.pid) {
+      rmSync(path, { recursive: true, force: true });
+      continue;
+    }
     if (pid && isAlive(pid)) continue;
     const minAgeMs = pid ? 10 * MINUTE_MS : 24 * 60 * MINUTE_MS;
     try {

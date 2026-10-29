@@ -16,6 +16,7 @@ afterEach(() => {
   for (const conversationId of ids.splice(0)) {
     rmSync(conversationWorkspaceDir(conversationId), { recursive: true, force: true });
     rmSync(trashedConversationWorkspaceDir(conversationId), { recursive: true, force: true });
+    if (!existsSync(trashedConversationWorkspacesDir())) continue;
     for (const entry of readdirSync(trashedConversationWorkspacesDir(), { withFileTypes: true })) {
       if (entry.name.startsWith(`${conversationId}.replaced-`) || entry.name.startsWith(`${conversationId}.orphaned-`)) {
         rmSync(join(trashedConversationWorkspacesDir(), entry.name), { recursive: true, force: true });

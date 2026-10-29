@@ -120,6 +120,15 @@ export function setOpenAIWebSocketIdleTimeoutMsForTest(timeoutMs: number | null)
   websocketIdleTimeoutMsForTest = timeoutMs;
 }
 
+/**
+ * Shrink real waits in tests: retry backoff sleeps `backoffScale` of its delay
+ * (the delay reported to onRetry is unchanged), and a stalled prewarm holds a
+ * submit for `prewarmWaitMs`.
+ */
+export function setOpenAIWaitsForTest(waits: { backoffScale: number; prewarmWaitMs: number } | null): void {
+  waitsForTest = waits;
+}
+
 // Match Codex's default stream idle timeout. The app-level stale watchdog must
 // stay longer than this so provider retries get a chance to fire before the
 // whole Exocortex conversation is aborted.
@@ -192,6 +201,8 @@ function retryDisplay(
 }
 
 let websocketIdleTimeoutMsForTest: number | null = null;
+let waitsForTest: { backoffScale: number; prewarmWaitMs: number } | null = null;
+const PREWARM_WAIT_MS = 1_000;
 
 function stampReplayScope(result: StreamResult, model: ModelId, session: OpenAIRequestSession): void {
   // Verified production sessions always carry an accountKey. Tests and custom
@@ -269,7 +280,7 @@ async function waitForPrewarm(pending: Promise<void>, signal?: AbortSignal): Pro
     const cleanup = () => { clearTimeout(timer); signal?.removeEventListener("abort", onAbort); };
     const onAbort = () => { cleanup(); reject(createAbortError()); };
     // A broken speculative connect must not hold a real request hostage.
-    const timer = setTimeout(() => { cleanup(); resolve(); }, 1_000);
+    const timer = setTimeout(() => { cleanup(); resolve(); }, waitsForTest?.prewarmWaitMs ?? PREWARM_WAIT_MS);
     signal?.addEventListener("abort", onAbort, { once: true });
     pending.then(() => { cleanup(); resolve(); }, error => { cleanup(); reject(error); });
   });
@@ -1099,7 +1110,7 @@ function retryBackoff(
     const timer = setTimeout(() => {
       signal?.removeEventListener("abort", onAbort);
       resolve();
-    }, delay);
+    }, delay * (waitsForTest?.backoffScale ?? 1));
 
     const onAbort = () => {
       clearTimeout(timer);

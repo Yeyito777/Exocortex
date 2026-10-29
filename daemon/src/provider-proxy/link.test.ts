@@ -322,10 +322,10 @@ describe("provider proxy link + remote endpoint", () => {
 
   test("a long remote_bash command stays alive on the remote's heartbeats", async () => {
     const ssh = fakeSsh({ deps: { auth: stubAuth() } });
-    const link = makeLink(ssh.spawn, undefined, undefined, { execLiveness: { ackMs: 1_000, silenceMs: 11_000 } });
+    const link = makeLink(ssh.spawn, undefined, undefined, { execLiveness: { ackMs: 200, silenceMs: 11_000 } });
     await link.waitReady(2_000);
     // Longer than the acknowledgement limit; heartbeats come every 10 s.
-    const ran = await link.exec({ command: "sleep 1.5; echo done", timeoutMs: 10_000 });
+    const ran = await link.exec({ command: "sleep 0.4; echo done", timeoutMs: 10_000 });
     expect(ran).toMatchObject({ output: "done\n", exitCode: 0 });
   });
 

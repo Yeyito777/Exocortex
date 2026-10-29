@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "files": {
+    "src/chrono.test.ts": 25,
+    "src/command-exec.test.ts": 1547,
+    "src/config.test.ts": 46,
+    "src/daybreak.test.ts": 72,
+    "src/duration.test.ts": 6,
+    "src/fast-mode.test.ts": 88,
+    "src/file-links.test.ts": 25,
+    "src/generation-throughput.test.ts": 7,
+    "src/goals.test.ts": 30,
+    "src/macro-environment.test.ts": 15,
+    "src/paths.test.ts": 16,
+    "src/provider-proxy.test.ts": 7,
+    "src/restart-impact.test.ts": 1441,
+    "src/sidebar-digest.test.ts": 195,
+    "src/ssh-transport.test.ts": 171,
+    "src/token-pricing.test.ts": 33,
+    "src/update-status-service.test.ts": 90,
+    "src/user-macros.test.ts": 44
+  }
+}

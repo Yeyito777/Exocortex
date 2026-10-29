@@ -278,7 +278,7 @@ test("a deleted conversation's slow-to-stop turn never touches it after undo and
     throw Object.assign(new Error("aborted"), { name: "AbortError" });
   }) as unknown as typeof streamMessage;
   const first = orchestrateSendMessage(server() as never, null, undefined, id, "first", Date.now(), callbacks(slow));
-  for (let i = 0; i < 100 && !convStore.getActiveJob(id); i++) await Bun.sleep(5);
+  for (let i = 0; i < 600 && !convStore.getActiveJob(id); i++) await Bun.sleep(5);
   expect(convStore.getActiveJob(id)).toBeDefined();
   expect(convStore.remove(id)).toBe(true);
   expect((await convStore.undoDeleteAsync())?.type).toBe("conversation");
@@ -286,7 +286,7 @@ test("a deleted conversation's slow-to-stop turn never touches it after undo and
   let release!: () => void;
   const held = (async () => { await new Promise<void>(resolve => { release = resolve; }); return response("second answer"); }) as typeof streamMessage;
   const second = orchestrateSendMessage(server() as never, null, undefined, id, "second", Date.now(), callbacks(held));
-  for (let i = 0; i < 100 && !release; i++) await Bun.sleep(5);
+  for (let i = 0; i < 600 && !release; i++) await Bun.sleep(5);
   const secondJob = convStore.getActiveJob(id);
   expect(secondJob).toBeDefined();
 

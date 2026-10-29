@@ -160,7 +160,10 @@ export function configDir(): string {
 
 /** External tools directory (<repo>/external-tools). */
 export function externalToolsDir(): string {
-  return join(REPO_ROOT, "external-tools");
+  // Tests that add or remove tools use a temp dir, never the checkout's (the
+  // main daemon watches main's, and parallel test files read it).
+  const testDir = isTestProcess() ? process.env.EXOCORTEX_TEST_EXTERNAL_TOOLS_DIR?.trim() : "";
+  return testDir ? resolve(testDir) : join(REPO_ROOT, "external-tools");
 }
 
 /** Default process working directory for agent/tool execution. */

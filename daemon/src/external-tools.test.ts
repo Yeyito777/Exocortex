@@ -101,8 +101,10 @@ describe("buildDaemonSpawnSpec", () => {
     if (!child.pid) throw new Error("failed to spawn daemon command");
 
     try {
-      await Bun.sleep(50);
-      expect(readFileSync(`/proc/${child.pid}/comm`, "utf-8").trim()).toBe("sleep");
+      // The wrapper shell execs into the daemon; under load that takes a moment.
+      const comm = () => readFileSync(`/proc/${child.pid}/comm`, "utf-8").trim();
+      for (let i = 0; i < 200 && comm() !== "sleep"; i++) await Bun.sleep(10);
+      expect(comm()).toBe("sleep");
     } finally {
       try { process.kill(-child.pid, "SIGKILL"); } catch { /* already dead */ }
       await waitForPidExit(child.pid);

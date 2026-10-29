@@ -27,7 +27,9 @@ describe.skipIf(process.platform === "win32")("ClientExecutor", () => {
   test("runs in the home directory and captures stdout, stderr and the exit code", async () => {
     const home = tempHome();
     const outcome = await run(new ClientExecutor(home), "pwd; echo err >&2; exit 3");
-    expect(outcome).toEqual({ output: `${home}\nerr\n`, byteTruncated: false, exitCode: 3, signal: null, timedOut: false });
+    // stdout and stderr are separate pipes: either line may arrive first.
+    expect(outcome.output.split("\n").sort()).toEqual(["", "err", home].sort());
+    expect(outcome).toEqual({ output: expect.any(String), byteTruncated: false, exitCode: 3, signal: null, timedOut: false });
   });
 
   test("resolves ~ and relative working directories against home", async () => {
