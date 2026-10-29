@@ -311,8 +311,12 @@ export interface PrewarmConversationCommand {
  * load_conversation_history `folded`) leave out the content of the work a
  * folded client hides (see ElidedBlockRef); the client fetches it with
  * load_display_blocks before showing it.
+ *
+ * history-revisions: the daemon pushes history_revisions whenever what a
+ * conversation's history pages show may have changed (see HistoryRevisionsEvent),
+ * so a client that keeps opened pages can tell a current copy from a stale one.
  */
-export type ClientCapability = "targeted-unwind" | "sidebar-reorder-delta" | "sidebar-state-patch" | "history-block-pagination" | "token-stats-on-demand" | "sidebar-digest-sync" | "update-status-push" | "sidebar-incremental" | "client-exec-alive" | "history-folded-elision";
+export type ClientCapability = "targeted-unwind" | "sidebar-reorder-delta" | "sidebar-state-patch" | "history-block-pagination" | "token-stats-on-demand" | "sidebar-digest-sync" | "update-status-push" | "sidebar-incremental" | "client-exec-alive" | "history-folded-elision" | "history-revisions";
 
 /** Answered with token_stats carrying the same reqId. Older daemons answer with an Unknown command error. */
 export interface GetTokenStatsCommand {
@@ -447,6 +451,27 @@ export interface LoadConversationCommand extends CachedHistoryRequest {
    * older history, an older daemon) the client requests it as before.
    */
   initialBackfill?: { reqId: string; turns: number } & CachedHistoryRequest;
+  /**
+   * Fetch the pages without opening the conversation: no subscription, no
+   * unread change, no prewarm, no streaming or BTW catch-up. A client keeping
+   * a copy of recently opened conversations refreshes it this way. Only for
+   * daemons that answered get_history_revisions: an older daemon ignores the
+   * flag and opens the conversation.
+   */
+  peek?: true;
+}
+
+/**
+ * The current history revision of each named conversation (see
+ * HistoryRevisionsEvent), answered with history_revisions carrying the same
+ * reqId. Unknown and deleted conversations are left out. Older daemons
+ * answer with an Unknown command error.
+ */
+export interface GetHistoryRevisionsCommand {
+  type: "get_history_revisions";
+  reqId?: string;
+  /** At most 512 conversation ids. */
+  convIds: string[];
 }
 
 export interface LoadConversationHistoryCommand extends CachedHistoryRequest {
@@ -1465,6 +1490,7 @@ export type Command =
   | ListConversationsCommand
   | LoadConversationCommand
   | LoadConversationHistoryCommand
+  | GetHistoryRevisionsCommand
   | LoadToolOutputsCommand
   | LoadDisplayBlocksCommand
   | GetImageCommand
@@ -1973,6 +1999,8 @@ export interface ConversationLoadedEvent extends CachedHistoryResponse {
   hasOlderHistory?: boolean;
   /** The request's initialBackfill.reqId when that page follows this event. */
   initialBackfillReqId?: string;
+  /** The conversation's history revision this page was built at (HistoryRevisionsEvent). */
+  historyRev?: string;
   /** Live assistant snapshot for actively streaming conversations. */
   pendingAI?: AIMessagePayload;
   /** Last known input token count for this conversation. */
@@ -2009,6 +2037,25 @@ export interface ConversationHistoryLoadedEvent extends CachedHistoryResponse {
   historyTotalEntries: number;
   /** Whether more history exists before historyStartIndex. */
   hasOlderHistory: boolean;
+  /** The conversation's history revision this page was built at (HistoryRevisionsEvent). */
+  historyRev?: string;
+}
+
+/**
+ * Opaque history revisions by conversation id. A revision changes whenever
+ * anything a history page shows may have changed: messages appended, edited,
+ * unwound, trimmed or compacted, a turn starting or ending, its instructions
+ * or folder. Equal revisions mean equal pages for the same request; a
+ * restarted daemon starts new revisions. Pinned folder instructions (not
+ * drawn by the TUI) and the live pendingAI of a running turn are not
+ * covered. Pushed without reqId to `history-revisions` clients (coalesced, a
+ * few times a second at most) and sent with reqId to answer
+ * get_history_revisions.
+ */
+export interface HistoryRevisionsEvent {
+  type: "history_revisions";
+  reqId?: string;
+  revs: Record<string, string>;
 }
 
 export interface GoalUpdatedEvent {
@@ -2706,6 +2753,7 @@ export type Event =
   | ConversationsListEvent
   | ConversationLoadedEvent
   | ConversationHistoryLoadedEvent
+  | HistoryRevisionsEvent
   | GoalUpdatedEvent
   | ChronoResultEvent
   | ConversationUpdatedEvent

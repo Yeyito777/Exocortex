@@ -70,6 +70,12 @@ const pendingHistoryUnwinds = new Map<string, PendingHistoryUnwind>();
 const CHUNK_ACTIVITY_INTERVAL = 5;
 
 let idleListener: ((convId: string) => void) | null = null;
+let runStateListener: ((convId: string) => void) | null = null;
+
+/** Called whenever a conversation's job or handoff starts or ends. */
+export function setRunStateListener(listener: ((convId: string) => void) | null): void {
+  runStateListener = listener;
+}
 
 /** Called when a conversation stops streaming: its turn chain ended, or an unwind released it. */
 export function setStreamingIdleListener(listener: ((convId: string) => void) | null): void {
@@ -121,6 +127,7 @@ function endTurnChain(convId: string): void {
 export function beginStreamHandoff(convId: string): void {
   if (!isStreaming(convId)) endTurnChain(convId);
   streamHandoffs.set(convId, Symbol("stream-handoff"));
+  runStateListener?.(convId);
 }
 
 /**
@@ -134,12 +141,14 @@ export function tryBeginStreamHandoff(convId: string): symbol | undefined {
   endTurnChain(convId);
   const token = Symbol("stream-handoff");
   streamHandoffs.set(convId, token);
+  runStateListener?.(convId);
   return token;
 }
 
 export function clearStreamHandoff(convId: string): void {
   const wasBusy = streamHandoffs.delete(convId);
   if (!isStreaming(convId)) endTurnChain(convId);
+  if (wasBusy) runStateListener?.(convId);
   notifyIfIdle(convId, wasBusy);
 }
 
@@ -193,6 +202,7 @@ export function setActiveJob(
     streamSequences.delete(convId);
   }
   lastActivityAt.set(convId, startedAt);
+  runStateListener?.(convId);
 }
 
 export function getActiveJob(convId: string): AbortController | undefined {
@@ -250,6 +260,7 @@ export function clearActiveJob(convId: string, owner?: AbortController): void {
   pausedStreams.delete(convId);
   activeToolBackgrounders.delete(convId);
   if (!isStreaming(convId)) endTurnChain(convId);
+  if (wasBusy) runStateListener?.(convId);
   notifyIfIdle(convId, wasBusy);
 }
 

@@ -146,6 +146,17 @@ screen's folded work this way (newest block first, `maxBytes` 32 KB), so
 Ctrl+O and Ctrl+I at the bottom need no round trip. Other clients
 (the phone app, older TUIs) are unaffected.
 
+Every page carries `historyRev`, the conversation's history revision when it
+was built (see [SSH conversation history cache](ssh-history-cache.md)). A
+client with the `history-revisions` capability gets `history_revisions`
+(`revs` by conversation id) whenever revisions change, coalesced to at most
+one push every 250 ms; `get_history_revisions { convIds }` answers the same
+event for the named conversations (unknown and deleted ones left out).
+`load_conversation` with `peek: true` returns the same pages without opening
+the conversation: no subscription, unread change, prewarm, or streaming and
+BTW catch-up. Send it only to daemons that answered `get_history_revisions`;
+older ones ignore the flag and open the conversation.
+
 ## Connectivity
 
 One connectivity monitor per daemon decides whether the network is reachable

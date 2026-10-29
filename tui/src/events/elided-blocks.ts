@@ -12,7 +12,7 @@ import { getViewStart, preserveViewportAcrossHistoryMutation } from "../chatscro
 import { saveTurnWorkPreference } from "../diagnostics";
 import type { Block, ElidedBlockRef } from "../messages";
 import type { Event } from "../protocol";
-import type { RenderState } from "../state";
+import { isProvisionalStale, type RenderState } from "../state";
 import { jumpToSearchMatch } from "../search";
 import { keptByCut, planHistoryTrimAboveView, trimHistoryAboveView, type HistoryCut } from "./history-trim";
 import { omittedToolOutputIdsNearViewport, requestToolOutputs } from "./tool-outputs";
@@ -105,7 +105,8 @@ export function requestElidedBlocksIfNeeded(
   state: RenderState,
   daemon: Pick<DaemonActions, "loadDisplayBlocks" | "loadToolOutputs">,
 ): boolean {
-  if (!state.convId || state.elidedBlocksRequestId !== null || !needsElidedBlocks(state)) return false;
+  // A cached copy's entry indexes may be stale: wait for the open's answer.
+  if (!state.convId || state.elidedBlocksRequestId !== null || isProvisionalStale(state) || !needsElidedBlocks(state)) return false;
   // About to show the work: the history above the view goes rather than all its
   // work coming (history-trim.ts), and the work shows once what is in view and
   // above it is in; the rest below fills in after. The trim waits for the work
@@ -197,7 +198,7 @@ export function bottomScreenFilledIn(state: RenderState): boolean {
  * the first paint, so it never delays first content.
  */
 export function prefetchBottomScreen(state: RenderState, daemon: Pick<DaemonActions, "loadDisplayBlocks">): void {
-  if (!state.convId || !daemon.loadDisplayBlocks || state.elidedBlocksRequestId !== null) return;
+  if (!state.convId || !daemon.loadDisplayBlocks || state.elidedBlocksRequestId !== null || isProvisionalStale(state)) return;
   if (state.showTurnWork || state.showToolOutput) return;
   // Newest first, one range per block: a reply cut at its limit keeps the newest.
   const ranges: Array<{ entry: number; start: number; end: number }> = [];

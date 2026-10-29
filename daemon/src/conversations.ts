@@ -105,6 +105,39 @@ const contextAttributionDirty = new Set<string>();
 const unread = new Set<string>();
 const renderSnapshotCache = new Map<string, Map<boolean, ConversationRenderSnapshot>>();
 
+// ── History revisions (protocol HistoryRevisionsEvent) ──────────────
+// Clients that keep opened pages compare these to tell a current copy from a
+// stale one. In memory only: a restart starts a new epoch, so a revision from
+// before it never matches one after it.
+const HISTORY_REV_EPOCH = Date.now().toString(36);
+let historyRevCounter = 0;
+const historyRevs = new Map<string, number>();
+let historyRevListener: ((id: string) => void) | null = null;
+
+/** The revision a page built now carries. Changes whenever what pages show may have. */
+export function getHistoryRev(id: string): string {
+  return `${HISTORY_REV_EPOCH}.${historyRevs.get(id) ?? 0}`;
+}
+
+/** Told (synchronously) after every revision change; the handler pushes them. */
+export function setHistoryRevListener(listener: ((id: string) => void) | null): void {
+  historyRevListener = listener;
+}
+
+function bumpHistoryRev(id: string): void {
+  historyRevs.set(id, ++historyRevCounter);
+  historyRevListener?.(id);
+}
+
+/** A history mutation: drop the cached render and move the revision. */
+function invalidateRender(id: string): void {
+  renderSnapshotCache.delete(id);
+  bumpHistoryRev(id);
+}
+
+// A turn starting or ending changes which folded work its pages elide.
+streaming.setRunStateListener(bumpHistoryRev);
+
 // Full transcripts are lazy-loaded, but historically every load stayed resident
 // for the lifetime of the daemon. A startup scan (or enough ordinary opens) could
 // therefore materialize the entire conversation corpus and retain several GiB.
@@ -351,7 +384,7 @@ function setConversationSidebarState(
     loaded.pinned = state.pinned;
     loaded.sortOrder = state.sortOrder;
   }
-  if (folderChanged) renderSnapshotCache.delete(id);
+  if (folderChanged) invalidateRender(id);
   return true;
 }
 
@@ -893,6 +926,7 @@ function removeConversationState(id: string): boolean {
   notifyConversationRemoved(id);
   evictCachedConversation(id);
   renderSnapshotCache.delete(id);
+  historyRevs.delete(id);
   summaries.delete(id);
   dirty.delete(id);
   messageContentDirty.delete(id);
@@ -1451,7 +1485,7 @@ export function setSystemInstructions(id: string, text: string): boolean {
     if (text === (storedSystemInstructions(conv) ?? "")) pendingSystemInstructions.delete(id);
     else pendingSystemInstructions.set(id, text);
     savePendingSystemInstructions();
-    renderSnapshotCache.delete(id);
+    invalidateRender(id);
     // Idle but not materialized (a turn ended just now): load it and apply.
     if (!locked) void applyPendingSystemInstructions(id);
     return true;
@@ -1839,7 +1873,7 @@ async function performUnwindTo(
     if (recoveredActiveContext) rememberValidatedActiveContext(recoveredActiveContext, conv.messages);
     conv.lastContextTokens = plannedConversation.lastContextTokens;
     conv.updatedAt = plannedConversation.updatedAt;
-    renderSnapshotCache.delete(id);
+    invalidateRender(id);
     dirty.delete(id);
     messageContentDirty.delete(id);
     contextAttributionDirty.delete(id);
@@ -2124,7 +2158,7 @@ export function loadFromDisk(): LoadFromDiskStats {
 
 /** Mark a conversation as needing a save. */
 export function markDirty(id: string, mode: "auto" | "messages" = "auto"): void {
-  renderSnapshotCache.delete(id);
+  invalidateRender(id);
   contextAttributionDirty.delete(id);
   if (mode === "messages") messageContentDirty.add(id);
   dirty.add(id);
@@ -2132,7 +2166,7 @@ export function markDirty(id: string, mode: "auto" | "messages" = "auto"): void 
 
 /** Mark only provider-derived token attribution as dirty. */
 export function markContextAttributionDirty(id: string): void {
-  renderSnapshotCache.delete(id);
+  invalidateRender(id);
   // A pending full save already writes attribution; never narrow it, or its
   // in-place edits are recorded as saved without being written.
   if (dirty.has(id) && !contextAttributionDirty.has(id)) return;
@@ -2186,7 +2220,7 @@ export function appendMessages(
   const previousUpdatedAt = conv.updatedAt;
   conv.messages.push(...messages);
   conv.updatedAt = Math.max(previousUpdatedAt, options.updatedAt ?? Date.now());
-  renderSnapshotCache.delete(id);
+  invalidateRender(id);
   const ephemeral = isEphemeralConversation(id);
   try {
     if (!ephemeral) persistence.appendMessages(conv, expectedStoredMessageCount);
