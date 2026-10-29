@@ -97,6 +97,7 @@ export type KeyResult =
   | { type: "clone_conversation"; convId: string }
   | { type: "create_folder"; name: string; parentId: string | null; items: SidebarItemRef[] }
   | { type: "rename_folder"; folderId: string; name: string }
+  | { type: "move_to_done"; moves: { items: SidebarItemRef[]; parentId: string; reqId?: string }[]; create: SidebarItemRef[]; notice?: string }
   | { type: "new_conversation"; placement?: NewConversationPlacement }
   | { type: "queue_confirm" }
   | { type: "queue_cancel" }
@@ -533,7 +534,7 @@ export function handleFocusedKey(
   // ── Sidebar shortcuts that would otherwise be eaten by Vim commands ──
   if (state.panelFocus === "sidebar" && state.sidebar.open && state.vim.mode === "normal"
       && !vimHasPendingInput(state)
-      && key.type === "char" && key.char && ["v", "V", "f", "F", "<", "r", "x", "M"].includes(key.char)) {
+      && key.type === "char" && key.char && ["v", "V", "f", "F", "<", "r", "x", "M", "."].includes(key.char)) {
     return mapSidebarResult(handleSidebarKey(key, state.sidebar));
   }
 

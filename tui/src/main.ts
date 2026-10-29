@@ -113,6 +113,7 @@ import type { SidebarViewHint } from "@exocortex/shared/sidebar-first-page";
 import { applyTuiStartingState, availableStartingConversationId, applyRouteViewState, captureRouteViewState, captureTuiStartingState, daemonRouteKey, loadTuiStartingState, RouteViewStates, saveTuiStartingState } from "./startingstate";
 import { closeBtwSession, startBtwSession } from "./btw/controller";
 import { createSidebarState } from "./sidebar/state";
+import { DONE_FOLDER_NAME } from "./sidebar/doneaction";
 import { addOptimisticConversation, focusConversationById, rememberEnteredConversation } from "./sidebar";
 import { newConversationFolderId, type NewConversationPlacement } from "./sidebar/tree";
 import { formatConnectionLostNotice } from "./events/notices";
@@ -2126,6 +2127,11 @@ function handleKey(key: KeyEvent): void {
       break;
     case "rename_folder":
       daemon.renameFolder(result.folderId, result.name);
+      break;
+    case "move_to_done":
+      for (const move of result.moves) daemon.moveSidebarItems(move.items, move.parentId, undefined, {}, move.reqId);
+      if (result.create.length > 0) daemon.createFolder(DONE_FOLDER_NAME, null, result.create);
+      if (result.notice) pushSystemMessage(state, result.notice);
       break;
     case "handled":
       break;
