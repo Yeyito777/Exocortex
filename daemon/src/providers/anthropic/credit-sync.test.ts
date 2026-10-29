@@ -208,15 +208,60 @@ describe("balances from the last sync", () => {
       { name: null, programId: null, remainingUsd: 5, grantedUsd: 5, expiresAt: 2_000 },
       { name: null, programId: null, remainingUsd: 5, grantedUsd: 5, expiresAt: 1_000 },
     ];
-    expect(drawDown(tranches, 7, 0)).toEqual({ balanceUsd: 13, grantedUsd: 20, expiresAt: [1_000, 2_000] });
+    expect(drawDown(tranches, 7, 0)).toEqual({
+      balanceUsd: 13, grantedUsd: 20, expiresAt: [1_000, 2_000],
+      grants: [
+        { leftUsd: 0, grantedUsd: 5, expiresAt: 1_000 },
+        { leftUsd: 3, grantedUsd: 5, expiresAt: 2_000 },
+        { leftUsd: 10, grantedUsd: 10, expiresAt: null },
+      ],
+    });
     expect(drawDown(tranches, 100, 0).balanceUsd).toBe(0);
-    expect(drawDown(tranches, 0, 1_500)).toEqual({ balanceUsd: 15, grantedUsd: 15, expiresAt: [2_000] });
+    expect(drawDown(tranches, 0, 1_500)).toEqual({
+      balanceUsd: 15, grantedUsd: 15, expiresAt: [2_000],
+      grants: [{ leftUsd: 5, grantedUsd: 5, expiresAt: 2_000 }, { leftUsd: 10, grantedUsd: 10, expiresAt: null }],
+    });
   });
 
   test("the usage block gets the balance of the key in use", async () => {
     await refreshApiCreditSecrets({ force: true });
     await syncConsoleCredits(keys(), { now: () => OCT29 });
     expect(apiCreditsUsage(true, OCT29)).toMatchObject({ label: "main", balanceUsd: 699.99, grantedUsd: 700, approximate: false });
+  });
+
+  test("the usage block's pool: every organization's grants together, soonest expiry first, and when the subscriptions are back", async () => {
+    await refreshApiCreditSecrets({ force: true });
+    await syncConsoleCredits(keys(), { now: () => OCT29 });
+    spend(MAIN_KEY, 2, OCT29 + 1);
+    const usage = apiCreditsUsage(true, OCT29 + 2, new Set(), OCT29 + 5 * H)!;
+    expect(usage.subscriptionsBackAt).toBe(OCT29 + 5 * H);
+    expect(usage.pool!.balanceUsd).toBeCloseTo(897.98, 6);
+    expect(usage.pool).toMatchObject({ grantedUsd: 900, approximate: false });
+    expect(usage.pool!.signInNeeded).toBeUndefined();
+    // The $2 spent since the sync comes off main's grant that expires soonest.
+    expect(usage.pool!.grants.map(grant => [Math.round(grant.leftUsd * 100) / 100, grant.grantedUsd, grant.expiresAt])).toEqual([
+      [197.99, 200, NOV11], [199.99, 200, NOV18], [500, 500, APR18],
+    ]);
+  });
+
+  test("two keys on one organization count it once, synced or not", async () => {
+    writeExocortexConfig({ providers: { anthropic: { apiCreditFallback: { enabled: true, keys: [
+      { secret: MAIN_KEY, label: "main", account: "main", console: { org: MAIN_ORG },
+        grants: [{ amountUsd: 200, expires: "2026-11-11", monthly: true }, { amountUsd: 500, expires: "2027-04-18" }] },
+      { secret: MAX2_KEY, label: "second", account: "main", console: { org: MAIN_ORG },
+        grants: [{ amountUsd: 200, expires: "2026-11-11", monthly: true }, { amountUsd: 500, expires: "2027-04-18" }] },
+    ] } } } });
+    // Before a sync: the organization's configured grants once, drawn on by both keys' spend.
+    spend(MAIN_KEY, 10, OCT29 - H);
+    spend(MAX2_KEY, 5, OCT29 - H);
+    let pool = apiCreditsUsage(true, OCT29)!.pool!;
+    expect(pool).toMatchObject({ balanceUsd: 685, grantedUsd: 700, approximate: true });
+    expect(pool.grants.map(grant => grant.leftUsd)).toEqual([185, 500]);
+    await refreshApiCreditSecrets({ force: true });
+    await syncConsoleCredits(keys(), { now: () => OCT29 });
+    pool = apiCreditsUsage(true, OCT29 + 1)!.pool!;
+    expect(pool).toMatchObject({ balanceUsd: 699.99, grantedUsd: 700, approximate: false });
+    expect(pool.grants).toHaveLength(2);
   });
 });
 

@@ -26,6 +26,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname, join } from "path";
 import { externalToolsDir, runtimeDir } from "@exocortex/shared/paths";
 import { log } from "../../log";
+import type { ApiCreditGrantLeft } from "../../messages";
 import { apiKeyDailySpendUsd } from "../openai/api-key-usage";
 
 export const CONSOLE_ORIGIN = "https://platform.claude.com";
@@ -230,6 +231,8 @@ export interface SyncedBalance {
   grantedUsd: number;
   /** Each grant's expiry (ms), soonest first; grants that do not expire are left out. */
   expiresAt: number[];
+  /** Each grant and what is left of it, soonest expiry first. */
+  grants: ApiCreditGrantLeft[];
   /** Synced too long ago to be more than an estimate. */
   approximate: boolean;
   /** The last sync found the Console session signed out. */
@@ -245,16 +248,16 @@ export function drawDown(tranches: readonly ConsoleTranche[], spentUsd: number, 
     .filter(entry => entry.expiresAt === null || entry.expiresAt > now)
     .sort((a, b) => (a.expiresAt ?? Infinity) - (b.expiresAt ?? Infinity));
   let left = Math.max(0, spentUsd);
-  let balanceUsd = 0;
-  for (const entry of live) {
+  const grants = live.map((entry) => {
     const take = Math.min(left, entry.remainingUsd);
     left -= take;
-    balanceUsd += entry.remainingUsd - take;
-  }
+    return { leftUsd: entry.remainingUsd - take, grantedUsd: entry.grantedUsd, expiresAt: entry.expiresAt };
+  });
   return {
-    balanceUsd,
+    balanceUsd: grants.reduce((sum, grant) => sum + grant.leftUsd, 0),
     grantedUsd: live.reduce((sum, entry) => sum + entry.grantedUsd, 0),
     expiresAt: live.filter(entry => entry.expiresAt !== null).map(entry => entry.expiresAt!),
+    grants,
   };
 }
 

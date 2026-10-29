@@ -137,6 +137,32 @@ export function isAccountLimited(state: AccountRouteState, now: number): boolean
   return false;
 }
 
+/**
+ * When a limited account can take turns again: the last of its rejection and
+ * its full windows' resets. `now` when it is not limited; null when a full
+ * window's reset is unknown.
+ */
+export function accountUsableAt(state: AccountRouteState, now: number): number | null {
+  let at = now;
+  if (state.limitedUntil !== null && state.limitedUntil > now) at = state.limitedUntil;
+  const usage = state.usage;
+  for (const window of [usage?.fiveHour, usage?.sevenDay]) {
+    if (!window || window.utilization < 100) continue;
+    if (window.resetsAt === null) return null;
+    if (window.resetsAt > now) at = Math.max(at, window.resetsAt);
+  }
+  return at;
+}
+
+/** The soonest a signed-in account can take turns again (`now` if one can already); null when none says. */
+export function subscriptionsUsableAt(states: readonly AccountRouteState[], now: number): number | null {
+  const times = states
+    .filter(state => state.available)
+    .map(state => accountUsableAt(state, now))
+    .filter((at): at is number => at !== null);
+  return times.length > 0 ? Math.min(...times) : null;
+}
+
 /** 0 at the 5-hour floor, rising linearly to 1 at the comfort level. */
 function fiveHourDamping(headroom: number, policy: RoutingPolicy): number {
   const span = policy.fiveHourComfort - policy.fiveHourFloor;

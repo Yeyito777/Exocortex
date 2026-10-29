@@ -32,6 +32,7 @@ import {
   isAccountLimited,
   routeConversation,
   routeNewWork,
+  subscriptionsUsableAt,
   type AccountRouteState,
   type RouteDecision,
 } from "./routing";
@@ -351,13 +352,17 @@ export function getCombinedUsage(now = Date.now()): UsageData | null {
   const usage = included.length > 0 ? aggregateUsage(included.map(state => state.usage), now)
     : multipleClaudeAccounts() ? null : getAccountUsage(MAIN_ACCOUNT_ID);
   if (!usage || isProviderProxied("anthropic")) return usage;
-  const credits = apiCreditsUsage(activeCreditTurns.size > 0 || apiCreditFallbackActive(now), now, new Set(activeCreditTurns.keys()));
+  const active = activeCreditTurns.size > 0 || apiCreditFallbackActive(now);
+  const backAt = active ? subscriptionsUsableAt(applyDevRoutingOverrides(claudeAccountStates(now), now).states, now) : null;
+  const credits = apiCreditsUsage(active, now, new Set(activeCreditTurns.keys()), backAt !== null && backAt > now ? backAt : null);
   return credits ? { ...usage, apiCredits: credits } : usage;
 }
 
 /** Refresh stale statuses and idle usage of every account, then return the combined usage. */
 export async function refreshCombinedUsage(): Promise<UsageData | null> {
   if (multipleClaudeAccounts()) await refreshClaudeAccountStatuses();
+  // Which credit keys exist decides whether the bar shows credits; after a restart nothing else checks before a turn.
+  if (apiCreditFallbackEnabled()) await refreshApiCreditSecrets();
   const now = Date.now();
   const stale = capacityAccounts(now).filter(state => now - getAccountUsageUpdatedAt(state.id) >= USAGE_REFRESH_TTL_MS);
   await Promise.all(stale.map(async (state) => {
