@@ -4,8 +4,12 @@
 # Builds macos/launcher into "Exocortex Daemon.app", signs it with a stable
 # identity, and points the com.exocortex.daemon LaunchAgent at it so TCC
 # privacy consents belong to the app instead of Homebrew's ad-hoc signed bash.
-# Idempotent; bun is resolved when the daemon starts, so Homebrew upgrades
-# need no rebuild. See README.md › macOS › Daemon launcher.
+# Then checks the app's Full Disk Access and, if missing, opens System
+# Settings for the one-time grant (full-disk-access.sh). Idempotent; bun is
+# resolved when the daemon starts, so Homebrew upgrades need no rebuild.
+# Without a signing identity it stops unless --adhoc is given: an ad-hoc app
+# loses its privacy grants on every rebuild. See README.md › macOS › Daemon
+# launcher.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -21,6 +25,7 @@ IDENTITY="${EXOCORTEX_CODESIGN_IDENTITY:-}"
 ADHOC=0
 UPDATE_PLIST=1
 RELOAD=0
+PRIVACY=1
 UPDATE_TOOLS=1
 IF_CHANGED=0
 QUIET=0
@@ -33,15 +38,18 @@ Usage: scripts/macos/build-launcher.sh [options]
   --identity ID     codesign identity: SHA-1 hash or name (default: first
                     "Apple Development" or "Developer ID Application" identity;
                     also EXOCORTEX_CODESIGN_IDENTITY)
-  --adhoc           Sign ad-hoc (privacy prompts will keep coming back)
+  --adhoc           Sign ad-hoc (privacy grants are lost on every rebuild);
+                    without it, having no identity is an error
   --no-plist        Do not touch the LaunchAgent plist
+  --no-privacy      Skip the Full Disk Access check (full-disk-access.sh)
   --reload          Reload the LaunchAgent now (graceful restart with replay);
                     first fast-forwards the external-tools/* repos
                     (see update-external-tools.sh)
   --no-tools-update Skip updating external-tools/* on --reload
   --if-changed      Keep the installed app when its sources and signing
                     identity are unchanged (an ad-hoc rebuild resets consents)
-  --quiet           Short output: no next steps, one-line ad-hoc warning
+  --quiet           Short output: no next steps or Full Disk Access check,
+                    one-line ad-hoc warning
   -h, --help        Show this help
 EOF
 }
@@ -52,6 +60,7 @@ while (($# > 0)); do
     --identity) IDENTITY="${2:?--identity needs a value}"; shift ;;
     --adhoc) ADHOC=1 ;;
     --no-plist) UPDATE_PLIST=0 ;;
+    --no-privacy) PRIVACY=0 ;;
     --reload) RELOAD=1 ;;
     --no-tools-update) UPDATE_TOOLS=0 ;;
     --if-changed) IF_CHANGED=1 ;;
@@ -100,17 +109,28 @@ if ((ADHOC == 1)); then
 elif [[ -z "$IDENTITY" ]]; then
   IDENTITY="$(pick_identity)"
 fi
-if [[ -z "$IDENTITY" || "$IDENTITY" == "-" ]]; then
-  IDENTITY="-"
+if [[ -z "$IDENTITY" ]]; then
+  cat >&2 <<'EOF'
+
+  ✗ No "Apple Development" or "Developer ID Application" signing identity.
+    An ad-hoc signed app has no stable identity: macOS forgets its privacy
+    grants (Full Disk Access included) on every rebuild and asks again.
+    Fix: Xcode › Settings › Accounts › your Apple ID › Manage Certificates ›
+    + › Apple Development, then re-run this script. To sign ad-hoc anyway,
+    pass --adhoc.
+
+EOF
+  exit 1
+fi
+if [[ "$IDENTITY" == "-" ]]; then
   if ((QUIET == 1)); then
-    echo "  ⚠ No Apple Development signing identity: signing the launcher ad-hoc (privacy prompts may return after launcher rebuilds)" >&2
+    echo "  ⚠ Signing the launcher ad-hoc (--adhoc): privacy prompts may return after launcher rebuilds" >&2
   else
     cat >&2 <<'EOF'
 
   ⚠ ─────────────────────────────────────────────────────────────────────
-  ⚠ No "Apple Development" or "Developer ID Application" signing identity.
-  ⚠ Signing AD-HOC: macOS has no stable identity to remember consent for,
-  ⚠ so privacy prompts WILL keep coming back after rebuilds.
+  ⚠ Signing AD-HOC (--adhoc): macOS has no stable identity to remember
+  ⚠ consent for, so privacy prompts WILL come back after rebuilds.
   ⚠ Fix: sign in to Xcode › Settings › Accounts and create an
   ⚠ "Apple Development" certificate, then re-run this script.
   ⚠ ─────────────────────────────────────────────────────────────────────
@@ -195,21 +215,30 @@ if ((UPDATE_PLIST == 1)); then
   esac
 fi
 
+# ── Full Disk Access ─────────────────────────────────────────────────
+
+# The one grant that covers every file prompt. Checked without prompting;
+# when missing, System Settings opens at the right pane (not from inside the
+# daemon: nobody may be at the screen). Never fatal.
+if ((PRIVACY == 1 && QUIET == 0)); then
+  fda_args=()
+  [[ "${XPC_SERVICE_NAME:-}" == "$LABEL" ]] && fda_args=(--no-open --no-wait)
+  "$SCRIPT_DIR/full-disk-access.sh" --app "$APP" ${fda_args[@]+"${fda_args[@]}"} setup || true
+fi
+
 if ((RELOAD == 0)); then
   ((QUIET == 1)) && exit 0
   cat <<EOF
 
   Next steps (from a terminal, not from an Exocortex turn):
-    1. Optional, avoids every prompt: System Settings › Privacy & Security ›
-       Full Disk Access › + › $APP
-    2. Reload the LaunchAgent (graceful; active conversations replay):
+    1. Reload the LaunchAgent (graceful; active conversations replay):
          $SCRIPT_DIR/build-launcher.sh --reload
        or by hand:
          (cd "$REPO_DIR/daemon" && bun run src/control-cli.ts prepare-restart)
          launchctl bootout $TARGET
          launchctl bootstrap $DOMAIN "$PLIST"
-    3. Check: launchctl print $TARGET | grep -E 'program|state|pid'
-              exocortexd status
+    2. Check: launchctl print $TARGET | grep -E 'program|state|pid'
+              exocortexd doctor
 
 EOF
   exit 0

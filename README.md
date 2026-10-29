@@ -353,20 +353,29 @@ Homebrew/Bun upgrades. It resolves Bun each time it starts, forwards
 stop/restart signals, and exits with the daemon's status, so `exocortexd` and
 launchd's restart behaviour are unchanged.
 
-**One-time consent.** The first time a prompt names “Exocortex Daemon”, choose
-**Allow**; it now sticks. To never be asked, add the app under **System
-Settings › Privacy & Security › Full Disk Access** (`+`, then
-`~/Applications/Exocortex Daemon.app`); do this before the first reload if the
-clone lives in Desktop or Documents.
+**One-time Full Disk Access.** macOS asks separately for each protected place
+(Desktop, Documents, Downloads, other apps' data, removable and network
+volumes), so allowing prompts one at a time keeps producing new ones. Full Disk
+Access for “Exocortex Daemon” covers them all, once. `build-launcher.sh` and
+`install.sh` check it without prompting (`scripts/macos/full-disk-access.sh
+check` prints `granted`, `missing` or `unknown`) and, when it is missing, open
+**System Settings › Privacy & Security › Full Disk Access**: switch on
+**Exocortex Daemon** (if it is not listed, `+`, then
+`~/Applications/Exocortex Daemon.app`), then `exocortexd restart`. Run
+`scripts/macos/full-disk-access.sh setup` to do this step alone, and
+`exocortexd doctor` warns while it is missing. Do it before the first reload if
+the clone lives in Desktop or Documents. The grant belongs to the app's signing
+identity, so it survives restarts, pulls, rebuilds and Homebrew/Bun upgrades.
 
 **Rebuild** after pulling launcher changes, or to re-sign with a new
 certificate, by re-running `scripts/macos/build-launcher.sh --reload`. It is
 idempotent and keeps your LaunchAgent's other settings (a backup of the previous
 plist goes to `config/runtime/launchd/backups/`). Homebrew or Bun upgrades need
-no rebuild. Without an Apple Development or Developer ID certificate it signs
-ad-hoc and warns: prompts will then return after each rebuild. `install.sh`
-runs it with `--if-changed`, which keeps the installed app unless the launcher
-sources or signing identity changed.
+no rebuild. Without an Apple Development or Developer ID certificate it stops:
+an ad-hoc signed app loses its grants on every rebuild. Pass `--adhoc` to sign
+ad-hoc anyway (`install.sh` does, with a warning, when there is no
+certificate). `install.sh` runs it with `--if-changed`, which keeps the
+installed app unless the launcher sources or signing identity changed.
 
 #### Update
 

@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync }
 import { createServer, type Server } from "net";
 import { tmpdir } from "os";
 import { join } from "path";
-import { clientSocketPath, diagnose, findClaudeBinary, linksInto, probeDaemon, readClaudeLogin, type DoctorReport } from "./doctor";
+import { clientSocketPath, diagnose, findClaudeBinary, launchAgentProgram, launcherAppOf, linksInto, probeDaemon, readClaudeLogin, type DoctorReport } from "./doctor";
 
 const dirs: string[] = [];
 function tempDir(): string {
@@ -26,6 +26,7 @@ function report(overrides: Partial<DoctorReport> = {}): DoctorReport {
     daemon: { socket: "/s", running: true, responsive: true, pid: 1, service: { manager: "systemd", name: "x", installed: true, active: true } },
     providers: { anthropic: { authenticated: true, status: "logged_in", email: "me@example.com", source: "claude-code" } },
     commands: { exocortexd: "/home/me/.local/bin/exocortexd", tui: null },
+    macos: null,
     problems: [],
     ...overrides,
   };
@@ -140,5 +141,55 @@ describe("probeDaemon", () => {
     server = createServer(() => {});
     await new Promise<void>(resolve => server!.listen(socket, resolve));
     expect(await probeDaemon(socket, 200)).toEqual({ running: true, responsive: false });
+  });
+});
+
+describe("macOS launcher", () => {
+  const macos = (overrides: Partial<NonNullable<DoctorReport["macos"]>> = {}): DoctorReport["macos"] => ({
+    launcherApp: "/Users/me/Applications/Exocortex Daemon.app",
+    launcherInstalled: true,
+    launcherSigning: "identity",
+    agentUsesLauncher: true,
+    fullDiskAccess: "granted",
+    ...overrides,
+  });
+  const launchd = { manager: "launchd" as const, name: "com.exocortex.daemon", installed: true, active: true };
+  const mac = (m: DoctorReport["macos"], service = launchd, running = true) => report({
+    platform: "darwin",
+    daemon: { socket: "/s", running, responsive: running, pid: running ? 1 : null, service },
+    macos: m,
+  });
+
+  test("a signed launcher with Full Disk Access has no problems", () => {
+    expect(diagnose(mac(macos()))).toEqual([]);
+  });
+
+  test("missing Full Disk Access is a warning that points at the one-time setup", () => {
+    const problems = diagnose(mac(macos({ fullDiskAccess: "missing" })));
+    expect(problems.map(p => [p.id, p.severity])).toEqual([["full-disk-access-missing", "warning"]]);
+    expect(problems[0].fix).toContain("/repo/scripts/macos/full-disk-access.sh setup");
+    // Unknown (e.g. the check could not run) is not reported as missing.
+    expect(diagnose(mac(macos({ fullDiskAccess: "unknown" })))).toEqual([]);
+  });
+
+  test("a LaunchAgent that bypasses the launcher, or an ad-hoc launcher, is flagged", () => {
+    expect(diagnose(mac(macos({ agentUsesLauncher: false }))).map(p => p.id)).toEqual(["launcher-not-used"]);
+    expect(diagnose(mac(macos({ launcherSigning: "adhoc" }))).map(p => p.id)).toEqual(["launcher-adhoc"]);
+    expect(diagnose(mac(macos({ launcherInstalled: false, launcherSigning: null, fullDiskAccess: null }))).map(p => p.id)).toEqual(["launcher-missing"]);
+  });
+
+  test("a daemon running outside its LaunchAgent is flagged", () => {
+    expect(diagnose(mac(macos(), { ...launchd, active: false })).map(p => p.id)).toEqual(["daemon-outside-launchagent"]);
+    // Stopped altogether is the daemon-not-running error instead.
+    expect(diagnose(mac(macos(), { ...launchd, active: false }, false)).map(p => p.id)).toEqual(["daemon-not-running"]);
+  });
+
+  test("launchAgentProgram and launcherAppOf read the agent's program", () => {
+    const xml = `<?xml version="1.0"?>\n<plist version="1.0">\n<dict>\n\t<key>Label</key>\n\t<string>com.exocortex.daemon</string>\n\t<key>ProgramArguments</key>\n\t<array>\n\t\t<string>/Users/me/Apps/A &amp; B/Exocortex Daemon.app/Contents/MacOS/exocortex-daemon</string>\n\t\t<string>--repo</string>\n\t</array>\n</dict>\n</plist>\n`;
+    const program = launchAgentProgram(xml);
+    expect(program).toBe("/Users/me/Apps/A & B/Exocortex Daemon.app/Contents/MacOS/exocortex-daemon");
+    expect(launcherAppOf(program)).toBe("/Users/me/Apps/A & B/Exocortex Daemon.app");
+    expect(launcherAppOf("/bin/bash")).toBeNull();
+    expect(launchAgentProgram("<plist><dict></dict></plist>")).toBeNull();
   });
 });

@@ -20,6 +20,8 @@ import { pidPath, repoRoot, socketPath } from "../../shared/src/paths";
 
 export const SYSTEMD_UNIT = "exocortex-daemon.service";
 export const DEFAULT_LAUNCHD_LABEL = "com.exocortex.daemon";
+/** The launcher app's executable, relative to the .app (macos/launcher, scripts/macos/build-launcher.sh). */
+export const LAUNCHER_EXECUTABLE = "Contents/MacOS/exocortex-daemon";
 
 export interface DoctorProblem {
   id: string;
@@ -54,7 +56,21 @@ export interface DoctorReport {
   /** Per provider id; null when the daemon's dependencies are not installed. */
   providers: Record<string, DoctorProvider> | null;
   commands: { exocortexd: string | null; tui: string | null };
+  /** macOS only (else null): the signed launcher app privacy grants belong to. */
+  macos: DoctorMacos | null;
   problems: DoctorProblem[];
+}
+
+export interface DoctorMacos {
+  /** The "Exocortex Daemon.app" the LaunchAgent runs, or the default install path. */
+  launcherApp: string;
+  launcherInstalled: boolean;
+  /** "identity": a certificate, so grants survive rebuilds; "adhoc": they do not. */
+  launcherSigning: "identity" | "adhoc" | "unsigned" | null;
+  /** Whether the LaunchAgent's program is the launcher; null without a LaunchAgent. */
+  agentUsesLauncher: boolean | null;
+  /** The launcher app's Full Disk Access, checked without prompting; null when not checked. */
+  fullDiskAccess: "granted" | "missing" | "unknown" | null;
 }
 
 // ── Probes ───────────────────────────────────────────────────────────
@@ -64,12 +80,12 @@ export function clientSocketPath(env: NodeJS.ProcessEnv = process.env): string {
   return env.EXOCORTEX_SOCKET?.trim() || socketPath();
 }
 
-function run(argv: string[], timeoutMs = 5000): { ok: boolean; stdout: string } {
+function run(argv: string[], timeoutMs = 5000): { ok: boolean; stdout: string; stderr: string } {
   try {
     const result = Bun.spawnSync(argv, { stdout: "pipe", stderr: "pipe", stdin: "ignore", timeout: timeoutMs });
-    return { ok: result.exitCode === 0, stdout: result.stdout.toString().trim() };
+    return { ok: result.exitCode === 0, stdout: result.stdout.toString().trim(), stderr: result.stderr.toString().trim() };
   } catch {
-    return { ok: false, stdout: "" };
+    return { ok: false, stdout: "", stderr: "" };
   }
 }
 
@@ -164,6 +180,45 @@ function serviceState(home = homedir()): DoctorReport["daemon"]["service"] {
   return { manager: "none", name: null, installed: false, active: null };
 }
 
+/** The first ProgramArguments string of a LaunchAgent plist (XML), or null. */
+export function launchAgentProgram(plistXml: string): string | null {
+  const match = /<key>ProgramArguments<\/key>\s*<array>\s*<string>([^<]*)<\/string>/.exec(plistXml);
+  if (!match) return null;
+  return match[1].replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+}
+
+/** The .app a launcher executable path belongs to, or null if it is not one. */
+export function launcherAppOf(program: string | null): string | null {
+  const suffix = `.app/${LAUNCHER_EXECUTABLE}`;
+  return program?.endsWith(suffix) ? program.slice(0, -LAUNCHER_EXECUTABLE.length - 1) : null;
+}
+
+function macosState(home = homedir()): DoctorMacos {
+  const label = process.env.EXOCORTEX_LAUNCHD_LABEL || DEFAULT_LAUNCHD_LABEL;
+  let program: string | null = null;
+  let hasAgent = false;
+  try {
+    program = launchAgentProgram(readFileSync(join(home, "Library", "LaunchAgents", `${label}.plist`), "utf-8"));
+    hasAgent = true;
+  } catch { /* no LaunchAgent, or a binary plist */ }
+  const fromAgent = launcherAppOf(program);
+  const launcherApp = fromAgent ?? join(home, "Applications", "Exocortex Daemon.app");
+  const executable = join(launcherApp, LAUNCHER_EXECUTABLE);
+  const launcherInstalled = existsSync(executable);
+
+  let launcherSigning: DoctorMacos["launcherSigning"] = null;
+  let fullDiskAccess: DoctorMacos["fullDiskAccess"] = null;
+  if (launcherInstalled) {
+    // codesign -dv prints to stderr; an unsigned bundle fails.
+    const sign = run(["codesign", "-dv", launcherApp]);
+    launcherSigning = !sign.ok ? "unsigned" : /Signature=adhoc/.test(sign.stderr) ? "adhoc" : "identity";
+    // Runs as the app itself and never prompts (macos/launcher/launcher.c).
+    const word = run([executable, "--check-full-disk-access"]).stdout;
+    fullDiskAccess = word === "granted" || word === "missing" ? word : "unknown";
+  }
+  return { launcherApp, launcherInstalled, launcherSigning, agentUsesLauncher: hasAgent ? fromAgent !== null : null, fullDiskAccess };
+}
+
 /** A command on PATH or in ~/.local/bin (where the installer links it). */
 function findCommand(name: string, home = homedir()): string | null {
   const onPath = Bun.which(name);
@@ -240,6 +295,7 @@ export async function collectDoctorReport(): Promise<DoctorReport> {
     daemon: { socket, running: probe.running, responsive: probe.responsive, pid: socket === socketPath() ? readPid() : null, service },
     providers,
     commands: { exocortexd, tui },
+    macos: process.platform === "darwin" ? macosState() : null,
     problems: [],
   };
   report.problems = diagnose(report);
@@ -282,6 +338,39 @@ export function diagnose(report: DoctorReport): DoctorProblem[] {
   if (report.daemon.service.manager !== "none" && !report.daemon.service.installed) {
     add("service-not-installed", "warning", "The daemon is not installed as a background service.", "Rerun the installer without --no-service");
   }
+  if (report.macos) problems.push(...diagnoseMacos(report));
+  return problems;
+}
+
+/**
+ * macOS privacy: every file the daemon and its tools touch is attributed to
+ * the process launchd started. Only the signed launcher app, with Full Disk
+ * Access, keeps macOS from asking about each protected folder again.
+ */
+function diagnoseMacos(report: DoctorReport): DoctorProblem[] {
+  const macos = report.macos!;
+  const problems: DoctorProblem[] = [];
+  const add = (id: string, message: string, fix: string) => problems.push({ id, severity: "warning", message, fix });
+  const build = `${report.exocortex.repoDir}/scripts/macos/build-launcher.sh --reload   (from a terminal)`;
+  const { service } = report.daemon;
+
+  if (service.installed && macos.agentUsesLauncher === false) {
+    add("launcher-not-used", "The LaunchAgent does not run Exocortex Daemon.app, so macOS asks about files on behalf of bash.", build);
+  } else if (!macos.launcherInstalled && service.installed) {
+    add("launcher-missing", `${macos.launcherApp} is not installed.`, build);
+  }
+  if (macos.launcherSigning === "adhoc" || macos.launcherSigning === "unsigned") {
+    add("launcher-adhoc", "Exocortex Daemon.app has no signing identity, so macOS forgets its privacy grants whenever it is rebuilt.",
+      `Create an Apple Development certificate (Xcode › Settings › Accounts › Manage Certificates), then: ${build}`);
+  }
+  if (service.installed && service.active === false && report.daemon.running) {
+    add("daemon-outside-launchagent", "The daemon is running outside its LaunchAgent, so macOS attributes its file access to the terminal that started it.",
+      "Stop that daemon (Ctrl+C in its terminal), then: exocortexd start");
+  }
+  if (macos.fullDiskAccess === "missing") {
+    add("full-disk-access-missing", "Exocortex Daemon has no Full Disk Access, so macOS asks separately about Desktop, Documents, Downloads and other apps' data.",
+      `${report.exocortex.repoDir}/scripts/macos/full-disk-access.sh setup   (switch on "Exocortex Daemon", then exocortexd restart)`);
+  }
   return problems;
 }
 
@@ -317,6 +406,12 @@ export function formatDoctorReport(report: DoctorReport, color = false): string 
     lines.push(`  ${signedIn.length > 0 ? good : bad} Providers: ${signedIn.length > 0 ? signedIn.join(", ") : "none signed in"}`);
   }
   lines.push(`  ${info} TUI: ${commands.tui ? commands.tui : "not installed (add it: exocortexd install-tui)"}`);
+  if (report.macos) {
+    const { launcherInstalled, launcherSigning, fullDiskAccess } = report.macos;
+    const access = fullDiskAccess === "granted" ? "Full Disk Access" : fullDiskAccess === "missing" ? "no Full Disk Access" : "Full Disk Access unknown";
+    const fine = launcherInstalled && launcherSigning === "identity" && fullDiskAccess === "granted";
+    lines.push(`  ${fine ? good : warn} Launcher: ${launcherInstalled ? `${launcherSigning === "identity" ? "signed" : launcherSigning}, ${access}` : "not installed"}  ${report.macos.launcherApp}`);
+  }
 
   if (report.problems.length > 0) {
     lines.push("");

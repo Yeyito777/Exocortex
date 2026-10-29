@@ -340,12 +340,16 @@ install_service_macos() {
   before="$(file_digest "$plist")"
   launchctl print "$target" >/dev/null 2>&1 && loaded=1
 
-  local launcher=0
+  local launcher=0 sign=()
   if command -v clang >/dev/null 2>&1 && command -v codesign >/dev/null 2>&1; then
     # The signed launcher app makes macOS privacy prompts name "Exocortex
     # Daemon" instead of bash (README › macOS › Daemon launcher). It edits an
     # existing LaunchAgent in place and rebuilds only when its sources change.
-    EXOCORTEX_LAUNCHD_LABEL="$LAUNCHD_LABEL" bash "$DIR/scripts/macos/build-launcher.sh" --if-changed --quiet \
+    if ! security find-identity -v -p codesigning 2>/dev/null | grep -qE '"(Apple Development|Developer ID Application): '; then
+      warn "No Apple Development certificate: signing the daemon launcher ad-hoc (macOS forgets its privacy grants when it is rebuilt)"
+      sign=(--adhoc)
+    fi
+    EXOCORTEX_LAUNCHD_LABEL="$LAUNCHD_LABEL" bash "$DIR/scripts/macos/build-launcher.sh" --if-changed --quiet ${sign[@]+"${sign[@]}"} \
       || die "Building the daemon launcher failed."
     launcher=1
   else
@@ -372,6 +376,17 @@ install_service_macos() {
     restart_daemon
   else
     ok "LaunchAgent $LAUNCHD_LABEL already running"
+  fi
+
+  # One-time Full Disk Access for the launcher app, so macOS stops asking
+  # about each protected folder. Only the user can grant it.
+  if ((launcher == 1)); then
+    if inside_exocortex; then
+      bash "$DIR/scripts/macos/full-disk-access.sh" check >/dev/null 2>&1 \
+        || note "Give Exocortex Daemon Full Disk Access from a terminal: $DIR/scripts/macos/full-disk-access.sh setup"
+    else
+      bash "$DIR/scripts/macos/full-disk-access.sh" setup || true
+    fi
   fi
 }
 

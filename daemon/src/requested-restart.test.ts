@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import * as conversations from "./conversations";
@@ -161,6 +161,24 @@ describe("after-turn executor scheduling", () => {
       expect(plist).toContain("<key>AbandonProcessGroup</key><true/>");
       expect(run.mock.calls.map(call => call[0].slice(0, 2))).toEqual([["launchctl", "bootout"], ["launchctl", "bootstrap"]]);
       expect(run.mock.calls[1][0][3]).toBe(plistPath);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("macOS runs the job through the signed launcher when the daemon has one", () => {
+    const dir = mkdtempSync(join(tmpdir(), "exo-restart-launchd-"));
+    try {
+      const launcher = join(dir, "exocortex-daemon");
+      writeFileSync(launcher, "");
+      const run = mock((_argv: string[]) => ({ ok: true, output: "" }));
+      scheduleRestartExecutor("tok5", { platform: "darwin", run, launchdDir: dir, launcher });
+      const plist = readFileSync(join(dir, "com.exocortex.requested-restart.plist"), "utf-8");
+      expect(plist).toContain(`<key>ProgramArguments</key><array><string>${launcher}</string><string>--exec</string><string>${process.execPath}</string><string>run</string>`);
+      // A launcher path that no longer exists falls back to bun itself.
+      scheduleRestartExecutor("tok6", { platform: "darwin", run, launchdDir: dir, launcher: join(dir, "gone") });
+      expect(readFileSync(join(dir, "com.exocortex.requested-restart.plist"), "utf-8"))
+        .toContain(`<key>ProgramArguments</key><array><string>${process.execPath}</string><string>run</string>`);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
