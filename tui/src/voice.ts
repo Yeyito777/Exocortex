@@ -293,6 +293,42 @@ export function recorderErrorMessage(stderr: string): string {
     .trim();
 }
 
+const WAVE_FORMAT_PCM = 1;
+const WAVE_FORMAT_EXTENSIBLE = 0xfffe;
+
+/**
+ * True when a 16-bit PCM WAV holds no sound at all: every sample is exactly
+ * zero. A live microphone always has a noise floor; an input that delivers
+ * none (e.g. a Bluetooth headset whose mic link never started) records this.
+ */
+export function isDigitallySilentWav(wav: Buffer): boolean {
+  if (wav.length < 12 || wav.toString("ascii", 0, 4) !== "RIFF" || wav.toString("ascii", 8, 12) !== "WAVE") return false;
+  let pcm16 = false;
+  for (let offset = 12; offset + 8 <= wav.length;) {
+    const id = wav.toString("ascii", offset, offset + 4);
+    const size = wav.readUInt32LE(offset + 4);
+    const body = offset + 8;
+    if (id === "fmt " && body + 16 <= wav.length) {
+      const format = wav.readUInt16LE(body);
+      pcm16 = (format === WAVE_FORMAT_PCM || format === WAVE_FORMAT_EXTENSIBLE) && wav.readUInt16LE(body + 14) === 16;
+    } else if (id === "data") {
+      if (!pcm16) return false;
+      // A recorder stopped by a signal may leave a placeholder size; the samples run to the end of the file.
+      for (let i = body; i + 1 < wav.length; i += 2) {
+        if (wav.readInt16LE(i) !== 0) return false;
+      }
+      return true;
+    }
+    offset = body + size + (size & 1);
+  }
+  return false;
+}
+
+function silentCaptureMessage(platform: NodeJS.Platform): string {
+  const device = platform === "darwin" ? "the input device in System Settings › Sound › Input" : "the input device";
+  return `the microphone recorded only silence; check ${device} (a Bluetooth headset's mic can stay silent until it is reconnected)`;
+}
+
 export class VoiceRecorder {
   private readonly child: ChildProcess;
   private readonly filePath: string;
@@ -366,6 +402,9 @@ export class VoiceRecorder {
       const bytes = readFileSync(this.filePath);
       if (bytes.length === 0) {
         throw new Error(recorderErrorMessage(this.stderr) || "captured audio file was empty; check microphone access and hold Space while speaking");
+      }
+      if (isDigitallySilentWav(bytes)) {
+        throw new Error(recorderErrorMessage(this.stderr) || silentCaptureMessage(process.platform));
       }
       return { bytes, mimeType: "audio/wav" };
     } finally {

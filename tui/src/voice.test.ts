@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { applyVoicePlaceholder, chooseDarwinRecorderCommand, chooseLinuxRecorderCommand, chooseRecorderCommand, getRenderedVoicePrompt, insertVoiceTranscript, recorderErrorMessage, voicePlaceholderText, type VoicePromptState } from "./voice";
+import { applyVoicePlaceholder, chooseDarwinRecorderCommand, chooseLinuxRecorderCommand, chooseRecorderCommand, getRenderedVoicePrompt, insertVoiceTranscript, isDigitallySilentWav, recorderErrorMessage, voicePlaceholderText, type VoicePromptState } from "./voice";
 
 describe("voice prompt helpers", () => {
   test("renders the requested spinner frames for recording and transcription", () => {
@@ -87,5 +87,46 @@ describe("voice prompt helpers", () => {
     ].join("\n");
 
     expect(recorderErrorMessage(stderr)).toBe("Error opening input: Permission denied");
+  });
+
+  test("recognizes a capture that is entirely digital silence", () => {
+    const chunk = (id: string, body: Buffer, size = body.length) => {
+      const header = Buffer.alloc(8);
+      header.write(id, 0, "ascii");
+      header.writeUInt32LE(size, 4);
+      return Buffer.concat([header, body, Buffer.alloc(body.length & 1)]);
+    };
+    const fmt = (format: number, bits: number) => {
+      const body = Buffer.alloc(16);
+      body.writeUInt16LE(format, 0);
+      body.writeUInt16LE(1, 2);
+      body.writeUInt32LE(16000, 4);
+      body.writeUInt32LE(16000 * bits / 8, 8);
+      body.writeUInt16LE(bits / 8, 12);
+      body.writeUInt16LE(bits, 14);
+      return chunk("fmt ", body);
+    };
+    const wav = (chunks: Buffer[]) => {
+      const riff = Buffer.alloc(12);
+      riff.write("RIFF", 0, "ascii");
+      riff.write("WAVE", 8, "ascii");
+      return Buffer.concat([riff, ...chunks]);
+    };
+    const samples = (values: number[]) => {
+      const body = Buffer.alloc(values.length * 2);
+      values.forEach((value, i) => body.writeInt16LE(value, i * 2));
+      return body;
+    };
+    const silence = samples(new Array(1600).fill(0));
+    const quiet = samples([...new Array(1599).fill(0), -1]);
+
+    expect(isDigitallySilentWav(wav([fmt(1, 16), chunk("data", silence)]))).toBe(true);
+    expect(isDigitallySilentWav(wav([fmt(1, 16), chunk("data", quiet)]))).toBe(false);
+    // ffmpeg writes a LIST chunk before the samples; a recorder stopped by a signal may leave a placeholder size.
+    expect(isDigitallySilentWav(wav([fmt(1, 16), chunk("LIST", Buffer.from("INFOISFT")), chunk("data", silence, 0xffffffff)]))).toBe(true);
+    expect(isDigitallySilentWav(wav([fmt(0xfffe, 16), chunk("data", silence)]))).toBe(true);
+    // Only 16-bit PCM is judged; anything else is passed on to transcription.
+    expect(isDigitallySilentWav(wav([fmt(3, 32), chunk("data", silence)]))).toBe(false);
+    expect(isDigitallySilentWav(Buffer.from("not a wav file at all"))).toBe(false);
   });
 });
