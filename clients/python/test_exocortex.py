@@ -271,6 +271,23 @@ class Reconnect(Base):
         self.assertEqual(caught.exception.code, "lost")
         self.assertEqual(conv.ended, "lost")
 
+    def test_drop_while_reattaching_still_reconnects(self):
+        c = self.client()
+        convs = [c.conversation("temporary") for _ in range(4)]
+        armed = []
+
+        def listener(event):
+            # The first re-attach answer after the first drop: drop again while the others are in flight.
+            if event["type"] == "app_conversation_attached" and armed == [1]:
+                armed.append(2)
+                threading.Thread(target=admin, args=(self.fake, {"type": "fake_drop"})).start()
+
+        c.on_event(listener)
+        armed.append(1)
+        admin(self.fake, {"type": "fake_drop"})
+        self.assertEqual(convs[0].send("count", timeout=6).text, "turns: 1")
+        self.assertEqual(armed, [1, 2])
+
     def test_route_and_billing_fields(self):
         c = self.client()
         conv = c.conversation("temporary", route={"credits": "never", "whenLimited": "error"})

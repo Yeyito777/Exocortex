@@ -133,6 +133,28 @@ describe("app tool calls", () => {
     expect(appToolBroker.pendingCount("conv-a")).toBe(0);
   });
 
+  test("a daemon going away tells the owner its pending calls are moot; the turn's abort settles them", async () => {
+    const turn = new AbortController();
+    const result = appToolBroker.call("conv-a", "call-9", "lookup", {}, turn.signal);
+    expect(appToolBroker.cancelAllForShutdown()).toBe(1);
+    expect(sent.at(-1)?.event).toEqual({ type: "app_tool_cancel", convId: "conv-a", callId: "call-9", reason: "aborted" });
+    expect(appToolBroker.pendingCount("conv-a")).toBe(1);
+    turn.abort();
+    expect((await result).isError).toBe(true);
+  });
+
+  test("the owner wait can follow the owner's session (its reconnect grace)", async () => {
+    owner = null;
+    appToolBroker.configure({ owner: () => owner, send: (to, event) => sent.push({ owner: to.id, event }), ownerWaitMs: convId => convId === "conv-grace" ? 5_000 : 30 });
+    const quick = appToolBroker.call("conv-a", "call-10", "lookup", {});
+    const patient = appToolBroker.call("conv-grace", "call-11", "lookup", {});
+    expect((await quick).output).toMatch(/not connected/);
+    owner = { id: "back" };
+    expect(appToolBroker.ownerAttached("conv-grace")).toBe(1);
+    expect(appToolBroker.resolve("conv-grace", "call-11", "answered", false)).toBe(true);
+    expect((await patient).output).toBe("answered");
+  });
+
   test("with no owner it waits for one to attach, then sends the call to it", async () => {
     owner = null;
     const result = appToolBroker.call("conv-a", "call-5", "lookup", {});

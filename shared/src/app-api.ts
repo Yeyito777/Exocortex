@@ -15,7 +15,8 @@ export const APP_TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
 /**
  * - `saved`: in the sidebar under `apps/<app>/`, kept until deleted.
  * - `temporary`: on disk but hidden; deleted `idleTtlMs` after its last activity.
- * - `ephemeral`: memory only; ends with its owner's connection.
+ * - `ephemeral`: memory only; ends with its owner's session (end_app_session, or
+ *   no reconnect within its grace). A graceful restart hands it to the next daemon.
  */
 export type AppLifetime = "saved" | "temporary" | "ephemeral";
 export const APP_LIFETIMES: readonly AppLifetime[] = ["saved", "temporary", "ephemeral"];

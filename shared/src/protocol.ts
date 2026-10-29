@@ -1445,7 +1445,7 @@ export interface AppRunCommand {
   images?: ImageAttachment[];
   /** The prompt's time in ms (the daemon's clock when absent); the turn_result's turnId is it as a string. */
   startedAt?: number;
-  /** Keep an ephemeral conversation after the turn (it still ends with the connection). */
+  /** Keep an ephemeral conversation after the turn (it still ends with the session). */
   keep?: boolean;
 }
 

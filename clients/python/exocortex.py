@@ -536,7 +536,9 @@ class Client:
             with self._lock:
                 self._requests[req_id] = (match, future)
             try:
-                self._write({**command, "reqId": req_id})
+                # Without retry (the reconnect's own re-attaches, end_app_session) it must not wait
+                # for a reconnect: the reconnect may be what is waiting on it.
+                self._write({**command, "reqId": req_id}, wait=retry)
                 return future.result(self._request_timeout if timeout is None else timeout)
             except _FutureTimeout:  # the builtin TimeoutError from 3.11 on
                 raise ExocortexError("timeout", f"No answer to {command['type']} within {timeout or self._request_timeout} s") from None
@@ -848,68 +850,82 @@ class Client:
 
     def _reconnect_loop(self) -> None:
         try:
-            deadline = time.monotonic() + self._reconnect_timeout
-            delay = 0.1
-            while not self._closed:
-                try:
-                    self._handshake()
-                    break
-                except ExocortexError as error:
-                    if error.code == "incompatible":
-                        self._closed = True
-                        return self._fail_all(error)
-                    if time.monotonic() + delay > deadline:
-                        self._closed = True
-                        return self._fail_all(ExocortexError(
-                            "disconnected", f"Could not reconnect to the Exocortex daemon within {self._reconnect_timeout} s"))
-                    time.sleep(delay * (0.75 + random.random() / 2))
-                    delay = min(delay * 2, 2.0)
-            if self._closed:
-                return
-            generation = self._generation
-            # A daemon with sessions never runs a prompt twice: what was in flight is sent again.
-            resend = bool(self.welcome.get("session"))
-            with self._lock:
-                conversations = list(self._conversations.values())
-            attached: Dict[str, Dict[str, Any]] = {}
-            for conv in conversations:
-                try:
-                    attached[conv.id] = self._attach_existing(conv, retry=False)
-                except ExocortexError as error:
-                    if error.code == "disconnected":
-                        return  # the next close retries
-                    if "not found" in str(error):
-                        self._lost(conv.id, rerun=resend)
-                    else:
-                        self._end_conversation(conv.id, str(error))
-            with self._lock:
-                turns = [t for t in self._turns.values() if t.generation < generation]
-            if resend:
-                # The daemon answers a prompt it already has from its turn, and carries on with
-                # a run whose conversation it already has.
-                for t in turns:
-                    self._send_turn_now(t)
-                return
-            # An older daemon: what never went out goes now; what did is settled from the attach answers.
-            for t in turns:
-                if t.generation == -1:
-                    self._send_turn_now(t)
-                    continue
-                event = attached.get(t.conv_id or "")
-                if event is None:
-                    self._settle(t, ExocortexError("lost", "The connection dropped before the daemon took this run"))
-                    continue
-                if (event.get("conversation") or {}).get("streaming"):
-                    continue  # its result comes as the owner's copy
-                last = event.get("lastTurnResult")
-                if last and last.get("turnId") == t.turn_id:
-                    self._settle(t, TurnResult.from_event(last))
-                else:
-                    self._settle(t, ExocortexError("result_lost", f"The turn on {t.conv_id} ended while the client was "
-                                                   "disconnected, and the daemon did not report its result"))
+            while self._redial():
+                generation = self._generation
+                self._reclaim(generation)
+                with self._lock:
+                    # Dropped again meanwhile: that close found this loop running, so it goes round again.
+                    if self._closed or (self._connected.is_set() and self._generation == generation):
+                        self._reconnecting = False
+                        return
         finally:
             with self._lock:
                 self._reconnecting = False
+
+    def _redial(self) -> bool:
+        """Handshake again with backoff; false when the client closed or gave up (failing everything)."""
+        deadline = time.monotonic() + self._reconnect_timeout
+        delay = 0.1
+        while not self._closed:
+            try:
+                self._handshake()
+                return True
+            except ExocortexError as error:
+                if error.code == "incompatible":
+                    self._closed = True
+                    self._fail_all(error)
+                    return False
+                if time.monotonic() + delay > deadline:
+                    self._closed = True
+                    self._fail_all(ExocortexError(
+                        "disconnected", f"Could not reconnect to the Exocortex daemon within {self._reconnect_timeout} s"))
+                    return False
+                time.sleep(delay * (0.75 + random.random() / 2))
+                delay = min(delay * 2, 2.0)
+        return False
+
+    def _reclaim(self, generation: int) -> None:
+        """After a reconnect: take the conversations back, then send again what was in flight."""
+        # A daemon with sessions never runs a prompt twice: what was in flight is sent again.
+        resend = bool(self.welcome.get("session"))
+        with self._lock:
+            conversations = list(self._conversations.values())
+        attached: Dict[str, Dict[str, Any]] = {}
+        for conv in conversations:
+            try:
+                attached[conv.id] = self._attach_existing(conv, retry=False)
+            except ExocortexError as error:
+                if error.code == "disconnected":
+                    return  # _reconnect_loop goes round again
+                if "not found" in str(error):
+                    self._lost(conv.id, rerun=resend)
+                else:
+                    self._end_conversation(conv.id, str(error))
+        with self._lock:
+            turns = [t for t in self._turns.values() if t.generation < generation]
+        if resend:
+            # The daemon answers a prompt it already has from its turn, and carries on with
+            # a run whose conversation it already has.
+            for t in turns:
+                self._send_turn_now(t)
+            return
+        # An older daemon: what never went out goes now; what did is settled from the attach answers.
+        for t in turns:
+            if t.generation == -1:
+                self._send_turn_now(t)
+                continue
+            event = attached.get(t.conv_id or "")
+            if event is None:
+                self._settle(t, ExocortexError("lost", "The connection dropped before the daemon took this run"))
+                continue
+            if (event.get("conversation") or {}).get("streaming"):
+                continue  # its result comes as the owner's copy
+            last = event.get("lastTurnResult")
+            if last and last.get("turnId") == t.turn_id:
+                self._settle(t, TurnResult.from_event(last))
+            else:
+                self._settle(t, ExocortexError("result_lost", f"The turn on {t.conv_id} ended while the client was "
+                                               "disconnected, and the daemon did not report its result"))
 
     def _lost(self, conv_id: str, rerun: bool = True) -> None:
         """The daemon no longer has a conversation of ours: a crash, or we were away longer than the

@@ -322,8 +322,9 @@ function sendToOwnerSession(convId: string, event: Event, except?: ConnectedClie
   const session = owners.get(convId);
   if (!session) return;
   const client = connectedClient(session);
-  if (client) {
-    if (client !== except) server?.sendTo(client, event);
+  // While a restart's turns settle the connections are going away: kept for the next daemon.
+  if (client && server) {
+    if (client !== except) server.sendTo(client, event);
     return;
   }
   if (session.anonymous) return;
@@ -752,7 +753,12 @@ interface HandoffFile {
 
 /** A handover older than this is from a restart that never came back: ignored. */
 const HANDOFF_MAX_AGE_MS = 15 * 60_000;
-let handoffSessions: HandoffSession[] | null = null;
+/**
+ * A graceful restart is under way: owners, sessions and turn results stay
+ * live while the turns settle (a turn ending meanwhile is kept for its
+ * session), until handOffAppConversations writes them.
+ */
+let handingOff = false;
 
 function handoffPath(): string {
   return join(ephemeralWorkspaceRoot(), "handoff.json");
@@ -760,15 +766,24 @@ function handoffPath(): string {
 
 /** After the turns settle at a graceful restart: write what the next daemon takes over. Returns the conversations handed over. */
 export function handOffAppConversations(): number {
-  if (!handoffSessions) return 0;
+  if (!handingOff) return 0;
+  handingOff = false;
+  flushAppRegistry();
   const conversations: HandoffFile["conversations"] = [];
   for (const record of listAppRecords()) {
     if (record.lifetime !== "ephemeral") continue;
     const conversation = convStore.getCached(record.convId);
     if (conversation) conversations.push({ record, conversation, account: getConversationAccount(record.convId) });
   }
-  const sessionsToHand = handoffSessions;
-  handoffSessions = null;
+  const sessionsToHand: HandoffSession[] = [...sessions.values()]
+    .filter(session => !session.anonymous)
+    .map(session => ({ id: session.id, app: session.app, graceMs: session.graceMs, owns: ownedBy(session), pending: session.pending }));
+  // This daemon is going away: what it handed over is the next one's.
+  stopTurnListener?.();
+  stopTurnListener = null;
+  owners.clear();
+  sessions.clear();
+  awaits.clear();
   if (conversations.length === 0 && sessionsToHand.length === 0) return 0;
   const path = handoffPath();
   const tmp = `${path}.${process.pid}.tmp`;
@@ -879,6 +894,8 @@ export async function recoverAppConversations(): Promise<void> {
  */
 export async function shutdownAppConversations(): Promise<void> {
   shuttingDown = true;
+  // Their turns are about to be interrupted: a replayed turn asks again if it still needs the answer.
+  appToolBroker.cancelAllForShutdown();
   if (sweepTimer) clearInterval(sweepTimer);
   sweepTimer = null;
   for (const session of sessions.values()) {
@@ -886,9 +903,7 @@ export async function shutdownAppConversations(): Promise<void> {
     session.graceTimer = null;
   }
   if (getDaemonShutdownMode() === "restart" && ephemeralConversationsSurviveRestart()) {
-    handoffSessions = [...sessions.values()]
-      .filter(session => !session.anonymous)
-      .map(session => ({ id: session.id, app: session.app, graceMs: session.graceMs, owns: ownedBy(session), pending: session.pending }));
+    handingOff = true;
     flushAppRegistry();
     return;
   }
@@ -912,7 +927,10 @@ export function configureAppApi(target: DaemonServer, options: {
 } = {}): () => void {
   server = target;
   shuttingDown = false;
-  handoffSessions = null;
+  handingOff = false;
+  owners.clear();
+  sessions.clear();
+  awaits.clear();
   graceOverrideMs = options.reconnectGraceMs ?? null;
   ready = options.holdUntilReady !== true;
   held.length = 0;
@@ -942,19 +960,21 @@ export function configureAppApi(target: DaemonServer, options: {
   }
   return () => {
     stopClose();
-    stopTurnListener?.();
-    stopTurnListener = null;
     if (sweepTimer) clearInterval(sweepTimer);
     sweepTimer = null;
     for (const session of sessions.values()) if (session.graceTimer) clearTimeout(session.graceTimer);
     setConversationToolResolver(null);
     appToolBroker.configure(null);
-    owners.clear();
-    sessions.clear();
-    awaits.clear();
     ready = true;
     held.length = 0;
     graceOverrideMs = null;
     server = null;
+    // Kept for handOffAppConversations while a graceful restart's turns settle.
+    if (handingOff) return;
+    stopTurnListener?.();
+    stopTurnListener = null;
+    owners.clear();
+    sessions.clear();
+    awaits.clear();
   };
 }

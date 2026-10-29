@@ -330,6 +330,16 @@ class AppToolBroker {
     }
   }
 
+  /** The daemon is going away: tell the owners no answer to their pending calls is wanted (the turns' abort settles them). */
+  cancelAllForShutdown(): number {
+    let sent = 0;
+    for (const call of this.pending.values()) {
+      if (this.deps?.owner(call.convId)) sent++;
+      this.cancel(call, "aborted");
+    }
+    return sent;
+  }
+
   /** The conversation ended: every call it still waits on fails. */
   conversationEnded(convId: string): void {
     for (const call of [...this.pending.values()]) {

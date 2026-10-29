@@ -289,6 +289,8 @@ describe("graceful restarts", () => {
     beginDaemonShutdown("restart");
     await handle.stop();
     expect(registry.isAppConversation(ephemeral)).toBe(true);
+    // A turn that ends while the restart's turns settle is kept for the session.
+    endTurn(temporary, 8888);
     expect(appApi.handOffAppConversations()).toBe(1);
     const file = join(workspaces.ephemeralWorkspaceRoot(), "handoff.json");
     expect(statSync(file).mode & 0o777).toBe(0o600);
@@ -311,6 +313,7 @@ describe("graceful restarts", () => {
     expect(existsSync(workspace)).toBe(true);
     expect(accountPool.getConversationAccount(ephemeral)).toEqual({ account: "max2", lastUsedAt: 1234 });
     expect(appApi.appConversationOwner(temporary)).toBe(back as never);
+    expect(back.events).toContainEqual(expect.objectContaining({ type: "turn_result", convId: temporary, turnId: "8888" }));
     handle.startQueueDelivery();
     await until(() => back.events.some(event => event.type === "app_conversation_attached"));
     expect(back.events.at(-1)).toMatchObject({ type: "app_conversation_attached", reqId: "a", convId: ephemeral });
