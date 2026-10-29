@@ -23,6 +23,7 @@ import { BtwMutationReplay, isBtwMutation } from "./btw/replay";
 import { HistoryCache } from "./history-cache";
 import { btwRequestId, queueRequestId, turnRequestId, unqueueRequestId } from "./request-ids";
 import { SidebarCache } from "./sidebar-cache";
+import { ViewCache, ViewCacheStore, viewCacheDir } from "./viewcache";
 import { transcribeLocally } from "./local-transcription";
 import { ClientExecutor, clientInstallId } from "@exocortex/shared/command-exec";
 import {
@@ -49,6 +50,7 @@ const CLIENT_CAPABILITIES: ClientCapability[] = [
   "sidebar-incremental",
   "client-exec-alive",
   "history-folded-elision",
+  "history-revisions",
 ];
 
 export type EventHandler = (event: Event) => void;
@@ -130,6 +132,8 @@ export class DaemonClient {
   private decoder = new StringDecoder("utf8");
   private readonly historyCache = new HistoryCache();
   private readonly sidebarCache = new SidebarCache();
+  /** Opened conversations kept on disk, per SSH alias (see viewcache.ts). */
+  private readonly viewCaches = new Map<string, ViewCache>();
   private handler: EventHandler;
   private _connected = false;
   private socketPath: string;
@@ -209,6 +213,29 @@ export class DaemonClient {
 
   get connected(): boolean { return this._connected; }
   get remoteAlias(): string | null { return this.sshAlias; }
+
+  /** The current SSH route's cache of opened conversations; none for a local daemon. */
+  get viewCache(): ViewCache | null {
+    return this.sshAlias ? this.viewCacheFor(this.sshAlias) : null;
+  }
+
+  private viewCacheFor(alias: string): ViewCache {
+    let cache = this.viewCaches.get(alias);
+    if (!cache) {
+      cache = new ViewCache(new ViewCacheStore(viewCacheDir(alias)));
+      cache.setContext(this.viewCacheContext);
+      this.viewCaches.set(alias, cache);
+    }
+    return cache;
+  }
+
+  private viewCacheContext: Parameters<ViewCache["setContext"]>[0] = null;
+
+  /** What the view caches need to know about the screen (see ViewCacheContext). */
+  setViewCacheContext(context: Parameters<ViewCache["setContext"]>[0]): void {
+    this.viewCacheContext = context;
+    for (const cache of this.viewCaches.values()) cache.setContext(context);
+  }
 
   async connect(): Promise<ConnectResult> {
     this.historyCache.resetPending();
@@ -328,6 +355,8 @@ export class DaemonClient {
   /** Capabilities plus any first-flight requests, ahead of the probe's bootstrap ping. */
   private probePreamble(alias: string): Command[] {
     const requests = this.sshProbeRequests?.(alias) ?? [];
+    // Its open is kept like any other once answered.
+    for (const request of requests) this.viewCacheFor(alias).sent(request);
     if (wireTrace) for (const request of requests) this.traceWire("up", request, JSON.stringify(request).length + 1, alias);
     return [this.probeCapabilities(alias), ...requests];
   }
@@ -467,6 +496,7 @@ export class DaemonClient {
         this._connected = true;
         this.handler(this.connectedRouteStatus(false, true));
         this.writeCommand({ type: "client_capabilities", capabilities: CLIENT_CAPABILITIES, clientHost: this.clientHostInfo() });
+        this.viewCacheFor(alias).connected(command => this.writeCommand(command));
         const replayedCommands = this.flushPendingCommands();
         resolve({
           replayedCommands,
@@ -499,7 +529,11 @@ export class DaemonClient {
       this.imageCallbacks.clear();
       this._connected = false;
       this.socket = null;
-      if (this.activeSshConnection?.transport === socket) this.activeSshConnection = null;
+      if (this.activeSshConnection?.transport === socket) {
+        this.activeSshConnection = null;
+        // Not the local socket a route switch closes: its probe's open is still on the way.
+        if (this.sshAlias) this.viewCaches.get(this.sshAlias)?.disconnected();
+      }
       this.buffer = "";
       this.decoder = new StringDecoder("utf8");
       this.announcedShutdownMode = null;
@@ -1414,6 +1448,13 @@ export class DaemonClient {
       const pending = this.unresolvedTranscriptionCommands.get(command.reqId);
       if (pending) pending.attempts++;
     }
+    if (this.sshAlias && command.type === "load_conversation") {
+      const cache = this.viewCacheFor(this.sshAlias);
+      // A TUI that just started has no pages in memory: the kept ones still make it a delta.
+      const view = cache.view(command.convId, command.viewport?.folded === true);
+      if (view) this.historyCache.seed(command, view.loaded, view.backfill);
+      cache.sent(command);
+    }
     const outgoing = this.sshAlias && (command.type === "load_conversation" || command.type === "load_conversation_history")
       ? this.historyCache.prepare(command)
       : command;
@@ -1551,6 +1592,8 @@ export class DaemonClient {
           if (received?.type === "conversations_list") this.writeCommand({ type: "list_conversations" });
           continue;
         }
+        // A peek's pages and revision answers are the view cache's own.
+        if (this.sshAlias && this.viewCacheFor(this.sshAlias).receive(event)) continue;
         if (event.type === "daemon_shutdown") {
           // This is transport metadata rather than a user-facing event. Retain it
           // until close so the reconnecting TUI can distinguish a planned daemon

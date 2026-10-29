@@ -5,7 +5,7 @@
  * This is the only file that knows how to render the top bar.
  */
 
-import type { RenderState } from "./state";
+import { isStaleCopyMarked, type RenderState } from "./state";
 import { convDisplayName, formatModelDisplayName } from "./messages";
 import { termWidth, truncateToWidth } from "./textwidth";
 import { theme } from "./theme";
@@ -46,6 +46,8 @@ export function renderTopbar(state: RenderState, width?: number): string {
   const titleStyled = `${theme.bold} Exocortex${offline}${theme.boldOff}`;
   const titlePlain = ` Exocortex${offline}`;
   let label = convLabel(state);
+  // A cached copy shown until the daemon confirms or updates it (cachedopen.ts).
+  const updating = label && isStaleCopyMarked(state) ? " ↻ updating" : "";
 
   let rightLabel = "";
   if (!state.sshConnecting && (state.hasChosenProvider || state.convId)) {
@@ -56,15 +58,18 @@ export function renderTopbar(state: RenderState, width?: number): string {
   }
 
   const maxLeftWidth = Math.max(0, w - (rightLabel ? termWidth(rightLabel) + 1 : 0));
-  const maxLabelWidth = Math.max(0, maxLeftWidth - termWidth(titlePlain) - (label ? termWidth(" — ") : 0));
+  const maxLabelWidth = Math.max(0, maxLeftWidth - termWidth(titlePlain) - (label ? termWidth(" — ") + termWidth(updating) : 0));
   label = truncateToWidth(label, maxLabelWidth);
   const separator = label ? " — " : "";
+  const marker = label ? updating : "";
 
-  const leftPlain = `${titlePlain}${separator}${label}`;
+  const leftPlain = `${titlePlain}${separator}${label}${marker}`;
   const rightSpace = Math.max(0, w - termWidth(leftPlain));
   rightLabel = truncateToWidth(rightLabel, Math.max(0, rightSpace - 1));
   const rightWidth = rightLabel ? termWidth(rightLabel) + 1 : 0;
   const padding = Math.max(0, w - termWidth(leftPlain) - rightWidth);
 
-  return `${theme.topbarBg}${titleStyled}${separator}${label}${" ".repeat(padding)}${rightLabel}${rightLabel ? " " : ""}${theme.reset}`;
+  // SGR 22 ends dim (and bold) without resetting the bar's background.
+  const markerStyled = marker ? `${theme.dim}${marker}\x1b[22m` : "";
+  return `${theme.topbarBg}${titleStyled}${separator}${label}${markerStyled}${" ".repeat(padding)}${rightLabel}${rightLabel ? " " : ""}${theme.reset}`;
 }
