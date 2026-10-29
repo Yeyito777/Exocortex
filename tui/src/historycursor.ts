@@ -136,10 +136,16 @@ function moveHistoryLine(surface: HistorySurface, direction: -1 | 1): void {
 }
 
 /**
- * Shift+K / Shift+J — the cursor moves Ctrl+U/Ctrl+D's half page, keeping
- * its column like j/k, but the view stays put: it stops at the visible edge.
+ * Shift+K / Shift+J — the cursor moves half of Ctrl+U/Ctrl+D's half page (a
+ * quarter page), keeping its column like j/k, but the view stays put: it
+ * stops at the visible edge.
  * `dir`: positive = up, negative = down.
  */
+/** Shift+J/K's rows: half of Ctrl+U/Ctrl+D's floor(height / 2), at least 1. */
+export function shiftJkRows(viewportHeight: number): number {
+  return Math.max(1, Math.floor(Math.floor(viewportHeight / 2) / 2));
+}
+
 function moveHistoryHalfPageInView(surface: HistorySurface, dir: number): void {
   const desiredCol = surface.curswant ?? surface.cursor.col;
   const { cursorRow } = moveCursorInViewport({
@@ -147,7 +153,7 @@ function moveHistoryHalfPageInView(surface: HistorySurface, dir: number): void {
     viewportHeight: surface.viewportHeight,
     viewStart: historySurfaceViewStart(surface),
     cursorRow: surface.cursor.row,
-  }, dir, Math.floor(surface.viewportHeight / 2));
+  }, dir, shiftJkRows(surface.viewportHeight));
   surface.setCursor({ row: cursorRow, col: clampCol(desiredCol, surface.lines, cursorRow) });
   surface.setCurswant(desiredCol);
 }
@@ -198,8 +204,8 @@ export function applyHistoryAction(action: Action, state: RenderState): boolean 
   const navigationRow = messageNavigationOriginRow(action, state, surface, cur.row);
 
   switch (action) {
-    case "history_left":    surface.setCursor(charLeft(cur, lines)); resetHistoryCurswant(surface); break;
-    case "history_right":   surface.setCursor(charRight(cur, lines)); resetHistoryCurswant(surface); break;
+    case "history_left":    surface.setCursor(charLeft(cur, lines, wrapCont)); resetHistoryCurswant(surface); break;
+    case "history_right":   surface.setCursor(charRight(cur, lines, wrapCont)); resetHistoryCurswant(surface); break;
     case "history_up":      moveHistoryLine(surface, -1); break;
     case "history_down":    moveHistoryLine(surface, 1); break;
     case "history_half_up":   moveHistoryHalfPageInView(surface, 1); return true;

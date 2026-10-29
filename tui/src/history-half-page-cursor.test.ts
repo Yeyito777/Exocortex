@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { buildMessageLines } from "./conversation";
 import { handleFocusedKey } from "./focus";
-import { stripAnsi } from "./historycursor";
+import { shiftJkRows, stripAnsi } from "./historycursor";
 import { historySurfaceViewStart, activeHistorySurface } from "./historysurface";
 import { configureInlineImages, inlineImagesInternalsForTest, setInlineImageCellSize, setInlineImageMode } from "./inlineimages";
 import type { Block, ImageRef, Message } from "./messages";
@@ -9,8 +9,9 @@ import { render } from "./render";
 import { createInitialState, type RenderState } from "./state";
 import type { BtwPanelState } from "./btw/state";
 
-// Shift+K / Shift+J in the history: the cursor moves the rows Ctrl+U / Ctrl+D
-// would, but the view does not scroll; the cursor stops at the visible edge.
+// Shift+K / Shift+J in the history: the cursor moves half the rows Ctrl+U /
+// Ctrl+D would (a quarter page), but the view does not scroll; the cursor stops
+// at the visible edge.
 
 const K = { type: "char" as const, char: "K" };
 const J = { type: "char" as const, char: "J" };
@@ -63,7 +64,7 @@ function ctrlMove(state: RenderState, key: "ctrl-u" | "ctrl-d"): number {
 }
 
 describe("Shift+K / Shift+J in chat history", () => {
-  test("move the cursor exactly Ctrl+U / Ctrl+D's rows without scrolling", () => {
+  test("move the cursor half of Ctrl+U / Ctrl+D's rows without scrolling", () => {
     const state = historyState(lines(200));
     state.scrollOffset = 60;
     const start = viewStart(state) + 10;
@@ -72,7 +73,7 @@ describe("Shift+K / Shift+J in chat history", () => {
     const up = ctrlMove(state, "ctrl-u");
     expect(up).toBe(-10);
     expect(handleFocusedKey(K, state)).toEqual({ type: "handled" });
-    expect(state.historyCursor.row - start).toBe(up);
+    expect(state.historyCursor.row - start).toBe(up / 2);
     expect(state.scrollOffset).toBe(60);
     expect(state.sidebar.open).toBe(false);
 
@@ -82,18 +83,18 @@ describe("Shift+K / Shift+J in chat history", () => {
     expect(down).toBe(10);
     state.historyCursor = { row: start - 5, col: 0 };
     handleFocusedKey(J, state);
-    expect(state.historyCursor.row).toBe(start - 5 + down);
+    expect(state.historyCursor.row).toBe(start - 5 + down / 2);
     expect(state.scrollOffset).toBe(60);
   });
 
-  test("an odd viewport moves floor(height / 2) rows, like Ctrl+U", () => {
+  test("an odd viewport moves half of Ctrl+U's floor(height / 2) rows, rounded down", () => {
     const state = historyState(lines(200), 9);
     state.scrollOffset = 40;
     const start = viewStart(state) + 6;
     state.historyCursor = { row: start, col: 0 };
     expect(ctrlMove(state, "ctrl-u")).toBe(-4);
     handleFocusedKey(K, state);
-    expect(state.historyCursor.row).toBe(start - 4);
+    expect(state.historyCursor.row).toBe(start - 2);
     expect(state.scrollOffset).toBe(40);
   });
 
@@ -162,7 +163,7 @@ describe("Shift+K / Shift+J in chat history", () => {
     const up = ctrlMove(state, "ctrl-u");
 
     handleFocusedKey(K, state);
-    expect(state.historyCursor.row - start).toBe(up);
+    expect(state.historyCursor.row - start).toBe(up / 2);
     handleFocusedKey(J, state);
     expect(state.historyCursor).toEqual({ row: start, col: 30 });
     expect(state.scrollOffset).toBe(30);
@@ -191,9 +192,9 @@ describe("Shift+K / Shift+J in chat history", () => {
       state.historyCursor = { row: start, col: 0 };
 
       handleFocusedKey(K, state);
-      expect(state.historyCursor.row).toBe(start - 10);
+      expect(state.historyCursor.row).toBe(start - 5);
       handleFocusedKey(K, state);
-      expect(state.historyCursor.row).toBe(top);
+      expect(state.historyCursor.row).toBe(top + 5);
       handleFocusedKey(J, state);
       expect(state.historyCursor.row).toBe(top + 10);
       expect(viewStart(state)).toBe(top);
@@ -230,7 +231,7 @@ describe("Shift+K / Shift+J in chat history", () => {
       state.historyCursor = { row: start, col: 0 };
 
       handleFocusedKey(K, state);
-      expect(state.historyCursor.row).toBe(start - 10);
+      expect(state.historyCursor.row).toBe(start - 5);
       expect(imageRows).toContain(state.historyCursor.row);
       handleFocusedKey(J, state);
       expect(state.historyCursor.row).toBe(start);
@@ -252,7 +253,7 @@ describe("Shift+K / Shift+J in chat history", () => {
       state.historyCursor = { row: top + height - 1, col: 0 };
       handleFocusedKey(K, state);
       render(state);
-      expect(state.historyCursor.row).toBe(top + height - 1 - Math.floor(height / 2));
+      expect(state.historyCursor.row).toBe(top + height - 1 - shiftJkRows(height));
       handleFocusedKey(J, state);
       handleFocusedKey(J, state);
       render(state);
@@ -273,7 +274,7 @@ describe("Shift+K / Shift+J in chat history", () => {
     handleFocusedKey(K, state);
     expect(state.vim.mode).toBe("visual-line");
     expect(state.historyVisualAnchor.row).toBe(start);
-    expect(state.historyCursor.row).toBe(start - 10);
+    expect(state.historyCursor.row).toBe(start - 5);
     expect(state.scrollOffset).toBe(60);
   });
 
@@ -307,12 +308,15 @@ describe("Shift+K / Shift+J in chat history", () => {
     const top = viewStart(state);
     state.btw!.historyCursor = { row: top + 6, col: 0 };
 
+    // 8-row viewport: Ctrl+U moves 4, Shift+K half of that.
+    handleFocusedKey(K, state);
+    expect(state.btw!.historyCursor.row).toBe(top + 4);
     handleFocusedKey(K, state);
     expect(state.btw!.historyCursor.row).toBe(top + 2);
     handleFocusedKey(K, state);
     expect(state.btw!.historyCursor.row).toBe(top);
     handleFocusedKey(J, state);
-    expect(state.btw!.historyCursor.row).toBe(top + 4);
+    expect(state.btw!.historyCursor.row).toBe(top + 2);
     expect(state.btw!.scrollOffset).toBe(10);
   });
 
