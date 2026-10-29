@@ -118,24 +118,21 @@ function pipeCommand(text: string): string {
   return `${APC_START}!${text}${ST}`;
 }
 
-let stPlayChecked: { path: string | null; reason: string } | null = null;
+let stPlayChecked: string | null = null;
 
 /**
  * The st-play this host plays with: $EXOCORTEX_ST_PLAY or the one on PATH,
- * as long as it has --pipe (st after Oct 29 2026).
+ * as long as it has --pipe (st after Oct 29 2026). Only a usable one is
+ * remembered, so installing st-play needs no daemon restart.
  */
 export function stPlayPath(): { path: string | null; reason: string } {
-  if (stPlayChecked) return stPlayChecked;
   const path = process.env.EXOCORTEX_ST_PLAY || Bun.which("st-play") || Bun.which("st-play", { PATH: "/usr/local/bin:/opt/homebrew/bin" });
-  if (!path) {
-    stPlayChecked = { path: null, reason: "video playback needs st-play (from st) on the daemon's host" };
-    return stPlayChecked;
-  }
+  if (!path) return { path: null, reason: "video playback needs st-play (from st) on the daemon's host" };
+  if (stPlayChecked === path) return { path, reason: "" };
   const help = Bun.spawnSync([path, "--help"], { stdout: "pipe", stderr: "pipe", timeout: 5_000 });
-  stPlayChecked = help.stdout.toString().includes("--pipe")
-    ? { path, reason: "" }
-    : { path: null, reason: `${path} is too old to play in Exocortex (no --pipe): update st` };
-  return stPlayChecked;
+  if (!help.stdout.toString().includes("--pipe")) return { path: null, reason: `${path} is too old to play in Exocortex (no --pipe): update st` };
+  stPlayChecked = path;
+  return { path, reason: "" };
 }
 
 export const videoPlaybackInternalsForTest = {

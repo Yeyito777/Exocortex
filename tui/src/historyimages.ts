@@ -323,7 +323,8 @@ export function collectHistoryImages(options: CollectHistoryImagesOptions): Coll
         ...(wholeHeight ? {} : { sourceY, sourceHeight: Math.max(1, sourceBottom - sourceY) }),
         ...(wholeWidth ? {} : { sourceX, sourceWidth: Math.max(1, sourceRight - sourceX) }),
         ...("kitty" in layout ? { z: MATH_IMAGE_Z } : {}),
-        ...(cursorImage === layout ? { selected: true } : {}),
+        // A playing video keeps its colours under the cursor.
+        ...(cursorImage === layout && !image.external ? { selected: true } : {}),
       });
     });
   }

@@ -18,7 +18,9 @@ Common commands include `list_conversations`, `load_conversation`,
 `load_conversation_history`, `new_conversation`, `send_message`, `create_folder`, and
 `move_sidebar_items`. Read their exact fields in the spec before sending.
 `get_image` fetches a bounded preview of a history image (see
-[inline images](inline-images.md)).
+[inline images](inline-images.md)); `video_play`, `video_input`,
+`video_control` and `video_stop` play an attached video in the client's
+terminal (see [video attachments](video-attachments.md)).
 Managed task inspection/stopping uses `list_tasks` / `stop_task`; task IDs are
 not raw PIDs. Use `abort` for subagent conversations and Chrono cancellation
 for schedules: `chrono` lists, creates, or cancels a conversation's schedules.

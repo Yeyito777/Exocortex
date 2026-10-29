@@ -155,7 +155,7 @@ describe("video thumbnails in history", () => {
     expect(handleVideoTerminalReply(`\x1b_Gi=42;OK\x1b\\`)).toBe(false);
     handleVideoEvent({ type: "video_status", playbackId: play.playbackId, kbps: 1200, width: 384, height: 192, copy: false, rateKbps: 3000, rttMs: 100 });
     const caption = stripAnsi(capture(state));
-    expect(caption).toMatch(/▶ 0:03 \/ 0:12\s+━+─+\s+space ⏯  < > seek  x stop  enter big  1\.2 Mb\/s 384×192/);
+    expect(caption).toMatch(/▶ 0:03 \/ 0:12\s+━+─+\s+space pause  < > seek  x stop  enter big  1\.2 Mb\/s 384×192/);
 
     // Keys on the thumbnail: seek, pause.
     handleVideoHistoryKey({ type: "char", char: ">" }, state, { width: 8, height: 16 });
@@ -204,7 +204,8 @@ describe("video thumbnails in history", () => {
     expect(videoInViewer!.controls).toContain(",z=3,");
     expect(videoInViewer).toMatchObject({ row: posterInViewer!.row, col: posterInViewer!.col });
     expect(stripAnsi(opening)).toContain("clip.mp4 · 0:12 · 400×200 · 3.2 MB");
-    expect(stripAnsi(open)).toMatch(/… 0:04 \/ 0:12\s+━*─+\s+buffering/);
+    // Narrow: the buffering mark (…) and the short key list.
+    expect(stripAnsi(open)).toMatch(/… 0:04 \/ 0:12\s+━*─+\s+space pause  ←\/→  q close/);
 
     // Viewer keys.
     expect(handleVideoModalKey({ type: "right" }, state, () => {})).toBe(true);
@@ -270,6 +271,14 @@ describe("video thumbnails in history", () => {
   });
 });
 
+function activeVideoStub(source: Parameters<typeof videoCaptionText>[0]) {
+  return {
+    playbackId: "p", source, videoId: video.id, kittyId: 1, place: "viewer" as const, target: null, convId: null,
+    size: { width: 1, height: 1 }, image: null, state: "playing" as const, posMs: 3000, posAt: Date.now(), muted: false,
+    sent: { kbps: 1200, width: 960, height: 540, copy: false }, error: null,
+  };
+}
+
 describe("player pieces", () => {
   test("the open's display size and the status replies", () => {
     expect(openSizeIn(`junk${openApc(77)}`, 77)).toEqual({ width: 400, height: 200 });
@@ -278,11 +287,33 @@ describe("player pieces", () => {
     expect(parseVideoStatusReply("OK seq=3 state=buffering pos=-1")).toEqual({ state: "buffering" });
   });
 
+  test("an inline video that ended gives back its sender after a while", async () => {
+    setInlineImageMode("kitty");
+    setInlineVideoSupport("yes");
+    videoPlayerInternalsForTest.setEndedReleaseMs(20);
+    const state = videoState();
+    await showVideo(state);
+    handleVideoHistoryKey({ type: "char", char: " " }, state, { width: 8, height: 16 });
+    const play = lastOf("video_play")!;
+    handleVideoTerminalReply(`\x1b_Gi=${play.kittyId};OK seq=9 state=ended pos=8000000\x1b\\`);
+    expect(stripAnsi(capture(state))).toContain("↻ 0:08 / 0:12  ━");
+    for (let i = 0; i < 100 && activeVideo(); i++) await Bun.sleep(5);
+    expect(activeVideo()).toBeNull();
+    expect(lastOf("video_stop")?.playbackId).toBe(play.playbackId);
+  });
+
   test("captions fit their width, dropping details first", () => {
     const source = { imageId: poster.id, width: 400, height: 200, mediaType: "image/jpeg" as const, sizeBytes: 5000, video };
     expect(videoCaptionText(source, null, true, 60, termWidth)).toBe("▶ 0:12  space plays here · enter plays big");
     expect(videoCaptionText(source, null, true, 10, termWidth)).toBe("▶ 0:12");
     expect(videoCaptionText(source, null, false, 80, termWidth, "viewer")).toBe("▶ 0:12 video · o opens it in a player  this terminal can't play it inline");
+    const playing = { ...activeVideoStub(source), state: "playing" as const };
+    const wide = videoCaptionText(source, playing, true, 120, termWidth, "viewer");
+    expect(wide).toContain("space pause  ←/→ 5s  0-9 jump  m mute  o open  q close");
+    // Narrow: the short key list, never no keys at all.
+    const narrow = videoCaptionText(source, playing, true, 50, termWidth, "viewer");
+    expect(narrow).toMatch(/^▶ 0:0\d \/ 0:12  ━*─+  space pause  ←\/→  q close$/);
+    expect(termWidth(narrow)).toBeLessThanOrEqual(50);
   });
 
   test("an external image is placed, never sent, and its placements report nothing", () => {

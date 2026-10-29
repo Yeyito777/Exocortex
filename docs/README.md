@@ -26,6 +26,7 @@ selects another daemon without moving client-side UI operations to that host.
 - [Delegation models](delegation-models.md)
 - [Local links](local-links.md)
 - [Inline images](inline-images.md)
+- [Video attachments](video-attachments.md): attach videos, play them inline in st
 - [Macros](macros.md)
 - [Update status](update-status.md)
 - [Test daemons and the main daemon](dev-daemons.md): start/stop worktree

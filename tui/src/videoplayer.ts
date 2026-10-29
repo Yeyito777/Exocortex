@@ -67,6 +67,28 @@ let active: ActiveVideo | null = null;
 let finished: ActiveVideo | null = null;
 let nextKittyId = FIRST_KITTY_ID;
 let playbackCounter = 0;
+/** Redraws the status line while a video plays, between the terminal's reports. */
+let tick: ReturnType<typeof setInterval> | null = null;
+let tickSignature = "";
+const TICK_MS = 250;
+/** An inline video that played to the end gives back its sender and the terminal's video after this. */
+let endedReleaseMs = 60_000;
+let endedTimer: ReturnType<typeof setTimeout> | null = null;
+
+function syncEndedTimer(): void {
+  const ended = active !== null && active.place === "inline" && active.state === "ended";
+  if (ended && !endedTimer) {
+    const playbackId = active!.playbackId;
+    endedTimer = setTimeout(() => {
+      endedTimer = null;
+      if (active?.playbackId === playbackId && active.state === "ended") stopVideo();
+    }, endedReleaseMs);
+    endedTimer.unref?.();
+  } else if (!ended && endedTimer) {
+    clearTimeout(endedTimer);
+    endedTimer = null;
+  }
+}
 
 export function configureVideoPlayer(options: VideoPlayerHost): void {
   host = options;
@@ -117,6 +139,42 @@ export function videoPositionMs(video: ActiveVideo): number {
   const duration = video.source.video?.durationMs;
   const pos = video.state === "playing" ? video.posMs + (now() - video.posAt) : video.posMs;
   return duration !== undefined ? Math.min(duration, Math.max(0, pos)) : Math.max(0, pos);
+}
+
+/** The state to show: a video the clock has run past the end of has ended, whatever the last report said. */
+export function videoDisplayState(video: ActiveVideo): VideoState {
+  const duration = video.source.video?.durationMs;
+  if (video.state === "playing" && duration !== undefined && video.posMs + (now() - video.posAt) >= duration + 500) return "ended";
+  return video.state;
+}
+
+/** `m:ss` (or `h:mm:ss`): where playback is. */
+export function formatClock(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const pad = (value: number) => String(value).padStart(2, "0");
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor(total / 60) % 60;
+  return hours > 0 ? `${hours}:${pad(minutes)}:${pad(total % 60)}` : `${minutes}:${pad(total % 60)}`;
+}
+
+function syncTick(): void {
+  syncEndedTimer();
+  const playing = active !== null && active.state === "playing";
+  if (playing && !tick) {
+    tick = setInterval(() => {
+      if (!active) return syncTick();
+      const signature = videoStatusSignature(active);
+      if (signature !== tickSignature) {
+        tickSignature = signature;
+        host?.changed();
+      }
+      if (active.state !== "playing") syncTick();
+    }, TICK_MS);
+    tick.unref?.();
+  } else if (!playing && tick) {
+    clearInterval(tick);
+    tick = null;
+  }
 }
 
 export interface StartVideoOptions {
@@ -172,6 +230,7 @@ export function stopVideo(): void {
   active = null;
   host?.send({ type: "video_stop", playbackId: stopping.playbackId });
   host?.write(deleteImage(stopping.kittyId));
+  syncTick();
   host?.changed();
 }
 
@@ -180,6 +239,7 @@ export function resetVideoPlayer(): void {
   if (active) host?.write(deleteImage(active.kittyId));
   active = null;
   finished = null;
+  syncTick();
   host?.changed();
 }
 
@@ -191,7 +251,7 @@ function control(command: Omit<Extract<Command, { type: "video_control" }>, "typ
 export function toggleVideo(): void {
   if (!active) return;
   const pos = videoPositionMs(active);
-  if (active.state === "ended") {
+  if (videoDisplayState(active) === "ended") {
     active.posMs = 0;
     active.state = "buffering";
   } else {
@@ -264,6 +324,7 @@ export function handleVideoEvent(event: Event): boolean {
   host?.write(deleteImage(current.kittyId));
   active = null;
   if (event.reason === "error") finished = { ...current, state: "error", error: event.message ?? "playback failed", image: null };
+  syncTick();
   host?.changed();
   return true;
 }
@@ -285,19 +346,20 @@ export function handleVideoTerminalReply(sequence: string): boolean {
       active.posMs = status.posMs;
       active.posAt = now();
     }
+    syncTick();
     if (videoStatusSignature(active) !== before) host?.changed();
   }
   return true;
 }
 
 function videoStatusSignature(video: ActiveVideo): string {
-  return `${video.state}:${Math.floor(videoPositionMs(video) / 1000)}`;
+  return `${videoDisplayState(video)}:${Math.floor(videoPositionMs(video) / 1000)}`;
 }
 
 // ── Status lines ────────────────────────────────────────────────────
 
 function icon(video: ActiveVideo | null): string {
-  switch (video?.state) {
+  switch (video ? videoDisplayState(video) : undefined) {
     case "playing": return "▶";
     case "paused": return "⏸";
     case "ended": return "↻";
@@ -342,22 +404,29 @@ export function videoCaptionText(
     return fitParts([`▶ ${duration}`, place === "viewer" ? "space plays" : "space plays here · enter plays big"], width, widthOf);
   }
   if (video.state === "error") return fitParts([`⚠ ${video.error ?? "playback failed"}`], width, widthOf);
-  const position = formatVideoDuration(videoPositionMs(video));
+  const shown = videoDisplayState(video);
+  const position = formatClock(videoPositionMs(video));
   const time = `${icon(video)} ${position} / ${duration}`;
   const sent = video.sent && video.sent.width > 0
     ? `${video.sent.copy ? "original" : `${(video.sent.kbps / 1000).toFixed(1)} Mb/s`} ${video.sent.width}×${video.sent.height}`
     : "";
-  const state = video.state === "buffering" || video.state === "starting" ? "buffering" : video.muted ? "muted" : "";
+  const state = shown === "buffering" || shown === "starting" ? "buffering" : video.muted ? "muted" : "";
+  const space = shown === "ended" ? "space replay" : shown === "paused" ? "space play" : "space pause";
   const keys = place === "viewer"
-    ? "space ⏯  ←/→ 5s  0-9 jump  m mute  o open  q close"
-    : "space ⏯  < > seek  x stop  enter big";
+    ? `${space}  ←/→ 5s  0-9 jump  m mute  o open  q close`
+    : `${space}  < > seek  x stop  enter big`;
+  const shortKeys = place === "viewer" ? `${space}  ←/→  q close` : `${space}  x stop`;
   const fraction = ref.durationMs ? videoPositionMs(video) / ref.durationMs : 0;
-  // Keep what fits beside a bar of at least 6 cells (details go first), then let the bar fill the rest.
-  const kept = [state, keys, sent].filter(Boolean);
-  const used = () => widthOf([time, ...kept].join("  ")) + 2;
-  while (kept.length > 0 && used() + 6 > width) kept.pop();
-  const barWidth = Math.min(40, width - used());
-  return [time, barWidth >= 3 ? bar(fraction, barWidth) : "", ...kept].filter(Boolean).join("  ");
+  // The most that fits beside a bar of at least 6 cells (the bitrate goes
+  // first, then the long key list), then the bar fills the rest.
+  for (const parts of [[state, keys, sent], [state, keys], [state, shortKeys], [shortKeys], []]) {
+    const kept = parts.filter(Boolean);
+    const used = widthOf([time, ...kept].join("  ")) + 2;
+    if (used + 6 > width && kept.length > 0) continue;
+    const barWidth = Math.min(40, width - used);
+    return [time, barWidth >= 3 ? bar(fraction, barWidth) : "", ...kept].filter(Boolean).join("  ");
+  }
+  return time;
 }
 
 export const videoPlayerInternalsForTest = {
@@ -367,5 +436,14 @@ export const videoPlayerInternalsForTest = {
     finished = null;
     nextKittyId = FIRST_KITTY_ID;
     playbackCounter = 0;
+    if (tick) clearInterval(tick);
+    tick = null;
+    tickSignature = "";
+    if (endedTimer) clearTimeout(endedTimer);
+    endedTimer = null;
+    endedReleaseMs = 60_000;
+  },
+  setEndedReleaseMs(ms: number): void {
+    endedReleaseMs = ms;
   },
 };
