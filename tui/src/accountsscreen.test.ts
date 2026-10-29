@@ -499,12 +499,23 @@ test("limited, blocked, signed-out and other states replace the bars with a shor
   ]);
   snap.claude.nextNewWork = null;
   const text = screenText(openScreen(snap).state, 40, 160).join("\n");
-  expect(text).toMatch(/● main {2}limited 3h {3}━{14} {2}40%/);
-  expect(text).toMatch(/● max2 {15}blocked: token refresh failed · retry in 10m +│/);
-  expect(text).toMatch(/● max3 {15}signed out +│/);
-  expect(text).toMatch(/● max4 {15}not a subscription \(apiKey\) +│/);
-  expect(text).toMatch(/● max5 {15}checking… +│/);
+  expect(text).toMatch(/● main {2}limited {3}━{14} {2}40%/);
+  expect(text).toMatch(/● max2 {12}blocked: token refresh failed · retry in 10m +│/);
+  expect(text).toMatch(/● max3 {12}signed out +│/);
+  expect(text).toMatch(/● max4 {12}not a subscription \(apiKey\) +│/);
+  expect(text).toMatch(/● max5 {12}checking… +│/);
   expect(text).toContain("sign in max3: CLAUDE_CONFIG_DIR=~/.claude-max3 command claude auth login --claudeai");
+});
+
+test("a limited account shows its reset time by the name only when there are no usage columns", () => {
+  const snap = snapshot({}, [
+    claude("main", { state: "limited", limitedUntil: NOW + 3 * H }),
+    claude("max2", { state: "limited", limitedUntil: NOW + 3 * H, usage: null }),
+  ]);
+  snap.claude.nextNewWork = null;
+  const text = screenText(openScreen(snap).state, 40, 160).join("\n");
+  expect(text).toMatch(/● main {2}limited {6}━/);
+  expect(text).toMatch(/● max2 {2}limited 3h/);
 });
 
 test("an account without usage yet shows no bars, not ?%", () => {
@@ -556,7 +567,7 @@ test("pushed snapshots update the open screen live", () => {
   next.claude.accounts[1] = claude("max2", { state: "limited", limitedUntil: NOW + 3 * H });
   handleEvent({ type: "accounts", snapshot: next }, state, noDaemon);
   expect(state.accountsScreen?.snapshot).toBe(next);
-  expect(screenText(state).join("\n")).toMatch(/● max2 {2}limited 3h/);
+  expect(screenText(state).join("\n")).toMatch(/● max2 {2}limited /);
   // Only the opening request opens the screen; unrelated answers do not reopen a closed one.
   state.accountsScreen = null;
   handleEvent({ type: "accounts", snapshot: next }, state, noDaemon);
