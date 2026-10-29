@@ -21,6 +21,8 @@
     "./protocol": "./src/protocol.ts",
     "./file-links": "./src/file-links.ts",
     "./history-delta": "./src/history-delta.ts",
+    "./history-push": "./src/history-push.ts",
+    "./live-delta": "./src/live-delta.ts",
     "./sidebar-digest": "./src/sidebar-digest.ts",
     "./sidebar-first-page": "./src/sidebar-first-page.ts",
     "./paths": "./src/paths.ts",

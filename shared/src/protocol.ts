@@ -316,8 +316,14 @@ export interface PrewarmConversationCommand {
  * history-revisions: the daemon pushes history_revisions whenever what a
  * conversation's history pages show may have changed (see HistoryRevisionsEvent),
  * so a client that keeps opened pages can tell a current copy from a stale one.
+ *
+ * history-push: the client keeps the pages it opens (or peeks) with `watch`,
+ * live part included; the daemon keeps them current with history_push (see
+ * HistoryPushEvent), sends a running turn's live blocks without tool output
+ * and against the client's liveBase, and leaves the blocks out of a streaming
+ * conversation's subscription catch-up (the loaded event has them).
  */
-export type ClientCapability = "targeted-unwind" | "sidebar-reorder-delta" | "sidebar-state-patch" | "history-block-pagination" | "token-stats-on-demand" | "sidebar-digest-sync" | "update-status-push" | "sidebar-incremental" | "client-exec-alive" | "history-folded-elision" | "history-revisions";
+export type ClientCapability = "targeted-unwind" | "sidebar-reorder-delta" | "sidebar-state-patch" | "history-block-pagination" | "token-stats-on-demand" | "sidebar-digest-sync" | "update-status-push" | "sidebar-incremental" | "client-exec-alive" | "history-folded-elision" | "history-revisions" | "history-push";
 
 /** Answered with token_stats carrying the same reqId. Older daemons answer with an Unknown command error. */
 export interface GetTokenStatsCommand {
@@ -460,6 +466,41 @@ export interface LoadConversationCommand extends CachedHistoryRequest {
    * flag and opens the conversation.
    */
   peek?: true;
+  /**
+   * With history-push: the client keeps these pages (and the live part), and
+   * the daemon keeps them current with history_push until it says otherwise.
+   * The answer carries copySeq. Older daemons ignore it.
+   */
+  watch?: true;
+  /** The client's copy of the running turn's live blocks; the answer's pendingAI is sent against it. */
+  liveBase?: LiveBlocksBase;
+  /**
+   * The copySeq of the watched copy the client holds: the answer (and its
+   * initialBackfill) is then sent against the daemon's record of that copy,
+   * marked with baseCopy, and needs no cachedEntryHashes or liveBase. A copy
+   * the daemon no longer keeps gets an ordinary answer.
+   */
+  baseCopy?: number;
+}
+
+/**
+ * A client's copy of a running turn's live blocks, by content: liveBlockHash
+ * of each block (shared/src/live-delta.ts), and the length of the last one's
+ * text when it is text or thinking, which may since have grown.
+ */
+export interface LiveBlocksBase {
+  hashes: string[];
+  tailChars?: number;
+}
+
+/**
+ * Live blocks sent against a LiveBlocksBase: the base's first `keep` blocks,
+ * the base block at `keep` with `extend` appended when set, then the payload's
+ * blocks. Clients rebuild them before UI handlers.
+ */
+export interface LiveBlocksDelta {
+  keep: number;
+  extend?: string;
 }
 
 /**
@@ -2011,6 +2052,12 @@ export interface AIMessagePayload {
   metadata: MessageMetadata | null;
   /** Canonical active-turn blocks represented by entries before this live tail. */
   blockOffset?: number;
+  /** Only against a liveBase (or in history_push): `blocks` follow these blocks of the base. */
+  blocksBase?: LiveBlocksDelta;
+  /** With history-push: the turn's status rows, as a subscription catch-up carries them. */
+  compactionStartedAt?: number | null;
+  connectionWaitStartedAt?: number | null;
+  connectionWaitLabel?: string | null;
 }
 
 export type DisplayEntry =
@@ -2029,6 +2076,14 @@ export interface ToolOutputInfo {
  * Clients must reconstruct entries before passing the event to UI handlers. */
 export interface CachedHistoryResponse {
   entryOrder?: number[];
+  /**
+   * Only in history_push: [entriesIndex, baseIndex, blockOrder] — that fresh
+   * AI entry's blocks in order: nonnegative indices select its own blocks,
+   * negative ones the blocks of the base page's entry at baseIndex via -index - 1.
+   */
+  entryBlocks?: Array<[number, number, number[]]>;
+  /** Only in answers to a baseCopy: entries (entryOrder, entryBlocks) and pendingAI are against that copy. */
+  baseCopy?: number;
 }
 
 export interface ConversationLoadedEvent extends CachedHistoryResponse {
@@ -2055,6 +2110,8 @@ export interface ConversationLoadedEvent extends CachedHistoryResponse {
   initialBackfillReqId?: string;
   /** The conversation's history revision this page was built at (HistoryRevisionsEvent). */
   historyRev?: string;
+  /** With `watch`: this copy's number, which history_push updates name as their base. */
+  copySeq?: number;
   /** Live assistant snapshot for actively streaming conversations. */
   pendingAI?: AIMessagePayload;
   /** Last known input token count for this conversation. */
@@ -2106,6 +2163,28 @@ export interface ConversationHistoryLoadedEvent extends CachedHistoryResponse {
  * few times a second at most) and sent with reqId to answer
  * get_history_revisions.
  */
+/**
+ * With history-push: an update of a copy the client keeps (a load with
+ * `watch`), coalesced to a few a second at most. Applies only to the copy
+ * numbered `base`; a client holding another copy ignores it (and may peek).
+ * Never sent for a conversation the client is subscribed to: its events
+ * follow it. `unwatched`: the daemon no longer keeps that copy current.
+ */
+export interface HistoryPushEvent {
+  type: "history_push";
+  convId: string;
+  base?: number;
+  copySeq?: number;
+  rev?: string;
+  /** The new opening page (entries against the base's, see entryBlocks), without pendingAI. */
+  loaded?: ConversationLoadedEvent;
+  /** Its new initial backfill; null when there is none any more. */
+  backfill?: ConversationHistoryLoadedEvent | null;
+  /** The running turn's live part (blocks against the base's); null when no turn runs. */
+  live?: AIMessagePayload | null;
+  unwatched?: true;
+}
+
 export interface HistoryRevisionsEvent {
   type: "history_revisions";
   reqId?: string;
@@ -2839,6 +2918,7 @@ export type Event =
   | ConversationLoadedEvent
   | ConversationHistoryLoadedEvent
   | HistoryRevisionsEvent
+  | HistoryPushEvent
   | GoalUpdatedEvent
   | ChronoResultEvent
   | ConversationUpdatedEvent

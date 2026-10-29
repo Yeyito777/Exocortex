@@ -7,27 +7,33 @@ neither can leave a stale transcript on screen.
 
 ## Opened conversations on disk
 
-`tui/src/viewcache.ts` keeps, per SSH alias, the opening page and initial
-backfill of the 64 most recently opened conversations (64 MiB at most, 8 MiB per
+`tui/src/viewcache.ts` keeps, per SSH alias, the opening page, initial
+backfill and a running turn's live part (its pendingAI, without tool output)
+of the 64 most recently opened conversations (64 MiB at most, 8 MiB per
 conversation, least recently opened out first) in
 `config/runtime/ssh-view-cache/<alias>/`, as the daemon last sent them, with
 the history revision they were built at. The directory is the index: a file's
 name carries its conversation, revision and fold, its mtime the last open.
+Copies that pushes update are written at most every 5 s, and on exit.
 
 **Opening one** (`tui/src/cachedopen.ts`) paints the copy on the first frame,
-as if the daemon had answered, placed like any open (saved position, unread
-response), with the sidebar's newer model, effort and goal. The open's request
-still goes out as before (it subscribes, clears unread and carries the copy's
-entry hashes, so its answer is a delta). When the answer comes:
+as if the daemon had answered, a running turn's live part and status rows
+included, placed like any open (saved position, unread response), with the
+sidebar's newer model, effort and goal. The open's request still goes out as
+before (it subscribes and clears unread); it names the copy, by number when
+the daemon keeps it current (`baseCopy`, below), else by entry hashes and
+`liveBase`, so its answer carries only what is newer. When the answer comes:
 
-- **It matches** (same entries and cursors, no running turn): only metadata
-  is applied (context size, BTW, goal). Nothing is redrawn.
+- **It matches** (same entries and cursors, a live part that only grew):
+  only metadata is applied (context size, BTW, goal), and newer live text
+  and blocks stream in where the copy left off. Nothing else is redrawn.
 - **It differs**: it is applied as the open landing, placed by that open's
   intent if the reader has not moved yet, else where they are. The bottom
   anchor holds and the change snaps (no smooth-scroll glide).
 
 A copy is **current** when its revision is the latest this connection has
-heard of and the conversation is not streaming. A copy not known current is
+heard of, and either the conversation is idle or the daemon is keeping its
+live part current (within one push). A copy not known current is
 still painted at once, but the top bar says `↻ updating` if the answer has
 not landed after `STALE_COPY_MARK_DELAY_MS` (250 ms; 0 marks it at once).
 Until the answer, a stale copy fetches no older pages or elided work, whose
@@ -37,25 +43,45 @@ cursors may have moved.
 change with everything a history page shows: messages appended, edited in
 place, unwound (edits, rewinds), trimmed or compacted, instructions set, a
 move to another folder, a turn or handoff starting or ending (it changes what
-folded pages elide). Pinned folder instructions (not drawn) and a running
-turn's live tail are not covered; the open's content check catches them. They
+folded pages elide). Pinned folder instructions (not drawn) are not covered,
+nor is a running turn's live tail (pushes carry that); the open's content
+check catches either. They
 are in memory: a restarted daemon starts a new epoch, so no revision from
 before it matches one after it.
 
 **Keeping copies current.** Clients with the `history-revisions` capability
 get `history_revisions` pushes (coalesced, at most every 250 ms) for every
 change. On each connection the TUI asks `get_history_revisions` for its cached
-conversations. Stale copies among the 12 most recently opened, not streaming
-and not open, are refreshed in the background 1.5 s after the last change, two
-at a time, with `load_conversation { peek: true }`: the same pages, as a delta
-against the copy, with no subscription, unread change, prewarm or catch-up.
-So a conversation that changed while you were elsewhere is usually current
-again before you return, and most opens need no round trip at all.
+conversations. Stale copies among the 12 most recently opened (and running
+ones the daemon does not keep current yet), not open, are refreshed in the
+background 1.5 s after the last change, two at a time, with
+`load_conversation { peek: true }`: the same pages, as a delta against the
+copy, with no subscription, unread change, prewarm or catch-up.
+
+**Pushes** (`history-push`, protocol `HistoryPushEvent`). Every open and peek
+asks with `watch`: the daemon then keeps a record of the copy it sent that
+connection (its page, backfill and live blocks, by hash; the 16 most recently
+watched, `daemon/src/handler.ts`) and numbers it (`copySeq`). Whenever one
+changes while the client is not subscribed to it, the daemon sends a
+`history_push` at most every 500 ms: a changed page as entry indexes into the
+last one plus a changed AI entry's new blocks (`entryBlocks`, so a round
+committed to a long turn sends that round, not the turn), an unchanged
+backfill not at all, and the live part as the base's blocks kept plus the
+text appended to the last one (`blocksBase`, shared/src/live-delta.ts), tool
+output left out (`load_tool_outputs` serves a running round's results when
+they are shown). Each push names the copy it updates; the TUI applies it only
+to that copy, and peeks one it cannot. An open of a watched copy names it
+(`baseCopy`) and its answer is encoded against the daemon's record, so neither
+side resends or describes the copy; the subscription's catch-up leaves out the
+blocks the answer already carried. So a conversation that changed, or is
+streaming, while you were elsewhere is current when you return, its turn in
+progress included.
 
 **Older daemons** answer `get_history_revisions` with an error: no copy is
 ever current and nothing is peeked, but opens still paint the copy at once and
-the answer confirms or replaces it. Older TUIs never send the new fields; the
-daemon's additions are optional.
+the answer confirms or replaces it. A daemon without `history-push` ignores
+`watch`, `liveBase` and `baseCopy` and answers in full. Older TUIs never send
+the new fields and get the whole live part, with tool output, as before.
 
 ### Numbers
 
@@ -78,6 +104,24 @@ content (`~/Workspace/research/ssh-open-cache-20261029/measure.ts`):
 No frame showed the placeholder or a smooth-scroll move on a cached open; at
 600 ms RTT the stale copy painted in 10 ms and showed `↻ updating` from 250 ms
 until its answer at ~617 ms.
+
+Streaming conversations, with pushes (Oct 30): the same harness against a
+worktree daemon whose three chats run scripted turns from a local fake model
+(prose at 40 tokens/s, a 3 s Bash call with ~19 KB of output per round), the
+TUI sitting on an idle chat for 10 s, then opening each
+(`~/Workspace/research/ssh-live-cache-20261030/measure2.ts`):
+
+| Streaming open | Before | After |
+| --- | ---: | ---: |
+| First frame | 2–5 ms, the copy from before the turn | 2–5 ms, finished messages and the turn in progress |
+| Answer (~107 ms) | turn in progress pops in (6-row scroll) | same frame but the spinner; newer text streams on |
+| Bytes down / up per open | 35–37 KB / 2.9 KB raw | 2.0–2.7 KB / 0.6 KB raw |
+| After a TUI restart mid-turn | (no copy of the turn) | 8 ms from the disk copy, one round behind; the answer (114 ms) updated the step in place |
+| 1 Mbit/s link | — | 3–5 ms first frame, answer ~127 ms, nothing changes |
+
+Background cost with three chats streaming: 1.9–2.0 KiB/s of pushes before
+SSH compression, 0.36–0.38 KiB/s on the wire (the simulator compresses like
+`ssh -C`); before, those chats cost nothing but their copies went stale.
 
 ## Transport cache
 

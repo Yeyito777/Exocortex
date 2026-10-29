@@ -71,6 +71,12 @@ const CHUNK_ACTIVITY_INTERVAL = 5;
 
 let idleListener: ((convId: string) => void) | null = null;
 let runStateListener: ((convId: string) => void) | null = null;
+let liveChangeListener: ((convId: string) => void) | null = null;
+
+/** Called whenever what a late joiner's snapshot would show changes: live blocks or status rows. */
+export function setLiveChangeListener(listener: ((convId: string) => void) | null): void {
+  liveChangeListener = listener;
+}
 
 /** Called whenever a conversation's job or handoff starts or ends. */
 export function setRunStateListener(listener: ((convId: string) => void) | null): void {
@@ -340,6 +346,7 @@ export function getStreamingGenerationThroughput(convId: string): GenerationThro
 }
 
 export function setContextCompactionStartedAt(convId: string, startedAt: number | null): void {
+  liveChangeListener?.(convId);
   if (startedAt == null) contextCompactionStartedAt.delete(convId);
   else if (activeJobs.has(convId)) contextCompactionStartedAt.set(convId, startedAt);
 }
@@ -350,6 +357,7 @@ export function getContextCompactionStartedAt(convId: string): number | undefine
 
 /** When the active turn started waiting for the network (see network-wait.ts). */
 export function setConnectionWaitStartedAt(convId: string, startedAt: number | null, label?: string): void {
+  liveChangeListener?.(convId);
   if (startedAt == null || !label) connectionWaitLabels.delete(convId);
   else connectionWaitLabels.set(convId, label);
   if (startedAt == null) connectionWaitStartedAt.delete(convId);
@@ -450,6 +458,7 @@ export function initStreamingState(convId: string): void {
   streamingBlocks.set(convId, []);
   streamingCommittedBlockCounts.set(convId, 0);
   streamingPendingAssistantOpen.add(convId);
+  liveChangeListener?.(convId);
 }
 
 /** Get the current in-flight assistant blocks for a late-joining client. */
@@ -460,6 +469,7 @@ export function getCurrentStreamingBlocks(convId: string): Block[] | undefined {
 /** Record how much of the eventual message_complete block stream is committed. */
 export function setStreamingCommittedBlockCount(convId: string, count: number): void {
   streamingCommittedBlockCounts.set(convId, Math.max(0, count));
+  liveChangeListener?.(convId);
 }
 
 export function getStreamingCommittedBlockCount(convId: string): number {
@@ -479,6 +489,7 @@ export function getStreamingCommittedMessageCount(convId: string): number | unde
 /** Close the pending overlay once the final assistant response is canonical. */
 export function markStreamingAssistantCommitted(convId: string): void {
   streamingPendingAssistantOpen.delete(convId);
+  liveChangeListener?.(convId);
 }
 
 export function hasPendingStreamingAssistant(convId: string): boolean {
@@ -489,17 +500,20 @@ export function hasPendingStreamingAssistant(convId: string): boolean {
 export function pushStreamingBlock(convId: string, block: Block): void {
   const blocks = streamingBlocks.get(convId);
   if (blocks) blocks.push(block);
+  liveChangeListener?.(convId);
 }
 
 /** Replace the current in-flight assistant accumulator for exact provider syncs. */
 export function replaceCurrentStreamingBlocks(convId: string, blocks: Block[]): void {
   streamingBlocks.set(convId, [...blocks]);
+  liveChangeListener?.(convId);
 }
 
 /** Append text to the live tail, creating a new block if streaming resumed after another type. */
 export function appendToStreamingBlock(convId: string, type: "text" | "thinking", chunk: string): void {
   const blocks = streamingBlocks.get(convId);
   if (!blocks) return;
+  liveChangeListener?.(convId);
   const last = blocks[blocks.length - 1];
   if (last?.type === type) {
     last.text += chunk;
@@ -518,6 +532,7 @@ export function appendToStreamingBlock(convId: string, type: "text" | "thinking"
  * entirely as final cleanup.
  */
 export function clearCurrentStreamingBlocks(convId: string): void {
+  liveChangeListener?.(convId);
   if (activeJobs.has(convId)) {
     streamingBlocks.set(convId, []);
   } else {

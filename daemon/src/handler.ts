@@ -21,7 +21,9 @@ import { setApiKeyUsageRecordedListener } from "./providers/openai/api-key-usage
 import { API_CREDIT_ACCOUNT_KEY_PREFIX } from "./providers/anthropic/api-credits";
 import { setCreditSyncListener } from "./providers/anthropic/credit-sync";
 import { emitClaudeAccountsChanged } from "./providers/anthropic/account-events";
-import { encodeHistoryDelta } from "@exocortex/shared/history-delta";
+import { encodeHistoryDelta, type HistoryResponse } from "@exocortex/shared/history-delta";
+import { compactLiveBlock, describeLiveBlocks, encodeLiveBlocks, isLiveBlocksBase } from "@exocortex/shared/live-delta";
+import { encodePagePush, pageBase, type PageBase } from "@exocortex/shared/history-push";
 import { effectiveConversationDefaults } from "@exocortex/shared/config";
 import { isDurationMs } from "@exocortex/shared/duration";
 import { experimentalFeatures } from "./experimental";
@@ -49,9 +51,10 @@ import { rememberSentImages, resolveImageForPreview } from "./image-requests";
 import { cachedImagePreview, renderImagePreview, validatePreviewRequest, isImageId } from "./attachments";
 import { VideoPlayback } from "./video-playback";
 import { DaemonServer, broadcastUsageUpdate, type ConnectedClient } from "./server";
+import { setLiveChangeListener } from "./streaming";
 import { isSidebarDigest, sidebarListDelta } from "@exocortex/shared/sidebar-digest";
 import { isSidebarViewHint, sidebarFirstPageConversationIds, sidebarFolderConversationCounts } from "@exocortex/shared/sidebar-first-page";
-import type { Command, Event, SidebarItemOrderUpdate } from "./protocol";
+import type { AIMessagePayload, Command, ConversationHistoryLoadedEvent, ConversationLoadedEvent, Event, HistoryPushEvent, LiveBlocksBase, SidebarItemOrderUpdate } from "./protocol";
 import { clearAuth, ensureAuthenticated, getAuthByProvider, getAuthInfoByProvider, hasConfiguredCredentials, invalidateCredentialsCache } from "./auth";
 import { addAccount as addOpenAIAccount, listAccounts as listOpenAIAccounts, removeAccount as removeOpenAIAccount, switchAccount as switchOpenAIAccount } from "./providers/openai/auth";
 import { getProviderAdapter } from "./providers/catalog";
@@ -162,6 +165,12 @@ export interface HandlerOptions extends HandlerLifecycle {
  */
 /** get_history_revisions answers at most this many conversations. */
 const MAX_HISTORY_REVISION_IDS = 512;
+/** Copies a client keeps current with history_push: the most recently opened or peeked. */
+const MAX_WATCHED_COPIES = 16;
+/** Changes to watched copies within this window go out as one history_push each. */
+let historyPushDelayMs = 500;
+export function setHistoryPushDelayForTest(ms: number): void { historyPushDelayMs = ms; }
+
 /** Revision changes within this window go out as one history_revisions push. */
 let historyRevPushDelayMs = 250;
 export function setHistoryRevPushDelayForTest(ms: number): void { historyRevPushDelayMs = ms; }
@@ -199,6 +208,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   const changedHistoryRevs = new Set<string>();
   let historyRevTimer: ReturnType<typeof setTimeout> | null = null;
   convStore.setHistoryRevListener((id) => {
+    markHistoryPushDirty(id);
     changedHistoryRevs.add(id);
     if (historyRevTimer) return;
     historyRevTimer = setTimeout(() => {
@@ -209,6 +219,40 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     }, historyRevPushDelayMs);
     historyRevTimer.unref?.();
   });
+  // ── Watched copies (history_push) ────────────────────────────────
+  // What each history-push client holds of the conversations it watches, as
+  // last sent: the next update goes against it. Per connection, in memory.
+  interface CopyRecord {
+    seq: number;
+    request: { turns?: number; viewport?: HistoryViewport; backfillTurns?: number };
+    rev: string;
+    page: PageBase;
+    backfill: PageBase | null;
+    backfillCursors?: string;
+    live: LiveBlocksBase | null;
+    liveKey: string | null;
+  }
+  /** What a copy's live part shows besides token counts (`described` its blocks): an update goes out when it changes. */
+  const liveKeyOf = (live: AIMessagePayload | null, described: LiveBlocksBase | null): string | null => live
+    ? JSON.stringify([described, live.blockOffset ?? 0, live.metadata?.startedAt ?? null,
+      live.compactionStartedAt ?? null, live.connectionWaitStartedAt ?? null, live.connectionWaitLabel ?? null])
+    : null;
+  const backfillCursorsOf = (page: ConversationHistoryLoadedEvent): string => JSON.stringify([page.historyStartIndex, page.historyStartBlockIndex ?? 0,
+    page.historyEndIndex, page.historyEndBlockIndex ?? 0, page.historyTotalEntries, page.hasOlderHistory]);
+  const copyRecords = new Map<ConnectedClient, Map<string, CopyRecord>>();
+  let nextCopySeq = 1;
+  const dirtyHistoryPushes = new Set<string>();
+  let historyPushTimer: ReturnType<typeof setTimeout> | null = null;
+  function markHistoryPushDirty(convId: string): void {
+    if (copyRecords.size === 0) return;
+    dirtyHistoryPushes.add(convId);
+    if (historyPushTimer) return;
+    historyPushTimer = setTimeout(flushHistoryPushes, historyPushDelayMs);
+    historyPushTimer.unref?.();
+  }
+  // Closed connections' records go at the next flush.
+  setLiveChangeListener(markHistoryPushDirty);
+
   /**
    * Every durable entry for a conversation, delivery-suspended or not.
    * Deduplication must see entries an in-progress unwind is gating.
@@ -994,6 +1038,45 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       : {}),
   });
 
+  /** How a page goes out: delta-encoded and sent, or with `build` handed back whole (history_push). */
+  interface PageEmit {
+    /** The client's copy of the live blocks: pendingAI goes against it. */
+    liveBase?: LiveBlocksBase;
+    copySeq?: number;
+    build?: boolean;
+    /** The daemon's record of the client's copy (baseCopy): the page goes against it instead of cachedEntryHashes. */
+    fromCopy?: { seq: number; page: PageBase };
+  }
+
+  /** A running turn's live part as `target` takes it: history-push clients get it without tool output, with its status rows. */
+  const livePayload = (target: ConnectedClient, convId: string, pending: AIMessagePayload): AIMessagePayload => {
+    if (!target.capabilities?.has("history-push")) return pending;
+    return {
+      blocks: pending.blocks.map(compactLiveBlock),
+      ...(pending.blockOffset !== undefined ? { blockOffset: pending.blockOffset } : {}),
+      metadata: pending.metadata,
+      compactionStartedAt: convStore.getContextCompactionStartedAt(convId) ?? null,
+      connectionWaitStartedAt: convStore.getConnectionWaitStartedAt(convId) ?? null,
+      connectionWaitLabel: convStore.getConnectionWaitLabel(convId) ?? null,
+    };
+  };
+
+  /** Live blocks against a client's copy of them. */
+  const liveAgainst = (payload: AIMessagePayload, base: LiveBlocksBase | null | undefined): AIMessagePayload => {
+    const encoded = base ? encodeLiveBlocks(payload.blocks, base) : null;
+    return encoded ? { ...payload, blocks: encoded.blocks, blocksBase: encoded.delta } : payload;
+  };
+
+  const emitPage = (target: ConnectedClient, event: HistoryResponse, cachedEntryHashes: string[] | undefined, measure: boolean, emit: PageEmit): number => {
+    if (emit.build) return 0;
+    const wire = event.type === "conversation_loaded" && event.pendingAI && emit.liveBase
+      ? { ...event, pendingAI: liveAgainst(event.pendingAI, emit.liveBase) }
+      : event;
+    return server.sendTo(target, emit.fromCopy
+      ? { ...encodePagePush(wire, emit.fromCopy.page), baseCopy: emit.fromCopy.seq }
+      : encodeHistoryDelta(wire, cachedEntryHashes), measure);
+  };
+
   const sendCompactConversationLoaded = (
     target: ConnectedClient,
     convId: string,
@@ -1003,6 +1086,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     cachedEntryHashes?: string[],
     viewport?: HistoryViewport,
     initialBackfillReqId?: string,
+    emit: PageEmit = {},
   ) => {
     const paginated = target.capabilities?.has("history-pagination") || turns !== undefined;
     const windowOptions = historyWindowOptions(target, convId, viewport?.folded === true);
@@ -1022,7 +1106,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         const sendStartedAt = metrics ? performance.now() : 0;
         const btw = btwManager.getSnapshot(page.convId);
         const pending = convStore.getPendingStreamSnapshot(page.convId);
-        const responseBytes = server.sendTo(target, encodeHistoryDelta({
+        const full: ConversationLoadedEvent = {
           type: "conversation_loaded",
           reqId,
           convId: page.convId,
@@ -1038,19 +1122,21 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           hasOlderHistory: page.hasOlder,
           ...(initialBackfillReqId && page.hasOlder ? { initialBackfillReqId } : {}),
           historyRev: convStore.getHistoryRev(page.convId),
+          ...(emit.copySeq !== undefined ? { copySeq: emit.copySeq } : {}),
           ...(pending ? {
-            pendingAI: {
+            pendingAI: livePayload(target, page.convId, {
               blocks: pending.blocks,
               blockOffset: pending.blockOffset,
               metadata: pending.metadata,
-            },
+            }),
           } : {}),
           contextTokens: page.contextTokens,
           toolOutputsIncluded: false,
           queuedMessages: queued.length > 0 ? queued : undefined,
           goal: summary?.goal ?? null,
           btw,
-        }, cachedEntryHashes), metrics !== undefined);
+        };
+        const responseBytes = emitPage(target, full, cachedEntryHashes, metrics !== undefined, emit);
         if (metrics) {
           metrics.snapshot = snapshotDiagnostics ?? {};
           metrics.compactMs = 0;
@@ -1064,6 +1150,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           convId: page.convId,
           btwSessionId: btw?.sessionId ?? null,
           olderCursor: page.hasOlder ? { beforeEntryIndex: page.startIndex, beforeBlockIndex: page.startBlockIndex } : null,
+          full,
         };
       }
     }
@@ -1083,7 +1170,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     const responseEntries = page ? [...page.pinnedEntries, ...page.entries] : compactData.entries;
     const sendStartedAt = metrics ? performance.now() : 0;
     const btw = btwManager.getSnapshot(data.convId);
-    const responseBytes = server.sendTo(target, encodeHistoryDelta({
+    const full: ConversationLoadedEvent = {
       type: "conversation_loaded",
       reqId,
       convId: compactData.convId,
@@ -1101,13 +1188,15 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         ...(initialBackfillReqId && page.hasOlder ? { initialBackfillReqId } : {}),
       } : {}),
       historyRev: convStore.getHistoryRev(compactData.convId),
-      ...(compactData.pendingAI ? { pendingAI: compactData.pendingAI } : {}),
+      ...(emit.copySeq !== undefined ? { copySeq: emit.copySeq } : {}),
+      ...(compactData.pendingAI ? { pendingAI: livePayload(target, compactData.convId, compactData.pendingAI) } : {}),
       contextTokens: compactData.contextTokens,
       toolOutputsIncluded: compactData.toolOutputsIncluded,
       queuedMessages: queued.length > 0 ? queued : undefined,
       goal: summary?.goal ?? null,
       btw,
-    }, cachedEntryHashes), metrics !== undefined);
+    };
+    const responseBytes = emitPage(target, full, cachedEntryHashes, metrics !== undefined, emit);
     if (metrics) {
       metrics.snapshot = snapshotDiagnostics ?? {};
       metrics.compactMs = compactMs;
@@ -1121,6 +1210,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       convId: data.convId,
       btwSessionId: btw?.sessionId ?? null,
       olderCursor: page?.hasOlder ? { beforeEntryIndex: page.startIndex, beforeBlockIndex: page.startBlockIndex } : null,
+      full,
     };
   };
 
@@ -1135,14 +1225,15 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     metrics?: ConversationLoadMetrics,
     cachedEntryHashes?: string[],
     folded = false,
-  ): boolean => {
+    emit: PageEmit = {},
+  ): ConversationHistoryLoadedEvent | null => {
     const windowOptions: HistoryWindowOptions = { ...historyWindowOptions(target, convId, folded), beforeBlockIndex };
     {
       const snapshotDiagnostics: Partial<convStore.RenderSnapshotDiagnostics> | undefined = metrics ? {} : undefined;
       const page = convStore.getStoredDisplayPage(convId, turns, beforeEntryIndex, snapshotDiagnostics, windowOptions);
       if (page) {
         const sendStartedAt = metrics ? performance.now() : 0;
-        const responseBytes = server.sendTo(target, encodeHistoryDelta({
+        const full: ConversationHistoryLoadedEvent = {
           type: "conversation_history_loaded",
           reqId,
           convId,
@@ -1156,7 +1247,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           historyTotalEntries: page.totalEntries,
           hasOlderHistory: page.hasOlder,
           historyRev: convStore.getHistoryRev(convId),
-        }, cachedEntryHashes), metrics !== undefined);
+        };
+        const responseBytes = emitPage(target, full, cachedEntryHashes, metrics !== undefined, emit);
         if (metrics) {
           metrics.snapshot = snapshotDiagnostics ?? {};
           metrics.compactMs = 0;
@@ -1166,13 +1258,13 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           metrics.responseEntries = page.entries.length;
           metrics.historyTotalEntries = page.totalEntries;
         }
-        return true;
+        return full;
       }
     }
 
     const snapshotDiagnostics: Partial<convStore.RenderSnapshotDiagnostics> | undefined = metrics ? {} : undefined;
     const data = getRenderSnapshot(convId, snapshotDiagnostics);
-    if (!data) return false;
+    if (!data) return null;
     const compactStartedAt = metrics ? performance.now() : 0;
     const compactData = compactHistoryImages(data);
     const compactMs = metrics ? performance.now() - compactStartedAt : 0;
@@ -1180,7 +1272,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     const page = pageDisplayHistory(compactData.entries, turns, beforeEntryIndex, windowOptions);
     const paginateMs = metrics ? performance.now() - paginateStartedAt : 0;
     const sendStartedAt = metrics ? performance.now() : 0;
-    const responseBytes = server.sendTo(target, encodeHistoryDelta({
+    const full: ConversationHistoryLoadedEvent = {
       type: "conversation_history_loaded",
       reqId,
       convId,
@@ -1194,7 +1286,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       historyTotalEntries: page.totalEntries,
       hasOlderHistory: page.hasOlder,
       historyRev: convStore.getHistoryRev(convId),
-    }, cachedEntryHashes), metrics !== undefined);
+    };
+    const responseBytes = emitPage(target, full, cachedEntryHashes, metrics !== undefined, emit);
     if (metrics) {
       metrics.snapshot = snapshotDiagnostics ?? {};
       metrics.compactMs = compactMs;
@@ -1204,8 +1297,97 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       metrics.responseEntries = page.entries.length;
       metrics.historyTotalEntries = page.totalEntries;
     }
-    return true;
+    return full;
   };
+
+  // ── Watched copies: records and updates ──────────────────────────
+
+  /** Start (or restart) keeping `client`'s copy of `convId` current; the least recently watched beyond the limit stop. */
+  function watchCopy(client: ConnectedClient, convId: string, record: CopyRecord): void {
+    let records = copyRecords.get(client);
+    if (!records) copyRecords.set(client, records = new Map());
+    records.delete(convId);
+    records.set(convId, record);
+    while (records.size > MAX_WATCHED_COPIES) {
+      const oldest = records.keys().next().value!;
+      records.delete(oldest);
+      server.sendTo(client, { type: "history_push", convId: oldest, unwatched: true });
+    }
+  }
+
+  function flushHistoryPushes(): void {
+    historyPushTimer = null;
+    const dirty = [...dirtyHistoryPushes];
+    dirtyHistoryPushes.clear();
+    for (const [client, records] of copyRecords) {
+      if (client.socket?.destroyed) {
+        copyRecords.delete(client);
+        continue;
+      }
+      for (const convId of dirty) {
+        const record = records.get(convId);
+        // An open conversation's events follow it; leaving it marks it again.
+        if (record && !client.subscriptions?.has(convId)) pushCopyUpdate(client, records, convId, record);
+      }
+    }
+  }
+
+  /**
+   * Bring one watched copy up to date: a changed page against the last one
+   * sent, the live blocks against theirs. With `confirm`, an unchanged copy
+   * is confirmed current too (the client just left it, so it followed events).
+   */
+  function pushCopyUpdate(client: ConnectedClient, records: Map<string, CopyRecord>, convId: string, record: CopyRecord, confirm = false): void {
+    const unwatch = () => {
+      records.delete(convId);
+      server.sendTo(client, { type: "history_push", convId, unwatched: true });
+    };
+    if (!convStore.getSummary(convId) || isHiddenConversation(convId)) return unwatch();
+    const push: HistoryPushEvent = { type: "history_push", convId, base: record.seq };
+    let live: AIMessagePayload | null;
+    const rev = convStore.getHistoryRev(convId);
+    if (rev !== record.rev) {
+      const { turns, viewport, backfillTurns } = record.request;
+      const built = sendCompactConversationLoaded(client, convId, undefined, turns, undefined, undefined, viewport, backfillTurns ? "push" : undefined, { build: true });
+      if (!built) return unwatch();
+      const { pendingAI, initialBackfillReqId: _backfill, ...page } = built.full;
+      push.loaded = encodePagePush(page, record.page);
+      record.page = pageBase(page.entries);
+      // The backfill from the same snapshot, as an open would follow it with.
+      const backfill = backfillTurns && built.olderCursor
+        ? sendCompactConversationHistory(client, convId, built.olderCursor.beforeEntryIndex, built.olderCursor.beforeBlockIndex,
+          backfillTurns, undefined, "initial-backfill", undefined, undefined, viewport?.folded === true, { build: true })
+        : null;
+      if (backfill) {
+        const next = pageBase(backfill.entries);
+        const cursors = backfillCursorsOf(backfill);
+        // Older history rarely changes with a round: an unchanged backfill is not sent again.
+        if (!record.backfill || cursors !== record.backfillCursors || next.hashes.join() !== record.backfill.hashes.join()) {
+          push.backfill = record.backfill ? encodePagePush(backfill, record.backfill) : backfill;
+          record.backfill = next;
+          record.backfillCursors = cursors;
+        }
+      } else if (record.backfill) {
+        push.backfill = null;
+        record.backfill = null;
+      }
+      push.rev = record.rev = rev;
+      live = pendingAI ?? null;
+    } else {
+      const pending = convStore.getPendingStreamSnapshot(convId);
+      live = pending ? livePayload(client, convId, { blocks: pending.blocks, blockOffset: pending.blockOffset, metadata: pending.metadata }) : null;
+    }
+    const described = live ? describeLiveBlocks(live.blocks) : null;
+    const liveKey = liveKeyOf(live, described);
+    if (liveKey !== record.liveKey) {
+      push.live = live ? liveAgainst(live, record.live) : null;
+      record.live = described;
+      record.liveKey = liveKey;
+    }
+    if (!confirm && !push.loaded && push.live === undefined) return;
+    push.copySeq = record.seq = nextCopySeq++;
+    server.sendTo(client, push);
+  }
 
   const sendGoalUpdated = (convId: string, reqId: string | undefined, message?: string) => {
     const goal = convStore.getIndexedSummary(convId)?.goal ?? null;
@@ -2193,7 +2375,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
               || capability === "sidebar-incremental"
               || capability === "client-exec-alive"
               || capability === "history-folded-elision"
-              || capability === "history-revisions") client.capabilities.add(capability);
+              || capability === "history-revisions"
+              || capability === "history-push") client.capabilities.add(capability);
         }
         if (client.capabilities.has("sidebar-digest-sync") && isSidebarDigest(cmd.sidebarDigest)) {
           client.sidebarDigest = cmd.sidebarDigest;
@@ -2269,6 +2452,10 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       }
       case "unsubscribe": {
         server.unsubscribe(client, cmd.convId);
+        // Its copy, followed by events while open, is brought up to date (or confirmed) now and kept current from here.
+        const records = copyRecords.get(client);
+        const record = records?.get(cmd.convId);
+        if (records && record) pushCopyUpdate(client, records, cmd.convId, record, true);
         server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
         break;
       }
@@ -3700,6 +3887,14 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
           break;
         }
+        // A running round's results are not stored yet; history-push clients get its live blocks without them.
+        if (cmd.toolCallIds?.length) {
+          const found = new Set(outputs.map(output => output.toolCallId));
+          const wanted = new Set(cmd.toolCallIds.filter(id => !found.has(id)));
+          for (const block of wanted.size ? convStore.getPendingStreamSnapshot(cmd.convId)?.blocks ?? [] : []) {
+            if (block.type === "tool_result" && wanted.has(block.toolCallId)) outputs = [...outputs, { toolCallId: block.toolCallId, output: block.output }];
+          }
+        }
         const sendStartedAt = PERFORMANCE_PROFILING_ENABLED ? performance.now() : 0;
         const responseBytes = server.sendTo(
           client,
@@ -3749,7 +3944,16 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         const metrics = PERFORMANCE_PROFILING_ENABLED ? createConversationLoadMetrics() : undefined;
         // The page the client would ask for next rides right behind this one.
         const backfill = isValidInitialBackfill(cmd.initialBackfill) ? cmd.initialBackfill : undefined;
-        const loaded = sendCompactConversationLoaded(client, cmd.convId, cmd.reqId, cmd.turns, metrics, cmd.cachedEntryHashes, cmd.viewport, backfill?.reqId);
+        // A client keeping this copy gets updates of it (history_push) from here on.
+        const watch = cmd.watch === true && client.capabilities?.has("history-push") === true && !isHiddenConversation(cmd.convId);
+        const copySeq = watch ? nextCopySeq++ : undefined;
+        // A copy the daemon keeps a record of needs no description of it.
+        const record = typeof cmd.baseCopy === "number" ? copyRecords.get(client)?.get(cmd.convId) : undefined;
+        const fromCopy = record?.seq === cmd.baseCopy ? record : undefined;
+        const liveBase = fromCopy ? fromCopy.live ?? undefined
+          : client.capabilities?.has("history-push") && isLiveBlocksBase(cmd.liveBase) ? cmd.liveBase : undefined;
+        const loaded = sendCompactConversationLoaded(client, cmd.convId, cmd.reqId, cmd.turns, metrics, cmd.cachedEntryHashes, cmd.viewport, backfill?.reqId,
+          { liveBase, copySeq, ...(fromCopy ? { fromCopy: { seq: fromCopy.seq, page: fromCopy.page } } : {}) });
         if (!loaded) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
           if (PERFORMANCE_PROFILING_ENABLED) {
@@ -3793,7 +3997,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
               snapshotKind: "catchup",
               startedAt: pendingAI.metadata?.startedAt ?? Date.now(),
               workTimerStartedAt: pendingAI.metadata?.workTimerStartedAt,
-              blocks: pendingAI.blocks,
+              // Nothing ran since the loaded event, which carried these blocks: history-push clients are not sent them twice.
+              ...(client.capabilities?.has("history-push") ? {} : { blocks: pendingAI.blocks }),
               blockOffset: pendingAI.blockOffset,
               tokens: pendingAI.metadata?.tokens ?? 0,
               generationThroughput: pendingAI.metadata?.generationThroughput,
@@ -3805,8 +4010,9 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         }
         // Last, so nothing the first paint needs waits behind it on the wire.
         // Same synchronous snapshot as the loaded page, so it ends where that begins.
+        let backfillPage: ConversationHistoryLoadedEvent | null = null;
         if (backfill && loaded.olderCursor) {
-          const sent = sendCompactConversationHistory(
+          const sent = backfillPage = sendCompactConversationHistory(
             client,
             loadedConvId,
             loaded.olderCursor.beforeEntryIndex,
@@ -3817,8 +4023,23 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             undefined,
             backfill.cachedEntryHashes,
             cmd.viewport?.folded === true,
+            fromCopy?.backfill ? { fromCopy: { seq: fromCopy.seq, page: fromCopy.backfill } } : {},
           );
           if (!sent) server.sendTo(client, { type: "error", reqId: backfill.reqId, convId: loadedConvId, message: `Conversation ${loadedConvId} not found` });
+        }
+        if (copySeq !== undefined) {
+          const live = loaded.full.pendingAI ?? null;
+          const described = live ? describeLiveBlocks(live.blocks) : null;
+          watchCopy(client, loadedConvId, {
+            seq: copySeq,
+            request: { turns: cmd.turns, viewport: cmd.viewport, ...(backfill ? { backfillTurns: backfill.turns } : {}) },
+            rev: loaded.full.historyRev ?? convStore.getHistoryRev(loadedConvId),
+            page: pageBase(loaded.full.entries),
+            backfill: backfillPage ? pageBase(backfillPage.entries) : null,
+            ...(backfillPage ? { backfillCursors: backfillCursorsOf(backfillPage) } : {}),
+            live: described,
+            liveKey: liveKeyOf(live, described),
+          });
         }
         // Clear unread when a client views the conversation
         if (!peek && convStore.clearUnread(loadedConvId)) {

@@ -50,16 +50,14 @@ export class HistoryCache {
 
   /**
    * Bases for an open from pages kept elsewhere (the on-disk view cache, see
-   * viewcache.ts), where this cache holds none: a TUI that just started
-   * still gets deltas. Hashes match by content, so a stale page costs bytes only.
+   * viewcache.ts), which pushes and peeks keep newer than the last answer
+   * here: a TUI that just started, or reopening a conversation that changed
+   * since, still gets a small delta. Hashes match by content, so a stale
+   * page costs bytes only.
    */
   seed(command: Extract<HistoryRequest, { type: "load_conversation" }>, loaded: HistoryResponse, backfill: HistoryResponse | null): void {
-    const key = requestKey(command);
-    if (!this.pages.has(key)) this.remember(key, loaded);
-    if (backfill && command.initialBackfill) {
-      const backfillKey = initialBackfillKey(command.convId, command.initialBackfill.turns);
-      if (!this.pages.has(backfillKey)) this.remember(backfillKey, backfill);
-    }
+    this.remember(requestKey(command), loaded);
+    if (backfill && command.initialBackfill) this.remember(initialBackfillKey(command.convId, command.initialBackfill.turns), backfill);
   }
 
   prepare<T extends HistoryRequest>(command: T): T {

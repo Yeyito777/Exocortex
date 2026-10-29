@@ -51,6 +51,7 @@ const CLIENT_CAPABILITIES: ClientCapability[] = [
   "client-exec-alive",
   "history-folded-elision",
   "history-revisions",
+  "history-push",
 ];
 
 export type EventHandler = (event: Event) => void;
@@ -231,6 +232,11 @@ export class DaemonClient {
 
   private viewCacheContext: Parameters<ViewCache["setContext"]>[0] = null;
 
+  /** On exit: copies kept current by pushes are written lazily; write them now. */
+  flushViewCaches(): void {
+    for (const cache of this.viewCaches.values()) cache.store.flushSync();
+  }
+
   /** What the view caches need to know about the screen (see ViewCacheContext). */
   setViewCacheContext(context: Parameters<ViewCache["setContext"]>[0]): void {
     this.viewCacheContext = context;
@@ -354,9 +360,10 @@ export class DaemonClient {
 
   /** Capabilities plus any first-flight requests, ahead of the probe's bootstrap ping. */
   private probePreamble(alias: string): Command[] {
-    const requests = this.sshProbeRequests?.(alias) ?? [];
+    const cache = this.viewCacheFor(alias);
     // Its open is kept like any other once answered.
-    for (const request of requests) this.viewCacheFor(alias).sent(request);
+    const requests = (this.sshProbeRequests?.(alias) ?? []).map(request => request.type === "load_conversation" ? cache.prepare(request) : request);
+    for (const request of requests) cache.sent(request);
     if (wireTrace) for (const request of requests) this.traceWire("up", request, JSON.stringify(request).length + 1, alias);
     return [this.probeCapabilities(alias), ...requests];
   }
@@ -1450,12 +1457,15 @@ export class DaemonClient {
     }
     if (this.sshAlias && command.type === "load_conversation") {
       const cache = this.viewCacheFor(this.sshAlias);
+      command = cache.prepare(command);
       // A TUI that just started has no pages in memory: the kept ones still make it a delta.
       const view = cache.view(command.convId, command.viewport?.folded === true);
-      if (view) this.historyCache.seed(command, view.loaded, view.backfill);
+      if (view && command.baseCopy === undefined) this.historyCache.seed(command, view.loaded, view.backfill);
       cache.sent(command);
     }
+    // A load naming a watched copy needs no entry hashes: the daemon has a record of that copy.
     const outgoing = this.sshAlias && (command.type === "load_conversation" || command.type === "load_conversation_history")
+      && !(command.type === "load_conversation" && command.baseCopy !== undefined)
       ? this.historyCache.prepare(command)
       : command;
     const line = JSON.stringify(outgoing) + "\n";
@@ -1581,7 +1591,10 @@ export class DaemonClient {
           );
           continue;
         }
-        const received = this.historyCache.receive(parsed, command => this.writeCommand(command));
+        // Pages sent against a copy the view cache holds (baseCopy) are rebuilt from it first.
+        const fromCopy = this.sshAlias ? this.viewCacheFor(this.sshAlias).decodeCopyAnswer(parsed, command => this.writeCommand(command)) : parsed;
+        if (!fromCopy) continue;
+        const received = this.historyCache.receive(fromCopy, command => this.writeCommand(command));
         const assembled = received?.type === "conversations_list" ? this.assembleConversationsList(received) : received;
         // A first page never replaces the SSH sidebar cache; the rebuilt whole list does.
         const event = assembled && this.sshAlias && !(assembled.type === "conversations_list" && assembled.sidebarPartial)
@@ -1593,7 +1606,7 @@ export class DaemonClient {
           continue;
         }
         // A peek's pages and revision answers are the view cache's own.
-        if (this.sshAlias && this.viewCacheFor(this.sshAlias).receive(event)) continue;
+        if (this.sshAlias && this.viewCacheFor(this.sshAlias).receive(event, command => this.writeCommand(command))) continue;
         if (event.type === "daemon_shutdown") {
           // This is transport metadata rather than a user-facing event. Retain it
           // until close so the reconnecting TUI can distinguish a planned daemon

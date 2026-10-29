@@ -59,7 +59,7 @@ import { createMessageMetadata, createPendingAI, type ImageAttachment, type User
 import { loginPromptProviders } from "./providerselection";
 import { handleEvent } from "./events";
 import { beginConversationLoad, beginOptimisticConversation } from "./events/conversations";
-import { beginProvisionalOpen, cachedOpenEvents, noteProvisionalPlacement, reconcileProvisionalOpen } from "./cachedopen";
+import { beginProvisionalOpen, cachedOpenEvents, liveCatchup, noteProvisionalPlacement, reconcileProvisionalOpen } from "./cachedopen";
 import type { CachedView } from "./viewcache";
 import { CONV_SCOPED } from "./events/stream-sequence";
 import {
@@ -427,7 +427,7 @@ function performRender(): number {
   const renderMs = performance.now() - renderStartedAt;
   // A page that landed before the history had a layout keeps paging from its first frame.
   if (olderHistoryDueAfterLayout(state)) requestOlderHistory(OLDER_HISTORY_PAGE_TURNS);
-  if (STALL_PROFILE) stallMark(`${framePresented ? "frame" : "held"} ${state.convId} msgs=${state.messages.length}${isActiveConversationLoading(state) ? " loading" : ""}${state.provisionalOpen ? isProvisionalStale(state) ? " cached-stale" : " cached" : ""} off=${state.scrollOffset} lines=${state.layout.totalLines}/${state.layout.messageAreaHeight} w=${state.layout.chatWidth} view=${state.showToolOutput ? "detail" : state.showTurnWork ? "work" : "folded"}`);
+  if (STALL_PROFILE) stallMark(`${framePresented ? "frame" : "held"} ${state.convId} msgs=${state.messages.length}${isActiveConversationLoading(state) ? " loading" : ""}${state.provisionalOpen ? isProvisionalStale(state) ? " cached-stale" : " cached" : ""} live=${state.pendingAI?.blocks.length ?? "-"} off=${state.scrollOffset} lines=${state.layout.totalLines}/${state.layout.messageAreaHeight} w=${state.layout.chatWidth} view=${state.showToolOutput ? "detail" : state.showTurnWork ? "work" : "folded"}`);
   if (!framePresented) return renderMs;
   // Scrolling, streaming and overlays move what is under a still pointer.
   refreshMouseCursor(state);
@@ -764,6 +764,11 @@ function onDaemonEvent(event: Event): void {
   if (state.provisionalOpen) {
     const outcome = reconcileProvisionalOpen(state, event);
     if (outcome.kind === "confirmed") {
+      // Newer live text than the copy's streams in where it left off, as a catch-up merges it.
+      if (outcome.live && event.type === "conversation_loaded") {
+        invalidateHistoryRenderCache(state);
+        handleEvent(liveCatchup(event, outcome.live, true), state, daemon);
+      }
       if (outcome.wasStale) prefetchBottomScreen(state, daemon);
       if (outcome.done) {
         requestElidedBlocksIfNeeded(state, daemon);
@@ -1086,8 +1091,8 @@ function attachTerminalClipboardImage(image: ImageAttachment): void {
 function openConversation(convId: string, input: "keyboard" | "mouse"): void {
   prepareConversationOpen(state, convId);
   const viewCache = daemon.viewCache;
-  // The conversation being left changed while open: its copy is refreshed in the background.
-  if (state.convId && state.convId !== convId) viewCache?.poke();
+  // The conversation being left: its copy is brought up to date by the daemon's next push (or a peek).
+  if (state.convId && state.convId !== convId) viewCache?.left(state.convId);
   // Over /ssh a conversation opened before paints from its copy; the open
   // still goes out, and its answer confirms or replaces the copy.
   const cached = viewCache && state.convId !== convId ? viewCache.view(convId, openingViewport(state).folded === true) : null;
@@ -1115,11 +1120,13 @@ function openConversation(convId: string, input: "keyboard" | "mouse"): void {
 /** Show a conversation's cached copy as if `reqId` had been answered (cachedopen.ts). */
 function paintCachedView(view: CachedView, reqId: string, current: boolean): void {
   const summary = state.sidebar.conversations.find(conversation => conversation.id === view.convId);
-  const { loaded, backfill } = cachedOpenEvents(view, reqId, summary);
-  beginProvisionalOpen(state, view, reqId, current, backfill?.reqId ?? null);
+  const { loaded, backfill, catchup } = cachedOpenEvents(view, reqId, summary);
+  beginProvisionalOpen(state, view, reqId, current, backfill?.reqId ?? null, loaded.pendingAI ?? null);
   invalidateHistoryRenderCache(state);
   clearDeferredHistoryRenderTimer();
   handleEvent(loaded, state, daemon);
+  // A running turn's status rows (compaction, a wait for the network), as its catch-up would set them.
+  if (catchup) handleEvent(catchup, state, daemon);
   if (backfill && requestOlderHistory(INITIAL_BUFFER_ADDITIONAL_TURNS, "initial-backfill", backfill.reqId)) {
     handleEvent(backfill, state, daemon);
   }
@@ -2702,6 +2709,7 @@ function cleanup(): void {
   terminalClipboardClient?.dispose();
   terminalClipboardClient = null;
   remoteFileLinks?.cancel();
+  daemon?.flushViewCaches();
   daemon?.disconnect();
   restoreTerminal();
   process.exit(0);

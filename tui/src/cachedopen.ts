@@ -1,20 +1,22 @@
 /**
  * Opening a conversation from its on-disk copy (viewcache.ts) over /ssh.
  *
- * The copy paints at once, as if the daemon had answered, and the open's real
- * request goes out as before. Its answer then either matches what is on
- * screen (the usual case: only metadata is applied, nothing is redrawn) or
- * replaces it like an open landing, placed as that open would have been
- * unless the reader has already moved. A copy not known to be current is
- * marked as updating (topbar.ts) if that takes longer than a moment.
+ * The copy paints at once, as if the daemon had answered, a running turn's
+ * live part included, and the open's real request goes out as before. Its
+ * answer then either matches what is on screen (the usual case: only
+ * metadata is applied, and a running turn's newer text streams in where it
+ * left off) or replaces it like an open landing, placed as that open would
+ * have been unless the reader has already moved. A copy not known to be
+ * current is marked as updating (topbar.ts) if that takes longer than a moment.
  */
 
-import type { ConversationSummary } from "./messages";
-import type { Event } from "./protocol";
+import type { Block, ConversationSummary } from "./messages";
+import type { AIMessagePayload, Event } from "./protocol";
 import type { RenderState } from "./state";
 import type { PendingConversationOpen } from "./conversationscroll/types";
 import type { CachedView, HistoryPageEvent, LoadedEvent } from "./viewcache";
 import { applyLoadedMetadata } from "./events/conversations";
+import { findSnapshotAlignment } from "./events/streaming-snapshot";
 import { markRelayout } from "./smoothscroll";
 
 export interface ProvisionalOpen {
@@ -27,6 +29,8 @@ export interface ProvisionalOpen {
   paintedAt: number;
   /** pageKey of the painted opening page and backfill. */
   loadedKey: string;
+  /** The painted live part of a running turn: an answer may only extend it. */
+  live: { blocks: Block[]; blockOffset: number } | null;
   backfillKey: string | null;
   /** The request id the painted backfill pretended to answer. */
   cachedBackfillReqId: string | null;
@@ -55,8 +59,10 @@ export function cachedOpenEvents(
   view: CachedView,
   reqId: string,
   summary: ConversationSummary | undefined,
-): { loaded: LoadedEvent; backfill: HistoryPageEvent | null } {
+): { loaded: LoadedEvent; backfill: HistoryPageEvent | null; catchup: StreamingStarted | null } {
   const backfillReqId = view.backfill && view.loaded.hasOlderHistory ? `cached_${reqId}` : null;
+  // A live part shows only while the turn still runs; one that ended is stale anyway.
+  const live = view.live && summary?.streaming ? view.live : null;
   const loaded: LoadedEvent = {
     ...view.loaded,
     reqId,
@@ -64,18 +70,43 @@ export function cachedOpenEvents(
     ...(summary ? {
       provider: summary.provider, model: summary.model, effort: summary.effort, fastMode: summary.fastMode, goal: summary.goal ?? null,
     } : {}),
+    ...(live ? { pendingAI: { blocks: live.blocks, blockOffset: live.blockOffset ?? 0, metadata: live.metadata } } : {}),
   };
   const backfill = backfillReqId ? { ...view.backfill!, reqId: backfillReqId, requestSource: "initial-backfill" as const } : null;
-  return { loaded, backfill };
+  return { loaded, backfill, catchup: live ? liveCatchup(loaded, live, false) : null };
 }
 
-export function beginProvisionalOpen(state: RenderState, view: CachedView, reqId: string, current: boolean, backfillReqId: string | null): void {
+type StreamingStarted = Extract<Event, { type: "streaming_started" }>;
+
+/**
+ * A live part as a subscription catch-up: its status rows and token count,
+ * with `withBlocks` its blocks too (merged into what is shown, as a late joiner's are).
+ */
+export function liveCatchup(loaded: Pick<LoadedEvent, "convId" | "provider" | "model">, live: AIMessagePayload, withBlocks: boolean): StreamingStarted {
+  return {
+    type: "streaming_started",
+    convId: loaded.convId,
+    provider: loaded.provider,
+    model: loaded.model,
+    snapshotKind: "catchup",
+    startedAt: live.metadata?.startedAt ?? Date.now(),
+    ...(live.metadata?.workTimerStartedAt !== undefined ? { workTimerStartedAt: live.metadata.workTimerStartedAt } : {}),
+    ...(withBlocks ? { blocks: live.blocks, blockOffset: live.blockOffset ?? 0 } : {}),
+    tokens: live.metadata?.tokens ?? 0,
+    ...(live.metadata?.generationThroughput !== undefined ? { generationThroughput: live.metadata.generationThroughput } : {}),
+    ...(live.compactionStartedAt !== undefined ? { compactionStartedAt: live.compactionStartedAt } : {}),
+    ...(live.connectionWaitStartedAt !== undefined ? { connectionWaitStartedAt: live.connectionWaitStartedAt, connectionWaitLabel: live.connectionWaitLabel ?? null } : {}),
+  };
+}
+
+export function beginProvisionalOpen(state: RenderState, view: CachedView, reqId: string, current: boolean, backfillReqId: string | null, live: AIMessagePayload | null = null): void {
   state.provisionalOpen = {
     convId: view.convId,
     reqId,
     current,
     paintedAt: Date.now(),
     loadedKey: pageKey(view.loaded),
+    live: live ? { blocks: structuredClone(live.blocks), blockOffset: live.blockOffset ?? 0 } : null,
     backfillKey: view.backfill ? pageKey(view.backfill) : null,
     cachedBackfillReqId: backfillReqId,
     intent: state.conversationScroll.pendingOpen ? { ...state.conversationScroll.pendingOpen } : null,
@@ -92,8 +123,8 @@ export function noteProvisionalPlacement(state: RenderState): void {
 export type ProvisionalOutcome =
   /** Not this view's business: handle it as usual. */
   | { kind: "pass" }
-  /** The answer matched the view: nothing more to apply. */
-  | { kind: "confirmed"; done: boolean; wasStale: boolean }
+  /** The answer matched the view: nothing more to apply but a running turn's newer live part (`live`). */
+  | { kind: "confirmed"; done: boolean; wasStale: boolean; live?: AIMessagePayload }
   /** The view is gone: handle these events (the answer) as usual instead. */
   | { kind: "replace"; events: Event[] };
 
@@ -109,19 +140,25 @@ export function reconcileProvisionalOpen(state: RenderState, event: Event): Prov
     return { kind: "pass" };
   }
   if (event.type === "conversation_loaded" && event.reqId === provisional.reqId && !provisional.confirmed) {
-    const matches = event.convId === provisional.convId && !event.pendingAI
+    // A running turn's live part may have grown since the copy (a push is a fraction of a second behind), never changed.
+    const live = provisional.live;
+    const liveMatches = event.pendingAI
+      ? live !== null && (event.pendingAI.blockOffset ?? 0) === live.blockOffset && findSnapshotAlignment(live.blocks, event.pendingAI.blocks) !== null
+      : live === null;
+    const matches = event.convId === provisional.convId && liveMatches
       && Boolean(event.initialBackfillReqId) === (provisional.backfillKey !== null)
       && pageKey(event) === provisional.loadedKey;
     if (!matches) return replace(state, provisional, [event]);
     applyLoadedMetadata(state, event);
     const wasStale = !provisional.current;
     provisional.current = true;
+    const grown = event.pendingAI ? { live: event.pendingAI } : {};
     if (event.initialBackfillReqId) {
       provisional.confirmed = { loaded: event, backfillReqId: event.initialBackfillReqId };
-      return { kind: "confirmed", done: false, wasStale };
+      return { kind: "confirmed", done: false, wasStale, ...grown };
     }
     state.provisionalOpen = null;
-    return { kind: "confirmed", done: true, wasStale };
+    return { kind: "confirmed", done: true, wasStale, ...grown };
   }
   if (event.type === "conversation_history_loaded" && provisional.confirmed
       && event.reqId === provisional.confirmed.backfillReqId) {
