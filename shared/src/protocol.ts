@@ -21,6 +21,7 @@ import type { SidebarViewHint } from "./sidebar-first-page";
 export type { SidebarViewHint };
 import type { ProviderProxiesEvent, ProviderProxyCommand, ProviderProxyInfo, ProviderProxyLinkCommand, ProviderProxyLinkEvent } from "./provider-proxy";
 import type { UserMacro } from "./user-macros";
+import type { VideoControlAction, VideoPlaybackLink } from "./video";
 export type { UserMacro };
 import type { AppClientInfo, AppConversationInfo, AppLifetime, AppSystemSpec, AppToolsSpec, TurnStopReason } from "./app-api";
 export type { AppBuiltinTool, AppClientInfo, AppConversationInfo, AppLifetime, AppSystemBase, AppSystemSpec, AppToolDef, AppToolsSpec, TurnStopReason } from "./app-api";
@@ -499,6 +500,55 @@ export interface GetImageCommand {
   height: number;
   /** png: a history thumbnail, which the daemon may quantize to 256 colours. Older daemons ignore it. */
   purpose?: "thumbnail";
+}
+
+/**
+ * Play a stored video in this client's terminal (st's `a=v` video), streamed
+ * by `st-play --pipe` on the daemon's host (docs/video-attachments.md). The
+ * client writes each `video_output` to its terminal unchanged, relays the
+ * terminal's replies about `kittyId` with video_input, and places and
+ * deletes the video itself. A playback lives until video_stop, its client
+ * disconnects, or it fails (`video_ended`).
+ */
+export interface VideoPlayCommand {
+  type: "video_play";
+  /** Chosen by the client; names the playback in every later message. */
+  playbackId: string;
+  /** `VideoRef.id`. */
+  videoId: string;
+  /** Kitty image id the video gets in the client's terminal. */
+  kittyId: number;
+  /** The placement in pixels: the resolution sent never exceeds it. */
+  width: number;
+  height: number;
+  /** Whether the terminal is on this machine's side of any network link. */
+  link: VideoPlaybackLink;
+  startMs?: number;
+  /** 0..1 */
+  volume?: number;
+}
+
+/** Terminal replies about a playing video (Kitty graphics APCs for its kittyId), unchanged. */
+export interface VideoInputCommand {
+  type: "video_input";
+  playbackId: string;
+  data: string;
+}
+
+export interface VideoControlCommand {
+  type: "video_control";
+  playbackId: string;
+  action: VideoControlAction;
+  /** seek: seconds from the start; skip: seconds (negative goes back); volume: 0..1; mute: 0 or 1. */
+  value?: number;
+  /** size: the placement's new size in pixels. */
+  width?: number;
+  height?: number;
+}
+
+export interface VideoStopCommand {
+  type: "video_stop";
+  playbackId: string;
 }
 
 export interface LoadToolOutputsCommand {
@@ -1468,6 +1518,10 @@ export type Command =
   | LoadToolOutputsCommand
   | LoadDisplayBlocksCommand
   | GetImageCommand
+  | VideoPlayCommand
+  | VideoInputCommand
+  | VideoControlCommand
+  | VideoStopCommand
   | DeleteConversationCommand
   | DeleteConversationsCommand
   | MarkConversationCommand
@@ -2345,6 +2399,37 @@ export interface HistoryUpdatedEvent {
   pendingAI?: AIMessagePayload | null;
 }
 
+/** Bytes for the client's terminal: whole Kitty graphics APCs, never part of a chunked transfer. */
+export interface VideoOutputEvent {
+  type: "video_output";
+  playbackId: string;
+  data: string;
+}
+
+/** What the sender is doing, about once a second when it changes. */
+export interface VideoStatusEvent {
+  type: "video_status";
+  playbackId: string;
+  /** Video bitrate being sent. */
+  kbps: number;
+  /** Resolution being sent. */
+  width: number;
+  height: number;
+  /** Passing the original H.264 through. */
+  copy: boolean;
+  /** Measured delivery rate to the terminal, kbit/s. */
+  rateKbps: number;
+  rttMs: number;
+}
+
+/** The playback is over: stopped (video_stop, or the sender quit) or failed. */
+export interface VideoEndedEvent {
+  type: "video_ended";
+  playbackId: string;
+  reason: "stopped" | "error";
+  message?: string;
+}
+
 export interface ImageDataEvent {
   type: "image_data";
   reqId: string;
@@ -2730,6 +2815,9 @@ export type Event =
   | ToolOutputsLoadedEvent
   | DisplayBlocksLoadedEvent
   | ImageDataEvent
+  | VideoOutputEvent
+  | VideoStatusEvent
+  | VideoEndedEvent
   | SystemInstructionsUpdatedEvent
   | FolderInstructionsLoadedEvent
   | FolderInstructionsUpdatedEvent

@@ -16,7 +16,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, utimesSync, writeFileSync, copyFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { dataDir } from "@exocortex/shared/paths";
-import type { ImageMediaType, ImageRef } from "./messages";
+import type { ImageMediaType, ImageRef, VideoMediaType } from "./messages";
 import { imageIdForBytes, sniffImage } from "@exocortex/shared/image-sniff";
 
 export { imageIdForBytes, sniffImage, type SniffedImage } from "@exocortex/shared/image-sniff";
@@ -71,7 +71,7 @@ async function withMagickSlot<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 /** Run `magick <args>` with `input` on stdin; resolves with stdout. */
-function runMagick(args: string[], input: Uint8Array): Promise<Buffer> {
+export function runMagick(args: string[], input: Uint8Array): Promise<Buffer> {
   return withMagickSlot(async () => {
     let proc: ReturnType<typeof Bun.spawn>;
     try {
@@ -111,6 +111,29 @@ export interface StoredImage {
 
 function storedPath(id: string, mediaType: ImageMediaType): string {
   return join(attachmentsDir(), `${id}.${EXTENSIONS[mediaType]}`);
+}
+
+const VIDEO_EXTENSIONS: Record<VideoMediaType, string> = {
+  "video/mp4": "mp4",
+  "video/quicktime": "mov",
+  "video/webm": "webm",
+  "video/x-matroska": "mkv",
+  "image/gif": "gif",
+};
+
+/** Where a stored video lives (video-attachments.ts puts it there). */
+export function storedVideoPath(id: string, mediaType: VideoMediaType): string {
+  return join(attachmentsDir(), `${id}.${VIDEO_EXTENSIONS[mediaType]}`);
+}
+
+/** Locate a stored video by id. */
+export function findStoredVideo(id: string): { path: string; mediaType: VideoMediaType } | null {
+  if (!isImageId(id)) return null;
+  for (const mediaType of Object.keys(VIDEO_EXTENSIONS) as VideoMediaType[]) {
+    const path = storedVideoPath(id, mediaType);
+    if (existsSync(path)) return { path, mediaType };
+  }
+  return null;
 }
 
 /** Locate a stored image by id. */
@@ -189,11 +212,11 @@ export async function storeImageFile(path: string, name = basename(path)): Promi
   };
 }
 
-/** Copy stored images referenced by an export into `destination`. */
+/** Copy stored images (and videos) referenced by an export into `destination`. */
 export function copyStoredImages(ids: Iterable<string>, destination: string): string[] {
   const copied: string[] = [];
   for (const id of new Set(ids)) {
-    const stored = findStoredImage(id);
+    const stored = findStoredImage(id) ?? findStoredVideo(id);
     if (!stored) continue;
     mkdirSync(destination, { recursive: true, mode: 0o700 });
     const target = join(destination, basename(stored.path));
