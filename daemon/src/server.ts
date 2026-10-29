@@ -262,6 +262,13 @@ export class DaemonServer {
     }
   }
 
+  /** Changed history revisions, to TUIs that keep opened pages (never app clients). */
+  broadcastHistoryRevisions(revs: Record<string, string>): void {
+    for (const client of this.clients.values()) {
+      if (client.capabilities.has("history-revisions") && !client.app) this.sendTo(client, { type: "history_revisions", revs });
+    }
+  }
+
   /**
    * Send the compact reorder delta to capable clients. Materialize the legacy
    * full sidebar snapshot at most once, and only when an older client needs it.

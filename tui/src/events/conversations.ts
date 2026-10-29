@@ -273,6 +273,17 @@ export function handleSidebarStatePatched(event: Extract<Event, { type: "sidebar
   applySidebarStatePatch(state.sidebar, event);
 }
 
+/** What a load says about the conversation besides its history: model, goal, BTW, context size. */
+export function applyLoadedMetadata(state: RenderState, event: Extract<Event, { type: "conversation_loaded" }>): void {
+  syncChosenProvider(state, event.provider ?? fallbackProvider(state));
+  state.model = event.model ?? state.model;
+  state.effort = event.effort ?? state.effort;
+  state.fastMode = event.fastMode ?? state.fastMode;
+  state.goal = event.goal ?? null;
+  state.btw = projectConversationBtw(event.convId, event.btw);
+  state.contextTokens = event.contextTokens;
+}
+
 export function handleConversationLoaded(
   event: Extract<Event, { type: "conversation_loaded" }>,
   state: RenderState,
@@ -368,14 +379,8 @@ export function handleConversationLoaded(
   } else {
     focusConversationById(state.sidebar, event.convId);
   }
-  syncChosenProvider(state, event.provider ?? fallbackProvider(state));
-  state.model = event.model ?? state.model;
-  state.effort = event.effort ?? state.effort;
-  state.fastMode = event.fastMode ?? state.fastMode;
-  state.goal = event.goal ?? null;
-  state.btw = projectConversationBtw(event.convId, event.btw);
+  applyLoadedMetadata(state, event);
   state.scrollOffset = 0;
-  state.contextTokens = event.contextTokens;
   state.historyStartIndex = event.historyStartIndex ?? 0;
   state.historyStartBlockIndex = event.historyStartBlockIndex ?? 0;
   state.historyStartUserIndex = event.historyStartUserIndex ?? 0;

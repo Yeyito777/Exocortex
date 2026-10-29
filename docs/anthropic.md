@@ -45,6 +45,38 @@ conversations:
   transcript.
 - Tool rounds are stored as normal `tool_use`/`tool_result` messages, so a
   conversation can switch to another provider afterwards.
+- **Session files.** A fork is a full copy of the transcript up to its resume
+  point (same entry ids, a new session id), so a long conversation left one
+  25-40 MB file per new process. Resuming in place instead would append to one
+  file, but Claude Code then loads only its newest branch, cannot resume the
+  entries of a process still running, and cannot reach points from before its
+  own compaction, so every new process still forks. Once a day (the first time
+  10 minutes after the daemon starts) a separate process prunes
+  (`daemon/src/providers/anthropic/session-prune.ts`): per conversation it
+  keeps the fewest files that hold every resume point its history records
+  (the next turn's, plus one per Claude Code compaction for unwinds past it)
+  and moves the rest of the conversation's files, once they are a day old, to
+  `exocortex-prune-quarantine/<date>/` beside `projects/` (same relative
+  paths, a rename); quarantine days older than 7 are purged by a later run.
+  A pruned session id gets an alias in `claude-session-aliases.json` (data
+  directory) to the kept file that holds its points; an unwind to one of them
+  resumes that file at the same entry, which sends the model the same
+  messages (a point counts as held by a file only when the file has the same
+  entries from the start up to it: a compaction re-parents the entries it
+  keeps). It touches only this instance's conversation workspaces' project
+  directories, never a file a running process holds, never an interactive
+  `claude` session, and never the `tool-results/` and `subagents/`
+  directories later transcripts point into. Claude Code's own sweep would
+  delete transcripts 30 days old wherever they are, sessions idle
+  conversations resume from included, so at start the daemon sets
+  `cleanupPeriodDays` to 3650 in each Claude configuration directory's
+  `settings.json` where it is unset (an explicit value stays). By hand:
+
+  ```
+  bun daemon/src/providers/anthropic/session-prune-cli.ts                      # dry run
+  bun daemon/src/providers/anthropic/session-prune-cli.ts --apply              # quarantine
+  bun daemon/src/providers/anthropic/session-prune-cli.ts --restore 2026-10-30 # undo a day
+  ```
 - **Context compaction.** Claude Code compacts its own session, from the API's
   real usage: automatically near the window (967k of a 1M window) and when a
   request is still too long. Exocortex shows each such compaction ("Claude
@@ -67,12 +99,19 @@ conversations:
     a `[notification] Background task completed` message for it and shows that
     turn's work.
 
-  Even without background tasks a process stays 15 seconds after its turn
-  ends or is interrupted, so queued messages, steering and quick follow-ups
-  continue in it instead of starting and resuming a new one. It closes once it
-  has had no task or turn for that long, or when the model, effort or
-  workspace changes, history is rewound past it, or the daemon stops. Its
-  tasks end with it; a resumed session reports them as stopped.
+  Even without background tasks a process stays 30 minutes after its turn
+  ends or is interrupted, so the conversation's next turn (a follow-up,
+  steering, a queued message) continues in it instead of starting a new
+  process and forking its session (in Oct 2026 about half of the turns that
+  started a new process came within 5 minutes of the last one). It closes once it has had no task or turn for
+  that long, or when the model, effort, workspace, Claude account,
+  instructions or tool text change, history is rewound past it, or the daemon
+  stops. Idle processes are capped: past 12 idle ones, or once every live
+  process together uses more than a fifth of the machine's memory (measured
+  from the relays' process trees; 6 GiB on a 31 GiB machine), the one idle
+  longest closes first; a process with a turn or background tasks is
+  never closed for room. Its tasks end with it; a resumed session reports them
+  as stopped.
 - **Daemon restarts.** Each process runs under a small relay
   (`daemon/src/providers/anthropic/relay.ts`) in its own transient systemd
   unit (`exocortex-claude-*`; started detached elsewhere), so a restart,

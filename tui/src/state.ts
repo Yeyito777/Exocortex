@@ -1,3 +1,4 @@
+import type { ProvisionalOpen } from "./cachedopen";
 import type { FastMode } from "@exocortex/shared/messages";
 /**
  * TUI render state.
@@ -226,6 +227,11 @@ export interface RenderState {
   convId: string | null;
   /** Conversation opened ahead of its canonical load (remote routes); shown as a spinner. */
   conversationLoading: { convId: string; startedAt: number } | null;
+  /**
+   * The open conversation is painted from the on-disk view cache (over /ssh)
+   * until the open's own answer confirms or replaces it (cachedopen.ts).
+   */
+  provisionalOpen: ProvisionalOpen | null;
   /**
    * Latest load_conversation this TUI still wants applied. A load for another
    * conversation navigates only when it answers this request; starting a draft
@@ -467,6 +473,23 @@ export function noteConversationOpenRequest(state: RenderState, convId: string, 
   state.conversationOpenRequest = { reqId, convId };
 }
 
+/** Whether the open conversation is a cached copy not yet known to be current (cachedopen.ts). */
+export function isProvisionalStale(state: RenderState): boolean {
+  const provisional = state.provisionalOpen;
+  return provisional !== null && provisional.convId === state.convId && !provisional.current;
+}
+
+/**
+ * How long a cached copy not known to be current shows unmarked: an answer
+ * within a round trip or two replaces it with no flash of "updating". 0 marks it at once.
+ */
+export const STALE_COPY_MARK_DELAY_MS = 250;
+
+/** Whether the top bar marks the open conversation as updating (a stale copy, past the delay). */
+export function isStaleCopyMarked(state: RenderState, now = Date.now()): boolean {
+  return isProvisionalStale(state) && now - state.provisionalOpen!.paintedAt >= STALE_COPY_MARK_DELAY_MS;
+}
+
 export function isActiveConversationLoading(state: RenderState): boolean {
   return state.conversationLoading != null && state.conversationLoading.convId === state.convId;
 }
@@ -697,6 +720,7 @@ export function createInitialState(): RenderState {
     goal: null,
     convId: null,
     conversationLoading: null,
+    provisionalOpen: null,
     conversationOpenRequest: null,
     sshRemote: null,
     macroEnvironment: null,

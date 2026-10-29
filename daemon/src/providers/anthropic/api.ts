@@ -18,6 +18,8 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { existsSync } from "fs";
+import { join } from "path";
 import type { Options as ClaudeQueryOptions } from "@anthropic-ai/claude-agent-sdk";
 import { claudeCodeSafetyHooks } from "./safety-hooks";
 import { claudeSdks, loadClaudeSdks } from "./sdk";
@@ -29,7 +31,9 @@ import type { StreamCallbacks, StreamOptions, StreamResult } from "../types";
 import { requireSubscriptionAuth } from "./auth";
 import { claudeProcessOptions } from "./cli";
 import { AuthError } from "../errors";
-import { MAIN_ACCOUNT_ID } from "./accounts";
+import { getClaudeAccount, MAIN_ACCOUNT_ID, mainClaudeConfigDir } from "./accounts";
+import { CLAUDE_SESSION_ALIASES_FILE, claudeProjectDirName, claudeSessionAlias } from "./session-prune";
+import { dataDir } from "@exocortex/shared/paths";
 import { apiCreditSwitchNotice, beginAccountTurn, beginApiCreditTurn, multipleClaudeAccounts, noteAccountAuthFailure, routeClaudeTurn, touchConversationAccount } from "./account-pool";
 import { ApiCreditExhaustedError, ApiCreditUsageMeter, classifyApiCreditError, noteApiCreditFailure, type ApiCreditKey } from "./api-credits";
 import { isUsageLimitError } from "../../usage-limit-wait";
@@ -193,6 +197,16 @@ function helperOptions(model: ModelId, options: StreamOptions, cwd: string, stde
     maxTurns: 1,
     persistSession: false,
   };
+}
+
+/** When a resume point's session file was pruned, the kept session that holds the same point (session-prune.ts). */
+export function prunedSessionAlias(resume: NonNullable<ClaudePromptPlan["resume"]>, account: string): string | null {
+  // Under /proxy the local Claude Code runs in the main configuration directory.
+  const configDir = isProviderProxied("anthropic") ? mainClaudeConfigDir() : getClaudeAccount(account)?.configDir ?? mainClaudeConfigDir();
+  const dir = join(configDir, "projects", claudeProjectDirName(resume.cwd));
+  if (existsSync(join(dir, `${resume.sessionId}.jsonl`))) return null;
+  const alias = claudeSessionAlias(join(dataDir(), CLAUDE_SESSION_ALIASES_FILE), resume.sessionId);
+  return alias && existsSync(join(dir, `${alias}.jsonl`)) ? alias : null;
 }
 
 function hasOutput(state: ClaudeStreamState): boolean {
@@ -411,6 +425,10 @@ async function runStreamMessage(
 
   const start = (resumePlan: ClaudePromptPlan) => {
     const history = resumePlan.resume ? null : historyMark(resumePlan.pending);
+    // A pruned session resumes from the kept file holding the same point (session-prune.ts).
+    const resumeFrom = resumePlan.resume ? prunedSessionAlias(resumePlan.resume, account) : null;
+    if (resumeFrom && resumePlan.resume) log("info", `anthropic: Claude Code session ${resumePlan.resume.sessionId} was pruned; resuming ${resumeFrom}, which holds the same point`);
+    const processPlan: ClaudePromptPlan = resumeFrom && resumePlan.resume ? { ...resumePlan, resume: { ...resumePlan.resume, sessionId: resumeFrom } } : resumePlan;
     // A conversation's process runs under a relay, so it can outlive this daemon
     // (not an ephemeral app conversation's, which ends with it).
     const meta: RelayMeta | null = convId && relaysEnabled() && !app?.ephemeral ? {
@@ -429,7 +447,7 @@ async function runStreamMessage(
     const session = openClaudeCodeSession(convId, key, (input, binding) => claudeSdks().claude.query({
       prompt: input,
       options: {
-        ...agentTurnOptions(model, options, cwd, resumePlan, onStderr, binding, account, convId, apiCredit),
+        ...agentTurnOptions(model, options, cwd, processPlan, onStderr, binding, account, convId, apiCredit),
         ...(relay && meta ? { spawnClaudeCodeProcess: spawnOptions => relay.launch(spawnOptions, meta) } : {}),
       },
     }), { relay, resume: resumePlan.resume, history, system, account, apiCredit, ...(app?.ephemeral ? { keepAlive: true } : {}) });

@@ -53,12 +53,14 @@ import {
   IMAGE_CLIP_QUERY, parseImageClipReport,
 } from "./smoothscroll";
 import { enter_alt, leave_alt, hide_cursor, show_cursor, enable_bracketed_paste, disable_bracketed_paste, query_clipboard_paste_events, enable_clipboard_paste_events, disable_clipboard_paste_events, enable_kitty_kbd, disable_kitty_kbd, enable_mouse, disable_mouse, set_cursor_color, reset_cursor_color } from "./terminal";
-import { createInitialState, isStreaming, canInterrupt, clearPendingAI, clearStreamingTailMessages, focusPrompt, isActiveConversationLoading, modelSupportsImages, newConversationSelection, noConversationOpen, noteConversationOpenRequest, pushSystemMessage, resetDraftConversationState, resetHistoryPagination, resetNewConversationDefaults, resetToolOutputState } from "./state";
+import { createInitialState, isStreaming, canInterrupt, clearPendingAI, clearStreamingTailMessages, focusPrompt, isActiveConversationLoading, isProvisionalStale, isStaleCopyMarked, STALE_COPY_MARK_DELAY_MS, modelSupportsImages, newConversationSelection, noConversationOpen, noteConversationOpenRequest, pushSystemMessage, resetDraftConversationState, resetHistoryPagination, resetNewConversationDefaults, resetToolOutputState } from "./state";
 import { workingRowVisible } from "./conversation";
 import { createMessageMetadata, createPendingAI, type ImageAttachment, type UserMessage } from "./messages";
 import { loginPromptProviders } from "./providerselection";
 import { handleEvent } from "./events";
 import { beginConversationLoad, beginOptimisticConversation } from "./events/conversations";
+import { beginProvisionalOpen, cachedOpenEvents, noteProvisionalPlacement, reconcileProvisionalOpen } from "./cachedopen";
+import type { CachedView } from "./viewcache";
 import { CONV_SCOPED } from "./events/stream-sequence";
 import {
   clearAllQueuedMessagesForConversation,
@@ -114,6 +116,7 @@ import type { SidebarViewHint } from "@exocortex/shared/sidebar-first-page";
 import { applyTuiStartingState, availableStartingConversationId, applyRouteViewState, captureRouteViewState, captureTuiStartingState, daemonRouteKey, loadTuiStartingState, RouteViewStates, saveTuiStartingState } from "./startingstate";
 import { closeBtwSession, startBtwSession } from "./btw/controller";
 import { createSidebarState } from "./sidebar/state";
+import { DONE_FOLDER_NAME } from "./sidebar/doneaction";
 import { addOptimisticConversation, focusConversationById, rememberEnteredConversation } from "./sidebar";
 import { newConversationFolderId, type NewConversationPlacement } from "./sidebar/tree";
 import { formatConnectionLostNotice } from "./events/notices";
@@ -424,7 +427,7 @@ function performRender(): number {
   const renderMs = performance.now() - renderStartedAt;
   // A page that landed before the history had a layout keeps paging from its first frame.
   if (olderHistoryDueAfterLayout(state)) requestOlderHistory(OLDER_HISTORY_PAGE_TURNS);
-  if (STALL_PROFILE) stallMark(`${framePresented ? "frame" : "held"} ${state.convId} msgs=${state.messages.length}${isActiveConversationLoading(state) ? " loading" : ""} off=${state.scrollOffset} lines=${state.layout.totalLines}/${state.layout.messageAreaHeight} w=${state.layout.chatWidth} view=${state.showToolOutput ? "detail" : state.showTurnWork ? "work" : "folded"}`);
+  if (STALL_PROFILE) stallMark(`${framePresented ? "frame" : "held"} ${state.convId} msgs=${state.messages.length}${isActiveConversationLoading(state) ? " loading" : ""}${state.provisionalOpen ? isProvisionalStale(state) ? " cached-stale" : " cached" : ""} off=${state.scrollOffset} lines=${state.layout.totalLines}/${state.layout.messageAreaHeight} w=${state.layout.chatWidth} view=${state.showToolOutput ? "detail" : state.showTurnWork ? "work" : "folded"}`);
   if (!framePresented) return renderMs;
   // Scrolling, streaming and overlays move what is under a still pointer.
   refreshMouseCursor(state);
@@ -569,6 +572,8 @@ function scheduleDayRolloverRender(): void {
  * daemon already sends unasked (a load's initialBackfill): wait for it instead.
  */
 function requestOlderHistory(turns: number, requestSource: "initial-backfill" | "viewport" = "viewport", pushedReqId?: string): boolean {
+  // A cached copy's cursors may be stale: older pages wait for the open's answer.
+  if (!pushedReqId && isProvisionalStale(state)) return false;
   const request = beginOlderHistoryLoad(state, turns);
   if (!request) return false;
   state.historyLoadingRequestId = pushedReqId ?? daemon.loadConversationHistory(
@@ -586,6 +591,12 @@ function requestOlderHistory(turns: number, requestSource: "initial-backfill" | 
 function loadConversationWindow(convId: string): string {
   const reqId = daemon.loadConversation(convId, openingHistoryTurns(state.rows), openingViewport(state), INITIAL_BUFFER_ADDITIONAL_TURNS);
   noteConversationOpenRequest(state, convId, reqId);
+  // A reload (reconnect, reopen) of a cached copy still on screen: this answer settles it.
+  const provisional = state.provisionalOpen;
+  if (provisional?.convId === convId) {
+    provisional.reqId = reqId;
+    provisional.confirmed = null;
+  }
   return reqId;
 }
 
@@ -749,6 +760,24 @@ function onDaemonEvent(event: Event): void {
     startupProfileMark("conversations_list_received", { conversationCount: event.conversations.length });
   }
 
+  // The open's answer to a conversation painted from its cached copy.
+  if (state.provisionalOpen) {
+    const outcome = reconcileProvisionalOpen(state, event);
+    if (outcome.kind === "confirmed") {
+      if (outcome.wasStale) prefetchBottomScreen(state, daemon);
+      if (outcome.done) {
+        requestElidedBlocksIfNeeded(state, daemon);
+        maybeRequestOlderHistory();
+      }
+      scheduleRender();
+      return;
+    }
+    if (outcome.kind === "replace") {
+      for (const replacement of outcome.events) onDaemonEvent(replacement);
+      return;
+    }
+  }
+
   if (isBackgroundConversationScopedEvent(event)) {
     return;
   }
@@ -761,6 +790,8 @@ function onDaemonEvent(event: Event): void {
   invalidateHistoryRenderCache(state);
   handleEvent(event, state, daemon);
   startupProfileEvent(event);
+  // A turn ended: copies of conversations that changed are refreshed in the background.
+  if (event.type === "conversation_updated" && wasUpdatedConversationStreaming && !event.summary.streaming) daemon.viewCache?.poke();
   if (state.sshConnecting?.phase === "loading" && (event.type === "conversation_loaded" || event.type === "tools_available")
       && state.toolsAvailableReceived && state.convId && !isActiveConversationLoading(state) && state.messages.length > 0) {
     // The conversation and its tool styles are here: draw it without waiting
@@ -1054,15 +1085,45 @@ function attachTerminalClipboardImage(image: ImageAttachment): void {
 
 function openConversation(convId: string, input: "keyboard" | "mouse"): void {
   prepareConversationOpen(state, convId);
+  const viewCache = daemon.viewCache;
+  // The conversation being left changed while open: its copy is refreshed in the background.
+  if (state.convId && state.convId !== convId) viewCache?.poke();
+  // Over /ssh a conversation opened before paints from its copy; the open
+  // still goes out, and its answer confirms or replaces the copy.
+  const cached = viewCache && state.convId !== convId ? viewCache.view(convId, openingViewport(state).folded === true) : null;
   // Local loads land within a frame. Remote ones cross the network, so open
   // the chat now and let its spinner cover the round trip.
-  if (daemon.remoteAlias) beginConversationLoad(state, convId, daemon);
+  if (daemon.remoteAlias && !cached) beginConversationLoad(state, convId, daemon);
   maybePrewarmOpenAI();
   const reqId = loadConversationWindow(convId);
+  if (cached) paintCachedView(cached, reqId, viewCache!.isCurrent(cached));
+  viewCache?.opened(convId);
   const renderMs = renderAfterLocalUiMutation();
+  if (cached) {
+    noteProvisionalPlacement(state);
+    maybeRequestOlderHistory();
+    // Marked as updating if the answer is not here by then.
+    if (isProvisionalStale(state)) {
+      setTimeout(() => { if (isStaleCopyMarked(state)) scheduleRender(0); }, STALE_COPY_MARK_DELAY_MS).unref?.();
+    }
+  }
   if (PERFORMANCE_PROFILING_ENABLED && renderMs >= 100) {
     log("warn", `perf: conversation_open tui_request_render ${JSON.stringify({ reqId, convId, renderMs, input })}`);
   }
+}
+
+/** Show a conversation's cached copy as if `reqId` had been answered (cachedopen.ts). */
+function paintCachedView(view: CachedView, reqId: string, current: boolean): void {
+  const summary = state.sidebar.conversations.find(conversation => conversation.id === view.convId);
+  const { loaded, backfill } = cachedOpenEvents(view, reqId, summary);
+  beginProvisionalOpen(state, view, reqId, current, backfill?.reqId ?? null);
+  invalidateHistoryRenderCache(state);
+  clearDeferredHistoryRenderTimer();
+  handleEvent(loaded, state, daemon);
+  if (backfill && requestOlderHistory(INITIAL_BUFFER_ADDITIONAL_TURNS, "initial-backfill", backfill.reqId)) {
+    handleEvent(backfill, state, daemon);
+  }
+  if (current) prefetchBottomScreen(state, daemon);
 }
 
 function startNewConversation(placement: NewConversationPlacement = "selected"): void {
@@ -2086,6 +2147,11 @@ function handleKey(key: KeyEvent): void {
     case "rename_folder":
       daemon.renameFolder(result.folderId, result.name);
       break;
+    case "move_to_done":
+      for (const move of result.moves) daemon.moveSidebarItems(move.items, move.parentId, undefined, {}, move.reqId);
+      if (result.create.length > 0) daemon.createFolder(DONE_FOLDER_NAME, null, result.create);
+      if (result.notice) pushSystemMessage(state, result.notice);
+      break;
     case "handled":
       break;
   }
@@ -2407,6 +2473,14 @@ async function main(): Promise<void> {
     sshProbeFallback,
   });
   daemon.setSidebarViewHint(sidebarViewHint);
+  daemon.setViewCacheContext(() => ({
+    openConvId: state.convId,
+    request: () => ({ turns: openingHistoryTurns(state.rows), viewport: openingViewport(state), backfillTurns: INITIAL_BUFFER_ADDITIONAL_TURNS }),
+    summary: convId => {
+      const summary = state.sidebar.conversations.find(conversation => conversation.id === convId);
+      return summary ? { streaming: summary.streaming } : null;
+    },
+  }));
   remotePathCompletion = new RemotePathCompletionController(
     (directory, prefix) => daemon.requestPathDirectory(directory, prefix),
   );

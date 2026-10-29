@@ -22,6 +22,7 @@ import {
   toggleVisualSelection,
   unwrapSelectedFolder,
 } from "./sidebar/folderactions";
+import { moveSelectionToDone } from "./sidebar/doneaction";
 import { sameSidebarItem as sameItem } from "./sidebar/items";
 import { reconcileNotificationMutes } from "./sidebar/folders";
 import { moveSelection, moveToMarked, moveToStreaming } from "./sidebar/navigation";
@@ -240,6 +241,8 @@ export function handleSidebarKey(key: KeyEvent, sidebar: SidebarState): SidebarK
         return unwrapSelectedFolder(sidebar);
       case "M":
         return toggleSelectedMute(sidebar);
+      case ".":
+        return moveSelectionToDone(sidebar);
     }
   }
   const action = resolveAction(key, "navigation");

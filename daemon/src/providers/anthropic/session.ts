@@ -23,6 +23,8 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
+import { readdirSync, readFileSync } from "fs";
+import { totalmem } from "os";
 import type { Query, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { createAbortError, createDetachedTurnError } from "../../abort";
 import type { ToolExecutor } from "../../agent";
@@ -95,8 +97,32 @@ export type LiveTurnInput =
 
 /** Claude Code keeps the watchdog quiet through long tool calls while it runs. */
 export const HEARTBEAT_INTERVAL_MS = 60_000;
-/** How long a process without background tasks stays for a late notification turn or a quick follow-up. */
-const IDLE_CLOSE_MS = 15_000;
+
+/**
+ * How long processes without background tasks stay after their turn, so the
+ * conversation's next turn (a follow-up, a late notification) runs in them
+ * instead of starting and forking a new one. Kept under the prompt cache's
+ * hour, so an idle process never pins a conversation to its Claude account
+ * longer than its warm cache already does (routing.ts).
+ */
+export interface ClaudeIdlePolicy {
+  /** A process idle this long closes. */
+  keepMs: number;
+  /** At most this many idle processes stay; past it the one idle longest closes. */
+  maxIdle: number;
+  /** Past this much memory (every live process, in bytes), idle processes close, idle longest first. */
+  maxRssBytes: number;
+}
+
+/** Thirty minutes, at most 12 idle, and every live process together within a fifth of the machine's memory. */
+const DEFAULT_IDLE_POLICY: ClaudeIdlePolicy = { keepMs: 30 * 60_000, maxIdle: 12, maxRssBytes: Math.round(totalmem() / 5) };
+let idlePolicy = DEFAULT_IDLE_POLICY;
+let readProcessRss: (pid: number) => number | null = processTreeRss;
+
+export function setClaudeIdlePolicyForTest(policy: Partial<ClaudeIdlePolicy> | null, rss?: (pid: number) => number | null): void {
+  idlePolicy = policy ? { ...DEFAULT_IDLE_POLICY, ...policy } : DEFAULT_IDLE_POLICY;
+  readProcessRss = rss ?? processTreeRss;
+}
 /** How long an interrupted turn may take to end before its process is given up. */
 const INTERRUPT_GRACE_MS = 30_000;
 /** How long a host tool call from a turn Claude Code started waits for that turn to be shown. */
@@ -151,6 +177,11 @@ export function openClaudeCodeSession(
   return session;
 }
 
+/** Sessions running processes write to or forked from: never pruned (session-prune.ts). */
+export function heldClaudeSessionIds(): string[] {
+  return [...sessions.values()].flatMap(session => session.heldSessionIds);
+}
+
 export function closeAllClaudeCodeSessions(reason: string): void {
   for (const session of [...sessions.values()]) session.close(reason);
 }
@@ -163,6 +194,65 @@ export function detachAllClaudeCodeSessions(reason: string): void {
 /** Close every process and wait (briefly) until their relays have stopped them. */
 export async function stopAllClaudeCodeSessions(reason: string): Promise<void> {
   await Promise.all([...sessions.values()].map(session => session.stop(reason)));
+}
+
+/** What a process the daemon cannot measure (no relay pid, or no /proc) is assumed to use. */
+const UNMEASURED_PROCESS_BYTES = 400 * 1024 ** 2;
+
+/** Resident memory of a process and its descendants (Linux /proc), or null when unknown. */
+export function processTreeRss(pid: number): number | null {
+  if (process.platform !== "linux") return null;
+  const status = (id: number) => { try { return readFileSync(`/proc/${id}/status`, "utf8"); } catch { return null; } };
+  const own = status(pid);
+  if (own === null) return null;
+  let bytes = 0;
+  const seen = new Set<number>();
+  const visit = (id: number, text: string | null) => {
+    if (seen.has(id) || text === null) return;
+    seen.add(id);
+    bytes += Number(/^VmRSS:\s+(\d+) kB/m.exec(text)?.[1] ?? 0) * 1024;
+    let tasks: string[] = [];
+    try { tasks = readdirSync(`/proc/${id}/task`); } catch { /* exited */ }
+    for (const task of tasks) {
+      let children = "";
+      try { children = readFileSync(`/proc/${id}/task/${task}/children`, "utf8"); } catch { /* exited */ }
+      for (const child of children.split(/\s+/).filter(Boolean).map(Number)) visit(child, status(child));
+    }
+  };
+  visit(pid, own);
+  return bytes;
+}
+
+/**
+ * Keep idle processes within the policy's caps: close the ones idle longest
+ * past `maxIdle`, then while every live process together uses more than
+ * `maxRssBytes`. A process running a turn or background tasks is never closed
+ * here, only counted.
+ */
+function enforceIdleCaps(): void {
+  const live = [...sessions.values()].filter(session => !session.isClosed);
+  const idle = live.filter(session => session.idleFor !== null).sort((a, b) => b.idleFor! - a.idleFor!);
+  while (idle.length > idlePolicy.maxIdle) {
+    idle.shift()!.close(`more than ${idlePolicy.maxIdle} Claude Code processes were idle, and it was idle longest`);
+  }
+  const usage = new Map(live.filter(session => !session.isClosed).map(session => {
+    const pid = session.pid;
+    return [session, (pid === null ? null : readProcessRss(pid)) ?? UNMEASURED_PROCESS_BYTES] as const;
+  }));
+  let total = [...usage.values()].reduce((sum, bytes) => sum + bytes, 0);
+  while (total > idlePolicy.maxRssBytes && idle.length > 0) {
+    const session = idle.shift()!;
+    session.close(`Claude Code processes used ${formatBytes(total)}, over the ${formatBytes(idlePolicy.maxRssBytes)} cap, and it was idle longest`);
+    total -= usage.get(session) ?? 0;
+  }
+}
+
+function formatBytes(bytes: number): string {
+  return bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(1)} GiB` : `${Math.round(bytes / 1024 ** 2)} MiB`;
+}
+
+function formatDuration(ms: number): string {
+  return ms >= 60_000 ? `${Math.round(ms / 60_000)} minutes` : `${Math.round(ms / 1000)} seconds`;
 }
 
 function systemFingerprint(system: string): string {
@@ -444,6 +534,8 @@ export class ClaudeCodeSession {
   private discard: { promptUuid: string | null; deadline: ReturnType<typeof setTimeout>; closeAfter: boolean } | null = null;
   private bindingWaiters: Array<{ resolve(binding: HostToolBinding): void; reject(error: Error): void }> = [];
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
+  /** When the process last went idle (no turn, task or pending wake), while it stays so. */
+  private idleSince: number | null = null;
   /** Claude Code reports what becomes of each message it is sent; without that, queued input waits for the turn to end. */
   private reportsLifecycle = false;
   private closed = false;
@@ -469,10 +561,29 @@ export class ClaudeCodeSession {
     }
     this.runtime = start(this.input, () => this.turnBinding());
     void this.read();
+    // Adopted with nothing running (its relay saw no live task): idle from now,
+    // like a process whose turn just ended.
+    if (this.adopted && !this.held && Object.keys(this.taskStarts).length === 0) queueMicrotask(() => this.settle());
+    enforceIdleCaps();
   }
 
   get isClosed(): boolean {
     return this.closed;
+  }
+
+  /** How long the process has been idle, or null while it is busy (or closed, or kept alive). */
+  get idleFor(): number | null {
+    return this.idleSince === null || !this.isIdle() ? null : Date.now() - this.idleSince;
+  }
+
+  /** The session the process writes, and the one it forked from. */
+  get heldSessionIds(): string[] {
+    return [this.sessionId, this.resumePoint?.sessionId].filter((id): id is string => typeof id === "string");
+  }
+
+  /** The relay's pid, the root of the process tree it runs; null without a relay or before it said hello. */
+  get pid(): number | null {
+    return this.relay?.hello?.pid ?? null;
   }
 
   /** Background tasks, or a turn Claude Code started by itself, that closing the process would stop. */
@@ -993,18 +1104,33 @@ export class ClaudeCodeSession {
     if (changed) hooks?.tasksChanged(convId);
   }
 
-  /** Close once nothing needs the process: no turn, task, pending wake or interrupted turn. */
+  /** Nothing needs the process: no turn, task, pending wake, held or interrupted turn. */
+  private isIdle(): boolean {
+    return !this.closed && !this.keepAlive && !this.turn && this.tasks.size === 0 && this.wakeId === null
+      && !this.held && !this.discard && this.buffer.length === 0;
+  }
+
+  /**
+   * Close once nothing has needed the process for the idle policy's time, or
+   * sooner when the idle caps need room. Going idle again does not extend a
+   * wait already running.
+   */
   private settle(): void {
-    if (this.closed || this.turn || this.tasks.size > 0 || this.wakeId !== null || this.held || this.discard) return;
-    if (this.keepAlive) return;
-    this.clearIdleTimer();
-    this.idleTimer = setTimeout(() => this.close("idle with no background tasks"), IDLE_CLOSE_MS);
+    if (!this.isIdle() || this.idleTimer) return;
+    this.idleSince = Date.now();
+    const keepMs = idlePolicy.keepMs;
+    this.idleTimer = setTimeout(() => {
+      this.idleTimer = null;
+      if (this.isIdle()) this.close(`idle with no background tasks for ${formatDuration(keepMs)}`);
+    }, keepMs);
     this.idleTimer.unref?.();
+    enforceIdleCaps();
   }
 
   private clearIdleTimer(): void {
     if (this.idleTimer) clearTimeout(this.idleTimer);
     this.idleTimer = null;
+    this.idleSince = null;
   }
 
   /** The turn a host tool call runs under; Claude Code can make one before its own turn is shown. */
