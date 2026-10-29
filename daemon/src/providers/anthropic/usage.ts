@@ -12,6 +12,11 @@
  *
  * Usage is kept per Claude account (accounts.ts); the display combines the
  * accounts into one bar per window (aggregateUsage, account-pool.ts).
+ *
+ * The two sources disagree by about a point at the same moment (the `/usage`
+ * poll reads a little higher than the rate_limit_events), so an account's
+ * window never goes back within the same window (mergeUsage); only a reset
+ * starts it over.
  */
 
 import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
@@ -33,6 +38,13 @@ const USAGE_FILE = join(runtimeDir(), "usage-anthropic.json");
 const REMOTE_USAGE_TIMEOUT_MS = 30_000;
 /** A rejection without a reset time keeps the account out of new turns this long. */
 const UNKNOWN_LIMIT_MS = 15 * 60_000;
+/** Two reports of a window whose reset times are this close describe the same window. */
+const SAME_WINDOW_MS = 60_000;
+/**
+ * The most two sources disagree on one window at the same moment, in points.
+ * A bigger drop within a window is real (Anthropic reset the usage).
+ */
+const SOURCE_DISAGREEMENT = 5;
 
 interface AccountUsageEntry {
   usage: UsageData | null;
@@ -103,10 +115,35 @@ export function noteAccountUsageRefusal(account: string, message = "", now = Dat
   }
 }
 
-function commitUsage(account: string, usage: UsageData): void {
+function mergeWindow(previous: UsageWindow | null | undefined, next: UsageWindow | null, now: number): UsageWindow | null {
+  if (!previous || !next || previous.resetsAt === null || next.resetsAt === null) return next;
+  if (previous.resetsAt <= now || Math.abs(next.resetsAt - previous.resetsAt) > SAME_WINDOW_MS) return next;
+  // Under 100 after a limit: the account has room again, which routing must see.
+  if (previous.utilization >= 100 && next.utilization < 100) return next;
+  const drop = previous.utilization - next.utilization;
+  return drop > 0 && drop <= SOURCE_DISAGREEMENT ? { ...next, utilization: previous.utilization } : next;
+}
+
+/**
+ * An account's new usage report over its last one: within the same window the
+ * utilization only grows, so a report a point lower is the other source's
+ * rounding or lag, not less usage, and keeps the higher figure. A new window
+ * (another reset time, or the old one past), a big drop (Anthropic reset the
+ * usage) or a drop off a limit takes the report as it is.
+ */
+export function mergeUsage(previous: UsageData | null, next: UsageData, now = Date.now()): UsageData {
+  if (!previous) return next;
+  return {
+    ...next,
+    fiveHour: mergeWindow(previous.fiveHour, next.fiveHour, now),
+    sevenDay: mergeWindow(previous.sevenDay, next.sevenDay, now),
+  };
+}
+
+function commitUsage(account: string, usage: UsageData, now = Date.now()): void {
   const entry = entryFor(account);
-  entry.usage = usage;
-  entry.updatedAt = Date.now();
+  entry.usage = mergeUsage(entry.usage, usage, now);
+  entry.updatedAt = now;
   saveToDisk();
   emitClaudeAccountsChanged();
 }
@@ -145,11 +182,12 @@ interface PlanRateLimitWindow {
 
 function toPlanWindow(window: PlanRateLimitWindow | null | undefined): UsageWindow | null {
   if (!window || typeof window.utilization !== "number") return null;
-  // The `/usage` control request reports utilization as 0–100 and resets_at as ISO 8601.
+  // The `/usage` control request reports utilization as 0–100 and resets_at as ISO 8601,
+  // a fraction of a second off the whole second the rate_limit_events give.
   const resetsAt = window.resets_at ? Date.parse(window.resets_at) : Number.NaN;
   return {
     utilization: Math.round(window.utilization * 10) / 10,
-    resetsAt: Number.isFinite(resetsAt) ? resetsAt : null,
+    resetsAt: Number.isFinite(resetsAt) ? Math.round(resetsAt / 1000) * 1000 : null,
   };
 }
 
@@ -275,6 +313,24 @@ async function fetchPlanRateLimits(account: string): Promise<Record<string, unkn
   }
 }
 
+/** Record one account's `/usage` answer (refreshAccountUsage). */
+export function applyPlanRateLimits(account: string, limits: Record<string, unknown> | null, now = Date.now()): void {
+  const usage = usageFromPlanRateLimits(limits, getAccountUsage(account));
+  // A fresh authoritative report may free an account before the old reset.
+  // Include model-specific windows (e.g. seven_day_opus), not just the bars.
+  const windows = Object.values(limits ?? {}).filter((value): value is { utilization: number } =>
+    typeof value === "object" && value !== null && "utilization" in value
+    && typeof value.utilization === "number");
+  const entry = entryFor(account);
+  const freed = entry.limitedUntil != null && windows.length > 0 && windows.every(window => window.utilization < 100);
+  if (freed) entry.limitedUntil = null;
+  if (usage) commitUsage(account, usage, now);
+  else if (freed) {
+    saveToDisk();
+    emitClaudeAccountsChanged();
+  }
+}
+
 /** Ask Claude Code for one account's usage; concurrent calls share one process. */
 export function refreshAccountUsage(account: string): Promise<UsageData | null> {
   const running = remoteRefreshes.get(account);
@@ -282,21 +338,8 @@ export function refreshAccountUsage(account: string): Promise<UsageData | null> 
   const generation = usageGeneration;
   const refresh = (async () => {
     const limits = await fetchPlanRateLimits(account);
-    const usage = usageFromPlanRateLimits(limits, getAccountUsage(account));
     if (generation !== usageGeneration) return getAccountUsage(account);
-    // A fresh authoritative report may free an account before the old reset.
-    // Include model-specific windows (e.g. seven_day_opus), not just the bars.
-    const windows = Object.values(limits ?? {}).filter((value): value is { utilization: number } =>
-      typeof value === "object" && value !== null && "utilization" in value
-      && typeof value.utilization === "number");
-    const entry = entryFor(account);
-    const freed = entry.limitedUntil != null && windows.length > 0 && windows.every(window => window.utilization < 100);
-    if (freed) entry.limitedUntil = null;
-    if (usage) commitUsage(account, usage);
-    else if (freed) {
-      saveToDisk();
-      emitClaudeAccountsChanged();
-    }
+    applyPlanRateLimits(account, limits);
     return getAccountUsage(account);
   })();
   remoteRefreshes.set(account, refresh);
@@ -349,7 +392,7 @@ export function applyUsageHeaders(headers: Headers, now = Date.now()): string | 
     noteRateLimitStatus(entry, info, now);
     const usage = usageFromRateLimitInfo(info, entry.usage);
     if (usage) {
-      commitUsage(account, usage);
+      commitUsage(account, usage, now);
     } else if (before !== entry.limitedUntil) {
       saveToDisk();
       emitClaudeAccountsChanged();

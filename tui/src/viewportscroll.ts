@@ -108,23 +108,6 @@ export function scrollWithCursorInViewport(view: CursorViewport, dir: number, am
 }
 
 /**
- * Shift+K / Shift+J behavior: move the cursor by `amount` rows (Ctrl+U/D's
- * half page) without scrolling, stopping at the visible top/bottom row.
- * `dir`: positive = up/older, negative = down/newer.
- */
-export function moveCursorInViewport(view: CursorViewport, dir: number, amount: number): CursorViewport {
-  const totalLines = Math.max(0, view.totalLines);
-  if (totalLines === 0) return { ...view, totalLines, cursorRow: 0 };
-
-  const viewportHeight = Math.max(0, view.viewportHeight);
-  const viewStart = clampViewStart(totalLines, viewportHeight, view.viewStart);
-  const viewEnd = Math.min(totalLines - 1, viewStart + Math.max(1, viewportHeight) - 1);
-  const cursorRow = Math.max(viewStart, Math.min(view.cursorRow - dir * amount, viewEnd));
-
-  return { ...view, totalLines, viewportHeight, cursorRow };
-}
-
-/**
  * Ctrl+B / Ctrl+F behavior: scroll a page and place the cursor at the edge of
  * the new page, matching Vim's page-scroll feel. Vim uses roughly one window
  * minus two context lines.  `dir`: positive = up/older, negative = down/newer.
