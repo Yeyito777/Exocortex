@@ -117,6 +117,36 @@ describe("usage block hit-test", () => {
     expect(cursorZone(rect.left - 1, rect.top, state)).toBe("pointer");
   });
 
+  test("on API credits the rectangle is the Credit and Expiry rows, right column included, and shrinks with a narrower form", () => {
+    for (const cols of [150, 60]) {
+      const state = claudeState(2, cols);
+      const now = Date.now();
+      state.usageByProvider.anthropic!.apiCredits = {
+        active: true, ready: true, label: "main", spentUsd: 1, resetAt: null,
+        pool: { balanceUsd: 862, grantedUsd: 900, approximate: false, grants: [
+          { leftUsd: 162, grantedUsd: 200, expiresAt: now + 12 * 86_400_000 },
+          { leftUsd: 700, grantedUsd: 700, expiresAt: now + 170 * 86_400_000 },
+        ] },
+        subscriptionsBackAt: now + 28 * 3_600_000,
+      };
+      const rows = frame(state);
+      const top = rows.findIndex(row => row.includes("Credit:")) + 1;
+      const rect = state.layout.usageBlockRect!;
+      expect(rows[top]).toContain("Expiry:");
+      expect(rect.top).toBe(top);
+      expect(rect.bottom).toBe(top + 1);
+      expect(rect.left).toBe(rows[top - 1].indexOf("Credit:") + 1 - 2);
+      // Its widest row ends on the rectangle's right edge (1-based column = 0-based index + 1), and the cell after it is blank.
+      const ends = [rows[top - 1], rows[top]].map(row => row.slice(0, rect.right).trimEnd().length);
+      expect(Math.max(...ends)).toBe(rect.right);
+      for (const row of [rows[top - 1], rows[top]]) expect(row[rect.right] ?? " ").toBe(" ");
+      expect(rows.join("\n").includes("API credits")).toBe(cols === 150);
+      expect(cursorZone(rect.right, rect.bottom, state)).toBe("hand");
+      expect(press(state, rect.right, rect.bottom)).toEqual({ type: "open_accounts" });
+      expect(isInsideUsageBlock(rect.right + 1, rect.top, state)).toBe(false);
+    }
+  });
+
   test("no block, no rectangle: signed out, or too narrow for the usage bars", () => {
     const state = claudeState(2);
     frame(state);

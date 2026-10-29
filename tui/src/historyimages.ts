@@ -89,6 +89,16 @@ export interface CollectHistoryImagesOptions {
   extendBelow?: number;
   /** History lines above and below the screen whose thumbnails are fetched ahead of scrolling (default: one screen). */
   prefetchLines?: number;
+  /** A playing video placed instead of this thumbnail (its poster), if any (videoplayer.ts). */
+  videoImage?: (layout: InlineImageLayout) => KittyImageData | null;
+}
+
+/** A video caption row's slot on screen, which the frame fills with live status while it plays. */
+export interface HistoryVideoCaption {
+  row: number;
+  col: number;
+  width: number;
+  layout: InlineImageLayout;
 }
 
 /** Text drawn over the first visible row of a thumbnail that has no pixels yet. */
@@ -102,6 +112,9 @@ export interface HistoryImageNotice {
 export interface CollectedHistoryImages {
   placements: KittyPlacement[];
   notices: HistoryImageNotice[];
+  /** Thumbnails with at least one row on screen. */
+  visible: InlineImageLayout[];
+  videoCaptions: HistoryVideoCaption[];
 }
 
 const placementIds = new WeakMap<object, Map<number, number>>();
@@ -221,9 +234,15 @@ export function collectHistoryImages(options: CollectHistoryImagesOptions): Coll
   const visible = new Map<HistoryImageLayout, VisibleImageRow[]>();
   /** Columns a thumbnail's notice may use: its row to the right edge when it is alone on the row. */
   const noticeWidths = new Map<HistoryImageLayout, number>();
+  const videoCaptions: HistoryVideoCaption[] = [];
   options.viewportRows.forEach((viewportRow, index) => {
     if (!viewportRow) return;
     const screenRow = options.messageAreaStart + index;
+    for (const caption of options.lineAnchors[viewportRow.lineIndex]?.videoCaptions ?? []) {
+      const col = options.chatCol + caption.col - viewportRow.startCol + viewportRow.displayPrefixWidth;
+      const width = Math.min(caption.width, options.maxCol - col + 1);
+      if (col >= options.chatCol && width > 0) videoCaptions.push({ row: screenRow, col, width, layout: caption.layout });
+    }
     const anchorImages = options.lineAnchors[viewportRow.lineIndex]?.images ?? [];
     for (const image of anchorImages) {
       if (image.layout.rows <= 0 || (options.mathOnly && !("kitty" in image.layout))) continue;
@@ -248,8 +267,11 @@ export function collectHistoryImages(options: CollectHistoryImagesOptions): Coll
   const covers = [...options.obstructions, ...(options.covers ?? [])];
   for (const [layout, rows] of visible) {
     let image: KittyImageData;
+    const video = "kitty" in layout ? null : options.videoImage?.(layout) ?? null;
     if ("kitty" in layout) {
       image = layout.kitty;
+    } else if (video) {
+      image = video;
     } else {
       const preview = kittyThumbnail(layout.source, { urgent: true });
       if (preview.phase !== "ready") {
@@ -301,12 +323,14 @@ export function collectHistoryImages(options: CollectHistoryImagesOptions): Coll
         ...(wholeHeight ? {} : { sourceY, sourceHeight: Math.max(1, sourceBottom - sourceY) }),
         ...(wholeWidth ? {} : { sourceX, sourceWidth: Math.max(1, sourceRight - sourceX) }),
         ...("kitty" in layout ? { z: MATH_IMAGE_Z } : {}),
-        ...(cursorImage === layout ? { selected: true } : {}),
+        // A playing video keeps its colours under the cursor.
+        ...(cursorImage === layout && !image.external ? { selected: true } : {}),
       });
     });
   }
   if (!options.mathOnly) prefetchNearby(options);
-  return { placements, notices };
+  const shown = [...visible.keys()].filter((layout): layout is InlineImageLayout => !("kitty" in layout));
+  return { placements, notices, visible: shown, videoCaptions: options.mathOnly ? [] : videoCaptions };
 }
 
 // ── Per-screen terminal state ───────────────────────────────────────

@@ -36,7 +36,7 @@ import type { ScreenRect } from "./historyimages";
 import { moveTo } from "./frame";
 import { maybeCensorEmail } from "./privacy";
 import { pushSystemMessage } from "./state";
-import { barFill } from "./statusblocks/usage";
+import { barFill, formatCreditCountdown } from "./statusblocks/usage";
 import { theme } from "./theme";
 import { termWidth, truncateToWidth } from "./textwidth";
 
@@ -203,13 +203,7 @@ function formatDuration(ms: number): string {
   return `${mins}m`;
 }
 
-/** Time until a credit grant expires, coarse: "171d", "5h", "<1h". */
-export function formatCreditCountdown(ms: number): string {
-  const hours = Math.floor(ms / 3_600_000);
-  if (hours >= 24) return `${Math.floor(hours / 24)}d`;
-  if (hours >= 1) return `${hours}h`;
-  return "<1h";
-}
+export { formatCreditCountdown };
 
 /** A window past its reset time has started over. */
 function windowPercent(window: UsageWindow | null | undefined, now: number): number | null {
@@ -273,7 +267,7 @@ export function openAICredits(credit: ApiKeyCredit | null | undefined): AccountC
 interface TableRow {
   dot: string;
   name: Segment;
-  /** Short words after the name: "new work", "limited 2h". */
+  /** Short words after the name: "new work", "limited" ("limited 2h" when there are no usage columns). */
   tag?: Segment;
   /** 5-hour and weekly cells; an unknown window is left blank. */
   windows?: [UsageCell | null, UsageCell | null];
@@ -306,11 +300,13 @@ function claudeRow(account: ClaudeAccountInfo, claude: ClaudeAccountsInfo, now: 
   let tagColor = theme.muted;
   let dot = theme.success;
   let note: Segment[] | undefined;
+  const windows = usageCells(account.usage, now);
   switch (account.state) {
     case "ready": break;
     case "limited":
       dot = tagColor = theme.warning;
-      tags.push(account.limitedUntil && account.limitedUntil > now ? `limited ${formatDuration(account.limitedUntil - now)}` : "limited");
+      // The usage columns already show when the limit resets; the time is only worth repeating without them.
+      tags.push(!windows && account.limitedUntil && account.limitedUntil > now ? `limited ${formatDuration(account.limitedUntil - now)}` : "limited");
       break;
     case "blocked": {
       dot = theme.error;
@@ -336,7 +332,7 @@ function claudeRow(account: ClaudeAccountInfo, claude: ClaudeAccountsInfo, now: 
     dot,
     name: [holdsCurrent ? theme.bold + theme.accent : theme.text, account.id],
     tag: tags.length > 0 ? [tagColor, tags.join(" · ")] : undefined,
-    windows: note ? undefined : usageCells(account.usage, now),
+    windows: note ? undefined : windows,
     note,
     credits: note ? null : creditCell(account.credits, now),
   };

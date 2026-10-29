@@ -14,7 +14,10 @@ import { setWireTrace, DaemonClient } from "./client";
 import { parseInput, PasteBuffer, type KeyEvent, type MouseEvent } from "./input";
 import { TerminalClipboardClient, TerminalControlBuffer } from "./terminalclipboard";
 import { CELL_SIZE_QUERY, TerminalGraphicsDetector, parseCellSizeResponse } from "./terminalgraphics";
-import { configureInlineImages, setInlineImageCellSize, setInlineImageMode } from "./inlineimages";
+import { configureInlineImages, inlineImageCellSize, setInlineImageCellSize, setInlineImageMode, setInlineVideoSupport } from "./inlineimages";
+import { configureVideoPlayer, handleVideoEvent, handleVideoTerminalReply, resetVideoPlayer, stopVideo } from "./videoplayer";
+import { handleVideoHistoryKey, handleVideoModalKey } from "./videoview";
+import { isAnyHistoryFocused } from "./historysurface";
 import { renderLocalPreview } from "./localpreview";
 import { disposeHistoryImages, handleHistoryImageResponse, invalidateHistoryImagePlacements } from "./historyimages";
 import { configureMathImages, disposeMathImages, mathImagesActive } from "./mathimages";
@@ -113,6 +116,7 @@ import type { SidebarViewHint } from "@exocortex/shared/sidebar-first-page";
 import { applyTuiStartingState, availableStartingConversationId, applyRouteViewState, captureRouteViewState, captureTuiStartingState, daemonRouteKey, loadTuiStartingState, RouteViewStates, saveTuiStartingState } from "./startingstate";
 import { closeBtwSession, startBtwSession } from "./btw/controller";
 import { createSidebarState } from "./sidebar/state";
+import { DONE_FOLDER_NAME } from "./sidebar/doneaction";
 import { addOptimisticConversation, focusConversationById, rememberEnteredConversation } from "./sidebar";
 import { newConversationFolderId, type NewConversationPlacement } from "./sidebar/tree";
 import { formatConnectionLostNotice } from "./events/notices";
@@ -603,6 +607,8 @@ function maybeRequestOlderHistory(): void {
 // ── Event handler (daemon → TUI) ───────────────────────────────────
 
 function resetForDaemonRouteSwitch(newRouteKey: string): void {
+  // A video plays from the old endpoint.
+  stopVideo();
   // The Accounts screen showed the old endpoint's accounts.
   state.accountsScreen = null;
   state.accountsOpenRequest = null;
@@ -664,6 +670,7 @@ function onDaemonEvent(event: Event): void {
   // The switched status is the final frame from the old endpoint. Ignore any
   // already-in-flight old-route events until a fresh local socket reconnects.
   if (daemonRouteSwitchPending && event.type !== "ssh_status") return;
+  if (handleVideoEvent(event)) return;
   if (remoteFileLinks?.handleEvent(event)) return;
   if (event.type === "ssh_status") {
     // A failed or cancelled switch: the probe's first-flight load was never
@@ -1946,6 +1953,10 @@ function handleKey(key: KeyEvent): void {
   // The image viewer owns the keyboard until it closes; Ctrl-C still quits.
   if (state.imageModal && key.type !== "ctrl-c") {
     if (key.event === "release") return;
+    if (handleVideoModalKey(key, state, path => remoteFileLinks?.open(path))) {
+      renderAfterLocalUiMutation();
+      return;
+    }
     const shown = state.imageModal.index;
     if (handleImageModalKey(key, state.imageModal) === "close") {
       state.imageModal = null;
@@ -1973,6 +1984,15 @@ function handleKey(key: KeyEvent): void {
   }
   if (voiceInput?.handleKey(key)) return;
   if (key.event === "release") return;
+
+  if (isAnyHistoryFocused(state)) {
+    const video = handleVideoHistoryKey(key, state, inlineImageCellSize());
+    if (video?.type === "open_viewer") state.imageModal = { images: video.target.images, index: video.target.index };
+    if (video) {
+      renderAfterLocalUiMutation();
+      return;
+    }
+  }
 
   const promptBefore = state.inputBuffer;
   const result = handleFocusedKey(
@@ -2126,6 +2146,11 @@ function handleKey(key: KeyEvent): void {
       break;
     case "rename_folder":
       daemon.renameFolder(result.folderId, result.name);
+      break;
+    case "move_to_done":
+      for (const move of result.moves) daemon.moveSidebarItems(move.items, move.parentId, undefined, {}, move.reqId);
+      if (result.create.length > 0) daemon.createFolder(DONE_FOLDER_NAME, null, result.create);
+      if (result.notice) pushSystemMessage(state, result.notice);
       break;
     case "handled":
       break;
@@ -2317,6 +2342,8 @@ async function reconnectToDaemon(): Promise<void> {
 
 function handleDaemonConnectionLost(shutdownMode: DaemonShutdownMode | null): void {
   remoteFileLinks?.cancel();
+  // The daemon's senders went with the connection.
+  resetVideoPlayer();
   updateMonitor?.disconnected(daemon.remoteAlias);
   // SSH outages do not interrupt local capture/ASR. Keep prompt jobs and
   // optimistic submissions alive; their final text can queue until reconnect.
@@ -2385,6 +2412,7 @@ function restoreTerminal(): void {
   const cursorResetSeq = theme.cursorColor ? reset_cursor_color : '';
   terminalGraphicsDetector?.dispose();
   disposeMathImages();
+  stopVideo();
   process.stdout.write(disposeHistoryImages(state));
   const smoothOff = smoothScrollerFor(state) ? SMOOTH_SCROLL_OFF : "";
   process.stdout.write(smoothOff + disable_mouse + disable_kitty_kbd + disable_clipboard_paste_events + disable_bracketed_paste + show_cursor + cursorResetSeq + leave_alt);
@@ -2552,6 +2580,8 @@ async function main(): Promise<void> {
         return;
       }
       if (terminalGraphicsDetector?.handleControlSequence(sequence)) return;
+      // A playing video's replies are its sender's acknowledgements.
+      if (handleVideoTerminalReply(sequence)) return;
       if (handleHistoryImageResponse(state, sequence)) {
         scheduleRender();
         return;
@@ -2567,6 +2597,13 @@ async function main(): Promise<void> {
       if (mode !== "kitty" && !mathImagesActive()) process.stdout.write(disposeHistoryImages(state));
       setInlineImageMode(mode);
     },
+    onVideoChanged: support => setInlineVideoSupport(support),
+  });
+  // Attached videos stream through the daemon; commands never wait for a reconnect.
+  configureVideoPlayer({
+    send: command => { if (daemon.connected) daemon.send(command); },
+    write: data => { process.stdout.write(data); },
+    changed: () => scheduleRender(),
   });
   configureInlineImages({
     fetch: request => daemon.getImage(request),

@@ -47,6 +47,7 @@ import { startTitleGeneration, isPendingTitle, PENDING_TITLE } from "./titlegen"
 import * as convStore from "./conversations";
 import { rememberSentImages, resolveImageForPreview } from "./image-requests";
 import { cachedImagePreview, renderImagePreview, validatePreviewRequest, isImageId } from "./attachments";
+import { VideoPlayback } from "./video-playback";
 import { DaemonServer, broadcastUsageUpdate, type ConnectedClient } from "./server";
 import { isSidebarDigest, sidebarListDelta } from "@exocortex/shared/sidebar-digest";
 import { isSidebarViewHint, sidebarFirstPageConversationIds, sidebarFolderConversationCounts } from "@exocortex/shared/sidebar-first-page";
@@ -179,6 +180,11 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   const lifecycle = options;
   // App clients' commands wait for startup recovery like queued messages do (startQueueDelivery).
   const stopAppApi = configureAppApi(server, { holdUntilReady: options.holdQueueDeliveryUntilReady === true });
+  let videoPlayback: VideoPlayback | null = null;
+  const videos = () => videoPlayback ??= new VideoPlayback({
+    sendTo: (client, event) => server.sendTo(client, event),
+    ...(typeof server.onClientClosed === "function" ? { onClientClosed: listener => server.onClientClosed(listener) } : {}),
+  });
   /** The queue as the TUI sees it: hidden app conversations' entries are not shown. */
   const visibleQueuedMessages = () => convStore.listQueuedMessages().filter(message => !isHiddenConversation(message.convId));
 
@@ -3623,6 +3629,22 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         break;
       }
 
+      case "video_play":
+        videos().play(client, cmd);
+        break;
+
+      case "video_input":
+        videoPlayback?.input(client, cmd.playbackId, cmd.data);
+        break;
+
+      case "video_control":
+        videoPlayback?.control(client, cmd);
+        break;
+
+      case "video_stop":
+        videoPlayback?.stop(client, cmd.playbackId);
+        break;
+
       case "load_display_blocks": {
         const ranges = cmd.ranges;
         if (!Array.isArray(ranges) || ranges.length === 0 || ranges.length > MAX_DISPLAY_BLOCK_RANGES
@@ -4386,6 +4408,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     stop: async () => {
       await shutdownAppConversations();
       stopAppApi();
+      videoPlayback?.dispose();
       unsubscribeConnectivity();
       setApiKeyUsageRecordedListener(null);
       setCreditSyncListener(null);

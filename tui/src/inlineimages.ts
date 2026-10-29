@@ -17,11 +17,15 @@
  *   terminal placement; the half-block fallback draws the pixels as text.
  * - strips: a message with several images lays them out side by side; those
  *   that don't fit hide behind a `› +N` that opens the viewer on them.
+ * - videos: an attached video is its poster (with a play badge) plus one
+ *   caption row under it, which says its length and how to play it, and while
+ *   it plays the frame draws its live status there (videoplayer.ts).
  */
 
-import type { ImageAttachment, ImageMediaType, ImageRef } from "./messages";
+import type { ImageAttachment, ImageMediaType, ImageRef, VideoRef } from "./messages";
 import type { KittyImageData } from "./kittyimages";
-import type { TerminalImageMode } from "./terminalgraphics";
+import type { TerminalImageMode, TerminalVideoSupport } from "./terminalgraphics";
+import { formatVideoDuration } from "@exocortex/shared/video";
 import { theme, terminalColorLevel } from "./theme";
 import { hexToRgb, rgbToAnsi, type TerminalColorLevel } from "./terminalcolors";
 import { log } from "./log";
@@ -42,6 +46,8 @@ export interface InlineImageSource {
   name?: string;
   /** Base64 bytes already in hand (a pasted image's payload), drawable without the daemon. */
   localBase64?: string;
+  /** The image is this video's poster. */
+  video?: VideoRef;
 }
 
 /**
@@ -57,6 +63,7 @@ export function sourceFromRef(ref: ImageRef): InlineImageSource {
     mediaType: ref.mediaType,
     sizeBytes: ref.sizeBytes,
     ...(ref.name ? { name: ref.name } : {}),
+    ...(ref.video ? { video: ref.video } : {}),
   };
 }
 
@@ -148,11 +155,13 @@ export function historyImageLimits(availableWidth: number, terminalRows: number)
 interface InlineImageEnvironment {
   mode: TerminalImageMode;
   cell: CellSize;
+  video: TerminalVideoSupport;
 }
 
 const environment: InlineImageEnvironment = {
   mode: "pending",
   cell: { width: 8, height: 16 },
+  video: "pending",
 };
 let generation = 0;
 let onChange: () => void = () => {};
@@ -187,6 +196,17 @@ export function inlineImagesActive(): boolean {
 export function setInlineImageMode(mode: TerminalImageMode): void {
   if (environment.mode === mode) return;
   environment.mode = mode;
+  changed();
+}
+
+/** Whether attached videos can play here: st's video in Kitty mode. */
+export function inlineVideoPlayable(): boolean {
+  return environment.mode === "kitty" && environment.video === "yes";
+}
+
+export function setInlineVideoSupport(support: TerminalVideoSupport): void {
+  if (environment.video === support) return;
+  environment.video = support;
   changed();
 }
 
@@ -504,8 +524,10 @@ export interface InlineImageLayout {
 }
 
 export interface RenderedInlineImage {
+  /** Set when the last row is a video's caption row. */
+  videoCaptions?: VideoCaptionSlot[];
   layout: InlineImageLayout;
-  /** One row per image row; the first carries a status while there are no pixels. */
+  /** One row per image row (the first carries a status while there are no pixels), then a video's caption row. */
   lines: string[];
   copy: string[];
 }
@@ -516,8 +538,32 @@ function formatSize(bytes: number): string {
 
 /** Name (or type), size, and bytes: the viewer's title and what a yank of the image copies. */
 export function imageCaption(source: InlineImageSource): string {
+  const video = source.video;
+  if (video) {
+    const length = video.durationMs !== undefined ? formatVideoDuration(video.durationMs) : "video";
+    return [source.name ?? "video", length, `${video.width}×${video.height}`, formatSize(video.sizeBytes)].join(" · ");
+  }
   const kind = source.mediaType.slice("image/".length).toUpperCase();
   return [source.name ?? kind, `${source.width}×${source.height}`, formatSize(source.sizeBytes)].join(" · ");
+}
+
+function copyLabel(source: InlineImageSource): string {
+  return `[${source.video ? "video" : "image"}: ${imageCaption(source)}]`;
+}
+
+/**
+ * A video thumbnail's caption row when nothing plays: its length and how to
+ * play it. While it plays the frame draws its status over this row.
+ */
+export function videoIdleCaption(source: InlineImageSource, width: number): string {
+  const video = source.video;
+  if (!video) return "";
+  const length = video.durationMs !== undefined ? formatVideoDuration(video.durationMs) : "--:--";
+  const parts = inlineVideoPlayable()
+    ? [`▶ ${length}`, "space plays here · enter plays big"]
+    : [`▶ ${length} video`, "enter for details"];
+  const full = parts.join("  ");
+  return truncateToWidth(termWidth(full) <= width ? full : parts[0], Math.max(1, width));
 }
 
 function blend(channel: number, alpha: number, background: number): number {
@@ -590,20 +636,29 @@ export function renderInlineImage(
 ): RenderedInlineImage {
   const layout: InlineImageLayout = { source, col, cols: box.cols, rows: box.rows, owner, index };
   const indent = " ".repeat(col);
-  const copy = Array.from({ length: box.rows }, (_, row) => row === 0 ? `[image: ${imageCaption(source)}]` : "");
+  const copy = Array.from({ length: box.rows }, (_, row) => row === 0 ? copyLabel(source) : "");
   const blank = () => Array.from({ length: box.rows }, () => "");
+  // A video's caption row goes under its poster.
+  const withCaption = (lines: string[]): RenderedInlineImage => source.video
+    ? {
+      layout,
+      lines: [...lines, `${indent}${theme.dim}${videoIdleCaption(source, statusWidth)}${theme.reset}`],
+      copy: [...copy, ""],
+      videoCaptions: [{ layout, col, width: statusWidth }],
+    }
+    : { layout, lines, copy };
 
   let preview: PreviewState<unknown> | null = null;
   if (environment.mode === "kitty") {
-    return { layout, lines: blank(), copy };
+    return withCaption(blank());
   } else if (environment.mode === "halfblock") {
     const pixels = rgbaPreview(source, box);
-    if (pixels.phase === "ready") return { layout, lines: renderHalfBlockRows(pixels.value).map(row => indent + row), copy };
+    if (pixels.phase === "ready") return withCaption(renderHalfBlockRows(pixels.value).map(row => indent + row));
     preview = pixels;
   }
   const lines = blank();
   lines[0] = `${indent}${theme.dim}${imageStatus(preview, statusWidth)}${theme.reset}`;
-  return { layout, lines, copy };
+  return withCaption(lines);
 }
 
 // ── Strips ──────────────────────────────────────────────────────────
@@ -726,7 +781,17 @@ function stripImageRows(source: InlineImageSource, box: InlineImageBox): string[
   return blanks;
 }
 
+/** Where a video's caption sits in its caption row, which the frame overwrites while it plays. */
+export interface VideoCaptionSlot {
+  layout: InlineImageLayout;
+  /** 0-based column within the history line. */
+  col: number;
+  width: number;
+}
+
 export interface RenderedInlineImageStrip {
+  /** Set when the last row is the videos' caption row. */
+  videoCaptions?: VideoCaptionSlot[];
   layouts: InlineImageLayout[];
   /** One row per strip row, no captions (the viewer shows each image's name and size). */
   lines: string[];
@@ -790,8 +855,25 @@ export function renderInlineImageStrip(
     lines.push(line.replace(/ +$/, ""));
     rowImages.push(covering);
   }
-  const copy = lines.map((_, row) => row === 0 ? images.map(source => `[image: ${imageCaption(source)}]`).join(" ") : "");
-  return { layouts, lines, copy, rowImages, hits };
+  const copy = lines.map((_, row) => row === 0 ? images.map(copyLabel).join(" ") : "");
+  // Videos get a caption row under the strip, each under its own thumbnail.
+  const videoCaptions: VideoCaptionSlot[] = [];
+  if (layouts.some(layout => layout.source.video)) {
+    let line = "";
+    let visible = 0;
+    layouts.forEach((layout, index) => {
+      if (!layout.source.video) return;
+      const width = strip.slots[index].width;
+      const text = videoIdleCaption(layout.source, width);
+      line += " ".repeat(Math.max(0, layout.col - visible)) + `${theme.dim}${text}${theme.reset}`;
+      visible = Math.max(visible, layout.col) + termWidth(text);
+      videoCaptions.push({ layout, col: layout.col, width });
+    });
+    lines.push(line);
+    copy.push("");
+    rowImages.push([]);
+  }
+  return { layouts, lines, copy, rowImages, hits, ...(videoCaptions.length ? { videoCaptions } : {}) };
 }
 
 export const inlineImagesInternalsForTest = {
@@ -807,6 +889,7 @@ export const inlineImagesInternalsForTest = {
     onChange = () => {};
     environment.mode = "pending";
     environment.cell = { width: 8, height: 16 };
+    environment.video = "pending";
     generation = 0;
   },
 };
