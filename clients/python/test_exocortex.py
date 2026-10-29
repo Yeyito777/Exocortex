@@ -2,7 +2,9 @@
 
 import asyncio
 import os
+import json
 import shutil
+import socket as _socket
 import subprocess
 import sys
 import tempfile
@@ -45,6 +47,15 @@ class Fake:
             if pipe:
                 pipe.close()
         shutil.rmtree(self.dir, ignore_errors=True)
+
+
+def admin(fake: "Fake", command: dict) -> None:
+    """Send a test-only command (fake_restart, fake_drop) on a connection of its own."""
+    sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    sock.connect(fake.socket)
+    sock.sendall((json.dumps(command) + "\n").encode())
+    time.sleep(0.05)
+    sock.close()
 
 
 def lookup(handler, **kw) -> Tool:
@@ -199,18 +210,71 @@ class Reconnect(Base):
         self.assertIsNotNone(result.turn_id)
         self.assertEqual(conv.send("count").text, "turns: 2")
 
-    def test_ephemeral_ends_on_drop(self):
+    def test_ephemeral_survives_restart(self):
+        c = self.client()
+        session = c.session
+        self.assertTrue(session)
+        conv = c.conversation("ephemeral")
+        self.assertEqual(conv.send("restart echo", timeout=15).text, "echo: echo")
+        self.assertEqual(c.session, session)
+        self.assertEqual(conv.send("count").text, "turns: 2")
+        # A one-shot run rides a restart too.
+        self.assertEqual(c.run("restart again", timeout=15).text, "echo: again")
+
+    def test_requests_and_sends_wait_while_reconnecting(self):
         c = self.client()
         conv = c.conversation("ephemeral")
-        with self.assertRaisesRegex(ExocortexError, "ended"):
-            conv.send("restart echo", timeout=5)
-        for _ in range(100):
-            try:
-                c.list()
-                break
-            except ExocortexError:
-                time.sleep(0.05)
-        self.assertEqual(c.run("after").text, "echo: after")
+        admin(self.fake, {"type": "fake_restart", "downMs": 600})
+        time.sleep(0.1)
+        self.assertEqual(conv.send("count", timeout=15).text, "turns: 1")
+        self.assertEqual([i["convId"] for i in c.list()], [conv.id])
+        fresh = c.conversation("temporary")
+        admin(self.fake, {"type": "fake_drop"})
+        self.assertEqual(fresh.send("count", timeout=15).text, "turns: 1")
+
+    def test_dropped_connection_keeps_ephemeral_and_tool_calls(self):
+        c = self.client()
+        answered = []
+
+        def slow(args, call):
+            time.sleep(0.3)
+            answered.append(args["word"])
+            return "kept " + args["word"]
+
+        conv = c.conversation("ephemeral", tools=[lookup(slow)])
+        turn = conv.stream('tool lookup {"word":"q"}')
+        time.sleep(0.1)
+        admin(self.fake, {"type": "fake_drop"})
+        self.assertEqual(turn.result(15).text, "lookup -> kept q")
+        self.assertEqual(answered, ["q"])
+
+    def test_crash_loses_conversations_and_reruns_runs(self):
+        c = self.client()
+        conv = c.conversation("ephemeral")
+        hanging = conv.stream("hang")
+        time.sleep(0.1)
+        calls = []
+
+        def crash_once(args):
+            calls.append(args)
+            if len(calls) == 1:
+                admin(self.fake, {"type": "fake_restart", "crash": True, "downMs": 200})
+                time.sleep(0.2)
+                return "too late"
+            return "second try"
+
+        result = c.run('tool lookup {"word":"x"}', tools=[lookup(crash_once)], timeout=15)
+        self.assertEqual(result.text, "lookup -> second try")
+        self.assertEqual(len(calls), 2)
+        with self.assertRaises(ExocortexError) as caught:
+            hanging.result(15)
+        self.assertEqual(caught.exception.code, "lost")
+        self.assertEqual(conv.ended, "lost")
+
+    def test_route_and_billing_fields(self):
+        c = self.client()
+        conv = c.conversation("temporary", route={"credits": "never", "whenLimited": "error"})
+        self.assertEqual(conv.info["route"], {"credits": "never", "whenLimited": "error"})
 
 
 class EndedWhileAway(Base):
@@ -224,7 +288,9 @@ class EndedWhileAway(Base):
 
 
 class EndedWhileAwayLost(Base):
-    fake_args = ("--refuse-after-restart-ms", "400", "--no-owner-results")
+    """A daemon from before sessions: nothing is sent again, a result it did not keep is lost."""
+
+    fake_args = ("--refuse-after-restart-ms", "400", "--no-owner-results", "--no-sessions")
 
     def test_reported_lost(self):
         conv = self.client().conversation("saved")
@@ -232,6 +298,14 @@ class EndedWhileAwayLost(Base):
             conv.send("restart echo quick", timeout=15)
         self.assertEqual(caught.exception.code, "result_lost")
         self.assertEqual(conv.send("count").text, "turns: 2")
+
+    def test_ephemeral_lost_on_restart(self):
+        c = self.client()
+        conv = c.conversation("ephemeral")
+        with self.assertRaises(ExocortexError) as caught:
+            conv.send("restart echo", timeout=15)
+        self.assertEqual(caught.exception.code, "lost")
+        self.assertEqual(c.run("after", timeout=15).text, "echo: after")
 
 
 class Connecting(unittest.TestCase):

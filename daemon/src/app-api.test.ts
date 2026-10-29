@@ -71,9 +71,9 @@ async function run(client: FakeClient, command: Record<string, unknown>): Promis
   return client.events.slice(before);
 }
 
-async function asApp(name = "demo"): Promise<FakeClient> {
+async function asApp(name = "demo", app: Record<string, unknown> = {}): Promise<FakeClient> {
   const client = fakeClient();
-  const [welcome] = await run(client, { type: "client_capabilities", reqId: "w", capabilities: [], app: { name, version: "1" } });
+  const [welcome] = await run(client, { type: "client_capabilities", reqId: "w", capabilities: [], app: { name, version: "1", ...app } });
   expect(welcome).toMatchObject({ type: "app_welcome", reqId: "w", appApiVersion: 1, app: name });
   return client;
 }
@@ -212,8 +212,12 @@ describe("creating app conversations", () => {
       .toContainEqual(expect.objectContaining({ type: "error", reqId: "u", message: expect.stringMatching(/Ephemeral/) }));
     convStore.pushQueuedMessage(convId, "later", "next-turn");
     convStore.setSystemInstructions(convId, "changed");
+    // Its id (only) is kept for a graceful restart's replay while restarts hand ephemeral conversations over.
     setActiveJob(convId, new AbortController(), Date.now());
+    expect(convStore.listRestartRecoverableConversationIds()).toContain(convId);
+    registry.setEphemeralConversationsSurviveRestart(false);
     expect(convStore.listRestartRecoverableConversationIds()).not.toContain(convId);
+    registry.setEphemeralConversationsSurviveRestart(true);
     clearActiveJob(convId);
     const onDisk = (dir: string): string[] => existsSync(dir) ? readdirSync(dir, { recursive: true }).map(String).filter(name => name.includes(convId)) : [];
     expect(onDisk(conversationsDir())).toEqual([]);
@@ -326,8 +330,8 @@ describe("awaited turns", () => {
 });
 
 describe("ownership", () => {
-  test("an ephemeral conversation ends when its owner disconnects; others wait for a new owner", async () => {
-    const owner = await asApp();
+  test("an ephemeral conversation of a graceless session ends when its owner disconnects; others wait for a new owner", async () => {
+    const owner = await asApp("demo", { reconnectGraceMs: 0 });
     const ephemeral = await createApp(owner, { lifetime: "ephemeral" });
     const temporary = await createApp(owner, { lifetime: "temporary" });
     const workspace = registry.getAppRecord(ephemeral)!.ephemeralWorkspace!;

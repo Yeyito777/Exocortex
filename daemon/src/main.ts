@@ -43,7 +43,7 @@ import { connectivity } from "./connectivity";
 import { initExternalTools, stopExternalToolsAsync, getExternalToolCount, getSupervisedDaemonCount, getExternalToolStyles } from "./external-tools";
 import { recoverPendingTitles } from "./titlegen";
 import { isEphemeralConversation, loadAppRegistry } from "./app-registry";
-import { recoverAppConversations } from "./app-api";
+import { handOffAppConversations, recoverAppConversations } from "./app-api";
 import { beginDaemonShutdown, DAEMON_RESTART_EXIT_CODE, getDaemonShutdownMode, resolveDaemonShutdownMode } from "./daemon-lifecycle";
 import { clearLiveTurns, clearStopRequest, hasFreshStopRequest, takeLiveTurnsLeftByUncleanExit, writeLiveTurns } from "./restart-markers";
 import { setRestartRecoverableJobsListener } from "./streaming";
@@ -225,6 +225,8 @@ async function startDaemon(): Promise<void> {
       }
 
       profileMark("shutdown_streams_settled");
+      // The next daemon takes over app sessions and ephemeral conversations, now that their turns settled.
+      if (shutdownMode === "restart") handOffAppConversations();
       // A clean exit: nothing for the next start to find in the live-turns journal.
       setRestartRecoverableJobsListener(null);
       clearLiveTurns();

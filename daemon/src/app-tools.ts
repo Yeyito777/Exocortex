@@ -213,8 +213,8 @@ export interface AppToolBrokerDeps {
   /** The connection owning a conversation, if one is connected. */
   owner(convId: string): AppToolOwner | null;
   send(owner: AppToolOwner, event: Event): void;
-  /** Override for tests. */
-  ownerWaitMs?: number;
+  /** How long a call waits for an owner to attach (default APP_OWNER_WAIT_MS); tests shorten it. */
+  ownerWaitMs?: number | ((convId: string) => number);
 }
 
 class AppToolBroker {
@@ -224,6 +224,11 @@ class AppToolBroker {
 
   configure(deps: AppToolBrokerDeps | null): void {
     this.deps = deps;
+  }
+
+  private ownerWaitMs(convId: string): number {
+    const wait = this.deps?.ownerWaitMs;
+    return typeof wait === "function" ? wait(convId) : wait ?? APP_OWNER_WAIT_MS;
   }
 
   private key(convId: string, callId: string): string {
@@ -263,7 +268,7 @@ class AppToolBroker {
           if (call.sentTo) return;
           log("warn", `app-tools: no owner attached to ${convId} for ${name} within the wait`);
           call.settle({ output: `${app} is not connected`, isError: true });
-        }, this.deps?.ownerWaitMs ?? APP_OWNER_WAIT_MS);
+        }, this.ownerWaitMs(convId));
         call.ownerWait.unref?.();
       }
     });
@@ -320,7 +325,7 @@ class AppToolBroker {
         call.ownerWait = null;
         if (call.sentTo) return;
         call.settle({ output: `${app} is not connected`, isError: true });
-      }, this.deps?.ownerWaitMs ?? APP_OWNER_WAIT_MS);
+      }, this.ownerWaitMs(convId));
       call.ownerWait.unref?.();
     }
   }

@@ -161,15 +161,28 @@ function removePath(path: string): boolean {
 /**
  * Startup: an earlier daemon of this instance that did not shut down left
  * ephemeral conversations' directories and their Claude Code projects behind.
+ * `keep`: working directories of the ephemeral conversations a graceful
+ * restart handed to this daemon (app-api.ts), left as they are.
  */
-export function sweepEphemeralLeftovers(): { workspaces: number; claudeProjects: number } {
+export function sweepEphemeralLeftovers(keep: ReadonlySet<string> = new Set()): { workspaces: number; claudeProjects: number } {
   const root = ephemeralWorkspaceRoot();
-  const workspaces = listDirs(root).length;
-  removePath(root);
+  const kept = new Set([...keep].map(path => resolve(path)));
+  let workspaces = 0;
+  if (kept.size === 0) {
+    workspaces = listDirs(root).length;
+    removePath(root);
+  } else {
+    for (const dir of listDirs(root)) {
+      if (kept.has(resolve(dir))) continue;
+      if (removePath(dir)) workspaces++;
+    }
+  }
   const prefix = claudeProjectDirName(resolve(root));
+  const keptProjects = new Set([...kept].map(path => claudeProjectDirName(path)));
   let claudeProjects = 0;
   for (const dir of listDirs(join(claudeConfigDir(), "projects"))) {
     const name = dir.slice(dir.lastIndexOf("/") + 1);
+    if (keptProjects.has(name)) continue;
     if ((name === prefix || name.startsWith(`${prefix}-`)) && removePath(dir)) claudeProjects++;
   }
   return { workspaces, claudeProjects };

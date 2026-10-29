@@ -63,7 +63,38 @@ export interface AppToolsSpec {
 export interface AppClientInfo {
   name: string;
   version?: string;
+  /**
+   * The client's session token, to take its conversations back after a
+   * dropped connection or a daemon restart. Omitted: the daemon makes one
+   * (app_welcome.session); send that one when reconnecting.
+   */
+  session?: string;
+  /** How long the session's ephemeral conversations wait for it to reconnect; default APP_DEFAULT_RECONNECT_GRACE_MS. */
+  reconnectGraceMs?: number;
 }
+
+/** A session token: what app_welcome hands out, and what a reconnecting client sends back. */
+export const APP_SESSION_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
+/** How long a disconnected session's ephemeral conversations wait for it to come back. */
+export const APP_DEFAULT_RECONNECT_GRACE_MS = 2 * 60_000;
+export const APP_MAX_RECONNECT_GRACE_MS = 24 * 60 * 60_000;
+
+/**
+ * How an app conversation's Claude turns may be billed (docs/app-api.md,
+ * "Accounts and API credits"). Every field defaults to what an ordinary
+ * conversation does.
+ * - `credits`: `allow` (default): Claude subscription accounts first, API
+ *   credits while every one is at a usage limit; `never`: subscriptions only.
+ * - `whenLimited`: what a turn does when nothing it may use can run it:
+ *   `wait` (default) until something can, or `error` at once
+ *   (turn_result.limited says until when).
+ */
+export interface AppRouteSpec {
+  credits?: "allow" | "never";
+  whenLimited?: "wait" | "error";
+}
+export const APP_ROUTE_CREDITS = ["allow", "never"] as const;
+export const APP_ROUTE_WHEN_LIMITED = ["wait", "error"] as const;
 
 export const APP_DEFAULT_IDLE_TTL_MS = 60 * 60_000;
 export const APP_MAX_IDLE_TTL_MS = 30 * 24 * 60 * 60_000;
@@ -101,6 +132,12 @@ export interface AppConversationInfo {
   /** The neutral built-in tool names it was created with. */
   builtinTools: string[] | "all";
   appTools: string[];
+  /** Its route preferences, when it set any. */
+  route?: AppRouteSpec;
+  /** The Claude account its turns last ran on (Anthropic, several accounts), if any. */
+  account?: string;
+  /** Its turns run on Claude API credits now (every subscription account is at a limit). */
+  billing?: "api-credits";
 }
 
 /** Why a turn awaited with `awaitResult` / `app_run` ended. */

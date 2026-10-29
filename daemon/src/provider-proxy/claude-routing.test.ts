@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PROVIDER_PROXY_ACCOUNT_MOVE_HEADER, PROVIDER_PROXY_API_CREDITS_HEADER, PROVIDER_PROXY_CONVERSATION_HEADER } from "@exocortex/shared/provider-proxy";
+import { PROVIDER_PROXY_ACCOUNT_MOVE_HEADER, PROVIDER_PROXY_API_CREDITS_HEADER, PROVIDER_PROXY_CONVERSATION_HEADER, PROVIDER_PROXY_NO_API_CREDITS_HEADER } from "@exocortex/shared/provider-proxy";
 import { writeExocortexConfig } from "@exocortex/shared/config";
 import { refreshApiCreditSecrets, setApiCreditSecretsForTests, usableApiCreditKey } from "../providers/anthropic/api-credits";
 import { addClaudeAccount, setClaudeAccountsFileForTests } from "../providers/anthropic/accounts";
@@ -73,12 +73,12 @@ async function proxied(upstream: Upstream, authOverrides: Parameters<typeof stub
   const link = new ProviderProxyLink("whale", { providers: () => ["anthropic"], spawnProcess: ssh.spawn, reconnectDelaysMs: [20], helloTimeoutMs: 2_000 });
   links.push(link);
   await link.waitReady(2_000);
-  const send = async (conversation: string | null) => {
+  const send = async (conversation: string | null, headers: Record<string, string> = {}) => {
     const response = await link.openHttp({
       provider: "anthropic",
       method: "POST",
       target: "/v1/messages",
-      headers: conversation ? { [PROVIDER_PROXY_CONVERSATION_HEADER]: conversation } : {},
+      headers: { ...(conversation ? { [PROVIDER_PROXY_CONVERSATION_HEADER]: conversation } : {}), ...headers },
       body: new TextEncoder().encode("{}"),
     });
     return { status: response.status, text: await new Response(response.body).text(), headers: response.headers };
@@ -267,5 +267,27 @@ describe("proxied Claude requests on API credits", () => {
     expect(upstream.calls.map(call => call.init.headers["x-api-key"])).toEqual(["value-of-ANTHROPIC_API_KEY_MAIN_CREDITS", "value-of-ANTHROPIC_API_KEY_MAX2_CREDITS"]);
     expect((response.headers as unknown as Record<string, string>)[PROVIDER_PROXY_API_CREDITS_HEADER]).toBe("max2");
     expect(usableApiCreditKey()?.id).toBe(KEYS[1]);
+  });
+
+  test("a conversation that may not use API credits is never signed with a key, and the header stays here", async () => {
+    report("main", 100, 2 * H, 50, 30 * H);
+    report("max2", 100, 3 * H, 50, 96 * H);
+    const upstream: Upstream = {
+      calls: [],
+      answer: () => new Response("limited", { status: 429, headers: limiterHeaders("rejected", 1, 0.5) }),
+    };
+    const { send } = await proxied(upstream, {
+      async headers(_provider, _url, options) {
+        const signer = options.apiCredit ? `value-of-${options.apiCredit.id}` : options.account ?? "main";
+        return { authorization: `Bearer token-${signer}`, ...(options.apiCredit ? { "x-api-key": signer } : {}) };
+      },
+    });
+    const response = await send("macbook/app-conv", { [PROVIDER_PROXY_NO_API_CREDITS_HEADER]: "1" });
+    expect(response.status).toBe(429);
+    expect(upstream.calls.length).toBeGreaterThan(0);
+    for (const call of upstream.calls) {
+      expect(call.init.headers["x-api-key"]).toBeUndefined();
+      expect(call.init.headers[PROVIDER_PROXY_NO_API_CREDITS_HEADER]).toBeUndefined();
+    }
   });
 });

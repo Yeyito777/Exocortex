@@ -2,6 +2,19 @@
 import { createAbortError } from "./abort";
 import { STEER_PREEMPTION_REASON, StreamPreemptedError, type RetryableStreamAbortController } from "./watchdog-retry";
 
+/**
+ * A turn that may not wait out a usage limit (an app conversation with
+ * `route.whenLimited: "error"`) found nothing it may use able to run it.
+ */
+export class UsageLimitedError extends Error {
+  override readonly name = "UsageLimitedError";
+  constructor(readonly resetAt: number | null, cause?: unknown) {
+    super(cause instanceof Error && cause.message
+      ? cause.message
+      : `Every Claude route this conversation may use is at a usage limit${resetAt ? ` (the soonest resets ${new Date(resetAt).toISOString()})` : ""}`);
+  }
+}
+
 export function isUsageLimitError(error: unknown): boolean {
   if (!(error instanceof Error) || error.name === "AbortError") return false;
   // A Claude turn's API credits ran out: wait for another key or a subscription like any limit.
@@ -39,7 +52,7 @@ export async function runWithUsageLimitWait<T>(
   operation: () => Promise<T>,
   availability: () => UsageAvailability,
   hooks: { start(resetAt: number | null): void; end(): void },
-  options: { probeMs?: number; retryFloorMs?: number; shouldRetry?: (error: unknown) => boolean } = {},
+  options: { probeMs?: number; retryFloorMs?: number; shouldRetry?: (error: unknown) => boolean; failInsteadOfWaiting?: boolean } = {},
 ): Promise<T> {
   const probeMs = options.probeMs ?? 30_000;
   const retryFloorMs = options.retryFloorMs ?? 1_000;
@@ -58,6 +71,7 @@ export async function runWithUsageLimitWait<T>(
       if (controller.signal.aborted) throw createAbortError();
       const state = availability();
       const cooldown = refused ? Math.max(0, lastAttempt + retryFloorMs - Date.now()) : 0;
+      if (options.failInsteadOfWaiting && !state.ready) throw new UsageLimitedError(state.resetAt);
       if (!state.ready || cooldown > 0) {
         if (!waiting) {
           waiting = true;
@@ -94,6 +108,11 @@ export async function runWithUsageLimitWait<T>(
         return await operation();
       } catch (error) {
         if (controller.signal.aborted || !(options.shouldRetry ?? isUsageLimitError)(error)) throw error;
+        if (options.failInsteadOfWaiting) {
+          // Another account or a credit key may still take it: try once more, then give up.
+          const next = availability();
+          if (!next.ready || refused) throw new UsageLimitedError(next.resetAt, error);
+        }
         refused = true;
       }
     }

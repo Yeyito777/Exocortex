@@ -76,7 +76,8 @@ import { buildConversationRequestSurface } from "./conversation-request-surface"
 import { connectivity as daemonConnectivity, type ConnectivityMonitor } from "./connectivity";
 import { runWithNetworkWait } from "./network-wait";
 import { runWithProxyLinkWait, type ProxyLinkWaitDeps, type ProxyLinkWaitOptions } from "./proxy-link-wait";
-import { isUsageLimitError, runWithUsageLimitWait, type UsageAvailability } from "./usage-limit-wait";
+import { isUsageLimitError, runWithUsageLimitWait, UsageLimitedError, type UsageAvailability } from "./usage-limit-wait";
+import { conversationAllowsApiCredits, conversationWaitsForUsageLimits } from "./app-registry";
 import { claudeUsageAvailability } from "./providers/anthropic/availability";
 import { isProviderProxied, providerProxyConnect, providerProxyRoute } from "./provider-proxy/route";
 import { classifyNetworkFailureMessage } from "./providers/errors";
@@ -210,6 +211,8 @@ export interface AssistantTurnOutcome {
   daemonRestart?: boolean;
   /** The turn ended at a deferred Chrono sleep and will continue by replay later. */
   suspended?: boolean;
+  /** No route it may use could run it, and it may not wait (an app's `route.whenLimited: "error"`). */
+  limited?: { resetAt: number | null };
   /**
    * The turn's own finalizer already settled subagent notifications for it (or
    * left them for a replay or a sleep). Its starter's promise resolves only
@@ -890,6 +893,7 @@ async function orchestrateAdmittedAssistantTurn(
       streamSeq: convStore.nextStreamSeq(convId),
       active: show,
       ...(waitStartedAt != null ? { startedAt: waitStartedAt } : {}),
+      ...(show ? { reason: "network" as const } : {}),
     });
   };
   const noteNetworkTrouble = () => {
@@ -911,13 +915,13 @@ async function orchestrateAdmittedAssistantTurn(
   let compacting = false;
 
   /** A provider wait with its own label (usage limit, /proxy link): yellow in the sidebar, the label in the chat. */
-  const showProviderWait = (label: string) => {
+  const showProviderWait = (label: string, detail: { reason: "network" | "proxy_link" | "usage_limit"; resetAt?: number | null } = { reason: "proxy_link" }) => {
     convStore.pauseActivity(convId);
     convStore.setConnectionWaitStartedAt(convId, Date.now(), label);
     broadcastConversationUpdated(server, convId);
     server.sendToSubscribers(convId, {
       type: "connection_wait_status", convId, streamSeq: convStore.nextStreamSeq(convId),
-      active: true, startedAt: Date.now(), label,
+      active: true, startedAt: Date.now(), label, ...detail,
     });
   };
   const endProviderWait = () => {
@@ -960,12 +964,14 @@ async function orchestrateAdmittedAssistantTurn(
         syncConnectionWait();
       },
     }, { label: convId }), () => provider === "anthropic"
-      ? (ext.usageAvailability?.() ?? (ext.streamMessageFn ? { ready: true, resetAt: null } : claudeUsageAvailability()))
+      ? (ext.usageAvailability?.() ?? (ext.streamMessageFn ? { ready: true, resetAt: null } : claudeUsageAvailability(Date.now(), { apiCredits: conversationAllowsApiCredits(convId) })))
       : { ready: true, resetAt: null }, {
-      start: (resetAt) => showProviderWait("Waiting for usage limit" + (resetAt == null ? "…" : ` · resets ${new Date(resetAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`)),
+      start: (resetAt) => showProviderWait("Waiting for usage limit" + (resetAt == null ? "…" : ` · resets ${new Date(resetAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`), { reason: "usage_limit", resetAt }),
       end: endProviderWait,
     }, {
       shouldRetry: error => provider === "anthropic" && isUsageLimitError(error),
+      // An app conversation may choose to fail rather than wait (docs/app-api.md).
+      failInsteadOfWaiting: provider === "anthropic" && !conversationWaitsForUsageLimits(convId),
       // The remote already tries an alternative account. With an old/unknown
       // pool snapshot, do not hammer its refused request once per second.
       retryFloorMs: isProviderProxied("anthropic") ? 30_000 : 1_000,
@@ -1115,13 +1121,13 @@ async function orchestrateAdmittedAssistantTurn(
     tokens: 0,
   };
   /** An informational provider notice: shown muted, live and after reload (display.ts). */
-  const pushProviderNotice = (text: string): void => {
+  const pushProviderNotice = (text: string, route?: import("./protocol").ConversationRouteNotice): void => {
     const now = Date.now();
     transcriptMarkers.push({
       afterIndex: agentState.completedMessages.length,
       message: { role: "system", content: text, metadata: { ...createMessageMetadata(now, liveConv.model, { endedAt: now }), kind: PROVIDER_NOTICE_KIND } },
     });
-    server.sendToSubscribers(convId, { type: "system_message", convId, streamSeq: convStore.nextStreamSeq(convId), text, color: "muted" });
+    server.sendToSubscribers(convId, { type: "system_message", convId, streamSeq: convStore.nextStreamSeq(convId), text, color: "muted", ...(route ? { route } : {}) });
   };
   const partialContent: import("./messages").ApiContentBlock[] = [];
   /** Blocks that survived persistence on abort/error — sent to TUI so it can trim display. */
@@ -1655,9 +1661,9 @@ async function orchestrateAdmittedAssistantTurn(
         server.sendToSubscribers(convId, { type: "context_update", convId, streamSeq: convStore.nextStreamSeq(convId), contextTokens: postTokens });
       }
     },
-    onProviderNotice(text) {
+    onProviderNotice(text, route) {
       log("info", `orchestrator: provider notice for ${convId}: ${text}`);
-      pushProviderNotice(text);
+      pushProviderNotice(text, route);
     },
     onBilling(next) {
       billing = next;
@@ -2168,6 +2174,7 @@ async function orchestrateAdmittedAssistantTurn(
       aborted: isAbort || isWatchdog,
       watchdog: isWatchdog,
       daemonRestart: isDaemonRestart,
+      ...(err instanceof UsageLimitedError ? { limited: { resetAt: err.resetAt } } : {}),
     };
   } finally {
     if (providerTurnSession) {
@@ -2338,6 +2345,8 @@ async function orchestrateAdmittedAssistantTurn(
         daemonRestart: outcome.daemonRestart,
         suspended: outcome.suspended,
         manualCompaction,
+        ...(billing ? { billing } : {}),
+        ...(outcome.limited ? { limited: outcome.limited } : {}),
       });
     }
     // Releases (or, when aborted, cancels) a daemon restart this turn requested.

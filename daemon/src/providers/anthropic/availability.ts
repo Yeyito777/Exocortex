@@ -18,7 +18,8 @@ function localApiCredits(now: number): { ready: boolean; resetAt: number | null 
   return { ready: usableApiCreditKey(now) !== null, resetAt: apiCreditResetAt(now) };
 }
 
-export function claudeUsageAvailability(now = Date.now()): UsageAvailability {
+/** `apiCredits: false`: the conversation may not use API credits (an app's `route.credits: "never"`). */
+export function claudeUsageAvailability(now = Date.now(), options: { apiCredits?: boolean } = {}): UsageAvailability {
   const remote = proxiedClaudeAccounts()?.pool;
   if (isProviderProxied("anthropic") && !remote) return { ready: true, resetAt: null };
   const local = applyDevRoutingOverrides(claudeAccountStates(now), now);
@@ -34,7 +35,7 @@ export function claudeUsageAvailability(now = Date.now()): UsageAvailability {
     return { ready: true, resetAt: null };
   }
   // Every subscription account is at a limit: API credits can take the turn (api-credits.ts).
-  const credits = remote ? remote.combined?.apiCredits ?? null : localApiCredits(now);
+  const credits = options.apiCredits === false ? null : remote ? remote.combined?.apiCredits ?? null : localApiCredits(now);
   if (credits?.ready) return { ready: true, resetAt: null };
   const resets = eligible.map(account => Math.max(
     account.limitedUntil ?? 0,

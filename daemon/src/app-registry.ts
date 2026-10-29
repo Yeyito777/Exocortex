@@ -14,7 +14,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { dataDir } from "@exocortex/shared/paths";
-import type { AppLifetime, AppSystemBase, AppToolDef } from "@exocortex/shared/app-api";
+import type { AppLifetime, AppRouteSpec, AppSystemBase, AppToolDef } from "@exocortex/shared/app-api";
 import type { TurnResultEvent } from "@exocortex/shared/protocol";
 import { log } from "./log";
 
@@ -37,6 +37,10 @@ export interface AppConversationRecord {
   appTools: AppToolDef[];
   /** The most recent turn_result (without reqId), for an owner attaching after its turn ended. */
   lastTurnResult?: TurnResultEvent;
+  /** How its Claude turns may be billed; absent: as an ordinary conversation. */
+  route?: AppRouteSpec;
+  /** An app_run's ephemeral conversation (without `keep`): ends when its turn does. */
+  endAfterTurn?: boolean;
 }
 
 interface RegistryFile {
@@ -72,6 +76,17 @@ function isRecord(value: unknown): value is AppConversationRecord {
     && typeof record.createdAt === "number" && typeof record.lastActivityAt === "number"
     && typeof record.system?.text === "string" && typeof record.system.base === "string"
     && (record.builtin === "all" || Array.isArray(record.builtin)) && Array.isArray(record.appTools);
+}
+
+let ephemeralHandoff = true;
+
+/** Whether ephemeral conversations go to the next daemon on a graceful restart (app-api.ts). */
+export function ephemeralConversationsSurviveRestart(): boolean {
+  return ephemeralHandoff;
+}
+
+export function setEphemeralConversationsSurviveRestart(enabled: boolean): void {
+  ephemeralHandoff = enabled;
 }
 
 /** Read the saved and temporary records; ephemeral ones from an earlier daemon are gone with it. */
@@ -194,6 +209,24 @@ export function setAppTools(convId: string, appTools: AppToolDef[]): void {
   if (!record) return;
   record.appTools = appTools;
   if (record.lifetime !== "ephemeral") writeNow();
+}
+
+export function setAppRoute(convId: string, route: AppRouteSpec | undefined): void {
+  const record = records.get(convId);
+  if (!record) return;
+  if (route) record.route = route;
+  else delete record.route;
+  if (record.lifetime !== "ephemeral") writeNow();
+}
+
+/** Whether a conversation's Claude turns may run on API credits (only an app's can say no). */
+export function conversationAllowsApiCredits(convId: string | undefined): boolean {
+  return !convId || records.get(convId)?.route?.credits !== "never";
+}
+
+/** Whether a conversation's turn waits out usage limits (only an app's can choose to fail instead). */
+export function conversationWaitsForUsageLimits(convId: string | undefined): boolean {
+  return !convId || records.get(convId)?.route?.whenLimited !== "error";
 }
 
 export function setLastTurnResult(convId: string, result: TurnResultEvent): void {

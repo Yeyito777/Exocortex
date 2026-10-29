@@ -7,7 +7,7 @@
  * (usage.ts), and each conversation's last account and when it last used it.
  */
 
-import { isEphemeralConversation, isHiddenConversation } from "../../app-registry";
+import { conversationAllowsApiCredits, isEphemeralConversation, isHiddenConversation } from "../../app-registry";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "fs";
 import { join } from "path";
 import { runtimeDir } from "@exocortex/shared/paths";
@@ -152,6 +152,11 @@ export function getConversationAccount(convId: string): Assignment | null {
   return loadAssignments().get(convId) ?? null;
 }
 
+/** Whether a conversation's turns last ran on API credits rather than a subscription. */
+export function conversationOnApiCredits(convId: string): boolean {
+  return (conversationCredits.get(convId) ?? null) !== null;
+}
+
 /** The conversation just made a request on `account` (keeps its cache-warm clock). */
 export function touchConversationAccount(convId: string, account: string, now = Date.now()): void {
   loadAssignments().set(convId, { account, lastUsedAt: now });
@@ -265,8 +270,10 @@ function subscriptionsExhausted(states: AccountRouteState[], now: number): boole
 }
 
 /** The API-credit key a turn routed as `decision` runs on instead of the subscription, if it should. */
-function apiCreditFor(decision: RouteDecision, states: AccountRouteState[], now: number, live: LiveProcessState | null): ApiCreditKey | null {
+function apiCreditFor(decision: RouteDecision, states: AccountRouteState[], now: number, live: LiveProcessState | null, convId?: string): ApiCreditKey | null {
   if (!apiCreditFallbackEnabled()) return null;
+  // An app conversation may forbid credits (route.credits "never"): it waits or fails like any limit.
+  if (!conversationAllowsApiCredits(convId)) return null;
   // Moving a process with background tasks would stop them: it keeps how it bills, as it keeps its account.
   if (live?.backgroundWork) return live.apiCredit ?? null;
   const chosen = states.find(state => state.id === decision.account);
@@ -318,7 +325,7 @@ export async function routeClaudeTurn(
     // Whether `main` is signed in decides between credits and a sign-in error: checked as for several accounts.
     await refreshClaudeAccountStatuses({ signal });
     const now = Date.now();
-    return { ...decision, apiCredit: apiCreditFor(decision, applyDevRoutingOverrides(claudeAccountStates(now), now).states, now, live) };
+    return { ...decision, apiCredit: apiCreditFor(decision, applyDevRoutingOverrides(claudeAccountStates(now), now).states, now, live, convId) };
   }
   await refreshClaudeAccountStatuses({ signal });
   const now = Date.now();
@@ -336,7 +343,7 @@ export async function routeClaudeTurn(
       backgroundWork: live?.backgroundWork ?? false,
     }, accounts, now, policy);
   }
-  return { ...decision, apiCredit: apiCreditFor(decision, accounts, now, live) };
+  return { ...decision, apiCredit: apiCreditFor(decision, accounts, now, live, convId) };
 }
 
 /** Accounts whose usage the bars combine: signed in and not blocked. */
