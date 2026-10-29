@@ -122,6 +122,23 @@ export function emitProxiedClaudeMove(convId: string, move: ProviderProxyAccount
   for (const listener of claudeMoveListeners.get(convId) ?? []) listener(move);
 }
 
+const claudeCreditListeners = new Map<string, Set<(label: string) => void>>();
+
+/** While `convId`'s turn runs: the /proxy remote billed one of its requests to its API credits. */
+export function onProxiedClaudeApiCredits(convId: string, listener: (label: string) => void): () => void {
+  let listeners = claudeCreditListeners.get(convId);
+  if (!listeners) claudeCreditListeners.set(convId, listeners = new Set());
+  listeners.add(listener);
+  return () => {
+    listeners!.delete(listener);
+    if (listeners!.size === 0 && claudeCreditListeners.get(convId) === listeners) claudeCreditListeners.delete(convId);
+  };
+}
+
+export function emitProxiedClaudeApiCredits(convId: string, label: string): void {
+  for (const listener of claudeCreditListeners.get(convId) ?? []) listener(label);
+}
+
 /** The remote's Claude pool while Claude is proxied, if the remote shares it. */
 export function proxiedClaudeAccounts(): { pool: ProviderProxyRemoteAccounts; remote: ClaudeAccountsRemoteInfo } | null {
   return routes.has("anthropic") ? hooks?.remoteAccounts() ?? null : null;

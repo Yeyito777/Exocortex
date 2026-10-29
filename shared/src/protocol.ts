@@ -2,6 +2,7 @@ import type { FastMode } from "./messages";
 import type { ConversationDefaults } from "./config";
 import type { ActiveTaskInfo } from "./messages";
 import type { GenerationThroughput } from "./messages";
+import type { MessageBilling } from "./messages";
 /**
  * @exocortex/shared — IPC protocol.
  *
@@ -1842,6 +1843,8 @@ export interface MessageCompleteEvent {
   endedAt: number;
   tokens: number;
   generationThroughput?: GenerationThroughput;
+  /** The turn ran on API credits. */
+  billing?: MessageBilling;
 }
 
 export interface UsageUpdateEvent {

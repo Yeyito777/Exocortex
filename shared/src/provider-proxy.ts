@@ -56,6 +56,14 @@ export const PROVIDER_PROXY_CONVERSATION_HEADER = "x-exocortex-proxy-conversatio
  */
 export const PROVIDER_PROXY_ACCOUNT_MOVE_HEADER = "x-exocortex-claude-account-move";
 
+/**
+ * Response header a remote adds when it billed the request to one of its
+ * Claude API-credit keys (every subscription account at a limit): the key's
+ * URI-encoded label. The local forwarder takes it off, so the turn shows it
+ * ran on API credits, as the remote's own turns do.
+ */
+export const PROVIDER_PROXY_API_CREDITS_HEADER = "x-exocortex-claude-api-credits";
+
 export interface ProviderProxyAccountMove {
   from: string;
   to: string;

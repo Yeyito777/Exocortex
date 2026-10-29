@@ -1,4 +1,4 @@
-import type { ModelId, EffortLevel, ApiMessage, ProviderId, ModelInfo, UsageData, ToolCallBlock, ToolResultBlock, TokenTrackingContext, ImageAttachment, ImageRef, ToolCallPresentation } from "../messages";
+import type { ModelId, EffortLevel, ApiMessage, ProviderId, ModelInfo, UsageData, ToolCallBlock, ToolResultBlock, TokenTrackingContext, ImageAttachment, ImageRef, ToolCallPresentation, MessageBilling } from "../messages";
 import type { OAuthProfile, StoredTokens } from "../store";
 import type { AssistantProviderData } from "./provider-data";
 import type { ToolExecutor } from "../agent";
@@ -117,6 +117,8 @@ export interface StreamCallbacks {
    * connectivity and shows the turn as waiting for it while the network is down.
    */
   onNetworkTrouble?: () => void;
+  /** The turn runs on API credits instead of the provider's subscription (Claude: api-credits.ts). */
+  onBilling?: (billing: MessageBilling) => void;
   /** A provider running its own agent loop finished a tool round; the agent loop commits it like one of its own. */
   onProviderRound?: (round: ProviderRound) => void;
   /**

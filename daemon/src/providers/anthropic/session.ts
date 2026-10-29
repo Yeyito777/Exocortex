@@ -35,7 +35,8 @@ import type { HostToolBinding } from "./host-tools";
 import { buildLiveSessionContent, buildQueuedInputContent, trailingUserMessages } from "./prompt";
 import type { ClaudeRelay } from "./relay-client";
 import { MAIN_ACCOUNT_ID } from "./accounts";
-import { endsInterruptedTurn, startsClaudeTurn, type RelayHistoryMark, type RelayResumePoint } from "./relay-protocol";
+import { ApiCreditUsageMeter, type ApiCreditKey } from "./api-credits";
+import { endsInterruptedTurn, REPLAYED_FIELD, startsClaudeTurn, type RelayHistoryMark, type RelayResumePoint } from "./relay-protocol";
 import { agentTitlesInHistory, commitInterruptedRound, finalizeClaudeStream, pushClaudeMessage, takeQueuedInput, type ClaudeStreamState } from "./stream";
 import type { AnthropicAssistantProviderData } from "./types";
 
@@ -74,6 +75,8 @@ export interface ClaudeCodeSessionOptions {
   system?: string;
   /** Claude account (accounts.ts) the process is signed in as; default `main`. */
   account?: string;
+  /** The API-credit key (api-credits.ts) the process bills instead of the account's subscription. */
+  apiCredit?: ApiCreditKey | null;
   /**
    * Stay running between turns instead of closing when idle (ephemeral app
    * conversations, which keep no session files to resume from). Closed when
@@ -171,12 +174,14 @@ function systemFingerprint(system: string): string {
  * new one. `proxyAlias` is the /proxy alias its requests go through, if any:
  * its environment points there, so toggling /proxy needs a new process.
  * Likewise a process is signed in as one Claude account (other than `main`,
- * which keeps the key it had before accounts existed).
+ * which keeps the key it had before accounts existed), and one on API
+ * credits bills one key.
  */
-export function claudeSessionKey(model: string, effort: string | undefined, cwd: string, proxyAlias?: string | null, account?: string | null): string {
+export function claudeSessionKey(model: string, effort: string | undefined, cwd: string, proxyAlias?: string | null, account?: string | null, apiCredit?: string | null): string {
   const key: string[] = [model, effort ?? null, cwd] as string[];
   if (proxyAlias) key.push(`proxy:${proxyAlias}`);
   else if (account && account !== MAIN_ACCOUNT_ID) key.push(`account:${account}`);
+  if (!proxyAlias && apiCredit) key.push(`api-credit:${apiCredit}`);
   return JSON.stringify(key);
 }
 
@@ -396,6 +401,10 @@ export class ClaudeCodeSession {
   readonly key: string;
   /** Claude account the process is signed in as. */
   readonly account: string;
+  /** API-credit key the process bills, if it does not bill the subscription. */
+  readonly apiCredit: ApiCreditKey | null;
+  /** Counts what the process spends on its API-credit key. */
+  private readonly creditMeter: ApiCreditUsageMeter | null;
   /** Fingerprint of the system prompt addition the process started with. */
   private readonly system: string;
   sessionId: string | null = null;
@@ -444,6 +453,8 @@ export class ClaudeCodeSession {
     this.key = key;
     this.keepAlive = options.keepAlive === true;
     this.account = options.account ?? MAIN_ACCOUNT_ID;
+    this.apiCredit = options.apiCredit ?? null;
+    this.creditMeter = this.apiCredit ? new ApiCreditUsageMeter(this.apiCredit) : null;
     this.system = systemFingerprint(options.system ?? "");
     this.relay = options.relay ?? null;
     const hello = this.relay?.hello ?? null;
@@ -614,6 +625,7 @@ export class ClaudeCodeSession {
 
   private end(reason: string, stop: boolean): void {
     if (this.closed) return;
+    this.creditMeter?.flushAll();
     const detaching = !stop && this.relay !== null;
     this.closed = true;
     if (this.convId && sessions.get(this.convId) === this) sessions.delete(this.convId);
@@ -662,6 +674,11 @@ export class ClaudeCodeSession {
     const uuid = str(message.uuid);
     if (uuid && !message.parent_tool_use_id) this.lastSeenUuid = uuid;
     if (message.type === "system" && message.subtype === "background_tasks_changed") this.updateTasks(message.tasks);
+    // Every API call the process makes is billed to its key, turns of its own included.
+    // Replayed messages (after a daemon restart) were counted by the daemon that saw them first.
+    if (this.creditMeter && message.type === "stream_event" && message[REPLAYED_FIELD] !== true) {
+      this.creditMeter.observe(message.event, str(message.parent_tool_use_id) ?? "main");
+    }
     this.route(message);
   }
 

@@ -3,8 +3,16 @@ import { chooseAccountForNewWork, DEFAULT_ROUTING_POLICY, type AccountRouteState
 import { isProviderProxied, proxiedClaudeAccounts } from "../../provider-proxy/route";
 import type { UsageAvailability } from "../../usage-limit-wait";
 import { applyDevRoutingOverrides } from "./routing-dev-overrides";
+import { apiCreditFallbackEnabled, apiCreditResetAt, knownApiCreditSecrets, refreshApiCreditSecrets, usableApiCreditKey } from "./api-credits";
 
 let nextRefreshAt = 0;
+
+function localApiCredits(now: number): { ready: boolean; resetAt: number | null } | null {
+  if (!apiCreditFallbackEnabled()) return null;
+  // Which keys exist is known after a check of the secrets store; the next probe sees it.
+  if (!knownApiCreditSecrets()) void refreshApiCreditSecrets();
+  return { ready: usableApiCreditKey(now) !== null, resetAt: apiCreditResetAt(now) };
+}
 
 export function claudeUsageAvailability(now = Date.now()): UsageAvailability {
   const remote = proxiedClaudeAccounts()?.pool;
@@ -21,6 +29,9 @@ export function claudeUsageAvailability(now = Date.now()): UsageAvailability {
   if (!eligible.length || chooseAccountForNewWork(states, now, policy)) {
     return { ready: true, resetAt: null };
   }
+  // Every subscription account is at a limit: API credits can take the turn (api-credits.ts).
+  const credits = remote ? remote.combined?.apiCredits ?? null : localApiCredits(now);
+  if (credits?.ready) return { ready: true, resetAt: null };
   const resets = eligible.map(account => Math.max(
     account.limitedUntil ?? 0,
     ...[account.usage?.fiveHour, account.usage?.sevenDay]
@@ -33,5 +44,7 @@ export function claudeUsageAvailability(now = Date.now()): UsageAvailability {
     // a helper process. The next capacity probe observes the new snapshot.
     void refreshCombinedUsage().catch(() => {});
   }
+  // A rate-limited key may be back before any subscription resets.
+  if (credits?.resetAt && credits.resetAt > now) resets.push(credits.resetAt);
   return { ready: false, resetAt: resets.length ? Math.min(...resets) : null };
 }

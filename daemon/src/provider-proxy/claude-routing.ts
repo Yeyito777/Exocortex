@@ -10,12 +10,25 @@
  * client's PROVIDER_PROXY_CONVERSATION_HEADER (`<client host>/<conversation
  * id>`), kept here as `proxy:<that>`. Each response's rate-limit headers
  * update the account that served it.
+ *
+ * While every account is at a usage limit, Messages API requests run on an
+ * API-credit key instead (providers/anthropic/api-credits.ts), as this
+ * daemon's own turns do: the lease names the key, upstream-auth.ts signs the
+ * request with it, and what it spends is counted from the response stream.
  */
 
 import { CLAUDE_RATE_LIMIT_HEADER, CLAUDE_ACCOUNT_HEADER, applyUsageHeaders } from "../providers/anthropic/usage";
-import { beginAccountTurn, getConversationAccount, multipleClaudeAccounts, noteAccountAuthFailure, routeClaudeTurn, touchConversationAccount } from "../providers/anthropic/account-pool";
+import { beginAccountTurn, beginApiCreditTurn, getConversationAccount, multipleClaudeAccounts, noteAccountAuthFailure, routeClaudeTurn, touchConversationAccount } from "../providers/anthropic/account-pool";
 import type { RouteDecision } from "../providers/anthropic/routing";
 import { MAIN_ACCOUNT_ID } from "../providers/anthropic/accounts";
+import {
+  ApiCreditUsageMeter,
+  isApiCreditRefusalText,
+  markApiCreditRejected,
+  markApiCreditSpent,
+  markApiCreditThrottled,
+  type ApiCreditKey,
+} from "../providers/anthropic/api-credits";
 import { log } from "../log";
 
 /** Assignment keys of proxied conversations start with this. */
@@ -30,18 +43,31 @@ export function proxiedConversationKey(value: string | undefined): string | null
 /** One proxied request's account, held while its response streams. */
 export interface ProxiedClaudeLease {
   account: string;
+  /** Set when the request is billed to an API-credit key instead of the account's subscription. */
+  apiCredit: ApiCreditKey | null;
   /** Set when the request moved its conversation off the account it last used. */
   moved: { from: string; detail: string } | null;
-  /** The upstream answered: record its rate-limit headers on this account. Returns true when it refused the request at a usage limit. */
-  observe(status: number, headers: Headers): boolean;
+  /**
+   * The upstream answered: record its rate-limit headers on this account.
+   * Returns true when it refused the request at a usage limit, or (API
+   * credits) for lack of credits or a rate limit; `errorText` is an error
+   * response's body, read only for API-credit leases.
+   */
+  observe(status: number, headers: Headers, errorText?: string): boolean;
+  /** API-credit leases: counts what the response stream spends. */
+  meter: ApiCreditUsageMeter | null;
   /** Its login was rejected even after a refresh. */
   authFailed(reason: string): void;
   release(): void;
 }
 
 export interface ProxiedClaudeRouter {
-  /** Pick the account for a request of `conversation` (null: not tied to one, e.g. a title). */
-  lease(conversation: string | null, signal?: AbortSignal): Promise<ProxiedClaudeLease>;
+  /**
+   * Pick the account for a request of `conversation` (null: not tied to one,
+   * e.g. a title). `apiCredits`: the request may run on API credits (Messages
+   * API requests; Claude Code's account endpoints need the subscription login).
+   */
+  lease(conversation: string | null, signal?: AbortSignal, options?: { apiCredits?: boolean }): Promise<ProxiedClaudeLease>;
 }
 
 function number(value: string | null): number | undefined {
@@ -77,17 +103,53 @@ export function rateLimitInfoFromHeaders(headers: Headers): Record<string, unkno
 }
 
 export interface ProxiedClaudeRouterDeps {
-  route?: (key: string | undefined, signal?: AbortSignal) => Promise<RouteDecision>;
+  route?: (key: string | undefined, signal?: AbortSignal) => Promise<RouteDecision & { apiCredit?: ApiCreditKey | null }>;
 }
 
 export function createProxiedClaudeRouter(deps: ProxiedClaudeRouterDeps = {}): ProxiedClaudeRouter {
   const route = deps.route ?? ((key, signal) => routeClaudeTurn(key, null, signal));
   return {
-    async lease(conversation, signal) {
+    async lease(conversation, signal, options = {}) {
       const key = conversation ?? undefined;
       const previous = key ? getConversationAccount(key)?.account ?? null : null;
       const decision = await route(key, signal);
       const account = decision.account;
+      const apiCredit = options.apiCredits ? decision.apiCredit ?? null : null;
+      if (apiCredit) {
+        log("info", `provider-proxy: ${key ?? "a proxied helper request"} runs on API credits "${apiCredit.label}" (every Claude subscription account is at a usage limit)`);
+        const endCreditTurn = beginApiCreditTurn();
+        const meter = new ApiCreditUsageMeter(apiCredit);
+        let rejections = 0;
+        return {
+          account,
+          apiCredit,
+          moved: null,
+          meter,
+          observe(status, _headers, errorText = "") {
+            if (status === 401) {
+              // Retried once with the key read again; a second rejection sets it aside.
+              if (++rejections >= 2) markApiCreditRejected(apiCredit, `HTTP 401 ${errorText}`.trim());
+              return false;
+            }
+            if (status === 429) {
+              markApiCreditThrottled(apiCredit);
+              return true;
+            }
+            if (status >= 400 && isApiCreditRefusalText(errorText)) {
+              markApiCreditSpent(apiCredit, `HTTP ${status}: ${errorText}`.replace(/\s+/g, " ").slice(0, 200));
+              return true;
+            }
+            return false;
+          },
+          authFailed(reason) {
+            markApiCreditRejected(apiCredit, reason);
+          },
+          release() {
+            meter.flushAll();
+            endCreditTurn();
+          },
+        };
+      }
       if (decision.movedFrom) {
         log("info", `provider-proxy: proxied conversation ${key} moves from Claude account ${decision.movedFrom} to ${account} (${decision.reason}: ${decision.detail})`);
       } else if (multipleClaudeAccounts() && previous !== account) {
@@ -97,6 +159,8 @@ export function createProxiedClaudeRouter(deps: ProxiedClaudeRouterDeps = {}): P
       const endTurn = beginAccountTurn(account, key);
       return {
         account,
+        apiCredit: null,
+        meter: null,
         moved: decision.movedFrom ? { from: decision.movedFrom, detail: decision.detail } : null,
         observe(status, headers) {
           const info = rateLimitInfoFromHeaders(headers);

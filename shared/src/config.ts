@@ -99,8 +99,38 @@ export interface OpenCodeProviderConfig {
   baseUrl?: string;
 }
 
+export interface AnthropicProviderConfig {
+  /** /proxy: send Claude requests through another machine's logins (daemon/src/provider-proxy/manager.ts). */
+  proxy?: { ssh?: string };
+  /**
+   * Run Claude turns on Claude API credits (an API key) while every Claude
+   * subscription account is at a usage limit (docs/claude-accounts.md).
+   */
+  apiCreditFallback?: AnthropicApiCreditFallbackConfig;
+}
+
+export interface AnthropicApiCreditFallbackConfig {
+  enabled?: boolean;
+  /** Keys in the order they are used: put the credits that expire soonest first. */
+  keys?: AnthropicApiCreditKeyConfig[];
+}
+
+export interface AnthropicApiCreditKeyConfig {
+  /** Name of the API key in the `secrets` store, e.g. ANTHROPIC_API_KEY_MAX2_CREDITS. Never the key itself. */
+  secret: string;
+  /** Short name shown in the status bar, e.g. "max2". Defaults to the secret name. */
+  label?: string;
+  /**
+   * Day of the month its credits are granted again (the plan's billing day).
+   * A key out of credits waits until then; without it, a day. The status
+   * bar counts "this cycle" from it (else from the 1st).
+   */
+  renewsOnDay?: number;
+}
+
 export interface ProvidersConfig {
   openai?: OpenAIProviderConfig;
+  anthropic?: AnthropicProviderConfig;
   deepseek?: DeepSeekProviderConfig;
   opencode?: OpenCodeProviderConfig;
   /** OpenRouter API base URL override (API keys belong in provider auth or OPENROUTER_API_KEY). */

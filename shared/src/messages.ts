@@ -445,7 +445,11 @@ export interface MessageMetadata {
   defaultHost?: string;
   /** On a client_host notice: the machine (user@hostname) the user last wrote from. */
   clientOrigin?: string;
+  /** Set when the turn ran on API credits instead of a Claude subscription. */
+  billing?: MessageBilling;
 }
+
+export type MessageBilling = "api-credits";
 
 /** Build standard message metadata with sensible defaults. */
 export function createMessageMetadata(
@@ -880,6 +884,22 @@ export interface UsageData {
    * the key spent through this daemon, counted from response usage.
    */
   apiKey?: ApiKeyUsage | null;
+  /** Claude: the API-credit fallback (providers.anthropic.apiCreditFallback), when it is configured. */
+  apiCredits?: ApiCreditsUsage | null;
+}
+
+/** Claude turns running on API credits while every subscription account is at a limit. */
+export interface ApiCreditsUsage {
+  /** Turns go to API credits now, or one is still running on them. */
+  active: boolean;
+  /** A key can take a turn now (some subscription account may still be preferred). */
+  ready: boolean;
+  /** Label of the key credit turns use now; null when none is left. */
+  label: string | null;
+  /** Estimated spend this billing cycle, every key together, from the local ledger. */
+  spentUsd: number;
+  /** With no key ready: when one can take turns again (a rate limit ends), if known. */
+  resetAt: number | null;
 }
 
 /** Spend counted from the usage OpenAI reported for API-key requests. */

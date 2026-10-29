@@ -20,6 +20,7 @@ import { dirname } from "node:path";
 import type { Server, ServerWebSocket } from "bun";
 import {
   PROVIDER_PROXY_ACCOUNT_MOVE_HEADER,
+  PROVIDER_PROXY_API_CREDITS_HEADER,
   PROVIDER_PROXY_CONVERSATION_HEADER,
   PROVIDER_PROXY_MAX_REQUEST_BYTES,
   type ProviderProxyAccountMove,
@@ -53,6 +54,8 @@ export interface ProviderProxyForwarderOptions {
   linkFor(provider: ProxyableProviderId): ProviderProxyLink | null;
   /** The remote moved a named conversation (PROVIDER_PROXY_CONVERSATION_HEADER) to another Claude account. */
   onAccountMove?(conversation: string, move: ProviderProxyAccountMove): void;
+  /** The remote billed a named conversation's request to its Claude API credits (the key's label). */
+  onApiCredits?(conversation: string, label: string): void;
   /** Overrides LINK_HOLD_MS (tests). */
   linkHoldMs?: number;
   /** Overrides LINK_HOLD_RETRY_DELAYS_MS (tests). */
@@ -308,7 +311,16 @@ export class ProviderProxyForwarder {
         const responseHeaders = { ...response.headers };
         const move = responseHeaders[PROVIDER_PROXY_ACCOUNT_MOVE_HEADER];
         delete responseHeaders[PROVIDER_PROXY_ACCOUNT_MOVE_HEADER];
+        const credits = responseHeaders[PROVIDER_PROXY_API_CREDITS_HEADER];
+        delete responseHeaders[PROVIDER_PROXY_API_CREDITS_HEADER];
         const conversation = headers[PROVIDER_PROXY_CONVERSATION_HEADER];
+        if (credits && conversation) {
+          try {
+            this.options.onApiCredits?.(conversation, decodeURIComponent(credits));
+          } catch {
+            // A malformed note changes nothing about the response.
+          }
+        }
         if (move && conversation) {
           try {
             this.options.onAccountMove?.(conversation, JSON.parse(decodeURIComponent(move)) as ProviderProxyAccountMove);

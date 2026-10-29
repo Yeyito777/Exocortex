@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PROVIDER_PROXY_ACCOUNT_MOVE_HEADER, PROVIDER_PROXY_CONVERSATION_HEADER } from "@exocortex/shared/provider-proxy";
+import { PROVIDER_PROXY_ACCOUNT_MOVE_HEADER, PROVIDER_PROXY_API_CREDITS_HEADER, PROVIDER_PROXY_CONVERSATION_HEADER } from "@exocortex/shared/provider-proxy";
+import { writeExocortexConfig } from "@exocortex/shared/config";
+import { refreshApiCreditSecrets, setApiCreditSecretsForTests, usableApiCreditKey } from "../providers/anthropic/api-credits";
 import { addClaudeAccount, setClaudeAccountsFileForTests } from "../providers/anthropic/accounts";
 import { claudeAccountsInfo, getConversationAccount, setAssignmentsFileForTests } from "../providers/anthropic/account-pool";
 import { setClaudeAuthProbeForTests } from "../providers/anthropic/auth-cache";
@@ -219,5 +221,51 @@ describe("helpers", () => {
       isUsingOverage: true,
       unifiedWindows: { five_hour: { utilization: 1, resetsAt: 1800000000 } },
     });
+  });
+});
+
+describe("proxied Claude requests on API credits", () => {
+  const KEYS = ["ANTHROPIC_API_KEY_MAIN_CREDITS", "ANTHROPIC_API_KEY_MAX2_CREDITS"];
+
+  beforeEach(async () => {
+    writeExocortexConfig({ providers: { anthropic: { apiCreditFallback: { enabled: true, keys: [
+      { secret: KEYS[0], label: "main" }, { secret: KEYS[1], label: "max2" },
+    ] } } } });
+    setApiCreditSecretsForTests({
+      names: async () => KEYS,
+      value: async name => `value-of-${name}`,
+      helperCommand: () => null,
+    }, join(dir, "credit-state.json"));
+    await refreshApiCreditSecrets({ force: true });
+  });
+
+  afterEach(() => {
+    writeExocortexConfig({});
+    setApiCreditSecretsForTests(null);
+  });
+
+  test("with every account limited, a key signs the request; one out of credits hands over to the next", async () => {
+    report("main", 100, 2 * H, 50, 30 * H);
+    report("max2", 100, 3 * H, 50, 96 * H);
+    // The stub signs with the key's value (x-api-key), so the fake upstream sees who signed.
+    const upstream: Upstream = {
+      calls: [],
+      answer: (signer) => signer === "value-of-ANTHROPIC_API_KEY_MAIN_CREDITS"
+        ? new Response(`{"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API."}}`, { status: 400 })
+        : new Response(`event: message_start\ndata: {"type":"message_start","message":{"model":"claude-haiku-5-5","usage":{"input_tokens":100,"output_tokens":1}}}\n\n`, {
+          status: 200, headers: { "content-type": "text/event-stream" },
+        }),
+    };
+    const { send } = await proxied(upstream, {
+      async headers(_provider, _url, options) {
+        const signer = options.apiCredit ? `value-of-${options.apiCredit.id}` : options.account ?? "main";
+        return { authorization: `Bearer token-${signer}`, ...(options.apiCredit ? { "x-api-key": signer } : {}) };
+      },
+    });
+    const response = await send("macbook/conv-1");
+    expect(response.status).toBe(200);
+    expect(upstream.calls.map(call => call.init.headers["x-api-key"])).toEqual(["value-of-ANTHROPIC_API_KEY_MAIN_CREDITS", "value-of-ANTHROPIC_API_KEY_MAX2_CREDITS"]);
+    expect((response.headers as unknown as Record<string, string>)[PROVIDER_PROXY_API_CREDITS_HEADER]).toBe("max2");
+    expect(usableApiCreditKey()?.id).toBe(KEYS[1]);
   });
 });

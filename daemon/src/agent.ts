@@ -12,7 +12,7 @@
 import { streamMessage, type ApiToolCall, type ProviderTurnSession } from "./api";
 import { log } from "./log";
 import { recordToolCallDiagnostics } from "./diagnostics";
-import { type ProviderId, type ModelId, type EffortLevel, type Block, type ToolCallBlock, type ToolResultBlock, type ToolCallPresentation, type ApiMessage, type ApiContentBlock, type TokenTrackingContext } from "./messages";
+import { type ProviderId, type ModelId, type EffortLevel, type Block, type ToolCallBlock, type ToolResultBlock, type ToolCallPresentation, type ApiMessage, type ApiContentBlock, type TokenTrackingContext, type MessageBilling } from "./messages";
 import type { DeferredToolResult } from "./tools/types";
 import type { ContentBlock as ProviderContentBlock, ProviderCompaction, ProviderRound, QueuedInput, QueuedInputSource, ServiceTier, StreamOptions, StreamRetryMetadata } from "./providers/types";
 import { MAX_OUTPUT_CHARS, cap } from "./tools/util";
@@ -82,6 +82,8 @@ export interface AgentCallbacks {
   onProviderCompaction?(compaction: ProviderCompaction): void;
   /** A provider notice for the transcript (e.g. the turn moved to another Claude account). */
   onProviderNotice?(text: string): void;
+  /** The turn runs on API credits instead of the provider's subscription. */
+  onBilling?(billing: MessageBilling): void;
   /** Atomically replace active provider replay with an automatic checkpoint. */
   compactContext?(messages: ApiMessage[], reason: CompactionReason, projectedTokens: number): Promise<ApiMessage[] | null>;
 }
@@ -348,6 +350,7 @@ export async function runAgentLoop(
           onProviderRound: commitProviderRound,
           onProviderCompaction: callbacks.onProviderCompaction,
           onProviderNotice: callbacks.onProviderNotice,
+          onBilling: callbacks.onBilling,
           onGenerationRate: (rate) => {
             providerMeasuredRates = true;
             callbacks.onGenerationRate?.(rate);

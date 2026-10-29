@@ -6,7 +6,8 @@
  * this module returns them to a link or logs them. Claude requests carry the
  * login of the account the pool routed them to (claude-routing.ts): Claude
  * Code's own stored login in that account's configuration directory, which
- * Claude Code itself keeps refreshed.
+ * Claude Code itself keeps refreshed, or, while every account is at a usage
+ * limit, an API-credit key (providers/anthropic/api-credits.ts).
  */
 
 import { createHash } from "node:crypto";
@@ -24,6 +25,7 @@ import { requireSubscriptionAuth } from "../providers/anthropic/auth";
 import { refreshAccountUsage } from "../providers/anthropic/usage";
 import { getClaudeAccount, MAIN_ACCOUNT_ID } from "../providers/anthropic/accounts";
 import { claudeAccountStates } from "../providers/anthropic/account-pool";
+import { apiCreditKeyValue, type ApiCreditKey } from "../providers/anthropic/api-credits";
 import { log } from "../log";
 import { isProviderProxied } from "./route";
 
@@ -33,9 +35,11 @@ export interface UpstreamAuth {
   /**
    * Headers that authenticate one upstream request. `afterRejection` is set
    * when the previous attempt got 401: refresh the credentials first.
-   * `account` is the Claude account the request was routed to (default `main`).
+   * `account` is the Claude account the request was routed to (default `main`);
+   * `apiCredit`, the API-credit key it is billed to instead, if any. An empty
+   * value removes that client header.
    */
-  headers(provider: ProxyableProviderId, url: string, options: { afterRejection: boolean; clientHeaders: Record<string, string>; account?: string }): Promise<Record<string, string>>;
+  headers(provider: ProxyableProviderId, url: string, options: { afterRejection: boolean; clientHeaders: Record<string, string>; account?: string; apiCredit?: ApiCreditKey | null }): Promise<Record<string, string>>;
   /** Upstream response headers, for cookie jars. */
   observeResponse?(provider: ProxyableProviderId, url: string, headers: Headers): void;
   /** Whether a provider can be served at all right now (logged in), for the request gate. */
@@ -119,6 +123,11 @@ export function readClaudeCodeOAuth(account = MAIN_ACCOUNT_ID): ClaudeOAuth | nu
   return null;
 }
 
+/** The client's betas without the OAuth one, which an API key must not send (Claude Code adds it for its subscription login). */
+function withoutOAuthBeta(value: string | undefined): string {
+  return (value ?? "").split(",").map(part => part.trim()).filter(part => part && part !== CLAUDE_OAUTH_BETA).join(",");
+}
+
 function withOAuthBeta(value: string | undefined): string {
   const betas = (value ?? "").split(",").map(part => part.trim()).filter(Boolean);
   if (!betas.includes(CLAUDE_OAUTH_BETA)) betas.push(CLAUDE_OAUTH_BETA);
@@ -138,6 +147,8 @@ export interface UpstreamCredentialSources {
   claudePoolAvailable(): boolean;
   /** This daemon's OpenAI session, refreshed when asked to. */
   openaiSession(options: { forceRefresh?: boolean }): Promise<{ accessToken: string; accountId: string | null }>;
+  /** An API-credit key's value (read again with `fresh`). */
+  apiCreditKey(key: ApiCreditKey, fresh: boolean): Promise<string | null>;
 }
 
 const defaultSources: UpstreamCredentialSources = {
@@ -150,6 +161,7 @@ const defaultSources: UpstreamCredentialSources = {
   claudePoolAvailable: () => claudeAccountStates().some(state => state.id !== MAIN_ACCOUNT_ID && state.available),
   // /proxy forwards to the ChatGPT backend, so only the ChatGPT login can serve it.
   openaiSession: (options) => getVerifiedSession({ ...options, chatgptOnly: true }),
+  apiCreditKey: (key, fresh) => apiCreditKeyValue(key, { fresh }),
 };
 
 export class UpstreamAuthError extends Error {
@@ -219,8 +231,13 @@ export function createLocalUpstreamAuth(overrides: Partial<UpstreamCredentialSou
       return (testOrigins()[provider] ?? PROVIDER_PROXY_ORIGINS[provider]).replace(/\/+$/, "");
     },
 
-    async headers(provider, url, { afterRejection, clientHeaders, account = MAIN_ACCOUNT_ID }): Promise<Record<string, string>> {
+    async headers(provider, url, { afterRejection, clientHeaders, account = MAIN_ACCOUNT_ID, apiCredit = null }): Promise<Record<string, string>> {
       if (isProviderProxied(provider)) throw new UpstreamAuthError(CHAINED_PROXY_ERROR(provider));
+      if (provider === "anthropic" && apiCredit) {
+        const key = await sources.apiCreditKey(apiCredit, afterRejection);
+        if (!key) throw new UpstreamAuthError(`The API-credit key "${apiCredit.label}" could not be read from the secrets store on this machine.`);
+        return { "x-api-key": key, "anthropic-beta": withoutOAuthBeta(clientHeaders["anthropic-beta"]) };
+      }
       if (provider === "anthropic") {
         // The pool routes only to accounts signed in with a subscription; `main` is checked here as before.
         if (account === MAIN_ACCOUNT_ID) {

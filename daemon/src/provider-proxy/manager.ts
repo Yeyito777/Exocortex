@@ -31,6 +31,7 @@ import { describeRemoteHost, ProviderProxyLink, ProviderProxyUnavailableError } 
 import {
   configureProviderProxyHooks,
   emitProxiedClaudeMove,
+  emitProxiedClaudeApiCredits,
   getProxiedUsage,
   proxiedConversationName,
   setProviderProxyRoute,
@@ -123,6 +124,10 @@ export class ProviderProxyManager {
       onAccountMove: (conversation, move) => {
         const prefix = proxiedConversationName("");
         if (conversation.startsWith(prefix)) emitProxiedClaudeMove(conversation.slice(prefix.length), move);
+      },
+      onApiCredits: (conversation, label) => {
+        const prefix = proxiedConversationName("");
+        if (conversation.startsWith(prefix)) emitProxiedClaudeApiCredits(conversation.slice(prefix.length), label);
       },
     });
   }

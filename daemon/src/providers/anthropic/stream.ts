@@ -20,6 +20,7 @@ import { claudeCodeResultText, exocortexToolName, summarizeClaudeCodeTool } from
 import { resolveToolCallPresentationFromCache } from "../../helper-tool-manifest";
 import { AuthError } from "../errors";
 import { isUsageLimitError } from "../../usage-limit-wait";
+import { ApiCreditExhaustedError, isApiCreditRefusalText } from "./api-credits";
 import type { ContentBlock, ProviderRound, StreamCallbacks, StreamResult } from "../types";
 import { REPLAYED_FIELD } from "./relay-protocol";
 import { takeHostToolAttachments } from "./host-tool-attachments";
@@ -41,6 +42,8 @@ export interface ClaudeStreamState {
   appToolCall?: ClaudeAppToolCallView;
   /** Claude account (accounts.ts) the process runs on; null for `main`. */
   account: string | null;
+  /** The process runs on API credits (api-credits.ts), not the account's subscription. */
+  apiCredit: boolean;
   /** uuid of the prompt Exocortex sent; only the result answering it ends the turn. Null ends on any result. */
   promptUuid: string | null;
   /** uuids of queued input Claude Code took into the turn; a result answering one ends it too. */
@@ -94,6 +97,7 @@ export function createClaudeStreamState(
     callbacks,
     cwd,
     account: null,
+    apiCredit: false,
     promptUuid,
     inputUuids: [],
     blocks: [],
@@ -425,6 +429,8 @@ function answersPrompt(state: ClaudeStreamState, message: SdkRecord): boolean {
 }
 
 function handleRateLimit(state: ClaudeStreamState, info: SdkRecord): void {
+  // The subscription's limiter: nothing to do with a turn on API credits.
+  if (state.apiCredit) return;
   const headers = new Headers({ [CLAUDE_RATE_LIMIT_HEADER]: JSON.stringify(info) });
   if (state.account) headers.set(CLAUDE_ACCOUNT_HEADER, state.account);
   state.callbacks.onHeaders?.(headers);
@@ -435,9 +441,11 @@ function handleRateLimit(state: ClaudeStreamState, info: SdkRecord): void {
   }
 }
 
-function resultError(message: SdkRecord): Error {
+function resultError(message: SdkRecord, apiCredit = false): Error {
   const errors = Array.isArray(message.errors) ? message.errors.filter((e): e is string => typeof e === "string") : [];
   const text = errors.join("\n") || str(message.result) || `Claude Code ended with ${str(message.subtype) ?? "an error"}`;
+  // Out of API credits (or refused by billing): waits for another key or a subscription, like a usage limit.
+  if (apiCredit && isApiCreditRefusalText(text)) return new ApiCreditExhaustedError(`Claude Code: ${text}`);
   if (/auth|login|401|oauth|credential/i.test(text)) {
     return new AuthError(`${text} Run \`claude auth login\` and try again.`);
   }
@@ -493,7 +501,7 @@ function pushMessage(state: ClaudeStreamState, message: SdkRecord): void {
         return;
       }
       if (message.subtype !== "success" || message.is_error === true) {
-        const error = resultError(message);
+        const error = resultError(message, state.apiCredit);
         if (isUsageLimitError(error)) {
           // Keep any complete assistant payload before the refusal. No resume
           // marker: replay this tail after the last committed session boundary.

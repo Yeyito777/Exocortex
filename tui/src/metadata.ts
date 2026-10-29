@@ -133,8 +133,9 @@ export function renderMetadata(
 
   const parts: string[] = [];
 
-  // Model
+  // Model, and what paid for the turn when it was not the subscription
   parts.push(formatModelDisplayName(metadata.model));
+  if (metadata.billing === "api-credits") parts.push("API credits");
 
   const now = options.now ?? Date.now();
   const end = options.active ? now : metadata.endedAt ?? now;
