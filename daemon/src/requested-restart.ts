@@ -442,7 +442,14 @@ export async function runRequestedRestart(token: string, deps: RestartExecutorDe
     clearRequestedRestart(token);
     return "superseded";
   }
-  await (deps.restart ?? restartTarget)(record);
+  try {
+    await (deps.restart ?? restartTarget)(record);
+  } catch (err) {
+    // The same daemon is still up, so nothing restarted: free the slot for a
+    // retry, and keep the next boot from reporting this restart as finished.
+    if (current()) clearRequestedRestart(token);
+    throw err;
+  }
   return "restarted";
 }
 
