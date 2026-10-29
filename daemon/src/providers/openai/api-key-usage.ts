@@ -168,6 +168,12 @@ export function apiKeyUsage(accountKey: string, label: string, now = Date.now())
   return { label, today: todaySpend, month: monthSpend };
 }
 
+/** The key's estimated spend per local day (YYYY-MM-DD), as the ledger counted it. */
+export function apiKeyDailySpendUsd(accountKey: string): Record<string, number> {
+  const days = loadLedger().byAccount[accountKey] ?? {};
+  return Object.fromEntries(Object.entries(days).map(([day, spend]) => [day, spend.estimatedCostUsd]));
+}
+
 /** Days a pace is averaged over, today included. */
 const PACE_DAYS = 7;
 

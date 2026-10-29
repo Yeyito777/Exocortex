@@ -38,6 +38,7 @@ import {
 import { applyDevRoutingOverrides } from "./routing-dev-overrides";
 import {
   API_CREDIT_ACCOUNT_KEY_PREFIX,
+  apiCreditAccountCredits,
   apiCreditFallbackEnabled,
   apiCreditsUsage,
   refreshApiCreditSecrets,
@@ -74,8 +75,8 @@ let saveTimer: ReturnType<typeof setTimeout> | null = null;
 const activeTurns = new Map<string, number>();
 /** Conversations with a turn running now, and the account it runs on. */
 const runningConversations = new Map<string, string>();
-/** Turns running on API credits now (api-credits.ts). */
-let activeCreditTurns = 0;
+/** Turns running on API credits now (api-credits.ts), by key. */
+const activeCreditTurns = new Map<string, number>();
 /** The API-credit key each conversation's last turn ran on (null: a subscription), for the switch notices. */
 const conversationCredits = new Map<string, string | null>();
 
@@ -84,7 +85,7 @@ export function setAssignmentsFileForTests(path: string | null): void {
   assignments = null;
   activeTurns.clear();
   runningConversations.clear();
-  activeCreditTurns = 0;
+  activeCreditTurns.clear();
   conversationCredits.clear();
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = null;
@@ -157,17 +158,19 @@ export function touchConversationAccount(convId: string, account: string, now = 
 }
 
 /** A turn starts on API credits; returns its end. It counts toward no subscription account. */
-export function beginApiCreditTurn(): () => void {
-  activeCreditTurns += 1;
+export function beginApiCreditTurn(key: ApiCreditKey): () => void {
+  activeCreditTurns.set(key.id, (activeCreditTurns.get(key.id) ?? 0) + 1);
   emitClaudeAccountsChanged();
-  notifyApiKeyUsageChanged(API_CREDIT_ACCOUNT_KEY_PREFIX);
+  notifyApiKeyUsageChanged(API_CREDIT_ACCOUNT_KEY_PREFIX + key.id);
   let ended = false;
   return () => {
     if (ended) return;
     ended = true;
-    activeCreditTurns = Math.max(0, activeCreditTurns - 1);
+    const left = (activeCreditTurns.get(key.id) ?? 1) - 1;
+    if (left > 0) activeCreditTurns.set(key.id, left);
+    else activeCreditTurns.delete(key.id);
     emitClaudeAccountsChanged();
-    notifyApiKeyUsageChanged(API_CREDIT_ACCOUNT_KEY_PREFIX);
+    notifyApiKeyUsageChanged(API_CREDIT_ACCOUNT_KEY_PREFIX + key.id);
   };
 }
 
@@ -344,7 +347,7 @@ export function getCombinedUsage(now = Date.now()): UsageData | null {
   const usage = included.length > 0 ? aggregateUsage(included.map(state => state.usage), now)
     : multipleClaudeAccounts() ? null : getAccountUsage(MAIN_ACCOUNT_ID);
   if (!usage || isProviderProxied("anthropic")) return usage;
-  const credits = apiCreditsUsage(activeCreditTurns > 0 || apiCreditFallbackActive(now), now);
+  const credits = apiCreditsUsage(activeCreditTurns.size > 0 || apiCreditFallbackActive(now), now);
   return credits ? { ...usage, apiCredits: credits } : usage;
 }
 
@@ -476,6 +479,7 @@ export function claudeAccountsInfo(currentConvId: string | null = null, now = Da
       activeTurns: state.activeTurns,
       conversations: (byAccount.get(account.id) ?? []).sort((a, b) => Number(b.running) - Number(a.running) || b.lastUsedAt - a.lastUsedAt),
       loginCommand: !signedIn && !block && !state.available ? claudeLoginCommand(account) : null,
+      credits: apiCreditAccountCredits(account.id, new Set(activeCreditTurns.keys()), now),
     };
   });
   const current = currentConvId ? getConversationAccount(currentConvId) : null;

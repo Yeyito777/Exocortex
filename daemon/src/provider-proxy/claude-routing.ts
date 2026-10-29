@@ -117,7 +117,7 @@ export function createProxiedClaudeRouter(deps: ProxiedClaudeRouterDeps = {}): P
       const apiCredit = options.apiCredits ? decision.apiCredit ?? null : null;
       if (apiCredit) {
         log("info", `provider-proxy: ${key ?? "a proxied helper request"} runs on API credits "${apiCredit.label}" (every Claude subscription account is at a usage limit)`);
-        const endCreditTurn = beginApiCreditTurn();
+        const endCreditTurn = beginApiCreditTurn(apiCredit);
         const meter = new ApiCreditUsageMeter(apiCredit);
         let rejections = 0;
         return {

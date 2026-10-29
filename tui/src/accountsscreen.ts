@@ -3,10 +3,14 @@
  * table on a card drawn over the chat, opened with /accounts or `g a` in
  * normal mode. A row is a state dot, the account, and its 5-hour and weekly
  * usage with the time to each reset; a short word replaces the bars when the
- * account cannot be used. The account this conversation runs on (OpenAI: the
- * current login) is highlighted and the one new work goes to is tagged. A dim
- * note under the table says why new work skips an account near its limit and
- * how to sign one in, only when there is something to say. Data comes from
+ * account cannot be used. A Credits column follows for accounts with prepaid
+ * API credits (a Claude plan's, through the API-credit fallback; OpenAI's
+ * `providers.openai.credit`): the balance, then the time until each grant
+ * expires, the balance in bold blue with a ◀ while turns spend it, red under
+ * a tenth of what was granted. The account this conversation runs on (OpenAI:
+ * the current login) is highlighted and the one new work goes to is tagged. A
+ * dim note under the table says how to sign an account in, only when there
+ * is something to say. Data comes from
  * the daemon's `accounts` command, which keeps pushing snapshots while the
  * screen is open. It only opens when several accounts are set up; otherwise it
  * explains how to add one. The TUI asks for a snapshot as soon as it
@@ -21,8 +25,8 @@
  * says so, or that the link is down.
  */
 
-import type { AccountsEvent, AccountsSnapshot, Event, ClaudeAccountInfo, ClaudeAccountsInfo } from "./protocol";
-import type { UsageData, UsageWindow } from "./messages";
+import type { AccountCredits, AccountsEvent, AccountsSnapshot, Event, ClaudeAccountInfo, ClaudeAccountsInfo } from "./protocol";
+import type { ApiKeyCredit, UsageData, UsageWindow } from "./messages";
 import type { KeyEvent } from "./input";
 import type { RenderState } from "./state";
 import type { ScreenRect } from "./historyimages";
@@ -196,6 +200,14 @@ function formatDuration(ms: number): string {
   return `${mins}m`;
 }
 
+/** Time until a credit grant expires, coarse: "171d", "5h", "<1h". */
+export function formatCreditCountdown(ms: number): string {
+  const hours = Math.floor(ms / 3_600_000);
+  if (hours >= 24) return `${Math.floor(hours / 24)}d`;
+  if (hours >= 1) return `${hours}h`;
+  return "<1h";
+}
+
 /** A window past its reset time has started over. */
 function windowPercent(window: UsageWindow | null | undefined, now: number): number | null {
   if (!window) return null;
@@ -213,6 +225,43 @@ interface UsageCell {
   reset: string;
 }
 
+/** The Credits column of a row: the balance, the countdowns to each grant's expiry, and whether turns spend it now. */
+export interface CreditCell {
+  amount: Segment;
+  expiries: string;
+  active: boolean;
+}
+
+/** Share of the granted credits under which the balance shows red. */
+const LOW_CREDIT_SHARE = 0.1;
+
+/** The Credits cell for these credits; null when none is left unexpired. */
+export function creditCell(credits: AccountCredits | null | undefined, now: number): CreditCell | null {
+  if (!credits) return null;
+  const expiries = credits.expiresAt.filter(at => at > now).sort((a, b) => a - b);
+  if (expiries.length === 0) return null;
+  const color = credits.active ? theme.bold + theme.accent
+    : credits.balanceUsd < credits.grantedUsd * LOW_CREDIT_SHARE ? theme.error
+    : theme.success;
+  return {
+    amount: [color, `$${Math.max(0, Math.round(credits.balanceUsd))}`],
+    expiries: expiries.map(at => formatCreditCountdown(at - now)).join(" · "),
+    active: credits.active,
+  };
+}
+
+/** OpenAI's API-key credit grant (`providers.openai.credit`) as account credits: it expires at the end of its last day. */
+export function openAICredits(credit: ApiKeyCredit | null | undefined): AccountCredits | null {
+  if (!credit?.expires) return null;
+  const [year, month, day] = credit.expires.split("-").map(Number);
+  return {
+    balanceUsd: Math.max(0, credit.amountUsd - credit.usedUsd),
+    grantedUsd: credit.amountUsd,
+    expiresAt: [new Date(year, month - 1, day + 1).getTime()],
+    active: false,
+  };
+}
+
 interface TableRow {
   dot: string;
   name: Segment;
@@ -222,9 +271,11 @@ interface TableRow {
   windows?: [UsageCell | null, UsageCell | null];
   /** A state that takes the usage columns' place: "blocked", "signed out". */
   note?: Segment[];
+  credits?: CreditCell | null;
 }
 
 type ScreenLine =
+  /** `columns`: the usage columns' labels; the Credits label shows whenever some row has credits. */
   | { kind: "heading"; label: string; columns: boolean }
   | { kind: "row"; row: TableRow }
   | { kind: "text"; segments: Segment[] }
@@ -239,15 +290,6 @@ function usageCell(window: UsageWindow | null | undefined, now: number): UsageCe
 function usageCells(usage: UsageData | null | undefined, now: number): [UsageCell | null, UsageCell | null] | undefined {
   const cells: [UsageCell | null, UsageCell | null] = [usageCell(usage?.fiveHour, now), usageCell(usage?.sevenDay, now)];
   return cells[0] || cells[1] ? cells : undefined;
-}
-
-/** The window an account is too close to for new work, by the routing floors. */
-function nearLimit(account: ClaudeAccountInfo, claude: ClaudeAccountsInfo, now: number): "weekly" | "5-hour" | null {
-  const weekly = windowPercent(account.usage?.sevenDay, now);
-  if (weekly !== null && 100 - weekly < claude.routing.weeklyFloor) return "weekly";
-  const fiveHour = windowPercent(account.usage?.fiveHour, now);
-  if (fiveHour !== null && 100 - fiveHour < claude.routing.fiveHourFloor) return "5-hour";
-  return null;
 }
 
 function claudeRow(account: ClaudeAccountInfo, claude: ClaudeAccountsInfo, now: number): TableRow {
@@ -288,34 +330,15 @@ function claudeRow(account: ClaudeAccountInfo, claude: ClaudeAccountsInfo, now: 
     tag: tags.length > 0 ? [tagColor, tags.join(" · ")] : undefined,
     windows: note ? undefined : usageCells(account.usage, now),
     note,
+    credits: note ? null : creditCell(account.credits, now),
   };
-}
-
-/** Why new work skips a usable account, or that none can take it; null when the "new work" tag says it all. */
-function routingNote(claude: ClaudeAccountsInfo, now: number): Segment[] | null {
-  const next = claude.nextNewWork;
-  if (!next) return claude.accounts.length > 0 ? [[theme.warning, "no account can take new work"]] : null;
-  const chosen = claude.accounts.find(account => account.id === next.account);
-  if (chosen && nearLimit(chosen, claude, now)) {
-    return [[theme.muted, `every account is near a limit → new work goes to ${next.account}`]];
-  }
-  const skipped = claude.accounts.filter(account => account.id !== next.account && account.state === "ready" && nearLimit(account, claude, now));
-  if (skipped.length === 0) return null;
-  const why = skipped.length === 1
-    ? `${skipped[0]!.id} is near its ${nearLimit(skipped[0]!, claude, now)} limit`
-    : `${skipped.map(account => account.id).join(", ")} are near their limits`;
-  return [[theme.muted, `${why} → new work goes to ${next.account}`]];
 }
 
 /** Longest /proxy problem reason in the note. */
 const MAX_PROXY_REASON = 48;
 
-/**
- * While the accounts are the /proxy remote's: a link or login problem first,
- * else the routing note marked with the remote's name, else whose accounts
- * these are.
- */
-function proxyNote(remote: NonNullable<ClaudeAccountsInfo["remote"]>, routing: Segment[] | null): Segment[] {
+/** While the accounts are the /proxy remote's: a link or login problem, else whose accounts these are. */
+function proxyNote(remote: NonNullable<ClaudeAccountsInfo["remote"]>): Segment[] {
   const problem = remote.state === "connecting" ? "connecting…"
     : remote.state === "disconnected" ? "down"
     : remote.message ? "cannot serve Claude"
@@ -325,7 +348,6 @@ function proxyNote(remote: NonNullable<ClaudeAccountsInfo["remote"]>, routing: S
     const reason = remote.message && remote.message.length > MAX_PROXY_REASON ? `${remote.message.slice(0, MAX_PROXY_REASON - 1)}…` : remote.message;
     return [[remote.state === "connecting" ? theme.muted : theme.error, `/proxy ${remote.alias} ${problem}`], [theme.muted, reason ? `: ${reason}` : ""]];
   }
-  if (routing) return [[theme.muted, `on ${remote.alias}: `], ...routing];
   return [[theme.muted, `accounts on ${remote.alias} (/proxy)`]];
 }
 
@@ -346,8 +368,7 @@ export function accountsScreenLines(state: RenderState, screen: AccountsScreenSt
       lines.push({ kind: "row", row: claudeRow(account, claude, now) });
       if (account.loginCommand) notes.push([[theme.muted, `sign in ${account.id}${claude.remote ? ` on ${claude.remote.alias}` : ""}: `], [theme.command, account.loginCommand]]);
     }
-    const routing = claude.remote ? proxyNote(claude.remote, routingNote(claude, now)) : routingNote(claude, now);
-    if (routing) notes.unshift(routing);
+    if (claude.remote) notes.unshift(proxyNote(claude.remote));
   }
 
   if (openai.accounts.length > 0) {
@@ -363,6 +384,7 @@ export function accountsScreenLines(state: RenderState, screen: AccountsScreenSt
           dot: account.current ? theme.success : theme.muted,
           name: [account.current ? theme.bold + theme.accent : theme.text, name],
           windows: account.current ? usageCells(usage, now) : undefined,
+          credits: account.current ? creditCell(openAICredits(usage?.apiKey?.credit), now) : null,
         },
       });
     }
@@ -394,6 +416,8 @@ interface Columns {
   bar: number;
   /** Widest time to reset. */
   reset: number;
+  /** Widest Credits cell; 0 when no row has credits (no column). */
+  credits: number;
 }
 
 function cellWidth(columns: Columns): number {
@@ -401,23 +425,32 @@ function cellWidth(columns: Columns): number {
 }
 
 function tableWidth(columns: Columns): number {
-  return DOT_WIDTH + columns.name + 2 * (COLUMN_GAP + cellWidth(columns));
+  return DOT_WIDTH + columns.name + 2 * (COLUMN_GAP + cellWidth(columns)) + (columns.credits > 0 ? COLUMN_GAP + columns.credits : 0);
+}
+
+const CREDITS_LABEL = "Credits";
+const ACTIVE_MARK = " ◀";
+
+function creditWidth(cell: CreditCell): number {
+  return termWidth(cell.amount[1]) + (cell.expiries ? 1 + termWidth(cell.expiries) : 0) + (cell.active ? termWidth(ACTIVE_MARK) : 0);
 }
 
 /** Column widths for these lines, with bars as wide as `maxWidth` allows (up to MAX_BAR_WIDTH). */
 function layoutColumns(lines: ScreenLine[], maxWidth: number): Columns {
   let name = 0;
   let reset = 0;
+  let credits = 0;
   for (const line of lines) {
     if (line.kind === "heading") name = Math.max(name, termWidth(line.label) - DOT_WIDTH);
     if (line.kind !== "row") continue;
     const { row } = line;
     name = Math.max(name, termWidth(row.name[1]) + (row.tag ? 2 + termWidth(row.tag[1]) : 0));
     for (const cell of row.windows ?? []) if (cell) reset = Math.max(reset, cell.reset.length);
+    if (row.credits) credits = Math.max(credits, termWidth(CREDITS_LABEL), creditWidth(row.credits));
   }
-  const fixed = tableWidth({ name, bar: 0, reset });
+  const fixed = tableWidth({ name, bar: 0, reset, credits });
   const bar = Math.max(MIN_BAR_WIDTH, Math.min(MAX_BAR_WIDTH, Math.floor((maxWidth - fixed) / 2)));
-  return { name, bar, reset };
+  return { name, bar, reset, credits };
 }
 
 function cellSegments(cell: UsageCell | null, columns: Columns): Segment[] {
@@ -432,18 +465,29 @@ function cellSegments(cell: UsageCell | null, columns: Columns): Segment[] {
   return segments;
 }
 
+function creditSegments(cell: CreditCell): Segment[] {
+  return [
+    cell.amount, [theme.boldOff, ""],
+    ...(cell.expiries ? [[theme.muted, ` ${cell.expiries}`]] as Segment[] : []),
+    ...(cell.active ? [[theme.accent, ACTIVE_MARK]] as Segment[] : []),
+  ];
+}
+
 function lineSegments(line: ScreenLine, columns: Columns): Segment[] {
   const gap: Segment = [theme.text, " ".repeat(COLUMN_GAP)];
+  const blankCells: Segment = [theme.text, " ".repeat(2 * cellWidth(columns) + COLUMN_GAP)];
   switch (line.kind) {
     case "blank": return [];
     case "text": return line.segments;
     case "heading": {
       const label: Segment = [theme.bold + theme.text, line.label.padEnd(DOT_WIDTH + columns.name)];
-      if (!line.columns) return [label, [theme.boldOff, ""]];
+      const credits: Segment[] = columns.credits > 0 ? [gap, [theme.muted, CREDITS_LABEL]] : [];
+      if (!line.columns) return credits.length > 0 ? [label, [theme.boldOff, ""], gap, blankCells, ...credits] : [label, [theme.boldOff, ""]];
       return [
         label, [theme.boldOff, ""], gap,
         [theme.muted, COLUMN_LABELS[0].padEnd(cellWidth(columns))], gap,
-        [theme.muted, COLUMN_LABELS[1]],
+        [theme.muted, credits.length > 0 ? COLUMN_LABELS[1].padEnd(cellWidth(columns)) : COLUMN_LABELS[1]],
+        ...credits,
       ];
     }
     case "row": {
@@ -457,8 +501,9 @@ function lineSegments(line: ScreenLine, columns: Columns): Segment[] {
         gap,
       ];
       if (row.note) return [...segments, ...row.note];
-      if (!row.windows) return segments;
-      return [...segments, ...cellSegments(row.windows[0], columns), gap, ...cellSegments(row.windows[1], columns)];
+      const credits: Segment[] = row.credits && columns.credits > 0 ? [gap, ...creditSegments(row.credits)] : [];
+      if (!row.windows) return credits.length > 0 ? [...segments, blankCells, ...credits] : segments;
+      return [...segments, ...cellSegments(row.windows[0], columns), gap, ...cellSegments(row.windows[1], columns), ...credits];
     }
   }
 }

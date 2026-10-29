@@ -1260,6 +1260,20 @@ export interface ClaudeAccountInfo {
   conversations: AccountConversationInfo[];
   /** The terminal command that signs it in, when it is not signed in with a subscription. */
   loginCommand: string | null;
+  /** Its plan's Claude API credits, when the API-credit fallback has a key for it with grants configured. */
+  credits?: AccountCredits | null;
+}
+
+/** Prepaid API credits: what is left of the grants that have not expired. */
+export interface AccountCredits {
+  /** Estimated balance: the grants less the spend Exocortex counted. */
+  balanceUsd: number;
+  /** What those grants granted. */
+  grantedUsd: number;
+  /** When each of them expires (ms), soonest first. */
+  expiresAt: number[];
+  /** A turn is spending these credits now. */
+  active: boolean;
 }
 
 export interface ClaudeRoutingInfo {

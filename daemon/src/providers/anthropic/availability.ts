@@ -9,8 +9,12 @@ let nextRefreshAt = 0;
 
 function localApiCredits(now: number): { ready: boolean; resetAt: number | null } | null {
   if (!apiCreditFallbackEnabled()) return null;
-  // Which keys exist is known after a check of the secrets store; the next probe sees it.
-  if (!knownApiCreditSecrets()) void refreshApiCreditSecrets();
+  // Which keys exist is not known until the secrets store is first checked:
+  // let the turn try, its routing waits for that check and decides.
+  if (!knownApiCreditSecrets()) {
+    void refreshApiCreditSecrets();
+    return { ready: true, resetAt: null };
+  }
   return { ready: usableApiCreditKey(now) !== null, resetAt: apiCreditResetAt(now) };
 }
 

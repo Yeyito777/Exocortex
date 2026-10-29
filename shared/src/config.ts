@@ -120,12 +120,38 @@ export interface AnthropicApiCreditKeyConfig {
   secret: string;
   /** Short name shown in the status bar, e.g. "max2". Defaults to the secret name. */
   label?: string;
+  /** The Claude account (`main`, `max2`, …) whose plan grants these credits: its row on the Accounts screen shows them. */
+  account?: string;
   /**
    * Day of the month its credits are granted again (the plan's billing day).
-   * A key out of credits waits until then; without it, a day. The status
-   * bar counts "this cycle" from it (else from the 1st).
+   * A key out of credits waits until then; without it, the expiry day of its
+   * monthly grant, else a day. The status bar counts "this cycle" from it
+   * (else from the 1st).
    */
   renewsOnDay?: number;
+  /**
+   * The credit grants on the key's organization, for the balance on the
+   * Accounts screen: each grant's amount less what Exocortex counted the key
+   * spending, the soonest-expiring grant first (the API does not report the
+   * balance to an ordinary key). Spend made elsewhere with the key is not seen.
+   */
+  grants?: AnthropicApiCreditGrantConfig[];
+}
+
+export interface AnthropicApiCreditGrantConfig {
+  amountUsd: number;
+  /** Last day it can be used, YYYY-MM-DD (local time); it expires at the end of that day. */
+  expires: string;
+  /** Day it was credited, YYYY-MM-DD; spend before it is not counted against it. */
+  since?: string;
+  /**
+   * Granted again every month (a Claude Max plan's $200): each grant expires
+   * on `expires`' day of the month and the next one, of the same amount,
+   * starts then. An assumption: the plan's credits renew on that day.
+   */
+  monthly?: boolean;
+  /** Short name, e.g. "Max" or "YC". */
+  label?: string;
 }
 
 export interface ProvidersConfig {

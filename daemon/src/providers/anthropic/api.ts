@@ -306,7 +306,7 @@ export async function streamMessage(
   const creditNotice = apiCreditSwitchNotice(convId, route);
   if (creditNotice) callbacks.onProviderNotice?.(creditNotice);
   if (apiCredit) callbacks.onBilling?.("api-credits");
-  const endTurn = apiCredit ? beginApiCreditTurn() : beginAccountTurn(account, convId);
+  const endTurn = apiCredit ? beginApiCreditTurn(apiCredit) : beginAccountTurn(account, convId);
   if (convId && !apiCredit) touchConversationAccount(convId, account);
   if (!apiCredit) callbacks = accountCallbacks(callbacks, account);
   // Under /proxy the remote picks the account per request; announce its moves as for local ones.

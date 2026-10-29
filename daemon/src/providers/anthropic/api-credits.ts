@@ -28,8 +28,9 @@ import { readExocortexConfig } from "@exocortex/shared/config";
 import { externalToolsDir, runtimeDir } from "@exocortex/shared/paths";
 import { resolveAnthropicApiPricing } from "@exocortex/shared/token-pricing";
 import type { ApiCreditsUsage } from "../../messages";
+import type { AccountCredits } from "@exocortex/shared/protocol";
 import { log } from "../../log";
-import { apiKeyCredit, recordApiKeyUsage } from "../openai/api-key-usage";
+import { apiKeyCredit, apiKeyDailySpendUsd, recordApiKeyUsage } from "../openai/api-key-usage";
 
 /** Ledger account of a key: `anthropic-credits:<secret name>`. */
 export const API_CREDIT_ACCOUNT_KEY_PREFIX = "anthropic-credits:";
@@ -39,9 +40,22 @@ export interface ApiCreditKey {
   id: string;
   label: string;
   renewsOnDay: number | null;
+  /** The Claude account whose plan grants its credits (the Accounts screen shows them there). */
+  account?: string | null;
+  grants?: ApiCreditGrant[];
+}
+
+export interface ApiCreditGrant {
+  amountUsd: number;
+  /** Last day it can be used, YYYY-MM-DD. */
+  expires: string;
+  since: string | null;
+  monthly: boolean;
+  label: string | null;
 }
 
 const SECRET_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const DAY = 24 * 60 * 60_000;
 /** How long a key the API rate-limited sits out. */
 const THROTTLE_MS = 60_000;
@@ -68,11 +82,27 @@ export function apiCreditConfig(): ApiCreditConfig {
   for (const entry of Array.isArray(raw.keys) ? raw.keys : []) {
     if (!entry || typeof entry.secret !== "string" || !SECRET_NAME_RE.test(entry.secret)) continue;
     if (keys.some(key => key.id === entry.secret)) continue;
+    const grants: ApiCreditGrant[] = [];
+    for (const grant of Array.isArray(entry.grants) ? entry.grants : []) {
+      if (!grant || typeof grant.amountUsd !== "number" || !Number.isFinite(grant.amountUsd) || grant.amountUsd <= 0) continue;
+      if (typeof grant.expires !== "string" || !DAY_RE.test(grant.expires)) continue;
+      grants.push({
+        amountUsd: grant.amountUsd,
+        expires: grant.expires,
+        since: typeof grant.since === "string" && DAY_RE.test(grant.since) ? grant.since : null,
+        monthly: grant.monthly === true,
+        label: typeof grant.label === "string" && grant.label.trim() ? grant.label.trim() : null,
+      });
+    }
     const day = entry.renewsOnDay;
+    const monthly = grants.find(grant => grant.monthly);
     keys.push({
       id: entry.secret,
       label: typeof entry.label === "string" && entry.label.trim() ? entry.label.trim() : entry.secret,
-      renewsOnDay: typeof day === "number" && Number.isInteger(day) && day >= 1 && day <= 31 ? day : null,
+      renewsOnDay: typeof day === "number" && Number.isInteger(day) && day >= 1 && day <= 31 ? day
+        : monthly ? Number(monthly.expires.slice(8, 10)) : null,
+      account: typeof entry.account === "string" && entry.account.trim() ? entry.account.trim() : null,
+      grants,
     });
   }
   return { enabled: raw.enabled === true && keys.length > 0, keys };
@@ -549,6 +579,95 @@ export function recordApiCreditRequest(key: ApiCreditKey, model: string, usage: 
 /** Estimated spend of one key since its current cycle began. */
 export function apiCreditCycleSpendUsd(key: ApiCreditKey, now = Date.now()): number {
   return apiKeyCredit(API_CREDIT_ACCOUNT_KEY_PREFIX + key.id, { amountUsd: 1, since: cycleStartDay(key.renewsOnDay, now) }, now).usedUsd;
+}
+
+// ── Balances ────────────────────────────────────────────────────────
+
+/** Midnight (local) after day `day` (YYYY-MM-DD) of `monthOffset` months later (the day clamped to short months). */
+function endOfDay(day: string, monthOffset = 0): number {
+  const [year, month, date] = day.split("-").map(Number);
+  const last = new Date(year, month - 1 + monthOffset + 1, 0).getDate();
+  return new Date(year, month - 1 + monthOffset, Math.min(date, last) + 1).getTime();
+}
+
+function dayStart(day: string): number {
+  const [year, month, date] = day.split("-").map(Number);
+  return new Date(year, month - 1, date).getTime();
+}
+
+interface GrantSpan {
+  amountUsd: number;
+  start: number;
+  end: number;
+  remaining: number;
+}
+
+/** Each grant's periods from `from` on: one, or a monthly grant's month by month, the current one last. */
+function grantSpans(grants: ApiCreditGrant[], from: number, now: number): GrantSpan[] {
+  const spans: GrantSpan[] = [];
+  for (const grant of grants) {
+    const since = grant.since ? dayStart(grant.since) : -Infinity;
+    if (!grant.monthly) {
+      spans.push({ amountUsd: grant.amountUsd, start: since, end: endOfDay(grant.expires), remaining: grant.amountUsd });
+      continue;
+    }
+    // From the month of the first spend counted (or now) to the one running now.
+    const target = Math.max(since, Math.min(from, now));
+    let first = 0;
+    while (first > -1200 && endOfDay(grant.expires, first - 1) > target) first--;
+    for (let k = first; k <= first + 2400; k++) {
+      const end = endOfDay(grant.expires, k);
+      const start = Math.max(since, endOfDay(grant.expires, k - 1));
+      if (start < end) spans.push({ amountUsd: grant.amountUsd, start, end, remaining: grant.amountUsd });
+      if (end > now) break;
+    }
+  }
+  return spans;
+}
+
+/**
+ * What is left of a key's grants that have not expired: the ledger's spend,
+ * day by day, drawn from the grant that expires soonest. Null without grants.
+ */
+export function apiCreditBalance(key: ApiCreditKey, now = Date.now()): { balanceUsd: number; grantedUsd: number; expiresAt: number[] } | null {
+  const grants = key.grants ?? [];
+  if (grants.length === 0) return null;
+  const days = Object.entries(apiKeyDailySpendUsd(API_CREDIT_ACCOUNT_KEY_PREFIX + key.id)).sort(([a], [b]) => a.localeCompare(b));
+  const from = days.length > 0 ? dayStart(days[0][0]) : now;
+  const spans = grantSpans(grants, from, now).sort((a, b) => a.end - b.end);
+  for (const [day, spent] of days) {
+    const at = dayStart(day);
+    let left = spent;
+    for (const span of spans) {
+      if (left <= 0) break;
+      if (span.start > at || span.end <= at) continue;
+      const take = Math.min(left, span.remaining);
+      span.remaining -= take;
+      left -= take;
+    }
+  }
+  const current = spans.filter(span => span.start <= now && span.end > now);
+  if (current.length === 0) return { balanceUsd: 0, grantedUsd: 0, expiresAt: [] };
+  return {
+    balanceUsd: current.reduce((sum, span) => sum + span.remaining, 0),
+    grantedUsd: current.reduce((sum, span) => sum + span.amountUsd, 0),
+    expiresAt: current.map(span => span.end),
+  };
+}
+
+/** The credits of the keys configured for a Claude account (`account`), for its Accounts row; null without any. */
+export function apiCreditAccountCredits(account: string, activeKeys: ReadonlySet<string>, now = Date.now()): AccountCredits | null {
+  const balances = apiCreditConfig().keys
+    .filter(key => key.account === account)
+    .map(key => ({ key, balance: apiCreditBalance(key, now) }))
+    .filter((entry): entry is { key: ApiCreditKey; balance: NonNullable<ReturnType<typeof apiCreditBalance>> } => entry.balance !== null);
+  if (balances.length === 0) return null;
+  return {
+    balanceUsd: balances.reduce((sum, entry) => sum + entry.balance.balanceUsd, 0),
+    grantedUsd: balances.reduce((sum, entry) => sum + entry.balance.grantedUsd, 0),
+    expiresAt: balances.flatMap(entry => entry.balance.expiresAt).sort((a, b) => a - b),
+    active: balances.some(entry => activeKeys.has(entry.key.id)),
+  };
 }
 
 /** The status-bar view of the fallback; null when it is off. `active`: credit turns run or would run now. */

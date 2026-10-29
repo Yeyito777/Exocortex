@@ -14,6 +14,9 @@ import {
   ApiCreditStreamTap,
   ApiCreditUsageMeter,
   apiCreditCycleSpendUsd,
+  apiCreditAccountCredits,
+  apiCreditBalance,
+  apiCreditConfig,
   apiCreditKeyValue,
   apiCreditResetAt,
   classifyApiCreditError,
@@ -34,7 +37,7 @@ import { claudeProcessOptions } from "./cli";
 import { createClaudeStreamState, pushClaudeMessage } from "./stream";
 import type { ClaudeAuthStatus } from "./types";
 import { applyUsageHeaders, CLAUDE_ACCOUNT_HEADER, CLAUDE_RATE_LIMIT_HEADER, clearUsage } from "./usage";
-import { apiKeyUsage } from "../openai/api-key-usage";
+import { apiKeyUsage, recordApiKeyUsage } from "../openai/api-key-usage";
 import { createLocalUpstreamAuth } from "../../provider-proxy/upstream-auth";
 import { createProxiedClaudeRouter } from "../../provider-proxy/claude-routing";
 
@@ -166,6 +169,15 @@ describe("API-credit fallback routing", () => {
 
   test("availability waits only once no key is left", async () => {
     report("main", 100, 60);
+    // Before the first look at the secrets store, the turn may try: its routing checks.
+    setApiCreditSecretsForTests(fakeSecrets, join(dir, "credit-state.json"));
+    expect(claudeUsageAvailability().ready).toBe(true);
+    await refreshApiCreditSecrets({ force: true });
+    storeNames = [];
+    await refreshApiCreditSecrets({ force: true });
+    expect(claudeUsageAvailability().ready).toBe(false);
+    storeNames = [MAIN_KEY, MAX2_KEY];
+    await refreshApiCreditSecrets({ force: true });
     expect(claudeUsageAvailability().ready).toBe(true);
     markApiCreditSpent({ id: MAIN_KEY, label: "main", renewsOnDay: 11 }, "credit balance is too low");
     expect(claudeUsageAvailability().ready).toBe(true);
@@ -344,5 +356,53 @@ describe("API credits over /proxy", () => {
     const other = await router.lease("proxy:mac/conv-1", undefined, { apiCredits: false });
     expect(other.apiCredit).toBeNull();
     other.release();
+  });
+});
+
+describe("API-credit balances for the Accounts screen", () => {
+  const spend = (id: string, usd: number, day: Date) => recordApiKeyUsage(API_CREDIT_ACCOUNT_KEY_PREFIX + id, {
+    model: "claude-opus-5-5", inputTokens: 1, outputTokens: 1, timestamp: day.getTime(), estimatedCostUsd: usd,
+  });
+
+  test("grants less the counted spend, soonest-expiring first; a monthly grant renews on its day", () => {
+    const key: ApiCreditKey = {
+      id: "BALANCE_KEY_A", label: "main", renewsOnDay: null, account: "main",
+      grants: [
+        { amountUsd: 500, expires: "2027-04-18", since: null, monthly: false, label: "YC" },
+        { amountUsd: 200, expires: "2026-11-11", since: null, monthly: true, label: "Max" },
+      ],
+    };
+    const oct29 = new Date(2026, 9, 29, 12).getTime();
+    spend(key.id, 150, new Date(2026, 9, 20, 12));
+    spend(key.id, 80, new Date(2026, 9, 28, 12));
+    // $230 against this month's $200 Max grant first, the rest from YC.
+    expect(apiCreditBalance(key, oct29)).toEqual({
+      balanceUsd: 470, grantedUsd: 700,
+      expiresAt: [new Date(2026, 10, 12).getTime(), new Date(2027, 3, 19).getTime()],
+    });
+    // Renewed on Nov 11's end: a fresh $200, expiring Dec 11; YC keeps what it lost.
+    expect(apiCreditBalance(key, new Date(2026, 10, 15).getTime())).toEqual({
+      balanceUsd: 670, grantedUsd: 700,
+      expiresAt: [new Date(2026, 11, 12).getTime(), new Date(2027, 3, 19).getTime()],
+    });
+    // After YC expires only the Max grant is left.
+    expect(apiCreditBalance(key, new Date(2027, 3, 20).getTime())?.expiresAt).toEqual([new Date(2027, 4, 12).getTime()]);
+  });
+
+  test("config ties keys to accounts; a running credit turn marks them active; no grants, no column", async () => {
+    configure(true, [
+      { secret: MAIN_KEY, label: "main", account: "main", grants: [{ amountUsd: 200, expires: "2099-01-11", monthly: true }] },
+      { secret: MAX2_KEY, label: "max2", account: "max2" },
+    ] as never);
+    const [main, max2] = apiCreditConfig().keys;
+    expect(main).toMatchObject({ account: "main", renewsOnDay: 11, grants: [{ amountUsd: 200, monthly: true }] });
+    expect(max2.grants).toEqual([]);
+    // (Earlier tests in this file counted a few cents on this key.)
+    const credits = apiCreditAccountCredits("main", new Set([MAIN_KEY]))!;
+    expect(credits).toMatchObject({ grantedUsd: 200, active: true });
+    expect(credits.balanceUsd).toBeGreaterThan(199);
+    expect(credits.balanceUsd).toBeLessThanOrEqual(200);
+    expect(apiCreditAccountCredits("main", new Set())?.active).toBe(false);
+    expect(apiCreditAccountCredits("max2", new Set())).toBeNull();
   });
 });
