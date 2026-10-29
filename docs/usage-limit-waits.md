@@ -21,7 +21,13 @@ Claude limit result, uncommitted text/thinking and interrupted tools are committ
 without a session resume marker, so the normal continuation prompt replays that
 tail after the last safe session boundary.
 
-Waiting uses the existing connection-wait status/snapshot with a usage label,
+An app conversation may choose not to wait (`route.whenLimited: "error"`: the
+turn ends at once with `UsageLimitedError`, reported as `turn_result.limited`)
+or not to use API credits (`route.credits: "never"`), see
+[app API](app-api.md#accounts-and-api-credits).
+
+Waiting uses the existing connection-wait status/snapshot with a usage label
+(`reason: "usage_limit"`, `resetAt`),
 and `ConversationSummary.providerWaiting` makes the shared sidebar/Tasks activity
 indicator yellow. The wait pauses the stale-stream watchdog.
 

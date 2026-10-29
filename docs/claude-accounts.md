@@ -173,6 +173,10 @@ still keeps them in place.
 
 ## API credits when every account is at a limit
 
+App conversations are routed the same way; an app can keep its turns off
+credits or have them stop instead of waiting (`route`, see
+[app API](app-api.md#accounts-and-api-credits)).
+
 Each Claude Max plan comes with Claude API credits ($200 a month) that pay for
 the Claude API and the Agent SDK, not interactive Claude Code. While every
 subscription account is at a usage limit (5-hour or weekly, as routing sees
@@ -231,9 +235,24 @@ requests (titles, summaries, compaction) fall back too. Code:
 - **The spend cap** is the credits themselves: an organization without a card
   or auto-reload refuses requests once they run out.
 - **Visibility**: the transcript notes when a conversation moves onto API
-  credits and back; each turn's metadata line says "API credits"; the status
-  bar shows two short rows beside the usage bars while turns run on them
-  ("API credits max2" / "$199 left", the balance below). What turns spend is
+  credits and back; each turn's metadata line says "API credits". While turns
+  run on them, the status bar's usage bars give way to two rows:
+
+  ```
+    Credit: [████████████████████░] $862 / $900   API credits
+    Expiry: $162 12d · $200 19d · $500 170d       subs back 1d4h
+  ```
+
+  Credit is everything left over everything granted, across every configured
+  key, each Console organization once (`≈` and red as on the Accounts screen,
+  "sign-in needed" after it); Expiry lists each grant that has not expired
+  with what is left of it (the Console's own figure per grant, less the spend
+  counted since the last sync from the one expiring soonest), soonest first;
+  "subs back" is the soonest a signed-in subscription account can take turns
+  again (its rejection and full windows' resets), left out when unknown. A
+  narrow terminal drops the right column first, then lists fewer grants
+  (`+2`). An older daemon sends no pool: the bars stay, with "API credits
+  max2" / "$199 left" beside them. What turns spend is
   estimated at list prices from the responses' usage and kept in the API-key
   ledger as `anthropic-credits:<secret>`; /tokens shows this cycle's.
 - **Accounts screen**: a Credits column per account: the balance, then the

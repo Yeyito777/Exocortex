@@ -6,6 +6,7 @@ import {
   DEFAULT_ROUTING_POLICY,
   routeConversation,
   routeNewWork,
+  subscriptionsUsableAt,
   type AccountRouteState,
   type ConversationRouteState,
 } from "./routing";
@@ -313,5 +314,25 @@ describe("why new work went where it did", () => {
     expect(routeConversation(conversation(), accounts, NOW)).toEqual({
       account: "max2", reason: "new", detail: "it is furthest behind its weekly pace (60% left over 1 day vs 60% over 5 days)",
     });
+  });
+});
+
+describe("when the subscriptions can take turns again", () => {
+  test("the soonest signed-in account, each at the last of its rejection and full windows", () => {
+    const accounts = [
+      // Weekly full for 2 days, though its rejection ends sooner.
+      account("main", usage([40, HOUR], [100, 2 * DAY]), { limitedUntil: NOW + HOUR }),
+      // 5-hour full for 3 hours.
+      account("max2", usage([100, 3 * HOUR], [60, 4 * DAY])),
+      // Signed out: not counted.
+      account("max3", usage([100, 10 * MIN], null), { available: false }),
+    ];
+    expect(subscriptionsUsableAt(accounts, NOW)).toBe(NOW + 3 * HOUR);
+  });
+
+  test("now when one can already; null when no full window says when it resets", () => {
+    expect(subscriptionsUsableAt([account("main", usage([20, HOUR], [30, DAY]))], NOW)).toBe(NOW);
+    expect(subscriptionsUsableAt([account("main", usage([100, null], null))], NOW)).toBeNull();
+    expect(subscriptionsUsableAt([account("main", usage([100, null], null)), account("max2", null, { limitedUntil: NOW + DAY })], NOW)).toBe(NOW + DAY);
   });
 });

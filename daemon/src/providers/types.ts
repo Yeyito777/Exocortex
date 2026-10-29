@@ -136,7 +136,8 @@ export interface StreamCallbacks {
   /** A provider managing its own session context (Claude Code) compacted it. */
   onProviderCompaction?: (compaction: ProviderCompaction) => void;
   /** Something the user should see in the transcript, such as the turn moving to another Claude account. */
-  onProviderNotice?: (text: string) => void;
+  /** `route`: set when the notice is about where a Claude turn runs (an account move, API credits). */
+  onProviderNotice?: (text: string, route?: import("../protocol").ConversationRouteNotice) => void;
 }
 
 /** A provider-side context compaction, with the provider's own token counts. */

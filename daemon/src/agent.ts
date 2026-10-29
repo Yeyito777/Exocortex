@@ -81,7 +81,7 @@ export interface AgentCallbacks {
   /** A provider managing its own session context (Claude Code) compacted it. */
   onProviderCompaction?(compaction: ProviderCompaction): void;
   /** A provider notice for the transcript (e.g. the turn moved to another Claude account). */
-  onProviderNotice?(text: string): void;
+  onProviderNotice?(text: string, route?: import("./protocol").ConversationRouteNotice): void;
   /** The turn runs on API credits instead of the provider's subscription. */
   onBilling?(billing: MessageBilling): void;
   /** Atomically replace active provider replay with an automatic checkpoint. */

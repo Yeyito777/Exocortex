@@ -277,7 +277,17 @@ export interface TuiConfig {
   scrollRegions?: boolean;
 }
 
+/** The app API (docs/app-api.md). */
+export interface AppApiConfig {
+  /** How long a disconnected app session's ephemeral conversations wait for it (ms); default 2 minutes. A client may ask for its own. */
+  reconnectGraceMs?: number;
+  /** Hand ephemeral app conversations to the next daemon on a graceful restart; default true. */
+  ephemeralSurvivesRestart?: boolean;
+}
+
 export interface ExocortexConfig {
+  /** The app API: reconnect grace and restart handoff. */
+  appApi?: AppApiConfig;
   /** Active TUI theme name. */
   theme?: string;
   /** Experimental/product feature gates. */

@@ -7,7 +7,7 @@
  * (usage.ts), and each conversation's last account and when it last used it.
  */
 
-import { isEphemeralConversation, isHiddenConversation } from "../../app-registry";
+import { conversationAllowsApiCredits, isEphemeralConversation, isHiddenConversation } from "../../app-registry";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "fs";
 import { join } from "path";
 import { runtimeDir } from "@exocortex/shared/paths";
@@ -32,6 +32,7 @@ import {
   isAccountLimited,
   routeConversation,
   routeNewWork,
+  subscriptionsUsableAt,
   type AccountRouteState,
   type RouteDecision,
 } from "./routing";
@@ -152,6 +153,11 @@ export function getConversationAccount(convId: string): Assignment | null {
   return loadAssignments().get(convId) ?? null;
 }
 
+/** Whether a conversation's turns last ran on API credits rather than a subscription. */
+export function conversationOnApiCredits(convId: string): boolean {
+  return (conversationCredits.get(convId) ?? null) !== null;
+}
+
 /** The conversation just made a request on `account` (keeps its cache-warm clock). */
 export function touchConversationAccount(convId: string, account: string, now = Date.now()): void {
   loadAssignments().set(convId, { account, lastUsedAt: now });
@@ -265,8 +271,10 @@ function subscriptionsExhausted(states: AccountRouteState[], now: number): boole
 }
 
 /** The API-credit key a turn routed as `decision` runs on instead of the subscription, if it should. */
-function apiCreditFor(decision: RouteDecision, states: AccountRouteState[], now: number, live: LiveProcessState | null): ApiCreditKey | null {
+function apiCreditFor(decision: RouteDecision, states: AccountRouteState[], now: number, live: LiveProcessState | null, convId?: string): ApiCreditKey | null {
   if (!apiCreditFallbackEnabled()) return null;
+  // An app conversation may forbid credits (route.credits "never"): it waits or fails like any limit.
+  if (!conversationAllowsApiCredits(convId)) return null;
   // Moving a process with background tasks would stop them: it keeps how it bills, as it keeps its account.
   if (live?.backgroundWork) return live.apiCredit ?? null;
   const chosen = states.find(state => state.id === decision.account);
@@ -318,7 +326,7 @@ export async function routeClaudeTurn(
     // Whether `main` is signed in decides between credits and a sign-in error: checked as for several accounts.
     await refreshClaudeAccountStatuses({ signal });
     const now = Date.now();
-    return { ...decision, apiCredit: apiCreditFor(decision, applyDevRoutingOverrides(claudeAccountStates(now), now).states, now, live) };
+    return { ...decision, apiCredit: apiCreditFor(decision, applyDevRoutingOverrides(claudeAccountStates(now), now).states, now, live, convId) };
   }
   await refreshClaudeAccountStatuses({ signal });
   const now = Date.now();
@@ -336,7 +344,7 @@ export async function routeClaudeTurn(
       backgroundWork: live?.backgroundWork ?? false,
     }, accounts, now, policy);
   }
-  return { ...decision, apiCredit: apiCreditFor(decision, accounts, now, live) };
+  return { ...decision, apiCredit: apiCreditFor(decision, accounts, now, live, convId) };
 }
 
 /** Accounts whose usage the bars combine: signed in and not blocked. */
@@ -351,13 +359,17 @@ export function getCombinedUsage(now = Date.now()): UsageData | null {
   const usage = included.length > 0 ? aggregateUsage(included.map(state => state.usage), now)
     : multipleClaudeAccounts() ? null : getAccountUsage(MAIN_ACCOUNT_ID);
   if (!usage || isProviderProxied("anthropic")) return usage;
-  const credits = apiCreditsUsage(activeCreditTurns.size > 0 || apiCreditFallbackActive(now), now, new Set(activeCreditTurns.keys()));
+  const active = activeCreditTurns.size > 0 || apiCreditFallbackActive(now);
+  const backAt = active ? subscriptionsUsableAt(applyDevRoutingOverrides(claudeAccountStates(now), now).states, now) : null;
+  const credits = apiCreditsUsage(active, now, new Set(activeCreditTurns.keys()), backAt !== null && backAt > now ? backAt : null);
   return credits ? { ...usage, apiCredits: credits } : usage;
 }
 
 /** Refresh stale statuses and idle usage of every account, then return the combined usage. */
 export async function refreshCombinedUsage(): Promise<UsageData | null> {
   if (multipleClaudeAccounts()) await refreshClaudeAccountStatuses();
+  // Which credit keys exist decides whether the bar shows credits; after a restart nothing else checks before a turn.
+  if (apiCreditFallbackEnabled()) await refreshApiCreditSecrets();
   const now = Date.now();
   const stale = capacityAccounts(now).filter(state => now - getAccountUsageUpdatedAt(state.id) >= USAGE_REFRESH_TTL_MS);
   await Promise.all(stale.map(async (state) => {

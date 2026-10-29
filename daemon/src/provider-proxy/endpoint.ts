@@ -14,6 +14,7 @@ import {
   PROVIDER_PROXY_ACCOUNT_MOVE_HEADER,
   PROVIDER_PROXY_API_CREDITS_HEADER,
   PROVIDER_PROXY_CONVERSATION_HEADER,
+  PROVIDER_PROXY_NO_API_CREDITS_HEADER,
   PROVIDER_PROXY_FEATURES,
   PROVIDER_PROXY_MAX_REQUEST_BYTES,
   PROVIDER_PROXY_PROTOCOL_VERSION,
@@ -295,10 +296,13 @@ export class ProviderProxyEndpoint {
     // Which conversation the request belongs to is for routing here, never for the upstream.
     const conversation = proxiedConversationKey(clientHeaders[PROVIDER_PROXY_CONVERSATION_HEADER]);
     delete clientHeaders[PROVIDER_PROXY_CONVERSATION_HEADER];
+    // An app conversation that may not run on API credits (docs/app-api.md).
+    const noApiCredits = clientHeaders[PROVIDER_PROXY_NO_API_CREDITS_HEADER] === "1";
+    delete clientHeaders[PROVIDER_PROXY_NO_API_CREDITS_HEADER];
     const body = command.body ? Buffer.from(command.body, "base64") : undefined;
     const router = provider === "anthropic" ? this.claudeRouter : null;
     // Only Messages API requests may run on API credits; Claude Code's account endpoints need its login.
-    const leaseOptions = { apiCredits: isMessagesRequest(url) };
+    const leaseOptions = { apiCredits: isMessagesRequest(url) && !noApiCredits };
     let lease: ProxiedClaudeLease | null = null;
     try {
       let response: Response;

@@ -169,6 +169,15 @@ describe("the remote's Claude pool over /proxy", () => {
     expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe(`x-exocortex-proxy-conversation: ${proxiedConversationName("conv-1")}`);
     // Helper requests carry no conversation.
     expect((claudeProcessOptions("/tmp").env as Record<string, string>).ANTHROPIC_CUSTOM_HEADERS).toBeUndefined();
+    // An app conversation that may not use API credits says so (docs/app-api.md).
+    const { registerAppConversation, removeAppConversationRecord } = await import("../app-registry");
+    registerAppConversation({ convId: "app-never", app: "batch", lifetime: "ephemeral", createdAt: 0, lastActivityAt: 0, system: { text: "", base: "none" }, builtin: [], appTools: [], route: { credits: "never" } });
+    try {
+      const appEnv = claudeProcessOptions("/tmp", undefined, "app-never").env as Record<string, string>;
+      expect(appEnv.ANTHROPIC_CUSTOM_HEADERS).toBe(`x-exocortex-proxy-conversation: ${proxiedConversationName("app-never")}\nx-exocortex-claude-no-api-credits: 1`);
+    } finally {
+      removeAppConversationRecord("app-never");
+    }
   });
 
   test("an older remote without provider_proxy_accounts falls back to its main account's bars", async () => {

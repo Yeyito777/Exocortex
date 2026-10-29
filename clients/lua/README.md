@@ -23,14 +23,17 @@ end)
   `exo.await(fn, ...)` returns the result or raises the error. Errors are
   tables with `code` (`not_installed` carries the install one-liner,
   `not_running`, `too_old`, `incompatible`, `ended`, …) and `message`.
-- `exo.connect({ app, version?, socket?, reconnect? }, cb)` finds the socket
+- `exo.connect({ app, version?, socket?, reconnect?, reconnect_timeout_ms?,
+  reconnect_grace_ms?, session?, rerun_lost? }, cb)` finds the socket
   (`$EXOCORTEX_SOCKET`, then `exocortexd socket`) and checks the version.
 - `client:run(prompt, opts, cb)` / `client:run_stream(prompt, opts)`: one-shot,
   ephemeral by default (`lifetime`, `keep`); `exo.run(prompt, { app, … }, cb)`
   connects and closes around it.
 - `client:conversation(opts, cb)`: `lifetime`, `system` (text, or
   `{ text, base }`), `base`, `builtin`, `tools`, `provider`, `model`,
-  `effort`, `cwd`, `title`, `idle_ttl_ms`. A conversation has
+  `effort`, `cwd`, `title`, `idle_ttl_ms`, `route` (`{ credits = "allow" |
+  "never", whenLimited = "wait" | "error" }`). Results also carry `billing`
+  and `limited` when they apply. A conversation has
   `send(prompt, { on_text, on_event, on_raw }, cb)`, `stream(prompt)` (iterate
   `stream:iter()` inside `exo.async`, or `stream:wait(cb)`), `abort`,
   `set_tools`, `delete`.
@@ -41,9 +44,15 @@ end)
   `app_tool_cancel`. Use `vim.empty_dict()` for empty JSON objects.
 - `client:attach(conv_id, { tools }, cb)`, `client:list({ include_saved,
   all_apps }, cb)`, `client:delete(conv_id, cb)`, `client:on_event(fn)`,
-  `client:close()`.
-- A dropped connection or daemon restart reconnects and re-attaches saved and
-  temporary conversations; their pending sends still complete.
+  `client:close(cb?)` (ends the session's ephemeral conversations).
+- A dropped connection or daemon restart is a delay, not an error: the client
+  reconnects (for up to `reconnect_timeout_ms`, default 300 s) under its
+  session (`client.session`), takes every conversation back, ephemeral ones
+  too, and sends again what was in flight (the daemon never runs a prompt
+  twice); requests made meanwhile wait. Running tool handlers keep going. A
+  conversation the daemon lost (a crash, or away longer than the session's
+  grace) ends with code `lost`; a pending `run` on one runs again on a new
+  conversation (`rerun_lost = false` to fail it instead).
 
 Tests (need `bun` for [the fake daemon](../testing/fake-daemon.ts)):
 `nvim --headless -u NONE -l test/run.lua`.

@@ -23,8 +23,8 @@ import type { ProviderProxiesEvent, ProviderProxyCommand, ProviderProxyInfo, Pro
 import type { UserMacro } from "./user-macros";
 import type { VideoControlAction, VideoPlaybackLink } from "./video";
 export type { UserMacro };
-import type { AppClientInfo, AppConversationInfo, AppLifetime, AppSystemSpec, AppToolsSpec, TurnStopReason } from "./app-api";
-export type { AppBuiltinTool, AppClientInfo, AppConversationInfo, AppLifetime, AppSystemBase, AppSystemSpec, AppToolDef, AppToolsSpec, TurnStopReason } from "./app-api";
+import type { AppClientInfo, AppConversationInfo, AppLifetime, AppRouteSpec, AppSystemSpec, AppToolsSpec, TurnStopReason } from "./app-api";
+export type { AppBuiltinTool, AppClientInfo, AppConversationInfo, AppLifetime, AppRouteSpec, AppSystemBase, AppSystemSpec, AppToolDef, AppToolsSpec, TurnStopReason } from "./app-api";
 export type * from "./provider-proxy";
 export type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMetadata, UsageData, ConversationSummary, FolderSummary, SidebarItemRef, ToolDisplayInfo, ExternalToolStyle, ToolCallPresentation, ImageAttachment, ImageRef, TokenStatsSnapshot, TokenUsageSource, ConversationGoal, ConversationGoalStatus, ConversationBtw, UserMessageContextCheckpoint, ExternalNotificationDelivery, UserMessageAutomation };
 
@@ -182,6 +182,8 @@ export interface NewConversationCommand {
   cwd?: string;
   /** App conversations only: built-in tools by neutral name and the app's own tools (default none). */
   tools?: AppToolsSpec;
+  /** App conversations only: how its Claude turns may be billed (default: as an ordinary conversation). */
+  route?: AppRouteSpec;
 }
 
 export interface ParentNotificationTarget {
@@ -1484,6 +1486,17 @@ export interface AttachAppConversationCommand {
   reqId?: string;
   convId: string;
   tools?: Pick<AppToolsSpec, "app">;
+  /** Replaces its route preferences from the next turn on. */
+  route?: AppRouteSpec;
+}
+
+/**
+ * The app client is done with its session: its ephemeral conversations end
+ * now instead of waiting the reconnect grace. Answered with app_session_ended.
+ */
+export interface EndAppSessionCommand {
+  type: "end_app_session";
+  reqId?: string;
 }
 
 /** The owner's answer to an app_tool_call. Unanswered; a late or duplicate result is ignored. */
@@ -1518,11 +1531,12 @@ export interface AppRunCommand {
   model?: ModelId;
   effort?: EffortLevel;
   cwd?: string;
+  route?: AppRouteSpec;
   prompt: string;
   images?: ImageAttachment[];
   /** The prompt's time in ms (the daemon's clock when absent); the turn_result's turnId is it as a string. */
   startedAt?: number;
-  /** Keep an ephemeral conversation after the turn (it still ends with the connection). */
+  /** Keep an ephemeral conversation after the turn (it still ends with the session). */
   keep?: boolean;
 }
 
@@ -1633,6 +1647,7 @@ export type Command =
   | ConsumeUsageResetCommand
   | LogoutCommand
   | AttachAppConversationCommand
+  | EndAppSessionCommand
   | AppToolResultCommand
   | AppRunCommand
   | ListAppConversationsCommand;
@@ -2259,7 +2274,11 @@ export interface ConversationDeletedEvent {
   /** Set on the answer to the delete request of an app conversation. */
   reqId?: string;
   convId: string;
-  /** App conversations: why it ended. */
+  /**
+   * App conversations: why it ended. `owner_disconnected`: an ephemeral
+   * conversation's session did not come back within its reconnect grace, or
+   * ended (end_app_session, a daemon stop).
+   */
   reason?: "deleted" | "expired" | "owner_disconnected" | "run_finished";
 }
 
@@ -2388,6 +2407,10 @@ export interface ConnectionWaitStatusEvent {
   label?: string;
   /** When the turn started waiting (stable across brief reconnect attempts). */
   startedAt?: number;
+  /** What it waits for (active only). */
+  reason?: "network" | "proxy_link" | "usage_limit";
+  /** Usage waits: when the soonest limit resets (ms), when known. */
+  resetAt?: number | null;
 }
 
 /** The daemon's shared connectivity monitor (one per daemon, not per conversation). */
@@ -2407,6 +2430,21 @@ export interface SystemMessageEvent {
   streamSeq?: number;
   text: string;
   color?: string;
+  /** A provider notice about where the turn runs, for programs (the text says the same). */
+  route?: ConversationRouteNotice;
+}
+
+/**
+ * Where a conversation's Claude turns run, when it changes:
+ * `account`: it moved to another subscription account; `api_credits`: it now
+ * runs on API credits (`creditKey` names the key); `subscription`: it is back
+ * on a subscription account.
+ */
+export interface ConversationRouteNotice {
+  kind: "account" | "api_credits" | "subscription";
+  account?: string;
+  movedFrom?: string;
+  creditKey?: string;
 }
 
 export interface ProviderAuthInfo {
@@ -2806,6 +2844,21 @@ export interface AppWelcomeEvent {
   /** The daemon instance (`main`, or a worktree's name). */
   instance: string;
   pid: number;
+  /** The session token: send it as client_capabilities.app.session when reconnecting. */
+  session?: string;
+  /** How long the session's ephemeral conversations wait for it after its connection drops. */
+  reconnectGraceMs?: number;
+  /** The session was known: the conversations it owns are this connection's again (`conversations`). */
+  resumed?: boolean;
+  /** Conversations the session owns. */
+  conversations?: string[];
+}
+
+export interface AppSessionEndedEvent {
+  type: "app_session_ended";
+  reqId?: string;
+  /** The ephemeral conversations that ended with it. */
+  ended: string[];
 }
 
 /** The model called one of the app's tools: answer with app_tool_result. Sent to the conversation's owner. */
@@ -2846,6 +2899,14 @@ export interface TurnResultEvent {
     outputTokens: number;
     durationMs: number;
   };
+  /** The turn ran on Claude API credits (some of it, at least). */
+  billing?: MessageBilling;
+  /**
+   * The turn ended because nothing it may use could run it (`route.whenLimited: "error"`):
+   * every Claude subscription account at a usage limit, and API credits not allowed or spent.
+   * `resetAt`: when the soonest one resets (ms), when known.
+   */
+  limited?: { resetAt: number | null };
 }
 
 export interface AppConversationAttachedEvent {
@@ -2967,6 +3028,7 @@ export type Event =
   | ExternalNotificationPublishResultEvent
   | AuthStatusEvent
   | AppWelcomeEvent
+  | AppSessionEndedEvent
   | AppToolCallEvent
   | AppToolCancelEvent
   | TurnResultEvent

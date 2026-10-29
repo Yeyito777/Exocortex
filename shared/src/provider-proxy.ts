@@ -64,6 +64,13 @@ export const PROVIDER_PROXY_ACCOUNT_MOVE_HEADER = "x-exocortex-claude-account-mo
  */
 export const PROVIDER_PROXY_API_CREDITS_HEADER = "x-exocortex-claude-api-credits";
 
+/**
+ * Request header (`1`) of a conversation whose turns may not run on API
+ * credits (an app's `route.credits: "never"`, docs/app-api.md): the remote
+ * never bills its requests to a key. Taken off before the upstream.
+ */
+export const PROVIDER_PROXY_NO_API_CREDITS_HEADER = "x-exocortex-claude-no-api-credits";
+
 export interface ProviderProxyAccountMove {
   from: string;
   to: string;

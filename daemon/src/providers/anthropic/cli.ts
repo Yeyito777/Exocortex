@@ -15,7 +15,8 @@ import type { LoginCallbacks } from "../types";
 import { AuthError } from "../errors";
 import type { ClaudeAuthStatus } from "./types";
 import { providerProxyRoute, providerProxySupports, proxiedConversationName } from "../../provider-proxy/route";
-import { PROVIDER_PROXY_CONVERSATION_HEADER } from "@exocortex/shared/provider-proxy";
+import { PROVIDER_PROXY_CONVERSATION_HEADER, PROVIDER_PROXY_NO_API_CREDITS_HEADER } from "@exocortex/shared/provider-proxy";
+import { conversationAllowsApiCredits } from "../../app-registry";
 import { claudeAccountEnv } from "./accounts";
 import { apiCreditClaudeSettings, type ApiCreditKey } from "./api-credits";
 
@@ -75,11 +76,14 @@ function claudeProxyEnv(base: Record<string, string | undefined>, convId?: strin
   const conversation = convId && providerProxySupports("anthropic", "claude-pool")
     ? `${PROVIDER_PROXY_CONVERSATION_HEADER}: ${proxiedConversationName(convId)}`
     : null;
+  // An app conversation that may not use API credits says so to the remote, which picks the billing.
+  const noCredits = convId && !conversationAllowsApiCredits(convId) ? `${PROVIDER_PROXY_NO_API_CREDITS_HEADER}: 1` : null;
+  const headers = [base.ANTHROPIC_CUSTOM_HEADERS, conversation, noCredits].filter(Boolean);
   return {
     ANTHROPIC_BASE_URL: route.baseUrl,
     CLAUDE_CODE_OAUTH_TOKEN: route.token,
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
-    ...(conversation ? { ANTHROPIC_CUSTOM_HEADERS: [base.ANTHROPIC_CUSTOM_HEADERS, conversation].filter(Boolean).join("\n") } : {}),
+    ...(conversation || noCredits ? { ANTHROPIC_CUSTOM_HEADERS: headers.join("\n") } : {}),
   };
 }
 

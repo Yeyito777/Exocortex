@@ -1,7 +1,8 @@
 -- Tests against clients/testing/fake-daemon.ts (needs bun):
 --   nvim --headless -u NONE -l clients/lua/test/run.lua [name-filter]
 local here = vim.fs.dirname(vim.fs.normalize(debug.getinfo(1, "S").source:sub(2)))
-package.path = here .. "/../lua/?/init.lua;" .. here .. "/../lua/?.lua;" .. package.path
+-- This checkout's module, not one on the runtimepath (Neovim's loader searches that before package.path).
+package.loaded.exocortex = dofile(vim.fs.normalize(here .. "/../lua/exocortex/init.lua"))
 local exo = require("exocortex")
 local await = exo.await
 local FAKE = vim.fs.normalize(here .. "/../../testing/fake-daemon.ts")
@@ -42,6 +43,32 @@ local function fails(fn, pattern, ...)
 end
 
 local function sleep(ms) await(function(cb) vim.defer_fn(cb, ms) end) end
+
+--- Waits until `check()` holds; fails fast after `ms`.
+local function until_(check, ms)
+  local deadline = vim.uv.now() + (ms or 5000)
+  while not check() do
+    if vim.uv.now() > deadline then error("timed out waiting", 2) end
+    sleep(10)
+  end
+end
+
+--- Send a test-only command (fake_restart, fake_drop) on a connection of its own; cb() once answered or dropped.
+local function admin(f, command, cb)
+  local pipe = vim.uv.new_pipe(false)
+  local finished = false
+  local function finish()
+    if finished then return end
+    finished = true
+    if not pipe:is_closing() then pipe:close() end
+    vim.schedule(cb)
+  end
+  pipe:connect(f.socket, function(e)
+    if e then return finish() end
+    pipe:read_start(function() finish() end)
+    pipe:write(vim.json.encode(command) .. "\n")
+  end)
+end
 
 local schema = { type = "object", properties = { word = { type = "string" } }, required = { "word" } }
 local function lookup(handler, extra)
@@ -171,21 +198,103 @@ test("a turn that ended while away resolves from the attach answer", function(f,
   assert(r.turn_id)
 end, { "--refuse-after-restart-ms", "400" })
 
-test("without lastTurnResult such a turn is reported lost", function(f, c)
+test("an ephemeral conversation and a one-shot run survive a graceful restart", function(f, c)
+  local session = c.session
+  assert(session, "session")
+  local conv = await(c.conversation, c, { lifetime = "ephemeral" })
+  eq(await(conv.send, conv, "restart echo").text, "echo: echo")
+  eq(c.session, session)
+  eq(await(conv.send, conv, "count").text, "turns: 2")
+  eq(await(c.run, c, "restart again").text, "echo: again")
+end)
+
+test("requests and sends made while reconnecting wait for the connection", function(f, c)
+  local conv = await(c.conversation, c, { lifetime = "ephemeral" })
+  await(admin, f, { type = "fake_restart", downMs = 600 })
+  until_(function() return not c.connected end)
+  eq(await(conv.send, conv, "count").text, "turns: 1")
+  local ids = vim.tbl_map(function(i) return i.convId end, await(c.list, c))
+  eq(ids, { conv.id })
+  local fresh = await(c.conversation, c, { lifetime = "temporary" })
+  await(admin, f, { type = "fake_drop" })
+  eq(await(fresh.send, fresh, "count").text, "turns: 1")
+  eq(#await(c.list, c), 2)
+end)
+
+test("a dropped connection keeps the ephemeral conversation and its running tool call", function(f, c)
+  local answered, started = {}, false
+  local slow = lookup(function(input, call)
+    started = true
+    vim.defer_fn(function() table.insert(answered, input.word); call:respond("kept " .. input.word) end, 300)
+  end, { async = true })
+  local conv = await(c.conversation, c, { lifetime = "ephemeral", tools = { slow } })
+  local turn = conv:stream('tool lookup {"word":"q"}')
+  until_(function() return started end)
+  await(admin, f, { type = "fake_drop" })
+  eq(await(turn.wait, turn).text, "lookup -> kept q")
+  eq(answered, { "q" })
+end)
+
+test("a crash loses the conversations; a one-shot run runs again on a new one", function(f, c)
+  local conv = await(c.conversation, c, { lifetime = "ephemeral" })
+  local hanging = conv:stream("hang")
+  for event in hanging:iter() do if event.type == "text" then break end end
+  local calls = 0
+  local crash_once = lookup(function(_, call)
+    calls = calls + 1
+    if calls > 1 then return call:respond("second try") end
+    admin(f, { type = "fake_restart", crash = true, downMs = 200 }, function()
+      vim.defer_fn(function() call:respond("too late") end, 200)
+    end)
+  end, { async = true })
+  eq(await(c.run, c, 'tool lookup {"word":"x"}', { tools = { crash_once } }).text, "lookup -> second try")
+  eq(calls, 2)
+  fails(await, "^lost", hanging.wait, hanging)
+  eq(conv.ended, "lost")
+end)
+
+test("a connection that drops again while conversations are re-attached still reconnects", function(f, c)
+  local convs = {}
+  for i = 1, 4 do convs[i] = await(c.conversation, c, { lifetime = "temporary" }) end
+  local armed = 0
+  c:on_event(function(ev)
+    -- The first re-attach answer after the first drop: drop again while the others are in flight.
+    if ev.type == "app_conversation_attached" and armed == 1 then
+      armed = 2
+      admin(f, { type = "fake_drop" }, function() end)
+    end
+  end)
+  armed = 1
+  await(admin, f, { type = "fake_drop" })
+  local result
+  convs[1]:send("count", function(e, r) result = e or r end)
+  until_(function() return result ~= nil end, 6000)
+  eq(result.text, "turns: 1")
+  eq(armed, 2)
+end)
+
+test("route passes through to the conversation", function(f, c)
+  local conv = await(c.conversation, c, { lifetime = "temporary", route = { credits = "never", whenLimited = "error" } })
+  eq(conv.info.route, { credits = "never", whenLimited = "error" })
+  eq(await(c.run, c, "hi", { route = { credits = "allow" } }).text, "echo: hi")
+  local state = await(c.request, c, { type = "fake_state" }, function(ev) return ev.type == "fake_state" end)
+  for _, cmd in ipairs(state.received) do
+    if cmd.type == "app_run" then eq(cmd.route, { credits = "allow" }) end
+  end
+end)
+
+test("without sessions: a turn whose result the daemon did not keep is reported lost", function(f, c)
+  eq(c.session, nil)
   local conv = await(c.conversation, c, { lifetime = "saved" })
   fails(await, "result_lost", conv.send, conv, "restart echo quick")
   eq(await(conv.send, conv, "count").text, "turns: 2")
-end, { "--refuse-after-restart-ms", "400", "--no-owner-results" })
+end, { "--refuse-after-restart-ms", "400", "--no-owner-results", "--no-sessions" })
 
-test("ephemeral ends on a dropped connection; the client keeps working", function(f, c)
+test("without sessions: an ephemeral conversation is lost on a restart; the client keeps working", function(f, c)
   local conv = await(c.conversation, c, { lifetime = "ephemeral" })
-  fails(await, "ended", conv.send, conv, "restart echo")
-  for _ = 1, 100 do
-    if pcall(await, c.list, c) then break end
-    sleep(50)
-  end
+  fails(await, "^lost", conv.send, conv, "restart echo")
   eq(await(c.run, c, "after").text, "echo: after")
-end)
+end, { "--no-sessions" })
 
 test("version mismatch is refused", function(f)
   fails(await, "incompatible", exo.connect, { app = "test-app", socket = f.socket })

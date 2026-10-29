@@ -195,10 +195,13 @@ async function mainPhase(): Promise<void> {
     const owned = await ownerClient.request({ type: "new_conversation", lifetime: "ephemeral", provider, model, effort, system: { text: "Reply with one word." } }, ["conversation_created"], 30_000);
     const ownedWorkspace = owned.app?.workspace as string;
     await sendAwait(ownerClient, owned.convId, "Say yes.");
+    // Closing alone leaves it the session's reconnect grace; end_app_session ends it now.
+    const ended = await ownerClient.request({ type: "end_app_session" }, ["app_session_ended"], 30_000);
+    check((ended.ended as string[] | undefined)?.includes(owned.convId) === true, "end_app_session ended the ephemeral conversation", ended);
     ownerClient.close();
     await Bun.sleep(1500);
     const afterClose = await client.request({ type: "list_app_conversations", includeSaved: true }, ["app_conversations_list"], 10_000);
-    check(!(afterClose.conversations as Json[]).some(info => info.convId === owned.convId), "ephemeral ended when its owner disconnected");
+    check(!(afterClose.conversations as Json[]).some(info => info.convId === owned.convId), "ephemeral ended with its owner's session");
     check(!existsSync(ownedWorkspace), "its temporary working directory is gone", ownedWorkspace);
     const projectDir = join(homedir(), ".claude", "projects", ownedWorkspace.replace(/[^a-zA-Z0-9]/g, "-"));
     check(!existsSync(projectDir), "its Claude Code project directory is gone (or never made)", projectDir);

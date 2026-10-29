@@ -19,6 +19,14 @@ export type StopReason = "end_turn" | "aborted" | "error";
 
 export interface SystemSpec { text?: string; base?: SystemBase }
 
+/** How the conversation's Claude turns may be billed (docs/app-api.md). */
+export interface RouteSpec {
+  /** "allow" (default): API credits while every subscription is limited; "never": subscriptions only. */
+  credits?: "allow" | "never";
+  /** "wait" (default) until something can run the turn, or "error" at once (TurnResult.limited). */
+  whenLimited?: "wait" | "error";
+}
+
 export interface AppToolDef {
   name: string;
   description: string;
@@ -67,6 +75,10 @@ export interface AppConversationInfo {
   systemBase: SystemBase;
   builtinTools: string[] | "all";
   appTools: string[];
+  route?: RouteSpec;
+  /** The Claude account its turns last ran on, if any. */
+  account?: string;
+  billing?: "api-credits";
 }
 
 export interface TurnResult {
@@ -77,11 +89,26 @@ export interface TurnResult {
   usage?: { outputTokens: number; durationMs: number };
   /** The daemon's turn identity, when it sends one. */
   turnId?: string;
+  /** "api-credits" when (some of) the turn ran on Claude API credits. */
+  billing?: "api-credits";
+  /** The turn stopped at a usage limit (`route.whenLimited: "error"`); `resetAt` in ms when known. */
+  limited?: { resetAt: number | null };
   /** The raw turn_result event (or a reconstruction after a reconnect). */
   raw: Record<string, any>;
 }
 
-export interface Welcome { appApiVersion: number; app: string; instance: string; pid: number }
+export interface Welcome {
+  appApiVersion: number;
+  app: string;
+  instance: string;
+  pid: number;
+  /** The session token; absent from a daemon older than sessions. */
+  session?: string;
+  reconnectGraceMs?: number;
+  /** The session was known: the conversations it owns are this client's again. */
+  resumed?: boolean;
+  conversations?: string[];
+}
 
 /** What a turn's stream yields. Everything else is available raw through `onEvent`. */
 export type StreamEvent =
@@ -103,8 +130,9 @@ export interface ConversationOptions {
   effort?: string;
   /** An existing absolute directory tools run in. */
   cwd?: string;
-  /** A client-chosen conversation id. */
+  /** A client-chosen conversation id (default: one the client makes). */
   convId?: string;
+  route?: RouteSpec;
 }
 
 export interface SendOptions {
@@ -116,7 +144,7 @@ export interface SendOptions {
 export interface RunOptions extends ConversationOptions, SendOptions {
   /** Default "ephemeral". */
   lifetime?: Lifetime;
-  /** Keep an ephemeral conversation after the run (it ends with the connection). */
+  /** Keep an ephemeral conversation after the run (it ends with the client's session). */
   keep?: boolean;
 }
 
@@ -126,10 +154,19 @@ export interface ConnectOptions {
   version?: string;
   /** The daemon's socket; default: $EXOCORTEX_SOCKET, then `exocortexd socket`. */
   socket?: string;
-  /** Reconnect (and re-attach saved/temporary conversations) when the connection drops. Default true. */
+  /**
+   * Ride out a dropped connection or a daemon restart: reconnect under the session,
+   * take the conversations back and send again what was in flight. Default true.
+   */
   reconnect?: boolean;
-  /** Give up reconnecting after this long. Default 60 s. */
+  /** Give up reconnecting after this long. Default 300 s. */
   reconnectTimeoutMs?: number;
+  /** How long the daemon keeps this session's ephemeral conversations while it is away (default: the daemon's, 2 min). */
+  reconnectGraceMs?: number;
+  /** A session token to take back (`client.session` of an earlier client). */
+  session?: string;
+  /** A one-shot run whose conversation the daemon lost (a crash) runs again on a new one. Default true. */
+  rerunLost?: boolean;
   /** How long to wait for app_welcome. Default 5 s. */
   welcomeTimeoutMs?: number;
   /** Timeout for requests other than turns. Default 30 s. */
@@ -138,7 +175,7 @@ export interface ConnectOptions {
 
 export type ErrorCode =
   | "not_installed" | "not_running" | "too_old" | "incompatible" | "daemon"
-  | "disconnected" | "closed" | "ended" | "timeout" | "result_lost";
+  | "disconnected" | "closed" | "ended" | "lost" | "timeout" | "result_lost";
 
 export class ExocortexError extends Error {
   readonly code: ErrorCode;
@@ -206,17 +243,19 @@ interface PendingRequest {
 
 interface PendingTurn {
   reqId: string;
-  convId: string | null;
+  convId: string;
   /** The daemon's turn identity: the prompt's startedAt, as a string. */
   turnId: string;
-  /** The connection this turn's request went out on. */
+  /** The connection this turn's command went out on; -1 before it went out. */
   generation: number;
+  /** The send_message or app_run that started it, sent again (same startedAt) after a reconnect. */
+  command: Record<string, any>;
   resolve: (result: TurnResult) => void;
   reject: (error: Error) => void;
   onEvent?: (event: Record<string, any>) => void;
   stream?: TurnStream;
-  /** app_run: becomes the conversation once conversation_created arrives. */
-  run?: { options: RunOptions };
+  /** app_run: the tools of the conversation it creates. */
+  runTools?: AppTool[];
 }
 
 function toResult(event: Record<string, any>): TurnResult {
@@ -225,6 +264,8 @@ function toResult(event: Record<string, any>): TurnResult {
     ...(event.error ? { error: event.error } : {}),
     ...(event.usage ? { usage: event.usage } : {}),
     ...(event.turnId ? { turnId: event.turnId } : {}),
+    ...(event.billing ? { billing: event.billing } : {}),
+    ...(event.limited ? { limited: event.limited } : {}),
     raw: event,
   };
 }
@@ -242,12 +283,19 @@ function toolsWire(tools: ToolsSpec | undefined): Record<string, unknown> | unde
   return { ...(tools.builtin !== undefined ? { builtin: tools.builtin } : {}), ...(tools.app ? { app: toolDefs(tools.app) } : {}) };
 }
 
+/** A conversation id of our own, so a create sent again after a reconnect is recognized. */
+function newConvId(): string {
+  let suffix = "";
+  for (let i = 0; i < 6; i++) suffix += "abcdefghijklmnopqrstuvwxyz0123456789"[Math.floor(Math.random() * 36)];
+  return `${Date.now()}-${suffix}`;
+}
+
 function createFields(options: ConversationOptions): Record<string, unknown> {
   const fields: Record<string, unknown> = {
     lifetime: options.lifetime, idleTtlMs: options.idleTtlMs, title: options.title,
     system: systemSpec(options.system), tools: toolsWire(options.tools),
     provider: options.provider, model: options.model, effort: options.effort,
-    cwd: options.cwd, convId: options.convId,
+    cwd: options.cwd, convId: options.convId ?? newConvId(), route: options.route,
   };
   for (const key of Object.keys(fields)) if (fields[key] === undefined) delete fields[key];
   return fields;
@@ -313,7 +361,7 @@ export class Conversation {
   readonly id: string;
   /** How the daemon last reported it. */
   info: AppConversationInfo;
-  /** Set once it is gone (deleted, expired, its connection closed). */
+  /** Set once it is gone (deleted, expired, owner_disconnected, lost, ...). */
   ended: string | null = null;
   /** @internal */ handlers = new Map<string, AppTool>();
   /** @internal */ tools: AppTool[] | undefined;
@@ -365,32 +413,51 @@ export class Conversation {
 
 // ── Client ─────────────────────────────────────────────────────────────
 
-/** A connection to the daemon, declared as one app. */
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+type ClientOptions = Required<Pick<ConnectOptions, "reconnect" | "reconnectTimeoutMs" | "welcomeTimeoutMs" | "requestTimeoutMs" | "rerunLost">>
+  & Omit<ConnectOptions, "reconnect" | "reconnectTimeoutMs" | "welcomeTimeoutMs" | "requestTimeoutMs" | "rerunLost">;
+
+/**
+ * A connection to the daemon, declared as one app. It survives a dropped
+ * connection and a daemon restart: it reconnects with backoff under its
+ * session token, takes its conversations back, and sends whatever was in
+ * flight again (the daemon never runs a prompt twice), so a send or a run
+ * sees a delay instead of an error. Requests made while it is reconnecting
+ * wait for it.
+ */
 export class Client {
   readonly app: string;
   welcome!: Welcome;
-  private options: Required<Omit<ConnectOptions, "version" | "socket">> & Pick<ConnectOptions, "version" | "socket">;
+  /** The session token (app_welcome.session): conversations belong to it, not to the socket. */
+  session: string | null;
+  private options: ClientOptions;
   private socketPath = "";
   private socket: Socket | null = null;
+  /** The handshake on the current socket is done. */
+  private connected = false;
+  private connectedWaiters: Array<(connected: boolean) => void> = [];
   private generation = 0;
   private reqCounter = 0;
   private lastStartedAt = 0;
   private buffer = "";
   private closed = false;
+  private closing: Promise<void> | null = null;
   private reconnecting: Promise<void> | null = null;
   private requests = new Map<string, PendingRequest>();
   private turns = new Map<string, PendingTurn>();
   private conversations = new Map<string, Conversation>();
-  /** In-flight and recently finished app tool calls by callId (a re-attach resends unanswered ones). */
+  /** In-flight and recently finished app tool calls by callId (the daemon re-sends unanswered ones after a reconnect). */
   private calls = new Map<string, { controller: AbortController; result?: { output: string; isError: boolean }; convId: string }>();
   private listeners = new Set<(event: Record<string, any>) => void>();
 
   /** @internal Use `connect()`. */
   constructor(options: ConnectOptions) {
     this.app = options.app;
+    this.session = options.session ?? null;
     this.options = {
-      reconnect: true, reconnectTimeoutMs: 60_000, welcomeTimeoutMs: 5_000, requestTimeoutMs: 30_000,
-      ...options,
+      reconnect: true, reconnectTimeoutMs: 300_000, welcomeTimeoutMs: 5_000, requestTimeoutMs: 30_000, rerunLost: true,
+      ...Object.fromEntries(Object.entries(options).filter(([, value]) => value !== undefined)) as ConnectOptions,
     };
   }
 
@@ -409,8 +476,10 @@ export class Client {
 
   private async handshake(): Promise<void> {
     const socket = await openSocket(this.socketPath);
+    if (this.closed) { socket.destroy(); throw new ExocortexError("closed", "The client was closed"); }
     const generation = ++this.generation;
     this.socket = socket;
+    this.connected = false;
     this.buffer = "";
     socket.setEncoding("utf8");
     socket.on("data", (data: string) => { if (this.socket === socket) this.onData(data); });
@@ -420,16 +489,16 @@ export class Client {
       if (this.socket !== socket) return;
       if (ready) return this.onClose(generation);
       this.socket = null;
-      for (const [reqId, request] of this.requests) {
-        clearTimeout(request.timer);
-        this.requests.delete(reqId);
-        request.reject(new ExocortexError("disconnected", "The daemon closed the connection before app_welcome"));
-      }
+      this.failRequests(new ExocortexError("disconnected", "The daemon closed the connection before app_welcome"));
     });
-    const welcome = await this.request(
-      { type: "client_capabilities", capabilities: [], app: { name: this.app, ...(this.options.version ? { version: this.options.version } : {}) } },
+    const app: Record<string, unknown> = { name: this.app };
+    if (this.options.version) app.version = this.options.version;
+    if (this.session) app.session = this.session;
+    if (this.options.reconnectGraceMs !== undefined) app.reconnectGraceMs = this.options.reconnectGraceMs;
+    const welcome = await this.exchange(
+      { type: "client_capabilities", capabilities: [], app },
       event => event.type === "app_welcome",
-      this.options.welcomeTimeoutMs,
+      this.options.welcomeTimeoutMs, false,
     ).catch(error => {
       socket.destroy();
       if (error instanceof ExocortexError && error.code === "timeout") {
@@ -444,9 +513,13 @@ export class Client {
         ? `The Exocortex daemon speaks app API v${welcome.appApiVersion}; this client knows v${APP_API_VERSION}. Update @exocortex/client.`
         : `The Exocortex daemon speaks app API v${welcome.appApiVersion}; this client needs v${APP_API_VERSION}. Update Exocortex:\n  ${INSTALL_COMMAND}`);
     }
-    this.welcome = { appApiVersion: welcome.appApiVersion, app: welcome.app, instance: welcome.instance, pid: welcome.pid };
+    const { appApiVersion, instance, pid, session, reconnectGraceMs, resumed, conversations } = welcome;
+    this.welcome = { appApiVersion, app: welcome.app, instance, pid, ...(session ? { session, reconnectGraceMs, resumed, conversations } : {}) };
+    if (session) this.session = session;
     ready = true;
     if (this.socket !== socket) throw new ExocortexError("disconnected", "The daemon closed the connection");
+    this.connected = true;
+    for (const wake of this.connectedWaiters.splice(0)) wake(true);
   }
 
   /** Listen to every daemon event this connection receives. Returns an unsubscribe function. */
@@ -455,24 +528,69 @@ export class Client {
     return () => this.listeners.delete(listener);
   }
 
-  /** Send a raw command and wait for the answer `match` accepts (or an `error` with its reqId). */
-  request(command: Record<string, any>, match: (event: Record<string, any>) => boolean, timeoutMs = this.options.requestTimeoutMs): Promise<Record<string, any>> {
-    const reqId = command.reqId ?? this.nextReqId();
+  /**
+   * Send a raw command and wait for the answer `match` accepts (or an `error` with its reqId).
+   * While reconnecting it waits for the connection; a request the connection dropped under is
+   * sent again once reconnected, unless `retry` is false.
+   */
+  request(command: Record<string, any>, match: (event: Record<string, any>) => boolean, timeoutMs = this.options.requestTimeoutMs, retry = true): Promise<Record<string, any>> {
+    if (this.closed || this.closing) return Promise.reject(new ExocortexError("closed", "The client was closed"));
+    return this.exchange(command, match, timeoutMs, retry);
+  }
+
+  private async exchange(command: Record<string, any>, match: (event: Record<string, any>) => boolean, timeoutMs: number, retry: boolean): Promise<Record<string, any>> {
+    let reqId: string = command.reqId ?? this.nextReqId();
+    for (;;) {
+      try {
+        if (!this.connected && retry) await this.waitConnected();
+        return await this.exchangeOnce({ ...command, reqId }, match, timeoutMs);
+      } catch (error) {
+        if (!(error instanceof ExocortexError) || error.code !== "disconnected" || !retry || !await this.waitConnected()) throw error;
+      }
+      reqId = this.nextReqId();
+    }
+  }
+
+  private exchangeOnce(command: Record<string, any>, match: (event: Record<string, any>) => boolean, timeoutMs: number): Promise<Record<string, any>> {
+    const reqId: string = command.reqId;
     return new Promise((resolve, reject) => {
       const pending: PendingRequest = { match, resolve, reject };
+      this.requests.set(reqId, pending);
+      try { this.write(command); }
+      catch (error) { this.requests.delete(reqId); reject(error); return; }
       if (timeoutMs > 0) pending.timer = setTimeout(() => {
         this.requests.delete(reqId);
         reject(new ExocortexError("timeout", `No answer to ${command.type} within ${timeoutMs} ms`));
       }, timeoutMs);
-      this.requests.set(reqId, pending);
-      try { this.write({ ...command, reqId }); }
-      catch (error) { clearTimeout(pending.timer); this.requests.delete(reqId); reject(error); }
+    });
+  }
+
+  /** While reconnecting: wait until connected again (true) or given up (false). */
+  private waitConnected(): Promise<boolean> {
+    if (this.closed || !this.options.reconnect) return Promise.resolve(false);
+    if (this.connected) return Promise.resolve(true);
+    return new Promise(resolve => {
+      const wake = (connected: boolean) => { clearTimeout(timer); resolve(connected && !this.closed); };
+      const timer = setTimeout(() => {
+        this.connectedWaiters = this.connectedWaiters.filter(w => w !== wake);
+        resolve(false);
+      }, this.options.reconnectTimeoutMs);
+      this.connectedWaiters.push(wake);
     });
   }
 
   /** Create a conversation. */
   async conversation(options: ConversationOptions = {}): Promise<Conversation> {
-    const event = await this.request({ type: "new_conversation", ...createFields(options) }, e => e.type === "conversation_created");
+    const fields = createFields(options);
+    let event: Record<string, any>;
+    try { event = await this.request({ type: "new_conversation", ...fields }, e => e.type === "conversation_created"); }
+    catch (error) {
+      // Made by an earlier attempt whose answer a dropped connection lost: it is ours.
+      if (error instanceof ExocortexError && error.code === "daemon" && error.message.includes("already exists") && !options.convId) {
+        return this.attach(fields.convId as string, { tools: options.tools?.app });
+      }
+      throw error;
+    }
     const conversation = new Conversation(this, event.app, options.tools?.app);
     this.conversations.set(conversation.id, conversation);
     return conversation;
@@ -494,10 +612,10 @@ export class Client {
   }
 
   /** @internal Re-send the attach for a conversation this client owns, with its current tools. */
-  async attachExisting(conversation: Conversation): Promise<Record<string, any>> {
-    const event = await this.request(
+  async attachExisting(conversation: Conversation, retry = true): Promise<Record<string, any>> {
+    const event = await this.exchange(
       { type: "attach_app_conversation", convId: conversation.id, ...(conversation.tools ? { tools: { app: toolDefs(conversation.tools) } } : {}) },
-      e => e.type === "app_conversation_attached",
+      e => e.type === "app_conversation_attached", this.options.requestTimeoutMs, retry,
     );
     conversation.info = event.conversation;
     return event;
@@ -527,17 +645,28 @@ export class Client {
 
   /** Delete an app conversation for good. */
   async delete(convId: string): Promise<void> {
-    await this.request({ type: "delete_conversation", convId }, e => e.type === "conversation_deleted" && e.convId === convId);
+    try { await this.request({ type: "delete_conversation", convId }, e => e.type === "conversation_deleted" && e.convId === convId); }
+    catch (error) {
+      // Gone already: an earlier attempt went through before the connection dropped, or it ended.
+      if (!(error instanceof ExocortexError) || error.code !== "daemon" || !error.message.includes("not found")) throw error;
+    }
     this.endConversation(convId, "deleted");
   }
 
-  /** Close the connection. Ephemeral conversations end with it; saved and temporary ones stay. */
-  close(): void {
-    if (this.closed) return;
-    this.closed = true;
-    this.failAll(new ExocortexError("closed", "The client was closed"));
-    this.socket?.end();
-    this.socket = null;
+  /** Close the connection. Ephemeral conversations end now; saved and temporary ones stay. */
+  close(): Promise<void> {
+    this.closing ??= (async () => {
+      if (this.connected && this.welcome?.session) {
+        // Without it they would wait out the session's reconnect grace.
+        await this.exchange({ type: "end_app_session" }, e => e.type === "app_session_ended", 2_000, false).catch(() => {});
+      }
+      this.closed = true;
+      this.failAll(new ExocortexError("closed", "The client was closed"));
+      this.socket?.end();
+      this.socket = null;
+      this.connected = false;
+    })();
+    return this.closing;
   }
 
   // ── Turns ──
@@ -547,27 +676,40 @@ export class Client {
     if (conversation.ended) return Promise.reject(new ExocortexError("ended", `Conversation ${conversation.id} has ended (${conversation.ended})`));
     const reqId = this.nextReqId();
     const startedAt = this.nextStartedAt();
-    return new Promise((resolve, reject) => {
-      const turn: PendingTurn = { reqId, convId: conversation.id, turnId: String(startedAt), generation: this.generation, resolve, reject, onEvent: options.onEvent };
-      if (stream) Object.defineProperty(turn, "stream", { get: stream });
-      this.turns.set(reqId, turn);
-      try {
-        this.write({ type: "send_message", reqId, convId: conversation.id, text: prompt, startedAt, awaitResult: true, ...(options.images ? { images: options.images } : {}) });
-      } catch (error) { this.turns.delete(reqId); reject(error); }
-    });
+    const command = { type: "send_message", reqId, convId: conversation.id, text: prompt, startedAt, awaitResult: true, ...(options.images ? { images: options.images } : {}) };
+    return this.startTurn({ reqId, convId: conversation.id, turnId: String(startedAt), generation: -1, command, resolve: () => {}, reject: () => {}, onEvent: options.onEvent }, stream);
   }
 
   private startRun(prompt: string, options: RunOptions, stream: (() => TurnStream) | null): Promise<TurnResult> {
     const reqId = this.nextReqId();
     const startedAt = this.nextStartedAt();
+    const fields = createFields(options);
+    const command = { type: "app_run", reqId, ...fields, prompt, startedAt, ...(options.images ? { images: options.images } : {}), ...(options.keep ? { keep: true } : {}) };
+    return this.startTurn({ reqId, convId: fields.convId as string, turnId: String(startedAt), generation: -1, command, resolve: () => {}, reject: () => {}, onEvent: options.onEvent, runTools: options.tools?.app }, stream);
+  }
+
+  private startTurn(turn: PendingTurn, stream: (() => TurnStream) | null): Promise<TurnResult> {
+    if (this.closed || this.closing) return Promise.reject(new ExocortexError("closed", "The client was closed"));
+    if (!this.options.reconnect && !this.connected) return Promise.reject(new ExocortexError("disconnected", "Not connected to the Exocortex daemon"));
+    if (stream) Object.defineProperty(turn, "stream", { get: stream });
     return new Promise((resolve, reject) => {
-      const turn: PendingTurn = { reqId, convId: null, turnId: String(startedAt), generation: this.generation, resolve, reject, onEvent: options.onEvent, run: { options } };
-      if (stream) Object.defineProperty(turn, "stream", { get: stream });
-      this.turns.set(reqId, turn);
-      try {
-        this.write({ type: "app_run", reqId, ...createFields(options), prompt, startedAt, ...(options.images ? { images: options.images } : {}), ...(options.keep ? { keep: true } : {}) });
-      } catch (error) { this.turns.delete(reqId); reject(error); }
+      turn.resolve = resolve;
+      turn.reject = reject;
+      this.turns.set(turn.reqId, turn);
+      // Not connected now: the reconnect sends it.
+      this.sendTurnNow(turn);
     });
+  }
+
+  /**
+   * Send a turn's command on the current connection, once per connection: a turn sent on a
+   * connection that dropped is sent again on the next one (the daemon never runs it twice).
+   */
+  private sendTurnNow(turn: PendingTurn): boolean {
+    if (!this.socket || !this.connected || turn.generation >= this.generation || !this.turns.has(turn.reqId)) return false;
+    turn.generation = this.generation;
+    try { this.write(turn.command); return true; }
+    catch { return false; } // the reconnect sends it again
   }
 
   private settle(turn: PendingTurn, result: TurnResult | Error): void {
@@ -596,15 +738,18 @@ export class Client {
     const reqId: string | undefined = event.reqId;
     const turnByReq = reqId ? this.turns.get(reqId) : undefined;
 
-    if (turnByReq && turnByReq.generation === this.generation) {
-      if (event.type === "error") return this.settle(turnByReq, new ExocortexError("daemon", event.message));
-      if (event.type === "conversation_created" && turnByReq.run) {
-        const conversation = new Conversation(this, event.app, turnByReq.run.options.tools?.app);
-        this.conversations.set(conversation.id, conversation);
-        turnByReq.convId = conversation.id;
+    if (turnByReq) {
+      if (event.type === "error") {
+        const message: string = event.message ?? "error";
+        return this.settle(turnByReq, new ExocortexError(message.includes("sent before") ? "result_lost" : "daemon", message));
+      }
+      if (event.type === "conversation_created") {
+        if (!this.conversations.has(event.convId)) this.conversations.set(event.convId, new Conversation(this, event.app, turnByReq.runTools));
+        turnByReq.convId = event.convId;
         return;
       }
       if (event.type === "turn_result") return this.settle(turnByReq, toResult(event));
+      if (event.type === "app_conversation_attached") return; // a run sent again after a reconnect took its conversation back
     }
     if (reqId) {
       const request = this.requests.get(reqId);
@@ -622,7 +767,7 @@ export class Client {
       this.endConversation(convId, event.reason ?? "deleted");
       return;
     }
-    for (const turn of this.turns.values()) {
+    for (const turn of [...this.turns.values()]) {
       if (turn.convId !== convId) continue;
       if (event.type === "turn_result") {
         // The owner's copy (after a reconnect our reqId is gone): ours when it names our turn.
@@ -640,12 +785,11 @@ export class Client {
     }
   }
 
-
   private onToolCall(event: Record<string, any>): void {
     const { convId, callId, name } = event;
     const known = this.calls.get(callId);
     if (known) {
-      // Re-sent after a re-attach: answer again if it already finished, else keep running it.
+      // Re-sent after a reconnect: answer again if it already finished, else keep running it.
       if (known.result) this.writeQuietly({ type: "app_tool_result", convId, callId, ...known.result });
       return;
     }
@@ -659,7 +803,7 @@ export class Client {
       entry.result = result;
       this.writeQuietly({ type: "app_tool_result", convId, callId, ...result });
       // Keep the answer a while in case the daemon re-sends the call after a reconnect.
-      setTimeout(() => { if (this.calls.get(callId) === entry) this.calls.delete(callId); }, 120_000).unref?.();
+      setTimeout(() => { if (this.calls.get(callId) === entry) this.calls.delete(callId); }, 600_000).unref?.();
     };
     if (!tool) return finish({ output: `${this.app} has no handler for tool ${name}`, isError: true });
     Promise.resolve()
@@ -667,76 +811,125 @@ export class Client {
       .then(value => finish(normalizeOutput(value)), error => finish({ output: error instanceof Error ? error.message : String(error), isError: true }));
   }
 
-  private endConversation(convId: string, reason: string): void {
+  private endConversation(convId: string, reason: string, code: ErrorCode = "ended", message?: string): void {
     const conversation = this.conversations.get(convId);
     if (conversation) { conversation.ended = reason; this.conversations.delete(convId); }
     for (const [callId, call] of this.calls) if (call.convId === convId) { call.controller.abort("ended"); this.calls.delete(callId); }
-    for (const turn of this.turns.values()) {
+    for (const turn of [...this.turns.values()]) {
       // app_run answers turn_result before deleting its ephemeral conversation; anything else still pending is gone.
-      if (turn.convId === convId) this.settle(turn, new ExocortexError("ended", `Conversation ${convId} has ended (${reason})`));
+      if (turn.convId === convId) this.settle(turn, new ExocortexError(code, message ?? `Conversation ${convId} has ended (${reason})`));
     }
   }
 
   // ── Connection loss ──
 
+  private failRequests(error: Error): void {
+    for (const [reqId, request] of this.requests) { clearTimeout(request.timer); this.requests.delete(reqId); request.reject(error); }
+  }
+
   private onClose(generation: number): void {
     this.socket = null;
     if (this.closed || generation !== this.generation) return;
+    this.connected = false;
+    // Requests waiting on an answer are sent again once reconnected (request()); turns and
+    // running tool calls carry on: the reconnect sends the turns again, and the daemon re-sends
+    // the calls it still waits on, which get the answers kept for them.
     const lost = new ExocortexError("disconnected", "Lost the connection to the Exocortex daemon");
-    for (const [reqId, request] of this.requests) { clearTimeout(request.timer); request.reject(lost); this.requests.delete(reqId); }
-    for (const [callId, call] of this.calls) if (!call.result) { call.controller.abort("disconnected"); this.calls.delete(callId); }
-    // Ephemeral conversations end with the connection; their turns with them.
-    for (const conversation of [...this.conversations.values()]) {
-      if (conversation.info.lifetime === "ephemeral") this.endConversation(conversation.id, "owner_disconnected");
-    }
-    for (const turn of [...this.turns.values()]) if (!turn.convId) this.settle(turn, lost);
+    this.failRequests(lost);
+    if (this.closing) return;
     if (!this.options.reconnect) { this.closed = true; this.failAll(lost); return; }
     this.reconnecting ??= this.reconnect().finally(() => { this.reconnecting = null; });
   }
 
   private async reconnect(): Promise<void> {
-    const deadline = Date.now() + this.options.reconnectTimeoutMs;
-    let delay = 100;
-    while (!this.closed) {
-      try {
-        await this.handshake();
-        break;
-      } catch (error) {
-        if (error instanceof ExocortexError && (error.code === "incompatible")) { this.closed = true; this.failAll(error); return; }
-        if (Date.now() + delay > deadline) {
-          this.closed = true;
-          this.failAll(new ExocortexError("disconnected", `Could not reconnect to the Exocortex daemon within ${this.options.reconnectTimeoutMs} ms`));
-          return;
-        }
-        await new Promise(resolve => setTimeout(resolve, delay));
-        delay = Math.min(delay * 2, 2_000);
-      }
-    }
-    if (this.closed) return;
-    for (const conversation of [...this.conversations.values()]) {
-      let event: Record<string, any>;
-      try { event = await this.attachExisting(conversation); }
-      catch (error) {
-        if (error instanceof ExocortexError && error.code === "disconnected") return; // the next onClose retries
-        this.endConversation(conversation.id, error instanceof Error ? error.message : String(error));
-        continue;
-      }
-      if (event.conversation?.streaming) continue;
-      // The turn ended while we were away.
-      for (const turn of [...this.turns.values()]) {
-        if (turn.convId !== conversation.id) continue;
-        const last = event.lastTurnResult;
-        if (last && last.turnId === turn.turnId) this.settle(turn, toResult(last));
-        else this.settle(turn, new ExocortexError("result_lost", `The turn on ${conversation.id} ended while the client was disconnected, and the daemon did not report its result`));
-      }
+    for (;;) {
+      if (!await this.redial()) return;
+      const generation = this.generation;
+      await this.reclaim(generation);
+      // Dropped again meanwhile: that close found this loop running, so it goes round again.
+      if (this.closed || this.closing || (this.connected && this.generation === generation)) return;
     }
   }
 
+  /** Handshake again with backoff; false when it gave up (and failed everything). */
+  private async redial(): Promise<boolean> {
+    const deadline = Date.now() + this.options.reconnectTimeoutMs;
+    let delay = 100;
+    while (!this.closed && !this.closing) {
+      try {
+        await this.handshake();
+        return true;
+      } catch (error) {
+        if (error instanceof ExocortexError && error.code === "incompatible") { this.closed = true; this.failAll(error); return false; }
+        if (Date.now() + delay > deadline) {
+          this.closed = true;
+          this.failAll(new ExocortexError("disconnected", `Could not reconnect to the Exocortex daemon within ${this.options.reconnectTimeoutMs} ms`));
+          return false;
+        }
+        await sleep(delay * (0.75 + Math.random() / 2));
+        delay = Math.min(delay * 2, 2_000);
+      }
+    }
+    return false;
+  }
+
+  /** After a reconnect: take the conversations back and send again what was in flight. */
+  private async reclaim(generation: number): Promise<void> {
+    // A daemon with sessions never runs a prompt twice: what was in flight is sent again.
+    const resend = Boolean(this.welcome.session);
+    const attached = new Map<string, Record<string, any>>();
+    for (const conversation of [...this.conversations.values()]) {
+      if (!this.conversations.has(conversation.id)) continue;
+      try { attached.set(conversation.id, await this.attachExisting(conversation, false)); }
+      catch (error) {
+        if (error instanceof ExocortexError && (error.code === "disconnected" || error.code === "closed")) return;
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.includes("not found")) this.lost(conversation.id, resend);
+        else this.endConversation(conversation.id, message);
+      }
+    }
+    const turns = [...this.turns.values()].filter(turn => turn.generation < generation);
+    if (resend) {
+      // The daemon answers a prompt it already has from its turn, and carries on with a run
+      // whose conversation it already has.
+      for (const turn of turns) this.sendTurnNow(turn);
+      return;
+    }
+    // An older daemon: what never went out goes now; what did is settled from the attach answers.
+    for (const turn of turns) {
+      if (turn.generation === -1) { this.sendTurnNow(turn); continue; }
+      const event = attached.get(turn.convId);
+      if (!event) { this.settle(turn, new ExocortexError("lost", "The connection dropped before the daemon took this run")); continue; }
+      if (event.conversation?.streaming) continue; // its result comes as the owner's copy
+      const last = event.lastTurnResult;
+      if (last && last.turnId === turn.turnId) this.settle(turn, toResult(last));
+      else this.settle(turn, new ExocortexError("result_lost", `The turn on ${turn.convId} ended while the client was disconnected, and the daemon did not report its result`));
+    }
+  }
+
+  /**
+   * The daemon no longer has a conversation of ours: a crash, or we were away longer than the
+   * session's reconnect grace. A one-shot run starts over on a new conversation (`rerunLost`).
+   */
+  private lost(convId: string, rerun: boolean): void {
+    if (this.options.rerunLost && rerun) {
+      for (const turn of this.turns.values()) {
+        if (turn.convId !== convId || turn.command.type !== "app_run") continue;
+        turn.convId = newConvId();
+        turn.command = { ...turn.command, convId: turn.convId };
+        turn.generation = -1; // not sent on any connection: sent again
+      }
+    }
+    this.endConversation(convId, "lost", "lost", `Conversation ${convId} is gone from the Exocortex daemon (it crashed, or the client was away longer than its reconnect grace)`);
+  }
+
   private failAll(error: Error): void {
-    for (const [reqId, request] of this.requests) { clearTimeout(request.timer); request.reject(error); this.requests.delete(reqId); }
+    this.failRequests(error);
     for (const turn of [...this.turns.values()]) this.settle(turn, error);
     for (const call of this.calls.values()) call.controller.abort("closed");
     this.calls.clear();
+    // Wakes requests waiting for a reconnect: they see the client closed.
+    for (const wake of this.connectedWaiters.splice(0)) wake(false);
   }
 
   // ── Plumbing ──
@@ -756,7 +949,7 @@ export class Client {
   }
 
   private writeQuietly(command: Record<string, any>): void {
-    try { this.write(command); } catch { /* a re-attach re-sends the call */ }
+    try { this.write(command); } catch { /* the daemon re-sends the call after a reconnect */ }
   }
 }
 
@@ -773,14 +966,15 @@ function normalizeOutput(value: unknown): { output: string; isError: boolean } {
 export async function connect(options: ConnectOptions): Promise<Client> {
   if (!/^[a-z0-9][a-z0-9-]{0,39}$/.test(options.app)) throw new TypeError(`Invalid app name ${JSON.stringify(options.app)}: use lowercase letters, digits and dashes`);
   const client = new Client(options);
-  await client.open();
+  try { await client.open(); }
+  catch (error) { await client.close(); throw error; }
   return client;
 }
 
-/** One-shot from anywhere: connect, run, close. */
+/** One-shot from anywhere: connect, run (ephemeral by default), close. Rides out a daemon restart. */
 export async function run(prompt: string, options: RunOptions & ConnectOptions): Promise<TurnResult> {
-  const { app, version, socket, welcomeTimeoutMs, requestTimeoutMs, ...runOptions } = options;
-  const client = await connect({ app, version, socket, welcomeTimeoutMs, requestTimeoutMs, reconnect: false });
+  const { app, version, socket, reconnect, reconnectTimeoutMs, reconnectGraceMs, session, rerunLost, welcomeTimeoutMs, requestTimeoutMs, ...runOptions } = options;
+  const client = await connect({ app, version, socket, reconnect, reconnectTimeoutMs, reconnectGraceMs, session, rerunLost, welcomeTimeoutMs, requestTimeoutMs });
   try { return await client.run(prompt, runOptions); }
-  finally { client.close(); }
+  finally { await client.close(); }
 }
