@@ -173,6 +173,10 @@ still keeps them in place.
 
 ## API credits when every account is at a limit
 
+App conversations are routed the same way; an app can keep its turns off
+credits or have them stop instead of waiting (`route`, see
+[app API](app-api.md#accounts-and-api-credits)).
+
 Each Claude Max plan comes with Claude API credits ($200 a month) that pay for
 the Claude API and the Agent SDK, not interactive Claude Code. While every
 subscription account is at a usage limit (5-hour or weekly, as routing sees

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { claudeDailyReset, isUsageLimitError, runWithUsageLimitWait } from "./usage-limit-wait";
+import { claudeDailyReset, isUsageLimitError, runWithUsageLimitWait, UsageLimitedError } from "./usage-limit-wait";
 import { RetryableStreamAbortController } from "./watchdog-retry";
 
 const refused = () => new Error("Claude Code: You've hit your session limit · resets 9:10pm (America/Panama)");
@@ -37,6 +37,30 @@ describe("usage capacity waits", () => {
     }, () => ({ ready: true, resetAt: null }), { start() {}, end() {} }, options);
     expect(result).toBe("continued");
     expect(calls).toBe(2);
+  });
+
+  test("a turn that may not wait fails at once when nothing can take it, after trying the next route once", async () => {
+    const fail = { ...options, failInsteadOfWaiting: true };
+    const resetAt = Date.now() + 60_000;
+    let calls = 0;
+    const limited = runWithUsageLimitWait(new RetryableStreamAbortController(), async () => { calls++; return "ran"; },
+      () => ({ ready: false, resetAt }), { start() { throw new Error("must not wait"); }, end() {} }, fail);
+    const error = await limited.then(() => null, (reason: unknown) => reason);
+    expect(error).toBeInstanceOf(UsageLimitedError);
+    expect((error as UsageLimitedError).resetAt).toBe(resetAt);
+    expect(calls).toBe(0);
+    // Refused mid-turn while another account can still take it: one more try, then the error.
+    let tries = 0;
+    const second = await runWithUsageLimitWait(new RetryableStreamAbortController(), async () => {
+      if (++tries === 1) throw refused();
+      return "second account";
+    }, () => ({ ready: true, resetAt: null }), { start() {}, end() {} }, fail);
+    expect(second).toBe("second account");
+    let refusals = 0;
+    const always = runWithUsageLimitWait(new RetryableStreamAbortController(), async () => { refusals++; throw refused(); },
+      () => ({ ready: true, resetAt: null }), { start() {}, end() {} }, fail);
+    await expect(always).rejects.toBeInstanceOf(UsageLimitedError);
+    expect(refusals).toBe(2);
   });
 
   test("all limited waits through reset and completes only at the real end", async () => {

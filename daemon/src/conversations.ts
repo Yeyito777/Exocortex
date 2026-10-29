@@ -32,7 +32,7 @@ import type { HistoryWindowOptions } from "./history-pagination";
 import { scheduleDisplayIndex } from "./display-index-backfill";
 import { loadConversationOffThread, prepareArchiveHashes, releaseArchiveWindow } from "./conversation-loader";
 import { archiveWindow, forgetFullArchiveWindow, inheritArchiveHashProof, isArchivedMessage, storedMessageCount, archivedUserCount, systemInstructionMessages } from "./conversation-window";
-import { appWorkingDirectory, isAppConversation, isEphemeralConversation, isHiddenConversation } from "./app-registry";
+import { appWorkingDirectory, ephemeralConversationsSurviveRestart, isAppConversation, isEphemeralConversation, isHiddenConversation } from "./app-registry";
 
 // Re-export streaming functions so existing `convStore.*` call sites keep working
 export {
@@ -635,6 +635,18 @@ export function generateId(): string {
 }
 
 // ── Conversation CRUD/configuration ─────────────────────────────────
+
+/**
+ * An ephemeral app conversation an earlier daemon handed over at a graceful
+ * restart (app-api.ts): back in memory, as it was. Its app record is
+ * registered first, so it is never written.
+ */
+export function adoptEphemeralConversation(conv: Conversation): void {
+  if (!isEphemeralConversation(conv.id)) throw new Error(`Conversation ${conv.id} is not an ephemeral app conversation`);
+  if (hasConversation(conv.id)) throw new Error(`Conversation ${conv.id} already exists`);
+  retainConversation(conv);
+  updateSummaryFromConversation(conv);
+}
 
 export function create(id: string, provider: ProviderId, model: ModelId, title?: string, effort?: EffortLevel, fastMode: FastMode = false, folderId: string | null = null, adoptExistingWorkspace = false): Conversation {
   if (hasConversation(id) || persistence.hasDeletedConversation(id)) {
@@ -2371,8 +2383,9 @@ export function listRunningConversationIds(): string[] {
 
 /** Active model turns that should be replayed after a daemon restart. */
 export function listRestartRecoverableConversationIds(): string[] {
-  // Ephemeral app conversations end with the daemon: never replayed.
-  return [...summaries.keys()].filter((id) => streaming.isStreaming(id) && streaming.isRestartRecoverableJob(id) && !isEphemeralConversation(id));
+  // Ephemeral app conversations are replayed only when a graceful restart hands them over (app-api.ts).
+  const ephemeral = ephemeralConversationsSurviveRestart();
+  return [...summaries.keys()].filter((id) => streaming.isStreaming(id) && streaming.isRestartRecoverableJob(id) && (ephemeral || !isEphemeralConversation(id)));
 }
 
 // ── Conversation sidebar actions ───────────────────────────────────

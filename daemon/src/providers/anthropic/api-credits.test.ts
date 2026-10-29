@@ -161,6 +161,22 @@ describe("API-credit fallback routing", () => {
     expect(apiCreditSwitchNotice("conv-2", back)).toBeNull();
   });
 
+  test("an app conversation that never uses credits stays on its subscription account and waits (or fails) instead", async () => {
+    const { registerAppConversation, removeAppConversationRecord } = await import("../../app-registry");
+    registerAppConversation({ convId: "app-never", app: "batch", lifetime: "ephemeral", createdAt: 0, lastActivityAt: 0, system: { text: "", base: "none" }, builtin: [], appTools: [], route: { credits: "never" } });
+    try {
+      report("main", 100, 60);
+      expect((await routeClaudeTurn("app-never", null)).apiCredit).toBeNull();
+      expect((await routeClaudeTurn("conv-1", null)).apiCredit?.id).toBe(MAIN_KEY);
+      setApiCreditSecretsForTests(fakeSecrets, join(dir, "credit-state.json"));
+      await refreshApiCreditSecrets({ force: true });
+      expect(claudeUsageAvailability().ready).toBe(true);
+      expect(claudeUsageAvailability(Date.now(), { apiCredits: false }).ready).toBe(false);
+    } finally {
+      removeAppConversationRecord("app-never");
+    }
+  });
+
   test("a process with background tasks keeps how it bills", async () => {
     report("main", 100, 60);
     const live = { account: "main", open: true, backgroundWork: true, apiCredit: null };

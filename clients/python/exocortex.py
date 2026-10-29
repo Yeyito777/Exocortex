@@ -15,6 +15,7 @@ import itertools
 import json
 import os
 import queue
+import random
 import re
 import socket as _socket
 import subprocess
@@ -37,7 +38,7 @@ _APP_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 
 class ExocortexError(Exception):
     """``code`` is one of not_installed, not_running, too_old, incompatible, daemon,
-    disconnected, closed, ended, timeout, result_lost."""
+    disconnected, closed, ended, lost, timeout, result_lost."""
 
     def __init__(self, code: str, message: str):
         super().__init__(message)
@@ -119,11 +120,16 @@ class TurnResult:
     usage: Optional[Dict[str, Any]] = None
     turn_id: Optional[str] = None
     raw: Dict[str, Any] = field(default_factory=dict)
+    #: "api-credits" when (some of) the turn ran on Claude API credits.
+    billing: Optional[str] = None
+    #: ``{"resetAt": ms or None}`` when the turn stopped at a usage limit (``route={"whenLimited": "error"}``).
+    limited: Optional[Dict[str, Any]] = None
 
     @classmethod
     def from_event(cls, event: Dict[str, Any]) -> "TurnResult":
         return cls(event.get("convId", ""), event.get("text") or "", event.get("stopReason", ""),
-                   event.get("error"), event.get("usage"), event.get("turnId"), event)
+                   event.get("error"), event.get("usage"), event.get("turnId"), event,
+                   event.get("billing"), event.get("limited"))
 
 
 @dataclass
@@ -183,6 +189,8 @@ class _Turn:
         self.stream: Optional[TurnStream] = None
         self.run_tools = run_tools
         self.run_lifetime: Optional[str] = None
+        #: The send_message or app_run that started it, sent again (same startedAt) after a reconnect.
+        self.command: Dict[str, Any] = {}
 
 
 # ── Conversation ────────────────────────────────────────────────────────
@@ -283,11 +291,18 @@ def _system(system: Union[str, Dict[str, Any], None], base: Optional[str]) -> Op
     return spec
 
 
+def _new_conv_id() -> str:
+    """A conversation id of our own, so a create sent again after a reconnect is recognized."""
+    return f"{int(time.time() * 1000)}-" + "".join(random.choice("abcdefghijklmnopqrstuvwxyz0123456789") for _ in range(6))
+
+
 def _create_fields(lifetime=None, idle_ttl_ms=None, title=None, system=None, base=None, builtin=None,
-                   tools=None, provider=None, model=None, effort=None, cwd=None, conv_id=None) -> Dict[str, Any]:
+                   tools=None, provider=None, model=None, effort=None, cwd=None, conv_id=None,
+                   route=None) -> Dict[str, Any]:
     fields: Dict[str, Any] = {
         "lifetime": lifetime, "idleTtlMs": idle_ttl_ms, "title": title, "system": _system(system, base),
-        "provider": provider, "model": model, "effort": effort, "cwd": cwd, "convId": conv_id,
+        "provider": provider, "model": model, "effort": effort, "cwd": cwd, "convId": conv_id or _new_conv_id(),
+        "route": route,
     }
     if builtin is not None or tools:
         fields["tools"] = {k: v for k, v in (("builtin", builtin), ("app", [t.wire() for t in tools] if tools else None)) if v is not None}
@@ -298,23 +313,35 @@ def _create_fields(lifetime=None, idle_ttl_ms=None, title=None, system=None, bas
 
 
 class Client:
-    """A connection to the daemon, declared as one app. Use ``connect()``."""
+    """A connection to the daemon, declared as one app. Use ``connect()``.
+
+    It survives a dropped connection and a daemon restart: it reconnects with
+    backoff under its session token, takes its conversations back, and sends
+    whatever was in flight again (the daemon never runs a prompt twice), so a
+    send or a run sees a delay instead of an error. Requests made while it is
+    reconnecting wait for it."""
 
     def __init__(self, app: str, version: Optional[str] = None, socket: Optional[str] = None,
-                 reconnect: bool = True, reconnect_timeout: float = 60.0, welcome_timeout: float = 5.0,
-                 request_timeout: float = 30.0, tool_workers: int = 8):
+                 reconnect: bool = True, reconnect_timeout: float = 300.0, welcome_timeout: float = 5.0,
+                 request_timeout: float = 30.0, tool_workers: int = 8, reconnect_grace_ms: Optional[int] = None,
+                 session: Optional[str] = None, rerun_lost: bool = True):
         if not _APP_NAME.match(app or ""):
             raise ValueError(f"Invalid app name {app!r}: use lowercase letters, digits and dashes")
         self.app = app
         self.version = version
         self.welcome: Dict[str, Any] = {}
+        #: The session token (app_welcome.session): conversations belong to it, not to the socket.
+        self.session: Optional[str] = session
         self._socket_path = socket
         self._reconnect = reconnect
         self._reconnect_timeout = reconnect_timeout
+        self._grace_ms = reconnect_grace_ms
+        self._rerun_lost = rerun_lost
         self._welcome_timeout = welcome_timeout
         self._request_timeout = request_timeout
         self._sock: Optional[_socket.socket] = None
         self._generation = 0
+        self._connected = threading.Event()
         self._ids = itertools.count(1)
         self._last_started_at = 0
         self._lock = threading.RLock()
@@ -358,11 +385,15 @@ class Client:
         ready = threading.Event()
         threading.Thread(target=self._reader, args=(sock, generation, ready), daemon=True,
                          name=f"exocortex-{self.app}-reader").start()
-        caps = {"type": "client_capabilities", "capabilities": [], "app": {"name": self.app}}
+        caps: Dict[str, Any] = {"type": "client_capabilities", "capabilities": [], "app": {"name": self.app}}
         if self.version:
             caps["app"]["version"] = self.version
+        if self.session:
+            caps["app"]["session"] = self.session
+        if self._grace_ms is not None:
+            caps["app"]["reconnectGraceMs"] = self._grace_ms
         try:
-            welcome = self.request(caps, lambda e: e["type"] == "app_welcome", self._welcome_timeout)
+            welcome = self.request(caps, lambda e: e["type"] == "app_welcome", self._welcome_timeout, retry=False)
         except ExocortexError as error:
             sock.close()
             if error.code == "timeout":
@@ -378,9 +409,11 @@ class Client:
                 msg = f"The Exocortex daemon speaks app API v{v}; this client needs v{APP_API_VERSION}. Update Exocortex:\n  {INSTALL_COMMAND}"
             raise ExocortexError("incompatible", msg)
         self.welcome = welcome
+        self.session = welcome.get("session") or self.session
         ready.set()
         if self._sock is not sock:
             raise ExocortexError("disconnected", "The daemon closed the connection")
+        self._connected.set()
 
     def _reader(self, sock: _socket.socket, generation: int, ready: threading.Event) -> None:
         buffer = b""
@@ -420,7 +453,14 @@ class Client:
             self._fail_requests(ExocortexError("disconnected", "The daemon closed the connection before app_welcome"))
 
     def close(self) -> None:
-        """Close the connection. Ephemeral conversations end with it; saved and temporary ones stay."""
+        """Close the connection. Ephemeral conversations end now; saved and temporary ones stay."""
+        if self._closed:
+            return
+        if self._sock is not None and self.welcome.get("session"):
+            try:  # without it they would wait out the session's reconnect grace
+                self.request({"type": "end_app_session"}, lambda e: e["type"] == "app_session_ended", 2.0, retry=False)
+            except ExocortexError:
+                pass
         with self._lock:
             if self._closed:
                 return
@@ -457,10 +497,20 @@ class Client:
             self._last_started_at = max(int(time.time() * 1000), self._last_started_at + 1)
             return self._last_started_at
 
-    def _write(self, command: Dict[str, Any]) -> None:
+    def _wait_connected(self) -> bool:
+        """While reconnecting: wait until connected again (true) or given up (false)."""
+        if self._closed or not self._reconnect:
+            return False
+        self._connected.wait(self._reconnect_timeout)
+        return not self._closed and self._sock is not None
+
+    def _write(self, command: Dict[str, Any], wait: bool = True) -> None:
+        """Send a command. While reconnecting it waits for the connection, unless ``wait`` is false."""
         if self._closed:
             raise ExocortexError("closed", "The client was closed")
         sock = self._sock
+        if (sock is None or not self._connected.is_set()) and wait and command.get("type") != "client_capabilities" and self._wait_connected():
+            sock = self._sock
         if sock is None:
             raise ExocortexError("disconnected", "Not connected to the Exocortex daemon (reconnecting)")
         data = (json.dumps(command) + "\n").encode("utf-8")
@@ -472,25 +522,33 @@ class Client:
 
     def _write_quietly(self, command: Dict[str, Any]) -> None:
         try:
-            self._write(command)
+            self._write(command, wait=False)
         except ExocortexError:
             pass  # a re-attach re-sends unanswered calls
 
     def request(self, command: Dict[str, Any], match: Callable[[Dict[str, Any]], bool],
-                timeout: Optional[float] = None) -> Dict[str, Any]:
-        """Send a raw command; return the answer ``match`` accepts (or raise on an ``error`` with its reqId)."""
+                timeout: Optional[float] = None, retry: bool = True) -> Dict[str, Any]:
+        """Send a raw command; return the answer ``match`` accepts (or raise on an ``error`` with its reqId).
+        A request the connection dropped under is sent again once reconnected, unless ``retry`` is false."""
         req_id = command.get("reqId") or self._next_id()
-        future: "Future[Dict[str, Any]]" = Future()
-        with self._lock:
-            self._requests[req_id] = (match, future)
-        try:
-            self._write({**command, "reqId": req_id})
-            return future.result(self._request_timeout if timeout is None else timeout)
-        except _FutureTimeout:  # the builtin TimeoutError from 3.11 on
-            raise ExocortexError("timeout", f"No answer to {command['type']} within {timeout or self._request_timeout} s") from None
-        finally:
+        while True:
+            future: "Future[Dict[str, Any]]" = Future()
             with self._lock:
-                self._requests.pop(req_id, None)
+                self._requests[req_id] = (match, future)
+            try:
+                # Without retry (the reconnect's own re-attaches, end_app_session) it must not wait
+                # for a reconnect: the reconnect may be what is waiting on it.
+                self._write({**command, "reqId": req_id}, wait=retry)
+                return future.result(self._request_timeout if timeout is None else timeout)
+            except _FutureTimeout:  # the builtin TimeoutError from 3.11 on
+                raise ExocortexError("timeout", f"No answer to {command['type']} within {timeout or self._request_timeout} s") from None
+            except ExocortexError as error:
+                if error.code != "disconnected" or not retry or not self._wait_connected():
+                    raise
+            finally:
+                with self._lock:
+                    self._requests.pop(req_id, None)
+            req_id = self._next_id()
 
     # ── public API ──
 
@@ -499,10 +557,17 @@ class Client:
                      base: Optional[str] = None, builtin: Union[List[str], str, None] = None,
                      tools: Optional[List[Tool]] = None, provider: Optional[str] = None,
                      model: Optional[str] = None, effort: Optional[str] = None, cwd: Optional[str] = None,
-                     conv_id: Optional[str] = None) -> Conversation:
-        """Create a conversation (``lifetime`` saved by default, or temporary/ephemeral)."""
-        fields = _create_fields(lifetime, idle_ttl_ms, title, system, base, builtin, tools, provider, model, effort, cwd, conv_id)
-        event = self.request({"type": "new_conversation", **fields}, lambda e: e["type"] == "conversation_created")
+                     conv_id: Optional[str] = None, route: Optional[Dict[str, str]] = None) -> Conversation:
+        """Create a conversation (``lifetime`` saved by default, or temporary/ephemeral).
+        ``route``: ``{"credits": "allow"|"never", "whenLimited": "wait"|"error"}`` (docs/app-api.md)."""
+        fields = _create_fields(lifetime, idle_ttl_ms, title, system, base, builtin, tools, provider, model, effort, cwd, conv_id, route)
+        try:
+            event = self.request({"type": "new_conversation", **fields}, lambda e: e["type"] == "conversation_created")
+        except ExocortexError as error:
+            # Made by an earlier attempt whose answer a dropped connection lost: it is ours.
+            if error.code == "daemon" and "already exists" in str(error) and not conv_id:
+                return self.attach(fields["convId"], tools)
+            raise
         conv = Conversation(self, event["app"], tools)
         with self._lock:
             self._conversations[conv.id] = conv
@@ -524,11 +589,11 @@ class Client:
                     conv._set_tools(tools)
         return conv
 
-    def _attach_existing(self, conv: Conversation) -> Dict[str, Any]:
+    def _attach_existing(self, conv: Conversation, retry: bool = True) -> Dict[str, Any]:
         command: Dict[str, Any] = {"type": "attach_app_conversation", "convId": conv.id}
         if conv.tools is not None:
             command["tools"] = {"app": [t.wire() for t in conv.tools]}
-        event = self.request(command, lambda e: e["type"] == "app_conversation_attached")
+        event = self.request(command, lambda e: e["type"] == "app_conversation_attached", retry=retry)
         conv.info = event["conversation"]
         return event
 
@@ -552,8 +617,13 @@ class Client:
 
     def delete(self, conv_id: str) -> None:
         """Delete an app conversation for good."""
-        self.request({"type": "delete_conversation", "convId": conv_id},
-                     lambda e: e["type"] == "conversation_deleted" and e.get("convId") == conv_id)
+        try:
+            self.request({"type": "delete_conversation", "convId": conv_id},
+                         lambda e: e["type"] == "conversation_deleted" and e.get("convId") == conv_id)
+        except ExocortexError as error:
+            # Gone already: an earlier attempt went through before the connection dropped, or it ended.
+            if error.code != "daemon" or "not found" not in str(error):
+                raise
         self._end_conversation(conv_id, "deleted")
 
     # ── turns ──
@@ -566,42 +636,54 @@ class Client:
         turn.turn_id = str(started_at)
         if stream:
             turn.stream = TurnStream(turn.future)
-        with self._lock:
-            self._turns[turn.req_id] = turn
-        command = {"type": "send_message", "reqId": turn.req_id, "convId": conv.id, "text": prompt,
-                   "startedAt": started_at, "awaitResult": True}
+        turn.command = {"type": "send_message", "reqId": turn.req_id, "convId": conv.id, "text": prompt,
+                        "startedAt": started_at, "awaitResult": True}
         if images:
-            command["images"] = images
-        try:
-            self._write(command)
-        except ExocortexError:
-            with self._lock:
-                self._turns.pop(turn.req_id, None)
-            raise
-        return turn
+            turn.command["images"] = images
+        return self._start_turn(turn)
 
     def _start_run(self, prompt, lifetime, keep, images, on_event, stream, options) -> _Turn:
         tools = options.get("tools")
-        turn = _Turn(self._next_id(), None, self._generation, on_event, run_tools=tools)
+        fields = _create_fields(lifetime=lifetime, **options)
+        turn = _Turn(self._next_id(), fields["convId"], self._generation, on_event, run_tools=tools)
         started_at = self._next_started_at()
         turn.turn_id = str(started_at)
         if stream:
             turn.stream = TurnStream(turn.future)
-        fields = _create_fields(lifetime=lifetime, **options)
-        command = {"type": "app_run", "reqId": turn.req_id, **fields, "prompt": prompt, "startedAt": started_at}
+        turn.command = {"type": "app_run", "reqId": turn.req_id, **fields, "prompt": prompt, "startedAt": started_at}
         if images:
-            command["images"] = images
+            turn.command["images"] = images
         if keep:
-            command["keep"] = True
+            turn.command["keep"] = True
+        return self._start_turn(turn)
+
+    def _start_turn(self, turn: _Turn) -> _Turn:
+        if self._closed:
+            raise ExocortexError("closed", "The client was closed")
         with self._lock:
+            if not self._reconnect and self._sock is None:
+                raise ExocortexError("disconnected", "Not connected to the Exocortex daemon")
+            turn.generation = -1  # not sent yet
             self._turns[turn.req_id] = turn
-        try:
-            self._write(command)
-        except ExocortexError:
-            with self._lock:
-                self._turns.pop(turn.req_id, None)
-            raise
+        # Not connected now: the reconnect sends it.
+        self._send_turn_now(turn)
         return turn
+
+    def _send_turn_now(self, turn: _Turn) -> bool:
+        """Send a turn's command on the current connection, once per connection: a turn sent on a
+        connection that dropped is sent again on the next one (the daemon never runs it twice)."""
+        with self._lock:
+            sock, generation = self._sock, self._generation
+            if sock is None or not self._connected.is_set() or turn.generation >= generation or turn.req_id not in self._turns:
+                return False
+            turn.generation = generation
+        data = (json.dumps(turn.command) + "\n").encode("utf-8")
+        with self._write_lock:
+            try:
+                sock.sendall(data)
+            except OSError:
+                return False  # the reconnect sends it again
+        return True
 
     def _settle(self, turn: _Turn, outcome: Union[TurnResult, Exception]) -> None:
         with self._lock:
@@ -622,17 +704,21 @@ class Client:
         with self._lock:
             turn = self._turns.get(req_id) if req_id else None
             request = self._requests.get(req_id) if req_id else None
-        if turn is not None and turn.generation == self._generation:
+        if turn is not None:
             if etype == "error":
-                return self._settle(turn, ExocortexError("daemon", event.get("message", "error")))
-            if etype == "conversation_created" and turn.conv_id is None:
-                conv = Conversation(self, event["app"], turn.run_tools)
+                message = event.get("message", "error")
+                code = "result_lost" if "sent before" in message else "daemon"
+                return self._settle(turn, ExocortexError(code, message))
+            if etype == "conversation_created":
                 with self._lock:
-                    self._conversations[conv.id] = conv
-                turn.conv_id = conv.id
+                    if event["convId"] not in self._conversations:
+                        self._conversations[event["convId"]] = Conversation(self, event["app"], turn.run_tools)
+                turn.conv_id = event["convId"]
                 return
             if etype == "turn_result":
                 return self._settle(turn, TurnResult.from_event(event))
+            if etype == "app_conversation_attached":
+                return  # a run sent again after a reconnect took its conversation back
         if request is not None:
             match, future = request
             if etype == "error":
@@ -678,7 +764,6 @@ class Client:
                     t.stream._push(StreamEvent("tool_result", id=event.get("toolCallId"), name=event.get("toolName"),
                                                output=event.get("output"), is_error=bool(event.get("isError"))))
 
-
     def _on_tool_call(self, event: Dict[str, Any]) -> None:
         conv_id, call_id, name = event["convId"], event["callId"], event.get("name", "")
         call = ToolCall(conv_id, call_id, name)
@@ -689,7 +774,7 @@ class Client:
                 self._calls[call_id] = entry
             conv = self._conversations.get(conv_id)
         if known is not None:
-            # Re-sent after a re-attach: answer again if it already finished, else keep running it.
+            # Re-sent after a reconnect: answer again if it already finished, else keep running it.
             if known["result"] is not None:
                 self._write_quietly({"type": "app_tool_result", "convId": conv_id, "callId": call_id, **known["result"]})
             return
@@ -702,7 +787,7 @@ class Client:
                 entry["result"] = result
             self._write_quietly({"type": "app_tool_result", "convId": conv_id, "callId": call_id, **result})
             # Keep the answer a while in case the daemon re-sends the call after a reconnect.
-            timer = threading.Timer(120, lambda: self._calls.pop(call_id, None) if self._calls.get(call_id) is entry else None)
+            timer = threading.Timer(600, lambda: self._calls.pop(call_id, None) if self._calls.get(call_id) is entry else None)
             timer.daemon = True
             timer.start()
 
@@ -721,7 +806,7 @@ class Client:
         except RuntimeError:  # pool shut down: the client is closing
             pass
 
-    def _end_conversation(self, conv_id: str, reason: str) -> None:
+    def _end_conversation(self, conv_id: str, reason: str, code: str = "ended", message: Optional[str] = None) -> None:
         with self._lock:
             conv = self._conversations.pop(conv_id, None)
             calls = [(k, v) for k, v in self._calls.items() if v["conv_id"] == conv_id]
@@ -734,7 +819,7 @@ class Client:
             entry["call"].reason = "ended"
             entry["call"].cancelled.set()
         for t in turns:
-            self._settle(t, ExocortexError("ended", f"Conversation {conv_id} has ended ({reason})"))
+            self._settle(t, ExocortexError(code, message or f"Conversation {conv_id} has ended ({reason})"))
 
     # ── connection loss ──
 
@@ -748,23 +833,14 @@ class Client:
     def _on_close(self, generation: int) -> None:
         if self._closed or generation != self._generation:
             return
-        lost = ExocortexError("disconnected", "Lost the connection to the Exocortex daemon")
-        self._fail_requests(lost)
-        with self._lock:
-            for call_id, entry in list(self._calls.items()):
-                if entry["result"] is None:
-                    entry["call"].reason = "disconnected"
-                    entry["call"].cancelled.set()
-                    self._calls.pop(call_id, None)
-            ephemeral = [c.id for c in self._conversations.values() if c.info.get("lifetime") == "ephemeral"]
-            orphans = [t for t in self._turns.values() if t.conv_id is None]
-        for conv_id in ephemeral:
-            self._end_conversation(conv_id, "owner_disconnected")
-        for t in orphans:
-            self._settle(t, lost)
+        self._connected.clear()
+        # Requests waiting on an answer are sent again once reconnected (request()); turns and
+        # running tool calls carry on: the reconnect sends the turns again, and the daemon re-sends
+        # the calls it still waits on, which get the answers kept for them.
+        self._fail_requests(ExocortexError("disconnected", "Lost the connection to the Exocortex daemon"))
         if not self._reconnect:
             self._closed = True
-            self._fail_all(lost)
+            self._fail_all(ExocortexError("disconnected", "Lost the connection to the Exocortex daemon"))
             return
         with self._lock:
             if self._reconnecting:
@@ -774,49 +850,96 @@ class Client:
 
     def _reconnect_loop(self) -> None:
         try:
-            deadline = time.monotonic() + self._reconnect_timeout
-            delay = 0.1
-            while not self._closed:
-                try:
-                    self._handshake()
-                    break
-                except ExocortexError as error:
-                    if error.code == "incompatible":
-                        self._closed = True
-                        return self._fail_all(error)
-                    if time.monotonic() + delay > deadline:
-                        self._closed = True
-                        return self._fail_all(ExocortexError(
-                            "disconnected", f"Could not reconnect to the Exocortex daemon within {self._reconnect_timeout} s"))
-                    time.sleep(delay)
-                    delay = min(delay * 2, 2.0)
-            if self._closed:
-                return
-            with self._lock:
-                conversations = list(self._conversations.values())
-            for conv in conversations:
-                try:
-                    event = self._attach_existing(conv)
-                except ExocortexError as error:
-                    if error.code == "disconnected":
-                        return  # the next close retries
-                    self._end_conversation(conv.id, str(error))
-                    continue
-                if (event.get("conversation") or {}).get("streaming"):
-                    continue
-                # The turn ended while we were away.
-                last = event.get("lastTurnResult")
+            while self._redial():
+                generation = self._generation
+                self._reclaim(generation)
                 with self._lock:
-                    turns = [t for t in self._turns.values() if t.conv_id == conv.id]
-                for t in turns:
-                    if last and last.get("turnId") == t.turn_id:
-                        self._settle(t, TurnResult.from_event(last))
-                    else:
-                        self._settle(t, ExocortexError("result_lost", f"The turn on {conv.id} ended while the client was "
-                                                       "disconnected, and the daemon did not report its result"))
+                    # Dropped again meanwhile: that close found this loop running, so it goes round again.
+                    if self._closed or (self._connected.is_set() and self._generation == generation):
+                        self._reconnecting = False
+                        return
         finally:
             with self._lock:
                 self._reconnecting = False
+
+    def _redial(self) -> bool:
+        """Handshake again with backoff; false when the client closed or gave up (failing everything)."""
+        deadline = time.monotonic() + self._reconnect_timeout
+        delay = 0.1
+        while not self._closed:
+            try:
+                self._handshake()
+                return True
+            except ExocortexError as error:
+                if error.code == "incompatible":
+                    self._closed = True
+                    self._fail_all(error)
+                    return False
+                if time.monotonic() + delay > deadline:
+                    self._closed = True
+                    self._fail_all(ExocortexError(
+                        "disconnected", f"Could not reconnect to the Exocortex daemon within {self._reconnect_timeout} s"))
+                    return False
+                time.sleep(delay * (0.75 + random.random() / 2))
+                delay = min(delay * 2, 2.0)
+        return False
+
+    def _reclaim(self, generation: int) -> None:
+        """After a reconnect: take the conversations back, then send again what was in flight."""
+        # A daemon with sessions never runs a prompt twice: what was in flight is sent again.
+        resend = bool(self.welcome.get("session"))
+        with self._lock:
+            conversations = list(self._conversations.values())
+        attached: Dict[str, Dict[str, Any]] = {}
+        for conv in conversations:
+            try:
+                attached[conv.id] = self._attach_existing(conv, retry=False)
+            except ExocortexError as error:
+                if error.code == "disconnected":
+                    return  # _reconnect_loop goes round again
+                if "not found" in str(error):
+                    self._lost(conv.id, rerun=resend)
+                else:
+                    self._end_conversation(conv.id, str(error))
+        with self._lock:
+            turns = [t for t in self._turns.values() if t.generation < generation]
+        if resend:
+            # The daemon answers a prompt it already has from its turn, and carries on with
+            # a run whose conversation it already has.
+            for t in turns:
+                self._send_turn_now(t)
+            return
+        # An older daemon: what never went out goes now; what did is settled from the attach answers.
+        for t in turns:
+            if t.generation == -1:
+                self._send_turn_now(t)
+                continue
+            event = attached.get(t.conv_id or "")
+            if event is None:
+                self._settle(t, ExocortexError("lost", "The connection dropped before the daemon took this run"))
+                continue
+            if (event.get("conversation") or {}).get("streaming"):
+                continue  # its result comes as the owner's copy
+            last = event.get("lastTurnResult")
+            if last and last.get("turnId") == t.turn_id:
+                self._settle(t, TurnResult.from_event(last))
+            else:
+                self._settle(t, ExocortexError("result_lost", f"The turn on {t.conv_id} ended while the client was "
+                                               "disconnected, and the daemon did not report its result"))
+
+    def _lost(self, conv_id: str, rerun: bool = True) -> None:
+        """The daemon no longer has a conversation of ours: a crash, or we were away longer than the
+        session's reconnect grace. A one-shot run starts over on a new conversation (``rerun_lost``)."""
+        with self._lock:
+            runs = [t for t in self._turns.values() if t.conv_id == conv_id and t.command.get("type") == "app_run"]
+            if self._rerun_lost and rerun:
+                for t in runs:
+                    t.conv_id = _new_conv_id()
+                    t.command = {**t.command, "convId": t.conv_id}
+                    t.generation = -1  # not sent on any connection: sent again below
+        message = (f"Conversation {conv_id} is gone from the Exocortex daemon (it crashed, or the client was away "
+                   "longer than its reconnect grace)")
+        self._end_conversation(conv_id, "lost", code="lost", message=message)
 
     def _fail_all(self, error: Exception) -> None:
         self._fail_requests(error)
@@ -829,11 +952,13 @@ class Client:
         for entry in calls:
             entry["call"].reason = "closed"
             entry["call"].cancelled.set()
+        self._connected.set()  # wakes requests waiting for a reconnect: they see the client closed
 
 
 def connect(app: str, **options: Any) -> Client:
     """Connect to the user's daemon as ``app``. Options: version, socket, reconnect,
-    reconnect_timeout, welcome_timeout, request_timeout, tool_workers."""
+    reconnect_timeout (s, default 300), reconnect_grace_ms, session, rerun_lost, welcome_timeout,
+    request_timeout, tool_workers."""
     client = Client(app, **options)
     try:
         client._open()
@@ -845,8 +970,8 @@ def connect(app: str, **options: Any) -> Client:
 
 def run(prompt: str, app: str, *, socket: Optional[str] = None, version: Optional[str] = None,
         **options: Any) -> TurnResult:
-    """One-shot from anywhere: connect, run (ephemeral by default), close."""
-    with connect(app, socket=socket, version=version, reconnect=False) as client:
+    """One-shot from anywhere: connect, run (ephemeral by default), close. Rides out a daemon restart."""
+    with connect(app, socket=socket, version=version) as client:
         return client.run(prompt, **options)
 
 

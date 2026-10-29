@@ -41,6 +41,10 @@ export interface AssistantTurnEnd {
   suspended?: boolean;
   /** A /compact turn, which asks the model nothing. */
   manualCompaction: boolean;
+  /** Some of it ran on Claude API credits. */
+  billing?: "api-credits";
+  /** It ended because no route it may use could run it, and it may not wait (UsageLimitedError). */
+  limited?: { resetAt: number | null };
 }
 
 type TurnEndedListener = (end: AssistantTurnEnd) => void;

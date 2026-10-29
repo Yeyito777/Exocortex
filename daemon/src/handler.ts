@@ -95,7 +95,7 @@ import { cancelSuspendedTurn } from "./suspended-turns";
 import { runChronoCommand } from "./chrono-commands";
 import { inlineLongSleepStartedAt } from "@exocortex/shared/chrono";
 import { configureClaudeCodeSessions } from "./providers/anthropic/session";
-import { abandonAppCreate, appConversationInfo, appTitleFromPrompt, attachAppConversation, checkAppToolsForModel, configureAppApi, dropTurnAwait, endAppConversation, ensureAppFolder, listAppConversations, parseAppCreate, registerAppCreate, registerTurnAwait, setAppConversationOwner, shutdownAppConversations, welcomeAppClient, type AppCreateSpec } from "./app-api";
+import { abandonAppCreate, appConversationInfo, appConversationOwner, appTitleFromPrompt, attachAppConversation, checkAppToolsForModel, configureAppApi, dropTurnAwait, endAppConversation, endAppSession, ensureAppFolder, finishAppRun, holdAppCommandUntilReady, listAppConversations, markAppApiReady, parseAppCreate, registerAppCreate, registerTurnAwait, setAppConversationOwner, shutdownAppConversations, welcomeAppClient, type AppCreateSpec } from "./app-api";
 import { getAppRecord, isAppConversation, isEphemeralConversation, isHiddenConversation, touchAppConversation } from "./app-registry";
 import { appToolBroker } from "./app-tools";
 import { addClaudeAccount, claudeLoginCommand, removeClaudeAccount } from "./providers/anthropic/accounts";
@@ -178,7 +178,8 @@ export function cliDelegationAutomation(
 
 export function createHandler(server: DaemonServer, options: HandlerOptions = {}): DaemonCommandHandler {
   const lifecycle = options;
-  const stopAppApi = configureAppApi(server);
+  // App clients' commands wait for startup recovery like queued messages do (startQueueDelivery).
+  const stopAppApi = configureAppApi(server, { holdUntilReady: options.holdQueueDeliveryUntilReady === true });
   let videoPlayback: VideoPlayback | null = null;
   const videos = () => videoPlayback ??= new VideoPlayback({
     sendTo: (client, event) => server.sendTo(client, event),
@@ -1630,6 +1631,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   // waits only behind an earlier one that is still warming.
   const startingConversationCommands = new Map<string, Promise<void>>();
   const handleCommand = async function handleCommand(client: ConnectedClient, cmd: Command): Promise<void> {
+    // An app client reconnecting while the daemon starts waits until replays have started (app-api.ts).
+    if (holdAppCommandUntilReady(client, cmd.type, () => { void handleCommand(client, cmd); })) return;
     const convId = "convId" in cmd && typeof cmd.convId === "string" ? cmd.convId : null;
     // Any command on a temporary app conversation keeps it from expiring.
     if (convId !== null && isAppConversation(convId)) touchAppConversation(convId);
@@ -2662,6 +2665,16 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         noteUserWroteFrom(client, cmd.convId);
         // App clients may leave the prompt's time to the daemon's clock.
         if (typeof cmd.startedAt !== "number" || !Number.isFinite(cmd.startedAt)) cmd.startedAt = Date.now();
+        // An app client resending a prompt after a reconnect (same startedAt): wait for that turn, never run it twice.
+        if (cmd.awaitResult === true && isAppConversation(cmd.convId)
+            && convStore.hasMessageMetadata(cmd.convId, { startedAt: cmd.startedAt }, "user")) {
+          const turnId = String(cmd.startedAt);
+          const last = getAppRecord(cmd.convId)?.lastTurnResult;
+          if (last?.turnId === turnId) server.sendTo(client, { ...last, ...(cmd.reqId ? { reqId: cmd.reqId } : {}) });
+          else if (convStore.isStreaming(cmd.convId)) registerTurnAwait(client, cmd.reqId, cmd.convId, turnId);
+          else server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "That prompt was sent before and its turn's result is no longer known" });
+          break;
+        }
         // Ephemeral app conversations keep their images in memory only.
         if (!isEphemeralConversation(cmd.convId)) rememberSentImages(cmd.images);
         if (isAppConversation(cmd.convId)) {
@@ -4290,6 +4303,11 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         break;
       }
 
+      case "end_app_session": {
+        await endAppSession(client, cmd);
+        break;
+      }
+
       case "app_tool_result": {
         // Late, duplicate and unknown results are ignored.
         appToolBroker.resolve(cmd.convId, cmd.callId, cmd.output, cmd.isError);
@@ -4315,6 +4333,22 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         while (!cmd.convId && (convStore.hasConversation(id) || convStore.hasDeletedConversation(id))) id = convStore.generateId();
         const lifetime = cmd.lifetime ?? "ephemeral";
         const startedAt = typeof cmd.startedAt === "number" && Number.isFinite(cmd.startedAt) ? cmd.startedAt : Date.now();
+        // The same app_run sent again after a reconnect (its own convId): carry on with it instead of creating it twice.
+        const resumedRun = cmd.convId !== undefined ? getAppRecord(cmd.convId) : undefined;
+        if (resumedRun && convStore.hasConversation(id)) {
+          if (resumedRun.app !== (cmd.app ?? client.app?.name)) {
+            fail(`Conversation ${id} belongs to app ${resumedRun.app}`);
+            break;
+          }
+          // Answered on this reqId: an error ends the run's request, a success is ignored by clients.
+          attachAppConversation(client, { type: "attach_app_conversation", reqId: cmd.reqId, convId: id });
+          if (appConversationOwner(id) !== client) break;
+          await handleCommand(client, {
+            type: "send_message", reqId: cmd.reqId, convId: id, text: cmd.prompt, startedAt,
+            ...(cmd.images?.length ? { images: cmd.images } : {}), awaitResult: true,
+          });
+          break;
+        }
         // Validation answers `error` with this reqId before anything is created.
         await handleCommand(client, {
           type: "new_conversation",
@@ -4330,8 +4364,12 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           ...(cmd.model !== undefined ? { model: cmd.model } : {}),
           ...(cmd.effort !== undefined ? { effort: cmd.effort } : {}),
           ...(cmd.cwd !== undefined ? { cwd: cmd.cwd } : {}),
+          ...(cmd.route !== undefined ? { route: cmd.route } : {}),
         });
         if (!isAppConversation(id) || !convStore.hasConversation(id)) break;
+        // Ends with its turn, also one the next daemon replays after a restart.
+        const runRecord = getAppRecord(id);
+        if (runRecord && lifetime === "ephemeral" && cmd.keep !== true) runRecord.endAfterTurn = true;
         try {
           await handleCommand(client, {
             type: "send_message",
@@ -4343,7 +4381,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             awaitResult: true,
           });
         } finally {
-          if (lifetime === "ephemeral" && cmd.keep !== true) await endAppConversation(id, "run_finished");
+          if (lifetime === "ephemeral" && cmd.keep !== true) await finishAppRun(id);
         }
         break;
       }
@@ -4380,6 +4418,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     backgroundTaskComplete: enqueueBackgroundTaskCompletion,
     providerProxies,
     startQueueDelivery: () => {
+      markAppApiReady();
       if (queueDeliveryReady) return;
       queueDeliveryReady = true;
       scheduleQueuePump(0);

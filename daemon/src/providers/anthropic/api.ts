@@ -44,6 +44,8 @@ import { isProviderProxied, onProxiedClaudeApiCredits, onProxiedClaudeMove, prov
 import { claudeProcessPrompt, createAppToolServer, createHostToolServer, hostToolDefs, type HostToolBinding } from "./host-tools";
 import type { ClaudeCodeAppSurface } from "../types";
 import { appToolCallView } from "../../app-tools";
+import { ephemeralConversationsSurviveRestart, isEphemeralConversation } from "../../app-registry";
+import type { ConversationRouteNotice } from "../../protocol";
 import { buildClaudeHelperPrompt, buildClaudeUserContent, planClaudePrompt, trailingUserMessages, type ClaudePromptPlan } from "./prompt";
 import { ClaudeRelay, reconnectRelays, relaysEnabled } from "./relay-client";
 import type { RelayMeta } from "./relay-protocol";
@@ -284,6 +286,11 @@ function accountStreamState(callbacks: StreamCallbacks, cwd: string, account: st
   return state;
 }
 
+/** The structured twin of apiCreditSwitchNotice's text, for programs (docs/app-api.md). */
+function creditRouteNotice(account: string, creditKey: string | null): ConversationRouteNotice {
+  return creditKey ? { kind: "api_credits", account, creditKey } : { kind: "subscription", account };
+}
+
 export async function streamMessage(
   messages: ApiMessage[],
   model: ModelId,
@@ -313,12 +320,12 @@ export async function streamMessage(
     log("info", `anthropic: ${convId ?? "a helper request"} runs on API credits "${apiCredit.label}" (every Claude subscription account is at a usage limit; configuration from account ${account})`);
   } else if (route.movedFrom) {
     log("info", `anthropic: conversation ${convId ?? "?"} moves from Claude account ${route.movedFrom} to ${account} (${route.reason}: ${route.detail})`);
-    callbacks.onProviderNotice?.(accountSwitchNotice(route));
+    callbacks.onProviderNotice?.(accountSwitchNotice(route), { kind: "account", account, movedFrom: route.movedFrom });
   } else if (multipleClaudeAccounts()) {
     log("info", `anthropic: Claude account ${account} for ${convId ?? "a helper request"} (${route.reason}: ${route.detail})`);
   }
   const creditNotice = apiCreditSwitchNotice(convId, route);
-  if (creditNotice) callbacks.onProviderNotice?.(creditNotice);
+  if (creditNotice) callbacks.onProviderNotice?.(creditNotice, creditRouteNotice(account, route.apiCredit?.label ?? null));
   if (apiCredit) callbacks.onBilling?.("api-credits");
   const endTurn = apiCredit ? beginApiCreditTurn(apiCredit) : beginAccountTurn(account, convId);
   if (convId && !apiCredit) touchConversationAccount(convId, account);
@@ -326,7 +333,7 @@ export async function streamMessage(
   // Under /proxy the remote picks the account per request; announce its moves as for local ones.
   const stopMoveNotices = convId && isProviderProxied("anthropic") ? onProxiedClaudeMove(convId, (move) => {
     log("info", `anthropic: proxied conversation ${convId} moved from Claude account ${move.from} to ${move.to} on the /proxy remote (${move.detail})`);
-    callbacks.onProviderNotice?.(accountSwitchNotice({ account: move.to, movedFrom: move.from, reason: "new", detail: move.detail }));
+    callbacks.onProviderNotice?.(accountSwitchNotice({ account: move.to, movedFrom: move.from, reason: "new", detail: move.detail }), { kind: "account", account: move.to, movedFrom: move.from });
   }) : null;
   // Under /proxy the remote may bill the turn to its API credits: shown as for local ones.
   let remoteCredits: string | null = null;
@@ -336,14 +343,14 @@ export async function streamMessage(
     log("info", `anthropic: proxied conversation ${convId} runs on the /proxy remote's API credits "${label}"`);
     callbacks.onBilling?.("api-credits");
     const notice = apiCreditSwitchNotice(convId, { account, reason: "new", detail: "", apiCredit: { id: label, label, renewsOnDay: null } });
-    if (notice) callbacks.onProviderNotice?.(notice);
+    if (notice) callbacks.onProviderNotice?.(notice, creditRouteNotice(account, label));
   }) : null;
   try {
     const result = await runStreamMessage(messages, model, callbacks, options, cwd, plan, convId, live, account, apiCredit);
     // A proxied turn the remote served on a subscription again.
     if (convId && isProviderProxied("anthropic") && remoteCredits === null) {
       const notice = apiCreditSwitchNotice(convId, { ...route, apiCredit: null });
-      if (notice) callbacks.onProviderNotice?.(notice);
+      if (notice) callbacks.onProviderNotice?.(notice, creditRouteNotice(account, null));
     }
     return result;
   } catch (error) {
@@ -429,9 +436,9 @@ async function runStreamMessage(
     const resumeFrom = resumePlan.resume ? prunedSessionAlias(resumePlan.resume, account) : null;
     if (resumeFrom && resumePlan.resume) log("info", `anthropic: Claude Code session ${resumePlan.resume.sessionId} was pruned; resuming ${resumeFrom}, which holds the same point`);
     const processPlan: ClaudePromptPlan = resumeFrom && resumePlan.resume ? { ...resumePlan, resume: { ...resumePlan.resume, sessionId: resumeFrom } } : resumePlan;
-    // A conversation's process runs under a relay, so it can outlive this daemon
-    // (not an ephemeral app conversation's, which ends with it).
-    const meta: RelayMeta | null = convId && relaysEnabled() && !app?.ephemeral ? {
+    // A conversation's process runs under a relay, so it can outlive this daemon. An
+    // ephemeral app conversation's does only while restarts hand those over (app-api.ts).
+    const meta: RelayMeta | null = convId && relaysEnabled() && (!app?.ephemeral || ephemeralConversationsSurviveRestart()) ? {
       convId,
       key,
       cwd,
@@ -454,9 +461,12 @@ async function runStreamMessage(
     session.rememberAgentTitles(messages);
     return session;
   };
-  log("info", `anthropic: Claude Code turn (model=${model}, effort=${options.effort ?? "default"}, cwd=${cwd}, account=${account}${apiCredit ? `, api-credits=${apiCredit.label}` : ""}, resume=${plan.resume?.sessionId ?? "none"}, pending=${plan.pending.length})`);
+  // An ephemeral app conversation's sessions live only in its process (persistSession: false):
+  // a new process starts from the whole history instead of a session file that was never written.
+  const startPlan: ClaudePromptPlan = app?.ephemeral && agentPlan.resume ? { resume: null, pending: messages } : agentPlan;
+  log("info", `anthropic: Claude Code turn (model=${model}, effort=${options.effort ?? "default"}, cwd=${cwd}, account=${account}${apiCredit ? `, api-credits=${apiCredit.label}` : ""}, resume=${startPlan.resume?.sessionId ?? "none"}, pending=${startPlan.pending.length})`);
   const state = accountStreamState(callbacks, cwd, account, apiCredit, randomUUID(), appConvId);
-  const session = start(plan);
+  const session = start(startPlan);
   try {
     return await session.run(state, buildClaudeUserContent(plan.pending), options.toolExecutor, signal, trailingUserMessages(plan.pending), options.queuedInput);
   } catch (error) {
@@ -464,9 +474,9 @@ async function runStreamMessage(
     // A missing/unforkable session (deleted, moved, or rejected) should not
     // strand the conversation: replay the whole history into a new session.
     // A network failure is not that: the same session resumes once the network is back.
-    if (!plan.resume || signal?.aborted || hasOutput(state) || classifyNetworkFailure(error) || isUsageLimitError(error)) throw error;
+    if (!startPlan.resume || signal?.aborted || hasOutput(state) || classifyNetworkFailure(error) || isUsageLimitError(error)) throw error;
     if (apiCredit && classifyApiCreditError(error)) throw error;
-    log("warn", `anthropic: resuming Claude Code session ${plan.resume.sessionId} failed (${error instanceof Error ? error.message : error}); starting a new session`);
+    log("warn", `anthropic: resuming Claude Code session ${startPlan.resume.sessionId} failed (${error instanceof Error ? error.message : error}); starting a new session`);
     session.close("resuming its session failed");
     const fresh: ClaudePromptPlan = { resume: null, pending: messages };
     stderr = "";
@@ -519,6 +529,8 @@ export async function adoptClaudeCodeProcesses(hasConversation: (convId: string)
       });
     }, {
       relay,
+      // An ephemeral app conversation's process holds its only copy of the session.
+      ...(isEphemeralConversation(meta.convId) ? { keepAlive: true } : {}),
       system: meta.app
         ? `${claudeProcessPrompt(meta.systemAppend ?? "", meta.hostTools)}\u0000${JSON.stringify([meta.app.base, meta.app.tools ?? null, meta.app.appTools])}`
         : claudeProcessPrompt(meta.systemAppend ?? "", meta.hostTools),

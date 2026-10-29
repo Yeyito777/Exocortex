@@ -17,6 +17,10 @@
  *   --refuse-after-restart-ms N
  *                         after a restart, drop new connections this long (default 0), so a
  *                         replayed turn ends before its owner is back
+ *   --grace-ms N          default reconnect grace of a session (default 120000)
+ *   --no-sessions         behave like a daemon from before sessions: no session in app_welcome,
+ *                         an ephemeral conversation ends with its connection and with a restart,
+ *                         a prompt sent again runs again
  *
  * The model's reply depends on the prompt:
  *   tool NAME JSON        call app tool NAME with input JSON; reply "NAME -> <output>"
@@ -24,12 +28,15 @@
  *   hang                  stream "working" and wait for an abort
  *   fail                  end the turn with stopReason "error"
  *   count                 reply "turns: N" (user messages so far, this one included)
- *   restart REST          stream "before", restart the daemon (connections close,
- *                         ephemeral conversations end), replay the turn as REST
+ *   restart REST          stream "before", restart the daemon gracefully (connections close;
+ *                         sessions and conversations, ephemeral ones too, carry on), replay
+ *                         the turn as REST
  *   anything else         reply "echo: <prompt>"
  *
- * Test-only commands: `fake_restart {downMs?}`, `fake_exit`, `fake_state` (answers
- * `fake_state` with every conversation and the commands received).
+ * Test-only commands: `fake_restart {downMs?, crash?}` (a crash loses the sessions and
+ * ephemeral conversations), `fake_drop` (closes every connection, the daemon stays up),
+ * `fake_exit`, `fake_state` (answers `fake_state` with every conversation and the
+ * commands received).
  */
 import { createServer, type Server, type Socket } from "node:net";
 import { existsSync, unlinkSync } from "node:fs";
@@ -47,6 +54,8 @@ const ownerWaitMs = Number(opt("--owner-wait-ms") ?? 3000);
 const ownerResults = !argv.includes("--no-owner-results");
 const chunkDelayMs = Number(opt("--chunk-delay-ms") ?? 5);
 const refuseAfterRestartMs = Number(opt("--refuse-after-restart-ms") ?? 0);
+const defaultGraceMs = Number(opt("--grace-ms") ?? 120_000);
+const sessionsEnabled = !argv.includes("--no-sessions");
 let refuseUntil = 0;
 
 const APP_NAME = /^[a-z0-9][a-z0-9-]{0,39}$/;
@@ -56,15 +65,18 @@ const LIFETIMES = ["saved", "temporary", "ephemeral"];
 
 type Json = Record<string, any>;
 
-interface Conn { socket: Socket; app: string | null; id: number }
+interface Conn { socket: Socket; app: string | null; id: number; session: Session | null }
+
+/** What owns conversations: a client's session, which a reconnecting client takes back by its token. */
+interface Session { id: string; app: string; conn: Conn | null; graceMs: number; timer: ReturnType<typeof setTimeout> | null; pending: Json[] }
 
 interface PendingCall { callId: string; name: string; input: Json; resolve: (r: { output: string; isError: boolean }) => void; timer?: ReturnType<typeof setTimeout> }
 
 interface Turn {
   turnId: string;
   prompt: string;
-  awaiter: Conn | null;
-  reqId: string | null;
+  /** Connections awaiting it (the sender, and any that sent the same prompt again). */
+  awaiters: { conn: Conn; reqId: string | null }[];
   startedAt: number;
   aborted: boolean;
   wake: (() => void) | null;
@@ -84,13 +96,16 @@ interface Conv {
   systemBase: string;
   builtinTools: string[] | "all";
   tools: Json[];
-  owner: Conn | null;
+  route?: Json;
+  owner: Session | null;
   subscribers: Set<Conn>;
+  /** startedAt of every prompt it was sent. */
+  prompts: Set<number>;
   createdAt: number;
   lastActivityAt: number;
   userMessages: number;
   turn: Turn | null;
-  replay: { prompt: string; turnId: string; startedAt: number } | null;
+  replay: { prompt: string; turnId: string; startedAt: number; awaiters?: Turn["awaiters"] } | null;
   lastTurnResult: Json | null;
   keep: boolean;
   runFinished?: boolean;
@@ -99,6 +114,7 @@ interface Conv {
 
 const conversations = new Map<string, Conv>();
 const connections = new Set<Conn>();
+const sessions = new Map<string, Session>();
 const received: Json[] = [];
 let connCounter = 0;
 let idCounter = 0;
@@ -112,10 +128,48 @@ function write(conn: Conn | null, event: Json): void {
   conn.socket.write(JSON.stringify(event) + "\n");
 }
 
+function ownerConn(conv: Conv): Conn | null {
+  const conn = conv.owner?.conn ?? null;
+  return conn && !conn.socket.destroyed ? conn : null;
+}
+
 function toSubscribers(conv: Conv, event: Json): void {
   const targets = new Set(conv.subscribers);
-  if (conv.owner) targets.add(conv.owner);
+  const owner = ownerConn(conv);
+  if (owner) targets.add(owner);
   for (const conn of targets) write(conn, event);
+}
+
+/** To the owner, or kept for its session while it is away. */
+function toOwner(conv: Conv, event: Json): void {
+  const owner = ownerConn(conv);
+  if (owner) write(owner, event);
+  else if (conv.owner && sessionsEnabled) conv.owner.pending.push(event);
+}
+
+function sessionOf(conn: Conn): Session {
+  if (conn.session) return conn.session;
+  const session: Session = { id: `anon-${conn.id}`, app: conn.app ?? "", conn, graceMs: 0, timer: null, pending: [] };
+  conn.session = session;
+  sessions.set(session.id, session);
+  return session;
+}
+
+function owned(session: Session): Conv[] {
+  return [...conversations.values()].filter(conv => conv.owner === session);
+}
+
+function armGrace(session: Session): void {
+  if (session.timer) clearTimeout(session.timer);
+  session.timer = setTimeout(() => {
+    session.timer = null;
+    if (session.conn) return;
+    sessions.delete(session.id);
+    for (const conv of owned(session)) {
+      conv.owner = null;
+      if (conv.lifetime === "ephemeral") deleteConv(conv, "owner_disconnected");
+    }
+  }, session.graceMs);
 }
 
 function info(conv: Conv): Json {
@@ -124,10 +178,11 @@ function info(conv: Conv): Json {
     provider: conv.provider, model: conv.model, effort: conv.effort,
     createdAt: conv.createdAt, lastActivityAt: conv.lastActivityAt,
     ...(conv.lifetime === "temporary" ? { idleTtlMs: conv.idleTtlMs, expiresAt: conv.lastActivityAt + (conv.idleTtlMs ?? 3_600_000) } : {}),
-    ownerConnected: Boolean(conv.owner), streaming: Boolean(conv.turn || conv.replay),
+    ownerConnected: Boolean(ownerConn(conv)), streaming: Boolean(conv.turn || conv.replay),
     ...(conv.cwd ? { cwd: conv.cwd } : { workspace: `/tmp/fake-workspace/${conv.convId}` }),
     systemBase: conv.systemBase, builtinTools: conv.builtinTools,
     appTools: conv.tools.map(tool => tool.name),
+    ...(conv.route ? { route: conv.route } : {}),
   };
 }
 
@@ -176,7 +231,8 @@ function create(conn: Conn, cmd: Json, defaultLifetime: string): Conv | string {
     idleTtlMs: lifetime === "temporary" ? cmd.idleTtlMs ?? 3_600_000 : undefined,
     cwd: cmd.cwd, systemBase: cmd.system?.base ?? "none",
     builtinTools: cmd.tools?.builtin ?? [], tools: cmd.tools?.app ?? [],
-    owner: conn, subscribers: new Set(), createdAt: now, lastActivityAt: now,
+    ...(cmd.route ? { route: cmd.route } : {}),
+    owner: sessionOf(conn), subscribers: new Set(), prompts: new Set(), createdAt: now, lastActivityAt: now,
     userMessages: 0, turn: null, replay: null, lastTurnResult: null, keep: Boolean(cmd.keep), ownerWaiters: [],
   };
   conversations.set(conv.convId, conv);
@@ -188,7 +244,7 @@ function created(conv: Conv, reqId: string | undefined): Json {
 }
 
 function waitForOwner(conv: Conv, turn: Turn): Promise<boolean> {
-  if (conv.owner) return Promise.resolve(true);
+  if (ownerConn(conv)) return Promise.resolve(true);
   return new Promise(resolve => {
     const timer = setTimeout(() => { conv.ownerWaiters = conv.ownerWaiters.filter(w => w !== waiter); resolve(false); }, ownerWaitMs);
     const waiter = () => { clearTimeout(timer); resolve(!turn.aborted); };
@@ -209,10 +265,10 @@ async function callAppTool(conv: Conv, turn: Turn, name: string, input: Json): P
       turn.calls.set(callId, call);
       if (def.timeoutMs) call.timer = setTimeout(() => {
         if (!turn.calls.delete(callId)) return;
-        write(conv.owner, { type: "app_tool_cancel", convId: conv.convId, callId, reason: "timeout" });
+        write(ownerConn(conv), { type: "app_tool_cancel", convId: conv.convId, callId, reason: "timeout" });
         resolve({ output: `${name} timed out`, isError: true });
       }, def.timeoutMs);
-      write(conv.owner, { type: "app_tool_call", convId: conv.convId, callId, name, input });
+      write(ownerConn(conv), { type: "app_tool_call", convId: conv.convId, callId, name, input });
     });
   }
   toSubscribers(conv, { type: "tool_result", convId: conv.convId, toolCallId: callId, toolName: name, output: result.output, isError: result.isError });
@@ -258,10 +314,11 @@ async function model(conv: Conv, turn: Turn, prompt: string): Promise<{ text: st
   return { text, stopReason: "end_turn" };
 }
 
-async function runTurn(conv: Conv, prompt: string, awaiter: Conn | null, reqId: string | null, startedAt: number, turnId: string, replayed: boolean): Promise<void> {
-  const turn: Turn = { turnId, prompt, awaiter, reqId, startedAt, aborted: false, wake: null, calls: new Map() };
+async function runTurn(conv: Conv, prompt: string, awaiter: Conn | null, reqId: string | null, startedAt: number, turnId: string, replayed: boolean, awaiters: Turn["awaiters"] = []): Promise<void> {
+  const turn: Turn = { turnId, prompt, awaiters: [...awaiters, ...(awaiter ? [{ conn: awaiter, reqId }] : [])], startedAt, aborted: false, wake: null, calls: new Map() };
   conv.turn = turn;
   if (!replayed) {
+    conv.prompts.add(startedAt);
     conv.userMessages++;
     toSubscribers(conv, { type: "user_message", convId: conv.convId, text: prompt, startedAt });
   }
@@ -269,7 +326,7 @@ async function runTurn(conv: Conv, prompt: string, awaiter: Conn | null, reqId: 
   let outcome: { text: string; stopReason: string; error?: string };
   try { outcome = await model(conv, turn, prompt); }
   catch (error) {
-    if ((error as Error).message === "restart") { conv.turn = null; void restart(400); return; }
+    if ((error as Error).message === "restart") { conv.turn = null; void restart(400, false); return; }
     outcome = { text: "", stopReason: "error", error: String(error) };
   }
   if (conv.turn !== turn) return; // deleted or restarted meanwhile
@@ -288,8 +345,10 @@ async function runTurn(conv: Conv, prompt: string, awaiter: Conn | null, reqId: 
     usage: { outputTokens: outcome.text.length, durationMs: Date.now() - startedAt },
   };
   conv.lastTurnResult = result;
-  if (turn.awaiter && !turn.awaiter.socket.destroyed) write(turn.awaiter, { ...result, reqId: turn.reqId });
-  if (ownerResults && conv.owner && conv.owner !== turn.awaiter) write(conv.owner, result);
+  for (const { conn, reqId } of turn.awaiters) if (!conn.socket.destroyed) write(conn, { ...result, reqId });
+  const owner = ownerConn(conv);
+  if (ownerResults && !(owner && turn.awaiters.some(entry => entry.conn === owner))) toOwner(conv, result);
+  if (conv.lifetime === "ephemeral" && conv.runFinished && !conv.keep && conversations.has(conv.convId)) deleteConv(conv, "run_finished");
 }
 
 function abortTurn(conv: Conv, reason: "aborted" | "ended"): void {
@@ -298,7 +357,7 @@ function abortTurn(conv: Conv, reason: "aborted" | "ended"): void {
   turn.aborted = true;
   for (const call of turn.calls.values()) {
     if (call.timer) clearTimeout(call.timer);
-    write(conv.owner, { type: "app_tool_cancel", convId: conv.convId, callId: call.callId, reason });
+    write(ownerConn(conv), { type: "app_tool_cancel", convId: conv.convId, callId: call.callId, reason });
     call.resolve({ output: "interrupted", isError: true });
   }
   turn.calls.clear();
@@ -312,12 +371,14 @@ function deleteConv(conv: Conv, reason: string, reqId?: string, answer?: Conn): 
     abortTurn(conv, "ended");
     conv.turn = null;
     const result = { type: "turn_result", convId: conv.convId, turnId: turn.turnId, text: "", stopReason: "aborted" };
-    if (turn.awaiter) write(turn.awaiter, { ...result, reqId: turn.reqId });
+    for (const entry of turn.awaiters) write(entry.conn, { ...result, reqId: entry.reqId });
   }
   conversations.delete(conv.convId);
   const event = { type: "conversation_deleted", convId: conv.convId, reason };
   const targets = new Set(conv.subscribers);
-  if (conv.owner) targets.add(conv.owner);
+  const owner = ownerConn(conv);
+  if (owner) targets.add(owner);
+  else if (conv.owner && sessionsEnabled) conv.owner.pending.push(event);
   if (answer) targets.delete(answer);
   for (const conn of targets) write(conn, event);
   if (answer) write(answer, { ...event, reqId });
@@ -326,11 +387,33 @@ function deleteConv(conv: Conv, reason: string, reqId?: string, answer?: Conn): 
 function sendMessage(conn: Conn, conv: Conv, text: string, reqId: string | null, startedAt: number, awaited: boolean): void {
   // Like the daemon: a turn's identity is its prompt's startedAt.
   const turnId = String(startedAt);
-  void runTurn(conv, text, awaited ? conn : null, reqId, startedAt, turnId, false).then(() => {
-    if (conv.lifetime === "ephemeral" && conv.runFinished && !conv.keep && conversations.has(conv.convId) && !conv.turn && !conv.replay) {
-      deleteConv(conv, "run_finished");
-    }
-  });
+  // The same prompt sent again after a reconnect: wait for its turn, never run it twice.
+  if (awaited && sessionsEnabled && conv.prompts.has(startedAt)) {
+    if (conv.lastTurnResult?.turnId === turnId) return write(conn, { ...conv.lastTurnResult, reqId });
+    if (conv.turn?.turnId === turnId) { conv.turn.awaiters.push({ conn, reqId }); return; }
+    if (conv.replay?.turnId === turnId) { (conv.replay.awaiters ??= []).push({ conn, reqId }); return; }
+    return write(conn, { type: "error", reqId, convId: conv.convId, message: "That prompt was sent before and its turn's result is no longer known" });
+  }
+  if (conv.turn || conv.replay) return write(conn, { type: "error", reqId, convId: conv.convId, message: "Already streaming" });
+  void runTurn(conv, text, awaited ? conn : null, reqId, startedAt, turnId, false);
+}
+
+function attach(conn: Conn, conv: Conv, reqId: string | undefined, tools?: Json[]): boolean {
+  const session = sessionOf(conn);
+  if (conv.lifetime === "ephemeral" && conv.owner && conv.owner !== session) {
+    write(conn, { type: "error", reqId, convId: conv.convId, message: "An ephemeral conversation belongs to the session that created it" });
+    return false;
+  }
+  if (tools !== undefined) {
+    const toolError = validateAppTools(tools);
+    if (toolError) { write(conn, { type: "error", reqId, convId: conv.convId, message: toolError }); return false; }
+    conv.tools = tools;
+  }
+  conv.owner = session;
+  write(conn, { type: "app_conversation_attached", reqId, convId: conv.convId, conversation: info(conv), ...(ownerResults ? { lastTurnResult: conv.lastTurnResult } : {}) });
+  for (const waiter of conv.ownerWaiters.splice(0)) waiter();
+  for (const call of conv.turn?.calls.values() ?? []) write(conn, { type: "app_tool_call", convId: conv.convId, callId: call.callId, name: call.name, input: call.input });
+  return true;
 }
 
 function handle(conn: Conn, cmd: Json): void {
@@ -338,7 +421,8 @@ function handle(conn: Conn, cmd: Json): void {
   const reqId = cmd.reqId;
   const error = (message: string, convId?: string) => write(conn, { type: "error", reqId, ...(convId ? { convId } : {}), message });
   if (cmd.type === "fake_exit") process.exit(0);
-  if (cmd.type === "fake_restart") { write(conn, { type: "ack", reqId }); void restart(cmd.downMs ?? 300); return; }
+  if (cmd.type === "fake_restart") { write(conn, { type: "ack", reqId }); void restart(cmd.downMs ?? 300, Boolean(cmd.crash)); return; }
+  if (cmd.type === "fake_drop") { for (const other of [...connections]) other.socket.destroy(); return; }
   if (cmd.type === "fake_state") {
     write(conn, { type: "fake_state", reqId, conversations: [...conversations.values()].map(info), received });
     return;
@@ -348,8 +432,30 @@ function handle(conn: Conn, cmd: Json): void {
     if (!APP_NAME.test(cmd.app.name ?? "")) return error(`app.name: invalid app name ${JSON.stringify(cmd.app.name)}`);
     conn.app = cmd.app.name;
     if (noWelcome) return;
-    write(conn, { type: "app_welcome", reqId, appApiVersion: apiVersion, app: conn.app, instance: "fake", pid: process.pid });
+    if (!sessionsEnabled) {
+      write(conn, { type: "app_welcome", reqId, appApiVersion: apiVersion, app: conn.app, instance: "fake", pid: process.pid });
+      write(conn, { type: "fake_unknown_event", note: "clients must ignore event types they do not know" });
+      return;
+    }
+    let session = typeof cmd.app.session === "string" ? sessions.get(cmd.app.session) : undefined;
+    const resumed = Boolean(session);
+    if (!session) {
+      session = { id: cmd.app.session ?? `fake-session-${++idCounter}-${Math.random().toString(36).slice(2, 12)}`, app: conn.app!, conn: null, graceMs: defaultGraceMs, timer: null, pending: [] };
+      sessions.set(session.id, session);
+    }
+    if (typeof cmd.app.reconnectGraceMs === "number") session.graceMs = cmd.app.reconnectGraceMs;
+    if (session.timer) clearTimeout(session.timer);
+    session.timer = null;
+    session.conn = conn;
+    conn.session = session;
+    const mine = owned(session);
+    write(conn, { type: "app_welcome", reqId, appApiVersion: apiVersion, app: conn.app, instance: "fake", pid: process.pid, session: session.id, reconnectGraceMs: session.graceMs, resumed, conversations: mine.map(c => c.convId) });
     write(conn, { type: "fake_unknown_event", note: "clients must ignore event types they do not know" });
+    for (const event of session.pending.splice(0)) write(conn, event);
+    for (const conv of mine) {
+      for (const waiter of conv.ownerWaiters.splice(0)) waiter();
+      for (const call of conv.turn?.calls.values() ?? []) write(conn, { type: "app_tool_call", convId: conv.convId, callId: call.callId, name: call.name, input: call.input });
+    }
     return;
   }
   if (!conn.app) return error("fake daemon: declare an app with client_capabilities first");
@@ -364,6 +470,12 @@ function handle(conn: Conn, cmd: Json): void {
     }
     case "app_run": {
       if (typeof cmd.prompt !== "string" || !cmd.prompt) return error("prompt: required");
+      // The same run sent again after a reconnect: carry on with its conversation.
+      if (conv) {
+        if (!attach(conn, conv, reqId)) return;
+        sendMessage(conn, conv, cmd.prompt, reqId, cmd.startedAt ?? Date.now(), true);
+        return;
+      }
       const result = create(conn, cmd, "ephemeral");
       if (typeof result === "string") return error(result);
       result.runFinished = true;
@@ -373,27 +485,32 @@ function handle(conn: Conn, cmd: Json): void {
     }
     case "send_message": {
       if (!conv) return error(`Conversation not found: ${cmd.convId}`, cmd.convId);
-      if (conv.turn || conv.replay) return error("Already streaming", conv.convId);
       sendMessage(conn, conv, cmd.text, reqId, cmd.startedAt ?? Date.now(), Boolean(cmd.awaitResult));
       return;
     }
     case "attach_app_conversation": {
-      if (!conv) return error(`Conversation not found: ${cmd.convId}`, cmd.convId);
-      if (conv.lifetime === "ephemeral" && conv.owner !== conn) return error("Cannot attach to another connection's ephemeral conversation", conv.convId);
-      if (cmd.tools?.app !== undefined) {
-        const toolError = validateAppTools(cmd.tools.app);
-        if (toolError) return error(toolError, conv.convId);
-        conv.tools = cmd.tools.app;
+      if (!conv) return error(`App conversation ${cmd.convId} not found`, cmd.convId);
+      if (cmd.route !== undefined) conv.route = cmd.route ?? undefined;
+      attach(conn, conv, reqId, cmd.tools?.app);
+      return;
+    }
+    case "end_app_session": {
+      const session = conn.session;
+      const ended: string[] = [];
+      if (session) {
+        sessions.delete(session.id);
+        conn.session = null;
+        for (const owned_ of owned(session)) {
+          owned_.owner = null;
+          if (owned_.lifetime === "ephemeral") { deleteConv(owned_, "owner_disconnected"); ended.push(owned_.convId); }
+        }
       }
-      conv.owner = conn;
-      write(conn, { type: "app_conversation_attached", reqId, convId: conv.convId, conversation: info(conv), ...(ownerResults ? { lastTurnResult: conv.lastTurnResult } : {}) });
-      for (const waiter of conv.ownerWaiters.splice(0)) waiter();
-      for (const call of conv.turn?.calls.values() ?? []) write(conn, { type: "app_tool_call", convId: conv.convId, callId: call.callId, name: call.name, input: call.input });
+      write(conn, { type: "app_session_ended", reqId, ended });
       return;
     }
     case "app_tool_result": {
       const call = conv?.turn?.calls.get(cmd.callId);
-      if (!conv || !call || conv.owner !== conn) return;
+      if (!conv || !call || ownerConn(conv) !== conn) return;
       conv.turn!.calls.delete(cmd.callId);
       if (call.timer) clearTimeout(call.timer);
       call.resolve({ output: String(cmd.output), isError: Boolean(cmd.isError) });
@@ -406,7 +523,7 @@ function handle(conn: Conn, cmd: Json): void {
       return;
     }
     case "delete_conversation": {
-      if (!conv) return error(`Conversation not found: ${cmd.convId}`, cmd.convId);
+      if (!conv) return error(`App conversation ${cmd.convId} not found`, cmd.convId);
       deleteConv(conv, "deleted", reqId, conn);
       return;
     }
@@ -426,21 +543,30 @@ function handle(conn: Conn, cmd: Json): void {
   }
 }
 
-function dropConnection(conn: Conn): void {
+function dropConnection(conn: Conn, restarting = false): void {
   if (!connections.delete(conn)) return;
-  for (const conv of [...conversations.values()]) {
-    conv.subscribers.delete(conn);
-    if (conv.owner !== conn) continue;
-    conv.owner = null;
-    if (conv.lifetime === "ephemeral") deleteConv(conv, "owner_disconnected");
+  for (const conv of conversations.values()) conv.subscribers.delete(conn);
+  const session = conn.session;
+  if (!session || session.conn !== conn) return;
+  session.conn = null;
+  // A restart starts the grace when the daemon is back.
+  if (restarting) return;
+  if (!sessionsEnabled || session.graceMs === 0) {
+    sessions.delete(session.id);
+    for (const conv of owned(session)) {
+      conv.owner = null;
+      if (conv.lifetime === "ephemeral") deleteConv(conv, "owner_disconnected");
+    }
+    return;
   }
+  armGrace(session);
 }
 
 function listen(): Promise<void> {
   if (existsSync(socketPath!)) unlinkSync(socketPath!);
   server = createServer(socket => {
     if (Date.now() < refuseUntil) { socket.destroy(); return; }
-    const conn: Conn = { socket, app: null, id: ++connCounter };
+    const conn: Conn = { socket, app: null, id: ++connCounter, session: null };
     connections.add(conn);
     socket.setEncoding("utf8");
     let buffer = "";
@@ -462,29 +588,38 @@ function listen(): Promise<void> {
   return new Promise((resolve, reject) => { server!.once("error", reject); server!.listen(socketPath, () => resolve()); });
 }
 
-async function restart(downMs: number): Promise<void> {
+/**
+ * A graceful restart (sessions and every conversation carry on, interrupted
+ * turns are replayed), or with `crash` (or --no-sessions) one that loses the
+ * sessions and the ephemeral conversations.
+ */
+async function restart(downMs: number, crash: boolean): Promise<void> {
   const old = server;
   server = null;
   const closed = new Promise<void>(resolve => (old ? old.close(() => resolve()) : resolve()));
-  for (const conn of [...connections]) { conn.socket.destroy(); dropConnection(conn); }
+  for (const conn of [...connections]) { conn.socket.destroy(); dropConnection(conn, true); }
   await closed;
+  const loses = crash || !sessionsEnabled;
   for (const conv of [...conversations.values()]) {
-    if (conv.lifetime === "ephemeral") { conversations.delete(conv.convId); continue; }
+    if (conv.lifetime === "ephemeral" && loses) { conversations.delete(conv.convId); continue; }
     if (conv.turn) { abortTurn(conv, "ended"); conv.replay = { prompt: conv.turn.prompt, turnId: conv.turn.turnId, startedAt: conv.turn.startedAt }; conv.turn = null; }
-    conv.owner = null;
+    if (loses) conv.owner = null;
     conv.subscribers.clear();
   }
+  if (loses) sessions.clear();
+  for (const session of sessions.values()) if (session.timer) { clearTimeout(session.timer); session.timer = null; }
   await sleep(downMs);
   refuseUntil = Date.now() + refuseAfterRestartMs;
   await listen();
+  for (const session of [...sessions.values()]) if (!session.conn) armGrace(session);
   for (const conv of conversations.values()) {
     const replay = conv.replay;
     if (!replay) continue;
-    // Like the real daemon's replay: the turn runs again with nobody awaiting it.
+    // Like the real daemon's replay: the turn runs again, awaited only by those who sent it again.
     setTimeout(() => {
       if (conv.replay !== replay || !conversations.has(conv.convId)) return;
       conv.replay = null;
-      void runTurn(conv, replay.prompt, null, null, replay.startedAt, replay.turnId, true);
+      void runTurn(conv, replay.prompt, null, null, replay.startedAt, replay.turnId, true, replay.awaiters ?? []);
     }, refuseAfterRestartMs ? 0 : 200);
   }
 }

@@ -6,8 +6,13 @@ discovery (`$EXOCORTEX_SOCKET`, then `exocortexd socket`; the install
 one-liner when `exocortexd` is missing, `exocortexd doctor --json`'s problems
 when the daemon does not answer), the `app_welcome` version check, a one-shot `run`, conversation
 objects that send and await or stream, app tools as handler callbacks, attach,
-list, delete, and reconnect with re-attach after a dropped connection or a
-daemon restart.
+list, delete, `route` preferences (keep a batch job off Claude API credits, or
+stop instead of waiting at a usage limit), and reconnecting: after a dropped
+connection or a daemon restart a client reconnects with backoff under its
+session token, takes its conversations back (ephemeral ones too) and sends
+what was in flight again, so a send or a run only takes longer. A daemon
+crash loses ephemeral conversations: a one-shot run starts over, anything else
+fails with code `lost`.
 
 | Client | For | Depends on |
 |---|---|---|

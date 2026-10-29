@@ -10,29 +10,39 @@
  * orchestrator.
  */
 
-import { statSync } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
+import { randomBytes } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
   APP_API_VERSION,
   APP_DEFAULT_IDLE_TTL_MS,
+  APP_DEFAULT_RECONNECT_GRACE_MS,
   APP_LIFETIMES,
   APP_MAX_IDLE_TTL_MS,
+  APP_MAX_RECONNECT_GRACE_MS,
   APP_MAX_SYSTEM_TEXT_BYTES,
+  APP_OWNER_WAIT_MS,
+  APP_ROUTE_CREDITS,
+  APP_ROUTE_WHEN_LIMITED,
+  APP_SESSION_PATTERN,
   APP_SYSTEM_BASES,
   APPS_FOLDER_NAME,
   isAppName,
   type AppConversationInfo,
   type AppLifetime,
+  type AppRouteSpec,
   type AppSystemBase,
   type AppToolDef,
 } from "@exocortex/shared/app-api";
+import { readExocortexConfig } from "@exocortex/shared/config";
 import { worktreeName } from "@exocortex/shared/paths";
-import type { AttachAppConversationCommand, ClientCapabilitiesCommand, ListAppConversationsCommand, TurnResultEvent } from "./protocol";
+import type { AttachAppConversationCommand, ClientCapabilitiesCommand, EndAppSessionCommand, Event, ListAppConversationsCommand, TurnResultEvent } from "./protocol";
 import type { ConnectedClient, DaemonServer } from "./server";
-import type { ProviderId, ModelId, StoredMessage } from "./messages";
+import type { Conversation, ProviderId, ModelId, StoredMessage } from "./messages";
 import * as convStore from "./conversations";
 import {
   appConversationExpiresAt,
+  ephemeralConversationsSurviveRestart,
   getAppRecord,
   isAppConversation,
   isHiddenConversation,
@@ -40,18 +50,21 @@ import {
   flushAppRegistry,
   registerAppConversation,
   removeAppConversationRecord,
+  setAppRoute,
   setAppTools,
+  setEphemeralConversationsSurviveRestart,
   setLastTurnResult,
   touchAppConversation,
   type AppConversationRecord,
 } from "./app-registry";
 import { appToolBroker, appToolFor, resolveAppBuiltinTools, validateAppToolDefs } from "./app-tools";
-import { createEphemeralWorkspace, daemonCreatedAppWorkspace, removeAppWorkspace, removeClaudeProjectDir, removeClaudeSessionFiles, sweepEphemeralLeftovers } from "./app-workspaces";
+import { createEphemeralWorkspace, daemonCreatedAppWorkspace, ephemeralWorkspaceRoot, removeAppWorkspace, removeClaudeProjectDir, removeClaudeSessionFiles, sweepEphemeralLeftovers } from "./app-workspaces";
 import { onAssistantTurnEnded, type AssistantTurnEnd } from "./conversation-lifecycle";
+import { getDaemonShutdownMode } from "./daemon-lifecycle";
 import { setConversationToolResolver } from "./tools/registry";
 import { getModelInfo } from "./providers/registry";
 import { getClaudeCodeSession } from "./providers/anthropic/session";
-import { forgetConversationAccount } from "./providers/anthropic/account-pool";
+import { conversationOnApiCredits, forgetConversationAccount, getConversationAccount, touchConversationAccount } from "./providers/anthropic/account-pool";
 import type { AnthropicAssistantProviderData } from "./providers/anthropic/types";
 import { log } from "./log";
 
@@ -66,6 +79,7 @@ export interface AppCreateSpec {
   cwd?: string;
   builtin: string[] | "all";
   appTools: AppToolDef[];
+  route?: AppRouteSpec;
 }
 
 interface AppCreateFields {
@@ -75,9 +89,24 @@ interface AppCreateFields {
   system?: unknown;
   cwd?: unknown;
   tools?: unknown;
+  route?: unknown;
 }
 
-const APP_ONLY_FIELDS = ["lifetime", "idleTtlMs", "system", "cwd", "tools"] as const;
+const APP_ONLY_FIELDS = ["lifetime", "idleTtlMs", "system", "cwd", "tools", "route"] as const;
+
+/** An app conversation's `route` preferences, validated; undefined when it asks for nothing but the defaults. */
+export function parseAppRoute(value: unknown): AppRouteSpec | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "object" || Array.isArray(value)) throw new Error("route must be an object");
+  const { credits, whenLimited } = value as { credits?: unknown; whenLimited?: unknown };
+  if (credits !== undefined && !APP_ROUTE_CREDITS.includes(credits as never)) throw new Error(`route.credits must be one of ${APP_ROUTE_CREDITS.join(", ")}`);
+  if (whenLimited !== undefined && !APP_ROUTE_WHEN_LIMITED.includes(whenLimited as never)) throw new Error(`route.whenLimited must be one of ${APP_ROUTE_WHEN_LIMITED.join(", ")}`);
+  const route: AppRouteSpec = {
+    ...(credits === "never" ? { credits: "never" as const } : {}),
+    ...(whenLimited === "error" ? { whenLimited: "error" as const } : {}),
+  };
+  return Object.keys(route).length > 0 ? route : undefined;
+}
 
 /**
  * Validate a create request's app fields. Null for an ordinary conversation
@@ -123,6 +152,7 @@ export function parseAppCreate(cmd: AppCreateFields, client: Pick<ConnectedClien
     cwd = resolve(cmd.cwd);
   }
 
+  const route = parseAppRoute(cmd.route);
   const tools = cmd.tools ?? {};
   if (typeof tools !== "object" || tools === null || Array.isArray(tools)) throw new Error("tools must be an object");
   const { builtin = [], app: appTools } = tools as { builtin?: unknown; app?: unknown };
@@ -137,6 +167,7 @@ export function parseAppCreate(cmd: AppCreateFields, client: Pick<ConnectedClien
     ...(cwd ? { cwd } : {}),
     builtin: builtin === "all" ? "all" : [...new Set(builtin as string[])],
     appTools: validateAppToolDefs(appTools),
+    ...(route ? { route } : {}),
   };
 }
 
@@ -163,6 +194,7 @@ export function registerAppCreate(convId: string, spec: AppCreateSpec, now = Dat
     ...(spec.lifetime === "ephemeral" && !spec.cwd ? { ephemeralWorkspace: createEphemeralWorkspace(convId) } : {}),
     builtin: spec.builtin,
     appTools: spec.appTools,
+    ...(spec.route ? { route: spec.route } : {}),
   };
   registerAppConversation(record);
   return record;
@@ -190,28 +222,181 @@ export function appTitleFromPrompt(text: string): string {
   return line.length > 80 ? `${line.slice(0, 79)}…` : line;
 }
 
-// ── Owners, awaits and turn results ─────────────────────────────────
+// ── Sessions and owners ─────────────────────────────────────────────
 
-const owners = new Map<string, ConnectedClient>();
+/**
+ * What owns app conversations: an app client's session, not its socket. A
+ * client that reconnects (a dropped connection, a daemon restart) with its
+ * session token takes its conversations back. While a session is away its
+ * ephemeral conversations wait `graceMs` for it, then end; turn results and
+ * endings meanwhile are kept and sent when it is back.
+ */
+interface AppSession {
+  id: string;
+  app: string;
+  client: ConnectedClient | null;
+  graceMs: number;
+  graceTimer: ReturnType<typeof setTimeout> | null;
+  /** When it lost its connection (or this daemon took it over from the one before). */
+  disconnectedAt: number | null;
+  /** Events of its conversations while it was away: turn_result and conversation_deleted. */
+  pending: Event[];
+  /** For a connection that declared no app (e.g. the exo CLI attaching): no grace, never handed over. */
+  anonymous: boolean;
+}
+
+const sessions = new Map<string, AppSession>();
+const clientSessions = new WeakMap<ConnectedClient, AppSession>();
+const owners = new Map<string, AppSession>();
 interface PendingAwait { client: ConnectedClient; reqId: string | undefined; turnId: string }
 const awaits = new Map<string, PendingAwait[]>();
 let server: DaemonServer | null = null;
 let sweepTimer: ReturnType<typeof setInterval> | null = null;
 let stopTurnListener: (() => void) | null = null;
 let shuttingDown = false;
+let graceOverrideMs: number | null = null;
 const SWEEP_INTERVAL_MS = 60_000;
+const MAX_PENDING_EVENTS = 64;
+
+function defaultGraceMs(): number {
+  if (graceOverrideMs !== null) return graceOverrideMs;
+  const configured = readExocortexConfig().appApi?.reconnectGraceMs;
+  return Number.isSafeInteger(configured) && (configured as number) >= 0
+    ? Math.min(configured as number, APP_MAX_RECONNECT_GRACE_MS)
+    : APP_DEFAULT_RECONNECT_GRACE_MS;
+}
+
+function newSession(id: string, app: string, graceMs: number, anonymous: boolean): AppSession {
+  const session: AppSession = { id, app, client: null, graceMs, graceTimer: null, disconnectedAt: null, pending: [], anonymous };
+  sessions.set(id, session);
+  return session;
+}
+
+/** The session a connection owns conversations through: its app session, else one made for it. */
+function sessionOf(client: ConnectedClient): AppSession {
+  const known = clientSessions.get(client);
+  if (known && sessions.get(known.id) === known) return known;
+  const session = newSession(`anon-${client.id}-${randomBytes(6).toString("hex")}`, client.app?.name ?? "", 0, true);
+  session.client = client;
+  clientSessions.set(client, session);
+  return session;
+}
+
+function ownedBy(session: AppSession): string[] {
+  const ids: string[] = [];
+  for (const [convId, owner] of owners) if (owner === session) ids.push(convId);
+  return ids;
+}
+
+function connectedClient(session: AppSession | undefined): ConnectedClient | null {
+  const client = session?.client;
+  return client && !client.socket.destroyed ? client : null;
+}
 
 export function appConversationOwner(convId: string): ConnectedClient | null {
-  const owner = owners.get(convId);
-  return owner && !owner.socket.destroyed ? owner : null;
+  return connectedClient(owners.get(convId));
+}
+
+/** How long a call to an app tool of `convId` waits for an owner: a minute, or what is left of its session's grace. */
+function ownerWaitMs(convId: string, base: number): number {
+  const session = owners.get(convId);
+  if (!session || session.client || session.disconnectedAt === null) return base;
+  return Math.max(base, session.graceMs - (Date.now() - session.disconnectedAt));
 }
 
 /** Make `client` the owner: it gets the conversation's events and app tool calls. */
 export function setAppConversationOwner(convId: string, client: ConnectedClient): void {
-  owners.set(convId, client);
+  owners.set(convId, sessionOf(client));
   server?.subscribe(client, convId);
   appToolBroker.ownerAttached(convId);
 }
+
+function deliverPending(session: AppSession): void {
+  const client = connectedClient(session);
+  if (!client) return;
+  for (const event of session.pending.splice(0)) server?.sendTo(client, event);
+}
+
+/** Send an event to a conversation's owner, or keep it for the owner's session while it is away. */
+function sendToOwnerSession(convId: string, event: Event, except?: ConnectedClient): void {
+  const session = owners.get(convId);
+  if (!session) return;
+  const client = connectedClient(session);
+  // While a restart's turns settle the connections are going away: kept for the next daemon.
+  if (client && server) {
+    if (client !== except) server.sendTo(client, event);
+    return;
+  }
+  if (session.anonymous) return;
+  session.pending.push(event);
+  if (session.pending.length > MAX_PENDING_EVENTS) session.pending.splice(0, session.pending.length - MAX_PENDING_EVENTS);
+}
+
+/** A connection takes a session (new, or back after a drop or a restart). */
+function connectSession(session: AppSession, client: ConnectedClient): void {
+  if (session.graceTimer) clearTimeout(session.graceTimer);
+  session.graceTimer = null;
+  session.disconnectedAt = null;
+  const previous = session.client;
+  if (previous && previous !== client && !previous.socket.destroyed) {
+    log("info", `app-api: ${client.id} takes over the session of ${session.app} from ${previous.id}`);
+    clientSessions.delete(previous);
+  }
+  session.client = client;
+  clientSessions.set(client, session);
+  for (const convId of ownedBy(session)) {
+    server?.subscribe(client, convId);
+    appToolBroker.ownerAttached(convId);
+  }
+}
+
+/** A session lost its connection: its ephemeral conversations wait out its grace. */
+function disconnectSession(session: AppSession, now = Date.now()): void {
+  session.client = null;
+  session.disconnectedAt = now;
+  const owned = ownedBy(session);
+  for (const convId of owned) appToolBroker.ownerDetached(convId);
+  if (owned.length === 0 && session.pending.length === 0) {
+    sessions.delete(session.id);
+    return;
+  }
+  armGrace(session);
+}
+
+function armGrace(session: AppSession): void {
+  if (session.graceTimer) clearTimeout(session.graceTimer);
+  session.graceTimer = null;
+  const remaining = session.graceMs - (Date.now() - (session.disconnectedAt ?? Date.now()));
+  if (remaining <= 0) {
+    void expireSession(session);
+    return;
+  }
+  session.graceTimer = setTimeout(() => { void expireSession(session); }, remaining);
+  session.graceTimer.unref?.();
+}
+
+/** A session did not come back in time: its ephemeral conversations end, the rest just lose their owner. */
+async function expireSession(session: AppSession): Promise<void> {
+  session.graceTimer = null;
+  if (session.client || sessions.get(session.id) !== session) return;
+  sessions.delete(session.id);
+  const owned = ownedBy(session);
+  let ended = 0;
+  for (const convId of owned) {
+    owners.delete(convId);
+    if (getAppRecord(convId)?.lifetime !== "ephemeral") continue;
+    try {
+      if (await endAppConversation(convId, "owner_disconnected")) ended++;
+    } catch (error) {
+      log("error", `app-api: ending ${convId} failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  if (!session.anonymous && owned.length > 0) {
+    log("info", `app-api: a session of ${session.app} did not reconnect within ${session.graceMs} ms${ended ? `; ended ${ended} ephemeral conversation(s)` : ""}`);
+  }
+}
+
+// ── Awaits and turn results ─────────────────────────────────────────
 
 /** A send that waits for its turn's end; answered by onTurnEnded. */
 export function registerTurnAwait(client: ConnectedClient, reqId: string | undefined, convId: string, turnId: string): void {
@@ -249,14 +434,16 @@ export function buildTurnResult(end: AssistantTurnEnd): TurnResultEvent {
     stopReason,
     ...(stopReason === "error" && end.error ? { error: end.error } : {}),
     usage: { outputTokens: end.tokens, durationMs: end.durationMs },
+    ...(end.billing ? { billing: end.billing } : {}),
+    ...(end.limited ? { limited: end.limited } : {}),
   };
 }
 
 /**
  * Every assistant turn's end: answer the sends that awaited it and, for an app
- * conversation, tell its current owner and keep the result for one attaching
- * later. A turn that only paused (a Chrono sleep) or that a daemon restart
- * will replay is not over.
+ * conversation, tell its owner (or keep it for the owner's session) and keep
+ * the result for one attaching later. A turn that only paused (a Chrono
+ * sleep) or that a daemon restart will replay is not over.
  */
 function onTurnEnded(end: AssistantTurnEnd): void {
   if (end.manualCompaction || end.suspended || (end.aborted && end.daemonRestart)) return;
@@ -271,11 +458,25 @@ function onTurnEnded(end: AssistantTurnEnd): void {
   for (const entry of waiting) {
     if (!entry.client.socket.destroyed) server?.sendTo(entry.client, { ...result, ...(entry.reqId ? { reqId: entry.reqId } : {}) });
   }
-  if (!isAppConversation(end.convId)) return;
+  const record = getAppRecord(end.convId);
+  if (!record) return;
   touchAppConversation(end.convId);
   setLastTurnResult(end.convId, result);
   const owner = appConversationOwner(end.convId);
-  if (owner && !waiting.some(entry => entry.client === owner)) server?.sendTo(owner, result);
+  if (!owner || !waiting.some(entry => entry.client === owner)) sendToOwnerSession(end.convId, result);
+  // An app_run's ephemeral conversation ends with its turn, also one a restart replayed.
+  if (record.endAfterTurn && !shuttingDown) void finishAppRun(end.convId);
+}
+
+/** The end of an app_run whose ephemeral conversation is not kept. */
+export async function finishAppRun(convId: string): Promise<void> {
+  // A graceful restart hands it over instead: the next daemon ends it after the replayed turn.
+  if (shuttingDown) return;
+  try {
+    await endAppConversation(convId, "run_finished");
+  } catch (error) {
+    log("error", `app-api: ending ${convId} failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 // ── Reporting ───────────────────────────────────────────────────────
@@ -284,6 +485,7 @@ export function appConversationInfo(record: AppConversationRecord): AppConversat
   const summary = convStore.getIndexedSummary(record.convId);
   const expiresAt = appConversationExpiresAt(record);
   const workspace = daemonCreatedAppWorkspace(record);
+  const account = summary?.provider === "anthropic" ? getConversationAccount(record.convId)?.account : undefined;
   return {
     convId: record.convId,
     app: record.app,
@@ -302,17 +504,34 @@ export function appConversationInfo(record: AppConversationRecord): AppConversat
     systemBase: record.system.base,
     builtinTools: record.builtin === "all" ? "all" : [...record.builtin],
     appTools: record.appTools.map(tool => tool.name),
+    ...(record.route ? { route: { ...record.route } } : {}),
+    ...(account ? { account } : {}),
+    ...(conversationOnApiCredits(record.convId) ? { billing: "api-credits" as const } : {}),
   };
 }
 
 export function welcomeAppClient(client: ConnectedClient, cmd: ClientCapabilitiesCommand): void {
-  const app = cmd.app as { name?: unknown; version?: unknown } | null | undefined;
-  if (!app || typeof app !== "object" || !isAppName(app.name)) {
-    server?.sendTo(client, { type: "error", reqId: cmd.reqId, message: "app.name must match ^[a-z0-9][a-z0-9-]{0,39}$" });
-    return;
+  const app = cmd.app as { name?: unknown; version?: unknown; session?: unknown; reconnectGraceMs?: unknown } | null | undefined;
+  const fail = (message: string) => server?.sendTo(client, { type: "error", reqId: cmd.reqId, message });
+  if (!app || typeof app !== "object" || !isAppName(app.name)) return void fail("app.name must match ^[a-z0-9][a-z0-9-]{0,39}$");
+  if (app.session !== undefined && (typeof app.session !== "string" || !APP_SESSION_PATTERN.test(app.session))) {
+    return void fail("app.session must match ^[A-Za-z0-9_-]{16,128}$ (the session app_welcome gave you)");
+  }
+  if (app.reconnectGraceMs !== undefined
+      && (!Number.isSafeInteger(app.reconnectGraceMs) || (app.reconnectGraceMs as number) < 0 || (app.reconnectGraceMs as number) > APP_MAX_RECONNECT_GRACE_MS)) {
+    return void fail(`app.reconnectGraceMs must be a whole number of milliseconds from 0 to ${APP_MAX_RECONNECT_GRACE_MS}`);
   }
   const name = app.name;
+  let session = typeof app.session === "string" ? sessions.get(app.session) : undefined;
+  if (session && session.app !== name) return void fail(`Session belongs to app ${session.app}`);
+  const resumed = session !== undefined;
+  session ??= newSession(typeof app.session === "string" ? app.session : randomBytes(18).toString("base64url"), name, 0, false);
+  session.graceMs = typeof app.reconnectGraceMs === "number" ? app.reconnectGraceMs : defaultGraceMs();
+  // A connection that declares itself again leaves the session it had.
+  const earlier = clientSessions.get(client);
+  if (earlier && earlier !== session && earlier.client === client) disconnectSession(earlier);
   client.app = { name, ...(typeof app.version === "string" ? { version: app.version.slice(0, 100) } : {}) };
+  connectSession(session, client);
   server?.sendTo(client, {
     type: "app_welcome",
     ...(cmd.reqId ? { reqId: cmd.reqId } : {}),
@@ -320,8 +539,35 @@ export function welcomeAppClient(client: ConnectedClient, cmd: ClientCapabilitie
     app: name,
     instance: worktreeName() ?? "main",
     pid: process.pid,
+    session: session.id,
+    reconnectGraceMs: session.graceMs,
+    resumed,
+    conversations: ownedBy(session),
   });
-  log("info", `app-api: ${client.id} is app ${name}${client.app.version ? ` ${client.app.version}` : ""}`);
+  // What ended while it was away, after the welcome.
+  deliverPending(session);
+  log("info", `app-api: ${client.id} is app ${name}${client.app.version ? ` ${client.app.version}` : ""}${resumed ? ` (session resumed, ${ownedBy(session).length} conversation(s))` : ""}`);
+}
+
+/** end_app_session: the client is done; its ephemeral conversations end now. */
+export async function endAppSession(client: ConnectedClient, cmd: EndAppSessionCommand): Promise<void> {
+  const session = clientSessions.get(client);
+  const ended: string[] = [];
+  if (session && sessions.get(session.id) === session) {
+    sessions.delete(session.id);
+    clientSessions.delete(client);
+    if (session.graceTimer) clearTimeout(session.graceTimer);
+    session.graceTimer = null;
+    for (const convId of ownedBy(session)) {
+      owners.delete(convId);
+      if (getAppRecord(convId)?.lifetime === "ephemeral") {
+        if (await endAppConversation(convId, "owner_disconnected", { client })) ended.push(convId);
+      } else {
+        appToolBroker.ownerDetached(convId);
+      }
+    }
+  }
+  server?.sendTo(client, { type: "app_session_ended", ...(cmd.reqId ? { reqId: cmd.reqId } : {}), ended });
 }
 
 export function listAppConversations(client: ConnectedClient, cmd: ListAppConversationsCommand): void {
@@ -333,30 +579,26 @@ export function listAppConversations(client: ConnectedClient, cmd: ListAppConver
   server?.sendTo(client, { type: "app_conversations_list", reqId: cmd.reqId, conversations });
 }
 
-/** attach_app_conversation: become the owner, optionally replacing the app tools. */
+/** attach_app_conversation: become the owner, optionally replacing the app tools and route. */
 export function attachAppConversation(client: ConnectedClient, cmd: AttachAppConversationCommand): void {
   const record = getAppRecord(cmd.convId);
-  if (!record || !convStore.hasConversation(cmd.convId)) {
-    server?.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `App conversation ${cmd.convId} not found` });
-    return;
+  const fail = (message: string) => server?.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message });
+  if (!record || !convStore.hasConversation(cmd.convId)) return void fail(`App conversation ${cmd.convId} not found`);
+  if (client.app && client.app.name !== record.app) return void fail(`Conversation ${cmd.convId} belongs to app ${record.app}`);
+  const owner = owners.get(cmd.convId);
+  if (record.lifetime === "ephemeral" && owner && owner !== clientSessions.get(client) && (owner.client || !owner.anonymous)) {
+    return void fail("An ephemeral conversation belongs to the session that created it");
   }
-  const current = appConversationOwner(cmd.convId);
-  if (record.lifetime === "ephemeral" && current && current !== client) {
-    server?.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "An ephemeral conversation belongs to the connection that created it" });
-    return;
+  let tools: AppToolDef[] | undefined;
+  let route: AppRouteSpec | undefined;
+  try {
+    if (cmd.tools?.app !== undefined) tools = validateAppToolDefs(cmd.tools.app);
+    if (cmd.route !== undefined) route = parseAppRoute(cmd.route);
+  } catch (error) {
+    return void fail(error instanceof Error ? error.message : String(error));
   }
-  if (client.app && client.app.name !== record.app) {
-    server?.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} belongs to app ${record.app}` });
-    return;
-  }
-  if (cmd.tools?.app !== undefined) {
-    let tools: AppToolDef[];
-    try { tools = validateAppToolDefs(cmd.tools.app); } catch (error) {
-      server?.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: error instanceof Error ? error.message : String(error) });
-      return;
-    }
-    setAppTools(cmd.convId, tools);
-  }
+  if (tools) setAppTools(cmd.convId, tools);
+  if (cmd.route !== undefined) setAppRoute(cmd.convId, route);
   touchAppConversation(cmd.convId);
   setAppConversationOwner(cmd.convId, client);
   server?.sendTo(client, {
@@ -366,6 +608,34 @@ export function attachAppConversation(client: ConnectedClient, cmd: AttachAppCon
     conversation: appConversationInfo(record),
     ...(record.lastTurnResult ? { lastTurnResult: record.lastTurnResult } : {}),
   });
+}
+
+// ── Startup: app commands wait for recovery ─────────────────────────
+
+let ready = true;
+const held: (() => void)[] = [];
+/** What an app client may send before startup recovery is done. */
+const BEFORE_READY = new Set(["client_capabilities", "ping", "app_tool_result"]);
+
+/**
+ * An app client's command while the daemon is still starting (conversations
+ * loading, interrupted turns not yet replayed) waits until it is done, so an
+ * attach right after a restart sees the replayed turn running rather than a
+ * conversation that seems idle or missing. True when held.
+ */
+export function holdAppCommandUntilReady(client: ConnectedClient, type: string, run: () => void): boolean {
+  if (ready || !client.app || BEFORE_READY.has(type)) return false;
+  held.push(run);
+  return true;
+}
+
+/** Startup recovery is done: run what app clients sent meanwhile, in order. */
+export function markAppApiReady(): void {
+  if (ready) return;
+  ready = true;
+  const runs = held.splice(0);
+  if (runs.length > 0) log("info", `app-api: running ${runs.length} app command(s) held during startup`);
+  for (const run of runs) run();
 }
 
 // ── Ending ──────────────────────────────────────────────────────────
@@ -399,16 +669,18 @@ export async function endAppConversation(convId: string, reason: AppConversation
   if (getAppRecord(convId) !== record) return false;
   appToolBroker.conversationEnded(convId);
   const live = getClaudeCodeSession(convId);
-  const sessions = claudeSessions(messages);
-  if (live?.sessionId) sessions.push({ sessionId: live.sessionId, ...(record.cwd ? { cwd: record.cwd } : {}) });
+  const claude = claudeSessions(messages);
+  if (live?.sessionId) claude.push({ sessionId: live.sessionId, ...(record.cwd ? { cwd: record.cwd } : {}) });
   live?.close(`its app conversation ended (${reason})`);
   const existed = convStore.purge(convId) || !convStore.hasConversation(convId);
   // The daemon's own working directory is the Claude Code project of its sessions alone.
   const workspace = daemonCreatedAppWorkspace(record);
-  removeClaudeSessionFiles(sessions);
+  removeClaudeSessionFiles(claude);
   if (workspace) removeClaudeProjectDir(workspace);
   removeAppWorkspace(record);
   const event = { type: "conversation_deleted" as const, convId, reason };
+  // An owner away (reconnecting) hears of it when it is back.
+  if (!appConversationOwner(convId)) sendToOwnerSession(convId, event);
   if (requester) {
     server?.sendTo(requester.client, { ...event, ...(requester.reqId ? { reqId: requester.reqId } : {}) });
     if (typeof server?.broadcastExcept === "function") server.broadcastExcept(event, requester.client);
@@ -436,18 +708,10 @@ function onClientClosed(client: ConnectedClient): void {
     if (rest.length > 0) awaits.set(convId, rest);
     else awaits.delete(convId);
   }
-  for (const [convId, owner] of [...owners]) {
-    if (owner !== client) continue;
-    owners.delete(convId);
-    const record = getAppRecord(convId);
-    if (record?.lifetime === "ephemeral") {
-      void endAppConversation(convId, "owner_disconnected").catch(error => {
-        log("error", `app-api: ending ${convId} failed: ${error instanceof Error ? error.message : String(error)}`);
-      });
-    } else {
-      appToolBroker.ownerDetached(convId);
-    }
-  }
+  const session = clientSessions.get(client);
+  clientSessions.delete(client);
+  if (!session || session.client !== client || sessions.get(session.id) !== session) return;
+  disconnectSession(session);
 }
 
 /** Delete temporary conversations past their idle time (never one that is running). */
@@ -462,17 +726,160 @@ export async function sweepExpiredAppConversations(now = Date.now()): Promise<st
   return expired;
 }
 
+// ── Graceful restarts: the next daemon takes over ───────────────────
+
 /**
- * Startup, after the records (loadAppRegistry) and conversations load: forget
- * records whose conversation is gone, clear what crashed ephemeral
- * conversations left, and delete expired temporary ones.
+ * At a graceful restart, the next daemon takes the app sessions (their
+ * conversations, grace and undelivered events) and the ephemeral
+ * conversations themselves: their records and histories, in a file only the
+ * user can read in the instance's temporary directory, which the next daemon
+ * reads and deletes as it starts. Their Claude Code processes carry on under
+ * their relays, and an interrupted turn is replayed as any other.
+ */
+interface HandoffSession {
+  id: string;
+  app: string;
+  graceMs: number;
+  owns: string[];
+  pending: Event[];
+}
+
+interface HandoffFile {
+  version: 1;
+  writtenAt: number;
+  sessions: HandoffSession[];
+  conversations: { record: AppConversationRecord; conversation: Conversation; account: { account: string; lastUsedAt: number } | null }[];
+}
+
+/** A handover older than this is from a restart that never came back: ignored. */
+const HANDOFF_MAX_AGE_MS = 15 * 60_000;
+/**
+ * A graceful restart is under way: owners, sessions and turn results stay
+ * live while the turns settle (a turn ending meanwhile is kept for its
+ * session), until handOffAppConversations writes them.
+ */
+let handingOff = false;
+
+function handoffPath(): string {
+  return join(ephemeralWorkspaceRoot(), "handoff.json");
+}
+
+/** After the turns settle at a graceful restart: write what the next daemon takes over. Returns the conversations handed over. */
+export function handOffAppConversations(): number {
+  if (!handingOff) return 0;
+  handingOff = false;
+  flushAppRegistry();
+  const conversations: HandoffFile["conversations"] = [];
+  for (const record of listAppRecords()) {
+    if (record.lifetime !== "ephemeral") continue;
+    const conversation = convStore.getCached(record.convId);
+    if (conversation) conversations.push({ record, conversation, account: getConversationAccount(record.convId) });
+  }
+  const sessionsToHand: HandoffSession[] = [...sessions.values()]
+    .filter(session => !session.anonymous)
+    .map(session => ({ id: session.id, app: session.app, graceMs: session.graceMs, owns: ownedBy(session), pending: session.pending }));
+  // This daemon is going away: what it handed over is the next one's.
+  stopTurnListener?.();
+  stopTurnListener = null;
+  owners.clear();
+  sessions.clear();
+  awaits.clear();
+  if (conversations.length === 0 && sessionsToHand.length === 0) return 0;
+  const path = handoffPath();
+  const tmp = `${path}.${process.pid}.tmp`;
+  try {
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    writeFileSync(tmp, JSON.stringify({ version: 1, writtenAt: Date.now(), sessions: sessionsToHand, conversations } satisfies HandoffFile), { mode: 0o600 });
+    renameSync(tmp, path);
+  } catch (error) {
+    rmSync(tmp, { force: true });
+    log("error", `app-api: could not hand app conversations to the next daemon: ${error instanceof Error ? error.message : String(error)}`);
+    return 0;
+  }
+  log("info", `app-api: handed ${sessionsToHand.length} app session(s) and ${conversations.length} ephemeral conversation(s) to the next daemon`);
+  return conversations.length;
+}
+
+function readHandoff(): HandoffFile | null {
+  const path = handoffPath();
+  if (!existsSync(path)) return null;
+  let file: HandoffFile | null = null;
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as HandoffFile;
+    if (parsed?.version === 1 && Array.isArray(parsed.sessions) && Array.isArray(parsed.conversations)) file = parsed;
+  } catch (error) {
+    log("warn", `app-api: ignoring an unreadable handover file: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  // Read once: nothing of an ephemeral conversation stays on disk.
+  rmSync(path, { force: true });
+  if (file && Date.now() - file.writtenAt > HANDOFF_MAX_AGE_MS) {
+    log("warn", `app-api: ignoring a handover from ${new Date(file.writtenAt).toISOString()}, too old`);
+    return null;
+  }
+  return file;
+}
+
+/** Take over what the daemon before handed over. Returns the working directories of the conversations it restored. */
+function restoreHandedOff(): Set<string> {
+  const keep = new Set<string>();
+  const file = readHandoff();
+  if (!file) return keep;
+  let restored = 0;
+  for (const { record, conversation, account } of file.conversations) {
+    if (record?.lifetime !== "ephemeral" || conversation?.id !== record.convId || convStore.hasConversation(record.convId)) continue;
+    try {
+      registerAppConversation(record);
+      convStore.adoptEphemeralConversation(conversation);
+    } catch (error) {
+      removeAppConversationRecord(record.convId);
+      log("warn", `app-api: could not restore ${record.convId}: ${error instanceof Error ? error.message : String(error)}`);
+      continue;
+    }
+    if (account) touchConversationAccount(record.convId, account.account, account.lastUsedAt);
+    const workspace = daemonCreatedAppWorkspace(record);
+    if (workspace) keep.add(workspace);
+    restored++;
+  }
+  const now = Date.now();
+  for (const handed of file.sessions) {
+    // Its client may have reconnected already, while this daemon was loading.
+    let session = sessions.get(handed.id);
+    if (session && session.app !== handed.app) continue;
+    if (!session) {
+      session = newSession(handed.id, handed.app, handed.graceMs, false);
+      session.disconnectedAt = now;
+    }
+    session.pending.unshift(...(handed.pending ?? []));
+    for (const convId of handed.owns ?? []) {
+      if (!isAppConversation(convId) || !convStore.hasConversation(convId) || owners.has(convId)) continue;
+      owners.set(convId, session);
+      if (session.client) server?.subscribe(session.client, convId);
+    }
+    if (session.client) deliverPending(session);
+    else if (ownedBy(session).length > 0 || session.pending.length > 0) armGrace(session);
+    else sessions.delete(session.id);
+  }
+  // An ephemeral conversation whose owner had no session (graceless) ends as it would have.
+  for (const record of listAppRecords()) {
+    if (record.lifetime === "ephemeral" && !owners.has(record.convId)) void endAppConversation(record.convId, "owner_disconnected");
+  }
+  log("info", `app-api: took over ${file.sessions.length} app session(s) and ${restored} ephemeral conversation(s) from the daemon before`);
+  return keep;
+}
+
+/**
+ * Startup, after the records (loadAppRegistry) and conversations load: take
+ * over what a graceful restart handed over, forget records whose
+ * conversation is gone, clear what crashed ephemeral conversations left, and
+ * delete expired temporary ones.
  */
 export async function recoverAppConversations(): Promise<void> {
-  const loaded = listAppRecords().length;
+  const keep = restoreHandedOff();
+  const loaded = listAppRecords().filter(record => record.lifetime !== "ephemeral").length;
   for (const record of listAppRecords()) {
     if (!convStore.hasConversation(record.convId)) removeAppConversationRecord(record.convId);
   }
-  const swept = sweepEphemeralLeftovers();
+  const swept = sweepEphemeralLeftovers(keep);
   if (swept.workspaces > 0 || swept.claudeProjects > 0) {
     log("info", `app-api: removed ${swept.workspaces} ephemeral working director(ies) and ${swept.claudeProjects} Claude Code project(s) an earlier daemon left`);
   }
@@ -480,11 +887,26 @@ export async function recoverAppConversations(): Promise<void> {
   log("info", `app-api: ${loaded} saved/temporary app conversation(s)${expired.length ? `, ${expired.length} expired and deleted` : ""}`);
 }
 
-/** Daemon shutdown: ephemeral conversations end with it. */
+/**
+ * Daemon shutdown. A graceful restart keeps everything for the next daemon
+ * (handOffAppConversations writes it once the turns settle); any other exit
+ * ends the ephemeral conversations with it.
+ */
 export async function shutdownAppConversations(): Promise<void> {
   shuttingDown = true;
+  // Their turns are about to be interrupted: a replayed turn asks again if it still needs the answer.
+  appToolBroker.cancelAllForShutdown();
   if (sweepTimer) clearInterval(sweepTimer);
   sweepTimer = null;
+  for (const session of sessions.values()) {
+    if (session.graceTimer) clearTimeout(session.graceTimer);
+    session.graceTimer = null;
+  }
+  if (getDaemonShutdownMode() === "restart" && ephemeralConversationsSurviveRestart()) {
+    handingOff = true;
+    flushAppRegistry();
+    return;
+  }
   for (const record of listAppRecords()) {
     if (record.lifetime !== "ephemeral") continue;
     try { await endAppConversation(record.convId, "owner_disconnected"); } catch (error) {
@@ -495,17 +917,34 @@ export async function shutdownAppConversations(): Promise<void> {
 }
 
 /** Wire the app API into a daemon's server. */
-export function configureAppApi(target: DaemonServer, options: { ownerWaitMs?: number; sweepIntervalMs?: number | null } = {}): () => void {
+export function configureAppApi(target: DaemonServer, options: {
+  ownerWaitMs?: number;
+  sweepIntervalMs?: number | null;
+  /** App clients' commands wait for markAppApiReady (startup recovery). */
+  holdUntilReady?: boolean;
+  /** Tests: the default reconnect grace. */
+  reconnectGraceMs?: number;
+} = {}): () => void {
   server = target;
   shuttingDown = false;
+  handingOff = false;
+  owners.clear();
+  sessions.clear();
+  awaits.clear();
+  graceOverrideMs = options.reconnectGraceMs ?? null;
+  ready = options.holdUntilReady !== true;
+  held.length = 0;
+  const survives = readExocortexConfig().appApi?.ephemeralSurvivesRestart;
+  setEphemeralConversationsSurviveRestart(survives !== false);
   // Test doubles of the server may lack these.
   target.setHiddenConversationFilter?.(isHiddenConversation);
   const stopClose = typeof target.onClientClosed === "function" ? target.onClientClosed(onClientClosed) : () => {};
   setConversationToolResolver((convId, name) => appToolFor(convId, name));
+  const baseOwnerWait = options.ownerWaitMs ?? APP_OWNER_WAIT_MS;
   appToolBroker.configure({
     owner: convId => appConversationOwner(convId),
     send: (owner, event) => target.sendTo(owner as ConnectedClient, event),
-    ...(options.ownerWaitMs !== undefined ? { ownerWaitMs: options.ownerWaitMs } : {}),
+    ownerWaitMs: convId => ownerWaitMs(convId, baseOwnerWait),
   });
   stopTurnListener?.();
   stopTurnListener = onAssistantTurnEnded(onTurnEnded);
@@ -521,14 +960,21 @@ export function configureAppApi(target: DaemonServer, options: { ownerWaitMs?: n
   }
   return () => {
     stopClose();
-    stopTurnListener?.();
-    stopTurnListener = null;
     if (sweepTimer) clearInterval(sweepTimer);
     sweepTimer = null;
+    for (const session of sessions.values()) if (session.graceTimer) clearTimeout(session.graceTimer);
     setConversationToolResolver(null);
     appToolBroker.configure(null);
-    owners.clear();
-    awaits.clear();
+    ready = true;
+    held.length = 0;
+    graceOverrideMs = null;
     server = null;
+    // Kept for handOffAppConversations while a graceful restart's turns settle.
+    if (handingOff) return;
+    stopTurnListener?.();
+    stopTurnListener = null;
+    owners.clear();
+    sessions.clear();
+    awaits.clear();
   };
 }
