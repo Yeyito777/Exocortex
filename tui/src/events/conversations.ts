@@ -22,6 +22,7 @@ import { focusSidebarItem } from "../sidebar/selection";
 import { pushSystemMessage, type RenderState } from "../state";
 import { theme } from "../theme";
 import { preserveViewportAcrossHistoryPrepend } from "../chatscroll";
+import { markRelayout } from "../smoothscroll";
 import { resumeHistoryNavigation } from "../historycursor";
 import { joinSplitAssistantEntry } from "../historypagination";
 import {
@@ -381,6 +382,7 @@ export function handleConversationLoaded(
   state.historyTotalEntries = event.historyTotalEntries
     ?? event.entries.filter((entry) => entry.type !== "system_instructions").length;
   state.historyHasOlder = event.hasOlderHistory ?? false;
+  state.historyTrimmedAboveView = null;
   state.pendingHistoryNavigation = null;
   state.historyLoadingOlder = false;
   state.historyLoadingStartedAt = null;
@@ -524,6 +526,9 @@ export function handleConversationHistoryLoaded(
     && !state.pendingHistoryNavigation
     && state.scrollOffset === 0
     && !(state.panelFocus === "chat" && state.chatFocus === "history");
+  // Older rows going in above are a re-layout, not output arriving: a history
+  // shorter than the pane moves down under them, which must snap, not glide.
+  markRelayout(state);
   if (canFastPathInitialBackfill) prependOlderMessages();
   else preserveViewportAcrossHistoryPrepend(state, prependOlderMessages);
   const pageIsEmpty = event.historyStartIndex > event.historyEndIndex

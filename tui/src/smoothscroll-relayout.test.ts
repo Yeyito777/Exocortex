@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
-import { render } from "./render";
 import { createInitialState, type RenderState } from "./state";
 import { invalidateFrame, setScrollRegionsEnabled } from "./frame";
 import { SmoothScroller, markScrollIntent, setSmoothScroller } from "./smoothscroll";
@@ -9,25 +8,11 @@ import {
   toggleToolOutputPreservingViewport,
 } from "./chatscroll";
 import { TerminalScreen } from "./testhelpers/terminalscreen";
+import { captureRender as capture, glides } from "./testhelpers/smoothframes";
 
 // Only scrolling glides. Every other reason the conversation pane's offset or
 // content moves (a re-layout that keeps the user's place, a jump to the
 // bottom after sending) snaps: no eased move goes to st (mode 2032).
-
-function capture(state: RenderState): string {
-  let out = "";
-  const write = process.stdout.write.bind(process.stdout);
-  process.stdout.write = ((chunk: string | Uint8Array) => {
-    out += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
-    return true;
-  }) as typeof process.stdout.write;
-  try {
-    render(state);
-  } finally {
-    process.stdout.write = write as typeof process.stdout.write;
-  }
-  return out;
-}
 
 let now = 0;
 let screen: TerminalScreen;
@@ -73,9 +58,9 @@ function frames(state: RenderState, ms = 300): string {
   return out;
 }
 
-/** Eased moves (OSC 2032 ; m ; dA ; B ; D with B != 0): a glide. */
-const glides = (out: string) => [...out.matchAll(/\x1b\]2032;m;-?\d+;(-?\d+);\d+\x1b\\/g)].filter(match => match[1] !== "0");
 const topRow = (_state: RenderState) => screen.plainRows()[2]?.trim() ?? "";
+/** Every move sent to st (OSC 2032 ; m / o), but a reset to rest: anything still sliding. */
+const motion = (out: string) => [...out.matchAll(/\x1b\]2032;([mo];[-;\d]*)\x1b\\/g)].map(match => match[1]!).filter(move => move !== "o;0");
 
 function settle(state: RenderState, scrollOffset: number): void {
   screen.feed(capture(state));
@@ -152,6 +137,18 @@ describe("re-layouts never glide", () => {
       expect(glides(frames(state))).toEqual([]);
     });
   }
+
+  test("Ctrl+O in the middle of a scroll's glide shows the new view in place", () => {
+    const state = conversationState();
+    settle(state, 10);
+    markScrollIntent(state);
+    state.scrollOffset += 6;
+    expect(glides(frames(state, 20)).length).toBe(1);
+    preserveViewportAcrossHistoryMutation(state, () => { state.showTurnWork = !state.showTurnWork; });
+    expect(motion(frames(state))).toEqual([]);
+    preserveViewportAcrossHistoryMutation(state, () => { state.showTurnWork = !state.showTurnWork; });
+    expect(motion(frames(state))).toEqual([]);
+  });
 
   test("sending from a scrolled-up view jumps to the bottom without a glide", () => {
     const state = conversationState();
@@ -283,6 +280,35 @@ describe("the bottom growing and shrinking while following it", () => {
     liveTurn(state, 3, 2);
     expect(glides(frames(state))).toEqual([]);
   });
+
+  for (const key of ["Ctrl+O", "Ctrl+I"] as const) {
+    test(`${key} while the bottom is still sliding shows the new view in place`, () => {
+      // The live turn's newest step got taller as the key was pressed: the
+      // view it switches to is all new rows, nothing of the slide carries on.
+      setSystemTime(new Date("2026-10-29T00:00:00Z"));
+      try {
+        // Pressed at any point of the slide (st draws it for 100 ms).
+        for (let into = 4; into < 100; into += 4) {
+          const state = conversationState();
+          liveTurn(state, 1);
+          settle(state, 0);
+          liveTurn(state, 11, 1);
+          expect(eases(frames(state, into)).length).toBe(1);
+          if (key === "Ctrl+O") preserveViewportAcrossHistoryMutation(state, () => { state.showTurnWork = !state.showTurnWork; });
+          else toggleToolOutputPreservingViewport(state);
+          expect({ into, moves: motion(frames(state)) }).toEqual({ into, moves: [] });
+          const settled = screen.plainRows();
+          setSmoothScroller(state, null);
+          const fresh = new TerminalScreen(state.rows, state.cols);
+          invalidateFrame(state);
+          fresh.feed(capture(state));
+          expect(settled).toEqual(fresh.plainRows());
+        }
+      } finally {
+        setSystemTime();
+      }
+    });
+  }
 
   test("Ctrl+I at the bottom still snaps even when only the last turn changes", () => {
     const state = conversationState();

@@ -8,12 +8,13 @@
  * fetch it first (load_display_blocks) and act once it is in. A page that
  * arrives folded while the work is shown is filled in the same way.
  */
-import { getViewStart, preserveViewportAcrossHistoryMutation, toggleToolOutputPreservingViewport } from "../chatscroll";
+import { getViewStart, preserveViewportAcrossHistoryMutation } from "../chatscroll";
 import { saveTurnWorkPreference } from "../diagnostics";
 import type { Block, ElidedBlockRef } from "../messages";
 import type { Event } from "../protocol";
 import type { RenderState } from "../state";
 import { jumpToSearchMatch } from "../search";
+import { keptByCut, planHistoryTrimAboveView, trimHistoryAboveView, type HistoryCut } from "./history-trim";
 import { omittedToolOutputIdsNearViewport, requestToolOutputs } from "./tool-outputs";
 import type { DaemonActions } from "./types";
 
@@ -26,14 +27,17 @@ function elidedRef(block: Block): ElidedBlockRef | undefined {
   return block.type === "tool_call" || block.type === "thinking" ? block.elided : undefined;
 }
 
-/** Visit elided blocks (through message index `through`) until `visit` returns true. */
-function forEachElided(state: RenderState, visit: (ref: ElidedBlockRef) => boolean | void, through = Number.POSITIVE_INFINITY): void {
-  for (let index = 0; index < state.messages.length && index <= through; index++) {
+/**
+ * Visit elided blocks (through message index `through`, none a trim at `cut`
+ * would drop) until `visit` returns true.
+ */
+function forEachElided(state: RenderState, visit: (ref: ElidedBlockRef) => boolean | void, through = Number.POSITIVE_INFINITY, cut: HistoryCut | null = null): void {
+  for (let index = cut?.at ?? 0; index < state.messages.length && index <= through; index++) {
     const message = state.messages[index]!;
     if (message.role !== "assistant") continue;
-    for (const block of message.blocks) {
-      const ref = elidedRef(block);
-      if (ref && !state.elidedBlocksUnavailable.has(refKey(ref)) && visit(ref) === true) return;
+    for (let block = 0; block < message.blocks.length; block++) {
+      const ref = elidedRef(message.blocks[block]!);
+      if (ref && keptByCut(cut, index, block) && !state.elidedBlocksUnavailable.has(refKey(ref)) && visit(ref) === true) return;
     }
   }
 }
@@ -77,7 +81,7 @@ function needsElidedBlocks(state: RenderState): boolean {
  * order: the blocks between (tool results, text) are small and come back
  * unchanged, and a long turn is one range instead of hundreds.
  */
-export function elidedBlockRanges(state: RenderState, limit = MAX_RANGES_PER_REQUEST, through?: number): Array<{ entry: number; start: number; end: number }> {
+export function elidedBlockRanges(state: RenderState, limit = MAX_RANGES_PER_REQUEST, through?: number, cut: HistoryCut | null = null): Array<{ entry: number; start: number; end: number }> {
   const ranges: Array<{ entry: number; start: number; end: number }> = [];
   forEachElided(state, (ref) => {
     const last = ranges.at(-1);
@@ -88,7 +92,7 @@ export function elidedBlockRanges(state: RenderState, limit = MAX_RANGES_PER_REQ
     }
     if (ranges.length >= limit) return true;
     ranges.push({ entry: ref.entry, start: ref.block, end: ref.block + 1 });
-  }, through);
+  }, through, cut);
   return ranges;
 }
 
@@ -103,11 +107,12 @@ export function requestElidedBlocksIfNeeded(
 ): boolean {
   if (!state.convId || state.elidedBlocksRequestId !== null || !needsElidedBlocks(state)) return false;
   // About to show the work: the history above the view goes rather than all its
-  // work coming, and the work shows once what is in view and above it is in;
-  // the rest below fills in after.
+  // work coming (history-trim.ts), and the work shows once what is in view and
+  // above it is in; the rest below fills in after. The trim waits for the work
+  // to show: the folded view keeps the history meanwhile.
   let through: number | undefined;
+  let cut: HistoryCut | null = null;
   if (state.unfoldAfterElidedLoad !== null && state.searchAfterElidedLoad === null) {
-    trimHistoryAboveView(state);
     // At the bottom, a screen already filled in (the open's prefetch) shows at
     // once; the work above it is fetched right after, out of view.
     if (state.scrollOffset === 0 && bottomScreenFilledIn(state)) {
@@ -116,8 +121,9 @@ export function requestElidedBlocksIfNeeded(
       return settled;
     }
     through = lastMessageInView(state);
+    cut = planHistoryTrimAboveView(state);
   }
-  const ranges = daemon.loadDisplayBlocks ? elidedBlockRanges(state, MAX_RANGES_PER_REQUEST, through) : [];
+  const ranges = daemon.loadDisplayBlocks ? elidedBlockRanges(state, MAX_RANGES_PER_REQUEST, through, cut) : [];
   if (ranges.length === 0) {
     const settled = settleElidedBlocks(state, daemon);
     // Anything still elided (below the view) is fetched now that the work shows.
@@ -204,87 +210,6 @@ export function prefetchBottomScreen(state: RenderState, daemon: Pick<DaemonActi
   state.elidedBlocksRequestId = daemon.loadDisplayBlocks(state.convId, ranges, PREFETCH_SCREEN_BYTES) ?? null;
 }
 
-/** Blocks (a message counts as a few) kept above the first one in view: a couple of screens of tool calls. */
-const UNFOLD_KEEP_BLOCKS = 90;
-const UNFOLD_MESSAGE_BLOCKS = 3;
-
-/**
- * Before showing folded work: drop the loaded history above the view, as if it
- * had never been loaded, except about UNFOLD_KEEP_BLOCKS blocks right above
- * the first one in view; scrolling up pages the rest back in, in full. A folded
- * window covers far more history than the unfolded view needs (its pages leave
- * the work out, and a long turn's work sits between its prompt and reply), so
- * fetching all of it would cost more than the unfolded view ever loaded. A cut
- * inside a turn falls at a round start, so no call loses its result.
- */
-export function trimHistoryAboveView(state: RenderState): void {
-  const anchors = state.historyLineAnchors;
-  if (state.layout.messageAreaHeight <= 0 || anchors.length === 0) return;
-  let first = 0;
-  while (state.messages[first]?.role === "system_instructions") first++;
-  const owners = new Map<object, { message: number; block: number }>();
-  state.messages.forEach((message, index) => {
-    if (index < first) return;
-    owners.set(message, { message: index, block: 0 });
-    if (message.role === "assistant") message.blocks.forEach((block, blockIndex) => owners.set(block, { message: index, block: blockIndex }));
-  });
-  // At the bottom the unfolded view stays at the bottom: keep the end of the
-  // history. Scrolled up, it keeps the first row in view where it is.
-  let top: { message: number; block: number } | undefined;
-  if (state.scrollOffset === 0) {
-    const last = state.messages.length - 1;
-    const message = state.messages[last];
-    if (last >= first && message) top = { message: last, block: message.role === "assistant" ? message.blocks.length : 0 };
-  } else {
-    for (let row = getViewStart(state); row < anchors.length && !top; row++) top = owners.get(anchors[row]!.owner);
-  }
-  if (!top) return;
-  // Walk up from the first block in view until the budget is spent.
-  let budget = UNFOLD_KEEP_BLOCKS;
-  let at = top.message;
-  let keepFrom = top.block;
-  for (;;) {
-    const message = state.messages[at]!;
-    if (message.role === "assistant") {
-      if (keepFrom > budget) { keepFrom -= budget; break; }
-      budget -= keepFrom;
-      keepFrom = 0;
-    } else {
-      budget -= UNFOLD_MESSAGE_BLOCKS;
-    }
-    if (budget <= 0 || at === first) break;
-    at--;
-    const previous = state.messages[at]!;
-    keepFrom = previous.role === "assistant" ? previous.blocks.length : 0;
-  }
-  const message = state.messages[at]!;
-  if (message.role === "assistant") {
-    while (keepFrom > 0 && !(message.blocks[keepFrom - 1]!.type === "tool_result" && message.blocks[keepFrom]!.type !== "tool_result")) keepFrom--;
-    if (keepFrom >= message.blocks.length) { at++; keepFrom = 0; }
-  }
-  if (at === first && keepFrom === 0) return;
-  // Messages map one to one onto the window's entries, from historyStartIndex
-  // (its first only from historyStartBlockIndex).
-  const offset = at - first;
-  const entry = state.historyStartIndex + offset;
-  const kept = state.messages[at];
-  // Never cut on a guess: any elided reference that disagrees with that mapping leaves the window as it is.
-  for (let index = first; index < state.messages.length; index++) {
-    const candidate = state.messages[index]!;
-    const ref = candidate.role === "assistant" ? candidate.blocks.map(elidedRef).find(Boolean) : undefined;
-    if (ref && ref.entry !== state.historyStartIndex + index - first) return;
-  }
-  if (!kept) return;
-  const dropped = state.messages.slice(first, at);
-  if (keepFrom > 0 && kept.role === "assistant") state.messages[at] = { ...kept, blocks: kept.blocks.slice(keepFrom) };
-  state.messages.splice(first, at - first);
-  state.historyStartIndex = entry;
-  state.historyStartBlockIndex = (offset === 0 ? state.historyStartBlockIndex : 0) + keepFrom;
-  state.historyStartUserIndex += dropped.filter(candidate => candidate.role === "user").length;
-  state.historyHasOlder = true;
-  state.deferredHistoryRender = null;
-}
-
 /** Put fetched blocks in place of the elided ones they answer. */
 export function applyDisplayBlocks(state: RenderState, ranges: Extract<Event, { type: "display_blocks_loaded" }>["ranges"]): number {
   const loaded = new Map<string, Block>();
@@ -364,6 +289,7 @@ function settleElidedBlocks(state: RenderState, daemon: Pick<DaemonActions, "loa
   state.searchAfterElidedLoad = null;
   if (unfold === "turn_work") {
     preserveViewportAcrossHistoryMutation(state, () => {
+      trimHistoryAboveView(state);
       state.showTurnWork = true;
       state.showToolOutput = false;
     });
@@ -382,7 +308,10 @@ function settleElidedBlocks(state: RenderState, daemon: Pick<DaemonActions, "loa
 export function expandToolOutput(state: RenderState, daemon: Pick<DaemonActions, "loadToolOutputs">): void {
   const toolCallIds = state.convId ? omittedToolOutputIdsNearViewport(state, { retry: true }) : [];
   if (toolCallIds.length === 0) {
-    toggleToolOutputPreservingViewport(state);
+    preserveViewportAcrossHistoryMutation(state, () => {
+      trimHistoryAboveView(state);
+      state.showToolOutput = true;
+    });
     return;
   }
   state.showToolOutputAfterLoad = true;

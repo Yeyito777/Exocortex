@@ -9,10 +9,11 @@
  * applyPreservedToolResultOutputs, so a body is fetched again only when a Ctrl+O
  * press retries one that is still empty.
  */
-import { getViewStart, preserveViewportAcrossHistoryMutation, toggleToolOutputPreservingViewport } from "../chatscroll";
+import { getViewStart, preserveViewportAcrossHistoryMutation } from "../chatscroll";
 import type { Block } from "../messages";
 import type { Event, ToolOutputInfo } from "../protocol";
 import type { RenderState } from "../state";
+import { trimHistoryAboveView } from "./history-trim";
 import type { DaemonActions } from "./types";
 
 type ToolResultBlock = Extract<Block, { type: "tool_result" }>;
@@ -84,7 +85,12 @@ export function handleToolOutputsLoaded(state: RenderState, event: Extract<Event
   state.toolOutputsRequestId = null;
   if (state.showToolOutputAfterLoad) {
     state.showToolOutputAfterLoad = false;
-    if (!state.showToolOutput) toggleToolOutputPreservingViewport(state);
+    if (!state.showToolOutput) {
+      preserveViewportAcrossHistoryMutation(state, () => {
+        trimHistoryAboveView(state);
+        state.showToolOutput = true;
+      });
+    }
   }
 }
 
