@@ -15,7 +15,7 @@
 
 import { lookup } from "node:dns/promises";
 import { connect } from "node:net";
-import { createAbortError } from "./abort";
+import { createAbortError, raceAbort } from "./abort";
 import { log } from "./log";
 
 export const PROBE_INITIAL_DELAY_MS = 3_000;
@@ -213,18 +213,6 @@ export class ConnectivityMonitor {
       }
     }
   }
-}
-
-function raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-  if (signal.aborted) return Promise.reject(createAbortError());
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(createAbortError());
-    signal.addEventListener("abort", onAbort, { once: true });
-    promise.then(
-      (value) => { signal.removeEventListener("abort", onAbort); resolve(value); },
-      (error) => { signal.removeEventListener("abort", onAbort); reject(error); },
-    );
-  });
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, signal: AbortSignal): Promise<T> {
