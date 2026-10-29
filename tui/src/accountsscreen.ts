@@ -36,7 +36,7 @@ import type { ScreenRect } from "./historyimages";
 import { moveTo } from "./frame";
 import { maybeCensorEmail } from "./privacy";
 import { pushSystemMessage } from "./state";
-import { barFill } from "./statusblocks/usage";
+import { barFill, formatCreditCountdown } from "./statusblocks/usage";
 import { theme } from "./theme";
 import { termWidth, truncateToWidth } from "./textwidth";
 
@@ -203,13 +203,7 @@ function formatDuration(ms: number): string {
   return `${mins}m`;
 }
 
-/** Time until a credit grant expires, coarse: "171d", "5h", "<1h". */
-export function formatCreditCountdown(ms: number): string {
-  const hours = Math.floor(ms / 3_600_000);
-  if (hours >= 24) return `${Math.floor(hours / 24)}d`;
-  if (hours >= 1) return `${hours}h`;
-  return "<1h";
-}
+export { formatCreditCountdown };
 
 /** A window past its reset time has started over. */
 function windowPercent(window: UsageWindow | null | undefined, now: number): number | null {

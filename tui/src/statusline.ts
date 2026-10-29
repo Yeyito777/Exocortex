@@ -25,6 +25,8 @@ export interface StatusBlock {
   width: number;        // visible columns needed (excluding delimiter)
   height: number;       // rows this block occupies
   rows: string[];       // pre-rendered ANSI row strings
+  /** Narrower forms of this block, widest first: the first that fits is shown before the block is dropped. */
+  narrower?: StatusBlock[];
 }
 
 type BlockBuilder = (state: RenderState) => StatusBlock | null;
@@ -56,21 +58,22 @@ function layoutBlocks(state: RenderState, cols: number): StatusBlock[] {
   // Sort by priority descending for the survival decision
   const byPriority = [...candidates].sort((a, b) => b.block.priority - a.block.priority);
 
-  // Greedily select blocks that fit
-  const selectedPositions = new Set<number>();
+  // Greedily select blocks that fit, each in its widest form that does
+  const selected = new Map<number, StatusBlock>();
   let used = 0;
   for (const { block, position } of byPriority) {
-    const need = selectedPositions.size === 0 ? block.width : DELIMITER_WIDTH + block.width;
-    if (used + need <= cols) {
-      selectedPositions.add(position);
-      used += need;
+    const delimiter = selected.size === 0 ? 0 : DELIMITER_WIDTH;
+    const form = [block, ...(block.narrower ?? [])].find(entry => used + delimiter + entry.width <= cols);
+    if (form) {
+      selected.set(position, form);
+      used += delimiter + form.width;
     }
   }
 
   // Return in original positional order
   return candidates
-    .filter(c => selectedPositions.has(c.position))
-    .map(c => c.block);
+    .filter(c => selected.has(c.position))
+    .map(c => selected.get(c.position)!);
 }
 
 // ── Row composition ─────────────────────────────────────────────────

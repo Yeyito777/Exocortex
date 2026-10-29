@@ -10,13 +10,18 @@
  * them so it never fails silently.
  *
  * While Claude turns run on API credits (every subscription account at a
- * limit), two short rows beside the bars say so, with the balance left on
- * the key in use (≈ while only an estimate, red under a tenth of its grants).
+ * limit), the bars give way to the credits: a Credit row (everything left
+ * over everything granted, every key's organization once) and an Expiry row
+ * (each grant's balance and the time to its expiry, soonest first), with
+ * "API credits" and when a subscription is back on the right. OpenAI on an
+ * API-key credit grant shows the same rows, with today's spend against the
+ * pace that lasts until it expires on the right. An older daemon that sends
+ * no pool keeps the bars, with two short rows beside them.
  */
 
 import type { RenderState } from "../state";
 import type { StatusBlock } from "../statusline";
-import type { ApiCreditsUsage, ApiKeyCredit, ApiKeySpend, ApiKeyUsage, UsageWindow } from "../messages";
+import type { ApiCreditGrantLeft, ApiCreditPool, ApiCreditsUsage, ApiKeyCredit, ApiKeySpend, ApiKeyUsage, UsageWindow } from "../messages";
 import { theme } from "../theme";
 import { activeProviderProxy } from "../provider-proxies";
 
@@ -276,33 +281,144 @@ export function creditView(credit: ApiKeyCredit, todayUsd: number): CreditView {
   };
 }
 
-const CREDIT_LABEL_WIDTH = "Credits".length;
+/** Time until a credit grant expires, coarse: "171d", "5h", "<1h" (the Accounts screen's too). */
+export function formatCreditCountdown(ms: number): string {
+  const hours = Math.floor(ms / 3_600_000);
+  if (hours >= 24) return `${Math.floor(hours / 24)}d`;
+  if (hours >= 1) return `${hours}h`;
+  return "<1h";
+}
 
-/** "  Credits: [bar] expired Oct 20", in red. */
-function expiredCreditLine(credit: ApiKeyCredit): { line: string; width: number } {
-  const head = labelCell("Credits", CREDIT_LABEL_WIDTH);
-  const text = `expired ${formatDay(credit.expires!)}`;
-  return {
-    line: `${theme.muted}${head}${theme.text}[${renderBar(credit.usedUsd, credit.amountUsd)}${theme.text}] ${theme.error}${text}${theme.reset}`,
-    width: head.length + 1 + BAR_WIDTH + 1 + 1 + text.length,
+/** A run of text in one colour; a row is a list of them. */
+type Piece = [color: string, text: string];
+
+function piecesWidth(pieces: readonly Piece[]): number {
+  return pieces.reduce((sum, [, text]) => sum + text.length, 0);
+}
+
+function paint(pieces: readonly Piece[], width = piecesWidth(pieces)): string {
+  return pieces.map(([color, text]) => color + text).join("") + theme.reset + " ".repeat(Math.max(0, width - piecesWidth(pieces)));
+}
+
+/** The left column of the credit rows, the right column, and the narrower forms the left one has. */
+interface CreditRows {
+  credit: Piece[];
+  /** The Expiry row showing its first `shown` grants (all of them: the full row). */
+  expiry: (shown: number) => Piece[];
+  /** How many grants the Expiry row lists in full. */
+  grants: number;
+  right: [Piece[], Piece[]];
+}
+
+/** Between the left column and the right one. */
+const CREDIT_RIGHT_GAP = 3;
+
+/**
+ * The credit rows as a block, and narrower ones for the status line to fall
+ * back to: first without the right column, then with fewer grants listed
+ * ("+2" for the rest).
+ */
+function creditBlock(rows: CreditRows): StatusBlock {
+  const variant = (shown: number, right: boolean): StatusBlock => {
+    const expiry = rows.expiry(shown);
+    const left = Math.max(piecesWidth(rows.credit), piecesWidth(expiry));
+    const rightWidth = right ? Math.max(...rows.right.map(piecesWidth)) : 0;
+    const width = right && rightWidth > 0 ? left + CREDIT_RIGHT_GAP + rightWidth : left;
+    const row = (leftPieces: Piece[], rightPieces: Piece[]) => width === left
+      ? paint(leftPieces, width)
+      : paint(leftPieces, left + CREDIT_RIGHT_GAP) + paint(rightPieces, rightWidth);
+    return { id: "usage", priority: 3, width, height: 2, rows: [row(rows.credit, rows.right[0]), row(expiry, rows.right[1])] };
   };
+  const full = variant(rows.grants, true);
+  const narrower: StatusBlock[] = [];
+  for (const form of [variant(rows.grants, false), ...Array.from({ length: Math.max(0, rows.grants - 1) }, (_, i) => variant(rows.grants - 1 - i, false))]) {
+    // The Credit row sets the least width: a form no narrower than the last one is no help.
+    if (form.width < (narrower.at(-1) ?? full).width) narrower.push(form);
+  }
+  return narrower.length > 0 ? { ...full, narrower } : full;
+}
+
+/** "  Credit: [bar] ≈$862 / $900": the bar is the share left, green (red under a tenth), the amount bold. */
+function creditRow(leftUsd: number, grantedUsd: number, approximate: boolean, note: Piece[] = []): Piece[] {
+  const color = leftUsd < grantedUsd * LOW_CREDIT_FRACTION ? theme.error : theme.success;
+  const filled = grantedUsd > 0 ? barFill(leftUsd, grantedUsd) : 0;
+  return [
+    [theme.muted, labelCell("Credit")],
+    [theme.text, "["], [color, "\u2588".repeat(filled)], [theme.muted, "\u2591".repeat(BAR_WIDTH - filled)], [theme.text, "] "],
+    [theme.bold + color, `${approximate ? "≈" : ""}${formatDollars(Math.max(0, leftUsd))}`],
+    [theme.boldOff + theme.muted, ` / ${formatDollars(grantedUsd)}`],
+    ...note,
+  ];
+}
+
+/** Grants worth listing: anything that rounds to a dollar or more. */
+function listedGrants(grants: readonly ApiCreditGrantLeft[], now: number): ApiCreditGrantLeft[] {
+  return grants
+    .filter(grant => (grant.expiresAt === null || grant.expiresAt > now) && Math.round(grant.leftUsd) >= 1)
+    .sort((a, b) => (a.expiresAt ?? Infinity) - (b.expiresAt ?? Infinity));
+}
+
+/** "  Expiry: $162 12d · $200 19d · $500 170d", the first `shown` grants, then "+N" for the rest. */
+function expiryRow(grants: readonly ApiCreditGrantLeft[], shown: number, now: number): Piece[] {
+  const pieces: Piece[] = [[theme.muted, labelCell("Expiry")]];
+  if (grants.length === 0) return [...pieces, [theme.muted, "none left"]];
+  const separator: Piece = [theme.muted + theme.dim, " · "];
+  grants.slice(0, shown).forEach((grant, index) => {
+    if (index > 0) pieces.push(separator);
+    pieces.push(
+      [theme.reset + theme.bold + theme.success, formatDollars(grant.leftUsd)],
+      [theme.boldOff + theme.muted, grant.expiresAt === null ? " no expiry" : ` ${formatCreditCountdown(grant.expiresAt - now)}`],
+    );
+  });
+  if (shown < grants.length) pieces.push(separator, [theme.reset + theme.muted, `+${grants.length - shown}`]);
+  return pieces;
+}
+
+const API_CREDITS_HEAD: Piece[] = [[theme.warning, "API credits"]];
+
+/** The rows for Claude turns on API credits, from a daemon that sends the pool. */
+function claudeCreditBlock(credits: ApiCreditsUsage, pool: ApiCreditPool, now: number): StatusBlock {
+  const grants = listedGrants(pool.grants, now);
+  const back = credits.subscriptionsBackAt;
+  return creditBlock({
+    credit: creditRow(pool.balanceUsd, pool.grantedUsd, pool.approximate, pool.signInNeeded ? [[theme.muted, " sign-in needed"]] : []),
+    expiry: shown => expiryRow(grants, shown, now),
+    grants: grants.length,
+    right: [
+      API_CREDITS_HEAD,
+      typeof back === "number" && back > now ? [[theme.muted, "subs back "], [theme.accent, formatShortTimeUntil(back, now)]] : [],
+    ],
+  });
+}
+
+/** Midnight (local) after a local day: when a grant that expires that day ends. */
+function endOfLocalDay(day: string): number {
+  const [year, month, date] = day.split("-").map(Number);
+  return new Date(year, month - 1, date + 1).getTime();
 }
 
 /**
- * "  Credits: [bar] $936 / $1000" over "  Today:   [bar] $39.70 / $2.73".
- * The credit bar is the share used; the balance turns red under 10%. Today's
- * bar is its spend against the pace that lasts until the grant expires, red
- * once over it; without an expiry (or once expired) today is a plain amount.
+ * OpenAI's credit grant as the same rows: "  Credit: [bar] ≈$935 / $1000"
+ * (always ≈: it is the grant less what this daemon counted) over its expiry,
+ * with today's spend against the pace that lasts until then on the right, red
+ * once over it. An expired grant says so in red.
  */
-function creditLines(apiKey: ApiKeyUsage, credit: ApiKeyCredit): Array<{ line: string; width: number }> {
+function openAICreditBlock(apiKey: ApiKeyUsage, credit: ApiKeyCredit, now: number): StatusBlock {
   const todayUsd = apiKey.today.estimatedCostUsd;
   const view = creditView(credit, todayUsd);
-  const credits = view.expired
-    ? expiredCreditLine(credit)
-    : barLine("Credits", credit.usedUsd, credit.amountUsd, formatDollars(view.leftUsd), view.low ? theme.error : theme.accent, formatDollars(credit.amountUsd), CREDIT_LABEL_WIDTH);
-  const options = { labelWidth: CREDIT_LABEL_WIDTH, format: formatCents };
-  const today = view.paceUsd !== null ? budgetLine("Today", todayUsd, view.paceUsd, options) : spendLine("Today", todayUsd, options);
-  return [credits, today];
+  const today: Piece[] = view.paceUsd !== null
+    ? [[theme.muted, "today "], [todayUsd > view.paceUsd ? theme.error : theme.accent, formatCents(todayUsd)], [theme.muted, ` of ${formatCents(view.paceUsd)}`]]
+    : [[theme.muted, "today "], [theme.accent, formatCents(todayUsd)]];
+  const grant: ApiCreditGrantLeft = { leftUsd: view.leftUsd, grantedUsd: credit.amountUsd, expiresAt: credit.expires === null ? null : endOfLocalDay(credit.expires) };
+  const grants = view.expired ? [] : listedGrants([grant], now);
+  return creditBlock({
+    credit: creditRow(view.expired ? 0 : view.leftUsd, credit.amountUsd, true),
+    expiry: shown => view.expired
+      ? [[theme.muted, labelCell("Expiry")], [theme.error, `expired ${formatDay(credit.expires!)}`]]
+      : expiryRow(grants, shown, now),
+    grants: grants.length,
+    right: [API_CREDITS_HEAD, today],
+  });
 }
 
 /**
@@ -314,15 +430,15 @@ function creditLines(apiKey: ApiKeyUsage, credit: ApiKeyCredit): Array<{ line: s
  * Requests the estimate could not price (audio, images) are left to /tokens.
  */
 export function apiKeyRows(apiKey: ApiKeyUsage, now = Date.now()): StatusBlock {
+  if (apiKey.credit) return openAICreditBlock(apiKey, apiKey.credit, now);
   const budget = apiKey.monthlyBudgetUsd && apiKey.monthlyBudgetUsd > 0 ? apiKey.monthlyBudgetUsd : null;
   const allowance = budget === null ? 0 : dailyAllowance(apiKey, budget, now);
-  const lines = apiKey.credit ? creditLines(apiKey, apiKey.credit)
-    : budget === null
-      ? [spendLine("Today", apiKey.today.estimatedCostUsd), spendLine("Month", apiKey.month.estimatedCostUsd)]
-      : [
-          allowance > 0 ? budgetLine("Today", apiKey.today.estimatedCostUsd, allowance) : spendLine("Today", apiKey.today.estimatedCostUsd),
-          budgetLine("Month", apiKey.month.estimatedCostUsd, budget),
-        ];
+  const lines = budget === null
+    ? [spendLine("Today", apiKey.today.estimatedCostUsd), spendLine("Month", apiKey.month.estimatedCostUsd)]
+    : [
+        allowance > 0 ? budgetLine("Today", apiKey.today.estimatedCostUsd, allowance) : spendLine("Today", apiKey.today.estimatedCostUsd),
+        budgetLine("Month", apiKey.month.estimatedCostUsd, budget),
+      ];
   const width = Math.max(...lines.map(line => line.width));
   return {
     id: "usage",
@@ -340,11 +456,21 @@ export function usageSummary(state: RenderState, now = Date.now()): string | nul
   if (usage?.apiKey) return apiKeySummary(usage.apiKey);
   if (!usage?.fiveHour && !usage?.sevenDay) return null;
   const capacity = usage.capacity && usage.capacity > 0 ? usage.capacity : 100;
-  const left = usage.apiCredits ? creditBalance(usage.apiCredits) : null;
-  const credits = usage.apiCredits?.active
-    ? ` · on API credits${usage.apiCredits.label ? ` (${usage.apiCredits.label})` : ""}${left ? `, ${left.text} left` : ""}, ≈${formatCents(usage.apiCredits.spentUsd)} this cycle`
-    : "";
+  const credits = usage.apiCredits?.active ? ` · ${apiCreditSummary(usage.apiCredits, now)}` : "";
   return `${summarizeWindow("5-hour", usage.fiveHour, now, capacity)} · ${summarizeWindow("weekly", usage.sevenDay, now, capacity)}${credits}`;
+}
+
+/** "on API credits, $862 / $900 left, subscriptions back in 1d4h, ≈$1.23 this cycle" (older daemons: the key in use and its balance). */
+function apiCreditSummary(credits: ApiCreditsUsage, now: number): string {
+  const spent = `≈${formatCents(credits.spentUsd)} this cycle`;
+  const pool = credits.pool;
+  if (!pool) {
+    const left = creditBalance(credits);
+    return `on API credits${credits.label ? ` (${credits.label})` : ""}${left ? `, ${left.text} left` : ""}, ${spent}`;
+  }
+  const back = typeof credits.subscriptionsBackAt === "number" && credits.subscriptionsBackAt > now
+    ? `, subscriptions back in ${formatShortTimeUntil(credits.subscriptionsBackAt, now)}` : "";
+  return `on API credits, ${pool.approximate ? "≈" : ""}${formatDollars(Math.max(0, pool.balanceUsd))} / ${formatDollars(pool.grantedUsd)} left${back}, ${spent}`;
 }
 
 /** "$199" (≈ while only an estimate) for the key in use, red under 10% of its grants; null from a daemon that does not send it. */
@@ -393,30 +519,43 @@ function proxyProblemRows(state: RenderState): { rows: string[]; width: number }
   };
 }
 
+/** Claude's credit rows replace the bars: while turns run on API credits, from a daemon that sends the pool. */
+function creditPool(credits: ApiCreditsUsage | null | undefined): ApiCreditPool | null {
+  return credits?.active && credits.pool ? credits.pool : null;
+}
+
+/** `side` beside `block` (and beside each of its narrower forms). */
+function withSide(block: StatusBlock, side: { rows: string[]; width: number }): StatusBlock {
+  const gap = "  ";
+  return {
+    ...block,
+    width: block.width + gap.length + side.width,
+    rows: block.rows.map((row, index) => `${row}${gap}${side.rows[index] ?? " ".repeat(side.width)}`),
+    ...(block.narrower ? { narrower: block.narrower.map(form => withSide(form, side)) } : {}),
+  };
+}
+
 export function usageBlock(state: RenderState): StatusBlock | null {
   if (!state.authByProvider[state.provider]) return null;
 
-  const sides = [apiCreditRows(state.usageByProvider[state.provider]?.apiCredits), proxyProblemRows(state)]
+  const credits = state.usageByProvider[state.provider]?.apiCredits;
+  const sides = [creditPool(credits) ? null : apiCreditRows(credits), proxyProblemRows(state)]
     .filter((side): side is { rows: string[]; width: number } => side !== null);
   const bars = usageBars(state);
   if (!bars) {
     const problem = sides.at(-1);
     return problem ? { id: "usage", priority: 3, width: problem.width, height: problem.rows.length, rows: problem.rows } : null;
   }
-  const gap = "  ";
-  return sides.reduce<StatusBlock>((block, side) => ({
-    ...block,
-    width: block.width + gap.length + side.width,
-    rows: block.rows.map((row, index) => `${row}${gap}${side.rows[index] ?? " ".repeat(side.width)}`),
-  }), bars);
+  return sides.reduce<StatusBlock>(withSide, bars);
 }
 
 function usageBars(state: RenderState): StatusBlock | null {
   const usage = state.usageByProvider[state.provider];
-  if (usage?.apiKey) return apiKeyRows(usage.apiKey);
-  if (!usage?.fiveHour && !usage?.sevenDay) return null;
-
   const now = Date.now();
+  if (usage?.apiKey) return apiKeyRows(usage.apiKey, now);
+  const pool = creditPool(usage?.apiCredits);
+  if (pool) return claudeCreditBlock(usage!.apiCredits!, pool, now);
+  if (!usage?.fiveHour && !usage?.sevenDay) return null;
 
   const capacity = usage.capacity && usage.capacity > 0 ? usage.capacity : 100;
   const fiveHour = usage.fiveHour

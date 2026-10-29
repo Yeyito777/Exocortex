@@ -32,7 +32,7 @@ import { dirname, join } from "path";
 import { readExocortexConfig } from "@exocortex/shared/config";
 import { externalToolsDir, runtimeDir } from "@exocortex/shared/paths";
 import { resolveAnthropicApiPricing } from "@exocortex/shared/token-pricing";
-import type { ApiCreditsUsage } from "../../messages";
+import type { ApiCreditGrantLeft, ApiCreditPool, ApiCreditsUsage } from "../../messages";
 import type { AccountCredits } from "@exocortex/shared/protocol";
 import { log } from "../../log";
 import { apiKeyCredit, apiKeyDailySpendUsd, recordApiKeyUsage } from "../openai/api-key-usage";
@@ -641,14 +641,33 @@ function grantSpans(grants: ApiCreditGrant[], from: number, now: number): GrantS
   return spans;
 }
 
+/** What is left of some grants: the total, what they granted, their expiries and each one's share, soonest expiry first. */
+export interface CreditBalance {
+  balanceUsd: number;
+  grantedUsd: number;
+  expiresAt: number[];
+  grants: ApiCreditGrantLeft[];
+}
+
+/** The keys' counted spend per local day, added up. */
+function dailySpend(keys: readonly ApiCreditKey[]): Record<string, number> {
+  const days: Record<string, number> = {};
+  for (const key of keys) {
+    for (const [day, usd] of Object.entries(apiKeyDailySpendUsd(API_CREDIT_ACCOUNT_KEY_PREFIX + key.id))) days[day] = (days[day] ?? 0) + usd;
+  }
+  return days;
+}
+
 /**
  * What is left of a key's grants that have not expired: the ledger's spend,
  * day by day, drawn from the grant that expires soonest. Null without grants.
+ * `spenders` are the keys whose spend draws on them (keys sharing one
+ * organization share its grants); unset, the key alone.
  */
-export function apiCreditBalance(key: ApiCreditKey, now = Date.now()): { balanceUsd: number; grantedUsd: number; expiresAt: number[] } | null {
+export function apiCreditBalance(key: ApiCreditKey, now = Date.now(), spenders: readonly ApiCreditKey[] = [key]): CreditBalance | null {
   const grants = key.grants ?? [];
   if (grants.length === 0) return null;
-  const days = Object.entries(apiKeyDailySpendUsd(API_CREDIT_ACCOUNT_KEY_PREFIX + key.id)).sort(([a], [b]) => a.localeCompare(b));
+  const days = Object.entries(dailySpend(spenders)).sort(([a], [b]) => a.localeCompare(b));
   const from = days.length > 0 ? dayStart(days[0][0]) : now;
   const spans = grantSpans(grants, from, now).sort((a, b) => a.end - b.end);
   for (const [day, spent] of days) {
@@ -663,32 +682,41 @@ export function apiCreditBalance(key: ApiCreditKey, now = Date.now()): { balance
     }
   }
   const current = spans.filter(span => span.start <= now && span.end > now);
-  if (current.length === 0) return { balanceUsd: 0, grantedUsd: 0, expiresAt: [] };
   return {
     balanceUsd: current.reduce((sum, span) => sum + span.remaining, 0),
     grantedUsd: current.reduce((sum, span) => sum + span.amountUsd, 0),
     expiresAt: current.map(span => span.end),
+    grants: current.map(span => ({ leftUsd: span.remaining, grantedUsd: span.amountUsd, expiresAt: span.end })),
   };
 }
 
+/** Credits of some keys, with each grant listed (the status bar's pool); the Accounts screen drops the list. */
+export type KeysCredits = Omit<AccountCredits, "active"> & { grants: ApiCreditGrantLeft[] };
+
 /**
  * What is left on these keys: each Console organization's synced balance
- * once, else a key's configured grants (an estimate). Null when neither is known.
+ * once, else its configured grants (an estimate): a key's own, or for keys
+ * on one organization the first one's that has any, drawn on by all of them.
+ * Null when neither is known.
  */
-export function apiCreditKeysCredits(keys: readonly ApiCreditKey[], now = Date.now()): Omit<AccountCredits, "active"> | null {
-  type Part = { balanceUsd: number; grantedUsd: number; expiresAt: number[]; approximate: boolean; signInNeeded: boolean };
+export function apiCreditKeysCredits(keys: readonly ApiCreditKey[], now = Date.now()): KeysCredits | null {
+  type Part = CreditBalance & { approximate: boolean; signInNeeded: boolean };
   const parts: Part[] = [];
-  const synced = new Set<string>();
+  const done = new Set<string>();
   for (const org of consoleOrgs(keys)) {
     const balance = syncedBalance(org, now);
     if (!balance) continue;
     parts.push(balance);
-    for (const id of org.keyIds) synced.add(id);
+    for (const id of org.keyIds) done.add(id);
   }
   for (const key of keys) {
-    if (synced.has(key.id)) continue;
-    const estimate = apiCreditBalance(key, now);
-    if (estimate) parts.push({ ...estimate, approximate: true, signInNeeded: key.console ? consoleSignInNeeded(key.console.org) : false });
+    if (done.has(key.id)) continue;
+    const org = key.console?.org ?? null;
+    const sharing = org ? keys.filter(entry => entry.console?.org === org) : [key];
+    for (const entry of sharing) done.add(entry.id);
+    const granting = sharing.find(entry => (entry.grants ?? []).length > 0);
+    const estimate = granting ? apiCreditBalance(granting, now, sharing) : null;
+    if (estimate) parts.push({ ...estimate, approximate: true, signInNeeded: org ? consoleSignInNeeded(org) : false });
   }
   if (parts.length === 0) return null;
   return {
@@ -697,6 +725,7 @@ export function apiCreditKeysCredits(keys: readonly ApiCreditKey[], now = Date.n
     expiresAt: parts.flatMap(part => part.expiresAt).sort((a, b) => a - b),
     approximate: parts.some(part => part.approximate),
     signInNeeded: parts.some(part => part.signInNeeded),
+    grants: parts.flatMap(part => part.grants).sort((a, b) => (a.expiresAt ?? Infinity) - (b.expiresAt ?? Infinity)),
   };
 }
 
@@ -704,7 +733,22 @@ export function apiCreditKeysCredits(keys: readonly ApiCreditKey[], now = Date.n
 export function apiCreditAccountCredits(account: string, activeKeys: ReadonlySet<string>, now = Date.now()): AccountCredits | null {
   const keys = apiCreditConfig().keys.filter(key => key.account === account);
   const credits = apiCreditKeysCredits(keys, now);
-  return credits ? { ...credits, active: keys.some(key => activeKeys.has(key.id)) } : null;
+  if (!credits) return null;
+  const { grants: _grants, ...rest } = credits;
+  return { ...rest, active: keys.some(key => activeKeys.has(key.id)) };
+}
+
+/** Every configured key's credits together, for the status bar; null when none is known. */
+export function apiCreditPool(now = Date.now()): ApiCreditPool | null {
+  const credits = apiCreditKeysCredits(apiCreditConfig().keys, now);
+  if (!credits) return null;
+  return {
+    balanceUsd: credits.balanceUsd,
+    grantedUsd: credits.grantedUsd,
+    approximate: credits.approximate === true,
+    ...(credits.signInNeeded ? { signInNeeded: true } : {}),
+    grants: credits.grants,
+  };
 }
 
 /** The keys whose balance a key's figures show: its account's, else its own. */
@@ -716,7 +760,12 @@ function balanceKeys(key: ApiCreditKey): ApiCreditKey[] {
  * The status-bar view of the fallback; null when it is off. `active`: credit
  * turns run or would run now; `activeKeys`: the keys they run on.
  */
-export function apiCreditsUsage(active: boolean, now = Date.now(), activeKeys: ReadonlySet<string> = new Set()): ApiCreditsUsage | null {
+export function apiCreditsUsage(
+  active: boolean,
+  now = Date.now(),
+  activeKeys: ReadonlySet<string> = new Set(),
+  subscriptionsBackAt: number | null = null,
+): ApiCreditsUsage | null {
   const config = apiCreditConfig();
   if (!config.enabled) return null;
   const key = usableApiCreditKey(now);
@@ -731,6 +780,8 @@ export function apiCreditsUsage(active: boolean, now = Date.now(), activeKeys: R
     balanceUsd: credits?.balanceUsd ?? null,
     grantedUsd: credits?.grantedUsd ?? null,
     approximate: credits?.approximate ?? false,
+    pool: apiCreditPool(now),
+    subscriptionsBackAt,
   };
 }
 

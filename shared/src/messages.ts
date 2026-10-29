@@ -932,6 +932,35 @@ export interface ApiCreditsUsage {
   grantedUsd?: number | null;
   /** That balance is only an estimate. */
   approximate?: boolean;
+  /**
+   * Every configured key's credits together, each Console organization once
+   * (the status bar's Credit and Expiry rows). Omitted by older daemons.
+   */
+  pool?: ApiCreditPool | null;
+  /**
+   * While every subscription account is at a usage limit: the soonest one can
+   * take turns again; null when unknown. Omitted by older daemons.
+   */
+  subscriptionsBackAt?: number | null;
+}
+
+/** API credits pooled over every configured key. */
+export interface ApiCreditPool {
+  balanceUsd: number;
+  grantedUsd: number;
+  /** Some of it is only an estimate (never synced from the Console, or synced hours ago). */
+  approximate: boolean;
+  /** A Console session the balance is read through is signed out. */
+  signInNeeded?: boolean;
+  /** Each grant that has not expired and what is left of it, soonest expiry first (never-expiring ones last). */
+  grants: ApiCreditGrantLeft[];
+}
+
+export interface ApiCreditGrantLeft {
+  leftUsd: number;
+  grantedUsd: number;
+  /** When it expires (ms); null: it does not. */
+  expiresAt: number | null;
 }
 
 /** Spend counted from the usage OpenAI reported for API-key requests. */
