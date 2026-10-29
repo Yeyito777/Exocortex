@@ -103,7 +103,7 @@ export function focusNextStreamingConversation(sidebar: SidebarState, currentCon
   return focusNextActivityConversation(sidebar, "streaming", currentConvId);
 }
 
-export function selectedDisplayRow(displayRows: DisplayRow[], sidebar: SidebarState): number {
+export function selectedDisplayRow(displayRows: readonly DisplayRow[], sidebar: SidebarState): number {
   if (!sidebar.selectedItem) {
     const legacyConv = sidebar.selectedId
       ? sidebar.conversations.find(c => c.id === sidebar.selectedId)
