@@ -77,7 +77,7 @@ import { connectivity as daemonConnectivity, type ConnectivityMonitor } from "./
 import { runWithNetworkWait } from "./network-wait";
 import { runWithProxyLinkWait, type ProxyLinkWaitDeps, type ProxyLinkWaitOptions } from "./proxy-link-wait";
 import { isUsageLimitError, runWithUsageLimitWait, UsageLimitedError, type UsageAvailability } from "./usage-limit-wait";
-import { conversationAllowsApiCredits, conversationWaitsForUsageLimits } from "./app-registry";
+import { conversationAllowsApiCredits, conversationWaitsForUsageLimits, isAppConversation } from "./app-registry";
 import { claudeUsageAvailability } from "./providers/anthropic/availability";
 import { isProviderProxied, providerProxyConnect, providerProxyRoute } from "./provider-proxy/route";
 import { classifyNetworkFailureMessage } from "./providers/errors";
@@ -659,13 +659,13 @@ async function orchestrateAdmittedAssistantTurn(
   // The turn's identity for awaiting clients (turn_result.turnId): its prompt,
   // or for a replay the latest prompt it replays.
   let turnPromptStartedAt: number | undefined = userMessage ? startedAt : undefined;
-  /** What an earlier job of the turn showed, after its prompt: a replay continues it. */
+  /** What an earlier job of the turn showed, after its prompt: a replay continues it (app turn catch-ups). */
   let turnShownBefore: Block[] = [];
   for (let index = conv.messages.length - 1; !userMessage && index >= 0; index--) {
     const message = conv.messages[index];
     if (!message || !isRealUserMessage(message)) continue;
     turnPromptStartedAt = message.metadata?.startedAt ?? undefined;
-    if (!manualCompaction) turnShownBefore = convStore.turnBlocksAfter(conv, index);
+    if (!manualCompaction && isAppConversation(convId)) turnShownBefore = convStore.turnBlocksAfter(conv, index);
     break;
   }
   if (goalContinuation && conv.goal?.status === "active") conv.goal.turns += 1;
