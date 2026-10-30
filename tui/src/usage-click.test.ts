@@ -117,7 +117,7 @@ describe("usage block hit-test", () => {
     expect(cursorZone(rect.left - 1, rect.top, state)).toBe("pointer");
   });
 
-  test("on API credits the rectangle is the Credit and Expiry rows, right column included, and shrinks with a narrower form", () => {
+  test("on API credits the rectangle is the Credit and Expiry rows, at any width", () => {
     for (const cols of [150, 60]) {
       const state = claudeState(2, cols);
       const now = Date.now();
@@ -140,7 +140,7 @@ describe("usage block hit-test", () => {
       const ends = [rows[top - 1], rows[top]].map(row => row.slice(0, rect.right).trimEnd().length);
       expect(Math.max(...ends)).toBe(rect.right);
       for (const row of [rows[top - 1], rows[top]]) expect(row[rect.right] ?? " ").toBe(" ");
-      expect(rows.join("\n").includes("API credits")).toBe(cols === 150);
+      expect(rows.join("\n")).not.toContain("API credits");
       expect(cursorZone(rect.right, rect.bottom, state)).toBe("hand");
       expect(press(state, rect.right, rect.bottom)).toEqual({ type: "open_accounts" });
       expect(isInsideUsageBlock(rect.right + 1, rect.top, state)).toBe(false);

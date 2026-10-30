@@ -213,23 +213,21 @@ describe("Claude on API credits: Credit and Expiry rows", () => {
     const rows = block.rows.map(stripAnsi);
     const credit = `  Credit: [${"\u2588".repeat(19)}${"\u2591"}] $862 / $900`;
     const expiry = "  Expiry: $162 12d · $200 19d · $500 170d";
-    const col = Math.max(credit.length, expiry.length) + 3;
-    expect(rows[0].trimEnd()).toBe(`${credit.padEnd(col)}API credits`);
-    expect(rows[1].trimEnd()).toBe(`${expiry.padEnd(col)}subs back 1d4h`);
+    expect(rows[0].trimEnd()).toBe(credit);
+    expect(rows[1].trimEnd()).toBe(expiry);
     expect(rows.every(row => row.length === block.width)).toBe(true);
-    expect(block.width).toBe(col + "subs back 1d4h".length);
+    // Nothing to the right: the block is as wide as its longer row.
+    expect(block.width).toBe(Math.max(credit.length, expiry.length));
     const text = rows.join("\n");
-    for (const gone of ["5-Hour", "Weekly", "main", "$662", "left"]) expect(text).not.toContain(gone);
-    // Colours: the bar accent, the amounts plain green, the grant muted, the label warning, the time accent, the separators dim.
+    for (const gone of ["5-Hour", "Weekly", "main", "$662", "left", "API credits", "subs back"]) expect(text).not.toContain(gone);
+    // Colours: the bar accent, the amounts plain green, the grant muted, the separators dim.
     expect(block.rows[0]).toContain(`${theme.accent}\u2588`);
     expect(block.rows[0]).toContain(`${theme.success}$862`);
     expect(block.rows[0]).not.toContain(theme.bold);
     expect(block.rows[0]).toContain(`${theme.muted} / $900`);
-    expect(block.rows[0]).toContain(`${theme.warning}API credits`);
     expect(block.rows[1]).toContain(`${theme.success}$162`);
     expect(block.rows[1]).not.toContain(theme.bold);
     expect(block.rows[1]).toContain(`${theme.dim} · `);
-    expect(block.rows[1]).toContain(`${theme.accent}1d4h`);
   });
 
   test("labels share the window labels' width: the bar does not move between subscription and credits", () => {
@@ -244,29 +242,18 @@ describe("Claude on API credits: Credit and Expiry rows", () => {
     expect(credits[1].indexOf("$")).toBe(bars[1].indexOf("["));
   });
 
-  test("the right column starts 3 after the longer left row, wherever that is", () => {
-    // Long Expiry row: the column follows it.
-    let rows = usageBlock(creditState({}, [grant(100, 100, 3), grant(100, 100, 30), grant(100, 100, 60), grant(100, 100, 300)]))!.rows.map(stripAnsi);
-    expect(rows[1].indexOf("subs back")).toBe("  Expiry: $100 3d · $100 30d · $100 60d · $100 300d".length + 3);
-    expect(rows[0].indexOf("API credits")).toBe(rows[1].indexOf("subs back"));
+  test("the block is as wide as the longer row, whichever that is", () => {
+    // Long Expiry row.
+    let block = usageBlock(creditState({}, [grant(100, 100, 3), grant(100, 100, 30), grant(100, 100, 60), grant(100, 100, 300)]))!;
+    expect(block.width).toBe("  Expiry: $100 3d · $100 30d · $100 60d · $100 300d".length);
     // One grant: the Credit row is longer.
-    rows = usageBlock(creditState({}, [grant(40, 200, 12)]))!.rows.map(stripAnsi);
-    expect(rows[0].indexOf("API credits")).toBe(`  Credit: [${"x".repeat(20)}] $40 / $200`.length + 3);
-  });
-
-  test("an unknown or past return time leaves the second right row blank", () => {
-    for (const subscriptionsBackAt of [null, undefined, NOW - 1]) {
-      const block = usageBlock(creditState({ subscriptionsBackAt }))!;
-      const rows = block.rows.map(stripAnsi);
-      expect(rows[0].trimEnd()).toEndWith("   API credits");
-      expect(rows[1]).not.toContain("subs back");
-      expect(block.width).toBe(rows[0].trimEnd().length);
-    }
+    block = usageBlock(creditState({}, [grant(40, 200, 12)]))!;
+    expect(block.width).toBe(`  Credit: [${"x".repeat(20)}] $40 / $200`.length);
   });
 
   test("sorting and filtering: soonest expiry first, never-expiring last, used-up and expired grants left out", () => {
     const rows = usageBlock(creditState({}, [grant(300, 300, null), grant(0.2, 200, 2), grant(50, 50, -1), grant(20, 20, 0.5), grant(80, 100, 40)]))!.rows.map(stripAnsi);
-    expect(rows[1]).toStartWith("  Expiry: $20 13h · $80 40d · $300 no expiry ");
+    expect(rows[1].trimEnd()).toBe("  Expiry: $20 13h · $80 40d · $300 no expiry");
   });
 
   test("≈ while an estimate or stale, red under a tenth, sign-in needed beside it", () => {
@@ -277,25 +264,22 @@ describe("Claude on API credits: Credit and Expiry rows", () => {
     expect(stripAnsi(block.rows[0])).toContain("] ≈$862 / $900");
     Object.assign(pool, { balanceUsd: 80, signInNeeded: true });
     block = usageBlock(state)!;
-    expect(stripAnsi(block.rows[0])).toContain(`[${"\u2588".repeat(2)}${"\u2591".repeat(18)}] ≈$80 / $900 sign-in needed   API credits`);
+    expect(stripAnsi(block.rows[0])).toContain(`[${"\u2588".repeat(2)}${"\u2591".repeat(18)}] ≈$80 / $900 sign-in needed`);
     expect(block.rows[0]).toContain(`${theme.error}≈$80`);
     expect(block.rows[0]).toContain(`${theme.error}${"\u2588".repeat(2)}`);
   });
 
-  test("narrow terminals: the right column goes first, then the Expiry list shortens to +N, then the block", () => {
+  test("narrow terminals: the Expiry list shortens to +N, then the block goes", () => {
     const grants = [grant(10, 10, 3), grant(20, 20, 30), grant(30, 30, 60), grant(40, 40, 90), grant(50, 50, 120)];
     const state = creditState({}, grants);
     state.sidebar.open = false;
     const block = usageBlock(state)!;
     const draw = (cols: number) => renderStatusLine(state, cols).lines.map(stripAnsi);
     const full = "  Expiry: $10 3d · $20 30d · $30 60d · $40 90d · $50 120d";
-    expect(draw(block.width)[1]).toContain(`${full}   subs back`);
-    // One column short of the right column: it goes, the whole list stays.
-    let rows = draw(block.width - 1);
-    expect(rows.join("\n")).not.toContain("API credits");
-    expect(rows[1].trimEnd()).toBe(full);
+    expect(block.width).toBe(full.length);
+    expect(draw(block.width)[1].trimEnd()).toBe(full);
     // Shorter than the list: fewer grants, the rest counted.
-    rows = draw(full.length - 1);
+    let rows = draw(full.length - 1);
     expect(rows[1].trimEnd()).toBe("  Expiry: $10 3d · $20 30d · $30 60d · $40 90d · +1");
     rows = draw(46);
     expect(rows[1].trimEnd()).toBe("  Expiry: $10 3d · $20 30d · $30 60d · +2");
