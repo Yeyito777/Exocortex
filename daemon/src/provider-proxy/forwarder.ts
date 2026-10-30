@@ -24,6 +24,7 @@ import {
   PROVIDER_PROXY_CONVERSATION_HEADER,
   PROVIDER_PROXY_MAX_REQUEST_BYTES,
   type ProviderProxyAccountMove,
+  isClaudeMessagesPath,
   isProxyableProvider,
   matchProviderProxyRoute,
   providerProxyRequestHeaders,
@@ -54,8 +55,12 @@ export interface ProviderProxyForwarderOptions {
   linkFor(provider: ProxyableProviderId): ProviderProxyLink | null;
   /** The remote moved a named conversation (PROVIDER_PROXY_CONVERSATION_HEADER) to another Claude account. */
   onAccountMove?(conversation: string, move: ProviderProxyAccountMove): void;
-  /** The remote billed a named conversation's request to its Claude API credits (the key's label). */
-  onApiCredits?(conversation: string, label: string): void;
+  /**
+   * The remote billed a named conversation's request to its Claude API
+   * credits (the key's label), or served one of its Messages requests on a
+   * subscription account (null).
+   */
+  onApiCredits?(conversation: string, label: string | null): void;
   /** Overrides LINK_HOLD_MS (tests). */
   linkHoldMs?: number;
   /** Overrides LINK_HOLD_RETRY_DELAYS_MS (tests). */
@@ -314,9 +319,11 @@ export class ProviderProxyForwarder {
         const credits = responseHeaders[PROVIDER_PROXY_API_CREDITS_HEADER];
         delete responseHeaders[PROVIDER_PROXY_API_CREDITS_HEADER];
         const conversation = headers[PROVIDER_PROXY_CONVERSATION_HEADER];
-        if (credits && conversation) {
+        // A Messages request answered without the credits note ran on a subscription account.
+        const billed = credits || (provider === "anthropic" && response.status < 400 && isClaudeMessagesPath(target));
+        if (billed && conversation) {
           try {
-            this.options.onApiCredits?.(conversation, decodeURIComponent(credits));
+            this.options.onApiCredits?.(conversation, credits ? decodeURIComponent(credits) : null);
           } catch {
             // A malformed note changes nothing about the response.
           }

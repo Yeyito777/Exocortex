@@ -122,10 +122,13 @@ export function emitProxiedClaudeMove(convId: string, move: ProviderProxyAccount
   for (const listener of claudeMoveListeners.get(convId) ?? []) listener(move);
 }
 
-const claudeCreditListeners = new Map<string, Set<(label: string) => void>>();
+const claudeCreditListeners = new Map<string, Set<(label: string | null) => void>>();
 
-/** While `convId`'s turn runs: the /proxy remote billed one of its requests to its API credits. */
-export function onProxiedClaudeApiCredits(convId: string, listener: (label: string) => void): () => void {
+/**
+ * While `convId`'s turn runs: the /proxy remote billed one of its requests to
+ * its API credits (the key's label), or served one on a subscription (null).
+ */
+export function onProxiedClaudeApiCredits(convId: string, listener: (label: string | null) => void): () => void {
   let listeners = claudeCreditListeners.get(convId);
   if (!listeners) claudeCreditListeners.set(convId, listeners = new Set());
   listeners.add(listener);
@@ -135,7 +138,7 @@ export function onProxiedClaudeApiCredits(convId: string, listener: (label: stri
   };
 }
 
-export function emitProxiedClaudeApiCredits(convId: string, label: string): void {
+export function emitProxiedClaudeApiCredits(convId: string, label: string | null): void {
   for (const listener of claudeCreditListeners.get(convId) ?? []) listener(label);
 }
 
