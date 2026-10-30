@@ -33,8 +33,8 @@ sent, as with attached images.
 ## History (TUI)
 
 A video's thumbnail is its poster plus one caption row under it:
-`▶ 0:12  space plays here · enter plays big` where video plays, else
-`▶ 0:12 video  enter for details`. A yank copies `[video: name · 0:12 · …]`.
+`▶ 0:12` where video plays (Space plays it in place, Enter in the viewer),
+else `▶ 0:12 video  enter for details`. A yank copies `[video: name · 0:12 · …]`.
 
 The TUI asks st for video with its startup queries: st's `a=v,k=c` query rides
 between the Kitty graphics query and DA1 (`tui/src/terminalgraphics.ts`); an

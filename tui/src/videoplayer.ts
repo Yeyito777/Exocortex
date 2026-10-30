@@ -401,7 +401,7 @@ export function videoCaptionText(
   const duration = ref.durationMs !== undefined ? formatVideoDuration(ref.durationMs) : "--:--";
   if (!video) {
     if (!canPlay) return fitParts([`▶ ${duration} video · o opens it in a player`, "this terminal can't play it inline"], width, widthOf);
-    return fitParts([`▶ ${duration}`, place === "viewer" ? "space plays" : "space plays here · enter plays big"], width, widthOf);
+    return fitParts(place === "viewer" ? [`▶ ${duration}`, "space plays"] : [`▶ ${duration}`], width, widthOf);
   }
   if (video.state === "error") return fitParts([`⚠ ${video.error ?? "playback failed"}`], width, widthOf);
   const shown = videoDisplayState(video);
