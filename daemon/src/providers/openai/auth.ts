@@ -1,4 +1,4 @@
-import { clearProviderAuth, isTokenExpired, loadProviderAuth, saveProviderAuth, type StoredTokens } from "../../store";
+import { borrowsSharedCredentials, clearProviderAuth, isTokenExpired, loadProviderAuth, saveProviderAuth, type StoredTokens } from "../../store";
 import { OPENAI_AUTH_CLIENT_ID, OPENAI_TOKEN_URL } from "./constants";
 import { buildOpenAIJsonHeaders, parseOpenAIJson } from "./http";
 import { runOpenAIBrowserOAuth } from "./oauth";
@@ -275,6 +275,11 @@ async function refreshStoredAuth(
 ): Promise<StoredOpenAIAuth> {
   const previousRejection = rejectedRefreshMessage(refreshToken);
   if (previousRejection) throw new AuthError(previousRejection);
+  // OpenAI rotates refresh tokens, and replaying a rotated one can revoke the
+  // whole login: a test daemon borrowing the main's logins never refreshes.
+  if (borrowsSharedCredentials()) {
+    throw new AuthError("This test daemon borrows the main daemon's ChatGPT login and never refreshes it (a refresh here could sign the main daemon out). The main daemon refreshes it when it next uses OpenAI.");
+  }
   const existing = inflightRefreshes.get(refreshToken);
   if (existing) return existing;
 

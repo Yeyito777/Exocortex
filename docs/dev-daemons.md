@@ -36,6 +36,35 @@ main daemon's or isn't this worktree's daemon (by label, or by its working
 directory for an unlabelled one). In your own harnesses, keep the PID you
 spawned (`$!`, `child.pid`) and kill that.
 
+## Credentials in worktree daemons
+
+A worktree daemon uses the main checkout's logins but never changes them.
+`create-worktree`, `testd` and `exotest` give the worktree a
+`config/secrets/` directory of symlinks to the main checkout's files, marked
+by `.borrowed-from-main` (older worktrees linked the whole directory; the
+next of those commands converts them). Such a daemon (`daemon/src/store.ts`):
+
+- reads the main credentials live, so the owner's logins work in tests;
+- keeps every credential change it makes (a `/login`, a key check that
+  saves, a logout) in its own memory, gone when it stops; a change gives
+  way as soon as the main daemon changes that login;
+- never refreshes the shared ChatGPT login: OpenAI replaces the refresh
+  token on every refresh, and replaying an old one can revoke the login, so
+  a refresh from a test would sign the main daemon out. When the shared
+  access token has expired, OpenAI turns on a test daemon fail until the
+  main daemon next uses OpenAI and refreshes it.
+
+Even code that predates this cannot reach the main files: an atomic save
+replaces the symlink inside the worktree, which the next `testd`/`exotest`
+start restores. Old daemon code can still refresh the shared ChatGPT login,
+though, so merge main into an old worktree before running its daemon against
+real logins.
+
+A test that must not touch real accounts at all (a fake provider, fake keys)
+replaces `config/secrets/` with its own directory without the marker; the
+scripts leave such a directory alone. Claude Code's own logins (`~/.claude*`)
+are Claude Code's and are not part of this store.
+
 ## If the main daemon is stopped by mistake
 
 On Linux the unit is `Restart=always`: any exit other than `exocortexd stop`
