@@ -2051,7 +2051,7 @@ describe("sidebar Ctrl scrolling", () => {
   });
 });
 
-describe("sidebar Ctrl+E move to top", () => {
+describe("sidebar Ctrl+Shift+E move to top", () => {
   function setupSidebar(conversations: ConversationSummary[], selectedId: string) {
     const state = createInitialState();
     state.sidebar.open = true;
@@ -2074,7 +2074,7 @@ describe("sidebar Ctrl+E move to top", () => {
       conversation("conv-c", 3),
     ], "conv-c");
 
-    expect(handleFocusedKey({ type: "ctrl-e" }, state)).toEqual({
+    expect(handleFocusedKey({ type: "ctrl-shift-e" }, state)).toEqual({
       type: "move_sidebar_items",
       reqId: expect.any(String),
       items: [{ type: "conversation", id: "conv-c" }],
@@ -2094,7 +2094,7 @@ describe("sidebar Ctrl+E move to top", () => {
       conversation("conv-a", 2),
     ], "pinned-b");
 
-    expect(handleFocusedKey({ type: "ctrl-e" }, state)).toMatchObject({
+    expect(handleFocusedKey({ type: "ctrl-shift-e" }, state)).toMatchObject({
       type: "move_sidebar_items",
       items: [{ type: "conversation", id: "pinned-b" }],
       before: { type: "conversation", id: "pinned-a" },
@@ -2106,7 +2106,7 @@ describe("sidebar Ctrl+E move to top", () => {
   test("does nothing for an item already at the top", () => {
     const state = setupSidebar([conversation("conv-a", 1), conversation("conv-b", 2)], "conv-a");
 
-    expect(handleFocusedKey({ type: "ctrl-e" }, state)).toEqual({ type: "handled" });
+    expect(handleFocusedKey({ type: "ctrl-shift-e" }, state)).toEqual({ type: "handled" });
     expect(order(state)).toEqual(["conv-a", "conv-b"]);
   });
 
@@ -2120,7 +2120,7 @@ describe("sidebar Ctrl+E move to top", () => {
 
     handleFocusedKey({ type: "char", char: "v" }, state);
     handleFocusedKey({ type: "char", char: "j" }, state);
-    expect(handleFocusedKey({ type: "ctrl-e" }, state)).toMatchObject({
+    expect(handleFocusedKey({ type: "ctrl-shift-e" }, state)).toMatchObject({
       type: "move_sidebar_items",
       items: [{ type: "conversation", id: "conv-b" }, { type: "conversation", id: "conv-c" }],
       before: { type: "conversation", id: "conv-a" },
@@ -2136,7 +2136,7 @@ describe("sidebar Ctrl+E move to top", () => {
     ], "work-b");
     state.sidebar.folders = [folder("work", -1)];
 
-    expect(handleFocusedKey({ type: "ctrl-e" }, state)).toMatchObject({
+    expect(handleFocusedKey({ type: "ctrl-shift-e" }, state)).toMatchObject({
       type: "move_sidebar_items",
       items: [{ type: "conversation", id: "work-b" }],
       parentId: "work",
@@ -2152,7 +2152,13 @@ describe("sidebar Ctrl+E move to top", () => {
     const state = setupSidebar([conversation("conv-a", 1), conversation("conv-b", 2)], "conv-b");
     state.panelFocus = "chat";
 
-    expect(handleFocusedKey({ type: "ctrl-e" }, state)).toEqual({ type: "handled" });
+    expect(handleFocusedKey({ type: "ctrl-shift-e" }, state)).toEqual({ type: "handled" });
+    expect(order(state)).toEqual(["conv-a", "conv-b"]);
+  });
+  test("plain Ctrl+E scrolls the sidebar instead of moving the selection", () => {
+    const state = setupSidebar([conversation("conv-a", 1), conversation("conv-b", 2)], "conv-b");
+
+    expect(handleFocusedKey({ type: "ctrl-e" }, state)).not.toMatchObject({ type: "move_sidebar_items" });
     expect(order(state)).toEqual(["conv-a", "conv-b"]);
   });
 });
