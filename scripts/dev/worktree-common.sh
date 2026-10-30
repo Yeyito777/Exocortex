@@ -22,15 +22,39 @@ resolve_worktree_dir() {
   fi
 }
 
+# A worktree reads the main checkout's credentials but must never write them
+# (docs/dev-daemons.md): its config/secrets is a directory of per-file symlinks
+# to the main ones, marked as borrowed. The daemon (daemon/src/store.ts) keeps
+# its own credential changes in memory there, and an atomic save by older
+# daemon code can only replace a link in this directory, never the real file;
+# the next sync restores the link. A worktree whose config/secrets is a private
+# directory without the marker (a test with its own fake keys) is left alone.
+BORROWED_SECRETS_MARKER=".borrowed-from-main"
+
 sync_shared_secrets() {
   local worktree_dir="$1"
   local main_secrets="$EXOCORTEX_ROOT/config/secrets"
   local wt_secrets="$worktree_dir/config/secrets"
+  [[ -d "$main_secrets" ]] || return 0
 
-  if [[ -d "$main_secrets" && ! -e "$wt_secrets" ]]; then
-    mkdir -p "$(dirname "$wt_secrets")"
-    ln -s "$main_secrets" "$wt_secrets"
+  # Older worktrees linked the whole directory, so their writes landed in the main store.
+  if [[ -L "$wt_secrets" && -d "$wt_secrets" && "$(cd "$wt_secrets" && pwd -P)" == "$(cd "$main_secrets" && pwd -P)" ]]; then
+    rm "$wt_secrets"
   fi
+  if [[ -e "$wt_secrets" && ! -f "$wt_secrets/$BORROWED_SECRETS_MARKER" ]]; then
+    return 0
+  fi
+  mkdir -p "$wt_secrets"
+  chmod 700 "$wt_secrets"
+  printf 'Symlinks to %s: this worktree reads the main credentials and never writes them.\n' "$main_secrets" > "$wt_secrets/$BORROWED_SECRETS_MARKER"
+  local file name
+  for file in "$main_secrets"/*; do
+    [[ -f "$file" ]] || continue
+    name="$(basename "$file")"
+    # A regular file here is a copy an older daemon saved over its link: stale, and never the owner's.
+    if [[ -e "$wt_secrets/$name" && ! -L "$wt_secrets/$name" ]]; then rm -f "$wt_secrets/$name"; fi
+    [[ -L "$wt_secrets/$name" ]] || ln -s "$file" "$wt_secrets/$name"
+  done
 }
 
 sync_external_tools() {
