@@ -34,7 +34,7 @@ import { AuthError } from "../errors";
 import { getClaudeAccount, MAIN_ACCOUNT_ID, mainClaudeConfigDir } from "./accounts";
 import { CLAUDE_SESSION_ALIASES_FILE, claudeProjectDirName, claudeSessionAlias } from "./session-prune";
 import { dataDir } from "@exocortex/shared/paths";
-import { apiCreditSwitchNotice, beginAccountTurn, beginApiCreditTurn, multipleClaudeAccounts, noteAccountAuthFailure, routeClaudeTurn, touchConversationAccount, type ClaudeTurnRoute } from "./account-pool";
+import { apiCreditSwitchNotice, beginAccountTurn, beginApiCreditTurn, multipleClaudeAccounts, noteAccountAuthFailure, routeClaudeTurn, touchConversationAccount, touchConversationCredit, type ClaudeTurnRoute } from "./account-pool";
 import { ApiCreditExhaustedError, ApiCreditUsageMeter, classifyApiCreditError, noteApiCreditFailure, type ApiCreditKey } from "./api-credits";
 import { isUsageLimitError } from "../../usage-limit-wait";
 import { noteAccountUsageRefusal } from "./usage";
@@ -344,7 +344,8 @@ export async function streamMessage(
   if (!apiCredit) await requireSubscriptionAuth(signal, account);
   await loadClaudeSdks();
   if (apiCredit) {
-    log("info", `anthropic: ${convId ?? "a helper request"} runs on API credits "${apiCredit.label}" (every Claude subscription account is at a usage limit; configuration from account ${account})`);
+    const moved = route.apiCreditMovedFrom ? ` moves from API-credit key "${route.apiCreditMovedFrom.label}" and` : "";
+    log("info", `anthropic: ${convId ?? "a helper request"}${moved} runs on API credits "${apiCredit.label}" (every Claude subscription account is at a usage limit; key: ${route.apiCreditDetail ?? "?"}; configuration from account ${account})`);
   } else if (route.movedFrom) {
     log("info", `anthropic: conversation ${convId ?? "?"} moves from Claude account ${route.movedFrom} to ${account} (${route.reason}: ${route.detail})`);
     callbacks.onProviderNotice?.(accountSwitchNotice(route), { kind: "account", account, movedFrom: route.movedFrom });
@@ -382,6 +383,8 @@ export async function streamMessage(
     stopCreditNotes();
     endTurn();
     if (convId && !apiCredit) touchConversationAccount(convId, account);
+    // The turn's last request renews the key's cache: its warm window counts from here.
+    if (convId && apiCredit && !isProviderProxied("anthropic")) touchConversationCredit(convId, apiCredit.id);
   }
 }
 

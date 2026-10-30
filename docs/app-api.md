@@ -276,7 +276,8 @@ same notices reach the owner as events:
 
 - `system_message` with `route`: `{"kind":"account","account":"max2","movedFrom":"main"}`,
   `{"kind":"api_credits","account":"main","creditKey":"main"}` (now on
-  credits) or `{"kind":"subscription","account":"main"}` (back), besides the
+  credits, or moved to another credit key; `creditKey` is the key's label)
+  or `{"kind":"subscription","account":"main"}` (back), besides the
   text a person reads. The two credit kinds also carry `hidden: true`: chat
   views don't show them and history doesn't keep them, since the usage block
   shows the switch.

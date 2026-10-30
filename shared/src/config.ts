@@ -111,8 +111,16 @@ export interface AnthropicProviderConfig {
 
 export interface AnthropicApiCreditFallbackConfig {
   enabled?: boolean;
-  /** Keys in the order they are used: put the credits that expire soonest first. */
+  /** The keys. With `strategy: "order"` (or no Console balances to go by), the order they are used in. */
   keys?: AnthropicApiCreditKeyConfig[];
+  /**
+   * Which key new credit turns take: `expiry` (default), the one whose Console
+   * organization has the credit that expires soonest; `order`, the first in
+   * `keys`. Either way a conversation stays on its key while its cache is warm.
+   */
+  strategy?: "expiry" | "order";
+  /** A key with less left than this (USD, default 2) is used only when every key has. */
+  minBalanceUsd?: number;
 }
 
 export interface AnthropicApiCreditKeyConfig {

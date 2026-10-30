@@ -18,7 +18,7 @@
  */
 
 import { CLAUDE_RATE_LIMIT_HEADER, CLAUDE_ACCOUNT_HEADER, applyUsageHeaders } from "../providers/anthropic/usage";
-import { beginAccountTurn, beginApiCreditTurn, getConversationAccount, multipleClaudeAccounts, noteAccountAuthFailure, routeClaudeTurn, touchConversationAccount } from "../providers/anthropic/account-pool";
+import { beginAccountTurn, beginApiCreditTurn, getConversationAccount, multipleClaudeAccounts, noteAccountAuthFailure, routeClaudeTurn, touchConversationAccount, touchConversationCredit } from "../providers/anthropic/account-pool";
 import type { RouteDecision } from "../providers/anthropic/routing";
 import { MAIN_ACCOUNT_ID } from "../providers/anthropic/accounts";
 import {
@@ -103,7 +103,7 @@ export function rateLimitInfoFromHeaders(headers: Headers): Record<string, unkno
 }
 
 export interface ProxiedClaudeRouterDeps {
-  route?: (key: string | undefined, signal?: AbortSignal) => Promise<RouteDecision & { apiCredit?: ApiCreditKey | null }>;
+  route?: (key: string | undefined, signal?: AbortSignal) => Promise<RouteDecision & { apiCredit?: ApiCreditKey | null; apiCreditDetail?: string; apiCreditMovedFrom?: ApiCreditKey | null }>;
 }
 
 export function createProxiedClaudeRouter(deps: ProxiedClaudeRouterDeps = {}): ProxiedClaudeRouter {
@@ -116,7 +116,9 @@ export function createProxiedClaudeRouter(deps: ProxiedClaudeRouterDeps = {}): P
       const account = decision.account;
       const apiCredit = options.apiCredits ? decision.apiCredit ?? null : null;
       if (apiCredit) {
-        log("info", `provider-proxy: ${key ?? "a proxied helper request"} runs on API credits "${apiCredit.label}" (every Claude subscription account is at a usage limit)`);
+        const moved = decision.apiCreditMovedFrom ? ` moves from API-credit key "${decision.apiCreditMovedFrom.label}" and` : "";
+        log("info", `provider-proxy: ${key ?? "a proxied helper request"}${moved} runs on API credits "${apiCredit.label}" (every Claude subscription account is at a usage limit; key: ${decision.apiCreditDetail ?? "?"})`);
+        if (key) touchConversationCredit(key, apiCredit.id);
         const endCreditTurn = beginApiCreditTurn(apiCredit);
         const meter = new ApiCreditUsageMeter(apiCredit);
         let rejections = 0;
@@ -146,6 +148,7 @@ export function createProxiedClaudeRouter(deps: ProxiedClaudeRouterDeps = {}): P
           },
           release() {
             meter.flushAll();
+            if (key) touchConversationCredit(key, apiCredit.id);
             endCreditTurn();
           },
         };
@@ -155,7 +158,11 @@ export function createProxiedClaudeRouter(deps: ProxiedClaudeRouterDeps = {}): P
       } else if (multipleClaudeAccounts() && previous !== account) {
         log("info", `provider-proxy: Claude account ${account} for ${key ?? "a proxied helper request"} (${decision.reason}: ${decision.detail})`);
       }
-      if (key) touchConversationAccount(key, account);
+      if (key) {
+        touchConversationAccount(key, account);
+        // Claude Code's account endpoints keep the subscription login on a credit turn: not a move off credits.
+        if (!decision.apiCredit) touchConversationCredit(key, null);
+      }
       const endTurn = beginAccountTurn(account, key);
       return {
         account,
