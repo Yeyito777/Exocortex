@@ -1122,12 +1122,17 @@ async function orchestrateAdmittedAssistantTurn(
   };
   /** An informational provider notice: shown muted, live and after reload (display.ts). */
   const pushProviderNotice = (text: string, route?: import("./protocol").ConversationRouteNotice): void => {
+    // Moves onto or off API credits show in the usage block: apps still get the
+    // event, but chat views don't show it and history doesn't keep it.
+    const hidden = route?.kind === "api_credits" || route?.kind === "subscription";
     const now = Date.now();
-    transcriptMarkers.push({
-      afterIndex: agentState.completedMessages.length,
-      message: { role: "system", content: text, metadata: { ...createMessageMetadata(now, liveConv.model, { endedAt: now }), kind: PROVIDER_NOTICE_KIND } },
-    });
-    server.sendToSubscribers(convId, { type: "system_message", convId, streamSeq: convStore.nextStreamSeq(convId), text, color: "muted", ...(route ? { route } : {}) });
+    if (!hidden) {
+      transcriptMarkers.push({
+        afterIndex: agentState.completedMessages.length,
+        message: { role: "system", content: text, metadata: { ...createMessageMetadata(now, liveConv.model, { endedAt: now }), kind: PROVIDER_NOTICE_KIND } },
+      });
+    }
+    server.sendToSubscribers(convId, { type: "system_message", convId, streamSeq: convStore.nextStreamSeq(convId), text, color: "muted", ...(route ? { route } : {}), ...(hidden ? { hidden: true } : {}) });
   };
   const partialContent: import("./messages").ApiContentBlock[] = [];
   /** Blocks that survived persistence on abort/error — sent to TUI so it can trim display. */

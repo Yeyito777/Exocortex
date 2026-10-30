@@ -277,7 +277,9 @@ same notices reach the owner as events:
 - `system_message` with `route`: `{"kind":"account","account":"max2","movedFrom":"main"}`,
   `{"kind":"api_credits","account":"main","creditKey":"main"}` (now on
   credits) or `{"kind":"subscription","account":"main"}` (back), besides the
-  text a person reads.
+  text a person reads. The two credit kinds also carry `hidden: true`: chat
+  views don't show them and history doesn't keep them, since the usage block
+  shows the switch.
 - `connection_wait_status` with `reason: "usage_limit"` and `resetAt` while a
   turn waits for a limit to reset (`network` / `proxy_link` for the other
   waits).

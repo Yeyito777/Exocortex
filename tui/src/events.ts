@@ -385,7 +385,8 @@ export function handleEvent(
       break;
 
     case "system_message":
-      handleSystemMessage(event, state);
+      // Program-only notices (moves onto or off API credits): the usage block shows those.
+      if (!event.hidden) handleSystemMessage(event, state);
       break;
 
     case "tools_available":
