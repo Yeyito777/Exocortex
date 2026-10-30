@@ -1,8 +1,9 @@
 """App API resilience end to end, with the Python reference client (what batch jobs use).
 
 PHASE=restart: an ephemeral one-shot run whose app tool call is pending, a temporary
-conversation streaming, and an ephemeral multi-turn conversation all ride a graceful
-restart of the test daemon; a send made while the daemon is down waits and completes.
+conversation streaming, an ephemeral multi-turn conversation, and a message queued on an
+ephemeral conversation mid-turn all ride a graceful restart of the test daemon; a send
+made while the daemon is down waits and completes.
 PHASE=credits: with every Claude account marked limited (EXOCORTEX_DEV_CLAUDE_ROUTING),
 app turns fall back to API credits like ordinary ones and say so; route credits=never
 fails fast (whenLimited=error) or waits (default).
@@ -14,6 +15,7 @@ import os
 import sys
 import threading
 import time
+import uuid
 
 sys.path.insert(0, os.environ["CLIENT_DIR"])
 import exocortex  # noqa: E402
@@ -54,6 +56,7 @@ def restart_phase():
     streaming = client.conversation("temporary", idle_ttl_ms=600_000, system="Follow instructions exactly.", **MODEL)
 
     calls = []
+    queued_ready = threading.Event()
 
     def step(_args, call):
         calls.append(call)
@@ -61,6 +64,7 @@ def restart_phase():
             return "marmalade"
         # The harness restarts the daemon while this call is pending: like any tool call it is
         # interrupted (app_tool_cancel), and the replayed turn sees that and calls it again.
+        queued_ready.wait(300)
         open(RESTART_NOW, "w").close()
         wait_for(RESTARTED)
         time.sleep(1.0)
@@ -78,6 +82,39 @@ def restart_phase():
                 timeout=600, **MODEL)
         except Exception as error:  # noqa: BLE001
             results["run"] = error
+
+    # An ephemeral conversation mid-turn with a message queued for after the turn (memory only,
+    # handed over at the restart): after the replayed turn the queued one runs.
+    holds = []
+    holding = threading.Event()
+
+    def hold(_args, call):
+        holds.append(call)
+        if len(holds) > 1:
+            return "fig"
+        holding.set()
+        wait_for(RESTARTED)
+        time.sleep(1.0)
+        return "too late"
+
+    queued = client.conversation("ephemeral", system="Follow instructions exactly.",
+                                 tools=[Tool("hold", "Returns a word.", {"type": "object", "properties": {}}, hold)], **MODEL)
+    queued_results = []
+    client.on_event(lambda e: queued_results.append(e) if e.get("type") == "turn_result" and e.get("convId") == queued.id else None)
+
+    def queued_job():
+        try:
+            pending = queued.stream("Call the hold tool, then reply with exactly the word it returned and nothing else. "
+                                    "If a call is interrupted, call it again.")
+            if not holding.wait(300):
+                raise RuntimeError("the hold tool was never called")
+            client.request({"type": "queue_message", "convId": queued.id, "text": "Reply with just the word: plum",
+                            "timing": "message-end", "queueId": f"e2e-{uuid.uuid4().hex}"}, lambda e: e.get("type") == "ack")
+            queued_ready.set()
+            results["held"] = pending.result(600)
+        except Exception as error:  # noqa: BLE001
+            queued_ready.set()
+            results["held"] = error
 
     stream_events = []
 
@@ -101,7 +138,7 @@ def restart_phase():
         except Exception as error:  # noqa: BLE001
             results["memory"] = error
 
-    threads = [threading.Thread(target=job) for job in (run_job, stream_job, down_job)]
+    threads = [threading.Thread(target=job) for job in (run_job, stream_job, down_job, queued_job)]
     started = time.time()
     for thread in threads:
         thread.start()
@@ -124,6 +161,15 @@ def restart_phase():
     check(isinstance(memory_result, exocortex.TurnResult) and "7461" in memory_result.text,
           f"ephemeral conversation kept its history across the restart ({getattr(memory_result, 'text', memory_result)!r})",
           getattr(memory_result, "raw", memory_result))
+    held = results.get("held")
+    check(isinstance(held, exocortex.TurnResult) and "fig" in held.text.lower(),
+          f"an ephemeral conversation's turn with a message queued behind it completed ({getattr(held, 'text', held)!r})",
+          getattr(held, "raw", held))
+    deadline = time.time() + 300
+    while time.time() < deadline and not any("plum" in (e.get("text") or "").lower() for e in queued_results):
+        time.sleep(0.1)
+    check(any("plum" in (e.get("text") or "").lower() for e in queued_results),
+          f"the message queued on it before the restart ran after it ({[e.get('text') for e in queued_results]})")
     resumed = [w for w in welcomes if w.get("resumed")]
     check(bool(resumed) and client.session == session,
           f"the client reconnected under the same session (resumed welcome, owns {len(resumed[-1].get('conversations', [])) if resumed else 0})")

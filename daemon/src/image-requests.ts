@@ -6,10 +6,12 @@
  * copies it into the store, so later requests skip the conversation scan.
  * Images a client sends are also copied into the store on arrival: the turn
  * stores its user message only after loading the conversation, and a client's
- * first preview of its own paste would otherwise race it.
+ * first preview of its own paste would otherwise race it. An ephemeral app
+ * conversation's images stay in memory only: never copied into the store.
  */
 
 import * as convStore from "./conversations";
+import { isEphemeralConversation } from "./app-registry";
 import { findStoredImage, imageIdForBytes, putImageBytes, sniffImage } from "./attachments";
 import type { ImageAttachment, ImageMediaType, StoredMessage } from "./messages";
 import { log } from "./log";
@@ -49,13 +51,13 @@ export async function resolveImageForPreview(imageId: string, convId?: string): 
       return null;
     }
   }
-  if (found) putImageBytes(found.bytes, found.mediaType);
+  if (found && !isEphemeralConversation(convId)) putImageBytes(found.bytes, found.mediaType);
   return found;
 }
 
-/** Store the images of a message a client just sent, so previews never wait on the turn. */
-export function rememberSentImages(images: readonly ImageAttachment[] | undefined): void {
-  if (!images?.length) return;
+/** Store the images of a message a client just sent to `convId` (sent or queued), so previews never wait on the turn. */
+export function rememberSentImages(convId: string | undefined, images: readonly ImageAttachment[] | undefined): void {
+  if (!images?.length || (convId !== undefined && isEphemeralConversation(convId))) return;
   for (const image of images) {
     if (!image.base64) continue;
     try {

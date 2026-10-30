@@ -38,7 +38,7 @@ import { readExocortexConfig } from "@exocortex/shared/config";
 import { worktreeName } from "@exocortex/shared/paths";
 import type { AttachAppConversationCommand, ClientCapabilitiesCommand, EndAppSessionCommand, Event, ListAppConversationsCommand, TurnResultEvent } from "./protocol";
 import type { ConnectedClient, DaemonServer } from "./server";
-import type { Conversation, ProviderId, ModelId, StoredMessage } from "./messages";
+import type { ProviderId, ModelId, StoredMessage } from "./messages";
 import * as convStore from "./conversations";
 import {
   appConversationExpiresAt,
@@ -375,24 +375,35 @@ function armGrace(session: AppSession): void {
   session.graceTimer.unref?.();
 }
 
-/** A session did not come back in time: its ephemeral conversations end, the rest just lose their owner. */
-async function expireSession(session: AppSession): Promise<void> {
-  session.graceTimer = null;
-  if (session.client || sessions.get(session.id) !== session) return;
+/** A session is over: its ephemeral conversations end, the rest just lose their owner. Returns those that ended. */
+async function releaseSession(session: AppSession, requester?: { client: ConnectedClient }): Promise<string[]> {
   sessions.delete(session.id);
-  const owned = ownedBy(session);
-  let ended = 0;
-  for (const convId of owned) {
+  if (session.graceTimer) clearTimeout(session.graceTimer);
+  session.graceTimer = null;
+  const ended: string[] = [];
+  for (const convId of ownedBy(session)) {
     owners.delete(convId);
-    if (getAppRecord(convId)?.lifetime !== "ephemeral") continue;
+    if (getAppRecord(convId)?.lifetime !== "ephemeral") {
+      appToolBroker.ownerDetached(convId);
+      continue;
+    }
     try {
-      if (await endAppConversation(convId, "owner_disconnected")) ended++;
+      if (await endAppConversation(convId, "owner_disconnected", requester)) ended.push(convId);
     } catch (error) {
       log("error", `app-api: ending ${convId} failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  if (!session.anonymous && owned.length > 0) {
-    log("info", `app-api: a session of ${session.app} did not reconnect within ${session.graceMs} ms${ended ? `; ended ${ended} ephemeral conversation(s)` : ""}`);
+  return ended;
+}
+
+/** A session did not come back in time. */
+async function expireSession(session: AppSession): Promise<void> {
+  session.graceTimer = null;
+  if (session.client || sessions.get(session.id) !== session) return;
+  const owned = ownedBy(session).length;
+  const ended = await releaseSession(session);
+  if (!session.anonymous && owned > 0) {
+    log("info", `app-api: a session of ${session.app} did not reconnect within ${session.graceMs} ms${ended.length ? `; ended ${ended.length} ephemeral conversation(s)` : ""}`);
   }
 }
 
@@ -552,20 +563,10 @@ export function welcomeAppClient(client: ConnectedClient, cmd: ClientCapabilitie
 /** end_app_session: the client is done; its ephemeral conversations end now. */
 export async function endAppSession(client: ConnectedClient, cmd: EndAppSessionCommand): Promise<void> {
   const session = clientSessions.get(client);
-  const ended: string[] = [];
+  let ended: string[] = [];
   if (session && sessions.get(session.id) === session) {
-    sessions.delete(session.id);
     clientSessions.delete(client);
-    if (session.graceTimer) clearTimeout(session.graceTimer);
-    session.graceTimer = null;
-    for (const convId of ownedBy(session)) {
-      owners.delete(convId);
-      if (getAppRecord(convId)?.lifetime === "ephemeral") {
-        if (await endAppConversation(convId, "owner_disconnected", { client })) ended.push(convId);
-      } else {
-        appToolBroker.ownerDetached(convId);
-      }
-    }
+    ended = await releaseSession(session, { client });
   }
   server?.sendTo(client, { type: "app_session_ended", ...(cmd.reqId ? { reqId: cmd.reqId } : {}), ended });
 }
@@ -731,10 +732,15 @@ export async function sweepExpiredAppConversations(now = Date.now()): Promise<st
 /**
  * At a graceful restart, the next daemon takes the app sessions (their
  * conversations, grace and undelivered events) and the ephemeral
- * conversations themselves: their records and histories, in a file only the
- * user can read in the instance's temporary directory, which the next daemon
- * reads and deletes as it starts. Their Claude Code processes carry on under
- * their relays, and an interrupted turn is replayed as any other.
+ * conversations themselves: their records and what the stores keep of them
+ * only in memory (convStore.ephemeralConversationState: history, queued
+ * messages, pending instructions; and their Claude account), in a file only
+ * the user can read in the instance's temporary directory, which the next
+ * daemon reads and deletes as it starts. Everything else is the ordinary
+ * restart: their Claude Code processes carry on under their relays, an
+ * interrupted turn is replayed from the same interrupted-streams list as any
+ * other, and queued messages and pending instructions are delivered and
+ * applied with everyone's.
  */
 interface HandoffSession {
   id: string;
@@ -748,7 +754,7 @@ interface HandoffFile {
   version: 1;
   writtenAt: number;
   sessions: HandoffSession[];
-  conversations: { record: AppConversationRecord; conversation: Conversation; account: { account: string; lastUsedAt: number } | null }[];
+  conversations: (convStore.EphemeralConversationState & { record: AppConversationRecord; account: { account: string; lastUsedAt: number } | null })[];
 }
 
 /** A handover older than this is from a restart that never came back: ignored. */
@@ -772,8 +778,8 @@ export function handOffAppConversations(): number {
   const conversations: HandoffFile["conversations"] = [];
   for (const record of listAppRecords()) {
     if (record.lifetime !== "ephemeral") continue;
-    const conversation = convStore.getCached(record.convId);
-    if (conversation) conversations.push({ record, conversation, account: getConversationAccount(record.convId) });
+    const state = convStore.ephemeralConversationState(record.convId);
+    if (state) conversations.push({ record, ...state, account: getConversationAccount(record.convId) });
   }
   const sessionsToHand: HandoffSession[] = [...sessions.values()]
     .filter(session => !session.anonymous)
@@ -825,11 +831,12 @@ function restoreHandedOff(): Set<string> {
   const file = readHandoff();
   if (!file) return keep;
   let restored = 0;
-  for (const { record, conversation, account } of file.conversations) {
+  for (const handed of file.conversations) {
+    const { record, conversation, account } = handed;
     if (record?.lifetime !== "ephemeral" || conversation?.id !== record.convId || convStore.hasConversation(record.convId)) continue;
     try {
       registerAppConversation(record);
-      convStore.adoptEphemeralConversation(conversation);
+      convStore.adoptEphemeralConversation(handed);
     } catch (error) {
       removeAppConversationRecord(record.convId);
       log("warn", `app-api: could not restore ${record.convId}: ${error instanceof Error ? error.message : String(error)}`);

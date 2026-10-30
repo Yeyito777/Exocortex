@@ -70,13 +70,20 @@ function cloneMessages(): QueuedMessage[] {
   return messages.map(cloneEntry);
 }
 
-function mutateAndCommit<T>(mutation: () => T): T {
+/**
+ * Apply a mutation, save the queue file and tell listeners. `memoryOnly`: it
+ * changes only an ephemeral conversation's entries, which are not in the file
+ * (one a restart handed over exists before the file is loaded).
+ */
+function mutateAndCommit<T>(mutation: () => T, memoryOnly = false): T {
   const previous = cloneMessages();
   let result: T;
   try {
     result = mutation();
-    if (persistenceFailureForTest) throw persistenceFailureForTest;
-    persistence.saveQueuedMessages(durableMessages(messages));
+    if (!memoryOnly) {
+      if (persistenceFailureForTest) throw persistenceFailureForTest;
+      persistence.saveQueuedMessages(durableMessages(messages));
+    }
   } catch (error) {
     messages = previous;
     throw error;
@@ -101,21 +108,26 @@ export function observeQueuedMessages(observer: () => void): () => void {
   return () => { observers.delete(observer); };
 }
 
-/** Load queue state after conversations have loaded, dropping already-accepted crash-window entries. */
+/**
+ * Load queue state after conversations have loaded, dropping already-accepted
+ * crash-window entries. Ephemeral conversations' entries were never in the
+ * file: the ones a graceful restart handed over (adoptQueuedMessages) stay.
+ */
 export function loadQueuedMessagesFromDisk(deliveredQueueIds: ReadonlySet<string> = new Set()): number {
   deliverySuspended.clear();
   const loaded = persistence.loadQueuedMessages();
   const unwindTombstones = persistence.loadUnwindQueueTombstones();
   const seen = new Set<string>();
-  messages = loaded.filter((entry) => {
+  const kept = loaded.filter((entry) => {
     if (seen.has(entry.id) || deliveredQueueIds.has(entry.id) || unwindTombstones.has(entry.id)) return false;
     seen.add(entry.id);
     return true;
   });
-  if (messages.length !== loaded.length || unwindTombstones.size > 0) {
-    persistence.saveQueuedMessages(durableMessages(messages));
+  if (kept.length !== loaded.length || unwindTombstones.size > 0) {
+    persistence.saveQueuedMessages(durableMessages(kept));
     persistence.acknowledgeRecoveredUnwindQueueCleanup();
   }
+  messages = [...kept, ...messages.filter(entry => isEphemeralConversation(entry.convId) && !seen.has(entry.id))];
   changedListener?.(listQueuedMessages());
   notifyObservers();
   return messages.length;
@@ -146,7 +158,7 @@ export function advanceQueuedMessagesToNextTurn(convId: string): boolean {
   const ids = new Set(entries);
   mutateAndCommit(() => {
     for (const entry of messages) if (ids.has(entry.id)) entry.timing = "next-turn";
-  });
+  }, isEphemeralConversation(convId));
   return true;
 }
 
@@ -182,6 +194,18 @@ export function getQueuedMessageById(id: string): QueuedMessage | undefined {
   return entry ? cloneEntry(entry) : undefined;
 }
 
+/**
+ * An ephemeral conversation's entries, which a graceful restart handed over
+ * in place of the queue file. Returns how many were new. The file does not
+ * change (and is not loaded yet when a restart's handover is taken over).
+ */
+export function adoptQueuedMessages(entries: readonly QueuedMessage[]): number {
+  const known = new Set(messages.map(entry => entry.id));
+  const adopted = entries.filter(entry => isEphemeralConversation(entry.convId) && !known.has(entry.id)).map(cloneEntry);
+  if (adopted.length > 0) mutateAndCommit(() => { messages.push(...adopted); }, true);
+  return adopted.length;
+}
+
 /** Push an ordinary stream-relative queue entry. Returns its durable identity. */
 export function pushQueuedMessage(
   convId: string,
@@ -211,7 +235,7 @@ export function pushQueuedMessage(
   return mutateAndCommit(() => {
     messages.push(entry);
     return cloneEntry(entry);
-  });
+  }, isEphemeralConversation(convId));
 }
 
 /** Push a `/queue` entry whose readiness is evaluated by the daemon. */
@@ -244,14 +268,14 @@ export function pushGlobalIdleQueuedMessage(
   return mutateAndCommit(() => {
     messages.push(entry);
     return cloneEntry(entry);
-  });
+  }, isEphemeralConversation(convId));
 }
 
 /** Remove one entry by stable identity. */
 export function removeQueuedMessageById(id: string): boolean {
   const index = messages.findIndex(entry => entry.id === id);
   if (index === -1) return false;
-  mutateAndCommit(() => messages.splice(index, 1));
+  mutateAndCommit(() => messages.splice(index, 1), isEphemeralConversation(messages[index].convId));
   return true;
 }
 
@@ -286,7 +310,7 @@ export function steerGlobalIdleQueuedMessage(id: string): boolean {
       ...(images ? { images } : {}),
       ...(automation ? { automation } : {}),
     };
-  });
+  }, isEphemeralConversation(convId));
   return true;
 }
 
@@ -304,7 +328,7 @@ export function updateQueuedMessage(
     entry.timing = entry.source === "global-idle" ? "message-end" : timing;
     if (images?.length) entry.images = images;
     else delete entry.images;
-  });
+  }, isEphemeralConversation(entry.convId));
   return true;
 }
 
@@ -334,7 +358,7 @@ export function drainQueuedMessages(convId: string, timing?: QueueTiming): Queue
     && (timing === undefined || entry.timing === timing));
   if (drained.length === 0) return [];
   const ids = new Set(drained.map(entry => entry.id));
-  mutateAndCommit(() => { messages = messages.filter(entry => !ids.has(entry.id)); });
+  mutateAndCommit(() => { messages = messages.filter(entry => !ids.has(entry.id)); }, isEphemeralConversation(convId));
   return drained.map(cloneEntry);
 }
 
@@ -343,7 +367,7 @@ export function clearQueuedMessages(convId: string): void {
   deliverySuspended.delete(convId);
   const remaining = messages.filter(entry => entry.convId !== convId);
   if (remaining.length === messages.length) return;
-  mutateAndCommit(() => { messages = remaining; });
+  mutateAndCommit(() => { messages = remaining; }, isEphemeralConversation(convId));
 }
 
 /** Test/process cleanup helper. */

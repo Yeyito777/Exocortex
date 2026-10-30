@@ -194,8 +194,9 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     sendTo: (client, event) => server.sendTo(client, event),
     ...(typeof server.onClientClosed === "function" ? { onClientClosed: listener => server.onClientClosed(listener) } : {}),
   });
-  /** The queue as the TUI sees it: hidden app conversations' entries are not shown. */
-  const visibleQueuedMessages = () => convStore.listQueuedMessages().filter(message => !isHiddenConversation(message.convId));
+  /** The queue a client is told of: the TUI's never shows hidden app conversations' entries, an app client's only its own conversations'. */
+  const queuedMessagesFor = (client: ConnectedClient) => convStore.listQueuedMessages()
+    .filter(message => client.app ? client.subscriptions.has(message.convId) : !isHiddenConversation(message.convId));
 
   // History revisions of conversations that clients see (not app ones).
   const visibleHistoryRevs = (ids: Iterable<string>): Record<string, string> => {
@@ -1960,7 +1961,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         if (!client.capabilities?.has("token-stats-on-demand")) {
           server.sendTo(client, { type: "token_stats", stats: getTokenStatsSnapshot() });
         }
-        server.sendTo(client, { type: "queue_updated", messages: visibleQueuedMessages() });
+        server.sendTo(client, { type: "queue_updated", messages: queuedMessagesFor(client) });
         server.sendTo(client, { type: "connectivity_status", ...connectivity.snapshot() });
         if (restOfList) server.sendTo(client, restOfList);
         for (const provider of getProviders()) {
@@ -2862,8 +2863,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           else server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "That prompt was sent before and its turn's result is no longer known" });
           break;
         }
-        // Ephemeral app conversations keep their images in memory only.
-        if (!isEphemeralConversation(cmd.convId)) rememberSentImages(cmd.images);
+        rememberSentImages(cmd.convId, cmd.images);
         if (isAppConversation(cmd.convId)) {
           // App conversations get no generated title: the first line of their first prompt.
           const summary = convStore.getIndexedSummary(cmd.convId);
@@ -3174,7 +3174,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
 
       case "list_conversations": {
         server.sendTo(client, conversationsListFor(client, cmd.reqId));
-        server.sendTo(client, { type: "queue_updated", messages: visibleQueuedMessages() });
+        server.sendTo(client, { type: "queue_updated", messages: queuedMessagesFor(client) });
         break;
       }
 
@@ -3386,7 +3386,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
 
       case "queue_message": {
         noteUserWroteFrom(client, cmd.convId);
-        rememberSentImages(cmd.images);
+        rememberSentImages(cmd.convId, cmd.images);
         const delegationTarget = convStore.getPolicyMetadata(cmd.convId);
         if (delegationTarget && (cmd.delegation || delegationTarget.subagentPolicy)) {
           try { assertDelegationModel(delegationTarget.provider, delegationTarget.model, cmd.legacy); }
@@ -3406,18 +3406,18 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         } | null = null;
         if (queueId && (queueId.length > 200 || /[\r\n]/.test(queueId))) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Invalid queue id" });
-          server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages(), settledQueueIds: [queueId] });
+          server.sendTo(client, { type: "queue_updated", messages: queuedMessagesFor(client), settledQueueIds: [queueId] });
           break;
         }
         if (cmd.source !== "global-idle" && cmd.timing !== "next-turn" && cmd.timing !== "message-end") {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Invalid queue timing" });
-          server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages(), ...(queueId ? { settledQueueIds: [queueId] } : {}) });
+          server.sendTo(client, { type: "queue_updated", messages: queuedMessagesFor(client), ...(queueId ? { settledQueueIds: [queueId] } : {}) });
           break;
         }
         if (queueId && convStore.getQueuedMessageById(queueId)) {
           // Idempotent replay after a socket reconnect.
           server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
-          server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages(), settledQueueIds: [queueId] });
+          server.sendTo(client, { type: "queue_updated", messages: queuedMessagesFor(client), settledQueueIds: [queueId] });
           break;
         }
         if (queueId && convStore.hasMessageMetadata(cmd.convId, { queueEntryId: queueId })) {
@@ -3425,7 +3425,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           // caller observed its acknowledgement. Durable history deduplicates
           // that replay as well as queue-file crash recovery.
           server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
-          server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages(), settledQueueIds: [queueId] });
+          server.sendTo(client, { type: "queue_updated", messages: queuedMessagesFor(client), settledQueueIds: [queueId] });
           break;
         }
 
@@ -3462,7 +3462,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           });
           server.sendTo(client, {
             type: "queue_updated",
-            messages: convStore.listQueuedMessages(),
+            messages: queuedMessagesFor(client),
             ...(queueId ? { settledQueueIds: [queueId] } : {}),
           });
           break;
@@ -3478,32 +3478,32 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
               || convStore.hasConversation(cmd.convId)
               || convStore.hasDeletedConversation(cmd.convId)) {
             server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "Invalid or duplicate client-supplied conversation id" });
-            server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages(), ...(queueId ? { settledQueueIds: [queueId] } : {}) });
+            server.sendTo(client, { type: "queue_updated", messages: queuedMessagesFor(client), ...(queueId ? { settledQueueIds: [queueId] } : {}) });
             break;
           }
           const defaults = effectiveConversationDefaults();
           const provider = cmd.provider ?? inferProviderForModel(cmd.model) ?? defaults.provider;
           if (!getProvider(provider)) {
             server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Unknown provider: ${provider}` });
-            server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages(), ...(queueId ? { settledQueueIds: [queueId] } : {}) });
+            server.sendTo(client, { type: "queue_updated", messages: queuedMessagesFor(client), ...(queueId ? { settledQueueIds: [queueId] } : {}) });
             break;
           }
           if (cmd.model && !isKnownModel(provider, cmd.model) && !allowsCustomModels(provider)) {
             server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: unknownModelMessage(provider, cmd.model) });
-            server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages(), ...(queueId ? { settledQueueIds: [queueId] } : {}) });
+            server.sendTo(client, { type: "queue_updated", messages: queuedMessagesFor(client), ...(queueId ? { settledQueueIds: [queueId] } : {}) });
             break;
           }
           const model = cmd.model ?? (provider === defaults.provider ? defaults.model : getDefaultModel(provider));
           const daybreakError = daybreakSelectionError(provider, model);
           if (daybreakError) {
             server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: daybreakError });
-            server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages(), ...(queueId ? { settledQueueIds: [queueId] } : {}) });
+            server.sendTo(client, { type: "queue_updated", messages: queuedMessagesFor(client), ...(queueId ? { settledQueueIds: [queueId] } : {}) });
             break;
           }
           const effort = normalizeEffort(provider, model, cmd.effort ?? effortDefaultForSelection(provider, model));
           if (cmd.fastMode !== undefined && (!isFastMode(cmd.fastMode) || (cmd.fastMode && !supportsFastMode(provider, model, cmd.fastMode)))) {
             server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Fast mode is only available for ${provider} conversations that support it.` });
-            server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages(), ...(queueId ? { settledQueueIds: [queueId] } : {}) });
+            server.sendTo(client, { type: "queue_updated", messages: queuedMessagesFor(client), ...(queueId ? { settledQueueIds: [queueId] } : {}) });
             break;
           }
           const requestedFastMode = cmd.fastMode ?? fastDefaultForSelection(provider, model);
@@ -3511,13 +3511,13 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           const folderId = cmd.folderId ?? null;
           if (folderId && !convStore.listSidebarState().folders.some(folder => folder.id === folderId)) {
             server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Folder ${folderId} not found` });
-            server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages(), ...(queueId ? { settledQueueIds: [queueId] } : {}) });
+            server.sendTo(client, { type: "queue_updated", messages: queuedMessagesFor(client), ...(queueId ? { settledQueueIds: [queueId] } : {}) });
             break;
           }
           queuedDraftSettings = { provider, model, effort, fastMode, folderId };
         } else if (!convStore.hasConversation(cmd.convId)) {
           server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: `Conversation ${cmd.convId} not found` });
-          server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages(), ...(queueId ? { settledQueueIds: [queueId] } : {}) });
+          server.sendTo(client, { type: "queue_updated", messages: queuedMessagesFor(client), ...(queueId ? { settledQueueIds: [queueId] } : {}) });
           break;
         }
 
@@ -3580,15 +3580,15 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           : (cmd.convId && cmd.text ? convStore.removeQueuedMessage(cmd.convId, cmd.text) : false);
         server.sendTo(client, { type: "ack", reqId: cmd.reqId, ...(cmd.convId ? { convId: cmd.convId } : {}) });
         if (cmd.queueId) {
-          server.sendTo(client, { type: "queue_updated", messages: convStore.listQueuedMessages(), settledQueueIds: [cmd.queueId] });
+          server.sendTo(client, { type: "queue_updated", messages: queuedMessagesFor(client), settledQueueIds: [cmd.queueId] });
         }
         if (ok) log("info", `handler: unqueued message ${cmd.queueId ?? `${cmd.convId}: ${cmd.text?.slice(0, 50)}`}`);
         break;
       }
 
       case "update_queued_message": {
-        rememberSentImages(cmd.images);
         const existing = convStore.getQueuedMessageById(cmd.queueId);
+        rememberSentImages(existing?.convId, cmd.images);
         if (existing?.command) {
           const definition = queuedCommandDefinitions.get(existing.command.name);
           const validationError = cmd.images?.length
