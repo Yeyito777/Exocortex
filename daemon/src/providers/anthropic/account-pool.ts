@@ -42,6 +42,8 @@ import {
   apiCreditAccountCredits,
   apiCreditFallbackEnabled,
   apiCreditsUsage,
+  apiCreditConfig,
+  pickApiCreditKey,
   refreshApiCreditSecrets,
   requestApiCreditSync,
   usableApiCreditKey,
@@ -72,7 +74,7 @@ interface Assignment {
   lastUsedAt: number;
 }
 
-/** The API-credit key a conversation's last turn ran on (null: a subscription), and when. */
+/** The API-credit key a conversation's last turn ran on (null: a subscription), and when it last made a request. */
 interface CreditState {
   key: string | null;
   at: number;
@@ -192,6 +194,18 @@ export function conversationOnApiCredits(convId: string): boolean {
   return (loadCredits().get(convId)?.key ?? null) !== null;
 }
 
+/**
+ * The conversation just made a request on API-credit key `key` (keeps its
+ * cache-warm clock there; pickApiCreditKey). Null: on a subscription, noted
+ * only for a conversation with a record.
+ */
+export function touchConversationCredit(convId: string, key: string | null, now = Date.now()): void {
+  const credits = loadCredits();
+  if (key === null && !credits.has(convId)) return;
+  credits.set(convId, { key, at: now });
+  scheduleSave();
+}
+
 /** The conversation just made a request on `account` (keeps its cache-warm clock). */
 export function touchConversationAccount(convId: string, account: string, now = Date.now()): void {
   loadAssignments().set(convId, { account, lastUsedAt: now });
@@ -293,7 +307,14 @@ export interface LiveProcessState {
 export interface ClaudeTurnRoute extends RouteDecision {
   /** Set when every subscription account is at a usage limit and the turn runs on API credits instead. */
   apiCredit: ApiCreditKey | null;
+  /** Why that key (pickApiCreditKey), for the log and route events. */
+  apiCreditDetail?: string;
+  /** The key the conversation's last credit turn ran on, when the turn moves off it. */
+  apiCreditMovedFrom?: ApiCreditKey | null;
 }
+
+type CreditChoice = Pick<ClaudeTurnRoute, "apiCredit" | "apiCreditDetail" | "apiCreditMovedFrom">;
+const NO_CREDIT: CreditChoice = { apiCredit: null };
 
 /**
  * Whether no subscription account can take a turn because of usage limits:
@@ -304,17 +325,19 @@ function subscriptionsExhausted(states: AccountRouteState[], now: number): boole
   return states.some(state => state.available) && !states.some(state => state.available && !isAccountLimited(state, now));
 }
 
-/** The API-credit key a turn routed as `decision` runs on instead of the subscription, if it should. */
-function apiCreditFor(decision: RouteDecision, states: AccountRouteState[], now: number, live: LiveProcessState | null, convId?: string): ApiCreditKey | null {
-  if (!apiCreditFallbackEnabled()) return null;
+/** The API-credit key a turn routed as `decision` runs on instead of the subscription, if it should, and why. */
+function apiCreditFor(decision: RouteDecision, states: AccountRouteState[], now: number, live: LiveProcessState | null, convId?: string): CreditChoice {
+  if (!apiCreditFallbackEnabled()) return NO_CREDIT;
   // An app conversation may forbid credits (route.credits "never"): it waits or fails like any limit.
-  if (!conversationAllowsApiCredits(convId)) return null;
+  if (!conversationAllowsApiCredits(convId)) return NO_CREDIT;
   // Moving a process with background tasks would stop them: it keeps how it bills, as it keeps its account.
-  if (live?.backgroundWork) return live.apiCredit ?? null;
+  if (live?.backgroundWork) return live.apiCredit ? { apiCredit: live.apiCredit, apiCreditDetail: "its process has background tasks" } : NO_CREDIT;
   const chosen = states.find(state => state.id === decision.account);
-  if (chosen && chosen.available && !isAccountLimited(chosen, now)) return null;
-  if (!subscriptionsExhausted(states, now)) return null;
-  return usableApiCreditKey(now);
+  if (chosen && chosen.available && !isAccountLimited(chosen, now)) return NO_CREDIT;
+  if (!subscriptionsExhausted(states, now)) return NO_CREDIT;
+  const last = convId ? loadCredits().get(convId) : undefined;
+  const pick = pickApiCreditKey(last ? { key: last.key, lastUsedAt: last.at } : null, now);
+  return pick ? { apiCredit: pick.key, apiCreditDetail: pick.detail, apiCreditMovedFrom: pick.movedFrom } : NO_CREDIT;
 }
 
 /** Turns would go to API credits now: no subscription account can take them and a key can. */
@@ -334,7 +357,10 @@ export function apiCreditSwitchNotice(convId: string | undefined, route: ClaudeT
   credits.set(convId, { key: next, at: Date.now() });
   scheduleSave();
   if (next === previous || (!known && next === null)) return null;
-  if (route.apiCredit && previous) return `Claude API credits: now on "${route.apiCredit.label}" (the previous key cannot take it now).`;
+  if (route.apiCredit && previous) {
+    const from = apiCreditConfig().keys.find(key => key.id === previous)?.label ?? previous;
+    return `Claude API credits: now on "${route.apiCredit.label}" instead of "${from}"${route.apiCreditDetail ? ` (${route.apiCreditDetail})` : ""}.`;
+  }
   if (route.apiCredit) return `Running on Claude API credits ("${route.apiCredit.label}"): every Claude subscription account is at a usage limit.`;
   return `Back on the Claude subscription (account "${route.account}"): it has usage again.`;
 }
@@ -352,17 +378,17 @@ export async function routeClaudeTurn(
   sessionAccount: string | null = null,
 ): Promise<ClaudeTurnRoute> {
   if (isProviderProxied("anthropic")) {
-    return { account: MAIN_ACCOUNT_ID, reason: "new", detail: "single account", apiCredit: null };
+    return { account: MAIN_ACCOUNT_ID, reason: "new", detail: "single account", ...NO_CREDIT };
   }
   const fallback = apiCreditFallbackEnabled();
   if (fallback) await refreshApiCreditSecrets();
   if (!multipleClaudeAccounts()) {
     const decision: RouteDecision = { account: MAIN_ACCOUNT_ID, reason: "new", detail: "single account" };
-    if (!fallback) return { ...decision, apiCredit: null };
+    if (!fallback) return { ...decision, ...NO_CREDIT };
     // Whether `main` is signed in decides between credits and a sign-in error: checked as for several accounts.
     await refreshClaudeAccountStatuses({ signal });
     const now = Date.now();
-    return { ...decision, apiCredit: apiCreditFor(decision, applyDevRoutingOverrides(claudeAccountStates(now), now).states, now, live, convId) };
+    return { ...decision, ...apiCreditFor(decision, applyDevRoutingOverrides(claudeAccountStates(now), now).states, now, live, convId) };
   }
   await refreshClaudeAccountStatuses({ signal });
   const now = Date.now();
@@ -380,7 +406,7 @@ export async function routeClaudeTurn(
       backgroundWork: live?.backgroundWork ?? false,
     }, accounts, now, policy);
   }
-  return { ...decision, apiCredit: apiCreditFor(decision, accounts, now, live, convId) };
+  return { ...decision, ...apiCreditFor(decision, accounts, now, live, convId) };
 }
 
 /** Accounts whose usage the bars combine: signed in and not blocked. */

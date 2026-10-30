@@ -435,6 +435,14 @@ export function usageSummary(state: RenderState, now = Date.now()): string | nul
   return `${summarizeWindow("5-hour", usage.fiveHour, now, capacity)} · ${summarizeWindow("weekly", usage.sevenDay, now, capacity)}${credits}`;
 }
 
+/** While Claude turns run on API credits: the key new ones take and why ("max2 (its credit expires soonest: …)"); null otherwise or from an older daemon. */
+export function apiCreditPickSummary(state: RenderState): string | null {
+  if (!state.authByProvider[state.provider]) return null;
+  const credits = state.usageByProvider[state.provider]?.apiCredits;
+  if (!credits?.active || !credits.label || !credits.labelReason) return null;
+  return `${credits.label} (${credits.labelReason})`;
+}
+
 /** "on API credits, $862 / $900 left, subscriptions back in 1d4h, ≈$1.23 this cycle" (older daemons: the key in use and its balance). */
 function apiCreditSummary(credits: ApiCreditsUsage, now: number): string {
   const spent = `≈${formatCents(credits.spentUsd)} this cycle`;

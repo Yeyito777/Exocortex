@@ -4,8 +4,10 @@
  * Each Claude Max plan comes with Claude API credits that cover the Agent
  * SDK. While every subscription account is at a usage limit (account-pool.ts
  * decides that), turns run through the same Claude Code path on one of the
- * API keys in `providers.anthropic.apiCreditFallback.keys`, in config order,
- * and go back to the subscriptions once one can take work again.
+ * API keys in `providers.anthropic.apiCreditFallback.keys`, and go back to
+ * the subscriptions once one can take work again. Which key: the one whose
+ * organization has the credit that expires soonest (pickApiCreditKey), unless
+ * a conversation's prompt cache is still warm on another.
  *
  * The keys live in the owner's `secrets` store, named in config, never
  * written into it. A local turn gives Claude Code an `apiKeyHelper` that
@@ -80,14 +82,29 @@ const PURPOSE = "exocortex: Claude turns on API credits";
 
 // ── Config ──────────────────────────────────────────────────────────
 
+/** Which key new credit turns take: the one whose credits expire soonest, or the first in config order. */
+export type ApiCreditStrategy = "expiry" | "order";
+
 export interface ApiCreditConfig {
   enabled: boolean;
   keys: ApiCreditKey[];
+  strategy: ApiCreditStrategy;
+  /** A key with less left than this is picked only when every key has. */
+  minBalanceUsd: number;
 }
+
+const DEFAULT_MIN_BALANCE_USD = 2;
+/**
+ * How long a conversation's prompt cache stays warm on a key. Claude Code on
+ * an API key writes the main conversation's cache with a 5-minute TTL
+ * (its `promptCacheTtl` is 1 hour only on a subscription; seen in credit
+ * turns' `cache_creation` on 2026-10-29), renewed by every request.
+ */
+export const API_CREDIT_CACHE_TTL_MS = 5 * 60_000;
 
 export function apiCreditConfig(): ApiCreditConfig {
   const raw = readExocortexConfig().providers?.anthropic?.apiCreditFallback;
-  if (!raw || typeof raw !== "object") return { enabled: false, keys: [] };
+  if (!raw || typeof raw !== "object") return { enabled: false, keys: [], strategy: "expiry", minBalanceUsd: DEFAULT_MIN_BALANCE_USD };
   const keys: ApiCreditKey[] = [];
   for (const entry of Array.isArray(raw.keys) ? raw.keys : []) {
     if (!entry || typeof entry.secret !== "string" || !SECRET_NAME_RE.test(entry.secret)) continue;
@@ -120,7 +137,12 @@ export function apiCreditConfig(): ApiCreditConfig {
       grants,
     });
   }
-  return { enabled: raw.enabled === true && keys.length > 0, keys };
+  return {
+    enabled: raw.enabled === true && keys.length > 0,
+    keys,
+    strategy: raw.strategy === "order" ? "order" : "expiry",
+    minBalanceUsd: typeof raw.minBalanceUsd === "number" && Number.isFinite(raw.minBalanceUsd) && raw.minBalanceUsd >= 0 ? raw.minBalanceUsd : DEFAULT_MIN_BALANCE_USD,
+  };
 }
 
 export function apiCreditFallbackEnabled(): boolean {
@@ -365,9 +387,9 @@ export interface ApiCreditKeyStatus {
   throttledUntil: number | null;
 }
 
-export function apiCreditKeyStatuses(now = Date.now()): ApiCreditKeyStatus[] {
+export function apiCreditKeyStatuses(now = Date.now(), config = apiCreditConfig()): ApiCreditKeyStatus[] {
   const names = knownApiCreditSecrets();
-  return apiCreditConfig().keys.map((key) => {
+  return config.keys.map((key) => {
     const entry = loadStates().get(key.id) ?? {};
     return {
       key,
@@ -379,11 +401,9 @@ export function apiCreditKeyStatuses(now = Date.now()): ApiCreditKeyStatus[] {
   });
 }
 
-/** The first configured key that is in the store, has credits and is not rate-limited; null when none (or the fallback is off). */
+/** The key new credit work takes now (pickApiCreditKey); null when none can (or the fallback is off). */
 export function usableApiCreditKey(now = Date.now()): ApiCreditKey | null {
-  if (!apiCreditFallbackEnabled()) return null;
-  const usable = apiCreditKeyStatuses(now).find(status => status.present === true && status.spentUntil === null && status.throttledUntil === null);
-  return usable?.key ?? null;
+  return pickApiCreditKey(null, now)?.key ?? null;
 }
 
 /** With no usable key: when a rate-limited one can be tried again (spent keys wait for the subscriptions). */
@@ -768,13 +788,15 @@ export function apiCreditsUsage(
 ): ApiCreditsUsage | null {
   const config = apiCreditConfig();
   if (!config.enabled) return null;
-  const key = usableApiCreditKey(now);
+  const pick = pickApiCreditKey(null, now);
+  const key = pick?.key ?? null;
   const shown = key ?? config.keys.find(entry => activeKeys.has(entry.id)) ?? null;
   const credits = shown ? apiCreditKeysCredits(balanceKeys(shown), now) : null;
   return {
     active,
     ready: key !== null,
     label: key?.label ?? null,
+    labelReason: pick?.detail ?? null,
     spentUsd: config.keys.reduce((sum, entry) => sum + apiCreditCycleSpendUsd(entry, now), 0),
     resetAt: key ? null : apiCreditResetAt(now),
     balanceUsd: credits?.balanceUsd ?? null,
@@ -783,6 +805,111 @@ export function apiCreditsUsage(
     pool: apiCreditPool(now),
     subscriptionsBackAt,
   };
+}
+
+// ── Picking a key ───────────────────────────────────────────────────
+
+/** Which key a credit turn runs on, and why (for the logs, /tokens and route events). */
+export interface ApiCreditPick {
+  key: ApiCreditKey;
+  /** `warm`: the conversation stays where its prompt cache is; `expiry` / `order`: picked afresh by that rule. */
+  reason: "warm" | "expiry" | "order";
+  detail: string;
+  /** The key the conversation's last credit turn ran on, when this is another. */
+  movedFrom: ApiCreditKey | null;
+}
+
+/** The key a conversation's last turn ran on (null: a subscription) and when it last made a request. */
+export interface ApiCreditHistory {
+  key: string | null;
+  lastUsedAt: number | null;
+}
+
+function shortDuration(ms: number): string {
+  if (ms >= DAY) return `${Math.round(ms / DAY)}d`;
+  if (ms >= 60 * 60_000) return `${Math.round(ms / (60 * 60_000))}h`;
+  if (ms >= 60_000) return `${Math.round(ms / 60_000)}m`;
+  return `${Math.max(1, Math.round(ms / 1000))}s`;
+}
+
+function usd(amount: number): string {
+  return amount >= 10 ? `$${Math.round(amount)}` : `$${amount.toFixed(2)}`;
+}
+
+/** The keys whose credits a key draws on: those on its Console organization, else itself. */
+function orgKeys(key: ApiCreditKey, keys: readonly ApiCreditKey[]): ApiCreditKey[] {
+  const org = key.console?.org;
+  return org ? keys.filter(entry => entry.console?.org === org) : [key];
+}
+
+/** A key's soonest-expiring grant with at least `min` left; null when none has (or none expires). */
+function soonestGrant(credits: KeysCredits, min: number): ApiCreditGrantLeft | null {
+  return credits.grants.find(grant => grant.leftUsd >= min && typeof grant.expiresAt === "number") ?? null;
+}
+
+/**
+ * The key a credit turn runs on; null when no key can take it (or the
+ * fallback is off). Usable keys are in the secrets store, not out of credits,
+ * rejected or rate-limited. A key with less than `minBalanceUsd` left is a
+ * last resort (the API's own refusal still catches one that runs dry).
+ *
+ * A conversation stays on the key its last turn used while its prompt cache
+ * there is warm (each organization caches apart, so a move rewrites it);
+ * otherwise, and for new work, `expiry` takes the key whose organization has
+ * the credit that expires soonest, ties in config order. Without real Console
+ * figures for every usable key (never synced, or synced hours ago) that is
+ * not known, and config order decides, as `order` always does.
+ */
+export function pickApiCreditKey(previous: ApiCreditHistory | null = null, now = Date.now()): ApiCreditPick | null {
+  const config = apiCreditConfig();
+  if (!config.enabled) return null;
+  // One read of the config: keys are compared as objects below.
+  const usable = apiCreditKeyStatuses(now, config)
+    .filter(status => status.present === true && status.spentUntil === null && status.throttledUntil === null)
+    .map(status => status.key);
+  if (usable.length === 0) return null;
+  const min = config.minBalanceUsd;
+  const figures = new Map(usable.map(key => [key.id, apiCreditKeysCredits(orgKeys(key, config.keys), now)]));
+  const funded = usable.filter(key => (figures.get(key.id)?.balanceUsd ?? Infinity) >= min);
+  const pool = funded.length > 0 ? funded : usable;
+  const low = usable.filter(key => !funded.includes(key));
+  const lowNote = low.length === 0 ? ""
+    : funded.length === 0 ? `; every key has under ${usd(min)} left`
+    : `; ${low.map(key => `"${key.label}"`).join(", ")} under ${usd(min)}`;
+
+  const from = previous?.key ? config.keys.find(key => key.id === previous.key) ?? null : null;
+  const idle = previous?.lastUsedAt != null ? now - previous.lastUsedAt : Infinity;
+  if (from && pool.includes(from) && idle < API_CREDIT_CACHE_TTL_MS) {
+    return { key: from, reason: "warm", detail: `its prompt cache on this key is warm, last request ${shortDuration(idle)} ago`, movedFrom: null };
+  }
+
+  let pick: Omit<ApiCreditPick, "movedFrom">;
+  const unknown = pool.filter(key => !figures.get(key.id) || figures.get(key.id)!.approximate);
+  if (pool.length === 1) {
+    pick = { key: pool[0], reason: config.strategy, detail: "the only key that can take it" };
+  } else if (config.strategy === "order") {
+    pick = { key: pool[0], reason: "order", detail: "config order" };
+  } else if (unknown.length > 0) {
+    pick = { key: pool[0], reason: "order", detail: `config order, no recent Console balance for ${unknown.map(key => `"${key.label}"`).join(", ")}` };
+  } else {
+    // Among keys that are all nearly empty, any grant with something left counts.
+    const grantMin = funded.length > 0 ? min : 0.01;
+    const expiry = (key: ApiCreditKey) => soonestGrant(figures.get(key.id)!, grantMin)?.expiresAt ?? Infinity;
+    // A stable sort: equal expiries keep config order.
+    const ranked = [...pool].sort((a, b) => expiry(a) - expiry(b));
+    const [best, ...rest] = ranked;
+    const grant = soonestGrant(figures.get(best.id)!, grantMin);
+    const others = rest.map(key => `"${key.label}" ${Number.isFinite(expiry(key)) ? shortDuration(expiry(key) - now) : "never"}`).join(", ");
+    pick = grant
+      ? { key: best, reason: "expiry", detail: `its credit expires soonest: ${usd(grant.leftUsd)} in ${shortDuration(grant.expiresAt! - now)}, vs ${others}` }
+      : { key: best, reason: "expiry", detail: "no credit left expires; config order" };
+  }
+  pick = { ...pick, detail: pick.detail + lowNote };
+  if (!from || from.id === pick.key.id) return { ...pick, movedFrom: null };
+  const why = !usable.includes(from) ? `"${from.label}" cannot take it now`
+    : !pool.includes(from) ? `"${from.label}" has under ${usd(min)} left`
+    : `its cache on "${from.label}" is cold`;
+  return { ...pick, detail: `${why}; ${pick.detail}`, movedFrom: from };
 }
 
 // ── Console sync ────────────────────────────────────────────────────

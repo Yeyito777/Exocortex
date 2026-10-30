@@ -191,6 +191,8 @@ requests (titles, summaries, compaction) fall back too. Code:
   "anthropic": {
     "apiCreditFallback": {
       "enabled": true,
+      "strategy": "expiry",
+      "minBalanceUsd": 2,
       "keys": [
         { "secret": "ANTHROPIC_API_KEY_MAIN_CREDITS", "label": "main", "account": "main",
           "console": { "org": "<organization uuid>" },
@@ -207,9 +209,41 @@ requests (titles, summaries, compaction) fall back too. Code:
 }
 ```
 
-- **Keys** are names in the `secrets` store, never values. Keys are used in
-  config order (put the credits that expire soonest first); a key whose
+- **Keys** are names in the `secrets` store, never values. A key whose
   secret does not exist is skipped (the store is checked every few minutes).
+- **Which key a turn takes** (`pickApiCreditKey`, api-credits.ts), among the
+  keys that are in the store and not out of credits, rejected or
+  rate-limited:
+  1. **A conversation stays on its key** while its prompt cache there is
+     warm: less than 5 minutes since its last request on it. Each
+     organization caches apart, so a move rewrites the whole cache. Claude
+     Code on an API key writes the cache with a 5-minute TTL (the one-hour
+     TTL is a subscription's; seen in credit turns' usage on 2026-10-29), so
+     unlike an account's hour this is short, and an open process pins
+     nothing. A process with background tasks keeps its key, as it keeps
+     its account. A key that refuses (out of credits, rejected, rate-limited)
+     cannot keep anyone.
+  2. **New conversations, helper requests and conversations whose cache is
+     cold** go to the key whose Console organization has the grant that
+     expires soonest with at least `minBalanceUsd` left (grants used up don't
+     count), ties in config order. With `main` holding only its YC grant
+     (expires in 169 days) and `max2` an untouched Max grant (18 days), new
+     work goes to `max2`.
+  3. **Config order** instead of rule 2 while any usable key has no recent
+     Console figures (never synced, or the last sync over 3 hours old, the
+     `≈` on the Accounts screen): the configured `grants` alone are not
+     trusted to rank. `"strategy": "order"` always uses config order; rule 1
+     applies either way.
+
+  A key with less than `minBalanceUsd` left (default $2) is skipped while
+  another has more, warm cache or not; when every key is that low they are
+  still used, by the same rules, and the API's refusal ends each one. A move
+  between keys is announced to programs only (`api_credits` route event with
+  the new `creditKey`; hidden from chat), and the log says why, for example
+  `<conv> moves from API-credit key "main" and runs on API credits "max2"
+  (…; key: its cache on "main" is cold; its credit expires soonest: $200 in
+  18d, vs "main" 169d; …)`. /tokens shows the key new credit turns take and
+  why (`New credit turns go to max2 (its credit expires soonest: …)`).
 - **The key never reaches an agent.** A local turn gives Claude Code an
   `apiKeyHelper` (`--settings`) that runs `secrets run --allow NAME -- printenv
   NAME`, which Claude Code prefers to the account's subscription login. The
@@ -234,7 +268,9 @@ requests (titles, summaries, compaction) fall back too. Code:
   is tried every 3 hours until the grant lands), and the turn moves to the next
   key. With none left, the turn waits for a subscription to reset, like any
   usage limit. No key is retried in a loop. A key the API rejects sits out an
-  hour; one it rate-limits (429, after Claude Code's own backoff) a minute.
+  hour; one it rate-limits (429, after Claude Code's own backoff) a minute,
+  and the turn is retried at once on another key that has credit (under
+  /proxy, the request is retried once on it).
 - **The spend cap** is the credits themselves: an organization without a card
   or auto-reload refuses requests once they run out.
 - **Visibility**: the usage block shows it (neither the turn's metadata line

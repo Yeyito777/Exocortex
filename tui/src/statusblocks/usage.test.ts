@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { usageBlock, usageSummary } from "./usage";
+import { apiCreditPickSummary, usageBlock, usageSummary } from "./usage";
 import { renderStatusLine } from "../statusline";
 import type { ApiCreditGrantLeft, ApiCreditsUsage } from "../messages";
 import { createInitialState } from "../state";
@@ -294,5 +294,13 @@ describe("Claude on API credits: Credit and Expiry rows", () => {
 
   test("/tokens: the pool, when a subscription is back, and the cycle's spend", () => {
     expect(usageSummary(creditState())).toEndWith(" · on API credits, $862 / $900 left, subscriptions back in 1d4h, ≈$1.23 this cycle");
+  });
+
+  test("/tokens: the key new credit turns take and why", () => {
+    const reason = `its credit expires soonest: $200 in 19d, vs "main" 170d`;
+    expect(apiCreditPickSummary(creditState({ label: "max2", labelReason: reason }))).toBe(`max2 (${reason})`);
+    // Older daemons send no reason; off credits there is nothing to say.
+    expect(apiCreditPickSummary(creditState())).toBeNull();
+    expect(apiCreditPickSummary(creditState({ active: false, label: "max2", labelReason: reason }))).toBeNull();
   });
 });

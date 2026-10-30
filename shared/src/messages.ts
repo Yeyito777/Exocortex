@@ -921,8 +921,10 @@ export interface ApiCreditsUsage {
   active: boolean;
   /** A key can take a turn now (some subscription account may still be preferred). */
   ready: boolean;
-  /** Label of the key credit turns use now; null when none is left. */
+  /** Label of the key new credit turns take now; null when none is left. */
   label: string | null;
+  /** Why new credit turns take that key (soonest-expiring credit, config order, …). Omitted by older daemons. */
+  labelReason?: string | null;
   /** Estimated spend this billing cycle, every key together, from the local ledger. */
   spentUsd: number;
   /** With no key ready: when one can take turns again (a rate limit ends), if known. */

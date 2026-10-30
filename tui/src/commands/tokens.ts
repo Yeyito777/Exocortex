@@ -1,7 +1,7 @@
 import { clearPrompt } from "../promptstate";
 import { getProviderInfo, pushSystemMessage, type RenderState } from "../state";
 import { contextMeter } from "../statusblocks/context";
-import { usageSummary } from "../statusblocks/usage";
+import { apiCreditPickSummary, usageSummary } from "../statusblocks/usage";
 import { terminalColorLevel, theme } from "../theme";
 import { ansiColorToRgb, rgbToAnsi as terminalRgbToAnsi } from "../terminalcolors";
 import { resolveModelTokenPricing } from "@exocortex/shared/token-pricing";
@@ -525,6 +525,8 @@ function buildCurrentConversationLines(state: RenderState): string[] {
   ];
   const usage = usageSummary(state);
   if (usage) lines.push(`  ${providerLabel} usage: ${accentText(usage)}`);
+  const pick = apiCreditPickSummary(state);
+  if (pick) lines.push(`  New credit turns go to ${accentText(pick)}`);
   return lines;
 }
 
