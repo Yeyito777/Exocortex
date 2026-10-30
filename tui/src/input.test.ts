@@ -24,6 +24,12 @@ describe("kitty keyboard protocol parsing", () => {
     ]);
   });
 
+  test("distinguishes Ctrl+Shift+E from Ctrl+E (st's legacy and kitty forms)", () => {
+    expect(parseInput("\x1b[101;6u")).toEqual([{ type: "ctrl-shift-e" }]);
+    expect(parseInput("\x1b[101;6:1u")).toEqual([{ type: "ctrl-shift-e", event: "press" }]);
+    expect(parseInput("\x05")).toEqual([{ type: "ctrl-e" }]);
+  });
+
   test("treats shift+backspace like regular backspace", () => {
     expect(parseInput("\x1b[127;2u")).toEqual([{ type: "backspace", event: "press" }]);
     expect(parseInput("\x1b[127;2:2u")).toEqual([{ type: "backspace", event: "repeat" }]);
