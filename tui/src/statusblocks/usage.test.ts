@@ -220,11 +220,14 @@ describe("Claude on API credits: Credit and Expiry rows", () => {
     expect(block.width).toBe(col + "subs back 1d4h".length);
     const text = rows.join("\n");
     for (const gone of ["5-Hour", "Weekly", "main", "$662", "left"]) expect(text).not.toContain(gone);
-    // Colours: the amounts bold green, the grant muted, the label warning, the time accent, the separators dim.
-    expect(block.rows[0]).toContain(`${theme.bold}${theme.success}$862`);
+    // Colours: the bar accent, the amounts plain green, the grant muted, the label warning, the time accent, the separators dim.
+    expect(block.rows[0]).toContain(`${theme.accent}\u2588`);
+    expect(block.rows[0]).toContain(`${theme.success}$862`);
+    expect(block.rows[0]).not.toContain(theme.bold);
     expect(block.rows[0]).toContain(`${theme.muted} / $900`);
     expect(block.rows[0]).toContain(`${theme.warning}API credits`);
-    expect(block.rows[1]).toContain(`${theme.bold}${theme.success}$162`);
+    expect(block.rows[1]).toContain(`${theme.success}$162`);
+    expect(block.rows[1]).not.toContain(theme.bold);
     expect(block.rows[1]).toContain(`${theme.dim} · `);
     expect(block.rows[1]).toContain(`${theme.accent}1d4h`);
   });
@@ -275,7 +278,7 @@ describe("Claude on API credits: Credit and Expiry rows", () => {
     Object.assign(pool, { balanceUsd: 80, signInNeeded: true });
     block = usageBlock(state)!;
     expect(stripAnsi(block.rows[0])).toContain(`[${"\u2588".repeat(2)}${"\u2591".repeat(18)}] ≈$80 / $900 sign-in needed   API credits`);
-    expect(block.rows[0]).toContain(`${theme.bold}${theme.error}≈$80`);
+    expect(block.rows[0]).toContain(`${theme.error}≈$80`);
     expect(block.rows[0]).toContain(`${theme.error}${"\u2588".repeat(2)}`);
   });
 
