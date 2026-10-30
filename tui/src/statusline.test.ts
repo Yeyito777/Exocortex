@@ -86,8 +86,8 @@ describe("API-key usage", () => {
     expect(dailyAllowance(apiKey, 20, now)).toBeCloseTo((20 - (14.87 - 0.412)) / 7, 10);
     const block = apiKeyRows(apiKey, now);
     const rows = block.rows.map(stripAnsi);
-    expect(rows[0].trimEnd()).toBe(`  Today:  [${"\u2588".repeat(10)}${"\u2591".repeat(10)}] $0.412 / $0.792`);
-    expect(rows[1].trimEnd()).toBe(`  Month:  [${"\u2588".repeat(15)}${"\u2591".repeat(5)}] $14.87 / $20.00`);
+    expect(rows[0].trimEnd()).toBe(`  Today:  [${"\u2588".repeat(10)}${"\u2591".repeat(10)}] $0.412/$0.792`);
+    expect(rows[1].trimEnd()).toBe(`  Month:  [${"\u2588".repeat(15)}${"\u2591".repeat(5)}] $14.87/$20.00`);
     expect(rows.every((row) => row.length === block.width)).toBe(true);
     expect(rows[0].indexOf("[")).toBe(stripAnsi(usageBlock(stateWithUsage())!.rows[0]).indexOf("["));
   });
@@ -99,7 +99,7 @@ describe("API-key usage", () => {
     const block = apiKeyRows(apiKey, now);
     const rows = block.rows.map(stripAnsi);
     expect(rows[0].trimEnd()).toBe("  Today:  $1.00");
-    expect(rows[1].trimEnd()).toBe(`  Month:  [${"\u2588".repeat(20)}] $25.00 / $20.00`);
+    expect(rows[1].trimEnd()).toBe(`  Month:  [${"\u2588".repeat(20)}] $25.00/$20.00`);
     expect(rows.join("\n")).not.toContain("$0.000");
     expect(rows.join("\n")).not.toContain("unpriced");
     expect(rows.every((row) => row.length === block.width)).toBe(true);
@@ -135,7 +135,7 @@ describe("API-key usage", () => {
       const block = apiKeyRows(keyWith(c, 1.5), NOW);
       const rows = block.rows.map(stripAnsi);
       // 935.56 left of 1000 is 94%: nineteen cells of twenty, shown as ≈$936 (always an estimate).
-      const credit0 = `  Credit: [${FULL.repeat(19)}${EMPTY}] ≈$936 / $1000`;
+      const credit0 = `  Credit: [${FULL.repeat(19)}${EMPTY}] ≈$936/$1000`;
       expect(rows[0].trimEnd()).toBe(credit0);
       // This morning's balance: 1000 - (64.44 - 1.50) = 937.06, over 357 days = $2.62/day (for /tokens).
       expect(creditView(c, 1.5).paceUsd).toBeCloseTo(937.06 / DAYS_TO_EXPIRY, 10);
@@ -158,7 +158,7 @@ describe("API-key usage", () => {
       const c = credit({ usedUsd: 0, firstTrackedDay: null, paceUsd: 0, paceDays: 0 });
       expect(creditView(c, 0)).toMatchObject({ leftUsd: 1000, approximate: false, runway: null, low: false });
       const rows = apiKeyRows(keyWith(c, 0), NOW).rows.map(stripAnsi);
-      expect(rows[0].trimEnd()).toBe(`  Credit: [${FULL.repeat(20)}] ≈$1000 / $1000`);
+      expect(rows[0].trimEnd()).toBe(`  Credit: [${FULL.repeat(20)}] ≈$1000/$1000`);
       expect(rows[1].trimEnd()).toBe("  Expiry: $1000 357d");
     });
 
@@ -166,19 +166,19 @@ describe("API-key usage", () => {
       const c = credit({ usedUsd: 950, paceUsd: 70, paceDays: 7 });
       const block = apiKeyRows(keyWith(c, 10), NOW);
       const rows = block.rows.map(stripAnsi);
-      expect(rows[0].trimEnd()).toBe(`  Credit: [${FULL}${EMPTY.repeat(19)}] ≈$50 / $1000`);
+      expect(rows[0].trimEnd()).toBe(`  Credit: [${FULL}${EMPTY.repeat(19)}] ≈$50/$1000`);
       expect(block.rows[0]).toContain(`${theme.error}${FULL}`);
       expect(block.rows[0]).toContain(`${theme.error}≈$50`);
       // Nothing left at all.
       const spent = apiKeyRows(keyWith(credit({ usedUsd: 1200 }), 5), NOW).rows.map(stripAnsi);
-      expect(spent[0].trimEnd()).toBe(`  Credit: [${EMPTY.repeat(20)}] ≈$0 / $1000`);
+      expect(spent[0].trimEnd()).toBe(`  Credit: [${EMPTY.repeat(20)}] ≈$0/$1000`);
       expect(spent[1].trimEnd()).toBe("  Expiry: none left");
     });
 
     test("an expired grant says so", () => {
       const block = apiKeyRows(keyWith(credit({ asOf: "2027-10-20" })), new Date(2027, 9, 21, 12).getTime());
       const rows = block.rows.map(stripAnsi);
-      expect(rows[0].trimEnd()).toBe(`  Credit: [${EMPTY.repeat(20)}] ≈$0 / $1000`);
+      expect(rows[0].trimEnd()).toBe(`  Credit: [${EMPTY.repeat(20)}] ≈$0/$1000`);
       expect(rows[1].trimEnd()).toBe("  Expiry: expired Oct 20");
       expect(block.rows[1]).toContain(`${theme.error}expired Oct 20`);
       // The day before it expires, that one day gets the whole balance.
@@ -189,7 +189,7 @@ describe("API-key usage", () => {
       const c = credit({ expires: null });
       expect(creditView(c, 39.3).paceUsd).toBeNull();
       const rows = apiKeyRows(keyWith(c), NOW).rows.map(stripAnsi);
-      expect(rows[0].trimEnd()).toBe(`  Credit: [${FULL.repeat(19)}${EMPTY}] ≈$936 / $1000`);
+      expect(rows[0].trimEnd()).toBe(`  Credit: [${FULL.repeat(19)}${EMPTY}] ≈$936/$1000`);
       expect(rows[1].trimEnd()).toBe("  Expiry: $936 no expiry");
     });
 

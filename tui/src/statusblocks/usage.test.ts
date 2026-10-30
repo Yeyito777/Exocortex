@@ -211,7 +211,7 @@ describe("Claude on API credits: Credit and Expiry rows", () => {
   test("replace the bars: the pool over everything granted, every grant soonest first, no account names", () => {
     const block = usageBlock(creditState())!;
     const rows = block.rows.map(stripAnsi);
-    const credit = `  Credit: [${"\u2588".repeat(19)}${"\u2591"}] $862 / $900`;
+    const credit = `  Credit: [${"\u2588".repeat(19)}${"\u2591"}] $862/$900`;
     const expiry = "  Expiry: $162 12d · $200 19d · $500 170d";
     expect(rows[0].trimEnd()).toBe(credit);
     expect(rows[1].trimEnd()).toBe(expiry);
@@ -224,7 +224,7 @@ describe("Claude on API credits: Credit and Expiry rows", () => {
     expect(block.rows[0]).toContain(`${theme.accent}\u2588`);
     expect(block.rows[0]).toContain(`${theme.accent}$862`);
     expect(block.rows[0]).not.toContain(theme.bold);
-    expect(block.rows[0]).toContain(`${theme.muted} / $900`);
+    expect(block.rows[0]).toContain(`${theme.muted}/$900`);
     expect(block.rows[1]).toContain(`${theme.accent}$162`);
     expect(block.rows[1]).not.toContain(theme.bold);
     expect(block.rows[1]).toContain(`${theme.dim} · `);
@@ -248,7 +248,7 @@ describe("Claude on API credits: Credit and Expiry rows", () => {
     expect(block.width).toBe("  Expiry: $100 3d · $100 30d · $100 60d · $100 300d".length);
     // One grant: the Credit row is longer.
     block = usageBlock(creditState({}, [grant(40, 200, 12)]))!;
-    expect(block.width).toBe(`  Credit: [${"x".repeat(20)}] $40 / $200`.length);
+    expect(block.width).toBe(`  Credit: [${"x".repeat(20)}] $40/$200`.length);
   });
 
   test("sorting and filtering: soonest expiry first, never-expiring last, used-up and expired grants left out", () => {
@@ -261,10 +261,10 @@ describe("Claude on API credits: Credit and Expiry rows", () => {
     const pool = state.usageByProvider.anthropic!.apiCredits!.pool!;
     Object.assign(pool, { approximate: true });
     let block = usageBlock(state)!;
-    expect(stripAnsi(block.rows[0])).toContain("] ≈$862 / $900");
+    expect(stripAnsi(block.rows[0])).toContain("] ≈$862/$900");
     Object.assign(pool, { balanceUsd: 80, signInNeeded: true });
     block = usageBlock(state)!;
-    expect(stripAnsi(block.rows[0])).toContain(`[${"\u2588".repeat(2)}${"\u2591".repeat(18)}] ≈$80 / $900 sign-in needed`);
+    expect(stripAnsi(block.rows[0])).toContain(`[${"\u2588".repeat(2)}${"\u2591".repeat(18)}] ≈$80/$900 sign-in needed`);
     expect(block.rows[0]).toContain(`${theme.error}≈$80`);
     expect(block.rows[0]).toContain(`${theme.error}${"\u2588".repeat(2)}`);
   });
@@ -285,7 +285,7 @@ describe("Claude on API credits: Credit and Expiry rows", () => {
     expect(rows[1].trimEnd()).toBe("  Expiry: $10 3d · $20 30d · $30 60d · +2");
     expect(rows[0]).toContain("Credit: [");
     // The Credit row is the least it can be: narrower than that, the block is dropped.
-    const credit = stripAnsi(block.rows[0]).indexOf("$150 / $150") + "$150 / $150".length;
+    const credit = stripAnsi(block.rows[0]).indexOf("$150/$150") + "$150/$150".length;
     expect(draw(credit)[0]).toContain("Credit:");
     expect(draw(credit - 1).join("\n")).not.toContain("Credit:");
     // Every form's rows are as wide as it says.
