@@ -221,6 +221,82 @@ function Stream:wait(cb)
   if self.done then cb(self.err, self.result) else table.insert(self.waiters, cb) end
 end
 
+-- ── Following a turn (turn_catchup) ─────────────────────────────────────
+
+local BLOCK_EVENTS = { block_start = true, text_chunk = true, thinking_chunk = true, tool_call = true, tool_result = true }
+
+--- Apply a stream event to blocks, as the daemon builds a turn's blocks from its events.
+local function apply_stream_event(blocks, ev)
+  local t = ev.type
+  if t == "block_start" then
+    table.insert(blocks, { type = ev.blockType, text = "" })
+  elseif t == "text_chunk" or t == "thinking_chunk" then
+    local kind = t == "text_chunk" and "text" or "thinking"
+    local last = blocks[#blocks]
+    if last and last.type == kind then last.text = (last.text or "") .. (ev.text or "")
+    else table.insert(blocks, { type = kind, text = ev.text or "" }) end
+  elseif t == "tool_call" then
+    table.insert(blocks, { type = "tool_call", toolCallId = ev.toolCallId, toolName = ev.toolName, input = ev.input })
+  elseif t == "tool_result" then
+    table.insert(blocks, { type = "tool_result", toolCallId = ev.toolCallId, toolName = ev.toolName, output = ev.output, isError = ev.isError })
+  end
+end
+
+--- The stream event that shows a block, from byte `from` of its text.
+local function block_event(block, from)
+  local kind = block.type
+  if kind == "text" or kind == "thinking" then
+    local text = (block.text or ""):sub((from or 0) + 1)
+    return text ~= "" and { type = kind, text = text } or nil
+  end
+  if kind == "tool_call" then return { type = "tool_call", id = block.toolCallId, name = block.toolName, input = block.input } end
+  if kind == "tool_result" then
+    return { type = "tool_result", id = block.toolCallId, name = block.toolName or "", output = block.output or "", is_error = block.isError == true }
+  end
+end
+
+--- How a turn's blocks stand to what a stream showed: "extends" (and the new part as stream events),
+--- "behind" when they agree but the turn has not reached all of it yet (a replay after a restart
+--- sending the turn again from its start), or "diverged".
+local function compare(shown, target)
+  for i = 1, math.min(#shown, #target) do
+    local was, now = shown[i], target[i]
+    if now.type ~= was.type then return "diverged" end
+    if was.type == "text" or was.type == "thinking" then
+      local a, b = was.text or "", now.text or ""
+      -- Texts may differ only at the end of one side: the turn grew past the stream, or not up to it yet.
+      if a ~= b and not (b:sub(1, #a) == a and i == #shown) and not (a:sub(1, #b) == b and i == #target) then
+        return "diverged"
+      end
+    elseif now.toolCallId ~= was.toolCallId then
+      return "diverged"
+    end
+  end
+  if #target < #shown then return "behind" end
+  local events = {}
+  local last = shown[#shown]
+  if last and (last.type == "text" or last.type == "thinking") then
+    local had, has = #(last.text or ""), #(target[#shown].text or "")
+    if has < had then return "behind" end
+    local grown = block_event(target[#shown], had)
+    if grown then table.insert(events, grown) end
+  end
+  for i = #shown + 1, #target do
+    local e = block_event(target[i])
+    if e then table.insert(events, e) end
+  end
+  return "extends", events
+end
+
+--- A stream event to a turn's callbacks and stream.
+local function emit(tr, se)
+  if tr.on_event then tr.on_event(se) end
+  if se.type == "text" and tr.on_text then tr.on_text(se.text) end
+  if tr.stream then tr.stream:_push(se) end
+end
+
+local function streams(tr) return tr.on_event or tr.on_text or tr.stream end
+
 -- ── Conversation ─────────────────────────────────────────────────────────
 
 local Conversation = {}
@@ -240,6 +316,8 @@ end
 
 --- Send a prompt; cb(err, result) when the turn ends.
 --- opts: on_text(delta), on_event(event) for stream events, on_raw(daemon_event), images
+--- Stream events: text, thinking, tool_call, tool_result, and reset (the daemon replaced what was
+--- shown, as a provider retry does; what the turn shows now follows again from the start).
 function Conversation:send(prompt, opts, cb)
   if type(opts) == "function" then opts, cb = nil, opts end
   return self.client:_send_turn(self, prompt, opts or {}, cb)
@@ -250,6 +328,13 @@ function Conversation:stream(prompt, opts)
   local stream = new_stream()
   self.client:_send_turn(self, prompt, opts or {}, function(e, r) stream:_finish(e, r) end, stream)
   return stream
+end
+
+--- The turn running now (one this client did not send: after attach, or a queued message's), as a
+--- Stream from its start: what it showed so far, then live. nil when none runs, or with a daemon
+--- that sends no turn catch-ups.
+function Conversation:follow()
+  return self.client:_follow_turn(self)
 end
 
 function Conversation:abort(cb)
@@ -337,6 +422,10 @@ function M.connect(opts, cb)
     pipe = nil, connected = false, connected_waiters = {}, generation = 0, next_id = 0, last_started_at = 0,
     closed = false, closing = false, reconnecting = false,
     requests = {}, turns = {}, conversations = {}, calls = {}, listeners = {},
+    --- Running turns as caught up (turn_catchup) and followed since, by conversation.
+    live = {}, follow_counter = 0,
+    --- This connection's welcome said turnCatchup (read as it arrives: catch-ups may follow it at once).
+    turn_catchup = false,
   }, Client)
   local discovered = not opts.socket and vim.trim(vim.env.EXOCORTEX_SOCKET or "") == ""
   local function open(path)
@@ -412,7 +501,7 @@ function Client:_handshake(cb)
       end)
     end)
     local app = { name = self.app, version = self.version, session = self.session, reconnectGraceMs = self.reconnect_grace_ms }
-    local caps = { type = "client_capabilities", capabilities = {}, app = app }
+    local caps = { type = "client_capabilities", capabilities = { "turn-catchup" }, app = app }
     self:_exchange(caps, function(ev) return ev.type == "app_welcome" end, function(e, welcome)
       if e then
         if self.pipe == pipe then self.pipe = nil end
@@ -720,6 +809,7 @@ local function stream_event(ev)
 end
 
 function Client:_dispatch(ev)
+  if ev.type == "app_welcome" then self.turn_catchup = ev.turnCatchup == true end
   for listener in pairs(self.listeners) do listener(ev) end
   local t, req_id = ev.type, ev.reqId
   local turn = req_id and self.turns[req_id]
@@ -735,7 +825,7 @@ function Client:_dispatch(ev)
       turn.conv_id = ev.convId
       return
     end
-    if t == "turn_result" then return self:_settle(turn, nil, to_result(ev)) end
+    if t == "turn_result" then return self:_finish_turn(turn, ev) end
     if t == "app_conversation_attached" then return end -- a run sent again after a reconnect took its conversation back
   end
   local request = req_id and self.requests[req_id]
@@ -758,6 +848,7 @@ function Client:_dispatch(ev)
     return
   end
   if t == "conversation_deleted" then return self:_end_conversation(conv_id, ev.reason or "deleted") end
+  if self.turn_catchup then return self:_dispatch_followed(conv_id, ev) end
   for _, tr in ipairs(self:_turns_on(conv_id)) do
     if t == "turn_result" then
       -- The owner's copy (after a reconnect our reqId is gone): ours when it names our turn.
@@ -774,6 +865,122 @@ function Client:_dispatch(ev)
   end
 end
 
+
+-- ── following a turn ──
+
+--- A conversation event with a daemon that sends turn catch-ups: streams follow its live turn.
+function Client:_dispatch_followed(conv_id, ev)
+  local t = ev.type
+  local change = self:_track_live(conv_id, ev)
+  for _, tr in ipairs(self:_turns_on(conv_id)) do
+    if t == "turn_result" then
+      -- The owner's copy (after a reconnect our reqId is gone): ours when it names our turn.
+      if tr.turn_id == ev.turnId then self:_finish_turn(tr, ev) end
+    else
+      if tr.on_raw then tr.on_raw(ev) end
+      if change and streams(tr) then self:_follow_live(tr, conv_id, change == "event" and ev or nil) end
+    end
+  end
+  local live = self.live[conv_id]
+  if t == "turn_result" and live and live.turn_id == ev.turnId then self.live[conv_id] = nil end
+end
+
+--- Keep a conversation's running turn: a catch-up replaces it, a newer stream event extends it, the
+--- stream's message_complete completes it. "rebase" when streams must compare against it, "event"
+--- when the event extended it, nil when nothing changed (an event at or below the last catch-up's
+--- streamSeq is already in it).
+function Client:_track_live(conv_id, ev)
+  local t = ev.type
+  if t == "turn_catchup" then
+    self.live[conv_id] = { turn_id = ev.turnId, blocks = vim.deepcopy(ev.blocks or {}), seq = ev.streamSeq or 0, offset = ev.streamOffset or 0 }
+    return "rebase"
+  end
+  local live = self.live[conv_id]
+  if t == "streaming_started" and ev.snapshotKind == "start" then
+    -- A new stream: its catch-up follows at once and says which turn it is.
+    if live then live.seq = ev.streamSeq or 0
+    else self.live[conv_id] = { turn_id = nil, blocks = {}, seq = ev.streamSeq or 0, offset = 0 } end
+    return nil
+  end
+  if not BLOCK_EVENTS[t] and t ~= "message_complete" then return nil end
+  if not live then
+    live = { turn_id = nil, blocks = {}, seq = 0, offset = 0 }
+    self.live[conv_id] = live
+  end
+  if type(ev.streamSeq) == "number" then
+    if ev.streamSeq <= live.seq then return nil end
+    live.seq = ev.streamSeq
+  end
+  if t == "message_complete" then
+    local blocks = {}
+    for i = 1, math.min(live.offset, #live.blocks) do blocks[i] = live.blocks[i] end
+    for _, block in ipairs(ev.blocks or {}) do table.insert(blocks, vim.deepcopy(block)) end
+    live.blocks = blocks
+    return "rebase"
+  end
+  apply_stream_event(live.blocks, ev)
+  return "event"
+end
+
+--- Bring a turn's stream up to its conversation's live turn: `ev` when only that event is new.
+function Client:_follow_live(tr, conv_id, ev)
+  local live = self.live[conv_id]
+  if not live or (live.turn_id ~= nil and live.turn_id ~= tr.turn_id) then return end
+  if ev and tr.synced and tr.shown then
+    apply_stream_event(tr.shown, ev)
+    local se
+    if ev.type == "text_chunk" or ev.type == "thinking_chunk" then
+      se = (ev.text or "") ~= "" and { type = ev.type == "text_chunk" and "text" or "thinking", text = ev.text } or nil
+    elseif ev.type ~= "block_start" then
+      se = block_event(tr.shown[#tr.shown])
+    end
+    if se then emit(tr, se) end
+    return
+  end
+  tr.synced = self:_catch_up(tr, live.blocks, false)
+end
+
+--- Show what `blocks` adds to what the turn's stream showed. While they agree but `blocks` has not
+--- reached all of it (not `final`), nothing: the stream goes on once the turn passes it. When they
+--- disagree (or the turn ended short of it), a reset, then the turn again. True when the stream now
+--- shows exactly `blocks`.
+function Client:_catch_up(tr, blocks, final)
+  local kind, events = compare(tr.shown or {}, blocks)
+  if kind == "behind" and not final then return false end
+  if kind ~= "extends" then
+    emit(tr, { type = "reset" })
+    local _
+    _, events = compare({}, blocks)
+  end
+  tr.shown = vim.deepcopy(blocks)
+  for _, se in ipairs(events or {}) do emit(tr, se) end
+  return true
+end
+
+--- A turn's result: its stream first shows what it lacks of the whole turn (turn_result.blocks).
+function Client:_finish_turn(tr, ev)
+  if streams(tr) and self.turn_catchup and type(ev.blocks) == "table" and self.turns[tr.req_id] == tr then
+    self:_catch_up(tr, ev.blocks, true)
+    tr.synced = false
+  end
+  self:_settle(tr, nil, to_result(ev))
+end
+
+function Client:_follow_turn(conv)
+  local live = self.live[conv.id]
+  if not self.turn_catchup or not live or not live.turn_id or conv.ended then return nil end
+  local stream = new_stream()
+  self.follow_counter = self.follow_counter + 1
+  -- Never sent: the daemon's owner copy of its turn_result settles it.
+  local tr = {
+    req_id = "f" .. self.follow_counter, conv_id = conv.id, turn_id = live.turn_id, started_at = 0,
+    generation = math.huge, command = {}, stream = stream, shown = {}, synced = true,
+    cb = function(e, r) stream:_finish(e, r) end,
+  }
+  self.turns[tr.req_id] = tr
+  self:_follow_live(tr, conv.id, nil)
+  return stream
+end
 
 local Call = {}
 Call.__index = Call
@@ -819,6 +1026,7 @@ function Client:_on_tool_call(ev)
 end
 
 function Client:_end_conversation(conv_id, reason, code, message)
+  self.live[conv_id] = nil
   local conv = self.conversations[conv_id]
   self.conversations[conv_id] = nil
   if conv then conv.ended = reason end

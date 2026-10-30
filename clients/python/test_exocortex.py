@@ -325,6 +325,112 @@ class EndedWhileAwayLost(Base):
         self.assertEqual(c.run("after", timeout=15).text, "echo: after")
 
 
+def numbers(n: int) -> str:
+    return "".join(f"{i + 1} " for i in range(n))
+
+
+def collect(stream, until_text: int = 0):
+    """Read a stream on a thread: (its events list, the thread, an event set once the text is that long)."""
+    events, reached = [], threading.Event()
+
+    def read():
+        for event in stream:
+            events.append(event)
+            if sum(len(e.text or "") for e in events if e.type == "text") >= until_text:
+                reached.set()
+        reached.set()
+
+    thread = threading.Thread(target=read, daemon=True)
+    thread.start()
+    return events, thread, reached
+
+
+def text_of(events) -> str:
+    return "".join(e.text or "" for e in events if e.type == "text")
+
+
+class FollowingATurn(Base):
+    fake_args = ("--chunk-delay-ms", "8")
+
+    def test_dropped_connection_mid_reply(self):
+        c = self.client()
+        self.assertTrue(c.welcome.get("turnCatchup"))
+        stream = c.conversation().stream("slow 40")
+        events, thread, reached = collect(stream, 10)
+        self.assertTrue(reached.wait(10))
+        admin(self.fake, {"type": "fake_drop", "refuseMs": 150})
+        thread.join(30)
+        self.assertEqual(text_of(events), numbers(40))
+        self.assertEqual(stream.result(10).text, numbers(40))
+
+    def test_graceful_restart_mid_reply(self):
+        c = self.client()
+        stream = c.conversation("ephemeral").stream("slow 40")
+        events, thread, reached = collect(stream, 10)
+        self.assertTrue(reached.wait(10))
+        admin(self.fake, {"type": "fake_restart", "downMs": 200})
+        thread.join(30)
+        self.assertFalse(any(e.type == "reset" for e in events))
+        self.assertEqual(text_of(events), numbers(40))
+
+    def test_replay_from_start_waits_for_what_was_shown(self):
+        self.fake.stop()
+        self.fake = Fake("--chunk-delay-ms", "8", "--replay-from-start")
+        c = self.client()
+        stream = c.conversation("ephemeral").stream("slow 40")
+        events, thread, reached = collect(stream, 10)
+        self.assertTrue(reached.wait(10))
+        admin(self.fake, {"type": "fake_restart", "downMs": 200})
+        thread.join(30)
+        self.assertFalse(any(e.type == "reset" for e in events))
+        self.assertEqual(text_of(events), numbers(40))
+
+    def test_turn_ends_while_away(self):
+        c = self.client()
+        stream = c.conversation().stream("slow 30")
+        events, thread, reached = collect(stream, 6)
+        self.assertTrue(reached.wait(10))
+        admin(self.fake, {"type": "fake_drop", "refuseMs": 600})
+        thread.join(30)
+        self.assertEqual(text_of(events), numbers(30))
+        self.assertLess(len(events), 30)  # the rest came in one piece, from the held turn_result
+
+    def test_follow_after_attach(self):
+        a = self.client()
+        conv = a.conversation("temporary")
+        sent = conv.stream("slow 30")
+        events_a, thread_a, reached = collect(sent, 10)
+        self.assertTrue(reached.wait(10))
+        b = self.client()
+        attached = b.attach(conv.id)
+        self.assertTrue(attached.info["streaming"])
+        followed = attached.follow()
+        self.assertIsNotNone(followed)
+        mine = list(followed)
+        thread_a.join(30)
+        self.assertEqual(text_of(mine), numbers(30))
+        self.assertEqual(text_of(events_a), numbers(30))
+        self.assertEqual(followed.result(10).text, numbers(30))
+        self.assertIsNone(attached.follow())
+
+    def test_replaced_text_resets(self):
+        events = list(self.client().conversation().stream("retry"))
+        self.assertEqual([(e.type, e.text) for e in events],
+                         [("text", "draft"), ("reset", None), ("text", "final "), ("text", "answer")])
+
+
+class FollowingWithoutCatchups(Base):
+    fake_args = ("--no-turn-catchup", "--chunk-delay-ms", "5")
+
+    def test_streams_as_before(self):
+        c = self.client()
+        self.assertIsNone(c.welcome.get("turnCatchup"))
+        conv = c.conversation()
+        stream = conv.stream("slow 10")
+        self.assertIsNone(conv.follow())
+        self.assertEqual(text_of(list(stream)), numbers(10))
+
+
 class Connecting(unittest.TestCase):
     def test_version_mismatch(self):
         fake = Fake("--api-version", "2")

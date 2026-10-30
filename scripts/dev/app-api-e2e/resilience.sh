@@ -9,7 +9,9 @@
 # secret names), so every turn here runs on API credits: a few cents at most.
 # Phase restart: a graceful restart of the TEST daemon while an ephemeral run's
 # app tool call is pending, a temporary conversation streams, and a send is made
-# while the daemon is down; everything completes after the restart. Phase
+# while the daemon is down; everything completes after the restart, and the
+# stream shows its whole reply exactly once. Phase drop: the client's connection
+# drops mid-reply; the turn catch-up completes its stream exactly once. Phase
 # credits: app turns fall back to credits and say so; route credits=never fails
 # fast or waits. Phase crash: the test daemon (its recorded PID) is killed with
 # SIGKILL mid-run; the one-shot run starts over, a multi-turn ephemeral
@@ -97,6 +99,9 @@ wait "$client" || status=1
 tail -n "+$log_from" "$log" | grep -E "app-api: (handed|took over)|restart-recovery: replaying|adopted the Claude Code process|session resumed" | sed 's/^/  log: /' || true
 handoff="$(ls "${TMPDIR:-/tmp}"/exocortex-apps-*-"$NAME"/handoff.json 2>/dev/null || true)"
 [[ -z "$handoff" ]] && echo "  ok   no handover file left behind" || { echo "  FAIL handover file left: $handoff"; status=1; }
+
+echo "phase drop"
+PHASE=drop timeout 600 python3 "$HERE/resilience.py" || status=1
 
 echo "phase crash"
 rm -f "$SCRATCH/restart-now" "$SCRATCH/restarted"

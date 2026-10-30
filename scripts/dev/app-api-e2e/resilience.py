@@ -1,9 +1,11 @@
 """App API resilience end to end, with the Python reference client (what batch jobs use).
 
 PHASE=restart: an ephemeral one-shot run whose app tool call is pending, a temporary
-conversation streaming, an ephemeral multi-turn conversation, and a message queued on an
-ephemeral conversation mid-turn all ride a graceful restart of the test daemon; a send
-made while the daemon is down waits and completes.
+conversation streaming (its stream must show every integer exactly once), an ephemeral
+multi-turn conversation, and a message queued on an ephemeral conversation mid-turn all ride
+a graceful restart of the test daemon; a send made while the daemon is down waits and completes.
+PHASE=drop: the client's connection drops mid-reply; after the reconnect the turn catch-up
+completes the stream with every integer exactly once.
 PHASE=credits: with every Claude account marked limited (EXOCORTEX_DEV_CLAUDE_ROUTING),
 app turns fall back to API credits like ordinary ones and say so; route credits=never
 fails fast (whenLimited=error) or waits (default).
@@ -12,6 +14,8 @@ Env: SOCKET, SCRATCH (restart-now / restarted marker files), CLIENT_DIR.
 """
 
 import os
+import re
+import socket as _socket
 import sys
 import threading
 import time
@@ -43,6 +47,19 @@ def wait_for(path, seconds=300):
     return os.path.exists(path)
 
 
+def integers_once(text, n):
+    """The stream showed 1..n, each exactly once, in order, and nothing else."""
+    return [int(x) for x in re.findall(r"\d+", text)] == list(range(1, n + 1))
+
+
+def stream_text(events):
+    return "".join(e.text or "" for e in events if e.type == "text")
+
+
+def turn_text(result):
+    return "".join(b.get("text", "") for b in (result.raw.get("blocks") or []) if b.get("type") == "text")
+
+
 def restart_phase():
     client = exocortex.connect("e2e-resilience", socket=SOCKET, reconnect_timeout=300)
     session = client.session
@@ -57,6 +74,7 @@ def restart_phase():
 
     calls = []
     queued_ready = threading.Event()
+    streamed_enough = threading.Event()
 
     def step(_args, call):
         calls.append(call)
@@ -64,7 +82,9 @@ def restart_phase():
             return "marmalade"
         # The harness restarts the daemon while this call is pending: like any tool call it is
         # interrupted (app_tool_cancel), and the replayed turn sees that and calls it again.
+        # It waits for the streaming turn to be part way through its reply.
         queued_ready.wait(300)
+        streamed_enough.wait(120)
         open(RESTART_NOW, "w").close()
         wait_for(RESTARTED)
         time.sleep(1.0)
@@ -117,14 +137,26 @@ def restart_phase():
             results["held"] = error
 
     stream_events = []
+    shown_when_down = []
 
     def stream_job():
-        wait_for(RESTART_NOW)
         try:
-            results["stream"] = streaming.send("Write the integers from 1 to 150 separated by single spaces and nothing else.",
-                                               on_event=stream_events.append, timeout=600)
+            live = streaming.stream("Write the integers from 1 to 300 separated by single spaces and nothing else.")
+            for event in live:
+                stream_events.append(event)
+                if len(stream_text(stream_events)) > 60:
+                    streamed_enough.set()
+            results["stream"] = live.result(600)
         except Exception as error:  # noqa: BLE001
             results["stream"] = error
+        streamed_enough.set()
+
+    def watch_down():
+        # How much of the reply the stream had shown when the daemon went away.
+        deadline = time.time() + 300
+        while time.time() < deadline and client._connected.is_set():
+            time.sleep(0.005)
+        shown_when_down.append(len(stream_text(stream_events)))
 
     def down_job():
         # Sent while the daemon is down: it waits for the reconnection, then runs on the handed-over history.
@@ -138,7 +170,7 @@ def restart_phase():
         except Exception as error:  # noqa: BLE001
             results["memory"] = error
 
-    threads = [threading.Thread(target=job) for job in (run_job, stream_job, down_job, queued_job)]
+    threads = [threading.Thread(target=job) for job in (run_job, stream_job, down_job, queued_job, watch_down)]
     started = time.time()
     for thread in threads:
         thread.start()
@@ -153,9 +185,17 @@ def restart_phase():
           f"its pending app tool call was cancelled by the restart and called again ({len(calls)} calls, "
           f"first {calls[0].reason if calls else None})")
     stream = results.get("stream")
-    check(isinstance(stream, exocortex.TurnResult) and stream.stop_reason == "end_turn" and "150" in stream.text,
-          f"temporary conversation's turn completed (streamed {sum(1 for e in stream_events if e.get('type') == 'text_chunk')} chunks)",
+    check(isinstance(stream, exocortex.TurnResult) and stream.stop_reason == "end_turn" and "300" in stream.text,
+          f"temporary conversation's turn completed ({sum(1 for e in stream_events if e.type == 'text')} text deltas)",
           getattr(stream, "raw", stream))
+    shown = stream_text(stream_events)
+    down = shown_when_down[0] if shown_when_down else None
+    check(down is not None and 0 < down < len(shown),
+          f"the restart came mid-reply: its stream had shown {down} of {len(shown)} characters")
+    check(not any(e.type == "reset" for e in stream_events) and integers_once(shown, 300),
+          f"its stream across the restart showed 1..300 exactly once ({shown[:40]!r}…{shown[-40:]!r})")
+    if isinstance(stream, exocortex.TurnResult):
+        check(shown == turn_text(stream), "and exactly the turn's text (turn_result.blocks)", turn_text(stream)[:300])
     memory_result = results.get("memory")
     check(results.get("down_while_sent") is True, "a send was made while the daemon was down")
     check(isinstance(memory_result, exocortex.TurnResult) and "7461" in memory_result.text,
@@ -179,6 +219,35 @@ def restart_phase():
     client.close()  # end_app_session: the ephemeral conversation ends now
     with exocortex.connect("e2e-resilience", socket=SOCKET) as other:
         check(other.list() == [], "closing the client ended its ephemeral conversation at once", other.list())
+
+
+def drop_phase():
+    """The client's connection drops mid-reply (the daemon stays up): the reconnect's turn
+    catch-up completes the stream, every integer exactly once."""
+    client = exocortex.connect("e2e-resilience", socket=SOCKET, reconnect_timeout=300)
+    check(client.welcome.get("turnCatchup") is True, "the daemon sends this client turn catch-ups")
+    conv = client.conversation("ephemeral", system="Follow instructions exactly.", **MODEL)
+    welcomes = []
+    client.on_event(lambda e: welcomes.append(e) if e.get("type") == "app_welcome" else None)
+    raw = []
+    client.on_event(lambda e: raw.append(e.get("type")) if e.get("convId") == conv.id else None)
+    stream = conv.stream("Write the integers from 1 to 300 separated by single spaces and nothing else.")
+    events, dropped_at = [], None
+    for event in stream:
+        events.append(event)
+        if dropped_at is None and len(stream_text(events)) > 60:
+            dropped_at = len(stream_text(events))
+            client._sock.shutdown(_socket.SHUT_RDWR)  # the connection drops mid-reply
+    result = stream.result(300)
+    shown = stream_text(events)
+    check(dropped_at is not None and dropped_at < len(shown),
+          f"the connection dropped mid-reply (after {dropped_at} of {len(shown)} characters)")
+    check(any(w.get("resumed") for w in welcomes) and "turn_catchup" in raw,
+          f"the client took its session back and was caught up ({raw.count('turn_catchup')} catch-up(s))")
+    check(not any(e.type == "reset" for e in events) and integers_once(shown, 300),
+          f"the stream showed 1..300 exactly once ({shown[:30]!r}…{shown[-30:]!r})")
+    check(shown == turn_text(result), "and exactly the turn's text (turn_result.blocks)", turn_text(result)[:300])
+    client.close()
 
 
 def crash_phase():
@@ -246,5 +315,5 @@ def credits_phase():
 
 
 if __name__ == "__main__":
-    {"restart": restart_phase, "crash": crash_phase, "credits": credits_phase}[os.environ["PHASE"]]()
+    {"restart": restart_phase, "drop": drop_phase, "crash": crash_phase, "credits": credits_phase}[os.environ["PHASE"]]()
     sys.exit(1 if failures else 0)

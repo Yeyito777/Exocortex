@@ -35,8 +35,16 @@ end)
   "never", whenLimited = "wait" | "error" }`). Results also carry `billing`
   and `limited` when they apply. A conversation has
   `send(prompt, { on_text, on_event, on_raw }, cb)`, `stream(prompt)` (iterate
-  `stream:iter()` inside `exo.async`, or `stream:wait(cb)`), `abort`,
-  `set_tools`, `delete`.
+  `stream:iter()` inside `exo.async`, or `stream:wait(cb)`), `follow()` (a
+  Stream of a turn already running, after `attach` or a queued message's,
+  from its start; or nil), `abort`, `set_tools`, `delete`.
+- Streams and stream callbacks never repeat or miss text: after a reconnect,
+  a daemon restart or an attach the daemon catches the client up with the
+  running turn (`turn_catchup`), and only what was not shown is shown. If the
+  daemon replaces text it streamed (a provider retry), `on_event` and the
+  stream get `{ type = "reset" }`, then the turn again from its start. Against a
+  daemon without catch-ups (`client.welcome.turnCatchup` unset) they behave as
+  before.
 - App tools: `{ name, description, input_schema, timeout_ms?, handler, async? }`.
   `handler(input, call)` returns text, `{ output, isError }` or any value
   (sent as JSON); `error()` is an error result. With `async = true`, answer

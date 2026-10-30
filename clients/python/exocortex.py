@@ -19,6 +19,7 @@ import random
 import re
 import socket as _socket
 import subprocess
+import sys
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -134,7 +135,9 @@ class TurnResult:
 
 @dataclass
 class StreamEvent:
-    """``type``: text, thinking, tool_call or tool_result."""
+    """``type``: text, thinking, tool_call, tool_result, or reset: the daemon replaced what the
+    stream showed (a provider retry), and everything the turn shows now follows again from the
+    start. Rare; never for a reconnect."""
 
     type: str
     text: Optional[str] = None
@@ -169,7 +172,7 @@ class TurnStream:
             yield item
 
     def text(self) -> Iterator[str]:
-        """Just the reply's text deltas."""
+        """Just the reply's text deltas (after a ``reset`` event, the text shown again)."""
         for event in self:
             if event.type == "text":
                 yield event.text or ""
@@ -191,6 +194,80 @@ class _Turn:
         self.run_lifetime: Optional[str] = None
         #: The send_message or app_run that started it, sent again (same startedAt) after a reconnect.
         self.command: Dict[str, Any] = {}
+        #: What its stream has shown, as the turn's blocks (with a daemon that sends turn catch-ups).
+        self.shown: Optional[List[Dict[str, Any]]] = None
+        #: ``shown`` is the conversation's live turn: a stream event passes straight through.
+        self.synced = False
+
+
+# ── Following a turn (turn_catchup) ─────────────────────────────────────
+
+_BLOCK_EVENTS = {"block_start", "text_chunk", "thinking_chunk", "tool_call", "tool_result"}
+
+
+def _apply_stream_event(blocks: List[Dict[str, Any]], event: Dict[str, Any]) -> None:
+    """Apply a stream event to blocks, as the daemon builds a turn's blocks from its events."""
+    etype = event["type"]
+    if etype == "block_start":
+        blocks.append({"type": event.get("blockType"), "text": ""})
+    elif etype in ("text_chunk", "thinking_chunk"):
+        kind = "text" if etype == "text_chunk" else "thinking"
+        if blocks and blocks[-1].get("type") == kind:
+            blocks[-1]["text"] = blocks[-1].get("text", "") + event.get("text", "")
+        else:
+            blocks.append({"type": kind, "text": event.get("text", "")})
+    elif etype == "tool_call":
+        blocks.append({"type": "tool_call", "toolCallId": event.get("toolCallId"), "toolName": event.get("toolName"),
+                       "input": event.get("input")})
+    elif etype == "tool_result":
+        blocks.append({"type": "tool_result", "toolCallId": event.get("toolCallId"), "toolName": event.get("toolName"),
+                       "output": event.get("output"), "isError": event.get("isError")})
+
+
+def _block_event(block: Dict[str, Any], start: int = 0) -> Optional[StreamEvent]:
+    """The stream event that shows a block, from character ``start`` of its text."""
+    kind = block.get("type")
+    if kind in ("text", "thinking"):
+        text = (block.get("text") or "")[start:]
+        return StreamEvent(kind, text=text) if text else None
+    if kind == "tool_call":
+        return StreamEvent("tool_call", id=block.get("toolCallId"), name=block.get("toolName"), input=block.get("input") or {})
+    if kind == "tool_result":
+        return StreamEvent("tool_result", id=block.get("toolCallId"), name=block.get("toolName") or "",
+                           output=block.get("output") or "", is_error=bool(block.get("isError")))
+    return None
+
+
+def _compare(shown: List[Dict[str, Any]], target: List[Dict[str, Any]]):
+    """How a turn's blocks stand to what a stream showed: ("extends", new part as stream events),
+    ("behind", None) when they agree but the turn has not reached all of it yet (a replay after a
+    restart sending the turn again from its start), or ("diverged", None)."""
+    for i in range(min(len(shown), len(target))):
+        was, now = shown[i], target[i]
+        if now.get("type") != was.get("type"):
+            return "diverged", None
+        if was.get("type") in ("text", "thinking"):
+            a, b = was.get("text") or "", now.get("text") or ""
+            # Texts may differ only at the end of one side: the turn grew past the stream, or not up to it yet.
+            if a != b and not (b.startswith(a) and i == len(shown) - 1) and not (a.startswith(b) and i == len(target) - 1):
+                return "diverged", None
+        elif now.get("toolCallId") != was.get("toolCallId"):
+            return "diverged", None
+    if len(target) < len(shown):
+        return "behind", None
+    events: List[StreamEvent] = []
+    if shown and shown[-1].get("type") in ("text", "thinking"):
+        had, has = len(shown[-1].get("text") or ""), len(target[len(shown) - 1].get("text") or "")
+        if has < had:
+            return "behind", None
+        grown = _block_event(target[len(shown) - 1], had)
+        if grown:
+            events.append(grown)
+    for block in target[len(shown):]:
+        event = _block_event(block)
+        if event:
+            events.append(event)
+    return "extends", events
 
 
 # ── Conversation ────────────────────────────────────────────────────────
@@ -220,6 +297,12 @@ class Conversation:
     def stream(self, prompt: str, images: Optional[list] = None, on_event: Optional[Callable] = None) -> TurnStream:
         """Send a prompt and stream the reply."""
         return self._client._send_turn(self, prompt, images, on_event, stream=True).stream  # type: ignore[return-value]
+
+    def follow(self) -> Optional[TurnStream]:
+        """The turn running now (one this client did not send: after ``attach()``, or a queued
+        message's), streamed from its start: what it showed so far, then live. None when none runs,
+        or with a daemon that sends no turn catch-ups."""
+        return self._client._follow_turn(self)
 
     def abort(self) -> None:
         self._client.request({"type": "abort", "convId": self.id}, lambda e: e["type"] == "ack")
@@ -353,6 +436,12 @@ class Client:
         self._conversations: Dict[str, Conversation] = {}
         self._calls: Dict[str, Dict[str, Any]] = {}  # callId -> {call, result, conv_id}
         self._listeners: List[Callable[[Dict[str, Any]], None]] = []
+        #: Running turns as caught up (turn_catchup) and followed since, by conversation.
+        self._live: Dict[str, Dict[str, Any]] = {}
+        self._live_lock = threading.RLock()
+        self._follows = itertools.count(1)
+        #: This connection's welcome said turnCatchup (read as it arrives: catch-ups may follow it at once).
+        self._turn_catchup = False
         self._pool = ThreadPoolExecutor(max_workers=tool_workers, thread_name_prefix=f"exocortex-{app}-tool")
 
     # ── connection ──
@@ -385,7 +474,7 @@ class Client:
         ready = threading.Event()
         threading.Thread(target=self._reader, args=(sock, generation, ready), daemon=True,
                          name=f"exocortex-{self.app}-reader").start()
-        caps: Dict[str, Any] = {"type": "client_capabilities", "capabilities": [], "app": {"name": self.app}}
+        caps: Dict[str, Any] = {"type": "client_capabilities", "capabilities": ["turn-catchup"], "app": {"name": self.app}}
         if self.version:
             caps["app"]["version"] = self.version
         if self.session:
@@ -697,6 +786,8 @@ class Client:
     # ── incoming ──
 
     def _dispatch(self, event: Dict[str, Any]) -> None:
+        if event["type"] == "app_welcome":
+            self._turn_catchup = event.get("turnCatchup") is True
         for listener in list(self._listeners):
             listener(event)
         etype = event["type"]
@@ -716,7 +807,7 @@ class Client:
                 turn.conv_id = event["convId"]
                 return
             if etype == "turn_result":
-                return self._settle(turn, TurnResult.from_event(event))
+                return self._finish_turn(turn, event)
             if etype == "app_conversation_attached":
                 return  # a run sent again after a reconnect took its conversation back
         if request is not None:
@@ -743,6 +834,8 @@ class Client:
             return
         if etype == "conversation_deleted":
             return self._end_conversation(conv_id, event.get("reason") or "deleted")
+        if self._turn_catchup:
+            return self._dispatch_followed(conv_id, event)
         with self._lock:
             turns = [t for t in self._turns.values() if t.conv_id == conv_id]
         for t in turns:
@@ -763,6 +856,126 @@ class Client:
                 elif etype == "tool_result":
                     t.stream._push(StreamEvent("tool_result", id=event.get("toolCallId"), name=event.get("toolName"),
                                                output=event.get("output"), is_error=bool(event.get("isError"))))
+
+    # ── following a turn ──
+
+    def _dispatch_followed(self, conv_id: str, event: Dict[str, Any]) -> None:
+        """A conversation event with a daemon that sends turn catch-ups: streams follow its live turn."""
+        etype = event["type"]
+        with self._live_lock:
+            change = self._track_live(conv_id, event)
+            with self._lock:
+                turns = [t for t in self._turns.values() if t.conv_id == conv_id]
+            if etype != "turn_result" and change:
+                for t in turns:
+                    if t.stream is not None:
+                        self._follow_live(t, conv_id, None if change == "rebase" else event)
+        for t in turns:
+            if etype == "turn_result":
+                # The owner's copy (after a reconnect our reqId is gone): ours when it names our turn.
+                if t.turn_id == event.get("turnId"):
+                    self._finish_turn(t, event)
+            elif t.on_event:
+                t.on_event(event)
+        if etype == "turn_result":
+            with self._live_lock:
+                if self._live.get(conv_id, {}).get("turnId") == event.get("turnId"):
+                    self._live.pop(conv_id, None)
+
+    def _track_live(self, conv_id: str, event: Dict[str, Any]) -> Optional[str]:
+        """Keep a conversation's running turn: a catch-up replaces it, a newer stream event extends
+        it, the stream's message_complete completes it. "rebase" when streams must compare against
+        it, "event" when the event extended it, None when nothing changed (an event at or below the
+        last catch-up's streamSeq is already in it)."""
+        etype = event["type"]
+        if etype == "turn_catchup":
+            self._live[conv_id] = {"turnId": event.get("turnId"), "blocks": json.loads(json.dumps(event.get("blocks") or [])),
+                                   "seq": event.get("streamSeq") or 0, "offset": event.get("streamOffset") or 0}
+            return "rebase"
+        live = self._live.get(conv_id)
+        if etype == "streaming_started" and event.get("snapshotKind") == "start":
+            # A new stream: its catch-up follows at once and says which turn it is.
+            if live:
+                live["seq"] = event.get("streamSeq") or 0
+            else:
+                self._live[conv_id] = {"turnId": None, "blocks": [], "seq": event.get("streamSeq") or 0, "offset": 0}
+            return None
+        if etype not in _BLOCK_EVENTS and etype != "message_complete":
+            return None
+        if live is None:
+            live = self._live[conv_id] = {"turnId": None, "blocks": [], "seq": 0, "offset": 0}
+        seq = event.get("streamSeq")
+        if isinstance(seq, int):
+            if seq <= live["seq"]:
+                return None
+            live["seq"] = seq
+        if etype == "message_complete":
+            live["blocks"] = live["blocks"][:live["offset"]] + json.loads(json.dumps(event.get("blocks") or []))
+            return "rebase"
+        _apply_stream_event(live["blocks"], event)
+        return "event"
+
+    def _follow_live(self, turn: _Turn, conv_id: str, event: Optional[Dict[str, Any]]) -> None:
+        """Bring a turn's stream up to its conversation's live turn: ``event`` when only that event is new."""
+        live = self._live.get(conv_id)
+        if live is None or (live["turnId"] is not None and live["turnId"] != turn.turn_id):
+            return
+        if event is not None and turn.synced and turn.shown is not None:
+            _apply_stream_event(turn.shown, event)
+            etype = event["type"]
+            if etype in ("text_chunk", "thinking_chunk"):
+                shown = StreamEvent("text" if etype == "text_chunk" else "thinking", text=event.get("text", "")) if event.get("text") else None
+            elif etype == "block_start":
+                shown = None
+            else:
+                shown = _block_event(turn.shown[-1])
+            if shown and turn.stream is not None:
+                turn.stream._push(shown)
+            return
+        turn.synced = self._catch_up(turn, live["blocks"], final=False)
+
+    def _catch_up(self, turn: _Turn, blocks: List[Dict[str, Any]], final: bool) -> bool:
+        """Show what ``blocks`` adds to what the turn's stream showed. While they agree but
+        ``blocks`` has not reached all of it (not ``final``), nothing: the stream goes on once the
+        turn passes it. When they disagree (or the turn ended short of it), a reset, then the turn
+        again. True when the stream now shows exactly ``blocks``."""
+        kind, events = _compare(turn.shown or [], blocks)
+        if kind == "behind" and not final:
+            return False
+        if kind != "extends":
+            if turn.stream is not None:
+                turn.stream._push(StreamEvent("reset"))
+            events = _compare([], blocks)[1]
+        turn.shown = json.loads(json.dumps(blocks))
+        if turn.stream is not None:
+            for shown in events or []:
+                turn.stream._push(shown)
+        return True
+
+    def _finish_turn(self, turn: _Turn, event: Dict[str, Any]) -> None:
+        """A turn's result: its stream first shows what it lacks of the whole turn (turn_result.blocks)."""
+        if turn.stream is not None and self._turn_catchup and isinstance(event.get("blocks"), list):
+            with self._live_lock:
+                if turn.req_id in self._turns:
+                    self._catch_up(turn, event["blocks"], final=True)
+                    turn.synced = False
+        self._settle(turn, TurnResult.from_event(event))
+
+    def _follow_turn(self, conv: Conversation) -> Optional[TurnStream]:
+        with self._live_lock:
+            live = self._live.get(conv.id)
+            if not self._turn_catchup or not live or not live.get("turnId") or conv.ended:
+                return None
+            # Never sent: the daemon's owner copy of its turn_result settles it.
+            turn = _Turn(f"f{next(self._follows)}", conv.id, sys.maxsize, None)
+            turn.turn_id = live["turnId"]
+            turn.stream = TurnStream(turn.future)
+            turn.shown = []
+            turn.synced = True
+            with self._lock:
+                self._turns[turn.req_id] = turn
+            self._follow_live(turn, conv.id, None)
+            return turn.stream
 
     def _on_tool_call(self, event: Dict[str, Any]) -> None:
         conv_id, call_id, name = event["convId"], event["callId"], event.get("name", "")
@@ -807,6 +1020,8 @@ class Client:
             pass
 
     def _end_conversation(self, conv_id: str, reason: str, code: str = "ended", message: Optional[str] = None) -> None:
+        with self._live_lock:
+            self._live.pop(conv_id, None)
         with self._lock:
             conv = self._conversations.pop(conv_id, None)
             calls = [(k, v) for k, v in self._calls.items() if v["conv_id"] == conv_id]

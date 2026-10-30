@@ -108,14 +108,21 @@ export interface Welcome {
   /** The session was known: the conversations it owns are this client's again. */
   resumed?: boolean;
   conversations?: string[];
+  /** The daemon catches this client up with running turns (turn_catchup): streams never miss or repeat text. */
+  turnCatchup?: boolean;
 }
 
-/** What a turn's stream yields. Everything else is available raw through `onEvent`. */
+/**
+ * What a turn's stream yields. Everything else is available raw through `onEvent`.
+ * `reset`: the daemon replaced what the stream showed (a provider retry); everything
+ * the turn shows now follows it again from the start. Rare; never for a reconnect.
+ */
 export type StreamEvent =
   | { type: "text"; text: string }
   | { type: "thinking"; text: string }
   | { type: "tool_call"; id: string; name: string; input: Record<string, unknown> }
-  | { type: "tool_result"; id: string; name: string; output: string; isError: boolean };
+  | { type: "tool_result"; id: string; name: string; output: string; isError: boolean }
+  | { type: "reset" };
 
 export interface ConversationOptions {
   lifetime?: Lifetime;
@@ -256,6 +263,75 @@ interface PendingTurn {
   stream?: TurnStream;
   /** app_run: the tools of the conversation it creates. */
   runTools?: AppTool[];
+  /** What its stream has shown, as the turn's blocks (with a daemon that sends turn catch-ups). */
+  shown?: Block[];
+  /** `shown` is the conversation's live turn: a stream event passes straight through. */
+  synced?: boolean;
+}
+
+// ── Following a turn (turn_catchup) ───────────────────────────────────
+
+type Block = Record<string, any>;
+
+/** A conversation's running turn as this client knows it: from a turn_catchup, then newer stream events. */
+interface LiveTurn { turnId: string | null; blocks: Block[]; seq: number; offset: number }
+
+const BLOCK_EVENTS = new Set(["block_start", "text_chunk", "thinking_chunk", "tool_call", "tool_result"]);
+
+/** Apply a stream event to blocks, as the daemon builds a turn's blocks from its events. */
+function applyStreamEvent(blocks: Block[], event: Record<string, any>): void {
+  if (event.type === "block_start") blocks.push({ type: event.blockType, text: "" });
+  else if (event.type === "text_chunk" || event.type === "thinking_chunk") {
+    const type = event.type === "text_chunk" ? "text" : "thinking";
+    const last = blocks.at(-1);
+    if (last?.type === type) last.text += event.text; else blocks.push({ type, text: event.text });
+  } else if (event.type === "tool_call") blocks.push({ type: "tool_call", toolCallId: event.toolCallId, toolName: event.toolName, input: event.input });
+  else if (event.type === "tool_result") blocks.push({ type: "tool_result", toolCallId: event.toolCallId, toolName: event.toolName, output: event.output, isError: event.isError });
+}
+
+/** The stream event that shows a block, from character `from` of its text. */
+function blockEvent(block: Block, from = 0): StreamEvent | null {
+  if (block.type === "text" || block.type === "thinking") {
+    const text = String(block.text ?? "").slice(from);
+    return text ? { type: block.type, text } : null;
+  }
+  if (block.type === "tool_call") return { type: "tool_call", id: block.toolCallId, name: block.toolName, input: block.input ?? {} };
+  if (block.type === "tool_result") return { type: "tool_result", id: block.toolCallId, name: block.toolName ?? "", output: block.output ?? "", isError: Boolean(block.isError) };
+  return null;
+}
+
+type Comparison = { kind: "extends"; events: StreamEvent[] } | { kind: "behind" } | { kind: "diverged" };
+
+/**
+ * How a turn's blocks stand to what a stream showed: "extends" it (with the new part as
+ * stream events), "behind" (it agrees but has not reached all of it yet: a replay after a
+ * restart sending the turn again from its start), or "diverged".
+ */
+function compare(shown: Block[], target: Block[]): Comparison {
+  const common = Math.min(shown.length, target.length);
+  for (let i = 0; i < common; i++) {
+    const was = shown[i]!, now = target[i]!;
+    if (now.type !== was.type) return { kind: "diverged" };
+    if (was.type === "text" || was.type === "thinking") {
+      const a = String(was.text ?? ""), b = String(now.text ?? "");
+      // Texts may differ only at the end of one side: the turn grew past the stream, or not up to it yet.
+      if (a !== b && !(b.startsWith(a) && i === shown.length - 1) && !(a.startsWith(b) && i === target.length - 1)) return { kind: "diverged" };
+    } else if (now.toolCallId !== was.toolCallId) return { kind: "diverged" };
+  }
+  if (target.length < shown.length) return { kind: "behind" };
+  const last = shown.length - 1;
+  const events: StreamEvent[] = [];
+  if (last >= 0 && (shown[last]!.type === "text" || shown[last]!.type === "thinking")) {
+    const had = String(shown[last]!.text ?? "").length, has = String(target[last]!.text ?? "").length;
+    if (has < had) return { kind: "behind" };
+    const grown = blockEvent(target[last]!, had);
+    if (grown) events.push(grown);
+  }
+  for (let i = shown.length; i < target.length; i++) {
+    const event = blockEvent(target[i]!);
+    if (event) events.push(event);
+  }
+  return { kind: "extends", events };
 }
 
 function toResult(event: Record<string, any>): TurnResult {
@@ -394,6 +470,15 @@ export class Conversation {
     return stream;
   }
 
+  /**
+   * The turn running now (one this client did not send: after attach(), or a queued
+   * message's), streamed from its start: what it showed so far, then live. Null when none
+   * runs, or with a daemon that sends no turn catch-ups.
+   */
+  follow(): TurnStream | null {
+    return this.client.followTurn(this);
+  }
+
   /** Abort the running turn, if any. */
   async abort(): Promise<void> {
     await this.client.request({ type: "abort", convId: this.id }, event => event.type === "ack");
@@ -447,6 +532,11 @@ export class Client {
   private requests = new Map<string, PendingRequest>();
   private turns = new Map<string, PendingTurn>();
   private conversations = new Map<string, Conversation>();
+  /** Running turns as caught up (turn_catchup) and followed since, by conversation. */
+  private live = new Map<string, LiveTurn>();
+  private followCounter = 0;
+  /** This connection's welcome said turnCatchup (read as it arrives: catch-ups may follow it at once). */
+  private turnCatchup = false;
   /** In-flight and recently finished app tool calls by callId (the daemon re-sends unanswered ones after a reconnect). */
   private calls = new Map<string, { controller: AbortController; result?: { output: string; isError: boolean }; convId: string }>();
   private listeners = new Set<(event: Record<string, any>) => void>();
@@ -496,7 +586,7 @@ export class Client {
     if (this.session) app.session = this.session;
     if (this.options.reconnectGraceMs !== undefined) app.reconnectGraceMs = this.options.reconnectGraceMs;
     const welcome = await this.exchange(
-      { type: "client_capabilities", capabilities: [], app },
+      { type: "client_capabilities", capabilities: ["turn-catchup"], app },
       event => event.type === "app_welcome",
       this.options.welcomeTimeoutMs, false,
     ).catch(error => {
@@ -513,8 +603,8 @@ export class Client {
         ? `The Exocortex daemon speaks app API v${welcome.appApiVersion}; this client knows v${APP_API_VERSION}. Update @exocortex/client.`
         : `The Exocortex daemon speaks app API v${welcome.appApiVersion}; this client needs v${APP_API_VERSION}. Update Exocortex:\n  ${INSTALL_COMMAND}`);
     }
-    const { appApiVersion, instance, pid, session, reconnectGraceMs, resumed, conversations } = welcome;
-    this.welcome = { appApiVersion, app: welcome.app, instance, pid, ...(session ? { session, reconnectGraceMs, resumed, conversations } : {}) };
+    const { appApiVersion, instance, pid, session, reconnectGraceMs, resumed, conversations, turnCatchup } = welcome;
+    this.welcome = { appApiVersion, app: welcome.app, instance, pid, ...(session ? { session, reconnectGraceMs, resumed, conversations } : {}), ...(turnCatchup ? { turnCatchup: true } : {}) };
     if (session) this.session = session;
     ready = true;
     if (this.socket !== socket) throw new ExocortexError("disconnected", "The daemon closed the connection");
@@ -734,6 +824,7 @@ export class Client {
   }
 
   private dispatch(event: Record<string, any>): void {
+    if (event.type === "app_welcome") this.turnCatchup = event.turnCatchup === true;
     for (const listener of this.listeners) listener(event);
     const reqId: string | undefined = event.reqId;
     const turnByReq = reqId ? this.turns.get(reqId) : undefined;
@@ -748,7 +839,7 @@ export class Client {
         turnByReq.convId = event.convId;
         return;
       }
-      if (event.type === "turn_result") return this.settle(turnByReq, toResult(event));
+      if (event.type === "turn_result") return this.finishTurn(turnByReq, event);
       if (event.type === "app_conversation_attached") return; // a run sent again after a reconnect took its conversation back
     }
     if (reqId) {
@@ -767,22 +858,123 @@ export class Client {
       this.endConversation(convId, event.reason ?? "deleted");
       return;
     }
+    const exact = this.turnCatchup;
+    const change = exact ? this.trackLive(convId, event) : null;
     for (const turn of [...this.turns.values()]) {
       if (turn.convId !== convId) continue;
       if (event.type === "turn_result") {
         // The owner's copy (after a reconnect our reqId is gone): ours when it names our turn.
-        if (turn.turnId === event.turnId) this.settle(turn, toResult(event));
+        if (turn.turnId === event.turnId) this.finishTurn(turn, event);
         continue;
       }
       turn.onEvent?.(event);
       const stream = turn.stream;
-      if (stream) {
-        if (event.type === "text_chunk") stream.push({ type: "text", text: event.text });
-        else if (event.type === "thinking_chunk") stream.push({ type: "thinking", text: event.text });
-        else if (event.type === "tool_call") stream.push({ type: "tool_call", id: event.toolCallId, name: event.toolName, input: event.input });
-        else if (event.type === "tool_result") stream.push({ type: "tool_result", id: event.toolCallId, name: event.toolName, output: event.output, isError: event.isError });
-      }
+      if (!stream) continue;
+      if (exact) {
+        if (change) this.followLive(turn, convId, change === "rebase" ? null : event);
+      } else if (event.type === "text_chunk") stream.push({ type: "text", text: event.text });
+      else if (event.type === "thinking_chunk") stream.push({ type: "thinking", text: event.text });
+      else if (event.type === "tool_call") stream.push({ type: "tool_call", id: event.toolCallId, name: event.toolName, input: event.input });
+      else if (event.type === "tool_result") stream.push({ type: "tool_result", id: event.toolCallId, name: event.toolName, output: event.output, isError: event.isError });
     }
+    if (event.type === "turn_result" && this.live.get(convId)?.turnId === event.turnId) this.live.delete(convId);
+  }
+
+  /**
+   * Keep a conversation's running turn: a catch-up replaces it, a newer stream event extends
+   * it, the stream's message_complete completes it. "rebase" when streams must compare
+   * against it, "event" when the event extended it, null when nothing changed (an event at or
+   * below the last catch-up's streamSeq is already in it).
+   */
+  private trackLive(convId: string, event: Record<string, any>): "rebase" | "event" | null {
+    if (event.type === "turn_catchup") {
+      this.live.set(convId, { turnId: event.turnId, blocks: structuredClone(event.blocks ?? []), seq: event.streamSeq ?? 0, offset: event.streamOffset ?? 0 });
+      return "rebase";
+    }
+    let live = this.live.get(convId);
+    if (event.type === "streaming_started" && event.snapshotKind === "start") {
+      // A new stream: its catch-up follows at once and says which turn it is.
+      if (live) live.seq = event.streamSeq ?? 0;
+      else this.live.set(convId, { turnId: null, blocks: [], seq: event.streamSeq ?? 0, offset: 0 });
+      return null;
+    }
+    if (!BLOCK_EVENTS.has(event.type) && event.type !== "message_complete") return null;
+    if (!live) this.live.set(convId, live = { turnId: null, blocks: [], seq: 0, offset: 0 });
+    if (typeof event.streamSeq === "number") {
+      if (event.streamSeq <= live.seq) return null;
+      live.seq = event.streamSeq;
+    }
+    if (event.type === "message_complete") {
+      live.blocks = [...live.blocks.slice(0, live.offset), ...structuredClone(event.blocks ?? [])];
+      return "rebase";
+    }
+    applyStreamEvent(live.blocks, event);
+    return "event";
+  }
+
+  /** Bring a turn's stream up to its conversation's live turn: `event` when only that event is new. */
+  private followLive(turn: PendingTurn, convId: string, event: Record<string, any> | null): void {
+    const live = this.live.get(convId);
+    if (!live || (live.turnId !== null && live.turnId !== turn.turnId)) return;
+    if (event && turn.synced && turn.shown) {
+      applyStreamEvent(turn.shown, event);
+      const block = turn.shown.at(-1);
+      const shown = event.type === "text_chunk" || event.type === "thinking_chunk"
+        ? { type: event.type === "text_chunk" ? "text" : "thinking", text: event.text } as StreamEvent
+        : event.type === "block_start" ? null : block ? blockEvent(block) : null;
+      if (shown && (shown.type !== "text" && shown.type !== "thinking" || shown.text)) turn.stream!.push(shown);
+      return;
+    }
+    turn.synced = this.catchUp(turn, live.blocks, false);
+  }
+
+  /**
+   * Show what `blocks` adds to what the turn's stream showed. While they agree but `blocks`
+   * has not reached all of it (`final` false), nothing: the stream goes on once the turn
+   * passes it. When they disagree (or the turn ended short of it), a reset, then the turn
+   * again. True when the stream now shows exactly `blocks`.
+   */
+  private catchUp(turn: PendingTurn, blocks: Block[], final: boolean): boolean {
+    const stream = turn.stream;
+    const comparison = compare(turn.shown ?? [], blocks);
+    if (comparison.kind === "behind" && !final) return false;
+    let events: StreamEvent[];
+    if (comparison.kind === "extends") events = comparison.events;
+    else {
+      stream?.push({ type: "reset" });
+      events = (compare([], blocks) as Extract<Comparison, { kind: "extends" }>).events;
+    }
+    turn.shown = structuredClone(blocks);
+    for (const event of events) stream?.push(event);
+    return true;
+  }
+
+  /** A turn's result: its stream first shows what it lacks of the whole turn (turn_result.blocks). */
+  private finishTurn(turn: PendingTurn, event: Record<string, any>): void {
+    if (turn.stream && this.turnCatchup && Array.isArray(event.blocks) && this.turns.has(turn.reqId)) {
+      this.catchUp(turn, event.blocks, true);
+      turn.synced = false;
+    }
+    this.settle(turn, toResult(event));
+  }
+
+  /** @internal */
+  followTurn(conversation: Conversation): TurnStream | null {
+    const live = this.live.get(conversation.id);
+    if (!this.turnCatchup || !live?.turnId || conversation.ended) return null;
+    let stream!: TurnStream;
+    const result = new Promise<TurnResult>((resolve, reject) => {
+      // Never sent: the daemon's owner copy of its turn_result settles it.
+      const turn: PendingTurn = {
+        reqId: `f${++this.followCounter}`, convId: conversation.id, turnId: live.turnId!, generation: Number.MAX_SAFE_INTEGER,
+        command: {}, resolve, reject, synced: true, shown: [],
+      };
+      Object.defineProperty(turn, "stream", { get: () => stream });
+      this.turns.set(turn.reqId, turn);
+      queueMicrotask(() => { if (this.turns.has(turn.reqId)) this.followLive(turn, conversation.id, null); });
+    });
+    stream = new TurnStream(result);
+    return stream;
   }
 
   private onToolCall(event: Record<string, any>): void {
@@ -812,6 +1004,7 @@ export class Client {
   }
 
   private endConversation(convId: string, reason: string, code: ErrorCode = "ended", message?: string): void {
+    this.live.delete(convId);
     const conversation = this.conversations.get(convId);
     if (conversation) { conversation.ended = reason; this.conversations.delete(convId); }
     for (const [callId, call] of this.calls) if (call.convId === convId) { call.controller.abort("ended"); this.calls.delete(callId); }

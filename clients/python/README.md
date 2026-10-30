@@ -31,7 +31,9 @@ with exocortex.connect("myapp") as exo:
   model=, effort=, cwd=, title=, idle_ttl_ms=, route=)` → `Conversation`:
   `send(prompt)` returns a `TurnResult` (`text`, `stop_reason`, `error`,
   `usage`, `billing`, `limited`); `stream(prompt)` iterates `StreamEvent`s (`text`, `thinking`,
-  `tool_call`, `tool_result`) with `.text()` and `.result()`; `abort()`,
+  `tool_call`, `tool_result`, `reset`) with `.text()` and `.result()`;
+  `follow()` streams a turn already running (after `attach`, or a queued
+  message's) from its start, or returns None; `abort()`,
   `set_tools()`, `delete()`; `asend` / `astream` and `exocortex.arun` for
   asyncio.
 - App tools: `Tool(name, description, input_schema, handler, timeout_ms)` or
@@ -46,6 +48,12 @@ with exocortex.connect("myapp") as exo:
   (`result.limited`) instead of waiting for a usage limit to reset. Default:
   as ordinary conversations (subscriptions first, credits when every account
   is at a limit; `result.billing == "api-credits"` says so).
+- Streams never repeat or miss text: after a reconnect, a daemon restart or an
+  attach the daemon catches the client up with the running turn
+  (`turn_catchup`), and a stream shows only what it had not. If the daemon
+  replaces text it streamed (a provider retry), the stream yields a `reset`
+  event, then the turn again from its start. Against a daemon without catch-ups
+  (no `turnCatchup` in `client.welcome`) streams behave as before.
 - Restarts and dropped connections are a delay, not an error: the client
   reconnects with backoff under its session (`client.session`), takes every
   conversation back (ephemeral ones too, within the daemon's reconnect grace),
