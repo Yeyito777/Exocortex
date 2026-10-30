@@ -320,9 +320,9 @@ export function handleFocusedKey(
     }
   }
 
-  // On the sidebar Ctrl+E moves the selection to the top of its folder
-  // instead of scrolling the sidebar a line.
-  if (key.type === "ctrl-e" && state.panelFocus === "sidebar" && state.sidebar.open) {
+  // On the sidebar Ctrl+Shift+E moves the selection to the top of its folder;
+  // plain Ctrl+E scrolls the sidebar a line like everywhere else.
+  if (key.type === "ctrl-shift-e" && state.panelFocus === "sidebar" && state.sidebar.open) {
     return mapSidebarResult(handleSidebarAction("move_to_top", state.sidebar));
   }
 
