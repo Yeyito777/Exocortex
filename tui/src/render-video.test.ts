@@ -109,7 +109,7 @@ const openApc = (kittyId: number) => `\x1b_Ga=v,i=${kittyId},k=o,q=1;${btoa("vid
 const lastOf = <T extends Command["type"]>(type: T) => sent.filter(command => command.type === type).at(-1) as Extract<Command, { type: T }> | undefined;
 
 describe("video thumbnails in history", () => {
-  test("a poster with a caption row: its length and how to play it", async () => {
+  test("a poster with a caption row: its length", async () => {
     setInlineImageMode("kitty");
     setInlineVideoSupport("yes");
     const state = videoState();
@@ -119,7 +119,7 @@ describe("video thumbnails in history", () => {
     // 12 poster rows, then the caption.
     expect(captionRow).toBe(first + 12);
     expect(anchors[captionRow].images).toEqual([]);
-    expect(stripAnsi(state.historyLines[captionRow]).trim()).toBe("▶ 0:12  space plays here · enter plays big");
+    expect(stripAnsi(state.historyLines[captionRow]).trim()).toBe("▶ 0:12");
     // A yank of the poster copies what it is.
     expect(state.historyCopyLines?.[first]?.text).toBe("[video: clip.mp4 · 0:12 · 400×200 · 3.2 MB]");
   });
@@ -304,7 +304,8 @@ describe("player pieces", () => {
 
   test("captions fit their width, dropping details first", () => {
     const source = { imageId: poster.id, width: 400, height: 200, mediaType: "image/jpeg" as const, sizeBytes: 5000, video };
-    expect(videoCaptionText(source, null, true, 60, termWidth)).toBe("▶ 0:12  space plays here · enter plays big");
+    expect(videoCaptionText(source, null, true, 60, termWidth)).toBe("▶ 0:12");
+    expect(videoCaptionText(source, null, true, 60, termWidth, "viewer")).toBe("▶ 0:12  space plays");
     expect(videoCaptionText(source, null, true, 10, termWidth)).toBe("▶ 0:12");
     expect(videoCaptionText(source, null, false, 80, termWidth, "viewer")).toBe("▶ 0:12 video · o opens it in a player  this terminal can't play it inline");
     const playing = { ...activeVideoStub(source), state: "playing" as const };

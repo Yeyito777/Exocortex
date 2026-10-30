@@ -552,15 +552,16 @@ function copyLabel(source: InlineImageSource): string {
 }
 
 /**
- * A video thumbnail's caption row when nothing plays: its length and how to
- * play it. While it plays the frame draws its status over this row.
+ * A video thumbnail's caption row when nothing plays: its length (and, where
+ * it can't play inline, how to see it). While it plays the frame draws its
+ * status over this row.
  */
 export function videoIdleCaption(source: InlineImageSource, width: number): string {
   const video = source.video;
   if (!video) return "";
   const length = video.durationMs !== undefined ? formatVideoDuration(video.durationMs) : "--:--";
   const parts = inlineVideoPlayable()
-    ? [`▶ ${length}`, "space plays here · enter plays big"]
+    ? [`▶ ${length}`]
     : [`▶ ${length} video`, "enter for details"];
   const full = parts.join("  ");
   return truncateToWidth(termWidth(full) <= width ? full : parts[0], Math.max(1, width));

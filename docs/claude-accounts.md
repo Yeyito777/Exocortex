@@ -237,9 +237,9 @@ requests (titles, summaries, compaction) fall back too. Code:
   hour; one it rate-limits (429, after Claude Code's own backoff) a minute.
 - **The spend cap** is the credits themselves: an organization without a card
   or auto-reload refuses requests once they run out.
-- **Visibility**: each turn's metadata line says "API credits" (the move onto
-  credits and back is not noted in the transcript; programs get it as an
-  event, see app-api.md). Which conversations last ran on credits is kept in
+- **Visibility**: the usage block shows it (neither the turn's metadata line
+  nor the transcript notes it; programs get the move as an event and
+  `turn_result.billing`, see app-api.md). Which conversations last ran on credits is kept in
   `runtime/anthropic-conversation-credits.json`, so a restart is no move. While turns
   run on them, the status bar's usage bars give way to two rows:
 
