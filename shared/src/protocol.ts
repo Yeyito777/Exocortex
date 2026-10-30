@@ -2432,6 +2432,8 @@ export interface SystemMessageEvent {
   color?: string;
   /** A provider notice about where the turn runs, for programs (the text says the same). */
   route?: ConversationRouteNotice;
+  /** For programs only: chat views don't show it and it isn't kept in history (moves onto or off API credits, which the usage block shows). */
+  hidden?: boolean;
 }
 
 /**

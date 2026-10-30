@@ -37,6 +37,21 @@ function plainLines(width = 80) {
 }
 
 describe("streaming system-message tail", () => {
+  test("program-only notices (moves onto or off API credits) are not shown", () => {
+    const { state, render } = plainLines();
+    handleEvent({
+      type: "system_message", convId: "conv-1", color: "muted", hidden: true,
+      text: `Running on Claude API credits ("main"): every Claude subscription account is at a usage limit.`,
+      route: { kind: "api_credits", account: "main", creditKey: "main" },
+    }, state, null as never);
+    state.pendingAI = null;
+    handleEvent({ type: "system_message", convId: "conv-1", color: "muted", hidden: true, text: "Back on the Claude subscription", route: { kind: "subscription", account: "main" } }, state, null as never);
+
+    expect(state.messages).toHaveLength(0);
+    expect(state.streamingTailMessages ?? []).toHaveLength(0);
+    expect(render().join("\n")).not.toContain("API credits");
+  });
+
   test("buffers ordinary daemon notices without splitting an in-progress canonical block", () => {
     const { state, render } = plainLines();
     state.pendingAI!.blocks.push({ type: "text", text: "streaming " });
