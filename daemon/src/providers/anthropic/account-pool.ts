@@ -60,6 +60,7 @@ import {
 } from "./usage";
 
 const ASSIGNMENTS_FILE_NAME = "anthropic-conversation-accounts.json";
+const CREDITS_FILE_NAME = "anthropic-conversation-credits.json";
 /** Assignments unused this long are forgotten. */
 const ASSIGNMENT_RETENTION_MS = 30 * 24 * 60 * 60_000;
 const SAVE_DELAY_MS = 2_000;
@@ -71,6 +72,12 @@ interface Assignment {
   lastUsedAt: number;
 }
 
+/** The API-credit key a conversation's last turn ran on (null: a subscription), and when. */
+interface CreditState {
+  key: string | null;
+  at: number;
+}
+
 let assignmentsFileOverride: string | null = null;
 let assignments: Map<string, Assignment> | null = null;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -79,8 +86,8 @@ const activeTurns = new Map<string, number>();
 const runningConversations = new Map<string, string>();
 /** Turns running on API credits now (api-credits.ts), by key. */
 const activeCreditTurns = new Map<string, number>();
-/** The API-credit key each conversation's last turn ran on (null: a subscription), for the switch notices. */
-const conversationCredits = new Map<string, string | null>();
+/** Each conversation's CreditState, for the switch notices; saved, so a restart is no switch. */
+let conversationCredits: Map<string, CreditState> | null = null;
 
 export function setAssignmentsFileForTests(path: string | null): void {
   assignmentsFileOverride = path;
@@ -88,13 +95,54 @@ export function setAssignmentsFileForTests(path: string | null): void {
   activeTurns.clear();
   runningConversations.clear();
   activeCreditTurns.clear();
-  conversationCredits.clear();
+  conversationCredits = null;
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = null;
 }
 
 function assignmentsFile(): string {
   return assignmentsFileOverride ?? join(runtimeDir(), ASSIGNMENTS_FILE_NAME);
+}
+
+function creditsFile(): string {
+  return assignmentsFileOverride ? `${assignmentsFileOverride.replace(/\.json$/, "")}-credits.json` : join(runtimeDir(), CREDITS_FILE_NAME);
+}
+
+function loadCredits(): Map<string, CreditState> {
+  if (conversationCredits) return conversationCredits;
+  conversationCredits = new Map();
+  try {
+    const path = creditsFile();
+    if (existsSync(path)) {
+      const parsed = JSON.parse(readFileSync(path, "utf-8")) as Record<string, CreditState>;
+      for (const [convId, entry] of Object.entries(parsed)) {
+        if ((typeof entry?.key === "string" || entry?.key === null) && typeof entry.at === "number") conversationCredits.set(convId, entry);
+      }
+    }
+  } catch {
+    // start empty
+  }
+  return conversationCredits;
+}
+
+function writeJsonFile(path: string, data: unknown, what: string): void {
+  try {
+    const tmp = `${path}.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify(data));
+    renameSync(tmp, path);
+  } catch (error) {
+    log("debug", `anthropic: saving ${what} failed: ${error instanceof Error ? error.message : error}`);
+  }
+}
+
+/** The records unused since `cutoff` dropped from `map`; the rest, minus ephemeral app conversations' (kept in memory only), to save. */
+function retained<T>(map: Map<string, T>, usedAt: (entry: T) => number, cutoff: number): Record<string, T> {
+  const out: Record<string, T> = {};
+  for (const [convId, entry] of map) {
+    if (usedAt(entry) < cutoff) map.delete(convId);
+    else if (!isEphemeralConversation(convId)) out[convId] = entry;
+  }
+  return out;
 }
 
 function loadAssignments(): Map<string, Assignment> {
@@ -117,23 +165,9 @@ function loadAssignments(): Map<string, Assignment> {
 export function flushAssignments(): void {
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = null;
-  if (!assignments) return;
-  const map = assignments;
   const cutoff = Date.now() - ASSIGNMENT_RETENTION_MS;
-  const out: Record<string, Assignment> = {};
-  for (const [convId, entry] of map) {
-    if (entry.lastUsedAt < cutoff) map.delete(convId);
-    // An ephemeral app conversation's account stays in memory only.
-    else if (!isEphemeralConversation(convId)) out[convId] = entry;
-  }
-  try {
-    const path = assignmentsFile();
-    const tmp = `${path}.${process.pid}.tmp`;
-    writeFileSync(tmp, JSON.stringify(out));
-    renameSync(tmp, path);
-  } catch (error) {
-    log("debug", `anthropic: saving conversation accounts failed: ${error instanceof Error ? error.message : error}`);
-  }
+  if (assignments) writeJsonFile(assignmentsFile(), retained(assignments, entry => entry.lastUsedAt, cutoff), "conversation accounts");
+  if (conversationCredits) writeJsonFile(creditsFile(), retained(conversationCredits, entry => entry.at, cutoff), "conversation API-credit states");
 }
 
 function scheduleSave(): void {
@@ -145,8 +179,8 @@ function scheduleSave(): void {
 /** A deleted app conversation's account record (app-api.ts). */
 export function forgetConversationAccount(convId: string): void {
   runningConversations.delete(convId);
-  conversationCredits.delete(convId);
-  if (loadAssignments().delete(convId)) flushAssignments();
+  const hadCredits = loadCredits().delete(convId);
+  if (loadAssignments().delete(convId) || hadCredits) flushAssignments();
 }
 
 export function getConversationAccount(convId: string): Assignment | null {
@@ -155,7 +189,7 @@ export function getConversationAccount(convId: string): Assignment | null {
 
 /** Whether a conversation's turns last ran on API credits rather than a subscription. */
 export function conversationOnApiCredits(convId: string): boolean {
-  return (conversationCredits.get(convId) ?? null) !== null;
+  return (loadCredits().get(convId)?.key ?? null) !== null;
 }
 
 /** The conversation just made a request on `account` (keeps its cache-warm clock). */
@@ -294,9 +328,11 @@ export function apiCreditFallbackActive(now = Date.now()): boolean {
 export function apiCreditSwitchNotice(convId: string | undefined, route: ClaudeTurnRoute): string | null {
   if (!convId) return null;
   const next = route.apiCredit?.id ?? null;
-  const known = conversationCredits.has(convId);
-  const previous = conversationCredits.get(convId) ?? null;
-  conversationCredits.set(convId, next);
+  const credits = loadCredits();
+  const known = credits.has(convId);
+  const previous = credits.get(convId)?.key ?? null;
+  credits.set(convId, { key: next, at: Date.now() });
+  scheduleSave();
   if (next === previous || (!known && next === null)) return null;
   if (route.apiCredit && previous) return `Claude API credits: now on "${route.apiCredit.label}" (the previous key cannot take it now).`;
   if (route.apiCredit) return `Running on Claude API credits ("${route.apiCredit.label}"): every Claude subscription account is at a usage limit.`;

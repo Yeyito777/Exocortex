@@ -65,6 +65,15 @@ export const PROVIDER_PROXY_ACCOUNT_MOVE_HEADER = "x-exocortex-claude-account-mo
 export const PROVIDER_PROXY_API_CREDITS_HEADER = "x-exocortex-claude-api-credits";
 
 /**
+ * A Claude Messages API path (`/v1/messages`, `/v1/messages/count_tokens`, an
+ * optional query): the requests API credits may pay for. A successful one
+ * without PROVIDER_PROXY_API_CREDITS_HEADER ran on a subscription account.
+ */
+export function isClaudeMessagesPath(path: string): boolean {
+  return /^\/v1\/messages(?:\/count_tokens)?\/?(?:\?.*)?$/.test(path);
+}
+
+/**
  * Request header (`1`) of a conversation whose turns may not run on API
  * credits (an app's `route.credits: "never"`, docs/app-api.md): the remote
  * never bills its requests to a key. Taken off before the upstream.

@@ -34,7 +34,7 @@ import { AuthError } from "../errors";
 import { getClaudeAccount, MAIN_ACCOUNT_ID, mainClaudeConfigDir } from "./accounts";
 import { CLAUDE_SESSION_ALIASES_FILE, claudeProjectDirName, claudeSessionAlias } from "./session-prune";
 import { dataDir } from "@exocortex/shared/paths";
-import { apiCreditSwitchNotice, beginAccountTurn, beginApiCreditTurn, multipleClaudeAccounts, noteAccountAuthFailure, routeClaudeTurn, touchConversationAccount } from "./account-pool";
+import { apiCreditSwitchNotice, beginAccountTurn, beginApiCreditTurn, multipleClaudeAccounts, noteAccountAuthFailure, routeClaudeTurn, touchConversationAccount, type ClaudeTurnRoute } from "./account-pool";
 import { ApiCreditExhaustedError, ApiCreditUsageMeter, classifyApiCreditError, noteApiCreditFailure, type ApiCreditKey } from "./api-credits";
 import { isUsageLimitError } from "../../usage-limit-wait";
 import { noteAccountUsageRefusal } from "./usage";
@@ -291,6 +291,33 @@ function creditRouteNotice(account: string, creditKey: string | null): Conversat
   return creditKey ? { kind: "api_credits", account, creditKey } : { kind: "subscription", account };
 }
 
+/**
+ * A turn's notices for moves onto or off API credits; returns their end.
+ * Under /proxy the remote decides what bills each request, so only its reports
+ * (forwarder.ts) say which, as they come: this daemon's route (always `main`)
+ * knows nothing of the remote's limits, and announcing it would flip back and
+ * forth every turn.
+ */
+export function creditSwitchNotices(convId: string | undefined, route: ClaudeTurnRoute, callbacks: Pick<StreamCallbacks, "onProviderNotice" | "onBilling">): () => void {
+  if (!isProviderProxied("anthropic")) {
+    const notice = apiCreditSwitchNotice(convId, route);
+    if (notice) callbacks.onProviderNotice?.(notice, creditRouteNotice(route.account, route.apiCredit?.label ?? null));
+    return () => {};
+  }
+  if (!convId) return () => {};
+  let reported: string | null | undefined;
+  return onProxiedClaudeApiCredits(convId, (label) => {
+    if (reported === label) return;
+    reported = label;
+    if (label !== null) {
+      log("info", `anthropic: proxied conversation ${convId} runs on the /proxy remote's API credits "${label}"`);
+      callbacks.onBilling?.("api-credits");
+    }
+    const notice = apiCreditSwitchNotice(convId, { ...route, apiCredit: label === null ? null : { id: label, label, renewsOnDay: null } });
+    if (notice) callbacks.onProviderNotice?.(notice, creditRouteNotice(route.account, label));
+  });
+}
+
 export async function streamMessage(
   messages: ApiMessage[],
   model: ModelId,
@@ -324,35 +351,19 @@ export async function streamMessage(
   } else if (multipleClaudeAccounts()) {
     log("info", `anthropic: Claude account ${account} for ${convId ?? "a helper request"} (${route.reason}: ${route.detail})`);
   }
-  const creditNotice = apiCreditSwitchNotice(convId, route);
-  if (creditNotice) callbacks.onProviderNotice?.(creditNotice, creditRouteNotice(account, route.apiCredit?.label ?? null));
+  const stopCreditNotes = creditSwitchNotices(convId, route, callbacks);
   if (apiCredit) callbacks.onBilling?.("api-credits");
   const endTurn = apiCredit ? beginApiCreditTurn(apiCredit) : beginAccountTurn(account, convId);
   if (convId && !apiCredit) touchConversationAccount(convId, account);
   if (!apiCredit) callbacks = accountCallbacks(callbacks, account);
   // Under /proxy the remote picks the account per request; announce its moves as for local ones.
-  const stopMoveNotices = convId && isProviderProxied("anthropic") ? onProxiedClaudeMove(convId, (move) => {
+  const proxied = isProviderProxied("anthropic");
+  const stopMoveNotices = convId && proxied ? onProxiedClaudeMove(convId, (move) => {
     log("info", `anthropic: proxied conversation ${convId} moved from Claude account ${move.from} to ${move.to} on the /proxy remote (${move.detail})`);
     callbacks.onProviderNotice?.(accountSwitchNotice({ account: move.to, movedFrom: move.from, reason: "new", detail: move.detail }), { kind: "account", account: move.to, movedFrom: move.from });
   }) : null;
-  // Under /proxy the remote may bill the turn to its API credits: shown as for local ones.
-  let remoteCredits: string | null = null;
-  const stopCreditNotes = convId && isProviderProxied("anthropic") ? onProxiedClaudeApiCredits(convId, (label) => {
-    if (remoteCredits === label) return;
-    remoteCredits = label;
-    log("info", `anthropic: proxied conversation ${convId} runs on the /proxy remote's API credits "${label}"`);
-    callbacks.onBilling?.("api-credits");
-    const notice = apiCreditSwitchNotice(convId, { account, reason: "new", detail: "", apiCredit: { id: label, label, renewsOnDay: null } });
-    if (notice) callbacks.onProviderNotice?.(notice, creditRouteNotice(account, label));
-  }) : null;
   try {
-    const result = await runStreamMessage(messages, model, callbacks, options, cwd, plan, convId, live, account, apiCredit);
-    // A proxied turn the remote served on a subscription again.
-    if (convId && isProviderProxied("anthropic") && remoteCredits === null) {
-      const notice = apiCreditSwitchNotice(convId, { ...route, apiCredit: null });
-      if (notice) callbacks.onProviderNotice?.(notice, creditRouteNotice(account, null));
-    }
-    return result;
+    return await runStreamMessage(messages, model, callbacks, options, cwd, plan, convId, live, account, apiCredit);
   } catch (error) {
     if (apiCredit) {
       // The key's refusal, never the subscription account's: out of credits, rejected, or rate-limited.
@@ -364,11 +375,11 @@ export async function streamMessage(
       throw error;
     }
     if (error instanceof AuthError && !signal?.aborted) noteAccountAuthFailure(account, error.message);
-    if (!signal?.aborted && isUsageLimitError(error) && !isProviderProxied("anthropic")) noteAccountUsageRefusal(account, (error as Error).message);
+    if (!signal?.aborted && isUsageLimitError(error) && !proxied) noteAccountUsageRefusal(account, (error as Error).message);
     throw error;
   } finally {
     stopMoveNotices?.();
-    stopCreditNotes?.();
+    stopCreditNotes();
     endTurn();
     if (convId && !apiCredit) touchConversationAccount(convId, account);
   }

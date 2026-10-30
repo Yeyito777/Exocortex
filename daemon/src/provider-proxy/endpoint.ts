@@ -18,6 +18,7 @@ import {
   PROVIDER_PROXY_FEATURES,
   PROVIDER_PROXY_MAX_REQUEST_BYTES,
   PROVIDER_PROXY_PROTOCOL_VERSION,
+  isClaudeMessagesPath,
   isProxyableProvider,
   matchProviderProxyRoute,
   providerProxyRequestHeaders,
@@ -67,10 +68,10 @@ interface OpenStream {
   sendText?: (text: string) => void;
 }
 
-/** A Claude Messages API request (`/v1/messages`, `/v1/messages/count_tokens`), which API credits may pay for. */
+/** A Claude Messages API request, which API credits may pay for. */
 function isMessagesRequest(url: string): boolean {
   try {
-    return /^\/v1\/messages(?:\/count_tokens)?\/?$/.test(new URL(url).pathname);
+    return isClaudeMessagesPath(new URL(url).pathname);
   } catch {
     return false;
   }

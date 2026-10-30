@@ -222,6 +222,9 @@ requests (titles, summaries, compaction) fall back too. Code:
   API requests with the key (`x-api-key`, without the OAuth beta), counts
   their spend from the response stream, and tells the other machine
   (`x-exocortex-claude-api-credits`), so its turns are marked the same way.
+  The other machine takes a Messages answer without that header as served on
+  a subscription, and follows only these reports for the move onto credits
+  and back (its own route always says `main` with no credits).
   Claude Code's account endpoints keep the subscription login. The other
   machine's daemon must be updated too: an older one keeps waiting for a
   subscription to reset.
@@ -236,7 +239,8 @@ requests (titles, summaries, compaction) fall back too. Code:
   or auto-reload refuses requests once they run out.
 - **Visibility**: each turn's metadata line says "API credits" (the move onto
   credits and back is not noted in the transcript; programs get it as an
-  event, see app-api.md). While turns
+  event, see app-api.md). Which conversations last ran on credits is kept in
+  `runtime/anthropic-conversation-credits.json`, so a restart is no move. While turns
   run on them, the status bar's usage bars give way to two rows:
 
   ```

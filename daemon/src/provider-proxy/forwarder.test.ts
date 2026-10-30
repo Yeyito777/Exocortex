@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PROVIDER_PROXY_ACCOUNT_MOVE_HEADER, PROVIDER_PROXY_CONVERSATION_HEADER, type ProviderProxyAccountMove } from "@exocortex/shared/provider-proxy";
+import { PROVIDER_PROXY_ACCOUNT_MOVE_HEADER, PROVIDER_PROXY_API_CREDITS_HEADER, PROVIDER_PROXY_CONVERSATION_HEADER, type ProviderProxyAccountMove } from "@exocortex/shared/provider-proxy";
 import { ProviderProxyForwarder } from "./forwarder";
 import { ProviderProxyLink, ProviderProxyUnavailableError, type ProviderProxyHttpRequest, type ProviderProxyWebSocketHandlers } from "./link";
 import { fakeSsh, stubAuth } from "./testing";
@@ -244,6 +244,48 @@ describe("Claude account moves on the remote", () => {
     // The conversation's name goes to the remote, which takes it off before the upstream.
     expect(link.requests[0].headers[PROVIDER_PROXY_CONVERSATION_HEADER]).toBe("macbook/conv-1");
     expect(moves).toEqual([["macbook/conv-1", { from: "main", to: "max2", detail: "\"main\" is at a usage limit" }]]);
+  });
+});
+
+describe("how the remote billed a conversation's request", () => {
+  test("is its API credits with the credits note, a subscription for a Messages answer without it", async () => {
+    const link = fakeLink();
+    let status = 200;
+    let credits: string | null = "main%20key";
+    Object.assign(link, {
+      async openHttp(request: ProviderProxyHttpRequest) {
+        link.requests.push(request);
+        return { status, headers: { "content-type": "text/plain", ...(credits ? { [PROVIDER_PROXY_API_CREDITS_HEADER]: credits } : {}) }, body: new Response("ok").body! };
+      },
+    });
+    const reports: Array<[string, string | null]> = [];
+    const forwarder = new ProviderProxyForwarder({
+      linkFor: () => link as unknown as ProviderProxyLink,
+      onApiCredits: (conversation, label) => reports.push([conversation, label]),
+    });
+    forwarder.start();
+    forwarders.push(forwarder);
+    const send = async (path: string, conversation = "macbook/conv-1") => {
+      const response = await fetch(`${forwarder.baseUrl("anthropic")}${path}`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${forwarder.secret}`, ...(conversation ? { [PROVIDER_PROXY_CONVERSATION_HEADER]: conversation } : {}) },
+        body: "{}",
+      });
+      await response.text();
+      return response;
+    };
+    const first = await send("/v1/messages?beta=true");
+    expect(first.headers.get(PROVIDER_PROXY_API_CREDITS_HEADER)).toBeNull();
+    credits = null;
+    await send("/v1/messages?beta=true");
+    // Neither a refused request nor a request only a login may make says it ran on a subscription.
+    status = 429;
+    await send("/v1/messages");
+    status = 200;
+    await send("/api/oauth/usage");
+    // Nor a request of no named conversation.
+    await send("/v1/messages", "");
+    expect(reports).toEqual([["macbook/conv-1", "main key"], ["macbook/conv-1", null]]);
   });
 });
 
