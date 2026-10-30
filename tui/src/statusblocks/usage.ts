@@ -338,15 +338,15 @@ function creditBlock(rows: CreditRows): StatusBlock {
   return narrower.length > 0 ? { ...full, narrower } : full;
 }
 
-/** "  Credit: [bar] ≈$862 / $900": the bar is the share left, green (red under a tenth), the amount bold. */
+/** "  Credit: [bar] ≈$862 / $900": the bar is the share left in the accent colour like the usage bars, the amount green (both red under a tenth). */
 function creditRow(leftUsd: number, grantedUsd: number, approximate: boolean, note: Piece[] = []): Piece[] {
-  const color = leftUsd < grantedUsd * LOW_CREDIT_FRACTION ? theme.error : theme.success;
+  const low = leftUsd < grantedUsd * LOW_CREDIT_FRACTION;
   const filled = grantedUsd > 0 ? barFill(leftUsd, grantedUsd) : 0;
   return [
     [theme.muted, labelCell("Credit")],
-    [theme.text, "["], [color, "\u2588".repeat(filled)], [theme.muted, "\u2591".repeat(BAR_WIDTH - filled)], [theme.text, "] "],
-    [theme.bold + color, `${approximate ? "≈" : ""}${formatDollars(Math.max(0, leftUsd))}`],
-    [theme.boldOff + theme.muted, ` / ${formatDollars(grantedUsd)}`],
+    [theme.text, "["], [low ? theme.error : theme.accent, "\u2588".repeat(filled)], [theme.muted, "\u2591".repeat(BAR_WIDTH - filled)], [theme.text, "] "],
+    [low ? theme.error : theme.success, `${approximate ? "≈" : ""}${formatDollars(Math.max(0, leftUsd))}`],
+    [theme.muted, ` / ${formatDollars(grantedUsd)}`],
     ...note,
   ];
 }
@@ -366,8 +366,8 @@ function expiryRow(grants: readonly ApiCreditGrantLeft[], shown: number, now: nu
   grants.slice(0, shown).forEach((grant, index) => {
     if (index > 0) pieces.push(separator);
     pieces.push(
-      [theme.reset + theme.bold + theme.success, formatDollars(grant.leftUsd)],
-      [theme.boldOff + theme.muted, grant.expiresAt === null ? " no expiry" : ` ${formatCreditCountdown(grant.expiresAt - now)}`],
+      [theme.reset + theme.success, formatDollars(grant.leftUsd)],
+      [theme.muted, grant.expiresAt === null ? " no expiry" : ` ${formatCreditCountdown(grant.expiresAt - now)}`],
     );
   });
   if (shown < grants.length) pieces.push(separator, [theme.reset + theme.muted, `+${grants.length - shown}`]);

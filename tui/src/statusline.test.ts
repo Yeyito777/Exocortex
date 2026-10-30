@@ -142,7 +142,7 @@ describe("API-key usage", () => {
       // This morning's balance: 1000 - (64.44 - 1.50) = 937.06, over 357 days = $2.62/day.
       expect(creditView(c, 1.5).paceUsd).toBeCloseTo(937.06 / DAYS_TO_EXPIRY, 10);
       expect(rows[1].trimEnd()).toBe(columns("  Expiry: $936 357d", "today $1.50 of $2.62", credit0.length + 3));
-      expect(block.rows[0]).toContain(`${theme.bold}${theme.success}≈$936`);
+      expect(block.rows[0]).toContain(`${theme.success}≈$936`);
       expect(block.rows[0]).toContain(`${theme.warning}API credits`);
       expect(block.rows[1]).toContain(`${theme.accent}$1.50`);
       expect(rows.every((row) => row.length === block.width)).toBe(true);
@@ -174,7 +174,7 @@ describe("API-key usage", () => {
       const rows = block.rows.map(stripAnsi);
       expect(rows[0]).toStartWith(`  Credit: [${FULL}${EMPTY.repeat(19)}] ≈$50 / $1000   API credits`);
       expect(block.rows[0]).toContain(`${theme.error}${FULL}`);
-      expect(block.rows[0]).toContain(`${theme.bold}${theme.error}≈$50`);
+      expect(block.rows[0]).toContain(`${theme.error}≈$50`);
       // (1000 - 940) / 357 = $0.17/day.
       expect(rows[1].trimEnd()).toEndWith("today $10.00 of $0.17");
       expect(block.rows[1]).toContain(`${theme.error}$10.00`);
