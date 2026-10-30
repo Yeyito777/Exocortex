@@ -244,7 +244,7 @@ requests (titles, summaries, compaction) fall back too. Code:
   run on them, the status bar's usage bars give way to two rows:
 
   ```
-    Credit: [████████████████████░] $862 / $900
+    Credit: [████████████████████░] $862/$900
     Expiry: $162 12d · $200 19d · $500 170d
   ```
 

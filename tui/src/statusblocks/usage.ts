@@ -187,7 +187,7 @@ export function dailyAllowance(apiKey: ApiKeyUsage, monthlyBudgetUsd: number, no
   return Math.max(0, monthlyBudgetUsd - spentBeforeToday) / daysLeft;
 }
 
-/** "  Label:  [bar] figure / limit": a bar filled to `filled` of `capacity`, the figure in its own colour. */
+/** "  Label:  [bar] figure/limit": a bar filled to `filled` of `capacity`, the figure in its own colour. */
 function barLine(
   label: string,
   filled: number,
@@ -198,11 +198,11 @@ function barLine(
   labelWidth = LABEL_WIDTH,
 ): { line: string; width: number } {
   const head = labelCell(label, labelWidth);
-  const line = `${theme.muted}${head}${theme.text}[${renderBar(filled, capacity)}${theme.text}] ${figureColor}${figure}${theme.muted} / ${theme.accent}${limit}${theme.reset}`;
-  return { line, width: head.length + 1 + BAR_WIDTH + 1 + 1 + figure.length + 3 + limit.length };
+  const line = `${theme.muted}${head}${theme.text}[${renderBar(filled, capacity)}${theme.text}] ${figureColor}${figure}${theme.muted}/${theme.accent}${limit}${theme.reset}`;
+  return { line, width: head.length + 1 + BAR_WIDTH + 1 + 1 + figure.length + 1 + limit.length };
 }
 
-/** "  Today:  [bar] $0.412 / $0.79"; the spend turns red once it passes the limit. */
+/** "  Today:  [bar] $0.412/$0.79"; the spend turns red once it passes the limit. */
 function budgetLine(label: string, spentUsd: number, limitUsd: number, options: { labelWidth?: number; format?: (usd: number) => string } = {}): { line: string; width: number } {
   const format = options.format ?? formatUsd;
   const color = spentUsd > limitUsd ? theme.error : theme.accent;
@@ -326,7 +326,7 @@ function creditBlock(rows: CreditRows): StatusBlock {
   return narrower.length > 0 ? { ...full, narrower } : full;
 }
 
-/** "  Credit: [bar] ≈$862 / $900": the bar and the amount in the accent colour like the usage bars (both red under a tenth). */
+/** "  Credit: [bar] ≈$862/$900": the bar and the amount in the accent colour like the usage bars (both red under a tenth). */
 function creditRow(leftUsd: number, grantedUsd: number, approximate: boolean, note: Piece[] = []): Piece[] {
   const low = leftUsd < grantedUsd * LOW_CREDIT_FRACTION;
   const filled = grantedUsd > 0 ? barFill(leftUsd, grantedUsd) : 0;
@@ -334,7 +334,7 @@ function creditRow(leftUsd: number, grantedUsd: number, approximate: boolean, no
     [theme.muted, labelCell("Credit")],
     [theme.text, "["], [low ? theme.error : theme.accent, "\u2588".repeat(filled)], [theme.muted, "\u2591".repeat(BAR_WIDTH - filled)], [theme.text, "] "],
     [low ? theme.error : theme.accent, `${approximate ? "≈" : ""}${formatDollars(Math.max(0, leftUsd))}`],
-    [theme.muted, ` / ${formatDollars(grantedUsd)}`],
+    [theme.muted, `/${formatDollars(grantedUsd)}`],
     ...note,
   ];
 }
@@ -379,7 +379,7 @@ function endOfLocalDay(day: string): number {
 }
 
 /**
- * OpenAI's credit grant as the same rows: "  Credit: [bar] ≈$935 / $1000"
+ * OpenAI's credit grant as the same rows: "  Credit: [bar] ≈$935/$1000"
  * (always ≈: it is the grant less what this daemon counted) over its expiry.
  * An expired grant says so in red.
  */
