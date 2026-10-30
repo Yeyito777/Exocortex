@@ -220,12 +220,12 @@ describe("Claude on API credits: Credit and Expiry rows", () => {
     expect(block.width).toBe(Math.max(credit.length, expiry.length));
     const text = rows.join("\n");
     for (const gone of ["5-Hour", "Weekly", "main", "$662", "left", "API credits", "subs back"]) expect(text).not.toContain(gone);
-    // Colours: the bar accent, the amounts plain green, the grant muted, the separators dim.
+    // Colours: the bar accent, the amounts accent (not bold), the grant muted, the separators dim.
     expect(block.rows[0]).toContain(`${theme.accent}\u2588`);
-    expect(block.rows[0]).toContain(`${theme.success}$862`);
+    expect(block.rows[0]).toContain(`${theme.accent}$862`);
     expect(block.rows[0]).not.toContain(theme.bold);
     expect(block.rows[0]).toContain(`${theme.muted} / $900`);
-    expect(block.rows[1]).toContain(`${theme.success}$162`);
+    expect(block.rows[1]).toContain(`${theme.accent}$162`);
     expect(block.rows[1]).not.toContain(theme.bold);
     expect(block.rows[1]).toContain(`${theme.dim} · `);
   });

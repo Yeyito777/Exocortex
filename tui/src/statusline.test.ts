@@ -140,7 +140,7 @@ describe("API-key usage", () => {
       // This morning's balance: 1000 - (64.44 - 1.50) = 937.06, over 357 days = $2.62/day (for /tokens).
       expect(creditView(c, 1.5).paceUsd).toBeCloseTo(937.06 / DAYS_TO_EXPIRY, 10);
       expect(rows[1].trimEnd()).toBe("  Expiry: $936 357d");
-      expect(block.rows[0]).toContain(`${theme.success}≈$936`);
+      expect(block.rows[0]).toContain(`${theme.accent}≈$936`);
       expect(rows.every((row) => row.length === block.width)).toBe(true);
       expect(block.width).toBe(credit0.length);
       // The bar starts where the plan bars do.
