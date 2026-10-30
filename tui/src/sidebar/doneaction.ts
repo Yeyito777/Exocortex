@@ -50,23 +50,43 @@ export function doneDestination(sidebar: SidebarState, convId: string): DoneDest
   return topLevel ? { type: "folder", folderId: topLevel } : { type: "create_top_level" };
 }
 
-function leavesView(sidebar: SidebarState, destination: string): boolean {
+/**
+ * Where `.` brings a folder filed directly in a `done` folder: out to that
+ * done folder's own parent (done/x -> x at the top level, proj/done/x -> proj/x).
+ * Null for a folder that isn't in a done folder.
+ */
+export function outOfDoneDestination(sidebar: SidebarState, folderId: string): { parentId: string | null } | null {
+  const folder = sidebar.folders.find(candidate => candidate.id === folderId);
+  const parent = folder?.parentId ? sidebar.folders.find(candidate => candidate.id === folder.parentId) : undefined;
+  return parent?.name === DONE_FOLDER_NAME ? { parentId: parent.parentId ?? null } : null;
+}
+
+function leavesView(sidebar: SidebarState, destination: string | null): boolean {
   return isTreeFolderView(sidebar)
     ? !isFolderOpenInTree(sidebar, destination)
     : destination !== sidebar.currentFolderId;
 }
 
-/** `.`: file the selected conversation, or every conversation in a visual block, into done/. */
+/**
+ * `.`: file the selected conversation, or every conversation in a visual block,
+ * into done/; a folder filed in a done folder comes back out of it.
+ */
 export function moveSelectionToDone(sidebar: SidebarState): SidebarKeyResult {
   const cursor = getSelectedSidebarItem(sidebar);
-  const conversations = selectedVisualItems(sidebar)
+  const selected = selectedVisualItems(sidebar);
+  const conversations = selected
     .filter((item): item is SidebarItemRef & { type: "conversation" } => item.type === "conversation");
-  if (conversations.length === 0) return { type: "handled" };
+  const folders = selected.flatMap(item => {
+    const destination = item.type === "folder" ? outOfDoneDestination(sidebar, item.id) : null;
+    return destination ? [{ item, parentId: destination.parentId }] : [];
+  });
+  if (conversations.length === 0 && folders.length === 0) return { type: "handled" };
   sidebar.visualAnchor = null;
   sidebar.pendingDeleteId = null;
   sidebar.pendingDeleteItem = null;
 
-  const byFolder = new Map<string, SidebarItemRef[]>();
+  const byFolder = new Map<string | null, SidebarItemRef[]>();
+  for (const { item, parentId } of folders) byFolder.set(parentId, [...byFolder.get(parentId) ?? [], item]);
   const create: SidebarItemRef[] = [];
   let alreadyDone = 0;
   for (const item of conversations) {
@@ -83,10 +103,10 @@ export function moveSelectionToDone(sidebar: SidebarState): SidebarKeyResult {
   ];
   // As with F: when the cursor's row leaves the view, the row below takes it;
   // a row moved into an expanded tree folder keeps the cursor.
-  const cursorLeaves = cursor?.type === "conversation" && leaving.some(item => item.id === cursor.id);
+  const cursorLeaves = cursor !== null && leaving.some(item => item.type === cursor.type && item.id === cursor.id);
   const focus = cursorLeaves ? focusTargetAfterRemovingSidebarItems(sidebar, leaving) : null;
 
-  const moves: { items: SidebarItemRef[]; parentId: string; reqId?: string }[] = [];
+  const moves: { items: SidebarItemRef[]; parentId: string | null; reqId?: string }[] = [];
   for (const [folderId, items] of byFolder) {
     const reqId = applyPendingSidebarItemsMove(sidebar, items, folderId, undefined, {});
     if (reqId) moves.push({ items, parentId: folderId, reqId });

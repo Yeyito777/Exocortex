@@ -3,7 +3,7 @@ import type { ConversationSummary, FolderSummary, SidebarItemRef } from "./messa
 import type { KeyEvent } from "./input";
 import { handleFocusedKey } from "./focus";
 import { handleSidebarKey, updateConversationList, type SidebarState, type SidebarKeyResult } from "./sidebar";
-import { doneDestination } from "./sidebar/doneaction";
+import { doneDestination, outOfDoneDestination } from "./sidebar/doneaction";
 import { focusSidebarItem } from "./sidebar/selection";
 import { createSidebarState } from "./sidebar/state";
 import { createInitialState } from "./state";
@@ -170,7 +170,7 @@ describe("`.` key", () => {
     expect(sidebar.selectedItem).toEqual(conv("in-done"));
   });
 
-  test("a folder row: nothing", () => {
+  test("a folder row outside a done folder: nothing", () => {
     const sidebar = sidebarWith("navigate");
     select(sidebar, dir("misc"));
     expect(handleSidebarKey(dot, sidebar)).toEqual({ type: "handled" });
@@ -237,6 +237,68 @@ describe("`.` key", () => {
     // Same rule as F: the block starts as the last row of proj/'s level, so the row above it.
     expect(sidebar.selectedItem).toEqual(conv("p-a"));
     expect(sidebar.pendingFocusItem).toEqual(conv("p-a"));
+  });
+});
+
+describe("`.` on a folder filed in done/", () => {
+  function parentOf(sidebar: SidebarState, id: string): string | null {
+    return sidebar.folders.find(f => f.id === id)?.parentId ?? null;
+  }
+
+  test("destination: the done folder's own parent; nothing for folders not directly in a done folder", () => {
+    const sidebar = sidebarWith("navigate");
+    updateConversationList(sidebar, sidebar.conversations, [...sidebar.folders, folder("shipped", 5, { parentId: "proj-done" })]);
+    expect(outOfDoneDestination(sidebar, "old")).toEqual({ parentId: null });
+    expect(outOfDoneDestination(sidebar, "shipped")).toEqual({ parentId: "proj" });
+    expect(outOfDoneDestination(sidebar, "arch-done")).toBeNull();
+    expect(outOfDoneDestination(sidebar, "misc")).toBeNull();
+    expect(outOfDoneDestination(sidebar, "root-done")).toBeNull();
+  });
+
+  test("navigate view: brings it out to the top level; the row below takes the cursor", () => {
+    const sidebar = sidebarWith("navigate");
+    sidebar.currentFolderId = "root-done";
+    select(sidebar, dir("old"));
+    const result = pressDot(sidebar);
+    expect(result.moves).toMatchObject([{ items: [dir("old")], parentId: null }]);
+    expect(result.create).toEqual([]);
+    expect(result.notice).toBeUndefined();
+    expect(parentOf(sidebar, "old")).toBeNull();
+    expect(sidebar.selectedItem).toEqual(dir("arch"));
+  });
+
+  test("tree view: the folder stays in view and keeps the cursor", () => {
+    const sidebar = sidebarWith("tree");
+    sidebar.expandedFolderIds.add("root-done");
+    select(sidebar, dir("arch"));
+    expect(pressDot(sidebar).moves).toMatchObject([{ items: [dir("arch")], parentId: null }]);
+    expect(parentOf(sidebar, "arch")).toBeNull();
+    expect(sidebar.selectedItem).toEqual(dir("arch"));
+  });
+
+  test("a folder in a nested done/ goes back to that done/'s folder", () => {
+    const sidebar = sidebarWith("navigate");
+    updateConversationList(sidebar, sidebar.conversations, [...sidebar.folders, folder("shipped", 5, { parentId: "proj-done" })]);
+    sidebar.currentFolderId = "proj-done";
+    select(sidebar, dir("shipped"));
+    expect(pressDot(sidebar).moves).toMatchObject([{ items: [dir("shipped")], parentId: "proj" }]);
+    expect(parentOf(sidebar, "shipped")).toBe("proj");
+  });
+
+  test("tree view block: done folders come out, conversations go in, other folders stay", () => {
+    const sidebar = sidebarWith("tree");
+    sidebar.expandedFolderIds.add("root-done");
+    // Tree rows: done/ [old/ arch/ in-done] proj/ misc/ a b c
+    select(sidebar, conv("a"), dir("arch"));
+    const result = pressDot(sidebar);
+    expect(result.moves).toEqual([
+      expect.objectContaining({ items: [dir("arch")], parentId: null }),
+      expect.objectContaining({ items: [conv("a")], parentId: "root-done" }),
+    ]);
+    expect(result.notice).toBe("1 already in a done folder; left in place");
+    expect(parentOf(sidebar, "arch")).toBeNull();
+    expect(parentOf(sidebar, "proj")).toBeNull();
+    expect(folderOf(sidebar, "a")).toBe("root-done");
   });
 });
 
