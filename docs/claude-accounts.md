@@ -240,19 +240,17 @@ requests (titles, summaries, compaction) fall back too. Code:
   run on them, the status bar's usage bars give way to two rows:
 
   ```
-    Credit: [████████████████████░] $862 / $900   API credits
-    Expiry: $162 12d · $200 19d · $500 170d       subs back 1d4h
+    Credit: [████████████████████░] $862 / $900
+    Expiry: $162 12d · $200 19d · $500 170d
   ```
 
   Credit is everything left over everything granted, across every configured
   key, each Console organization once (`≈` and red as on the Accounts screen,
   "sign-in needed" after it); Expiry lists each grant that has not expired
   with what is left of it (the Console's own figure per grant, less the spend
-  counted since the last sync from the one expiring soonest), soonest first;
-  "subs back" is the soonest a signed-in subscription account can take turns
-  again (its rejection and full windows' resets), left out when unknown. A
-  narrow terminal drops the right column first, then lists fewer grants
-  (`+2`). An older daemon sends no pool: the bars stay, with "API credits
+  counted since the last sync from the one expiring soonest), soonest first.
+  When a subscription is back is in /tokens and on the Accounts screen. A
+  narrow terminal lists fewer grants (`+2`). An older daemon sends no pool: the bars stay, with "API credits
   max2" / "$199 left" beside them. What turns spend is
   estimated at list prices from the responses' usage and kept in the API-key
   ledger as `anthropic-credits:<secret>`; /tokens shows this cycle's.

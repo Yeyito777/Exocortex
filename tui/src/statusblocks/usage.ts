@@ -12,10 +12,8 @@
  * While Claude turns run on API credits (every subscription account at a
  * limit), the bars give way to the credits: a Credit row (everything left
  * over everything granted, every key's organization once) and an Expiry row
- * (each grant's balance and the time to its expiry, soonest first), with
- * "API credits" and when a subscription is back on the right. OpenAI on an
- * API-key credit grant shows the same rows, with today's spend against the
- * pace that lasts until it expires on the right. An older daemon that sends
+ * (each grant's balance and the time to its expiry, soonest first). OpenAI
+ * on an API-key credit grant shows the same rows. An older daemon that sends
  * no pool keeps the bars, with two short rows beside them.
  */
 
@@ -300,38 +298,28 @@ function paint(pieces: readonly Piece[], width = piecesWidth(pieces)): string {
   return pieces.map(([color, text]) => color + text).join("") + theme.reset + " ".repeat(Math.max(0, width - piecesWidth(pieces)));
 }
 
-/** The left column of the credit rows, the right column, and the narrower forms the left one has. */
+/** The credit rows, and the narrower forms the Expiry row has. */
 interface CreditRows {
   credit: Piece[];
   /** The Expiry row showing its first `shown` grants (all of them: the full row). */
   expiry: (shown: number) => Piece[];
   /** How many grants the Expiry row lists in full. */
   grants: number;
-  right: [Piece[], Piece[]];
 }
-
-/** Between the left column and the right one. */
-const CREDIT_RIGHT_GAP = 3;
 
 /**
  * The credit rows as a block, and narrower ones for the status line to fall
- * back to: first without the right column, then with fewer grants listed
- * ("+2" for the rest).
+ * back to, with fewer grants listed ("+2" for the rest).
  */
 function creditBlock(rows: CreditRows): StatusBlock {
-  const variant = (shown: number, right: boolean): StatusBlock => {
+  const variant = (shown: number): StatusBlock => {
     const expiry = rows.expiry(shown);
-    const left = Math.max(piecesWidth(rows.credit), piecesWidth(expiry));
-    const rightWidth = right ? Math.max(...rows.right.map(piecesWidth)) : 0;
-    const width = right && rightWidth > 0 ? left + CREDIT_RIGHT_GAP + rightWidth : left;
-    const row = (leftPieces: Piece[], rightPieces: Piece[]) => width === left
-      ? paint(leftPieces, width)
-      : paint(leftPieces, left + CREDIT_RIGHT_GAP) + paint(rightPieces, rightWidth);
-    return { id: "usage", priority: 3, width, height: 2, rows: [row(rows.credit, rows.right[0]), row(expiry, rows.right[1])] };
+    const width = Math.max(piecesWidth(rows.credit), piecesWidth(expiry));
+    return { id: "usage", priority: 3, width, height: 2, rows: [paint(rows.credit, width), paint(expiry, width)] };
   };
-  const full = variant(rows.grants, true);
+  const full = variant(rows.grants);
   const narrower: StatusBlock[] = [];
-  for (const form of [variant(rows.grants, false), ...Array.from({ length: Math.max(0, rows.grants - 1) }, (_, i) => variant(rows.grants - 1 - i, false))]) {
+  for (const form of Array.from({ length: Math.max(0, rows.grants - 1) }, (_, i) => variant(rows.grants - 1 - i))) {
     // The Credit row sets the least width: a form no narrower than the last one is no help.
     if (form.width < (narrower.at(-1) ?? full).width) narrower.push(form);
   }
@@ -374,20 +362,13 @@ function expiryRow(grants: readonly ApiCreditGrantLeft[], shown: number, now: nu
   return pieces;
 }
 
-const API_CREDITS_HEAD: Piece[] = [[theme.warning, "API credits"]];
-
 /** The rows for Claude turns on API credits, from a daemon that sends the pool. */
-function claudeCreditBlock(credits: ApiCreditsUsage, pool: ApiCreditPool, now: number): StatusBlock {
+function claudeCreditBlock(pool: ApiCreditPool, now: number): StatusBlock {
   const grants = listedGrants(pool.grants, now);
-  const back = credits.subscriptionsBackAt;
   return creditBlock({
     credit: creditRow(pool.balanceUsd, pool.grantedUsd, pool.approximate, pool.signInNeeded ? [[theme.muted, " sign-in needed"]] : []),
     expiry: shown => expiryRow(grants, shown, now),
     grants: grants.length,
-    right: [
-      API_CREDITS_HEAD,
-      typeof back === "number" && back > now ? [[theme.muted, "subs back "], [theme.accent, formatShortTimeUntil(back, now)]] : [],
-    ],
   });
 }
 
@@ -399,16 +380,11 @@ function endOfLocalDay(day: string): number {
 
 /**
  * OpenAI's credit grant as the same rows: "  Credit: [bar] ≈$935 / $1000"
- * (always ≈: it is the grant less what this daemon counted) over its expiry,
- * with today's spend against the pace that lasts until then on the right, red
- * once over it. An expired grant says so in red.
+ * (always ≈: it is the grant less what this daemon counted) over its expiry.
+ * An expired grant says so in red.
  */
 function openAICreditBlock(apiKey: ApiKeyUsage, credit: ApiKeyCredit, now: number): StatusBlock {
-  const todayUsd = apiKey.today.estimatedCostUsd;
-  const view = creditView(credit, todayUsd);
-  const today: Piece[] = view.paceUsd !== null
-    ? [[theme.muted, "today "], [todayUsd > view.paceUsd ? theme.error : theme.accent, formatCents(todayUsd)], [theme.muted, ` of ${formatCents(view.paceUsd)}`]]
-    : [[theme.muted, "today "], [theme.accent, formatCents(todayUsd)]];
+  const view = creditView(credit, apiKey.today.estimatedCostUsd);
   const grant: ApiCreditGrantLeft = { leftUsd: view.leftUsd, grantedUsd: credit.amountUsd, expiresAt: credit.expires === null ? null : endOfLocalDay(credit.expires) };
   const grants = view.expired ? [] : listedGrants([grant], now);
   return creditBlock({
@@ -417,7 +393,6 @@ function openAICreditBlock(apiKey: ApiKeyUsage, credit: ApiKeyCredit, now: numbe
       ? [[theme.muted, labelCell("Expiry")], [theme.error, `expired ${formatDay(credit.expires!)}`]]
       : expiryRow(grants, shown, now),
     grants: grants.length,
-    right: [API_CREDITS_HEAD, today],
   });
 }
 
@@ -554,7 +529,7 @@ function usageBars(state: RenderState): StatusBlock | null {
   const now = Date.now();
   if (usage?.apiKey) return apiKeyRows(usage.apiKey, now);
   const pool = creditPool(usage?.apiCredits);
-  if (pool) return claudeCreditBlock(usage!.apiCredits!, pool, now);
+  if (pool) return claudeCreditBlock(pool, now);
   if (!usage?.fiveHour && !usage?.sevenDay) return null;
 
   const capacity = usage.capacity && usage.capacity > 0 ? usage.capacity : 100;

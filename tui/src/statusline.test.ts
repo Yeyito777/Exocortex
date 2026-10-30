@@ -129,80 +129,68 @@ describe("API-key usage", () => {
     const NOW = new Date(2026, 9, 28, 12).getTime();
     const FULL = "\u2588";
     const EMPTY = "\u2591";
-    /** Two columns: the left one padded to `col`, then the right one. */
-    const columns = (left: string, right: string, col: number) => `${left.padEnd(col)}${right}`;
 
-    test("under the pace: Credit and Expiry rows aligned with the plan bars, today against the pace on the right; the budget is ignored", () => {
+    test("Credit and Expiry rows aligned with the plan bars, nothing to the right; the budget is ignored", () => {
       const c = credit({ usedUsd: 64.44 });
       const block = apiKeyRows(keyWith(c, 1.5), NOW);
       const rows = block.rows.map(stripAnsi);
       // 935.56 left of 1000 is 94%: nineteen cells of twenty, shown as ≈$936 (always an estimate).
       const credit0 = `  Credit: [${FULL.repeat(19)}${EMPTY}] ≈$936 / $1000`;
-      expect(rows[0].trimEnd()).toBe(`${credit0}   API credits`);
-      // This morning's balance: 1000 - (64.44 - 1.50) = 937.06, over 357 days = $2.62/day.
+      expect(rows[0].trimEnd()).toBe(credit0);
+      // This morning's balance: 1000 - (64.44 - 1.50) = 937.06, over 357 days = $2.62/day (for /tokens).
       expect(creditView(c, 1.5).paceUsd).toBeCloseTo(937.06 / DAYS_TO_EXPIRY, 10);
-      expect(rows[1].trimEnd()).toBe(columns("  Expiry: $936 357d", "today $1.50 of $2.62", credit0.length + 3));
+      expect(rows[1].trimEnd()).toBe("  Expiry: $936 357d");
       expect(block.rows[0]).toContain(`${theme.success}≈$936`);
-      expect(block.rows[0]).toContain(`${theme.warning}API credits`);
-      expect(block.rows[1]).toContain(`${theme.accent}$1.50`);
       expect(rows.every((row) => row.length === block.width)).toBe(true);
+      expect(block.width).toBe(credit0.length);
       // The bar starts where the plan bars do.
       expect(rows[0].indexOf("[")).toBe(stripAnsi(usageBlock(stateWithUsage())!.rows[0]).indexOf("["));
       const text = rows.join("\n");
-      for (const gone of ["used", "since", "days left", "unpriced", "Month", "Today"]) expect(text).not.toContain(gone);
+      for (const gone of ["used", "since", "days left", "unpriced", "Month", "Today", "today", "API credits"]) expect(text).not.toContain(gone);
     });
 
-    test("over the pace: today's spend is red", () => {
+    test("today's spend stays out of the bar even over the pace (it is in /tokens)", () => {
       const block = apiKeyRows(keyWith(credit({ usedUsd: 64.44 }), 39.7), NOW);
-      // 1000 - (64.44 - 39.70) = 975.26 this morning, over 357 days.
-      expect(stripAnsi(block.rows[1]).trimEnd()).toEndWith("   today $39.70 of $2.73");
-      expect(block.rows[1]).toContain(`${theme.error}$39.70`);
+      expect(block.rows.map(stripAnsi).join("\n")).not.toContain("39.70");
     });
 
     test("no history yet: the whole grant left, spread to expiry", () => {
       const c = credit({ usedUsd: 0, firstTrackedDay: null, paceUsd: 0, paceDays: 0 });
       expect(creditView(c, 0)).toMatchObject({ leftUsd: 1000, approximate: false, runway: null, low: false });
       const rows = apiKeyRows(keyWith(c, 0), NOW).rows.map(stripAnsi);
-      expect(rows[0].trimEnd()).toBe(`  Credit: [${FULL.repeat(20)}] ≈$1000 / $1000   API credits`);
-      expect(rows[1].trimEnd()).toEndWith("   today $0.00 of $2.80");
-      expect(rows[1]).toStartWith("  Expiry: $1000 357d ");
+      expect(rows[0].trimEnd()).toBe(`  Credit: [${FULL.repeat(20)}] ≈$1000 / $1000`);
+      expect(rows[1].trimEnd()).toBe("  Expiry: $1000 357d");
     });
 
-    test("a low balance is red, and the pace shrinks with it; nothing left lists no grant", () => {
+    test("a low balance is red; nothing left lists no grant", () => {
       const c = credit({ usedUsd: 950, paceUsd: 70, paceDays: 7 });
       const block = apiKeyRows(keyWith(c, 10), NOW);
       const rows = block.rows.map(stripAnsi);
-      expect(rows[0]).toStartWith(`  Credit: [${FULL}${EMPTY.repeat(19)}] ≈$50 / $1000   API credits`);
+      expect(rows[0].trimEnd()).toBe(`  Credit: [${FULL}${EMPTY.repeat(19)}] ≈$50 / $1000`);
       expect(block.rows[0]).toContain(`${theme.error}${FULL}`);
       expect(block.rows[0]).toContain(`${theme.error}≈$50`);
-      // (1000 - 940) / 357 = $0.17/day.
-      expect(rows[1].trimEnd()).toEndWith("today $10.00 of $0.17");
-      expect(block.rows[1]).toContain(`${theme.error}$10.00`);
-      // Nothing left at all: no pace, today is its plain spend.
+      // Nothing left at all.
       const spent = apiKeyRows(keyWith(credit({ usedUsd: 1200 }), 5), NOW).rows.map(stripAnsi);
-      expect(spent[0]).toStartWith(`  Credit: [${EMPTY.repeat(20)}] ≈$0 / $1000   API credits`);
-      expect(spent[1]).toStartWith("  Expiry: none left ");
-      expect(spent[1].trimEnd()).toEndWith("   today $5.00");
+      expect(spent[0].trimEnd()).toBe(`  Credit: [${EMPTY.repeat(20)}] ≈$0 / $1000`);
+      expect(spent[1].trimEnd()).toBe("  Expiry: none left");
     });
 
-    test("an expired grant says so; today is its plain spend", () => {
+    test("an expired grant says so", () => {
       const block = apiKeyRows(keyWith(credit({ asOf: "2027-10-20" })), new Date(2027, 9, 21, 12).getTime());
       const rows = block.rows.map(stripAnsi);
-      expect(rows[0]).toStartWith(`  Credit: [${EMPTY.repeat(20)}] ≈$0 / $1000   API credits`);
-      expect(rows[1]).toStartWith("  Expiry: expired Oct 20 ");
+      expect(rows[0].trimEnd()).toBe(`  Credit: [${EMPTY.repeat(20)}] ≈$0 / $1000`);
+      expect(rows[1].trimEnd()).toBe("  Expiry: expired Oct 20");
       expect(block.rows[1]).toContain(`${theme.error}expired Oct 20`);
-      expect(rows[1].trimEnd()).toEndWith("   today $39.30");
       // The day before it expires, that one day gets the whole balance.
       expect(creditView(credit({ asOf: "2027-10-19", usedUsd: 100 }), 0).paceUsd).toBe(900);
     });
 
-    test("without an expiry, today is its plain spend", () => {
+    test("without an expiry", () => {
       const c = credit({ expires: null });
       expect(creditView(c, 39.3).paceUsd).toBeNull();
       const rows = apiKeyRows(keyWith(c), NOW).rows.map(stripAnsi);
-      expect(rows[0]).toStartWith(`  Credit: [${FULL.repeat(19)}${EMPTY}] ≈$936 / $1000   API credits`);
-      expect(rows[1]).toStartWith("  Expiry: $936 no expiry ");
-      expect(rows[1].trimEnd()).toEndWith("   today $39.30");
+      expect(rows[0].trimEnd()).toBe(`  Credit: [${FULL.repeat(19)}${EMPTY}] ≈$936 / $1000`);
+      expect(rows[1].trimEnd()).toBe("  Expiry: $936 no expiry");
     });
 
     test("the runway stays out of the bar but is in /tokens", () => {
