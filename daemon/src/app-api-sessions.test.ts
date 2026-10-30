@@ -27,6 +27,9 @@ const registry = await import("./app-registry");
 const appApi = await import("./app-api");
 const workspaces = await import("./app-workspaces");
 const accountPool = await import("./providers/anthropic/account-pool");
+const persistence = await import("./persistence");
+const attachments = await import("./attachments");
+const { rememberSentImages, resolveImageForPreview } = await import("./image-requests");
 
 interface FakeClient {
   id: string;
@@ -319,6 +322,52 @@ describe("graceful restarts", () => {
     expect(back.events.at(-1)).toMatchObject({ type: "app_conversation_attached", reqId: "a", convId: ephemeral });
   });
 
+  test("its queued messages and instructions saved mid-turn go with it; the queue file keeps everyone else's", async () => {
+    const { client, welcome } = await asApp({ reconnectGraceMs: 60_000 });
+    const ephemeral = await createApp(client, { lifetime: "ephemeral" });
+    const ordinary = convStore.create(convStore.generateId(), "openai", "gpt-5.4").id;
+    created.push(ordinary);
+    // Both mid-turn, so the entries wait for their turns' ends.
+    const jobs = [ephemeral, ordinary].map(convId => { const job = new AbortController(); convStore.setActiveJob(convId, job, Date.now()); return [convId, job] as const; });
+    const handed = convStore.pushQueuedMessage(ephemeral, "after this turn", "message-end");
+    const kept = convStore.pushQueuedMessage(ordinary, "an ordinary entry", "message-end");
+    expect(convStore.setSystemInstructions(ephemeral, "Answer in one word.")).toBe(true);
+    expect(persistence.loadQueuedMessages().map(entry => entry.id)).toEqual([kept.id]);
+    expect(persistence.loadPendingConversationInstructions().has(ephemeral)).toBe(false);
+
+    beginDaemonShutdown("restart");
+    await handle.stop();
+    expect(appApi.handOffAppConversations()).toBe(1);
+    // The old daemon's memory goes with it.
+    for (const [convId, job] of jobs) convStore.clearActiveJob(convId, job);
+    // An ephemeral conversation's entries never touch the queue file, which the next daemon takes them over before loading.
+    const noQueueWrites = new Error("the queue file was written");
+    convStore.setMessageQueuePersistenceFailureForTest(noQueueWrites);
+    convStore.purge(ephemeral);
+    registry.removeAppConversationRecord(ephemeral);
+    resetDaemonShutdownModeForTest();
+
+    handle = createHandler(server as never, { holdQueueDeliveryUntilReady: true });
+    await asApp({ session: welcome.session, reconnectGraceMs: 60_000 });
+    try {
+      await appApi.recoverAppConversations();
+    } finally {
+      convStore.setMessageQueuePersistenceFailureForTest(null);
+    }
+    convStore.loadQueuedMessagesFromDisk();
+    expect(convStore.listQueuedMessages().map(entry => [entry.id, entry.convId, entry.text]))
+      .toEqual([[kept.id, ordinary, "an ordinary entry"], [handed.id, ephemeral, "after this turn"]]);
+    expect(persistence.loadQueuedMessages().map(entry => entry.id)).toEqual([kept.id]);
+    expect(convStore.getSystemInstructions(ephemeral)).toBe("Answer in one word.");
+    expect(persistence.loadPendingConversationInstructions().has(ephemeral)).toBe(false);
+    // Delivered as everyone's are once the replays have started.
+    const { orchestrateSendMessage } = await import("./orchestrator");
+    const delivered = () => (orchestrateSendMessage as ReturnType<typeof mock>).mock.calls.some(call => call[3] === ephemeral && call[4] === "after this turn");
+    expect(delivered()).toBe(false);
+    handle.startQueueDelivery();
+    await until(delivered);
+  });
+
   test("an app_run conversation handed over ends after its replayed turn", async () => {
     const { client } = await asApp();
     const convId = await createApp(client, { lifetime: "ephemeral" });
@@ -347,5 +396,44 @@ describe("graceful restarts", () => {
     expect(appApi.handOffAppConversations()).toBe(0);
     resetDaemonShutdownModeForTest();
     handle = createHandler(server as never);
+  });
+});
+
+describe("what ephemeral conversations never write", () => {
+  // A 1×1 PNG.
+  const png = (pixel: string) => {
+    const base64 = `iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk${pixel}AAAAABJRU5ErkJggg==`;
+    return { mediaType: "image/png" as const, base64, sizeBytes: Buffer.from(base64, "base64").length };
+  };
+  const stored = (image: { base64: string }) => attachments.findStoredImage(attachments.imageIdForBytes(Buffer.from(image.base64, "base64"))) !== null;
+
+  test("images sent, queued or previewed stay out of the image store", async () => {
+    const { client } = await asApp();
+    const ephemeral = await createApp(client, { lifetime: "ephemeral" });
+    const sent = png("YPhfDwAChwGA60e6kg");
+    rememberSentImages(ephemeral, [sent]);
+    expect(stored(sent)).toBe(false);
+    convStore.appendMessages(ephemeral, [{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: sent.base64 } }], metadata: { startedAt: 7, endedAt: 7, model: "gpt-5.4", tokens: 0 } }]);
+    expect(await resolveImageForPreview(attachments.imageIdForBytes(Buffer.from(sent.base64, "base64")), ephemeral)).not.toBeNull();
+    expect(stored(sent)).toBe(false);
+    rememberSentImages(convStore.generateId(), [sent]);
+    expect(stored(sent)).toBe(true);
+  });
+
+  test("a queue snapshot sent to a client holds only what it may see", async () => {
+    const { client } = await asApp();
+    const ephemeral = await createApp(client, { lifetime: "ephemeral" });
+    const ordinary = convStore.create(convStore.generateId(), "openai", "gpt-5.4").id;
+    created.push(ordinary);
+    const jobs = [ephemeral, ordinary].map(convId => { const job = new AbortController(); convStore.setActiveJob(convId, job, Date.now()); return [convId, job] as const; });
+    const own = convStore.pushQueuedMessage(ephemeral, "the app's", "message-end");
+    const other = convStore.pushQueuedMessage(ordinary, "the user's", "message-end");
+    const snapshot = async (asker: FakeClient, convId: string) => {
+      const reply = (await run(asker, { type: "queue_message", reqId: "q", convId, text: "x", timing: "sometime" })).find(event => event.type === "queue_updated");
+      return (reply as Extract<Event, { type: "queue_updated" }>).messages.map(entry => entry.id);
+    };
+    expect(await snapshot(client, ephemeral)).toEqual([own.id]);
+    expect(await snapshot(fakeClient(), ordinary)).toEqual([other.id]);
+    for (const [convId, job] of jobs) convStore.clearActiveJob(convId, job);
   });
 });

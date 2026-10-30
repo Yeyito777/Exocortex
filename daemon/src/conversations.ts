@@ -637,15 +637,41 @@ export function generateId(): string {
 // ── Conversation CRUD/configuration ─────────────────────────────────
 
 /**
+ * What only memory holds of an ephemeral app conversation: everything the
+ * store would otherwise write (its history, its queued messages, instructions
+ * saved mid-turn). A graceful restart hands it to the next daemon (app-api.ts).
+ */
+export interface EphemeralConversationState {
+  conversation: Conversation;
+  queued?: messageQueue.QueuedMessage[];
+  pendingInstructions?: string;
+}
+
+export function ephemeralConversationState(id: string): EphemeralConversationState | null {
+  const conversation = isEphemeralConversation(id) ? conversations.get(id) : undefined;
+  if (!conversation) return null;
+  const queued = messageQueue.listInternalQueuedMessages().filter(entry => entry.convId === id);
+  const pendingInstructions = pendingSystemInstructions.get(id);
+  return {
+    conversation,
+    ...(queued.length > 0 ? { queued } : {}),
+    ...(pendingInstructions !== undefined ? { pendingInstructions } : {}),
+  };
+}
+
+/**
  * An ephemeral app conversation an earlier daemon handed over at a graceful
  * restart (app-api.ts): back in memory, as it was. Its app record is
- * registered first, so it is never written.
+ * registered first, so it is never written. Its queued messages are delivered
+ * and its pending instructions applied as everyone's are after a restart.
  */
-export function adoptEphemeralConversation(conv: Conversation): void {
+export function adoptEphemeralConversation({ conversation: conv, queued, pendingInstructions }: EphemeralConversationState): void {
   if (!isEphemeralConversation(conv.id)) throw new Error(`Conversation ${conv.id} is not an ephemeral app conversation`);
   if (hasConversation(conv.id)) throw new Error(`Conversation ${conv.id} already exists`);
   retainConversation(conv);
   updateSummaryFromConversation(conv);
+  if (typeof pendingInstructions === "string") pendingSystemInstructions.set(conv.id, pendingInstructions);
+  if (Array.isArray(queued)) messageQueue.adoptQueuedMessages(queued.filter(entry => entry?.convId === conv.id));
 }
 
 export function create(id: string, provider: ProviderId, model: ModelId, title?: string, effort?: EffortLevel, fastMode: FastMode = false, folderId: string | null = null, adoptExistingWorkspace = false): Conversation {

@@ -74,10 +74,11 @@ bars or other conversations' events. `ping` answers only `pong`.
   A running turn, or one waiting on an app tool call, never expires. Expiry is
   checked every minute and at startup.
 - Ephemeral conversations are never written: not to the conversation store,
-  the queue file, pending instructions, the image store, the live-turns
-  journal or the Claude account file (and they cannot be unwound, a durable
-  rewrite). The one exception is a graceful restart, which hands them to the
-  next daemon in a file only the user can read
+  the queue file, pending instructions, the image store (images sent, queued
+  or previewed), the live-turns journal or the Claude account file (and they
+  cannot be unwound, a durable rewrite). The one exception is a graceful
+  restart, which hands them (history, queued messages, instructions saved
+  mid-turn, Claude account) to the next daemon in a file only the user can read
   (`<tmp>/exocortex-apps-<uid>-<instance>/handoff.json`, mode 0600) that the
   next daemon reads and deletes as it starts; `appApi.ephemeralSurvivesRestart:
   false` turns that off (they then end with the daemon, as before). Their default working directory is a temporary directory
@@ -232,7 +233,8 @@ connection takes its conversations back by reconnecting with the same token:
   disconnection: the next daemon takes over every session (its grace starts
   when it is up) and every ephemeral conversation, adopts their Claude Code
   processes, and replays interrupted turns as it does for ordinary
-  conversations (`turnId` unchanged). Commands an app client sends while the
+  conversations (`turnId` unchanged); their queued messages are delivered
+  and instructions saved mid-turn applied as everyone's are. Commands an app client sends while the
   daemon is still starting wait until the replays have started, so an attach
   right after a restart sees the replayed turn running. An app tool call that
   was pending is interrupted like any tool call (`app_tool_cancel`, reason
