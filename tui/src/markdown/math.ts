@@ -124,6 +124,8 @@ function likelyDollarMath(content: string): boolean {
   if (/^\d[\d,.]*$/.test(content) || (/^\d/.test(content) && /,/.test(content))) return false;
   // Plain words ("$HOME and $PATH") and shell/quoted text are not math.
   if (/^[A-Za-z]+(?:\s+[A-Za-z0-9]+)+$/.test(content) || /["`]/.test(content)) return false;
+  // Shell paths: "$HOME/bin:$PATH", $A:$B, "$DIR/$FILE".
+  if (/[/:]$/.test(content)) return false;
   return /[A-Za-z0-9α-ωΑ-Ω\\_^=+*/<>()[\]{}|−∞∑∫]/u.test(content);
 }
 
@@ -295,12 +297,14 @@ function scanMath(text: string): MathScan {
           break;
         }
       }
-      // Shell and template text ("$HOME", PATH="$JAVA_HOME/bin:$PATH", US$5)
-      // puts the dollar right after a word, quote or `=`.
-      const opensWord = /[A-Za-z0-9"'=/]/.test(text[i - 1] ?? "");
+      // Shell and template text (PATH=$JAVA_HOME/bin:$PATH, US$5) puts the
+      // dollar right after a word or `=`. A quote may open math ("$n$"), but
+      // not when the same quote sits inside the span ('$HOME' and '$PATH').
+      const before = text[i - 1] ?? "";
+      const opensWord = /[A-Za-z0-9=/]/.test(before);
       if (close >= 0 && !opensWord && text[close + 1] !== "$" && !/[0-9_]/.test(text[close + 1] ?? "")) {
         const content = text.slice(i + 1, close);
-        if (likelyDollarMath(content)) {
+        if (likelyDollarMath(content) && !(/["']/.test(before) && content.includes(before))) {
           push(i, i + 1, close, close + 1, "$", false);
           i = close + 1;
           continue;

@@ -249,6 +249,33 @@ c &= d
     expect(findMathFragments(text).map(fragment => fragment.tex)).toEqual(["n"]);
   });
 
+  test("quotes, parentheses and brackets may surround inline math", () => {
+    const text = [
+      String.raw`The "$\vdots$" chain is exactly the part that induction replaces.`,
+      `Let Sₙ be the statement "$n$ can be written as a sum of distinct powers of 2".`,
+      `Primes '$p$' and “$q$”, ‘$r$’, ($s$), [$t$], {$u$}, «$v$» and ¡$w$!`,
+      `A prime: ($f'(x)$) is fine.`,
+    ].join("\n");
+    expect(findMathFragments(text).map(fragment => fragment.tex)).toEqual([
+      String.raw`\vdots`, "n", "p", "q", "r", "s", "t", "u", "v", "w", "f'(x)",
+    ]);
+    expect(renderInlineMath(`The "$\\vdots$" chain and "$n$ can".`)).toBe(`The "⋮" chain and "n can".`);
+  });
+
+  test("quoted shell variables and prices stay text", () => {
+    const text = [
+      `Run "$HOME" and "$PATH"; or '$HOME' and '$PATH'; also "$HOME/bin:$PATH".`,
+      `Prices "$5" and "$10", '$5' or '$10', ($5 and $10), [$20/$30].`,
+      `Shell PATH=$A:$B:$C and "$DIR/$FILE".`,
+      `Pay $5 and $10; $x $ is not closed; $ y$ opens on a space; $3$4 ends on a digit.`,
+      "Code `\"$x$\"` and",
+      "```sh",
+      `echo "$a" '$b$'`,
+      "```",
+    ].join("\n");
+    expect(findMathFragments(text)).toEqual([]);
+  });
+
   test("strips blockquote markers from multi-line fragments", () => {
     const text = "> Quoted\n> \\[\n> a^2+b^2\n> \\]";
     expect(findMathFragments(text)[0].tex).toBe("\na^2+b^2\n");
