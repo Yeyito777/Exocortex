@@ -159,6 +159,17 @@ the conversation: no subscription, unread change, prewarm, or streaming and
 BTW catch-up. Send it only to daemons that answered `get_history_revisions`;
 older ones ignore the flag and open the conversation.
 
+With the `history-push` capability, a load with `watch` makes the daemon keep
+that copy current: its answer carries `copySeq`, and while the client is not
+subscribed to the conversation, `history_push` events update the copy
+(changed page entries, a changed AI entry's new blocks in `entryBlocks`, the
+live part against the copy's in `blocksBase`, tool output left out), at most
+every 500 ms, each naming the `base` copy it applies to. A later load can name
+that copy with `baseCopy` instead of `cachedEntryHashes`/`liveBase`; its pages
+then come against the daemon's record of it, marked `baseCopy`. Running
+rounds' tool output comes from `load_tool_outputs`. See
+[SSH conversation history cache](ssh-history-cache.md).
+
 ## Connectivity
 
 One connectivity monitor per daemon decides whether the network is reachable

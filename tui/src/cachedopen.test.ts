@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { handleEvent, type DaemonActions } from "./events";
 import { createInitialState, isProvisionalStale, isStaleCopyMarked, noteConversationOpenRequest, STALE_COPY_MARK_DELAY_MS, type RenderState } from "./state";
 import { prepareConversationOpen } from "./conversationscroll";
-import { beginProvisionalOpen, cachedOpenEvents, noteProvisionalPlacement, reconcileProvisionalOpen } from "./cachedopen";
+import { beginProvisionalOpen, cachedOpenEvents, liveCatchup, noteProvisionalPlacement, reconcileProvisionalOpen } from "./cachedopen";
 import type { ConversationSummary } from "./messages";
 import type { DisplayEntry, Event } from "./protocol";
 import type { CachedView } from "./viewcache";
@@ -33,7 +33,7 @@ function backfillAnswer(reqId: string, entries = OLDER): Page {
 const cached: CachedView = (() => {
   const { reqId: _r, initialBackfillReqId: _b, ...loaded } = answer("old");
   const { reqId: _p, ...backfill } = backfillAnswer("old-b");
-  return { convId: "c", rev: "e.1", folded: true, loaded: loaded as Loaded, backfill: backfill as Page };
+  return { convId: "c", rev: "e.1", folded: true, loaded: loaded as Loaded, backfill: backfill as Page, live: null };
 })();
 
 const summary = (overrides: Partial<ConversationSummary> = {}): ConversationSummary => ({
@@ -141,5 +141,57 @@ describe("opening a conversation from its cached copy", () => {
     expect(isStaleCopyMarked(state, paintedAt + STALE_COPY_MARK_DELAY_MS - 1)).toBe(false);
     expect(isStaleCopyMarked(state, paintedAt + STALE_COPY_MARK_DELAY_MS)).toBe(true);
     expect(isStaleCopyMarked(paint(true), paintedAt + 10_000)).toBe(false);
+  });
+});
+
+describe("opening a streaming conversation from its copy", () => {
+  const live = { blocks: [{ type: "thinking" as const, text: "Reading the code" }, { type: "tool_call" as const, toolCallId: "t1", toolName: "bash", input: { command: "ls" }, summary: "ls" }], blockOffset: 0, metadata: { startedAt: 5_000, endedAt: null, model: "gpt-5.4", tokens: 120 } };
+  const streamingCopy: CachedView = { ...cached, live, loaded: { ...cached.loaded } };
+
+  function paintStreaming(current = true, summaryOverrides: Partial<ConversationSummary> = { streaming: true }): RenderState {
+    const state = createInitialState();
+    state.sidebar.conversations = [summary({ id: "prev" }), summary(summaryOverrides)];
+    state.convId = "prev";
+    prepareConversationOpen(state, "c");
+    noteConversationOpenRequest(state, "c", "open");
+    const { loaded, backfill, catchup } = cachedOpenEvents(streamingCopy, "open", state.sidebar.conversations[1]);
+    beginProvisionalOpen(state, streamingCopy, "open", current, backfill!.reqId ?? null, loaded.pendingAI ?? null);
+    handleEvent(loaded, state, daemon);
+    if (catchup) handleEvent(catchup, state, daemon);
+    state.historyLoadingOlder = true;
+    state.historyLoadingRequestId = backfill!.reqId!;
+    handleEvent(backfill!, state, daemon);
+    noteProvisionalPlacement(state);
+    return state;
+  }
+
+  test("paints the finished messages and the turn in progress at once", () => {
+    const state = paintStreaming();
+    expect(texts(state).slice(0, 8)).toEqual(["u1", "a1", "u2", "a2", "u3", "a3", "u4", "a4"]);
+    expect(state.pendingAI?.blocks).toEqual(live.blocks);
+    expect(state.pendingAI?.metadata?.tokens).toBe(120);
+  });
+
+  test("an answer whose live part only grew is applied as streaming, nothing else redrawn", () => {
+    const state = paintStreaming();
+    const messages = state.messages;
+    const grown = { ...live, blocks: [{ type: "thinking" as const, text: "Reading the code closely" }, live.blocks[1]!, { type: "tool_result" as const, toolCallId: "t1", toolName: "bash", output: "", isError: false }] };
+    const outcome = reconcileProvisionalOpen(state, answer("open", ENTRIES, { pendingAI: grown }));
+    expect(outcome).toMatchObject({ kind: "confirmed", live: grown });
+    handleEvent(liveCatchup(answer("open"), grown, true), state, daemon);
+    expect(state.pendingAI?.blocks.map(block => block.type)).toEqual(["thinking", "tool_call", "tool_result"]);
+    expect((state.pendingAI?.blocks[0] as { text: string }).text).toBe("Reading the code closely");
+    expect(state.messages).toBe(messages);
+  });
+
+  test("a live part that changed, ended or started meanwhile replaces the copy", () => {
+    const rewritten = { ...live, blocks: [{ type: "text" as const, text: "Different" }] };
+    expect(reconcileProvisionalOpen(paintStreaming(), answer("open", ENTRIES, { pendingAI: rewritten })).kind).toBe("replace");
+    expect(reconcileProvisionalOpen(paintStreaming(), answer("open", ENTRIES, { pendingAI: { ...live, blockOffset: 3 } })).kind).toBe("replace");
+    expect(reconcileProvisionalOpen(paintStreaming(), answer("open")).kind).toBe("replace");
+    // The sidebar says the turn ended: its copy's live part is not shown, and an answer with one replaces it.
+    const ended = paintStreaming(false, { streaming: false });
+    expect(ended.pendingAI).toBeNull();
+    expect(reconcileProvisionalOpen(ended, answer("open", ENTRIES, { pendingAI: live })).kind).toBe("replace");
   });
 });

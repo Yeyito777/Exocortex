@@ -29,7 +29,7 @@ const page = (convId: string, reqId: string, rev: string, entries = [entry("o")]
 });
 const view = (convId: string, rev: string | null = "e.1", entries = [entry("a")]): CachedView => {
   const { reqId: _r, ...rest } = loaded(convId, "x", rev ?? "", entries);
-  return { convId, rev, folded: true, loaded: rest as Loaded, backfill: null };
+  return { convId, rev, folded: true, loaded: rest as Loaded, backfill: null, live: null };
 };
 const open = (convId: string, reqId: string, peek = false): Extract<Command, { type: "load_conversation" }> => ({
   type: "load_conversation", reqId, convId, turns: 5, viewport: { rows: 40, cols: 100, folded: true },
@@ -112,14 +112,15 @@ describe("view cache session", () => {
     const { cache, store, send } = session();
     cache.connected(send);
     send(open("c", "r1"));
-    expect(cache.receive(loaded("c", "r1", "e.7", undefined, { initialBackfillReqId: "r1-b", pendingAI: { blocks: [], metadata: null } }))).toBe(false);
+    expect(cache.receive(loaded("c", "r1", "e.7", undefined, { initialBackfillReqId: "r1-b", queuedMessages: [] }))).toBe(false);
     expect(store.has("c")).toBe(false);
     expect(cache.receive(page("c", "r1-b", "e.7"))).toBe(false);
     const kept = cache.view("c", true)!;
     expect(kept.rev).toBe("e.7");
     expect(kept.backfill?.entries).toEqual([entry("o")]);
-    expect(kept.loaded).not.toHaveProperty("pendingAI");
+    expect(kept.loaded).not.toHaveProperty("queuedMessages");
     expect(kept.loaded).not.toHaveProperty("reqId");
+    expect(kept.live).toBeNull();
     expect(cache.view("c", false)).toBeNull();
     expect(cache.isCurrent(kept)).toBe(true);
     // Any change the daemon pushes makes it stale.
@@ -153,21 +154,23 @@ describe("view cache session", () => {
   });
 
   test("a new connection forgets revisions, asks for the cached ones', and refreshes the stale working set with peeks", async () => {
-    const { cache, store, sent, send } = session({ summaries: { busy: { streaming: true }, a: { streaming: false }, b: { streaming: false } }, openConvId: "open" });
-    for (const id of ["a", "b", "busy", "open", "same"]) store.put(view(id, "e.1"));
+    const { cache, store, sent, send } = session({ summaries: { busy: { streaming: true }, a: { streaming: false }, b: { streaming: false }, same: { streaming: false } }, openConvId: "open" });
+    for (const id of ["a", "b", "busy", "open", "same"]) store.put(view(id, "e.1"), 1);
+    store.touch("a");
     cache.connected(send);
     const ask = sent.find(command => command.type === "get_history_revisions") as Extract<Command, { type: "get_history_revisions" }>;
     expect(new Set(ask.convIds)).toEqual(new Set(["a", "b", "busy", "open", "same"]));
-    expect(cache.receive({ type: "history_revisions", reqId: ask.reqId, revs: { a: "e.2", b: "e.3", busy: "e.2", open: "e.2", same: "e.1" } })).toBe(true);
+    expect(cache.receive({ type: "history_revisions", reqId: ask.reqId, revs: { a: "e.2", b: "e.1", busy: "e.1", open: "e.2", same: "e.1" } })).toBe(true);
+    // The stale one, and the running one the daemon does not keep current yet; never the open or a current one.
     await until(() => sent.filter(command => command.type === "load_conversation").length === 2);
     const peeks = sent.filter(command => command.type === "load_conversation") as Array<Extract<Command, { type: "load_conversation" }>>;
-    // The streaming one, the open one and the current one are left alone.
-    expect(peeks.map(peek => peek.convId).sort()).toEqual(["a", "b"]);
-    expect(peeks.every(peek => peek.peek === true && peek.viewport?.folded === true && peek.initialBackfill)).toBe(true);
+    expect(peeks.map(peek => peek.convId).sort()).toEqual(["a", "busy"]);
+    expect(peeks.every(peek => peek.peek === true && peek.watch === true && peek.viewport?.folded === true && peek.initialBackfill)).toBe(true);
     // A peek's pages are the cache's own and update the copy without making it look used.
     const before = store.ids();
-    expect(cache.receive(loaded("a", peeks[0]!.reqId!, "e.2", [entry("fresh")], { initialBackfillReqId: peeks[0]!.initialBackfill!.reqId }))).toBe(true);
-    expect(cache.receive(page("a", peeks[0]!.initialBackfill!.reqId, "e.2"))).toBe(true);
+    const peekA = peeks.find(peek => peek.convId === "a")!;
+    expect(cache.receive(loaded("a", peekA.reqId!, "e.2", [entry("fresh")], { initialBackfillReqId: peekA.initialBackfill!.reqId }))).toBe(true);
+    expect(cache.receive(page("a", peekA.initialBackfill!.reqId, "e.2"))).toBe(true);
     expect(cache.view("a", true)!.loaded.entries).toEqual([entry("fresh")]);
     expect(cache.isCurrent(cache.view("a", true)!)).toBe(true);
     expect(store.ids()).toEqual(before);
@@ -212,5 +215,122 @@ describe("view cache session", () => {
     const delta = encodeHistoryDelta(answer, prepared.cachedEntryHashes);
     expect(delta.entries).toEqual([entry("c")]);
     expect(history.receive(delta, () => { throw new Error("retry"); })).toEqual(answer);
+    // A copy kept newer than the last answer (pushes, peeks) replaces it as the base.
+    const newer = view("c", "e.3", [entry("a"), entry("b"), entry("c"), entry("d")]);
+    history.seed(open("c", "r2"), newer.loaded, null);
+    expect(history.prepare(open("c", "r2")).cachedEntryHashes).toHaveLength(4);
+  });
+});
+
+describe("copies kept current by pushes", () => {
+  const thinking = (text: string) => ({ type: "thinking" as const, text });
+  const live = (blocks: Array<ReturnType<typeof thinking>>) => ({ blocks, blockOffset: 0, metadata: null });
+
+  /** An open answered with copy number `copySeq`, a running turn's live part included. */
+  function watched(copySeq = 1) {
+    const s = session({ summaries: { c: { streaming: true } } });
+    s.cache.connected(s.send);
+    s.send(s.cache.prepare(open("c", "r1")));
+    s.cache.receive(loaded("c", "r1", "e.1", [entry("a"), entry("b")], { copySeq, initialBackfillReqId: "r1-b",
+      pendingAI: { blocks: [thinking("Look"), { type: "tool_result", toolCallId: "t", toolName: "bash", output: "big", isError: false }], blockOffset: 2, metadata: null } }));
+    s.cache.receive(page("c", "r1-b", "e.1"));
+    return s;
+  }
+
+  test("keep a running turn's live part without tool output; current while the daemon keeps it so and the turn runs", () => {
+    const { cache } = watched();
+    const kept = cache.view("c", true)!;
+    expect(kept.live).toEqual({ blocks: [thinking("Look"), { type: "tool_result", toolCallId: "t", toolName: "bash", output: "", isError: false }], blockOffset: 2, metadata: null });
+    expect(cache.isCurrent(kept)).toBe(true);
+    // Left after being open: current again once the daemon's push confirms it.
+    cache.left("c");
+    expect(cache.isCurrent(cache.view("c", true)!)).toBe(false);
+    cache.receive({ type: "history_push", convId: "c", base: 1, copySeq: 2 });
+    expect(cache.isCurrent(cache.view("c", true)!)).toBe(true);
+    cache.receive({ type: "history_push", convId: "c", unwatched: true });
+    expect(cache.isCurrent(kept)).toBe(false);
+  });
+
+  test("apply pushes to the copy they were built against: page, backfill and live text", () => {
+    const { cache } = watched(1);
+    expect(cache.receive({ type: "history_push", convId: "c", base: 1, copySeq: 2, live: { blocksBase: { keep: 0, extend: "ing closer" }, blocks: [], blockOffset: 2, metadata: null } })).toBe(true);
+    expect(cache.view("c", true)!.live!.blocks).toEqual([thinking("Looking closer")]);
+    const nextPage = { ...loaded("c", "", "e.2", [entry("c")]), entryOrder: [-2, 0], reqId: undefined };
+    cache.receive({ type: "history_push", convId: "c", base: 2, copySeq: 3, rev: "e.2", loaded: nextPage, backfill: null, live: null });
+    const after = cache.view("c", true)!;
+    expect(after.loaded.entries).toEqual([entry("b"), entry("c")]);
+    expect(after.backfill).toBeNull();
+    expect(after.live).toBeNull();
+    expect(after.rev).toBe("e.2");
+  });
+
+  test("refresh a copy whose push cannot apply, and ask again for a live part that cannot be rebuilt", async () => {
+    const { cache, sent, send, store } = watched(1);
+    cache.receive({ type: "history_push", convId: "c", base: 7, copySeq: 8, live: null });
+    expect(cache.isCurrent(cache.view("c", true)!)).toBe(false);
+    cache.receive({ type: "history_revisions", revs: { c: "e.1" } });
+    await until(() => sent.some(command => command.type === "load_conversation" && command.peek));
+    const peek = sent.find(command => command.type === "load_conversation" && command.peek) as Extract<Command, { type: "load_conversation" }>;
+    expect(peek.watch).toBe(true);
+    expect(peek.liveBase?.hashes).toHaveLength(2);
+
+    const retried: Command[] = [];
+    send(cache.prepare(open("c", "r9")));
+    const bad = loaded("c", "r9", "e.1", undefined, { pendingAI: { blocksBase: { keep: 5 }, blocks: [], blockOffset: 2, metadata: null } });
+    expect(cache.receive(bad, command => retried.push(command))).toBe(true);
+    expect(retried).toHaveLength(1);
+    expect(retried[0]).not.toHaveProperty("liveBase");
+    expect(store.get("c")!.live).toBeNull();
+  });
+
+  test("an open's live part comes against the copy's and is rebuilt before anything sees it", () => {
+    const { cache, send } = watched(1);
+    const command = cache.prepare(open("c", "r2"));
+    expect(command.liveBase?.tailChars).toBeUndefined();
+    send(command);
+    const answer = loaded("c", "r2", "e.1", undefined, { copySeq: 4, pendingAI: { blocksBase: { keep: 2 }, blocks: [thinking("more")], blockOffset: 2, metadata: null } });
+    expect(cache.receive(answer)).toBe(false);
+    expect(answer.pendingAI!.blocks.map(block => block.type)).toEqual(["thinking", "tool_result", "thinking"]);
+    expect(answer.pendingAI).not.toHaveProperty("blocksBase");
+  });
+
+  test("an open names a watched copy by number, and its answer is rebuilt from that copy first", () => {
+    const { cache, send } = watched(1);
+    const command = cache.prepare(open("c", "r3"));
+    expect(command.baseCopy).toBe(1);
+    expect(command).not.toHaveProperty("liveBase");
+    send(command);
+    const fromCopy = { ...loaded("c", "r3", "e.1", []), entryOrder: [-1, -2], baseCopy: 1, initialBackfillReqId: "r3-b",
+      pendingAI: { blocksBase: { keep: 1 }, blocks: [], blockOffset: 2, metadata: null } };
+    const rebuilt = cache.decodeCopyAnswer(fromCopy) as Loaded;
+    expect(rebuilt.entries).toEqual([entry("a"), entry("b")]);
+    expect(rebuilt).not.toHaveProperty("baseCopy");
+    expect(cache.receive(rebuilt)).toBe(false);
+    expect(rebuilt.pendingAI!.blocks).toEqual([thinking("Look")]);
+    const backfill = cache.decodeCopyAnswer({ ...page("c", "r3-b", "e.1", []), entryOrder: [-1], baseCopy: 1 }) as Page;
+    expect(backfill.entries).toEqual([entry("o")]);
+    // One that cannot be rebuilt is asked for again plainly, and the copy is no longer named.
+    const retried: Command[] = [];
+    send(cache.prepare(open("c", "r4")));
+    expect(cache.decodeCopyAnswer({ ...loaded("c", "r4", "e.1", []), entryOrder: [-9], baseCopy: 1 }, command => retried.push(command))).toBeNull();
+    expect(retried[0]).not.toHaveProperty("baseCopy");
+    expect(cache.prepare(open("c", "r5"))).not.toHaveProperty("baseCopy");
+  });
+
+  test("write pushed copies lazily, and all of them on exit; a restarted TUI reads them as not known current", async () => {
+    const dir = tempDir();
+    const store = new ViewCacheStore(dir, undefined, 60_000);
+    store.put(view("c"));
+    await store.flush();
+    store.put({ ...view("c", "e.2"), live: live([thinking("streaming")]) }, 0, true);
+    expect(store.get("c")!.live!.blocks).toEqual([thinking("streaming")]);
+    expect(readdirSync(dir)).toEqual(["c@e.1@f.json"]);
+    store.flushSync();
+    expect(readdirSync(dir)).toEqual(["c@e.2@f.json"]);
+    const restarted = new ViewCache(new ViewCacheStore(dir));
+    restarted.setContext(() => ({ openConvId: null, request: () => ({ backfillTurns: 0 }), summary: () => ({ streaming: true }) }));
+    const reread = restarted.view("c", true)!;
+    expect(reread.live!.blocks).toEqual([thinking("streaming")]);
+    expect(restarted.isCurrent(reread)).toBe(false);
   });
 });
