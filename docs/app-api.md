@@ -35,12 +35,12 @@ daemon adds new ones. A line that is not JSON is answered
 **Bootstrap.** Declare the connection an app client before anything else:
 
 ```json
-{"type":"client_capabilities","reqId":"1","capabilities":[],"app":{"name":"myapp","version":"0.3.0"}}
+{"type":"client_capabilities","reqId":"1","capabilities":["turn-catchup"],"app":{"name":"myapp","version":"0.3.0"}}
 ```
 
 ```json
 {"type":"app_welcome","reqId":"1","appApiVersion":1,"app":"myapp","instance":"main","pid":4242,
- "session":"Qm4…","reconnectGraceMs":120000,"resumed":false,"conversations":[]}
+ "session":"Qm4…","reconnectGraceMs":120000,"resumed":false,"conversations":[],"turnCatchup":true}
 ```
 
 `session` is the connection's session token: keep it, and send it back as
@@ -48,7 +48,9 @@ daemon adds new ones. A line that is not JSON is answered
 restarts"). `app.reconnectGraceMs` (0 to 24 h) asks for a reconnect grace of
 your own; the default is the daemon's (`appApi.reconnectGraceMs` in
 `config/config.json`, 2 minutes). A daemon from before sessions sends none of
-these four fields.
+these four fields. The `turn-catchup` capability asks for turn catch-ups
+(see "Catching up with a turn"); `turnCatchup: true` says the daemon sends
+them (an older one leaves it out and ignores the capability).
 
 Refuse to go on if `appApiVersion` is one your client does not support (this
 document is version 1), telling the user to update. A daemon from before the
@@ -256,6 +258,55 @@ connection takes its conversations back by reconnecting with the same token:
   lost conversation as error code `lost`, and start a lost one-shot `app_run`
   over on a new conversation.
 
+**Catching up with a turn.** A connection that declared `turn-catchup` gets
+a `turn_catchup` for a turn running in a conversation it owns: the turn as it
+has streamed so far, so a client showing a reply live never jumps from
+nothing to the second half.
+
+```json
+{"type":"turn_catchup","convId":"1793160000000-ab12cd","turnId":"1793160000123","streamSeq":57,
+ "blocks":[{"type":"text","text":"Per the lookup tool, "}],"streamOffset":0,"startedAt":1793160000130}
+```
+
+- **When:** in the same moment the connection becomes the owner (create,
+  `attach_app_conversation`, also again on the same connection) or takes its
+  session back (after the welcome and the events it missed); when a turn's
+  stream starts (a new turn, or one a daemon restart replays); and after a
+  `streaming_sync` replaced part of what was streamed.
+- **What:** `blocks` are the turn so far: its `text`, `thinking`, `tool_call`
+  and `tool_result` blocks, every round of it, also what a stream before a
+  daemon restart showed (the first `streamOffset` blocks; the current
+  stream's `message_complete` holds the rest). `turnId` is the turn's
+  `turn_result.turnId`.
+- **Exactly once:** stream events (`block_start`, `text_chunk`,
+  `thinking_chunk`, `tool_call`, `tool_result`, `message_complete`) carry a
+  `streamSeq` that grows within a stream; a stream starts with
+  `streaming_started` (`snapshotKind: "start"`), whose catch-up follows at
+  once. A catch-up holds every event of its stream up to and including its
+  `streamSeq`, and the stream events after it on the connection are exactly
+  the newer ones. So: replace what you have of the turn with `blocks`, then
+  apply each following stream event (`block_start` adds an empty block;
+  `text_chunk` appends to the last text block or adds one; `tool_call` and
+  `tool_result` add blocks; ignore `streaming_sync`, whose catch-up
+  follows). An event with a `streamSeq` at or below the catch-up's is
+  already in it (it never comes after one; a client may check).
+- **The end:** `turn_result` carries `blocks`, the whole turn, for such a
+  connection, also the copy kept while it was away and the answer to a send
+  repeated after the turn ended. A turn that ended while the client was away
+  thus still completes its stream.
+- **Showing it:** compare the turn with what you showed. When it extends it
+  (always, after a reconnect or attach), show only what is new. When it
+  agrees with it but has not reached all of it yet, wait until it does: a
+  Claude Code turn replayed after a restart sends what its process had not
+  saved again from the start. When it disagrees (a provider retry discarded
+  streamed text, or the turn ended short of what was shown), the reference
+  clients yield a `reset` stream event and then the turn again from its start.
+
+The reference clients do all of this: their streams and stream callbacks
+show a turn caught up on (after a reconnect, a restart, or for a turn
+`conversation.follow()` follows after an attach) as text then deltas, with
+nothing repeated or missing.
+
 **Turn results.** At the end of every turn of an app conversation (prompts the
 app sent, and turns the daemon starts itself, such as a background task's
 report), the current owner receives a `turn_result` without `reqId` (kept for
@@ -437,6 +488,7 @@ An owner (or subscriber) receives, among others:
 
 - `user_message`: the prompt as stored.
 - `streaming_started` / `streaming_stopped`: a turn began / ended.
+- `turn_catchup`: a running turn so far (with `turn-catchup`; above).
 - `block_start`, `text_chunk`, `thinking_chunk`: the reply as it streams.
 - `tool_call`, `tool_result`: every tool call, built-in or the app's.
 - `tokens_update`, `context_update`: progress.
@@ -500,7 +552,10 @@ credits (a few cents).
 A client needs: discovery (above), the bootstrap and version check, a reader
 that splits lines and routes answers by `reqId` and events by `convId`, a
 handler table for its app tools (answer every `app_tool_call` exactly once,
-stop work on `app_tool_cancel`), and a reconnect: back off, send
+stop work on `app_tool_cancel`), turn catch-ups if it shows replies live
+(declare `turn-catchup`; keep each running turn as "Catching up with a turn"
+says, and what each stream showed, and show only the difference), and a
+reconnect: back off, send
 `client_capabilities` with its `session`, attach each conversation it owns
 (one answering "not found" is lost), then send again, unchanged, every send
 and `app_run` it had in flight (with its own `convId` and `startedAt` they

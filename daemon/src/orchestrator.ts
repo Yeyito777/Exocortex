@@ -53,7 +53,7 @@ import { isScopedSubagent, remainingSubagentDepth } from "./subagent-policy";
 import { acknowledgeSubagentNotification, getSubagentNotificationRuntime, settlePendingSubagentNotifications } from "./subagent-notifications";
 import { noteRequestedRestartTurnEnded } from "./requested-restart";
 import { getDaemonShutdownMode } from "./daemon-lifecycle";
-import { notifyAssistantTurnEnded } from "./conversation-lifecycle";
+import { notifyAssistantTurnEnded, notifyLiveTurnRebased } from "./conversation-lifecycle";
 import { appTurnWorkingDirectory } from "./app-workspaces";
 import { appToolCallView } from "./app-tools";
 import { ensureConversationWorkspace } from "./workspace-service";
@@ -77,7 +77,7 @@ import { connectivity as daemonConnectivity, type ConnectivityMonitor } from "./
 import { runWithNetworkWait } from "./network-wait";
 import { runWithProxyLinkWait, type ProxyLinkWaitDeps, type ProxyLinkWaitOptions } from "./proxy-link-wait";
 import { isUsageLimitError, runWithUsageLimitWait, UsageLimitedError, type UsageAvailability } from "./usage-limit-wait";
-import { conversationAllowsApiCredits, conversationWaitsForUsageLimits } from "./app-registry";
+import { conversationAllowsApiCredits, conversationWaitsForUsageLimits, isAppConversation } from "./app-registry";
 import { claudeUsageAvailability } from "./providers/anthropic/availability";
 import { isProviderProxied, providerProxyConnect, providerProxyRoute } from "./provider-proxy/route";
 import { classifyNetworkFailureMessage } from "./providers/errors";
@@ -659,10 +659,13 @@ async function orchestrateAdmittedAssistantTurn(
   // The turn's identity for awaiting clients (turn_result.turnId): its prompt,
   // or for a replay the latest prompt it replays.
   let turnPromptStartedAt: number | undefined = userMessage ? startedAt : undefined;
+  /** What an earlier job of the turn showed, after its prompt: a replay continues it (app turn catch-ups). */
+  let turnShownBefore: Block[] = [];
   for (let index = conv.messages.length - 1; !userMessage && index >= 0; index--) {
     const message = conv.messages[index];
     if (!message || !isRealUserMessage(message)) continue;
     turnPromptStartedAt = message.metadata?.startedAt ?? undefined;
+    if (!manualCompaction && isAppConversation(convId)) turnShownBefore = convStore.turnBlocksAfter(conv, index);
     break;
   }
   if (goalContinuation && conv.goal?.status === "active") conv.goal.turns += 1;
@@ -799,6 +802,7 @@ async function orchestrateAdmittedAssistantTurn(
   convStore.setStreamingWorkTimerStartedAt(convId, workTimerStartedAt);
   convStore.initStreamingState(convId);
   convStore.setStreamingCommittedMessageCount(convId, storedMessageCount(conv.messages));
+  if (!manualCompaction) convStore.setStreamingTurn(convId, String(turnPromptStartedAt ?? ""), turnShownBefore);
 
   // ── Instant steering ──────────────────────────────────────────────
   // Queued user steering should reach the model now rather than at the next
@@ -1026,6 +1030,7 @@ async function orchestrateAdmittedAssistantTurn(
     workTimerStartedAt,
     generationThroughput,
   });
+  notifyLiveTurnRebased(convId);
 
   // The request surface appends current goal state after the stable system
   // prefix; continuation instructions are ordinary daemon-authored user turns.
@@ -1433,7 +1438,7 @@ async function orchestrateAdmittedAssistantTurn(
   function resetPartialStream(): void {
     partialContent.length = 0;
     convStore.initStreamingState(convId);
-    convStore.setStreamingCommittedBlockCount(convId, agentState.completedBlocks.length);
+    convStore.setStreamingCommittedBlocks(convId, agentState.completedBlocks);
   }
 
   function recordStreamRetry(
@@ -1584,6 +1589,7 @@ async function orchestrateAdmittedAssistantTurn(
       replacePartialContentFromBlocks(blocks);
       convStore.replaceCurrentStreamingBlocks(convId, syncedBlocks);
       server.sendToSubscribers(convId, { type: "streaming_sync", convId, streamSeq: convStore.nextStreamSeq(convId), blocks: syncedBlocks });
+      notifyLiveTurnRebased(convId);
     },
     onSignature(signature) {
       for (let i = partialContent.length - 1; i >= 0; i--) {
@@ -1686,7 +1692,10 @@ async function orchestrateAdmittedAssistantTurn(
       const hadPartial = partialContent.length > 0;
       resetPartialStream();
       // An empty sync drops the client's live text/thinking tail.
-      if (hadPartial) server.sendToSubscribers(convId, { type: "streaming_sync", convId, streamSeq: convStore.nextStreamSeq(convId), blocks: [] });
+      if (hadPartial) {
+        server.sendToSubscribers(convId, { type: "streaming_sync", convId, streamSeq: convStore.nextStreamSeq(convId), blocks: [] });
+        notifyLiveTurnRebased(convId);
+      }
     },
     onRetryWaitStart() {
       convStore.pauseActivity(convId);
@@ -1702,7 +1711,7 @@ async function orchestrateAdmittedAssistantTurn(
       // Without this, partialContent accumulates across rounds and abort would double-persist.
       partialContent.length = 0;
       convStore.clearCurrentStreamingBlocks(convId);
-      convStore.setStreamingCommittedBlockCount(convId, agentState.completedBlocks.length);
+      convStore.setStreamingCommittedBlocks(convId, agentState.completedBlocks);
       // Persist the structurally complete tool-call/result prefix before any
       // potentially long mid-turn compaction or next provider request.
       persistCompletedTurnPrefix();
@@ -2352,6 +2361,7 @@ async function orchestrateAdmittedAssistantTurn(
         manualCompaction,
         ...(billing ? { billing } : {}),
         ...(outcome.limited ? { limited: outcome.limited } : {}),
+        turnBlocks: [...turnShownBefore, ...outcome.blocks],
       });
     }
     // Releases (or, when aborted, cancels) a daemon restart this turn requested.

@@ -10,7 +10,9 @@ list, delete, `route` preferences (keep a batch job off Claude API credits, or
 stop instead of waiting at a usage limit), and reconnecting: after a dropped
 connection or a daemon restart a client reconnects with backoff under its
 session token, takes its conversations back (ephemeral ones too) and sends
-what was in flight again, so a send or a run only takes longer. A daemon
+what was in flight again, so a send or a run only takes longer; a streamed
+reply goes on where it was (turn catch-ups), with no text repeated or missing,
+and `follow()` streams a turn already running after an attach. A daemon
 crash loses ephemeral conversations: a one-shot run starts over, anything else
 fails with code `lost`.
 

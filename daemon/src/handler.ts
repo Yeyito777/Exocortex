@@ -98,7 +98,7 @@ import { cancelSuspendedTurn } from "./suspended-turns";
 import { runChronoCommand } from "./chrono-commands";
 import { inlineLongSleepStartedAt } from "@exocortex/shared/chrono";
 import { configureClaudeCodeSessions } from "./providers/anthropic/session";
-import { abandonAppCreate, appConversationInfo, appConversationOwner, appTitleFromPrompt, attachAppConversation, checkAppToolsForModel, configureAppApi, dropTurnAwait, endAppConversation, endAppSession, ensureAppFolder, finishAppRun, holdAppCommandUntilReady, listAppConversations, markAppApiReady, parseAppCreate, registerAppCreate, registerTurnAwait, setAppConversationOwner, shutdownAppConversations, welcomeAppClient, type AppCreateSpec } from "./app-api";
+import { abandonAppCreate, appConversationInfo, appConversationOwner, appTitleFromPrompt, attachAppConversation, checkAppToolsForModel, configureAppApi, dropTurnAwait, endAppConversation, endAppSession, ensureAppFolder, finishAppRun, holdAppCommandUntilReady, listAppConversations, markAppApiReady, parseAppCreate, registerAppCreate, registerTurnAwait, repeatedTurnResult, setAppConversationOwner, shutdownAppConversations, welcomeAppClient, type AppCreateSpec } from "./app-api";
 import { getAppRecord, isAppConversation, isEphemeralConversation, isHiddenConversation, touchAppConversation } from "./app-registry";
 import { appToolBroker } from "./app-tools";
 import { addClaudeAccount, claudeLoginCommand, removeClaudeAccount } from "./providers/anthropic/accounts";
@@ -2380,7 +2380,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
               || capability === "client-exec-alive"
               || capability === "history-folded-elision"
               || capability === "history-revisions"
-              || capability === "history-push") client.capabilities.add(capability);
+              || capability === "history-push"
+              || capability === "turn-catchup") client.capabilities.add(capability);
         }
         if (client.capabilities.has("sidebar-digest-sync") && isSidebarDigest(cmd.sidebarDigest)) {
           client.sidebarDigest = cmd.sidebarDigest;
@@ -2858,7 +2859,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             && convStore.hasMessageMetadata(cmd.convId, { startedAt: cmd.startedAt }, "user")) {
           const turnId = String(cmd.startedAt);
           const last = getAppRecord(cmd.convId)?.lastTurnResult;
-          if (last?.turnId === turnId) server.sendTo(client, { ...last, ...(cmd.reqId ? { reqId: cmd.reqId } : {}) });
+          if (last?.turnId === turnId) server.sendTo(client, { ...repeatedTurnResult(client, last), ...(cmd.reqId ? { reqId: cmd.reqId } : {}) });
           else if (convStore.isStreaming(cmd.convId)) registerTurnAwait(client, cmd.reqId, cmd.convId, turnId);
           else server.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message: "That prompt was sent before and its turn's result is no longer known" });
           break;

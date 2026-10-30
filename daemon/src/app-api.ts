@@ -38,7 +38,7 @@ import { readExocortexConfig } from "@exocortex/shared/config";
 import { worktreeName } from "@exocortex/shared/paths";
 import type { AttachAppConversationCommand, ClientCapabilitiesCommand, EndAppSessionCommand, Event, ListAppConversationsCommand, TurnResultEvent } from "./protocol";
 import type { ConnectedClient, DaemonServer } from "./server";
-import type { ProviderId, ModelId, StoredMessage } from "./messages";
+import type { Block, ProviderId, ModelId, StoredMessage } from "./messages";
 import * as convStore from "./conversations";
 import {
   appConversationExpiresAt,
@@ -59,7 +59,7 @@ import {
 } from "./app-registry";
 import { appToolBroker, appToolFor, resolveAppBuiltinTools, validateAppToolDefs } from "./app-tools";
 import { createEphemeralWorkspace, daemonCreatedAppWorkspace, ephemeralWorkspaceRoot, removeAppWorkspace, removeClaudeProjectDir, removeClaudeSessionFiles, sweepEphemeralLeftovers } from "./app-workspaces";
-import { onAssistantTurnEnded, type AssistantTurnEnd } from "./conversation-lifecycle";
+import { onAssistantTurnEnded, onLiveTurnRebased, type AssistantTurnEnd } from "./conversation-lifecycle";
 import { getDaemonShutdownMode } from "./daemon-lifecycle";
 import { setConversationToolResolver } from "./tools/registry";
 import { getModelInfo } from "./providers/registry";
@@ -250,9 +250,12 @@ const clientSessions = new WeakMap<ConnectedClient, AppSession>();
 const owners = new Map<string, AppSession>();
 interface PendingAwait { client: ConnectedClient; reqId: string | undefined; turnId: string }
 const awaits = new Map<string, PendingAwait[]>();
+/** Each app conversation's latest turn's blocks (memory only; lastTurnResult keeps none), for a send again answered from it. */
+const lastTurnBlocks = new Map<string, { turnId: string; blocks: Block[] }>();
 let server: DaemonServer | null = null;
 let sweepTimer: ReturnType<typeof setInterval> | null = null;
 let stopTurnListener: (() => void) | null = null;
+let stopRebaseListener: (() => void) | null = null;
 let shuttingDown = false;
 let graceOverrideMs: number | null = null;
 const SWEEP_INTERVAL_MS = 60_000;
@@ -304,17 +307,40 @@ function ownerWaitMs(convId: string, base: number): number {
   return Math.max(base, session.graceMs - (Date.now() - session.disconnectedAt));
 }
 
-/** Make `client` the owner: it gets the conversation's events and app tool calls. */
+/** Make `client` the owner: it gets the conversation's events (caught up with a running turn) and app tool calls. */
 export function setAppConversationOwner(convId: string, client: ConnectedClient): void {
   owners.set(convId, sessionOf(client));
   server?.subscribe(client, convId);
+  sendTurnCatchup(client, convId);
   appToolBroker.ownerAttached(convId);
+}
+
+function catchesUp(client: ConnectedClient): boolean {
+  return client.capabilities?.has("turn-catchup") === true;
+}
+
+/**
+ * A running turn as it has streamed so far, to an app client that asked for
+ * catch-ups. Sent in the same tick as its subscription (or the event that
+ * rebased the stream), so the stream events after it are exactly the newer ones.
+ */
+function sendTurnCatchup(client: ConnectedClient, convId: string): void {
+  if (!server || !catchesUp(client)) return;
+  const catchup = convStore.getTurnCatchup(convId);
+  if (catchup) server.sendTo(client, { type: "turn_catchup", ...catchup });
+}
+
+/** A turn_result keeps the turn's blocks only for a client that asked for catch-ups. */
+function eventFor(client: ConnectedClient, event: Event): Event {
+  if (event.type !== "turn_result" || !event.blocks || catchesUp(client)) return event;
+  const { blocks: _blocks, ...rest } = event;
+  return rest;
 }
 
 function deliverPending(session: AppSession): void {
   const client = connectedClient(session);
   if (!client) return;
-  for (const event of session.pending.splice(0)) server?.sendTo(client, event);
+  for (const event of session.pending.splice(0)) server?.sendTo(client, eventFor(client, event));
 }
 
 /** Send an event to a conversation's owner, or keep it for the owner's session while it is away. */
@@ -324,7 +350,7 @@ function sendToOwnerSession(convId: string, event: Event, except?: ConnectedClie
   const client = connectedClient(session);
   // While a restart's turns settle the connections are going away: kept for the next daemon.
   if (client && server) {
-    if (client !== except) server.sendTo(client, event);
+    if (client !== except) server.sendTo(client, eventFor(client, event));
     return;
   }
   if (session.anonymous) return;
@@ -348,6 +374,12 @@ function connectSession(session: AppSession, client: ConnectedClient): void {
     server?.subscribe(client, convId);
     appToolBroker.ownerAttached(convId);
   }
+}
+
+/** A session's running turns, to its connection: after its welcome and what it missed, in the tick it subscribed. */
+function catchUpSession(session: AppSession): void {
+  const client = connectedClient(session);
+  if (client) for (const convId of ownedBy(session)) sendTurnCatchup(client, convId);
 }
 
 /** A session lost its connection: its ephemeral conversations wait out its grace. */
@@ -459,6 +491,8 @@ export function buildTurnResult(end: AssistantTurnEnd): TurnResultEvent {
 function onTurnEnded(end: AssistantTurnEnd): void {
   if (end.manualCompaction || end.suspended || (end.aborted && end.daemonRestart)) return;
   const result = buildTurnResult(end);
+  // The whole turn, for clients that follow its stream; never kept in lastTurnResult.
+  const withBlocks: TurnResultEvent = end.turnBlocks ? { ...result, blocks: [...end.turnBlocks] } : result;
   const list = awaits.get(end.convId) ?? [];
   const waiting = list.filter(entry => entry.turnId === result.turnId);
   if (waiting.length > 0) {
@@ -467,16 +501,23 @@ function onTurnEnded(end: AssistantTurnEnd): void {
     else awaits.delete(end.convId);
   }
   for (const entry of waiting) {
-    if (!entry.client.socket.destroyed) server?.sendTo(entry.client, { ...result, ...(entry.reqId ? { reqId: entry.reqId } : {}) });
+    if (!entry.client.socket.destroyed) server?.sendTo(entry.client, { ...eventFor(entry.client, withBlocks), ...(entry.reqId ? { reqId: entry.reqId } : {}) });
   }
   const record = getAppRecord(end.convId);
   if (!record) return;
   touchAppConversation(end.convId);
   setLastTurnResult(end.convId, result);
+  if (withBlocks.blocks) lastTurnBlocks.set(end.convId, { turnId: result.turnId, blocks: withBlocks.blocks });
   const owner = appConversationOwner(end.convId);
-  if (!owner || !waiting.some(entry => entry.client === owner)) sendToOwnerSession(end.convId, result);
+  if (!owner || !waiting.some(entry => entry.client === owner)) sendToOwnerSession(end.convId, withBlocks);
   // An app_run's ephemeral conversation ends with its turn, also one a restart replayed.
   if (record.endAfterTurn && !shuttingDown) void finishAppRun(end.convId);
+}
+
+/** A turn's result again, for a send repeated after its turn ended: with its blocks for a client that follows streams. */
+export function repeatedTurnResult(client: ConnectedClient, last: TurnResultEvent): TurnResultEvent {
+  const known = lastTurnBlocks.get(last.convId);
+  return known?.turnId === last.turnId && catchesUp(client) ? { ...last, blocks: known.blocks } : last;
 }
 
 /** The end of an app_run whose ephemeral conversation is not kept. */
@@ -554,9 +595,11 @@ export function welcomeAppClient(client: ConnectedClient, cmd: ClientCapabilitie
     reconnectGraceMs: session.graceMs,
     resumed,
     conversations: ownedBy(session),
+    ...(catchesUp(client) ? { turnCatchup: true } : {}),
   });
-  // What ended while it was away, after the welcome.
+  // What ended while it was away, after the welcome; then where its running turns are.
   deliverPending(session);
+  catchUpSession(session);
   log("info", `app-api: ${client.id} is app ${name}${client.app.version ? ` ${client.app.version}` : ""}${resumed ? ` (session resumed, ${ownedBy(session).length} conversation(s))` : ""}`);
 }
 
@@ -696,6 +739,7 @@ export async function endAppConversation(convId: string, reason: AppConversation
   }
   awaits.delete(convId);
   owners.delete(convId);
+  lastTurnBlocks.delete(convId);
   forgetConversationAccount(convId);
   removeAppConversationRecord(convId);
   log("info", `app-api: ended ${record.lifetime} conversation ${convId} of ${record.app} (${reason})`);
@@ -790,6 +834,7 @@ export function handOffAppConversations(): number {
   owners.clear();
   sessions.clear();
   awaits.clear();
+  lastTurnBlocks.clear();
   if (conversations.length === 0 && sessionsToHand.length === 0) return 0;
   const path = handoffPath();
   const tmp = `${path}.${process.pid}.tmp`;
@@ -862,8 +907,10 @@ function restoreHandedOff(): Set<string> {
       owners.set(convId, session);
       if (session.client) server?.subscribe(session.client, convId);
     }
-    if (session.client) deliverPending(session);
-    else if (ownedBy(session).length > 0 || session.pending.length > 0) armGrace(session);
+    if (session.client) {
+      deliverPending(session);
+      catchUpSession(session);
+    } else if (ownedBy(session).length > 0 || session.pending.length > 0) armGrace(session);
     else sessions.delete(session.id);
   }
   // An ephemeral conversation whose owner had no session (graceless) ends as it would have.
@@ -938,6 +985,7 @@ export function configureAppApi(target: DaemonServer, options: {
   owners.clear();
   sessions.clear();
   awaits.clear();
+  lastTurnBlocks.clear();
   graceOverrideMs = options.reconnectGraceMs ?? null;
   ready = options.holdUntilReady !== true;
   held.length = 0;
@@ -955,6 +1003,12 @@ export function configureAppApi(target: DaemonServer, options: {
   });
   stopTurnListener?.();
   stopTurnListener = onAssistantTurnEnded(onTurnEnded);
+  stopRebaseListener?.();
+  // A stream started or was replaced: its owner catches up again.
+  stopRebaseListener = onLiveTurnRebased((convId) => {
+    const owner = appConversationOwner(convId);
+    if (owner) sendTurnCatchup(owner, convId);
+  });
   if (sweepTimer) clearInterval(sweepTimer);
   sweepTimer = null;
   if (options.sweepIntervalMs !== null) {
@@ -970,6 +1024,8 @@ export function configureAppApi(target: DaemonServer, options: {
     if (sweepTimer) clearInterval(sweepTimer);
     sweepTimer = null;
     for (const session of sessions.values()) if (session.graceTimer) clearTimeout(session.graceTimer);
+    stopRebaseListener?.();
+    stopRebaseListener = null;
     setConversationToolResolver(null);
     appToolBroker.configure(null);
     ready = true;
@@ -983,5 +1039,6 @@ export function configureAppApi(target: DaemonServer, options: {
     owners.clear();
     sessions.clear();
     awaits.clear();
+    lastTurnBlocks.clear();
   };
 }

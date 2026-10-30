@@ -28,6 +28,13 @@ const chunkCounters = new Map<string, number>();
 const streamingBlocks = new Map<string, Block[]>();
 /** Canonical block count in structurally completed rounds of the active turn. */
 const streamingCommittedBlockCounts = new Map<string, number>();
+/** Those blocks themselves, for catching an app client up with the turn (turn_catchup). */
+const streamingCommittedBlocks = new Map<string, Block[]>();
+/**
+ * The turn an assistant job runs: its identity (turn_result.turnId) and the
+ * blocks an earlier job of the same turn showed (one a daemon restart cut off).
+ */
+const streamingTurns = new Map<string, { turnId: string; prefix: Block[] }>();
 /** Exact canonical message count observed by the active partial accumulator. */
 const streamingCommittedMessageCounts = new Map<string, number>();
 /** Whether the current provider response still has a non-canonical partial tail. */
@@ -260,6 +267,8 @@ export function clearActiveJob(convId: string, owner?: AbortController): void {
   connectionWaitLabels.delete(convId);
   streamSequences.delete(convId);
   streamingCommittedBlockCounts.delete(convId);
+  streamingCommittedBlocks.delete(convId);
+  streamingTurns.delete(convId);
   streamingCommittedMessageCounts.delete(convId);
   streamingPendingAssistantOpen.delete(convId);
   lastActivityAt.delete(convId);
@@ -457,6 +466,7 @@ export function resetChunkCounter(convId: string): void {
 export function initStreamingState(convId: string): void {
   streamingBlocks.set(convId, []);
   streamingCommittedBlockCounts.set(convId, 0);
+  streamingCommittedBlocks.set(convId, []);
   streamingPendingAssistantOpen.add(convId);
   liveChangeListener?.(convId);
 }
@@ -474,6 +484,25 @@ export function setStreamingCommittedBlockCount(convId: string, count: number): 
 
 export function getStreamingCommittedBlockCount(convId: string): number {
   return streamingCommittedBlockCounts.get(convId) ?? 0;
+}
+
+/** The structurally completed rounds' blocks (a copy the caller no longer changes), and their count. */
+export function setStreamingCommittedBlocks(convId: string, blocks: Block[]): void {
+  streamingCommittedBlocks.set(convId, blocks);
+  setStreamingCommittedBlockCount(convId, blocks.length);
+}
+
+export function getStreamingCommittedBlocks(convId: string): Block[] {
+  return streamingCommittedBlocks.get(convId) ?? [];
+}
+
+/** The turn the active assistant job runs (see streamingTurns). */
+export function setStreamingTurn(convId: string, turnId: string, prefix: Block[]): void {
+  if (activeJobs.has(convId)) streamingTurns.set(convId, { turnId, prefix });
+}
+
+export function getStreamingTurn(convId: string): { turnId: string; prefix: Block[] } | undefined {
+  return streamingTurns.get(convId);
 }
 
 /** Advance the non-overlapping durable boundary after a canonical append. */

@@ -352,3 +352,118 @@ describe("connecting", () => {
     expect(error.code).toBe("not_running");
   });
 });
+
+describe("following a turn (turn catch-ups)", () => {
+  const numbers = (n: number) => Array.from({ length: n }, (_, i) => `${i + 1} `).join("");
+
+  /** Read a stream to its end: its text, and every event it yielded. */
+  async function drain(stream: AsyncIterable<StreamEvent>): Promise<{ text: string; events: StreamEvent[] }> {
+    const events: StreamEvent[] = [];
+    for await (const event of stream) events.push(event);
+    return { text: events.flatMap(e => e.type === "text" ? [e.text] : []).join(""), events };
+  }
+
+  test("a stream that loses its connection mid-reply shows the whole reply exactly once", async () => {
+    const { socket } = await fake(["--chunk-delay-ms", "8"]);
+    const c = await client(socket);
+    expect(c.welcome.turnCatchup).toBe(true);
+    const conv = await c.conversation();
+    const stream = conv.stream("slow 40");
+    const seen: string[] = [];
+    const reading = (async () => { for await (const event of stream) if (event.type === "text") seen.push(event.text); })();
+    await until(() => seen.join("").length > 10);
+    // The connection drops; the reply goes on while the client is away (refused for a moment).
+    await admin(socket, { type: "fake_drop", refuseMs: 150 });
+    await reading;
+    expect(seen.join("")).toBe(numbers(40));
+    expect((await stream.result).text).toBe(numbers(40));
+  });
+
+  test("a graceful daemon restart mid-reply: the replay goes on from what was shown, nothing twice", async () => {
+    const { socket } = await fake(["--chunk-delay-ms", "8"]);
+    const c = await client(socket);
+    const conv = await c.conversation({ lifetime: "ephemeral" });
+    const stream = conv.stream("slow 40");
+    const events: StreamEvent[] = [];
+    const reading = (async () => { for await (const event of stream) events.push(event); })();
+    await until(() => events.length > 5);
+    await admin(socket, { type: "fake_restart", downMs: 200 });
+    await reading;
+    expect(events.some(e => e.type === "reset")).toBe(false);
+    expect(events.flatMap(e => e.type === "text" ? [e.text] : []).join("")).toBe(numbers(40));
+    // The turn as the daemon has it: what the stream showed before the restart, then the replay.
+    expect((await stream.result).raw.blocks.map((b: any) => b.text).join("")).toBe(numbers(40));
+  });
+
+  test("a replay that sends the turn again from its start: the stream waits until it passes what was shown", async () => {
+    const { socket } = await fake(["--chunk-delay-ms", "8", "--replay-from-start"]);
+    const c = await client(socket);
+    const conv = await c.conversation({ lifetime: "ephemeral" });
+    const stream = conv.stream("slow 40");
+    const events: StreamEvent[] = [];
+    const reading = (async () => { for await (const event of stream) events.push(event); })();
+    await until(() => events.length > 5);
+    await admin(socket, { type: "fake_restart", downMs: 200 });
+    await reading;
+    expect(events.some(e => e.type === "reset")).toBe(false);
+    expect(events.flatMap(e => e.type === "text" ? [e.text] : []).join("")).toBe(numbers(40));
+  });
+
+  test("a turn that ends while the client is away: the held turn_result completes its stream", async () => {
+    const { socket } = await fake(["--chunk-delay-ms", "5"]);
+    const c = await client(socket);
+    const conv = await c.conversation();
+    const stream = conv.stream("slow 30");
+    const seen: string[] = [];
+    const reading = (async () => { for await (const event of stream) if (event.type === "text") seen.push(event.text); })();
+    await until(() => seen.length >= 3);
+    const before = seen.length;
+    await admin(socket, { type: "fake_drop", refuseMs: 600 });
+    await reading;
+    expect(seen.join("")).toBe(numbers(30));
+    // The rest came in one piece, from the held turn_result.
+    expect(seen.length).toBeLessThan(30);
+    expect(seen.length).toBeGreaterThan(before);
+  });
+
+  test("follow() streams a turn running when this client attached, from its start", async () => {
+    const { socket } = await fake(["--chunk-delay-ms", "8"]);
+    const a = await client(socket);
+    const conv = await a.conversation({ lifetime: "temporary" });
+    const sent = conv.stream("slow 30");
+    const seenA: string[] = [];
+    const readingA = (async () => { for await (const event of sent) if (event.type === "text") seenA.push(event.text); })();
+    await until(() => seenA.join("").length > 10);
+    const b = await client(socket);
+    const attached = await b.attach(conv.id);
+    expect(attached.info.streaming).toBe(true);
+    const followed = attached.follow()!;
+    expect(followed).not.toBeNull();
+    const [mine, theirs] = await Promise.all([drain(followed), readingA.then(() => seenA.join(""))]);
+    expect(mine.text).toBe(numbers(30));
+    expect(mine.events.some(e => e.type === "reset")).toBe(false);
+    // The sender no longer owns it; its stream still ends whole, from turn_result.blocks.
+    expect(theirs).toBe(numbers(30));
+    expect((await followed.result).text).toBe(numbers(30));
+    expect(attached.follow()).toBeNull();
+  });
+
+  test("text the daemon replaces (a provider retry) is announced with a reset, then shown anew", async () => {
+    const { socket } = await fake();
+    const c = await client(socket);
+    const conv = await c.conversation();
+    const { events } = await drain(conv.stream("retry"));
+    expect(events).toEqual([{ type: "text", text: "draft" }, { type: "reset" }, { type: "text", text: "final " }, { type: "text", text: "answer" }]);
+  });
+
+  test("a daemon without catch-ups: streams work as before and follow() has nothing to follow", async () => {
+    const { socket } = await fake(["--no-turn-catchup", "--chunk-delay-ms", "5"]);
+    const c = await client(socket);
+    expect(c.welcome.turnCatchup).toBeUndefined();
+    const conv = await c.conversation();
+    const stream = conv.stream("slow 10");
+    await until(() => conv.info !== undefined);
+    expect(conv.follow()).toBeNull();
+    expect((await drain(stream)).text).toBe(numbers(10));
+  });
+});

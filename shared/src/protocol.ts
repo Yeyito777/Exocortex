@@ -325,7 +325,7 @@ export interface PrewarmConversationCommand {
  * and against the client's liveBase, and leaves the blocks out of a streaming
  * conversation's subscription catch-up (the loaded event has them).
  */
-export type ClientCapability = "targeted-unwind" | "sidebar-reorder-delta" | "sidebar-state-patch" | "history-block-pagination" | "token-stats-on-demand" | "sidebar-digest-sync" | "update-status-push" | "sidebar-incremental" | "client-exec-alive" | "history-folded-elision" | "history-revisions" | "history-push";
+export type ClientCapability = "targeted-unwind" | "sidebar-reorder-delta" | "sidebar-state-patch" | "history-block-pagination" | "token-stats-on-demand" | "sidebar-digest-sync" | "update-status-push" | "sidebar-incremental" | "client-exec-alive" | "history-folded-elision" | "history-revisions" | "history-push" | "turn-catchup";
 
 /** Answered with token_stats carrying the same reqId. Older daemons answer with an Unknown command error. */
 export interface GetTokenStatsCommand {
@@ -2854,6 +2854,8 @@ export interface AppWelcomeEvent {
   resumed?: boolean;
   /** Conversations the session owns. */
   conversations?: string[];
+  /** The connection declared the turn-catchup capability and gets turn_catchup events (and turn_result.blocks). */
+  turnCatchup?: boolean;
 }
 
 export interface AppSessionEndedEvent {
@@ -2909,6 +2911,39 @@ export interface TurnResultEvent {
    * `resetAt`: when the soonest one resets (ms), when known.
    */
   limited?: { resetAt: number | null };
+  /**
+   * With turn-catchup: the whole turn as its streams built it (every stream
+   * of it, also one before a daemon restart). Not in lastTurnResult.
+   */
+  blocks?: Block[];
+}
+
+/**
+ * A turn in progress as it has streamed so far, for an app client with the
+ * turn-catchup capability (docs/app-api.md, "Catching up with a turn"). Sent
+ * when the client becomes the conversation's owner or takes its session back
+ * while a turn runs, when a turn's stream starts (also a replay after a daemon
+ * restart), and after a streaming_sync replaced part of what was streamed.
+ * It holds every event of the current stream up to and including `streamSeq`;
+ * the stream events that follow it on the connection have higher streamSeqs,
+ * until a streaming_started (snapshotKind "start") begins the next stream.
+ */
+export interface TurnCatchupEvent {
+  type: "turn_catchup";
+  convId: string;
+  /** As turn_result.turnId: the startedAt of the prompt that started the turn. */
+  turnId: string;
+  /** The current stream's sequence number this catch-up is as of. */
+  streamSeq: number;
+  /** The turn so far: its text, thinking, tool_call and tool_result blocks. */
+  blocks: Block[];
+  /**
+   * How many of `blocks` came before the current stream (a stream of the same
+   * turn before a daemon restart). This stream's message_complete holds the rest.
+   */
+  streamOffset: number;
+  /** When the current stream started. */
+  startedAt: number;
 }
 
 export interface AppConversationAttachedEvent {
@@ -3034,6 +3069,7 @@ export type Event =
   | AppToolCallEvent
   | AppToolCancelEvent
   | TurnResultEvent
+  | TurnCatchupEvent
   | AppConversationAttachedEvent
   | AppConversationsListEvent
   | ErrorEvent;

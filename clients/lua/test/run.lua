@@ -337,6 +337,118 @@ end)
 -- ── runner ──
 
 local failed, ran = 0, 0
+-- ── following a turn (turn catch-ups) ──
+
+local function numbers(n)
+  local out = {}
+  for i = 1, n do out[i] = i .. " " end
+  return table.concat(out)
+end
+
+--- Collect a turn's stream events through on_event while it runs; returns the list and a text() reader.
+local function recorder()
+  local events = {}
+  local function text()
+    local out = {}
+    for _, e in ipairs(events) do if e.type == "text" then table.insert(out, e.text) end end
+    return table.concat(out)
+  end
+  return events, text
+end
+
+test("a stream that loses its connection mid-reply shows the whole reply exactly once", function(f, c)
+  eq(c.welcome.turnCatchup, true)
+  local conv = await(c.conversation, c, {})
+  local events, text = recorder()
+  local result
+  conv:send("slow 40", { on_event = function(e) table.insert(events, e) end }, function(e, r) result = e or r end)
+  until_(function() return #text() > 10 end)
+  await(admin, f, { type = "fake_drop", refuseMs = 150 })
+  until_(function() return result ~= nil end, 15000)
+  eq(text(), numbers(40))
+  eq(result.text, numbers(40))
+end, { "--chunk-delay-ms", "8" })
+
+test("a graceful daemon restart mid-reply: the replay goes on from what was shown, nothing twice", function(f, c)
+  local conv = await(c.conversation, c, { lifetime = "ephemeral" })
+  local events, text = recorder()
+  local stream = conv:stream("slow 40")
+  local done = false
+  exo.async(function()
+    for e in stream:iter() do table.insert(events, e) end
+    done = true
+  end)
+  until_(function() return #events > 5 end)
+  await(admin, f, { type = "fake_restart", downMs = 200 })
+  until_(function() return done end, 15000)
+  for _, e in ipairs(events) do if e.type == "reset" then error("unexpected reset") end end
+  eq(text(), numbers(40))
+end, { "--chunk-delay-ms", "8" })
+
+test("a replay that sends the turn again from its start: the stream waits until it passes what was shown", function(f, c)
+  local conv = await(c.conversation, c, { lifetime = "ephemeral" })
+  local events, text = recorder()
+  local result
+  conv:send("slow 40", { on_event = function(e) table.insert(events, e) end }, function(e, r) result = e or r end)
+  until_(function() return #events > 5 end)
+  await(admin, f, { type = "fake_restart", downMs = 200 })
+  until_(function() return result ~= nil end, 15000)
+  for _, e in ipairs(events) do if e.type == "reset" then error("unexpected reset") end end
+  eq(text(), numbers(40))
+end, { "--chunk-delay-ms", "8", "--replay-from-start" })
+
+test("a turn that ends while the client is away: the held turn_result completes its stream", function(f, c)
+  local conv = await(c.conversation, c, {})
+  local deltas = {}
+  local result
+  conv:send("slow 30", { on_text = function(d) table.insert(deltas, d) end }, function(e, r) result = e or r end)
+  until_(function() return #deltas >= 3 end)
+  await(admin, f, { type = "fake_drop", refuseMs = 600 })
+  until_(function() return result ~= nil end, 15000)
+  eq(table.concat(deltas), numbers(30))
+  if #deltas >= 30 then error("expected the rest in one piece from the held turn_result") end
+end, { "--chunk-delay-ms", "5" })
+
+test("follow() streams a turn running when this client attached, from its start", function(f, a)
+  local conv = await(a.conversation, a, { lifetime = "temporary" })
+  local events_a, text_a = recorder()
+  local result_a
+  conv:send("slow 30", { on_event = function(e) table.insert(events_a, e) end }, function(e, r) result_a = e or r end)
+  until_(function() return #text_a() > 10 end)
+  local b = await(exo.connect, { app = "test-app", socket = f.socket })
+  local attached = await(b.attach, b, conv.id, {})
+  eq(attached.info.streaming, true)
+  local followed = attached:follow()
+  assert(followed, "follow() returned nil")
+  local text = ""
+  for e in followed:iter() do
+    if e.type == "reset" then error("unexpected reset") end
+    if e.type == "text" then text = text .. e.text end
+  end
+  eq(text, numbers(30))
+  until_(function() return result_a ~= nil end, 15000)
+  eq(text_a(), numbers(30))
+  eq(attached:follow(), nil)
+  b:close()
+end, { "--chunk-delay-ms", "8" })
+
+test("text the daemon replaces (a provider retry) is announced with a reset, then shown anew", function(f, c)
+  local conv = await(c.conversation, c, {})
+  local seen = {}
+  for e in conv:stream("retry"):iter() do table.insert(seen, e.type == "reset" and "reset" or e.text) end
+  eq(seen, { "draft", "reset", "final ", "answer" })
+end)
+
+test("a daemon without catch-ups: streams work as before and follow() has nothing to follow", function(f, c)
+  eq(c.welcome.turnCatchup, nil)
+  local conv = await(c.conversation, c, {})
+  local stream = conv:stream("slow 10")
+  eq(conv:follow(), nil)
+  local text = ""
+  for e in stream:iter() do if e.type == "text" then text = text .. e.text end end
+  eq(text, numbers(10))
+end, { "--no-turn-catchup", "--chunk-delay-ms", "5" })
+
 for _, t in ipairs(tests) do
   if not filter or t.name:find(filter, 1, true) then
     ran = ran + 1

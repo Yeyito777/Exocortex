@@ -12,7 +12,7 @@ import type { Conversation, ProviderId, ModelId, EffortLevel, ConversationSummar
 import { CONTEXT_COMPACTION_FINISHED_KIND, isQueuedObligation, DEFAULT_MODEL_BY_PROVIDER, DEFAULT_PROVIDER_ID, cachedValidatedHistoryPrefixHashBeforeMessage, createConversation, countConversationMessages, createMessageMetadata, createModelVisibleSystemNotice, createStoredUserContextCheckpoint, createStoredUserMessage, historyPrefixHash, isRealUserMessage, isReplayHistoryMessage, isToolResultMessage, isValidActiveContextCached, rememberValidatedActiveContext, rewindActiveContextToHistoryCount, rewindValidatedActiveContextToHistoryCount, topUnpinnedOrder, bottomPinnedOrder, summarizeConversation, type StoredUserContextCheckpoint, validatedActiveContextCompactionHistoryCount } from "./messages";
 import type { ImageAttachment } from "@exocortex/shared/messages";
 import { applyGoalStatus } from "@exocortex/shared/goals";
-import type { MoveSidebarItemsOptions, SidebarItemOrderUpdate, TrimMode, ToolOutputInfo } from "./protocol";
+import type { MoveSidebarItemsOptions, SidebarItemOrderUpdate, TrimMode, ToolOutputInfo, TurnCatchupEvent } from "./protocol";
 import { trimConversationInPlace, type TrimConversationResult } from "./conversation-trim";
 import { buildDisplayData, collectToolOutputs, type ConversationDisplayData, type DisplayEntry } from "./display";
 import { summarizeTool } from "./tools/registry";
@@ -50,7 +50,7 @@ export {
   setActiveSteerHandler, clearActiveSteerHandler, steerActiveTurn,
   resetChunkCounter,
   initStreamingState, getCurrentStreamingBlocks, replaceCurrentStreamingBlocks,
-  setStreamingCommittedBlockCount, getStreamingCommittedBlockCount,
+  setStreamingCommittedBlockCount, getStreamingCommittedBlockCount, setStreamingCommittedBlocks, setStreamingTurn,
   setStreamingCommittedMessageCount, getStreamingCommittedMessageCount,
   pushStreamingBlock, appendToStreamingBlock, clearCurrentStreamingBlocks,
   requestGoalContinuationAfterStream, consumeGoalContinuationAfterStream, clearGoalContinuationAfterStream,
@@ -3119,6 +3119,44 @@ export function getPendingStreamSnapshot(id: string): PendingStreamSnapshot | nu
       generationThroughput: streaming.getStreamingGenerationThroughput(id),
     },
     committedMessageCount: storedMessageCount(conv.messages),
+  };
+}
+
+/** Tool results named after their calls: the history leaves their tool name out. */
+function namedToolResults(blocks: Block[]): Block[] {
+  const names = new Map<string, string>();
+  return blocks.map((block) => {
+    if (block.type === "tool_call") names.set(block.toolCallId, block.toolName);
+    return block.type === "tool_result" && !block.toolName && names.has(block.toolCallId)
+      ? { ...block, toolName: names.get(block.toolCallId)! }
+      : block;
+  });
+}
+
+/** The blocks of a turn's messages after its prompt at `promptIndex`, as the history shows them. */
+export function turnBlocksAfter(conv: Conversation, promptIndex: number): Block[] {
+  const data = buildDisplayData(conv.id, conv.provider, conv.model, conv.effort, conv.fastMode ?? false,
+    conv.messages.slice(promptIndex + 1), null, summarizeTool);
+  return namedToolResults(data.entries.flatMap(entry => entry.type === "ai" ? entry.blocks : []));
+}
+
+/**
+ * The running turn as it has streamed so far, for an app client catching up
+ * (turn_catchup): what an earlier job of the turn showed, the current job's
+ * completed rounds, and its live round. Every stream event updates this state
+ * in the tick it is sent, so it holds exactly the events up to `streamSeq`.
+ */
+export function getTurnCatchup(id: string): Omit<TurnCatchupEvent, "type"> | null {
+  const turn = streaming.getStreamingTurn(id);
+  if (!turn || streaming.getActiveJobKind(id) !== "assistant") return null;
+  const job = [...streaming.getStreamingCommittedBlocks(id), ...(streaming.getCurrentStreamingBlocks(id) ?? [])];
+  return {
+    convId: id,
+    turnId: turn.turnId,
+    streamSeq: streaming.getStreamSeq(id),
+    blocks: namedToolResults([...turn.prefix, ...job]),
+    streamOffset: turn.prefix.length,
+    startedAt: streaming.getStreamingStartedAt(id) ?? Date.now(),
   };
 }
 

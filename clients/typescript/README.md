@@ -28,7 +28,9 @@ await exo.close();
 - `client.conversation(opts)` → `Conversation`: `send(prompt)` resolves the
   `TurnResult` (`text`, `stopReason`, `error`, `usage`); `stream(prompt)` is
   an async iterator of `text` / `thinking` / `tool_call` / `tool_result`
-  events with `.text()` and `.result`; `abort()`, `setTools()`, `delete()`.
+  events with `.text()` and `.result`; `follow()` streams a turn already
+  running (after `attach`, or a queued message's) from its start, or is
+  null; `abort()`, `setTools()`, `delete()`.
   Options: `lifetime`, `idleTtlMs`, `title`, `system` (text, or
   `{ text, base }`), `tools: { builtin, app }`, `provider`, `model`, `effort`,
   `cwd`, `route: { credits: "allow" | "never", whenLimited: "wait" | "error" }`.
@@ -42,6 +44,12 @@ await exo.close();
   (e.g. after your program restarts); `client.list({ includeSaved, allApps })`;
   `client.delete(convId)`; `client.onEvent(fn)` sees every raw event;
   `await client.close()` ends the session's ephemeral conversations.
+- Streams never repeat or miss text: after a reconnect, a daemon restart or an
+  attach the daemon catches the client up with the running turn
+  (`turn_catchup`), and a stream shows only what it had not. If the daemon
+  replaces text it streamed (a provider retry), the stream yields a `reset`
+  event, then the turn again from its start. Against a daemon without catch-ups
+  (`client.welcome.turnCatchup` unset) streams behave as before.
 - A dropped connection or daemon restart is a delay, not an error: the client
   reconnects (for up to `reconnectTimeoutMs`, default 300 s) under its
   session (`client.session`), takes every conversation back, ephemeral ones
