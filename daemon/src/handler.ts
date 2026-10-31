@@ -3173,6 +3173,17 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
 
       // ── Sidebar/list commands ─────────────────────────────────────
 
+      case "reload_store_changes": {
+        const before = convStore.listSidebarState();
+        const result = convStore.reloadStoreChanges(cmd.changed, cmd.removed);
+        broadcastSidebarStatePatch(before);
+        for (const id of result.changed) {
+          if (server.hasSubscribers(id)) broadcastConversationHistoryUpdated(server, id);
+        }
+        server.sendTo(client, { type: "store_changes_reloaded", reqId: cmd.reqId, ...result });
+        break;
+      }
+
       case "list_conversations": {
         server.sendTo(client, conversationsListFor(client, cmd.reqId));
         server.sendTo(client, { type: "queue_updated", messages: queuedMessagesFor(client) });

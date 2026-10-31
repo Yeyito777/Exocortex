@@ -36,6 +36,17 @@ export type { ProviderId, ProviderInfo, ModelId, EffortLevel, Block, MessageMeta
  * update-status-push capability, once known) and the large conversations_list,
  * queue_updated and connectivity_status. See docs/daemon-ipc.md.
  */
+/**
+ * Another process committed these conversations to the store: read them again.
+ * The backup job on a second machine sends it after each sync.
+ */
+export interface ReloadStoreChangesCommand {
+  type: "reload_store_changes";
+  reqId?: string;
+  changed: string[];
+  removed: string[];
+}
+
 export interface PingCommand {
   type: "ping";
   reqId?: string;
@@ -1554,6 +1565,7 @@ export interface ListAppConversationsCommand {
 
 export type Command =
   | PingCommand
+  | ReloadStoreChangesCommand
   | GetTokenStatsCommand
   | ProviderProxyCommand
   | ProviderProxyLinkCommand
@@ -1655,6 +1667,15 @@ export type Command =
   | ListAppConversationsCommand;
 
 // ── Events (daemon → client) ────────────────────────────────────────
+
+export interface StoreChangesReloadedEvent {
+  type: "store_changes_reloaded";
+  reqId?: string;
+  changed: string[];
+  removed: string[];
+  /** Conversations with work in flight, left as they are. */
+  skipped: string[];
+}
 
 export interface PongEvent {
   type: "pong";
@@ -2974,6 +2995,7 @@ export type Event =
   | PongEvent
   | UpdateStatusEvent
   | ProviderProxiesEvent
+  | StoreChangesReloadedEvent
   | ProviderProxyLinkEvent
   | ConversationDefaultsEvent
   | UserMacrosEvent

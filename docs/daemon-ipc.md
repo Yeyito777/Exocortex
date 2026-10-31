@@ -64,6 +64,12 @@ daemon's own OpenAI login and answer `transcription_result` /
 provider credential is ever handed to a tool process, its argv, environment or
 command text.
 
+`reload_store_changes` (`changed`, `removed`: conversation IDs) tells the daemon
+that another process committed those conversations to its SQLite store, for
+example a backup job replicating from another machine. It reads them and the
+folders again, updates clients, and answers `store_changes_reloaded`; a
+conversation with work in flight stays as it is and is listed as `skipped`.
+
 `provider_proxy` lists, enables or disables [/proxy](provider-proxy.md);
 daemons also speak the `provider_proxy_*` link messages to each other over
 `exocortexd proxy`.
