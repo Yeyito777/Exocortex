@@ -78,7 +78,7 @@ import { runWithNetworkWait } from "./network-wait";
 import { runWithProxyLinkWait, type ProxyLinkWaitDeps, type ProxyLinkWaitOptions } from "./proxy-link-wait";
 import { isUsageLimitError, runWithUsageLimitWait, UsageLimitedError, type UsageAvailability } from "./usage-limit-wait";
 import { conversationAllowsApiCredits, conversationWaitsForUsageLimits, isAppConversation } from "./app-registry";
-import { claudeUsageAvailability } from "./providers/anthropic/availability";
+import { claudeProxyFallbackInMs, claudeUsageAvailability } from "./providers/anthropic/availability";
 import { isProviderProxied, providerProxyConnect, providerProxyRoute } from "./provider-proxy/route";
 import { classifyNetworkFailureMessage } from "./providers/errors";
 import { getModelInfo, cyberAccessProgramForSelection, refreshProviders } from "./providers/registry";
@@ -947,6 +947,7 @@ async function orchestrateAdmittedAssistantTurn(
     const proxyLink: ProxyLinkWaitDeps = ext.proxyLinkWait ?? {
       alias: () => providerProxyRoute(provider)?.alias ?? null,
       connect: (signal) => providerProxyConnect(provider as Parameters<typeof providerProxyConnect>[0], signal),
+      ...(provider === "anthropic" ? { fallbackInMs: () => claudeProxyFallbackInMs(convId) } : {}),
     };
     return runWithUsageLimitWait(ac, () => runWithNetworkWait(ac, connectivity, () => runWithProxyLinkWait(ac, attempt, proxyLink, {
       start: (alias) => showProviderWait(`Waiting for network / ${alias}…`),

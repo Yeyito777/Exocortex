@@ -48,7 +48,7 @@ function fakeLink(overrides: Partial<FakeLink> = {}): FakeLink {
 
 const dirs: string[] = [];
 const forwarders: ProviderProxyForwarder[] = [];
-function start(linkFor: (provider: string) => FakeLink | null, stateFile?: string, hold: { linkHoldMs?: number; linkHoldRetryDelaysMs?: number[] } = {}): ProviderProxyForwarder {
+function start(linkFor: (provider: string) => FakeLink | null, stateFile?: string, hold: { linkHoldMs?: number; linkHoldRetryDelaysMs?: number[]; fallbackInMs?: () => number | null } = {}): ProviderProxyForwarder {
   const forwarder = new ProviderProxyForwarder({ linkFor: provider => linkFor(provider) as unknown as ProviderProxyLink | null, ...(stateFile ? { stateFile } : {}), ...hold });
   forwarder.start();
   forwarders.push(forwarder);
@@ -58,6 +58,32 @@ function start(linkFor: (provider: string) => FakeLink | null, stateFile?: strin
 afterEach(() => {
   for (const forwarder of forwarders.splice(0)) forwarder.stop();
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+describe("a request while the turn has somewhere else to run", () => {
+  const post = (forwarder: ProviderProxyForwarder) => fetch(`${forwarder.baseUrl("anthropic")}/v1/messages`, { method: "POST", body: "{}", headers: { authorization: `Bearer ${forwarder.secret}` } });
+
+  test("is held only until the fallback is due", async () => {
+    const down = fakeLink({ ready: async () => { throw new ProviderProxyUnavailableError("The SSH connection to whale was lost (exit 255)."); } });
+    const forwarder = start(() => down, undefined, { linkHoldMs: 60_000, linkHoldRetryDelaysMs: [10], fallbackInMs: () => 40 });
+    const started = Date.now();
+    const response = await post(forwarder);
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(response.status).toBe(503);
+    expect(response.headers.get("x-should-retry")).toBe("false");
+    expect(await response.text()).toContain("Exocortex /proxy (link down): The SSH connection to whale was lost");
+  });
+
+  test("a failure that will not clear up reads as link down, for the turn to move", async () => {
+    const down = fakeLink({ ready: async () => { throw new ProviderProxyUnavailableError("Permission denied (publickey).", false); } });
+    const forwarder = start(() => down, undefined, { fallbackInMs: () => 0 });
+    expect(await (await post(forwarder)).text()).toContain("Exocortex /proxy (link down): Permission denied");
+  });
+
+  test("a healthy link is not held to anything", async () => {
+    const forwarder = start(() => fakeLink(), undefined, { fallbackInMs: () => null });
+    expect((await post(forwarder)).status).toBe(200);
+  });
 });
 
 describe("provider proxy forwarder", () => {

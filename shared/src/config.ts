@@ -121,6 +121,12 @@ export interface AnthropicApiCreditFallbackConfig {
   strategy?: "expiry" | "order";
   /** A key with less left than this (USD, default 2) is used only when every key has. */
   minBalanceUsd?: number;
+  /**
+   * While Claude goes through /proxy and the proxy cannot serve it, run turns
+   * directly on these keys (docs/provider-proxy.md). `afterSeconds`: how long
+   * the link must stay down first (default 60). Unset: turns wait for the link.
+   */
+  whenProxyDown?: { afterSeconds?: number };
 }
 
 export interface AnthropicApiCreditKeyConfig {

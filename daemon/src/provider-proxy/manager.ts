@@ -5,7 +5,9 @@
  * The setting persists in config.json (`providers.<id>.proxy.ssh`), so a
  * restarted daemon proxies the same providers. A proxied provider never falls
  * back to its direct API: while the link is down its requests fail like any
- * network error, with the reason.
+ * network error, with the reason. The one exception is opt-in: Claude with
+ * `apiCreditFallback.whenProxyDown`, whose turns then run on this machine's
+ * API-credit keys (account-pool.ts).
  */
 
 import { hostname } from "node:os";
@@ -25,6 +27,8 @@ import {
 import type { ClaudeAccountsRemoteInfo } from "@exocortex/shared/protocol";
 import type { UsageData } from "../messages";
 import { AuthError } from "../providers/errors";
+import { proxyDownCreditInfo, proxyDownCreditInMs } from "../providers/anthropic/account-pool";
+import { apiCreditConfig } from "../providers/anthropic/api-credits";
 import { log } from "../log";
 import { ProviderProxyForwarder } from "./forwarder";
 import { describeRemoteHost, ProviderProxyLink, ProviderProxyUnavailableError } from "./link";
@@ -36,6 +40,7 @@ import {
   proxiedConversationName,
   setProviderProxyRoute,
   setProxiedUsage,
+  type ProviderProxyOutage,
 } from "./route";
 
 const PROVIDER_LABELS: Record<ProxyableProviderId, string> = { openai: "OpenAI", anthropic: "Anthropic" };
@@ -45,6 +50,8 @@ const SET_TIMEOUT_MS = 30_000;
 const READY_TIMEOUT_MS = 20_000;
 /** A link no provider uses closes once its streams finish, or after this long. */
 const RETIRE_GRACE_MS = 15 * 60_000;
+/** A remote that was not logged in is asked again at most this often. */
+const REMOTE_RECHECK_MS = 30_000;
 
 export interface ProviderProxyManagerOptions {
   spawnProcess?: SpawnSshProcess;
@@ -60,6 +67,8 @@ export interface ProviderProxyManagerOptions {
   onAccountsChange?: () => void;
   reconnectDelaysMs?: readonly number[];
   helloTimeoutMs?: number;
+  /** Overrides REMOTE_RECHECK_MS (tests). */
+  remoteRecheckMs?: number;
 }
 
 let activeManager: ProviderProxyManager | null = null;
@@ -109,6 +118,9 @@ export class ProviderProxyManager {
   private readonly readConfig: () => ExocortexConfig;
   private readonly updateConfig: (mutator: (config: ExocortexConfig) => void) => void;
   private started = false;
+  /** Fires when an outage becomes long enough for this machine's API-credit keys. */
+  private outageTimer: ReturnType<typeof setTimeout> | null = null;
+  private remoteCheckedAt = 0;
   private listeners: Pick<ProviderProxyManagerOptions, "onChange" | "onRouteChange" | "onAccountsChange">;
 
   constructor(private readonly options: ProviderProxyManagerOptions = {}) {
@@ -121,6 +133,7 @@ export class ProviderProxyManager {
         const alias = this.proxies.get(provider);
         return alias ? this.links.get(alias) ?? null : null;
       },
+      fallbackInMs: provider => provider === "anthropic" ? proxyDownCreditInMs() : null,
       onAccountMove: (conversation, move) => {
         const prefix = proxiedConversationName("");
         if (conversation.startsWith(prefix)) emitProxiedClaudeMove(conversation.slice(prefix.length), move);
@@ -144,6 +157,7 @@ export class ProviderProxyManager {
       ready: (provider, signal) => this.ready(provider, signal),
       connect: async (provider, signal) => { await this.linkFor(provider)?.waitReady(READY_TIMEOUT_MS, signal); },
       remoteStatus: (provider) => this.remoteStatus(provider),
+      outage: (provider) => this.outage(provider),
       remoteSupports: (provider, feature) => this.linkFor(provider)?.features.includes(feature) ?? false,
       remoteAccounts: () => this.remoteAccounts(),
       refreshUsage: (provider) => this.refreshUsage(provider),
@@ -162,6 +176,8 @@ export class ProviderProxyManager {
   }
 
   stop(): void {
+    if (this.outageTimer) clearTimeout(this.outageTimer);
+    this.outageTimer = null;
     configureProviderProxyHooks(null);
     for (const provider of this.proxies.keys()) setProviderProxyRoute(provider, null);
     for (const timer of this.retiring.values()) clearInterval(timer);
@@ -234,6 +250,7 @@ export class ProviderProxyManager {
         ...(message ? { message } : {}),
         ...(connected && link?.host ? { remoteHost: describeRemoteHost(link.host, alias) } : {}),
         ...(connected && remote ? { remoteLoggedIn: remote.loggedIn, remoteAccount: remote.authInfo?.email ?? null } : {}),
+        ...(provider === "anthropic" ? this.creditInfo() : {}),
       };
     });
   }
@@ -312,7 +329,8 @@ export class ProviderProxyManager {
     const alias = this.proxies.get(provider);
     const link = alias ? this.links.get(alias) : undefined;
     if (!alias || !link) throw new ProviderProxyUnavailableError(`${PROVIDER_LABELS[provider]} is not proxied.`);
-    await link.waitReady(READY_TIMEOUT_MS, signal);
+    const fallback = provider === "anthropic" ? proxyDownCreditInMs() : null;
+    await link.waitReady(fallback === null ? READY_TIMEOUT_MS : Math.max(1, Math.min(fallback, READY_TIMEOUT_MS)), signal);
     let status = link.remote[provider];
     // A remote that was not logged in may have been since: ask again rather than trusting the hello.
     if (!status || !status.loggedIn) status = await link.status(provider);
@@ -324,6 +342,27 @@ export class ProviderProxyManager {
 
   remoteStatus(provider: ProxyableProviderId): ProviderProxyRemoteStatus | null {
     return this.linkFor(provider)?.remote[provider] ?? null;
+  }
+
+  outage(provider: ProxyableProviderId): ProviderProxyOutage | null {
+    const link = this.linkFor(provider);
+    if (!link) return null;
+    if (link.state !== "connected") {
+      return { since: link.downSince ?? Date.now(), settled: !link.downTransient, reason: link.downMessage() };
+    }
+    const remote = link.remote[provider];
+    if (!remote || remote.loggedIn) return null;
+    // It may have logged in since: nothing else asks while turns go elsewhere.
+    if (Date.now() - this.remoteCheckedAt >= (this.options.remoteRecheckMs ?? REMOTE_RECHECK_MS)) {
+      this.remoteCheckedAt = Date.now();
+      void link.status(provider).then(() => this.notify(), () => {});
+    }
+    return { since: Date.now(), settled: true, reason: remote.error ?? `${link.alias} is not logged in to ${PROVIDER_LABELS[provider]}.` };
+  }
+
+  private creditInfo(): Pick<ProviderProxyInfo, "apiCredits"> {
+    const info = proxyDownCreditInfo();
+    return info ? { apiCredits: info } : {};
   }
 
   /**
@@ -341,6 +380,7 @@ export class ProviderProxyManager {
         host: info.remoteHost ?? null,
         state: info.state,
         ...(info.message ? { message: info.message } : {}),
+        ...(info.apiCredits ? { apiCredits: info.apiCredits } : {}),
       },
     };
   }
@@ -428,7 +468,21 @@ export class ProviderProxyManager {
     closeWhenIdle();
   }
 
+  /** Say so once an outage is long enough for the API-credit keys: the bars and /proxy follow. */
+  private watchOutage(): void {
+    if (this.outageTimer) clearTimeout(this.outageTimer);
+    this.outageTimer = null;
+    const afterMs = apiCreditConfig().proxyDownAfterMs;
+    const outage = afterMs === null ? null : this.outage("anthropic");
+    if (afterMs === null || !outage || outage.settled) return;
+    const dueInMs = outage.since + afterMs - Date.now();
+    if (dueInMs <= 0) return;
+    this.outageTimer = setTimeout(() => this.notify(), dueInMs + 1);
+    this.outageTimer.unref?.();
+  }
+
   private notify(): void {
+    this.watchOutage();
     this.listeners.onChange?.();
   }
 }

@@ -354,7 +354,9 @@ With `whenLimited: "error"` a turn that cannot run ends at once with
 once more when another account may still take it), so a batch job can stop
 and resume later: `{"credits":"never","whenLimited":"error"}`. `credits:
 "never"` holds under /proxy too (the request says so to the remote, which must
-be as new). Other providers ignore `route`.
+be as new), and such a conversation waits for a /proxy link that is down
+rather than move to this machine's keys (`whenProxyDown`). Other providers
+ignore `route`.
 
 ## Commands
 

@@ -61,6 +61,12 @@ export interface ProviderProxyForwarderOptions {
    * subscription account (null).
    */
   onApiCredits?(conversation: string, label: string | null): void;
+  /**
+   * How long until the provider's turns run without the link (a daemon's
+   * API-credit keys): 0 now, null never. A request is held no longer than
+   * that, and any failure of the link then goes to the turn to deal with.
+   */
+  fallbackInMs?(provider: ProxyableProviderId): number | null;
   /** Overrides LINK_HOLD_MS (tests). */
   linkHoldMs?: number;
   /** Overrides LINK_HOLD_RETRY_DELAYS_MS (tests). */
@@ -86,10 +92,10 @@ function jsonError(provider: string, status: number, message: string): Response 
  * Code's own retries: a transient failure has already been waited out here,
  * and the turn takes over from there; the others will not clear up.
  */
-function linkError(provider: string, error: unknown): Response {
+function linkError(provider: string, error: unknown, hasFallback = false): Response {
   if (isAbortLikeError(error)) return new Response(null, { status: 499 });
   const message = error instanceof Error ? error.message : String(error);
-  const response = jsonError(provider, 503, isTransientProviderProxyError(error)
+  const response = jsonError(provider, 503, isTransientProviderProxyError(error) || hasFallback
     ? `${PROVIDER_PROXY_LINK_DOWN_PREFIX}${message}`
     : `Exocortex /proxy: ${message}`);
   response.headers.set("x-should-retry", "false");
@@ -272,14 +278,16 @@ export class ProviderProxyForwarder {
     const notProxied = () => jsonError(provider, 503, `Exocortex /proxy: ${provider} is no longer proxied; retry to use it directly.`);
     const initialLink = this.options.linkFor(provider);
     if (!initialLink) return notProxied();
-    const deadline = Date.now() + (this.options.linkHoldMs ?? LINK_HOLD_MS);
+    const fallbackInMs = this.options.fallbackInMs?.(provider) ?? null;
+    const hasFallback = () => (fallbackInMs ?? this.options.fallbackInMs?.(provider) ?? null) !== null;
+    const deadline = Date.now() + Math.min(this.options.linkHoldMs ?? LINK_HOLD_MS, fallbackInMs ?? Infinity);
     let link: ProviderProxyLink;
     try {
       const ready = await this.holdForLink(provider, initialLink, deadline, request.signal);
       if (!ready) return notProxied();
       link = ready;
     } catch (error) {
-      return linkError(provider, error);
+      return linkError(provider, error, hasFallback());
     }
 
     const headers = providerProxyRequestHeaders(request.headers.entries());
@@ -309,7 +317,7 @@ export class ProviderProxyForwarder {
             if (!ready) return notProxied();
             link = ready;
           } catch (holdError) {
-            return linkError(provider, holdError);
+            return linkError(provider, holdError, hasFallback());
           }
           continue;
         }

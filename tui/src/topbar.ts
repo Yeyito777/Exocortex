@@ -23,7 +23,7 @@ function proxyLabel(state: RenderState): string {
   const proxy = activeProviderProxy(state);
   if (!proxy) return "";
   const problem = proxy.state === "connecting" ? " (connecting)"
-    : proxy.state === "disconnected" ? " (down)"
+    : proxy.state === "disconnected" ? proxy.apiCredits?.active ? " (down, API credits)" : " (down)"
       : proxy.remoteLoggedIn === false ? " (not logged in)"
         : "";
   return ` — via ${proxy.alias}${problem}`;

@@ -21,6 +21,14 @@ export interface ProviderProxyRoute {
   token: string;
 }
 
+/** Why a proxied provider's remote cannot serve it now. */
+export interface ProviderProxyOutage {
+  since: number;
+  /** It will not clear up by itself (SSH authentication, an outdated remote, a remote that is not logged in). */
+  settled: boolean;
+  reason: string;
+}
+
 /** What the manager offers the providers beyond the route. */
 export interface ProviderProxyHooks {
   /** Wait (bounded) until the link is up and the remote can serve `provider`; throws a clear error otherwise. */
@@ -31,6 +39,8 @@ export interface ProviderProxyHooks {
   remoteSupports(provider: ProxyableProviderId, feature: ProviderProxyFeature): boolean;
   /** The remote's last known status for `provider`. */
   remoteStatus(provider: ProxyableProviderId): ProviderProxyRemoteStatus | null;
+  /** Why the remote `provider` goes through cannot serve it now, if so. */
+  outage(provider: ProxyableProviderId): ProviderProxyOutage | null;
   /** The remote's Claude pool and the link's state, when Claude is proxied and the remote shares its pool. */
   remoteAccounts(): { pool: ProviderProxyRemoteAccounts; remote: ClaudeAccountsRemoteInfo } | null;
   /** Ask the remote for fresh usage of its account. */
@@ -82,6 +92,11 @@ export async function providerProxyReady(provider: ProxyableProviderId, signal?:
 export async function providerProxyConnect(provider: ProxyableProviderId, signal?: AbortSignal): Promise<void> {
   if (!routes.has(provider) || !hooks) return;
   await hooks.connect(provider, signal);
+}
+
+/** Why a proxied provider's remote cannot serve it now; null when it can, or the provider is not proxied. */
+export function providerProxyOutage(provider: ProxyableProviderId): ProviderProxyOutage | null {
+  return routes.has(provider) ? hooks?.outage(provider) ?? null : null;
 }
 
 export function providerProxyRemoteStatus(provider: ProxyableProviderId): ProviderProxyRemoteStatus | null {

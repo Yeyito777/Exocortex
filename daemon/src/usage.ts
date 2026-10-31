@@ -3,18 +3,20 @@ import { getProviderAdapter } from "./providers/catalog";
 import type { UsageResetOutcome } from "./protocol";
 import { log } from "./log";
 import { getProxiedUsage, providerProxyHooks, providerProxyRoute, proxiedClaudeAccounts, setProxiedUsage } from "./provider-proxy/route";
+import { withProxyDownCredits } from "./providers/anthropic/account-pool";
 
 // A provider that goes through /proxy reports the remote account's usage: the
 // remote answers refreshes, and response headers that come back through the
 // link update the same proxied copy (see provider-proxy/route.ts). For Claude,
 // a remote that shares its account pool shows the pool's combined usage, as
-// it does on the remote itself; otherwise its main account's.
+// it does on the remote itself; otherwise its main account's. While Claude's
+// turns run on this machine's keys instead (`whenProxyDown`), their credits show.
 
 function proxiedUsage(provider: ProviderId): UsageData | null {
   const route = providerProxyRoute(provider);
   if (!route) return null;
-  const combined = route.provider === "anthropic" ? proxiedClaudeAccounts()?.pool.combined : null;
-  return combined ?? getProxiedUsage(route.provider);
+  if (route.provider !== "anthropic") return getProxiedUsage(route.provider);
+  return withProxyDownCredits(proxiedClaudeAccounts()?.pool.combined ?? getProxiedUsage(route.provider));
 }
 
 export function getLastUsage(provider: ProviderId): UsageData | null {

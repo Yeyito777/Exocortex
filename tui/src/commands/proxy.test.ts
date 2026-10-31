@@ -8,6 +8,7 @@ import { handleEvent, type DaemonActions } from "../events";
 import { stripAnsi } from "../historycursor";
 import { createInitialState } from "../state";
 import { renderStatusLine } from "../statusline";
+import { formatProviderProxies } from "../provider-proxies";
 import type { ProviderProxyInfo } from "../protocol";
 
 const originalConfig = process.env.EXOCORTEX_SSH_CONFIG;
@@ -22,6 +23,19 @@ afterEach(() => {
 
 const lastMessage = (state: ReturnType<typeof createInitialState>) => (state.messages.at(-1) as { text?: string }).text;
 const connected: ProviderProxyInfo = { provider: "anthropic", alias: "whale", state: "connected", remoteHost: "yeyito@whale", remoteLoggedIn: true, remoteAccount: "someone@example.com" };
+
+describe("/proxy with this machine's API-credit keys", () => {
+  const down: ProviderProxyInfo = { provider: "anthropic", alias: "whale", state: "disconnected", message: "The SSH connection to whale was lost." };
+  const status = (proxy: ProviderProxyInfo) => formatProviderProxies({ providerProxies: [proxy], hideSensitiveInfo: false });
+
+  test("says what they do in each state", () => {
+    expect(status({ ...connected, apiCredits: { afterSeconds: 60, active: false, label: "vm one" } })).toContain("connected (yeyito@whale, someone@example.com); API credits after 60s down");
+    expect(status({ ...down, apiCredits: { afterSeconds: 60, active: false, label: "vm one" } })).toContain("down: The SSH connection to whale was lost.; API credits after 60s down");
+    expect(status({ ...down, apiCredits: { afterSeconds: 60, active: true, label: "vm one" } })).toContain("; turns run on API credits (vm one)");
+    expect(status({ ...down, apiCredits: { afterSeconds: 60, active: false, label: null } })).toContain("; no API-credit key usable");
+    expect(status(down)).not.toContain("API");
+  });
+});
 
 describe("/proxy", () => {
   test("parses status, set and off", () => {
