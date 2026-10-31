@@ -2101,11 +2101,24 @@ export interface LoadFromDiskStats {
 }
 
 /** Load conversation summaries from disk into memory on daemon startup. Full conversations are lazy-loaded on demand. */
-export function loadFromDisk(): LoadFromDiskStats {
-  const startedAt = performance.now();
-  const index = persistence.loadConversationIndex();
-  renderSnapshotCache.clear();
-  summaries.clear();
+/** Fit a summary read from the store to this daemon's providers and folders; returns the repairs made. */
+function normalizeStoredSummary(summary: PersistedConversationSummary): number {
+  let repairs = 0;
+  if (!hasProvider(summary.provider)) {
+    summary.provider = DEFAULT_PROVIDER_ID;
+    summary.model = DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID];
+    repairs++;
+  }
+  const normalizedEffort = normalizeEffort(summary.provider, summary.model, summary.effort);
+  if (normalizedEffort !== summary.effort) {
+    summary.effort = normalizedEffort;
+    repairs++;
+  }
+  summary.folderId = summary.folderId && folders.has(summary.folderId) ? summary.folderId : null;
+  return repairs;
+}
+
+function loadStoredFolders(): void {
   folders.clear();
   folderInstructions.clear();
   for (const folder of persistence.loadFolders()) {
@@ -2114,22 +2127,64 @@ export function loadFromDisk(): LoadFromDiskStats {
   for (const [folderId, text] of persistence.loadFolderInstructions()) {
     if (folders.has(folderId)) folderInstructions.set(folderId, text);
   }
+}
+
+export interface StoreReloadResult {
+  changed: string[];
+  removed: string[];
+  /** Conversations with work in flight here, left as they are. */
+  skipped: string[];
+}
+
+/**
+ * Take in what another process committed to the store: the backup job on a
+ * second machine writes conversations straight to SQLite while this daemon runs.
+ * `changed` conversations are read again and `removed` ones dropped; folders are
+ * always read again. One with work in flight here keeps its running state.
+ */
+export function reloadStoreChanges(changedIds: string[], removedIds: string[]): StoreReloadResult {
+  const stored = new Map(persistence.loadConversationIndex().summaries.map(summary => [summary.id, summary]));
+  loadStoredFolders();
+  const result: StoreReloadResult = { changed: [], removed: [], skipped: [] };
+  for (const id of removedIds) {
+    if (stored.has(id) || !summaries.has(id)) continue;
+    if (!canEvictCachedConversation(id)) { result.skipped.push(id); continue; }
+    removeConversationState(id);
+    result.removed.push(id);
+  }
+  for (const id of changedIds) {
+    const summary = stored.get(id);
+    if (!summary) continue;
+    if (!canEvictCachedConversation(id)) { result.skipped.push(id); continue; }
+    evictCachedConversation(id);
+    renderSnapshotCache.delete(id);
+    normalizeStoredSummary(summary);
+    summaries.set(id, summary);
+    bumpHistoryRev(id);
+    result.changed.push(id);
+  }
+  // Folders may have gone: nothing else may keep pointing at one.
+  for (const summary of summaries.values()) {
+    if (!summary.folderId || folders.has(summary.folderId)) continue;
+    summary.folderId = null;
+    const loaded = conversations.get(summary.id);
+    if (loaded) loaded.folderId = null;
+  }
+  return result;
+}
+
+export function loadFromDisk(): LoadFromDiskStats {
+  const startedAt = performance.now();
+  const index = persistence.loadConversationIndex();
+  renderSnapshotCache.clear();
+  summaries.clear();
+  loadStoredFolders();
   pendingSystemInstructions.clear();
   for (const [convId, text] of persistence.loadPendingConversationInstructions()) pendingSystemInstructions.set(convId, text);
 
   let normalizedEffortCount = 0;
   for (const summary of index.summaries) {
-    if (!hasProvider(summary.provider)) {
-      summary.provider = DEFAULT_PROVIDER_ID;
-      summary.model = DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID];
-      normalizedEffortCount++;
-    }
-    const normalizedEffort = normalizeEffort(summary.provider, summary.model, summary.effort);
-    if (normalizedEffort !== summary.effort) {
-      summary.effort = normalizedEffort;
-      normalizedEffortCount++;
-    }
-    summary.folderId = summary.folderId && folders.has(summary.folderId) ? summary.folderId : null;
+    normalizedEffortCount += normalizeStoredSummary(summary);
     summaries.set(summary.id, summary);
   }
 
