@@ -477,6 +477,19 @@ yours: the tool breaks, or foreign code runs with the tool's credentials.
 `PYTHONPATH` still finds your `src`. Add a test that runs the wrapper from a
 directory containing `src/__init__.py` (see duo-cli `tests/test_launcher.py`).
 
+## Tests must isolate themselves
+
+Tests delete and rewrite state, so they must never depend on the cwd or on a
+per-directory `bunfig.toml` preload for isolation: both vanish when someone runs
+`bun test` from another directory (a stray run from the repo root once wiped
+whatsapp-cli's real login). Point every state path (config dir, socket, pid and
+lock files) at a temp dir from code the test files themselves import first, and
+make that code throw if a path resolves outside the temp dir. Add a test that
+runs a test file from another cwd. Reference: whatsapp-cli `test/setup.ts` and
+`test/isolation.test.ts`. The exocortex root `bunfig.toml` ignores
+`external-tools/**` and `helper-tools/**`, so a bare root `bun test` never
+reaches these tests.
+
 ## Subcommands
 
 Each subcommand is a function that takes `argv` and uses `argparse`
