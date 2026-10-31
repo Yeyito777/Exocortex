@@ -47,6 +47,58 @@ describe("runWithProxyLinkWait", () => {
     expect(log).toEqual(["start:whale", "end"]);
   });
 
+  test("with a fallback, waits only until it is due, then sends the request again", async () => {
+    const { log, deps, hooks, controller } = harness(async () => { throw transient(); });
+    const due = Date.now() + 40;
+    let calls = 0;
+    const result = await runWithProxyLinkWait(controller, async () => {
+      if (++calls === 1) throw LINK_DOWN;
+      return "on the key";
+    }, { ...deps, fallbackInMs: () => Math.max(0, due - Date.now()) }, hooks, { delaysMs: [60_000], budgetMs: 600_000 });
+    expect(result).toBe("on the key");
+    expect(calls).toBe(2);
+    expect(Date.now()).toBeGreaterThanOrEqual(due);
+    expect(log).toEqual(["start:whale", "end"]);
+  });
+
+  test("a connect attempt that hangs does not outlast the fallback", async () => {
+    const { deps, hooks, controller } = harness(() => new Promise<void>(() => {}));
+    const due = Date.now() + 30;
+    let calls = 0;
+    await runWithProxyLinkWait(controller, async () => {
+      if (++calls === 1) throw LINK_DOWN;
+    }, { ...deps, fallbackInMs: () => Math.max(0, due - Date.now()) }, hooks, { delaysMs: [1], budgetMs: 5_000 });
+    expect(calls).toBe(2);
+  });
+
+  test("a link back before the fallback is due retries on the link", async () => {
+    const { deps, hooks, controller } = harness(async () => {});
+    let calls = 0;
+    await runWithProxyLinkWait(controller, async () => {
+      if (++calls === 1) throw LINK_DOWN;
+    }, { ...deps, fallbackInMs: () => (calls === 1 ? 60_000 : null) }, hooks, { delaysMs: [1], budgetMs: 5_000 });
+    expect(calls).toBe(2);
+  });
+
+  test("a retry that lands on the link again pauses before the next, instead of spinning", async () => {
+    const { deps, hooks, controller } = harness(async () => { throw transient(); });
+    let calls = 0;
+    await expect(runWithProxyLinkWait(controller, async () => { calls++; throw LINK_DOWN; }, { ...deps, fallbackInMs: () => 0 }, hooks, { delaysMs: [10], budgetMs: 35 }))
+      .rejects.toThrow("gave up");
+    expect(calls).toBeGreaterThanOrEqual(2);
+    expect(calls).toBeLessThanOrEqual(6);
+  });
+
+  test("a link failure that will not clear up goes to a fallback that is due", async () => {
+    const { deps, hooks, controller } = harness(async () => { throw new ProviderProxyUnavailableError("Host key verification failed.", false); });
+    let calls = 0;
+    let due = false;
+    await runWithProxyLinkWait(controller, async () => {
+      if (++calls === 1) throw LINK_DOWN;
+    }, { ...deps, connect: async () => { due = true; await deps.connect(); }, fallbackInMs: () => (due ? 0 : 60_000) }, hooks, { delaysMs: [1], budgetMs: 5_000 });
+    expect(calls).toBe(2);
+  });
+
   test("passes errors through when the provider is no longer proxied", async () => {
     const { log, hooks, controller } = harness(async () => {});
     await expect(runWithProxyLinkWait(controller, async () => { throw LINK_DOWN; }, { alias: () => null, connect: async () => {} }, hooks))

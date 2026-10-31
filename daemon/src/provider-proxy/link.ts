@@ -171,6 +171,8 @@ export class ProviderProxyLink {
    * remote does not share one (it predates provider_proxy_accounts).
    */
   remoteAccounts: ProviderProxyRemoteAccounts | null = null;
+  /** Since when the link has been down, through reconnect attempts (from its creation until it first connects); null while connected. */
+  downSince: number | null = Date.now();
 
   private process: SshProcess | null = null;
   private generation = 0;
@@ -662,6 +664,7 @@ export class ProviderProxyLink {
       this.features = Array.isArray(event.features) ? event.features.filter((feature): feature is string => typeof feature === "string") : [];
       this.state = "connected";
       this.message = undefined;
+      this.downSince = null;
       log("info", `provider-proxy: connected to ${this.alias} (${describeRemoteHost(this.host, this.alias)})`);
       this.stallTimer = setInterval(() => this.checkStall(generation), this.stall.checkMs);
       this.stallTimer.unref?.();
@@ -697,6 +700,7 @@ export class ProviderProxyLink {
     const wasConnected = this.state === "connected";
     this.state = "disconnected";
     this.message = message;
+    if (wasConnected) this.downSince = Date.now();
     this.failureTransient = options.transient ?? true;
     this.blockedStreams.clear();
     for (const stream of [...this.streams.values()]) stream.onLinkLost(message);

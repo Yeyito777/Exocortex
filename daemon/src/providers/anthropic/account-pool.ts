@@ -14,7 +14,8 @@ import { runtimeDir } from "@exocortex/shared/paths";
 import type { UsageData } from "../../messages";
 import type { AccountConversationInfo, ClaudeAccountInfo, ClaudeAccountsInfo, ClaudeAccountState } from "@exocortex/shared/protocol";
 import { log } from "../../log";
-import { isProviderProxied } from "../../provider-proxy/route";
+import { isProviderProxied, providerProxyConnect, providerProxyOutage, providerProxyRoute } from "../../provider-proxy/route";
+import type { ProviderProxyApiCredits } from "@exocortex/shared/provider-proxy";
 import { emitClaudeAccountsChanged } from "./account-events";
 import { claudeLoginCommand, displayPath, listClaudeAccounts, MAIN_ACCOUNT_ID, type ClaudeAccount } from "./accounts";
 import { hasConfiguredCredentials } from "./auth";
@@ -78,6 +79,8 @@ interface Assignment {
 interface CreditState {
   key: string | null;
   at: number;
+  /** On that key because /proxy was down (`whenProxyDown`). */
+  proxyDown?: boolean;
 }
 
 let assignmentsFileOverride: string | null = null;
@@ -201,8 +204,9 @@ export function conversationOnApiCredits(convId: string): boolean {
  */
 export function touchConversationCredit(convId: string, key: string | null, now = Date.now()): void {
   const credits = loadCredits();
-  if (key === null && !credits.has(convId)) return;
-  credits.set(convId, { key, at: now });
+  const last = credits.get(convId);
+  if (key === null && !last) return;
+  credits.set(convId, { key, at: now, ...(key !== null && last?.proxyDown ? { proxyDown: true } : {}) });
   scheduleSave();
 }
 
@@ -311,9 +315,11 @@ export interface ClaudeTurnRoute extends RouteDecision {
   apiCreditDetail?: string;
   /** The key the conversation's last credit turn ran on, when the turn moves off it. */
   apiCreditMovedFrom?: ApiCreditKey | null;
+  /** On that key because the /proxy link through this alias is down (`whenProxyDown`). */
+  proxyDownAlias?: string;
 }
 
-type CreditChoice = Pick<ClaudeTurnRoute, "apiCredit" | "apiCreditDetail" | "apiCreditMovedFrom">;
+type CreditChoice = Pick<ClaudeTurnRoute, "apiCredit" | "apiCreditDetail" | "apiCreditMovedFrom" | "proxyDownAlias">;
 const NO_CREDIT: CreditChoice = { apiCredit: null };
 
 /**
@@ -340,6 +346,44 @@ function apiCreditFor(decision: RouteDecision, states: AccountRouteState[], now:
   return pick ? { apiCredit: pick.key, apiCreditDetail: pick.detail, apiCreditMovedFrom: pick.movedFrom } : NO_CREDIT;
 }
 
+/**
+ * While Claude's /proxy remote cannot serve it, how long until turns run on
+ * this machine's API-credit keys (`whenProxyDown`): 0 now, null when they will
+ * not (no outage, not configured, no usable key, or a conversation that may
+ * not use credits). A short outage only delays a turn: it stays on the link.
+ */
+export function proxyDownCreditInMs(convId?: string, now = Date.now()): number | null {
+  const afterMs = apiCreditConfig().proxyDownAfterMs;
+  if (afterMs === null || !conversationAllowsApiCredits(convId)) return null;
+  const outage = providerProxyOutage("anthropic");
+  if (!outage) return null;
+  void refreshApiCreditSecrets();
+  if (!usableApiCreditKey(now)) return null;
+  return outage.settled ? 0 : Math.max(0, outage.since + afterMs - now);
+}
+
+/** What /proxy says about those keys; null when they are not configured. */
+export function proxyDownCreditInfo(now = Date.now()): ProviderProxyApiCredits | null {
+  const afterMs = apiCreditConfig().proxyDownAfterMs;
+  if (afterMs === null) return null;
+  return { afterSeconds: Math.round(afterMs / 1000), active: proxyDownCreditInMs(undefined, now) === 0, label: usableApiCreditKey(now)?.label ?? null };
+}
+
+/** The local key a proxied turn runs on instead of the link, if it should. `owner`: the conversation it is for, a helper request's too. */
+async function proxyDownCredit(convId: string | undefined, owner: string | undefined, live: LiveProcessState | null): Promise<CreditChoice> {
+  if (apiCreditConfig().proxyDownAfterMs === null) return NO_CREDIT;
+  await refreshApiCreditSecrets();
+  const alias = providerProxyRoute("anthropic")?.alias;
+  if (live?.backgroundWork) return live.apiCredit ? { apiCredit: live.apiCredit, apiCreditDetail: "its process has background tasks", proxyDownAlias: alias } : NO_CREDIT;
+  const now = Date.now();
+  if (proxyDownCreditInMs(owner, now) !== 0) return NO_CREDIT;
+  // A link waiting out its backoff tries now, for the next turn; this one does not wait for it.
+  void providerProxyConnect("anthropic").catch(() => {});
+  const last = convId ? loadCredits().get(convId) : undefined;
+  const pick = pickApiCreditKey(last ? { key: last.key, lastUsedAt: last.at } : null, now);
+  return pick ? { apiCredit: pick.key, apiCreditDetail: pick.detail, apiCreditMovedFrom: pick.movedFrom, proxyDownAlias: alias } : NO_CREDIT;
+}
+
 /** Turns would go to API credits now: no subscription account can take them and a key can. */
 export function apiCreditFallbackActive(now = Date.now()): boolean {
   if (isProviderProxied("anthropic") || !apiCreditFallbackEnabled()) return false;
@@ -353,15 +397,18 @@ export function apiCreditSwitchNotice(convId: string | undefined, route: ClaudeT
   const next = route.apiCredit?.id ?? null;
   const credits = loadCredits();
   const known = credits.has(convId);
-  const previous = credits.get(convId)?.key ?? null;
-  credits.set(convId, { key: next, at: Date.now() });
+  const last = credits.get(convId);
+  const previous = last?.key ?? null;
+  credits.set(convId, { key: next, at: Date.now(), ...(route.proxyDownAlias ? { proxyDown: true } : {}) });
   scheduleSave();
   if (next === previous || (!known && next === null)) return null;
   if (route.apiCredit && previous) {
     const from = apiCreditConfig().keys.find(key => key.id === previous)?.label ?? previous;
     return `Claude API credits: now on "${route.apiCredit.label}" instead of "${from}"${route.apiCreditDetail ? ` (${route.apiCreditDetail})` : ""}.`;
   }
-  if (route.apiCredit) return `Running on Claude API credits ("${route.apiCredit.label}"): every Claude subscription account is at a usage limit.`;
+  if (route.apiCredit) return `Running on Claude API credits ("${route.apiCredit.label}"): ${route.proxyDownAlias ? `/proxy ${route.proxyDownAlias} is down` : "every Claude subscription account is at a usage limit"}.`;
+  const alias = last?.proxyDown ? providerProxyRoute("anthropic")?.alias : null;
+  if (alias) return `Back on /proxy ${alias}: it is up again.`;
   return `Back on the Claude subscription (account "${route.account}"): it has usage again.`;
 }
 
@@ -370,15 +417,17 @@ export function apiCreditSwitchNotice(convId: string | undefined, route: ClaudeT
  * /proxy (the remote's login), that is always `main`, without checking
  * anything. `sessionAccount` is the account that wrote the Claude Code
  * session the turn resumes, for conversations this daemon has no record of.
+ * `owner` is the conversation a helper request (no `convId`) is for.
  */
 export async function routeClaudeTurn(
   convId: string | undefined,
   live: LiveProcessState | null,
   signal?: AbortSignal,
   sessionAccount: string | null = null,
+  owner: string | undefined = convId,
 ): Promise<ClaudeTurnRoute> {
   if (isProviderProxied("anthropic")) {
-    return { account: MAIN_ACCOUNT_ID, reason: "new", detail: "single account", ...NO_CREDIT };
+    return { account: MAIN_ACCOUNT_ID, reason: "new", detail: "single account", ...await proxyDownCredit(convId, owner, live) };
   }
   const fallback = apiCreditFallbackEnabled();
   if (fallback) await refreshApiCreditSecrets();
@@ -412,6 +461,14 @@ export async function routeClaudeTurn(
 /** Accounts whose usage the bars combine: signed in and not blocked. */
 function capacityAccounts(now: number): AccountRouteState[] {
   return claudeAccountStates(now).filter(state => state.available);
+}
+
+/** A proxied Claude's bars while turns run on this machine's keys: the remote's last usage, with those keys' credits. */
+export function withProxyDownCredits(usage: UsageData | null, now = Date.now()): UsageData | null {
+  if (apiCreditConfig().proxyDownAfterMs === null) return usage;
+  if (activeCreditTurns.size === 0 && proxyDownCreditInMs(undefined, now) !== 0) return usage;
+  const credits = apiCreditsUsage(true, now, new Set(activeCreditTurns.keys()));
+  return credits ? { ...(usage ?? { fiveHour: null, sevenDay: null }), apiCredits: credits } : usage;
 }
 
 /** Combined usage of the usable accounts (one account: its own usage), and the API-credit fallback when it is on. */

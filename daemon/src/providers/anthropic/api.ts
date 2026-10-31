@@ -12,9 +12,9 @@
  *
  * Every request goes through the Claude Code CLI's claude.ai login, so usage
  * bills the Claude subscription; API-key environment overrides are stripped.
- * The one exception: while every subscription account is at a usage limit,
- * turns run on Claude API credits when the owner has configured them
- * (api-credits.ts), through the same Claude Code path.
+ * The exception: while every subscription account is at a usage limit, or a
+ * /proxy link is down, turns run on Claude API credits when the owner has
+ * configured them (api-credits.ts), through the same Claude Code path.
  */
 
 import { randomUUID } from "node:crypto";
@@ -293,13 +293,13 @@ function creditRouteNotice(account: string, creditKey: string | null): Conversat
 
 /**
  * A turn's notices for moves onto or off API credits; returns their end.
- * Under /proxy the remote decides what bills each request, so only its reports
+ * Under /proxy (a turn on this machine's key aside: the link is down) the remote decides what bills each request, so only its reports
  * (forwarder.ts) say which, as they come: this daemon's route (always `main`)
  * knows nothing of the remote's limits, and announcing it would flip back and
  * forth every turn.
  */
 export function creditSwitchNotices(convId: string | undefined, route: ClaudeTurnRoute, callbacks: Pick<StreamCallbacks, "onProviderNotice" | "onBilling">): () => void {
-  if (!isProviderProxied("anthropic")) {
+  if (!isProviderProxied("anthropic") || route.apiCredit) {
     const notice = apiCreditSwitchNotice(convId, route);
     if (notice) callbacks.onProviderNotice?.(notice, creditRouteNotice(route.account, route.apiCredit?.label ?? null));
     return () => {};
@@ -337,7 +337,7 @@ export async function streamMessage(
     open: true,
     backgroundWork: live.hasBackgroundWork,
     apiCredit: live.apiCredit,
-  } : null, signal, plan?.resume ? plan.resume.account ?? MAIN_ACCOUNT_ID : null);
+  } : null, signal, plan?.resume ? plan.resume.account ?? MAIN_ACCOUNT_ID : null, options.tracking?.conversationId);
   const account = route.account;
   const apiCredit = route.apiCredit;
   // A turn on API credits does not use the account's login, only its configuration directory.
@@ -345,7 +345,7 @@ export async function streamMessage(
   await loadClaudeSdks();
   if (apiCredit) {
     const moved = route.apiCreditMovedFrom ? ` moves from API-credit key "${route.apiCreditMovedFrom.label}" and` : "";
-    log("info", `anthropic: ${convId ?? "a helper request"}${moved} runs on API credits "${apiCredit.label}" (every Claude subscription account is at a usage limit; key: ${route.apiCreditDetail ?? "?"}; configuration from account ${account})`);
+    log("info", `anthropic: ${convId ?? "a helper request"}${moved} runs on API credits "${apiCredit.label}" (${route.proxyDownAlias ? `/proxy ${route.proxyDownAlias} is down` : "every Claude subscription account is at a usage limit"}; key: ${route.apiCreditDetail ?? "?"}; configuration from account ${account})`);
   } else if (route.movedFrom) {
     log("info", `anthropic: conversation ${convId ?? "?"} moves from Claude account ${route.movedFrom} to ${account} (${route.reason}: ${route.detail})`);
     callbacks.onProviderNotice?.(accountSwitchNotice(route), { kind: "account", account, movedFrom: route.movedFrom });
@@ -358,7 +358,7 @@ export async function streamMessage(
   if (convId && !apiCredit) touchConversationAccount(convId, account);
   if (!apiCredit) callbacks = accountCallbacks(callbacks, account);
   // Under /proxy the remote picks the account per request; announce its moves as for local ones.
-  const proxied = isProviderProxied("anthropic");
+  const proxied = isProviderProxied("anthropic") && !apiCredit;
   const stopMoveNotices = convId && proxied ? onProxiedClaudeMove(convId, (move) => {
     log("info", `anthropic: proxied conversation ${convId} moved from Claude account ${move.from} to ${move.to} on the /proxy remote (${move.detail})`);
     callbacks.onProviderNotice?.(accountSwitchNotice({ account: move.to, movedFrom: move.from, reason: "new", detail: move.detail }), { kind: "account", account: move.to, movedFrom: move.from });
@@ -384,7 +384,7 @@ export async function streamMessage(
     endTurn();
     if (convId && !apiCredit) touchConversationAccount(convId, account);
     // The turn's last request renews the key's cache: its warm window counts from here.
-    if (convId && apiCredit && !isProviderProxied("anthropic")) touchConversationCredit(convId, apiCredit.id);
+    if (convId && apiCredit) touchConversationCredit(convId, apiCredit.id);
   }
 }
 
@@ -411,7 +411,7 @@ async function runStreamMessage(
   }
 
   const plan = agentPlan;
-  const key = claudeSessionKey(model, options.effort, cwd, providerProxyRoute("anthropic")?.alias, account, apiCredit?.id);
+  const key = claudeSessionKey(model, options.effort, cwd, apiCredit ? null : providerProxyRoute("anthropic")?.alias, account, apiCredit?.id);
 
   // The conversation's Claude Code process is still running (background tasks,
   // or a quick follow-up): continue in it.

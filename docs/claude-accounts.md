@@ -271,6 +271,13 @@ requests (titles, summaries, compaction) fall back too. Code:
   hour; one it rate-limits (429, after Claude Code's own backoff) a minute,
   and the turn is retried at once on another key that has credit (under
   /proxy, the request is retried once on it).
+- **/proxy down:** with `"whenProxyDown": { "afterSeconds": 60 }`, a machine
+  that sends Claude through /proxy also runs its turns on these keys, directly,
+  while the proxy cannot serve it, whether or not it has a login of its own;
+  see [provider-proxy.md](provider-proxy.md#api-keys-when-the-proxy-is-down).
+  Off when unset. `console` and `account` are optional on a key: without
+  `console` there is no sync and the balance is `grants` less counted spend
+  (`≈`); without `grants` either, none shows.
 - **The spend cap** is the credits themselves: an organization without a card
   or auto-reload refuses requests once they run out.
 - **Visibility**: the usage block shows it (neither the turn's metadata line

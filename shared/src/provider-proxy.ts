@@ -480,6 +480,18 @@ export interface ProviderProxyInfo {
   remoteHost?: string;
   remoteLoggedIn?: boolean;
   remoteAccount?: string | null;
+  /** Claude only, when `apiCreditFallback.whenProxyDown` is set. */
+  apiCredits?: ProviderProxyApiCredits;
+}
+
+/** This machine's own API-credit keys, which take turns while the proxy cannot serve them. */
+export interface ProviderProxyApiCredits {
+  /** How long the link must stay down first. */
+  afterSeconds: number;
+  /** Turns run on the keys now. */
+  active: boolean;
+  /** The key new turns take; null when none can. */
+  label: string | null;
 }
 
 /** The daemon's proxies, sent on change, in answer to `provider_proxy`, and at bootstrap. */

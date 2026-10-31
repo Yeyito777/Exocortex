@@ -33,8 +33,9 @@ Compare `/ssh`, which moves the whole TUI to the other daemon.
 
 The setting is saved in `config/config.json` as
 `providers.<provider>.proxy.ssh` and restored when the daemon starts, so a
-proxied provider never silently falls back to a local login. While the
-current provider is proxied, its 5-hour/weekly bars are the remote's, and a
+proxied provider never silently falls back to a local login (Claude can be
+told to, see [API keys when the proxy is down](#api-keys-when-the-proxy-is-down)).
+While the current provider is proxied, its 5-hour/weekly bars are the remote's, and a
 link that is down or connecting, or a remote that is not logged in, shows
 beside them (`/proxy whale down` and the reason); `/proxy` lists the full
 reasons. The provider's account info is the remote account, and `/login`,
@@ -76,6 +77,81 @@ OpenAI API key refuses it and says to log in with the key here instead
   (websocket, Codex headers). An API key needs a different origin, paths and
   request shape, so forwarding it would mean a second dialect through the
   link and both daemons agreeing which one is in use, to save one login.
+
+### API keys when the proxy is down
+
+A machine with no subscription login of its own (an always-on VM) can use
+/proxy as its normal route and this machine's own Claude API-credit keys only
+while the proxy cannot serve it. Off unless configured: `whenProxyDown`, in the
+[API-credit fallback](claude-accounts.md#api-credits-when-every-account-is-at-a-limit)
+config, beside the saved proxy.
+
+```json
+"providers": {
+  "anthropic": {
+    "proxy": { "ssh": "whale" },
+    "apiCreditFallback": {
+      "enabled": true,
+      "strategy": "order",
+      "whenProxyDown": { "afterSeconds": 60 },
+      "keys": [
+        { "secret": "ANTHROPIC_API_KEY_VM_ONE", "label": "vm one",
+          "grants": [{ "label": "Max", "amountUsd": 200, "expires": "2026-11-11", "monthly": true }] },
+        { "secret": "ANTHROPIC_API_KEY_VM_TWO", "label": "vm two" }
+      ]
+    }
+  }
+}
+```
+
+The keys live in this machine's `secrets` store; `secrets` must be on the
+daemon's PATH, or set `EXOCORTEX_SECRETS_BIN`. Leave `console` out on a
+machine with no signed-in browser. `/proxy anthropic <alias>` and `off` touch
+only `proxy`, so this block stays.
+
+- **When:** the link has stayed down for `afterSeconds` (default 60; 0 means
+  at once), counted from when it dropped, or from the daemon's start if it has
+  not connected since. A reconnect inside that time resets it, and the turn
+  only waits, as in "Behavior when things go wrong" below. Sooner for failures
+  that will not clear up by themselves: SSH authentication or host keys, no
+  `exocortexd`, an outdated or refusing remote, a remote that is not logged in.
+  A whale that dies without a word takes SSH keepalives ~45s to notice first.
+  A remote at its usage limits is not down: it decides, as always.
+- **Before a turn:** a turn that starts past the delay goes straight to the
+  key. One that starts inside it shows "Waiting for network / <alias>…" until
+  the link is back or the delay is up.
+- **During a turn:** the request in flight fails as for any lost link, the
+  forwarder holds its retry no longer than the delay (up to 45s), the turn
+  waits out the rest and sends the request again on the key. Committed rounds
+  and tool calls are not run again.
+- **Coming back:** the turn that is running finishes on the key; the next one
+  goes through the proxy. A link in backoff tries again whenever a turn
+  starts on the key and at least every 60s by itself.
+- **On the key** a turn runs exactly as a [credit turn](claude-accounts.md#api-credits-when-every-account-is-at-a-limit):
+  no forwarder address or token, directly to Anthropic through Claude Code's
+  `apiKeyHelper`. No Claude Code login is needed, and the key reaches no agent
+  shell. The conversation resumes the same Claude Code session both ways, in
+  a new process each way, so its prompt cache is written again on the other side.
+- **What stays on the link:** a conversation whose app forbids credits
+  (`route.credits: "never"`), its helper requests too; a process with
+  background tasks, since moving it would stop them (it keeps how it bills, as
+  it keeps its account); and everything when no key is usable (none in the
+  store, all out of credits). Those wait as without this setting.
+- **Helper requests** (titles, summaries, compaction) follow the same rule. Past
+  the delay they run on the key; inside it they fail or wait as without it.
+- **What shows:** the status bar keeps `/proxy whale down`, the bars give way
+  to the keys' `Credit`/`Expiry` rows (with `grants`; without any, the remote's
+  last bars with "API credits vm one" and what was spent this cycle). The top
+  bar says `via whale (down, API credits)`. `/proxy` adds `; turns run on API
+  credits (vm one)`, or `; API credits after 60s down` while they don't. The
+  Accounts screen keeps the remote's last accounts, with `; on API credits vm
+  one` in its note. Moves are not written into the transcript, like any move
+  onto credits; programs get the `api_credits` / `subscription` route notices
+  and `turn_result.billing`.
+- **Balances** on a machine without Console sync are always estimates (`≈`):
+  the configured `grants` less what this machine's turns spent. Spending from
+  any other machine is not seen, so they run high, and the API's own refusal
+  is what ends a key. Without `grants` no balance shows.
 
 ## remote_bash and client_bash over the link
 
@@ -145,6 +221,8 @@ before. End-to-end test: `bun scripts/dev/client-exec-e2e.ts`.
   is up. Rounds already committed are not run again and the message is not
   duplicated. Stop cancels the wait. It gives up after
   `agent.proxyOutageWaitMinutes` in `config/config.json` (default 30).
+  With `whenProxyDown`, Claude's turns move to this machine's keys instead
+  once it is due.
   Failures that will not clear up by themselves fail at once with their
   reason: SSH authentication or host-key errors, no `exocortexd` on the
   remote, an outdated or refusing remote.
@@ -248,13 +326,15 @@ off and turns into the transcript notice. Clients use `provider_proxy` (`status`
 `provider_proxies`, which `tools_available` also carries.
 
 Code: `daemon/src/provider-proxy/` (`manager.ts` local state and config,
-`link.ts` SSH link, `forwarder.ts` loopback endpoint, `endpoint.ts`,
+`link.ts` SSH link and how long it has been down, `forwarder.ts` loopback endpoint, `endpoint.ts`,
 `upstream-auth.ts` and `claude-routing.ts` remote side, `remote-accounts.ts`
-the shared pool, `route.ts` what providers consult).
+the shared pool, `route.ts` what providers consult). `whenProxyDown` is decided
+in `providers/anthropic/account-pool.ts` (`proxyDownCreditInMs`).
 
 ## Testing
 
-- Unit tests: `daemon/src/provider-proxy/*.test.ts`,
+- Unit tests: `daemon/src/provider-proxy/*.test.ts` (`proxy-down-credits.test.ts`
+  for `whenProxyDown`),
   `shared/src/provider-proxy.test.ts`, `tui/src/commands/proxy.test.ts`.
 - End to end, no real accounts: `bun scripts/dev/provider-proxy-e2e.ts` starts
   a client and a remote daemon joined by a fake `ssh`, with a mock upstream and

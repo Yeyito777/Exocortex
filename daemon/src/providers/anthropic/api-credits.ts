@@ -16,6 +16,9 @@
  * Only /proxy requests from another machine need the value here, to sign
  * the upstream request (provider-proxy/upstream-auth.ts); it stays in memory.
  *
+ * With `whenProxyDown`, a daemon that sends Claude through /proxy also turns
+ * to its keys, directly, while the proxy cannot serve it (account-pool.ts).
+ *
  * A key out of credits (the API answers that the credit balance is too low)
  * is set aside until its credits are granted again (`renewsOnDay`), and the
  * next key takes over; with none left, turns wait for the subscriptions as
@@ -91,9 +94,12 @@ export interface ApiCreditConfig {
   strategy: ApiCreditStrategy;
   /** A key with less left than this is picked only when every key has. */
   minBalanceUsd: number;
+  /** How long a /proxy link must stay down before turns run on the keys; null: they wait for the link. */
+  proxyDownAfterMs: number | null;
 }
 
 const DEFAULT_MIN_BALANCE_USD = 2;
+const DEFAULT_PROXY_DOWN_AFTER_SECONDS = 60;
 /**
  * How long a conversation's prompt cache stays warm on a key. Claude Code on
  * an API key writes the main conversation's cache with a 5-minute TTL
@@ -104,7 +110,7 @@ export const API_CREDIT_CACHE_TTL_MS = 5 * 60_000;
 
 export function apiCreditConfig(): ApiCreditConfig {
   const raw = readExocortexConfig().providers?.anthropic?.apiCreditFallback;
-  if (!raw || typeof raw !== "object") return { enabled: false, keys: [], strategy: "expiry", minBalanceUsd: DEFAULT_MIN_BALANCE_USD };
+  if (!raw || typeof raw !== "object") return { enabled: false, keys: [], strategy: "expiry", minBalanceUsd: DEFAULT_MIN_BALANCE_USD, proxyDownAfterMs: null };
   const keys: ApiCreditKey[] = [];
   for (const entry of Array.isArray(raw.keys) ? raw.keys : []) {
     if (!entry || typeof entry.secret !== "string" || !SECRET_NAME_RE.test(entry.secret)) continue;
@@ -137,11 +143,16 @@ export function apiCreditConfig(): ApiCreditConfig {
       grants,
     });
   }
+  const enabled = raw.enabled === true && keys.length > 0;
+  const proxyDown = raw.whenProxyDown;
+  const afterSeconds = proxyDown?.afterSeconds;
   return {
-    enabled: raw.enabled === true && keys.length > 0,
+    enabled,
     keys,
     strategy: raw.strategy === "order" ? "order" : "expiry",
     minBalanceUsd: typeof raw.minBalanceUsd === "number" && Number.isFinite(raw.minBalanceUsd) && raw.minBalanceUsd >= 0 ? raw.minBalanceUsd : DEFAULT_MIN_BALANCE_USD,
+    proxyDownAfterMs: !enabled || !proxyDown || typeof proxyDown !== "object" ? null
+      : (typeof afterSeconds === "number" && Number.isFinite(afterSeconds) && afterSeconds >= 0 ? afterSeconds : DEFAULT_PROXY_DOWN_AFTER_SECONDS) * 1000,
   };
 }
 

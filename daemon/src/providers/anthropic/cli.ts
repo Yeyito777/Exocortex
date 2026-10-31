@@ -94,17 +94,18 @@ function claudeProxyEnv(base: Record<string, string | undefined>, convId?: strin
  *
  * With `apiCredit`, the process bills that API-credit key instead
  * (api-credits.ts): Claude Code reads it through an `apiKeyHelper` command,
- * which it prefers to the account's subscription login. The account still
- * picks the configuration directory, so sessions resume as usual. The SDK's
+ * which it prefers to the account's subscription login. It goes directly to
+ * Anthropic, under /proxy too (a link that is down, `whenProxyDown`). The
+ * account still picks the configuration directory, so sessions resume as usual. The SDK's
  * own entrypoint and user agent are left as they are: the requests are Agent
  * SDK requests, which the credits pay for.
  */
 export function claudeProcessOptions(cwd: string, account?: string, convId?: string, apiCredit?: ApiCreditKey | null): ClaudeQueryOptions {
   const base = claudeSubscriptionEnv();
-  const proxy = claudeProxyEnv(base, convId);
+  const proxy = apiCredit ? {} : claudeProxyEnv(base, convId);
   const accountEnv = Object.keys(proxy).length > 0 ? {} : claudeAccountEnv(account);
-  const creditSettings = apiCredit && Object.keys(proxy).length === 0 ? apiCreditClaudeSettings(apiCredit) : null;
-  if (apiCredit && Object.keys(proxy).length === 0 && !creditSettings) throw new Error("No `secrets` CLI to read the API-credit key with.");
+  const creditSettings = apiCredit ? apiCreditClaudeSettings(apiCredit) : null;
+  if (apiCredit && !creditSettings) throw new Error("No `secrets` CLI to read the API-credit key with.");
   return {
     cwd,
     ...(creditSettings ? { settings: creditSettings } : {}),

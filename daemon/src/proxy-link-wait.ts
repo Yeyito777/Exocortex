@@ -13,6 +13,10 @@
  * key, an outdated or refusing remote) are not waited for, and the wait gives
  * up after a budget (`agent.proxyOutageWaitMinutes`, 30 minutes by default).
  * Stop aborts the wait; a steer preempts it like any retry backoff.
+ *
+ * With somewhere else to run (`fallbackInMs`: Claude's API-credit keys,
+ * `whenProxyDown`), the wait lasts until that is due, then the request goes
+ * again, and its routing takes it there.
  */
 
 import { readExocortexConfig } from "@exocortex/shared/config";
@@ -50,6 +54,8 @@ export interface ProxyLinkWaitDeps {
   alias(): string | null;
   /** Try the link now: resolve once it is up (or no longer needed), reject with the failure otherwise. */
   connect(signal: AbortSignal): Promise<void>;
+  /** How long until the request can run without the link: 0 now, null never or not now. */
+  fallbackInMs?(): number | null;
 }
 
 export interface ProxyLinkWaitHooks {
@@ -78,6 +84,7 @@ export async function runWithProxyLinkWait<T>(
   const label = options.label ? ` for ${options.label}` : "";
   let budgetMs: number | null = null;
   let waitedMs = 0;
+  let triedFallback = false;
   while (true) {
     let failure: unknown;
     try {
@@ -92,9 +99,16 @@ export async function runWithProxyLinkWait<T>(
     const message = failure instanceof Error ? failure.message : String(failure);
     log("warn", `proxy-link-wait: /proxy ${alias} is down${label} (${message}); waiting for it`);
     hooks.start(alias);
+    let fallingBack = false;
     try {
       for (let attempt = 0; ; attempt++) {
-        const delay = delays[Math.min(attempt, delays.length - 1)];
+        const fallback = deps.fallbackInMs?.() ?? null;
+        // Once per pause, should the retry end up here again.
+        if (fallback === 0 && !triedFallback) {
+          triedFallback = fallingBack = true;
+          break;
+        }
+        const delay = Math.min(delays[Math.min(attempt, delays.length - 1)], fallback || Infinity);
         if (waitedMs + delay > budgetMs) {
           const minutes = Math.round(waitedMs / 60_000);
           const gaveUp = new Error(`${message} Exocortex waited ${minutes >= 1 ? `${minutes} min` : `${Math.round(waitedMs / 1000)}s`} for /proxy ${alias} and gave up; send a message to try again.`, { cause: failure });
@@ -105,10 +119,14 @@ export async function runWithProxyLinkWait<T>(
         const started = Date.now();
         try {
           await waitPreemptibly(controller, signal => abortableDelay(delay, signal));
-          await waitPreemptibly(controller, signal => deps.connect(signal));
+          triedFallback = false;
+          const left = deps.fallbackInMs?.() ?? null;
+          if (left === 0) continue;
+          await waitPreemptibly(controller, signal => left === null ? deps.connect(signal) : Promise.race([deps.connect(signal), abortableDelay(left, signal)]));
+          if (deps.fallbackInMs?.() === 0) continue;
           break;
         } catch (error) {
-          if (controller.signal.aborted || !isTransientProviderProxyError(error)) throw error;
+          if (controller.signal.aborted || (!isTransientProviderProxyError(error) && deps.fallbackInMs?.() !== 0)) throw error;
           failure = error;
         } finally {
           waitedMs += Date.now() - started;
@@ -117,6 +135,6 @@ export async function runWithProxyLinkWait<T>(
     } finally {
       hooks.end();
     }
-    log("info", `proxy-link-wait: /proxy ${alias} is back${label}; retrying the request`);
+    log("info", fallingBack ? `proxy-link-wait: /proxy ${alias} is still down${label}; retrying the request without it` : `proxy-link-wait: /proxy ${alias} is back${label}; retrying the request`);
   }
 }

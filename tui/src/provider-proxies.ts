@@ -10,11 +10,19 @@ export function activeProviderProxy(state: Pick<RenderState, "providerProxies" |
 }
 
 export function describeProviderProxyState(proxy: ProviderProxyInfo, hideSensitiveInfo: boolean): string {
-  if (proxy.state === "connecting") return "connecting…";
-  if (proxy.state === "disconnected") return `down${proxy.message ? `: ${proxy.message}` : ""}`;
-  if (proxy.remoteLoggedIn === false) return `connected, but ${proxy.message ?? "the remote is not logged in"}`;
+  if (proxy.state === "connecting") return `connecting…${proxyCreditsNote(proxy)}`;
+  if (proxy.state === "disconnected") return `down${proxy.message ? `: ${proxy.message}` : ""}${proxyCreditsNote(proxy)}`;
+  if (proxy.remoteLoggedIn === false) return `connected, but ${proxy.message ?? "the remote is not logged in"}${proxyCreditsNote(proxy)}`;
   const account = maybeCensorEmail(proxy.remoteAccount, hideSensitiveInfo);
-  return `connected${proxy.remoteHost ? ` (${proxy.remoteHost}${account ? `, ${account}` : ""})` : ""}`;
+  return `connected${proxy.remoteHost ? ` (${proxy.remoteHost}${account ? `, ${account}` : ""})` : ""}${proxyCreditsNote(proxy)}`;
+}
+
+/** This machine's API-credit keys for when the proxy cannot serve. */
+function proxyCreditsNote(proxy: ProviderProxyInfo): string {
+  const credits = proxy.apiCredits;
+  if (!credits) return "";
+  if (credits.active) return `; turns run on API credits${credits.label ? ` (${credits.label})` : ""}`;
+  return credits.label ? `; API credits after ${credits.afterSeconds}s down` : "; no API-credit key usable";
 }
 
 export function formatProviderProxies(state: Pick<RenderState, "providerProxies" | "hideSensitiveInfo">): string {

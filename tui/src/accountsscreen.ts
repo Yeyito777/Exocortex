@@ -350,7 +350,8 @@ function proxyNote(remote: NonNullable<ClaudeAccountsInfo["remote"]>): Segment[]
   if (problem) {
     // Clipped so the card keeps its table's width; /proxy has the whole reason.
     const reason = remote.message && remote.message.length > MAX_PROXY_REASON ? `${remote.message.slice(0, MAX_PROXY_REASON - 1)}…` : remote.message;
-    return [[remote.state === "connecting" ? theme.muted : theme.error, `/proxy ${remote.alias} ${problem}`], [theme.muted, reason ? `: ${reason}` : ""]];
+    const credits = remote.apiCredits?.active ? `; on API credits${remote.apiCredits.label ? ` ${remote.apiCredits.label}` : ""}` : "";
+    return [[remote.state === "connecting" ? theme.muted : theme.error, `/proxy ${remote.alias} ${problem}`], [theme.muted, `${reason ? `: ${reason}` : ""}${credits}`]];
   }
   return [[theme.muted, `accounts on ${remote.alias} (/proxy)`]];
 }

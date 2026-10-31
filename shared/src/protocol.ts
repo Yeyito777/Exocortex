@@ -1453,6 +1453,8 @@ export interface ClaudeAccountsRemoteInfo {
   state: ProviderProxyInfo["state"];
   /** Why the link is down or the remote cannot serve Claude. */
   message?: string;
+  /** This machine's API-credit keys for that case, when configured. */
+  apiCredits?: ProviderProxyInfo["apiCredits"];
 }
 
 export interface OpenAIAccountInfo {
