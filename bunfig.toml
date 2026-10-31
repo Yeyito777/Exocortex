@@ -1,2 +1,6 @@
 [test]
 preload = ["./test/setup-config.ts"]
+# External and helper tools are their own repos with their own isolation; their
+# tests must never run from the exocortex root (a bare `bun test` here once
+# reached whatsapp-cli's tests without its preload and wiped the real login).
+pathIgnorePatterns = ["external-tools/**", "helper-tools/**", "config/**"]
