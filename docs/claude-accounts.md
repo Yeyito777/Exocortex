@@ -384,6 +384,15 @@ reset times, soonest first, at most two (`resets in 1h20m · 3h05m`,
 `resets in 3d · 5d`). With one account the bars are unchanged.
 `/account claude` shows each account's own windows.
 
+Verified accounts have no 5-hour limit: `/usage` reports `five_hour: null` for
+them. The 5-hour bar then counts only the accounts that still have the limit
+(`1/100%`, with only their reset times) and crosses out the others' share of
+the bar; with no account left it reads `not applicable`. Only a `/usage` report
+clears the window, since a `rate_limit_event` can leave a window out for no
+reason, but an event that leaves out a window the account still holds doesn't
+put off the next poll. An account whose usage isn't known yet stays counted.
+Such an account always has full 5-hour headroom in routing.
+
 Idle usage comes from Claude Code's `/usage` data, fetched per account with a
 bare Claude Code process for that account (at most once a minute per account,
 only when a client connects or a turn ends). During turns, each

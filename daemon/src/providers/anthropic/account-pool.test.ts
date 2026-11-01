@@ -13,8 +13,8 @@ import {
   setAssignmentsFileForTests,
   touchConversationAccount,
 } from "./account-pool";
-import { claudeAuthProbeCount, setClaudeAuthProbeForTests } from "./auth-cache";
-import { applyUsageHeaders, CLAUDE_ACCOUNT_HEADER, CLAUDE_RATE_LIMIT_HEADER, clearUsage } from "./usage";
+import { cachedClaudeAuthStatus, claudeAuthProbeCount, setClaudeAuthProbeForTests } from "./auth-cache";
+import { applyPlanRateLimits, applyUsageHeaders, CLAUDE_ACCOUNT_HEADER, CLAUDE_RATE_LIMIT_HEADER, clearUsage } from "./usage";
 import type { ClaudeAuthStatus } from "./types";
 import { DEV_ROUTING_ENV } from "./routing-dev-overrides";
 
@@ -144,6 +144,54 @@ describe("account pool", () => {
     expect(combined?.sevenDay?.utilization).toBe(70);
     expect(combined?.fiveHour?.resets).toHaveLength(2);
     expect(combined!.fiveHour!.resets![0]).toBeLessThan(combined!.fiveHour!.resets![1]);
+  });
+
+  describe("with no 5-hour limit on main", () => {
+    const seven_day = { utilization: 11, resets_at: new Date(Date.now() + 120 * H * 1000).toISOString() };
+
+    test("the 5-hour bar counts only the account that still has it", async () => {
+      addClaudeAccount("pool-b", join(dir, "b"));
+      applyPlanRateLimits("main", { five_hour: null, seven_day });
+      report("pool-b", 1, 4 * H, 28, 110 * H);
+      await routeClaudeTurn("conv-1", null);
+      const combined = getCombinedUsage();
+      expect(combined).toMatchObject({ capacity: 200, fiveHourCapacity: 100, fiveHour: { utilization: 1 }, sevenDay: { utilization: 39 } });
+      expect(combined?.fiveHour?.resets).toHaveLength(1);
+      expect(claudeAccountsInfo().combined?.fiveHourCapacity).toBe(100);
+    });
+
+    test("an account not checked yet after a start stays counted, so the row doesn't flash not applicable", async () => {
+      addClaudeAccount("pool-b", join(dir, "b"));
+      applyPlanRateLimits("main", { five_hour: null, seven_day });
+      await cachedClaudeAuthStatus("main");
+      // pool-b has no usage yet either: unknown, not crossed out.
+      expect(getCombinedUsage()).toMatchObject({ capacity: 200, fiveHourCapacity: 100, fiveHour: null });
+      report("pool-b", 1, 4 * H, 28, 110 * H);
+      expect(getCombinedUsage()).toMatchObject({ capacity: 200, fiveHourCapacity: 100, fiveHour: { utilization: 1 } });
+
+      // The check says it is signed out: it no longer counts, and main alone has no 5-hour limit.
+      signedIn["pool-b"] = false;
+      await refreshClaudeAccountStatuses();
+      const alone = getCombinedUsage();
+      expect(alone).toMatchObject({ fiveHour: null, noFiveHourLimit: true });
+      expect(alone?.capacity).toBeUndefined();
+    });
+
+    test("no account without the limit: an unchecked account adds nothing, as before", async () => {
+      addClaudeAccount("pool-b", join(dir, "b"));
+      report("main", 30, 2 * H, 40, 48 * H);
+      report("pool-b", 1, 4 * H, 28, 110 * H);
+      await cachedClaudeAuthStatus("main");
+      expect(getCombinedUsage()?.capacity).toBeUndefined();
+      expect(getCombinedUsage()?.fiveHour?.utilization).toBe(30);
+    });
+
+    test("it is the account routing picks when the other is at its 5-hour limit", async () => {
+      addClaudeAccount("pool-b", join(dir, "b"));
+      applyPlanRateLimits("main", { five_hour: null, seven_day });
+      report("pool-b", 100, 4 * H, 28, 110 * H);
+      expect(await routeClaudeTurn("conv-1", null)).toMatchObject({ account: "main" });
+    });
   });
 });
 

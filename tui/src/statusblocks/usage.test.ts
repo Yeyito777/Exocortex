@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { apiCreditPickSummary, usageBlock, usageSummary } from "./usage";
 import { renderStatusLine } from "../statusline";
-import type { ApiCreditGrantLeft, ApiCreditsUsage } from "../messages";
+import type { ApiCreditGrantLeft, ApiCreditsUsage, UsageData } from "../messages";
 import { createInitialState } from "../state";
 import { stripAnsi } from "../historycursor";
 import { theme } from "../theme";
@@ -121,6 +121,125 @@ describe("usage status block", () => {
     const block = usageBlock(state)!;
     expect(stripAnsi(block.rows[0])).toContain("50% resets in 2h:00m");
     expect(stripAnsi(block.rows[0])).not.toContain("/100");
+  });
+});
+
+describe("Claude accounts without the 5-hour limit", () => {
+  const NOW = 1_700_000_000_000;
+  const M = 60_000;
+  const H = 60 * M;
+  const weekly = { utilization: 39, resetsAt: NOW + 5 * 24 * H, resets: [NOW + 5 * 24 * H, NOW + 5 * 24 * H + 30 * M] };
+  const WEEKLY_ROW = `  Weekly: [${"\u2588".repeat(4)}${"\u2591".repeat(16)}] 39/200% resets in 5d · 5d`;
+
+  function rows(usage: UsageData): string[] {
+    Date.now = () => NOW;
+    const state = createInitialState();
+    state.provider = "anthropic";
+    state.authByProvider.anthropic = true;
+    state.usageByProvider.anthropic = usage;
+    const block = usageBlock(state)!;
+    expect(block.rows.every(row => stripAnsi(row).length === block.width)).toBe(true);
+    return block.rows.map(row => stripAnsi(row).trimEnd());
+  }
+  function summary(usage: UsageData): string | null {
+    Date.now = () => NOW;
+    const state = createInitialState();
+    state.provider = "anthropic";
+    state.authByProvider.anthropic = true;
+    state.usageByProvider.anthropic = usage;
+    return usageSummary(state, NOW);
+  }
+
+  test("1 of 2: the bar counts the limited account; the other's half is crossed out on the right", () => {
+    const usage: UsageData = {
+      capacity: 200,
+      fiveHourCapacity: 100,
+      fiveHour: { utilization: 1, resetsAt: NOW + 4 * H + 49 * M + 30_000, resets: [NOW + 4 * H + 49 * M + 30_000] },
+      sevenDay: weekly,
+    };
+    expect(rows(usage)).toEqual([
+      `  5-Hour: [${"\u2591".repeat(10)}${"X".repeat(10)}] 1/100% resets in 4h49m`,
+      WEEKLY_ROW,
+    ]);
+    expect(summary(usage)).toBe("5-hour 1/100% (resets in 4h49m) · weekly 39/200% (resets in 5d · 5d)");
+  });
+
+  test("the X cells are the dim ones of the not-applicable row", () => {
+    Date.now = () => NOW;
+    const state = createInitialState();
+    state.provider = "anthropic";
+    state.authByProvider.anthropic = true;
+    state.usageByProvider.anthropic = { capacity: 200, fiveHourCapacity: 100, fiveHour: { utilization: 1, resetsAt: NOW + H, resets: [NOW + H] }, sevenDay: weekly };
+    expect(usageBlock(state)!.rows[0]).toContain(`${theme.text}${theme.dim}${"X".repeat(10)}${theme.reset}`);
+  });
+
+  test("2 of 2: the not-applicable row, unchanged", () => {
+    const usage: UsageData = { capacity: 200, fiveHourCapacity: 0, fiveHour: null, sevenDay: weekly };
+    expect(rows(usage)).toEqual([
+      `  5-Hour: [${"X".repeat(20)}] not applicable`,
+      WEEKLY_ROW,
+    ]);
+    expect(summary(usage)).toBe("5-hour n/a · weekly 39/200% (resets in 5d · 5d)");
+  });
+
+  test("one account without it: the not-applicable row over the plain weekly bar", () => {
+    const usage: UsageData = { fiveHour: null, sevenDay: { utilization: 39, resetsAt: NOW + 5 * 24 * H }, noFiveHourLimit: true };
+    expect(rows(usage)).toEqual([
+      `  5-Hour: [${"X".repeat(20)}] not applicable`,
+      `  Weekly: [${"\u2588".repeat(8)}${"\u2591".repeat(12)}] 39% resets in 5d:0h:00m`,
+    ]);
+  });
+
+  test("no account without it: exactly the old row, the old form of a lone reset included", () => {
+    const usage: UsageData = {
+      capacity: 200,
+      fiveHour: { utilization: 1, resetsAt: NOW + 4 * H + 49 * M + 30_000, resets: [NOW + 4 * H + 49 * M + 30_000] },
+      sevenDay: weekly,
+    };
+    expect(rows(usage)).toEqual([
+      `  5-Hour: [${"\u2591".repeat(20)}] 1/200% resets in 4h:49m`,
+      WEEKLY_ROW,
+    ]);
+  });
+
+  test("a limited account at 100% fills all of its cells", () => {
+    expect(rows({
+      capacity: 200,
+      fiveHourCapacity: 100,
+      fiveHour: { utilization: 100, resetsAt: NOW + 80 * M, resets: [NOW + 80 * M] },
+      sevenDay: weekly,
+    })[0]).toBe(`  5-Hour: [${"\u2588".repeat(10)}${"X".repeat(10)}] 100/100% resets in 1h20m`);
+  });
+
+  test("by share: 1 of 3 crosses out about a third, the two others fill the rest", () => {
+    expect(rows({
+      capacity: 300,
+      fiveHourCapacity: 200,
+      fiveHour: { utilization: 100, resetsAt: NOW + 80 * M, resets: [NOW + 80 * M, NOW + 3 * H + 5 * M] },
+      sevenDay: { ...weekly, utilization: 60 },
+    })[0]).toBe(`  5-Hour: [${"\u2588".repeat(7)}${"\u2591".repeat(6)}${"X".repeat(7)}] 100/200% resets in 1h20m · 3h05m`);
+  });
+
+  test("the limited account's usage not known yet: still counted, so the bar stays unfilled, not all crossed out", () => {
+    const usage: UsageData = { capacity: 200, fiveHourCapacity: 100, fiveHour: null, sevenDay: weekly };
+    expect(rows(usage)[0]).toBe(`  5-Hour: [${"\u2591".repeat(10)}${"X".repeat(10)}] ?/100% resets in ?`);
+    expect(summary(usage)).toBe("5-hour ?/100% · weekly 39/200% (resets in 5d · 5d)");
+  });
+
+  test("an older daemon, with no 5-hour capacity, shows what it showed", () => {
+    expect(rows({ capacity: 200, fiveHour: null, sevenDay: weekly })[0]).toBe(`  5-Hour: [${"X".repeat(20)}] not applicable`);
+  });
+
+  test("OpenAI rows are untouched by the new fields' absence", () => {
+    Date.now = () => NOW;
+    const state = createInitialState();
+    state.provider = "openai";
+    state.authByProvider.openai = true;
+    state.usageByProvider.openai = { fiveHour: { utilization: 25, resetsAt: NOW + H }, sevenDay: { utilization: 50, resetsAt: NOW + 24 * H } };
+    expect(usageBlock(state)!.rows.map(row => stripAnsi(row).trimEnd())).toEqual([
+      `  5-Hour: [${"\u2588".repeat(5)}${"\u2591".repeat(15)}] 25% resets in 1h:00m`,
+      `  Weekly: [${"\u2588".repeat(10)}${"\u2591".repeat(10)}] 50% resets in 1d:0h:00m`,
+    ]);
   });
 });
 

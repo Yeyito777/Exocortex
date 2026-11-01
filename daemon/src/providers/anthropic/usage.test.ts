@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, readFileSync } from "fs";
+import { join } from "path";
+import { runtimeDir } from "@exocortex/shared/paths";
 import {
   aggregateUsage,
   applyUsageHeaders,
@@ -7,6 +10,7 @@ import {
   clearUsage,
   getAccountLimitedUntil,
   getAccountUsage,
+  getAccountUsageUpdatedAt,
   applyPlanRateLimits,
   mergeUsage,
   usageFromPlanRateLimits,
@@ -34,12 +38,39 @@ describe("usageFromPlanRateLimits", () => {
       fiveHour: { utilization: 20, resetsAt: 1_000 },
       sevenDay: { utilization: 40, resetsAt: 2_000 },
     };
-    expect(usageFromPlanRateLimits({ five_hour: null, seven_day: { utilization: 45, resets_at: null } }, previous)).toEqual({
-      fiveHour: previous.fiveHour,
-      sevenDay: { utilization: 45, resetsAt: null },
+    expect(usageFromPlanRateLimits({ five_hour: { utilization: 25, resets_at: null }, seven_day: null }, previous)).toEqual({
+      fiveHour: { utilization: 25, resetsAt: null },
+      sevenDay: previous.sevenDay,
     });
     expect(usageFromPlanRateLimits({ five_hour: null, seven_day: null }, previous)).toBeNull();
     expect(usageFromPlanRateLimits(null, previous)).toBeNull();
+  });
+
+  test("a report with the weekly window and no 5-hour one means no 5-hour limit, null or absent", () => {
+    const previous = {
+      fiveHour: { utilization: 20, resetsAt: 1_000 },
+      sevenDay: { utilization: 40, resetsAt: 2_000 },
+    };
+    const cleared = { fiveHour: null, sevenDay: { utilization: 45, resetsAt: null }, noFiveHourLimit: true };
+    // What Claude Code answers for a verified account (read from main, Nov 1 2026).
+    expect(usageFromPlanRateLimits({ five_hour: null, seven_day: { utilization: 45, resets_at: null } }, previous)).toEqual(cleared);
+    expect(usageFromPlanRateLimits({ seven_day: { utilization: 45, resets_at: null } }, previous)).toEqual(cleared);
+  });
+
+  test("a 5-hour window without a figure says nothing: the last value stays, and so does no limit", () => {
+    const blank = { five_hour: { utilization: null, resets_at: null }, seven_day: { utilization: 45, resets_at: null } };
+    const sevenDay = { utilization: 45, resetsAt: null };
+    const fiveHour = { utilization: 20, resetsAt: 1_000 };
+    expect(usageFromPlanRateLimits(blank, { fiveHour, sevenDay: null })).toEqual({ fiveHour, sevenDay });
+    expect(usageFromPlanRateLimits(blank, { fiveHour: null, sevenDay: null, noFiveHourLimit: true })).toEqual({ fiveHour: null, sevenDay, noFiveHourLimit: true });
+  });
+
+  test("the limit coming back ends no limit", () => {
+    const usage = usageFromPlanRateLimits(
+      { five_hour: { utilization: 3, resets_at: null }, seven_day: { utilization: 45, resets_at: null } },
+      { fiveHour: null, sevenDay: null, noFiveHourLimit: true },
+    );
+    expect(usage).toEqual({ fiveHour: { utilization: 3, resetsAt: null }, sevenDay: { utilization: 45, resetsAt: null } });
   });
 });
 
@@ -57,7 +88,161 @@ describe("usageFromRateLimitInfo", () => {
   });
 });
 
+describe("usageFromRateLimitInfo on the 5-hour limit", () => {
+  const sevenDay = { utilization: 0.11, resetsAt: 1_794_038_400 };
+  const weekly = { utilization: 11, resetsAt: 1_794_038_400_000 };
+
+  test("an event that leaves the window out keeps what is known: a window, or no limit", () => {
+    const fiveHour = { utilization: 20, resetsAt: 1_000 };
+    // Recorded from main, Nov 1 2026: a verified account's events carry only seven_day.
+    const info = { status: "allowed", rateLimitType: "seven_day", unifiedWindows: { seven_day: sevenDay } };
+    expect(usageFromRateLimitInfo(info, { fiveHour, sevenDay: null })).toEqual({ fiveHour, sevenDay: weekly });
+    expect(usageFromRateLimitInfo(info, { fiveHour: null, sevenDay: null, noFiveHourLimit: true })).toEqual({ fiveHour: null, sevenDay: weekly, noFiveHourLimit: true });
+  });
+
+  test("an event on an account never reported is unknown, not no limit", () => {
+    expect(usageFromRateLimitInfo({ unifiedWindows: { seven_day: sevenDay } })).toEqual({ fiveHour: null, sevenDay: weekly });
+  });
+
+  test("a window with no reset time does not bring a cleared limit back; a running one does", () => {
+    const cleared = { fiveHour: null, sevenDay: weekly, noFiveHourLimit: true };
+    const idle = { unifiedWindows: { five_hour: { utilization: 0 }, seven_day: sevenDay } };
+    expect(usageFromRateLimitInfo(idle, cleared)).toEqual(cleared);
+    expect(usageFromRateLimitInfo({ unifiedWindows: { five_hour: { utilization: 0 } } }, cleared)).toBeNull();
+    expect(usageFromRateLimitInfo({ unifiedWindows: { five_hour: { utilization: 0.02, resetsAt: 1_793_579_400 }, seven_day: sevenDay } }, cleared)).toEqual({
+      fiveHour: { utilization: 2, resetsAt: 1_793_579_400_000 },
+      sevenDay: weekly,
+    });
+  });
+});
+
+describe("an account losing the 5-hour limit", () => {
+  const ACCOUNT = "test-verified";
+  const FULL = { seven_day: { utilization: 11, resets_at: new Date(1_900_000_000_000).toISOString() } };
+  const event = (windows: Record<string, unknown>) => new Headers({
+    [CLAUDE_RATE_LIMIT_HEADER]: JSON.stringify({ status: "allowed", unifiedWindows: windows }),
+    [CLAUDE_ACCOUNT_HEADER]: ACCOUNT,
+  });
+  const seed = (fiveHour: { utilization: number; resetsAt: number | null }, now: number) =>
+    applyPlanRateLimits(ACCOUNT, { five_hour: { utilization: fiveHour.utilization, resets_at: fiveHour.resetsAt ? new Date(fiveHour.resetsAt).toISOString() : null }, ...FULL }, now);
+
+  test("the stored value (main's stale 0% with no reset) goes on the next report, also on disk", async () => {
+    mkdirSync(runtimeDir(), { recursive: true });
+    try {
+      seed({ utilization: 0, resetsAt: null }, 1_000);
+      expect(getAccountUsage(ACCOUNT)?.fiveHour).toEqual({ utilization: 0, resetsAt: null });
+      applyPlanRateLimits(ACCOUNT, { five_hour: null, ...FULL }, 2_000);
+      expect(getAccountUsage(ACCOUNT)).toEqual({ fiveHour: null, sevenDay: { utilization: 11, resetsAt: 1_900_000_000_000 }, noFiveHourLimit: true });
+      const onDisk = JSON.parse(readFileSync(join(runtimeDir(), "usage-anthropic.json"), "utf-8"));
+      expect(onDisk.accounts[ACCOUNT].usage).toEqual(getAccountUsage(ACCOUNT));
+      // A restart reads it back: the row does not flash while the first report is out.
+      const restartedPath = "./usage?restarted";
+      const restarted = await import(restartedPath) as typeof import("./usage");
+      expect(restarted.getAccountUsage(ACCOUNT)).toEqual(getAccountUsage(ACCOUNT));
+    } finally {
+      clearUsage(ACCOUNT);
+    }
+  });
+
+  test("a window in progress goes too, and a limit on it no longer holds the account", () => {
+    const now = 1_000_000;
+    try {
+      seed({ utilization: 100, resetsAt: now + 3_600_000 }, now);
+      applyUsageHeaders(new Headers({
+        [CLAUDE_RATE_LIMIT_HEADER]: JSON.stringify({ status: "rejected", resetsAt: Math.floor((now + 3_600_000) / 1000) }),
+        [CLAUDE_ACCOUNT_HEADER]: ACCOUNT,
+      }), now);
+      expect(getAccountLimitedUntil(ACCOUNT, now)).not.toBeNull();
+      applyPlanRateLimits(ACCOUNT, { five_hour: null, ...FULL }, now + 1);
+      expect(getAccountUsage(ACCOUNT)?.fiveHour).toBeNull();
+      expect(getAccountLimitedUntil(ACCOUNT, now + 1)).toBeNull();
+    } finally {
+      clearUsage(ACCOUNT);
+    }
+  });
+
+  test("events do not clear a window, and only a poll does: leaving it out does not put the poll off", () => {
+    const now = 1_000_000;
+    const running = { utilization: 20, resetsAt: 1_900_000_000_000 };
+    try {
+      seed(running, now);
+      expect(getAccountUsageUpdatedAt(ACCOUNT)).toBe(now);
+      applyUsageHeaders(event({ seven_day: { utilization: 0.12, resetsAt: 1_900_000_000 } }), now + 30_000);
+      expect(getAccountUsage(ACCOUNT)?.fiveHour).toEqual(running);
+      expect(getAccountUsage(ACCOUNT)?.sevenDay?.utilization).toBe(12);
+      expect(getAccountUsageUpdatedAt(ACCOUNT)).toBe(now);
+
+      // An event with the window is as fresh as ever.
+      applyUsageHeaders(event({ five_hour: { utilization: 0.21, resetsAt: 1_900_000_000 }, seven_day: { utilization: 0.12, resetsAt: 1_900_000_000 } }), now + 40_000);
+      expect(getAccountUsageUpdatedAt(ACCOUNT)).toBe(now + 40_000);
+
+      // Once the poll has cleared it, events on the account count as reports again.
+      applyPlanRateLimits(ACCOUNT, { five_hour: null, ...FULL }, now + 50_000);
+      applyUsageHeaders(event({ seven_day: { utilization: 0.12, resetsAt: 1_900_000_000 } }), now + 60_000);
+      expect(getAccountUsage(ACCOUNT)?.noFiveHourLimit).toBe(true);
+      expect(getAccountUsage(ACCOUNT)?.fiveHour).toBeNull();
+      expect(getAccountUsageUpdatedAt(ACCOUNT)).toBe(now + 60_000);
+    } finally {
+      clearUsage(ACCOUNT);
+    }
+  });
+});
+
 describe("aggregateUsage", () => {
+  const NOW_NA = 1_791_000_000_000;
+  const H_NA = 3_600_000;
+  const limited = (utilization: number, reset: number) => ({ fiveHour: { utilization, resetsAt: NOW_NA + reset * H_NA }, sevenDay: { utilization: 20, resetsAt: NOW_NA + 90 * H_NA } });
+  const verified = (utilization: number) => ({ fiveHour: null, sevenDay: { utilization, resetsAt: NOW_NA + 120 * H_NA }, noFiveHourLimit: true });
+
+  test("1 of 2 without the 5-hour limit: that bar counts only the other, with only its reset", () => {
+    const combined = aggregateUsage([verified(11), limited(1, 4)], NOW_NA)!;
+    expect(combined.capacity).toBe(200);
+    expect(combined.fiveHourCapacity).toBe(100);
+    expect(combined.fiveHour).toEqual({ utilization: 1, resetsAt: NOW_NA + 4 * H_NA, resets: [NOW_NA + 4 * H_NA] });
+    // Weekly never changes.
+    expect(combined.sevenDay).toEqual({ utilization: 31, resetsAt: NOW_NA + 90 * H_NA, resets: [NOW_NA + 90 * H_NA, NOW_NA + 120 * H_NA] });
+  });
+
+  test("2 of 2 without it: no window and no capacity left; an older client still shows not applicable", () => {
+    const combined = aggregateUsage([verified(11), verified(28)], NOW_NA)!;
+    expect(combined.fiveHour).toBeNull();
+    expect(combined.fiveHourCapacity).toBe(0);
+    expect(combined.capacity).toBe(200);
+    expect(combined.sevenDay?.utilization).toBe(39);
+  });
+
+  test("0 of 2: exactly the shape from before", () => {
+    const combined = aggregateUsage([limited(1, 4), limited(2, 3)], NOW_NA)!;
+    expect(combined).toEqual({
+      fiveHour: { utilization: 3, resetsAt: NOW_NA + 3 * H_NA, resets: [NOW_NA + 3 * H_NA, NOW_NA + 4 * H_NA] },
+      sevenDay: { utilization: 40, resetsAt: NOW_NA + 90 * H_NA, resets: [NOW_NA + 90 * H_NA, NOW_NA + 90 * H_NA] },
+      capacity: 200,
+    });
+    expect("fiveHourCapacity" in combined).toBe(false);
+  });
+
+  test("an account not reported yet stays counted", () => {
+    expect(aggregateUsage([limited(1, 4), null], NOW_NA)).not.toHaveProperty("fiveHourCapacity");
+    // A partial event, not a report: the weekly window alone is not no limit.
+    expect(aggregateUsage([limited(1, 4), { fiveHour: null, sevenDay: { utilization: 5, resetsAt: null } }], NOW_NA)).not.toHaveProperty("fiveHourCapacity");
+    const oneKnown = aggregateUsage([verified(11), null], NOW_NA)!;
+    expect(oneKnown.fiveHour).toBeNull();
+    expect(oneKnown.fiveHourCapacity).toBe(100);
+    expect(oneKnown.capacity).toBe(200);
+  });
+
+  test("shares generalize: 1 of 3 leaves two accounts' capacity", () => {
+    const combined = aggregateUsage([verified(11), limited(1, 4), limited(2, 3)], NOW_NA)!;
+    expect(combined.capacity).toBe(300);
+    expect(combined.fiveHourCapacity).toBe(200);
+    expect(combined.fiveHour?.utilization).toBe(3);
+  });
+
+  test("one verified account keeps the plain single-account shape", () => {
+    const one = verified(11);
+    expect(aggregateUsage([one], NOW_NA)).toBe(one);
+  });
+
   const NOW = 1_800_000_000_000;
   const H = 3_600_000;
 

@@ -3,7 +3,8 @@
  *
  * Usage combined over several accounts (Claude) fills a bar scaled to
  * `capacity` (two accounts: 0–200%) and lists the accounts' two soonest
- * reset times.
+ * reset times. Accounts with no 5-hour limit cross out their share of the
+ * 5-hour bar; the rest of the bar is scaled to the accounts that have it.
  *
  * While the provider goes through /proxy, the bars are the remote's; a link
  * that is down or connecting, or a remote that is not logged in, shows beside
@@ -19,7 +20,7 @@
 
 import type { RenderState } from "../state";
 import type { StatusBlock } from "../statusline";
-import type { ApiCreditGrantLeft, ApiCreditPool, ApiCreditsUsage, ApiKeyCredit, ApiKeySpend, ApiKeyUsage, UsageWindow } from "../messages";
+import type { ApiCreditGrantLeft, ApiCreditPool, ApiCreditsUsage, ApiKeyCredit, ApiKeySpend, ApiKeyUsage, UsageData, UsageWindow } from "../messages";
 import { theme } from "../theme";
 import { activeProviderProxy } from "../provider-proxies";
 
@@ -35,13 +36,16 @@ export function barFill(pct: number, capacity = 100, width = BAR_WIDTH): number 
   return Math.round((clamped / capacity) * width);
 }
 
-function renderBar(pct: number | null, capacity = 100): string {
+/** A bar with its last `crossed` cells crossed out; `pct` of `capacity` fills the others. */
+function renderBar(pct: number | null, capacity = 100, crossed = 0): string {
+  const width = BAR_WIDTH - crossed;
+  const xs = crossed > 0 ? `${theme.text}${theme.dim}${"X".repeat(crossed)}${theme.reset}` : "";
   if (pct === null) {
-    return theme.muted + "\u2591".repeat(BAR_WIDTH);
+    return theme.muted + "\u2591".repeat(width) + xs;
   }
-  const filled = barFill(pct, capacity);
-  const empty = BAR_WIDTH - filled;
-  return theme.accent + "\u2588".repeat(filled) + theme.muted + "\u2591".repeat(empty);
+  const filled = barFill(pct, capacity, width);
+  const empty = width - filled;
+  return theme.accent + "\u2588".repeat(filled) + theme.muted + "\u2591".repeat(empty) + xs;
 }
 
 function formatTimeUntil(resetMs: number, now: number): string {
@@ -68,9 +72,10 @@ function formatShortTimeUntil(resetMs: number, now: number): string {
   return `${mins}m`;
 }
 
-function formatResetLabel(window: UsageWindow | null, now: number): string {
+/** `compact`: a combined bar's list form even for one reset (`4h49m`, not `4h:49m`). */
+function formatResetLabel(window: UsageWindow | null, now: number, compact = false): string {
   if (!window) return "?";
-  if (window.resets && window.resets.length > 1) {
+  if (window.resets && window.resets.length > (compact ? 0 : 1)) {
     return window.resets
       .filter(reset => reset > now)
       .slice(0, MAX_RESETS_SHOWN)
@@ -95,12 +100,12 @@ function unavailableWindowLineWidth(label: string): number {
   return 2 + label.length + 2 + 1 + BAR_WIDTH + 1 + 1 + "not applicable".length;
 }
 
-function renderWindowLine(label: string, window: UsageWindow | null, now: number, capacity = 100): { line: string; width: number } {
+function renderWindowLine(label: string, window: UsageWindow | null, now: number, capacity = 100, crossed = 0): { line: string; width: number } {
   const pct = window ? Math.round(window.utilization) : null;
   const shown = pct !== null ? `${pct}` : "?";
-  const pctStr = capacity !== 100 ? `${shown}/${capacity}%` : `${shown}%`;
-  const resetStr = formatResetLabel(window, now);
-  const bar = renderBar(pct, capacity);
+  const pctStr = capacity !== 100 || crossed > 0 ? `${shown}/${capacity}%` : `${shown}%`;
+  const resetStr = formatResetLabel(window, now, crossed > 0);
+  const bar = renderBar(pct, capacity, crossed);
   const line = `${theme.muted}  ${label}: ${theme.text}[${bar}${theme.text}] ${theme.accent}${pctStr}${theme.muted} resets in ${theme.accent}${resetStr}${theme.reset}`;
   const width = windowLineWidth(label, pctStr, resetStr);
   return { line, width };
@@ -116,6 +121,21 @@ function summarizeWindow(label: string, window: UsageWindow | null, now: number,
   if (!window) return `${label} n/a`;
   const pct = Math.round(window.utilization);
   return `${label} ${capacity !== 100 ? `${pct}/${capacity}` : pct}% (resets in ${formatResetLabel(window, now)})`;
+}
+
+/** The 5-hour bar when only some combined accounts have the limit: their capacity and the others' crossed-out cells. */
+function fiveHourShare(usage: UsageData, capacity: number): { capacity: number; crossed: number } | null {
+  const limited = usage.fiveHourCapacity;
+  if (limited === undefined || limited <= 0 || limited >= capacity) return null;
+  return { capacity: limited, crossed: Math.round(BAR_WIDTH * (1 - limited / capacity)) };
+}
+
+/** The /tokens form of the 5-Hour row. */
+function summarizeFiveHour(usage: UsageData, now: number, capacity: number): string {
+  const share = fiveHourShare(usage, capacity);
+  if (!share) return summarizeWindow("5-hour", usage.fiveHour, now, capacity);
+  if (!usage.fiveHour) return `5-hour ?/${share.capacity}%`;
+  return `5-hour ${Math.round(usage.fiveHour.utilization)}/${share.capacity}% (resets in ${formatResetLabel(usage.fiveHour, now, true)})`;
 }
 
 function formatTokenCount(tokens: number): string {
@@ -432,7 +452,7 @@ export function usageSummary(state: RenderState, now = Date.now()): string | nul
   if (!usage?.fiveHour && !usage?.sevenDay) return null;
   const capacity = usage.capacity && usage.capacity > 0 ? usage.capacity : 100;
   const credits = usage.apiCredits?.active ? ` · ${apiCreditSummary(usage.apiCredits, now)}` : "";
-  return `${summarizeWindow("5-hour", usage.fiveHour, now, capacity)} · ${summarizeWindow("weekly", usage.sevenDay, now, capacity)}${credits}`;
+  return `${summarizeFiveHour(usage, now, capacity)} · ${summarizeWindow("weekly", usage.sevenDay, now, capacity)}${credits}`;
 }
 
 /** While Claude turns run on API credits: the key new ones take and why ("max2 (its credit expires soonest: …)"); null otherwise or from an older daemon. */
@@ -541,8 +561,9 @@ function usageBars(state: RenderState): StatusBlock | null {
   if (!usage?.fiveHour && !usage?.sevenDay) return null;
 
   const capacity = usage.capacity && usage.capacity > 0 ? usage.capacity : 100;
-  const fiveHour = usage.fiveHour
-    ? renderWindowLine("5-Hour", usage.fiveHour, now, capacity)
+  const share = fiveHourShare(usage, capacity);
+  const fiveHour = share ? renderWindowLine("5-Hour", usage.fiveHour, now, share.capacity, share.crossed)
+    : usage.fiveHour ? renderWindowLine("5-Hour", usage.fiveHour, now, capacity)
     : renderUnavailableWindowLine("5-Hour");
   const weekly = renderWindowLine("Weekly", usage?.sevenDay ?? null, now, capacity);
   const blockWidth = Math.max(fiveHour.width, weekly.width);

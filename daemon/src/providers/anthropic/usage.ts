@@ -17,6 +17,11 @@
  * poll reads a little higher than the rate_limit_events), so an account's
  * window never goes back within the same window (mergeUsage); only a reset
  * starts it over.
+ *
+ * Verified accounts have no 5-hour limit: `/usage` reports `five_hour: null`
+ * and their rate_limit_events leave it out. Only `/usage` is a full report, so
+ * only it clears the window (noFiveHourLimit); an event may leave a window out
+ * for no reason.
  */
 
 import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
@@ -140,10 +145,10 @@ export function mergeUsage(previous: UsageData | null, next: UsageData, now = Da
   };
 }
 
-function commitUsage(account: string, usage: UsageData, now = Date.now()): void {
+function commitUsage(account: string, usage: UsageData, now = Date.now(), reported = true): void {
   const entry = entryFor(account);
   entry.usage = mergeUsage(entry.usage, usage, now);
-  entry.updatedAt = now;
+  if (reported) entry.updatedAt = now;
   saveToDisk();
   emitClaudeAccountsChanged();
 }
@@ -166,12 +171,16 @@ function toWindow(window: RateLimitWindow | null | undefined): UsageWindow | nul
 /** Parse an SDK `rate_limit_event`'s rate_limit_info into usage windows. */
 export function usageFromRateLimitInfo(info: Record<string, unknown>, previous: UsageData | null = null): UsageData | null {
   const windows = (info.unifiedWindows ?? {}) as Record<string, RateLimitWindow | undefined>;
-  const fiveHour = toWindow(windows.five_hour);
+  const reported = toWindow(windows.five_hour);
+  // Only a running window (one with a reset time) brings back a limit `/usage` said is gone.
+  const noLimit = previous?.noFiveHourLimit === true && reported?.resetsAt == null;
+  const fiveHour = noLimit ? null : reported;
   const sevenDay = toWindow(windows.seven_day);
   if (!fiveHour && !sevenDay) return null;
   return {
     fiveHour: fiveHour ?? previous?.fiveHour ?? null,
     sevenDay: sevenDay ?? previous?.sevenDay ?? null,
+    ...(noLimit ? { noFiveHourLimit: true } : {}),
   };
 }
 
@@ -197,9 +206,12 @@ export function usageFromPlanRateLimits(rateLimits: Record<string, unknown> | nu
   const fiveHour = toPlanWindow(rateLimits.five_hour as PlanRateLimitWindow | null | undefined);
   const sevenDay = toPlanWindow(rateLimits.seven_day as PlanRateLimitWindow | null | undefined);
   if (!fiveHour && !sevenDay) return null;
+  // A report with the weekly window and no 5-hour one: the account has no 5-hour limit.
+  const noLimit = rateLimits.five_hour == null ? sevenDay !== null : !fiveHour && previous?.noFiveHourLimit === true;
   return {
-    fiveHour: fiveHour ?? previous?.fiveHour ?? null,
+    fiveHour: fiveHour ?? (noLimit ? null : previous?.fiveHour ?? null),
     sevenDay: sevenDay ?? previous?.sevenDay ?? null,
+    ...(noLimit ? { noFiveHourLimit: true } : {}),
   };
 }
 
@@ -258,7 +270,9 @@ function aggregateWindow(windows: Array<UsageWindow | null>, now: number): Usage
 
 /**
  * Combined usage of the given accounts: one bar per window scaled to
- * `capacity` (100 per account), with every account's reset time.
+ * `capacity` (100 per account), with every account's reset time. The 5-hour
+ * bar leaves out accounts reported to have no 5-hour limit (`fiveHourCapacity`);
+ * one with unknown usage still counts.
  * A single account keeps the plain single-account shape.
  */
 export function aggregateUsage(usages: Array<UsageData | null>, now = Date.now()): UsageData | null {
@@ -267,7 +281,13 @@ export function aggregateUsage(usages: Array<UsageData | null>, now = Date.now()
   if (usages.every(usage => !usage?.fiveHour && !usage?.sevenDay)) return null;
   const fiveHour = aggregateWindow(usages.map(usage => usage?.fiveHour ?? null), now);
   const sevenDay = aggregateWindow(usages.map(usage => usage?.sevenDay ?? null), now);
-  return { fiveHour, sevenDay, capacity: usages.length * 100 };
+  const noLimit = usages.filter(usage => usage?.noFiveHourLimit).length;
+  return {
+    fiveHour,
+    sevenDay,
+    capacity: usages.length * 100,
+    ...(noLimit > 0 ? { fiveHourCapacity: (usages.length - noLimit) * 100 } : {}),
+  };
 }
 
 /** Streaming input that stays silent until `signal` aborts, so Claude Code never prompts the model. */
@@ -392,7 +412,10 @@ export function applyUsageHeaders(headers: Headers, now = Date.now()): string | 
     noteRateLimitStatus(entry, info, now);
     const usage = usageFromRateLimitInfo(info, entry.usage);
     if (usage) {
-      commitUsage(account, usage, now);
+      // An event without the 5-hour window still held is not a fresh report:
+      // the limit may be gone, and only the next `/usage` poll can say so.
+      const held = usage.fiveHour !== null && usage.fiveHour === entry.usage?.fiveHour;
+      commitUsage(account, usage, now, !held);
     } else if (before !== entry.limitedUntil) {
       saveToDisk();
       emitClaudeAccountsChanged();

@@ -904,6 +904,17 @@ export interface UsageData {
    * (two Claude accounts: 0–200%). Omitted for a single account (100).
    */
   capacity?: number;
+  /**
+   * Combined Claude usage with some account that has no 5-hour limit: what
+   * means "full" for `fiveHour`, 100 per account that still has one (0: none
+   * does). Omitted when no account is known to have lost the limit.
+   */
+  fiveHourCapacity?: number;
+  /**
+   * One Claude account: its full `/usage` report had no 5-hour window, so the
+   * limit does not apply to it. A null `fiveHour` without this is only unknown.
+   */
+  noFiveHourLimit?: boolean;
   /** OpenAI reset-credit metadata. Omitted for older caches and unsupported providers. */
   resetCredits?: UsageResetCredits | null;
   /**

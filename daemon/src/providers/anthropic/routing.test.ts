@@ -2,8 +2,10 @@ import { describe, expect, test } from "bun:test";
 import type { UsageData } from "../../messages";
 import {
   accountSwitchNotice,
+  accountUsableAt,
   chooseAccountForNewWork,
   DEFAULT_ROUTING_POLICY,
+  isAccountLimited,
   routeConversation,
   routeNewWork,
   subscriptionsUsableAt,
@@ -334,5 +336,53 @@ describe("when the subscriptions can take turns again", () => {
     expect(subscriptionsUsableAt([account("main", usage([20, HOUR], [30, DAY]))], NOW)).toBe(NOW);
     expect(subscriptionsUsableAt([account("main", usage([100, null], null))], NOW)).toBeNull();
     expect(subscriptionsUsableAt([account("main", usage([100, null], null)), account("max2", null, { limitedUntil: NOW + DAY })], NOW)).toBe(NOW + DAY);
+  });
+});
+
+describe("an account with no 5-hour limit", () => {
+  const verified = (weekly: [number, number | null]): UsageData => ({ ...usage(null, weekly), noFiveHourLimit: true });
+
+  test("has full 5-hour headroom, and is not limited by it", () => {
+    const state = account("main", verified([11, 6 * DAY]));
+    expect(isAccountLimited(state, NOW)).toBe(false);
+    expect(accountUsableAt(state, NOW)).toBe(NOW);
+    expect(subscriptionsUsableAt([state], NOW)).toBe(NOW);
+    expect(chooseAccountForNewWork([state], NOW)?.id).toBe("main");
+  });
+
+  test("takes the work an account near or at its 5-hour limit cannot", () => {
+    const main = account("main", verified([90, 6 * DAY]));
+    const near = account("max2", usage([95, HOUR], [10, 6 * DAY]));
+    expect(routeNewWork([main, near], NOW)).toEqual({ account: "main", detail: "\"max2\" is below the 5-hour floor" });
+    const full = account("max2", usage([100, HOUR], [10, 6 * DAY]));
+    expect(routeNewWork([main, full], NOW)).toEqual({ account: "main", detail: "\"max2\" is at a usage limit" });
+  });
+
+  test("still ranks on its weekly pace, and its 5-hour figure is never the reason", () => {
+    const main = account("main", verified([50, 6 * DAY]));
+    const other = account("max2", usage([0, HOUR], [10, 6 * DAY]));
+    const picked = routeNewWork([main, other], NOW)!;
+    expect(picked.account).toBe("max2");
+    expect(picked.detail).toContain("weekly pace");
+    expect(picked.detail).not.toContain("5-hour usage");
+
+    // The other way round: the account deep in its 5-hour window is the one named.
+    const deep = account("max2", usage([85, HOUR], [10, 6 * DAY]));
+    const reason = routeNewWork([account("main", verified([20, 6 * DAY])), deep], NOW)!;
+    expect(reason.account).toBe("main");
+    expect(reason.detail).toBe("\"max2\"'s 5-hour usage is at 85%");
+  });
+
+  test("counts as limited only for its weekly window or a rejection", () => {
+    const weekly = account("main", verified([100, 6 * DAY]));
+    expect(isAccountLimited(weekly, NOW)).toBe(true);
+    expect(accountUsableAt(weekly, NOW)).toBe(NOW + 6 * DAY);
+    const rejected = account("main", verified([11, 6 * DAY]), { limitedUntil: NOW + HOUR });
+    expect(isAccountLimited(rejected, NOW)).toBe(true);
+    expect(accountUsableAt(rejected, NOW)).toBe(NOW + HOUR);
+    // Not every account is at a limit while this one has weekly room.
+    const other = account("max2", usage([100, HOUR], [100, DAY]));
+    expect(chooseAccountForNewWork([account("main", verified([50, 6 * DAY])), other], NOW)?.id).toBe("main");
+    expect(chooseAccountForNewWork([weekly, other], NOW)).toBeNull();
   });
 });

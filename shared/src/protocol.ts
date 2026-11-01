@@ -1435,7 +1435,7 @@ export interface ClaudeAccountsInfo {
    */
   remote?: ClaudeAccountsRemoteInfo;
   accounts: ClaudeAccountInfo[];
-  /** The usage bars' combined numbers (`capacity` 100 per usable account). */
+  /** The usage bars' combined numbers (`capacity` 100 per usable account; `fiveHourCapacity` when some have no 5-hour limit). */
   combined: UsageData | null;
   routing: ClaudeRoutingInfo;
   /** Where new work would go now, and why. */
