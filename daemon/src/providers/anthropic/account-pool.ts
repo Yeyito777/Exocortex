@@ -463,6 +463,19 @@ function capacityAccounts(now: number): AccountRouteState[] {
   return claudeAccountStates(now).filter(state => state.available);
 }
 
+/**
+ * The usages the bars combine. After a start, an account waits for its first
+ * sign-in check to be available; while another has no 5-hour limit it stays
+ * counted, so the 5-Hour row doesn't read "not applicable" until the check ends.
+ */
+function barUsages(included: AccountRouteState[], now: number): Array<UsageData | null> {
+  const usages = included.map(state => state.usage);
+  if (!usages.some(usage => usage?.noFiveHourLimit)) return usages;
+  const unchecked = listClaudeAccounts().filter(account =>
+    !included.some(state => state.id === account.id) && !lastClaudeAuthStatus(account.id) && !claudeAccountBlock(account.id, now));
+  return [...usages, ...unchecked.map(account => getAccountUsage(account.id))];
+}
+
 /** A proxied Claude's bars while turns run on this machine's keys: the remote's last usage, with those keys' credits. */
 export function withProxyDownCredits(usage: UsageData | null, now = Date.now()): UsageData | null {
   if (apiCreditConfig().proxyDownAfterMs === null) return usage;
@@ -475,7 +488,7 @@ export function withProxyDownCredits(usage: UsageData | null, now = Date.now()):
 export function getCombinedUsage(now = Date.now()): UsageData | null {
   const included = capacityAccounts(now);
   // Nothing known to be signed in yet: show the main account's last usage, as before.
-  const usage = included.length > 0 ? aggregateUsage(included.map(state => state.usage), now)
+  const usage = included.length > 0 ? aggregateUsage(barUsages(included, now), now)
     : multipleClaudeAccounts() ? null : getAccountUsage(MAIN_ACCOUNT_ID);
   if (!usage || isProviderProxied("anthropic")) return usage;
   const active = activeCreditTurns.size > 0 || apiCreditFallbackActive(now);

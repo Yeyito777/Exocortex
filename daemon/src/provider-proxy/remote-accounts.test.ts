@@ -143,6 +143,18 @@ describe("the remote's Claude pool over /proxy", () => {
     expect(accountChanges()).toBe(received);
   });
 
+  test("a remote account with no 5-hour limit reaches the bars and the rows here", async () => {
+    const verified: UsageData = { fiveHour: null, sevenDay: { utilization: 11, resetsAt: now + 120 * HOUR }, noFiveHourLimit: true };
+    const remote = fakeSource(pool([account("main", { usage: verified }), account("max2", { usage: usage(1, 28) })]));
+    const ssh = fakeSsh({ deps: { auth: stubAuth(), accounts: remote.source } });
+    const { manager } = makeManager(ssh.spawn);
+    await manager.set("anthropic", "whale");
+    await until(() => manager.remoteAccounts() !== null);
+    expect(getLastUsage("anthropic")).toMatchObject({ capacity: 200, fiveHourCapacity: 100, fiveHour: { utilization: 1 } });
+    expect(manager.remoteAccounts()?.pool.accounts[0].usage).toEqual(verified);
+    manager.off("anthropic");
+  });
+
   test("keeps the last pool while the link is down, with the link's state, and watches again after reconnecting", async () => {
     const remote = fakeSource(pool([account("main", { usage: usage(50, 50) }), account("max2", { usage: usage(0, 0) })]));
     const ssh = fakeSsh({ deps: { auth: stubAuth(), accounts: remote.source } });

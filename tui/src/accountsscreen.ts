@@ -220,6 +220,8 @@ type Segment = [color: string, text: string];
 interface UsageCell {
   pct: number;
   reset: string;
+  /** The account has no such limit: a crossed-out bar, "n/a" for the percent. */
+  notApplicable?: boolean;
 }
 
 /** The Credits column of a row: the balance, the countdowns to each grant's expiry, and whether turns spend it now. */
@@ -290,7 +292,8 @@ function usageCell(window: UsageWindow | null | undefined, now: number): UsageCe
 }
 
 function usageCells(usage: UsageData | null | undefined, now: number): [UsageCell | null, UsageCell | null] | undefined {
-  const cells: [UsageCell | null, UsageCell | null] = [usageCell(usage?.fiveHour, now), usageCell(usage?.sevenDay, now)];
+  const fiveHour = usage?.noFiveHourLimit ? { pct: 0, reset: "", notApplicable: true } : usageCell(usage?.fiveHour, now);
+  const cells: [UsageCell | null, UsageCell | null] = [fiveHour, usageCell(usage?.sevenDay, now)];
   return cells[0] || cells[1] ? cells : undefined;
 }
 
@@ -468,7 +471,10 @@ function layoutColumns(lines: ScreenLine[], maxWidth: number): Columns {
 function cellSegments(cell: UsageCell | null, columns: Columns): Segment[] {
   if (!cell) return [[theme.text, " ".repeat(cellWidth(columns))]];
   const filled = barFill(cell.pct, 100, columns.bar);
-  const segments: Segment[] = [
+  const segments: Segment[] = cell.notApplicable ? [
+    [theme.text + theme.dim, "X".repeat(columns.bar)],
+    [theme.boldOff + theme.muted, ` ${"n/a".padStart(PCT_WIDTH)}`],
+  ] : [
     [theme.accent, BAR_GLYPH.repeat(filled)],
     [theme.borderUnfocused, BAR_GLYPH.repeat(columns.bar - filled)],
     [theme.accent, ` ${`${cell.pct}%`.padStart(PCT_WIDTH)}`],

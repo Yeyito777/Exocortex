@@ -49,7 +49,8 @@ function formatAccount(report: ClaudeAccountReport, now: number): string[] {
       report.activeTurns > 0 ? `${report.activeTurns} turn${report.activeTurns === 1 ? "" : "s"} running` : null,
       report.conversations > 0 ? `${report.conversations} conversation${report.conversations === 1 ? "" : "s"} with a warm cache` : null,
     ].filter(Boolean).join(", ");
-    lines.push(`      ${formatWindow("5-hour", report.usage?.fiveHour, now)} · ${formatWindow("weekly", report.usage?.sevenDay, now)}${activity ? ` · ${activity}` : ""}`);
+    const fiveHour = report.usage?.noFiveHourLimit ? "5-hour n/a" : formatWindow("5-hour", report.usage?.fiveHour, now);
+    lines.push(`      ${fiveHour} · ${formatWindow("weekly", report.usage?.sevenDay, now)}${activity ? ` · ${activity}` : ""}`);
   } else if (!report.block && (!status || !status.loggedIn || !isSubscriptionAuth(status))) {
     lines.push(`      sign in from a terminal: ${claudeLoginCommand(account)}`);
   }
@@ -58,9 +59,9 @@ function formatAccount(report: ClaudeAccountReport, now: number): string[] {
 
 function formatCombined(usage: UsageData | null): string | null {
   if (!usage?.capacity) return null;
-  const part = (label: string, window: UsageWindow | null) =>
-    `${label} ${window ? Math.round(window.utilization) : "?"}/${usage.capacity}%`;
-  return `Combined (the usage bars): ${part("5-hour", usage.fiveHour)} · ${part("weekly", usage.sevenDay)}`;
+  const part = (label: string, window: UsageWindow | null, capacity: number) =>
+    capacity > 0 ? `${label} ${window ? Math.round(window.utilization) : "?"}/${capacity}%` : `${label} n/a`;
+  return `Combined (the usage bars): ${part("5-hour", usage.fiveHour, usage.fiveHourCapacity ?? usage.capacity)} · ${part("weekly", usage.sevenDay, usage.capacity)}`;
 }
 
 export function formatClaudeAccountReports(reports: ClaudeAccountReport[], combined: UsageData | null, now = Date.now()): string {

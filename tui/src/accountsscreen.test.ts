@@ -635,3 +635,35 @@ test("under /proxy without the remote's accounts the answer says why", () => {
   expect(state.accountsScreen).toBeNull();
   expect(JSON.stringify(state.messages.at(-1))).toContain("the remote's Claude accounts are not available");
 });
+
+test("an account with no 5-hour limit shows a crossed-out 5-hour cell; the limited tag stays correct", () => {
+  const verified = { fiveHour: null, sevenDay: { utilization: 11, resetsAt: NOW + 120 * H }, noFiveHourLimit: true };
+  const { state } = openScreen(snapshot({}, [
+    claude("main", { usage: verified }),
+    claude("max2", { usage: { fiveHour: { utilization: 2, resetsAt: NOW + 4 * H }, sevenDay: { utilization: 28, resetsAt: NOW + 110 * H } } }),
+    claude("max3", { state: "limited", usage: { ...verified, sevenDay: { utilization: 100, resetsAt: NOW + 24 * H } } }),
+  ]));
+  const rows = screenText(state);
+  const row = (id: string) => rows.find(text => text.includes(`● ${id}`))!;
+  expect(row("main")).toMatch(/X{6,14} +n\/a +━+ +11% +5d/);
+  expect(row("main")).not.toContain("limited");
+  expect(row("max2")).not.toContain("X");
+  expect(row("max2")).toMatch(/━+ +2% +4h/);
+  expect(row("max3")).toContain("limited");
+  expect(row("max3")).toMatch(/X{6,14} +n\/a +━+ +100% +1d/);
+});
+
+test("the crossed-out cell ends its dim, and the Accounts screen stays aligned around it", () => {
+  const verified = { fiveHour: null, sevenDay: { utilization: 11, resetsAt: NOW + 120 * H }, noFiveHourLimit: true };
+  const { state } = openScreen(snapshot({}, [
+    claude("main", { usage: verified }),
+    claude("max2", { usage: { fiveHour: { utilization: 2, resetsAt: NOW + 4 * H }, sevenDay: { utilization: 28, resetsAt: NOW + 110 * H } } }),
+  ]));
+  const payload = renderAccountsScreen(state, state.accountsScreen!, 40, 150, NOW).payload;
+  expect(payload).toContain(`${theme.text}${theme.dim}XX`);
+  expect(payload).toContain(`${theme.boldOff}${theme.muted}  n/a`);
+  const rows = screenText(state);
+  const weekly = (id: string) => rows.find(text => text.includes(`● ${id}`))!.lastIndexOf("━");
+  expect(weekly("main")).toBe(weekly("max2"));
+});
+
