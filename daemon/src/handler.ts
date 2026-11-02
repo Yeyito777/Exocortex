@@ -98,7 +98,7 @@ import { cancelSuspendedTurn } from "./suspended-turns";
 import { runChronoCommand } from "./chrono-commands";
 import { inlineLongSleepStartedAt } from "@exocortex/shared/chrono";
 import { configureClaudeCodeSessions } from "./providers/anthropic/session";
-import { abandonAppCreate, appConversationInfo, appConversationOwner, appTitleFromPrompt, attachAppConversation, checkAppToolsForModel, configureAppApi, dropTurnAwait, endAppConversation, endAppSession, ensureAppFolder, finishAppRun, holdAppCommandUntilReady, listAppConversations, markAppApiReady, parseAppCreate, registerAppCreate, registerTurnAwait, repeatedTurnResult, setAppConversationOwner, shutdownAppConversations, welcomeAppClient, type AppCreateSpec } from "./app-api";
+import { abandonAppCreate, announceAppConversation, appConversationInfo, appConversationOwner, appTurnSentByAnother, noteAppTurnSender, appTitleFromPrompt, attachAppConversation, checkAppToolsForModel, configureAppApi, dropTurnAwait, endAppConversation, endAppSession, ensureAppFolder, finishAppRun, holdAppCommandUntilReady, listAppConversations, markAppApiReady, parseAppCreate, registerAppCreate, registerTurnAwait, repeatedTurnResult, setAppConversationOwner, shutdownAppConversations, welcomeAppClient, type AppCreateSpec } from "./app-api";
 import { getAppRecord, isAppConversation, isEphemeralConversation, isHiddenConversation, touchAppConversation } from "./app-registry";
 import { appToolBroker } from "./app-tools";
 import { addClaudeAccount, claudeLoginCommand, removeClaudeAccount } from "./providers/anthropic/accounts";
@@ -2322,6 +2322,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           goal,
           ...(appRecord ? { app: appConversationInfo(appRecord) } : {}),
         });
+        if (appRecord) announceAppConversation(id, client);
         broadcastConversationUpdated(server, id);
         if (previousSubagentSidebarState) broadcastSidebarStatePatch(previousSubagentSidebarState);
 
@@ -2856,7 +2857,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         if (typeof cmd.startedAt !== "number" || !Number.isFinite(cmd.startedAt)) cmd.startedAt = Date.now();
         // An app client resending a prompt after a reconnect (same startedAt): wait for that turn, never run it twice.
         if (cmd.awaitResult === true && isAppConversation(cmd.convId)
-            && convStore.hasMessageMetadata(cmd.convId, { startedAt: cmd.startedAt }, "user")) {
+            && convStore.hasMessageMetadata(cmd.convId, { startedAt: cmd.startedAt }, "user")
+            && !appTurnSentByAnother(cmd.convId, cmd.startedAt, client)) {
           const turnId = String(cmd.startedAt);
           const last = getAppRecord(cmd.convId)?.lastTurnResult;
           if (last?.turnId === turnId) server.sendTo(client, { ...repeatedTurnResult(client, last), ...(cmd.reqId ? { reqId: cmd.reqId } : {}) });
@@ -2963,6 +2965,12 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             }
           });
           break;
+        }
+        // In the tick the turn is admitted, so a send that loses the race changes nothing
+        // and no running turn's tool calls ever move.
+        if (isAppConversation(cmd.convId) && !convStore.isStreaming(cmd.convId)) {
+          noteAppTurnSender(cmd.convId, cmd.startedAt, client);
+          if (cmd.own === true) setAppConversationOwner(cmd.convId, client);
         }
         const automation = cliDelegationAutomation(cmd);
         const outcome = orchestrateSendMessage(

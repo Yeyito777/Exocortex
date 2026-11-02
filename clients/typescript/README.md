@@ -40,6 +40,11 @@ await exo.close();
   handler (sync or async) gets `(input, { convId, callId, signal })` and
   returns text, `{ output, isError }` or any JSON value; a throw is an error
   result; `signal` aborts on `app_tool_cancel`.
+- `client.join(convId)` shares a conversation with other connections: it follows
+  its events, and runs the tools of the turns it sends itself
+  (`conversation.setHandlers(tools)`; see [several
+  clients](../../docs/app-api.md#several-clients-on-one-conversation)). A send
+  while another's turn runs fails with "Already streaming".
 - `client.attach(convId, { tools })` owns a saved/temporary conversation again
   (e.g. after your program restarts); `client.list({ includeSaved, allApps })`;
   `client.delete(convId)`; `client.onEvent(fn)` sees every raw event;

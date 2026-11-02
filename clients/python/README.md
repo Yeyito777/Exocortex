@@ -41,6 +41,11 @@ with exocortex.connect("myapp") as exo:
   take `(args)` or `(args, call)`; they return text, `{"output", "isError"}`
   or any JSON value, and an exception is an error result. `call.cancelled`
   (a `threading.Event`) is set on `app_tool_cancel`.
+- `client.join(conv_id)` shares a conversation with other connections: it
+  follows its events, and runs the tools of the turns it sends itself
+  (`conversation.set_handlers(tools)`; see [several
+  clients](../../docs/app-api.md#several-clients-on-one-conversation)). A send
+  while another's turn runs fails with "Already streaming".
 - `client.attach(conv_id, tools=)`, `client.list(include_saved=, all_apps=)`,
   `client.delete(conv_id)`, `client.on_event(fn)`.
 - `route={"credits": "never", "whenLimited": "error"}` keeps a batch job off

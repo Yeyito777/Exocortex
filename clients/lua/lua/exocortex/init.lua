@@ -343,6 +343,11 @@ function Conversation:abort(cb)
   end)
 end
 
+--- The app tools' handlers for the next turns; their definitions stay as they are.
+function Conversation:set_handlers(tools)
+  self:_set_tools(tools)
+end
+
 --- Replace the app tools (handlers and definitions) from the next turn on.
 function Conversation:set_tools(tools, cb)
   self:_set_tools(tools)
@@ -654,9 +659,33 @@ function Client:attach(conv_id, opts, cb)
   end)
 end
 
+--- Share a saved or temporary conversation (one this client created too): follow its events and
+--- turn results, and run the app tools of the turns it sends itself; give those tools' handlers
+--- with conversation:set_handlers. Nothing moves: a plain attach would take running turns' tool
+--- calls from whoever sent them. cb(err, conversation)
+function Client:join(conv_id, cb)
+  local cmd = { type = "attach_app_conversation", convId = conv_id, join = true }
+  self:request(cmd, function(ev) return ev.type == "app_conversation_attached" end, function(e, ev)
+    if e then return cb(e) end
+    local conv = self.conversations[conv_id]
+    if conv then
+      conv.info = ev.conversation
+    else
+      conv = new_conversation(self, ev.conversation)
+      self.conversations[conv_id] = conv
+    end
+    conv.joined = true
+    cb(nil, conv)
+  end)
+end
+
 function Client:_attach_existing(conv, cb, retry)
   local cmd = { type = "attach_app_conversation", convId = conv.id }
-  if conv.tools then cmd.tools = { app = tool_defs(conv.tools) } end
+  if conv.joined then
+    cmd.join = true
+  elseif conv.tools then
+    cmd.tools = { app = tool_defs(conv.tools) }
+  end
   self:_exchange(cmd, function(ev) return ev.type == "app_conversation_attached" end, function(e, ev)
     if not e then conv.info = ev.conversation end
     cb(e, ev)
@@ -776,7 +805,7 @@ function Client:_send_turn(conv, prompt, opts, cb, stream)
   local turn = self:_new_turn(conv.id, opts, cb, stream)
   self:_start(turn, {
     type = "send_message", reqId = turn.req_id, convId = conv.id, text = prompt,
-    startedAt = turn.started_at, awaitResult = true, images = opts.images,
+    startedAt = turn.started_at, awaitResult = true, images = opts.images, own = conv.joined or nil,
   })
 end
 

@@ -50,6 +50,11 @@ end)
   (sent as JSON); `error()` is an error result. With `async = true`, answer
   later with `call:respond(value)`; `call:on_cancel(fn)` hears
   `app_tool_cancel`. Use `vim.empty_dict()` for empty JSON objects.
+- `client:join(conv_id, cb)` shares a conversation with other connections:
+  it follows its events, and runs the tools of the turns it sends itself
+  (`conversation:set_handlers(tools)`; see [several
+  clients](../../docs/app-api.md#several-clients-on-one-conversation)). A send
+  while another's turn runs fails with "Already streaming".
 - `client:attach(conv_id, { tools }, cb)`, `client:list({ include_saved,
   all_apps }, cb)`, `client:delete(conv_id, cb)`, `client:on_event(fn)`,
   `client:close(cb?)` (ends the session's ephemeral conversations).

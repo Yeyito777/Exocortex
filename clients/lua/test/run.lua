@@ -78,6 +78,40 @@ end
 local tests = {}
 local function test(name, fn, fake_args) table.insert(tests, { name = name, fn = fn, args = fake_args }) end
 
+test("join shares a conversation: each runs the tools of its own turns", function(f)
+  local a = await(exo.connect, { app = "test-app", socket = f.socket })
+  local b = await(exo.connect, { app = "test-app", socket = f.socket })
+  local created, results = {}, {}
+  b:on_event(function(ev)
+    if ev.type == "app_conversation_created" then table.insert(created, ev) end
+    if ev.type == "turn_result" then table.insert(results, ev) end
+  end)
+  local conv_a = await(a.conversation, a, { lifetime = "temporary", tools = { lookup(function() return "from a" end) } })
+  await(a.join, a, conv_a.id)
+  assert(vim.wait(2000, function() return #created == 1 end, 5), "b heard of the new conversation")
+  eq(created[1].conversation.convId, conv_a.id)
+  local conv_b = await(b.join, b, conv_a.id)
+  conv_b:set_handlers({ lookup(function() return "from b" end) })
+  eq(await(conv_b.send, conv_b, 'tool lookup {"word":"x"}').text, "lookup -> from b")
+  eq(await(conv_a.send, conv_a, 'tool lookup {"word":"x"}').text, "lookup -> from a")
+  assert(vim.wait(2000, function() return #results == 2 end, 5), "b hears every turn's result")
+  eq(results[2].text, "lookup -> from a")
+  -- A send while the other's turn runs is refused and takes nothing from it.
+  local stopped = false
+  conv_a:send("hang", function() stopped = true end)
+  assert(vim.wait(2000, function()
+    local running = false
+    b:list(function(_, list) running = list and list[1] and list[1].streaming end)
+    vim.wait(20)
+    return running
+  end, 5), "the turn runs")
+  fails(function() await(conv_b.send, conv_b, "count") end, "Already streaming")
+  conv_b:abort()
+  assert(vim.wait(2000, function() return stopped end, 5), "either one can stop it")
+  a:close()
+  b:close()
+end)
+
 test("one-shot run, module level", function(f)
   local r = await(exo.run, "hello", { app = "test-app", socket = f.socket, system = "Be brief." })
   eq(r.text, "echo: hello")
