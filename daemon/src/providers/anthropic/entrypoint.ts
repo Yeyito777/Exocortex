@@ -1,6 +1,7 @@
 /**
  * What Claude Code calls the program that started it (`CLAUDE_CODE_ENTRYPOINT`).
- * See docs/anthropic.md#entrypoint.
+ * By default the Agent SDK's own label; Exocortex's only with
+ * `providers.anthropic.customEntrypoint`. See docs/anthropic.md#entrypoint.
  */
 
 import { readExocortexConfig } from "@exocortex/shared/config";
@@ -9,20 +10,24 @@ export const CLAUDE_CODE_ENTRYPOINT = "exocortex";
 /** The Agent SDK's own label, which it sets when the variable is unset. */
 export const AGENT_SDK_ENTRYPOINT = "sdk-ts";
 
+function customEntrypointEnabled(): boolean {
+  return readExocortexConfig().providers?.anthropic?.customEntrypoint === true;
+}
+
 /**
- * Environment that labels a subscription process, empty with
- * `providers.anthropic.sdkEntrypoint`. Claude Code turns on some things for
- * any label but `sdk-*` (Artifact tools and the scratchpad, feedback drafts),
- * so this keeps them off, as under the SDK's label.
+ * Environment that labels a subscription process, empty unless the custom
+ * entrypoint is on. Claude Code turns on some things for any label but `sdk-*`
+ * (Artifact tools and the scratchpad, feedback drafts), so this keeps them off,
+ * as under the SDK's label.
  */
 export function claudeEntrypointEnv(): Record<string, string> {
-  if (readExocortexConfig().providers?.anthropic?.sdkEntrypoint === true) return {};
+  if (!customEntrypointEnabled()) return {};
   return { CLAUDE_CODE_ENTRYPOINT, CLAUDE_CODE_ARTIFACT: "0", CLAUDE_CODE_SEND_FEEDBACK: "0" };
 }
 
 /** Settings for the same purpose: automatic memory consolidation, which has no environment switch. */
 export function claudeEntrypointSettings(): { autoDreamEnabled: false } | null {
-  return readExocortexConfig().providers?.anthropic?.sdkEntrypoint === true ? null : { autoDreamEnabled: false };
+  return customEntrypointEnabled() ? { autoDreamEnabled: false } : null;
 }
 
 /**

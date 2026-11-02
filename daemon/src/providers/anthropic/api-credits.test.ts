@@ -280,7 +280,7 @@ describe("API-credit key handling never exposes the key", () => {
     expect(serialized).not.toContain(KEY_VALUE);
     expect(options.env?.ANTHROPIC_API_KEY).toBeUndefined();
     expect(options.env?.CLAUDE_CODE_ENTRYPOINT).toBeUndefined();
-    expect(claudeProcessOptions(dir, "main", "conv-1").settings).not.toHaveProperty("apiKeyHelper");
+    expect(claudeProcessOptions(dir, "main", "conv-1").settings).toBeUndefined();
   });
 
   test("state, usage and logs carry the key's name only", async () => {

@@ -107,8 +107,8 @@ export interface AnthropicProviderConfig {
    * subscription account is at a usage limit (docs/claude-accounts.md).
    */
   apiCreditFallback?: AnthropicApiCreditFallbackConfig;
-  /** Keep the Agent SDK's own entrypoint instead of Exocortex's (docs/anthropic.md#entrypoint). */
-  sdkEntrypoint?: boolean;
+  /** Report Exocortex's own entrypoint instead of the Agent SDK's; off by default (docs/anthropic.md#entrypoint). */
+  customEntrypoint?: boolean;
 }
 
 export interface AnthropicApiCreditFallbackConfig {

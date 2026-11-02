@@ -249,13 +249,15 @@ requests (titles, summaries, compaction) fall back too. Code:
   NAME`, which Claude Code prefers to the account's subscription login. The
   key is in no environment a Bash tool inherits, and in no log, transcript,
   config or message. The account still picks the configuration directory, so
-  sessions resume as usual. These turns keep the SDK's own entrypoint, not
-  [Exocortex's](anthropic.md#entrypoint): they are Agent SDK requests, which the
-  credits cover (checked live on 2026-10-29: the Console lists them under Logs
-  as API requests), and a credit-only organization refuses other labels.
+  sessions resume as usual. These turns always keep the SDK's own entrypoint,
+  even with the [custom one](anthropic.md#entrypoint) on: they are Agent SDK
+  requests, which the credits cover (checked live on 2026-10-29: the Console
+  lists them under Logs as API requests), and a credit-only organization refuses
+  other labels.
 - **/proxy**: a remote serving another machine's turns signs their Messages
   API requests with the key (`x-api-key`, without the OAuth beta, with the
-  SDK's entrypoint back in the User-Agent), counts
+  SDK's entrypoint back in the User-Agent if the other machine uses the
+  custom one), counts
   their spend from the response stream, and tells the other machine
   (`x-exocortex-claude-api-credits`), so its turns are marked the same way.
   The other machine takes a Messages answer without that header as served on

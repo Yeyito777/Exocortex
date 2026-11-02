@@ -156,15 +156,18 @@ Other model ids Claude Code accepts can also be used.
 
 ## Entrypoint
 
-Claude Code processes report `CLAUDE_CODE_ENTRYPOINT=exocortex` instead of the
-Agent SDK's `sdk-ts`, because `sdk-*` labels use the subscription's 5-hour window
+Claude Code processes report the Agent SDK's own `CLAUDE_CODE_ENTRYPOINT=sdk-ts`.
+Setting `providers.anthropic.customEntrypoint` to `true` in `config/config.json`
+makes new subscription processes report `exocortex` instead. It is off by default,
+by the owner's decision. People report that `sdk-*` labels use the 5-hour window
 about 1.8-2.5x as fast for the same tokens
-([anthropics/claude-code#97074](https://github.com/anthropics/claude-code/issues/97074)).
-API-credit turns keep `sdk-ts`, since a credit-only organization refuses other
-labels. Claude Code turns on some things for any other label, so Exocortex keeps
-them off (`daemon/src/providers/anthropic/entrypoint.ts`). To go back to the SDK's
-label, set `providers.anthropic.sdkEntrypoint` to `true` in `config/config.json`;
-new processes pick it up.
+([anthropics/claude-code#97074](https://github.com/anthropics/claude-code/issues/97074)),
+but a credit-only API-credit organization refuses a request with no `sdk-*` label
+("credit balance is too low", seen on 2026-11-02). So Anthropic's servers appear
+to use the label to tell Agent SDK traffic apart, and changing it to escape that
+weighting could count as getting around usage limits under its terms. With the
+flag on, API-credit turns still keep `sdk-ts`, and what Claude Code turns on for
+other labels stays off (`daemon/src/providers/anthropic/entrypoint.ts`).
 
 ## Billing: subscription only
 
