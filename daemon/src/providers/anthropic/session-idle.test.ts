@@ -32,6 +32,7 @@ class FakeRuntime implements AsyncIterable<unknown> {
   }
   async interrupt() { return {}; }
   async stopTask() {}
+  async backgroundTasks() { return false; }
   close(): void {
     this.closed = true;
     this.notify?.();
@@ -89,7 +90,7 @@ function hello(overrides: Partial<RelayHello> = {}): RelayHello {
   };
 }
 
-configureClaudeCodeSessions({ tasksChanged: () => {}, wake: () => true, cancelWake: () => {} });
+configureClaudeCodeSessions({ tasksChanged: () => {}, wake: () => true, cancelWake: () => {}, backgroundFailed: () => {} });
 
 beforeEach(() => setClaudeIdlePolicyForTest({ keepMs: 60_000, maxIdle: 10, maxRssBytes: 1e15 }, () => 0));
 afterEach(() => {

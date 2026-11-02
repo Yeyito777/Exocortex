@@ -304,7 +304,11 @@ async function executeStdin(input: Record<string, unknown>, context?: ToolExecut
     if (chars && session.closed) throw new Error("Session has already exited; input was not sent. Poll without chars for its final output.");
     const startedAt = Date.now();
     if (chars) session.runner.stdin.write(JSON.stringify({ type: "input", chars }) + "\n");
-    await waitFor(session, session.done, yieldMs, signal);
+    // The command already runs detached: the background key or a steer only ends this wait.
+    const manual = deferred();
+    context?.registerBackgrounder?.({ toolName: "write_stdin", toolCallId: context.toolCallId, background: () => { manual.resolve(); return !candidate.closed; } });
+    try { await waitFor(session, Promise.race([session.done, manual.promise]), yieldMs, signal); }
+    finally { context?.registerBackgrounder?.(null); }
     return await result(session, startedAt, tokens);
   } catch (error) {
     return { output: `write_stdin: ${error instanceof Error ? error.message : String(error)}`, isError: true };

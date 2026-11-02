@@ -48,6 +48,7 @@ The implementation in [keybinds.ts](../tui/src/keybinds.ts) and
 |---|---|
 | `Enter` | Send message. It shows at once, also over `/ssh`, and stays put until the daemon confirms it. If a turn the daemon started meanwhile (a notification, a wake) got there first, it is queued for that turn's end; any other rejection puts it back in the prompt with the reason. Right after editing a message, it is sent as soon as the rewind lands |
 | `Ctrl+Q` | Abort current stream |
+| `Ctrl+A` | Move the running shell command to the background, or end the running wait (a chrono sleep or wait, a shell poll); the turn carries on |
 | `Ctrl+C` | Quit |
 | `Ctrl+M` | Toggle sidebar |
 | `Ctrl+J` / `K` | Cycle focus between sidebar and chat |

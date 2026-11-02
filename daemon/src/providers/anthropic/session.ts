@@ -54,7 +54,7 @@ interface QueuedInputControls {
   interrupt(options?: { cancelQueued?: boolean }): Promise<unknown>;
 }
 
-export type ClaudeRuntime = Pick<Query, "stopTask" | "close"> & QueuedInputControls & AsyncIterable<unknown>;
+export type ClaudeRuntime = Pick<Query, "stopTask" | "backgroundTasks" | "close"> & QueuedInputControls & AsyncIterable<unknown>;
 export type StartClaudeRuntime = (input: AsyncIterable<SDKUserMessage>, binding: () => Promise<HostToolBinding>) => ClaudeRuntime;
 
 export interface ClaudeCodeSessionHooks {
@@ -64,6 +64,8 @@ export interface ClaudeCodeSessionHooks {
   wake(convId: string, text: string, wakeId: string): boolean;
   /** Withdraw a queued wake whose work another turn already showed. */
   cancelWake(convId: string, wakeId: string): void;
+  /** Claude Code refused to move a tool call to the background. */
+  backgroundFailed(convId: string, reason: string): void;
 }
 
 export interface ClaudeCodeSessionOptions {
@@ -128,6 +130,8 @@ const INTERRUPT_GRACE_MS = 30_000;
 /** How long a host tool call from a turn Claude Code started waits for that turn to be shown. */
 const BINDING_WAIT_MS = 60_000;
 const TERMINAL_TASK_STATUSES = new Set(["completed", "failed", "stopped", "killed"]);
+/** Claude Code's shell tools, whose running calls can move to the background. */
+const SHELL_TOOLS = new Set(["Bash", "PowerShell"]);
 /**
  * How Claude Code reports a background command it stopped by itself (at its
  * time limit, or short of memory), which it answers with a turn. A task
@@ -313,6 +317,15 @@ interface LiveTask {
   parentTaskId?: string;
 }
 
+/** A tool call holding up the turn that Claude Code can move to the background. */
+interface ForegroundCall {
+  startedAt: number;
+  /** Claude Code has registered its task, about 3 s after it starts; until then it cannot move. */
+  taskStarted: boolean;
+  /** Moving it was asked for. */
+  moving: boolean;
+}
+
 interface TaskNote {
   id: string;
   /** The task run it reports; the result of the turn that answers it names the same run. */
@@ -438,6 +451,11 @@ function str(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
+function contentBlocks(message: SdkRecord): SdkRecord[] {
+  const content = asRecord(message.message)?.content;
+  return Array.isArray(content) ? content.map(asRecord).filter((block): block is SdkRecord => block !== null) : [];
+}
+
 function wakeIdOf(message: ApiMessage): string | null {
   const automation = message.metadata?.automation;
   return automation?.kind === WAKE_AUTOMATION_KIND && automation.sourceId ? automation.sourceId : null;
@@ -518,12 +536,14 @@ export class ClaudeCodeSession {
   private readonly delivered = new Set<string>();
   /** Last main-thread message read; with a relay, what an interrupt has consumed. */
   private lastSeenUuid: string | null = null;
-  /** For an adopted process, when its relay first saw each task. */
+  /** When a task began, if not when it joined the background: as an adopted process's relay first saw it, or as a tool call it moved from the foreground. */
   private readonly taskStarts: Record<string, number>;
   /** Finished tasks Claude Code has yet to answer, each with a turn of its own, in order. */
   private notes: TaskNote[] = [];
   /** Main-thread model calls Claude Code has made since its last result. */
   private callsSinceResult = 0;
+  /** Running tool calls Claude Code can move to the background, by tool use id. */
+  private readonly foregroundCalls = new Map<string, ForegroundCall>();
   private tasks = new Map<string, LiveTask>();
   /** Every task seen, kept after it ends: its notification can arrive after it left `tasks`. */
   private readonly seenTasks = new Map<string, LiveTask>();
@@ -589,6 +609,22 @@ export class ClaudeCodeSession {
   /** Background tasks, or a turn Claude Code started by itself, that closing the process would stop. */
   get hasBackgroundWork(): boolean {
     return !this.closed && (this.tasks.size > 0 || this.wakeId !== null || this.held || this.buffer.length > 0);
+  }
+
+  /**
+   * Move the running shell calls to the background, as Ctrl+B does in Claude
+   * Code: each gets a "backgrounded" result at once and the turn goes on, and
+   * the command stays one of the conversation's tasks. One whose task Claude
+   * Code has yet to register moves as soon as it does. False when no call can move.
+   */
+  backgroundForegroundCalls(): boolean {
+    if (this.closed || this.foregroundCalls.size === 0) return false;
+    for (const [toolUseId, call] of this.foregroundCalls) {
+      if (call.moving) continue;
+      call.moving = true;
+      if (call.taskStarted) this.moveToBackground(toolUseId, call);
+    }
+    return true;
   }
 
   /**
@@ -785,12 +821,51 @@ export class ClaudeCodeSession {
     const uuid = str(message.uuid);
     if (uuid && !message.parent_tool_use_id) this.lastSeenUuid = uuid;
     if (message.type === "system" && message.subtype === "background_tasks_changed") this.updateTasks(message.tasks);
+    this.trackForegroundCalls(message);
     // Every API call the process makes is billed to its key, turns of its own included.
     // Replayed messages (after a daemon restart) were counted by the daemon that saw them first.
     if (this.creditMeter && message.type === "stream_event" && message[REPLAYED_FIELD] !== true) {
       this.creditMeter.observe(message.event, str(message.parent_tool_use_id) ?? "main");
     }
     this.route(message);
+  }
+
+  private trackForegroundCalls(message: SdkRecord): void {
+    if (message.type === "result") {
+      this.foregroundCalls.clear();
+    } else if (message.type === "assistant" && !message.parent_tool_use_id) {
+      for (const block of contentBlocks(message)) {
+        const id = str(block.id);
+        if (block.type !== "tool_use" || !id || !SHELL_TOOLS.has(str(block.name) ?? "") || asRecord(block.input)?.run_in_background === true) continue;
+        if (!this.foregroundCalls.has(id)) this.foregroundCalls.set(id, { startedAt: Date.now(), taskStarted: false, moving: false });
+      }
+    } else if (message.type === "user") {
+      for (const block of contentBlocks(message)) {
+        if (block.type === "tool_result") this.foregroundCalls.delete(str(block.tool_use_id) ?? "");
+      }
+    } else if (message.type === "system" && message.subtype === "task_started" && message.is_backgrounded === false) {
+      const id = str(message.tool_use_id);
+      if (!id) return;
+      const call = this.foregroundCalls.get(id) ?? { startedAt: Date.now(), taskStarted: false, moving: false };
+      this.foregroundCalls.set(id, call);
+      call.taskStarted = true;
+      // Once moved, its clock keeps counting from when the call started.
+      const taskId = str(message.task_id);
+      if (taskId) this.taskStarts[taskId] ??= call.startedAt;
+      if (call.moving) this.moveToBackground(id, call);
+    }
+  }
+
+  private moveToBackground(toolUseId: string, call: ForegroundCall): void {
+    // Whatever stops it moving, a call still running can be asked for again.
+    this.runtime.backgroundTasks(toolUseId).then((moved) => {
+      if (!moved) call.moving = false;
+    }, (error) => {
+      const reason = error instanceof Error ? error.message : String(error);
+      log("warn", `anthropic: moving Claude Code tool call ${toolUseId} to the background failed: ${reason}`);
+      call.moving = false;
+      if (!this.closed && this.convId) hooks?.backgroundFailed(this.convId, reason);
+    });
   }
 
   /** Hand a message to the turn showing it, or hold it for a turn Claude Code started by itself. */

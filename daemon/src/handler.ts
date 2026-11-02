@@ -97,7 +97,7 @@ import { configureChronoService, cancelDeferredChronoSleep } from "./chrono-serv
 import { cancelSuspendedTurn } from "./suspended-turns";
 import { runChronoCommand } from "./chrono-commands";
 import { inlineLongSleepStartedAt } from "@exocortex/shared/chrono";
-import { configureClaudeCodeSessions } from "./providers/anthropic/session";
+import { configureClaudeCodeSessions, getClaudeCodeSession } from "./providers/anthropic/session";
 import { abandonAppCreate, announceAppConversation, appConversationInfo, appConversationOwner, appTurnSentByAnother, noteAppTurnSender, appTitleFromPrompt, attachAppConversation, checkAppToolsForModel, configureAppApi, dropTurnAwait, endAppConversation, endAppSession, ensureAppFolder, finishAppRun, holdAppCommandUntilReady, listAppConversations, markAppApiReady, parseAppCreate, registerAppCreate, registerTurnAwait, repeatedTurnResult, setAppConversationOwner, shutdownAppConversations, welcomeAppClient, type AppCreateSpec } from "./app-api";
 import { getAppRecord, isAppConversation, isEphemeralConversation, isHiddenConversation, touchAppConversation } from "./app-registry";
 import { appToolBroker } from "./app-tools";
@@ -324,6 +324,15 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     pendingBackgroundNotifications.set(id, { convId, completion });
     deliverPendingBackgroundNotifications();
   };
+  const sendBackgroundToolWarning = (convId: string, text: string): void => {
+    server.sendToSubscribers(convId, {
+      type: "system_message",
+      convId,
+      streamSeq: convStore.isStreaming(convId) ? convStore.nextStreamSeq(convId) : undefined,
+      text,
+      color: "warning",
+    });
+  };
   configureChronoService(
     (convId) => broadcastConversationUpdated(server, convId),
     async (sleep) => {
@@ -374,6 +383,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       ));
       if (queued) convStore.removeQueuedMessageById(queued.id);
     },
+    backgroundFailed: (convId, reason) => sendBackgroundToolWarning(convId, `Claude Code could not move the tool call to the background: ${reason}`),
   });
   setExternalNotificationsChangedListener((convIds) => {
     for (const convId of convIds) broadcastConversationUpdated(server, convId);
@@ -2497,17 +2507,11 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       }
 
       case "background_tool": {
+        // Claude Code runs its own tools, so its process moves those; a chrono call it made is Exocortex's.
+        const movingInClaudeCode = getClaudeCodeSession(cmd.convId)?.backgroundForegroundCalls() ?? false;
         const result = convStore.backgroundActiveTool(cmd.convId);
-        if (result === "none") {
-          server.sendToSubscribers(cmd.convId, {
-            type: "system_message",
-            convId: cmd.convId,
-            streamSeq: convStore.isStreaming(cmd.convId) ? convStore.nextStreamSeq(cmd.convId) : undefined,
-            text: "No backgroundable tool call is currently running.",
-            color: "warning",
-          });
-        }
-        log("info", `handler: background_tool requested for ${cmd.convId}: ${result}`);
+        if (result === "none" && !movingInClaudeCode) sendBackgroundToolWarning(cmd.convId, "No backgroundable tool call is currently running.");
+        log("info", `handler: background_tool requested for ${cmd.convId}: ${movingInClaudeCode ? "moving in Claude Code" : result}`);
         server.sendTo(client, { type: "ack", reqId: cmd.reqId, convId: cmd.convId });
         break;
       }
