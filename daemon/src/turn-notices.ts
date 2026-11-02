@@ -15,6 +15,7 @@ import {
   isModelVisibleSystemNotice, type ConversationGoal, type MessageMetadata, type ModelId, type StoredMessage, type SubagentPolicy,
 } from "./messages";
 import { CLIENT_HOST_DETACHED_NOTICE, clientHostNotice, userWroteFrom, type ClientOrigin } from "./client-hosts";
+import { log } from "./log";
 import { activeProviderProxyManager } from "./provider-proxy/manager";
 
 /** Told to a conversation whose provider stopped going through /proxy. */
@@ -123,6 +124,34 @@ function clientOrigin(conv: TurnNoticeState): ClientOrigin | null {
     id = parent?.subagentPolicy?.parentConversationId ?? null;
   }
   return null;
+}
+
+/**
+ * What clientOrigin reads above a subagent, loaded ahead of its synchronous
+ * walk: any of them may be cold, and only an asynchronous read loads a cold one.
+ * The origin only informs a notice, so one that cannot load ends the walk
+ * rather than costing the subagent its turn.
+ */
+export async function loadClientOriginAncestors(
+  conv: TurnNoticeState,
+  load: (id: string) => Promise<ReturnType<ConversationLookup>>,
+): Promise<ConversationLookup> {
+  const ancestors = new Map<string, NonNullable<ReturnType<ConversationLookup>>>();
+  const seen = new Set([conv.id]);
+  if (!userWroteFrom(conv.id)) {
+    for (let id = conv.subagentPolicy?.parentConversationId ?? null; id && !seen.has(id) && !userWroteFrom(id);) {
+      seen.add(id);
+      const parent = await load(id).catch((error: unknown) => {
+        log("warn", `turn-notices: could not load ${id} above ${conv.id}: ${error instanceof Error ? error.message : String(error)}`);
+        return undefined;
+      });
+      if (!parent) break;
+      ancestors.set(id, parent);
+      if (storedClientOrigin(parent.messages)) break;
+      id = parent.subagentPolicy?.parentConversationId ?? null;
+    }
+  }
+  return id => ancestors.get(id);
 }
 
 function clientNotice(conv: TurnNoticeState): { text: string; metadata?: NoticeMetadata } | null {

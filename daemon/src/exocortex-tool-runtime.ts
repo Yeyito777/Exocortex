@@ -128,7 +128,7 @@ export function createExocortexToolRuntime(deps: ExocortexToolRuntimeDependencie
         if (actions !== 1) throw new Error("Specify exactly one of subagent, message, status, abort, or restart.");
         if (!spawning && input.args !== undefined) throw new Error("args is only available with subagent.");
         if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-        const parent = parentId ? convStore.get(parentId) : undefined;
+        const parent = parentId ? await convStore.getAsync(parentId) : undefined;
 
         if (input.restart !== undefined) {
           if (!parentId || !parent) throw new Error("restart requires an active conversation.");

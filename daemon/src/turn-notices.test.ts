@@ -4,7 +4,7 @@ import type { ClientHostInfo } from "@exocortex/shared/protocol";
 import { attachClientHost, resetClientHostsForTest } from "./client-hosts";
 import { CLIENT_HOST_NOTICE_KIND, CONTEXT_COMPACTION_FINISHED_KIND, GOAL_NOTICE_KIND, type StoredMessage } from "./messages";
 import type { ConnectedClient } from "./server";
-import { pendingTurnNotices, turnNoticeMessages, type TurnNotice, type TurnNoticeState } from "./turn-notices";
+import { loadClientOriginAncestors, pendingTurnNotices, turnNoticeMessages, type TurnNotice, type TurnNoticeState } from "./turn-notices";
 import { LineSplitter } from "./line-splitter";
 
 const laptop: ClientHostInfo = { hostname: "toronto", user: "yeyito", platform: "linux", home: "/home/yeyito" };
@@ -29,6 +29,46 @@ const compaction: StoredMessage = {
 };
 
 afterEach(() => resetClientHostsForTest());
+
+describe("loading the conversations above a subagent", () => {
+  const policy = (parentConversationId: string | null) => ({ parentConversationId, allowEdits: false, parentSystemInstructions: "" });
+  const [origin] = told({ kind: CLIENT_HOST_NOTICE_KIND, text: "notice", metadata: { clientOrigin: "mac" } });
+  const chain: Record<string, Pick<TurnNoticeState, "messages" | "subagentPolicy">> = {
+    parent: { messages: [], subagentPolicy: policy("grandparent") },
+    grandparent: { messages: [origin], subagentPolicy: policy("root") },
+    root: { messages: [], subagentPolicy: null },
+  };
+  const loads: string[] = [];
+  const load = async (id: string) => { loads.push(id); return chain[id]; };
+  afterEach(() => { loads.length = 0; });
+
+  test("loads nothing for a conversation that is not a subagent", async () => {
+    const lookup = await loadClientOriginAncestors(conversation(), load);
+    expect(loads).toEqual([]);
+    expect(lookup("parent")).toBeUndefined();
+  });
+
+  test("stops at the first conversation that knows where the user wrote", async () => {
+    const lookup = await loadClientOriginAncestors(conversation([], { subagentPolicy: policy("parent") }), load);
+    expect(loads).toEqual(["parent", "grandparent"]);
+    expect(lookup("grandparent")).toBe(chain.grandparent);
+  });
+
+  test("a parent that cannot load does not fail the subagent's turn", async () => {
+    const lookup = await loadClientOriginAncestors(
+      conversation([], { subagentPolicy: policy("parent") }),
+      async () => { throw new Error("Cold archive failed verification"); },
+    );
+    expect(lookup("parent")).toBeUndefined();
+    expect(pendingTurnNotices(conversation([], { subagentPolicy: policy("parent"), conversationById: lookup }))).toEqual([]);
+  });
+
+  test("a cycle of parents ends", async () => {
+    const cyclic = async (id: string) => { loads.push(id); return { messages: [], subagentPolicy: policy(id === "a" ? "b" : "a") }; };
+    await loadClientOriginAncestors(conversation([], { id: "a", subagentPolicy: policy("b") }), cyclic);
+    expect(loads).toEqual(["b"]);
+  });
+});
 
 describe("client host notices", () => {
   test("say nothing to a conversation that was never told and has no client", () => {
