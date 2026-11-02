@@ -102,10 +102,14 @@ The daemon uses `$EXOCORTEX_ST_PLAY` or the `st-play` on its PATH (also
 `/usr/local/bin`, `/opt/homebrew/bin`), and only one with `--pipe` (st after
 Oct 29 2026); otherwise playback ends with "update st".
 
+## The phone app
+
+Plays them without this daemon's playback: its update server prepares H.264 + AAC
+segments from the attachment store and its web view streams them over SSH
+(`exocortex-phone` `docs/VIDEO.md`).
+
 ## Not yet
 
-- The phone app shows the badged poster (it is an ordinary attached image);
-  it does not play the video.
 - Pasting a video into the prompt: only images paste.
 
 Phone videos with a rotation in their display matrix play upright: ffprobe's
