@@ -19,6 +19,7 @@ import { PROVIDER_PROXY_CONVERSATION_HEADER, PROVIDER_PROXY_NO_API_CREDITS_HEADE
 import { conversationAllowsApiCredits } from "../../app-registry";
 import { claudeAccountEnv } from "./accounts";
 import { apiCreditClaudeSettings, type ApiCreditKey } from "./api-credits";
+import { claudeEntrypointEnv, claudeEntrypointSettings } from "./entrypoint";
 
 /**
  * The daemon usually runs as a systemd user service whose PATH lacks
@@ -55,11 +56,17 @@ export function getClaudeBinary(): string {
   return CLAUDE_BINARY;
 }
 
-/** Process environment for Claude Code with API-billing overrides removed. */
-export function claudeSubscriptionEnv(base: NodeJS.ProcessEnv = process.env): Record<string, string | undefined> {
+/** Process environment with API-billing overrides and any inherited entrypoint removed. */
+function claudeCleanEnv(base: NodeJS.ProcessEnv): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = { ...base };
   for (const name of NON_SUBSCRIPTION_ENV_VARS) delete env[name];
+  delete env.CLAUDE_CODE_ENTRYPOINT;
   return env;
+}
+
+/** Process environment for Claude Code on the subscription. */
+export function claudeSubscriptionEnv(base: NodeJS.ProcessEnv = process.env): Record<string, string | undefined> {
+  return { ...claudeCleanEnv(base), ...claudeEntrypointEnv() };
 }
 
 /**
@@ -96,19 +103,20 @@ function claudeProxyEnv(base: Record<string, string | undefined>, convId?: strin
  * (api-credits.ts): Claude Code reads it through an `apiKeyHelper` command,
  * which it prefers to the account's subscription login. It goes directly to
  * Anthropic, under /proxy too (a link that is down, `whenProxyDown`). The
- * account still picks the configuration directory, so sessions resume as usual. The SDK's
- * own entrypoint and user agent are left as they are: the requests are Agent
- * SDK requests, which the credits pay for.
+ * account still picks the configuration directory, so sessions resume as usual. It keeps
+ * the SDK's own entrypoint and user agent, the only ones the credits pay for
+ * (entrypoint.ts).
  */
 export function claudeProcessOptions(cwd: string, account?: string, convId?: string, apiCredit?: ApiCreditKey | null): ClaudeQueryOptions {
-  const base = claudeSubscriptionEnv();
+  const base = apiCredit ? claudeCleanEnv(process.env) : claudeSubscriptionEnv();
   const proxy = apiCredit ? {} : claudeProxyEnv(base, convId);
   const accountEnv = Object.keys(proxy).length > 0 ? {} : claudeAccountEnv(account);
   const creditSettings = apiCredit ? apiCreditClaudeSettings(apiCredit) : null;
   if (apiCredit && !creditSettings) throw new Error("No `secrets` CLI to read the API-credit key with.");
+  const settings = apiCredit ? creditSettings : claudeEntrypointSettings();
   return {
     cwd,
-    ...(creditSettings ? { settings: creditSettings } : {}),
+    ...(settings ? { settings } : {}),
     pathToClaudeCodeExecutable: getClaudeBinary(),
     env: {
       ...base, ...accountEnv, ...proxy, CLAUDE_AGENT_SDK_CLIENT_APP: "exocortex-daemon",

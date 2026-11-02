@@ -44,6 +44,18 @@ describe("remote credentials for /proxy", () => {
     expect(refreshed).toBe(0);
   });
 
+  test("a request signed with an API-credit key has the SDK's entrypoint back in its User-Agent", async () => {
+    const auth = createLocalUpstreamAuth({ apiCreditKey: async () => "credit-key" });
+    const apiCredit = { id: "KEY", label: "main", renewsOnDay: null };
+    const clientHeaders = { "anthropic-beta": "claude-code-20250219,oauth-2025-04-20", "user-agent": "claude-cli/2.1.303 (external, exocortex, agent-sdk/0.3.294, client-app/exocortex-daemon)" };
+    expect(await auth.headers("anthropic", "https://api.anthropic.com/v1/messages", { afterRejection: false, clientHeaders, apiCredit })).toEqual({
+      "x-api-key": "credit-key",
+      "anthropic-beta": "claude-code-20250219",
+      "user-agent": "claude-cli/2.1.303 (external, sdk-ts, agent-sdk/0.3.294, client-app/exocortex-daemon)",
+    });
+    expect(await auth.headers("anthropic", "https://api.anthropic.com/v1/messages", { afterRejection: false, clientHeaders: {}, apiCredit })).toEqual({ "x-api-key": "credit-key", "anthropic-beta": "" });
+  });
+
   test("an expiring token is refreshed by Claude Code before use, once for concurrent requests", async () => {
     const dir = claudeDir("old-token", Date.now() + 60_000);
     let refreshed = 0;
