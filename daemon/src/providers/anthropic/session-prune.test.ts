@@ -176,11 +176,12 @@ describe("planClaudeSessionPrune", () => {
     writeSession(dir, sid(1), ["a<-"]);
     writeSession(dir, sid(5), ["z<-"]);
     writeSession(dir, sid(6), ["y<-"], { entrypoint: "cli" });
+    writeSession(dir, sid(7), ["x<-"], { entrypoint: "exocortex" });
     const plan = planClaudeSessionPrune({
       conversations: [conversation(workspaces, convId, [[1, "a"]])],
       projectsRoots: [projects], workspacesRoot: workspaces, now: NOW,
     });
-    expect(plan.remove.map(file => [file.path.split("/").pop(), file.reason])).toEqual([[`${sid(5)}.jsonl`, "unreferenced"]]);
+    expect(plan.remove.map(file => [file.path.split("/").pop(), file.reason]).sort()).toEqual([[`${sid(5)}.jsonl`, "unreferenced"], [`${sid(7)}.jsonl`, "unreferenced"]]);
   });
 
   test("removes a deleted conversation's directory once quiet, and leaves other instances' and the owner's directories", () => {

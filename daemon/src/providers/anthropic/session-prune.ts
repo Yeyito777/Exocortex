@@ -29,6 +29,7 @@
 
 import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync, writeSync } from "fs";
 import { basename, dirname, join, relative } from "path";
+import { AGENT_SDK_ENTRYPOINT, CLAUDE_CODE_ENTRYPOINT } from "./entrypoint";
 
 /** A resume point Exocortex recorded on a message (AnthropicAssistantProviderData). */
 export interface RecordedResumePoint {
@@ -235,7 +236,7 @@ function coverHistory(
   return { kept: new Set(kept), aliases };
 }
 
-/** Claude Code started by the Agent SDK wrote this file (an Exocortex turn), not an interactive `claude`. */
+/** Claude Code started by Exocortex wrote this file (under either of its labels), not an interactive `claude`. */
 function writtenByAgentSdk(path: string): boolean {
   let head = "";
   try {
@@ -249,7 +250,7 @@ function writtenByAgentSdk(path: string): boolean {
   } catch {
     return false;
   }
-  return head.includes('"entrypoint":"sdk-ts"') && !head.includes('"entrypoint":"cli"');
+  return (head.includes(`"entrypoint":"${CLAUDE_CODE_ENTRYPOINT}"`) || head.includes(`"entrypoint":"${AGENT_SDK_ENTRYPOINT}"`)) && !head.includes('"entrypoint":"cli"');
 }
 
 /** Decide what to keep, alias and delete. Reads the project directories; changes nothing. */

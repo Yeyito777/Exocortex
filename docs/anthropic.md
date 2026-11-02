@@ -154,6 +154,18 @@ conversations:
 
 Other model ids Claude Code accepts can also be used.
 
+## Entrypoint
+
+Claude Code processes report `CLAUDE_CODE_ENTRYPOINT=exocortex` instead of the
+Agent SDK's `sdk-ts`, because `sdk-*` labels use the subscription's 5-hour window
+about 1.8-2.5x as fast for the same tokens
+([anthropics/claude-code#97074](https://github.com/anthropics/claude-code/issues/97074)).
+API-credit turns keep `sdk-ts`, since a credit-only organization refuses other
+labels. Claude Code turns on some things for any other label, so Exocortex keeps
+them off (`daemon/src/providers/anthropic/entrypoint.ts`). To go back to the SDK's
+label, set `providers.anthropic.sdkEntrypoint` to `true` in `config/config.json`;
+new processes pick it up.
+
 ## Billing: subscription only
 
 Requests go through the Claude Code CLI's claude.ai login, so they draw on the

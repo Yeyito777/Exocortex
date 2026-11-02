@@ -26,6 +26,7 @@ import { refreshAccountUsage } from "../providers/anthropic/usage";
 import { getClaudeAccount, MAIN_ACCOUNT_ID } from "../providers/anthropic/accounts";
 import { claudeAccountStates } from "../providers/anthropic/account-pool";
 import { apiCreditKeyValue, type ApiCreditKey } from "../providers/anthropic/api-credits";
+import { agentSdkUserAgent } from "../providers/anthropic/entrypoint";
 import { log } from "../log";
 import { isProviderProxied } from "./route";
 
@@ -236,7 +237,8 @@ export function createLocalUpstreamAuth(overrides: Partial<UpstreamCredentialSou
       if (provider === "anthropic" && apiCredit) {
         const key = await sources.apiCreditKey(apiCredit, afterRejection);
         if (!key) throw new UpstreamAuthError(`The API-credit key "${apiCredit.label}" could not be read from the secrets store on this machine.`);
-        return { "x-api-key": key, "anthropic-beta": withoutOAuthBeta(clientHeaders["anthropic-beta"]) };
+        const userAgent = clientHeaders["user-agent"];
+        return { "x-api-key": key, "anthropic-beta": withoutOAuthBeta(clientHeaders["anthropic-beta"]), ...(userAgent ? { "user-agent": agentSdkUserAgent(userAgent) } : {}) };
       }
       if (provider === "anthropic") {
         // The pool routes only to accounts signed in with a subscription; `main` is checked here as before.
