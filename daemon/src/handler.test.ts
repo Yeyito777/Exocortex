@@ -20,6 +20,7 @@ import { listPendingExternalNotificationSoftWakes, resetExternalNotificationSoft
 import { getExocortexToolRuntime } from "./exocortex-tool-runtime";
 import { getConversationActivityCounts, getConversationTasks, resetConversationActivityForTest, setBackgroundTaskActive, setChronoTaskActive } from "./conversation-activity";
 import { getProviderAdapter } from "./providers/catalog";
+import { openClaudeCodeSession } from "./providers/anthropic/session";
 import { HISTORY_PAGE_BYTE_BUDGET, estimateEntryRows } from "./history-pagination";
 import { computeSidebarDigest } from "@exocortex/shared/sidebar-digest";
 import type { DisplayEntry } from "./display";
@@ -2829,6 +2830,91 @@ describe("handler subagent completion delivery", () => {
       for (const id of [topId, childId]) removePendingSubagentNotificationsForConversation(id);
       resetConversationActivityForTest();
     }
+  });
+});
+
+describe("handler background_tool", () => {
+  beforeEach(cleanupIds);
+  afterEach(cleanupIds);
+
+  function backgroundToolServer() {
+    const warnings: string[] = [];
+    const server = {
+      sendTo: mock(() => {}), broadcast: mock(() => {}),
+      sendToSubscribers: mock((_convId: string, event: { type: string; text?: string }) => {
+        if (event.type === "system_message" && event.text) warnings.push(event.text);
+      }),
+      sendToSubscribersExcept: mock(() => {}), subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    return { handle: createHandler(server as never), warnings };
+  }
+
+  /** A Claude Code process whose model is running a command in the foreground, its task registered. */
+  async function claudeCodeRunning(convId: string, backgroundTasks: (toolUseId?: string) => Promise<boolean>) {
+    let close = () => {};
+    const closing = new Promise<void>((resolve) => { close = resolve; });
+    let delivered = false;
+    const session = openClaudeCodeSession(convId, "key", (input) => ({
+      backgroundTasks,
+      stopTask: async () => {},
+      interrupt: async () => ({}),
+      close,
+      async *[Symbol.asyncIterator]() {
+        void (async () => { for await (const _ of input) { /* sent */ } })();
+        yield { type: "assistant", uuid: "a1", parent_tool_use_id: null, message: { content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "sleep 60" } }] } };
+        yield { type: "system", subtype: "task_started", task_id: "b1", tool_use_id: "t1", is_backgrounded: false };
+        delivered = true;
+        await closing;
+      },
+    }));
+    for (let i = 0; i < 200 && !delivered; i++) await Bun.sleep(1);
+    expect(delivered).toBe(true);
+    return session;
+  }
+
+  test("warns when nothing can move, and says nothing when a provider's own tool call moves", async () => {
+    const convId = mkId("background-tool");
+    create(convId, "openai", "gpt-5.4");
+    const { handle, warnings } = backgroundToolServer();
+
+    await handle({} as never, { type: "background_tool", convId });
+    expect(warnings).toEqual(["No backgroundable tool call is currently running."]);
+
+    warnings.length = 0;
+    const reasons: unknown[] = [];
+    setActiveToolBackgrounder(convId, { toolName: "exec_command", background: (reason) => { reasons.push(reason); return true; } });
+    try {
+      await handle({} as never, { type: "background_tool", convId });
+    } finally {
+      clearActiveToolBackgrounder(convId);
+    }
+    expect(reasons).toEqual(["manual"]);
+    expect(warnings).toEqual([]);
+  });
+
+  test("moves a Claude Code Bash call through its process", async () => {
+    const convId = mkId("background-tool-claude");
+    create(convId, "anthropic", "claude-opus-5-5");
+    const { handle, warnings } = backgroundToolServer();
+    const moved: Array<string | undefined> = [];
+    const session = await claudeCodeRunning(convId, async (toolUseId) => { moved.push(toolUseId); return true; });
+
+    await handle({} as never, { type: "background_tool", convId });
+    expect(moved).toEqual(["t1"]);
+    expect(warnings).toEqual([]);
+    session.close("test");
+  });
+
+  test("reports Claude Code refusing to move a call", async () => {
+    const convId = mkId("background-tool-refused");
+    create(convId, "anthropic", "claude-opus-5-5");
+    const { handle, warnings } = backgroundToolServer();
+    const session = await claudeCodeRunning(convId, async () => { throw new Error("background tasks are disabled"); });
+
+    await handle({} as never, { type: "background_tool", convId });
+    for (let i = 0; i < 200 && warnings.length === 0; i++) await Bun.sleep(1);
+    expect(warnings).toEqual(["Claude Code could not move the tool call to the background: background tasks are disabled"]);
+    session.close("test");
   });
 });
 

@@ -5,7 +5,7 @@ import { join } from "path";
 import { execCommand, writeStdin, unifiedExecInternalsForTest as internals } from "./unified-exec";
 import { readBackgroundTaskRecord, removeBackgroundTaskRecord } from "../background-task-state";
 import { beginDaemonShutdown, resetDaemonShutdownModeForTest } from "../daemon-lifecycle";
-import type { BackgroundTaskCompletion, ToolExecutionContext } from "./types";
+import type { ActiveToolBackgrounder, BackgroundTaskCompletion, ToolExecutionContext } from "./types";
 import { waitForConversationTask } from "../conversation-activity";
 
 const context: ToolExecutionContext = { conversationId: "unified-exec-test", provider: "openai", cwd: tmpdir() };
@@ -123,6 +123,30 @@ describe.skipIf(process.platform === "win32")("Codex unified exec", () => {
     expect(polled.isError).toBe(exitCode !== 0);
     expect(JSON.parse(polled.output).exit_code).toBe(exitCode);
     expect(JSON.parse(polled.output).output).toContain("final");
+  });
+
+  test("the background key ends a poll early and leaves the command running", async () => {
+    const started = await run("sleep 30", { yield_time_ms: 0 });
+    const { session_id: sessionId } = JSON.parse(started.output);
+    const registered: Array<ActiveToolBackgrounder | null> = [];
+    const ctx: ToolExecutionContext = { ...context, toolCallId: "poll", registerBackgrounder: (backgrounder) => { registered.push(backgrounder); } };
+
+    const poll = writeStdin.execute({ session_id: sessionId, yield_time_ms: 300_000 }, ctx);
+    for (let i = 0; i < 200 && registered.length === 0; i++) await Bun.sleep(5);
+    expect(registered[0]).toMatchObject({ toolName: "write_stdin", toolCallId: "poll" });
+    expect(registered[0]!.background("manual")).toBe(true);
+
+    const result = await poll;
+    expect(result.isError).toBe(false);
+    const body = JSON.parse(result.output);
+    expect(body.session_id).toBe(sessionId);
+    expect(body.exit_code).toBeUndefined();
+    expect(registered).toEqual([registered[0], null]);
+
+    const session = internals.sessions.get(sessionId)!;
+    expect(session.closed).toBe(false);
+    internals.stopAll();
+    await session.done;
   });
 
   test("shell guidance favors polling, not Chrono waits or completion notifications", () => {

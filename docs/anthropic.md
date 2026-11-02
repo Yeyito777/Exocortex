@@ -99,6 +99,15 @@ conversations:
     a `[notification] Background task completed` message for it and shows that
     turn's work.
 
+  `Ctrl+A` moves a running Bash call there through the SDK's
+  `Query.backgroundTasks`, the control request behind `Ctrl+B` in Claude Code.
+  The call gets a result saying so, the turn goes on, and the command carries on
+  as above, until Claude Code stops it after 30 minutes in the background. A call
+  can only move once Claude Code registers its task, about 3 seconds after it
+  starts, so one asked for sooner moves then (or, if it finishes first, just
+  finishes). Steering does not move a Claude Code call: Claude Code takes the
+  message in when the call ends.
+
   Even without background tasks a process stays 30 minutes after its turn
   ends or is interrupted, so the conversation's next turn (a follow-up,
   steering, a queued message) continues in it instead of starting a new

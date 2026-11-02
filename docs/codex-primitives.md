@@ -35,7 +35,9 @@ daemon's configured PATH and auth environment. `shell` and `login` remain
 explicit overrides; login startup files may change that environment.
 The Codex surface keeps stdin open and optionally allocates a POSIX PTY. Sessions
 are owned by a conversation and may be written/polled using `write_stdin`.
-Yield time is not a process timeout. The current hard process limit is one hour;
+Yield time is not a process timeout: `Ctrl+A` or a steering message ends the
+wait of a running `exec_command` or `write_stdin` early, and the command runs on.
+The current hard process limit is one hour;
 output capture is capped at 16 MiB per Codex session with explicit truncation.
 
 Yielded commands are polling-only: use `write_stdin` to collect output and final

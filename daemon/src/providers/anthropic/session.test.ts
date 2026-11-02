@@ -65,6 +65,19 @@ class FakeRuntime implements AsyncIterable<unknown> {
     if (this.stopFails) throw new Error("no such task");
   }
 
+  moved: Array<string | undefined> = [];
+  /** Whether backgroundTasks fails after accepting the request. */
+  moveFails = false;
+
+  /** What backgroundTasks answers: false when it found no foreground task. */
+  moves = true;
+
+  async backgroundTasks(toolUseId?: string) {
+    this.moved.push(toolUseId);
+    if (this.moveFails) throw new Error("background tasks are disabled");
+    return this.moves;
+  }
+
   close(): void {
     this.closed = true;
     this.notify?.();
@@ -101,6 +114,14 @@ const tasks = (...live: Array<{ id: string; description: string; type?: string; 
     task_id: task.id, task_type: task.type ?? "local_bash", description: task.description,
     ...(task.parent ? { parent_task_id: task.parent } : {}),
   })),
+});
+/** Claude Code registering a running tool call's task, about 3 s after it starts. */
+const foregroundTask = (id: string, toolUseId: string) => ({
+  type: "system", subtype: "task_started", session_id: SESSION, task_id: id, tool_use_id: toolUseId,
+  is_backgrounded: false, task_type: "local_bash", description: id,
+});
+const toolCall = (uuid: string, id: string, name: string, input: Record<string, unknown>, parent: string | null = null) => ({
+  type: "assistant", uuid, session_id: SESSION, parent_tool_use_id: parent, message: { content: [{ type: "tool_use", id, name, input }] },
 });
 /** Claude Code starting a main-thread model call. */
 const callStart = { type: "stream_event", session_id: SESSION, parent_tool_use_id: null, event: { type: "message_start", message: { usage: { input_tokens: 1, output_tokens: 1 } } } };
@@ -158,6 +179,7 @@ let convCounter = 0;
 const wakes: Array<{ convId: string; text: string; id: string }> = [];
 const cancelled: string[] = [];
 const changed: string[] = [];
+const failedMoves: Array<{ convId: string; reason: string }> = [];
 
 function open(): { convId: string; session: ClaudeCodeSession; runtime: () => FakeRuntime } {
   const convId = `claude-session-test-${Date.now()}-${convCounter++}`;
@@ -234,6 +256,7 @@ configureClaudeCodeSessions({
     return true;
   },
   cancelWake: (_convId, id) => cancelled.push(id),
+  backgroundFailed: (convId, reason) => failedMoves.push({ convId, reason }),
 });
 
 afterEach(() => {
@@ -241,6 +264,7 @@ afterEach(() => {
   wakes.length = 0;
   cancelled.length = 0;
   changed.length = 0;
+  failedMoves.length = 0;
 });
 
 describe("Claude Code processes outliving a turn", () => {
@@ -608,6 +632,164 @@ describe("Claude Code processes outliving a turn", () => {
     expect(session.canContinue(claudeSessionKey("claude-sonnet-5-5", "high", "/work"), { sessionId: SESSION, resumeAt: "a2", cwd: "/work" })).toBe(false);
     expect(session.canContinue(KEY, { sessionId: SESSION, resumeAt: "u1", cwd: "/work" })).toBe(false);
     expect(session.canContinue(KEY, null)).toBe(false);
+  });
+});
+
+describe("moving a running tool call to the background", () => {
+  /** A turn whose model has just called `frames`' tools. */
+  async function runningTurn(session: ClaudeCodeSession, runtime: () => FakeRuntime, ...frames: unknown[]) {
+    const turn = session.run(createClaudeStreamState(callbacks(), "/work", "p1"), [{ type: "text", text: "run it" }], undefined, undefined);
+    await tick();
+    runtime().emit(init, ...frames);
+    await tick();
+    return { turn };
+  }
+
+  test("the command becomes a task, the turn goes on, and its end is shown with the turn Claude Code starts", async () => {
+    const { convId, session, runtime } = open();
+    const { turn } = await runningTurn(session, runtime, call("a1", "t1", "sleep 60"), foregroundTask("b1", "t1"));
+
+    expect(session.backgroundForegroundCalls()).toBe(true);
+    await tick();
+    expect(runtime().moved).toEqual(["t1"]);
+
+    runtime().emit(tasks({ id: "b1", description: "Sleep 60 seconds" }), output("u1", "t1", "Command was manually backgrounded by user with ID: b1."), text("a2", "it runs on"), result("p1"));
+    expect((await turn).text).toBe("it runs on");
+    expect(getConversationTasks(convId)).toMatchObject([{ id: "b1", kind: "background", title: "Sleep 60 seconds" }]);
+
+    runtime().emit(finished("b1"), tasks(), text("a3", "it finished"));
+    await tick();
+    expect(wakes.map(wake => wake.text)).toEqual([expect.stringContaining("[notification] Background task completed: b1")]);
+  });
+
+  test("the moved command's clock keeps counting from when the call started", async () => {
+    const { convId, session, runtime } = open();
+    const { turn } = await runningTurn(session, runtime, call("a1", "t1", "sleep 60"));
+    const startedBy = Date.now();
+    await Bun.sleep(5);
+
+    runtime().emit(foregroundTask("b1", "t1"), tasks({ id: "b1", description: "Sleep 60 seconds" }));
+    await tick();
+    expect(getConversationTasks(convId)[0]?.startedAt).toBeLessThanOrEqual(startedBy);
+
+    runtime().emit(output("u1", "t1", "moved"), text("a2", "done"), result("p1"));
+    await turn;
+  });
+
+  test("asked before Claude Code has registered its task, the call moves as soon as it does, once", async () => {
+    const { session, runtime } = open();
+    const { turn } = await runningTurn(session, runtime, call("a1", "t1", "sleep 60"));
+
+    expect(session.backgroundForegroundCalls()).toBe(true);
+    await tick();
+    expect(runtime().moved).toEqual([]);
+
+    runtime().emit(foregroundTask("b1", "t1"));
+    await tick();
+    expect(runtime().moved).toEqual(["t1"]);
+    expect(session.backgroundForegroundCalls()).toBe(true);
+    await tick();
+    expect(runtime().moved).toEqual(["t1"]);
+
+    runtime().emit(output("u1", "t1", "moved"), text("a2", "done"), result("p1"));
+    await turn;
+  });
+
+  test("a command that finishes first leaves nothing to move", async () => {
+    const { session, runtime } = open();
+    const { turn } = await runningTurn(session, runtime, call("a1", "t1", "echo hi"));
+
+    expect(session.backgroundForegroundCalls()).toBe(true);
+    runtime().emit(output("u1", "t1", "hi"));
+    await tick();
+    expect(session.backgroundForegroundCalls()).toBe(false);
+    expect(runtime().moved).toEqual([]);
+
+    runtime().emit(text("a2", "done"), result("p1"));
+    await turn;
+  });
+
+  test("every running shell call moves, the turn being held up by each of them", async () => {
+    const { session, runtime } = open();
+    const { turn } = await runningTurn(session, runtime, call("a1", "t1", "sleep 60"), call("a2", "t2", "sleep 61"), foregroundTask("b1", "t1"));
+
+    expect(session.backgroundForegroundCalls()).toBe(true);
+    await tick();
+    expect(runtime().moved).toEqual(["t1"]);
+
+    runtime().emit(foregroundTask("b2", "t2"));
+    await tick();
+    expect(runtime().moved).toEqual(["t1", "t2"]);
+
+    runtime().emit(output("u1", "t1", "moved"), output("u2", "t2", "moved"), text("a3", "done"), result("p1"));
+    await turn;
+  });
+
+  test("only a main-thread shell call that holds up the turn can move", async () => {
+    const { session, runtime } = open();
+    expect(session.backgroundForegroundCalls()).toBe(false);
+
+    const { turn } = await runningTurn(
+      session, runtime,
+      toolCall("a1", "r1", "Read", { file_path: "/work/a" }),
+      toolCall("a2", "t1", "Bash", { command: "sleep 60", run_in_background: true }),
+      toolCall("a3", "t2", "Bash", { command: "sleep 60" }, "agent-call"),
+    );
+    expect(session.backgroundForegroundCalls()).toBe(false);
+
+    runtime().emit(output("u1", "r1", "text"), output("u2", "t1", "started"), text("a4", "done"), result("p1"));
+    await turn;
+  });
+
+  test("a refusal is reported, and the call can be asked for again", async () => {
+    const { convId, session, runtime } = open();
+    const { turn } = await runningTurn(session, runtime, call("a1", "t1", "sleep 60"), foregroundTask("b1", "t1"));
+
+    runtime().moveFails = true;
+    expect(session.backgroundForegroundCalls()).toBe(true);
+    await tick();
+    expect(failedMoves).toEqual([{ convId, reason: "background tasks are disabled" }]);
+
+    runtime().moveFails = false;
+    expect(session.backgroundForegroundCalls()).toBe(true);
+    await tick();
+    expect(runtime().moved).toEqual(["t1", "t1"]);
+
+    runtime().emit(output("u1", "t1", "moved"), text("a2", "done"), result("p1"));
+    await turn;
+  });
+
+  test("a call Claude Code found nothing to move for can be asked for again", async () => {
+    const { session, runtime } = open();
+    const { turn } = await runningTurn(session, runtime, call("a1", "t1", "sleep 60"), foregroundTask("b1", "t1"));
+
+    runtime().moves = false;
+    expect(session.backgroundForegroundCalls()).toBe(true);
+    await tick();
+    runtime().moves = true;
+    expect(session.backgroundForegroundCalls()).toBe(true);
+    await tick();
+    expect(runtime().moved).toEqual(["t1", "t1"]);
+    expect(failedMoves).toEqual([]);
+
+    runtime().emit(output("u1", "t1", "moved"), text("a2", "done"), result("p1"));
+    await turn;
+  });
+
+  test("a turn's end forgets the calls it left open, and a closed process moves nothing", async () => {
+    const { session, runtime } = open();
+    const { turn } = await runningTurn(session, runtime, call("a1", "t1", "sleep 60"));
+    runtime().emit(text("a2", "done"), result("p1"));
+    await turn;
+    expect(session.backgroundForegroundCalls()).toBe(false);
+
+    const second = open();
+    second.session.run(createClaudeStreamState(callbacks(), "/work", "p2"), [{ type: "text", text: "run it" }], undefined, undefined).catch(() => {});
+    await tick();
+    second.runtime().emit(init, call("a1", "t1", "sleep 60"));
+    await tick();
+    second.session.close("test");
+    expect(second.session.backgroundForegroundCalls()).toBe(false);
   });
 });
 
