@@ -177,6 +177,7 @@ const activeCommandControllers = new Map<string, AbortController>();
 const cancelledOccurrences = new Set<string>();
 let changedListener: ConversationChanged | null = null;
 let deferredSleepReadyListener: DeferredSleepReady | null = null;
+let deferredSleepCancelledListener: ConversationChanged | null = null;
 let timer: ReturnType<typeof setTimeout> | null = null;
 let started = false;
 let waitSubscriptionsEnabled = false;
@@ -869,6 +870,12 @@ export function interruptDeferredChronoSleep(
   conversationId: string,
   resumedAt = Date.now(),
 ): DeferredChronoSleep | null {
+  // A cancel recorded while the conversation was cold, its result still unattached.
+  for (const stopped of listDeferredChronoSleeps(conversationId)) {
+    if (stopped.state !== "resuming" || stopped.resumeReason !== "user_stop") continue;
+    prepareDeferredSleepResume(stopped, "user_stop", stopped.resumedAt ?? resumedAt);
+    completeDeferredChronoSleepResume(stopped.id);
+  }
   // A sleep an earlier user turn already ended, whose turn then never started,
   // is waiting for its 30 s retry replay. This turn is that replay: owning the
   // record lets its finalizer retire it instead of chrono replaying again.
@@ -895,6 +902,18 @@ export function completeDeferredChronoSleepResume(sleepId: string): void {
 export function cancelDeferredChronoSleep(conversationId: string): boolean {
   const sleeps = listDeferredChronoSleeps(conversationId);
   for (const sleep of sleeps) {
+    // Stop never waits for a load: a cold conversation's result is attached by
+    // executeDeferredSleep, which can load it.
+    if (convStore.needsAsyncLoad(conversationId)) {
+      const { retryAt: _retryAt, ...rest } = sleep;
+      const stopped: DeferredChronoSleep = { ...rest, state: "resuming", resumedAt: Date.now(), resumeReason: "user_stop" };
+      deferredSleeps.set(stopped.id, stopped);
+      stopDeferredWait(stopped.id);
+      persist();
+      publishDeferredSleep(stopped, false);
+      armTimer();
+      continue;
+    }
     // Persist cancellation before attaching the result. Recovery may repair the
     // result after a crash, but must never replay the cancelled model turn.
     prepareDeferredSleepResume(sleep, "user_stop", Date.now());
@@ -1285,6 +1304,8 @@ async function executeDeferredSleep(sleep: DeferredChronoSleep): Promise<void> {
   if (processingSleeps.has(sleep.id)) return;
   processingSleeps.add(sleep.id);
   try {
+    // Attaching the result needs the conversation loaded: after a restart it is cold.
+    if (convStore.needsAsyncLoad(sleep.conversationId)) await convStore.getAsync(sleep.conversationId);
     const current = deferredSleeps.get(sleep.id);
     if (!current) return;
     // Task completion may happen before the agent commits the assistant
@@ -1305,6 +1326,7 @@ async function executeDeferredSleep(sleep: DeferredChronoSleep): Promise<void> {
     if (!prepared) return;
     if (prepared.resumeReason === "user_stop") {
       removeDeferredSleep(prepared);
+      deferredSleepCancelledListener?.(prepared.conversationId);
       return;
     }
     // An early user-message wake is consumed by the user turn that changed the
@@ -1401,9 +1423,11 @@ async function processPendingAndDue(now = Date.now()): Promise<void> {
 export function configureChronoService(
   listener: ConversationChanged | null,
   sleepReadyListener: DeferredSleepReady | null = null,
+  sleepCancelledListener: ConversationChanged | null = null,
 ): void {
   changedListener = listener;
   deferredSleepReadyListener = sleepReadyListener;
+  deferredSleepCancelledListener = sleepCancelledListener;
 }
 
 /** Attach recovered wait targets only after the daemon has rebuilt its task catalog. */

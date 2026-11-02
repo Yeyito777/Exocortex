@@ -776,6 +776,11 @@ export function get(id: string): Conversation | undefined {
   return loadConversation(id);
 }
 
+/** Whether a synchronous read of this conversation would throw until getAsync loads it. */
+export function needsAsyncLoad(id: string): boolean {
+  return asyncLoadingRequired && !conversations.has(id) && persistence.isSqliteConversationStore() && hasConversation(id);
+}
+
 /** Coalesce cold reads and adopt only the exact still-current durable generation. */
 export async function getAsync(id: string): Promise<Conversation | undefined> {
   const cached = conversations.get(id);
@@ -1393,7 +1398,18 @@ function applySidebarHistoryAsync(direction: SidebarUndoDirection): Promise<Asyn
           : { type: "conversations" as const, conversations: restored };
       }
       if (entry.type === "folder_unwrap") {
-        for (const child of entry.children) if (child.item.type === "conversation") await getAsync(child.item.id);
+        // Loading a later child must not evict an earlier one before the entry applies.
+        const releases: (() => void)[] = [];
+        try {
+          for (const child of entry.children) {
+            if (child.item.type !== "conversation") continue;
+            releases.push(pinConversationCache(child.item.id));
+            await getAsync(child.item.id);
+          }
+          return applySidebarStackEntry(entry, direction);
+        } finally {
+          for (const release of releases) release();
+        }
       }
       return applySidebarStackEntry(entry, direction);
     } catch (error) {

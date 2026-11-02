@@ -10,6 +10,10 @@ import {
 } from "./messages";
 import { buildConversationApiContext } from "./context-compaction";
 import { orchestrateSendMessage, orchestrateCompactConversation, orchestrateGoalCycle } from "./orchestrator";
+import {
+  cancelDeferredChronoSleep, configureChronoService, deferChronoSleep, interruptDeferredChronoSleep,
+  listDeferredChronoSleeps, startChronoService, stopChronoService,
+} from "./chrono-service";
 import type { streamMessage } from "./api";
 
 convStore.requireAsyncConversationLoading();
@@ -274,6 +278,25 @@ test("an unwound conversation gone cold is deleted, alone or with its folder, wi
   expect(persistence.load(alone)!.messages).toEqual(kept);
 });
 
+test("undoing a folder unwrap keeps every cold child loaded under cache pressure", async () => {
+  const first = seed();
+  const second = seed();
+  const folder = convStore.createFolder("unwrap fixture")!;
+  expect(convStore.moveConversationToFolder(first, folder.id)).toBe(true);
+  expect(convStore.moveConversationToFolder(second, folder.id)).toBe(true);
+  expect(convStore.deleteFolder(folder.id, "unwrap")).toBe(true);
+  convStore.conversationCacheInternalsForTest.evictClean();
+  convStore.conversationCacheInternalsForTest.setLimits({ maxEntries: 1, maxFileBytes: Number.MAX_SAFE_INTEGER });
+  try {
+    expect(await convStore.undoDeleteAsync()).not.toBeNull();
+    expect(convStore.getIndexedSummary(first)?.folderId).toBe(folder.id);
+    expect(convStore.getIndexedSummary(second)?.folderId).toBe(folder.id);
+  } finally {
+    convStore.conversationCacheInternalsForTest.resetLimits();
+    convStore.deleteFolder(folder.id, "unwrap", false);
+  }
+});
+
 test("undo and redo of a cold rename or mark apply without loading, and older entries stay reachable", async () => {
   const a = seed();
   const b = seed();
@@ -324,6 +347,97 @@ test("a deleted conversation's slow-to-stop turn never touches it after undo and
   const tail = (await convStore.getAsync(id))!.messages.slice(-3).map(m => [m.role, typeof m.content === "string" ? m.content : "blocks"]);
   // "first" was saved before the delete; nothing of turn 1's was written after it.
   expect(tail).toEqual([["user", "first"], ["user", "second"], ["assistant", "blocks"]]);
+});
+
+test("a turn in a subagent whose parent is cold loads the parent instead of failing", async () => {
+  const parent = seed();
+  const child = seed();
+  await convStore.getAsync(child);
+  convStore.setSubagentPolicy(child, { parentConversationId: parent, allowEdits: false, parentSystemInstructions: "" });
+  convStore.conversationCacheInternalsForTest.evictClean();
+  expect(convStore.getCached(parent)).toBeUndefined();
+  expect(convStore.getCached(child)).toBeUndefined();
+
+  const outcome = await orchestrateSendMessage(
+    server() as never, null, undefined, child, "[chrono wake: chrono:test]\ncheck the run", Date.now(),
+    callbacks(async () => response("checked")), undefined, { automation: { kind: "chrono_wake", sourceId: "chrono:test" } },
+  );
+
+  expect(outcome.error).toBeUndefined();
+  expect(outcome.ok).toBe(true);
+  const stored = persistence.load(child)!.messages;
+  expect(stored.some(message => message.role === "system" && String(message.content).startsWith("✗"))).toBe(false);
+  expect(stored.some(message => isRealUserMessage(message) && String(message.content).includes("check the run"))).toBe(true);
+});
+
+/** A conversation holding an unanswered Chrono sleep call, gone cold as after a restart. */
+async function seedColdSleeper(toolCallId: string): Promise<string> {
+  const id = seed();
+  await convStore.getAsync(id);
+  convStore.appendMessages(id, [{
+    role: "assistant",
+    content: [{ type: "tool_use", id: toolCallId, name: "chrono", input: { action: "sleep", duration: "10m" } }],
+    metadata: null,
+  }]);
+  convStore.conversationCacheInternalsForTest.evictClean();
+  expect(convStore.getCached(id)).toBeUndefined();
+  return id;
+}
+
+async function until(condition: () => boolean): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error("Timed out waiting for the condition");
+    await Bun.sleep(5);
+  }
+}
+
+test("a deferred Chrono sleep ending on a cold conversation loads it, attaches its result and replays", async () => {
+  const id = await seedColdSleeper("cold-sleep-elapsed");
+  let replayed = false;
+  configureChronoService(null, () => { replayed = true; });
+  await startChronoService();
+  try {
+    const durationMs = 10 * 60_000;
+    expect(deferChronoSleep({ conversationId: id, toolCallId: "cold-sleep-elapsed", startedAt: Date.now() - durationMs + 20, durationMs }).error).toBeUndefined();
+    await until(() => replayed && listDeferredChronoSleeps(id).length === 0);
+    expect(convStore.hasToolBlock(id, "tool_result", "cold-sleep-elapsed")).toBe(true);
+  } finally {
+    stopChronoService();
+    configureChronoService(null);
+  }
+});
+
+test("cancelling a cold conversation's deferred sleep answers at once and attaches the result after loading", async () => {
+  const id = await seedColdSleeper("cold-sleep-stop");
+  let replayed = false;
+  const historyChanged: string[] = [];
+  configureChronoService(null, () => { replayed = true; }, changed => { historyChanged.push(changed); });
+  await startChronoService();
+  try {
+    expect(deferChronoSleep({ conversationId: id, toolCallId: "cold-sleep-stop", startedAt: Date.now(), durationMs: 10 * 60_000 }).error).toBeUndefined();
+    expect(cancelDeferredChronoSleep(id)).toBe(true);
+    expect(convStore.getCached(id)).toBeUndefined();
+    await until(() => listDeferredChronoSleeps(id).length === 0);
+    expect(convStore.hasToolBlock(id, "tool_result", "cold-sleep-stop")).toBe(true);
+    expect(historyChanged).toEqual([id]);
+    expect(replayed).toBe(false);
+  } finally {
+    stopChronoService();
+    configureChronoService(null);
+  }
+});
+
+test("a user turn right after a cold Stop finds the cancelled sleep's result already attached", async () => {
+  const id = await seedColdSleeper("cold-sleep-stop-turn");
+  // The scheduler is not running here: the turn has to attach the result itself.
+  expect(deferChronoSleep({ conversationId: id, toolCallId: "cold-sleep-stop-turn", startedAt: Date.now(), durationMs: 10 * 60_000 }).error).toBeUndefined();
+  expect(cancelDeferredChronoSleep(id)).toBe(true);
+  expect(convStore.hasToolBlock(id, "tool_result", "cold-sleep-stop-turn")).toBe(false);
+  await convStore.getAsync(id);
+  expect(interruptDeferredChronoSleep(id)).toBeNull();
+  expect(convStore.hasToolBlock(id, "tool_result", "cold-sleep-stop-turn")).toBe(true);
+  expect(listDeferredChronoSleeps(id)).toEqual([]);
 });
 
 test("Stop can persist a cold active-goal pause without loading its history", async () => {

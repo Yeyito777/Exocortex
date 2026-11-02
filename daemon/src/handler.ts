@@ -356,6 +356,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       }
       if (!outcome.suspended) notificationRuntime.complete(sleep.conversationId, outcome);
     },
+    (convId) => { broadcastConversationHistoryUpdated(server, convId); },
   );
   // Claude Code processes outliving a turn report their background tasks, and
   // queue a turn when Claude Code starts work by itself (a task finished).
@@ -1652,6 +1653,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         } else {
           queueRetryAfter.delete(entry.id);
           convStore.removeQueuedMessageById(entry.id);
+          log("error", `handler: dropped queued ${entry.command?.name ?? entry.automation?.kind ?? "user message"} ${entry.id} for ${entry.convId}: ${error}`);
           server.broadcast({
             type: "queue_notice",
             queueId: entry.id,

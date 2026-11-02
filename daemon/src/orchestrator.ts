@@ -47,7 +47,7 @@ import {
 import { getCurrentAccountScope as getCurrentOpenAIAccountScope } from "./providers/openai/auth";
 import { buildCodexWindowId } from "./providers/openai/identity";
 import { resolveToolCallPresentation } from "./helper-tool-manifest";
-import { pendingTurnNotices, turnNoticeMessages } from "./turn-notices";
+import { loadClientOriginAncestors, pendingTurnNotices, turnNoticeMessages } from "./turn-notices";
 import { setBackgroundTaskActive as setConversationBackgroundTaskActive, setChronoTaskActive as setConversationChronoTaskActive } from "./conversation-activity";
 import { isScopedSubagent, remainingSubagentDepth } from "./subagent-policy";
 import { acknowledgeSubagentNotification, getSubagentNotificationRuntime, settlePendingSubagentNotifications } from "./subagent-notifications";
@@ -556,6 +556,7 @@ async function orchestrateAdmittedAssistantTurn(
   });
 
   const reportSendError = (message: string): AssistantTurnOutcome => {
+    log("error", `orchestrator: send failed for ${convId}: ${message}`);
     if (client) {
       server.sendTo(client, { type: "error", reqId, convId, message });
       return buildErrorOutcome(message);
@@ -693,7 +694,10 @@ async function orchestrateAdmittedAssistantTurn(
       // client machine, the goal). Clients do not show these notices. They
       // precede the message's checkpoint, so unwinding the message keeps what
       // was true when it was sent.
-      const notices = pendingTurnNotices({ ...conv, conversationById: id => convStore.get(id) });
+      const conversationById = await loadClientOriginAncestors(conv, id => convStore.getAsync(id));
+      const cancelledAfterAncestors = handoffCancelled();
+      if (cancelledAfterAncestors) return cancelledAfterAncestors;
+      const notices = pendingTurnNotices({ ...conv, conversationById });
       if (notices.length > 0) {
         convStore.appendMessages(convId, turnNoticeMessages(notices, conv.model, startedAt));
         await prepareArchiveHashes(conv.messages);

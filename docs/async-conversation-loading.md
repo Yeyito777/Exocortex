@@ -129,6 +129,11 @@ as `.js`, while source installations use `.ts`.
 - Production rejects synchronous cold SQLite `get` calls. Turn admission owns
   asynchronous loading, reserves a handoff first, and verifies its exact token
   again after awaits. Stop acknowledges without waiting for the worker.
+- Everything else on the way to a turn stays off the synchronous path too: a
+  subagent's admission loads the conversations above it for its client notice
+  (one that cannot load only ends that walk), and a deferred Chrono sleep loads
+  its conversation before attaching the result. Cancelling a cold sleep records
+  the cancel at once and attaches the result after that load.
 - Queue injection prepares each preceding checkpoint before committing the
   batch; cancellation/queue changes cannot consume uncommitted durable entries.
 - Recovery, scheduler/notification dedupe, policy queries, cold goal pause,
