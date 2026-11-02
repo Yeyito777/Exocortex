@@ -358,6 +358,35 @@ be as new), and such a conversation waits for a /proxy link that is down
 rather than move to this machine's keys (`whenProxyDown`). Other providers
 ignore `route`.
 
+## Several clients on one conversation
+
+Several connections of an app can share a saved or temporary conversation, as
+TUIs share one through the daemon: each joins it, any of them can send, and
+each runs the app tools of the turns it sent itself. The Neovim fork does this
+for all its windows in a folder.
+
+- **Join:** `attach_app_conversation` with `"join": true`, also after a
+  reconnect (the conversation stays owned by the session that owns it). A joined
+  connection gets the conversation's events as they happen (a `turn_catchup`
+  for a turn running when it joins, with `turn-catchup`), and every
+  `turn_result`, without `reqId` for a turn it did not send. A plain attach would
+  take running turns' tool calls away from whoever sent them.
+- **Send:** `send_message` with `"own": true`. The sender becomes the owner when
+  the turn starts, so that turn's `app_tool_call`s go to it; it stays the owner
+  until another client's send takes over. The running turn's calls never move:
+  while one runs a send is refused (`error`, "Already streaming") and nothing
+  changes. So clients wait for the `turn_result` and send then; of two at the
+  same moment one is refused and sends after the next one.
+- **Finding it:** `list_app_conversations` gives the live ones (`cwd`,
+  `streaming`, `lastActivityAt`). A connection also hears of new ones as they are
+  created by another connection of its app, for every lifetime but `ephemeral`:
+
+```json
+{"type":"app_conversation_created","conversation":{"convId":"1793160000000-ab12cd","app":"nvim","lifetime":"temporary","cwd":"/home/me/project","…":"…"}}
+```
+
+- **Its end:** `conversation_deleted` reaches everyone who joined.
+
 ## Commands
 
 ### `new_conversation`
@@ -392,7 +421,10 @@ answers `error` naming the field, and creates nothing.
 ```
 
 `startedAt` is the prompt's time in ms; when absent the daemon uses its own
-clock (and you cannot match the turn after a reconnect). Events for the
+clock (and you cannot match the turn after a reconnect). With `"own": true` the
+connection becomes the owner in the moment the turn starts, so it runs the
+turn's app tools ([several clients](#several-clients-on-one-conversation)). A
+send refused because a turn is running changes nothing. Events for the
 conversation stream meanwhile; when the turn ends the request is answered:
 
 ```json
@@ -444,6 +476,10 @@ new owner. Counts as activity. Answered with `app_conversation_attached`:
 `conversation` (AppConversationInfo, whose `streaming` says whether a turn is
 running) and `lastTurnResult`. Refused for an ephemeral conversation of
 another session, and for another app's conversation.
+
+With `"join": true` the connection follows it instead, without becoming the
+owner: nothing moves and `tools` and `route` are ignored
+([several clients](#several-clients-on-one-conversation)).
 
 ### `end_app_session`
 

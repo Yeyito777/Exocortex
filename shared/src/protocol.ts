@@ -231,6 +231,11 @@ export interface SendMessageCommand {
   notifyParent?: ParentNotificationTarget;
   /** Answer this request with turn_result when the turn ends (docs/app-api.md). */
   awaitResult?: boolean;
+  /**
+   * App conversations: if the turn starts, this connection becomes the owner, so
+   * it runs the turn's app tools. A refused send changes nothing (docs/app-api.md).
+   */
+  own?: boolean;
 }
 
 export interface ReplayConversationCommand {
@@ -1501,6 +1506,11 @@ export interface AttachAppConversationCommand {
   tools?: Pick<AppToolsSpec, "app">;
   /** Replaces its route preferences from the next turn on. */
   route?: AppRouteSpec;
+  /**
+   * Follow it without becoming the owner: its events and turn results, not its
+   * tool calls; `tools` and `route` are ignored (docs/app-api.md).
+   */
+  join?: boolean;
 }
 
 /**
@@ -2978,6 +2988,12 @@ export interface AppConversationAttachedEvent {
   lastTurnResult?: TurnResultEvent;
 }
 
+/** Another connection of this app created a conversation it can follow (docs/app-api.md). */
+export interface AppConversationCreatedEvent {
+  type: "app_conversation_created";
+  conversation: AppConversationInfo;
+}
+
 export interface AppConversationsListEvent {
   type: "app_conversations_list";
   reqId?: string;
@@ -3096,4 +3112,5 @@ export type Event =
   | TurnCatchupEvent
   | AppConversationAttachedEvent
   | AppConversationsListEvent
+  | AppConversationCreatedEvent
   | ErrorEvent;

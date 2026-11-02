@@ -173,6 +173,39 @@ class Conversations(Base):
         with self.assertRaisesRegex(ExocortexError, "ended"):
             again.send("hi")
 
+    def test_join_shares_a_conversation(self):
+        def wait_for(check):
+            deadline = time.time() + 5
+            while not check():
+                self.assertLess(time.time(), deadline, "timed out waiting")
+                time.sleep(0.01)
+
+        first, second = self.client(), self.client()
+        created = []
+        second.on_event(lambda e: created.append(e) if e["type"] == "app_conversation_created" else None)
+        conv = first.conversation("temporary", tools=[lookup(lambda a: "first")])
+        first.join(conv.id)
+        wait_for(lambda: created)
+        self.assertEqual(created[0]["conversation"]["convId"], conv.id)
+        results = []
+        second.on_event(lambda e: results.append(e) if e["type"] == "turn_result" else None)
+        shared = second.join(conv.id)
+        shared.set_handlers([lookup(lambda a: "second")])
+        # Each runs the tools of the turns it sends, and hears the other's.
+        self.assertEqual(shared.send('tool lookup {"word":"x"}').text, "lookup -> second")
+        self.assertEqual(conv.send('tool lookup {"word":"x"}').text, "lookup -> first")
+        wait_for(lambda: len(results) == 2)
+        self.assertEqual(results[-1]["text"], "lookup -> first")
+        # A send while the other's turn runs is refused, and takes nothing.
+        running = threading.Thread(target=lambda: conv.send('hang'))
+        running.start()
+        wait_for(lambda: any(i["streaming"] for i in second.list()))
+        with self.assertRaisesRegex(ExocortexError, "Already streaming"):
+            shared.send("count")
+        shared.abort()
+        running.join(5)
+        self.assertEqual(second.list()[0]["ownerConnected"], True)
+
     def test_ephemeral_ends_with_connection(self):
         owner, watcher = self.client(), self.client()
         conv = owner.conversation("ephemeral")

@@ -248,6 +248,14 @@ interface AppSession {
 const sessions = new Map<string, AppSession>();
 const clientSessions = new WeakMap<ConnectedClient, AppSession>();
 const owners = new Map<string, AppSession>();
+/** Sessions that follow a conversation they may not own (attach with join): they hear its turn results too. */
+const followers = new Map<string, Set<AppSession>>();
+/**
+ * Who sent each conversation's latest turn (memory only): a prompt with its
+ * startedAt is the sender's, sent again after a reconnect, or another client's
+ * in the same millisecond.
+ */
+const turnSenders = new Map<string, { startedAt: number; session: AppSession }>();
 interface PendingAwait { client: ConnectedClient; reqId: string | undefined; turnId: string }
 const awaits = new Map<string, PendingAwait[]>();
 /** Each app conversation's latest turn's blocks (memory only; lastTurnResult keeps none), for a send again answered from it. */
@@ -412,6 +420,7 @@ async function releaseSession(session: AppSession, requester?: { client: Connect
   sessions.delete(session.id);
   if (session.graceTimer) clearTimeout(session.graceTimer);
   session.graceTimer = null;
+  for (const following of followers.values()) following.delete(session);
   const ended: string[] = [];
   for (const convId of ownedBy(session)) {
     owners.delete(convId);
@@ -510,6 +519,12 @@ function onTurnEnded(end: AssistantTurnEnd): void {
   if (withBlocks.blocks) lastTurnBlocks.set(end.convId, { turnId: result.turnId, blocks: withBlocks.blocks });
   const owner = appConversationOwner(end.convId);
   if (!owner || !waiting.some(entry => entry.client === owner)) sendToOwnerSession(end.convId, withBlocks);
+  for (const session of followers.get(end.convId) ?? []) {
+    const follower = connectedClient(session);
+    if (follower && follower !== owner && !waiting.some(entry => entry.client === follower)) {
+      server?.sendTo(follower, eventFor(follower, withBlocks));
+    }
+  }
   // An app_run's ephemeral conversation ends with its turn, also one a restart replayed.
   if (record.endAfterTurn && !shuttingDown) void finishAppRun(end.convId);
 }
@@ -623,7 +638,28 @@ export function listAppConversations(client: ConnectedClient, cmd: ListAppConver
   server?.sendTo(client, { type: "app_conversations_list", reqId: cmd.reqId, conversations });
 }
 
-/** attach_app_conversation: become the owner, optionally replacing the app tools and route. */
+export function noteAppTurnSender(convId: string, startedAt: number, client: ConnectedClient): void {
+  turnSenders.set(convId, { startedAt, session: sessionOf(client) });
+}
+
+export function appTurnSentByAnother(convId: string, startedAt: number, client: ConnectedClient): boolean {
+  const sender = turnSenders.get(convId);
+  return sender?.startedAt === startedAt && sender.session !== sessionOf(client);
+}
+
+/** A new conversation other connections of the app can follow, for them: ephemeral ones are their owner's alone. */
+export function announceAppConversation(convId: string, creator: ConnectedClient): void {
+  const record = getAppRecord(convId);
+  if (!record || record.lifetime === "ephemeral") return;
+  for (const session of sessions.values()) {
+    const client = connectedClient(session);
+    if (client && client !== creator && session.app === record.app) {
+      server?.sendTo(client, { type: "app_conversation_created", conversation: appConversationInfo(record) });
+    }
+  }
+}
+
+/** attach_app_conversation: become the owner, optionally replacing the app tools and route; or just follow it (join). */
 export function attachAppConversation(client: ConnectedClient, cmd: AttachAppConversationCommand): void {
   const record = getAppRecord(cmd.convId);
   const fail = (message: string) => server?.sendTo(client, { type: "error", reqId: cmd.reqId, convId: cmd.convId, message });
@@ -632,6 +668,21 @@ export function attachAppConversation(client: ConnectedClient, cmd: AttachAppCon
   const owner = owners.get(cmd.convId);
   if (record.lifetime === "ephemeral" && owner && owner !== clientSessions.get(client) && (owner.client || !owner.anonymous)) {
     return void fail("An ephemeral conversation belongs to the session that created it");
+  }
+  if (cmd.join === true) {
+    let following = followers.get(cmd.convId);
+    if (!following) followers.set(cmd.convId, following = new Set());
+    following.add(sessionOf(client));
+    server?.subscribe(client, cmd.convId);
+    sendTurnCatchup(client, cmd.convId);
+    server?.sendTo(client, {
+      type: "app_conversation_attached",
+      reqId: cmd.reqId,
+      convId: cmd.convId,
+      conversation: appConversationInfo(record),
+      ...(record.lastTurnResult ? { lastTurnResult: record.lastTurnResult } : {}),
+    });
+    return;
   }
   let tools: AppToolDef[] | undefined;
   let route: AppRouteSpec | undefined;
@@ -739,6 +790,8 @@ export async function endAppConversation(convId: string, reason: AppConversation
   }
   awaits.delete(convId);
   owners.delete(convId);
+  followers.delete(convId);
+  turnSenders.delete(convId);
   lastTurnBlocks.delete(convId);
   forgetConversationAccount(convId);
   removeAppConversationRecord(convId);
@@ -832,6 +885,8 @@ export function handOffAppConversations(): number {
   stopTurnListener?.();
   stopTurnListener = null;
   owners.clear();
+  followers.clear();
+  turnSenders.clear();
   sessions.clear();
   awaits.clear();
   lastTurnBlocks.clear();
@@ -983,6 +1038,8 @@ export function configureAppApi(target: DaemonServer, options: {
   shuttingDown = false;
   handingOff = false;
   owners.clear();
+  followers.clear();
+  turnSenders.clear();
   sessions.clear();
   awaits.clear();
   lastTurnBlocks.clear();
@@ -1037,6 +1094,8 @@ export function configureAppApi(target: DaemonServer, options: {
     stopTurnListener?.();
     stopTurnListener = null;
     owners.clear();
+    followers.clear();
+    turnSenders.clear();
     sessions.clear();
     awaits.clear();
     lastTurnBlocks.clear();

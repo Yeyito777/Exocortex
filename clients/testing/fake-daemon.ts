@@ -117,6 +117,10 @@ interface Conv {
   route?: Json;
   owner: Session | null;
   subscribers: Set<Conn>;
+  followers: Set<Session>;
+  lastSender?: { startedAt: number; session: Session };
+  /** Finished turns' display entries (load_conversation_history). */
+  entries: Json[];
   /** startedAt of every prompt it was sent. */
   prompts: Set<number>;
   createdAt: number;
@@ -282,7 +286,7 @@ function create(conn: Conn, cmd: Json, defaultLifetime: string): Conv | string {
     cwd: cmd.cwd, systemBase: cmd.system?.base ?? "none",
     builtinTools: cmd.tools?.builtin ?? [], tools: cmd.tools?.app ?? [],
     ...(cmd.route ? { route: cmd.route } : {}),
-    owner: sessionOf(conn), subscribers: new Set(), prompts: new Set(), createdAt: now, lastActivityAt: now,
+    owner: sessionOf(conn), subscribers: new Set(), followers: new Set(), entries: [], prompts: new Set(), createdAt: now, lastActivityAt: now,
     userMessages: 0, turn: null, replay: null, live: null, lastTurnResult: null, keep: Boolean(cmd.keep), ownerWaiters: [],
   };
   conversations.set(conv.convId, conv);
@@ -396,6 +400,7 @@ async function runTurn(conv: Conv, prompt: string, awaiter: Conn | null, reqId: 
   if (!replayed) {
     conv.prompts.add(startedAt);
     conv.userMessages++;
+    conv.entries.push({ type: "user", text: prompt });
     toSubscribers(conv, { type: "user_message", convId: conv.convId, text: prompt, startedAt });
   }
   conv.live = { turnId, seq: 0, blocks: structuredClone(shown), offset: shown.length, startedAt };
@@ -410,6 +415,7 @@ async function runTurn(conv: Conv, prompt: string, awaiter: Conn | null, reqId: 
   if (conv.turn !== turn) return; // deleted or restarted meanwhile
   if (turn.aborted) outcome = { text: outcome.text, stopReason: "aborted" };
   const live = conv.live!;
+  conv.entries.push({ type: "ai", blocks: live.blocks });
   if (outcome.stopReason === "end_turn") {
     streamEvent(conv, { type: "tokens_update", convId: conv.convId, tokens: outcome.text.length });
     streamEvent(conv, { type: "message_complete", convId: conv.convId, blocks: live.blocks.slice(live.offset), endedAt: Date.now(), tokens: outcome.text.length });
@@ -429,6 +435,12 @@ async function runTurn(conv: Conv, prompt: string, awaiter: Conn | null, reqId: 
   for (const { conn, reqId } of turn.awaiters) if (!conn.socket.destroyed) write(conn, { ...forConn(conn, withBlocks), reqId });
   const owner = ownerConn(conv);
   if (ownerResults && !(owner && turn.awaiters.some(entry => entry.conn === owner))) toOwner(conv, withBlocks);
+  for (const session of conv.followers) {
+    const follower = session.conn;
+    if (follower && !follower.socket.destroyed && follower !== owner && !turn.awaiters.some(entry => entry.conn === follower)) {
+      write(follower, forConn(follower, withBlocks));
+    }
+  }
   if (conv.lifetime === "ephemeral" && conv.runFinished && !conv.keep && conversations.has(conv.convId)) deleteConv(conv, "run_finished");
 }
 
@@ -470,13 +482,16 @@ function sendMessage(conn: Conn, conv: Conv, text: string, reqId: string | null,
   // Like the daemon: a turn's identity is its prompt's startedAt.
   const turnId = String(startedAt);
   // The same prompt sent again after a reconnect: wait for its turn, never run it twice.
-  if (awaited && sessionsEnabled && conv.prompts.has(startedAt)) {
+  // Another client's in the same millisecond is its own prompt.
+  const another = conv.lastSender?.startedAt === startedAt && conv.lastSender.session !== sessionOf(conn);
+  if (awaited && sessionsEnabled && conv.prompts.has(startedAt) && !another) {
     if (conv.lastTurnResult?.turnId === turnId) return write(conn, { ...conv.lastTurnResult, reqId });
     if (conv.turn?.turnId === turnId) { conv.turn.awaiters.push({ conn, reqId }); return; }
     if (conv.replay?.turnId === turnId) { (conv.replay.awaiters ??= []).push({ conn, reqId }); return; }
     return write(conn, { type: "error", reqId, convId: conv.convId, message: "That prompt was sent before and its turn's result is no longer known" });
   }
   if (conv.turn || conv.replay) return write(conn, { type: "error", reqId, convId: conv.convId, message: "Already streaming" });
+  conv.lastSender = { startedAt, session: sessionOf(conn) };
   void runTurn(conv, text, awaited ? conn : null, reqId, startedAt, turnId, false);
 }
 
@@ -555,6 +570,14 @@ function handle(conn: Conn, cmd: Json): void {
       const result = create(conn, cmd, "saved");
       if (typeof result === "string") return error(result);
       write(conn, created(result, reqId));
+      if (result.lifetime !== "ephemeral") {
+        for (const session of sessions.values()) {
+          const other = session.conn;
+          if (other && other !== conn && !other.socket.destroyed && session.app === result.app) {
+            write(other, { type: "app_conversation_created", conversation: info(result) });
+          }
+        }
+      }
       return;
     }
     case "app_run": {
@@ -574,11 +597,20 @@ function handle(conn: Conn, cmd: Json): void {
     }
     case "send_message": {
       if (!conv) return error(`Conversation not found: ${cmd.convId}`, cmd.convId);
+      // In the moment its turn starts: a refused send moves nothing.
+      if (!conv.turn && !conv.replay && cmd.own === true) conv.owner = sessionOf(conn);
       sendMessage(conn, conv, cmd.text, reqId, cmd.startedAt ?? Date.now(), Boolean(cmd.awaitResult));
       return;
     }
     case "attach_app_conversation": {
       if (!conv) return error(`App conversation ${cmd.convId} not found`, cmd.convId);
+      if (cmd.join === true) {
+        conv.subscribers.add(conn);
+        conv.followers.add(sessionOf(conn));
+        catchup(conn, conv);
+        write(conn, { type: "app_conversation_attached", reqId, convId: conv.convId, conversation: info(conv), ...(ownerResults ? { lastTurnResult: conv.lastTurnResult } : {}) });
+        return;
+      }
       if (cmd.route !== undefined) conv.route = cmd.route ?? undefined;
       attach(conn, conv, reqId, cmd.tools?.app);
       return;
@@ -620,6 +652,12 @@ function handle(conn: Conn, cmd: Json): void {
       if (!conv) return error(`Conversation not found: ${cmd.convId}`, cmd.convId);
       conv.subscribers.add(conn);
       write(conn, { type: "ack", reqId, convId: conv.convId });
+      return;
+    }
+    case "load_conversation_history": {
+      if (!conv) return error(`Conversation ${cmd.convId} not found`, cmd.convId);
+      const end = Math.min(cmd.beforeEntryIndex, conv.entries.length);
+      write(conn, { type: "conversation_history_loaded", reqId, convId: conv.convId, entries: conv.entries.slice(0, end), historyStartIndex: 0, historyStartUserIndex: 0, historyEndIndex: end, historyTotalEntries: conv.entries.length, hasOlderHistory: false });
       return;
     }
     case "list_app_conversations": {

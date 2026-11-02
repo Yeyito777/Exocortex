@@ -283,11 +283,17 @@ class Conversation:
         self.info: Dict[str, Any] = info
         #: Why it ended (deleted, expired, owner_disconnected, ...), or None while alive.
         self.ended: Optional[str] = None
+        #: Shared with other connections (``Client.join``): a send takes the turn's tool calls.
+        self.joined: bool = False
         self._set_tools(tools)
 
     def _set_tools(self, tools: Optional[List[Tool]]) -> None:
         self.tools = tools
         self.handlers = {t.name: t for t in tools or []}
+
+    def set_handlers(self, tools: Optional[List[Tool]]) -> None:
+        """The app tools' handlers for the next turns (their definitions stay as they are)."""
+        self._set_tools(tools)
 
     def send(self, prompt: str, images: Optional[list] = None, on_event: Optional[Callable] = None,
              timeout: Optional[float] = None) -> TurnResult:
@@ -678,9 +684,26 @@ class Client:
                     conv._set_tools(tools)
         return conv
 
+    def join(self, conv_id: str) -> Conversation:
+        """Share a saved or temporary conversation (one this client created too): follow its events
+        and turn results, and run the app tools of the turns it sends itself (``set_handlers``).
+        Nothing moves: a plain attach would take running turns' tool calls from whoever sent them."""
+        command = {"type": "attach_app_conversation", "convId": conv_id, "join": True}
+        event = self.request(command, lambda e: e["type"] == "app_conversation_attached")
+        with self._lock:
+            conv = self._conversations.get(conv_id)
+            if conv is None:
+                conv = self._conversations[conv_id] = Conversation(self, event["conversation"], None)
+            else:
+                conv.info = event["conversation"]
+            conv.joined = True
+        return conv
+
     def _attach_existing(self, conv: Conversation, retry: bool = True) -> Dict[str, Any]:
         command: Dict[str, Any] = {"type": "attach_app_conversation", "convId": conv.id}
-        if conv.tools is not None:
+        if conv.joined:
+            command["join"] = True
+        elif conv.tools is not None:
             command["tools"] = {"app": [t.wire() for t in conv.tools]}
         event = self.request(command, lambda e: e["type"] == "app_conversation_attached", retry=retry)
         conv.info = event["conversation"]
@@ -727,6 +750,8 @@ class Client:
             turn.stream = TurnStream(turn.future)
         turn.command = {"type": "send_message", "reqId": turn.req_id, "convId": conv.id, "text": prompt,
                         "startedAt": started_at, "awaitResult": True}
+        if conv.joined:
+            turn.command["own"] = True
         if images:
             turn.command["images"] = images
         return self._start_turn(turn)

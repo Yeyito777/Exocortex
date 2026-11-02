@@ -125,6 +125,102 @@ afterEach(async () => {
   }
 });
 
+describe("several clients on one conversation", () => {
+  const owner = (convId: string) => appApi.appConversationOwner(convId);
+
+  test("join follows it without taking it, own takes it when the turn starts", async () => {
+    const a = await asApp();
+    const b = await asApp();
+    const convId = await createApp(a.client, { lifetime: "temporary", title: "Shared" });
+    expect(owner(convId)).toBe(a.client as never);
+
+    const [joined] = await run(b.client, { type: "attach_app_conversation", reqId: "j", convId, join: true });
+    expect(joined).toMatchObject({ type: "app_conversation_attached", reqId: "j", convId });
+    expect(owner(convId)).toBe(a.client as never);
+    expect(b.client.subscriptions.has(convId)).toBe(true);
+
+    await run(b.client, { type: "send_message", reqId: "s", convId, text: "hi", startedAt: 1000, own: true });
+    expect(owner(convId)).toBe(b.client as never);
+    // Without own it stays where it is.
+    await run(a.client, { type: "send_message", reqId: "s", convId, text: "hi", startedAt: 2000 });
+    expect(owner(convId)).toBe(b.client as never);
+  });
+
+  test("a send while a turn runs moves nothing: its tool calls stay where they are", async () => {
+    const a = await asApp();
+    const b = await asApp();
+    const convId = await createApp(a.client, { lifetime: "temporary" });
+    await run(b.client, { type: "attach_app_conversation", reqId: "j", convId, join: true });
+    const admitted = convStore.tryBeginStreamHandoff(convId);
+    expect(admitted).toBeDefined();
+    try {
+      await run(b.client, { type: "send_message", reqId: "s", convId, text: "hi", startedAt: 3000, own: true });
+      expect(owner(convId)).toBe(a.client as never);
+    } finally {
+      convStore.clearStreamHandoff(convId);
+    }
+  });
+
+  test("another client's prompt in the same millisecond is its own prompt, not a resend", async () => {
+    const a = await asApp();
+    const b = await asApp();
+    const convId = await createApp(a.client, { lifetime: "temporary" });
+    await run(b.client, { type: "attach_app_conversation", reqId: "j", convId, join: true });
+    await run(a.client, { type: "send_message", reqId: "s1", convId, text: "one", startedAt: 5000, own: true });
+    expect(appApi.appTurnSentByAnother(convId, 5000, a.client as never)).toBe(false);
+    expect(appApi.appTurnSentByAnother(convId, 5000, b.client as never)).toBe(true);
+    expect(appApi.appTurnSentByAnother(convId, 5001, b.client as never)).toBe(false);
+  });
+
+  test("everyone who joined hears each turn's result, and only once", async () => {
+    const a = await asApp();
+    const b = await asApp();
+    const c = await asApp();
+    const convId = await createApp(a.client, { lifetime: "temporary" });
+    await run(b.client, { type: "attach_app_conversation", reqId: "j", convId, join: true });
+    await run(a.client, { type: "attach_app_conversation", reqId: "j", convId, join: true }); // the owner too
+    const results = (client: FakeClient) => client.events.filter(event => event.type === "turn_result");
+    running.set(convId, () => {});
+    const send = run(a.client, { type: "send_message", reqId: "s", convId, text: "hi", startedAt: 4000, awaitResult: true, own: true });
+    await until(() => running.get(convId) !== undefined && a.client.subscriptions.has(convId));
+    endTurn(convId, 4000);
+    await until(() => results(b.client).length === 1);
+    running.get(convId)!();
+    running.delete(convId);
+    await send;
+    expect(results(a.client)).toHaveLength(1);
+    expect(results(a.client)[0]).toMatchObject({ reqId: "s", turnId: "4000" });
+    expect(results(b.client)[0]).toMatchObject({ convId, turnId: "4000" });
+    expect((results(b.client)[0] as { reqId?: string }).reqId).toBeUndefined();
+    expect(results(c.client)).toHaveLength(0);
+  });
+
+  test("the app's other connections hear of a new conversation, never of an ephemeral one", async () => {
+    const a = await asApp();
+    const b = await asApp();
+    const other = await asApp({ name: "other" });
+    const heard = (client: FakeClient) => client.events.filter(event => event.type === "app_conversation_created");
+    const convId = await createApp(a.client, { lifetime: "temporary", cwd: scratch });
+    expect(heard(a.client)).toHaveLength(0);
+    expect(heard(other.client)).toHaveLength(0);
+    expect(heard(b.client)).toHaveLength(1);
+    expect(heard(b.client)[0]).toMatchObject({ conversation: { convId, app: "demo", cwd: scratch, lifetime: "temporary" } });
+    await createApp(a.client, { lifetime: "ephemeral" });
+    expect(heard(b.client)).toHaveLength(1);
+  });
+
+  test("the conversation's end reaches who joined", async () => {
+    const a = await asApp();
+    const b = await asApp();
+    const convId = await createApp(a.client, { lifetime: "temporary", idleTtlMs: 60_000 });
+    await run(b.client, { type: "attach_app_conversation", reqId: "j", convId, join: true });
+    await run(a.client, { type: "delete_conversation", reqId: "d", convId });
+    expect(registry.getAppRecord(convId)).toBeUndefined();
+    const [refused] = await run(b.client, { type: "attach_app_conversation", reqId: "j2", convId, join: true });
+    expect(refused).toMatchObject({ type: "error", reqId: "j2" });
+  });
+});
+
 describe("sessions", () => {
   test("app_welcome hands out a session; a bad token or grace is refused", async () => {
     const { welcome } = await asApp();

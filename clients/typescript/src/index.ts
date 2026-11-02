@@ -441,6 +441,7 @@ export class Conversation {
   ended: string | null = null;
   /** @internal */ handlers = new Map<string, AppTool>();
   /** @internal */ tools: AppTool[] | undefined;
+  /** @internal Shared with other connections (Client.join): a send takes the turn's tool calls. */ joined = false;
   private client: Client;
 
   /** @internal */
@@ -451,7 +452,7 @@ export class Conversation {
     this.setHandlers(tools);
   }
 
-  /** @internal */
+  /** The app tools' handlers for the next turns (their definitions stay as they are). */
   setHandlers(tools: AppTool[] | undefined): void {
     this.tools = tools;
     this.handlers = new Map((tools ?? []).map(tool => [tool.name, tool]));
@@ -701,10 +702,27 @@ export class Client {
     return conversation;
   }
 
+  /**
+   * Share a saved or temporary conversation (one this client created too): follow its events and
+   * turn results, and run the app tools of the turns it sends itself (`setHandlers`). Nothing
+   * moves: a plain attach would take running turns' tool calls from whoever sent them.
+   */
+  async join(convId: string): Promise<Conversation> {
+    const event = await this.request({ type: "attach_app_conversation", convId, join: true }, e => e.type === "app_conversation_attached");
+    let conversation = this.conversations.get(convId);
+    if (conversation) conversation.info = event.conversation;
+    else {
+      conversation = new Conversation(this, event.conversation, undefined);
+      this.conversations.set(convId, conversation);
+    }
+    conversation.joined = true;
+    return conversation;
+  }
+
   /** @internal Re-send the attach for a conversation this client owns, with its current tools. */
   async attachExisting(conversation: Conversation, retry = true): Promise<Record<string, any>> {
     const event = await this.exchange(
-      { type: "attach_app_conversation", convId: conversation.id, ...(conversation.tools ? { tools: { app: toolDefs(conversation.tools) } } : {}) },
+      { type: "attach_app_conversation", convId: conversation.id, ...(conversation.joined ? { join: true } : conversation.tools ? { tools: { app: toolDefs(conversation.tools) } } : {}) },
       e => e.type === "app_conversation_attached", this.options.requestTimeoutMs, retry,
     );
     conversation.info = event.conversation;
@@ -766,7 +784,7 @@ export class Client {
     if (conversation.ended) return Promise.reject(new ExocortexError("ended", `Conversation ${conversation.id} has ended (${conversation.ended})`));
     const reqId = this.nextReqId();
     const startedAt = this.nextStartedAt();
-    const command = { type: "send_message", reqId, convId: conversation.id, text: prompt, startedAt, awaitResult: true, ...(options.images ? { images: options.images } : {}) };
+    const command = { type: "send_message", reqId, convId: conversation.id, text: prompt, startedAt, awaitResult: true, ...(conversation.joined ? { own: true } : {}), ...(options.images ? { images: options.images } : {}) };
     return this.startTurn({ reqId, convId: conversation.id, turnId: String(startedAt), generation: -1, command, resolve: () => {}, reject: () => {}, onEvent: options.onEvent }, stream);
   }
 

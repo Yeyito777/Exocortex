@@ -42,6 +42,37 @@ async function until(check: () => boolean, ms = 5000): Promise<void> {
   }
 }
 
+describe("several clients", () => {
+  test("join shares a conversation: each runs the tools of its own turns", async () => {
+    const { socket } = await fake();
+    const a = await client(socket);
+    const b = await client(socket);
+    const created: any[] = [];
+    const results: any[] = [];
+    b.onEvent((event: any) => {
+      if (event.type === "app_conversation_created") created.push(event);
+      if (event.type === "turn_result") results.push(event);
+    });
+    const shared = await a.conversation({ lifetime: "temporary", tools: { app: [lookup(() => "from a")] } });
+    await a.join(shared.id);
+    await until(() => created.length === 1);
+    expect(created[0].conversation.convId).toBe(shared.id);
+    const joined = await b.join(shared.id);
+    joined.setHandlers([lookup(() => "from b")]);
+    expect((await joined.send('tool lookup {"word":"x"}')).text).toBe("lookup -> from b");
+    expect((await shared.send('tool lookup {"word":"x"}')).text).toBe("lookup -> from a");
+    await until(() => results.length === 2);
+    expect(results[1].text).toBe("lookup -> from a");
+    // A send while the other's turn runs is refused and takes nothing from it.
+    const hanging = shared.send("hang");
+    let streaming = false;
+    await until(() => { void b.list().then(list => { streaming = list[0]?.streaming === true; }); return streaming; });
+    await expect(joined.send("count")).rejects.toThrow("Already streaming");
+    await joined.abort();
+    expect((await hanging).stopReason).toBe("aborted");
+  });
+});
+
 describe("one-shot", () => {
   test("run() connects, runs an ephemeral conversation and closes", async () => {
     const { socket } = await fake();
