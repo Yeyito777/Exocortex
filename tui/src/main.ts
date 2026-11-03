@@ -118,7 +118,7 @@ import { closeBtwSession, startBtwSession } from "./btw/controller";
 import { createSidebarState } from "./sidebar/state";
 import { DONE_FOLDER_NAME } from "./sidebar/doneaction";
 import { addOptimisticConversation, focusConversationById, rememberEnteredConversation } from "./sidebar";
-import { newConversationFolderId, type NewConversationPlacement } from "./sidebar/tree";
+import { newConversationFolderId } from "./sidebar/tree";
 import { formatConnectionLostNotice } from "./events/notices";
 import { RemotePathCompletionController } from "./remote-path-completion";
 import {
@@ -1133,7 +1133,7 @@ function paintCachedView(view: CachedView, reqId: string, current: boolean): voi
   if (current) prefetchBottomScreen(state, daemon);
 }
 
-function startNewConversation(placement: NewConversationPlacement = "selected"): void {
+function startNewConversation(): void {
   conversationPrewarmer.reset();
   pendingNewConversationConvId = null;
   // Going back from the conversation the draft becomes returns here.
@@ -1142,7 +1142,7 @@ function startNewConversation(placement: NewConversationPlacement = "selected"):
   if (state.convId) {
     unsubscribeConversation(state.convId);
   }
-  resetDraftConversationState(state, newConversationFolderId(state.sidebar, placement));
+  resetDraftConversationState(state, newConversationFolderId(state.sidebar));
   maybePrewarmOpenAI();
 }
 
@@ -2082,7 +2082,7 @@ function handleKey(key: KeyEvent): void {
       requestToolOutputs(state, daemon, result.toolCallIds);
       break;
     case "new_conversation":
-      startNewConversation(result.placement);
+      startNewConversation();
       break;
     case "delete_conversation":
       deleteConversationFromUi(result.convId);

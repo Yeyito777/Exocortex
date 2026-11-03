@@ -14,7 +14,6 @@
 import type { KeyEvent } from "./input";
 import type { MoveSidebarItemsOptions, SidebarItemRef } from "./protocol";
 import type { RenderState } from "./state";
-import type { NewConversationPlacement } from "./sidebar/tree";
 import { focusBtw, focusPrompt, focusHistory, focusSidebar, modelSupportsImages, pushSystemMessage } from "./state";
 import { resolveAction, sidebarTopShortcutIndex } from "./keybinds";
 import { handleChatKey } from "./chat";
@@ -98,7 +97,7 @@ export type KeyResult =
   | { type: "create_folder"; name: string; parentId: string | null; items: SidebarItemRef[] }
   | { type: "rename_folder"; folderId: string; name: string }
   | { type: "move_to_done"; moves: { items: SidebarItemRef[]; parentId: string | null; reqId?: string }[]; create: SidebarItemRef[]; notice?: string }
-  | { type: "new_conversation"; placement?: NewConversationPlacement }
+  | { type: "new_conversation" }
   | { type: "queue_confirm" }
   | { type: "queue_cancel" }
   | { type: "edit_message_confirm" }
@@ -345,9 +344,7 @@ export function handleFocusedKey(
       }
       return { type: "handled" };
     case "new_conversation":
-      return { type: "new_conversation", placement: "selected" };
-    case "new_top_level_conversation":
-      return { type: "new_conversation", placement: "top_level" };
+      return { type: "new_conversation" };
     case "edit_message":
       openEditMessageModal(state);
       return { type: "handled" };

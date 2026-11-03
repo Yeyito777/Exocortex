@@ -11,7 +11,6 @@ import type { ConversationSummary, FolderSummary } from "../messages";
 import type { SidebarSelectableItem } from "./items";
 
 export type SidebarFolderView = "navigate" | "tree";
-export type NewConversationPlacement = "selected" | "top_level";
 
 export interface SidebarTreeState {
   conversations: ConversationSummary[];
@@ -86,14 +85,15 @@ export function syncTreeFolderContext(state: SidebarTreeContextState): void {
 
 /**
  * The folder a new conversation is filed in. The navigate view uses the open
- * folder. The tree view files Ctrl+P conversations in the folder under the
- * cursor (or the folder listing the cursor's row) and Ctrl+Shift+O ones at the
- * top level.
+ * folder. In the tree view the cursor decides: an expanded folder under the
+ * cursor, or the expanded folder listing the cursor's row. Anything else,
+ * including a collapsed folder at the top level, files at the top level.
  */
-export function newConversationFolderId(state: SidebarTreeContextState, placement: NewConversationPlacement): string | null {
+export function newConversationFolderId(state: SidebarTreeContextState): string | null {
   if (!isTreeFolderView(state)) return state.currentFolderId ?? null;
-  if (placement === "top_level") return null;
   const item = state.selectedItem;
-  if (item?.type === "folder" && state.folders.some(folder => folder.id === item.id)) return item.id;
-  return (item ? sidebarItemContainer(state, item) : undefined) ?? state.currentFolderId ?? null;
+  if (!item) return null;
+  if (item.type === "folder" && isFolderOpenInTree(state, item.id)) return item.id;
+  const container = sidebarItemContainer(state, item);
+  return container && isFolderOpenInTree(state, container) ? container : null;
 }
