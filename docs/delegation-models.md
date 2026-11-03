@@ -114,7 +114,8 @@ whole daemon at any depth. Finished subagents stop counting.
   its parent's prompts in view. Clients tell a child by the
   `parentConversationId` of its conversation summary.
 
-Administration goes directly through [daemon IPC](daemon-ipc.md).
+Administration goes through the external `exo` CLI where it has a command,
+otherwise directly through [daemon IPC](daemon-ipc.md).
 
 `daemon/src/delegation-models.ts` still owns the external/debug CLI's delegation
 IPC model selection. The compatibility rules below apply to that interface,

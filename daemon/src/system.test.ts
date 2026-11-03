@@ -72,7 +72,7 @@ describe("system prompt", () => {
   test("tells child turns their remaining native delegation budget", () => {
     const blocked = buildSystemPrompt({ conversationId: "nested-zero", subagentMaxDepth: 0 });
     expect(blocked).toContain("depth-zero turn: do not delegate further");
-    expect(blocked).toContain("Administration uses direct daemon IPC");
+    expect(blocked).toContain("Administration uses the external `exo` CLI or direct daemon IPC");
 
     const nested = buildSystemPrompt({ conversationId: "nested-two", subagentMaxDepth: 2 });
     expect(nested).not.toContain("max_depth");

@@ -4,6 +4,10 @@ For conversation/history/task inspection, new conversations, folders, and other
 administration, read `shared/src/protocol.ts`: `Command` and `Event` are the wire
 specification. Implementation/validation is in `daemon/src/handler.ts`.
 
+The external `exo` CLI (`external-tools/exo-cli`) already speaks this protocol
+for reading conversations (`exo list`, `exo info`, `exo history`), folders and
+the other commands in `exo -h`; use it where it has a command.
+
 Send one JSON object per line over the daemon socket (`daemon/src/server.ts`).
 Resolve the current instance's endpoint with `socketPath()` from
 `shared/src/paths.ts`; do not guess a main-instance or worktree socket path.
