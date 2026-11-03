@@ -184,28 +184,42 @@ describe("sidebar tree folder view", () => {
     expect(sidebar.currentFolderId).toBeNull();
   });
 
-  test("Ctrl+P files into the cursor's folder and Ctrl+Shift+O at the top level", () => {
+  test("new conversations go in the expanded folder the cursor is on or inside", () => {
     const sidebar = treeSidebar();
     sidebar.expandedFolderIds.add("work");
 
-    focus(sidebar, { type: "folder", id: "nested" });
-    expect(newConversationFolderId(sidebar, "selected")).toBe("nested");
-    expect(newConversationFolderId(sidebar, "top_level")).toBeNull();
+    focus(sidebar, { type: "folder", id: "work" });
+    expect(newConversationFolderId(sidebar)).toBe("work");
 
     focus(sidebar, { type: "conversation", id: "inside-a" });
-    expect(newConversationFolderId(sidebar, "selected")).toBe("work");
+    expect(newConversationFolderId(sidebar)).toBe("work");
+
+    // A collapsed folder isn't picked; the open folder listing it is.
+    focus(sidebar, { type: "folder", id: "nested" });
+    expect(newConversationFolderId(sidebar)).toBe("work");
+
+    sidebar.expandedFolderIds.add("nested");
+    expect(newConversationFolderId(sidebar)).toBe("nested");
 
     focus(sidebar, { type: "conversation", id: "root-b" });
-    expect(newConversationFolderId(sidebar, "selected")).toBeNull();
+    expect(newConversationFolderId(sidebar)).toBeNull();
   });
 
-  test("the navigate view keeps filing both shortcuts in the open folder", () => {
+  test("a collapsed top-level folder under the cursor files at the top level", () => {
+    const sidebar = treeSidebar();
+    focus(sidebar, { type: "folder", id: "work" });
+    expect(newConversationFolderId(sidebar)).toBeNull();
+
+    sidebar.selectedItem = null;
+    expect(newConversationFolderId(sidebar)).toBeNull();
+  });
+
+  test("the navigate view files new conversations in the open folder", () => {
     const sidebar = treeSidebar();
     setSidebarFolderView(sidebar, "navigate");
     sidebar.currentFolderId = "work";
     focus(sidebar, { type: "folder", id: "nested" });
-    expect(newConversationFolderId(sidebar, "selected")).toBe("work");
-    expect(newConversationFolderId(sidebar, "top_level")).toBe("work");
+    expect(newConversationFolderId(sidebar)).toBe("work");
   });
 
   test("focusing a nested conversation expands every folder above it", () => {

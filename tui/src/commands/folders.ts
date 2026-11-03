@@ -7,7 +7,7 @@ import type { SlashCommand } from "./types";
 const USAGE = "Usage: /folders [tree|navigate]";
 
 const DESCRIPTIONS: Record<SidebarFolderView, string> = {
-  tree: "folders expand in place; Ctrl+P files new conversations in the cursor's folder, Ctrl+Shift+O at the top level",
+  tree: "folders expand in place; new conversations go in the expanded folder the cursor is on or in, else the top level",
   navigate: "opening a folder shows only its contents",
 };
 
