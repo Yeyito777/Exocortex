@@ -263,7 +263,7 @@ function buildPromptParts(options: BuildSystemPromptOptions & {
   const depth = options.subagentMaxDepth;
   const hasExoTool = !options.toolNames || options.toolNames.includes("exo");
   if (hasExoTool && typeof depth === "number" && Number.isInteger(depth) && depth >= 0) {
-    if (depth === 0) parts.push("This is a depth-zero turn: do not delegate further. Administration uses direct daemon IPC.");
+    if (depth === 0) parts.push("This is a depth-zero turn: do not delegate further. Administration uses the external `exo` CLI or direct daemon IPC.");
   }
 
   parts.push(...buildAdditionParts(options));
