@@ -19,7 +19,7 @@ import {
 import { rejectPendingSidebarMove } from "../sidebar/pendingmoves";
 import { focusTargetAfterRemovingSidebarItems } from "../sidebar/removal";
 import { focusSidebarItem } from "../sidebar/selection";
-import { pushSystemMessage, type RenderState } from "../state";
+import { clearUnreadLocally, isOpenRequested, pushSystemMessage, type RenderState } from "../state";
 import { theme } from "../theme";
 import { preserveViewportAcrossHistoryPrepend } from "../chatscroll";
 import { markRelayout } from "../smoothscroll";
@@ -139,6 +139,8 @@ export function handleConversationsList(event: Extract<Event, { type: "conversat
   // The list that answers a refused move is the authoritative rollback.
   const rejectedMove = rejectPendingSidebarMove(state.sidebar, event.reqId);
   updateConversationList(state.sidebar, event.conversations, event.folders ?? []);
+  const openConvId = state.conversationOpenRequest?.convId;
+  if (openConvId) clearUnreadLocally(state, openConvId);
   // A first page carries every folder but not every conversation: what it
   // leaves out isn't gone, and arrives with the rest of the same bootstrap.
   const partial = event.sidebarPartial;
@@ -184,7 +186,9 @@ export function handleConversationUpdated(event: Extract<Event, { type: "convers
   const summary = event.summary;
   if (!summary) return;
 
-  updateConversation(state.sidebar, summary);
+  // The open conversation's unread clears when our open lands, so a summary
+  // sent before that must not bring the mark back.
+  updateConversation(state.sidebar, summary.unread && isOpenRequested(state, summary.id) ? { ...summary, unread: false } : summary);
   // Sync provider/model/effort if this is the active conversation.
   if (summary.id === state.convId) syncActiveConversationSummary(state, summary);
 }

@@ -2227,3 +2227,34 @@ describe("conversation_updated", () => {
       .toMatchObject({ streaming: false, unread: true });
   });
 });
+
+describe("opening an unread conversation", () => {
+  test("drops the unread mark when the open is sent, before the daemon answers", () => {
+    const state = createInitialState();
+    state.sidebar.conversations = [summary({ id: "done", unread: true })];
+    prepareConversationOpen(state, "done");
+    noteConversationOpenRequest(state, "done", "req-1");
+    expect(state.sidebar.conversations[0].unread).toBe(false);
+    // The scroll still lands on the reply that was unread.
+    expect(state.conversationScroll.pendingOpen).toEqual({ convId: "done", unreadAtOpen: true });
+  });
+
+  test("a summary or list sent before the open landed doesn't bring the mark back", () => {
+    const state = createInitialState();
+    state.sidebar.conversations = [summary({ id: "done", unread: true }), summary({ id: "other", unread: true })];
+    noteConversationOpenRequest(state, "done", "req-1");
+
+    handleEvent({ type: "conversation_updated", summary: summary({ id: "done", unread: true }) }, state, daemon);
+    handleEvent({ type: "conversations_list", conversations: [summary({ id: "done", unread: true }), summary({ id: "other", unread: true })] }, state, daemon);
+
+    expect(state.sidebar.conversations.find(conversation => conversation.id === "done")?.unread).toBe(false);
+    expect(state.sidebar.conversations.find(conversation => conversation.id === "other")?.unread).toBe(true);
+  });
+
+  test("a list before any open leaves the restored conversation unread for its scroll placement", () => {
+    const state = createInitialState();
+    state.convId = "restored";
+    handleEvent({ type: "conversations_list", conversations: [summary({ id: "restored", unread: true })] }, state, daemon);
+    expect(state.sidebar.conversations[0].unread).toBe(true);
+  });
+});
