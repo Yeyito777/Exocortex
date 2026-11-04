@@ -471,6 +471,21 @@ export function noConversationOpen(): { reqId: null; convId: null } {
 /** Record the load_conversation request the user currently wants applied. */
 export function noteConversationOpenRequest(state: RenderState, convId: string, reqId: string): void {
   state.conversationOpenRequest = { reqId, convId };
+  // The daemon clears unread when this open lands. Over /ssh that is a round
+  // trip away: drop the sidebar's unread mark now.
+  clearUnreadLocally(state, convId);
+}
+
+/** Whether `convId` is the open this TUI last asked the daemon for, which clears its unread. */
+export function isOpenRequested(state: RenderState, convId: string): boolean {
+  return state.conversationOpenRequest?.convId === convId;
+}
+
+/** Show `convId` as read without waiting for the daemon's summary. */
+export function clearUnreadLocally(state: RenderState, convId: string): void {
+  const conversations = state.sidebar.conversations;
+  const index = conversations.findIndex(conversation => conversation.id === convId);
+  if (index !== -1 && conversations[index].unread) conversations[index] = { ...conversations[index], unread: false };
 }
 
 /** Whether the open conversation is a cached copy not yet known to be current (cachedopen.ts). */
