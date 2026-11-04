@@ -19,7 +19,7 @@ import {
 import { rejectPendingSidebarMove } from "../sidebar/pendingmoves";
 import { focusTargetAfterRemovingSidebarItems } from "../sidebar/removal";
 import { focusSidebarItem } from "../sidebar/selection";
-import { clearUnreadLocally, isOpenRequested, pushSystemMessage, type RenderState } from "../state";
+import { clearUnreadLocally, isOpenRequested, pushSystemMessage, reapplyLocalStops, withLocalStop, type RenderState } from "../state";
 import { theme } from "../theme";
 import { preserveViewportAcrossHistoryPrepend } from "../chatscroll";
 import { markRelayout } from "../smoothscroll";
@@ -141,6 +141,7 @@ export function handleConversationsList(event: Extract<Event, { type: "conversat
   updateConversationList(state.sidebar, event.conversations, event.folders ?? []);
   const openConvId = state.conversationOpenRequest?.convId;
   if (openConvId) clearUnreadLocally(state, openConvId);
+  reapplyLocalStops(state);
   // A first page carries every folder but not every conversation: what it
   // leaves out isn't gone, and arrives with the rest of the same bootstrap.
   const partial = event.sidebarPartial;
@@ -183,8 +184,9 @@ function clearRemovedActiveConversation(state: RenderState, convId: string): voi
 }
 
 export function handleConversationUpdated(event: Extract<Event, { type: "conversation_updated" }>, state: RenderState): void {
-  const summary = event.summary;
-  if (!summary) return;
+  if (!event.summary) return;
+  // A summary sent before this TUI's stop landed still says streaming.
+  const summary = withLocalStop(state, event.summary);
 
   // The open conversation's unread clears when our open lands, so a summary
   // sent before that must not bring the mark back.

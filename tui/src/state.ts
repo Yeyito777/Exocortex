@@ -11,7 +11,7 @@ import { createEmptyProviderAuthInfo } from "@exocortex/shared/auth";
 import { productConversationDefaults, type ConversationDefaults } from "@exocortex/shared/config";
 import type { ProviderId, ProviderInfo, ModelId, EffortLevel, UsageData, ToolDisplayInfo, ExternalToolStyle, ImageAttachment, ModelInfo, TokenStatsSnapshot, UserMessage } from "./messages";
 import { supportsImageInputsForModel } from "./messages";
-import type { Message, AIMessage, SystemMessage, Block } from "./messages";
+import type { Message, AIMessage, SystemMessage, Block, ConversationSummary } from "./messages";
 import { loadHideSensitiveInfoPreference } from "./privacy";
 import { loadClockPreference, type ClockFormat } from "./clock";
 import { loadDiagnosticsPreference, loadTurnWorkPreference } from "./diagnostics";
@@ -240,6 +240,13 @@ export interface RenderState {
    * (nothing opened through the tracked path yet; loads apply as before).
    */
   conversationOpenRequest: { reqId: string | null; convId: string | null } | null;
+  /**
+   * Conversations this TUI stopped (Ctrl+Q, or an edit that cut a running
+   * turn) and shows as stopped before the daemon confirms. Summaries still
+   * saying streaming are shown as stopped until the daemon's stop lands, a
+   * new turn starts, or LOCAL_STOP_HOLD_MS passes.
+   */
+  locallyStopped: Map<string, { startedAt: number | null; at: number }>;
   /** Selected remote daemon route. Null means the local daemon. */
   sshRemote: { alias: string; connected: boolean } | null;
   macroEnvironment: MacroEnvironment | null;
@@ -474,6 +481,45 @@ export function noteConversationOpenRequest(state: RenderState, convId: string, 
   // The daemon clears unread when this open lands. Over /ssh that is a round
   // trip away: drop the sidebar's unread mark now.
   clearUnreadLocally(state, convId);
+}
+
+/** How long a local stop hides a summary that still says streaming, if the daemon never confirms it. */
+export const LOCAL_STOP_HOLD_MS = 15_000;
+
+/** Show `convId` as stopped now; the daemon's own stop arrives a round trip later. */
+export function markStoppedLocally(state: RenderState, convId: string, startedAt: number | null, now = Date.now()): void {
+  state.locallyStopped.set(convId, { startedAt, at: now });
+  reapplyLocalStops(state, now);
+}
+
+/** A summary as this TUI shows it: still streaming only if no local stop is holding it. */
+export function withLocalStop(state: RenderState, summary: ConversationSummary, now = Date.now()): ConversationSummary {
+  const stop = state.locallyStopped.get(summary.id);
+  if (!stop) return summary;
+  if (!summary.streaming || now - stop.at >= LOCAL_STOP_HOLD_MS) {
+    state.locallyStopped.delete(summary.id);
+    return summary;
+  }
+  return { ...summary, streaming: false };
+}
+
+/** Re-apply local stops to the sidebar's summaries (after a list replaced them). */
+export function reapplyLocalStops(state: RenderState, now = Date.now()): void {
+  if (state.locallyStopped.size === 0) return;
+  const conversations = state.sidebar.conversations;
+  for (const convId of [...state.locallyStopped.keys()]) {
+    const index = conversations.findIndex(conversation => conversation.id === convId);
+    if (index === -1) continue;
+    const shown = withLocalStop(state, conversations[index], now);
+    if (shown !== conversations[index]) conversations[index] = shown;
+  }
+}
+
+/** The daemon stopped `convId`'s turn, or started a different one: local stops no longer apply. */
+export function releaseLocalStop(state: RenderState, convId: string, startedAt?: number): void {
+  const stop = state.locallyStopped.get(convId);
+  if (!stop) return;
+  if (startedAt === undefined || stop.startedAt === null || startedAt !== stop.startedAt) state.locallyStopped.delete(convId);
 }
 
 /** Whether `convId` is the open this TUI last asked the daemon for, which clears its unread. */
@@ -737,6 +783,7 @@ export function createInitialState(): RenderState {
     conversationLoading: null,
     provisionalOpen: null,
     conversationOpenRequest: null,
+    locallyStopped: new Map(),
     sshRemote: null,
     macroEnvironment: null,
     macroStore: createUserMacroStore(),

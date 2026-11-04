@@ -2,7 +2,7 @@ import { describe, expect, setSystemTime, test } from "bun:test";
 import { browserOpenCommand, handleEvent, type DaemonActions } from "./events";
 import { buildDiskSyncAssistantDiffPayload } from "./events/disk-sync-diagnostics";
 import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, createPendingAI, type ConversationSummary, type FolderSummary } from "./messages";
-import { createInitialState, isStreaming, canInterrupt, noteConversationOpenRequest, resetDraftConversationState, type RenderState } from "./state";
+import { createInitialState, isStreaming, canInterrupt, LOCAL_STOP_HOLD_MS, markStoppedLocally, noteConversationOpenRequest, resetDraftConversationState, type RenderState } from "./state";
 import { buildMessageLines } from "./conversation";
 import { getViewStartFor } from "./chatscroll";
 import { requestVisibleToolOutputs } from "./events/tool-outputs";
@@ -2256,5 +2256,66 @@ describe("opening an unread conversation", () => {
     state.convId = "restored";
     handleEvent({ type: "conversations_list", conversations: [summary({ id: "restored", unread: true })] }, state, daemon);
     expect(state.sidebar.conversations[0].unread).toBe(true);
+  });
+});
+
+describe("a stop shown before the daemon confirms it", () => {
+  const streamingOf = (state: RenderState, id: string) => state.sidebar.conversations.find(conversation => conversation.id === id)?.streaming;
+
+  test("the dot goes off at once and summaries sent before the stop landed keep it off", () => {
+    const state = createInitialState();
+    state.convId = "busy";
+    state.sidebar.conversations = [summary({ id: "busy", streaming: true }), summary({ id: "other", streaming: true })];
+    markStoppedLocally(state, "busy", 1_000);
+    expect(streamingOf(state, "busy")).toBe(false);
+    expect(isStreaming(state)).toBe(false);
+
+    handleEvent({ type: "conversation_updated", summary: summary({ id: "busy", streaming: true }) }, state, daemon);
+    handleEvent({ type: "conversations_list", conversations: [summary({ id: "busy", streaming: true }), summary({ id: "other", streaming: true })] }, state, daemon);
+    expect(streamingOf(state, "busy")).toBe(false);
+    expect(streamingOf(state, "other")).toBe(true);
+  });
+
+  test("the daemon's own stop ends the hold", () => {
+    const state = createInitialState();
+    state.sidebar.conversations = [summary({ id: "busy", streaming: true })];
+    markStoppedLocally(state, "busy", 1_000);
+    handleEvent({ type: "streaming_stopped", convId: "busy" }, state, daemon);
+    expect(state.locallyStopped.has("busy")).toBe(false);
+    handleEvent({ type: "conversation_updated", summary: summary({ id: "busy", streaming: true }) }, state, daemon);
+    expect(streamingOf(state, "busy")).toBe(true);
+  });
+
+  test("a stopped summary ends the hold; a later turn shows streaming again", () => {
+    const state = createInitialState();
+    state.sidebar.conversations = [summary({ id: "busy", streaming: true })];
+    markStoppedLocally(state, "busy", 1_000);
+    handleEvent({ type: "conversation_updated", summary: summary({ id: "busy", streaming: false }) }, state, daemon);
+    expect(state.locallyStopped.has("busy")).toBe(false);
+    handleEvent({ type: "conversation_updated", summary: summary({ id: "busy", streaming: true }) }, state, daemon);
+    expect(streamingOf(state, "busy")).toBe(true);
+  });
+
+  test("a different turn starting ends the hold; the stopped turn's own start does not", () => {
+    const state = createInitialState();
+    state.sidebar.conversations = [summary({ id: "busy", streaming: true })];
+    markStoppedLocally(state, "busy", 1_000);
+    const started = (startedAt: number) => ({
+      type: "streaming_started", convId: "busy", provider: "openai", model: "gpt-5.4", startedAt,
+    }) as Event;
+    handleEvent(started(1_000), state, daemon);
+    expect(state.locallyStopped.has("busy")).toBe(true);
+    handleEvent(started(2_000), state, daemon);
+    expect(state.locallyStopped.has("busy")).toBe(false);
+  });
+
+  test("a stop the daemon never confirms stops hiding the dot after the hold", () => {
+    const state = createInitialState();
+    state.sidebar.conversations = [summary({ id: "busy", streaming: true })];
+    const now = Date.now();
+    markStoppedLocally(state, "busy", 1_000, now - LOCAL_STOP_HOLD_MS);
+    handleEvent({ type: "conversation_updated", summary: summary({ id: "busy", streaming: true }) }, state, daemon);
+    expect(streamingOf(state, "busy")).toBe(true);
+    expect(state.locallyStopped.has("busy")).toBe(false);
   });
 });
