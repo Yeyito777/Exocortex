@@ -103,13 +103,12 @@ function formatTokenCount(tokens: number): string {
 /**
  * Render message metadata into display lines.
  *
- * Format: model | N tokens/s | Xs-or-finish-time [| N tokens with diagnostics enabled]
+ * Format: model | N tokens/s | duration [| finish time] [| N tokens with diagnostics enabled]
  *
- * Working: the live duration (`1m 12s`). Final: the finish time replaces it
- * (`2:03pm`), taken from metadata.endedAt (the instant the duration stopped)
- * in the TUI machine's local zone, so it is right over /ssh. Messages with no
- * endedAt keep the duration. Both are one segment, so truncation is the same
- * for either.
+ * Working: the live duration (`1m 12s`). Final: the duration stays and the
+ * finish time follows it (`1m 12s | 2:03pm`), taken from metadata.endedAt (the
+ * instant the duration stopped) in the TUI machine's local zone, so it is
+ * right over /ssh. Messages with no endedAt show only the duration.
  *
  * Throughput is an exponentially weighted average of this message's last ten
  * API rounds, supplied by the daemon. Each sample is output tokens / request
@@ -120,7 +119,7 @@ function formatTokenCount(tokens: number): string {
  * @param options.active  Keep elapsed time live even if endedAt is persisted.
  * @param options.width  Available pane columns, including the assistant indent.
  * @param options.diagnostics  Also display the accumulated output-token count.
- * @param options.showDuration  Show the duration even once finished (tests and tooling; not user-facing).
+ * @param options.showDuration  Leave out the finish time (tests and tooling; not user-facing).
  * @param options.clock  12h (default) or 24h finish time.
  * @param options.timeZone  IANA zone for the finish time (default: this machine's).
  * @returns Lines to append below the message content.
@@ -147,18 +146,13 @@ export function renderMetadata(
   const rate = measuredRate ?? (metadata.endedAt === null ? 0 : null);
   parts.push(`${rate === null ? "—" : rate.toFixed(1)} tokens/s`);
 
-  // While working (no endedAt, or kept live via options.active) the segment is
-  // the live work timer. Once final, the finish clock takes its place and the
-  // duration is no longer shown (it stays in the metadata). Messages without
-  // endedAt (legacy history, live turns) keep the duration.
+  // The duration counts from the start of the run (its work timer). While
+  // working (no endedAt, or kept live via options.active) it is the live timer;
+  // once final it stops and the finish clock follows it. Messages without
+  // endedAt (legacy history, live turns) show only the duration.
+  parts.push(formatDuration(end - (metadata.workTimerStartedAt ?? metadata.startedAt)));
   const finished = options.active || options.showDuration ? null : formatFinishTime(metadata.endedAt, now, options.timeZone, options.clock);
-  if (finished) {
-    parts.push(finished);
-  } else {
-    // Duration counts from the start of the run (its work timer).
-    const elapsed = end - (metadata.workTimerStartedAt ?? metadata.startedAt);
-    parts.push(formatDuration(elapsed));
-  }
+  if (finished) parts.push(finished);
 
   if (options.diagnostics) parts.push(`${formatTokenCount(metadata.tokens)} tokens`);
 
