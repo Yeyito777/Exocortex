@@ -7,7 +7,7 @@
  */
 
 import type { RenderState } from "./state";
-import { clearPendingAI, clearStreamingTailMessages, isLocalOnlyMessage, pushSystemMessage } from "./state";
+import { clearPendingAI, clearStreamingTailMessages, isLocalOnlyMessage, pushSystemMessage, releaseLocalStop } from "./state";
 import { handleInstructionsEvent } from "./instructions/controller";
 import { buildTokenStatsViewMessage } from "./commands/tokens";
 import { theme } from "./theme";
@@ -92,6 +92,11 @@ export function handleEvent(
   state: RenderState,
   daemon: DaemonActions,
 ): void {
+  // A stop shown locally is over once the daemon stops that turn or starts a
+  // different one (the stop never took), in whichever conversation.
+  if (event.type === "streaming_stopped") releaseLocalStop(state, event.convId);
+  else if (event.type === "streaming_started") releaseLocalStop(state, event.convId, event.startedAt);
+
   // Early exit for conversation-scoped events targeting a different conversation.
   if (CONV_SCOPED.has(event.type) && "convId" in event && event.convId !== state.convId) {
     return;

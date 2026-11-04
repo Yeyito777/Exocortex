@@ -45,7 +45,7 @@ import { expandMacros, macroEnvironmentForState } from "./macros";
 import { applyInlineCommands, type InlineCommandApplication } from "./inlineeffort";
 import { resolveSlashShorthands } from "./slashsearch";
 import { advanceDeferredHistoryRender, hasDeferredHistoryRenderWork, render, invalidateHistoryRenderCache } from "./render";
-import { preserveViewportAcrossResize } from "./chatscroll";
+import { preserveViewportAcrossResize, preserveViewportAcrossTurnEnd } from "./chatscroll";
 import { invalidateFrame, scrollRegionsEnabled } from "./frame";
 import {
   SMOOTH_SCROLL_FRAME_MS, SMOOTH_SCROLL_OFF, SMOOTH_SCROLL_ON, SMOOTH_SCROLL_QUERY,
@@ -53,11 +53,12 @@ import {
   IMAGE_CLIP_QUERY, parseImageClipReport,
 } from "./smoothscroll";
 import { enter_alt, leave_alt, hide_cursor, show_cursor, enable_bracketed_paste, disable_bracketed_paste, query_clipboard_paste_events, enable_clipboard_paste_events, disable_clipboard_paste_events, enable_kitty_kbd, disable_kitty_kbd, enable_mouse, disable_mouse, set_cursor_color, reset_cursor_color } from "./terminal";
-import { createInitialState, isStreaming, canInterrupt, clearPendingAI, clearStreamingTailMessages, focusPrompt, isActiveConversationLoading, isProvisionalStale, isStaleCopyMarked, STALE_COPY_MARK_DELAY_MS, modelSupportsImages, newConversationSelection, noConversationOpen, noteConversationOpenRequest, pushSystemMessage, resetDraftConversationState, resetHistoryPagination, resetNewConversationDefaults, resetToolOutputState } from "./state";
+import { createInitialState, isStreaming, canInterrupt, clearPendingAI, clearStreamingTailMessages, focusPrompt, markStoppedLocally, releaseLocalStop, isActiveConversationLoading, isProvisionalStale, isStaleCopyMarked, STALE_COPY_MARK_DELAY_MS, modelSupportsImages, newConversationSelection, noConversationOpen, noteConversationOpenRequest, pushSystemMessage, resetDraftConversationState, resetHistoryPagination, resetNewConversationDefaults, resetToolOutputState } from "./state";
 import { workingRowVisible } from "./conversation";
 import { createMessageMetadata, createPendingAI, type ImageAttachment, type UserMessage } from "./messages";
 import { loginPromptProviders } from "./providerselection";
 import { handleEvent } from "./events";
+import { handleStreamingStopped } from "./events/streaming";
 import { beginConversationLoad, beginOptimisticConversation } from "./events/conversations";
 import { beginProvisionalOpen, cachedOpenEvents, liveCatchup, noteProvisionalPlacement, reconcileProvisionalOpen } from "./cachedopen";
 import type { CachedView } from "./viewcache";
@@ -211,6 +212,8 @@ let remoteFileLinks: RemoteFileLinkController | null = null;
 let pendingVoiceQueuePrompt = false;
 let pendingNewConversationConvId: string | null = null;
 let pendingLocalInterruptConvId: string | null = null;
+/** The turn Ctrl+Q stopped locally; a later send's pending reply is not it. */
+let pendingLocalInterruptStartedAt: number | null = null;
 let pendingEditMessageUnwind: PendingEditMessageUnwind | null = null;
 /** A message sent while the edit's unwind was in flight; shown, not yet sent. */
 let deferredEditResend: { convId: string; message: UserMessage; startedAt: number } | null = null;
@@ -237,17 +240,31 @@ function pendingAIHasVisibleContent(): boolean {
   }) ?? false;
 }
 
-function showLocalPreContentInterrupt(convId: string): void {
-  // If Ctrl+Q lands before any visible assistant content arrives, the daemon may
-  // still be opening a websocket or waiting for the first provider event. Show
-  // the terminal state immediately instead of leaving a metadata-only pending AI
-  // bubble/spinner until the abort propagates through the transport.
-  if (!state.pendingAI || pendingAIHasVisibleContent()) return;
+/**
+ * Ctrl+Q shows the stop at once instead of a round trip later: the reply
+ * freezes where it is, the interrupt notice appears and the sidebar's dot goes
+ * off. The rest of that turn's stream is dropped. The daemon keeps what it had
+ * when the abort reached it, which may run a few words further; a reopen shows it.
+ */
+function stopLocally(convId: string, startedAt: number | null): void {
   pendingLocalInterruptConvId = convId;
+  pendingLocalInterruptStartedAt = startedAt;
   clearStreamTick();
-  clearPendingAI(state);
-  clearStreamingTailMessages(state);
+  const pending = state.pendingAI;
+  if (pending) {
+    // As the daemon does: a tool call cut off before its result isn't kept.
+    const answered = new Set(pending.blocks.flatMap(block => block.type === "tool_result" ? [block.toolCallId] : []));
+    pending.blocks = pending.blocks.filter(block => block.type !== "tool_call" || answered.has(block.toolCallId));
+  }
+  if (pendingAIHasVisibleContent()) {
+    preserveViewportAcrossTurnEnd(state, () => handleStreamingStopped({ type: "streaming_stopped", convId }, state));
+  } else {
+    // Nothing shown yet (still connecting): no empty reply is left behind.
+    clearPendingAI(state);
+    clearStreamingTailMessages(state);
+  }
   pushSystemMessage(state, "✗ Interrupted", theme.error);
+  markStoppedLocally(state, convId, startedAt);
 }
 
 function shouldIgnoreEventAfterLocalPreContentInterrupt(event: Event): boolean {
@@ -624,6 +641,7 @@ function resetForDaemonRouteSwitch(newRouteKey: string): void {
   clearDeferredHistoryRenderTimer();
   pendingNewConversationConvId = null;
   pendingLocalInterruptConvId = null;
+  state.locallyStopped.clear();
   pendingEditMessageUnwind = null;
   restoreDeferredEditResend();
   forgetUnconfirmedSends(state);
@@ -750,6 +768,14 @@ function onDaemonEvent(event: Event): void {
   }
 
   if (event.type === "system_message" && event.convId === pendingLocalInterruptConvId && event.text === "✗ Interrupted") {
+    return;
+  }
+  // The stopped turn was finalized locally. A reply pending now belongs to a
+  // message sent since, which the old turn's stop must not finalize.
+  if (event.type === "streaming_stopped" && event.convId === pendingLocalInterruptConvId
+      && state.pendingAI && state.pendingAI.metadata?.startedAt !== pendingLocalInterruptStartedAt) {
+    pendingLocalInterruptConvId = null;
+    releaseLocalStop(state, event.convId);
     return;
   }
   if (shouldIgnoreEventAfterLocalPreContentInterrupt(event)) return;
@@ -1902,11 +1928,15 @@ function confirmSelectedEditMessage(): void {
     }
   } else if (er.action === "edit_sent" && state.convId) {
     const convId = state.convId;
+    const wasStreaming = isStreaming(state);
+    const runningStartedAt = state.pendingAI?.metadata?.startedAt ?? null;
     const optimisticallyUnwound = applyOptimisticEditMessageUnwind(state, er.userMessageIndex);
     if (optimisticallyUnwound) {
       clearStreamTick();
       pendingLocalInterruptConvId = null;
       invalidateHistoryRenderCache(state);
+      // The cut stops the running turn: the sidebar shows that now too.
+      if (wasStreaming) markStoppedLocally(state, convId, runningStartedAt);
     }
     // The daemon's unwindTo handles abort internally if streaming,
     // waits for the stream to stop, then truncates.
@@ -2061,7 +2091,7 @@ function handleKey(key: KeyEvent): void {
           // can finish and start a queued successor before this command reaches
           // the daemon; that successor must not inherit the stale interrupt.
           const expectedStartedAt = state.pendingAI?.metadata?.startedAt;
-          if (isStreaming(state)) showLocalPreContentInterrupt(convId);
+          if (isStreaming(state)) stopLocally(convId, expectedStartedAt ?? null);
           daemon.abort(convId, expectedStartedAt);
         }
       }
