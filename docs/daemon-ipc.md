@@ -117,7 +117,9 @@ daemon for no bootstrap of its own unless the switch fails. The TUI draws a
 remote route once its conversation (or list) and tool styles are in, without
 waiting for the whole list. The `exocortexd proxy` at the far end loads only
 the stdio bridge (`daemon/src/proxy-main.ts`), and the TUI reuses one SSH
-connection per alias ([SSH connection reuse](ssh-connection-reuse.md)).
+connection per alias ([SSH connection reuse](ssh-connection-reuse.md)). The
+proxy exits when stdin, stdout or the daemon socket goes, within about 4 s even
+if its client has stopped reading; a closed stderr doesn't stop it.
 
 ## Opening a conversation
 
