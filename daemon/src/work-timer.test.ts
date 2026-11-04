@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { interruptedRunWorkTimer } from "./work-timer";
+import { interruptedRunWorkTimer, sleptLong } from "./work-timer";
 import { CONTEXT_COMPACTION_FINISHED_KIND, createMessageMetadata, type StoredMessage } from "./messages";
 
 const ai = (startedAt: number, endedAt: number | null, workTimerStartedAt: number | null = startedAt): StoredMessage => ({
@@ -33,6 +33,12 @@ describe("work timer", () => {
       role: "system", content: "Compaction finished",
       metadata: { ...createMessageMetadata(120_000, "gpt-5.5", { endedAt: 134_000 }), workTimerStartedAt: 24_000, kind: CONTEXT_COMPACTION_FINISHED_KIND },
     }], 200_000)).toBe(90_000);
+  });
+
+  test("only a sleep that really lasted past five minutes counts as long", () => {
+    expect(sleptLong(0, 17_000)).toBe(false);
+    expect(sleptLong(0, 5 * 60_000)).toBe(false);
+    expect(sleptLong(0, 5 * 60_000 + 1)).toBe(true);
   });
 
   test("a replay starts a fresh timer when the interrupted turn left no work to continue", () => {
