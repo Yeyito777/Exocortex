@@ -94,6 +94,7 @@ import { prepareCatchableShutdownForReplay } from "./restart-recovery";
 import { PREPARE_RESTART_MAX_SETTLE_MS, writeActiveGoalRestartMarker } from "./restart-markers";
 import { buildBackgroundTaskNotificationText } from "./background-task-notifications";
 import { configureChronoService, cancelDeferredChronoSleep } from "./chrono-service";
+import { sleptLong } from "./work-timer";
 import { cancelSuspendedTurn } from "./suspended-turns";
 import { runChronoCommand } from "./chrono-commands";
 import { inlineLongSleepStartedAt } from "@exocortex/shared/chrono";
@@ -347,6 +348,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         sleep.conversationId,
         Date.now(),
         buildOrchestrationCallbacks(sleep.conversationId),
+        { resumesInterruptedRun: !sleptLong(sleep.startedAt, sleep.resumedAt ?? Date.now()) },
       );
       // Chrono owns a durable replay, but it does not own an unrelated active
       // detached-send notification. A lost admission must remain retryable;

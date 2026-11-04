@@ -13,7 +13,7 @@ import { planClaudePrompt } from "./providers/anthropic/prompt";
 import { isDeepStrictEqual } from "node:util";
 import { prepareArchiveHashes } from "./conversation-loader";
 import { archiveWindow, inheritArchiveHashProof, storedMessageCount } from "./conversation-window";
-import { interruptedRunWorkTimer } from "./work-timer";
+import { interruptedRunWorkTimer, sleptLong } from "./work-timer";
 import { appendGenerationRate, createGenerationThroughput } from "@exocortex/shared/generation-throughput";
 import { hasConfiguredCredentials } from "./auth";
 import { runAgentLoop, type AgentCallbacks, type AgentState } from "./agent";
@@ -244,7 +244,7 @@ interface AssistantTurnOptions {
   automation?: UserMessageAutomation;
   /** Its sender waits on this turn's reply itself (a foreground `exo send`): no report to a parent. */
   replyAwaited?: boolean;
-  /** Replays a turn a daemon restart interrupted: its run's work timer continues. */
+  /** Replays a turn a daemon restart or a short sleep interrupted: its run's work timer continues. */
   resumesInterruptedRun?: boolean;
   /** Force one context compaction without requesting an assistant response. */
   manualCompaction?: boolean;
@@ -854,6 +854,7 @@ async function orchestrateAdmittedAssistantTurn(
   // A Claude Code turn runs long chrono sleeps and waits inside the call rather
   // than suspending: the chrono task ids of those in progress.
   const inlineLongSleeps = new Set<string>();
+  let inlineSleepStartedAt = 0;
   // Any queued message, automated or message-end ones too, ends a suspended
   // sleep by starting a turn. One queued during an inline long sleep steers
   // like a person's until it is delivered.
@@ -1090,14 +1091,19 @@ async function orchestrateAdmittedAssistantTurn(
     setChronoTaskActive: (taskId, active, details) => {
       if (active && details?.dueAt !== undefined && (details.chronoMode === "sleep" || details.chronoMode === "wait")
           && details.dueAt - details.startedAt > LONG_CHRONO_SLEEP_THRESHOLD_MS) {
+        if (inlineLongSleeps.size === 0) inlineSleepStartedAt = details.startedAt;
         inlineLongSleeps.add(taskId);
         // A message queued earlier would end a suspended sleep at once.
         queueMicrotask(steerTurn);
       }
       if (!active && inlineLongSleeps.delete(taskId) && inlineLongSleeps.size === 0) {
         // As after a suspended turn's wake, work after a long sleep starts a
-        // new timer: the sleep is never charged. Overlapping sleeps are one.
-        workTimerStartedAt = Date.now();
+        // new timer, and after a short one the timer picks up where it stopped:
+        // the sleep is never charged. Overlapping sleeps are one.
+        const wokeAt = Date.now();
+        workTimerStartedAt = sleptLong(inlineSleepStartedAt, wokeAt)
+          ? wokeAt
+          : workTimerStartedAt + wokeAt - inlineSleepStartedAt;
         convStore.setStreamingWorkTimerStartedAt(convId, workTimerStartedAt);
         // Before the task leaves the sidebar, which unfreezes the TUI clock.
         sendStreamingSnapshot();

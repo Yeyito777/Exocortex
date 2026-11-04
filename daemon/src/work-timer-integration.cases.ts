@@ -266,7 +266,7 @@ test("a long chrono sleep inside a Claude Code call is never charged: work after
         workTimers.push(latestOrigin(events));
         return reply("queued answer");
       }
-      for (const [callId, sleptMs] of [["toolu_short", 60_000], ["toolu_long", 30 * 60_000]] as const) {
+      for (const [callId, sleptMs] of [["toolu_first", 6 * 60_000], ["toolu_second", 30 * 60_000]] as const) {
         await sleepInsideCall(callId, sleptMs, options.toolExecutor, options.signal);
         wokeAt.push(Date.now());
         workTimers.push(latestOrigin(events));
@@ -286,6 +286,47 @@ test("a long chrono sleep inside a Claude Code call is never charged: work after
     }
     expect(workTimers[2]).toBe(workTimers[1]);
     expect(load(id)!.messages.at(-1)?.metadata?.workTimerStartedAt).toBe(workTimers[1]);
+    await untilIdle(id);
+  } finally {
+    setSystemTime();
+    conversations.remove(id);
+  }
+});
+
+test("a long limit that ends early is no long sleep: the timer picks up where it stopped", async () => {
+  const id = `work-timer-early-wake-${Date.now()}`;
+  const events: any[] = [];
+  const server = fakeServer(events);
+  conversations.create(id, "anthropic", DEFAULT_MODEL_BY_PROVIDER.anthropic);
+  const startedAt = Date.now() - 27 * 60_000;
+  const sleptMs = 17_000;
+  let frozenAt = 0;
+  let wokeAt = 0;
+  let origin = 0;
+  const callbacks: OrchestrationCallbacks = {
+    onHeaders() {}, onComplete() {},
+    streamMessageFn: async (_provider, _messages, _model, _streamCallbacks, options: any) => {
+      // As a `chrono wait` with a 30 minute limit whose task finishes at once.
+      const pending = options.toolExecutor([{ id: "toolu_early", name: "chrono", input: { action: "sleep", duration: "30m" } }], options.signal);
+      while (conversations.getActiveBackgroundableToolName(id) !== "chrono") await Bun.sleep(1);
+      frozenAt = conversations.getSummary(id)!.tasks!.find(task => task.id === "chrono:sleep:toolu_early")!.startedAt;
+      advance(sleptMs);
+      wokeAt = Date.now();
+      conversations.backgroundActiveTool(id, "steer");
+      await pending;
+      origin = latestOrigin(events);
+      return reply("awake");
+    },
+  };
+  try {
+    const result = await orchestrateSendMessage(server, null, undefined, id, "wait for it", startedAt, callbacks);
+    expect(result.ok, result.error).toBe(true);
+    // The wait is not charged, and the 27 minutes before it stay on the timer.
+    expect(origin).toBeGreaterThanOrEqual(startedAt + sleptMs);
+    expect(origin).toBeLessThan(startedAt + sleptMs + 1_000);
+    expect(wokeAt - origin).toBeGreaterThanOrEqual(frozenAt - startedAt - 1_000);
+    expect(wokeAt - origin).toBeLessThanOrEqual(frozenAt - startedAt);
+    expect(load(id)!.messages.at(-1)?.metadata?.workTimerStartedAt).toBe(origin);
     await untilIdle(id);
   } finally {
     setSystemTime();
@@ -315,14 +356,14 @@ test("overlapping chrono sleeps inside a Claude Code call are one sleep", async 
       const sleeping = (callId: string) => conversations.getSummary(id)?.tasks?.some(task => task.id === `chrono:sleep:${callId}`);
       const first = sleep("toolu_first");
       while (!sleeping("toolu_first")) await Bun.sleep(1);
-      advance(60_000);
+      advance(120_000);
       const second = sleep("toolu_second");
       while (!sleeping("toolu_second")) await Bun.sleep(1);
-      advance(60_000);
+      advance(120_000);
       first.stop();
       await first.done;
       afterFirst = latestOrigin(events);
-      advance(60_000);
+      advance(120_000);
       bothEndedAt = Date.now();
       second.stop();
       await second.done;
