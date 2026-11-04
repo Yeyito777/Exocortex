@@ -62,7 +62,7 @@ import { adoptClaudeCodeProcesses } from "./providers/anthropic/api";
 import { ensureClaudeRetentionSettings, scheduleClaudeSessionPrune } from "./providers/anthropic/session-prune-schedule";
 import { detachAllClaudeCodeSessions, stopAllClaudeCodeSessions } from "./providers/anthropic/session";
 import { flushAssignments } from "./providers/anthropic/account-pool";
-import { runIpcProxy } from "./ipc-proxy";
+import { exitAfterIpcProxy, runIpcProxy } from "./ipc-proxy";
 import { migrateGlobalInstructions } from "./system";
 
 // ── Startup profiling ────────────────────────────────────────────────
@@ -470,6 +470,7 @@ async function main(): Promise<void> {
   if (command === "proxy") {
     try {
       await runIpcProxy({ socketPath: SOCKET_PATH });
+      exitAfterIpcProxy();
       return;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

@@ -9,8 +9,16 @@
 
 import { loadEnvFile } from "./env";
 import { socketPath } from "@exocortex/shared/paths";
-import { runIpcProxy } from "./ipc-proxy";
+import { exitAfterIpcProxy, runIpcProxy } from "./ipc-proxy";
 import { LinkOnlyFilter, parseLinkOnlyProviders } from "./ipc-link-filter";
+
+// Bun carries on after an uncaught error, and with nothing left to wait for its
+// event loop spins. stderr's reader going away must not stop the bridge.
+process.on("uncaughtException", (err) => {
+  console.error(`exocortexd proxy: ${err instanceof Error ? err.message : String(err)}`);
+  process.exit(1);
+});
+process.stderr.on("error", () => {});
 
 loadEnvFile();
 try {
@@ -21,6 +29,7 @@ try {
     filter = new LinkOnlyFilter({ providers: parseLinkOnlyProviders(linkOnly[1]) });
   }
   await runIpcProxy({ socketPath: socketPath(), filter });
+  exitAfterIpcProxy();
 } catch (err) {
   console.error(`exocortexd proxy: ${err instanceof Error ? err.message : String(err)}`);
   process.exit(1);
