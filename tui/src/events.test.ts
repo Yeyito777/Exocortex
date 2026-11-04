@@ -69,7 +69,7 @@ describe("generation throughput events", () => {
 });
 
 describe("metadata timer to finish clock", () => {
-  test("the live timer becomes the clock on the render where the message turns final, with no leftover timer", () => {
+  test("the live timer stops and the clock follows it on the render where the message turns final", () => {
     try {
       const state = createInitialState();
       state.convId = "finish-clock";
@@ -96,9 +96,9 @@ describe("metadata timer to finish clock", () => {
       setSystemTime(new Date(2026, 9, 23, 14, 3, 31));
       // One render after the event: only the finished row, showing the clock and no duration.
       expect(state.pendingAI).toBeNull();
-      expect(metadataRow()).toEqual(["  Gpt-5.4 | 50.0 tokens/s | 2:03pm"]);
+      expect(metadataRow()).toEqual(["  Gpt-5.4 | 50.0 tokens/s | 1m 42s | 2:03pm"]);
       setSystemTime(new Date(2026, 9, 23, 14, 9, 0));
-      expect(metadataRow()).toEqual(["  Gpt-5.4 | 50.0 tokens/s | 2:03pm"]);
+      expect(metadataRow()).toEqual(["  Gpt-5.4 | 50.0 tokens/s | 1m 42s | 2:03pm"]);
     } finally {
       setSystemTime();
     }

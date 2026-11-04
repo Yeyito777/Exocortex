@@ -35,10 +35,9 @@ describe("renderMetadata", () => {
     expect(renderWorking(metadata)[0]).toContain("Gpt-5.5 | 100.0 tokens/s | 2m 54s");
     expect(renderMetadata({ ...metadata, endedAt: null }, { now: 187_000 })[0])
       .toContain("Gpt-5.5 | 100.0 tokens/s | 3m 4s");
-    // Finished: the clock replaces the duration, which no longer shows.
+    // Finished: the duration stops and the clock follows it.
     const finished = stripAnsi(renderMetadata(metadata, { now: 900_000, timeZone: "UTC" })[0]);
-    expect(finished).toBe("  Gpt-5.5 | 100.0 tokens/s | 12:02am");
-    expect(finished).not.toContain("2m 54s");
+    expect(finished).toBe("  Gpt-5.5 | 100.0 tokens/s | 2m 54s | 12:02am");
   });
   test("fits metadata and its indent into terminal columns, including Unicode and tiny panes", () => {
     for (const model of ["gpt-6-astra", "模型👩‍💻é-super-long-model-name"]) {
@@ -156,7 +155,7 @@ describe("renderMetadata", () => {
     expect(renderWorking(metadata)[0]).not.toContain("1,234 tokens");
     expect(renderWorking(metadata, { diagnostics: true })[0]).toContain("Gpt-5.4 | 617.0 tokens/s | 2s | 1,234 tokens");
     expect(stripAnsi(renderMetadata(metadata, { diagnostics: true, timeZone: "UTC", now: 3_500 })[0]))
-      .toBe("  Gpt-5.4 | 617.0 tokens/s | 12:00am | 1,234 tokens");
+      .toBe("  Gpt-5.4 | 617.0 tokens/s | 2s | 12:00am | 1,234 tokens");
     expect(metadata).toEqual(original);
   });
 
@@ -240,11 +239,11 @@ describe("finish time", () => {
     expect(formatFinishTime(at("2026-10-31T23:30:00Z"), at("2026-11-02T20:00:00Z"), "America/Toronto", "24h")).toBe("Oct 31 19:30");
   });
 
-  test("replaces the duration and sits before the diagnostics tokens", () => {
+  test("follows the duration and sits before the diagnostics tokens", () => {
     const now = at("2026-10-23T15:30:00Z");
     const endedAt = at("2026-10-23T14:03:00Z");
-    expect(renderMetadata(meta(endedAt), { now, timeZone: "UTC", clock: "24h" })[0]).toContain("Opus-5.5 | — tokens/s | 14:03");
-    expect(renderMetadata(meta(endedAt), { now, timeZone: "UTC", clock: "24h", diagnostics: true })[0]).toContain("| 14:03 | 1 tokens");
+    expect(renderMetadata(meta(endedAt), { now, timeZone: "UTC", clock: "24h" })[0]).toContain("Opus-5.5 | — tokens/s | 1m 49s | 14:03");
+    expect(renderMetadata(meta(endedAt), { now, timeZone: "UTC", clock: "24h", diagnostics: true })[0]).toContain("| 1m 49s | 14:03 | 1 tokens");
   });
 
   test("no segment without a timestamp, while live, or when active", () => {
@@ -284,7 +283,7 @@ describe("finish time", () => {
     expect(f("2026-10-19T09:12:00Z")).toBe("Oct 19 9:12am");
     expect(f("2025-10-19T09:12:00Z")).toBe("Oct 19 2025 9:12am");
     expect(renderMetadata(meta(at("2026-10-23T14:03:00Z")), { now, timeZone: "UTC" })[0])
-      .toContain("Opus-5.5 | — tokens/s | 2:03pm");
+      .toContain("Opus-5.5 | — tokens/s | 1m 49s | 2:03pm");
     expect(renderMetadata(meta(at("2026-10-23T14:03:00Z")), { now, timeZone: "UTC", clock: "12h" })[0]).toContain("| 2:03pm");
   });
 
@@ -310,40 +309,39 @@ describe("finish time", () => {
     expect(formatFinishTime(endedAt, now, "Asia/Tokyo")).toBe("yesterday 12:30pm");
   });
 
-  test("working shows the live timer, finished shows the clock instead, old messages keep the duration", () => {
+  test("working shows the live timer, finished adds the clock after the duration, old messages keep the duration", () => {
     const now = at("2026-10-23T15:30:00Z");
     const line = (m: ReturnType<typeof meta>, opts = {}) =>
       stripAnsi(renderMetadata({ ...m, tokens: 1234 }, { now, timeZone: "UTC", ...opts })[0]);
     // Working: no endedAt (a live timer counting up to now).
     expect(stripAnsi(renderMetadata({ startedAt: now - 72_000, endedAt: null, model: "claude-opus-5-5", tokens: 0 }, { now })[0]))
       .toBe("  Opus-5.5 | 0.0 tokens/s | 1m 12s");
-    // Finished: the clock replaces the duration; no arrow, no duration.
+    // Finished: the duration stops and the clock follows it.
     const done = (iso: string, opts = {}) => line(meta(at(iso)), opts);
-    expect(done("2026-10-23T14:03:00Z")).toBe("  Opus-5.5 | — tokens/s | 2:03pm");
-    expect(done("2026-10-22T22:41:00Z")).toBe("  Opus-5.5 | — tokens/s | yesterday 10:41pm");
-    expect(done("2026-10-19T09:12:00Z")).toBe("  Opus-5.5 | — tokens/s | Oct 19 9:12am");
-    expect(done("2026-10-23T14:03:00Z", { clock: "24h" })).toBe("  Opus-5.5 | — tokens/s | 14:03");
-    expect(done("2026-10-23T14:03:00Z")).not.toMatch(/1m 49s|→/);
-    expect(done("2026-10-23T14:03:00Z", { diagnostics: true })).toBe("  Opus-5.5 | — tokens/s | 2:03pm | 1,234 tokens");
+    expect(done("2026-10-23T14:03:00Z")).toBe("  Opus-5.5 | — tokens/s | 1m 49s | 2:03pm");
+    expect(done("2026-10-22T22:41:00Z")).toBe("  Opus-5.5 | — tokens/s | 1m 49s | yesterday 10:41pm");
+    expect(done("2026-10-19T09:12:00Z")).toBe("  Opus-5.5 | — tokens/s | 1m 49s | Oct 19 9:12am");
+    expect(done("2026-10-23T14:03:00Z", { clock: "24h" })).toBe("  Opus-5.5 | — tokens/s | 1m 49s | 14:03");
+    expect(done("2026-10-23T14:03:00Z", { diagnostics: true })).toBe("  Opus-5.5 | — tokens/s | 1m 49s | 2:03pm | 1,234 tokens");
     // Old messages with no endedAt keep the duration instead of losing information.
     expect(line({ ...meta(0), startedAt: now - 109_000, endedAt: null })).toContain("| 1m 49s");
   });
 
-  test("the timer becomes the clock on the same render the message gets its endedAt", () => {
+  test("the timer stops and the clock appears on the same render the message gets its endedAt", () => {
     const now = at("2026-10-23T14:03:00Z");
     const m = { startedAt: now - 109_000, endedAt: null as number | null, model: "claude-opus-5-5", tokens: 0 };
     expect(stripAnsi(renderMetadata(m, { now, timeZone: "UTC" })[0])).toBe("  Opus-5.5 | 0.0 tokens/s | 1m 49s");
     m.endedAt = now;
-    expect(stripAnsi(renderMetadata(m, { now, timeZone: "UTC" })[0])).toBe("  Opus-5.5 | — tokens/s | 2:03pm");
+    expect(stripAnsi(renderMetadata(m, { now, timeZone: "UTC" })[0])).toBe("  Opus-5.5 | — tokens/s | 1m 49s | 2:03pm");
     // A durably sleeping message stays a live timer even though a round has ended.
     expect(stripAnsi(renderMetadata(m, { now: now + 60_000, timeZone: "UTC", active: true })[0]))
       .toBe("  Opus-5.5 | — tokens/s | 2m 49s");
   });
 
-  test("the clock truncates exactly like the duration did", () => {
+  test("the clock is cut first when the line is too narrow", () => {
     const now = at("2026-10-23T15:30:00Z");
     const finished = meta(at("2026-10-23T14:03:00Z"));
-    const prefix = "  Opus-5.5 | — tokens/s | ";
+    const prefix = "  Opus-5.5 | — tokens/s | 1m 49s | ";
     const at_ = (width: number, m = finished, opts = {}) => stripAnsi(renderMetadata(m, { now, timeZone: "UTC", width, ...opts })[0]);
     expect(at_(prefix.length + "2:03pm".length)).toBe(prefix + "2:03pm");
     expect(at_(prefix.length + "2:03pm".length - 1)).toBe(prefix + "2:03…");

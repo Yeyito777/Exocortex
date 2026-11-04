@@ -533,13 +533,13 @@ While the AI is working the segment is the live work timer counting up:
 from idle to working, whatever starts it (your message, a wake, a notification),
 and runs on through messages that join the running work (steered or queued ones,
 goal continuations) and daemon restarts. Time asleep in a long Chrono sleep is
-not counted: work after the sleep starts again at 0. When the message finishes, the finish
-clock replaces the duration on that same render (`endedAt`, the instant the timer
-stopped): `Opus-5.5 | 87.9 tokens/s | 2:03pm`, `... | yesterday 10:41pm`,
-`... | Oct 19 9:12am` (year added for another year, `Oct 19 2025 9:12am`). The
-duration stays in the stored metadata but is no longer rendered on finished
-messages; messages with no `endedAt` (older conversations) keep showing it. With
-`/diagnostics` on the token count follows: `... | 2:03pm | 1,234 tokens`. The clock
+not counted: work after the sleep starts again at 0. When the message finishes, the timer
+stops and the finish clock follows it on that same render (`endedAt`, the instant
+the timer stopped): `Opus-5.5 | 87.9 tokens/s | 1m 12s | 2:03pm`,
+`... | 1m 12s | yesterday 10:41pm`, `... | 1m 12s | Oct 19 9:12am` (year added
+for another year, `Oct 19 2025 9:12am`). Messages with no `endedAt` (older
+conversations) show only the duration. With `/diagnostics` on the token count
+follows: `... | 1m 12s | 2:03pm | 1,234 tokens`. The clock
 is 12-hour by default; `/clock 24h` switches to `14:03`, `yesterday 22:41`,
 `Oct 19 09:12`, and `/clock 12h` switches back (bare `/clock` shows the current
 value). The choice is a TUI-only preference saved as `tui.clock` in

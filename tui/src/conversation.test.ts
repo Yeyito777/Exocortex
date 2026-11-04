@@ -1612,9 +1612,9 @@ describe("assistant finish time", () => {
     const endedAt = new Date(2026, 9, 23, 14, 3).getTime();
     setSystemTime(new Date(2026, 9, 23, 15, 0));
     const state = finished(endedAt);
-    expect(metadataRows(state)).toEqual(["  Opus-5.5 | — tokens/s | 2:03pm"]);
+    expect(metadataRows(state)).toEqual(["  Opus-5.5 | — tokens/s | 1m 49s | 2:03pm"]);
     state.clock = "24h";
-    expect(metadataRows(state)).toEqual(["  Opus-5.5 | — tokens/s | 14:03"]);
+    expect(metadataRows(state)).toEqual(["  Opus-5.5 | — tokens/s | 1m 49s | 14:03"]);
     state.pendingAI = createPendingAI(endedAt + 1_000, "claude-opus-5-5");
     state.pendingAI.blocks = [{ type: "text", text: "Next" }];
     expect(metadataRows(state).at(-1)).not.toMatch(/\d:\d\d(am|pm)?$/);
@@ -1641,7 +1641,7 @@ describe("assistant finish time", () => {
     expect(metadataRows(state)[0]).toEndWith("| 2:03pm");
   });
 
-  test("a working message shows the live timer and swaps to the clock on the render where it becomes final", () => {
+  test("a working message shows the live timer and adds the clock on the render where it becomes final", () => {
     setSystemTime(new Date(2026, 9, 23, 14, 3, 30));
     const state = finished(new Date(2026, 9, 23, 14, 3).getTime());
     const message = state.messages[0];
@@ -1652,10 +1652,10 @@ describe("assistant finish time", () => {
     // The stream handlers finalize with a fresh metadata object (or push the pending message),
     // so cached rows can never keep the timer.
     message.metadata = { ...message.metadata!, endedAt: new Date(2026, 9, 23, 14, 3, 30).getTime() };
-    expect(metadataRows(state)).toEqual(["  Opus-5.5 | — tokens/s | 2:03pm"]);
+    expect(metadataRows(state)).toEqual(["  Opus-5.5 | — tokens/s | 1m 42s | 2:03pm"]);
   });
 
-  test("a message without endedAt renders no time segment", () => {
+  test("a message without endedAt renders no clock segment", () => {
     const state = finished(5_000_000);
     state.messages[0].role === "assistant" && (state.messages[0].metadata!.endedAt = null);
     state.messages.push({ role: "user", text: "next" } as never);
