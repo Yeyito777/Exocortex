@@ -36,7 +36,11 @@ with its file and test name and the error, and exits 1 on any failure.
 
 - **Don't sleep on a real timer.** Make the wait injectable and shrink it in
   the test, e.g. `setOpenAIWaitsForTest`, `setRelayHelloTimeoutsForTest`,
-  `setClientExecLivenessForTest`, or freeze the clock with `setSystemTime`.
+  `setClientExecLivenessForTest`, `setQueuePumpDelayForTest` (the daemon
+  queue's readiness poll), `setUsageLimitRetryFloorForTest`,
+  `setExternalToolsDebounceForTest`, or freeze the clock with `setSystemTime`.
+  Restore the default after the test, and keep a test on the real value where
+  the timing itself is what's tested.
 - **Poll for the outcome, with a bound.** `for (… i < N && !done(); …) await
   Bun.sleep(10)` returns as soon as the work is done and fails if it never
   is. A fixed `sleep(100)` before an assert is slow when it passes and flaky
