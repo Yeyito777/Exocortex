@@ -100,6 +100,15 @@ describe("durable Chrono sleep metadata", () => {
     expect(inlineSleepMetadataEndedAt(state)).toBeNull();
   });
 
+  test("runs a streaming turn's clock through a long Chrono wait: waiting on its own task is work", () => {
+    const { state } = sleepingState(true);
+    state.pendingAI = createPendingAI(1_000, state.model);
+    const task = state.sidebar.conversations[0].tasks![0];
+    task.id = "chrono:wait:sleep-call";
+    task.chronoMode = "wait";
+    expect(inlineSleepMetadataEndedAt(state)).toBeNull();
+  });
+
   test("requires the active sleep task to match the committed tool call", () => {
     const { state } = sleepingState();
     state.sidebar.conversations[0].tasks![0].id = "chrono:sleep:another-call";

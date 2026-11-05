@@ -3,6 +3,7 @@ import * as conversations from "./conversations";
 import { DEFAULT_MODEL_BY_PROVIDER, type StoredMessage } from "./messages";
 import { load } from "./persistence";
 import { orchestrateReplayConversation, orchestrateSendMessage, type OrchestrationCallbacks } from "./orchestrator";
+import { setBackgroundTaskActive } from "./conversation-activity";
 
 const OWNER_RELAY = "[notification] Discord/paramount · DM\nYeyito [ch:1]\n\n→ Yeyito <@3> [owner]:\nare you there?\n[msg:5]\n\nAction: answer on Discord.";
 
@@ -379,6 +380,38 @@ test("overlapping chrono sleeps inside a Claude Code call are one sleep", async 
     // Restarted once, when the last sleep ended.
     expect(afterBoth).toBeGreaterThanOrEqual(bothEndedAt);
     expect(afterBoth).toBeLessThan(bothEndedAt + 1_000);
+  } finally {
+    setSystemTime();
+    conversations.remove(id);
+  }
+});
+
+test("a long chrono wait inside a Claude Code call is work: the timer runs through it", async () => {
+  const id = `work-timer-inline-wait-${Date.now()}`;
+  const events: any[] = [];
+  const server = fakeServer(events);
+  conversations.create(id, "anthropic", DEFAULT_MODEL_BY_PROVIDER.anthropic);
+  const startedAt = Date.now() - 11 * 60_000;
+  const callbacks: OrchestrationCallbacks = {
+    onHeaders() {}, onComplete() {},
+    streamMessageFn: async (_provider, _messages, _model, _streamCallbacks, options: any) => {
+      // The turn's own test run, waited on for 6 minutes (Nov 5: an 18-minute reply showed 45 s).
+      setBackgroundTaskActive(id, "bash:suite", true, { title: "test suite", startedAt: Date.now() });
+      const pending = options.toolExecutor([{ id: "toolu_wait", name: "chrono",
+        input: { action: "wait", task_id: "bash:suite", max_wait: "9m" } }], options.signal);
+      while (!conversations.getSummary(id)?.tasks?.some(task => task.id === "chrono:wait:toolu_wait")) await Bun.sleep(1);
+      advance(6 * 60_000);
+      setBackgroundTaskActive(id, "bash:suite", false);
+      await pending;
+      return reply("done");
+    },
+  };
+  try {
+    const result = await orchestrateSendMessage(server, null, undefined, id, "run the suite", startedAt, callbacks);
+    expect(result.ok, result.error).toBe(true);
+    expect(latestOrigin(events)).toBe(startedAt);
+    expect(load(id)!.messages.at(-1)?.metadata?.workTimerStartedAt).toBe(startedAt);
+    await untilIdle(id);
   } finally {
     setSystemTime();
     conversations.remove(id);
