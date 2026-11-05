@@ -348,7 +348,10 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         sleep.conversationId,
         Date.now(),
         buildOrchestrationCallbacks(sleep.conversationId),
-        { resumesInterruptedRun: !sleptLong(sleep.startedAt, sleep.resumedAt ?? Date.now()) },
+        // A wait is work: the run goes on and counts it. A sleep past five minutes starts a new timer.
+        sleep.wait
+          ? { resumesInterruptedRun: true, resumedRunChargesGap: true }
+          : { resumesInterruptedRun: !sleptLong(sleep.startedAt, sleep.resumedAt ?? Date.now()) },
       );
       // Chrono owns a durable replay, but it does not own an unrelated active
       // detached-send notification. A lost admission must remain retryable;

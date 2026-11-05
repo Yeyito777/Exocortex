@@ -13,10 +13,11 @@ export function sleptLong(sleptAt: number, wokeAt: number): boolean {
 /**
  * Work timer origin for a turn replayed after a daemon restart interrupted it
  * or a short sleep suspended it. The run never really ended, so its timer
- * continues, without charging the gap. When the interrupted turn left no work
- * after its prompt, the replay starts a fresh timer.
+ * continues, without charging the gap (chargeGap: with it, for a Chrono wait,
+ * which is work). When the interrupted turn left no work after its prompt, the
+ * replay starts a fresh timer.
  */
-export function interruptedRunWorkTimer(messages: StoredMessage[], resumedAt: number): number {
+export function interruptedRunWorkTimer(messages: StoredMessage[], resumedAt: number, chargeGap = false): number {
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i];
     if (isRealUserMessage(message)) return resumedAt;
@@ -25,6 +26,7 @@ export function interruptedRunWorkTimer(messages: StoredMessage[], resumedAt: nu
     const compaction = metadata?.kind === CONTEXT_COMPACTION_FINISHED_KIND && metadata.workTimerStartedAt !== undefined;
     if (message.role !== "assistant" && !compaction) continue;
     if (metadata?.workTimerStartedAt === undefined || metadata.endedAt == null) return resumedAt;
+    if (chargeGap) return Math.min(resumedAt, metadata.workTimerStartedAt);
     return resumedAt - Math.max(0, metadata.endedAt - metadata.workTimerStartedAt);
   }
   return resumedAt;

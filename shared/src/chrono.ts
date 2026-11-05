@@ -47,18 +47,20 @@ export function isTurnChronoSleep(task: ConversationTaskSummary): boolean {
 
 /**
  * Start of the Chrono sleeps or waits past the suspension threshold that a
- * still streaming turn is blocked in, or null.
+ * still streaming turn is blocked in, or null. sleepsOnly: the work timer's
+ * question, which waits never pause (a wait for work in progress is work).
  *
  * Claude Code runs these inside the call because Exocortex cannot suspend its
  * turn, so the conversation keeps streaming while it is really sleeping.
  */
 export function inlineLongSleepStartedAt(
   conversation: Pick<ConversationSummary, "streaming" | "tasks">,
+  options: { sleepsOnly?: boolean } = {},
 ): number | null {
   if (!conversation.streaming) return null;
   let startedAt: number | null = null;
   for (const task of conversation.tasks ?? []) {
-    if (!isTurnChronoSleep(task) || task.dueAt === undefined
+    if (!isTurnChronoSleep(task) || (options.sleepsOnly && task.chronoMode !== "sleep") || task.dueAt === undefined
         || task.dueAt - task.startedAt <= LONG_CHRONO_SLEEP_THRESHOLD_MS) continue;
     startedAt = Math.min(startedAt ?? task.startedAt, task.startedAt);
   }

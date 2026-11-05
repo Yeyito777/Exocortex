@@ -246,13 +246,15 @@ interface AssistantTurnOptions {
   replyAwaited?: boolean;
   /** Replays a turn a daemon restart or a short sleep interrupted: its run's work timer continues. */
   resumesInterruptedRun?: boolean;
+  /** With resumesInterruptedRun: the gap was work (a suspended Chrono wait), so the timer counts it. */
+  resumedRunChargesGap?: boolean;
   /** Force one context compaction without requesting an assistant response. */
   manualCompaction?: boolean;
   /** This turn is the daemon-owned successor in an already-active stream chain. */
   streamChainHandoff?: boolean;
 }
 
-export type SubagentTurnPolicy = Pick<AssistantTurnOptions, "subagentMaxDepth" | "subagentNotificationId" | "queueEntryId" | "automation" | "replyAwaited" | "resumesInterruptedRun">;
+export type SubagentTurnPolicy = Pick<AssistantTurnOptions, "subagentMaxDepth" | "subagentNotificationId" | "queueEntryId" | "automation" | "replyAwaited" | "resumesInterruptedRun" | "resumedRunChargesGap">;
 
 export async function orchestrateSendMessage(
   server: DaemonServer,
@@ -796,7 +798,7 @@ async function orchestrateAdmittedAssistantTurn(
   // from idle to working, and turns the chain hands off to (queued messages,
   // goal continuations) keep it.
   let workTimerStartedAt = convStore.getStreamingWorkTimerStartedAt(convId)
-    ?? (options.resumesInterruptedRun ? interruptedRunWorkTimer(conv.messages, startedAt) : startedAt);
+    ?? (options.resumesInterruptedRun ? interruptedRunWorkTimer(conv.messages, startedAt, options.resumedRunChargesGap) : startedAt);
   // One invocation produces one assistant message. Never seed its rate from
   // earlier messages, even when the independent work timer continues.
   let generationThroughput = createGenerationThroughput(conv.provider, conv.model);
@@ -854,6 +856,8 @@ async function orchestrateAdmittedAssistantTurn(
   // A Claude Code turn runs long chrono sleeps and waits inside the call rather
   // than suspending: the chrono task ids of those in progress.
   const inlineLongSleeps = new Set<string>();
+  // The work timer's subset: sleeps. A wait is for the turn's own task, so it is work and the timer runs through it.
+  const inlineTimerSleeps = new Set<string>();
   let inlineSleepStartedAt = 0;
   // Any queued message, automated or message-end ones too, ends a suspended
   // sleep by starting a turn. One queued during an inline long sleep steers
@@ -1091,12 +1095,16 @@ async function orchestrateAdmittedAssistantTurn(
     setChronoTaskActive: (taskId, active, details) => {
       if (active && details?.dueAt !== undefined && (details.chronoMode === "sleep" || details.chronoMode === "wait")
           && details.dueAt - details.startedAt > LONG_CHRONO_SLEEP_THRESHOLD_MS) {
-        if (inlineLongSleeps.size === 0) inlineSleepStartedAt = details.startedAt;
         inlineLongSleeps.add(taskId);
+        if (details.chronoMode === "sleep") {
+          if (inlineTimerSleeps.size === 0) inlineSleepStartedAt = details.startedAt;
+          inlineTimerSleeps.add(taskId);
+        }
         // A message queued earlier would end a suspended sleep at once.
         queueMicrotask(steerTurn);
       }
-      if (!active && inlineLongSleeps.delete(taskId) && inlineLongSleeps.size === 0) {
+      if (!active) inlineLongSleeps.delete(taskId);
+      if (!active && inlineTimerSleeps.delete(taskId) && inlineTimerSleeps.size === 0) {
         // As after a suspended turn's wake, work after a long sleep starts a
         // new timer, and after a short one the timer picks up where it stopped:
         // the sleep is never charged. Overlapping sleeps are one.

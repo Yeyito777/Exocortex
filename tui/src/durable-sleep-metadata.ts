@@ -50,10 +50,13 @@ export function focusedInlineSleepStartedAt(state: RenderState): number | null {
 
 /**
  * Where the live turn's metadata clock stops while it sleeps inside a long
- * Chrono call, as a suspended turn's clock stops; null while it works.
+ * Chrono call, as a suspended turn's clock stops; null while it works. A wait
+ * is work (the task it waits for is the turn's), so its clock runs on.
  */
 export function inlineSleepMetadataEndedAt(state: RenderState): number | null {
-  return state.pendingAI ? focusedInlineSleepStartedAt(state) : null;
+  if (!state.pendingAI || !state.convId) return null;
+  const conversation = state.sidebar?.conversations.find(candidate => candidate.id === state.convId);
+  return conversation ? inlineLongSleepStartedAt(conversation, { sleepsOnly: true }) : null;
 }
 
 /** Start time of the assistant metadata clock that remains live while sleeping. */

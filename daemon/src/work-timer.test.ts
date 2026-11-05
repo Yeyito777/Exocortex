@@ -35,6 +35,12 @@ describe("work timer", () => {
     }], 200_000)).toBe(90_000);
   });
 
+  test("a suspended Chrono wait's gap is work: the resumed run counts it", () => {
+    expect(interruptedRunWorkTimer([user(), ai(100_000, 134_000, 24_000)], 200_000, true)).toBe(24_000);
+    // No work before the wait: a fresh timer, as without the gap.
+    expect(interruptedRunWorkTimer([user()], 200_000, true)).toBe(200_000);
+  });
+
   test("only a sleep that really lasted past five minutes counts as long", () => {
     expect(sleptLong(0, 17_000)).toBe(false);
     expect(sleptLong(0, 5 * 60_000)).toBe(false);
