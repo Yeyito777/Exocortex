@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { externalToolsDir } from "@exocortex/shared/paths";
 import { localMacroEnvironment } from "@exocortex/shared/macro-environment";
-import { initExternalTools, setLoadedExternalToolsForTest, stopExternalToolsAsync } from "./external-tools";
+import { initExternalTools, setExternalToolsDebounceForTest, setLoadedExternalToolsForTest, stopExternalToolsAsync } from "./external-tools";
 
 test("manifestless checkout additions and removals refresh the macro catalog", async () => {
   const name = `macro-catalog-test-${process.pid}`;
@@ -23,6 +23,7 @@ test("manifestless checkout additions and removals refresh the macro catalog", a
     while (catalog.includes(name) !== present && Date.now() < deadline) await Bun.sleep(20);
     expect(catalog.includes(name)).toBe(present);
   };
+  setExternalToolsDebounceForTest(20);
   try {
     initExternalTools(() => { catalog = localMacroEnvironment().installedToolDirs; });
     mkdirSync(directory);
@@ -31,6 +32,7 @@ test("manifestless checkout additions and removals refresh the macro catalog", a
     await waitFor(false);
   } finally {
     await stopExternalToolsAsync();
+    setExternalToolsDebounceForTest(null);
     rmSync(toolsRoot, { recursive: true, force: true });
     if (previousToolsDir === undefined) delete process.env.EXOCORTEX_TEST_EXTERNAL_TOOLS_DIR;
     else process.env.EXOCORTEX_TEST_EXTERNAL_TOOLS_DIR = previousToolsDir;

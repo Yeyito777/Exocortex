@@ -44,10 +44,12 @@ interface WatchdogEvent {
 function createTestWatchdog(checkMs: number) {
   let timer: ReturnType<typeof setInterval> | null = null;
   const events: WatchdogEvent[] = [];
+  let ticks = 0;
 
   return {
     start() {
       timer = setInterval(() => {
+        ticks++;
         for (const [convId, ac, inactiveMs] of getStaleStreams()) {
           // Skip already-aborted controllers — in production the
           // orchestrator's finally block calls clearActiveJob() almost
@@ -59,6 +61,12 @@ function createTestWatchdog(checkMs: number) {
           events.push({ convId, inactiveMs, timestamp: Date.now() });
         }
       }, checkMs);
+    },
+    /** Waits until the watchdog has swept `count` more times. */
+    async sweeps(count: number) {
+      const target = ticks + count;
+      for (let i = 0; i < 1_000 && ticks < target; i++) await Bun.sleep(checkMs);
+      expect(ticks).toBeGreaterThanOrEqual(target);
     },
     stop() {
       if (timer) { clearInterval(timer); timer = null; }
@@ -125,12 +133,12 @@ describe("scenario 1: model hangs → watchdog recovery and fallback", () => {
     expect(getStaleStreams()).toHaveLength(1);
     expect(ac.signal.aborted).toBe(false);
 
-    // Start a fast watchdog (checks every 50ms instead of 60s)
-    const wd = createTestWatchdog(50);
+    // Start a fast watchdog (checks every 5ms instead of 60s)
+    const wd = createTestWatchdog(5);
     wd.start();
 
     // Give it a few cycles to detect and abort
-    await Bun.sleep(200);
+    await wd.sweeps(4);
     wd.stop();
 
     // The watchdog should have aborted the stream with reason "watchdog"
@@ -203,9 +211,9 @@ describe("scenario 1: model hangs → watchdog recovery and fallback", () => {
     const ac = new AbortController();
     setActiveJob("wd-int-1", ac, Date.now()); // just now
 
-    const wd = createTestWatchdog(50);
+    const wd = createTestWatchdog(5);
     wd.start();
-    await Bun.sleep(300);
+    await wd.sweeps(6);
     wd.stop();
 
     expect(ac.signal.aborted).toBe(false);
@@ -219,9 +227,9 @@ describe("scenario 1: model hangs → watchdog recovery and fallback", () => {
     setActiveJob("wd-int-1", ac1, past);
     setActiveJob("wd-int-2", ac2, past);
 
-    const wd = createTestWatchdog(50);
+    const wd = createTestWatchdog(5);
     wd.start();
-    await Bun.sleep(200);
+    await wd.sweeps(4);
     wd.stop();
 
     expect(ac1.signal.aborted).toBe(true);
@@ -275,9 +283,9 @@ describe("scenario 2: long tool call → paused stream is invisible to watchdog"
     pauseActivity("wd-int-1");
 
     // Run watchdog aggressively
-    const wd = createTestWatchdog(50);
+    const wd = createTestWatchdog(5);
     wd.start();
-    await Bun.sleep(500);
+    await wd.sweeps(10);
     wd.stop();
 
     // Stream untouched — watchdog skipped it entirely
@@ -300,10 +308,10 @@ describe("scenario 2: long tool call → paused stream is invisible to watchdog"
     const ac = new AbortController();
     setActiveJob("wd-int-1", ac, Date.now());
 
-    const fakeExecutor = async (durationMs: number): Promise<string> => {
+    const fakeExecutor = async (runTool: () => Promise<void>): Promise<string> => {
       pauseActivity("wd-int-1");
       try {
-        await Bun.sleep(durationMs);
+        await runTool();
         return "tool output: compilation succeeded";
       } finally {
         resumeActivity("wd-int-1");
@@ -311,10 +319,11 @@ describe("scenario 2: long tool call → paused stream is invisible to watchdog"
     };
 
     // Run watchdog concurrently
-    const wd = createTestWatchdog(50);
+    const wd = createTestWatchdog(5);
     wd.start();
 
-    const result = await fakeExecutor(400);
+    // The tool runs through eight watchdog sweeps.
+    const result = await fakeExecutor(() => wd.sweeps(8));
 
     wd.stop();
 
@@ -330,7 +339,7 @@ describe("scenario 2: long tool call → paused stream is invisible to watchdog"
 
     // Phase 1: tool executing — paused
     pauseActivity("wd-int-1");
-    await Bun.sleep(200);
+    await Bun.sleep(20);
 
     // Phase 2: tool done — resumed (clock reset)
     resumeActivity("wd-int-1");
@@ -342,9 +351,9 @@ describe("scenario 2: long tool call → paused stream is invisible to watchdog"
     setActiveJob("wd-int-1", ac2, Date.now() - STALE_STREAM_TIMEOUT - 1_000);
 
     // Phase 4: watchdog catches it
-    const wd = createTestWatchdog(50);
+    const wd = createTestWatchdog(5);
     wd.start();
-    await Bun.sleep(200);
+    await wd.sweeps(4);
     wd.stop();
 
     expect(ac2.signal.aborted).toBe(true);
@@ -365,9 +374,9 @@ describe("scenario 2: long tool call → paused stream is invisible to watchdog"
     setActiveJob("wd-int-2", ac2, past);
 
     // Run watchdog
-    const wd = createTestWatchdog(50);
+    const wd = createTestWatchdog(5);
     wd.start();
-    await Bun.sleep(200);
+    await wd.sweeps(4);
     wd.stop();
 
     // Stream 1: safe (paused — watchdog ignored it)

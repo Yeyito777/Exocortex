@@ -146,6 +146,12 @@ const STREAMING_SNAPSHOT_INTERVAL_MS = 5_000;
  * queue edit) before a turn stops preempting, so a stuck entry cannot spin it.
  */
 const MAX_PREEMPTIONS_WITHOUT_DELIVERY = 3;
+let usageLimitRetryFloorForTest: number | null = null;
+
+/** Shorten the gap between usage-limit retries; null restores the default. */
+export function setUsageLimitRetryFloorForTest(ms: number | null): void {
+  usageLimitRetryFloorForTest = ms;
+}
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -988,7 +994,7 @@ async function orchestrateAdmittedAssistantTurn(
       failInsteadOfWaiting: provider === "anthropic" && !conversationWaitsForUsageLimits(convId),
       // The remote already tries an alternative account. With an old/unknown
       // pool snapshot, do not hammer its refused request once per second.
-      retryFloorMs: isProviderProxied("anthropic") ? 30_000 : 1_000,
+      retryFloorMs: usageLimitRetryFloorForTest ?? (isProviderProxied("anthropic") ? 30_000 : 1_000),
     });
   };
 

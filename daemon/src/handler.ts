@@ -171,6 +171,11 @@ const MAX_WATCHED_COPIES = 16;
 /** Changes to watched copies within this window go out as one history_push each. */
 let historyPushDelayMs = 500;
 export function setHistoryPushDelayForTest(ms: number): void { historyPushDelayMs = ms; }
+/** How often the daemon-owned queue re-checks readiness, and the soonest a timed entry is re-checked. */
+const QUEUE_PUMP_DELAY_MS = 120;
+let queuePumpDelayMs = QUEUE_PUMP_DELAY_MS;
+/** Shorten the queue readiness poll; null restores the default. */
+export function setQueuePumpDelayForTest(ms: number | null): void { queuePumpDelayMs = ms ?? QUEUE_PUMP_DELAY_MS; }
 
 /** Revision changes within this window go out as one history_revisions push. */
 let historyRevPushDelayMs = 250;
@@ -1475,7 +1480,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   /** Re-check timed entries at least this often so wall-clock jumps (suspend/resume) cannot strand them. */
   const QUEUE_DELAY_MAX_TIMER_MS = 60_000;
 
-  const scheduleQueuePump = (delayMs = 120): void => {
+  const scheduleQueuePump = (delayMs = queuePumpDelayMs): void => {
     if (schedulerGeneration !== queueSchedulerGeneration || getDaemonShutdownMode()) return;
     const pumpAt = Date.now() + delayMs;
     if (queuePumpTimer) {
@@ -1796,7 +1801,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     const nextWakeAt = Math.min(earliestRetryAt, earliestDueAt);
     if (needsReadinessPoll) scheduleQueuePump();
     else if (Number.isFinite(nextWakeAt)) {
-      scheduleQueuePump(Math.min(QUEUE_DELAY_MAX_TIMER_MS, Math.max(120, nextWakeAt - Date.now())));
+      scheduleQueuePump(Math.min(QUEUE_DELAY_MAX_TIMER_MS, Math.max(queuePumpDelayMs, nextWakeAt - Date.now())));
     }
   };
 
