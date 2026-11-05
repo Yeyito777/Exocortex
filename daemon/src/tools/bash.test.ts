@@ -85,11 +85,14 @@ describe("bash timeouts with escaped descendants", () => {
         { command: `setsid bash -c 'exec -a ${marker} sleep 30' & sleep 100`, await: 60 },
         controller.signal, 60_000, { cwd: tmpdir() },
       );
-      await Bun.sleep(500);
+      // Abort once the escaped descendant is running and holds the output open.
+      const running = () => Bun.spawnSync(["pgrep", "-f", marker]).exitCode === 0;
+      for (let i = 0; i < 500 && !running(); i++) await Bun.sleep(10);
+      expect(running()).toBe(true);
       controller.abort();
       await pending;
       let after = units().length;
-      for (let i = 0; i < 40 && after > before; i++) { await Bun.sleep(100); after = units().length; }
+      for (let i = 0; i < 200 && after > before; i++) { await Bun.sleep(20); after = units().length; }
       expect(after).toBe(before);
     } finally {
       spawn("pkill", ["-f", marker]);
@@ -103,8 +106,8 @@ describe("backgrounded bash output", () => {
     const path = /Output is being written to: (\S+)/.exec(result.output)?.[1];
     expect(path).toBeDefined();
     let text = "";
-    for (let i = 0; i < 600 && !text.includes("[process exited"); i++) {
-      await Bun.sleep(100);
+    for (let i = 0; i < 6_000 && !text.includes("[process exited"); i++) {
+      await Bun.sleep(10);
       text = existsSync(path!) ? readFileSync(path!, "utf8") : "";
     }
     rmSync(path!, { force: true });
