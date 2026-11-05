@@ -45,9 +45,17 @@ const makeAssistantOutcome = (overrides: Partial<TestAssistantOutcome> = {}): Te
   ...overrides,
 });
 
-const orchestrateSendMessage = mock(async () => makeAssistantOutcome());
-const orchestrateReplayConversation = mock(async () => makeAssistantOutcome());
-const orchestrateCompactConversation = mock(async () => makeAssistantOutcome());
+/** Like real orchestration, an accepted turn removes its durable queue entry. */
+function acceptQueueEntry(options: unknown): void {
+  const entryId = (options as { queueEntryId?: string } | undefined)?.queueEntryId;
+  if (entryId) removeQueuedMessageById(entryId);
+}
+/** orchestrateSendMessage takes its turn options ninth; replay and compaction take theirs seventh. */
+const acceptSend = async (...args: unknown[]) => { acceptQueueEntry(args[8]); return makeAssistantOutcome(); };
+const acceptTurn = async (...args: unknown[]) => { acceptQueueEntry(args[6]); return makeAssistantOutcome(); };
+const orchestrateSendMessage = mock(acceptSend);
+const orchestrateReplayConversation = mock(acceptTurn);
+const orchestrateCompactConversation = mock(acceptTurn);
 const orchestrateGoalCycle = mock(async () => {});
 const getDaemonUpdateStatus = mock(async () => "restart_needed" as const);
 const peekDaemonUpdateStatus = mock((): "none" | null => null);
@@ -64,13 +72,10 @@ const { createHandler, setQueuePumpDelayForTest } = await import("./handler");
 
 /** The queue's readiness poll in the tests that shorten it (120 ms by default). */
 const QUEUE_PUMP_TEST_MS = 20;
-/**
- * Polls until `done` holds. The mocked orchestrator leaves an entry queued, so
- * it is sent again one pump after it finishes; polling well inside a pump
- * sees the first send alone, as the real orchestrator's removal would.
- */
+/** Polls until `done` holds, then lets a few more queue pumps run so an extra dispatch would show. */
 async function queueSettles(done: () => boolean): Promise<void> {
   for (let i = 0; i < 400 && !done(); i++) await Bun.sleep(2);
+  await Bun.sleep(QUEUE_PUMP_TEST_MS * 3);
 }
 /** Lets a few queue pumps run, for a check that nothing was dispatched. */
 const queuePumps = () => Bun.sleep(QUEUE_PUMP_TEST_MS * 3);
@@ -1149,13 +1154,6 @@ describe("handler daemon-owned queue", () => {
     };
     const handle = createHandler(server as never);
     const callsBefore = orchestrateSendMessage.mock.calls.length;
-    // Real orchestration removes an accepted entry; mirror that so each sends once.
-    const acceptAndRemove = async (...args: unknown[]) => {
-      removeQueuedMessageById((args[8] as { queueEntryId: string }).queueEntryId);
-      return makeAssistantOutcome();
-    };
-    orchestrateSendMessage.mockImplementationOnce(acceptAndRemove).mockImplementationOnce(acceptAndRemove);
-
     try {
       const queuedAt = Date.now();
       await handle({} as never, {
@@ -1612,10 +1610,15 @@ describe("handler daemon-owned queue", () => {
       fastMode: false,
     });
 
-    await queueSettles(() => get(id) !== undefined);
+    const sends = () => orchestrateSendMessage.mock.calls.map(call => call as unknown as unknown[])
+      .filter(call => (call[8] as { queueEntryId?: string } | undefined)?.queueEntryId === "recover-draft-id");
+    await queueSettles(() => sends().length > 0);
 
     expect(get(id)).toEqual(expect.objectContaining({ id, provider: DEFAULT_PROVIDER_ID }));
-    expect(getQueuedMessageById("recover-draft-id")).not.toBeUndefined();
+    // The entry survives recovery and is delivered, once, to the recreated conversation.
+    expect(sends()).toHaveLength(1);
+    expect(sends()[0][3]).toBe(id);
+    expect(sends()[0][4]).toBe("recover draft");
     removeQueuedMessageById("recover-draft-id");
   });
 
@@ -2559,12 +2562,6 @@ describe("handler subagent completion delivery", () => {
     };
     createHandler(server as never);
     const runtime = getExocortexToolRuntime(server as never)!;
-    const acceptAndRemove = async (...args: unknown[]) => {
-      const entryId = (args[8] as { queueEntryId?: string } | undefined)?.queueEntryId;
-      if (entryId) removeQueuedMessageById(entryId);
-      return makeAssistantOutcome();
-    };
-    orchestrateSendMessage.mockImplementation(acceptAndRemove);
     const sendsTo = (convId: string) => orchestrateSendMessage.mock.calls
       .map(call => call as unknown as unknown[]).filter(call => call[3] === convId);
     setQueuePumpDelayForTest(QUEUE_PUMP_TEST_MS);
@@ -2594,7 +2591,6 @@ describe("handler subagent completion delivery", () => {
       expect(listPendingSubagentNotifications({ childConvId: targetId })[0]?.text).toContain("Task: while idle");
     } finally {
       setQueuePumpDelayForTest(null);
-      orchestrateSendMessage.mockImplementation(async () => makeAssistantOutcome());
       for (const entry of [...getQueuedMessages(targetId), ...getQueuedMessages(parentId)]) removeQueuedMessageById(entry.id);
     }
   });
