@@ -281,14 +281,15 @@ describe("the bottom growing and shrinking while following it", () => {
     expect(glides(frames(state))).toEqual([]);
   });
 
+  // The live turn's newest step got taller as the key was pressed: the view it
+  // switches to is all new rows, nothing of the slide carries on. Pressed at
+  // any point of the slide (st draws it for 100 ms); one test per point, each
+  // well inside the timeout on a loaded machine.
   for (const key of ["Ctrl+O", "Ctrl+I"] as const) {
-    test(`${key} while the bottom is still sliding shows the new view in place`, () => {
-      // The live turn's newest step got taller as the key was pressed: the
-      // view it switches to is all new rows, nothing of the slide carries on.
-      setSystemTime(new Date("2026-10-29T00:00:00Z"));
-      try {
-        // Pressed at any point of the slide (st draws it for 100 ms).
-        for (let into = 4; into < 100; into += 4) {
+    for (let into = 4; into < 100; into += 4) {
+      test(`${key} ${into} ms into the bottom's slide shows the new view in place`, () => {
+        setSystemTime(new Date("2026-10-29T00:00:00Z"));
+        try {
           const state = conversationState();
           liveTurn(state, 1);
           settle(state, 0);
@@ -303,11 +304,11 @@ describe("the bottom growing and shrinking while following it", () => {
           invalidateFrame(state);
           fresh.feed(capture(state));
           expect(settled).toEqual(fresh.plainRows());
+        } finally {
+          setSystemTime();
         }
-      } finally {
-        setSystemTime();
-      }
-    });
+      });
+    }
   }
 
   test("Ctrl+I at the bottom still snaps even when only the last turn changes", () => {
