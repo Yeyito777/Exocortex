@@ -21,7 +21,10 @@ with its file and test name and the error, and exits 1 on any failure.
 - **Suites run `bun test --parallel`.** Each test file runs in a fresh global
   in one of N worker processes. Files start slowest first, ordered by
   `test/timings/<suite>.json` (tracked) and by this checkout's last run
-  (`node_modules/.cache/exocortex-check/`).
+  (`node_modules/.cache/exocortex-check/`). `FIRST_IN_FRESH_WORKER` in check.ts starts
+  `tui/src/updatecheck.test.ts` first in a fresh worker: after other files,
+  bun 1.4.2 can wedge its worker for good
+  (`scripts/dev/repro/bun-isolate-hang.sh`).
 - **Every file has its own config dir.** `test/setup-config.ts` (the preload
   in each `bunfig.toml`) makes a fresh `EXOCORTEX_CONFIG_DIR` per file, and
   refuses the live config. Nothing a test does reaches the main daemon.
@@ -29,7 +32,7 @@ with its file and test name and the error, and exits 1 on any failure.
   removes it at the end, also after a failure, a timeout or Ctrl-C. Plain
   `bun test` sweeps its own leftover config dirs.
 - **Nothing hangs.** Each test has bun's 5 s timeout. Each step runs in its own
-  session; one still running after `--timeout` (default 300 s) is listed with
+  session; one still running after `--timeout` (default 90 s) is listed with
   what it was running and killed with all of its processes.
 
 ## Writing tests that stay fast

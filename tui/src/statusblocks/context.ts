@@ -8,8 +8,12 @@ import type { StatusBlock } from "../statusline";
 import { termWidth } from "../textwidth";
 import { theme } from "../theme";
 
+// One formatter for every frame: Number#toLocaleString builds a new one per
+// call, which was a fifth of a render's time.
+const tokenCountFormat = new Intl.NumberFormat("en-US");
+
 function formatTokenCount(n: number): string {
-  return n.toLocaleString("en-US");
+  return tokenCountFormat.format(n);
 }
 
 /** The context meter's reading: last known context tokens (null: unknown) and the model's max (0: unknown). */
