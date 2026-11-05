@@ -12,10 +12,11 @@
  *   node_modules/.cache/tsc), so an unchanged package checks in a second or two.
  * - Each suite runs as `bun test --parallel`: every test file in a fresh global
  *   (per-file test config dir, see test/setup-config.ts), slowest files first
- *   by test/timings/<suite>.json and this checkout's last measured durations.
+ *   by test/timings/<suite>.json and this checkout's last measured durations
+ *   (FIRST_IN_FRESH_WORKER files ahead of all: a bun hang workaround).
  * - All temp files go in one per-run TMPDIR, removed at the end, also on
  *   failure, timeout or Ctrl-C.
- * - A step that outlives --timeout (default 300 s) has its process group
+ * - A step that outlives --timeout (default 90 s) has its process group
  *   killed; failures list file and test name; exit status 1 on any failure.
  *
  * `--update-timings` rewrites test/timings/*.json (tracked) from this run.
@@ -39,7 +40,7 @@ function defaultJobs(): number {
 }
 
 function parseArgs(argv: string[]): Options {
-  const options: Options = { jobs: defaultJobs(), timeoutMs: 300_000, updateTimings: false, steps: [] };
+  const options: Options = { jobs: defaultJobs(), timeoutMs: 90_000, updateTimings: false, steps: [] };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     const value = () => {
@@ -210,16 +211,63 @@ function writeTrackedTimings(local: string, tracked: string, cwd: string): void 
   writeFileSync(tracked, `${JSON.stringify({ ...timings, files }, null, 2)}\n`);
 }
 
-async function suite(name: "shared" | "daemon" | "tui", options: Options, env: NodeJS.ProcessEnv, runTmp: string): Promise<Result> {
+type Suite = "shared" | "daemon" | "tui";
+
+/**
+ * Files each started first in a fresh worker. bun 1.4.2 under --isolate can
+ * wedge a worker that has already run other files: in updatecheck.test.ts its
+ * main thread spins at 100% CPU with finished git children never reaped, and
+ * not even the 5 s test timeout fires. As a worker's first file it never hung.
+ * Repro: scripts/dev/repro/bun-isolate-hang.sh.
+ */
+const FIRST_IN_FRESH_WORKER: Partial<Record<Suite, string[]>> = { tui: ["src/updatecheck.test.ts"] };
+
+function readTimings(path: string): Record<string, number> {
+  try {
+    return (JSON.parse(readFileSync(path, "utf8")) as { files?: Record<string, number> }).files ?? {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * One timings file for the run: this checkout's measurements over the tracked
+ * ones, with FIRST_IN_FRESH_WORKER above everything. bun starts the slowest N
+ * files as the first file of each of its N workers.
+ */
+function writeRunTimings(name: Suite, path: string, local: string, tracked: string): Map<string, { pin: number; was?: number }> {
+  const files = { ...readTimings(tracked), ...readTimings(local) };
+  const top = Math.max(0, ...Object.values(files));
+  const pinned = new Map<string, { pin: number; was?: number }>();
+  const first = FIRST_IN_FRESH_WORKER[name] ?? [];
+  first.forEach((file, i) => {
+    const pin = top + 1_000_000 * (first.length - i);
+    pinned.set(file, { pin, was: files[file] });
+    files[file] = pin;
+  });
+  writeFileSync(path, JSON.stringify({ version: 1, files }));
+  return pinned;
+}
+
+async function suite(name: Suite, options: Options, env: NodeJS.ProcessEnv, runTmp: string): Promise<Result> {
   const cwd = join(ROOT, name);
   const tracked = join(ROOT, "test/timings", `${name}.json`);
   const local = join(CACHE, `${name}-timings.json`);
+  const runTimings = join(runTmp, `${name}-timings.json`);
   const junit = join(runTmp, `${name}.junit.xml`);
-  const timings = [`--timings=${local}`, ...(existsSync(tracked) ? [`--timings=${tracked}`] : [])];
-  const cmd = [process.execPath, "test", `--parallel=${options.jobs}`, ...timings, "--update-timings",
+  const pinned = writeRunTimings(name, runTimings, local, tracked);
+  const cmd = [process.execPath, "test", `--parallel=${options.jobs}`, `--timings=${runTimings}`, "--update-timings",
     "--reporter=junit", `--reporter-outfile=${junit}`];
   const result = await run(`${name} tests`, cmd, cwd, env, options.timeoutMs);
-  if (options.updateTimings && result.ok && existsSync(local)) writeTrackedTimings(local, tracked, cwd);
+  // bun rewrote the run's file with what it measured; a pin it didn't measure goes back.
+  const measured = readTimings(runTimings);
+  for (const [file, { pin, was }] of pinned) {
+    if (measured[file] !== pin) continue;
+    if (was === undefined) delete measured[file];
+    else measured[file] = was;
+  }
+  writeFileSync(local, JSON.stringify({ version: 1, files: measured }, null, 2));
+  if (options.updateTimings && result.ok) writeTrackedTimings(local, tracked, cwd);
 
   const counts = Object.fromEntries(["pass", "fail", "skip"].map(kind =>
     [kind, Number(new RegExp(`^ (\\d+) ${kind}$`, "m").exec(result.output)?.[1] ?? 0)]));
