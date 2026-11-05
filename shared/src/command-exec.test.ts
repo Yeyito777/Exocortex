@@ -51,7 +51,7 @@ describe.skipIf(process.platform === "win32")("ClientExecutor", () => {
     expect(outcome.timedOut).toBe(true);
     const grandchild = Number(outcome.output.trim());
     expect(grandchild).toBeGreaterThan(0);
-    await Bun.sleep(300);
+    for (let i = 0; i < 60 && alive(grandchild); i++) await Bun.sleep(5);
     expect(alive(grandchild)).toBe(false);
   });
 
