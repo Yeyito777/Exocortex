@@ -1,7 +1,7 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { create, getActiveJob, getSummary, isStreaming, remove } from "./conversations";
 import { load } from "./persistence";
-import { orchestrateSendMessage, type OrchestrationCallbacks } from "./orchestrator";
+import { orchestrateSendMessage, setUsageLimitRetryFloorForTest, type OrchestrationCallbacks } from "./orchestrator";
 import type { streamMessage } from "./api";
 import { beginPendingSubagentNotification, listPendingSubagentNotifications, removePendingSubagentNotificationsForConversation } from "./subagent-notifications";
 
@@ -30,6 +30,9 @@ async function until(predicate: () => boolean) {
   throw new Error("waiting state not reached");
 }
 afterEach(() => { for (const id of ids.splice(0)) { removePendingSubagentNotificationsForConversation(id); remove(id); } });
+// The retry floor itself is unit-tested in usage-limit-wait.test.ts.
+beforeAll(() => setUsageLimitRetryFloorForTest(20));
+afterAll(() => setUsageLimitRetryFloorForTest(null));
 
 test("real turn keeps committed partial output and continues without error or replay", async () => {
   const id = conversation();

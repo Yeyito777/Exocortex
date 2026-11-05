@@ -51,7 +51,12 @@ describe("bash process-tree timeout", () => {
     }) + "\n");
 
     await closed;
-    await Bun.sleep(1_000);
+    // The command runs in its own process group; once that is gone nothing is left to touch the marker.
+    const pid = Number(/"type":"started","pid":(\d+)/.exec(stdout)?.[1]);
+    expect(pid).toBeGreaterThan(0);
+    const groupAlive = () => { try { process.kill(-pid, 0); return true; } catch { return false; } };
+    for (let i = 0; i < 300 && groupAlive(); i++) await Bun.sleep(10);
+    expect(groupAlive()).toBe(false);
     expect(existsSync(markerPath)).toBe(false);
     rmSync(markerPath, { force: true });
     rmSync(outputPath, { force: true });

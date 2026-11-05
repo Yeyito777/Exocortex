@@ -100,7 +100,7 @@ test("a single-account daemon never registers a watcher; a closed socket is drop
   pair.watch.handle(client, { type: "accounts", watch: true });
   (client.socket as { destroyed: boolean }).destroyed = true;
   pair.watch.changed();
-  await Bun.sleep(400);
+  for (let i = 0; i < 200 && pair.watch.watcherCount() > 0; i++) await Bun.sleep(5);
   expect(pair.watch.watcherCount()).toBe(0);
 });
 

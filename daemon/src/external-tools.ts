@@ -25,6 +25,7 @@ export { buildDaemonSpawnSpec, getDaemonStatePaths, isLikelyManagedDaemonPid, ki
 
 const BASE_PATH = process.env.PATH ?? "";
 const DEBOUNCE_MS = 1_000;
+let debounceMs = DEBOUNCE_MS;
 export const EXOCORTEX_SOURCE_DIR_PLACEHOLDER = "<exocortex-source-dir>";
 
 export function resolveSystemHintPaths(systemHint: string): string {
@@ -135,7 +136,7 @@ export function initExternalTools(onUpdate?: () => void): void {
   // Watch for changes. Keep watches shallow so tool runtime artifacts
   // (e.g. browser profile sockets inside config/) can't crash the daemon.
   watcher?.stop();
-  watcher = new ExternalToolWatcher(externalToolsDir, DEBOUNCE_MS, () => reloadTools(onUpdate));
+  watcher = new ExternalToolWatcher(externalToolsDir, debounceMs, () => reloadTools(onUpdate));
   watcher.start();
 }
 
@@ -210,6 +211,11 @@ export function setLoadedExternalToolsForTest(nextTools: readonly LoadedTool[]):
   const previous = tools;
   tools = [...nextTools];
   return () => { tools = previous; };
+}
+
+/** Shorten the watcher's debounce for the next initExternalTools; null restores the default. */
+export function setExternalToolsDebounceForTest(ms: number | null): void {
+  debounceMs = ms ?? DEBOUNCE_MS;
 }
 
 /** Number of tool daemons currently being supervised. */

@@ -60,7 +60,20 @@ mock.module("./orchestrator", () => ({
   orchestrateGoalCycle,
 }));
 
-const { createHandler } = await import("./handler");
+const { createHandler, setQueuePumpDelayForTest } = await import("./handler");
+
+/** The queue's readiness poll in the tests that shorten it (120 ms by default). */
+const QUEUE_PUMP_TEST_MS = 20;
+/**
+ * Polls until `done` holds. The mocked orchestrator leaves an entry queued, so
+ * it is sent again one pump after it finishes; polling well inside a pump
+ * sees the first send alone, as the real orchestrator's removal would.
+ */
+async function queueSettles(done: () => boolean): Promise<void> {
+  for (let i = 0; i < 400 && !done(); i++) await Bun.sleep(2);
+}
+/** Lets a few queue pumps run, for a check that nothing was dispatched. */
+const queuePumps = () => Bun.sleep(QUEUE_PUMP_TEST_MS * 3);
 
 test("status-only ping returns the host's runtime status without sidebar/usage bootstrap", async () => {
   const sent: Array<Record<string, unknown>> = [];
@@ -889,6 +902,8 @@ describe("direct task-management IPC", () => {
 });
 
 describe("handler daemon-owned queue", () => {
+  beforeEach(() => setQueuePumpDelayForTest(QUEUE_PUMP_TEST_MS));
+  afterEach(() => setQueuePumpDelayForTest(null));
   afterEach(cleanupIds);
 
   test("lets next-turn input steer the active turn immediately", async () => {
@@ -958,7 +973,7 @@ describe("handler daemon-owned queue", () => {
     const callsBefore = orchestrateSendMessage.mock.calls.length;
 
     await handle({} as never, { type: "queue_message", queueId: "idle-dispatch", convId: id, text: "run me", timing: "message-end" });
-    await new Promise(resolve => setTimeout(resolve, 180));
+    await queueSettles(() => orchestrateSendMessage.mock.calls.length > callsBefore);
 
     expect(orchestrateSendMessage.mock.calls.length).toBe(callsBefore + 1);
     const lastCall = orchestrateSendMessage.mock.calls.at(-1) as unknown as unknown[];
@@ -990,11 +1005,11 @@ describe("handler daemon-owned queue", () => {
       target: "conversation",
       waitTarget: { type: "conversation", convId: dependencyId, label: "Dependency" },
     });
-    await new Promise(resolve => setTimeout(resolve, 170));
+    await queuePumps();
     expect(orchestrateSendMessage.mock.calls.length).toBe(callsBefore);
 
     clearActiveJob(dependencyId);
-    await new Promise(resolve => setTimeout(resolve, 150));
+    await queueSettles(() => orchestrateSendMessage.mock.calls.length > callsBefore);
     expect(orchestrateSendMessage.mock.calls.length).toBe(callsBefore + 1);
     expect((orchestrateSendMessage.mock.calls.at(-1) as unknown as unknown[])[4]).toBe("after dependency");
     removeQueuedMessageById("targeted-idle");
@@ -1028,14 +1043,14 @@ describe("handler daemon-owned queue", () => {
         target: "conversation",
         waitTarget: { type: "conversation", convId: dependencyId, label: "Dependency" },
       });
-      await new Promise(resolve => setTimeout(resolve, 170));
+      await queuePumps();
       expect(orchestrateSendMessage.mock.calls.length).toBe(callsBefore);
 
       setChronoTaskActive(dependencyId, "chrono:sleep:toolu_short", false);
       setChronoTaskActive(dependencyId, "chrono:sleep:toolu_long", true, {
         title: "Sleeping", startedAt, dueAt: startedAt + 20 * 60_000, chronoMode: "sleep",
       });
-      await new Promise(resolve => setTimeout(resolve, 150));
+      await queueSettles(() => orchestrateSendMessage.mock.calls.length > callsBefore);
       expect(orchestrateSendMessage.mock.calls.length).toBe(callsBefore + 1);
       expect((orchestrateSendMessage.mock.calls.at(-1) as unknown as unknown[])[4]).toBe("after dependency sleeps");
     } finally {
@@ -1075,7 +1090,7 @@ describe("handler daemon-owned queue", () => {
           waitTarget: { type: "delay", delayMs: 50, label: "50ms" },
         });
       }
-      await new Promise(resolve => setTimeout(resolve, 300));
+      await queueSettles(() => steer.mock.calls.length > 0 && getQueuedMessageById("delayed-text")?.timing === "next-turn");
       expect(steer).toHaveBeenCalled();
       expect(getQueuedMessageById("delayed-text")).toEqual(expect.objectContaining({
         convId: id, text: "check the build", timing: "next-turn", source: "daemon",
@@ -1151,7 +1166,7 @@ describe("handler daemon-owned queue", () => {
         timing: "message-end",
         source: "global-idle",
         target: "conversation",
-        waitTarget: { type: "delay", delayMs: 450, label: "450ms" },
+        waitTarget: { type: "delay", delayMs: 250, label: "250ms" },
       });
       expect(getQueuedMessageById("delayed-send")?.createdAt).toBeGreaterThanOrEqual(queuedAt);
       await handle({} as never, {
@@ -1164,12 +1179,12 @@ describe("handler daemon-owned queue", () => {
         target: "conversation",
       });
 
-      await new Promise(resolve => setTimeout(resolve, 250));
+      await queueSettles(() => orchestrateSendMessage.mock.calls.length > callsBefore);
       expect(orchestrateSendMessage.mock.calls.length).toBe(callsBefore + 1);
       expect((orchestrateSendMessage.mock.calls.at(-1) as unknown as unknown[])[4]).toBe("idle turn");
       expect(getQueuedMessageById("delayed-send")).not.toBeUndefined();
 
-      await new Promise(resolve => setTimeout(resolve, 400));
+      await queueSettles(() => orchestrateSendMessage.mock.calls.length > callsBefore + 1);
       expect(orchestrateSendMessage.mock.calls.length).toBe(callsBefore + 2);
       expect((orchestrateSendMessage.mock.calls.at(-1) as unknown as unknown[])[4]).toBe("delayed turn");
       expect(getQueuedMessageById("delayed-send")).toBeUndefined();
@@ -1192,11 +1207,11 @@ describe("handler daemon-owned queue", () => {
       // A queue entry preserved across the restart (e.g. withdrawn from a
       // Claude Code process that boot has not adopted yet).
       pushQueuedMessage(id, "queued before restart", "next-turn", undefined, null, undefined, "boot-held");
-      await new Promise(resolve => setTimeout(resolve, 300));
+      await queuePumps();
       expect(orchestrateSendMessage.mock.calls.length).toBe(callsBefore);
 
       handle.startQueueDelivery();
-      await new Promise(resolve => setTimeout(resolve, 300));
+      await queueSettles(() => orchestrateSendMessage.mock.calls.length > callsBefore);
       expect(orchestrateSendMessage.mock.calls.length).toBeGreaterThan(callsBefore);
       expect((orchestrateSendMessage.mock.calls[callsBefore] as unknown as unknown[])[4]).toBe("queued before restart");
     } finally {
@@ -1226,11 +1241,13 @@ describe("handler daemon-owned queue", () => {
         target: "conversation",
         waitTarget: { type: "delay", delayMs: 50, label: "50ms" },
       });
-      await new Promise(resolve => setTimeout(resolve, 250));
+      // Past the 50 ms delay, then several more pumps.
+      await Bun.sleep(60);
+      await queuePumps();
       expect(orchestrateSendMessage.mock.calls.length).toBe(callsBefore);
 
       clearActiveJob(id);
-      await new Promise(resolve => setTimeout(resolve, 180));
+      await queueSettles(() => orchestrateSendMessage.mock.calls.length > callsBefore);
       expect(orchestrateSendMessage.mock.calls.length).toBeGreaterThan(callsBefore);
       expect((orchestrateSendMessage.mock.calls[callsBefore] as unknown as unknown[])[4]).toBe("after delay and turn");
     } finally {
@@ -1307,7 +1324,7 @@ describe("handler daemon-owned queue", () => {
       source: "global-idle",
       target: "conversation",
     });
-    await new Promise(resolve => setTimeout(resolve, 180));
+    await queueSettles(() => orchestrateReplayConversation.mock.calls.length > replayCallsBefore);
 
     expect(orchestrateReplayConversation.mock.calls.length).toBe(replayCallsBefore + 1);
     expect(orchestrateSendMessage.mock.calls.length).toBe(sendCallsBefore);
@@ -1337,7 +1354,7 @@ describe("handler daemon-owned queue", () => {
       source: "global-idle",
       target: "conversation",
     });
-    await new Promise(resolve => setTimeout(resolve, 180));
+    await queueSettles(() => orchestrateCompactConversation.mock.calls.length > compactCallsBefore);
 
     expect(orchestrateCompactConversation.mock.calls.length).toBe(compactCallsBefore + 1);
     const lastCall = orchestrateCompactConversation.mock.calls.at(-1) as unknown as unknown[];
@@ -1479,18 +1496,18 @@ describe("handler daemon-owned queue", () => {
       source: "global-idle",
       target: "conversation",
     });
-    await new Promise(resolve => setTimeout(resolve, 150));
+    await queueSettles(() => orchestrateSendMessage.mock.calls.length > callsBefore);
     expect(orchestrateSendMessage.mock.calls.length).toBe(callsBefore + 1);
     expect((orchestrateSendMessage.mock.calls.at(-1) as unknown as unknown[])[4]).toBe("first global turn");
 
     // Real orchestration removes the durable entry immediately after accepting
     // its user message, while the assistant turn is still in flight.
     removeQueuedMessageById("global-fifo-first");
-    await new Promise(resolve => setTimeout(resolve, 150));
+    await queuePumps();
     expect(orchestrateSendMessage.mock.calls.length).toBe(callsBefore + 1);
 
     finishFirst(makeAssistantOutcome());
-    await new Promise(resolve => setTimeout(resolve, 150));
+    await queueSettles(() => orchestrateSendMessage.mock.calls.length > callsBefore + 1);
     expect(orchestrateSendMessage.mock.calls.length).toBe(callsBefore + 2);
     expect((orchestrateSendMessage.mock.calls.at(-1) as unknown as unknown[])[4]).toBe("second global turn");
     removeQueuedMessageById("global-fifo-second");
@@ -1595,7 +1612,7 @@ describe("handler daemon-owned queue", () => {
       fastMode: false,
     });
 
-    await new Promise(resolve => setTimeout(resolve, 180));
+    await queueSettles(() => get(id) !== undefined);
 
     expect(get(id)).toEqual(expect.objectContaining({ id, provider: DEFAULT_PROVIDER_ID }));
     expect(getQueuedMessageById("recover-draft-id")).not.toBeUndefined();
@@ -2550,16 +2567,17 @@ describe("handler subagent completion delivery", () => {
     orchestrateSendMessage.mockImplementation(acceptAndRemove);
     const sendsTo = (convId: string) => orchestrateSendMessage.mock.calls
       .map(call => call as unknown as unknown[]).filter(call => call[3] === convId);
+    setQueuePumpDelayForTest(QUEUE_PUMP_TEST_MS);
     try {
       setActiveJob(targetId, new AbortController(), Date.now());
       const queued = JSON.parse((await runtime.execute({ message: { conversation: targetId, text: "while busy" } }, parentId)).output);
       expect(queued).toMatchObject({ status: "queued", target_status: "streaming" });
-      await new Promise(resolve => setTimeout(resolve, 250));
+      await queuePumps();
       expect(sendsTo(targetId)).toHaveLength(0);
       expect(getQueuedMessageById(queued.queue_id)?.text).toBe("while busy");
 
       clearActiveJob(targetId);
-      await new Promise(resolve => setTimeout(resolve, 400));
+      await queueSettles(() => sendsTo(targetId).length > 0);
       expect(sendsTo(targetId)).toHaveLength(1);
       expect(sendsTo(targetId)[0][4]).toBe("while busy");
       expect(sendsTo(targetId)[0][8]).toMatchObject({ queueEntryId: queued.queue_id, automation: { kind: "exo_send", sourceId: parentId } });
@@ -2575,6 +2593,7 @@ describe("handler subagent completion delivery", () => {
       expect(sendsTo(parentId).at(-1)?.[8]).toMatchObject({ automation: { kind: "subagent_completion", sourceId: targetId } });
       expect(listPendingSubagentNotifications({ childConvId: targetId })[0]?.text).toContain("Task: while idle");
     } finally {
+      setQueuePumpDelayForTest(null);
       orchestrateSendMessage.mockImplementation(async () => makeAssistantOutcome());
       for (const entry of [...getQueuedMessages(targetId), ...getQueuedMessages(parentId)]) removeQueuedMessageById(entry.id);
     }
