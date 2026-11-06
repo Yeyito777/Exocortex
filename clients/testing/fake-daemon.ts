@@ -32,6 +32,7 @@
  *   hang                  stream "working" and wait for an abort
  *   fail                  end the turn with stopReason "error"
  *   count                 reply "turns: N" (user messages so far, this one included)
+ *   model                 reply "model: <the conversation's model>"
  *   restart REST          stream "before", restart the daemon gracefully (connections close;
  *                         sessions and conversations, ephemeral ones too, carry on), replay
  *                         the turn as REST
@@ -77,6 +78,9 @@ const APP_NAME = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const TOOL_NAME = /^[a-zA-Z0-9_-]{1,64}$/;
 const BUILTINS = ["bash", "read", "write", "edit", "glob", "grep", "web_search", "web_fetch", "exo", "chrono", "goal", "attach"];
 const LIFETIMES = ["saved", "temporary", "ephemeral"];
+const MODEL_ALIASES: Record<string, string> = {
+  opus: "claude-opus-5-5", sonnet: "claude-sonnet-5-5", haiku: "claude-haiku-5-5", fable: "claude-fable-5-1", sol: "gpt-6.1-sol",
+};
 
 type Json = Record<string, any>;
 
@@ -389,7 +393,9 @@ async function model(conv: Conv, turn: Turn, prompt: string): Promise<{ text: st
     return { text: "final answer", stopReason: "end_turn" };
   }
   if (words[0] === "fail") return { text: "", stopReason: "error", error: "fake failure" };
-  const text = words[0] === "count" ? `turns: ${conv.userMessages}` : `echo: ${prompt}`;
+  const text = words[0] === "count" ? `turns: ${conv.userMessages}`
+    : words[0] === "model" ? `model: ${conv.model}`
+    : `echo: ${prompt}`;
   await stream(conv, text);
   return { text, stopReason: "end_turn" };
 }
@@ -658,6 +664,18 @@ function handle(conn: Conn, cmd: Json): void {
       if (!conv) return error(`Conversation ${cmd.convId} not found`, cmd.convId);
       const end = Math.min(cmd.beforeEntryIndex, conv.entries.length);
       write(conn, { type: "conversation_history_loaded", reqId, convId: conv.convId, entries: conv.entries.slice(0, end), historyStartIndex: 0, historyStartUserIndex: 0, historyEndIndex: end, historyTotalEntries: conv.entries.length, hasOlderHistory: false });
+      return;
+    }
+    case "set_model": {
+      // As the daemon: refused while a turn runs; aliases and OpenAI sizes resolve (a few here).
+      if (!conv) return error(`Conversation ${cmd.convId} not found`, cmd.convId);
+      if (conv.turn || conv.replay) return error("Cannot switch provider/model while the conversation is streaming.", conv.convId);
+      const model = String(cmd.model ?? "").trim();
+      if (!model) return error("Missing model", conv.convId);
+      const resolved = MODEL_ALIASES[model] ?? model;
+      conv.model = resolved;
+      conv.provider = cmd.provider ?? (/^(gpt-|o\d)/.test(resolved) ? "openai" : "anthropic");
+      write(conn, { type: "ack", reqId, convId: conv.convId });
       return;
     }
     case "list_app_conversations": {
