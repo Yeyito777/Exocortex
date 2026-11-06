@@ -120,8 +120,10 @@ function fencedRanges(text: string): Array<[number, number]> {
 
 function likelyDollarMath(content: string): boolean {
   if (!content || /^\s|\s$/.test(content) || content.includes("\n")) return false;
-  // Currency in prose: "$5 and $10", "$33,055 and ... $33,055".
-  if (/^\d[\d,.]*$/.test(content) || (/^\d/.test(content) && /,/.test(content))) return false;
+  // Currency in prose: "$5 and $10", "$33,055 and ... $33,055". A number
+  // list with TeX in it ("$12,\ 6,\ 3$", "$2^{3}, 4$") is math.
+  const tex = /\\[A-Za-z,;:! ]|[\^_{=]/.test(content);
+  if (/^\d[\d,.]*$/.test(content) || (/^\d/.test(content) && /,/.test(content) && !tex)) return false;
   // Plain words ("$HOME and $PATH") and shell/quoted text are not math.
   if (/^[A-Za-z]+(?:\s+[A-Za-z0-9]+)+$/.test(content) || /["`]/.test(content)) return false;
   // Shell paths: "$HOME/bin:$PATH", $A:$B, "$DIR/$FILE".
@@ -466,6 +468,19 @@ export function takeDisplayMathBlock(lines: string[], start: number): DisplayMat
     chunks.push(current);
   }
   return null;
+}
+
+/**
+ * TeX of a ```math fenced block (GitHub's display math fence), without a
+ * `$$…$$` or `\[…\]` the model may have wrapped it in, or null for any
+ * other fence or an empty one.
+ */
+export function mathFenceTex(language: string, lines: string[]): string | null {
+  if (language.toLowerCase() !== "math") return null;
+  const tex = lines.join("\n").trim();
+  const wrapped = /^(?:\$\$([^]*)\$\$|\\\[([^]*)\\\])$/.exec(tex);
+  const body = (wrapped ? wrapped[1] ?? wrapped[2] : tex).trim();
+  return body || null;
 }
 
 export interface LocatedDisplayMathBlock extends DisplayMathBlock {

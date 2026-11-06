@@ -324,6 +324,15 @@ describe("inline math in prose", () => {
     }
   });
 
+  test("renders number lists that contain TeX, not prices", () => {
+    expect(renderInlineMath(String.raw`Values used: $48,\ 24,\ 11$ (3 steps) and $2^{4}, 2^{2}$.`))
+      .toBe("Values used: 48, 24, 11 (3 steps) and 2⁴, 2².");
+    expect(renderInlineMath(String.raw`Rows $1,2\to 3$ and $10,x=5$.`)).toBe("Rows 1, 2 → 3 and 10, x = 5.");
+    for (const input of ["Paid $1,200 then $1,300 later.", "It was $12,500, then $9,000."]) {
+      expect(renderInlineMath(input)).toBe(input);
+    }
+  });
+
   test("joins a fragment that spans a hard newline and keeps code spans across lines", () => {
     const chunks = (lines: string[]) => renderInlineMathChunks(lines).map(line => line.replace(/\u00A0/g, " "));
     expect(chunks(["Sum \\(a +", "b\\) done", "next"])).toEqual(["Sum a + b done", "next"]);
@@ -384,6 +393,46 @@ describe("display math blocks in Markdown", () => {
       .toBe("\\[\n\\frac{a}{b} \\le 1\n\\]");
     // Character-wise selections still see the rendered text.
     expect(rendered.copy?.[middle]?.text).toContain("─");
+  });
+
+  test("renders a closed ```math fence as display math and copies the fence", () => {
+    const markdown = MATH_CASES.find(item => item.name.startsWith("math fence"))!.markdown;
+    expect(plainRows(markdown, 72)).toEqual([
+      "a.",
+      "",
+      "  96 = 2 · 48",
+      "  48 = 2 · 24",
+      "  23 = 2 · 11 + 1",
+      "    Values used: 48, 24, 11  (3 steps)",
+      "",
+      "b.",
+      "",
+      "  1100 = 2¹⁰ + 2⁶ + 2³ + 2²",
+      "  Each step uses q = ⌊n/2⌋, not n − 1 (e.g. 1100 → 550).",
+    ]);
+    const fence = ["```math", "x = \\frac{a}{b}", "```"].join("\n");
+    const rendered = markdownWordWrap(fence, 40, "\x1b[0m");
+    expect(rendered.lines.map(stripAnsi)).toEqual(["      a", "  x = ─", "      b"]);
+    expect(joinLogicalLines(rendered.lines, rendered.cont, 0, rendered.lines.length - 1, rendered.join, rendered.copy)).toBe(fence);
+    // A `$$` wrapper inside the fence is not part of the TeX.
+    expect(plainRows("```math\n$$x^2$$\n```", 40)).toEqual(["  x²"]);
+  });
+
+  test("a ```math fence uses the display image hook, inside a list item too", () => {
+    const calls: Array<[string, number, string]> = [];
+    markdownWordWrap("- item\n  ```math\n  a^2\n  ```", 40, "\x1b[0m", {
+      displayMath: (tex, width, source) => {
+        calls.push([tex, width, source]);
+        return null;
+      },
+    });
+    expect(calls).toEqual([["a^2", 38, "```math\na^2\n```"]]);
+  });
+
+  test("other fences, empty and unclosed ```math fences stay code blocks", () => {
+    for (const markdown of ["```latex\nx^2\n```", "```math\n\n```", "```math\nx^2"]) {
+      expect(plainRows(markdown, 40).join("\n")).toContain("▎");
+    }
   });
 
   test("standalone display block reader is unchanged", () => {

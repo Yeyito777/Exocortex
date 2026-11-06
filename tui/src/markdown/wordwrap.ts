@@ -2,7 +2,7 @@ import { theme } from "../theme";
 import { formatMarkdownChunks, stripMarkdown, termWidth, sliceByWidth, isHorizontalRule } from "./formatting";
 import { FENCE_OPEN_RE, isFenceClose, renderCodeBlockWrapped, stripFenceIndent } from "./codeblocks";
 import { isTableLine, renderTableBlock } from "./tables";
-import { DISPLAY_PLACEHOLDER, extractDisplayMath, renderDisplayMath, renderInlineMathLines, type ExtractedDisplayMath } from "./math";
+import { DISPLAY_PLACEHOLDER, extractDisplayMath, mathFenceTex, renderDisplayMath, renderInlineMathLines, type ExtractedDisplayMath } from "./math";
 import type { WrapCopyLine, WrapImage, WrapImageRow } from "../textwrap";
 import type { LinkSpan } from "../links";
 import { wrapLinkedParagraphs } from "./linkwrap";
@@ -74,8 +74,9 @@ function seedLongWord(
  *
  * Processes text line by line and:
  * 1. Detects fenced code blocks and renders them with syntax highlighting
- * 2. Renders display TeX math (`$$`, `\\[`, math environments) as indented
- *    Unicode blocks; inline math renders within its paragraph
+ * 2. Renders display TeX math (`$$`, `\\[`, math environments, ```math
+ *    fences) as indented Unicode blocks; inline math renders within its
+ *    paragraph
  * 3. Detects table blocks and renders with box-drawing (pipe lines that
  *    are not a renderable table wrap like a paragraph)
  * 4. Detects horizontal rules and renders them as box-drawing lines
@@ -144,7 +145,15 @@ export function markdownWordWrap(text: string, width: number, bgRestore?: string
         codeLines.push(stripFenceIndent(inputLines[i], openingIndent));
         i++;
       }
-      if (i < inputLines.length) i++; // skip closing fence
+      const closed = i < inputLines.length;
+      if (closed) i++; // skip closing fence
+      // A closed ```math fence is display math (an unclosed one is still streaming).
+      const tex = closed ? mathFenceTex(language, codeLines) : null;
+      if (tex) {
+        const fence = "`".repeat(fenceLen);
+        pushDisplayMath({ tex, source: [fence + language, ...codeLines, fence].join("\n"), prefix: openingIndent, trailing: "" });
+        continue;
+      }
       const rendered = renderCodeBlockWrapped(codeLines, language, width);
       result.push(...rendered.lines);
       cont.push(...rendered.cont);

@@ -182,4 +182,30 @@ C=S\,[b+(1-a)]=S\,(1-\text{book spread})
 O(P + K + R) = O(H)
 \]`,
   },
+  {
+    name: "math fence: aligned rows with spacing, text rows and floors",
+    markdown: String.raw`**a.**
+
+` + "```math" + String.raw`
+\begin{aligned}
+96 &= 2\cdot 48\\
+48 &= 2\cdot 24\\
+23 &= 2\cdot 11 + 1\\[6pt]
+&\text{Values used: } 48,\ 24,\ 11 \quad (3 \text{ steps})
+\end{aligned}
+` + "```" + String.raw`
+
+**b.**
+
+` + "```math" + String.raw`
+\begin{aligned}
+&1100 = 2^{10}+2^{6}+2^{3}+2^{2}\\[6pt]
+&\text{Each step uses } q=\lfloor n/2\rfloor \text{, not } n-1 \text{ (e.g. } 1100\to 550\text{).}
+\end{aligned}
+` + "```",
+  },
+  {
+    name: "inline number list with TeX spacing",
+    markdown: String.raw`Values used: $48,\ 24,\ 11$ (3 steps), and $2^{4}, 2^{2}$ remain; tuition is $12,500 and fees are $12,500.`,
+  },
 ];

@@ -136,6 +136,21 @@ exports[`real conversation corpus and targeted cases renders every message withi
 |  C = S [b + (1 − a)] = S (1 − book spread)
 |
 |  O(P + K + R) = O(H)
+=== math fence: aligned rows with spacing, text rows and floors
+|a.
+|
+|  96 = 2 · 48
++  48 = 2 · 24
++  23 = 2 · 11 + 1
++    Values used: 48, 24, 11  (3 steps)
+|
+|b.
+|
+|  1100 = 2¹⁰ + 2⁶ + 2³ + 2²
++  Each step uses q = ⌊n/2⌋, not n − 1 (e.g. 1100 → 550).
+=== inline number list with TeX spacing
+|Values used: 48, 24, 11 (3 steps), and 2⁴, 2² remain; tuition is $12,500
++and fees are $12,500.
 === 1789573187919-fn27l8#1 (gpt-6-astra)
 |Your truth value and reasoning are correct! Taking x = 5 gives
 |  (x − 4)(y + 2) = y + 2
@@ -1660,6 +1675,23 @@ exports[`real conversation corpus and targeted cases renders every message withi
 |  C = S [b + (1 − a)] = S (1 − book spread)
 |
 |  O(P + K + R) = O(H)
+=== math fence: aligned rows with spacing, text rows and floors
+|a.
+|
+|  96 = 2 · 48
++  48 = 2 · 24
++  23 = 2 · 11 + 1
++    Values used: 48, 24, 11  (3 steps)
+|
+|b.
+|
+|  1100 = 2¹⁰ + 2⁶ + 2³ + 2²
++  Each step uses q
++    = ⌊n/2⌋, not n − 1 (e.g. 1100 → 550).
+=== inline number list with TeX spacing
+|Values used: 48, 24, 11 (3 steps), and
++2⁴, 2² remain; tuition is $12,500 and fees
++are $12,500.
 === 1789573187919-fn27l8#1 (gpt-6-astra)
 |Your truth value and reasoning are correct!
 +Taking x = 5 gives
