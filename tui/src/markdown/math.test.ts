@@ -324,6 +324,22 @@ describe("inline math in prose", () => {
     }
   });
 
+  test("renders a tight $N$ number but not prices", () => {
+    expect(renderInlineMath("so it takes $12$ steps; for example, $500$ goes to $250$ or $244$, not $499$."))
+      .toBe("so it takes 12 steps; for example, 500 goes to 250 or 244, not 499.");
+    expect(renderInlineMath("Rates $2.5$, $1,000$ and **$7$**: $8$")).toBe("Rates 2.5, 1,000 and **7**: 8");
+    for (const input of [
+      "$5,$10 each.",
+      "Pick $5.$10 or $3.50$4.",
+      "It costs $5 and at most $10 today.",
+      "Paid $1,200 then $1,300 later.",
+      "It costs $20.",
+      "Fees: $5$off and $5$10.",
+    ]) {
+      expect(renderInlineMath(input)).toBe(input);
+    }
+  });
+
   test("renders number lists that contain TeX, not prices", () => {
     expect(renderInlineMath(String.raw`Values used: $48,\ 24,\ 11$ (3 steps) and $2^{4}, 2^{2}$.`))
       .toBe("Values used: 48, 24, 11 (3 steps) and 2⁴, 2².");
