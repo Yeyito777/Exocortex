@@ -865,15 +865,16 @@ async function orchestrateAdmittedAssistantTurn(
   // The work timer's subset: sleeps. A wait is for the turn's own task, so it is work and the timer runs through it.
   const inlineTimerSleeps = new Set<string>();
   let inlineSleepStartedAt = 0;
-  // Any queued message, automated or message-end ones too, ends a suspended
-  // sleep by starting a turn. One queued during an inline long sleep steers
-  // like a person's until it is delivered.
+  // Automated input ends a long sleep, inline or suspended, as it would by
+  // starting a turn; one queued during an inline long sleep steers like a
+  // person's until it is delivered. A person's message-end input waits for the
+  // turn to end: a long sleep or wait is not its end.
   let inlineSleepWoken = false;
   const hasQueuedSteer = () => convStore.hasQueuedUserSteer(convId)
     || (inlineSleepWoken && convStore.hasQueuedNextTurn(convId));
   const steerTurn = () => {
     if (inlineLongSleeps.size > 0) {
-      convStore.advanceQueuedMessagesToNextTurn(convId);
+      convStore.advanceAutomatedQueuedMessagesToNextTurn(convId);
       if (convStore.hasQueuedNextTurn(convId)) inlineSleepWoken = true;
     }
     if (!hasQueuedSteer()) return;
@@ -1106,7 +1107,7 @@ async function orchestrateAdmittedAssistantTurn(
           if (inlineTimerSleeps.size === 0) inlineSleepStartedAt = details.startedAt;
           inlineTimerSleeps.add(taskId);
         }
-        // A message queued earlier would end a suspended sleep at once.
+        // Automated input queued earlier would end a suspended sleep at once.
         queueMicrotask(steerTurn);
       }
       if (!active) inlineLongSleeps.delete(taskId);
@@ -2256,7 +2257,10 @@ async function orchestrateAdmittedAssistantTurn(
       if (cancelDeferredChronoSleep(convId)) broadcastConversationHistoryUpdated(server, convId);
       outcome.suspended = false;
     }
-    const allQueued = shutdownMode ? [] : convStore.getQueuedMessages(convId);
+    // A turn suspended in a long sleep or wait has not ended: a person's
+    // message-end input waits for the turn that resumes it.
+    const allQueued = shutdownMode ? [] : convStore.getQueuedMessages(convId)
+      .filter(entry => !outcome?.suspended || !convStore.waitsForTurnEnd(entry));
     let shouldContinueGoal = false;
     if (shutdownMode) {
       convStore.clearGoalContinuationAfterStream(convId);

@@ -865,6 +865,14 @@ function prepareDeferredSleepResume(
   return structuredClone(resuming);
 }
 
+/** Whether a conversation's turn is suspended in a long sleep or wait that has yet to resume it. A stopped one has ended. */
+export function hasPendingDeferredChronoSleep(conversationId: string): boolean {
+  for (const sleep of deferredSleeps.values()) {
+    if (sleep.conversationId === conversationId && sleep.resumeReason !== "user_stop") return true;
+  }
+  return false;
+}
+
 /** Attach an early result synchronously so an incoming user turn can replay valid history. */
 export function interruptDeferredChronoSleep(
   conversationId: string,

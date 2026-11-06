@@ -413,7 +413,7 @@ describe("instant steering", () => {
     });
   }
 
-  test("message-end input queued before a long chrono sleep inside a Claude Code call wakes it", async () => {
+  test("automated message-end input queued before a long chrono sleep inside a Claude Code call wakes it", async () => {
     const convId = id("steer-inline-sleep-message-end");
     create(convId, "anthropic", "claude-opus-5-5");
     const sleepOutputs: string[] = [];
@@ -424,7 +424,8 @@ describe("instant steering", () => {
         expect(messages.at(-1)?.content).toBe("check this instead");
         return finalAnswer("checking");
       }
-      pushQueuedMessage(convId, "check this instead", "message-end", undefined, undefined, undefined, "after-this");
+      pushQueuedMessage(convId, "check this instead", "message-end", undefined, undefined, undefined, "after-this",
+        undefined, { kind: "exo_send", sourceId: "parent" });
       const call = { id: "toolu_sleep_2h", name: "chrono", input: { action: "sleep", duration: "2h" } };
       streamCallbacks.onToolCall?.({ type: "tool_call", toolCallId: call.id, toolName: call.name, input: call.input, summary: "sleep: 2h" });
       const [result] = await (options as any).toolExecutor([call], options?.signal);
@@ -444,11 +445,11 @@ describe("instant steering", () => {
   });
 
   for (const timing of ["next-turn", "message-end"] as const) {
-    test(`${timing} input wakes a long chrono sleep in a Claude Code turn that takes queued input itself`, async () => {
+    test(`automated ${timing} input wakes a long chrono sleep in a Claude Code turn that takes queued input itself`, async () => {
       const convId = id(`steer-inline-sleep-subscribed-${timing}`);
       create(convId, "anthropic", "claude-opus-5-5");
       const queueWake = () => pushQueuedMessage(convId, "subagent finished", timing, undefined, undefined, undefined, undefined,
-        undefined, timing === "next-turn" ? { kind: "subagent_completion", sourceId: "child" } : undefined);
+        undefined, timing === "next-turn" ? { kind: "subagent_completion", sourceId: "child" } : { kind: "exo_send", sourceId: "parent" });
       const sleepOutputs: string[] = [];
       let requests = 0;
       const fakeStream = (async (_provider, _messages, _model, streamCallbacks, options) => {
@@ -491,6 +492,55 @@ describe("instant steering", () => {
       expect(sleepOutputs[0]).toMatch(/^Sleep interrupted after /);
       expect(getQueuedMessages(convId)).toEqual([]);
     });
+  }
+
+  for (const operation of ["sleep", "wait"] as const) {
+    for (const queuedBeforeSleep of [true, false]) {
+      test(`a person's message-end input ${queuedBeforeSleep ? "queued before" : "queued during"} a long chrono ${operation} in a Claude Code turn waits for the turn's end; next-turn input wakes it`, async () => {
+        const convId = id(`inline-${operation}-message-end-${queuedBeforeSleep}`);
+        create(convId, "anthropic", "claude-opus-5-5");
+        if (operation === "wait") setBackgroundTaskActive(convId, "bash:suite", true, { title: "suite", startedAt: Date.now() });
+        const queueLater = () => pushQueuedMessage(convId, "after the turn", "message-end", undefined, undefined, undefined, "later");
+        const call = { id: `toolu_${operation}`, name: "chrono", input: operation === "sleep"
+          ? { action: "sleep", duration: "2h" } : { action: "wait", task_id: "bash:suite", max_wait: "2h" } };
+        const toolOutputs: string[] = [];
+        const userPrompts: unknown[] = [];
+        const fakeStream = (async (_provider, messages, _model, streamCallbacks, options) => {
+          userPrompts.push(messages.at(-1)?.content);
+          if (userPrompts.length > 1) return finalAnswer(`answer ${userPrompts.length}`);
+          if (queuedBeforeSleep) queueLater();
+          streamCallbacks.onToolCall?.({ type: "tool_call", toolCallId: call.id, toolName: call.name, input: call.input, summary: operation });
+          let settled = false;
+          const running = (options as any).toolExecutor([call], options?.signal).finally(() => { settled = true; });
+          while (!getSummary(convId)?.tasks?.some(task => task.id === `chrono:${operation}:${call.id}`)) await Bun.sleep(1);
+          if (!queuedBeforeSleep) queueLater();
+          // What the daemon's queue listener does for a turn running chrono.
+          steerActiveTurn(convId);
+          await new Promise(resolve => setTimeout(resolve, 0));
+          expect(settled).toBe(false);
+          expect(options?.signal?.aborted).toBe(false);
+          expect(getQueuedMessages(convId).map(entry => entry.timing)).toEqual(["message-end"]);
+
+          pushQueuedMessage(convId, "look at this now", "next-turn", undefined, undefined, undefined, "now");
+          steerActiveTurn(convId);
+          const [result] = await running;
+          toolOutputs.push(result.output);
+          streamCallbacks.onToolResult?.({ type: "tool_result", toolCallId: call.id, toolName: call.name, output: result.output, isError: false });
+          return waitForAbort(options?.signal);
+        }) as typeof streamMessage;
+
+        const outcome = await orchestrateSendMessage(
+          server() as never, null, undefined, convId, "run the suite", Date.now(), callbacks(fakeStream),
+        );
+
+        expect(outcome.ok).toBe(true);
+        expect(toolOutputs[0]).toMatch(operation === "sleep" ? /^Sleep interrupted after .* the user sent a message/ : /wait_interrupted/);
+        // The steer is answered inside the turn; the message-end input starts the next one.
+        expect(userPrompts).toEqual(["run the suite", "look at this now", "after the turn"]);
+        expect(getQueuedMessages(convId)).toEqual([]);
+        if (operation === "wait") setBackgroundTaskActive(convId, "bash:suite", false);
+      });
+    }
   }
 
   test("automated input does not wake a short chrono sleep", async () => {
@@ -1862,6 +1912,56 @@ describe("DB-first orchestrator persistence", () => {
       "user", "assistant", "user", "user", "assistant",
     ]);
   });
+
+  for (const operation of ["sleep", "wait"] as const) {
+    for (const automated of [false, true]) {
+      test(`${automated ? "automated" : "a person's"} message-end input queued before a Chrono ${operation} suspends ${automated ? "ends it" : "waits for the turn that resumes it"}`, async () => {
+        const convId = id(`suspended-${operation}-message-end-${automated}`);
+        create(convId, "openai", "gpt-5.6-sol");
+        setBackgroundTaskActive(convId, "bash:build", true, { title: "build", startedAt: 1 });
+        const prompts: unknown[] = [];
+        const stream = (async (_provider, messages) => {
+          prompts.push(messages.at(-1)?.content);
+          if (prompts.length > 1) {
+            return {
+              text: "ok", thinking: "", stopReason: "stop" as const, blocks: [{ type: "text" as const, text: "ok" }],
+              toolCalls: [], inputTokens: 10, outputTokens: 2,
+            };
+          }
+          pushQueuedMessage(convId, "after the turn", "message-end", undefined, undefined, undefined, `later-${operation}`,
+            undefined, automated ? { kind: "exo_send", sourceId: "parent" } : undefined);
+          return {
+            text: "", thinking: "", stopReason: "tool_use" as const, blocks: [], inputTokens: 10, outputTokens: 2,
+            toolCalls: [{ id: `suspend-${operation}-${automated}`, name: "chrono", input: operation === "sleep"
+              ? { action: "sleep", duration: "10m" } : { action: "wait", task_id: "bash:build", max_wait: "10m" } }],
+          };
+        }) as typeof streamMessage;
+
+        const sleeping = await orchestrateSendMessage(
+          server() as never, null, undefined, convId, "build, then wait", Date.now(), callbacks(stream),
+        );
+        expect(sleeping).toMatchObject({ ok: true, suspended: true });
+        if (automated) {
+          expect(prompts).toEqual(["build, then wait", "after the turn"]);
+          expect(listDeferredChronoSleeps(convId)).toHaveLength(0);
+        } else {
+          expect(prompts).toEqual(["build, then wait"]);
+          expect(listDeferredChronoSleeps(convId)).toHaveLength(1);
+          expect(getQueuedMessages(convId).map(entry => entry.text)).toEqual(["after the turn"]);
+
+          // A message sent now still ends the sleep; the queued one follows that turn.
+          const woken = await orchestrateSendMessage(
+            server() as never, null, undefined, convId, "wake up early", Date.now(), callbacks(stream),
+          );
+          expect(woken.ok).toBe(true);
+          expect(prompts).toEqual(["build, then wait", "wake up early", "after the turn"]);
+          expect(listDeferredChronoSleeps(convId)).toHaveLength(0);
+        }
+        expect(getQueuedMessages(convId)).toEqual([]);
+        setBackgroundTaskActive(convId, "bash:build", false);
+      });
+    }
+  }
 
   test.each(["sleep", "wait"] as const)("Chrono %s suspension destroys rather than parks the provider transport", async (operation) => {
     const convId = id(`transport-${operation}`);
