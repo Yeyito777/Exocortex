@@ -118,12 +118,15 @@ function fencedRanges(text: string): Array<[number, number]> {
   return ranges;
 }
 
-function likelyDollarMath(content: string): boolean {
+/** `after` is the character just past the closing `$` ("" at the end). */
+function likelyDollarMath(content: string, after: string): boolean {
   if (!content || /^\s|\s$/.test(content) || content.includes("\n")) return false;
-  // Currency in prose: "$5 and $10", "$33,055 and ... $33,055". A number
-  // list with TeX in it ("$12,\ 6,\ 3$", "$2^{3}, 4$") is math.
+  // Currency in prose: "$5 and $10", "$33,055 and ... $33,055", "$5,$10". A
+  // tight number ("takes $10$ steps", "$2.5$.") and a number list with TeX in
+  // it ("$12,\ 6,\ 3$", "$2^{3}, 4$") are math.
+  if (/^\d[\d,.]*$/.test(content)) return /\d$/.test(content) && /^(?:$|[\s.,;:!?)\]}'"*~\-–—])/.test(after);
   const tex = /\\[A-Za-z,;:! ]|[\^_{=]/.test(content);
-  if (/^\d[\d,.]*$/.test(content) || (/^\d/.test(content) && /,/.test(content) && !tex)) return false;
+  if (/^\d/.test(content) && /,/.test(content) && !tex) return false;
   // Plain words ("$HOME and $PATH") and shell/quoted text are not math.
   if (/^[A-Za-z]+(?:\s+[A-Za-z0-9]+)+$/.test(content) || /["`]/.test(content)) return false;
   // Shell paths: "$HOME/bin:$PATH", $A:$B, "$DIR/$FILE".
@@ -306,7 +309,7 @@ function scanMath(text: string): MathScan {
       const opensWord = /[A-Za-z0-9=/]/.test(before);
       if (close >= 0 && !opensWord && text[close + 1] !== "$" && !/[0-9_]/.test(text[close + 1] ?? "")) {
         const content = text.slice(i + 1, close);
-        if (likelyDollarMath(content) && !(/["']/.test(before) && content.includes(before))) {
+        if (likelyDollarMath(content, text[close + 1] ?? "") && !(/["']/.test(before) && content.includes(before))) {
           push(i, i + 1, close, close + 1, "$", false);
           i = close + 1;
           continue;
