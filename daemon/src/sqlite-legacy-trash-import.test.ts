@@ -2,10 +2,13 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { dirname, join, relative } from "node:path";
+import { configDir, dataDir } from "@exocortex/shared/paths";
 
 const roots: string[] = [];
-const instance = basename(resolve(import.meta.dir, "../.."));
+// Where data lives under a config dir: "data", or "data/instances/<git
+// worktree name>" in a linked worktree (not always the checkout's folder name).
+const dataPath = relative(configDir(), dataDir());
 
 function testRoot(): string {
   const root = mkdtempSync(join(tmpdir(), "exocortex-legacy-trash-import-"));
@@ -13,9 +16,9 @@ function testRoot(): string {
   return root;
 }
 
+/** The data dir the phases use with `root` as their EXOCORTEX_CONFIG_DIR. */
 function dataRoot(root: string): string {
-  const instanceRoot = join(root, "data", "instances", instance);
-  return existsSync(instanceRoot) ? instanceRoot : join(root, "data");
+  return join(root, dataPath);
 }
 const conversationsModule = join(import.meta.dir, "conversations.ts");
 const persistenceModule = join(import.meta.dir, "persistence.ts");
@@ -239,11 +242,8 @@ describe("SQLite legacy trash and history import", () => {
       }
     `);
 
-    const sqliteData = dataRoot(sqliteRoot);
-    const instanceScoped = sqliteData === join(sqliteRoot, "data", "instances", instance);
-    const rollbackData = instanceScoped
-      ? join(rollbackRoot, "data", "instances", instance)
-      : join(rollbackRoot, "data");
+    expect(existsSync(join(dataRoot(sqliteRoot), "exocortex.sqlite3"))).toBe(true);
+    const rollbackData = dataRoot(rollbackRoot);
     rmSync(rollbackData, { recursive: true, force: true });
     mkdirSync(dirname(rollbackData), { recursive: true });
     cpSync(exportRoot, rollbackData, { recursive: true });
