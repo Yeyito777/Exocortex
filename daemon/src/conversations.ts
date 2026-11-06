@@ -56,7 +56,7 @@ export {
   requestGoalContinuationAfterStream, consumeGoalContinuationAfterStream, clearGoalContinuationAfterStream,
 } from "./streaming";
 export {
-  getQueuedMessages, getQueuedMessageById, listQueuedMessages, listInternalQueuedMessages, hasQueuedUserSteer, hasQueuedNextTurn, advanceQueuedMessagesToNextTurn,
+  getQueuedMessages, getQueuedMessageById, listQueuedMessages, listInternalQueuedMessages, hasQueuedUserSteer, hasQueuedNextTurn, advanceAutomatedQueuedMessagesToNextTurn, waitsForTurnEnd,
   pushQueuedMessage, pushGlobalIdleQueuedMessage, steerGlobalIdleQueuedMessage, drainQueuedMessages,
   clearQueuedMessages, clearAllQueuedMessages, removeQueuedMessage, removeQueuedMessageById,
   removeQueuedMessagesById, updateQueuedMessage, moveQueuedMessage,

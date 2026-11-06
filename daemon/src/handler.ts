@@ -93,7 +93,7 @@ import { beginDaemonShutdown, getDaemonShutdownMode } from "./daemon-lifecycle";
 import { prepareCatchableShutdownForReplay } from "./restart-recovery";
 import { PREPARE_RESTART_MAX_SETTLE_MS, writeActiveGoalRestartMarker } from "./restart-markers";
 import { buildBackgroundTaskNotificationText } from "./background-task-notifications";
-import { configureChronoService, cancelDeferredChronoSleep } from "./chrono-service";
+import { configureChronoService, cancelDeferredChronoSleep, hasPendingDeferredChronoSleep } from "./chrono-service";
 import { sleptLong } from "./work-timer";
 import { cancelSuspendedTurn } from "./suspended-turns";
 import { runChronoCommand } from "./chrono-commands";
@@ -1733,6 +1733,12 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     const seenConversations = new Set<string>();
     for (const entry of queued) {
       if (entry.source !== "daemon" || seenConversations.has(entry.convId)) continue;
+      // A person's message-end input waits for the turn a suspended sleep or
+      // wait resumes; automated input behind it still wakes the sleep.
+      if (convStore.waitsForTurnEnd(entry) && hasPendingDeferredChronoSleep(entry.convId)) {
+        needsReadinessPoll = true;
+        continue;
+      }
       seenConversations.add(entry.convId);
       if (!convStore.hasConversation(entry.convId)) {
         convStore.removeQueuedMessageById(entry.id);
@@ -1812,8 +1818,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
 
   convStore.setQueuedMessagesChangedListener((messages) => {
     server.broadcast({ type: "queue_updated", messages: messages.filter(message => !isHiddenConversation(message.convId)) });
-    // Automated and message-end input waits for a boundary, but would end a
-    // suspended chrono sleep; let a turn sleeping inside a chrono call decide.
+    // Automated input waits for a boundary, but would end a suspended chrono
+    // sleep; let a turn sleeping inside a chrono call decide.
     const queuedConvIds = new Set(messages
       .filter(message => message.source === "daemon")
       .map(message => message.convId));
@@ -3570,15 +3576,12 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
             waitTarget: cmd.waitTarget,
           });
         } else {
-          // A turn only sleeping or waiting in chrono takes a new prompt now, as a
-          // suspended chrono sleep resumes on one.
-          const timing = cmd.timing === "message-end" && convStore.getActiveBackgroundableToolName(cmd.convId) === "chrono"
-            ? "next-turn"
-            : cmd.timing;
-          convStore.pushQueuedMessage(cmd.convId, cmd.text, timing, cmd.images, undefined, undefined, queueId,
+          // Message-end input waits for the turn to end, even one sleeping or
+          // waiting in chrono.
+          convStore.pushQueuedMessage(cmd.convId, cmd.text, cmd.timing, cmd.images, undefined, undefined, queueId,
             undefined, cliDelegationAutomation(cmd));
           // Instant steering: a next-turn prompt preempts the active turn now.
-          if (timing === "next-turn") convStore.steerActiveTurn(cmd.convId);
+          if (cmd.timing === "next-turn") convStore.steerActiveTurn(cmd.convId);
         }
         if (queuedDraftSettings) {
           const { provider, model, effort, fastMode, folderId } = queuedDraftSettings;

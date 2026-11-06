@@ -936,7 +936,7 @@ describe("handler daemon-owned queue", () => {
     }
   });
 
-  test("an ordinary message steers a turn that is only sleeping in chrono", async () => {
+  test("message-end input stays queued for the turn's end while it sleeps in chrono; next-turn input steers it", async () => {
     const id = mkId("queue-chrono");
     create(id, DEFAULT_PROVIDER_ID, DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER_ID]);
     setActiveJob(id, new AbortController(), Date.now());
@@ -956,14 +956,17 @@ describe("handler daemon-owned queue", () => {
       expect(getQueuedMessageById("during-bash")?.timing).toBe("message-end");
 
       setActiveToolBackgrounder(id, sleep);
-      await handle({} as never, { type: "queue_message", queueId: "during-sleep", convId: id, text: "wake up", timing: "message-end" });
+      await handle({} as never, { type: "queue_message", queueId: "during-sleep", convId: id, text: "after the turn", timing: "message-end" });
+      expect(getQueuedMessageById("during-sleep")?.timing).toBe("message-end");
+      await handle({} as never, { type: "queue_message", queueId: "steer-sleep", convId: id, text: "wake up", timing: "next-turn" });
       expect(steer).toHaveBeenCalled();
-      expect(getQueuedMessageById("during-sleep")?.timing).toBe("next-turn");
+      expect(getQueuedMessageById("steer-sleep")?.timing).toBe("next-turn");
     } finally {
       clearActiveToolBackgrounder(id);
       clearActiveSteerHandler(id, steer);
       removeQueuedMessageById("during-bash");
       removeQueuedMessageById("during-sleep");
+      removeQueuedMessageById("steer-sleep");
     }
   });
 
@@ -985,6 +988,41 @@ describe("handler daemon-owned queue", () => {
     expect(lastCall[4]).toBe("run me");
     expect(lastCall[8]).toEqual(expect.objectContaining({ queueEntryId: "idle-dispatch" }));
     removeQueuedMessageById("idle-dispatch");
+  });
+
+  test.each(["sleep", "wait"] as const)("a person's message-end input waits out a suspended chrono %s; automated input behind it wakes it", async (operation) => {
+    const id = mkId(`queue-suspended-${operation}`);
+    create(id, "openai", "gpt-6-astra");
+    const server = {
+      sendTo: mock(() => {}), broadcast: mock(() => {}), sendToSubscribers: mock(() => {}),
+      sendToSubscribersExcept: mock(() => {}), subscribe: mock(() => {}), unsubscribe: mock(() => {}), hasSubscribers: mock(() => false),
+    };
+    const handle = createHandler(server as never);
+    const sentTo = () => orchestrateSendMessage.mock.calls
+      .map(call => call as unknown as unknown[])
+      .filter(call => call[3] === id)
+      .map(call => call[4]);
+    try {
+      expect(deferChronoSleep({
+        conversationId: id, toolCallId: `suspended-${operation}`, startedAt: Date.now(), durationMs: 3_600_000,
+        ...(operation === "wait" ? { wait: { taskId: "bash:build", maxWait: "1h" } } : {}),
+      }).error).toBeUndefined();
+      await handle({} as never, { type: "queue_message", queueId: "held-human", convId: id, text: "after the turn", timing: "message-end" });
+      await handle({} as never, { type: "queue_message", queueId: "relayed", convId: id, text: "from a shell", timing: "message-end", delegation: true });
+      await queueSettles(() => sentTo().length > 0);
+
+      expect(sentTo()).toEqual(["from a shell"]);
+      expect(getQueuedMessageById("held-human")?.timing).toBe("message-end");
+
+      // Once the sleep has ended (here: stopped), the turn is over and it goes.
+      chronoInternalsForTest.reset();
+      await queueSettles(() => sentTo().length > 1);
+      expect(sentTo()).toEqual(["from a shell", "after the turn"]);
+    } finally {
+      chronoInternalsForTest.reset();
+      removeQueuedMessageById("held-human");
+      removeQueuedMessageById("relayed");
+    }
   });
 
   test("waits in the daemon for a targeted conversation to become idle", async () => {

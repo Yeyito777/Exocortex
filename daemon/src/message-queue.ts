@@ -151,9 +151,19 @@ export function getQueuedMessages(convId: string): QueuedMessage[] {
     .map(cloneEntry);
 }
 
-/** Deliver a conversation's message-end entries at the next turn boundary instead. */
-export function advanceQueuedMessagesToNextTurn(convId: string): boolean {
-  const entries = getQueuedMessages(convId).filter(entry => entry.timing === "message-end").map(entry => entry.id);
+/**
+ * A person's message-end entry: it waits for the turn to end, and a long
+ * chrono sleep or wait inside the turn is not its end.
+ */
+export function waitsForTurnEnd(entry: Pick<QueuedMessage, "timing" | "automation">): boolean {
+  return entry.timing === "message-end" && !entry.automation;
+}
+
+/** Deliver a conversation's automated message-end entries at the next turn boundary instead. */
+export function advanceAutomatedQueuedMessagesToNextTurn(convId: string): boolean {
+  const entries = getQueuedMessages(convId)
+    .filter(entry => entry.timing === "message-end" && !waitsForTurnEnd(entry))
+    .map(entry => entry.id);
   if (entries.length === 0) return false;
   const ids = new Set(entries);
   mutateAndCommit(() => {
