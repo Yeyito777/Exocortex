@@ -36,9 +36,9 @@ export function barFill(pct: number, capacity = 100, width = BAR_WIDTH): number 
   return Math.round((clamped / capacity) * width);
 }
 
-/** A bar with its last `crossed` cells crossed out; `pct` of `capacity` fills the others. */
-function renderBar(pct: number | null, capacity = 100, crossed = 0): string {
-  const width = BAR_WIDTH - crossed;
+/** A `cells`-wide bar with its last `crossed` cells crossed out; `pct` of `capacity` fills the others. */
+export function renderBar(pct: number | null, capacity = 100, crossed = 0, cells = BAR_WIDTH): string {
+  const width = cells - crossed;
   const xs = crossed > 0 ? `${theme.text}${theme.dim}${"X".repeat(crossed)}${theme.reset}` : "";
   if (pct === null) {
     return theme.muted + "\u2591".repeat(width) + xs;

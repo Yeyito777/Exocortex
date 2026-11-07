@@ -182,6 +182,13 @@ then come against the daemon's record of it, marked `baseCopy`. Running
 rounds' tool output comes from `load_tool_outputs`. See
 [SSH conversation history cache](ssh-history-cache.md).
 
+With the `machine-resources` capability, the client gets `machine_resources`
+every 2 s while it is connected (the first within half a second): the
+daemon's own machine's CPU %, RAM, GPU % and VRAM, each null where that
+machine does not report it (`daemon/src/machine-resources.ts`). The daemon
+samples only while such a client is connected. Over `/ssh` they are the
+remote's; the TUI's resources block shows them.
+
 ## Sending a prompt exactly once
 
 A `send_message` can be lost with its connection: a daemon restart or a dropped

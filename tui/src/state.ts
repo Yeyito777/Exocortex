@@ -32,7 +32,7 @@ import type { SearchDirection } from "./search";
 import type { UndoState } from "./undo";
 import { commitInsertSession, createUndoState, markInsertEntry } from "./undo";
 import type { AutocompleteState } from "./autocomplete";
-import type { AccountsSnapshot, ConversationDefaultsSnapshot, ConversationGoal, MacroEnvironment, ProviderAuthInfo, UserMacro, ProviderProxyInfo, QueuedCommandInvocation, QueueTiming, QueueWaitTarget as ProtocolQueueWaitTarget, UserMessageAutomation } from "./protocol";
+import type { AccountsSnapshot, ConversationDefaultsSnapshot, MachineResources, ConversationGoal, MacroEnvironment, ProviderAuthInfo, UserMacro, ProviderProxyInfo, QueuedCommandInvocation, QueueTiming, QueueWaitTarget as ProtocolQueueWaitTarget, UserMessageAutomation } from "./protocol";
 import type { VoiceChatMessageState, VoicePromptState } from "./voice";
 import type { TokenStatsView } from "./commands/tokens";
 import type { BtwPanelState } from "./btw/state";
@@ -277,6 +277,8 @@ export interface RenderState {
   authInfoByProvider: Record<ProviderId, ProviderAuthInfo>;
   /** Rate-limit usage data keyed by provider. Null until first update per provider. */
   usageByProvider: Record<ProviderId, UsageData | null>;
+  /** The connected daemon's machine (the remote's over /ssh); null until its first sample or while disconnected. */
+  machineResources: MachineResources | null;
   /** Providers the daemon sends through /proxy; null when the daemon predates /proxy. */
   providerProxies: ProviderProxyInfo[] | null;
   /** Persistent token-accounting snapshot from the daemon. */
@@ -827,6 +829,7 @@ export function createInitialState(): RenderState {
       openrouter: null,
       anthropic: null,
     },
+    machineResources: null,
     providerProxies: null,
     tokenStats: null,
     pendingTokenStatsView: null,

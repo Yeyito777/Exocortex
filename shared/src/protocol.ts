@@ -347,7 +347,7 @@ export interface PrewarmConversationCommand {
  * and against the client's liveBase, and leaves the blocks out of a streaming
  * conversation's subscription catch-up (the loaded event has them).
  */
-export type ClientCapability = "targeted-unwind" | "sidebar-reorder-delta" | "sidebar-state-patch" | "history-block-pagination" | "token-stats-on-demand" | "sidebar-digest-sync" | "update-status-push" | "sidebar-incremental" | "client-exec-alive" | "history-folded-elision" | "history-revisions" | "history-push" | "turn-catchup";
+export type ClientCapability = "targeted-unwind" | "sidebar-reorder-delta" | "sidebar-state-patch" | "history-block-pagination" | "token-stats-on-demand" | "sidebar-digest-sync" | "update-status-push" | "sidebar-incremental" | "client-exec-alive" | "history-folded-elision" | "history-revisions" | "history-push" | "turn-catchup" | "machine-resources";
 
 /** Answered with token_stats carrying the same reqId. Older daemons answer with an Unknown command error. */
 export interface GetTokenStatsCommand {
@@ -2049,6 +2049,34 @@ export interface UsageUpdateEvent {
   usage: UsageData | null;
 }
 
+/** Used and total bytes of one kind of memory. */
+export interface MemoryUse {
+  usedBytes: number;
+  totalBytes: number;
+}
+
+/** What the daemon's machine is using; null where a figure is not available there. */
+export interface MachineResources {
+  /** All cores' busy share over the last interval, 0–100. */
+  cpuPercent: number | null;
+  /** RAM in use: Linux MemTotal − MemAvailable; macOS app memory + wired + compressed. */
+  memory: MemoryUse | null;
+  /** The GPU's busy share, 0–100. */
+  gpuPercent: number | null;
+  /** Dedicated GPU memory. */
+  vram: MemoryUse | null;
+  sampledAt: number;
+}
+
+/**
+ * Sent every few seconds to a client with the machine-resources capability,
+ * from the daemon's own machine (so over /ssh, the remote's).
+ */
+export interface MachineResourcesEvent {
+  type: "machine_resources";
+  resources: MachineResources;
+}
+
 /** Answer to `accounts`, and pushed to its watchers on change. */
 export interface AccountsEvent {
   type: "accounts";
@@ -3057,6 +3085,7 @@ export type Event =
   | ContextUpdateEvent
   | MessageCompleteEvent
   | UsageUpdateEvent
+  | MachineResourcesEvent
   | AccountsEvent
   | UsageResetResultEvent
   | TokenStatsEvent

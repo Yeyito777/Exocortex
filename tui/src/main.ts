@@ -652,6 +652,7 @@ function resetForDaemonRouteSwitch(newRouteKey: string): void {
   state.externalToolStyles = [];
   state.tokenStats = null;
   state.pendingTokenStatsView = null;
+  state.machineResources = null;
   state.lastStreamSeqByConv = {};
   state.conversationDefaults = null;
   resetDraftConversationState(state);
@@ -2386,6 +2387,8 @@ function handleDaemonConnectionLost(shutdownMode: DaemonShutdownMode | null): vo
   resetPrewarmer();
   instructionsConnectionLost(state);
   userMacrosConnectionLost(state);
+  // Stale figures would read as live; the next connection's first sample brings them back.
+  state.machineResources = null;
   state.historyLoadingOlder = false;
   state.historyLoadingStartedAt = null;
   state.historyLoadingRequestId = null;

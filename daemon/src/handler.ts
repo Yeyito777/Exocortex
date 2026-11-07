@@ -107,6 +107,7 @@ import { addClaudeAccount, claudeLoginCommand, removeClaudeAccount } from "./pro
 import { claudeAccountReports } from "./providers/anthropic/account-pool";
 import { formatClaudeAccountReports } from "./providers/anthropic/account-report";
 import { createAccountsWatch } from "./accounts-watch";
+import { createMachineResourcesWatch } from "./machine-resources";
 import { DISPLAY_BLOCKS_RESPONSE_BYTES, HISTORY_PAGE_BYTE_BUDGET, INITIAL_HISTORY_TURNS, MAX_DISPLAY_BLOCK_RANGES, MAX_HISTORY_REQUEST_TURNS, buildHistoryUpdatedEvents, isValidHistoryViewport, isValidInitialBackfill, compactHistoryImages, pageDisplayHistory, type HistoryViewport, type HistoryWindowOptions } from "./history-pagination";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
 import { randomUUID } from "crypto";
@@ -432,6 +433,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
     send: (client, event) => { server.sendTo(client, event); },
     onClaudeUsage: (usage) => broadcastUsage("anthropic", usage),
   });
+  /** The status bar's resources block: this machine's CPU, RAM, GPU and VRAM, for machine-resources clients (dropped at the first sample after they disconnect). */
+  const machineResources = createMachineResourcesWatch({ send: (client, event) => { server.sendTo(client, event); } });
 
   // ── /proxy ────────────────────────────────────────────────────────
 
@@ -2412,6 +2415,10 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
               || capability === "history-revisions"
               || capability === "history-push"
               || capability === "turn-catchup") client.capabilities.add(capability);
+        }
+        if (cmd.capabilities.includes("machine-resources") && !client.app && !client.providerProxyLink) {
+          client.capabilities.add("machine-resources");
+          machineResources.add(client);
         }
         if (client.capabilities.has("sidebar-digest-sync") && isSidebarDigest(cmd.sidebarDigest)) {
           client.sidebarDigest = cmd.sidebarDigest;
@@ -4679,6 +4686,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       await shutdownAppConversations();
       stopAppApi();
       videoPlayback?.dispose();
+      machineResources.dispose();
       unsubscribeConnectivity();
       setApiKeyUsageRecordedListener(null);
       setCreditSyncListener(null);

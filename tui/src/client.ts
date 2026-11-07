@@ -52,6 +52,7 @@ const CLIENT_CAPABILITIES: ClientCapability[] = [
   "history-folded-elision",
   "history-revisions",
   "history-push",
+  "machine-resources",
 ];
 
 export type EventHandler = (event: Event) => void;
