@@ -99,6 +99,51 @@ describe("folded history", () => {
     }
   });
 
+  test("a reply split by its last tool call keeps its first part, the call, and the rest", () => {
+    const answer = "Yes, it's a straightforward bug fix. ".repeat(8).trim();
+    const state = createInitialState();
+    state.messages.push(user("is it a bug fix?"), assistant([
+      { type: "text", text: "Checking the log first." },
+      ...call("c1", "git log -1"),
+      { type: "thinking", text: "Explain, then update the scratchpad." },
+      { type: "text", text: answer },
+      ...call("c2", "write scratchpad"),
+      { type: "text", text: "Scratchpad updated." },
+    ]));
+    const shown = rows(state, 400).filter(Boolean);
+    expect(shown.some(row => row.includes(answer))).toBe(true);
+    expect(shown.some(row => row.includes("write scratchpad"))).toBe(true);
+    expect(shown.some(row => row.includes("Scratchpad updated."))).toBe(true);
+    expect(shown.some(row => /Checking the log first|git log -1|write scratchpad output|update the scratchpad/.test(row))).toBe(false);
+    const order = ["Yes, it's", "write scratchpad", "Scratchpad updated."].map(text => shown.findIndex(row => row.includes(text)));
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+    freshMatchesIncremental(state, 400);
+  });
+
+  test("a reply followed only by a tool call still shows, with the call", () => {
+    const answer = "Here is the whole answer, written before one last command. ".repeat(5).trim();
+    const state = createInitialState();
+    state.messages.push(user("explain"), assistant([{ type: "text", text: answer }, ...call("c1", "chrono wake")]));
+    const shown = rows(state, 400).filter(Boolean);
+    expect(shown.some(row => row.includes(answer))).toBe(true);
+    expect(shown.some(row => row.includes("chrono wake"))).toBe(true);
+    expect(shown.some(row => row.includes("GPT-6-Astra"))).toBe(true);
+  });
+
+  test("short interim text before the last call, or a longer final reply, keeps the usual fold", () => {
+    const state = createInitialState();
+    state.messages.push(...workTurn());
+    state.messages.push(user("again"), assistant([
+      { type: "text", text: "A note of medium length, but the final reply is longer. ".repeat(4).trim() },
+      ...call("c3", "make test"),
+      { type: "text", text: "All tests pass, and here is the full final reply explaining what changed in detail. ".repeat(4).trim() },
+    ]));
+    const shown = rows(state, 400).filter(Boolean);
+    expect(shown.some(row => /Checking the log first|git diff --stat|A note of medium length|make test/.test(row))).toBe(false);
+    expect(shown.some(row => row.includes("Two files changed."))).toBe(true);
+    expect(shown.some(row => row.includes("All tests pass"))).toBe(true);
+  });
+
   test("a reply without tools folds nothing", () => {
     const state = createInitialState();
     state.messages.push(user("hi"), assistant([{ type: "thinking", text: "Greet." }, { type: "text", text: "Hello." }]));
