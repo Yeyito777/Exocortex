@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Sign agent commits with the Exocortex conversation that made them, so a failing test traces back to an agent.
+set -euo pipefail
+id="${EXOCORTEX_PARENT_CONV_ID:-}"
+[[ -n "$id" ]] || exit 0
+grep -q '^Exocortex-Conversation:' "$1" && exit 0
+git interpret-trailers --in-place --if-exists addIfDifferent --trailer "Exocortex-Conversation: $id" "$1"
