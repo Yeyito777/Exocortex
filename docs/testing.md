@@ -3,6 +3,8 @@
 ```bash
 bun run check                      # everything, ~12 s on whale (12 cores)
 bun run check daemon tui           # some steps: typecheck, shared, daemon, tui
+bun run check --changed            # only what this branch's changes can reach
+scripts/dev/test-select.ts --explain FILE   # which change picked FILE, and through what
 bun run check --jobs 4             # workers per suite (default: 2/3 of the cores)
 bun run check --update-timings     # also rewrite test/timings/*.json
 cd daemon && bun test src/foo.test.ts   # one file
@@ -38,6 +40,15 @@ with its file and test name and the error, and exits 1 on any failure.
   `systemd-run` or a user manager the check runs in place, as with
   `EXOCORTEX_CHECK_SCOPE=off`. When the check ends, anything left in its scope
   is killed, and it stops if the process that started it dies.
+- **`--changed` picks by what the change reaches.** `scripts/dev/test-select.ts`
+  follows each test file's imports and the files its code names in strings
+  (an entry point it spawns, a prompt it reads) to the files changed since
+  the branch left `origin/main`, uncommitted and untracked ones included
+  (`--base REF` for another base). Typechecks run for the packages whose code
+  changed and the packages that import from them. It runs everything, and
+  says why, for package, lock, bunfig or tsconfig files, `test/`, the check
+  scripts, a file deleted or renamed in a package, or a package file no code
+  names. Files outside the packages that no code names (docs) pick nothing.
 - **Nothing hangs.** Each test has bun's 5 s timeout. Each step runs in its own
   session; one still running after `--timeout` (default 90 s) is listed with
   what it was running and killed with all of its processes.

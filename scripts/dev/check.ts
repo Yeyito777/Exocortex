@@ -4,9 +4,13 @@
  * TUI test suites, all at once. The pre-merge check: `bun run check` at the repo root.
  *
  * Usage:
- *   bun run check [--jobs N (default 2/3 of the cores)] [--timeout SECONDS] [--update-timings] [STEP...]
+ *   bun run check [--changed [--base REF]] [--jobs N (default 2/3 of the cores)] [--timeout SECONDS] [--update-timings] [STEP...]
  *
  * STEP is any of: typecheck, shared, daemon, tui (default: all four).
+ *
+ * --changed runs only the test files and typechecks that this branch's
+ * changes since it left origin/main (or REF), uncommitted and untracked files
+ * included, can affect; everything when it can't tell (scripts/dev/test-select.ts).
  *
  * - Typechecks are incremental (tsconfig `incremental`, build info under
  *   node_modules/.cache/tsc), so an unchanged package checks in a second or two.
@@ -27,13 +31,14 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os, { availableParallelism, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { select, SUITES, workingChanges, workingTree, type Selection } from "./test-select";
 
 const ROOT = resolve(import.meta.dir, "../..");
 const CACHE = join(ROOT, "node_modules/.cache/exocortex-check");
 const STEPS = ["typecheck", "shared", "daemon", "tui"] as const;
 type StepName = (typeof STEPS)[number];
 
-interface Options { jobs: number; timeoutMs: number; updateTimings: boolean; steps: StepName[] }
+interface Options { jobs: number; timeoutMs: number; updateTimings: boolean; steps: StepName[]; changed: boolean; base?: string }
 
 /** Both suites and three tsc processes share the machine; ~2/3 of the cores per suite measured fastest. */
 function defaultJobs(): number {
@@ -41,7 +46,7 @@ function defaultJobs(): number {
 }
 
 function parseArgs(argv: string[]): Options {
-  const options: Options = { jobs: defaultJobs(), timeoutMs: 90_000, updateTimings: false, steps: [] };
+  const options: Options = { jobs: defaultJobs(), timeoutMs: 90_000, updateTimings: false, steps: [], changed: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     const value = () => {
@@ -52,6 +57,8 @@ function parseArgs(argv: string[]): Options {
     if (arg === "--jobs" || arg === "-j") options.jobs = positiveInt(value(), arg);
     else if (arg === "--timeout") options.timeoutMs = positiveInt(value(), arg) * 1000;
     else if (arg === "--update-timings") options.updateTimings = true;
+    else if (arg === "--changed") options.changed = true;
+    else if (arg === "--base") { options.base = value(); options.changed = true; }
     else if (arg === "-h" || arg === "--help") usage();
     else if ((STEPS as readonly string[]).includes(arg)) options.steps.push(arg as StepName);
     else usage(`unknown argument: ${arg}`);
@@ -68,7 +75,7 @@ function positiveInt(text: string, flag: string): number {
 
 function usage(error?: string): never {
   if (error) console.error(`check: ${error}`);
-  console.error("Usage: bun run check [--jobs N] [--timeout SECONDS] [--update-timings] [typecheck] [shared] [daemon] [tui]");
+  console.error("Usage: bun run check [--changed [--base REF]] [--jobs N] [--timeout SECONDS] [--update-timings] [typecheck] [shared] [daemon] [tui]");
   process.exit(error ? 2 : 0);
 }
 
@@ -250,7 +257,8 @@ function writeRunTimings(name: Suite, path: string, local: string, tracked: stri
   return pinned;
 }
 
-async function suite(name: Suite, options: Options, env: NodeJS.ProcessEnv, runTmp: string): Promise<Result> {
+/** `files`: only these test files (relative to the suite); undefined runs them all. */
+async function suite(name: Suite, options: Options, env: NodeJS.ProcessEnv, runTmp: string, files?: string[]): Promise<Result> {
   const cwd = join(ROOT, name);
   const tracked = join(ROOT, "test/timings", `${name}.json`);
   const local = join(CACHE, `${name}-timings.json`);
@@ -258,7 +266,7 @@ async function suite(name: Suite, options: Options, env: NodeJS.ProcessEnv, runT
   const junit = join(runTmp, `${name}.junit.xml`);
   const pinned = writeRunTimings(name, runTimings, local, tracked);
   const cmd = [process.execPath, "test", `--parallel=${options.jobs}`, `--timings=${runTimings}`, "--update-timings",
-    "--reporter=junit", `--reporter-outfile=${junit}`];
+    "--reporter=junit", `--reporter-outfile=${junit}`, ...(files ?? []).map(file => `./${file}`)];
   const result = await run(`${name} tests`, cmd, cwd, env, options.timeoutMs);
   // bun rewrote the run's file with what it measured; a pin it didn't measure goes back.
   const measured = readTimings(runTimings);
@@ -267,8 +275,9 @@ async function suite(name: Suite, options: Options, env: NodeJS.ProcessEnv, runT
     if (was === undefined) delete measured[file];
     else measured[file] = was;
   }
-  writeFileSync(local, JSON.stringify({ version: 1, files: measured }, null, 2));
-  if (options.updateTimings && result.ok) writeTrackedTimings(local, tracked, cwd);
+  // A run of some files keeps what earlier runs measured for the rest.
+  writeFileSync(local, JSON.stringify({ version: 1, files: { ...(files ? readTimings(local) : {}), ...measured } }, null, 2));
+  if (options.updateTimings && result.ok && !files) writeTrackedTimings(local, tracked, cwd);
 
   const counts = Object.fromEntries(["pass", "fail", "skip"].map(kind =>
     [kind, Number(new RegExp(`^ (\\d+) ${kind}$`, "m").exec(result.output)?.[1] ?? 0)]));
@@ -391,12 +400,29 @@ const report = (result: Result) => {
   return result;
 };
 
+let picked: Selection | undefined;
+if (options.changed) {
+  try {
+    picked = select(workingChanges(options.base), workingTree());
+  } catch (error) {
+    picked = { all: error instanceof Error ? error.message : String(error), suites: { shared: [], daemon: [], tui: [] }, typecheck: [...SUITES], why: [] };
+  }
+  console.log(picked.all ? `changed: running everything: ${picked.all}` : `changed: ${picked.why.join("; ")}`);
+}
+const skipped = (label: string): Result => ({ label, ok: true, ms: 0, summary: "nothing changed reaches it", details: "" });
+
 const jobs: Promise<Result>[] = [];
 if (options.steps.includes("typecheck")) {
-  for (const pkg of ["shared", "daemon", "tui"]) jobs.push(typecheck(pkg, env, options.timeoutMs).then(report));
+  for (const pkg of SUITES) {
+    if (picked && !picked.all && !picked.typecheck.includes(pkg)) jobs.push(Promise.resolve(report(skipped(`typecheck ${pkg}`))));
+    else jobs.push(typecheck(pkg, env, options.timeoutMs).then(report));
+  }
 }
-for (const name of ["shared", "daemon", "tui"] as const) {
-  if (options.steps.includes(name)) jobs.push(suite(name, options, env, runTmp).then(report));
+for (const name of SUITES) {
+  if (!options.steps.includes(name)) continue;
+  const files = picked && !picked.all ? picked.suites[name] : undefined;
+  if (files?.length === 0) jobs.push(Promise.resolve(report(skipped(`${name} tests`))));
+  else jobs.push(suite(name, options, env, runTmp, files).then(report));
 }
 
 let results: Result[];
