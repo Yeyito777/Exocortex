@@ -3,7 +3,8 @@
  *
  * Folded (the default), the history reads like a plain chat: the user's
  * messages and the agent's final replies with their metadata. Everything else
- * leaves no row: a turn's thinking, tool calls and interim text, notifications
+ * leaves no row: a turn's thinking, tool calls and interim text (a reply split
+ * by its last tool calls keeps its first part and those calls), notifications
  * (in a top-level conversation, its own subagents' messages too), background
  * turns with no reply, and informational notices (an interrupt only once
  * something follows it). Ctrl+O shows all of it and
@@ -649,6 +650,53 @@ function turnKey(messages: readonly Message[], turnStart: number, fallback: obje
   return token;
 }
 
+/** Text before a turn's last tool calls that counts as the start of its reply. */
+const SPLIT_REPLY_MIN_CHARS = 200;
+
+/**
+ * A reply split by its turn's last tool calls (the answer, then e.g. a
+ * scratchpad write, then a line or nothing) keeps its first part in the folded
+ * view: when the text just before that last run of calls is substantial and
+ * longer than the text after it, that text and the run's calls show too.
+ * Thinking and tool output stay folded.
+ */
+function revealSplitReply(
+  messages: readonly Message[],
+  from: number,
+  lastToolMessage: number,
+  lastToolBlock: number,
+  hiddenByMessage: Array<boolean[] | null>,
+): void {
+  const steps: Array<{ message: number; block: number; value: Block }> = [];
+  let last = -1;
+  for (let index = from; index < from + hiddenByMessage.length; index++) {
+    if (!hiddenByMessage[index - from]) continue;
+    (messages[index] as AIMessage).blocks.forEach((value, block) => {
+      if (index === lastToolMessage && block === lastToolBlock) last = steps.length;
+      steps.push({ message: index, block, value });
+    });
+  }
+  if (last < 0) return;
+  const chars = (block: Block) => block.type === "text" ? block.text.trim().length : 0;
+  let after = 0;
+  for (let step = last + 1; step < steps.length; step++) after += chars(steps[step].value);
+  // The last run of calls: back to the nearest text with something in it.
+  let runStart = last;
+  while (runStart > 0 && !hasText(steps[runStart - 1].value)) runStart--;
+  // The text just before it: back to the previous tool block.
+  let textStart = runStart;
+  let before = 0;
+  while (textStart > 0 && !isToolBlock(steps[textStart - 1].value)) {
+    textStart--;
+    before += chars(steps[textStart].value);
+  }
+  if (before < SPLIT_REPLY_MIN_CHARS || before <= after) return;
+  for (let step = textStart; step <= last; step++) {
+    const { message, block, value } = steps[step];
+    if (hasText(value) || value.type === "tool_call") hiddenByMessage[message - from]![block] = false;
+  }
+}
+
 function planTurn(
   messages: readonly Message[],
   start: number,
@@ -704,12 +752,15 @@ function planTurn(
       continue;
     }
     if (firstAssistant < 0) firstAssistant = index;
-    const hidden = msg.blocks.map((block, blockIndex) => inProgress
+    hiddenByMessage.push(msg.blocks.map((block, blockIndex) => inProgress
       || index < lastToolMessage
       || (index === lastToolMessage && blockIndex <= lastToolBlock)
-      || block.type === "thinking");
-    if (msg.blocks.some((block, blockIndex) => hasText(block) && !hidden[blockIndex])) reply = true;
-    hiddenByMessage.push(hidden);
+      || block.type === "thinking"));
+  }
+  if (!inProgress && lastToolMessage >= 0) revealSplitReply(messages, from, lastToolMessage, lastToolBlock, hiddenByMessage);
+  for (let index = from; index < to; index++) {
+    const hidden = hiddenByMessage[index - from];
+    if (hidden && (messages[index] as AIMessage).blocks.some((block, blockIndex) => hasText(block) && !hidden[blockIndex])) reply = true;
   }
   // A folded turn with nothing to read drops its metadata line.
   const metaHidden = !inProgress && !reply;
