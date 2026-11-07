@@ -45,7 +45,7 @@ import { expandMacros, macroEnvironmentForState } from "./macros";
 import { applyInlineCommands, type InlineCommandApplication } from "./inlineeffort";
 import { resolveSlashShorthands } from "./slashsearch";
 import { advanceDeferredHistoryRender, hasDeferredHistoryRenderWork, render, invalidateHistoryRenderCache } from "./render";
-import { preserveViewportAcrossResize, preserveViewportAcrossTurnEnd } from "./chatscroll";
+import { preserveViewportAcrossResize } from "./chatscroll";
 import { invalidateFrame, scrollRegionsEnabled } from "./frame";
 import {
   SMOOTH_SCROLL_FRAME_MS, SMOOTH_SCROLL_OFF, SMOOTH_SCROLL_ON, SMOOTH_SCROLL_QUERY,
@@ -58,7 +58,7 @@ import { workingRowVisible } from "./conversation";
 import { createMessageMetadata, createPendingAI, type ImageAttachment, type UserMessage } from "./messages";
 import { loginPromptProviders } from "./providerselection";
 import { handleEvent } from "./events";
-import { handleStreamingStopped } from "./events/streaming";
+import { showStoppedLocally } from "./localstop";
 import { beginConversationLoad, beginOptimisticConversation } from "./events/conversations";
 import { beginProvisionalOpen, cachedOpenEvents, liveCatchup, noteProvisionalPlacement, reconcileProvisionalOpen } from "./cachedopen";
 import type { CachedView } from "./viewcache";
@@ -235,38 +235,17 @@ function generateClientConversationId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function pendingAIHasVisibleContent(): boolean {
-  return state.pendingAI?.blocks.some((block) => {
-    if (block.type === "text" || block.type === "thinking") return block.text.trim().length > 0;
-    return true;
-  }) ?? false;
-}
-
 /**
- * Ctrl+Q shows the stop at once instead of a round trip later: the reply
- * freezes where it is, the interrupt notice appears and the sidebar's dot goes
- * off. The rest of that turn's stream is dropped. The daemon keeps what it had
- * when the abort reached it, which may run a few words further; a reopen shows it.
+ * Ctrl+Q shows the stop at once instead of a round trip later
+ * (showStoppedLocally). The rest of that turn's stream is dropped. The daemon
+ * keeps what it had when the abort reached it, which may run a few words
+ * further; a reopen shows it.
  */
 function stopLocally(convId: string, startedAt: number | null): void {
   pendingLocalInterruptConvId = convId;
   pendingLocalInterruptStartedAt = startedAt;
   clearStreamTick();
-  const pending = state.pendingAI;
-  if (pending) {
-    // As the daemon does: a tool call cut off before its result isn't kept.
-    const answered = new Set(pending.blocks.flatMap(block => block.type === "tool_result" ? [block.toolCallId] : []));
-    pending.blocks = pending.blocks.filter(block => block.type !== "tool_call" || answered.has(block.toolCallId));
-  }
-  if (pendingAIHasVisibleContent()) {
-    preserveViewportAcrossTurnEnd(state, () => handleStreamingStopped({ type: "streaming_stopped", convId }, state));
-  } else {
-    // Nothing shown yet (still connecting): no empty reply is left behind.
-    clearPendingAI(state);
-    clearStreamingTailMessages(state);
-  }
-  pushSystemMessage(state, "✗ Interrupted", theme.error);
-  markStoppedLocally(state, convId, startedAt);
+  showStoppedLocally(state, convId, startedAt);
 }
 
 function shouldIgnoreEventAfterLocalPreContentInterrupt(event: Event): boolean {
