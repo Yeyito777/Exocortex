@@ -61,6 +61,11 @@ if (!process.env.EXOCORTEX_TEST_CONFIG_READY) {
 
   process.env.EXOCORTEX_CONFIG_DIR = configDir;
   mkdirSync(configDir, { recursive: true });
+  // Never the real Claude Code: a fresh config has no cached login, so the
+  // first bootstrap ran `claude auth status` (which can refresh the user's
+  // OAuth login) and a usage refresh started a real Claude Code process. A
+  // missing binary reads as not signed in. Tests that need one set their own.
+  process.env.CLAUDE_CODE_BIN = join(configDir, "no-claude-code-in-tests");
 
   if (!configured) {
     process.on("exit", () => {
