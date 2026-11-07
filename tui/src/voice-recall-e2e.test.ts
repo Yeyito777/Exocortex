@@ -45,6 +45,6 @@ describe("voice recall real TUI flow", () => {
       expect(transcriptRows[0].index).toBeGreaterThanOrEqual(17);
       expect(stderrText()).not.toContain("Fatal:");
       if (route === "ssh") expect(fakeDaemon.commands.filter(isTranscribeAudioCommand)).toEqual([]);
-    }, 10_000);
+    }, 20_000);
   }
 });

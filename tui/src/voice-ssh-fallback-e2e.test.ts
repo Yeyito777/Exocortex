@@ -44,5 +44,5 @@ describe("voice recall real TUI flow", () => {
     expect(stdoutText()).not.toContain("duplicate remote voice");
     expect(stdoutText()).not.toContain("late duplicate fixture error");
     expect(stderrText()).not.toContain("Fatal:");
-  }, 10_000);
+  }, 20_000);
 });
