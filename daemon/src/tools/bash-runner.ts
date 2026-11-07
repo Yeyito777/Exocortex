@@ -59,6 +59,8 @@ type RunnerEvent =
 let commandProcess: ChildProcessWithoutNullStreams | null = null;
 let terminalProcess: Bun.Subprocess | null = null;
 let terminal: Bun.Terminal | undefined;
+/** When the terminal last delivered output (performance.now()). */
+let terminalOutputAt = 0;
 let captureLimitBytes: number | undefined;
 let backgroundCaptureLimitBytes: number | undefined;
 let outputPath: string | undefined;
@@ -269,6 +271,20 @@ function enableBackgrounding(request: BackgroundRequest): void {
   });
 }
 
+/**
+ * A PTY's last output can still be on its way after the command exits, and no
+ * end of file comes while this process holds the terminal: wait until it has
+ * been quiet for a moment (at most 2 s, for a descendant that keeps writing).
+ */
+async function terminalQuiet(): Promise<void> {
+  const deadline = performance.now() + 2_000;
+  while (performance.now() < deadline) {
+    const last = terminalOutputAt;
+    await Bun.sleep(30);
+    if (terminalOutputAt === last) return;
+  }
+}
+
 function finish(code: number | null, signal: string | null): void {
   // Output still being moved into the capture is written before the exit line.
   if (rotation) {
@@ -382,14 +398,18 @@ function start(request: StartRequest): void {
     const args = request.windows ? ["-NoProfile", "-Command", request.command] : [request.login ? "-lc" : "-c", request.command];
     if (request.tty) {
       if (request.windows) throw new Error("PTY execution is not supported on Windows by this runner");
-      terminal = new Bun.Terminal({ cols: 120, rows: 30, data: (_term, data) => writeOutput(Buffer.from(data)) });
+      terminal = new Bun.Terminal({ cols: 120, rows: 30, data: (_term, data) => {
+        terminalOutputAt = performance.now();
+        writeOutput(Buffer.from(data));
+      } });
       terminalProcess = Bun.spawn([shell, ...args], {
         cwd: request.cwd, env: request.env ?? process.env, terminal, detached: true,
       });
       send({ type: "started", pid: terminalProcess.pid });
       if (request.timeoutMs) commandTimeout = setTimeout(terminateCommandTree, request.timeoutMs);
       if (request.stdin) terminal.write(request.stdin);
-      void terminalProcess.exited.then(code => {
+      void terminalProcess.exited.then(async code => {
+        await terminalQuiet();
         // Newer Bun types also allow a signal number here.
         const signal = terminalProcess?.signalCode ?? null;
         finish(code, signal === null ? null : String(signal));

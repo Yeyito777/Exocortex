@@ -9,7 +9,8 @@ import type { ActiveToolBackgrounder, BackgroundTaskCompletion, ToolExecutionCon
 import { waitForConversationTask } from "../conversation-activity";
 
 const context: ToolExecutionContext = { conversationId: "unified-exec-test", provider: "openai", cwd: tmpdir() };
-const run = (cmd: string, extra: Record<string, unknown> = {}, ctx = context, signal?: AbortSignal) => execCommand.execute({ cmd, shell: "/bin/bash", login: false, yield_time_ms: 1000, ...extra }, ctx, signal);
+// A yield ends as soon as the command exits, so waits for an exit are long: under load a shell can take over a second.
+const run = (cmd: string, extra: Record<string, unknown> = {}, ctx = context, signal?: AbortSignal) => execCommand.execute({ cmd, shell: "/bin/bash", login: false, yield_time_ms: 10_000, ...extra }, ctx, signal);
 
 afterAll(async () => {
   internals.stopAll();
@@ -51,7 +52,7 @@ describe.skipIf(process.platform === "win32")("Codex unified exec", () => {
       firstOutput += JSON.parse((await writeStdin.execute({ session_id: body.session_id, yield_time_ms: 100 }, ctx)).output).output;
     }
     expect(firstOutput).toContain("first:one");
-    const second = await writeStdin.execute({ session_id: body.session_id, chars: "two\n", yield_time_ms: 1000 }, ctx);
+    const second = await writeStdin.execute({ session_id: body.session_id, chars: "two\n", yield_time_ms: 10_000 }, ctx);
     const final = JSON.parse(second.output);
     expect(final.exit_code).toBe(0);
     expect(final.output).toContain("second:two");
@@ -76,10 +77,19 @@ describe.skipIf(process.platform === "win32")("Codex unified exec", () => {
       output += JSON.parse((await writeStdin.execute({ session_id: body.session_id, yield_time_ms: 100 }, context)).output).output;
     }
     expect(output).toContain("PTY-ready");
-    const response = await writeStdin.execute({ session_id: body.session_id, chars: "hello\n", yield_time_ms: 1000 }, context);
+    const response = await writeStdin.execute({ session_id: body.session_id, chars: "hello\n", yield_time_ms: 10_000 }, context);
     expect(response.isError).toBe(false);
     expect(JSON.parse(response.output).exit_code).toBe(0);
     expect(JSON.parse(response.output).output).toContain("got:hello");
+  });
+
+  test("a PTY command's output just before it exits is kept", async () => {
+    // The tail of a burst is still being read from the terminal when the command exits.
+    for (let i = 0; i < 5; i++) {
+      const body = JSON.parse((await run("printf '%8000s' x; printf PTY-END", { tty: true })).output);
+      expect(body.exit_code).toBe(0);
+      expect(body.output.endsWith("xPTY-END")).toBe(true);
+    }
   });
 
   test("polls unobserved completion and stops exact tasks without notifying", async () => {
