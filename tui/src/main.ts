@@ -115,7 +115,6 @@ import { requestToolOutputs, requestVisibleToolOutputs } from "./events/tool-out
 import { prefetchBottomScreen, requestElidedBlocksIfNeeded } from "./events/elided-blocks";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
 import { log, TUI_LOG_PATH } from "./log";
-import { noteStalledHistoryNavigation } from "./historydiag";
 import { installFatalErrorHandlers } from "./fatal";
 import { ConversationPrewarmer } from "./prewarm";
 import { FirstTextUX } from "./first-text";
@@ -583,15 +582,9 @@ function scheduleDayRolloverRender(): void {
  */
 function requestOlderHistory(turns: number, requestSource: "initial-backfill" | "viewport" = "viewport", pushedReqId?: string): boolean {
   // A cached copy's cursors may be stale: older pages wait for the open's answer.
-  if (!pushedReqId && isProvisionalStale(state)) {
-    noteStalledHistoryNavigation(state, "cached copy not confirmed yet");
-    return false;
-  }
+  if (!pushedReqId && isProvisionalStale(state)) return false;
   const request = beginOlderHistoryLoad(state, turns);
-  if (!request) {
-    noteStalledHistoryNavigation(state, state.historyLoadingOlder ? "in-flight" : "no older cursor");
-    return false;
-  }
+  if (!request) return false;
   state.historyLoadingRequestId = pushedReqId ?? daemon.loadConversationHistory(
     request.convId,
     request.beforeEntryIndex,
@@ -618,7 +611,6 @@ function loadConversationWindow(convId: string): string {
 
 function maybeRequestOlderHistory(): void {
   if (olderHistoryDue(state)) requestOlderHistory(OLDER_HISTORY_PAGE_TURNS);
-  else noteStalledHistoryNavigation(state, state.historyLoadingOlder ? "in-flight" : "not due");
 }
 
 // ── Event handler (daemon → TUI) ───────────────────────────────────
