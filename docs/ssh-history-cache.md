@@ -15,6 +15,9 @@ conversation, least recently opened out first) in
 the history revision they were built at. The directory is the index: a file's
 name carries its conversation, revision and fold, its mtime the last open.
 Copies that pushes update are written at most every 5 s, and on exit.
+TUIs on one machine share the directory; a copy another wrote over this one's
+is still painted, but never named to the daemon by number (`baseCopy`, below):
+the daemon's record is of this connection's copy.
 
 **Opening one** (`tui/src/cachedopen.ts`) paints the copy on the first frame,
 as if the daemon had answered, a running turn's live part and status rows

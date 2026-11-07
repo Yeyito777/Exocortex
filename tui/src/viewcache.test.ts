@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HistoryCache } from "./history-cache";
 import { encodeHistoryDelta } from "@exocortex/shared/history-delta";
+import { encodePagePush, pageBase } from "@exocortex/shared/history-push";
 import type { Command, DisplayEntry, Event } from "./protocol";
 import { ViewCache, ViewCacheStore, type CachedView, type ViewCacheContext } from "./viewcache";
 
@@ -315,6 +316,54 @@ describe("copies kept current by pushes", () => {
     expect(cache.decodeCopyAnswer({ ...loaded("c", "r4", "e.1", []), entryOrder: [-9], baseCopy: 1 }, command => retried.push(command))).toBeNull();
     expect(retried[0]).not.toHaveProperty("baseCopy");
     expect(cache.prepare(open("c", "r5"))).not.toHaveProperty("baseCopy");
+  });
+
+  /**
+   * Two TUIs on one machine share the directory. Each watches its own copy of
+   * c (their windows differ, so the daemon split the pages differently), a
+   * turn ends and both keep the push; B quits last, writing its copy over A's.
+   */
+  async function sharedDirectory() {
+    const dir = tempDir();
+    const tui = (copySeq: number, pageEntries: DisplayEntry[], backfillEntries: DisplayEntry[]) => {
+      const cache = new ViewCache(new ViewCacheStore(dir, undefined, 60_000), 1);
+      cache.setContext(() => ({ openConvId: null, request: () => ({ turns: 5, backfillTurns: 10 }), summary: () => ({ streaming: false }) }));
+      cache.connected(() => {});
+      cache.sent(cache.prepare(open("c", `${copySeq}`)));
+      cache.receive(loaded("c", `${copySeq}`, "e.1", pageEntries, { copySeq, initialBackfillReqId: `${copySeq}-b` }));
+      cache.receive(page("c", `${copySeq}-b`, "e.1", backfillEntries));
+      const next = [...pageEntries, entry("5")];
+      const { reqId: _r, ...built } = loaded("c", "", "e.2", next);
+      cache.receive({ type: "history_push", convId: "c", base: copySeq, copySeq: copySeq + 1, rev: "e.2", loaded: encodePagePush(built, pageBase(pageEntries)) });
+      return { cache, record: { seq: copySeq + 1, page: next, backfill: backfillEntries } };
+    };
+    const a = tui(10, [entry("3"), entry("4")], [entry("1"), entry("2")]);
+    const b = tui(20, [entry("2"), entry("3"), entry("4")], [entry("1")]);
+    await a.cache.store.flush();
+    b.cache.store.flushSync();
+    return a;
+  }
+
+  test("a copy another TUI wrote over is not named by number, so the open's pages are never rebuilt from it", async () => {
+    const { cache, record } = await sharedDirectory();
+    const command = cache.prepare(open("c", "r2"));
+    cache.sent(command);
+    // As the daemon answers: against its record of A's copy when the open names it, else whole.
+    const fromRecord = <T extends Loaded | Page>(event: T, base: DisplayEntry[]) =>
+      command.baseCopy === record.seq ? { ...encodePagePush(event, pageBase(base)), baseCopy: record.seq } : event;
+    const shown = [
+      fromRecord(loaded("c", "r2", "e.2", record.page, { copySeq: 30, initialBackfillReqId: "r2-b" }), record.page),
+      fromRecord(page("c", "r2-b", "e.2", record.backfill), record.backfill),
+    ].map(event => cache.decodeCopyAnswer(event));
+    expect(shown.map(event => event?.type === "error" ? event.message : (event as Loaded | Page).entries)).toEqual([record.page, record.backfill]);
+  });
+
+  test("a push for a copy another TUI wrote over is not applied to that one", async () => {
+    const { cache, record } = await sharedDirectory();
+    const { reqId: _r, ...built } = loaded("c", "", "e.3", [...record.page, entry("6")]);
+    cache.receive({ type: "history_push", convId: "c", base: record.seq, copySeq: record.seq + 1, rev: "e.3", loaded: encodePagePush(built, pageBase(record.page)) });
+    expect(cache.view("c", true)!.loaded.entries).toEqual([entry("2"), entry("3"), entry("4"), entry("5")]);
+    expect(cache.prepare(open("c", "r3"))).not.toHaveProperty("baseCopy");
   });
 
   test("write pushed copies lazily, and all of them on exit; a restarted TUI reads them as not known current", async () => {
