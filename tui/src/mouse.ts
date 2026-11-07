@@ -31,6 +31,7 @@ import { sameSidebarItem } from "./sidebar/items";
 import { focusSidebarItem } from "./sidebar/selection";
 import { imageAtHistoryPosition, openableTargetAtHistoryPosition } from "./historyopenable";
 import { nextGrapheme } from "./textwidth";
+import { userTextCanonicalCells, type UserTextSpan } from "./usertextcells";
 import { stripAnsi } from "./historymotions";
 import type { InlineImageTarget } from "./inlineimages";
 import { accountsScreenAvailable } from "./accountsscreen";
@@ -99,6 +100,7 @@ function screenToHistoryPos(
 
   // Map screen column to content column (account for sidebar offset)
   const contentCol = screenCol - layout.chatCol;
+  if (viewportRow.userText) return userTextHistoryPos(contentCol, lineIdx, viewportRow.userText, state);
   const sourceCol = Math.max(0, contentCol - viewportRow.displayPrefixWidth);
   const plain = stripAnsi(lines[lineIdx]);
   let offset = viewportRow.startCol;
@@ -111,6 +113,33 @@ function screenToHistoryPos(
   }
   const col = clampCol(offset, lines, lineIdx);
   return { row: lineIdx, col };
+}
+
+/** A column of a bubble row reflowed beside the Tasks panel, as the canonical position it shows. */
+function userTextHistoryPos(
+  contentCol: number, lineIdx: number, text: UserTextSpan, state: RenderState,
+): { row: number; col: number } {
+  const lines = state.historyLines;
+  const cells = userTextCanonicalCells(state.historyLineAnchors, lineIdx, text);
+  const document = state.historyLineAnchors[lineIdx]?.userFlowDocument;
+  const source = document?.hardLines[text.source.lineIndex]
+    ?? document?.badges[text.source.lineIndex - (document?.hardLines.length ?? 0)]
+    ?? "";
+  const rowText = source.slice(text.source.offset, text.source.offset + text.length);
+  let offset = 0;
+  let width = 0;
+  while (offset < rowText.length) {
+    const [size, end] = nextGrapheme(rowText, offset);
+    if (width + size > contentCol - text.col) break;
+    width += size;
+    offset = end;
+  }
+  // A wrap point the canonical layout does not show lands on the character before it.
+  let index = Math.min(offset, cells.length - 1);
+  while (index > 0 && cells[index].col === null) index--;
+  const cell = cells[index];
+  if (!cell || cell.col === null) return { row: lineIdx, col: clampCol(0, lines, lineIdx) };
+  return { row: cell.lineIndex, col: clampCol(cell.col, lines, cell.lineIndex) };
 }
 
 /** Exact hit test for images: in a strip, the click must land on a thumbnail, caption, or `› +N`. */
