@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { buildDisplayRows, createSidebarState } from "./sidebar";
 import type { ConversationSummary, FolderSummary } from "./messages";
-import type { SidebarState } from "./sidebar/state";
+import { insertConversation, type SidebarState } from "./sidebar/state";
+import { editConversation, editFolder } from "./sidebar/version";
 
 function conversation(id: string, sortOrder: number, overrides: Partial<ConversationSummary> = {}): ConversationSummary {
   return {
@@ -39,18 +40,25 @@ describe("sidebar display rows cache", () => {
     expect(buildDisplayRows(sidebar)).toBe(first);
   });
 
-  test("summaries changed in place relayout the rows", () => {
+  test("summaries edited in place relayout the rows", () => {
+    const sidebar = sidebarWith("tree");
+    expect(ids(sidebar)).toEqual(["box", "a", "b"]);
+    editConversation(sidebar, sidebar.conversations[1]!, { pinned: true });
+    expect(ids(sidebar)).toEqual(["label", "b", "delimiter", "box", "a"]);
+    editConversation(sidebar, sidebar.conversations[1]!, { pinned: false });
+    editConversation(sidebar, sidebar.conversations[0]!, { sortOrder: 9 });
+    expect(ids(sidebar)).toEqual(["box", "b", "a"]);
+    editConversation(sidebar, sidebar.conversations[1]!, { folderId: "box" });
+    expect(ids(sidebar)).toEqual(["box", "a"]);
+    editFolder(sidebar, sidebar.folders[0]!, { pinned: true });
+    expect(ids(sidebar)).toEqual(["label", "box", "delimiter", "a"]);
+  });
+
+  test("an in-place edit that skips the version bump fails under the check", () => {
     const sidebar = sidebarWith("tree");
     expect(ids(sidebar)).toEqual(["box", "a", "b"]);
     sidebar.conversations[1]!.pinned = true;
-    expect(ids(sidebar)).toEqual(["label", "b", "delimiter", "box", "a"]);
-    sidebar.conversations[1]!.pinned = false;
-    sidebar.conversations[0]!.sortOrder = 9;
-    expect(ids(sidebar)).toEqual(["box", "b", "a"]);
-    sidebar.conversations[1]!.folderId = "box";
-    expect(ids(sidebar)).toEqual(["box", "a"]);
-    sidebar.folders[0]!.pinned = true;
-    expect(ids(sidebar)).toEqual(["label", "box", "delimiter", "a"]);
+    expect(() => buildDisplayRows(sidebar)).toThrow(/without touchSidebar/);
   });
 
   test("expanding and collapsing a tree folder in place relayouts the rows", () => {
@@ -76,7 +84,7 @@ describe("sidebar display rows cache", () => {
   test("added, removed and replaced lists relayout the rows", () => {
     const sidebar = sidebarWith("tree");
     buildDisplayRows(sidebar);
-    sidebar.conversations.push(conversation("d", -1));
+    insertConversation(sidebar, sidebar.conversations.length, conversation("d", -1));
     expect(ids(sidebar)).toEqual(["d", "box", "a", "b"]);
     sidebar.conversations = sidebar.conversations.filter(conv => conv.id !== "a");
     expect(ids(sidebar)).toEqual(["d", "box", "b"]);

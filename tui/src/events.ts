@@ -6,6 +6,7 @@
  * routing visible in one place.
  */
 
+import { editConversation } from "./sidebar/version";
 import type { RenderState } from "./state";
 import { clearPendingAI, clearStreamingTailMessages, isLocalOnlyMessage, pushSystemMessage, releaseLocalStop } from "./state";
 import { handleInstructionsEvent } from "./instructions/controller";
@@ -330,7 +331,7 @@ export function handleEvent(
 
     case "conversation_marked": {
       const conv = state.sidebar.conversations.find(c => c.id === event.convId);
-      if (conv) conv.marked = event.marked;
+      if (conv) editConversation(state.sidebar, conv, { marked: event.marked });
       break;
     }
 

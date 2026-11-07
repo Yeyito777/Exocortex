@@ -1,4 +1,5 @@
 import { topUnpinnedOrder, type SidebarItemRef } from "../messages";
+import { editConversation, editFolder } from "./version";
 import type { MoveSidebarItemsOptions } from "../protocol";
 import { reconcileNotificationMutes } from "./folders";
 import { sidebarItemKey as itemKey } from "./items";
@@ -140,17 +141,12 @@ function projectSidebarItemsMove(
     if (item.type === "conversation") {
       const conversation = sidebar.conversations.find(candidate => candidate.id === item.id);
       if (!conversation) continue;
-      conversation.folderId = safeParent;
-      conversation.pinned = pinned;
-      conversation.sortOrder = order;
+      editConversation(sidebar, conversation, { folderId: safeParent, pinned, sortOrder: order });
       placements.set(itemKey(item)!, { sortOrder: order, parentId: safeParent, pinned });
     } else {
       const folder = sidebar.folders.find(candidate => candidate.id === item.id);
       if (!folder) continue;
-      folder.parentId = safeParent;
-      folder.pinned = pinned;
-      folder.sortOrder = order;
-      folder.updatedAt = now;
+      editFolder(sidebar, folder, { parentId: safeParent, pinned, sortOrder: order, updatedAt: now });
       placements.set(itemKey(item)!, { sortOrder: order, parentId: safeParent, pinned });
     }
   }

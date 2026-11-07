@@ -3,6 +3,7 @@ import type { SidebarSelectableItem } from "./items";
 import type { SidebarPromptState } from "./prompt";
 import { sidebarPromptAutocompleteVisibleRows } from "./prompt";
 import { compareSidebarOrder } from "./order";
+import { assertNoUnversionedEdit, SIDEBAR_VERSION_CHECK, sidebarListVersion } from "./version";
 import { isTreeFolderView, type SidebarFolderView } from "./tree";
 import {
   getActiveSidebarSearchQuery,
@@ -101,11 +102,33 @@ function sameInputs(a: readonly unknown[], b: readonly unknown[]): boolean {
  * The layout is rebuilt only when its inputs change. Every frame and most
  * sidebar keys ask for it; with thousands of conversations each rebuild made
  * two objects per row, so a smooth scroll (a frame per row) produced megabytes
- * of garbage a second. Summaries are updated in place in places, so inputs are
- * compared by value, which allocates nothing.
+ * of garbage a second. Reading every summary to tell whether anything changed
+ * cost ~0.4 ms a frame with 3,900 conversations, so the cache keys on the
+ * lists, their version (sidebar/version.ts: in-place edits bump it) and the
+ * view, not on every summary's fields.
  */
-const displayRowsCaches = new WeakMap<SidebarRowsState, { inputs: unknown[]; rows: readonly DisplayRow[] }>();
-let displayRowsScratch: unknown[] = [];
+interface DisplayRowsCache {
+  conversations: ConversationSummary[];
+  folders: FolderSummary[];
+  version: number;
+  folderView: SidebarFolderView | undefined;
+  currentFolderId: string | null;
+  expanded: string[];
+  rows: readonly DisplayRow[];
+  /** Under SIDEBAR_VERSION_CHECK: every input, to catch an edit that skipped the bump. */
+  inputs: unknown[] | null;
+}
+const displayRowsCaches = new WeakMap<SidebarRowsState, DisplayRowsCache>();
+
+function expandedIds(sidebar: SidebarRowsState): string[] {
+  return isTreeFolderView(sidebar) ? [...(sidebar.expandedFolderIds ?? [])] : [];
+}
+
+function collectAll(sidebar: SidebarRowsState): unknown[] {
+  const inputs: unknown[] = [];
+  collectDisplayRowInputs(sidebar, inputs);
+  return inputs;
+}
 
 /**
  * Build the flat list of display rows from the conversation/folder lists.
@@ -115,14 +138,25 @@ let displayRowsScratch: unknown[] = [];
 export function buildDisplayRows(sidebar: SidebarRowsState): readonly DisplayRow[] {
   const activeQuery = getActiveSidebarSearchQuery(sidebar);
   if (activeQuery) return buildUncachedDisplayRows(sidebar, activeQuery);
-  const inputs = displayRowsScratch;
-  inputs.length = 0;
-  collectDisplayRowInputs(sidebar, inputs);
+  const version = sidebarListVersion(sidebar);
+  const expanded = expandedIds(sidebar);
   const cached = displayRowsCaches.get(sidebar);
-  if (cached && sameInputs(cached.inputs, inputs)) return cached.rows;
+  if (cached
+    && cached.conversations === sidebar.conversations
+    && cached.folders === sidebar.folders
+    && cached.version === version
+    && cached.folderView === sidebar.folderView
+    && cached.currentFolderId === sidebar.currentFolderId
+    && sameInputs(cached.expanded, expanded)) {
+    if (cached.inputs) assertNoUnversionedEdit("rows", cached.inputs, collectAll(sidebar));
+    return cached.rows;
+  }
   const rows = buildUncachedDisplayRows(sidebar, null);
-  displayRowsScratch = cached?.inputs ?? [];
-  displayRowsCaches.set(sidebar, { inputs, rows });
+  displayRowsCaches.set(sidebar, {
+    conversations: sidebar.conversations, folders: sidebar.folders, version,
+    folderView: sidebar.folderView, currentFolderId: sidebar.currentFolderId, expanded, rows,
+    inputs: SIDEBAR_VERSION_CHECK ? collectAll(sidebar) : null,
+  });
   return rows;
 }
 

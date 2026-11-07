@@ -93,9 +93,13 @@ export function formatFinishTime(
   return `${MONTHS[then.month - 1]} ${then.day}${year} ${time}`;
 }
 
+// One formatter for every call: Number#toLocaleString builds a new one each
+// time (~65 µs on the Mac), and live token counts are formatted every frame.
+const tokenCountFormat = new Intl.NumberFormat("en-US");
+
 function formatTokenCount(tokens: number): string {
   if (Number.isInteger(tokens) && tokens > -1000 && tokens < 1000) return `${tokens}`;
-  return tokens.toLocaleString("en-US");
+  return tokenCountFormat.format(tokens);
 }
 
 // ── Renderer ────────────────────────────────────────────────────────

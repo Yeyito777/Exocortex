@@ -5,6 +5,7 @@
 // imports can continue to use "./sidebar", while still owning the top-level
 // key/action routing in the same spirit as commands.ts + commands/.
 
+import { editConversation, editFolder } from "./sidebar/version";
 import type { KeyEvent } from "./input";
 import { resolveAction } from "./keybinds";
 import { bottomPinnedOrder, topUnpinnedOrder, type SidebarItemRef } from "./messages";
@@ -133,16 +134,16 @@ function toggleSelectedMute(sidebar: SidebarState): SidebarKeyResult {
   if (item?.type === "conversation") {
     const conversation = sidebar.conversations.find(candidate => candidate.id === item.id);
     if (!conversation) return { type: "handled" };
-    conversation.muted = conversation.muted !== true;
+    editConversation(sidebar, conversation, { muted: conversation.muted !== true });
     reconcileNotificationMutes(sidebar);
-    return { type: "mute_conversation", convId: conversation.id, muted: conversation.muted };
+    return { type: "mute_conversation", convId: conversation.id, muted: conversation.muted === true };
   }
   if (item?.type === "folder") {
     const folder = sidebar.folders.find(candidate => candidate.id === item.id);
     if (!folder) return { type: "handled" };
-    folder.muted = folder.muted !== true;
+    editFolder(sidebar, folder, { muted: folder.muted !== true });
     reconcileNotificationMutes(sidebar);
-    return { type: "mute_folder", folderId: folder.id, muted: folder.muted };
+    return { type: "mute_folder", folderId: folder.id, muted: folder.muted === true };
   }
   return { type: "handled" };
 }
@@ -180,15 +181,13 @@ function applyPinToItem(sidebar: SidebarState, item: SidebarItemRef, pinned: boo
   if (item.type === "folder") {
     const folder = sidebar.folders.find(f => f.id === item.id);
     if (!folder || folder.pinned === pinned) return null;
-    folder.sortOrder = optimisticSortOrderAfterPin(sidebar, item, pinned);
-    folder.pinned = pinned;
+    editFolder(sidebar, folder, { sortOrder: optimisticSortOrderAfterPin(sidebar, item, pinned), pinned });
     return { item, pinned };
   }
 
   const conv = sidebar.conversations.find(c => c.id === item.id);
   if (!conv || conv.pinned === pinned) return null;
-  conv.sortOrder = optimisticSortOrderAfterPin(sidebar, item, pinned);
-  conv.pinned = pinned;
+  editConversation(sidebar, conv, { sortOrder: optimisticSortOrderAfterPin(sidebar, item, pinned), pinned });
   return { item, pinned };
 }
 
@@ -332,7 +331,7 @@ export function handleSidebarAction(action: string, sidebar: SidebarState): Side
       const conv = getSelectedVisibleConversation(sidebar);
       if (!conv) return { type: "handled" };
       const newMarked = !conv.marked;
-      conv.marked = newMarked;
+      editConversation(sidebar, conv, { marked: newMarked });
       return { type: "mark_conversation", convId: conv.id, marked: newMarked };
     }
 

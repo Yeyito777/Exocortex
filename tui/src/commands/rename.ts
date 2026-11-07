@@ -1,4 +1,5 @@
 import { clearPrompt } from "../promptstate";
+import { editConversation } from "../sidebar/version";
 import { pushSystemMessage } from "../state";
 import { getMarkPrefix } from "../marks";
 import type { SlashCommand } from "./types";
@@ -20,7 +21,7 @@ export const RENAME_COMMAND: SlashCommand = {
     const conv = state.sidebar.conversations.find((conversation) => conversation.id === state.convId);
     const markPrefix = conv ? getMarkPrefix(conv.title) : null;
     const title = markPrefix ? `${markPrefix} ${rawTitle}` : rawTitle;
-    if (conv) conv.title = title;
+    if (conv) editConversation(state.sidebar, conv, { title });
     clearPrompt(state);
     return { type: "rename_conversation", title };
   },
