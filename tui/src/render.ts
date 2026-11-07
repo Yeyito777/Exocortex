@@ -52,9 +52,9 @@ import {
   hasFocusedConversationIntegrations,
   hasFocusedConversationTasks,
   isTaskPanelExpanded,
-  layoutTaskPanel,
   taskPanelHoverTarget,
 } from "./activitypanel";
+import { focusedScratchpadLines, isScratchpadExpanded, layoutSidePanels } from "./scratchpadpanel";
 import { trimAnsiLeadingSpaces, wrapAnsiLine } from "./ansiwrap";
 import { getBtwPanelPreferredHeight, MAX_BTW_PANEL_HEIGHT, renderBtwPanel } from "./btw/panel";
 import { wordWrap } from "./textwrap";
@@ -1661,7 +1661,10 @@ export function render(state: RenderState): boolean {
     || (!hasFocusedConversationTasks(state) && !hasFocusedConversationIntegrations(state)))) {
     state.taskPanelExpansion = null;
   }
-  const taskLayout = layoutTaskPanel(state, chatW, messageAreaHeight);
+  if (state.scratchpadExpansion && (!isScratchpadExpanded(state) || focusedScratchpadLines(state).length === 0)) {
+    state.scratchpadExpansion = null;
+  }
+  const taskLayout = layoutSidePanels(state, chatW, messageAreaHeight);
   const historyWidth = taskLayout.historyWidth;
   const deferredTargetLines = Math.max(1, messageAreaHeight * DEFERRED_HISTORY_TARGET_VIEWPORTS);
   const { lines: allLines, messageBounds, wrapContinuation, wrapJoiners, copyLines, lineAnchors, revision: historyRevision } = getHistoryRender(
@@ -1708,8 +1711,8 @@ export function render(state: RenderState): boolean {
   // screen that the in-flight older history would immediately push down.
   if (shouldHoldOpeningFrame(state)) return false;
 
-  const taskPanelFlowHeight = taskLayout.panel
-    ? Math.min(messageAreaHeight, taskLayout.panel.lines.length + 1)
+  const taskPanelFlowHeight = taskLayout.column
+    ? Math.min(messageAreaHeight, taskLayout.column.height + 1)
     : 0;
   const scrollUpdate = applyChatConversationScroll(
     state,
@@ -1761,10 +1764,13 @@ export function render(state: RenderState): boolean {
   }
   const preserveViewportTop = scrollUpdate.topAnchorRow !== null;
 
-  // Float the task panel over only the history rows it actually occupies,
-  // keeping one extra row narrow below the card as visual breathing room.
+  // Float the task panel (and the Scratchpad card below it) over only the
+  // history rows they actually occupy, keeping one extra row narrow below
+  // them as visual breathing room.
   const taskPanel = taskLayout.panel;
-  const panelFlowHeight = taskPanel ? Math.min(messageAreaHeight, taskPanel.lines.length + 1) : 0;
+  const scratchpad = taskLayout.scratchpad;
+  const column = taskLayout.column;
+  const panelFlowHeight = column ? Math.min(messageAreaHeight, column.height + 1) : 0;
   const viewportRows = composeFloatingHistoryViewport(
     allLines,
     lineAnchors,
@@ -1772,7 +1778,7 @@ export function render(state: RenderState): boolean {
     viewStart,
     messageAreaHeight,
     panelFlowHeight,
-    taskPanel ? historyWidth : chatW,
+    column ? historyWidth : chatW,
     chatW,
     preserveViewportTop,
   );
@@ -1852,6 +1858,22 @@ export function render(state: RenderState): boolean {
     for (let i = 0; i < taskPanel.lines.length; i++) {
       appendRowWrite(ctx, panelTop + i, panelCol, hoverLines.get(i)?.() ?? taskPanel.lines[i]);
     }
+  }
+  // ── Scratchpad card (below the task panel, same right edge) ────
+  state.layout.scratchpadRect = null;
+  state.layout.scratchpadMaxScroll = scratchpad?.maxScroll ?? 0;
+  state.layout.scratchpadToggleable = scratchpad?.toggleable ?? false;
+  if (state.scratchpadExpansion && scratchpad) state.scratchpadExpansion.scroll = scratchpad.scroll;
+  if (scratchpad) {
+    const cardCol = chatCol + chatW - scratchpad.width;
+    const cardTop = messageAreaStart + (taskPanel?.lines.length ?? 0);
+    state.layout.scratchpadRect = {
+      top: cardTop,
+      bottom: cardTop + scratchpad.lines.length - 1,
+      left: cardCol,
+      right: cardCol + scratchpad.width - 1,
+    };
+    for (let i = 0; i < scratchpad.lines.length; i++) appendRowWrite(ctx, cardTop + i, cardCol, scratchpad.lines[i]);
   }
 
   // ── Autocomplete popup (overlays message area above input) ────
@@ -1933,7 +1955,7 @@ export function render(state: RenderState): boolean {
   // Floating overlays are drawn as text, which images (z above text) would
   // cover. The task panel, autocomplete, queue prompt, edit menu, conversation
   // menu, accounts screen and image viewer crop them around their box.
-  const imageCovers: ScreenRect[] = [state.layout.taskPanelRect, autocompleteRect]
+  const imageCovers: ScreenRect[] = [state.layout.taskPanelRect, state.layout.scratchpadRect, autocompleteRect]
     .filter((rect): rect is ScreenRect => rect !== null);
   // A daemon switch can turn images off under an open viewer.
   if (state.imageModal && !inlineImagesActive()) state.imageModal = null;
@@ -1963,7 +1985,7 @@ export function render(state: RenderState): boolean {
   const imageClips = smooth?.imageClipSupported && messageAreaHeight > 0 && !modal
     ? smoothScrollRects(
       { start: messageAreaStart, end: messageAreaStart + messageAreaHeight - 1 },
-      chatCol, chatW, taskPanel ? chatCol + chatW - taskPanel.width : null, messageAreaStart + panelFlowHeight,
+      chatCol, chatW, column ? chatCol + chatW - column.width : null, messageAreaStart + panelFlowHeight,
     )
     : [];
   // Display math may be forced to images on a terminal that failed detection.
@@ -2020,7 +2042,7 @@ export function render(state: RenderState): boolean {
     || !!state.accountsScreen
     || !!state.instructionsModal;
   const legacyScrollRegion = messageAreaHeight > 0 && !overlaysOpen
-    && !sidebarOpen && !taskPanel && !hadHistoryImages && historyImagePlacements.length === 0
+    && !sidebarOpen && !column && !hadHistoryImages && historyImagePlacements.length === 0
     ? { start: messageAreaStart, end: messageAreaStart + messageAreaHeight - 1 }
     : null;
   // Region scrolls: the band is the longest run of message rows no floating
@@ -2042,7 +2064,7 @@ export function render(state: RenderState): boolean {
     : legacyScrollRegion;
 
   const smoothRects = smooth && scrollRegion
-    ? smoothScrollRects(scrollRegion, chatCol, chatW, taskPanel ? chatCol + chatW - taskPanel.width : null, messageAreaStart + panelFlowHeight)
+    ? smoothScrollRects(scrollRegion, chatCol, chatW, column ? chatCol + chatW - column.width : null, messageAreaStart + panelFlowHeight)
     : [];
   flushFrame(state, {
     afterScroll: smooth ? (regionShift, intact) => smooth.afterFlush(regionShift, smoothRects, intact, imageClips) : undefined,

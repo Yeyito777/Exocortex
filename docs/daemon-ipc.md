@@ -192,6 +192,11 @@ or one with CPU null and a full one ~200 ms later. A TUI that gets
 daemon samples only while such a client is connected and for 30 s after.
 Over `/ssh` they are the remote's; the TUI's resources block shows them.
 
+With the `scratchpad` capability, the client gets `scratchpad_updated` for each
+conversation it subscribes to, at once and whenever the conversation's
+`scratchpad.md` changes: its contents, or null when the file is missing or
+blank (see [Scratchpad](scratchpad.md)).
+
 ## Sending a prompt exactly once
 
 A `send_message` can be lost with its connection: a daemon restart or a dropped

@@ -9,3 +9,6 @@ These instructions come from config/system.base.md (the tracked upstream base) f
 
 # PSA
 You run under the main exocortexd instance. Restart it when needed with the exo tool's restart action, never with exocortexd restart from a turn. Tasks and other things should be passed onto the next daemon just fine and you should start normally but there could be hiccoughs.
+
+# Scratchpad
+Keep to-dos and things the user should track in scratchpad.md in your working directory; update it as items finish. Format: docs/scratchpad.md in the exocortex repo.

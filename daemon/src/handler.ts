@@ -108,6 +108,7 @@ import { claudeAccountReports } from "./providers/anthropic/account-pool";
 import { formatClaudeAccountReports } from "./providers/anthropic/account-report";
 import { createAccountsWatch } from "./accounts-watch";
 import { createMachineResourcesWatch } from "./machine-resources";
+import { createScratchpadWatch } from "./scratchpad";
 import { DISPLAY_BLOCKS_RESPONSE_BYTES, HISTORY_PAGE_BYTE_BUDGET, INITIAL_HISTORY_TURNS, MAX_DISPLAY_BLOCK_RANGES, MAX_HISTORY_REQUEST_TURNS, buildHistoryUpdatedEvents, isValidHistoryViewport, isValidInitialBackfill, compactHistoryImages, pageDisplayHistory, type HistoryViewport, type HistoryWindowOptions } from "./history-pagination";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
 import { randomUUID } from "crypto";
@@ -435,6 +436,15 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   });
   /** The status bar's resources block: this machine's CPU, RAM, GPU and VRAM, for machine-resources clients (dropped at the first sample after they disconnect). */
   const machineResources = createMachineResourcesWatch({ send: (client, event) => { server.sendTo(client, event); } });
+  /** The Scratchpad panel: each followed conversation's scratchpad.md, for scratchpad clients (scratchpad.ts). */
+  const scratchpads = createScratchpadWatch({ send: (client, event) => { server.sendTo(client, event); } });
+  const stopScratchpadSubscriptions = typeof server.onSubscriptionChanged === "function"
+    ? server.onSubscriptionChanged((client, convId, subscribed) => {
+        if (!client.capabilities.has("scratchpad")) return;
+        if (subscribed) scratchpads.subscribed(client, convId);
+        else scratchpads.unsubscribed(client, convId);
+      })
+    : () => {};
 
   // ── /proxy ────────────────────────────────────────────────────────
 
@@ -2415,6 +2425,11 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
               || capability === "history-revisions"
               || capability === "history-push"
               || capability === "turn-catchup") client.capabilities.add(capability);
+        }
+        if (cmd.capabilities.includes("scratchpad") && !client.app && !client.providerProxyLink
+            && !client.capabilities.has("scratchpad")) {
+          client.capabilities.add("scratchpad");
+          for (const convId of client.subscriptions) scratchpads.subscribed(client, convId);
         }
         if (cmd.capabilities.includes("machine-resources") && !client.app && !client.providerProxyLink) {
           client.capabilities.add("machine-resources");
@@ -4687,6 +4702,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       stopAppApi();
       videoPlayback?.dispose();
       machineResources.dispose();
+      stopScratchpadSubscriptions();
+      scratchpads.stop();
       unsubscribeConnectivity();
       setApiKeyUsageRecordedListener(null);
       setCreditSyncListener(null);
