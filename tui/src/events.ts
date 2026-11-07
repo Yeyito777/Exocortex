@@ -73,6 +73,7 @@ import { confirmDirectSendRequest, restoreUnconfirmedSends, settleRejectedDirect
 import { formatChronoResult } from "./chronoschedule";
 import { turnRequestStartedAt } from "./request-ids";
 import { applyMachineResources, machineResourcesBootstrapped } from "./machine-resources";
+import { scratchpadHash } from "@exocortex/shared/scratchpad";
 
 export type { DaemonActions } from "./events/types";
 
@@ -302,8 +303,12 @@ export function handleEvent(
       break;
 
     case "scratchpad_updated":
-      if (event.content === null) state.scratchpads.delete(event.convId);
-      else state.scratchpads.set(event.convId, event.content);
+      // Summaries say which contents a conversation shows; these are only held.
+      if (event.content !== null) state.scratchpads.put(event.hash ?? scratchpadHash(event.content), event.content);
+      break;
+
+    case "scratchpads":
+      for (const { hash, content } of event.scratchpads) state.scratchpads.put(hash, content);
       break;
 
     case "goal_updated":

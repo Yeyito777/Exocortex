@@ -18,6 +18,11 @@ import {
   wrapRuns,
 } from "./scratchpadpanel";
 import { createInitialState, type RenderState } from "./state";
+import { ScratchpadStore } from "./scratchpadstore";
+import { scratchpadHash } from "@exocortex/shared/scratchpad";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { termWidth } from "./textwidth";
 import { theme } from "./theme";
 
@@ -54,11 +59,19 @@ function tasks(count: number): ConversationTaskSummary[] {
   return Array.from({ length: count }, (_, i) => ({ id: `bash:${i}`, kind: "background" as const, title: `Command ${i}`, startedAt: NOW - 1_000, toolName: "bash" }));
 }
 
+/** What the daemon sends: the contents (held by hash), and the summary naming them. */
+function hold(state: RenderState, convId: string, content: string): void {
+  const hash = scratchpadHash(content);
+  state.scratchpads.put(hash, content);
+  const summary = state.sidebar.conversations.find(conversation => conversation.id === convId);
+  if (summary) summary.scratchpad = hash;
+}
+
 function stateWith(content: string | null, taskList: ConversationTaskSummary[] = []): RenderState {
   const state = createInitialState();
   state.convId = "conv";
   state.sidebar.conversations = [conversation(state, "conv", taskList), conversation(state, "other")];
-  if (content !== null) state.scratchpads.set("conv", content);
+  if (content !== null) hold(state, "conv", content);
   return state;
 }
 
@@ -282,17 +295,120 @@ describe("scratchpad clicks", () => {
     const state = screen(LONG);
     click(state, state.layout.scratchpadRect!.left + 2, state.layout.scratchpadRect!.top + 1);
     expect(isScratchpadExpanded(state)).toBe(true);
-    handleEvent({ type: "scratchpad_updated", convId: "conv", content: "- [ ] only one" }, state, {} as never);
-    capture(() => render(state));
+    const summary = () => state.sidebar.conversations.find(conversation => conversation.id === "conv")!;
+    const update = (content: string | null) => {
+      if (content !== null) handleEvent({ type: "scratchpad_updated", convId: "conv", content, hash: scratchpadHash(content) }, state, {} as never);
+      const { scratchpad: _old, ...rest } = summary();
+      handleEvent({ type: "conversation_updated", summary: { ...rest, ...(content !== null ? { scratchpad: scratchpadHash(content) } : {}) } }, state, {} as never);
+      capture(() => render(state));
+    };
+    update("- [ ] only one");
     expect(state.layout.scratchpadRect!.bottom - state.layout.scratchpadRect!.top + 1).toBe(3);
-    handleEvent({ type: "scratchpad_updated", convId: "conv", content: null }, state, {} as never);
-    capture(() => render(state));
+    update(null);
     expect(state.layout.scratchpadRect).toBeNull();
     expect(state.scratchpadExpansion).toBeNull();
     expect(state.layout.historyWidth).toBe(120);
-    // Another conversation's file never shows here.
-    handleEvent({ type: "scratchpad_updated", convId: "other", content: "- [ ] elsewhere" }, state, {} as never);
+    // Another conversation's contents never show here.
+    handleEvent({ type: "scratchpad_updated", convId: "other", content: "- [ ] elsewhere", hash: scratchpadHash("- [ ] elsewhere") }, state, {} as never);
     capture(() => render(state));
     expect(state.layout.scratchpadRect).toBeNull();
+  });
+});
+
+describe("the card paints with the summaries, like Tasks", () => {
+  test("a bootstrap's contents and list paint both cards in the same frame", () => {
+    const state = createInitialState();
+    state.cols = 120;
+    state.rows = 30;
+    state.sidebar.open = false;
+    state.convId = "conv";
+    const summary = { ...conversation(state, "conv", tasks(2)), scratchpad: scratchpadHash(MOCK) };
+    handleEvent({ type: "scratchpads", scratchpads: [{ hash: scratchpadHash(MOCK), content: MOCK }] }, state, {} as never);
+    handleEvent({ type: "conversations_list", conversations: [summary], folders: [] }, state, {} as never);
+    capture(() => render(state));
+    expect(state.layout.taskPanelRect).not.toBeNull();
+    expect(state.layout.scratchpadRect!.top).toBe(state.layout.taskPanelRect!.bottom + 1);
+  });
+
+  test("switching conversations shows each one's card at once, and never another version's", () => {
+    const state = screen(MOCK, tasks(1));
+    state.sidebar.conversations[1]!.tasks = tasks(1);
+    hold(state, "other", "- [ ] the other one");
+    state.convId = "other";
+    capture(() => render(state));
+    expect(state.layout.scratchpadRect!.bottom - state.layout.scratchpadRect!.top + 1).toBe(3);
+    // A summary naming contents not held yet shows no card rather than older contents.
+    state.sidebar.conversations[1]!.scratchpad = scratchpadHash("- [ ] newer");
+    capture(() => render(state));
+    expect(state.layout.scratchpadRect).toBeNull();
+    expect(state.layout.taskPanelRect).not.toBeNull();
+    state.scratchpads.put(scratchpadHash("- [ ] newer"), "- [ ] newer");
+    capture(() => render(state));
+    expect(state.layout.scratchpadRect).not.toBeNull();
+  });
+
+  test("a fresh TUI paints it from the disk store with its first summaries", () => {
+    const dir = mkdtempSync(join(tmpdir(), "exocortex-scratchpad-store-"));
+    try {
+      const path = join(dir, "scratchpad-cache.json");
+      const first = new ScratchpadStore(path);
+      first.put(scratchpadHash(MOCK), MOCK);
+      first.flushSync();
+
+      const state = stateWith(null, tasks(2));
+      state.scratchpads = new ScratchpadStore(path);
+      expect(state.scratchpads.hashes()).toEqual([scratchpadHash(MOCK)]);
+      state.sidebar.conversations[0]!.scratchpad = scratchpadHash(MOCK);
+      state.cols = 120;
+      state.rows = 30;
+      state.sidebar.open = false;
+      capture(() => render(state));
+      expect(state.layout.taskPanelRect).not.toBeNull();
+      expect(state.layout.scratchpadRect).not.toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("scratchpad store", () => {
+  test("round-trips through its file, keeping the most recently used within its bounds", () => {
+    const dir = mkdtempSync(join(tmpdir(), "exocortex-scratchpad-store-"));
+    try {
+      const path = join(dir, "nested", "scratchpad-cache.json");
+      const store = new ScratchpadStore(path, { maxEntries: 3, maxBytes: 1_000 });
+      for (const name of ["a", "b", "c"]) expect(store.put(name, `- [ ] ${name}`)).toBe(true);
+      expect(store.put("a", "- [ ] a")).toBe(false);
+      store.put("d", "- [ ] d");
+      expect(store.hashes()).toEqual(["d", "a", "c"]);
+      expect(store.has("b")).toBe(false);
+      store.put("big", "x".repeat(995));
+      expect(store.hashes()).toEqual(["big"]);
+      store.flushSync();
+      const reread = new ScratchpadStore(path, { maxEntries: 3, maxBytes: 1_000 });
+      expect(reread.hashes()).toEqual(["big"]);
+      expect(reread.get("big")).toBe("x".repeat(995));
+      // Tighter bounds on the next start keep the newest.
+      store.put("e", "- [ ] e");
+      store.flushSync();
+      expect(new ScratchpadStore(path, { maxEntries: 1, maxBytes: 1_000 }).hashes()).toEqual(["e"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a damaged file starts empty, and a memory-only store writes nothing", () => {
+    const dir = mkdtempSync(join(tmpdir(), "exocortex-scratchpad-store-"));
+    try {
+      const path = join(dir, "scratchpad-cache.json");
+      Bun.write(path, "{not json");
+      expect(new ScratchpadStore(path).size).toBe(0);
+      const memory = new ScratchpadStore();
+      memory.put("a", "x");
+      memory.flushSync();
+      expect(memory.get("a")).toBe("x");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

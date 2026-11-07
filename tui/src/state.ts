@@ -33,6 +33,7 @@ import type { UndoState } from "./undo";
 import { commitInsertSession, createUndoState, markInsertEntry } from "./undo";
 import type { AutocompleteState } from "./autocomplete";
 import { DEFAULT_RESOURCES_SHAPE, type ResourcesShape } from "./machine-resources";
+import { ScratchpadStore } from "./scratchpadstore";
 import type { AccountsSnapshot, ConversationDefaultsSnapshot, MachineResources, ConversationGoal, MacroEnvironment, ProviderAuthInfo, UserMacro, ProviderProxyInfo, QueuedCommandInvocation, QueueTiming, QueueWaitTarget as ProtocolQueueWaitTarget, UserMessageAutomation } from "./protocol";
 import type { VoiceChatMessageState, VoicePromptState } from "./voice";
 import type { TokenStatsView } from "./commands/tokens";
@@ -468,8 +469,8 @@ export interface RenderState {
    * the panel collapses when another conversation is shown.
    */
   taskPanelExpansion: { convId: string; scroll: number } | null;
-  /** Each followed conversation's scratchpad.md as the daemon last sent it (scratchpad_updated); blank files are absent. */
-  scratchpads: Map<string, string>;
+  /** Scratchpad contents held, by the hash conversation summaries name them with (scratchpadstore.ts). */
+  scratchpads: ScratchpadStore;
   /** The Scratchpad card expanded by a click, like taskPanelExpansion; at most one of the two is expanded. */
   scratchpadExpansion: { convId: string; scroll: number } | null;
 }
@@ -910,7 +911,7 @@ export function createInitialState(): RenderState {
     accountsPrefetchReqId: null,
     claudeConversationAccounts: new Map(),
     taskPanelExpansion: null,
-    scratchpads: new Map(),
+    scratchpads: new ScratchpadStore(),
     scratchpadExpansion: null,
     undo: createUndoState(),
     autocomplete: null,

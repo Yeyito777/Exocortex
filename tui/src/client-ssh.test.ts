@@ -530,23 +530,18 @@ describe("DaemonClient SSH routing", () => {
     }
   });
 
-  test("a remote daemon's scratchpad reaches the TUI over /ssh, which declares the capability there", async () => {
+  test("over /ssh the TUI tells the remote which scratchpads it holds, and keeps what the remote sends", async () => {
     let remote: FakeProcess | null = null;
     const state = createInitialState();
+    state.scratchpads.put("held0000000a", "- [ ] already here");
     const client = new DaemonClient(event => handleEvent(event, state, client), "/tmp/local.sock", false, {
       spawnSshProcess: () => {
-        const child = respondingProbe();
+        const child = respondingProbe({ type: "scratchpads", scratchpads: [{ hash: "remote000001", content: "- [ ] on the remote\n" }] });
         remote = child;
-        child.stdin.on("data", chunk => {
-          for (const line of chunk.toString().trim().split("\n")) {
-            const cmd = JSON.parse(line);
-            if (cmd.type !== "load_conversation") continue;
-            child.stdout.write(`${JSON.stringify({ type: "scratchpad_updated", convId: cmd.convId, content: "- [ ] on the remote\n" })}\n`);
-          }
-        });
         return child;
       },
     });
+    client.setScratchpadHashes(() => state.scratchpads.hashes());
     try {
       client.ssh("connect", "whale");
       await waitFor(() => client.remoteAlias === "whale");
@@ -554,9 +549,9 @@ describe("DaemonClient SSH routing", () => {
       const capabilities = remote!.input.split("\n").filter(Boolean).map(line => JSON.parse(line))
         .find(command => command.type === "client_capabilities");
       expect(capabilities.capabilities).toContain("scratchpad");
-      client.loadConversation("remote-conv");
-      await waitFor(() => state.scratchpads.has("remote-conv"));
-      expect(state.scratchpads.get("remote-conv")).toBe("- [ ] on the remote\n");
+      expect(capabilities.scratchpadHashes).toEqual(["held0000000a"]);
+      await waitFor(() => state.scratchpads.has("remote000001"));
+      expect(state.scratchpads.get("remote000001")).toBe("- [ ] on the remote\n");
     } finally {
       client.disconnect();
     }

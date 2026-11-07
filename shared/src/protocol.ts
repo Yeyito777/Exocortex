@@ -385,6 +385,8 @@ export interface ClientCapabilitiesCommand {
    * parts, a first page for this view, then the rest. Used once.
    */
   sidebarView?: SidebarViewHint;
+  /** With scratchpad: hashes of the scratchpad contents the client already holds, so the bootstrap leaves them out. */
+  scratchpadHashes?: string[];
 }
 
 /** The user's own machine, as announced by an SSH-connected TUI or a linking daemon. */
@@ -2078,15 +2080,29 @@ export interface MachineResourcesEvent {
 }
 
 /**
- * The conversation's scratchpad.md (in its workspace), for scratchpad clients
- * subscribed to it: sent when a client subscribes and whenever the file
- * changes. `content` is null when the file is missing or blank; it is cut to
- * the last whole line within SCRATCHPAD_MAX_BYTES. See docs/scratchpad.md.
+ * A conversation's scratchpad.md (in its workspace) changed, for scratchpad
+ * clients: sent before the conversation_updated whose summary carries the new
+ * hash, to clients not known to hold these contents yet, and when a client
+ * subscribes to a conversation whose contents it lacks. `content` is null when
+ * the file is missing or blank (older daemons); it is cut to the last whole
+ * line within SCRATCHPAD_MAX_BYTES. See docs/scratchpad.md.
  */
 export interface ScratchpadUpdatedEvent {
   type: "scratchpad_updated";
   convId: string;
   content: string | null;
+  /** scratchpadHash(content); absent from older daemons. */
+  hash?: string;
+}
+
+/**
+ * Bootstrap, for scratchpad clients, ahead of the conversation list: the
+ * contents of scratchpads the client did not list in scratchpadHashes, the
+ * conversations it shows first and the most recent first, up to a size cap.
+ */
+export interface ScratchpadsEvent {
+  type: "scratchpads";
+  scratchpads: Array<{ hash: string; content: string }>;
 }
 
 /** Answer to `accounts`, and pushed to its watchers on change. */
@@ -3099,6 +3115,7 @@ export type Event =
   | UsageUpdateEvent
   | MachineResourcesEvent
   | ScratchpadUpdatedEvent
+  | ScratchpadsEvent
   | AccountsEvent
   | UsageResetResultEvent
   | TokenStatsEvent

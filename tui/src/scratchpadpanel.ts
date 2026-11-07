@@ -1,6 +1,7 @@
 /**
  * The Scratchpad card: the focused conversation's scratchpad.md
- * (docs/scratchpad.md), as the daemon sends it (scratchpad_updated), drawn
+ * (docs/scratchpad.md), as its summary names it (by hash, like Tasks ride on
+ * the summary) from the contents held (scratchpadstore.ts), drawn
  * read-only below the Tasks card in the same right-hand column, or at its top
  * when there is no Tasks card.
  *
@@ -124,9 +125,14 @@ export function scratchpadHeaderCount(lines: readonly ScratchpadLine[]): string 
 let parsedFor: string | null = null;
 let parsed: ScratchpadLine[] = [];
 
-/** The focused conversation's scratchpad lines; empty when it has none. */
+/**
+ * The focused conversation's scratchpad lines: the contents its summary's
+ * hash names, when held. Empty without a scratchpad, or before its contents
+ * are here (never another version's).
+ */
 export function focusedScratchpadLines(state: RenderState): ScratchpadLine[] {
-  const content = state.convId ? state.scratchpads.get(state.convId) : undefined;
+  const hash = state.convId ? state.sidebar.conversations.find(conversation => conversation.id === state.convId)?.scratchpad : undefined;
+  const content = hash ? state.scratchpads.get(hash) : undefined;
   if (!content) return [];
   if (content !== parsedFor) {
     parsed = parseScratchpad(content);
