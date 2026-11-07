@@ -1,6 +1,6 @@
 /** Fixtures shared by the async-conversation-loading*.cases.ts files. */
 import * as convStore from "./conversations";
-import { stopConversationLoader } from "./conversation-loader";
+import { conversationLoaderIdleForTest, stopConversationLoader } from "./conversation-loader";
 import { CONTEXT_COMPACTION_FINISHED_KIND, CONTEXT_COMPACTION_FINISHED_TEXT, createStoredUserContextCheckpoint, currentReplayHistoryPrefix } from "./messages";
 import { orchestrateSendMessage } from "./orchestrator";
 import type { streamMessage } from "./api";
@@ -53,9 +53,13 @@ export function callbacks(fn: typeof streamMessage) { return { onHeaders() {}, o
 export function send(id: string, text: string, fn: typeof streamMessage = async () => response("answer")) {
   return orchestrateSendMessage(server() as never, null, undefined, id, text, Date.now(), callbacks(fn));
 }
-/** Run after each case: stops the loader workers and drops this case's conversations. */
+/**
+ * Run after each case: drops this case's conversations. Stops the loader
+ * workers only when work is still outstanding: starting them again costs
+ * ~0.1 s of CPU each, most of these files' time.
+ */
 export function cleanupAsyncLoadingCase(): void {
-  stopConversationLoader();
+  if (!conversationLoaderIdleForTest()) stopConversationLoader();
   for (const id of ids.splice(0)) {
     convStore.clearStreamHandoff(id);
     convStore.clearHistoryUnwindPending(id);
