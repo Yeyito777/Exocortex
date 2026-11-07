@@ -6,7 +6,7 @@ describe("voice recall real TUI flow", () => {
 
   test("SSH: recording submission immediately queues a placeholder and sends only final locally transcribed text remotely", async () => {
     if (process.platform === "win32") return;
-    const { proc, screen, fakeDaemon, localDaemon, stderrText } = await launchVoiceTui("ssh");
+    const { proc, screen, holdSpace, fakeDaemon, localDaemon, stderrText } = await launchVoiceTui("ssh");
     fakeDaemon.broadcast({
       type: "conversation_created", convId: "remote-voice", provider: "openai", model: "gpt-5.5",
       effort: "high", fastMode: false,
@@ -15,11 +15,8 @@ describe("voice recall real TUI flow", () => {
       type: "streaming_started", convId: "remote-voice", provider: "openai", model: "gpt-5.5",
       startedAt: Date.now(),
     });
-    await delay(100);
-    proc.stdin.write("\x1b");
-    await delay(30);
-    proc.stdin.write("\x1b[32;1:1u");
-    await delay(650);
+    await waitFor(() => screen.plainRows().some(row => row.includes("Working")));
+    await holdSpace();
     // Enter during recording retains the automatic message-end queue behavior.
     proc.stdin.write("\r");
     const transcriptionCommand = await waitFor(() => localDaemon.commands.find(isTranscribeAudioCommand));
@@ -39,16 +36,13 @@ describe("voice recall real TUI flow", () => {
 
   test("SSH: a submitted local transcription survives a remote disconnect and reconnect", async () => {
     if (process.platform === "win32") return;
-    const { proc, screen, fakeDaemon, localDaemon, stderrText } = await launchVoiceTui("ssh");
+    const { proc, screen, holdSpace, fakeDaemon, localDaemon, stderrText } = await launchVoiceTui("ssh");
     fakeDaemon.broadcast({
       type: "conversation_created", convId: "remote-voice", provider: "openai", model: "gpt-5.5",
       effort: "high", fastMode: false,
     });
-    await delay(100);
-    proc.stdin.write("\x1b");
-    await delay(30);
-    proc.stdin.write("\x1b[32;1:1u");
-    await delay(650);
+    await waitFor(() => fakeDaemon.commands.some(command => command.type === "subscribe" && command.convId === "remote-voice"));
+    await holdSpace();
     proc.stdin.write("\r");
     const transcriptionCommand = await waitFor(() => localDaemon.commands.find(isTranscribeAudioCommand));
     await waitFor(() => screen.plainRows().some(row => row.includes("Transcribing…")));

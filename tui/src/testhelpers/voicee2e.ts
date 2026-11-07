@@ -4,7 +4,7 @@
  * workers).
  */
 import { afterEach } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { createServer, type Socket } from "node:net";
 import { execFileSync } from "node:child_process";
@@ -84,9 +84,10 @@ function writeFakeRecorder(fakeBin: string): void {
     const fakeRecorder = join(fakeBin, command);
     writeFileSync(fakeRecorder, `#!/usr/bin/env bash
 set -euo pipefail
+trap 'exit 0' INT TERM
 out="\${@: -1}"
 printf 'fake wav bytes' > "$out"
-trap 'exit 0' INT TERM
+echo started >> "$(dirname "$0")/recordings"
 while true; do sleep 0.05; done
 `);
     chmodSync(fakeRecorder, 0o755);
@@ -285,8 +286,28 @@ socket.on("close", () => process.exit(0));
     const stderrText = await readStream(proc.stderr);
 
     await waitFor(() => fakeDaemon.commands.some(command => command.type === "client_capabilities"));
-    await delay(100); // release bootstrap and complete the route-switch UI reset
-    return { proc, screen, stdoutText, stderrText, fakeDaemon, localDaemon };
+    // Keys sent before the UI is up on its route (the SSH progress view, the
+    // route-switch reset) don't reach the prompt.
+    await waitFor(() => {
+      const rows = screen.plainRows();
+      return rows.some(row => row.includes("OpenAI/Gpt-5.5")) && rows.some(row => row.startsWith("I >"))
+        && (route === "local" || rows.some(row => row.includes("Connected daemon: SSH alias fixture")));
+    });
+
+    const recordingsPath = join(fakeBin, "recordings");
+    const recordings = () => existsSync(recordingsPath) ? readFileSync(recordingsPath, "utf8").split("\n").length - 1 : 0;
+    /**
+     * Escape to normal mode and hold Space until the fake recorder has run for
+     * longer than the minimum clip. The hold is timed from the recorder's own
+     * start, so a slow TUI or a slow recorder spawn can't shorten it.
+     */
+    async function holdSpace(): Promise<void> {
+      const before = recordings();
+      proc.stdin.write("\x1b\x1b[32;1:1u");
+      await waitFor(() => recordings() > before);
+      await delay(650);
+    }
+    return { proc, screen, stdoutText, stderrText, fakeDaemon, localDaemon, holdSpace };
   }
 
   return launchVoiceTui;
