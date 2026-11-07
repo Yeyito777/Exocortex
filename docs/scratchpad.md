@@ -6,7 +6,8 @@ directory, `config/data/workspaces/<conversation-id>/`, see
 their normal file tools; the TUI shows it read-only as a Scratchpad card in the
 right-hand column, directly below the Tasks card (or at the column's top when
 there is none). A missing or blank file shows no card. The `/scratchpad` macro
-asks the agent to set one up.
+asks the agent to set one up; `/scratchpad update` and `/scratchpad clear` ask it to
+bring it up to date or empty it.
 
 ## Writing it
 
