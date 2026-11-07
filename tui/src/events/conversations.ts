@@ -1,4 +1,5 @@
 import { log } from "../log";
+import { logHistoryNavigation } from "../historydiag";
 import type { ConversationSummary } from "../messages";
 import type { Event } from "../protocol";
 import { syncChosenProvider } from "../providerselection";
@@ -484,12 +485,18 @@ export function handleConversationHistoryLoaded(
   state: RenderState,
 ): void {
   if (event.convId !== state.convId) return;
-  if (!event.reqId || event.reqId !== state.historyLoadingRequestId) return;
+  if (!event.reqId || event.reqId !== state.historyLoadingRequestId) {
+    if (state.pendingHistoryNavigation || state.historyLoadingOlder) {
+      logHistoryNavigation("older page dropped: not the request in flight", state, { pageReqId: event.reqId ?? null, pageStart: event.historyStartIndex, pageEnd: event.historyEndIndex });
+    }
+    return;
+  }
 
   // A canonical history refresh may have replaced the window while this page
   // was in flight. Absolute cursors make that stale response safe to discard.
   if (event.historyEndIndex !== state.historyStartIndex
       || (event.historyEndBlockIndex ?? 0) !== state.historyStartBlockIndex) {
+    logHistoryNavigation("older page dropped: window moved", state, { pageReqId: event.reqId, pageStart: event.historyStartIndex, pageEnd: event.historyEndIndex, pageEndBlock: event.historyEndBlockIndex ?? 0 });
     state.pendingHistoryNavigation = null;
     state.historyLoadingOlder = false;
     state.historyLoadingStartedAt = null;
