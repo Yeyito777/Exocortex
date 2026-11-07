@@ -50,6 +50,10 @@ interface TrackedBackgroundProcess {
   taskId?: string;
   recordPath?: string;
   suppressCompletionNotification: boolean;
+  /** Bash calls running a kill of this process; until they end, a completion waits on their outcome. */
+  stopsInFlight?: number;
+  /** A completion that came while a stop was in flight: delivered if the stop fails, dropped if it succeeds. */
+  heldCompletion?: (suppressed: boolean) => void;
 }
 
 /** Detached bash processes that may later be stopped by another bash tool call. */
@@ -139,6 +143,7 @@ function markIntentionalBackgroundTaskStops(command: string, conversationId?: st
     const tracked = trackedBackgroundProcesses.get(pid);
     if (tracked?.conversationId === conversationId) {
       tracked.suppressCompletionNotification = true;
+      tracked.stopsInFlight = (tracked.stopsInFlight ?? 0) + 1;
       if (tracked.recordPath) {
         try { suppressBackgroundTaskNotification(tracked.recordPath); } catch { /* in-memory suppression still applies */ }
       }
@@ -150,15 +155,35 @@ function markIntentionalBackgroundTaskStops(command: string, conversationId?: st
 }
 
 function restoreBackgroundTaskNotifications(pids: number[]): void {
-  for (const pid of pids) {
+  for (const pid of pids.splice(0)) {
     const tracked = trackedBackgroundProcesses.get(pid);
     if (tracked) {
+      tracked.stopsInFlight = Math.max(0, (tracked.stopsInFlight ?? 1) - 1);
       tracked.suppressCompletionNotification = false;
       if (tracked.recordPath) {
         try { restoreBackgroundTaskNotification(tracked.recordPath); } catch { /* best effort */ }
       }
+      releaseHeldCompletion(pid, tracked);
     }
   }
+}
+
+/** The stop commands for these processes succeeded: a completion held for them stays suppressed. */
+function settleBackgroundTaskStops(pids: number[]): void {
+  for (const pid of pids.splice(0)) {
+    const tracked = trackedBackgroundProcesses.get(pid);
+    if (!tracked) continue;
+    tracked.stopsInFlight = Math.max(0, (tracked.stopsInFlight ?? 1) - 1);
+    releaseHeldCompletion(pid, tracked);
+  }
+}
+
+function releaseHeldCompletion(pid: number, tracked: TrackedBackgroundProcess): void {
+  if (!tracked.heldCompletion || tracked.stopsInFlight) return;
+  const held = tracked.heldCompletion;
+  tracked.heldCompletion = undefined;
+  trackedBackgroundProcesses.delete(pid);
+  held(tracked.suppressCompletionNotification);
 }
 
 // ── Output limiting ───────────────────────────────────────────────
@@ -478,10 +503,21 @@ async function executeBashImpl(
         startedAt: startTime, endedAt: Date.now(), exitCode: code, signal,
         ...(processFailure ? { failure: processFailure } : { outputPath: capturePath }),
       });
+      const endedAt = Date.now();
       const tracked = trackedBackgroundProcesses.get(commandPid);
+      // A kill of this task is still running (it may be what ended it): whether
+      // the model hears of the completion depends on that kill's outcome.
+      if (tracked?.suppressCompletionNotification && tracked.stopsInFlight) {
+        tracked.heldCompletion = suppressed => deliverBackgroundTaskCompletion(code, signal, endedAt, suppressed);
+        return;
+      }
       trackedBackgroundProcesses.delete(commandPid);
-      let completionAccepted = tracked?.suppressCompletionNotification === true;
-      if (!tracked?.suppressCompletionNotification) {
+      deliverBackgroundTaskCompletion(code, signal, endedAt, tracked?.suppressCompletionNotification === true);
+    }
+
+    function deliverBackgroundTaskCompletion(code: number | null, signal: string | null, endedAt: number, suppressed: boolean): void {
+      let completionAccepted = suppressed;
+      if (!suppressed) {
         const completionCallback = context?.onBackgroundTaskComplete;
         if (!completionCallback) {
           completionAccepted = true;
@@ -492,7 +528,7 @@ async function executeBashImpl(
               toolName: "bash",
               title: command!,
               startedAt: startTime,
-              endedAt: Date.now(),
+              endedAt,
               exitCode: code,
               signal,
               ...(processFailure ? {} : { outputPath: capturePath }),
@@ -643,6 +679,7 @@ async function executeBashImpl(
       if (helperKillTimer) clearTimeout(helperKillTimer);
       removeAbortListener();
       if (code !== 0) restoreBackgroundTaskNotifications(intentionalStops);
+      else settleBackgroundTaskStops(intentionalStops);
       clearRegisteredBackgrounder();
       if (outputError) processFailure ??= outputError;
       notifyBackgroundTaskCompletion(code, sig);
@@ -774,6 +811,7 @@ async function executeBashImpl(
     });
     runner.stdin.on("error", () => { /* runner lifecycle handles the failure */ });
     runner.on("error", (err) => {
+      restoreBackgroundTaskNotifications(intentionalStops);
       processFailure = err.message;
       if (commandPid) killProcessGroup(commandPid);
       if (wasBackgrounded) {

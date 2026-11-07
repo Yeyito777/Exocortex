@@ -31,6 +31,13 @@ with its file and test name and the error, and exits 1 on any failure.
 - **One temp root per run.** The check points `TMPDIR` at `/tmp/exck-…` and
   removes it at the end, also after a failure, a timeout or Ctrl-C. Plain
   `bun test` sweeps its own leftover config dirs.
+- **A larger CPU share.** On Linux the check reruns itself in a transient
+  systemd scope with `CPUWeight=1000`. Every other user unit has 100 whatever
+  its nice level, so a niced replay unit would otherwise take as much CPU as
+  the check. It only matters while the CPU is contended. Without
+  `systemd-run` or a user manager the check runs in place, as with
+  `EXOCORTEX_CHECK_SCOPE=off`. When the check ends, anything left in its scope
+  is killed, and it stops if the process that started it dies.
 - **Nothing hangs.** Each test has bun's 5 s timeout. Each step runs in its own
   session; one still running after `--timeout` (default 90 s) is listed with
   what it was running and killed with all of its processes.

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
-import { join } from "path";
+import { dirname, join } from "path";
 import { tmpdir } from "os";
 import { bash, executeBashBackgroundable, intentionalBackgroundTaskStopPidsForTest } from "./bash";
 import type { BackgroundTaskCompletion } from "./types";
@@ -16,10 +16,11 @@ function platformCommand(posix: string, windows: string): string {
  * A shell wait that ends once release() runs, so a command cannot finish
  * before the test acts on it. It gives up after ~30 s if a failed test never releases it.
  */
-function gate(): { wait: string; release: () => void; cleanup: () => void } {
+function gate(): { wait: string; path: string; release: () => void; cleanup: () => void } {
   const dir = mkdtempSync(join(tmpdir(), "exo-bash-gate-"));
   const path = join(dir, "open");
   return {
+    path,
     wait: `i=0; until [ -e '${path}' ] || [ $i -ge 3000 ]; do sleep 0.01; i=$((i + 1)); done`,
     release: () => writeFileSync(path, ""),
     cleanup: () => rmSync(dir, { recursive: true, force: true }),
@@ -100,8 +101,9 @@ describe("bash manual backgrounding", () => {
     if (process.platform === "win32") return;
 
     let background: (() => boolean) | null = null;
+    const held = gate();
     const promise = executeBashBackgroundable(
-      { command: "sleep 2", await: 60 },
+      { command: held.wait, await: 60 },
       undefined,
       60_000,
       {
@@ -110,7 +112,7 @@ describe("bash manual backgrounding", () => {
       },
     );
 
-    for (let i = 0; i < 40 && !background; i++) await Bun.sleep(5);
+    await waitUntil(() => background !== null);
     expect(background).toBeTruthy();
     expect(background!()).toBe(true);
 
@@ -125,6 +127,7 @@ describe("bash manual backgrounding", () => {
     expect(parentPid).not.toBe(process.pid);
     process.kill(-commandPid, "SIGTERM");
     await Bun.sleep(100);
+    held.cleanup();
     const spillPath = result.output.match(/Output is being written to: (\S+)/)?.[1];
     if (spillPath) rmSync(spillPath, { force: true });
   });
@@ -149,8 +152,8 @@ describe("bash manual backgrounding", () => {
     expect(runnerPid).toBeGreaterThan(0);
 
     process.kill(runnerPid, "SIGKILL");
-    for (let i = 0; i < 50 && activity.length < 2; i++) await Bun.sleep(10);
-    await Bun.sleep(250);
+    const groupAlive = () => { try { process.kill(-commandPid, 0); return true; } catch { return false; } };
+    await waitUntil(() => activity.length >= 2 && completions.length >= 1 && !groupAlive());
 
     expect(activity).toEqual([true, false]);
     expect(completions).toHaveLength(1);
@@ -183,16 +186,10 @@ describe("bash explicit backgrounding", () => {
     const spillPath = result.output.match(/Output is being written to: (\S+)/)?.[1];
     expect(spillPath).toBeTruthy();
 
-    for (let i = 0; i < 50 && !existsSync(markerPath); i++) {
-      await new Promise(resolve => setTimeout(resolve, 10));
-    }
+    await waitUntil(() => existsSync(markerPath));
     expect(existsSync(markerPath)).toBe(true);
     let spilled = "";
-    for (let i = 0; i < 50; i++) {
-      spilled = existsSync(spillPath!) ? readFileSync(spillPath!, "utf8") : "";
-      if (spilled.includes("done")) break;
-      await new Promise(resolve => setTimeout(resolve, 10));
-    }
+    await waitUntil(() => (spilled = existsSync(spillPath!) ? readFileSync(spillPath!, "utf8") : "").includes("done"));
     expect(spilled).toContain("start");
     expect(spilled).toContain("done");
 
@@ -228,9 +225,7 @@ describe("bash explicit backgrounding", () => {
       stop: expect.any(Function),
     });
 
-    for (let i = 0; i < 50 && activity.length < 2; i++) {
-      await new Promise(resolve => setTimeout(resolve, 10));
-    }
+    await waitUntil(() => activity.length >= 2);
     expect(activity).toEqual([
       { id: activity[0].id, active: true, details: activity[0].details },
       { id: activity[0].id, active: false, details: undefined },
@@ -269,9 +264,7 @@ describe("bash explicit backgrounding", () => {
     const stopped = await executeBashBackgroundable({ command: `kill ${pid}` }, undefined, 60_000, context);
     expect(stopped.isError).toBe(false);
 
-    for (let index = 0; index < 50 && !activity.includes(false); index++) {
-      await new Promise(resolve => setTimeout(resolve, 10));
-    }
+    await waitUntil(() => activity.includes(false));
     expect(activity).toEqual([true, false]);
     expect(completions).toHaveLength(0);
     if (spillPath) rmSync(spillPath, { force: true });
@@ -298,11 +291,44 @@ describe("bash explicit backgrounding", () => {
     expect(failedStop.isError).toBe(true);
     expect(isBackgroundTaskNotificationSuppressed(backgroundTaskRecordPath(taskId!))).toBe(false);
 
-    for (let index = 0; index < 100 && completions.length === 0; index++) await Bun.sleep(10);
+    await waitUntil(() => completions.length > 0);
     expect(completions).toHaveLength(1);
     const spillPath = background.output.match(/Output is being written to: (\S+)/)?.[1];
     if (spillPath) rmSync(spillPath, { force: true });
   });
+
+  for (const [outcome, stopTail, expected] of [
+    ["fails", "kill -NOT_A_SIGNAL PID", 1],
+    ["succeeds", "kill PID 2>/dev/null; true", 0],
+  ] as const) {
+    test(`a task that ends while a kill of it is still running is reported if the kill ${outcome}`, async () => {
+      if (process.platform === "win32") return;
+      const held = gate();
+      const ended = join(mkdtempSync(join(tmpdir(), "exo-bash-ended-")), "ended");
+      const completions: BackgroundTaskCompletion[] = [];
+      const context = {
+        conversationId: `stop-race-${outcome}-${process.pid}-${Date.now()}`,
+        setBackgroundTaskActive: (_id: string, active: boolean) => { if (!active) writeFileSync(ended, ""); },
+        onBackgroundTaskComplete: (completion: BackgroundTaskCompletion) => completions.push(completion),
+      };
+      const background = await executeBashBackgroundable({ command: held.wait, background: true }, undefined, 60_000, context);
+      const pid = Number(background.output.match(/PID (\d+)/)?.[1]);
+      expect(pid).toBeGreaterThan(0);
+
+      // The kill releases the task and waits until this process has seen it end, then finishes.
+      const stop = await executeBashBackgroundable({
+        command: `touch '${held.path}'; until [ -e '${ended}' ]; do sleep 0.01; done; ${stopTail.replace("PID", String(pid))}`,
+      }, undefined, 60_000, context);
+      expect(stop.isError).toBe(expected === 1);
+
+      await waitUntil(() => completions.length >= expected, expected ? 3_000 : 0);
+      expect(completions).toHaveLength(expected);
+      held.cleanup();
+      rmSync(dirname(ended), { recursive: true, force: true });
+      const spillPath = background.output.match(/Output is being written to: (\S+)/)?.[1];
+      if (spillPath) rmSync(spillPath, { force: true });
+    });
+  }
 
   test("rejects conflicting background and await parameters before spawning", async () => {
     const result = await executeBashBackgroundable({

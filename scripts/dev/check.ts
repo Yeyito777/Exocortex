@@ -18,13 +18,14 @@
  *   failure, timeout or Ctrl-C.
  * - A step that outlives --timeout (default 90 s) has its process group
  *   killed; failures list file and test name; exit status 1 on any failure.
+ * - On Linux it runs in a systemd scope with a larger CPU share (runInCpuScope).
  *
  * `--update-timings` rewrites test/timings/*.json (tracked) from this run.
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { availableParallelism, tmpdir } from "node:os";
+import os, { availableParallelism, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 const ROOT = resolve(import.meta.dir, "../..");
@@ -289,21 +290,88 @@ async function suite(name: Suite, options: Options, env: NodeJS.ProcessEnv, runT
   return { label: result.label, ok, ms: result.ms, summary, details };
 }
 
+// ── CPU share ─────────────────────────────────────────────────────
+
+const IN_SCOPE = "EXOCORTEX_CHECK_SCOPE";
+const SCOPE_CPU_WEIGHT = 1000;
+
+/**
+ * Under a systemd user manager every unit gets the same CPU share (cgroup v2
+ * cpu.weight 100), whatever its nice level, so a busy background unit (a
+ * niced replay) slows the check as much as anything else and its real-time
+ * waits run out. On Linux the check reruns itself in a transient scope with
+ * CPUWeight=1000. That only matters while the CPU is contended. Returns the
+ * scoped run's exit status, or null to run here: not Linux, already scoped,
+ * or no systemd-run or user manager.
+ *
+ * The scope leaves this process's cgroup (an Exocortex turn's, say), so the
+ * scoped check watches this process: if it dies, even by SIGKILL, the scoped
+ * one stops and kills its steps as on Ctrl-C. EXOCORTEX_CHECK_SCOPE=off runs
+ * the check here.
+ */
+async function runInCpuScope(): Promise<number | null> {
+  if (process.platform !== "linux" || process.env[IN_SCOPE]) return null;
+  const scope = ["systemd-run", "--user", "--scope", "--quiet", "--collect", "-p", `CPUWeight=${SCOPE_CPU_WEIGHT}`];
+  let probe: ReturnType<typeof Bun.spawnSync>;
+  try {
+    probe = Bun.spawnSync([...scope, "true"], { stdout: "ignore", stderr: "ignore", timeout: 5_000 });
+  } catch {
+    return null;
+  }
+  if (probe.exitCode !== 0) return null;
+  const child = spawn(scope[0], [...scope.slice(1), process.execPath, import.meta.path, ...process.argv.slice(2)], {
+    env: { ...process.env, [IN_SCOPE]: String(process.pid) }, stdio: "inherit",
+  });
+  // A terminal's Ctrl-C reaches both processes; a signal sent to this one alone is passed on.
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+    process.on(signal, () => { try { child.kill(signal); } catch { /* gone */ } });
+  }
+  return new Promise(resolveStatus => {
+    child.on("error", () => resolveStatus(1));
+    child.on("exit", (code, signal) => resolveStatus(code ?? (signal ? 128 + (os.constants.signals[signal] ?? 0) : 1)));
+  });
+}
+
+/**
+ * In the scope, everything else in its cgroup is this check's: a step's
+ * process that left the step's session (a test's detached helper) goes too.
+ */
+function killRestOfScope(): void {
+  if (!(Number(process.env[IN_SCOPE]) > 0)) return;
+  try {
+    const cgroup = readFileSync("/proc/self/cgroup", "utf8").match(/^0::(.*)$/m)?.[1];
+    if (!cgroup?.endsWith(".scope")) return;
+    const pids = readFileSync(join("/sys/fs/cgroup", cgroup, "cgroup.procs"), "utf8").split("\n").map(Number);
+    for (const pid of pids) if (pid > 0 && pid !== process.pid) try { process.kill(pid, "SIGKILL"); } catch { /* gone */ }
+  } catch { /* no cgroup v2 view */ }
+}
+
+/** In the scope: the launcher is the parent (systemd-run execs the check); once it's gone the parent changes. */
+function stopWhenLauncherGoes(stop: (why: string) => void): void {
+  const launcher = Number(process.env[IN_SCOPE]);
+  if (!(launcher > 0)) return;
+  const watch = setInterval(() => { if (process.ppid !== launcher) stop("launcher gone"); }, 250);
+  watch.unref();
+}
+
 // ── Main ──────────────────────────────────────────────────────────
 
 const options = parseArgs(process.argv.slice(2));
+const scoped = await runInCpuScope();
+if (scoped !== null) process.exit(scoped);
 mkdirSync(CACHE, { recursive: true });
 // Short: some tests put unix sockets under TMPDIR (sun_path holds ~104 bytes).
 const runTmp = mkdtempSync(join(tmpdir(), "exck-"));
 const cleanup = () => rmSync(runTmp, { recursive: true, force: true, maxRetries: 3 });
-for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
-  process.on(signal, () => {
-    console.error(`\ncheck: ${signal}; stopping`);
-    for (const child of children) if (child.pid !== undefined) killSession(child.pid);
-    cleanup();
-    process.exit(130);
-  });
-}
+const stop = (why: string) => {
+  console.error(`\ncheck: ${why}; stopping`);
+  for (const child of children) if (child.pid !== undefined) killSession(child.pid);
+  killRestOfScope();
+  cleanup();
+  process.exit(130);
+};
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => stop(signal));
+stopWhenLauncherGoes(stop);
 
 // Tests get their own temp root and config dir (test/setup-config.ts makes one
 // per test file); nothing may reach the live daemon's config.
@@ -313,6 +381,7 @@ const env: NodeJS.ProcessEnv = {
   ...process.env, TMPDIR: runTmp, FORCE_COLOR: "0", NO_COLOR: "1", OMP_NUM_THREADS: "1", MAGICK_THREAD_LIMIT: "1",
 };
 delete env.EXOCORTEX_CONFIG_DIR;
+delete env[IN_SCOPE];
 delete env.EXOCORTEX_TEST_CONFIG_READY;
 
 const started = performance.now();
@@ -334,6 +403,7 @@ let results: Result[];
 try {
   results = await Promise.all(jobs);
 } finally {
+  killRestOfScope();
   cleanup();
 }
 
