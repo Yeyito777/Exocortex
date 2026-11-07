@@ -69,6 +69,7 @@ import {
   cancelQueuePrompt,
   enqueueQueuedCommand,
   enqueueGlobalIdleMessage,
+  noteImmediateQueuedDeliveries,
   openQueuePrompt,
   removeNewConversationQueuedMessage,
   removeQueuedMessageByReference,
@@ -1574,6 +1575,7 @@ function confirmPendingVoiceQueuePrompt(): boolean {
   if (state.convId && isStreaming(state)) {
     const queueId = randomUUID();
     state.queuedMessages.push({ id: queueId, optimistic: true, convId: state.convId, text: messageText, timing, images, source: "daemon", createdAt: Date.now() });
+    noteImmediateQueuedDeliveries(state);
     clearPrompt(state);
     state.pendingImages = [];
     daemon.queueMessage(state.convId, messageText, timing, images, { queueId });
@@ -1810,6 +1812,7 @@ function completePendingVoiceTranscription(submission: SubmittedVoiceTranscripti
         submission.queuedMessage.optimistic = true;
         submission.queuedMessage.source = "daemon";
         submission.queuedMessage.createdAt ??= Date.now();
+        noteImmediateQueuedDeliveries(state);
         daemon.queueMessage(submission.convId, messageText, submission.queuedMessage.timing, submission.images, { queueId });
       }
     }

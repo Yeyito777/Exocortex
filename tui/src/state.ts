@@ -402,6 +402,8 @@ export interface RenderState {
   queuedMessages: QueuedMessage[];
   /** Optimistic unqueues awaiting an authoritative settled snapshot. */
   pendingQueueRemovalIds: Set<string>;
+  /** Queued entries the daemon delivers at once (their turn sleeps in Chrono): shown as sent until their echo arrives. */
+  deliveringQueueIds: Set<string>;
   /** Edit message modal — non-null when the modal is showing. */
   editMessagePrompt: EditMessageState | null;
   /** Images pasted from clipboard, waiting to be sent with the next message. */
@@ -885,6 +887,7 @@ export function createInitialState(): RenderState {
     search: null,
     queuedMessages: [],
     pendingQueueRemovalIds: new Set(),
+    deliveringQueueIds: new Set(),
     editMessagePrompt: null,
     pendingImages: [],
     voicePrompt: null,

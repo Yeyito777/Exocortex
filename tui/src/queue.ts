@@ -1,4 +1,5 @@
 import { isFastMode } from "@exocortex/shared/messages";
+import { queuedInputEndsChronoSleep } from "@exocortex/shared/chrono";
 /**
  * Message queue prompt — modal overlay for queuing messages during streaming.
  *
@@ -74,6 +75,26 @@ export function queueTimingLabel(message: QueuedMessage, now = Date.now(), provi
   // Automated next-turn entries wait for a tool boundary; only a person's
   // next-turn message steers the active turn immediately.
   return message.automation || !steersInstantly(provider) ? "queued: next turn" : "queued: steer";
+}
+
+/**
+ * Note the queued entries the daemon delivers at once because their turn is
+ * blocked in a Chrono sleep or wait: they show as sent, not queued. Kept until
+ * the entry leaves the queue, as the sleep ends just before its echo arrives.
+ */
+export function noteImmediateQueuedDeliveries(state: RenderState): void {
+  const present = new Set<string>();
+  for (const message of state.queuedMessages) {
+    if (!message.id || isGlobalIdleQueuedMessage(message)) continue;
+    present.add(message.id);
+    const conversation = state.sidebar?.conversations.find(candidate => candidate.id === message.convId);
+    if (conversation && queuedInputEndsChronoSleep(conversation, message)) state.deliveringQueueIds.add(message.id);
+  }
+  for (const id of state.deliveringQueueIds) if (!present.has(id)) state.deliveringQueueIds.delete(id);
+}
+
+export function isDeliveringQueuedMessage(state: Pick<RenderState, "deliveringQueueIds">, message: QueuedMessage): boolean {
+  return !!message.id && state.deliveringQueueIds.has(message.id);
 }
 
 function queueDisplayBucket(message: QueuedMessage): number {
@@ -306,6 +327,7 @@ export function confirmQueueMessage(state: RenderState): ConfirmResult {
   const queued: QueuedMessage = { id: queueId, optimistic: true, convId, text, timing, images, source: "daemon", createdAt: Date.now() };
   if (images?.length) state.pendingImages = [];
   state.queuedMessages.push(queued);
+  noteImmediateQueuedDeliveries(state);
   state.queuePrompt = null;
   state.inputBuffer = "";
   state.cursorPos = 0;

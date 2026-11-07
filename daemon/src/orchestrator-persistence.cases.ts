@@ -11,6 +11,7 @@ import { invalidateCredentialsCache } from "./auth";
 import { createOpenAIEventAccumulator } from "./providers/openai/stream";
 import { getStaleStreams } from "./streaming";
 import { setMessageQueuePersistenceFailureForTest } from "./message-queue";
+import { queuedInputEndsChronoSleep } from "@exocortex/shared/chrono";
 import {
   beginPendingSubagentNotification,
   getSubagentNotificationRuntime,
@@ -520,6 +521,9 @@ describe("instant steering", () => {
           expect(settled).toBe(false);
           expect(options?.signal?.aborted).toBe(false);
           expect(getQueuedMessages(convId).map(entry => entry.timing)).toEqual(["message-end"]);
+          // What clients are told to expect, from the published summary.
+          expect(queuedInputEndsChronoSleep(getSummary(convId)!, { timing: "message-end" })).toBe(false);
+          expect(queuedInputEndsChronoSleep(getSummary(convId)!, { timing: "next-turn" })).toBe(true);
 
           pushQueuedMessage(convId, "look at this now", "next-turn", undefined, undefined, undefined, "now");
           steerActiveTurn(convId);
