@@ -2227,7 +2227,7 @@ function handleMouse(ev: MouseEvent): void {
         || state.historyCursor.col !== prevCursorCol) {
       state.pendingHistoryNavigation = null;
       renderAfterLocalUiMutation();
-    } else if (taskPanelHoverChanged(state, ev.col, ev.row)) {
+    } else if (taskPanelHoverChanged(state)) {
       renderAfterLocalUiMutation();
     }
     return;

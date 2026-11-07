@@ -378,15 +378,15 @@ function capture(fn: () => void): string {
   return out;
 }
 
-const mouse = (col: number, row: number, action: "press" | "release" | "motion", button = 0) =>
-  ({ type: "mouse" as const, shift: false, meta: false, ctrl: false, col, row, button, action });
+const mouse = (col: number, row: number, action: "press" | "release" | "motion", button = 0, shift = false) =>
+  ({ type: "mouse" as const, shift, meta: false, ctrl: false, col, row, button, action });
 
 /** A click as the terminal reports it: press then release on the same cell. */
-function click(state: RenderState, col: number, row: number): string[] {
+function click(state: RenderState, col: number, row: number, shift = false): string[] {
   const results: string[] = [];
   capture(() => {
-    results.push(handleMouseEvent(mouse(col, row, "press"), state).type);
-    results.push(handleMouseEvent(mouse(col, row, "release"), state).type);
+    results.push(handleMouseEvent(mouse(col, row, "press", 0, shift), state).type);
+    results.push(handleMouseEvent(mouse(col, row, "release", 0, shift), state).type);
   });
   return results;
 }
@@ -419,12 +419,12 @@ describe("task panel clicks", () => {
     const collapsed = state.layout.taskPanelRect!;
     expect(collapsed.right).toBe(120);
     expect(collapsed.right - collapsed.left + 1).toBe(50);
-    for (const [col, row] of [[collapsed.left, collapsed.top], [collapsed.right, collapsed.bottom], [collapsed.left + 20, collapsed.top + 2]]) {
+    for (const [col, row] of [[collapsed.left, collapsed.top], [collapsed.right, collapsed.bottom], [collapsed.left + 10, collapsed.top + 2]]) {
       expect(cursorZone(col, row, state)).toBe("hand");
     }
     expect(cursorZone(collapsed.left - 2, collapsed.top + 2, state)).toBe("text");
 
-    expect(click(state, collapsed.left + 20, collapsed.top + 2)).toEqual(["handled", "handled"]);
+    expect(click(state, collapsed.left + 10, collapsed.top + 2)).toEqual(["handled", "handled"]);
     expect(isTaskPanelExpanded(state)).toBe(true);
     capture(() => render(state));
     const expanded = state.layout.taskPanelRect!;
@@ -455,9 +455,9 @@ describe("task panel clicks", () => {
     const rect = state.layout.taskPanelRect!;
     expect(rect.right - rect.left + 1).toBe(50);
     expect(state.layout.taskPanelToggleable).toBe(false);
-    expect(cursorZone(rect.left + 20, rect.top + 1, state)).toBe("pointer");
+    expect(cursorZone(rect.left + 10, rect.top + 1, state)).toBe("pointer");
     const before = { cursor: { ...state.historyCursor }, mode: state.vim.mode, focus: state.chatFocus };
-    expect(click(state, rect.left + 20, rect.top + 1)).toEqual(["handled", "handled"]);
+    expect(click(state, rect.left + 10, rect.top + 1)).toEqual(["handled", "handled"]);
     expect(isTaskPanelExpanded(state)).toBe(false);
     expect({ cursor: state.historyCursor, mode: state.vim.mode, focus: state.chatFocus }).toEqual(before);
     capture(() => render(state));
@@ -468,8 +468,8 @@ describe("task panel clicks", () => {
     conversation.tasks = [...conversation.tasks!, { id: "bash:long", kind: "background", title: HOURLY, startedAt: Date.now(), toolName: "bash" }];
     capture(() => render(state));
     expect(state.layout.taskPanelToggleable).toBe(true);
-    expect(cursorZone(rect.left + 20, rect.top + 1, state)).toBe("hand");
-    click(state, rect.left + 20, rect.top + 1);
+    expect(cursorZone(rect.left + 10, rect.top + 1, state)).toBe("hand");
+    click(state, rect.left + 10, rect.top + 1);
     expect(isTaskPanelExpanded(state)).toBe(true);
   });
 
@@ -477,7 +477,7 @@ describe("task panel clicks", () => {
     const state = chatState();
     const rect = state.layout.taskPanelRect!;
     const before = { cursor: { ...state.historyCursor }, mode: state.vim.mode, focus: state.chatFocus };
-    expect(click(state, rect.left + 20, rect.top + 1)).toEqual(["handled", "handled"]);
+    expect(click(state, rect.left + 5, rect.top + 1)).toEqual(["handled", "handled"]);
     expect({ cursor: state.historyCursor, mode: state.vim.mode, focus: state.chatFocus }).toEqual(before);
     expect(state.mouseLinkPress ?? null).toBeNull();
     expect(state.mouseImagePress ?? null).toBeNull();
@@ -500,7 +500,7 @@ describe("task panel clicks", () => {
     expect(state.scrollOffset).toBeGreaterThan(offset);
     state.scrollOffset = offset;
 
-    click(state, rect.left + 20, rect.top + 2);
+    click(state, rect.left + 4, rect.top + 2);
     capture(() => render(state));
     expect(state.layout.taskPanelMaxScroll).toBeGreaterThan(0);
     wheel(65);
@@ -523,7 +523,7 @@ describe("task panel clicks", () => {
   test("switching conversations collapses it, even on the way back", () => {
     const state = chatState();
     const rect = state.layout.taskPanelRect!;
-    click(state, rect.left + 20, rect.top + 1);
+    click(state, rect.left + 4, rect.top + 1);
     expect(isTaskPanelExpanded(state)).toBe(true);
     state.convId = "other";
     capture(() => render(state));
@@ -537,7 +537,7 @@ describe("task panel clicks", () => {
   test("stays expanded while tasks come and go, and ends with the last one", () => {
     const state = chatState();
     const rect = state.layout.taskPanelRect!;
-    click(state, rect.left + 20, rect.top + 1);
+    click(state, rect.left + 4, rect.top + 1);
     capture(() => render(state));
     const height = state.layout.taskPanelRect!.bottom - state.layout.taskPanelRect!.top;
 
@@ -606,7 +606,7 @@ describe("images under the expanded card", () => {
     // Below the compact card it fits; the expanded card grows down over its rows and columns.
     expect(collapsed.row).toBeGreaterThan(rect.bottom);
     expect(collapsed.col + collapsed.cols - 1).toBeGreaterThanOrEqual(rect.left);
-    click(state, rect.left + 20, rect.top + 1);
+    click(state, rect.left + 4, rect.top + 1);
     await frame(state);
     // Re-send every placement so the frame lists all of them, not just the changes.
     invalidateHistoryImagePlacements(state);
@@ -631,7 +631,7 @@ describe("images under the expanded card", () => {
     const state = imageState();
     await frame(state);
     const rect = state.layout.taskPanelRect!;
-    click(state, rect.left + 20, rect.top + 1);
+    click(state, rect.left + 4, rect.top + 1);
     const out = capture(() => render(state));
     expect(out).not.toContain("\x1b_G");
     const expanded = state.layout.taskPanelRect!;
@@ -645,125 +645,144 @@ describe("images under the expanded card", () => {
   });
 });
 
-describe("subagent labels on the task panel", () => {
+describe("subagent rows on the task panel with Shift", () => {
   // fittingTasks: the subagent "child" leads on the first body row, then a Bash row and a Chrono row.
-  const LABEL_WIDTH = termWidth("◆ Exocortex");
-  // A label row starts at its border; hovered, the hover background follows the card's own.
-  const plainLabel = `│${theme.reset}${hexToAnsiBg("#00050f")} `;
-  const hoveredLabel = `│${theme.reset}${hexToAnsiBg("#00050f")}${theme.sidebarSelBg} `;
+  // A row starts at its border; highlighted, the hover background follows the card's own.
+  const plainRow = `│${theme.reset}${hexToAnsiBg("#00050f")} `;
+  const hoveredRow = `│${theme.reset}${hexToAnsiBg("#00050f")}${theme.sidebarSelBg} `;
+  const move = (state: RenderState, col: number, row: number, shift: boolean) =>
+    capture(() => handleMouseEvent(mouse(col, row, "motion", 35, shift), state));
 
-  test("only a subagent's label and the cell either side of it are a link", () => {
+  test("a subagent's whole row between the borders is its link; other rows and the borders are not", () => {
     const state = chatState(120, 30, filler(80), fittingTasks(Date.now()));
     const rect = state.layout.taskPanelRect!;
     const row = rect.top + 1;
-    expect(state.layout.taskPanelLinks).toEqual([{ row, left: rect.left + 1, right: rect.left + LABEL_WIDTH + 2, convId: "child" }]);
-    for (let col = rect.left + 1; col <= rect.left + LABEL_WIDTH + 2; col++) expect(taskPanelLinkAt(state, col, row)).toBe("child");
-    // The border, the title, other rows and the header are not.
-    for (const [col, r] of [[rect.left, row], [rect.left + LABEL_WIDTH + 3, row], [rect.left + 20, row], [rect.left + 5, rect.top], [rect.left + 5, row + 1], [rect.left + 5, row + 2]]) {
+    expect(state.layout.taskPanelLinks).toEqual([{ row, left: rect.left + 1, right: rect.right - 1, convId: "child" }]);
+    // Label, title and time all count.
+    for (let col = rect.left + 1; col < rect.right; col++) expect(taskPanelLinkAt(state, col, row)).toBe("child");
+    for (const [col, r] of [[rect.left, row], [rect.right, row], [rect.left + 5, rect.top], [rect.left + 5, row + 1], [rect.left + 5, row + 2], [rect.left + 5, rect.bottom]]) {
       expect(taskPanelLinkAt(state, col, r)).toBeNull();
     }
-    expect(cursorZone(rect.left + 5, row, state)).toBe("hand");
-    expect(cursorZone(rect.left + 5, row + 1, state)).toBe("pointer");
   });
 
-  test("follows the subagent's row when the card expands and scrolls, and leaves with it", () => {
-    const state = chatState(120, 16);
-    click(state, state.layout.taskPanelRect!.left + 20, state.layout.taskPanelRect!.top + 3);
+  test("a wrapped entry is a link on every row it takes, and follows the card's scroll", () => {
+    const longTitle = "Map daemon events and write the protocol notes for every command the TUI sends over the socket, with examples";
+    const tasks = [...manyTasks(2, Date.now()), { id: "long", kind: "subagent" as const, title: longTitle, startedAt: Date.now() - 1_000 }];
+    const state = chatState(120, 16, filler(80), tasks);
+    click(state, state.layout.taskPanelRect!.left + 20, state.layout.taskPanelRect!.top + 4);
+    expect(isTaskPanelExpanded(state)).toBe(true);
     capture(() => render(state));
-    const rect = state.layout.taskPanelRect!;
-    const first = state.layout.taskPanelLinks;
-    expect(first.map(link => link.convId)).toEqual(["child:0", "child:1"]);
-    expect(first[0].row).toBe(rect.top + 1);
-    expect(first[1].row).toBeGreaterThan(first[0].row);
-    expect(first.every(link => link.left === rect.left + 1)).toBe(true);
+    const rows = (id: string) => state.layout.taskPanelLinks.filter(link => link.convId === id).map(link => link.row);
+    const top = state.layout.taskPanelRect!.top;
+    expect(rows("child:0")).toEqual([top + 1]);
+    expect(rows("child:1")).toEqual([top + 2]);
+    expect(rows("long").length).toBeGreaterThan(1);
+    expect(rows("long")).toEqual(rows("long").map((_, i) => top + 3 + i));
 
-    // Scrolled past the first subagent, only the second is a link, moved up by the scroll.
+    // Scrolled by one, the first subagent leaves and the rest move up a row.
     state.taskPanelExpansion!.scroll = 1;
     capture(() => render(state));
-    expect(state.layout.taskPanelLinks).toEqual([{ ...first[1], row: first[1].row - 1 }]);
-    for (let i = 0; i < 40; i++) capture(() => handleMouseEvent(mouse(rect.left + 20, rect.top + 2, "press", 65), state));
-    capture(() => render(state));
-    expect(state.taskPanelExpansion!.scroll).toBeGreaterThan(1);
-    expect(state.layout.taskPanelLinks).toEqual([]);
+    expect(rows("child:0")).toEqual([]);
+    expect(rows("child:1")).toEqual([top + 1]);
+    expect(rows("long")[0]).toBe(top + 2);
 
-    // No panel, no links.
     state.sidebar.conversations[0].tasks = [];
     capture(() => render(state));
-    expect(state.layout.taskPanelRect).toBeNull();
     expect(state.layout.taskPanelLinks).toEqual([]);
   });
 
-  test("hovering a label repaints it highlighted, and leaving it repaints it plain", () => {
+  test("only Shift over the row highlights it; letting go of Shift or leaving the row repaints it plain", () => {
     const state = chatState(120, 30, filler(80), fittingTasks(Date.now()));
     const rect = state.layout.taskPanelRect!;
-    const label = { col: rect.left + 4, row: rect.top + 1 };
-    expect(state.taskPanelHover ?? null).toBeNull();
+    const row = rect.top + 1;
 
-    // Motion over the label: a repaint is due, and the frame draws the hover background.
-    capture(() => handleMouseEvent(mouse(label.col, label.row, "motion", 35), state));
-    expect(taskPanelHoverChanged(state, label.col, label.row)).toBe(true);
+    // Without Shift: no highlight, no repaint, and the card's own pointer (it shows everything, so no hand).
+    move(state, rect.left + 20, row, false);
+    expect(taskPanelHoverChanged(state)).toBe(false);
+    expect(cursorZone(rect.left + 20, row, state)).toBe("pointer");
+
+    // Shift held over the title: a repaint is due and the frame draws the row on the hover background.
+    move(state, rect.left + 20, row, true);
+    expect(taskPanelHoverChanged(state)).toBe(true);
+    expect(cursorZone(rect.left + 20, row, state)).toBe("hand");
     const hovered = capture(() => render(state));
     expect(state.taskPanelHover).toBe("child");
-    expect(hovered).toContain(hoveredLabel);
-    expect(hovered).not.toContain(plainLabel);
-    expect(stripAnsi(hovered)).toContain("◆ Exocortex");
+    expect(hovered).toContain(hoveredRow);
+    expect(hovered).not.toContain(plainRow);
+    expect(stripAnsi(hovered)).toContain("Exocortex You are the STAGE 2 agent");
 
-    // Moving within the label changes nothing, so motion does not repaint.
-    expect(taskPanelHoverChanged(state, label.col + 3, label.row)).toBe(false);
-    capture(() => handleMouseEvent(mouse(label.col + 3, label.row, "motion", 35), state));
+    // Moving within the row changes nothing, so motion does not repaint.
+    move(state, rect.left + 40, row, true);
+    expect(taskPanelHoverChanged(state)).toBe(false);
     expect(capture(() => render(state))).toBe("");
 
-    // Onto the title: a repaint is due, and it restores the plain label.
-    expect(taskPanelHoverChanged(state, rect.left + 20, label.row)).toBe(true);
-    capture(() => handleMouseEvent(mouse(rect.left + 20, label.row, "motion", 35), state));
-    const left = capture(() => render(state));
+    // Shift let go: the next report repaints it plain.
+    move(state, rect.left + 40, row, false);
+    expect(taskPanelHoverChanged(state)).toBe(true);
+    const released = capture(() => render(state));
     expect(state.taskPanelHover).toBeNull();
-    expect(left).not.toContain(hoveredLabel);
-    expect(left).toContain(plainLabel);
-    expect(stripAnsi(left)).toContain("◆ Exocortex");
-    expect(taskPanelHoverChanged(state, rect.left + 20, label.row)).toBe(false);
-  });
+    expect(released).not.toContain(hoveredRow);
+    expect(released).toContain(plainRow);
 
-  test("a modal overlay drops the highlight and the link", () => {
-    const state = chatState(120, 30, filler(80), fittingTasks(Date.now()));
-    const rect = state.layout.taskPanelRect!;
-    capture(() => handleMouseEvent(mouse(rect.left + 4, rect.top + 1, "motion", 35), state));
+    // Shift onto a shell row: nothing to highlight.
+    move(state, rect.left + 20, row, true);
     capture(() => render(state));
-    expect(state.taskPanelHover).toBe("child");
-    state.queuePrompt = { text: "queued", selection: "next-turn" };
-    expect(taskPanelLinkAt(state, rect.left + 4, rect.top + 1)).toBeNull();
-    expect(taskPanelHoverChanged(state, rect.left + 4, rect.top + 1)).toBe(true);
-    expect(click(state, rect.left + 4, rect.top + 1)).toEqual(["handled", "handled"]);
+    move(state, rect.left + 20, row + 1, true);
+    expect(taskPanelHoverChanged(state)).toBe(true);
+    expect(capture(() => render(state))).not.toContain(hoveredRow);
+    expect(state.taskPanelHover).toBeNull();
+    expect(taskPanelHoverChanged(state)).toBe(false);
   });
 
-  test("a click on the label opens the subagent's conversation; other rows keep toggling the card", () => {
+  test("Shift+click opens the subagent; a plain click toggles the card as before", () => {
     const state = chatState();
     const rect = state.layout.taskPanelRect!;
     const before = { cursor: { ...state.historyCursor }, mode: state.vim.mode, focus: state.chatFocus };
     const results: unknown[] = [];
     capture(() => {
-      results.push(handleMouseEvent(mouse(rect.left + 3, rect.top + 1, "press"), state));
-      results.push(handleMouseEvent(mouse(rect.left + 3, rect.top + 1, "release"), state));
+      results.push(handleMouseEvent(mouse(rect.left + 30, rect.top + 1, "press", 0, true), state));
+      results.push(handleMouseEvent(mouse(rect.left + 30, rect.top + 1, "release", 0, true), state));
     });
     expect(results).toEqual([{ type: "load_conversation", convId: "child:0" }, { type: "handled" }]);
     expect(isTaskPanelExpanded(state)).toBe(false);
     expect({ cursor: state.historyCursor, mode: state.vim.mode, focus: state.chatFocus }).toEqual(before);
+    expect(handleMouseEvent(mouse(rect.right - 1, rect.top + 2, "press", 0, true), state)).toEqual({ type: "load_conversation", convId: "child:1" });
 
-    // The second subagent opens its own conversation.
-    const second = state.layout.taskPanelLinks[1];
-    expect(handleMouseEvent(mouse(second.right, second.row, "press"), state)).toEqual({ type: "load_conversation", convId: "child:1" });
+    // The same cells without Shift toggle the card.
+    expect(click(state, rect.left + 3, rect.top + 1)).toEqual(["handled", "handled"]);
+    expect(isTaskPanelExpanded(state)).toBe(true);
+    capture(() => render(state));
+    expect(click(state, rect.left + 30, rect.top + 1)).toEqual(["handled", "handled"]);
+    expect(isTaskPanelExpanded(state)).toBe(false);
+  });
 
-    // Chrono, shell and Claude Code agent rows are not conversations: a click on their label toggles the card as before.
+  test("Shift+click on rows that are not conversations toggles the card like a plain click", () => {
+    const state = chatState();
+    const rect = state.layout.taskPanelRect!;
+    // Collapsed: two subagents, then the Chrono, shell and Claude Code agent rows in the daemon's order.
     expect(state.layout.taskPanelLinks.map(link => link.convId)).toEqual(["child:0", "child:1"]);
     const chronoRow = rect.top + 3;
     expect(screenText(state).split("\n")[3]).toContain("◷ Chrono");
-    expect(cursorZone(rect.left + 3, chronoRow, state)).toBe("hand");
-    expect(click(state, rect.left + 3, chronoRow)).toEqual(["handled", "handled"]);
+    capture(() => handleMouseEvent(mouse(rect.left + 3, chronoRow, "motion", 35, true), state));
+    expect(cursorZone(rect.left + 3, chronoRow, state)).toBe("hand"); // the card's own toggle hand
+    expect(click(state, rect.left + 3, chronoRow, true)).toEqual(["handled", "handled"]);
     expect(isTaskPanelExpanded(state)).toBe(true);
-    // Right clicks and wheel on a label do not open it.
+    // Right clicks and the wheel with Shift never open a subagent.
     capture(() => render(state));
     const link = state.layout.taskPanelLinks[0];
-    expect(handleMouseEvent(mouse(link.left, link.row, "press", 2), state).type).toBe("handled");
-    expect(handleMouseEvent(mouse(link.left, link.row, "press", 65), state).type).toBe("handled");
+    expect(handleMouseEvent(mouse(link.left, link.row, "press", 2, true), state).type).toBe("handled");
+    expect(handleMouseEvent(mouse(link.left, link.row, "press", 65, true), state).type).toBe("handled");
+  });
+
+  test("a modal overlay drops the highlight and the link", () => {
+    const state = chatState(120, 30, filler(80), fittingTasks(Date.now()));
+    const rect = state.layout.taskPanelRect!;
+    move(state, rect.left + 20, rect.top + 1, true);
+    capture(() => render(state));
+    expect(state.taskPanelHover).toBe("child");
+    state.queuePrompt = { text: "queued", selection: "next-turn" };
+    expect(taskPanelLinkAt(state, rect.left + 20, rect.top + 1)).toBeNull();
+    expect(taskPanelHoverChanged(state)).toBe(true);
+    expect(click(state, rect.left + 20, rect.top + 1, true)).toEqual(["handled", "handled"]);
   });
 });
