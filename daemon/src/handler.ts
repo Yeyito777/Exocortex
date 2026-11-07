@@ -90,6 +90,7 @@ import {
   type PendingSubagentNotification,
 } from "./subagent-notifications";
 import { beginDaemonShutdown, getDaemonShutdownMode } from "./daemon-lifecycle";
+import { runDirectSendOnce } from "./direct-send";
 import { prepareCatchableShutdownForReplay } from "./restart-recovery";
 import { PREPARE_RESTART_MAX_SETTLE_MS, writeActiveGoalRestartMarker } from "./restart-markers";
 import { buildBackgroundTaskNotificationText } from "./background-task-notifications";
@@ -2995,16 +2996,25 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           if (cmd.own === true) setAppConversationOwner(cmd.convId, client);
         }
         const automation = cliDelegationAutomation(cmd);
-        const outcome = orchestrateSendMessage(
-          server, client, cmd.reqId, cmd.convId, cmd.text, cmd.startedAt,
-          callbacks,
-          cmd.images,
-          // The CLI waits for this reply itself; the parent gets no report too.
-          automation ? { subagentMaxDepth: null, automation, replyAwaited: true } : { subagentMaxDepth: null },
-        );
-        maybeStartAutoTitleGeneration(cmd.convId);
+        // The CLI waits for this reply itself; the parent gets no report too.
+        const policy = automation ? { subagentMaxDepth: null, automation, replyAwaited: true } : { subagentMaxDepth: null };
+        const startedAt = cmd.startedAt;
+        const run = (onUserMessageCommitted?: () => void) => {
+          const turn = orchestrateSendMessage(
+            server, client, cmd.reqId, cmd.convId, cmd.text, startedAt,
+            callbacks,
+            cmd.images,
+            { ...policy, onUserMessageCommitted },
+          );
+          maybeStartAutoTitleGeneration(cmd.convId);
+          return turn;
+        };
+        const outcome = cmd.acceptAck === true && !awaited
+          ? runDirectSendOnce(server, client, { reqId: cmd.reqId, convId: cmd.convId, startedAt }, run)
+          : run();
         try {
-          dropAwait(await outcome);
+          const settled = await outcome;
+          dropAwait(settled ?? undefined);
         } catch (error) {
           dropAwait();
           throw error;

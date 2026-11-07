@@ -182,6 +182,19 @@ then come against the daemon's record of it, marked `baseCopy`. Running
 rounds' tool output comes from `load_tool_outputs`. See
 [SSH conversation history cache](ssh-history-cache.md).
 
+## Sending a prompt exactly once
+
+A `send_message` can be lost with its connection: a daemon restart or a dropped
+`/ssh` link between the write and the daemon's answer. With `acceptAck: true`
+the daemon answers `ack` (same `reqId`) once the prompt is in the transcript,
+and takes a repeat of the same `convId` and `startedAt` as that prompt: it is
+acked again (or gets the first copy's refusal), never run twice
+(`daemon/src/direct-send.ts`). The TUI client keeps each such send until its
+`ack`, its `user_message` echo or an `error`, and sends it again after every
+reconnect (`tui/src/client.ts`). An `error` with `reason: "daemon_shutting_down"`
+is not a verdict: the next daemon takes the prompt. A switch to another daemon
+drops these sends, and their text returns to the prompt.
+
 ## Connectivity
 
 One connectivity monitor per daemon decides whether the network is reachable

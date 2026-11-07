@@ -73,7 +73,7 @@ import {
   removeNewConversationQueuedMessage,
   removeQueuedMessageByReference,
 } from "./queue";
-import { forgetUnconfirmedSends, trackDirectSend } from "./sendecho";
+import { noteResentDirectSends, returnUnconfirmedSendsToPrompt, trackDirectSend } from "./sendecho";
 import {
   applyOptimisticEditMessageUnwind,
   cancelEditMessage,
@@ -647,7 +647,6 @@ function resetForDaemonRouteSwitch(newRouteKey: string): void {
   state.locallyStopped.clear();
   pendingEditMessageUnwind = null;
   restoreDeferredEditResend();
-  forgetUnconfirmedSends(state);
   reconnectNavigationTarget = null;
   pendingStartingState = null;
   startingConversationLoad = null;
@@ -666,6 +665,8 @@ function resetForDaemonRouteSwitch(newRouteKey: string): void {
   state.pendingAuthQueue = [];
   state.pendingSend = { active: false, text: "" };
   state.pendingImages = [];
+  // The client drops the old route's unanswered sends: their text returns.
+  returnUnconfirmedSendsToPrompt(state);
   state.toolRegistry = [];
   state.toolsAvailableReceived = false;
   state.externalToolStyles = [];
@@ -2351,6 +2352,7 @@ async function reconnectToDaemon(): Promise<void> {
       bootstrapAlreadyRequested,
       releaseBootstrapEvents,
     } = await daemon.connect();
+    noteResentDirectSends(state, replayedCommands);
     const replayedNavigation = [...replayedCommands].reverse().find((command) => command.type === "load_conversation");
     reconnectNavigationTarget = replayedNavigation?.type === "load_conversation" ? replayedNavigation.convId : null;
     const conversationWillReload = replayedCommands.some((command) =>
@@ -2394,7 +2396,8 @@ function handleDaemonConnectionLost(shutdownMode: DaemonShutdownMode | null): vo
   // the normal reconnect load may still reveal the canonical state meanwhile.
   clearPendingAI(state);
   clearStreamingTailMessages(state);
-  forgetUnconfirmedSends(state);
+  // Unconfirmed sends stay: the client sends them again after reconnecting,
+  // and the reconnect load puts them back at the tail until answered.
   clearStreamTick();
   resetPrewarmer();
   instructionsConnectionLost(state);
