@@ -7,6 +7,21 @@ their normal file tools; the TUI shows it read-only as a Scratchpad card in the
 right-hand column, directly below the Tasks card (or at the column's top when
 there is none). A missing or blank file shows no card.
 
+## Writing it
+
+It is a to-do list for the user, not a status board. Plain words, one line per
+item, at most about eight open items. Leave out IDs, file paths, exact
+timestamps, thresholds and your own schedules: Tasks already shows Chrono
+wakes and running work. Tick items as they finish and drop done items after a
+day.
+
+```markdown
+# Now
+- [ ] Testing on live: E bids closer to the price, aiming for +$13/day
+# Waiting on you
+- [ ] OK bigger E orders (40 shares), ~+$10–15/day
+```
+
 ## Format
 
 A small markdown subset, one item per line:
