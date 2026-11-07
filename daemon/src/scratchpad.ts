@@ -1,32 +1,32 @@
 /**
  * The Scratchpad panel's source: each conversation's `scratchpad.md` in its
- * workspace, pushed to clients with the scratchpad capability while they are
- * subscribed to that conversation (docs/scratchpad.md). A TUI on /ssh talks to
- * the remote daemon, so it shows the remote's file.
+ * workspace (docs/scratchpad.md). Like Tasks, it rides on the conversation
+ * summaries: they carry a short hash of the contents (`scratchpad`), and the
+ * contents go to clients separately, keyed by that hash, only when a client
+ * lacks them. So a client holding them (from the bootstrap, a change, or its
+ * disk cache) paints the card together with the summary, before any open.
  *
- * A client gets the file's contents as soon as it subscribes, then again each
- * time they change. A conversation's file is watched only while such a client
- * follows it: fs.watch on the workspace directory (which also sees editors
- * that replace the file by renaming), debounced, plus a stat every second for
- * what a watch misses (a workspace created later, a watch that died, network
- * file systems).
+ * The index is kept current, cheapest first:
+ * - fs.watch on the workspaces of conversations a client follows (debounced),
+ * - a stat every second of those, of running conversations and of ones that
+ *   ran in the last half minute (agents write it during turns),
+ * - a stat of every workspace's file every half minute (a background command,
+ *   an edit by hand).
+ * A stat that shows no change reads nothing.
  */
 
-import { closeSync, openSync, readSync, statSync, watch, type FSWatcher } from "fs";
+import { closeSync, openSync, readdirSync, readSync, statSync, watch, type FSWatcher } from "fs";
 import { join } from "path";
-import { conversationWorkspaceDir } from "@exocortex/shared/paths";
-import type { Event } from "./protocol";
-import type { ConnectedClient } from "./server";
+import { SCRATCHPAD_MAX_BYTES, scratchpadHash } from "@exocortex/shared/scratchpad";
 import { log } from "./log";
 
+export { SCRATCHPAD_MAX_BYTES } from "@exocortex/shared/scratchpad";
 export const SCRATCHPAD_FILE = "scratchpad.md";
-/** The most of the file a client is sent; longer files are cut to their last whole line within it. */
-export const SCRATCHPAD_MAX_BYTES = 16 * 1024;
 
-const DEFAULT_TIMING = { debounceMs: 100, pollMs: 1_000 };
+const DEFAULT_TIMING = { debounceMs: 100, pollMs: 1_000, sweepMs: 30_000, lingerMs: 30_000 };
 let timing = DEFAULT_TIMING;
 
-/** Shrink the watch's waits in tests; call with no argument to restore them. */
+/** Shrink the index's waits in tests; call with no argument to restore them. */
 export function setScratchpadTimingForTest(next?: typeof DEFAULT_TIMING): void {
   timing = next ?? DEFAULT_TIMING;
 }
@@ -64,58 +64,123 @@ function fileSignature(path: string): string {
   }
 }
 
-interface WatchedScratchpad {
-  dir: string;
-  path: string;
-  clients: Set<ConnectedClient>;
-  content: string | null;
+interface Entry {
   signature: string;
+  content: string;
+  hash: string;
+}
+
+interface Watched {
+  count: number;
   watcher: FSWatcher | null;
   debounce: ReturnType<typeof setTimeout> | null;
-  poll: ReturnType<typeof setInterval>;
 }
 
-export interface ScratchpadWatchDeps {
-  send: (client: ConnectedClient, event: Event) => void;
-  /** The conversation's workspace directory; defaults to its live workspace. */
-  workspaceDir?: (convId: string) => string;
+export interface ScratchpadIndexDeps {
+  /** The directory holding every conversation's workspace, one per conversation id. */
+  workspacesDir: () => string;
+  /** Conversations running a turn now. */
+  activeConversationIds: () => Iterable<string>;
+  /** The scratchpad of `convId` changed: `entry` null when it is gone. */
+  onChange: (convId: string, entry: { content: string; hash: string } | null) => void;
 }
 
-export function createScratchpadWatch(deps: ScratchpadWatchDeps) {
-  const workspaceDir = deps.workspaceDir ?? conversationWorkspaceDir;
-  const watched = new Map<string, WatchedScratchpad>();
+export function createScratchpadIndex(deps: ScratchpadIndexDeps) {
+  const entries = new Map<string, Entry>();
+  /** Signatures of files that are missing or blank, so a stat is all an unchanged one costs. */
+  const empty = new Map<string, string>();
+  const watched = new Map<string, Watched>();
+  /** Conversations last seen running, and when: polled a while after their turn ends. */
+  const lastActive = new Map<string, number>();
+  let pollTimer: ReturnType<typeof setInterval> | null = null;
+  let sweepTimer: ReturnType<typeof setInterval> | null = null;
 
-  const publish = (convId: string, entry: WatchedScratchpad) => {
-    const event: Event = { type: "scratchpad_updated", convId, content: entry.content };
-    for (const client of entry.clients) {
-      if (client.socket.destroyed) entry.clients.delete(client);
-      else deps.send(client, event);
+  const pathOf = (convId: string) => join(deps.workspacesDir(), convId, SCRATCHPAD_FILE);
+
+  /** Stat the file; read it only when that changed. True when what clients see changed. */
+  const check = (convId: string): boolean => {
+    const path = pathOf(convId);
+    const signature = fileSignature(path);
+    const entry = entries.get(convId);
+    if (entry ? entry.signature === signature : empty.get(convId) === signature) return false;
+    const content = signature === "missing" ? null : readScratchpad(path);
+    if (content === null) {
+      entries.delete(convId);
+      if (signature === "missing") empty.delete(convId);
+      else empty.set(convId, signature);
+      if (!entry) return false;
+      deps.onChange(convId, null);
+      return true;
+    }
+    empty.delete(convId);
+    if (entry?.content === content) {
+      entry.signature = signature;
+      return false;
+    }
+    const next = { signature, content, hash: scratchpadHash(content) };
+    entries.set(convId, next);
+    deps.onChange(convId, { content, hash: next.hash });
+    return true;
+  };
+
+  const safeCheck = (convId: string) => {
+    try { check(convId); } catch (error) {
+      log("debug", `scratchpad: check failed for ${convId}: ${error instanceof Error ? error.message : error}`);
     }
   };
 
-  /** Read the file again; publish when what clients see changed. */
-  const refresh = (convId: string, entry: WatchedScratchpad) => {
-    entry.signature = fileSignature(entry.path);
-    const content = readScratchpad(entry.path);
-    if (content === entry.content) return;
-    entry.content = content;
-    publish(convId, entry);
+  /** Every workspace's file; conversations whose workspace is gone lose theirs. */
+  const sweep = (notify = true) => {
+    let ids: string[];
+    try { ids = readdirSync(deps.workspacesDir()); } catch { ids = []; }
+    const present = new Set(ids);
+    for (const convId of [...entries.keys()]) {
+      if (present.has(convId)) continue;
+      entries.delete(convId);
+      if (notify) deps.onChange(convId, null);
+    }
+    for (const convId of [...empty.keys()]) if (!present.has(convId)) empty.delete(convId);
+    for (const convId of ids) {
+      if (convId.startsWith(".")) continue;
+      if (notify) safeCheck(convId);
+      else {
+        // The first sweep fills the index without telling anyone: summaries read it.
+        const signature = fileSignature(pathOf(convId));
+        if (signature === "missing") continue;
+        const content = readScratchpad(pathOf(convId));
+        if (content === null) empty.set(convId, signature);
+        else entries.set(convId, { signature, content, hash: scratchpadHash(content) });
+      }
+    }
   };
 
-  const attachWatcher = (convId: string, entry: WatchedScratchpad) => {
+  const poll = () => {
+    const now = Date.now();
+    for (const convId of deps.activeConversationIds()) lastActive.set(convId, now);
+    for (const [convId, at] of lastActive) {
+      if (now - at > timing.lingerMs) lastActive.delete(convId);
+      else safeCheck(convId);
+    }
+    for (const [convId, watch] of watched) {
+      if (!lastActive.has(convId)) safeCheck(convId);
+      attachWatcher(convId, watch);
+    }
+  };
+
+  const attachWatcher = (convId: string, entry: Watched) => {
     if (entry.watcher) return;
     try {
-      const watcher = watch(entry.dir, { persistent: false }, (_kind, filename) => {
+      const watcher = watch(join(deps.workspacesDir(), convId), { persistent: false }, (_kind, filename) => {
         // Some platforms omit the name; then any change in the workspace may be it.
         if (filename && filename.toString() !== SCRATCHPAD_FILE) return;
         if (entry.debounce) clearTimeout(entry.debounce);
         entry.debounce = setTimeout(() => {
           entry.debounce = null;
-          if (watched.get(convId) === entry) refresh(convId, entry);
+          if (watched.get(convId) === entry) safeCheck(convId);
         }, timing.debounceMs);
       });
       watcher.on("error", () => {
-        // The workspace went away (deleted, moved to trash): the poll notices and watches again if it returns.
+        // The workspace went away (deleted, moved to trash): the poll watches again if it returns.
         watcher.close();
         if (entry.watcher === watcher) entry.watcher = null;
       });
@@ -125,68 +190,74 @@ export function createScratchpadWatch(deps: ScratchpadWatchDeps) {
     }
   };
 
-  const poll = (convId: string, entry: WatchedScratchpad) => {
-    attachWatcher(convId, entry);
-    if (fileSignature(entry.path) !== entry.signature) refresh(convId, entry);
-  };
-
-  const stopWatching = (convId: string) => {
-    const entry = watched.get(convId);
-    if (!entry) return;
-    watched.delete(convId);
-    entry.watcher?.close();
-    if (entry.debounce) clearTimeout(entry.debounce);
-    clearInterval(entry.poll);
-  };
-
-  const remove = (client: ConnectedClient, convId: string) => {
-    const entry = watched.get(convId);
-    if (!entry) return;
-    entry.clients.delete(client);
-    if (entry.clients.size === 0) stopWatching(convId);
-  };
-
   return {
-    /** The client follows the conversation: send it the file now, and on every change. */
-    subscribed(client: ConnectedClient, convId: string): void {
-      let entry = watched.get(convId);
-      if (!entry) {
-        let dir: string;
-        try { dir = workspaceDir(convId); } catch (error) {
-          log("debug", `scratchpad: no workspace for ${convId}: ${error instanceof Error ? error.message : error}`);
-          return;
-        }
-        const path = join(dir, SCRATCHPAD_FILE);
-        const created: WatchedScratchpad = {
-          dir,
-          path,
-          clients: new Set(),
-          content: null,
-          signature: "",
-          watcher: null,
-          debounce: null,
-          poll: setInterval(() => poll(convId, created), timing.pollMs),
-        };
-        (created.poll as { unref?: () => void }).unref?.();
-        entry = created;
-        watched.set(convId, entry);
-        attachWatcher(convId, entry);
-        entry.signature = fileSignature(path);
-        entry.content = readScratchpad(path);
-      }
-      entry.clients.add(client);
-      deps.send(client, { type: "scratchpad_updated", convId, content: entry.content });
-    },
-    /** The client stopped following the conversation (or disconnected). */
-    unsubscribed: remove,
-    /** Conversations whose file is being watched (tests). */
-    watchedConversations(): string[] {
-      return [...watched.keys()];
+    /** Fill the index from every workspace and keep it current. */
+    start(): void {
+      sweep(false);
+      pollTimer = setInterval(poll, timing.pollMs);
+      sweepTimer = setInterval(() => sweep(), timing.sweepMs);
+      (pollTimer as { unref?: () => void }).unref?.();
+      (sweepTimer as { unref?: () => void }).unref?.();
     },
     stop(): void {
-      for (const convId of [...watched.keys()]) stopWatching(convId);
+      if (pollTimer) clearInterval(pollTimer);
+      if (sweepTimer) clearInterval(sweepTimer);
+      pollTimer = sweepTimer = null;
+      for (const entry of watched.values()) {
+        entry.watcher?.close();
+        if (entry.debounce) clearTimeout(entry.debounce);
+      }
+      watched.clear();
+    },
+    /** The hash summaries carry, or undefined without a scratchpad. */
+    hash(convId: string): string | undefined {
+      return entries.get(convId)?.hash;
+    },
+    get(convId: string): { content: string; hash: string } | null {
+      const entry = entries.get(convId);
+      return entry ? { content: entry.content, hash: entry.hash } : null;
+    },
+    /** Conversations with a scratchpad (tests, the bootstrap). */
+    conversationIds(): string[] {
+      return [...entries.keys()];
+    },
+    /** Check one conversation's file now; true when it changed. */
+    check,
+    /** A client follows the conversation: watch its file closely until the last one leaves. */
+    watch(convId: string): void {
+      let entry = watched.get(convId);
+      if (!entry) {
+        entry = { count: 0, watcher: null, debounce: null };
+        watched.set(convId, entry);
+        attachWatcher(convId, entry);
+      }
+      entry.count++;
+    },
+    unwatch(convId: string): void {
+      const entry = watched.get(convId);
+      if (!entry || --entry.count > 0) return;
+      watched.delete(convId);
+      entry.watcher?.close();
+      if (entry.debounce) clearTimeout(entry.debounce);
+    },
+    /** Conversations watched closely (tests). */
+    watchedConversations(): string[] {
+      return [...watched.keys()];
     },
   };
 }
 
-export type ScratchpadWatch = ReturnType<typeof createScratchpadWatch>;
+export type ScratchpadIndex = ReturnType<typeof createScratchpadIndex>;
+
+let activeIndex: ScratchpadIndex | null = null;
+
+/** The index summaries read (the daemon's one, set by its handler). */
+export function setActiveScratchpadIndex(index: ScratchpadIndex | null): void {
+  activeIndex = index;
+}
+
+/** The summary field for `convId`: its scratchpad's hash, when it has one. */
+export function scratchpadSummaryFields(convId: string): { scratchpad?: string } {
+  const hash = activeIndex?.hash(convId);
+  return hash ? { scratchpad: hash } : {};
+}

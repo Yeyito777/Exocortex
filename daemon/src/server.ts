@@ -44,6 +44,8 @@ export interface ConnectedClient {
    * the events of conversations it subscribes to, never broadcasts.
    */
   app?: AppClientInfo;
+  /** With scratchpad: hashes of the scratchpad contents this client holds (it said so, or was sent them). */
+  scratchpadHashes?: Set<string>;
 }
 
 /** The conversation an event is about, when it names one. */
@@ -438,4 +440,9 @@ export class DaemonServer {
   }
 
   get clientCount(): number { return this.clients.size; }
+
+  /** The connected clients. */
+  clientList(): ConnectedClient[] {
+    return [...this.clients.values()];
+  }
 }

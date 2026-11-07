@@ -18,6 +18,7 @@ import { buildDisplayData, collectToolOutputs, type ConversationDisplayData, typ
 import { summarizeTool } from "./tools/registry";
 import * as persistence from "./persistence";
 import { getConversationActivityCounts, getConversationTasks, stopBackgroundTasksForConversation } from "./conversation-activity";
+import { scratchpadSummaryFields } from "./scratchpad";
 import { ConversationWorkspaceRestoreError, assertConversationWorkspaceRestorable, createConversationWorkspace, reconcileConversationWorkspaces, restoreConversationWorkspace, trashConversationWorkspace } from "./workspace-service";
 import * as streaming from "./streaming";
 import * as messageQueue from "./message-queue";
@@ -2446,6 +2447,7 @@ export function listSummaries(): ConversationSummary[] {
       ...getConversationActivityCounts(summary.id),
       tasks: getConversationTasks(summary.id),
       integrations: getConversationExternalIntegrations(summary.id),
+      ...scratchpadSummaryFields(summary.id),
     });
   }
   sortSidebarEntries(result);
@@ -2923,6 +2925,7 @@ export function getSummary(id: string): ConversationSummary | null {
     ...getConversationActivityCounts(id),
     tasks: getConversationTasks(id),
     integrations: getConversationExternalIntegrations(id),
+    ...scratchpadSummaryFields(id),
   };
 }
 

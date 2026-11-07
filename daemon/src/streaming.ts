@@ -121,6 +121,11 @@ export function isStreaming(convId: string): boolean {
   return activeJobs.has(convId) || streamHandoffs.has(convId);
 }
 
+/** Conversations streaming now (isStreaming). */
+export function listStreamingConversationIds(): string[] {
+  return [...new Set([...activeJobs.keys(), ...streamHandoffs.keys()])];
+}
+
 /** True only while a completed turn is being handed to its immediate successor. */
 export function isStreamHandoffActive(convId: string): boolean {
   return streamHandoffs.has(convId);

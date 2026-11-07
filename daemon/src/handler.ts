@@ -51,7 +51,7 @@ import { rememberSentImages, resolveImageForPreview } from "./image-requests";
 import { cachedImagePreview, renderImagePreview, validatePreviewRequest, isImageId } from "./attachments";
 import { VideoPlayback } from "./video-playback";
 import { DaemonServer, broadcastUsageUpdate, type ConnectedClient } from "./server";
-import { setLiveChangeListener } from "./streaming";
+import { listStreamingConversationIds, setLiveChangeListener } from "./streaming";
 import { isSidebarDigest, sidebarListDelta } from "@exocortex/shared/sidebar-digest";
 import { isSidebarViewHint, sidebarFirstPageConversationIds, sidebarFolderConversationCounts } from "@exocortex/shared/sidebar-first-page";
 import type { AIMessagePayload, Command, ConversationHistoryLoadedEvent, ConversationLoadedEvent, Event, HistoryPushEvent, LiveBlocksBase, SidebarItemOrderUpdate } from "./protocol";
@@ -108,7 +108,8 @@ import { claudeAccountReports } from "./providers/anthropic/account-pool";
 import { formatClaudeAccountReports } from "./providers/anthropic/account-report";
 import { createAccountsWatch } from "./accounts-watch";
 import { createMachineResourcesWatch } from "./machine-resources";
-import { createScratchpadWatch } from "./scratchpad";
+import { createScratchpadIndex, setActiveScratchpadIndex } from "./scratchpad";
+import { conversationWorkspacesDir } from "@exocortex/shared/paths";
 import { DISPLAY_BLOCKS_RESPONSE_BYTES, HISTORY_PAGE_BYTE_BUDGET, INITIAL_HISTORY_TURNS, MAX_DISPLAY_BLOCK_RANGES, MAX_HISTORY_REQUEST_TURNS, buildHistoryUpdatedEvents, isValidHistoryViewport, isValidInitialBackfill, compactHistoryImages, pageDisplayHistory, type HistoryViewport, type HistoryWindowOptions } from "./history-pagination";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
 import { randomUUID } from "crypto";
@@ -436,13 +437,70 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
   });
   /** The status bar's resources block: this machine's CPU, RAM, GPU and VRAM, for machine-resources clients (dropped at the first sample after they disconnect). */
   const machineResources = createMachineResourcesWatch({ send: (client, event) => { server.sendTo(client, event); } });
-  /** The Scratchpad panel: each followed conversation's scratchpad.md, for scratchpad clients (scratchpad.ts). */
-  const scratchpads = createScratchpadWatch({ send: (client, event) => { server.sendTo(client, event); } });
+  /**
+   * The Scratchpad panel (scratchpad.ts): every conversation's scratchpad.md,
+   * its hash in the summaries, its contents sent to scratchpad clients that
+   * lack them (the bootstrap, a change, a subscribe).
+   */
+  const scratchpadClients = (): ConnectedClient[] => typeof server.clientList === "function"
+    ? server.clientList().filter(client => client.capabilities?.has("scratchpad"))
+    : [];
+  const sendScratchpad = (client: ConnectedClient, convId: string, entry: { content: string; hash: string }) => {
+    const known = client.scratchpadHashes ??= new Set();
+    if (known.has(entry.hash)) return;
+    known.add(entry.hash);
+    server.sendTo(client, { type: "scratchpad_updated", convId, content: entry.content, hash: entry.hash });
+  };
+  const scratchpads = createScratchpadIndex({
+    workspacesDir: conversationWorkspacesDir,
+    activeConversationIds: listStreamingConversationIds,
+    onChange: (convId, entry) => {
+      // The contents first, so the summary's new hash never names contents a client lacks.
+      if (entry) {
+        const hidden = isHiddenConversation(convId);
+        for (const client of scratchpadClients()) {
+          if (!hidden || client.subscriptions.has(convId)) sendScratchpad(client, convId, entry);
+        }
+      }
+      broadcastConversationUpdated(server, convId);
+    },
+  });
+  scratchpads.start();
+  setActiveScratchpadIndex(scratchpads);
+  /** The bootstrap's scratchpad contents the client lacks: the conversations it shows first, then the most recent, up to this many bytes. */
+  const SCRATCHPAD_BOOTSTRAP_BYTES = 256 * 1024;
+  const sendBootstrapScratchpads = (client: ConnectedClient, firstIds: readonly string[]) => {
+    if (!client.capabilities?.has("scratchpad")) return;
+    const known = client.scratchpadHashes ??= new Set();
+    const recency = (id: string) => convStore.getIndexedSummary(id)?.updatedAt ?? 0;
+    const first = new Set(firstIds);
+    const ids = scratchpads.conversationIds()
+      .filter(id => !isHiddenConversation(id))
+      .sort((a, b) => Number(first.has(b)) - Number(first.has(a)) || recency(b) - recency(a));
+    const out: Array<{ hash: string; content: string }> = [];
+    let bytes = 0;
+    for (const id of ids) {
+      const entry = scratchpads.get(id);
+      if (!entry || known.has(entry.hash)) continue;
+      const size = Buffer.byteLength(entry.content);
+      if (bytes + size > SCRATCHPAD_BOOTSTRAP_BYTES) continue;
+      bytes += size;
+      known.add(entry.hash);
+      out.push(entry);
+    }
+    if (out.length > 0) server.sendTo(client, { type: "scratchpads", scratchpads: out });
+  };
   const stopScratchpadSubscriptions = typeof server.onSubscriptionChanged === "function"
     ? server.onSubscriptionChanged((client, convId, subscribed) => {
         if (!client.capabilities.has("scratchpad")) return;
-        if (subscribed) scratchpads.subscribed(client, convId);
-        else scratchpads.unsubscribed(client, convId);
+        if (!subscribed) {
+          scratchpads.unwatch(convId);
+          return;
+        }
+        scratchpads.watch(convId);
+        scratchpads.check(convId);
+        const entry = scratchpads.get(convId);
+        if (entry) sendScratchpad(client, convId, entry);
       })
     : () => {};
 
@@ -1971,6 +2029,8 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
           break;
         }
         server.sendTo(client, { type: "pong", reqId: cmd.reqId });
+        // Scratchpad contents lead the list, so a summary's hash never names contents the client lacks.
+        sendBootstrapScratchpads(client, client.sidebarView?.conversationIds ?? []);
         // An incremental first page is small and drawn together with the
         // conversation, so it leads; a whole list stays behind the small events.
         const [conversationsList, restOfList] = bootstrapConversationsLists(client);
@@ -2429,7 +2489,14 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
         if (cmd.capabilities.includes("scratchpad") && !client.app && !client.providerProxyLink
             && !client.capabilities.has("scratchpad")) {
           client.capabilities.add("scratchpad");
-          for (const convId of client.subscriptions) scratchpads.subscribed(client, convId);
+          client.scratchpadHashes = new Set(Array.isArray(cmd.scratchpadHashes)
+            ? cmd.scratchpadHashes.filter((hash): hash is string => typeof hash === "string").slice(0, 1024)
+            : []);
+          for (const convId of client.subscriptions) {
+            scratchpads.watch(convId);
+            const entry = scratchpads.get(convId);
+            if (entry) sendScratchpad(client, convId, entry);
+          }
         }
         if (cmd.capabilities.includes("machine-resources") && !client.app && !client.providerProxyLink) {
           client.capabilities.add("machine-resources");
@@ -4704,6 +4771,7 @@ export function createHandler(server: DaemonServer, options: HandlerOptions = {}
       machineResources.dispose();
       stopScratchpadSubscriptions();
       scratchpads.stop();
+      setActiveScratchpadIndex(null);
       unsubscribeConnectivity();
       setApiKeyUsageRecordedListener(null);
       setCreditSyncListener(null);

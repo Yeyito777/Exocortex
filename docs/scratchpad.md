@@ -60,10 +60,31 @@ terminal too narrow for the Tasks card, neither shows.
 
 ## How it gets there
 
-The daemon watches the file of each conversation a client with the
-`scratchpad` capability is subscribed to (`daemon/src/scratchpad.ts`):
-`fs.watch` on the workspace, debounced, plus a stat every second. It sends
-`scratchpad_updated` (`convId`, `content`) when the client subscribes and
-whenever the contents change; `content` is null for a missing or blank file
-and is cut to the last whole line within 16 KB. Over `/ssh` the file is the
-remote daemon's; with `/proxy` tools run locally, so it is this machine's.
+Like Tasks, it rides on the conversation summaries, so the card paints with
+the Tasks card, before any open, locally and over `/ssh` (the remote daemon's
+file), on a fresh TUI start and when switching conversations:
+
+- **The daemon** (`daemon/src/scratchpad.ts`) indexes every conversation's
+  file: all of them at start, then a stat every second of the conversations
+  a client follows (also `fs.watch`ed), running ones and ones that ran in the
+  last 30 s, and of every workspace every 30 s. Only a changed stat reads the
+  file, cut to the last whole line within 16 KB.
+- **Summaries** carry a 12-hex-digit hash of the contents (`scratchpad`),
+  absent for a missing or blank file. A change re-sends the summary like any
+  other summary change.
+- **Contents** travel apart, keyed by hash, only to clients that lack them:
+  `scratchpads` in the bootstrap, ahead of the conversation list (the shown
+  conversations first, then the most recent, up to 256 KB), and
+  `scratchpad_updated` on a change (ahead of its summary) or on a subscribe.
+  The TUI lists the hashes it holds in `client_capabilities`
+  (`scratchpadHashes`).
+- **The TUI** (`tui/src/scratchpadstore.ts`) keeps contents by hash in
+  `config/runtime/scratchpad-cache.json` (512 entries, 2 MiB, least recently
+  used out), so a fresh start paints from it with its first summaries (over
+  `/ssh`, the cached sidebar list). The card shows the contents the summary's
+  hash names, or nothing until they are here: never another version.
+
+Measured on whale's daemon (Nov 7): 3884 conversations, a 1.97 MB sidebar
+list; the 5 scratchpads add 140 bytes to it (28 per conversation that has
+one) and 3.4 KB of contents to a bootstrap that lacks them, and nothing once
+the TUI holds them.

@@ -203,6 +203,8 @@ export class DaemonClient {
   private pendingSshConnection: (ProbedSshConnection & { alias: string }) | null = null;
   /** What the sidebar will draw first on a route (null: local), for the bootstrap's first page. */
   private sidebarViewHint: ((alias: string | null) => SidebarViewHint | null) | null = null;
+  /** Scratchpad contents held (by hash), told to each daemon so its bootstrap leaves them out. */
+  private scratchpadHashes: (() => string[]) | null = null;
   /** sidebar-incremental: the bootstrap's first page until the rest completes it. */
   private sidebarFirstPage: Extract<Event, { type: "conversations_list" }> | null = null;
   /** Requests to send in an SSH probe's first flight, ahead of its bootstrap ping. */
@@ -296,7 +298,7 @@ export class DaemonClient {
         this._connected = true;
         resolved = true;
         const sidebarView = this.sidebarViewHint?.(null);
-        this.writeCommand({ type: "client_capabilities", capabilities: CLIENT_CAPABILITIES, ...(sidebarView ? { sidebarView } : {}) });
+        this.writeCommand({ type: "client_capabilities", capabilities: CLIENT_CAPABILITIES, ...(sidebarView ? { sidebarView } : {}), ...this.scratchpadHashesField() });
         // Report the queue state atomically with the flush. Input can enqueue a
         // command while the socket attempt is still in flight, so a pre-connect
         // queue snapshot would already be stale here.
@@ -337,7 +339,13 @@ export class DaemonClient {
       capabilities: CLIENT_CAPABILITIES,
       ...(sidebarDigest ? { sidebarDigest } : {}),
       ...(sidebarView ? { sidebarView } : {}),
+      ...this.scratchpadHashesField(),
     };
+  }
+
+  private scratchpadHashesField(): { scratchpadHashes?: string[] } {
+    const hashes = this.scratchpadHashes?.() ?? [];
+    return hashes.length > 0 ? { scratchpadHashes: hashes } : {};
   }
 
   /**
@@ -346,6 +354,11 @@ export class DaemonClient {
    */
   setSidebarViewHint(hint: ((alias: string | null) => SidebarViewHint | null) | null): void {
     this.sidebarViewHint = hint;
+  }
+
+  /** The scratchpad hashes the TUI holds, sent with the capabilities of every connection. */
+  setScratchpadHashes(hashes: (() => string[]) | null): void {
+    this.scratchpadHashes = hashes;
   }
 
   /**

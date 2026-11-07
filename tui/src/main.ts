@@ -8,6 +8,9 @@
  * Usage: bun run src/main.ts [--ssh <alias>]
  */
 
+import { join } from "node:path";
+import { runtimeDir } from "@exocortex/shared/paths";
+import { ScratchpadStore } from "./scratchpadstore";
 import { randomUUID } from "node:crypto";
 import { queryLocalUpdateStatus, UpdateStatusMonitor } from "./update-status";
 import { setWireTrace, DaemonClient } from "./client";
@@ -158,6 +161,8 @@ if (launchOptions.showHelp) {
 
 const savedStartingState = loadTuiStartingState();
 const state = createInitialState();
+// Scratchpad contents from the last run: the card paints with the first summaries.
+state.scratchpads = new ScratchpadStore(join(runtimeDir(), "scratchpad-cache.json"));
 // The view is kept per daemon route so `--ssh`/`/ssh` reopens its own
 // conversation, sidebar cursor and tree.
 const routeViews = new RouteViewStates(savedStartingState);
@@ -2529,6 +2534,7 @@ async function main(): Promise<void> {
     sshProbeFallback,
   });
   daemon.setSidebarViewHint(sidebarViewHint);
+  daemon.setScratchpadHashes(() => state.scratchpads.hashes());
   daemon.setViewCacheContext(() => ({
     openConvId: state.convId,
     request: () => ({ turns: openingHistoryTurns(state.rows), viewport: openingViewport(state), backfillTurns: INITIAL_BUFFER_ADDITIONAL_TURNS }),
@@ -2761,6 +2767,7 @@ function cleanup(): void {
   terminalClipboardClient = null;
   remoteFileLinks?.cancel();
   daemon?.flushViewCaches();
+  state.scratchpads.flushSync();
   daemon?.disconnect();
   restoreTerminal();
   process.exit(0);

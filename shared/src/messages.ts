@@ -801,6 +801,11 @@ export interface ConversationSummary {
   tasks?: ConversationTaskSummary[];
   /** Durable external notification subscriptions targeting this conversation. */
   integrations?: ExternalIntegrationSummary[];
+  /**
+   * Hash (scratchpadHash) of the conversation's scratchpad.md; absent when it
+   * is missing or blank. Its contents come in scratchpads/scratchpad_updated.
+   */
+  scratchpad?: string;
 }
 
 export interface FolderSummary {
