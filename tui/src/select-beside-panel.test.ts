@@ -3,7 +3,7 @@ import { render } from "./render";
 import { invalidateFrame } from "./frame";
 import { createInitialState, type RenderState } from "./state";
 import { theme } from "./theme";
-import { contentBounds, getHistoryVisualSelection } from "./historycursor";
+import { contentBounds, getHistoryVisualSelection, joinLogicalLines, logicalLineRange } from "./historycursor";
 import { stripAnsi } from "./historymotions";
 import { handleMouseEvent } from "./mouse";
 
@@ -210,6 +210,39 @@ describe("visual selection beside the Tasks panel", () => {
         }
       });
       expect(checked).toBeGreaterThan(10);
+    }
+  });
+
+  test("the normal-mode line tint covers exactly the line yy copies", () => {
+    const saved = theme.historyLineBg;
+    // A terminal without truecolor maps every background to one colour: pin the tint apart.
+    theme.historyLineBg = "\x1b[48;2;1;2;3m";
+    try {
+    for (const taskCount of [1, 12]) {
+      const state = panelState(taskCount, messages);
+      state.vim.mode = "normal";
+      captureRenderOutput(state);
+      const lines = state.historyLineAnchors.flatMap((anchor, row) =>
+        anchor?.segment === "user_content" ? [row] : []);
+      expect(lines.length).toBeGreaterThan(2);
+      for (const row of lines) {
+        state.historyCursor = { row, col: contentBounds(stripAnsi(state.historyLines[row])).start };
+        invalidateFrame(state);
+        const writes = rowWrites(captureRenderOutput(state));
+        const tinted = state.layout.historyViewportRows
+          .map((viewportRow, index) => viewportRow && (writes.get(3 + index) ?? "").startsWith(theme.historyLineBg)
+            ? stripAnsi(writes.get(3 + index) ?? "").replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "")
+            : "")
+          .filter(Boolean)
+          .join(" ");
+        // What yy copies: the cursor's whole logical line.
+        const { first, last } = logicalLineRange(row, state.historyWrapContinuation);
+        const copied = joinLogicalLines(state.historyLines, state.historyWrapContinuation, first, last, state.historyWrapJoiners, state.historyCopyLines);
+        expect(squash(tinted), `tasks=${taskCount} row=${row}`).toBe(squash(copied));
+      }
+    }
+    } finally {
+      theme.historyLineBg = saved;
     }
   });
 });

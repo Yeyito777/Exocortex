@@ -1177,6 +1177,7 @@ function renderMessageArea(
       let rendered = line;
       const math = inVisual ? mathImageSpan(lineAnchors[lineIdx], lineIdx) : null;
       let cursorCol: number | null = null;
+      let tinted = lineIdx >= hlFirst && lineIdx <= hlLast;
 
       if (math) {
         // A display-math image selects as one unit, like one glyph: when the
@@ -1192,6 +1193,8 @@ function renderMessageArea(
         // its canonical line and column, where selection and cursor live.
         const text = viewportRow.userText;
         const cells = userTextCanonicalCells(lineAnchors, viewportRow.lineIndex, text);
+        // The cursor's line is tinted on the rows that show its text, not by where each row starts.
+        if (text.length > 0) tinted = cells.some(cell => cell.col !== null && cell.lineIndex >= hlFirst && cell.lineIndex <= hlLast);
         if (inVisual) {
           let first = -1;
           let last = -1;
@@ -1239,7 +1242,7 @@ function renderMessageArea(
       }
       if (cursorCol !== null) rendered = renderLineWithCursor(rendered, cursorCol);
 
-      const finalLine = historyFocused && !inVisual && lineIdx >= hlFirst && lineIdx <= hlLast
+      const finalLine = historyFocused && !inVisual && tinted
         ? applyLineBg(rendered, theme.historyLineBg)
         : bgLine(rendered);
       appendRowWrite(ctx, row, chatCol, finalLine);
