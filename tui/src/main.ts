@@ -11,7 +11,7 @@
 import { randomUUID } from "node:crypto";
 import { queryLocalUpdateStatus, UpdateStatusMonitor } from "./update-status";
 import { setWireTrace, DaemonClient } from "./client";
-import { parseInput, PasteBuffer, type KeyEvent, type MouseEvent } from "./input";
+import { parseInput, PasteBuffer, type KeyEvent, type ModifierEvent, type MouseEvent } from "./input";
 import { TerminalClipboardClient, TerminalControlBuffer } from "./terminalclipboard";
 import { CELL_SIZE_QUERY, TerminalGraphicsDetector, parseCellSizeResponse } from "./terminalgraphics";
 import { configureInlineImages, inlineImageCellSize, setInlineImageCellSize, setInlineImageMode, setInlineVideoSupport } from "./inlineimages";
@@ -36,7 +36,7 @@ import {
 } from "./instructions/controller";
 import { handleFocusedKey, toggleSidebar } from "./focus";
 import { resolveAction } from "./keybinds";
-import { handleMouseEvent, refreshMouseCursor, trackMouseCursor } from "./mouse";
+import { handleModifierEvent, handleMouseEvent, refreshMouseCursor, trackMouseCursor } from "./mouse";
 import { clearPrompt } from "./promptstate";
 import { MACRO_COMMAND, MACRO_ERROR_DELAY_MS, tryCommand } from "./commands";
 import { isMacroCommandText } from "./usermacros/parse";
@@ -2184,6 +2184,13 @@ function handleKey(key: KeyEvent): void {
   renderAfterLocalUiMutation();
 }
 
+/** Shift without moving the mouse: repaint only when the task panel's highlight changes. */
+function handleModifiers(ev: ModifierEvent): void {
+  if (state.sshConnecting) return;
+  handleModifierEvent(ev, state);
+  if (taskPanelHoverChanged(state)) renderAfterLocalUiMutation();
+}
+
 function handleMouse(ev: MouseEvent): void {
   if (ev.action !== "motion") state.pendingHistoryNavigation = null;
   // Hidden old-route controls must not remain clickable during the transition.
@@ -2654,6 +2661,8 @@ async function main(): Promise<void> {
     for (const ev of events) {
       if (ev.type === "mouse") {
         handleMouse(ev);
+      } else if (ev.type === "modifiers") {
+        handleModifiers(ev);
       } else {
         handleKey(ev);
       }

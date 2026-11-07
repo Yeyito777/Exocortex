@@ -426,8 +426,13 @@ export interface RenderState {
   mouseCursor: "pointer" | "text" | "hand";
   /** Last reported pointer cell, so the shape can follow content that moves under a still mouse. */
   mousePosition?: { col: number; row: number } | null;
-  /** Whether the last pointer report held Shift, which turns the task panel's subagent rows into links. */
+  /** Whether the last mouse report held Shift; the cursor shape follows it. */
   mouseShift?: boolean;
+  /**
+   * The pointer cell and Shift as the task panel's hover sees them: from mouse
+   * reports, and from st's modifier reports, which change nothing else.
+   */
+  taskPanelPointer?: { col: number; row: number; shift: boolean } | null;
   /** The subagent whose task panel rows the last frame drew highlighted under the pointer. */
   taskPanelHover?: string | null;
   /** Open only on release at the original link, never when dragging to select. */

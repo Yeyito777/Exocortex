@@ -43,8 +43,26 @@ export interface MouseEvent {
   ctrl: boolean;
 }
 
+/**
+ * st's mode 7778 report (CSI ? 7778 ; mods ; col ; row ~): Shift, Option or
+ * Control went down or up with the pointer at (col, row). Not a mouse event:
+ * the pointer did not move.
+ */
+export interface ModifierEvent {
+  type: "modifiers";
+  /** 1-based column */
+  col: number;
+  /** 1-based row */
+  row: number;
+  shift: boolean;
+  meta: boolean;
+  ctrl: boolean;
+}
+
 /** Union of all input events from the terminal. */
-export type InputEvent = KeyEvent | MouseEvent;
+export type InputEvent = KeyEvent | MouseEvent | ModifierEvent;
+
+const MODIFIER_REPORT = /^\?7778;(\d+);(\d+);(\d+)$/;
 
 /**
  * CSI u (kitty keyboard protocol) lookup table.
@@ -441,6 +459,22 @@ export function parseInput(data: Buffer | string): InputEvent[] {
             const csiuEvent = parseCsiU(params);
             if (csiuEvent) { events.push(csiuEvent); i += seqLen; continue; }
             // Unknown CSI u — skip
+            i += seqLen;
+            continue;
+          }
+
+          // st's modifier change report (mode 7778).
+          const modifiers = final === "~" ? MODIFIER_REPORT.exec(params) : null;
+          if (modifiers) {
+            const mods = parseInt(modifiers[1], 10);
+            events.push({
+              type: "modifiers",
+              col: parseInt(modifiers[2], 10),
+              row: parseInt(modifiers[3], 10),
+              shift: !!(mods & 1),
+              meta: !!(mods & 2),
+              ctrl: !!(mods & 4),
+            });
             i += seqLen;
             continue;
           }

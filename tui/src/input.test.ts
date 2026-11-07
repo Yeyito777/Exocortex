@@ -108,3 +108,19 @@ describe("PasteBuffer", () => {
     expect(parseInput(ready ?? "")).toEqual([{ type: "paste", text: "Eé" }]);
   });
 });
+
+describe("st modifier change reports (mode 7778)", () => {
+  test("parse as a modifier event, never as a mouse event or a key", () => {
+    expect(parseInput("\x1b[?7778;1;5;3~")).toEqual([
+      { type: "modifiers", col: 5, row: 3, shift: true, meta: false, ctrl: false },
+    ]);
+    expect(parseInput("A\x1b[?7778;6;80;24~b")).toEqual([
+      { type: "char", char: "A" },
+      { type: "modifiers", col: 80, row: 24, shift: false, meta: true, ctrl: true },
+      { type: "char", char: "b" },
+    ]);
+    expect(parseInput("\x1b[?7778;0;1;1~")).toEqual([
+      { type: "modifiers", col: 1, row: 1, shift: false, meta: false, ctrl: false },
+    ]);
+  });
+});

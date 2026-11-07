@@ -7,7 +7,7 @@
  * coordinate-based hit-testing rather than modal key interpretation.
  */
 
-import type { MouseEvent } from "./input";
+import type { ModifierEvent, MouseEvent } from "./input";
 import type { RenderState } from "./state";
 import { focusHistory, focusPrompt, focusSidebar } from "./state";
 import { handleSidebarActionMenuResult, type KeyResult } from "./focus";
@@ -245,6 +245,7 @@ function updateMouseCursor(col: number, row: number, state: RenderState): void {
 export function trackMouseCursor(ev: Pick<MouseEvent, "col" | "row"> & Partial<Pick<MouseEvent, "shift">>, state: RenderState): void {
   state.mousePosition = { col: ev.col, row: ev.row };
   state.mouseShift = ev.shift ?? false;
+  state.taskPanelPointer = { col: ev.col, row: ev.row, shift: state.mouseShift };
   updateMouseCursor(ev.col, ev.row, state);
 }
 
@@ -254,9 +255,22 @@ export function refreshMouseCursor(state: RenderState): void {
   if (position) updateMouseCursor(position.col, position.row, state);
 }
 
+/**
+ * A modifier went down or up with the pointer still (st mode 7778). It only
+ * tells the task panel's hover about Shift: focus, selection, the cursor shape
+ * and everything else that follows the mouse are left alone.
+ */
+export function handleModifierEvent(ev: ModifierEvent, state: RenderState): void {
+  state.taskPanelPointer = { col: ev.col, row: ev.row, shift: ev.shift };
+}
+
 // ── Event handler ─────────────────────────────────────────────────
 
 export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult {
+  // Motion on the cell the pointer was already on only changed the modifier bits
+  // (terminals without mode 7778 report it so): the pointer did not move.
+  const previous = state.mousePosition;
+  const stillPointer = ev.action === "motion" && previous?.col === ev.col && previous?.row === ev.row;
   if (ev.action === "press" || (ev.action === "motion" && state.mouseLinkPress
       && (ev.col !== state.mouseLinkPress.col || ev.row !== state.mouseLinkPress.row))) state.mouseLinkPress = null;
   if (ev.action === "press" || (ev.action === "motion" && state.mouseImagePress
@@ -296,16 +310,17 @@ export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult 
   const inSidebar = sidebarOpen && col <= SIDEBAR_WIDTH;
 
   // ── Focus follows mouse ─────────────────────────────────────────
-  if (inSidebar && state.panelFocus !== "sidebar") {
+  // Only when the pointer moves or clicks: a modifier pressed while typing must not take focus.
+  if (!stillPointer && inSidebar && state.panelFocus !== "sidebar") {
     focusSidebar(state);
-  } else if (!inSidebar && state.panelFocus === "sidebar") {
+  } else if (!stillPointer && !inSidebar && state.panelFocus === "sidebar") {
     state.panelFocus = "chat";
   }
 
   // Sidebar selection follows the pointer. This makes keyboard actions such
   // as `;` apply to the conversation or folder under the mouse without loading
   // it; clicking still performs the existing activation behavior below.
-  if (inSidebar && action === "motion") {
+  if (inSidebar && action === "motion" && !stillPointer) {
     const hovered = sidebarHitTest(row, state.rows, sidebar);
     if (hovered && !sameSidebarItem(sidebar.selectedItem, hovered)) {
       focusSidebarItem(sidebar, hovered);

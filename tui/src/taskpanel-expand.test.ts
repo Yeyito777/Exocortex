@@ -15,7 +15,7 @@ import { disposeHistoryImages, invalidateHistoryImagePlacements } from "./histor
 import { stripAnsi } from "./historycursor";
 import { configureInlineImages, inlineImagesInternalsForTest, setInlineImageCellSize, setInlineImageMode } from "./inlineimages";
 import type { ConversationTaskSummary, ImageRef } from "./messages";
-import { cursorZone, handleMouseEvent } from "./mouse";
+import { cursorZone, handleModifierEvent, handleMouseEvent } from "./mouse";
 import { render } from "./render";
 import { createInitialState, type RenderState } from "./state";
 import { termWidth, visibleLength } from "./textwidth";
@@ -784,5 +784,97 @@ describe("subagent rows on the task panel with Shift", () => {
     expect(taskPanelLinkAt(state, rect.left + 20, rect.top + 1)).toBeNull();
     expect(taskPanelHoverChanged(state)).toBe(true);
     expect(click(state, rect.left + 20, rect.top + 1, true)).toEqual(["handled", "handled"]);
+  });
+});
+
+describe("Shift without moving the mouse", () => {
+  const report = (state: RenderState, col: number, row: number, shift: boolean) =>
+    handleModifierEvent({ type: "modifiers", col, row, shift, meta: false, ctrl: false }, state);
+  const plainRow = `│${theme.reset}${hexToAnsiBg("#00050f")} `;
+  const hoveredRow = `│${theme.reset}${hexToAnsiBg("#00050f")}${theme.sidebarSelBg} `;
+
+  test("st's modifier report shows and clears the highlight and changes nothing else", () => {
+    const state = chatState(120, 30, filler(80), fittingTasks(Date.now()));
+    state.sidebar.open = true;
+    capture(() => render(state));
+    const rect = state.layout.taskPanelRect!;
+    const row = rect.top + 1;
+    capture(() => handleMouseEvent(mouse(rect.left + 20, row, "motion", 35), state));
+    capture(() => render(state));
+    // Typing in the prompt with the pointer resting on the subagent's row.
+    state.panelFocus = "chat";
+    state.chatFocus = "prompt";
+    const before = { panel: state.panelFocus, chat: state.chatFocus, cursor: state.mouseCursor, position: { ...state.mousePosition! } };
+
+    report(state, rect.left + 20, row, true);
+    expect(taskPanelHoverChanged(state)).toBe(true);
+    const shown = capture(() => render(state));
+    expect(state.taskPanelHover).toBe("child");
+    expect(shown).toContain(hoveredRow);
+    expect({ panel: state.panelFocus, chat: state.chatFocus, cursor: state.mouseCursor, position: state.mousePosition })
+      .toEqual(before);
+
+    report(state, rect.left + 20, row, false);
+    expect(taskPanelHoverChanged(state)).toBe(true);
+    const cleared = capture(() => render(state));
+    expect(state.taskPanelHover).toBeNull();
+    expect(cleared).toContain(plainRow);
+    expect(cleared).not.toContain(hoveredRow);
+    expect({ panel: state.panelFocus, chat: state.chatFocus, cursor: state.mouseCursor, position: state.mousePosition })
+      .toEqual(before);
+  });
+
+  test("a modifier report with the pointer on the sidebar never takes focus or moves its selection", () => {
+    const state = chatState(120, 30, filler(80), fittingTasks(Date.now()));
+    state.sidebar.open = true;
+    capture(() => render(state));
+    capture(() => handleMouseEvent(mouse(5, 3, "motion", 35), state));
+    state.panelFocus = "chat";
+    state.chatFocus = "prompt";
+    const selected = state.sidebar.selectedItem;
+    for (const shift of [true, false, true]) report(state, 5, 3, shift);
+    expect(state.panelFocus).toBe("chat");
+    expect(state.chatFocus).toBe("prompt");
+    expect(state.sidebar.selectedItem).toBe(selected);
+    expect(taskPanelHoverChanged(state)).toBe(false);
+  });
+
+  test("a same-cell motion that only changes modifiers never moves focus (terminals without mode 7778)", () => {
+    const state = chatState(120, 30, filler(80), [
+      ...fittingTasks(Date.now()),
+    ]);
+    state.sidebar.open = true;
+    state.sidebar.conversations.push({ ...state.sidebar.conversations[1], id: "third", title: "Third", sortOrder: 2, tasks: [] });
+    capture(() => render(state));
+    // The pointer rests on the sidebar; then the owner goes back to typing.
+    capture(() => handleMouseEvent(mouse(5, 4, "motion", 35), state));
+    expect(state.panelFocus).toBe("sidebar");
+    state.panelFocus = "chat";
+    state.chatFocus = "prompt";
+    const selected = state.sidebar.selectedItem;
+
+    // Shift and Ctrl presses arrive as motion on the same cell with new modifier bits.
+    capture(() => handleMouseEvent(mouse(5, 4, "motion", 35, true), state));
+    capture(() => handleMouseEvent({ ...mouse(5, 4, "motion", 35), ctrl: true }, state));
+    capture(() => handleMouseEvent(mouse(5, 4, "motion", 35), state));
+    expect(state.panelFocus).toBe("chat");
+    expect(state.chatFocus).toBe("prompt");
+    expect(state.sidebar.selectedItem).toBe(selected);
+
+    // A real move still brings focus to what is under the pointer.
+    capture(() => handleMouseEvent(mouse(5, 5, "motion", 35), state));
+    expect(state.panelFocus as string).toBe("sidebar");
+  });
+
+  test("on the task panel, a same-cell Shift motion still highlights, and Shift+click still opens", () => {
+    const state = chatState(120, 30, filler(80), fittingTasks(Date.now()));
+    const rect = state.layout.taskPanelRect!;
+    capture(() => handleMouseEvent(mouse(rect.left + 20, rect.top + 1, "motion", 35), state));
+    capture(() => handleMouseEvent(mouse(rect.left + 20, rect.top + 1, "motion", 35, true), state));
+    expect(taskPanelHoverChanged(state)).toBe(true);
+    capture(() => render(state));
+    expect(state.taskPanelHover).toBe("child");
+    expect(handleMouseEvent(mouse(rect.left + 20, rect.top + 1, "press", 0, true), state))
+      .toEqual({ type: "load_conversation", convId: "child" });
   });
 });

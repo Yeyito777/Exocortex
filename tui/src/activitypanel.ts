@@ -90,10 +90,10 @@ export function taskPanelLinkAt(state: RenderState, col: number, row: number): s
   return state.layout.taskPanelLinks.find(link => link.row === row && col >= link.left && col <= link.right)?.convId ?? null;
 }
 
-/** The subagent the last pointer report highlights: only while it held Shift. */
+/** The subagent the pointer highlights: only while Shift is held. */
 export function taskPanelHoverTarget(state: RenderState): string | null {
-  const pointer = state.mousePosition;
-  return pointer && state.mouseShift ? taskPanelLinkAt(state, pointer.col, pointer.row) : null;
+  const pointer = state.taskPanelPointer;
+  return pointer?.shift ? taskPanelLinkAt(state, pointer.col, pointer.row) : null;
 }
 
 /** Whether the last pointer report highlights a different subagent than the last frame drew. */

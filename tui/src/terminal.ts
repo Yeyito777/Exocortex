@@ -21,8 +21,9 @@ export const enable_clipboard_paste_events = `${ESC}?5522h`;
 export const disable_clipboard_paste_events = `${ESC}?5522l`;
 export const enable_kitty_kbd = `${ESC}>27u`;  // push kitty kbd: disambiguate + event types + all keys + associated text
 export const disable_kitty_kbd = `${ESC}<u`;    // pop keyboard mode
-export const enable_mouse = `${ESC}?1003h${ESC}?1006h`;   // all motion + SGR extended encoding
-export const disable_mouse = `${ESC}?1003l${ESC}?1006l`;
+// All motion + SGR extended encoding + st's modifier change reports (Shift without moving the mouse).
+export const enable_mouse = `${ESC}?1003h${ESC}?1006h${ESC}?7778h`;
+export const disable_mouse = `${ESC}?1003l${ESC}?1006l${ESC}?7778l`;
 
 /** OSC 777 mouseshape: switch X cursor between text (I-beam), pointer (arrow), and hand (clickable). */
 export const mouse_cursor_text = `\x1b]777;mouseshape;text\x07`;
