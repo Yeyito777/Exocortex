@@ -365,9 +365,15 @@ function start(request: StartRequest): void {
     captureLimitBytes = request.captureLimitBytes;
     backgroundCaptureLimitBytes = request.backgroundCaptureLimitBytes;
     outputPath = request.outputPath;
-    outputStream = createWriteStream(request.outputPath, { flags: "wx", mode: 0o600 });
-    outputStream.on("error", markOutputFailed);
-    outputStream.on("drain", resumeCommandOutput);
+    // Opened before the command starts: the backgrounded result names this
+    // file, and a stream's own open would only finish some time after "started".
+    let fd: number | undefined;
+    try { fd = openSync(request.outputPath, "wx", 0o600); } catch (err) { markOutputFailed(err); }
+    if (fd !== undefined) {
+      outputStream = createWriteStream(request.outputPath, { fd });
+      outputStream.on("error", markOutputFailed);
+      outputStream.on("drain", resumeCommandOutput);
+    }
 
     // Keep the legacy non-login shell default; $SHELL/login profiles are not a
     // substitute for the daemon environment supplied in request.env. Apply that
