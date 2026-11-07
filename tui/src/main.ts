@@ -110,14 +110,12 @@ import {
   openingViewport,
   olderHistoryDue,
   olderHistoryDueAfterLayout,
-  LOST_OLDER_PAGE_MS,
 } from "./historypagination";
-import { advanceHistoryNavigation as advanceWaitingHistoryJump } from "./historycursor";
 import { requestToolOutputs, requestVisibleToolOutputs } from "./events/tool-outputs";
 import { prefetchBottomScreen, requestElidedBlocksIfNeeded } from "./events/elided-blocks";
 import { PERFORMANCE_PROFILING_ENABLED } from "@exocortex/shared/performance-profiling";
 import { log, TUI_LOG_PATH } from "./log";
-import { logHistoryNavigation, noteStalledHistoryNavigation } from "./historydiag";
+import { noteStalledHistoryNavigation } from "./historydiag";
 import { installFatalErrorHandlers } from "./fatal";
 import { ConversationPrewarmer } from "./prewarm";
 import { FirstTextUX } from "./first-text";
@@ -583,11 +581,9 @@ function scheduleDayRolloverRender(): void {
  * Load the page before the oldest loaded entry. `pushedReqId` is a page the
  * daemon already sends unasked (a load's initialBackfill): wait for it instead.
  */
-function requestOlderHistory(turns: number, requestSource: "initial-backfill" | "viewport" = "viewport", pushedReqId?: string, forJump = false): boolean {
-  // A cached copy's cursors may be stale: older pages wait for the open's
-  // answer. A jump (gg) asks anyway; a page that no longer fits is dropped,
-  // and the jump asks again from the window the answer brings.
-  if (!pushedReqId && !forJump && isProvisionalStale(state)) {
+function requestOlderHistory(turns: number, requestSource: "initial-backfill" | "viewport" = "viewport", pushedReqId?: string): boolean {
+  // A cached copy's cursors may be stale: older pages wait for the open's answer.
+  if (!pushedReqId && isProvisionalStale(state)) {
     noteStalledHistoryNavigation(state, "cached copy not confirmed yet");
     return false;
   }
@@ -621,29 +617,8 @@ function loadConversationWindow(convId: string): string {
 }
 
 function maybeRequestOlderHistory(): void {
-  advanceHistoryNavigation();
   if (olderHistoryDue(state)) requestOlderHistory(OLDER_HISTORY_PAGE_TURNS);
   else noteStalledHistoryNavigation(state, state.historyLoadingOlder ? "in-flight" : "not due");
-}
-
-let historyNavigationTimer: ReturnType<typeof setTimeout> | null = null;
-
-/** Keep a waiting jump (gg, {, [) moving: it never waits on nothing (historycursor.ts). */
-function advanceHistoryNavigation(): void {
-  const did = advanceWaitingHistoryJump(state, (resend) => {
-    if (resend) logHistoryNavigation("older page unanswered: asking again", state);
-    requestOlderHistory(OLDER_HISTORY_PAGE_TURNS, "viewport", undefined, true);
-  });
-  if (did === "land") scheduleRender();
-  // Check again once the page in flight would count as lost.
-  if (state.pendingHistoryNavigation && state.historyLoadingOlder && !historyNavigationTimer) {
-    historyNavigationTimer = setTimeout(() => {
-      historyNavigationTimer = null;
-      advanceHistoryNavigation();
-      scheduleRender();
-    }, LOST_OLDER_PAGE_MS + 50);
-    historyNavigationTimer.unref?.();
-  }
 }
 
 // ── Event handler (daemon → TUI) ───────────────────────────────────
@@ -826,8 +801,6 @@ function onDaemonEvent(event: Event): void {
       if (outcome.done) {
         requestElidedBlocksIfNeeded(state, daemon);
         maybeRequestOlderHistory();
-      } else {
-        advanceHistoryNavigation();
       }
       scheduleRender();
       return;
@@ -1024,10 +997,6 @@ function onDaemonEvent(event: Event): void {
     return;
   }
 
-  if (state.pendingHistoryNavigation && event.type !== "conversation_history_loaded") {
-    // A reload or refresh of the window: a jump on its way pages on from it.
-    advanceHistoryNavigation();
-  }
   if (event.type === "conversation_history_loaded") {
     if (state.pendingHistoryNavigation) {
       maybeRequestOlderHistory();
