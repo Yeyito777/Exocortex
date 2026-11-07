@@ -5,7 +5,8 @@
  * messages and the agent's final replies with their metadata. Everything else
  * leaves no row: a turn's thinking, tool calls and interim text, notifications
  * (in a top-level conversation, its own subagents' messages too), background
- * turns with no reply, and informational notices. Ctrl+O shows all of it and
+ * turns with no reply, and informational notices (an interrupt only once
+ * something follows it). Ctrl+O shows all of it and
  * Ctrl+I the detail view, notifications as automated bubbles; nothing opens on
  * its own. The in-progress turn shows only its latest step under a Working row.
  *
@@ -346,7 +347,24 @@ export function planHistory(input: PlanHistoryInput): HistoryPlan {
   }
   revealActiveCall(messages, start, plans, signatures, input.active ?? null);
   planGutter(messages, start, pendingContinues ? liveTurnStart(messages, start) : count, plans, signatures, input.active ?? null);
+  if (!pendingAI) revealStandingInterrupt(messages, start, plans, signatures);
   return { collapse, messages: plans, signatures, pending };
+}
+
+/**
+ * A stop the user asked for stays in view while it ends the history: until
+ * their next message or the turn's replay follows it, it folds only then.
+ * Applied after the memoized passes, which keep folding it.
+ */
+function revealStandingInterrupt(messages: readonly Message[], start: number, plans: MessagePlan[], signatures: string[]): void {
+  for (let index = messages.length - 1; index >= start; index--) {
+    const msg = messages[index];
+    if (msg.role !== "system") return;
+    if (msg.text !== "✗ Interrupted") continue;
+    plans[index - start] = null;
+    signatures[index - start] = NO_SIGNATURE;
+    return;
+  }
 }
 
 /**
