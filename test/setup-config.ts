@@ -68,3 +68,8 @@ if (!process.env.EXOCORTEX_TEST_CONFIG_READY) {
     });
   }
 }
+
+// The sidebar's per-frame caches key on a list version (tui/src/sidebar/version.ts);
+// in tests every cache hit is checked against a full recompute, so an in-place
+// edit that skips the bump fails the test that made it.
+process.env.EXOCORTEX_SIDEBAR_VERSION_CHECK ??= "1";

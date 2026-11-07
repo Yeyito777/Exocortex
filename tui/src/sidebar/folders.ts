@@ -1,5 +1,6 @@
 /** Folder/path helpers for the conversations sidebar. */
 
+import { touchSidebar } from "./version";
 import type { ConversationSummary, FolderSummary, SidebarItemRef } from "../messages";
 import type { CompletionItem } from "../commands";
 
@@ -81,6 +82,7 @@ export function reconcileNotificationMutes(state: SidebarFolderViewState): void 
     conversation.notificationsMuted = muted;
     if (muted) conversation.unread = false;
   }
+  touchSidebar(state);
 }
 
 export function normalizeMoveDestinationInput(input: string): string {

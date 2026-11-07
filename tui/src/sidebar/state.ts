@@ -1,4 +1,5 @@
 import type { ConversationSummary, FolderSummary, SidebarItemRef } from "../messages";
+import { touchSidebar } from "./version";
 import type { SidebarSelectableItem } from "./items";
 import type { SidebarPromptState } from "./prompt";
 import type { SidebarSearchState } from "../sidebarsearch";
@@ -75,17 +76,20 @@ export function replaceConversationAt(sidebar: SidebarState, at: number, summary
   if (index && old && index.get(old.id) === old) index.delete(old.id);
   sidebar.conversations[at] = summary;
   index?.set(summary.id, summary);
+  touchSidebar(sidebar);
 }
 
 export function insertConversation(sidebar: SidebarState, at: number, summary: ConversationSummary): void {
   sidebar.conversations.splice(at, 0, summary);
   conversationIndexes.get(sidebar.conversations)?.set(summary.id, summary);
+  touchSidebar(sidebar);
 }
 
 export function removeConversationAt(sidebar: SidebarState, at: number): void {
   const [removed] = sidebar.conversations.splice(at, 1);
   const index = conversationIndexes.get(sidebar.conversations);
   if (removed && index?.get(removed.id) === removed) index.delete(removed.id);
+  touchSidebar(sidebar);
 }
 
 export function createSidebarState(folderView: SidebarFolderView = "tree"): SidebarState {

@@ -1,3 +1,4 @@
+import { editConversation } from "./sidebar/version";
 import { describe, expect, test } from "bun:test";
 import type { ConversationSummary, FolderSummary, SidebarItemRef } from "./messages";
 import type { KeyEvent } from "./input";
@@ -274,7 +275,7 @@ describe("sidebar cursor after the selected rows leave: the row below takes the 
 
       test("a pinned row moves to the next pinned row, and the last one to the previous", () => {
         const sidebar = rootSidebar(view);
-        for (const id of ["a", "b", "c"]) sidebar.conversations.find(c => c.id === id)!.pinned = true;
+        for (const id of ["a", "b", "c"]) editConversation(sidebar, sidebar.conversations.find(c => c.id === id)!, { pinned: true });
         select(sidebar, conv("b"));
         remove(sidebar);
         expect(settledFocus(sidebar)).toEqual(conv("c"));
@@ -286,7 +287,7 @@ describe("sidebar cursor after the selected rows leave: the row below takes the 
 
       test("emptying the pinned section moves to the first unpinned row", () => {
         const sidebar = rootSidebar(view);
-        for (const id of ["a", "b"]) sidebar.conversations.find(c => c.id === id)!.pinned = true;
+        for (const id of ["a", "b"]) editConversation(sidebar, sidebar.conversations.find(c => c.id === id)!, { pinned: true });
         select(sidebar, conv("b"), conv("a"));
         remove(sidebar);
         expect(settledFocus(sidebar)).toEqual(dir("dest"));

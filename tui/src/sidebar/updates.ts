@@ -1,4 +1,5 @@
 import type { ConversationSummary, FolderSummary } from "../messages";
+import { touchSidebar } from "./version";
 import type { SidebarItemOrderUpdate, SidebarStatePatchedEvent } from "../protocol";
 import { isMovableSidebarItem, sidebarItemKey as itemKey, type SidebarSelectableItem } from "./items";
 import { compareSidebarOrder } from "./order";
@@ -20,6 +21,7 @@ function sidebarSort<T extends { pinned: boolean; sortOrder: number }>(items: T[
 function sortSidebarCollections(sidebar: SidebarState): void {
   sidebarSort(sidebar.conversations);
   sidebarSort(sidebar.folders);
+  touchSidebar(sidebar);
 }
 
 /** Apply an authoritative two-item order delta without replacing every summary. */
@@ -35,6 +37,7 @@ export function applySidebarItemOrderUpdates(sidebar: SidebarState, updates: Sid
       : sidebar.folders.find(folder => folder.id === update.item.id);
     if (!target || target.sortOrder === update.sortOrder) continue;
     target.sortOrder = update.sortOrder;
+    touchSidebar(sidebar);
     changed = true;
   }
   if (!changed) return;
@@ -163,6 +166,7 @@ export function updateConversationList(sidebar: SidebarState, conversations: Con
   overlayPendingSidebarMoves(sidebar);
   sidebarSort(sidebar.conversations);
   sidebarSort(sidebar.folders);
+  touchSidebar(sidebar);
   const actionMenuItem = sidebar.actionMenu?.item;
   if (actionMenuItem && !(actionMenuItem.type === "conversation"
     ? sidebar.conversations.some(conv => conv.id === actionMenuItem.id)

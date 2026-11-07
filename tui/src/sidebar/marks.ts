@@ -1,4 +1,5 @@
 import { toggleMark } from "../marks";
+import { editConversation } from "./version";
 import { getSelectedVisibleConversation } from "./selection";
 import type { SidebarState } from "./state";
 import type { SidebarKeyResult } from "./types";
@@ -16,6 +17,6 @@ export function handleSidebarMark(sidebar: SidebarState, key: number): SidebarKe
   if (newTitle === conv.title) return { type: "handled" };
 
   // Optimistic update
-  conv.title = newTitle;
+  editConversation(sidebar, conv, { title: newTitle });
   return { type: "rename_conversation", convId: conv.id, title: newTitle };
 }

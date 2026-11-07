@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { editConversation } from "./sidebar/version";
+import { insertConversation } from "./sidebar/state";
 import { createSidebarState, renderSidebar } from "./sidebar";
 import type { ConversationSummary } from "./messages";
 import { SIDEBAR_WIDTH } from "./sidebar/layout";
@@ -554,7 +556,7 @@ describe("sidebar rendering", () => {
     expect(visibleLength(folderRow!)).toBe(SIDEBAR_WIDTH);
   });
 
-  test("folder badges follow summaries updated in place between frames", () => {
+  test("folder badges follow summaries edited in place between frames", () => {
     const sidebar = createSidebarState("navigate");
     sidebar.folders = [
       { id: "work", name: "Work", parentId: null, createdAt: 0, updatedAt: 0, pinned: false, sortOrder: 0 },
@@ -567,13 +569,16 @@ describe("sidebar rendering", () => {
     const folderRow = () => renderSidebar(sidebar, 8, true, null).find(row => row.includes("Work"));
 
     expect(folderRow()).toContain(badge(2));
-    sidebar.conversations[0].unread = false;
+    editConversation(sidebar, sidebar.conversations[0], { unread: false });
     expect(folderRow()).toContain(badge(1));
-    sidebar.conversations[1].streaming = true;
+    editConversation(sidebar, sidebar.conversations[1], { streaming: true });
     expect(folderRow()).toContain(`${theme.accent}◉ `);
     expect(folderRow()).not.toContain(badge(1));
-    sidebar.conversations.push(conversation("c", 2, { folderId: "work", unread: true }));
+    insertConversation(sidebar, sidebar.conversations.length, conversation("c", 2, { folderId: "work", unread: true }));
     expect(folderRow()).toContain(badge(1));
+    // An edit that skips the bump fails the check instead of leaving a stale badge.
+    sidebar.conversations[2].unread = false;
+    expect(() => folderRow()).toThrow(/without touchSidebar/);
   });
 
   test("does not count streaming unread conversations in folder notification badges", () => {

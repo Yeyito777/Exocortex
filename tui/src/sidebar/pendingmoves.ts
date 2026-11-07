@@ -1,4 +1,5 @@
 import type { SidebarItemRef } from "../messages";
+import { editConversation, editFolder } from "./version";
 import type { SidebarItemOrderUpdate, SidebarStatePatchedEvent } from "../protocol";
 import { sidebarItemKey as itemKey } from "./items";
 import type { SidebarState } from "./state";
@@ -156,15 +157,19 @@ export function overlayPendingSidebarMoves(sidebar: SidebarState): void {
       if (type === "conversation") {
         const conv = sidebar.conversations.find(candidate => candidate.id === id);
         if (!conv) continue;
-        conv.sortOrder = placement.sortOrder;
-        if (placement.parentId !== undefined) conv.folderId = placement.parentId;
-        if (placement.pinned !== undefined) conv.pinned = placement.pinned;
+        editConversation(sidebar, conv, {
+          sortOrder: placement.sortOrder,
+          ...(placement.parentId !== undefined ? { folderId: placement.parentId } : {}),
+          ...(placement.pinned !== undefined ? { pinned: placement.pinned } : {}),
+        });
       } else {
         const folder = sidebar.folders.find(candidate => candidate.id === id);
         if (!folder) continue;
-        folder.sortOrder = placement.sortOrder;
-        if (placement.parentId !== undefined) folder.parentId = placement.parentId;
-        if (placement.pinned !== undefined) folder.pinned = placement.pinned;
+        editFolder(sidebar, folder, {
+          sortOrder: placement.sortOrder,
+          ...(placement.parentId !== undefined ? { parentId: placement.parentId } : {}),
+          ...(placement.pinned !== undefined ? { pinned: placement.pinned } : {}),
+        });
       }
     }
   }

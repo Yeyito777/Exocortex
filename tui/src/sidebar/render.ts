@@ -20,7 +20,8 @@ import { theme } from "../theme";
 import { conversationWorkCounts, hasInProgressModelWork, inlineLongSleepStartedAt, isDurablySleeping, shouldDisplayConversationTask } from "../taskvisibility";
 import { padRightToWidth, termWidth, truncateToWidth } from "../textwidth";
 import { sanitizeUntrustedLabel } from "../terminaltext";
-import type { ConversationTaskSummary } from "../messages";
+import type { ConversationSummary, ConversationTaskSummary, FolderSummary } from "../messages";
+import { assertNoUnversionedEdit, SIDEBAR_VERSION_CHECK, sidebarListVersion } from "./version";
 import type { DisplayUpdateStatus } from "../update-status";
 
 const UPDATE_LABELS: Record<DisplayUpdateStatus, string> = {
@@ -78,31 +79,54 @@ function sameInputs(a: readonly unknown[], b: readonly unknown[]): boolean {
 }
 
 interface FolderAggregateCache {
-  inputs: unknown[];
+  conversations: ConversationSummary[];
+  folders: FolderSummary[];
+  version: number;
+  partial: SidebarState["partial"];
+  optimisticStreamingConvId: string | null;
+  globalIdle: string[];
   aggregates: Map<string, FolderAggregate>;
+  /** Under SIDEBAR_VERSION_CHECK: every input, to catch an edit that skipped the bump. */
+  inputs: unknown[] | null;
 }
 
 /**
  * Aggregates walk every conversation, so they are reused while their inputs
  * are unchanged; with thousands of conversations this was most of each frame.
- * Summaries are updated in place in places, so inputs are compared by value.
+ * Telling whether any summary changed by reading them all still cost ~0.1 ms
+ * a frame, so the cache keys on the lists and their version
+ * (sidebar/version.ts: in-place edits bump it).
  */
 const folderAggregateCaches = new WeakMap<SidebarState, FolderAggregateCache>();
-let folderAggregateScratch: unknown[] = [];
 
 function folderAggregatesFor(
   sidebar: SidebarState,
   globalIdleConvIds: ReadonlySet<string>,
   optimisticStreamingConvId: string | null,
 ): Map<string, FolderAggregate> {
-  const inputs = folderAggregateScratch;
-  inputs.length = 0;
-  collectFolderAggregateInputs(sidebar, globalIdleConvIds, optimisticStreamingConvId, inputs);
+  const version = sidebarListVersion(sidebar);
+  const globalIdle = [...globalIdleConvIds];
   const cached = folderAggregateCaches.get(sidebar);
-  if (cached && sameInputs(cached.inputs, inputs)) return cached.aggregates;
+  const allInputs = () => {
+    const inputs: unknown[] = [];
+    collectFolderAggregateInputs(sidebar, globalIdleConvIds, optimisticStreamingConvId, inputs);
+    return inputs;
+  };
+  if (cached
+    && cached.conversations === sidebar.conversations
+    && cached.folders === sidebar.folders
+    && cached.version === version
+    && cached.partial === sidebar.partial
+    && cached.optimisticStreamingConvId === optimisticStreamingConvId
+    && sameInputs(cached.globalIdle, globalIdle)) {
+    if (cached.inputs) assertNoUnversionedEdit("folder totals", cached.inputs, allInputs());
+    return cached.aggregates;
+  }
   const aggregates = buildFolderAggregates(sidebar, globalIdleConvIds, optimisticStreamingConvId);
-  folderAggregateScratch = cached?.inputs ?? [];
-  folderAggregateCaches.set(sidebar, { inputs, aggregates });
+  folderAggregateCaches.set(sidebar, {
+    conversations: sidebar.conversations, folders: sidebar.folders, version, partial: sidebar.partial,
+    optimisticStreamingConvId, globalIdle, aggregates, inputs: SIDEBAR_VERSION_CHECK ? allInputs() : null,
+  });
   return aggregates;
 }
 
