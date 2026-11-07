@@ -18,9 +18,11 @@ function freshBuild(state: RenderState, width: number) {
   return comparable(buildMessageLines(copy, width));
 }
 
+/** Each check is a second after the last, so committed rows that follow the clock show up as stale. */
+let clockNow = Date.UTC(2026, 9, 29, 12);
 function expectIncrementalMatchesFresh(state: RenderState, width = 80, reuseArrays = true): BuildMessageLinesResult {
   // The live turn's spinner reads the clock: both builds must see the same second.
-  const now = Date.now();
+  const now = clockNow += 1_000;
   const clock = spyOn(Date, "now").mockReturnValue(now);
   try {
     const incremental = buildMessageLines(state, width, { reuseArrays });
@@ -94,6 +96,9 @@ describe("incremental committed history", () => {
         if (block.type === "text") block.text += " more";
       }],
       ["commit the stream", () => {
+        // As message_complete does. With no end the duration would follow the
+        // clock, which committed rows don't.
+        state.pendingAI!.metadata!.endedAt = 25_000;
         state.messages.push(state.pendingAI!);
         state.pendingAI = null;
       }],
