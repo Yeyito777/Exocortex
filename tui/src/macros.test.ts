@@ -36,6 +36,12 @@ describe("macro expansion", () => {
     expect(expandMacros("/scratchpad")).toBe("Set up your scratchpad for this conversation: what I need to do or keep track of, and keep it updated as things change.");
   });
 
+  test("/scratchpad clear and update expand to their own prompts", () => {
+    expect(getMacroArgs()["/scratchpad"]?.map(arg => arg.name)).toEqual(["clear", "update"]);
+    expect(expandMacros("/scratchpad clear")).toBe("Clear your scratchpad: empty scratchpad.md.");
+    expect(expandMacros("/scratchpad update")).toBe("Update your scratchpad: tick off what's done, add what's new and drop what no longer matters.");
+  });
+
   test("/todo expands to the sequential TODO workflow prompt", () => {
     expect(expandMacros("/todo")).toBe("Make a <name>-todo.md for this with items - [ ] and finish it sequentially.");
   });
