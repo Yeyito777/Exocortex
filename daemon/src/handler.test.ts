@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, setSystemTime, spyOn, test } from "bun:test";
 import { clearConversationDefaults, configuredConversationDefaults, productConversationDefaults, saveConversationDefaults } from "@exocortex/shared/config";
 import { conversationWorkspaceDir } from "@exocortex/shared/paths";
 import { localMacroEnvironment } from "@exocortex/shared/macro-environment";
@@ -1193,7 +1193,10 @@ describe("handler daemon-owned queue", () => {
     const handle = createHandler(server as never);
     const callsBefore = orchestrateSendMessage.mock.calls.length;
     try {
+      // The clock stands still until the test moves it past the delay: on a
+      // loaded machine a real 250 ms could pass before the idle entry's check.
       const queuedAt = Date.now();
+      setSystemTime(new Date(queuedAt));
       await handle({} as never, {
         type: "queue_message",
         queueId: "delayed-send",
@@ -1220,11 +1223,13 @@ describe("handler daemon-owned queue", () => {
       expect((orchestrateSendMessage.mock.calls.at(-1) as unknown as unknown[])[4]).toBe("idle turn");
       expect(getQueuedMessageById("delayed-send")).not.toBeUndefined();
 
+      setSystemTime(new Date(queuedAt + 250));
       await queueSettles(() => orchestrateSendMessage.mock.calls.length > callsBefore + 1);
       expect(orchestrateSendMessage.mock.calls.length).toBe(callsBefore + 2);
       expect((orchestrateSendMessage.mock.calls.at(-1) as unknown as unknown[])[4]).toBe("delayed turn");
       expect(getQueuedMessageById("delayed-send")).toBeUndefined();
     } finally {
+      setSystemTime();
       removeQueuedMessageById("delayed-send");
       removeQueuedMessageById("idle-after-delayed");
     }

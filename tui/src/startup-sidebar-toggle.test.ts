@@ -64,7 +64,8 @@ import { createInterface } from "node:readline";
 import { existsSync } from "node:fs";
 const send = event => process.stdout.write(JSON.stringify(event) + "\\n");
 const whenReleased = run => { const timer = setInterval(() => { if (existsSync(${JSON.stringify(release)})) { clearInterval(timer); run(); } }, 5); };
-createInterface({ input: process.stdin }).on("line", line => {
+// Like ssh, go when the TUI does, even with a reply still held back.
+createInterface({ input: process.stdin }).on("close", () => process.exit(0)).on("line", line => {
   const command = JSON.parse(line);
   if (command.type !== "ping") return;
   if (command.updateStatusOnly) send({ type: "pong", reqId: command.reqId, updateStatus: "none" });
