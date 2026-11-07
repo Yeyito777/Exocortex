@@ -14,6 +14,7 @@
 import { isActiveConversationLoading, type RenderState } from "./state";
 import type { ImageAttachment, UserMessageAutomation } from "./messages";
 import { ownerWords } from "./turncollapse";
+import { noteCursorOffScreen } from "./historydiag";
 import { getViewStart, getViewStartFor } from "./chatscroll";
 import { smoothScrollerFor, type ScrollRect } from "./smoothscroll";
 import { shouldHoldOpeningFrame } from "./historypagination";
@@ -1825,6 +1826,8 @@ export function render(state: RenderState): boolean {
       }
       : null,
   );
+
+  if (!smooth?.busy()) noteCursorOffScreen(state);
 
   // Compute visual selection range if in visual mode
   const inVisual = historyFocused
