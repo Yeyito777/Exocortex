@@ -69,7 +69,7 @@ import type { DaemonActions } from "./events/types";
 import { accountsMayHaveChanged, handleAccountsEvent, isAccountsPrefetchError, prefetchAccounts, type AccountsRequester } from "./accountsscreen";
 import { failBtwRequest, handleBtwEvent } from "./btw/events";
 import { settleRejectedQueueRequest } from "./queue";
-import { restoreUnconfirmedSends, settleRejectedDirectSend } from "./sendecho";
+import { confirmDirectSendRequest, restoreUnconfirmedSends, settleRejectedDirectSend } from "./sendecho";
 import { formatChronoResult } from "./chronoschedule";
 import { turnRequestStartedAt } from "./request-ids";
 
@@ -644,8 +644,11 @@ export function handleEvent(
       // No-op — the daemon sends history_updated which rebuilds everything.
       break;
 
-    case "llm_complete_result":
     case "ack":
+      confirmDirectSendRequest(state, event.convId, event.reqId);
+      break;
+
+    case "llm_complete_result":
     case "pong":
       break;
   }

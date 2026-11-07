@@ -236,6 +236,12 @@ export interface SendMessageCommand {
    * it runs the turn's app tools. A refused send changes nothing (docs/app-api.md).
    */
   own?: boolean;
+  /**
+   * Answer with `ack` (this reqId) once the prompt is in the transcript, and
+   * take a repeat of this startedAt as the same prompt: a client that lost the
+   * connection before its ack sends it again, and it runs once.
+   */
+  acceptAck?: boolean;
 }
 
 export interface ReplayConversationCommand {
@@ -3005,6 +3011,8 @@ export interface ErrorEvent {
   reqId?: string;
   convId?: string;
   message: string;
+  /** A send refused because the daemon is shutting down: the next daemon can take it. */
+  reason?: "daemon_shutting_down";
 }
 
 export type Event =

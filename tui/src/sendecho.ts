@@ -11,13 +11,19 @@
  *   queued for the end of that turn, as the queue prompt would have offered;
  *   any other rejection puts the text back in the prompt.
  *
- * The daemon confirms an accepted send with a user_message echo carrying its
- * startedAt, or (after waking a Chrono sleep) with a history snapshot that
- * contains it, and rejects one with an error carrying its turn request id.
+ * The daemon confirms an accepted send with an ack carrying its turn request
+ * id, a user_message echo carrying its startedAt, or (after waking a Chrono
+ * sleep) a history snapshot that contains it, and rejects one with an error
+ * carrying its turn request id.
+ *
+ * A send can be lost with its connection (a daemon restart, a dropped /ssh
+ * link). It stays tracked across the reconnect: the client sends it again
+ * (client.ts, unresolvedSendCommands) and the daemon runs it once.
  */
 
 import { randomUUID } from "node:crypto";
 import type { ImageAttachment, UserMessage } from "./messages";
+import type { Command } from "./protocol";
 import { createPendingAI } from "./messages";
 import type { RenderState } from "./state";
 import { clearPendingAI } from "./state";
@@ -44,6 +50,12 @@ export function trackDirectSend(state: RenderState, convId: string, message: Use
   state.unconfirmedSends.push({ convId, startedAt, message, sentAt: now });
 }
 
+/** The daemon acked the send `reqId` named. */
+export function confirmDirectSendRequest(state: RenderState, convId: string | undefined, reqId: string | undefined): void {
+  const startedAt = turnRequestStartedAt(reqId);
+  if (convId && startedAt !== null) confirmDirectSend(state, convId, startedAt);
+}
+
 /** The daemon echoed (accepted) the send that started at `startedAt`. */
 export function confirmDirectSend(state: RenderState, convId: string, startedAt: number | undefined): void {
   if (typeof startedAt !== "number" || state.unconfirmedSends.length === 0) return;
@@ -65,9 +77,39 @@ export function keepUnconfirmedSendsLast(state: RenderState, convId: string): vo
   }
 }
 
-/** The connection dropped: whatever loads after reconnecting is authoritative. */
-export function forgetUnconfirmedSends(state: RenderState): void {
+/**
+ * The client sent these again after reconnecting: their wait for a verdict
+ * starts over, so a snapshot loaded now does not outlive them.
+ */
+export function noteResentDirectSends(state: RenderState, commands: readonly Command[], now = Date.now()): void {
+  for (const command of commands) {
+    if (command.type !== "send_message") continue;
+    const send = state.unconfirmedSends.find(candidate => candidate.convId === command.convId && candidate.startedAt === command.startedAt);
+    if (send) send.sentAt = now;
+  }
+}
+
+/**
+ * The TUI is switching to another daemon, and the client drops what it never
+ * got an answer for: unconfirmed sends go back to the prompt.
+ */
+export function returnUnconfirmedSendsToPrompt(state: RenderState): number {
+  const sends = state.unconfirmedSends;
   state.unconfirmedSends = [];
+  for (const send of sends) {
+    const index = state.messages.indexOf(send.message);
+    if (index !== -1) state.messages.splice(index, 1);
+    if (state.pendingAI?.metadata?.startedAt === send.startedAt && state.pendingAI.blocks.length === 0) clearPendingAI(state);
+    restoreToPrompt(state, send.message);
+  }
+  return sends.length;
+}
+
+function restoreToPrompt(state: RenderState, message: UserMessage): void {
+  const { text, images } = message;
+  state.inputBuffer = state.inputBuffer ? `${state.inputBuffer}\n${text}` : text;
+  state.cursorPos = state.inputBuffer.length;
+  if (images?.length) state.pendingImages.push(...images);
 }
 
 /**
@@ -138,8 +180,6 @@ export function settleRejectedDirectSend(
     daemon.queueMessage(send.convId, text, "message-end", images, { queueId });
     return "queued";
   }
-  state.inputBuffer = state.inputBuffer ? `${state.inputBuffer}\n${text}` : text;
-  state.cursorPos = state.inputBuffer.length;
-  if (images?.length) state.pendingImages.push(...images);
+  restoreToPrompt(state, send.message);
   return "restored";
 }

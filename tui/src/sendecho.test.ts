@@ -3,7 +3,7 @@ import { handleEvent, type DaemonActions } from "./events";
 import { createMessageMetadata, createPendingAI, type ImageAttachment, type UserMessage } from "./messages";
 import type { DisplayEntry, Event } from "./protocol";
 import { turnRequestId } from "./request-ids";
-import { UNCONFIRMED_SEND_TTL_MS, restoreUnconfirmedSends, trackDirectSend } from "./sendecho";
+import { UNCONFIRMED_SEND_TTL_MS, noteResentDirectSends, restoreUnconfirmedSends, returnUnconfirmedSendsToPrompt, trackDirectSend } from "./sendecho";
 import { createInitialState, isStreaming, type RenderState } from "./state";
 
 const CONV = "conv-send";
@@ -196,6 +196,43 @@ describe("optimistic direct sends", () => {
 
     expect(restoreUnconfirmedSends(state, CONV, Date.now() + UNCONFIRMED_SEND_TTL_MS)).toBe(false);
     expect(userTexts(state)).toEqual([]);
+    expect(state.unconfirmedSends).toEqual([]);
+  });
+
+  test("the daemon's ack confirms the send by its request id", () => {
+    const state = openState();
+    const daemon = fakeDaemon();
+    send(state, "hello", 1_000);
+
+    handleEvent({ type: "ack", reqId: turnRequestId(1_000, 3), convId: CONV }, state, daemon);
+    expect(state.unconfirmedSends).toEqual([]);
+    expect(userTexts(state)).toEqual(["hello"]);
+  });
+
+  test("a send the client sent again after reconnecting outlives the snapshot that follows", () => {
+    const state = openState();
+    send(state, "after a long outage", 1_000);
+    state.messages = state.messages.filter(message => message.role !== "user");
+    state.pendingAI = null;
+    const later = Date.now() + UNCONFIRMED_SEND_TTL_MS;
+
+    noteResentDirectSends(state, [{ type: "send_message", reqId: turnRequestId(1_000, 1), convId: CONV, text: "after a long outage", startedAt: 1_000, acceptAck: true }], later);
+    expect(restoreUnconfirmedSends(state, CONV, later + 1)).toBe(true);
+    expect(userTexts(state)).toEqual(["after a long outage"]);
+    expect((state.pendingAI as RenderState["pendingAI"])?.metadata?.startedAt).toBe(1_000);
+  });
+
+  test("switching daemons returns unconfirmed sends to the prompt", () => {
+    const state = openState();
+    const image: ImageAttachment = { mediaType: "image/png", base64: "aGk=", sizeBytes: 2 };
+    state.inputBuffer = "draft";
+    send(state, "never answered", 1_000, [image]);
+
+    expect(returnUnconfirmedSendsToPrompt(state)).toBe(1);
+    expect(userTexts(state)).toEqual([]);
+    expect(state.pendingAI).toBeNull();
+    expect(state.inputBuffer).toBe("draft\nnever answered");
+    expect(state.pendingImages).toEqual([image]);
     expect(state.unconfirmedSends).toEqual([]);
   });
 });

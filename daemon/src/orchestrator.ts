@@ -259,9 +259,11 @@ interface AssistantTurnOptions {
   manualCompaction?: boolean;
   /** This turn is the daemon-owned successor in an already-active stream chain. */
   streamChainHandoff?: boolean;
+  /** Called once the turn's user message is in the transcript (direct-send.ts). */
+  onUserMessageCommitted?: () => void;
 }
 
-export type SubagentTurnPolicy = Pick<AssistantTurnOptions, "subagentMaxDepth" | "subagentNotificationId" | "queueEntryId" | "automation" | "replyAwaited" | "resumesInterruptedRun" | "resumedRunChargesGap">;
+export type SubagentTurnPolicy = Pick<AssistantTurnOptions, "subagentMaxDepth" | "subagentNotificationId" | "queueEntryId" | "automation" | "replyAwaited" | "resumesInterruptedRun" | "resumedRunChargesGap" | "onUserMessageCommitted">;
 
 export async function orchestrateSendMessage(
   server: DaemonServer,
@@ -606,7 +608,7 @@ async function orchestrateAdmittedAssistantTurn(
   const shutdownModeAtStart = getDaemonShutdownMode();
   if (shutdownModeAtStart) {
     const message = `Daemon is shutting down (${shutdownModeAtStart}); refusing to start another turn.`;
-    if (client) server.sendTo(client, { type: "error", reqId, convId, message });
+    if (client) server.sendTo(client, { type: "error", reqId, convId, message, reason: "daemon_shutting_down" });
     return buildErrorOutcome(message);
   }
 
@@ -740,6 +742,7 @@ async function orchestrateAdmittedAssistantTurn(
     if (!convStore.appendMessages(convId, [acceptedUserMessage], { updatedAt: conv.updatedAt })) {
       throw new Error(`Conversation ${convId} disappeared before its user turn could be committed`);
     }
+    options.onUserMessageCommitted?.();
     // A subagent woken by automated input after its task reported: its reply goes up too.
     if (automation) {
       if (!options.replyAwaited) getSubagentNotificationRuntime(server)?.relayFollowUp?.(convId, automation, admittedText, startedAt);

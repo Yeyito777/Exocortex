@@ -109,6 +109,7 @@ export interface DaemonClientTransportOptions {
 
 type ReplayableQueueCommand = Extract<Command, { type: "queue_message" | "unqueue_message" }>;
 type ReplayableUnwindCommand = Extract<Command, { type: "unwind_conversation" }>;
+type ReplayableSendCommand = Extract<Command, { type: "send_message" }> & { reqId: string; acceptAck: true };
 type ReplayableTranscriptionCommand = Extract<Command, { type: "transcribe_audio" }> & { reqId: string };
 interface PendingTranscription {
   command: ReplayableTranscriptionCommand;
@@ -117,6 +118,10 @@ interface PendingTranscription {
   expiresAt: number;
   timer: ReturnType<typeof setTimeout>;
 }
+function isReplayableSend(command: Command): command is ReplayableSendCommand {
+  return command.type === "send_message" && command.acceptAck === true && typeof command.reqId === "string";
+}
+
 function replayableQueueCommandKey(command: Command): string | null {
   if (command.type === "queue_message" && command.queueId) return `enqueue:${command.queueId}`;
   if (command.type === "unqueue_message" && command.queueId) return `unqueue:${command.queueId}`;
@@ -153,6 +158,13 @@ export class DaemonClient {
   private unresolvedQueueCommands = new Map<string, { command: ReplayableQueueCommand; sequence: number }>();
   /** Ambiguous socket writes are retried with the same durable operation UUID. */
   private unresolvedUnwindCommands = new Map<string, { command: ReplayableUnwindCommand; sequence: number }>();
+  /**
+   * A prompt is not sent until the daemon answers it (ack, its user_message or
+   * an error): a restart or a dropped link can take it before then. The daemon
+   * takes a repeat of its reqId and startedAt as the same prompt (direct-send.ts),
+   * so it is sent again on every reconnect until answered.
+   */
+  private unresolvedSendCommands = new Map<string, { command: ReplayableSendCommand; sequence: number }>();
   private readonly btwMutationReplay = new BtwMutationReplay();
   /** Original issuance order shared by connected-unresolved and offline commands. */
   private commandSequences = new WeakMap<Command, number>();
@@ -576,6 +588,7 @@ export class DaemonClient {
     if (command.type === "unwind_conversation" && command.reqId) {
       this.unresolvedUnwindCommands.set(command.reqId, { command, sequence });
     }
+    if (isReplayableSend(command)) this.unresolvedSendCommands.set(command.reqId, { command, sequence });
     if (command.type === "transcribe_audio" && command.reqId
         && this.transcriptionCallbacks.has(command.reqId)
         && !this.unresolvedTranscriptionCommands.has(command.reqId)) {
@@ -671,7 +684,7 @@ export class DaemonClient {
   }
 
   sendMessage(convId: string, text: string, startedAt: number, images?: ImageAttachment[]): void {
-    this.send({ type: "send_message", reqId: turnRequestId(startedAt, ++this.nextReqId), convId, text, startedAt, images: images?.length ? images : undefined });
+    this.send({ type: "send_message", reqId: turnRequestId(startedAt, ++this.nextReqId), convId, text, startedAt, images: images?.length ? images : undefined, acceptAck: true });
   }
 
   replayConversation(convId: string, startedAt: number): void {
@@ -915,10 +928,11 @@ export class DaemonClient {
    */
   private discardOldEndpointCommands(): void {
     const dropped = this.pendingCommands.length + this.unresolvedQueueCommands.size
-      + this.unresolvedUnwindCommands.size + this.btwMutationReplay.size;
+      + this.unresolvedUnwindCommands.size + this.unresolvedSendCommands.size + this.btwMutationReplay.size;
     this.pendingCommands = [];
     this.unresolvedQueueCommands.clear();
     this.unresolvedUnwindCommands.clear();
+    this.unresolvedSendCommands.clear();
     this.btwMutationReplay.clear();
     if (dropped > 0) log("info", `ssh transport: dropped ${dropped} unsent/unresolved command(s) for the previous route`);
   }
@@ -1507,6 +1521,7 @@ export class DaemonClient {
     const ordinary = pending
       .filter(command => replayableQueueCommandKey(command) === null
         && (command.type !== "unwind_conversation" || !command.reqId)
+        && !isReplayableSend(command)
         && (command.type !== "transcribe_audio" || !command.reqId
           || !this.unresolvedTranscriptionCommands.has(command.reqId))
         && !isBtwMutation(command))
@@ -1515,6 +1530,7 @@ export class DaemonClient {
       ...ordinary,
       ...this.unresolvedQueueCommands.values(),
       ...this.unresolvedUnwindCommands.values(),
+      ...this.unresolvedSendCommands.values(),
       ...this.unresolvedTranscriptionCommands.values(),
       ...this.btwMutationReplay.values(),
     ]
@@ -1556,6 +1572,28 @@ export class DaemonClient {
         || event.type === "error")
         || !event.reqId) return;
     this.unresolvedUnwindCommands.delete(event.reqId);
+  }
+
+  /**
+   * Settles a prompt the daemon answered. A refusal because the daemon is
+   * shutting down is not an answer: the prompt stays for the next daemon, and
+   * returns true so the TUI is not told it failed.
+   */
+  private settleSendCommand(event: Event): boolean {
+    if (this.unresolvedSendCommands.size === 0) return false;
+    if ((event.type === "ack" || event.type === "error") && event.reqId) {
+      if (!this.unresolvedSendCommands.has(event.reqId)) return false;
+      if (event.type === "error" && event.reason === "daemon_shutting_down") return true;
+      this.unresolvedSendCommands.delete(event.reqId);
+      return false;
+    }
+    // Daemons without acceptAck answer an admitted prompt with these alone.
+    if ((event.type === "user_message" && !event.queueId) || event.type === "streaming_started") {
+      for (const [reqId, { command }] of this.unresolvedSendCommands) {
+        if (command.convId === event.convId && command.startedAt === event.startedAt) this.unresolvedSendCommands.delete(reqId);
+      }
+    }
+    return false;
   }
 
   private onData(data: Buffer | string): void {
@@ -1670,7 +1708,7 @@ export class DaemonClient {
         this.settleQueueCommands(event);
         this.settleUnwindCommand(event);
         this.btwMutationReplay.settle(event);
-        let handledByCallback = false;
+        let handledByCallback = this.settleSendCommand(event);
 
         // Intercept request-scoped responses so they do not also surface as
         // generic global events.
