@@ -410,6 +410,25 @@ describe("folded-work elision", () => {
     expect(finished.blocks.slice(8)).toEqual(entry.blocks.slice(8));
   });
 
+  test("a reply split by its last tool call keeps that call: the folded view shows it", () => {
+    const answer = "Yes, it's a straightforward bug fix. ".repeat(8).trim();
+    const entry: DisplayEntry = { type: "ai", metadata: null, blocks: [
+      { type: "thinking", text: "Look first." },
+      { type: "tool_call", toolCallId: "call-0", toolName: "Bash", input: { command: "git log" }, summary: "git log" },
+      { type: "tool_result", toolCallId: "call-0", toolName: "Bash", output: "", isError: false },
+      { type: "text", text: answer },
+      { type: "tool_call", toolCallId: "call-1", toolName: "Write", input: { path: "scratchpad.md" }, summary: "Write scratchpad.md" },
+      { type: "tool_result", toolCallId: "call-1", toolName: "Write", output: "", isError: false },
+      { type: "text", text: "Scratchpad updated." },
+    ] };
+    const elided = elideFoldedWork(entry, 4, false);
+    if (elided.type !== "ai" || entry.type !== "ai") throw new Error("not ai");
+    expect(elided.blocks[4]).toBe(entry.blocks[4]);
+    expect(elided.blocks[3]).toBe(entry.blocks[3]);
+    expect(elided.blocks[1]).toMatchObject({ summary: "", elided: { entry: 4, block: 1 } });
+    expect(elided.blocks[0]).toMatchObject({ text: "", elided: { entry: 4, block: 0 } });
+  });
+
   test("leaves entries with nothing to elide as they are", () => {
     const prompt = user("u");
     const reply = ai("reply");
