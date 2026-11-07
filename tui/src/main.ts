@@ -88,7 +88,7 @@ import { RemoteFileLinkController } from "./remote-file-links";
 import { msUntilNextElapsedSecond } from "./time";
 import { activeDurableSleepMetadataStartedAt, focusedInlineSleepStartedAt, inlineSleepMetadataEndedAt } from "./durable-sleep-metadata";
 import { msUntilLiveChronoChange } from "./chronocalls";
-import type { DaemonShutdownMode, Event, QueueTiming } from "./protocol";
+import type { DaemonShutdownMode, Event, MachineResources, QueueTiming } from "./protocol";
 import { createVoiceInputController, type SubmittedVoiceTranscription, type VoiceInputController } from "./voiceinput";
 import { editItemLooksLikePendingVoiceSubmission, pendingVoicePreviewTextsMatch, pendingVoiceSubmissionsMatch, removePendingVoiceEchoes } from "./pendingvoice";
 import { startReplayConversation } from "./replay";
@@ -116,6 +116,7 @@ import { installFatalErrorHandlers } from "./fatal";
 import { ConversationPrewarmer } from "./prewarm";
 import { FirstTextUX } from "./first-text";
 import type { SidebarViewHint } from "@exocortex/shared/sidebar-first-page";
+import { applyMachineResources, machineResourcesDisconnected, machineResourcesRouteSwitched, ResourcesShapes } from "./machine-resources";
 import { applyTuiStartingState, availableStartingConversationId, applyRouteViewState, captureRouteViewState, captureTuiStartingState, daemonRouteKey, loadTuiStartingState, RouteViewStates, saveTuiStartingState } from "./startingstate";
 import { closeBtwSession, startBtwSession } from "./btw/controller";
 import { createSidebarState } from "./sidebar/state";
@@ -162,6 +163,9 @@ const state = createInitialState();
 const routeViews = new RouteViewStates(savedStartingState);
 let activeRouteKey = daemonRouteKey(null);
 if (savedStartingState) applyTuiStartingState(state, savedStartingState, routeViews);
+/** The resources block's last shape per route, so it draws at its final width from the first frame. */
+const resourcesShapes = new ResourcesShapes();
+state.machineResourcesShape = resourcesShapes.forRoute(daemonRouteKey(launchOptions.sshAlias ?? null));
 /**
  * The restored conversation until the route's first conversations list
  * confirms it, and whether that restore placed the sidebar cursor.
@@ -652,7 +656,7 @@ function resetForDaemonRouteSwitch(newRouteKey: string): void {
   state.externalToolStyles = [];
   state.tokenStats = null;
   state.pendingTokenStatsView = null;
-  state.machineResources = null;
+  machineResourcesRouteSwitched(state, resourcesShapes.forRoute(newRouteKey));
   state.lastStreamSeqByConv = {};
   state.conversationDefaults = null;
   resetDraftConversationState(state);
@@ -803,8 +807,16 @@ function onDaemonEvent(event: Event): void {
     ? state.sidebar.conversations.find((c) => c.id === event.summary.id)?.streaming ?? false
     : false;
 
+  // With --ssh the block is the remote's from the first frame; the local daemon's samples don't show.
+  if (event.type === "machine_resources" && localBootstrapDeferred) {
+    deferredLocalResources = event.resources;
+    return;
+  }
   invalidateHistoryRenderCache(state);
   handleEvent(event, state, daemon);
+  if ((event.type === "machine_resources" || event.type === "tools_available") && !localBootstrapDeferred) {
+    resourcesShapes.remember(activeRouteKey, state.machineResourcesShape);
+  }
   startupProfileEvent(event);
   // A turn ended: copies of conversations that changed are refreshed in the background.
   if (event.type === "conversation_updated" && wasUpdatedConversationStreaming && !event.summary.streaming) daemon.viewCache?.poke();
@@ -2395,7 +2407,7 @@ function handleDaemonConnectionLost(shutdownMode: DaemonShutdownMode | null): vo
   instructionsConnectionLost(state);
   userMacrosConnectionLost(state);
   // Stale figures would read as live; the next connection's first sample brings them back.
-  state.machineResources = null;
+  machineResourcesDisconnected(state);
   state.historyLoadingOlder = false;
   state.historyLoadingStartedAt = null;
   state.historyLoadingRequestId = null;
@@ -2481,9 +2493,16 @@ function sidebarViewHint(alias: string | null): SidebarViewHint {
   };
 }
 /** --ssh launch: the local route's bootstrap waits for the SSH switch's outcome. */
-let localBootstrapDeferred = false;
+let localBootstrapDeferred = Boolean(launchOptions.sshAlias);
+/** --ssh launch: the local daemon's last sample, shown if the switch fails. */
+let deferredLocalResources: MachineResources | null = null;
 
 function requestLocalBootstrap(): void {
+  if (localBootstrapDeferred) {
+    state.machineResourcesShape = resourcesShapes.forRoute(activeRouteKey);
+    if (deferredLocalResources) applyMachineResources(state, deferredLocalResources);
+  }
+  deferredLocalResources = null;
   localBootstrapDeferred = false;
   // Speculatively request the saved conversation before the much larger
   // sidebar bootstrap. The list remains authoritative, but the common case no

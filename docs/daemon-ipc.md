@@ -183,11 +183,14 @@ rounds' tool output comes from `load_tool_outputs`. See
 [SSH conversation history cache](ssh-history-cache.md).
 
 With the `machine-resources` capability, the client gets `machine_resources`
-every 2 s while it is connected (the first within half a second): the
-daemon's own machine's CPU %, RAM, GPU % and VRAM, each null where that
-machine does not report it (`daemon/src/machine-resources.ts`). The daemon
-samples only while such a client is connected. Over `/ssh` they are the
-remote's; the TUI's resources block shows them.
+every 2 s while it is connected: the daemon's own machine's CPU %, RAM, GPU %
+and VRAM, each null where that machine does not report it
+(`daemon/src/machine-resources.ts`). The first is sent while the daemon
+handles `client_capabilities`, ahead of any bootstrap event: the last sample,
+or one with CPU null and a full one ~200 ms later. A TUI that gets
+`tools_available` with none before it knows the daemon predates them. The
+daemon samples only while such a client is connected and for 30 s after.
+Over `/ssh` they are the remote's; the TUI's resources block shows them.
 
 ## Sending a prompt exactly once
 

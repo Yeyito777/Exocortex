@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { handleEvent, type DaemonActions } from "../events";
 import { stripAnsi } from "../historycursor";
-import type { MachineResources } from "../protocol";
+import { DEFAULT_RESOURCES_SHAPE, machineResourcesDisconnected, machineResourcesRouteSwitched, ResourcesShapes, shapeAfter, type ResourcesShape } from "../machine-resources";
+import type { Event, MachineResources } from "../protocol";
 import { createInitialState } from "../state";
 import { renderStatusLine } from "../statusline";
 import { theme } from "../theme";
@@ -23,7 +27,8 @@ const WHALE: MachineResources = {
 /** A Mac: unified memory, no GPU figures. */
 const MAC: MachineResources = { cpuPercent: 7.4, memory: { usedBytes: 16.6 * GIB, totalBytes: 24 * GIB }, gpuPercent: null, vram: null, sampledAt: 1 };
 
-const rows = (resources: MachineResources) => resourcesBlockFor(resources)!.rows.map(stripAnsi);
+const shapeOf = (resources: MachineResources) => shapeAfter(null, resources);
+const rows = (resources: MachineResources | null, shape: ResourcesShape = shapeOf(resources!)) => resourcesBlockFor(resources, shape)!.rows.map(stripAnsi);
 
 describe("resources block", () => {
   test("formats figures as the dwm blocks do", () => {
@@ -40,15 +45,15 @@ describe("resources block", () => {
       "  CPU: [██████░░░░] 64%      GPU:  [░░░░░░░░░░] 0%    ",
       "  MEM: [███░░░░░░░] 10.8/31G VRAM: [░░░░░░░░░░] 0.3/8G",
     ]);
-    const block = resourcesBlockFor(WHALE)!;
+    const block = resourcesBlockFor(WHALE, shapeOf(WHALE))!;
     for (const row of block.rows) expect(stripAnsi(row).length).toBe(block.width);
     // Labels muted, figures accent, bars filled in accent over muted.
     expect(block.rows[0]).toContain(`${theme.muted}CPU: ${theme.text}[${theme.accent}██████${theme.muted}░░░░${theme.text}] ${theme.accent}64%`);
   });
 
   test("the width holds as figures change", () => {
-    const busy = resourcesBlockFor({ ...WHALE, cpuPercent: 100, gpuPercent: 100, memory: { ...WHALE.memory!, usedBytes: WHALE.memory!.totalBytes } })!;
-    expect(busy.width).toBe(resourcesBlockFor(WHALE)!.width);
+    const busy = resourcesBlockFor({ ...WHALE, cpuPercent: 100, gpuPercent: 100, memory: { ...WHALE.memory!, usedBytes: WHALE.memory!.totalBytes } }, shapeOf(WHALE))!;
+    expect(busy.width).toBe(resourcesBlockFor(WHALE, shapeOf(WHALE))!.width);
   });
 
   test("a machine without GPU figures shows CPU and memory only", () => {
@@ -58,10 +63,34 @@ describe("resources block", () => {
     ]);
   });
 
-  test("a missing figure is a dash with an empty bar; nothing known hides the block", () => {
-    expect(rows({ ...WHALE, gpuPercent: null, cpuPercent: null })[0]).toBe("  CPU: [░░░░░░░░░░] —        GPU:  [░░░░░░░░░░] —     ");
-    expect(resourcesBlockFor({ cpuPercent: null, memory: null, gpuPercent: null, vram: null, sampledAt: 1 })).toBeNull();
-    expect(resourcesBlockFor(null)).toBeNull();
+  test("a missing figure is a dash with an empty bar", () => {
+    expect(rows({ ...WHALE, gpuPercent: null, cpuPercent: null }, shapeOf(WHALE))[0]).toBe("  CPU: [░░░░░░░░░░] —        GPU:  [░░░░░░░░░░] —     ");
+  });
+
+  test("before the first sample it is empty at its final width, and the sample fills it in place", () => {
+    for (const machine of [WHALE, MAC]) {
+      const placeholder = resourcesBlockFor(null, shapeOf(machine))!;
+      const filled = resourcesBlockFor(machine, shapeOf(machine))!;
+      expect(placeholder.width).toBe(filled.width);
+      expect(placeholder.narrower?.[0]?.width).toBe(filled.narrower?.[0]?.width);
+      for (const row of placeholder.rows) {
+        expect(stripAnsi(row).length).toBe(placeholder.width);
+        expect(stripAnsi(row)).not.toContain("█");
+      }
+    }
+    expect(rows(null, shapeOf(WHALE))).toEqual([
+      "  CPU: [░░░░░░░░░░] —        GPU:  [░░░░░░░░░░] —     ",
+      "  MEM: [░░░░░░░░░░] —        VRAM: [░░░░░░░░░░] —     ",
+    ]);
+    // A route never seen: CPU and MEM, at the width of a "10.8/31G" machine.
+    expect(resourcesBlockFor(null, DEFAULT_RESOURCES_SHAPE)!.width).toBe(resourcesBlockFor(MAC, shapeOf(MAC))!.width);
+    // A daemon that sends none: no block.
+    expect(resourcesBlockFor(null, null)).toBeNull();
+  });
+
+  test("a sample without the memory total (vm_stat not read yet) keeps the width", () => {
+    const first = { ...MAC, cpuPercent: null, memory: null };
+    expect(shapeAfter(shapeOf(MAC), first)).toEqual(shapeOf(MAC));
   });
 });
 
@@ -70,8 +99,14 @@ function stateWith(resources: MachineResources | null) {
   state.provider = "openai";
   state.authByProvider.openai = true;
   state.usageByProvider.openai = { fiveHour: { utilization: 25, resetsAt: null }, sevenDay: { utilization: 50, resetsAt: null } };
+  state.machineResourcesShape = resources ? shapeOf(resources) : DEFAULT_RESOURCES_SHAPE;
   state.machineResources = resources;
   return state;
+}
+
+/** The bootstrap's tools_available, changing nothing else. */
+function toolsAvailable(state: ReturnType<typeof stateWith>): Event {
+  return { type: "tools_available", providers: state.providerRegistry ?? [], tools: [], authByProvider: { ...state.authByProvider }, authInfoByProvider: { ...state.authInfoByProvider } };
 }
 
 describe("in the status line", () => {
@@ -100,19 +135,65 @@ describe("in the status line", () => {
 
   test("shows whichever daemon's machine sent the latest sample", () => {
     const state = stateWith(null);
-    expect(stripAnsi(renderStatusLine(state, 200).lines.join("\n"))).not.toContain("CPU");
+    const shown = () => stripAnsi(renderStatusLine(state, 200).lines.join("\n"));
+    expect(shown()).toContain("CPU: [░░░░░░░░░░] —");
+    const placeholderWidth = resourcesBlock(state)!.width;
 
-    // Local daemon on the Mac.
+    // Local daemon on the Mac: filled in place.
     handleEvent({ type: "machine_resources", resources: MAC }, state, {} as DaemonActions);
-    let shown = stripAnsi(renderStatusLine(state, 200).lines.join("\n"));
-    expect(shown).toContain("16.6/24G");
-    expect(shown).not.toContain("GPU");
+    expect(shown()).toContain("16.6/24G");
+    expect(shown()).not.toContain("GPU");
+    expect(resourcesBlock(state)!.width).toBe(placeholderWidth);
+    handleEvent(toolsAvailable(state), state, {} as DaemonActions);
+    expect(shown()).toContain("16.6/24G");
 
-    // After /ssh whale, whale's daemon sends its own.
+    // /ssh whale: whale's shape at once, empty until whale's daemon sends its own.
+    machineResourcesRouteSwitched(state, shapeOf(WHALE));
+    expect(shown()).toContain("VRAM: [░░░░░░░░░░] —");
+    const whaleWidth = resourcesBlock(state)!.width;
     handleEvent({ type: "machine_resources", resources: WHALE }, state, {} as DaemonActions);
-    shown = stripAnsi(renderStatusLine(state, 200).lines.join("\n"));
-    expect(shown).toContain("10.8/31G");
-    expect(shown).toContain("0.3/8G");
-    expect(shown).not.toContain("16.6/24G");
+    expect(shown()).toContain("10.8/31G");
+    expect(shown()).toContain("0.3/8G");
+    expect(shown()).not.toContain("16.6/24G");
+    expect(resourcesBlock(state)!.width).toBe(whaleWidth);
+
+    // The link drops: the block stays, empty.
+    machineResourcesDisconnected(state);
+    expect(resourcesBlock(state)!.width).toBe(whaleWidth);
+    expect(shown()).not.toContain("10.8/31G");
+  });
+
+  test("a daemon that sends no sample before its bootstrap gets no block", () => {
+    const state = stateWith(null);
+    handleEvent(toolsAvailable(state), state, {} as DaemonActions);
+    expect(resourcesBlock(state)).toBeNull();
+    expect(stripAnsi(renderStatusLine(state, 200).lines.join("\n"))).not.toContain("CPU");
+    // An upgraded daemon after a reconnect brings it back.
+    machineResourcesDisconnected(state);
+    handleEvent({ type: "machine_resources", resources: MAC }, state, {} as DaemonActions);
+    expect(resourcesBlock(state)).not.toBeNull();
+  });
+});
+
+describe("shape per route", () => {
+  test("kept across TUI runs, written only on change", () => {
+    const dir = mkdtempSync(join(tmpdir(), "exo-resources-shape-"));
+    try {
+      const path = join(dir, "tui-resources.json");
+      const shapes = new ResourcesShapes(path);
+      expect(shapes.forRoute("ssh:whale")).toEqual(DEFAULT_RESOURCES_SHAPE);
+      shapes.remember("ssh:whale", shapeOf(WHALE));
+      shapes.remember("local", null);
+      const written = readFileSync(path, "utf8");
+      shapes.remember("ssh:whale", shapeOf(WHALE));
+      expect(readFileSync(path, "utf8")).toBe(written);
+
+      const next = new ResourcesShapes(path);
+      expect(next.forRoute("ssh:whale")).toEqual(shapeOf(WHALE));
+      expect(next.forRoute("local")).toBeNull();
+      expect(next.forRoute("ssh:other")).toEqual(DEFAULT_RESOURCES_SHAPE);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

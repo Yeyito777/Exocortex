@@ -72,6 +72,7 @@ import { noteImmediateQueuedDeliveries, settleRejectedQueueRequest } from "./que
 import { confirmDirectSendRequest, restoreUnconfirmedSends, settleRejectedDirectSend } from "./sendecho";
 import { formatChronoResult } from "./chronoschedule";
 import { turnRequestStartedAt } from "./request-ids";
+import { applyMachineResources, machineResourcesBootstrapped } from "./machine-resources";
 
 export type { DaemonActions } from "./events/types";
 
@@ -245,7 +246,7 @@ export function handleEvent(
       break;
 
     case "machine_resources":
-      state.machineResources = event.resources;
+      applyMachineResources(state, event.resources);
       break;
 
     case "accounts":
@@ -401,6 +402,7 @@ export function handleEvent(
 
     case "tools_available":
       handleToolsAvailable(event, state);
+      machineResourcesBootstrapped(state);
       if (state.sshConnecting?.phase === "loading" && state.sidebar.listLoaded) state.sshConnecting = null;
       break;
 
