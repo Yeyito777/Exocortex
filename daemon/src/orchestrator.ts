@@ -47,6 +47,7 @@ import {
 import { getCurrentAccountScope as getCurrentOpenAIAccountScope } from "./providers/openai/auth";
 import { buildCodexWindowId } from "./providers/openai/identity";
 import { resolveToolCallPresentation } from "./helper-tool-manifest";
+import { chronoCallPresentation } from "./tools/chrono";
 import { loadClientOriginAncestors, pendingTurnNotices, turnNoticeMessages } from "./turn-notices";
 import { setBackgroundTaskActive as setConversationBackgroundTaskActive, setChronoTaskActive as setConversationChronoTaskActive } from "./conversation-activity";
 import { isScopedSubagent, remainingSubagentDepth } from "./subagent-policy";
@@ -1950,7 +1951,8 @@ async function orchestrateAdmittedAssistantTurn(
           return s.detail || s.label;
         },
         presentationResolver: async (name, input) => {
-          const presentation = appToolCallView(convId)(name, input)?.presentation ?? await resolveToolCallPresentation(name, input, workingDirectory);
+          const presentation = appToolCallView(convId)(name, input)?.presentation
+            ?? (name === "chrono" ? chronoCallPresentation(input) : await resolveToolCallPresentation(name, input, workingDirectory));
           return presentation ?? undefined;
         },
         effort: conv.effort,

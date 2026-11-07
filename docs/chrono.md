@@ -19,6 +19,28 @@ that cannot be recovered closes the wait with a tool error.
 Implementation: `daemon/src/tools/chrono.ts`, `daemon/src/chrono-service.ts`,
 and `tui/src/taskvisibility.ts`.
 
+## What a sleep or wait is for
+
+`wait` and `sleep` take a short `what` (≤60 chars) naming in plain words what
+is being waited on. History shows it instead of the target id:
+`Chrono wait: <what> · up to 45m`, `Chrono sleep: <what> · 5m`, the what bold
+and the part after the dot dim. Ctrl+O adds the raw target (`task <id>`) on a
+dim second line. A missing, blank or id-only `what` is no error: when the call
+is made the daemon names the target instead (a subagent's or task's title, a
+unit's name) and stores it in the call's `presentation.subject`, so history
+keeps it after the target is gone; with nothing to resolve the line shows the
+raw id.
+
+While the call runs its line counts up, `Chrono waiting on <what> · 12m of 45m`
+(`sleeping` for a sleep), from the Chrono task the daemon publishes for it:
+whole minutes, or seconds under two minutes, redrawn only when the text
+changes. A turn suspended in a long sleep or wait keeps that line in view in
+the folded history. Once it ends the line reads past tense again.
+
+Implementation: `chronoCallLine` in `shared/src/chrono.ts`,
+`chronoCallPresentation` in `daemon/src/tools/chrono.ts`, and
+`tui/src/chronocalls.ts`.
+
 ## Unit waits
 
 `task_id: "unit:NAME"` waits on a systemd user unit, e.g. a `systemd-run --user`

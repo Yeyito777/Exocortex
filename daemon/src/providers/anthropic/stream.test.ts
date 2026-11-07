@@ -356,6 +356,20 @@ describe("Claude Code stream translation", () => {
     expect(rounds).toHaveLength(1);
   });
 
+  test("a host chrono wait without a what is named by its target in the call and its history", () => {
+    const { events, callbacks } = recorder();
+    const rounds: ProviderRound[] = [];
+    callbacks.onProviderRound = (round) => rounds.push(round);
+    const state = createClaudeStreamState(callbacks, "/work");
+    const input = { action: "wait", task_id: "unit:pm5-batch-x", max_wait: "1h" };
+    pushClaudeMessage(state, { type: "assistant", uuid: "a-1", session_id: SESSION, parent_tool_use_id: null, message: { content: [{ type: "tool_use", id: "t1", name: "mcp__exocortex__chrono", input }] } });
+    expect(events).toEqual(["call:chrono:wait: pm5-batch-x · up to 1h"]);
+    commitInterruptedRound(state);
+    expect(rounds[0].messages[0].content).toEqual([
+      { type: "tool_use", id: "t1", name: "chrono", input, presentation: { subject: "pm5-batch-x", detail: "wait: pm5-batch-x · up to 1h" } },
+    ]);
+  });
+
   test("fails when Claude Code exits without a result", () => {
     const state = createClaudeStreamState(recorder().callbacks, "/work");
     pushClaudeMessage(state, TOOL_TURN[0]);

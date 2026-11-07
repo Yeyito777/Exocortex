@@ -17,6 +17,8 @@ import { sliceByWidthFrom, termWidth } from "./textwidth";
 import { wordWrap, type WrapImage, type WrapResult } from "./textwrap";
 import { createDisplayMathImageRenderer, mathImageCacheKey, mathImageGeneration, type DisplayMathImageRenderer } from "./mathimages";
 import { renderToolCallLogicalLines, type ToolCallLogicalLine } from "./toolcalllogical";
+import { resolveToolDisplay } from "./toolstyles";
+import { chronoCallLine, formatChronoProgress, type ChronoCallProgress } from "@exocortex/shared/chrono";
 import { CODE_GUTTER } from "./markdown/codeblocks";
 import { formatMarkdownChunks } from "./markdown/formatting";
 import { highlightLine } from "./markdown/highlight";
@@ -40,6 +42,8 @@ interface BlockCacheEntry {
   externalToolStylesRef: ExternalToolStyle[];
   /** Display-math image environment ("" when this caller renders math as text). */
   mathKey: string;
+  /** A Chrono call's progress text while it runs and whether its target shows. */
+  chronoKey: string;
   /** Math image generation when rendered; only matters while `result.mathPending`. */
   mathGeneration: number;
   /** Cached render result. */
@@ -144,6 +148,41 @@ function callLocalBashStyles(block: Extract<Block, { type: "tool_call" }>): Exte
     && typeof style.color === "string"
     && /^#[0-9a-fA-F]{6}$/.test(style.color)
   ));
+}
+
+export interface ChronoCallView {
+  progress?: ChronoCallProgress;
+  showTarget?: boolean;
+}
+
+function isChronoCallBlock(block: Block): block is Extract<Block, { type: "tool_call" }> {
+  return block.type === "tool_call" && block.toolName === "chrono" && !block.elided
+    && (block.input.action === "wait" || block.input.action === "sleep");
+}
+
+/**
+ * A Chrono sleep or wait as one line: `Chrono wait: <what>` with the what
+ * emphasized and `· up to 45m` dim after it, or `Chrono waiting on <what>`
+ * with `· 12m of 45m` while it runs.
+ */
+function chronoCallLogicalLine(
+  block: Extract<Block, { type: "tool_call" }>,
+  toolRegistry: ToolDisplayInfo[],
+  progress: ChronoCallProgress | undefined,
+): ToolCallLogicalLine | null {
+  if (!isChronoCallBlock(block)) return null;
+  const line = chronoCallLine(block.input, { subject: block.presentation?.subject, progress });
+  if (!line) return null;
+  const display = resolveToolDisplay("chrono", "", toolRegistry);
+  const what = sanitizeUntrustedText(line.what).replace(/\s+/g, " ");
+  const head = `${display.label} ${line.head}`;
+  return {
+    display,
+    text: `${head}${what}`.trimEnd(),
+    hasLabel: true,
+    ...(what ? { strongFrom: head.length } : {}),
+    ...(line.meta ? { meta: `· ${line.meta}` } : {}),
+  };
 }
 
 /**
@@ -255,10 +294,17 @@ export function renderBlockCached(
   toolCallErrored = false,
   /** Draw display math as images (history only: it places them). */
   mathImages = false,
+  /**
+   * A Chrono sleep or wait: where it stands while it runs, and whether to
+   * name its raw target under the line (expanded views).
+   */
+  chrono: ChronoCallView = {},
 ): WrapResult {
   // Hidden results render nothing; do not key a cache on a possibly huge body.
   if (block.type === "tool_result" && !showToolOutput) return HIDDEN_TOOL_RESULT;
   const mathKey = mathImages && block.type === "text" ? mathImageCacheKey() : "";
+  const chronoView = isChronoCallBlock(block) ? chrono : {};
+  const chronoKey = `${chronoView.progress ? formatChronoProgress(chronoView.progress) : ""}|${chronoView.showTarget ? 1 : 0}`;
   const own = blockRenderCache.get(block);
   const reusable = (entry: BlockCacheEntry, contentKey?: string): boolean => (contentKey === undefined ? sameSourceRefs(entry.sourceRefs, block) : entry.contentKey === contentKey)
     && entry.width === contentWidth
@@ -268,6 +314,7 @@ export function renderBlockCached(
     && entry.toolRegistryRef === toolRegistry
     && entry.externalToolStylesRef === externalToolStyles
     && entry.mathKey === mathKey
+    && entry.chronoKey === chronoKey
     && (!entry.result.mathPending || entry.mathGeneration === mathImageGeneration());
   // Fast path: this exact block object with unchanged field references. Every
   // history frame passes here for every loaded block, so it must not
@@ -285,7 +332,7 @@ export function renderBlockCached(
 
   const mathGeneration = mathImageGeneration();
   const math = mathKey && mathKey !== "text" ? createDisplayMathImageRenderer() : undefined;
-  const result = renderBlock(block, contentWidth, toolRegistry, externalToolStyles, showToolOutput, toolCallErrored, math);
+  const result = renderBlock(block, contentWidth, toolRegistry, externalToolStyles, showToolOutput, toolCallErrored, math, chronoView);
   const entry: BlockCacheEntry = {
     contentKey,
     sourceRefs,
@@ -296,14 +343,16 @@ export function renderBlockCached(
     toolRegistryRef: toolRegistry,
     externalToolStylesRef: externalToolStyles,
     mathKey,
+    chronoKey,
     mathGeneration,
     result,
   };
   blockRenderCache.set(block, entry);
   // A block whose content changed in place is streaming; its intermediate
-  // prefixes would only evict reusable entries from the shared LRU.
+  // prefixes would only evict reusable entries from the shared LRU, as would
+  // a running Chrono call's line, which changes with the clock.
   const streaming = own !== undefined && own.contentKey !== contentKey;
-  if (!streaming) {
+  if (!streaming && !chronoView.progress) {
     rehydratedBlockRenderCache.set(rehydratedKey, { ...entry, sourceRefs: NO_SOURCE_REFS }, contentKey.length * 2 + wrapResultBytes(result));
   }
   return result;
@@ -317,6 +366,7 @@ function renderBlock(
   showToolOutput: boolean,
   toolCallErrored: boolean,
   math?: DisplayMathImageRenderer,
+  chrono: ChronoCallView = {},
 ): WrapResult {
   const lines: string[] = [];
   const cont: boolean[] = [];
@@ -382,7 +432,8 @@ function renderBlock(
       const localToolRegistry = block.presentation?.toolStyle
         ? [block.presentation.toolStyle, ...toolRegistry.filter((tool) => tool.name !== block.presentation!.toolStyle!.name)]
         : toolRegistry;
-      const logical = renderToolCallLogicalLines(
+      const chronoLine = chronoCallLogicalLine(block, localToolRegistry, chrono.progress);
+      const logical = chronoLine ? [chronoLine] : renderToolCallLogicalLines(
         block.toolName,
         summary,
         localToolRegistry,
@@ -401,12 +452,18 @@ function renderBlock(
           continue;
         }
         const w = wordWrap(entry.text, contentWidth - 2);
+        // Emphasis runs from strongFrom on the first row to the end of the text.
+        const strongFrom = entry.strongFrom === undefined ? Infinity : Math.min(entry.strongFrom, w.lines[0]?.length ?? 0);
+        const strong = (row: string, from: number) => from >= row.length
+          ? row
+          : `${row.slice(0, from)}${theme.bold}${row.slice(from)}${theme.boldOff}`;
         for (let j = 0; j < w.lines.length; j++) {
           if (entry.hasLabel && j === 0) {
-            const rest = w.lines[0].slice(entry.display.label.length);
-            lines.push(`  ${entry.display.fg}${theme.bold}${entry.display.label}${theme.reset}${entry.display.fg}${rest}${theme.reset}`);
+            const label = entry.display.label;
+            const rest = strong(w.lines[0], strongFrom).slice(label.length);
+            lines.push(`  ${entry.display.fg}${theme.bold}${label}${theme.reset}${entry.display.fg}${rest}${theme.reset}`);
           } else {
-            lines.push(`  ${entry.display.fg}${w.lines[j]}${theme.reset}`);
+            lines.push(`  ${entry.display.fg}${j === 0 ? strong(w.lines[0], strongFrom) : strongFrom < Infinity ? strong(w.lines[j], 0) : w.lines[j]}${theme.reset}`);
           }
           cont.push(w.cont[j]);
           join.push(w.join[j]);
@@ -430,6 +487,17 @@ function renderBlock(
       collapseLongToolCallDetail(block.toolName, logical.some(entry => entry.payload), showToolOutput, firstRow, lines, cont, join, copy);
       if (toolCallErrored && lines.length > 0) {
         lines[lines.length - 1] += ` ${theme.error}✗${theme.reset}`;
+      }
+      // Expanded, a wait names its raw target under the line.
+      const target = chronoLine && (showToolOutput || chrono.showTarget) && block.input.action === "wait" && typeof block.input.task_id === "string"
+        ? sanitizeUntrustedText(block.input.task_id.trim()) : "";
+      if (target) {
+        for (const row of wordWrap(`task ${target}`, Math.max(1, contentWidth - 4)).lines) {
+          lines.push(`    ${theme.dim}${row}${theme.reset}`);
+          cont.push(false);
+          join.push("");
+          copy.push(null);
+        }
       }
       break;
     }

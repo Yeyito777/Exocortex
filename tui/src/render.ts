@@ -75,6 +75,7 @@ import {
 import { pinBottomRelativeScrollOffset } from "./viewportscroll";
 import { localDayKey } from "./metadata";
 import { durableSleepMetadataFrame } from "./durable-sleep-metadata";
+import { liveChronoFrame } from "./chronocalls";
 import { inlineImageCellSize, inlineImageGeneration, inlineImageMode, inlineImagesActive } from "./inlineimages";
 import { renderAccountsScreen } from "./accountsscreen";
 import { renderImageModal } from "./imagemodal";
@@ -103,6 +104,7 @@ interface HistoryRenderCacheEntry {
   historyLoadingFrame: number | null;
   conversationLoadingFrame: number | null;
   durableSleepMetadataFrame: number | null;
+  liveChronoFrame: string;
   showToolOutput: boolean;
   showTurnWork: boolean;
   showDiagnostics: boolean;
@@ -155,6 +157,7 @@ function canReuseHistoryRender(
     && cached.historyLoadingFrame === historyLoadingFrame(state)
     && cached.conversationLoadingFrame === conversationLoadingFrame(state)
     && cached.durableSleepMetadataFrame === currentDurableSleepMetadataFrame
+    && cached.liveChronoFrame === liveChronoFrame(state)
     && cached.showToolOutput === state.showToolOutput
     && cached.showTurnWork === state.showTurnWork
     && cached.showDiagnostics === state.showDiagnostics
@@ -302,6 +305,7 @@ function getHistoryRender(
     historyLoadingFrame: historyLoadingFrame(state),
     conversationLoadingFrame: conversationLoadingFrame(state),
     durableSleepMetadataFrame: currentDurableSleepMetadataFrame,
+    liveChronoFrame: liveChronoFrame(state),
     showToolOutput: state.showToolOutput,
     showTurnWork: state.showTurnWork,
     showDiagnostics: state.showDiagnostics,
