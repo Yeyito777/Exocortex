@@ -95,7 +95,7 @@ import { startReplayConversation } from "./replay";
 import { startManualCompaction } from "./compact";
 import { runStreamFinishedPing, shouldPingForStreamCompletion } from "./ping";
 import { stripStartupLaunchEcho } from "./startupinput";
-import { focusedConversationTasks, msUntilTaskPanelEntryUpdate } from "./activitypanel";
+import { focusedConversationTasks, msUntilTaskPanelEntryUpdate, taskPanelHoverChanged } from "./activitypanel";
 import { hasInProgressModelWork } from "./taskvisibility";
 import {
   beginOlderHistoryLoad,
@@ -2212,7 +2212,7 @@ function handleMouse(ev: MouseEvent): void {
     return;
   }
 
-  // Motion events: only render if something visual changed (focus switch, drag selection)
+  // Motion events: only render if something visual changed (focus switch, drag selection, task panel hover)
   if (ev.action === "motion") {
     const prevFocus = state.panelFocus;
     const prevSidebarItem = state.sidebar.selectedItem;
@@ -2226,6 +2226,8 @@ function handleMouse(ev: MouseEvent): void {
         || state.historyCursor.row !== prevCursorRow
         || state.historyCursor.col !== prevCursorCol) {
       state.pendingHistoryNavigation = null;
+      renderAfterLocalUiMutation();
+    } else if (taskPanelHoverChanged(state, ev.col, ev.row)) {
       renderAfterLocalUiMutation();
     }
     return;

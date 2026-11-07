@@ -12,7 +12,7 @@ import type { RenderState } from "./state";
 import { focusHistory, focusPrompt, focusSidebar } from "./state";
 import { handleSidebarActionMenuResult, type KeyResult } from "./focus";
 import { scrollBy } from "./chat";
-import { isTaskPanelExpanded, scrollTaskPanel, toggleTaskPanelExpansion } from "./activitypanel";
+import { isTaskPanelExpanded, scrollTaskPanel, taskPanelLinkAt, toggleTaskPanelExpansion } from "./activitypanel";
 import {
   activateSidebarItem,
   handleSidebarActionMenuMouse,
@@ -166,7 +166,8 @@ type CursorShape = "pointer" | "text" | "hand";
 /**
  * Determine the desired cursor shape for a mouse position.
  * - "hand" for anything a click acts on (sidebar entries, menu actions,
- *   edit-message picker rows, history links/paths/images, the task panel,
+ *   edit-message picker rows, history links/paths/images, the task panel
+ *   and the subagent labels on it,
  *   the usage block while several accounts make the Accounts screen available)
  * - "text" for text-content areas (prompt, chat history)
  * - "pointer" for non-interactive chrome (topbar, separators, statusbar, sidebar header)
@@ -208,7 +209,10 @@ export function cursorZone(col: number, row: number, state: RenderState): Cursor
   // Message area (chat history) → text, except for the task panel, which a click expands or collapses.
   // The queue prompt swallows clicks, so nothing under it is clickable.
   if (row >= 3 && layout.sepAbove > 0 && row < layout.sepAbove) {
-    if (isInsideTaskPanel(col, row, state)) return state.queuePrompt || !layout.taskPanelToggleable ? "pointer" : "hand";
+    if (isInsideTaskPanel(col, row, state)) {
+      if (taskPanelLinkAt(state, col, row)) return "hand";
+      return state.queuePrompt || !layout.taskPanelToggleable ? "pointer" : "hand";
+    }
     return !state.queuePrompt && historyClickableAtScreen(col, row, state) ? "hand" : "text";
   }
 
@@ -368,9 +372,12 @@ export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult 
       return { type: "handled" };
     }
 
-    // The task panel is one toggle: expand to list every entry, or back to the capped card.
+    // A subagent's label opens its conversation. The rest of the task panel is one toggle:
+    // expand to list every entry, or back to the capped card.
     // A collapsed card that already shows everything has nothing to expand to.
     if (isInsideTaskPanel(col, row, state)) {
+      const convId = taskPanelLinkAt(state, col, row);
+      if (convId) return { type: "load_conversation", convId };
       if (layout.taskPanelToggleable) toggleTaskPanelExpansion(state);
       return { type: "handled" };
     }

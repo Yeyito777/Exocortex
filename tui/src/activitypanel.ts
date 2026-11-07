@@ -15,6 +15,10 @@
  * than that onto indented continuation rows (a subagent's prompt up to
  * EXPANDED_SUBAGENT_TITLE_ROWS rows), and scrolls when it outgrows the message
  * area. A collapsed card that already shows everything ignores clicks.
+ *
+ * A subagent's `<indicator> Exocortex` label is a link to its conversation:
+ * the pointer over it highlights it, and a click there opens the subagent
+ * instead of toggling the card.
  */
 
 import type { ConversationGoalStatus, ConversationTaskSummary, ExternalIntegrationSummary } from "./messages";
@@ -62,6 +66,33 @@ export interface TaskPanelRender {
   maxScroll: number;
   /** A click changes the card: it is expanded, or collapsed with an entry or part of a title left out. */
   toggleable: boolean;
+  /** Subagent labels that open the child conversation, in card-relative cells. */
+  links: TaskPanelLink[];
+}
+
+/**
+ * A subagent's `<indicator> Exocortex` label: line `line` of the card,
+ * columns `left`..`right` (0-based, inclusive), and how to draw that line
+ * with the label highlighted, for while the pointer is over it.
+ */
+export interface TaskPanelLink {
+  line: number;
+  left: number;
+  right: number;
+  convId: string;
+  hoverLine: () => string;
+}
+
+/** The conversation whose subagent label is at (col, row), or null; nothing is clickable under a modal overlay. */
+export function taskPanelLinkAt(state: RenderState, col: number, row: number): string | null {
+  if (state.imageModal || state.accountsScreen || state.instructionsModal || state.editMessagePrompt
+    || state.queuePrompt || state.sidebar.actionMenu) return null;
+  return state.layout.taskPanelLinks.find(link => link.row === row && col >= link.left && col <= link.right)?.convId ?? null;
+}
+
+/** Whether a pointer at (col, row) would highlight a different subagent label than the last frame drew. */
+export function taskPanelHoverChanged(state: RenderState, col: number, row: number): boolean {
+  return taskPanelLinkAt(state, col, row) !== (state.taskPanelHover ?? null);
 }
 
 export interface TaskPanelLayout {
@@ -370,15 +401,16 @@ function entryRows(
   titles: string[],
   status: string,
   statusWidth: number,
+  highlightLead = false,
 ): string[] {
-  const row = (start: string, title: string, end: string) => palette.withPanelBg(
-    `${palette.outline}│${theme.reset} ${start}${theme.text} ${title}`
+  const row = (start: string, title: string, end: string, highlight = false) => palette.withPanelBg(
+    `${palette.outline}│${theme.reset}${highlight ? theme.sidebarSelBg : ""} ${start}${theme.text} ${highlight ? theme.reset : ""}${title}`
     + `${theme.muted}${end}${theme.reset} ${palette.outline}│`,
   );
   const blankLead = " ".repeat(leadWidth);
   const blankStatus = " ".repeat(statusWidth);
   return titles.map((title, index) => index === 0
-    ? row(lead, title, padLeftToWidth(status, statusWidth))
+    ? row(lead, title, padLeftToWidth(status, statusWidth), highlightLead)
     : row(blankLead, title, blankStatus));
 }
 
@@ -408,7 +440,11 @@ function taskTitle(task: TaskPanelEntry): string {
   return cleanPanelText(task.title) || fallbackTitle;
 }
 
-/** One entry: label, the title truncated (or wrapped) to fit, and the countdown, elapsed time, or a paused goal's status. */
+/**
+ * One entry: label, the title truncated (or wrapped) to fit, and the countdown,
+ * elapsed time, or a paused goal's status. `highlightLabel` draws the label on
+ * the hover background.
+ */
 function taskRows(
   task: TaskPanelEntry,
   palette: PanelPalette,
@@ -417,6 +453,7 @@ function taskRows(
   now: number,
   indicator: ConversationActivityIndicator | null,
   wrap: boolean,
+  highlightLabel = false,
 ): string[] {
   const isSubagent = task.kind === "subagent";
   const isGoal = task.kind === "goal";
@@ -435,7 +472,7 @@ function taskRows(
   const lead = `${color}${indicator ? `${indicator.color}${label[0]}${color}${label.slice(1)}` : label}`;
   // A subagent's title is its prompt, which can run long: expanded, it gets a few rows, not the whole prompt.
   const limit = isSubagent ? { chars: EXPANDED_SUBAGENT_TITLE_CHARS, rows: EXPANDED_SUBAGENT_TITLE_ROWS } : undefined;
-  return entryRows(palette, lead, termWidth(label), titleRows(title, titleWidth, wrap, limit), time, ELAPSED_WIDTH);
+  return entryRows(palette, lead, termWidth(label), titleRows(title, titleWidth, wrap, limit), time, ELAPSED_WIDTH, highlightLabel);
 }
 
 function sectionDivider(palette: PanelPalette, innerWidth: number, title: string, count: number): string {
@@ -557,8 +594,26 @@ export function renderTaskPanel(
     ),
   ];
 
-  const body = visible.tasks.flatMap(task =>
-    taskRows(task, palette, innerWidth, compactExocortex, now, subagentIndicator(state, task), expanded));
+  const body: string[] = [];
+  // A subagent's label opens its conversation: the label and the blank cell either side, on the entry's first row.
+  const bodyLinks: Array<Omit<TaskPanelLink, "line"> & { bodyIndex: number }> = [];
+  for (const task of visible.tasks) {
+    const indicator = subagentIndicator(state, task);
+    const rows = taskRows(task, palette, innerWidth, compactExocortex, now, indicator, expanded);
+    if (task.kind === "subagent") {
+      bodyLinks.push({
+        bodyIndex: body.length,
+        left: 1,
+        right: termWidth(taskLabel(task, compactExocortex, indicator !== null)) + 2,
+        convId: task.id,
+        hoverLine: () => taskRows(task, palette, innerWidth, compactExocortex, now, indicator, expanded, true)[0],
+      });
+    }
+    body.push(...rows);
+  }
+  const linksFrom = (scroll: number, shownRows: number): TaskPanelLink[] => bodyLinks
+    .filter(link => link.bodyIndex >= scroll && link.bodyIndex < scroll + shownRows)
+    .map(({ bodyIndex, ...link }) => ({ ...link, line: 1 + bodyIndex - scroll }));
   if (visible.showSubscriptionsDivider) {
     body.push(sectionDivider(palette, innerWidth, "Subscriptions", integrations.length));
   }
@@ -570,7 +625,7 @@ export function renderTaskPanel(
     const shown = body.slice(scroll, scroll + maxContentRows);
     lines.push(...shown);
     lines.push(expandedPanelFooter(palette, innerWidth, scroll, body.length - scroll - shown.length));
-    return { width: panelWidth, lines, scroll, maxScroll, toggleable: true };
+    return { width: panelWidth, lines, scroll, maxScroll, toggleable: true, links: linksFrom(scroll, shown.length) };
   }
 
   lines.push(...body);
@@ -588,7 +643,7 @@ export function renderTaskPanel(
   lines.push(withPanelBg(`${outline}╰${"─".repeat(innerWidth)}╯`));
   // Expanding shows the entries the card leaves out and the rest of any title it cuts short; with neither, a click has nothing to show.
   const toggleable = visible.tasks.length + visible.integrations.length < totalEntries || widestEntry > panelWidth;
-  return { width: panelWidth, lines, scroll: 0, maxScroll: 0, toggleable };
+  return { width: panelWidth, lines, scroll: 0, maxScroll: 0, toggleable, links: linksFrom(0, body.length) };
 }
 
 /**

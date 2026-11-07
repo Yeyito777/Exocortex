@@ -53,6 +53,7 @@ import {
   hasFocusedConversationTasks,
   isTaskPanelExpanded,
   layoutTaskPanel,
+  taskPanelLinkAt,
 } from "./activitypanel";
 import { trimAnsiLeadingSpaces, wrapAnsiLine } from "./ansiwrap";
 import { getBtwPanelPreferredHeight, MAX_BTW_PANEL_HEIGHT, renderBtwPanel } from "./btw/panel";
@@ -1826,6 +1827,8 @@ export function render(state: RenderState): boolean {
   state.layout.taskPanelRect = null;
   state.layout.taskPanelMaxScroll = taskPanel?.maxScroll ?? 0;
   state.layout.taskPanelToggleable = taskPanel?.toggleable ?? false;
+  state.layout.taskPanelLinks = [];
+  state.taskPanelHover = null;
   if (state.taskPanelExpansion && taskPanel) state.taskPanelExpansion.scroll = taskPanel.scroll;
   if (taskPanel) {
     const panelCol = chatCol + chatW - taskPanel.width;
@@ -1836,8 +1839,19 @@ export function render(state: RenderState): boolean {
       left: panelCol,
       right: panelCol + taskPanel.width - 1,
     };
+    state.layout.taskPanelLinks = taskPanel.links.map(link => ({
+      row: panelTop + link.line,
+      left: panelCol + link.left,
+      right: panelCol + link.right,
+      convId: link.convId,
+    }));
+    // The subagent label under the pointer is highlighted; mouse motion repaints only when that changes.
+    const pointer = state.mousePosition;
+    const hovered = pointer ? taskPanelLinkAt(state, pointer.col, pointer.row) : null;
+    const hoveredLink = hovered ? taskPanel.links.find(link => link.convId === hovered) : undefined;
+    state.taskPanelHover = hoveredLink ? hovered : null;
     for (let i = 0; i < taskPanel.lines.length; i++) {
-      appendRowWrite(ctx, panelTop + i, panelCol, taskPanel.lines[i]);
+      appendRowWrite(ctx, panelTop + i, panelCol, hoveredLink?.line === i ? hoveredLink.hoverLine() : taskPanel.lines[i]);
     }
   }
 

@@ -132,6 +132,8 @@ export interface LayoutCache {
   taskPanelMaxScroll: number;
   /** A click on the task panel toggles its expansion: false while the collapsed card already shows everything. */
   taskPanelToggleable: boolean;
+  /** Screen cells of the task panel's subagent labels, each opening its child conversation. */
+  taskPanelLinks: Array<{ row: number; left: number; right: number; convId: string }>;
   /** Screen rectangle of the status line's usage block; a click there opens the Accounts screen. */
   usageBlockRect: { top: number; bottom: number; left: number; right: number } | null;
   /** Canonical history row and source/display offsets rendered on each message-area row. */
@@ -422,6 +424,8 @@ export interface RenderState {
   mouseCursor: "pointer" | "text" | "hand";
   /** Last reported pointer cell, so the shape can follow content that moves under a still mouse. */
   mousePosition?: { col: number; row: number } | null;
+  /** The subagent whose task panel label the last frame drew highlighted under the pointer. */
+  taskPanelHover?: string | null;
   /** Open only on release at the original link, never when dragging to select. */
   mouseLinkPress?: { row: number; col: number; target: string } | null;
   /** Left press on an inline image; a release on the same cell opens the viewer. */
@@ -830,7 +834,7 @@ export function createInitialState(): RenderState {
     sidebar: createSidebarState(loadSidebarFolderViewPreference()),
     sidebarOpenChosen: false,
     vim: createVimState(),
-    layout: { totalLines: 0, messageAreaHeight: 0, historyWidth: 0, chatWidth: 0, taskPanelRect: null, taskPanelMaxScroll: 0, taskPanelToggleable: false, usageBlockRect: null, historyViewportRows: [], chatCol: 1, sepAbove: 0, firstInputRow: 0, sepBelow: 0 },
+    layout: { totalLines: 0, messageAreaHeight: 0, historyWidth: 0, chatWidth: 0, taskPanelRect: null, taskPanelMaxScroll: 0, taskPanelToggleable: false, taskPanelLinks: [], usageBlockRect: null, historyViewportRows: [], chatCol: 1, sepAbove: 0, firstInputRow: 0, sepBelow: 0 },
     deferredHistoryRender: null,
     pendingSend: { active: false, text: "" },
     unconfirmedSends: [],
