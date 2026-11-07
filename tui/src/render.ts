@@ -521,10 +521,7 @@ interface FloatingHistoryViewportCacheEntry {
   narrowWidth: number;
   fullWidth: number;
   preserveTop: boolean;
-  cursorRow: number | null;
-  previousAnchor: HistoryViewportAnchor | null;
   rows: ViewportHistoryRow[];
-  anchor: HistoryViewportAnchor;
 }
 
 /**
@@ -958,25 +955,6 @@ function alignShiftedImageRows(
   return rows;
 }
 
-/** Which end of the viewport stays in place when rows beside the Tasks panel re-wrap narrower. */
-type HistoryViewportAnchor = "top" | "bottom";
-
-/** The end each conversation pane kept last frame: a cursor moving inside the view keeps it. */
-const historyViewportAnchors = new WeakMap<RenderState, HistoryViewportAnchor>();
-
-/**
- * The viewport's rows from `viewStart` beside a floating panel. Rows beside
- * it re-wrap narrower, so the canonical rows [viewStart, viewStart + height)
- * can need more screen rows than there are. Kept at the top, the overflow is
- * clipped at the bottom; kept at the bottom, the rows displaced at the top
- * stay reachable by scrolling up.
- *
- * `cursorRow` (history focused) is on screen as far as the cursor motions
- * know, so the end chosen is one that shows it, `previousAnchor` first so
- * the rows do not jump while it moves inside the view. Kept at the bottom,
- * a cursor going up with k or Ctrl+U walked into the dropped rows while the
- * screen stood still, up to the last rows above the true top.
- */
 function composeFloatingHistoryViewport(
   allLines: string[],
   lineAnchors: BuildMessageLinesResult["lineAnchors"],
@@ -987,9 +965,7 @@ function composeFloatingHistoryViewport(
   narrowWidth: number,
   fullWidth: number,
   preserveTop = false,
-  cursorRow: number | null = null,
-  previousAnchor: HistoryViewportAnchor | null = null,
-): { rows: ViewportHistoryRow[]; anchor: HistoryViewportAnchor } {
+): ViewportHistoryRow[] {
   const cached = floatingHistoryViewportCache.get(allLines);
   if (cached
     && cached.revision === revision
@@ -999,103 +975,91 @@ function composeFloatingHistoryViewport(
     && cached.panelHeight === panelHeight
     && cached.narrowWidth === narrowWidth
     && cached.fullWidth === fullWidth
-    && cached.preserveTop === preserveTop
-    && cached.cursorRow === cursorRow
-    && cached.previousAnchor === previousAnchor) {
-    return { rows: cached.rows, anchor: cached.anchor };
+    && cached.preserveTop === preserveTop) {
+    return cached.rows;
   }
-  const composed = composeFloatingHistoryRows(
-    allLines, lineAnchors, viewStart, messageAreaHeight, panelHeight, narrowWidth, fullWidth, preserveTop, cursorRow, previousAnchor,
-  );
-  floatingHistoryViewportCache.set(allLines, {
-    revision,
-    lineAnchors,
-    viewStart,
-    messageAreaHeight,
-    panelHeight,
-    narrowWidth,
-    fullWidth,
-    preserveTop,
-    cursorRow,
-    previousAnchor,
-    ...composed,
-  });
-  return composed;
-}
 
-function composeFloatingHistoryRows(
-  allLines: string[],
-  lineAnchors: BuildMessageLinesResult["lineAnchors"],
-  viewStart: number,
-  messageAreaHeight: number,
-  panelHeight: number,
-  narrowWidth: number,
-  fullWidth: number,
-  preserveTop: boolean,
-  cursorRow: number | null,
-  previousAnchor: HistoryViewportAnchor | null,
-): { rows: ViewportHistoryRow[]; anchor: HistoryViewportAnchor } {
   const endLineIndex = Math.min(allLines.length, viewStart + messageAreaHeight);
-  if (viewStart >= endLineIndex) return { rows: [], anchor: "bottom" };
+  if (viewStart >= endLineIndex) return [];
 
   if (panelHeight <= 0 || narrowWidth === fullWidth) {
-    return { rows: canonicalViewportRows(allLines, viewStart, endLineIndex, fullWidth), anchor: "bottom" };
+    const rows = canonicalViewportRows(allLines, viewStart, endLineIndex, fullWidth);
+    floatingHistoryViewportCache.set(allLines, {
+      revision,
+      lineAnchors,
+      viewStart,
+      messageAreaHeight,
+      panelHeight,
+      narrowWidth,
+      fullWidth,
+      preserveTop,
+      rows,
+    });
+    return rows;
   }
-
-  // Composed forward from the exact source start, the overflow clipped at the bottom.
-  let directRows: ViewportHistoryRow[] | null = null;
-  const direct = () => directRows ??= composeViewportFrom(
-    allLines,
-    lineAnchors,
-    canonicalSourceState(allLines, viewStart),
-    endLineIndex,
-    0,
-    panelHeight,
-    narrowWidth,
-    fullWidth,
-  );
-  const rowsFor = (anchor: HistoryViewportAnchor) => anchor === "top"
-    ? alignShiftedImageRows(direct().slice(0, messageAreaHeight), lineAnchors)
-    : bottomAnchoredFloatingRows(allLines, lineAnchors, viewStart, endLineIndex, messageAreaHeight, panelHeight, narrowWidth, fullWidth);
 
   // Final-response autoscroll is a semantic top anchor. The canonical history
   // was wrapped at full chat width, so task-panel reflow can otherwise clip the
   // first one or two visual chunks while preserving the viewport's bottom tail.
-  if (preserveTop) return { rows: rowsFor("top"), anchor: "top" };
+  // Compose forward from the exact source start for this one placement mode.
+  if (preserveTop) {
+    const rows = alignShiftedImageRows(composeViewportFrom(
+      allLines,
+      lineAnchors,
+      canonicalSourceState(allLines, viewStart),
+      endLineIndex,
+      0,
+      panelHeight,
+      narrowWidth,
+      fullWidth,
+    ).slice(0, messageAreaHeight), lineAnchors);
+    floatingHistoryViewportCache.set(allLines, {
+      revision,
+      lineAnchors,
+      viewStart,
+      messageAreaHeight,
+      panelHeight,
+      narrowWidth,
+      fullWidth,
+      preserveTop,
+      rows,
+    });
+    return rows;
+  }
 
   // At the canonical top there is no preceding viewport that can reveal rows
   // displaced by narrow wrapping, so keep the beginning anchored and clip any
   // reflow overflow at the bottom. Genuinely short histories also stay
   // top-aligned; a full canonical viewport can use the bottom-anchored path.
   const atCanonicalTop = viewStart === 0;
-  const atCanonicalBottom = endLineIndex === allLines.length;
-  const fallback: HistoryViewportAnchor = atCanonicalTop
-    || (endLineIndex - viewStart < messageAreaHeight && direct().length <= messageAreaHeight)
-    ? "top"
-    : "bottom";
-  if (cursorRow === null || cursorRow < viewStart || cursorRow >= endLineIndex) return { rows: rowsFor(fallback), anchor: fallback };
-
-  // Either end of the history is shown whole whenever the cursor allows,
-  // so neither stays out of reach.
-  const first = atCanonicalTop ? "top" : atCanonicalBottom ? "bottom" : previousAnchor ?? fallback;
-  for (const anchor of [first, first === "top" ? "bottom" : "top"] as const) {
-    const rows = rowsFor(anchor);
-    if (rows.some(row => row.lineIndex === cursorRow)) return { rows, anchor };
+  if (atCanonicalTop || endLineIndex - viewStart < messageAreaHeight) {
+    const directRows = composeViewportFrom(
+      allLines,
+      lineAnchors,
+      canonicalSourceState(allLines, viewStart),
+      endLineIndex,
+      0,
+      panelHeight,
+      narrowWidth,
+      fullWidth,
+    );
+    if (atCanonicalTop || directRows.length <= messageAreaHeight) {
+      const rows = alignShiftedImageRows(directRows.slice(0, messageAreaHeight), lineAnchors);
+      floatingHistoryViewportCache.set(allLines, {
+        revision,
+        lineAnchors,
+        viewStart,
+        messageAreaHeight,
+        panelHeight,
+        narrowWidth,
+        fullWidth,
+        preserveTop,
+        rows,
+      });
+      return rows;
+    }
   }
-  return { rows: rowsFor(fallback), anchor: fallback };
-}
 
-/** Preserve the newest canonical full-width rows; narrow wrapping above them drops rows at the top. */
-function bottomAnchoredFloatingRows(
-  allLines: string[],
-  lineAnchors: BuildMessageLinesResult["lineAnchors"],
-  viewStart: number,
-  endLineIndex: number,
-  messageAreaHeight: number,
-  panelHeight: number,
-  narrowWidth: number,
-  fullWidth: number,
-): ViewportHistoryRow[] {
   const narrowRowCount = Math.min(panelHeight, messageAreaHeight);
   const fullRowCount = Math.max(0, messageAreaHeight - narrowRowCount);
 
@@ -1133,7 +1097,19 @@ function bottomAnchoredFloatingRows(
     fullWidth,
     fullWidth,
   );
-  return alignShiftedImageRows([...narrowRows, ...fullRows].slice(-messageAreaHeight), lineAnchors);
+  const visibleRows = alignShiftedImageRows([...narrowRows, ...fullRows].slice(-messageAreaHeight), lineAnchors);
+  floatingHistoryViewportCache.set(allLines, {
+    revision,
+    lineAnchors,
+    viewStart,
+    messageAreaHeight,
+    panelHeight,
+    narrowWidth,
+    fullWidth,
+    preserveTop,
+    rows: visibleRows,
+  });
+  return visibleRows;
 }
 
 /**
@@ -1795,7 +1771,7 @@ export function render(state: RenderState): boolean {
   const scratchpad = taskLayout.scratchpad;
   const column = taskLayout.column;
   const panelFlowHeight = column ? Math.min(messageAreaHeight, column.height + 1) : 0;
-  const { rows: viewportRows, anchor: viewportAnchor } = composeFloatingHistoryViewport(
+  const viewportRows = composeFloatingHistoryViewport(
     allLines,
     lineAnchors,
     historyRevision,
@@ -1805,10 +1781,7 @@ export function render(state: RenderState): boolean {
     column ? historyWidth : chatW,
     chatW,
     preserveViewportTop,
-    historyFocused ? state.historyCursor.row : null,
-    historyViewportAnchors.get(state) ?? null,
   );
-  historyViewportAnchors.set(state, viewportAnchor);
   state.layout.historyViewportRows = Array.from(
     { length: messageAreaHeight },
     (_, index) => viewportRows[index]
