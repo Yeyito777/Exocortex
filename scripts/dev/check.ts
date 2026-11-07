@@ -4,7 +4,7 @@
  * TUI test suites, all at once. The pre-merge check: `bun run check` at the repo root.
  *
  * Usage:
- *   bun run check [--changed [--base REF]] [--jobs N (default 2/3 of the cores)] [--timeout SECONDS] [--update-timings] [STEP...]
+ *   bun run check [--changed [--base REF]] [--jobs N (per suite; default: defaultJobs)] [--timeout SECONDS] [--update-timings] [STEP...]
  *
  * STEP is any of: typecheck, shared, daemon, tui (default: all four).
  *
@@ -12,8 +12,9 @@
  * changes since it left origin/main (or REF), uncommitted and untracked files
  * included, can affect; everything when it can't tell (scripts/dev/test-select.ts).
  *
- * - Typechecks are incremental (tsconfig `incremental`, build info under
- *   node_modules/.cache/tsc), so an unchanged package checks in a second or two.
+ * - Typechecks use tsgo and are incremental (tsconfig `incremental`, build
+ *   info under node_modules/.cache/tsgo), so an unchanged package checks in a
+ *   second or two.
  * - Each suite runs as `bun test --parallel`: every test file in a fresh global
  *   (per-file test config dir, see test/setup-config.ts), slowest files first
  *   by test/timings/<suite>.json and this checkout's last measured durations
@@ -38,15 +39,21 @@ const CACHE = join(ROOT, "node_modules/.cache/exocortex-check");
 const STEPS = ["typecheck", "shared", "daemon", "tui"] as const;
 type StepName = (typeof STEPS)[number];
 
-interface Options { jobs: number; timeoutMs: number; updateTimings: boolean; steps: StepName[]; changed: boolean; base?: string }
+interface Options { jobs?: number; timeoutMs: number; updateTimings: boolean; steps: StepName[]; changed: boolean; base?: string }
 
-/** Both suites and three tsc processes share the machine; ~2/3 of the cores per suite measured fastest. */
-function defaultJobs(): number {
-  return Math.max(2, Math.round(availableParallelism() * 2 / 3));
+/**
+ * Workers per suite. The daemon suite holds most of the file time and its
+ * files mostly wait on subprocesses and sockets, so it gets more workers than
+ * cores, the others half the cores: on whale (12 cores) 14/6 took 14.4 s
+ * against 17.6 s for 8 each.
+ */
+function defaultJobs(suite: Suite): number {
+  const cores = availableParallelism();
+  return Math.max(2, Math.round(suite === "daemon" ? cores * 7 / 6 : cores / 2));
 }
 
 function parseArgs(argv: string[]): Options {
-  const options: Options = { jobs: defaultJobs(), timeoutMs: 90_000, updateTimings: false, steps: [], changed: false };
+  const options: Options = { timeoutMs: 90_000, updateTimings: false, steps: [], changed: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     const value = () => {
@@ -157,8 +164,21 @@ function run(label: string, cmd: string[], cwd: string, env: NodeJS.ProcessEnv, 
 
 interface Result { label: string; ok: boolean; ms: number; summary: string; details: string }
 
+const TSGO = join(ROOT, "node_modules/.bin/tsgo");
+
+/**
+ * tsgo, TypeScript's native compiler (@typescript/native-preview, pinned in
+ * package.json): ~4x faster than tsc here. Its build info goes beside tsc's,
+ * not over it, so `bun run typecheck` (tsc) stays incremental too. Without
+ * tsgo installed it falls back to tsc.
+ */
+function typecheckCommand(pkg: string): string[] {
+  if (!existsSync(TSGO)) return ["bunx", "tsc", "--noEmit", "-p", pkg];
+  return [TSGO, "--noEmit", "-p", pkg, "--tsBuildInfoFile", join(ROOT, "node_modules/.cache/tsgo", `${pkg}.tsbuildinfo`)];
+}
+
 async function typecheck(pkg: string, env: NodeJS.ProcessEnv, timeoutMs: number): Promise<Result> {
-  const result = await run(`typecheck ${pkg}`, ["bunx", "tsc", "--noEmit", "-p", pkg], ROOT, env, timeoutMs);
+  const result = await run(`typecheck ${pkg}`, typecheckCommand(pkg), ROOT, env, timeoutMs);
   const errors = result.output.match(/error TS\d+/g)?.length ?? 0;
   return {
     label: result.label, ok: result.ok, ms: result.ms,
@@ -265,7 +285,7 @@ async function suite(name: Suite, options: Options, env: NodeJS.ProcessEnv, runT
   const runTimings = join(runTmp, `${name}-timings.json`);
   const junit = join(runTmp, `${name}.junit.xml`);
   const pinned = writeRunTimings(name, runTimings, local, tracked);
-  const cmd = [process.execPath, "test", `--parallel=${options.jobs}`, `--timings=${runTimings}`, "--update-timings",
+  const cmd = [process.execPath, "test", `--parallel=${options.jobs ?? defaultJobs(name)}`, `--timings=${runTimings}`, "--update-timings",
     "--reporter=junit", `--reporter-outfile=${junit}`, ...(files ?? []).map(file => `./${file}`)];
   const result = await run(`${name} tests`, cmd, cwd, env, options.timeoutMs);
   // bun rewrote the run's file with what it measured; a pin it didn't measure goes back.

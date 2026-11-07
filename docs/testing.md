@@ -1,11 +1,12 @@
 # Tests
 
 ```bash
-bun run check                      # everything, ~12 s on whale (12 cores)
-bun run check daemon tui           # some steps: typecheck, shared, daemon, tui
+bun run check                      # everything, ~15 s on whale (12 cores), more when it's busy
 bun run check --changed            # only what this branch's changes can reach
+bun run check daemon tui           # some steps: typecheck, shared, daemon, tui
 scripts/dev/test-select.ts --explain FILE   # which change picked FILE, and through what
-bun run check --jobs 4             # workers per suite (default: 2/3 of the cores)
+bun run check --jobs 4             # workers per suite (default: 7/6 of the cores for the daemon, half for the others)
+bun run typecheck                  # the three typechecks with tsc
 bun run check --update-timings     # also rewrite test/timings/*.json
 cd daemon && bun test src/foo.test.ts   # one file
 cd daemon && bun test              # one suite, serially (~55 s for the daemon)
@@ -15,21 +16,31 @@ cd daemon && bun test              # one suite, serially (~55 s for the daemon)
 TUI suites at the same time. It prints one line per step, then each failure
 with its file and test name and the error, and exits 1 on any failure.
 
+While iterating, run `bun run check --changed`; before merging, run the full
+`bun run check`.
+
 ## What it does
 
-- **Typechecks are incremental.** Each `tsconfig.json` sets `incremental`, with
-  build info in `node_modules/.cache/tsc/` (per checkout). An unchanged
-  package checks in a second or two; a cold one takes the full ~9 s.
+- **Typechecks use tsgo and are incremental.** tsgo is TypeScript's native
+  compiler (`@typescript/native-preview`, pinned in `package.json`). Each
+  `tsconfig.json` sets `incremental`; the check keeps tsgo's build info in
+  `node_modules/.cache/tsgo/` (per checkout), beside tsc's. A warm daemon
+  typecheck takes ~1.7 s (tsc ~6 s), a cold one ~5 s (tsc ~28 s).
+  `bun run typecheck` still runs tsc. If the two ever disagree on a real
+  error, note it here.
 - **Suites run `bun test --parallel`.** Each test file runs in a fresh global
   in one of N worker processes. Files start slowest first, ordered by
   `test/timings/<suite>.json` (tracked) and by this checkout's last run
   (`node_modules/.cache/exocortex-check/`). `FIRST_IN_FRESH_WORKER` in check.ts starts
   `tui/src/updatecheck.test.ts` first in a fresh worker: after other files,
   bun 1.4.2 can wedge its worker for good
-  (`scripts/dev/repro/bun-isolate-hang.sh`).
+  (`scripts/dev/repro/bun-isolate-hang.sh`; it hit other files too, and
+  bun 1.4.4 doesn't hang).
 - **Every file has its own config dir.** `test/setup-config.ts` (the preload
   in each `bunfig.toml`) makes a fresh `EXOCORTEX_CONFIG_DIR` per file, and
-  refuses the live config. Nothing a test does reaches the main daemon.
+  refuses the live config. Nothing a test does reaches the main daemon. It
+  also points `CLAUDE_CODE_BIN` at a missing file, so no test runs the real
+  Claude Code CLI or uses the user's Claude login.
 - **One temp root per run.** The check points `TMPDIR` at `/tmp/exck-…` and
   removes it at the end, also after a failure, a timeout or Ctrl-C. Plain
   `bun test` sweeps its own leftover config dirs.

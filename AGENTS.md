@@ -9,7 +9,8 @@
 - Worktree daemons read the main logins and never write or refresh them
   (docs/dev-daemons.md#credentials-in-worktree-daemons). Never point a
   worktree's `config/secrets` back at the main directory.
-- Before a merge, run `bun run check` at the repo root (all typechecks and
-  test suites in parallel, ~12 s). Not three separate `bun test` and typecheck
-  runs. Tests must poll, not sleep, and fail fast; they must pass in parallel
+- While iterating, run `bun run check --changed` (only the tests and
+  typechecks your changes can reach); before a merge, run `bun run check` at
+  the repo root (all typechecks and test suites in parallel, ~15 s on whale).
+  Not three separate `bun test` and typecheck runs. Tests must poll, not sleep, and fail fast; they must pass in parallel
   with every other file. See [docs/testing.md](docs/testing.md).
