@@ -426,12 +426,13 @@ export function retryFailedImagePreviews(): void {
 
 /** A pasted PNG's own bytes, ready for Kitty when the terminal can draw them at about `pixels` without waste. */
 function localKittyEntry(source: InlineImageSource, pixels: { width: number; height: number }): PreviewEntry | null {
-  const base64 = source.localBase64;
+  const key = `${source.imageId}:local`;
+  const existing = previews.get(key);
+  // History carries a large paste without its bytes; the ones its local echo drew from are still here.
+  const base64 = source.localBase64 ?? (existing?.phase === "ready" ? existing.preview.base64 : undefined);
   if (!base64 || source.mediaType !== "image/png" || base64.length > MAX_LOCAL_KITTY_CHARS) return null;
   if (source.width > MAX_KITTY_DIMENSION || source.height > MAX_KITTY_DIMENSION) return null;
   if (source.width * source.height > MAX_LOCAL_AREA_RATIO * pixels.width * pixels.height) return null;
-  const key = `${source.imageId}:local`;
-  const existing = previews.get(key);
   if (existing) {
     touch(key, existing);
     return existing;
