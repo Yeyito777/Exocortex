@@ -79,7 +79,7 @@ export function subagentDelegationNote(
     "## Delegation",
     `${position} You may start subagents with exo, ${remaining === 1 ? "and they cannot delegate further" : `up to ${remaining} more levels deep`}.`,
     "Delegate only clearly separable work that would take hours; do everything else yourself. Never hand off your whole task, never delegate a task back to your parent or anyone above it, and never start a subagent only to have it start another.",
-    "Your subagents report to you, not to the top-level conversation. Before ending your turn, wait for each one (chrono wait with task_id set to its conversation id) and include its results in your own report.",
+    "Your subagents report to you, not to the top-level conversation. Before ending your turn, wait for each one (chrono wait with task_id set to its conversation id and what naming its job) and include its results in your own report.",
     reporting,
   ].filter(Boolean).join("\n");
 }

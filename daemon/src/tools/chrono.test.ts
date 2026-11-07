@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { chmodSync, mkdirSync } from "node:fs";
 import { dataDir } from "@exocortex/shared/paths";
-import { chrono } from "./chrono";
+import { chrono, chronoCallPresentation } from "./chrono";
 import { chronoInternalsForTest, installMigratedSchedule } from "../chrono-service";
-import { resetConversationActivityForTest, setBackgroundTaskActive, recordBackgroundTaskCompletion } from "../conversation-activity";
+import { resetConversationActivityForTest, setBackgroundTaskActive, setSubagentActive, recordBackgroundTaskCompletion } from "../conversation-activity";
 import { create, remove } from "../conversations";
 import { buildExecutor } from "./registry";
 import type { ActiveToolBackgrounder } from "./types";
@@ -58,9 +58,54 @@ describe("Chrono tool", () => {
     expect(delegatingChild.isError).toBe(true);
   });
 
-  test("shows the wait limit as a flag in TUI summaries", () => {
+  test("asks for a plain-language what on waits and sleeps", () => {
+    const what = (chrono.inputSchema.properties as Record<string, { type: string; description: string }>).what;
+    expect(what.type).toBe("string");
+    expect(what.description).toContain("Required for wait and sleep");
+    expect(what.description).toContain("≤60 chars");
+    expect(chrono.inputSchema.required).toEqual(["action"]);
+    expect(chrono.systemHint).toContain("Give every wait and sleep a short `what`");
+  });
+
+  test("summarizes waits and sleeps by what, with the limit after a dot", () => {
+    expect(chrono.summarize({ action: "wait", task_id: "1794036663304-sr0sel", max_wait: "45m", what: "arm A price-move research agent" }).detail)
+      .toBe("wait: arm A price-move research agent · up to 45m");
+    expect(chrono.summarize({ action: "sleep", duration: "5m", what: "  letting the replay\n warm up " }).detail)
+      .toBe("sleep: letting the replay warm up · 5m");
+    expect(chrono.summarize({ action: "sleep", duration: "90s" }).detail).toBe("sleep: 1m 30s");
+  });
+
+  test("a missing, blank or id-only what falls back to the raw target", () => {
+    for (const what of [undefined, "", "   ", "1794036663304-sr0sel", "task 1794036663304-sr0sel", "waiting on the subagent"]) {
+      expect(chrono.summarize({ action: "wait", task_id: "1794036663304-sr0sel", max_wait: "45m", ...(what === undefined ? {} : { what }) }).detail)
+        .toBe("wait: 1794036663304-sr0sel · up to 45m");
+    }
+    expect(chrono.summarize({ action: "wait", task_id: "unit:pm5-batch-x", max_wait: "2h" }).detail).toBe("wait: pm5-batch-x · up to 2h");
+  });
+
+  test("names a wait without a usable what by its subagent, task or unit at call time", () => {
+    const child = makeConversation("child");
+    setSubagentActive("parent", child, true, { title: "arm A research", startedAt: 1 });
+    expect(chronoCallPresentation({ action: "wait", task_id: child, max_wait: "45m" }))
+      .toEqual({ subject: "arm A research", detail: "wait: arm A research · up to 45m" });
+
+    const idle = makeConversation("idle");
+    expect(chronoCallPresentation({ action: "wait", task_id: idle, max_wait: "10m", what: idle })?.subject).toBe("idle");
+
+    setBackgroundTaskActive("parent", "bash:7", true, { title: "bun run check", startedAt: 1 });
+    expect(chronoCallPresentation({ action: "wait", task_id: "bash:7", max_wait: "5m" })?.detail).toBe("wait: bun run check · up to 5m");
+    setBackgroundTaskActive("parent", "bash:7", false);
+    expect(chronoCallPresentation({ action: "wait", task_id: "bash:7", max_wait: "5m" })?.subject).toBe("bun run check");
+
+    expect(chronoCallPresentation({ action: "wait", task_id: "unit:pm5-batch-x", max_wait: "2h" })?.subject).toBe("pm5-batch-x");
+    expect(chronoCallPresentation({ action: "wait", task_id: "bash:missing", max_wait: "5m" })).toBeUndefined();
+    expect(chronoCallPresentation({ action: "wait", task_id: child, max_wait: "5m", what: "the arm A agent" })).toBeUndefined();
+    expect(chronoCallPresentation({ action: "sleep", duration: "5m" })).toBeUndefined();
+  });
+
+  test("shows the wait limit in TUI summaries", () => {
     expect(chrono.summarize({ action: "wait", task_id: "bash:42", max_wait: "20m" }).detail)
-      .toBe("wait: bash:42 --max_wait 20m");
+      .toBe("wait: bash:42 · up to 20m");
   });
 
   test("wait requires an explicit maximum duration", async () => {

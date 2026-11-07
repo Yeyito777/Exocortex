@@ -344,8 +344,27 @@ export function planHistory(input: PlanHistoryInput): HistoryPlan {
     orphanLabels.length = 0;
     turnStart = index;
   }
+  revealActiveCall(messages, start, plans, signatures, input.active ?? null);
   planGutter(messages, start, pendingContinues ? liveTurnStart(messages, start) : count, plans, signatures, input.active ?? null);
   return { collapse, messages: plans, signatures, pending };
+}
+
+/**
+ * A turn suspended in a long Chrono sleep or wait keeps that call in view
+ * above its metadata, as a live turn keeps its newest step.
+ */
+function revealActiveCall(messages: readonly Message[], start: number, plans: MessagePlan[], signatures: string[], active: object | null): void {
+  if (!active) return;
+  const index = messages.lastIndexOf(active as Message);
+  const plan = index >= start ? plans[index - start] : null;
+  if (plan?.kind !== "assistant") return;
+  const blocks = (active as AIMessage).blocks;
+  const block = latestStep(blocks);
+  if (block < 0 || blocks[block].type !== "tool_call" || !plan.hidden?.[block]) return;
+  const hidden = plan.hidden!.slice();
+  hidden[block] = false;
+  plans[index - start] = { ...plan, hidden };
+  signatures[index - start] = `${signatures[index - start]}|r${block}`;
 }
 
 /** Where the live turn starts: its prompt (the last user message), or the window's start. */

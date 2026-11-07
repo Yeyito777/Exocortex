@@ -237,6 +237,11 @@ export interface ToolCallPresentation {
    * Claude Code agent a message went to. Shown instead of the input's summary.
    */
   detail?: string;
+  /**
+   * What the call acts on, named from state at call time when its input does
+   * not say: a Chrono wait's subagent, task or unit when it has no usable `what`.
+   */
+  subject?: string;
 }
 
 export interface ToolCallBlock {

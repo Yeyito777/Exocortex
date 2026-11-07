@@ -1,5 +1,4 @@
 import type { Tool, ToolResult } from "./types";
-import { summarizeParams } from "./util";
 import {
   adoptChronoSchedule,
   cancelChronoSchedule,
@@ -12,11 +11,12 @@ import {
   type RepeatInput,
 } from "../chrono-service";
 import { onBackgroundTaskEnded, type CompletedConversationTask } from "../conversation-activity";
-import { checkChronoWaitTarget, waitForChronoWaitTarget } from "../chrono-wait-targets";
+import { checkChronoWaitTarget, chronoWaitTargetLabel, waitForChronoWaitTarget } from "../chrono-wait-targets";
 import { backgroundTaskWakeText } from "./chrono-output";
 import { CLAUDE_CODE_INLINE_CHRONO_MAX_MS } from "./chrono-limits";
 import { parseDurationMs } from "@exocortex/shared/duration";
-import { LONG_CHRONO_SLEEP_THRESHOLD_MS } from "@exocortex/shared/chrono";
+import { LONG_CHRONO_SLEEP_THRESHOLD_MS, chronoCallLine, chronoCallLineText, chronoWhat } from "@exocortex/shared/chrono";
+import type { ToolCallPresentation } from "@exocortex/shared/messages";
 import { toolTextSource } from "./tool-text";
 
 function action(input: Record<string, unknown>): string {
@@ -484,6 +484,7 @@ export const chrono: Tool = {
       task_id: { type: "string", description: "For wait: exact active task id from the Tasks UI, exec_command, or daemon IPC list_tasks, or unit:NAME for a systemd user unit (Linux), which ends when the unit stops." },
       max_wait: { type: "string", description: "Required for wait: maximum duration to wait, such as 30s, 1m20s, 2h 30m, or 1d." },
       duration: { type: "string", description: "For sleep: positive duration such as 30s, 1m20s, 2h 30m, or 1d." },
+      what: { type: "string", description: "Required for wait and sleep: what you are waiting on, in plain words (≤60 chars), e.g. \"arm A price-move research agent\", \"PMV5 remote test suite\" or \"letting the replay warm up\". The user sees it instead of the task id." },
       ...WAKE_PROPERTIES,
       wakes: {
         type: "array",
@@ -502,11 +503,8 @@ export const chrono: Tool = {
   display: { label: "Chrono", color: "#4ec9b0" },
   summarize(input) {
     const selected = action(input) || "invalid";
-    if (selected === "wait") {
-      const taskId = String(input.task_id ?? "");
-      const primary = taskId ? `wait: ${taskId}` : "wait";
-      return { label: "Chrono", detail: summarizeParams(primary, input, ["action", "task_id"]) };
-    }
+    const line = chronoCallLine(input);
+    if (line) return { label: "Chrono", detail: chronoCallLineText(line).replace(/:?\s*$/, "") };
     if (selected === "cancel") {
       const ids = cancelScheduleIds(input);
       const detail = "error" in ids ? String(input.schedule_id ?? "")
@@ -519,13 +517,26 @@ export const chrono: Tool = {
       const detail = input.wakes.length > 1 ? `${input.wakes.length} schedules: ${titles.join(", ")}` : titles[0] ?? "";
       return { label: "Chrono", detail: detail ? `wake: ${detail}` : "wake" };
     }
-    const detail = selected === "sleep" ? String(input.duration ?? "")
-      : selected === "wake" ? wakeSummary(input)
+    const detail = selected === "wake" ? wakeSummary(input)
         : selected === "adopt" ? String(input.schedule_id ?? "")
           : "";
     return { label: "Chrono", detail: detail ? `${selected}: ${detail}` : selected };
   },
   execute,
 };
+
+/**
+ * A wait without a usable `what` names its target as it is called: a
+ * subagent's or task's title, or a unit's name. History keeps that name after
+ * the target is gone.
+ */
+export function chronoCallPresentation(input: Record<string, unknown>): ToolCallPresentation | undefined {
+  if (action(input) !== "wait" || chronoWhat(input)) return undefined;
+  const taskId = typeof input.task_id === "string" ? input.task_id.trim() : "";
+  const subject = taskId ? chronoWaitTargetLabel(taskId) : null;
+  if (!subject || subject === taskId) return undefined;
+  const line = chronoCallLine(input, { subject })!;
+  return { subject, detail: chronoCallLineText(line) };
+}
 
 export const chronoToolInternalsForTest = { parseDurationMs, abortableSleep };

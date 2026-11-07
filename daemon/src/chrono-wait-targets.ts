@@ -5,7 +5,8 @@
  * the same way a task wait does.
  */
 
-import { getWaitableConversationTask, waitForConversationTask } from "./conversation-activity";
+import { getCompletedConversationTask, getWaitableConversationTask, listActiveConversationTasks, waitForConversationTask } from "./conversation-activity";
+import * as convStore from "./conversations";
 import { completedChronoWaitOutput } from "./tools/chrono-output";
 import {
   checkSystemdUnit,
@@ -25,6 +26,20 @@ export interface ChronoWaitOutcome {
 function withUnitHint(err: unknown, taskId: string): unknown {
   if (!(err instanceof Error) || !err.message.startsWith("Task not found") || !looksLikeSystemdUnitName(taskId)) return err;
   return new Error(`${err.message}. If it is a systemd user unit, use task_id "${SYSTEMD_UNIT_TARGET_PREFIX}${taskId}".`);
+}
+
+/**
+ * A readable name for a wait target, or null when nothing names it: a unit's
+ * name, a task's title (a subagent's title, a command's description), or a
+ * conversation's title.
+ */
+export function chronoWaitTargetLabel(taskId: string): string | null {
+  const unit = systemdUnitTargetName(taskId);
+  if (unit !== null) return unit || null;
+  const task = listActiveConversationTasks().find(record => record.id === taskId) ?? getCompletedConversationTask(taskId);
+  const title = task?.title.trim();
+  if (title && title !== taskId) return title;
+  return convStore.hasConversation(taskId) ? convStore.subagentTaskTitle(taskId) ?? null : null;
 }
 
 /** The outcome of a target that already finished, or null while it runs. Rejects when it cannot be waited on. */

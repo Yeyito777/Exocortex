@@ -38,6 +38,8 @@ export interface ToolCallLogicalLine {
   hasLabel: boolean;
   /** Call parameters shown dim after this line (`--timeout_seconds 120`). */
   meta?: string;
+  /** Offset in `text` where emphasized text starts and runs to the end (a Chrono call's `what`). */
+  strongFrom?: number;
   /** Set on the rows of a heredoc or stdin payload block. */
   payload?: { block: ToolCallPayload; role: "title" | "body" | "end" };
 }

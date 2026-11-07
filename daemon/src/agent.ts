@@ -552,7 +552,7 @@ export async function runAgentLoop(
         toolCallId: tc.id,
         toolName: tc.name,
         input: tc.input,
-        summary: (options.summarizer ?? defaultSummarizer)(tc.name, tc.input),
+        summary: presentations.get(tc.id)?.detail || (options.summarizer ?? defaultSummarizer)(tc.name, tc.input),
         ...(presentations.get(tc.id) ? { presentation: presentations.get(tc.id) } : {}),
       };
       allBlocks.push(block);

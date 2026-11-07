@@ -18,6 +18,7 @@ import { log } from "../../log";
 import type { ApiContentBlock, ApiMessage } from "../../messages";
 import { claudeCodeResultText, exocortexToolName, summarizeClaudeCodeTool } from "../../tools/claude-code";
 import { resolveToolCallPresentationFromCache } from "../../helper-tool-manifest";
+import { chronoCallPresentation } from "../../tools/chrono";
 import { AuthError } from "../errors";
 import { isUsageLimitError } from "../../usage-limit-wait";
 import { ApiCreditExhaustedError, isApiCreditRefusalText } from "./api-credits";
@@ -287,14 +288,15 @@ function handleAssistantMessage(state: ClaudeStreamState, message: SdkRecord): v
       const namedDetail = detail !== summarizeClaudeCodeTool(name, input).detail ? { detail } : {};
       // Bash calls that run a tool by path (or a variable holding one) render as that tool.
       const bashStyles = resolveToolCallPresentationFromCache(name, input, state.cwd);
-      const presentation = { ...bashStyles, ...namedDetail };
+      const presentation = { ...bashStyles, ...namedDetail, ...(name === "chrono" ? chronoCallPresentation(input) : undefined) };
       const named = Object.keys(presentation).length > 0 ? { presentation } : {};
+      const shown = presentation.detail || summary;
       state.toolNames.set(id, name);
       if ((name === "Agent" || name === "Task") && typeof input.description === "string") state.agentCalls.set(id, input.description);
       state.openToolUses.add(id);
-      state.blocks.push({ type: "tool_call", id, name, input, summary, ...named });
+      state.blocks.push({ type: "tool_call", id, name, input, summary: shown, ...named });
       pushMessageContent(state, "assistant", { type: "tool_use", id, name, input, ...named });
-      state.callbacks.onToolCall?.({ type: "tool_call", toolCallId: id, toolName: name, input, summary, ...named });
+      state.callbacks.onToolCall?.({ type: "tool_call", toolCallId: id, toolName: name, input, summary: shown, ...named });
     }
   }
 }

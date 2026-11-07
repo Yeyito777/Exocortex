@@ -25,6 +25,7 @@ import {
 import { isActiveConversationLoading, isStreaming, type RenderState } from "./state";
 import { formatDuration, localDayKey, renderMetadata } from "./metadata";
 import { activeDurableSleepAssistant, inlineSleepMetadataEndedAt } from "./durable-sleep-metadata";
+import { liveChronoCalls, liveChronoProgressTexts } from "./chronocalls";
 import { theme } from "./theme";
 import {
   renderBlockCached,
@@ -396,6 +397,8 @@ interface CommittedHistoryCache {
   /** Rows after the last committed message. */
   committedLines: number;
   erroredToolCallIds: Set<string>;
+  /** Running Chrono calls' progress text by tool call id, as drawn. */
+  liveChronoTexts: Map<string, string>;
   /** turncollapse plan signature of each message [startMessageIndex, messageCount). */
   planSignatures: string[];
   /** The committed messages' share of erroredToolCallIds, reused while they are unchanged. */
@@ -558,6 +561,23 @@ function firstChangedErroredToolCallMessage(
   const changed = new Set<string>();
   for (const id of previous) if (!next.has(id)) changed.add(id);
   for (const id of next) if (!previous.has(id)) changed.add(id);
+  return firstMessageWithToolCall(messages, start, changed);
+}
+
+/** First message from `start` whose running Chrono call's line differs between the two. */
+function firstChangedLiveChronoMessage(
+  messages: Message[],
+  start: number,
+  previous: Map<string, string>,
+  next: Map<string, string>,
+): number {
+  const changed = new Set<string>();
+  for (const [id, text] of previous) if (next.get(id) !== text) changed.add(id);
+  for (const id of next.keys()) if (!previous.has(id)) changed.add(id);
+  return firstMessageWithToolCall(messages, start, changed);
+}
+
+function firstMessageWithToolCall(messages: Message[], start: number, changed: Set<string>): number {
   if (changed.size === 0) return Infinity;
   for (let index = start; index < messages.length; index++) {
     const message = messages[index];
@@ -586,9 +606,14 @@ export function buildMessageLines(
   const startMessageIndex = Math.max(0, Math.min(options.startMessageIndex ?? 0, state.messages.length));
   // Tool calls whose result failed; filled once the committed rows are planned.
   let erroredToolCallIds = new Set<string>();
+  // Running Chrono sleeps and waits count up on their lines.
+  const now = Date.now();
+  const liveChrono = liveChronoCalls(state);
+  const liveChronoTexts = liveChronoProgressTexts(liveChrono, now);
 
-  const renderAssistantBlock = (block: Extract<Message, { role: "assistant" }>["blocks"][number]): WrapResult =>
-    renderBlockCached(
+  const renderAssistantBlock = (block: Extract<Message, { role: "assistant" }>["blocks"][number]): WrapResult => {
+    const chrono = block.type === "tool_call" ? liveChrono.get(block.toolCallId) : undefined;
+    return renderBlockCached(
       block,
       contentWidth,
       state.toolRegistry,
@@ -596,7 +621,9 @@ export function buildMessageLines(
       state.showToolOutput,
       block.type === "tool_call" && erroredToolCallIds.has(block.toolCallId),
       true,
+      { ...(chrono ? { progress: { ...chrono, now } } : {}), showTarget: state.showTurnWork },
     );
+  };
 
   const pushAnchoredLine = (
     line: string,
@@ -825,6 +852,8 @@ export function buildMessageLines(
     }
     const erroredChange = firstChangedErroredToolCallMessage(messages, s, cached.erroredToolCallIds, erroredToolCallIds);
     if (erroredChange < messageCount) dirty.push(erroredChange);
+    const chronoChange = firstChangedLiveChronoMessage(messages, s, cached.liveChronoTexts, liveChronoTexts);
+    if (chronoChange < messageCount) dirty.push(chronoChange);
     if (historyLoadingRow !== cached.historyLoadingRow) {
       dirty.push(historyLoadingRow !== null ? historyLoadingInsertIndex : cached.historyLoadingInsertIndex);
     }
@@ -1073,6 +1102,7 @@ export function buildMessageLines(
       lineStarts,
       committedLines: lines.length,
       erroredToolCallIds,
+      liveChronoTexts,
       planSignatures: plan.signatures,
       committedErroredToolCallIds: committedErroredToolCallIds!,
       lastContinuesIntoPending,

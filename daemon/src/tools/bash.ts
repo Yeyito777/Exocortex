@@ -709,7 +709,7 @@ async function executeBashImpl(
           : [
               `Output is being written to: ${capturePath}`,
               "• View output so far → read tool on that file",
-              `• Wait for it to finish → chrono wait with task_id="${backgroundTaskId()}" and max_wait=<duration>`,
+              `• Wait for it to finish → chrono wait with task_id="${backgroundTaskId()}", max_wait=<duration> and what=<what it is>`,
             ]),
         `• Check if still running → ${checkCmd}`,
         `• Stop it → ${stopCmd}`,

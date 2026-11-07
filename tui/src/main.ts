@@ -86,6 +86,7 @@ import { theme } from "./theme";
 import { RemoteFileLinkController } from "./remote-file-links";
 import { msUntilNextElapsedSecond } from "./time";
 import { activeDurableSleepMetadataStartedAt, focusedInlineSleepStartedAt, inlineSleepMetadataEndedAt } from "./durable-sleep-metadata";
+import { msUntilLiveChronoChange } from "./chronocalls";
 import type { DaemonShutdownMode, Event, QueueTiming } from "./protocol";
 import { createVoiceInputController, type SubmittedVoiceTranscription, type VoiceInputController } from "./voiceinput";
 import { editItemLooksLikePendingVoiceSubmission, pendingVoicePreviewTextsMatch, pendingVoiceSubmissionsMatch, removePendingVoiceEchoes } from "./pendingvoice";
@@ -570,6 +571,8 @@ function resetStreamTick(): void {
     const delay = msUntilTaskPanelEntryUpdate(task);
     if (delay !== null) tickDelays.push(delay);
   }
+  const chronoDelay = msUntilLiveChronoChange(state);
+  if (chronoDelay !== null) tickDelays.push(chronoDelay);
   if (tickDelays.length > 0) {
     streamTickTimer = setTimeout(scheduleRender, Math.min(...tickDelays));
   }
