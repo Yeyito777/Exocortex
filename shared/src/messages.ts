@@ -370,6 +370,48 @@ const LEGACY_AUTOMATED_PROMPT = /^\[(?:notification\]|chrono (?:hard )?wake[:\]]
  * user typed: a subagent completion, a wake, a message from another
  * conversation... Clients fold these apart from the user's own messages.
  */
+/** Text before a reply's last tool calls that counts as the start of the reply. */
+export const SPLIT_REPLY_MIN_CHARS = 200;
+
+/**
+ * A reply split by its last tool calls (the answer, then e.g. a scratchpad
+ * write, then a line or nothing): the indices of the blocks a folded view shows
+ * besides the trailing text, namely the text just before that last run of calls
+ * and the run's tool calls, when that text is substantial and longer than the
+ * text after it. Empty otherwise. Thinking and tool results stay folded. The
+ * TUI's fold (tui/src/turncollapse.ts) and the daemon's folded-work elision
+ * (daemon/src/history-pagination.ts) both use it, so what one shows the other sends.
+ */
+export function splitReplyReveal(blocks: readonly Block[]): number[] {
+  const isTool = (block: Block) => block.type === "tool_call" || block.type === "tool_result";
+  const hasText = (block: Block) => block.type === "text" && block.text.trim().length > 0;
+  const chars = (block: Block) => block.type === "text" ? block.text.trim().length : 0;
+  let last = -1;
+  for (let index = blocks.length - 1; index >= 0; index--) {
+    if (isTool(blocks[index]!)) { last = index; break; }
+  }
+  if (last < 0) return [];
+  let after = 0;
+  for (let index = last + 1; index < blocks.length; index++) after += chars(blocks[index]!);
+  // The last run of calls: back to the nearest text with something in it.
+  let runStart = last;
+  while (runStart > 0 && !hasText(blocks[runStart - 1]!)) runStart--;
+  // The text just before it: back to the previous tool block.
+  let textStart = runStart;
+  let before = 0;
+  while (textStart > 0 && !isTool(blocks[textStart - 1]!)) {
+    textStart--;
+    before += chars(blocks[textStart]!);
+  }
+  if (before < SPLIT_REPLY_MIN_CHARS || before <= after) return [];
+  const reveal: number[] = [];
+  for (let index = textStart; index <= last; index++) {
+    const block = blocks[index]!;
+    if (hasText(block) || block.type === "tool_call") reveal.push(index);
+  }
+  return reveal;
+}
+
 export function isAutomatedUserPrompt(text: string, metadata: Pick<MessageMetadata, "automation"> | null | undefined): boolean {
   return metadata?.automation !== undefined || LEGACY_AUTOMATED_PROMPT.test(text);
 }

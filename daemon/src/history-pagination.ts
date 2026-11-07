@@ -1,7 +1,7 @@
 import type { DisplayEntry } from "./display";
 import type { ConversationRenderSnapshot, StoredDisplayHistoryPage } from "./conversations";
 import type { HistoryUpdatedEvent } from "./protocol";
-import { isAutomatedUserPrompt, ownerRelayedText, type Block, type ImageAttachment } from "./messages";
+import { isAutomatedUserPrompt, ownerRelayedText, splitReplyReveal, type Block, type ImageAttachment } from "./messages";
 
 export const INITIAL_HISTORY_TURNS = 5;
 export const BUFFERED_HISTORY_TURNS = 15;
@@ -131,8 +131,11 @@ export function elideFoldedWork(entry: DisplayEntry, index: number, keepLastTool
     if (entry.blocks[block]!.type === "tool_call") { lastToolCall = block; break; }
   }
   const end = keepLastToolCall ? lastToolCall : lastToolCall + 1;
+  // A reply split by its last tool calls shows those calls folded too.
+  const shown = new Set(splitReplyReveal(entry.blocks));
   let blocks: Block[] | null = null;
   for (let block = 0; block < end; block++) {
+    if (shown.has(block)) continue;
     const source = entry.blocks[block]!;
     let elided: Block | null = null;
     if (source.type === "tool_call") {
@@ -295,6 +298,8 @@ function foldedReplyRows(entry: Extract<DisplayEntry, { type: "ai" }>, cols: num
     if (block.type === "tool_call" || block.type === "tool_result") break;
     if (block.type === "text" && block.text.trim()) rows += estimateBlockRows(block, cols);
   }
+  // A reply split by its last tool calls also shows its first part and those calls.
+  for (const index of splitReplyReveal(entry.blocks)) rows += estimateBlockRows(entry.blocks[index]!, cols);
   return rows;
 }
 

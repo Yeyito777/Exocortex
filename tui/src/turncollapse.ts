@@ -16,7 +16,7 @@
  * whose plan changed (a turn finishing, a reply arriving), not the whole history.
  */
 
-import { isAutomatedUserPrompt, isInformationalNotice, ownerRelayedText, type AIMessage, type Block, type Message, type UserMessage, type UserMessageAutomation } from "./messages";
+import { isAutomatedUserPrompt, isInformationalNotice, ownerRelayedText, splitReplyReveal, type AIMessage, type Block, type Message, type UserMessage, type UserMessageAutomation } from "./messages";
 import { sanitizeUntrustedText } from "./terminaltext";
 
 const AUTOMATION_LABELS: Record<UserMessageAutomation["kind"], string> = {
@@ -650,50 +650,24 @@ function turnKey(messages: readonly Message[], turnStart: number, fallback: obje
   return token;
 }
 
-/** Text before a turn's last tool calls that counts as the start of its reply. */
-const SPLIT_REPLY_MIN_CHARS = 200;
-
 /**
- * A reply split by its turn's last tool calls (the answer, then e.g. a
- * scratchpad write, then a line or nothing) keeps its first part in the folded
- * view: when the text just before that last run of calls is substantial and
- * longer than the text after it, that text and the run's calls show too.
- * Thinking and tool output stay folded.
+ * A reply split by its turn's last tool calls keeps its first part in the
+ * folded view (splitReplyReveal, shared with the daemon's folded-work elision):
+ * the turn's assistant blocks are read as one sequence across its messages.
  */
-function revealSplitReply(
-  messages: readonly Message[],
-  from: number,
-  lastToolMessage: number,
-  lastToolBlock: number,
-  hiddenByMessage: Array<boolean[] | null>,
-): void {
-  const steps: Array<{ message: number; block: number; value: Block }> = [];
-  let last = -1;
+function revealSplitReply(messages: readonly Message[], from: number, hiddenByMessage: Array<boolean[] | null>): void {
+  const steps: Array<{ message: number; block: number }> = [];
+  const blocks: Block[] = [];
   for (let index = from; index < from + hiddenByMessage.length; index++) {
     if (!hiddenByMessage[index - from]) continue;
     (messages[index] as AIMessage).blocks.forEach((value, block) => {
-      if (index === lastToolMessage && block === lastToolBlock) last = steps.length;
-      steps.push({ message: index, block, value });
+      steps.push({ message: index, block });
+      blocks.push(value);
     });
   }
-  if (last < 0) return;
-  const chars = (block: Block) => block.type === "text" ? block.text.trim().length : 0;
-  let after = 0;
-  for (let step = last + 1; step < steps.length; step++) after += chars(steps[step].value);
-  // The last run of calls: back to the nearest text with something in it.
-  let runStart = last;
-  while (runStart > 0 && !hasText(steps[runStart - 1].value)) runStart--;
-  // The text just before it: back to the previous tool block.
-  let textStart = runStart;
-  let before = 0;
-  while (textStart > 0 && !isToolBlock(steps[textStart - 1].value)) {
-    textStart--;
-    before += chars(steps[textStart].value);
-  }
-  if (before < SPLIT_REPLY_MIN_CHARS || before <= after) return;
-  for (let step = textStart; step <= last; step++) {
-    const { message, block, value } = steps[step];
-    if (hasText(value) || value.type === "tool_call") hiddenByMessage[message - from]![block] = false;
+  for (const step of splitReplyReveal(blocks)) {
+    const { message, block } = steps[step]!;
+    hiddenByMessage[message - from]![block] = false;
   }
 }
 
@@ -757,7 +731,7 @@ function planTurn(
       || (index === lastToolMessage && blockIndex <= lastToolBlock)
       || block.type === "thinking"));
   }
-  if (!inProgress && lastToolMessage >= 0) revealSplitReply(messages, from, lastToolMessage, lastToolBlock, hiddenByMessage);
+  if (!inProgress && lastToolMessage >= 0) revealSplitReply(messages, from, hiddenByMessage);
   for (let index = from; index < to; index++) {
     const hidden = hiddenByMessage[index - from];
     if (hidden && (messages[index] as AIMessage).blocks.some((block, blockIndex) => hasText(block) && !hidden[blockIndex])) reply = true;
