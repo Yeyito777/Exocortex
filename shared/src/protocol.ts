@@ -347,7 +347,7 @@ export interface PrewarmConversationCommand {
  * and against the client's liveBase, and leaves the blocks out of a streaming
  * conversation's subscription catch-up (the loaded event has them).
  */
-export type ClientCapability = "targeted-unwind" | "sidebar-reorder-delta" | "sidebar-state-patch" | "history-block-pagination" | "token-stats-on-demand" | "sidebar-digest-sync" | "update-status-push" | "sidebar-incremental" | "client-exec-alive" | "history-folded-elision" | "history-revisions" | "history-push" | "turn-catchup" | "machine-resources";
+export type ClientCapability = "targeted-unwind" | "sidebar-reorder-delta" | "sidebar-state-patch" | "history-block-pagination" | "token-stats-on-demand" | "sidebar-digest-sync" | "update-status-push" | "sidebar-incremental" | "client-exec-alive" | "history-folded-elision" | "history-revisions" | "history-push" | "turn-catchup" | "machine-resources" | "scratchpad";
 
 /** Answered with token_stats carrying the same reqId. Older daemons answer with an Unknown command error. */
 export interface GetTokenStatsCommand {
@@ -2077,6 +2077,18 @@ export interface MachineResourcesEvent {
   resources: MachineResources;
 }
 
+/**
+ * The conversation's scratchpad.md (in its workspace), for scratchpad clients
+ * subscribed to it: sent when a client subscribes and whenever the file
+ * changes. `content` is null when the file is missing or blank; it is cut to
+ * the last whole line within SCRATCHPAD_MAX_BYTES. See docs/scratchpad.md.
+ */
+export interface ScratchpadUpdatedEvent {
+  type: "scratchpad_updated";
+  convId: string;
+  content: string | null;
+}
+
 /** Answer to `accounts`, and pushed to its watchers on change. */
 export interface AccountsEvent {
   type: "accounts";
@@ -3086,6 +3098,7 @@ export type Event =
   | MessageCompleteEvent
   | UsageUpdateEvent
   | MachineResourcesEvent
+  | ScratchpadUpdatedEvent
   | AccountsEvent
   | UsageResetResultEvent
   | TokenStatsEvent

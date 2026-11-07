@@ -79,8 +79,8 @@ describe("late-join streaming integration", () => {
     let onStreamingStarted!: () => void;
     const streamingStarted = new Promise<void>((resolve) => { onStreamingStarted = resolve; });
     const client = new DaemonClient((event) => {
-      // The machine's resources come on connect, whatever is loaded.
-      if (event.type !== "machine_resources") seen.push(event.type);
+      // The machine's resources come on connect, whatever is loaded, and the scratchpad with any subscribe.
+      if (event.type !== "machine_resources" && event.type !== "scratchpad_updated") seen.push(event.type);
       handleEvent(event, state, client);
       if (event.type === "streaming_started") onStreamingStarted();
     }, socketPath);

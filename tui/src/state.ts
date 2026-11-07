@@ -135,6 +135,12 @@ export interface LayoutCache {
   taskPanelToggleable: boolean;
   /** Screen cells of the task panel's subagent rows, each opening its child conversation on Shift+click. */
   taskPanelLinks: Array<{ row: number; left: number; right: number; convId: string }>;
+  /** Screen rectangle of the Scratchpad card below the Tasks panel; like taskPanelRect. */
+  scratchpadRect: { top: number; bottom: number; left: number; right: number } | null;
+  /** Rows the expanded Scratchpad card can scroll; 0 when everything fits or it is collapsed. */
+  scratchpadMaxScroll: number;
+  /** A click on the Scratchpad card toggles its expansion: false while the collapsed card already shows everything. */
+  scratchpadToggleable: boolean;
   /** Screen rectangle of the status line's usage block; a click there opens the Accounts screen. */
   usageBlockRect: { top: number; bottom: number; left: number; right: number } | null;
   /** Canonical history row and source/display offsets rendered on each message-area row. */
@@ -462,6 +468,10 @@ export interface RenderState {
    * the panel collapses when another conversation is shown.
    */
   taskPanelExpansion: { convId: string; scroll: number } | null;
+  /** Each followed conversation's scratchpad.md as the daemon last sent it (scratchpad_updated); blank files are absent. */
+  scratchpads: Map<string, string>;
+  /** The Scratchpad card expanded by a click, like taskPanelExpansion; at most one of the two is expanded. */
+  scratchpadExpansion: { convId: string; scroll: number } | null;
 }
 
 /** The daemon's streaming bit also covers handoffs between ordinary turns. */
@@ -851,7 +861,7 @@ export function createInitialState(): RenderState {
     sidebar: createSidebarState(loadSidebarFolderViewPreference()),
     sidebarOpenChosen: false,
     vim: createVimState(),
-    layout: { totalLines: 0, messageAreaHeight: 0, historyWidth: 0, chatWidth: 0, taskPanelRect: null, taskPanelMaxScroll: 0, taskPanelToggleable: false, taskPanelLinks: [], usageBlockRect: null, historyViewportRows: [], chatCol: 1, sepAbove: 0, firstInputRow: 0, sepBelow: 0 },
+    layout: { totalLines: 0, messageAreaHeight: 0, historyWidth: 0, chatWidth: 0, taskPanelRect: null, taskPanelMaxScroll: 0, taskPanelToggleable: false, taskPanelLinks: [], scratchpadRect: null, scratchpadMaxScroll: 0, scratchpadToggleable: false, usageBlockRect: null, historyViewportRows: [], chatCol: 1, sepAbove: 0, firstInputRow: 0, sepBelow: 0 },
     deferredHistoryRender: null,
     pendingSend: { active: false, text: "" },
     unconfirmedSends: [],
@@ -900,6 +910,8 @@ export function createInitialState(): RenderState {
     accountsPrefetchReqId: null,
     claudeConversationAccounts: new Map(),
     taskPanelExpansion: null,
+    scratchpads: new Map(),
+    scratchpadExpansion: null,
     undo: createUndoState(),
     autocomplete: null,
     promptScrollOffset: 0,

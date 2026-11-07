@@ -13,6 +13,7 @@ import { focusHistory, focusPrompt, focusSidebar } from "./state";
 import { handleSidebarActionMenuResult, type KeyResult } from "./focus";
 import { scrollBy } from "./chat";
 import { isTaskPanelExpanded, scrollTaskPanel, taskPanelLinkAt, toggleTaskPanelExpansion } from "./activitypanel";
+import { isScratchpadExpanded, scrollScratchpad, toggleScratchpadExpansion } from "./scratchpadpanel";
 import {
   activateSidebarItem,
   handleSidebarActionMenuMouse,
@@ -38,13 +39,25 @@ import { accountsScreenAvailable } from "./accountsscreen";
 
 const SCROLL_LINES = 3;
 
-function isInsideTaskPanel(col: number, row: number, state: RenderState): boolean {
-  const rect = state.layout.taskPanelRect;
+function isInsideRect(col: number, row: number, rect: RenderState["layout"]["taskPanelRect"]): boolean {
   return !!rect
     && row >= rect.top
     && row <= rect.bottom
     && col >= rect.left
     && col <= rect.right;
+}
+
+function isInsideTaskCard(col: number, row: number, state: RenderState): boolean {
+  return isInsideRect(col, row, state.layout.taskPanelRect);
+}
+
+function isInsideScratchpad(col: number, row: number, state: RenderState): boolean {
+  return isInsideRect(col, row, state.layout.scratchpadRect);
+}
+
+/** On either card of the right-hand column; clicks there never reach the history under it. */
+function isInsideTaskPanel(col: number, row: number, state: RenderState): boolean {
+  return isInsideTaskCard(col, row, state) || isInsideScratchpad(col, row, state);
 }
 
 /** Whether (col, row) is on the status line's usage block as last rendered. */
@@ -209,6 +222,7 @@ export function cursorZone(col: number, row: number, state: RenderState): Cursor
   // Message area (chat history) → text, except for the task panel, which a click expands or collapses.
   // The queue prompt swallows clicks, so nothing under it is clickable.
   if (row >= 3 && layout.sepAbove > 0 && row < layout.sepAbove) {
+    if (isInsideScratchpad(col, row, state)) return state.queuePrompt || !layout.scratchpadToggleable ? "pointer" : "hand";
     if (isInsideTaskPanel(col, row, state)) {
       if (state.mouseShift && taskPanelLinkAt(state, col, row)) return "hand";
       return state.queuePrompt || !layout.taskPanelToggleable ? "pointer" : "hand";
@@ -353,8 +367,12 @@ export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult 
     }
 
     // An expanded panel too tall for the message area scrolls itself, never the history under it.
-    if (isInsideTaskPanel(col, row, state) && isTaskPanelExpanded(state) && layout.taskPanelMaxScroll > 0) {
+    if (isInsideTaskCard(col, row, state) && isTaskPanelExpanded(state) && layout.taskPanelMaxScroll > 0) {
       scrollTaskPanel(state, -delta);
+      return { type: "handled" };
+    }
+    if (isInsideScratchpad(col, row, state) && isScratchpadExpanded(state) && layout.scratchpadMaxScroll > 0) {
+      scrollScratchpad(state, -delta);
       return { type: "handled" };
     }
 
@@ -391,6 +409,10 @@ export function handleMouseEvent(ev: MouseEvent, state: RenderState): KeyResult 
     // Shift+click on a subagent's rows opens its conversation. Otherwise the task panel is one toggle:
     // expand to list every entry, or back to the capped card.
     // A collapsed card that already shows everything has nothing to expand to.
+    if (isInsideScratchpad(col, row, state)) {
+      if (layout.scratchpadToggleable) toggleScratchpadExpansion(state);
+      return { type: "handled" };
+    }
     if (isInsideTaskPanel(col, row, state)) {
       const convId = ev.shift ? taskPanelLinkAt(state, col, row) : null;
       if (convId) return { type: "load_conversation", convId };

@@ -53,6 +53,7 @@ const CLIENT_CAPABILITIES: ClientCapability[] = [
   "history-revisions",
   "history-push",
   "machine-resources",
+  "scratchpad",
 ];
 
 export type EventHandler = (event: Event) => void;

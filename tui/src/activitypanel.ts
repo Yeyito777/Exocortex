@@ -31,8 +31,8 @@ import { padRightToWidth, termWidth, truncateToWidth } from "./textwidth";
 import { wordWrap } from "./textwrap";
 import { hexToAnsi, hexToAnsiBg, theme } from "./theme";
 
-const MAX_PANEL_WIDTH = 50;
-const MIN_PANEL_WIDTH = 30;
+export const MAX_PANEL_WIDTH = 50;
+export const MIN_PANEL_WIDTH = 30;
 /** The expanded card grows leftward up to this multiple of its collapsed width, room and titles permitting. */
 export const EXPANDED_PANEL_WIDTH_FACTOR = 1.5;
 /** Keep the floating card compact even when a conversation owns many schedules. */
@@ -129,11 +129,12 @@ export function isTaskPanelExpanded(state: RenderState): boolean {
   return state.convId !== null && state.taskPanelExpansion?.convId === state.convId;
 }
 
-/** Expand the focused conversation's panel at its top, or collapse it. */
+/** Expand the focused conversation's panel at its top (collapsing the Scratchpad card), or collapse it. */
 export function toggleTaskPanelExpansion(state: RenderState): void {
   state.taskPanelExpansion = isTaskPanelExpanded(state) || !state.convId
     ? null
     : { convId: state.convId, scroll: 0 };
+  if (state.taskPanelExpansion) state.scratchpadExpansion = null;
 }
 
 /** Scroll the expanded panel by `delta` rows within what the last frame could show; true when it moved. */
@@ -335,7 +336,7 @@ function fitTasksAndSubscriptions(
   };
 }
 
-interface PanelPalette {
+export interface PanelPalette {
   outline: string;
   topOutline: string;
   exocortex: string;
@@ -345,7 +346,7 @@ interface PanelPalette {
   withPanelBg: (line: string) => string;
 }
 
-function panelPalette(state: RenderState): PanelPalette {
+export function panelPalette(state: RenderState): PanelPalette {
   const panelBg = hexToAnsiBg(PANEL_BG_HEX);
   return {
     outline: `${theme.dim}${theme.text}`,
@@ -533,17 +534,18 @@ function integrationRows(
   );
 }
 
-/** Bottom border of the expanded card: hidden rows on the left, how to collapse on the right. */
-function expandedPanelFooter(palette: PanelPalette, innerWidth: number, above: number, below: number): string {
+/** Bottom border of an expanded card: hidden rows on the left, how to collapse on the right (with `hint`). */
+export function expandedPanelFooter(palette: PanelPalette, innerWidth: number, above: number, below: number, hint = true): string {
   const scrollText = [above > 0 ? `↑ ${above} above` : "", below > 0 ? `↓ ${below} below` : ""].filter(Boolean).join(" · ");
   // Each text is framed as `─ text ` or ` text ─`; narrow cards drop the hint first, then the scroll counts.
   const framed = (text: string) => text ? termWidth(text) + 3 : 0;
-  const hint = ["click to collapse", "collapse", ""].find(text => framed(scrollText) + framed(text) <= innerWidth) ?? "";
-  const scroll = framed(scrollText) + framed(hint) <= innerWidth ? scrollText : "";
-  const fill = "─".repeat(Math.max(0, innerWidth - framed(scroll) - framed(hint)));
+  const hints = hint ? ["click to collapse", "collapse", ""] : [""];
+  const hintText = hints.find(text => framed(scrollText) + framed(text) <= innerWidth) ?? "";
+  const scroll = framed(scrollText) + framed(hintText) <= innerWidth ? scrollText : "";
+  const fill = "─".repeat(Math.max(0, innerWidth - framed(scroll) - framed(hintText)));
   const muted = (text: string) => `${theme.reset}${theme.muted}${text}${palette.outline}`;
   return palette.withPanelBg(
-    `${palette.outline}╰${scroll ? `─ ${muted(scroll)} ` : ""}${fill}${hint ? ` ${muted(hint)} ─` : ""}╯`,
+    `${palette.outline}╰${scroll ? `─ ${muted(scroll)} ` : ""}${fill}${hintText ? ` ${muted(hintText)} ─` : ""}╯`,
   );
 }
 

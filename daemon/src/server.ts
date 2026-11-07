@@ -159,6 +159,7 @@ export class DaemonServer {
   private notifyClosed(client: ConnectedClient): void {
     if (this.closed.has(client)) return;
     this.closed.add(client);
+    for (const convId of client.subscriptions) this.notifySubscription(client, convId, false);
     for (const listener of this.closeListeners) {
       try { listener(client); } catch (err) {
         log("error", `server: close listener failed for ${client.id}: ${err instanceof Error ? err.message : String(err)}`);
@@ -403,11 +404,29 @@ export class DaemonServer {
   // ── Subscriptions ───────────────────────────────────────────────
 
   subscribe(client: ConnectedClient, convId: string): void {
+    if (client.subscriptions.has(convId)) return;
     client.subscriptions.add(convId);
+    this.notifySubscription(client, convId, true);
   }
 
   unsubscribe(client: ConnectedClient, convId: string): void {
-    client.subscriptions.delete(convId);
+    if (client.subscriptions.delete(convId)) this.notifySubscription(client, convId, false);
+  }
+
+  private subscriptionListeners = new Set<(client: ConnectedClient, convId: string, subscribed: boolean) => void>();
+
+  private notifySubscription(client: ConnectedClient, convId: string, subscribed: boolean): void {
+    for (const listener of this.subscriptionListeners) {
+      try { listener(client, convId, subscribed); } catch (err) {
+        log("error", `server: subscription listener failed for ${client.id}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+
+  /** Told when a client starts or stops following a conversation, including by disconnecting. */
+  onSubscriptionChanged(listener: (client: ConnectedClient, convId: string, subscribed: boolean) => void): () => void {
+    this.subscriptionListeners.add(listener);
+    return () => this.subscriptionListeners.delete(listener);
   }
 
   /** Check if any connected client is subscribed to a conversation. */

@@ -530,6 +530,38 @@ describe("DaemonClient SSH routing", () => {
     }
   });
 
+  test("a remote daemon's scratchpad reaches the TUI over /ssh, which declares the capability there", async () => {
+    let remote: FakeProcess | null = null;
+    const state = createInitialState();
+    const client = new DaemonClient(event => handleEvent(event, state, client), "/tmp/local.sock", false, {
+      spawnSshProcess: () => {
+        const child = respondingProbe();
+        remote = child;
+        child.stdin.on("data", chunk => {
+          for (const line of chunk.toString().trim().split("\n")) {
+            const cmd = JSON.parse(line);
+            if (cmd.type !== "load_conversation") continue;
+            child.stdout.write(`${JSON.stringify({ type: "scratchpad_updated", convId: cmd.convId, content: "- [ ] on the remote\n" })}\n`);
+          }
+        });
+        return child;
+      },
+    });
+    try {
+      client.ssh("connect", "whale");
+      await waitFor(() => client.remoteAlias === "whale");
+      (await client.connect()).releaseBootstrapEvents?.();
+      const capabilities = remote!.input.split("\n").filter(Boolean).map(line => JSON.parse(line))
+        .find(command => command.type === "client_capabilities");
+      expect(capabilities.capabilities).toContain("scratchpad");
+      client.loadConversation("remote-conv");
+      await waitFor(() => state.scratchpads.has("remote-conv"));
+      expect(state.scratchpads.get("remote-conv")).toBe("- [ ] on the remote\n");
+    } finally {
+      client.disconnect();
+    }
+  });
+
   test("selects a remote transport for only one TUI while another stays local", async () => {
     const spawned: FakeProcess[] = [];
     const events: unknown[] = [];

@@ -301,6 +301,11 @@ export function handleEvent(
       applyConversationUnwound(state, event);
       break;
 
+    case "scratchpad_updated":
+      if (event.content === null) state.scratchpads.delete(event.convId);
+      else state.scratchpads.set(event.convId, event.content);
+      break;
+
     case "goal_updated":
       state.goal = event.goal ?? null;
       if (event.message) pushSystemMessage(state, event.message, theme.muted);
