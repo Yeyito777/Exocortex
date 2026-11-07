@@ -184,6 +184,7 @@ function macroDefinitions(environment: MacroEnvironment | null = localMacroEnvir
       { name: "other", desc: "Draft plan for another instance", expansion: `Draft a plan for this as a prompt for another instance. Write it as a kebab-case markdown file inside \`${PLAYGROUND_DIR}\` (create the directory if needed). The file should be self-contained so I can send it to another instance and he gets all the context he needs to work on it.` },
     ],
   },
+  { name: "/scratchpad", desc: "Set up your scratchpad", expansion: "Set up your scratchpad for this conversation: what I need to do or keep track of, and keep it updated as things change." },
   { name: "/fix", desc: "Go ahead and fix it", expansion: "Go ahead and fix it" },
   { name: "/go", desc: "Go ahead and implement", expansion: "Go ahead and implement that" },
   { name: "/questions", desc: "Any questions?", expansion: "Before we proceed, any questions?" },

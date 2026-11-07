@@ -32,6 +32,10 @@ describe("macro expansion", () => {
     expect(expandMacros("/xenv")).toBe("/xenv");
   });
 
+  test("/scratchpad asks the agent to set up and keep its scratchpad", () => {
+    expect(expandMacros("/scratchpad")).toBe("Set up your scratchpad for this conversation: what I need to do or keep track of, and keep it updated as things change.");
+  });
+
   test("/todo expands to the sequential TODO workflow prompt", () => {
     expect(expandMacros("/todo")).toBe("Make a <name>-todo.md for this with items - [ ] and finish it sequentially.");
   });
