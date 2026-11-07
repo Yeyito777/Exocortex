@@ -9,5 +9,8 @@
   "scripts": {
     "check": "bun scripts/dev/check.ts",
     "typecheck": "bunx tsc --noEmit -p shared && bunx tsc --noEmit -p daemon && bunx tsc --noEmit -p tui"
+  },
+  "devDependencies": {
+    "@typescript/native-preview": "7.0.0-dev.20260707.2"
   }
 }
