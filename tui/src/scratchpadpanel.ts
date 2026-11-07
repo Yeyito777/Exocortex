@@ -29,7 +29,7 @@ import {
   type PanelPalette,
   type TaskPanelRender,
 } from "./activitypanel";
-import type { RenderState } from "./state";
+import { focusedConversation, type RenderState } from "./state";
 import { sliceByWidth, termWidth } from "./textwidth";
 import { hexToAnsi, theme } from "./theme";
 
@@ -131,7 +131,7 @@ let parsed: ScratchpadLine[] = [];
  * are here (never another version's).
  */
 export function focusedScratchpadLines(state: RenderState): ScratchpadLine[] {
-  const hash = state.convId ? state.sidebar.conversations.find(conversation => conversation.id === state.convId)?.scratchpad : undefined;
+  const hash = focusedConversation(state)?.scratchpad;
   const content = hash ? state.scratchpads.get(hash) : undefined;
   if (!content) return [];
   if (content !== parsedFor) {
@@ -285,7 +285,22 @@ function headerLine(palette: PanelPalette, innerWidth: number, count: string): s
  * most (the rows left below the Tasks card). Null without a scratchpad, or
  * where the Tasks card would not show either.
  */
+const scratchpadPanelCache = new WeakMap<RenderState, { key: unknown[]; panel: ScratchpadRender | null }>();
+
+/** The Scratchpad card, built again only when its lines, expansion, size or colours changed: scroll frames reuse it. */
 export function renderScratchpadPanel(state: RenderState, chatWidth: number, maxHeight: number): ScratchpadRender | null {
+  const key: unknown[] = [
+    focusedScratchpadLines(state), chatWidth, maxHeight, isScratchpadExpanded(state), state.scratchpadExpansion?.scroll,
+    state.externalToolStyles, state.toolRegistry, theme.name,
+  ];
+  const cached = scratchpadPanelCache.get(state);
+  if (cached && cached.key.every((value, index) => value === key[index])) return cached.panel;
+  const panel = buildScratchpadPanel(state, chatWidth, maxHeight);
+  scratchpadPanelCache.set(state, { key, panel });
+  return panel;
+}
+
+function buildScratchpadPanel(state: RenderState, chatWidth: number, maxHeight: number): ScratchpadRender | null {
   const lines = focusedScratchpadLines(state);
   const expanded = isScratchpadExpanded(state);
   const panelHeight = expanded ? maxHeight : Math.min(maxHeight, MAX_SCRATCHPAD_PANEL_HEIGHT);

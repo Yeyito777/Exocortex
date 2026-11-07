@@ -6,7 +6,7 @@
  * in blockrenderer.ts.
  */
 
-import { CONTEXT_COMPACTION_FINISHED_KIND, combineMessageMetadata, convDisplayName, ownerRelayedText, type Block, type ConversationSummary, type ImageAttachment, type Message, type MessageMetadata, type UserMessageAutomation } from "./messages";
+import { CONTEXT_COMPACTION_FINISHED_KIND, combineMessageMetadata, convDisplayName, ownerRelayedText, type Block, type ImageAttachment, type Message, type MessageMetadata, type UserMessageAutomation } from "./messages";
 import {
   fitImageBox,
   historyImageLimits,
@@ -22,7 +22,8 @@ import {
   type InlineImageSource,
   type VideoCaptionSlot,
 } from "./inlineimages";
-import { isActiveConversationLoading, isStreaming, type RenderState } from "./state";
+import { focusedConversation, isActiveConversationLoading, isStreaming, type RenderState } from "./state";
+import { conversationById } from "./sidebar/state";
 import { formatDuration, localDayKey, renderMetadata } from "./metadata";
 import { activeDurableSleepAssistant, inlineSleepMetadataEndedAt } from "./durable-sleep-metadata";
 import { liveChronoCalls, liveChronoProgressTexts } from "./chronocalls";
@@ -769,15 +770,13 @@ export function buildMessageLines(
   const imageCell = inlineImageCellSize();
   const collapse = !state.showTurnWork && !state.showToolOutput;
   // Senders by id, indexed on the first lookup: the sidebar list is sorted and patched in place.
-  let sidebarById: Map<string, ConversationSummary> | null = null;
-  const sidebarConversation = (id: string) =>
-    (sidebarById ??= new Map((state.sidebar?.conversations ?? []).map(conv => [conv.id, conv]))).get(id);
+  const sidebarConversation = (id: string) => conversationById(state.sidebar, id);
   const conversationTitle = (id: string) => {
     const conv = sidebarConversation(id);
     return conv ? convDisplayName(conv) : null;
   };
   // A top-level conversation's subagents: folded, their messages leave no row.
-  const ownConversation = state.convId ? state.sidebar?.conversations.find(conv => conv.id === state.convId) : undefined;
+  const ownConversation = focusedConversation(state);
   const isOwnSubagent = ownConversation && !ownConversation.parentConversationId
     ? (id: string) => sidebarConversation(id)?.parentConversationId === ownConversation.id
     : undefined;

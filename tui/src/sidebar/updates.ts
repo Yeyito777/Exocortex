@@ -10,7 +10,7 @@ import {
   getSearchableConversationTitle,
 } from "../sidebarsearch";
 import { focusSidebarItem } from "./selection";
-import type { SidebarState } from "./state";
+import { insertConversation, replaceConversationAt, type SidebarState } from "./state";
 import { isSidebarItemVisibleInTree, isTreeFolderView, sidebarItemContainer, syncTreeFolderContext } from "./tree";
 
 function sidebarSort<T extends { pinned: boolean; sortOrder: number }>(items: T[]): T[] {
@@ -208,9 +208,9 @@ export function updateConversation(sidebar: SidebarState, summary: ConversationS
   sidebar.optimisticConversationIds.delete(summary.id);
   const idx = sidebar.conversations.findIndex(c => c.id === summary.id);
   if (idx !== -1) {
-    sidebar.conversations[idx] = summary;
+    replaceConversationAt(sidebar, idx, summary);
   } else {
-    sidebar.conversations.unshift(summary);
+    insertConversation(sidebar, 0, summary);
   }
   overlayPendingSidebarMoves(sidebar);
   sortSidebarCollections(sidebar);

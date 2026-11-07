@@ -5,7 +5,7 @@
  * This is the only file that knows how to render the top bar.
  */
 
-import { isStaleCopyMarked, type RenderState } from "./state";
+import { focusedConversation, isStaleCopyMarked, type RenderState } from "./state";
 import { convDisplayName, formatModelDisplayName } from "./messages";
 import { termWidth, truncateToWidth } from "./textwidth";
 import { theme } from "./theme";
@@ -33,7 +33,7 @@ function proxyLabel(state: RenderState): string {
 function convLabel(state: RenderState): string {
   if (state.sshConnecting) return "";
   if (!state.convId) return "";
-  const conv = state.sidebar.conversations.find(c => c.id === state.convId);
+  const conv = focusedConversation(state);
   if (!conv) return "";
   return truncateToWidth(convDisplayName(conv), PREVIEW_MAX);
 }

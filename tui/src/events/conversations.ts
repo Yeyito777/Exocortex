@@ -19,6 +19,7 @@ import {
 import { rejectPendingSidebarMove } from "../sidebar/pendingmoves";
 import { focusTargetAfterRemovingSidebarItems } from "../sidebar/removal";
 import { focusSidebarItem } from "../sidebar/selection";
+import { removeConversationAt } from "../sidebar/state";
 import { clearUnreadLocally, isOpenRequested, pushSystemMessage, reapplyLocalStops, withLocalStop, type RenderState } from "../state";
 import { theme } from "../theme";
 import { preserveViewportAcrossHistoryPrepend } from "../chatscroll";
@@ -256,7 +257,7 @@ export function handleConversationDeleted(event: Extract<Event, { type: "convers
     const focusTarget = selectedWasDeleted
       ? focusTargetAfterRemovingSidebarItems(state.sidebar, [{ type: "conversation", id: event.convId }])
       : null;
-    state.sidebar.conversations.splice(idx, 1);
+    removeConversationAt(state.sidebar, idx);
     if (selectedWasDeleted) focusSidebarItem(state.sidebar, focusTarget);
     else syncSelectedIndex(state.sidebar);
   }
