@@ -20,7 +20,7 @@ import {
 let dir: string;
 
 function magick(args: string[]): void {
-  const proc = Bun.spawnSync(["magick", ...args], { stderr: "pipe" });
+  const proc = Bun.spawnSync(["magick", ...args], { stderr: "pipe", timeout: 10_000 });
   if (proc.exitCode !== 0) throw new Error(proc.stderr.toString());
 }
 
@@ -31,8 +31,9 @@ beforeAll(() => {
   magick(["-size", "30x10", "xc:yellow", join(dir, "anim.gif")]);
   magick(["-size", "24x12", "xc:purple", join(dir, "art.webp")]);
   magick(["-size", "5000x100", "xc:white", join(dir, "wide.png")]);
-  // Many colours, like a downscaled screenshot.
-  magick(["-size", "600x300", "plasma:fractal", join(dir, "busy.png")]);
+  // Many colours, like a downscaled screenshot. (plasma:fractal took 0.6 s of
+  // CPU, most of this hook, and timed it out under load.)
+  magick(["-size", "600x300", "gradient:red-blue", "-swirl", "90", join(dir, "busy.png")]);
 });
 
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -167,7 +168,7 @@ describe("previews", () => {
     const fade = await storeImageFile(join(dir, "fade.png"));
     const fadeStored = findStoredImage(fade.id)!;
     const fadeThumb = await renderImagePreview(fade.id, { bytes: readFileSync(fadeStored.path), mediaType: fadeStored.mediaType }, { format: "png", width: 32, height: 32, purpose: "thumbnail" });
-    const rgba = Bun.spawnSync(["magick", "png:-", "-depth", "8", "rgba:-"], { stdin: fadeThumb.data }).stdout;
+    const rgba = Bun.spawnSync(["magick", "png:-", "-depth", "8", "rgba:-"], { stdin: fadeThumb.data, timeout: 10_000 }).stdout;
     const alphas = new Set(Array.from({ length: rgba.length / 4 }, (_, i) => rgba[i * 4 + 3]));
     expect(alphas.size).toBeGreaterThan(4);
   });
