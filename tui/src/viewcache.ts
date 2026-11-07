@@ -102,6 +102,10 @@ export class ViewCacheStore {
   private writing = new Map<string, string>();
   private lazyTimer: ReturnType<typeof setTimeout> | null = null;
   private writes = new Map<string, Promise<void>>();
+  /** Hashes of the texts this store put: a file not matching is another TUI's copy, written over this one's. */
+  private written = new Map<string, number | bigint>();
+  /** Conversations whose copy held came from another TUI. */
+  private foreign = new Set<string>();
   private bytes = 0;
 
   constructor(readonly dir: string, private readonly limits: ViewCacheLimits = DEFAULT_VIEW_CACHE_LIMITS, private readonly lazyWriteMs = LAZY_WRITE_MS) {}
@@ -154,7 +158,8 @@ export class ViewCacheStore {
     const entry = this.scan().get(convId);
     if (!entry) return null;
     try {
-      const text = this.unwritten.get(convId)?.json ?? this.writing.get(convId) ?? this.texts.get(convId) ?? readFileSync(join(this.dir, entry.file), "utf8");
+      const held = this.unwritten.get(convId)?.json ?? this.writing.get(convId) ?? this.texts.get(convId);
+      const text = held ?? readFileSync(join(this.dir, entry.file), "utf8");
       const data = JSON.parse(text) as { format?: number } & Partial<CachedView>;
       if (data.format !== FORMAT || data.convId !== convId || data.loaded?.type !== "conversation_loaded"
           || data.loaded.convId !== convId || !Array.isArray(data.loaded.entries)
@@ -162,12 +167,21 @@ export class ViewCacheStore {
           || (data.live && !Array.isArray(data.live.blocks))) {
         throw new Error("invalid");
       }
+      if (held === undefined) {
+        if (this.written.get(convId) === Bun.hash(text)) this.foreign.delete(convId);
+        else this.foreign.add(convId);
+      }
       if (!this.unwritten.has(convId)) this.remember(convId, text);
       return { convId, rev: entry.rev, folded: entry.folded, loaded: data.loaded, backfill: data.backfill ?? null, live: data.live ?? null };
     } catch {
       this.remove(convId);
       return null;
     }
+  }
+
+  /** Whether the copy of `convId` held is the one this store last put, not another TUI's that replaced it. */
+  own(convId: string): boolean {
+    return this.written.has(convId) && !this.foreign.has(convId);
   }
 
   /** Mark a view used now (opened), so it is the last to go. */
@@ -199,6 +213,8 @@ export class ViewCacheStore {
     const entry = { file, rev: view.rev, folded: view.folded, bytes, usedAt: Math.max(usedAt, previous?.usedAt ?? 0) };
     entries.set(view.convId, entry);
     this.bytes += bytes;
+    this.written.set(view.convId, Bun.hash(json));
+    this.foreign.delete(view.convId);
     this.unwritten.delete(view.convId);
     if (lazy) {
       this.texts.delete(view.convId);
@@ -220,6 +236,8 @@ export class ViewCacheStore {
     this.texts.delete(convId);
     this.unwritten.delete(convId);
     this.writing.delete(convId);
+    this.written.delete(convId);
+    this.foreign.delete(convId);
     if (!entry) return;
     this.entries!.delete(convId);
     this.bytes -= entry.bytes;
@@ -414,6 +432,8 @@ export class ViewCache {
   /** The cached view of `convId` for a page folded like `folded`, if any. */
   view(convId: string, folded: boolean): CachedView | null {
     const view = this.store.get(convId);
+    // Another TUI's copy (they share the directory): the daemon's numbered record is of this one's, not it.
+    if (view && !this.store.own(convId)) this.copySeqs.delete(convId);
     return view && view.folded === folded ? view : null;
   }
 
@@ -629,7 +649,7 @@ export class ViewCache {
     }
     const view = this.store.get(convId);
     try {
-      if (!view || push.base === undefined || push.copySeq === undefined || this.copySeqs.get(convId) !== push.base) throw new Error("Not this copy");
+      if (!view || !this.store.own(convId) || push.base === undefined || push.copySeq === undefined || this.copySeqs.get(convId) !== push.base) throw new Error("Not this copy");
       const loaded = push.loaded ? decodePagePush(push.loaded, view.loaded.entries) : null;
       let backfill = view.backfill;
       if (push.backfill === null) backfill = null;
