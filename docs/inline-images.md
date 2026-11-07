@@ -106,7 +106,8 @@ paste right away. The `user_message` event echoes a pasted image over 128 KB
 of base64 as its id and size only: the sender keeps its own bytes (also for a
 queued message delivered later) and other clients fetch a preview. A pasted PNG
 whose bytes the TUI still holds (its local echo, or history that carries the
-payload) goes to Kitty terminals as is, with no `get_image` at all, when the
+payload; once drawn, also after history drops them) goes to Kitty terminals as
+is, with no `get_image` at all, when the
 terminal would not have to shrink it much (at most 4× the drawn pixel area, at
 most 8192 px a side, up to 16 MB of base64, 1 MB when the TUI's own terminal is
 reached over SSH). Any other image whose bytes the TUI holds (a larger

@@ -6,6 +6,7 @@ import {
   inlineImageGeneration,
   inlineImagesInternalsForTest,
   kittyPreview,
+  kittyThumbnail,
   renderHalfBlockRows,
   renderInlineImage,
   setInlineImageCellSize,
@@ -155,6 +156,29 @@ describe("pasted images", () => {
     // Larger than a Kitty terminal accepts: always a preview.
     const huge = { ...pasted, width: 9000, height: 100 };
     expect(kittyPreview(huge, { cols: 512, rows: 100 })).toEqual({ phase: "loading" });
+  });
+
+  test("a sent PNG drawn from its bytes still draws, with no fetch, once history drops them", async () => {
+    const requests: ImagePreviewRequest[] = [];
+    configureInlineImages({
+      fetch: async request => { requests.push(request); return { format: "png", width: 10, height: 5, base64: "UE5H" }; },
+      onChange: () => {},
+    });
+    // Small enough for its thumbnail box (56×12 cells of 8×16 px) to take it as is.
+    const echo = { ...pasted, width: 400, height: 200 };
+    const sent = kittyThumbnail(echo);
+    expect(sent.phase).toBe("ready");
+    // History (a reopen, the turn's end) carries a large paste as its id and size only.
+    const { localBase64: _, ...fromHistory } = echo;
+    expect(kittyThumbnail(fromHistory)).toEqual(sent);
+    await Bun.sleep(0);
+    expect(requests).toHaveLength(0);
+    // Bytes no longer kept (evicted, a restarted TUI): the daemon is asked as before.
+    inlineImagesInternalsForTest.reset();
+    configureInlineImages({ fetch: async request => { requests.push(request); return { format: "png", width: 10, height: 5, base64: "UE5H" }; }, onChange: () => {} });
+    expect(kittyThumbnail(fromHistory)).toEqual({ phase: "loading" });
+    await Bun.sleep(0);
+    expect(requests).toHaveLength(1);
   });
 
   test("permanent errors are not retried", async () => {
